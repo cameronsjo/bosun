@@ -76,15 +76,47 @@ def deep_merge(base: dict, overlay: dict, path: str = "") -> dict:
     return result
 
 
-def load_provision(provision_name: str, variables: dict, provisions_dir: Path) -> dict:
-    """Load provision, interpolate variables, parse YAML."""
+def load_provision(
+    provision_name: str,
+    variables: dict,
+    provisions_dir: Path,
+    loaded: set[str] | None = None,
+) -> dict:
+    """Load provision, interpolate variables, parse YAML. Supports inheritance via 'includes'."""
+    if loaded is None:
+        loaded = set()
+
+    # Prevent circular includes
+    if provision_name in loaded:
+        return {}
+    loaded.add(provision_name)
+
     provision_path = provisions_dir / f"{provision_name}.yml"
     if not provision_path.exists():
         raise FileNotFoundError(f"Provision not found: {provision_path}")
 
     raw_content = provision_path.read_text()
     interpolated = interpolate(raw_content, variables)
-    return yaml.safe_load(interpolated) or {}
+    provision = yaml.safe_load(interpolated) or {}
+
+    # Handle inheritance - load included provisions first, then merge this on top
+    includes = provision.pop("includes", [])
+    if includes:
+        result: dict[str, dict] = {}
+        for included in includes:
+            included_provision = load_provision(included, variables, provisions_dir, loaded)
+            for target in ("compose", "traefik", "gatus"):
+                if target in included_provision:
+                    result[target] = deep_merge(
+                        result.get(target, {}), included_provision[target]
+                    )
+        # Merge this provision on top of included ones
+        for target in ("compose", "traefik", "gatus"):
+            if target in provision:
+                result[target] = deep_merge(result.get(target, {}), provision[target])
+        return result
+
+    return provision
 
 
 def render_service(manifest: dict, provisions_dir: Path) -> dict[str, dict]:

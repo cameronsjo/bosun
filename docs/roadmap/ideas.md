@@ -2,16 +2,8 @@
 
 | Item | Priority | Effort | Notes |
 |------|----------|--------|-------|
-| `bosun init` - interactive setup wizard | p1 | medium | Zero to deployed in 2 minutes |
 | Linux-first docs & examples | p1 | medium | Unraid-tested but generic Linux instructions |
-| `bosun doctor` - pre-flight checks | p1 | small | Docker, age key, webhook, SOPS validation |
-| Dry-run deploys | p1 | medium | Show diff of what would change before applying |
-| `bosun lint` - validate before deploy | p1 | small | Catch manifest errors early |
-| Dependency ordering | p1 | medium | Postgres before app, traefik before everything |
 | Rollback snapshots | p2 | medium | Auto-snapshot before deploy, `bosun mayday --rollback` |
-| `bosun status` - health dashboard | p2 | medium | Unified view: containers, gatus, deploys, resources |
-| Provision inheritance | p2 | small | `webapp` bundles `[container, reverse-proxy, healthcheck]` |
-| Service templates | p2 | small | `bosun create webapp myapp` scaffolds manifest |
 | `bosun log` - release history | p2 | small | Deploy timeline with git SHAs |
 | `bosun drift` - drift detection | p2 | medium | Show diff between git and running state |
 | Values overlays | p2 | medium | `--values prod.yaml` for env-specific config |
@@ -27,3 +19,16 @@
 | Replica scaling | p4 | large | `replicas: 3` in manifest, bosun manages instances |
 | Auto-prune orphans | p4 | medium | Remove containers no longer in manifest (opt-in) |
 | Plugin system | p4 | large | Lifecycle hooks in `bosun/plugins/` |
+
+## Done
+
+| Item | Notes |
+|------|-------|
+| `bosun init` - interactive setup wizard | Scaffolds project, sets up age/sops, creates starter files |
+| `bosun doctor` - pre-flight checks | Validates Docker, Compose, Git, Age, SOPS, uv, webhook |
+| `bosun lint` - validate before deploy | Validates provisions, services, stacks with dry-run render |
+| Dry-run deploys | `provision --dry-run` shows output, `--diff` shows changes |
+| Dependency ordering | Lint validates deps, yacht up checks traefik |
+| Provision inheritance | `webapp` bundles container, healthcheck, reverse-proxy, etc. |
+| Service templates | `bosun create webapp myapp` scaffolds from templates |
+| `bosun status` - health dashboard | Shows crew, infrastructure, resources, recent activity |

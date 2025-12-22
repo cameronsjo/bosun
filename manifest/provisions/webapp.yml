@@ -1,0 +1,8 @@
+# Web application bundle - includes all common webapp provisions
+# Use this instead of listing: container, healthcheck, reverse-proxy, homepage, monitoring
+includes:
+  - container
+  - healthcheck
+  - reverse-proxy
+  - homepage
+  - monitoring
