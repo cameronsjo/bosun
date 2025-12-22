@@ -14,6 +14,12 @@ import (
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
+// Provision command display limits.
+const (
+	// MaxDiffOutputLines is the maximum number of lines to show in diff output before truncation.
+	MaxDiffOutputLines = 50
+)
+
 var (
 	provisionDryRun bool
 	provisionDiff   bool
@@ -292,9 +298,9 @@ func showDiff(output *manifest.RenderOutput, outputDir, stackName string) error 
 
 	// Truncate long output
 	lines := strings.Split(yamlOutput, "\n")
-	if len(lines) > 50 {
-		fmt.Println(strings.Join(lines[:50], "\n"))
-		fmt.Printf("... (%d more lines)\n", len(lines)-50)
+	if len(lines) > MaxDiffOutputLines {
+		fmt.Println(strings.Join(lines[:MaxDiffOutputLines], "\n"))
+		fmt.Printf("... (%d more lines)\n", len(lines)-MaxDiffOutputLines)
 	} else {
 		fmt.Print(yamlOutput)
 	}

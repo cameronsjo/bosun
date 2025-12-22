@@ -120,7 +120,7 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 		return nil, fmt.Errorf("list containers: %w", err)
 	}
 
-	var result []ContainerInfo
+	result := make([]ContainerInfo, 0, len(containers))
 	for _, ctr := range containers {
 		name := ""
 		if len(ctr.Names) > 0 {
@@ -136,7 +136,7 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 			}
 		}
 
-		var ports []string
+		ports := make([]string, 0, len(ctr.Ports))
 		for _, p := range ctr.Ports {
 			if p.PublicPort > 0 {
 				ports = append(ports, fmt.Sprintf("%d:%d/%s", p.PublicPort, p.PrivatePort, p.Type))
@@ -296,7 +296,7 @@ func (c *Client) GetAllContainerStats(ctx context.Context) ([]ContainerStats, er
 		return nil, err
 	}
 
-	var stats []ContainerStats
+	stats := make([]ContainerStats, 0, len(containers))
 	for _, ctr := range containers {
 		s, err := c.GetContainerStats(ctx, ctr.Name)
 		if err != nil {
@@ -315,32 +315,5 @@ func (c *Client) DiskUsage(ctx context.Context) (types.DiskUsage, error) {
 
 // readJSONStats reads a single JSON stats object from the reader.
 func readJSONStats(r io.Reader, v *statsJSON) error {
-	dec := newJSONDecoder(r)
-	return dec.Decode(v)
-}
-
-// jsonDecoder wraps a decoder for stats parsing.
-type jsonDecoder struct {
-	dec *jsonStdDecoder
-}
-
-type jsonStdDecoder struct {
-	r io.Reader
-}
-
-func newJSONDecoder(r io.Reader) *jsonDecoder {
-	return &jsonDecoder{dec: &jsonStdDecoder{r: r}}
-}
-
-func (d *jsonDecoder) Decode(v any) error {
-	data, err := io.ReadAll(d.dec.r)
-	if err != nil {
-		return err
-	}
-	return unmarshalJSON(data, v)
-}
-
-// unmarshalJSON wraps encoding/json.Unmarshal.
-func unmarshalJSON(data []byte, v any) error {
-	return json.Unmarshal(data, v)
+	return json.NewDecoder(r).Decode(v)
 }

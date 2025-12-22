@@ -20,11 +20,13 @@ func TestNewGitOps(t *testing.T) {
 }
 
 func TestGitOps_IsRepo(t *testing.T) {
+	ctx := context.Background()
+
 	t.Run("not a repo", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		gitOps := NewGitOps("", "", tmpDir)
 
-		assert.False(t, gitOps.IsRepo())
+		assert.False(t, gitOps.IsRepo(ctx))
 	})
 
 	t.Run("is a repo", func(t *testing.T) {
@@ -38,7 +40,7 @@ func TestGitOps_IsRepo(t *testing.T) {
 		require.NoError(t, cmd.Run())
 
 		gitOps := NewGitOps("", "", tmpDir)
-		assert.True(t, gitOps.IsRepo())
+		assert.True(t, gitOps.IsRepo(ctx))
 	})
 }
 

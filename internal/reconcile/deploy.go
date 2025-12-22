@@ -107,6 +107,10 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 // CheckSSHConnectivity verifies SSH connectivity to a remote host.
 // Returns nil if connection succeeds, error with actionable details otherwise.
 func (d *DeployOps) CheckSSHConnectivity(ctx context.Context, host string) error {
+	if err := validateHost(host); err != nil {
+		return fmt.Errorf("invalid SSH host: %w", err)
+	}
+
 	// Apply timeout if context doesn't have one
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
@@ -230,6 +234,10 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 // BackupRemote creates a backup from a remote host via SSH.
 // Retries on transient SSH errors with exponential backoff.
 func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, remotePaths []string) (string, error) {
+	if err := validateHost(host); err != nil {
+		return "", fmt.Errorf("invalid SSH host: %w", err)
+	}
+
 	timestamp := time.Now().Format("20060102-150405")
 	backupName := fmt.Sprintf("backup-%s", timestamp)
 	backupPath := filepath.Join(backupDir, backupName)
@@ -341,6 +349,10 @@ func (d *DeployOps) DeployLocalFile(ctx context.Context, sourceFile, targetFile 
 // Uses RsyncTimeout if the parent context has no deadline.
 // Retries on transient SSH errors with exponential backoff.
 func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, targetDir string) error {
+	if err := validateHost(targetHost); err != nil {
+		return fmt.Errorf("invalid SSH host: %w", err)
+	}
+
 	// Apply timeout if context doesn't have one
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
@@ -373,6 +385,10 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 // DeployRemoteFile syncs a single file to a remote host using rsync over SSH.
 // Retries on transient SSH errors with exponential backoff.
 func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost, targetFile string) error {
+	if err := validateHost(targetHost); err != nil {
+		return fmt.Errorf("invalid SSH host: %w", err)
+	}
+
 	args := []string{"-avz"}
 	if d.DryRun {
 		args = append(args, "--dry-run")
@@ -396,6 +412,10 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 // Uses SSHTimeout if the parent context has no deadline.
 // Retries on transient SSH errors with exponential backoff.
 func (d *DeployOps) EnsureRemoteDir(ctx context.Context, host, dir string) error {
+	if err := validateHost(host); err != nil {
+		return fmt.Errorf("invalid SSH host: %w", err)
+	}
+
 	// Apply timeout if context doesn't have one
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
@@ -504,6 +524,10 @@ func (d *DeployOps) VerifyContainerHealth(ctx context.Context, composeFile strin
 // ComposeUpRemote runs docker compose up on a remote host via SSH.
 // Retries on transient SSH errors with exponential backoff.
 func (d *DeployOps) ComposeUpRemote(ctx context.Context, host, composeDir string) error {
+	if err := validateHost(host); err != nil {
+		return fmt.Errorf("invalid SSH host: %w", err)
+	}
+
 	if d.DryRun {
 		return nil
 	}
@@ -524,6 +548,13 @@ func (d *DeployOps) ComposeUpRemote(ctx context.Context, host, composeDir string
 
 // SignalContainer sends a signal to a Docker container.
 func (d *DeployOps) SignalContainer(ctx context.Context, containerName, signal string) error {
+	if err := validateContainerName(containerName); err != nil {
+		return fmt.Errorf("invalid container name: %w", err)
+	}
+	if err := validateSignal(signal); err != nil {
+		return fmt.Errorf("invalid signal: %w", err)
+	}
+
 	if d.DryRun {
 		return nil
 	}
@@ -541,6 +572,16 @@ func (d *DeployOps) SignalContainer(ctx context.Context, containerName, signal s
 // SignalContainerRemote sends a signal to a Docker container on a remote host.
 // Retries on transient SSH errors with exponential backoff.
 func (d *DeployOps) SignalContainerRemote(ctx context.Context, host, containerName, signal string) error {
+	if err := validateHost(host); err != nil {
+		return fmt.Errorf("invalid SSH host: %w", err)
+	}
+	if err := validateContainerName(containerName); err != nil {
+		return fmt.Errorf("invalid container name: %w", err)
+	}
+	if err := validateSignal(signal); err != nil {
+		return fmt.Errorf("invalid signal: %w", err)
+	}
+
 	if d.DryRun {
 		return nil
 	}

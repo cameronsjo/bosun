@@ -63,7 +63,7 @@ func TestSOPSOps_DecryptToMap(t *testing.T) {
 	})
 }
 
-func TestSOPSOps_DecryptMultiple(t *testing.T) {
+func TestSOPSOps_DecryptFiles(t *testing.T) {
 	if _, err := exec.LookPath("sops"); err != nil {
 		t.Skip("sops not installed")
 	}
@@ -72,7 +72,7 @@ func TestSOPSOps_DecryptMultiple(t *testing.T) {
 		sops := NewSOPSOps()
 		ctx := context.Background()
 
-		result, err := sops.DecryptMultiple(ctx, []string{})
+		result, err := sops.DecryptFiles(ctx, []string{})
 		require.NoError(t, err)
 		assert.Empty(t, result)
 	})
@@ -81,7 +81,7 @@ func TestSOPSOps_DecryptMultiple(t *testing.T) {
 		sops := NewSOPSOps()
 		ctx := context.Background()
 
-		_, err := sops.DecryptMultiple(ctx, []string{"/non/existent/file1.yaml"})
+		_, err := sops.DecryptFiles(ctx, []string{"/non/existent/file1.yaml"})
 		assert.Error(t, err)
 	})
 }

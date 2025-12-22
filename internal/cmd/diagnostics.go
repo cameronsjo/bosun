@@ -21,12 +21,56 @@ import (
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
-// Command timeouts
+// Command timeouts and display limits.
 const (
 	doctorCheckTimeout = 10 * time.Second
 	httpClientTimeout  = 5 * time.Second
 	dockerPingTimeout  = 5 * time.Second
+	gitCommandTimeout  = 10 * time.Second
+
+	// Display limits for diagnostics commands.
+	// MaxRecentActivityDisplay is the maximum number of recent containers to show.
+	MaxRecentActivityDisplay = 5
+	// MaxDeployTagsDisplay is the maximum number of deploy tags to show.
+	MaxDeployTagsDisplay = 5
+	// MaxProvisionTimestamps is the maximum number of provision timestamps to show.
+	MaxProvisionTimestamps = 10
+	// DefaultLogHistoryCount is the default number of log history entries to show.
+	DefaultLogHistoryCount = 10
 )
+
+// Pre-compiled regex patterns for port detection
+var portPatterns = []*regexp.Regexp{
+	// Quoted ports: "8080:80"
+	regexp.MustCompile(`"(\d+):\d+(?:/(?:tcp|udp))?"`),
+	// Unquoted ports: 8080:80 or - 8080:80
+	regexp.MustCompile(`(?:^|\s|-)(\d+):\d+(?:/(?:tcp|udp))?`),
+	// Port ranges: "8000-8010:8000-8010"
+	regexp.MustCompile(`"(\d+)-\d+:\d+-\d+"`),
+	// Short syntax: - 80 or "80"
+	regexp.MustCompile(`(?:^|\s)-\s*"?(\d+)"?\s*$`),
+	// Traefik labels: loadbalancer.server.port=8080
+	regexp.MustCompile(`loadbalancer\.server\.port[=:](\d+)`),
+	// Host-bound: "127.0.0.1:8080:80"
+	regexp.MustCompile(`"\d+\.\d+\.\d+\.\d+:(\d+):\d+"`),
+}
+
+// serviceNameRegex matches docker-compose service names
+var serviceNameRegex = regexp.MustCompile(`(?m)^    ([a-z][a-z0-9-]+):$`)
+
+// CheckResult holds the results of a diagnostic check.
+type CheckResult struct {
+	Passed int
+	Failed int
+	Warned int
+}
+
+// Add combines two CheckResults.
+func (r *CheckResult) Add(other CheckResult) {
+	r.Passed += other.Passed
+	r.Failed += other.Failed
+	r.Warned += other.Warned
+}
 
 // statusCmd shows the yacht health dashboard.
 var statusCmd = &cobra.Command{
@@ -41,138 +85,137 @@ func runStatus(cmd *cobra.Command, args []string) {
 	ui.Blue.Println("Yacht Status Dashboard")
 	fmt.Println()
 
-	ctx := context.Background()
-	client, err := docker.NewClient()
-	if err != nil {
-		ui.Error("Docker not available: %v", err)
-		return
-	}
-	defer client.Close()
-
 	// Load config for infrastructure container list
-	cfg, err := config.Load()
+	cfg, cfgErr := config.Load()
 	var infraContainers []string
-	if err == nil {
+	if cfgErr == nil {
 		infraContainers = cfg.InfraContainers()
 	} else {
 		// Fall back to defaults if config can't be loaded
 		infraContainers = []string{"traefik", "authelia", "gatus"}
 	}
 
-	// Crew Status
-	ui.Blue.Println("--- Crew Status ---")
-	running, total, unhealthy, err := client.CountContainers(ctx)
-	if err != nil {
-		ui.Error("Failed to count containers: %v", err)
-	} else {
-		ui.Green.Printf("  Containers: ")
-		fmt.Printf("%d running / %d total\n", running, total)
+	err := withDockerClient(func(ctx context.Context, client *docker.Client) error {
+		// Crew Status
+		ui.Blue.Println("--- Crew Status ---")
+		running, total, unhealthy, err := client.CountContainers(ctx)
+		if err != nil {
+			ui.Error("Failed to count containers: %v", err)
+		} else {
+			ui.Green.Printf("  Containers: ")
+			fmt.Printf("%d running / %d total\n", running, total)
 
-		if unhealthy > 0 {
-			ui.Red.Printf("  Health: %d unhealthy\n", unhealthy)
-			// Show unhealthy containers
-			containers, _ := client.ListContainers(ctx, true)
-			for _, ctr := range containers {
-				if ctr.Health == "unhealthy" {
-					fmt.Printf("    %s: %s\n", ctr.Name, ctr.Status)
+			if unhealthy > 0 {
+				ui.Red.Printf("  Health: %d unhealthy\n", unhealthy)
+				// Show unhealthy containers
+				containers, _ := client.ListContainers(ctx, true)
+				for _, ctr := range containers {
+					if ctr.Health == "unhealthy" {
+						fmt.Printf("    %s: %s\n", ctr.Name, ctr.Status)
+					}
+				}
+			} else {
+				ui.Green.Println("  Health: All healthy")
+			}
+		}
+
+		// Infrastructure
+		fmt.Println()
+		ui.Blue.Println("--- Infrastructure ---")
+		for _, name := range infraContainers {
+			if client.IsContainerRunning(ctx, name) {
+				ctr, _ := client.GetContainerByName(ctx, name)
+				health := ctr.Health
+				if health == "" {
+					health = "running"
+				}
+				if health == "healthy" || health == "running" {
+					ui.Green.Printf("  * %s\n", name)
+				} else {
+					ui.Yellow.Printf("  * %s (%s)\n", name, health)
+				}
+			} else {
+				ui.Red.Printf("  o %s (not running)\n", name)
+			}
+		}
+
+		// Applications (non-infra containers)
+		fmt.Println()
+		ui.Blue.Println("--- Applications ---")
+		containers, _ := client.ListContainers(ctx, true)
+		for _, ctr := range containers {
+			// Skip infra containers
+			isInfra := false
+			for _, infra := range infraContainers {
+				if ctr.Name == infra {
+					isInfra = true
+					break
 				}
 			}
-		} else {
-			ui.Green.Println("  Health: All healthy")
-		}
-	}
+			if isInfra || ctr.Name == "bosun" {
+				continue
+			}
 
-	// Infrastructure
-	fmt.Println()
-	ui.Blue.Println("--- Infrastructure ---")
-	for _, name := range infraContainers {
-		if client.IsContainerRunning(ctx, name) {
-			ctr, _ := client.GetContainerByName(ctx, name)
 			health := ctr.Health
 			if health == "" {
 				health = "running"
 			}
-			if health == "healthy" || health == "running" {
-				ui.Green.Printf("  * %s\n", name)
-			} else {
-				ui.Yellow.Printf("  * %s (%s)\n", name, health)
-			}
-		} else {
-			ui.Red.Printf("  o %s (not running)\n", name)
-		}
-	}
 
-	// Applications (non-infra containers)
-	fmt.Println()
-	ui.Blue.Println("--- Applications ---")
-	containers, _ := client.ListContainers(ctx, true)
-	for _, ctr := range containers {
-		// Skip infra containers
-		isInfra := false
-		for _, infra := range infraContainers {
-			if ctr.Name == infra {
-				isInfra = true
+			if health == "healthy" || health == "running" {
+				ui.Green.Printf("  * %s (%s)\n", ctr.Name, ctr.Status)
+			} else if health == "unhealthy" {
+				ui.Red.Printf("  * %s (unhealthy)\n", ctr.Name)
+			} else {
+				ui.Yellow.Printf("  * %s (%s)\n", ctr.Name, health)
+			}
+		}
+
+		// Resources
+		fmt.Println()
+		ui.Blue.Println("--- Resources ---")
+		stats, err := client.GetAllContainerStats(ctx)
+		if err == nil && len(stats) > 0 {
+			var totalMem, totalCPU float64
+			for _, s := range stats {
+				totalMem += s.MemPercent
+				totalCPU += s.CPUPercent
+			}
+			fmt.Printf("  Memory: %.1f%% used by containers\n", totalMem)
+			// Note: CPU can exceed 100% on multi-core systems (sum of all cores' usage)
+			fmt.Printf("  CPU: %.1f%% used by containers\n", totalCPU)
+		} else {
+			ui.Yellow.Println("  No container stats available")
+		}
+
+		// Disk usage
+		diskUsage, err := client.DiskUsage(ctx)
+		if err == nil {
+			var volumeSize int64
+			for _, v := range diskUsage.Volumes {
+				volumeSize += v.UsageData.Size
+			}
+			fmt.Printf("  Volumes: %s\n", formatBytes(volumeSize))
+		}
+
+		// Recent Activity
+		fmt.Println()
+		ui.Blue.Println("--- Recent Activity ---")
+		allContainers, _ := client.ListContainers(ctx, false)
+		count := 0
+		for _, ctr := range allContainers {
+			if count >= MaxRecentActivityDisplay {
 				break
 			}
+			fmt.Printf("  %s: %s\n", ctr.Name, ctr.Status)
+			count++
 		}
-		if isInfra || ctr.Name == "bosun" {
-			continue
-		}
+		fmt.Println()
+		return nil
+	})
 
-		health := ctr.Health
-		if health == "" {
-			health = "running"
-		}
-
-		if health == "healthy" || health == "running" {
-			ui.Green.Printf("  * %s (%s)\n", ctr.Name, ctr.Status)
-		} else if health == "unhealthy" {
-			ui.Red.Printf("  * %s (unhealthy)\n", ctr.Name)
-		} else {
-			ui.Yellow.Printf("  * %s (%s)\n", ctr.Name, health)
-		}
+	if err != nil {
+		ui.Error("Docker not available: %v", err)
 	}
-
-	// Resources
-	fmt.Println()
-	ui.Blue.Println("--- Resources ---")
-	stats, err := client.GetAllContainerStats(ctx)
-	if err == nil && len(stats) > 0 {
-		var totalMem, totalCPU float64
-		for _, s := range stats {
-			totalMem += s.MemPercent
-			totalCPU += s.CPUPercent
-		}
-		fmt.Printf("  Memory: %.1f%% used by containers\n", totalMem)
-		// Note: CPU can exceed 100% on multi-core systems (sum of all cores' usage)
-		fmt.Printf("  CPU: %.1f%% used by containers\n", totalCPU)
-	} else {
-		ui.Yellow.Println("  No container stats available")
-	}
-
-	// Disk usage
-	diskUsage, err := client.DiskUsage(ctx)
-	if err == nil {
-		var volumeSize int64
-		for _, v := range diskUsage.Volumes {
-			volumeSize += v.UsageData.Size
-		}
-		fmt.Printf("  Volumes: %s\n", formatBytes(volumeSize))
-	}
-
-	// Recent Activity
-	fmt.Println()
-	ui.Blue.Println("--- Recent Activity ---")
-	allContainers, _ := client.ListContainers(ctx, false)
-	count := 0
-	for _, ctr := range allContainers {
-		if count >= 5 {
-			break
-		}
-		fmt.Printf("  %s: %s\n", ctr.Name, ctr.Status)
-		count++
-	}
-	fmt.Println()
 }
 
 // logCmd shows release history.
@@ -186,7 +229,7 @@ var logCmd = &cobra.Command{
 }
 
 func runLog(cmd *cobra.Command, args []string) {
-	count := 10
+	count := DefaultLogHistoryCount
 	if len(args) > 0 {
 		if n, err := strconv.Atoi(args[0]); err == nil && n > 0 {
 			count = n
@@ -202,9 +245,13 @@ func runLog(cmd *cobra.Command, args []string) {
 	ui.Blue.Println("Release History")
 	fmt.Println()
 
+	// Create context with timeout for git commands
+	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
+	defer cancel()
+
 	// Recent Manifest Changes
 	ui.Blue.Println("--- Recent Manifest Changes ---")
-	gitLog := exec.Command("git", "-C", cfg.Root, "log", "--oneline",
+	gitLog := exec.CommandContext(ctx, "git", "-C", cfg.Root, "log", "--oneline",
 		fmt.Sprintf("-n%d", count),
 		"--format=  %C(yellow)%h%C(reset) %s %C(dim)(%cr)%C(reset)",
 		"--", "manifest/")
@@ -229,16 +276,16 @@ func runLog(cmd *cobra.Command, args []string) {
 
 	// Deploy Tags
 	ui.Blue.Println("--- Deploy Tags ---")
-	tagsCmd := exec.Command("git", "-C", cfg.Root, "tag", "-l", "--sort=-creatordate")
+	tagsCmd := exec.CommandContext(ctx, "git", "-C", cfg.Root, "tag", "-l", "--sort=-creatordate")
 	output, err := tagsCmd.Output()
 	if err == nil && len(output) > 0 {
 		lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 		for i, tag := range lines {
-			if i >= 5 {
+			if i >= MaxDeployTagsDisplay {
 				break
 			}
 			// Get tag date
-			dateCmd := exec.Command("git", "-C", cfg.Root, "log", "-1", "--format=%cr", tag)
+			dateCmd := exec.CommandContext(ctx, "git", "-C", cfg.Root, "log", "-1", "--format=%cr", tag)
 			date, _ := dateCmd.Output()
 			fmt.Printf("  %s (%s)\n", tag, strings.TrimSpace(string(date)))
 		}
@@ -263,14 +310,6 @@ func runDrift(cmd *cobra.Command, args []string) {
 	ui.Blue.Println("Checking for drift...")
 	fmt.Println()
 
-	ctx := context.Background()
-	client, err := docker.NewClient()
-	if err != nil {
-		ui.Error("Docker not available: %v", err)
-		os.Exit(1)
-	}
-	defer client.Close()
-
 	cfg, err := config.Load()
 	if err != nil {
 		ui.Error("Failed to load config: %v", err)
@@ -279,83 +318,91 @@ func runDrift(cmd *cobra.Command, args []string) {
 
 	hasDrift := false
 
-	// Get running containers
-	containers, err := client.ListContainers(ctx, true)
-	if err != nil {
-		ui.Error("Failed to list containers: %v", err)
-		os.Exit(1)
-	}
+	err = withDockerClient(func(ctx context.Context, client *docker.Client) error {
+		// Get running containers
+		containers, err := client.ListContainers(ctx, true)
+		if err != nil {
+			return fmt.Errorf("list containers: %w", err)
+		}
 
-	runningNames := make(map[string]string) // name -> image
-	for _, ctr := range containers {
-		runningNames[ctr.Name] = ctr.Image
-	}
+		runningNames := make(map[string]string) // name -> image
+		for _, ctr := range containers {
+			runningNames[ctr.Name] = ctr.Image
+		}
 
-	if len(runningNames) == 0 {
-		ui.Yellow.Println("No containers running")
-		return
-	}
+		if len(runningNames) == 0 {
+			ui.Yellow.Println("No containers running")
+			return nil
+		}
 
-	ui.Blue.Println("--- Container Drift ---")
+		ui.Blue.Println("--- Container Drift ---")
 
-	// Check each stack's compose file
-	composeDir := filepath.Join(cfg.OutputDir(), "compose")
-	stackFiles, _ := filepath.Glob(filepath.Join(composeDir, "*.yml"))
+		// Check each stack's compose file
+		composeDir := filepath.Join(cfg.OutputDir(), "compose")
+		stackFiles, _ := filepath.Glob(filepath.Join(composeDir, "*.yml"))
 
-	allExpected := make(map[string]bool)
+		allExpected := make(map[string]bool)
 
-	for _, stackFile := range stackFiles {
-		stackName := strings.TrimSuffix(filepath.Base(stackFile), ".yml")
-		expected := extractServicesFromCompose(stackFile)
+		for _, stackFile := range stackFiles {
+			stackName := strings.TrimSuffix(filepath.Base(stackFile), ".yml")
+			expected := extractServicesFromCompose(stackFile)
 
-		for svc, expectedImage := range expected {
-			allExpected[svc] = true
+			for svc, expectedImage := range expected {
+				allExpected[svc] = true
 
-			runningImage, isRunning := runningNames[svc]
-			if isRunning {
-				// Use normalized comparison to avoid false positives from tag vs digest
-				if expectedImage != "" && normalizeImage(runningImage) != normalizeImage(expectedImage) {
-					ui.Yellow.Printf("  ~ %s: image drift\n", svc)
-					fmt.Printf("      Expected: %s\n", expectedImage)
-					fmt.Printf("      Running:  %s\n", runningImage)
-					hasDrift = true
+				runningImage, isRunning := runningNames[svc]
+				if isRunning {
+					// Use normalized comparison to avoid false positives from tag vs digest
+					if expectedImage != "" && normalizeImage(runningImage) != normalizeImage(expectedImage) {
+						ui.Yellow.Printf("  ~ %s: image drift\n", svc)
+						fmt.Printf("      Expected: %s\n", expectedImage)
+						fmt.Printf("      Running:  %s\n", runningImage)
+						hasDrift = true
+					} else {
+						ui.Green.Printf("  * %s\n", svc)
+					}
 				} else {
-					ui.Green.Printf("  * %s\n", svc)
+					ui.Red.Printf("  x %s: not running (expected by %s)\n", svc, stackName)
+					hasDrift = true
 				}
-			} else {
-				ui.Red.Printf("  x %s: not running (expected by %s)\n", svc, stackName)
+			}
+		}
+
+		// Check for orphaned containers
+		fmt.Println()
+		ui.Blue.Println("--- Orphaned Containers ---")
+		orphansFound := false
+		infraContainerList := cfg.InfraContainers()
+		for name := range runningNames {
+			// Skip known infrastructure
+			isInfra := false
+			for _, infra := range append(infraContainerList, "bosun") {
+				if name == infra {
+					isInfra = true
+					break
+				}
+			}
+			if isInfra {
+				continue
+			}
+
+			if !allExpected[name] {
+				ui.Yellow.Printf("  ? %s: not in any manifest\n", name)
+				orphansFound = true
 				hasDrift = true
 			}
 		}
-	}
 
-	// Check for orphaned containers
-	fmt.Println()
-	ui.Blue.Println("--- Orphaned Containers ---")
-	orphansFound := false
-	infraContainerList := cfg.InfraContainers()
-	for name := range runningNames {
-		// Skip known infrastructure
-		isInfra := false
-		for _, infra := range append(infraContainerList, "bosun") {
-			if name == infra {
-				isInfra = true
-				break
-			}
-		}
-		if isInfra {
-			continue
+		if !orphansFound {
+			ui.Green.Println("  * No orphaned containers")
 		}
 
-		if !allExpected[name] {
-			ui.Yellow.Printf("  ? %s: not in any manifest\n", name)
-			orphansFound = true
-			hasDrift = true
-		}
-	}
+		return nil
+	})
 
-	if !orphansFound {
-		ui.Green.Println("  * No orphaned containers")
+	if err != nil {
+		ui.Error("Docker not available: %v", err)
+		os.Exit(1)
 	}
 
 	fmt.Println()
@@ -376,82 +423,83 @@ var doctorCmd = &cobra.Command{
 	Run:     runDoctor,
 }
 
-func runDoctor(cmd *cobra.Command, args []string) {
-	ui.Blue.Println("Running pre-flight checks...")
-	fmt.Println()
-
-	passed := 0
-	failed := 0
-	warned := 0
-
-	// Check: Docker running (with timeout)
-	ctx, cancel := context.WithTimeout(context.Background(), dockerPingTimeout)
-	client, err := docker.NewClient()
-	if err == nil {
+// checkDocker verifies Docker is running and accessible.
+// NOTE: This function uses explicit Docker client handling because it needs
+// a caller-provided context with timeout for the ping operation.
+func checkDocker(ctx context.Context) CheckResult {
+	var result CheckResult
+	err := withDockerClientContext(ctx, func(client *docker.Client) error {
 		if err := client.Ping(ctx); err == nil {
 			ui.Green.Println("  * Docker is running")
-			passed++
-		} else {
-			ui.Red.Println("  x Docker is not running")
-			ui.Blue.Println("      To fix this:")
-			ui.Blue.Println("      - Start Docker: systemctl start docker")
-			ui.Blue.Println("      - Or use Docker Desktop on macOS/Windows")
-			failed++
+			result = CheckResult{Passed: 1}
+			return nil
 		}
-		client.Close()
-	} else {
+		ui.Red.Println("  x Docker is not running")
+		ui.Blue.Println("      To fix this:")
+		ui.Blue.Println("      - Start Docker: systemctl start docker")
+		ui.Blue.Println("      - Or use Docker Desktop on macOS/Windows")
+		result = CheckResult{Failed: 1}
+		return nil
+	})
+
+	if err != nil {
 		ui.Red.Println("  x Docker is not running")
 		ui.Blue.Println("      To fix this:")
 		ui.Blue.Println("      - Install Docker from https://docs.docker.com/get-docker/")
 		ui.Blue.Println("      - Ensure Docker daemon is running: systemctl start docker")
 		ui.Blue.Println("      - Check permissions: docker ps (should not require sudo)")
-		failed++
+		return CheckResult{Failed: 1}
 	}
-	cancel()
 
-	// Check: Docker Compose v2
+	return result
+}
+
+// checkDockerCompose verifies Docker Compose v2 is installed.
+func checkDockerCompose() CheckResult {
 	composeCmd := exec.Command("docker", "compose", "version", "--short")
 	if output, err := composeCmd.Output(); err == nil {
 		version := strings.TrimSpace(string(output))
 		ui.Green.Printf("  * Docker Compose v2 (%s)\n", version)
-		passed++
-	} else {
-		ui.Red.Println("  x Docker Compose v2 not found")
-		ui.Blue.Println("      To fix this:")
-		ui.Blue.Println("      - Install Docker Desktop (includes Compose v2)")
-		ui.Blue.Println("      - Or: https://docs.docker.com/compose/install/")
-		failed++
+		return CheckResult{Passed: 1}
 	}
+	ui.Red.Println("  x Docker Compose v2 not found")
+	ui.Blue.Println("      To fix this:")
+	ui.Blue.Println("      - Install Docker Desktop (includes Compose v2)")
+	ui.Blue.Println("      - Or: https://docs.docker.com/compose/install/")
+	return CheckResult{Failed: 1}
+}
 
-	// Check: Git
+// checkGit verifies Git is installed.
+func checkGit() CheckResult {
 	if _, err := exec.LookPath("git"); err == nil {
 		ui.Green.Println("  * Git is installed")
-		passed++
-	} else {
-		ui.Red.Println("  x Git not found")
-		ui.Blue.Println("      To fix this:")
-		ui.Blue.Println("      - macOS: brew install git")
-		ui.Blue.Println("      - Ubuntu/Debian: apt-get install git")
-		ui.Blue.Println("      - Fedora/RHEL: dnf install git")
-		ui.Blue.Println("      - Windows: https://git-scm.com/download/win")
-		failed++
+		return CheckResult{Passed: 1}
 	}
+	ui.Red.Println("  x Git not found")
+	ui.Blue.Println("      To fix this:")
+	ui.Blue.Println("      - macOS: brew install git")
+	ui.Blue.Println("      - Ubuntu/Debian: apt-get install git")
+	ui.Blue.Println("      - Fedora/RHEL: dnf install git")
+	ui.Blue.Println("      - Windows: https://git-scm.com/download/win")
+	return CheckResult{Failed: 1}
+}
 
-	// Check: Project root
-	cfg, err := config.Load()
-	if err == nil {
+// checkProjectRoot verifies the project root is accessible.
+func checkProjectRoot(cfg *config.Config) CheckResult {
+	if cfg != nil {
 		ui.Green.Printf("  * Project root found: %s\n", cfg.Root)
-		passed++
-	} else {
-		ui.Yellow.Println("  ! Project root not found (run from project directory)")
-		ui.Blue.Println("      To fix this:")
-		ui.Blue.Println("      - Ensure config.yaml or manifest/ directory exists")
-		ui.Blue.Println("      - Run bosun from the root of your project")
-		ui.Blue.Println("      - Create config.yaml in project root if missing")
-		warned++
+		return CheckResult{Passed: 1}
 	}
+	ui.Yellow.Println("  ! Project root not found (run from project directory)")
+	ui.Blue.Println("      To fix this:")
+	ui.Blue.Println("      - Ensure config.yaml or manifest/ directory exists")
+	ui.Blue.Println("      - Run bosun from the root of your project")
+	ui.Blue.Println("      - Create config.yaml in project root if missing")
+	return CheckResult{Warned: 1}
+}
 
-	// Check: Age key
+// checkAgeKey verifies the Age key exists for SOPS decryption.
+func checkAgeKey() CheckResult {
 	ageKeyFile := os.Getenv("SOPS_AGE_KEY_FILE")
 	if ageKeyFile == "" {
 		home, _ := os.UserHomeDir()
@@ -459,108 +507,143 @@ func runDoctor(cmd *cobra.Command, args []string) {
 	}
 	if _, err := os.Stat(ageKeyFile); err == nil {
 		ui.Green.Printf("  * Age key found: %s\n", ageKeyFile)
-		passed++
-	} else {
-		ui.Yellow.Printf("  ! Age key not found at %s\n", ageKeyFile)
-		ui.Blue.Println("      To fix this:")
-		ui.Blue.Printf("      - Run: age-keygen -o %s\n", ageKeyFile)
-		ui.Blue.Println("      - Or set SOPS_AGE_KEY_FILE env var to existing key")
-		ui.Blue.Println("      - Install age: https://github.com/FiloSottile/age#installation")
-		warned++
+		return CheckResult{Passed: 1}
 	}
+	ui.Yellow.Printf("  ! Age key not found at %s\n", ageKeyFile)
+	ui.Blue.Println("      To fix this:")
+	ui.Blue.Printf("      - Run: age-keygen -o %s\n", ageKeyFile)
+	ui.Blue.Println("      - Or set SOPS_AGE_KEY_FILE env var to existing key")
+	ui.Blue.Println("      - Install age: https://github.com/FiloSottile/age#installation")
+	return CheckResult{Warned: 1}
+}
 
-	// Check: SOPS
+// checkSOPS verifies SOPS is installed.
+func checkSOPS() CheckResult {
 	if sopsPath, err := exec.LookPath("sops"); err == nil {
 		versionCmd := exec.Command(sopsPath, "--version")
 		if output, err := versionCmd.Output(); err == nil {
 			version := strings.TrimSpace(string(output))
 			ui.Green.Printf("  * SOPS is installed (%s)\n", version)
-			passed++
 		} else {
 			ui.Green.Println("  * SOPS is installed")
-			passed++
 		}
-	} else {
-		ui.Yellow.Println("  ! SOPS not found (needed for secrets)")
-		ui.Blue.Println("      To fix this:")
-		ui.Blue.Println("      - macOS: brew install sops")
-		ui.Blue.Println("      - Ubuntu/Debian: apt-get install sops")
-		ui.Blue.Println("      - Fedora/RHEL: dnf install sops")
-		ui.Blue.Println("      - Or: https://github.com/getsops/sops/releases")
-		warned++
+		return CheckResult{Passed: 1}
 	}
+	ui.Yellow.Println("  ! SOPS not found (needed for secrets)")
+	ui.Blue.Println("      To fix this:")
+	ui.Blue.Println("      - macOS: brew install sops")
+	ui.Blue.Println("      - Ubuntu/Debian: apt-get install sops")
+	ui.Blue.Println("      - Fedora/RHEL: dnf install sops")
+	ui.Blue.Println("      - Or: https://github.com/getsops/sops/releases")
+	return CheckResult{Warned: 1}
+}
 
-	// Check: uv (optional now with Go)
+// checkUV verifies uv is installed for manifest rendering.
+func checkUV() CheckResult {
 	if _, err := exec.LookPath("uv"); err == nil {
 		ui.Green.Println("  * uv is installed")
-		passed++
-	} else {
-		ui.Yellow.Println("  ! uv not found (needed for manifest rendering)")
-		ui.Blue.Println("      To fix this:")
-		ui.Blue.Println("      - Visit: https://docs.astral.sh/uv/getting-started/installation/")
-		ui.Blue.Println("      - Or: curl -LsSf https://astral.sh/uv/install.sh | sh")
-		ui.Blue.Println("      - Or: brew install uv (macOS)")
-		warned++
+		return CheckResult{Passed: 1}
 	}
+	ui.Yellow.Println("  ! uv not found (needed for manifest rendering)")
+	ui.Blue.Println("      To fix this:")
+	ui.Blue.Println("      - Visit: https://docs.astral.sh/uv/getting-started/installation/")
+	ui.Blue.Println("      - Or: curl -LsSf https://astral.sh/uv/install.sh | sh")
+	ui.Blue.Println("      - Or: brew install uv (macOS)")
+	return CheckResult{Warned: 1}
+}
 
-	// Check: Manifest directory
-	if cfg != nil {
-		manifestPy := filepath.Join(cfg.ManifestDir, "manifest.py")
-		if _, err := os.Stat(manifestPy); err == nil {
-			ui.Green.Println("  * Manifest directory found")
-			passed++
-		} else if _, err := os.Stat(cfg.ManifestDir); err == nil {
-			ui.Green.Println("  * Manifest directory found")
-			passed++
-		} else {
-			ui.Yellow.Println("  ! Manifest directory not found")
-			ui.Blue.Println("      To fix this:")
-			ui.Blue.Printf("      - Create manifest directory at: %s\n", cfg.ManifestDir)
-			ui.Blue.Println("      - Or update manifest_dir in config.yaml")
-			ui.Blue.Println("      - See: https://github.com/cameronsjo/bosun/docs/")
-			warned++
-		}
+// checkManifestDirectory verifies the manifest directory exists.
+func checkManifestDirectory(cfg *config.Config) CheckResult {
+	if cfg == nil {
+		return CheckResult{} // Skip if no config
 	}
+	manifestPy := filepath.Join(cfg.ManifestDir, "manifest.py")
+	if _, err := os.Stat(manifestPy); err == nil {
+		ui.Green.Println("  * Manifest directory found")
+		return CheckResult{Passed: 1}
+	}
+	if _, err := os.Stat(cfg.ManifestDir); err == nil {
+		ui.Green.Println("  * Manifest directory found")
+		return CheckResult{Passed: 1}
+	}
+	ui.Yellow.Println("  ! Manifest directory not found")
+	ui.Blue.Println("      To fix this:")
+	ui.Blue.Printf("      - Create manifest directory at: %s\n", cfg.ManifestDir)
+	ui.Blue.Println("      - Or update manifest_dir in config.yaml")
+	ui.Blue.Println("      - See: https://github.com/cameronsjo/bosun/docs/")
+	return CheckResult{Warned: 1}
+}
 
-	// Check: Webhook endpoint (with timeout)
+// checkWebhook verifies the webhook endpoint is responding.
+func checkWebhook() CheckResult {
 	httpClient := &http.Client{Timeout: httpClientTimeout}
 	resp, err := httpClient.Get("http://localhost:8080/health")
 	if err == nil {
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {
 			ui.Green.Println("  * Webhook endpoint responding")
-			passed++
-		} else {
-			ui.Yellow.Println("  ! Webhook not responding (bosun container not running?)")
-			ui.Blue.Println("      To fix this:")
-			ui.Blue.Println("      - Start bosun container: docker-compose up -d bosun")
-			ui.Blue.Println("      - Check logs: docker logs bosun")
-			ui.Blue.Println("      - Verify port 8080 is available and not in use")
-			warned++
+			return CheckResult{Passed: 1}
 		}
-	} else {
-		ui.Yellow.Println("  ! Webhook not responding (bosun container not running?)")
-		ui.Blue.Println("      To fix this:")
-		ui.Blue.Println("      - Start bosun container: docker-compose up -d bosun")
-		ui.Blue.Println("      - Check logs: docker logs bosun")
-		ui.Blue.Println("      - Verify port 8080 is available and not in use")
-		warned++
 	}
+	ui.Yellow.Println("  ! Webhook not responding (bosun container not running?)")
+	ui.Blue.Println("      To fix this:")
+	ui.Blue.Println("      - Start bosun container: docker-compose up -d bosun")
+	ui.Blue.Println("      - Check logs: docker logs bosun")
+	ui.Blue.Println("      - Verify port 8080 is available and not in use")
+	return CheckResult{Warned: 1}
+}
+
+// checkChezmoi verifies chezmoi is installed (optional).
+func checkChezmoi() CheckResult {
+	if _, err := exec.LookPath("chezmoi"); err == nil {
+		ui.Green.Println("  * chezmoi is installed")
+		return CheckResult{Passed: 1}
+	}
+	ui.Yellow.Println("  ! chezmoi not found (optional, for dotfiles management)")
+	ui.Blue.Println("      To fix this:")
+	ui.Blue.Println("      - macOS: brew install chezmoi")
+	ui.Blue.Println("      - Or: sh -c \"$(curl -fsLS get.chezmoi.io)\"")
+	ui.Blue.Println("      - See: https://www.chezmoi.io/install/")
+	return CheckResult{Warned: 1}
+}
+
+func runDoctor(cmd *cobra.Command, args []string) {
+	ui.Blue.Println("Running pre-flight checks...")
+	fmt.Println()
+
+	var result CheckResult
+
+	// Load config once for checks that need it
+	cfg, _ := config.Load()
+
+	// Run all checks with timeout context for Docker
+	ctx, cancel := context.WithTimeout(context.Background(), dockerPingTimeout)
+	result.Add(checkDocker(ctx))
+	cancel()
+
+	result.Add(checkDockerCompose())
+	result.Add(checkGit())
+	result.Add(checkProjectRoot(cfg))
+	result.Add(checkAgeKey())
+	result.Add(checkSOPS())
+	result.Add(checkUV())
+	result.Add(checkManifestDirectory(cfg))
+	result.Add(checkWebhook())
 
 	// Summary
 	fmt.Println()
 	fmt.Printf("Summary: ")
-	ui.Green.Printf("%d passed", passed)
+	ui.Green.Printf("%d passed", result.Passed)
 	fmt.Printf(", ")
-	ui.Yellow.Printf("%d warnings", warned)
+	ui.Yellow.Printf("%d warnings", result.Warned)
 	fmt.Printf(", ")
-	ui.Red.Printf("%d failed\n", failed)
+	ui.Red.Printf("%d failed\n", result.Failed)
 
-	if failed > 0 {
+	if result.Failed > 0 {
 		fmt.Println()
 		ui.Red.Println("Ship not seaworthy! Fix errors above.")
 		os.Exit(1)
-	} else if warned > 0 {
+	} else if result.Warned > 0 {
 		fmt.Println()
 		ui.Yellow.Println("Ship can sail, but check warnings.")
 	} else {
@@ -708,7 +791,7 @@ func showProvisionTimestamps(outputDir, manifestDir string) {
 		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".yml") {
 			return nil
 		}
-		if count >= 10 {
+		if count >= MaxProvisionTimestamps {
 			return nil
 		}
 		info, _ := d.Info()
@@ -839,9 +922,8 @@ func checkDependencies(cfg *config.Config) int {
 
 		rendered := string(output)
 
-		// Extract service names
-		serviceRegex := regexp.MustCompile(`(?m)^    ([a-z][a-z0-9-]+):$`)
-		services := serviceRegex.FindAllStringSubmatch(rendered, -1)
+		// Extract service names using package-level regex
+		services := serviceNameRegex.FindAllStringSubmatch(rendered, -1)
 
 		for _, match := range services {
 			svc := match[1]
@@ -1045,22 +1127,6 @@ func checkPortConflictsFromStacks(cfg *config.Config, portMap map[int]string) in
 
 	stacksDir := cfg.StacksDir()
 	stackFiles, _ := filepath.Glob(filepath.Join(stacksDir, "*.yml"))
-
-	// Enhanced regex patterns for port detection
-	portPatterns := []*regexp.Regexp{
-		// Quoted ports: "8080:80"
-		regexp.MustCompile(`"(\d+):\d+(?:/(?:tcp|udp))?"`),
-		// Unquoted ports: 8080:80 or - 8080:80
-		regexp.MustCompile(`(?:^|\s|-)(\d+):\d+(?:/(?:tcp|udp))?`),
-		// Port ranges: "8000-8010:8000-8010"
-		regexp.MustCompile(`"(\d+)-\d+:\d+-\d+"`),
-		// Short syntax: - 80 or "80"
-		regexp.MustCompile(`(?:^|\s)-\s*"?(\d+)"?\s*$`),
-		// Traefik labels: loadbalancer.server.port=8080
-		regexp.MustCompile(`loadbalancer\.server\.port[=:](\d+)`),
-		// Host-bound: "127.0.0.1:8080:80"
-		regexp.MustCompile(`"\d+\.\d+\.\d+\.\d+:(\d+):\d+"`),
-	}
 
 	for _, stackFile := range stackFiles {
 		stackName := strings.TrimSuffix(filepath.Base(stackFile), ".yml")

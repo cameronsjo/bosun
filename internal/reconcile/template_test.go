@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/cameronsjo/bosun/internal/fileutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -209,6 +210,139 @@ func TestCopyNonTemplateFiles(t *testing.T) {
 	})
 }
 
+func TestIsSensitiveEnvVar(t *testing.T) {
+	tests := []struct {
+		name     string
+		envVar   string
+		expected bool
+	}{
+		// Prefix matches - cloud providers
+		{"AWS prefix", "AWS_ACCESS_KEY_ID=AKIA...", true},
+		{"AWS prefix lowercase", "aws_secret_access_key=secret", true},
+		{"Azure prefix", "AZURE_CLIENT_SECRET=secret", true},
+		{"GCP prefix", "GCP_PROJECT=myproject", true},
+		{"Google prefix", "GOOGLE_APPLICATION_CREDENTIALS=/path", true},
+		{"DigitalOcean prefix", "DO_API_TOKEN=token", true},
+		{"Linode prefix", "LINODE_TOKEN=token", true},
+		{"Vultr prefix", "VULTR_API_KEY=key", true},
+		{"Cloudflare prefix", "CLOUDFLARE_API_TOKEN=token", true},
+		{"Hetzner prefix", "HETZNER_API_TOKEN=token", true},
+		{"OVH prefix", "OVH_APPLICATION_KEY=key", true},
+		{"SOPS prefix", "SOPS_AGE_KEY=AGE...", true},
+
+		// Prefix matches - generic sensitive
+		{"API_KEY prefix", "API_KEY_GITHUB=key", true},
+		{"SECRET prefix", "SECRET_VALUE=secret", true},
+		{"TOKEN prefix", "TOKEN_FOR_SERVICE=token", true},
+		{"PASSWORD prefix", "PASSWORD_DB=pass", true},
+		{"CREDENTIAL prefix", "CREDENTIAL_FILE=/path", true},
+
+		// Suffix matches
+		{"_TOKEN suffix", "GITHUB_TOKEN=ghp_...", true},
+		{"_SECRET suffix", "CLIENT_SECRET=secret", true},
+		{"_KEY suffix", "ENCRYPTION_KEY=key", true},
+		{"_PASS suffix", "DB_PASS=password", true},
+		{"_PASSWORD suffix", "DATABASE_PASSWORD=password", true},
+		{"_AUTH suffix", "SMTP_AUTH=authvalue", true},
+		{"_CREDENTIAL suffix", "SERVICE_CREDENTIAL=cred", true},
+		{"_CREDENTIALS suffix", "AWS_CREDENTIALS=creds", true},
+
+		// Exact matches
+		{"GITHUB_TOKEN exact", "GITHUB_TOKEN=ghp_...", true},
+		{"GITLAB_TOKEN exact", "GITLAB_TOKEN=glpat_...", true},
+		{"NPM_TOKEN exact", "NPM_TOKEN=npm_...", true},
+		{"DOCKER_AUTH exact", "DOCKER_AUTH=authconfig", true},
+		{"REGISTRY_AUTH exact", "REGISTRY_AUTH=auth", true},
+		{"SSH_AUTH_SOCK exact", "SSH_AUTH_SOCK=/tmp/ssh-agent.sock", true},
+		{"GPG_TTY exact", "GPG_TTY=/dev/pts/0", true},
+
+		// Safe variables - should NOT be sensitive
+		{"PATH is safe", "PATH=/usr/bin", false},
+		{"HOME is safe", "HOME=/home/user", false},
+		{"USER is safe", "USER=testuser", false},
+		{"LANG is safe", "LANG=en_US.UTF-8", false},
+		{"TERM is safe", "TERM=xterm-256color", false},
+		{"SHELL is safe", "SHELL=/bin/bash", false},
+		{"EDITOR is safe", "EDITOR=vim", false},
+		{"CUSTOM_VAR is safe", "CUSTOM_VAR=value", false},
+		{"MY_APP_DEBUG is safe", "MY_APP_DEBUG=true", false},
+
+		// Edge cases
+		{"empty string", "", false},
+		{"no value", "SOME_VAR", false},
+		{"empty value", "SOME_VAR=", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isSensitiveEnvVar(tt.envVar)
+			assert.Equal(t, tt.expected, result, "isSensitiveEnvVar(%q) = %v, want %v", tt.envVar, result, tt.expected)
+		})
+	}
+}
+
+func TestFilterSafeEnv(t *testing.T) {
+	t.Run("filters sensitive variables", func(t *testing.T) {
+		env := []string{
+			"PATH=/usr/bin",
+			"HOME=/home/user",
+			"AWS_SECRET_ACCESS_KEY=secret",
+			"GITHUB_TOKEN=ghp_...",
+			"USER=testuser",
+			"MY_API_TOKEN=token",
+			"LANG=en_US.UTF-8",
+			"CLOUDFLARE_API_KEY=key",
+		}
+
+		result := filterSafeEnv(env)
+
+		// Should include safe vars
+		assert.Contains(t, result, "PATH=/usr/bin")
+		assert.Contains(t, result, "HOME=/home/user")
+		assert.Contains(t, result, "USER=testuser")
+		assert.Contains(t, result, "LANG=en_US.UTF-8")
+
+		// Should exclude sensitive vars
+		assert.NotContains(t, result, "AWS_SECRET_ACCESS_KEY=secret")
+		assert.NotContains(t, result, "GITHUB_TOKEN=ghp_...")
+		assert.NotContains(t, result, "MY_API_TOKEN=token")
+		assert.NotContains(t, result, "CLOUDFLARE_API_KEY=key")
+	})
+
+	t.Run("handles empty env", func(t *testing.T) {
+		result := filterSafeEnv([]string{})
+		assert.Empty(t, result)
+	})
+
+	t.Run("all sensitive vars filtered", func(t *testing.T) {
+		env := []string{
+			"AWS_ACCESS_KEY=key",
+			"GITHUB_TOKEN=token",
+			"DB_PASSWORD=pass",
+		}
+
+		result := filterSafeEnv(env)
+		assert.Empty(t, result)
+	})
+
+	t.Run("case insensitive matching", func(t *testing.T) {
+		env := []string{
+			"PATH=/usr/bin",
+			"github_token=token",
+			"Aws_Secret_Key=key",
+		}
+
+		result := filterSafeEnv(env)
+
+		assert.Contains(t, result, "PATH=/usr/bin")
+		// Lowercase sensitive vars should still be filtered
+		for _, r := range result {
+			assert.NotContains(t, r, "github_token")
+			assert.NotContains(t, r, "Aws_Secret_Key")
+		}
+	})
+}
+
 func TestCopyFile(t *testing.T) {
 	t.Run("copy file", func(t *testing.T) {
 		tmpDir := t.TempDir()
@@ -218,7 +352,7 @@ func TestCopyFile(t *testing.T) {
 		content := "test content"
 		require.NoError(t, os.WriteFile(srcFile, []byte(content), 0644))
 
-		err := copyFile(srcFile, dstFile)
+		err := fileutil.CopyFile(srcFile, dstFile)
 		require.NoError(t, err)
 
 		copied, err := os.ReadFile(dstFile)
@@ -233,7 +367,7 @@ func TestCopyFile(t *testing.T) {
 
 		require.NoError(t, os.WriteFile(srcFile, []byte("content"), 0644))
 
-		err := copyFile(srcFile, dstFile)
+		err := fileutil.CopyFile(srcFile, dstFile)
 		require.NoError(t, err)
 
 		assert.FileExists(t, dstFile)
@@ -243,7 +377,7 @@ func TestCopyFile(t *testing.T) {
 		tmpDir := t.TempDir()
 		dstFile := filepath.Join(tmpDir, "dst.txt")
 
-		err := copyFile("/non/existent/file.txt", dstFile)
+		err := fileutil.CopyFile("/non/existent/file.txt", dstFile)
 		assert.Error(t, err)
 	})
 }

@@ -56,15 +56,13 @@ var yachtUpCmd = &cobra.Command{
 		}
 
 		// Check traefik status
-		dockerClient, err := docker.NewClient()
-		if err != nil {
-			ui.Warning("Could not connect to Docker: %v", err)
-		} else {
-			defer dockerClient.Close()
-
-			if err := checkTraefik(ctx, dockerClient); err != nil {
-				ui.Warning("%v", err)
-			}
+		// NOTE: Docker client is optional here - we continue even if it fails.
+		// This allows yacht up to work in environments where Docker API isn't accessible
+		// but docker compose commands still work (e.g., remote Docker hosts).
+		if err := withDockerClientContext(ctx, func(client *docker.Client) error {
+			return checkTraefik(ctx, client)
+		}); err != nil {
+			ui.Warning("%v", err)
 		}
 
 		ui.Green.Println("Raising anchor...")

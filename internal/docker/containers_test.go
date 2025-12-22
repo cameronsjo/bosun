@@ -472,7 +472,7 @@ func TestFormatContainerStatus(t *testing.T) {
 	}
 }
 
-func TestMustParseTime(t *testing.T) {
+func TestParseTimeOrZero(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
@@ -497,7 +497,7 @@ func TestMustParseTime(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := mustParseTime(tt.input)
+			got := parseTimeOrZero(tt.input)
 			if tt.want {
 				assert.False(t, got.IsZero())
 			} else {

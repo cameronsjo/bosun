@@ -5,12 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/cameronsjo/bosun/internal/fileutil"
 )
 
 // TemplateOps provides Chezmoi template rendering operations.
@@ -101,23 +102,10 @@ func filterSafeEnv(env []string) []string {
 		"PATH=", "HOME=", "USER=", "LANG=", "LC_", "TERM=",
 		"XDG_", "TMPDIR=", "TMP=", "TEMP=",
 	}
-	// Env vars to explicitly exclude (may contain secrets)
-	excludePrefix := []string{
-		"SOPS_", "AWS_", "AZURE_", "GCP_", "GOOGLE_",
-		"API_KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL",
-	}
 
 	var result []string
 	for _, e := range env {
-		// Check exclusions first
-		excluded := false
-		for _, prefix := range excludePrefix {
-			if strings.HasPrefix(strings.ToUpper(e), prefix) {
-				excluded = true
-				break
-			}
-		}
-		if excluded {
+		if isSensitiveEnvVar(e) {
 			continue
 		}
 
@@ -130,6 +118,86 @@ func filterSafeEnv(env []string) []string {
 		}
 	}
 	return result
+}
+
+// isSensitiveEnvVar checks if an environment variable is potentially sensitive.
+// It checks against prefix patterns, suffix patterns, and exact variable names.
+func isSensitiveEnvVar(envVar string) bool {
+	// Split on first = to get variable name
+	parts := strings.SplitN(envVar, "=", 2)
+	if len(parts) == 0 {
+		return false
+	}
+	varName := strings.ToUpper(parts[0])
+
+	// Env var prefixes to exclude (may contain secrets)
+	excludePrefixes := []string{
+		// Secret management
+		"SOPS_",
+		// Cloud providers
+		"AWS_",
+		"AZURE_",
+		"GCP_",
+		"GOOGLE_",
+		"DO_",         // DigitalOcean
+		"LINODE_",     // Linode
+		"VULTR_",      // Vultr
+		"CLOUDFLARE_", // Cloudflare
+		"HETZNER_",    // Hetzner
+		"OVH_",        // OVH
+		// Generic sensitive prefixes
+		"API_KEY",
+		"SECRET",
+		"TOKEN",
+		"PASSWORD",
+		"CREDENTIAL",
+	}
+
+	// Env var suffixes to exclude (common token patterns)
+	excludeSuffixes := []string{
+		"_TOKEN",
+		"_SECRET",
+		"_KEY",
+		"_PASS",
+		"_PASSWORD",
+		"_AUTH",
+		"_CREDENTIAL",
+		"_CREDENTIALS",
+	}
+
+	// Specific known sensitive variables
+	excludeExact := []string{
+		"GITHUB_TOKEN",
+		"GITLAB_TOKEN",
+		"NPM_TOKEN",
+		"DOCKER_AUTH",
+		"REGISTRY_AUTH",
+		"SSH_AUTH_SOCK",
+		"GPG_TTY",
+	}
+
+	// Check prefix matches
+	for _, prefix := range excludePrefixes {
+		if strings.HasPrefix(varName, prefix) {
+			return true
+		}
+	}
+
+	// Check suffix matches
+	for _, suffix := range excludeSuffixes {
+		if strings.HasSuffix(varName, suffix) {
+			return true
+		}
+	}
+
+	// Check exact matches
+	for _, exact := range excludeExact {
+		if varName == exact {
+			return true
+		}
+	}
+
+	return false
 }
 
 // sanitizeStderr removes potential secret values from error output.
@@ -216,29 +284,6 @@ func copyNonTemplateFiles(src, dst string) error {
 			return nil
 		}
 
-		return copyFile(path, dstPath)
+		return fileutil.CopyFile(path, dstPath)
 	})
-}
-
-// copyFile copies a single file from src to dst.
-func copyFile(src, dst string) error {
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer srcFile.Close()
-
-	// Ensure destination directory exists.
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return err
-	}
-
-	dstFile, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer dstFile.Close()
-
-	_, err = io.Copy(dstFile, srcFile)
-	return err
 }

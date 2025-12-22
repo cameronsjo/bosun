@@ -3,13 +3,14 @@ package snapshot
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/cameronsjo/bosun/internal/fileutil"
 )
 
 const (
@@ -80,7 +81,7 @@ func Create(manifestDir string) (string, error) {
 	}
 
 	// Copy output directory contents to snapshot
-	if err := copyDir(outDir, snapshotPath); err != nil {
+	if err := fileutil.CopyDir(outDir, snapshotPath); err != nil {
 		// Clean up partial snapshot on error
 		os.RemoveAll(snapshotPath)
 		return "", fmt.Errorf("copy output to snapshot: %w", err)
@@ -176,7 +177,7 @@ func Restore(manifestDir, snapshotName string) error {
 			return fmt.Errorf("create backup directory: %w", err)
 		}
 
-		if err := copyDir(outDir, backupPath); err != nil {
+		if err := fileutil.CopyDir(outDir, backupPath); err != nil {
 			os.RemoveAll(backupPath)
 			return fmt.Errorf("create pre-rollback backup: %w", err)
 		}
@@ -191,7 +192,7 @@ func Restore(manifestDir, snapshotName string) error {
 		return fmt.Errorf("create temp restore directory: %w", err)
 	}
 
-	if err := copyDir(snapshotPath, tempDir); err != nil {
+	if err := fileutil.CopyDir(snapshotPath, tempDir); err != nil {
 		os.RemoveAll(tempDir)
 		return fmt.Errorf("copy snapshot to temp: %w", err)
 	}
@@ -285,51 +286,6 @@ func countFiles(dir string) int {
 		return nil
 	})
 	return count
-}
-
-// copyDir recursively copies a directory.
-func copyDir(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-
-		// Calculate destination path
-		relPath, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		dstPath := filepath.Join(dst, relPath)
-
-		if d.IsDir() {
-			return os.MkdirAll(dstPath, 0755)
-		}
-
-		return copyFile(path, dstPath)
-	})
-}
-
-// copyFile copies a single file.
-func copyFile(src, dst string) error {
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer srcFile.Close()
-
-	// Create parent directories if needed
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return err
-	}
-
-	dstFile, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer dstFile.Close()
-
-	_, err = io.Copy(dstFile, srcFile)
-	return err
 }
 
 // checkDiskSpace checks if there's enough disk space available.

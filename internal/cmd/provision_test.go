@@ -147,3 +147,100 @@ func TestShowDiff(t *testing.T) {
 		t.Skip("requires RenderOutput from manifest package")
 	})
 }
+
+// TestProvisionCmd_HelpFlags tests that provision help shows expected flags.
+func TestProvisionCmd_HelpFlags(t *testing.T) {
+	t.Run("provision help contains provision command", func(t *testing.T) {
+		output, err := executeCmd(t, "provision", "--help")
+		assert.NoError(t, err)
+		assert.Contains(t, output, "provision")
+	})
+
+	t.Run("provision help contains diff flag", func(t *testing.T) {
+		output, err := executeCmd(t, "provision", "--help")
+		assert.NoError(t, err)
+		assert.Contains(t, output, "-d")
+	})
+
+	t.Run("provision help contains dry-run flag", func(t *testing.T) {
+		output, err := executeCmd(t, "provision", "--help")
+		assert.NoError(t, err)
+		assert.Contains(t, output, "-n")
+	})
+
+	t.Run("provision help contains values flag", func(t *testing.T) {
+		output, err := executeCmd(t, "provision", "--help")
+		assert.NoError(t, err)
+		assert.Contains(t, output, "-f")
+	})
+}
+
+// TestCreateCmd_ValidTemplates tests that valid service templates generate correct content.
+func TestCreateCmd_ValidTemplates(t *testing.T) {
+	validTemplates := []string{"webapp", "api", "worker", "static"}
+
+	for _, tmpl := range validTemplates {
+		t.Run(tmpl+" template", func(t *testing.T) {
+			result := generateServiceTemplate(tmpl, "test-service")
+			assert.Contains(t, result, "name: test-service")
+			assert.Contains(t, result, tmpl)
+		})
+	}
+}
+
+// TestGenerateServiceTemplate_AllTypes tests service template generation for all types.
+func TestGenerateServiceTemplate_AllTypes(t *testing.T) {
+	testCases := []struct {
+		template     string
+		name         string
+		mustContain  []string
+		mustNotContain []string
+	}{
+		{
+			template:    "webapp",
+			name:        "my-webapp",
+			mustContain: []string{"name: my-webapp", "webapp", "port:", "domain:"},
+		},
+		{
+			template:    "api",
+			name:        "my-api",
+			mustContain: []string{"name: my-api", "api", "health_path:"},
+		},
+		{
+			template:    "worker",
+			name:        "my-worker",
+			mustContain: []string{"name: my-worker", "worker", "replicas:"},
+		},
+		{
+			template:    "static",
+			name:        "my-static",
+			mustContain: []string{"name: my-static", "static", "root:"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.template, func(t *testing.T) {
+			result := generateServiceTemplate(tc.template, tc.name)
+
+			for _, expected := range tc.mustContain {
+				assert.Contains(t, result, expected,
+					"template %s should contain %q", tc.template, expected)
+			}
+
+			for _, notExpected := range tc.mustNotContain {
+				assert.NotContains(t, result, notExpected,
+					"template %s should not contain %q", tc.template, notExpected)
+			}
+		})
+	}
+}
+
+// TestCreateCmd_HelpWorks tests that create help works without args.
+func TestCreateCmd_HelpWorks(t *testing.T) {
+	t.Run("help works without args", func(t *testing.T) {
+		output, err := executeCmd(t, "create", "--help")
+		assert.NoError(t, err)
+		assert.Contains(t, output, "create")
+		assert.Contains(t, output, "Usage:")
+	})
+}

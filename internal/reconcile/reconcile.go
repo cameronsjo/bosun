@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/ui"
@@ -65,8 +64,8 @@ func DefaultConfig() *Config {
 // Reconciler orchestrates the GitOps reconciliation workflow.
 type Reconciler struct {
 	config   *Config
-	git      *GitOps
-	sops     *SOPSOps
+	git      GitOperations
+	sops     SecretsDecryptor
 	template *TemplateOps
 	deploy   *DeployOps
 	lockFile string
@@ -74,13 +73,50 @@ type Reconciler struct {
 }
 
 // NewReconciler creates a new Reconciler with the given configuration.
-func NewReconciler(cfg *Config) *Reconciler {
-	return &Reconciler{
+func NewReconciler(cfg *Config, opts ...ReconcilerOption) *Reconciler {
+	r := &Reconciler{
 		config:   cfg,
 		git:      NewGitOps(cfg.RepoURL, cfg.RepoBranch, cfg.RepoDir),
 		sops:     NewSOPSOps(),
 		deploy:   NewDeployOps(cfg.DryRun),
 		lockFile: "/tmp/reconcile.lock",
+	}
+
+	for _, opt := range opts {
+		opt(r)
+	}
+
+	return r
+}
+
+// ReconcilerOption is a functional option for configuring the Reconciler.
+type ReconcilerOption func(*Reconciler)
+
+// WithGitOperations sets the GitOperations implementation.
+func WithGitOperations(git GitOperations) ReconcilerOption {
+	return func(r *Reconciler) {
+		r.git = git
+	}
+}
+
+// WithSecretsDecryptor sets the SecretsDecryptor implementation.
+func WithSecretsDecryptor(sops SecretsDecryptor) ReconcilerOption {
+	return func(r *Reconciler) {
+		r.sops = sops
+	}
+}
+
+// WithDeployOps sets the DeployOps implementation.
+func WithDeployOps(deploy *DeployOps) ReconcilerOption {
+	return func(r *Reconciler) {
+		r.deploy = deploy
+	}
+}
+
+// WithLockFile sets the lock file path.
+func WithLockFile(path string) ReconcilerOption {
+	return func(r *Reconciler) {
+		r.lockFile = path
 	}
 }
 
@@ -134,7 +170,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	}
 
 	// Step 5: Deploy.
-	if err := r.deploy_(ctx, secrets); err != nil {
+	if err := r.doDeploy(ctx, secrets); err != nil {
 		return fmt.Errorf("deployment failed: %w", err)
 	}
 
@@ -167,32 +203,6 @@ func (r *Reconciler) cleanupStaging() error {
 	return nil
 }
 
-// acquireLock acquires an exclusive lock to prevent concurrent runs.
-func (r *Reconciler) acquireLock() error {
-	fd, err := os.OpenFile(r.lockFile, os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open lock file: %w", err)
-	}
-
-	// Try non-blocking exclusive lock.
-	if err := syscall.Flock(int(fd.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		fd.Close()
-		return fmt.Errorf("lock already held: %w", err)
-	}
-
-	r.lockFd = fd
-	return nil
-}
-
-// releaseLock releases the lock file.
-func (r *Reconciler) releaseLock() {
-	if r.lockFd != nil {
-		syscall.Flock(int(r.lockFd.Fd()), syscall.LOCK_UN)
-		r.lockFd.Close()
-		r.lockFd = nil
-	}
-}
-
 // syncRepo syncs the git repository.
 func (r *Reconciler) syncRepo(ctx context.Context) (bool, string, string, error) {
 	ui.Info("Syncing repository...")
@@ -217,7 +227,7 @@ func (r *Reconciler) decryptSecrets(ctx context.Context) (map[string]any, error)
 		files = append(files, path)
 	}
 
-	secrets, err := r.sops.DecryptMultiple(ctx, files)
+	secrets, err := r.sops.DecryptFiles(ctx, files)
 	if err != nil {
 		return nil, err
 	}
@@ -289,8 +299,8 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any) e
 	return nil
 }
 
-// deploy_ performs the actual deployment.
-func (r *Reconciler) deploy_(ctx context.Context, secrets map[string]any) error {
+// doDeploy performs the actual deployment.
+func (r *Reconciler) doDeploy(ctx context.Context, secrets map[string]any) error {
 	if r.isLocalMode() {
 		return r.deployLocal(ctx)
 	}

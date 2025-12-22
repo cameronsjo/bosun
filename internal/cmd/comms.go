@@ -13,6 +13,14 @@ import (
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
+// Radio command constants.
+const (
+	// RadioTestTimeout is the HTTP timeout for testing the webhook endpoint.
+	RadioTestTimeout = 5 * time.Second
+	// MaxOnlinePeersDisplay is the maximum number of online Tailscale peers to show.
+	MaxOnlinePeersDisplay = 5
+)
+
 // radioCmd represents the radio command group.
 var radioCmd = &cobra.Command{
 	Use:     "radio",
@@ -40,7 +48,7 @@ func runRadioTest(cmd *cobra.Command, args []string) {
 	ui.Info("Testing radio...")
 
 	client := &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: RadioTestTimeout,
 	}
 
 	resp, err := client.Get("http://localhost:8080/health")
@@ -176,8 +184,8 @@ func displayTailscaleStatus(status *TailscaleStatus) {
 			if !peer.Online {
 				continue
 			}
-			if count >= 5 {
-				fmt.Printf("  ... and %d more\n", onlinePeers-5)
+			if count >= MaxOnlinePeersDisplay {
+				fmt.Printf("  ... and %d more\n", onlinePeers-MaxOnlinePeersDisplay)
 				break
 			}
 

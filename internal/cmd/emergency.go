@@ -24,10 +24,31 @@ import (
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
+// Emergency command display limits.
+const (
+	// MaxErrorDisplay is the maximum number of error lines to show in mayday output.
+	MaxErrorDisplay = 50
+	// MaxSnapshotDisplay is the maximum number of snapshots to show in list output.
+	MaxSnapshotDisplay = 10
+	// MaxBackupDisplay is the maximum number of backups to show in list output.
+	MaxBackupDisplay = 10
+	// MaxSnapshotPrompt is the maximum number of snapshots to show in interactive prompt.
+	MaxSnapshotPrompt = 5
+	// ContainerLogTailLines is the number of log lines to fetch per container for error scanning.
+	ContainerLogTailLines = 20
+	// DockerLogHeaderSize is the size of Docker's multiplexed log header in bytes.
+	DockerLogHeaderSize = 8
+	// MaxExtractFileSize is the maximum file size allowed when extracting tar archives (100MB).
+	MaxExtractFileSize = 100 * 1024 * 1024
+)
+
 var (
 	maydayList     bool
 	maydayRollback string
 	restoreList    bool
+
+	// errorRegex matches common error indicators in logs
+	errorLogRegex = regexp.MustCompile(`(?i)(error|fatal|panic|exception)`)
 )
 
 // maydayCmd handles emergency situations.
@@ -68,46 +89,42 @@ func showRecentErrors() {
 	ui.Mayday("MAYDAY - Recent errors across all crew:")
 	fmt.Println()
 
-	ctx := context.Background()
-	client, err := docker.NewClient()
+	err := withDockerClient(func(ctx context.Context, client *docker.Client) error {
+		containers, err := client.ListContainers(ctx, true)
+		if err != nil {
+			return fmt.Errorf("list containers: %w", err)
+		}
+
+		errorCount := 0
+
+		for _, ctr := range containers {
+			logs, err := client.GetContainerLogs(ctx, ctr.Name, ContainerLogTailLines)
+			if err != nil {
+				continue
+			}
+
+			lines := strings.Split(logs, "\n")
+			for _, line := range lines {
+				if errorCount >= MaxErrorDisplay {
+					break
+				}
+				// Clean up Docker log prefix (first 8 bytes are header)
+				cleanLine := stripDockerLogPrefix(line)
+				if errorLogRegex.MatchString(cleanLine) {
+					ui.Red.Printf("[%s] %s\n", ctr.Name, cleanLine)
+					errorCount++
+				}
+			}
+		}
+
+		if errorCount == 0 {
+			ui.Green.Println("No recent errors found")
+		}
+		return nil
+	})
+
 	if err != nil {
 		ui.Error("Docker not available: %v", err)
-		return
-	}
-	defer client.Close()
-
-	containers, err := client.ListContainers(ctx, true)
-	if err != nil {
-		ui.Error("Failed to list containers: %v", err)
-		return
-	}
-
-	errorRegex := regexp.MustCompile(`(?i)(error|fatal|panic|exception)`)
-	errorCount := 0
-	maxErrors := 50
-
-	for _, ctr := range containers {
-		logs, err := client.GetContainerLogs(ctx, ctr.Name, 20)
-		if err != nil {
-			continue
-		}
-
-		lines := strings.Split(logs, "\n")
-		for _, line := range lines {
-			if errorCount >= maxErrors {
-				break
-			}
-			// Clean up Docker log prefix (first 8 bytes are header)
-			cleanLine := stripDockerLogPrefix(line)
-			if errorRegex.MatchString(cleanLine) {
-				ui.Red.Printf("[%s] %s\n", ctr.Name, cleanLine)
-				errorCount++
-			}
-		}
-	}
-
-	if errorCount == 0 {
-		ui.Green.Println("No recent errors found")
 	}
 }
 
@@ -134,8 +151,8 @@ func showSnapshots(cfg *config.Config) {
 	fmt.Println()
 
 	for i, snap := range snapshots {
-		if i >= 10 {
-			remaining := len(snapshots) - 10
+		if i >= MaxSnapshotDisplay {
+			remaining := len(snapshots) - MaxSnapshotDisplay
 			fmt.Printf("  ... and %d more\n", remaining)
 			break
 		}
@@ -214,7 +231,7 @@ func promptForSnapshot(snapshots []snapshot.SnapshotInfo) string {
 	ui.Blue.Println("Available snapshots:")
 	fmt.Println()
 
-	maxShow := 5
+	maxShow := MaxSnapshotPrompt
 	if len(snapshots) < maxShow {
 		maxShow = len(snapshots)
 	}
@@ -226,7 +243,7 @@ func promptForSnapshot(snapshots []snapshot.SnapshotInfo) string {
 	fmt.Println()
 
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("Select snapshot (1-5, or name): ")
+	fmt.Printf("Select snapshot (1-%d, or name): ", MaxSnapshotPrompt)
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
 
@@ -248,10 +265,10 @@ func stripDockerLogPrefix(line string) string {
 	// First byte: stream type (1=stdout, 2=stderr)
 	// Bytes 2-4: reserved
 	// Bytes 5-8: length (big-endian uint32)
-	if len(line) >= 8 {
+	if len(line) >= DockerLogHeaderSize {
 		// Check if this looks like a multiplexed header
 		if line[0] == 1 || line[0] == 2 {
-			return line[8:]
+			return line[DockerLogHeaderSize:]
 		}
 	}
 	return line
@@ -270,18 +287,17 @@ var overboardCmd = &cobra.Command{
 func runOverboard(cmd *cobra.Command, args []string) {
 	name := args[0]
 
-	ctx := context.Background()
-	client, err := docker.NewClient()
-	if err != nil {
-		ui.Error("Docker not available: %v", err)
-		os.Exit(1)
-	}
-	defer client.Close()
-
 	ui.Red.Printf("Man overboard! Removing %s...\n", name)
 
-	if err := client.RemoveContainer(ctx, name); err != nil {
-		ui.Error("Failed to remove container: %v", err)
+	err := withDockerClient(func(ctx context.Context, client *docker.Client) error {
+		if err := client.RemoveContainer(ctx, name); err != nil {
+			return fmt.Errorf("remove container: %w", err)
+		}
+		return nil
+	})
+
+	if err != nil {
+		ui.Error("Failed: %v", err)
 		os.Exit(1)
 	}
 
@@ -361,8 +377,8 @@ func listBackups(backupDir string) error {
 	fmt.Println()
 
 	for i, backup := range backups {
-		if i >= 10 {
-			remaining := len(backups) - 10
+		if i >= MaxBackupDisplay {
+			remaining := len(backups) - MaxBackupDisplay
 			fmt.Printf("  ... and %d more\n", remaining)
 			break
 		}
@@ -574,8 +590,7 @@ func extractTarGz(tarPath, destDir string) error {
 				return err
 			}
 			// Use io.CopyN to limit copy size as a security measure
-			const maxFileSize = 100 * 1024 * 1024 // 100MB max per file
-			if _, err := io.CopyN(outFile, tr, maxFileSize); err != nil && err != io.EOF {
+			if _, err := io.CopyN(outFile, tr, MaxExtractFileSize); err != nil && err != io.EOF {
 				outFile.Close()
 				return err
 			}

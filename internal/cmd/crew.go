@@ -17,6 +17,16 @@ import (
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
+// Display limits for crew commands.
+const (
+	// MaxPortDisplayLength is the maximum length for displaying port mappings before truncation.
+	MaxPortDisplayLength = 40
+	// TruncatedPortLength is the length to truncate port display to when exceeding max.
+	TruncatedPortLength = 37
+	// DefaultLogTailLines is the default number of log lines to show.
+	DefaultLogTailLines = 100
+)
+
 var (
 	crewAll    bool
 	crewTail   int
@@ -44,38 +54,32 @@ var crewListCmd = &cobra.Command{
 	Short: "Show all hands on deck (docker ps)",
 	Long:  `Lists all containers with their status, ports, and health.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx := context.Background()
-
-		client, err := docker.NewClient()
-		if err != nil {
-			return fmt.Errorf("connect to docker: %w", err)
-		}
-		defer client.Close()
-
-		containers, err := client.ListContainers(ctx, !crewAll)
-		if err != nil {
-			return fmt.Errorf("list containers: %w", err)
-		}
-
-		if len(containers) == 0 {
-			ui.Warning("No containers found")
-			return nil
-		}
-
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tSTATUS\tPORTS")
-		fmt.Fprintln(w, "----\t------\t-----")
-
-		for _, c := range containers {
-			ports := strings.Join(c.Ports, ", ")
-			if len(ports) > 40 {
-				ports = ports[:37] + "..."
+		return withDockerClient(func(ctx context.Context, client *docker.Client) error {
+			containers, err := client.ListContainers(ctx, !crewAll)
+			if err != nil {
+				return fmt.Errorf("list containers: %w", err)
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\n", c.Name, c.Status, ports)
-		}
 
-		w.Flush()
-		return nil
+			if len(containers) == 0 {
+				ui.Warning("No containers found")
+				return nil
+			}
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "NAME\tSTATUS\tPORTS")
+			fmt.Fprintln(w, "----\t------\t-----")
+
+			for _, c := range containers {
+				ports := strings.Join(c.Ports, ", ")
+				if len(ports) > MaxPortDisplayLength {
+					ports = ports[:TruncatedPortLength] + "..."
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\n", c.Name, c.Status, ports)
+			}
+
+			w.Flush()
+			return nil
+		})
 	},
 }
 
@@ -86,39 +90,38 @@ var crewLogsCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
+		// NOTE: This command uses explicit Docker client handling because it needs
+		// custom context management for signal-based cancellation during log streaming.
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
 		// Handle interrupt
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(sigCh)
 		go func() {
 			<-sigCh
 			cancel()
 		}()
 
-		client, err := docker.NewClient()
-		if err != nil {
-			return fmt.Errorf("connect to docker: %w", err)
-		}
-		defer client.Close()
-
-		reader, err := client.Logs(ctx, name, crewTail, crewFollow)
-		if err != nil {
-			return fmt.Errorf("get logs: %w", err)
-		}
-		defer reader.Close()
-
-		// Stream logs to stdout, stripping Docker multiplex headers
-		if _, err := stdCopy(os.Stdout, os.Stderr, reader); err != nil {
-			if ctx.Err() != nil {
-				// Context cancelled, normal exit
-				return nil
+		return withDockerClientContext(ctx, func(client *docker.Client) error {
+			reader, err := client.Logs(ctx, name, crewTail, crewFollow)
+			if err != nil {
+				return fmt.Errorf("get logs: %w", err)
 			}
-			return fmt.Errorf("read logs: %w", err)
-		}
+			defer reader.Close()
 
-		return nil
+			// Stream logs to stdout, stripping Docker multiplex headers
+			if _, err := stdCopy(os.Stdout, os.Stderr, reader); err != nil {
+				if ctx.Err() != nil {
+					// Context cancelled, normal exit
+					return nil
+				}
+				return fmt.Errorf("read logs: %w", err)
+			}
+
+			return nil
+		})
 	},
 }
 
@@ -129,27 +132,22 @@ var crewInspectCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
-		ctx := context.Background()
 
-		client, err := docker.NewClient()
-		if err != nil {
-			return fmt.Errorf("connect to docker: %w", err)
-		}
-		defer client.Close()
+		return withDockerClient(func(ctx context.Context, client *docker.Client) error {
+			details, err := client.Inspect(ctx, name)
+			if err != nil {
+				return fmt.Errorf("inspect container: %w", err)
+			}
 
-		details, err := client.Inspect(ctx, name)
-		if err != nil {
-			return fmt.Errorf("inspect container: %w", err)
-		}
+			// Print as formatted JSON
+			output, err := json.MarshalIndent(details, "", "  ")
+			if err != nil {
+				return fmt.Errorf("marshal details: %w", err)
+			}
 
-		// Print as formatted JSON
-		output, err := json.MarshalIndent(details, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal details: %w", err)
-		}
-
-		fmt.Println(string(output))
-		return nil
+			fmt.Println(string(output))
+			return nil
+		})
 	},
 }
 
@@ -160,22 +158,17 @@ var crewRestartCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
-		ctx := context.Background()
 
-		client, err := docker.NewClient()
-		if err != nil {
-			return fmt.Errorf("connect to docker: %w", err)
-		}
-		defer client.Close()
+		return withDockerClient(func(ctx context.Context, client *docker.Client) error {
+			ui.Blue.Printf("Sending %s for a coffee break...\n", name)
 
-		ui.Blue.Printf("Sending %s for a coffee break...\n", name)
+			if err := client.RestartContainer(ctx, name); err != nil {
+				return fmt.Errorf("restart container: %w", err)
+			}
 
-		if err := client.RestartContainer(ctx, name); err != nil {
-			return fmt.Errorf("restart container: %w", err)
-		}
-
-		ui.Success("%s is back on duty!", name)
-		return nil
+			ui.Success("%s is back on duty!", name)
+			return nil
+		})
 	},
 }
 
@@ -223,7 +216,7 @@ func stdCopy(stdout, stderr io.Writer, src io.Reader) (written int64, err error)
 func init() {
 	crewListCmd.Flags().BoolVarP(&crewAll, "all", "a", false, "Show all containers (including stopped)")
 
-	crewLogsCmd.Flags().IntVarP(&crewTail, "tail", "n", 100, "Number of lines to show")
+	crewLogsCmd.Flags().IntVarP(&crewTail, "tail", "n", DefaultLogTailLines, "Number of lines to show")
 	crewLogsCmd.Flags().BoolVarP(&crewFollow, "follow", "f", false, "Follow log output")
 
 	crewCmd.AddCommand(crewListCmd)

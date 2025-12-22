@@ -169,7 +169,7 @@ func (c *Client) Exists(ctx context.Context, name string) (bool, error) {
 // formatContainerStatus formats container state for display.
 func formatContainerStatus(state *types.ContainerState) string {
 	if state.Running {
-		return fmt.Sprintf("Up %s", formatDuration(time.Since(mustParseTime(state.StartedAt))))
+		return fmt.Sprintf("Up %s", formatDuration(time.Since(parseTimeOrZero(state.StartedAt))))
 	}
 	if state.ExitCode != 0 {
 		return fmt.Sprintf("Exited (%d)", state.ExitCode)
@@ -177,8 +177,8 @@ func formatContainerStatus(state *types.ContainerState) string {
 	return state.Status
 }
 
-// mustParseTime parses a time string or returns zero time.
-func mustParseTime(s string) time.Time {
+// parseTimeOrZero parses a time string or returns zero time on failure.
+func parseTimeOrZero(s string) time.Time {
 	t, _ := time.Parse(time.RFC3339Nano, s)
 	return t
 }

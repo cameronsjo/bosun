@@ -42,6 +42,10 @@ func NewGitOps(url, branch, dir string) *GitOps {
 // If depth is 0, a full clone is performed.
 // Uses GitCloneTimeout if the parent context has no deadline.
 func (g *GitOps) Clone(ctx context.Context, depth int) error {
+	if err := validateBranch(g.Branch); err != nil {
+		return fmt.Errorf("invalid branch: %w", err)
+	}
+
 	// Apply timeout if context doesn't have one
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
@@ -76,6 +80,10 @@ func (g *GitOps) Clone(ctx context.Context, depth int) error {
 // Returns (changed, beforeCommit, afterCommit, error).
 // Uses GitFetchTimeout for network operations.
 func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
+	if err := validateBranch(g.Branch); err != nil {
+		return false, "", "", fmt.Errorf("invalid branch: %w", err)
+	}
+
 	before, err := g.GetLatestCommit(ctx)
 	if err != nil {
 		return false, "", "", fmt.Errorf("failed to get current commit: %w", err)
@@ -144,18 +152,36 @@ func (g *GitOps) GetCommitMessage(ctx context.Context) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+// IsRepoCheckTimeout is the timeout for checking if a directory is a git repository.
+const IsRepoCheckTimeout = 2 * time.Second
+
 // IsRepo checks if the directory is a git repository.
-func (g *GitOps) IsRepo() bool {
+// Uses the provided context for timeout control.
+func (g *GitOps) IsRepo(ctx context.Context) bool {
+	// Apply a short timeout for this check if context doesn't have one
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, IsRepoCheckTimeout)
+		defer cancel()
+	}
+
 	gitDir := filepath.Join(g.Dir, ".git")
-	cmd := exec.Command("test", "-d", gitDir)
-	return cmd.Run() == nil
+	cmd := exec.CommandContext(ctx, "git", "-C", g.Dir, "rev-parse", "--git-dir")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		// Fall back to checking if .git directory exists
+		info, statErr := os.Stat(gitDir)
+		return statErr == nil && info.IsDir()
+	}
+	return true
 }
 
 // Sync clones or pulls depending on whether repo exists.
 // Returns (changed, beforeCommit, afterCommit, error).
 // For fresh clones, changed is always true.
 func (g *GitOps) Sync(ctx context.Context) (bool, string, string, error) {
-	if !g.IsRepo() {
+	if !g.IsRepo(ctx) {
 		if err := g.Clone(ctx, 1); err != nil {
 			return false, "", "", err
 		}

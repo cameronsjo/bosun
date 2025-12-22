@@ -324,48 +324,6 @@ func TestCountFiles(t *testing.T) {
 	assert.Equal(t, 3, count)
 }
 
-func TestCopyDir(t *testing.T) {
-	srcDir := t.TempDir()
-	dstDir := t.TempDir()
-
-	// Create source structure
-	subDir := filepath.Join(srcDir, "sub")
-	require.NoError(t, os.MkdirAll(subDir, 0755))
-
-	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "file1.txt"), []byte("content1"), 0644))
-	require.NoError(t, os.WriteFile(filepath.Join(subDir, "file2.txt"), []byte("content2"), 0644))
-
-	// Copy
-	err := copyDir(srcDir, dstDir)
-	require.NoError(t, err)
-
-	// Verify
-	content1, err := os.ReadFile(filepath.Join(dstDir, "file1.txt"))
-	require.NoError(t, err)
-	assert.Equal(t, "content1", string(content1))
-
-	content2, err := os.ReadFile(filepath.Join(dstDir, "sub", "file2.txt"))
-	require.NoError(t, err)
-	assert.Equal(t, "content2", string(content2))
-}
-
-func TestCopyFile(t *testing.T) {
-	srcDir := t.TempDir()
-	dstDir := t.TempDir()
-
-	srcFile := filepath.Join(srcDir, "source.txt")
-	dstFile := filepath.Join(dstDir, "nested", "dest.txt")
-
-	require.NoError(t, os.WriteFile(srcFile, []byte("file content"), 0644))
-
-	err := copyFile(srcFile, dstFile)
-	require.NoError(t, err)
-
-	content, err := os.ReadFile(dstFile)
-	require.NoError(t, err)
-	assert.Equal(t, "file content", string(content))
-}
-
 func TestSnapshotInfo(t *testing.T) {
 	info := SnapshotInfo{
 		Name:      "snapshot-20240101-120000",
@@ -508,36 +466,6 @@ func TestGetRestoredFiles_EmptyOutputDir(t *testing.T) {
 	assert.Empty(t, files)
 }
 
-func TestCopyFile_SourceNotFound(t *testing.T) {
-	dstDir := t.TempDir()
-	err := copyFile("/nonexistent/source.txt", filepath.Join(dstDir, "dest.txt"))
-	require.Error(t, err)
-}
-
-func TestCopyDir_SourceNotFound(t *testing.T) {
-	dstDir := t.TempDir()
-	err := copyDir("/nonexistent/source", dstDir)
-	require.Error(t, err)
-}
-
-func TestCopyDir_DeepNesting(t *testing.T) {
-	srcDir := t.TempDir()
-	dstDir := t.TempDir()
-
-	// Create deeply nested structure
-	deepDir := filepath.Join(srcDir, "a", "b", "c", "d")
-	require.NoError(t, os.MkdirAll(deepDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(deepDir, "deep.txt"), []byte("deep content"), 0644))
-
-	err := copyDir(srcDir, dstDir)
-	require.NoError(t, err)
-
-	// Verify deep file was copied
-	content, err := os.ReadFile(filepath.Join(dstDir, "a", "b", "c", "d", "deep.txt"))
-	require.NoError(t, err)
-	assert.Equal(t, "deep content", string(content))
-}
-
 func TestCountFiles_EmptyDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	count := countFiles(tmpDir)
@@ -636,20 +564,3 @@ func TestList_ReadDirError(t *testing.T) {
 	assert.Len(t, snapshots, 1)
 }
 
-func TestCopyFile_DstDirCreation(t *testing.T) {
-	srcDir := t.TempDir()
-	dstDir := t.TempDir()
-
-	srcFile := filepath.Join(srcDir, "source.txt")
-	require.NoError(t, os.WriteFile(srcFile, []byte("content"), 0644))
-
-	// Destination is in a deeply nested directory that doesn't exist
-	dstFile := filepath.Join(dstDir, "a", "b", "c", "dest.txt")
-
-	err := copyFile(srcFile, dstFile)
-	require.NoError(t, err)
-
-	content, err := os.ReadFile(dstFile)
-	require.NoError(t, err)
-	assert.Equal(t, "content", string(content))
-}

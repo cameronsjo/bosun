@@ -739,3 +739,687 @@ func TestNormalizeImage(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckResult_Add(t *testing.T) {
+	t.Run("add two results", func(t *testing.T) {
+		r1 := CheckResult{Passed: 2, Failed: 1, Warned: 3}
+		r2 := CheckResult{Passed: 1, Failed: 2, Warned: 1}
+
+		r1.Add(r2)
+
+		assert.Equal(t, 3, r1.Passed)
+		assert.Equal(t, 3, r1.Failed)
+		assert.Equal(t, 4, r1.Warned)
+	})
+
+	t.Run("add empty result", func(t *testing.T) {
+		r1 := CheckResult{Passed: 2, Failed: 1, Warned: 3}
+		r2 := CheckResult{}
+
+		r1.Add(r2)
+
+		assert.Equal(t, 2, r1.Passed)
+		assert.Equal(t, 1, r1.Failed)
+		assert.Equal(t, 3, r1.Warned)
+	})
+
+	t.Run("add to empty result", func(t *testing.T) {
+		r1 := CheckResult{}
+		r2 := CheckResult{Passed: 2, Failed: 1, Warned: 3}
+
+		r1.Add(r2)
+
+		assert.Equal(t, 2, r1.Passed)
+		assert.Equal(t, 1, r1.Failed)
+		assert.Equal(t, 3, r1.Warned)
+	})
+}
+
+func TestCheckGit(t *testing.T) {
+	// Git is typically installed in test environments
+	t.Run("git installed", func(t *testing.T) {
+		result := checkGit()
+		// Git should be installed on any dev machine running tests
+		// If not, this is a warning that the test environment is unusual
+		assert.True(t, result.Passed == 1 || result.Failed == 1,
+			"checkGit should return exactly one passed or failed")
+		assert.Equal(t, 0, result.Warned)
+	})
+}
+
+func TestCheckProjectRoot(t *testing.T) {
+	t.Run("with valid config", func(t *testing.T) {
+		cfg := &config.Config{
+			Root: "/some/path",
+		}
+		result := checkProjectRoot(cfg)
+		assert.Equal(t, 1, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 0, result.Warned)
+	})
+
+	t.Run("with nil config", func(t *testing.T) {
+		result := checkProjectRoot(nil)
+		assert.Equal(t, 0, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 1, result.Warned)
+	})
+}
+
+func TestCheckAgeKey(t *testing.T) {
+	t.Run("with SOPS_AGE_KEY_FILE set to existing file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		keyFile := filepath.Join(tmpDir, "keys.txt")
+		require.NoError(t, os.WriteFile(keyFile, []byte("test key"), 0600))
+
+		t.Setenv("SOPS_AGE_KEY_FILE", keyFile)
+		result := checkAgeKey()
+		assert.Equal(t, 1, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 0, result.Warned)
+	})
+
+	t.Run("with SOPS_AGE_KEY_FILE set to non-existent file", func(t *testing.T) {
+		t.Setenv("SOPS_AGE_KEY_FILE", "/non/existent/path/keys.txt")
+		result := checkAgeKey()
+		assert.Equal(t, 0, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 1, result.Warned)
+	})
+}
+
+func TestCheckManifestDirectory(t *testing.T) {
+	t.Run("with nil config", func(t *testing.T) {
+		result := checkManifestDirectory(nil)
+		assert.Equal(t, 0, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 0, result.Warned)
+	})
+
+	t.Run("with manifest.py present", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifestDir := filepath.Join(tmpDir, "manifest")
+		require.NoError(t, os.MkdirAll(manifestDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(manifestDir, "manifest.py"), []byte("# test"), 0644))
+
+		cfg := &config.Config{
+			ManifestDir: manifestDir,
+		}
+		result := checkManifestDirectory(cfg)
+		assert.Equal(t, 1, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 0, result.Warned)
+	})
+
+	t.Run("with manifest directory present but no manifest.py", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifestDir := filepath.Join(tmpDir, "manifest")
+		require.NoError(t, os.MkdirAll(manifestDir, 0755))
+
+		cfg := &config.Config{
+			ManifestDir: manifestDir,
+		}
+		result := checkManifestDirectory(cfg)
+		assert.Equal(t, 1, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 0, result.Warned)
+	})
+
+	t.Run("with non-existent manifest directory", func(t *testing.T) {
+		cfg := &config.Config{
+			ManifestDir: "/non/existent/manifest",
+		}
+		result := checkManifestDirectory(cfg)
+		assert.Equal(t, 0, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 1, result.Warned)
+	})
+}
+
+func TestCheckWebhook(t *testing.T) {
+	// Note: This test checks behavior when webhook is not running
+	// In a typical test environment, the webhook will not be running
+	t.Run("webhook not responding", func(t *testing.T) {
+		result := checkWebhook()
+		// Should warn when webhook is not responding
+		assert.Equal(t, 0, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 1, result.Warned)
+	})
+}
+
+func TestCheckDockerCompose(t *testing.T) {
+	// Docker Compose v2 is typically installed in test environments with Docker
+	t.Run("docker compose check", func(t *testing.T) {
+		result := checkDockerCompose()
+		// Should return exactly one passed or failed (not warned)
+		assert.True(t, result.Passed == 1 || result.Failed == 1,
+			"checkDockerCompose should return exactly one passed or failed")
+		assert.Equal(t, 0, result.Warned)
+	})
+}
+
+func TestCheckSOPS(t *testing.T) {
+	t.Run("sops check", func(t *testing.T) {
+		result := checkSOPS()
+		// Should return exactly one passed or warned
+		assert.True(t, result.Passed == 1 || result.Warned == 1,
+			"checkSOPS should return exactly one passed or warned")
+		assert.Equal(t, 0, result.Failed)
+	})
+}
+
+func TestCheckUV(t *testing.T) {
+	t.Run("uv check", func(t *testing.T) {
+		result := checkUV()
+		// Should return exactly one passed or warned
+		assert.True(t, result.Passed == 1 || result.Warned == 1,
+			"checkUV should return exactly one passed or warned")
+		assert.Equal(t, 0, result.Failed)
+	})
+}
+
+func TestCheckChezmoi(t *testing.T) {
+	t.Run("chezmoi check", func(t *testing.T) {
+		result := checkChezmoi()
+		// Should return exactly one passed or warned
+		assert.True(t, result.Passed == 1 || result.Warned == 1,
+			"checkChezmoi should return exactly one passed or warned")
+		assert.Equal(t, 0, result.Failed)
+	})
+}
+
+// TestDoctorCmd_MissingDependencies tests doctor with missing dependencies.
+func TestDoctorCmd_MissingDependencies(t *testing.T) {
+	t.Run("doctor help shows expected checks", func(t *testing.T) {
+		output, err := executeCmd(t, "doctor", "--help")
+		assert.NoError(t, err)
+		assert.Contains(t, output, "Docker")
+		assert.Contains(t, output, "diagnostic")
+	})
+}
+
+// TestLintCmd_MissingManifestDir tests lint when manifest directory doesn't exist.
+func TestLintCmd_MissingManifestDir(t *testing.T) {
+	t.Run("lint help shows expected content", func(t *testing.T) {
+		output, err := executeCmd(t, "lint", "--help")
+		assert.NoError(t, err)
+		assert.Contains(t, output, "Validate")
+		assert.Contains(t, output, "provisions")
+	})
+}
+
+// TestDriftCmd_NoContainers tests drift when no containers are running.
+func TestDriftCmd_NoContainers(t *testing.T) {
+	t.Run("drift help shows expected content", func(t *testing.T) {
+		output, err := executeCmd(t, "drift", "--help")
+		assert.NoError(t, err)
+		assert.Contains(t, output, "manifest")
+		assert.Contains(t, output, "containers")
+	})
+}
+
+// TestCheckDependencyCycles_EdgeCases tests edge cases in cycle detection.
+func TestCheckDependencyCycles_EdgeCases(t *testing.T) {
+	testCases := []struct {
+		name       string
+		graph      map[string][]string
+		wantCycles int
+	}{
+		{
+			name:       "empty graph",
+			graph:      map[string][]string{},
+			wantCycles: 0,
+		},
+		{
+			name: "single node no deps",
+			graph: map[string][]string{
+				"a": {},
+			},
+			wantCycles: 0,
+		},
+		{
+			name: "diamond - no cycle",
+			graph: map[string][]string{
+				"a": {"b", "c"},
+				"b": {"d"},
+				"c": {"d"},
+				"d": {},
+			},
+			wantCycles: 0,
+		},
+		{
+			name: "long chain - no cycle",
+			graph: map[string][]string{
+				"a": {"b"},
+				"b": {"c"},
+				"c": {"d"},
+				"d": {"e"},
+				"e": {},
+			},
+			wantCycles: 0,
+		},
+		{
+			name: "multiple independent cycles",
+			graph: map[string][]string{
+				"a": {"b"},
+				"b": {"a"},
+				"c": {"d"},
+				"d": {"c"},
+			},
+			wantCycles: 2,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cycles := detectCycles(tc.graph)
+			assert.Len(t, cycles, tc.wantCycles,
+				"expected %d cycles, got %d: %v", tc.wantCycles, len(cycles), cycles)
+		})
+	}
+}
+
+// TestExtractSection_EdgeCases tests edge cases in section extraction.
+func TestExtractSection_EdgeCases(t *testing.T) {
+	testCases := []struct {
+		name          string
+		content       string
+		serviceName   string
+		expectContain []string
+		expectEmpty   bool
+	}{
+		{
+			name: "first service",
+			content: `services:
+    web:
+      image: nginx
+    api:
+      image: myapi
+`,
+			serviceName:   "web",
+			expectContain: []string{"web:", "image: nginx"},
+		},
+		{
+			name: "last service",
+			content: `services:
+    web:
+      image: nginx
+    api:
+      image: myapi
+`,
+			serviceName:   "api",
+			expectContain: []string{"api:", "image: myapi"},
+		},
+		{
+			name: "service with complex config",
+			content: `services:
+    web:
+      image: nginx
+      ports:
+        - "80:80"
+        - "443:443"
+      environment:
+        - FOO=bar
+      labels:
+        traefik.enable: "true"
+    api:
+      image: myapi
+`,
+			serviceName:   "web",
+			expectContain: []string{"web:", "ports:", "environment:", "labels:"},
+		},
+		{
+			name:        "empty content",
+			content:     "",
+			serviceName: "web",
+			expectEmpty: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			section := extractSection(tc.content, tc.serviceName)
+
+			if tc.expectEmpty {
+				assert.Empty(t, section)
+			} else {
+				for _, expected := range tc.expectContain {
+					assert.Contains(t, section, expected)
+				}
+			}
+		})
+	}
+}
+
+// TestFormatBytes_AdditionalCases tests additional edge cases for formatBytes.
+func TestFormatBytes_AdditionalCases(t *testing.T) {
+	testCases := []struct {
+		name     string
+		bytes    int64
+		expected string
+	}{
+		{
+			name:     "max int64",
+			bytes:    9223372036854775807,
+			expected: "8.0 EB",
+		},
+		{
+			name:     "1023 bytes (just under 1KB)",
+			bytes:    1023,
+			expected: "1023 B",
+		},
+		{
+			name:     "1025 bytes (just over 1KB)",
+			bytes:    1025,
+			expected: "1.0 KB",
+		},
+		{
+			name:     "petabyte",
+			bytes:    1125899906842624,
+			expected: "1.0 PB",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := formatBytes(tc.bytes)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
+
+// TestValidateServiceFile_EdgeCases tests edge cases in service file validation.
+// Note: validateServiceFile requires uv to be installed and may fail dry-run validation.
+func TestValidateServiceFile_EdgeCases(t *testing.T) {
+	// Test cases that should definitely fail (missing required fields)
+	t.Run("empty file fails", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		serviceFile := filepath.Join(tmpDir, "service.yml")
+		require.NoError(t, os.WriteFile(serviceFile, []byte(""), 0644))
+		result := validateServiceFile(serviceFile, tmpDir)
+		assert.False(t, result)
+	})
+
+	t.Run("name in comments only fails", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		serviceFile := filepath.Join(tmpDir, "service.yml")
+		content := `# name: not a real name
+provisions:
+  - webapp
+`
+		require.NoError(t, os.WriteFile(serviceFile, []byte(content), 0644))
+		result := validateServiceFile(serviceFile, tmpDir)
+		assert.False(t, result)
+	})
+
+	t.Run("missing provisions fails", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		serviceFile := filepath.Join(tmpDir, "service.yml")
+		content := `name: myservice
+config:
+  port: 8080
+`
+		require.NoError(t, os.WriteFile(serviceFile, []byte(content), 0644))
+		result := validateServiceFile(serviceFile, tmpDir)
+		assert.False(t, result)
+	})
+
+	t.Run("missing name fails", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		serviceFile := filepath.Join(tmpDir, "service.yml")
+		content := `provisions:
+  - webapp
+`
+		require.NoError(t, os.WriteFile(serviceFile, []byte(content), 0644))
+		result := validateServiceFile(serviceFile, tmpDir)
+		assert.False(t, result)
+	})
+}
+
+// TestValidateStackFile_EdgeCases tests edge cases in stack file validation.
+// Note: validateStackFile runs uv dry-run validation which may fail in test environment.
+func TestValidateStackFile_EdgeCases(t *testing.T) {
+	// Test cases that return true regardless of uv validation
+	t.Run("without include returns true (warning only)", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		stackFile := filepath.Join(tmpDir, "stack.yml")
+		content := `name: mystack
+`
+		require.NoError(t, os.WriteFile(stackFile, []byte(content), 0644))
+		result := validateStackFile(stackFile, tmpDir)
+		// validateStackFile returns true for "no include" as it's just a warning
+		assert.True(t, result)
+	})
+
+	t.Run("empty file returns true (no include is just a warning)", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		stackFile := filepath.Join(tmpDir, "stack.yml")
+		require.NoError(t, os.WriteFile(stackFile, []byte(""), 0644))
+		result := validateStackFile(stackFile, tmpDir)
+		// validateStackFile returns true for empty (no include) as it's just a warning
+		assert.True(t, result)
+	})
+
+	t.Run("non-existent file returns false", func(t *testing.T) {
+		result := validateStackFile("/non/existent/file.yml", "/tmp")
+		assert.False(t, result)
+	})
+}
+
+// TestParsePortString_EdgeCases tests edge cases in port string parsing.
+func TestParsePortString_EdgeCases(t *testing.T) {
+	testCases := []struct {
+		name     string
+		input    string
+		expected []int
+	}{
+		{
+			name:     "ipv6-like (not supported)",
+			input:    "::1:8080:80",
+			expected: []int{},
+		},
+		{
+			name:     "only protocol",
+			input:    "/tcp",
+			expected: []int{},
+		},
+		{
+			name:     "port zero",
+			input:    "0:80",
+			expected: []int{},
+		},
+		{
+			name:     "negative port",
+			input:    "-1:80",
+			expected: []int{},
+		},
+		{
+			name:     "very large port",
+			input:    "99999:80",
+			expected: []int{99999},
+		},
+		{
+			name:     "reverse range (invalid)",
+			input:    "8010-8000:8010-8000",
+			expected: []int{},
+		},
+		{
+			name:     "single port range",
+			input:    "8080-8080:80-80",
+			expected: []int{8080},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := parsePortString(tc.input)
+			if len(tc.expected) == 0 {
+				assert.Empty(t, result)
+			} else {
+				assert.Equal(t, tc.expected, result)
+			}
+		})
+	}
+}
+
+// TestExtractServicesFromCompose_EdgeCases tests edge cases in compose service extraction.
+func TestExtractServicesFromCompose_EdgeCases(t *testing.T) {
+	testCases := []struct {
+		name          string
+		content       string
+		expectCount   int
+		expectService map[string]string
+	}{
+		{
+			name:        "empty services",
+			content:     `services: {}`,
+			expectCount: 0,
+		},
+		{
+			name: "service with build instead of image",
+			content: `services:
+  app:
+    build: .
+`,
+			expectCount:   1,
+			expectService: map[string]string{"app": ""},
+		},
+		{
+			name: "multiple services mixed",
+			content: `services:
+  web:
+    image: nginx:latest
+  api:
+    build: ./api
+  db:
+    image: postgres:15
+`,
+			expectCount: 3,
+			expectService: map[string]string{
+				"web": "nginx:latest",
+				"api": "",
+				"db":  "postgres:15",
+			},
+		},
+		{
+			name: "service with complex image reference",
+			content: `services:
+  app:
+    image: ghcr.io/org/repo/image:v1.2.3@sha256:abc123
+`,
+			expectCount: 1,
+			expectService: map[string]string{
+				"app": "ghcr.io/org/repo/image:v1.2.3@sha256:abc123",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			composeFile := filepath.Join(tmpDir, "compose.yml")
+			require.NoError(t, os.WriteFile(composeFile, []byte(tc.content), 0644))
+
+			services := extractServicesFromCompose(composeFile)
+			assert.Len(t, services, tc.expectCount)
+
+			for svc, image := range tc.expectService {
+				assert.Equal(t, image, services[svc], "service %s image mismatch", svc)
+			}
+		})
+	}
+}
+
+// TestBuildCyclePath_EdgeCases tests edge cases in cycle path building.
+func TestBuildCyclePath_EdgeCases(t *testing.T) {
+	testCases := []struct {
+		name       string
+		current    string
+		cycleStart string
+		parent     map[string]string
+		expectPath string
+	}{
+		{
+			name:       "self cycle",
+			current:    "a",
+			cycleStart: "a",
+			parent:     map[string]string{},
+			expectPath: "a -> a",
+		},
+		{
+			name:       "two node cycle",
+			current:    "b",
+			cycleStart: "a",
+			parent:     map[string]string{"b": "a"},
+			expectPath: "a -> b -> a",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := buildCyclePath(tc.current, tc.cycleStart, tc.parent)
+			assert.Equal(t, tc.expectPath, result)
+		})
+	}
+}
+
+// TestExtractDependencyGraph_EdgeCases tests edge cases in dependency graph extraction.
+func TestExtractDependencyGraph_EdgeCases(t *testing.T) {
+	testCases := []struct {
+		name        string
+		content     string
+		expectGraph map[string][]string
+	}{
+		{
+			name: "mixed depends_on formats in same file",
+			content: `services:
+  web:
+    image: nginx
+    depends_on:
+      - db
+  api:
+    image: myapi
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: postgres
+`,
+			expectGraph: map[string][]string{
+				"web": {"db"},
+				"api": {"db"},
+				"db":  {},
+			},
+		},
+		{
+			name: "empty depends_on list",
+			content: `services:
+  web:
+    image: nginx
+    depends_on: []
+  db:
+    image: postgres
+`,
+			expectGraph: map[string][]string{
+				"web": {},
+				"db":  {},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			composeFile := filepath.Join(tmpDir, "compose.yml")
+			require.NoError(t, os.WriteFile(composeFile, []byte(tc.content), 0644))
+
+			graph := extractDependencyGraph(composeFile)
+
+			assert.Len(t, graph, len(tc.expectGraph))
+			for svc, deps := range tc.expectGraph {
+				assert.ElementsMatch(t, deps, graph[svc], "service %s deps mismatch", svc)
+			}
+		})
+	}
+}

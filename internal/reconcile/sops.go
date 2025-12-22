@@ -135,9 +135,10 @@ func (s *SOPSOps) DecryptToMap(ctx context.Context, file string) (map[string]any
 	return result, nil
 }
 
-// DecryptMultiple decrypts multiple SOPS files and merges them into a single map.
+// DecryptFiles decrypts multiple SOPS files and merges them into a single map.
 // Later files override earlier ones for duplicate keys.
-func (s *SOPSOps) DecryptMultiple(ctx context.Context, files []string) (map[string]any, error) {
+// This method implements the SecretsDecryptor interface.
+func (s *SOPSOps) DecryptFiles(ctx context.Context, files []string) (map[string]any, error) {
 	merged := make(map[string]any)
 
 	for _, file := range files {
@@ -153,7 +154,7 @@ func (s *SOPSOps) DecryptMultiple(ctx context.Context, files []string) (map[stri
 
 // DecryptToJSON decrypts files and returns merged JSON bytes.
 func (s *SOPSOps) DecryptToJSON(ctx context.Context, files []string) ([]byte, error) {
-	merged, err := s.DecryptMultiple(ctx, files)
+	merged, err := s.DecryptFiles(ctx, files)
 	if err != nil {
 		return nil, err
 	}
