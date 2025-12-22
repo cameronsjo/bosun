@@ -302,6 +302,7 @@ See [ADR-0004: Multi-Server Monorepo](docs/adr/0004-multi-server-monorepo.md).
 | [0006: Conductor Auth](docs/adr/0006-conductor-authentication.md) | Proposed | Authelia integration |
 | [0007: Agentgateway MCP Proxy](docs/adr/0007-agentgateway-mcp-proxy.md) | Draft | MCP servers via Agentgateway + Authelia |
 | [0008: Container vs Daemon](docs/adr/0008-container-vs-daemon.md) | Accepted | When to use systemd vs Docker |
+| [0009: Unraid Community Apps](docs/adr/0009-unraid-community-apps.md) | Evaluating | CA registration strategy |
 
 ---
 
