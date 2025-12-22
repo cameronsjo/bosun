@@ -10,20 +10,58 @@ The unops icon should be placed here as `icon.png`.
 - **Format**: PNG with transparency
 - **Style**: Simple, recognizable at small sizes
 
-### Design Concept
+### Image Generation Prompt
 
-Suggested design elements:
-- Musical conductor's baton (ties to "conductor" theme)
-- Git branch lines
-- Docker whale silhouette
-- Orchestra/music notation elements
+**Full prompt:**
 
-### Placeholder
+```
+Minimalist app icon for "unops" - a GitOps deployment tool for homelabs.
 
-Until a proper icon is created, the template will show a generic Docker icon.
+Design concept: A conductor's baton crossed with a Docker container, forming a subtle "U" shape.
 
-To add an icon:
-1. Create a 512x512 PNG
-2. Save as `assets/icon.png`
+Style:
+- Flat design, no gradients
+- Dark background (#1a1a2e or deep navy)
+- Accent colors: Teal (#00d4aa) and orange (#ff6b35)
+- Clean geometric shapes
+- Visible at 64x64px
+
+Elements to include:
+- Conductor's baton (diagonal, elegant line with small tip)
+- Docker whale silhouette OR container box shape
+- Subtle git branch lines connecting them
+- Musical staff lines as background texture (very subtle)
+
+Do NOT include:
+- Text or letters
+- Complex details
+- Realistic shading
+- More than 3 colors
+
+Output: 512x512 PNG with transparent background, suitable for Unraid Community Apps
+```
+
+**Simple prompt:**
+
+```
+Minimalist tech icon: conductor's baton pointing at a shipping container, teal and orange on dark navy, flat design, app icon style, 512x512
+```
+
+**Concept sketch:**
+
+```
+     ╲
+      ╲  ← baton
+       ╲
+    ┌───╲───┐
+    │   ╲   │  ← container
+    │    ╲  │
+    └───────┘
+```
+
+### To Add Icon
+
+1. Generate icon using prompt above
+2. Save as `assets/icon.png` (512x512 PNG)
 3. Commit and push
 4. Icon will be served from: `https://raw.githubusercontent.com/cameronsjo/unops/main/assets/icon.png`
