@@ -1,0 +1,49 @@
+{{- $secrets := fromJson (env "SOPS_SECRETS") -}}
+# Example compose template rendered by chezmoi
+# Variables from SOPS secrets are injected at deploy time
+
+services:
+  myapp:
+    image: ghcr.io/org/myapp:latest
+    container_name: myapp
+    restart: unless-stopped
+    environment:
+      TZ: America/Chicago
+      DATABASE_URL: postgres://postgres:{{ $secrets.apps.myapp.db_password }}@myapp-db:5432/myapp
+      SECRET_KEY: {{ $secrets.apps.myapp.secret_key }}
+    networks:
+      - proxynet
+    depends_on:
+      myapp-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  myapp-db:
+    image: postgres:17-alpine
+    container_name: myapp-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: myapp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: {{ $secrets.apps.myapp.db_password }}
+    volumes:
+      - myapp_db_data:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  proxynet:
+    external: true
+  internal:
+
+volumes:
+  myapp_db_data:

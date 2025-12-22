@@ -1,0 +1,27 @@
+# Secrets
+*.sops.yaml
+!*.sops.yaml.example
+age-key.txt
+secrets.yaml
+
+# Output
+composer/output/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/

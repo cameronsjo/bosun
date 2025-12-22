@@ -1,0 +1,51 @@
+# GitOps Runner deployment
+# Deploy this on Unraid to enable GitOps deployments
+
+services:
+  gitops-runner:
+    image: ghcr.io/cameronsjo/gitops-runner:latest
+    container_name: gitops-runner
+    restart: unless-stopped
+    environment:
+      TZ: America/Chicago
+      # Repository configuration
+      REPO_URL: git@github.com:cameronsjo/dotfiles.git
+      REPO_BRANCH: main
+      # Polling interval (1 hour)
+      POLL_INTERVAL: "3600"
+      # Deploy target
+      DEPLOY_TARGET: unraid
+      # Webhook configuration (set via .env or secrets)
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+      WEBHOOK_PORT: "9000"
+      # Discord notifications
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL}
+      # Dry run mode (set to "true" for testing)
+      DRY_RUN: "false"
+    volumes:
+      # Age key for SOPS decryption
+      - /mnt/user/appdata/gitops-runner/age-key.txt:/config/age-key.txt:ro
+      # SSH deploy key for git operations
+      - /mnt/user/appdata/gitops-runner/deploy-key:/config/deploy-key:ro
+      # Docker socket for container operations
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Persistent data
+      - /mnt/user/appdata/gitops-runner/logs:/app/logs
+      - /mnt/user/appdata/gitops-runner/backups:/app/backups
+    networks:
+      - proxynet
+    labels:
+      - homepage.group=Infrastructure
+      - homepage.name=GitOps Runner
+      - homepage.icon=mdi-git
+      - homepage.description=Infrastructure deployment automation
+    healthcheck:
+      test: ["CMD", "/app/scripts/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+networks:
+  proxynet:
+    external: true
