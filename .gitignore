@@ -6,6 +6,7 @@ secrets.yaml
 
 # Output
 manifest/output/
+build/
 
 # IDE
 .idea/
