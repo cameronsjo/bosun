@@ -57,7 +57,7 @@ That's it. That's the whole thing.
 |-----------|---------|
 | **Conductor** | Orchestrates deployments. Webhook receiver, reconciliation loop, secret decryption. |
 | **Composer** | DRY service definitions. Write 10 lines, generate compose + Traefik + Gatus configs. |
-| **Batteries** | Tailscale Funnel, Cloudflare Tunnel, Authelia auth, Watchtower integration. Swappable. |
+| **Batteries** | Tailscale/Cloudflare tunnels, Authelia auth, Watchtower, Agentgateway for MCP. Swappable. |
 
 ## Philosophy
 
@@ -300,6 +300,7 @@ See [ADR-0004: Multi-Server Monorepo](docs/adr/0004-multi-server-monorepo.md).
 | [0004: Multi-Server Monorepo](docs/adr/0004-multi-server-monorepo.md) | Proposed | Hub-and-spoke architecture |
 | [0005: Tunnel Providers](docs/adr/0005-tunnel-providers.md) | Accepted | Tailscale vs Cloudflare |
 | [0006: Conductor Auth](docs/adr/0006-conductor-authentication.md) | Proposed | Authelia integration |
+| [0007: Agentgateway MCP Proxy](docs/adr/0007-agentgateway-mcp-proxy.md) | Draft | MCP servers via Agentgateway + Authelia |
 
 ---
 
