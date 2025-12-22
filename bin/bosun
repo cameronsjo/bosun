@@ -63,6 +63,7 @@ COMMS COMMANDS
 
 DIAGNOSTICS
   status                Health dashboard - crew, infra, resources
+  log [n]               Release history - manifest changes, provisions, tags
   doctor                Pre-flight checks - is the ship seaworthy?
   lint                  Validate all manifests before deploy
 
@@ -393,6 +394,56 @@ EOF
     echo "  1. Edit $output_file to customize"
     echo "  2. Add to a stack in manifest/stacks/"
     echo "  3. Run 'bosun provision --dry-run stacks/yourstack.yml'"
+}
+
+# Log command - release history
+cmd_log() {
+    local count="${1:-10}"
+
+    echo -e "${BLUE}📜 Release History${NC}"
+    echo ""
+
+    if [[ ! -d "$ROOT/.git" ]]; then
+        echo -e "${RED}Not a git repository${NC}"
+        return 1
+    fi
+
+    # Show recent commits affecting manifests
+    echo -e "${BLUE}━━━ Recent Manifest Changes ━━━${NC}"
+    git -C "$ROOT" log --oneline --format="  %C(yellow)%h%C(reset) %s %C(dim)(%cr)%C(reset)" \
+        -n "$count" -- manifest/ 2>/dev/null || echo "  No manifest changes found"
+
+    echo ""
+
+    # Show last provision renders (based on output file timestamps)
+    echo -e "${BLUE}━━━ Last Provisions ━━━${NC}"
+    if [[ -d "$MANIFEST_DIR/output" ]]; then
+        find "$MANIFEST_DIR/output" -name "*.yml" -type f 2>/dev/null | while read -r file; do
+            local relpath="${file#$MANIFEST_DIR/output/}"
+            local mtime=$(stat -f "%Sm" -t "%Y-%m-%d %H:%M" "$file" 2>/dev/null || \
+                          stat -c "%y" "$file" 2>/dev/null | cut -d. -f1)
+            echo "  $relpath  ($mtime)"
+        done | head -10
+    else
+        echo "  No provisions rendered yet"
+    fi
+
+    echo ""
+
+    # Show recent deploys (git tags with 'deploy' or version pattern)
+    echo -e "${BLUE}━━━ Deploy Tags ━━━${NC}"
+    local tags=$(git -C "$ROOT" tag -l --sort=-creatordate 2>/dev/null | head -5)
+    if [[ -n "$tags" ]]; then
+        echo "$tags" | while read -r tag; do
+            local date=$(git -C "$ROOT" log -1 --format="%cr" "$tag" 2>/dev/null)
+            echo "  $tag ($date)"
+        done
+    else
+        echo "  No deploy tags found"
+        echo "  Tip: Use 'git tag v1.0.0' to mark releases"
+    fi
+
+    echo ""
 }
 
 # Status command - unified health dashboard
@@ -1023,6 +1074,9 @@ main() {
         status|bridge)
             cmd_status
             ;;
+        log|ledger)
+            cmd_log "${@:2}"
+            ;;
         doctor|checkup)
             cmd_doctor
             ;;
@@ -1047,6 +1101,7 @@ main() {
             echo "  forge       → create"
             echo "  parrot      → radio"
             echo "  bridge      → status"
+            echo "  ledger      → log"
             echo "  checkup     → doctor"
             echo "  inspect     → lint"
             echo "  mutiny      → mayday"
