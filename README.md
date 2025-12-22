@@ -11,7 +11,7 @@ unops is a lightweight GitOps toolkit for managing Docker Compose deployments on
 - **Webhook-triggered deploys** from GitHub
 - **Polling fallback** for reliability
 - **Watchtower integration** for container image updates
-- **Service composition** (planned) for DRY service definitions
+- **Service composition** for DRY service definitions
 
 ```
 git push → webhook → decrypt secrets → render templates → docker compose up
@@ -35,16 +35,63 @@ conductor/
     └── notify.sh        # Discord notifications
 ```
 
-### Composer (Planned)
+### Composer
 
-Service definition abstraction - define once, generate compose + traefik + monitoring:
+Service definition abstraction - define once, generate compose + traefik + gatus:
 
 ```
 composer/
-├── compose.py           # Renderer CLI
+├── compose.py           # Renderer CLI (~200 lines)
 ├── profiles/            # Reusable fragments
-├── services/            # Service manifests
-└── stacks/              # Stack definitions
+│   ├── container.yml    # Base service config
+│   ├── healthcheck.yml  # Health check pattern
+│   ├── homepage.yml     # Dashboard labels
+│   ├── reverse-proxy.yml# Traefik integration
+│   ├── monitoring.yml   # Gatus endpoints
+│   ├── postgres.yml     # PostgreSQL sidecar
+│   └── redis.yml        # Redis sidecar
+├── services/            # Service manifests (~10 lines each)
+├── stacks/              # Stack definitions
+└── output/              # Generated configs (gitignored)
+```
+
+#### Usage
+
+```bash
+cd composer
+
+# Render a stack to output files
+uv run compose.py render stacks/apps.yml
+
+# Preview without writing (dry-run)
+uv run compose.py render stacks/apps.yml --dry-run
+
+# Show expanded service
+uv run compose.py expand services/myapp.yml
+
+# List available profiles
+uv run compose.py profiles
+```
+
+#### Service Manifest Example
+
+```yaml
+# services/myapp.yml (~10 lines)
+name: myapp
+profiles: [container, healthcheck, homepage, reverse-proxy, monitoring]
+config:
+  image: ghcr.io/org/myapp:latest
+  port: 3000
+  subdomain: myapp
+  domain: example.com
+  group: Apps
+  icon: mdi-application
+  description: My application
+services:
+  postgres:
+    version: 17
+    db: myapp
+    db_password: "{{ $secrets.apps.myapp.db_password }}"
 ```
 
 See [ADR-0001: Service Composer](docs/adr/0001-service-composer.md) for the full design.
@@ -159,6 +206,8 @@ See [ADR-0002: Watchtower Webhook Deploy](docs/adr/0002-watchtower-webhook-deplo
 
 - [ADR-0001: Service Composer](docs/adr/0001-service-composer.md) - Service definition abstraction
 - [ADR-0002: Watchtower Webhook](docs/adr/0002-watchtower-webhook-deploy.md) - Image update automation
+- [ADR-0003: Dagger for Conductor](docs/adr/0003-dagger-for-conductor.md) - Deferred: shell scripts sufficient
+- [ADR-0004: Multi-Server Monorepo](docs/adr/0004-multi-server-monorepo.md) - Hub-and-spoke architecture
 
 ## License
 

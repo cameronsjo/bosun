@@ -1,0 +1,31 @@
+# Redis sidecar profile
+# Injects: ${name}-redis service, env vars, depends_on
+compose:
+  services:
+    ${name}-redis:
+      image: redis:${version}-alpine
+      container_name: ${name}-redis
+      restart: unless-stopped
+      environment:
+        TZ: America/Chicago
+      volumes:
+        - ${name}_redis_data:/data
+      networks:
+        - internal
+      healthcheck:
+        test: ["CMD", "redis-cli", "ping"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+    ${name}:
+      environment:
+        REDIS_HOST: ${name}-redis
+        REDIS_PORT: "6379"
+      depends_on:
+        - ${name}-redis
+      networks:
+        - internal
+  volumes:
+    ${name}_redis_data:
+  networks:
+    internal:

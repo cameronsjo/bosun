@@ -1,0 +1,19 @@
+# Stirling PDF - PDF manipulation tool
+# Simple service without database
+name: stirling-pdf
+
+profiles:
+  - container
+  - healthcheck
+  - homepage
+  - reverse-proxy
+  - monitoring
+
+config:
+  image: frooodle/s-pdf:latest
+  port: 8080
+  subdomain: pdf
+  domain: example.com
+  group: Tools
+  icon: mdi-file-pdf-box
+  description: PDF toolkit

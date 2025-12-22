@@ -1,0 +1,9 @@
+# Healthcheck profile - wget-based health endpoint check
+compose:
+  services:
+    ${name}:
+      healthcheck:
+        test: ["CMD", "wget", "-q", "--spider", "http://localhost:${port}/health"]
+        interval: 30s
+        timeout: 5s
+        retries: 3

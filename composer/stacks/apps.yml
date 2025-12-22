@@ -1,0 +1,9 @@
+# Apps Stack - User-facing applications
+include:
+  - norish.yml
+  - stirling-pdf.yml
+
+networks:
+  proxynet:
+    external: true
+  internal:

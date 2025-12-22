@@ -1,0 +1,9 @@
+# Monitoring profile - Gatus endpoint
+gatus:
+  endpoints:
+    - name: ${name}
+      group: ${group}
+      url: https://${subdomain}.${domain}
+      interval: 60s
+      conditions:
+        - "[STATUS] == 200"

@@ -1,0 +1,15 @@
+[project]
+name = "unops-composer"
+version = "0.1.0"
+description = "Service Composer - Generate compose, traefik, and gatus configs from service manifests"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+compose = "compose:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

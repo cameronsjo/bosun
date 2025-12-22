@@ -1,0 +1,37 @@
+# PostgreSQL sidecar profile
+# Injects: ${name}-db service, env vars, depends_on
+compose:
+  services:
+    ${name}-db:
+      image: postgres:${version}-alpine
+      container_name: ${name}-db
+      restart: unless-stopped
+      environment:
+        TZ: America/Chicago
+        POSTGRES_DB: ${db}
+        POSTGRES_USER: postgres
+        POSTGRES_PASSWORD: "${db_password}"
+      volumes:
+        - ${name}_db_data:/var/lib/postgresql/data
+      networks:
+        - internal
+      healthcheck:
+        test: ["CMD-SHELL", "pg_isready -U postgres"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+    ${name}:
+      environment:
+        POSTGRES_HOST: ${name}-db
+        POSTGRES_PORT: "5432"
+        POSTGRES_DB: ${db}
+        POSTGRES_USER: postgres
+        POSTGRES_PASSWORD: "${db_password}"
+      depends_on:
+        - ${name}-db
+      networks:
+        - internal
+  volumes:
+    ${name}_db_data:
+  networks:
+    internal:

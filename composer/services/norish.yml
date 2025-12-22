@@ -1,0 +1,25 @@
+# Norish - Recipe Manager
+# Example service manifest demonstrating profile composition
+name: norish
+
+profiles:
+  - container
+  - healthcheck
+  - homepage
+  - reverse-proxy
+  - monitoring
+
+config:
+  image: ghcr.io/norishapp/norish:latest
+  port: 3000
+  subdomain: recipes
+  domain: example.com
+  group: Apps
+  icon: mdi-food
+  description: Recipe manager
+
+services:
+  postgres:
+    version: 17
+    db: norish
+    db_password: "{{ $secrets.apps.norish.db_password }}"
