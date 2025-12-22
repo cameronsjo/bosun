@@ -783,6 +783,38 @@ cmd_lint() {
         echo -e "  ${GREEN}✓${NC} All dependencies look correct"
     fi
 
+    # Check for port conflicts
+    echo -e "\nChecking for port conflicts:"
+    local port_conflicts=0
+    local port_map=""
+
+    for stack in "$MANIFEST_DIR/stacks"/*.yml; do
+        [[ -f "$stack" ]] || continue
+
+        # Render and extract ports
+        local rendered=$(cd "$MANIFEST_DIR" && uv run manifest.py render "$stack" --dry-run 2>/dev/null)
+
+        # Find port mappings (like "8080:8080" or just exposed ports in traefik labels)
+        local ports=$(echo "$rendered" | grep -E "loadbalancer.server.port|ports:" -A1 | grep -oE "[0-9]+" | sort -u)
+
+        for port in $ports; do
+            # Skip common non-conflict ports
+            [[ "$port" -lt 1000 ]] && continue
+
+            if echo "$port_map" | grep -q ":${port}:"; then
+                local existing=$(echo "$port_map" | grep ":${port}:" | cut -d: -f1)
+                echo -e "  ${YELLOW}⚠${NC} Port $port claimed by multiple services ($(basename "$stack" .yml) and $existing)"
+                ((port_conflicts++))
+            else
+                port_map="${port_map}$(basename "$stack" .yml):${port}:\n"
+            fi
+        done
+    done
+
+    if [[ $port_conflicts -eq 0 ]]; then
+        echo -e "  ${GREEN}✓${NC} No port conflicts detected"
+    fi
+
     # Summary
     echo ""
     if [[ $errors -gt 0 ]]; then
