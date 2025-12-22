@@ -1,14 +1,14 @@
 [project]
-name = "unops-composer"
+name = "bosun-manifest"
 version = "0.1.0"
-description = "Service Composer - Generate compose, traefik, and gatus configs from service manifests"
+description = "Crew Manifest - Generate compose, traefik, and gatus configs from service manifests"
 requires-python = ">=3.11"
 dependencies = [
     "pyyaml>=6.0",
 ]
 
 [project.scripts]
-compose = "compose:main"
+manifest = "manifest:main"
 
 [build-system]
 requires = ["hatchling"]

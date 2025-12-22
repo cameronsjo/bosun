@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <Container version="2">
-  <Name>unops-conductor</Name>
-  <Repository>ghcr.io/cameronsjo/unops-conductor</Repository>
-  <Registry>https://github.com/cameronsjo/unops/pkgs/container/unops-conductor</Registry>
+  <Name>bosun</Name>
+  <Repository>ghcr.io/cameronsjo/bosun</Repository>
+  <Registry>https://github.com/cameronsjo/bosun/pkgs/container/bosun</Registry>
   <Branch>
     <Tag>latest</Tag>
     <TagDescription>Latest stable release</TagDescription>
@@ -13,26 +13,26 @@
   </Branch>
   <Network>bridge</Network>
   <Privileged>false</Privileged>
-  <Support>https://github.com/cameronsjo/unops/issues</Support>
-  <Project>https://github.com/cameronsjo/unops</Project>
+  <Support>https://github.com/cameronsjo/bosun/issues</Support>
+  <Project>https://github.com/cameronsjo/bosun</Project>
   <Overview>
     Helm for home. GitOps for Docker Compose on bare metal.&#xD;
     &#xD;
-    Push to GitHub, your server updates. Encrypted secrets with SOPS + Age.&#xD;
-    Templated configs with Chezmoi. Instant webhook deploys with polling fallback.&#xD;
+    You're the captain of your homelab. 40 containers. Traefik. Secrets everywhere.&#xD;
+    You shouldn't have to swab the deck yourself. That's what the bosun is for.&#xD;
     &#xD;
-    git push → webhook → decrypt → render → docker compose up&#xD;
+    git push → bosun receives orders → crew deployed → yacht runs smooth&#xD;
     &#xD;
     Features:&#xD;
-    - GitHub webhook receiver for instant deploys&#xD;
-    - SOPS + Age for encrypted secrets&#xD;
-    - Chezmoi for template rendering&#xD;
-    - Hourly polling as fallback&#xD;
-    - Discord notifications&#xD;
+    - GitHub webhook receiver (the radio) for instant deploys&#xD;
+    - SOPS + Age for encrypted secrets (the safe)&#xD;
+    - Chezmoi for template rendering (prep configs)&#xD;
+    - Hourly polling as fallback (night watch)&#xD;
+    - Discord notifications (ship's log)&#xD;
     - Health check endpoint
   </Overview>
   <Category>Tools: Productivity:</Category>
-  <Icon>https://raw.githubusercontent.com/cameronsjo/unops/main/assets/icon.png</Icon>
+  <Icon>https://raw.githubusercontent.com/cameronsjo/bosun/main/assets/icon.png</Icon>
   <ExtraParams>--restart=unless-stopped</ExtraParams>
   <PostArgs/>
   <Requires>
@@ -40,17 +40,17 @@
     Requires an Age key for SOPS secret decryption.&#xD;
     Optional: Tailscale for webhook exposure, Discord for notifications.
   </Requires>
-  <DonateText/>
-  <DonateLink/>
-  <DonateImg/>
+  <DonateText>Support on Ko-fi</DonateText>
+  <DonateLink>https://ko-fi.com/cameronsjo</DonateLink>
+  <DonateImg>https://storage.ko-fi.com/cdn/brandasset/kofi_button_red.png</DonateImg>
   <WebUI>http://[IP]:[PORT:8080]/health</WebUI>
-  <TemplateURL>https://raw.githubusercontent.com/cameronsjo/unops/main/unraid-templates/unops-conductor.xml</TemplateURL>
+  <TemplateURL>https://raw.githubusercontent.com/cameronsjo/bosun/main/unraid-templates/bosun.xml</TemplateURL>
 
   <!-- Required Configuration -->
   <Config
     Name="Config Path"
     Target="/config"
-    Default="/mnt/user/appdata/unops-conductor"
+    Default="/mnt/user/appdata/bosun"
     Mode="rw"
     Description="Configuration and state directory. Contains age key, repo clone, rendered configs."
     Type="Path"
@@ -60,7 +60,7 @@
 
   <Config
     Name="Git Repository URL"
-    Target="UNOPS_REPO_URL"
+    Target="BOSUN_REPO_URL"
     Default=""
     Mode=""
     Description="HTTPS URL to your GitOps config repository (e.g., https://github.com/user/infrastructure.git)"
@@ -71,7 +71,7 @@
 
   <Config
     Name="Git Branch"
-    Target="UNOPS_REPO_BRANCH"
+    Target="BOSUN_REPO_BRANCH"
     Default="main"
     Mode=""
     Description="Branch to track (default: main)"
@@ -152,7 +152,7 @@
   <!-- Optional: Polling -->
   <Config
     Name="Poll Interval"
-    Target="UNOPS_POLL_INTERVAL"
+    Target="BOSUN_POLL_INTERVAL"
     Default="3600"
     Mode=""
     Description="Seconds between git poll checks (default: 3600 = 1 hour). Set to 0 to disable."
@@ -164,7 +164,7 @@
   <!-- Optional: Paths -->
   <Config
     Name="Secrets File"
-    Target="UNOPS_SECRETS_FILE"
+    Target="BOSUN_SECRETS_FILE"
     Default="secrets.yaml.sops"
     Mode=""
     Description="Path to encrypted secrets file in repo (relative to repo root)"
@@ -175,7 +175,7 @@
 
   <Config
     Name="Compose Directory"
-    Target="UNOPS_COMPOSE_DIR"
+    Target="BOSUN_COMPOSE_DIR"
     Default="compose"
     Mode=""
     Description="Directory containing compose templates in repo (relative to repo root)"

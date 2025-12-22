@@ -5,7 +5,7 @@ age-key.txt
 secrets.yaml
 
 # Output
-composer/output/
+manifest/output/
 
 # IDE
 .idea/

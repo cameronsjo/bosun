@@ -1,34 +1,34 @@
 # Unraid Setup Guide
 
-Complete guide to setting up unops on Unraid.
+Complete guide to setting up bosun on Unraid.
 
 ## Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Unraid Server                                   │
+│                              Your Yacht (Unraid)                             │
 │                                                                              │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │                    Docker Compose Manager                            │    │
 │  │  /boot/config/plugins/compose.manager/projects/                     │    │
-│  │    ├── core/           ← Conductor deploys here                     │    │
+│  │    ├── core/           ← Bosun deploys here                         │    │
 │  │    ├── apps/                                                         │    │
 │  │    └── mcp/                                                          │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                      ▲                                       │
 │                                      │                                       │
 │  ┌──────────────────────────────────┴──────────────────────────────────┐    │
-│  │                         Conductor                                    │    │
+│  │                           Bosun                                      │    │
 │  │                                                                      │    │
-│  │  1. Receives webhook or polls                                        │    │
-│  │  2. git pull                                                         │    │
-│  │  3. sops decrypt → SOPS_SECRETS env                                  │    │
-│  │  4. chezmoi execute-template                                         │    │
-│  │  5. docker compose up -d                                             │    │
+│  │  1. Receives orders (webhook) or checks in (polls)                   │    │
+│  │  2. git pull (fetch orders)                                          │    │
+│  │  3. sops decrypt → SOPS_SECRETS env (unlock the safe)                │    │
+│  │  4. chezmoi execute-template (prep configs)                          │    │
+│  │  5. docker compose up -d (deploy crew)                               │    │
 │  │                                                                      │    │
 │  └──────────────────────────────────────────────────────────────────────┘    │
 │         ▲                                                                    │
-│         │ webhook                                                            │
+│         │ webhook (radio)                                                    │
 │  ┌──────┴──────┐                                                             │
 │  │  Tailscale  │                                                             │
 │  │   Funnel    │                                                             │
@@ -137,7 +137,7 @@ git remote add origin https://github.com/YOUR_USER/infrastructure.git
 git push -u origin main
 ```
 
-## Step 2: Install Conductor on Unraid
+## Step 2: Install Bosun on Unraid
 
 ### Add Template Repository
 
@@ -146,19 +146,19 @@ git push -u origin main
 3. Scroll to **Template Repositories**
 4. Add:
    ```
-   https://github.com/cameronsjo/unops
+   https://github.com/cameronsjo/bosun
    ```
 5. Click **Save**
 
-### Install Conductor
+### Install Bosun
 
-1. Search for "unops"
-2. Click **unops-conductor**
+1. Search for "bosun"
+2. Click **bosun**
 3. Configure:
 
 | Setting | Value |
 |---------|-------|
-| Config Path | `/mnt/user/appdata/unops-conductor` |
+| Config Path | `/mnt/user/appdata/bosun` |
 | Git Repository URL | `https://github.com/YOUR_USER/infrastructure.git` |
 | Age Key File | `/config/age-key.txt` |
 | GitHub Webhook Secret | (generate random string) |
@@ -170,7 +170,7 @@ git push -u origin main
 
 ```bash
 # From your local machine
-scp age-key.txt root@unraid:/mnt/user/appdata/unops-conductor/age-key.txt
+scp age-key.txt root@unraid:/mnt/user/appdata/bosun/age-key.txt
 ```
 
 ### Verify Installation
@@ -180,7 +180,7 @@ scp age-key.txt root@unraid:/mnt/user/appdata/unops-conductor/age-key.txt
 ssh root@unraid
 
 # Check logs
-docker logs unops-conductor
+docker logs bosun
 
 # Test health endpoint
 curl http://localhost:8080/health
@@ -208,7 +208,7 @@ curl http://localhost:8080/health
 2. Configure:
    - **Payload URL**: `https://your-funnel-url/hooks/github-push`
    - **Content type**: `application/json`
-   - **Secret**: Same secret you set in conductor config
+   - **Secret**: Same secret you set in bosun config
    - **Events**: Just the push event
 3. Click **Add webhook**
 
@@ -216,19 +216,19 @@ curl http://localhost:8080/health
 
 1. Make a commit to your repo
 2. Push to GitHub
-3. Check conductor logs:
+3. Check bosun logs:
    ```bash
-   docker logs -f unops-conductor
+   docker logs -f bosun
    ```
 
 You should see:
 ```
-[INFO] Received webhook for ref: refs/heads/main
-[INFO] Pulling latest changes...
-[INFO] Decrypting secrets...
-[INFO] Rendering templates...
-[INFO] Running docker compose up...
-[INFO] Deployment complete!
+[INFO] Captain's orders received for ref: refs/heads/main
+[INFO] Fetching latest orders...
+[INFO] Unlocking the safe...
+[INFO] Prepping configs...
+[INFO] Deploying crew...
+[INFO] All hands on deck!
 ```
 
 ## Step 4: Add More Services
@@ -257,12 +257,12 @@ services:
 git add compose/homepage.yml.tmpl
 git commit -m "Add homepage"
 git push
-# Webhook triggers, conductor deploys
+# Webhook fires → bosun receives orders → crew deployed
 ```
 
 ## Compose Manager Integration
 
-The conductor deploys to Unraid's Compose Manager directory:
+Bosun deploys to Unraid's Compose Manager directory:
 
 ```
 /boot/config/plugins/compose.manager/projects/
@@ -281,8 +281,8 @@ After deployment, your projects appear in:
 # Check webhook delivery in GitHub
 # Repo → Settings → Webhooks → Recent Deliveries
 
-# Check conductor logs
-docker logs unops-conductor | tail -50
+# Check bosun logs
+docker logs bosun | tail -50
 
 # Verify webhook endpoint
 curl -X POST http://localhost:8080/hooks/github-push \
@@ -294,36 +294,36 @@ curl -X POST http://localhost:8080/hooks/github-push \
 
 ```bash
 # Check Age key exists
-docker exec unops-conductor cat /config/age-key.txt
+docker exec bosun cat /config/age-key.txt
 
 # Test decryption manually
-docker exec unops-conductor sops -d /config/repo/secrets.yaml.sops
+docker exec bosun sops -d /config/repo/secrets.yaml.sops
 
 # Verify SOPS_AGE_KEY_FILE env var
-docker exec unops-conductor env | grep SOPS
+docker exec bosun env | grep SOPS
 ```
 
 ### Docker Compose Errors
 
 ```bash
 # Check Docker socket access
-docker exec unops-conductor docker ps
+docker exec bosun docker ps
 
 # Run compose manually
-docker exec unops-conductor docker compose -f /compose/myapp.yml up -d
+docker exec bosun docker compose -f /compose/myapp.yml up -d
 
 # Check rendered template
-docker exec unops-conductor cat /config/rendered/myapp.yml
+docker exec bosun cat /config/rendered/myapp.yml
 ```
 
 ### Network Issues
 
 ```bash
-# Check if conductor can reach GitHub
-docker exec unops-conductor curl -I https://github.com
+# Check if bosun can reach GitHub
+docker exec bosun curl -I https://github.com
 
 # Check DNS
-docker exec unops-conductor nslookup github.com
+docker exec bosun nslookup github.com
 ```
 
 ## Best Practices
