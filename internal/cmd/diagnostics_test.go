@@ -91,20 +91,23 @@ func TestLintCmd_Aliases(t *testing.T) {
 
 func TestFormatBytes(t *testing.T) {
 	testCases := []struct {
+		name     string
 		bytes    int64
 		expected string
 	}{
-		{0, "0 B"},
-		{512, "512 B"},
-		{1024, "1.0 KB"},
-		{1536, "1.5 KB"},
-		{1048576, "1.0 MB"},
-		{1073741824, "1.0 GB"},
-		{1099511627776, "1.0 TB"},
+		{"negative_small", -1, "N/A"},
+		{"negative_large", -12345, "N/A"},
+		{"zero", 0, "0 B"},
+		{"512_bytes", 512, "512 B"},
+		{"1_kb", 1024, "1.0 KB"},
+		{"1.5_kb", 1536, "1.5 KB"},
+		{"1_mb", 1048576, "1.0 MB"},
+		{"1_gb", 1073741824, "1.0 GB"},
+		{"1_tb", 1099511627776, "1.0 TB"},
 	}
 
 	for _, tc := range testCases {
-		t.Run(tc.expected, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			result := formatBytes(tc.bytes)
 			assert.Equal(t, tc.expected, result)
 		})

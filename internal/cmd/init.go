@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/cameronsjo/bosun/internal/ui"
 )
@@ -31,10 +32,14 @@ This creates:
   - .gitignore         Git ignore file
   - README.md          Project documentation
 
-If no directory is specified, the current directory is used.`,
+If no directory is specified, the current directory is used.
+
+Use --yes to skip all interactive prompts (useful for non-TTY environments).`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runInit,
 }
+
+var initYes bool
 
 func runInit(cmd *cobra.Command, args []string) error {
 	targetDir := "."
@@ -58,9 +63,15 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if _, err := os.Stat(bosunDir); err == nil {
 		if _, err := os.Stat(composeFile); err == nil {
 			ui.Warning("This directory already has a bosun project.")
-			if !promptYesNo("Reinitialize? This won't overwrite existing files.") {
-				fmt.Println("Aborted.")
-				return nil
+			if !initYes {
+				response, err := promptYesNo("Reinitialize? This won't overwrite existing files.")
+				if err != nil {
+					return err
+				}
+				if !response {
+					fmt.Println("Aborted.")
+					return nil
+				}
 			}
 		}
 	}
@@ -262,18 +273,28 @@ func extractAgePublicKey(keyFile string) (string, error) {
 	return "", fmt.Errorf("could not extract public key from %s", keyFile)
 }
 
+// isTerminal checks if stdin is a TTY.
+func isTerminal() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
 // promptYesNo asks the user a yes/no question.
-func promptYesNo(question string) bool {
+// Returns error if stdin is not a TTY and cannot read input.
+func promptYesNo(question string) (bool, error) {
+	if !isTerminal() {
+		return false, fmt.Errorf("cannot prompt for input: stdin is not a TTY. Use --yes flag to skip interactive prompts")
+	}
+
 	fmt.Printf("%s [y/N] ", question)
 
 	reader := bufio.NewReader(os.Stdin)
 	response, err := reader.ReadString('\n')
 	if err != nil {
-		return false
+		return false, fmt.Errorf("read user input: %w", err)
 	}
 
 	response = strings.TrimSpace(strings.ToLower(response))
-	return response == "y" || response == "yes"
+	return response == "y" || response == "yes", nil
 }
 
 // createFileIfNotExists creates a file with the given content if it doesn't exist.
@@ -407,4 +428,5 @@ bosun yacht up
 
 func init() {
 	rootCmd.AddCommand(initCmd)
+	initCmd.Flags().BoolVarP(&initYes, "yes", "y", false, "Skip all interactive prompts (assume yes for all questions)")
 }

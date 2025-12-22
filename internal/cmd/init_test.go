@@ -62,11 +62,28 @@ func TestCreateFileIfNotExists(t *testing.T) {
 	})
 }
 
-func TestPromptYesNo(t *testing.T) {
-	// Note: promptYesNo reads from stdin, which is hard to test directly.
-	// In production, this would be tested with integration tests or by
-	// refactoring to accept an io.Reader.
-	t.Skip("requires stdin interaction")
+func TestPromptYesNo_NonTTY(t *testing.T) {
+	t.Run("returns error when stdin is not a TTY", func(t *testing.T) {
+		// This test verifies that promptYesNo returns an error when called without a TTY.
+		// In a non-TTY environment (like CI/CD), isTerminal() will return false.
+		// The test itself runs in a non-TTY environment, so this should fail.
+		_, err := promptYesNo("test prompt")
+		if err == nil {
+			t.Skip("test must run in non-TTY environment")
+		}
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "stdin is not a TTY")
+		assert.Contains(t, err.Error(), "--yes")
+	})
+}
+
+func TestIsTerminal(t *testing.T) {
+	t.Run("can detect TTY status", func(t *testing.T) {
+		// This test verifies that isTerminal() can be called without panicking.
+		// The actual return value depends on the environment.
+		result := isTerminal()
+		assert.IsType(t, true, result)
+	})
 }
 
 func TestExtractAgePublicKey(t *testing.T) {

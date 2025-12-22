@@ -144,6 +144,7 @@ func runStatus(cmd *cobra.Command, args []string) {
 			totalCPU += s.CPUPercent
 		}
 		fmt.Printf("  Memory: %.1f%% used by containers\n", totalMem)
+		// Note: CPU can exceed 100% on multi-core systems (sum of all cores' usage)
 		fmt.Printf("  CPU: %.1f%% used by containers\n", totalCPU)
 	} else {
 		ui.Yellow.Println("  No container stats available")
@@ -392,11 +393,18 @@ func runDoctor(cmd *cobra.Command, args []string) {
 			passed++
 		} else {
 			ui.Red.Println("  x Docker is not running")
+			ui.Blue.Println("      To fix this:")
+			ui.Blue.Println("      - Start Docker: systemctl start docker")
+			ui.Blue.Println("      - Or use Docker Desktop on macOS/Windows")
 			failed++
 		}
 		client.Close()
 	} else {
 		ui.Red.Println("  x Docker is not running")
+		ui.Blue.Println("      To fix this:")
+		ui.Blue.Println("      - Install Docker from https://docs.docker.com/get-docker/")
+		ui.Blue.Println("      - Ensure Docker daemon is running: systemctl start docker")
+		ui.Blue.Println("      - Check permissions: docker ps (should not require sudo)")
 		failed++
 	}
 	cancel()
@@ -409,6 +417,9 @@ func runDoctor(cmd *cobra.Command, args []string) {
 		passed++
 	} else {
 		ui.Red.Println("  x Docker Compose v2 not found")
+		ui.Blue.Println("      To fix this:")
+		ui.Blue.Println("      - Install Docker Desktop (includes Compose v2)")
+		ui.Blue.Println("      - Or: https://docs.docker.com/compose/install/")
 		failed++
 	}
 
@@ -418,6 +429,11 @@ func runDoctor(cmd *cobra.Command, args []string) {
 		passed++
 	} else {
 		ui.Red.Println("  x Git not found")
+		ui.Blue.Println("      To fix this:")
+		ui.Blue.Println("      - macOS: brew install git")
+		ui.Blue.Println("      - Ubuntu/Debian: apt-get install git")
+		ui.Blue.Println("      - Fedora/RHEL: dnf install git")
+		ui.Blue.Println("      - Windows: https://git-scm.com/download/win")
 		failed++
 	}
 
@@ -428,6 +444,10 @@ func runDoctor(cmd *cobra.Command, args []string) {
 		passed++
 	} else {
 		ui.Yellow.Println("  ! Project root not found (run from project directory)")
+		ui.Blue.Println("      To fix this:")
+		ui.Blue.Println("      - Ensure config.yaml or manifest/ directory exists")
+		ui.Blue.Println("      - Run bosun from the root of your project")
+		ui.Blue.Println("      - Create config.yaml in project root if missing")
 		warned++
 	}
 
@@ -442,7 +462,10 @@ func runDoctor(cmd *cobra.Command, args []string) {
 		passed++
 	} else {
 		ui.Yellow.Printf("  ! Age key not found at %s\n", ageKeyFile)
-		ui.Blue.Printf("      Run: age-keygen -o %s\n", ageKeyFile)
+		ui.Blue.Println("      To fix this:")
+		ui.Blue.Printf("      - Run: age-keygen -o %s\n", ageKeyFile)
+		ui.Blue.Println("      - Or set SOPS_AGE_KEY_FILE env var to existing key")
+		ui.Blue.Println("      - Install age: https://github.com/FiloSottile/age#installation")
 		warned++
 	}
 
@@ -459,6 +482,11 @@ func runDoctor(cmd *cobra.Command, args []string) {
 		}
 	} else {
 		ui.Yellow.Println("  ! SOPS not found (needed for secrets)")
+		ui.Blue.Println("      To fix this:")
+		ui.Blue.Println("      - macOS: brew install sops")
+		ui.Blue.Println("      - Ubuntu/Debian: apt-get install sops")
+		ui.Blue.Println("      - Fedora/RHEL: dnf install sops")
+		ui.Blue.Println("      - Or: https://github.com/getsops/sops/releases")
 		warned++
 	}
 
@@ -468,6 +496,10 @@ func runDoctor(cmd *cobra.Command, args []string) {
 		passed++
 	} else {
 		ui.Yellow.Println("  ! uv not found (needed for manifest rendering)")
+		ui.Blue.Println("      To fix this:")
+		ui.Blue.Println("      - Visit: https://docs.astral.sh/uv/getting-started/installation/")
+		ui.Blue.Println("      - Or: curl -LsSf https://astral.sh/uv/install.sh | sh")
+		ui.Blue.Println("      - Or: brew install uv (macOS)")
 		warned++
 	}
 
@@ -482,6 +514,10 @@ func runDoctor(cmd *cobra.Command, args []string) {
 			passed++
 		} else {
 			ui.Yellow.Println("  ! Manifest directory not found")
+			ui.Blue.Println("      To fix this:")
+			ui.Blue.Printf("      - Create manifest directory at: %s\n", cfg.ManifestDir)
+			ui.Blue.Println("      - Or update manifest_dir in config.yaml")
+			ui.Blue.Println("      - See: https://github.com/cameronsjo/bosun/docs/")
 			warned++
 		}
 	}
@@ -496,10 +532,18 @@ func runDoctor(cmd *cobra.Command, args []string) {
 			passed++
 		} else {
 			ui.Yellow.Println("  ! Webhook not responding (bosun container not running?)")
+			ui.Blue.Println("      To fix this:")
+			ui.Blue.Println("      - Start bosun container: docker-compose up -d bosun")
+			ui.Blue.Println("      - Check logs: docker logs bosun")
+			ui.Blue.Println("      - Verify port 8080 is available and not in use")
 			warned++
 		}
 	} else {
 		ui.Yellow.Println("  ! Webhook not responding (bosun container not running?)")
+		ui.Blue.Println("      To fix this:")
+		ui.Blue.Println("      - Start bosun container: docker-compose up -d bosun")
+		ui.Blue.Println("      - Check logs: docker logs bosun")
+		ui.Blue.Println("      - Verify port 8080 is available and not in use")
 		warned++
 	}
 
@@ -643,6 +687,10 @@ func runLint(cmd *cobra.Command, args []string) {
 
 func formatBytes(bytes int64) string {
 	const unit = 1024
+	// Guard against negative values - display as N/A instead of negative size
+	if bytes < 0 {
+		return "N/A"
+	}
 	if bytes < unit {
 		return fmt.Sprintf("%d B", bytes)
 	}
