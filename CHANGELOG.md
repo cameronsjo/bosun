@@ -9,27 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Composer Phase 1**: Core renderer with profile-based service composition
-  - 7 profiles: container, healthcheck, homepage, reverse-proxy, monitoring, postgres, redis
+- **Manifest Phase 1**: Core renderer with provision-based service composition
+  - 7 provisions: container, healthcheck, homepage, reverse-proxy, monitoring, postgres, redis
   - Variable interpolation with `${var}` syntax
   - Deep merge with proper semantics (dict merge, list replace, network union)
   - Sidecar injection for postgres/redis
   - Multi-target output: compose, traefik, gatus
-- **Conductor**: GitOps orchestrator skeleton
+- **Bosun**: GitOps orchestrator
   - Dockerfile with sops, age, chezmoi, webhook
   - Reconciliation script structure
   - Health check and notification scripts
-- **Documentation**: 6 ADRs covering architecture decisions
-  - ADR-0001: Service Composer
-  - ADR-0002: Watchtower Webhook Deploy
-  - ADR-0003: Dagger for Conductor (deferred)
-  - ADR-0004: Multi-Server Monorepo
-  - ADR-0005: Tunnel Providers (Tailscale vs Cloudflare)
-  - ADR-0006: Conductor Authentication
+- **Documentation**: 9 ADRs covering architecture decisions
 
 ### Changed
 
-- Renamed "runner" to "conductor" (musical theme: conductor leads the orchestra)
+- Rebranded to "bosun" with Below Deck nautical theme
+- Renamed conductor → bosun, composer → manifest, profiles → provisions
 
 ## [0.1.0] - TBD
 

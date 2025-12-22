@@ -2,7 +2,7 @@
 # Simple service without database
 name: stirling-pdf
 
-profiles:
+provisions:
   - container
   - healthcheck
   - homepage

@@ -1,8 +1,8 @@
 # Norish - Recipe Manager
-# Example service manifest demonstrating profile composition
+# Example service manifest demonstrating provisions
 name: norish
 
-profiles:
+provisions:
   - container
   - healthcheck
   - homepage

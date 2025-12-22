@@ -1,6 +1,6 @@
-# Contributing to unops
+# Contributing to bosun
 
-Thanks for your interest in contributing! unops is designed to be simple and stay simple.
+Thanks for your interest in contributing! Bosun is designed to be simple and stay simple.
 
 ## Philosophy
 
@@ -9,7 +9,7 @@ Before contributing, understand the project philosophy:
 - **Shell scripts over frameworks.** ~100 lines of bash beats 10,000 lines of Go.
 - **Batteries included, batteries swappable.** Defaults work. Replace any component.
 - **Escape hatches everywhere.** Raw passthrough when abstractions don't fit.
-- **Guardrails matter.** Composer stays under 250 lines. Max 10 profiles.
+- **Guardrails matter.** Manifest stays under 250 lines. Max 10 provisions.
 
 ## How to Contribute
 
@@ -17,7 +17,7 @@ Before contributing, understand the project philosophy:
 
 1. Check existing issues first
 2. Include: OS, Docker version, steps to reproduce, expected vs actual behavior
-3. Attach logs if relevant (`docker logs conductor`)
+3. Attach logs if relevant (`docker logs bosun`)
 
 ### Suggesting Features
 
@@ -47,7 +47,7 @@ Before contributing, understand the project philosophy:
 
 - Bug fixes with tests
 - Documentation improvements
-- New profiles (if broadly useful)
+- New provisions (if broadly useful)
 - Cloudflare Tunnel integration
 
 ### Lower Priority
@@ -66,15 +66,15 @@ Before contributing, understand the project philosophy:
 
 ```bash
 # Clone
-git clone https://github.com/cameronsjo/unops.git
-cd unops
+git clone https://github.com/cameronsjo/bosun.git
+cd bosun
 
-# Test composer
-cd composer
-uv run compose.py render stacks/apps.yml --dry-run
+# Test manifest
+cd manifest
+uv run manifest.py render stacks/apps.yml --dry-run
 
-# Test conductor (requires Docker)
-cd conductor
+# Test bosun (requires Docker)
+cd bosun
 docker compose up -d
 ```
 

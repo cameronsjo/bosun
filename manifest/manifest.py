@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Service Composer - Generate compose, traefik, and gatus configs from service manifests."""
+"""Crew Manifest - Generate compose, traefik, and gatus configs from service manifests."""
 
 import argparse
 import re
@@ -76,22 +76,22 @@ def deep_merge(base: dict, overlay: dict, path: str = "") -> dict:
     return result
 
 
-def load_profile(profile_name: str, variables: dict, profiles_dir: Path) -> dict:
-    """Load profile, interpolate variables, parse YAML."""
-    profile_path = profiles_dir / f"{profile_name}.yml"
-    if not profile_path.exists():
-        raise FileNotFoundError(f"Profile not found: {profile_path}")
+def load_provision(provision_name: str, variables: dict, provisions_dir: Path) -> dict:
+    """Load provision, interpolate variables, parse YAML."""
+    provision_path = provisions_dir / f"{provision_name}.yml"
+    if not provision_path.exists():
+        raise FileNotFoundError(f"Provision not found: {provision_path}")
 
-    raw_content = profile_path.read_text()
+    raw_content = provision_path.read_text()
     interpolated = interpolate(raw_content, variables)
     return yaml.safe_load(interpolated) or {}
 
 
-def render_service(manifest: dict, profiles_dir: Path) -> dict[str, dict]:
+def render_service(manifest: dict, provisions_dir: Path) -> dict[str, dict]:
     """Render a service manifest into compose/traefik/gatus outputs."""
     name = manifest["name"]
     config = manifest.get("config", {})
-    profiles = manifest.get("profiles", [])
+    provisions = manifest.get("provisions", [])
 
     # Build variables from config + name
     variables = {"name": name, **config}
@@ -105,26 +105,26 @@ def render_service(manifest: dict, profiles_dir: Path) -> dict[str, dict]:
             outputs["compose"] = {"services": manifest["compose"]}
         return outputs
 
-    # Load and merge profiles
-    for profile_name in profiles:
-        profile = load_profile(profile_name, variables, profiles_dir)
+    # Load and merge provisions
+    for provision_name in provisions:
+        provision = load_provision(provision_name, variables, provisions_dir)
         for target in ("compose", "traefik", "gatus"):
-            if target in profile:
-                outputs[target] = deep_merge(outputs[target], profile[target])
+            if target in provision:
+                outputs[target] = deep_merge(outputs[target], provision[target])
 
     # Handle sidecar services (postgres, redis, etc.)
     sidecars = manifest.get("services", {})
     for sidecar_type, sidecar_config in sidecars.items():
         sidecar_vars = {"name": name, "sidecar": sidecar_type, **sidecar_config, **config}
-        profile = load_profile(sidecar_type, sidecar_vars, profiles_dir)
+        provision = load_provision(sidecar_type, sidecar_vars, provisions_dir)
         for target in ("compose", "traefik", "gatus"):
-            if target in profile:
-                outputs[target] = deep_merge(outputs[target], profile[target])
+            if target in provision:
+                outputs[target] = deep_merge(outputs[target], provision[target])
 
     return outputs
 
 
-def render_stack(stack_path: Path, profiles_dir: Path, services_dir: Path) -> dict[str, dict]:
+def render_stack(stack_path: Path, provisions_dir: Path, services_dir: Path) -> dict[str, dict]:
     """Render a stack file into compose/traefik/gatus outputs."""
     stack = yaml.safe_load(stack_path.read_text())
     outputs = {"compose": {}, "traefik": {}, "gatus": {}}
@@ -135,7 +135,7 @@ def render_stack(stack_path: Path, profiles_dir: Path, services_dir: Path) -> di
             raise FileNotFoundError(f"Service not found: {service_path}")
 
         manifest = yaml.safe_load(service_path.read_text())
-        service_outputs = render_service(manifest, profiles_dir)
+        service_outputs = render_service(manifest, provisions_dir)
 
         for target in ("compose", "traefik", "gatus"):
             outputs[target] = deep_merge(outputs[target], service_outputs[target])
@@ -170,14 +170,14 @@ def write_outputs(outputs: dict[str, dict], output_dir: Path, stack_name: str) -
 def cmd_render(args: argparse.Namespace) -> int:
     """Render a stack or service manifest."""
     input_path = Path(args.path)
-    # Composer dir is parent of stacks/ or services/
+    # Manifest dir is parent of stacks/ or services/
     if "stacks" in str(input_path) or "services" in str(input_path):
-        composer_dir = input_path.parent.parent
+        manifest_dir = input_path.parent.parent
     else:
-        composer_dir = input_path.parent
-    profiles_dir = composer_dir / "profiles"
-    services_dir = composer_dir / "services"
-    output_dir = composer_dir / "output"
+        manifest_dir = input_path.parent
+    provisions_dir = manifest_dir / "provisions"
+    services_dir = manifest_dir / "services"
+    output_dir = manifest_dir / "output"
 
     if not input_path.exists():
         print(f"Error: {input_path} not found", file=sys.stderr)
@@ -185,11 +185,11 @@ def cmd_render(args: argparse.Namespace) -> int:
 
     # Determine if stack or single service
     if "stacks" in str(input_path):
-        outputs = render_stack(input_path, profiles_dir, services_dir)
+        outputs = render_stack(input_path, provisions_dir, services_dir)
         stack_name = input_path.stem
     else:
         manifest = yaml.safe_load(input_path.read_text())
-        outputs = render_service(manifest, profiles_dir)
+        outputs = render_service(manifest, provisions_dir)
         stack_name = manifest["name"]
 
     if args.dry_run:
@@ -200,31 +200,31 @@ def cmd_render(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_profiles(args: argparse.Namespace) -> int:
-    """List available profiles."""
-    profiles_dir = Path(args.dir) / "profiles"
-    if not profiles_dir.exists():
-        print(f"Error: {profiles_dir} not found", file=sys.stderr)
+def cmd_provisions(args: argparse.Namespace) -> int:
+    """List available provisions."""
+    provisions_dir = Path(args.dir) / "provisions"
+    if not provisions_dir.exists():
+        print(f"Error: {provisions_dir} not found", file=sys.stderr)
         return 1
 
-    for profile in sorted(profiles_dir.glob("*.yml")):
-        print(f"  - {profile.stem}")
+    for provision in sorted(provisions_dir.glob("*.yml")):
+        print(f"  - {provision.stem}")
     return 0
 
 
 def cmd_expand(args: argparse.Namespace) -> int:
     """Show what a service manifest expands to."""
     input_path = Path(args.path)
-    profiles_dir = input_path.parent.parent / "profiles"
+    provisions_dir = input_path.parent.parent / "provisions"
 
     manifest = yaml.safe_load(input_path.read_text())
-    outputs = render_service(manifest, profiles_dir)
+    outputs = render_service(manifest, provisions_dir)
     print(yaml.dump(outputs, default_flow_style=False, sort_keys=False))
     return 0
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Service Composer")
+    parser = argparse.ArgumentParser(description="Crew Manifest - provision your services")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # render command
@@ -232,9 +232,9 @@ def main() -> int:
     render_parser.add_argument("path", help="Path to stack or service manifest")
     render_parser.add_argument("--dry-run", action="store_true", help="Print output without writing")
 
-    # profiles command
-    profiles_parser = subparsers.add_parser("profiles", help="List available profiles")
-    profiles_parser.add_argument("--dir", default=".", help="Composer directory")
+    # provisions command
+    provisions_parser = subparsers.add_parser("provisions", help="List available provisions")
+    provisions_parser.add_argument("--dir", default=".", help="Manifest directory")
 
     # expand command
     expand_parser = subparsers.add_parser("expand", help="Show expanded service")
@@ -242,7 +242,7 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    commands = {"render": cmd_render, "profiles": cmd_profiles, "expand": cmd_expand}
+    commands = {"render": cmd_render, "provisions": cmd_provisions, "expand": cmd_expand}
 
     return commands[args.command](args)
 

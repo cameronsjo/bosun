@@ -2,17 +2,8 @@
 
 **Helm for home.**
 
----
-
-## The Story
-
-You're the captain of your homelab. 40 containers. Traefik. Secrets everywhere. It's a lot.
-
-You shouldn't have to swab the deck yourself.
-
-That's what the bosun is for.
-
-Push your orders to GitHub. Bosun handles the rest—wrangling containers, managing secrets, keeping everything ship-shape while you're topside sipping rosé and pretending your homelab didn't just have a meltdown at 2 AM.
+You're the captain of your homelab. 40 containers. Traefik. Secrets everywhere.
+You shouldn't have to swab the deck yourself. That's what the bosun is for.
 
 ```
 git push → bosun receives orders → crew deployed → yacht runs smooth
@@ -20,248 +11,44 @@ git push → bosun receives orders → crew deployed → yacht runs smooth
 
 No Kubernetes. No drama. Just smooth sailing.
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Your Yacht (Server)                             │
-│                                                                              │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │                             Bosun                                     │   │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐    │   │
-│  │  │ Radio   │→ │  Fetch  │→ │ Decrypt │→ │ Prep    │→ │ Deploy  │    │   │
-│  │  │(Webhook)│  │ Orders  │  │ Secrets │  │ Configs │  │  Crew   │    │   │
-│  │  └─────────┘  └─────────┘  └─────────┘  └─────────┘  └─────────┘    │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-│         ▲                                                    │              │
-│         │                                                    ▼              │
-│  ┌──────┴──────┐                                    ┌───────────────┐       │
-│  │  Tailscale  │                                    │  Your Crew    │       │
-│  │   (Radio)   │                                    │ (Containers)  │       │
-│  └──────┬──────┘                                    │ traefik nginx │       │
-│         │                                           │ postgres redis│       │
-└─────────│───────────────────────────────────────────└───────────────┘───────┘
-          │
-          ▼
-    ┌──────────┐
-    │ Captain  │
-    │ (GitHub) │
-    └──────────┘
-```
-
----
-
 ## What's On Board
 
-| Role | What They Do |
-|------|--------------|
-| **Bosun** | Receives orders, decrypts secrets, deploys containers. The whole operation. |
-| **Manifest** | Crew provisioning. Write 10 lines, generate compose + Traefik + Gatus configs. |
-| **Provisions** | Tailscale/Cloudflare tunnels, Authelia auth, Watchtower, Agentgateway. Swappable. |
-
-## Philosophy
-
-- **Captain gives orders, bosun executes.** Push to git, everything updates.
-- **No drama below deck.** ~100 lines of shell beats 10,000 lines of Go.
-- **Every crew member has a backup.** Batteries included, all swappable.
-- **One yacht, many ports.** Monorepo support for multi-server setups.
-
----
+| Component | Role |
+|-----------|------|
+| **Bosun** | Receives orders, decrypts secrets, deploys containers |
+| **Manifest** | Write 10 lines, generate compose + Traefik + Gatus configs |
+| **Provisions** | Reusable config templates - batteries included, all swappable |
 
 ## Quick Start
 
-### 1. Provision secrets
-
 ```bash
-# Generate encryption keys
+# 1. Generate encryption key
 age-keygen -o ~/.config/sops/age/keys.txt
 
-# Create .sops.yaml
+# 2. Create .sops.yaml with your public key
 cat > .sops.yaml << 'EOF'
 creation_rules:
   - path_regex: .*\.yaml$
     age: <your-public-key>
 EOF
 
-# Encrypt the guest list
+# 3. Encrypt secrets
 sops -e secrets.yaml > secrets.yaml.sops
-```
 
-### 2. Write the manifest
-
-```yaml
-# compose/myapp.yml.tmpl
-{{- $secrets := fromJson (env "SOPS_SECRETS") -}}
-services:
-  myapp:
-    image: myapp:latest
-    environment:
-      API_KEY: {{ $secrets.auth.api_key }}
-```
-
-### 3. Hire the bosun
-
-```bash
+# 4. Start bosun
 docker compose -f bosun/docker-compose.yml up -d
-```
 
-### 4. Give orders
-
-```bash
+# 5. Push orders
 git add . && git commit -m "deploy the fleet" && git push
-# Webhook fires → bosun pulls → secrets decrypt → crew deployed
 ```
 
----
+## Documentation
 
-## The Bosun
+- **[Concepts](docs/concepts.md)** - Architecture, components, diagrams
+- **[Unraid Setup](docs/guides/unraid-setup.md)** - Complete walkthrough
+- **[Unraid Templates](unraid-templates/)** - Community Apps templates
 
-The bosun runs the deck. Responsibilities:
-- Receives orders via webhook (or checks in hourly)
-- Pulls the latest manifest from GitHub
-- Decrypts secrets with SOPS + Age
-- Preps configs with Chezmoi templates
-- Deploys crew via `docker compose up -d`
-
-```
-bosun/
-├── Dockerfile           # Alpine + sops + age + chezmoi + webhook
-├── docker-compose.yml
-├── hooks.yaml           # Radio configuration
-└── scripts/
-    ├── entrypoint.sh    # Morning briefing
-    ├── reconcile.sh     # The actual work (~100 lines)
-    ├── healthcheck.sh   # Status check
-    └── notify.sh        # Discord alerts
-```
-
-## The Manifest (Crew Provisioning)
-
-Write 10 lines, deploy a full crew:
-
-```
-┌────────────────┐     ┌────────────────┐
-│ Crew Manifest  │     │   Positions    │
-│   (~10 lines)  │     │  (reusable)    │
-│                │     │                │
-│ name: myapp    │     │ - deckhand     │
-│ positions: [..]│     │ - interior     │
-│ config:        │     │ - chef         │
-│   port: 3000   │     │ - engineer     │
-└───────┬────────┘     └───────┬────────┘
-        │                      │
-        └──────────┬───────────┘
-                   │
-                   ▼
-          ┌────────────────┐
-          │    manifest    │
-          │    render      │
-          └────────┬───────┘
-                   │
-        ┌──────────┼──────────┐
-        ▼          ▼          ▼
-┌──────────┐ ┌──────────┐ ┌──────────┐
-│ compose/ │ │ traefik/ │ │  gatus/  │
-│ crew.yml │ │routes.yml│ │ watch.yml│
-└──────────┘ └──────────┘ └──────────┘
-```
-
-```yaml
-# manifest/services/myapp.yml
-name: myapp
-positions: [deckhand, interior, engineer]
-config:
-  image: ghcr.io/org/myapp:latest
-  port: 3000
-  subdomain: myapp
-  domain: example.com
-  group: Apps
-services:
-  postgres:
-    version: 17
-    db: myapp
-    db_password: "{{ $secrets.apps.myapp.db_password }}"
-```
-
-```bash
-cd manifest
-uv run manifest.py render stacks/apps.yml
-```
-
----
-
-## Comms (Tunnel Options)
-
-The yacht needs a radio. Pick one:
-
-| Radio | Setup | Custom Domain | Features |
-|-------|-------|---------------|----------|
-| **Tailscale Funnel** | 1 command | No (*.ts.net) | Zero config |
-| **Cloudflare Tunnel** | Dashboard + token | Yes | DDoS, caching |
-
-See [ADR-0005: Tunnel Providers](docs/adr/0005-tunnel-providers.md).
-
----
-
-## Crew Rotation (Image Updates)
-
-Two ways to rotate crew:
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    Manifest Changes (New Orders)                             │
-│                                                                              │
-│    Edit YAML ──→ git push ──→ Radio ──→ Bosun ──→ docker compose up         │
-│                                                                              │
-│    Use for: compose files, routes, secrets, environment                     │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    Crew Upgrades (New Uniforms)                              │
-│                                                                              │
-│    Code push ──→ CI Build ──→ Registry ──→ Watchtower ──→ docker pull       │
-│                                                                              │
-│    Use for: application code, dependencies, runtime updates                 │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-See [ADR-0002: Watchtower Webhook](docs/adr/0002-watchtower-webhook-deploy.md).
-
----
-
-## Fleet Management (Multi-Server)
-
-One captain, many yachts. Hub receives orders, dispatches to fleet:
-
-```
-                         ┌──────────────┐
-                         │   Captain    │
-                         │   (GitHub)   │
-                         └──────┬───────┘
-                                │
-                                ▼
-                    ┌───────────────────────┐
-                    │    Harbor Master      │
-                    │    (Hub Bosun)        │
-                    │                       │
-                    │  routes by manifest:  │
-                    │  yachts/main/*   → A  │
-                    │  yachts/backup/* → B  │
-                    │  shared/*        → *  │
-                    └───────────┬───────────┘
-                                │
-              ┌─────────────────┼─────────────────┐
-              │                 │                 │
-              ▼                 ▼                 ▼
-      ┌───────────────┐ ┌───────────────┐ ┌───────────────┐
-      │  Main Yacht   │ │ Backup Yacht  │ │   Tender      │
-      │   (Unraid)    │ │    (VPS)      │ │ (Pi Cluster)  │
-      └───────────────┘ └───────────────┘ └───────────────┘
-```
-
-See [ADR-0004: Multi-Server Monorepo](docs/adr/0004-multi-server-monorepo.md).
-
----
-
-## Ship's Log (Documentation)
+### Architecture Decisions
 
 | ADR | Status | Summary |
 |-----|--------|---------|
@@ -275,8 +62,6 @@ See [ADR-0004: Multi-Server Monorepo](docs/adr/0004-multi-server-monorepo.md).
 | [0008: Container vs Daemon](docs/adr/0008-container-vs-daemon.md) | Accepted | When to use systemd |
 | [0009: Unraid Community Apps](docs/adr/0009-unraid-community-apps.md) | Evaluating | CA registration |
 
----
-
 ## Requirements
 
 - Docker + Docker Compose
@@ -285,36 +70,10 @@ See [ADR-0004: Multi-Server Monorepo](docs/adr/0004-multi-server-monorepo.md).
 - Age key for encryption
 - (Optional) Tailscale or Cloudflare account
 
-## Guides
-
-- [Unraid Setup Guide](docs/guides/unraid-setup.md) - Complete walkthrough
-- [Unraid Templates](unraid-templates/) - Community Apps templates
-
----
-
-## Prior Art & Provisions
-
-- [Helm](https://helm.sh/) - The Kubernetes package manager we're simplifying
-- [Flux](https://fluxcd.io/) - GitOps for Kubernetes
-- [ArgoCD](https://argoproj.github.io/cd/) - GitOps for Kubernetes
-- [Watchtower](https://containrrr.dev/watchtower/) - Container image updates
-- [SOPS](https://github.com/getsops/sops) - Secrets encryption
-- [Chezmoi](https://www.chezmoi.io/) - Template management
-
----
-
 ## Support
 
-If bosun keeps your yacht running smooth, consider buying the crew a coffee:
-
 [![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/cameronsjo)
-
----
 
 ## License
 
 MIT
-
----
-
-*No tip required. But we appreciate a star.*
