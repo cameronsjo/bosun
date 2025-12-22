@@ -156,10 +156,10 @@ compose:
 `
 	require.NoError(t, writeTestFile(tmpDir, "circular.yml", circular))
 
-	// Should not hang or error - circular includes are silently skipped
-	provision, err := LoadProvision("circular", map[string]any{}, tmpDir)
-	require.NoError(t, err)
-	require.NotNil(t, provision)
+	// Should return an error for circular includes (not silently skip)
+	_, err := LoadProvision("circular", map[string]any{}, tmpDir)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrCircularInclude)
 }
 
 func TestListProvisions(t *testing.T) {

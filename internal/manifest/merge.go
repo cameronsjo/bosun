@@ -1,9 +1,17 @@
 package manifest
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
+
+// MaxMergeDepth is the maximum recursion depth for DeepMerge operations.
+// This prevents stack overflow from deeply nested or circular structures.
+const MaxMergeDepth = 100
+
+// ErrMergeDepthExceeded indicates the merge operation exceeded the maximum depth.
+var ErrMergeDepthExceeded = errors.New("merge depth exceeded maximum")
 
 // UnionKeys are keys where lists use set-union merge (no duplicates).
 var UnionKeys = map[string]bool{
@@ -22,11 +30,17 @@ var ExtendKeys = map[string]bool{
 //   - ExtendKeys (endpoints): append lists
 //   - Default: replace lists, recursive merge for dicts
 //   - environment/labels are normalized from list to map before merging
+//
+// Panics if recursion depth exceeds MaxMergeDepth to prevent OOM.
 func DeepMerge(base, overlay map[string]any) map[string]any {
-	return deepMergeInternal(base, overlay, "")
+	return deepMergeInternal(base, overlay, "", 0)
 }
 
-func deepMergeInternal(base, overlay map[string]any, path string) map[string]any {
+func deepMergeInternal(base, overlay map[string]any, path string, depth int) map[string]any {
+	if depth > MaxMergeDepth {
+		panic(fmt.Sprintf("DeepMerge: %v at path %q", ErrMergeDepthExceeded, path))
+	}
+
 	result := copyMap(base)
 
 	for key, overlayValue := range overlay {
@@ -37,7 +51,7 @@ func deepMergeInternal(base, overlay map[string]any, path string) map[string]any
 
 		baseValue, exists := result[key]
 		if !exists {
-			result[key] = deepCopy(overlayValue)
+			result[key] = deepCopyWithDepth(overlayValue, depth+1)
 			continue
 		}
 
@@ -50,7 +64,7 @@ func deepMergeInternal(base, overlay map[string]any, path string) map[string]any
 				baseMap = normalizeToDict(baseMap, key)
 				overlayMap = normalizeToDict(overlayMap, key)
 			}
-			result[key] = deepMergeInternal(baseMap, overlayMap, currentPath)
+			result[key] = deepMergeInternal(baseMap, overlayMap, currentPath, depth+1)
 			continue
 		}
 
@@ -66,13 +80,13 @@ func deepMergeInternal(base, overlay map[string]any, path string) map[string]any
 				result[key] = append(baseList, overlayList...)
 			} else {
 				// Replace
-				result[key] = deepCopy(overlayValue)
+				result[key] = deepCopyWithDepth(overlayValue, depth+1)
 			}
 			continue
 		}
 
 		// Default: replace
-		result[key] = deepCopy(overlayValue)
+		result[key] = deepCopyWithDepth(overlayValue, depth+1)
 	}
 
 	return result
@@ -168,21 +182,30 @@ func copyMap(m map[string]any) map[string]any {
 
 // deepCopy creates a deep copy of any value.
 func deepCopy(value any) any {
+	return deepCopyWithDepth(value, 0)
+}
+
+// deepCopyWithDepth creates a deep copy with depth tracking.
+func deepCopyWithDepth(value any, depth int) any {
 	if value == nil {
 		return nil
+	}
+
+	if depth > MaxMergeDepth {
+		panic(fmt.Sprintf("deepCopy: %v", ErrMergeDepthExceeded))
 	}
 
 	switch v := value.(type) {
 	case map[string]any:
 		result := make(map[string]any, len(v))
 		for k, val := range v {
-			result[k] = deepCopy(val)
+			result[k] = deepCopyWithDepth(val, depth+1)
 		}
 		return result
 	case []any:
 		result := make([]any, len(v))
 		for i, val := range v {
-			result[i] = deepCopy(val)
+			result[i] = deepCopyWithDepth(val, depth+1)
 		}
 		return result
 	case []string:

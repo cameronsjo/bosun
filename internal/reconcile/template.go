@@ -42,27 +42,51 @@ func (t *TemplateOps) ExecuteTemplate(ctx context.Context, templateFile, outputF
 		return fmt.Errorf("failed to marshal template data: %w", err)
 	}
 
-	// Write secrets to a temporary file with restricted permissions (0600)
-	// instead of passing the actual secret values via environment variables
-	secretsFile, err := os.CreateTemp("", "bosun-secrets-*.json")
-	if err != nil {
-		return fmt.Errorf("failed to create temp secrets file: %w", err)
-	}
-	secretsPath := secretsFile.Name()
-	defer func() {
-		secretsFile.Close()
-		os.Remove(secretsPath)
+	// Create temp secrets file with restricted permissions (0600) from the start
+	// to ensure secrets are never world-readable even briefly.
+	secretsPath, err := func() (string, error) {
+		f, err := os.CreateTemp("", "bosun-secrets-*.json")
+		if err != nil {
+			return "", fmt.Errorf("failed to create temp secrets file: %w", err)
+		}
+		path := f.Name()
+
+		// Close immediately - we'll reopen with proper permissions
+		if err := f.Close(); err != nil {
+			os.Remove(path)
+			return "", fmt.Errorf("failed to close temp file: %w", err)
+		}
+
+		// Reopen with restricted permissions (0600) before writing any secrets
+		restricted, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0600)
+		if err != nil {
+			os.Remove(path)
+			return "", fmt.Errorf("failed to reopen secrets file with restricted permissions: %w", err)
+		}
+		defer restricted.Close()
+
+		// Set permissions explicitly (redundant but defensive)
+		if err := os.Chmod(path, 0600); err != nil {
+			os.Remove(path)
+			return "", fmt.Errorf("failed to set secrets file permissions: %w", err)
+		}
+
+		if _, err := restricted.Write(dataJSON); err != nil {
+			os.Remove(path)
+			return "", fmt.Errorf("failed to write secrets to temp file: %w", err)
+		}
+
+		if err := restricted.Close(); err != nil {
+			os.Remove(path)
+			return "", fmt.Errorf("failed to close secrets file: %w", err)
+		}
+
+		return path, nil
 	}()
-
-	// Set restrictive permissions before writing
-	if err := os.Chmod(secretsPath, 0600); err != nil {
-		return fmt.Errorf("failed to set secrets file permissions: %w", err)
+	if err != nil {
+		return err
 	}
-
-	if _, err := secretsFile.Write(dataJSON); err != nil {
-		return fmt.Errorf("failed to write secrets to temp file: %w", err)
-	}
-	secretsFile.Close()
+	defer os.Remove(secretsPath)
 
 	// Build chezmoi command.
 	// Pass path to secrets file via env var (the file path itself is not sensitive,
@@ -83,13 +107,37 @@ func (t *TemplateOps) ExecuteTemplate(ctx context.Context, templateFile, outputF
 	}
 
 	// Ensure output directory exists.
-	if err := os.MkdirAll(filepath.Dir(outputFile), 0755); err != nil {
+	outputDir := filepath.Dir(outputFile)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory for %s: %w", outputFile, err)
 	}
 
-	// Write rendered output.
-	if err := os.WriteFile(outputFile, stdout.Bytes(), 0644); err != nil {
-		return fmt.Errorf("failed to write output %s: %w", outputFile, err)
+	// Write rendered output atomically to avoid malformed files on failure.
+	// Write to a temp file first, then rename.
+	tmpFile, err := os.CreateTemp(outputDir, ".bosun-template-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file for %s: %w", outputFile, err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath) // Cleanup on failure
+
+	if _, err := tmpFile.Write(stdout.Bytes()); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to write temp file for %s: %w", outputFile, err)
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file for %s: %w", outputFile, err)
+	}
+
+	// Set permissions before rename
+	if err := os.Chmod(tmpPath, 0644); err != nil {
+		return fmt.Errorf("failed to set permissions on %s: %w", outputFile, err)
+	}
+
+	// Atomic rename - either succeeds completely or fails, no partial writes
+	if err := os.Rename(tmpPath, outputFile); err != nil {
+		return fmt.Errorf("failed to rename temp file to %s: %w", outputFile, err)
 	}
 
 	return nil

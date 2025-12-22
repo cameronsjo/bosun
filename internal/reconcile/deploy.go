@@ -3,6 +3,7 @@ package reconcile
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,12 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrRollbackSucceeded indicates deployment failed but rollback succeeded.
+var ErrRollbackSucceeded = errors.New("deployment failed, rollback succeeded")
+
+// ErrRollbackFailed indicates both deployment and rollback failed.
+var ErrRollbackFailed = errors.New("deployment and rollback both failed")
 
 // SSH retry configuration
 const (
@@ -256,18 +263,31 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 	if err != nil {
 		return "", fmt.Errorf("failed to create backup file: %w", err)
 	}
-	defer outFile.Close()
 
 	// Retry with backoff on transient SSH errors.
-	// Note: tar may fail partially for missing files, which is OK.
-	_ = retryWithBackoff(ctx, DefaultMaxRetries, func() error {
+	sshErr := retryWithBackoff(ctx, DefaultMaxRetries, func() error {
 		cmd := exec.CommandContext(ctx, "ssh", host, sshCmd)
 		cmd.Stdout = outFile
 		return cmd.Run()
 	})
 
+	// Close the file before verification
+	if closeErr := outFile.Close(); closeErr != nil {
+		// Clean up on close failure
+		os.RemoveAll(backupPath)
+		return "", fmt.Errorf("failed to close backup file: %w", closeErr)
+	}
+
+	// Log SSH error but don't fail - tar may return non-zero for missing files
+	if sshErr != nil && !isTransientSSHError(sshErr) {
+		// Only log if it's not a transient error we already retried
+		// tar returning non-zero for missing files is expected
+	}
+
 	// Verify the backup was created successfully
 	if err := d.VerifyBackup(backupPath); err != nil {
+		// Clean up invalid backup on verification failure
+		os.RemoveAll(backupPath)
 		return "", fmt.Errorf("backup verification failed: %w", err)
 	}
 
@@ -383,10 +403,18 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 }
 
 // DeployRemoteFile syncs a single file to a remote host using rsync over SSH.
+// Uses RsyncTimeout if the parent context has no deadline.
 // Retries on transient SSH errors with exponential backoff.
 func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost, targetFile string) error {
 	if err := validateHost(targetHost); err != nil {
 		return fmt.Errorf("invalid SSH host: %w", err)
+	}
+
+	// Apply timeout if context doesn't have one
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, RsyncTimeout)
+		defer cancel()
 	}
 
 	args := []string{"-avz"}
@@ -402,6 +430,9 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 		cmd.Stderr = &stderr
 
 		if err := cmd.Run(); err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("rsync timed out after %v", RsyncTimeout)
+			}
 			return fmt.Errorf("rsync failed: %w: %s", err, stderr.String())
 		}
 		return nil
@@ -468,21 +499,26 @@ func (d *DeployOps) ComposeUp(ctx context.Context, composeFile string) error {
 
 // ComposeUpWithRollback runs docker compose up and rolls back on failure.
 // backupPath should contain the previous config files for rollback.
+// Returns:
+//   - nil on success
+//   - ErrRollbackSucceeded wrapped with deployment error if rollback succeeded
+//   - ErrRollbackFailed wrapped with both errors if rollback also failed
+//   - Original error if no backup available
 func (d *DeployOps) ComposeUpWithRollback(ctx context.Context, composeFile, backupPath string) error {
-	err := d.ComposeUp(ctx, composeFile)
-	if err == nil {
+	deployErr := d.ComposeUp(ctx, composeFile)
+	if deployErr == nil {
 		return nil
 	}
 
 	// Compose failed - attempt rollback if backup exists
 	if backupPath == "" {
-		return fmt.Errorf("%w (no backup available for rollback)", err)
+		return fmt.Errorf("deployment failed (no backup available for rollback): %w", deployErr)
 	}
 
 	// Check if backup exists
 	backupComposeFile := filepath.Join(backupPath, filepath.Base(composeFile))
 	if _, statErr := os.Stat(backupComposeFile); os.IsNotExist(statErr) {
-		return fmt.Errorf("%w (backup file not found for rollback)", err)
+		return fmt.Errorf("deployment failed (backup file not found for rollback): %w", deployErr)
 	}
 
 	// Attempt rollback with previous config
@@ -494,10 +530,12 @@ func (d *DeployOps) ComposeUpWithRollback(ctx context.Context, composeFile, back
 	rollbackCmd.Stderr = &rollbackStderr
 
 	if rollbackErr := rollbackCmd.Run(); rollbackErr != nil {
-		return fmt.Errorf("%w (rollback also failed: %v)", err, rollbackErr)
+		// Both deployment and rollback failed - critical state
+		return fmt.Errorf("%w: deployment error: %v, rollback error: %v", ErrRollbackFailed, deployErr, rollbackErr)
 	}
 
-	return fmt.Errorf("%w (rolled back to previous config)", err)
+	// Rollback succeeded - return distinguishable error
+	return fmt.Errorf("%w: %v", ErrRollbackSucceeded, deployErr)
 }
 
 // VerifyContainerHealth checks if containers from a compose file are healthy.

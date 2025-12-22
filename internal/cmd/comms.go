@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sort"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -179,8 +180,17 @@ func displayTailscaleStatus(status *TailscaleStatus) {
 	if onlinePeers > 0 {
 		fmt.Println()
 		ui.Blue.Println("--- Online Peers ---")
+
+		// Sort peer keys for deterministic output order
+		peerKeys := make([]string, 0, len(status.Peer))
+		for key := range status.Peer {
+			peerKeys = append(peerKeys, key)
+		}
+		sort.Strings(peerKeys)
+
 		count := 0
-		for _, peer := range status.Peer {
+		for _, key := range peerKeys {
+			peer := status.Peer[key]
 			if !peer.Online {
 				continue
 			}

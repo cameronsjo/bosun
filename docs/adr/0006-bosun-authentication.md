@@ -1,4 +1,4 @@
-# ADR-0006: Conductor Authentication
+# ADR-0006: Bosun Authentication
 
 ## Status
 
@@ -6,7 +6,7 @@ Proposed
 
 ## Context
 
-The conductor webhook endpoint receives GitHub push events. It needs authentication to:
+The bosun webhook endpoint receives GitHub push events. It needs authentication to:
 1. Verify requests come from GitHub (webhook signature)
 2. Optionally require additional auth layer (defense in depth)
 
@@ -25,11 +25,11 @@ Proposed: Support optional Authelia/OIDC integration.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     Defense in Depth                         │
+│                     Defense in Depth                        │
 ├─────────────────────────────────────────────────────────────┤
 │  Layer 1: Tunnel Auth (Cloudflare Access / Tailscale ACL)   │
 ├─────────────────────────────────────────────────────────────┤
-│  Layer 2: Authelia ForwardAuth (optional)                    │
+│  Layer 2: Authelia ForwardAuth (optional)                   │
 ├─────────────────────────────────────────────────────────────┤
 │  Layer 3: GitHub Webhook Signature (HMAC-SHA256)            │
 └─────────────────────────────────────────────────────────────┘
@@ -54,11 +54,11 @@ For users who want Authelia protecting the webhook endpoint:
 # traefik dynamic config
 http:
   routers:
-    conductor-hooks:
+    bosun-hooks:
       rule: "Host(`hooks.example.com`) && PathPrefix(`/hooks`)"
       middlewares:
         - authelia@docker  # Optional: remove for webhook-secret-only
-      service: conductor
+      service: bosun
 ```
 
 ### Authelia Bypass for Webhooks
@@ -98,7 +98,7 @@ Then use Authelia's API keys or service tokens (if/when supported).
 Always enabled. Non-negotiable.
 
 ```bash
-# Verify signature in conductor
+# Verify signature in bosun
 verify_signature() {
     local payload="$1"
     local signature="$2"
@@ -116,7 +116,7 @@ verify_signature() {
 ## Configuration
 
 ```yaml
-# conductor/config.yml
+# bosun/config.yml
 auth:
   # GitHub webhook secret (required)
   github_webhook_secret: ${GITHUB_WEBHOOK_SECRET}
@@ -145,7 +145,7 @@ auth:
 
 1. **Webhook secret rotation**: Support graceful rotation (accept old+new during transition)
 2. **IP allowlisting**: GitHub IPs change; fetch from `https://api.github.com/meta`
-3. **Rate limiting**: Implement at tunnel layer, not conductor
+3. **Rate limiting**: Implement at tunnel layer, not bosun
 4. **Audit logging**: Log all webhook attempts (success and failure)
 
 ## Future Work

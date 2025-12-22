@@ -1,12 +1,44 @@
 package manifest
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+// ErrPathTraversal indicates an attempted path traversal attack.
+var ErrPathTraversal = errors.New("path traversal detected")
+
+// ErrCircularInclude indicates a circular include was detected.
+var ErrCircularInclude = errors.New("circular include detected")
+
+// validatePathWithinDir checks that a joined path stays within the base directory.
+// Returns the cleaned absolute path or an error if path traversal is detected.
+func validatePathWithinDir(baseDir, relativePath string) (string, error) {
+	// Clean and resolve the base directory to absolute path
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve base directory: %w", err)
+	}
+	absBase = filepath.Clean(absBase)
+
+	// Join and clean the full path
+	fullPath := filepath.Join(absBase, relativePath)
+	fullPath = filepath.Clean(fullPath)
+
+	// Verify the path is within the base directory
+	// Add separator to prevent prefix matching issues (e.g., /foo vs /foobar)
+	if !strings.HasPrefix(fullPath+string(filepath.Separator), absBase+string(filepath.Separator)) &&
+		fullPath != absBase {
+		return "", fmt.Errorf("%s: %w", relativePath, ErrPathTraversal)
+	}
+
+	return fullPath, nil
+}
 
 // RenderService renders a service manifest into compose/traefik/gatus outputs.
 func RenderService(manifest *ServiceManifest, provisionsDir string) (*RenderOutput, error) {
@@ -133,7 +165,12 @@ func RenderStack(stackPath, provisionsDir, servicesDir string, valuesOverlay map
 	output := NewRenderOutput()
 
 	for _, serviceFile := range stack.Include {
-		servicePath := filepath.Join(servicesDir, serviceFile)
+		// Validate path to prevent path traversal attacks
+		servicePath, err := validatePathWithinDir(servicesDir, serviceFile)
+		if err != nil {
+			return nil, fmt.Errorf("validate service path %s: %w", serviceFile, err)
+		}
+
 		serviceContent, err := os.ReadFile(servicePath)
 		if err != nil {
 			return nil, fmt.Errorf("read service %s: %w", serviceFile, err)

@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -63,13 +64,14 @@ func DefaultConfig() *Config {
 
 // Reconciler orchestrates the GitOps reconciliation workflow.
 type Reconciler struct {
-	config   *Config
-	git      GitOperations
-	sops     SecretsDecryptor
-	template *TemplateOps
-	deploy   *DeployOps
-	lockFile string
-	lockFd   *os.File
+	config         *Config
+	git            GitOperations
+	sops           SecretsDecryptor
+	template       *TemplateOps
+	deploy         *DeployOps
+	lockFile       string
+	lockFd         *os.File
+	lastBackupPath string // Path to the last backup for rollback support
 }
 
 // NewReconciler creates a new Reconciler with the given configuration.
@@ -126,8 +128,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 	// Acquire lock to prevent concurrent runs.
 	if err := r.acquireLock(); err != nil {
-		ui.Info("Another reconciliation is in progress, skipping")
-		return nil
+		return fmt.Errorf("failed to acquire lock (another reconciliation may be in progress): %w", err)
 	}
 	defer r.releaseLock()
 
@@ -290,6 +291,9 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any) e
 		return err
 	}
 
+	// Store backup path for potential rollback
+	r.lastBackupPath = filepath.Join(r.config.BackupDir, backupName)
+
 	// Cleanup old backups.
 	if err := r.deploy.CleanupBackups(r.config.BackupDir, r.config.BackupsToKeep); err != nil {
 		ui.Warning("Failed to cleanup old backups: %v", err)
@@ -380,11 +384,19 @@ func (r *Reconciler) deployLocal(ctx context.Context) error {
 		return err
 	}
 
-	// Reload services.
+	// Reload services with rollback support.
 	if !r.config.DryRun {
 		ui.Info("  Reloading services...")
-		if err := r.deploy.ComposeUp(ctx, filepath.Join(appdata, "compose", "core.yml")); err != nil {
-			ui.Warning("Could not recreate core stack: %v", err)
+		composeFile := filepath.Join(appdata, "compose", "core.yml")
+		if err := r.deploy.ComposeUpWithRollback(ctx, composeFile, r.lastBackupPath); err != nil {
+			// Check if rollback succeeded or failed
+			if errors.Is(err, ErrRollbackFailed) {
+				return fmt.Errorf("CRITICAL: service reload and rollback both failed: %w", err)
+			} else if errors.Is(err, ErrRollbackSucceeded) {
+				return fmt.Errorf("service reload failed but rollback succeeded: %w", err)
+			}
+			// Other errors (no backup available, etc.)
+			return fmt.Errorf("service reload failed: %w", err)
 		}
 		if err := r.deploy.SignalContainer(ctx, "agentgateway", "SIGHUP"); err != nil {
 			ui.Warning("Could not reload agentgateway: %v", err)

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -13,6 +14,12 @@ import (
 	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/ui"
+)
+
+// Compose command timeouts.
+const (
+	// ComposeCommandTimeout is the maximum time allowed for compose commands.
+	ComposeCommandTimeout = 5 * time.Minute
 )
 
 var yachtCmd = &cobra.Command{
@@ -36,7 +43,8 @@ var yachtUpCmd = &cobra.Command{
 	Short: "Start the yacht (docker compose up -d)",
 	Long:  `Starts all services defined in the compose file. Checks for Traefik first.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), ComposeCommandTimeout)
+		defer cancel()
 
 		cfg, err := config.Load()
 		if err != nil {
@@ -66,7 +74,10 @@ var yachtUpCmd = &cobra.Command{
 		}
 
 		ui.Green.Println("Raising anchor...")
-		compose := docker.NewComposeClient(cfg.ComposeFile)
+		compose, err := docker.NewComposeClient(cfg.ComposeFile)
+		if err != nil {
+			return fmt.Errorf("compose client: %w", err)
+		}
 		if err := compose.Up(ctx, args...); err != nil {
 			return fmt.Errorf("compose up: %w", err)
 		}
@@ -81,7 +92,8 @@ var yachtDownCmd = &cobra.Command{
 	Short: "Dock the yacht (docker compose down)",
 	Long:  `Stops and removes all services defined in the compose file.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), ComposeCommandTimeout)
+		defer cancel()
 
 		cfg, err := config.Load()
 		if err != nil {
@@ -94,7 +106,10 @@ var yachtDownCmd = &cobra.Command{
 		}
 
 		ui.Yellow.Println("Dropping anchor...")
-		compose := docker.NewComposeClient(cfg.ComposeFile)
+		compose, err := docker.NewComposeClient(cfg.ComposeFile)
+		if err != nil {
+			return fmt.Errorf("compose client: %w", err)
+		}
 		if err := compose.Down(ctx); err != nil {
 			return fmt.Errorf("compose down: %w", err)
 		}
@@ -109,7 +124,8 @@ var yachtRestartCmd = &cobra.Command{
 	Short: "Quick turnaround (docker compose restart)",
 	Long:  `Restarts all or specified services.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), ComposeCommandTimeout)
+		defer cancel()
 
 		cfg, err := config.Load()
 		if err != nil {
@@ -129,7 +145,10 @@ var yachtRestartCmd = &cobra.Command{
 		}
 
 		ui.Blue.Println("Quick turnaround...")
-		compose := docker.NewComposeClient(cfg.ComposeFile)
+		compose, err := docker.NewComposeClient(cfg.ComposeFile)
+		if err != nil {
+			return fmt.Errorf("compose client: %w", err)
+		}
 		if err := compose.Restart(ctx, args...); err != nil {
 			return fmt.Errorf("compose restart: %w", err)
 		}
@@ -144,14 +163,18 @@ var yachtStatusCmd = &cobra.Command{
 	Short: "Check if we're seaworthy",
 	Long:  `Shows the status of all services in the compose file.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), ComposeCommandTimeout)
+		defer cancel()
 
 		cfg, err := config.Load()
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
 		}
 
-		compose := docker.NewComposeClient(cfg.ComposeFile)
+		compose, err := docker.NewComposeClient(cfg.ComposeFile)
+		if err != nil {
+			return fmt.Errorf("compose client: %w", err)
+		}
 		output, err := compose.Ps(ctx)
 		if err != nil {
 			return fmt.Errorf("compose ps: %w", err)

@@ -1271,25 +1271,25 @@ func detectCycles(graph map[string][]string) []string {
 	)
 
 	color := make(map[string]int)
-	parent := make(map[string]string)
 	var cycles []string
 	cycleSet := make(map[string]bool) // Deduplicate cycles
 
-	var dfs func(node string)
-	dfs = func(node string) {
+	// Use a local path slice instead of global parent map to avoid concurrent access issues
+	var dfs func(node string, path []string)
+	dfs = func(node string, path []string) {
 		color[node] = gray
+		currentPath := append(path, node)
 
 		for _, neighbor := range graph[node] {
 			if color[neighbor] == gray {
-				// Back edge found - construct cycle
-				cycle := buildCyclePath(node, neighbor, parent)
+				// Back edge found - construct cycle from current path
+				cycle := buildCyclePathFromSlice(currentPath, neighbor)
 				if !cycleSet[cycle] {
 					cycleSet[cycle] = true
 					cycles = append(cycles, cycle)
 				}
 			} else if color[neighbor] == white {
-				parent[neighbor] = node
-				dfs(neighbor)
+				dfs(neighbor, currentPath)
 			}
 		}
 
@@ -1299,30 +1299,32 @@ func detectCycles(graph map[string][]string) []string {
 	// Run DFS from each node
 	for node := range graph {
 		if color[node] == white {
-			dfs(node)
+			dfs(node, nil)
 		}
 	}
 
 	return cycles
 }
 
-// buildCyclePath constructs a cycle path string from the DFS state.
-func buildCyclePath(current, cycleStart string, parent map[string]string) string {
-	// Build path from cycleStart back to current, then to cycleStart again
-	var path []string
-	path = append(path, cycleStart)
-
-	node := current
-	for node != cycleStart && node != "" {
-		path = append([]string{node}, path...)
-		node = parent[node]
+// buildCyclePathFromSlice constructs a cycle path string from the current DFS path.
+func buildCyclePathFromSlice(path []string, cycleStart string) string {
+	// Find where the cycle starts in the path
+	startIdx := -1
+	for i, node := range path {
+		if node == cycleStart {
+			startIdx = i
+			break
+		}
 	}
 
-	if node == cycleStart {
-		path = append([]string{cycleStart}, path...)
+	if startIdx == -1 {
+		// cycleStart not in path, just show the back edge
+		return path[len(path)-1] + " -> " + cycleStart
 	}
 
-	return strings.Join(path, " -> ")
+	// Build cycle path from startIdx to end, then back to cycleStart
+	cyclePath := append(path[startIdx:], cycleStart)
+	return strings.Join(cyclePath, " -> ")
 }
 
 func init() {

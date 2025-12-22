@@ -40,6 +40,10 @@ const (
 	DockerLogHeaderSize = 8
 	// MaxExtractFileSize is the maximum file size allowed when extracting tar archives (100MB).
 	MaxExtractFileSize = 100 * 1024 * 1024
+	// MaxExtractFileCount is the maximum number of files allowed in a tar archive (tar bomb protection).
+	MaxExtractFileCount = 1000
+	// MaxExtractTotalSize is the maximum total size allowed when extracting tar archives (50GB).
+	MaxExtractTotalSize = 50 * 1024 * 1024 * 1024
 )
 
 var (
@@ -215,8 +219,10 @@ func doRollback(cfg *config.Config, target string) {
 	fmt.Println()
 
 	// Show restored files
-	files, _ := snapshot.GetRestoredFiles(cfg.ManifestDir)
-	if len(files) > 0 {
+	files, err := snapshot.GetRestoredFiles(cfg.ManifestDir)
+	if err != nil {
+		ui.Warning("Could not list restored files: %v", err)
+	} else if len(files) > 0 {
 		fmt.Println("Restored files:")
 		for _, f := range files {
 			fmt.Printf("  - %s\n", f)
@@ -243,8 +249,12 @@ func promptForSnapshot(snapshots []snapshot.SnapshotInfo) string {
 	fmt.Println()
 
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Printf("Select snapshot (1-%d, or name): ", MaxSnapshotPrompt)
-	input, _ := reader.ReadString('\n')
+	fmt.Printf("Select snapshot (1-%d, or name): ", maxShow)
+	input, err := reader.ReadString('\n')
+	if err != nil {
+		ui.Error("Failed to read input: %v", err)
+		return ""
+	}
 	input = strings.TrimSpace(input)
 
 	if input == "" {
@@ -252,7 +262,12 @@ func promptForSnapshot(snapshots []snapshot.SnapshotInfo) string {
 	}
 
 	// Check if input is a number
-	if n, err := strconv.Atoi(input); err == nil && n >= 1 && n <= maxShow {
+	if n, err := strconv.Atoi(input); err == nil {
+		// Validate bounds before array access
+		if n < 1 || n > len(snapshots) {
+			ui.Error("Invalid selection: %d (valid range: 1-%d)", n, maxShow)
+			return ""
+		}
 		return snapshots[n-1].Name
 	}
 
@@ -561,6 +576,17 @@ func extractTarGz(tarPath, destDir string) error {
 
 	tr := tar.NewReader(gzr)
 
+	// Resolve destDir to absolute path for secure prefix checking
+	absDestDir, err := filepath.Abs(destDir)
+	if err != nil {
+		return fmt.Errorf("resolve destination path: %w", err)
+	}
+	absDestDir = filepath.Clean(absDestDir) + string(os.PathSeparator)
+
+	// Tar bomb protection counters
+	var fileCount int
+	var totalSize int64
+
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
@@ -570,32 +596,81 @@ func extractTarGz(tarPath, destDir string) error {
 			return err
 		}
 
+		// Tar bomb protection: check file count
+		fileCount++
+		if fileCount > MaxExtractFileCount {
+			return fmt.Errorf("archive contains too many files (max %d)", MaxExtractFileCount)
+		}
+
 		// Sanitize path to prevent directory traversal
-		target := filepath.Join(destDir, header.Name)
-		if !strings.HasPrefix(target, filepath.Clean(destDir)+string(os.PathSeparator)) {
+		// Clean the header name first to normalize path separators and remove . or ..
+		cleanName := filepath.Clean(header.Name)
+		if cleanName == "." || cleanName == ".." || strings.HasPrefix(cleanName, ".."+string(os.PathSeparator)) {
 			return fmt.Errorf("invalid file path in archive: %s", header.Name)
+		}
+
+		target := filepath.Join(absDestDir, cleanName)
+		absTarget, err := filepath.Abs(target)
+		if err != nil {
+			return fmt.Errorf("resolve target path: %w", err)
+		}
+
+		// Verify the resolved path is within the destination directory
+		if !strings.HasPrefix(absTarget, absDestDir) {
+			return fmt.Errorf("path traversal attempt detected: %s", header.Name)
 		}
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0755); err != nil {
+			if err := os.MkdirAll(absTarget, 0755); err != nil {
 				return err
 			}
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			// Check individual file size
+			if header.Size > MaxExtractFileSize {
+				return fmt.Errorf("file too large: %s (%d bytes, max %d)", header.Name, header.Size, MaxExtractFileSize)
+			}
+
+			// Tar bomb protection: check total size
+			totalSize += header.Size
+			if totalSize > MaxExtractTotalSize {
+				return fmt.Errorf("archive total size exceeds limit (%d bytes)", MaxExtractTotalSize)
+			}
+
+			if err := os.MkdirAll(filepath.Dir(absTarget), 0755); err != nil {
 				return err
 			}
-			outFile, err := os.Create(target)
-			if err != nil {
-				return err
+
+			if err := extractFile(absTarget, tr, header.Size); err != nil {
+				return fmt.Errorf("extract %s: %w", header.Name, err)
 			}
-			// Use io.CopyN to limit copy size as a security measure
-			if _, err := io.CopyN(outFile, tr, MaxExtractFileSize); err != nil && err != io.EOF {
-				outFile.Close()
-				return err
-			}
-			outFile.Close()
 		}
+	}
+
+	return nil
+}
+
+// extractFile extracts a single file from a tar reader with proper resource cleanup.
+func extractFile(target string, tr *tar.Reader, size int64) error {
+	outFile, err := os.Create(target)
+	if err != nil {
+		return err
+	}
+
+	// Use io.CopyN to limit copy size as a security measure
+	_, copyErr := io.CopyN(outFile, tr, size)
+
+	// Always attempt to close the file
+	closeErr := outFile.Close()
+
+	// Handle copy errors first (more likely to be relevant)
+	if copyErr != nil && copyErr != io.EOF {
+		return copyErr
+	}
+
+	// Report close errors
+	if closeErr != nil {
+		return fmt.Errorf("close file: %w", closeErr)
 	}
 
 	return nil
@@ -603,7 +678,8 @@ func extractTarGz(tarPath, destDir string) error {
 
 func deployRestoredConfigs(stagingDir, targetDir string) error {
 	// Use rsync for deployment
-	cmd := exec.Command("rsync", "-av", stagingDir+"/", targetDir+"/")
+	// The "--" prevents any directory paths from being interpreted as flags
+	cmd := exec.Command("rsync", "-av", "--", stagingDir+"/", targetDir+"/")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

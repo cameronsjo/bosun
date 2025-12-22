@@ -16,9 +16,9 @@ func LoadProvision(provisionName string, variables map[string]any, provisionsDir
 }
 
 func loadProvisionInternal(provisionName string, variables map[string]any, provisionsDir string, loaded map[string]bool) (*Provision, error) {
-	// Prevent circular includes
+	// Prevent circular includes - return error instead of silently ignoring
 	if loaded[provisionName] {
-		return &Provision{}, nil
+		return nil, fmt.Errorf("provision %s: %w", provisionName, ErrCircularInclude)
 	}
 	loaded[provisionName] = true
 

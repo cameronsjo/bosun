@@ -10,63 +10,63 @@ unops components need to run reliably on the server. The question: should everyt
 
 **The chicken-and-egg problem:**
 ```
-Conductor runs in Docker
+Bosun runs in Docker
          ↓
-Conductor runs `docker compose up`
+Bosun runs `docker compose up`
          ↓
 Docker crashes
          ↓
-Conductor dies with Docker
+Bosun dies with Docker
          ↓
-Nothing to restart Docker or conductor
+Nothing to restart Docker or bosun
          ↓
 Manual SSH intervention required
 ```
 
 ## Decision
 
-**Default: All containers.** Optional: Conductor as systemd service for advanced users.
+**Default: All containers.** Optional: Bosun as systemd service for advanced users.
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
+┌─────────────────────────────────────────────────────────────────────────────-┐
 │                           Deployment Options                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
+├─────────────────────────────────────────────────────────────────────────────-┤
 │                                                                              │
-│  Option A: All Containers (Default)         Option B: Hybrid (Advanced)     │
-│  ─────────────────────────────              ────────────────────────────    │
+│  Option A: All Containers (Default)         Option B: Hybrid (Advanced)      │
+│  ─────────────────────────────              ────────────────────────────     │
 │                                                                              │
-│  ┌─────────────────────────┐               ┌─────────────────────────┐      │
-│  │        Docker           │               │        systemd          │      │
-│  │  ┌───────────────────┐  │               │  ┌───────────────────┐  │      │
-│  │  │    Conductor      │  │               │  │    Conductor      │  │      │
-│  │  │    Tailscale      │  │               │  │    (native)       │  │      │
-│  │  │    Agentgateway   │  │               │  └───────────────────┘  │      │
-│  │  │    MCP Servers    │  │               │  ┌───────────────────┐  │      │
-│  │  │    Your Apps      │  │               │  │    Tailscale      │  │      │
-│  │  └───────────────────┘  │               │  │    (native)       │  │      │
-│  └─────────────────────────┘               │  └───────────────────┘  │      │
-│                                            └───────────┬─────────────┘      │
-│  Simpler. Consistent.                                  │                    │
-│  Single deployment model.                   ┌──────────▼──────────┐         │
-│                                             │       Docker        │         │
-│  Risk: Docker crash = all down              │  ┌───────────────┐  │         │
-│                                             │  │ Agentgateway  │  │         │
-│                                             │  │ MCP Servers   │  │         │
-│                                             │  │ Your Apps     │  │         │
-│                                             │  └───────────────┘  │         │
-│                                             └─────────────────────┘         │
+│  ┌─────────────────────────┐               ┌─────────────────────────┐       │
+│  │        Docker           │               │        systemd          │       │
+│  │  ┌───────────────────┐  │               │  ┌───────────────────┐  │       │
+│  │  │      Bosun        │  │               │  │      Bosun        │  │       │
+│  │  │    Tailscale      │  │               │  │    (native)       │  │       │
+│  │  │    Agentgateway   │  │               │  └───────────────────┘  │       │
+│  │  │    MCP Servers    │  │               │  ┌───────────────────┐  │       │
+│  │  │    Your Apps      │  │               │  │    Tailscale      │  │       │
+│  │  └───────────────────┘  │               │  │    (native)       │  │       │
+│  └─────────────────────────┘               │  └───────────────────┘  │       │
+│                                            └───────────┬─────────────┘       │
+│  Simpler. Consistent.                                  │                     │
+│  Single deployment model.                   ┌──────────▼──────────┐          │
+│                                             │       Docker        │          │
+│  Risk: Docker crash = all down              │  ┌───────────────┐  │          │
+│                                             │  │ Agentgateway  │  │          │
+│                                             │  │ MCP Servers   │  │          │
+│                                             │  │ Your Apps     │  │          │
+│                                             │  └───────────────┘  │          │
+│                                             └─────────────────────┘          │
 │                                                                              │
 │                                             More resilient.                  │
-│                                             Conductor survives Docker crash. │
+│                                             Bosun survives Docker crash.     │
 │                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+└──────────────────────────────────────────────────────────────────────────-───┘
 ```
 
 ## Component Analysis
 
 | Component | Container | Daemon | Recommendation |
 |-----------|-----------|--------|----------------|
-| **Conductor** | Easy deploy, dies with Docker | Survives crashes, can restart Docker | Container (default), daemon (opt-in) |
+| **Bosun** | Easy deploy, dies with Docker | Survives crashes, can restart Docker | Container (default), daemon (opt-in) |
 | **Tailscale** | Works with state volume | More robust, system integration | Container (default), daemon (advanced) |
 | **Cloudflared** | Standard deployment | Unnecessary complexity | Container only |
 | **Agentgateway** | Standard deployment | No benefit | Container only |
@@ -87,12 +87,12 @@ One deployment model. One set of tools. One mental model.
 ### 3. Updates
 ```bash
 # Container: trivial
-docker pull conductor:latest && docker compose up -d
+docker pull bosun:latest && docker compose up -d
 
 # Daemon: more steps
-systemctl stop conductor
-curl -L ... -o /usr/local/bin/conductor
-systemctl start conductor
+systemctl stop bosun
+curl -L ... -o /usr/local/bin/bosun
+systemctl start bosun
 ```
 
 ### 4. Rollback
@@ -110,10 +110,10 @@ Daemon requires installing each on the host.
 ## Why Offer Daemon Option
 
 ### 1. Resilience
-Conductor can survive Docker crashes and potentially restart Docker:
+Bosun can survive Docker crashes and potentially restart Docker:
 
 ```bash
-# conductor.service can include:
+# bosun.service can include:
 ExecStartPre=/usr/bin/systemctl start docker
 ```
 
@@ -131,10 +131,10 @@ If Docker corrupts, daemon can:
 ### Option A: Container (Default)
 
 ```yaml
-# conductor/docker-compose.yml
+# bosun/docker-compose.yml
 services:
-  conductor:
-    image: ghcr.io/unops/conductor:latest
+  bosun:
+    image: ghcr.io/unops/bosun:latest
     restart: always
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -147,19 +147,19 @@ Docker's `restart: always` handles most failure cases.
 ### Option B: Systemd Service (Advanced)
 
 ```bash
-# /etc/systemd/system/conductor.service
+# /etc/systemd/system/bosun.service
 [Unit]
-Description=unops Conductor
+Description=unops Bosun
 After=network-online.target
 Wants=network-online.target
 Before=docker.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/conductor serve
+ExecStart=/usr/local/bin/bosun serve
 Restart=always
 RestartSec=5
-Environment=SOPS_AGE_KEY_FILE=/etc/conductor/age-key.txt
+Environment=SOPS_AGE_KEY_FILE=/etc/bosun/age-key.txt
 
 [Install]
 WantedBy=multi-user.target
@@ -167,10 +167,10 @@ WantedBy=multi-user.target
 
 ```bash
 # Installation
-curl -L https://github.com/unops/conductor/releases/latest/download/conductor-linux-amd64 \
-  -o /usr/local/bin/conductor
-chmod +x /usr/local/bin/conductor
-systemctl enable --now conductor
+curl -L https://github.com/unops/bosun/releases/latest/download/bosun-linux-amd64 \
+  -o /usr/local/bin/bosun
+chmod +x /usr/local/bin/bosun
+systemctl enable --now bosun
 ```
 
 ### Tailscale: Native vs Container
@@ -191,30 +191,30 @@ curl -fsSL https://tailscale.com/install.sh | sh
 tailscale up --auth-key=$TS_AUTHKEY
 ```
 
-Native Tailscale survives Docker restarts and can provide network to conductor daemon.
+Native Tailscale survives Docker restarts and can provide network to bosun daemon.
 
 ## Failure Scenarios
 
 | Scenario | All Containers | Hybrid |
 |----------|---------------|--------|
 | Container crash | Docker restarts it | Docker restarts it |
-| Docker crash | Everything down, manual recovery | Conductor alive, can restart Docker |
-| Docker hang | Stuck, manual recovery | Conductor can detect and restart Docker |
-| Host reboot | Docker starts, containers start | systemd starts conductor, then Docker |
+| Docker crash | Everything down, manual recovery | Bosun alive, can restart Docker |
+| Docker hang | Stuck, manual recovery | Bosun can detect and restart Docker |
+| Host reboot | Docker starts, containers start | systemd starts bosun, then Docker |
 | Disk full | Depends on which disk | Same |
-| OOM killer | Might kill conductor | Might kill conductor |
+| OOM killer | Might kill bosun | Might kill bosun |
 
 ## Recommendation
 
 1. **Start with containers.** Simpler, works for 95% of cases.
-2. **If you need maximum resilience**, install conductor as systemd service.
+2. **If you need maximum resilience**, install bosun as systemd service.
 3. **If you want Tailscale to survive Docker**, install Tailscale natively.
 
 The architecture supports both. Choose based on your reliability requirements.
 
-## Future: Conductor Binary
+## Future: Bosun Binary
 
-If demand exists, ship conductor as:
+If demand exists, ship bosun as:
 - Docker image (default)
 - Static binary for Linux amd64/arm64
 - systemd unit file

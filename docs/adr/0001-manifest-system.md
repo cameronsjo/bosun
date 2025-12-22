@@ -1,4 +1,4 @@
-# ADR-0001: Service Composer
+# ADR-0001: Manifest System
 
 **Status:** Proposed
 **Date:** 2025-12-21
@@ -16,10 +16,10 @@ No existing tool handles compose + reverse proxy + monitoring as a unified servi
 
 ## Decision
 
-Build a lightweight **Service Composer** that:
+Build a lightweight **Manifest System** that:
 1. Reads simple service manifests (~10 lines)
-2. Merges reusable profiles (healthcheck, reverse-proxy, monitoring, etc.)
-3. Outputs complete configs for compose, Traefik, and Gatus
+2. Merges reusable provisions (healthcheck, reverse-proxy, monitoring, etc.)
+3. Outputs complete configs for yacht (compose), Traefik, and Gatus
 
 ## Architecture Diagrams
 
@@ -29,15 +29,15 @@ Build a lightweight **Service Composer** that:
 flowchart LR
     subgraph Input
         M[Service Manifest<br/>~10 lines]
-        P[Profiles<br/>reusable fragments]
+        P[Provisions<br/>reusable fragments]
     end
 
-    subgraph Composer
-        R[compose.py render]
+    subgraph Manifest
+        R[manifest.py render]
     end
 
     subgraph Output
-        C[compose/*.yml]
+        C[yacht/*.yml]
         T[traefik/*.yml]
         G[gatus/*.yml]
     end
@@ -54,20 +54,20 @@ flowchart LR
 ```mermaid
 flowchart TB
     subgraph "Service Manifest"
-        SM["norish.yml<br/>profiles: [container, reverse-proxy, monitoring]<br/>config: {port: 3000, subdomain: recipes}"]
+        SM["norish.yml<br/>provisions: [container, reverse-proxy, monitoring]<br/>config: {port: 3000, subdomain: recipes}"]
     end
 
-    subgraph "Profile: reverse-proxy.yml"
-        RP_C["compose:<br/>  networks: [proxynet]<br/>  labels: {traefik.enable: true}"]
+    subgraph "Provision: reverse-proxy.yml"
+        RP_C["yacht:<br/>  networks: [proxynet]<br/>  labels: {traefik.enable: true}"]
         RP_T["traefik:<br/>  routers: {rule: Host(...)}"]
     end
 
-    subgraph "Profile: monitoring.yml"
+    subgraph "Provision: monitoring.yml"
         MON_G["gatus:<br/>  endpoints: [{url: https://...}]"]
     end
 
     subgraph "Output Files"
-        OUT_C["compose/norish.yml"]
+        OUT_C["yacht/norish.yml"]
         OUT_T["traefik/dynamic.yml"]
         OUT_G["gatus/endpoints.yml"]
     end
@@ -85,11 +85,11 @@ flowchart TB
 
 ```mermaid
 flowchart TD
-    A[1. Load Manifest] --> B[2. Load Profiles<br/>raw YAML strings]
+    A[1. Load Manifest] --> B[2. Load Provisions<br/>raw YAML strings]
     B --> C[3. Interpolate Variables<br/>before parsing]
     C --> D[4. Parse YAML<br/>normalize env/labels to dicts]
     D --> E[5. Deep Merge<br/>into 3 accumulators]
-    E --> F{Sidecars<br/>defined?}
+    E --> F{Crew sidecars<br/>defined?}
     F -->|Yes| G[6. Inject env vars<br/>+ depends_on]
     F -->|No| H[7. Apply Overrides]
     G --> H
@@ -103,13 +103,13 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    subgraph "Profile A"
+    subgraph "Provision A"
         A_L["labels:<br/>  foo: bar"]
         A_N["networks:<br/>  - internal"]
         A_P["ports:<br/>  - 3000:3000"]
     end
 
-    subgraph "Profile B"
+    subgraph "Provision B"
         B_L["labels:<br/>  baz: qux"]
         B_N["networks:<br/>  - proxynet"]
         B_P["ports:<br/>  - 8080:8080"]
@@ -183,49 +183,49 @@ flowchart LR
     style GR fill:#dfd
 ```
 
-### Profile Composition (Mixin Pattern)
+### Provision Composition (Mixin Pattern)
 
 ```mermaid
 classDiagram
     class ServiceManifest {
         name: string
-        profiles: list
+        provisions: list
         config: dict
-        services: dict
+        crew: dict
     }
 
-    class ContainerProfile {
-        compose.services.*
+    class ContainerProvision {
+        yacht.services.*
         image, restart, TZ
     }
 
-    class HealthcheckProfile {
-        compose.services.*.healthcheck
+    class HealthcheckProvision {
+        yacht.services.*.healthcheck
         test, interval, timeout
     }
 
-    class ReverseProxyProfile {
-        compose.services.*.networks
-        compose.services.*.labels
+    class ReverseProxyProvision {
+        yacht.services.*.networks
+        yacht.services.*.labels
         traefik.http.routers.*
         traefik.http.services.*
     }
 
-    class MonitoringProfile {
+    class MonitoringProvision {
         gatus.endpoints[]
         url, conditions, alerts
     }
 
-    class PostgresProfile {
-        compose.services.${name}-db
+    class PostgresProvision {
+        yacht.services.${name}-db
         auto-inject env vars
     }
 
-    ServiceManifest --> ContainerProfile : has-a
-    ServiceManifest --> HealthcheckProfile : has-a
-    ServiceManifest --> ReverseProxyProfile : has-a
-    ServiceManifest --> MonitoringProfile : has-a
-    ServiceManifest --> PostgresProfile : has-a
+    ServiceManifest --> ContainerProvision : has-a
+    ServiceManifest --> HealthcheckProvision : has-a
+    ServiceManifest --> ReverseProxyProvision : has-a
+    ServiceManifest --> MonitoringProvision : has-a
+    ServiceManifest --> PostgresProvision : has-a
 ```
 
 ## Specification
@@ -236,7 +236,7 @@ classDiagram
 # services/norish.yml
 name: norish
 
-profiles:
+provisions:
   - container           # base docker service
   - healthcheck         # wget /health pattern
   - homepage            # dashboard labels
@@ -257,7 +257,7 @@ config:
     OIDC_CLIENT_ID: norish
     OIDC_CLIENT_SECRET: "{{ $secrets.oidc.norish.client_secret }}"
 
-services:
+crew:
   postgres:
     version: 17
     db: norish
@@ -267,19 +267,19 @@ services:
 
 ### Raw Passthrough Mode
 
-For infrastructure or complex services that don't fit the profile model:
+For infrastructure or complex services that don't fit the provision model:
 
 ```yaml
 # services/traefik.yml
 name: traefik
 type: raw
 
-compose:
+yacht:
   traefik:
     image: traefik:v3.2
     container_name: traefik
     restart: unless-stopped
-    # ... full compose spec, copied verbatim
+    # ... full yacht spec, copied verbatim
 ```
 
 ### Master Include File
@@ -287,7 +287,7 @@ compose:
 ```yaml
 # stacks/core.yml
 include:
-  # Profile-based
+  # Provision-based
   - stirling-pdf.yml
   - llm-council.yml
   - norish.yml
@@ -304,28 +304,28 @@ networks:
     external: true
 ```
 
-### Profiles
+### Provisions
 
-Profiles are YAML fragments merged into the final output. No logic, just templates.
+Provisions are YAML fragments merged into the final output. No logic, just templates.
 
-| Profile | What it adds |
-|---------|--------------|
+| Provision | What it adds |
+|-----------|--------------|
 | `container` | Base service: image, container_name, restart, TZ, volumes |
 | `healthcheck` | Healthcheck block with configurable endpoint |
 | `homepage` | Homepage dashboard labels |
 | `reverse-proxy` | Traefik router + service (no auth) |
 | `auth` | Traefik authelia middleware |
 | `monitoring` | Gatus endpoint definition |
-| `postgres` | PostgreSQL sidecar service |
-| `redis` | Redis sidecar service |
+| `postgres` | PostgreSQL crew (sidecar) service |
+| `redis` | Redis crew (sidecar) service |
 
 ### Outputs
 
-Running `compose.py render stacks/core.yml` generates:
+Running `manifest.py render stacks/core.yml` generates:
 
 | Output | Description |
 |--------|-------------|
-| `output/compose/core.yml` | Complete Docker Compose file |
+| `output/yacht/core.yml` | Complete Docker Compose file |
 | `output/traefik/dynamic.yml` | Traefik routers and services |
 | `output/gatus/endpoints.yml` | Gatus monitoring endpoints |
 
@@ -333,28 +333,28 @@ Running `compose.py render stacks/core.yml` generates:
 
 ```bash
 # Render a stack
-compose.py render stacks/core.yml
+manifest.py render stacks/core.yml
 
 # Render with dry-run (show diff)
-compose.py render stacks/core.yml --dry-run
+manifest.py render stacks/core.yml --dry-run
 
 # Validate manifests without rendering
-compose.py validate services/*.yml
+manifest.py validate services/*.yml
 
-# List available profiles
-compose.py profiles
+# List available provisions
+manifest.py provisions
 
 # Show what a service expands to
-compose.py expand services/norish.yml
+manifest.py expand services/norish.yml
 ```
 
 ## Directory Structure
 
 ```
 infrastructure/
-├── composer/
-│   ├── compose.py          # Main CLI (~100-150 lines)
-│   ├── profiles/
+├── manifest/
+│   ├── manifest.py         # Main CLI (~100-150 lines)
+│   ├── provisions/
 │   │   ├── container.yml
 │   │   ├── healthcheck.yml
 │   │   ├── homepage.yml
@@ -374,7 +374,7 @@ infrastructure/
 │   │   ├── apps.yml         # user apps
 │   │   └── mcp.yml          # MCP servers
 │   └── output/              # generated files (gitignored)
-│       ├── compose/
+│       ├── yacht/
 │       ├── traefik/
 │       └── gatus/
 ```
@@ -393,12 +393,12 @@ infrastructure/
 The renderer executes in strict order for safety and predictability:
 
 1. **Load Manifest** - Read service manifest, extract config block
-2. **Load & Interpolate Profiles** - Load raw YAML strings, apply `${var}` substitution
+2. **Load & Interpolate Provisions** - Load raw YAML strings, apply `${var}` substitution
    - **Constraint:** Missing variables = fatal error
 3. **Parse & Normalize** - Parse interpolated strings, normalize `environment` and `labels` to Dicts
-4. **Deep Merge** - Merge profile objects into three target accumulators (compose, traefik, gatus)
-5. **Sidecar Injection** - If `services.<sidecar>` present, inject env vars and `depends_on`
-6. **Apply Overrides** - Apply manifest's `compose` block overrides
+4. **Deep Merge** - Merge provision objects into three target accumulators (yacht, traefik, gatus)
+5. **Crew Injection** - If `crew.<sidecar>` present, inject env vars and `depends_on`
+6. **Apply Overrides** - Apply manifest's `yacht` block overrides
 7. **Render** - Output files to `output/`
 
 ### Merge Semantics
@@ -409,15 +409,15 @@ The renderer executes in strict order for safety and predictability:
 | Lists (default) | **Replace** | ports, volumes |
 | Lists (exception) | **Set Union** | networks, depends_on |
 
-**Why replace for lists:** Prevents "garbage collection" issues. Merging port lists could result in unwanted exposures. Later profiles overwrite earlier lists entirely.
+**Why replace for lists:** Prevents "garbage collection" issues. Merging port lists could result in unwanted exposures. Later provisions overwrite earlier lists entirely.
 
-### Profile Schema (Multi-Target)
+### Provision Schema (Multi-Target)
 
-Profiles organize fragments by target output file:
+Provisions organize fragments by target output file:
 
 ```yaml
-# profiles/reverse-proxy.yml
-compose:
+# provisions/reverse-proxy.yml
+yacht:
   services:
     ${name}:
       networks: ["proxynet"]  # Merged via Union
@@ -433,7 +433,7 @@ traefik:
 ```
 
 ```yaml
-# profiles/monitoring.yml
+# provisions/monitoring.yml
 gatus:
   endpoints:
     - name: ${name}
@@ -449,19 +449,19 @@ gatus:
 Variables are interpolated on **raw strings before YAML parsing** to preserve data types:
 
 ```yaml
-# profiles/container.yml (raw)
-compose:
+# provisions/container.yml (raw)
+yacht:
   services:
     ${name}:
       ports:
         - "${port}:${port}"  # Stays as string "3000:3000"
 ```
 
-### Sidecar Contract
+### Crew Contract
 
-Sidecars are opinionated to maximize productivity:
+Crew (sidecars) are opinionated to maximize productivity:
 
-**Postgres Profile:**
+**Postgres Provision:**
 - Creates service: `${name}-db`
 - Volume: `${name}_db_data:/var/lib/postgresql/data`
 - **Auto-injects into main service:**
@@ -469,11 +469,11 @@ Sidecars are opinionated to maximize productivity:
   - `POSTGRES_HOST: ${name}-db`
   - `POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD` from config
 
-**Escape hatch:** Don't use sidecar profile if non-standard setup needed. Use `type: raw` or manual env vars.
+**Escape hatch:** Don't use crew provision if non-standard setup needed. Use `type: raw` or manual env vars.
 
 ### SOPS Integration
 
-Secrets stay as SOPS template syntax. Composer passes through unchanged:
+Secrets stay as SOPS template syntax. Manifest renderer passes through unchanged:
 
 ```yaml
 # In service manifest
@@ -485,18 +485,18 @@ env:
 
 ## Guardrails
 
-1. **Composer stays under 250 lines** - if bigger, we're over-engineering
-2. **Max 10 profiles** - more means abstraction is wrong
-3. **Profiles have no logic** - just YAML fragments with variable substitution
+1. **Manifest renderer stays under 250 lines** - if bigger, we're over-engineering
+2. **Max 10 provisions** - more means abstraction is wrong
+3. **Provisions have no logic** - just YAML fragments with variable substitution
 4. **Raw mode is the escape hatch** - don't handle every edge case
-5. **No nested profiles** - profiles don't include other profiles
+5. **No nested provisions** - provisions don't include other provisions
 6. **Missing variables = hard error** - no silent failures
 7. **Normalize environment/labels to Dicts** - simplifies merge logic
 
 ## Success Criteria
 
 - New service: **< 5 minutes** from manifest to deployed
-- Profile change: **< 1 minute** to update all services
+- Provision change: **< 1 minute** to update all services
 - Learning curve: **< 15 minutes** to understand the system
 - Debugging: Generated YAML is readable, not minified/mangled
 
@@ -506,7 +506,7 @@ env:
 |-------------|---------|
 | Helm | K8s only, heavyweight |
 | Kustomize | K8s only |
-| docker-compose `include` | Compose only, no traefik/gatus |
+| docker-compose `include` | Yacht only, no traefik/gatus |
 | ytt | Another tool to learn, overkill |
 | Jsonnet/Dhall/CUE | Real programming languages, overkill |
 | VS Code snippets | Doesn't solve bulk updates |
@@ -520,21 +520,21 @@ env:
 
 ## Phases
 
-### Phase 1: Compose Only
-- Core renderer with multi-target profile schema
-- 5 basic profiles (container, healthcheck, homepage, postgres, redis)
+### Phase 1: Yacht Only
+- Core renderer with multi-target provision schema
+- 5 basic provisions (container, healthcheck, homepage, postgres, redis)
 - Raw passthrough mode
 - Merge semantics (dict merge, list replace, network union)
 - Validate with 3 real services
 
 ### Phase 2: Traefik Integration
-- reverse-proxy profile
-- auth profile
+- reverse-proxy provision
+- auth provision
 - Generate traefik/dynamic.yml
-- `compose.py import` command to scaffold manifests from existing compose files
+- `manifest.py import` command to scaffold manifests from existing yacht files
 
 ### Phase 3: Gatus Integration
-- monitoring profile
+- monitoring provision
 - Generate gatus/endpoints.yml
 
 ### Phase 4: Polish
@@ -548,14 +548,14 @@ Minor implementation details deferred to developer discretion:
 
 1. **Import Command Priority** - Some argue `import` is critical for Phase 1 adoption (44 services to migrate). Resolution: Build core renderer first; if manual migration too painful, prioritize import.
 
-2. **Sidecar Opt-Out** - Disagreement on explicit `auto_inject: false` flag vs implicit "just don't use the profile". Resolution: Start implicit (convention over configuration); add flags only if edge cases abound.
+2. **Crew Opt-Out** - Disagreement on explicit `auto_inject: false` flag vs implicit "just don't use the provision". Resolution: Start implicit (convention over configuration); add flags only if edge cases abound.
 
-3. **Networks Definition** - Should be in stack files for validation. Profiles reference by name; renderer validates referenced networks exist.
+3. **Networks Definition** - Should be in stack files for validation. Provisions reference by name; renderer validates referenced networks exist.
 
 ## Open Questions
 
 1. **Stack organization** - One big core.yml or split by category (infra, apps, mcp)?
-2. **Networks** - Defined in stack file or inferred from profiles?
+2. **Networks** - Defined in stack file or inferred from provisions?
 3. **Volumes** - Standard pattern or per-service config?
 4. **Secrets path convention** - `$secrets.app.key` or `$secrets.apps.app.key`?
 

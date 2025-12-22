@@ -149,7 +149,7 @@ compose_file: docker-compose.yml
 
 | ADR | Status | Summary |
 |-----|--------|---------|
-| [0001: Manifest System](docs/adr/0001-service-composer.md) | Accepted | DRY crew provisioning |
+| [0001: Manifest System](docs/adr/0001-manifest-system.md) | Accepted | DRY crew provisioning |
 | [0002: Watchtower Webhook](docs/adr/0002-watchtower-webhook-deploy.md) | Accepted | Crew rotation automation |
 | [0008: Container vs Daemon](docs/adr/0008-container-vs-daemon.md) | Accepted | When to use systemd |
 | [0010: Go Rewrite](docs/adr/0010-go-rewrite.md) | Accepted | Single-binary CLI |

@@ -506,7 +506,7 @@ sequenceDiagram
 ## Related Documents
 
 - [ADR-0010: Go Rewrite](adr/0010-go-rewrite.md) - Why Go was chosen
-- [ADR-0001: Manifest System](adr/0001-service-composer.md) - Provision design
+- [ADR-0001: Manifest System](adr/0001-manifest-system.md) - Provision design
 - [ADR-0008: Container vs Daemon](adr/0008-container-vs-daemon.md) - Deployment modes
 - [Commands Reference](commands.md) - Full command documentation
 - [Concepts](concepts.md) - High-level architecture diagrams

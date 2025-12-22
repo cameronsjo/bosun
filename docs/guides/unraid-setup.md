@@ -5,19 +5,19 @@ Complete guide to setting up bosun on Unraid.
 ## Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
+┌-─────────────────────────────────────────────────────────────────────────────┐
 │                              Your Yacht (Unraid)                             │
 │                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  ┌──────────────────────────────────────────────────────────────────────┐    │
 │  │                    Docker Compose Manager                            │    │
-│  │  /boot/config/plugins/compose.manager/projects/                     │    │
-│  │    ├── core/           ← Bosun deploys here                         │    │
+│  │  /boot/config/plugins/compose.manager/projects/                      │    │
+│  │    ├── core/           ← Bosun deploys here                          │    │
 │  │    ├── apps/                                                         │    │
 │  │    └── mcp/                                                          │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                      ▲                                       │
-│                                      │                                       │
-│  ┌──────────────────────────────────┴──────────────────────────────────┐    │
+│  └──────────────────────────────────────────────────────────────────────┘    │
+│                                     ▲                                        │
+│                                     │                                        │
+│  ┌──────────────────────────────────┴───────────────────────────────────┐    │
 │  │                           Bosun                                      │    │
 │  │                                                                      │    │
 │  │  1. Receives orders (webhook) or checks in (polls)                   │    │
@@ -388,6 +388,6 @@ Services: homepage, traefik, authelia
 
 ## Next Steps
 
-- [Service Composer](../adr/0001-service-composer.md) - Generate configs from manifests
+- [Manifest System](../adr/0001-manifest-system.md) - Generate configs from manifests
 - [Watchtower Integration](../adr/0002-watchtower-webhook-deploy.md) - Auto-update container images
 - [Multi-Server Setup](../adr/0004-multi-server-monorepo.md) - Manage multiple servers

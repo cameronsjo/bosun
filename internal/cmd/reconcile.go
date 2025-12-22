@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -135,12 +136,21 @@ func runReconcile(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Use sync.Once to ensure cancel() is only called once, preventing race condition
+	// when multiple signals arrive or when defer also calls cancel.
+	var cancelOnce sync.Once
+	safeCancel := func() {
+		cancelOnce.Do(func() {
+			ui.Warning("Received shutdown signal, cancelling...")
+			cancel()
+		})
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		ui.Warning("Received shutdown signal, cancelling...")
-		cancel()
+		safeCancel()
 	}()
 
 	// Run reconciliation.

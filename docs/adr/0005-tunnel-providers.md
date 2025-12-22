@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-The conductor needs to receive GitHub webhooks from the internet. This requires exposing an endpoint securely without opening firewall ports.
+The bosun needs to receive GitHub webhooks from the internet. This requires exposing an endpoint securely without opening firewall ports.
 
 Two main approaches exist:
 1. **Tailscale Funnel** - Zero-config, built into Tailscale
@@ -49,7 +49,7 @@ Default to Tailscale Funnel (simpler setup), but document Cloudflare Tunnel as a
 ### Setup
 
 ```yaml
-# conductor/docker-compose.yml
+# bosun/docker-compose.yml
 services:
   tailscale-gateway:
     image: tailscale/tailscale:latest
@@ -67,7 +67,7 @@ services:
   "Web": {
     "gateway.tail${TAILNET}.ts.net:443": {
       "Handlers": {
-        "/hooks/": { "Proxy": "http://conductor:8080" }
+        "/hooks/": { "Proxy": "http://bosun:8080" }
       }
     }
   }
@@ -91,7 +91,7 @@ services:
 ### Setup
 
 ```yaml
-# conductor/docker-compose.cloudflare.yml
+# bosun/docker-compose.cloudflare.yml
 services:
   cloudflared:
     image: cloudflare/cloudflared:latest
@@ -104,7 +104,7 @@ services:
 # Cloudflare tunnel config (via dashboard or CLI)
 ingress:
   - hostname: hooks.example.com
-    service: http://conductor:8080
+    service: http://bosun:8080
   - service: http_status:404
 ```
 
@@ -119,7 +119,7 @@ ingress:
 
 ## Swappable Architecture
 
-The conductor doesn't care which tunnel is used. It just listens on port 8080:
+The bosun doesn't care which tunnel is used. It just listens on port 8080:
 
 ```
                     ┌─────────────────┐
@@ -138,7 +138,7 @@ The conductor doesn't care which tunnel is used. It just listens on port 8080:
                          │
                          ▼
               ┌─────────────────┐
-              │    Conductor    │
+              │      Bosun      │
               │   :8080/hooks   │
               └─────────────────┘
 ```
@@ -167,7 +167,7 @@ Switching tunnels:
 3. Verify webhooks arriving
 4. Remove old tunnel
 
-No conductor changes required.
+No bosun changes required.
 
 ## References
 

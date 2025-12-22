@@ -39,6 +39,12 @@ type PortBinding struct {
 }
 
 // Logs returns a reader for container logs (streaming).
+//
+// IMPORTANT: The caller MUST close the returned io.ReadCloser when done to avoid
+// goroutine leaks. If following logs (follow=true), the reader will block until
+// the context is cancelled or the container stops.
+//
+// For non-streaming use cases, prefer GetContainerLogs which handles cleanup automatically.
 func (c *Client) Logs(ctx context.Context, name string, tail int, follow bool) (io.ReadCloser, error) {
 	tailStr := "all"
 	if tail > 0 {
@@ -155,9 +161,12 @@ func (c *Client) Exists(ctx context.Context, name string) (bool, error) {
 		return false, fmt.Errorf("list containers: %w", err)
 	}
 
+	// Normalize input name (remove leading slash if present)
+	normalizedName := strings.TrimPrefix(name, "/")
+
 	for _, ctr := range containers {
 		for _, n := range ctr.Names {
-			if strings.TrimPrefix(n, "/") == name {
+			if strings.TrimPrefix(n, "/") == normalizedName {
 				return true, nil
 			}
 		}

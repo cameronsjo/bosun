@@ -95,11 +95,17 @@ var crewLogsCmd = &cobra.Command{
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		// Handle interrupt
+		// Handle interrupt with panic recovery
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		defer signal.Stop(sigCh)
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// Log panic but don't crash - just cancel the context
+					cancel()
+				}
+			}()
 			<-sigCh
 			cancel()
 		}()
@@ -109,15 +115,25 @@ var crewLogsCmd = &cobra.Command{
 			if err != nil {
 				return fmt.Errorf("get logs: %w", err)
 			}
-			defer reader.Close()
 
 			// Stream logs to stdout, stripping Docker multiplex headers
-			if _, err := stdCopy(os.Stdout, os.Stderr, reader); err != nil {
+			_, copyErr := stdCopy(os.Stdout, os.Stderr, reader)
+
+			// Always close reader and capture error
+			closeErr := reader.Close()
+
+			// Handle copy errors first
+			if copyErr != nil {
 				if ctx.Err() != nil {
 					// Context cancelled, normal exit
 					return nil
 				}
-				return fmt.Errorf("read logs: %w", err)
+				return fmt.Errorf("read logs: %w", copyErr)
+			}
+
+			// Report close errors (usually less critical but shouldn't be silent)
+			if closeErr != nil {
+				ui.Warning("Failed to close log reader: %v", closeErr)
 			}
 
 			return nil

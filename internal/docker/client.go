@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -42,14 +43,25 @@ type Client struct {
 	api DockerAPI // interface for testing
 }
 
-// NewClient creates a new Docker client connection.
+// NewClient creates a new Docker client connection and validates daemon connectivity.
 func NewClient() (*Client, error) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, fmt.Errorf("create docker client: %w", err)
 	}
 
-	return &Client{cli: cli, api: cli}, nil
+	c := &Client{cli: cli, api: cli}
+
+	// Validate daemon is reachable before returning client
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := cli.Ping(ctx); err != nil {
+		cli.Close()
+		return nil, fmt.Errorf("docker daemon not reachable: %w", err)
+	}
+
+	return c, nil
 }
 
 // NewClientWithAPI creates a new Docker client with a custom API implementation.
@@ -131,7 +143,10 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 		if ctr.State == "running" {
 			// Get health status from inspection
 			inspect, err := c.api.ContainerInspect(ctx, ctr.ID)
-			if err == nil && inspect.State.Health != nil {
+			if err != nil {
+				// Indicate health status could not be determined
+				health = "unknown"
+			} else if inspect.State.Health != nil {
 				health = inspect.State.Health.Status
 			}
 		}
@@ -227,7 +242,11 @@ func (c *Client) RestartContainer(ctx context.Context, name string) error {
 	return c.api.ContainerRestart(ctx, name, container.StopOptions{Timeout: &timeout})
 }
 
+// MaxLogSize is the maximum size of logs to read (100MB).
+const MaxLogSize = 100 * 1024 * 1024
+
 // GetContainerLogs returns the last n lines of logs from a container.
+// Logs are limited to MaxLogSize (100MB) to prevent memory exhaustion.
 func (c *Client) GetContainerLogs(ctx context.Context, name string, tail int) (string, error) {
 	options := container.LogsOptions{
 		ShowStdout: true,
@@ -241,8 +260,9 @@ func (c *Client) GetContainerLogs(ctx context.Context, name string, tail int) (s
 	}
 	defer reader.Close()
 
-	// Read all logs
-	logs, err := io.ReadAll(reader)
+	// Read logs with size limit to prevent memory exhaustion
+	limitedReader := io.LimitReader(reader, MaxLogSize)
+	logs, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return "", fmt.Errorf("read logs: %w", err)
 	}
@@ -258,7 +278,11 @@ func (c *Client) GetContainerStats(ctx context.Context, name string) (*Container
 	if err != nil {
 		return nil, fmt.Errorf("get container stats: %w", err)
 	}
-	defer stats.Body.Close()
+	defer func() {
+		// Drain any remaining data before closing to ensure proper connection reuse
+		_, _ = io.Copy(io.Discard, stats.Body)
+		stats.Body.Close()
+	}()
 
 	// Parse the stats JSON
 	var v statsJSON
@@ -290,6 +314,7 @@ func (c *Client) GetContainerStats(ctx context.Context, name string) (*Container
 }
 
 // GetAllContainerStats returns stats for all running containers.
+// Containers that fail to return stats are logged and skipped.
 func (c *Client) GetAllContainerStats(ctx context.Context) ([]ContainerStats, error) {
 	containers, err := c.ListContainers(ctx, true)
 	if err != nil {
@@ -300,7 +325,10 @@ func (c *Client) GetAllContainerStats(ctx context.Context) ([]ContainerStats, er
 	for _, ctr := range containers {
 		s, err := c.GetContainerStats(ctx, ctr.Name)
 		if err != nil {
-			continue // Skip containers that fail
+			slog.Debug("Skipping container stats due to error",
+				slog.String("container", ctr.Name),
+				slog.String("error", err.Error()))
+			continue
 		}
 		stats = append(stats, *s)
 	}

@@ -66,7 +66,10 @@ func (g *GitOps) Clone(ctx context.Context, depth int) error {
 	if err := cmd.Run(); err != nil {
 		// Clean up partial clone on failure
 		if _, statErr := os.Stat(g.Dir); statErr == nil {
-			os.RemoveAll(g.Dir)
+			if removeErr := os.RemoveAll(g.Dir); removeErr != nil {
+				// Log cleanup failure but return the original clone error
+				fmt.Fprintf(os.Stderr, "warning: failed to clean up partial clone at %s: %v\n", g.Dir, removeErr)
+			}
 		}
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("git clone timed out after %v", GitCloneTimeout)
@@ -82,6 +85,13 @@ func (g *GitOps) Clone(ctx context.Context, depth int) error {
 func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 	if err := validateBranch(g.Branch); err != nil {
 		return false, "", "", fmt.Errorf("invalid branch: %w", err)
+	}
+
+	// Check for uncommitted changes before doing anything
+	if dirty, err := g.IsDirty(ctx); err != nil {
+		return false, "", "", fmt.Errorf("failed to check repository status: %w", err)
+	} else if dirty {
+		return false, "", "", fmt.Errorf("repository has uncommitted changes; clean the working directory before syncing")
 	}
 
 	before, err := g.GetLatestCommit(ctx)
@@ -104,6 +114,13 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 		return false, "", "", fmt.Errorf("git fetch failed: %w: %s", err, fetchStderr.String())
 	}
 
+	// Verify that origin/branch exists after fetch
+	if exists, err := g.RemoteBranchExists(ctx, g.Branch); err != nil {
+		return false, "", "", fmt.Errorf("failed to verify remote branch: %w", err)
+	} else if !exists {
+		return false, "", "", fmt.Errorf("remote branch origin/%s does not exist", g.Branch)
+	}
+
 	// Reset to remote branch (local operation, shorter timeout).
 	resetCtx, resetCancel := context.WithTimeout(ctx, GitLocalTimeout)
 	defer resetCancel()
@@ -122,6 +139,39 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 	}
 
 	return before != after, before, after, nil
+}
+
+// IsDirty checks if the repository has uncommitted changes.
+func (g *GitOps) IsDirty(ctx context.Context) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	cmd.Dir = g.Dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return false, fmt.Errorf("git status failed: %w: %s", err, stderr.String())
+	}
+
+	// If output is non-empty, there are uncommitted changes
+	return strings.TrimSpace(stdout.String()) != "", nil
+}
+
+// RemoteBranchExists checks if a remote branch exists.
+func (g *GitOps) RemoteBranchExists(ctx context.Context, branch string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "origin/"+branch)
+	cmd.Dir = g.Dir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		// Exit code 128 means the ref doesn't exist
+		if strings.Contains(stderr.String(), "fatal") {
+			return false, nil
+		}
+		return false, fmt.Errorf("git rev-parse failed: %w: %s", err, stderr.String())
+	}
+	return true, nil
 }
 
 // GetLatestCommit returns the current HEAD commit hash.

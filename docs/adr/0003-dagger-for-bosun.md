@@ -1,4 +1,4 @@
-# ADR-0003: Dagger for Conductor Pipelines
+# ADR-0003: Dagger for Bosun Pipelines
 
 ## Status
 
@@ -6,7 +6,7 @@ Deferred
 
 ## Context
 
-The conductor component orchestrates deployments via a reconciliation loop:
+The bosun component orchestrates deployments via a reconciliation loop:
 
 ```
 git pull → sops decrypt → chezmoi render → docker compose up
@@ -65,7 +65,7 @@ Shell is:
 
 Revisit this decision if:
 
-1. Composer generates multiple output targets needing parallel rendering
+1. Manifest renderer generates multiple output targets needing parallel rendering
 2. Pipeline exceeds 10 steps with branching logic
 3. Caching becomes critical (large template sets)
 4. Team grows and needs type-safe guardrails
@@ -76,7 +76,7 @@ If adopted later, maintain interface compatibility:
 
 ```bash
 # Shell (default)
-./conductor.sh reconcile
+./bosun.sh reconcile
 
 # Dagger (opt-in)
 dagger call reconcile --source=.

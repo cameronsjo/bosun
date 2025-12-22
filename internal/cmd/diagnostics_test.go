@@ -448,16 +448,14 @@ func TestExtractDependencyGraph(t *testing.T) {
 	})
 }
 
-func TestBuildCyclePath(t *testing.T) {
+func TestBuildCyclePathFromSlice(t *testing.T) {
 	t.Run("simple path", func(t *testing.T) {
-		parent := map[string]string{
-			"b": "a",
-			"c": "b",
-		}
-		path := buildCyclePath("c", "a", parent)
+		path := []string{"a", "b", "c"}
+		result := buildCyclePathFromSlice(path, "a")
 		// Should build path from a to c back to a
-		assert.Contains(t, path, "->")
-		assert.Contains(t, path, "a")
+		assert.Contains(t, result, "->")
+		assert.Contains(t, result, "a")
+		assert.Equal(t, "a -> b -> c -> a", result)
 	})
 }
 
@@ -1331,34 +1329,49 @@ func TestExtractServicesFromCompose_EdgeCases(t *testing.T) {
 	}
 }
 
-// TestBuildCyclePath_EdgeCases tests edge cases in cycle path building.
-func TestBuildCyclePath_EdgeCases(t *testing.T) {
+// TestBuildCyclePathFromSlice_EdgeCases tests edge cases in cycle path building.
+func TestBuildCyclePathFromSlice_EdgeCases(t *testing.T) {
 	testCases := []struct {
 		name       string
-		current    string
+		path       []string
 		cycleStart string
-		parent     map[string]string
 		expectPath string
 	}{
 		{
 			name:       "self cycle",
-			current:    "a",
+			path:       []string{"a"},
 			cycleStart: "a",
-			parent:     map[string]string{},
 			expectPath: "a -> a",
 		},
 		{
 			name:       "two node cycle",
-			current:    "b",
+			path:       []string{"a", "b"},
 			cycleStart: "a",
-			parent:     map[string]string{"b": "a"},
 			expectPath: "a -> b -> a",
+		},
+		{
+			name:       "three node cycle",
+			path:       []string{"a", "b", "c"},
+			cycleStart: "a",
+			expectPath: "a -> b -> c -> a",
+		},
+		{
+			name:       "cycle start not at beginning",
+			path:       []string{"x", "a", "b"},
+			cycleStart: "a",
+			expectPath: "a -> b -> a",
+		},
+		{
+			name:       "cycle start not in path",
+			path:       []string{"x", "y"},
+			cycleStart: "z",
+			expectPath: "y -> z",
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result := buildCyclePath(tc.current, tc.cycleStart, tc.parent)
+			result := buildCyclePathFromSlice(tc.path, tc.cycleStart)
 			assert.Equal(t, tc.expectPath, result)
 		})
 	}

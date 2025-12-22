@@ -20,9 +20,9 @@ Challenges:
 **Use [Agentgateway](https://github.com/agentgateway/agentgateway) as the MCP proxy, with Authelia providing OAuth2/OIDC authentication.**
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Your Server                                     │
-│                                                                              │
+┌────────────────────────────────────────────────────────────────────────────┐
+│                              Your Server                                   │
+│                                                                            │
 │  ┌─────────────┐     ┌─────────────────┐     ┌─────────────────────────┐   │
 │  │  Authelia   │────▶│  Agentgateway   │────▶│     MCP Servers         │   │
 │  │             │     │                 │     │                         │   │
@@ -31,14 +31,14 @@ Challenges:
 │  │ • 2FA       │     │ • Tracing       │     │ • database-mcp          │   │
 │  │             │     │ • Rate limiting │     │ • home-assistant-mcp    │   │
 │  └─────────────┘     └─────────────────┘     └─────────────────────────┘   │
-│         ▲                    ▲                                              │
-│         │                    │                                              │
-│  ┌──────┴────────────────────┴──────┐                                       │
-│  │        Tailscale Funnel          │                                       │
-│  │   gateway.tail*.ts.net:443       │                                       │
-│  └──────────────┬───────────────────┘                                       │
-│                 │                                                            │
-└─────────────────│────────────────────────────────────────────────────────────┘
+│         ▲                    ▲                                             │
+│         │                    │                                             │
+│  ┌──────┴────────────────────┴──────┐                                      │
+│  │        Tailscale Funnel          │                                      │
+│  │   gateway.tail*.ts.net:443       │                                      │
+│  └──────────────┬───────────────────┘                                      │
+│                 │                                                          │
+└─────────────────│──────────────────────────────────────────────────────────┘
                   │
                   ▼
           ┌───────────────┐
@@ -192,11 +192,11 @@ networks:
     internal: true  # No external access
 ```
 
-## Composer Profile
+## MCP Server Provision
 
 ```yaml
-# profiles/mcp-server.yml
-compose:
+# provisions/mcp-server.yml
+yacht:
   services:
     ${name}:
       networks:
@@ -255,4 +255,4 @@ authorization:
 - [Agentgateway](https://github.com/agentgateway/agentgateway)
 - [MCP Specification](https://modelcontextprotocol.io)
 - [Authelia OIDC](https://www.authelia.com/configuration/identity-providers/oidc/)
-- [ADR-0006: Conductor Authentication](0006-conductor-authentication.md)
+- [ADR-0006: Bosun Authentication](0006-bosun-authentication.md)

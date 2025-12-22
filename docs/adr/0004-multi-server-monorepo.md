@@ -6,20 +6,20 @@ Proposed
 
 ## Context
 
-Currently each server runs its own conductor and exposes its own webhook endpoint. With multiple servers this creates:
+Currently each server runs its own bosun and exposes its own webhook endpoint. With multiple servers this creates:
 
 - Multiple gateway entries per server
 - Multiple webhook URLs to configure in GitHub
 - Each server reaching out to GitHub independently
-- Duplicated conductor infrastructure
+- Duplicated bosun infrastructure
 
 ## Decision
 
-Implement a **hub-and-spoke** architecture with a central conductor hub that:
+Implement a **hub-and-spoke** architecture with a central bosun hub that:
 
 1. Receives all GitHub webhooks (single endpoint)
 2. Determines target server(s) from repo/path configuration
-3. Broadcasts reconciliation requests to server conductors via internal network
+3. Broadcasts reconciliation requests to server bosuns via internal network
 
 ## Architecture
 
@@ -36,22 +36,22 @@ Implement a **hub-and-spoke** architecture with a central conductor hub that:
 │  ├── shared/               # Shared profiles, services          │
 │  │   ├── profiles/                                              │
 │  │   └── services/                                              │
-│  └── hub/                  # Hub conductor config               │
+│  └── hub/                  # Hub bosun config                   │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                      Hub Conductor                               │
+│                        Hub Bosun                                 │
 │  • Single webhook endpoint (webhook.example.com)                │
 │  • Receives GitHub push events                                   │
 │  • Parses changed paths to determine target servers              │
-│  • Broadcasts to server conductors via Tailscale/WireGuard      │
+│  • Broadcasts to server bosuns via Tailscale/WireGuard          │
 └─────────────────────────────────────────────────────────────────┘
          │                    │                    │
          ▼                    ▼                    ▼
 ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
 │   Unraid    │      │   VPS-1     │      │ Homelab-2   │
-│  Conductor  │      │  Conductor  │      │  Conductor  │
+│    Bosun    │      │    Bosun    │      │    Bosun    │
 │             │      │             │      │             │
 │ • No gateway│      │ • No gateway│      │ • No gateway│
 │ • Internal  │      │ • Internal  │      │ • Internal  │
@@ -81,7 +81,7 @@ routes:
 Hub → Server communication over private network (Tailscale/WireGuard):
 
 ```bash
-# Hub broadcasts to server conductor
+# Hub broadcasts to server bosun
 curl -X POST http://unraid.tailnet:8080/reconcile \
   -H "X-Hub-Token: $HUB_TOKEN" \
   -d '{"ref": "main", "paths": ["servers/unraid/stacks/apps.yml"]}'
@@ -106,12 +106,12 @@ Servers only accept requests from hub (no public exposure).
 - Shared profiles/services directory
 - Per-server secrets files
 
-### Phase 2: Hub Conductor
+### Phase 2: Hub Bosun
 - Webhook receiver with path parsing
 - Routing configuration
 - Internal broadcast mechanism
 
-### Phase 3: Server Conductors
+### Phase 3: Server Bosuns
 - Remove gateway/webhook exposure
 - Internal-only listener for hub broadcasts
 - Token-based authentication
@@ -121,7 +121,7 @@ Servers only accept requests from hub (no public exposure).
 | Alternative | Why not |
 |-------------|---------|
 | GitHub Actions per server | Still N workflows, complexity in matrix |
-| Single conductor, remote exec | Security concerns with remote commands |
+| Single bosun, remote exec | Security concerns with remote commands |
 | Kubernetes | Overkill, doesn't fit bare-metal focus |
 
 ## Risks
@@ -132,5 +132,5 @@ Servers only accept requests from hub (no public exposure).
 
 ## References
 
-- ADR-0001: Service Composer
+- ADR-0001: Manifest System
 - ADR-0002: Watchtower Webhook Deploy

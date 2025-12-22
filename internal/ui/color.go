@@ -74,9 +74,9 @@ func Package(format string, args ...any) {
 	Green.Printf("📦 "+format+"\n", args...)
 }
 
-// Fatal prints an error and exits.
+// Fatal prints an error to stderr and exits.
 func Fatal(format string, args ...any) {
-	Error(format, args...)
+	Red.Fprintf(os.Stderr, "✗ "+format+"\n", args...)
 	os.Exit(1)
 }
 

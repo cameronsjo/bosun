@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -23,8 +24,15 @@ type ComposeClient struct {
 }
 
 // NewComposeClient creates a new compose client for the given compose file.
-func NewComposeClient(file string) *ComposeClient {
-	return &ComposeClient{file: file}
+// Returns an error if the compose file does not exist.
+func NewComposeClient(file string) (*ComposeClient, error) {
+	if _, err := os.Stat(file); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("compose file not found: %s", file)
+		}
+		return nil, fmt.Errorf("cannot access compose file %s: %w", file, err)
+	}
+	return &ComposeClient{file: file}, nil
 }
 
 // Up starts services defined in the compose file.

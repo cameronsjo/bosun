@@ -12,35 +12,43 @@ import (
 )
 
 func TestNewComposeClient(t *testing.T) {
-	tests := []struct {
-		name     string
-		file     string
-		wantFile string
-	}{
-		{
-			name:     "absolute path",
-			file:     "/path/to/docker-compose.yml",
-			wantFile: "/path/to/docker-compose.yml",
-		},
-		{
-			name:     "relative path",
-			file:     "docker-compose.yml",
-			wantFile: "docker-compose.yml",
-		},
-		{
-			name:     "complex path",
-			file:     "/app/deployments/stack/compose.yaml",
-			wantFile: "/app/deployments/stack/compose.yaml",
-		},
-	}
+	t.Run("valid file", func(t *testing.T) {
+		// Create a temporary compose file
+		tmpDir := t.TempDir()
+		composeFile := filepath.Join(tmpDir, "docker-compose.yml")
+		err := os.WriteFile(composeFile, []byte("services: {}"), 0644)
+		require.NoError(t, err)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			client := NewComposeClient(tt.file)
-			assert.NotNil(t, client)
-			assert.Equal(t, tt.wantFile, client.file)
-		})
-	}
+		client, err := NewComposeClient(composeFile)
+		require.NoError(t, err)
+		assert.NotNil(t, client)
+		assert.Equal(t, composeFile, client.file)
+	})
+
+	t.Run("nonexistent file", func(t *testing.T) {
+		client, err := NewComposeClient("/nonexistent/docker-compose.yml")
+		require.Error(t, err)
+		assert.Nil(t, client)
+		assert.Contains(t, err.Error(), "compose file not found")
+	})
+
+	t.Run("permission denied", func(t *testing.T) {
+		// This test is platform-specific and may not work in all environments
+		// Skip if running as root or on Windows
+		if os.Getuid() == 0 {
+			t.Skip("Skipping permission test when running as root")
+		}
+
+		tmpDir := t.TempDir()
+		composeFile := filepath.Join(tmpDir, "docker-compose.yml")
+		err := os.WriteFile(composeFile, []byte("services: {}"), 0000)
+		require.NoError(t, err)
+		defer os.Chmod(composeFile, 0644) // Restore for cleanup
+
+		// On some systems stat works even without read permission
+		// so we just check that it doesn't panic
+		_, _ = NewComposeClient(composeFile)
+	})
 }
 
 func TestComposeClient_ParseStatusOutput(t *testing.T) {
@@ -196,7 +204,8 @@ services:
 	err := os.WriteFile(composeFile, []byte(composeContent), 0644)
 	require.NoError(t, err)
 
-	client := NewComposeClient(composeFile)
+	client, err := NewComposeClient(composeFile)
+	require.NoError(t, err)
 
 	ctx := context.Background()
 
@@ -235,45 +244,11 @@ services:
 
 // Test error cases with invalid compose files
 func TestComposeClient_Errors(t *testing.T) {
-	if os.Getenv("DOCKER_INTEGRATION_TESTS") != "1" {
-		t.Skip("Skipping integration test. Set DOCKER_INTEGRATION_TESTS=1 to run.")
-	}
-
-	// Check if docker is available
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("Docker not available")
-	}
-
-	ctx := context.Background()
-
-	t.Run("Up with nonexistent file", func(t *testing.T) {
-		client := NewComposeClient("/nonexistent/docker-compose.yml")
-		err := client.Up(ctx)
+	// Constructor now validates file existence, so nonexistent files fail at construction
+	t.Run("constructor with nonexistent file", func(t *testing.T) {
+		_, err := NewComposeClient("/nonexistent/docker-compose.yml")
 		require.Error(t, err)
-	})
-
-	t.Run("Down with nonexistent file", func(t *testing.T) {
-		client := NewComposeClient("/nonexistent/docker-compose.yml")
-		err := client.Down(ctx)
-		require.Error(t, err)
-	})
-
-	t.Run("Status with nonexistent file", func(t *testing.T) {
-		client := NewComposeClient("/nonexistent/docker-compose.yml")
-		_, err := client.Status(ctx)
-		require.Error(t, err)
-	})
-
-	t.Run("Ps with nonexistent file", func(t *testing.T) {
-		client := NewComposeClient("/nonexistent/docker-compose.yml")
-		_, err := client.Ps(ctx)
-		require.Error(t, err)
-	})
-
-	t.Run("Restart with nonexistent file", func(t *testing.T) {
-		client := NewComposeClient("/nonexistent/docker-compose.yml")
-		err := client.Restart(ctx, "service")
-		require.Error(t, err)
+		assert.Contains(t, err.Error(), "compose file not found")
 	})
 }
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -93,9 +94,23 @@ func ValidateSOPSFile(path string) error {
 	return nil
 }
 
+// CheckSOPSBinary verifies that the sops binary is available in PATH.
+func (s *SOPSOps) CheckSOPSBinary() error {
+	_, err := exec.LookPath("sops")
+	if err != nil {
+		return fmt.Errorf("sops binary not found in PATH: install it with 'brew install sops' or download from https://github.com/getsops/sops/releases")
+	}
+	return nil
+}
+
 // Decrypt decrypts a SOPS-encrypted file and returns the plaintext bytes.
 // It first validates the file is SOPS-encrypted and checks that an age key is available.
 func (s *SOPSOps) Decrypt(ctx context.Context, file string) ([]byte, error) {
+	// Check sops binary is available
+	if err := s.CheckSOPSBinary(); err != nil {
+		return nil, err
+	}
+
 	// Validate SOPS file before attempting decryption
 	if err := ValidateSOPSFile(file); err != nil {
 		return nil, err
@@ -111,7 +126,9 @@ func (s *SOPSOps) Decrypt(ctx context.Context, file string) ([]byte, error) {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("sops decrypt failed for %s: %w: %s", file, err, stderr.String())
+		// Sanitize stderr to avoid leaking secrets in error messages
+		sanitizedErr := sanitizeSOPSError(stderr.String())
+		return nil, fmt.Errorf("sops decrypt failed for %s: %w: %s", file, err, sanitizedErr)
 	}
 	return stdout.Bytes(), nil
 }
@@ -159,6 +176,42 @@ func (s *SOPSOps) DecryptToJSON(ctx context.Context, files []string) ([]byte, er
 		return nil, err
 	}
 	return json.Marshal(merged)
+}
+
+// sanitizeSOPSError removes potential secrets from SOPS error output.
+// SOPS error messages can sometimes include partial decrypted content.
+func sanitizeSOPSError(stderr string) string {
+	// List of patterns that indicate secret content might follow
+	sensitivePatterns := []string{
+		"data key",
+		"decrypted",
+		"plaintext",
+		"secret",
+	}
+
+	lines := strings.Split(stderr, "\n")
+	var sanitized []string
+	for _, line := range lines {
+		lineLower := strings.ToLower(line)
+		isSensitive := false
+		for _, pattern := range sensitivePatterns {
+			if strings.Contains(lineLower, pattern) {
+				isSensitive = true
+				break
+			}
+		}
+		if !isSensitive {
+			sanitized = append(sanitized, line)
+		}
+	}
+
+	result := strings.Join(sanitized, "\n")
+	// Limit output length
+	const maxLen = 500
+	if len(result) > maxLen {
+		result = result[:maxLen] + "... (truncated)"
+	}
+	return result
 }
 
 // mergeMap recursively merges src into dst.

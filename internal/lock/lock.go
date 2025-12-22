@@ -39,6 +39,7 @@ func (l *Lock) Acquire() error {
 	// Try to acquire exclusive lock (non-blocking)
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
+		l.file = nil // Ensure file handle is nil on error
 		if err == syscall.EWOULDBLOCK {
 			return fmt.Errorf("another %s operation is already running", filepath.Base(l.path[:len(l.path)-5]))
 		}

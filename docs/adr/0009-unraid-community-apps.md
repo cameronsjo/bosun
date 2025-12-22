@@ -14,10 +14,10 @@ Unraid is a primary target platform for unops. The [Community Apps (CA)](https:/
 
 | Component | CA Candidate? | Notes |
 |-----------|---------------|-------|
-| **Conductor** | Yes | Core orchestrator, primary value prop |
+| **Bosun** | Yes | Core orchestrator, primary value prop |
 | **Tailscale Gateway** | No | Official Tailscale template exists |
 | **Agentgateway** | Maybe | Niche (MCP users only) |
-| **Composer** | No | CLI tool, not a container |
+| **Manifest CLI** | No | CLI tool, not a container |
 
 ## Registration Requirements
 
@@ -25,7 +25,7 @@ Based on [Unraid CA documentation](https://docs.unraid.net/unraid-os/using-unrai
 
 ### 1. Docker Image on Registry
 ```
-ghcr.io/cameronsjo/unops-conductor:latest
+ghcr.io/cameronsjo/unops-bosun:latest
 ```
 - Must be public
 - Must have versioned tags (not just `latest`)
@@ -35,16 +35,16 @@ ghcr.io/cameronsjo/unops-conductor:latest
 ```xml
 <?xml version="1.0"?>
 <Container version="2">
-  <Name>unops-conductor</Name>
-  <Repository>ghcr.io/cameronsjo/unops-conductor</Repository>
-  <Registry>https://github.com/cameronsjo/unops/pkgs/container/unops-conductor</Registry>
+  <Name>unops-bosun</Name>
+  <Repository>ghcr.io/cameronsjo/unops-bosun</Repository>
+  <Registry>https://github.com/cameronsjo/unops/pkgs/container/unops-bosun</Registry>
   <Branch>
     <Tag>latest</Tag>
     <TagDescription>Latest stable release</TagDescription>
   </Branch>
   <Network>bridge</Network>
   <Privileged>false</Privileged>
-  <Support>https://forums.unraid.net/topic/XXXXX-unops-conductor/</Support>
+  <Support>https://forums.unraid.net/topic/XXXXX-unops-bosun/</Support>
   <Project>https://github.com/cameronsjo/unops</Project>
   <Overview>
     GitOps for Docker Compose on bare metal. Push to GitHub, your server updates.
@@ -69,7 +69,7 @@ ghcr.io/cameronsjo/unops-conductor:latest
 ### 3. Support Thread
 - Create thread in [Unraid Forums](https://forums.unraid.net/)
 - Category: Docker Containers
-- Title: `[Support] unops-conductor - GitOps for Docker Compose`
+- Title: `[Support] unops-bosun - GitOps for Docker Compose`
 - Must be actively monitored
 
 ### 4. Template Repository
@@ -80,7 +80,7 @@ ghcr.io/cameronsjo/unops-conductor:latest
   unraid-templates/
   ├── README.md
   └── templates/
-      └── unops-conductor.xml
+      └── unops-bosun.xml
   ```
 
 ### 5. Submit to Squid
@@ -136,7 +136,7 @@ https://github.com/cameronsjo/unops/tree/main/unraid-templates
 ### Phase 1 Checklist
 
 - [ ] Create `unraid-templates/` directory in repo
-- [ ] Write conductor XML template
+- [ ] Write bosun XML template
 - [ ] Create icon (512x512 PNG)
 - [ ] Add installation docs for manual template repo
 - [ ] Test on fresh Unraid install
@@ -152,7 +152,7 @@ https://github.com/cameronsjo/unops/tree/main/unraid-templates
 ## Template Design Considerations
 
 ### Docker Socket Access
-Conductor needs Docker socket to run `docker compose`. Options:
+Bosun needs Docker socket to run `docker compose`. Options:
 
 1. **Direct mount (simpler, less secure)**
    ```xml
@@ -172,11 +172,11 @@ Unraid's Docker Compose Manager plugin stores projects in:
 /boot/config/plugins/compose.manager/projects/
 ```
 
-Conductor should be aware of this path for Unraid-specific deployments.
+Bosun should be aware of this path for Unraid-specific deployments.
 
 ### Network Considerations
 
-Conductor may need access to:
+Bosun may need access to:
 - `proxynet` (if using Traefik)
 - `mcp-net` (if using Agentgateway)
 - Host network (for webhook from Tailscale)
