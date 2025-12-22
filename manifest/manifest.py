@@ -144,7 +144,26 @@ def render_service(manifest: dict, provisions_dir: Path) -> dict[str, dict]:
             if target in provision:
                 outputs[target] = deep_merge(outputs[target], provision[target])
 
-    # Handle sidecar services (postgres, redis, etc.)
+    # Handle 'needs' shorthand for common dependencies
+    # e.g., needs: [postgres, redis] auto-provisions with defaults
+    needs = manifest.get("needs", [])
+    sidecar_defaults = {
+        "postgres": {"version": "17", "db": name, "db_password": "${db_password}"},
+        "redis": {"version": "7"},
+        "mysql": {"version": "8", "db": name, "db_password": "${db_password}"},
+        "mongodb": {"version": "7", "db": name},
+    }
+    for need in needs:
+        if need in sidecar_defaults:
+            defaults = sidecar_defaults[need]
+            sidecar_vars = {"name": name, "sidecar": need, **defaults, **config}
+            if (provisions_dir / f"{need}.yml").exists():
+                provision = load_provision(need, sidecar_vars, provisions_dir)
+                for target in ("compose", "traefik", "gatus"):
+                    if target in provision:
+                        outputs[target] = deep_merge(outputs[target], provision[target])
+
+    # Handle sidecar services (postgres, redis, etc.) with explicit config
     sidecars = manifest.get("services", {})
     for sidecar_type, sidecar_config in sidecars.items():
         sidecar_vars = {"name": name, "sidecar": sidecar_type, **sidecar_config, **config}
