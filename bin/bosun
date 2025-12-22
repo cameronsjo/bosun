@@ -64,6 +64,7 @@ COMMS COMMANDS
 DIAGNOSTICS
   status                Health dashboard - crew, infra, resources
   log [n]               Release history - manifest changes, provisions, tags
+  drift                 Detect config drift - git vs running state
   doctor                Pre-flight checks - is the ship seaworthy?
   lint                  Validate all manifests before deploy
 
@@ -394,6 +395,102 @@ EOF
     echo "  1. Edit $output_file to customize"
     echo "  2. Add to a stack in manifest/stacks/"
     echo "  3. Run 'bosun provision --dry-run stacks/yourstack.yml'"
+}
+
+# Drift command - detect config drift
+cmd_drift() {
+    echo -e "${BLUE}🔍 Checking for drift...${NC}"
+    echo ""
+
+    if ! command -v docker &> /dev/null || ! docker info &> /dev/null; then
+        echo -e "${RED}Docker not available${NC}"
+        return 1
+    fi
+
+    local has_drift=false
+
+    # Get running containers
+    local running=$(docker ps --format '{{.Names}}' 2>/dev/null)
+
+    if [[ -z "$running" ]]; then
+        echo -e "${YELLOW}No containers running${NC}"
+        return 0
+    fi
+
+    echo -e "${BLUE}━━━ Container Drift ━━━${NC}"
+
+    # For each stack, check if rendered config matches running state
+    for stack in "$MANIFEST_DIR/stacks"/*.yml; do
+        [[ -f "$stack" ]] || continue
+        local stack_name=$(basename "$stack" .yml)
+
+        # Get expected services from rendered output
+        local compose_file="$MANIFEST_DIR/output/compose/${stack_name}.yml"
+        if [[ ! -f "$compose_file" ]]; then
+            echo -e "  ${YELLOW}⚠${NC} $stack_name: No rendered output (run provision first)"
+            continue
+        fi
+
+        # Extract expected service names
+        local expected=$(grep -E "^  [a-z][a-z0-9-]+:$" "$compose_file" 2>/dev/null | sed 's/://g' | tr -d ' ')
+
+        for svc in $expected; do
+            if echo "$running" | grep -q "^${svc}$"; then
+                # Container exists - check image
+                local expected_image=$(grep -A5 "^  ${svc}:" "$compose_file" | grep "image:" | head -1 | awk '{print $2}')
+                local running_image=$(docker inspect --format '{{.Config.Image}}' "$svc" 2>/dev/null)
+
+                if [[ "$expected_image" != "$running_image" ]] && [[ -n "$expected_image" ]]; then
+                    echo -e "  ${YELLOW}~${NC} $svc: image drift"
+                    echo -e "      Expected: $expected_image"
+                    echo -e "      Running:  $running_image"
+                    has_drift=true
+                else
+                    echo -e "  ${GREEN}✓${NC} $svc"
+                fi
+            else
+                echo -e "  ${RED}✗${NC} $svc: not running (expected by $stack_name)"
+                has_drift=true
+            fi
+        done
+    done
+
+    # Check for orphaned containers (running but not in any manifest)
+    echo ""
+    echo -e "${BLUE}━━━ Orphaned Containers ━━━${NC}"
+
+    local all_expected=""
+    for stack in "$MANIFEST_DIR/stacks"/*.yml; do
+        [[ -f "$stack" ]] || continue
+        local stack_name=$(basename "$stack" .yml)
+        local compose_file="$MANIFEST_DIR/output/compose/${stack_name}.yml"
+        [[ -f "$compose_file" ]] || continue
+        all_expected="$all_expected $(grep -E "^  [a-z][a-z0-9-]+:$" "$compose_file" 2>/dev/null | sed 's/://g' | tr -d ' ')"
+    done
+
+    local orphans_found=false
+    for container in $running; do
+        # Skip known infrastructure
+        [[ "$container" =~ ^(traefik|authelia|gatus|bosun)$ ]] && continue
+
+        if ! echo "$all_expected" | grep -qw "$container"; then
+            echo -e "  ${YELLOW}?${NC} $container: not in any manifest"
+            orphans_found=true
+            has_drift=true
+        fi
+    done
+
+    if [[ "$orphans_found" == false ]]; then
+        echo -e "  ${GREEN}✓${NC} No orphaned containers"
+    fi
+
+    echo ""
+    if [[ "$has_drift" == true ]]; then
+        echo -e "${YELLOW}Drift detected. Run 'bosun yacht up' to reconcile.${NC}"
+        return 1
+    else
+        echo -e "${GREEN}✓ No drift - running state matches manifests${NC}"
+    fi
 }
 
 # Log command - release history
@@ -1109,6 +1206,9 @@ main() {
         log|ledger)
             cmd_log "${@:2}"
             ;;
+        drift|compass)
+            cmd_drift
+            ;;
         doctor|checkup)
             cmd_doctor
             ;;
@@ -1134,6 +1234,7 @@ main() {
             echo "  parrot      → radio"
             echo "  bridge      → status"
             echo "  ledger      → log"
+            echo "  compass     → drift"
             echo "  checkup     → doctor"
             echo "  inspect     → lint"
             echo "  mutiny      → mayday"
