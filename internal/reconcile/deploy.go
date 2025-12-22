@@ -20,9 +20,10 @@ const (
 
 // Deploy operation timeouts
 const (
-	SSHTimeout       = 30 * time.Second
-	RsyncTimeout     = 5 * time.Minute
-	ComposeUpTimeout = 10 * time.Minute
+	SSHConnectTimeout = 5 * time.Second
+	SSHTimeout        = 30 * time.Second
+	RsyncTimeout      = 5 * time.Minute
+	ComposeUpTimeout  = 10 * time.Minute
 )
 
 // DeployOps provides deployment operations including backup, rsync, and service management.
@@ -103,6 +104,89 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 	return fmt.Errorf("operation failed after %d attempts: %w", maxRetries, lastErr)
 }
 
+// CheckSSHConnectivity verifies SSH connectivity to a remote host.
+// Returns nil if connection succeeds, error with actionable details otherwise.
+func (d *DeployOps) CheckSSHConnectivity(ctx context.Context, host string) error {
+	// Apply timeout if context doesn't have one
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, SSHConnectTimeout)
+		defer cancel()
+	}
+
+	cmd := exec.CommandContext(ctx, "ssh",
+		"-o", "ConnectTimeout=5",
+		"-o", "BatchMode=yes",
+		host, "exit", "0",
+	)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		stderrStr := stderr.String()
+		return parseSSHError(err, stderrStr, host)
+	}
+	return nil
+}
+
+// parseSSHError converts SSH errors into actionable error messages.
+func parseSSHError(err error, stderr, host string) error {
+	stderrLower := strings.ToLower(stderr)
+
+	switch {
+	case strings.Contains(stderrLower, "permission denied"):
+		return fmt.Errorf("SSH authentication failed for %s: permission denied. Check that your SSH key is added to the remote host's authorized_keys", host)
+	case strings.Contains(stderrLower, "connection refused"):
+		return fmt.Errorf("SSH connection refused by %s: the SSH service may not be running or the port may be blocked", host)
+	case strings.Contains(stderrLower, "host key verification failed"):
+		return fmt.Errorf("SSH host key verification failed for %s: run 'ssh-keyscan %s >> ~/.ssh/known_hosts' to add the host key", host, host)
+	case strings.Contains(stderrLower, "no route to host"):
+		return fmt.Errorf("cannot reach %s: no route to host. Check network connectivity and that the host is online", host)
+	case strings.Contains(stderrLower, "connection timed out"):
+		return fmt.Errorf("SSH connection to %s timed out: check network connectivity and firewall rules", host)
+	case strings.Contains(stderrLower, "name or service not known"):
+		return fmt.Errorf("cannot resolve hostname %s: check that the hostname is correct and DNS is working", host)
+	default:
+		return fmt.Errorf("SSH connection to %s failed: %w: %s", host, err, stderr)
+	}
+}
+
+// VerifyBackup checks that a backup archive is valid and non-empty.
+func (d *DeployOps) VerifyBackup(backupPath string) error {
+	tarFile := filepath.Join(backupPath, "configs.tar.gz")
+
+	// Check file exists
+	info, err := os.Stat(tarFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("backup archive not found: %s", tarFile)
+		}
+		return fmt.Errorf("failed to stat backup archive: %w", err)
+	}
+
+	// Check file is non-empty
+	if info.Size() == 0 {
+		return fmt.Errorf("backup archive is empty: %s", tarFile)
+	}
+
+	// Verify archive integrity by listing contents
+	cmd := exec.Command("tar", "-tzf", tarFile)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("backup archive is corrupted: %w: %s", err, stderr.String())
+	}
+
+	// Check archive has at least one file
+	if strings.TrimSpace(stdout.String()) == "" {
+		return fmt.Errorf("backup archive contains no files: %s", tarFile)
+	}
+
+	return nil
+}
+
 // Backup creates a timestamped tar.gz backup of the specified paths.
 func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string) (string, error) {
 	timestamp := time.Now().Format("20060102-150405")
@@ -134,6 +218,11 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 
 	// tar returns non-zero if some files don't exist, which is OK.
 	_ = cmd.Run()
+
+	// Verify the backup was created successfully
+	if err := d.VerifyBackup(backupPath); err != nil {
+		return "", fmt.Errorf("backup verification failed: %w", err)
+	}
 
 	return backupName, nil
 }
@@ -168,6 +257,11 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 		cmd.Stdout = outFile
 		return cmd.Run()
 	})
+
+	// Verify the backup was created successfully
+	if err := d.VerifyBackup(backupPath); err != nil {
+		return "", fmt.Errorf("backup verification failed: %w", err)
+	}
 
 	return backupName, nil
 }

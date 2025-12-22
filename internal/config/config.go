@@ -5,7 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"gopkg.in/yaml.v3"
 )
+
+// defaultInfraContainers is the fallback list of infrastructure containers.
+var defaultInfraContainers = []string{"traefik", "authelia", "gatus"}
 
 // Config holds the bosun project configuration.
 type Config struct {
@@ -20,6 +25,16 @@ type Config struct {
 
 	// SnapshotsDir is the path to the snapshots directory.
 	SnapshotsDir string
+
+	// infraContainers holds the configured infrastructure container names.
+	infraContainers []string
+}
+
+// configFile represents the structure of .bosun/config.yml or bosun.yml.
+type configFile struct {
+	Infrastructure struct {
+		Containers []string `yaml:"containers"`
+	} `yaml:"infrastructure"`
 }
 
 // FindRoot searches upward from the current directory to find the project root.
@@ -65,13 +80,43 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		Root:         root,
-		ManifestDir:  filepath.Join(root, "manifest"),
-		ComposeFile:  filepath.Join(root, "bosun", "docker-compose.yml"),
-		SnapshotsDir: filepath.Join(root, "manifest", ".bosun", "snapshots"),
+		Root:            root,
+		ManifestDir:    filepath.Join(root, "manifest"),
+		ComposeFile:    filepath.Join(root, "bosun", "docker-compose.yml"),
+		SnapshotsDir:   filepath.Join(root, "manifest", ".bosun", "snapshots"),
+		infraContainers: loadInfraContainers(root),
 	}
 
 	return cfg, nil
+}
+
+// loadInfraContainers loads infrastructure container names from config files.
+// Checks for .bosun/config.yml or bosun.yml in the project root.
+// Falls back to default list if no config is found.
+func loadInfraContainers(root string) []string {
+	// Check for .bosun/config.yml first
+	configPaths := []string{
+		filepath.Join(root, ".bosun", "config.yml"),
+		filepath.Join(root, "bosun.yml"),
+	}
+
+	for _, path := range configPaths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+
+		var cfg configFile
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			continue
+		}
+
+		if len(cfg.Infrastructure.Containers) > 0 {
+			return cfg.Infrastructure.Containers
+		}
+	}
+
+	return defaultInfraContainers
 }
 
 // ProvisionsDir returns the path to the provisions directory.
@@ -92,4 +137,10 @@ func (c *Config) StacksDir() string {
 // OutputDir returns the path to the output directory.
 func (c *Config) OutputDir() string {
 	return filepath.Join(c.ManifestDir, "output")
+}
+
+// InfraContainers returns the list of infrastructure container names.
+// These containers are shown separately in status displays and excluded from orphan detection.
+func (c *Config) InfraContainers() []string {
+	return c.infraContainers
 }

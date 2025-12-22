@@ -9,10 +9,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"gopkg.in/yaml.v3"
 )
 
 // ErrAgeKeyNotFound is returned when no age key is found for SOPS decryption.
 var ErrAgeKeyNotFound = errors.New("age key not found")
+
+// ErrNotSOPSFile is returned when a file is not a valid SOPS-encrypted file.
+var ErrNotSOPSFile = errors.New("file is not SOPS-encrypted")
 
 // SOPSOps provides SOPS decryption operations.
 type SOPSOps struct{}
@@ -62,9 +67,40 @@ To fix:
   3. Or set SOPS_AGE_KEY environment variable with the key content`, ErrAgeKeyNotFound)
 }
 
+// ValidateSOPSFile checks if a file is a valid SOPS-encrypted file.
+// Returns nil if valid, or an actionable error describing the problem.
+func ValidateSOPSFile(path string) error {
+	// Check file exists
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("SOPS file not found: %s", path)
+		}
+		return fmt.Errorf("failed to read SOPS file: %w", err)
+	}
+
+	// Parse as YAML
+	var content map[string]any
+	if err := yaml.Unmarshal(data, &content); err != nil {
+		return fmt.Errorf("invalid YAML syntax in %s: %w", path, err)
+	}
+
+	// Check for SOPS metadata marker
+	if _, hasSOPS := content["sops"]; !hasSOPS {
+		return fmt.Errorf("%w: %s does not contain 'sops' metadata key. Encrypt it with: sops --encrypt --in-place %s", ErrNotSOPSFile, path, path)
+	}
+
+	return nil
+}
+
 // Decrypt decrypts a SOPS-encrypted file and returns the plaintext bytes.
-// It first checks that an age key is available.
+// It first validates the file is SOPS-encrypted and checks that an age key is available.
 func (s *SOPSOps) Decrypt(ctx context.Context, file string) ([]byte, error) {
+	// Validate SOPS file before attempting decryption
+	if err := ValidateSOPSFile(file); err != nil {
+		return nil, err
+	}
+
 	if err := s.CheckAgeKey(); err != nil {
 		return nil, err
 	}

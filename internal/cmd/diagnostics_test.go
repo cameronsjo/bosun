@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/cameronsjo/bosun/internal/config"
 )
 
 func TestStatusCmd_Help(t *testing.T) {
@@ -269,10 +271,34 @@ func TestExtractSection(t *testing.T) {
 	})
 }
 
-func TestInfraContainers(t *testing.T) {
-	assert.Contains(t, infraContainers, "traefik")
-	assert.Contains(t, infraContainers, "authelia")
-	assert.Contains(t, infraContainers, "gatus")
+func TestDefaultInfraContainers(t *testing.T) {
+	// Test that config package's default infra containers include expected values
+	// Load config from a directory without config file to get defaults
+	tmpDir := t.TempDir()
+
+	// Create manifest directory to enable config loading
+	manifestDir := filepath.Join(tmpDir, "manifest")
+	require.NoError(t, os.MkdirAll(manifestDir, 0755))
+
+	// Create bosun directory with docker-compose.yml
+	bosunDir := filepath.Join(tmpDir, "bosun")
+	require.NoError(t, os.MkdirAll(bosunDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(bosunDir, "docker-compose.yml"), []byte("version: '3'"), 0644))
+
+	// Change to project root
+	originalWd, err := os.Getwd()
+	require.NoError(t, err)
+	defer os.Chdir(originalWd)
+
+	require.NoError(t, os.Chdir(tmpDir))
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+
+	containers := cfg.InfraContainers()
+	assert.Contains(t, containers, "traefik")
+	assert.Contains(t, containers, "authelia")
+	assert.Contains(t, containers, "gatus")
 }
 
 func TestDetectCycles(t *testing.T) {
@@ -429,6 +455,224 @@ func TestBuildCyclePath(t *testing.T) {
 		// Should build path from a to c back to a
 		assert.Contains(t, path, "->")
 		assert.Contains(t, path, "a")
+	})
+}
+
+func TestParsePortString(t *testing.T) {
+	testCases := []struct {
+		name     string
+		input    string
+		expected []int
+	}{
+		{
+			name:     "short syntax",
+			input:    "80",
+			expected: []int{80},
+		},
+		{
+			name:     "standard mapping",
+			input:    "8080:80",
+			expected: []int{8080},
+		},
+		{
+			name:     "with tcp protocol",
+			input:    "8080:80/tcp",
+			expected: []int{8080},
+		},
+		{
+			name:     "with udp protocol",
+			input:    "53:53/udp",
+			expected: []int{53},
+		},
+		{
+			name:     "host-bound",
+			input:    "127.0.0.1:8080:80",
+			expected: []int{8080},
+		},
+		{
+			name:     "port range",
+			input:    "8000-8003:8000-8003",
+			expected: []int{8000, 8001, 8002, 8003},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := parsePortString(tc.input)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+
+	// Test empty/invalid cases separately with assert.Empty
+	t.Run("empty string", func(t *testing.T) {
+		result := parsePortString("")
+		assert.Empty(t, result)
+	})
+
+	t.Run("invalid format", func(t *testing.T) {
+		result := parsePortString("not:a:valid:port:format")
+		assert.Empty(t, result)
+	})
+}
+
+func TestParsePortEntry(t *testing.T) {
+	t.Run("integer port", func(t *testing.T) {
+		result := parsePortEntry(80)
+		assert.Equal(t, []int{80}, result)
+	})
+
+	t.Run("string port mapping", func(t *testing.T) {
+		result := parsePortEntry("8080:80")
+		assert.Equal(t, []int{8080}, result)
+	})
+
+	t.Run("long syntax map with int published", func(t *testing.T) {
+		entry := map[string]any{
+			"published": 8080,
+			"target":    80,
+		}
+		result := parsePortEntry(entry)
+		assert.Equal(t, []int{8080}, result)
+	})
+
+	t.Run("long syntax map with string published", func(t *testing.T) {
+		entry := map[string]any{
+			"published": "9090",
+			"target":    80,
+		}
+		result := parsePortEntry(entry)
+		assert.Equal(t, []int{9090}, result)
+	})
+
+	t.Run("map without published", func(t *testing.T) {
+		entry := map[string]any{
+			"target": 80,
+		}
+		result := parsePortEntry(entry)
+		assert.Empty(t, result)
+	})
+
+	t.Run("nil entry", func(t *testing.T) {
+		result := parsePortEntry(nil)
+		assert.Empty(t, result)
+	})
+}
+
+func TestExtractPorts(t *testing.T) {
+	t.Run("extract standard ports", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		composeFile := filepath.Join(tmpDir, "compose.yml")
+
+		content := `services:
+  web:
+    image: nginx
+    ports:
+      - "8080:80"
+      - "8443:443"
+  api:
+    image: myapi
+    ports:
+      - 3000
+`
+		require.NoError(t, os.WriteFile(composeFile, []byte(content), 0644))
+
+		ports := extractPorts(composeFile)
+
+		assert.Equal(t, "web", ports[8080])
+		assert.Equal(t, "web", ports[8443])
+		assert.Equal(t, "api", ports[3000])
+	})
+
+	t.Run("extract host-bound ports", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		composeFile := filepath.Join(tmpDir, "compose.yml")
+
+		content := `services:
+  web:
+    image: nginx
+    ports:
+      - "127.0.0.1:8080:80"
+`
+		require.NoError(t, os.WriteFile(composeFile, []byte(content), 0644))
+
+		ports := extractPorts(composeFile)
+
+		assert.Equal(t, "web", ports[8080])
+	})
+
+	t.Run("extract traefik labels", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		composeFile := filepath.Join(tmpDir, "compose.yml")
+
+		content := `services:
+  web:
+    image: nginx
+    labels:
+      traefik.http.services.web.loadbalancer.server.port: "8080"
+`
+		require.NoError(t, os.WriteFile(composeFile, []byte(content), 0644))
+
+		ports := extractPorts(composeFile)
+
+		assert.Equal(t, "web (traefik)", ports[8080])
+	})
+
+	t.Run("extract port ranges", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		composeFile := filepath.Join(tmpDir, "compose.yml")
+
+		content := `services:
+  web:
+    image: nginx
+    ports:
+      - "8000-8002:8000-8002"
+`
+		require.NoError(t, os.WriteFile(composeFile, []byte(content), 0644))
+
+		ports := extractPorts(composeFile)
+
+		assert.Equal(t, "web", ports[8000])
+		assert.Equal(t, "web", ports[8001])
+		assert.Equal(t, "web", ports[8002])
+	})
+
+	t.Run("non-existent file", func(t *testing.T) {
+		ports := extractPorts("/non/existent/file.yml")
+		assert.Empty(t, ports)
+	})
+
+	t.Run("invalid yaml", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		composeFile := filepath.Join(tmpDir, "compose.yml")
+
+		content := `not: valid: yaml: content`
+		require.NoError(t, os.WriteFile(composeFile, []byte(content), 0644))
+
+		ports := extractPorts(composeFile)
+		assert.Empty(t, ports)
+	})
+}
+
+func TestExtractPorts_LongSyntax(t *testing.T) {
+	t.Run("extract long syntax ports", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		composeFile := filepath.Join(tmpDir, "compose.yml")
+
+		content := `services:
+  web:
+    image: nginx
+    ports:
+      - published: 8080
+        target: 80
+      - published: "9090"
+        target: 90
+`
+		require.NoError(t, os.WriteFile(composeFile, []byte(content), 0644))
+
+		ports := extractPorts(composeFile)
+
+		assert.Equal(t, "web", ports[8080])
+		assert.Equal(t, "web", ports[9090])
 	})
 }
 

@@ -138,9 +138,32 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		return fmt.Errorf("deployment failed: %w", err)
 	}
 
+	// Step 6: Cleanup staging directory after successful deployment.
+	if err := r.cleanupStaging(); err != nil {
+		ui.Warning("Failed to cleanup staging directory: %v", err)
+	}
+
 	duration := time.Since(startTime)
 	ui.Success("=== Reconciliation completed in %s ===", duration.Round(time.Second))
 
+	return nil
+}
+
+// cleanupStaging removes the staging directory after successful deployment.
+func (r *Reconciler) cleanupStaging() error {
+	if r.config.DryRun {
+		return nil
+	}
+
+	if r.config.StagingDir == "" {
+		return nil
+	}
+
+	if err := os.RemoveAll(r.config.StagingDir); err != nil {
+		return fmt.Errorf("failed to remove staging directory: %w", err)
+	}
+
+	ui.Info("Cleaned up staging directory")
 	return nil
 }
 
