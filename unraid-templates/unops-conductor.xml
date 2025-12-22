@@ -1,0 +1,199 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>unops-conductor</Name>
+  <Repository>ghcr.io/cameronsjo/unops-conductor</Repository>
+  <Registry>https://github.com/cameronsjo/unops/pkgs/container/unops-conductor</Registry>
+  <Branch>
+    <Tag>latest</Tag>
+    <TagDescription>Latest stable release</TagDescription>
+  </Branch>
+  <Branch>
+    <Tag>main</Tag>
+    <TagDescription>Development build from main branch</TagDescription>
+  </Branch>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/cameronsjo/unops/issues</Support>
+  <Project>https://github.com/cameronsjo/unops</Project>
+  <Overview>
+    Helm for home. GitOps for Docker Compose on bare metal.&#xD;
+    &#xD;
+    Push to GitHub, your server updates. Encrypted secrets with SOPS + Age.&#xD;
+    Templated configs with Chezmoi. Instant webhook deploys with polling fallback.&#xD;
+    &#xD;
+    git push → webhook → decrypt → render → docker compose up&#xD;
+    &#xD;
+    Features:&#xD;
+    - GitHub webhook receiver for instant deploys&#xD;
+    - SOPS + Age for encrypted secrets&#xD;
+    - Chezmoi for template rendering&#xD;
+    - Hourly polling as fallback&#xD;
+    - Discord notifications&#xD;
+    - Health check endpoint
+  </Overview>
+  <Category>Tools: Productivity:</Category>
+  <Icon>https://raw.githubusercontent.com/cameronsjo/unops/main/assets/icon.png</Icon>
+  <ExtraParams>--restart=unless-stopped</ExtraParams>
+  <PostArgs/>
+  <Requires>
+    Requires a GitHub repository with your Docker Compose configs.&#xD;
+    Requires an Age key for SOPS secret decryption.&#xD;
+    Optional: Tailscale for webhook exposure, Discord for notifications.
+  </Requires>
+  <DonateText/>
+  <DonateLink/>
+  <DonateImg/>
+  <WebUI>http://[IP]:[PORT:8080]/health</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/cameronsjo/unops/main/unraid-templates/unops-conductor.xml</TemplateURL>
+
+  <!-- Required Configuration -->
+  <Config
+    Name="Config Path"
+    Target="/config"
+    Default="/mnt/user/appdata/unops-conductor"
+    Mode="rw"
+    Description="Configuration and state directory. Contains age key, repo clone, rendered configs."
+    Type="Path"
+    Display="always"
+    Required="true"
+    Mask="false"/>
+
+  <Config
+    Name="Git Repository URL"
+    Target="UNOPS_REPO_URL"
+    Default=""
+    Mode=""
+    Description="HTTPS URL to your GitOps config repository (e.g., https://github.com/user/infrastructure.git)"
+    Type="Variable"
+    Display="always"
+    Required="true"
+    Mask="false"/>
+
+  <Config
+    Name="Git Branch"
+    Target="UNOPS_REPO_BRANCH"
+    Default="main"
+    Mode=""
+    Description="Branch to track (default: main)"
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false"/>
+
+  <Config
+    Name="Webhook Port"
+    Target="8080"
+    Default="8080"
+    Mode="tcp"
+    Description="Port for GitHub webhook listener and health endpoint"
+    Type="Port"
+    Display="always"
+    Required="true"
+    Mask="false"/>
+
+  <!-- Secrets Configuration -->
+  <Config
+    Name="Age Key File"
+    Target="SOPS_AGE_KEY_FILE"
+    Default="/config/age-key.txt"
+    Mode=""
+    Description="Path to Age private key for SOPS decryption. Generate with: age-keygen -o age-key.txt"
+    Type="Variable"
+    Display="always"
+    Required="true"
+    Mask="false"/>
+
+  <Config
+    Name="GitHub Webhook Secret"
+    Target="GITHUB_WEBHOOK_SECRET"
+    Default=""
+    Mode=""
+    Description="Secret for validating GitHub webhook signatures. Must match webhook config in GitHub."
+    Type="Variable"
+    Display="always"
+    Required="true"
+    Mask="true"/>
+
+  <!-- Docker Access -->
+  <Config
+    Name="Docker Socket"
+    Target="/var/run/docker.sock"
+    Default="/var/run/docker.sock"
+    Mode="rw"
+    Description="Docker socket for running compose commands. Required for deployments."
+    Type="Path"
+    Display="advanced"
+    Required="true"
+    Mask="false"/>
+
+  <Config
+    Name="Compose Projects Path"
+    Target="/compose"
+    Default="/boot/config/plugins/compose.manager/projects"
+    Mode="rw"
+    Description="Path to Docker Compose Manager projects (Unraid default shown)"
+    Type="Path"
+    Display="advanced"
+    Required="false"
+    Mask="false"/>
+
+  <!-- Optional: Notifications -->
+  <Config
+    Name="Discord Webhook URL"
+    Target="DISCORD_WEBHOOK_URL"
+    Default=""
+    Mode=""
+    Description="Discord webhook URL for deployment notifications (optional)"
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="true"/>
+
+  <!-- Optional: Polling -->
+  <Config
+    Name="Poll Interval"
+    Target="UNOPS_POLL_INTERVAL"
+    Default="3600"
+    Mode=""
+    Description="Seconds between git poll checks (default: 3600 = 1 hour). Set to 0 to disable."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false"/>
+
+  <!-- Optional: Paths -->
+  <Config
+    Name="Secrets File"
+    Target="UNOPS_SECRETS_FILE"
+    Default="secrets.yaml.sops"
+    Mode=""
+    Description="Path to encrypted secrets file in repo (relative to repo root)"
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false"/>
+
+  <Config
+    Name="Compose Directory"
+    Target="UNOPS_COMPOSE_DIR"
+    Default="compose"
+    Mode=""
+    Description="Directory containing compose templates in repo (relative to repo root)"
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false"/>
+
+  <!-- Timezone -->
+  <Config
+    Name="Timezone"
+    Target="TZ"
+    Default="America/Chicago"
+    Mode=""
+    Description="Container timezone for logs"
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false"/>
+
+</Container>

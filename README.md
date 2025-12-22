@@ -314,6 +314,11 @@ See [ADR-0004: Multi-Server Monorepo](docs/adr/0004-multi-server-monorepo.md).
 - Age key for encryption
 - (Optional) Tailscale or Cloudflare account
 
+## Guides
+
+- [Unraid Setup Guide](docs/guides/unraid-setup.md) - Complete walkthrough for Unraid
+- [Unraid Templates](unraid-templates/) - Community Apps templates
+
 ---
 
 ## Prior Art
