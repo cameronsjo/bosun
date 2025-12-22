@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+#
+# bosun - Helm for home
+#
+# Usage: bosun <command> [args]
+#
+set -euo pipefail
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Find project root (where bosun/ directory lives)
+find_root() {
+    local dir="$PWD"
+    while [[ "$dir" != "/" ]]; do
+        if [[ -d "$dir/bosun" ]] && [[ -f "$dir/bosun/docker-compose.yml" ]]; then
+            echo "$dir"
+            return 0
+        fi
+        dir="$(dirname "$dir")"
+    done
+    echo ""
+}
+
+ROOT=$(find_root)
+COMPOSE_FILE="${ROOT:-.}/bosun/docker-compose.yml"
+MANIFEST_DIR="${ROOT:-.}/manifest"
+
+# Help text
+usage() {
+    cat << 'EOF'
+bosun - Helm for home
+
+YACHT COMMANDS
+  yacht up              Start the yacht (docker compose up -d)
+  yacht down            Dock the yacht (docker compose down)
+  yacht restart         Quick turnaround
+  yacht status          Check if we're seaworthy
+
+CREW COMMANDS
+  crew list             Show all hands on deck (docker ps)
+  crew logs [name]      Tail crew member logs
+  crew inspect [name]   Detailed crew info
+  crew restart [name]   Send crew member for coffee break
+
+MANIFEST COMMANDS
+  provision [stack]     Render manifest to compose/traefik/gatus
+  provisions            List available provisions
+
+COMMS COMMANDS
+  radio test            Test webhook endpoint
+  radio status          Check Tailscale/tunnel status
+
+EMERGENCY
+  mayday                Show recent errors across all crew
+  overboard [name]      Force remove a problematic container
+
+OPTIONS
+  -h, --help            Show this help
+  -v, --version         Show version
+EOF
+}
+
+# Yacht commands
+cmd_yacht() {
+    local action="${1:-status}"
+
+    case "$action" in
+        up)
+            echo -e "${GREEN}⚓ Raising anchor...${NC}"
+            docker compose -f "$COMPOSE_FILE" up -d "${@:2}"
+            echo -e "${GREEN}⚓ Yacht is underway!${NC}"
+            ;;
+        down)
+            echo -e "${YELLOW}⚓ Dropping anchor...${NC}"
+            docker compose -f "$COMPOSE_FILE" down "${@:2}"
+            echo -e "${YELLOW}⚓ Yacht is docked.${NC}"
+            ;;
+        restart)
+            echo -e "${BLUE}⚓ Quick turnaround...${NC}"
+            docker compose -f "$COMPOSE_FILE" restart "${@:2}"
+            ;;
+        status)
+            docker compose -f "$COMPOSE_FILE" ps
+            ;;
+        *)
+            echo -e "${RED}Unknown yacht command: $action${NC}"
+            echo "Try: up, down, restart, status"
+            exit 1
+            ;;
+    esac
+}
+
+# Crew commands
+cmd_crew() {
+    local action="${1:-list}"
+
+    case "$action" in
+        list)
+            docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" "${@:2}"
+            ;;
+        logs)
+            if [[ -z "${2:-}" ]]; then
+                echo -e "${RED}Specify crew member name${NC}"
+                exit 1
+            fi
+            docker logs -f "$2" "${@:3}"
+            ;;
+        inspect)
+            if [[ -z "${2:-}" ]]; then
+                echo -e "${RED}Specify crew member name${NC}"
+                exit 1
+            fi
+            docker inspect "$2" "${@:3}"
+            ;;
+        restart)
+            if [[ -z "${2:-}" ]]; then
+                echo -e "${RED}Specify crew member name${NC}"
+                exit 1
+            fi
+            echo -e "${BLUE}☕ Sending $2 for a coffee break...${NC}"
+            docker restart "$2"
+            ;;
+        *)
+            echo -e "${RED}Unknown crew command: $action${NC}"
+            echo "Try: list, logs, inspect, restart"
+            exit 1
+            ;;
+    esac
+}
+
+# Manifest/provision commands
+cmd_provision() {
+    local stack="${1:-}"
+
+    if [[ -z "$stack" ]]; then
+        echo -e "${RED}Specify a stack to provision${NC}"
+        echo "Example: bosun provision stacks/apps.yml"
+        exit 1
+    fi
+
+    echo -e "${GREEN}📦 Provisioning $stack...${NC}"
+    cd "$MANIFEST_DIR"
+    uv run manifest.py render "$stack"
+}
+
+cmd_provisions() {
+    echo -e "${BLUE}Available provisions:${NC}"
+    cd "$MANIFEST_DIR"
+    uv run manifest.py provisions
+}
+
+# Radio commands
+cmd_radio() {
+    local action="${1:-status}"
+
+    case "$action" in
+        test)
+            echo -e "${BLUE}📻 Testing radio...${NC}"
+            if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+                echo -e "${GREEN}📻 Radio is loud and clear!${NC}"
+            else
+                echo -e "${RED}📻 Radio silence. Check webhook container.${NC}"
+                exit 1
+            fi
+            ;;
+        status)
+            echo -e "${BLUE}📻 Checking comms...${NC}"
+            if command -v tailscale &> /dev/null; then
+                tailscale status
+            else
+                echo "Tailscale not installed locally"
+            fi
+            ;;
+        *)
+            echo -e "${RED}Unknown radio command: $action${NC}"
+            echo "Try: test, status"
+            exit 1
+            ;;
+    esac
+}
+
+# Emergency commands
+cmd_mayday() {
+    echo -e "${RED}🆘 MAYDAY - Recent errors across all crew:${NC}"
+    docker ps -q | xargs -I {} docker logs --tail 20 {} 2>&1 | grep -iE "(error|fatal|panic|exception)" | tail -50 || echo "No recent errors found"
+}
+
+cmd_overboard() {
+    local name="${1:-}"
+
+    if [[ -z "$name" ]]; then
+        echo -e "${RED}Specify container to throw overboard${NC}"
+        exit 1
+    fi
+
+    echo -e "${RED}🌊 Man overboard! Removing $name...${NC}"
+    docker rm -f "$name"
+}
+
+# Main
+main() {
+    if [[ $# -eq 0 ]]; then
+        usage
+        exit 0
+    fi
+
+    case "$1" in
+        yacht)
+            cmd_yacht "${@:2}"
+            ;;
+        crew)
+            cmd_crew "${@:2}"
+            ;;
+        provision)
+            cmd_provision "${@:2}"
+            ;;
+        provisions)
+            cmd_provisions
+            ;;
+        radio)
+            cmd_radio "${@:2}"
+            ;;
+        mayday)
+            cmd_mayday
+            ;;
+        overboard)
+            cmd_overboard "${@:2}"
+            ;;
+        -h|--help|help)
+            usage
+            ;;
+        -v|--version|version)
+            echo "bosun 0.1.0"
+            ;;
+        *)
+            echo -e "${RED}Unknown command: $1${NC}"
+            echo "Run 'bosun --help' for usage"
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
