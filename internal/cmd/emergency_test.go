@@ -109,3 +109,20 @@ func TestStripDockerLogPrefix(t *testing.T) {
 		assert.Equal(t, line, result)
 	})
 }
+
+func TestRestoreCmd_Help(t *testing.T) {
+	t.Run("restore --help", func(t *testing.T) {
+		output, err := executeCmd(t, "restore", "--help")
+		assert.NoError(t, err)
+		assert.Contains(t, output, "Restore")
+		assert.Contains(t, output, "backup")
+		assert.Contains(t, output, "--list")
+	})
+}
+
+func TestRestoreCmd_Flags(t *testing.T) {
+	t.Run("has list flag", func(t *testing.T) {
+		resetRootCmd(t)
+		assert.False(t, restoreList) // default value
+	})
+}

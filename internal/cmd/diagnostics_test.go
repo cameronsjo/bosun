@@ -274,3 +274,221 @@ func TestInfraContainers(t *testing.T) {
 	assert.Contains(t, infraContainers, "authelia")
 	assert.Contains(t, infraContainers, "gatus")
 }
+
+func TestDetectCycles(t *testing.T) {
+	t.Run("no cycles", func(t *testing.T) {
+		graph := map[string][]string{
+			"a": {"b"},
+			"b": {"c"},
+			"c": {},
+		}
+		cycles := detectCycles(graph)
+		assert.Empty(t, cycles)
+	})
+
+	t.Run("simple cycle", func(t *testing.T) {
+		graph := map[string][]string{
+			"a": {"b"},
+			"b": {"a"},
+		}
+		cycles := detectCycles(graph)
+		assert.Len(t, cycles, 1)
+		// The cycle should contain both a and b
+		assert.Contains(t, cycles[0], "a")
+		assert.Contains(t, cycles[0], "b")
+	})
+
+	t.Run("self cycle", func(t *testing.T) {
+		graph := map[string][]string{
+			"a": {"a"},
+		}
+		cycles := detectCycles(graph)
+		assert.Len(t, cycles, 1)
+		assert.Contains(t, cycles[0], "a")
+	})
+
+	t.Run("larger cycle", func(t *testing.T) {
+		graph := map[string][]string{
+			"a": {"b"},
+			"b": {"c"},
+			"c": {"a"},
+		}
+		cycles := detectCycles(graph)
+		assert.Len(t, cycles, 1)
+		assert.Contains(t, cycles[0], "a")
+		assert.Contains(t, cycles[0], "b")
+		assert.Contains(t, cycles[0], "c")
+	})
+
+	t.Run("empty graph", func(t *testing.T) {
+		graph := map[string][]string{}
+		cycles := detectCycles(graph)
+		assert.Empty(t, cycles)
+	})
+
+	t.Run("disconnected with one cycle", func(t *testing.T) {
+		graph := map[string][]string{
+			"a": {"b"},
+			"b": {},
+			"c": {"d"},
+			"d": {"c"},
+		}
+		cycles := detectCycles(graph)
+		assert.Len(t, cycles, 1)
+		// Should find the c-d cycle
+		assert.Contains(t, cycles[0], "c")
+		assert.Contains(t, cycles[0], "d")
+	})
+}
+
+func TestExtractDependencyGraph(t *testing.T) {
+	t.Run("extract list format depends_on", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		composeFile := filepath.Join(tmpDir, "compose.yml")
+
+		content := `services:
+  web:
+    image: nginx
+    depends_on:
+      - db
+      - redis
+  db:
+    image: postgres
+  redis:
+    image: redis
+`
+		require.NoError(t, os.WriteFile(composeFile, []byte(content), 0644))
+
+		graph := extractDependencyGraph(composeFile)
+
+		assert.Len(t, graph, 3)
+		assert.ElementsMatch(t, []string{"db", "redis"}, graph["web"])
+		assert.Empty(t, graph["db"])
+		assert.Empty(t, graph["redis"])
+	})
+
+	t.Run("extract map format depends_on", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		composeFile := filepath.Join(tmpDir, "compose.yml")
+
+		content := `services:
+  web:
+    image: nginx
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+  db:
+    image: postgres
+  redis:
+    image: redis
+`
+		require.NoError(t, os.WriteFile(composeFile, []byte(content), 0644))
+
+		graph := extractDependencyGraph(composeFile)
+
+		assert.Len(t, graph, 3)
+		assert.Len(t, graph["web"], 2)
+		assert.Contains(t, graph["web"], "db")
+		assert.Contains(t, graph["web"], "redis")
+	})
+
+	t.Run("no depends_on", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		composeFile := filepath.Join(tmpDir, "compose.yml")
+
+		content := `services:
+  web:
+    image: nginx
+  db:
+    image: postgres
+`
+		require.NoError(t, os.WriteFile(composeFile, []byte(content), 0644))
+
+		graph := extractDependencyGraph(composeFile)
+
+		assert.Len(t, graph, 2)
+		assert.Empty(t, graph["web"])
+		assert.Empty(t, graph["db"])
+	})
+
+	t.Run("non-existent file", func(t *testing.T) {
+		graph := extractDependencyGraph("/non/existent/file.yml")
+		assert.Empty(t, graph)
+	})
+}
+
+func TestBuildCyclePath(t *testing.T) {
+	t.Run("simple path", func(t *testing.T) {
+		parent := map[string]string{
+			"b": "a",
+			"c": "b",
+		}
+		path := buildCyclePath("c", "a", parent)
+		// Should build path from a to c back to a
+		assert.Contains(t, path, "->")
+		assert.Contains(t, path, "a")
+	})
+}
+
+func TestNormalizeImage(t *testing.T) {
+	testCases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "simple image with tag",
+			input:    "nginx:latest",
+			expected: "nginx",
+		},
+		{
+			name:     "image with digest",
+			input:    "nginx@sha256:abc123def456",
+			expected: "nginx",
+		},
+		{
+			name:     "image with tag and digest",
+			input:    "nginx:latest@sha256:abc123def456",
+			expected: "nginx",
+		},
+		{
+			name:     "registry with port and tag",
+			input:    "localhost:5000/myimage:v1",
+			expected: "localhost:5000/myimage",
+		},
+		{
+			name:     "registry with port and digest",
+			input:    "localhost:5000/myimage@sha256:abc123",
+			expected: "localhost:5000/myimage",
+		},
+		{
+			name:     "gcr registry with tag",
+			input:    "gcr.io/project/image:v2.0.0",
+			expected: "gcr.io/project/image",
+		},
+		{
+			name:     "ghcr registry with tag",
+			input:    "ghcr.io/owner/repo:latest",
+			expected: "ghcr.io/owner/repo",
+		},
+		{
+			name:     "image without tag or digest",
+			input:    "nginx",
+			expected: "nginx",
+		},
+		{
+			name:     "multi-path registry image",
+			input:    "registry.example.com:5000/org/repo/image:tag",
+			expected: "registry.example.com:5000/org/repo/image",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := normalizeImage(tc.input)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}

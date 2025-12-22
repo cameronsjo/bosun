@@ -4,9 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 )
+
+// ErrAgeKeyNotFound is returned when no age key is found for SOPS decryption.
+var ErrAgeKeyNotFound = errors.New("age key not found")
 
 // SOPSOps provides SOPS decryption operations.
 type SOPSOps struct{}
@@ -16,8 +22,53 @@ func NewSOPSOps() *SOPSOps {
 	return &SOPSOps{}
 }
 
+// CheckAgeKey verifies that an age key is available for SOPS decryption.
+// It checks in order:
+//  1. SOPS_AGE_KEY environment variable
+//  2. SOPS_AGE_KEY_FILE environment variable
+//  3. Default location: ~/.config/sops/age/keys.txt
+//
+// Returns nil if a key is found, or an error with setup instructions if not.
+func (s *SOPSOps) CheckAgeKey() error {
+	// Check SOPS_AGE_KEY environment variable
+	if key := os.Getenv("SOPS_AGE_KEY"); key != "" {
+		return nil
+	}
+
+	// Check SOPS_AGE_KEY_FILE environment variable
+	if keyFile := os.Getenv("SOPS_AGE_KEY_FILE"); keyFile != "" {
+		if _, err := os.Stat(keyFile); err == nil {
+			return nil
+		}
+		return fmt.Errorf("%w: SOPS_AGE_KEY_FILE is set to %q but file does not exist.\n\nTo fix:\n  1. Create the key file at the specified path\n  2. Or set SOPS_AGE_KEY_FILE to an existing key file\n  3. Or run: age-keygen -o ~/.config/sops/age/keys.txt", ErrAgeKeyNotFound, keyFile)
+	}
+
+	// Check default location
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("%w: unable to determine home directory: %v\n\nTo fix:\n  1. Set SOPS_AGE_KEY environment variable with the key content\n  2. Or set SOPS_AGE_KEY_FILE=/path/to/key", ErrAgeKeyNotFound, err)
+	}
+
+	defaultKeyPath := filepath.Join(homeDir, ".config", "sops", "age", "keys.txt")
+	if _, err := os.Stat(defaultKeyPath); err == nil {
+		return nil
+	}
+
+	return fmt.Errorf(`%w
+
+To fix:
+  1. Generate key: age-keygen -o ~/.config/sops/age/keys.txt
+  2. Or set SOPS_AGE_KEY_FILE=/path/to/key
+  3. Or set SOPS_AGE_KEY environment variable with the key content`, ErrAgeKeyNotFound)
+}
+
 // Decrypt decrypts a SOPS-encrypted file and returns the plaintext bytes.
+// It first checks that an age key is available.
 func (s *SOPSOps) Decrypt(ctx context.Context, file string) ([]byte, error) {
+	if err := s.CheckAgeKey(); err != nil {
+		return nil, err
+	}
+
 	cmd := exec.CommandContext(ctx, "sops", "--input-type", "yaml", "--output-type", "json", "-d", file)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -30,7 +81,12 @@ func (s *SOPSOps) Decrypt(ctx context.Context, file string) ([]byte, error) {
 }
 
 // DecryptToMap decrypts a SOPS-encrypted file and returns the data as a map.
+// It first checks that an age key is available.
 func (s *SOPSOps) DecryptToMap(ctx context.Context, file string) (map[string]any, error) {
+	if err := s.CheckAgeKey(); err != nil {
+		return nil, err
+	}
+
 	data, err := s.Decrypt(ctx, file)
 	if err != nil {
 		return nil, err

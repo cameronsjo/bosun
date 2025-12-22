@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -324,5 +325,124 @@ func TestDeployOps_SignalContainerRemote(t *testing.T) {
 		err := deploy.SignalContainerRemote(ctx, "host", "container", "SIGHUP")
 
 		require.NoError(t, err)
+	})
+}
+
+func TestIsTransientSSHError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{"nil error", nil, false},
+		{"connection refused", fmt.Errorf("ssh: connect to host: Connection refused"), true},
+		{"connection reset", fmt.Errorf("connection reset by peer"), true},
+		{"connection timed out", fmt.Errorf("ssh: connection timed out"), true},
+		{"network unreachable", fmt.Errorf("network is unreachable"), true},
+		{"no route to host", fmt.Errorf("no route to host"), true},
+		{"host is down", fmt.Errorf("host is down"), true},
+		{"i/o timeout", fmt.Errorf("dial tcp: i/o timeout"), true},
+		{"temporary failure", fmt.Errorf("temporary failure in name resolution"), true},
+		{"permission denied", fmt.Errorf("permission denied (publickey)"), false},
+		{"authentication failure", fmt.Errorf("authentication failed"), false},
+		{"file not found", fmt.Errorf("file not found"), false},
+		{"generic error", fmt.Errorf("some other error"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isTransientSSHError(tt.err)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestRetryWithBackoff(t *testing.T) {
+	t.Run("succeeds on first attempt", func(t *testing.T) {
+		ctx := context.Background()
+		attempts := 0
+
+		err := retryWithBackoff(ctx, 3, func() error {
+			attempts++
+			return nil
+		})
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, attempts)
+	})
+
+	t.Run("retries on transient error and succeeds", func(t *testing.T) {
+		ctx := context.Background()
+		attempts := 0
+
+		err := retryWithBackoff(ctx, 3, func() error {
+			attempts++
+			if attempts < 2 {
+				return fmt.Errorf("connection refused")
+			}
+			return nil
+		})
+
+		require.NoError(t, err)
+		assert.Equal(t, 2, attempts)
+	})
+
+	t.Run("fails immediately on non-transient error", func(t *testing.T) {
+		ctx := context.Background()
+		attempts := 0
+
+		err := retryWithBackoff(ctx, 3, func() error {
+			attempts++
+			return fmt.Errorf("permission denied")
+		})
+
+		require.Error(t, err)
+		assert.Equal(t, 1, attempts)
+		assert.Contains(t, err.Error(), "permission denied")
+	})
+
+	t.Run("exhausts retries on persistent transient error", func(t *testing.T) {
+		ctx := context.Background()
+		attempts := 0
+
+		err := retryWithBackoff(ctx, 3, func() error {
+			attempts++
+			return fmt.Errorf("connection refused")
+		})
+
+		require.Error(t, err)
+		assert.Equal(t, 3, attempts)
+		assert.Contains(t, err.Error(), "operation failed after 3 attempts")
+	})
+
+	t.Run("respects context cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		attempts := 0
+
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+		}()
+
+		err := retryWithBackoff(ctx, 5, func() error {
+			attempts++
+			return fmt.Errorf("connection refused")
+		})
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("uses default max retries when zero", func(t *testing.T) {
+		ctx := context.Background()
+		attempts := 0
+
+		err := retryWithBackoff(ctx, 0, func() error {
+			attempts++
+			return fmt.Errorf("connection refused")
+		})
+
+		require.Error(t, err)
+		assert.Equal(t, DefaultMaxRetries, attempts)
 	})
 }

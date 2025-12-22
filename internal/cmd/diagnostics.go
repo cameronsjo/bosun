@@ -2,7 +2,6 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/docker"
@@ -305,7 +305,8 @@ func runDrift(cmd *cobra.Command, args []string) {
 
 			runningImage, isRunning := runningNames[svc]
 			if isRunning {
-				if expectedImage != "" && runningImage != expectedImage {
+				// Use normalized comparison to avoid false positives from tag vs digest
+				if expectedImage != "" && normalizeImage(runningImage) != normalizeImage(expectedImage) {
 					ui.Yellow.Printf("  ~ %s: image drift\n", svc)
 					fmt.Printf("      Expected: %s\n", expectedImage)
 					fmt.Printf("      Running:  %s\n", runningImage)
@@ -607,6 +608,19 @@ func runLint(cmd *cobra.Command, args []string) {
 		errors += portConflicts
 	}
 
+	// Check for dependency cycles
+	fmt.Println()
+	fmt.Println("Checking for dependency cycles:")
+	cycles := checkDependencyCycles(cfg)
+	if len(cycles) == 0 {
+		ui.Green.Println("  * No dependency cycles detected")
+	} else {
+		for _, cycle := range cycles {
+			ui.Red.Printf("  x Cycle detected: %s\n", cycle)
+		}
+		errors += len(cycles)
+	}
+
 	// Summary
 	fmt.Println()
 	if errors > 0 {
@@ -649,58 +663,52 @@ func showProvisionTimestamps(outputDir, manifestDir string) {
 	})
 }
 
+// ComposeFile represents a Docker Compose file structure for YAML parsing.
+type ComposeFile struct {
+	Services map[string]struct {
+		Image string `yaml:"image"`
+	} `yaml:"services"`
+}
+
 func extractServicesFromCompose(filename string) map[string]string {
 	services := make(map[string]string)
 
-	file, err := os.Open(filename)
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		return services
 	}
-	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
-	inServices := false
-	currentService := ""
-	serviceIndent := 0
+	var compose ComposeFile
+	if err := yaml.Unmarshal(data, &compose); err != nil {
+		return services
+	}
 
-	serviceRegex := regexp.MustCompile(`^(\s*)([a-z][a-z0-9-]+):$`)
-	imageRegex := regexp.MustCompile(`^\s*image:\s*(.+)$`)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// Check for services: section
-		if strings.TrimSpace(line) == "services:" {
-			inServices = true
-			continue
-		}
-
-		if !inServices {
-			continue
-		}
-
-		// Check for service definition (2-space indent under services)
-		if matches := serviceRegex.FindStringSubmatch(line); matches != nil {
-			indent := len(matches[1])
-			if indent == 2 { // Service definition
-				currentService = matches[2]
-				serviceIndent = indent
-				services[currentService] = ""
-			} else if indent <= serviceIndent && currentService != "" {
-				// New section at same or lower indent
-				currentService = ""
-			}
-		}
-
-		// Check for image: line
-		if currentService != "" {
-			if matches := imageRegex.FindStringSubmatch(line); matches != nil {
-				services[currentService] = strings.TrimSpace(matches[1])
-			}
-		}
+	for name, svc := range compose.Services {
+		services[name] = svc.Image
 	}
 
 	return services
+}
+
+// normalizeImage extracts the base image name for comparison, stripping tags and digests.
+// Handles formats: image:tag, image@sha256:..., registry/image:tag
+func normalizeImage(image string) string {
+	// Strip digest (image@sha256:...)
+	if idx := strings.Index(image, "@"); idx != -1 {
+		image = image[:idx]
+	}
+
+	// Strip tag (image:tag)
+	if idx := strings.LastIndex(image, ":"); idx != -1 {
+		// Ensure we're not stripping a port from a registry (e.g., localhost:5000/image)
+		// Check if there's a slash after the colon, which would indicate registry:port/image
+		afterColon := image[idx+1:]
+		if !strings.Contains(afterColon, "/") {
+			image = image[:idx]
+		}
+	}
+
+	return image
 }
 
 func validateServiceFile(filename, manifestDir string) bool {
@@ -873,6 +881,138 @@ func extractSection(content, serviceName string) string {
 	}
 
 	return section.String()
+}
+
+// checkDependencyCycles checks rendered compose files for dependency cycles.
+func checkDependencyCycles(cfg *config.Config) []string {
+	var allCycles []string
+
+	// Check rendered compose files in output directory
+	composeDir := filepath.Join(cfg.OutputDir(), "compose")
+	composeFiles, _ := filepath.Glob(filepath.Join(composeDir, "*.yml"))
+
+	for _, composeFile := range composeFiles {
+		depGraph := extractDependencyGraph(composeFile)
+		if len(depGraph) == 0 {
+			continue
+		}
+
+		cycles := detectCycles(depGraph)
+		allCycles = append(allCycles, cycles...)
+	}
+
+	return allCycles
+}
+
+// ComposeFileWithDeps represents a Docker Compose file with dependencies for YAML parsing.
+type ComposeFileWithDeps struct {
+	Services map[string]struct {
+		DependsOn any `yaml:"depends_on"`
+	} `yaml:"services"`
+}
+
+// extractDependencyGraph parses a compose file and returns a map of service -> dependencies.
+func extractDependencyGraph(filename string) map[string][]string {
+	graph := make(map[string][]string)
+
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return graph
+	}
+
+	var compose ComposeFileWithDeps
+	if err := yaml.Unmarshal(data, &compose); err != nil {
+		return graph
+	}
+
+	for svc, svcCfg := range compose.Services {
+		graph[svc] = []string{}
+
+		if svcCfg.DependsOn == nil {
+			continue
+		}
+
+		// depends_on can be either a list or a map
+		switch deps := svcCfg.DependsOn.(type) {
+		case []any:
+			for _, d := range deps {
+				if depName, ok := d.(string); ok {
+					graph[svc] = append(graph[svc], depName)
+				}
+			}
+		case map[string]any:
+			for depName := range deps {
+				graph[svc] = append(graph[svc], depName)
+			}
+		}
+	}
+
+	return graph
+}
+
+// detectCycles uses depth-first search with coloring to detect cycles in a dependency graph.
+// Returns a list of cycle descriptions (e.g., "a -> b -> c -> a").
+func detectCycles(graph map[string][]string) []string {
+	// Node colors: white (0) = unvisited, gray (1) = in progress, black (2) = done
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+
+	color := make(map[string]int)
+	parent := make(map[string]string)
+	var cycles []string
+	cycleSet := make(map[string]bool) // Deduplicate cycles
+
+	var dfs func(node string)
+	dfs = func(node string) {
+		color[node] = gray
+
+		for _, neighbor := range graph[node] {
+			if color[neighbor] == gray {
+				// Back edge found - construct cycle
+				cycle := buildCyclePath(node, neighbor, parent)
+				if !cycleSet[cycle] {
+					cycleSet[cycle] = true
+					cycles = append(cycles, cycle)
+				}
+			} else if color[neighbor] == white {
+				parent[neighbor] = node
+				dfs(neighbor)
+			}
+		}
+
+		color[node] = black
+	}
+
+	// Run DFS from each node
+	for node := range graph {
+		if color[node] == white {
+			dfs(node)
+		}
+	}
+
+	return cycles
+}
+
+// buildCyclePath constructs a cycle path string from the DFS state.
+func buildCyclePath(current, cycleStart string, parent map[string]string) string {
+	// Build path from cycleStart back to current, then to cycleStart again
+	var path []string
+	path = append(path, cycleStart)
+
+	node := current
+	for node != cycleStart && node != "" {
+		path = append([]string{node}, path...)
+		node = parent[node]
+	}
+
+	if node == cycleStart {
+		path = append([]string{cycleStart}, path...)
+	}
+
+	return strings.Join(path, " -> ")
 }
 
 func init() {

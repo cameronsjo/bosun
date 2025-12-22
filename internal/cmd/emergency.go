@@ -2,11 +2,17 @@
 package cmd
 
 import (
+	"archive/tar"
 	"bufio"
+	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -21,6 +27,7 @@ import (
 var (
 	maydayList     bool
 	maydayRollback string
+	restoreList    bool
 )
 
 // maydayCmd handles emergency situations.
@@ -281,10 +288,326 @@ func runOverboard(cmd *cobra.Command, args []string) {
 	ui.Success("Container %s removed", name)
 }
 
+// restoreCmd restores from a reconcile backup.
+var restoreCmd = &cobra.Command{
+	Use:   "restore [backup-name]",
+	Short: "Restore from a reconcile backup",
+	Long: `Restore infrastructure configs from a previous backup.
+
+Use 'bosun restore --list' to see available backups.
+Backups are created automatically by the reconcile command before each deployment.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runRestore,
+}
+
+// BackupInfo contains information about a backup.
+type BackupInfo struct {
+	Name    string
+	Path    string
+	HasTar  bool
+	ModTime string
+}
+
+func runRestore(cmd *cobra.Command, args []string) error {
+	// Determine backup directory
+	backupDir := getBackupDir()
+
+	if restoreList {
+		return listBackups(backupDir)
+	}
+
+	if len(args) == 0 {
+		return fmt.Errorf("backup name required. Use --list to see available backups")
+	}
+
+	backupName := args[0]
+	return doRestore(backupDir, backupName)
+}
+
+// getBackupDir returns the backup directory path.
+func getBackupDir() string {
+	// Check environment variable first
+	if dir := os.Getenv("BACKUP_DIR"); dir != "" {
+		return dir
+	}
+
+	// Check for project-level .bosun/backups
+	cfg, err := config.Load()
+	if err == nil {
+		projectBackups := filepath.Join(cfg.Root, ".bosun", "backups")
+		if _, err := os.Stat(projectBackups); err == nil {
+			return projectBackups
+		}
+	}
+
+	// Default to /app/backups (container mode)
+	return "/app/backups"
+}
+
+func listBackups(backupDir string) error {
+	backups, err := getBackups(backupDir)
+	if err != nil {
+		return fmt.Errorf("failed to list backups: %w", err)
+	}
+
+	if len(backups) == 0 {
+		ui.Yellow.Println("No backups found")
+		fmt.Printf("Backup directory: %s\n", backupDir)
+		fmt.Println("Backups are created automatically by 'bosun reconcile' before each deployment.")
+		return nil
+	}
+
+	ui.Blue.Println("Available backups:")
+	fmt.Println()
+
+	for i, backup := range backups {
+		if i >= 10 {
+			remaining := len(backups) - 10
+			fmt.Printf("  ... and %d more\n", remaining)
+			break
+		}
+
+		statusIcon := "*"
+		if !backup.HasTar {
+			statusIcon = "!"
+		}
+		ui.Green.Printf("  %s %s\n", statusIcon, backup.Name)
+		fmt.Printf("      Modified: %s\n", backup.ModTime)
+		if !backup.HasTar {
+			ui.Yellow.Printf("      Warning: configs.tar.gz missing\n")
+		}
+	}
+
+	fmt.Println()
+	fmt.Printf("Backup directory: %s\n", backupDir)
+	return nil
+}
+
+func getBackups(backupDir string) ([]BackupInfo, error) {
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var backups []BackupInfo
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "backup-") {
+			continue
+		}
+
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+
+		backupPath := filepath.Join(backupDir, e.Name())
+		tarPath := filepath.Join(backupPath, "configs.tar.gz")
+		hasTar := false
+		if _, err := os.Stat(tarPath); err == nil {
+			hasTar = true
+		}
+
+		backups = append(backups, BackupInfo{
+			Name:    e.Name(),
+			Path:    backupPath,
+			HasTar:  hasTar,
+			ModTime: info.ModTime().Format("2006-01-02 15:04:05"),
+		})
+	}
+
+	// Sort by name descending (newest first, since names include timestamp)
+	sort.Slice(backups, func(i, j int) bool {
+		return backups[i].Name > backups[j].Name
+	})
+
+	return backups, nil
+}
+
+func doRestore(backupDir, backupName string) error {
+	backupPath := filepath.Join(backupDir, backupName)
+
+	// Validate backup exists
+	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
+		return fmt.Errorf("backup not found: %s", backupName)
+	}
+
+	// Validate configs.tar.gz exists
+	tarPath := filepath.Join(backupPath, "configs.tar.gz")
+	if _, err := os.Stat(tarPath); os.IsNotExist(err) {
+		return fmt.Errorf("backup incomplete: configs.tar.gz not found in %s", backupName)
+	}
+
+	ui.Yellow.Printf("Restoring from backup: %s\n", backupName)
+	fmt.Println()
+
+	// Determine target directory (appdata)
+	targetDir := getAppdataDir()
+	if targetDir == "" {
+		return fmt.Errorf("could not determine appdata directory")
+	}
+
+	// Create staging directory
+	stagingDir, err := os.MkdirTemp("", "bosun-restore-*")
+	if err != nil {
+		return fmt.Errorf("failed to create staging directory: %w", err)
+	}
+	defer os.RemoveAll(stagingDir)
+
+	// Extract backup to staging
+	ui.Info("  Extracting backup...")
+	if err := extractTarGz(tarPath, stagingDir); err != nil {
+		return fmt.Errorf("failed to extract backup: %w", err)
+	}
+
+	// Show what will be restored
+	var restoredFiles []string
+	err = filepath.Walk(stagingDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !info.IsDir() {
+			relPath, _ := filepath.Rel(stagingDir, path)
+			restoredFiles = append(restoredFiles, relPath)
+		}
+		return nil
+	})
+	if err != nil {
+		ui.Warning("Could not enumerate restored files: %v", err)
+	}
+
+	if len(restoredFiles) > 0 {
+		fmt.Println("  Files to restore:")
+		for _, f := range restoredFiles {
+			if len(restoredFiles) > 10 && len(f) > 0 {
+				fmt.Printf("    - %s\n", f)
+			} else {
+				fmt.Printf("    - %s\n", f)
+			}
+		}
+		fmt.Println()
+	}
+
+	// Deploy files from staging to target
+	ui.Info("  Deploying restored configs...")
+	if err := deployRestoredConfigs(stagingDir, targetDir); err != nil {
+		return fmt.Errorf("failed to deploy restored configs: %w", err)
+	}
+
+	// Run compose up if compose file exists
+	composeFile := filepath.Join(targetDir, "compose", "core.yml")
+	if _, err := os.Stat(composeFile); err == nil {
+		ui.Info("  Restarting services...")
+		if err := runComposeUp(composeFile); err != nil {
+			ui.Warning("Could not restart services: %v", err)
+			ui.Yellow.Println("  Run 'docker compose -f " + composeFile + " up -d' manually")
+		}
+	}
+
+	ui.Success("Restore complete!")
+	fmt.Println()
+	return nil
+}
+
+func getAppdataDir() string {
+	// Check environment variable
+	if dir := os.Getenv("LOCAL_APPDATA"); dir != "" {
+		return dir
+	}
+
+	// Check for local mount (container mode)
+	if _, err := os.Stat("/mnt/appdata"); err == nil {
+		return "/mnt/appdata"
+	}
+
+	// Check for remote appdata path
+	if _, err := os.Stat("/mnt/user/appdata"); err == nil {
+		return "/mnt/user/appdata"
+	}
+
+	return ""
+}
+
+func extractTarGz(tarPath, destDir string) error {
+	file, err := os.Open(tarPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	gzr, err := gzip.NewReader(file)
+	if err != nil {
+		return err
+	}
+	defer gzr.Close()
+
+	tr := tar.NewReader(gzr)
+
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		// Sanitize path to prevent directory traversal
+		target := filepath.Join(destDir, header.Name)
+		if !strings.HasPrefix(target, filepath.Clean(destDir)+string(os.PathSeparator)) {
+			return fmt.Errorf("invalid file path in archive: %s", header.Name)
+		}
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return err
+			}
+			outFile, err := os.Create(target)
+			if err != nil {
+				return err
+			}
+			// Use io.CopyN to limit copy size as a security measure
+			const maxFileSize = 100 * 1024 * 1024 // 100MB max per file
+			if _, err := io.CopyN(outFile, tr, maxFileSize); err != nil && err != io.EOF {
+				outFile.Close()
+				return err
+			}
+			outFile.Close()
+		}
+	}
+
+	return nil
+}
+
+func deployRestoredConfigs(stagingDir, targetDir string) error {
+	// Use rsync for deployment
+	cmd := exec.Command("rsync", "-av", stagingDir+"/", targetDir+"/")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func runComposeUp(composeFile string) error {
+	cmd := exec.Command("docker", "compose", "-f", composeFile, "up", "-d", "--remove-orphans")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 func init() {
 	maydayCmd.Flags().BoolVarP(&maydayList, "list", "l", false, "List available snapshots")
 	maydayCmd.Flags().StringVarP(&maydayRollback, "rollback", "r", "", "Rollback to a snapshot (use 'interactive' for menu)")
 
+	restoreCmd.Flags().BoolVarP(&restoreList, "list", "l", false, "List available backups")
+
 	rootCmd.AddCommand(maydayCmd)
 	rootCmd.AddCommand(overboardCmd)
+	rootCmd.AddCommand(restoreCmd)
 }
