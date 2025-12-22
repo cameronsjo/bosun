@@ -3,7 +3,6 @@
 | Item | Priority | Effort | Notes |
 |------|----------|--------|-------|
 | Linux-first docs & examples | p1 | medium | Unraid-tested but generic Linux instructions |
-| Rollback snapshots | p2 | medium | Auto-snapshot before deploy, `bosun mayday --rollback` |
 | Local dev mode | p3 | medium | `bosun dev up` watches filesystem, hot reload |
 | Secret rotation helper | p3 | medium | `bosun secrets rotate` generates, re-encrypts, deploys |
 | `bosun watch` - scheduled tasks | p3 | medium | Nautical cron - watches, bells, tides |
@@ -32,3 +31,4 @@
 | `bosun drift` - drift detection | Compares git manifests vs running containers |
 | Dependency declarations | `needs: [postgres]` auto-provisions with defaults |
 | Values overlays | `--values prod.yaml` overrides config per environment |
+| Rollback snapshots | Auto-snapshot before provision, `mayday --rollback` to restore |

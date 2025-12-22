@@ -71,6 +71,8 @@ DIAGNOSTICS
 
 EMERGENCY
   mayday                Show recent errors across all crew
+    --rollback, -r      Rollback to a previous snapshot
+    --list, -l          List available snapshots
   overboard [name]      Force remove a problematic container
 
 OPTIONS
@@ -289,6 +291,8 @@ cmd_provision() {
         fi
     else
         echo -e "${GREEN}📦 Provisioning $stack...${NC}"
+        # Snapshot current state before provisioning
+        create_snapshot
         uv run manifest.py render "$stack" $values_arg
     fi
 }
@@ -1172,8 +1176,144 @@ EOF
 
 # Emergency commands
 cmd_mayday() {
-    echo -e "${RED}🆘 MAYDAY - Recent errors across all crew:${NC}"
-    docker ps -q | xargs -I {} docker logs --tail 20 {} 2>&1 | grep -iE "(error|fatal|panic|exception)" | tail -50 || echo "No recent errors found"
+    local action="${1:-errors}"
+
+    case "$action" in
+        --rollback|-r)
+            mayday_rollback "${@:2}"
+            ;;
+        --list|-l)
+            mayday_list
+            ;;
+        errors|*)
+            echo -e "${RED}🆘 MAYDAY - Recent errors across all crew:${NC}"
+            docker ps -q | xargs -I {} docker logs --tail 20 {} 2>&1 | grep -iE "(error|fatal|panic|exception)" | tail -50 || echo "No recent errors found"
+            ;;
+    esac
+}
+
+mayday_list() {
+    local snapshots_dir="$MANIFEST_DIR/.bosun/snapshots"
+
+    if [[ ! -d "$snapshots_dir" ]]; then
+        echo -e "${YELLOW}No snapshots found${NC}"
+        echo "Snapshots are created automatically before each provision"
+        return 0
+    fi
+
+    echo -e "${BLUE}📦 Available snapshots:${NC}"
+    echo ""
+
+    local count=0
+    for snapshot in $(ls -1t "$snapshots_dir" 2>/dev/null); do
+        local timestamp=$(echo "$snapshot" | sed 's/snapshot-//')
+        local human_date=$(date -r "$snapshots_dir/$snapshot" "+%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "$timestamp")
+        local files=$(ls "$snapshots_dir/$snapshot" 2>/dev/null | wc -l | tr -d ' ')
+
+        echo -e "  ${GREEN}$snapshot${NC}"
+        echo "    Created: $human_date"
+        echo "    Files: $files"
+        echo ""
+
+        ((count++))
+        if [[ $count -ge 10 ]]; then
+            echo "  ... and $(( $(ls -1 "$snapshots_dir" | wc -l) - 10 )) more"
+            break
+        fi
+    done
+}
+
+mayday_rollback() {
+    local target="${1:-}"
+    local snapshots_dir="$MANIFEST_DIR/.bosun/snapshots"
+    local output_dir="$MANIFEST_DIR/output"
+
+    if [[ ! -d "$snapshots_dir" ]]; then
+        echo -e "${RED}No snapshots available${NC}"
+        return 1
+    fi
+
+    # If no target specified, show list and ask
+    if [[ -z "$target" ]]; then
+        echo -e "${BLUE}Available snapshots:${NC}"
+        echo ""
+
+        local snapshots=($(ls -1t "$snapshots_dir"))
+        local i=1
+        for snapshot in "${snapshots[@]:0:5}"; do
+            local human_date=$(date -r "$snapshots_dir/$snapshot" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
+            echo "  $i) $snapshot ($human_date)"
+            ((i++))
+        done
+        echo ""
+
+        read -p "Select snapshot (1-5, or name): " choice
+
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#snapshots[@]} ]]; then
+            target="${snapshots[$((choice-1))]}"
+        else
+            target="$choice"
+        fi
+    fi
+
+    local snapshot_path="$snapshots_dir/$target"
+
+    if [[ ! -d "$snapshot_path" ]]; then
+        echo -e "${RED}Snapshot not found: $target${NC}"
+        return 1
+    fi
+
+    echo -e "${YELLOW}🔄 Rolling back to: $target${NC}"
+    echo ""
+
+    # Create backup of current state before rollback
+    local backup_name="pre-rollback-$(date +%Y%m%d-%H%M%S)"
+    if [[ -d "$output_dir" ]]; then
+        echo -e "  Creating safety backup: $backup_name"
+        mkdir -p "$snapshots_dir/$backup_name"
+        cp -r "$output_dir"/* "$snapshots_dir/$backup_name/" 2>/dev/null || true
+    fi
+
+    # Restore snapshot
+    echo -e "  Restoring files..."
+    mkdir -p "$output_dir"
+    rm -rf "$output_dir"/*
+    cp -r "$snapshot_path"/* "$output_dir/"
+
+    echo ""
+    echo -e "${GREEN}✓ Rollback complete${NC}"
+    echo ""
+    echo "Restored files:"
+    find "$output_dir" -type f -name "*.yml" | while read f; do
+        echo "  - ${f#$MANIFEST_DIR/}"
+    done
+    echo ""
+    echo -e "${YELLOW}Note: Run 'bosun yacht up' to apply restored configuration${NC}"
+}
+
+# Create snapshot before provisioning
+create_snapshot() {
+    local output_dir="$MANIFEST_DIR/output"
+    local snapshots_dir="$MANIFEST_DIR/.bosun/snapshots"
+
+    # Only snapshot if there's something to snapshot
+    if [[ ! -d "$output_dir" ]] || [[ -z "$(ls -A "$output_dir" 2>/dev/null)" ]]; then
+        return 0
+    fi
+
+    local snapshot_name="snapshot-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$snapshots_dir/$snapshot_name"
+    cp -r "$output_dir"/* "$snapshots_dir/$snapshot_name/" 2>/dev/null || true
+
+    echo -e "${BLUE}📸 Snapshot created: $snapshot_name${NC}"
+
+    # Keep only last 20 snapshots
+    local count=$(ls -1 "$snapshots_dir" | wc -l)
+    if [[ $count -gt 20 ]]; then
+        ls -1t "$snapshots_dir" | tail -n +21 | while read old; do
+            rm -rf "$snapshots_dir/$old"
+        done
+    fi
 }
 
 cmd_overboard() {
@@ -1233,7 +1373,7 @@ main() {
             cmd_lint "${@:2}"
             ;;
         mayday|mutiny)
-            cmd_mayday
+            cmd_mayday "${@:2}"
             ;;
         overboard|plank)
             cmd_overboard "${@:2}"
