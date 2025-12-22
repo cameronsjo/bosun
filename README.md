@@ -22,6 +22,33 @@ git push → webhook → decrypt → render → docker compose up
 
 That's it. That's the whole thing.
 
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              Your Server                                     │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                           Conductor                                   │   │
+│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐    │   │
+│  │  │ Webhook │→ │Git Pull │→ │  SOPS   │→ │ Chezmoi │→ │ Compose │    │   │
+│  │  │Receiver │  │         │  │ Decrypt │  │ Render  │  │   Up    │    │   │
+│  │  └─────────┘  └─────────┘  └─────────┘  └─────────┘  └─────────┘    │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│         ▲                                                    │              │
+│         │                                                    ▼              │
+│  ┌──────┴──────┐                                    ┌───────────────┐       │
+│  │  Tailscale  │                                    │Your Containers│       │
+│  │   Funnel    │                                    │  app1  app2   │       │
+│  └──────┬──────┘                                    │  app3  app4   │       │
+│         │                                           └───────────────┘       │
+└─────────│───────────────────────────────────────────────────────────────────┘
+          │
+          ▼
+    ┌──────────┐
+    │  GitHub  │
+    │ Webhooks │
+    └──────────┘
+```
+
 ---
 
 ## What You Get
@@ -114,6 +141,37 @@ conductor/
 
 Write 10 lines, generate 100. The composer turns service manifests into complete configs:
 
+```
+┌────────────────┐     ┌────────────────┐
+│ Service Manifest│     │    Profiles    │
+│   (~10 lines)  │     │   (reusable)   │
+│                │     │                │
+│ name: myapp    │     │ - container    │
+│ profiles: [...]│     │ - healthcheck  │
+│ config:        │     │ - reverse-proxy│
+│   port: 3000   │     │ - postgres     │
+└───────┬────────┘     └───────┬────────┘
+        │                      │
+        └──────────┬───────────┘
+                   │
+                   ▼
+          ┌────────────────┐
+          │   compose.py   │
+          │    render      │
+          └────────┬───────┘
+                   │
+        ┌──────────┼──────────┐
+        ▼          ▼          ▼
+┌──────────┐ ┌──────────┐ ┌──────────┐
+│ compose/ │ │ traefik/ │ │  gatus/  │
+│ myapp.yml│ │dynamic.yml│ │endpoints │
+│          │ │          │ │   .yml   │
+│ services │ │ routers  │ │ monitors │
+│ networks │ │ services │ │ alerts   │
+│ volumes  │ │ tls      │ │          │
+└──────────┘ └──────────┘ └──────────┘
+```
+
 ```yaml
 # services/myapp.yml
 name: myapp
@@ -156,7 +214,25 @@ See [ADR-0005: Tunnel Providers](docs/adr/0005-tunnel-providers.md).
 
 ## Image Updates
 
-Two patterns:
+Two patterns for two use cases:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        Config Changes (GitOps)                               │
+│                                                                              │
+│    Edit YAML ──→ git push ──→ Webhook ──→ Conductor ──→ docker compose up   │
+│                                                                              │
+│    Use for: compose files, traefik routes, secrets, environment vars        │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        Code Changes (Watchtower)                             │
+│                                                                              │
+│    Code push ──→ CI Build ──→ GHCR ──→ Watchtower API ──→ docker pull/up    │
+│                                                                              │
+│    Use for: application code, dependencies, runtime updates                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
 | Pattern | Trigger | Use Case |
 |---------|---------|----------|
@@ -182,7 +258,32 @@ See [ADR-0002: Watchtower Webhook](docs/adr/0002-watchtower-webhook-deploy.md).
 One repo, many servers. Hub receives webhooks, broadcasts to server conductors:
 
 ```
-GitHub → Hub Conductor → [ Unraid | VPS | Pi ]
+                         ┌──────────────┐
+                         │    GitHub    │
+                         │   Webhook    │
+                         └──────┬───────┘
+                                │
+                                ▼
+                    ┌───────────────────────┐
+                    │    Hub Conductor      │
+                    │  (single endpoint)    │
+                    │                       │
+                    │  routes by path:      │
+                    │  servers/unraid/* → A │
+                    │  servers/vps/*   → B │
+                    │  shared/*        → * │
+                    └───────────┬───────────┘
+                                │
+              ┌─────────────────┼─────────────────┐
+              │                 │                 │
+              ▼                 ▼                 ▼
+      ┌───────────────┐ ┌───────────────┐ ┌───────────────┐
+      │    Unraid     │ │     VPS       │ │   Pi Cluster  │
+      │   Conductor   │ │   Conductor   │ │   Conductor   │
+      │               │ │               │ │               │
+      │  (internal    │ │  (internal    │ │  (internal    │
+      │   listener)   │ │   listener)   │ │   listener)   │
+      └───────────────┘ └───────────────┘ └───────────────┘
 ```
 
 See [ADR-0004: Multi-Server Monorepo](docs/adr/0004-multi-server-monorepo.md).
