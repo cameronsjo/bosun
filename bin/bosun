@@ -210,26 +210,40 @@ main() {
     fi
 
     case "$1" in
-        yacht)
+        yacht|hoist)
             cmd_yacht "${@:2}"
             ;;
-        crew)
+        crew|scallywags)
             cmd_crew "${@:2}"
             ;;
-        provision)
+        provision|plunder)
             cmd_provision "${@:2}"
             ;;
-        provisions)
+        provisions|loot)
             cmd_provisions
             ;;
-        radio)
+        radio|parrot)
             cmd_radio "${@:2}"
             ;;
-        mayday)
+        mayday|mutiny)
             cmd_mayday
             ;;
-        overboard)
+        overboard|plank)
             cmd_overboard "${@:2}"
+            ;;
+        yarr)
+            echo -e "${YELLOW}🏴‍☠️ Ahoy! Ye found the secret pirate mode!${NC}"
+            echo ""
+            echo "Aliases for scallywags:"
+            echo "  hoist       → yacht"
+            echo "  scallywags  → crew"
+            echo "  plunder     → provision"
+            echo "  loot        → provisions"
+            echo "  parrot      → radio"
+            echo "  mutiny      → mayday"
+            echo "  plank       → overboard"
+            echo ""
+            echo -e "${YELLOW}Now swab the deck! 🦜${NC}"
             ;;
         -h|--help|help)
             usage
