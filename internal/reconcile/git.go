@@ -5,9 +5,18 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+)
+
+// Git operation timeouts
+const (
+	GitCloneTimeout = 5 * time.Minute
+	GitFetchTimeout = 2 * time.Minute
+	GitLocalTimeout = 30 * time.Second
 )
 
 // GitOps represents git operations for the reconciliation workflow.
@@ -31,7 +40,15 @@ func NewGitOps(url, branch, dir string) *GitOps {
 
 // Clone clones the repository with the specified depth.
 // If depth is 0, a full clone is performed.
+// Uses GitCloneTimeout if the parent context has no deadline.
 func (g *GitOps) Clone(ctx context.Context, depth int) error {
+	// Apply timeout if context doesn't have one
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, GitCloneTimeout)
+		defer cancel()
+	}
+
 	args := []string{"clone", "--branch", g.Branch, "--single-branch"}
 	if depth > 0 {
 		args = append(args, "--depth", fmt.Sprintf("%d", depth))
@@ -43,6 +60,13 @@ func (g *GitOps) Clone(ctx context.Context, depth int) error {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		// Clean up partial clone on failure
+		if _, statErr := os.Stat(g.Dir); statErr == nil {
+			os.RemoveAll(g.Dir)
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("git clone timed out after %v", GitCloneTimeout)
+		}
 		return fmt.Errorf("git clone failed: %w: %s", err, stderr.String())
 	}
 	return nil
@@ -50,23 +74,33 @@ func (g *GitOps) Clone(ctx context.Context, depth int) error {
 
 // Pull fetches and resets to the remote branch.
 // Returns (changed, beforeCommit, afterCommit, error).
+// Uses GitFetchTimeout for network operations.
 func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 	before, err := g.GetLatestCommit(ctx)
 	if err != nil {
 		return false, "", "", fmt.Errorf("failed to get current commit: %w", err)
 	}
 
-	// Fetch with depth 1 to minimize data transfer.
-	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", g.Branch, "--depth", "1")
+	// Fetch with depth 1 to minimize data transfer (with timeout).
+	fetchCtx, fetchCancel := context.WithTimeout(ctx, GitFetchTimeout)
+	defer fetchCancel()
+
+	fetchCmd := exec.CommandContext(fetchCtx, "git", "fetch", "origin", g.Branch, "--depth", "1")
 	fetchCmd.Dir = g.Dir
 	var fetchStderr bytes.Buffer
 	fetchCmd.Stderr = &fetchStderr
 	if err := fetchCmd.Run(); err != nil {
+		if fetchCtx.Err() == context.DeadlineExceeded {
+			return false, "", "", fmt.Errorf("git fetch timed out after %v", GitFetchTimeout)
+		}
 		return false, "", "", fmt.Errorf("git fetch failed: %w: %s", err, fetchStderr.String())
 	}
 
-	// Reset to remote branch.
-	resetCmd := exec.CommandContext(ctx, "git", "reset", "--hard", "origin/"+g.Branch)
+	// Reset to remote branch (local operation, shorter timeout).
+	resetCtx, resetCancel := context.WithTimeout(ctx, GitLocalTimeout)
+	defer resetCancel()
+
+	resetCmd := exec.CommandContext(resetCtx, "git", "reset", "--hard", "origin/"+g.Branch)
 	resetCmd.Dir = g.Dir
 	var resetStderr bytes.Buffer
 	resetCmd.Stderr = &resetStderr

@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cameronsjo/bosun/internal/config"
+	"github.com/cameronsjo/bosun/internal/lock"
 	"github.com/cameronsjo/bosun/internal/manifest"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
@@ -141,6 +142,13 @@ func runProvision(cmd *cobra.Command, args []string) error {
 	if provisionDiff {
 		return showDiff(output, cfg.OutputDir(), stackName)
 	}
+
+	// Acquire provision lock to prevent concurrent writes
+	provisionLock := lock.New(cfg.ManifestDir, "provision")
+	if err := provisionLock.Acquire(); err != nil {
+		return fmt.Errorf("acquire provision lock: %w", err)
+	}
+	defer provisionLock.Release()
 
 	if err := manifest.WriteOutputs(output, cfg.OutputDir(), stackName); err != nil {
 		return fmt.Errorf("write outputs: %w", err)

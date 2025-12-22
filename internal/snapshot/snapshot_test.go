@@ -402,7 +402,7 @@ func TestCreate_SnapshotsDirError(t *testing.T) {
 
 	_, err := Create(tmpDir)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "create snapshot directory")
+	assert.Contains(t, err.Error(), "create snapshots directory")
 }
 
 func TestList_NonSnapshotDirs(t *testing.T) {

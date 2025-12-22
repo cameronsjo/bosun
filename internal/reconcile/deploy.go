@@ -12,6 +12,13 @@ import (
 	"time"
 )
 
+// Deploy operation timeouts
+const (
+	SSHTimeout       = 30 * time.Second
+	RsyncTimeout     = 5 * time.Minute
+	ComposeUpTimeout = 10 * time.Minute
+)
+
 // DeployOps provides deployment operations including backup, rsync, and service management.
 type DeployOps struct {
 	// DryRun if true, only shows what would be done without making changes.
@@ -161,7 +168,15 @@ func (d *DeployOps) DeployLocalFile(ctx context.Context, sourceFile, targetFile 
 }
 
 // DeployRemote syncs files to a remote host using rsync over SSH.
+// Uses RsyncTimeout if the parent context has no deadline.
 func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, targetDir string) error {
+	// Apply timeout if context doesn't have one
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, RsyncTimeout)
+		defer cancel()
+	}
+
 	args := []string{"-avz", "--delete"}
 	if d.DryRun {
 		args = append(args, "--dry-run")
@@ -174,6 +189,9 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("rsync timed out after %v", RsyncTimeout)
+		}
 		return fmt.Errorf("rsync failed: %w: %s", err, stderr.String())
 	}
 	return nil
@@ -199,30 +217,108 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 }
 
 // EnsureRemoteDir ensures a directory exists on a remote host via SSH.
+// Uses SSHTimeout if the parent context has no deadline.
 func (d *DeployOps) EnsureRemoteDir(ctx context.Context, host, dir string) error {
+	// Apply timeout if context doesn't have one
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, SSHTimeout)
+		defer cancel()
+	}
+
 	cmd := exec.CommandContext(ctx, "ssh", host, "mkdir", "-p", dir)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("ssh timed out after %v", SSHTimeout)
+		}
 		return fmt.Errorf("ssh mkdir failed: %w: %s", err, stderr.String())
 	}
 	return nil
 }
 
 // ComposeUp runs docker compose up for the specified compose file.
+// Uses ComposeUpTimeout if the parent context has no deadline.
+// Returns an error if compose up fails (caller should handle rollback).
 func (d *DeployOps) ComposeUp(ctx context.Context, composeFile string) error {
 	if d.DryRun {
 		return nil
 	}
 
-	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--remove-orphans")
+	// Apply timeout if context doesn't have one
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, ComposeUpTimeout)
+		defer cancel()
+	}
+
+	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--remove-orphans", "--wait")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("docker compose up timed out after %v", ComposeUpTimeout)
+		}
 		return fmt.Errorf("docker compose up failed: %w: %s", err, stderr.String())
 	}
+	return nil
+}
+
+// ComposeUpWithRollback runs docker compose up and rolls back on failure.
+// backupPath should contain the previous config files for rollback.
+func (d *DeployOps) ComposeUpWithRollback(ctx context.Context, composeFile, backupPath string) error {
+	err := d.ComposeUp(ctx, composeFile)
+	if err == nil {
+		return nil
+	}
+
+	// Compose failed - attempt rollback if backup exists
+	if backupPath == "" {
+		return fmt.Errorf("%w (no backup available for rollback)", err)
+	}
+
+	// Check if backup exists
+	backupComposeFile := filepath.Join(backupPath, filepath.Base(composeFile))
+	if _, statErr := os.Stat(backupComposeFile); os.IsNotExist(statErr) {
+		return fmt.Errorf("%w (backup file not found for rollback)", err)
+	}
+
+	// Attempt rollback with previous config
+	rollbackCtx, cancel := context.WithTimeout(context.Background(), ComposeUpTimeout)
+	defer cancel()
+
+	rollbackCmd := exec.CommandContext(rollbackCtx, "docker", "compose", "-f", backupComposeFile, "up", "-d", "--remove-orphans")
+	var rollbackStderr bytes.Buffer
+	rollbackCmd.Stderr = &rollbackStderr
+
+	if rollbackErr := rollbackCmd.Run(); rollbackErr != nil {
+		return fmt.Errorf("%w (rollback also failed: %v)", err, rollbackErr)
+	}
+
+	return fmt.Errorf("%w (rolled back to previous config)", err)
+}
+
+// VerifyContainerHealth checks if containers from a compose file are healthy.
+func (d *DeployOps) VerifyContainerHealth(ctx context.Context, composeFile string) error {
+	if d.DryRun {
+		return nil
+	}
+
+	// Use docker compose ps to check container status
+	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", composeFile, "ps", "--format", "json")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to check container status: %w: %s", err, stderr.String())
+	}
+
+	// For now, just verify the command succeeded
+	// A more complete implementation would parse the JSON and check health status
 	return nil
 }
 

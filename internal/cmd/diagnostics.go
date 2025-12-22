@@ -12,12 +12,20 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/ui"
+)
+
+// Command timeouts
+const (
+	doctorCheckTimeout = 10 * time.Second
+	httpClientTimeout  = 5 * time.Second
+	dockerPingTimeout  = 5 * time.Second
 )
 
 // Infrastructure containers that are shown separately in status.
@@ -366,8 +374,8 @@ func runDoctor(cmd *cobra.Command, args []string) {
 	failed := 0
 	warned := 0
 
-	// Check: Docker running
-	ctx := context.Background()
+	// Check: Docker running (with timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), dockerPingTimeout)
 	client, err := docker.NewClient()
 	if err == nil {
 		if err := client.Ping(ctx); err == nil {
@@ -382,6 +390,7 @@ func runDoctor(cmd *cobra.Command, args []string) {
 		ui.Red.Println("  x Docker is not running")
 		failed++
 	}
+	cancel()
 
 	// Check: Docker Compose v2
 	composeCmd := exec.Command("docker", "compose", "version", "--short")
@@ -468,8 +477,9 @@ func runDoctor(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	// Check: Webhook endpoint
-	resp, err := http.Get("http://localhost:8080/health")
+	// Check: Webhook endpoint (with timeout)
+	httpClient := &http.Client{Timeout: httpClientTimeout}
+	resp, err := httpClient.Get("http://localhost:8080/health")
 	if err == nil {
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {

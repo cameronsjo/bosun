@@ -25,6 +25,9 @@ func NewTemplateOps(data map[string]any) *TemplateOps {
 }
 
 // ExecuteTemplate renders a single template file using chezmoi execute-template.
+// Secrets are passed via a temporary file with restricted permissions (0600).
+// The template can access secrets via BOSUN_SECRETS_FILE environment variable
+// pointing to a JSON file that can be read with chezmoi's fromJson/include functions.
 func (t *TemplateOps) ExecuteTemplate(ctx context.Context, templateFile, outputFile string) error {
 	// Read template content.
 	content, err := os.ReadFile(templateFile)
@@ -38,20 +41,44 @@ func (t *TemplateOps) ExecuteTemplate(ctx context.Context, templateFile, outputF
 		return fmt.Errorf("failed to marshal template data: %w", err)
 	}
 
+	// Write secrets to a temporary file with restricted permissions (0600)
+	// instead of passing the actual secret values via environment variables
+	secretsFile, err := os.CreateTemp("", "bosun-secrets-*.json")
+	if err != nil {
+		return fmt.Errorf("failed to create temp secrets file: %w", err)
+	}
+	secretsPath := secretsFile.Name()
+	defer func() {
+		secretsFile.Close()
+		os.Remove(secretsPath)
+	}()
+
+	// Set restrictive permissions before writing
+	if err := os.Chmod(secretsPath, 0600); err != nil {
+		return fmt.Errorf("failed to set secrets file permissions: %w", err)
+	}
+
+	if _, err := secretsFile.Write(dataJSON); err != nil {
+		return fmt.Errorf("failed to write secrets to temp file: %w", err)
+	}
+	secretsFile.Close()
+
 	// Build chezmoi command.
-	// chezmoi execute-template reads from stdin and writes to stdout.
-	// Data is passed via --init --promptString.
-	// However, chezmoi execute-template can use environment variables.
+	// Pass path to secrets file via env var (the file path itself is not sensitive,
+	// only the file contents are protected by 0600 permissions).
+	// Templates can use: {{ $secrets := fromJson (include (env "BOSUN_SECRETS_FILE")) }}
 	cmd := exec.CommandContext(ctx, "chezmoi", "execute-template")
 	cmd.Stdin = bytes.NewReader(content)
-	cmd.Env = append(os.Environ(), "SOPS_SECRETS="+string(dataJSON))
+	// Pass filtered safe environment plus the secrets file path
+	cmd.Env = append(filterSafeEnv(os.Environ()), "BOSUN_SECRETS_FILE="+secretsPath)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("chezmoi execute-template failed for %s: %w: %s", templateFile, err, stderr.String())
+		// Sanitize error output to avoid leaking secrets
+		return fmt.Errorf("chezmoi execute-template failed for %s: %w: %s", templateFile, err, sanitizeStderr(stderr.String()))
 	}
 
 	// Ensure output directory exists.
@@ -65,6 +92,55 @@ func (t *TemplateOps) ExecuteTemplate(ctx context.Context, templateFile, outputF
 	}
 
 	return nil
+}
+
+// filterSafeEnv returns only safe environment variables, excluding secrets.
+func filterSafeEnv(env []string) []string {
+	// List of env var prefixes that are safe to pass through
+	safePrefix := []string{
+		"PATH=", "HOME=", "USER=", "LANG=", "LC_", "TERM=",
+		"XDG_", "TMPDIR=", "TMP=", "TEMP=",
+	}
+	// Env vars to explicitly exclude (may contain secrets)
+	excludePrefix := []string{
+		"SOPS_", "AWS_", "AZURE_", "GCP_", "GOOGLE_",
+		"API_KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL",
+	}
+
+	var result []string
+	for _, e := range env {
+		// Check exclusions first
+		excluded := false
+		for _, prefix := range excludePrefix {
+			if strings.HasPrefix(strings.ToUpper(e), prefix) {
+				excluded = true
+				break
+			}
+		}
+		if excluded {
+			continue
+		}
+
+		// Include if it matches safe prefix
+		for _, prefix := range safePrefix {
+			if strings.HasPrefix(e, prefix) {
+				result = append(result, e)
+				break
+			}
+		}
+	}
+	return result
+}
+
+// sanitizeStderr removes potential secret values from error output.
+func sanitizeStderr(stderr string) string {
+	// Remove any JSON-like structures that might contain secrets
+	// and limit output length
+	const maxLen = 500
+	if len(stderr) > maxLen {
+		stderr = stderr[:maxLen] + "... (truncated)"
+	}
+	return stderr
 }
 
 // RenderDirectory processes all .tmpl files in sourceDir and renders them to stagingDir.

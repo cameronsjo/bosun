@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -18,6 +19,8 @@ const (
 	DateFormat = "20060102-150405"
 	// MaxSnapshots is the maximum number of snapshots to retain.
 	MaxSnapshots = 20
+	// MinFreeDiskBytes is the minimum free disk space required (100MB).
+	MinFreeDiskBytes = 100 * 1024 * 1024
 )
 
 // SnapshotInfo holds metadata about a snapshot.
@@ -48,12 +51,30 @@ func Create(manifestDir string) (string, error) {
 		return "", nil
 	}
 
+	snapDir := snapshotsDir(manifestDir)
+
+	// Check disk space before creating snapshot
+	dirSize, err := getDirSize(outDir)
+	if err != nil {
+		return "", fmt.Errorf("calculate output directory size: %w", err)
+	}
+
+	// Ensure snapshots directory exists for disk check
+	if err := os.MkdirAll(snapDir, 0755); err != nil {
+		return "", fmt.Errorf("create snapshots directory: %w", err)
+	}
+
+	// Check available disk space (need at least dirSize + MinFreeDiskBytes)
+	requiredSpace := dirSize + MinFreeDiskBytes
+	if err := checkDiskSpace(snapDir, requiredSpace); err != nil {
+		return "", fmt.Errorf("insufficient disk space for snapshot: %w", err)
+	}
+
 	// Create snapshot name with timestamp
 	snapshotName := SnapshotPrefix + time.Now().Format(DateFormat)
-	snapDir := snapshotsDir(manifestDir)
 	snapshotPath := filepath.Join(snapDir, snapshotName)
 
-	// Ensure snapshots directory exists
+	// Ensure snapshot directory exists
 	if err := os.MkdirAll(snapshotPath, 0755); err != nil {
 		return "", fmt.Errorf("create snapshot directory: %w", err)
 	}
@@ -125,7 +146,8 @@ func List(manifestDir string) ([]SnapshotInfo, error) {
 	return snapshots, nil
 }
 
-// Restore restores a snapshot, creating a pre-rollback backup first.
+// Restore restores a snapshot atomically, creating a pre-rollback backup first.
+// Uses temp directory + atomic rename pattern to prevent broken state on failure.
 func Restore(manifestDir, snapshotName string) error {
 	snapDir := snapshotsDir(manifestDir)
 	snapshotPath := filepath.Join(snapDir, snapshotName)
@@ -134,6 +156,15 @@ func Restore(manifestDir, snapshotName string) error {
 	// Verify snapshot exists
 	if _, err := os.Stat(snapshotPath); os.IsNotExist(err) {
 		return fmt.Errorf("snapshot not found: %s", snapshotName)
+	}
+
+	// Check disk space for atomic restore (need space for temp copy)
+	snapshotSize, err := getDirSize(snapshotPath)
+	if err != nil {
+		return fmt.Errorf("calculate snapshot size: %w", err)
+	}
+	if err := checkDiskSpace(filepath.Dir(outDir), snapshotSize+MinFreeDiskBytes); err != nil {
+		return fmt.Errorf("insufficient disk space for restore: %w", err)
 	}
 
 	// Create pre-rollback backup if output exists
@@ -151,18 +182,45 @@ func Restore(manifestDir, snapshotName string) error {
 		}
 	}
 
-	// Clear output directory
-	if err := os.RemoveAll(outDir); err != nil {
-		return fmt.Errorf("clear output directory: %w", err)
+	// Atomic restore: copy to temp directory first, then rename
+	tempDir := outDir + ".restore-temp-" + time.Now().Format("150405")
+	oldDir := outDir + ".restore-old-" + time.Now().Format("150405")
+
+	// Step 1: Copy snapshot to temp directory
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return fmt.Errorf("create temp restore directory: %w", err)
 	}
 
-	// Restore snapshot to output
-	if err := os.MkdirAll(outDir, 0755); err != nil {
-		return fmt.Errorf("recreate output directory: %w", err)
+	if err := copyDir(snapshotPath, tempDir); err != nil {
+		os.RemoveAll(tempDir)
+		return fmt.Errorf("copy snapshot to temp: %w", err)
 	}
 
-	if err := copyDir(snapshotPath, outDir); err != nil {
-		return fmt.Errorf("restore snapshot: %w", err)
+	// Step 2: Check if output directory exists (even if empty)
+	_, statErr := os.Stat(outDir)
+	outputExists := statErr == nil
+
+	// Step 3: Atomic swap - rename current output to old (if exists)
+	if outputExists {
+		if err := os.Rename(outDir, oldDir); err != nil {
+			os.RemoveAll(tempDir)
+			return fmt.Errorf("rename current output: %w", err)
+		}
+	}
+
+	// Step 4: Rename temp to output
+	if err := os.Rename(tempDir, outDir); err != nil {
+		// Try to restore old directory on failure
+		if outputExists {
+			os.Rename(oldDir, outDir)
+		}
+		os.RemoveAll(tempDir)
+		return fmt.Errorf("rename temp to output: %w", err)
+	}
+
+	// Step 5: Cleanup old directory
+	if outputExists {
+		os.RemoveAll(oldDir)
 	}
 
 	return nil
@@ -272,4 +330,37 @@ func copyFile(src, dst string) error {
 
 	_, err = io.Copy(dstFile, srcFile)
 	return err
+}
+
+// checkDiskSpace checks if there's enough disk space available.
+func checkDiskSpace(dir string, requiredBytes int64) error {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(dir, &stat); err != nil {
+		return fmt.Errorf("failed to check disk space: %w", err)
+	}
+
+	available := int64(stat.Bavail) * int64(stat.Bsize)
+	if available < requiredBytes {
+		return fmt.Errorf("need %d bytes, only %d available", requiredBytes, available)
+	}
+	return nil
+}
+
+// getDirSize calculates the total size of a directory tree.
+func getDirSize(dir string) (int64, error) {
+	var size int64
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			size += info.Size()
+		}
+		return nil
+	})
+	return size, err
 }
