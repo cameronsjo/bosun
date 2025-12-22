@@ -167,7 +167,7 @@ flowchart LR
     subgraph "Unraid"
         GR[gitops-runner]
         SOPS[SOPS decrypt]
-        CHEM[chezmoi render]
+        TMPL[Go template render]
         DEPLOY[docker compose up]
     end
 
@@ -176,8 +176,8 @@ flowchart LR
     COMMIT --> HOOK
     HOOK --> GR
     GR --> SOPS
-    SOPS --> CHEM
-    CHEM --> DEPLOY
+    SOPS --> TMPL
+    TMPL --> DEPLOY
 
     style RENDER fill:#ffd
     style GR fill:#dfd
@@ -480,7 +480,7 @@ Secrets stay as SOPS template syntax. Manifest renderer passes through unchanged
 env:
   API_KEY: "{{ $secrets.myapp.api_key }}"
 
-# Output unchanged, SOPS/chezmoi handles at deploy time
+# Output unchanged, SOPS decryption + Go templates handle at deploy time
 ```
 
 ## Guardrails

@@ -1,20 +1,20 @@
 package reconcile
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+	"text/template"
 
+	"github.com/Masterminds/sprig/v3"
 	"github.com/cameronsjo/bosun/internal/fileutil"
 )
 
-// TemplateOps provides Chezmoi template rendering operations.
+// TemplateOps provides template rendering operations using Go's text/template with sprig functions.
 type TemplateOps struct {
 	// Data is the template data available during rendering.
 	Data map[string]any
@@ -25,85 +25,23 @@ func NewTemplateOps(data map[string]any) *TemplateOps {
 	return &TemplateOps{Data: data}
 }
 
-// ExecuteTemplate renders a single template file using chezmoi execute-template.
-// Secrets are passed via a temporary file with restricted permissions (0600).
-// The template can access secrets via BOSUN_SECRETS_FILE environment variable
-// pointing to a JSON file that can be read with chezmoi's fromJson/include functions.
-func (t *TemplateOps) ExecuteTemplate(ctx context.Context, templateFile, outputFile string) error {
+// ExecuteTemplate renders a single template file using Go's text/template with sprig functions.
+// Template data is passed directly to the template context.
+// Templates can access data via {{ .key }} syntax and use sprig functions.
+func (t *TemplateOps) ExecuteTemplate(_ context.Context, templateFile, outputFile string) error {
 	// Read template content.
 	content, err := os.ReadFile(templateFile)
 	if err != nil {
 		return fmt.Errorf("failed to read template %s: %w", templateFile, err)
 	}
 
-	// Prepare data as JSON for chezmoi.
-	dataJSON, err := json.Marshal(t.Data)
+	// Create template with sprig functions and custom bosun functions.
+	tmpl := template.New(filepath.Base(templateFile)).Funcs(sprig.TxtFuncMap()).Funcs(bosunTemplateFuncs())
+
+	// Parse the template.
+	tmpl, err = tmpl.Parse(string(content))
 	if err != nil {
-		return fmt.Errorf("failed to marshal template data: %w", err)
-	}
-
-	// Create temp secrets file with restricted permissions (0600) from the start
-	// to ensure secrets are never world-readable even briefly.
-	secretsPath, err := func() (string, error) {
-		f, err := os.CreateTemp("", "bosun-secrets-*.json")
-		if err != nil {
-			return "", fmt.Errorf("failed to create temp secrets file: %w", err)
-		}
-		path := f.Name()
-
-		// Close immediately - we'll reopen with proper permissions
-		if err := f.Close(); err != nil {
-			os.Remove(path)
-			return "", fmt.Errorf("failed to close temp file: %w", err)
-		}
-
-		// Reopen with restricted permissions (0600) before writing any secrets
-		restricted, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0600)
-		if err != nil {
-			os.Remove(path)
-			return "", fmt.Errorf("failed to reopen secrets file with restricted permissions: %w", err)
-		}
-		defer restricted.Close()
-
-		// Set permissions explicitly (redundant but defensive)
-		if err := os.Chmod(path, 0600); err != nil {
-			os.Remove(path)
-			return "", fmt.Errorf("failed to set secrets file permissions: %w", err)
-		}
-
-		if _, err := restricted.Write(dataJSON); err != nil {
-			os.Remove(path)
-			return "", fmt.Errorf("failed to write secrets to temp file: %w", err)
-		}
-
-		if err := restricted.Close(); err != nil {
-			os.Remove(path)
-			return "", fmt.Errorf("failed to close secrets file: %w", err)
-		}
-
-		return path, nil
-	}()
-	if err != nil {
-		return err
-	}
-	defer os.Remove(secretsPath)
-
-	// Build chezmoi command.
-	// Pass path to secrets file via env var (the file path itself is not sensitive,
-	// only the file contents are protected by 0600 permissions).
-	// Templates can use: {{ $secrets := fromJson (include (env "BOSUN_SECRETS_FILE")) }}
-	cmd := exec.CommandContext(ctx, "chezmoi", "execute-template")
-	cmd.Stdin = bytes.NewReader(content)
-	// Pass filtered safe environment plus the secrets file path
-	cmd.Env = append(filterSafeEnv(os.Environ()), "BOSUN_SECRETS_FILE="+secretsPath)
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		// Sanitize error output to avoid leaking secrets
-		return fmt.Errorf("chezmoi execute-template failed for %s: %w: %s", templateFile, err, sanitizeStderr(stderr.String()))
+		return fmt.Errorf("failed to parse template %s: %w", templateFile, err)
 	}
 
 	// Ensure output directory exists.
@@ -121,9 +59,10 @@ func (t *TemplateOps) ExecuteTemplate(ctx context.Context, templateFile, outputF
 	tmpPath := tmpFile.Name()
 	defer os.Remove(tmpPath) // Cleanup on failure
 
-	if _, err := tmpFile.Write(stdout.Bytes()); err != nil {
+	// Execute template with data.
+	if err := tmpl.Execute(tmpFile, t.Data); err != nil {
 		tmpFile.Close()
-		return fmt.Errorf("failed to write temp file for %s: %w", outputFile, err)
+		return fmt.Errorf("failed to execute template %s: %w", templateFile, err)
 	}
 
 	if err := tmpFile.Close(); err != nil {
@@ -143,120 +82,35 @@ func (t *TemplateOps) ExecuteTemplate(ctx context.Context, templateFile, outputF
 	return nil
 }
 
-// filterSafeEnv returns only safe environment variables, excluding secrets.
-func filterSafeEnv(env []string) []string {
-	// List of env var prefixes that are safe to pass through
-	safePrefix := []string{
-		"PATH=", "HOME=", "USER=", "LANG=", "LC_", "TERM=",
-		"XDG_", "TMPDIR=", "TMP=", "TEMP=",
-	}
-
-	var result []string
-	for _, e := range env {
-		if isSensitiveEnvVar(e) {
-			continue
-		}
-
-		// Include if it matches safe prefix
-		for _, prefix := range safePrefix {
-			if strings.HasPrefix(e, prefix) {
-				result = append(result, e)
-				break
+// bosunTemplateFuncs returns custom template functions for bosun templates.
+// These extend the standard Sprig functions with bosun-specific utilities.
+func bosunTemplateFuncs() template.FuncMap {
+	return template.FuncMap{
+		// include reads and returns the contents of a file.
+		// Usage: {{ include "/path/to/file" }}
+		"include": func(path string) (string, error) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return "", fmt.Errorf("include %s: %w", path, err)
 			}
-		}
-	}
-	return result
-}
+			return string(data), nil
+		},
 
-// isSensitiveEnvVar checks if an environment variable is potentially sensitive.
-// It checks against prefix patterns, suffix patterns, and exact variable names.
-func isSensitiveEnvVar(envVar string) bool {
-	// Split on first = to get variable name
-	parts := strings.SplitN(envVar, "=", 2)
-	if len(parts) == 0 {
-		return false
+		// fromJsonFile reads a JSON file and returns the parsed data.
+		// This is a convenience function that combines include + fromJson.
+		// Usage: {{ $data := fromJsonFile "/path/to/file.json" }}
+		"fromJsonFile": func(path string) (any, error) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil, fmt.Errorf("fromJsonFile %s: %w", path, err)
+			}
+			var result any
+			if err := json.Unmarshal(data, &result); err != nil {
+				return nil, fmt.Errorf("fromJsonFile %s: invalid JSON: %w", path, err)
+			}
+			return result, nil
+		},
 	}
-	varName := strings.ToUpper(parts[0])
-
-	// Env var prefixes to exclude (may contain secrets)
-	excludePrefixes := []string{
-		// Secret management
-		"SOPS_",
-		// Cloud providers
-		"AWS_",
-		"AZURE_",
-		"GCP_",
-		"GOOGLE_",
-		"DO_",         // DigitalOcean
-		"LINODE_",     // Linode
-		"VULTR_",      // Vultr
-		"CLOUDFLARE_", // Cloudflare
-		"HETZNER_",    // Hetzner
-		"OVH_",        // OVH
-		// Generic sensitive prefixes
-		"API_KEY",
-		"SECRET",
-		"TOKEN",
-		"PASSWORD",
-		"CREDENTIAL",
-	}
-
-	// Env var suffixes to exclude (common token patterns)
-	excludeSuffixes := []string{
-		"_TOKEN",
-		"_SECRET",
-		"_KEY",
-		"_PASS",
-		"_PASSWORD",
-		"_AUTH",
-		"_CREDENTIAL",
-		"_CREDENTIALS",
-	}
-
-	// Specific known sensitive variables
-	excludeExact := []string{
-		"GITHUB_TOKEN",
-		"GITLAB_TOKEN",
-		"NPM_TOKEN",
-		"DOCKER_AUTH",
-		"REGISTRY_AUTH",
-		"SSH_AUTH_SOCK",
-		"GPG_TTY",
-	}
-
-	// Check prefix matches
-	for _, prefix := range excludePrefixes {
-		if strings.HasPrefix(varName, prefix) {
-			return true
-		}
-	}
-
-	// Check suffix matches
-	for _, suffix := range excludeSuffixes {
-		if strings.HasSuffix(varName, suffix) {
-			return true
-		}
-	}
-
-	// Check exact matches
-	for _, exact := range excludeExact {
-		if varName == exact {
-			return true
-		}
-	}
-
-	return false
-}
-
-// sanitizeStderr removes potential secret values from error output.
-func sanitizeStderr(stderr string) string {
-	// Remove any JSON-like structures that might contain secrets
-	// and limit output length
-	const maxLen = 500
-	if len(stderr) > maxLen {
-		stderr = stderr[:maxLen] + "... (truncated)"
-	}
-	return stderr
 }
 
 // RenderDirectory processes all .tmpl files in sourceDir and renders them to stagingDir.

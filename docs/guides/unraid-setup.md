@@ -22,8 +22,8 @@ Complete guide to setting up bosun on Unraid.
 │  │                                                                      │    │
 │  │  1. Receives orders (webhook) or checks in (polls)                   │    │
 │  │  2. git pull (fetch orders)                                          │    │
-│  │  3. sops decrypt → SOPS_SECRETS env (unlock the safe)                │    │
-│  │  4. chezmoi execute-template (prep configs)                          │    │
+│  │  3. sops decrypt (unlock the safe)                                   │    │
+│  │  4. Go template rendering (prep configs)                             │    │
 │  │  5. docker compose up -d (deploy crew)                               │    │
 │  │                                                                      │    │
 │  └──────────────────────────────────────────────────────────────────────┘    │

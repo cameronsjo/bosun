@@ -1,16 +1,15 @@
 package reconcile
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/getsops/sops/v3/decrypt"
 	"gopkg.in/yaml.v3"
 )
 
@@ -94,23 +93,10 @@ func ValidateSOPSFile(path string) error {
 	return nil
 }
 
-// CheckSOPSBinary verifies that the sops binary is available in PATH.
-func (s *SOPSOps) CheckSOPSBinary() error {
-	_, err := exec.LookPath("sops")
-	if err != nil {
-		return fmt.Errorf("sops binary not found in PATH: install it with 'brew install sops' or download from https://github.com/getsops/sops/releases")
-	}
-	return nil
-}
-
-// Decrypt decrypts a SOPS-encrypted file and returns the plaintext bytes.
+// Decrypt decrypts a SOPS-encrypted file and returns the plaintext bytes as JSON.
 // It first validates the file is SOPS-encrypted and checks that an age key is available.
+// Uses go-sops library for in-process decryption - no external binary required.
 func (s *SOPSOps) Decrypt(ctx context.Context, file string) ([]byte, error) {
-	// Check sops binary is available
-	if err := s.CheckSOPSBinary(); err != nil {
-		return nil, err
-	}
-
 	// Validate SOPS file before attempting decryption
 	if err := ValidateSOPSFile(file); err != nil {
 		return nil, err
@@ -120,17 +106,26 @@ func (s *SOPSOps) Decrypt(ctx context.Context, file string) ([]byte, error) {
 		return nil, err
 	}
 
-	cmd := exec.CommandContext(ctx, "sops", "--input-type", "yaml", "--output-type", "json", "-d", file)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		// Sanitize stderr to avoid leaking secrets in error messages
-		sanitizedErr := sanitizeSOPSError(stderr.String())
-		return nil, fmt.Errorf("sops decrypt failed for %s: %w: %s", file, err, sanitizedErr)
+	// Use go-sops library for in-process decryption
+	// The decrypt.File function reads the age key from SOPS_AGE_KEY or SOPS_AGE_KEY_FILE
+	// or the default location ~/.config/sops/age/keys.txt
+	plaintext, err := decrypt.File(file, "yaml")
+	if err != nil {
+		return nil, fmt.Errorf("sops decrypt failed for %s: %w", file, sanitizeDecryptError(err))
 	}
-	return stdout.Bytes(), nil
+
+	// Parse the YAML and convert to JSON for consistent output
+	var data map[string]any
+	if err := yaml.Unmarshal(plaintext, &data); err != nil {
+		return nil, fmt.Errorf("failed to parse decrypted YAML from %s: %w", file, err)
+	}
+
+	jsonBytes, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert decrypted data to JSON from %s: %w", file, err)
+	}
+
+	return jsonBytes, nil
 }
 
 // DecryptToMap decrypts a SOPS-encrypted file and returns the data as a map.
@@ -178,40 +173,40 @@ func (s *SOPSOps) DecryptToJSON(ctx context.Context, files []string) ([]byte, er
 	return json.Marshal(merged)
 }
 
-// sanitizeSOPSError removes potential secrets from SOPS error output.
-// SOPS error messages can sometimes include partial decrypted content.
-func sanitizeSOPSError(stderr string) string {
-	// List of patterns that indicate secret content might follow
-	sensitivePatterns := []string{
-		"data key",
-		"decrypted",
-		"plaintext",
-		"secret",
+// sanitizeDecryptError wraps and sanitizes errors from the decrypt library.
+// This ensures no sensitive information (like partial keys or decrypted content)
+// is exposed in error messages.
+func sanitizeDecryptError(err error) error {
+	if err == nil {
+		return nil
 	}
 
-	lines := strings.Split(stderr, "\n")
-	var sanitized []string
-	for _, line := range lines {
-		lineLower := strings.ToLower(line)
-		isSensitive := false
-		for _, pattern := range sensitivePatterns {
-			if strings.Contains(lineLower, pattern) {
-				isSensitive = true
-				break
+	errStr := err.Error()
+	errLower := strings.ToLower(errStr)
+
+	// Check for common, safe error patterns and return them directly
+	safePatterns := []string{
+		"could not find",
+		"no key found",
+		"failed to get",
+		"cannot find",
+		"key not found",
+		"permission denied",
+		"no such file",
+	}
+
+	for _, pattern := range safePatterns {
+		if strings.Contains(errLower, pattern) {
+			// Limit length for safety
+			if len(errStr) > 200 {
+				return errors.New(errStr[:200] + "... (truncated)")
 			}
-		}
-		if !isSensitive {
-			sanitized = append(sanitized, line)
+			return err
 		}
 	}
 
-	result := strings.Join(sanitized, "\n")
-	// Limit output length
-	const maxLen = 500
-	if len(result) > maxLen {
-		result = result[:maxLen] + "... (truncated)"
-	}
-	return result
+	// For unknown errors, provide a generic message
+	return errors.New("decryption failed - check age key configuration")
 }
 
 // mergeMap recursively merges src into dst.

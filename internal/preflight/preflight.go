@@ -25,40 +25,23 @@ type BinaryCheck struct {
 }
 
 // requiredBinaries defines binaries that must be present for bosun to function.
+// Note: git is no longer required as we use go-git library for git operations.
 var requiredBinaries = []BinaryCheck{
 	{
 		Name:        "docker",
 		Required:    true,
 		InstallHint: "Install Docker: https://docs.docker.com/get-docker/",
 	},
-	{
-		Name:        "git",
-		Required:    true,
-		InstallHint: "Install git: https://git-scm.com/downloads",
-	},
 }
 
 // optionalBinaries defines binaries that enhance bosun functionality but are not strictly required.
+// Note: sops binary is no longer required - we use the go-sops library for in-process decryption.
+// The age binary is still optional for key generation (age-keygen).
 var optionalBinaries = []BinaryCheck{
-	{
-		Name:        "sops",
-		Required:    false,
-		InstallHint: "Install sops: brew install sops",
-	},
 	{
 		Name:        "age",
 		Required:    false,
-		InstallHint: "Install age: brew install age",
-	},
-	{
-		Name:        "chezmoi",
-		Required:    false,
-		InstallHint: "Install chezmoi: brew install chezmoi",
-	},
-	{
-		Name:        "rsync",
-		Required:    false,
-		InstallHint: "Install rsync: brew install rsync",
+		InstallHint: "Install age: brew install age (needed for key generation with age-keygen)",
 	},
 }
 

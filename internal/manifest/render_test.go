@@ -577,7 +577,7 @@ func TestRenderStack_InvalidYAML(t *testing.T) {
 
 	_, err := RenderStack(stackPath, "", "", nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parse stack file")
+	assert.Contains(t, err.Error(), "validate stack")
 }
 
 func TestRenderStack_ServiceNotFound(t *testing.T) {

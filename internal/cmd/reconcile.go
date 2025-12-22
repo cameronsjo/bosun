@@ -32,7 +32,7 @@ var reconcileCmd = &cobra.Command{
 3. Decrypt secrets with SOPS
 4. Render templates with Chezmoi
 5. Create backup of current configs
-6. Deploy (rsync or local copy)
+6. Deploy (native file copy or tar-over-SSH for remote)
 7. Docker compose up
 8. SIGHUP to agentgateway
 9. Release lock

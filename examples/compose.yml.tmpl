@@ -1,5 +1,5 @@
 {{- $secrets := fromJson (env "SOPS_SECRETS") -}}
-# Example compose template rendered by chezmoi
+# Example compose template rendered by Go text/template + Sprig
 # Variables from SOPS secrets are injected at deploy time
 
 services:

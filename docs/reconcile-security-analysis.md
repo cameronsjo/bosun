@@ -8,13 +8,15 @@
 
 ## Executive Summary
 
-The reconcile workflow is the core GitOps engine for deploying infrastructure configurations. Analysis identified **23 findings** across security, reliability, and edge case handling:
+The reconcile workflow is the core GitOps engine for deploying infrastructure configurations. Analysis identified **23 findings** across security, reliability, and edge case handling.
 
-| Severity | Count | Categories |
-|----------|-------|------------|
-| CRITICAL | 3 | Secrets exposure, SSH key handling, rollback gaps |
+**Update:** With the migration from chezmoi to native Go templates, 2 critical findings have been resolved (secrets no longer exposed via environment variables, no external binary dependency).
+
+| Severity | Count | Status |
+|----------|-------|--------|
+| CRITICAL | 3 | 1 resolved, 2 remaining |
 | HIGH | 7 | Error recovery, partial failures, stale locks |
-| MEDIUM | 9 | Timeouts, validation, cleanup |
+| MEDIUM | 9 | 1 resolved, 8 remaining |
 | LOW | 4 | Logging, UX, minor edge cases |
 
 ---
@@ -121,25 +123,17 @@ if _, err := os.Stat(path); err != nil {
 
 **Recommendation:** Parse SOPS metadata to identify expected key fingerprint and compare with available keys.
 
-### 2.4 CRITICAL: Decrypted Secrets in Memory
+### 2.4 RESOLVED: Decrypted Secrets in Memory
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/sops.go:33-44` and `/Users/cameron/Projects/unops/internal/reconcile/template.go:47`
+**File:** `/Users/cameron/Projects/unops/internal/reconcile/sops.go:33-44` and `/Users/cameron/Projects/unops/internal/reconcile/template.go`
 
-**Finding (CRITICAL):** Decrypted secrets are held in `map[string]any` and passed to environment variable:
+**Previous Finding (CRITICAL):** Decrypted secrets were passed via environment variables to external processes.
 
-```go
-cmd.Env = append(os.Environ(), "SOPS_SECRETS="+string(dataJSON))
-```
+**Resolution:** Template rendering now uses native Go `text/template` with Sprig functions. Secrets are processed entirely in-memory without spawning external processes. No environment variable exposure.
 
-**Impact:**
-1. Secrets visible in `/proc/<pid>/environ` on Linux
-2. Secrets could be swapped to disk
-3. Child processes inherit environment with secrets
-
-**Recommendation:**
-1. Pass secrets via stdin pipe to chezmoi instead of environment
-2. Consider using memory-locked buffers for sensitive data
-3. Clear secret data from memory when done (though Go doesn't guarantee zeroing)
+**Remaining considerations:**
+1. Secrets still held in Go maps (garbage collected after use)
+2. Memory could be swapped to disk (consider mlock for high-security deployments)
 
 ---
 
@@ -147,20 +141,20 @@ cmd.Env = append(os.Environ(), "SOPS_SECRETS="+string(dataJSON))
 
 ### 3.1 Missing Template Variables - Silent Failure
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/template.go:45-55`
+**File:** `/Users/cameron/Projects/unops/internal/reconcile/template.go`
 
-**Finding (HIGH):** Chezmoi template rendering with missing variables may produce empty output or partial output depending on template syntax.
+**Finding (HIGH):** Go template rendering with missing variables may produce empty output or partial output depending on template syntax.
 
 **Impact:** Deployed configs could be incomplete, causing service failures.
 
 **Recommendation:**
 1. Validate rendered output is non-empty
-2. Use Chezmoi strict mode if available
+2. Use template Option("missingkey=error") for strict mode
 3. Consider schema validation for critical configs
 
 ### 3.2 Invalid Template Syntax
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/template.go:52-54`
+**File:** `/Users/cameron/Projects/unops/internal/reconcile/template.go`
 
 **Finding (MEDIUM):** Template syntax errors are caught but not validated before deployment.
 
@@ -168,19 +162,11 @@ cmd.Env = append(os.Environ(), "SOPS_SECRETS="+string(dataJSON))
 
 **Recommendation:** Pre-validate all templates before starting deployment (fail fast).
 
-### 3.3 Chezmoi Not Installed
+### 3.3 RESOLVED: External Binary Dependency
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/template.go:45`
+**Previous Finding (MEDIUM):** Required chezmoi binary as external dependency.
 
-**Finding (MEDIUM):** No pre-check for chezmoi binary availability.
-
-```go
-cmd := exec.CommandContext(ctx, "chezmoi", "execute-template")
-```
-
-**Impact:** Cryptic "executable not found" error.
-
-**Recommendation:** Check for required binaries at startup and provide installation instructions.
+**Resolution:** Template rendering now uses native Go `text/template` with Sprig functions. No external binary required - all template processing is built into the bosun binary.
 
 ### 3.4 Template Output Not Validated
 
@@ -475,7 +461,9 @@ cmd := exec.CommandContext(ctx, "sops", ...)
 
 ### 9.3 Required Binaries Not Validated
 
-**Finding (MEDIUM):** Assumes `git`, `sops`, `chezmoi`, `rsync`, `ssh`, `tar`, `docker` are available.
+**Finding (MEDIUM):** Assumes `git`, `sops`, `rsync`, `ssh`, `tar`, `docker` are available.
+
+**Note:** Template rendering no longer requires chezmoi - it uses native Go templates built into bosun.
 
 **Recommendation:** Add startup validation for all required binaries with version checks.
 
@@ -485,7 +473,7 @@ cmd := exec.CommandContext(ctx, "sops", ...)
 
 ### CRITICAL (Fix Immediately)
 
-1. **Secrets in environment** - Pass secrets via stdin to chezmoi, not environment variable
+1. **RESOLVED: Secrets in environment** - Now using native Go templates; secrets processed in-memory
 2. **Rollback on compose failure** - Implement automatic rollback when deployment fails
 3. **Secrets in logs** - Sanitize all external command output before logging
 

@@ -104,8 +104,8 @@ docker compose up -d --force-recreate  # uses previous image
 ```
 
 ### 5. Dependencies
-Container bundles everything: sops, age, chezmoi, webhook, git.
-Daemon requires installing each on the host.
+Container bundles the bosun binary with all dependencies built-in.
+Daemon requires only the bosun binary and sops/age for secrets.
 
 ## Why Offer Daemon Option
 

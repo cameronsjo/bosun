@@ -1,3 +1,5 @@
+apiVersion: bosun.io/v1
+kind: Provision
 # PostgreSQL sidecar profile
 compose:
   services:

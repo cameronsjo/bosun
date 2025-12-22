@@ -198,7 +198,7 @@ flowchart TD
 
     G -->|Clear Staging| G1[Clear Staging Directory]
     G1 --> G2[Copy Non-Template Files]
-    G2 --> G3[Execute Chezmoi Templates]
+    G2 --> G3[Execute Go Templates]
     G3 -->|Template Error| G_ERR[Error: template render failed]
     G3 -->|Success| H{Dry Run?}
 
@@ -242,7 +242,7 @@ flowchart TD
 | 6 | Decrypt SOPS files to JSON map | Returns error with file path |
 | 7 | Clear staging directory | Removes previous staging state |
 | 8 | Copy non-template files to staging | Preserves directory structure |
-| 9 | Execute Chezmoi templates with secrets | Secrets passed via temp file (0600 permissions) |
+| 9 | Execute Go templates with secrets | In-memory template rendering with Sprig functions |
 | 10 | Create backup of current configs | Backup verification: check tar.gz is valid |
 | 11 | Deploy via local rsync or SSH rsync | SSH retry with exponential backoff (1s, 2s, 4s) |
 | 12 | Run `docker compose up -d --remove-orphans --wait` | Warning if fails (non-fatal) |
@@ -260,7 +260,7 @@ flowchart TD
 | `age key not found` | No SOPS decryption key | Run `age-keygen -o ~/.config/sops/age/keys.txt` |
 | `file is not SOPS-encrypted` | Missing `sops` metadata | Encrypt file: `sops --encrypt --in-place file.yaml` |
 | `sops decrypt failed` | Wrong key or corrupted file | Verify age key matches encryption key |
-| `chezmoi execute-template failed` | Template syntax error | Fix template, check stderr output |
+| `template render failed` | Template syntax error | Fix template, check error output |
 | `SSH authentication failed` | Invalid SSH key | Add key to remote authorized_keys |
 | `SSH connection refused` | SSH service not running | Start SSH service on remote |
 | `SSH host key verification failed` | Unknown host | Run `ssh-keyscan host >> ~/.ssh/known_hosts` |

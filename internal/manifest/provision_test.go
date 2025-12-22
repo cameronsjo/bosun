@@ -286,7 +286,7 @@ func TestLoadProvision_InvalidYAML(t *testing.T) {
 
 	_, err := LoadProvision("invalid", map[string]any{}, tmpDir)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parse provision")
+	assert.Contains(t, err.Error(), "validate provision")
 }
 
 func TestLoadProvision_IncludeError(t *testing.T) {

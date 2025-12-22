@@ -18,6 +18,7 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/docker"
+	"github.com/cameronsjo/bosun/internal/tunnel"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -538,29 +539,10 @@ func checkSOPS() CheckResult {
 	return CheckResult{Warned: 1}
 }
 
-// checkUV verifies uv is installed for manifest rendering.
-func checkUV() CheckResult {
-	if _, err := exec.LookPath("uv"); err == nil {
-		ui.Green.Println("  * uv is installed")
-		return CheckResult{Passed: 1}
-	}
-	ui.Yellow.Println("  ! uv not found (needed for manifest rendering)")
-	ui.Blue.Println("      To fix this:")
-	ui.Blue.Println("      - Visit: https://docs.astral.sh/uv/getting-started/installation/")
-	ui.Blue.Println("      - Or: curl -LsSf https://astral.sh/uv/install.sh | sh")
-	ui.Blue.Println("      - Or: brew install uv (macOS)")
-	return CheckResult{Warned: 1}
-}
-
 // checkManifestDirectory verifies the manifest directory exists.
 func checkManifestDirectory(cfg *config.Config) CheckResult {
 	if cfg == nil {
 		return CheckResult{} // Skip if no config
-	}
-	manifestPy := filepath.Join(cfg.ManifestDir, "manifest.py")
-	if _, err := os.Stat(manifestPy); err == nil {
-		ui.Green.Println("  * Manifest directory found")
-		return CheckResult{Passed: 1}
 	}
 	if _, err := os.Stat(cfg.ManifestDir); err == nil {
 		ui.Green.Println("  * Manifest directory found")
@@ -593,18 +575,72 @@ func checkWebhook() CheckResult {
 	return CheckResult{Warned: 1}
 }
 
-// checkChezmoi verifies chezmoi is installed (optional).
-func checkChezmoi() CheckResult {
-	if _, err := exec.LookPath("chezmoi"); err == nil {
-		ui.Green.Println("  * chezmoi is installed")
+// checkTunnel verifies the configured tunnel provider is installed and connected.
+func checkTunnel(ctx context.Context, cfg *config.Config) CheckResult {
+	providerName := "tailscale" // default
+	if cfg != nil {
+		providerName = cfg.TunnelProvider()
+	}
+
+	provider, err := tunnel.NewProvider(providerName)
+	if err != nil {
+		if _, ok := err.(tunnel.ErrNotInstalled); ok {
+			ui.Yellow.Printf("  ! %s not installed\n", capitalizeProviderName(providerName))
+			ui.Blue.Println("      To fix this:")
+			switch providerName {
+			case "tailscale":
+				ui.Blue.Println("      - Install from: https://tailscale.com/download")
+			case "cloudflare":
+				ui.Blue.Println("      - Install from: https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/")
+			default:
+				ui.Blue.Printf("      - Install %s\n", providerName)
+			}
+			return CheckResult{Warned: 1}
+		}
+		ui.Yellow.Printf("  ! Tunnel provider error: %v\n", err)
+		return CheckResult{Warned: 1}
+	}
+
+	status, err := provider.Status(ctx)
+	if err != nil {
+		ui.Yellow.Printf("  ! Failed to get %s status: %v\n", providerName, err)
+		return CheckResult{Warned: 1}
+	}
+
+	if status.Connected {
+		ui.Green.Printf("  * %s is connected", capitalizeProviderName(providerName))
+		if status.Hostname != "" {
+			fmt.Printf(" (%s)", status.Hostname)
+		}
+		fmt.Println()
 		return CheckResult{Passed: 1}
 	}
-	ui.Yellow.Println("  ! chezmoi not found (optional, for dotfiles management)")
+
+	ui.Yellow.Printf("  ! %s is not connected (state: %s)\n", capitalizeProviderName(providerName), status.BackendState)
 	ui.Blue.Println("      To fix this:")
-	ui.Blue.Println("      - macOS: brew install chezmoi")
-	ui.Blue.Println("      - Or: sh -c \"$(curl -fsLS get.chezmoi.io)\"")
-	ui.Blue.Println("      - See: https://www.chezmoi.io/install/")
+	switch providerName {
+	case "tailscale":
+		ui.Blue.Println("      - Run: tailscale up")
+	case "cloudflare":
+		ui.Blue.Println("      - Run: cloudflared tunnel run <tunnel-name>")
+	}
 	return CheckResult{Warned: 1}
+}
+
+// capitalizeProviderName capitalizes the first letter of a provider name.
+func capitalizeProviderName(name string) string {
+	if name == "" {
+		return name
+	}
+	// Handle special cases
+	switch name {
+	case "tailscale":
+		return "Tailscale"
+	case "cloudflare":
+		return "Cloudflare"
+	default:
+		return strings.ToUpper(name[:1]) + name[1:]
+	}
 }
 
 func runDoctor(cmd *cobra.Command, args []string) {
@@ -626,9 +662,13 @@ func runDoctor(cmd *cobra.Command, args []string) {
 	result.Add(checkProjectRoot(cfg))
 	result.Add(checkAgeKey())
 	result.Add(checkSOPS())
-	result.Add(checkUV())
 	result.Add(checkManifestDirectory(cfg))
 	result.Add(checkWebhook())
+
+	// Check tunnel provider with timeout
+	tunnelCtx, tunnelCancel := context.WithTimeout(context.Background(), doctorCheckTimeout)
+	result.Add(checkTunnel(tunnelCtx, cfg))
+	tunnelCancel()
 
 	// Summary
 	fmt.Println()
@@ -850,7 +890,7 @@ func normalizeImage(image string) string {
 	return image
 }
 
-func validateServiceFile(filename, manifestDir string) bool {
+func validateServiceFile(filename, _ string) bool {
 	content, err := os.ReadFile(filename)
 	if err != nil {
 		return false
@@ -859,71 +899,40 @@ func validateServiceFile(filename, manifestDir string) bool {
 	hasName := strings.Contains(string(content), "name:")
 	hasProvisions := strings.Contains(string(content), "provisions:")
 
-	if !hasName || !hasProvisions {
-		return false
-	}
-
-	// Try dry-run render if uv is available
-	if _, err := exec.LookPath("uv"); err == nil {
-		cmd := exec.Command("uv", "run", "manifest.py", "render", filename, "--dry-run")
-		cmd.Dir = manifestDir
-		if err := cmd.Run(); err != nil {
-			return false
-		}
-	}
-
-	return true
+	return hasName && hasProvisions
 }
 
-func validateStackFile(filename, manifestDir string) bool {
+func validateStackFile(filename, _ string) bool {
 	content, err := os.ReadFile(filename)
 	if err != nil {
 		return false
 	}
 
-	hasInclude := strings.Contains(string(content), "include:")
-
-	if !hasInclude {
-		return true // Stacks without include are warnings, not errors
-	}
-
-	// Try dry-run render if uv is available
-	if _, err := exec.LookPath("uv"); err == nil {
-		cmd := exec.Command("uv", "run", "manifest.py", "render", filename, "--dry-run")
-		cmd.Dir = manifestDir
-		if err := cmd.Run(); err != nil {
-			return false
-		}
-	}
-
+	// Stacks without include are warnings, not errors
+	// Basic validation: file is readable
+	_ = content
 	return true
 }
 
 func checkDependencies(cfg *config.Config) int {
 	warnings := 0
 
-	stacksDir := cfg.StacksDir()
-	stackFiles, _ := filepath.Glob(filepath.Join(stacksDir, "*.yml"))
+	// Check rendered compose files in output directory
+	composeDir := filepath.Join(cfg.OutputDir(), "compose")
+	composeFiles, _ := filepath.Glob(filepath.Join(composeDir, "*.yml"))
 
-	for _, stackFile := range stackFiles {
-		stackName := strings.TrimSuffix(filepath.Base(stackFile), ".yml")
+	for _, composeFile := range composeFiles {
+		stackName := strings.TrimSuffix(filepath.Base(composeFile), ".yml")
 
-		// Try to render and check
-		if _, err := exec.LookPath("uv"); err != nil {
-			continue
-		}
-
-		cmd := exec.Command("uv", "run", "manifest.py", "render", stackFile, "--dry-run")
-		cmd.Dir = cfg.ManifestDir
-		output, err := cmd.Output()
+		rendered, err := os.ReadFile(composeFile)
 		if err != nil {
 			continue
 		}
 
-		rendered := string(output)
+		content := string(rendered)
 
 		// Extract service names using package-level regex
-		services := serviceNameRegex.FindAllStringSubmatch(rendered, -1)
+		services := serviceNameRegex.FindAllStringSubmatch(content, -1)
 
 		for _, match := range services {
 			svc := match[1]
@@ -932,7 +941,7 @@ func checkDependencies(cfg *config.Config) int {
 			if strings.HasSuffix(svc, "-db") {
 				parent := strings.TrimSuffix(svc, "-db")
 				// Check if parent exists and has depends_on
-				parentSection := extractSection(rendered, parent)
+				parentSection := extractSection(content, parent)
 				if parentSection != "" && !strings.Contains(parentSection, "depends_on:") {
 					ui.Yellow.Printf("  ! %s: %s may be missing depends_on: %s\n", stackName, parent, svc)
 					warnings++
@@ -940,7 +949,7 @@ func checkDependencies(cfg *config.Config) int {
 			}
 
 			// Check: services with traefik labels should be on proxynet
-			svcSection := extractSection(rendered, svc)
+			svcSection := extractSection(content, svc)
 			if strings.Contains(svcSection, "traefik.enable") && !strings.Contains(svcSection, "proxynet") {
 				ui.Yellow.Printf("  ! %s: %s has traefik labels but may not be on proxynet\n", stackName, svc)
 				warnings++
@@ -1121,53 +1130,13 @@ func checkPortConflicts(cfg *config.Config) int {
 	return conflicts
 }
 
-// checkPortConflictsFromStacks checks port conflicts by rendering stack files.
-func checkPortConflictsFromStacks(cfg *config.Config, portMap map[int]string) int {
-	conflicts := 0
-
-	stacksDir := cfg.StacksDir()
-	stackFiles, _ := filepath.Glob(filepath.Join(stacksDir, "*.yml"))
-
-	for _, stackFile := range stackFiles {
-		stackName := strings.TrimSuffix(filepath.Base(stackFile), ".yml")
-
-		if _, err := exec.LookPath("uv"); err != nil {
-			continue
-		}
-
-		cmd := exec.Command("uv", "run", "manifest.py", "render", stackFile, "--dry-run")
-		cmd.Dir = cfg.ManifestDir
-		output, err := cmd.Output()
-		if err != nil {
-			continue
-		}
-
-		rendered := string(output)
-
-		// Find all ports using enhanced patterns
-		for _, pattern := range portPatterns {
-			matches := pattern.FindAllStringSubmatch(rendered, -1)
-			for _, match := range matches {
-				if len(match) < 2 {
-					continue
-				}
-				portStr := match[1]
-				port, err := strconv.Atoi(portStr)
-				if err != nil || port < 1 {
-					continue
-				}
-
-				if existing, ok := portMap[port]; ok && existing != stackName {
-					ui.Yellow.Printf("  ! Port %d claimed by multiple services (%s and %s)\n", port, existing, stackName)
-					conflicts++
-				} else {
-					portMap[port] = stackName
-				}
-			}
-		}
-	}
-
-	return conflicts
+// checkPortConflictsFromStacks checks port conflicts from raw stack files.
+// This is a fallback when no rendered compose files exist.
+// Without rendered files, we cannot reliably detect port conflicts.
+func checkPortConflictsFromStacks(_ *config.Config, _ map[int]string) int {
+	// Port conflict detection requires rendered compose files.
+	// Run 'bosun provision' first to generate them.
+	return 0
 }
 
 func extractSection(content, serviceName string) string {

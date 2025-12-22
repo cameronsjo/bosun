@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/cameronsjo/bosun/internal/fileutil"
 )
 
 // ErrRollbackSucceeded indicates deployment failed but rollback succeeded.
@@ -27,13 +29,13 @@ const (
 
 // Deploy operation timeouts
 const (
-	SSHConnectTimeout = 5 * time.Second
-	SSHTimeout        = 30 * time.Second
-	RsyncTimeout      = 5 * time.Minute
-	ComposeUpTimeout  = 10 * time.Minute
+	SSHConnectTimeout  = 5 * time.Second
+	SSHTimeout         = 30 * time.Second
+	RemoteDeployTimeout = 5 * time.Minute
+	ComposeUpTimeout   = 10 * time.Minute
 )
 
-// DeployOps provides deployment operations including backup, rsync, and service management.
+// DeployOps provides deployment operations including backup, file sync, and service management.
 type DeployOps struct {
 	// DryRun if true, only shows what would be done without making changes.
 	DryRun bool
@@ -329,112 +331,238 @@ func (d *DeployOps) CleanupBackups(backupDir string, keep int) error {
 	return nil
 }
 
-// DeployLocal syncs files locally using rsync.
+// DeployLocal syncs files locally using native Go file operations.
+// Performs atomic copy: copies to temp directory first, then replaces target.
+// Uses --delete semantics: removes files in target that don't exist in source.
 func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string) error {
-	args := []string{"-av", "--delete"}
 	if d.DryRun {
-		args = append(args, "--dry-run")
+		return nil
 	}
-	args = append(args, sourceDir+"/", targetDir+"/")
 
-	cmd := exec.CommandContext(ctx, "rsync", args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("rsync failed: %w: %s", err, stderr.String())
+	// Verify source directory exists
+	srcInfo, err := os.Stat(sourceDir)
+	if err != nil {
+		return fmt.Errorf("source directory: %w", err)
 	}
+	if !srcInfo.IsDir() {
+		return fmt.Errorf("source is not a directory: %s", sourceDir)
+	}
+
+	// Create parent of target directory if needed
+	targetParent := filepath.Dir(targetDir)
+	if err := os.MkdirAll(targetParent, 0755); err != nil {
+		return fmt.Errorf("create target parent: %w", err)
+	}
+
+	// Create temp directory in same parent for atomic rename
+	tmpDir, err := os.MkdirTemp(targetParent, ".deploy-tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp directory: %w", err)
+	}
+
+	// Cleanup temp directory on failure
+	success := false
+	defer func() {
+		if !success {
+			os.RemoveAll(tmpDir)
+		}
+	}()
+
+	// Copy source to temp directory
+	if err := fileutil.CopyDir(sourceDir, tmpDir); err != nil {
+		return fmt.Errorf("copy to temp: %w", err)
+	}
+
+	// Check context for cancellation
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	// Remove existing target if it exists
+	if _, err := os.Stat(targetDir); err == nil {
+		if err := os.RemoveAll(targetDir); err != nil {
+			return fmt.Errorf("remove existing target: %w", err)
+		}
+	}
+
+	// Atomic rename temp to target
+	if err := os.Rename(tmpDir, targetDir); err != nil {
+		return fmt.Errorf("rename to target: %w", err)
+	}
+
+	success = true
 	return nil
 }
 
-// DeployLocalFile syncs a single file locally using rsync.
+// DeployLocalFile syncs a single file locally using native Go file operations.
+// Uses atomic copy via temp file.
 func (d *DeployOps) DeployLocalFile(ctx context.Context, sourceFile, targetFile string) error {
-	args := []string{"-av"}
 	if d.DryRun {
-		args = append(args, "--dry-run")
+		return nil
 	}
-	args = append(args, sourceFile, targetFile)
 
-	cmd := exec.CommandContext(ctx, "rsync", args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("rsync failed: %w: %s", err, stderr.String())
+	// Check context for cancellation
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
-	return nil
+
+	return fileutil.CopyFile(sourceFile, targetFile)
 }
 
-// DeployRemote syncs files to a remote host using rsync over SSH.
-// Uses RsyncTimeout if the parent context has no deadline.
+// DeployRemote syncs files to a remote host using tar-over-SSH.
+// Uses RemoteDeployTimeout if the parent context has no deadline.
 // Retries on transient SSH errors with exponential backoff.
+// Performs atomic deployment: tar to temp dir, then move to target.
 func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, targetDir string) error {
 	if err := validateHost(targetHost); err != nil {
 		return fmt.Errorf("invalid SSH host: %w", err)
 	}
 
+	if d.DryRun {
+		return nil
+	}
+
 	// Apply timeout if context doesn't have one
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, RsyncTimeout)
+		ctx, cancel = context.WithTimeout(ctx, RemoteDeployTimeout)
 		defer cancel()
 	}
 
-	args := []string{"-avz", "--delete"}
-	if d.DryRun {
-		args = append(args, "--dry-run")
+	// Ensure target directory parent exists on remote
+	targetParent := filepath.Dir(targetDir)
+	if err := d.EnsureRemoteDir(ctx, targetHost, targetParent); err != nil {
+		return fmt.Errorf("ensure remote parent dir: %w", err)
 	}
-	target := fmt.Sprintf("%s:%s/", targetHost, targetDir)
-	args = append(args, sourceDir+"/", target)
+
+	// Create temp directory on remote for atomic deployment
+	// Use unique name based on target to avoid collisions
+	tmpDirName := fmt.Sprintf(".deploy-tmp-%d", time.Now().UnixNano())
+	tmpDir := filepath.Join(targetParent, tmpDirName)
 
 	return retryWithBackoff(ctx, DefaultMaxRetries, func() error {
-		cmd := exec.CommandContext(ctx, "rsync", args...)
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-
-		if err := cmd.Run(); err != nil {
-			if ctx.Err() == context.DeadlineExceeded {
-				return fmt.Errorf("rsync timed out after %v", RsyncTimeout)
-			}
-			return fmt.Errorf("rsync failed: %w: %s", err, stderr.String())
+		// Create temp directory on remote
+		mkdirCmd := exec.CommandContext(ctx, "ssh", targetHost, "mkdir", "-p", tmpDir)
+		var mkdirStderr bytes.Buffer
+		mkdirCmd.Stderr = &mkdirStderr
+		if err := mkdirCmd.Run(); err != nil {
+			return fmt.Errorf("create remote temp dir: %w: %s", err, mkdirStderr.String())
 		}
+
+		// Tar source directory and pipe to SSH for extraction on remote
+		// tar -C sourceDir -cf - . | ssh host "tar -C tmpDir -xf -"
+		tarCmd := exec.CommandContext(ctx, "tar", "-C", sourceDir, "-cf", "-", ".")
+		sshCmd := exec.CommandContext(ctx, "ssh", targetHost, fmt.Sprintf("tar -C %s -xf -", tmpDir))
+
+		// Connect tar stdout to ssh stdin
+		pipe, err := tarCmd.StdoutPipe()
+		if err != nil {
+			return fmt.Errorf("create pipe: %w", err)
+		}
+		sshCmd.Stdin = pipe
+
+		var tarStderr, sshStderr bytes.Buffer
+		tarCmd.Stderr = &tarStderr
+		sshCmd.Stderr = &sshStderr
+
+		// Start both commands
+		if err := tarCmd.Start(); err != nil {
+			return fmt.Errorf("start tar: %w", err)
+		}
+		if err := sshCmd.Start(); err != nil {
+			tarCmd.Process.Kill()
+			return fmt.Errorf("start ssh: %w: %s", err, sshStderr.String())
+		}
+
+		// Wait for both to complete
+		tarErr := tarCmd.Wait()
+		sshErr := sshCmd.Wait()
+
+		if tarErr != nil {
+			// Cleanup temp dir on failure
+			exec.CommandContext(ctx, "ssh", targetHost, "rm", "-rf", tmpDir).Run()
+			return fmt.Errorf("tar failed: %w: %s", tarErr, tarStderr.String())
+		}
+		if sshErr != nil {
+			exec.CommandContext(ctx, "ssh", targetHost, "rm", "-rf", tmpDir).Run()
+			if ctx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("ssh timed out after %v", RemoteDeployTimeout)
+			}
+			return fmt.Errorf("ssh extract failed: %w: %s", sshErr, sshStderr.String())
+		}
+
+		// Atomic move: remove old target and rename temp to target
+		// Using a shell command to ensure atomicity
+		moveCmd := fmt.Sprintf("rm -rf %s && mv %s %s", targetDir, tmpDir, targetDir)
+		atomicCmd := exec.CommandContext(ctx, "ssh", targetHost, moveCmd)
+		var atomicStderr bytes.Buffer
+		atomicCmd.Stderr = &atomicStderr
+
+		if err := atomicCmd.Run(); err != nil {
+			// Try to cleanup temp dir
+			exec.CommandContext(ctx, "ssh", targetHost, "rm", "-rf", tmpDir).Run()
+			return fmt.Errorf("atomic move failed: %w: %s", err, atomicStderr.String())
+		}
+
 		return nil
 	})
 }
 
-// DeployRemoteFile syncs a single file to a remote host using rsync over SSH.
-// Uses RsyncTimeout if the parent context has no deadline.
+// DeployRemoteFile syncs a single file to a remote host using scp.
+// Uses RemoteDeployTimeout if the parent context has no deadline.
 // Retries on transient SSH errors with exponential backoff.
+// Performs atomic copy: scp to temp file, then move to target.
 func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost, targetFile string) error {
 	if err := validateHost(targetHost); err != nil {
 		return fmt.Errorf("invalid SSH host: %w", err)
 	}
 
+	if d.DryRun {
+		return nil
+	}
+
 	// Apply timeout if context doesn't have one
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, RsyncTimeout)
+		ctx, cancel = context.WithTimeout(ctx, RemoteDeployTimeout)
 		defer cancel()
 	}
 
-	args := []string{"-avz"}
-	if d.DryRun {
-		args = append(args, "--dry-run")
+	// Ensure target directory exists on remote
+	targetDir := filepath.Dir(targetFile)
+	if err := d.EnsureRemoteDir(ctx, targetHost, targetDir); err != nil {
+		return fmt.Errorf("ensure remote dir: %w", err)
 	}
-	target := fmt.Sprintf("%s:%s", targetHost, targetFile)
-	args = append(args, sourceFile, target)
+
+	// Create temp file path for atomic copy
+	tmpFile := fmt.Sprintf("%s.tmp.%d", targetFile, time.Now().UnixNano())
 
 	return retryWithBackoff(ctx, DefaultMaxRetries, func() error {
-		cmd := exec.CommandContext(ctx, "rsync", args...)
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
+		// SCP to temp file
+		target := fmt.Sprintf("%s:%s", targetHost, tmpFile)
+		scpCmd := exec.CommandContext(ctx, "scp", "-q", sourceFile, target)
+		var scpStderr bytes.Buffer
+		scpCmd.Stderr = &scpStderr
 
-		if err := cmd.Run(); err != nil {
+		if err := scpCmd.Run(); err != nil {
+			// Cleanup temp file on failure
+			exec.CommandContext(ctx, "ssh", targetHost, "rm", "-f", tmpFile).Run()
 			if ctx.Err() == context.DeadlineExceeded {
-				return fmt.Errorf("rsync timed out after %v", RsyncTimeout)
+				return fmt.Errorf("scp timed out after %v", RemoteDeployTimeout)
 			}
-			return fmt.Errorf("rsync failed: %w: %s", err, stderr.String())
+			return fmt.Errorf("scp failed: %w: %s", err, scpStderr.String())
 		}
+
+		// Atomic move temp file to target
+		moveCmd := exec.CommandContext(ctx, "ssh", targetHost, "mv", tmpFile, targetFile)
+		var moveStderr bytes.Buffer
+		moveCmd.Stderr = &moveStderr
+
+		if err := moveCmd.Run(); err != nil {
+			exec.CommandContext(ctx, "ssh", targetHost, "rm", "-f", tmpFile).Run()
+			return fmt.Errorf("atomic move failed: %w: %s", err, moveStderr.String())
+		}
+
 		return nil
 	})
 }

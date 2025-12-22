@@ -1,3 +1,5 @@
+apiVersion: bosun.io/v1
+kind: Stack
 include:
   - simple-service.yml
 networks:

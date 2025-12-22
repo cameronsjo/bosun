@@ -2,8 +2,35 @@
 // compose, traefik, and gatus configs from service manifests.
 package manifest
 
+// API version and kind constants for manifest versioning.
+const (
+	// APIVersionV1 is the current API version for bosun manifests.
+	APIVersionV1 = "bosun.io/v1"
+
+	// KindProvision identifies a Provision manifest.
+	KindProvision = "Provision"
+
+	// KindStack identifies a Stack manifest.
+	KindStack = "Stack"
+
+	// KindService identifies a Service manifest.
+	KindService = "Service"
+)
+
+// SupportedAPIVersions lists all API versions that can be loaded.
+var SupportedAPIVersions = []string{APIVersionV1}
+
+// SupportedKinds lists all valid manifest kinds.
+var SupportedKinds = []string{KindProvision, KindStack, KindService}
+
 // ServiceManifest defines a service to be provisioned.
 type ServiceManifest struct {
+	// APIVersion identifies the schema version (e.g., "bosun.io/v1").
+	APIVersion string `yaml:"apiVersion,omitempty"`
+
+	// Kind identifies the manifest type (e.g., "Service").
+	Kind string `yaml:"kind,omitempty"`
+
 	// Name is the service name used for interpolation and output.
 	Name string `yaml:"name"`
 
@@ -29,6 +56,12 @@ type ServiceManifest struct {
 
 // Provision represents a loaded provision template with outputs for each target.
 type Provision struct {
+	// APIVersion identifies the schema version (e.g., "bosun.io/v1").
+	APIVersion string `yaml:"apiVersion,omitempty"`
+
+	// Kind identifies the manifest type (e.g., "Provision").
+	Kind string `yaml:"kind,omitempty"`
+
 	// Compose output for docker-compose.yml.
 	Compose map[string]any `yaml:"compose,omitempty"`
 
@@ -65,6 +98,12 @@ func NewRenderOutput() *RenderOutput {
 
 // Stack defines a collection of services to render together.
 type Stack struct {
+	// APIVersion identifies the schema version (e.g., "bosun.io/v1").
+	APIVersion string `yaml:"apiVersion,omitempty"`
+
+	// Kind identifies the manifest type (e.g., "Stack").
+	Kind string `yaml:"kind,omitempty"`
+
 	// Include lists service manifest files to include.
 	Include []string `yaml:"include,omitempty"`
 

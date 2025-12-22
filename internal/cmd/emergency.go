@@ -20,6 +20,7 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/docker"
+	"github.com/cameronsjo/bosun/internal/fileutil"
 	"github.com/cameronsjo/bosun/internal/snapshot"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
@@ -677,12 +678,8 @@ func extractFile(target string, tr *tar.Reader, size int64) error {
 }
 
 func deployRestoredConfigs(stagingDir, targetDir string) error {
-	// Use rsync for deployment
-	// The "--" prevents any directory paths from being interpreted as flags
-	cmd := exec.Command("rsync", "-av", "--", stagingDir+"/", targetDir+"/")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	// Use native Go file operations for deployment
+	return fileutil.CopyDir(stagingDir, targetDir)
 }
 
 func runComposeUp(composeFile string) error {

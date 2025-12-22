@@ -3,6 +3,7 @@ package manifest
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,6 +158,19 @@ func RenderStack(stackPath, provisionsDir, servicesDir string, valuesOverlay map
 		return nil, fmt.Errorf("read stack file: %w", err)
 	}
 
+	// Validate apiVersion if present (soft validation for backwards compatibility)
+	meta, err := ValidateManifest(stackContent)
+	if err != nil {
+		return nil, fmt.Errorf("validate stack: %w", err)
+	}
+
+	// Warn if manifest is unversioned
+	if meta.APIVersion == "" {
+		log.Printf("Warning: stack %s is missing apiVersion field (run 'bosun migrate' to update)", stackPath)
+	} else if meta.Kind != "" && meta.Kind != KindStack {
+		log.Printf("Warning: stack %s has kind %s, expected %s", stackPath, meta.Kind, KindStack)
+	}
+
 	var stack Stack
 	if err := yaml.Unmarshal(stackContent, &stack); err != nil {
 		return nil, fmt.Errorf("parse stack file: %w", err)
@@ -174,6 +188,19 @@ func RenderStack(stackPath, provisionsDir, servicesDir string, valuesOverlay map
 		serviceContent, err := os.ReadFile(servicePath)
 		if err != nil {
 			return nil, fmt.Errorf("read service %s: %w", serviceFile, err)
+		}
+
+		// Validate apiVersion if present (soft validation for backwards compatibility)
+		serviceMeta, err := ValidateManifest(serviceContent)
+		if err != nil {
+			return nil, fmt.Errorf("validate service %s: %w", serviceFile, err)
+		}
+
+		// Warn if manifest is unversioned
+		if serviceMeta.APIVersion == "" {
+			log.Printf("Warning: service %s is missing apiVersion field (run 'bosun migrate' to update)", serviceFile)
+		} else if serviceMeta.Kind != "" && serviceMeta.Kind != KindService {
+			log.Printf("Warning: service %s has kind %s, expected %s", serviceFile, serviceMeta.Kind, KindService)
 		}
 
 		var manifest ServiceManifest
@@ -269,6 +296,19 @@ func LoadServiceManifest(path string) (*ServiceManifest, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read manifest: %w", err)
+	}
+
+	// Validate apiVersion if present (soft validation for backwards compatibility)
+	meta, err := ValidateManifest(content)
+	if err != nil {
+		return nil, fmt.Errorf("validate manifest: %w", err)
+	}
+
+	// Warn if manifest is unversioned
+	if meta.APIVersion == "" {
+		log.Printf("Warning: service %s is missing apiVersion field (run 'bosun migrate' to update)", path)
+	} else if meta.Kind != "" && meta.Kind != KindService {
+		log.Printf("Warning: service %s has kind %s, expected %s", path, meta.Kind, KindService)
 	}
 
 	var manifest ServiceManifest

@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -31,6 +32,19 @@ func loadProvisionInternal(provisionName string, variables map[string]any, provi
 		return nil, fmt.Errorf("read provision %s: %w", provisionPath, err)
 	}
 
+	// Validate apiVersion if present (soft validation for backwards compatibility)
+	meta, err := ValidateManifest(rawContent)
+	if err != nil {
+		return nil, fmt.Errorf("validate provision %s: %w", provisionName, err)
+	}
+
+	// Warn if manifest is unversioned
+	if meta.APIVersion == "" {
+		log.Printf("Warning: provision %s is missing apiVersion field (run 'bosun migrate' to update)", provisionName)
+	} else if meta.Kind != "" && meta.Kind != KindProvision {
+		log.Printf("Warning: provision %s has kind %s, expected %s", provisionName, meta.Kind, KindProvision)
+	}
+
 	// Interpolate BEFORE YAML parsing
 	interpolated, err := Interpolate(string(rawContent), variables)
 	if err != nil {
@@ -46,6 +60,10 @@ func loadProvisionInternal(provisionName string, variables map[string]any, provi
 	if rawProvision == nil {
 		rawProvision = make(map[string]any)
 	}
+
+	// Remove apiVersion and kind from raw provision (they're metadata, not output)
+	delete(rawProvision, "apiVersion")
+	delete(rawProvision, "kind")
 
 	// Extract includes before processing
 	var includes []string

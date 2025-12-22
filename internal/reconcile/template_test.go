@@ -2,8 +2,8 @@ package reconcile
 
 import (
 	"context"
+	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -23,10 +23,6 @@ func TestNewTemplateOps(t *testing.T) {
 }
 
 func TestTemplateOps_ExecuteTemplate(t *testing.T) {
-	if _, err := exec.LookPath("chezmoi"); err != nil {
-		t.Skip("chezmoi not installed")
-	}
-
 	t.Run("simple template", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		ctx := context.Background()
@@ -53,9 +49,9 @@ func TestTemplateOps_ExecuteTemplate(t *testing.T) {
 		tmpDir := t.TempDir()
 		ctx := context.Background()
 
-		// Create template file with env variable
+		// Create template file with variable interpolation
 		templateFile := filepath.Join(tmpDir, "test.tmpl")
-		templateContent := `Static content`
+		templateContent := `Hello, {{ .name }}!`
 		require.NoError(t, os.WriteFile(templateFile, []byte(templateContent), 0644))
 
 		outputFile := filepath.Join(tmpDir, "output", "test.txt")
@@ -67,6 +63,150 @@ func TestTemplateOps_ExecuteTemplate(t *testing.T) {
 		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
 
 		require.NoError(t, err)
+
+		// Verify output contains interpolated value
+		content, err := os.ReadFile(outputFile)
+		require.NoError(t, err)
+		assert.Equal(t, "Hello, Test!", string(content))
+	})
+
+	t.Run("template with sprig functions", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		// Create template using sprig functions (upper, lower, default)
+		templateFile := filepath.Join(tmpDir, "test.tmpl")
+		templateContent := `{{ .name | upper }} - {{ .missing | default "fallback" }}`
+		require.NoError(t, os.WriteFile(templateFile, []byte(templateContent), 0644))
+
+		outputFile := filepath.Join(tmpDir, "output", "test.txt")
+
+		data := map[string]any{
+			"name": "hello",
+		}
+		tmpl := NewTemplateOps(data)
+		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+
+		require.NoError(t, err)
+
+		content, err := os.ReadFile(outputFile)
+		require.NoError(t, err)
+		assert.Equal(t, "HELLO - fallback", string(content))
+	})
+
+	t.Run("template with env function", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		// Create template using env function (provided by sprig)
+		templateFile := filepath.Join(tmpDir, "test.tmpl")
+		templateContent := `Home: {{ env "HOME" }}`
+		require.NoError(t, os.WriteFile(templateFile, []byte(templateContent), 0644))
+
+		outputFile := filepath.Join(tmpDir, "output", "test.txt")
+
+		tmpl := NewTemplateOps(map[string]any{})
+		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+
+		require.NoError(t, err)
+
+		content, err := os.ReadFile(outputFile)
+		require.NoError(t, err)
+		assert.Contains(t, string(content), "Home: ")
+	})
+
+	t.Run("template with toJson and fromJson", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		// Create template using JSON functions (provided by sprig)
+		templateFile := filepath.Join(tmpDir, "test.tmpl")
+		templateContent := `{{ .data | toJson }}`
+		require.NoError(t, os.WriteFile(templateFile, []byte(templateContent), 0644))
+
+		outputFile := filepath.Join(tmpDir, "output", "test.txt")
+
+		data := map[string]any{
+			"data": map[string]any{
+				"key": "value",
+			},
+		}
+		tmpl := NewTemplateOps(data)
+		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+
+		require.NoError(t, err)
+
+		content, err := os.ReadFile(outputFile)
+		require.NoError(t, err)
+		assert.Equal(t, `{"key":"value"}`, string(content))
+	})
+
+	t.Run("template with include function", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		// Create a file to include
+		includeFile := filepath.Join(tmpDir, "include.txt")
+		require.NoError(t, os.WriteFile(includeFile, []byte("included content"), 0644))
+
+		// Create template that includes the file
+		templateFile := filepath.Join(tmpDir, "test.tmpl")
+		templateContent := fmt.Sprintf(`Content: {{ include "%s" }}`, includeFile)
+		require.NoError(t, os.WriteFile(templateFile, []byte(templateContent), 0644))
+
+		outputFile := filepath.Join(tmpDir, "output", "test.txt")
+
+		tmpl := NewTemplateOps(map[string]any{})
+		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+
+		require.NoError(t, err)
+
+		content, err := os.ReadFile(outputFile)
+		require.NoError(t, err)
+		assert.Equal(t, "Content: included content", string(content))
+	})
+
+	t.Run("template with fromJsonFile function", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		// Create a JSON file to read
+		jsonFile := filepath.Join(tmpDir, "data.json")
+		require.NoError(t, os.WriteFile(jsonFile, []byte(`{"name":"test","port":8080}`), 0644))
+
+		// Create template that reads JSON file
+		templateFile := filepath.Join(tmpDir, "test.tmpl")
+		templateContent := fmt.Sprintf(`{{ $data := fromJsonFile "%s" }}Name: {{ $data.name }}, Port: {{ $data.port }}`, jsonFile)
+		require.NoError(t, os.WriteFile(templateFile, []byte(templateContent), 0644))
+
+		outputFile := filepath.Join(tmpDir, "output", "test.txt")
+
+		tmpl := NewTemplateOps(map[string]any{})
+		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+
+		require.NoError(t, err)
+
+		content, err := os.ReadFile(outputFile)
+		require.NoError(t, err)
+		assert.Equal(t, "Name: test, Port: 8080", string(content))
+	})
+
+	t.Run("invalid template syntax", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		// Create template with invalid syntax
+		templateFile := filepath.Join(tmpDir, "test.tmpl")
+		templateContent := `{{ .name | invalidFunc }}`
+		require.NoError(t, os.WriteFile(templateFile, []byte(templateContent), 0644))
+
+		outputFile := filepath.Join(tmpDir, "output", "test.txt")
+
+		tmpl := NewTemplateOps(map[string]any{"name": "test"})
+		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to parse template")
 	})
 
 	t.Run("non-existent template", func(t *testing.T) {
@@ -98,10 +238,6 @@ func TestTemplateOps_ExecuteTemplate(t *testing.T) {
 }
 
 func TestTemplateOps_RenderDirectory(t *testing.T) {
-	if _, err := exec.LookPath("chezmoi"); err != nil {
-		t.Skip("chezmoi not installed")
-	}
-
 	t.Run("render directory with templates and static files", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		sourceDir := filepath.Join(tmpDir, "source")
@@ -207,139 +343,6 @@ func TestCopyNonTemplateFiles(t *testing.T) {
 		err := copyNonTemplateFiles("/non/existent", dstDir)
 		// Should not error because of IsNotExist check
 		require.NoError(t, err)
-	})
-}
-
-func TestIsSensitiveEnvVar(t *testing.T) {
-	tests := []struct {
-		name     string
-		envVar   string
-		expected bool
-	}{
-		// Prefix matches - cloud providers
-		{"AWS prefix", "AWS_ACCESS_KEY_ID=AKIA...", true},
-		{"AWS prefix lowercase", "aws_secret_access_key=secret", true},
-		{"Azure prefix", "AZURE_CLIENT_SECRET=secret", true},
-		{"GCP prefix", "GCP_PROJECT=myproject", true},
-		{"Google prefix", "GOOGLE_APPLICATION_CREDENTIALS=/path", true},
-		{"DigitalOcean prefix", "DO_API_TOKEN=token", true},
-		{"Linode prefix", "LINODE_TOKEN=token", true},
-		{"Vultr prefix", "VULTR_API_KEY=key", true},
-		{"Cloudflare prefix", "CLOUDFLARE_API_TOKEN=token", true},
-		{"Hetzner prefix", "HETZNER_API_TOKEN=token", true},
-		{"OVH prefix", "OVH_APPLICATION_KEY=key", true},
-		{"SOPS prefix", "SOPS_AGE_KEY=AGE...", true},
-
-		// Prefix matches - generic sensitive
-		{"API_KEY prefix", "API_KEY_GITHUB=key", true},
-		{"SECRET prefix", "SECRET_VALUE=secret", true},
-		{"TOKEN prefix", "TOKEN_FOR_SERVICE=token", true},
-		{"PASSWORD prefix", "PASSWORD_DB=pass", true},
-		{"CREDENTIAL prefix", "CREDENTIAL_FILE=/path", true},
-
-		// Suffix matches
-		{"_TOKEN suffix", "GITHUB_TOKEN=ghp_...", true},
-		{"_SECRET suffix", "CLIENT_SECRET=secret", true},
-		{"_KEY suffix", "ENCRYPTION_KEY=key", true},
-		{"_PASS suffix", "DB_PASS=password", true},
-		{"_PASSWORD suffix", "DATABASE_PASSWORD=password", true},
-		{"_AUTH suffix", "SMTP_AUTH=authvalue", true},
-		{"_CREDENTIAL suffix", "SERVICE_CREDENTIAL=cred", true},
-		{"_CREDENTIALS suffix", "AWS_CREDENTIALS=creds", true},
-
-		// Exact matches
-		{"GITHUB_TOKEN exact", "GITHUB_TOKEN=ghp_...", true},
-		{"GITLAB_TOKEN exact", "GITLAB_TOKEN=glpat_...", true},
-		{"NPM_TOKEN exact", "NPM_TOKEN=npm_...", true},
-		{"DOCKER_AUTH exact", "DOCKER_AUTH=authconfig", true},
-		{"REGISTRY_AUTH exact", "REGISTRY_AUTH=auth", true},
-		{"SSH_AUTH_SOCK exact", "SSH_AUTH_SOCK=/tmp/ssh-agent.sock", true},
-		{"GPG_TTY exact", "GPG_TTY=/dev/pts/0", true},
-
-		// Safe variables - should NOT be sensitive
-		{"PATH is safe", "PATH=/usr/bin", false},
-		{"HOME is safe", "HOME=/home/user", false},
-		{"USER is safe", "USER=testuser", false},
-		{"LANG is safe", "LANG=en_US.UTF-8", false},
-		{"TERM is safe", "TERM=xterm-256color", false},
-		{"SHELL is safe", "SHELL=/bin/bash", false},
-		{"EDITOR is safe", "EDITOR=vim", false},
-		{"CUSTOM_VAR is safe", "CUSTOM_VAR=value", false},
-		{"MY_APP_DEBUG is safe", "MY_APP_DEBUG=true", false},
-
-		// Edge cases
-		{"empty string", "", false},
-		{"no value", "SOME_VAR", false},
-		{"empty value", "SOME_VAR=", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := isSensitiveEnvVar(tt.envVar)
-			assert.Equal(t, tt.expected, result, "isSensitiveEnvVar(%q) = %v, want %v", tt.envVar, result, tt.expected)
-		})
-	}
-}
-
-func TestFilterSafeEnv(t *testing.T) {
-	t.Run("filters sensitive variables", func(t *testing.T) {
-		env := []string{
-			"PATH=/usr/bin",
-			"HOME=/home/user",
-			"AWS_SECRET_ACCESS_KEY=secret",
-			"GITHUB_TOKEN=ghp_...",
-			"USER=testuser",
-			"MY_API_TOKEN=token",
-			"LANG=en_US.UTF-8",
-			"CLOUDFLARE_API_KEY=key",
-		}
-
-		result := filterSafeEnv(env)
-
-		// Should include safe vars
-		assert.Contains(t, result, "PATH=/usr/bin")
-		assert.Contains(t, result, "HOME=/home/user")
-		assert.Contains(t, result, "USER=testuser")
-		assert.Contains(t, result, "LANG=en_US.UTF-8")
-
-		// Should exclude sensitive vars
-		assert.NotContains(t, result, "AWS_SECRET_ACCESS_KEY=secret")
-		assert.NotContains(t, result, "GITHUB_TOKEN=ghp_...")
-		assert.NotContains(t, result, "MY_API_TOKEN=token")
-		assert.NotContains(t, result, "CLOUDFLARE_API_KEY=key")
-	})
-
-	t.Run("handles empty env", func(t *testing.T) {
-		result := filterSafeEnv([]string{})
-		assert.Empty(t, result)
-	})
-
-	t.Run("all sensitive vars filtered", func(t *testing.T) {
-		env := []string{
-			"AWS_ACCESS_KEY=key",
-			"GITHUB_TOKEN=token",
-			"DB_PASSWORD=pass",
-		}
-
-		result := filterSafeEnv(env)
-		assert.Empty(t, result)
-	})
-
-	t.Run("case insensitive matching", func(t *testing.T) {
-		env := []string{
-			"PATH=/usr/bin",
-			"github_token=token",
-			"Aws_Secret_Key=key",
-		}
-
-		result := filterSafeEnv(env)
-
-		assert.Contains(t, result, "PATH=/usr/bin")
-		// Lowercase sensitive vars should still be filtered
-		for _, r := range result {
-			assert.NotContains(t, r, "github_token")
-			assert.NotContains(t, r, "Aws_Secret_Key")
-		}
 	})
 }
 

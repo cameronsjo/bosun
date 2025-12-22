@@ -1,16 +1,17 @@
 package cmd
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"sort"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/cameronsjo/bosun/internal/config"
+	"github.com/cameronsjo/bosun/internal/tunnel"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -18,8 +19,10 @@ import (
 const (
 	// RadioTestTimeout is the HTTP timeout for testing the webhook endpoint.
 	RadioTestTimeout = 5 * time.Second
-	// MaxOnlinePeersDisplay is the maximum number of online Tailscale peers to show.
+	// MaxOnlinePeersDisplay is the maximum number of online tunnel peers to show.
 	MaxOnlinePeersDisplay = 5
+	// TunnelStatusTimeout is the timeout for tunnel status checks.
+	TunnelStatusTimeout = 10 * time.Second
 )
 
 // radioCmd represents the radio command group.
@@ -31,7 +34,7 @@ var radioCmd = &cobra.Command{
 
 Commands:
   test      Test webhook endpoint
-  status    Check Tailscale/tunnel status`,
+  status    Check tunnel status (Tailscale, Cloudflare, etc.)`,
 	Run: func(cmd *cobra.Command, args []string) {
 		cmd.Help()
 	},
@@ -68,105 +71,144 @@ func runRadioTest(cmd *cobra.Command, args []string) {
 	}
 }
 
-// radioStatusCmd checks Tailscale/tunnel status.
+// radioStatusCmd checks tunnel status.
 var radioStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Check Tailscale/tunnel status",
-	Long:  "Display Tailscale connection status and tunnel information.",
+	Short: "Check tunnel status",
+	Long:  "Display tunnel connection status and network information. Supports Tailscale, Cloudflare Tunnel, and other providers.",
 	Run:   runRadioStatus,
-}
-
-// TailscaleStatus represents the JSON output of tailscale status --json.
-type TailscaleStatus struct {
-	BackendState string                 `json:"BackendState"`
-	Self         TailscalePeer          `json:"Self"`
-	Peer         map[string]TailscalePeer `json:"Peer"`
-	MagicDNSSuffix string               `json:"MagicDNSSuffix"`
-}
-
-// TailscalePeer represents a peer in the Tailscale network.
-type TailscalePeer struct {
-	DNSName      string   `json:"DNSName"`
-	HostName     string   `json:"HostName"`
-	TailscaleIPs []string `json:"TailscaleIPs"`
-	Online       bool     `json:"Online"`
-	ExitNode     bool     `json:"ExitNode"`
-	Active       bool     `json:"Active"`
 }
 
 func runRadioStatus(cmd *cobra.Command, args []string) {
 	ui.Info("Checking comms...")
 
-	// Check if tailscale is installed
-	tailscalePath, err := exec.LookPath("tailscale")
+	// Load configuration to get tunnel provider
+	cfg, err := config.Load()
+	var providerName string
 	if err != nil {
-		ui.Warning("Tailscale not installed locally")
-		fmt.Println()
-		fmt.Println("Install Tailscale from: https://tailscale.com/download")
-		return
+		// Default to Tailscale if config not available
+		providerName = "tailscale"
+	} else {
+		providerName = cfg.TunnelProvider()
 	}
 
-	// Try to get JSON status first for structured output
-	jsonCmd := exec.Command(tailscalePath, "status", "--json")
-	jsonOutput, err := jsonCmd.Output()
-	if err == nil {
-		var status TailscaleStatus
-		if err := json.Unmarshal(jsonOutput, &status); err == nil {
-			displayTailscaleStatus(&status)
+	// Create the tunnel provider
+	provider, err := tunnel.NewProvider(providerName)
+	if err != nil {
+		if notInstalled, ok := err.(tunnel.ErrNotInstalled); ok {
+			ui.Warning("%s", notInstalled.Error())
+			fmt.Println()
+			displayInstallInstructions(providerName)
 			return
 		}
+		ui.Error("Failed to create tunnel provider: %v", err)
+		os.Exit(1)
 	}
 
-	// Fall back to plain text output
-	plainCmd := exec.Command(tailscalePath, "status")
-	plainCmd.Stdout = os.Stdout
-	plainCmd.Stderr = os.Stderr
-	if err := plainCmd.Run(); err != nil {
-		ui.Error("Failed to get Tailscale status: %v", err)
+	// Get status with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), TunnelStatusTimeout)
+	defer cancel()
+
+	status, err := provider.Status(ctx)
+	if err != nil {
+		ui.Error("Failed to get tunnel status: %v", err)
 		os.Exit(1)
+	}
+
+	// Display status based on provider type
+	displayTunnelStatus(status)
+}
+
+// displayInstallInstructions shows installation instructions for the tunnel provider.
+func displayInstallInstructions(providerName string) {
+	switch providerName {
+	case "tailscale":
+		fmt.Println("Install Tailscale from: https://tailscale.com/download")
+	case "cloudflare":
+		fmt.Println("Install cloudflared from: https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/")
+	default:
+		fmt.Printf("Install %s to use this tunnel provider.\n", providerName)
 	}
 }
 
-// displayTailscaleStatus formats and displays the Tailscale status.
-func displayTailscaleStatus(status *TailscaleStatus) {
+// displayTunnelStatus formats and displays the tunnel status.
+func displayTunnelStatus(status *tunnel.Status) {
 	fmt.Println()
 
 	// Connection state
-	switch status.BackendState {
-	case "Running":
-		ui.Success("Tailscale is connected")
-	case "Stopped":
-		ui.Error("Tailscale is stopped")
-		fmt.Println("  Run: tailscale up")
-		return
-	case "NeedsLogin":
-		ui.Warning("Tailscale needs login")
-		fmt.Println("  Run: tailscale login")
-		return
-	default:
-		ui.Warning("Tailscale state: %s", status.BackendState)
-	}
+	displayConnectionState(status)
 
-	// Self info
+	// Device info
 	fmt.Println()
 	ui.Blue.Println("--- This Device ---")
-	fmt.Printf("  Hostname: %s\n", status.Self.HostName)
-	if len(status.Self.TailscaleIPs) > 0 {
-		fmt.Printf("  IP: %s\n", status.Self.TailscaleIPs[0])
+	if status.Hostname != "" {
+		fmt.Printf("  Hostname: %s\n", status.Hostname)
 	}
-	if status.Self.DNSName != "" {
-		fmt.Printf("  DNS: %s\n", status.Self.DNSName)
+	if status.IP != "" {
+		fmt.Printf("  IP: %s\n", status.IP)
 	}
-
-	// Network info
-	if status.MagicDNSSuffix != "" {
-		fmt.Printf("  Tailnet: %s\n", status.MagicDNSSuffix)
+	if status.TailnetName != "" {
+		fmt.Printf("  Network: %s\n", status.TailnetName)
 	}
 
-	// Peer count
+	// Peer information (for mesh networks like Tailscale)
+	if len(status.Peers) > 0 {
+		displayPeerInfo(status.Peers)
+	}
+
+	fmt.Println()
+}
+
+// displayConnectionState shows the connection state with appropriate messaging.
+func displayConnectionState(status *tunnel.Status) {
+	switch status.BackendState {
+	case "Running":
+		ui.Success("%s is connected", capitalizeFirst(status.Provider))
+	case "Stopped":
+		ui.Error("%s is stopped", capitalizeFirst(status.Provider))
+		displayStartInstructions(status.Provider)
+		return
+	case "NeedsLogin":
+		ui.Warning("%s needs login", capitalizeFirst(status.Provider))
+		displayLoginInstructions(status.Provider)
+		return
+	case "Disconnected":
+		ui.Warning("%s is disconnected", capitalizeFirst(status.Provider))
+	case "Unknown":
+		ui.Warning("%s state is unknown", capitalizeFirst(status.Provider))
+	default:
+		if status.Connected {
+			ui.Success("%s is connected", capitalizeFirst(status.Provider))
+		} else {
+			ui.Warning("%s state: %s", capitalizeFirst(status.Provider), status.BackendState)
+		}
+	}
+}
+
+// displayStartInstructions shows how to start the tunnel.
+func displayStartInstructions(provider string) {
+	switch provider {
+	case "tailscale":
+		fmt.Println("  Run: tailscale up")
+	case "cloudflare":
+		fmt.Println("  Run: cloudflared tunnel run <tunnel-name>")
+	}
+}
+
+// displayLoginInstructions shows how to log in to the tunnel.
+func displayLoginInstructions(provider string) {
+	switch provider {
+	case "tailscale":
+		fmt.Println("  Run: tailscale login")
+	case "cloudflare":
+		fmt.Println("  Run: cloudflared tunnel login")
+	}
+}
+
+// displayPeerInfo shows peer information for mesh networks.
+func displayPeerInfo(peers []tunnel.Peer) {
 	onlinePeers := 0
-	totalPeers := len(status.Peer)
-	for _, peer := range status.Peer {
+	for _, peer := range peers {
 		if peer.Online {
 			onlinePeers++
 		}
@@ -174,23 +216,21 @@ func displayTailscaleStatus(status *TailscaleStatus) {
 
 	fmt.Println()
 	ui.Blue.Println("--- Network ---")
-	fmt.Printf("  Peers: %d online / %d total\n", onlinePeers, totalPeers)
+	fmt.Printf("  Peers: %d online / %d total\n", onlinePeers, len(peers))
 
-	// Show a few online peers
 	if onlinePeers > 0 {
 		fmt.Println()
 		ui.Blue.Println("--- Online Peers ---")
 
-		// Sort peer keys for deterministic output order
-		peerKeys := make([]string, 0, len(status.Peer))
-		for key := range status.Peer {
-			peerKeys = append(peerKeys, key)
-		}
-		sort.Strings(peerKeys)
+		// Sort peers by name for deterministic output
+		sortedPeers := make([]tunnel.Peer, len(peers))
+		copy(sortedPeers, peers)
+		sort.Slice(sortedPeers, func(i, j int) bool {
+			return sortedPeers[i].Name < sortedPeers[j].Name
+		})
 
 		count := 0
-		for _, key := range peerKeys {
-			peer := status.Peer[key]
+		for _, peer := range sortedPeers {
 			if !peer.Online {
 				continue
 			}
@@ -199,7 +239,7 @@ func displayTailscaleStatus(status *TailscaleStatus) {
 				break
 			}
 
-			name := peer.HostName
+			name := peer.Name
 			if name == "" {
 				name = peer.DNSName
 			}
@@ -209,22 +249,78 @@ func displayTailscaleStatus(status *TailscaleStatus) {
 				indicator = "E"
 			}
 
-			ip := ""
-			if len(peer.TailscaleIPs) > 0 {
-				ip = peer.TailscaleIPs[0]
-			}
-
 			ui.Green.Printf("  %s %s", indicator, name)
-			if ip != "" {
-				fmt.Printf(" (%s)", ip)
+			if peer.IP != "" {
+				fmt.Printf(" (%s)", peer.IP)
 			}
 			fmt.Println()
 
 			count++
 		}
 	}
+}
 
-	fmt.Println()
+// capitalizeFirst capitalizes the first letter of a string.
+func capitalizeFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return string(s[0]-32) + s[1:]
+}
+
+// TailscaleStatus represents the JSON output of tailscale status --json.
+// Kept for backwards compatibility with existing tests.
+type TailscaleStatus struct {
+	BackendState   string                   `json:"BackendState"`
+	Self           TailscalePeer            `json:"Self"`
+	Peer           map[string]TailscalePeer `json:"Peer"`
+	MagicDNSSuffix string                   `json:"MagicDNSSuffix"`
+}
+
+// TailscalePeer represents a peer in the Tailscale network.
+// Kept for backwards compatibility with existing tests.
+type TailscalePeer struct {
+	DNSName      string   `json:"DNSName"`
+	HostName     string   `json:"HostName"`
+	TailscaleIPs []string `json:"TailscaleIPs"`
+	Online       bool     `json:"Online"`
+	ExitNode     bool     `json:"ExitNode"`
+	Active       bool     `json:"Active"`
+}
+
+// displayTailscaleStatus formats and displays the Tailscale status.
+// Kept for backwards compatibility with existing tests.
+func displayTailscaleStatus(status *TailscaleStatus) {
+	// Convert to generic tunnel.Status and display
+	tunnelStatus := &tunnel.Status{
+		Provider:     "tailscale",
+		BackendState: status.BackendState,
+		Hostname:     status.Self.HostName,
+		TailnetName:  status.MagicDNSSuffix,
+	}
+
+	if len(status.Self.TailscaleIPs) > 0 {
+		tunnelStatus.IP = status.Self.TailscaleIPs[0]
+	}
+
+	tunnelStatus.Connected = status.BackendState == "Running"
+
+	// Convert peers
+	for _, tsPeer := range status.Peer {
+		peer := tunnel.Peer{
+			Name:     tsPeer.HostName,
+			DNSName:  tsPeer.DNSName,
+			Online:   tsPeer.Online,
+			ExitNode: tsPeer.ExitNode,
+			Active:   tsPeer.Active,
+		}
+		if len(tsPeer.TailscaleIPs) > 0 {
+			peer.IP = tsPeer.TailscaleIPs[0]
+		}
+		tunnelStatus.Peers = append(tunnelStatus.Peers, peer)
+	}
+
+	displayTunnelStatus(tunnelStatus)
 }
 
 func init() {

@@ -9,10 +9,10 @@ Deferred
 The bosun component orchestrates deployments via a reconciliation loop:
 
 ```
-git pull → sops decrypt → chezmoi render → docker compose up
+git pull → sops decrypt → Go template render → docker compose up
 ```
 
-Currently implemented as ~100 lines of shell script. Question: should we use [Dagger](https://dagger.io) for type-safe, containerized pipelines?
+Currently implemented in Go as part of the bosun binary. Question: should we use [Dagger](https://dagger.io) for type-safe, containerized pipelines?
 
 ## Decision
 
@@ -22,18 +22,16 @@ Currently implemented as ~100 lines of shell script. Question: should we use [Da
 
 ### Current State Works
 
-```bash
-# The entire pipeline
-git pull
-sops -d secrets.yaml.sops > /tmp/secrets.json
-chezmoi execute-template < template.yml > output.yml
-docker compose up -d
-```
+The bosun binary handles the entire pipeline natively in Go:
+- Git operations (clone/pull)
+- SOPS decryption
+- Go template rendering with Sprig functions
+- Docker Compose orchestration
 
-Shell is:
-- Simple to understand
-- No additional dependencies
-- Easy to debug (`bash -x`)
+Benefits:
+- Single binary, no external dependencies
+- Type-safe Go code
+- Easy to debug and test
 - Sufficient for linear pipelines
 
 ### When Dagger Makes Sense

@@ -43,12 +43,12 @@ The bosun runs the deck:
 - Receives orders via webhook (or checks in hourly)
 - Pulls the latest manifest from GitHub
 - Decrypts secrets with SOPS + Age
-- Preps configs with Chezmoi templates
+- Preps configs with Go templates + Sprig functions
 - Deploys crew via `docker compose up -d`
 
 ```
 bosun/
-├── Dockerfile           # Alpine + sops + age + chezmoi + webhook
+├── Dockerfile           # Alpine + sops + age + webhook
 ├── docker-compose.yml
 ├── hooks.yaml           # Radio configuration
 └── scripts/

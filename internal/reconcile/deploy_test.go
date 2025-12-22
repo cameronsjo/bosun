@@ -166,10 +166,6 @@ func TestDeployOps_CleanupBackups(t *testing.T) {
 }
 
 func TestDeployOps_DeployLocal(t *testing.T) {
-	if _, err := exec.LookPath("rsync"); err != nil {
-		t.Skip("rsync not installed")
-	}
-
 	t.Run("sync directories", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		ctx := context.Background()
@@ -178,7 +174,6 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		targetDir := filepath.Join(tmpDir, "target")
 
 		require.NoError(t, os.MkdirAll(sourceDir, 0755))
-		require.NoError(t, os.MkdirAll(targetDir, 0755))
 
 		// Create source files
 		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "file1.txt"), []byte("content1"), 0644))
@@ -192,6 +187,65 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		// Verify files were synced
 		assert.FileExists(t, filepath.Join(targetDir, "file1.txt"))
 		assert.FileExists(t, filepath.Join(targetDir, "file2.txt"))
+
+		// Verify content
+		content1, err := os.ReadFile(filepath.Join(targetDir, "file1.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, "content1", string(content1))
+
+		content2, err := os.ReadFile(filepath.Join(targetDir, "file2.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, "content2", string(content2))
+	})
+
+	t.Run("sync nested directories", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+
+		// Create nested directory structure
+		require.NoError(t, os.MkdirAll(filepath.Join(sourceDir, "subdir", "nested"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "root.txt"), []byte("root"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "subdir", "sub.txt"), []byte("sub"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "subdir", "nested", "deep.txt"), []byte("deep"), 0644))
+
+		deploy := NewDeployOps(false)
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir)
+
+		require.NoError(t, err)
+
+		// Verify all files were synced
+		assert.FileExists(t, filepath.Join(targetDir, "root.txt"))
+		assert.FileExists(t, filepath.Join(targetDir, "subdir", "sub.txt"))
+		assert.FileExists(t, filepath.Join(targetDir, "subdir", "nested", "deep.txt"))
+	})
+
+	t.Run("replaces existing target", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+
+		// Create source with one file
+		require.NoError(t, os.MkdirAll(sourceDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "new.txt"), []byte("new"), 0644))
+
+		// Create target with different file
+		require.NoError(t, os.MkdirAll(targetDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "old.txt"), []byte("old"), 0644))
+
+		deploy := NewDeployOps(false)
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir)
+
+		require.NoError(t, err)
+
+		// New file should exist
+		assert.FileExists(t, filepath.Join(targetDir, "new.txt"))
+		// Old file should be gone (delete semantics)
+		assert.NoFileExists(t, filepath.Join(targetDir, "old.txt"))
 	})
 
 	t.Run("dry run does not sync", func(t *testing.T) {
@@ -214,13 +268,39 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		// File should NOT exist in target (dry run)
 		assert.NoFileExists(t, filepath.Join(targetDir, "file.txt"))
 	})
+
+	t.Run("error on non-existent source", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		sourceDir := filepath.Join(tmpDir, "nonexistent")
+		targetDir := filepath.Join(tmpDir, "target")
+
+		deploy := NewDeployOps(false)
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "source directory")
+	})
+
+	t.Run("error when source is a file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		sourceFile := filepath.Join(tmpDir, "source.txt")
+		targetDir := filepath.Join(tmpDir, "target")
+
+		require.NoError(t, os.WriteFile(sourceFile, []byte("content"), 0644))
+
+		deploy := NewDeployOps(false)
+		err := deploy.DeployLocal(ctx, sourceFile, targetDir)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not a directory")
+	})
 }
 
 func TestDeployOps_DeployLocalFile(t *testing.T) {
-	if _, err := exec.LookPath("rsync"); err != nil {
-		t.Skip("rsync not installed")
-	}
-
 	t.Run("sync single file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		ctx := context.Background()
@@ -239,6 +319,51 @@ func TestDeployOps_DeployLocalFile(t *testing.T) {
 		content, err := os.ReadFile(targetFile)
 		require.NoError(t, err)
 		assert.Equal(t, "content", string(content))
+	})
+
+	t.Run("creates parent directories", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		sourceFile := filepath.Join(tmpDir, "source.txt")
+		targetFile := filepath.Join(tmpDir, "nested", "dir", "target.txt")
+
+		require.NoError(t, os.WriteFile(sourceFile, []byte("content"), 0644))
+
+		deploy := NewDeployOps(false)
+		err := deploy.DeployLocalFile(ctx, sourceFile, targetFile)
+
+		require.NoError(t, err)
+		assert.FileExists(t, targetFile)
+	})
+
+	t.Run("dry run does not copy", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		sourceFile := filepath.Join(tmpDir, "source.txt")
+		targetFile := filepath.Join(tmpDir, "target.txt")
+
+		require.NoError(t, os.WriteFile(sourceFile, []byte("content"), 0644))
+
+		deploy := NewDeployOps(true)
+		err := deploy.DeployLocalFile(ctx, sourceFile, targetFile)
+
+		require.NoError(t, err)
+		assert.NoFileExists(t, targetFile)
+	})
+
+	t.Run("error on non-existent source", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		sourceFile := filepath.Join(tmpDir, "nonexistent.txt")
+		targetFile := filepath.Join(tmpDir, "target.txt")
+
+		deploy := NewDeployOps(false)
+		err := deploy.DeployLocalFile(ctx, sourceFile, targetFile)
+
+		require.Error(t, err)
 	})
 }
 

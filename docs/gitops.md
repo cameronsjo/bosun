@@ -8,7 +8,7 @@ The reconcile system implements a GitOps workflow that:
 
 1. Monitors a Git repository for changes
 2. Decrypts secrets using SOPS with age encryption
-3. Renders templates using chezmoi's template engine
+3. Renders templates using Go's native `text/template` engine with [Sprig](https://masterminds.github.io/sprig/) functions
 4. Deploys configuration files to local or remote targets
 5. Restarts affected services
 
@@ -32,7 +32,7 @@ The reconcile system implements a GitOps workflow that:
                     +--------------------+
                     | GitOps      - git clone/pull
                     | SOPSOps     - secrets decryption
-                    | TemplateOps - chezmoi rendering
+                    | TemplateOps - Go template rendering
                     | DeployOps   - rsync/SSH sync
                     +--------------------+
 ```
@@ -52,7 +52,7 @@ The reconcile system implements a GitOps workflow that:
 4. SOPS Decryption
        |
        v
-5. Template Rendering (chezmoi execute-template)
+5. Template Rendering (Go text/template + Sprig)
        |
        v
 6. Backup Creation (tar.gz of current configs)
@@ -212,7 +212,7 @@ Keys in later files override earlier ones. Nested maps are recursively merged.
 
 ## Templating
 
-The template subsystem (`internal/reconcile/template.go`) uses [chezmoi](https://www.chezmoi.io/) for template rendering.
+The template subsystem (`internal/reconcile/template.go`) uses Go's native `text/template` engine with [Sprig](https://masterminds.github.io/sprig/) functions for template rendering. This provides the same Go template syntax without requiring an external binary.
 
 ### Template File Convention
 
@@ -231,7 +231,7 @@ Secrets are passed via a temporary JSON file. Access them using:
 
 ### Available Template Functions
 
-Chezmoi provides the full Go template library plus additional functions. Commonly used:
+The template engine provides Go's standard template functions plus all [Sprig functions](https://masterminds.github.io/sprig/). Commonly used:
 
 | Function | Description |
 |----------|-------------|
@@ -240,6 +240,12 @@ Chezmoi provides the full Go template library plus additional functions. Commonl
 | `fromJson "..."` | Parse JSON string |
 | `toJson .` | Convert to JSON |
 | `quote .` | Quote a string |
+| `default "val" .` | Default value if empty |
+| `upper .` | Uppercase string |
+| `lower .` | Lowercase string |
+| `trim .` | Trim whitespace |
+| `b64enc .` | Base64 encode |
+| `b64dec .` | Base64 decode |
 
 ### Template Processing
 
@@ -249,10 +255,9 @@ Chezmoi provides the full Go template library plus additional functions. Commonl
        v
 2. For each template:
    a. Read template content
-   b. Write secrets to temp file (0600 permissions)
-   c. Run: chezmoi execute-template
+   b. Parse template with Sprig functions
+   c. Execute with secrets data
    d. Write output to staging directory
-   e. Clean up temp file
        |
        v
 3. Copy non-template files as-is
@@ -260,7 +265,7 @@ Chezmoi provides the full Go template library plus additional functions. Commonl
 
 ### Environment Filtering
 
-For security, only safe environment variables are passed to chezmoi:
+For security, only safe environment variables are exposed to templates:
 
 **Allowed prefixes**: `PATH=`, `HOME=`, `USER=`, `LANG=`, `LC_`, `TERM=`, `XDG_`, `TMPDIR=`, `TMP=`, `TEMP=`
 
@@ -471,9 +476,9 @@ Some operations log warnings but continue:
 
 ### Secret Handling
 
-1. **Temporary files**: Secrets are written to temp files with `0600` permissions, deleted immediately after use
-2. **Environment filtering**: Only safe env vars are passed to subprocess (chezmoi)
-3. **Error sanitization**: stderr output is truncated to avoid leaking secrets in logs
+1. **In-memory processing**: Secrets are processed entirely in memory, no intermediate files needed
+2. **Environment filtering**: Only safe env vars are exposed to templates
+3. **Error sanitization**: Output is truncated to avoid leaking secrets in logs
 4. **Memory**: Secrets are stored in Go maps, garbage collected after use
 
 ### SSH Security

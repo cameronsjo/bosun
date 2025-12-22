@@ -1,3 +1,5 @@
+apiVersion: bosun.io/v1
+kind: Provision
 # Base container profile - provides standard service configuration
 compose:
   services:

@@ -240,9 +240,9 @@ func TestReconciler_RenderTemplates(t *testing.T) {
 		secrets := map[string]any{}
 		err := r.renderTemplates(nil, secrets)
 
-		// May error if chezmoi not installed, but staging should be cleared
+		// Template rendering uses native Go templates, should not error
 		if err != nil {
-			t.Logf("renderTemplates error (expected if chezmoi not installed): %v", err)
+			t.Logf("renderTemplates error: %v", err)
 		}
 
 		// Old file should be removed

@@ -2,14 +2,22 @@
 package reconcile
 
 import (
-	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
+	xssh "golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 )
 
 // Git operation timeouts
@@ -38,6 +46,43 @@ func NewGitOps(url, branch, dir string) *GitOps {
 	}
 }
 
+// getSSHAuth attempts to get SSH authentication from the SSH agent.
+// Returns nil if no SSH agent is available (falls back to default auth).
+func getSSHAuth(url string) (transport.AuthMethod, error) {
+	// Only use SSH auth for SSH URLs
+	if !strings.HasPrefix(url, "git@") && !strings.Contains(url, "ssh://") {
+		return nil, nil
+	}
+
+	// Try to connect to SSH agent
+	socket := os.Getenv("SSH_AUTH_SOCK")
+	if socket == "" {
+		return nil, nil
+	}
+
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		return nil, nil
+	}
+
+	agentClient := agent.NewClient(conn)
+	auth := &ssh.PublicKeysCallback{
+		User: "git",
+		Callback: func() ([]xssh.Signer, error) {
+			signers, err := agentClient.Signers()
+			if err != nil {
+				return nil, err
+			}
+			return signers, nil
+		},
+		HostKeyCallbackHelper: ssh.HostKeyCallbackHelper{
+			HostKeyCallback: xssh.InsecureIgnoreHostKey(),
+		},
+	}
+
+	return auth, nil
+}
+
 // Clone clones the repository with the specified depth.
 // If depth is 0, a full clone is performed.
 // Uses GitCloneTimeout if the parent context has no deadline.
@@ -53,29 +98,36 @@ func (g *GitOps) Clone(ctx context.Context, depth int) error {
 		defer cancel()
 	}
 
-	args := []string{"clone", "--branch", g.Branch, "--single-branch"}
-	if depth > 0 {
-		args = append(args, "--depth", fmt.Sprintf("%d", depth))
+	auth, err := getSSHAuth(g.RepoURL)
+	if err != nil {
+		return fmt.Errorf("failed to get SSH auth: %w", err)
 	}
-	args = append(args, g.RepoURL, g.Dir)
 
-	cmd := exec.CommandContext(ctx, "git", args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	cloneOpts := &git.CloneOptions{
+		URL:           g.RepoURL,
+		ReferenceName: plumbing.NewBranchReferenceName(g.Branch),
+		SingleBranch:  true,
+		Auth:          auth,
+	}
 
-	if err := cmd.Run(); err != nil {
+	if depth > 0 {
+		cloneOpts.Depth = depth
+	}
+
+	_, err = git.PlainCloneContext(ctx, g.Dir, false, cloneOpts)
+	if err != nil {
 		// Clean up partial clone on failure
 		if _, statErr := os.Stat(g.Dir); statErr == nil {
 			if removeErr := os.RemoveAll(g.Dir); removeErr != nil {
-				// Log cleanup failure but return the original clone error
 				fmt.Fprintf(os.Stderr, "warning: failed to clean up partial clone at %s: %v\n", g.Dir, removeErr)
 			}
 		}
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("git clone timed out after %v", GitCloneTimeout)
 		}
-		return fmt.Errorf("git clone failed: %w: %s", err, stderr.String())
+		return fmt.Errorf("git clone failed: %w", err)
 	}
+
 	return nil
 }
 
@@ -99,19 +151,33 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 		return false, "", "", fmt.Errorf("failed to get current commit: %w", err)
 	}
 
-	// Fetch with depth 1 to minimize data transfer (with timeout).
+	// Open the repository
+	repo, err := git.PlainOpen(g.Dir)
+	if err != nil {
+		return false, "", "", fmt.Errorf("failed to open repository: %w", err)
+	}
+
+	auth, authErr := getSSHAuth(g.RepoURL)
+	if authErr != nil {
+		return false, "", "", fmt.Errorf("failed to get SSH auth: %w", authErr)
+	}
+
+	// Fetch with timeout
 	fetchCtx, fetchCancel := context.WithTimeout(ctx, GitFetchTimeout)
 	defer fetchCancel()
 
-	fetchCmd := exec.CommandContext(fetchCtx, "git", "fetch", "origin", g.Branch, "--depth", "1")
-	fetchCmd.Dir = g.Dir
-	var fetchStderr bytes.Buffer
-	fetchCmd.Stderr = &fetchStderr
-	if err := fetchCmd.Run(); err != nil {
+	fetchOpts := &git.FetchOptions{
+		RemoteName: "origin",
+		RefSpecs:   []config.RefSpec{config.RefSpec(fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", g.Branch, g.Branch))},
+		Depth:      1,
+		Auth:       auth,
+	}
+
+	if err := repo.FetchContext(fetchCtx, fetchOpts); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		if fetchCtx.Err() == context.DeadlineExceeded {
 			return false, "", "", fmt.Errorf("git fetch timed out after %v", GitFetchTimeout)
 		}
-		return false, "", "", fmt.Errorf("git fetch failed: %w: %s", err, fetchStderr.String())
+		return false, "", "", fmt.Errorf("git fetch failed: %w", err)
 	}
 
 	// Verify that origin/branch exists after fetch
@@ -121,16 +187,35 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 		return false, "", "", fmt.Errorf("remote branch origin/%s does not exist", g.Branch)
 	}
 
-	// Reset to remote branch (local operation, shorter timeout).
+	// Get worktree and reset to remote branch
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return false, "", "", fmt.Errorf("failed to get worktree: %w", err)
+	}
+
+	// Get the remote branch reference
+	remoteRef, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", g.Branch), true)
+	if err != nil {
+		return false, "", "", fmt.Errorf("failed to get remote reference: %w", err)
+	}
+
+	// Reset to remote branch (hard reset)
 	resetCtx, resetCancel := context.WithTimeout(ctx, GitLocalTimeout)
 	defer resetCancel()
 
-	resetCmd := exec.CommandContext(resetCtx, "git", "reset", "--hard", "origin/"+g.Branch)
-	resetCmd.Dir = g.Dir
-	var resetStderr bytes.Buffer
-	resetCmd.Stderr = &resetStderr
-	if err := resetCmd.Run(); err != nil {
-		return false, "", "", fmt.Errorf("git reset failed: %w: %s", err, resetStderr.String())
+	// Check context before reset (go-git Reset doesn't take context)
+	select {
+	case <-resetCtx.Done():
+		return false, "", "", fmt.Errorf("context cancelled before reset")
+	default:
+	}
+
+	err = worktree.Reset(&git.ResetOptions{
+		Commit: remoteRef.Hash(),
+		Mode:   git.HardReset,
+	})
+	if err != nil {
+		return false, "", "", fmt.Errorf("git reset failed: %w", err)
 	}
 
 	after, err := g.GetLatestCommit(ctx)
@@ -143,63 +228,108 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 
 // IsDirty checks if the repository has uncommitted changes.
 func (g *GitOps) IsDirty(ctx context.Context) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
-	cmd.Dir = g.Dir
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return false, fmt.Errorf("git status failed: %w: %s", err, stderr.String())
+	repo, err := git.PlainOpen(g.Dir)
+	if err != nil {
+		return false, fmt.Errorf("failed to open repository: %w", err)
 	}
 
-	// If output is non-empty, there are uncommitted changes
-	return strings.TrimSpace(stdout.String()) != "", nil
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return false, fmt.Errorf("failed to get worktree: %w", err)
+	}
+
+	// Check context before status (go-git Status doesn't take context)
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	default:
+	}
+
+	status, err := worktree.Status()
+	if err != nil {
+		return false, fmt.Errorf("failed to get status: %w", err)
+	}
+
+	// If status is not clean, there are uncommitted changes
+	return !status.IsClean(), nil
 }
 
 // RemoteBranchExists checks if a remote branch exists.
 func (g *GitOps) RemoteBranchExists(ctx context.Context, branch string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "origin/"+branch)
-	cmd.Dir = g.Dir
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	repo, err := git.PlainOpen(g.Dir)
+	if err != nil {
+		return false, fmt.Errorf("failed to open repository: %w", err)
+	}
 
-	if err := cmd.Run(); err != nil {
-		// Exit code 128 means the ref doesn't exist
-		if strings.Contains(stderr.String(), "fatal") {
+	// Check context
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	default:
+	}
+
+	refName := plumbing.NewRemoteReferenceName("origin", branch)
+	_, err = repo.Reference(refName, true)
+	if err != nil {
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
 			return false, nil
 		}
-		return false, fmt.Errorf("git rev-parse failed: %w: %s", err, stderr.String())
+		return false, fmt.Errorf("failed to get reference: %w", err)
 	}
+
 	return true, nil
 }
 
 // GetLatestCommit returns the current HEAD commit hash.
 func (g *GitOps) GetLatestCommit(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
-	cmd.Dir = g.Dir
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git rev-parse failed: %w: %s", err, stderr.String())
+	repo, err := git.PlainOpen(g.Dir)
+	if err != nil {
+		return "", fmt.Errorf("failed to open repository: %w", err)
 	}
-	return strings.TrimSpace(stdout.String()), nil
+
+	// Check context
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+	}
+
+	head, err := repo.Head()
+	if err != nil {
+		return "", fmt.Errorf("failed to get HEAD: %w", err)
+	}
+
+	return head.Hash().String(), nil
 }
 
 // GetCommitMessage returns the commit message for the current HEAD.
 func (g *GitOps) GetCommitMessage(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "log", "--oneline", "-1")
-	cmd.Dir = g.Dir
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git log failed: %w: %s", err, stderr.String())
+	repo, err := git.PlainOpen(g.Dir)
+	if err != nil {
+		return "", fmt.Errorf("failed to open repository: %w", err)
 	}
-	return strings.TrimSpace(stdout.String()), nil
+
+	// Check context
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+	}
+
+	head, err := repo.Head()
+	if err != nil {
+		return "", fmt.Errorf("failed to get HEAD: %w", err)
+	}
+
+	commit, err := repo.CommitObject(head.Hash())
+	if err != nil {
+		return "", fmt.Errorf("failed to get commit: %w", err)
+	}
+
+	// Format similar to git log --oneline: "<short-hash> <subject>"
+	shortHash := head.Hash().String()[:7]
+	subject := strings.Split(commit.Message, "\n")[0]
+	return fmt.Sprintf("%s %s", shortHash, subject), nil
 }
 
 // IsRepoCheckTimeout is the timeout for checking if a directory is a git repository.
@@ -215,16 +345,23 @@ func (g *GitOps) IsRepo(ctx context.Context) bool {
 		defer cancel()
 	}
 
-	gitDir := filepath.Join(g.Dir, ".git")
-	cmd := exec.CommandContext(ctx, "git", "-C", g.Dir, "rev-parse", "--git-dir")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		// Fall back to checking if .git directory exists
-		info, statErr := os.Stat(gitDir)
-		return statErr == nil && info.IsDir()
+	// Check context
+	select {
+	case <-ctx.Done():
+		return false
+	default:
 	}
-	return true
+
+	// Try to open as a git repository
+	_, err := git.PlainOpen(g.Dir)
+	if err == nil {
+		return true
+	}
+
+	// Fall back to checking if .git directory exists
+	gitDir := filepath.Join(g.Dir, ".git")
+	info, statErr := os.Stat(gitDir)
+	return statErr == nil && info.IsDir()
 }
 
 // Sync clones or pulls depending on whether repo exists.

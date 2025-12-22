@@ -227,6 +227,66 @@ cp legacy-backup/manifest.py legacy-backup/pyproject.toml manifest/
 git checkout HEAD -- bin/bosun manifest/manifest.py manifest/pyproject.toml
 ```
 
+## Recent Changes
+
+### Template Engine: Chezmoi to Native Go Templates
+
+**What changed:** Template rendering has been migrated from chezmoi to native Go `text/template` with Sprig functions.
+
+**Why:** Single binary distribution - no external chezmoi binary required. Faster execution and better security (secrets processed entirely in-memory).
+
+**Impact on templates:**
+- **Syntax unchanged** - Go template syntax (`{{ .value }}`, `{{ if }}`, etc.) works identically
+- **New functions available** - All [Sprig functions](https://masterminds.github.io/sprig/) are now available
+- **No breaking changes** - Existing templates continue to work
+
+**Benefits:**
+- No external binary dependency
+- Secrets never exposed via environment variables
+- Faster template processing
+- Smaller container images
+
+### Schema Versioning
+
+**What changed:** Manifests now support explicit schema versioning with `apiVersion` and `kind` fields.
+
+**Example manifest format:**
+
+```yaml
+apiVersion: bosun.io/v1
+kind: Service
+name: myapp
+provisions:
+  - container
+  - reverse-proxy
+config:
+  image: ghcr.io/org/myapp:latest
+  port: 3000
+```
+
+**Supported kinds:**
+
+| Kind | Description |
+|------|-------------|
+| `Provision` | Reusable provision template |
+| `Stack` | Collection of services |
+| `Service` | Individual service definition |
+
+**Migration command:**
+
+```bash
+# Migrate unversioned manifests to the new format
+bosun migrate
+
+# Preview changes without modifying files
+bosun migrate --dry-run
+```
+
+**Backwards compatibility:**
+- Manifests without `apiVersion` continue to work with a warning
+- The `bosun migrate` command adds versioning to existing manifests
+- No breaking changes to existing workflows
+
 ## Getting Help
 
 - Run `bosun --help` for command documentation

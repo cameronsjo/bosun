@@ -81,7 +81,7 @@ func TestGetAllBinaries(t *testing.T) {
 }
 
 func TestGetRequiredBinaries(t *testing.T) {
-	t.Run("includes docker and git", func(t *testing.T) {
+	t.Run("includes docker", func(t *testing.T) {
 		required := GetRequiredBinaries()
 
 		names := make([]string, 0, len(required))
@@ -91,7 +91,6 @@ func TestGetRequiredBinaries(t *testing.T) {
 		}
 
 		assert.Contains(t, names, "docker")
-		assert.Contains(t, names, "git")
 	})
 
 	t.Run("all have install hints", func(t *testing.T) {
@@ -103,7 +102,7 @@ func TestGetRequiredBinaries(t *testing.T) {
 }
 
 func TestGetOptionalBinaries(t *testing.T) {
-	t.Run("includes sops, age, chezmoi, rsync", func(t *testing.T) {
+	t.Run("includes age", func(t *testing.T) {
 		optional := GetOptionalBinaries()
 
 		names := make([]string, 0, len(optional))
@@ -112,10 +111,7 @@ func TestGetOptionalBinaries(t *testing.T) {
 			assert.False(t, bin.Required, "all returned binaries should be optional")
 		}
 
-		assert.Contains(t, names, "sops")
 		assert.Contains(t, names, "age")
-		assert.Contains(t, names, "chezmoi")
-		assert.Contains(t, names, "rsync")
 	})
 
 	t.Run("all have install hints", func(t *testing.T) {
@@ -142,18 +138,18 @@ func TestBinaryCheck_Properties(t *testing.T) {
 		assert.Contains(t, docker.InstallHint, "https://")
 	})
 
-	t.Run("sops binary check", func(t *testing.T) {
+	t.Run("age binary check", func(t *testing.T) {
 		optional := GetOptionalBinaries()
-		var sops BinaryCheck
+		var age BinaryCheck
 		for _, bin := range optional {
-			if bin.Name == "sops" {
-				sops = bin
+			if bin.Name == "age" {
+				age = bin
 				break
 			}
 		}
 
-		assert.Equal(t, "sops", sops.Name)
-		assert.False(t, sops.Required)
-		assert.Contains(t, sops.InstallHint, "brew install")
+		assert.Equal(t, "age", age.Name)
+		assert.False(t, age.Required)
+		assert.Contains(t, age.InstallHint, "brew install")
 	})
 }

@@ -1,3 +1,5 @@
+apiVersion: bosun.io/v1
+kind: Provision
 # Web application bundle - includes all common webapp provisions
 includes:
   - container

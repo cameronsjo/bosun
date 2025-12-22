@@ -24,7 +24,7 @@ type SecretsDecryptor interface {
 	CheckAgeKey() error
 }
 
-// TemplateRenderer handles chezmoi templating.
+// TemplateRenderer handles Go template rendering with Sprig functions.
 type TemplateRenderer interface {
 	// Render processes all .tmpl files in srcDir and renders them to dstDir.
 	// Non-template files are copied as-is.

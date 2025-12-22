@@ -1,3 +1,5 @@
+apiVersion: bosun.io/v1
+kind: Provision
 # Redis sidecar profile
 compose:
   services:

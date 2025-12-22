@@ -3,7 +3,6 @@ package reconcile
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -17,9 +16,7 @@ func TestNewSOPSOps(t *testing.T) {
 }
 
 func TestSOPSOps_Decrypt(t *testing.T) {
-	if _, err := exec.LookPath("sops"); err != nil {
-		t.Skip("sops not installed")
-	}
+	// Note: sops binary is no longer required - we use go-sops library for in-process decryption
 
 	t.Run("decrypt non-existent file", func(t *testing.T) {
 		sops := NewSOPSOps()
@@ -50,9 +47,7 @@ nested:
 }
 
 func TestSOPSOps_DecryptToMap(t *testing.T) {
-	if _, err := exec.LookPath("sops"); err != nil {
-		t.Skip("sops not installed")
-	}
+	// Note: sops binary is no longer required - we use go-sops library for in-process decryption
 
 	t.Run("non-existent file", func(t *testing.T) {
 		sops := NewSOPSOps()
@@ -64,9 +59,7 @@ func TestSOPSOps_DecryptToMap(t *testing.T) {
 }
 
 func TestSOPSOps_DecryptFiles(t *testing.T) {
-	if _, err := exec.LookPath("sops"); err != nil {
-		t.Skip("sops not installed")
-	}
+	// Note: sops binary is no longer required - we use go-sops library for in-process decryption
 
 	t.Run("empty file list", func(t *testing.T) {
 		sops := NewSOPSOps()
@@ -87,9 +80,7 @@ func TestSOPSOps_DecryptFiles(t *testing.T) {
 }
 
 func TestSOPSOps_DecryptToJSON(t *testing.T) {
-	if _, err := exec.LookPath("sops"); err != nil {
-		t.Skip("sops not installed")
-	}
+	// Note: sops binary is no longer required - we use go-sops library for in-process decryption
 
 	t.Run("empty file list returns empty object", func(t *testing.T) {
 		sops := NewSOPSOps()
