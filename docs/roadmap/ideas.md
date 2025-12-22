@@ -4,11 +4,9 @@
 |------|----------|--------|-------|
 | Linux-first docs & examples | p1 | medium | Unraid-tested but generic Linux instructions |
 | Rollback snapshots | p2 | medium | Auto-snapshot before deploy, `bosun mayday --rollback` |
-| `bosun log` - release history | p2 | small | Deploy timeline with git SHAs |
 | `bosun drift` - drift detection | p2 | medium | Show diff between git and running state |
 | Values overlays | p2 | medium | `--values prod.yaml` for env-specific config |
 | Dependency declarations | p2 | small | "myapp needs postgres 17" auto-provisions sidecars |
-| Port conflict detection | p2 | small | Warn before two services claim same port |
 | Local dev mode | p3 | medium | `bosun dev up` watches filesystem, hot reload |
 | Secret rotation helper | p3 | medium | `bosun secrets rotate` generates, re-encrypts, deploys |
 | `bosun watch` - scheduled tasks | p3 | medium | Nautical cron - watches, bells, tides |
@@ -32,3 +30,5 @@
 | Provision inheritance | `webapp` bundles container, healthcheck, reverse-proxy, etc. |
 | Service templates | `bosun create webapp myapp` scaffolds from templates |
 | `bosun status` - health dashboard | Shows crew, infrastructure, resources, recent activity |
+| `bosun log` - release history | Manifest changes, provision timestamps, deploy tags |
+| Port conflict detection | Lint warns when services claim same port |
