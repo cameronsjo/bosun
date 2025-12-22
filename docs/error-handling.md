@@ -97,8 +97,8 @@ Errors related to Docker, SSH, and Git connectivity.
 | SSH host key | `reconcile/deploy.go` | Run `ssh-keyscan` command |
 | SSH connection refused | `reconcile/deploy.go` | Check SSH service/port |
 | SSH no route to host | `reconcile/deploy.go` | Check network connectivity |
-| Git clone timeout | `reconcile/git.go` | `git clone timed out after 5m0s` |
-| Git fetch failed | `reconcile/git.go` | Includes stderr output |
+| Git clone timeout | `reconcile/git.go` | `clone repository timed out after 5m0s` |
+| Git fetch failed | `reconcile/git.go` | Error from go-git library |
 
 **SSH Error Parsing**: The `parseSSHError()` function in `deploy.go` converts generic SSH errors into actionable messages:
 
@@ -203,8 +203,8 @@ const (
 **Retry Sequence**: 1s -> 2s -> 4s (exponential backoff)
 
 **What Retries**:
-- `DeployRemote()` - rsync over SSH
-- `DeployRemoteFile()` - single file rsync over SSH
+- `DeployRemote()` - tar-over-SSH file transfer
+- `DeployRemoteFile()` - single file transfer over SSH
 - `EnsureRemoteDir()` - mkdir over SSH
 - `ComposeUpRemote()` - docker compose over SSH
 - `SignalContainerRemote()` - docker kill over SSH
@@ -257,7 +257,7 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 |-----------|---------|----------|
 | SSH connect check | 5s | `SSHConnectTimeout` |
 | SSH commands | 30s | `SSHTimeout` |
-| Rsync transfers | 5m | `RsyncTimeout` |
+| File sync transfers | 5m | `FileSyncTimeout` |
 | Docker compose up | 10m | `ComposeUpTimeout` |
 | Git clone | 5m | `GitCloneTimeout` |
 | Git fetch | 2m | `GitFetchTimeout` |
@@ -306,13 +306,13 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 
 #### Git Clone/Fetch Timeout
 
-**Symptoms**: `git clone timed out after 5m0s`
+**Symptoms**: `clone repository timed out after 5m0s`
 
 **Recovery**:
 1. Check network connectivity
 2. Verify repository URL is accessible
 3. Check for firewall blocking git protocol
-4. Try cloning manually to diagnose
+4. Check SSH key availability for private repositories
 
 ### Rollback Capabilities
 

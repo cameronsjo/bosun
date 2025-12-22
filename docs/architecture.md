@@ -20,7 +20,7 @@ Bosun is a GitOps toolkit for Docker Compose deployments. It transforms declarat
 | Go | Single binary, native Docker SDK, easy cross-compilation |
 | Docker Compose v2 | Ubiquitous, stable, no Kubernetes complexity |
 | SOPS + Age | GitOps-friendly secrets (encrypted in repo) |
-| Chezmoi templates | Mature templating with Go template syntax |
+| Native Go templates | text/template + Sprig functions for consistent, in-process rendering |
 | Cobra CLI | Industry standard (kubectl, gh, hugo) |
 
 ### Target Users
@@ -67,10 +67,10 @@ internal/
   reconcile/            # GitOps reconciliation
     reconcile.go        # Orchestrates the workflow
     interfaces.go       # GitOperations, SecretsDecryptor
-    git.go              # Clone, pull, detect changes
-    sops.go             # SOPS decryption operations
-    template.go         # Chezmoi template rendering
-    deploy.go           # rsync, SSH, compose up
+    git.go              # Clone, pull, detect changes (go-git library)
+    sops.go             # SOPS decryption (go-sops library, in-process)
+    template.go         # Native Go template rendering (text/template + Sprig)
+    deploy.go           # Native file copy (local), tar-over-SSH (remote), compose up
     validation.go       # Input validation
 
   snapshot/             # Rollback system
@@ -114,8 +114,7 @@ graph TB
     subgraph External["External Dependencies"]
         docker_daemon[Docker Daemon]
         git_repo[Git Repository]
-        sops_bin[SOPS Binary]
-        ssh[SSH/rsync]
+        ssh[SSH Client]
     end
 
     yacht --> docker
@@ -131,7 +130,6 @@ graph TB
 
     docker --> docker_daemon
     git --> git_repo
-    sops --> sops_bin
     deploy --> ssh
 ```
 
@@ -245,7 +243,7 @@ The `DeepMerge` function implements Docker Compose-compatible merge rules:
 │  3. Decrypt secrets (SOPS + Age)                │
 │  4. Render templates (.tmpl files)              │
 │  5. Create backup of current config             │
-│  6. Deploy (rsync to target, compose up)        │
+│  6. Deploy (native file copy/tar-over-SSH, compose up) │
 │  7. Cleanup staging directory                   │
 │  8. Release lock                                │
 │                                                  │

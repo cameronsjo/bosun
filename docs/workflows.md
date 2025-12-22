@@ -211,14 +211,14 @@ flowchart TD
     J -->|Local Mount| K[Deploy Local]
     J -->|SSH Required| L[Deploy Remote]
 
-    K --> M[Sync Configs via rsync]
+    K --> M[Sync Configs via native file copy]
     L --> N{SSH Connectivity OK?}
 
     N -->|Permission Denied| N_ERR1[Error: SSH auth failed]
     N -->|Connection Refused| N_ERR2[Error: SSH service not running]
     N -->|Host Key Failed| N_ERR3[Error: Add host to known_hosts]
     N -->|No Route| N_ERR4[Error: Network unreachable]
-    N -->|Success| O[Sync Configs via rsync over SSH]
+    N -->|Success| O[Sync Configs via tar-over-SSH]
 
     M --> P[Compose Up + Signal Reload]
     O --> P
@@ -244,7 +244,7 @@ flowchart TD
 | 8 | Copy non-template files to staging | Preserves directory structure |
 | 9 | Execute Go templates with secrets | In-memory template rendering with Sprig functions |
 | 10 | Create backup of current configs | Backup verification: check tar.gz is valid |
-| 11 | Deploy via local rsync or SSH rsync | SSH retry with exponential backoff (1s, 2s, 4s) |
+| 11 | Deploy via native file copy (local) or tar-over-SSH (remote) | SSH retry with exponential backoff (1s, 2s, 4s) |
 | 12 | Run `docker compose up -d --remove-orphans --wait` | Warning if fails (non-fatal) |
 | 13 | Signal containers (SIGHUP for hot reload) | Warning if fails (non-fatal) |
 | 14 | Cleanup staging directory | Warning if fails (non-fatal) |
@@ -264,7 +264,7 @@ flowchart TD
 | `SSH authentication failed` | Invalid SSH key | Add key to remote authorized_keys |
 | `SSH connection refused` | SSH service not running | Start SSH service on remote |
 | `SSH host key verification failed` | Unknown host | Run `ssh-keyscan host >> ~/.ssh/known_hosts` |
-| `rsync timed out after 5m` | Large files or slow network | Retry, reduce file sizes |
+| `file sync timed out after 5m` | Large files or slow network | Retry, reduce file sizes |
 | `docker compose up failed` | Container startup error | Check container logs, compose file |
 
 ### SSH Retry Logic
@@ -365,7 +365,7 @@ flowchart TD
     G -->|Not Found| G_ERR[Error: could not determine appdata]
     G -->|Found| H[Deploy via rsync]
 
-    H -->|Failure| H_ERR[Error: rsync failed]
+    H -->|Failure| H_ERR[Error: file sync failed]
     H -->|Success| I{Compose File Exists?}
 
     I -->|Yes| J[Run docker compose up]
@@ -591,7 +591,7 @@ flowchart TD
 | Git local ops | 30 seconds | `GitLocalTimeout` |
 | SSH connect | 5 seconds | `SSHConnectTimeout` |
 | SSH operations | 30 seconds | `SSHTimeout` |
-| Rsync | 5 minutes | `RsyncTimeout` |
+| File sync | 5 minutes | `FileSyncTimeout` |
 | Docker compose up | 10 minutes | `ComposeUpTimeout` |
 | Doctor checks | 10 seconds | `doctorCheckTimeout` |
 | HTTP client | 5 seconds | `httpClientTimeout` |

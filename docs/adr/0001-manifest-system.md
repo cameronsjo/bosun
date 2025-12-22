@@ -1,8 +1,13 @@
 # ADR-0001: Manifest System
 
-**Status:** Proposed
+**Status:** Superseded by Go Implementation
 **Date:** 2025-12-21
 **Author:** Cameron + Claude
+
+> **Note (2024-12):** This ADR documents the original Python implementation design. The manifest system has since been rewritten in Go as part of the bosun CLI. The core concepts (provisions, services, stacks, merge semantics) remain the same, but the implementation details differ:
+> - Python `manifest.py` -> Go `bosun provision`
+> - External CLI tools (git, sops, rsync, chezmoi) -> Pure Go libraries (go-git, go-sops, native file copy, text/template)
+> - See [docs/architecture.md](../architecture.md) for current implementation details.
 
 ## Context
 

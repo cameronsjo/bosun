@@ -1391,11 +1391,11 @@ bosun reconcile
 Executes the complete GitOps reconciliation workflow:
 
 1. Acquire lock (prevent concurrent runs)
-2. Clone/pull repository
-3. Decrypt secrets with SOPS
-4. Render templates with Chezmoi
+2. Clone/pull repository (go-git library, in-process)
+3. Decrypt secrets (go-sops library, in-process)
+4. Render templates (native Go text/template + Sprig)
 5. Create backup of current configs
-6. Deploy (rsync or local copy)
+6. Deploy (native file copy or tar-over-SSH)
 7. Docker compose up
 8. SIGHUP to agentgateway
 9. Release lock

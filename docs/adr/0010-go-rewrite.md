@@ -2,7 +2,15 @@
 
 ## Status
 
-Accepted
+Implemented
+
+> **Note (2024-12):** The Go rewrite is complete. The implementation went beyond the original scope by eliminating additional external dependencies:
+> - **git CLI -> go-git library**: Pure Go Git operations, no external `git` binary
+> - **sops CLI -> go-sops library**: In-process decryption, no external `sops` binary
+> - **rsync -> native Go file copy**: Uses tar-over-SSH for remote, native copy for local
+> - **chezmoi -> native Go templates**: text/template + Sprig functions for template rendering
+>
+> This results in a truly single-binary deployment with minimal external dependencies (only SSH and Docker).
 
 ## Context
 
@@ -45,6 +53,9 @@ internal/
 - `github.com/docker/docker` - Native Docker SDK
 - `gopkg.in/yaml.v3` - YAML parsing
 - `github.com/fatih/color` - Colored output
+- `github.com/go-git/go-git` - Pure Go Git implementation (no git CLI)
+- `github.com/getsops/sops/v3` - Go SOPS library for in-process decryption
+- `github.com/Masterminds/sprig/v3` - Template functions (same as chezmoi uses)
 
 ### Migration Strategy
 
@@ -52,6 +63,20 @@ internal/
 2. Verify output parity using golden file tests
 3. Replace `bin/bosun` symlink once verified
 4. Remove legacy Python/bash after monitoring period
+
+### Actual Implementation (2024-12)
+
+The migration is complete. Additional improvements beyond the original plan:
+
+1. **Pure Go dependencies**: Replaced CLI tool dependencies with Go libraries
+   - go-git for Git operations (no shell exec to `git`)
+   - go-sops for secret decryption (no shell exec to `sops`)
+   - Native file operations for deployment (no `rsync`)
+   - text/template + Sprig for templating (no `chezmoi`)
+
+2. **Improved security**: Secrets never exposed via environment variables or external process calls
+
+3. **Reduced external dependencies**: Only SSH (for remote deployment) and Docker remain as external requirements
 
 ## Consequences
 

@@ -30,10 +30,10 @@ The reconcile system implements a GitOps workflow that:
                     +--------------------+
                     |   Component Stack  |
                     +--------------------+
-                    | GitOps      - git clone/pull
-                    | SOPSOps     - secrets decryption
-                    | TemplateOps - Go template rendering
-                    | DeployOps   - rsync/SSH sync
+                    | GitOps      - go-git library (in-process)
+                    | SOPSOps     - go-sops library (in-process)
+                    | TemplateOps - Go text/template + Sprig
+                    | DeployOps   - native file copy / tar-over-SSH
                     +--------------------+
 ```
 
@@ -58,7 +58,7 @@ The reconcile system implements a GitOps workflow that:
 6. Backup Creation (tar.gz of current configs)
        |
        v
-7. Deployment (rsync to local or remote)
+7. Deployment (native file copy or tar-over-SSH)
        |
        v
 8. Service Reload (docker compose up, SIGHUP)
@@ -120,17 +120,18 @@ bosun reconcile --dry-run --local
 
 ## Git Operations
 
-The git subsystem (`internal/reconcile/git.go`) handles repository synchronization with these features:
+The git subsystem (`internal/reconcile/git.go`) handles repository synchronization using the [go-git](https://github.com/go-git/go-git) library for pure Go, in-process Git operations:
 
 ### Clone Behavior
 
-- **Shallow clone**: Uses `--depth 1` by default to minimize bandwidth
-- **Single branch**: Only fetches the configured branch with `--single-branch`
+- **Shallow clone**: Uses depth 1 by default to minimize bandwidth
+- **Single branch**: Only fetches the configured branch
 - **Cleanup on failure**: Removes partial clones if the operation fails
+- **In-process**: No external `git` binary required
 
 ### Pull Behavior
 
-- **Shallow fetch**: Uses `--depth 1` for minimal data transfer
+- **Shallow fetch**: Uses depth 1 for minimal data transfer
 - **Hard reset**: Resets to `origin/<branch>` to ensure clean state
 - **Change detection**: Compares commit hashes before/after to detect changes
 
@@ -151,7 +152,7 @@ The `Sync()` method returns:
 
 ## Secrets Management
 
-The SOPS subsystem (`internal/reconcile/sops.go`) handles encrypted secrets using [SOPS](https://github.com/getsops/sops) with [age](https://github.com/FiloSottile/age) encryption.
+The SOPS subsystem (`internal/reconcile/sops.go`) handles encrypted secrets using the [go-sops](https://github.com/getsops/sops) library with [age](https://github.com/FiloSottile/age) encryption. All decryption happens in-process without requiring an external `sops` binary.
 
 ### Age Key Resolution
 
@@ -191,10 +192,10 @@ Before decryption, the system validates:
 2. Check age key availability
        |
        v
-3. Run: sops --input-type yaml --output-type json -d <file>
+3. In-process decryption via go-sops library
        |
        v
-4. Parse JSON to map[string]any
+4. Parse decrypted content to map[string]any
        |
        v
 5. Merge multiple files (later files override earlier)
@@ -286,7 +287,7 @@ The deploy subsystem (`internal/reconcile/deploy.go`) handles file synchronizati
 bosun reconcile --local
 ```
 
-**Remote Mode**: Uses rsync over SSH
+**Remote Mode**: Uses tar-over-SSH for file transfer
 
 ```bash
 bosun reconcile --remote root@192.168.1.8
@@ -302,7 +303,7 @@ If `--local` is not specified, the system auto-detects:
 
 ### Local Deployment
 
-Uses `rsync -av --delete` to sync directories:
+Uses native Go file operations to sync directories:
 
 ```
 Staging                    Target
@@ -311,12 +312,14 @@ staging/unraid/appdata/ -> /mnt/appdata/
 
 ### Remote Deployment
 
-Uses `rsync -avz --delete` over SSH:
+Uses tar-over-SSH for efficient file transfer:
 
 ```
 Staging                    Target
 staging/unraid/appdata/ -> root@host:/mnt/user/appdata/
 ```
+
+The remote deployment creates a tar archive locally, streams it over SSH, and extracts it on the remote host. This avoids requiring rsync on the remote system.
 
 ### Deployed Paths
 
@@ -342,12 +345,12 @@ After deployment:
 |-----------|---------|
 | SSH connect | 5 seconds |
 | SSH commands | 30 seconds |
-| rsync | 5 minutes |
+| File sync | 5 minutes |
 | docker compose up | 10 minutes |
 
 ### Retry Logic
 
-SSH and rsync operations retry on transient errors with exponential backoff:
+SSH and file sync operations retry on transient errors with exponential backoff:
 
 - **Max retries**: 3
 - **Backoff sequence**: 1s, 2s, 4s
@@ -476,10 +479,11 @@ Some operations log warnings but continue:
 
 ### Secret Handling
 
-1. **In-memory processing**: Secrets are processed entirely in memory, no intermediate files needed
-2. **Environment filtering**: Only safe env vars are exposed to templates
-3. **Error sanitization**: Output is truncated to avoid leaking secrets in logs
-4. **Memory**: Secrets are stored in Go maps, garbage collected after use
+1. **In-memory processing**: Secrets are decrypted and processed entirely in memory using the go-sops library
+2. **No external processes**: Template rendering uses native Go text/template, avoiding secrets in environment variables
+3. **Environment filtering**: Only safe env vars are exposed to templates
+4. **Error sanitization**: Output is truncated to avoid leaking secrets in logs
+5. **Memory**: Secrets are stored in Go maps, garbage collected after use
 
 ### SSH Security
 
