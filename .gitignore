@@ -26,3 +26,13 @@ Thumbs.db
 
 # Claude
 .claude/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+coverage.out
+coverage.html

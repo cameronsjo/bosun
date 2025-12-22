@@ -1,0 +1,9 @@
+# Homepage profile - dashboard labels for homepage integration
+compose:
+  services:
+    ${name}:
+      labels:
+        homepage.group: ${group}
+        homepage.name: ${name}
+        homepage.icon: ${icon}
+        homepage.description: ${description}

@@ -1,0 +1,11 @@
+name: mywebapp
+provisions:
+  - webapp
+config:
+  image: ghcr.io/example/mywebapp:latest
+  port: "8080"
+  subdomain: mywebapp
+  domain: example.com
+  group: Applications
+  icon: si-application
+  description: My Web Application

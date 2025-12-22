@@ -1,0 +1,105 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: bosun
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+
+builds:
+  - main: ./cmd/bosun
+    binary: bosun
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/cameronsjo/bosun/internal/cmd.version={{.Version}}
+      - -X github.com/cameronsjo/bosun/internal/cmd.commit={{.Commit}}
+      - -X github.com/cameronsjo/bosun/internal/cmd.date={{.Date}}
+
+archives:
+  - format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    # Use zip for Windows (if we add it later)
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - '^chore:'
+      - Merge pull request
+      - Merge branch
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Bug Fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Performance
+      regexp: '^.*?perf(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: Refactoring
+      regexp: '^.*?refactor(\([[:word:]]+\))??!?:.+$'
+      order: 3
+    - title: Others
+      order: 999
+
+release:
+  github:
+    owner: cameronsjo
+    name: bosun
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"
+  header: |
+    ## bosun v{{.Version}}
+
+    Helm for home - GitOps for Docker Compose
+  footer: |
+    ## Installation
+
+    **Quick install (macOS/Linux):**
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/cameronsjo/bosun/main/scripts/install.sh | bash
+    ```
+
+    **Manual download:**
+    Download the appropriate archive for your platform from the assets below.
+
+    ---
+    Full Changelog: https://github.com/cameronsjo/bosun/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+# Homebrew tap (optional - enable when ready)
+# brews:
+#   - repository:
+#       owner: cameronsjo
+#       name: homebrew-tap
+#     folder: Formula
+#     homepage: https://github.com/cameronsjo/bosun
+#     description: Helm for home - GitOps for Docker Compose
+#     license: MIT
+#     install: |
+#       bin.install "bosun"
+#     test: |
+#       system "#{bin}/bosun", "--version"

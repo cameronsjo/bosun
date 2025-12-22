@@ -1,0 +1,9 @@
+# Base container profile - provides standard service configuration
+compose:
+  services:
+    ${name}:
+      image: ${image}
+      container_name: ${name}
+      restart: unless-stopped
+      environment:
+        TZ: America/Chicago

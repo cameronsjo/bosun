@@ -39,6 +39,7 @@ type statsJSON struct {
 // Client wraps the Docker SDK client.
 type Client struct {
 	cli *client.Client
+	api DockerAPI // interface for testing
 }
 
 // NewClient creates a new Docker client connection.
@@ -48,7 +49,13 @@ func NewClient() (*Client, error) {
 		return nil, fmt.Errorf("create docker client: %w", err)
 	}
 
-	return &Client{cli: cli}, nil
+	return &Client{cli: cli, api: cli}, nil
+}
+
+// NewClientWithAPI creates a new Docker client with a custom API implementation.
+// This is primarily used for testing with mock implementations.
+func NewClientWithAPI(api DockerAPI) *Client {
+	return &Client{api: api}
 }
 
 // Ping tests the connection to the Docker daemon.
@@ -56,7 +63,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	_, err := c.cli.Ping(ctx)
+	_, err := c.api.Ping(ctx)
 	if err != nil {
 		return fmt.Errorf("ping docker: %w", err)
 	}
@@ -66,13 +73,13 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // Info returns system-wide information about the Docker daemon.
 func (c *Client) Info(ctx context.Context) (system.Info, error) {
-	return c.cli.Info(ctx)
+	return c.api.Info(ctx)
 }
 
 // Close closes the Docker client connection.
 func (c *Client) Close() error {
-	if c.cli != nil {
-		return c.cli.Close()
+	if c.api != nil {
+		return c.api.Close()
 	}
 	return nil
 }
@@ -106,7 +113,7 @@ type ContainerStats struct {
 
 // ListContainers returns all containers (running and stopped).
 func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]ContainerInfo, error) {
-	containers, err := c.cli.ContainerList(ctx, container.ListOptions{
+	containers, err := c.api.ContainerList(ctx, container.ListOptions{
 		All: !runningOnly,
 	})
 	if err != nil {
@@ -123,7 +130,7 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 		health := ""
 		if ctr.State == "running" {
 			// Get health status from inspection
-			inspect, err := c.cli.ContainerInspect(ctx, ctr.ID)
+			inspect, err := c.api.ContainerInspect(ctx, ctr.ID)
 			if err == nil && inspect.State.Health != nil {
 				health = inspect.State.Health.Status
 			}
@@ -209,7 +216,7 @@ func (c *Client) GetContainerImage(ctx context.Context, name string) (string, er
 
 // RemoveContainer forcefully removes a container by name.
 func (c *Client) RemoveContainer(ctx context.Context, name string) error {
-	return c.cli.ContainerRemove(ctx, name, container.RemoveOptions{
+	return c.api.ContainerRemove(ctx, name, container.RemoveOptions{
 		Force: true,
 	})
 }
@@ -217,7 +224,7 @@ func (c *Client) RemoveContainer(ctx context.Context, name string) error {
 // RestartContainer restarts a container by name.
 func (c *Client) RestartContainer(ctx context.Context, name string) error {
 	timeout := 10
-	return c.cli.ContainerRestart(ctx, name, container.StopOptions{Timeout: &timeout})
+	return c.api.ContainerRestart(ctx, name, container.StopOptions{Timeout: &timeout})
 }
 
 // GetContainerLogs returns the last n lines of logs from a container.
@@ -228,7 +235,7 @@ func (c *Client) GetContainerLogs(ctx context.Context, name string, tail int) (s
 		Tail:       fmt.Sprintf("%d", tail),
 	}
 
-	reader, err := c.cli.ContainerLogs(ctx, name, options)
+	reader, err := c.api.ContainerLogs(ctx, name, options)
 	if err != nil {
 		return "", fmt.Errorf("get container logs: %w", err)
 	}
@@ -247,7 +254,7 @@ func (c *Client) GetContainerLogs(ctx context.Context, name string, tail int) (s
 
 // GetContainerStats returns resource usage for a container.
 func (c *Client) GetContainerStats(ctx context.Context, name string) (*ContainerStats, error) {
-	stats, err := c.cli.ContainerStats(ctx, name, false)
+	stats, err := c.api.ContainerStats(ctx, name, false)
 	if err != nil {
 		return nil, fmt.Errorf("get container stats: %w", err)
 	}
@@ -303,7 +310,7 @@ func (c *Client) GetAllContainerStats(ctx context.Context) ([]ContainerStats, er
 
 // DiskUsage returns Docker system disk usage information.
 func (c *Client) DiskUsage(ctx context.Context) (types.DiskUsage, error) {
-	return c.cli.DiskUsage(ctx, types.DiskUsageOptions{})
+	return c.api.DiskUsage(ctx, types.DiskUsageOptions{})
 }
 
 // readJSONStats reads a single JSON stats object from the reader.

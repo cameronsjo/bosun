@@ -10,7 +10,12 @@ import (
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
-const version = "0.2.0"
+// Version information - set by goreleaser ldflags.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
 
 // rootCmd represents the base command when called without any subcommands.
 var rootCmd = &cobra.Command{
@@ -105,6 +110,66 @@ func init() {
 	// Add hidden yarr command
 	rootCmd.AddCommand(yarrCmd)
 
-	// Version template
+	// Version template with build info
 	rootCmd.SetVersionTemplate("bosun version {{.Version}}\n")
+
+	// Add completion command
+	rootCmd.AddCommand(completionCmd)
+}
+
+// completionCmd generates shell completion scripts.
+var completionCmd = &cobra.Command{
+	Use:   "completion [bash|zsh|fish|powershell]",
+	Short: "Generate shell completion scripts",
+	Long: `Generate shell completion scripts for bosun.
+
+To load completions:
+
+Bash:
+  $ source <(bosun completion bash)
+
+  # To load completions for each session, execute once:
+  # Linux:
+  $ bosun completion bash > /etc/bash_completion.d/bosun
+  # macOS:
+  $ bosun completion bash > $(brew --prefix)/etc/bash_completion.d/bosun
+
+Zsh:
+  # If shell completion is not already enabled in your environment,
+  # you will need to enable it. Execute once:
+  $ echo "autoload -U compinit; compinit" >> ~/.zshrc
+
+  # To load completions for each session, execute once:
+  $ bosun completion zsh > "${fpath[1]}/_bosun"
+
+  # You may need to start a new shell for this to take effect.
+
+Fish:
+  $ bosun completion fish | source
+
+  # To load completions for each session, execute once:
+  $ bosun completion fish > ~/.config/fish/completions/bosun.fish
+
+PowerShell:
+  PS> bosun completion powershell | Out-String | Invoke-Expression
+
+  # To load completions for every new session, run:
+  PS> bosun completion powershell > bosun.ps1
+  # and source this file from your PowerShell profile.
+`,
+	DisableFlagsInUseLine: true,
+	ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
+	Args:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
+	Run: func(cmd *cobra.Command, args []string) {
+		switch args[0] {
+		case "bash":
+			cmd.Root().GenBashCompletion(os.Stdout)
+		case "zsh":
+			cmd.Root().GenZshCompletion(os.Stdout)
+		case "fish":
+			cmd.Root().GenFishCompletion(os.Stdout, true)
+		case "powershell":
+			cmd.Root().GenPowerShellCompletionWithDesc(os.Stdout)
+		}
+	},
 }

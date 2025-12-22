@@ -1,0 +1,7 @@
+services:
+    myapp:
+        container_name: myapp
+        environment:
+            TZ: America/Chicago
+        image: ghcr.io/example/myapp:latest
+        restart: unless-stopped

@@ -1,0 +1,7 @@
+endpoints:
+    - conditions:
+        - '[STATUS] == 200'
+      group: Applications
+      interval: 60s
+      name: mywebapp
+      url: https://mywebapp.example.com

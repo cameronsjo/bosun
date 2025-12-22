@@ -1,0 +1,29 @@
+services:
+    mywebapp:
+        container_name: mywebapp
+        environment:
+            TZ: America/Chicago
+        healthcheck:
+            interval: 30s
+            retries: 3
+            test:
+                - CMD
+                - wget
+                - -q
+                - --spider
+                - http://localhost:8080/health
+            timeout: 5s
+        image: ghcr.io/example/mywebapp:latest
+        labels:
+            homepage.description: My Web Application
+            homepage.group: Applications
+            homepage.icon: si-application
+            homepage.name: mywebapp
+            traefik.enable: "true"
+            traefik.http.routers.mywebapp.entrypoints: websecure
+            traefik.http.routers.mywebapp.rule: Host(`mywebapp.example.com`)
+            traefik.http.routers.mywebapp.tls.certresolver: letsencrypt
+            traefik.http.services.mywebapp.loadbalancer.server.port: "8080"
+        networks:
+            - proxynet
+        restart: unless-stopped

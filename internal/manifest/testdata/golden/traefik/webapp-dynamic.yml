@@ -1,0 +1,14 @@
+http:
+    routers:
+        mywebapp:
+            entrypoints:
+                - websecure
+            rule: Host(`mywebapp.example.com`)
+            service: mywebapp
+            tls:
+                certResolver: letsencrypt
+    services:
+        mywebapp:
+            loadBalancer:
+                servers:
+                    - url: http://mywebapp:8080

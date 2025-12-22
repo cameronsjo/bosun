@@ -1,0 +1,5 @@
+name: myapp
+provisions:
+  - container
+config:
+  image: ghcr.io/example/myapp:latest

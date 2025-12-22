@@ -1,10 +1,13 @@
-.PHONY: build install clean test lint run
+.PHONY: build install clean test lint run release release-dry-run completion
 
 # Binary name
 BINARY := bosun
 
 # Build directory
 BUILD_DIR := ./build
+
+# Completion directory
+COMPLETION_DIR := ./completions
 
 # Go parameters
 GOCMD := go
@@ -13,8 +16,16 @@ GOTEST := $(GOCMD) test
 GOGET := $(GOCMD) get
 GOMOD := $(GOCMD) mod
 
+# Version info
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
+DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+
 # Build flags
-LDFLAGS := -s -w
+LDFLAGS := -s -w \
+	-X github.com/cameronsjo/bosun/internal/cmd.version=$(VERSION) \
+	-X github.com/cameronsjo/bosun/internal/cmd.commit=$(COMMIT) \
+	-X github.com/cameronsjo/bosun/internal/cmd.date=$(DATE)
 
 # Default target
 all: build
@@ -64,16 +75,46 @@ build-all: clean
 dev:
 	$(GOBUILD) -o $(BUILD_DIR)/$(BINARY) ./cmd/bosun
 
+# Release - dry run (test locally without publishing)
+release-dry-run:
+	@echo "Running goreleaser in dry-run mode..."
+	goreleaser release --snapshot --clean --skip=publish
+
+# Release - create and publish (requires GITHUB_TOKEN)
+release:
+	@if [ -z "$$GITHUB_TOKEN" ]; then \
+		echo "Error: GITHUB_TOKEN is required"; \
+		exit 1; \
+	fi
+	goreleaser release --clean
+
+# Check goreleaser config
+release-check:
+	goreleaser check
+
+# Generate shell completion scripts
+completion: build
+	@mkdir -p $(COMPLETION_DIR)
+	$(BUILD_DIR)/$(BINARY) completion bash > $(COMPLETION_DIR)/$(BINARY).bash
+	$(BUILD_DIR)/$(BINARY) completion zsh > $(COMPLETION_DIR)/_$(BINARY)
+	$(BUILD_DIR)/$(BINARY) completion fish > $(COMPLETION_DIR)/$(BINARY).fish
+	$(BUILD_DIR)/$(BINARY) completion powershell > $(COMPLETION_DIR)/$(BINARY).ps1
+	@echo "Completions generated in $(COMPLETION_DIR)/"
+
 # Help
 help:
 	@echo "Available targets:"
-	@echo "  build      - Build the binary"
-	@echo "  install    - Install to GOPATH/bin"
-	@echo "  run        - Run without building (use ARGS=... for arguments)"
-	@echo "  test       - Run tests"
-	@echo "  test-cover - Run tests with coverage"
-	@echo "  tidy       - Tidy go.mod"
-	@echo "  deps       - Download dependencies"
-	@echo "  clean      - Remove build artifacts"
-	@echo "  build-all  - Build for all platforms"
-	@echo "  dev        - Development build"
+	@echo "  build           - Build the binary"
+	@echo "  install         - Install to GOPATH/bin"
+	@echo "  run             - Run without building (use ARGS=... for arguments)"
+	@echo "  test            - Run tests"
+	@echo "  test-cover      - Run tests with coverage"
+	@echo "  tidy            - Tidy go.mod"
+	@echo "  deps            - Download dependencies"
+	@echo "  clean           - Remove build artifacts"
+	@echo "  build-all       - Build for all platforms"
+	@echo "  dev             - Development build"
+	@echo "  release-dry-run - Test release locally (no publish)"
+	@echo "  release         - Create and publish release (requires GITHUB_TOKEN)"
+	@echo "  release-check   - Validate goreleaser config"
+	@echo "  completion      - Generate shell completion scripts"

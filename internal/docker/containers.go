@@ -53,7 +53,7 @@ func (c *Client) Logs(ctx context.Context, name string, tail int, follow bool) (
 		Timestamps: false,
 	}
 
-	reader, err := c.cli.ContainerLogs(ctx, name, options)
+	reader, err := c.api.ContainerLogs(ctx, name, options)
 	if err != nil {
 		return nil, fmt.Errorf("get logs for %s: %w", name, err)
 	}
@@ -63,7 +63,7 @@ func (c *Client) Logs(ctx context.Context, name string, tail int, follow bool) (
 
 // Inspect returns detailed information about a container.
 func (c *Client) Inspect(ctx context.Context, name string) (*ContainerDetails, error) {
-	info, err := c.cli.ContainerInspect(ctx, name)
+	info, err := c.api.ContainerInspect(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("inspect container %s: %w", name, err)
 	}
@@ -133,7 +133,7 @@ func (c *Client) Remove(ctx context.Context, name string, force bool) error {
 		RemoveVolumes: false,
 	}
 
-	if err := c.cli.ContainerRemove(ctx, name, options); err != nil {
+	if err := c.api.ContainerRemove(ctx, name, options); err != nil {
 		return fmt.Errorf("remove container %s: %w", name, err)
 	}
 
@@ -142,7 +142,7 @@ func (c *Client) Remove(ctx context.Context, name string, force bool) error {
 
 // Start starts a stopped container.
 func (c *Client) Start(ctx context.Context, name string) error {
-	if err := c.cli.ContainerStart(ctx, name, container.StartOptions{}); err != nil {
+	if err := c.api.ContainerStart(ctx, name, container.StartOptions{}); err != nil {
 		return fmt.Errorf("start container %s: %w", name, err)
 	}
 	return nil
@@ -150,7 +150,7 @@ func (c *Client) Start(ctx context.Context, name string) error {
 
 // Exists checks if a container with the given name exists (running or stopped).
 func (c *Client) Exists(ctx context.Context, name string) (bool, error) {
-	containers, err := c.cli.ContainerList(ctx, container.ListOptions{All: true})
+	containers, err := c.api.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		return false, fmt.Errorf("list containers: %w", err)
 	}

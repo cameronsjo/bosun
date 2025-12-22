@@ -1,0 +1,28 @@
+# Reverse proxy profile - Traefik integration
+compose:
+  services:
+    ${name}:
+      networks:
+        - proxynet
+      labels:
+        traefik.enable: "true"
+        traefik.http.routers.${name}.rule: Host(`${subdomain}.${domain}`)
+        traefik.http.routers.${name}.entrypoints: websecure
+        traefik.http.routers.${name}.tls.certresolver: letsencrypt
+        traefik.http.services.${name}.loadbalancer.server.port: "${port}"
+
+traefik:
+  http:
+    routers:
+      ${name}:
+        rule: Host(`${subdomain}.${domain}`)
+        service: ${name}
+        entrypoints:
+          - websecure
+        tls:
+          certResolver: letsencrypt
+    services:
+      ${name}:
+        loadBalancer:
+          servers:
+            - url: http://${name}:${port}

@@ -1,0 +1,8 @@
+name: dbapp
+provisions:
+  - container
+needs:
+  - postgres
+config:
+  image: ghcr.io/example/dbapp:latest
+  db_password: secret123

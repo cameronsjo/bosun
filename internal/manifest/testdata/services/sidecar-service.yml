@@ -1,0 +1,12 @@
+name: fullapp
+provisions:
+  - container
+services:
+  postgres:
+    version: "16"
+    db: fullapp_prod
+  redis:
+    version: "7"
+config:
+  image: ghcr.io/example/fullapp:latest
+  db_password: production_secret

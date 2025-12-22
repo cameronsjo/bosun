@@ -1,4 +1,4 @@
-# bosun
+# Bosun
 
 **Helm for home.**
 
@@ -6,44 +6,60 @@ You're the captain of your homelab. 40 containers. Traefik. Secrets everywhere.
 You shouldn't have to swab the deck yourself. That's what the bosun is for.
 
 ```
-git push → bosun receives orders → crew deployed → yacht runs smooth
+git push -> bosun receives orders -> crew deployed -> yacht runs smooth
 ```
 
 No Kubernetes. No drama. Just smooth sailing.
 
 ```
-┌────────────────────────────────────────────────────────────────────────────┐
-│                              Your Yacht (Server)                           │
-│                                                                            │
-│  ┌────────────────────────────────────────────────────────────────────┐    │
-│  │                            Bosun                                   │    │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐   │    │
-│  │  │  Radio  │→ │  Fetch  │→ │ Decrypt │→ │  Prep   │→ │ Deploy  │   │    │
-│  │  │(Webhook)│  │ Orders  │  │ Secrets │  │ Configs │  │  Crew   │   │    │
-│  │  └─────────┘  └─────────┘  └─────────┘  └─────────┘  └─────────┘   │    │
-│  └────────────────────────────────────────────────────────────────────┘    │
-│        ▲                                                   │               │
-│        │                                                   ▼               │
-│  ┌─────┴─────┐                                    ┌──────────────┐         │
-│  │ Tailscale │                                    │  Your Crew   │         │
-│  │  Funnel   │                                    │ (Containers) │         │
-│  └─────┬─────┘                                    └──────────────┘         │
-└────────│───────────────────────────────────────────────────────────────────┘
-         │
-         ▼
-   ┌──────────┐
-   │ Captain  │
-   │ (GitHub) │
-   └──────────┘
++------------------------------------------------------------------------------+
+|                              Your Yacht (Server)                             |
+|                                                                              |
+|  +------------------------------------------------------------------------+  |
+|  |                              Bosun                                     |  |
+|  |  +---------+  +---------+  +---------+  +---------+  +---------+       |  |
+|  |  |  Radio  |->|  Fetch  |->| Decrypt |->|  Prep   |->| Deploy  |       |  |
+|  |  |(Webhook)|  | Orders  |  | Secrets |  | Configs |  |  Crew   |       |  |
+|  |  +---------+  +---------+  +---------+  +---------+  +---------+       |  |
+|  +------------------------------------------------------------------------+  |
+|        ^                                                   |                 |
+|        |                                                   v                 |
+|  +-----+-----+                                    +--------------+           |
+|  | Tailscale |                                    |  Your Crew   |           |
+|  |  Funnel   |                                    | (Containers) |           |
+|  +-----+-----+                                    +--------------+           |
++--------|---------------------------------------------------------------------+
+         |
+         v
+   +----------+
+   | Captain  |
+   | (GitHub) |
+   +----------+
 ```
 
-## What's On Board
+## Installation
 
-| Component | Role |
-|-----------|------|
-| **Bosun** | Receives orders, decrypts secrets, deploys containers |
-| **Manifest** | Write 10 lines, generate compose + Traefik + Gatus configs |
-| **Provisions** | Reusable config templates - batteries included, all swappable |
+### From Source (Recommended)
+
+```bash
+# Clone and build
+git clone https://github.com/cameronsjo/bosun.git
+cd bosun
+make build
+
+# Binary is at ./build/bosun
+./build/bosun --version
+```
+
+### Go Install
+
+```bash
+go install github.com/cameronsjo/bosun/cmd/bosun@latest
+```
+
+### Download Binary
+
+Download the latest release for your platform from the [Releases](https://github.com/cameronsjo/bosun/releases) page.
 
 ## Quick Start
 
@@ -58,21 +74,76 @@ creation_rules:
     age: <your-public-key>
 EOF
 
-# 3. Encrypt secrets
-sops -e secrets.yaml > secrets.yaml.sops
+# 3. Initialize your yacht
+bosun init
 
-# 4. Start bosun
-docker compose -f bosun/docker-compose.yml up -d
+# 4. Check if everything is seaworthy
+bosun doctor
 
-# 5. Push orders
-git add . && git commit -m "deploy the fleet" && git push
+# 5. Start the yacht
+bosun yacht up
 ```
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `init` | Interactive setup wizard |
+| `yacht up/down/restart/status` | Manage Docker Compose services |
+| `crew list/logs/inspect/restart` | Manage individual containers |
+| `provision [stack]` | Render manifest to compose/traefik/gatus |
+| `provisions` | List available provisions |
+| `create <template> <name>` | Scaffold new service |
+| `radio test/status` | Test webhook and Tailscale |
+| `status` | Health dashboard |
+| `doctor` | Pre-flight checks |
+| `drift` | Detect config drift |
+| `lint` | Validate manifests |
+| `mayday` | Show errors, rollback snapshots |
+| `reconcile` | Run GitOps workflow |
+
+See [docs/commands.md](docs/commands.md) for the full command reference.
+
+## Configuration
+
+Bosun looks for configuration in the following locations:
+
+1. `bosun.yaml` in the current directory
+2. `.bosun.yaml` in the current directory
+3. `$HOME/.config/bosun/config.yaml`
+
+Example configuration:
+
+```yaml
+# bosun.yaml
+root: .
+manifest_dir: manifest
+compose_file: docker-compose.yml
+```
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `REPO_URL` | Git repository URL (for reconcile) | Required for reconcile |
+| `REPO_BRANCH` | Git branch to track | `main` |
+| `SOPS_AGE_KEY_FILE` | Path to age key file | `~/.config/sops/age/keys.txt` |
+| `DEPLOY_TARGET` | Remote host for deployment | Local if unset |
+
+## What's on Board
+
+| Component | Role |
+|-----------|------|
+| **Bosun CLI** | Single binary managing Docker, manifests, and GitOps |
+| **Manifest System** | Write 10 lines, generate compose + Traefik + Gatus configs |
+| **Provisions** | Reusable config templates - batteries included, all swappable |
 
 ## Documentation
 
+- **[Commands Reference](docs/commands.md)** - Full command documentation
+- **[Migration Guide](docs/migration.md)** - Migrating from bash/Python version
 - **[Concepts](docs/concepts.md)** - Architecture, components, diagrams
 - **[Unraid Setup](docs/guides/unraid-setup.md)** - Complete walkthrough
-- **[Unraid Templates](unraid-templates/)** - Community Apps templates
 
 ### Architecture Decisions
 
@@ -80,21 +151,35 @@ git add . && git commit -m "deploy the fleet" && git push
 |-----|--------|---------|
 | [0001: Manifest System](docs/adr/0001-service-composer.md) | Accepted | DRY crew provisioning |
 | [0002: Watchtower Webhook](docs/adr/0002-watchtower-webhook-deploy.md) | Accepted | Crew rotation automation |
-| [0003: Dagger for Bosun](docs/adr/0003-dagger-for-conductor.md) | Deferred | Shell scripts sufficient |
-| [0004: Fleet Management](docs/adr/0004-multi-server-monorepo.md) | Proposed | Multi-yacht architecture |
-| [0005: Radio Options](docs/adr/0005-tunnel-providers.md) | Accepted | Tailscale vs Cloudflare |
-| [0006: Bosun Auth](docs/adr/0006-conductor-authentication.md) | Proposed | Authelia integration |
-| [0007: Agentgateway](docs/adr/0007-agentgateway-mcp-proxy.md) | Draft | MCP via Agentgateway |
 | [0008: Container vs Daemon](docs/adr/0008-container-vs-daemon.md) | Accepted | When to use systemd |
-| [0009: Unraid Community Apps](docs/adr/0009-unraid-community-apps.md) | Evaluating | CA registration |
+| [0010: Go Rewrite](docs/adr/0010-go-rewrite.md) | Accepted | Single-binary CLI |
 
 ## Requirements
 
-- Docker + Docker Compose
-- Linux server (tested: Unraid, Debian, Ubuntu)
-- GitHub repo for manifests
-- Age key for encryption
-- (Optional) Tailscale or Cloudflare account
+- Go 1.24+ (for building from source)
+- Docker + Docker Compose v2
+- Linux or macOS (tested: Unraid, Debian, Ubuntu, macOS)
+- Git (for reconcile workflow)
+- SOPS + Age (for secret encryption)
+
+## Development
+
+```bash
+# Build
+make build
+
+# Run tests
+make test
+
+# Run with coverage
+make test-cover
+
+# Build for all platforms
+make build-all
+
+# Development build (no optimizations)
+make dev
+```
 
 ## Support
 
