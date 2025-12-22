@@ -19,14 +19,14 @@ git push → webhook → decrypt secrets → render templates → docker compose
 
 ## Components
 
-### Runner
+### Conductor
 
-The GitOps runner container handles deployment automation:
+The conductor orchestrates deployments - leads the service orchestra:
 
 ```
-runner/
+conductor/
 ├── Dockerfile           # Alpine + sops + age + chezmoi + webhook
-├── docker-compose.yml   # Runner deployment config
+├── docker-compose.yml   # Conductor deployment config
 ├── hooks.yaml           # Webhook configuration
 └── scripts/
     ├── entrypoint.sh    # Container startup
@@ -91,10 +91,10 @@ services:
       API_KEY: {{ $secrets.auth.api_key }}
 ```
 
-### 4. Deploy runner
+### 4. Deploy conductor
 
 ```bash
-docker compose -f runner/docker-compose.yml up -d
+docker compose -f conductor/docker-compose.yml up -d
 ```
 
 ### 5. Configure GitHub webhook
@@ -125,7 +125,7 @@ See [ADR-0002: Watchtower Webhook Deploy](docs/adr/0002-watchtower-webhook-deplo
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Your Server                              │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────┐  │
-│  │   Runner    │    │  Watchtower │    │   Your Services     │  │
+│  │  Conductor  │    │  Watchtower │    │   Your Services     │  │
 │  │             │    │             │    │                     │  │
 │  │ • webhook   │    │ • HTTP API  │    │ • app1              │  │
 │  │ • reconcile │    │ • polling   │    │ • app2              │  │
