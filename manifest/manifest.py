@@ -175,7 +175,12 @@ def render_service(manifest: dict, provisions_dir: Path) -> dict[str, dict]:
     return outputs
 
 
-def render_stack(stack_path: Path, provisions_dir: Path, services_dir: Path) -> dict[str, dict]:
+def render_stack(
+    stack_path: Path,
+    provisions_dir: Path,
+    services_dir: Path,
+    values_overlay: dict[str, Any] | None = None,
+) -> dict[str, dict]:
     """Render a stack file into compose/traefik/gatus outputs."""
     stack = yaml.safe_load(stack_path.read_text())
     outputs = {"compose": {}, "traefik": {}, "gatus": {}}
@@ -186,6 +191,11 @@ def render_stack(stack_path: Path, provisions_dir: Path, services_dir: Path) -> 
             raise FileNotFoundError(f"Service not found: {service_path}")
 
         manifest = yaml.safe_load(service_path.read_text())
+
+        # Apply values overlay to each service's config
+        if values_overlay:
+            manifest["config"] = deep_merge(manifest.get("config", {}), values_overlay)
+
         service_outputs = render_service(manifest, provisions_dir)
 
         for target in ("compose", "traefik", "gatus"):
@@ -234,12 +244,24 @@ def cmd_render(args: argparse.Namespace) -> int:
         print(f"Error: {input_path} not found", file=sys.stderr)
         return 1
 
+    # Load values overlay if provided
+    values_overlay: dict[str, Any] = {}
+    if args.values:
+        values_path = Path(args.values)
+        if not values_path.exists():
+            print(f"Error: Values file {values_path} not found", file=sys.stderr)
+            return 1
+        values_overlay = yaml.safe_load(values_path.read_text()) or {}
+
     # Determine if stack or single service
     if "stacks" in str(input_path):
-        outputs = render_stack(input_path, provisions_dir, services_dir)
+        outputs = render_stack(input_path, provisions_dir, services_dir, values_overlay)
         stack_name = input_path.stem
     else:
         manifest = yaml.safe_load(input_path.read_text())
+        # Merge values overlay into config
+        if values_overlay:
+            manifest["config"] = deep_merge(manifest.get("config", {}), values_overlay)
         outputs = render_service(manifest, provisions_dir)
         stack_name = manifest["name"]
 
@@ -282,6 +304,7 @@ def main() -> int:
     render_parser = subparsers.add_parser("render", help="Render a stack or service")
     render_parser.add_argument("path", help="Path to stack or service manifest")
     render_parser.add_argument("--dry-run", action="store_true", help="Print output without writing")
+    render_parser.add_argument("--values", "-f", help="Values overlay file (YAML)")
 
     # provisions command
     provisions_parser = subparsers.add_parser("provisions", help="List available provisions")

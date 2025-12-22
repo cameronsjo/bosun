@@ -54,6 +54,7 @@ MANIFEST COMMANDS
   provision [stack]     Render manifest to compose/traefik/gatus
     --dry-run, -n       Show what would be generated without writing
     --diff, -d          Show diff against existing output files
+    --values, -f <file> Apply values overlay (e.g., prod.yaml)
   provisions            List available provisions
   create <tmpl> <name>  Scaffold new service (webapp, api, worker, static)
 
@@ -161,6 +162,7 @@ cmd_provision() {
     local dry_run=false
     local diff_only=false
     local stack=""
+    local values_file=""
 
     # Parse flags
     while [[ $# -gt 0 ]]; do
@@ -174,6 +176,10 @@ cmd_provision() {
                 dry_run=true
                 shift
                 ;;
+            --values|-f)
+                values_file="$2"
+                shift 2
+                ;;
             *)
                 stack="$1"
                 shift
@@ -184,11 +190,22 @@ cmd_provision() {
     if [[ -z "$stack" ]]; then
         echo -e "${RED}Specify a stack to provision${NC}"
         echo "Example: bosun provision stacks/apps.yml"
-        echo "Options: --dry-run, --diff"
+        echo "Options: --dry-run, --diff, --values <file>"
         exit 1
     fi
 
+    # Convert relative paths to absolute before changing directory
+    if [[ -n "$values_file" ]] && [[ ! "$values_file" = /* ]]; then
+        values_file="$(pwd)/$values_file"
+    fi
+
     cd "$MANIFEST_DIR"
+
+    # Build values arg if provided
+    local values_arg=""
+    if [[ -n "$values_file" ]]; then
+        values_arg="--values $values_file"
+    fi
 
     if [[ "$dry_run" == true ]]; then
         echo -e "${BLUE}🔍 Dry run - showing what would change...${NC}"
@@ -202,7 +219,7 @@ cmd_provision() {
         local stack_name=$(basename "$stack" .yml)
 
         # Render to temp
-        uv run manifest.py render "$stack" --dry-run > "$temp_dir/output.yml" 2>&1
+        uv run manifest.py render "$stack" --dry-run $values_arg > "$temp_dir/output.yml" 2>&1
 
         if [[ "$diff_only" == true ]]; then
             # Show diff against existing files
@@ -272,7 +289,7 @@ cmd_provision() {
         fi
     else
         echo -e "${GREEN}📦 Provisioning $stack...${NC}"
-        uv run manifest.py render "$stack"
+        uv run manifest.py render "$stack" $values_arg
     fi
 }
 
