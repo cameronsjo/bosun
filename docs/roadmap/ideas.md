@@ -3,6 +3,7 @@
 | Item | Priority | Effort | Notes |
 |------|----------|--------|-------|
 | `bosun init` - interactive setup wizard | p1 | medium | Zero to deployed in 2 minutes |
+| Linux-first docs & examples | p1 | medium | Unraid-tested but generic Linux instructions |
 | `bosun doctor` - pre-flight checks | p1 | small | Docker, age key, webhook, SOPS validation |
 | Dry-run deploys | p1 | medium | Show diff of what would change before applying |
 | `bosun lint` - validate before deploy | p1 | small | Catch manifest errors early |
