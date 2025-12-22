@@ -5,7 +5,6 @@
 | Linux-first docs & examples | p1 | medium | Unraid-tested but generic Linux instructions |
 | Rollback snapshots | p2 | medium | Auto-snapshot before deploy, `bosun mayday --rollback` |
 | Values overlays | p2 | medium | `--values prod.yaml` for env-specific config |
-| Dependency declarations | p2 | small | "myapp needs postgres 17" auto-provisions sidecars |
 | Local dev mode | p3 | medium | `bosun dev up` watches filesystem, hot reload |
 | Secret rotation helper | p3 | medium | `bosun secrets rotate` generates, re-encrypts, deploys |
 | `bosun watch` - scheduled tasks | p3 | medium | Nautical cron - watches, bells, tides |
@@ -32,3 +31,4 @@
 | `bosun log` - release history | Manifest changes, provision timestamps, deploy tags |
 | Port conflict detection | Lint warns when services claim same port |
 | `bosun drift` - drift detection | Compares git manifests vs running containers |
+| Dependency declarations | `needs: [postgres]` auto-provisions with defaults |
