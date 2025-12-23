@@ -303,7 +303,7 @@ func dirHasContent(dir string) bool {
 // countFiles counts the number of files in a directory tree.
 func countFiles(dir string) int {
 	count := 0
-	filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err == nil && !d.IsDir() {
 			count++
 		}

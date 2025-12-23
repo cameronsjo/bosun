@@ -104,7 +104,7 @@ func TestDiscordProvider_Send(t *testing.T) {
 		var receivedPayload discordPayload
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			json.NewDecoder(r.Body).Decode(&receivedPayload)
+			_ = json.NewDecoder(r.Body).Decode(&receivedPayload)
 			w.WriteHeader(http.StatusNoContent)
 		}))
 		defer server.Close()

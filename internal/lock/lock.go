@@ -47,8 +47,8 @@ func (l *Lock) Acquire() error {
 	}
 
 	// Write PID to lock file for debugging
-	f.Truncate(0)
-	f.Seek(0, 0)
+	_ = f.Truncate(0)
+	_, _ = f.Seek(0, 0)
 	fmt.Fprintf(f, "%d\n", os.Getpid())
 
 	l.file = f
@@ -82,7 +82,7 @@ func WithLock(manifestDir, operation string, fn func() error) error {
 	if err := lock.Acquire(); err != nil {
 		return err
 	}
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 
 	return fn()
 }

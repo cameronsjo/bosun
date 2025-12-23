@@ -44,7 +44,7 @@ func TestLock_DoubleAcquire(t *testing.T) {
 	// First acquire should succeed
 	err := lock1.Acquire()
 	require.NoError(t, err)
-	defer lock1.Release()
+	defer func() { _ = lock1.Release() }()
 
 	// Second acquire should fail
 	err = lock2.Acquire()
@@ -81,7 +81,7 @@ func TestWithLock_Blocked(t *testing.T) {
 	// Hold the lock
 	err := lock.Acquire()
 	require.NoError(t, err)
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 
 	// WithLock should fail
 	err = WithLock(tmpDir, "test", func() error {

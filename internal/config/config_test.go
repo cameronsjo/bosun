@@ -34,7 +34,7 @@ func TestFindRoot_WithBosunDir(t *testing.T) {
 	// Change to subdirectory
 	originalWd, err := os.Getwd()
 	require.NoError(t, err)
-	defer os.Chdir(originalWd)
+	defer func() { _ = os.Chdir(originalWd) }()
 
 	require.NoError(t, os.Chdir(subDir))
 
@@ -58,7 +58,7 @@ func TestFindRoot_WithManifestDir(t *testing.T) {
 	// Change to subdirectory
 	originalWd, err := os.Getwd()
 	require.NoError(t, err)
-	defer os.Chdir(originalWd)
+	defer func() { _ = os.Chdir(originalWd) }()
 
 	require.NoError(t, os.Chdir(subDir))
 
@@ -82,7 +82,7 @@ func TestFindRoot_BosunDirWithoutComposeFile(t *testing.T) {
 	// Change to bosun directory
 	originalWd, err := os.Getwd()
 	require.NoError(t, err)
-	defer os.Chdir(originalWd)
+	defer func() { _ = os.Chdir(originalWd) }()
 
 	require.NoError(t, os.Chdir(bosunDir))
 
@@ -99,7 +99,7 @@ func TestFindRoot_NoProjectRoot(t *testing.T) {
 	// Change to temp directory
 	originalWd, err := os.Getwd()
 	require.NoError(t, err)
-	defer os.Chdir(originalWd)
+	defer func() { _ = os.Chdir(originalWd) }()
 
 	require.NoError(t, os.Chdir(tmpDir))
 
@@ -119,7 +119,7 @@ func TestFindRoot_FromProjectRoot(t *testing.T) {
 	// Change to project root itself
 	originalWd, err := os.Getwd()
 	require.NoError(t, err)
-	defer os.Chdir(originalWd)
+	defer func() { _ = os.Chdir(originalWd) }()
 
 	require.NoError(t, os.Chdir(tmpDir))
 
@@ -144,7 +144,7 @@ func TestLoad(t *testing.T) {
 	// Change to project root
 	originalWd, err := os.Getwd()
 	require.NoError(t, err)
-	defer os.Chdir(originalWd)
+	defer func() { _ = os.Chdir(originalWd) }()
 
 	require.NoError(t, os.Chdir(tmpDir))
 
@@ -164,7 +164,7 @@ func TestLoad_NoProjectRoot(t *testing.T) {
 	// Change to temp directory (no project markers)
 	originalWd, err := os.Getwd()
 	require.NoError(t, err)
-	defer os.Chdir(originalWd)
+	defer func() { _ = os.Chdir(originalWd) }()
 
 	require.NoError(t, os.Chdir(tmpDir))
 
@@ -366,7 +366,7 @@ func TestLoad_WithInfraContainers(t *testing.T) {
 	// Change to project root
 	originalWd, err := os.Getwd()
 	require.NoError(t, err)
-	defer os.Chdir(originalWd)
+	defer func() { _ = os.Chdir(originalWd) }()
 
 	require.NoError(t, os.Chdir(tmpDir))
 
@@ -392,7 +392,7 @@ func TestFindRoot_BosunPreferredOverManifest(t *testing.T) {
 	// Change to project root
 	originalWd, err := os.Getwd()
 	require.NoError(t, err)
-	defer os.Chdir(originalWd)
+	defer func() { _ = os.Chdir(originalWd) }()
 
 	require.NoError(t, os.Chdir(tmpDir))
 
@@ -416,7 +416,7 @@ func TestFindRoot_DeepNesting(t *testing.T) {
 	// Change to deep directory
 	originalWd, err := os.Getwd()
 	require.NoError(t, err)
-	defer os.Chdir(originalWd)
+	defer func() { _ = os.Chdir(originalWd) }()
 
 	require.NoError(t, os.Chdir(deepDir))
 
