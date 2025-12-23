@@ -39,27 +39,45 @@ No Kubernetes. No drama. Just smooth sailing.
 
 ## Installation
 
-### From Source (Recommended)
+### Quick Install (Recommended)
 
 ```bash
-# Clone and build
-git clone https://github.com/cameronsjo/bosun.git
-cd bosun
-make build
+curl -fsSL https://raw.githubusercontent.com/cameronsjo/bosun/main/scripts/install.sh | bash
+```
 
-# Binary is at ./build/bosun
+This downloads the latest release, verifies the SHA256 checksum, and installs to `/usr/local/bin`.
+
+### Other Methods
+
+```bash
+# Go install
+go install github.com/cameronsjo/bosun/cmd/bosun@latest
+
+# From source
+git clone https://github.com/cameronsjo/bosun.git
+cd bosun && make build
 ./build/bosun --version
 ```
 
-### Go Install
+### Update
 
 ```bash
-go install github.com/cameronsjo/bosun/cmd/bosun@latest
+bosun update          # Download and install latest
+bosun update --check  # Check for updates without installing
 ```
 
-### Download Binary
+### Verify Release
 
-Download the latest release for your platform from the [Releases](https://github.com/cameronsjo/bosun/releases) page.
+Releases are signed with [cosign](https://github.com/sigstore/cosign) and include [SLSA provenance](https://slsa.dev/).
+
+```bash
+# Verify checksum signature
+cosign verify-blob --certificate checksums.txt.pem \
+  --signature checksums.txt.sig checksums.txt
+
+# Verify build provenance
+gh attestation verify bosun_*.tar.gz --owner cameronsjo
+```
 
 ## Quick Start
 
@@ -95,7 +113,9 @@ bosun yacht up
 | `provisions` | List available provisions |
 | `create <template> <name>` | Scaffold new service |
 | `radio test/status` | Test webhook and Tailscale |
+| `alert status/test` | Manage alert providers (Discord, SendGrid, Twilio) |
 | `status` | Health dashboard |
+| `update` | Self-update to latest version |
 | `doctor` | Pre-flight checks |
 | `drift` | Detect config drift |
 | `lint` | Validate manifests |
