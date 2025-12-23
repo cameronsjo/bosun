@@ -17,10 +17,10 @@ type DockerAPI interface {
 	Ping(ctx context.Context) (types.Ping, error)
 
 	// ContainerList returns a list of containers.
-	ContainerList(ctx context.Context, options container.ListOptions) ([]types.Container, error)
+	ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
 
 	// ContainerInspect returns detailed information about a container.
-	ContainerInspect(ctx context.Context, containerID string) (types.ContainerJSON, error)
+	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
 
 	// ContainerLogs returns logs from a container.
 	ContainerLogs(ctx context.Context, container string, options container.LogsOptions) (io.ReadCloser, error)
@@ -55,9 +55,9 @@ var _ DockerAPI = (dockerAPIAdapter)(nil)
 // The SDK client methods have the same signatures, so this is a type alias.
 type dockerAPIAdapter interface {
 	Ping(ctx context.Context) (types.Ping, error)
-	ContainerList(ctx context.Context, options container.ListOptions) ([]types.Container, error)
-	ContainerInspect(ctx context.Context, containerID string) (types.ContainerJSON, error)
-	ContainerLogs(ctx context.Context, container string, options container.LogsOptions) (io.ReadCloser, error)
+	ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
+	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
+	ContainerLogs(ctx context.Context, ctr string, options container.LogsOptions) (io.ReadCloser, error)
 	ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error
 	ContainerRestart(ctx context.Context, containerID string, options container.StopOptions) error
 	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error

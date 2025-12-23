@@ -280,11 +280,10 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 		return "", fmt.Errorf("failed to close backup file: %w", closeErr)
 	}
 
-	// Log SSH error but don't fail - tar may return non-zero for missing files
-	if sshErr != nil && !isTransientSSHError(sshErr) {
-		// Only log if it's not a transient error we already retried
-		// tar returning non-zero for missing files is expected
-	}
+	// Log SSH error but don't fail - tar may return non-zero for missing files.
+	// Only log if it's not a transient error we already retried.
+	// tar returning non-zero for missing files is expected.
+	_ = sshErr
 
 	// Verify the backup was created successfully
 	if err := d.VerifyBackup(backupPath); err != nil {

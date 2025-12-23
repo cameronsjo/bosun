@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -198,7 +199,7 @@ func TestReconciler_DecryptSecrets(t *testing.T) {
 		// Initialize sops
 		r.sops = NewSOPSOps()
 
-		secrets, err := r.decryptSecrets(nil)
+		secrets, err := r.decryptSecrets(context.TODO())
 		require.NoError(t, err)
 		assert.Empty(t, secrets)
 	})
@@ -212,7 +213,7 @@ func TestReconciler_DecryptSecrets(t *testing.T) {
 		r := NewReconciler(cfg)
 		r.sops = NewSOPSOps()
 
-		_, err := r.decryptSecrets(nil)
+		_, err := r.decryptSecrets(context.TODO())
 		assert.Error(t, err)
 	})
 }
@@ -238,7 +239,7 @@ func TestReconciler_RenderTemplates(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(stagingDir, "old.txt"), []byte("old"), 0644))
 
 		secrets := map[string]any{}
-		err := r.renderTemplates(nil, secrets)
+		err := r.renderTemplates(context.TODO(), secrets)
 
 		// Template rendering uses native Go templates, should not error
 		if err != nil {

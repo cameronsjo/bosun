@@ -26,16 +26,15 @@ var (
 	errMockStats     = errors.New("mock: container stats failed")
 	errMockDiskUsage = errors.New("mock: disk usage failed")
 	errMockInfo      = errors.New("mock: info failed")
-	errMockNotFound  = errors.New("mock: container not found")
 )
 
 // MockDockerAPI is a mock implementation of DockerAPI for testing.
 type MockDockerAPI struct {
 	// Function overrides for each method
 	PingFunc            func(ctx context.Context) (types.Ping, error)
-	ContainerListFunc   func(ctx context.Context, options container.ListOptions) ([]types.Container, error)
-	ContainerInspectFunc func(ctx context.Context, containerID string) (types.ContainerJSON, error)
-	ContainerLogsFunc   func(ctx context.Context, container string, options container.LogsOptions) (io.ReadCloser, error)
+	ContainerListFunc   func(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
+	ContainerInspectFunc func(ctx context.Context, containerID string) (container.InspectResponse, error)
+	ContainerLogsFunc   func(ctx context.Context, ctr string, options container.LogsOptions) (io.ReadCloser, error)
 	ContainerStartFunc  func(ctx context.Context, containerID string, options container.StartOptions) error
 	ContainerRestartFunc func(ctx context.Context, containerID string, options container.StopOptions) error
 	ContainerRemoveFunc func(ctx context.Context, containerID string, options container.RemoveOptions) error
@@ -73,21 +72,21 @@ func (m *MockDockerAPI) Ping(ctx context.Context) (types.Ping, error) {
 }
 
 // ContainerList implements DockerAPI.
-func (m *MockDockerAPI) ContainerList(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
+func (m *MockDockerAPI) ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
 	m.ContainerListCalls++
 	if m.ContainerListFunc != nil {
 		return m.ContainerListFunc(ctx, options)
 	}
-	return []types.Container{}, nil
+	return []container.Summary{}, nil
 }
 
 // ContainerInspect implements DockerAPI.
-func (m *MockDockerAPI) ContainerInspect(ctx context.Context, containerID string) (types.ContainerJSON, error) {
+func (m *MockDockerAPI) ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error) {
 	m.ContainerInspectCalls++
 	if m.ContainerInspectFunc != nil {
 		return m.ContainerInspectFunc(ctx, containerID)
 	}
-	return types.ContainerJSON{}, nil
+	return container.InspectResponse{}, nil
 }
 
 // ContainerLogs implements DockerAPI.
@@ -185,23 +184,23 @@ func (m *MockDockerAPI) Reset() {
 // Helper functions for creating test data
 
 // makeTestContainer creates a test container with the given name and state.
-func makeTestContainer(id, name, image, state string) types.Container {
-	return types.Container{
+func makeTestContainer(id, name, image, state string) container.Summary {
+	return container.Summary{
 		ID:      id + "0000000000000000", // Pad to make 12-char truncation work
 		Names:   []string{"/" + name},
 		Image:   image,
 		State:   state,
 		Status:  "Up 10 minutes",
 		Created: 1700000000, // Fixed timestamp for testing
-		Ports: []types.Port{
+		Ports: []container.Port{
 			{PublicPort: 8080, PrivatePort: 80, Type: "tcp"},
 		},
 	}
 }
 
 // makeTestContainerJSON creates a test ContainerJSON for inspection.
-func makeTestContainerJSON(id, name, image, status string, running bool) types.ContainerJSON {
-	state := &types.ContainerState{
+func makeTestContainerJSON(id, name, image, status string, running bool) container.InspectResponse {
+	state := &container.State{
 		Status:    status,
 		Running:   running,
 		StartedAt: "2024-01-01T00:00:00.000000000Z",
@@ -210,8 +209,8 @@ func makeTestContainerJSON(id, name, image, status string, running bool) types.C
 		state.ExitCode = 0
 	}
 
-	return types.ContainerJSON{
-		ContainerJSONBase: &types.ContainerJSONBase{
+	return container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{
 			ID:      id + "0000000000000000",
 			Name:    "/" + name,
 			Created: "2024-01-01T00:00:00.000000000Z",
@@ -223,23 +222,23 @@ func makeTestContainerJSON(id, name, image, status string, running bool) types.C
 			Labels: map[string]string{"app": "test"},
 			Env:    []string{"FOO=bar"},
 		},
-		NetworkSettings: &types.NetworkSettings{
-			NetworkSettingsBase: types.NetworkSettingsBase{
+		NetworkSettings: &container.NetworkSettings{
+			NetworkSettingsBase: container.NetworkSettingsBase{
 				Ports: nat.PortMap{},
 			},
 			Networks: map[string]*network.EndpointSettings{
 				"bridge": {},
 			},
 		},
-		Mounts: []types.MountPoint{},
+		Mounts: []container.MountPoint{},
 	}
 }
 
 // makeTestContainerJSONWithHealth creates a test ContainerJSON with health check.
-func makeTestContainerJSONWithHealth(id, name, image, status, health string, running bool) types.ContainerJSON {
+func makeTestContainerJSONWithHealth(id, name, image, status, health string, running bool) container.InspectResponse {
 	cj := makeTestContainerJSON(id, name, image, status, running)
 	if health != "" {
-		cj.State.Health = &types.Health{
+		cj.State.Health = &container.Health{
 			Status: health,
 		}
 	}

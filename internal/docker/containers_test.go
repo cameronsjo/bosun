@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/go-connections/nat"
@@ -116,13 +115,13 @@ func TestClient_Inspect(t *testing.T) {
 			name:      "inspect running container",
 			container: "web",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (types.ContainerJSON, error) {
-					return types.ContainerJSON{
-						ContainerJSONBase: &types.ContainerJSONBase{
+				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
+					return container.InspectResponse{
+						ContainerJSONBase: &container.ContainerJSONBase{
 							ID:      "abc1234567890000",
 							Name:    "/web",
 							Created: "2024-01-01T00:00:00.000000000Z",
-							State: &types.ContainerState{
+							State: &container.State{
 								Status:    "running",
 								Running:   true,
 								StartedAt: "2024-01-01T00:00:00.000000000Z",
@@ -135,8 +134,8 @@ func TestClient_Inspect(t *testing.T) {
 							Labels: map[string]string{"env": "prod"},
 							Env:    []string{"FOO=bar", "BAZ=qux"},
 						},
-						NetworkSettings: &types.NetworkSettings{
-							NetworkSettingsBase: types.NetworkSettingsBase{
+						NetworkSettings: &container.NetworkSettings{
+							NetworkSettingsBase: container.NetworkSettingsBase{
 								Ports: nat.PortMap{
 									"80/tcp": []nat.PortBinding{
 										{HostPort: "8080"},
@@ -148,7 +147,7 @@ func TestClient_Inspect(t *testing.T) {
 								"custom": {},
 							},
 						},
-						Mounts: []types.MountPoint{
+						Mounts: []container.MountPoint{
 							{Source: "/host/path", Destination: "/container/path"},
 						},
 					}, nil
@@ -170,17 +169,17 @@ func TestClient_Inspect(t *testing.T) {
 			name:      "inspect with health check",
 			container: "api",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (types.ContainerJSON, error) {
-					return types.ContainerJSON{
-						ContainerJSONBase: &types.ContainerJSONBase{
+				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
+					return container.InspectResponse{
+						ContainerJSONBase: &container.ContainerJSONBase{
 							ID:      "def1234567890000",
 							Name:    "/api",
 							Created: "2024-01-01T00:00:00.000000000Z",
-							State: &types.ContainerState{
+							State: &container.State{
 								Status:    "running",
 								Running:   true,
 								StartedAt: "2024-01-01T00:00:00.000000000Z",
-								Health: &types.Health{
+								Health: &container.Health{
 									Status: "healthy",
 								},
 							},
@@ -191,13 +190,13 @@ func TestClient_Inspect(t *testing.T) {
 							Labels: map[string]string{},
 							Env:    []string{},
 						},
-						NetworkSettings: &types.NetworkSettings{
-							NetworkSettingsBase: types.NetworkSettingsBase{
+						NetworkSettings: &container.NetworkSettings{
+							NetworkSettingsBase: container.NetworkSettingsBase{
 								Ports: nat.PortMap{},
 							},
 							Networks: map[string]*network.EndpointSettings{},
 						},
-						Mounts: []types.MountPoint{},
+						Mounts: []container.MountPoint{},
 					}, nil
 				}
 			},
@@ -214,8 +213,8 @@ func TestClient_Inspect(t *testing.T) {
 			name:      "inspect error",
 			container: "missing",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (types.ContainerJSON, error) {
-					return types.ContainerJSON{}, errMockInspect
+				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
+					return container.InspectResponse{}, errMockInspect
 				}
 			},
 			wantErr: true,
@@ -367,9 +366,9 @@ func TestClient_Exists(t *testing.T) {
 			name:      "container exists",
 			container: "web",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
 					assert.True(t, options.All)
-					return []types.Container{
+					return []container.Summary{
 						{Names: []string{"/web"}},
 						{Names: []string{"/api"}},
 					}, nil
@@ -382,8 +381,8 @@ func TestClient_Exists(t *testing.T) {
 			name:      "container does not exist",
 			container: "missing",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
-					return []types.Container{
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+					return []container.Summary{
 						{Names: []string{"/web"}},
 					}, nil
 				}
@@ -395,7 +394,7 @@ func TestClient_Exists(t *testing.T) {
 			name:      "list error",
 			container: "web",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
 					return nil, errMockList
 				}
 			},
@@ -405,8 +404,8 @@ func TestClient_Exists(t *testing.T) {
 			name:      "empty list",
 			container: "web",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
-					return []types.Container{}, nil
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+					return []container.Summary{}, nil
 				}
 			},
 			want:    false,
@@ -434,12 +433,12 @@ func TestClient_Exists(t *testing.T) {
 func TestFormatContainerStatus(t *testing.T) {
 	tests := []struct {
 		name  string
-		state *types.ContainerState
+		state *container.State
 		want  string
 	}{
 		{
 			name: "running container",
-			state: &types.ContainerState{
+			state: &container.State{
 				Running:   true,
 				StartedAt: time.Now().Add(-2 * time.Hour).Format(time.RFC3339Nano),
 			},
@@ -447,7 +446,7 @@ func TestFormatContainerStatus(t *testing.T) {
 		},
 		{
 			name: "exited with error",
-			state: &types.ContainerState{
+			state: &container.State{
 				Running:  false,
 				ExitCode: 1,
 			},
@@ -455,7 +454,7 @@ func TestFormatContainerStatus(t *testing.T) {
 		},
 		{
 			name: "exited successfully",
-			state: &types.ContainerState{
+			state: &container.State{
 				Running:  false,
 				ExitCode: 0,
 				Status:   "exited",

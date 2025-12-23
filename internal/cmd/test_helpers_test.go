@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"testing"
 )
 
@@ -17,7 +18,7 @@ func resetRootCmd(t *testing.T) *bytes.Buffer {
 	rootCmd.SetErr(buf)
 	// Reset all subcommands' context and flags
 	for _, cmd := range rootCmd.Commands() {
-		cmd.SetContext(nil)
+		cmd.SetContext(context.TODO())
 		cmd.ResetFlags()
 	}
 	return buf

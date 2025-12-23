@@ -14,6 +14,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Ensure types import is used for DiskUsage tests.
+var _ types.DiskUsage
+
 func TestNewClientWithAPI(t *testing.T) {
 	mock := NewMockDockerAPI()
 	client := NewClientWithAPI(mock)
@@ -151,8 +154,8 @@ func TestClient_ListContainers(t *testing.T) {
 			name:        "empty list",
 			runningOnly: false,
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
-					return []types.Container{}, nil
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+					return []container.Summary{}, nil
 				}
 			},
 			want:    nil,
@@ -162,12 +165,12 @@ func TestClient_ListContainers(t *testing.T) {
 			name:        "single running container",
 			runningOnly: true,
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
-					return []types.Container{
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+					return []container.Summary{
 						makeTestContainer("abc123456789", "web", "nginx:latest", "running"),
 					}, nil
 				}
-				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (types.ContainerJSON, error) {
+				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
 					return makeTestContainerJSONWithHealth("abc123456789", "web", "nginx:latest", "running", "healthy", true), nil
 				}
 			},
@@ -188,17 +191,17 @@ func TestClient_ListContainers(t *testing.T) {
 			name:        "multiple containers with mixed states",
 			runningOnly: false,
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
-					return []types.Container{
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+					return []container.Summary{
 						makeTestContainer("abc123456789", "web", "nginx:latest", "running"),
 						makeTestContainer("def123456789", "db", "postgres:15", "exited"),
 					}, nil
 				}
-				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (types.ContainerJSON, error) {
+				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
 					if containerID == "abc1234567890000000000000000" {
 						return makeTestContainerJSONWithHealth("abc123456789", "web", "nginx:latest", "running", "healthy", true), nil
 					}
-					return types.ContainerJSON{}, nil
+					return container.InspectResponse{}, nil
 				}
 			},
 			wantErr: false,
@@ -207,7 +210,7 @@ func TestClient_ListContainers(t *testing.T) {
 			name:        "list error",
 			runningOnly: false,
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
 					return nil, errMockList
 				}
 			},
@@ -246,8 +249,8 @@ func TestClient_CountContainers(t *testing.T) {
 		{
 			name: "no containers",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
-					return []types.Container{}, nil
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+					return []container.Summary{}, nil
 				}
 			},
 			wantRunning:   0,
@@ -258,21 +261,21 @@ func TestClient_CountContainers(t *testing.T) {
 		{
 			name: "mixed states",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
-					return []types.Container{
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+					return []container.Summary{
 						makeTestContainer("abc123456789", "web", "nginx:latest", "running"),
 						makeTestContainer("def123456789", "api", "app:latest", "running"),
 						makeTestContainer("ghi123456789", "db", "postgres:15", "exited"),
 					}, nil
 				}
-				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (types.ContainerJSON, error) {
+				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
 					if containerID == "abc1234567890000000000000000" {
 						return makeTestContainerJSONWithHealth("abc123456789", "web", "nginx:latest", "running", "healthy", true), nil
 					}
 					if containerID == "def1234567890000000000000000" {
 						return makeTestContainerJSONWithHealth("def123456789", "api", "app:latest", "running", "unhealthy", true), nil
 					}
-					return types.ContainerJSON{}, nil
+					return container.InspectResponse{}, nil
 				}
 			},
 			wantRunning:   2,
@@ -283,7 +286,7 @@ func TestClient_CountContainers(t *testing.T) {
 		{
 			name: "list error",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
 					return nil, errMockList
 				}
 			},
@@ -322,12 +325,12 @@ func TestClient_GetContainerByName(t *testing.T) {
 			name:      "found",
 			container: "web",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
-					return []types.Container{
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+					return []container.Summary{
 						makeTestContainer("abc123456789", "web", "nginx:latest", "running"),
 					}, nil
 				}
-				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (types.ContainerJSON, error) {
+				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
 					return makeTestContainerJSON("abc123456789", "web", "nginx:latest", "running", true), nil
 				}
 			},
@@ -338,12 +341,12 @@ func TestClient_GetContainerByName(t *testing.T) {
 			name:      "not found",
 			container: "missing",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
-					return []types.Container{
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+					return []container.Summary{
 						makeTestContainer("abc123456789", "web", "nginx:latest", "running"),
 					}, nil
 				}
-				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (types.ContainerJSON, error) {
+				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
 					return makeTestContainerJSON("abc123456789", "web", "nginx:latest", "running", true), nil
 				}
 			},
@@ -353,7 +356,7 @@ func TestClient_GetContainerByName(t *testing.T) {
 			name:      "list error",
 			container: "web",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
 					return nil, errMockList
 				}
 			},
@@ -389,12 +392,12 @@ func TestClient_IsContainerRunning(t *testing.T) {
 			name:      "running",
 			container: "web",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
-					return []types.Container{
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+					return []container.Summary{
 						makeTestContainer("abc123456789", "web", "nginx:latest", "running"),
 					}, nil
 				}
-				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (types.ContainerJSON, error) {
+				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
 					return makeTestContainerJSON("abc123456789", "web", "nginx:latest", "running", true), nil
 				}
 			},
@@ -404,8 +407,8 @@ func TestClient_IsContainerRunning(t *testing.T) {
 			name:      "stopped",
 			container: "web",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
-					return []types.Container{
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+					return []container.Summary{
 						makeTestContainer("abc123456789", "web", "nginx:latest", "exited"),
 					}, nil
 				}
@@ -416,8 +419,8 @@ func TestClient_IsContainerRunning(t *testing.T) {
 			name:      "not found",
 			container: "missing",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
-					return []types.Container{}, nil
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+					return []container.Summary{}, nil
 				}
 			},
 			want: false,
@@ -448,12 +451,12 @@ func TestClient_GetContainerImage(t *testing.T) {
 			name:      "found",
 			container: "web",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
-					return []types.Container{
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+					return []container.Summary{
 						makeTestContainer("abc123456789", "web", "nginx:latest", "running"),
 					}, nil
 				}
-				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (types.ContainerJSON, error) {
+				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
 					return makeTestContainerJSON("abc123456789", "web", "nginx:latest", "running", true), nil
 				}
 			},
@@ -464,8 +467,8 @@ func TestClient_GetContainerImage(t *testing.T) {
 			name:      "not found",
 			container: "missing",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
-					return []types.Container{}, nil
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+					return []container.Summary{}, nil
 				}
 			},
 			wantErr: true,
@@ -706,13 +709,13 @@ func TestClient_GetAllContainerStats(t *testing.T) {
 		{
 			name: "multiple containers",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
-					return []types.Container{
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+					return []container.Summary{
 						makeTestContainer("abc123456789", "web", "nginx:latest", "running"),
 						makeTestContainer("def123456789", "api", "app:latest", "running"),
 					}, nil
 				}
-				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (types.ContainerJSON, error) {
+				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
 					return makeTestContainerJSON("abc123456789", "web", "nginx:latest", "running", true), nil
 				}
 				m.ContainerStatsFunc = func(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error) {
@@ -729,13 +732,13 @@ func TestClient_GetAllContainerStats(t *testing.T) {
 			name: "skip failed stats",
 			setup: func(m *MockDockerAPI) {
 				callCount := 0
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
-					return []types.Container{
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+					return []container.Summary{
 						makeTestContainer("abc123456789", "web", "nginx:latest", "running"),
 						makeTestContainer("def123456789", "api", "app:latest", "running"),
 					}, nil
 				}
-				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (types.ContainerJSON, error) {
+				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
 					return makeTestContainerJSON("abc123456789", "web", "nginx:latest", "running", true), nil
 				}
 				m.ContainerStatsFunc = func(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error) {
@@ -755,7 +758,7 @@ func TestClient_GetAllContainerStats(t *testing.T) {
 		{
 			name: "list error",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
+				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
 					return nil, errMockList
 				}
 			},

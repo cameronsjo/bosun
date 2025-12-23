@@ -40,22 +40,6 @@ const (
 	DefaultLogHistoryCount = 10
 )
 
-// Pre-compiled regex patterns for port detection
-var portPatterns = []*regexp.Regexp{
-	// Quoted ports: "8080:80"
-	regexp.MustCompile(`"(\d+):\d+(?:/(?:tcp|udp))?"`),
-	// Unquoted ports: 8080:80 or - 8080:80
-	regexp.MustCompile(`(?:^|\s|-)(\d+):\d+(?:/(?:tcp|udp))?`),
-	// Port ranges: "8000-8010:8000-8010"
-	regexp.MustCompile(`"(\d+)-\d+:\d+-\d+"`),
-	// Short syntax: - 80 or "80"
-	regexp.MustCompile(`(?:^|\s)-\s*"?(\d+)"?\s*$`),
-	// Traefik labels: loadbalancer.server.port=8080
-	regexp.MustCompile(`loadbalancer\.server\.port[=:](\d+)`),
-	// Host-bound: "127.0.0.1:8080:80"
-	regexp.MustCompile(`"\d+\.\d+\.\d+\.\d+:(\d+):\d+"`),
-}
-
 // serviceNameRegex matches docker-compose service names
 var serviceNameRegex = regexp.MustCompile(`(?m)^    ([a-z][a-z0-9-]+):$`)
 

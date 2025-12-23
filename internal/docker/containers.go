@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 )
 
@@ -176,7 +175,7 @@ func (c *Client) Exists(ctx context.Context, name string) (bool, error) {
 }
 
 // formatContainerStatus formats container state for display.
-func formatContainerStatus(state *types.ContainerState) string {
+func formatContainerStatus(state *container.State) string {
 	if state.Running {
 		return fmt.Sprintf("Up %s", formatDuration(time.Since(parseTimeOrZero(state.StartedAt))))
 	}
