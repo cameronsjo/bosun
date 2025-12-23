@@ -53,6 +53,13 @@ COMMS COMMANDS
   radio test            Test webhook endpoint
   radio status          Check Tailscale/tunnel status
 
+ALERT COMMANDS
+  alert status          Show configured alert providers
+  alert test            Send test alert to providers
+    --provider, -p      Test specific provider (discord, sendgrid, twilio)
+    --message, -m       Custom test message
+    --severity, -s      Alert severity (info, warning, error)
+
 DIAGNOSTICS
   status                Show yacht health dashboard
   log [n]               Show release history
@@ -64,7 +71,11 @@ EMERGENCY
   mayday                Show recent errors across all crew
     --rollback, -r      Rollback to a previous snapshot
     --list, -l          List available snapshots
-  overboard [name]      Force remove a problematic container`,
+  overboard [name]      Force remove a problematic container
+
+MAINTENANCE
+  update                Update bosun to the latest version
+    --check             Only check for updates, don't install`,
 	Version: version,
 	Run: func(cmd *cobra.Command, args []string) {
 		cmd.Help()
@@ -87,6 +98,7 @@ var yarrCmd = &cobra.Command{
 		fmt.Println("  provisions → loot")
 		fmt.Println("  create     → forge")
 		fmt.Println("  radio      → parrot")
+		fmt.Println("  alert      → horn")
 		fmt.Println("  status     → bridge")
 		fmt.Println("  log        → ledger")
 		fmt.Println("  drift      → compass")
@@ -111,7 +123,7 @@ func init() {
 	rootCmd.AddCommand(yarrCmd)
 
 	// Version template with build info
-	rootCmd.SetVersionTemplate("bosun version {{.Version}}\n")
+	rootCmd.SetVersionTemplate(fmt.Sprintf("bosun version {{.Version}}\ncommit: %s\nbuilt: %s\n", commit, date))
 
 	// Add completion command
 	rootCmd.AddCommand(completionCmd)
