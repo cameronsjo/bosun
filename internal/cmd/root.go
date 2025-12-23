@@ -28,6 +28,15 @@ with Traefik, Gatus, and Homepage integration.
 
 SETUP
   init                  Christen your yacht (interactive setup wizard)
+    --systemd           Generate systemd unit files for daemon mode
+
+DAEMON COMMANDS
+  daemon                Run the GitOps daemon (long-running service)
+  trigger               Trigger reconciliation via daemon
+  daemon-status         Show daemon status
+  webhook               Run standalone webhook receiver
+  validate              Validate configuration and connectivity
+    --full              Run full dry-run reconciliation
 
 YACHT COMMANDS
   yacht up              Start the yacht (docker compose up -d)
