@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/cameronsjo/bosun/internal/alert"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
@@ -153,9 +154,65 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		safeCancel()
 	}()
 
+	// Set up alert manager.
+	alerter := createAlertManager()
+
 	// Run reconciliation.
-	r := reconcile.NewReconciler(cfg)
+	opts := []reconcile.ReconcilerOption{}
+	if alerter != nil {
+		opts = append(opts, reconcile.WithAlerter(alerter))
+	}
+
+	r := reconcile.NewReconciler(cfg, opts...)
 	if err := r.Run(ctx); err != nil {
 		ui.Fatal("Reconciliation failed: %v", err)
 	}
+}
+
+// createAlertManager creates an alert manager with configured providers.
+func createAlertManager() *alert.Manager {
+	mgr := alert.NewManager()
+
+	// Add Discord provider.
+	discord := alert.NewDiscordProvider(os.Getenv("DISCORD_WEBHOOK_URL"))
+	mgr.AddProvider(discord)
+
+	// Add SendGrid provider.
+	toEmails := filterEmptyStrings(strings.Split(os.Getenv("SENDGRID_TO_EMAILS"), ","))
+	sendgrid := alert.NewSendGrid(alert.SendGridConfig{
+		APIKey:    os.Getenv("SENDGRID_API_KEY"),
+		FromEmail: os.Getenv("SENDGRID_FROM_EMAIL"),
+		FromName:  os.Getenv("SENDGRID_FROM_NAME"),
+		ToEmails:  toEmails,
+	})
+	mgr.AddProvider(sendgrid)
+
+	// Add Twilio provider.
+	toNumbers := filterEmptyStrings(strings.Split(os.Getenv("TWILIO_TO_NUMBERS"), ","))
+	twilio := alert.NewTwilio(alert.TwilioConfig{
+		AccountSID: os.Getenv("TWILIO_ACCOUNT_SID"),
+		AuthToken:  os.Getenv("TWILIO_AUTH_TOKEN"),
+		FromNumber: os.Getenv("TWILIO_FROM_NUMBER"),
+		ToNumbers:  toNumbers,
+	})
+	mgr.AddProvider(twilio)
+
+	if !mgr.HasProviders() {
+		return nil
+	}
+
+	ui.Info("Alert providers: %v", mgr.ProviderNames())
+	return mgr
+}
+
+// filterEmptyStrings removes empty strings from a slice.
+func filterEmptyStrings(ss []string) []string {
+	result := make([]string, 0, len(ss))
+	for _, s := range ss {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			result = append(result, s)
+		}
+	}
+	return result
 }

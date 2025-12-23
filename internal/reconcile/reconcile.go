@@ -62,6 +62,14 @@ func DefaultConfig() *Config {
 	}
 }
 
+// AlertSender sends alerts for reconciliation events.
+type AlertSender interface {
+	SendDeploySuccess(ctx context.Context, commit, target string) error
+	SendDeployFailure(ctx context.Context, commit, target, reason string) error
+	SendRollbackSuccess(ctx context.Context, target, backupName string) error
+	SendRollbackFailure(ctx context.Context, target, reason string) error
+}
+
 // Reconciler orchestrates the GitOps reconciliation workflow.
 type Reconciler struct {
 	config         *Config
@@ -69,9 +77,11 @@ type Reconciler struct {
 	sops           SecretsDecryptor
 	template       *TemplateOps
 	deploy         *DeployOps
+	alerter        AlertSender
 	lockFile       string
 	lockFd         *os.File
 	lastBackupPath string // Path to the last backup for rollback support
+	lastCommit     string // Track commit for alerting
 }
 
 // NewReconciler creates a new Reconciler with the given configuration.
@@ -122,6 +132,13 @@ func WithLockFile(path string) ReconcilerOption {
 	}
 }
 
+// WithAlerter sets the alert sender for notifications.
+func WithAlerter(alerter AlertSender) ReconcilerOption {
+	return func(r *Reconciler) {
+		r.alerter = alerter
+	}
+}
+
 // Run executes the full reconciliation workflow.
 func (r *Reconciler) Run(ctx context.Context) error {
 	startTime := time.Now()
@@ -140,6 +157,9 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to sync repository: %w", err)
 	}
 
+	// Track commit for alerting.
+	r.lastCommit = after
+
 	// Skip if no changes and not forced.
 	if !changed && !r.config.Force {
 		ui.Info("=== No changes, skipping deployment ===")
@@ -155,11 +175,13 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	// Step 2: Decrypt secrets.
 	secrets, err := r.decryptSecrets(ctx)
 	if err != nil {
+		r.sendFailureAlert(ctx, "failed to decrypt secrets")
 		return fmt.Errorf("failed to decrypt secrets: %w", err)
 	}
 
 	// Step 3: Render templates.
 	if err := r.renderTemplates(ctx, secrets); err != nil {
+		r.sendFailureAlert(ctx, "failed to render templates")
 		return fmt.Errorf("failed to render templates: %w", err)
 	}
 
@@ -172,6 +194,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 	// Step 5: Deploy.
 	if err := r.doDeploy(ctx, secrets); err != nil {
+		r.sendFailureAlert(ctx, err.Error())
 		return fmt.Errorf("deployment failed: %w", err)
 	}
 
@@ -183,7 +206,42 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	duration := time.Since(startTime)
 	ui.Success("=== Reconciliation completed in %s ===", duration.Round(time.Second))
 
+	// Send success alert.
+	r.sendSuccessAlert(ctx)
+
 	return nil
+}
+
+// sendSuccessAlert sends a deployment success notification.
+func (r *Reconciler) sendSuccessAlert(ctx context.Context) {
+	if r.alerter == nil {
+		return
+	}
+
+	target := r.config.TargetHost
+	if target == "" {
+		target = "local"
+	}
+
+	if err := r.alerter.SendDeploySuccess(ctx, r.lastCommit, target); err != nil {
+		ui.Warning("Failed to send success alert: %v", err)
+	}
+}
+
+// sendFailureAlert sends a deployment failure notification.
+func (r *Reconciler) sendFailureAlert(ctx context.Context, reason string) {
+	if r.alerter == nil {
+		return
+	}
+
+	target := r.config.TargetHost
+	if target == "" {
+		target = "local"
+	}
+
+	if err := r.alerter.SendDeployFailure(ctx, r.lastCommit, target, reason); err != nil {
+		ui.Warning("Failed to send failure alert: %v", err)
+	}
 }
 
 // cleanupStaging removes the staging directory after successful deployment.

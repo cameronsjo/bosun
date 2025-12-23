@@ -37,6 +37,9 @@ type Config struct {
 
 	// tunnelConfig holds provider-specific tunnel configuration.
 	tunnelConfig TunnelConfig
+
+	// alertConfig holds alert provider configuration.
+	alertConfig AlertConfig
 }
 
 // TunnelConfig holds tunnel provider-specific configuration.
@@ -49,6 +52,28 @@ type TunnelConfig struct {
 
 	// HealthEndpoint is the health check URL (for Cloudflare).
 	HealthEndpoint string
+}
+
+// AlertConfig holds alert provider configuration.
+type AlertConfig struct {
+	// Discord
+	DiscordWebhookURL string `yaml:"discord_webhook_url"`
+
+	// SendGrid
+	SendGridAPIKey    string   `yaml:"sendgrid_api_key"`
+	SendGridFromEmail string   `yaml:"sendgrid_from_email"`
+	SendGridFromName  string   `yaml:"sendgrid_from_name"`
+	SendGridToEmails  []string `yaml:"sendgrid_to_emails"`
+
+	// Twilio
+	TwilioAccountSID string   `yaml:"twilio_account_sid"`
+	TwilioAuthToken  string   `yaml:"twilio_auth_token"`
+	TwilioFromNumber string   `yaml:"twilio_from_number"`
+	TwilioToNumbers  []string `yaml:"twilio_to_numbers"`
+
+	// Settings
+	OnSuccess bool `yaml:"on_success"` // Alert on successful deploys
+	OnFailure bool `yaml:"on_failure"` // Alert on failed deploys (default: true)
 }
 
 // configFile represents the structure of .bosun/config.yml or bosun.yml.
@@ -64,6 +89,9 @@ type configFile struct {
 		TunnelName     string `yaml:"tunnel_name"`
 		HealthEndpoint string `yaml:"health_endpoint"`
 	} `yaml:"tunnel"`
+
+	// Alerts configuration
+	Alerts AlertConfig `yaml:"alerts"`
 }
 
 // FindRoot searches upward from the current directory to find the project root.
@@ -109,15 +137,17 @@ func Load() (*Config, error) {
 	}
 
 	tunnelProvider, tunnelConfig := loadTunnelConfig(root)
+	alertConfig := loadAlertConfig(root)
 
 	cfg := &Config{
 		Root:            root,
-		ManifestDir:    filepath.Join(root, "manifest"),
-		ComposeFile:    filepath.Join(root, "bosun", "docker-compose.yml"),
-		SnapshotsDir:   filepath.Join(root, "manifest", ".bosun", "snapshots"),
+		ManifestDir:     filepath.Join(root, "manifest"),
+		ComposeFile:     filepath.Join(root, "bosun", "docker-compose.yml"),
+		SnapshotsDir:    filepath.Join(root, "manifest", ".bosun", "snapshots"),
 		infraContainers: loadInfraContainers(root),
 		tunnelProvider:  tunnelProvider,
 		tunnelConfig:    tunnelConfig,
+		alertConfig:     alertConfig,
 	}
 
 	return cfg, nil
@@ -238,4 +268,65 @@ func loadTunnelConfig(root string) (string, TunnelConfig) {
 	}
 
 	return defaultTunnelProvider, TunnelConfig{}
+}
+
+// GetAlertConfig returns the alert configuration.
+func (c *Config) GetAlertConfig() AlertConfig {
+	return c.alertConfig
+}
+
+// loadAlertConfig loads alert configuration from config files.
+// Supports environment variable overrides for sensitive values.
+func loadAlertConfig(root string) AlertConfig {
+	configPaths := []string{
+		filepath.Join(root, ".bosun", "config.yml"),
+		filepath.Join(root, "bosun.yml"),
+	}
+
+	var alertCfg AlertConfig
+	alertCfg.OnFailure = true // Default to alerting on failures
+
+	for _, path := range configPaths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+
+		var cfg configFile
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			continue
+		}
+
+		alertCfg = cfg.Alerts
+		// Ensure default for OnFailure if not explicitly set
+		if !cfg.Alerts.OnSuccess && !cfg.Alerts.OnFailure {
+			alertCfg.OnFailure = true
+		}
+		break
+	}
+
+	// Environment variable overrides
+	if v := os.Getenv("DISCORD_WEBHOOK_URL"); v != "" {
+		alertCfg.DiscordWebhookURL = v
+	}
+	if v := os.Getenv("SENDGRID_API_KEY"); v != "" {
+		alertCfg.SendGridAPIKey = v
+	}
+	if v := os.Getenv("SENDGRID_FROM_EMAIL"); v != "" {
+		alertCfg.SendGridFromEmail = v
+	}
+	if v := os.Getenv("SENDGRID_FROM_NAME"); v != "" {
+		alertCfg.SendGridFromName = v
+	}
+	if v := os.Getenv("TWILIO_ACCOUNT_SID"); v != "" {
+		alertCfg.TwilioAccountSID = v
+	}
+	if v := os.Getenv("TWILIO_AUTH_TOKEN"); v != "" {
+		alertCfg.TwilioAuthToken = v
+	}
+	if v := os.Getenv("TWILIO_FROM_NUMBER"); v != "" {
+		alertCfg.TwilioFromNumber = v
+	}
+
+	return alertCfg
 }
