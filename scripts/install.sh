@@ -1,166 +1,122 @@
 #!/bin/bash
-# bosun installer script
-# Usage: curl -fsSL https://raw.githubusercontent.com/cameronsjo/bosun/main/scripts/install.sh | bash
-
 set -euo pipefail
 
+# bosun installer
+# Usage: curl -fsSL https://raw.githubusercontent.com/cameronsjo/bosun/main/scripts/install.sh | bash
+
 REPO="cameronsjo/bosun"
-BINARY_NAME="bosun"
+BINARY="bosun"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
-# Colors for output
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
+YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-info() {
-    printf "${BLUE}==>${NC} %s\n" "$1"
-}
+info() { echo -e "${BLUE}==>${NC} $1"; }
+success() { echo -e "${GREEN}==>${NC} $1"; }
+warn() { echo -e "${YELLOW}==>${NC} $1"; }
+error() { echo -e "${RED}==>${NC} $1" >&2; exit 1; }
 
-success() {
-    printf "${GREEN}==>${NC} %s\n" "$1"
-}
+# Detect OS and architecture
+detect_platform() {
+    local os arch
 
-warn() {
-    printf "${YELLOW}==>${NC} %s\n" "$1"
-}
-
-error() {
-    printf "${RED}==>${NC} %s\n" "$1" >&2
-    exit 1
-}
-
-# Detect OS
-detect_os() {
     case "$(uname -s)" in
-        Linux*)  echo "linux" ;;
-        Darwin*) echo "darwin" ;;
-        *)       error "Unsupported operating system: $(uname -s)" ;;
+        Linux*)  os="linux" ;;
+        Darwin*) os="darwin" ;;
+        *)       error "Unsupported OS: $(uname -s)" ;;
     esac
-}
 
-# Detect architecture
-detect_arch() {
     case "$(uname -m)" in
-        x86_64|amd64)  echo "amd64" ;;
-        arm64|aarch64) echo "arm64" ;;
+        x86_64|amd64)  arch="amd64" ;;
+        arm64|aarch64) arch="arm64" ;;
         *)             error "Unsupported architecture: $(uname -m)" ;;
     esac
+
+    echo "${os}_${arch}"
 }
 
 # Get latest release version
 get_latest_version() {
-    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-        | grep '"tag_name":' \
-        | sed -E 's/.*"([^"]+)".*/\1/' \
-        | sed 's/^v//'
+    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" |
+        grep '"tag_name":' |
+        sed -E 's/.*"([^"]+)".*/\1/'
 }
 
-# Download and install
-install_bosun() {
-    local os arch version download_url archive_name tmp_dir
+# Verify checksum
+verify_checksum() {
+    local file="$1"
+    local checksums_url="$2"
+    local expected
 
-    os=$(detect_os)
-    arch=$(detect_arch)
+    info "Verifying checksum..."
 
-    info "Detected OS: ${os}, Arch: ${arch}"
+    expected=$(curl -fsSL "$checksums_url" | grep "$(basename "$file")" | awk '{print $1}')
 
-    # Get version (use VERSION env var or fetch latest)
-    if [ -n "${VERSION:-}" ]; then
-        version="${VERSION}"
-        info "Installing specified version: ${version}"
+    if command -v sha256sum &>/dev/null; then
+        actual=$(sha256sum "$file" | awk '{print $1}')
+    elif command -v shasum &>/dev/null; then
+        actual=$(shasum -a 256 "$file" | awk '{print $1}')
     else
-        info "Fetching latest version..."
-        version=$(get_latest_version)
-        if [ -z "$version" ]; then
-            error "Failed to determine latest version"
-        fi
-        info "Latest version: ${version}"
+        warn "No sha256sum or shasum found, skipping verification"
+        return 0
     fi
 
-    # Construct download URL
-    archive_name="${BINARY_NAME}_${version}_${os}_${arch}.tar.gz"
-    download_url="https://github.com/${REPO}/releases/download/v${version}/${archive_name}"
+    if [ "$expected" != "$actual" ]; then
+        error "Checksum verification failed!\nExpected: $expected\nActual: $actual"
+    fi
+
+    success "Checksum verified"
+}
+
+# Main installation
+main() {
+    info "Installing ${BINARY}..."
+
+    local platform version archive_name download_url checksums_url tmp_dir
+
+    platform=$(detect_platform)
+    info "Detected platform: ${platform}"
+
+    version=$(get_latest_version)
+    if [ -z "$version" ]; then
+        error "Could not determine latest version"
+    fi
+    info "Latest version: ${version}"
+
+    # Remove 'v' prefix for archive name
+    local version_num="${version#v}"
+    archive_name="${BINARY}_${version_num}_${platform}.tar.gz"
+    download_url="https://github.com/${REPO}/releases/download/${version}/${archive_name}"
+    checksums_url="https://github.com/${REPO}/releases/download/${version}/checksums.txt"
+
+    tmp_dir=$(mktemp -d)
+    trap "rm -rf $tmp_dir" EXIT
 
     info "Downloading ${archive_name}..."
-
-    # Create temp directory
-    tmp_dir=$(mktemp -d)
-    trap "rm -rf ${tmp_dir}" EXIT
-
-    # Download archive
-    if ! curl -fsSL "$download_url" -o "${tmp_dir}/${archive_name}"; then
+    curl -fsSL -o "${tmp_dir}/${archive_name}" "$download_url" ||
         error "Failed to download ${download_url}"
-    fi
 
-    # Download checksums and verify
-    checksums_url="https://github.com/${REPO}/releases/download/v${version}/checksums.txt"
-    if curl -fsSL "$checksums_url" -o "${tmp_dir}/checksums.txt" 2>/dev/null; then
-        info "Verifying checksum..."
-        cd "${tmp_dir}"
-        if command -v sha256sum &> /dev/null; then
-            grep "${archive_name}" checksums.txt | sha256sum -c - > /dev/null 2>&1 || warn "Checksum verification failed"
-        elif command -v shasum &> /dev/null; then
-            grep "${archive_name}" checksums.txt | shasum -a 256 -c - > /dev/null 2>&1 || warn "Checksum verification failed"
-        else
-            warn "No checksum tool available, skipping verification"
-        fi
-    else
-        warn "Checksums file not available, skipping verification"
-    fi
+    verify_checksum "${tmp_dir}/${archive_name}" "$checksums_url"
 
-    # Extract archive
     info "Extracting..."
-    tar -xzf "${tmp_dir}/${archive_name}" -C "${tmp_dir}"
+    tar -xzf "${tmp_dir}/${archive_name}" -C "$tmp_dir"
 
-    # Install binary
     info "Installing to ${INSTALL_DIR}..."
-
-    # Check if we can write to install dir
-    if [ -w "${INSTALL_DIR}" ]; then
-        mv "${tmp_dir}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+    if [ -w "$INSTALL_DIR" ]; then
+        mv "${tmp_dir}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
     else
-        warn "Permission denied for ${INSTALL_DIR}, trying with sudo..."
-        sudo mv "${tmp_dir}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+        sudo mv "${tmp_dir}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
     fi
+    chmod +x "${INSTALL_DIR}/${BINARY}"
 
-    # Make executable
-    chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
-
-    success "Successfully installed ${BINARY_NAME} v${version} to ${INSTALL_DIR}/${BINARY_NAME}"
-
-    # Verify installation
-    if command -v "${BINARY_NAME}" &> /dev/null; then
-        success "Verified: $(${BINARY_NAME} --version)"
-    else
-        warn "${INSTALL_DIR} may not be in your PATH"
-        echo ""
-        echo "Add to your shell profile:"
-        echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
-    fi
-
-    # Shell completion hint
+    success "Successfully installed ${BINARY} ${version} to ${INSTALL_DIR}/${BINARY}"
     echo ""
-    info "To enable shell completions, run:"
-    echo "  ${BINARY_NAME} completion --help"
-}
-
-# Main
-main() {
-    echo ""
-    echo "  ____                        "
-    echo " |  _ \\                       "
-    echo " | |_) | ___  ___ _   _ _ __  "
-    echo " |  _ < / _ \\/ __| | | | '_ \\ "
-    echo " | |_) | (_) \\__ \\ |_| | | | |"
-    echo " |____/ \\___/|___/\\__,_|_| |_|"
-    echo ""
-    echo " Helm for home - GitOps for Docker Compose"
-    echo ""
-
-    install_bosun
+    info "Run 'bosun --help' to get started"
+    info "Run 'bosun update' to update to the latest version"
 }
 
 main "$@"

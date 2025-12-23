@@ -38,6 +38,20 @@ checksum:
   name_template: 'checksums.txt'
   algorithm: sha256
 
+signs:
+  - cmd: cosign
+    env:
+      - COSIGN_EXPERIMENTAL=1
+    certificate: '${artifact}.pem'
+    args:
+      - sign-blob
+      - '--output-certificate=${certificate}'
+      - '--output-signature=${signature}'
+      - '${artifact}'
+      - '--yes'
+    artifacts: checksum
+    output: true
+
 changelog:
   sort: asc
   use: github
