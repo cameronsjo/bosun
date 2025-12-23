@@ -1,5 +1,5 @@
-# Bosun: GitOps for Docker Compose
-# Single binary that handles polling, webhooks, reconciliation, and health
+# Bosun - GitOps for Docker Compose
+# Single binary daemon that handles webhooks, polling, and reconciliation
 
 FROM alpine:3.21
 
@@ -33,7 +33,7 @@ ENV TZ=America/Chicago \
     DISCORD_WEBHOOK_URL="" \
     DRY_RUN="false"
 
-# Health check
+# Health check via the daemon's /health endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD wget -q -O /dev/null http://localhost:${PORT:-8080}/health || exit 1
 
