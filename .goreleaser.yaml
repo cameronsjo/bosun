@@ -67,11 +67,6 @@ dockers:
       - "--label=org.opencontainers.image.title=bosun"
       - "--label=org.opencontainers.image.description=Helm for home - GitOps for Docker Compose"
       - "--label=org.opencontainers.image.licenses=MIT"
-    extra_files:
-      - src: bosun/scripts/entrypoint.sh
-        dst: scripts/entrypoint.sh
-      - src: bosun/hooks.yaml
-        dst: hooks.yaml
     goos: linux
     goarch: amd64
 

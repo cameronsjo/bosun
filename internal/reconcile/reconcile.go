@@ -430,14 +430,14 @@ func (r *Reconciler) deployLocal(ctx context.Context) error {
 
 	// Sync tailscale-gateway config.
 	ui.Info("  Syncing tailscale-gateway config...")
-	os.MkdirAll(filepath.Join(appdata, "tailscale-gateway"), 0755)
+	_ = os.MkdirAll(filepath.Join(appdata, "tailscale-gateway"), 0755)
 	if err := r.deploy.DeployLocalFile(ctx, filepath.Join(stagingUnraid, "appdata", "tailscale-gateway", "serve.json"), filepath.Join(appdata, "tailscale-gateway", "serve.json")); err != nil {
 		ui.Warning("tailscale-gateway sync failed: %v", err)
 	}
 
 	// Sync compose files.
 	ui.Info("  Syncing compose files...")
-	os.MkdirAll(filepath.Join(appdata, "compose"), 0755)
+	_ = os.MkdirAll(filepath.Join(appdata, "compose"), 0755)
 	if err := r.deploy.DeployLocal(ctx, filepath.Join(stagingUnraid, "compose"), filepath.Join(appdata, "compose")); err != nil {
 		return err
 	}
@@ -506,14 +506,14 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) e
 
 	// Sync tailscale-gateway config.
 	ui.Info("  Syncing tailscale-gateway config...")
-	r.deploy.EnsureRemoteDir(ctx, host, filepath.Join(appdata, "tailscale-gateway"))
+	_ = r.deploy.EnsureRemoteDir(ctx, host, filepath.Join(appdata, "tailscale-gateway"))
 	if err := r.deploy.DeployRemoteFile(ctx, filepath.Join(stagingUnraid, "appdata", "tailscale-gateway", "serve.json"), host, filepath.Join(appdata, "tailscale-gateway", "serve.json")); err != nil {
 		ui.Warning("tailscale-gateway sync failed: %v", err)
 	}
 
 	// Sync compose files.
 	ui.Info("  Syncing compose files...")
-	r.deploy.EnsureRemoteDir(ctx, host, filepath.Join(appdata, "compose"))
+	_ = r.deploy.EnsureRemoteDir(ctx, host, filepath.Join(appdata, "compose"))
 	if err := r.deploy.DeployRemote(ctx, filepath.Join(stagingUnraid, "compose"), host, filepath.Join(appdata, "compose")); err != nil {
 		return err
 	}

@@ -223,9 +223,7 @@ func makeTestContainerJSON(id, name, image, status string, running bool) contain
 			Env:    []string{"FOO=bar"},
 		},
 		NetworkSettings: &container.NetworkSettings{
-			NetworkSettingsBase: container.NetworkSettingsBase{
-				Ports: nat.PortMap{},
-			},
+			Ports: nat.PortMap{},
 			Networks: map[string]*network.EndpointSettings{
 				"bridge": {},
 			},

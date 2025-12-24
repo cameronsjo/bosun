@@ -469,7 +469,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			return fmt.Errorf("start tar: %w", err)
 		}
 		if err := sshCmd.Start(); err != nil {
-			tarCmd.Process.Kill()
+			_ = tarCmd.Process.Kill()
 			return fmt.Errorf("start ssh: %w: %s", err, sshStderr.String())
 		}
 
@@ -479,11 +479,11 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 
 		if tarErr != nil {
 			// Cleanup temp dir on failure
-			exec.CommandContext(ctx, "ssh", targetHost, "rm", "-rf", tmpDir).Run()
+			_ = exec.CommandContext(ctx, "ssh", targetHost, "rm", "-rf", tmpDir).Run()
 			return fmt.Errorf("tar failed: %w: %s", tarErr, tarStderr.String())
 		}
 		if sshErr != nil {
-			exec.CommandContext(ctx, "ssh", targetHost, "rm", "-rf", tmpDir).Run()
+			_ = exec.CommandContext(ctx, "ssh", targetHost, "rm", "-rf", tmpDir).Run()
 			if ctx.Err() == context.DeadlineExceeded {
 				return fmt.Errorf("ssh timed out after %v", RemoteDeployTimeout)
 			}
@@ -499,7 +499,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 
 		if err := atomicCmd.Run(); err != nil {
 			// Try to cleanup temp dir
-			exec.CommandContext(ctx, "ssh", targetHost, "rm", "-rf", tmpDir).Run()
+			_ = exec.CommandContext(ctx, "ssh", targetHost, "rm", "-rf", tmpDir).Run()
 			return fmt.Errorf("atomic move failed: %w: %s", err, atomicStderr.String())
 		}
 

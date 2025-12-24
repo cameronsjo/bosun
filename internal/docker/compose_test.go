@@ -43,7 +43,7 @@ func TestNewComposeClient(t *testing.T) {
 		composeFile := filepath.Join(tmpDir, "docker-compose.yml")
 		err := os.WriteFile(composeFile, []byte("services: {}"), 0000)
 		require.NoError(t, err)
-		defer os.Chmod(composeFile, 0644) // Restore for cleanup
+		defer func() { _ = os.Chmod(composeFile, 0644) }() // Restore for cleanup
 
 		// On some systems stat works even without read permission
 		// so we just check that it doesn't panic

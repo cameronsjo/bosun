@@ -29,7 +29,7 @@ func (r *Reconciler) acquireLock() error {
 // releaseLock releases the lock file.
 func (r *Reconciler) releaseLock() {
 	if r.lockFd != nil {
-		syscall.Flock(int(r.lockFd.Fd()), syscall.LOCK_UN)
+		_ = syscall.Flock(int(r.lockFd.Fd()), syscall.LOCK_UN)
 		r.lockFd.Close()
 		r.lockFd = nil
 	}
