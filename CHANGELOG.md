@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4](https://github.com/cameronsjo/bosun/compare/v0.2.3...v0.2.4) (2025-12-24)
+
+
+### Features
+
+* **daemon:** add native daemon mode with HTTP server ([dea3ade](https://github.com/cameronsjo/bosun/commit/dea3ade4dd8395e78304aef6182a9286270d59db))
+* **daemon:** add Unix socket API with multi-provider webhook support ([a43308e](https://github.com/cameronsjo/bosun/commit/a43308e6177d36a0767278d55e8557e92ed95ca6))
+* **daemon:** Unix socket API with multi-provider webhooks ([6298f80](https://github.com/cameronsjo/bosun/commit/6298f80dfe3bbd2d31f1b221936cf9d6ece6dd3f))
+
+
+### Bug Fixes
+
+* **lint:** fix all remaining errcheck issues in webhook.go ([bf8f3f7](https://github.com/cameronsjo/bosun/commit/bf8f3f7c4ea3ec8cd9e35a452eeaea2814b7e66d))
+* **lint:** resolve errcheck issues in daemon package ([28b0f7b](https://github.com/cameronsjo/bosun/commit/28b0f7b6bd3295e4fd79fe6fb7ba0189260dbfab))
+* **lint:** resolve remaining errcheck issues ([87507d4](https://github.com/cameronsjo/bosun/commit/87507d45555ad2ef1f0ea6f56507a0b8aa97d9a3))
+
 ## [0.2.3](https://github.com/cameronsjo/bosun/compare/v0.2.2...v0.2.3) (2025-12-24)
 
 
