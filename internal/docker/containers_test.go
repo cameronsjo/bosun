@@ -135,9 +135,11 @@ func TestClient_Inspect(t *testing.T) {
 							Env:    []string{"FOO=bar", "BAZ=qux"},
 						},
 						NetworkSettings: &container.NetworkSettings{
-							Ports: nat.PortMap{
-								"80/tcp": []nat.PortBinding{
-									{HostPort: "8080"},
+							NetworkSettingsBase: container.NetworkSettingsBase{ //nolint:staticcheck // deprecated but still required
+								Ports: nat.PortMap{
+									"80/tcp": []nat.PortBinding{
+										{HostPort: "8080"},
+									},
 								},
 							},
 							Networks: map[string]*network.EndpointSettings{
@@ -189,7 +191,9 @@ func TestClient_Inspect(t *testing.T) {
 							Env:    []string{},
 						},
 						NetworkSettings: &container.NetworkSettings{
-							Ports:    nat.PortMap{},
+							NetworkSettingsBase: container.NetworkSettingsBase{ //nolint:staticcheck // deprecated but still required
+								Ports: nat.PortMap{},
+							},
 							Networks: map[string]*network.EndpointSettings{},
 						},
 						Mounts: []container.MountPoint{},
