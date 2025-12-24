@@ -5,7 +5,7 @@
     }
   },
   "Web": {
-    "gateway.your-tailnet.ts.net:443": {
+    "your-endpoint.your-tailnet.ts.net:443": {
       "Handlers": {
         "/hooks/": {
           "Proxy": "http://bosun:8080/webhook"
@@ -17,6 +17,6 @@
     }
   },
   "AllowFunnel": {
-    "gateway.your-tailnet.ts.net:443": true
+    "your-endpoint.your-tailnet.ts.net:443": true
   }
 }
