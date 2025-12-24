@@ -36,7 +36,7 @@ Commands:
   test      Test webhook endpoint
   status    Check tunnel status (Tailscale, Cloudflare, etc.)`,
 	Run: func(cmd *cobra.Command, args []string) {
-		cmd.Help()
+		_ = cmd.Help()
 	},
 }
 

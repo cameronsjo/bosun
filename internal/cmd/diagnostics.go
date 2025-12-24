@@ -811,7 +811,7 @@ func formatBytes(bytes int64) string {
 
 func showProvisionTimestamps(outputDir, manifestDir string) {
 	count := 0
-	filepath.WalkDir(outputDir, func(path string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(outputDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".yml") {
 			return nil
 		}

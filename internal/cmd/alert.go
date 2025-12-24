@@ -25,7 +25,7 @@ Commands:
   status    Show which alert providers are configured
   test      Send test alert to all or specific providers`,
 	Run: func(cmd *cobra.Command, args []string) {
-		cmd.Help()
+		_ = cmd.Help()
 	},
 }
 

@@ -545,7 +545,7 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 
 		if err := scpCmd.Run(); err != nil {
 			// Cleanup temp file on failure
-			exec.CommandContext(ctx, "ssh", targetHost, "rm", "-f", tmpFile).Run()
+			_ = exec.CommandContext(ctx, "ssh", targetHost, "rm", "-f", tmpFile).Run()
 			if ctx.Err() == context.DeadlineExceeded {
 				return fmt.Errorf("scp timed out after %v", RemoteDeployTimeout)
 			}
@@ -558,7 +558,7 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 		moveCmd.Stderr = &moveStderr
 
 		if err := moveCmd.Run(); err != nil {
-			exec.CommandContext(ctx, "ssh", targetHost, "rm", "-f", tmpFile).Run()
+			_ = exec.CommandContext(ctx, "ssh", targetHost, "rm", "-f", tmpFile).Run()
 			return fmt.Errorf("atomic move failed: %w: %s", err, moveStderr.String())
 		}
 

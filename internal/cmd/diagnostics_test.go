@@ -287,7 +287,7 @@ func TestDefaultInfraContainers(t *testing.T) {
 	// Change to project root
 	originalWd, err := os.Getwd()
 	require.NoError(t, err)
-	defer os.Chdir(originalWd)
+	defer func() { _ = os.Chdir(originalWd) }()
 
 	require.NoError(t, os.Chdir(tmpDir))
 

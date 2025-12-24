@@ -45,7 +45,7 @@ Commands:
   inspect   Detailed crew info
   restart   Send crew member for coffee break`,
 	Run: func(cmd *cobra.Command, args []string) {
-		cmd.Help()
+		_ = cmd.Help()
 	},
 }
 

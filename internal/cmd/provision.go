@@ -154,7 +154,7 @@ func runProvision(cmd *cobra.Command, args []string) error {
 	if err := provisionLock.Acquire(); err != nil {
 		return fmt.Errorf("acquire provision lock: %w", err)
 	}
-	defer provisionLock.Release()
+	defer func() { _ = provisionLock.Release() }()
 
 	if err := manifest.WriteOutputs(output, cfg.OutputDir(), stackName); err != nil {
 		return fmt.Errorf("write outputs: %w", err)
