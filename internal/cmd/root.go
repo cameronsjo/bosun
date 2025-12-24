@@ -58,6 +58,11 @@ MANIFEST COMMANDS
   provisions            List available provisions
   create <tmpl> <name>  Scaffold new service (webapp, api, worker, static)
 
+TEMPLATE COMMANDS
+  render [files...]     Render .tmpl files with SOPS secrets
+    --secrets, -s       SOPS secrets file
+    --output, -o        Output directory (stdout if not set)
+
 COMMS COMMANDS
   radio test            Test webhook endpoint
   radio status          Check Tailscale/tunnel status
