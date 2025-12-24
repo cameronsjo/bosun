@@ -398,11 +398,177 @@ bosun overboard <name>
 
 Forcefully removes a container. Use with caution.
 
+## Daemon Commands
+
+Run bosun as a long-running daemon for production GitOps deployments.
+
+### daemon
+
+Run the GitOps daemon.
+
+```bash
+bosun daemon
+bosun daemon -n
+bosun daemon -p 9090
+bosun daemon -i 1800
+```
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `-n`, `--dry-run` | Dry run mode (no actual changes) |
+| `-p`, `--port` | HTTP server port (default: 8080) |
+| `-i`, `--poll-interval` | Poll interval in seconds (default: 3600, 0 disables) |
+
+**Features:**
+
+- Unix socket API at `/var/run/bosun.sock` (primary)
+- Optional TCP API with bearer token auth
+- HTTP endpoints for webhooks and health checks
+- Polling-based reconciliation
+- Graceful shutdown on SIGTERM/SIGINT
+
+**Endpoints:**
+
+| Path | Method | Description |
+|------|--------|-------------|
+| `/health` | GET | Health check (JSON) |
+| `/ready` | GET | Readiness check |
+| `/webhook` | POST | Generic webhook trigger |
+| `/webhook/github` | POST | GitHub push webhook |
+| `/webhook/gitlab` | POST | GitLab push webhook |
+| `/webhook/gitea` | POST | Gitea push webhook |
+| `/webhook/bitbucket` | POST | Bitbucket push webhook |
+
+### trigger
+
+Trigger reconciliation via the daemon.
+
+```bash
+bosun trigger
+bosun trigger -s "manual"
+bosun trigger --socket /tmp/bosun.sock
+bosun trigger --tcp localhost:9090 --token mytoken
+```
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `-s`, `--source` | Source identifier (default: "cli") |
+| `--socket` | Path to daemon socket (default: /var/run/bosun.sock) |
+| `--tcp` | TCP address for remote daemon |
+| `--token` | Bearer token for TCP auth |
+| `-t`, `--timeout` | Timeout in seconds (default: 30) |
+
+### daemon-status
+
+Show daemon health and state.
+
+```bash
+bosun daemon-status
+bosun daemon-status --json
+bosun daemon-status --socket /tmp/bosun.sock
+```
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output as JSON |
+| `--socket` | Path to daemon socket |
+
+**Output:**
+
+```
+=== Bosun Daemon Status ===
+
+  ● State: idle
+    Uptime: 2h30m
+    Last Reconcile: 5m ago
+  ✓ Health: healthy
+  ✓ Ready: true
+```
+
+### validate
+
+Validate configuration and daemon connectivity.
+
+```bash
+bosun validate
+bosun validate --full
+bosun validate --socket /tmp/bosun.sock
+```
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--full` | Run full dry-run reconciliation |
+| `--socket` | Path to daemon socket |
+| `-t`, `--timeout` | Timeout in seconds (default: 30) |
+
+**Checks:**
+
+1. Environment variables (REPO_URL, etc.)
+2. Daemon connectivity
+3. Repository access
+4. Full dry-run (with `--full`)
+
+### webhook
+
+Run standalone webhook receiver.
+
+```bash
+bosun webhook
+bosun webhook -p 9000
+bosun webhook --fetch-secret
+```
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `-p`, `--port` | HTTP port (default: 8080) |
+| `--socket` | Path to daemon socket |
+| `--secret` | Webhook secret for signature validation |
+| `--fetch-secret` | Fetch secret from daemon (never stored on disk) |
+
+The webhook receiver validates signatures and forwards valid requests to the daemon's trigger endpoint. Supports GitHub, GitLab, Gitea, and Bitbucket webhook formats.
+
+**Daemon-Injected Secrets:**
+
+Use `--fetch-secret` to have the webhook server fetch the secret from the daemon at startup. This way the secret is never stored on disk in the webhook container.
+
+### init --systemd
+
+Generate systemd unit files for daemon deployment.
+
+```bash
+bosun init --systemd
+```
+
+Creates files in `systemd/`:
+
+| File | Description |
+|------|-------------|
+| `bosund.service` | Systemd service unit |
+| `bosund.socket` | Socket activation unit |
+| `bosund.env.example` | Environment template |
+| `install.sh` | Installation script |
+
+**Installation:**
+
+```bash
+cd systemd && sudo ./install.sh
+```
+
 ## GitOps Command
 
 ### reconcile
 
-Run the GitOps reconciliation workflow.
+Run the GitOps reconciliation workflow (one-shot mode).
 
 ```bash
 bosun reconcile

@@ -85,14 +85,14 @@ func printStatusHuman(status *daemon.StatusResponse, health *daemon.HealthStatus
 	stateColor.Printf("  %s State: %s\n", stateIcon, status.State)
 
 	// Uptime
-	fmt.Printf("  ⏱ Uptime: %s\n", status.Uptime)
+	fmt.Printf("    Uptime: %s\n", status.Uptime)
 
 	// Last reconcile
 	if status.LastReconcile != nil {
 		ago := time.Since(*status.LastReconcile).Round(time.Second)
-		fmt.Printf("  🔄 Last Reconcile: %s ago\n", ago)
+		fmt.Printf("    Last Reconcile: %s ago\n", ago)
 	} else {
-		fmt.Printf("  🔄 Last Reconcile: never\n")
+		fmt.Printf("    Last Reconcile: never\n")
 	}
 
 	// Last error

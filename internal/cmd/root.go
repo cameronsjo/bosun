@@ -97,7 +97,7 @@ var yarrCmd = &cobra.Command{
 	Hidden: true,
 	Short:  "Pirate mode",
 	Run: func(cmd *cobra.Command, args []string) {
-		ui.Yellow.Println("🏴\u200d☠️ Ahoy! Ye found the secret pirate mode!")
+		ui.Yellow.Println("Ahoy! Ye found the secret pirate mode!")
 		fmt.Println("")
 		fmt.Println("Command aliases for true pirates:")
 		fmt.Println("  init       → christen")

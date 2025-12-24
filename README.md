@@ -102,25 +102,93 @@ bosun doctor
 bosun yacht up
 ```
 
+## Daemon Mode
+
+Run bosun as a long-running daemon for production GitOps:
+
+```bash
+# Generate systemd unit files
+bosun init --systemd
+
+# Install and start
+cd systemd && sudo ./install.sh
+
+# Or run directly
+bosun daemon
+```
+
+The daemon provides:
+- **Unix socket API** - Primary interface at `/var/run/bosun.sock`
+- **Multi-provider webhooks** - GitHub, GitLab, Gitea, Bitbucket
+- **Polling** - Configurable interval reconciliation
+- **Health endpoints** - `/health`, `/ready` for orchestrators
+
+### Daemon Commands
+
+```bash
+bosun daemon              # Run the daemon
+bosun trigger             # Trigger reconciliation
+bosun daemon-status       # Show daemon health
+bosun validate            # Validate configuration
+bosun webhook             # Run standalone webhook receiver
+```
+
+### Environment Variables (Daemon)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `BOSUN_REPO_URL` | Git repository URL | Required |
+| `BOSUN_REPO_BRANCH` | Branch to track | `main` |
+| `BOSUN_POLL_INTERVAL` | Poll interval in seconds | `3600` |
+| `BOSUN_SOCKET_PATH` | Unix socket path | `/var/run/bosun.sock` |
+| `WEBHOOK_SECRET` | Webhook signature validation | Optional |
+
+See [docs/architecture/daemon-split.md](docs/architecture/daemon-split.md) for the full daemon architecture.
+
 ## Commands
+
+### Setup & Diagnostics
 
 | Command | Description |
 |---------|-------------|
-| `init` | Interactive setup wizard |
+| `init` | Interactive setup wizard (`--systemd` for unit files) |
+| `doctor` | Pre-flight checks |
+| `validate` | Validate config and daemon connectivity |
+| `status` | Health dashboard |
+
+### Daemon
+
+| Command | Description |
+|---------|-------------|
+| `daemon` | Run the GitOps daemon |
+| `trigger` | Trigger reconciliation via daemon |
+| `daemon-status` | Show daemon health and state |
+| `webhook` | Run standalone webhook receiver |
+
+### Yacht (Docker Compose)
+
+| Command | Description |
+|---------|-------------|
 | `yacht up/down/restart/status` | Manage Docker Compose services |
 | `crew list/logs/inspect/restart` | Manage individual containers |
+
+### Manifest & Provisioning
+
+| Command | Description |
+|---------|-------------|
 | `provision [stack]` | Render manifest to compose/traefik/gatus |
 | `provisions` | List available provisions |
 | `create <template> <name>` | Scaffold new service |
-| `radio test/status` | Test webhook and Tailscale |
-| `alert status/test` | Manage alert providers (Discord, SendGrid, Twilio) |
-| `status` | Health dashboard |
-| `update` | Self-update to latest version |
-| `doctor` | Pre-flight checks |
-| `drift` | Detect config drift |
 | `lint` | Validate manifests |
+| `drift` | Detect config drift |
+
+### Operations
+
+| Command | Description |
+|---------|-------------|
+| `reconcile` | Run GitOps workflow (one-shot) |
+| `radio test/status` | Test webhook and Tailscale |
 | `mayday` | Show errors, rollback snapshots |
-| `reconcile` | Run GitOps workflow |
 
 See [docs/commands.md](docs/commands.md) for the full command reference.
 
@@ -161,16 +229,18 @@ compose_file: docker-compose.yml
 ## Documentation
 
 - **[Commands Reference](docs/commands.md)** - Full command documentation
+- **[Daemon Architecture](docs/architecture/daemon-split.md)** - Unix socket API, webhooks, security
+- **[GitOps Workflow](docs/gitops.md)** - Reconciliation, polling, triggers
 - **[Migration Guide](docs/migration.md)** - Migrating from bash/Python version
 - **[Concepts](docs/concepts.md)** - Architecture, components, diagrams
-- **[Unraid Setup](docs/guides/unraid-setup.md)** - Complete walkthrough
 
 ### Architecture Decisions
 
 | ADR | Status | Summary |
 |-----|--------|---------|
+| [Daemon Architecture](docs/architecture/daemon-split.md) | Accepted | Unix socket API, multi-provider webhooks |
+| [Council Review](docs/architecture/council-review.md) | Approved | Security-first daemon design (9/10) |
 | [0001: Manifest System](docs/adr/0001-manifest-system.md) | Accepted | DRY crew provisioning |
-| [0002: Watchtower Webhook](docs/adr/0002-watchtower-webhook-deploy.md) | Accepted | Crew rotation automation |
 | [0008: Container vs Daemon](docs/adr/0008-container-vs-daemon.md) | Accepted | When to use systemd |
 | [0010: Go Rewrite](docs/adr/0010-go-rewrite.md) | Accepted | Single-binary CLI |
 
