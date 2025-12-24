@@ -34,7 +34,7 @@ Commands:
   restart   Quick turnaround (docker compose restart)
   status    Check if we're seaworthy`,
 	Run: func(cmd *cobra.Command, args []string) {
-		cmd.Help()
+		_ = cmd.Help()
 	},
 }
 

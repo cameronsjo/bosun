@@ -78,7 +78,7 @@ MAINTENANCE
     --check             Only check for updates, don't install`,
 	Version: version,
 	Run: func(cmd *cobra.Command, args []string) {
-		cmd.Help()
+		_ = cmd.Help()
 	},
 }
 
