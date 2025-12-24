@@ -208,6 +208,211 @@ func TestConfigResponse_JSON(t *testing.T) {
 	}
 }
 
+func TestConfigFromEnv(t *testing.T) {
+	t.Run("default values when no env vars", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if cfg.SocketPath != "/var/run/bosun.sock" {
+			t.Errorf("SocketPath = %q, want /var/run/bosun.sock", cfg.SocketPath)
+		}
+		if cfg.Port != 8080 {
+			t.Errorf("Port = %d, want 8080", cfg.Port)
+		}
+		if !cfg.EnableHTTP {
+			t.Error("EnableHTTP should be true by default")
+		}
+		if cfg.EnableTCP {
+			t.Error("EnableTCP should be false by default")
+		}
+	})
+
+	t.Run("BOSUN_SOCKET_PATH overrides default", func(t *testing.T) {
+		t.Setenv("BOSUN_SOCKET_PATH", "/tmp/custom.sock")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.SocketPath != "/tmp/custom.sock" {
+			t.Errorf("SocketPath = %q, want /tmp/custom.sock", cfg.SocketPath)
+		}
+	})
+
+	t.Run("PORT sets http port", func(t *testing.T) {
+		t.Setenv("PORT", "9000")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.Port != 9000 {
+			t.Errorf("Port = %d, want 9000", cfg.Port)
+		}
+	})
+
+	t.Run("WEBHOOK_PORT overrides PORT", func(t *testing.T) {
+		t.Setenv("PORT", "9000")
+		t.Setenv("WEBHOOK_PORT", "9999")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.Port != 9999 {
+			t.Errorf("Port = %d, want 9999", cfg.Port)
+		}
+	})
+
+	t.Run("BOSUN_DISABLE_HTTP disables HTTP server", func(t *testing.T) {
+		t.Setenv("BOSUN_DISABLE_HTTP", "true")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.EnableHTTP {
+			t.Error("EnableHTTP should be false when BOSUN_DISABLE_HTTP=true")
+		}
+	})
+
+	t.Run("BOSUN_ENABLE_TCP enables TCP server", func(t *testing.T) {
+		t.Setenv("BOSUN_ENABLE_TCP", "true")
+
+		cfg := ConfigFromEnv()
+
+		if !cfg.EnableTCP {
+			t.Error("EnableTCP should be true when BOSUN_ENABLE_TCP=true")
+		}
+	})
+
+	t.Run("BOSUN_TCP_ADDR sets TCP address", func(t *testing.T) {
+		t.Setenv("BOSUN_TCP_ADDR", "0.0.0.0:9999")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.TCPAddr != "0.0.0.0:9999" {
+			t.Errorf("TCPAddr = %q, want 0.0.0.0:9999", cfg.TCPAddr)
+		}
+	})
+
+	t.Run("BOSUN_BEARER_TOKEN sets bearer token", func(t *testing.T) {
+		t.Setenv("BOSUN_BEARER_TOKEN", "secret-token")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.BearerToken != "secret-token" {
+			t.Errorf("BearerToken = %q, want secret-token", cfg.BearerToken)
+		}
+	})
+
+	t.Run("GITHUB_WEBHOOK_SECRET overrides WEBHOOK_SECRET", func(t *testing.T) {
+		t.Setenv("WEBHOOK_SECRET", "generic-secret")
+		t.Setenv("GITHUB_WEBHOOK_SECRET", "github-secret")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.WebhookSecret != "github-secret" {
+			t.Errorf("WebhookSecret = %q, want github-secret", cfg.WebhookSecret)
+		}
+	})
+
+	t.Run("POLL_INTERVAL in seconds", func(t *testing.T) {
+		t.Setenv("POLL_INTERVAL", "300")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.PollInterval != 300*time.Second {
+			t.Errorf("PollInterval = %v, want 5m0s", cfg.PollInterval)
+		}
+	})
+
+	t.Run("BOSUN_POLL_INTERVAL overrides POLL_INTERVAL", func(t *testing.T) {
+		t.Setenv("POLL_INTERVAL", "300")
+		t.Setenv("BOSUN_POLL_INTERVAL", "600")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.PollInterval != 600*time.Second {
+			t.Errorf("PollInterval = %v, want 10m0s", cfg.PollInterval)
+		}
+	})
+
+	t.Run("BOSUN_REPO_URL overrides REPO_URL", func(t *testing.T) {
+		t.Setenv("REPO_URL", "https://github.com/old/repo")
+		t.Setenv("BOSUN_REPO_URL", "https://github.com/new/repo")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.RepoURL != "https://github.com/new/repo" {
+			t.Errorf("RepoURL = %q, want https://github.com/new/repo", cfg.ReconcileConfig.RepoURL)
+		}
+	})
+
+	t.Run("BOSUN_REPO_BRANCH overrides REPO_BRANCH", func(t *testing.T) {
+		t.Setenv("REPO_BRANCH", "develop")
+		t.Setenv("BOSUN_REPO_BRANCH", "production")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.RepoBranch != "production" {
+			t.Errorf("RepoBranch = %q, want production", cfg.ReconcileConfig.RepoBranch)
+		}
+	})
+
+	t.Run("DEPLOY_TARGET sets target host", func(t *testing.T) {
+		t.Setenv("DEPLOY_TARGET", "server.local")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.TargetHost != "server.local" {
+			t.Errorf("TargetHost = %q, want server.local", cfg.ReconcileConfig.TargetHost)
+		}
+	})
+
+	t.Run("BOSUN_SECRETS_FILE overrides SECRETS_FILES", func(t *testing.T) {
+		t.Setenv("SECRETS_FILES", "old.yaml")
+		t.Setenv("BOSUN_SECRETS_FILE", "new.yaml, another.yaml")
+
+		cfg := ConfigFromEnv()
+
+		want := []string{"new.yaml", "another.yaml"}
+		got := cfg.ReconcileConfig.SecretsFiles
+		if len(got) != len(want) {
+			t.Errorf("SecretsFiles len = %d, want %d", len(got), len(want))
+			return
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Errorf("SecretsFiles[%d] = %q, want %q", i, got[i], want[i])
+			}
+		}
+	})
+
+	t.Run("DRY_RUN sets dry run mode", func(t *testing.T) {
+		t.Setenv("DRY_RUN", "true")
+
+		cfg := ConfigFromEnv()
+
+		if !cfg.ReconcileConfig.DryRun {
+			t.Error("DryRun should be true when DRY_RUN=true")
+		}
+	})
+
+	t.Run("invalid port ignored", func(t *testing.T) {
+		t.Setenv("PORT", "not-a-number")
+
+		cfg := ConfigFromEnv()
+
+		// Should use default
+		if cfg.Port != 8080 {
+			t.Errorf("Port = %d, want 8080 (default)", cfg.Port)
+		}
+	})
+
+	t.Run("invalid poll interval ignored", func(t *testing.T) {
+		t.Setenv("POLL_INTERVAL", "not-a-number")
+
+		cfg := ConfigFromEnv()
+
+		// Should use default
+		if cfg.PollInterval != time.Hour {
+			t.Errorf("PollInterval = %v, want 1h (default)", cfg.PollInterval)
+		}
+	})
+}
+
 func TestSplitAndTrim(t *testing.T) {
 	tests := []struct {
 		name  string
