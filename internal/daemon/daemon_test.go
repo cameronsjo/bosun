@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
@@ -255,4 +256,32 @@ func TestSplitAndTrim(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConfigFromEnv_InfraDir(t *testing.T) {
+	// Save and restore environment
+	orig := os.Getenv("BOSUN_INFRA_DIR")
+	defer func() {
+		if orig != "" {
+			_ = os.Setenv("BOSUN_INFRA_DIR", orig)
+		} else {
+			_ = os.Unsetenv("BOSUN_INFRA_DIR")
+		}
+	}()
+
+	t.Run("uses default when not set", func(t *testing.T) {
+		_ = os.Unsetenv("BOSUN_INFRA_DIR")
+		cfg := ConfigFromEnv()
+		if cfg.ReconcileConfig.InfraSubDir != "infrastructure" {
+			t.Errorf("InfraSubDir = %q, want infrastructure", cfg.ReconcileConfig.InfraSubDir)
+		}
+	})
+
+	t.Run("uses env var when set", func(t *testing.T) {
+		_ = os.Setenv("BOSUN_INFRA_DIR", "unraid")
+		cfg := ConfigFromEnv()
+		if cfg.ReconcileConfig.InfraSubDir != "unraid" {
+			t.Errorf("InfraSubDir = %q, want unraid", cfg.ReconcileConfig.InfraSubDir)
+		}
+	})
 }

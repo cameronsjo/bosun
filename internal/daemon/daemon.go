@@ -484,6 +484,10 @@ func ConfigFromEnv() *Config {
 
 	rcfg.DryRun = os.Getenv("DRY_RUN") == "true"
 
+	if infraDir := os.Getenv("BOSUN_INFRA_DIR"); infraDir != "" {
+		rcfg.InfraSubDir = infraDir
+	}
+
 	cfg.ReconcileConfig = rcfg
 
 	return cfg
