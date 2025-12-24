@@ -303,7 +303,7 @@ func (h *webhookHandler) handleGitLabWebhook(w http.ResponseWriter, r *http.Requ
 	// Only process push events
 	if eventType != "Push Hook" {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ignored","reason":"not a push event"}`))
+		_, _ = w.Write([]byte(`{"status":"ignored","reason":"not a push event"}`))
 		return
 	}
 
@@ -366,7 +366,7 @@ func (h *webhookHandler) handleGiteaWebhook(w http.ResponseWriter, r *http.Reque
 	// Only process push events
 	if eventType != "push" {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ignored","reason":"not a push event"}`))
+		_, _ = w.Write([]byte(`{"status":"ignored","reason":"not a push event"}`))
 		return
 	}
 
@@ -435,7 +435,7 @@ func (h *webhookHandler) handleBitbucketWebhook(w http.ResponseWriter, r *http.R
 	// Only process push events
 	if eventType != "repo:push" {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ignored","reason":"not a push event"}`))
+		_, _ = w.Write([]byte(`{"status":"ignored","reason":"not a push event"}`))
 		return
 	}
 
@@ -490,7 +490,7 @@ func (h *webhookHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]string{
 			"status": "unhealthy",
 			"error":  "daemon unreachable",
 		})
@@ -501,7 +501,7 @@ func (h *webhookHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if health.Status != "healthy" {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
-	json.NewEncoder(w).Encode(health)
+	_ = json.NewEncoder(w).Encode(health)
 }
 
 func (h *webhookHandler) handleReady(w http.ResponseWriter, r *http.Request) {
@@ -511,12 +511,12 @@ func (h *webhookHandler) handleReady(w http.ResponseWriter, r *http.Request) {
 	health, err := h.client.Health(ctx)
 	if err != nil || !health.Ready {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("not ready"))
+		_, _ = w.Write([]byte("not ready"))
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ready"))
+	_, _ = w.Write([]byte("ready"))
 }
 
 // validateSignature validates a generic HMAC-SHA256 signature.
