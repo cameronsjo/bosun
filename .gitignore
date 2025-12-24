@@ -36,3 +36,5 @@ Thumbs.db
 *.test
 coverage.out
 coverage.html
+bosun/bosun
+.claude/reviews/

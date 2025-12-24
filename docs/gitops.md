@@ -4,6 +4,13 @@ This document describes the bosun GitOps reconciliation system, which automates 
 
 ## Overview
 
+Bosun supports two deployment modes:
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| **Daemon** | Long-running service with Unix socket API | Production, automated GitOps |
+| **One-shot** | Single `bosun reconcile` execution | Manual deploys, testing |
+
 The reconcile system implements a GitOps workflow that:
 
 1. Monitors a Git repository for changes
@@ -14,9 +21,91 @@ The reconcile system implements a GitOps workflow that:
 
 ### When to Use
 
-- **Continuous deployment**: Run in a container on a schedule (cron or interval) to automatically deploy config changes
+- **Continuous deployment**: Run the daemon with webhooks or polling for automated GitOps
 - **Manual deployment**: Run `bosun reconcile` to apply the latest configuration immediately
 - **Testing changes**: Use `--dry-run` to preview what would change before applying
+
+## Daemon Mode
+
+For production deployments, run bosun as a long-running daemon:
+
+```bash
+bosun daemon
+```
+
+### Unix Socket API
+
+The daemon exposes a Unix socket at `/var/run/bosun.sock` (configurable) for local control:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/trigger` | POST | Trigger reconciliation |
+| `/status` | GET | Get daemon status |
+| `/health` | GET | Health check |
+| `/ready` | GET | Readiness check |
+| `/config` | GET | Get current config |
+| `/ping` | GET | Simple ping |
+
+**Example usage:**
+
+```bash
+# Trigger reconciliation
+curl --unix-socket /var/run/bosun.sock http://localhost/trigger -X POST
+
+# Check status
+curl --unix-socket /var/run/bosun.sock http://localhost/status
+```
+
+Or use the CLI:
+
+```bash
+bosun trigger                    # Trigger via socket
+bosun daemon-status              # Get daemon status
+bosun validate                   # Validate config and connectivity
+```
+
+### Webhook Providers
+
+The daemon accepts webhooks from multiple Git providers at `/webhook/{provider}`:
+
+| Provider | Path | Signature Header |
+|----------|------|------------------|
+| GitHub | `/webhook/github` | `X-Hub-Signature-256` |
+| GitLab | `/webhook/gitlab` | `X-Gitlab-Token` |
+| Gitea | `/webhook/gitea` | `X-Gitea-Signature` |
+| Bitbucket | `/webhook/bitbucket` | `X-Hub-Signature` |
+
+Signatures are validated using HMAC-SHA256 (or SHA1 for legacy) with constant-time comparison.
+
+### Polling Mode
+
+Enable periodic reconciliation with `--poll-interval`:
+
+```bash
+bosun daemon --poll-interval 3600  # Check every hour
+```
+
+Set to `0` to disable polling (webhook-only mode).
+
+### Concurrency
+
+The daemon uses single-flight reconciliation with dirty flag coalescing:
+
+1. If a trigger arrives during reconciliation, set `pending = true`
+2. Return immediately (HTTP 202 Accepted)
+3. After reconciliation completes, check `pending`
+4. If `pending`, run one more reconciliation
+
+This prevents concurrent docker compose operations while ensuring no triggers are lost.
+
+### Security
+
+- **Socket permissions**: 0660 (owner and group only)
+- **SO_PEERCRED**: Logs kernel-reported UID/PID of every caller
+- **Bearer auth**: Optional TCP API requires `Authorization: Bearer <token>`
+- **Secret injection**: Webhook secret fetched from daemon, never on disk
+
+See [docs/architecture/daemon-split.md](architecture/daemon-split.md) for the full security model.
 
 ## Architecture
 

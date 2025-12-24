@@ -39,7 +39,10 @@ Use --yes to skip all interactive prompts (useful for non-TTY environments).`,
 	RunE: runInit,
 }
 
-var initYes bool
+var (
+	initYes     bool
+	initSystemd bool
+)
 
 func runInit(cmd *cobra.Command, args []string) error {
 	targetDir := "."
@@ -165,6 +168,14 @@ func runInit(cmd *cobra.Command, args []string) error {
 	readmeFile := filepath.Join(targetDir, "README.md")
 	if err := createFileIfNotExists(readmeFile, starterReadme); err != nil {
 		return fmt.Errorf("create README.md: %w", err)
+	}
+
+	// Step 6: Generate systemd unit files if requested
+	if initSystemd {
+		ui.Info("Generating systemd unit files...")
+		if err := generateSystemdUnits(targetDir); err != nil {
+			return fmt.Errorf("generate systemd units: %w", err)
+		}
 	}
 
 	// Summary
@@ -429,4 +440,204 @@ bosun yacht up
 func init() {
 	rootCmd.AddCommand(initCmd)
 	initCmd.Flags().BoolVarP(&initYes, "yes", "y", false, "Skip all interactive prompts (assume yes for all questions)")
+	initCmd.Flags().BoolVar(&initSystemd, "systemd", false, "Generate systemd unit files for daemon mode")
 }
+
+// generateSystemdUnits creates systemd service and socket unit files.
+func generateSystemdUnits(targetDir string) error {
+	systemdDir := filepath.Join(targetDir, "systemd")
+	if err := os.MkdirAll(systemdDir, 0755); err != nil {
+		return fmt.Errorf("create systemd directory: %w", err)
+	}
+
+	// Generate bosund.service
+	serviceFile := filepath.Join(systemdDir, "bosund.service")
+	if err := createFileIfNotExists(serviceFile, systemdServiceUnit); err != nil {
+		return fmt.Errorf("create service unit: %w", err)
+	}
+
+	// Generate bosund.socket (for socket activation)
+	socketFile := filepath.Join(systemdDir, "bosund.socket")
+	if err := createFileIfNotExists(socketFile, systemdSocketUnit); err != nil {
+		return fmt.Errorf("create socket unit: %w", err)
+	}
+
+	// Generate environment file template
+	envFile := filepath.Join(systemdDir, "bosund.env.example")
+	if err := createFileIfNotExists(envFile, systemdEnvFile); err != nil {
+		return fmt.Errorf("create env file: %w", err)
+	}
+
+	// Generate installation script
+	installScript := filepath.Join(systemdDir, "install.sh")
+	if err := createFileIfNotExists(installScript, systemdInstallScript); err != nil {
+		return fmt.Errorf("create install script: %w", err)
+	}
+	// Make install script executable
+	if err := os.Chmod(installScript, 0755); err != nil {
+		return fmt.Errorf("chmod install script: %w", err)
+	}
+
+	ui.Success("Generated systemd unit files in systemd/")
+	fmt.Println()
+	ui.Info("To install the systemd service:")
+	fmt.Println("    cd systemd && sudo ./install.sh")
+	fmt.Println()
+	ui.Info("Or manually:")
+	fmt.Println("    sudo cp bosund.service bosund.socket /etc/systemd/system/")
+	fmt.Println("    sudo cp bosund.env.example /etc/bosun/bosund.env")
+	fmt.Println("    sudo systemctl daemon-reload")
+	fmt.Println("    sudo systemctl enable --now bosund.socket")
+
+	return nil
+}
+
+// Systemd unit file templates
+
+const systemdServiceUnit = `[Unit]
+Description=Bosun GitOps Daemon
+Documentation=https://github.com/cameronsjo/bosun
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=bosun
+Group=bosun
+
+# Environment file with secrets
+EnvironmentFile=/etc/bosun/bosund.env
+
+# Main daemon process
+ExecStart=/usr/local/bin/bosun daemon
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Restart configuration
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/run/bosun.sock /var/lib/bosun /var/log/bosun
+
+# Resource limits
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+`
+
+const systemdSocketUnit = `[Unit]
+Description=Bosun GitOps Socket
+Documentation=https://github.com/cameronsjo/bosun
+PartOf=bosund.service
+
+[Socket]
+ListenStream=/var/run/bosun.sock
+SocketMode=0660
+SocketUser=bosun
+SocketGroup=bosun
+
+# Remove stale socket on start
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
+`
+
+const systemdEnvFile = `# Bosun Daemon Environment Configuration
+# Copy this to /etc/bosun/bosund.env and edit
+
+# Required: Git repository URL
+BOSUN_REPO_URL=https://github.com/your-org/your-infra-repo.git
+
+# Optional: Git branch (default: main)
+# BOSUN_REPO_BRANCH=main
+
+# Optional: Poll interval in seconds (default: 3600)
+# BOSUN_POLL_INTERVAL=3600
+
+# Optional: Deploy target for remote deployments
+# DEPLOY_TARGET=root@192.168.1.8
+
+# Optional: Secrets files (comma-separated, relative to repo)
+# BOSUN_SECRETS_FILE=secrets/prod.sops.yaml
+
+# Optional: Webhook secret for GitHub webhooks
+# GITHUB_WEBHOOK_SECRET=your-webhook-secret
+
+# Optional: Discord webhook for notifications
+# DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+
+# Optional: Disable HTTP server (socket-only mode)
+# BOSUN_DISABLE_HTTP=true
+`
+
+const systemdInstallScript = `#!/bin/bash
+# Bosun systemd installation script
+# Run as root: sudo ./install.sh
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "Installing Bosun systemd service..."
+
+# Create bosun user if it doesn't exist
+if ! id -u bosun &>/dev/null; then
+    echo "Creating bosun user..."
+    useradd -r -s /sbin/nologin -d /var/lib/bosun -m bosun
+    usermod -aG docker bosun
+fi
+
+# Create directories
+echo "Creating directories..."
+mkdir -p /etc/bosun
+mkdir -p /var/lib/bosun
+mkdir -p /var/log/bosun
+mkdir -p /var/run
+
+# Set permissions
+chown bosun:bosun /var/lib/bosun
+chown bosun:bosun /var/log/bosun
+
+# Copy unit files
+echo "Installing unit files..."
+cp "$SCRIPT_DIR/bosund.service" /etc/systemd/system/
+cp "$SCRIPT_DIR/bosund.socket" /etc/systemd/system/
+
+# Copy environment file if it doesn't exist
+if [ ! -f /etc/bosun/bosund.env ]; then
+    echo "Installing environment file template..."
+    cp "$SCRIPT_DIR/bosund.env.example" /etc/bosun/bosund.env
+    chmod 600 /etc/bosun/bosund.env
+    echo ""
+    echo "IMPORTANT: Edit /etc/bosun/bosund.env with your configuration!"
+    echo ""
+fi
+
+# Reload systemd
+echo "Reloading systemd..."
+systemctl daemon-reload
+
+echo ""
+echo "Installation complete!"
+echo ""
+echo "Next steps:"
+echo "  1. Edit /etc/bosun/bosund.env with your configuration"
+echo "  2. Enable and start the service:"
+echo "     sudo systemctl enable --now bosund.socket"
+echo "     sudo systemctl enable --now bosund.service"
+echo ""
+echo "Commands:"
+echo "  sudo systemctl status bosund        # Check status"
+echo "  sudo journalctl -u bosund -f        # Follow logs"
+echo "  bosun trigger                       # Trigger reconciliation"
+echo "  bosun daemon-status                 # Check daemon status"
+`

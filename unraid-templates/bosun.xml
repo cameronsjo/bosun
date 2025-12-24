@@ -24,12 +24,13 @@
     git push → bosun receives orders → crew deployed → yacht runs smooth&#xD;
     &#xD;
     Features:&#xD;
-    - GitHub webhook receiver (the radio) for instant deploys&#xD;
-    - SOPS + Age for encrypted secrets (the safe)&#xD;
-    - Chezmoi for template rendering (prep configs)&#xD;
-    - Hourly polling as fallback (night watch)&#xD;
-    - Discord notifications (ship's log)&#xD;
-    - Health check endpoint
+    - Native GitHub webhook receiver for instant deploys&#xD;
+    - SOPS + Age for encrypted secrets&#xD;
+    - Go templates with Sprig for config rendering&#xD;
+    - Configurable polling interval (default: hourly)&#xD;
+    - Discord, SendGrid, and Twilio notifications&#xD;
+    - Health and readiness endpoints&#xD;
+    - Prometheus metrics
   </Overview>
   <Category>Tools: Productivity:</Category>
   <Icon>https://raw.githubusercontent.com/cameronsjo/bosun/main/assets/icon.png</Icon>
@@ -38,7 +39,7 @@
   <Requires>
     Requires a GitHub repository with your Docker Compose configs.&#xD;
     Requires an Age key for SOPS secret decryption.&#xD;
-    Optional: Tailscale for webhook exposure, Discord for notifications.
+    Optional: Tailscale for webhook exposure, Discord/SendGrid/Twilio for notifications.
   </Requires>
   <DonateText>Support on Ko-fi</DonateText>
   <DonateLink>https://ko-fi.com/cameronsjo</DonateLink>

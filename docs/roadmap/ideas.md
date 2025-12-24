@@ -3,6 +3,7 @@
 | Item | Priority | Effort | Notes |
 |------|----------|--------|-------|
 | Linux-first docs & examples | p1 | medium | Unraid-tested but generic Linux instructions |
+| Package manager distribution | p2 | large | apt, yum, dnf, brew, AUR for easier installation |
 | Local dev mode | p3 | medium | `bosun dev up` watches filesystem, hot reload |
 | Secret rotation helper | p3 | medium | `bosun secrets rotate` generates, re-encrypts, deploys |
 | `bosun watch` - scheduled tasks | p3 | medium | Nautical cron - watches, bells, tides |
