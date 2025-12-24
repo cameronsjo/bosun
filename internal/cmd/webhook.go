@@ -201,7 +201,7 @@ func (h *webhookHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (h *webhookHandler) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
@@ -231,14 +231,14 @@ func (h *webhookHandler) handleGitHubWebhook(w http.ResponseWriter, r *http.Requ
 	eventType := r.Header.Get("X-GitHub-Event")
 	if eventType == "ping" {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"pong"}`))
+		_, _ = w.Write([]byte(`{"status":"pong"}`))
 		return
 	}
 
 	// Only process push events
 	if eventType != "push" {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ignored","reason":"not a push event"}`))
+		_, _ = w.Write([]byte(`{"status":"ignored","reason":"not a push event"}`))
 		return
 	}
 
@@ -271,7 +271,7 @@ func (h *webhookHandler) handleGitHubWebhook(w http.ResponseWriter, r *http.Requ
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (h *webhookHandler) handleGitLabWebhook(w http.ResponseWriter, r *http.Request) {
@@ -334,7 +334,7 @@ func (h *webhookHandler) handleGitLabWebhook(w http.ResponseWriter, r *http.Requ
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (h *webhookHandler) handleGiteaWebhook(w http.ResponseWriter, r *http.Request) {
@@ -399,7 +399,7 @@ func (h *webhookHandler) handleGiteaWebhook(w http.ResponseWriter, r *http.Reque
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (h *webhookHandler) handleBitbucketWebhook(w http.ResponseWriter, r *http.Request) {
@@ -478,7 +478,7 @@ func (h *webhookHandler) handleBitbucketWebhook(w http.ResponseWriter, r *http.R
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (h *webhookHandler) handleHealth(w http.ResponseWriter, r *http.Request) {

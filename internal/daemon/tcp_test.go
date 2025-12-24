@@ -87,7 +87,7 @@ func TestTCPServer_auditMiddleware(t *testing.T) {
 
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 
 	handler := server.auditMiddleware(testHandler)
@@ -126,7 +126,7 @@ func TestResponseWriter(t *testing.T) {
 		w := &responseWriter{ResponseWriter: rr, statusCode: http.StatusOK}
 
 		// Write body without calling WriteHeader
-		w.Write([]byte("test"))
+		_, _ = w.Write([]byte("test"))
 
 		if w.statusCode != http.StatusOK {
 			t.Errorf("statusCode = %d, want %d", w.statusCode, http.StatusOK)
