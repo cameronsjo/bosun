@@ -178,7 +178,7 @@ func (s *SocketServer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(TriggerResponse{
+	_ = json.NewEncoder(w).Encode(TriggerResponse{
 		Status:  "accepted",
 		Message: "Reconciliation triggered",
 	})
@@ -217,7 +217,7 @@ func (s *SocketServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // handleHealth handles GET /health requests.
@@ -234,7 +234,7 @@ func (s *SocketServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 
-	json.NewEncoder(w).Encode(status)
+	_ = json.NewEncoder(w).Encode(status)
 }
 
 // handleConfig handles GET /config requests.
@@ -264,7 +264,7 @@ func (s *SocketServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // auditMiddleware logs all requests with peer credentials.

@@ -421,10 +421,10 @@ func ConfigFromEnv() *Config {
 
 	// HTTP configuration
 	if port := os.Getenv("PORT"); port != "" {
-		fmt.Sscanf(port, "%d", &cfg.Port)
+		_, _ = fmt.Sscanf(port, "%d", &cfg.Port)
 	}
 	if port := os.Getenv("WEBHOOK_PORT"); port != "" {
-		fmt.Sscanf(port, "%d", &cfg.Port)
+		_, _ = fmt.Sscanf(port, "%d", &cfg.Port)
 	}
 
 	// Disable HTTP server if explicitly set

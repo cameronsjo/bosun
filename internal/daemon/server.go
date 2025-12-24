@@ -95,7 +95,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 
-	json.NewEncoder(w).Encode(status)
+	_ = json.NewEncoder(w).Encode(status)
 }
 
 // handleReady handles the readiness check endpoint.
@@ -111,7 +111,7 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("OK"))
+	_, _ = w.Write([]byte("OK"))
 }
 
 // handleWebhook handles generic webhook requests.
@@ -150,7 +150,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status":  "accepted",
 		"message": "Reconciliation triggered",
 	})
@@ -183,13 +183,13 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	eventType := r.Header.Get("X-GitHub-Event")
 	if eventType == "ping" {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("pong"))
+		_, _ = w.Write([]byte("pong"))
 		return
 	}
 
 	if eventType != "push" {
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]string{
 			"status":  "ignored",
 			"message": fmt.Sprintf("Event type '%s' not handled", eventType),
 		})
@@ -207,7 +207,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	expectedRef := "refs/heads/" + s.daemon.config.ReconcileConfig.RepoBranch
 	if payload.Ref != expectedRef {
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]string{
 			"status":  "ignored",
 			"message": fmt.Sprintf("Push to %s ignored (tracking %s)", payload.Ref, expectedRef),
 		})
@@ -227,7 +227,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status":  "accepted",
 		"message": "Reconciliation triggered",
 		"commit":  payload.After,
@@ -266,7 +266,7 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status":  "accepted",
 		"message": "Manual reconciliation triggered",
 	})

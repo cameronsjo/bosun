@@ -151,7 +151,7 @@ func (s *TCPServer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(TriggerResponse{
+	_ = json.NewEncoder(w).Encode(TriggerResponse{
 		Status:  "accepted",
 		Message: "Reconciliation triggered",
 	})
@@ -189,7 +189,7 @@ func (s *TCPServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // handleHealth handles GET /health requests.
@@ -206,5 +206,5 @@ func (s *TCPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 
-	json.NewEncoder(w).Encode(status)
+	_ = json.NewEncoder(w).Encode(status)
 }

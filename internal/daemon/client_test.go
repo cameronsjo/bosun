@@ -92,7 +92,7 @@ func TestClient_Trigger(t *testing.T) {
 
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusAccepted)
-			json.NewEncoder(w).Encode(TriggerResponse{
+			_ = json.NewEncoder(w).Encode(TriggerResponse{
 				Status:  "accepted",
 				Message: "Reconciliation triggered",
 			})
@@ -145,7 +145,7 @@ func TestClient_Status(t *testing.T) {
 			}
 
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(StatusResponse{
+			_ = json.NewEncoder(w).Encode(StatusResponse{
 				State:         "idle",
 				LastReconcile: &now,
 				Uptime:        "1h0m0s",
@@ -177,7 +177,7 @@ func TestClient_Health(t *testing.T) {
 			}
 
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(HealthStatus{
+			_ = json.NewEncoder(w).Encode(HealthStatus{
 				Status: "healthy",
 				Ready:  true,
 			})
@@ -205,7 +205,7 @@ func TestClient_Health(t *testing.T) {
 	t.Run("degraded", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(HealthStatus{
+			_ = json.NewEncoder(w).Encode(HealthStatus{
 				Status:    "degraded",
 				Ready:     true,
 				LastError: "previous reconcile failed",
@@ -233,7 +233,7 @@ func TestClient_Ping(t *testing.T) {
 	t.Run("ping success", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(HealthStatus{Status: "healthy"})
+			_ = json.NewEncoder(w).Encode(HealthStatus{Status: "healthy"})
 		}))
 		defer server.Close()
 
@@ -289,7 +289,7 @@ func TestClient_Config(t *testing.T) {
 			}
 
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(ConfigResponse{
+			_ = json.NewEncoder(w).Encode(ConfigResponse{
 				WebhookSecret: "secret123",
 				RepoURL:       "https://github.com/example/repo",
 			})
