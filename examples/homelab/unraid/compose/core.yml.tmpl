@@ -1,0 +1,77 @@
+{{- $secrets := . -}}
+# Core infrastructure stack
+# Managed by Bosun GitOps
+
+services:
+  # Reverse Proxy
+  traefik:
+    image: traefik:v3.2
+    container_name: traefik
+    restart: unless-stopped
+    command:
+      - --api.insecure=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.file.directory=/config/conf.d
+      - --providers.file.watch=true
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /mnt/user/appdata/traefik:/config
+    networks:
+      - proxynet
+
+  # Authentication / SSO
+  authelia:
+    image: authelia/authelia:latest
+    container_name: authelia
+    restart: unless-stopped
+    volumes:
+      - /mnt/user/appdata/authelia:/config
+    environment:
+      TZ: America/Chicago
+    networks:
+      - proxynet
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.authelia.rule=Host(`auth.{{ $secrets.network.domain }}`)
+      - traefik.http.routers.authelia.entrypoints=websecure
+      - traefik.http.services.authelia.loadbalancer.server.port=9091
+
+  # Uptime Monitoring
+  gatus:
+    image: twinproduction/gatus:latest
+    container_name: gatus
+    restart: unless-stopped
+    volumes:
+      - /mnt/user/appdata/gatus:/data
+      - /mnt/user/appdata/gatus/config.yaml:/config/config.yaml:ro
+    networks:
+      - proxynet
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.gatus.rule=Host(`status.{{ $secrets.network.domain }}`)
+      - traefik.http.routers.gatus.entrypoints=websecure
+      - traefik.http.services.gatus.loadbalancer.server.port=8080
+
+  # Auto-update containers
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: watchtower
+    restart: unless-stopped
+    environment:
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_POLL_INTERVAL: "86400"
+      WATCHTOWER_INCLUDE_STOPPED: "true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+networks:
+  proxynet:
+    name: proxynet
+    driver: bridge

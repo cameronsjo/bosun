@@ -1,0 +1,60 @@
+{{- $secrets := . -}}
+# Authelia configuration
+# See https://www.authelia.com/configuration/
+
+server:
+  address: tcp://0.0.0.0:9091/
+
+log:
+  level: info
+
+theme: auto
+
+identity_validation:
+  reset_password:
+    jwt_secret: {{ $secrets.authelia.jwt_secret }}
+
+authentication_backend:
+  file:
+    path: /config/users.yml
+
+session:
+  secret: {{ $secrets.authelia.session_secret }}
+  cookies:
+    - domain: {{ $secrets.network.domain }}
+      authelia_url: https://auth.{{ $secrets.network.domain }}
+      default_redirection_url: https://{{ $secrets.network.domain }}
+
+storage:
+  encryption_key: {{ $secrets.authelia.storage_encryption_key }}
+  local:
+    path: /config/db.sqlite3
+
+notifier:
+  filesystem:
+    filename: /config/notifications.txt
+
+access_control:
+  default_policy: one_factor
+  rules:
+    - domain: "*.{{ $secrets.network.domain }}"
+      policy: one_factor
+
+identity_providers:
+  oidc:
+    hmac_secret: {{ $secrets.authelia.oidc_hmac_secret }}
+    jwks:
+      - key: |
+{{ $secrets.authelia.oidc_private_key | indent 10 }}
+    clients:
+      - client_id: portainer
+        client_name: Portainer
+        client_secret: {{ $secrets.oidc_clients.portainer.client_secret }}
+        public: false
+        authorization_policy: one_factor
+        redirect_uris:
+          - https://portainer.{{ $secrets.network.domain }}
+        scopes:
+          - openid
+          - profile
+          - email
