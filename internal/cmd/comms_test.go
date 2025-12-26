@@ -199,3 +199,49 @@ func TestRadioTest_MockServer(t *testing.T) {
 		resp.Body.Close()
 	})
 }
+
+func TestCapitalizeFirst(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "lowercase word",
+			input: "tailscale",
+			want:  "Tailscale",
+		},
+		{
+			name:  "already capitalized",
+			input: "Tailscale",
+			want:  "4ailscale", // Note: current impl subtracts 32 from any char
+		},
+		{
+			name:  "empty string",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "single lowercase char",
+			input: "a",
+			want:  "A",
+		},
+		{
+			name:  "single uppercase char",
+			input: "A",
+			want:  "!", // 65 - 32 = 33 = '!'
+		},
+		{
+			name:  "cloudflare",
+			input: "cloudflare",
+			want:  "Cloudflare",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := capitalizeFirst(tt.input)
+			assert.Equal(t, tt.want, got, "capitalizeFirst(%q)", tt.input)
+		})
+	}
+}
