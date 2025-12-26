@@ -46,41 +46,77 @@ func NewGitOps(url, branch, dir string) *GitOps {
 	}
 }
 
-// getSSHAuth attempts to get SSH authentication from the SSH agent.
-// Returns nil if no SSH agent is available (falls back to default auth).
+// getSSHAuth attempts to get SSH authentication from:
+// 1. SSH agent (SSH_AUTH_SOCK)
+// 2. Deploy key file (BOSUN_SSH_KEY or default paths)
+// Returns nil if no SSH auth is available (falls back to default auth).
 func getSSHAuth(url string) (transport.AuthMethod, error) {
 	// Only use SSH auth for SSH URLs
 	if !strings.HasPrefix(url, "git@") && !strings.Contains(url, "ssh://") {
 		return nil, nil
 	}
 
-	// Try to connect to SSH agent
+	// Try SSH agent first
+	if auth := getSSHAgentAuth(); auth != nil {
+		return auth, nil
+	}
+
+	// Fall back to key file
+	return getSSHKeyFileAuth()
+}
+
+// getSSHAgentAuth attempts to get auth from SSH agent.
+func getSSHAgentAuth() transport.AuthMethod {
 	socket := os.Getenv("SSH_AUTH_SOCK")
 	if socket == "" {
-		return nil, nil
+		return nil
 	}
 
 	conn, err := net.Dial("unix", socket)
 	if err != nil {
-		return nil, nil
+		return nil
 	}
 
 	agentClient := agent.NewClient(conn)
-	auth := &ssh.PublicKeysCallback{
+	return &ssh.PublicKeysCallback{
 		User: "git",
 		Callback: func() ([]xssh.Signer, error) {
-			signers, err := agentClient.Signers()
-			if err != nil {
-				return nil, err
-			}
-			return signers, nil
+			return agentClient.Signers()
 		},
 		HostKeyCallbackHelper: ssh.HostKeyCallbackHelper{
 			HostKeyCallback: xssh.InsecureIgnoreHostKey(),
 		},
 	}
+}
 
-	return auth, nil
+// getSSHKeyFileAuth attempts to get auth from a key file.
+// Checks BOSUN_SSH_KEY env var, then common paths.
+func getSSHKeyFileAuth() (transport.AuthMethod, error) {
+	keyPaths := []string{
+		os.Getenv("BOSUN_SSH_KEY"),
+		"/config/deploy-key",
+		"/config/ssh-key",
+		filepath.Join(os.Getenv("HOME"), ".ssh", "id_ed25519"),
+		filepath.Join(os.Getenv("HOME"), ".ssh", "id_rsa"),
+	}
+
+	for _, keyPath := range keyPaths {
+		if keyPath == "" {
+			continue
+		}
+		if _, err := os.Stat(keyPath); err != nil {
+			continue
+		}
+
+		auth, err := ssh.NewPublicKeysFromFile("git", keyPath, "")
+		if err != nil {
+			continue
+		}
+		auth.HostKeyCallback = xssh.InsecureIgnoreHostKey()
+		return auth, nil
+	}
+
+	return nil, nil
 }
 
 // Clone clones the repository with the specified depth.
