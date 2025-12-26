@@ -187,35 +187,6 @@ func completeTemplateNames(cmd *cobra.Command, args []string, toComplete string)
 	return names, cobra.ShellCompDirectiveNoFileComp
 }
 
-// completeProvisionNames returns a completion function that completes provision template names.
-func completeProvisionNames(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	cfg, err := config.Load()
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveError
-	}
-
-	entries, err := os.ReadDir(cfg.ProvisionsDir())
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveError
-	}
-
-	var names []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		// Remove .yml or .yaml extension
-		name = strings.TrimSuffix(name, ".yml")
-		name = strings.TrimSuffix(name, ".yaml")
-		if strings.HasPrefix(name, toComplete) {
-			names = append(names, name)
-		}
-	}
-
-	return names, cobra.ShellCompDirectiveNoFileComp
-}
-
 // registerCompletions registers all dynamic completions for commands.
 // This is called from init() to set up completions after all commands are defined.
 func registerCompletions() {
