@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6](https://github.com/cameronsjo/bosun/compare/v0.2.5...v0.2.6) (2025-12-26)
+
+
+### Features
+
+* add native daemon mode with Unix socket API and webhook support ([34d05cf](https://github.com/cameronsjo/bosun/commit/34d05cf74f39ebc26d897c1265a3c4a17d27da4b))
+* **cli:** add render command for local template preview ([b454313](https://github.com/cameronsjo/bosun/commit/b45431353561d943f36860918b5bd05b4badfcac))
+
+
+### Bug Fixes
+
+* **lint:** remove unused completeProvisionNames function ([e5e27e6](https://github.com/cameronsjo/bosun/commit/e5e27e6f6daa7d1ee51e199687c71a295e1e7f86))
+
 ## [0.2.5](https://github.com/cameronsjo/bosun/compare/v0.2.4...v0.2.5) (2025-12-24)
 
 
