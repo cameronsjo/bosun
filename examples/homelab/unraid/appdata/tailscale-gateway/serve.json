@@ -1,0 +1,22 @@
+{
+  "TCP": {
+    "443": {
+      "HTTPS": true
+    }
+  },
+  "Web": {
+    "your-endpoint.your-tailnet.ts.net:443": {
+      "Handlers": {
+        "/hooks/": {
+          "Proxy": "http://bosun:8080/webhook"
+        },
+        "/": {
+          "Proxy": "http://authelia:9091"
+        }
+      }
+    }
+  },
+  "AllowFunnel": {
+    "your-endpoint.your-tailnet.ts.net:443": true
+  }
+}

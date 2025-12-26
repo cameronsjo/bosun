@@ -185,6 +185,17 @@
     Required="false"
     Mask="false"/>
 
+  <Config
+    Name="Infrastructure Directory"
+    Target="BOSUN_INFRA_DIR"
+    Default="infrastructure"
+    Mode=""
+    Description="Subdirectory containing infrastructure templates (default: infrastructure)"
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false"/>
+
   <!-- Timezone -->
   <Config
     Name="Timezone"

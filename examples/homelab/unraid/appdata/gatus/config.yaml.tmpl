@@ -1,0 +1,52 @@
+{{- $secrets := . -}}
+# Gatus uptime monitoring configuration
+
+storage:
+  type: sqlite
+  path: /data/gatus.db
+
+ui:
+  title: Homelab Status
+  header: Infrastructure Status
+
+alerting:
+  discord:
+    webhook-url: "{{ $secrets.discord.webhook_url }}"
+    title: "Homelab Alert"
+
+endpoints:
+  - name: Traefik
+    group: Infrastructure
+    url: https://localhost:443
+    interval: 30s
+    client:
+      insecure: true
+    conditions:
+      - "[STATUS] < 500"
+    alerts:
+      - type: discord
+        failure-threshold: 3
+        send-on-resolved: true
+
+  - name: Authelia
+    group: Infrastructure
+    url: https://auth.{{ $secrets.network.domain }}/.well-known/openid-configuration
+    interval: 60s
+    conditions:
+      - "[STATUS] == 200"
+    alerts:
+      - type: discord
+        failure-threshold: 3
+        send-on-resolved: true
+
+  - name: Homepage
+    group: Apps
+    url: https://{{ $secrets.network.domain }}
+    interval: 60s
+    conditions:
+      - "[STATUS] == 200"
+      - "[RESPONSE_TIME] < 2000"
+    alerts:
+      - type: discord
+        failure-threshold: 3
+        send-on-resolved: true

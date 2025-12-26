@@ -1,0 +1,42 @@
+{{- $secrets := . -}}
+# Traefik dynamic configuration
+# Add routers and services for non-Docker apps
+
+http:
+  routers:
+    # Example: Route to an external service
+    # nas:
+    #   rule: Host(`nas.{{ $secrets.network.domain }}`)
+    #   entryPoints:
+    #     - websecure
+    #   service: nas
+    #   middlewares:
+    #     - authelia
+
+  services:
+    # nas:
+    #   loadBalancer:
+    #     servers:
+    #       - url: http://192.168.1.100:5000
+
+  middlewares:
+    # Authelia forward auth
+    authelia:
+      forwardAuth:
+        address: http://authelia:9091/api/authz/forward-auth
+        trustForwardHeader: true
+        authResponseHeaders:
+          - Remote-User
+          - Remote-Groups
+          - Remote-Email
+          - Remote-Name
+
+    # Security headers
+    secure-headers:
+      headers:
+        browserXssFilter: true
+        contentTypeNosniff: true
+        frameDeny: true
+        stsIncludeSubdomains: true
+        stsPreload: true
+        stsSeconds: 31536000

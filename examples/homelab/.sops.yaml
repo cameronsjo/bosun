@@ -1,0 +1,5 @@
+# SOPS configuration
+# Replace the age public key with your own (from age-keygen output)
+creation_rules:
+  - path_regex: secrets\.yaml$
+    age: age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
