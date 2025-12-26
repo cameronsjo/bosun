@@ -188,9 +188,9 @@
   <Config
     Name="Infrastructure Directory"
     Target="BOSUN_INFRA_DIR"
-    Default="infrastructure"
+    Default="."
     Mode=""
-    Description="Subdirectory containing infrastructure templates (default: infrastructure)"
+    Description="Subdirectory containing infrastructure templates. Use '.' for dedicated infra repos where root is the infrastructure. Use a path like 'infrastructure' for repos where infra is nested (e.g., dotfiles)."
     Type="Variable"
     Display="advanced"
     Required="false"

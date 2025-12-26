@@ -477,8 +477,8 @@ func TestConfigFromEnv_InfraDir(t *testing.T) {
 	t.Run("uses default when not set", func(t *testing.T) {
 		_ = os.Unsetenv("BOSUN_INFRA_DIR")
 		cfg := ConfigFromEnv()
-		if cfg.ReconcileConfig.InfraSubDir != "infrastructure" {
-			t.Errorf("InfraSubDir = %q, want infrastructure", cfg.ReconcileConfig.InfraSubDir)
+		if cfg.ReconcileConfig.InfraSubDir != "." {
+			t.Errorf("InfraSubDir = %q, want .", cfg.ReconcileConfig.InfraSubDir)
 		}
 	})
 

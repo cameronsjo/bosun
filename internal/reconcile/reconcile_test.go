@@ -20,7 +20,7 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, "/app/logs", cfg.LogDir)
 	assert.Equal(t, "/mnt/appdata", cfg.LocalAppdataPath)
 	assert.Equal(t, "/mnt/user/appdata", cfg.RemoteAppdataPath)
-	assert.Equal(t, "infrastructure", cfg.InfraSubDir)
+	assert.Equal(t, ".", cfg.InfraSubDir)
 	assert.Equal(t, 5, cfg.BackupsToKeep)
 }
 
@@ -223,14 +223,14 @@ func TestReconciler_RenderTemplates(t *testing.T) {
 		tmpDir := t.TempDir()
 		stagingDir := filepath.Join(tmpDir, "staging")
 		repoDir := filepath.Join(tmpDir, "repo")
-		infraDir := filepath.Join(repoDir, "infrastructure")
 
-		require.NoError(t, os.MkdirAll(infraDir, 0755))
+		// Create repo dir (infra is at root with InfraSubDir=".")
+		require.NoError(t, os.MkdirAll(repoDir, 0755))
 
 		cfg := &Config{
-			RepoDir:    repoDir,
-			StagingDir: stagingDir,
-			InfraSubDir: "infrastructure",
+			RepoDir:     repoDir,
+			StagingDir:  stagingDir,
+			InfraSubDir: ".",
 		}
 		r := NewReconciler(cfg)
 

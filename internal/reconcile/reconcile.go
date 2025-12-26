@@ -41,6 +41,8 @@ type Config struct {
 	// SecretsFiles is the list of SOPS-encrypted secret files to decrypt.
 	SecretsFiles []string
 	// InfraSubDir is the subdirectory within the repo containing infrastructure configs.
+	// Use "." for repos where the root is the infrastructure (dedicated infra repos).
+	// Use a path like "infrastructure" for repos where infra is nested (e.g., dotfiles).
 	InfraSubDir string
 
 	// BackupsToKeep is the number of backups to retain.
@@ -57,7 +59,7 @@ func DefaultConfig() *Config {
 		LogDir:            "/app/logs",
 		LocalAppdataPath:  "/mnt/appdata",
 		RemoteAppdataPath: "/mnt/user/appdata",
-		InfraSubDir:       "infrastructure",
+		InfraSubDir:       ".",
 		BackupsToKeep:     5,
 	}
 }
