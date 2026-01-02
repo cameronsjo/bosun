@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.8](https://github.com/cameronsjo/bosun/compare/v0.2.7...v0.2.8) (2026-01-02)
+
+
+### Bug Fixes
+
+* **reconcile:** deploy all compose files, not just core.yml ([98d470e](https://github.com/cameronsjo/bosun/commit/98d470e1846f00b00b6d5a6c55860ae88b5e0d98))
+
 ## [0.2.7](https://github.com/cameronsjo/bosun/compare/v0.2.6...v0.2.7) (2026-01-02)
 
 
