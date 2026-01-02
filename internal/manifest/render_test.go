@@ -484,8 +484,8 @@ func TestWriteOutputs(t *testing.T) {
 	err := WriteOutputs(output, tmpDir, "test-stack")
 	require.NoError(t, err)
 
-	// Verify compose output
-	composePath := filepath.Join(tmpDir, "compose", "test-stack.yml")
+	// Verify compose output (uses .yml.tmpl for Go template processing during reconcile)
+	composePath := filepath.Join(tmpDir, "compose", "test-stack.yml.tmpl")
 	_, err = os.Stat(composePath)
 	require.NoError(t, err)
 
@@ -518,7 +518,7 @@ func TestWriteOutputs_EmptyOutput(t *testing.T) {
 	require.NoError(t, err)
 
 	// Empty outputs should not create files
-	composePath := filepath.Join(tmpDir, "compose", "empty-stack.yml")
+	composePath := filepath.Join(tmpDir, "compose", "empty-stack.yml.tmpl")
 	_, err = os.Stat(composePath)
 	assert.True(t, os.IsNotExist(err))
 }
@@ -538,7 +538,7 @@ func TestWriteOutputs_PartialOutput(t *testing.T) {
 	require.NoError(t, err)
 
 	// Compose should exist
-	composePath := filepath.Join(tmpDir, "compose", "partial-stack.yml")
+	composePath := filepath.Join(tmpDir, "compose", "partial-stack.yml.tmpl")
 	_, err = os.Stat(composePath)
 	require.NoError(t, err)
 
@@ -671,4 +671,208 @@ func TestLoadServiceManifest_InvalidYAML(t *testing.T) {
 	_, err := LoadServiceManifest(manifestPath)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parse manifest")
+}
+
+func TestRenderService_WithComposeOverride(t *testing.T) {
+	provisionsDir := filepath.Join("testdata", "provisions")
+
+	manifest := &ServiceManifest{
+		Name:       "override-app",
+		Provisions: []string{"container"},
+		Config: map[string]any{
+			"image": "ghcr.io/example/override-app:latest",
+		},
+		Compose: map[string]any{
+			"services": map[string]any{
+				"${name}": map[string]any{
+					"user": "99:100",
+					"environment": map[string]any{
+						"CUSTOM_VAR": "custom_value",
+					},
+					"volumes": []any{
+						"/mnt/data/${name}:/app/data",
+					},
+				},
+			},
+		},
+	}
+
+	output, err := RenderService(manifest, provisionsDir)
+	require.NoError(t, err)
+	require.NotNil(t, output)
+
+	services, ok := output.Compose["services"].(map[string]any)
+	require.True(t, ok)
+
+	app, ok := services["override-app"].(map[string]any)
+	require.True(t, ok)
+
+	// Should have image from provision
+	assert.Equal(t, "ghcr.io/example/override-app:latest", app["image"])
+
+	// Should have user from override
+	assert.Equal(t, "99:100", app["user"])
+
+	// Should have custom environment from override
+	env, ok := app["environment"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "custom_value", env["CUSTOM_VAR"])
+
+	// Should have volumes from override (interpolated)
+	volumes, ok := app["volumes"].([]any)
+	require.True(t, ok)
+	require.Len(t, volumes, 1)
+	assert.Contains(t, volumes[0], "/mnt/data/override-app:/app/data")
+}
+
+func TestRenderService_WithChromeSidecar(t *testing.T) {
+	provisionsDir := filepath.Join("testdata", "provisions")
+
+	manifest := &ServiceManifest{
+		Name:       "chrome-app",
+		Provisions: []string{"container"},
+		Needs:      []string{"chrome"},
+		Config: map[string]any{
+			"image": "ghcr.io/example/chrome-app:latest",
+		},
+	}
+
+	output, err := RenderService(manifest, provisionsDir)
+	require.NoError(t, err)
+
+	services, ok := output.Compose["services"].(map[string]any)
+	require.True(t, ok)
+
+	// Should have main service
+	_, hasMain := services["chrome-app"]
+	assert.True(t, hasMain)
+
+	// Should have chrome sidecar
+	chrome, hasChrome := services["chrome-app-chrome"].(map[string]any)
+	require.True(t, hasChrome)
+	assert.Contains(t, chrome["image"], "alpine-chrome")
+}
+
+func TestRenderService_ComposeOverridePreservesGoTemplates(t *testing.T) {
+	provisionsDir := filepath.Join("testdata", "provisions")
+
+	manifest := &ServiceManifest{
+		Name:       "secret-app",
+		Provisions: []string{"container"},
+		Config: map[string]any{
+			"image": "ghcr.io/example/secret-app:latest",
+		},
+		Compose: map[string]any{
+			"services": map[string]any{
+				"${name}": map[string]any{
+					"environment": map[string]any{
+						"DB_PASSWORD":  "{{ .apps.secret_app.db_password }}",
+						"SECRET_KEY":   "{{ .apps.secret_app.secret_key }}",
+						"NORMAL_VALUE": "regular_value",
+					},
+				},
+			},
+		},
+	}
+
+	output, err := RenderService(manifest, provisionsDir)
+	require.NoError(t, err)
+
+	services, ok := output.Compose["services"].(map[string]any)
+	require.True(t, ok)
+
+	app, ok := services["secret-app"].(map[string]any)
+	require.True(t, ok)
+
+	env, ok := app["environment"].(map[string]any)
+	require.True(t, ok)
+
+	// Go templates should be preserved (not interpolated)
+	assert.Equal(t, "{{ .apps.secret_app.db_password }}", env["DB_PASSWORD"])
+	assert.Equal(t, "{{ .apps.secret_app.secret_key }}", env["SECRET_KEY"])
+	assert.Equal(t, "regular_value", env["NORMAL_VALUE"])
+}
+
+func TestRenderService_ComposeOverrideMergesEnvironment(t *testing.T) {
+	provisionsDir := filepath.Join("testdata", "provisions")
+
+	manifest := &ServiceManifest{
+		Name:       "merge-env-app",
+		Provisions: []string{"container"},
+		Config: map[string]any{
+			"image": "ghcr.io/example/merge-env-app:latest",
+		},
+		Compose: map[string]any{
+			"services": map[string]any{
+				"${name}": map[string]any{
+					"environment": map[string]any{
+						"EXTRA_VAR": "extra_value",
+					},
+				},
+			},
+		},
+	}
+
+	output, err := RenderService(manifest, provisionsDir)
+	require.NoError(t, err)
+
+	services, ok := output.Compose["services"].(map[string]any)
+	require.True(t, ok)
+
+	app, ok := services["merge-env-app"].(map[string]any)
+	require.True(t, ok)
+
+	env, ok := app["environment"].(map[string]any)
+	require.True(t, ok)
+
+	// Should have TZ from provision's container template
+	assert.Equal(t, "America/Chicago", env["TZ"])
+	// Should have EXTRA_VAR from override
+	assert.Equal(t, "extra_value", env["EXTRA_VAR"])
+}
+
+func TestRenderService_ComposeOverrideAddsNetworks(t *testing.T) {
+	provisionsDir := filepath.Join("testdata", "provisions")
+
+	manifest := &ServiceManifest{
+		Name:       "network-app",
+		Provisions: []string{"container"},
+		Config: map[string]any{
+			"image": "ghcr.io/example/network-app:latest",
+		},
+		Compose: map[string]any{
+			"services": map[string]any{
+				"${name}": map[string]any{
+					"networks": []any{
+						"custom-net",
+					},
+				},
+			},
+			"networks": map[string]any{
+				"custom-net": map[string]any{
+					"driver": "bridge",
+				},
+			},
+		},
+	}
+
+	output, err := RenderService(manifest, provisionsDir)
+	require.NoError(t, err)
+
+	services, ok := output.Compose["services"].(map[string]any)
+	require.True(t, ok)
+
+	app, ok := services["network-app"].(map[string]any)
+	require.True(t, ok)
+
+	// Should have networks
+	networks, ok := app["networks"].([]any)
+	require.True(t, ok)
+	assert.Contains(t, networks, "custom-net")
+
+	// Should have network definition
+	networkDefs, ok := output.Compose["networks"].(map[string]any)
+	require.True(t, ok)
+	_, hasCustomNet := networkDefs["custom-net"]
+	assert.True(t, hasCustomNet)
 }

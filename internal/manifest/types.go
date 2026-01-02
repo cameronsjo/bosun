@@ -50,7 +50,11 @@ type ServiceManifest struct {
 	// e.g., needs: [postgres, redis] auto-provisions with sidecar defaults.
 	Needs []string `yaml:"needs,omitempty"`
 
-	// Compose is used in raw mode to pass through compose config directly.
+	// Compose provides compose configuration.
+	// In raw mode: used as the complete compose output (passthrough).
+	// In provision mode: merged as overrides after provisions are applied.
+	// This allows app-specific customization (env vars, volumes, user, etc.)
+	// while still benefiting from DRY provisions.
 	Compose map[string]any `yaml:"compose,omitempty"`
 }
 
@@ -114,10 +118,11 @@ type Stack struct {
 // SidecarDefaults provides default configuration for common sidecars.
 // These are used when a service uses the "needs" shorthand.
 var SidecarDefaults = map[string]map[string]any{
-	"postgres": {"version": "17", "db": "${name}", "db_password": "${db_password}"},
+	"postgres": {"version": "17", "db": "${name}", "db_user": "postgres", "db_password": "${db_password}"},
 	"redis":    {"version": "7"},
 	"mysql":    {"version": "8", "db": "${name}", "db_password": "${db_password}"},
 	"mongodb":  {"version": "7", "db": "${name}"},
+	"chrome":   {},
 }
 
 // TargetNames lists the output targets for provisioning.

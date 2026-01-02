@@ -135,6 +135,27 @@ func RenderService(manifest *ServiceManifest, provisionsDir string) (*RenderOutp
 		mergeProvision(output, provision)
 	}
 
+	// Apply compose overrides from manifest (allows app-specific customization)
+	if manifest.Compose != nil {
+		// Interpolate variables in the compose override
+		composeYAML, err := yaml.Marshal(manifest.Compose)
+		if err != nil {
+			return nil, fmt.Errorf("marshal compose override: %w", err)
+		}
+
+		interpolated, err := Interpolate(string(composeYAML), variables)
+		if err != nil {
+			return nil, fmt.Errorf("interpolate compose override: %w", err)
+		}
+
+		var composeOverride map[string]any
+		if err := yaml.Unmarshal([]byte(interpolated), &composeOverride); err != nil {
+			return nil, fmt.Errorf("parse compose override: %w", err)
+		}
+
+		output.Compose = DeepMerge(output.Compose, composeOverride)
+	}
+
 	return output, nil
 }
 
@@ -226,9 +247,13 @@ func RenderStack(stackPath, provisionsDir, servicesDir string, valuesOverlay map
 		output.Gatus = DeepMerge(output.Gatus, serviceOutput.Gatus)
 	}
 
-	// Add network definitions from stack
+	// Merge network definitions from stack (don't overwrite service networks)
 	if stack.Networks != nil {
-		output.Compose["networks"] = stack.Networks
+		if existing, ok := output.Compose["networks"].(map[string]any); ok {
+			output.Compose["networks"] = DeepMerge(existing, stack.Networks)
+		} else {
+			output.Compose["networks"] = stack.Networks
+		}
 	}
 
 	return output, nil
@@ -244,7 +269,7 @@ func WriteOutputs(output *RenderOutput, outputDir, stackName string) error {
 		content  map[string]any
 		filename string
 	}{
-		"compose": {output.Compose, stackName + ".yml"},
+		"compose": {output.Compose, stackName + ".yml.tmpl"},
 		"traefik": {output.Traefik, "dynamic.yml"},
 		"gatus":   {output.Gatus, "endpoints.yml"},
 	}

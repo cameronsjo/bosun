@@ -23,6 +23,9 @@ type Config struct {
 	// ManifestDir is the path to the manifest directory.
 	ManifestDir string
 
+	// provisionsDir is the path to the provisions directory.
+	provisionsDir string
+
 	// ComposeFile is the path to the main docker-compose.yml.
 	ComposeFile string
 
@@ -78,6 +81,15 @@ type AlertConfig struct {
 
 // configFile represents the structure of .bosun/config.yml or bosun.yml.
 type configFile struct {
+	// Root is the project root (relative paths are resolved from here).
+	Root string `yaml:"root"`
+
+	// ManifestDir overrides the default manifest directory.
+	ManifestDir string `yaml:"manifest_dir"`
+
+	// ProvisionsDir overrides the default provisions directory.
+	ProvisionsDir string `yaml:"provisions_dir"`
+
 	Infrastructure struct {
 		Containers []string `yaml:"containers"`
 	} `yaml:"infrastructure"`
@@ -95,7 +107,10 @@ type configFile struct {
 }
 
 // FindRoot searches upward from the current directory to find the project root.
-// The project root is identified by the presence of a bosun/ or manifest/ directory.
+// The project root is identified by:
+// - bosun.yaml or bosun.yml config file
+// - bosun/ directory with docker-compose.yml
+// - manifest/ or manifests/ directory
 func FindRoot() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
@@ -103,6 +118,14 @@ func FindRoot() (string, error) {
 	}
 
 	for dir != "/" {
+		// Check for bosun.yaml or bosun.yml config file
+		for _, name := range []string{"bosun.yaml", "bosun.yml"} {
+			configPath := filepath.Join(dir, name)
+			if _, err := os.Stat(configPath); err == nil {
+				return dir, nil
+			}
+		}
+
 		// Check for bosun directory with docker-compose.yml
 		bosunDir := filepath.Join(dir, "bosun")
 		if info, err := os.Stat(bosunDir); err == nil && info.IsDir() {
@@ -112,10 +135,12 @@ func FindRoot() (string, error) {
 			}
 		}
 
-		// Check for manifest directory
-		manifestDir := filepath.Join(dir, "manifest")
-		if info, err := os.Stat(manifestDir); err == nil && info.IsDir() {
-			return dir, nil
+		// Check for manifest or manifests directory
+		for _, name := range []string{"manifest", "manifests"} {
+			manifestDir := filepath.Join(dir, name)
+			if info, err := os.Stat(manifestDir); err == nil && info.IsDir() {
+				return dir, nil
+			}
 		}
 
 		// Move up one directory
@@ -126,7 +151,7 @@ func FindRoot() (string, error) {
 		dir = parent
 	}
 
-	return "", fmt.Errorf("project root not found (no bosun/ or manifest/ directory)")
+	return "", fmt.Errorf("project root not found (no bosun.yaml, bosun/, manifest/, or manifests/ directory)")
 }
 
 // Load finds the project root and returns a Config.
@@ -136,14 +161,38 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	// Load config file if present
+	fileCfg := loadConfigFile(root)
+
+	// Determine manifest directory
+	manifestDir := filepath.Join(root, "manifest")
+	if fileCfg.ManifestDir != "" {
+		manifestDir = filepath.Join(root, fileCfg.ManifestDir)
+	} else {
+		// Check for manifests/ (plural) if manifest/ doesn't exist
+		if _, err := os.Stat(manifestDir); os.IsNotExist(err) {
+			manifestsDir := filepath.Join(root, "manifests")
+			if _, err := os.Stat(manifestsDir); err == nil {
+				manifestDir = manifestsDir
+			}
+		}
+	}
+
+	// Determine provisions directory
+	provisionsDir := filepath.Join(manifestDir, "provisions")
+	if fileCfg.ProvisionsDir != "" {
+		provisionsDir = filepath.Join(root, fileCfg.ProvisionsDir)
+	}
+
 	tunnelProvider, tunnelConfig := loadTunnelConfig(root)
 	alertConfig := loadAlertConfig(root)
 
 	cfg := &Config{
 		Root:            root,
-		ManifestDir:     filepath.Join(root, "manifest"),
+		ManifestDir:     manifestDir,
+		provisionsDir:   provisionsDir,
 		ComposeFile:     filepath.Join(root, "bosun", "docker-compose.yml"),
-		SnapshotsDir:    filepath.Join(root, "manifest", ".bosun", "snapshots"),
+		SnapshotsDir:    filepath.Join(manifestDir, ".bosun", "snapshots"),
 		infraContainers: loadInfraContainers(root),
 		tunnelProvider:  tunnelProvider,
 		tunnelConfig:    tunnelConfig,
@@ -151,6 +200,26 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// loadConfigFile loads the bosun config file if present.
+func loadConfigFile(root string) configFile {
+	var cfg configFile
+
+	for _, name := range []string{"bosun.yaml", "bosun.yml", ".bosun/config.yml"} {
+		path := filepath.Join(root, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			continue
+		}
+		break
+	}
+
+	return cfg
 }
 
 // loadInfraContainers loads infrastructure container names from config files.
@@ -184,6 +253,9 @@ func loadInfraContainers(root string) []string {
 
 // ProvisionsDir returns the path to the provisions directory.
 func (c *Config) ProvisionsDir() string {
+	if c.provisionsDir != "" {
+		return c.provisionsDir
+	}
 	return filepath.Join(c.ManifestDir, "provisions")
 }
 
