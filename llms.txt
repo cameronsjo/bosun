@@ -1,0 +1,96 @@
+# Bosun
+
+> GitOps for Docker Compose on bare metal. "Helm for home."
+
+Bosun is a single-binary CLI tool that brings GitOps workflows to homelab Docker Compose deployments. Push to git, bosun receives orders, containers deploy automatically. No Kubernetes required.
+
+## Nautical Theme
+
+Everything uses nautical/Below Deck terminology:
+- **Bosun** - CLI tool and orchestrator (receives orders, deploys containers)
+- **Manifest** - Service definitions (crew manifest)
+- **Provisions** - Reusable config templates (supplies stocked aboard)
+- **Captain** - GitHub (gives orders)
+- **Radio** - Webhook/tunnel (Tailscale Funnel or Cloudflare Tunnel)
+- **Crew** - Containers
+- **Yacht** - Server/host running Docker Compose
+
+## Documentation
+
+- [README](https://raw.githubusercontent.com/cameronsjo/bosun/main/README.md): Installation, quick start, overview
+- [Commands Reference](https://raw.githubusercontent.com/cameronsjo/bosun/main/docs/commands.md): Full CLI documentation
+- [Concepts](https://raw.githubusercontent.com/cameronsjo/bosun/main/docs/concepts.md): Architecture and components
+- [Manifest System](https://raw.githubusercontent.com/cameronsjo/bosun/main/docs/manifest-system.md): DRY service definitions
+- [GitOps Workflow](https://raw.githubusercontent.com/cameronsjo/bosun/main/docs/gitops.md): Reconciliation and triggers
+- [Daemon Architecture](https://raw.githubusercontent.com/cameronsjo/bosun/main/docs/architecture/daemon-split.md): Unix socket API, webhooks
+- [Security](https://raw.githubusercontent.com/cameronsjo/bosun/main/docs/security.md): Security considerations
+- [Troubleshooting](https://raw.githubusercontent.com/cameronsjo/bosun/main/docs/troubleshooting.md): Common issues and solutions
+
+## Key Commands
+
+### Setup & Diagnostics
+- `bosun init` - Interactive setup wizard
+- `bosun doctor` - Pre-flight checks
+- `bosun status` - Health dashboard
+
+### Daemon (GitOps)
+- `bosun daemon` - Run the GitOps daemon
+- `bosun trigger` - Trigger reconciliation
+- `bosun reconcile` - One-shot GitOps workflow
+
+### Docker Management
+- `bosun yacht up/down/restart/status` - Manage Docker Compose services
+- `bosun crew list/logs/inspect/restart` - Manage individual containers
+
+### Manifest & Provisioning
+- `bosun provision [stack]` - Render manifest to compose/traefik/gatus configs
+- `bosun provisions` - List available provisions
+- `bosun create <template> <name>` - Scaffold new service
+- `bosun lint` - Validate manifests
+
+## Architecture
+
+```
+git push -> webhook/poll -> clone repo -> decrypt secrets (SOPS) ->
+template configs (chezmoi) -> rsync to target -> docker compose up
+```
+
+The daemon provides:
+- Unix socket API at `/var/run/bosun.sock`
+- Multi-provider webhooks (GitHub, GitLab, Gitea, Bitbucket)
+- Configurable polling intervals
+- Health endpoints (`/health`, `/ready`)
+
+## Project Structure
+
+```
+bosun/
+├── cmd/bosun/main.go       # Entry point
+├── internal/
+│   ├── cmd/                # Cobra CLI commands
+│   ├── config/             # Configuration loading
+│   ├── docker/             # Docker SDK wrapper
+│   ├── manifest/           # YAML rendering engine
+│   ├── reconcile/          # GitOps engine
+│   └── ui/                 # Colored console output
+├── manifest/               # Service definitions
+│   ├── provisions/         # Reusable config templates
+│   ├── services/           # Service manifests
+│   └── stacks/             # Stack definitions
+└── docs/                   # Documentation
+```
+
+## Technology Stack
+
+- Go 1.24+
+- Docker + Docker Compose v2
+- SOPS + Age (secret encryption)
+- Chezmoi (templating)
+- Cobra (CLI framework)
+
+## Optional
+
+- [ADR: Manifest System](https://raw.githubusercontent.com/cameronsjo/bosun/main/docs/adr/0001-manifest-system.md)
+- [ADR: Go Rewrite](https://raw.githubusercontent.com/cameronsjo/bosun/main/docs/adr/0010-go-rewrite.md)
+- [ADR: Container vs Daemon](https://raw.githubusercontent.com/cameronsjo/bosun/main/docs/adr/0008-container-vs-daemon.md)
+- [Migration Guide](https://raw.githubusercontent.com/cameronsjo/bosun/main/docs/migration.md): From bash/Python version
