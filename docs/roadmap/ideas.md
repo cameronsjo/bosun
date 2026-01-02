@@ -3,6 +3,7 @@
 | Item | Priority | Effort | Notes |
 |------|----------|--------|-------|
 | Linux-first docs & examples | p1 | medium | Unraid-tested but generic Linux instructions |
+| WebUI for review/trigger | p2 | large | Dashboard to view status, trigger reconcile, review logs |
 | Package manager distribution | p2 | large | apt, yum, dnf, brew, AUR for easier installation |
 | Local dev mode | p3 | medium | `bosun dev up` watches filesystem, hot reload |
 | Secret rotation helper | p3 | medium | `bosun secrets rotate` generates, re-encrypts, deploys |
