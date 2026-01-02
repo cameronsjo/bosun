@@ -20,6 +20,31 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 )
 
+func init() {
+	// Override go-git's default SSH auth builder to gracefully handle missing SSH agents.
+	// By default, go-git calls NewSSHAgentAuth() which errors if SSH_AUTH_SOCK isn't set.
+	// We use our own auth chain: SSH agent -> key files (BOSUN_SSH_KEY, /config/*, ~/.ssh/*).
+	ssh.DefaultAuthBuilder = func(user string) (ssh.AuthMethod, error) {
+		// Try SSH agent first
+		if auth := getSSHAgentAuth(); auth != nil {
+			if sshAuth, ok := auth.(ssh.AuthMethod); ok {
+				return sshAuth, nil
+			}
+		}
+		// Fall back to key file auth
+		keyAuth, err := getSSHKeyFileAuth()
+		if err != nil {
+			return nil, err
+		}
+		if keyAuth != nil {
+			if sshAuth, ok := keyAuth.(ssh.AuthMethod); ok {
+				return sshAuth, nil
+			}
+		}
+		return nil, nil
+	}
+}
+
 // Git operation timeouts
 const (
 	GitCloneTimeout = 5 * time.Minute
