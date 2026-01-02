@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7](https://github.com/cameronsjo/bosun/compare/v0.2.6...v0.2.7) (2026-01-02)
+
+
+### Features
+
+* **git:** add SSH key file support for git operations ([fb26cde](https://github.com/cameronsjo/bosun/commit/fb26cde35b9e044f46d7061a2fb36e4a9140fe86))
+
+
+### Bug Fixes
+
+* **config:** change InfraSubDir default from 'infrastructure' to '.' ([7759a86](https://github.com/cameronsjo/bosun/commit/7759a86139413a8343f6b9da2ffddfb2bc48c278))
+* **reconcile:** override go-git DefaultAuthBuilder for SSH without agent ([4b0b831](https://github.com/cameronsjo/bosun/commit/4b0b83192ed92d74c672fe2bbdd116e263748ff7))
+
 ## [0.2.6](https://github.com/cameronsjo/bosun/compare/v0.2.5...v0.2.6) (2025-12-26)
 
 
