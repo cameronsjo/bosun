@@ -447,16 +447,24 @@ func (r *Reconciler) deployLocal(ctx context.Context) error {
 	// Reload services with rollback support.
 	if !r.config.DryRun {
 		ui.Info("  Reloading services...")
-		composeFile := filepath.Join(appdata, "compose", "core.yml")
-		if err := r.deploy.ComposeUpWithRollback(ctx, composeFile, r.lastBackupPath); err != nil {
-			// Check if rollback succeeded or failed
-			if errors.Is(err, ErrRollbackFailed) {
-				return fmt.Errorf("CRITICAL: service reload and rollback both failed: %w", err)
-			} else if errors.Is(err, ErrRollbackSucceeded) {
-				return fmt.Errorf("service reload failed but rollback succeeded: %w", err)
+		composeDir := filepath.Join(appdata, "compose")
+		composeFiles, err := filepath.Glob(filepath.Join(composeDir, "*.yml"))
+		if err != nil {
+			return fmt.Errorf("failed to glob compose files: %w", err)
+		}
+		if len(composeFiles) == 0 {
+			ui.Warning("No compose files found in %s", composeDir)
+		} else {
+			if err := r.deploy.ComposeUpMultipleWithRollback(ctx, composeFiles, r.lastBackupPath); err != nil {
+				// Check if rollback succeeded or failed
+				if errors.Is(err, ErrRollbackFailed) {
+					return fmt.Errorf("CRITICAL: service reload and rollback both failed: %w", err)
+				} else if errors.Is(err, ErrRollbackSucceeded) {
+					return fmt.Errorf("service reload failed but rollback succeeded: %w", err)
+				}
+				// Other errors (no backup available, etc.)
+				return fmt.Errorf("service reload failed: %w", err)
 			}
-			// Other errors (no backup available, etc.)
-			return fmt.Errorf("service reload failed: %w", err)
 		}
 		if err := r.deploy.SignalContainer(ctx, "agentgateway", "SIGHUP"); err != nil {
 			ui.Warning("Could not reload agentgateway: %v", err)

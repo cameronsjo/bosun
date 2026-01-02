@@ -600,7 +600,18 @@ func (d *DeployOps) EnsureRemoteDir(ctx context.Context, host, dir string) error
 // Uses ComposeUpTimeout if the parent context has no deadline.
 // Returns an error if compose up fails (caller should handle rollback).
 func (d *DeployOps) ComposeUp(ctx context.Context, composeFile string) error {
+	return d.ComposeUpMultiple(ctx, []string{composeFile})
+}
+
+// ComposeUpMultiple runs docker compose up for multiple compose files.
+// Uses ComposeUpTimeout if the parent context has no deadline.
+// Returns an error if compose up fails (caller should handle rollback).
+func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string) error {
 	if d.DryRun {
+		return nil
+	}
+
+	if len(composeFiles) == 0 {
 		return nil
 	}
 
@@ -611,7 +622,14 @@ func (d *DeployOps) ComposeUp(ctx context.Context, composeFile string) error {
 		defer cancel()
 	}
 
-	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--remove-orphans", "--wait")
+	// Build args: docker compose -f file1.yml -f file2.yml up -d --remove-orphans --wait
+	args := []string{"compose"}
+	for _, f := range composeFiles {
+		args = append(args, "-f", f)
+	}
+	args = append(args, "up", "-d", "--remove-orphans", "--wait")
+
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
@@ -632,7 +650,18 @@ func (d *DeployOps) ComposeUp(ctx context.Context, composeFile string) error {
 //   - ErrRollbackFailed wrapped with both errors if rollback also failed
 //   - Original error if no backup available
 func (d *DeployOps) ComposeUpWithRollback(ctx context.Context, composeFile, backupPath string) error {
-	deployErr := d.ComposeUp(ctx, composeFile)
+	return d.ComposeUpMultipleWithRollback(ctx, []string{composeFile}, backupPath)
+}
+
+// ComposeUpMultipleWithRollback runs docker compose up for multiple files and rolls back on failure.
+// backupPath should contain the previous config files for rollback.
+// Returns:
+//   - nil on success
+//   - ErrRollbackSucceeded wrapped with deployment error if rollback succeeded
+//   - ErrRollbackFailed wrapped with both errors if rollback also failed
+//   - Original error if no backup available
+func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFiles []string, backupPath string) error {
+	deployErr := d.ComposeUpMultiple(ctx, composeFiles)
 	if deployErr == nil {
 		return nil
 	}
@@ -642,17 +671,33 @@ func (d *DeployOps) ComposeUpWithRollback(ctx context.Context, composeFile, back
 		return fmt.Errorf("deployment failed (no backup available for rollback): %w", deployErr)
 	}
 
-	// Check if backup exists
-	backupComposeFile := filepath.Join(backupPath, filepath.Base(composeFile))
-	if _, statErr := os.Stat(backupComposeFile); os.IsNotExist(statErr) {
-		return fmt.Errorf("deployment failed (backup file not found for rollback): %w", deployErr)
+	// Build backup file list and verify they exist
+	var backupFiles []string
+	for _, f := range composeFiles {
+		backupFile := filepath.Join(backupPath, filepath.Base(f))
+		if _, statErr := os.Stat(backupFile); os.IsNotExist(statErr) {
+			// Skip missing backup files - they may be new stacks
+			continue
+		}
+		backupFiles = append(backupFiles, backupFile)
+	}
+
+	if len(backupFiles) == 0 {
+		return fmt.Errorf("deployment failed (no backup files found for rollback): %w", deployErr)
 	}
 
 	// Attempt rollback with previous config
 	rollbackCtx, cancel := context.WithTimeout(context.Background(), ComposeUpTimeout)
 	defer cancel()
 
-	rollbackCmd := exec.CommandContext(rollbackCtx, "docker", "compose", "-f", backupComposeFile, "up", "-d", "--remove-orphans")
+	// Build rollback args
+	args := []string{"compose"}
+	for _, f := range backupFiles {
+		args = append(args, "-f", f)
+	}
+	args = append(args, "up", "-d", "--remove-orphans")
+
+	rollbackCmd := exec.CommandContext(rollbackCtx, "docker", args...)
 	var rollbackStderr bytes.Buffer
 	rollbackCmd.Stderr = &rollbackStderr
 
