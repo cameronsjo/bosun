@@ -1,0 +1,73 @@
+# .dockerignore - Reduce build context size and prevent sensitive files from being included
+#
+# This file is used when building the Dockerfile directly (not via goreleaser).
+# Goreleaser copies only the binary, but direct docker builds need this.
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Build artifacts (we want the binary copied explicitly, not from context)
+build/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go build cache and module cache
+.go/
+
+# Test artifacts
+coverage.out
+coverage.html
+*.test
+*.prof
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation (not needed at runtime)
+docs/
+*.md
+!README.md
+LICENSE
+
+# Development files
+Makefile
+.goreleaser.yaml
+.pre-commit-config.yaml
+release-please-config.json
+.release-please-manifest.json
+
+# Scripts (not needed at runtime)
+scripts/
+
+# Completions (generated, not needed in container)
+completions/
+
+# Examples and templates (not needed at runtime)
+examples/
+unraid-templates/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+Jenkinsfile
+
+# Local config that shouldn't be in image
+.env
+.env.*
+*.local
+
+# Claude Code
+CLAUDE.md
+.claude/
+llms.txt
