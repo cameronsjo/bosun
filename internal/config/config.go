@@ -32,6 +32,9 @@ type Config struct {
 	// SnapshotsDir is the path to the snapshots directory.
 	SnapshotsDir string
 
+	// projectName is the docker compose project name.
+	projectName string
+
 	// infraContainers holds the configured infrastructure container names.
 	infraContainers []string
 
@@ -89,6 +92,11 @@ type configFile struct {
 
 	// ProvisionsDir overrides the default provisions directory.
 	ProvisionsDir string `yaml:"provisions_dir"`
+
+	// ProjectName sets the docker compose project name for all stacks.
+	// This ensures all containers share a namespace and --remove-orphans works correctly.
+	// Defaults to the project root directory name.
+	ProjectName string `yaml:"project_name"`
 
 	Infrastructure struct {
 		Containers []string `yaml:"containers"`
@@ -187,12 +195,19 @@ func Load() (*Config, error) {
 	tunnelProvider, tunnelConfig := loadTunnelConfig(root)
 	alertConfig := loadAlertConfig(root)
 
+	// Determine project name (defaults to directory name)
+	projectName := fileCfg.ProjectName
+	if projectName == "" {
+		projectName = filepath.Base(root)
+	}
+
 	cfg := &Config{
 		Root:            root,
 		ManifestDir:     manifestDir,
 		provisionsDir:   provisionsDir,
 		ComposeFile:     filepath.Join(root, "bosun", "docker-compose.yml"),
 		SnapshotsDir:    filepath.Join(manifestDir, ".bosun", "snapshots"),
+		projectName:     projectName,
 		infraContainers: loadInfraContainers(root),
 		tunnelProvider:  tunnelProvider,
 		tunnelConfig:    tunnelConfig,
@@ -272,6 +287,13 @@ func (c *Config) StacksDir() string {
 // OutputDir returns the path to the output directory.
 func (c *Config) OutputDir() string {
 	return filepath.Join(c.ManifestDir, "output")
+}
+
+// ProjectName returns the docker compose project name.
+// All stacks share this project name so containers are properly namespaced
+// and --remove-orphans works correctly across stack boundaries.
+func (c *Config) ProjectName() string {
+	return c.projectName
 }
 
 // InfraContainers returns the list of infrastructure container names.

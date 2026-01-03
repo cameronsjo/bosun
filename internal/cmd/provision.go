@@ -156,6 +156,13 @@ func runProvision(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = provisionLock.Release() }()
 
+	// Inject project name into compose output for consistent container namespacing.
+	// This ensures all stacks share the same docker compose project, so
+	// --remove-orphans works correctly and container name conflicts are avoided.
+	if output.Compose != nil {
+		output.Compose["name"] = cfg.ProjectName()
+	}
+
 	if err := manifest.WriteOutputs(output, cfg.OutputDir(), stackName); err != nil {
 		return fmt.Errorf("write outputs: %w", err)
 	}
