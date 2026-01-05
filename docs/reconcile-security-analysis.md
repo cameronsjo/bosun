@@ -1,7 +1,7 @@
 # Reconcile Workflow: Security and Edge Case Analysis
 
 **Date:** 2024-12-22
-**Scope:** `/Users/cameron/Projects/unops/internal/reconcile/` and `/Users/cameron/Projects/unops/internal/cmd/reconcile.go`
+**Scope:** `internal/internal/reconcile/` and `internal/internal/cmd/reconcile.go`
 **Severity Levels:** CRITICAL, HIGH, MEDIUM, LOW
 
 ---
@@ -29,7 +29,7 @@ The reconcile workflow is the core GitOps engine for deploying infrastructure co
 
 ### 1.1 RESOLVED: Clone Failure Mid-Way
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/git.go`
+**File:** `internal/internal/reconcile/git.go`
 
 **Previous Finding (MEDIUM):** If `git clone` fails mid-way, a partial `.git` directory may remain.
 
@@ -37,7 +37,7 @@ The reconcile workflow is the core GitOps engine for deploying infrastructure co
 
 ### 1.2 RESOLVED: No Network Timeout Handling
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/git.go`
+**File:** `internal/internal/reconcile/git.go`
 
 **Previous Finding (MEDIUM):** Git operations had no explicit timeout.
 
@@ -45,7 +45,7 @@ The reconcile workflow is the core GitOps engine for deploying infrastructure co
 
 ### 1.3 Authentication Failures Not Distinguished
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/git.go:45-47`
+**File:** `internal/internal/reconcile/git.go:45-47`
 
 **Finding (LOW):** Authentication failures (bad SSH key, expired token) produce the same error format as other failures.
 
@@ -55,7 +55,7 @@ The reconcile workflow is the core GitOps engine for deploying infrastructure co
 
 ### 1.4 Dirty Working Directory Ignored
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/git.go:68-75`
+**File:** `internal/internal/reconcile/git.go:68-75`
 
 **Finding (MEDIUM):** The `Pull()` function uses `git reset --hard` which discards local changes without warning.
 
@@ -71,7 +71,7 @@ The reconcile workflow is the core GitOps engine for deploying infrastructure co
 
 ### 2.1 Missing Age Key - Error Not Actionable
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/sops.go`
+**File:** `internal/internal/reconcile/sops.go`
 
 **Finding (HIGH):** When the SOPS age key is missing, users need actionable guidance.
 
@@ -81,7 +81,7 @@ The reconcile workflow is the core GitOps engine for deploying infrastructure co
 
 ### 2.2 Corrupted Encrypted File Not Detected Early
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/reconcile.go:187-195`
+**File:** `internal/internal/reconcile/reconcile.go:187-195`
 
 **Finding (MEDIUM):** File existence is checked, but no validation that it's a valid SOPS file:
 
@@ -97,7 +97,7 @@ if _, err := os.Stat(path); err != nil {
 
 ### 2.3 Wrong Key for File - No Key Rotation Support
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/sops.go:20-30`
+**File:** `internal/internal/reconcile/sops.go:20-30`
 
 **Finding (MEDIUM):** If the file was encrypted with a different age key (key rotation scenario), decryption fails with no guidance.
 
@@ -107,7 +107,7 @@ if _, err := os.Stat(path); err != nil {
 
 ### 2.4 RESOLVED: Decrypted Secrets in Memory
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/sops.go` and `/Users/cameron/Projects/unops/internal/reconcile/template.go`
+**File:** `internal/internal/reconcile/sops.go` and `internal/internal/reconcile/template.go`
 
 **Previous Finding (CRITICAL):** Decrypted secrets were passed via environment variables to external processes.
 
@@ -127,7 +127,7 @@ if _, err := os.Stat(path); err != nil {
 
 ### 3.1 Missing Template Variables - Silent Failure
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/template.go`
+**File:** `internal/internal/reconcile/template.go`
 
 **Finding (HIGH):** Go template rendering with missing variables may produce empty output or partial output depending on template syntax.
 
@@ -140,7 +140,7 @@ if _, err := os.Stat(path); err != nil {
 
 ### 3.2 Invalid Template Syntax
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/template.go`
+**File:** `internal/internal/reconcile/template.go`
 
 **Finding (MEDIUM):** Template syntax errors are caught but not validated before deployment.
 
@@ -159,7 +159,7 @@ if _, err := os.Stat(path); err != nil {
 
 ### 3.4 Template Output Not Validated
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/template.go:63-64`
+**File:** `internal/internal/reconcile/template.go:63-64`
 
 **Finding (HIGH):** Rendered output is written directly without validation:
 
@@ -183,7 +183,7 @@ if err := os.WriteFile(outputFile, stdout.Bytes(), 0644); err != nil {
 
 ### 4.1 SSH Connection Failures - No Retry
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/deploy.go`
+**File:** `internal/internal/reconcile/deploy.go`
 
 **Finding (HIGH):** SSH failures need retry logic for transient issues.
 
@@ -191,7 +191,7 @@ if err := os.WriteFile(outputFile, stdout.Bytes(), 0644); err != nil {
 
 ### 4.2 RESOLVED: Rsync Dependency and Partial Failure
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/deploy.go`
+**File:** `internal/internal/reconcile/deploy.go`
 
 **Previous Finding (HIGH):** Rsync dependency and potential for partial transfers.
 
@@ -203,7 +203,7 @@ if err := os.WriteFile(outputFile, stdout.Bytes(), 0644); err != nil {
 
 ### 4.3 Remote Host Unreachable - No Pre-Check
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/reconcile.go:372-375`
+**File:** `internal/internal/reconcile/reconcile.go:372-375`
 
 **Finding (MEDIUM):** Remote mode only discovers host unreachability during first rsync.
 
@@ -213,7 +213,7 @@ if err := os.WriteFile(outputFile, stdout.Bytes(), 0644); err != nil {
 
 ### 4.4 Disk Space on Remote Not Checked
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/deploy.go:163-180`
+**File:** `internal/internal/reconcile/deploy.go:163-180`
 
 **Finding (MEDIUM):** No disk space check before deployment.
 
@@ -223,7 +223,7 @@ if err := os.WriteFile(outputFile, stdout.Bytes(), 0644); err != nil {
 
 ### 4.5 Permission Denied - Error Message Unclear
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/deploy.go:175-178`
+**File:** `internal/internal/reconcile/deploy.go:175-178`
 
 **Finding (LOW):** Permission errors from rsync are wrapped but not distinguished:
 
@@ -241,7 +241,7 @@ return fmt.Errorf("rsync failed: %w: %s", err, stderr.String())
 
 ### 5.1 Backup Directory Full - Silent Failure
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/deploy.go:27-59`
+**File:** `internal/internal/reconcile/deploy.go:27-59`
 
 **Finding (MEDIUM):** Tar command failure is ignored:
 
@@ -256,7 +256,7 @@ _ = cmd.Run()
 
 ### 5.2 Corrupt Backup Detection
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/deploy.go:27-59`
+**File:** `internal/internal/reconcile/deploy.go:27-59`
 
 **Finding (MEDIUM):** No verification that backup tar.gz is valid.
 
@@ -266,7 +266,7 @@ _ = cmd.Run()
 
 ### 5.3 No Restore Mechanism
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/deploy.go`
+**File:** `internal/internal/reconcile/deploy.go`
 
 **Finding (HIGH):** No restore-from-backup functionality implemented.
 
@@ -280,7 +280,7 @@ _ = cmd.Run()
 
 ### 6.1 CRITICAL: Compose Up Failure - No Rollback
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/deploy.go:214-227, 230-244`
+**File:** `internal/internal/reconcile/deploy.go:214-227, 230-244`
 
 **Finding (CRITICAL):** If `docker compose up` fails, configs are already deployed and no rollback occurs:
 
@@ -299,7 +299,7 @@ if err := r.deploy.ComposeUp(ctx, filepath.Join(appdata, "compose", "core.yml"))
 
 ### 6.2 Container Health Check Not Verified
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/deploy.go:214-227`
+**File:** `internal/internal/reconcile/deploy.go:214-227`
 
 **Finding (HIGH):** No health check verification after `docker compose up`.
 
@@ -309,7 +309,7 @@ if err := r.deploy.ComposeUp(ctx, filepath.Join(appdata, "compose", "core.yml"))
 
 ### 6.3 Compose Up Timeout
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/deploy.go:219`
+**File:** `internal/internal/reconcile/deploy.go:219`
 
 **Finding (MEDIUM):** Docker compose up has no timeout:
 
@@ -327,7 +327,7 @@ cmd := exec.CommandContext(ctx, "docker", "compose", "-f", composeFile, "up", "-
 
 ### 7.1 Stale Lock Detection
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/reconcile.go:148-162`
+**File:** `internal/internal/reconcile/reconcile.go:148-162`
 
 **Finding (MEDIUM):** Uses `flock` which auto-releases on process death, but no stale lock detection mechanism for informational purposes.
 
@@ -337,7 +337,7 @@ cmd := exec.CommandContext(ctx, "docker", "compose", "-f", composeFile, "up", "-
 
 ### 7.2 Lock Timeout Not Configurable
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/reconcile.go:155`
+**File:** `internal/internal/reconcile/reconcile.go:155`
 
 **Finding (LOW):** Uses `LOCK_NB` (non-blocking), immediately fails if locked.
 
@@ -351,7 +351,7 @@ if err := syscall.Flock(int(fd.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != n
 
 ### 7.3 Graceful Unlock on Crash
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/reconcile.go:165-171`
+**File:** `internal/internal/reconcile/reconcile.go:165-171`
 
 **Finding (LOW - Already Handled):** Uses file descriptor-based locking which auto-releases on process termination.
 
@@ -363,7 +363,7 @@ if err := syscall.Flock(int(fd.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != n
 
 ### 8.1 CRITICAL: Secrets Could Appear in Logs
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/sops.go:27`
+**File:** `internal/internal/reconcile/sops.go:27`
 
 **Finding (CRITICAL):** SOPS stderr is included in error messages:
 
@@ -384,7 +384,7 @@ return nil, fmt.Errorf("sops decrypt failed for %s: %w: %s", file, err, stderr.S
 
 ### 8.2 Temporary File Cleanup
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/reconcile.go:211-216`
+**File:** `internal/internal/reconcile/reconcile.go:211-216`
 
 **Finding (MEDIUM):** Staging directory contains rendered secrets and is cleared only at start of next run:
 
@@ -403,7 +403,7 @@ if err := os.RemoveAll(r.config.StagingDir); err != nil {
 
 ### 8.3 SSH Key Handling
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/deploy.go:77, 163-180`
+**File:** `internal/internal/reconcile/deploy.go:77, 163-180`
 
 **Finding (MEDIUM):** SSH relies on default key locations and ssh-agent. No validation that keys exist before attempting connection.
 
@@ -413,7 +413,7 @@ if err := os.RemoveAll(r.config.StagingDir); err != nil {
 
 ### 8.4 RESOLVED: SOPS Age Key Exposure
 
-**File:** `/Users/cameron/Projects/unops/internal/reconcile/sops.go`
+**File:** `internal/internal/reconcile/sops.go`
 
 **Previous Finding (MEDIUM):** SOPS binary inherited all environment variables including `SOPS_AGE_KEY`.
 

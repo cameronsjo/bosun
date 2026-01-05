@@ -6,9 +6,9 @@ Evaluating
 
 ## Context
 
-Unraid is a primary target platform for unops. The [Community Apps (CA)](https://unraid.net/community/apps) plugin is the standard way Unraid users discover and install Docker containers.
+Unraid is a primary target platform for bosun. The [Community Apps (CA)](https://unraid.net/community/apps) plugin is the standard way Unraid users discover and install Docker containers.
 
-**Question:** Should we register unops components with Unraid Community Apps?
+**Question:** Should we register bosun components with Unraid Community Apps?
 
 ## Components to Consider
 
@@ -25,7 +25,7 @@ Based on [Unraid CA documentation](https://docs.unraid.net/unraid-os/using-unrai
 
 ### 1. Docker Image on Registry
 ```
-ghcr.io/cameronsjo/unops-bosun:latest
+ghcr.io/cameronsjo/bosun-bosun:latest
 ```
 - Must be public
 - Must have versioned tags (not just `latest`)
@@ -35,30 +35,30 @@ ghcr.io/cameronsjo/unops-bosun:latest
 ```xml
 <?xml version="1.0"?>
 <Container version="2">
-  <Name>unops-bosun</Name>
-  <Repository>ghcr.io/cameronsjo/unops-bosun</Repository>
-  <Registry>https://github.com/cameronsjo/unops/pkgs/container/unops-bosun</Registry>
+  <Name>bosun-bosun</Name>
+  <Repository>ghcr.io/cameronsjo/bosun-bosun</Repository>
+  <Registry>https://github.com/cameronsjo/bosun/pkgs/container/bosun-bosun</Registry>
   <Branch>
     <Tag>latest</Tag>
     <TagDescription>Latest stable release</TagDescription>
   </Branch>
   <Network>bridge</Network>
   <Privileged>false</Privileged>
-  <Support>https://forums.unraid.net/topic/XXXXX-unops-bosun/</Support>
-  <Project>https://github.com/cameronsjo/unops</Project>
+  <Support>https://forums.unraid.net/topic/XXXXX-bosun-bosun/</Support>
+  <Project>https://github.com/cameronsjo/bosun</Project>
   <Overview>
     GitOps for Docker Compose on bare metal. Push to GitHub, your server updates.
     Encrypted secrets with SOPS, templated configs with Chezmoi, instant webhook deploys.
   </Overview>
   <Category>Tools: Productivity:</Category>
-  <Icon>https://raw.githubusercontent.com/cameronsjo/unops/main/assets/icon.png</Icon>
+  <Icon>https://raw.githubusercontent.com/cameronsjo/bosun/main/assets/icon.png</Icon>
   <ExtraParams>--restart=unless-stopped</ExtraParams>
   <PostArgs/>
   <DonateText/>
   <DonateLink/>
   <DonateImg/>
 
-  <Config Name="Config Path" Target="/config" Default="/mnt/user/appdata/unops" Mode="rw" Description="Configuration directory" Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="Config Path" Target="/config" Default="/mnt/user/appdata/bosun" Mode="rw" Description="Configuration directory" Type="Path" Display="always" Required="true" Mask="false"/>
   <Config Name="Repo URL" Target="REPO_URL" Default="" Mode="" Description="Git repository URL for your configs" Type="Variable" Display="always" Required="true" Mask="false"/>
   <Config Name="Webhook Port" Target="8080" Default="8080" Mode="tcp" Description="Webhook listener port" Type="Port" Display="always" Required="true" Mask="false"/>
   <Config Name="Age Key File" Target="SOPS_AGE_KEY_FILE" Default="/config/age-key.txt" Mode="" Description="Path to Age private key" Type="Variable" Display="always" Required="true" Mask="false"/>
@@ -69,7 +69,7 @@ ghcr.io/cameronsjo/unops-bosun:latest
 ### 3. Support Thread
 - Create thread in [Unraid Forums](https://forums.unraid.net/)
 - Category: Docker Containers
-- Title: `[Support] unops-bosun - GitOps for Docker Compose`
+- Title: `[Support] bosun-bosun - GitOps for Docker Compose`
 - Must be actively monitored
 
 ### 4. Template Repository
@@ -80,7 +80,7 @@ ghcr.io/cameronsjo/unops-bosun:latest
   unraid-templates/
   ├── README.md
   └── templates/
-      └── unops-bosun.xml
+      └── bosun-bosun.xml
   ```
 
 ### 5. Submit to Squid
@@ -94,7 +94,7 @@ Skip CA registration, host templates ourselves:
 
 ```
 Users add template repo URL manually:
-https://github.com/cameronsjo/unops/tree/main/unraid-templates
+https://github.com/cameronsjo/bosun/tree/main/unraid-templates
 ```
 
 **Pros:**
@@ -121,7 +121,7 @@ https://github.com/cameronsjo/unops/tree/main/unraid-templates
 ## Recommendation
 
 **Phase 1: Self-hosted templates**
-- Ship XML templates in unops repo
+- Ship XML templates in bosun repo
 - Document manual installation
 - Test with early adopters
 - Iterate on template based on feedback

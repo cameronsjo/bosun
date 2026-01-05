@@ -146,7 +146,7 @@ The bosun doesn't care which tunnel is used. It just listens on port 8080:
 ## Configuration
 
 ```yaml
-# unops.yml (future)
+# bosun.yml (future)
 tunnel:
   provider: tailscale  # or: cloudflare
 

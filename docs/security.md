@@ -23,7 +23,7 @@ Bosun uses [SOPS](https://github.com/getsops/sops) (Secrets OPerationS) for encr
 - Partial encryption (only values are encrypted, keys remain readable)
 - Git-friendly encrypted file format
 
-**Implementation**: `/Users/cameron/Projects/unops/internal/reconcile/sops.go`
+**Implementation**: `internal/internal/reconcile/sops.go`
 
 ```go
 // SOPSOps provides SOPS decryption operations
@@ -49,7 +49,7 @@ Bosun uses [age](https://age-encryption.org/) as the encryption backend for SOPS
 
 ### Key Generation and Storage
 
-**Implementation**: `/Users/cameron/Projects/unops/internal/cmd/init.go`
+**Implementation**: `internal/internal/cmd/init.go`
 
 During `bosun init`, age keys are generated with secure defaults:
 
@@ -105,7 +105,7 @@ To rotate age keys:
 
 ### Temporary File Approach
 
-**Implementation**: `/Users/cameron/Projects/unops/internal/reconcile/template.go`
+**Implementation**: `internal/internal/reconcile/template.go`
 
 Secrets are passed to templates via temporary files rather than environment variables. This prevents:
 
@@ -165,7 +165,7 @@ This ensures cleanup occurs even if template rendering fails.
 
 ### Connection Validation
 
-**Implementation**: `/Users/cameron/Projects/unops/internal/reconcile/deploy.go`
+**Implementation**: `internal/internal/reconcile/deploy.go`
 
 SSH connections include multiple security controls:
 
@@ -208,7 +208,7 @@ Non-transient errors (authentication failures, host key verification) fail immed
 
 ### Timeout Controls
 
-**Operation Timeouts** (defined in `/Users/cameron/Projects/unops/internal/reconcile/deploy.go`):
+**Operation Timeouts** (defined in `internal/internal/reconcile/deploy.go`):
 
 | Operation | Timeout | Rationale |
 |-----------|---------|-----------|
@@ -219,7 +219,7 @@ Non-transient errors (authentication failures, host key verification) fail immed
 
 ### Host Validation
 
-**Implementation**: `/Users/cameron/Projects/unops/internal/reconcile/validation.go`
+**Implementation**: `internal/internal/reconcile/validation.go`
 
 SSH hosts are validated to prevent command injection:
 
@@ -245,7 +245,7 @@ hostPattern = regexp.MustCompile(`^([a-zA-Z0-9_-]+@)?[a-zA-Z0-9.-]+$`)
 
 ### Blocked Variables
 
-**Implementation**: `/Users/cameron/Projects/unops/internal/reconcile/template.go`
+**Implementation**: `internal/internal/reconcile/template.go`
 
 Environment variables are filtered to prevent secret leakage to child processes:
 
@@ -324,7 +324,7 @@ func sanitizeStderr(stderr string) string {
 
 ### Lock File Implementation
 
-**Implementation**: `/Users/cameron/Projects/unops/internal/lock/lock.go`
+**Implementation**: `internal/internal/lock/lock.go`
 
 Bosun uses file-based locking to prevent concurrent operations:
 
@@ -376,7 +376,7 @@ Locks are automatically released when:
 
 ### Tar Extraction Validation
 
-**Implementation**: `/Users/cameron/Projects/unops/internal/cmd/emergency.go`
+**Implementation**: `internal/internal/cmd/emergency.go`
 
 Tar archives are validated to prevent directory traversal attacks (zip slip):
 
@@ -409,7 +409,7 @@ if _, err := io.CopyN(outFile, tr, maxFileSize); err != nil && err != io.EOF {
 
 ### Validated Inputs
 
-**Implementation**: `/Users/cameron/Projects/unops/internal/reconcile/validation.go`
+**Implementation**: `internal/internal/reconcile/validation.go`
 
 | Input | Pattern | Rejects |
 |-------|---------|---------|
