@@ -61,7 +61,7 @@ func TestProvisionCmd_RequiresStackName(t *testing.T) {
 	// when no stack name is provided and config is available
 	output, err := executeCmd(t, "provision", "--help")
 	assert.NoError(t, err)
-	assert.Contains(t, output, "[stack]")
+	assert.Contains(t, output, "[stack|chart]")
 }
 
 func TestProvisionsCmd_Help(t *testing.T) {
