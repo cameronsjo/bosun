@@ -1,0 +1,15 @@
+apiVersion: bosun.io/v1
+kind: Chart
+name: testapp
+version: 1.0.0
+description: Test application for unit tests
+
+templates:
+  - container
+
+dependencies:
+  - name: postgres
+    version: "17"
+    values:
+      db: testdb
+      db_user: testuser

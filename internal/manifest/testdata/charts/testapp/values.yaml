@@ -1,0 +1,2 @@
+image: ghcr.io/example/testapp:latest
+port: 8080

@@ -1,0 +1,12 @@
+apiVersion: bosun.io/v1
+kind: Template
+
+compose:
+  services:
+    {{ .Values.name }}-db:
+      image: postgres:{{ .Values.version }}
+      container_name: {{ .Values.name }}-db
+      restart: unless-stopped
+      environment:
+        - POSTGRES_DB={{ .Values.db }}
+        - POSTGRES_USER={{ .Values.db_user }}

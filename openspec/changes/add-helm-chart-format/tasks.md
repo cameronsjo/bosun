@@ -49,7 +49,7 @@
 
 - [x] 7.1 Fix TestProvisionCmd_RequiresStackName for new usage text
 - [x] 7.2 Add tests for --set flag parsing (TestParseSetValues)
-- [ ] 7.3 Add unit tests for Go template engine
-- [ ] 7.4 Add unit tests for ChartLoader
-- [ ] 7.5 Add integration tests for chart rendering
-- [ ] 7.6 Add tests for migration command
+- [x] 7.3 Add unit tests for Go template engine (TestTemplateEngine_*)
+- [x] 7.4 Add unit tests for ChartLoader (TestChartLoader_*)
+- [x] 7.5 Add integration tests for chart rendering (TestChartLoader_RenderChart, TestChartLoader_RenderStack)
+- [x] 7.6 Add tests for migration command (TestConvertInterpolation, TestEnsureManifestHeader, TestConvertToChart)
