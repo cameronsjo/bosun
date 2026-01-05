@@ -3,12 +3,13 @@ package manifest
 import (
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // ErrPathTraversal indicates an attempted path traversal attack.
@@ -187,9 +188,17 @@ func RenderStack(stackPath, provisionsDir, servicesDir string, valuesOverlay map
 
 	// Warn if manifest is unversioned
 	if meta.APIVersion == "" {
-		log.Printf("Warning: stack %s is missing apiVersion field (run 'bosun migrate' to update)", stackPath)
+		log.Warn().
+			Str(log.FieldComponent, log.ComponentManifest).
+			Str("stack", stackPath).
+			Msg("Stack is missing apiVersion field (run 'bosun migrate' to update)")
 	} else if meta.Kind != "" && meta.Kind != KindStack {
-		log.Printf("Warning: stack %s has kind %s, expected %s", stackPath, meta.Kind, KindStack)
+		log.Warn().
+			Str(log.FieldComponent, log.ComponentManifest).
+			Str("stack", stackPath).
+			Str("kind", meta.Kind).
+			Str("expected", KindStack).
+			Msg("Stack has unexpected kind")
 	}
 
 	var stack Stack
@@ -219,9 +228,17 @@ func RenderStack(stackPath, provisionsDir, servicesDir string, valuesOverlay map
 
 		// Warn if manifest is unversioned
 		if serviceMeta.APIVersion == "" {
-			log.Printf("Warning: service %s is missing apiVersion field (run 'bosun migrate' to update)", serviceFile)
+			log.Warn().
+				Str(log.FieldComponent, log.ComponentManifest).
+				Str("service", serviceFile).
+				Msg("Service is missing apiVersion field (run 'bosun migrate' to update)")
 		} else if serviceMeta.Kind != "" && serviceMeta.Kind != KindService {
-			log.Printf("Warning: service %s has kind %s, expected %s", serviceFile, serviceMeta.Kind, KindService)
+			log.Warn().
+				Str(log.FieldComponent, log.ComponentManifest).
+				Str("service", serviceFile).
+				Str("kind", serviceMeta.Kind).
+				Str("expected", KindService).
+				Msg("Service has unexpected kind")
 		}
 
 		var manifest ServiceManifest
@@ -331,9 +348,17 @@ func LoadServiceManifest(path string) (*ServiceManifest, error) {
 
 	// Warn if manifest is unversioned
 	if meta.APIVersion == "" {
-		log.Printf("Warning: service %s is missing apiVersion field (run 'bosun migrate' to update)", path)
+		log.Warn().
+			Str(log.FieldComponent, log.ComponentManifest).
+			Str("service", path).
+			Msg("Service is missing apiVersion field (run 'bosun migrate' to update)")
 	} else if meta.Kind != "" && meta.Kind != KindService {
-		log.Printf("Warning: service %s has kind %s, expected %s", path, meta.Kind, KindService)
+		log.Warn().
+			Str(log.FieldComponent, log.ComponentManifest).
+			Str("service", path).
+			Str("kind", meta.Kind).
+			Str("expected", KindService).
+			Msg("Service has unexpected kind")
 	}
 
 	var manifest ServiceManifest

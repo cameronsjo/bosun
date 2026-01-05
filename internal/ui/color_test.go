@@ -8,40 +8,54 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/cameronsjo/bosun/internal/log"
 )
+
+// init ensures tests run in console mode for consistent output testing.
+func init() {
+	log.Init(&log.Options{
+		Format: log.FormatConsole,
+	})
+}
 
 // captureColorOutput captures output from the color package.
 // The color package uses color.Output which defaults to os.Stdout.
 func captureColorOutput(fn func()) string {
-	// Save original state
+	// Ensure console mode for testing.
+	log.Init(&log.Options{
+		Format: log.FormatConsole,
+	})
+
+	// Save original state.
 	oldNoColor := color.NoColor
 	oldOutput := color.Output
 
-	// Configure for testing
+	// Configure for testing.
 	color.NoColor = true
 
-	// Create pipe
+	// Create pipe.
 	r, w, _ := os.Pipe()
 
-	// Set color.Output to our pipe
+	// Set color.Output to our pipe.
 	color.Output = w
 
-	// Also redirect os.Stdout for fmt.Printf calls
+	// Also redirect os.Stdout for fmt.Printf calls.
 	oldStdout := os.Stdout
 	os.Stdout = w
 
-	// Run the function
+	// Run the function.
 	fn()
 
-	// Close writer
+	// Close writer.
 	w.Close()
 
-	// Restore
+	// Restore.
 	color.Output = oldOutput
 	color.NoColor = oldNoColor
 	os.Stdout = oldStdout
 
-	// Read output
+	// Read output.
 	var buf bytes.Buffer
 	_, _ = io.Copy(&buf, r)
 	r.Close()

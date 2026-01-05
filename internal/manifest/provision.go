@@ -2,11 +2,12 @@ package manifest
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // LoadProvision loads a provision file, interpolates variables, and parses YAML.
@@ -40,9 +41,17 @@ func loadProvisionInternal(provisionName string, variables map[string]any, provi
 
 	// Warn if manifest is unversioned
 	if meta.APIVersion == "" {
-		log.Printf("Warning: provision %s is missing apiVersion field (run 'bosun migrate' to update)", provisionName)
+		log.Warn().
+			Str(log.FieldComponent, log.ComponentManifest).
+			Str("provision", provisionName).
+			Msg("Provision is missing apiVersion field (run 'bosun migrate' to update)")
 	} else if meta.Kind != "" && meta.Kind != KindProvision {
-		log.Printf("Warning: provision %s has kind %s, expected %s", provisionName, meta.Kind, KindProvision)
+		log.Warn().
+			Str(log.FieldComponent, log.ComponentManifest).
+			Str("provision", provisionName).
+			Str("kind", meta.Kind).
+			Str("expected", KindProvision).
+			Msg("Provision has unexpected kind")
 	}
 
 	// Interpolate BEFORE YAML parsing
