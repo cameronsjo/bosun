@@ -24,6 +24,7 @@ var (
 	provisionDryRun bool
 	provisionDiff   bool
 	provisionValues string
+	provisionSet    []string
 )
 
 // provisionCmd renders manifest to compose/traefik/gatus.
@@ -37,10 +38,12 @@ Supports both legacy (provisions) and Helm-aligned (charts) formats.
 The format is auto-detected based on directory structure.
 
 Examples:
-  bosun provision core           # Render the 'core' stack
-  bosun provision -n core        # Dry run - show output without writing
-  bosun provision -d core        # Show diff against existing files
-  bosun provision -f prod.yaml   # Apply values overlay`,
+  bosun provision core                    # Render the 'core' stack
+  bosun provision -n core                 # Dry run - show output without writing
+  bosun provision -d core                 # Show diff against existing files
+  bosun provision -f prod.yaml core       # Apply values overlay from file
+  bosun provision --set port=8080 core    # Override individual value
+  bosun provision --set db.host=localhost --set db.port=5432 core`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runProvision,
 }
@@ -113,6 +116,7 @@ func init() {
 	provisionCmd.Flags().BoolVarP(&provisionDryRun, "dry-run", "n", false, "Show what would be generated without writing")
 	provisionCmd.Flags().BoolVarP(&provisionDiff, "diff", "d", false, "Show diff against existing output files")
 	provisionCmd.Flags().StringVarP(&provisionValues, "values", "f", "", "Apply values overlay file (YAML)")
+	provisionCmd.Flags().StringArrayVar(&provisionSet, "set", nil, "Set values on the command line (can be repeated, e.g., --set key=value)")
 
 	// Chart subcommands
 	chartCmd.AddCommand(chartListCmd)
@@ -141,6 +145,19 @@ func runProvision(cmd *cobra.Command, args []string) error {
 		valuesOverlay, err = manifest.LoadValuesOverlay(provisionValues)
 		if err != nil {
 			return fmt.Errorf("load values: %w", err)
+		}
+	}
+
+	// Apply --set overrides with highest priority
+	if len(provisionSet) > 0 {
+		setOverrides, err := parseSetValues(provisionSet)
+		if err != nil {
+			return fmt.Errorf("parse --set values: %w", err)
+		}
+		if valuesOverlay == nil {
+			valuesOverlay = setOverrides
+		} else {
+			valuesOverlay = manifest.DeepMerge(valuesOverlay, setOverrides)
 		}
 	}
 
@@ -562,4 +579,58 @@ func runListTemplates(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// parseSetValues parses --set key=value arguments into a nested map.
+// Supports dot notation for nested keys: --set db.host=localhost
+func parseSetValues(setArgs []string) (map[string]any, error) {
+	result := make(map[string]any)
+
+	for _, arg := range setArgs {
+		parts := strings.SplitN(arg, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid --set format %q (expected key=value)", arg)
+		}
+
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+
+		if key == "" {
+			return nil, fmt.Errorf("empty key in --set %q", arg)
+		}
+
+		// Handle dot notation for nested keys
+		setNestedValue(result, key, value)
+	}
+
+	return result, nil
+}
+
+// setNestedValue sets a value at a dot-separated key path.
+// e.g., "db.host" with value "localhost" creates {"db": {"host": "localhost"}}
+func setNestedValue(m map[string]any, key string, value any) {
+	parts := strings.Split(key, ".")
+
+	// Navigate/create nested maps
+	current := m
+	for i := 0; i < len(parts)-1; i++ {
+		part := parts[i]
+		if existing, ok := current[part]; ok {
+			if nested, ok := existing.(map[string]any); ok {
+				current = nested
+			} else {
+				// Overwrite non-map value with new map
+				nested := make(map[string]any)
+				current[part] = nested
+				current = nested
+			}
+		} else {
+			nested := make(map[string]any)
+			current[part] = nested
+			current = nested
+		}
+	}
+
+	// Set the final value
+	current[parts[len(parts)-1]] = value
 }

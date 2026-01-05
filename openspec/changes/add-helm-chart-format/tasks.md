@@ -29,6 +29,7 @@
 - [x] 4.4 Add `provision chart show` to display chart details
 - [x] 4.5 Add `provision template` subcommand for template operations
 - [x] 4.6 Add `provision template list` to list available templates
+- [x] 4.7 Add `--set` flag for CLI value overrides (highest precedence)
 
 ## 5. Migration Tooling
 
@@ -47,7 +48,8 @@
 ## 7. Testing
 
 - [x] 7.1 Fix TestProvisionCmd_RequiresStackName for new usage text
-- [ ] 7.2 Add unit tests for Go template engine
-- [ ] 7.3 Add unit tests for ChartLoader
-- [ ] 7.4 Add integration tests for chart rendering
-- [ ] 7.5 Add tests for migration command
+- [x] 7.2 Add tests for --set flag parsing (TestParseSetValues)
+- [ ] 7.3 Add unit tests for Go template engine
+- [ ] 7.4 Add unit tests for ChartLoader
+- [ ] 7.5 Add integration tests for chart rendering
+- [ ] 7.6 Add tests for migration command
