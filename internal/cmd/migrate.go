@@ -362,7 +362,7 @@ func migrateServices(servicesDir, chartsDir string, isDryRun bool) error {
 		}
 
 		// Create values.yaml
-		if svcManifest.Config != nil && len(svcManifest.Config) > 0 {
+		if len(svcManifest.Config) > 0 {
 			valuesContent, err := yaml.Marshal(svcManifest.Config)
 			if err != nil {
 				return fmt.Errorf("marshal values.yaml for %s: %w", svcManifest.Name, err)
