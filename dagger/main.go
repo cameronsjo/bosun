@@ -43,14 +43,14 @@ func (m *Bosun) Base(source *Directory) *Container {
 		WithWorkdir("/src")
 }
 
-// Test runs the Go test suite with race detection and coverage.
+// Test runs the Go test suite with coverage.
+// Note: -race flag is omitted because it requires CGO which isn't available in Alpine.
 func (m *Bosun) Test(ctx context.Context, source *Directory) *Container {
 	return m.Base(source).
 		WithExec([]string{"go", "mod", "download"}).
 		WithExec([]string{
 			"go", "test",
 			"-v",
-			"-race",
 			"-coverprofile=coverage.out",
 			"./...",
 		})
