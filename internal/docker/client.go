@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -14,6 +13,8 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/system"
 	"github.com/docker/docker/client"
+
+	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // statsJSON is the internal representation for container stats.
@@ -325,9 +326,11 @@ func (c *Client) GetAllContainerStats(ctx context.Context) ([]ContainerStats, er
 	for _, ctr := range containers {
 		s, err := c.GetContainerStats(ctx, ctr.Name)
 		if err != nil {
-			slog.Debug("Skipping container stats due to error",
-				slog.String("container", ctr.Name),
-				slog.String("error", err.Error()))
+			log.Debug().
+				Str(log.FieldComponent, log.ComponentDocker).
+				Str(log.FieldContainer, ctr.Name).
+				Err(err).
+				Msg("Skipping container stats due to error")
 			continue
 		}
 		stats = append(stats, *s)
