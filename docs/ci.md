@@ -98,8 +98,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dagger/dagger-action/install@v6.16.0
-      - run: dagger call ci --source .
+      - uses: dagger/dagger-for-github@v8
+        with:
+          version: "latest"
+          call: ci --source .
 ```
 
 ## Release Workflow

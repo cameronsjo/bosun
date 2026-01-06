@@ -16,14 +16,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Dagger
-        uses: dagger/dagger-action/install@v6.16.0
-
       - name: Run CI pipeline
-        run: dagger call ci --source .
+        uses: dagger/dagger-for-github@v8
+        with:
+          version: "latest"
+          call: ci --source .
 
       - name: Extract coverage
-        run: dagger call coverage --source . -o coverage.out
+        uses: dagger/dagger-for-github@v8
+        with:
+          version: "latest"
+          call: coverage --source . -o coverage.out
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
