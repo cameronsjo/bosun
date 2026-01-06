@@ -47,6 +47,8 @@ func (m *Bosun) Base(source *Directory) *Container {
 // Note: -race flag is omitted because it requires CGO which isn't available in Alpine.
 func (m *Bosun) Test(ctx context.Context, source *Directory) *Container {
 	return m.Base(source).
+		// Install git for tests that need it (e.g., reconcile/git_test.go)
+		WithExec([]string{"apk", "add", "--no-cache", "git"}).
 		WithExec([]string{"go", "mod", "download"}).
 		WithExec([]string{
 			"go", "test",
