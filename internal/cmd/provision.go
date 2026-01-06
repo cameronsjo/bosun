@@ -24,30 +24,76 @@ var (
 	provisionDryRun bool
 	provisionDiff   bool
 	provisionValues string
+	provisionSet    []string
 )
 
 // provisionCmd renders manifest to compose/traefik/gatus.
 var provisionCmd = &cobra.Command{
-	Use:     "provision [stack]",
+	Use:     "provision [stack|chart]",
 	Aliases: []string{"plunder", "loot", "forge"},
 	Short:   "Render manifest to compose/traefik/gatus",
-	Long: `Render a stack or service manifest into compose, traefik, and gatus outputs.
+	Long: `Render a stack or chart manifest into compose, traefik, and gatus outputs.
+
+Supports both legacy (provisions) and Helm-aligned (charts) formats.
+The format is auto-detected based on directory structure.
 
 Examples:
-  bosun provision core           # Render the 'core' stack
-  bosun provision -n core        # Dry run - show output without writing
-  bosun provision -d core        # Show diff against existing files
-  bosun provision -f prod.yaml   # Apply values overlay`,
+  bosun provision core                    # Render the 'core' stack
+  bosun provision -n core                 # Dry run - show output without writing
+  bosun provision -d core                 # Show diff against existing files
+  bosun provision -f prod.yaml core       # Apply values overlay from file
+  bosun provision --set port=8080 core    # Override individual value
+  bosun provision --set db.host=localhost --set db.port=5432 core`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runProvision,
 }
 
-// provisionsCmd lists available provisions.
+// provisionsCmd lists available provisions (legacy format).
 var provisionsCmd = &cobra.Command{
 	Use:   "provisions",
-	Short: "List available provisions",
+	Short: "List available provisions (legacy format)",
 	Long:  `List all available provision templates in the provisions directory.`,
 	RunE:  runListProvisions,
+}
+
+// chartCmd is the parent command for chart operations.
+var chartCmd = &cobra.Command{
+	Use:   "chart",
+	Short: "Manage charts (Helm-aligned format)",
+	Long:  `Commands for managing Helm-aligned chart definitions.`,
+}
+
+// chartListCmd lists available charts.
+var chartListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List available charts",
+	Long:  `List all available charts in the charts directory.`,
+	RunE:  runListCharts,
+}
+
+// chartShowCmd shows details about a chart.
+var chartShowCmd = &cobra.Command{
+	Use:   "show <name>",
+	Short: "Show chart details",
+	Long:  `Display detailed information about a chart including templates and dependencies.`,
+	Args:  cobra.ExactArgs(1),
+	RunE:  runShowChart,
+}
+
+// templateCmd is the parent command for template operations.
+var templateCmd = &cobra.Command{
+	Use:     "template",
+	Aliases: []string{"templates"},
+	Short:   "Manage templates (Helm-aligned format)",
+	Long:    `Commands for managing Helm-aligned template definitions.`,
+}
+
+// templateListCmd lists available templates.
+var templateListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List available templates",
+	Long:  `List all available templates in the templates directory.`,
+	RunE:  runListTemplates,
 }
 
 // createCmd scaffolds a new service from a template.
@@ -70,10 +116,20 @@ func init() {
 	provisionCmd.Flags().BoolVarP(&provisionDryRun, "dry-run", "n", false, "Show what would be generated without writing")
 	provisionCmd.Flags().BoolVarP(&provisionDiff, "diff", "d", false, "Show diff against existing output files")
 	provisionCmd.Flags().StringVarP(&provisionValues, "values", "f", "", "Apply values overlay file (YAML)")
+	provisionCmd.Flags().StringArrayVar(&provisionSet, "set", nil, "Set values on the command line (can be repeated, e.g., --set key=value)")
+
+	// Chart subcommands
+	chartCmd.AddCommand(chartListCmd)
+	chartCmd.AddCommand(chartShowCmd)
+
+	// Template subcommands
+	templateCmd.AddCommand(templateListCmd)
 
 	// Add commands to root
 	rootCmd.AddCommand(provisionCmd)
 	rootCmd.AddCommand(provisionsCmd)
+	rootCmd.AddCommand(chartCmd)
+	rootCmd.AddCommand(templateCmd)
 	rootCmd.AddCommand(createCmd)
 }
 
@@ -92,48 +148,41 @@ func runProvision(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	var output *manifest.RenderOutput
-	var stackName string
-
-	if len(args) == 0 {
-		// No argument - look for default stack or show usage
-		return fmt.Errorf("stack name required (e.g., 'bosun provision core')")
+	// Apply --set overrides with highest priority
+	if len(provisionSet) > 0 {
+		setOverrides, err := parseSetValues(provisionSet)
+		if err != nil {
+			return fmt.Errorf("parse --set values: %w", err)
+		}
+		if valuesOverlay == nil {
+			valuesOverlay = setOverrides
+		} else {
+			valuesOverlay = manifest.DeepMerge(valuesOverlay, setOverrides)
+		}
 	}
 
-	stackName = args[0]
+	if len(args) == 0 {
+		return fmt.Errorf("stack or chart name required (e.g., 'bosun provision core')")
+	}
 
-	// Check if it's a stack or service
-	stackPath := filepath.Join(cfg.StacksDir(), stackName+".yml")
-	servicePath := filepath.Join(cfg.ServicesDir(), stackName+".yml")
+	name := args[0]
 
-	if _, err := os.Stat(stackPath); err == nil {
-		// Render stack
-		output, err = manifest.RenderStack(stackPath, cfg.ProvisionsDir(), cfg.ServicesDir(), valuesOverlay)
-		if err != nil {
-			return fmt.Errorf("render stack: %w", err)
-		}
-	} else if _, err := os.Stat(servicePath); err == nil {
-		// Render single service
-		svcManifest, err := manifest.LoadServiceManifest(servicePath)
-		if err != nil {
-			return fmt.Errorf("load service: %w", err)
-		}
+	// Detect format and render accordingly
+	format := cfg.Format()
+	var output *manifest.RenderOutput
+	var outputName string
 
-		// Apply values overlay
-		if valuesOverlay != nil {
-			if svcManifest.Config == nil {
-				svcManifest.Config = make(map[string]any)
-			}
-			svcManifest.Config = manifest.DeepMerge(svcManifest.Config, valuesOverlay)
-		}
+	switch format {
+	case "helm":
+		output, outputName, err = provisionHelm(cfg, name, valuesOverlay)
+	case "legacy":
+		output, outputName, err = provisionLegacy(cfg, name, valuesOverlay)
+	default:
+		return fmt.Errorf("unknown project format (no charts/ or provisions/ directory found)")
+	}
 
-		output, err = manifest.RenderService(svcManifest, cfg.ProvisionsDir())
-		if err != nil {
-			return fmt.Errorf("render service: %w", err)
-		}
-		stackName = svcManifest.Name
-	} else {
-		return fmt.Errorf("stack or service not found: %s", stackName)
+	if err != nil {
+		return err
 	}
 
 	if provisionDryRun {
@@ -146,11 +195,15 @@ func runProvision(cmd *cobra.Command, args []string) error {
 	}
 
 	if provisionDiff {
-		return showDiff(output, cfg.OutputDir(), stackName)
+		return showDiff(output, cfg.OutputDir(), outputName)
 	}
 
 	// Acquire provision lock to prevent concurrent writes
-	provisionLock := lock.New(cfg.ManifestDir, "provision")
+	lockDir := cfg.ManifestDir
+	if format == "helm" {
+		lockDir = cfg.ChartsDir()
+	}
+	provisionLock := lock.New(lockDir, "provision")
 	if err := provisionLock.Acquire(); err != nil {
 		return fmt.Errorf("acquire provision lock: %w", err)
 	}
@@ -163,12 +216,96 @@ func runProvision(cmd *cobra.Command, args []string) error {
 		output.Compose["name"] = cfg.ProjectName()
 	}
 
-	if err := manifest.WriteOutputs(output, cfg.OutputDir(), stackName); err != nil {
+	if err := manifest.WriteOutputs(output, cfg.OutputDir(), outputName); err != nil {
 		return fmt.Errorf("write outputs: %w", err)
 	}
 
-	ui.Green.Printf("Successfully provisioned %s\n", stackName)
+	ui.Green.Printf("Successfully provisioned %s\n", outputName)
 	return nil
+}
+
+// provisionHelm renders using Helm-aligned format.
+func provisionHelm(cfg *config.Config, name string, valuesOverlay map[string]any) (*manifest.RenderOutput, string, error) {
+	loader, err := manifest.NewChartLoader(cfg.ChartsDir())
+	if err != nil {
+		return nil, "", fmt.Errorf("create chart loader: %w", err)
+	}
+
+	// Check for stack first
+	stackPath := filepath.Join(cfg.HelmStacksDir(), name, "Stack.yaml")
+	if _, err := os.Stat(stackPath); err == nil {
+		ui.Blue.Printf("Rendering stack: %s (Helm-aligned)\n", name)
+		output, err := loader.RenderStack(stackPath, valuesOverlay)
+		if err != nil {
+			return nil, "", fmt.Errorf("render stack: %w", err)
+		}
+		return output, name, nil
+	}
+
+	// Check for stack file without directory
+	stackFilePath := filepath.Join(cfg.HelmStacksDir(), name+".yaml")
+	if _, err := os.Stat(stackFilePath); err == nil {
+		ui.Blue.Printf("Rendering stack: %s (Helm-aligned)\n", name)
+		output, err := loader.RenderStack(stackFilePath, valuesOverlay)
+		if err != nil {
+			return nil, "", fmt.Errorf("render stack: %w", err)
+		}
+		return output, name, nil
+	}
+
+	// Try as chart
+	if loader.ChartExists(name) {
+		ui.Blue.Printf("Rendering chart: %s (Helm-aligned)\n", name)
+		output, err := loader.RenderChart(name, valuesOverlay)
+		if err != nil {
+			return nil, "", fmt.Errorf("render chart: %w", err)
+		}
+		return output, name, nil
+	}
+
+	return nil, "", fmt.Errorf("stack or chart not found: %s", name)
+}
+
+// provisionLegacy renders using legacy provisions format.
+func provisionLegacy(cfg *config.Config, name string, valuesOverlay map[string]any) (*manifest.RenderOutput, string, error) {
+	// Check if it's a stack or service
+	stackPath := filepath.Join(cfg.StacksDir(), name+".yml")
+	servicePath := filepath.Join(cfg.ServicesDir(), name+".yml")
+
+	if _, err := os.Stat(stackPath); err == nil {
+		// Render stack
+		ui.Blue.Printf("Rendering stack: %s (legacy)\n", name)
+		output, err := manifest.RenderStack(stackPath, cfg.ProvisionsDir(), cfg.ServicesDir(), valuesOverlay)
+		if err != nil {
+			return nil, "", fmt.Errorf("render stack: %w", err)
+		}
+		return output, name, nil
+	}
+
+	if _, err := os.Stat(servicePath); err == nil {
+		// Render single service
+		ui.Blue.Printf("Rendering service: %s (legacy)\n", name)
+		svcManifest, err := manifest.LoadServiceManifest(servicePath)
+		if err != nil {
+			return nil, "", fmt.Errorf("load service: %w", err)
+		}
+
+		// Apply values overlay
+		if valuesOverlay != nil {
+			if svcManifest.Config == nil {
+				svcManifest.Config = make(map[string]any)
+			}
+			svcManifest.Config = manifest.DeepMerge(svcManifest.Config, valuesOverlay)
+		}
+
+		output, err := manifest.RenderService(svcManifest, cfg.ProvisionsDir())
+		if err != nil {
+			return nil, "", fmt.Errorf("render service: %w", err)
+		}
+		return output, svcManifest.Name, nil
+	}
+
+	return nil, "", fmt.Errorf("stack or service not found: %s", name)
 }
 
 func runListProvisions(cmd *cobra.Command, args []string) error {
@@ -313,4 +450,194 @@ func showDiff(output *manifest.RenderOutput, outputDir, stackName string) error 
 	}
 
 	return nil
+}
+
+// runListCharts lists all available charts.
+func runListCharts(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	if cfg.Format() != "helm" {
+		return fmt.Errorf("project uses legacy format (no charts/ directory)")
+	}
+
+	loader, err := manifest.NewChartLoader(cfg.ChartsDir())
+	if err != nil {
+		return fmt.Errorf("create chart loader: %w", err)
+	}
+
+	charts, err := loader.ListCharts()
+	if err != nil {
+		return fmt.Errorf("list charts: %w", err)
+	}
+
+	if len(charts) == 0 {
+		fmt.Println("No charts found")
+		return nil
+	}
+
+	ui.Blue.Println("Available charts:")
+	for _, c := range charts {
+		chart, err := loader.GetChartInfo(c)
+		if err != nil {
+			fmt.Printf("  - %s\n", c)
+			continue
+		}
+
+		if chart.Version != "" {
+			fmt.Printf("  - %s (%s)\n", c, chart.Version)
+		} else {
+			fmt.Printf("  - %s\n", c)
+		}
+
+		if chart.Description != "" {
+			fmt.Printf("      %s\n", chart.Description)
+		}
+	}
+
+	return nil
+}
+
+// runShowChart shows details about a specific chart.
+func runShowChart(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	if cfg.Format() != "helm" {
+		return fmt.Errorf("project uses legacy format (no charts/ directory)")
+	}
+
+	loader, err := manifest.NewChartLoader(cfg.ChartsDir())
+	if err != nil {
+		return fmt.Errorf("create chart loader: %w", err)
+	}
+
+	chartName := args[0]
+	chart, err := loader.GetChartInfo(chartName)
+	if err != nil {
+		return fmt.Errorf("load chart: %w", err)
+	}
+
+	ui.Blue.Printf("Chart: %s\n", chart.Name)
+	if chart.Version != "" {
+		fmt.Printf("Version: %s\n", chart.Version)
+	}
+	if chart.Description != "" {
+		fmt.Printf("Description: %s\n", chart.Description)
+	}
+	if chart.Homepage != "" {
+		fmt.Printf("Homepage: %s\n", chart.Homepage)
+	}
+
+	if len(chart.Templates) > 0 {
+		fmt.Println("\nTemplates:")
+		for _, t := range chart.Templates {
+			fmt.Printf("  - %s\n", t)
+		}
+	}
+
+	if len(chart.Dependencies) > 0 {
+		fmt.Println("\nDependencies:")
+		for _, d := range chart.Dependencies {
+			if d.Version != "" {
+				fmt.Printf("  - %s:%s\n", d.Name, d.Version)
+			} else {
+				fmt.Printf("  - %s\n", d.Name)
+			}
+		}
+	}
+
+	return nil
+}
+
+// runListTemplates lists all available templates.
+func runListTemplates(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	if cfg.Format() != "helm" {
+		return fmt.Errorf("project uses legacy format (use 'bosun provisions' instead)")
+	}
+
+	loader, err := manifest.NewChartLoader(cfg.ChartsDir())
+	if err != nil {
+		return fmt.Errorf("create chart loader: %w", err)
+	}
+
+	templates, err := loader.ListTemplates()
+	if err != nil {
+		return fmt.Errorf("list templates: %w", err)
+	}
+
+	if len(templates) == 0 {
+		fmt.Println("No templates found")
+		return nil
+	}
+
+	ui.Blue.Println("Available templates:")
+	for _, t := range templates {
+		fmt.Printf("  - %s\n", t)
+	}
+
+	return nil
+}
+
+// parseSetValues parses --set key=value arguments into a nested map.
+// Supports dot notation for nested keys: --set db.host=localhost
+func parseSetValues(setArgs []string) (map[string]any, error) {
+	result := make(map[string]any)
+
+	for _, arg := range setArgs {
+		parts := strings.SplitN(arg, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid --set format %q (expected key=value)", arg)
+		}
+
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+
+		if key == "" {
+			return nil, fmt.Errorf("empty key in --set %q", arg)
+		}
+
+		// Handle dot notation for nested keys
+		setNestedValue(result, key, value)
+	}
+
+	return result, nil
+}
+
+// setNestedValue sets a value at a dot-separated key path.
+// e.g., "db.host" with value "localhost" creates {"db": {"host": "localhost"}}
+func setNestedValue(m map[string]any, key string, value any) {
+	parts := strings.Split(key, ".")
+
+	// Navigate/create nested maps
+	current := m
+	for i := 0; i < len(parts)-1; i++ {
+		part := parts[i]
+		if existing, ok := current[part]; ok {
+			if nested, ok := existing.(map[string]any); ok {
+				current = nested
+			} else {
+				// Overwrite non-map value with new map
+				nested := make(map[string]any)
+				current[part] = nested
+				current = nested
+			}
+		} else {
+			nested := make(map[string]any)
+			current[part] = nested
+			current = nested
+		}
+	}
+
+	// Set the final value
+	current[parts[len(parts)-1]] = value
 }

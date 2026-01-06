@@ -61,7 +61,7 @@ func TestProvisionCmd_RequiresStackName(t *testing.T) {
 	// when no stack name is provided and config is available
 	output, err := executeCmd(t, "provision", "--help")
 	assert.NoError(t, err)
-	assert.Contains(t, output, "[stack]")
+	assert.Contains(t, output, "[stack|chart]")
 }
 
 func TestProvisionsCmd_Help(t *testing.T) {
@@ -242,5 +242,72 @@ func TestCreateCmd_HelpWorks(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Contains(t, output, "create")
 		assert.Contains(t, output, "Usage:")
+	})
+}
+
+// TestProvisionCmd_SetFlag tests that the --set flag is available.
+func TestProvisionCmd_SetFlag(t *testing.T) {
+	t.Run("provision help contains set flag", func(t *testing.T) {
+		output, err := executeCmd(t, "provision", "--help")
+		assert.NoError(t, err)
+		assert.Contains(t, output, "--set")
+	})
+}
+
+// TestParseSetValues tests the --set value parsing.
+func TestParseSetValues(t *testing.T) {
+	t.Run("simple key=value", func(t *testing.T) {
+		result, err := parseSetValues([]string{"port=8080"})
+		require.NoError(t, err)
+		assert.Equal(t, "8080", result["port"])
+	})
+
+	t.Run("multiple values", func(t *testing.T) {
+		result, err := parseSetValues([]string{"port=8080", "host=localhost"})
+		require.NoError(t, err)
+		assert.Equal(t, "8080", result["port"])
+		assert.Equal(t, "localhost", result["host"])
+	})
+
+	t.Run("nested key with dot notation", func(t *testing.T) {
+		result, err := parseSetValues([]string{"db.host=localhost"})
+		require.NoError(t, err)
+		db, ok := result["db"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "localhost", db["host"])
+	})
+
+	t.Run("deeply nested key", func(t *testing.T) {
+		result, err := parseSetValues([]string{"db.connection.host=localhost"})
+		require.NoError(t, err)
+		db, ok := result["db"].(map[string]any)
+		require.True(t, ok)
+		conn, ok := db["connection"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "localhost", conn["host"])
+	})
+
+	t.Run("value with equals sign", func(t *testing.T) {
+		result, err := parseSetValues([]string{"env=KEY=VALUE"})
+		require.NoError(t, err)
+		assert.Equal(t, "KEY=VALUE", result["env"])
+	})
+
+	t.Run("empty value", func(t *testing.T) {
+		result, err := parseSetValues([]string{"empty="})
+		require.NoError(t, err)
+		assert.Equal(t, "", result["empty"])
+	})
+
+	t.Run("invalid format - no equals", func(t *testing.T) {
+		_, err := parseSetValues([]string{"invalid"})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "expected key=value")
+	})
+
+	t.Run("invalid format - empty key", func(t *testing.T) {
+		_, err := parseSetValues([]string{"=value"})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "empty key")
 	})
 }

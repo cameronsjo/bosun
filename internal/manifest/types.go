@@ -1,5 +1,11 @@
 // Package manifest implements the Crew Manifest engine for generating
 // compose, traefik, and gatus configs from service manifests.
+//
+// This package supports two formats:
+//   - Legacy format: Provisions, ServiceManifest, ${var} interpolation
+//   - Helm-aligned format: Templates, Chart, {{ .Values.var }} Go templates
+//
+// See ADR-0011 for the Helm alignment decision.
 package manifest
 
 // API version and kind constants for manifest versioning.
@@ -7,21 +13,27 @@ const (
 	// APIVersionV1 is the current API version for bosun manifests.
 	APIVersionV1 = "bosun.io/v1"
 
-	// KindProvision identifies a Provision manifest.
+	// KindProvision identifies a Provision manifest (legacy).
 	KindProvision = "Provision"
+
+	// KindTemplate identifies a Template manifest (Helm-aligned).
+	KindTemplate = "Template"
 
 	// KindStack identifies a Stack manifest.
 	KindStack = "Stack"
 
-	// KindService identifies a Service manifest.
+	// KindService identifies a Service manifest (legacy).
 	KindService = "Service"
+
+	// KindChart identifies a Chart manifest (Helm-aligned).
+	KindChart = "Chart"
 )
 
 // SupportedAPIVersions lists all API versions that can be loaded.
 var SupportedAPIVersions = []string{APIVersionV1}
 
 // SupportedKinds lists all valid manifest kinds.
-var SupportedKinds = []string{KindProvision, KindStack, KindService}
+var SupportedKinds = []string{KindProvision, KindTemplate, KindStack, KindService, KindChart}
 
 // ServiceManifest defines a service to be provisioned.
 type ServiceManifest struct {
@@ -108,15 +120,145 @@ type Stack struct {
 	// Kind identifies the manifest type (e.g., "Stack").
 	Kind string `yaml:"kind,omitempty"`
 
-	// Include lists service manifest files to include.
+	// Name is the stack name.
+	Name string `yaml:"name,omitempty"`
+
+	// Description provides a human-readable description.
+	Description string `yaml:"description,omitempty"`
+
+	// Include lists service manifest files to include (legacy format).
 	Include []string `yaml:"include,omitempty"`
+
+	// Charts lists charts to include (Helm-aligned format).
+	Charts []StackChartRef `yaml:"charts,omitempty"`
 
 	// Networks defines network configurations for the stack.
 	Networks map[string]any `yaml:"networks,omitempty"`
 }
 
+// StackChartRef references a chart within a stack.
+type StackChartRef struct {
+	// Name is the chart name (directory name under charts/).
+	Name string `yaml:"name"`
+
+	// Values provides per-chart value overrides.
+	Values map[string]any `yaml:"values,omitempty"`
+}
+
+// =============================================================================
+// Helm-Aligned Types (ADR-0011)
+// =============================================================================
+
+// Chart represents a Helm-aligned service package.
+// Charts are directories containing Chart.yaml and values.yaml.
+type Chart struct {
+	// APIVersion identifies the schema version (e.g., "bosun.io/v1").
+	APIVersion string `yaml:"apiVersion,omitempty"`
+
+	// Kind identifies the manifest type ("Chart").
+	Kind string `yaml:"kind,omitempty"`
+
+	// Name is the chart name, used for container naming and references.
+	Name string `yaml:"name"`
+
+	// Version is the chart version (semver recommended).
+	Version string `yaml:"version,omitempty"`
+
+	// Description provides a human-readable description.
+	Description string `yaml:"description,omitempty"`
+
+	// Homepage is the URL to the project homepage.
+	Homepage string `yaml:"homepage,omitempty"`
+
+	// Templates lists template names to apply (from charts/templates/).
+	Templates []string `yaml:"templates,omitempty"`
+
+	// Dependencies lists required sidecars/sub-charts.
+	Dependencies []ChartDependency `yaml:"dependencies,omitempty"`
+
+	// Compose provides chart-specific compose overrides.
+	// In charts with no templates, this is used directly (implicit raw mode).
+	Compose map[string]any `yaml:"compose,omitempty"`
+}
+
+// ChartDependency represents a chart's dependency on a sidecar or sub-chart.
+type ChartDependency struct {
+	// Name is the dependency name (e.g., "postgres", "redis").
+	Name string `yaml:"name"`
+
+	// Version specifies the dependency version (e.g., "17" for postgres).
+	Version string `yaml:"version,omitempty"`
+
+	// Values provides template variables for the dependency.
+	Values map[string]any `yaml:"values,omitempty"`
+
+	// Compose provides raw compose overrides for edge cases (e.g., custom networks).
+	Compose map[string]any `yaml:"compose,omitempty"`
+}
+
+// ChartMeta provides metadata available in templates as .Chart.
+type ChartMeta struct {
+	// Name is the chart name.
+	Name string
+
+	// Version is the chart version.
+	Version string
+
+	// Description is the chart description.
+	Description string
+}
+
+// TemplateContext is the context passed to Go templates.
+type TemplateContext struct {
+	// Chart provides chart metadata (.Chart.Name, .Chart.Version, etc.).
+	Chart ChartMeta
+
+	// Values provides configuration values (.Values.*).
+	Values map[string]any
+
+	// Deps provides dependency information (.Deps.postgres.Host, etc.).
+	Deps map[string]DependencyInfo
+}
+
+// DependencyInfo provides information about a resolved dependency.
+type DependencyInfo struct {
+	// Name is the full service name (e.g., "myapp-db").
+	Name string
+
+	// Host is the hostname for connecting (same as Name for Docker networking).
+	Host string
+
+	// Port is the default port for the dependency type.
+	Port int
+
+	// Type is the dependency type (e.g., "postgres", "redis").
+	Type string
+}
+
+// Template represents a reusable configuration fragment (Helm-aligned).
+// Templates use Go template syntax: {{ .Chart.Name }}, {{ .Values.port }}, etc.
+type Template struct {
+	// APIVersion identifies the schema version (e.g., "bosun.io/v1").
+	APIVersion string `yaml:"apiVersion,omitempty"`
+
+	// Kind identifies the manifest type ("Template").
+	Kind string `yaml:"kind,omitempty"`
+
+	// Compose output for docker-compose.yml.
+	Compose map[string]any `yaml:"compose,omitempty"`
+
+	// Traefik output for dynamic.yml.
+	Traefik map[string]any `yaml:"traefik,omitempty"`
+
+	// Gatus output for endpoints.yml.
+	Gatus map[string]any `yaml:"gatus,omitempty"`
+
+	// Includes lists other templates to inherit from (using {{ include }}).
+	Includes []string `yaml:"includes,omitempty"`
+}
+
 // SidecarDefaults provides default configuration for common sidecars.
-// These are used when a service uses the "needs" shorthand.
+// These are used when a service uses the "needs" shorthand (legacy format).
 var SidecarDefaults = map[string]map[string]any{
 	"postgres": {"version": "17", "db": "${name}", "db_user": "postgres", "db_password": "${db_password}"},
 	"redis":    {"version": "7"},
@@ -125,5 +267,55 @@ var SidecarDefaults = map[string]map[string]any{
 	"chrome":   {},
 }
 
+// DependencyDefaults provides default configuration for dependencies (Helm-aligned).
+// Used when a chart declares dependencies without full configuration.
+var DependencyDefaults = map[string]struct {
+	Version string
+	Port    int
+	Values  map[string]any
+}{
+	"postgres": {Version: "17", Port: 5432, Values: map[string]any{"db_user": "postgres"}},
+	"redis":    {Version: "7", Port: 6379, Values: nil},
+	"mysql":    {Version: "8", Port: 3306, Values: nil},
+	"mongodb":  {Version: "7", Port: 27017, Values: nil},
+	"chrome":   {Version: "latest", Port: 3000, Values: nil},
+}
+
 // TargetNames lists the output targets for provisioning.
 var TargetNames = []string{"compose", "traefik", "gatus"}
+
+// NewTemplateContext creates a TemplateContext from a Chart and values.
+func NewTemplateContext(chart *Chart, values map[string]any) *TemplateContext {
+	ctx := &TemplateContext{
+		Chart: ChartMeta{
+			Name:        chart.Name,
+			Version:     chart.Version,
+			Description: chart.Description,
+		},
+		Values: values,
+		Deps:   make(map[string]DependencyInfo),
+	}
+
+	// Populate dependency info
+	for _, dep := range chart.Dependencies {
+		defaults, hasDefaults := DependencyDefaults[dep.Name]
+		port := defaults.Port
+		if !hasDefaults {
+			port = 0
+		}
+
+		serviceName := chart.Name + "-" + dep.Name
+		if dep.Name == "postgres" || dep.Name == "mysql" || dep.Name == "mongodb" {
+			serviceName = chart.Name + "-db"
+		}
+
+		ctx.Deps[dep.Name] = DependencyInfo{
+			Name: serviceName,
+			Host: serviceName,
+			Port: port,
+			Type: dep.Name,
+		}
+	}
+
+	return ctx
+}

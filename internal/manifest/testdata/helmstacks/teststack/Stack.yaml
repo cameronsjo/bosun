@@ -1,0 +1,14 @@
+apiVersion: bosun.io/v1
+kind: Stack
+name: teststack
+description: Test stack for unit tests
+
+charts:
+  - name: testapp
+  - name: rawapp
+    values:
+      port: 8888
+
+networks:
+  proxynet:
+    external: true

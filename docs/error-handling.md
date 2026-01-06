@@ -32,7 +32,7 @@ Bosun defines sentinel errors for conditions that callers may want to handle spe
 
 ### `ErrAgeKeyNotFound`
 
-**Location**: `/Users/cameron/Projects/unops/internal/reconcile/sops.go`
+**Location**: `internal/internal/reconcile/sops.go`
 
 ```go
 var ErrAgeKeyNotFound = errors.New("age key not found")
@@ -57,7 +57,7 @@ To fix:
 
 ### `ErrNotSOPSFile`
 
-**Location**: `/Users/cameron/Projects/unops/internal/reconcile/sops.go`
+**Location**: `internal/internal/reconcile/sops.go`
 
 ```go
 var ErrNotSOPSFile = errors.New("file is not SOPS-encrypted")
@@ -127,7 +127,7 @@ Errors related to file system and Docker permissions.
 
 Input validation errors that prevent command injection and ensure data integrity.
 
-**Location**: `/Users/cameron/Projects/unops/internal/reconcile/validation.go`
+**Location**: `internal/internal/reconcile/validation.go`
 
 | Validation | Pattern | Error Example |
 |------------|---------|---------------|
@@ -191,7 +191,7 @@ The `internal/ui` package provides consistent error formatting:
 
 ### SSH Retry with Exponential Backoff
 
-**Location**: `/Users/cameron/Projects/unops/internal/reconcile/deploy.go`
+**Location**: `internal/internal/reconcile/deploy.go`
 
 ```go
 const (

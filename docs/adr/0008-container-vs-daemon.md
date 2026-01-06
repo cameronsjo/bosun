@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-unops components need to run reliably on the server. The question: should everything be a Docker container, or should some components run as native daemons (systemd services)?
+bosun components need to run reliably on the server. The question: should everything be a Docker container, or should some components run as native daemons (systemd services)?
 
 **The chicken-and-egg problem:**
 ```
@@ -134,7 +134,7 @@ If Docker corrupts, daemon can:
 # bosun/docker-compose.yml
 services:
   bosun:
-    image: ghcr.io/unops/bosun:latest
+    image: ghcr.io/bosun/bosun:latest
     restart: always
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -149,7 +149,7 @@ Docker's `restart: always` handles most failure cases.
 ```bash
 # /etc/systemd/system/bosun.service
 [Unit]
-Description=unops Bosun
+Description=bosun Bosun
 After=network-online.target
 Wants=network-online.target
 Before=docker.service
@@ -167,7 +167,7 @@ WantedBy=multi-user.target
 
 ```bash
 # Installation
-curl -L https://github.com/unops/bosun/releases/latest/download/bosun-linux-amd64 \
+curl -L https://github.com/bosun/bosun/releases/latest/download/bosun-linux-amd64 \
   -o /usr/local/bin/bosun
 chmod +x /usr/local/bin/bosun
 systemctl enable --now bosun
@@ -222,7 +222,7 @@ If demand exists, ship bosun as:
 
 ```bash
 # Future installation
-curl -fsSL https://unops.dev/install.sh | sh
+curl -fsSL https://bosun.dev/install.sh | sh
 # Detects platform, installs binary or container as appropriate
 ```
 

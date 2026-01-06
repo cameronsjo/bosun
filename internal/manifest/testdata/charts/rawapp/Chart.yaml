@@ -1,0 +1,12 @@
+apiVersion: bosun.io/v1
+kind: Chart
+name: rawapp
+version: 1.0.0
+description: Raw mode test - no templates, just compose
+
+compose:
+  rawapp:
+    image: nginx:latest
+    container_name: rawapp
+    ports:
+      - "80:80"

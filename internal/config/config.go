@@ -289,12 +289,52 @@ func (c *Config) OutputDir() string {
 	return filepath.Join(c.ManifestDir, "output")
 }
 
+// ChartsDir returns the path to the charts directory (Helm-aligned format).
+func (c *Config) ChartsDir() string {
+	return filepath.Join(c.Root, "charts")
+}
+
+// TemplatesDir returns the path to the templates directory (Helm-aligned format).
+func (c *Config) TemplatesDir() string {
+	return filepath.Join(c.Root, "charts", "templates")
+}
+
+// HelmStacksDir returns the path to the stacks directory for Helm-aligned format.
+func (c *Config) HelmStacksDir() string {
+	return filepath.Join(c.Root, "stacks")
+}
+
+// Format returns the manifest format used by this project.
+// Returns "helm" for Helm-aligned format, "legacy" for provisions-based format.
+func (c *Config) Format() string {
+	// Check for Helm-aligned format (charts/ with Chart.yaml files)
+	chartsDir := c.ChartsDir()
+	if entries, err := os.ReadDir(chartsDir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() && entry.Name() != "templates" {
+				chartYaml := filepath.Join(chartsDir, entry.Name(), "Chart.yaml")
+				if _, err := os.Stat(chartYaml); err == nil {
+					return "helm"
+				}
+			}
+		}
+	}
+
+	// Check for legacy format (provisions directory)
+	if _, err := os.Stat(c.ProvisionsDir()); err == nil {
+		return "legacy"
+	}
+
+	return "unknown"
+}
+
 // ProjectName returns the docker compose project name.
 // All stacks share this project name so containers are properly namespaced
 // and --remove-orphans works correctly across stack boundaries.
 func (c *Config) ProjectName() string {
 	return c.projectName
 }
+
 
 // InfraContainers returns the list of infrastructure container names.
 // These containers are shown separately in status displays and excluded from orphan detection.

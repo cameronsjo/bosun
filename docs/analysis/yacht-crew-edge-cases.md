@@ -18,7 +18,7 @@ This document identifies missing error handling, edge cases, user experience iss
 
 ### yacht up
 
-**File**: `/Users/cameron/Projects/unops/internal/cmd/yacht.go` (lines 30-62)
+**File**: `internal/internal/cmd/yacht.go` (lines 30-62)
 
 #### Missing Error Handling
 
@@ -47,7 +47,7 @@ This document identifies missing error handling, edge cases, user experience iss
 
 ### yacht down
 
-**File**: `/Users/cameron/Projects/unops/internal/cmd/yacht.go` (lines 65-86)
+**File**: `internal/internal/cmd/yacht.go` (lines 65-86)
 
 #### Missing Error Handling
 
@@ -67,7 +67,7 @@ This document identifies missing error handling, edge cases, user experience iss
 
 ### yacht restart
 
-**File**: `/Users/cameron/Projects/unops/internal/cmd/yacht.go` (lines 88-109)
+**File**: `internal/internal/cmd/yacht.go` (lines 88-109)
 
 #### Missing Error Handling
 
@@ -86,7 +86,7 @@ This document identifies missing error handling, edge cases, user experience iss
 
 ### yacht status
 
-**File**: `/Users/cameron/Projects/unops/internal/cmd/yacht.go` (lines 111-132)
+**File**: `internal/internal/cmd/yacht.go` (lines 111-132)
 
 #### Missing Error Handling
 
@@ -107,7 +107,7 @@ This document identifies missing error handling, edge cases, user experience iss
 
 ### crew list
 
-**File**: `/Users/cameron/Projects/unops/internal/cmd/crew.go` (lines 42-80)
+**File**: `internal/internal/cmd/crew.go` (lines 42-80)
 
 #### Missing Error Handling
 
@@ -132,7 +132,7 @@ This document identifies missing error handling, edge cases, user experience iss
 
 ### crew logs
 
-**File**: `/Users/cameron/Projects/unops/internal/cmd/crew.go` (lines 82-123)
+**File**: `internal/internal/cmd/crew.go` (lines 82-123)
 
 #### Missing Error Handling
 
@@ -160,7 +160,7 @@ This document identifies missing error handling, edge cases, user experience iss
 
 ### crew inspect
 
-**File**: `/Users/cameron/Projects/unops/internal/cmd/crew.go` (lines 125-154)
+**File**: `internal/internal/cmd/crew.go` (lines 125-154)
 
 #### Missing Error Handling
 
@@ -186,7 +186,7 @@ This document identifies missing error handling, edge cases, user experience iss
 
 ### crew restart
 
-**File**: `/Users/cameron/Projects/unops/internal/cmd/crew.go` (lines 156-180)
+**File**: `internal/internal/cmd/crew.go` (lines 156-180)
 
 #### Missing Error Handling
 
@@ -207,7 +207,7 @@ This document identifies missing error handling, edge cases, user experience iss
 
 ### client.go
 
-**File**: `/Users/cameron/Projects/unops/internal/docker/client.go`
+**File**: `internal/internal/docker/client.go`
 
 #### Robustness
 
@@ -227,7 +227,7 @@ This document identifies missing error handling, edge cases, user experience iss
 
 ### compose.go
 
-**File**: `/Users/cameron/Projects/unops/internal/docker/compose.go`
+**File**: `internal/internal/docker/compose.go`
 
 #### Security Concerns
 
@@ -259,7 +259,7 @@ This document identifies missing error handling, edge cases, user experience iss
 
 ### containers.go
 
-**File**: `/Users/cameron/Projects/unops/internal/docker/containers.go`
+**File**: `internal/internal/docker/containers.go`
 
 #### Edge Cases
 
@@ -274,7 +274,7 @@ This document identifies missing error handling, edge cases, user experience iss
 
 ### Config Loading
 
-**File**: `/Users/cameron/Projects/unops/internal/config/config.go`
+**File**: `internal/internal/config/config.go`
 
 | Severity | Issue | Location | Recommendation |
 |----------|-------|----------|----------------|
@@ -347,10 +347,10 @@ func TestPing_Timeout(t *testing.T) {}
 ## References
 
 - **Files Analyzed**:
-  - `/Users/cameron/Projects/unops/internal/cmd/yacht.go`
-  - `/Users/cameron/Projects/unops/internal/cmd/crew.go`
-  - `/Users/cameron/Projects/unops/internal/docker/client.go`
-  - `/Users/cameron/Projects/unops/internal/docker/compose.go`
-  - `/Users/cameron/Projects/unops/internal/docker/containers.go`
-  - `/Users/cameron/Projects/unops/internal/config/config.go`
-  - `/Users/cameron/Projects/unops/internal/docker/interface.go`
+  - `internal/internal/cmd/yacht.go`
+  - `internal/internal/cmd/crew.go`
+  - `internal/internal/docker/client.go`
+  - `internal/internal/docker/compose.go`
+  - `internal/internal/docker/containers.go`
+  - `internal/internal/config/config.go`
+  - `internal/internal/docker/interface.go`

@@ -1,0 +1,10 @@
+apiVersion: bosun.io/v1
+kind: Template
+
+compose:
+  services:
+    {{ .Chart.Name }}:
+      image: {{ .Values.image }}
+      container_name: {{ .Chart.Name }}
+      restart: unless-stopped
+      {{ include "common.labels" . | nindent 6 }}
