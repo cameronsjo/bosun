@@ -200,3 +200,52 @@ func (m *Bosun) ReleaseDryRun(
 func (m *Bosun) Coverage(ctx context.Context, source *Directory) *File {
 	return m.Test(ctx, source).File("coverage.out")
 }
+
+// nodeVersion for WebUI builds.
+const nodeVersion = "22"
+
+// WebUI runs the WebUI CI pipeline: install, type check, and build.
+func (m *Bosun) WebUI(ctx context.Context, source *Directory) *Container {
+	npmCache := dag.CacheVolume("npm-cache")
+
+	return dag.Container().
+		From(fmt.Sprintf("node:%s-alpine", nodeVersion)).
+		WithMountedCache("/root/.npm", npmCache).
+		WithMountedDirectory("/src", source).
+		WithWorkdir("/src/webui").
+		WithExec([]string{"npm", "ci"}).
+		WithExec([]string{"npx", "tsc", "--noEmit"}).
+		WithExec([]string{"npm", "run", "build"})
+}
+
+// WebUIBuild returns the built WebUI dist directory.
+func (m *Bosun) WebUIBuild(ctx context.Context, source *Directory) *Directory {
+	return m.WebUI(ctx, source).Directory("/src/webui/dist")
+}
+
+// CIAll runs the complete CI pipeline for both Go and WebUI.
+func (m *Bosun) CIAll(
+	ctx context.Context,
+	source *Directory,
+	// Version string for ldflags (optional, defaults to "dev")
+	// +optional
+	version string,
+	// Git commit SHA for ldflags (optional, defaults to "none")
+	// +optional
+	commit string,
+) (*Directory, error) {
+	// Run Go CI and WebUI in parallel
+	goCIResult, err := m.CI(ctx, source, version, commit)
+	if err != nil {
+		return nil, fmt.Errorf("go ci failed: %w", err)
+	}
+
+	// Run WebUI CI
+	webUICtr := m.WebUI(ctx, source)
+	_, err = webUICtr.Stdout(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("webui ci failed: %w", err)
+	}
+
+	return goCIResult, nil
+}

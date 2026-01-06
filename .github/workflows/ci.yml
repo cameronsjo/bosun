@@ -16,11 +16,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run CI pipeline
+      - name: Run CI pipeline (Go + WebUI)
         uses: dagger/dagger-for-github@v8.2.0
         with:
           version: "latest"
-          call: ci --source .
+          call: ci-all --source .
 
       - name: Extract coverage
         uses: dagger/dagger-for-github@v8.2.0
@@ -35,28 +35,3 @@ jobs:
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-
-  webui:
-    name: WebUI
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: webui
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: webui/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Type check
-        run: npx tsc --noEmit
-
-      - name: Build
-        run: npm run build

@@ -1,4 +1,4 @@
-.PHONY: build install clean test lint run release release-dry-run completion ci dagger-test dagger-lint dagger-build dagger-release-dry-run
+.PHONY: build install clean test lint run release release-dry-run completion ci ci-all dagger-test dagger-lint dagger-build dagger-webui dagger-release-dry-run
 
 # Binary name
 BINARY := bosun
@@ -101,9 +101,13 @@ completion: build
 	$(BUILD_DIR)/$(BINARY) completion powershell > $(COMPLETION_DIR)/$(BINARY).ps1
 	@echo "Completions generated in $(COMPLETION_DIR)/"
 
-# Dagger CI - run full CI pipeline in containers
+# Dagger CI - run Go CI pipeline in containers
 ci:
 	dagger call ci --source . --version "$(VERSION)" --commit "$(COMMIT)"
+
+# Dagger CI All - run full CI pipeline (Go + WebUI) in containers
+ci-all:
+	dagger call ci-all --source . --version "$(VERSION)" --commit "$(COMMIT)"
 
 # Dagger test - run tests in container
 dagger-test:
@@ -116,6 +120,10 @@ dagger-lint:
 # Dagger build - build all platforms in container
 dagger-build:
 	dagger call build --source . --version "$(VERSION)" --commit "$(COMMIT)"
+
+# Dagger webui - build webui in container
+dagger-webui:
+	dagger call web-ui --source .
 
 # Dagger release dry-run - test goreleaser in container
 dagger-release-dry-run:
@@ -139,10 +147,12 @@ help:
 	@echo "  completion      - Generate shell completion scripts"
 	@echo ""
 	@echo "Dagger CI (containerized):"
-	@echo "  ci                    - Run full CI pipeline (test + lint + build)"
-	@echo "  dagger-test           - Run tests in container"
-	@echo "  dagger-lint           - Run linter in container"
+	@echo "  ci                    - Run Go CI pipeline (test + lint + build)"
+	@echo "  ci-all                - Run full CI pipeline (Go + WebUI)"
+	@echo "  dagger-test           - Run Go tests in container"
+	@echo "  dagger-lint           - Run Go linter in container"
 	@echo "  dagger-build          - Build all platforms in container"
+	@echo "  dagger-webui          - Build WebUI in container"
 	@echo "  dagger-release-dry-run - Test goreleaser in container"
 	@echo ""
 	@echo "Release:"

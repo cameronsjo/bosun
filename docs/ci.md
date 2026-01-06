@@ -23,10 +23,13 @@ dagger call ci --source .
 
 | Function | Description | Command |
 |----------|-------------|---------|
-| `ci` | Full pipeline (test + lint + build) | `dagger call ci --source .` |
-| `test` | Run tests with race detector and coverage | `dagger call test --source .` |
+| `ci-all` | Full pipeline (Go + WebUI) | `dagger call ci-all --source .` |
+| `ci` | Go pipeline (test + lint + build) | `dagger call ci --source .` |
+| `test` | Run Go tests with race detector and coverage | `dagger call test --source .` |
 | `lint` | Run golangci-lint | `dagger call lint --source .` |
 | `build` | Multi-platform binary builds | `dagger call build --source .` |
+| `web-ui` | WebUI pipeline (install + typecheck + build) | `dagger call web-ui --source .` |
+| `web-ui-build` | Get WebUI dist directory | `dagger call web-ui-build --source .` |
 | `release` | Run GoReleaser for releases | `dagger call release --source . --github-token env:GITHUB_TOKEN` |
 | `release-dry-run` | Test GoReleaser without publishing | `dagger call release-dry-run --source .` |
 | `coverage` | Extract coverage file | `dagger call coverage --source . -o coverage.out` |
@@ -36,10 +39,12 @@ dagger call ci --source .
 For convenience, these Makefile targets wrap Dagger commands:
 
 ```bash
-make ci                    # Full CI pipeline
-make dagger-test           # Run tests in container
-make dagger-lint           # Run linter in container
+make ci-all                # Full CI pipeline (Go + WebUI)
+make ci                    # Go CI pipeline
+make dagger-test           # Run Go tests in container
+make dagger-lint           # Run Go linter in container
 make dagger-build          # Build all platforms
+make dagger-webui          # Build WebUI in container
 make dagger-release-dry-run # Test goreleaser
 ```
 
@@ -47,23 +52,25 @@ make dagger-release-dry-run # Test goreleaser
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        CI Pipeline                          │
+│                     CI-All Pipeline                         │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│  ┌─────────┐    ┌─────────┐                                │
-│  │  Test   │    │  Lint   │   (parallel execution)         │
-│  └────┬────┘    └────┬────┘                                │
-│       │              │                                      │
-│       └──────┬───────┘                                      │
-│              ▼                                              │
-│         ┌────────┐                                          │
-│         │ Build  │   (multi-platform: linux/darwin x86/arm)│
-│         └────┬───┘                                          │
-│              │                                              │
-│              ▼                                              │
-│         ┌────────┐                                          │
-│         │Artifacts│  (4 binaries)                          │
-│         └────────┘                                          │
+│  ┌─────────────────────────┐    ┌─────────────────────┐    │
+│  │       Go Pipeline       │    │   WebUI Pipeline    │    │
+│  │  ┌──────┐  ┌──────┐    │    │  ┌──────────────┐   │    │
+│  │  │ Test │  │ Lint │    │    │  │   npm ci     │   │    │
+│  │  └──┬───┘  └──┬───┘    │    │  └──────┬───────┘   │    │
+│  │     └────┬────┘        │    │         ▼           │    │
+│  │          ▼             │    │  ┌──────────────┐   │    │
+│  │     ┌────────┐         │    │  │  tsc --noEmit│   │    │
+│  │     │ Build  │         │    │  └──────┬───────┘   │    │
+│  │     └────┬───┘         │    │         ▼           │    │
+│  │          ▼             │    │  ┌──────────────┐   │    │
+│  │     ┌────────┐         │    │  │  vite build  │   │    │
+│  │     │4 bins  │         │    │  └──────────────┘   │    │
+│  │     └────────┘         │    │                     │    │
+│  └─────────────────────────┘    └─────────────────────┘    │
+│                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
