@@ -1,0 +1,202 @@
+// Package main provides Dagger CI/CD pipelines for Bosun.
+//
+// Run locally with: dagger call ci --source .
+// Or use make: make ci
+package main
+
+import (
+	"context"
+	"fmt"
+)
+
+// Bosun provides CI/CD pipelines for the Bosun project.
+type Bosun struct{}
+
+// Target platforms for multi-platform builds.
+type Platform struct {
+	OS   string
+	Arch string
+}
+
+var platforms = []Platform{
+	{OS: "linux", Arch: "amd64"},
+	{OS: "linux", Arch: "arm64"},
+	{OS: "darwin", Arch: "amd64"},
+	{OS: "darwin", Arch: "arm64"},
+}
+
+// goVersion is extracted from go.mod.
+const goVersion = "1.24"
+
+// Base returns a Go container configured for building Bosun.
+// It sets up the Go toolchain and caches module downloads.
+func (m *Bosun) Base(source *Directory) *Container {
+	goCache := dag.CacheVolume("go-mod")
+	goBuildCache := dag.CacheVolume("go-build")
+
+	return dag.Container().
+		From(fmt.Sprintf("golang:%s-alpine", goVersion)).
+		WithMountedCache("/go/pkg/mod", goCache).
+		WithMountedCache("/root/.cache/go-build", goBuildCache).
+		WithEnvVariable("CGO_ENABLED", "0").
+		WithMountedDirectory("/src", source).
+		WithWorkdir("/src")
+}
+
+// Test runs the Go test suite with race detection and coverage.
+func (m *Bosun) Test(ctx context.Context, source *Directory) *Container {
+	return m.Base(source).
+		WithExec([]string{"go", "mod", "download"}).
+		WithExec([]string{
+			"go", "test",
+			"-v",
+			"-race",
+			"-coverprofile=coverage.out",
+			"./...",
+		})
+}
+
+// Lint runs golangci-lint on the codebase.
+func (m *Bosun) Lint(ctx context.Context, source *Directory) *Container {
+	goCache := dag.CacheVolume("go-mod")
+	goBuildCache := dag.CacheVolume("go-build")
+	lintCache := dag.CacheVolume("golangci-lint")
+
+	return dag.Container().
+		From("golangci/golangci-lint:v1.64-alpine").
+		WithMountedCache("/go/pkg/mod", goCache).
+		WithMountedCache("/root/.cache/go-build", goBuildCache).
+		WithMountedCache("/root/.cache/golangci-lint", lintCache).
+		WithMountedDirectory("/src", source).
+		WithWorkdir("/src").
+		WithExec([]string{
+			"golangci-lint", "run",
+			"--timeout=10m",
+			"./...",
+		})
+}
+
+// Build compiles Bosun for all target platforms.
+// Returns a directory containing the compiled binaries.
+func (m *Bosun) Build(
+	ctx context.Context,
+	source *Directory,
+	// Version string for ldflags (optional, defaults to "dev")
+	// +optional
+	version string,
+	// Git commit SHA for ldflags (optional, defaults to "none")
+	// +optional
+	commit string,
+) *Directory {
+	if version == "" {
+		version = "dev"
+	}
+	if commit == "" {
+		commit = "none"
+	}
+
+	ldflags := fmt.Sprintf(
+		"-s -w -X github.com/cameronsjo/bosun/internal/cmd.version=%s -X github.com/cameronsjo/bosun/internal/cmd.commit=%s",
+		version, commit,
+	)
+
+	outputs := dag.Directory()
+
+	for _, platform := range platforms {
+		binary := fmt.Sprintf("bosun-%s-%s", platform.OS, platform.Arch)
+
+		built := m.Base(source).
+			WithEnvVariable("GOOS", platform.OS).
+			WithEnvVariable("GOARCH", platform.Arch).
+			WithExec([]string{"go", "mod", "download"}).
+			WithExec([]string{
+				"go", "build",
+				"-ldflags", ldflags,
+				"-o", binary,
+				"./cmd/bosun",
+			})
+
+		outputs = outputs.WithFile(binary, built.File(binary))
+	}
+
+	return outputs
+}
+
+// CI runs the complete CI pipeline: test, lint, and build.
+// Returns a directory containing the build artifacts.
+func (m *Bosun) CI(
+	ctx context.Context,
+	source *Directory,
+	// Version string for ldflags (optional, defaults to "dev")
+	// +optional
+	version string,
+	// Git commit SHA for ldflags (optional, defaults to "none")
+	// +optional
+	commit string,
+) (*Directory, error) {
+	// Run test and lint in parallel for faster CI
+	testCtr := m.Test(ctx, source)
+	lintCtr := m.Lint(ctx, source)
+
+	// Wait for test to complete (this forces execution)
+	_, err := testCtr.Stdout(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("tests failed: %w", err)
+	}
+
+	// Wait for lint to complete
+	_, err = lintCtr.Stdout(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("lint failed: %w", err)
+	}
+
+	// Build all platforms
+	return m.Build(ctx, source, version, commit), nil
+}
+
+// Release runs GoReleaser to create a release.
+// This should be called from the release workflow after release-please creates a tag.
+func (m *Bosun) Release(
+	ctx context.Context,
+	source *Directory,
+	// GitHub token for publishing releases
+	githubToken *Secret,
+) *Container {
+	goCache := dag.CacheVolume("go-mod")
+	goBuildCache := dag.CacheVolume("go-build")
+
+	return dag.Container().
+		From("goreleaser/goreleaser:v2").
+		WithMountedCache("/go/pkg/mod", goCache).
+		WithMountedCache("/root/.cache/go-build", goBuildCache).
+		WithMountedDirectory("/src", source).
+		WithWorkdir("/src").
+		WithSecretVariable("GITHUB_TOKEN", githubToken).
+		WithExec([]string{
+			"goreleaser", "release", "--clean",
+		})
+}
+
+// ReleaseDryRun runs GoReleaser in snapshot mode for testing.
+func (m *Bosun) ReleaseDryRun(
+	ctx context.Context,
+	source *Directory,
+) *Container {
+	goCache := dag.CacheVolume("go-mod")
+	goBuildCache := dag.CacheVolume("go-build")
+
+	return dag.Container().
+		From("goreleaser/goreleaser:v2").
+		WithMountedCache("/go/pkg/mod", goCache).
+		WithMountedCache("/root/.cache/go-build", goBuildCache).
+		WithMountedDirectory("/src", source).
+		WithWorkdir("/src").
+		WithExec([]string{
+			"goreleaser", "release", "--snapshot", "--clean", "--skip=publish",
+		})
+}
+
+// Coverage runs tests and returns the coverage file.
+func (m *Bosun) Coverage(ctx context.Context, source *Directory) *File {
+	return m.Test(ctx, source).File("coverage.out")
+}

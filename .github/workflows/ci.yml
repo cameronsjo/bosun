@@ -10,23 +10,20 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Test
+  ci:
+    name: CI
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Install Dagger
+        uses: dagger/dagger-action/install@v6.16.0
 
-      - name: Download dependencies
-        run: go mod download
+      - name: Run CI pipeline
+        run: dagger call ci --source .
 
-      - name: Run tests
-        run: go test -v -race -coverprofile=coverage.out ./...
+      - name: Extract coverage
+        run: dagger call coverage --source . -o coverage.out
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
@@ -35,55 +32,3 @@ jobs:
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          args: --timeout=10m
-
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        goos: [linux, darwin]
-        goarch: [amd64, arm64]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Build
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
-        run: |
-          go build -ldflags="-s -w" -o bosun-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/bosun
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: bosun-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: bosun-${{ matrix.goos }}-${{ matrix.goarch }}
-          retention-days: 7
