@@ -1,0 +1,53 @@
+# Bosun WebUI Docker Compose Example
+#
+# This file shows how to deploy the WebUI alongside the Bosun daemon.
+# Copy this to your deployment and adjust as needed.
+#
+# Usage:
+#   docker compose up -d
+#
+# Environment variables:
+#   BOSUN_API_URL      - URL of the Bosun daemon API (default: http://bosun:9090)
+#   BOSUN_BEARER_TOKEN - Bearer token for API authentication (required if daemon has auth enabled)
+
+services:
+  webui:
+    image: ghcr.io/cameronsjo/bosun-webui:latest
+    container_name: bosun-webui
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - BOSUN_API_URL=${BOSUN_API_URL:-http://bosun:9090}
+      - BOSUN_BEARER_TOKEN=${BOSUN_BEARER_TOKEN:-}
+    networks:
+      - bosun
+    depends_on:
+      - bosun
+    labels:
+      # Traefik labels for reverse proxy (optional)
+      - "traefik.enable=true"
+      - "traefik.http.routers.bosun-webui.rule=Host(`bosun.example.com`)"
+      - "traefik.http.routers.bosun-webui.entrypoints=websecure"
+      - "traefik.http.routers.bosun-webui.tls.certresolver=letsencrypt"
+      - "traefik.http.services.bosun-webui.loadbalancer.server.port=8080"
+
+  # Example bosun daemon - replace with your actual bosun service
+  bosun:
+    image: ghcr.io/cameronsjo/bosun:latest
+    container_name: bosun
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - bosun-data:/data
+    environment:
+      - BOSUN_CONFIG=/data/config.yaml
+    networks:
+      - bosun
+
+networks:
+  bosun:
+    name: bosun
+
+volumes:
+  bosun-data:

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -144,9 +145,15 @@ func WithAlerter(alerter AlertSender) ReconcilerOption {
 // Run executes the full reconciliation workflow.
 func (r *Reconciler) Run(ctx context.Context) error {
 	startTime := time.Now()
+	reconcileID := log.ReconcileIDFromContext(ctx)
+	logger := log.Component(log.ComponentReconcile)
 
 	// Acquire lock to prevent concurrent runs.
 	if err := r.acquireLock(); err != nil {
+		logger.Error().
+			Str(log.FieldReconcileID, reconcileID).
+			Err(err).
+			Msg("Failed to acquire reconcile lock")
 		return fmt.Errorf("failed to acquire lock (another reconciliation may be in progress): %w", err)
 	}
 	defer r.releaseLock()
@@ -266,12 +273,44 @@ func (r *Reconciler) cleanupStaging() error {
 
 // syncRepo syncs the git repository.
 func (r *Reconciler) syncRepo(ctx context.Context) (bool, string, string, error) {
+	start := time.Now()
+	reconcileID := log.ReconcileIDFromContext(ctx)
+
+	log.Info().
+		Str(log.FieldComponent, log.ComponentGit).
+		Str(log.FieldReconcileID, reconcileID).
+		Str(log.FieldOperation, "sync").
+		Msg("Syncing repository")
+
 	ui.Info("Syncing repository...")
-	return r.git.Sync(ctx)
+
+	changed, before, after, err := r.git.Sync(ctx)
+
+	log.Info().
+		Str(log.FieldComponent, log.ComponentGit).
+		Str(log.FieldReconcileID, reconcileID).
+		Str(log.FieldOperation, "sync").
+		Bool("changed", changed).
+		Str("commit_before", before).
+		Str("commit_after", after).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Repository sync completed")
+
+	return changed, before, after, err
 }
 
 // decryptSecrets decrypts SOPS secret files.
 func (r *Reconciler) decryptSecrets(ctx context.Context) (map[string]any, error) {
+	start := time.Now()
+	reconcileID := log.ReconcileIDFromContext(ctx)
+
+	log.Info().
+		Str(log.FieldComponent, log.ComponentSOPS).
+		Str(log.FieldReconcileID, reconcileID).
+		Str(log.FieldOperation, "decrypt").
+		Int("file_count", len(r.config.SecretsFiles)).
+		Msg("Decrypting secrets")
+
 	ui.Info("Decrypting secrets...")
 
 	if len(r.config.SecretsFiles) == 0 {
@@ -283,6 +322,11 @@ func (r *Reconciler) decryptSecrets(ctx context.Context) (map[string]any, error)
 	for _, f := range r.config.SecretsFiles {
 		path := filepath.Join(r.config.RepoDir, f)
 		if _, err := os.Stat(path); err != nil {
+			log.Error().
+				Str(log.FieldComponent, log.ComponentSOPS).
+				Str(log.FieldReconcileID, reconcileID).
+				Str(log.FieldPath, path).
+				Msg("Secrets file not found")
 			return nil, fmt.Errorf("secrets file not found: %s", path)
 		}
 		files = append(files, path)
@@ -290,8 +334,20 @@ func (r *Reconciler) decryptSecrets(ctx context.Context) (map[string]any, error)
 
 	secrets, err := r.sops.DecryptFiles(ctx, files)
 	if err != nil {
+		log.Error().
+			Str(log.FieldComponent, log.ComponentSOPS).
+			Str(log.FieldReconcileID, reconcileID).
+			Err(err).
+			Msg("Failed to decrypt secrets")
 		return nil, err
 	}
+
+	log.Info().
+		Str(log.FieldComponent, log.ComponentSOPS).
+		Str(log.FieldReconcileID, reconcileID).
+		Int("file_count", len(files)).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Secrets decrypted successfully")
 
 	ui.Success("Secrets decrypted successfully")
 	return secrets, nil
@@ -299,6 +355,16 @@ func (r *Reconciler) decryptSecrets(ctx context.Context) (map[string]any, error)
 
 // renderTemplates renders all templates to the staging directory.
 func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any) error {
+	start := time.Now()
+	reconcileID := log.ReconcileIDFromContext(ctx)
+
+	log.Info().
+		Str(log.FieldComponent, log.ComponentTemplate).
+		Str(log.FieldReconcileID, reconcileID).
+		Str(log.FieldOperation, "render").
+		Str("staging_dir", r.config.StagingDir).
+		Msg("Rendering templates")
+
 	ui.Info("Rendering templates...")
 
 	// Clear staging directory.
@@ -314,8 +380,20 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 
 	infraDir := filepath.Join(r.config.RepoDir, r.config.InfraSubDir)
 	if err := r.template.RenderDirectory(ctx, infraDir, r.config.StagingDir, "unraid"); err != nil {
+		log.Error().
+			Str(log.FieldComponent, log.ComponentTemplate).
+			Str(log.FieldReconcileID, reconcileID).
+			Err(err).
+			Msg("Failed to render templates")
 		return err
 	}
+
+	log.Info().
+		Str(log.FieldComponent, log.ComponentTemplate).
+		Str(log.FieldReconcileID, reconcileID).
+		Str("staging_dir", r.config.StagingDir).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Templates rendered successfully")
 
 	ui.Success("Templates rendered to %s", r.config.StagingDir)
 	return nil

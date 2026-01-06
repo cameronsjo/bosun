@@ -1,0 +1,203 @@
+package log
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestParseLevel(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected Level
+	}{
+		{"debug", DebugLevel},
+		{"DEBUG", DebugLevel},
+		{"info", InfoLevel},
+		{"INFO", InfoLevel},
+		{"warn", WarnLevel},
+		{"WARN", WarnLevel},
+		{"warning", WarnLevel},
+		{"error", ErrorLevel},
+		{"ERROR", ErrorLevel},
+		{"invalid", InfoLevel}, // Defaults to info
+		{"", InfoLevel},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			assert.Equal(t, tt.expected, parseLevel(tt.input))
+		})
+	}
+}
+
+func TestDetectFormat(t *testing.T) {
+	// Test daemon mode detection.
+	os.Setenv("BOSUN_DAEMON_MODE", "true")
+	assert.Equal(t, FormatJSON, detectFormat())
+	os.Unsetenv("BOSUN_DAEMON_MODE")
+
+	// Non-terminal defaults to JSON (can't easily test terminal detection).
+	// In a pipe or test context, stdout is not a terminal.
+	assert.Equal(t, FormatJSON, detectFormat())
+}
+
+func TestInit(t *testing.T) {
+	// Test with explicit options.
+	Init(&Options{
+		Format:   FormatJSON,
+		Level:    DebugLevel,
+		LevelSet: true,
+	})
+	assert.Equal(t, FormatJSON, GetFormat())
+	assert.Equal(t, DebugLevel, GetLevel())
+
+	// Test with env vars.
+	os.Setenv("BOSUN_LOG_FORMAT", "console")
+	os.Setenv("BOSUN_LOG_LEVEL", "warn")
+	Init(nil)
+	assert.Equal(t, FormatConsole, GetFormat())
+	assert.Equal(t, WarnLevel, GetLevel())
+
+	// Cleanup.
+	os.Unsetenv("BOSUN_LOG_FORMAT")
+	os.Unsetenv("BOSUN_LOG_LEVEL")
+
+	// Reset to defaults.
+	Init(&Options{
+		Format:   FormatJSON,
+		Level:    InfoLevel,
+		LevelSet: true,
+	})
+}
+
+func TestLoggerOutput(t *testing.T) {
+	// Capture output.
+	var buf bytes.Buffer
+	logger = zerolog.New(&buf).With().Timestamp().Logger()
+
+	Info().Msg("test message")
+
+	var logEntry map[string]interface{}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &logEntry))
+	assert.Equal(t, "info", logEntry["level"])
+	assert.Equal(t, "test message", logEntry["message"])
+}
+
+func TestLoggerWithFields(t *testing.T) {
+	var buf bytes.Buffer
+	logger = zerolog.New(&buf)
+
+	Info().
+		Str(FieldComponent, ComponentDaemon).
+		Str(FieldSource, SourceWebhook).
+		Msg("processing request")
+
+	var logEntry map[string]interface{}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &logEntry))
+	assert.Equal(t, ComponentDaemon, logEntry[FieldComponent])
+	assert.Equal(t, SourceWebhook, logEntry[FieldSource])
+}
+
+func TestContextHelpers(t *testing.T) {
+	ctx := context.Background()
+
+	// Test request ID.
+	ctx, requestID := NewRequestContext(ctx)
+	assert.NotEmpty(t, requestID)
+	assert.Equal(t, requestID, RequestIDFromContext(ctx))
+
+	// Test reconcile ID.
+	ctx, reconcileID := NewReconcileContext(ctx)
+	assert.NotEmpty(t, reconcileID)
+	assert.Equal(t, reconcileID, ReconcileIDFromContext(ctx))
+
+	// Test FromContext includes IDs.
+	var buf bytes.Buffer
+	logger = zerolog.New(&buf)
+	l := FromContext(ctx)
+	l.Info().Msg("test")
+
+	var logEntry map[string]interface{}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &logEntry))
+	assert.Equal(t, requestID, logEntry[FieldRequestID])
+	assert.Equal(t, reconcileID, logEntry[FieldReconcileID])
+}
+
+func TestWithRequestIDEmpty(t *testing.T) {
+	ctx := context.Background()
+
+	// Empty ID should generate new UUID.
+	ctx = WithRequestID(ctx, "")
+	id := RequestIDFromContext(ctx)
+	assert.NotEmpty(t, id)
+	assert.Len(t, id, 36) // UUID format.
+}
+
+func TestWithReconcileIDExplicit(t *testing.T) {
+	ctx := context.Background()
+
+	// Explicit ID should be used.
+	ctx = WithReconcileID(ctx, "custom-id-123")
+	assert.Equal(t, "custom-id-123", ReconcileIDFromContext(ctx))
+}
+
+func TestDurationMS(t *testing.T) {
+	start := time.Now().Add(-100 * time.Millisecond)
+	duration := DurationMS(start)
+	assert.GreaterOrEqual(t, duration, int64(100))
+}
+
+func TestComponent(t *testing.T) {
+	var buf bytes.Buffer
+	logger = zerolog.New(&buf)
+
+	l := Component(ComponentReconcile)
+	l.Info().Msg("reconciling")
+
+	var logEntry map[string]interface{}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &logEntry))
+	assert.Equal(t, ComponentReconcile, logEntry[FieldComponent])
+}
+
+func TestWithDuration(t *testing.T) {
+	var buf bytes.Buffer
+	logger = zerolog.New(&buf)
+
+	start := time.Now().Add(-50 * time.Millisecond)
+	WithDuration(Info(), start).Msg("operation complete")
+
+	var logEntry map[string]interface{}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &logEntry))
+	duration := int64(logEntry[FieldDurationMS].(float64))
+	assert.GreaterOrEqual(t, duration, int64(50))
+}
+
+func TestWithError(t *testing.T) {
+	var buf bytes.Buffer
+	logger = zerolog.New(&buf)
+
+	err := assert.AnError
+	WithError(Error(), err).Msg("operation failed")
+
+	output := buf.String()
+	assert.True(t, strings.Contains(output, "error"))
+}
+
+func TestWithErrorNil(t *testing.T) {
+	var buf bytes.Buffer
+	logger = zerolog.New(&buf)
+
+	WithError(Info(), nil).Msg("no error")
+
+	output := buf.String()
+	assert.False(t, strings.Contains(output, "error\":"))
+}

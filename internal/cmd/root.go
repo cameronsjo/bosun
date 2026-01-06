@@ -4,10 +4,18 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
+)
+
+// Global logging flags.
+var (
+	logLevel  string
+	logFormat string
 )
 
 // Version information - set by goreleaser ldflags.
@@ -133,14 +141,51 @@ func Execute() {
 }
 
 func init() {
-	// Add hidden yarr command
+	// Initialize logging before any command runs.
+	cobra.OnInitialize(initLogging)
+
+	// Add global logging flags.
+	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "", "Log level (debug, info, warn, error)")
+	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "", "Log format (json, console, auto)")
+
+	// Add hidden yarr command.
 	rootCmd.AddCommand(yarrCmd)
 
-	// Version template with build info
+	// Version template with build info.
 	rootCmd.SetVersionTemplate(fmt.Sprintf("bosun version {{.Version}}\ncommit: %s\nbuilt: %s\n", commit, date))
 
-	// Add completion command
+	// Add completion command.
 	rootCmd.AddCommand(completionCmd)
+}
+
+// initLogging initializes the logger based on flags and environment.
+func initLogging() {
+	opts := &log.Options{}
+
+	// Set format from flag.
+	if logFormat != "" {
+		opts.Format = log.Format(strings.ToLower(logFormat))
+	}
+
+	// Set level from flag.
+	if logLevel != "" {
+		switch strings.ToLower(logLevel) {
+		case "debug":
+			opts.Level = log.DebugLevel
+			opts.LevelSet = true
+		case "info":
+			opts.Level = log.InfoLevel
+			opts.LevelSet = true
+		case "warn", "warning":
+			opts.Level = log.WarnLevel
+			opts.LevelSet = true
+		case "error":
+			opts.Level = log.ErrorLevel
+			opts.LevelSet = true
+		}
+	}
+
+	log.Init(opts)
 }
 
 // completionCmd generates shell completion scripts.
