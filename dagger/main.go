@@ -223,8 +223,8 @@ func (m *Bosun) WebUIBuild(ctx context.Context, source *Directory) *Directory {
 	return m.WebUI(ctx, source).Directory("/src/webui/dist")
 }
 
-// CIAll runs the complete CI pipeline for both Go and WebUI.
-func (m *Bosun) CIAll(
+// All runs the complete CI pipeline for both Go and WebUI.
+func (m *Bosun) All(
 	ctx context.Context,
 	source *Directory,
 	// Version string for ldflags (optional, defaults to "dev")

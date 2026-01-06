@@ -23,7 +23,7 @@ dagger call ci --source .
 
 | Function | Description | Command |
 |----------|-------------|---------|
-| `ci-all` | Full pipeline (Go + WebUI) | `dagger call ci-all --source .` |
+| `all` | Full pipeline (Go + WebUI) | `dagger call all --source .` |
 | `ci` | Go pipeline (test + lint + build) | `dagger call ci --source .` |
 | `test` | Run Go tests with race detector and coverage | `dagger call test --source .` |
 | `lint` | Run golangci-lint | `dagger call lint --source .` |
@@ -39,7 +39,7 @@ dagger call ci --source .
 For convenience, these Makefile targets wrap Dagger commands:
 
 ```bash
-make ci-all                # Full CI pipeline (Go + WebUI)
+make all                   # Full CI pipeline (Go + WebUI)
 make ci                    # Go CI pipeline
 make dagger-test           # Run Go tests in container
 make dagger-lint           # Run Go linter in container

@@ -1,4 +1,4 @@
-.PHONY: build install clean test lint run release release-dry-run completion ci ci-all dagger-test dagger-lint dagger-build dagger-webui dagger-release-dry-run
+.PHONY: build install clean test lint run release release-dry-run completion ci all dagger-test dagger-lint dagger-build dagger-webui dagger-release-dry-run
 
 # Binary name
 BINARY := bosun
@@ -105,9 +105,9 @@ completion: build
 ci:
 	dagger call ci --source . --version "$(VERSION)" --commit "$(COMMIT)"
 
-# Dagger CI All - run full CI pipeline (Go + WebUI) in containers
-ci-all:
-	dagger call ci-all --source . --version "$(VERSION)" --commit "$(COMMIT)"
+# Dagger All - run full CI pipeline (Go + WebUI) in containers
+all:
+	dagger call all --source . --version "$(VERSION)" --commit "$(COMMIT)"
 
 # Dagger test - run tests in container
 dagger-test:
@@ -148,7 +148,7 @@ help:
 	@echo ""
 	@echo "Dagger CI (containerized):"
 	@echo "  ci                    - Run Go CI pipeline (test + lint + build)"
-	@echo "  ci-all                - Run full CI pipeline (Go + WebUI)"
+	@echo "  all                   - Run full CI pipeline (Go + WebUI)"
 	@echo "  dagger-test           - Run Go tests in container"
 	@echo "  dagger-lint           - Run Go linter in container"
 	@echo "  dagger-build          - Build all platforms in container"
