@@ -98,7 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dagger/dagger-for-github@v8
+      - uses: dagger/dagger-for-github@v8.2.0
         with:
           version: "latest"
           call: ci --source .
