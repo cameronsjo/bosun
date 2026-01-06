@@ -271,6 +271,28 @@ make build-all
 make dev
 ```
 
+### Dagger CI
+
+Run the same CI pipeline locally that runs in GitHub Actions:
+
+```bash
+# Full CI pipeline (test + lint + build)
+make ci
+
+# Individual stages
+make dagger-test           # Run tests in container
+make dagger-lint           # Run linter in container
+make dagger-build          # Build all platforms in container
+make dagger-release-dry-run # Test goreleaser
+
+# Or use dagger directly
+dagger call ci --source .
+dagger call test --source .
+dagger call lint --source .
+```
+
+See [docs/ci.md](docs/ci.md) for the full CI pipeline documentation.
+
 ## Support
 
 [![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/cameronsjo)

@@ -36,12 +36,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
 
@@ -55,12 +49,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+      - name: Run GoReleaser via Dagger
+        uses: dagger/dagger-for-github@v8.2.0
         with:
-          distribution: goreleaser
-          version: latest
-          args: release --clean
+          version: "latest"
+          call: release --source . --github-token env:GITHUB_TOKEN
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

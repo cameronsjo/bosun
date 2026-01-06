@@ -1,0 +1,5 @@
+{
+  "name": "bosun",
+  "sdk": "go",
+  "source": "dagger"
+}

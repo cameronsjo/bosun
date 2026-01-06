@@ -1,4 +1,4 @@
-.PHONY: build install clean test lint run release release-dry-run completion
+.PHONY: build install clean test lint run release release-dry-run completion ci all dagger-test dagger-lint dagger-build dagger-webui dagger-release-dry-run
 
 # Binary name
 BINARY := bosun
@@ -101,9 +101,39 @@ completion: build
 	$(BUILD_DIR)/$(BINARY) completion powershell > $(COMPLETION_DIR)/$(BINARY).ps1
 	@echo "Completions generated in $(COMPLETION_DIR)/"
 
+# Dagger CI - run Go CI pipeline in containers
+ci:
+	dagger call ci --source . --version "$(VERSION)" --commit "$(COMMIT)"
+
+# Dagger All - run full CI pipeline (Go + WebUI) in containers
+all:
+	dagger call all --source . --version "$(VERSION)" --commit "$(COMMIT)"
+
+# Dagger test - run tests in container
+dagger-test:
+	dagger call test --source .
+
+# Dagger lint - run linter in container
+dagger-lint:
+	dagger call lint --source .
+
+# Dagger build - build all platforms in container
+dagger-build:
+	dagger call build --source . --version "$(VERSION)" --commit "$(COMMIT)"
+
+# Dagger webui - build webui in container
+dagger-webui:
+	dagger call web-ui --source .
+
+# Dagger release dry-run - test goreleaser in container
+dagger-release-dry-run:
+	dagger call release-dry-run --source .
+
 # Help
 help:
 	@echo "Available targets:"
+	@echo ""
+	@echo "Local Development:"
 	@echo "  build           - Build the binary"
 	@echo "  install         - Install to GOPATH/bin"
 	@echo "  run             - Run without building (use ARGS=... for arguments)"
@@ -114,7 +144,18 @@ help:
 	@echo "  clean           - Remove build artifacts"
 	@echo "  build-all       - Build for all platforms"
 	@echo "  dev             - Development build"
+	@echo "  completion      - Generate shell completion scripts"
+	@echo ""
+	@echo "Dagger CI (containerized):"
+	@echo "  ci                    - Run Go CI pipeline (test + lint + build)"
+	@echo "  all                   - Run full CI pipeline (Go + WebUI)"
+	@echo "  dagger-test           - Run Go tests in container"
+	@echo "  dagger-lint           - Run Go linter in container"
+	@echo "  dagger-build          - Build all platforms in container"
+	@echo "  dagger-webui          - Build WebUI in container"
+	@echo "  dagger-release-dry-run - Test goreleaser in container"
+	@echo ""
+	@echo "Release:"
 	@echo "  release-dry-run - Test release locally (no publish)"
 	@echo "  release         - Create and publish release (requires GITHUB_TOKEN)"
 	@echo "  release-check   - Validate goreleaser config"
-	@echo "  completion      - Generate shell completion scripts"
