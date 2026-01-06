@@ -12,17 +12,17 @@ import (
 // Bosun provides CI/CD pipelines for the Bosun project.
 type Bosun struct{}
 
-// Target platforms for multi-platform builds.
-type Platform struct {
-	OS   string
-	Arch string
+// buildTarget represents a target platform for multi-platform builds.
+type buildTarget struct {
+	os   string
+	arch string
 }
 
-var platforms = []Platform{
-	{OS: "linux", Arch: "amd64"},
-	{OS: "linux", Arch: "arm64"},
-	{OS: "darwin", Arch: "amd64"},
-	{OS: "darwin", Arch: "arm64"},
+var buildTargets = []buildTarget{
+	{os: "linux", arch: "amd64"},
+	{os: "linux", arch: "arm64"},
+	{os: "darwin", arch: "amd64"},
+	{os: "darwin", arch: "arm64"},
 }
 
 // goVersion is extracted from go.mod.
@@ -102,12 +102,12 @@ func (m *Bosun) Build(
 
 	outputs := dag.Directory()
 
-	for _, platform := range platforms {
-		binary := fmt.Sprintf("bosun-%s-%s", platform.OS, platform.Arch)
+	for _, target := range buildTargets {
+		binary := fmt.Sprintf("bosun-%s-%s", target.os, target.arch)
 
 		built := m.Base(source).
-			WithEnvVariable("GOOS", platform.OS).
-			WithEnvVariable("GOARCH", platform.Arch).
+			WithEnvVariable("GOOS", target.os).
+			WithEnvVariable("GOARCH", target.arch).
 			WithExec([]string{"go", "mod", "download"}).
 			WithExec([]string{
 				"go", "build",
