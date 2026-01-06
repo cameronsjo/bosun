@@ -38,6 +38,9 @@ func NewTCPServer(d *Daemon, addr, bearerToken string) (*TCPServer, error) {
 	mux.HandleFunc("/health", s.handleHealth)
 	// Note: /config endpoint is NOT exposed over TCP for security
 
+	// Register WebUI API routes
+	d.RegisterAPIRoutes(mux)
+
 	s.httpServer = &http.Server{
 		Handler:      s.authMiddleware(s.auditMiddleware(mux)),
 		ReadTimeout:  10 * time.Second,
