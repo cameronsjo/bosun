@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/alert"
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
@@ -144,6 +145,22 @@ func New(cfg *Config) (*Daemon, error) {
 // Run starts the daemon and blocks until shutdown.
 // It handles SIGTERM and SIGINT for graceful shutdown.
 func (d *Daemon) Run(ctx context.Context) error {
+	// Initialize structured logging for daemon mode (JSON output).
+	os.Setenv("BOSUN_DAEMON_MODE", "true")
+	log.Init(nil)
+
+	logger := log.Component(log.ComponentDaemon)
+
+	logger.Info().
+		Str("version", getVersion()).
+		Str("socket", d.config.SocketPath).
+		Bool("tcp_enabled", d.config.EnableTCP).
+		Str("tcp_addr", d.config.TCPAddr).
+		Bool("http_enabled", d.config.EnableHTTP).
+		Int("http_port", d.config.Port).
+		Dur("poll_interval", d.config.PollInterval).
+		Msg("Daemon starting")
+
 	ui.Header("=== Bosun Daemon Starting ===")
 	ui.Info("Version: %s", getVersion())
 	ui.Info("Socket: %s", d.config.SocketPath)
@@ -262,22 +279,32 @@ func (d *Daemon) shutdown() error {
 // If a reconcile is already in progress, it sets the pending flag and returns immediately.
 // The running reconcile will check the pending flag and re-run if set.
 func (d *Daemon) TriggerReconcile(ctx context.Context, source string) error {
+	// Add reconcile ID to context for correlation.
+	ctx, reconcileID := log.NewReconcileContext(ctx)
+
 	d.reconcileMu.Lock()
 
 	if d.reconciling {
-		// Another reconcile is in progress - set dirty flag and return
+		// Another reconcile is in progress - set dirty flag and return.
 		d.pendingTrigger = true
 		d.triggerSource = source
 		d.reconcileMu.Unlock()
+
+		log.Info().
+			Str(log.FieldComponent, log.ComponentDaemon).
+			Str(log.FieldSource, source).
+			Str(log.FieldReconcileID, reconcileID).
+			Msg("Reconcile already in progress, queued trigger")
+
 		ui.Info("Reconcile already in progress, queued trigger from %s", source)
 		return nil
 	}
 
-	// Mark as reconciling
+	// Mark as reconciling.
 	d.reconciling = true
 	d.reconcileMu.Unlock()
 
-	// Run the reconcile loop (may run multiple times if pending triggers arrive)
+	// Run the reconcile loop (may run multiple times if pending triggers arrive).
 	return d.reconcileLoop(ctx, source)
 }
 
@@ -314,20 +341,46 @@ func (d *Daemon) reconcileLoop(ctx context.Context, source string) error {
 // executeReconcile runs a single reconciliation and updates state.
 func (d *Daemon) executeReconcile(ctx context.Context, source string) error {
 	start := time.Now()
+	reconcileID := log.ReconcileIDFromContext(ctx)
+
+	log.Info().
+		Str(log.FieldComponent, log.ComponentReconcile).
+		Str(log.FieldReconcileID, reconcileID).
+		Str(log.FieldSource, source).
+		Msg("Starting reconciliation")
+
 	ui.Info("Starting reconciliation (source: %s)", source)
 
 	err := d.reconciler.Run(ctx)
 
-	// Update state (use stateMu for thread-safe reads from health checks)
+	// Update state (use stateMu for thread-safe reads from health checks).
 	d.stateMu.Lock()
 	d.lastReconcile = time.Now()
 	d.lastError = err
 	d.stateMu.Unlock()
 
+	durationMS := time.Since(start).Milliseconds()
+
 	if err != nil {
+		log.Error().
+			Str(log.FieldComponent, log.ComponentReconcile).
+			Str(log.FieldReconcileID, reconcileID).
+			Str(log.FieldSource, source).
+			Int64(log.FieldDurationMS, durationMS).
+			Err(err).
+			Msg("Reconciliation failed")
+
 		ui.Error("Reconciliation failed after %s: %v", time.Since(start), err)
 		return err
 	}
+
+	log.Info().
+		Str(log.FieldComponent, log.ComponentReconcile).
+		Str(log.FieldReconcileID, reconcileID).
+		Str(log.FieldSource, source).
+		Int64(log.FieldDurationMS, durationMS).
+		Bool("success", true).
+		Msg("Reconciliation completed")
 
 	ui.Success("Reconciliation completed in %s", time.Since(start))
 	return nil

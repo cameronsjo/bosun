@@ -1,0 +1,769 @@
+/* Google Fonts - must precede other imports */
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+
+@import "tailwindcss";
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   BOSUN WEBUI - Maritime Command Center Theme
+   A ship's bridge aesthetic for Docker container management
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   CSS Custom Properties - Maritime Color System
+   ───────────────────────────────────────────────────────────────────────────── */
+:root {
+  /* Typography */
+  --font-display: 'Playfair Display', Georgia, serif;
+  --font-mono: 'IBM Plex Mono', 'Menlo', monospace;
+  --font-body: 'IBM Plex Sans', system-ui, sans-serif;
+
+  /* Light Mode - Weathered Parchment & Navy */
+  --color-bg-primary: #f8f5f0;
+  --color-bg-secondary: #ffffff;
+  --color-bg-tertiary: #f0ebe3;
+  --color-bg-card: #ffffff;
+  --color-bg-card-hover: #faf8f5;
+
+  --color-text-primary: #1a2744;
+  --color-text-secondary: #4a5568;
+  --color-text-muted: #718096;
+  --color-text-inverse: #f8f5f0;
+
+  --color-border: #d4c9b8;
+  --color-border-subtle: #e8e0d4;
+
+  /* Accent Colors */
+  --color-brass: #b8860b;
+  --color-brass-light: #daa520;
+  --color-brass-dark: #8b6914;
+  --color-navy: #1a2744;
+  --color-navy-light: #2d3a52;
+  --color-ocean: #1a535c;
+  --color-ocean-light: #2d6a73;
+
+  /* Status Colors */
+  --color-healthy: #20b2aa;
+  --color-healthy-bg: #e6f7f6;
+  --color-warning: #d4a017;
+  --color-warning-bg: #fef7e0;
+  --color-danger: #c94c4c;
+  --color-danger-bg: #fde8e8;
+  --color-info: #4a90a4;
+  --color-info-bg: #e8f4f8;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(26, 39, 68, 0.06);
+  --shadow-md: 0 4px 12px rgba(26, 39, 68, 0.08);
+  --shadow-lg: 0 8px 24px rgba(26, 39, 68, 0.12);
+  --shadow-brass: 0 0 0 1px var(--color-brass), 0 4px 12px rgba(184, 134, 11, 0.15);
+
+  /* Transitions */
+  --transition-fast: 150ms ease;
+  --transition-base: 250ms ease;
+  --transition-slow: 400ms ease;
+}
+
+/* Dark Mode - Deep Ocean & Brass */
+.dark {
+  --color-bg-primary: #0a1628;
+  --color-bg-secondary: #111d32;
+  --color-bg-tertiary: #162440;
+  --color-bg-card: #152238;
+  --color-bg-card-hover: #1a2a48;
+
+  --color-text-primary: #e8e4dc;
+  --color-text-secondary: #a8b4c4;
+  --color-text-muted: #6b7a8f;
+  --color-text-inverse: #0a1628;
+
+  --color-border: #2a3a54;
+  --color-border-subtle: #1e2d44;
+
+  --color-brass: #daa520;
+  --color-brass-light: #f0c850;
+  --color-brass-dark: #b8860b;
+
+  --color-healthy-bg: rgba(32, 178, 170, 0.15);
+  --color-warning-bg: rgba(212, 160, 23, 0.15);
+  --color-danger-bg: rgba(201, 76, 76, 0.15);
+  --color-info-bg: rgba(74, 144, 164, 0.15);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --shadow-brass: 0 0 0 1px var(--color-brass), 0 4px 16px rgba(218, 165, 32, 0.2);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Base Styles
+   ───────────────────────────────────────────────────────────────────────────── */
+html {
+  font-family: var(--font-body);
+  line-height: 1.6;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Background Texture & Atmosphere
+   ───────────────────────────────────────────────────────────────────────────── */
+.maritime-bg {
+  position: relative;
+  background: var(--color-bg-primary);
+}
+
+.maritime-bg::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 20% 0%, rgba(26, 83, 92, 0.08) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 100%, rgba(26, 39, 68, 0.06) 0%, transparent 50%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.dark .maritime-bg::before {
+  background:
+    radial-gradient(ellipse at 20% 0%, rgba(218, 165, 32, 0.04) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 100%, rgba(32, 178, 170, 0.03) 0%, transparent 50%);
+}
+
+/* Subtle noise texture */
+.maritime-bg::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  opacity: 0.015;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.dark .maritime-bg::after {
+  opacity: 0.03;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Typography
+   ───────────────────────────────────────────────────────────────────────────── */
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Maritime Card Component
+   ───────────────────────────────────────────────────────────────────────────── */
+.maritime-card {
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  box-shadow: var(--shadow-md);
+  position: relative;
+  overflow: hidden;
+  transition: all var(--transition-base);
+}
+
+.maritime-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--color-brass-dark), var(--color-brass), var(--color-brass-dark));
+  opacity: 0;
+  transition: opacity var(--transition-base);
+}
+
+.maritime-card:hover::before {
+  opacity: 1;
+}
+
+.maritime-card:hover {
+  box-shadow: var(--shadow-lg);
+  transform: translateY(-1px);
+}
+
+/* Card with brass accent (always visible) */
+.maritime-card-accent {
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  box-shadow: var(--shadow-md);
+  position: relative;
+  overflow: hidden;
+}
+
+.maritime-card-accent::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--color-brass-dark), var(--color-brass), var(--color-brass-dark));
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Compass Rose Loading Animation
+   ───────────────────────────────────────────────────────────────────────────── */
+@keyframes compass-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes compass-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.compass-loader {
+  width: 48px;
+  height: 48px;
+  position: relative;
+}
+
+.compass-loader::before {
+  content: '⎈';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  color: var(--color-brass);
+  animation: compass-spin 2s linear infinite, compass-pulse 1.5s ease-in-out infinite;
+}
+
+.compass-loader-sm {
+  width: 20px;
+  height: 20px;
+}
+
+.compass-loader-sm::before {
+  font-size: 18px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Status Indicators - Porthole Style
+   ───────────────────────────────────────────────────────────────────────────── */
+.status-indicator {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  position: relative;
+  box-shadow:
+    inset 0 1px 2px rgba(0,0,0,0.2),
+    0 0 0 2px var(--color-border-subtle);
+}
+
+.status-indicator::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  width: 4px;
+  height: 4px;
+  background: rgba(255,255,255,0.4);
+  border-radius: 50%;
+}
+
+.status-healthy {
+  background: radial-gradient(circle at 30% 30%, #4ecdc4, var(--color-healthy));
+  box-shadow:
+    inset 0 1px 2px rgba(0,0,0,0.2),
+    0 0 0 2px var(--color-border-subtle),
+    0 0 8px rgba(32, 178, 170, 0.4);
+}
+
+.status-warning {
+  background: radial-gradient(circle at 30% 30%, #f7d060, var(--color-warning));
+  box-shadow:
+    inset 0 1px 2px rgba(0,0,0,0.2),
+    0 0 0 2px var(--color-border-subtle),
+    0 0 8px rgba(212, 160, 23, 0.4);
+}
+
+.status-danger {
+  background: radial-gradient(circle at 30% 30%, #e77575, var(--color-danger));
+  box-shadow:
+    inset 0 1px 2px rgba(0,0,0,0.2),
+    0 0 0 2px var(--color-border-subtle),
+    0 0 8px rgba(201, 76, 76, 0.4);
+  animation: pulse-danger 2s ease-in-out infinite;
+}
+
+@keyframes pulse-danger {
+  0%, 100% { box-shadow:
+    inset 0 1px 2px rgba(0,0,0,0.2),
+    0 0 0 2px var(--color-border-subtle),
+    0 0 8px rgba(201, 76, 76, 0.4); }
+  50% { box-shadow:
+    inset 0 1px 2px rgba(0,0,0,0.2),
+    0 0 0 2px var(--color-border-subtle),
+    0 0 16px rgba(201, 76, 76, 0.6); }
+}
+
+.status-info {
+  background: radial-gradient(circle at 30% 30%, #7cb9cc, var(--color-info));
+  box-shadow:
+    inset 0 1px 2px rgba(0,0,0,0.2),
+    0 0 0 2px var(--color-border-subtle),
+    0 0 8px rgba(74, 144, 164, 0.4);
+}
+
+.status-offline {
+  background: radial-gradient(circle at 30% 30%, #8899aa, #5a6a7a);
+  box-shadow:
+    inset 0 1px 2px rgba(0,0,0,0.2),
+    0 0 0 2px var(--color-border-subtle);
+}
+
+/* Pulsing animation for active states */
+@keyframes status-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.1); opacity: 0.8; }
+}
+
+.status-active {
+  animation: status-pulse 1.5s ease-in-out infinite;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Navigation - Ship's Wheel Style
+   ───────────────────────────────────────────────────────────────────────────── */
+.nav-item {
+  position: relative;
+  padding: 0.625rem 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  border-radius: 4px;
+  transition: all var(--transition-fast);
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.nav-item:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+}
+
+.nav-item-active {
+  color: var(--color-brass);
+  background: var(--color-bg-card);
+  border-color: var(--color-border);
+  box-shadow: var(--shadow-sm);
+}
+
+.nav-item-active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 20%;
+  right: 20%;
+  height: 2px;
+  background: var(--color-brass);
+  border-radius: 2px 2px 0 0;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Buttons - Brass & Naval Style
+   ───────────────────────────────────────────────────────────────────────────── */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--color-text-inverse);
+  background: linear-gradient(180deg, var(--color-brass-light), var(--color-brass));
+  border: none;
+  border-radius: 6px;
+  box-shadow:
+    0 1px 0 var(--color-brass-dark),
+    0 2px 4px rgba(0,0,0,0.2);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, var(--color-brass), var(--color-brass-dark));
+  transform: translateY(-1px);
+  box-shadow:
+    0 2px 0 var(--color-brass-dark),
+    0 4px 8px rgba(0,0,0,0.25);
+}
+
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow:
+    0 0px 0 var(--color-brass-dark),
+    0 1px 2px rgba(0,0,0,0.2);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border);
+}
+
+.btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-danger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.875rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-danger);
+  background: var(--color-danger-bg);
+  border: 1px solid var(--color-danger);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-danger:hover:not(:disabled) {
+  color: white;
+  background: var(--color-danger);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Form Controls - Instrument Panel Style
+   ───────────────────────────────────────────────────────────────────────────── */
+.form-select {
+  padding: 0.5rem 2rem 0.5rem 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--color-text-primary);
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7a8f' d='M3 4.5L6 8l3-3.5H3z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.5rem center;
+}
+
+.form-select:hover {
+  border-color: var(--color-brass);
+}
+
+.form-select:focus {
+  outline: none;
+  border-color: var(--color-brass);
+  box-shadow: 0 0 0 2px rgba(218, 165, 32, 0.2);
+}
+
+.form-label {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Health Badges - Signal Flag Style
+   ───────────────────────────────────────────────────────────────────────────── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.625rem;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 3px;
+  border: 1px solid;
+}
+
+.badge-healthy {
+  color: var(--color-healthy);
+  background: var(--color-healthy-bg);
+  border-color: var(--color-healthy);
+}
+
+.badge-warning {
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
+  border-color: var(--color-warning);
+}
+
+.badge-danger {
+  color: var(--color-danger);
+  background: var(--color-danger-bg);
+  border-color: var(--color-danger);
+}
+
+.badge-info {
+  color: var(--color-info);
+  background: var(--color-info-bg);
+  border-color: var(--color-info);
+}
+
+.badge-neutral {
+  color: var(--color-text-muted);
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Data Table - Ship's Log Style
+   ───────────────────────────────────────────────────────────────────────────── */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.data-table th {
+  padding: 0.875rem 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--color-text-muted);
+  background: var(--color-bg-tertiary);
+  border-bottom: 2px solid var(--color-border);
+}
+
+.data-table td {
+  padding: 1rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  transition: background var(--transition-fast);
+}
+
+.data-table tr:hover td {
+  background: var(--color-bg-card-hover);
+}
+
+.data-table .cell-primary {
+  font-family: var(--font-body);
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.data-table .cell-secondary {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Log Viewer - Captain's Log Style
+   ───────────────────────────────────────────────────────────────────────────── */
+.log-viewer {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.7;
+  color: #a8d4a8;
+  background: #0d1a0d;
+  padding: 1.25rem;
+  border-radius: 0 0 8px 8px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.dark .log-viewer {
+  background: #080f08;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Alert Banner - Signal Flag Style
+   ───────────────────────────────────────────────────────────────────────────── */
+.alert-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.875rem 1.25rem;
+  background: linear-gradient(90deg, #b91c1c, #dc2626);
+  color: white;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.alert-banner::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: repeating-linear-gradient(
+    45deg,
+    #fbbf24,
+    #fbbf24 8px,
+    #dc2626 8px,
+    #dc2626 16px
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Rope Divider Decoration
+   ───────────────────────────────────────────────────────────────────────────── */
+.rope-divider {
+  position: relative;
+  height: 1px;
+  background: var(--color-border);
+  margin: 1.5rem 0;
+}
+
+.rope-divider::before {
+  content: '⚓';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 0 1rem;
+  background: var(--color-bg-primary);
+  color: var(--color-brass);
+  font-size: 0.875rem;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Stat Display - Instrument Gauge Style
+   ───────────────────────────────────────────────────────────────────────────── */
+.stat-value {
+  font-family: var(--font-display);
+  font-size: 2.5rem;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--color-text-primary);
+}
+
+.stat-value-lg {
+  font-size: 3rem;
+}
+
+.stat-label {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin-top: 0.5rem;
+}
+
+.stat-sublabel {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  margin-top: 0.25rem;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Entrance Animations
+   ───────────────────────────────────────────────────────────────────────────── */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.4s ease-out forwards;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out forwards;
+}
+
+.animation-delay-1 { animation-delay: 0.1s; }
+.animation-delay-2 { animation-delay: 0.2s; }
+.animation-delay-3 { animation-delay: 0.3s; }
+.animation-delay-4 { animation-delay: 0.4s; }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Scrollbar Styling
+   ───────────────────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-bg-tertiary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-brass);
+}

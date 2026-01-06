@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -61,13 +62,37 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.server.Shutdown(ctx)
 }
 
-// loggingMiddleware logs HTTP requests.
+// loggingMiddleware logs HTTP requests with request ID tracking.
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+
+		// Generate or extract request ID.
+		requestID := r.Header.Get("X-Request-ID")
+		if requestID == "" {
+			var id string
+			r = r.WithContext(log.WithRequestID(r.Context(), ""))
+			id = log.RequestIDFromContext(r.Context())
+			requestID = id
+		} else {
+			r = r.WithContext(log.WithRequestID(r.Context(), requestID))
+		}
+
+		// Add request ID to response headers.
+		w.Header().Set("X-Request-ID", requestID)
+
 		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(wrapped, r)
-		ui.Info("HTTP %s %s %d %s", r.Method, r.URL.Path, wrapped.statusCode, time.Since(start))
+
+		// Log with structured fields.
+		log.Info().
+			Str(log.FieldComponent, log.ComponentHTTP).
+			Str(log.FieldRequestID, requestID).
+			Str(log.FieldMethod, r.Method).
+			Str(log.FieldURL, r.URL.Path).
+			Int(log.FieldStatus, wrapped.statusCode).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("HTTP request completed")
 	})
 }
 
