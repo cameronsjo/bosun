@@ -20,24 +20,37 @@ type ServiceStatus struct {
 
 // ComposeClient handles docker compose operations.
 type ComposeClient struct {
-	file string
+	file    string
+	project string
 }
 
-// NewComposeClient creates a new compose client for the given compose file.
+// NewComposeClient creates a new compose client for the given compose file and project name.
+// The project name ensures consistent container namespacing and proper orphan detection.
 // Returns an error if the compose file does not exist.
-func NewComposeClient(file string) (*ComposeClient, error) {
+func NewComposeClient(file, project string) (*ComposeClient, error) {
 	if _, err := os.Stat(file); err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("compose file not found: %s", file)
 		}
 		return nil, fmt.Errorf("cannot access compose file %s: %w", file, err)
 	}
-	return &ComposeClient{file: file}, nil
+	return &ComposeClient{file: file, project: project}, nil
+}
+
+// baseArgs returns the common docker compose arguments including project name.
+func (c *ComposeClient) baseArgs() []string {
+	args := []string{"compose"}
+	if c.project != "" {
+		args = append(args, "-p", c.project)
+	}
+	args = append(args, "-f", c.file)
+	return args
 }
 
 // Up starts services defined in the compose file.
 func (c *ComposeClient) Up(ctx context.Context, services ...string) error {
-	args := []string{"compose", "-f", c.file, "up", "-d"}
+	args := c.baseArgs()
+	args = append(args, "up", "-d")
 	args = append(args, services...)
 
 	cmd := exec.CommandContext(ctx, "docker", args...)
@@ -51,7 +64,10 @@ func (c *ComposeClient) Up(ctx context.Context, services ...string) error {
 
 // Down stops and removes services defined in the compose file.
 func (c *ComposeClient) Down(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", c.file, "down")
+	args := c.baseArgs()
+	args = append(args, "down")
+
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("docker compose down: %w\n%s", err, output)
@@ -62,7 +78,8 @@ func (c *ComposeClient) Down(ctx context.Context) error {
 
 // Restart restarts services defined in the compose file.
 func (c *ComposeClient) Restart(ctx context.Context, services ...string) error {
-	args := []string{"compose", "-f", c.file, "restart"}
+	args := c.baseArgs()
+	args = append(args, "restart")
 	args = append(args, services...)
 
 	cmd := exec.CommandContext(ctx, "docker", args...)
@@ -76,7 +93,9 @@ func (c *ComposeClient) Restart(ctx context.Context, services ...string) error {
 
 // Status returns the status of services in the compose file.
 func (c *ComposeClient) Status(ctx context.Context) ([]ServiceStatus, error) {
-	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", c.file, "ps", "--format", "{{.Name}}\t{{.State}}\t{{.Status}}\t{{.Ports}}")
+	args := c.baseArgs()
+	args = append(args, "ps", "--format", "{{.Name}}\t{{.State}}\t{{.Status}}\t{{.Ports}}")
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -115,7 +134,10 @@ func (c *ComposeClient) Status(ctx context.Context) ([]ServiceStatus, error) {
 
 // Ps runs docker compose ps and returns the raw output.
 func (c *ComposeClient) Ps(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", c.file, "ps")
+	args := c.baseArgs()
+	args = append(args, "ps")
+
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("docker compose ps: %w\n%s", err, output)

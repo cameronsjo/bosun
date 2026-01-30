@@ -15,12 +15,12 @@ import (
 
 func TestNewDeployOps(t *testing.T) {
 	t.Run("with dry run", func(t *testing.T) {
-		deploy := NewDeployOps(true)
+		deploy := NewDeployOps(true, "")
 		assert.True(t, deploy.DryRun)
 	})
 
 	t.Run("without dry run", func(t *testing.T) {
-		deploy := NewDeployOps(false)
+		deploy := NewDeployOps(false, "")
 		assert.False(t, deploy.DryRun)
 	})
 }
@@ -42,7 +42,7 @@ func TestDeployOps_Backup(t *testing.T) {
 
 		backupDir := filepath.Join(tmpDir, "backups")
 
-		deploy := NewDeployOps(false)
+		deploy := NewDeployOps(false, "")
 		backupName, err := deploy.Backup(ctx, backupDir, []string{srcDir})
 
 		require.NoError(t, err)
@@ -63,7 +63,7 @@ func TestDeployOps_Backup(t *testing.T) {
 
 		backupDir := filepath.Join(tmpDir, "backups")
 
-		deploy := NewDeployOps(false)
+		deploy := NewDeployOps(false, "")
 		backupName, err := deploy.Backup(ctx, backupDir, []string{"/non/existent/path"})
 
 		require.NoError(t, err)
@@ -76,7 +76,7 @@ func TestDeployOps_Backup(t *testing.T) {
 
 		backupDir := filepath.Join(tmpDir, "backups")
 
-		deploy := NewDeployOps(false)
+		deploy := NewDeployOps(false, "")
 		backupName, err := deploy.Backup(ctx, backupDir, []string{})
 
 		require.NoError(t, err)
@@ -95,7 +95,7 @@ func TestDeployOps_CleanupBackups(t *testing.T) {
 			require.NoError(t, os.MkdirAll(backupDir, 0755))
 		}
 
-		deploy := NewDeployOps(false)
+		deploy := NewDeployOps(false, "")
 		err := deploy.CleanupBackups(tmpDir, 5)
 
 		require.NoError(t, err)
@@ -123,7 +123,7 @@ func TestDeployOps_CleanupBackups(t *testing.T) {
 			require.NoError(t, os.MkdirAll(backupDir, 0755))
 		}
 
-		deploy := NewDeployOps(false)
+		deploy := NewDeployOps(false, "")
 		err := deploy.CleanupBackups(tmpDir, 5)
 
 		require.NoError(t, err)
@@ -135,7 +135,7 @@ func TestDeployOps_CleanupBackups(t *testing.T) {
 	})
 
 	t.Run("cleanup non-existent directory", func(t *testing.T) {
-		deploy := NewDeployOps(false)
+		deploy := NewDeployOps(false, "")
 		err := deploy.CleanupBackups("/non/existent/dir", 5)
 
 		// Should not error
@@ -155,7 +155,7 @@ func TestDeployOps_CleanupBackups(t *testing.T) {
 		// Create non-backup directory
 		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "other-dir"), 0755))
 
-		deploy := NewDeployOps(false)
+		deploy := NewDeployOps(false, "")
 		err := deploy.CleanupBackups(tmpDir, 2)
 
 		require.NoError(t, err)
@@ -179,7 +179,7 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "file1.txt"), []byte("content1"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "file2.txt"), []byte("content2"), 0644))
 
-		deploy := NewDeployOps(false)
+		deploy := NewDeployOps(false, "")
 		err := deploy.DeployLocal(ctx, sourceDir, targetDir)
 
 		require.NoError(t, err)
@@ -211,7 +211,7 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "subdir", "sub.txt"), []byte("sub"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "subdir", "nested", "deep.txt"), []byte("deep"), 0644))
 
-		deploy := NewDeployOps(false)
+		deploy := NewDeployOps(false, "")
 		err := deploy.DeployLocal(ctx, sourceDir, targetDir)
 
 		require.NoError(t, err)
@@ -237,7 +237,7 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		require.NoError(t, os.MkdirAll(targetDir, 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "old.txt"), []byte("old"), 0644))
 
-		deploy := NewDeployOps(false)
+		deploy := NewDeployOps(false, "")
 		err := deploy.DeployLocal(ctx, sourceDir, targetDir)
 
 		require.NoError(t, err)
@@ -260,7 +260,7 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 
 		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "file.txt"), []byte("content"), 0644))
 
-		deploy := NewDeployOps(true)
+		deploy := NewDeployOps(true, "")
 		err := deploy.DeployLocal(ctx, sourceDir, targetDir)
 
 		require.NoError(t, err)
@@ -276,7 +276,7 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		sourceDir := filepath.Join(tmpDir, "nonexistent")
 		targetDir := filepath.Join(tmpDir, "target")
 
-		deploy := NewDeployOps(false)
+		deploy := NewDeployOps(false, "")
 		err := deploy.DeployLocal(ctx, sourceDir, targetDir)
 
 		require.Error(t, err)
@@ -292,7 +292,7 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 
 		require.NoError(t, os.WriteFile(sourceFile, []byte("content"), 0644))
 
-		deploy := NewDeployOps(false)
+		deploy := NewDeployOps(false, "")
 		err := deploy.DeployLocal(ctx, sourceFile, targetDir)
 
 		require.Error(t, err)
@@ -310,7 +310,7 @@ func TestDeployOps_DeployLocalFile(t *testing.T) {
 
 		require.NoError(t, os.WriteFile(sourceFile, []byte("content"), 0644))
 
-		deploy := NewDeployOps(false)
+		deploy := NewDeployOps(false, "")
 		err := deploy.DeployLocalFile(ctx, sourceFile, targetFile)
 
 		require.NoError(t, err)
@@ -330,7 +330,7 @@ func TestDeployOps_DeployLocalFile(t *testing.T) {
 
 		require.NoError(t, os.WriteFile(sourceFile, []byte("content"), 0644))
 
-		deploy := NewDeployOps(false)
+		deploy := NewDeployOps(false, "")
 		err := deploy.DeployLocalFile(ctx, sourceFile, targetFile)
 
 		require.NoError(t, err)
@@ -346,7 +346,7 @@ func TestDeployOps_DeployLocalFile(t *testing.T) {
 
 		require.NoError(t, os.WriteFile(sourceFile, []byte("content"), 0644))
 
-		deploy := NewDeployOps(true)
+		deploy := NewDeployOps(true, "")
 		err := deploy.DeployLocalFile(ctx, sourceFile, targetFile)
 
 		require.NoError(t, err)
@@ -360,7 +360,7 @@ func TestDeployOps_DeployLocalFile(t *testing.T) {
 		sourceFile := filepath.Join(tmpDir, "nonexistent.txt")
 		targetFile := filepath.Join(tmpDir, "target.txt")
 
-		deploy := NewDeployOps(false)
+		deploy := NewDeployOps(false, "")
 		err := deploy.DeployLocalFile(ctx, sourceFile, targetFile)
 
 		require.Error(t, err)
@@ -371,7 +371,7 @@ func TestDeployOps_ComposeUp(t *testing.T) {
 	t.Run("dry run skips execution", func(t *testing.T) {
 		ctx := context.Background()
 
-		deploy := NewDeployOps(true)
+		deploy := NewDeployOps(true, "")
 		err := deploy.ComposeUp(ctx, "/any/compose.yml")
 
 		// Dry run should not error
@@ -385,7 +385,7 @@ func TestDeployOps_ComposeUp(t *testing.T) {
 
 		ctx := context.Background()
 
-		deploy := NewDeployOps(false)
+		deploy := NewDeployOps(false, "")
 		err := deploy.ComposeUp(ctx, "/non/existent/compose.yml")
 
 		assert.Error(t, err)
@@ -396,7 +396,7 @@ func TestDeployOps_SignalContainer(t *testing.T) {
 	t.Run("dry run skips execution", func(t *testing.T) {
 		ctx := context.Background()
 
-		deploy := NewDeployOps(true)
+		deploy := NewDeployOps(true, "")
 		err := deploy.SignalContainer(ctx, "container-name", "SIGHUP")
 
 		require.NoError(t, err)
@@ -409,7 +409,7 @@ func TestDeployOps_SignalContainer(t *testing.T) {
 
 		ctx := context.Background()
 
-		deploy := NewDeployOps(false)
+		deploy := NewDeployOps(false, "")
 		err := deploy.SignalContainer(ctx, "non-existent-container-12345", "SIGHUP")
 
 		assert.Error(t, err)
@@ -435,7 +435,7 @@ func TestDeployOps_ComposeUpRemote(t *testing.T) {
 	t.Run("dry run skips execution", func(t *testing.T) {
 		ctx := context.Background()
 
-		deploy := NewDeployOps(true)
+		deploy := NewDeployOps(true, "")
 		err := deploy.ComposeUpRemote(ctx, "host", "/any/path")
 
 		require.NoError(t, err)
@@ -446,7 +446,7 @@ func TestDeployOps_SignalContainerRemote(t *testing.T) {
 	t.Run("dry run skips execution", func(t *testing.T) {
 		ctx := context.Background()
 
-		deploy := NewDeployOps(true)
+		deploy := NewDeployOps(true, "")
 		err := deploy.SignalContainerRemote(ctx, "host", "container", "SIGHUP")
 
 		require.NoError(t, err)

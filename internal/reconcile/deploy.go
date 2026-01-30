@@ -39,11 +39,25 @@ const (
 type DeployOps struct {
 	// DryRun if true, only shows what would be done without making changes.
 	DryRun bool
+	// ProjectName is the docker compose project name for consistent container namespacing.
+	ProjectName string
 }
 
 // NewDeployOps creates a new DeployOps instance.
-func NewDeployOps(dryRun bool) *DeployOps {
-	return &DeployOps{DryRun: dryRun}
+func NewDeployOps(dryRun bool, projectName string) *DeployOps {
+	return &DeployOps{DryRun: dryRun, ProjectName: projectName}
+}
+
+// composeArgs returns docker compose arguments with project name if set.
+func (d *DeployOps) composeArgs(files ...string) []string {
+	args := []string{"compose"}
+	if d.ProjectName != "" {
+		args = append(args, "-p", d.ProjectName)
+	}
+	for _, f := range files {
+		args = append(args, "-f", f)
+	}
+	return args
 }
 
 // isTransientSSHError checks if an error is transient and worth retrying.
@@ -622,11 +636,8 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 		defer cancel()
 	}
 
-	// Build args: docker compose -f file1.yml -f file2.yml up -d --remove-orphans --wait
-	args := []string{"compose"}
-	for _, f := range composeFiles {
-		args = append(args, "-f", f)
-	}
+	// Build args: docker compose -p project -f file1.yml -f file2.yml up -d --remove-orphans --wait
+	args := d.composeArgs(composeFiles...)
 	args = append(args, "up", "-d", "--remove-orphans", "--wait")
 
 	cmd := exec.CommandContext(ctx, "docker", args...)
@@ -691,10 +702,7 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 	defer cancel()
 
 	// Build rollback args
-	args := []string{"compose"}
-	for _, f := range backupFiles {
-		args = append(args, "-f", f)
-	}
+	args := d.composeArgs(backupFiles...)
 	args = append(args, "up", "-d", "--remove-orphans")
 
 	rollbackCmd := exec.CommandContext(rollbackCtx, "docker", args...)
@@ -717,7 +725,9 @@ func (d *DeployOps) VerifyContainerHealth(ctx context.Context, composeFile strin
 	}
 
 	// Use docker compose ps to check container status
-	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", composeFile, "ps", "--format", "json")
+	args := d.composeArgs(composeFile)
+	args = append(args, "ps", "--format", "json")
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -742,7 +752,12 @@ func (d *DeployOps) ComposeUpRemote(ctx context.Context, host, composeDir string
 		return nil
 	}
 
-	sshCmd := fmt.Sprintf("cd %s && docker compose up -d --remove-orphans", composeDir)
+	// Build compose command with project name if set
+	composeCmd := "docker compose"
+	if d.ProjectName != "" {
+		composeCmd = fmt.Sprintf("docker compose -p %s", d.ProjectName)
+	}
+	sshCmd := fmt.Sprintf("cd %s && %s up -d --remove-orphans", composeDir, composeCmd)
 
 	return retryWithBackoff(ctx, DefaultMaxRetries, func() error {
 		cmd := exec.CommandContext(ctx, "ssh", host, sshCmd)

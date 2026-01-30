@@ -19,14 +19,14 @@ func TestNewComposeClient(t *testing.T) {
 		err := os.WriteFile(composeFile, []byte("services: {}"), 0644)
 		require.NoError(t, err)
 
-		client, err := NewComposeClient(composeFile)
+		client, err := NewComposeClient(composeFile, "test-project")
 		require.NoError(t, err)
 		assert.NotNil(t, client)
 		assert.Equal(t, composeFile, client.file)
 	})
 
 	t.Run("nonexistent file", func(t *testing.T) {
-		client, err := NewComposeClient("/nonexistent/docker-compose.yml")
+		client, err := NewComposeClient("/nonexistent/docker-compose.yml", "")
 		require.Error(t, err)
 		assert.Nil(t, client)
 		assert.Contains(t, err.Error(), "compose file not found")
@@ -47,7 +47,7 @@ func TestNewComposeClient(t *testing.T) {
 
 		// On some systems stat works even without read permission
 		// so we just check that it doesn't panic
-		_, _ = NewComposeClient(composeFile)
+		_, _ = NewComposeClient(composeFile, "test-project")
 	})
 }
 
@@ -204,7 +204,7 @@ services:
 	err := os.WriteFile(composeFile, []byte(composeContent), 0644)
 	require.NoError(t, err)
 
-	client, err := NewComposeClient(composeFile)
+	client, err := NewComposeClient(composeFile, "test-project")
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -246,7 +246,7 @@ services:
 func TestComposeClient_Errors(t *testing.T) {
 	// Constructor now validates file existence, so nonexistent files fail at construction
 	t.Run("constructor with nonexistent file", func(t *testing.T) {
-		_, err := NewComposeClient("/nonexistent/docker-compose.yml")
+		_, err := NewComposeClient("/nonexistent/docker-compose.yml", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "compose file not found")
 	})
@@ -257,33 +257,41 @@ func TestComposeClient_CommandBuilding(t *testing.T) {
 	tests := []struct {
 		name     string
 		file     string
+		project  string
 		services []string
 		wantArgs []string
 	}{
 		{
-			name:     "up with no services",
+			name:     "up with no services, no project",
 			file:     "compose.yml",
+			project:  "",
 			services: nil,
 			wantArgs: []string{"compose", "-f", "compose.yml", "up", "-d"},
 		},
 		{
-			name:     "up with one service",
+			name:     "up with project name",
 			file:     "compose.yml",
-			services: []string{"web"},
-			wantArgs: []string{"compose", "-f", "compose.yml", "up", "-d", "web"},
+			project:  "homelab",
+			services: nil,
+			wantArgs: []string{"compose", "-p", "homelab", "-f", "compose.yml", "up", "-d"},
 		},
 		{
-			name:     "up with multiple services",
+			name:     "up with project and services",
 			file:     "compose.yml",
-			services: []string{"web", "db", "cache"},
-			wantArgs: []string{"compose", "-f", "compose.yml", "up", "-d", "web", "db", "cache"},
+			project:  "homelab",
+			services: []string{"web", "db"},
+			wantArgs: []string{"compose", "-p", "homelab", "-f", "compose.yml", "up", "-d", "web", "db"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Build the args like Up() does
-			args := []string{"compose", "-f", tt.file, "up", "-d"}
+			// Build the args like baseArgs() + Up() does
+			args := []string{"compose"}
+			if tt.project != "" {
+				args = append(args, "-p", tt.project)
+			}
+			args = append(args, "-f", tt.file, "up", "-d")
 			args = append(args, tt.services...)
 			assert.Equal(t, tt.wantArgs, args)
 		})
@@ -294,33 +302,34 @@ func TestComposeClient_RestartCommandBuilding(t *testing.T) {
 	tests := []struct {
 		name     string
 		file     string
+		project  string
 		services []string
 		wantArgs []string
 	}{
 		{
-			name:     "restart with no services",
+			name:     "restart with no services, no project",
 			file:     "compose.yml",
+			project:  "",
 			services: nil,
 			wantArgs: []string{"compose", "-f", "compose.yml", "restart"},
 		},
 		{
-			name:     "restart with one service",
+			name:     "restart with project name",
 			file:     "compose.yml",
+			project:  "homelab",
 			services: []string{"web"},
-			wantArgs: []string{"compose", "-f", "compose.yml", "restart", "web"},
-		},
-		{
-			name:     "restart with multiple services",
-			file:     "compose.yml",
-			services: []string{"web", "api"},
-			wantArgs: []string{"compose", "-f", "compose.yml", "restart", "web", "api"},
+			wantArgs: []string{"compose", "-p", "homelab", "-f", "compose.yml", "restart", "web"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Build the args like Restart() does
-			args := []string{"compose", "-f", tt.file, "restart"}
+			// Build the args like baseArgs() + Restart() does
+			args := []string{"compose"}
+			if tt.project != "" {
+				args = append(args, "-p", tt.project)
+			}
+			args = append(args, "-f", tt.file, "restart")
 			args = append(args, tt.services...)
 			assert.Equal(t, tt.wantArgs, args)
 		})

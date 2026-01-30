@@ -48,6 +48,10 @@ type Config struct {
 
 	// BackupsToKeep is the number of backups to retain.
 	BackupsToKeep int
+
+	// ProjectName is the docker compose project name for consistent container namespacing.
+	// All compose operations will use this name, ensuring --remove-orphans works correctly.
+	ProjectName string
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -93,7 +97,7 @@ func NewReconciler(cfg *Config, opts ...ReconcilerOption) *Reconciler {
 		config:   cfg,
 		git:      NewGitOps(cfg.RepoURL, cfg.RepoBranch, cfg.RepoDir),
 		sops:     NewSOPSOps(),
-		deploy:   NewDeployOps(cfg.DryRun),
+		deploy:   NewDeployOps(cfg.DryRun, cfg.ProjectName),
 		lockFile: "/tmp/reconcile.lock",
 	}
 

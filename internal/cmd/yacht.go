@@ -74,7 +74,7 @@ var yachtUpCmd = &cobra.Command{
 		}
 
 		ui.Green.Println("Raising anchor...")
-		compose, err := docker.NewComposeClient(cfg.ComposeFile)
+		compose, err := docker.NewComposeClient(cfg.ComposeFile, cfg.ProjectName())
 		if err != nil {
 			return fmt.Errorf("compose client: %w", err)
 		}
@@ -106,7 +106,7 @@ var yachtDownCmd = &cobra.Command{
 		}
 
 		ui.Yellow.Println("Dropping anchor...")
-		compose, err := docker.NewComposeClient(cfg.ComposeFile)
+		compose, err := docker.NewComposeClient(cfg.ComposeFile, cfg.ProjectName())
 		if err != nil {
 			return fmt.Errorf("compose client: %w", err)
 		}
@@ -145,7 +145,7 @@ var yachtRestartCmd = &cobra.Command{
 		}
 
 		ui.Blue.Println("Quick turnaround...")
-		compose, err := docker.NewComposeClient(cfg.ComposeFile)
+		compose, err := docker.NewComposeClient(cfg.ComposeFile, cfg.ProjectName())
 		if err != nil {
 			return fmt.Errorf("compose client: %w", err)
 		}
@@ -171,7 +171,7 @@ var yachtStatusCmd = &cobra.Command{
 			return fmt.Errorf("load config: %w", err)
 		}
 
-		compose, err := docker.NewComposeClient(cfg.ComposeFile)
+		compose, err := docker.NewComposeClient(cfg.ComposeFile, cfg.ProjectName())
 		if err != nil {
 			return fmt.Errorf("compose client: %w", err)
 		}
