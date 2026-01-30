@@ -25,6 +25,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * **ci:** disable cosign signing in goreleaser ([fcdd747](https://github.com/cameronsjo/bosun/commit/fcdd7473af61ba8b2205324fdacad1cc8bcffed9))
 * **ci:** disable docker builds in goreleaser ([a24a9bb](https://github.com/cameronsjo/bosun/commit/a24a9bbe5073f4f600cdec1bd3cbe4496d059eba))
+* **ci:** disable SLSA attestation step ([e8c922c](https://github.com/cameronsjo/bosun/commit/e8c922cc157e09ef3a26a876085125f2e9d16fbd))
+* **ci:** install git in test container ([c25332b](https://github.com/cameronsjo/bosun/commit/c25332b54bb4127f73ebaba90f819e2d835dd7df))
+* **ci:** remove -race flag from tests (requires CGO) ([6ba452c](https://github.com/cameronsjo/bosun/commit/6ba452c18c25c92667da08b7aae261f2cb3b3c31))
+* **ci:** remove goreleaser prefix from exec commands ([02f0e00](https://github.com/cameronsjo/bosun/commit/02f0e00c581dfbbdf0354b553c88c7e5a084a5f2))
+* **ci:** rename CIAll to All for proper CLI naming ([5593ee8](https://github.com/cameronsjo/bosun/commit/5593ee8587f4509b768a7e37c5ae5618eb8adb37))
+* **ci:** rename Platform to buildTarget to avoid Dagger conflict ([9e43a40](https://github.com/cameronsjo/bosun/commit/9e43a40a33ddf98e8320173b87bae93f574adc38))
+* **ci:** use correct dagger-for-github action ([a1c481b](https://github.com/cameronsjo/bosun/commit/a1c481b54015da8010a71cab3ca8b73be6c3cd11))
+* **ci:** use full semver tag for dagger-for-github action ([6dedd29](https://github.com/cameronsjo/bosun/commit/6dedd29440310f129af8082ef7e746387dcf15eb))
+* **ci:** use goreleaser:latest instead of non-existent v2 tag ([50d5ea7](https://github.com/cameronsjo/bosun/commit/50d5ea70ba8050dd5a5a2ff5aa7cff08263d6179))
+* **docker:** add project name to compose commands to prevent orphan containers ([242c57c](https://github.com/cameronsjo/bosun/commit/242c57cceaece9a0c373fe43a9abf0cf33ec0a29))
+
+## [0.2.10](https://github.com/cameronsjo/bosun/compare/v0.2.9...v0.2.10) (2026-01-30)
+
+
+### Features
+
+* **ci:** add WebUI to Dagger pipeline ([5f97f14](https://github.com/cameronsjo/bosun/commit/5f97f14b90224a59bca5c5e5026a09f10576578f))
+* **ci:** convert GitHub Actions to Dagger pipelines ([7364990](https://github.com/cameronsjo/bosun/commit/736499052370ff6d688b97b321c679d48db86e96))
+* **ci:** convert GitHub Actions to Dagger pipelines ([3456db2](https://github.com/cameronsjo/bosun/commit/3456db2d84bc9a94b54f5ec3bc01452a371b2a80))
+* **log:** add structured logging with zerolog ([871e65a](https://github.com/cameronsjo/bosun/commit/871e65a7162833ff67f3771092043dfa3f429476))
+* **log:** add structured logging with zerolog ([cfc1eee](https://github.com/cameronsjo/bosun/commit/cfc1eeee289a02c657dae12cb54d1d79dff2b3a4))
+* **manifest:** add Helm-aligned chart format ([#15](https://github.com/cameronsjo/bosun/issues/15)) ([aaa8e92](https://github.com/cameronsjo/bosun/commit/aaa8e92a8411707b7bdc048a56879340be96cc2c))
+* **provision:** add project_name to compose output for container namespacing ([5772529](https://github.com/cameronsjo/bosun/commit/57725291ad1f230079ea70fafdba8d65da50e20b))
+* **webui:** add React dashboard with maritime theme ([4a1348a](https://github.com/cameronsjo/bosun/commit/4a1348a137b9a929a6111e909823b82302f840c1))
+* **webui:** add React dashboard with maritime theme ([60d973b](https://github.com/cameronsjo/bosun/commit/60d973b9d636f18dadb770a6f9eb825aa26f9f4d))
+
+
+### Bug Fixes
+
+* **ci:** disable cosign signing in goreleaser ([fcdd747](https://github.com/cameronsjo/bosun/commit/fcdd7473af61ba8b2205324fdacad1cc8bcffed9))
+* **ci:** disable docker builds in goreleaser ([a24a9bb](https://github.com/cameronsjo/bosun/commit/a24a9bbe5073f4f600cdec1bd3cbe4496d059eba))
 * **ci:** install git in test container ([c25332b](https://github.com/cameronsjo/bosun/commit/c25332b54bb4127f73ebaba90f819e2d835dd7df))
 * **ci:** remove -race flag from tests (requires CGO) ([6ba452c](https://github.com/cameronsjo/bosun/commit/6ba452c18c25c92667da08b7aae261f2cb3b3c31))
 * **ci:** remove goreleaser prefix from exec commands ([02f0e00](https://github.com/cameronsjo/bosun/commit/02f0e00c581dfbbdf0354b553c88c7e5a084a5f2))
