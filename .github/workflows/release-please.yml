@@ -57,7 +57,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate SLSA provenance
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: 'dist/*.tar.gz'
+      # Note: SLSA attestation disabled - artifacts are inside Dagger container
+      # TODO: Export dist/ from Dagger or restructure workflow for attestation
+      # - name: Generate SLSA provenance
+      #   uses: actions/attest-build-provenance@v2
+      #   with:
+      #     subject-path: 'dist/*.tar.gz'
