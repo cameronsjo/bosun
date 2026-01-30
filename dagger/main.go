@@ -168,7 +168,7 @@ func (m *Bosun) Release(
 	goBuildCache := dag.CacheVolume("go-build")
 
 	return dag.Container().
-		From("goreleaser/goreleaser:v2").
+		From("goreleaser/goreleaser:latest").
 		WithMountedCache("/go/pkg/mod", goCache).
 		WithMountedCache("/root/.cache/go-build", goBuildCache).
 		WithMountedDirectory("/src", source).
@@ -188,7 +188,7 @@ func (m *Bosun) ReleaseDryRun(
 	goBuildCache := dag.CacheVolume("go-build")
 
 	return dag.Container().
-		From("goreleaser/goreleaser:v2").
+		From("goreleaser/goreleaser:latest").
 		WithMountedCache("/go/pkg/mod", goCache).
 		WithMountedCache("/root/.cache/go-build", goBuildCache).
 		WithMountedDirectory("/src", source).
