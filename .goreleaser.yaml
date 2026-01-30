@@ -54,23 +54,25 @@ checksum:
 #     artifacts: checksum
 #     output: true
 
-dockers:
-  - image_templates:
-      - "ghcr.io/cameronsjo/bosun:{{ .Version }}"
-      - "ghcr.io/cameronsjo/bosun:latest"
-    dockerfile: bosun/Dockerfile
-    use: buildx
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - "--label=org.opencontainers.image.source=https://github.com/cameronsjo/bosun"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.revision={{ .Commit }}"
-      - "--label=org.opencontainers.image.created={{ .Date }}"
-      - "--label=org.opencontainers.image.title=bosun"
-      - "--label=org.opencontainers.image.description=Helm for home - GitOps for Docker Compose"
-      - "--label=org.opencontainers.image.licenses=MIT"
-    goos: linux
-    goarch: amd64
+# Note: Docker builds disabled - Dagger container doesn't expose Docker socket
+# TODO: Build Docker images via Dagger's native Docker functions or separate workflow
+# dockers:
+#   - image_templates:
+#       - "ghcr.io/cameronsjo/bosun:{{ .Version }}"
+#       - "ghcr.io/cameronsjo/bosun:latest"
+#     dockerfile: bosun/Dockerfile
+#     use: buildx
+#     build_flag_templates:
+#       - "--platform=linux/amd64"
+#       - "--label=org.opencontainers.image.source=https://github.com/cameronsjo/bosun"
+#       - "--label=org.opencontainers.image.version={{ .Version }}"
+#       - "--label=org.opencontainers.image.revision={{ .Commit }}"
+#       - "--label=org.opencontainers.image.created={{ .Date }}"
+#       - "--label=org.opencontainers.image.title=bosun"
+#       - "--label=org.opencontainers.image.description=Helm for home - GitOps for Docker Compose"
+#       - "--label=org.opencontainers.image.licenses=MIT"
+#     goos: linux
+#     goarch: amd64
 
 changelog:
   sort: asc
