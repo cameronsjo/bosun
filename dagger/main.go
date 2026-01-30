@@ -175,7 +175,7 @@ func (m *Bosun) Release(
 		WithWorkdir("/src").
 		WithSecretVariable("GITHUB_TOKEN", githubToken).
 		WithExec([]string{
-			"goreleaser", "release", "--clean",
+			"release", "--clean",
 		})
 }
 
@@ -194,7 +194,7 @@ func (m *Bosun) ReleaseDryRun(
 		WithMountedDirectory("/src", source).
 		WithWorkdir("/src").
 		WithExec([]string{
-			"goreleaser", "release", "--snapshot", "--clean", "--skip=publish",
+			"release", "--snapshot", "--clean", "--skip=publish",
 		})
 }
 
