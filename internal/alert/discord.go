@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // Discord embed colors (decimal format).
@@ -83,6 +85,12 @@ func (d *DiscordProvider) Send(ctx context.Context, alert *Alert) error {
 		return nil
 	}
 
+	log.Debug().
+		Str("provider", "discord").
+		Str("title", alert.Title).
+		Str("severity", string(alert.Severity)).
+		Msg("Preparing Discord alert")
+
 	embed := discordEmbed{
 		Title:       alert.Title,
 		Description: alert.Message,
@@ -124,12 +132,20 @@ func (d *DiscordProvider) Send(ctx context.Context, alert *Alert) error {
 
 	resp, err := d.client.Do(req)
 	if err != nil {
+		log.Error().
+			Err(err).
+			Str("provider", "discord").
+			Msg("Discord webhook request failed")
 		return fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	// Discord returns 204 No Content on success.
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		log.Error().
+			Str("provider", "discord").
+			Int("status_code", resp.StatusCode).
+			Msg("Discord webhook returned error status")
 		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
 

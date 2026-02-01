@@ -18,6 +18,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	xssh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
+
+	"github.com/cameronsjo/bosun/internal/log"
 )
 
 func init() {
@@ -148,9 +150,19 @@ func getSSHKeyFileAuth() (transport.AuthMethod, error) {
 // If depth is 0, a full clone is performed.
 // Uses GitCloneTimeout if the parent context has no deadline.
 func (g *GitOps) Clone(ctx context.Context, depth int) error {
+	start := time.Now()
+	logger := log.Component(log.ComponentGit)
+
 	if err := validateBranch(g.Branch); err != nil {
 		return fmt.Errorf("invalid branch: %w", err)
 	}
+
+	logger.Info().
+		Str(log.FieldOperation, "clone").
+		Str(log.FieldBranch, g.Branch).
+		Str(log.FieldPath, g.Dir).
+		Int("depth", depth).
+		Msg("Cloning repository")
 
 	// Apply timeout if context doesn't have one
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
@@ -161,6 +173,7 @@ func (g *GitOps) Clone(ctx context.Context, depth int) error {
 
 	auth, err := getSSHAuth(g.RepoURL)
 	if err != nil {
+		logger.Error().Err(err).Msg("Failed to get SSH auth")
 		return fmt.Errorf("failed to get SSH auth: %w", err)
 	}
 
@@ -180,14 +193,29 @@ func (g *GitOps) Clone(ctx context.Context, depth int) error {
 		// Clean up partial clone on failure
 		if _, statErr := os.Stat(g.Dir); statErr == nil {
 			if removeErr := os.RemoveAll(g.Dir); removeErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to clean up partial clone at %s: %v\n", g.Dir, removeErr)
+				logger.Warn().Err(removeErr).Str(log.FieldPath, g.Dir).Msg("Failed to clean up partial clone")
 			}
 		}
 		if ctx.Err() == context.DeadlineExceeded {
+			logger.Error().
+				Str(log.FieldOperation, "clone").
+				Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+				Msg("Git clone timed out")
 			return fmt.Errorf("git clone timed out after %v", GitCloneTimeout)
 		}
+		logger.Error().
+			Err(err).
+			Str(log.FieldOperation, "clone").
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("Git clone failed")
 		return fmt.Errorf("git clone failed: %w", err)
 	}
+
+	logger.Info().
+		Str(log.FieldOperation, "clone").
+		Str(log.FieldBranch, g.Branch).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Repository cloned successfully")
 
 	return nil
 }
@@ -196,14 +224,23 @@ func (g *GitOps) Clone(ctx context.Context, depth int) error {
 // Returns (changed, beforeCommit, afterCommit, error).
 // Uses GitFetchTimeout for network operations.
 func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
+	start := time.Now()
+	logger := log.Component(log.ComponentGit)
+
 	if err := validateBranch(g.Branch); err != nil {
 		return false, "", "", fmt.Errorf("invalid branch: %w", err)
 	}
+
+	logger.Debug().
+		Str(log.FieldOperation, "pull").
+		Str(log.FieldBranch, g.Branch).
+		Msg("Pulling repository")
 
 	// Check for uncommitted changes before doing anything
 	if dirty, err := g.IsDirty(ctx); err != nil {
 		return false, "", "", fmt.Errorf("failed to check repository status: %w", err)
 	} else if dirty {
+		logger.Warn().Str(log.FieldPath, g.Dir).Msg("Repository has uncommitted changes")
 		return false, "", "", fmt.Errorf("repository has uncommitted changes; clean the working directory before syncing")
 	}
 
@@ -284,7 +321,17 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 		return false, "", "", fmt.Errorf("failed to get new commit: %w", err)
 	}
 
-	return before != after, before, after, nil
+	changed := before != after
+	logger.Info().
+		Str(log.FieldOperation, "pull").
+		Str(log.FieldBranch, g.Branch).
+		Bool("changed", changed).
+		Str("commit_before", before[:7]).
+		Str("commit_after", after[:7]).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Pull completed")
+
+	return changed, before, after, nil
 }
 
 // IsDirty checks if the repository has uncommitted changes.
@@ -429,7 +476,10 @@ func (g *GitOps) IsRepo(ctx context.Context) bool {
 // Returns (changed, beforeCommit, afterCommit, error).
 // For fresh clones, changed is always true.
 func (g *GitOps) Sync(ctx context.Context) (bool, string, string, error) {
+	logger := log.Component(log.ComponentGit)
+
 	if !g.IsRepo(ctx) {
+		logger.Info().Str(log.FieldPath, g.Dir).Msg("Repository not found, cloning")
 		if err := g.Clone(ctx, 1); err != nil {
 			return false, "", "", err
 		}
@@ -437,7 +487,9 @@ func (g *GitOps) Sync(ctx context.Context) (bool, string, string, error) {
 		if err != nil {
 			return false, "", "", err
 		}
+		logger.Info().Str(log.FieldCommit, commit[:7]).Msg("Fresh clone completed")
 		return true, "", commit, nil
 	}
+	logger.Debug().Str(log.FieldPath, g.Dir).Msg("Repository exists, pulling")
 	return g.Pull(ctx)
 }

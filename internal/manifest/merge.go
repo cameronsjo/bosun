@@ -43,6 +43,11 @@ func deepMergeInternal(base, overlay map[string]any, path string, depth int) map
 
 	result := copyMap(base)
 
+	// Handle nil overlay - just return a copy of base
+	if overlay == nil {
+		return result
+	}
+
 	for key, overlayValue := range overlay {
 		currentPath := key
 		if path != "" {

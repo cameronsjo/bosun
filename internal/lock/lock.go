@@ -5,13 +5,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 )
 
 // Lock represents a file-based lock.
+// The Lock struct is safe for concurrent use from multiple goroutines.
 type Lock struct {
 	path string
 	file *os.File
+	mu   sync.Mutex // protects file field
 }
 
 // New creates a new lock for the given operation in the manifest directory.
@@ -24,7 +27,11 @@ func New(manifestDir, operation string) *Lock {
 
 // Acquire attempts to acquire the lock.
 // Returns an error if the lock is already held by another process.
+// This method is safe for concurrent calls.
 func (l *Lock) Acquire() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	// Ensure lock directory exists
 	if err := os.MkdirAll(filepath.Dir(l.path), 0755); err != nil {
 		return fmt.Errorf("create lock directory: %w", err)
@@ -39,7 +46,7 @@ func (l *Lock) Acquire() error {
 	// Try to acquire exclusive lock (non-blocking)
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
-		l.file = nil // Ensure file handle is nil on error
+		// Don't modify l.file here - leave it as-is (either nil from creation or previous state)
 		if err == syscall.EWOULDBLOCK {
 			return fmt.Errorf("another %s operation is already running", filepath.Base(l.path[:len(l.path)-5]))
 		}
@@ -56,7 +63,11 @@ func (l *Lock) Acquire() error {
 }
 
 // Release releases the lock.
+// This method is safe for concurrent calls.
 func (l *Lock) Release() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	if l.file == nil {
 		return nil
 	}
@@ -64,6 +75,7 @@ func (l *Lock) Release() error {
 	// Unlock the file
 	if err := syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN); err != nil {
 		l.file.Close()
+		l.file = nil
 		return fmt.Errorf("release lock: %w", err)
 	}
 

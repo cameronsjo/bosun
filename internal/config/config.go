@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/cameronsjo/bosun/internal/log"
 	"gopkg.in/yaml.v3"
 )
 
@@ -229,8 +230,16 @@ func loadConfigFile(root string) configFile {
 		}
 
 		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			log.Warn().
+				Err(err).
+				Str(log.FieldPath, path).
+				Msg("Failed to parse config file, skipping")
 			continue
 		}
+
+		log.Debug().
+			Str(log.FieldPath, path).
+			Msg("Loaded config file")
 		break
 	}
 
@@ -255,10 +264,18 @@ func loadInfraContainers(root string) []string {
 
 		var cfg configFile
 		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			log.Warn().
+				Err(err).
+				Str(log.FieldPath, path).
+				Msg("Failed to parse config file for infrastructure containers")
 			continue
 		}
 
 		if len(cfg.Infrastructure.Containers) > 0 {
+			log.Debug().
+				Str(log.FieldPath, path).
+				Int("count", len(cfg.Infrastructure.Containers)).
+				Msg("Loaded infrastructure containers from config")
 			return cfg.Infrastructure.Containers
 		}
 	}
@@ -384,6 +401,10 @@ func loadTunnelConfig(root string) (string, TunnelConfig) {
 
 		var cfg configFile
 		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			log.Warn().
+				Err(err).
+				Str(log.FieldPath, path).
+				Msg("Failed to parse config file for tunnel configuration")
 			continue
 		}
 
@@ -396,6 +417,13 @@ func loadTunnelConfig(root string) (string, TunnelConfig) {
 			Hostname:       cfg.Tunnel.Hostname,
 			TunnelName:     cfg.Tunnel.TunnelName,
 			HealthEndpoint: cfg.Tunnel.HealthEndpoint,
+		}
+
+		if cfg.Tunnel.Provider != "" {
+			log.Debug().
+				Str(log.FieldPath, path).
+				Str("provider", provider).
+				Msg("Loaded tunnel configuration")
 		}
 
 		return provider, tunnelCfg
@@ -428,6 +456,10 @@ func loadAlertConfig(root string) AlertConfig {
 
 		var cfg configFile
 		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			log.Warn().
+				Err(err).
+				Str(log.FieldPath, path).
+				Msg("Failed to parse config file for alert configuration")
 			continue
 		}
 
@@ -436,6 +468,12 @@ func loadAlertConfig(root string) AlertConfig {
 		if !cfg.Alerts.OnSuccess && !cfg.Alerts.OnFailure {
 			alertCfg.OnFailure = true
 		}
+
+		log.Debug().
+			Str(log.FieldPath, path).
+			Bool("on_success", alertCfg.OnSuccess).
+			Bool("on_failure", alertCfg.OnFailure).
+			Msg("Loaded alert configuration")
 		break
 	}
 

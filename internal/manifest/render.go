@@ -44,6 +44,13 @@ func validatePathWithinDir(baseDir, relativePath string) (string, error) {
 
 // RenderService renders a service manifest into compose/traefik/gatus outputs.
 func RenderService(manifest *ServiceManifest, provisionsDir string) (*RenderOutput, error) {
+	logger := log.Component(log.ComponentManifest)
+	logger.Debug().
+		Str(log.FieldOperation, "render_service").
+		Str("service", manifest.Name).
+		Int("provision_count", len(manifest.Provisions)).
+		Msg("Rendering service manifest")
+
 	output := NewRenderOutput()
 
 	// Build variables from config + name
@@ -58,13 +65,16 @@ func RenderService(manifest *ServiceManifest, provisionsDir string) (*RenderOutp
 		if manifest.Compose != nil {
 			output.Compose["services"] = manifest.Compose
 		}
+		logger.Debug().Str("service", manifest.Name).Msg("Service rendered as raw passthrough")
 		return output, nil
 	}
 
 	// Load and merge provisions
 	for _, provisionName := range manifest.Provisions {
+		logger.Debug().Str("provision", provisionName).Str("service", manifest.Name).Msg("Loading provision")
 		provision, err := LoadProvision(provisionName, variables, provisionsDir)
 		if err != nil {
+			logger.Error().Err(err).Str("provision", provisionName).Str("service", manifest.Name).Msg("Failed to load provision")
 			return nil, fmt.Errorf("load provision %s: %w", provisionName, err)
 		}
 		mergeProvision(output, provision)
@@ -138,6 +148,7 @@ func RenderService(manifest *ServiceManifest, provisionsDir string) (*RenderOutp
 
 	// Apply compose overrides from manifest (allows app-specific customization)
 	if manifest.Compose != nil {
+		logger.Debug().Str("service", manifest.Name).Msg("Applying compose overrides")
 		// Interpolate variables in the compose override
 		composeYAML, err := yaml.Marshal(manifest.Compose)
 		if err != nil {
@@ -146,6 +157,7 @@ func RenderService(manifest *ServiceManifest, provisionsDir string) (*RenderOutp
 
 		interpolated, err := Interpolate(string(composeYAML), variables)
 		if err != nil {
+			logger.Error().Err(err).Str("service", manifest.Name).Msg("Failed to interpolate compose override")
 			return nil, fmt.Errorf("interpolate compose override: %w", err)
 		}
 
@@ -157,6 +169,7 @@ func RenderService(manifest *ServiceManifest, provisionsDir string) (*RenderOutp
 		output.Compose = DeepMerge(output.Compose, composeOverride)
 	}
 
+	logger.Debug().Str("service", manifest.Name).Msg("Service rendering completed")
 	return output, nil
 }
 
@@ -175,8 +188,15 @@ func mergeProvision(output *RenderOutput, provision *Provision) {
 
 // RenderStack renders a stack file into compose/traefik/gatus outputs.
 func RenderStack(stackPath, provisionsDir, servicesDir string, valuesOverlay map[string]any) (*RenderOutput, error) {
+	logger := log.Component(log.ComponentManifest)
+	logger.Info().
+		Str(log.FieldOperation, "render_stack").
+		Str(log.FieldPath, stackPath).
+		Msg("Rendering stack")
+
 	stackContent, err := os.ReadFile(stackPath)
 	if err != nil {
+		logger.Error().Err(err).Str(log.FieldPath, stackPath).Msg("Failed to read stack file")
 		return nil, fmt.Errorf("read stack file: %w", err)
 	}
 
@@ -212,11 +232,15 @@ func RenderStack(stackPath, provisionsDir, servicesDir string, valuesOverlay map
 		// Validate path to prevent path traversal attacks
 		servicePath, err := validatePathWithinDir(servicesDir, serviceFile)
 		if err != nil {
+			logger.Error().Err(err).Str("service_file", serviceFile).Msg("Path validation failed")
 			return nil, fmt.Errorf("validate service path %s: %w", serviceFile, err)
 		}
 
+		logger.Debug().Str("service_file", serviceFile).Msg("Processing service include")
+
 		serviceContent, err := os.ReadFile(servicePath)
 		if err != nil {
+			logger.Error().Err(err).Str(log.FieldPath, servicePath).Msg("Failed to read service file")
 			return nil, fmt.Errorf("read service %s: %w", serviceFile, err)
 		}
 
@@ -256,6 +280,7 @@ func RenderStack(stackPath, provisionsDir, servicesDir string, valuesOverlay map
 
 		serviceOutput, err := RenderService(&manifest, provisionsDir)
 		if err != nil {
+			logger.Error().Err(err).Str("service", manifest.Name).Msg("Failed to render service")
 			return nil, fmt.Errorf("render service %s: %w", manifest.Name, err)
 		}
 
@@ -272,6 +297,11 @@ func RenderStack(stackPath, provisionsDir, servicesDir string, valuesOverlay map
 			output.Compose["networks"] = stack.Networks
 		}
 	}
+
+	logger.Info().
+		Str(log.FieldOperation, "render_stack").
+		Int("service_count", len(stack.Include)).
+		Msg("Stack rendering completed")
 
 	return output, nil
 }

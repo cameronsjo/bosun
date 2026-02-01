@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/fileutil"
+	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // ErrRollbackSucceeded indicates deployment failed but rollback succeeded.
@@ -216,11 +217,21 @@ func (d *DeployOps) VerifyBackup(backupPath string) error {
 
 // Backup creates a timestamped tar.gz backup of the specified paths.
 func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string) (string, error) {
+	start := time.Now()
+	logger := log.Component(log.ComponentDeploy)
+
 	timestamp := time.Now().Format("20060102-150405")
 	backupName := fmt.Sprintf("backup-%s", timestamp)
 	backupPath := filepath.Join(backupDir, backupName)
 
+	logger.Info().
+		Str(log.FieldOperation, "backup").
+		Str(log.FieldPath, backupPath).
+		Int("path_count", len(paths)).
+		Msg("Creating backup")
+
 	if err := os.MkdirAll(backupPath, 0755); err != nil {
+		logger.Error().Err(err).Str(log.FieldPath, backupPath).Msg("Failed to create backup directory")
 		return "", fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
@@ -235,6 +246,7 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 	}
 
 	if len(existingPaths) == 0 {
+		logger.Debug().Str(log.FieldPath, backupPath).Msg("No existing paths to backup")
 		return backupName, nil
 	}
 
@@ -248,8 +260,16 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 
 	// Verify the backup was created successfully
 	if err := d.VerifyBackup(backupPath); err != nil {
+		logger.Error().Err(err).Str(log.FieldPath, backupPath).Msg("Backup verification failed")
 		return "", fmt.Errorf("backup verification failed: %w", err)
 	}
+
+	logger.Info().
+		Str(log.FieldOperation, "backup").
+		Str(log.FieldPath, backupPath).
+		Int("file_count", len(existingPaths)).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Backup created successfully")
 
 	return backupName, nil
 }
@@ -348,16 +368,31 @@ func (d *DeployOps) CleanupBackups(backupDir string, keep int) error {
 // Performs atomic copy: copies to temp directory first, then replaces target.
 // Uses --delete semantics: removes files in target that don't exist in source.
 func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string) error {
+	start := time.Now()
+	logger := log.Component(log.ComponentDeploy)
+
 	if d.DryRun {
+		logger.Debug().
+			Str("source", sourceDir).
+			Str("target", targetDir).
+			Msg("Dry run: would deploy locally")
 		return nil
 	}
+
+	logger.Debug().
+		Str(log.FieldOperation, "deploy_local").
+		Str("source", sourceDir).
+		Str("target", targetDir).
+		Msg("Deploying files locally")
 
 	// Verify source directory exists
 	srcInfo, err := os.Stat(sourceDir)
 	if err != nil {
+		logger.Error().Err(err).Str("source", sourceDir).Msg("Source directory error")
 		return fmt.Errorf("source directory: %w", err)
 	}
 	if !srcInfo.IsDir() {
+		logger.Error().Str("source", sourceDir).Msg("Source is not a directory")
 		return fmt.Errorf("source is not a directory: %s", sourceDir)
 	}
 
@@ -400,10 +435,16 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 
 	// Atomic rename temp to target
 	if err := os.Rename(tmpDir, targetDir); err != nil {
+		logger.Error().Err(err).Str("target", targetDir).Msg("Failed to rename to target")
 		return fmt.Errorf("rename to target: %w", err)
 	}
 
 	success = true
+	logger.Debug().
+		Str(log.FieldOperation, "deploy_local").
+		Str("target", targetDir).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Local deployment completed")
 	return nil
 }
 
@@ -427,13 +468,28 @@ func (d *DeployOps) DeployLocalFile(ctx context.Context, sourceFile, targetFile 
 // Retries on transient SSH errors with exponential backoff.
 // Performs atomic deployment: tar to temp dir, then move to target.
 func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, targetDir string) error {
+	start := time.Now()
+	logger := log.Component(log.ComponentDeploy)
+
 	if err := validateHost(targetHost); err != nil {
 		return fmt.Errorf("invalid SSH host: %w", err)
 	}
 
 	if d.DryRun {
+		logger.Debug().
+			Str("source", sourceDir).
+			Str(log.FieldTarget, targetHost).
+			Str("target_dir", targetDir).
+			Msg("Dry run: would deploy remotely")
 		return nil
 	}
+
+	logger.Debug().
+		Str(log.FieldOperation, "deploy_remote").
+		Str("source", sourceDir).
+		Str(log.FieldTarget, targetHost).
+		Str("target_dir", targetDir).
+		Msg("Deploying files remotely")
 
 	// Apply timeout if context doesn't have one
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
@@ -517,6 +573,11 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			return fmt.Errorf("atomic move failed: %w: %s", err, atomicStderr.String())
 		}
 
+		logger.Debug().
+			Str(log.FieldOperation, "deploy_remote").
+			Str(log.FieldTarget, targetHost).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("Remote deployment completed")
 		return nil
 	})
 }
@@ -621,13 +682,25 @@ func (d *DeployOps) ComposeUp(ctx context.Context, composeFile string) error {
 // Uses ComposeUpTimeout if the parent context has no deadline.
 // Returns an error if compose up fails (caller should handle rollback).
 func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string) error {
+	start := time.Now()
+	logger := log.Component(log.ComponentDeploy)
+
 	if d.DryRun {
+		logger.Debug().
+			Int("file_count", len(composeFiles)).
+			Msg("Dry run: would run compose up")
 		return nil
 	}
 
 	if len(composeFiles) == 0 {
 		return nil
 	}
+
+	logger.Info().
+		Str(log.FieldOperation, "compose_up").
+		Int("file_count", len(composeFiles)).
+		Str("project", d.ProjectName).
+		Msg("Starting docker compose up")
 
 	// Apply timeout if context doesn't have one
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
@@ -646,10 +719,25 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
+			logger.Error().
+				Str(log.FieldOperation, "compose_up").
+				Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+				Msg("Docker compose up timed out")
 			return fmt.Errorf("docker compose up timed out after %v", ComposeUpTimeout)
 		}
+		logger.Error().
+			Err(err).
+			Str(log.FieldOperation, "compose_up").
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("Docker compose up failed")
 		return fmt.Errorf("docker compose up failed: %w: %s", err, stderr.String())
 	}
+
+	logger.Info().
+		Str(log.FieldOperation, "compose_up").
+		Int("file_count", len(composeFiles)).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Docker compose up completed successfully")
 	return nil
 }
 
@@ -672,6 +760,8 @@ func (d *DeployOps) ComposeUpWithRollback(ctx context.Context, composeFile, back
 //   - ErrRollbackFailed wrapped with both errors if rollback also failed
 //   - Original error if no backup available
 func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFiles []string, backupPath string) error {
+	logger := log.Component(log.ComponentDeploy)
+
 	deployErr := d.ComposeUpMultiple(ctx, composeFiles)
 	if deployErr == nil {
 		return nil
@@ -679,8 +769,16 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 
 	// Compose failed - attempt rollback if backup exists
 	if backupPath == "" {
+		logger.Warn().
+			Err(deployErr).
+			Msg("Deployment failed, no backup available for rollback")
 		return fmt.Errorf("deployment failed (no backup available for rollback): %w", deployErr)
 	}
+
+	logger.Warn().
+		Err(deployErr).
+		Str(log.FieldPath, backupPath).
+		Msg("Deployment failed, attempting rollback")
 
 	// Build backup file list and verify they exist
 	var backupFiles []string
@@ -694,6 +792,9 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 	}
 
 	if len(backupFiles) == 0 {
+		logger.Warn().
+			Str(log.FieldPath, backupPath).
+			Msg("No backup files found for rollback")
 		return fmt.Errorf("deployment failed (no backup files found for rollback): %w", deployErr)
 	}
 
@@ -711,10 +812,17 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 
 	if rollbackErr := rollbackCmd.Run(); rollbackErr != nil {
 		// Both deployment and rollback failed - critical state
+		logger.Error().
+			Err(rollbackErr).
+			Str(log.FieldPath, backupPath).
+			Msg("CRITICAL: Rollback also failed")
 		return fmt.Errorf("%w: deployment error: %v, rollback error: %v", ErrRollbackFailed, deployErr, rollbackErr)
 	}
 
 	// Rollback succeeded - return distinguishable error
+	logger.Info().
+		Str(log.FieldPath, backupPath).
+		Msg("Rollback completed successfully")
 	return fmt.Errorf("%w: %v", ErrRollbackSucceeded, deployErr)
 }
 

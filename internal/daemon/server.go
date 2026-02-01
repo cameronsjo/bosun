@@ -10,16 +10,26 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
+const (
+	// maxWebhookBodySize is the maximum allowed size for webhook request bodies (1MB).
+	// This prevents denial-of-service attacks via oversized payloads.
+	maxWebhookBodySize = 1 * 1024 * 1024
+)
+
 // Server handles HTTP requests for webhooks and health checks.
 type Server struct {
 	daemon *Daemon
 	server *http.Server
+
+	// Track in-flight reconciliation goroutines for graceful shutdown
+	wg sync.WaitGroup
 }
 
 // NewServer creates a new HTTP server for the daemon.
@@ -58,8 +68,26 @@ func (s *Server) Start(port int) error {
 }
 
 // Shutdown gracefully shuts down the HTTP server.
+// Waits for in-flight reconciliation goroutines to complete.
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.server.Shutdown(ctx)
+	// Stop accepting new connections
+	err := s.server.Shutdown(ctx)
+
+	// Wait for in-flight reconciliation goroutines
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All goroutines completed
+	case <-ctx.Done():
+		log.Warn().Msg("Shutdown timeout waiting for in-flight reconciliations")
+	}
+
+	return err
 }
 
 // loggingMiddleware logs HTTP requests with request ID tracking.
@@ -141,6 +169,8 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 
 // handleWebhook handles generic webhook requests.
 func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
+	requestID := log.RequestIDFromContext(r.Context())
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -153,20 +183,30 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 			sig = r.Header.Get("X-Hub-Signature-256")
 		}
 
-		body, err := io.ReadAll(r.Body)
+		// Limit body size to prevent DoS
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
 		if err != nil {
 			http.Error(w, "Failed to read body", http.StatusBadRequest)
 			return
 		}
 
 		if !s.validateSignature(body, sig) {
+			// Log security event for failed signature validation
+			log.Warn().
+				Str(log.FieldComponent, log.ComponentHTTP).
+				Str(log.FieldRequestID, requestID).
+				Str("remote_addr", r.RemoteAddr).
+				Str("endpoint", r.URL.Path).
+				Msg("Webhook signature validation failed")
 			http.Error(w, "Invalid signature", http.StatusUnauthorized)
 			return
 		}
 	}
 
-	// Trigger reconciliation
+	// Trigger reconciliation with goroutine tracking
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 		if err := s.daemon.TriggerReconcile(ctx, "webhook"); err != nil {
@@ -183,13 +223,15 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 // handleGitHubWebhook handles GitHub-specific webhook requests.
 func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
+	requestID := log.RequestIDFromContext(r.Context())
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Read body
-	body, err := io.ReadAll(r.Body)
+	// Read body with size limit to prevent DoS
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
 	if err != nil {
 		http.Error(w, "Failed to read body", http.StatusBadRequest)
 		return
@@ -199,6 +241,14 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	if s.daemon.config.WebhookSecret != "" {
 		sig := r.Header.Get("X-Hub-Signature-256")
 		if !s.validateGitHubSignature(body, sig) {
+			// Log security event for failed signature validation
+			log.Warn().
+				Str(log.FieldComponent, log.ComponentHTTP).
+				Str(log.FieldRequestID, requestID).
+				Str("remote_addr", r.RemoteAddr).
+				Str("endpoint", r.URL.Path).
+				Str("event_type", r.Header.Get("X-GitHub-Event")).
+				Msg("GitHub webhook signature validation failed")
 			http.Error(w, "Invalid signature", http.StatusUnauthorized)
 			return
 		}
@@ -241,8 +291,10 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 
 	ui.Info("GitHub push to %s by %s: %s", payload.Ref, payload.Pusher.Name, payload.HeadCommit.Message)
 
-	// Trigger reconciliation
+	// Trigger reconciliation with goroutine tracking
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 		source := fmt.Sprintf("github:%s", payload.Pusher.Name)
@@ -261,6 +313,8 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 
 // handleManualTrigger handles manual reconciliation triggers.
 func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
+	requestID := log.RequestIDFromContext(r.Context())
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -268,7 +322,8 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 
 	// Validate signature if configured
 	if s.daemon.config.WebhookSecret != "" {
-		body, err := io.ReadAll(r.Body)
+		// Limit body size to prevent DoS
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
 		if err != nil {
 			http.Error(w, "Failed to read body", http.StatusBadRequest)
 			return
@@ -276,13 +331,22 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 
 		sig := r.Header.Get("X-Signature")
 		if !s.validateSignature(body, sig) {
+			// Log security event for failed signature validation
+			log.Warn().
+				Str(log.FieldComponent, log.ComponentHTTP).
+				Str(log.FieldRequestID, requestID).
+				Str("remote_addr", r.RemoteAddr).
+				Str("endpoint", r.URL.Path).
+				Msg("Manual trigger signature validation failed")
 			http.Error(w, "Invalid signature", http.StatusUnauthorized)
 			return
 		}
 	}
 
-	// Trigger reconciliation
+	// Trigger reconciliation with goroutine tracking
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 		if err := s.daemon.TriggerReconcile(ctx, "manual"); err != nil {

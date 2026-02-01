@@ -133,6 +133,18 @@ func TestDeepMerge(t *testing.T) {
 			want:    map[string]any{"key": "value"},
 		},
 		{
+			name:    "nil overlay",
+			base:    map[string]any{"key": "value"},
+			overlay: nil,
+			want:    map[string]any{"key": "value"},
+		},
+		{
+			name:    "both nil",
+			base:    nil,
+			overlay: nil,
+			want:    map[string]any{},
+		},
+		{
 			name: "deeply nested merge",
 			base: map[string]any{
 				"level1": map[string]any{

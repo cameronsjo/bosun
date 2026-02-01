@@ -46,8 +46,12 @@ type Client struct {
 
 // NewClient creates a new Docker client connection and validates daemon connectivity.
 func NewClient() (*Client, error) {
+	logger := log.Component(log.ComponentDocker)
+	logger.Debug().Msg("Creating Docker client")
+
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
+		logger.Error().Err(err).Msg("Failed to create Docker client")
 		return nil, fmt.Errorf("create docker client: %w", err)
 	}
 
@@ -59,9 +63,11 @@ func NewClient() (*Client, error) {
 
 	if _, err := cli.Ping(ctx); err != nil {
 		cli.Close()
+		logger.Error().Err(err).Msg("Docker daemon not reachable")
 		return nil, fmt.Errorf("docker daemon not reachable: %w", err)
 	}
 
+	logger.Debug().Msg("Docker client created successfully")
 	return c, nil
 }
 
@@ -126,10 +132,15 @@ type ContainerStats struct {
 
 // ListContainers returns all containers (running and stopped).
 func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]ContainerInfo, error) {
+	start := time.Now()
+	logger := log.Component(log.ComponentDocker)
+	logger.Debug().Bool("running_only", runningOnly).Msg("Listing containers")
+
 	containers, err := c.api.ContainerList(ctx, container.ListOptions{
 		All: !runningOnly,
 	})
 	if err != nil {
+		logger.Error().Err(err).Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).Msg("Failed to list containers")
 		return nil, fmt.Errorf("list containers: %w", err)
 	}
 
@@ -173,6 +184,10 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 		})
 	}
 
+	logger.Debug().
+		Int("count", len(result)).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Listed containers successfully")
 	return result, nil
 }
 
@@ -232,15 +247,35 @@ func (c *Client) GetContainerImage(ctx context.Context, name string) (string, er
 
 // RemoveContainer forcefully removes a container by name.
 func (c *Client) RemoveContainer(ctx context.Context, name string) error {
-	return c.api.ContainerRemove(ctx, name, container.RemoveOptions{
+	logger := log.Component(log.ComponentDocker)
+	logger.Info().Str(log.FieldContainer, name).Msg("Removing container")
+
+	err := c.api.ContainerRemove(ctx, name, container.RemoveOptions{
 		Force: true,
 	})
+	if err != nil {
+		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to remove container")
+		return err
+	}
+
+	logger.Info().Str(log.FieldContainer, name).Msg("Container removed successfully")
+	return nil
 }
 
 // RestartContainer restarts a container by name.
 func (c *Client) RestartContainer(ctx context.Context, name string) error {
+	logger := log.Component(log.ComponentDocker)
+	logger.Info().Str(log.FieldContainer, name).Msg("Restarting container")
+
 	timeout := 10
-	return c.api.ContainerRestart(ctx, name, container.StopOptions{Timeout: &timeout})
+	err := c.api.ContainerRestart(ctx, name, container.StopOptions{Timeout: &timeout})
+	if err != nil {
+		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to restart container")
+		return err
+	}
+
+	logger.Info().Str(log.FieldContainer, name).Msg("Container restarted successfully")
+	return nil
 }
 
 // MaxLogSize is the maximum size of logs to read (100MB).
@@ -249,6 +284,9 @@ const MaxLogSize = 100 * 1024 * 1024
 // GetContainerLogs returns the last n lines of logs from a container.
 // Logs are limited to MaxLogSize (100MB) to prevent memory exhaustion.
 func (c *Client) GetContainerLogs(ctx context.Context, name string, tail int) (string, error) {
+	logger := log.Component(log.ComponentDocker)
+	logger.Debug().Str(log.FieldContainer, name).Int("tail", tail).Msg("Fetching container logs")
+
 	options := container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
@@ -257,6 +295,7 @@ func (c *Client) GetContainerLogs(ctx context.Context, name string, tail int) (s
 
 	reader, err := c.api.ContainerLogs(ctx, name, options)
 	if err != nil {
+		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to get container logs")
 		return "", fmt.Errorf("get container logs: %w", err)
 	}
 	defer reader.Close()
@@ -265,9 +304,11 @@ func (c *Client) GetContainerLogs(ctx context.Context, name string, tail int) (s
 	limitedReader := io.LimitReader(reader, MaxLogSize)
 	logs, err := io.ReadAll(limitedReader)
 	if err != nil {
+		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to read container logs")
 		return "", fmt.Errorf("read logs: %w", err)
 	}
 
+	logger.Debug().Str(log.FieldContainer, name).Int("bytes", len(logs)).Msg("Fetched container logs")
 	// Strip Docker log header bytes (first 8 bytes per line for multiplexed streams)
 	// This is a simplified version - logs may have control characters
 	return string(logs), nil
@@ -275,8 +316,12 @@ func (c *Client) GetContainerLogs(ctx context.Context, name string, tail int) (s
 
 // GetContainerStats returns resource usage for a container.
 func (c *Client) GetContainerStats(ctx context.Context, name string) (*ContainerStats, error) {
+	logger := log.Component(log.ComponentDocker)
+	logger.Debug().Str(log.FieldContainer, name).Msg("Fetching container stats")
+
 	stats, err := c.api.ContainerStats(ctx, name, false)
 	if err != nil {
+		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to get container stats")
 		return nil, fmt.Errorf("get container stats: %w", err)
 	}
 	defer func() {

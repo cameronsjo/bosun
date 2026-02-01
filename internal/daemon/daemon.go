@@ -76,6 +76,9 @@ type Daemon struct {
 	readyMu       sync.RWMutex
 	stopPoll      chan struct{}
 
+	// Track background goroutines for graceful shutdown
+	wg sync.WaitGroup
+
 	// Reconcile state (read frequently for health checks)
 	stateMu       sync.RWMutex
 	lastReconcile time.Time
@@ -183,16 +186,20 @@ func (d *Daemon) Run(ctx context.Context) error {
 	errCh := make(chan error, 3)
 
 	// Start Unix socket server (primary API)
+	logger.Debug().Str("socket", d.config.SocketPath).Msg("Starting Unix socket server")
 	go func() {
 		if err := d.socketServer.Start(); err != nil {
+			logger.Error().Err(err).Str("socket", d.config.SocketPath).Msg("Unix socket server failed")
 			errCh <- fmt.Errorf("socket server: %w", err)
 		}
 	}()
 
 	// Start TCP server for remote access (optional)
 	if d.config.EnableTCP && d.tcpServer != nil {
+		logger.Debug().Str("addr", d.config.TCPAddr).Msg("Starting TCP server")
 		go func() {
 			if err := d.tcpServer.Start(); err != nil {
+				logger.Error().Err(err).Str("addr", d.config.TCPAddr).Msg("TCP server failed")
 				errCh <- fmt.Errorf("TCP server: %w", err)
 			}
 		}()
@@ -200,26 +207,45 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Start HTTP server for webhooks (optional)
 	if d.config.EnableHTTP && d.httpServer != nil {
+		logger.Debug().Int("port", d.config.Port).Msg("Starting HTTP server")
 		go func() {
 			if err := d.httpServer.Start(d.config.Port); err != nil {
+				logger.Error().Err(err).Int("port", d.config.Port).Msg("HTTP server failed")
 				errCh <- fmt.Errorf("HTTP server: %w", err)
 			}
 		}()
 	}
 
 	// Run initial reconciliation after delay
+	d.wg.Add(1)
 	go func() {
-		time.Sleep(d.config.InitialDelay)
+		defer d.wg.Done()
+		logger.Info().Dur("delay", d.config.InitialDelay).Msg("Waiting before initial reconciliation")
+
+		// Use a select to allow cancellation during delay
+		select {
+		case <-time.After(d.config.InitialDelay):
+		case <-ctx.Done():
+			return
+		}
+
+		logger.Info().Msg("Running initial reconciliation")
 		ui.Info("Running initial reconciliation...")
 		if err := d.TriggerReconcile(ctx, "startup"); err != nil {
+			logger.Error().Err(err).Msg("Initial reconciliation failed")
 			ui.Error("Initial reconciliation failed: %v", err)
 		}
+		logger.Info().Msg("Daemon ready to serve requests")
 		d.setReady(true)
 	}()
 
 	// Start polling loop if enabled
 	if d.config.PollInterval > 0 {
-		go d.pollLoop(ctx)
+		d.wg.Add(1)
+		go func() {
+			defer d.wg.Done()
+			d.pollLoop(ctx)
+		}()
 	}
 
 	ui.Success("Daemon ready")
@@ -227,11 +253,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Wait for shutdown signal or error
 	select {
 	case sig := <-sigCh:
+		logger.Info().Str("signal", sig.String()).Msg("Received shutdown signal")
 		ui.Warning("Received signal %v, shutting down...", sig)
 	case err := <-errCh:
+		logger.Error().Err(err).Msg("Fatal error, shutting down")
 		ui.Error("Fatal error: %v", err)
 		return err
 	case <-ctx.Done():
+		logger.Info().Msg("Context cancelled, shutting down")
 		ui.Warning("Context cancelled, shutting down...")
 	}
 
@@ -241,6 +270,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 // shutdown performs graceful shutdown of all components.
 func (d *Daemon) shutdown() error {
+	logger := log.Component(log.ComponentDaemon)
+	logger.Info().Msg("Initiating graceful shutdown")
 	ui.Info("Shutting down...")
 
 	// Stop polling
@@ -252,25 +283,47 @@ func (d *Daemon) shutdown() error {
 
 	// Stop socket server
 	if d.socketServer != nil {
+		logger.Debug().Msg("Shutting down socket server")
 		if err := d.socketServer.Shutdown(ctx); err != nil {
+			logger.Warn().Err(err).Msg("Socket server shutdown error")
 			ui.Warning("Socket server shutdown: %v", err)
 		}
 	}
 
 	// Stop TCP server
 	if d.tcpServer != nil {
+		logger.Debug().Msg("Shutting down TCP server")
 		if err := d.tcpServer.Shutdown(ctx); err != nil {
+			logger.Warn().Err(err).Msg("TCP server shutdown error")
 			ui.Warning("TCP server shutdown: %v", err)
 		}
 	}
 
 	// Stop HTTP server
 	if d.httpServer != nil {
+		logger.Debug().Msg("Shutting down HTTP server")
 		if err := d.httpServer.Shutdown(ctx); err != nil {
+			logger.Warn().Err(err).Msg("HTTP server shutdown error")
 			ui.Warning("HTTP server shutdown: %v", err)
 		}
 	}
 
+	// Wait for background goroutines to complete
+	logger.Debug().Msg("Waiting for background goroutines to complete")
+	done := make(chan struct{})
+	go func() {
+		d.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		logger.Debug().Msg("All background goroutines completed")
+	case <-ctx.Done():
+		logger.Warn().Msg("Shutdown timeout waiting for background goroutines")
+	}
+
+	logger.Info().Msg("Shutdown complete")
 	ui.Success("Shutdown complete")
 	return nil
 }

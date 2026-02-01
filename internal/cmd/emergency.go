@@ -21,6 +21,7 @@ import (
 	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/fileutil"
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/snapshot"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
@@ -208,14 +209,30 @@ func doRollback(cfg *config.Config, target string) {
 		os.Exit(1)
 	}
 
+	// Audit log: Snapshot rollback
+	log.Warn().
+		Str(log.FieldOperation, "rollback").
+		Str("snapshot", target).
+		Str(log.FieldPath, cfg.ManifestDir).
+		Msg("Snapshot rollback initiated")
+
 	ui.Yellow.Printf("Rolling back to: %s\n", target)
 	fmt.Println()
 
 	if err := snapshot.Restore(cfg.ManifestDir, target); err != nil {
+		log.Error().
+			Str(log.FieldOperation, "rollback").
+			Str("snapshot", target).
+			Err(err).
+			Msg("Snapshot rollback failed")
 		ui.Error("Rollback failed: %v", err)
 		os.Exit(1)
 	}
 
+	log.Warn().
+		Str(log.FieldOperation, "rollback").
+		Str("snapshot", target).
+		Msg("Snapshot rollback completed")
 	ui.Success("Rollback complete")
 	fmt.Println()
 
@@ -303,6 +320,12 @@ var overboardCmd = &cobra.Command{
 func runOverboard(cmd *cobra.Command, args []string) {
 	name := args[0]
 
+	// Audit log: Emergency container removal
+	log.Warn().
+		Str(log.FieldOperation, "overboard").
+		Str(log.FieldContainer, name).
+		Msg("Emergency container removal initiated")
+
 	ui.Red.Printf("Man overboard! Removing %s...\n", name)
 
 	err := withDockerClient(func(ctx context.Context, client *docker.Client) error {
@@ -313,10 +336,19 @@ func runOverboard(cmd *cobra.Command, args []string) {
 	})
 
 	if err != nil {
+		log.Error().
+			Str(log.FieldOperation, "overboard").
+			Str(log.FieldContainer, name).
+			Err(err).
+			Msg("Emergency container removal failed")
 		ui.Error("Failed: %v", err)
 		os.Exit(1)
 	}
 
+	log.Warn().
+		Str(log.FieldOperation, "overboard").
+		Str(log.FieldContainer, name).
+		Msg("Emergency container removal completed")
 	ui.Success("Container %s removed", name)
 }
 
@@ -472,6 +504,13 @@ func doRestore(backupDir, backupName string) error {
 		return fmt.Errorf("backup incomplete: configs.tar.gz not found in %s", backupName)
 	}
 
+	// Audit log: Backup restore
+	log.Warn().
+		Str(log.FieldOperation, "restore").
+		Str("backup", backupName).
+		Str(log.FieldPath, backupPath).
+		Msg("Backup restore initiated")
+
 	ui.Yellow.Printf("Restoring from backup: %s\n", backupName)
 	fmt.Println()
 
@@ -538,6 +577,11 @@ func doRestore(backupDir, backupName string) error {
 		}
 	}
 
+	log.Warn().
+		Str(log.FieldOperation, "restore").
+		Str("backup", backupName).
+		Str("target", targetDir).
+		Msg("Backup restore completed")
 	ui.Success("Restore complete!")
 	fmt.Println()
 	return nil

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/fileutil"
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/google/uuid"
 )
 
@@ -95,7 +96,7 @@ func Create(manifestDir string) (string, error) {
 	// Cleanup old snapshots
 	if err := Cleanup(manifestDir); err != nil {
 		// Log but don't fail on cleanup errors
-		fmt.Fprintf(os.Stderr, "warning: failed to cleanup old snapshots: %v\n", err)
+		log.Warn().Err(err).Str(log.FieldPath, snapDir).Msg("Failed to cleanup old snapshots")
 	}
 
 	return snapshotName, nil
@@ -123,7 +124,7 @@ func List(manifestDir string) ([]SnapshotInfo, error) {
 		info, err := entry.Info()
 		if err != nil {
 			// Log warning for unreadable snapshot but continue with others
-			fmt.Fprintf(os.Stderr, "warning: cannot read snapshot %s: %v\n", entry.Name(), err)
+			log.Warn().Err(err).Str("snapshot", entry.Name()).Msg("Cannot read snapshot info")
 			continue
 		}
 

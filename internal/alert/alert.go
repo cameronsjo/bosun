@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // Severity levels for alerts.
@@ -61,16 +64,52 @@ func (m *Manager) Send(ctx context.Context, alert *Alert) error {
 		return nil
 	}
 
+	start := time.Now()
+	log.Debug().
+		Str("title", alert.Title).
+		Str("severity", string(alert.Severity)).
+		Str("source", alert.Source).
+		Int("provider_count", len(m.providers)).
+		Msg("Sending alert to providers")
+
 	var errs []error
+	var successCount int
 	for _, p := range m.providers {
+		providerStart := time.Now()
 		if err := p.Send(ctx, alert); err != nil {
+			log.Error().
+				Err(err).
+				Str("provider", p.Name()).
+				Str("title", alert.Title).
+				Int64(log.FieldDurationMS, time.Since(providerStart).Milliseconds()).
+				Msg("Alert provider failed")
 			errs = append(errs, fmt.Errorf("%s: %w", p.Name(), err))
+		} else {
+			successCount++
+			log.Debug().
+				Str("provider", p.Name()).
+				Int64(log.FieldDurationMS, time.Since(providerStart).Milliseconds()).
+				Msg("Alert sent successfully")
 		}
 	}
 
 	if len(errs) > 0 {
+		log.Warn().
+			Int("failed", len(errs)).
+			Int("succeeded", successCount).
+			Int("total", len(m.providers)).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("Alert delivery partially failed")
 		return fmt.Errorf("alert errors: %w", errors.Join(errs...))
 	}
+
+	log.Info().
+		Str("title", alert.Title).
+		Str("severity", string(alert.Severity)).
+		Int("provider_count", len(m.providers)).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Alert sent to all providers")
+
 	return nil
 }
 

@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // TwilioConfig holds configuration for the Twilio SMS alerter.
@@ -74,11 +76,28 @@ func (t *Twilio) Send(ctx context.Context, alert *Alert) error {
 
 	message := t.formatMessage(alert)
 	var lastErr error
+	var failCount int
 
 	for _, toNumber := range t.config.ToNumbers {
 		if err := t.sendSMS(ctx, toNumber, message); err != nil {
+			failCount++
+			log.Error().
+				Err(err).
+				Str("to", maskPhoneNumber(toNumber)).
+				Str("severity", string(alert.Severity)).
+				Str("title", alert.Title).
+				Msg("Failed to send SMS alert")
 			lastErr = fmt.Errorf("send to %s: %w", maskPhoneNumber(toNumber), err)
 		}
+	}
+
+	// Log summary if there were partial failures
+	if failCount > 0 && failCount < len(t.config.ToNumbers) {
+		log.Warn().
+			Int("failed", failCount).
+			Int("total", len(t.config.ToNumbers)).
+			Str("title", alert.Title).
+			Msg("Partial SMS delivery failure")
 	}
 
 	return lastErr
