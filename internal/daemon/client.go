@@ -23,7 +23,7 @@ type Client struct {
 // NewClient creates a new daemon client using Unix socket.
 func NewClient(socketPath string) *Client {
 	if socketPath == "" {
-		socketPath = "/var/run/bosun.sock"
+		socketPath = DefaultSocketPath
 	}
 
 	return &Client{

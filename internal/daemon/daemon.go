@@ -51,7 +51,7 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
-		SocketPath:   "/var/run/bosun.sock",
+		SocketPath:   DefaultSocketPath,
 		EnableTCP:    false,                  // Disabled by default for security
 		TCPAddr:      "127.0.0.1:9090",       // Localhost only by default
 		Port:         8080,
@@ -63,6 +63,9 @@ func DefaultConfig() *Config {
 		InitialDelay: 10 * time.Second,
 	}
 }
+
+// DefaultSocketPath is the default path for the bosun daemon Unix socket.
+const DefaultSocketPath = "/var/run/bosun.sock"
 
 // Daemon is the main GitOps daemon that handles webhooks and polling.
 type Daemon struct {

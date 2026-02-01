@@ -62,7 +62,7 @@ Examples:
 
 func init() {
 	webhookCmd.Flags().IntVarP(&webhookPort, "port", "p", 8080, "HTTP port to listen on")
-	webhookCmd.Flags().StringVar(&webhookSocket, "socket", "/var/run/bosun.sock", "Path to daemon socket")
+	webhookCmd.Flags().StringVar(&webhookSocket, "socket", daemon.DefaultSocketPath, "Path to daemon socket")
 	webhookCmd.Flags().StringVar(&webhookSecret, "secret", "", "Webhook secret for signature validation")
 	webhookCmd.Flags().BoolVar(&webhookFetchSecret, "fetch-secret", false, "Fetch webhook secret from daemon (daemon-injected secrets)")
 

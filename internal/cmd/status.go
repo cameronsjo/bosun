@@ -38,7 +38,7 @@ Examples:
 }
 
 func init() {
-	daemonStatusCmd.Flags().StringVar(&statusSocket, "socket", "/var/run/bosun.sock", "Path to daemon socket")
+	daemonStatusCmd.Flags().StringVar(&statusSocket, "socket", daemon.DefaultSocketPath, "Path to daemon socket")
 	daemonStatusCmd.Flags().IntVarP(&statusTimeout, "timeout", "t", 10, "Timeout in seconds")
 	daemonStatusCmd.Flags().BoolVar(&statusJSON, "json", false, "Output as JSON")
 

@@ -26,6 +26,8 @@ type Config struct {
 	BackupDir string
 	// LogDir is the directory for log files.
 	LogDir string
+	// LockFile is the path to the reconciliation lock file.
+	LockFile string
 
 	// TargetHost is empty for local deployment, or "user@host" for remote.
 	TargetHost string
@@ -54,6 +56,9 @@ type Config struct {
 	ProjectName string
 }
 
+// DefaultLockFile is the default path for the reconciliation lock file.
+const DefaultLockFile = "/var/run/bosun/reconcile.lock"
+
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -62,6 +67,7 @@ func DefaultConfig() *Config {
 		StagingDir:        "/app/staging",
 		BackupDir:         "/app/backups",
 		LogDir:            "/app/logs",
+		LockFile:          DefaultLockFile,
 		LocalAppdataPath:  "/mnt/appdata",
 		RemoteAppdataPath: "/mnt/user/appdata",
 		InfraSubDir:       ".",
@@ -93,12 +99,17 @@ type Reconciler struct {
 
 // NewReconciler creates a new Reconciler with the given configuration.
 func NewReconciler(cfg *Config, opts ...ReconcilerOption) *Reconciler {
+	lockFile := cfg.LockFile
+	if lockFile == "" {
+		lockFile = DefaultLockFile
+	}
+
 	r := &Reconciler{
 		config:   cfg,
 		git:      NewGitOps(cfg.RepoURL, cfg.RepoBranch, cfg.RepoDir),
 		sops:     NewSOPSOps(),
 		deploy:   NewDeployOps(cfg.DryRun, cfg.ProjectName),
-		lockFile: "/tmp/reconcile.lock",
+		lockFile: lockFile,
 	}
 
 	for _, opt := range opts {

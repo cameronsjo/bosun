@@ -39,7 +39,7 @@ func TestNewReconciler(t *testing.T) {
 	assert.NotNil(t, r.git)
 	assert.NotNil(t, r.sops)
 	assert.NotNil(t, r.deploy)
-	assert.Equal(t, "/tmp/reconcile.lock", r.lockFile)
+	assert.Equal(t, DefaultLockFile, r.lockFile)
 }
 
 func TestReconciler_AcquireLock(t *testing.T) {

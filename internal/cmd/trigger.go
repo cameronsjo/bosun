@@ -37,7 +37,7 @@ Examples:
 }
 
 func init() {
-	triggerCmd.Flags().StringVar(&triggerSocket, "socket", "/var/run/bosun.sock", "Path to daemon socket")
+	triggerCmd.Flags().StringVar(&triggerSocket, "socket", daemon.DefaultSocketPath, "Path to daemon socket")
 	triggerCmd.Flags().StringVar(&triggerTCP, "tcp", "", "TCP address for remote daemon (e.g., host:9090)")
 	triggerCmd.Flags().StringVar(&triggerToken, "token", "", "Bearer token for TCP auth (or BOSUN_BEARER_TOKEN)")
 	triggerCmd.Flags().StringVarP(&triggerSource, "source", "s", "cli", "Source identifier for this trigger")

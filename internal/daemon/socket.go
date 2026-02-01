@@ -31,7 +31,7 @@ type SocketConfig struct {
 // DefaultSocketConfig returns default socket configuration.
 func DefaultSocketConfig() *SocketConfig {
 	return &SocketConfig{
-		SocketPath: "/var/run/bosun.sock",
+		SocketPath: DefaultSocketPath,
 		SocketMode: 0660,
 	}
 }

@@ -230,6 +230,7 @@ compose_file: docker-compose.yml
 
 - **[Commands Reference](docs/commands.md)** - Full command documentation
 - **[Daemon Architecture](docs/architecture/daemon-split.md)** - Unix socket API, webhooks, security
+- **[Alerting Configuration](docs/alerting.md)** - Discord, SendGrid, Twilio notifications
 - **[GitOps Workflow](docs/gitops.md)** - Reconciliation, polling, triggers
 - **[Migration Guide](docs/migration.md)** - Migrating from bash/Python version
 - **[Concepts](docs/concepts.md)** - Architecture, components, diagrams
