@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"golang.org/x/sys/windows"
 )
 
 // Lock represents a file-based lock.
@@ -27,7 +29,9 @@ func New(manifestDir, operation string) *Lock {
 }
 
 // Acquire attempts to acquire the lock.
-// On Windows, this uses LockFileEx for exclusive locking.
+// On Windows, this uses LockFileEx for exclusive non-blocking locking.
+// Returns an error if the lock is already held by another process.
+// This method is safe for concurrent calls.
 func (l *Lock) Acquire() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -41,12 +45,27 @@ func (l *Lock) Acquire() error {
 		return fmt.Errorf("open lock file: %w", err)
 	}
 
-	// On Windows, use LockFileEx via x/sys/windows.
-	// For now, use a simple file-existence check as a basic lock.
-	// TODO(#24j): Implement proper Windows file locking with LockFileEx.
-	l.file = f
+	// Acquire exclusive non-blocking lock via LockFileEx.
+	overlapped := &windows.Overlapped{}
+	err = windows.LockFileEx(
+		windows.Handle(f.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
+		0,          // reserved
+		1,          // lock 1 byte
+		0,          // high-order size
+		overlapped, // overlapped structure
+	)
+	if err != nil {
+		f.Close()
+		return fmt.Errorf("another %s operation is already running", filepath.Base(l.path[:len(l.path)-5]))
+	}
+
+	// Write PID to lock file for debugging
+	_ = f.Truncate(0)
+	_, _ = f.Seek(0, 0)
 	fmt.Fprintf(f, "%d\n", os.Getpid())
 
+	l.file = f
 	return nil
 }
 
@@ -58,6 +77,20 @@ func (l *Lock) Release() error {
 
 	if l.file == nil {
 		return nil
+	}
+
+	// Unlock the file region.
+	overlapped := &windows.Overlapped{}
+	if err := windows.UnlockFileEx(
+		windows.Handle(l.file.Fd()),
+		0,          // reserved
+		1,          // unlock 1 byte
+		0,          // high-order size
+		overlapped, // overlapped structure
+	); err != nil {
+		l.file.Close()
+		l.file = nil
+		return fmt.Errorf("release lock: %w", err)
 	}
 
 	l.file.Close()
