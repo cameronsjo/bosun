@@ -3,7 +3,6 @@ package cmd
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
@@ -197,7 +196,7 @@ func initLogging() {
 
 	// If Sentry is active, attach its writer to the logger.
 	if w := sentrypkg.Writer(); w != nil {
-		opts.AdditionalWriters = append(opts.AdditionalWriters, w.(io.Writer))
+		opts.AdditionalWriters = append(opts.AdditionalWriters, w)
 	}
 
 	log.Init(opts)
