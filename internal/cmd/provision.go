@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/lock"
@@ -409,47 +410,107 @@ config:
 }
 
 func showDiff(output *manifest.RenderOutput, outputDir, stackName string) error {
-	// For now, just show a placeholder - full diff implementation would compare
-	// generated YAML against existing files
-	ui.Yellow.Println("Diff mode not yet implemented")
-	ui.Blue.Println("Would compare generated output against:")
-
 	targets := []struct {
 		name     string
 		filename string
+		content  map[string]any
 	}{
-		{"compose", stackName + ".yml"},
-		{"traefik", "dynamic.yml"},
-		{"gatus", "endpoints.yml"},
+		{"compose", stackName + ".yml", output.Compose},
+		{"traefik", "dynamic.yml", output.Traefik},
+		{"gatus", "endpoints.yml", output.Gatus},
 	}
 
+	hasDiff := false
 	for _, t := range targets {
-		path := filepath.Join(outputDir, t.name, t.filename)
-		if _, err := os.Stat(path); err == nil {
-			fmt.Printf("  - %s\n", path)
-		} else {
-			fmt.Printf("  - %s (new file)\n", path)
+		if len(t.content) == 0 {
+			continue
 		}
+
+		newBytes, err := yaml.Marshal(t.content)
+		if err != nil {
+			return fmt.Errorf("marshal %s output: %w", t.name, err)
+		}
+		newContent := string(newBytes)
+
+		path := filepath.Join(outputDir, t.name, t.filename)
+		existingBytes, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("read existing %s: %w", path, err)
+		}
+
+		existingContent := string(existingBytes)
+
+		if existingContent == newContent {
+			_, _ = ui.Green.Printf("  %s: no changes\n", path)
+			continue
+		}
+
+		hasDiff = true
+		if os.IsNotExist(err) {
+			_, _ = ui.Blue.Printf("\n--- /dev/null\n+++ %s (new file)\n", path)
+			for _, line := range strings.Split(strings.TrimRight(newContent, "\n"), "\n") {
+				_, _ = ui.Green.Printf("+%s\n", line)
+			}
+			continue
+		}
+
+		// Unified diff between existing and generated.
+		_, _ = ui.Blue.Printf("\n--- %s\n+++ %s (generated)\n", path, path)
+		printUnifiedDiff(existingContent, newContent)
 	}
 
-	// Show what would be generated
-	fmt.Println()
-	ui.Blue.Println("Generated output:")
-	yamlOutput, err := manifest.RenderToYAML(output)
-	if err != nil {
-		return err
-	}
-
-	// Truncate long output
-	lines := strings.Split(yamlOutput, "\n")
-	if len(lines) > MaxDiffOutputLines {
-		fmt.Println(strings.Join(lines[:MaxDiffOutputLines], "\n"))
-		fmt.Printf("... (%d more lines)\n", len(lines)-MaxDiffOutputLines)
-	} else {
-		fmt.Print(yamlOutput)
+	if !hasDiff {
+		ui.Success("No changes detected")
 	}
 
 	return nil
+}
+
+// printUnifiedDiff prints a simple unified diff between two strings.
+func printUnifiedDiff(old, new string) {
+	oldLines := strings.Split(strings.TrimRight(old, "\n"), "\n")
+	newLines := strings.Split(strings.TrimRight(new, "\n"), "\n")
+
+	// Simple line-by-line comparison with context.
+	// For manifests this is sufficient — they're typically short and well-structured.
+	maxLen := len(oldLines)
+	if len(newLines) > maxLen {
+		maxLen = len(newLines)
+	}
+
+	linesShown := 0
+	for i := 0; i < maxLen; i++ {
+		var oldLine, newLine string
+		if i < len(oldLines) {
+			oldLine = oldLines[i]
+		}
+		if i < len(newLines) {
+			newLine = newLines[i]
+		}
+
+		if oldLine == newLine {
+			// Show context lines near changes.
+			if linesShown > 0 && linesShown <= MaxDiffOutputLines {
+				fmt.Printf(" %s\n", oldLine)
+				linesShown++
+			}
+			continue
+		}
+
+		if i < len(oldLines) {
+			_, _ = ui.Red.Printf("-%s\n", oldLine)
+			linesShown++
+		}
+		if i < len(newLines) {
+			_, _ = ui.Green.Printf("+%s\n", newLine)
+			linesShown++
+		}
+
+		if linesShown > MaxDiffOutputLines {
+			fmt.Printf("... (diff truncated)\n")
+			return
+		}
+	}
 }
 
 // runListCharts lists all available charts.

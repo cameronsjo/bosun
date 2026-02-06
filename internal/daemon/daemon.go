@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/alert"
+	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	sentrypkg "github.com/cameronsjo/bosun/internal/sentry"
@@ -79,6 +80,9 @@ type Daemon struct {
 	httpServer    *Server       // HTTP server for webhooks (optional)
 	reconciler    *reconcile.Reconciler
 	alerter       *alert.Manager
+	dockerOnce    sync.Once      // Lazily initialize Docker client
+	dockerClient  *docker.Client // Shared Docker client for API handlers
+	dockerErr     error          // Error from Docker client initialization
 	ready         bool
 	readyMu       sync.RWMutex
 	stopPoll      chan struct{}
@@ -335,9 +339,24 @@ func (d *Daemon) shutdown() error {
 		logger.Warn().Msg("Shutdown timeout waiting for background goroutines")
 	}
 
+	// Close shared Docker client.
+	if d.dockerClient != nil {
+		if err := d.dockerClient.Close(); err != nil {
+			logger.Warn().Err(err).Msg("Docker client close error")
+		}
+	}
+
 	logger.Info().Msg("Shutdown complete")
 	ui.Success("Shutdown complete")
 	return nil
+}
+
+// DockerClient returns the shared Docker client, creating it on first use.
+func (d *Daemon) DockerClient() (*docker.Client, error) {
+	d.dockerOnce.Do(func() {
+		d.dockerClient, d.dockerErr = docker.NewClient()
+	})
+	return d.dockerClient, d.dockerErr
 }
 
 // TriggerReconcile triggers a reconciliation run.

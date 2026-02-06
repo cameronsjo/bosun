@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build windows
 
 // Package lock provides file-based locking for bosun operations.
 package lock
@@ -8,7 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
+
+	"golang.org/x/sys/windows"
 )
 
 // Lock represents a file-based lock.
@@ -28,31 +29,35 @@ func New(manifestDir, operation string) *Lock {
 }
 
 // Acquire attempts to acquire the lock.
+// On Windows, this uses LockFileEx for exclusive non-blocking locking.
 // Returns an error if the lock is already held by another process.
 // This method is safe for concurrent calls.
 func (l *Lock) Acquire() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	// Ensure lock directory exists
 	if err := os.MkdirAll(filepath.Dir(l.path), 0755); err != nil {
 		return fmt.Errorf("create lock directory: %w", err)
 	}
 
-	// Open or create the lock file
 	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return fmt.Errorf("open lock file: %w", err)
 	}
 
-	// Try to acquire exclusive lock (non-blocking)
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	// Acquire exclusive non-blocking lock via LockFileEx.
+	overlapped := &windows.Overlapped{}
+	err = windows.LockFileEx(
+		windows.Handle(f.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
+		0,          // reserved
+		1,          // lock 1 byte
+		0,          // high-order size
+		overlapped, // overlapped structure
+	)
+	if err != nil {
 		f.Close()
-		// Don't modify l.file here - leave it as-is (either nil from creation or previous state)
-		if err == syscall.EWOULDBLOCK {
-			return fmt.Errorf("another %s operation is already running", filepath.Base(l.path[:len(l.path)-5]))
-		}
-		return fmt.Errorf("acquire lock: %w", err)
+		return fmt.Errorf("another %s operation is already running", filepath.Base(l.path[:len(l.path)-5]))
 	}
 
 	// Write PID to lock file for debugging
@@ -74,14 +79,20 @@ func (l *Lock) Release() error {
 		return nil
 	}
 
-	// Unlock the file
-	if err := syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN); err != nil {
+	// Unlock the file region.
+	overlapped := &windows.Overlapped{}
+	if err := windows.UnlockFileEx(
+		windows.Handle(l.file.Fd()),
+		0,          // reserved
+		1,          // unlock 1 byte
+		0,          // high-order size
+		overlapped, // overlapped structure
+	); err != nil {
 		l.file.Close()
 		l.file = nil
 		return fmt.Errorf("release lock: %w", err)
 	}
 
-	// Close and remove the lock file
 	l.file.Close()
 	os.Remove(l.path)
 	l.file = nil
