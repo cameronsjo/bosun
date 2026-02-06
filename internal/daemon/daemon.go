@@ -16,6 +16,7 @@ import (
 	"github.com/cameronsjo/bosun/internal/alert"
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/reconcile"
+	sentrypkg "github.com/cameronsjo/bosun/internal/sentry"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -154,6 +155,8 @@ func New(cfg *Config) (*Daemon, error) {
 // Run starts the daemon and blocks until shutdown.
 // It handles SIGTERM and SIGINT for graceful shutdown.
 func (d *Daemon) Run(ctx context.Context) error {
+	defer sentrypkg.Recover()
+
 	// Initialize structured logging for daemon mode (JSON output).
 	os.Setenv("BOSUN_DAEMON_MODE", "true")
 	log.Init(nil)
@@ -280,6 +283,9 @@ func (d *Daemon) shutdown() error {
 	logger.Info().Msg("Initiating graceful shutdown")
 	ui.Info("Shutting down...")
 
+	// Flush Sentry events before shutting down network servers.
+	sentrypkg.Close(5 * time.Second)
+
 	// Stop polling
 	close(d.stopPoll)
 
@@ -402,6 +408,9 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string) error {
 	start := time.Now()
 	reconcileID := log.ReconcileIDFromContext(ctx)
 
+	// Start a Sentry transaction for performance monitoring.
+	ctx, finishTx := sentrypkg.ReconcileTransaction(ctx, source)
+
 	log.Info().
 		Str(log.FieldComponent, log.ComponentReconcile).
 		Str(log.FieldReconcileID, reconcileID).
@@ -419,6 +428,9 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string) error {
 	d.stateMu.Unlock()
 
 	durationMS := time.Since(start).Milliseconds()
+
+	// Finish the Sentry transaction with the result status.
+	finishTx(err)
 
 	if err != nil {
 		log.Error().

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
+	sentrypkg "github.com/cameronsjo/bosun/internal/sentry"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -176,7 +177,9 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	ui.Header("=== Starting reconciliation ===")
 
 	// Step 1: Sync repository.
-	changed, before, after, err := r.syncRepo(ctx)
+	spanCtx, finishSpan := sentrypkg.StartSpan(ctx, "reconcile.git_sync", "Git repository sync")
+	changed, before, after, err := r.syncRepo(spanCtx)
+	finishSpan(err)
 	if err != nil {
 		return fmt.Errorf("failed to sync repository: %w", err)
 	}
@@ -197,30 +200,42 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	}
 
 	// Step 2: Decrypt secrets.
-	secrets, err := r.decryptSecrets(ctx)
+	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.decrypt", "SOPS secret decryption")
+	secrets, err := r.decryptSecrets(spanCtx)
+	finishSpan(err)
 	if err != nil {
 		r.sendFailureAlert(ctx, "failed to decrypt secrets")
 		return fmt.Errorf("failed to decrypt secrets: %w", err)
 	}
 
 	// Step 3: Render templates.
-	if err := r.renderTemplates(ctx, secrets); err != nil {
+	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.template", "Template rendering")
+	if err := r.renderTemplates(spanCtx, secrets); err != nil {
+		finishSpan(err)
 		r.sendFailureAlert(ctx, "failed to render templates")
 		return fmt.Errorf("failed to render templates: %w", err)
 	}
+	finishSpan(nil)
 
 	// Step 4: Create backup (unless dry run).
 	if !r.config.DryRun {
-		if err := r.createBackup(ctx, secrets); err != nil {
+		spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.backup", "Configuration backup")
+		if err := r.createBackup(spanCtx, secrets); err != nil {
+			finishSpan(err)
 			ui.Warning("Backup partially failed: %v", err)
+		} else {
+			finishSpan(nil)
 		}
 	}
 
 	// Step 5: Deploy.
-	if err := r.doDeploy(ctx, secrets); err != nil {
+	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.deploy", "Deployment")
+	if err := r.doDeploy(spanCtx, secrets); err != nil {
+		finishSpan(err)
 		r.sendFailureAlert(ctx, err.Error())
 		return fmt.Errorf("deployment failed: %w", err)
 	}
+	finishSpan(nil)
 
 	// Step 6: Cleanup staging directory after successful deployment.
 	if err := r.cleanupStaging(); err != nil {

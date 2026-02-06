@@ -41,8 +41,9 @@ var logger zerolog.Logger
 
 // config holds the current logging configuration.
 var config struct {
-	format Format
-	level  Level
+	format            Format
+	level             Level
+	additionalWriters []io.Writer
 }
 
 func init() {
@@ -59,6 +60,11 @@ type Options struct {
 	Level    Level
 	LevelSet bool // Explicitly set level (needed because Level 0 is TraceLevel)
 	Output   io.Writer
+
+	// AdditionalWriters are extra io.Writers that receive log output alongside
+	// the primary writer (stdout). Used by the Sentry integration to fan out
+	// logs to the Sentry zerolog writer without changing existing call sites.
+	AdditionalWriters []io.Writer
 }
 
 // Init initializes the global logger with the given options.
@@ -85,6 +91,9 @@ func Init(opts *Options) {
 	} else {
 		config.level = InfoLevel
 	}
+
+	// Store additional writers for multi-writer fan-out (e.g. Sentry).
+	config.additionalWriters = opts.AdditionalWriters
 
 	initLogger()
 }
@@ -122,6 +131,14 @@ func initLogger() {
 	case FormatJSON:
 		// JSON output uses default zerolog behavior.
 		output = os.Stdout
+	}
+
+	// If additional writers are configured (e.g. Sentry), fan out to all of them.
+	if len(config.additionalWriters) > 0 {
+		writers := make([]io.Writer, 0, 1+len(config.additionalWriters))
+		writers = append(writers, output)
+		writers = append(writers, config.additionalWriters...)
+		output = zerolog.MultiLevelWriter(writers...)
 	}
 
 	zerolog.SetGlobalLevel(config.level)

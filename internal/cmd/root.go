@@ -3,12 +3,14 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/cameronsjo/bosun/internal/log"
+	sentrypkg "github.com/cameronsjo/bosun/internal/sentry"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -183,6 +185,19 @@ func initLogging() {
 			opts.Level = log.ErrorLevel
 			opts.LevelSet = true
 		}
+	}
+
+	// Initialize Sentry if DSN is configured.
+	sentryCfg := sentrypkg.ConfigFromEnv()
+	sentryCfg.Release = "bosun@" + version
+	if err := sentrypkg.Init(sentryCfg); err != nil {
+		// Sentry failure is non-fatal - log and continue.
+		fmt.Fprintf(os.Stderr, "Warning: Sentry initialization failed: %v\n", err)
+	}
+
+	// If Sentry is active, attach its writer to the logger.
+	if w := sentrypkg.Writer(); w != nil {
+		opts.AdditionalWriters = append(opts.AdditionalWriters, w.(io.Writer))
 	}
 
 	log.Init(opts)
