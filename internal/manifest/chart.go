@@ -2,11 +2,12 @@ package manifest
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // ChartLoader handles loading charts from the filesystem.
@@ -55,9 +56,9 @@ func (l *ChartLoader) LoadChart(name string) (*Chart, error) {
 	}
 
 	if meta.APIVersion == "" {
-		log.Printf("Warning: chart %s is missing apiVersion field", name)
+		log.Warn().Str("chart", name).Msg("Chart is missing apiVersion field")
 	} else if meta.Kind != "" && meta.Kind != KindChart {
-		log.Printf("Warning: chart %s has kind %s, expected %s", name, meta.Kind, KindChart)
+		log.Warn().Str("chart", name).Str("kind", meta.Kind).Str("expected", KindChart).Msg("Chart has unexpected kind")
 	}
 
 	var chart Chart
@@ -157,7 +158,7 @@ func (l *ChartLoader) RenderStack(stackPath string, stackValuesOverride map[stri
 	}
 
 	if meta.APIVersion == "" {
-		log.Printf("Warning: stack %s is missing apiVersion field", stackPath)
+		log.Warn().Str("stack", stackPath).Msg("Stack is missing apiVersion field")
 	}
 
 	var stack Stack

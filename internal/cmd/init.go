@@ -146,12 +146,6 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("create compose file: %w", err)
 	}
 
-	// manifest/pyproject.toml
-	pyprojectFile := filepath.Join(targetDir, "manifest", "pyproject.toml")
-	if err := createFileIfNotExists(pyprojectFile, starterPyprojectTOML); err != nil {
-		return fmt.Errorf("create pyproject.toml: %w", err)
-	}
-
 	// Example service manifest
 	exampleService := filepath.Join(targetDir, "manifest", "services", "example.yml")
 	if err := createFileIfNotExists(exampleService, starterExampleService); err != nil {
@@ -350,23 +344,6 @@ services:
 networks:
   default:
     name: bosun-net
-`
-
-const starterPyprojectTOML = `[project]
-name = "bosun-manifest"
-version = "0.1.0"
-description = "Service manifests for bosun"
-requires-python = ">=3.11"
-dependencies = [
-    "pyyaml>=6.0",
-]
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["."]
 `
 
 const starterExampleService = `# Example service manifest

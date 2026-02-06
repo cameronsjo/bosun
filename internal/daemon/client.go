@@ -2,6 +2,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -65,7 +66,7 @@ func (c *Client) Trigger(ctx context.Context, source string) (*TriggerResponse, 
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	httpReq.Body = io.NopCloser(jsonReader(body))
+	httpReq.Body = io.NopCloser(bytes.NewReader(body))
 	httpReq.Header.Set("Content-Type", "application/json")
 	c.addAuth(httpReq)
 
@@ -192,21 +193,3 @@ func (c *Client) Config(ctx context.Context) (*ConfigResponse, error) {
 	return &result, nil
 }
 
-// jsonReader wraps a byte slice in a reader.
-type jsonReaderType struct {
-	data []byte
-	pos  int
-}
-
-func jsonReader(data []byte) io.Reader {
-	return &jsonReaderType{data: data}
-}
-
-func (r *jsonReaderType) Read(p []byte) (n int, err error) {
-	if r.pos >= len(r.data) {
-		return 0, io.EOF
-	}
-	n = copy(p, r.data[r.pos:])
-	r.pos += n
-	return n, nil
-}

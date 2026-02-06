@@ -214,7 +214,7 @@ func TestCapitalizeFirst(t *testing.T) {
 		{
 			name:  "already capitalized",
 			input: "Tailscale",
-			want:  "4ailscale", // Note: current impl subtracts 32 from any char
+			want:  "Tailscale",
 		},
 		{
 			name:  "empty string",
@@ -229,7 +229,7 @@ func TestCapitalizeFirst(t *testing.T) {
 		{
 			name:  "single uppercase char",
 			input: "A",
-			want:  "!", // 65 - 32 = 33 = '!'
+			want:  "A",
 		},
 		{
 			name:  "cloudflare",

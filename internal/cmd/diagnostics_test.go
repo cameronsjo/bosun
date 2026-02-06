@@ -1100,19 +1100,17 @@ func TestValidateServiceFile_EdgeCases(t *testing.T) {
 		assert.False(t, result)
 	})
 
-	t.Run("name in comments - basic string check passes", func(t *testing.T) {
+	t.Run("name in comments - YAML parser correctly rejects", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		serviceFile := filepath.Join(tmpDir, "service.yml")
-		// Note: Basic string validation cannot distinguish comments from actual YAML keys.
-		// This test documents current behavior - more nuanced validation would require YAML parsing.
+		// YAML parsing correctly ignores commented-out fields
 		content := `# name: not a real name
 provisions:
   - webapp
 `
 		require.NoError(t, os.WriteFile(serviceFile, []byte(content), 0644))
 		result := validateServiceFile(serviceFile, tmpDir)
-		// Basic validation passes since "name:" and "provisions:" appear in file
-		assert.True(t, result)
+		assert.False(t, result)
 	})
 
 	t.Run("missing provisions fails", func(t *testing.T) {

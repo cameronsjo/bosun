@@ -130,12 +130,6 @@ func TestStarterTemplates(t *testing.T) {
 		assert.Contains(t, starterComposeYML, "healthcheck:")
 	})
 
-	t.Run("starterPyprojectTOML has required fields", func(t *testing.T) {
-		assert.Contains(t, starterPyprojectTOML, "[project]")
-		assert.Contains(t, starterPyprojectTOML, "name =")
-		assert.Contains(t, starterPyprojectTOML, "requires-python")
-	})
-
 	t.Run("starterExampleService has required fields", func(t *testing.T) {
 		assert.Contains(t, starterExampleService, "name:")
 		assert.Contains(t, starterExampleService, "provisions:")

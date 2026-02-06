@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -290,7 +291,7 @@ func (h *webhookHandler) handleGitLabWebhook(w http.ResponseWriter, r *http.Requ
 	// Validate GitLab token (X-Gitlab-Token header)
 	if h.secret != "" {
 		token := r.Header.Get("X-Gitlab-Token")
-		if token != h.secret {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(h.secret)) != 1 {
 			ui.Warning("Invalid GitLab token from %s", r.RemoteAddr)
 			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return

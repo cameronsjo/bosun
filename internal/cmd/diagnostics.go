@@ -880,10 +880,15 @@ func validateServiceFile(filename, _ string) bool {
 		return false
 	}
 
-	hasName := strings.Contains(string(content), "name:")
-	hasProvisions := strings.Contains(string(content), "provisions:")
+	var doc struct {
+		Name       string `yaml:"name"`
+		Provisions []any  `yaml:"provisions"`
+	}
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return false
+	}
 
-	return hasName && hasProvisions
+	return doc.Name != "" && len(doc.Provisions) > 0
 }
 
 func validateStackFile(filename, _ string) bool {
@@ -892,9 +897,12 @@ func validateStackFile(filename, _ string) bool {
 		return false
 	}
 
-	// Stacks without include are warnings, not errors
-	// Basic validation: file is readable
-	_ = content
+	// Validate the file contains parseable YAML (or is empty, which is a warning not an error)
+	var doc map[string]any
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return false
+	}
+
 	return true
 }
 

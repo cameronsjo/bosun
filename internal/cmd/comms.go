@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -265,7 +266,7 @@ func capitalizeFirst(s string) string {
 	if s == "" {
 		return s
 	}
-	return string(s[0]-32) + s[1:]
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 // TailscaleStatus represents the JSON output of tailscale status --json.

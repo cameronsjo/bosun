@@ -78,6 +78,9 @@ func runDaemon(cmd *cobra.Command, args []string) {
 		ui.Fatal("Invalid configuration: %v", err)
 	}
 
+	// Pass build-time version to daemon
+	cfg.Version = version
+
 	// Set up alert manager
 	cfg.AlertManager = createDaemonAlertManager()
 

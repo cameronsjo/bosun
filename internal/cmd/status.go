@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -123,53 +125,37 @@ func printStatusHuman(status *daemon.StatusResponse, health *daemon.HealthStatus
 	fmt.Println()
 }
 
+// statusJSONOutput is the JSON representation of daemon status for machine-readable output.
+type statusJSONOutput struct {
+	State         string  `json:"state"`
+	Uptime        string  `json:"uptime"`
+	LastReconcile *string `json:"last_reconcile"`
+	LastError     *string `json:"last_error"`
+	Health        *string `json:"health"`
+	Ready         *bool   `json:"ready"`
+}
+
 func printStatusJSON(status *daemon.StatusResponse, health *daemon.HealthStatus) {
-	// Simple JSON output without external deps
-	fmt.Println("{")
-	fmt.Printf("  \"state\": \"%s\",\n", status.State)
-	fmt.Printf("  \"uptime\": \"%s\",\n", status.Uptime)
+	out := statusJSONOutput{
+		State:  status.State,
+		Uptime: status.Uptime,
+	}
 
 	if status.LastReconcile != nil {
-		fmt.Printf("  \"last_reconcile\": \"%s\",\n", status.LastReconcile.Format(time.RFC3339))
-	} else {
-		fmt.Printf("  \"last_reconcile\": null,\n")
+		t := status.LastReconcile.Format(time.RFC3339)
+		out.LastReconcile = &t
 	}
 
 	if status.LastError != "" {
-		fmt.Printf("  \"last_error\": \"%s\",\n", escapeJSON(status.LastError))
-	} else {
-		fmt.Printf("  \"last_error\": null,\n")
+		out.LastError = &status.LastError
 	}
 
 	if health != nil {
-		fmt.Printf("  \"health\": \"%s\",\n", health.Status)
-		fmt.Printf("  \"ready\": %v\n", health.Ready)
-	} else {
-		fmt.Printf("  \"health\": null,\n")
-		fmt.Printf("  \"ready\": null\n")
+		out.Health = &health.Status
+		out.Ready = &health.Ready
 	}
 
-	fmt.Println("}")
-}
-
-// escapeJSON escapes a string for JSON output.
-func escapeJSON(s string) string {
-	result := ""
-	for _, r := range s {
-		switch r {
-		case '"':
-			result += "\\\""
-		case '\\':
-			result += "\\\\"
-		case '\n':
-			result += "\\n"
-		case '\r':
-			result += "\\r"
-		case '\t':
-			result += "\\t"
-		default:
-			result += string(r)
-		}
-	}
-	return result
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(out)
 }

@@ -19,6 +19,7 @@ var (
 	Yellow = color.New(color.FgYellow)
 	Blue   = color.New(color.FgBlue)
 	Cyan   = color.New(color.FgCyan)
+	Gray   = color.New(color.FgHiBlack)
 	Bold   = color.New(color.Bold)
 )
 
@@ -76,8 +77,7 @@ func Info(format string, args ...any) {
 func Debug(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if isConsoleMode() {
-		// Gray color for debug
-		fmt.Printf("\033[90m%s\033[0m\n", msg)
+		Gray.Println(msg)
 	} else {
 		log.Debug().Msg(msg)
 	}

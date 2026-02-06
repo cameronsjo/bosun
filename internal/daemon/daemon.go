@@ -46,6 +46,9 @@ type Config struct {
 
 	// Alerting
 	AlertManager *alert.Manager
+
+	// Version is the bosun version string (set by caller from build-time ldflags).
+	Version string
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -158,7 +161,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	logger := log.Component(log.ComponentDaemon)
 
 	logger.Info().
-		Str("version", getVersion()).
+		Str("version", versionOrDev(d.config.Version)).
 		Str("socket", d.config.SocketPath).
 		Bool("tcp_enabled", d.config.EnableTCP).
 		Str("tcp_addr", d.config.TCPAddr).
@@ -168,7 +171,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		Msg("Daemon starting")
 
 	ui.Header("=== Bosun Daemon Starting ===")
-	ui.Info("Version: %s", getVersion())
+	ui.Info("Version: %s", versionOrDev(d.config.Version))
 	ui.Info("Socket: %s", d.config.SocketPath)
 	if d.config.EnableTCP {
 		ui.Info("TCP: %s (bearer auth)", d.config.TCPAddr)
@@ -513,10 +516,26 @@ type HealthStatus struct {
 
 var startTime = time.Now()
 
-// getVersion returns the bosun version.
-func getVersion() string {
-	// This should be injected at build time via ldflags
+// versionOrDev returns v if non-empty, otherwise "dev".
+func versionOrDev(v string) string {
+	if v != "" {
+		return v
+	}
 	return "dev"
+}
+
+// parseDurationOrSeconds parses a string as a Go duration (e.g. "30s", "5m"),
+// or as bare seconds if no unit suffix is present (e.g. "30" -> 30s).
+// Returns the parsed duration and true, or zero and false if parsing fails.
+func parseDurationOrSeconds(s string) (time.Duration, bool) {
+	if d, err := time.ParseDuration(s); err == nil {
+		return d, true
+	}
+	// Treat as bare number of seconds
+	if d, err := time.ParseDuration(s + "s"); err == nil {
+		return d, true
+	}
+	return 0, false
 }
 
 // ConfigFromEnv loads daemon configuration from environment variables.
@@ -556,13 +575,13 @@ func ConfigFromEnv() *Config {
 	}
 
 	if interval := os.Getenv("POLL_INTERVAL"); interval != "" {
-		if secs, err := time.ParseDuration(interval + "s"); err == nil {
-			cfg.PollInterval = secs
+		if d, ok := parseDurationOrSeconds(interval); ok {
+			cfg.PollInterval = d
 		}
 	}
 	if interval := os.Getenv("BOSUN_POLL_INTERVAL"); interval != "" {
-		if secs, err := time.ParseDuration(interval + "s"); err == nil {
-			cfg.PollInterval = secs
+		if d, ok := parseDurationOrSeconds(interval); ok {
+			cfg.PollInterval = d
 		}
 	}
 
