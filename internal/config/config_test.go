@@ -256,7 +256,7 @@ func TestLoadInfraContainers(t *testing.T) {
 `
 		require.NoError(t, os.WriteFile(filepath.Join(bosunDir, "config.yml"), []byte(content), 0644))
 
-		containers := loadInfraContainers(tmpDir)
+		containers := extractInfraContainers(loadConfigFile(tmpDir))
 		assert.Equal(t, []string{"nginx", "redis", "postgres"}, containers)
 	})
 
@@ -270,14 +270,16 @@ func TestLoadInfraContainers(t *testing.T) {
 `
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yml"), []byte(content), 0644))
 
-		containers := loadInfraContainers(tmpDir)
+		containers := extractInfraContainers(loadConfigFile(tmpDir))
 		assert.Equal(t, []string{"custom1", "custom2"}, containers)
 	})
 
-	t.Run("prefers .bosun/config.yml over bosun.yml", func(t *testing.T) {
+	t.Run("prefers bosun.yml over .bosun/config.yml", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		// Create both files
+		// Create both files — bosun.yml takes priority since loadConfigFile
+		// searches bosun.yaml > bosun.yml > .bosun/config.yml consistently
+		// for all config sections.
 		bosunDir := filepath.Join(tmpDir, ".bosun")
 		require.NoError(t, os.MkdirAll(bosunDir, 0755))
 
@@ -293,14 +295,14 @@ func TestLoadInfraContainers(t *testing.T) {
 `
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yml"), []byte(content2), 0644))
 
-		containers := loadInfraContainers(tmpDir)
-		assert.Equal(t, []string{"from-bosun-dir"}, containers)
+		containers := extractInfraContainers(loadConfigFile(tmpDir))
+		assert.Equal(t, []string{"from-root"}, containers)
 	})
 
 	t.Run("returns defaults when no config file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		containers := loadInfraContainers(tmpDir)
+		containers := extractInfraContainers(loadConfigFile(tmpDir))
 		assert.Equal(t, defaultInfraContainers, containers)
 	})
 
@@ -312,7 +314,7 @@ func TestLoadInfraContainers(t *testing.T) {
 `
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yml"), []byte(content), 0644))
 
-		containers := loadInfraContainers(tmpDir)
+		containers := extractInfraContainers(loadConfigFile(tmpDir))
 		assert.Equal(t, defaultInfraContainers, containers)
 	})
 
@@ -324,7 +326,7 @@ func TestLoadInfraContainers(t *testing.T) {
 `
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yml"), []byte(content), 0644))
 
-		containers := loadInfraContainers(tmpDir)
+		containers := extractInfraContainers(loadConfigFile(tmpDir))
 		assert.Equal(t, defaultInfraContainers, containers)
 	})
 
@@ -336,7 +338,7 @@ func TestLoadInfraContainers(t *testing.T) {
 `
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yml"), []byte(content), 0644))
 
-		containers := loadInfraContainers(tmpDir)
+		containers := extractInfraContainers(loadConfigFile(tmpDir))
 		assert.Equal(t, defaultInfraContainers, containers)
 	})
 }

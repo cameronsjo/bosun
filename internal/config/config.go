@@ -193,8 +193,11 @@ func Load() (*Config, error) {
 		provisionsDir = filepath.Join(root, fileCfg.ProvisionsDir)
 	}
 
-	tunnelProvider, tunnelConfig := loadTunnelConfig(root)
-	alertConfig := loadAlertConfig(root)
+	// Extract all config sections from the already-parsed config file.
+	// This avoids re-reading and re-parsing the YAML file for each section.
+	infraContainers := extractInfraContainers(fileCfg)
+	tunnelProvider, tunnelConfig := extractTunnelConfig(fileCfg)
+	alertConfig := extractAlertConfig(fileCfg)
 
 	// Determine project name (defaults to directory name)
 	projectName := fileCfg.ProjectName
@@ -209,7 +212,7 @@ func Load() (*Config, error) {
 		ComposeFile:     filepath.Join(root, "bosun", "docker-compose.yml"),
 		SnapshotsDir:    filepath.Join(manifestDir, ".bosun", "snapshots"),
 		projectName:     projectName,
-		infraContainers: loadInfraContainers(root),
+		infraContainers: infraContainers,
 		tunnelProvider:  tunnelProvider,
 		tunnelConfig:    tunnelConfig,
 		alertConfig:     alertConfig,
@@ -246,40 +249,12 @@ func loadConfigFile(root string) configFile {
 	return cfg
 }
 
-// loadInfraContainers loads infrastructure container names from config files.
-// Checks for .bosun/config.yml or bosun.yml in the project root.
-// Falls back to default list if no config is found.
-func loadInfraContainers(root string) []string {
-	// Check for .bosun/config.yml first
-	configPaths := []string{
-		filepath.Join(root, ".bosun", "config.yml"),
-		filepath.Join(root, "bosun.yml"),
+// extractInfraContainers extracts infrastructure container names from a parsed config.
+// Falls back to default list if not configured.
+func extractInfraContainers(cfg configFile) []string {
+	if len(cfg.Infrastructure.Containers) > 0 {
+		return cfg.Infrastructure.Containers
 	}
-
-	for _, path := range configPaths {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-
-		var cfg configFile
-		if err := yaml.Unmarshal(data, &cfg); err != nil {
-			log.Warn().
-				Err(err).
-				Str(log.FieldPath, path).
-				Msg("Failed to parse config file for infrastructure containers")
-			continue
-		}
-
-		if len(cfg.Infrastructure.Containers) > 0 {
-			log.Debug().
-				Str(log.FieldPath, path).
-				Int("count", len(cfg.Infrastructure.Containers)).
-				Msg("Loaded infrastructure containers from config")
-			return cfg.Infrastructure.Containers
-		}
-	}
-
 	return defaultInfraContainers
 }
 
@@ -385,51 +360,21 @@ func (c *Config) GetTunnelConfig() TunnelConfig {
 	return c.tunnelConfig
 }
 
-// loadTunnelConfig loads tunnel configuration from config files.
+// extractTunnelConfig extracts tunnel configuration from a parsed config.
 // Returns the provider name and tunnel-specific configuration.
-func loadTunnelConfig(root string) (string, TunnelConfig) {
-	configPaths := []string{
-		filepath.Join(root, ".bosun", "config.yml"),
-		filepath.Join(root, "bosun.yml"),
+func extractTunnelConfig(cfg configFile) (string, TunnelConfig) {
+	provider := cfg.Tunnel.Provider
+	if provider == "" {
+		provider = defaultTunnelProvider
 	}
 
-	for _, path := range configPaths {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-
-		var cfg configFile
-		if err := yaml.Unmarshal(data, &cfg); err != nil {
-			log.Warn().
-				Err(err).
-				Str(log.FieldPath, path).
-				Msg("Failed to parse config file for tunnel configuration")
-			continue
-		}
-
-		provider := cfg.Tunnel.Provider
-		if provider == "" {
-			provider = defaultTunnelProvider
-		}
-
-		tunnelCfg := TunnelConfig{
-			Hostname:       cfg.Tunnel.Hostname,
-			TunnelName:     cfg.Tunnel.TunnelName,
-			HealthEndpoint: cfg.Tunnel.HealthEndpoint,
-		}
-
-		if cfg.Tunnel.Provider != "" {
-			log.Debug().
-				Str(log.FieldPath, path).
-				Str("provider", provider).
-				Msg("Loaded tunnel configuration")
-		}
-
-		return provider, tunnelCfg
+	tunnelCfg := TunnelConfig{
+		Hostname:       cfg.Tunnel.Hostname,
+		TunnelName:     cfg.Tunnel.TunnelName,
+		HealthEndpoint: cfg.Tunnel.HealthEndpoint,
 	}
 
-	return defaultTunnelProvider, TunnelConfig{}
+	return provider, tunnelCfg
 }
 
 // GetAlertConfig returns the alert configuration.
@@ -437,47 +382,17 @@ func (c *Config) GetAlertConfig() AlertConfig {
 	return c.alertConfig
 }
 
-// loadAlertConfig loads alert configuration from config files.
+// extractAlertConfig extracts alert configuration from a parsed config.
 // Supports environment variable overrides for sensitive values.
-func loadAlertConfig(root string) AlertConfig {
-	configPaths := []string{
-		filepath.Join(root, ".bosun", "config.yml"),
-		filepath.Join(root, "bosun.yml"),
+func extractAlertConfig(cfg configFile) AlertConfig {
+	alertCfg := cfg.Alerts
+
+	// Ensure default for OnFailure if not explicitly set.
+	if !cfg.Alerts.OnSuccess && !cfg.Alerts.OnFailure {
+		alertCfg.OnFailure = true
 	}
 
-	var alertCfg AlertConfig
-	alertCfg.OnFailure = true // Default to alerting on failures
-
-	for _, path := range configPaths {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-
-		var cfg configFile
-		if err := yaml.Unmarshal(data, &cfg); err != nil {
-			log.Warn().
-				Err(err).
-				Str(log.FieldPath, path).
-				Msg("Failed to parse config file for alert configuration")
-			continue
-		}
-
-		alertCfg = cfg.Alerts
-		// Ensure default for OnFailure if not explicitly set
-		if !cfg.Alerts.OnSuccess && !cfg.Alerts.OnFailure {
-			alertCfg.OnFailure = true
-		}
-
-		log.Debug().
-			Str(log.FieldPath, path).
-			Bool("on_success", alertCfg.OnSuccess).
-			Bool("on_failure", alertCfg.OnFailure).
-			Msg("Loaded alert configuration")
-		break
-	}
-
-	// Environment variable overrides
+	// Environment variable overrides for sensitive values.
 	if v := os.Getenv("DISCORD_WEBHOOK_URL"); v != "" {
 		alertCfg.DiscordWebhookURL = v
 	}

@@ -132,7 +132,7 @@ func (d *Daemon) handleAPIContainers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), d.config.APITimeout)
 	defer cancel()
 
 	containers, err := client.ListContainers(ctx, false)
@@ -224,7 +224,7 @@ func (d *Daemon) handleAPIContainerLogs(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), d.config.APITimeout)
 	defer cancel()
 
 	logs, err := client.GetContainerLogs(ctx, containerID, lines)
@@ -256,7 +256,7 @@ func (d *Daemon) handleAPIContainerRestart(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 2*d.config.APITimeout)
 	defer cancel()
 
 	if err := client.RestartContainer(ctx, containerID); err != nil {
@@ -297,7 +297,7 @@ func (d *Daemon) handleAPITrigger(w http.ResponseWriter, r *http.Request) {
 
 	// Trigger reconcile
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), d.config.ReconcileTimeout)
 		defer cancel()
 		_ = d.TriggerReconcile(ctx, source)
 	}()

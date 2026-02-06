@@ -145,7 +145,7 @@ func (s *TCPServer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 
 	// Trigger reconcile
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), s.daemon.config.ReconcileTimeout)
 		defer cancel()
 		if err := s.daemon.TriggerReconcile(ctx, source); err != nil {
 			ui.Error("TCP-triggered reconciliation failed: %v", err)

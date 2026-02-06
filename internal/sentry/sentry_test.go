@@ -3,6 +3,7 @@ package sentry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/getsentry/sentry-go"
@@ -73,7 +74,7 @@ func TestInit_EmptyDSN(t *testing.T) {
 
 func TestInit_InvalidDSN(t *testing.T) {
 	// Reset state from any previous test.
-	state.enabled = false
+	state.enabled.Store(false)
 	state.writer = nil
 	state.closer = nil
 
@@ -86,7 +87,7 @@ func TestInit_InvalidDSN(t *testing.T) {
 
 func TestInit_ValidDSN(t *testing.T) {
 	// Reset state.
-	state.enabled = false
+	state.enabled.Store(false)
 	state.writer = nil
 	state.closer = nil
 
@@ -108,7 +109,7 @@ func TestInit_ValidDSN(t *testing.T) {
 }
 
 func TestClose_WhenDisabled(t *testing.T) {
-	state.enabled = false
+	state.enabled.Store(false)
 	state.writer = nil
 	state.closer = nil
 
@@ -117,7 +118,7 @@ func TestClose_WhenDisabled(t *testing.T) {
 }
 
 func TestRecover_WhenDisabled(t *testing.T) {
-	state.enabled = false
+	state.enabled.Store(false)
 
 	// Should not panic.
 	Recover()
@@ -157,7 +158,7 @@ func TestBeforeSend_DropsAlreadyUpToDateFromHint(t *testing.T) {
 }
 
 func TestReconcileTransaction_WhenDisabled(t *testing.T) {
-	state.enabled = false
+	state.enabled.Store(false)
 
 	ctx := context.Background()
 	newCtx, finish := ReconcileTransaction(ctx, "test")
@@ -169,7 +170,7 @@ func TestReconcileTransaction_WhenDisabled(t *testing.T) {
 }
 
 func TestStartSpan_WhenDisabled(t *testing.T) {
-	state.enabled = false
+	state.enabled.Store(false)
 
 	ctx := context.Background()
 	newCtx, finish := StartSpan(ctx, "op", "desc")
@@ -179,10 +180,21 @@ func TestStartSpan_WhenDisabled(t *testing.T) {
 	finish(errors.New("err"))
 }
 
+func TestSpanStatus(t *testing.T) {
+	assert.Equal(t, sentry.SpanStatusOK, spanStatus(nil))
+	assert.Equal(t, sentry.SpanStatusCanceled, spanStatus(context.Canceled))
+	assert.Equal(t, sentry.SpanStatusDeadlineExceeded, spanStatus(context.DeadlineExceeded))
+	assert.Equal(t, sentry.SpanStatusInternalError, spanStatus(errors.New("something broke")))
+
+	// Wrapped context errors should also be detected.
+	wrapped := fmt.Errorf("operation failed: %w", context.Canceled)
+	assert.Equal(t, sentry.SpanStatusCanceled, spanStatus(wrapped))
+}
+
 func TestStartSpan_NoParentTransaction(t *testing.T) {
 	// Temporarily enable to test the "no parent" path.
-	state.enabled = true
-	defer func() { state.enabled = false }()
+	state.enabled.Store(true)
+	defer func() { state.enabled.Store(false) }()
 
 	ctx := context.Background() // No transaction in context.
 	newCtx, finish := StartSpan(ctx, "op", "desc")

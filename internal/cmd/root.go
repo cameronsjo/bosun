@@ -190,8 +190,9 @@ func initLogging() {
 	sentryCfg := sentrypkg.ConfigFromEnv()
 	sentryCfg.Release = "bosun@" + version
 	if err := sentrypkg.Init(sentryCfg); err != nil {
-		// Sentry failure is non-fatal - log and continue.
-		fmt.Fprintf(os.Stderr, "Warning: Sentry initialization failed: %v\n", err)
+		// Sentry failure is non-fatal but worth noting — the user explicitly
+		// set BOSUN_SENTRY_DSN so they expect error tracking to be active.
+		log.Warn().Err(err).Msg("Sentry initialization failed, error tracking disabled")
 	}
 
 	// If Sentry is active, attach its writer to the logger.

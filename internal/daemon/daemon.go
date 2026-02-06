@@ -46,6 +46,11 @@ type Config struct {
 	// Reconcile settings
 	ReconcileConfig *reconcile.Config
 
+	// Timeout settings
+	ReconcileTimeout time.Duration // Max time for a reconcile operation (default: 10m)
+	ShutdownTimeout  time.Duration // Max time for graceful shutdown (default: 30s)
+	APITimeout       time.Duration // Timeout for API handler requests (default: 30s)
+
 	// Alerting
 	AlertManager *alert.Manager
 
@@ -56,16 +61,19 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
-		SocketPath:   DefaultSocketPath,
-		EnableTCP:    false,                  // Disabled by default for security
-		TCPAddr:      "127.0.0.1:9090",       // Localhost only by default
-		Port:         8080,
-		EnableHTTP:   true, // Backwards compat: enable HTTP by default for now
-		WebhookPath:  "/webhook",
-		HealthPath:   "/health",
-		ReadyPath:    "/ready",
-		PollInterval: time.Hour,
-		InitialDelay: 10 * time.Second,
+		SocketPath:       DefaultSocketPath,
+		EnableTCP:        false,                  // Disabled by default for security
+		TCPAddr:          "127.0.0.1:9090",       // Localhost only by default
+		Port:             8080,
+		EnableHTTP:       true, // Backwards compat: enable HTTP by default for now
+		WebhookPath:      "/webhook",
+		HealthPath:       "/health",
+		ReadyPath:        "/ready",
+		PollInterval:     time.Hour,
+		InitialDelay:     10 * time.Second,
+		ReconcileTimeout: 10 * time.Minute,
+		ShutdownTimeout:  30 * time.Second,
+		APITimeout:       30 * time.Second,
 	}
 }
 
@@ -294,7 +302,7 @@ func (d *Daemon) shutdown() error {
 	close(d.stopPoll)
 
 	// Shutdown timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), d.config.ShutdownTimeout)
 	defer cancel()
 
 	// Stop socket server
@@ -648,6 +656,23 @@ func ConfigFromEnv() *Config {
 	}
 
 	cfg.ReconcileConfig = rcfg
+
+	// Timeout overrides
+	if v := os.Getenv("BOSUN_RECONCILE_TIMEOUT"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			cfg.ReconcileTimeout = d
+		}
+	}
+	if v := os.Getenv("BOSUN_SHUTDOWN_TIMEOUT"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			cfg.ShutdownTimeout = d
+		}
+	}
+	if v := os.Getenv("BOSUN_API_TIMEOUT"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			cfg.APITimeout = d
+		}
+	}
 
 	return cfg
 }

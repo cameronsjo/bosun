@@ -167,11 +167,8 @@ func TestClient_ListContainers(t *testing.T) {
 			setup: func(m *MockDockerAPI) {
 				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
 					return []container.Summary{
-						makeTestContainer("abc123456789", "web", "nginx:latest", "running"),
+						makeTestContainerWithHealth("abc123456789", "web", "nginx:latest", "running", "healthy"),
 					}, nil
-				}
-				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
-					return makeTestContainerJSONWithHealth("abc123456789", "web", "nginx:latest", "running", "healthy", true), nil
 				}
 			},
 			want: []ContainerInfo{
@@ -180,7 +177,7 @@ func TestClient_ListContainers(t *testing.T) {
 					Name:   "web",
 					Image:  "nginx:latest",
 					State:  "running",
-					Status: "Up 10 minutes",
+					Status: "Up 10 minutes (healthy)",
 					Health: "healthy",
 					Ports:  []string{"8080:80/tcp"},
 				},
@@ -193,15 +190,9 @@ func TestClient_ListContainers(t *testing.T) {
 			setup: func(m *MockDockerAPI) {
 				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
 					return []container.Summary{
-						makeTestContainer("abc123456789", "web", "nginx:latest", "running"),
+						makeTestContainerWithHealth("abc123456789", "web", "nginx:latest", "running", "healthy"),
 						makeTestContainer("def123456789", "db", "postgres:15", "exited"),
 					}, nil
-				}
-				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
-					if containerID == "abc1234567890000000000000000" {
-						return makeTestContainerJSONWithHealth("abc123456789", "web", "nginx:latest", "running", "healthy", true), nil
-					}
-					return container.InspectResponse{}, nil
 				}
 			},
 			wantErr: false,
@@ -263,19 +254,10 @@ func TestClient_CountContainers(t *testing.T) {
 			setup: func(m *MockDockerAPI) {
 				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
 					return []container.Summary{
-						makeTestContainer("abc123456789", "web", "nginx:latest", "running"),
-						makeTestContainer("def123456789", "api", "app:latest", "running"),
+						makeTestContainerWithHealth("abc123456789", "web", "nginx:latest", "running", "healthy"),
+						makeTestContainerWithHealth("def123456789", "api", "app:latest", "running", "unhealthy"),
 						makeTestContainer("ghi123456789", "db", "postgres:15", "exited"),
 					}, nil
-				}
-				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
-					if containerID == "abc1234567890000000000000000" {
-						return makeTestContainerJSONWithHealth("abc123456789", "web", "nginx:latest", "running", "healthy", true), nil
-					}
-					if containerID == "def1234567890000000000000000" {
-						return makeTestContainerJSONWithHealth("def123456789", "api", "app:latest", "running", "unhealthy", true), nil
-					}
-					return container.InspectResponse{}, nil
 				}
 			},
 			wantRunning:   2,

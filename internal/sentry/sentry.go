@@ -9,10 +9,12 @@ package sentry
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/getsentry/sentry-go"
@@ -36,8 +38,9 @@ type Options struct {
 }
 
 // state tracks whether Sentry has been initialized.
+// enabled uses atomic.Bool for safe concurrent reads during shutdown.
 var state struct {
-	enabled bool
+	enabled atomic.Bool
 	writer  io.Writer
 	closer  func()
 }
@@ -86,7 +89,7 @@ func Init(opts Options) error {
 		return err
 	}
 
-	state.enabled = true
+	state.enabled.Store(true)
 	state.writer = writer
 	state.closer = func() { _ = writer.Close() }
 
@@ -117,14 +120,14 @@ func beforeSend(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
 // Close flushes pending Sentry events and shuts down the writer.
 // Should be called during graceful shutdown.
 func Close(timeout time.Duration) {
-	if !state.enabled {
+	if !state.enabled.Load() {
 		return
 	}
 	sentry.Flush(timeout)
 	if state.closer != nil {
 		state.closer()
 	}
-	state.enabled = false
+	state.enabled.Store(false)
 }
 
 // Writer returns the Sentry zerolog writer for use with MultiLevelWriter.
@@ -135,13 +138,13 @@ func Writer() io.Writer {
 
 // Enabled returns whether Sentry is active.
 func Enabled() bool {
-	return state.enabled
+	return state.enabled.Load()
 }
 
 // Recover captures a panic and sends it to Sentry.
 // Use as: defer sentry.Recover()
 func Recover() {
-	if !state.enabled {
+	if !state.enabled.Load() {
 		return
 	}
 	sentry.Recover()
@@ -178,7 +181,7 @@ func ConfigFromEnv() Options {
 // The finish function should be called with the final error (or nil) when done.
 // If Sentry is disabled, returns the original context and a no-op finish function.
 func ReconcileTransaction(ctx context.Context, source string) (context.Context, func(error)) {
-	if !state.enabled {
+	if !state.enabled.Load() {
 		return ctx, func(error) {}
 	}
 
@@ -189,11 +192,7 @@ func ReconcileTransaction(ctx context.Context, source string) (context.Context, 
 	tx.SetTag("source", source)
 
 	finish := func(err error) {
-		if err != nil {
-			tx.Status = sentry.SpanStatusInternalError
-		} else {
-			tx.Status = sentry.SpanStatusOK
-		}
+		tx.Status = spanStatus(err)
 		tx.Finish()
 	}
 
@@ -204,7 +203,7 @@ func ReconcileTransaction(ctx context.Context, source string) (context.Context, 
 // Returns the context with the span and a finish function.
 // If no transaction exists or Sentry is disabled, returns a no-op.
 func StartSpan(ctx context.Context, operation, description string) (context.Context, func(error)) {
-	if !state.enabled {
+	if !state.enabled.Load() {
 		return ctx, func(error) {}
 	}
 
@@ -217,13 +216,25 @@ func StartSpan(ctx context.Context, operation, description string) (context.Cont
 	span.Description = description
 
 	finish := func(err error) {
-		if err != nil {
-			span.Status = sentry.SpanStatusInternalError
-		} else {
-			span.Status = sentry.SpanStatusOK
-		}
+		span.Status = spanStatus(err)
 		span.Finish()
 	}
 
 	return span.Context(), finish
+}
+
+// spanStatus maps an error to the appropriate Sentry span status.
+// Context cancellation and deadlines get their own status codes
+// to avoid inflating error rates during graceful shutdowns.
+func spanStatus(err error) sentry.SpanStatus {
+	if err == nil {
+		return sentry.SpanStatusOK
+	}
+	if errors.Is(err, context.Canceled) {
+		return sentry.SpanStatusCanceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return sentry.SpanStatusDeadlineExceeded
+	}
+	return sentry.SpanStatusInternalError
 }

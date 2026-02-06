@@ -185,12 +185,21 @@ func (m *MockDockerAPI) Reset() {
 
 // makeTestContainer creates a test container with the given name and state.
 func makeTestContainer(id, name, image, state string) container.Summary {
+	return makeTestContainerWithHealth(id, name, image, state, "")
+}
+
+// makeTestContainerWithHealth creates a test container.Summary with optional health status in the Status string.
+func makeTestContainerWithHealth(id, name, image, state, health string) container.Summary {
+	status := "Up 10 minutes"
+	if health != "" {
+		status = "Up 10 minutes (" + health + ")"
+	}
 	return container.Summary{
 		ID:      id + "0000000000000000", // Pad to make 12-char truncation work
 		Names:   []string{"/" + name},
 		Image:   image,
 		State:   state,
-		Status:  "Up 10 minutes",
+		Status:  status,
 		Created: 1700000000, // Fixed timestamp for testing
 		Ports: []container.Port{
 			{PublicPort: 8080, PrivatePort: 80, Type: "tcp"},

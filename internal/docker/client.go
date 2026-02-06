@@ -151,17 +151,7 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 			name = strings.TrimPrefix(ctr.Names[0], "/")
 		}
 
-		health := ""
-		if ctr.State == "running" {
-			// Get health status from inspection
-			inspect, err := c.api.ContainerInspect(ctx, ctr.ID)
-			if err != nil {
-				// Indicate health status could not be determined
-				health = "unknown"
-			} else if inspect.State.Health != nil {
-				health = inspect.State.Health.Status
-			}
-		}
+		health := parseHealthFromStatus(ctr.Status)
 
 		ports := make([]string, 0, len(ctr.Ports))
 		for _, p := range ctr.Ports {
@@ -387,6 +377,28 @@ func (c *Client) GetAllContainerStats(ctx context.Context) ([]ContainerStats, er
 // DiskUsage returns Docker system disk usage information.
 func (c *Client) DiskUsage(ctx context.Context) (types.DiskUsage, error) {
 	return c.api.DiskUsage(ctx, types.DiskUsageOptions{})
+}
+
+// parseHealthFromStatus extracts health status from the Docker Status string.
+// Docker's container list returns Status strings like:
+//
+//	"Up 2 hours (healthy)"
+//	"Up 5 minutes (unhealthy)"
+//	"Up 10 seconds (health: starting)"
+//
+// This avoids an N+1 ContainerInspect call per container.
+func parseHealthFromStatus(status string) string {
+	lower := strings.ToLower(status)
+	switch {
+	case strings.Contains(lower, "(healthy)"):
+		return "healthy"
+	case strings.Contains(lower, "(unhealthy)"):
+		return "unhealthy"
+	case strings.Contains(lower, "(health: starting)"):
+		return "starting"
+	default:
+		return ""
+	}
 }
 
 // readJSONStats reads a single JSON stats object from the reader.
