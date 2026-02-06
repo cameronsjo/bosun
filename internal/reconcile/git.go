@@ -18,6 +18,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	xssh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
+	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/cameronsjo/bosun/internal/log"
 )
@@ -92,6 +93,44 @@ func getSSHAuth(url string) (transport.AuthMethod, error) {
 	return getSSHKeyFileAuth()
 }
 
+// getHostKeyCallback returns an SSH host key callback for verifying server identity.
+// Search order: BOSUN_SSH_KNOWN_HOSTS env var, ~/.ssh/known_hosts, /config/known_hosts.
+// If BOSUN_SSH_INSECURE_HOST_KEY=true, verification is skipped entirely.
+// If no known_hosts file is found, falls back to insecure with a warning.
+func getHostKeyCallback() xssh.HostKeyCallback {
+	logger := log.Component(log.ComponentGit)
+
+	if strings.EqualFold(os.Getenv("BOSUN_SSH_INSECURE_HOST_KEY"), "true") {
+		logger.Warn().Msg("SSH host key verification disabled via BOSUN_SSH_INSECURE_HOST_KEY")
+		return xssh.InsecureIgnoreHostKey()
+	}
+
+	knownHostsPaths := []string{
+		os.Getenv("BOSUN_SSH_KNOWN_HOSTS"),
+		filepath.Join(os.Getenv("HOME"), ".ssh", "known_hosts"),
+		"/config/known_hosts",
+	}
+
+	for _, path := range knownHostsPaths {
+		if path == "" {
+			continue
+		}
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		callback, err := knownhosts.New(path)
+		if err != nil {
+			logger.Warn().Err(err).Str(log.FieldPath, path).Msg("Failed to parse known_hosts file, trying next")
+			continue
+		}
+		logger.Debug().Str(log.FieldPath, path).Msg("Using known_hosts for SSH host key verification")
+		return callback
+	}
+
+	logger.Warn().Msg("No known_hosts file found, SSH host key verification disabled. Set BOSUN_SSH_KNOWN_HOSTS or populate ~/.ssh/known_hosts")
+	return xssh.InsecureIgnoreHostKey()
+}
+
 // getSSHAgentAuth attempts to get auth from SSH agent.
 func getSSHAgentAuth() transport.AuthMethod {
 	socket := os.Getenv("SSH_AUTH_SOCK")
@@ -111,7 +150,7 @@ func getSSHAgentAuth() transport.AuthMethod {
 			return agentClient.Signers()
 		},
 		HostKeyCallbackHelper: ssh.HostKeyCallbackHelper{
-			HostKeyCallback: xssh.InsecureIgnoreHostKey(),
+			HostKeyCallback: getHostKeyCallback(),
 		},
 	}
 }
@@ -139,7 +178,7 @@ func getSSHKeyFileAuth() (transport.AuthMethod, error) {
 		if err != nil {
 			continue
 		}
-		auth.HostKeyCallback = xssh.InsecureIgnoreHostKey()
+		auth.HostKeyCallback = getHostKeyCallback()
 		return auth, nil
 	}
 
