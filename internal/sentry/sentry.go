@@ -88,7 +88,7 @@ func Init(opts Options) error {
 
 	state.enabled = true
 	state.writer = writer
-	state.closer = func() { writer.Close() }
+	state.closer = func() { _ = writer.Close() }
 
 	return nil
 }

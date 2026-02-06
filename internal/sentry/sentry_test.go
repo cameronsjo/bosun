@@ -3,7 +3,6 @@ package sentry
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 
 	"github.com/getsentry/sentry-go"
@@ -12,11 +11,11 @@ import (
 )
 
 func TestConfigFromEnv_Defaults(t *testing.T) {
-	// Clear any existing env vars.
-	os.Unsetenv("BOSUN_SENTRY_DSN")
-	os.Unsetenv("BOSUN_SENTRY_ENVIRONMENT")
-	os.Unsetenv("BOSUN_SENTRY_TRACES_SAMPLE_RATE")
-	os.Unsetenv("BOSUN_DAEMON_MODE")
+	// Clear any existing env vars via t.Setenv (auto-restores after test).
+	t.Setenv("BOSUN_SENTRY_DSN", "")
+	t.Setenv("BOSUN_SENTRY_ENVIRONMENT", "")
+	t.Setenv("BOSUN_SENTRY_TRACES_SAMPLE_RATE", "")
+	t.Setenv("BOSUN_DAEMON_MODE", "")
 
 	opts := ConfigFromEnv()
 
@@ -39,7 +38,7 @@ func TestConfigFromEnv_WithValues(t *testing.T) {
 
 func TestConfigFromEnv_DaemonModeAutoDetect(t *testing.T) {
 	t.Setenv("BOSUN_DAEMON_MODE", "true")
-	os.Unsetenv("BOSUN_SENTRY_ENVIRONMENT")
+	t.Setenv("BOSUN_SENTRY_ENVIRONMENT", "")
 
 	opts := ConfigFromEnv()
 
