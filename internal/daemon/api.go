@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/cameronsjo/bosun/internal/docker"
 )
 
 // APIStatusResponse is the extended status response for the WebUI API.
@@ -128,15 +126,14 @@ func (d *Daemon) handleAPIContainers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-
-	client, err := docker.NewClient()
+	client, err := d.DockerClient()
 	if err != nil {
 		http.Error(w, "Docker unavailable: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 
 	containers, err := client.ListContainers(ctx, false)
 	if err != nil {
@@ -221,15 +218,14 @@ func (d *Daemon) handleAPIContainerLogs(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-
-	client, err := docker.NewClient()
+	client, err := d.DockerClient()
 	if err != nil {
 		http.Error(w, "Docker unavailable: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 
 	logs, err := client.GetContainerLogs(ctx, containerID, lines)
 	if err != nil {
@@ -254,15 +250,14 @@ func (d *Daemon) handleAPIContainerRestart(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-	defer cancel()
-
-	client, err := docker.NewClient()
+	client, err := d.DockerClient()
 	if err != nil {
 		http.Error(w, "Docker unavailable: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
 
 	if err := client.RestartContainer(ctx, containerID); err != nil {
 		http.Error(w, "Failed to restart container: "+err.Error(), http.StatusInternalServerError)
