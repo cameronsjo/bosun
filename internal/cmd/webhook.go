@@ -191,7 +191,7 @@ func (h *webhookHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	resp, err := h.client.Trigger(ctx, "webhook")
+	resp, err := h.client.Trigger(ctx, "webhook", false)
 	if err != nil {
 		ui.Error("Failed to trigger daemon: %v", err)
 		http.Error(w, "Failed to trigger reconciliation", http.StatusBadGateway)
@@ -263,7 +263,7 @@ func (h *webhookHandler) handleGitHubWebhook(w http.ResponseWriter, r *http.Requ
 		source = fmt.Sprintf("github:%s", payload.Pusher.Name)
 	}
 
-	resp, err := h.client.Trigger(ctx, source)
+	resp, err := h.client.Trigger(ctx, source, false)
 	if err != nil {
 		ui.Error("Failed to trigger daemon: %v", err)
 		http.Error(w, "Failed to trigger reconciliation", http.StatusBadGateway)
@@ -326,7 +326,7 @@ func (h *webhookHandler) handleGitLabWebhook(w http.ResponseWriter, r *http.Requ
 		source = fmt.Sprintf("gitlab:%s", payload.UserName)
 	}
 
-	resp, err := h.client.Trigger(ctx, source)
+	resp, err := h.client.Trigger(ctx, source, false)
 	if err != nil {
 		ui.Error("Failed to trigger daemon: %v", err)
 		http.Error(w, "Failed to trigger reconciliation", http.StatusBadGateway)
@@ -391,7 +391,7 @@ func (h *webhookHandler) handleGiteaWebhook(w http.ResponseWriter, r *http.Reque
 		source = fmt.Sprintf("gitea:%s", payload.Pusher.Login)
 	}
 
-	resp, err := h.client.Trigger(ctx, source)
+	resp, err := h.client.Trigger(ctx, source, false)
 	if err != nil {
 		ui.Error("Failed to trigger daemon: %v", err)
 		http.Error(w, "Failed to trigger reconciliation", http.StatusBadGateway)
@@ -470,7 +470,7 @@ func (h *webhookHandler) handleBitbucketWebhook(w http.ResponseWriter, r *http.R
 		source = fmt.Sprintf("bitbucket:%s", payload.Actor.DisplayName)
 	}
 
-	resp, err := h.client.Trigger(ctx, source)
+	resp, err := h.client.Trigger(ctx, source, false)
 	if err != nil {
 		ui.Error("Failed to trigger daemon: %v", err)
 		http.Error(w, "Failed to trigger reconciliation", http.StatusBadGateway)

@@ -41,6 +41,8 @@ type Config struct {
 	DryRun bool
 	// Force if true, runs deployment even if no changes detected.
 	Force bool
+	// Source identifies what triggered this reconciliation (e.g., "webhook:github", "poll", "cli").
+	Source string
 
 	// SecretsFiles is the list of SOPS-encrypted secret files to decrypt.
 	SecretsFiles []string
@@ -55,6 +57,9 @@ type Config struct {
 	// ProjectName is the docker compose project name for consistent container namespacing.
 	// All compose operations will use this name, ensuring --remove-orphans works correctly.
 	ProjectName string
+
+	// StateFile is the path to the deploy state file that tracks last successful deployment.
+	StateFile string
 }
 
 // DefaultLockFile is the default path for the reconciliation lock file.
@@ -69,6 +74,7 @@ func DefaultConfig() *Config {
 		BackupDir:         "/app/backups",
 		LogDir:            "/app/logs",
 		LockFile:          DefaultLockFile,
+		StateFile:         filepath.Join(DefaultStateDir, DefaultStateFile),
 		LocalAppdataPath:  "/mnt/appdata",
 		RemoteAppdataPath: "/mnt/user/appdata",
 		InfraSubDir:       ".",
@@ -158,6 +164,13 @@ func WithAlerter(alerter AlertSender) ReconcilerOption {
 	}
 }
 
+// SetRunOptions sets per-run options (source and force) on the reconciler config.
+// This is called by the daemon before each Run() to pass trigger context.
+func (r *Reconciler) SetRunOptions(source string, force bool) {
+	r.config.Source = source
+	r.config.Force = force
+}
+
 // Run executes the full reconciliation workflow.
 func (r *Reconciler) Run(ctx context.Context) error {
 	startTime := time.Now()
@@ -187,16 +200,45 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	// Track commit for alerting.
 	r.lastCommit = after
 
-	// Skip if no changes and not forced.
-	if !changed && !r.config.Force {
-		ui.Info("=== No changes, skipping deployment ===")
+	// Load persistent deploy state to determine if pipeline should run.
+	state := LoadState(r.config.StateFile)
+
+	// State-based skip logic: compare last *deployed* commit, not last *fetched* commit.
+	if state.LastDeployedCommit == after && !r.config.Force {
+		ui.Info("=== Already deployed commit %s, skipping ===", after[:minLen(after, 8)])
 		return nil
+	}
+
+	// Circuit breaker: stop retrying after MaxAttempts consecutive failures on the same commit.
+	if state.LastAttemptedCommit == after && state.AttemptCount >= MaxAttempts && !r.config.Force {
+		logger.Error().
+			Str(log.FieldReconcileID, reconcileID).
+			Str("commit", after).
+			Int("attempts", state.AttemptCount).
+			Msg("Circuit breaker: too many consecutive failures on same commit, skipping (use --force to override)")
+		ui.Error("Circuit breaker: %d consecutive failures on commit %s (use --force to retry)",
+			state.AttemptCount, after[:minLen(after, 8)])
+		return fmt.Errorf("circuit breaker: %d consecutive failures on commit %s", state.AttemptCount, after)
+	}
+
+	// Track this attempt before executing the pipeline.
+	if state.LastAttemptedCommit == after {
+		state.AttemptCount++
+	} else {
+		state.LastAttemptedCommit = after
+		state.AttemptCount = 1
+	}
+	if err := SaveState(r.config.StateFile, state); err != nil {
+		logger.Error().Err(err).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save attempt tracking state")
 	}
 
 	if changed {
 		ui.Success("Updated: %s -> %s", before, after)
-	} else {
+	} else if r.config.Force {
 		ui.Info("Force mode enabled, proceeding with deployment")
+	} else {
+		ui.Info("State mismatch detected (deployed=%s, current=%s), re-running pipeline",
+			state.LastDeployedCommit[:minLen(state.LastDeployedCommit, 8)], after[:minLen(after, 8)])
 	}
 
 	// Step 2: Decrypt secrets.
@@ -242,6 +284,18 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		ui.Warning("Failed to cleanup staging directory: %v", err)
 	}
 
+	// Record successful deployment in state file.
+	state.LastDeployedCommit = after
+	state.DeployedAt = time.Now()
+	state.Source = r.config.Source
+	state.AttemptCount = 0
+	if err := SaveState(r.config.StateFile, state); err != nil {
+		logger.Error().
+			Err(err).
+			Str(log.FieldPath, r.config.StateFile).
+			Msg("Failed to save deploy state after successful deployment")
+	}
+
 	duration := time.Since(startTime)
 	ui.Success("=== Reconciliation completed in %s ===", duration.Round(time.Second))
 
@@ -249,6 +303,14 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	r.sendSuccessAlert(ctx)
 
 	return nil
+}
+
+// minLen returns min(len(s), n) for safe string slicing.
+func minLen(s string, n int) int {
+	if len(s) < n {
+		return len(s)
+	}
+	return n
 }
 
 // sendSuccessAlert sends a deployment success notification.

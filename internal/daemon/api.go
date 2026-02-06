@@ -299,7 +299,7 @@ func (d *Daemon) handleAPITrigger(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), d.config.ReconcileTimeout)
 		defer cancel()
-		_ = d.TriggerReconcile(ctx, source)
+		_ = d.TriggerReconcile(ctx, source, req.Force)
 	}()
 
 	w.Header().Set("Content-Type", "application/json")

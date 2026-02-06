@@ -17,6 +17,7 @@ var (
 	triggerToken   string
 	triggerSource  string
 	triggerTimeout int
+	triggerForce   bool
 )
 
 // triggerCmd represents the trigger command.
@@ -32,6 +33,7 @@ the request is queued and will run after the current one completes.
 Examples:
   bosun trigger                    # Trigger with default source "cli"
   bosun trigger -s "github-push"   # Trigger with custom source
+  bosun trigger --force            # Force full reconciliation regardless of state
   bosun trigger --socket /tmp/bosun.sock  # Use custom socket path`,
 	Run: runTrigger,
 }
@@ -42,6 +44,7 @@ func init() {
 	triggerCmd.Flags().StringVar(&triggerToken, "token", "", "Bearer token for TCP auth (or BOSUN_BEARER_TOKEN)")
 	triggerCmd.Flags().StringVarP(&triggerSource, "source", "s", "cli", "Source identifier for this trigger")
 	triggerCmd.Flags().IntVarP(&triggerTimeout, "timeout", "t", 30, "Timeout in seconds")
+	triggerCmd.Flags().BoolVarP(&triggerForce, "force", "f", false, "Force full reconciliation regardless of state")
 
 	rootCmd.AddCommand(triggerCmd)
 }
@@ -77,7 +80,7 @@ func runTrigger(cmd *cobra.Command, args []string) {
 	}
 
 	// Trigger reconciliation
-	resp, err := client.Trigger(ctx, triggerSource)
+	resp, err := client.Trigger(ctx, triggerSource, triggerForce)
 	if err != nil {
 		ui.Fatal("Failed to trigger reconciliation: %v", err)
 	}

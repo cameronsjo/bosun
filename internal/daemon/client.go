@@ -55,8 +55,8 @@ func NewTCPClient(addr, bearerToken string) *Client {
 }
 
 // Trigger sends a trigger request to the daemon.
-func (c *Client) Trigger(ctx context.Context, source string) (*TriggerResponse, error) {
-	req := TriggerRequest{Source: source}
+func (c *Client) Trigger(ctx context.Context, source string, force bool) (*TriggerResponse, error) {
+	req := TriggerRequest{Source: source, Force: force}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
