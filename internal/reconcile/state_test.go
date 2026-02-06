@@ -122,6 +122,10 @@ func TestSaveState_NoTempFileLeftOnSuccess(t *testing.T) {
 }
 
 func TestSaveState_PermissionError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipping permission test when running as root")
+	}
+
 	// Try to save to a read-only directory.
 	dir := t.TempDir()
 	require.NoError(t, os.Chmod(dir, 0555))
