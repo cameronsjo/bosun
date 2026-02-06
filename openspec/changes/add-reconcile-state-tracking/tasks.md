@@ -1,20 +1,32 @@
 ## 1. State Persistence Layer
 
-- [ ] 1.1 Create `internal/reconcile/state.go` with `DeployState` struct (`LastDeployedCommit string`, `DeployedAt time.Time`, `Source string`)
-- [ ] 1.2 Implement `LoadState(path string) (*DeployState, error)` — reads JSON, returns zero state on missing/corrupt file
-- [ ] 1.3 Implement `SaveState(path string, state *DeployState) error` — atomic write (temp file + rename)
-- [ ] 1.4 Add `StateFile` field to `reconcile.Config` with default `"/var/run/bosun/deploy-state.json"`
-- [ ] 1.5 Write tests for LoadState (missing file, corrupt file, valid file) and SaveState (atomic write, permissions)
+- [ ] 1.1 Create `internal/reconcile/state.go` with `DeployState` struct:
+  - `SchemaVersion int` (always 1)
+  - `LastDeployedCommit string`
+  - `DeployedAt time.Time`
+  - `Source string`
+  - `LastAttemptedCommit string`
+  - `AttemptCount int`
+- [ ] 1.2 Implement `LoadState(path string) (*DeployState, error)` — reads JSON, returns zero state on missing/corrupt file, logs warning on corrupt
+- [ ] 1.3 Implement `SaveState(path string, state *DeployState) error` — atomic write with fsync:
+  - Create temp file in same directory as target (`os.CreateTemp(filepath.Dir(path), ...)`)
+  - Write JSON → fsync temp file → rename to target → fsync directory
+- [ ] 1.4 Add `StateFile` field to `reconcile.Config` with default `"/var/lib/bosun/deploy-state.json"`
+- [ ] 1.5 Write tests for LoadState (missing file, corrupt file, valid file, schema version mismatch) and SaveState (atomic write, fsync, permissions)
 
 ## 2. Replace Skip Logic in Reconciler
 
 - [ ] 2.1 In `reconcile.Run()`, after `syncRepo()`, call `LoadState()` to read last deployed commit
 - [ ] 2.2 Replace `!changed && !r.config.Force` check with `state.LastDeployedCommit == after && !r.config.Force`
-- [ ] 2.3 At end of `Run()` (after cleanupStaging, before return nil), call `SaveState()` with current commit
-- [ ] 2.4 Keep the `changed` bool and `before`/`after` for logging — still useful to know if git moved
-- [ ] 2.5 Write test: interrupted deploy (state file absent) → next run deploys even though git shows no changes
-- [ ] 2.6 Write test: successful deploy (state file matches HEAD) → next run skips correctly
-- [ ] 2.7 Write test: force flag overrides state file match
+- [ ] 2.3 Before pipeline execution, update `LastAttemptedCommit` and increment `AttemptCount` in state (reset count if commit changed)
+- [ ] 2.4 Add circuit breaker: if `AttemptCount >= 3` on same commit and `!force`, log error and skip (surface as degraded health)
+- [ ] 2.5 At end of `Run()` (after cleanupStaging, before return nil), call `SaveState()` with current commit and reset `AttemptCount`
+- [ ] 2.6 Keep the `changed` bool and `before`/`after` for logging — still useful to know if git moved
+- [ ] 2.7 Write test: interrupted deploy (state file absent) → next run deploys even though git shows no changes
+- [ ] 2.8 Write test: successful deploy (state file matches HEAD) → next run skips correctly
+- [ ] 2.9 Write test: force flag overrides state file match
+- [ ] 2.10 Write test: 3 consecutive failures on same commit → circuit breaker trips, skips until new commit or force
+- [ ] 2.11 Write test: force flag overrides circuit breaker
 
 ## 3. Force Flag in Trigger API
 
@@ -35,10 +47,11 @@
 
 ## 5. Configuration
 
-- [ ] 5.1 Add `StateDir` to daemon `Config` struct (default: directory of lock file)
+- [ ] 5.1 Add `StateDir` to daemon `Config` struct (default: `/var/lib/bosun/`)
 - [ ] 5.2 Add `BOSUN_STATE_DIR` environment variable loading in `ConfigFromEnv()`
 - [ ] 5.3 Derive `reconcile.Config.StateFile` from `StateDir` + `"deploy-state.json"`
 - [ ] 5.4 Ensure state directory is created on daemon startup (like socket directory)
+- [ ] 5.5 Log startup warning if state directory appears to be on tmpfs (`/var/run/`, `/tmp/`, or check mount type)
 
 ## 6. Verification
 

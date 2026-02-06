@@ -62,16 +62,24 @@ no need to track which stage completed. Just track whether the whole thing succe
   remote deployments over SSH. The state file preserves the optimization while
   fixing the bug
 
-### Decision: State file location alongside lock file directory
+### Decision: State file in `/var/lib/bosun/` (persistent application state)
 
-Use the same parent directory as the lock file (`/var/run/bosun/` by default),
-configurable via `StateDir` in config. This directory is already expected to exist
-and be writable by the daemon.
+Use `/var/lib/bosun/` as the default state directory, configurable via `StateDir`
+in config. This follows FHS conventions for persistent mutable application state.
 
-**Risk:** `/var/run/` may be tmpfs on some systems, meaning state is lost on host
-reboot. This is acceptable — losing state just means the next reconcile does a
-full run, which is correct behavior. The state file is an optimization, not a
-correctness requirement. Without it, bosun falls back to "always deploy" behavior.
+**Why not `/var/run/bosun/` (alongside the lock file)?**
+`/var/run/` is conventionally tmpfs on Linux, and Docker container recreation
+(not just restart) wipes the filesystem layer. Since the whole point of the state
+file is surviving process death and container recreation, placing it on tmpfs
+would defeat the purpose. The daemon MUST log a startup warning if the state
+directory appears to be on a tmpfs mount.
+
+In containerized deployments, `/var/lib/bosun/` **must** be on a persistent
+volume. This should be documented prominently, not buried in a footnote.
+
+**Graceful fallback:** If the state file is missing (tmpfs, fresh install, lost
+volume), bosun treats the system as "never deployed" and runs the full pipeline.
+This is correct fail-open behavior — slightly wasteful but never wrong.
 
 ### Decision: Force flag in TriggerRequest, not reconcile Config
 
@@ -84,6 +92,41 @@ mode, we thread force from the API request to the reconciler by setting
 `Config.Force` per-invocation (the reconciler is recreated or the field is set
 before each run).
 
+### Decision: Attempt tracking to prevent bad-commit crash loops
+
+If a commit breaks the pipeline (bad template, invalid compose file), the
+sequence without protection is: pull → fail → no state written → next poll →
+pull (same commit) → fail → repeat hourly forever.
+
+Track `last_attempted_commit` and `attempt_count` in the state file. After 3
+consecutive failures on the same commit, stop retrying and require either a new
+commit or `--force` to resume. Surface this through health checks as "degraded."
+
+### Decision: Atomic writes with fsync
+
+State file writes use the pattern: write temp → fsync temp → rename → fsync
+directory. The temp file MUST be created in the same directory as the target
+(`os.CreateTemp(filepath.Dir(stateFile), ...)`) to avoid EXDEV errors from
+cross-filesystem rename. This matches the existing pattern in `template.go:55`
+and `deploy.go:406`.
+
+The fsync before rename adds two lines but survives power loss, not just process
+kills. Worth the minimal cost for a bare-metal homelab tool.
+
+### Decision: Schema versioning in state file
+
+Include `"schema_version": 1` in the state file. When fields are added later
+(rendered output hash, per-service tracking), old-format state files can be
+detected and handled gracefully instead of crashing on missing fields.
+
+### Decision: Defer rendered output hash to future iteration
+
+Directory content hashing requires stable sort order, metadata decisions
+(permissions? timestamps? symlinks?), and determinism testing. The
+implementation cost is 30-50 careful lines for a field that is purely
+informational in v1 (forensic, not gating). Defer to a future change when
+there is a concrete use case for content-addressed skip logic.
+
 ## Risks / Trade-offs
 
 - **State file corruption:** If the file is malformed, treat as "never deployed"
@@ -91,7 +134,16 @@ before each run).
 - **Clock skew:** Not relevant — we compare commit hashes, not timestamps.
 - **Multiple daemon instances:** The lock file prevents concurrent runs, and the
   state file is read/written under the lock. Safe.
-- **State file on tmpfs:** Lost on reboot → full pipeline runs. Correct.
+- **State file on non-persistent volume:** Lost on container recreation → full
+  pipeline runs. Correct but wasteful. Log warning on startup if state dir
+  appears to be tmpfs.
+- **State write failure after successful deploy:** Pipeline re-runs on every
+  trigger. Backup accumulation risk (new tarball each time). Log at ERROR level.
+  After N consecutive write failures, surface through health check as degraded.
+- **Cross-filesystem rename (EXDEV):** Temp file must be in same directory as
+  target. Enforced by implementation pattern, not left to caller.
+- **Bad commit crash loop:** Attempt tracking with circuit breaker after 3
+  consecutive failures on the same commit.
 
 ## Migration Plan
 

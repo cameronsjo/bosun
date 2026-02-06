@@ -15,9 +15,11 @@ This is a production-confirmed bug that hits the core of what bosun does.
 
 - Add persistent deploy state file tracking last successfully deployed commit
 - Replace git-diff-based skip logic with state-file-based skip logic
+- Add attempt tracking with circuit breaker (3 failures → stop retrying)
 - Add `Force` field to trigger API (`TriggerRequest`) for manual override
-- Add `StateDir` configuration for persistent state storage
+- Add `StateDir` configuration for persistent state storage (`/var/lib/bosun/`)
 - Thread force flag through all trigger paths (socket, TCP, HTTP, CLI)
+- Schema-versioned state file with atomic writes (fsync + same-fs rename)
 
 ## Impact
 

@@ -6,11 +6,15 @@ The reconciler SHALL persist the commit hash of the last successful deployment t
 a state file after the full reconcile pipeline completes (git sync, decrypt,
 render, backup, deploy, compose up, cleanup).
 
-The state file SHALL be a JSON file containing at minimum the deployed commit hash,
-deployment timestamp, and trigger source.
+The state file SHALL be a JSON file containing at minimum: schema version, deployed
+commit hash, deployment timestamp, trigger source, last attempted commit, and
+attempt count.
 
-The state file SHALL be written atomically (temp file + rename) to prevent
-corruption from interrupted writes.
+The state file SHALL include a `schema_version` field (initially `1`) to support
+future schema evolution without breaking existing deployments.
+
+The state file SHALL be written atomically using the pattern: write temp file
+(in same directory as target) → fsync temp → rename → fsync directory.
 
 #### Scenario: State file written after successful deploy
 
@@ -35,6 +39,38 @@ corruption from interrupted writes.
 - **WHEN** the state file exists but contains invalid JSON
 - **THEN** the reconciler logs a warning and treats the system as never deployed
 - **AND** the full pipeline executes
+
+### Requirement: Attempt Tracking and Circuit Breaker
+
+The reconciler SHALL track the last attempted commit and consecutive failure count
+in the state file to prevent infinite retry loops on commits that break the pipeline
+(bad templates, invalid compose files, etc.).
+
+Before executing the pipeline, the reconciler SHALL update `last_attempted_commit`
+and increment `attempt_count` in the state file. If the commit changes, the count
+SHALL reset to 1.
+
+After 3 consecutive failures on the same commit, the reconciler SHALL stop retrying
+and require either a new commit or `--force` to resume. This SHALL be surfaced
+through health checks as a "degraded" state.
+
+#### Scenario: Bad commit triggers circuit breaker
+
+- **WHEN** a commit causes the pipeline to fail 3 consecutive times
+- **THEN** the reconciler stops retrying on subsequent triggers
+- **AND** the health endpoint reports "degraded" status
+- **AND** a log entry at ERROR level identifies the failing commit
+
+#### Scenario: New commit resets circuit breaker
+
+- **WHEN** a new commit is pushed after a circuit breaker trip
+- **THEN** the attempt count resets to 1
+- **AND** the pipeline executes normally
+
+#### Scenario: Force flag overrides circuit breaker
+
+- **WHEN** a trigger with `force=true` is received while circuit breaker is tripped
+- **THEN** the pipeline executes regardless of attempt count
 
 ### Requirement: State-Based Skip Logic
 
@@ -88,17 +124,21 @@ The force flag SHALL be per-invocation, not a daemon-wide configuration.
 ### Requirement: State Directory Configuration
 
 The daemon SHALL support a configurable state directory for the deploy state file,
-defaulting to the same directory as the lock file (`/var/run/bosun/`).
+defaulting to `/var/lib/bosun/` (FHS-compliant persistent application state).
 
 The state directory SHALL be configurable via the `BOSUN_STATE_DIR` environment
 variable.
 
 The daemon SHALL create the state directory on startup if it does not exist.
 
+The daemon SHALL log a startup warning if the state directory appears to be on a
+tmpfs mount (`/var/run/`, `/tmp/`, or detected tmpfs filesystem), as this would
+defeat the purpose of persistent state tracking.
+
 #### Scenario: Default state directory
 
 - **WHEN** `BOSUN_STATE_DIR` is not set
-- **THEN** the state file is written to the lock file's parent directory
+- **THEN** the state file is written to `/var/lib/bosun/deploy-state.json`
 
 #### Scenario: Custom state directory
 
@@ -109,3 +149,9 @@ The daemon SHALL create the state directory on startup if it does not exist.
 
 - **WHEN** the configured state directory does not exist
 - **THEN** the daemon creates it with mode 0755 before starting reconciliation
+
+#### Scenario: Tmpfs warning on startup
+
+- **WHEN** the state directory is on a tmpfs mount
+- **THEN** the daemon logs a WARNING indicating state may be lost on container recreation
+- **AND** the daemon continues normally (does not block startup)
