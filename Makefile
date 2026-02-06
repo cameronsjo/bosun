@@ -1,4 +1,4 @@
-.PHONY: build install clean test lint run release release-dry-run completion ci all dagger-test dagger-lint dagger-build dagger-webui dagger-release-dry-run
+.PHONY: build install clean test lint lint-new run release release-dry-run completion ci all dagger-test dagger-lint dagger-build dagger-webui dagger-release-dry-run
 
 # Binary name
 BINARY := bosun
@@ -50,6 +50,15 @@ test:
 test-cover:
 	$(GOTEST) -v -coverprofile=coverage.out ./...
 	$(GOCMD) tool cover -html=coverage.out -o coverage.html
+
+# Run linter locally (install: brew install golangci-lint)
+# Uses --new-from-rev to only lint changed code (matches CI behavior with v1.64)
+lint:
+	golangci-lint run --timeout=5m ./...
+
+# Lint only files changed since main (faster, fewer false positives)
+lint-new:
+	golangci-lint run --timeout=5m --new-from-rev=main ./...
 
 # Tidy dependencies
 tidy:
@@ -139,6 +148,7 @@ help:
 	@echo "  run             - Run without building (use ARGS=... for arguments)"
 	@echo "  test            - Run tests"
 	@echo "  test-cover      - Run tests with coverage"
+	@echo "  lint            - Run golangci-lint locally"
 	@echo "  tidy            - Tidy go.mod"
 	@echo "  deps            - Download dependencies"
 	@echo "  clean           - Remove build artifacts"
