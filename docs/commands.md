@@ -456,6 +456,7 @@ bosun trigger --tcp localhost:9090 --token mytoken
 
 | Flag | Description |
 |------|-------------|
+| `-f`, `--force` | Force full reconciliation regardless of state |
 | `-s`, `--source` | Source identifier (default: "cli") |
 | `--socket` | Path to daemon socket (default: /var/run/bosun.sock) |
 | `--tcp` | TCP address for remote daemon |

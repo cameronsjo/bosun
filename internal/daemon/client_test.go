@@ -105,7 +105,7 @@ func TestClient_Trigger(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		resp, err := client.Trigger(ctx, "test")
+		resp, err := client.Trigger(ctx, "test", false)
 		if err != nil {
 			t.Fatalf("Trigger() error = %v", err)
 		}
@@ -126,7 +126,7 @@ func TestClient_Trigger(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		_, err := client.Trigger(ctx, "test")
+		_, err := client.Trigger(ctx, "test", false)
 		if err == nil {
 			t.Error("Trigger() should return error on 500")
 		}

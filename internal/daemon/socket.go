@@ -113,6 +113,7 @@ func (s *SocketServer) Shutdown(ctx context.Context) error {
 // TriggerRequest is the request body for /trigger.
 type TriggerRequest struct {
 	Source string `json:"source,omitempty"` // Source of trigger (e.g., "github", "manual")
+	Force  bool   `json:"force,omitempty"`  // Force full pipeline execution regardless of state
 }
 
 // TriggerResponse is the response body for /trigger.
@@ -171,7 +172,7 @@ func (s *SocketServer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), s.daemon.config.ReconcileTimeout)
 		defer cancel()
-		if err := s.daemon.TriggerReconcile(ctx, source); err != nil {
+		if err := s.daemon.TriggerReconcile(ctx, source, req.Force); err != nil {
 			ui.Error("Socket-triggered reconciliation failed: %v", err)
 		}
 	}()

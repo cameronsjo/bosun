@@ -236,18 +236,23 @@ func (m *Bosun) All(
 	// +optional
 	commit string,
 ) (*Directory, error) {
-	// Run Go CI and WebUI in parallel
-	goCIResult, err := m.CI(ctx, source, version, commit)
-	if err != nil {
-		return nil, fmt.Errorf("go ci failed: %w", err)
-	}
-
-	// Run WebUI CI
+	// Construct all pipelines before waiting on any — Dagger's engine
+	// parallelizes across all containers it knows about at evaluation time.
+	testCtr := m.Test(ctx, source)
+	lintCtr := m.Lint(ctx, source)
 	webUICtr := m.WebUI(ctx, source)
-	_, err = webUICtr.Stdout(ctx)
-	if err != nil {
+
+	// Force execution — engine runs test, lint, and webui concurrently.
+	if _, err := testCtr.Stdout(ctx); err != nil {
+		return nil, fmt.Errorf("tests failed: %w", err)
+	}
+	if _, err := lintCtr.Stdout(ctx); err != nil {
+		return nil, fmt.Errorf("lint failed: %w", err)
+	}
+	if _, err := webUICtr.Stdout(ctx); err != nil {
 		return nil, fmt.Errorf("webui ci failed: %w", err)
 	}
 
-	return goCIResult, nil
+	// Build only after checks pass.
+	return m.Build(ctx, source, version, commit), nil
 }

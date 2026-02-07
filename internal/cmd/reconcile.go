@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -132,6 +133,14 @@ func runReconcile(cmd *cobra.Command, args []string) {
 	if reconcileForce {
 		cfg.Force = true
 	}
+
+	// State file from environment.
+	if stateDir := os.Getenv("BOSUN_STATE_DIR"); stateDir != "" {
+		cfg.StateFile = filepath.Join(stateDir, reconcile.DefaultStateFile)
+	}
+
+	// Set source for state tracking.
+	cfg.Source = "cli"
 
 	// Create context with cancellation on SIGINT/SIGTERM.
 	ctx, cancel := context.WithCancel(context.Background())

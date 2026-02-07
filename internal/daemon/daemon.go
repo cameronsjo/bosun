@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -108,6 +109,7 @@ type Daemon struct {
 	reconciling    bool       // True while reconcile is in progress
 	pendingTrigger bool       // Dirty flag: another trigger arrived during reconcile
 	triggerSource  string     // Source of pending trigger (for logging)
+	triggerForce   bool       // Force flag for pending trigger (sticky: once set, stays set)
 }
 
 // New creates a new Daemon with the given configuration.
@@ -196,6 +198,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	ui.Info("Poll interval: %s", d.config.PollInterval)
 
+	// Ensure state directory exists for deploy state tracking.
+	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.StateFile != "" {
+		stateDir := filepath.Dir(d.config.ReconcileConfig.StateFile)
+		if err := os.MkdirAll(stateDir, 0755); err != nil {
+			logger.Warn().Err(err).Str("dir", stateDir).Msg("Failed to create state directory")
+		}
+	}
+
 	// Setup signal handling
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -252,7 +262,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 		logger.Info().Msg("Running initial reconciliation")
 		ui.Info("Running initial reconciliation...")
-		if err := d.TriggerReconcile(ctx, "startup"); err != nil {
+		if err := d.TriggerReconcile(ctx, "startup", false); err != nil {
 			logger.Error().Err(err).Msg("Initial reconciliation failed")
 			ui.Error("Initial reconciliation failed: %v", err)
 		}
@@ -370,7 +380,8 @@ func (d *Daemon) DockerClient() (*docker.Client, error) {
 // TriggerReconcile triggers a reconciliation run.
 // If a reconcile is already in progress, it sets the pending flag and returns immediately.
 // The running reconcile will check the pending flag and re-run if set.
-func (d *Daemon) TriggerReconcile(ctx context.Context, source string) error {
+// The force flag is sticky: if any trigger requests force, the coalesced run will be forced.
+func (d *Daemon) TriggerReconcile(ctx context.Context, source string, force bool) error {
 	// Add reconcile ID to context for correlation.
 	ctx, reconcileID := log.NewReconcileContext(ctx)
 
@@ -380,12 +391,15 @@ func (d *Daemon) TriggerReconcile(ctx context.Context, source string) error {
 		// Another reconcile is in progress - set dirty flag and return.
 		d.pendingTrigger = true
 		d.triggerSource = source
+		// Force is sticky: once any trigger requests force, keep it.
+		d.triggerForce = d.triggerForce || force
 		d.reconcileMu.Unlock()
 
 		log.Info().
 			Str(log.FieldComponent, log.ComponentDaemon).
 			Str(log.FieldSource, source).
 			Str(log.FieldReconcileID, reconcileID).
+			Bool("force", force).
 			Msg("Reconcile already in progress, queued trigger")
 
 		ui.Info("Reconcile already in progress, queued trigger from %s", source)
@@ -397,16 +411,16 @@ func (d *Daemon) TriggerReconcile(ctx context.Context, source string) error {
 	d.reconcileMu.Unlock()
 
 	// Run the reconcile loop (may run multiple times if pending triggers arrive).
-	return d.reconcileLoop(ctx, source)
+	return d.reconcileLoop(ctx, source, force)
 }
 
 // reconcileLoop runs reconciliation, checking for pending triggers after each run.
-func (d *Daemon) reconcileLoop(ctx context.Context, source string) error {
+func (d *Daemon) reconcileLoop(ctx context.Context, source string, force bool) error {
 	var lastErr error
 
 	for {
 		// Execute reconcile
-		err := d.executeReconcile(ctx, source)
+		err := d.executeReconcile(ctx, source, force)
 		if err != nil {
 			lastErr = err
 		}
@@ -416,10 +430,12 @@ func (d *Daemon) reconcileLoop(ctx context.Context, source string) error {
 		if d.pendingTrigger {
 			// Another trigger arrived - reset flag and run again
 			source = d.triggerSource
+			force = d.triggerForce
 			d.pendingTrigger = false
 			d.triggerSource = ""
+			d.triggerForce = false
 			d.reconcileMu.Unlock()
-			ui.Info("Processing queued trigger from %s", source)
+			ui.Info("Processing queued trigger from %s (force=%t)", source, force)
 			continue
 		}
 
@@ -431,20 +447,25 @@ func (d *Daemon) reconcileLoop(ctx context.Context, source string) error {
 }
 
 // executeReconcile runs a single reconciliation and updates state.
-func (d *Daemon) executeReconcile(ctx context.Context, source string) error {
+func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool) error {
 	start := time.Now()
 	reconcileID := log.ReconcileIDFromContext(ctx)
 
 	// Start a Sentry transaction for performance monitoring.
 	ctx, finishTx := sentrypkg.ReconcileTransaction(ctx, source)
 
+	// Set source and force on the reconciler config so the state-based
+	// skip logic and attempt tracking have the right context.
+	d.reconciler.SetRunOptions(source, force)
+
 	log.Info().
 		Str(log.FieldComponent, log.ComponentReconcile).
 		Str(log.FieldReconcileID, reconcileID).
 		Str(log.FieldSource, source).
+		Bool("force", force).
 		Msg("Starting reconciliation")
 
-	ui.Info("Starting reconciliation (source: %s)", source)
+	ui.Info("Starting reconciliation (source: %s, force: %t)", source, force)
 
 	err := d.reconciler.Run(ctx)
 
@@ -493,7 +514,7 @@ func (d *Daemon) pollLoop(ctx context.Context) {
 		select {
 		case <-ticker.C:
 			ui.Info("Poll triggered")
-			if err := d.TriggerReconcile(ctx, "poll"); err != nil {
+			if err := d.TriggerReconcile(ctx, "poll", false); err != nil {
 				ui.Error("Poll reconciliation failed: %v", err)
 			}
 		case <-d.stopPoll:
@@ -653,6 +674,11 @@ func ConfigFromEnv() *Config {
 
 	if infraDir := os.Getenv("BOSUN_INFRA_DIR"); infraDir != "" {
 		rcfg.InfraSubDir = infraDir
+	}
+
+	// State directory override
+	if stateDir := os.Getenv("BOSUN_STATE_DIR"); stateDir != "" {
+		rcfg.StateFile = filepath.Join(stateDir, reconcile.DefaultStateFile)
 	}
 
 	cfg.ReconcileConfig = rcfg

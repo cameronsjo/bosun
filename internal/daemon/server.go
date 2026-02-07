@@ -209,7 +209,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		defer s.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), s.daemon.config.ReconcileTimeout)
 		defer cancel()
-		if err := s.daemon.TriggerReconcile(ctx, "webhook"); err != nil {
+		if err := s.daemon.TriggerReconcile(ctx, "webhook", false); err != nil {
 			ui.Error("Webhook-triggered reconciliation failed: %v", err)
 		}
 	}()
@@ -298,7 +298,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(context.Background(), s.daemon.config.ReconcileTimeout)
 		defer cancel()
 		source := fmt.Sprintf("github:%s", payload.Pusher.Name)
-		if err := s.daemon.TriggerReconcile(ctx, source); err != nil {
+		if err := s.daemon.TriggerReconcile(ctx, source, false); err != nil {
 			ui.Error("GitHub webhook reconciliation failed: %v", err)
 		}
 	}()
@@ -349,7 +349,7 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 		defer s.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), s.daemon.config.ReconcileTimeout)
 		defer cancel()
-		if err := s.daemon.TriggerReconcile(ctx, "manual"); err != nil {
+		if err := s.daemon.TriggerReconcile(ctx, "manual", false); err != nil {
 			ui.Error("Manual trigger reconciliation failed: %v", err)
 		}
 	}()
