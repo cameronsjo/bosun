@@ -243,17 +243,6 @@ func makeTestContainerJSON(id, name, image, status string, running bool) contain
 	}
 }
 
-// makeTestContainerJSONWithHealth creates a test ContainerJSON with health check.
-func makeTestContainerJSONWithHealth(id, name, image, status, health string, running bool) container.InspectResponse {
-	cj := makeTestContainerJSON(id, name, image, status, running)
-	if health != "" {
-		cj.State.Health = &container.Health{
-			Status: health,
-		}
-	}
-	return cj
-}
-
 // makeStatsJSON creates test stats JSON data.
 func makeStatsJSON(cpuTotal, cpuSystem, preCPUTotal, preSystem, memUsage, memLimit uint64, cpuCount int) []byte {
 	stats := map[string]any{

@@ -129,7 +129,7 @@ func TestSaveState_PermissionError(t *testing.T) {
 	// Try to save to a read-only directory.
 	dir := t.TempDir()
 	require.NoError(t, os.Chmod(dir, 0555))
-	t.Cleanup(func() { os.Chmod(dir, 0755) })
+	t.Cleanup(func() { _ = os.Chmod(dir, 0755) })
 
 	path := filepath.Join(dir, "deploy-state.json")
 	err := SaveState(path, &DeployState{LastDeployedCommit: "abc"})
