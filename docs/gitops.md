@@ -45,6 +45,10 @@ The daemon exposes a Unix socket at `/var/run/bosun.sock` (configurable) for loc
 | `/ready` | GET | Readiness check |
 | `/config` | GET | Get current config |
 | `/ping` | GET | Simple ping |
+| `/api/drift` | GET | Get drift status (declared vs actual) |
+| `/api/containers` | GET | List all containers with summary |
+| `/api/trigger` | POST | Trigger reconciliation (WebUI) |
+| `/api/status` | GET | Extended status for WebUI |
 
 **Example usage:**
 
@@ -129,32 +133,168 @@ See [docs/architecture/daemon-split.md](architecture/daemon-split.md) for the fu
 ### Data Flow
 
 ```
-1. Lock Acquisition
-       |
-       v
-2. Git Sync (clone or pull)
-       |
-       v
-3. Change Detection (before/after commit comparison)
-       |
-       v (if changes detected or --force)
-4. SOPS Decryption
-       |
-       v
-5. Template Rendering (Go text/template + Sprig)
-       |
-       v
-6. Backup Creation (tar.gz of current configs)
-       |
-       v
-7. Deployment (native file copy or tar-over-SSH)
-       |
-       v
-8. Service Reload (docker compose up, SIGHUP)
-       |
-       v
-9. Cleanup & Lock Release
+ 1. Lock Acquisition
+        |
+        v
+ 2. Git Sync (clone or pull)
+        |
+        v
+ 3. State-Based Skip Logic
+    (compare deployed commit vs current, circuit breaker check)
+        |
+        v (if new commit, force, or state mismatch)
+ 4. SOPS Decryption
+        |
+        v
+ 5. Template Rendering (Go text/template + Sprig)
+        |
+        v
+ 6. Extract Declared State (parse rendered compose files)
+        |
+        v
+ 7. Backup Creation (tar.gz of current configs)
+        |
+        v
+ 8. Deployment (native file copy or tar-over-SSH)
+        |
+        v
+ 9. Service Reload (docker compose up, SIGHUP)
+        |
+        v
+10. Record Deploy State (commit, declared services, timestamp)
+        |
+        v
+11. Post-Deploy Verification (drift check against Docker)
+        |
+        v
+12. Cleanup & Lock Release
 ```
+
+## Deploy State Tracking
+
+The reconciler maintains persistent state in a JSON file at `/var/lib/bosun/deploy-state.json` (configurable via `BOSUN_STATE_DIR`). This state drives skip logic, circuit breaking, and drift detection.
+
+### State File Schema (v2)
+
+```json
+{
+  "schema_version": 2,
+  "last_deployed_commit": "abc123...",
+  "deployed_at": "2025-01-15T14:30:22Z",
+  "source": "webhook:github",
+  "last_attempted_commit": "abc123...",
+  "attempt_count": 0,
+  "declared_services": [
+    {"name": "web", "image": "nginx:1.25"},
+    {"name": "api", "image": "myapp:v2"}
+  ],
+  "drift_checked_at": "2025-01-15T14:35:00Z",
+  "drift_items": []
+}
+```
+
+### State-Based Skip Logic
+
+The reconciler compares the **last deployed commit** (not last fetched) against the current HEAD. This distinction matters: if a deploy fails halfway, the state file still records the *previous* successful commit, ensuring the pipeline re-runs on the next trigger.
+
+### Circuit Breaker
+
+After 3 consecutive failures on the same commit, the reconciler stops retrying:
+
+```
+Attempt 1: deploy fails → attempt_count=1, continues
+Attempt 2: deploy fails → attempt_count=2, continues
+Attempt 3: deploy fails → attempt_count=3, stops
+Next trigger: skips unless --force or new commit arrives
+```
+
+Use `--force` to override the circuit breaker.
+
+### Atomic State Writes
+
+State is written using the crash-safe pattern: write temp file (same directory) → fsync temp → rename → fsync directory. This prevents corruption from power loss or crashes during write.
+
+### Fail-Open Behavior
+
+Missing or corrupt state files are treated as "never deployed," which triggers a full deploy. This is correct fail-open behavior — it's better to deploy redundantly than to silently skip.
+
+## Drift Detection
+
+Drift detection compares **declared state** (services defined in rendered compose files) against **actual state** (running Docker containers). This closes the feedback loop in the GitOps model — after deploying, verify the deployment took effect.
+
+### How It Works
+
+1. **Declared state** is extracted from rendered compose files during reconciliation (step 6) and saved in the deploy state file.
+2. **Actual state** is collected from Docker by querying all containers and filtering by compose project labels.
+3. **Comparison** checks each declared service against actual containers.
+
+### Drift Types
+
+| Type | Severity | Condition |
+|------|----------|-----------|
+| `missing` | Critical | Service not running, or running but state is not `running` (e.g., exited) |
+| `unhealthy` | Critical | Service running but Docker health check reports `unhealthy` |
+| `image_mismatch` | Warning | Running image tag differs from declared (e.g., `nginx:1.24` vs `nginx:1.25`) |
+
+### Container Matching
+
+Containers are matched to declared services using Docker Compose v2 labels:
+
+- `com.docker.compose.project` — the compose project name
+- `com.docker.compose.service` — the service name within the project
+
+Labels are preferred because they are authoritative and unambiguous. For containers without labels, a name-based fallback parses the `<project>-<service>-<replica>` convention.
+
+### Image Comparison
+
+Images are normalized before comparison: bare names (e.g., `nginx`) are treated as `nginx:latest`. Digest references (`nginx@sha256:...`) are compared exactly.
+
+### Daemon Drift Loop
+
+When running as a daemon, drift checks run on a configurable interval (default: 5 minutes, set via `BOSUN_DRIFT_INTERVAL`). The loop:
+
+1. Skips if a reconciliation is in progress (avoids state file race conditions)
+2. Loads declared state from the deploy state file
+3. Queries Docker for actual state
+4. Updates the state file with drift results
+5. Sends an alert if critical drift is detected (missing or unhealthy services)
+
+Set `BOSUN_DRIFT_INTERVAL=0` to disable periodic drift checks.
+
+### Post-Deploy Verification
+
+After each successful deployment, the reconciler performs an immediate drift check:
+
+1. Waits for the startup grace period (default: 30 seconds) to let containers start and pass health checks
+2. Collects actual state from Docker
+3. Compares against declared state
+4. Updates drift results in the state file
+5. Logs warnings for any drift items (does not fail the reconciliation)
+
+### CLI Access
+
+```bash
+bosun drift                  # Show cached drift status
+bosun drift --live           # Fresh check against Docker
+bosun drift --json           # Machine-readable output
+bosun drift --project core   # Filter by compose project
+```
+
+### API Access
+
+The daemon exposes drift status at `GET /api/drift`:
+
+```json
+{
+  "status": "clean",
+  "checked_at": "2025-01-15T14:35:00Z",
+  "declared_count": 12,
+  "drift_item_count": 0,
+  "items": []
+}
+```
+
+Status values: `clean` (no drift), `drifted` (items detected), `unknown` (no deployment recorded).
 
 ## Configuration
 
@@ -174,6 +314,8 @@ See [docs/architecture/daemon-split.md](architecture/daemon-split.md) for the fu
 | `SECRETS_FILES` | No | - | Comma-separated SOPS files |
 | `DRY_RUN` | No | `false` | Preview mode |
 | `FORCE` | No | `false` | Deploy even without changes |
+| `BOSUN_STATE_DIR` | No | `/var/lib/bosun` | Directory for deploy state file |
+| `BOSUN_DRIFT_INTERVAL` | No | `5m` | Drift check interval (0 to disable) |
 
 ### Command-Line Flags
 
