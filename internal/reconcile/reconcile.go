@@ -202,6 +202,9 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	reconcileID := log.ReconcileIDFromContext(ctx)
 	logger := log.Component(log.ComponentReconcile)
 
+	// Reset per-run state to avoid stale data from a previous Run().
+	r.declaredServices = nil
+
 	// Acquire lock to prevent concurrent runs.
 	if err := r.acquireLock(); err != nil {
 		logger.Error().

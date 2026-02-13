@@ -60,13 +60,6 @@ func ExtractDeclaredState(stagingDir string) ([]DeclaredService, error) {
 		return nil, fmt.Errorf("glob compose files: %w", err)
 	}
 
-	// Also check for .yml.tmpl files (pre-chezmoi rendering)
-	tmplFiles, err := filepath.Glob(filepath.Join(composeDir, "*.yml.tmpl"))
-	if err != nil {
-		return nil, fmt.Errorf("glob compose template files: %w", err)
-	}
-	files = append(files, tmplFiles...)
-
 	if len(files) == 0 {
 		return nil, nil
 	}
@@ -136,16 +129,22 @@ func CollectActualState(ctx context.Context, client *docker.Client, projectName 
 	}
 
 	var actual []ActualService
+	seen := make(map[string]bool)
+
 	for _, c := range containers {
-		// If a project name is set, filter by compose project label.
-		// We use name-based matching since ContainerInfo doesn't expose labels.
-		// Docker Compose v2 names containers as: <project>-<service>-<replica>
-		if projectName != "" && !isProjectContainer(c.Name, projectName) {
+		serviceName, matched := matchContainer(c, projectName)
+		if !matched {
 			continue
 		}
 
+		// Deduplicate by service name (replicas produce multiple containers).
+		if seen[serviceName] {
+			continue
+		}
+		seen[serviceName] = true
+
 		actual = append(actual, ActualService{
-			Name:   serviceNameFromContainer(c.Name, projectName),
+			Name:   serviceName,
 			Image:  c.Image,
 			State:  c.State,
 			Health: c.Health,
@@ -159,25 +158,43 @@ func CollectActualState(ctx context.Context, client *docker.Client, projectName 
 	return actual, nil
 }
 
-// isProjectContainer checks if a container name belongs to a compose project.
-// Docker Compose v2 names containers as: <project>-<service>-<replica>
-func isProjectContainer(containerName, projectName string) bool {
-	return strings.HasPrefix(containerName, projectName+"-")
+// matchContainer determines if a container belongs to the given compose project
+// and extracts the service name. Uses compose labels (preferred) with name-based
+// fallback for containers that lack labels.
+func matchContainer(c docker.ContainerInfo, projectName string) (serviceName string, matched bool) {
+	// Prefer label-based matching — authoritative and unambiguous.
+	if c.Labels != nil {
+		labelProject := c.Labels[ComposeProjectLabel]
+		labelService := c.Labels[ComposeServiceLabel]
+
+		if labelProject != "" && labelService != "" {
+			if projectName == "" || labelProject == projectName {
+				return labelService, true
+			}
+			return "", false
+		}
+	}
+
+	// Fallback: name-based matching for containers without compose labels.
+	if projectName == "" {
+		return c.Name, true
+	}
+
+	if !strings.HasPrefix(c.Name, projectName+"-") {
+		return "", false
+	}
+
+	return serviceNameFromContainer(c.Name, projectName), true
 }
 
 // serviceNameFromContainer extracts the service name from a container name.
 // Docker Compose v2 format: <project>-<service>-<replica>
-// If no project name, returns the container name as-is.
+// This is a fallback for containers without compose labels.
 func serviceNameFromContainer(containerName, projectName string) string {
-	if projectName == "" {
-		return containerName
-	}
-
 	trimmed := strings.TrimPrefix(containerName, projectName+"-")
 	// Remove the trailing replica number (e.g., "-1")
 	if idx := strings.LastIndex(trimmed, "-"); idx > 0 {
 		suffix := trimmed[idx+1:]
-		// Only strip if the suffix is purely numeric (replica count).
 		isNumeric := true
 		for _, c := range suffix {
 			if c < '0' || c > '9' {

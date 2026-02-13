@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -220,30 +221,122 @@ func TestExtractDeclaredState_DeduplicatesServices(t *testing.T) {
 	assert.Len(t, declared, 1)
 }
 
-func TestServiceNameFromContainer(t *testing.T) {
+func TestMatchContainer_WithLabels(t *testing.T) {
 	tests := []struct {
-		containerName string
-		projectName   string
-		expected      string
+		name        string
+		container   docker.ContainerInfo
+		projectName string
+		wantService string
+		wantMatched bool
 	}{
-		{"core-web-1", "core", "web"},
-		{"core-my-service-1", "core", "my-service"},
-		{"web", "", "web"},
-		{"core-web", "core", "web"},
+		{
+			name: "label match with project filter",
+			container: docker.ContainerInfo{
+				Name: "core-web-1",
+				Labels: map[string]string{
+					ComposeProjectLabel: "core",
+					ComposeServiceLabel: "web",
+				},
+			},
+			projectName: "core",
+			wantService: "web",
+			wantMatched: true,
+		},
+		{
+			name: "label match without project filter",
+			container: docker.ContainerInfo{
+				Name: "core-web-1",
+				Labels: map[string]string{
+					ComposeProjectLabel: "core",
+					ComposeServiceLabel: "web",
+				},
+			},
+			projectName: "",
+			wantService: "web",
+			wantMatched: true,
+		},
+		{
+			name: "label mismatch project",
+			container: docker.ContainerInfo{
+				Name: "other-web-1",
+				Labels: map[string]string{
+					ComposeProjectLabel: "other",
+					ComposeServiceLabel: "web",
+				},
+			},
+			projectName: "core",
+			wantService: "",
+			wantMatched: false,
+		},
+		{
+			name: "hyphenated service name via label",
+			container: docker.ContainerInfo{
+				Name: "core-my-svc-2-1",
+				Labels: map[string]string{
+					ComposeProjectLabel: "core",
+					ComposeServiceLabel: "my-svc-2",
+				},
+			},
+			projectName: "core",
+			wantService: "my-svc-2",
+			wantMatched: true,
+		},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.containerName, func(t *testing.T) {
-			assert.Equal(t, tt.expected, serviceNameFromContainer(tt.containerName, tt.projectName))
+		t.Run(tt.name, func(t *testing.T) {
+			svc, matched := matchContainer(tt.container, tt.projectName)
+			assert.Equal(t, tt.wantMatched, matched)
+			assert.Equal(t, tt.wantService, svc)
 		})
 	}
 }
 
-func TestIsProjectContainer(t *testing.T) {
-	assert.True(t, isProjectContainer("core-web-1", "core"))
-	assert.True(t, isProjectContainer("core-my-service-1", "core"))
-	assert.False(t, isProjectContainer("other-web-1", "core"))
-	assert.False(t, isProjectContainer("web", "core"))
+func TestMatchContainer_NameFallback(t *testing.T) {
+	tests := []struct {
+		name        string
+		container   docker.ContainerInfo
+		projectName string
+		wantService string
+		wantMatched bool
+	}{
+		{
+			name:        "name-based match",
+			container:   docker.ContainerInfo{Name: "core-web-1"},
+			projectName: "core",
+			wantService: "web",
+			wantMatched: true,
+		},
+		{
+			name:        "name-based no project",
+			container:   docker.ContainerInfo{Name: "web"},
+			projectName: "",
+			wantService: "web",
+			wantMatched: true,
+		},
+		{
+			name:        "name-based mismatch",
+			container:   docker.ContainerInfo{Name: "other-web-1"},
+			projectName: "core",
+			wantService: "",
+			wantMatched: false,
+		},
+		{
+			name:        "name-based hyphenated service",
+			container:   docker.ContainerInfo{Name: "core-my-service-1"},
+			projectName: "core",
+			wantService: "my-service",
+			wantMatched: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, matched := matchContainer(tt.container, tt.projectName)
+			assert.Equal(t, tt.wantMatched, matched)
+			assert.Equal(t, tt.wantService, svc)
+		})
+	}
 }
 
 func TestDeployState_WithDriftFields(t *testing.T) {

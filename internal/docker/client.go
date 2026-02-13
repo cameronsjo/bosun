@@ -119,6 +119,7 @@ type ContainerInfo struct {
 	Created time.Time
 	Uptime  string
 	Ports   []string
+	Labels  map[string]string
 }
 
 // ContainerStats holds resource usage statistics.
@@ -171,6 +172,7 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 			Health:  health,
 			Created: time.Unix(ctr.Created, 0),
 			Ports:   ports,
+			Labels:  ctr.Labels,
 		})
 	}
 

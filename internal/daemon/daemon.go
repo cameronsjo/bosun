@@ -98,7 +98,7 @@ type Daemon struct {
 	dockerErr     error          // Error from Docker client initialization
 	ready         bool
 	readyMu       sync.RWMutex
-	stopPoll      chan struct{}
+	stopLoops      chan struct{}
 
 	// Track background goroutines for graceful shutdown
 	wg sync.WaitGroup
@@ -135,7 +135,7 @@ func New(cfg *Config) (*Daemon, error) {
 	d := &Daemon{
 		config:   cfg,
 		alerter:  cfg.AlertManager,
-		stopPoll: make(chan struct{}),
+		stopLoops: make(chan struct{}),
 	}
 
 	// Lazily inject Docker client into reconciler for post-deploy verification.
@@ -333,7 +333,7 @@ func (d *Daemon) shutdown() error {
 	sentrypkg.Close(5 * time.Second)
 
 	// Stop polling
-	close(d.stopPoll)
+	close(d.stopLoops)
 
 	// Shutdown timeout
 	ctx, cancel := context.WithTimeout(context.Background(), d.config.ShutdownTimeout)
@@ -541,7 +541,7 @@ func (d *Daemon) pollLoop(ctx context.Context) {
 			if err := d.TriggerReconcile(ctx, "poll", false); err != nil {
 				ui.Error("Poll reconciliation failed: %v", err)
 			}
-		case <-d.stopPoll:
+		case <-d.stopLoops:
 			return
 		case <-ctx.Done():
 			return
@@ -561,7 +561,7 @@ func (d *Daemon) driftCheckLoop(ctx context.Context) {
 		select {
 		case <-ticker.C:
 			d.runDriftCheck(ctx)
-		case <-d.stopPoll:
+		case <-d.stopLoops:
 			return
 		case <-ctx.Done():
 			return
@@ -570,8 +570,19 @@ func (d *Daemon) driftCheckLoop(ctx context.Context) {
 }
 
 // runDriftCheck performs a single drift check and updates the state file.
+// Skips if a reconciliation is in progress to avoid state file race conditions.
 func (d *Daemon) runDriftCheck(ctx context.Context) {
 	logger := log.Component(log.ComponentDaemon)
+
+	// Skip drift check if reconcile is in progress to avoid lost-update
+	// race on the shared state file (both load → modify → save).
+	d.reconcileMu.Lock()
+	busy := d.reconciling
+	d.reconcileMu.Unlock()
+	if busy {
+		logger.Debug().Msg("Drift check: skipping, reconciliation in progress")
+		return
+	}
 
 	stateFile := ""
 	projectName := ""
