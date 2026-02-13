@@ -195,8 +195,8 @@ environment variable. Setting it to 0 disables periodic drift checks.
 
 ### Requirement: Drift Alerts
 
-When drift is detected during a periodic check (not post-deploy), the system
-SHALL send an alert through the configured alert providers if drift items include
+The system SHALL send an alert through the configured alert providers when drift
+is detected during a periodic check (not post-deploy) and drift items include
 missing or unhealthy services.
 
 Drift alerts SHALL be rate-limited to one alert per drift check interval to
