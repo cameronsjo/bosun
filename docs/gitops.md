@@ -762,3 +762,39 @@ Use `--dry-run` to:
 # Safe way to test configuration changes
 bosun reconcile --dry-run
 ```
+
+## Known Limitations
+
+### Hardcoded Deploy Paths
+
+The deploy step (`deployLocal`/`deployRemote`) syncs a fixed set of directories: traefik, authelia, agentgateway, gatus, tailscale-gateway, and compose. Adding a new service to the reconciliation pipeline currently requires a code change to Bosun itself.
+
+The manifest/provision system is generic, but the reconciler's deploy step is not — it targets specific paths. A future version will make deploy paths data-driven via a deploy manifest. See [bosun-ciy](https://github.com/cameronsjo/bosun/issues?q=bosun-ciy).
+
+### Compose Up Blast Radius
+
+`docker compose up -d --remove-orphans --wait` applies to the entire compose file. If one service in `core.yml` has a broken image tag, the entire compose operation fails. Rollback restores previous configs and re-runs compose up, but there is no per-service granularity.
+
+For homelabs with 10-20 containers in one compose file, a bad image tag on one service affects all services. See [bosun-22q](https://github.com/cameronsjo/bosun/issues?q=bosun-22q).
+
+### Remote Deploy Partial Failure
+
+Remote deployments use tar-over-SSH for config sync followed by `docker compose up` over SSH. If the SSH connection succeeds for config sync but fails during compose up, the configs on disk are ahead of the running containers. The state file will **not** record this as a successful deploy (correct behavior), but a manual intervention or retry may be needed. See [bosun-4t4](https://github.com/cameronsjo/bosun/issues?q=bosun-4t4).
+
+### Full Sync on Every Reconcile
+
+The reconciler syncs all deploy paths on every run — it does not diff "what changed in this commit" to selectively sync affected services. For homelab scale this is fast enough, and Docker Compose won't restart unchanged containers (the `--wait` flag handles this). This is a deliberate simplicity tradeoff, not a bug.
+
+### Backup Scope
+
+Backups capture configuration files only (traefik routes, authelia config, gatus endpoints, compose files). Volume data — databases, application state, media files — is **not** included. If a compose up triggers a database migration (e.g., new PostgreSQL version), the rollback restores old configs but cannot restore the database to its previous state.
+
+This is inherent to the Docker Compose deployment model. Volume backup/restore is the responsibility of a dedicated backup tool (e.g., Duplicati, Restic, Borg).
+
+### Template `include` Function
+
+The `include` template function reads files from the local filesystem with no path restriction. A template could theoretically reference any file the bosun process can read. This is acceptable when all templates come from your own Git repository (the current trust model), but templates from untrusted sources MUST NOT be used without path validation. See [bosun-4su](https://github.com/cameronsjo/bosun/issues?q=bosun-4su).
+
+### Template Rendering Scope
+
+Template rendering walks the entire source directory for `.tmpl` files, while non-template file copying is limited to the infrastructure subdirectory. A `.tmpl` file placed outside the infra subdirectory will still be rendered. In practice this is harmless (you control the repo), but it expands the rendering surface beyond the intended scope.

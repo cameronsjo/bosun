@@ -110,7 +110,9 @@ No .deb/.rpm for v1. Instead:
 | Include drift detection (report only, no fix) | B |
 | Defer to v2, adds complexity | A, C, D |
 
-**Resolution**: Defer unless implementation is trivial.
+**Original resolution**: Defer unless implementation is trivial.
+
+**Update (PR #29)**: Drift detection is now implemented as report-only — B's position prevailed. The reconciler tracks declared services from rendered compose files and compares against actual Docker state. Detection runs on a configurable interval (default 5m) and after every deploy. No automatic correction — drift is reported via CLI (`bosun drift`), API (`/api/drift`), and daemon alerts. See [GitOps docs: Drift Detection](../gitops.md#drift-detection).
 
 ### TCP Necessity
 
@@ -127,14 +129,14 @@ No .deb/.rpm for v1. Instead:
 
 | Item | Priority | Status |
 |------|----------|--------|
-| Implement reconcile mutex + dirty flag | P0 | TODO |
-| SO_PEERCRED audit logging | P0 | TODO |
-| Daemon-injected webhook secret | P0 | TODO |
-| TCP disabled by default + bearer token | P1 | TODO |
-| `bosun init` wizard generates unit files | P1 | TODO |
-| Document polling-only as default | P1 | TODO |
+| Implement reconcile mutex + dirty flag | P0 | DONE |
+| SO_PEERCRED audit logging | P0 | DONE |
+| Daemon-injected webhook secret | P0 | DONE |
+| TCP disabled by default + bearer token | P1 | DONE |
+| `bosun init` wizard generates unit files | P1 | DONE |
+| Document polling-only as default | P1 | DONE |
 | Defer automated rollback to v1.1 | - | DECIDED |
-| No drift correction in v1 | - | DECIDED |
+| Drift detection (report only, no correction) | - | DONE (PR #29) |
 
 ---
 

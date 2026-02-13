@@ -439,6 +439,43 @@ Inputs starting with `-` are rejected to prevent:
 - Git option injection: `git clone --upload-pack=evil ...`
 - Docker option injection: `docker --config=evil ...`
 
+## Template Security
+
+### `include` Function Scope
+
+The `include` template function reads arbitrary files from the local filesystem:
+
+```go
+"include": func(path string) (string, error) {
+    data, err := os.ReadFile(path)
+    // ...
+}
+```
+
+**Current threat model**: Templates come from your own Git repository, which you control. The `include` function is used to read secrets files via `{{ include (env "BOSUN_SECRETS_FILE") }}`.
+
+**Risk**: If Bosun ever processes templates from untrusted sources, this is an arbitrary file read vulnerability. A malicious template could `{{ include "/etc/shadow" }}` or read any file the Bosun process has access to.
+
+**Mitigation**: Path validation for the `include` function is planned. See [bosun-4su](https://github.com/cameronsjo/bosun/issues?q=bosun-4su). Until then, only render templates from trusted repositories.
+
+### Template Rendering Scope
+
+The template renderer walks the entire cloned repository directory for `.tmpl` files. Non-template files are only copied from the infrastructure subdirectory. This means a `.tmpl` file placed outside the expected path will still be rendered, potentially producing unexpected output files.
+
+**Mitigation**: Limit `.tmpl` files to the infrastructure subdirectory in your repository. Consider code review rules that flag `.tmpl` files in unexpected locations.
+
+### Auth Ingress Chain
+
+The auth stack — Traefik, Authelia, and Tailscale gateway — forms a dependency chain for external access. A partial compose up failure where Authelia is down but Traefik is up could serve routes without authentication middleware.
+
+**Current mitigations**:
+
+- Traefik's `forwardAuth` middleware fails closed — if Authelia is unreachable, requests receive 502 errors rather than passing through unauthenticated
+- Post-deploy drift verification catches missing or unhealthy containers and logs warnings
+- All external routes defined via provisions include `forwardAuth` middleware by default
+
+**Planned**: A dedicated health gate that verifies the full auth chain is healthy before declaring a deploy successful. See [bosun-r9n](https://github.com/cameronsjo/bosun/issues?q=bosun-r9n).
+
 ## Best Practices
 
 ### Key Management

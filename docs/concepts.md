@@ -130,6 +130,8 @@ Two deployment paths:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+**Known gap**: These two update mechanisms are decoupled. Watchtower pulls new images independently of Bosun's GitOps loop. If a new image requires a config change, those updates happen through different pipelines. A per-service `updatePolicy` (pinned vs auto) is planned to let Bosun own both image updates and config updates, making Watchtower optional. See the [image update policy issue](https://github.com/cameronsjo/bosun/issues?q=bosun-djh).
+
 ## Fleet Management (Multi-Server)
 
 One captain, many yachts:
