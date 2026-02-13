@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/cameronsjo/bosun/internal/reconcile"
 )
 
 // APIStatusResponse is the extended status response for the WebUI API.
@@ -62,12 +64,30 @@ type APIRestartResponse struct {
 	Message   string `json:"message"`
 }
 
+// APIDriftResponse is the response for the drift status endpoint.
+type APIDriftResponse struct {
+	Status         string                 `json:"status"`
+	CheckedAt      *time.Time             `json:"checked_at,omitempty"`
+	DeclaredCount  int                    `json:"declared_count"`
+	DriftItemCount int                    `json:"drift_item_count"`
+	Items          []APIDriftItem         `json:"items"`
+}
+
+// APIDriftItem represents a single drift item in the API response.
+type APIDriftItem struct {
+	Service  string `json:"service"`
+	Type     string `json:"type"`
+	Declared string `json:"declared,omitempty"`
+	Actual   string `json:"actual,omitempty"`
+}
+
 // RegisterAPIRoutes registers the WebUI API routes on an http.ServeMux.
 func (d *Daemon) RegisterAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/status", d.handleAPIStatus)
 	mux.HandleFunc("/api/containers", d.handleAPIContainers)
 	mux.HandleFunc("/api/containers/", d.handleAPIContainerAction)
 	mux.HandleFunc("/api/trigger", d.handleAPITrigger)
+	mux.HandleFunc("/api/drift", d.handleAPIDrift)
 }
 
 // handleAPIStatus handles GET /api/status.
@@ -308,4 +328,55 @@ func (d *Daemon) handleAPITrigger(w http.ResponseWriter, r *http.Request) {
 		Status:  "accepted",
 		Message: "Reconciliation triggered",
 	})
+}
+
+// handleAPIDrift handles GET /api/drift.
+func (d *Daemon) handleAPIDrift(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	stateFile := ""
+	if d.config.ReconcileConfig != nil {
+		stateFile = d.config.ReconcileConfig.StateFile
+	}
+	if stateFile == "" {
+		http.Error(w, "State file not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	state := reconcile.LoadState(stateFile)
+
+	status := "clean"
+	if len(state.DriftItems) > 0 {
+		status = "drifted"
+	}
+	if state.LastDeployedCommit == "" {
+		status = "unknown"
+	}
+
+	items := make([]APIDriftItem, 0, len(state.DriftItems))
+	for _, item := range state.DriftItems {
+		items = append(items, APIDriftItem{
+			Service:  item.Service,
+			Type:     string(item.Type),
+			Declared: item.Declared,
+			Actual:   item.Actual,
+		})
+	}
+
+	resp := APIDriftResponse{
+		Status:         status,
+		DeclaredCount:  len(state.DeclaredServices),
+		DriftItemCount: len(state.DriftItems),
+		Items:          items,
+	}
+
+	if !state.DriftCheckedAt.IsZero() {
+		resp.CheckedAt = &state.DriftCheckedAt
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/log"
 	sentrypkg "github.com/cameronsjo/bosun/internal/sentry"
 	"github.com/cameronsjo/bosun/internal/ui"
@@ -60,6 +61,10 @@ type Config struct {
 
 	// StateFile is the path to the deploy state file that tracks last successful deployment.
 	StateFile string
+
+	// StartupGracePeriod is how long to wait after compose up before reporting
+	// unhealthy containers as drift. Allows time for health checks to pass.
+	StartupGracePeriod time.Duration
 }
 
 // DefaultLockFile is the default path for the reconciliation lock file.
@@ -77,8 +82,9 @@ func DefaultConfig() *Config {
 		StateFile:         filepath.Join(DefaultStateDir, DefaultStateFile),
 		LocalAppdataPath:  "/mnt/appdata",
 		RemoteAppdataPath: "/mnt/user/appdata",
-		InfraSubDir:       ".",
-		BackupsToKeep:     5,
+		InfraSubDir:        ".",
+		BackupsToKeep:      5,
+		StartupGracePeriod: 30 * time.Second,
 	}
 }
 
@@ -90,18 +96,23 @@ type AlertSender interface {
 	SendRollbackFailure(ctx context.Context, target, reason string) error
 }
 
+// DockerClientFunc returns a Docker client, or nil if unavailable.
+type DockerClientFunc func() *docker.Client
+
 // Reconciler orchestrates the GitOps reconciliation workflow.
 type Reconciler struct {
-	config         *Config
-	git            GitOperations
-	sops           SecretsDecryptor
-	template       *TemplateOps
-	deploy         *DeployOps
-	alerter        AlertSender
-	lockFile       string
-	lockFd         *os.File
-	lastBackupPath string // Path to the last backup for rollback support
-	lastCommit     string // Track commit for alerting
+	config           *Config
+	git              GitOperations
+	sops             SecretsDecryptor
+	template         *TemplateOps
+	deploy           *DeployOps
+	alerter          AlertSender
+	dockerClientFn   DockerClientFunc
+	lockFile         string
+	lockFd           *os.File
+	lastBackupPath   string            // Path to the last backup for rollback support
+	lastCommit       string            // Track commit for alerting
+	declaredServices []DeclaredService // Extracted from rendered compose after templating
 }
 
 // NewReconciler creates a new Reconciler with the given configuration.
@@ -164,6 +175,20 @@ func WithAlerter(alerter AlertSender) ReconcilerOption {
 	}
 }
 
+// WithDockerClient sets the Docker client for post-deploy verification.
+func WithDockerClient(client *docker.Client) ReconcilerOption {
+	return func(r *Reconciler) {
+		r.dockerClientFn = func() *docker.Client { return client }
+	}
+}
+
+// WithDockerClientFunc sets a lazy Docker client provider for post-deploy verification.
+func WithDockerClientFunc(fn DockerClientFunc) ReconcilerOption {
+	return func(r *Reconciler) {
+		r.dockerClientFn = fn
+	}
+}
+
 // SetRunOptions sets per-run options (source and force) on the reconciler config.
 // This is called by the daemon before each Run() to pass trigger context.
 func (r *Reconciler) SetRunOptions(source string, force bool) {
@@ -205,7 +230,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 	// State-based skip logic: compare last *deployed* commit, not last *fetched* commit.
 	if state.LastDeployedCommit == after && !r.config.Force {
-		ui.Info("=== Already deployed commit %s, skipping ===", after[:minLen(after, 8)])
+		ui.Info("=== Already deployed commit %s, skipping ===", after[:MinLen(after, 8)])
 		return nil
 	}
 
@@ -217,7 +242,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 			Int("attempts", state.AttemptCount).
 			Msg("Circuit breaker: too many consecutive failures on same commit, skipping (use --force to override)")
 		ui.Error("Circuit breaker: %d consecutive failures on commit %s (use --force to retry)",
-			state.AttemptCount, after[:minLen(after, 8)])
+			state.AttemptCount, after[:MinLen(after, 8)])
 		return fmt.Errorf("circuit breaker: %d consecutive failures on commit %s", state.AttemptCount, after)
 	}
 
@@ -238,7 +263,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		ui.Info("Force mode enabled, proceeding with deployment")
 	} else {
 		ui.Info("State mismatch detected (deployed=%s, current=%s), re-running pipeline",
-			state.LastDeployedCommit[:minLen(state.LastDeployedCommit, 8)], after[:minLen(after, 8)])
+			state.LastDeployedCommit[:MinLen(state.LastDeployedCommit, 8)], after[:MinLen(after, 8)])
 	}
 
 	// Step 2: Decrypt secrets.
@@ -258,6 +283,19 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to render templates: %w", err)
 	}
 	finishSpan(nil)
+
+	// Extract declared state from rendered compose files.
+	stagingUnraid := filepath.Join(r.config.StagingDir, "unraid")
+	declared, err := ExtractDeclaredState(stagingUnraid)
+	if err != nil {
+		logger.Warn().Err(err).Msg("Failed to extract declared state from rendered compose")
+	} else {
+		r.declaredServices = declared
+		logger.Info().
+			Str(log.FieldReconcileID, reconcileID).
+			Int("declared_services", len(declared)).
+			Msg("Extracted declared state from rendered compose")
+	}
 
 	// Step 4: Create backup (unless dry run).
 	if !r.config.DryRun {
@@ -289,11 +327,19 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	state.DeployedAt = time.Now()
 	state.Source = r.config.Source
 	state.AttemptCount = 0
+	state.DeclaredServices = r.declaredServices
 	if err := SaveState(r.config.StateFile, state); err != nil {
 		logger.Error().
 			Err(err).
 			Str(log.FieldPath, r.config.StateFile).
 			Msg("Failed to save deploy state after successful deployment")
+	}
+
+	// Post-deploy verification: check declared vs actual state.
+	if r.dockerClientFn != nil && !r.config.DryRun && len(r.declaredServices) > 0 {
+		if client := r.dockerClientFn(); client != nil {
+			r.verifyPostDeploy(ctx, state, client)
+		}
 	}
 
 	duration := time.Since(startTime)
@@ -305,8 +351,8 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	return nil
 }
 
-// minLen returns min(len(s), n) for safe string slicing.
-func minLen(s string, n int) int {
+// MinLen returns min(len(s), n) for safe string slicing.
+func MinLen(s string, n int) int {
 	if len(s) < n {
 		return len(s)
 	}
@@ -343,6 +389,61 @@ func (r *Reconciler) sendFailureAlert(ctx context.Context, reason string) {
 	if err := r.alerter.SendDeployFailure(ctx, r.lastCommit, target, reason); err != nil {
 		ui.Warning("Failed to send failure alert: %v", err)
 	}
+}
+
+// verifyPostDeploy performs a drift check after deployment to verify declared
+// services are running. Logs warnings but does not fail the reconciliation.
+func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, client *docker.Client) {
+	logger := log.Component(log.ComponentReconcile)
+	reconcileID := log.ReconcileIDFromContext(ctx)
+
+	// Wait for startup grace period to let containers start and pass health checks.
+	if r.config.StartupGracePeriod > 0 {
+		ui.Info("Waiting %s for services to start before verification...", r.config.StartupGracePeriod)
+		select {
+		case <-time.After(r.config.StartupGracePeriod):
+		case <-ctx.Done():
+			return
+		}
+	}
+
+	actual, err := CollectActualState(ctx, client, r.config.ProjectName)
+	if err != nil {
+		logger.Warn().
+			Str(log.FieldReconcileID, reconcileID).
+			Err(err).
+			Msg("Post-deploy verification: failed to collect actual state")
+		return
+	}
+
+	report := CompareDrift(r.declaredServices, actual)
+
+	// Update drift status in state file.
+	state.DriftCheckedAt = report.CheckedAt
+	state.DriftItems = report.Items
+	if err := SaveState(r.config.StateFile, state); err != nil {
+		logger.Warn().Err(err).Msg("Failed to save drift state after post-deploy verification")
+	}
+
+	if !report.HasDrift() {
+		logger.Info().
+			Str(log.FieldReconcileID, reconcileID).
+			Int("declared_services", len(r.declaredServices)).
+			Msg("Post-deploy verification: all declared services running")
+		ui.Success("Post-deploy verification: all %d declared services running", len(r.declaredServices))
+		return
+	}
+
+	for _, item := range report.Items {
+		logger.Warn().
+			Str(log.FieldReconcileID, reconcileID).
+			Str("service", item.Service).
+			Str("drift_type", string(item.Type)).
+			Str("declared", item.Declared).
+			Str("actual", item.Actual).
+			Msg("Post-deploy drift detected")
+	}
+	ui.Warning("Post-deploy verification: %d drift item(s) detected", len(report.Items))
 }
 
 // cleanupStaging removes the staging directory after successful deployment.
