@@ -187,7 +187,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer sentrypkg.Recover()
 
 	// Initialize structured logging for daemon mode (JSON output).
-	os.Setenv("BOSUN_DAEMON_MODE", "true")
+	_ = os.Setenv("BOSUN_DAEMON_MODE", "true")
 	log.Init(nil)
 
 	logger := log.Component(log.ComponentDaemon)

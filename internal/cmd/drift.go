@@ -97,7 +97,7 @@ func runLiveDriftCheck(state *reconcile.DeployState) {
 	if err != nil {
 		ui.Fatal("Failed to connect to Docker: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
