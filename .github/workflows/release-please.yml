@@ -67,9 +67,50 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Note: SLSA attestation disabled - artifacts are inside Dagger container
-      # TODO: Export dist/ from Dagger or restructure workflow for attestation
-      # - name: Generate SLSA provenance
-      #   uses: actions/attest-build-provenance@v2
-      #   with:
-      #     subject-path: 'dist/*.tar.gz'
+      # Docker image build — goreleaser can't build images inside Dagger (no socket).
+      # Quick fix: download the release binary and build+push here.
+      # TODO(homelab-1ti): Migrate to Dagger-native container builds.
+      - name: Extract version
+        id: version
+        env:
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        run: echo "version=${TAG_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download release binary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release download "v${VERSION}" \
+            --pattern "bosun_${VERSION}_linux_amd64.tar.gz" \
+            --dir /tmp
+          tar -xzf "/tmp/bosun_${VERSION}_linux_amd64.tar.gz" -C bosun/
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        id: docker-push
+        with:
+          context: bosun
+          push: true
+          tags: |
+            ghcr.io/cameronsjo/bosun:${{ steps.version.outputs.version }}
+            ghcr.io/cameronsjo/bosun:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/cameronsjo/bosun
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=bosun
+            org.opencontainers.image.description=Helm for home - GitOps for Docker Compose
+            org.opencontainers.image.licenses=MIT
+
+      - name: Sign container image
+        env:
+          DIGEST: ${{ steps.docker-push.outputs.digest }}
+        run: cosign sign --yes "ghcr.io/cameronsjo/bosun@${DIGEST}"
+
+      - name: Generate SLSA provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/cameronsjo/bosun
+          subject-digest: ${{ steps.docker-push.outputs.digest }}
+          push-to-registry: true
