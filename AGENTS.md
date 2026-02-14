@@ -172,15 +172,27 @@ Core:
 - `gopkg.in/yaml.v3` - YAML parsing
 - `github.com/fatih/color` - Colored output
 
-## Version
+## Versioning and Releases
 
-Version is defined in `internal/cmd/root.go`:
+Releases are fully automated via **release-please** + **goreleaser**.
 
-```go
-const version = "0.2.0"
-```
+- `version = "dev"` in `internal/cmd/root.go` — goreleaser injects the real version at build time via `-ldflags`
+- **Conventional Commits drive versioning**: `feat:` bumps minor, `fix:` bumps patch, `feat!:`/`BREAKING CHANGE:` bumps minor pre-1.0 (major post-1.0)
+- **Never manually edit version numbers** — release-please manages `.release-please-manifest.json` and `CHANGELOG.md`
 
-Update this when releasing.
+**Release pipeline:**
+
+1. Push to `main` with conventional commit prefixes
+2. Release-please opens/updates a release PR (auto-generated changelog)
+3. Merge the release PR
+4. Release-please creates a GitHub Release + git tag
+5. Goreleaser (via Dagger) builds binaries, pushes to GHCR, signs with Cosign
+
+**Config files:**
+
+- `release-please-config.json` — release-please behavior
+- `.release-please-manifest.json` — current version (do not edit manually)
+- `.goreleaser.yml` — build matrix and artifact config
 
 ## Legacy Files (To Remove)
 
