@@ -282,123 +282,6 @@ func runLog(cmd *cobra.Command, args []string) {
 	fmt.Println()
 }
 
-// driftCmd detects config drift between manifests and running state.
-var driftCmd = &cobra.Command{
-	Use:     "drift",
-	Aliases: []string{"compass"},
-	Short:   "Detect config drift - git vs running state",
-	Long:    "Compare manifest services vs running containers, detect image mismatches and orphans.",
-	Run:     runDrift,
-}
-
-func runDrift(cmd *cobra.Command, args []string) {
-	ui.Blue.Println("Checking for drift...")
-	fmt.Println()
-
-	cfg, err := config.Load()
-	if err != nil {
-		ui.Error("Failed to load config: %v", err)
-		os.Exit(1)
-	}
-
-	hasDrift := false
-
-	err = withDockerClient(func(ctx context.Context, client *docker.Client) error {
-		// Get running containers
-		containers, err := client.ListContainers(ctx, true)
-		if err != nil {
-			return fmt.Errorf("list containers: %w", err)
-		}
-
-		runningNames := make(map[string]string) // name -> image
-		for _, ctr := range containers {
-			runningNames[ctr.Name] = ctr.Image
-		}
-
-		if len(runningNames) == 0 {
-			ui.Yellow.Println("No containers running")
-			return nil
-		}
-
-		ui.Blue.Println("--- Container Drift ---")
-
-		// Check each stack's compose file
-		composeDir := filepath.Join(cfg.OutputDir(), "compose")
-		stackFiles, _ := filepath.Glob(filepath.Join(composeDir, "*.yml"))
-
-		allExpected := make(map[string]bool)
-
-		for _, stackFile := range stackFiles {
-			stackName := strings.TrimSuffix(filepath.Base(stackFile), ".yml")
-			expected := extractServicesFromCompose(stackFile)
-
-			for svc, expectedImage := range expected {
-				allExpected[svc] = true
-
-				runningImage, isRunning := runningNames[svc]
-				if isRunning {
-					// Use normalized comparison to avoid false positives from tag vs digest
-					if expectedImage != "" && normalizeImage(runningImage) != normalizeImage(expectedImage) {
-						ui.Yellow.Printf("  ~ %s: image drift\n", svc)
-						fmt.Printf("      Expected: %s\n", expectedImage)
-						fmt.Printf("      Running:  %s\n", runningImage)
-						hasDrift = true
-					} else {
-						ui.Green.Printf("  * %s\n", svc)
-					}
-				} else {
-					ui.Red.Printf("  x %s: not running (expected by %s)\n", svc, stackName)
-					hasDrift = true
-				}
-			}
-		}
-
-		// Check for orphaned containers
-		fmt.Println()
-		ui.Blue.Println("--- Orphaned Containers ---")
-		orphansFound := false
-		infraContainerList := cfg.InfraContainers()
-		for name := range runningNames {
-			// Skip known infrastructure
-			isInfra := false
-			for _, infra := range append(infraContainerList, "bosun") {
-				if name == infra {
-					isInfra = true
-					break
-				}
-			}
-			if isInfra {
-				continue
-			}
-
-			if !allExpected[name] {
-				ui.Yellow.Printf("  ? %s: not in any manifest\n", name)
-				orphansFound = true
-				hasDrift = true
-			}
-		}
-
-		if !orphansFound {
-			ui.Green.Println("  * No orphaned containers")
-		}
-
-		return nil
-	})
-
-	if err != nil {
-		ui.Error("Docker not available: %v", err)
-		os.Exit(1)
-	}
-
-	fmt.Println()
-	if hasDrift {
-		ui.Yellow.Println("Drift detected. Run 'bosun yacht up' to reconcile.")
-		os.Exit(1)
-	} else {
-		ui.Green.Println("* No drift - running state matches manifests")
-	}
-}
-
 // doctorCmd runs pre-flight checks.
 var doctorCmd = &cobra.Command{
 	Use:     "doctor",
@@ -833,46 +716,6 @@ type ComposeFile struct {
 	} `yaml:"services"`
 }
 
-func extractServicesFromCompose(filename string) map[string]string {
-	services := make(map[string]string)
-
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		return services
-	}
-
-	var compose ComposeFile
-	if err := yaml.Unmarshal(data, &compose); err != nil {
-		return services
-	}
-
-	for name, svc := range compose.Services {
-		services[name] = svc.Image
-	}
-
-	return services
-}
-
-// normalizeImage extracts the base image name for comparison, stripping tags and digests.
-// Handles formats: image:tag, image@sha256:..., registry/image:tag
-func normalizeImage(image string) string {
-	// Strip digest (image@sha256:...)
-	if idx := strings.Index(image, "@"); idx != -1 {
-		image = image[:idx]
-	}
-
-	// Strip tag (image:tag)
-	if idx := strings.LastIndex(image, ":"); idx != -1 {
-		// Ensure we're not stripping a port from a registry (e.g., localhost:5000/image)
-		// Check if there's a slash after the colon, which would indicate registry:port/image
-		afterColon := image[idx+1:]
-		if !strings.Contains(afterColon, "/") {
-			image = image[:idx]
-		}
-	}
-
-	return image
-}
 
 func validateServiceFile(filename, _ string) bool {
 	content, err := os.ReadFile(filename)
@@ -1291,7 +1134,6 @@ func buildCyclePathFromSlice(path []string, cycleStart string) string {
 func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(logCmd)
-	rootCmd.AddCommand(driftCmd)
 	rootCmd.AddCommand(doctorCmd)
 	rootCmd.AddCommand(lintCmd)
 }

@@ -45,15 +45,8 @@ func TestDriftCmd_Help(t *testing.T) {
 	t.Run("drift --help", func(t *testing.T) {
 		output, err := executeCmd(t, "drift", "--help")
 		assert.NoError(t, err)
-		assert.Contains(t, output, "manifest")
+		assert.Contains(t, output, "declared")
 		assert.Contains(t, output, "containers")
-	})
-}
-
-func TestDriftCmd_Aliases(t *testing.T) {
-	t.Run("compass alias", func(t *testing.T) {
-		_, err := executeCmd(t, "compass", "--help")
-		assert.NoError(t, err)
 	})
 }
 
@@ -114,50 +107,6 @@ func TestFormatBytes(t *testing.T) {
 	}
 }
 
-func TestExtractServicesFromCompose(t *testing.T) {
-	t.Run("extract services", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		composeFile := filepath.Join(tmpDir, "compose.yml")
-
-		content := `services:
-  web:
-    image: nginx:latest
-  api:
-    image: myapi:v1
-  db:
-    image: postgres:15
-`
-		require.NoError(t, os.WriteFile(composeFile, []byte(content), 0644))
-
-		services := extractServicesFromCompose(composeFile)
-
-		assert.Len(t, services, 3)
-		assert.Equal(t, "nginx:latest", services["web"])
-		assert.Equal(t, "myapi:v1", services["api"])
-		assert.Equal(t, "postgres:15", services["db"])
-	})
-
-	t.Run("service without image", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		composeFile := filepath.Join(tmpDir, "compose.yml")
-
-		content := `services:
-  web:
-    build: .
-`
-		require.NoError(t, os.WriteFile(composeFile, []byte(content), 0644))
-
-		services := extractServicesFromCompose(composeFile)
-
-		assert.Len(t, services, 1)
-		assert.Equal(t, "", services["web"])
-	})
-
-	t.Run("non-existent file", func(t *testing.T) {
-		services := extractServicesFromCompose("/non/existent/file.yml")
-		assert.Empty(t, services)
-	})
-}
 
 func TestValidateServiceFile(t *testing.T) {
 	t.Run("valid service file", func(t *testing.T) {
@@ -673,66 +622,6 @@ func TestExtractPorts_LongSyntax(t *testing.T) {
 	})
 }
 
-func TestNormalizeImage(t *testing.T) {
-	testCases := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "simple image with tag",
-			input:    "nginx:latest",
-			expected: "nginx",
-		},
-		{
-			name:     "image with digest",
-			input:    "nginx@sha256:abc123def456",
-			expected: "nginx",
-		},
-		{
-			name:     "image with tag and digest",
-			input:    "nginx:latest@sha256:abc123def456",
-			expected: "nginx",
-		},
-		{
-			name:     "registry with port and tag",
-			input:    "localhost:5000/myimage:v1",
-			expected: "localhost:5000/myimage",
-		},
-		{
-			name:     "registry with port and digest",
-			input:    "localhost:5000/myimage@sha256:abc123",
-			expected: "localhost:5000/myimage",
-		},
-		{
-			name:     "gcr registry with tag",
-			input:    "gcr.io/project/image:v2.0.0",
-			expected: "gcr.io/project/image",
-		},
-		{
-			name:     "ghcr registry with tag",
-			input:    "ghcr.io/owner/repo:latest",
-			expected: "ghcr.io/owner/repo",
-		},
-		{
-			name:     "image without tag or digest",
-			input:    "nginx",
-			expected: "nginx",
-		},
-		{
-			name:     "multi-path registry image",
-			input:    "registry.example.com:5000/org/repo/image:tag",
-			expected: "registry.example.com:5000/org/repo/image",
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := normalizeImage(tc.input)
-			assert.Equal(t, tc.expected, result)
-		})
-	}
-}
 
 func TestCheckResult_Add(t *testing.T) {
 	t.Run("add two results", func(t *testing.T) {
@@ -910,14 +799,6 @@ func TestLintCmd_MissingManifestDir(t *testing.T) {
 }
 
 // TestDriftCmd_NoContainers tests drift when no containers are running.
-func TestDriftCmd_NoContainers(t *testing.T) {
-	t.Run("drift help shows expected content", func(t *testing.T) {
-		output, err := executeCmd(t, "drift", "--help")
-		assert.NoError(t, err)
-		assert.Contains(t, output, "manifest")
-		assert.Contains(t, output, "containers")
-	})
-}
 
 // TestCheckDependencyCycles_EdgeCases tests edge cases in cycle detection.
 func TestCheckDependencyCycles_EdgeCases(t *testing.T) {
@@ -1222,72 +1103,6 @@ func TestParsePortString_EdgeCases(t *testing.T) {
 }
 
 // TestExtractServicesFromCompose_EdgeCases tests edge cases in compose service extraction.
-func TestExtractServicesFromCompose_EdgeCases(t *testing.T) {
-	testCases := []struct {
-		name          string
-		content       string
-		expectCount   int
-		expectService map[string]string
-	}{
-		{
-			name:        "empty services",
-			content:     `services: {}`,
-			expectCount: 0,
-		},
-		{
-			name: "service with build instead of image",
-			content: `services:
-  app:
-    build: .
-`,
-			expectCount:   1,
-			expectService: map[string]string{"app": ""},
-		},
-		{
-			name: "multiple services mixed",
-			content: `services:
-  web:
-    image: nginx:latest
-  api:
-    build: ./api
-  db:
-    image: postgres:15
-`,
-			expectCount: 3,
-			expectService: map[string]string{
-				"web": "nginx:latest",
-				"api": "",
-				"db":  "postgres:15",
-			},
-		},
-		{
-			name: "service with complex image reference",
-			content: `services:
-  app:
-    image: ghcr.io/org/repo/image:v1.2.3@sha256:abc123
-`,
-			expectCount: 1,
-			expectService: map[string]string{
-				"app": "ghcr.io/org/repo/image:v1.2.3@sha256:abc123",
-			},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			tmpDir := t.TempDir()
-			composeFile := filepath.Join(tmpDir, "compose.yml")
-			require.NoError(t, os.WriteFile(composeFile, []byte(tc.content), 0644))
-
-			services := extractServicesFromCompose(composeFile)
-			assert.Len(t, services, tc.expectCount)
-
-			for svc, image := range tc.expectService {
-				assert.Equal(t, image, services[svc], "service %s image mismatch", svc)
-			}
-		})
-	}
-}
 
 // TestBuildCyclePathFromSlice_EdgeCases tests edge cases in cycle path building.
 func TestBuildCyclePathFromSlice_EdgeCases(t *testing.T) {

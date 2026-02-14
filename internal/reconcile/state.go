@@ -22,7 +22,33 @@ const DefaultStateFile = "deploy-state.json"
 const MaxAttempts = 3
 
 // currentSchemaVersion is the schema version written to new state files.
-const currentSchemaVersion = 1
+const currentSchemaVersion = 2
+
+// DriftType classifies the kind of drift detected.
+type DriftType string
+
+const (
+	// DriftMissing indicates a declared service is not running.
+	DriftMissing DriftType = "missing"
+	// DriftImageMismatch indicates a running service uses a different image than declared.
+	DriftImageMismatch DriftType = "image_mismatch"
+	// DriftUnhealthy indicates a declared service is running but unhealthy.
+	DriftUnhealthy DriftType = "unhealthy"
+)
+
+// DeclaredService represents a service that should be running per the manifests.
+type DeclaredService struct {
+	Name  string `json:"name"`
+	Image string `json:"image"`
+}
+
+// DriftItem describes a single drift between declared and actual state.
+type DriftItem struct {
+	Service  string    `json:"service"`
+	Type     DriftType `json:"type"`
+	Declared string    `json:"declared,omitempty"`
+	Actual   string    `json:"actual,omitempty"`
+}
 
 // DeployState tracks the last successful deployment and attempt history.
 type DeployState struct {
@@ -32,6 +58,13 @@ type DeployState struct {
 	Source             string    `json:"source,omitempty"`
 	LastAttemptedCommit string   `json:"last_attempted_commit,omitempty"`
 	AttemptCount       int       `json:"attempt_count,omitempty"`
+
+	// Declared state snapshot from last successful deployment.
+	DeclaredServices []DeclaredService `json:"declared_services,omitempty"`
+
+	// Drift detection results from last check.
+	DriftCheckedAt time.Time   `json:"drift_checked_at,omitempty"`
+	DriftItems     []DriftItem `json:"drift_items,omitempty"`
 }
 
 // LoadState reads the deploy state file. Returns zero state on missing or

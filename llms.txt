@@ -37,6 +37,8 @@ Everything uses nautical/Below Deck terminology:
 - `bosun daemon` - Run the GitOps daemon
 - `bosun trigger` - Trigger reconciliation
 - `bosun reconcile` - One-shot GitOps workflow
+- `bosun drift` - Show drift between declared and actual state
+- `bosun drift --live` - Fresh drift check against Docker
 
 ### Docker Management
 - `bosun yacht up/down/restart/status` - Manage Docker Compose services
@@ -52,7 +54,8 @@ Everything uses nautical/Below Deck terminology:
 
 ```
 git push -> webhook/poll -> clone repo -> decrypt secrets (SOPS) ->
-template configs (chezmoi) -> rsync to target -> docker compose up
+template configs (Go text/template + Sprig) -> deploy to target ->
+docker compose up -> post-deploy drift verification
 ```
 
 The daemon provides:
@@ -60,6 +63,8 @@ The daemon provides:
 - Multi-provider webhooks (GitHub, GitLab, Gitea, Bitbucket)
 - Configurable polling intervals
 - Health endpoints (`/health`, `/ready`)
+- Periodic drift detection (declared vs actual state)
+- Deploy state tracking with circuit breaker (stops retrying after 3 failures)
 
 ## Project Structure
 
@@ -85,7 +90,7 @@ bosun/
 - Go 1.24+
 - Docker + Docker Compose v2
 - SOPS + Age (secret encryption)
-- Chezmoi (templating)
+- Go text/template + Sprig (templating)
 - Cobra (CLI framework)
 
 ## Optional

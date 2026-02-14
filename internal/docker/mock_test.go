@@ -190,6 +190,11 @@ func makeTestContainer(id, name, image, state string) container.Summary {
 
 // makeTestContainerWithHealth creates a test container.Summary with optional health status in the Status string.
 func makeTestContainerWithHealth(id, name, image, state, health string) container.Summary {
+	return makeTestContainerFull(id, name, image, state, health, nil)
+}
+
+// makeTestContainerFull creates a test container.Summary with all optional fields.
+func makeTestContainerFull(id, name, image, state, health string, labels map[string]string) container.Summary {
 	status := "Up 10 minutes"
 	if health != "" {
 		status = "Up 10 minutes (" + health + ")"
@@ -201,6 +206,7 @@ func makeTestContainerWithHealth(id, name, image, state, health string) containe
 		State:   state,
 		Status:  status,
 		Created: 1700000000, // Fixed timestamp for testing
+		Labels:  labels,
 		Ports: []container.Port{
 			{PublicPort: 8080, PrivatePort: 80, Type: "tcp"},
 		},

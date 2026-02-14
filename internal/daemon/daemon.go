@@ -52,6 +52,9 @@ type Config struct {
 	ShutdownTimeout  time.Duration // Max time for graceful shutdown (default: 30s)
 	APITimeout       time.Duration // Timeout for API handler requests (default: 30s)
 
+	// Drift check settings
+	DriftInterval time.Duration // Interval for periodic drift checks (0 disables, default: 5m)
+
 	// Alerting
 	AlertManager *alert.Manager
 
@@ -75,6 +78,7 @@ func DefaultConfig() *Config {
 		ReconcileTimeout: 10 * time.Minute,
 		ShutdownTimeout:  30 * time.Second,
 		APITimeout:       30 * time.Second,
+		DriftInterval:    5 * time.Minute,
 	}
 }
 
@@ -94,7 +98,7 @@ type Daemon struct {
 	dockerErr     error          // Error from Docker client initialization
 	ready         bool
 	readyMu       sync.RWMutex
-	stopPoll      chan struct{}
+	stopLoops      chan struct{}
 
 	// Track background goroutines for graceful shutdown
 	wg sync.WaitGroup
@@ -129,11 +133,22 @@ func New(cfg *Config) (*Daemon, error) {
 	}
 
 	d := &Daemon{
-		config:     cfg,
-		reconciler: reconcile.NewReconciler(cfg.ReconcileConfig, opts...),
-		alerter:    cfg.AlertManager,
-		stopPoll:   make(chan struct{}),
+		config:   cfg,
+		alerter:  cfg.AlertManager,
+		stopLoops: make(chan struct{}),
 	}
+
+	// Lazily inject Docker client into reconciler for post-deploy verification.
+	// The client is initialized on first use via DockerClient().
+	opts = append(opts, reconcile.WithDockerClientFunc(func() *docker.Client {
+		client, err := d.DockerClient()
+		if err != nil {
+			return nil
+		}
+		return client
+	}))
+
+	d.reconciler = reconcile.NewReconciler(cfg.ReconcileConfig, opts...)
 
 	// Create Unix socket server (primary API)
 	socketCfg := &SocketConfig{
@@ -172,7 +187,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer sentrypkg.Recover()
 
 	// Initialize structured logging for daemon mode (JSON output).
-	os.Setenv("BOSUN_DAEMON_MODE", "true")
+	_ = os.Setenv("BOSUN_DAEMON_MODE", "true")
 	log.Init(nil)
 
 	logger := log.Component(log.ComponentDaemon)
@@ -279,6 +294,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}()
 	}
 
+	// Start periodic drift check loop if enabled
+	if d.config.DriftInterval > 0 {
+		d.wg.Add(1)
+		go func() {
+			defer d.wg.Done()
+			d.driftCheckLoop(ctx)
+		}()
+	}
+
 	ui.Success("Daemon ready")
 
 	// Wait for shutdown signal or error
@@ -309,7 +333,7 @@ func (d *Daemon) shutdown() error {
 	sentrypkg.Close(5 * time.Second)
 
 	// Stop polling
-	close(d.stopPoll)
+	close(d.stopLoops)
 
 	// Shutdown timeout
 	ctx, cancel := context.WithTimeout(context.Background(), d.config.ShutdownTimeout)
@@ -517,11 +541,119 @@ func (d *Daemon) pollLoop(ctx context.Context) {
 			if err := d.TriggerReconcile(ctx, "poll", false); err != nil {
 				ui.Error("Poll reconciliation failed: %v", err)
 			}
-		case <-d.stopPoll:
+		case <-d.stopLoops:
 			return
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// driftCheckLoop runs periodic drift checks independent of reconciliation.
+func (d *Daemon) driftCheckLoop(ctx context.Context) {
+	logger := log.Component(log.ComponentDaemon)
+	ticker := time.NewTicker(d.config.DriftInterval)
+	defer ticker.Stop()
+
+	logger.Info().Dur("interval", d.config.DriftInterval).Msg("Drift check loop started")
+
+	for {
+		select {
+		case <-ticker.C:
+			d.runDriftCheck(ctx)
+		case <-d.stopLoops:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// runDriftCheck performs a single drift check and updates the state file.
+// Skips if a reconciliation is in progress to avoid state file race conditions.
+func (d *Daemon) runDriftCheck(ctx context.Context) {
+	logger := log.Component(log.ComponentDaemon)
+
+	// Skip drift check if reconcile is in progress to avoid lost-update
+	// race on the shared state file (both load → modify → save).
+	d.reconcileMu.Lock()
+	busy := d.reconciling
+	d.reconcileMu.Unlock()
+	if busy {
+		logger.Debug().Msg("Drift check: skipping, reconciliation in progress")
+		return
+	}
+
+	stateFile := ""
+	projectName := ""
+	if d.config.ReconcileConfig != nil {
+		stateFile = d.config.ReconcileConfig.StateFile
+		projectName = d.config.ReconcileConfig.ProjectName
+	}
+	if stateFile == "" {
+		return
+	}
+
+	client, err := d.DockerClient()
+	if err != nil {
+		logger.Warn().Err(err).Msg("Drift check: Docker unavailable")
+		return
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, d.config.APITimeout)
+	defer cancel()
+
+	report, err := reconcile.RunDriftCheck(checkCtx, client, stateFile, projectName)
+	if err != nil {
+		logger.Debug().Err(err).Msg("Drift check skipped")
+		return
+	}
+
+	// Update state file with drift results.
+	state := reconcile.LoadState(stateFile)
+	state.DriftCheckedAt = report.CheckedAt
+	state.DriftItems = report.Items
+	if err := reconcile.SaveState(stateFile, state); err != nil {
+		logger.Warn().Err(err).Msg("Drift check: failed to save state")
+	}
+
+	if report.HasDrift() {
+		logger.Warn().
+			Int("drift_items", len(report.Items)).
+			Msg("Drift detected during periodic check")
+
+		// Send alert for critical drift (missing/unhealthy).
+		if report.HasCriticalDrift() && d.alerter != nil {
+			d.sendDriftAlert(ctx, report)
+		}
+	} else {
+		logger.Debug().Msg("Drift check: no drift detected")
+	}
+}
+
+// sendDriftAlert sends an alert for detected drift.
+func (d *Daemon) sendDriftAlert(ctx context.Context, report *reconcile.DriftReport) {
+	logger := log.Component(log.ComponentDaemon)
+
+	target := "local"
+	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.TargetHost != "" {
+		target = d.config.ReconcileConfig.TargetHost
+	}
+
+	// Build a summary of the drift.
+	var summary string
+	for _, item := range report.Items {
+		if item.Type == reconcile.DriftMissing || item.Type == reconcile.DriftUnhealthy {
+			summary += fmt.Sprintf("%s (%s), ", item.Service, item.Type)
+		}
+	}
+	if len(summary) > 2 {
+		summary = summary[:len(summary)-2] // trim trailing ", "
+	}
+
+	reason := fmt.Sprintf("drift detected: %s", summary)
+	if err := d.alerter.SendDeployFailure(ctx, "drift-check", target, reason); err != nil {
+		logger.Warn().Err(err).Msg("Failed to send drift alert")
 	}
 }
 
@@ -697,6 +829,13 @@ func ConfigFromEnv() *Config {
 	if v := os.Getenv("BOSUN_API_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			cfg.APITimeout = d
+		}
+	}
+
+	// Drift check interval (0 disables periodic checks)
+	if v := os.Getenv("BOSUN_DRIFT_INTERVAL"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			cfg.DriftInterval = d
 		}
 	}
 

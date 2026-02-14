@@ -309,19 +309,36 @@ Displays:
 
 ### drift
 
-Detect config drift between git and running state.
+Show drift between declared services (from deploy state) and actual running containers.
+
+By default reads cached drift status from the deploy state file. The daemon updates this automatically on a configurable interval (default: 5 minutes). Use `--live` to perform a fresh check against Docker.
 
 ```bash
-bosun drift
+bosun drift                    # Show last cached drift result
+bosun drift --live             # Check Docker right now
+bosun drift --json             # Machine-readable output
+bosun drift --live --json      # Live check with JSON output
+bosun drift --project core     # Filter to a specific compose project
 ```
 
-Compares:
+**Flags:**
 
-- Manifest services vs running containers
-- Expected images vs running images
-- Orphaned containers (running but not in manifest)
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--live` | `false` | Perform a live drift check against Docker |
+| `--json` | `false` | Output as JSON |
+| `--state-file` | `/var/lib/bosun/deploy-state.json` | Path to deploy state file |
+| `--project` | `""` | Docker Compose project name for filtering |
 
-Exit code 1 if drift detected.
+**Drift types:**
+
+| Type | Severity | Description |
+|------|----------|-------------|
+| `missing` | Critical | Declared service is not running (or exited) |
+| `unhealthy` | Critical | Service is running but health check is failing |
+| `image_mismatch` | Warning | Running image differs from declared image |
+
+**Container matching:** Uses Docker Compose v2 labels (`com.docker.compose.project`, `com.docker.compose.service`) for authoritative matching. Falls back to name-based parsing (`<project>-<service>-<replica>`) for containers without labels.
 
 ### doctor
 
@@ -637,7 +654,7 @@ All commands have nautical aliases:
 | `radio` | `parrot` |
 | `status` | `bridge` |
 | `log` | `ledger` |
-| `drift` | `compass` |
+| `drift` | - |
 | `doctor` | `checkup` |
 | `lint` | `inspect` |
 | `mayday` | `mutiny` |
