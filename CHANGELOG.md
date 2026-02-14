@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/cameronsjo/bosun/compare/v0.2.10...v0.3.0) (2026-02-14)
+
+
+### Features
+
+* **logging:** comprehensive structured logging and fixes from code review ([c46a5af](https://github.com/cameronsjo/bosun/commit/c46a5afefad9cf4d7b88e462b30db036784b5343))
+* **reconcile:** add openspec proposal for declared-vs-actual state feedback loop ([3173f28](https://github.com/cameronsjo/bosun/commit/3173f283eff3e910bf80593eaec32a783b30732e))
+* **reconcile:** add state-based deploy tracking and circuit breaker ([da1f923](https://github.com/cameronsjo/bosun/commit/da1f9236509b90baa03e526ce7eb9c4ae15e339c))
+* **reconcile:** add state-based deploy tracking and circuit breaker ([bf34cf2](https://github.com/cameronsjo/bosun/commit/bf34cf2519cee5d67b304eb852b1d80ac8f6d77f))
+* **reconcile:** add state-based deploy tracking with circuit breaker ([#27](https://github.com/cameronsjo/bosun/issues/27)) ([da1f923](https://github.com/cameronsjo/bosun/commit/da1f9236509b90baa03e526ce7eb9c4ae15e339c))
+* **reconcile:** declared-vs-actual state feedback loop with drift detection ([d11b07d](https://github.com/cameronsjo/bosun/commit/d11b07d79ec3f4160858a218f5491539d39f2e41))
+* **reconcile:** implement declared-vs-actual state feedback loop ([2346c87](https://github.com/cameronsjo/bosun/commit/2346c8767578cadd5212e10f293cc91900224806))
+* **sentry:** add opt-in error tracking and performance monitoring ([dd4d6f5](https://github.com/cameronsjo/bosun/commit/dd4d6f5901eaf15a2e62ff94a7ba7dc8aa386482))
+* **sentry:** add opt-in error tracking and performance monitoring ([a04087f](https://github.com/cameronsjo/bosun/commit/a04087f4358d917157f01ee854e73c6463b271ca))
+
+
+### Bug Fixes
+
+* **ci:** bump minor version on feat commits pre-1.0 ([0f4bcdd](https://github.com/cameronsjo/bosun/commit/0f4bcdd85ca9c6e9ae4cd9b198ebf53305eca5c3))
+* **ci:** increase max-turns and add timeout for code review ([5323f49](https://github.com/cameronsjo/bosun/commit/5323f49a303ad23a9156e15dc4797d9a0c670e73))
+* **ci:** upgrade Claude workflow permissions to write for PRs and issues ([0b7a6ec](https://github.com/cameronsjo/bosun/commit/0b7a6ecb89f6392a22f79787be71263836d0b9c3))
+* **drift:** address review findings from PR [#29](https://github.com/cameronsjo/bosun/issues/29) ([a409723](https://github.com/cameronsjo/bosun/commit/a409723434d993761eee64e4f44b833a73975015))
+* **lint:** resolve errcheck and unused function lint errors ([7fc9e37](https://github.com/cameronsjo/bosun/commit/7fc9e373912dabeb613479c0a94859c1efeeaf0d))
+* **lint:** resolve errcheck in drift command and daemon startup ([a1bbe25](https://github.com/cameronsjo/bosun/commit/a1bbe25068d86263c5915c5d77421013657298fb))
+* **lint:** resolve errcheck violations and add local lint targets ([7c61406](https://github.com/cameronsjo/bosun/commit/7c614064aa4288a9876be81a482460378f92903d))
+* **lock:** implement proper Windows file locking with LockFileEx ([a21df66](https://github.com/cameronsjo/bosun/commit/a21df6684bf0ba407deafeef2608c878ecb19b92))
+* **observability:** add structured logging to drift detection pipeline ([f0bbdca](https://github.com/cameronsjo/bosun/commit/f0bbdcaf14fb0dce67d3c3ef0adfc4fa01b010d5))
+* **openspec:** use SHALL in Drift Alerts requirement description ([6f969d7](https://github.com/cameronsjo/bosun/commit/6f969d7b0860f8b2d127bfd312ac242a7cc7417e))
+* **reconcile:** skip permission test when running as root ([7aac83b](https://github.com/cameronsjo/bosun/commit/7aac83b2fc5dd488caeab00a72e2fc4230acf971))
+* **reconcile:** use known_hosts for SSH host key verification ([f41eecd](https://github.com/cameronsjo/bosun/commit/f41eecd718bcc56d186c2826e8c229bc32b7a97f))
+* resolve 11 bugs and code quality issues across codebase ([4c714a4](https://github.com/cameronsjo/bosun/commit/4c714a476bcc3f5b34bf9cc3ff6e39c2206a4ecd))
+* resolve 3 low-hanging issues from codebase investigation ([e3cfedd](https://github.com/cameronsjo/bosun/commit/e3cfedd7e74cec0351b754cbe7dcff2e57db6960))
+* resolve 3 low-hanging issues from codebase investigation ([06c2d31](https://github.com/cameronsjo/bosun/commit/06c2d31dc8023581320dfbc2be7c3ec04dde325c))
+* resolve 6 just-do-it issues from backlog ([022c408](https://github.com/cameronsjo/bosun/commit/022c4083cbebf849c32d334f17e01de898e998c0))
+* **sentry:** remove redundant io.Writer type assertion ([fca288a](https://github.com/cameronsjo/bosun/commit/fca288a839e21274cc46222af215392bab175d02))
+
+
+### Performance Improvements
+
+* **ci:** parallelize test, lint, and webui in Dagger pipeline ([26aaaa5](https://github.com/cameronsjo/bosun/commit/26aaaa5ae21e0b4636359c49b3beaa48312d61fd))
+
 ## [0.2.10](https://github.com/cameronsjo/bosun/compare/v0.2.9...v0.2.10) (2026-01-30)
 
 
