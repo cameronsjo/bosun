@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1](https://github.com/cameronsjo/bosun/compare/v0.4.0...v0.4.1) (2026-02-14)
+
+
+### Bug Fixes
+
+* **ci:** checkout release tag instead of HEAD for goreleaser ([d29549a](https://github.com/cameronsjo/bosun/commit/d29549af5b1d23bd11eeab94a29eb8eaeec507a7))
+
 ## [0.4.0](https://github.com/cameronsjo/bosun/compare/v0.3.1...v0.4.0) (2026-02-14)
 
 
