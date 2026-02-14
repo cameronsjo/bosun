@@ -603,14 +603,19 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	checkCtx, cancel := context.WithTimeout(ctx, d.config.APITimeout)
 	defer cancel()
 
+	checkCtx, finishSpan := sentrypkg.StartSpan(checkCtx, "drift.periodic_check", "Periodic drift check")
 	report, err := reconcile.RunDriftCheck(checkCtx, client, stateFile, projectName)
+	finishSpan(err)
 	if err != nil {
-		logger.Debug().Err(err).Msg("Drift check skipped")
+		logger.Warn().Err(err).Msg("Drift check failed")
 		return
 	}
 
-	// Update state file with drift results.
+	// Load previous state to detect drift resolution.
 	state := reconcile.LoadState(stateFile)
+	previouslyDrifted := len(state.DriftItems) > 0
+
+	// Update state file with drift results.
 	state.DriftCheckedAt = report.CheckedAt
 	state.DriftItems = report.Items
 	if err := reconcile.SaveState(stateFile, state); err != nil {
@@ -626,6 +631,8 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 		if report.HasCriticalDrift() && d.alerter != nil {
 			d.sendDriftAlert(ctx, report)
 		}
+	} else if previouslyDrifted {
+		logger.Info().Msg("Drift resolved: all declared services now match actual state")
 	} else {
 		logger.Debug().Msg("Drift check: no drift detected")
 	}
@@ -640,19 +647,15 @@ func (d *Daemon) sendDriftAlert(ctx context.Context, report *reconcile.DriftRepo
 		target = d.config.ReconcileConfig.TargetHost
 	}
 
-	// Build a summary of the drift.
-	var summary string
+	// Build list of critical drift items for the alert.
+	var driftItems []string
 	for _, item := range report.Items {
 		if item.Type == reconcile.DriftMissing || item.Type == reconcile.DriftUnhealthy {
-			summary += fmt.Sprintf("%s (%s), ", item.Service, item.Type)
+			driftItems = append(driftItems, fmt.Sprintf("%s (%s)", item.Service, item.Type))
 		}
 	}
-	if len(summary) > 2 {
-		summary = summary[:len(summary)-2] // trim trailing ", "
-	}
 
-	reason := fmt.Sprintf("drift detected: %s", summary)
-	if err := d.alerter.SendDeployFailure(ctx, "drift-check", target, reason); err != nil {
+	if err := d.alerter.SendDriftDetected(ctx, target, driftItems); err != nil {
 		logger.Warn().Err(err).Msg("Failed to send drift alert")
 	}
 }

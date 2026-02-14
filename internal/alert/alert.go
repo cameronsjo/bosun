@@ -181,6 +181,18 @@ func (m *Manager) SendRollbackFailure(ctx context.Context, target, reason string
 	})
 }
 
+// SendDriftDetected sends an alert for detected drift between declared and actual state.
+func (m *Manager) SendDriftDetected(ctx context.Context, target string, driftItems []string) error {
+	summary := strings.Join(driftItems, ", ")
+	return m.Send(ctx, &Alert{
+		Title:    "Drift Detected",
+		Message:  fmt.Sprintf("Drift detected on %s: %s", target, summary),
+		Severity: SeverityWarning,
+		Source:   "drift",
+		Metadata: map[string]string{"target": target, "drift_count": fmt.Sprintf("%d", len(driftItems))},
+	})
+}
+
 // SendDoctorAlert sends a health check alert.
 func (m *Manager) SendDoctorAlert(ctx context.Context, severity Severity, issues []string) error {
 	var title string

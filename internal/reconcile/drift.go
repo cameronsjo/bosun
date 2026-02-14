@@ -123,8 +123,17 @@ func extractServicesFromCompose(path string) ([]DeclaredService, error) {
 // CollectActualState queries Docker for running containers filtered by the
 // compose project label to scope to bosun-managed services.
 func CollectActualState(ctx context.Context, client *docker.Client, projectName string) ([]ActualService, error) {
+	logger := log.Component(log.ComponentReconcile)
+
+	logger.Debug().
+		Str("project_name", projectName).
+		Msg("Collecting actual container state from Docker")
+
 	containers, err := client.ListContainers(ctx, false)
 	if err != nil {
+		logger.Error().Err(err).
+			Str("project_name", projectName).
+			Msg("Failed to list containers from Docker")
 		return nil, fmt.Errorf("list containers: %w", err)
 	}
 
@@ -154,6 +163,12 @@ func CollectActualState(ctx context.Context, client *docker.Client, projectName 
 	sort.Slice(actual, func(i, j int) bool {
 		return actual[i].Name < actual[j].Name
 	})
+
+	logger.Debug().
+		Int("total_containers", len(containers)).
+		Int("matched_services", len(actual)).
+		Str("project_name", projectName).
+		Msg("Collected actual container state")
 
 	return actual, nil
 }
@@ -289,10 +304,18 @@ func normalizeImage(image string) string {
 // RunDriftCheck performs a full drift check: loads declared state from the
 // state file and compares against actual Docker state.
 func RunDriftCheck(ctx context.Context, client *docker.Client, stateFile, projectName string) (*DriftReport, error) {
+	logger := log.Component(log.ComponentReconcile)
+	start := time.Now()
+
 	state := LoadState(stateFile)
 	if len(state.DeclaredServices) == 0 {
 		return nil, fmt.Errorf("no declared services in state file (has a deployment been completed?)")
 	}
+
+	logger.Debug().
+		Int("declared_services", len(state.DeclaredServices)).
+		Str("project_name", projectName).
+		Msg("Starting drift check")
 
 	actual, err := CollectActualState(ctx, client, projectName)
 	if err != nil {
@@ -300,5 +323,14 @@ func RunDriftCheck(ctx context.Context, client *docker.Client, stateFile, projec
 	}
 
 	report := CompareDrift(state.DeclaredServices, actual)
+
+	logger.Info().
+		Int("declared_services", len(state.DeclaredServices)).
+		Int("actual_services", len(actual)).
+		Int("drift_items", len(report.Items)).
+		Bool("has_drift", report.HasDrift()).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Drift check completed")
+
 	return report, nil
 }
