@@ -1,3 +1,7 @@
 
 # Use bd merge for beads JSONL files
 .beads/issues.jsonl merge=beads
+
+# Mark generated/tracking files so GitHub collapses them in PR diffs
+.beads/*.jsonl linguist-generated
+go.sum linguist-generated
