@@ -41,8 +41,8 @@ RUN apk add --no-cache \
 # Home at /home/bosun for SSH config compatibility (mounts to ~/.ssh)
 # Combined into single RUN to minimize layers
 RUN adduser -D -h /home/bosun -s /sbin/nologin bosun && \
-    mkdir -p /app/repo /app/staging /app/backups /app/logs /config /home/bosun/.ssh && \
-    chown -R bosun:bosun /app /config /home/bosun
+    mkdir -p /app/repo /app/staging /app/backups /app/logs /config /home/bosun/.ssh /var/run/bosun && \
+    chown -R bosun:bosun /app /config /home/bosun /var/run/bosun
 
 # Layer 3: Copy the Go binary (built by goreleaser or make build)
 # --chmod=755 ensures executable permissions without extra layer
