@@ -328,6 +328,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	// Record successful deployment in state file.
 	state.LastDeployedCommit = after
 	state.DeployedAt = time.Now()
+	state.DeployCount++
 	state.Source = r.config.Source
 	state.AttemptCount = 0
 	state.DeclaredServices = r.declaredServices

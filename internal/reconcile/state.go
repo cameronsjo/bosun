@@ -55,6 +55,7 @@ type DeployState struct {
 	SchemaVersion      int       `json:"schema_version"`
 	LastDeployedCommit string    `json:"last_deployed_commit,omitempty"`
 	DeployedAt         time.Time `json:"deployed_at,omitempty"`
+	DeployCount        int       `json:"deploy_count,omitempty"`
 	Source             string    `json:"source,omitempty"`
 	LastAttemptedCommit string   `json:"last_attempted_commit,omitempty"`
 	AttemptCount       int       `json:"attempt_count,omitempty"`

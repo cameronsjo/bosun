@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -461,6 +463,87 @@ func TestSplitAndTrim(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWidgetData(t *testing.T) {
+	t.Run("fresh state returns zeroes", func(t *testing.T) {
+		stateFile := filepath.Join(t.TempDir(), "state.json")
+		d := &Daemon{
+			config: &Config{
+				ReconcileConfig: &reconcile.Config{
+					StateFile: stateFile,
+				},
+			},
+		}
+
+		data := d.WidgetData()
+
+		if data["deploys_total"] != 0 {
+			t.Errorf("deploys_total = %v, want 0", data["deploys_total"])
+		}
+		if data["last_deploy"] != "" {
+			t.Errorf("last_deploy = %v, want empty", data["last_deploy"])
+		}
+		if data["status"] != "ok" {
+			t.Errorf("status = %v, want ok", data["status"])
+		}
+		if data["git_sha"] != "" {
+			t.Errorf("git_sha = %v, want empty", data["git_sha"])
+		}
+	})
+
+	t.Run("with deploy history", func(t *testing.T) {
+		stateFile := filepath.Join(t.TempDir(), "state.json")
+		state := &reconcile.DeployState{
+			LastDeployedCommit: "abc1234def5678",
+			DeployedAt:         time.Date(2026, 2, 15, 12, 0, 0, 0, time.UTC),
+			DeployCount:        42,
+		}
+		if err := reconcile.SaveState(stateFile, state); err != nil {
+			t.Fatalf("Failed to write state: %v", err)
+		}
+
+		d := &Daemon{
+			config: &Config{
+				ReconcileConfig: &reconcile.Config{
+					StateFile: stateFile,
+				},
+			},
+		}
+
+		data := d.WidgetData()
+
+		if data["deploys_total"] != 42 {
+			t.Errorf("deploys_total = %v, want 42", data["deploys_total"])
+		}
+		if data["last_deploy"] != "2026-02-15T12:00:00Z" {
+			t.Errorf("last_deploy = %v, want 2026-02-15T12:00:00Z", data["last_deploy"])
+		}
+		if data["status"] != "ok" {
+			t.Errorf("status = %v, want ok", data["status"])
+		}
+		if data["git_sha"] != "abc1234" {
+			t.Errorf("git_sha = %v, want abc1234", data["git_sha"])
+		}
+	})
+
+	t.Run("error status when last reconcile failed", func(t *testing.T) {
+		stateFile := filepath.Join(t.TempDir(), "state.json")
+		d := &Daemon{
+			config: &Config{
+				ReconcileConfig: &reconcile.Config{
+					StateFile: stateFile,
+				},
+			},
+			lastError: fmt.Errorf("deployment failed"),
+		}
+
+		data := d.WidgetData()
+
+		if data["status"] != "error" {
+			t.Errorf("status = %v, want error", data["status"])
+		}
+	})
 }
 
 func TestConfigFromEnv_InfraDir(t *testing.T) {

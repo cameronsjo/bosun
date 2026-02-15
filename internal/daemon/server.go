@@ -47,6 +47,9 @@ func NewServer(d *Daemon) *Server {
 	mux.HandleFunc(d.config.WebhookPath+"/github", s.handleGitHubWebhook)
 	mux.HandleFunc(d.config.WebhookPath+"/manual", s.handleManualTrigger)
 
+	// Widget endpoint for Homepage dashboard
+	mux.HandleFunc("/api/widget", s.handleWidget)
+
 	// Metrics (placeholder for future)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 
@@ -359,6 +362,17 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 		"status":  "accepted",
 		"message": "Manual reconciliation triggered",
 	})
+}
+
+// handleWidget returns lightweight stats for Homepage's customapi widget.
+func (s *Server) handleWidget(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.daemon.WidgetData())
 }
 
 // handleMetrics serves Prometheus metrics (placeholder).

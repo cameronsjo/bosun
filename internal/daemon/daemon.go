@@ -709,6 +709,40 @@ type HealthStatus struct {
 	Uptime        time.Duration `json:"uptime"`
 }
 
+// WidgetData returns lightweight stats for Homepage's customapi widget.
+// Response is flat JSON with max 4 fields per Homepage block display limits.
+func (d *Daemon) WidgetData() map[string]any {
+	_, lastError := d.LastReconcile()
+
+	status := "ok"
+	if lastError != nil {
+		status = "error"
+	}
+
+	data := map[string]any{
+		"deploys_total": 0,
+		"last_deploy":   "",
+		"status":        status,
+		"git_sha":       "",
+	}
+
+	// Load persistent state for deploy history.
+	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.StateFile != "" {
+		state := reconcile.LoadState(d.config.ReconcileConfig.StateFile)
+		data["deploys_total"] = state.DeployCount
+		if !state.DeployedAt.IsZero() {
+			data["last_deploy"] = state.DeployedAt.UTC().Format(time.RFC3339)
+		}
+		if len(state.LastDeployedCommit) >= 7 {
+			data["git_sha"] = state.LastDeployedCommit[:7]
+		} else if state.LastDeployedCommit != "" {
+			data["git_sha"] = state.LastDeployedCommit
+		}
+	}
+
+	return data
+}
+
 var startTime = time.Now()
 
 // versionOrDev returns v if non-empty, otherwise "dev".
