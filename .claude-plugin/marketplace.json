@@ -1,0 +1,15 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "bosun",
+  "owner": {
+    "name": "Cameron Sjo",
+    "github": "cameronsjo"
+  },
+  "plugins": [
+    {
+      "name": "bosun",
+      "source": "./.claude-plugin",
+      "description": "GitOps CLI for Docker Compose on bare metal"
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "bosun",
+  "description": "GitOps CLI for Docker Compose on bare metal",
+  "author": {
+    "name": "cameronsjo"
+  }
+}
