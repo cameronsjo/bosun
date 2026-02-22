@@ -68,6 +68,10 @@ type Config struct {
 
 	// PostSyncHooks defines container restart actions triggered by file changes.
 	PostSyncHooks []PostSyncHook
+
+	// HookSettleDelay is a global pause after deploy but before any post-sync hooks run.
+	// Allows filesystem propagation on FUSE mounts (e.g., Unraid's shfs).
+	HookSettleDelay time.Duration
 }
 
 // DefaultLockFile is the default path for the reconciliation lock file.
@@ -557,7 +561,7 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	}
 
 	ui.Info("Executing %d post-sync hook(s)...", len(matched))
-	if err := ExecutePostSyncHooks(ctx, client, matched); err != nil {
+	if err := ExecutePostSyncHooks(ctx, client, matched, r.config.HookSettleDelay); err != nil {
 		logger.Warn().Err(err).Msg("Some post-sync hooks failed")
 		ui.Warning("Post-sync hook errors: %v", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/stretchr/testify/assert"
@@ -504,5 +505,111 @@ func TestPostSyncHooksFromConfig(t *testing.T) {
 		cfg, err := Load()
 		require.NoError(t, err)
 		assert.Empty(t, cfg.PostSyncHooks())
+	})
+
+	t.Run("parses hooks with delay field", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `post_sync_hooks:
+  - paths: ["traefik/conf.d/**"]
+    action: restart
+    container: traefik
+    delay: "5s"
+  - paths: ["gatus/config.yaml"]
+    action: restart
+    container: gatus
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+
+		hooks := cfg.PostSyncHooks()
+		require.Len(t, hooks, 2)
+		assert.Equal(t, 5*time.Second, hooks[0].Delay.Duration)
+		assert.Equal(t, time.Duration(0), hooks[1].Delay.Duration)
+	})
+}
+
+func TestHookSettleDelayFromConfig(t *testing.T) {
+	t.Run("parses duration string from bosun.yaml", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `hook_settle_delay: "2s"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, 2*time.Second, cfg.HookSettleDelay())
+	})
+
+	t.Run("parses bare seconds from bosun.yaml", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `hook_settle_delay: "5"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, 5*time.Second, cfg.HookSettleDelay())
+	})
+
+	t.Run("defaults to zero when not configured", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `infrastructure:
+  containers:
+    - traefik
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, time.Duration(0), cfg.HookSettleDelay())
+	})
+
+	t.Run("defaults to zero when no config file", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, time.Duration(0), cfg.HookSettleDelay())
 	})
 }

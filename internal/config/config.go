@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/reconcile"
@@ -51,6 +52,9 @@ type Config struct {
 
 	// postSyncHooks holds post-sync container restart hooks.
 	postSyncHooks []reconcile.PostSyncHook
+
+	// hookSettleDelay is a global pause after deploy before any post-sync hooks run.
+	hookSettleDelay time.Duration
 }
 
 // TunnelConfig holds tunnel provider-specific configuration.
@@ -120,6 +124,9 @@ type configFile struct {
 
 	// PostSyncHooks defines container restart actions triggered by file changes.
 	PostSyncHooks []reconcile.PostSyncHook `yaml:"post_sync_hooks"`
+
+	// HookSettleDelay is a global pause after deploy before post-sync hooks run.
+	HookSettleDelay reconcile.Duration `yaml:"hook_settle_delay"`
 }
 
 // FindRoot searches upward from the current directory to find the project root.
@@ -206,6 +213,7 @@ func Load() (*Config, error) {
 	tunnelProvider, tunnelConfig := extractTunnelConfig(fileCfg)
 	alertConfig := extractAlertConfig(fileCfg)
 	postSyncHooks := extractPostSyncHooks(fileCfg)
+	hookSettleDelay := extractHookSettleDelay(fileCfg)
 
 	// Determine project name (defaults to directory name)
 	projectName := fileCfg.ProjectName
@@ -225,6 +233,7 @@ func Load() (*Config, error) {
 		tunnelConfig:    tunnelConfig,
 		alertConfig:     alertConfig,
 		postSyncHooks:   postSyncHooks,
+		hookSettleDelay: hookSettleDelay,
 	}
 
 	return cfg, nil
@@ -399,6 +408,16 @@ func (c *Config) PostSyncHooks() []reconcile.PostSyncHook {
 // extractPostSyncHooks extracts post-sync hooks from a parsed config.
 func extractPostSyncHooks(cfg configFile) []reconcile.PostSyncHook {
 	return cfg.PostSyncHooks
+}
+
+// HookSettleDelay returns the configured global settle delay for post-sync hooks.
+func (c *Config) HookSettleDelay() time.Duration {
+	return c.hookSettleDelay
+}
+
+// extractHookSettleDelay extracts the hook settle delay from a parsed config.
+func extractHookSettleDelay(cfg configFile) time.Duration {
+	return cfg.HookSettleDelay.Duration
 }
 
 // extractAlertConfig extracts alert configuration from a parsed config.

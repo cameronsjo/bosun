@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -76,5 +77,26 @@ func TestEvaluatePostSyncHooks(t *testing.T) {
 		changed := []string{"traefik/conf.d/x.yml", "traefik/traefik.yml"}
 		matched := EvaluatePostSyncHooks(changed, dupeHooks)
 		assert.Len(t, matched, 1)
+	})
+
+	t.Run("preserves delay field on matched hooks", func(t *testing.T) {
+		hooksWithDelay := []PostSyncHook{
+			{
+				Paths:     []string{"traefik/conf.d/**"},
+				Action:    "restart",
+				Container: "traefik",
+				Delay:     Duration{Duration: 5 * time.Second},
+			},
+			{
+				Paths:     []string{"gatus/config.yaml"},
+				Action:    "restart",
+				Container: "gatus",
+			},
+		}
+		changed := []string{"traefik/conf.d/dynamic.yml", "gatus/config.yaml"}
+		matched := EvaluatePostSyncHooks(changed, hooksWithDelay)
+		assert.Len(t, matched, 2)
+		assert.Equal(t, 5*time.Second, matched[0].Delay.Duration)
+		assert.Equal(t, time.Duration(0), matched[1].Delay.Duration)
 	})
 }
