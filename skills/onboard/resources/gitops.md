@@ -30,10 +30,18 @@ Every reconciliation follows this sequence:
        |
 7. Docker compose up
        |
-8. SIGHUP to agentgateway (if configured)
+8. Post-sync hooks (restart containers on config changes)
        |
-9. Release lock
+9. SIGHUP to agentgateway (if configured)
+       |
+10. Release lock
 ```
+
+### Post-Sync Hooks
+
+After `docker compose up`, bosun checks if any configured hook patterns match the files that changed in this deploy. If so, it restarts the matched containers. This solves services like Traefik that don't detect config file changes on certain filesystems (e.g., Unraid's FUSE mount).
+
+Hooks are configured in `bosun.yaml` under `post_sync_hooks`. See the [Configuration guide](configuration.md#post-sync-hooks) for schema and examples.
 
 ### Lock Behavior
 
@@ -238,6 +246,7 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `SECRETS_FILES` | | Comma-separated SOPS encrypted files |
 | `DRY_RUN` | `false` | Enable dry run |
 | `FORCE` | `false` | Force deployment |
+| `BOSUN_POST_SYNC_HOOKS` | | JSON array of post-sync hooks (overrides config file) |
 
 ## Systemd Deployment
 

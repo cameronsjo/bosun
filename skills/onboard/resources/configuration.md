@@ -66,6 +66,16 @@ alerts:
   twilio_from_number: "+1234567890"
   twilio_to_numbers:
     - "+1987654321"
+
+# Post-sync hooks: restart containers when specific config files change.
+# Solves services (like Traefik) not picking up config changes on FUSE mounts.
+post_sync_hooks:
+  - paths: ["traefik/conf.d/**"]
+    action: restart
+    container: traefik
+  - paths: ["authelia/config.yml", "authelia/users.yml"]
+    action: restart
+    container: authelia
 ```
 
 ### Config Field Reference
@@ -79,6 +89,7 @@ alerts:
 | `tunnel.provider` | `tailscale` | Tunnel provider: `tailscale` or `cloudflare` |
 | `alerts.on_success` | `false` | Send alerts on successful deploys |
 | `alerts.on_failure` | `true` | Send alerts on failed deploys |
+| `post_sync_hooks` | `[]` | Container restart hooks triggered by file changes |
 
 ## Directory Structure
 
@@ -281,6 +292,41 @@ infrastructure:
     - authelia
     - gatus
     - homepage
+```
+
+## Post-Sync Hooks
+
+Restart containers automatically when specific files change during deployment. Useful for services that don't detect config changes on certain filesystems (e.g., Traefik on Unraid's FUSE mount).
+
+```yaml
+# bosun.yaml
+post_sync_hooks:
+  - paths: ["traefik/conf.d/**"]
+    action: restart
+    container: traefik
+```
+
+### Hook Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `paths` | Yes | Glob patterns matched against changed files (relative to repo root). Supports `**` for recursive matching |
+| `action` | Yes | Action to perform. Currently only `restart` is supported |
+| `container` | Yes | Container name to act on |
+
+### Behavior
+
+- After a successful deploy, bosun diffs the previous and current commits to find changed files
+- Each changed file is matched against hook glob patterns
+- Each container is restarted at most once per deploy, even if multiple patterns match
+- Hooks only run when dry run is disabled and a previous commit exists (skipped on first deploy)
+
+### Environment Variable Override
+
+The `BOSUN_POST_SYNC_HOOKS` environment variable (JSON array) overrides hooks from the config file. This applies to both daemon and CLI modes:
+
+```bash
+export BOSUN_POST_SYNC_HOOKS='[{"paths":["traefik/**"],"action":"restart","container":"traefik"}]'
 ```
 
 ## Docker Compose Project Name
