@@ -12,6 +12,10 @@ type GitOperations interface {
 	// IsRepo checks if the directory is a git repository.
 	// Uses the provided context for timeout control.
 	IsRepo(ctx context.Context) bool
+
+	// DiffFiles returns the list of changed file paths between two commits.
+	// Paths are relative to the repository root.
+	DiffFiles(ctx context.Context, fromCommit, toCommit string) ([]string, error)
 }
 
 // SecretsDecryptor handles SOPS decryption.

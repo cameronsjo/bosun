@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -873,6 +874,16 @@ func ConfigFromEnv() *Config {
 	if v := os.Getenv("BOSUN_DRIFT_INTERVAL"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			cfg.DriftInterval = d
+		}
+	}
+
+	// Post-sync hooks (JSON array)
+	if v := os.Getenv("BOSUN_POST_SYNC_HOOKS"); v != "" {
+		var hooks []reconcile.PostSyncHook
+		if err := json.Unmarshal([]byte(v), &hooks); err != nil {
+			log.Warn().Err(err).Msg("Failed to parse BOSUN_POST_SYNC_HOOKS, ignoring")
+		} else {
+			rcfg.PostSyncHooks = hooks
 		}
 	}
 

@@ -14,6 +14,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	xssh "golang.org/x/crypto/ssh"
@@ -531,4 +532,52 @@ func (g *GitOps) Sync(ctx context.Context) (bool, string, string, error) {
 	}
 	logger.Debug().Str(log.FieldPath, g.Dir).Msg("Repository exists, pulling")
 	return g.Pull(ctx)
+}
+
+// DiffFiles returns the list of changed file paths between two commits.
+// If fromCommit is empty, returns all files in toCommit.
+func (g *GitOps) DiffFiles(ctx context.Context, fromCommit, toCommit string) ([]string, error) {
+	repo, err := git.PlainOpen(g.Dir)
+	if err != nil {
+		return nil, fmt.Errorf("open repo: %w", err)
+	}
+
+	toHash := plumbing.NewHash(toCommit)
+	toObj, err := repo.CommitObject(toHash)
+	if err != nil {
+		return nil, fmt.Errorf("resolve to-commit %s: %w", toCommit[:MinLen(toCommit, 8)], err)
+	}
+	toTree, err := toObj.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("get tree for %s: %w", toCommit[:MinLen(toCommit, 8)], err)
+	}
+
+	var fromTree *object.Tree
+	if fromCommit != "" {
+		fromHash := plumbing.NewHash(fromCommit)
+		fromObj, err := repo.CommitObject(fromHash)
+		if err != nil {
+			return nil, fmt.Errorf("resolve from-commit %s: %w", fromCommit[:MinLen(fromCommit, 8)], err)
+		}
+		fromTree, err = fromObj.Tree()
+		if err != nil {
+			return nil, fmt.Errorf("get tree for %s: %w", fromCommit[:MinLen(fromCommit, 8)], err)
+		}
+	}
+
+	changes, err := object.DiffTree(fromTree, toTree)
+	if err != nil {
+		return nil, fmt.Errorf("diff trees: %w", err)
+	}
+
+	var files []string
+	for _, change := range changes {
+		name := change.To.Name
+		if name == "" {
+			name = change.From.Name
+		}
+		files = append(files, name)
+	}
+
+	return files, nil
 }
