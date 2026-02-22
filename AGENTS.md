@@ -51,6 +51,15 @@ make test-cover
 # Creates coverage.out and coverage.html
 ```
 
+## Testing Patterns
+
+- Uses `testify/assert` and `testify/require` (not stdlib `testing` assertions)
+- Table-driven subtests: `t.Run("case name", func(t *testing.T) { ... })`
+- Temp dirs via `t.TempDir()` — cleaned up automatically
+- macOS symlink resolution: `evalSymlinks(t, path)` helper for `/var` → `/private/var`
+- Tests that need a project root: create `manifest/` or `bosun.yaml` in temp dir, `os.Chdir()` to it, defer restore
+- Config tests call `loadConfigFile(tmpDir)` + `extract*()` directly (unit) or `Load()` with chdir (integration)
+
 ## Key Packages
 
 ### internal/cmd
@@ -75,6 +84,24 @@ func init() {
 }
 ```
 
+### internal/config
+
+Project discovery and configuration. Searches upward for `bosun.yaml` / `bosun.yml` / `bosun/` / `manifest/`.
+
+- **`FindRoot()`** — walk up directories to find project root
+- **`Load()`** — parse config file, extract all sections, return `*Config`
+- **Pattern**: raw `configFile` (YAML DTO) → `extract*()` helpers → public `Config` with getters
+- **Config sections**: infrastructure containers, tunnel, alerts, post-sync hooks
+
+### internal/daemon
+
+Long-running GitOps daemon with webhook reception, polling, and health checks.
+
+- **Interfaces**: Unix socket API (`/var/run/bosun.sock`), HTTP webhooks, optional TCP API
+- **Concurrency**: single-flight reconciliation with dirty-flag coalescing
+- **Features**: deploy state tracking, circuit breaker (3 failures), drift detection, alert throttling
+- **`ConfigFromEnv()`** — builds daemon config from environment variables
+
 ### internal/docker
 
 Docker SDK wrapper. Uses `github.com/docker/docker/client`.
@@ -89,7 +116,7 @@ err := client.RestartContainer(ctx, name)
 
 ### internal/manifest
 
-YAML rendering engine. Ported from Python.
+YAML rendering engine.
 
 - **Types**: `ServiceManifest`, `StackManifest`, `RenderOutput`
 - **Rendering**: `RenderStack()`, `RenderService()`
@@ -98,32 +125,72 @@ YAML rendering engine. Ported from Python.
 
 ### internal/reconcile
 
-GitOps engine. Ported from bash reconcile.sh.
+GitOps engine. Pipeline:
 
-Workflow:
+1. Lock → 2. Git clone/pull → 3. SOPS decrypt → 4. Go text/template + Sprig → 5. Backup → 6. Deploy (local copy or tar-over-SSH) → 7. Docker compose up → 8. Post-sync hooks → 9. Unlock
 
-1. Lock acquisition
-2. Git clone/pull
-3. SOPS decrypt
-4. Chezmoi template
-5. Backup
-6. Deploy (rsync or local)
-7. Docker compose up
-8. Unlock
+- **`PostSyncHook`** — glob-matched container restarts on file changes
+- **`EvaluatePostSyncHooks()`** — match changed files against hook patterns (deduped by container)
+- **Deploy modes**: local (file copy) or remote (tar-over-SSH)
+
+### internal/alert
+
+Native alerting with pluggable providers. `Provider` interface: `Name()`, `IsConfigured()`, `Send()`.
+
+- **Providers**: `DiscordProvider`, `SendGrid`, `Twilio`
+- **Manager**: fan-out to all configured providers, helper methods for deploy/drift/doctor events
+- **Throttling**: exponential backoff on repeated failures
+
+### internal/log
+
+Structured logging via zerolog. Two output modes: `console` (human-readable, colored) and `json` (structured).
+
+- **`Component(name)`** — returns a sub-logger with component field
+- **Constants**: `ComponentReconcile`, `ComponentDaemon`, `ComponentDocker`, etc.
+- **Field helpers**: `FieldPath`, `FieldContainer`, `FieldStack`, etc.
 
 ### internal/ui
 
-Colored output helpers:
+Colored console output with nautical theme. Wraps zerolog for user-facing messages.
 
 ```go
-ui.Success("Container started!")
-ui.Warning("Traefik not running")
-ui.Error("Failed to connect: %v", err)
-ui.Fatal("Critical error: %v", err)  // Exits with code 1
-
-ui.Green.Println("Text")
-ui.Yellow.Printf("Value: %s", val)
+ui.Success("Container started!")   // ✓ green
+ui.Warning("Traefik not running")  // ⚠ yellow
+ui.Error("Failed: %v", err)        // ✗ red
+ui.Fatal("Critical: %v", err)      // ✗ red + os.Exit(1)
+ui.Step(1, "Cloning repo...")      // numbered step
+ui.Header("Deploy Summary")        // bold section header
 ```
+
+Nautical helpers: `Anchor()`, `Ship()`, `Compass()`, `Mayday()`, `Snapshot()`, `Package()`.
+
+### internal/lock
+
+File-based locking (`flock` on Unix, `LockFileEx` on Windows). Prevents concurrent reconciliation runs.
+
+### internal/preflight
+
+Pre-flight validation for `bosun doctor`. Checks Docker, Compose v2, Git, SOPS, Age key, project structure.
+
+### internal/sentry
+
+Opt-in Sentry error tracking and performance monitoring. Enabled via `SENTRY_DSN` env var.
+
+### internal/snapshot
+
+Snapshot management for manifest output files. Used for rollback via `bosun mayday`.
+
+### internal/tunnel
+
+Abstraction layer for tunnel providers (Tailscale Funnel, Cloudflare Tunnel). Used by `bosun radio`.
+
+### internal/update
+
+Self-update via GitHub releases. Used by `bosun update`.
+
+### internal/fileutil
+
+Common file operations (copy, ensure directory, atomic write).
 
 ## Design Principles
 
@@ -138,6 +205,7 @@ ui.Yellow.Printf("Value: %s", val)
 2. Define command and flags
 3. Add to `rootCmd` in `init()`
 4. Update `docs/commands.md`
+5. Update `skills/onboard/resources/commands.md` (see Skill Maintenance)
 
 Example:
 
@@ -165,12 +233,19 @@ func init() {
 
 ## Dependencies
 
-Core:
+Core (direct):
 
 - `github.com/spf13/cobra` - CLI framework
 - `github.com/docker/docker` - Docker SDK
-- `gopkg.in/yaml.v3` - YAML parsing
+- `github.com/go-git/go-git/v5` - Git operations (in-process clone/pull)
+- `github.com/getsops/sops/v3` - Secret decryption (SOPS + Age)
+- `github.com/rs/zerolog` - Structured logging
+- `github.com/Masterminds/sprig/v3` - Template functions
 - `github.com/fatih/color` - Colored output
+- `github.com/getsentry/sentry-go` - Error tracking (opt-in)
+- `github.com/creativeprojects/go-selfupdate` - Self-update from GitHub releases
+- `gopkg.in/yaml.v3` - YAML parsing
+- `github.com/stretchr/testify` - Test assertions
 
 ## Versioning and Releases
 
@@ -194,15 +269,16 @@ Releases are fully automated via **release-please** + **goreleaser**.
 - `.release-please-manifest.json` — current version (do not edit manually)
 - `.goreleaser.yml` — build matrix and artifact config
 
-## Legacy Files (To Remove)
+## Skill Maintenance
 
-These files are from the bash/Python implementation and should be removed:
+When a feature is added, changed, or removed, **MUST** update the onboard skill resource files to match:
 
-- `bin/bosun` - Original bash script
-- `manifest/manifest.py` - Python renderer
-- `manifest/pyproject.toml` - Python dependencies
+- `skills/onboard/resources/configuration.md` — config file schema, fields, examples
+- `skills/onboard/resources/gitops.md` — reconcile pipeline, daemon, webhooks, drift
+- `skills/onboard/resources/commands.md` — CLI commands, flags, usage
+- `skills/onboard/resources/manifests.md` — manifest system, provisions, stacks
 
-See `docs/migration.md` for cleanup instructions.
+The skill is the primary consumer-facing documentation. If the code changes but the skill doesn't, users and AI agents get stale information.
 
 ## Landing the Plane (Session Completion)
 
