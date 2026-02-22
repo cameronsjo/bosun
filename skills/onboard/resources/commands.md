@@ -126,7 +126,7 @@ bosun provisions
 
 **Example output:**
 
-```
+```text
 Available provisions:
   - container
   - healthcheck
