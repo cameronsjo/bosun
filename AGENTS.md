@@ -315,6 +315,7 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 - **macOS temp dirs**: `/var` symlinks to `/private/var`, so `t.TempDir()` paths need `filepath.EvalSymlinks()` in tests
 - **Config graceful degradation**: `config.Load()` errors are swallowed in `reconcile.go` — reconcile works without a project config file
 - **Env var precedence**: `BOSUN_POST_SYNC_HOOKS` (JSON) completely *replaces* hooks from `bosun.yaml`, it does not merge
+- **Dirty repo is non-fatal**: `Pull()` warns on uncommitted changes and proceeds — the hard reset discards them. Don't add a dirty-state failure gate; these are stale reconciliation artifacts
 
 ## Landing the Plane (Session Completion)
 

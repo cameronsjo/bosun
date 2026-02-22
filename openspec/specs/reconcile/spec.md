@@ -61,8 +61,11 @@ track a single branch.
 Pulls SHALL fetch the configured branch from origin, verify the remote branch
 exists, and hard-reset the working tree to the remote HEAD.
 
-The reconciler SHALL reject pulls when the local repository has uncommitted
-changes, to prevent silent data loss.
+The reconciler SHALL warn when the local repository has uncommitted changes
+and proceed with the pull. The hard reset discards local changes, which are
+typically stale artifacts from previous reconciliation runs (template renders,
+FUSE symlink diffs). This prevents dirty working trees from blocking
+automated deployments.
 
 SSH authentication SHALL be resolved in order: SSH agent (via `SSH_AUTH_SOCK`),
 then key files (`BOSUN_SSH_KEY`, `/config/deploy-key`, `/config/ssh-key`,
@@ -88,7 +91,9 @@ environment variable SHALL disable verification entirely.
 #### Scenario: Pull with dirty working tree
 
 - **WHEN** the local repository has uncommitted changes
-- **THEN** the pull fails with an error indicating the working directory must be cleaned
+- **THEN** the reconciler logs a warning about the dirty state
+- **AND** proceeds with fetch and hard reset (discarding local changes)
+- **AND** the pull succeeds normally
 
 #### Scenario: Branch validation rejects injection
 
