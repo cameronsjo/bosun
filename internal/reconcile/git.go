@@ -276,12 +276,13 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 		Str(log.FieldBranch, g.Branch).
 		Msg("Pulling repository")
 
-	// Check for uncommitted changes before doing anything
+	// Check for uncommitted changes. Warn but continue — the hard reset below
+	// will discard them. These are typically stale artifacts from a previous
+	// reconciliation (template renders, symlink diffs on FUSE mounts, etc.).
 	if dirty, err := g.IsDirty(ctx); err != nil {
-		return false, "", "", fmt.Errorf("failed to check repository status: %w", err)
+		logger.Warn().Err(err).Str(log.FieldPath, g.Dir).Msg("Failed to check repository status, proceeding with pull")
 	} else if dirty {
-		logger.Warn().Str(log.FieldPath, g.Dir).Msg("Repository has uncommitted changes")
-		return false, "", "", fmt.Errorf("repository has uncommitted changes; clean the working directory before syncing")
+		logger.Warn().Str(log.FieldPath, g.Dir).Msg("Repository has uncommitted changes, will be discarded by hard reset")
 	}
 
 	before, err := g.GetLatestCommit(ctx)
