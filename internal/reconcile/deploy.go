@@ -709,9 +709,12 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 		defer cancel()
 	}
 
-	// Build args: docker compose -p project -f file1.yml -f file2.yml up -d --remove-orphans --wait
+	// Build args: docker compose -p project -f file1.yml -f file2.yml up -d --remove-orphans
+	// Note: --wait is intentionally omitted. It exits non-zero when ANY container is
+	// unhealthy, even pre-existing ones, which would block all deployments. Post-deploy
+	// verification (verifyPostDeploy) handles health inspection separately.
 	args := d.composeArgs(composeFiles...)
-	args = append(args, "up", "-d", "--remove-orphans", "--wait")
+	args = append(args, "up", "-d", "--remove-orphans")
 
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	var stderr bytes.Buffer

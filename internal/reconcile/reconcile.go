@@ -93,6 +93,7 @@ type AlertSender interface {
 	SendDeploySuccess(ctx context.Context, commit, target string) error
 	SendDeployFailure(ctx context.Context, commit, target, reason string) error
 	SendDeployRecovery(ctx context.Context, commit, target string, priorFailures int) error
+	SendUnhealthyContainers(ctx context.Context, target string, containers []string) error
 	SendRollbackSuccess(ctx context.Context, target, backupName string) error
 	SendRollbackFailure(ctx context.Context, target, reason string) error
 }
@@ -415,6 +416,22 @@ func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *Deplo
 	}
 }
 
+// sendUnhealthyAlert sends a warning notification for unhealthy containers found post-deploy.
+func (r *Reconciler) sendUnhealthyAlert(ctx context.Context, containers []string) {
+	if r.alerter == nil {
+		return
+	}
+
+	target := r.config.TargetHost
+	if target == "" {
+		target = "local"
+	}
+
+	if err := r.alerter.SendUnhealthyContainers(ctx, target, containers); err != nil {
+		ui.Warning("Failed to send unhealthy containers alert: %v", err)
+	}
+}
+
 // sendRecoveryAlert sends a notification when deployment succeeds after failures.
 func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) {
 	if r.alerter == nil {
@@ -474,6 +491,8 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 		return
 	}
 
+	// Categorize drift items and log each one.
+	var unhealthyNames []string
 	for _, item := range report.Items {
 		logger.Warn().
 			Str(log.FieldReconcileID, reconcileID).
@@ -482,8 +501,17 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 			Str("declared", item.Declared).
 			Str("actual", item.Actual).
 			Msg("Post-deploy drift detected")
+
+		if item.Type == DriftUnhealthy {
+			unhealthyNames = append(unhealthyNames, item.Service)
+		}
 	}
 	ui.Warning("Post-deploy verification: %d drift item(s) detected", len(report.Items))
+
+	// Alert on unhealthy containers (warning severity, not a deploy failure).
+	if len(unhealthyNames) > 0 {
+		r.sendUnhealthyAlert(ctx, unhealthyNames)
+	}
 }
 
 // cleanupStaging removes the staging directory after successful deployment.
