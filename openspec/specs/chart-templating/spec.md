@@ -14,6 +14,7 @@ The `TemplateEngine` MUST:
 
 - Load and cache templates from the templates directory
 - Support `.yaml` and `.yml` file extensions for templates
+- Load `_helpers.tpl` as a helper source regardless of the .yaml/.yml rule (it is always loaded when present)
 - Include all Sprig text functions via `sprig.TxtFuncMap()`
 - Provide custom bosun functions: `include`, `nindent`, `toYaml`
 
@@ -169,6 +170,7 @@ The system SHALL load templates from a `templates/` directory within the charts 
 Template files:
 
 - MUST have `.yaml` or `.yml` extension
+- `_helpers.tpl` is exempt from this extension rule and is always loaded as a helper source when present
 - MUST contain valid Go template syntax
 - MAY reference helpers from `_helpers.tpl`
 - `_helpers.tpl` is excluded from template listings

@@ -44,6 +44,9 @@ The command MUST:
 
 - Convert `provisions/*.yml` to `charts/templates/*.yaml`
 - Convert `services/*.yml` to `charts/{service}/Chart.yaml` + `values.yaml`
+
+The `{service}` directory name SHALL be derived from the service manifest's `name` field if present. If no `name` field exists, the file basename (without extension) SHALL be used. When the `name` field and file basename differ, a migration warning SHALL be emitted and the original filename SHALL be recorded in the generated `Chart.yaml` metadata. If two services resolve to the same `{service}` directory name, the migration SHALL fail with a collision error listing both source files.
+
 - Convert `stacks/*.yml` to `stacks/{stack}/Stack.yaml`
 - Preserve legacy files (not delete originals)
 - Default to dry-run mode (show what would be migrated without writing)

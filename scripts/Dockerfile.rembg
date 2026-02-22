@@ -1,4 +1,14 @@
 FROM python:3.11-slim
-RUN pip install --no-cache-dir 'rembg[cpu,cli]'
-RUN python -c "from rembg import new_session; new_session('u2net')"
+
+ARG REMBG_VERSION=2.0.72
+
+RUN pip install --no-cache-dir "rembg[cpu,cli]==${REMBG_VERSION}"
+
+RUN adduser --disabled-password --gecos "" --home /home/rembg rembg
+
+RUN python -c "from rembg import new_session; new_session('u2net')" \
+    && chown -R rembg:rembg /home/rembg
+
+USER rembg
+
 ENTRYPOINT ["rembg", "i"]

@@ -28,10 +28,21 @@ The system SHALL provide structured logging with JSON output support for machine
 - **WHEN** BOSUN_LOG_FORMAT is set to "json" or "console"
 - **THEN** the system SHALL use the specified format regardless of TTY detection
 
+#### Scenario: Format override takes precedence over daemon mode
+
+- **WHEN** BOSUN_LOG_FORMAT is set to "console" and BOSUN_DAEMON_MODE is true
+- **THEN** the system SHALL use console format (BOSUN_LOG_FORMAT overrides BOSUN_DAEMON_MODE)
+
 #### Scenario: Non-terminal default
 
 - **WHEN** stdout is not a terminal and BOSUN_DAEMON_MODE is not set
 - **THEN** the system SHALL default to JSON format
+
+Log format precedence (highest to lowest):
+
+1. `BOSUN_LOG_FORMAT` environment variable (explicit override)
+2. `BOSUN_DAEMON_MODE=true` (forces JSON)
+3. TTY detection (TTY → console with colors, non-TTY → JSON)
 
 #### Scenario: Additional log writers
 

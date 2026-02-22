@@ -22,9 +22,20 @@ else
   OUTPUT_ABS="$OUTPUT_DIR/$OUTPUT_FILE"
 fi
 
+# Validate output directory exists and is writable
+if [ ! -d "$OUTPUT_DIR" ]; then
+  echo "Error: Output directory does not exist: $OUTPUT_DIR" >&2
+  exit 1
+fi
+if [ ! -w "$OUTPUT_DIR" ]; then
+  echo "Error: Output directory is not writable: $OUTPUT_DIR" >&2
+  exit 1
+fi
+
 echo "Removing background: $INPUT_FILE -> $OUTPUT_FILE"
 
 docker run --rm \
+  --user "$(id -u):$(id -g)" \
   -v "$INPUT_DIR:/input:ro" \
   -v "$OUTPUT_DIR:/output" \
   rembg \

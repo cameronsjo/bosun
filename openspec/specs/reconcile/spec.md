@@ -95,6 +95,19 @@ environment variable SHALL disable verification entirely.
 - **WHEN** a branch name starts with `-` or contains shell metacharacters
 - **THEN** the operation fails with a validation error before any git command executes
 
+#### Scenario: DiffFiles with unavailable previous commit
+
+- **WHEN** a shallow clone does not contain the previous commit referenced in the deploy state file
+- **THEN** `DiffFiles` SHALL return a sentinel error indicating the commit is unavailable
+- **AND** `executePostSyncHooks` SHALL treat all files as changed (run hooks against the full file set)
+- **AND** a warning SHALL be logged indicating that full hook execution is triggered due to insufficient git history
+
+#### Scenario: Configurable fetch depth
+
+- **WHEN** `BOSUN_GIT_FETCH_DEPTH` is set to a value greater than 1
+- **THEN** git clone and fetch operations SHALL use the specified depth
+- **AND** the default depth SHALL remain 1 when unset
+
 ### Requirement: Secret Decryption
 
 The reconciler SHALL decrypt SOPS-encrypted YAML files using the Age encryption
@@ -219,7 +232,7 @@ The last backup path SHALL be stored for potential rollback during compose up.
 The reconciler SHALL support two deployment modes: local (direct file
 operations) and remote (SSH+tar or SCP).
 
-Local deployment SHALL use atomic operations: copy source to a temp directory in
+Local deployment SHALL use atomic-like operations: copy source to a temp directory in
 the same parent, then rename to the target path. This provides atomic directory
 replacement with `--delete` semantics (files in target not in source are removed).
 
@@ -234,12 +247,14 @@ attempts).
 All remote operations SHALL validate the host string against an allowlist pattern
 and reject strings starting with `-` to prevent SSH option injection.
 
-#### Scenario: Local atomic directory deployment
+#### Scenario: Local atomic-like directory deployment
 
 - **WHEN** deploying a directory locally
 - **THEN** files are copied to a temp directory in the target's parent
-- **AND** the temp directory is atomically renamed to the target
-- **AND** the old target is removed first
+- **AND** the old target is renamed aside (e.g., `target.old`)
+- **AND** the temp directory is renamed to the target path
+- **AND** the aside directory is removed after successful rename
+- **AND** if the final rename fails, the aside directory is renamed back to restore the previous state
 
 #### Scenario: Remote deployment with SSH retry
 

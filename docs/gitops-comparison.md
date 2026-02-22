@@ -10,7 +10,7 @@
 | **Target Runtime** | Docker Compose on bare metal | Kubernetes clusters | Kubernetes clusters |
 | **Architecture** | Single binary, file-based state | Controller + API server + repo-server | Modular controllers (source, kustomize, helm) |
 | **State Model** | JSON file on disk | K8s Application CRD status | K8s CRD status conditions |
-| **Deployment Model** | Push via rsync (local or SSH) | Apply via K8s API | Apply via K8s API |
+| **Deployment Model** | Push via tar-over-SSH (remote) / atomic local copy (local) | Apply via K8s API | Apply via K8s API |
 
 Bosun operates without an API server, which means capabilities that K8s tools get "for free" (atomic applies, watch-based drift detection, CRD-based state) must be explicitly implemented. This drives Bosun's file-based locking, backup-before-deploy, and periodic drift polling.
 
@@ -24,12 +24,12 @@ Bosun operates without an API server, which means capabilities that K8s tools ge
 |---|---|
 | **Zero infrastructure overhead** -- single binary, no cluster, no controllers, no CRDs. `scp` the binary and you're done | **Small ecosystem** -- 3 alert providers, no plugin system, no community extensions |
 | **Native secret management** -- SOPS + Age decryption built into the pipeline, not bolted on as a plugin | **No self-healing** -- detects drift and alerts but won't auto-remediate; requires manual intervention or next git push |
-| **Backup before deploy** -- timestamped tar.gz snapshots before every rsync, a safety net that K8s tools don't need but bare metal does | **No automated rollback** -- backups exist but there's no mechanism to auto-restore on failure |
+| **Backup before deploy** -- timestamped tar.gz snapshots before every deploy, a safety net that K8s tools don't need but bare metal does | **No automated rollback** -- backups exist but there's no mechanism to auto-restore on failure |
 | **Cost-aware alerting** -- progressive throttling (1, 3, 10, 30...) prevents alert storms; Twilio SMS gated to error/critical saves money | **No metrics endpoint** -- can't scrape with Prometheus, can't build Grafana dashboards. The biggest observability gap |
 | **Correlation IDs** -- every reconciliation and HTTP request gets a UUID that flows through all log entries. Neither competitor has this | **Periodic drift only** -- polls on an interval instead of reacting to state changes in real-time |
 | **Simple mental model** -- linear pipeline (lock -> git -> decrypt -> template -> backup -> deploy -> compose -> unlock), easy to reason about | **No sync waves/phases** -- can't order resource creation or run pre/post-deploy validation hooks |
 | **Built-in migration tooling** -- `bosun migrate helm` converts legacy manifests to Helm-aligned format automatically | **No RBAC** -- single-user model, no access control for shared environments |
-| **Monorepo multi-server** -- one repo drives multiple servers via SSH+rsync without fleet management overhead | **Limited multi-target** -- no auto-discovery, no fleet management, no tenant isolation |
+| **Monorepo multi-server** -- one repo drives multiple servers via SSH+tar without fleet management overhead | **Limited multi-target** -- no auto-discovery, no fleet management, no tenant isolation |
 | **Helm-aligned without Helm** -- Go templates + Sprig + provisions give Helm-like composition without the Helm binary or Tiller history | **Not actual Helm** -- can't use the Helm ecosystem (artifact hub, chart museums, helm plugins) |
 | **Circuit breaker** -- stops retrying after 3 consecutive failures, preventing cascading damage on persistent errors | **Limited health model** -- 3 categories (OK/warn/error) vs Argo's 6-status model with custom Lua checks |
 
@@ -57,10 +57,11 @@ Bosun operates without an API server, which means capabilities that K8s tools ge
 | **Sync waves and hooks** -- PreSync/Sync/PostSync/SyncFail hooks with wave ordering give fine-grained deploy control | **Complex configuration** -- RBAC policies in ConfigMaps, notification triggers in CEL expressions, health checks in Lua scripts |
 | **ApplicationSets** -- auto-generate applications from git directories, PR previews, cluster discovery, SCM org scanning | **No automated rollback** -- manual rollback via UI/CLI only. Automated rollback requires Argo Rollouts (separate project) |
 | **Multi-cluster at scale** -- single instance can manage hundreds of clusters with hub-and-spoke topology | **CMP plugin model** -- config management plugins run as sidecars with their own containers, adding operational complexity |
-| **Fine-grained RBAC** -- Casbin-based policies with project-scoped access control, SSO via Dex or native OIDC | **No OpenTelemetry** -- metrics via Prometheus but no native tracing. Proposed but not GA |
+| **Fine-grained RBAC** -- Casbin-based policies with project-scoped access control, SSO via Dex or native OIDC | **Redis dependency** -- requires Redis for caching; adds operational overhead and a stateful component to manage |
 | **Self-healing** -- `selfHeal: true` auto-corrects drift without waiting for a git push | **Steep learning curve** -- Applications, Projects, ApplicationSets, AppOfApps pattern, sync policies, sync windows -- lots of concepts |
 | **Mature ecosystem** -- large community, commercial support (Codefresh/Akuity), extensive documentation | **Monolithic repo-server** -- all manifest rendering happens in one component, which can become a bottleneck at scale |
-| **Ignored differences** -- suppress known drift noise (admission controller mutations, status fields) per-application | **No backup/snapshot** -- relies on K8s etcd and Helm release history. No explicit pre-deploy snapshot mechanism |
+| **OpenTelemetry tracing (v2.4.0+)** -- native OTLP tracing via `--otlp-address` flag for distributed tracing of reconciliation operations | **No backup/snapshot** -- relies on K8s etcd and Helm release history. No explicit pre-deploy snapshot mechanism |
+| **Ignored differences** -- suppress known drift noise (admission controller mutations, status fields) per-application | **Notification config complexity** -- CEL trigger expressions and Go templates in ConfigMaps require deep familiarity to configure correctly |
 
 **When to choose Argo CD:**
 - You run Kubernetes and want a polished UI for GitOps
@@ -82,14 +83,14 @@ Bosun operates without an API server, which means capabilities that K8s tools ge
 |---|---|
 | **Modular architecture** -- install only the controllers you need. Source + Kustomize is the minimum; add Helm, image automation, notifications as needed | **No built-in UI** -- CLI-first tool. Weave GitOps provides a third-party UI but it's a separate project |
 | **Native SOPS decryption** -- kustomize-controller decrypts SOPS-encrypted secrets directly, no plugin needed. Supports Age, PGP, AWS/GCP/Azure KMS | **No real-time drift detection** -- interval-based polling only. Faster intervals cost more API calls |
-| **OpenTelemetry tracing** -- v2.7 added native OTel spans for reconciliation in kustomize and helm controllers | **No sync waves** -- resource ordering is limited to Kustomize `depends_on`. No PreSync/PostSync hooks |
+| **OpenTelemetry tracing** -- v2.7 (September 2025) added native OTel spans for reconciliation in kustomize and helm controllers | **No sync waves** -- resource ordering is limited to Kustomize `depends_on`. No PreSync/PostSync hooks |
 | **Automated rollback** -- Helm controller supports automatic rollback on install/upgrade failure with configurable retry and remediation strategies | **No ApplicationSets equivalent** -- no built-in fleet generator for auto-discovering repos, clusters, or PRs |
 | **Image automation** -- closed-loop from registry scan to git commit to deploy. Detects new image tags and auto-commits updates | **Weaker multi-cluster** -- hub-spoke works but lacks Argo CD's fleet management features (cluster generator, SCM discovery) |
-| **20+ notification providers** -- same controller handles both outbound alerts and inbound webhook triggers | **CNCF archived (2025)** -- Flux was archived by the CNCF after Weaveworks folded. Community maintains it but governance is uncertain |
+| **20+ notification providers** -- same controller handles both outbound alerts and inbound webhook triggers | **Post-Weaveworks transition** -- Weaveworks folded in 2024; community-maintained under CNCF governance with smaller contributor base |
 | **Multi-tenancy built-in** -- service account impersonation + namespace isolation for tenant workloads | **No built-in API** -- management is via kubectl + Flux CLI. No REST or gRPC API for custom integrations |
 | **OCI artifact support** -- pull manifests from any OCI registry, not just git repos | **Helm-only drift detection** -- Kustomize drift correction is implicit (re-apply everything), not targeted |
 | **Lightweight footprint** -- controllers are small, focused, and resource-efficient compared to Argo CD's stack | **No custom health checks** -- relies on K8s readiness probes. No Lua scripting for custom health logic |
-| **Variable substitution** -- Kustomize `postBuild.substitute` injects values from ConfigMaps/Secrets without Helm | **Smaller community** -- after CNCF archival, community is active but smaller than Argo CD's |
+| **Variable substitution** -- Kustomize `postBuild.substitute` injects values from ConfigMaps/Secrets without Helm | **Smaller community** -- after Weaveworks closure, community is active but smaller than Argo CD's |
 
 **When to choose Flux CD:**
 - You run Kubernetes and prefer composable, lightweight tooling
@@ -101,7 +102,7 @@ Bosun operates without an API server, which means capabilities that K8s tools ge
 **When NOT to choose Flux CD:**
 - You want a polished web UI out of the box
 - You need ApplicationSets-style fleet management
-- You're concerned about long-term governance after CNCF archival
+- You're concerned about long-term governance after Weaveworks closure
 - You need custom health check logic beyond K8s readiness probes
 
 ### Decision Matrix
@@ -116,7 +117,7 @@ Bosun operates without an API server, which means capabilities that K8s tools ge
 | Automated Helm rollback | **Flux CD** |
 | Zero infrastructure overhead | **Bosun** |
 | Progressive delivery (canary/blue-green) | **Argo CD** + Rollouts or **Flux CD** + Flagger |
-| Native OpenTelemetry tracing | **Flux CD** (v2.7+) |
+| Native OpenTelemetry tracing | **Flux CD** (v2.7+), also **Argo CD** (v2.4.0+) |
 | Cost-aware alerting for homelab budgets | **Bosun** |
 
 ## Architectural Approach Comparison
@@ -133,7 +134,7 @@ The daemon process listens on a Unix socket, receives webhooks from git provider
 
 ```
 webhook/poll -> daemon process -> lock -> git pull -> decrypt -> template
-             -> backup -> rsync -> compose up -> unlock
+             -> backup -> deploy -> compose up -> unlock
 ```
 
 | Pros | Cons |
@@ -350,15 +351,15 @@ A standalone controller that handles both outbound alerts and inbound webhook re
 
 How does each tool get rendered configs onto the target?
 
-**Bosun: rsync push (local or SSH)**
+**Bosun: File push (local atomic copy or tar-over-SSH)**
 
-Rendered configs are copied to the target directory via rsync. Local deploys use filesystem rsync. Remote deploys use SSH+rsync with tar streaming. A pre-deploy backup is taken before any files are overwritten.
+Rendered configs are deployed to the target directory. Local deploys use atomic directory replacement (copy to temp, rename into place). Remote deploys stream a tar archive over SSH to a temp directory on the target, then atomically move it into place. A pre-deploy backup is taken before any files are overwritten.
 
 | Pros | Cons |
 |---|---|
-| Works on any Linux box -- no K8s, no API server, just SSH | rsync is destructive -- overwrites without merge, hence the backup stage |
-| Remote deploy over SSH -- no agent needed on target | No atomic apply -- files are copied one by one, partial state is possible |
-| Backup-before-deploy provides rollback capability | Network interruption mid-rsync can leave target in inconsistent state |
+| Works on any Linux box -- no K8s, no API server, just SSH | Overwrites without merge, hence the backup stage |
+| Remote deploy over SSH -- no agent needed on target | No merge semantics -- full directory replacement, not per-file diffing |
+| Backup-before-deploy provides rollback capability | Network interruption mid-transfer can leave target in inconsistent state |
 | Simple to debug -- it's just files on disk | No diff -- always copies everything, even unchanged files |
 
 **Argo CD: Kubernetes API apply with strategic merge**
@@ -383,7 +384,7 @@ Each controller applies resources independently. Kustomize-controller applies pl
 | Helm test support validates post-deploy state | No sync waves -- ordering is limited to `depends_on` |
 | Automated rollback on Helm failure | Kustomize applies are all-or-nothing per Kustomization resource |
 
-**Verdict:** Bosun's rsync is the simplest (files over SSH) but the most fragile (no atomicity, no diff). K8s API apply (Argo/Flux) provides per-resource atomicity and merge semantics but requires the K8s ecosystem. Argo's sync waves give the most control over ordering. Flux's Helm controller gives the best lifecycle management (install/upgrade/rollback as a unit).
+**Verdict:** Bosun's file push is the simplest (atomic local copy or tar-over-SSH) but the least flexible (no diff, no merge). K8s API apply (Argo/Flux) provides per-resource atomicity and merge semantics but requires the K8s ecosystem. Argo's sync waves give the most control over ordering. Flux's Helm controller gives the best lifecycle management (install/upgrade/rollback as a unit).
 
 ## Detailed Feature Comparison
 
@@ -397,7 +398,7 @@ Each controller applies resources independently. Kustomize-controller applies pl
 | Locking | **File-based flock** (cross-platform) | Not needed (K8s API is atomic) | Not needed (K8s API is atomic) |
 | Backup before deploy | **Yes** (timestamped tar.gz) | No (K8s resources are versioned) | No (Helm release history serves this role) |
 
-Bosun's locking and backup steps exist because Docker Compose has no API server. K8s tools get atomicity from the API server's optimistic concurrency. Bosun must prevent concurrent reconciliation with file locks and create explicit backups since rsync overwrites are destructive.
+Bosun's locking and backup steps exist because Docker Compose has no API server. K8s tools get atomicity from the API server's optimistic concurrency. Bosun must prevent concurrent reconciliation with file locks and create explicit backups since file deployment overwrites are destructive.
 
 ## State Tracking
 
@@ -462,7 +463,7 @@ Bosun's manifest system is its most distinctive feature. While Argo/Flux delegat
 | Log levels | Configurable (env var + CLI flag) | Configurable | Configurable |
 | Correlation IDs | **request_id + reconcile_id** | No built-in correlation | No built-in correlation |
 | Prometheus metrics | Not implemented | **Yes** (built-in) | **Yes** (built-in) |
-| OpenTelemetry | Not implemented | No (proposed) | **Yes** (v2.7) |
+| OpenTelemetry | Not implemented | **Yes** (v2.4.0+) | **Yes** (v2.7) |
 | Grafana dashboards | No | **Yes** (community) | **Yes** (community) |
 
 ## Secret Management
@@ -478,7 +479,7 @@ Bosun's manifest system is its most distinctive feature. While Argo/Flux delegat
 
 | Feature | Bosun | Argo CD | Flux CD |
 |---|---|---|---|
-| Multi-server | **Yes** (monorepo, SSH+rsync to remote) | **Yes** (multi-cluster, hundreds) | **Yes** (hub-spoke or standalone) |
+| Multi-server | **Yes** (monorepo, SSH+tar to remote) | **Yes** (multi-cluster, hundreds) | **Yes** (hub-spoke or standalone) |
 | Auto-discovery | No | **ApplicationSets** (cluster/SCM/PR generators) | No built-in fleet generator |
 | Multi-tenancy | No | **Projects + RBAC** | **Namespace isolation + SA impersonation** |
 
@@ -515,7 +516,7 @@ Bosun's manifest system is its most distinctive feature. While Argo/Flux delegat
 | **Correlation IDs** | Neither competitor has built-in reconcile/request correlation in logs |
 | **Alert throttling** | Smart progressive schedule prevents alert fatigue during extended outages |
 | **Manifest migration tooling** | Built-in format detection + migration CLI. No equivalent in K8s tools |
-| **File-based locking** | Solves a real problem that K8s tools don't face (concurrent rsync) |
+| **File-based locking** | Solves a real problem that K8s tools don't face (concurrent deployment) |
 | **Cost-aware alerting** | Twilio SMS gated to error/critical severity. Unique cost-consciousness |
 
 ## Conclusions

@@ -118,7 +118,7 @@ A `Stack` MAY contain:
 - `name`: Stack identifier
 - `description`: Human-readable description
 - `networks`: Shared network definitions merged into compose output
-- `charts`: List of chart references (Helm-aligned format)
+- `charts`: Not allowed in legacy Stack format (use Helm-aligned Stack instead; see Chart Stack Rendering)
 
 #### Scenario: Stack renders multiple services
 
@@ -451,6 +451,11 @@ The system SHALL detect whether a directory uses legacy or Helm-aligned manifest
 
 - **WHEN** neither Helm nor legacy directory structure is found
 - **THEN** `DetectFormat` returns `"unknown"`
+
+#### Scenario: Detect Helm when both formats present
+
+- **WHEN** both a `charts/` directory with `Chart.yaml` files and a `manifest/provisions/` or `provisions/` directory exist
+- **THEN** `DetectFormat` returns `"helm"` (Helm takes precedence over legacy)
 
 ### Requirement: Manifest Migration
 

@@ -363,7 +363,7 @@ flowchart TD
     F -->|Success| G[Determine Appdata Dir]
 
     G -->|Not Found| G_ERR[Error: could not determine appdata]
-    G -->|Found| H[Deploy via rsync]
+    G -->|Found| H[Deploy via tar-over-SSH]
 
     H -->|Failure| H_ERR[Error: file sync failed]
     H -->|Success| I{Compose File Exists?}

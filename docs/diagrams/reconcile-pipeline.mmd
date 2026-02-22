@@ -11,5 +11,5 @@ flowchart LR
     DriftVerify --> SaveState[Save State]
     SaveState --> Unlock[Unlock]
     DeployStep -->|failure| CB[Circuit Breaker]
-    CB -->|< 3 failures| Retry[Alert + Retry]
-    CB -->|>= 3 failures| Stop[Alert + Stop]
+    CB -->|fewer than 3 failures| Retry[Alert + Retry]
+    CB -->|3+ failures| Stop[Alert + Stop]

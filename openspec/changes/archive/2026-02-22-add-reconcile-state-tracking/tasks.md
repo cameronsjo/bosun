@@ -1,4 +1,4 @@
-## 1. State Persistence Layer
+# 1. State Persistence Layer
 
 - [x] 1.1 Create `internal/reconcile/state.go` with `DeployState` struct:
   - `SchemaVersion int` (always 1)

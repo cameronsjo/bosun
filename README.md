@@ -47,7 +47,7 @@ graph TB
             Fetch[Fetch Orders<br/>git clone/pull]
             Decrypt[Decrypt Secrets<br/>SOPS + Age]
             Template[Prep Configs<br/>Go Templates]
-            Deploy[Deploy<br/>rsync]
+            Deploy[Deploy<br/>tar-over-SSH / local copy]
             Compose[Crew Up<br/>docker compose]
             Drift[Drift Watch<br/>Periodic check]
         end
@@ -225,7 +225,9 @@ manifest_dir: manifest
 compose_file: docker-compose.yml
 ```
 
-### Additional Environment Variables
+### Additional Environment Variables (Reconcile)
+
+> These variables are used by `bosun reconcile` and the daemon's reconciliation pipeline. `REPO_URL` and `REPO_BRANCH` are legacy aliases for `BOSUN_REPO_URL` and `BOSUN_REPO_BRANCH` — if both are set, the `BOSUN_`-prefixed variable takes precedence.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -250,8 +252,8 @@ graph LR
     I --> J[Save State]
     J --> K[Unlock]
     G -->|failure| L[Circuit Breaker]
-    L -->|< 3 failures| M[Alert + Retry Next Cycle]
-    L -->|>= 3 failures| N[Alert + Stop]
+    L -->|fewer than 3 failures| M[Alert + Retry Next Cycle]
+    L -->|3+ failures| N[Alert + Stop]
 ```
 
 ## The Nautical Theme

@@ -14,7 +14,7 @@ Three pipelines were established in this session:
 
 ### 1. Mermaid Diagram Pipeline
 
-```
+```text
 Write .mmd source → Render with mmdc (dark theme, transparent bg) → SVG in docs/diagrams/
 ```
 
@@ -27,7 +27,7 @@ The README embeds raw Mermaid code blocks (GitHub renders natively), while the S
 
 ### 2. Mascot Identity Pipeline
 
-```
+```text
 Concept → definition.md (identity + consistency anchors) → style file (bg-removal optimized) → prompt files
 ```
 
@@ -39,7 +39,7 @@ Designed a chibi-proportioned bosun officer character:
 
 ### 3. Transparent PNG Pipeline
 
-```
+```text
 Prompt → Gemini 3 Pro Image → rembg (Docker) → Transparent PNG
 ```
 
