@@ -1,0 +1,297 @@
+# Bosun Configuration
+
+How bosun finds its project, what the config file looks like, environment variables, and directory layout.
+
+## Project Discovery
+
+Bosun searches **upward** from the current directory to find the project root. It looks for (in order):
+
+1. `bosun.yaml` or `bosun.yml` config file
+2. `bosun/` directory containing `docker-compose.yml`
+3. `manifest/` or `manifests/` directory
+
+If none are found, you get: `project root not found`. Fix by running commands from inside your project, or using `bosun --root /path/to/project`.
+
+## Config File (bosun.yaml)
+
+Optional but recommended. Controls project-level settings.
+
+```yaml
+# bosun.yaml
+
+# Override the manifest directory (default: manifest/)
+manifest_dir: manifest
+
+# Override the provisions directory (default: manifest/provisions/)
+provisions_dir: manifest/provisions
+
+# Docker Compose project name for all stacks.
+# Ensures all containers share a namespace and --remove-orphans works correctly.
+# Defaults to the project root directory name.
+project_name: my-homelab
+
+# Infrastructure containers (shown separately in status output)
+infrastructure:
+  containers:
+    - traefik
+    - authelia
+    - gatus
+
+# Tunnel configuration for webhook delivery
+tunnel:
+  provider: tailscale          # or "cloudflare"
+  # Cloudflare-specific:
+  hostname: bosun.example.com
+  tunnel_name: my-tunnel
+  health_endpoint: https://bosun.example.com/health
+
+# Alert configuration for deploy notifications
+alerts:
+  on_success: false            # Alert on successful deploys
+  on_failure: true             # Alert on failed deploys (default)
+
+  # Discord
+  discord_webhook_url: "https://discord.com/api/webhooks/..."
+
+  # SendGrid email
+  sendgrid_api_key: "SG.xxx"
+  sendgrid_from_email: "bosun@example.com"
+  sendgrid_from_name: "Bosun"
+  sendgrid_to_emails:
+    - admin@example.com
+
+  # Twilio SMS
+  twilio_account_sid: "ACxxx"
+  twilio_auth_token: "xxx"
+  twilio_from_number: "+1234567890"
+  twilio_to_numbers:
+    - "+1987654321"
+```
+
+### Config Field Reference
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `manifest_dir` | `manifest` | Path to manifest directory (relative to project root) |
+| `provisions_dir` | `manifest/provisions` | Path to provisions directory |
+| `project_name` | *(directory name)* | Docker Compose project name for all stacks |
+| `infrastructure.containers` | `[traefik, authelia, gatus]` | Infrastructure container names |
+| `tunnel.provider` | `tailscale` | Tunnel provider: `tailscale` or `cloudflare` |
+| `alerts.on_success` | `false` | Send alerts on successful deploys |
+| `alerts.on_failure` | `true` | Send alerts on failed deploys |
+
+## Directory Structure
+
+A standard bosun project:
+
+```
+my-homelab/
+├── bosun.yaml               # Project configuration
+├── .sops.yaml               # SOPS encryption config
+│
+├── manifest/                # Service definitions
+│   ├── provisions/          # Reusable templates
+│   │   ├── container.yml
+│   │   ├── healthcheck.yml
+│   │   ├── homepage.yml
+│   │   ├── monitoring.yml
+│   │   ├── postgres.yml
+│   │   ├── redis.yml
+│   │   └── reverse-proxy.yml
+│   ├── services/            # Individual service manifests
+│   │   ├── myapp.yml
+│   │   ├── norish.yml
+│   │   └── ...
+│   └── stacks/              # Service groups
+│       ├── core.yml
+│       └── apps.yml
+│
+├── compose/                 # Generated compose files (output)
+│   ├── core.yml
+│   └── apps.yml
+├── traefik/                 # Generated Traefik config (output)
+│   └── dynamic.yml
+├── gatus/                   # Generated Gatus endpoints (output)
+│   └── endpoints.yml
+│
+├── bosun/                   # Webhook receiver (if using container mode)
+│   └── docker-compose.yml
+│
+└── secrets.sops.yaml        # Encrypted secrets (SOPS + Age)
+```
+
+### Key Directories
+
+| Directory | Purpose | Managed By |
+|-----------|---------|------------|
+| `manifest/provisions/` | Reusable templates | You (or `bosun init`) |
+| `manifest/services/` | Service definitions | You |
+| `manifest/stacks/` | Service groups | You |
+| `compose/` | Generated Docker Compose files | `bosun provision` |
+| `traefik/` | Generated Traefik dynamic config | `bosun provision` |
+| `gatus/` | Generated Gatus monitoring endpoints | `bosun provision` |
+
+## Secrets (SOPS + Age)
+
+Bosun uses SOPS with Age encryption for secrets management.
+
+### Setup
+
+1. **Generate an Age key:**
+   ```bash
+   age-keygen -o ~/.config/sops/age/keys.txt
+   ```
+
+2. **Create `.sops.yaml`** in project root:
+   ```yaml
+   creation_rules:
+     - age: "age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+   ```
+
+3. **Create and encrypt a secrets file:**
+   ```bash
+   sops secrets.sops.yaml
+   ```
+
+### Using Secrets in Templates
+
+During reconciliation, SOPS files are decrypted and available to Go templates:
+
+```yaml
+# In a .tmpl file:
+db_password: "{{ .apps.myapp.db_password }}"
+```
+
+In service manifests, reference secrets with the template syntax:
+
+```yaml
+services:
+  postgres:
+    db_password: "{{ $secrets.apps.myapp.db_password }}"
+```
+
+### Preview Rendered Templates
+
+```bash
+bosun render config.yml.tmpl                    # Single file to stdout
+bosun render -s secrets.sops.yaml *.tmpl        # Specify secrets file
+bosun render -o /tmp/rendered unraid/           # Render to directory
+```
+
+The `BOSUN_SECRETS_FILE` environment variable can set the default secrets file path.
+
+## Environment Variables
+
+### Reconciliation Variables
+
+Used by `bosun daemon` and `bosun reconcile`:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REPO_URL` | *required* | Git repository URL |
+| `REPO_BRANCH` | `main` | Branch to track |
+| `REPO_DIR` | `/app/repo` | Local clone directory |
+| `STAGING_DIR` | `/app/staging` | Staging directory |
+| `BACKUP_DIR` | `/app/backups` | Backup directory |
+| `LOG_DIR` | `/app/logs` | Log directory |
+| `LOCAL_APPDATA` | `/mnt/appdata` | Local appdata path |
+| `REMOTE_APPDATA` | `/mnt/user/appdata` | Remote appdata path |
+| `DEPLOY_TARGET` | *(local)* | Target host (user@host for SSH) |
+| `SECRETS_FILES` | | Comma-separated SOPS files to decrypt |
+| `DRY_RUN` | `false` | Dry run mode |
+| `FORCE` | `false` | Force deployment |
+
+### Other Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `BOSUN_SECRETS_FILE` | Default secrets file for `bosun render` |
+| `SOPS_AGE_KEY_FILE` | Path to Age key file (default: `~/.config/sops/age/keys.txt`) |
+
+## Tunnel Configuration
+
+Bosun needs a way to receive webhooks from GitHub. Two tunnel options:
+
+### Tailscale Funnel (Recommended for Simplicity)
+
+Zero-config tunnel using your Tailscale network:
+
+```yaml
+# bosun.yaml
+tunnel:
+  provider: tailscale
+```
+
+```bash
+bosun radio status             # Check Tailscale connectivity
+bosun radio test               # Test webhook endpoint
+```
+
+### Cloudflare Tunnel
+
+For custom domains and DDoS protection:
+
+```yaml
+# bosun.yaml
+tunnel:
+  provider: cloudflare
+  hostname: bosun.example.com
+  tunnel_name: my-tunnel
+  health_endpoint: https://bosun.example.com/health
+```
+
+## Alert Configuration
+
+Bosun can notify you when deployments succeed or fail.
+
+### Supported Providers
+
+| Provider | Config Key | What You Need |
+|----------|-----------|---------------|
+| **Discord** | `discord_webhook_url` | Discord webhook URL |
+| **SendGrid** | `sendgrid_api_key` | API key, from/to emails |
+| **Twilio** | `twilio_account_sid` | Account SID, auth token, phone numbers |
+
+### Configuration
+
+```yaml
+# bosun.yaml
+alerts:
+  on_failure: true             # Alert on failed deploys (default)
+  on_success: false            # Alert on successful deploys
+
+  discord_webhook_url: "https://discord.com/api/webhooks/..."
+```
+
+Alerts include: deploy status, commit hash, changed files, error details (on failure), and duration.
+
+## Infrastructure Containers
+
+Bosun treats certain containers as "infrastructure" -- they're shown separately in `bosun status` and get priority during `bosun yacht up` (e.g., Traefik is started first).
+
+Default infrastructure containers: `traefik`, `authelia`, `gatus`.
+
+Override in config:
+
+```yaml
+# bosun.yaml
+infrastructure:
+  containers:
+    - traefik
+    - authelia
+    - gatus
+    - homepage
+```
+
+## Docker Compose Project Name
+
+By default, bosun uses the project root directory name as the Docker Compose project name. This ensures all containers share a namespace and `--remove-orphans` works correctly.
+
+Override if needed:
+
+```yaml
+# bosun.yaml
+project_name: my-homelab
+```
+
+This affects container naming (`my-homelab-traefik-1`), network naming, and volume naming.
