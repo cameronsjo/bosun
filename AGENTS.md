@@ -43,22 +43,17 @@ make build-all
 ## Testing
 
 ```bash
-# Run tests
-make test
-
-# Run with coverage
-make test-cover
-# Creates coverage.out and coverage.html
+make test               # Run all tests
+make test-cover         # With coverage (creates coverage.out + coverage.html)
 ```
 
-## Testing Patterns
+**Patterns:**
 
-- Uses `testify/assert` and `testify/require` (not stdlib `testing` assertions)
-- Table-driven subtests: `t.Run("case name", func(t *testing.T) { ... })`
-- Temp dirs via `t.TempDir()` — cleaned up automatically
-- macOS symlink resolution: `evalSymlinks(t, path)` helper for `/var` → `/private/var`
-- Tests that need a project root: create `manifest/` or `bosun.yaml` in temp dir, `os.Chdir()` to it, defer restore
-- Config tests call `loadConfigFile(tmpDir)` + `extract*()` directly (unit) or `Load()` with chdir (integration)
+- `testify/assert` + `testify/require` (not stdlib assertions)
+- Table-driven subtests: `t.Run("case", func(t *testing.T) { ... })`
+- Temp dirs via `t.TempDir()` with `evalSymlinks()` helper for macOS `/var` → `/private/var`
+- Project root tests: create `manifest/` or `bosun.yaml` in temp dir, `os.Chdir()`, defer restore
+- Config tests: `loadConfigFile(tmpDir)` + `extract*()` (unit) or `Load()` with chdir (integration)
 
 ## Key Packages
 
@@ -174,7 +169,7 @@ Pre-flight validation for `bosun doctor`. Checks Docker, Compose v2, Git, SOPS, 
 
 ### internal/sentry
 
-Opt-in Sentry error tracking and performance monitoring. Enabled via `SENTRY_DSN` env var.
+Opt-in Sentry error tracking and performance monitoring. Enabled via `BOSUN_SENTRY_DSN` env var.
 
 ### internal/snapshot
 
@@ -279,6 +274,47 @@ When a feature is added, changed, or removed, **MUST** update the onboard skill 
 - `skills/onboard/resources/manifests.md` — manifest system, provisions, stacks
 
 The skill is the primary consumer-facing documentation. If the code changes but the skill doesn't, users and AI agents get stale information.
+
+## Environment Variables
+
+All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`REPO_URL`, `POLL_INTERVAL`, etc.) are supported but `BOSUN_` variants take precedence.
+
+| Variable | Package | Description |
+|----------|---------|-------------|
+| `BOSUN_REPO_URL` | daemon, reconcile | Git repository URL |
+| `BOSUN_REPO_BRANCH` | daemon, reconcile | Branch to track (default: `main`) |
+| `BOSUN_POLL_INTERVAL` | daemon | Polling interval in seconds (default: `3600`) |
+| `BOSUN_SOCKET_PATH` | daemon | Unix socket path (default: `/var/run/bosun.sock`) |
+| `BOSUN_ENABLE_TCP` | daemon | Enable TCP API (`true`/`false`) |
+| `BOSUN_TCP_ADDR` | daemon | TCP listen address (default: `:8080`) |
+| `BOSUN_BEARER_TOKEN` | daemon, trigger | Bearer token for TCP auth |
+| `BOSUN_DISABLE_HTTP` | daemon | Disable HTTP webhook server |
+| `BOSUN_SECRETS_FILE` | daemon, render | SOPS secrets file path |
+| `BOSUN_INFRA_DIR` | daemon | Infrastructure directory |
+| `BOSUN_STATE_DIR` | daemon, reconcile | Deploy state directory |
+| `BOSUN_POST_SYNC_HOOKS` | daemon, reconcile | JSON array overriding config file hooks |
+| `BOSUN_RECONCILE_TIMEOUT` | daemon | Reconciliation timeout |
+| `BOSUN_SHUTDOWN_TIMEOUT` | daemon | Graceful shutdown timeout |
+| `BOSUN_API_TIMEOUT` | daemon | API request timeout |
+| `BOSUN_DRIFT_INTERVAL` | daemon | Drift check interval |
+| `BOSUN_SSH_KEY` | reconcile | SSH key path for git operations |
+| `BOSUN_SSH_KNOWN_HOSTS` | reconcile | Known hosts file path |
+| `BOSUN_SSH_INSECURE_HOST_KEY` | reconcile | Skip host key verification (`true`/`false`) |
+| `BOSUN_DAEMON_MODE` | log, sentry | Set automatically when daemon starts |
+| `BOSUN_LOG_FORMAT` | log | Log format: `console` or `json` |
+| `BOSUN_LOG_LEVEL` | log | Log level: `debug`, `info`, `warn`, `error` |
+| `BOSUN_SENTRY_DSN` | sentry | Sentry DSN (empty = disabled) |
+| `BOSUN_SENTRY_ENVIRONMENT` | sentry | Sentry environment tag |
+| `BOSUN_SENTRY_TRACES_SAMPLE_RATE` | sentry | Trace sample rate (0.0–1.0) |
+
+## Gotchas
+
+- **CLAUDE.md is a symlink** to `AGENTS.md`. When staging for git, `git add AGENTS.md` (not `CLAUDE.md`)
+- **Circuit breaker**: after 3 consecutive deploy failures, daemon stops retrying. Reset with `bosun trigger -f`
+- **FUSE mounts**: Traefik (and similar services) don't detect config changes on Unraid's FUSE filesystem — this is why post-sync hooks exist
+- **macOS temp dirs**: `/var` symlinks to `/private/var`, so `t.TempDir()` paths need `filepath.EvalSymlinks()` in tests
+- **Config graceful degradation**: `config.Load()` errors are swallowed in `reconcile.go` — reconcile works without a project config file
+- **Env var precedence**: `BOSUN_POST_SYNC_HOOKS` (JSON) completely *replaces* hooks from `bosun.yaml`, it does not merge
 
 ## Landing the Plane (Session Completion)
 
