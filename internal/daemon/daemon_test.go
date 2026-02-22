@@ -546,6 +546,111 @@ func TestWidgetData(t *testing.T) {
 	})
 }
 
+func TestConfigFromEnv_PostSyncHooksFromConfig(t *testing.T) {
+	t.Run("loads hooks from bosun.yaml", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		// macOS: /var -> /private/var symlink resolution.
+		tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+
+		yamlContent := `manifest_dir: manifest
+post_sync_hooks:
+  - paths: ["traefik/conf.d/**"]
+    action: restart
+    container: traefik
+`
+		if err := os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(yamlContent), 0o644); err != nil {
+			t.Fatalf("Failed to write bosun.yaml: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0o755); err != nil {
+			t.Fatalf("Failed to create manifest dir: %v", err)
+		}
+
+		origDir, _ := os.Getwd()
+		defer func() { _ = os.Chdir(origDir) }()
+		_ = os.Chdir(tmpDir)
+
+		cfg := ConfigFromEnv()
+
+		hooks := cfg.ReconcileConfig.PostSyncHooks
+		if len(hooks) != 1 {
+			t.Fatalf("PostSyncHooks len = %d, want 1", len(hooks))
+		}
+		if hooks[0].Container != "traefik" {
+			t.Errorf("PostSyncHooks[0].Container = %q, want traefik", hooks[0].Container)
+		}
+		if hooks[0].Action != "restart" {
+			t.Errorf("PostSyncHooks[0].Action = %q, want restart", hooks[0].Action)
+		}
+	})
+
+	t.Run("env var overrides bosun.yaml hooks", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+
+		yamlContent := `manifest_dir: manifest
+post_sync_hooks:
+  - paths: ["traefik/conf.d/**"]
+    action: restart
+    container: traefik
+`
+		if err := os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(yamlContent), 0o644); err != nil {
+			t.Fatalf("Failed to write bosun.yaml: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0o755); err != nil {
+			t.Fatalf("Failed to create manifest dir: %v", err)
+		}
+
+		origDir, _ := os.Getwd()
+		defer func() { _ = os.Chdir(origDir) }()
+		_ = os.Chdir(tmpDir)
+
+		envHooks := []reconcile.PostSyncHook{{
+			Paths:     []string{"authelia/**"},
+			Action:    "restart",
+			Container: "authelia",
+		}}
+		envJSON, _ := json.Marshal(envHooks)
+		t.Setenv("BOSUN_POST_SYNC_HOOKS", string(envJSON))
+
+		cfg := ConfigFromEnv()
+
+		hooks := cfg.ReconcileConfig.PostSyncHooks
+		if len(hooks) != 1 {
+			t.Fatalf("PostSyncHooks len = %d, want 1", len(hooks))
+		}
+		if hooks[0].Container != "authelia" {
+			t.Errorf("PostSyncHooks[0].Container = %q, want authelia (env var should override config)", hooks[0].Container)
+		}
+	})
+
+	t.Run("no config file uses env var only", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+
+		origDir, _ := os.Getwd()
+		defer func() { _ = os.Chdir(origDir) }()
+		_ = os.Chdir(tmpDir)
+
+		envHooks := []reconcile.PostSyncHook{{
+			Paths:     []string{"nginx/**"},
+			Action:    "restart",
+			Container: "nginx",
+		}}
+		envJSON, _ := json.Marshal(envHooks)
+		t.Setenv("BOSUN_POST_SYNC_HOOKS", string(envJSON))
+
+		cfg := ConfigFromEnv()
+
+		hooks := cfg.ReconcileConfig.PostSyncHooks
+		if len(hooks) != 1 {
+			t.Fatalf("PostSyncHooks len = %d, want 1", len(hooks))
+		}
+		if hooks[0].Container != "nginx" {
+			t.Errorf("PostSyncHooks[0].Container = %q, want nginx", hooks[0].Container)
+		}
+	})
+}
+
 func TestConfigFromEnv_InfraDir(t *testing.T) {
 	// Save and restore environment
 	orig := os.Getenv("BOSUN_INFRA_DIR")

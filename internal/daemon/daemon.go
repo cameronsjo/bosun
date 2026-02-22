@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/alert"
+	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/reconcile"
@@ -877,7 +878,10 @@ func ConfigFromEnv() *Config {
 		}
 	}
 
-	// Post-sync hooks (JSON array)
+	// Post-sync hooks: load from project config, env var overrides.
+	if projectCfg, err := config.Load(); err == nil {
+		rcfg.PostSyncHooks = projectCfg.PostSyncHooks()
+	}
 	if v := os.Getenv("BOSUN_POST_SYNC_HOOKS"); v != "" {
 		var hooks []reconcile.PostSyncHook
 		if err := json.Unmarshal([]byte(v), &hooks); err != nil {

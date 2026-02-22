@@ -55,6 +55,28 @@ Glob patterns SHALL support `**` for recursive directory matching.
 - **AND** no `bosun.yaml` is found
 - **THEN** hooks are empty and reconciliation proceeds without post-sync hooks
 
+#### Scenario: Daemon loads hooks from project config
+
+- **WHEN** the daemon starts via `ConfigFromEnv()`
+- **AND** `bosun.yaml` declares post-sync hooks
+- **AND** `BOSUN_POST_SYNC_HOOKS` is not set
+- **THEN** the hooks from `bosun.yaml` are loaded into the reconcile config
+- **AND** the daemon uses these hooks during reconciliation
+
+#### Scenario: Daemon env var overrides project config hooks
+
+- **WHEN** the daemon starts via `ConfigFromEnv()`
+- **AND** `bosun.yaml` declares hooks for container `traefik`
+- **AND** `BOSUN_POST_SYNC_HOOKS` is set with hooks for container `authelia`
+- **THEN** only the `authelia` hook from the environment variable is used
+- **AND** the `traefik` hook from the config file is ignored
+
+#### Scenario: Daemon without project config
+
+- **WHEN** the daemon starts via `ConfigFromEnv()`
+- **AND** no `bosun.yaml` is found
+- **THEN** hooks are empty unless `BOSUN_POST_SYNC_HOOKS` provides them
+
 #### Scenario: Container restarted after config change
 
 - **WHEN** a hook is configured with paths `["traefik/conf.d/**"]` and container `traefik`
