@@ -1,0 +1,4 @@
+FROM python:3.11-slim
+RUN pip install --no-cache-dir 'rembg[cpu,cli]'
+RUN python -c "from rembg import new_session; new_session('u2net')"
+ENTRYPOINT ["rembg", "i"]
