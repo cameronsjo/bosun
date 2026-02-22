@@ -14,6 +14,113 @@
 
 Bosun operates without an API server, which means capabilities that K8s tools get "for free" (atomic applies, watch-based drift detection, CRD-based state) must be explicitly implemented. This drives Bosun's file-based locking, backup-before-deploy, and periodic drift polling.
 
+## Pros and Cons
+
+### Bosun
+
+**Best for:** Homelab operators running Docker Compose on bare metal who want GitOps without Kubernetes.
+
+| Pros | Cons |
+|---|---|
+| **Zero infrastructure overhead** -- single binary, no cluster, no controllers, no CRDs. `scp` the binary and you're done | **Small ecosystem** -- 3 alert providers, no plugin system, no community extensions |
+| **Native secret management** -- SOPS + Age decryption built into the pipeline, not bolted on as a plugin | **No self-healing** -- detects drift and alerts but won't auto-remediate; requires manual intervention or next git push |
+| **Backup before deploy** -- timestamped tar.gz snapshots before every rsync, a safety net that K8s tools don't need but bare metal does | **No automated rollback** -- backups exist but there's no mechanism to auto-restore on failure |
+| **Cost-aware alerting** -- progressive throttling (1, 3, 10, 30...) prevents alert storms; Twilio SMS gated to error/critical saves money | **No metrics endpoint** -- can't scrape with Prometheus, can't build Grafana dashboards. The biggest observability gap |
+| **Correlation IDs** -- every reconciliation and HTTP request gets a UUID that flows through all log entries. Neither competitor has this | **Periodic drift only** -- polls on an interval instead of reacting to state changes in real-time |
+| **Simple mental model** -- linear pipeline (lock -> git -> decrypt -> template -> backup -> deploy -> compose -> unlock), easy to reason about | **No sync waves/phases** -- can't order resource creation or run pre/post-deploy validation hooks |
+| **Built-in migration tooling** -- `bosun migrate helm` converts legacy manifests to Helm-aligned format automatically | **No RBAC** -- single-user model, no access control for shared environments |
+| **Monorepo multi-server** -- one repo drives multiple servers via SSH+rsync without fleet management overhead | **Limited multi-target** -- no auto-discovery, no fleet management, no tenant isolation |
+| **Helm-aligned without Helm** -- Go templates + Sprig + provisions give Helm-like composition without the Helm binary or Tiller history | **Not actual Helm** -- can't use the Helm ecosystem (artifact hub, chart museums, helm plugins) |
+| **Circuit breaker** -- stops retrying after 3 consecutive failures, preventing cascading damage on persistent errors | **Limited health model** -- 3 categories (OK/warn/error) vs Argo's 6-status model with custom Lua checks |
+
+**When to choose Bosun:**
+- You run Docker Compose on bare metal or VMs and want GitOps
+- You value simplicity over feature richness
+- You don't want to run Kubernetes just to get GitOps
+- You're a solo operator or small team managing 1-5 servers
+
+**When NOT to choose Bosun:**
+- You're already running Kubernetes
+- You need progressive delivery (canary, blue-green)
+- You need fine-grained RBAC for multi-team access
+- You need a rich plugin ecosystem
+
+### Argo CD
+
+**Best for:** Teams running Kubernetes who want a full-featured GitOps platform with a polished UI and rich ecosystem.
+
+| Pros | Cons |
+|---|---|
+| **Best-in-class UI** -- real-time resource tree, diff view, log streaming, in-browser terminal, pod shell access | **Heavy footprint** -- API server + repo-server + application controller + Redis + Dex. Significant resource overhead |
+| **Real-time drift detection** -- K8s watch API means drift is detected in seconds, not minutes | **Requires Kubernetes** -- no option for non-K8s targets. You need a cluster before you can use it |
+| **20+ notification providers** -- Slack, Teams, PagerDuty, Opsgenie, GitHub commit status, Datadog, and more out of the box | **No native secret management** -- SOPS requires the KSOPS plugin; Vault requires AVP. Always an add-on |
+| **Sync waves and hooks** -- PreSync/Sync/PostSync/SyncFail hooks with wave ordering give fine-grained deploy control | **Complex configuration** -- RBAC policies in ConfigMaps, notification triggers in CEL expressions, health checks in Lua scripts |
+| **ApplicationSets** -- auto-generate applications from git directories, PR previews, cluster discovery, SCM org scanning | **No automated rollback** -- manual rollback via UI/CLI only. Automated rollback requires Argo Rollouts (separate project) |
+| **Multi-cluster at scale** -- single instance can manage hundreds of clusters with hub-and-spoke topology | **CMP plugin model** -- config management plugins run as sidecars with their own containers, adding operational complexity |
+| **Fine-grained RBAC** -- Casbin-based policies with project-scoped access control, SSO via Dex or native OIDC | **No OpenTelemetry** -- metrics via Prometheus but no native tracing. Proposed but not GA |
+| **Self-healing** -- `selfHeal: true` auto-corrects drift without waiting for a git push | **Steep learning curve** -- Applications, Projects, ApplicationSets, AppOfApps pattern, sync policies, sync windows -- lots of concepts |
+| **Mature ecosystem** -- large community, commercial support (Codefresh/Akuity), extensive documentation | **Monolithic repo-server** -- all manifest rendering happens in one component, which can become a bottleneck at scale |
+| **Ignored differences** -- suppress known drift noise (admission controller mutations, status fields) per-application | **No backup/snapshot** -- relies on K8s etcd and Helm release history. No explicit pre-deploy snapshot mechanism |
+
+**When to choose Argo CD:**
+- You run Kubernetes and want a polished UI for GitOps
+- You need multi-cluster management at scale
+- You need ApplicationSets for dynamic application generation (PR previews, per-cluster deploys)
+- You want the largest community and ecosystem
+
+**When NOT to choose Argo CD:**
+- You don't run Kubernetes
+- You want minimal operational overhead (Argo CD itself is a complex deployment)
+- You need native secret decryption without plugins
+- You're a solo operator who doesn't need RBAC or multi-tenancy
+
+### Flux CD
+
+**Best for:** Kubernetes operators who prefer a lightweight, composable, "Unix philosophy" approach to GitOps.
+
+| Pros | Cons |
+|---|---|
+| **Modular architecture** -- install only the controllers you need. Source + Kustomize is the minimum; add Helm, image automation, notifications as needed | **No built-in UI** -- CLI-first tool. Weave GitOps provides a third-party UI but it's a separate project |
+| **Native SOPS decryption** -- kustomize-controller decrypts SOPS-encrypted secrets directly, no plugin needed. Supports Age, PGP, AWS/GCP/Azure KMS | **No real-time drift detection** -- interval-based polling only. Faster intervals cost more API calls |
+| **OpenTelemetry tracing** -- v2.7 added native OTel spans for reconciliation in kustomize and helm controllers | **No sync waves** -- resource ordering is limited to Kustomize `depends_on`. No PreSync/PostSync hooks |
+| **Automated rollback** -- Helm controller supports automatic rollback on install/upgrade failure with configurable retry and remediation strategies | **No ApplicationSets equivalent** -- no built-in fleet generator for auto-discovering repos, clusters, or PRs |
+| **Image automation** -- closed-loop from registry scan to git commit to deploy. Detects new image tags and auto-commits updates | **Weaker multi-cluster** -- hub-spoke works but lacks Argo CD's fleet management features (cluster generator, SCM discovery) |
+| **20+ notification providers** -- same controller handles both outbound alerts and inbound webhook triggers | **CNCF archived (2025)** -- Flux was archived by the CNCF after Weaveworks folded. Community maintains it but governance is uncertain |
+| **Multi-tenancy built-in** -- service account impersonation + namespace isolation for tenant workloads | **No built-in API** -- management is via kubectl + Flux CLI. No REST or gRPC API for custom integrations |
+| **OCI artifact support** -- pull manifests from any OCI registry, not just git repos | **Helm-only drift detection** -- Kustomize drift correction is implicit (re-apply everything), not targeted |
+| **Lightweight footprint** -- controllers are small, focused, and resource-efficient compared to Argo CD's stack | **No custom health checks** -- relies on K8s readiness probes. No Lua scripting for custom health logic |
+| **Variable substitution** -- Kustomize `postBuild.substitute` injects values from ConfigMaps/Secrets without Helm | **Smaller community** -- after CNCF archival, community is active but smaller than Argo CD's |
+
+**When to choose Flux CD:**
+- You run Kubernetes and prefer composable, lightweight tooling
+- You need native SOPS decryption without plugins
+- You want image automation (registry scan -> auto-deploy)
+- You need automated Helm rollback on failure
+- You value OpenTelemetry tracing for observability
+
+**When NOT to choose Flux CD:**
+- You want a polished web UI out of the box
+- You need ApplicationSets-style fleet management
+- You're concerned about long-term governance after CNCF archival
+- You need custom health check logic beyond K8s readiness probes
+
+### Decision Matrix
+
+| If you need... | Choose |
+|---|---|
+| GitOps for Docker Compose on bare metal | **Bosun** (only option) |
+| Polished UI + largest ecosystem | **Argo CD** |
+| Lightweight + composable + native SOPS | **Flux CD** |
+| Multi-cluster fleet management | **Argo CD** (ApplicationSets) |
+| Image tag auto-updates | **Flux CD** (image automation) |
+| Automated Helm rollback | **Flux CD** |
+| Zero infrastructure overhead | **Bosun** |
+| Progressive delivery (canary/blue-green) | **Argo CD** + Rollouts or **Flux CD** + Flagger |
+| Native OpenTelemetry tracing | **Flux CD** (v2.7+) |
+| Cost-aware alerting for homelab budgets | **Bosun** |
+
+## Detailed Feature Comparison
+
 ## Reconciliation Pipeline
 
 | Feature | Bosun | Argo CD | Flux CD |
