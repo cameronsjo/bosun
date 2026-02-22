@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/log"
@@ -19,6 +20,9 @@ type PostSyncHook struct {
 	Action string `json:"action" yaml:"action"`
 	// Container is the name of the container to act on.
 	Container string `json:"container" yaml:"container"`
+	// Delay is an optional pause before restarting this specific container.
+	// Useful when a container needs extra time for config propagation.
+	Delay Duration `json:"delay,omitempty" yaml:"delay,omitempty"`
 }
 
 // EvaluatePostSyncHooks matches changed file paths against hook glob patterns
@@ -79,12 +83,24 @@ func matchGlob(pattern, file string) bool {
 }
 
 // ExecutePostSyncHooks runs matched hooks by restarting the specified containers.
-func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []PostSyncHook) error {
+// settleDelay is a global pause before any hooks run (filesystem propagation).
+func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []PostSyncHook, settleDelay time.Duration) error {
 	if len(hooks) == 0 {
 		return nil
 	}
 
 	logger := log.Component(log.ComponentReconcile)
+
+	// Global settle delay: wait for filesystem propagation before restarting anything.
+	if settleDelay > 0 {
+		logger.Info().Dur("settle_delay", settleDelay).Msg("Waiting for filesystem settle before post-sync hooks")
+		ui.Info("  Waiting %s for filesystem settle...", settleDelay)
+		select {
+		case <-time.After(settleDelay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 
 	var errs []string
 	for _, hook := range hooks {
@@ -94,6 +110,17 @@ func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []Po
 				Str("container", hook.Container).
 				Msg("Unsupported post-sync hook action, skipping")
 			continue
+		}
+
+		// Per-hook delay: wait before restarting this specific container.
+		if hook.Delay.Duration > 0 {
+			logger.Info().Dur("delay", hook.Delay.Duration).Str("container", hook.Container).Msg("Waiting before container restart")
+			ui.Info("  Waiting %s before restarting %s...", hook.Delay.Duration, hook.Container)
+			select {
+			case <-time.After(hook.Delay.Duration):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 
 		logger.Info().

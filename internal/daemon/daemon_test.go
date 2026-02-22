@@ -651,6 +651,81 @@ post_sync_hooks:
 	})
 }
 
+func TestConfigFromEnv_HookSettleDelay(t *testing.T) {
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "2s")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.HookSettleDelay != 2*time.Second {
+			t.Errorf("HookSettleDelay = %v, want 2s", cfg.ReconcileConfig.HookSettleDelay)
+		}
+	})
+
+	t.Run("parses bare seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "5")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.HookSettleDelay != 5*time.Second {
+			t.Errorf("HookSettleDelay = %v, want 5s", cfg.ReconcileConfig.HookSettleDelay)
+		}
+	})
+
+	t.Run("defaults to zero when not set", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.HookSettleDelay != 0 {
+			t.Errorf("HookSettleDelay = %v, want 0", cfg.ReconcileConfig.HookSettleDelay)
+		}
+	})
+
+	t.Run("invalid value ignored", func(t *testing.T) {
+		t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "not-a-duration")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.HookSettleDelay != 0 {
+			t.Errorf("HookSettleDelay = %v, want 0 (default)", cfg.ReconcileConfig.HookSettleDelay)
+		}
+	})
+}
+
+func TestConfigFromEnv_HooksWithDelay(t *testing.T) {
+	t.Run("parses hooks JSON with delay field", func(t *testing.T) {
+		envHooks := `[{"paths":["traefik/conf.d/**"],"action":"restart","container":"traefik","delay":"5s"}]`
+		t.Setenv("BOSUN_POST_SYNC_HOOKS", envHooks)
+
+		cfg := ConfigFromEnv()
+
+		hooks := cfg.ReconcileConfig.PostSyncHooks
+		if len(hooks) != 1 {
+			t.Fatalf("PostSyncHooks len = %d, want 1", len(hooks))
+		}
+		if hooks[0].Container != "traefik" {
+			t.Errorf("PostSyncHooks[0].Container = %q, want traefik", hooks[0].Container)
+		}
+		if hooks[0].Delay.Duration != 5*time.Second {
+			t.Errorf("PostSyncHooks[0].Delay = %v, want 5s", hooks[0].Delay.Duration)
+		}
+	})
+
+	t.Run("hooks without delay default to zero", func(t *testing.T) {
+		envHooks := `[{"paths":["gatus/**"],"action":"restart","container":"gatus"}]`
+		t.Setenv("BOSUN_POST_SYNC_HOOKS", envHooks)
+
+		cfg := ConfigFromEnv()
+
+		hooks := cfg.ReconcileConfig.PostSyncHooks
+		if len(hooks) != 1 {
+			t.Fatalf("PostSyncHooks len = %d, want 1", len(hooks))
+		}
+		if hooks[0].Delay.Duration != 0 {
+			t.Errorf("PostSyncHooks[0].Delay = %v, want 0", hooks[0].Delay.Duration)
+		}
+	})
+}
+
 func TestConfigFromEnv_InfraDir(t *testing.T) {
 	// Save and restore environment
 	orig := os.Getenv("BOSUN_INFRA_DIR")

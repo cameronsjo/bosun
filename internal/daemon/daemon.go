@@ -878,9 +878,10 @@ func ConfigFromEnv() *Config {
 		}
 	}
 
-	// Post-sync hooks: load from project config, env var overrides.
+	// Post-sync hooks and settle delay: load from project config, env var overrides.
 	if projectCfg, err := config.Load(); err == nil {
 		rcfg.PostSyncHooks = projectCfg.PostSyncHooks()
+		rcfg.HookSettleDelay = projectCfg.HookSettleDelay()
 	}
 	if v := os.Getenv("BOSUN_POST_SYNC_HOOKS"); v != "" {
 		var hooks []reconcile.PostSyncHook
@@ -888,6 +889,13 @@ func ConfigFromEnv() *Config {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_POST_SYNC_HOOKS, ignoring")
 		} else {
 			rcfg.PostSyncHooks = hooks
+		}
+	}
+	if v := os.Getenv("BOSUN_HOOK_SETTLE_DELAY"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			rcfg.HookSettleDelay = d
+		} else {
+			log.Warn().Str("value", v).Msg("Failed to parse BOSUN_HOOK_SETTLE_DELAY, ignoring")
 		}
 	}
 

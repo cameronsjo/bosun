@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -142,9 +143,10 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		cfg.StateFile = filepath.Join(stateDir, reconcile.DefaultStateFile)
 	}
 
-	// Load post-sync hooks from project config file.
+	// Load post-sync hooks and settle delay from project config file.
 	if projectCfg, err := config.Load(); err == nil {
 		cfg.PostSyncHooks = projectCfg.PostSyncHooks()
+		cfg.HookSettleDelay = projectCfg.HookSettleDelay()
 	}
 
 	// Environment variable override for post-sync hooks (JSON, same as daemon).
@@ -154,6 +156,17 @@ func runReconcile(cmd *cobra.Command, args []string) {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_POST_SYNC_HOOKS, ignoring")
 		} else {
 			cfg.PostSyncHooks = hooks
+		}
+	}
+
+	// Environment variable override for hook settle delay.
+	if v := os.Getenv("BOSUN_HOOK_SETTLE_DELAY"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.HookSettleDelay = d
+		} else if d, err := time.ParseDuration(v + "s"); err == nil {
+			cfg.HookSettleDelay = d
+		} else {
+			log.Warn().Str("value", v).Msg("Failed to parse BOSUN_HOOK_SETTLE_DELAY, ignoring")
 		}
 	}
 

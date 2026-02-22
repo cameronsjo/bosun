@@ -67,12 +67,17 @@ alerts:
   twilio_to_numbers:
     - "+1987654321"
 
+# Global pause after deploy, before any post-sync hooks run.
+# Lets FUSE filesystems (e.g., Unraid's shfs) propagate writes.
+hook_settle_delay: "2s"
+
 # Post-sync hooks: restart containers when specific config files change.
 # Solves services (like Traefik) not picking up config changes on FUSE mounts.
 post_sync_hooks:
   - paths: ["traefik/conf.d/**"]
     action: restart
     container: traefik
+    delay: "5s"                  # Per-hook pause before this container restarts
   - paths: ["authelia/config.yml", "authelia/users.yml"]
     action: restart
     container: authelia
@@ -90,6 +95,7 @@ post_sync_hooks:
 | `alerts.on_success` | `false` | Send alerts on successful deploys |
 | `alerts.on_failure` | `true` | Send alerts on failed deploys |
 | `post_sync_hooks` | `[]` | Container restart hooks triggered by file changes |
+| `hook_settle_delay` | `0` (disabled) | Global pause after deploy before hooks run (e.g., `"2s"`) |
 
 ## Directory Structure
 
@@ -313,6 +319,7 @@ post_sync_hooks:
 | `paths` | Yes | Glob patterns matched against changed files (relative to repo root). Supports `**` for recursive matching |
 | `action` | Yes | Action to perform. Currently only `restart` is supported |
 | `container` | Yes | Container name to act on |
+| `delay` | No | Pause before restarting this container (e.g., `"5s"`). Default: `0` (no delay) |
 
 ### Behavior
 
@@ -323,10 +330,11 @@ post_sync_hooks:
 
 ### Environment Variable Override
 
-The `BOSUN_POST_SYNC_HOOKS` environment variable (JSON array) overrides hooks from the config file. This applies to both daemon and CLI modes:
+The `BOSUN_POST_SYNC_HOOKS` environment variable (JSON array) overrides hooks from the config file. The `BOSUN_HOOK_SETTLE_DELAY` variable overrides the settle delay. Both apply to daemon and CLI modes:
 
 ```bash
-export BOSUN_POST_SYNC_HOOKS='[{"paths":["traefik/**"],"action":"restart","container":"traefik"}]'
+export BOSUN_POST_SYNC_HOOKS='[{"paths":["traefik/**"],"action":"restart","container":"traefik","delay":"5s"}]'
+export BOSUN_HOOK_SETTLE_DELAY=2s
 ```
 
 ## Docker Compose Project Name

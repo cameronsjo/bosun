@@ -41,6 +41,10 @@ Every reconciliation follows this sequence:
 
 After `docker compose up`, bosun checks if any configured hook patterns match the files that changed in this deploy. If so, it restarts the matched containers. This solves services like Traefik that don't detect config file changes on certain filesystems (e.g., Unraid's FUSE mount).
 
+Two timing controls are available:
+- **`hook_settle_delay`** — global pause after deploy, before any hooks run (filesystem propagation)
+- **`delay`** — per-hook pause before restarting a specific container
+
 Hooks are configured in `bosun.yaml` under `post_sync_hooks`. See the [Configuration guide](configuration.md#post-sync-hooks) for schema and examples.
 
 ### Lock Behavior
@@ -247,6 +251,7 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `DRY_RUN` | `false` | Enable dry run |
 | `FORCE` | `false` | Force deployment |
 | `BOSUN_POST_SYNC_HOOKS` | | JSON array of post-sync hooks (overrides config file) |
+| `BOSUN_HOOK_SETTLE_DELAY` | `0` | Global pause before post-sync hooks run (e.g., `2s`) |
 
 ## Systemd Deployment
 
