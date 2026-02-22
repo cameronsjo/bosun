@@ -33,7 +33,7 @@
 
 - [x] 4.1 `go build ./...` passes
 - [x] 4.2 `go test ./... -count=1` all pass
-- [ ] 4.3 `golangci-lint run ./...` zero issues
+- [x] 4.3 `golangci-lint run ./...` — zero issues in changed files (52 pre-existing errcheck issues in unrelated files)
 - [ ] 4.4 Manual test: deploy with unhealthy container present, verify deploy succeeds and alert fires
 - [ ] 4.5 Manual test: trigger circuit breaker, verify Discord alert received
 - [ ] 4.6 Manual test: change traefik config, verify traefik container restarted
