@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/cameronsjo/bosun/internal/log"
+	"github.com/cameronsjo/bosun/internal/reconcile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -47,6 +48,9 @@ type Config struct {
 
 	// alertConfig holds alert provider configuration.
 	alertConfig AlertConfig
+
+	// postSyncHooks holds post-sync container restart hooks.
+	postSyncHooks []reconcile.PostSyncHook
 }
 
 // TunnelConfig holds tunnel provider-specific configuration.
@@ -113,6 +117,9 @@ type configFile struct {
 
 	// Alerts configuration
 	Alerts AlertConfig `yaml:"alerts"`
+
+	// PostSyncHooks defines container restart actions triggered by file changes.
+	PostSyncHooks []reconcile.PostSyncHook `yaml:"post_sync_hooks"`
 }
 
 // FindRoot searches upward from the current directory to find the project root.
@@ -198,6 +205,7 @@ func Load() (*Config, error) {
 	infraContainers := extractInfraContainers(fileCfg)
 	tunnelProvider, tunnelConfig := extractTunnelConfig(fileCfg)
 	alertConfig := extractAlertConfig(fileCfg)
+	postSyncHooks := extractPostSyncHooks(fileCfg)
 
 	// Determine project name (defaults to directory name)
 	projectName := fileCfg.ProjectName
@@ -216,6 +224,7 @@ func Load() (*Config, error) {
 		tunnelProvider:  tunnelProvider,
 		tunnelConfig:    tunnelConfig,
 		alertConfig:     alertConfig,
+		postSyncHooks:   postSyncHooks,
 	}
 
 	return cfg, nil
@@ -380,6 +389,16 @@ func extractTunnelConfig(cfg configFile) (string, TunnelConfig) {
 // GetAlertConfig returns the alert configuration.
 func (c *Config) GetAlertConfig() AlertConfig {
 	return c.alertConfig
+}
+
+// PostSyncHooks returns the configured post-sync container restart hooks.
+func (c *Config) PostSyncHooks() []reconcile.PostSyncHook {
+	return c.postSyncHooks
+}
+
+// extractPostSyncHooks extracts post-sync hooks from a parsed config.
+func extractPostSyncHooks(cfg configFile) []reconcile.PostSyncHook {
+	return cfg.PostSyncHooks
 }
 
 // extractAlertConfig extracts alert configuration from a parsed config.

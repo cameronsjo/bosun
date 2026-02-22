@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cameronsjo/bosun/internal/alert"
+	"github.com/cameronsjo/bosun/internal/config"
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
@@ -137,6 +140,21 @@ func runReconcile(cmd *cobra.Command, args []string) {
 	// State file from environment.
 	if stateDir := os.Getenv("BOSUN_STATE_DIR"); stateDir != "" {
 		cfg.StateFile = filepath.Join(stateDir, reconcile.DefaultStateFile)
+	}
+
+	// Load post-sync hooks from project config file.
+	if projectCfg, err := config.Load(); err == nil {
+		cfg.PostSyncHooks = projectCfg.PostSyncHooks()
+	}
+
+	// Environment variable override for post-sync hooks (JSON, same as daemon).
+	if v := os.Getenv("BOSUN_POST_SYNC_HOOKS"); v != "" {
+		var hooks []reconcile.PostSyncHook
+		if err := json.Unmarshal([]byte(v), &hooks); err != nil {
+			log.Warn().Err(err).Msg("Failed to parse BOSUN_POST_SYNC_HOOKS, ignoring")
+		} else {
+			cfg.PostSyncHooks = hooks
+		}
 	}
 
 	// Set source for state tracking.

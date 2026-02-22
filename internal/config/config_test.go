@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -426,4 +427,82 @@ func TestFindRoot_DeepNesting(t *testing.T) {
 	root, err := FindRoot()
 	require.NoError(t, err)
 	assert.Equal(t, tmpDir, root)
+}
+
+func TestPostSyncHooksFromConfig(t *testing.T) {
+	t.Run("parses hooks from bosun.yaml", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		// Create manifest directory (needed for FindRoot)
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `post_sync_hooks:
+  - paths: ["traefik/conf.d/**"]
+    action: restart
+    container: traefik
+  - paths: ["authelia/config.yml"]
+    action: restart
+    container: authelia
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+
+		hooks := cfg.PostSyncHooks()
+		require.Len(t, hooks, 2)
+
+		assert.Equal(t, reconcile.PostSyncHook{
+			Paths:     []string{"traefik/conf.d/**"},
+			Action:    "restart",
+			Container: "traefik",
+		}, hooks[0])
+
+		assert.Equal(t, reconcile.PostSyncHook{
+			Paths:     []string{"authelia/config.yml"},
+			Action:    "restart",
+			Container: "authelia",
+		}, hooks[1])
+	})
+
+	t.Run("returns nil when no hooks configured", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `infrastructure:
+  containers:
+    - traefik
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Empty(t, cfg.PostSyncHooks())
+	})
+
+	t.Run("returns nil when no config file exists", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Empty(t, cfg.PostSyncHooks())
+	})
 }
