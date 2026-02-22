@@ -77,7 +77,7 @@ The system SHALL support reusable template snippets via `_helpers.tpl` files in 
 
 Helper templates MUST be defined using Go template `define` syntax:
 
-```
+```gotemplate
 {{- define "helper.name" -}}
 ...content...
 {{- end -}}
@@ -146,7 +146,7 @@ The system SHALL provide custom functions for YAML output formatting:
 #### Scenario: toYaml with slice
 
 - **WHEN** a template uses `{{ .Values.ports | toYaml }}`
-- **THEN** the slice is rendered as a YAML list with `- ` prefixes
+- **THEN** the slice is rendered as a YAML list with `-` prefixes
 
 #### Scenario: nindent single line
 

@@ -132,7 +132,7 @@ The core question: how does the tool learn about changes and apply them?
 
 The daemon process listens on a Unix socket, receives webhooks from git providers, and executes a linear pipeline. One process, one pipeline, sequential execution.
 
-```
+```text
 webhook/poll -> daemon process -> lock -> git pull -> decrypt -> template
              -> backup -> deploy -> compose up -> unlock
 ```

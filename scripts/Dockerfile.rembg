@@ -6,7 +6,11 @@ RUN pip install --no-cache-dir "rembg[cpu,cli]==${REMBG_VERSION}"
 
 RUN adduser --disabled-password --gecos "" --home /home/rembg rembg
 
+# Pre-download U2Net model. rembg caches to ~/.u2net/ which resolves to
+# /root/.u2net/ during build. Chown both the home dir and model cache so
+# the non-root user can read the model at runtime.
 RUN python -c "from rembg import new_session; new_session('u2net')" \
+    && cp -r /root/.u2net /home/rembg/.u2net \
     && chown -R rembg:rembg /home/rembg
 
 USER rembg
