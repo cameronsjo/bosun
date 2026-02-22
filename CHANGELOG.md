@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1](https://github.com/cameronsjo/bosun/compare/v0.7.0...v0.7.1) (2026-02-22)
+
+
+### Bug Fixes
+
+* **deps:** upgrade go-git and edwards25519 to patch security vulnerabilities ([6b785c5](https://github.com/cameronsjo/bosun/commit/6b785c5dff8e6a87dd4826efac1caa45df7b8e1f))
+
 ## [0.7.0](https://github.com/cameronsjo/bosun/compare/v0.6.1...v0.7.0) (2026-02-22)
 
 
