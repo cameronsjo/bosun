@@ -2,7 +2,7 @@
 
 Complete reference for every bosun command. All commands support `--help` for inline help.
 
-**Global flags:** `--help`/`-h` (help), `--version` (version), `--verbose` (debug output). Exit codes: `0` = success, `1` = error.
+**Global flags:** `--help`/`-h` (help), `--version` (version), `--verbose` (debug output), `--log-level` (debug/info/warn/error), `--log-format` (json/console/auto). Exit codes: `0` = success, `1` = error.
 
 ---
 
@@ -50,38 +50,13 @@ Manage Docker Compose stacks. All yacht commands validate the compose file befor
 
 **Parent alias:** `hoist` (e.g., `bosun hoist up`)
 
-### `bosun yacht up [services...]`
-
-Start Docker Compose services. Validates compose syntax, checks that Traefik is running (starting it if needed), then runs `docker compose up -d`.
-
 ```bash
-bosun yacht up                 # Start all services
+bosun yacht up                 # Start all services (validates compose, checks Traefik first)
 bosun yacht up nginx redis     # Start specific services
-```
-
-### `bosun yacht down`
-
-Stop and remove all services defined in the compose file.
-
-```bash
-bosun yacht down
-```
-
-### `bosun yacht restart [services...]`
-
-Restart services. Validates compose file and service names before restarting.
-
-```bash
-bosun yacht restart            # Restart all services
+bosun yacht down               # Stop and remove all services
+bosun yacht restart             # Restart all services
 bosun yacht restart myapp      # Restart specific service
-```
-
-### `bosun yacht status`
-
-Show status of all services in the compose file.
-
-```bash
-bosun yacht status
+bosun yacht status             # Show status of all compose services
 ```
 
 ---
@@ -90,58 +65,21 @@ bosun yacht status
 
 Manage individual containers. **Parent alias:** `scallywags`
 
-### `bosun crew list`
-
-List running containers with name, status, and ports.
-
 ```bash
-bosun crew list                # Running containers only
+bosun crew list                # List running containers (name, status, ports)
 bosun crew list -a             # Include stopped containers
+bosun crew logs <name>         # Last 100 lines of container logs
+bosun crew logs <name> -f      # Stream logs (follow)
+bosun crew logs <name> -n 20   # Last 20 lines
+bosun crew inspect <name>      # Detailed container info as formatted JSON
+bosun crew restart <name>      # Restart a specific container
 ```
 
-| Flag | Description |
-|------|-------------|
-| `-a`, `--all` | Show all containers (including stopped) |
-
-**Example output:**
-
-```
-NAME          STATUS              PORTS
-traefik       Up 3 days           80/tcp, 443/tcp
-authelia      Up 3 days (healthy) 9091/tcp
-myapp         Up 2 hours          8080/tcp
-```
-
-### `bosun crew logs <name>`
-
-View container logs.
-
-```bash
-bosun crew logs traefik        # Last 100 lines
-bosun crew logs traefik -f     # Stream logs (follow)
-bosun crew logs traefik -n 20  # Last 20 lines
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-f`, `--follow` | `false` | Follow log output |
-| `-n`, `--tail` | `100` | Number of lines to show |
-
-### `bosun crew inspect <name>`
-
-Show detailed container information as formatted JSON. Includes image, ports, environment, mounts, labels, and network configuration.
-
-```bash
-bosun crew inspect myapp
-```
-
-### `bosun crew restart <name>`
-
-Restart a specific container.
-
-```bash
-bosun crew restart myapp
-```
+| Flag | Applies To | Default | Description |
+|------|-----------|---------|-------------|
+| `-a`, `--all` | `list` | `false` | Show all containers (including stopped) |
+| `-f`, `--follow` | `logs` | `false` | Follow log output |
+| `-n`, `--tail` | `logs` | `100` | Number of lines to show |
 
 ---
 
@@ -154,19 +92,21 @@ Render service manifests into Docker Compose, Traefik, and Gatus configurations.
 Render a stack or service manifest into output files.
 
 ```bash
-bosun provision core                  # Render the 'core' stack
-bosun provision core -n               # Dry run -- preview without writing
-bosun provision core -d               # Show diff against existing files
-bosun provision core -f prod.yaml     # Apply values overlay file
+bosun provision core                        # Render the 'core' stack
+bosun provision core -n                     # Dry run -- preview without writing
+bosun provision core -d                     # Show diff against existing files
+bosun provision core -f prod.yaml           # Apply values overlay file
+bosun provision core --set db.host=localhost # Override individual values
 ```
 
-**Aliases:** `plunder`, `loot`, `forge`
+**Aliases:** `plunder`, `loot`, `forge`. Supports both legacy (provisions) and Helm-aligned (charts) formats, auto-detected from directory structure.
 
 | Flag | Description |
 |------|-------------|
 | `-n`, `--dry-run` | Show output without writing files |
 | `-d`, `--diff` | Show diff against existing files |
 | `-f`, `--values` | Apply values overlay file |
+| `--set` | Override individual values (repeatable, dot notation: `--set key=value`) |
 
 **Output files created:**
 
@@ -255,6 +195,14 @@ Templates have access to:
 - Secrets data via `{{ . }}` (the root context)
 - All Sprig template functions
 - Custom functions: `include`, `fromJsonFile`
+
+### Helm-Aligned Charts
+
+```bash
+bosun chart list               # List available charts (name, version, description)
+bosun chart show <name>        # Detailed chart info (templates, deps, version)
+bosun template list            # List available templates (alias: templates)
+```
 
 ---
 
@@ -415,25 +363,12 @@ bosun validate --full                  # Include full dry-run reconciliation
 
 ## Radio Commands (Connectivity)
 
-### `bosun radio test`
-
-Test webhook endpoint. Sends a GET request to `http://localhost:8080/health`.
+**Parent alias:** `parrot`
 
 ```bash
-bosun radio test
+bosun radio test               # Test webhook endpoint (GET /health)
+bosun radio status             # Check Tailscale/tunnel connectivity, peers, network info
 ```
-
-**Alias:** `parrot test`
-
-### `bosun radio status`
-
-Check Tailscale/tunnel connectivity.
-
-```bash
-bosun radio status
-```
-
-**Displays:** Connection state, device info (hostname, IP, DNS), network info (tailnet, peer count), and online peers.
 
 ---
 
@@ -490,3 +425,71 @@ bosun webhook --secret mysecret        # Set secret directly
 | `--fetch-secret` | Fetch secret from daemon at startup (never stored on disk) |
 
 Validates webhook signatures and forwards valid requests to the daemon's trigger endpoint. Supports GitHub, GitLab, Gitea, and Bitbucket formats.
+
+---
+
+## Alert Commands
+
+**Parent alias:** `horn`
+
+### `bosun alert status`
+
+Show configured alert providers (Discord, SendGrid, Twilio) with masked credentials and settings.
+
+```bash
+bosun alert status
+```
+
+### `bosun alert test`
+
+Send a test alert to configured providers.
+
+```bash
+bosun alert test                       # Test all configured providers
+bosun alert test -p discord            # Test specific provider
+bosun alert test -m "Custom message"   # Custom test message
+bosun alert test -s error              # Set severity (info/warning/error)
+```
+
+| Flag | Description |
+|------|-------------|
+| `-p`, `--provider` | Test specific provider (discord, sendgrid, twilio) |
+| `-m`, `--message` | Custom test message |
+| `-s`, `--severity` | Alert severity (info, warning, error) |
+
+---
+
+## Backup & Restore
+
+### `bosun restore [backup-name]`
+
+Restore infrastructure configs from a backup created during reconciliation.
+
+```bash
+bosun restore                  # Restore latest backup
+bosun restore -l               # List available backups
+bosun restore 2024-01-15_143022  # Restore specific backup
+```
+
+| Flag | Description |
+|------|-------------|
+| `-l`, `--list` | List available backups |
+
+After restoring, automatically runs `docker compose up -d` if a compose file is present.
+
+---
+
+## Shell Completion
+
+### `bosun completion [shell]`
+
+Generate shell completion scripts.
+
+```bash
+bosun completion bash | sudo tee /etc/bash_completion.d/bosun
+bosun completion zsh | sudo tee "${fpath[1]}/_bosun"
+bosun completion fish | source
+bosun completion powershell | Out-String | Invoke-Expression
+```
+
+Supports: `bash`, `zsh`, `fish`, `powershell`.

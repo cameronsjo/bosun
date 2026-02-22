@@ -93,11 +93,13 @@ bosun update --check      # Check for updates without installing
 | **Setup** | `init`, `doctor`, `update` | Project creation, health checks, updates |
 | **Yacht** | `yacht up/down/restart/status` | Manage Docker Compose stacks |
 | **Crew** | `crew list/logs/inspect/restart` | Manage individual containers |
-| **Manifest** | `provision`, `provisions`, `create`, `lint`, `render` | Build and validate service configs |
+| **Manifest** | `provision`, `provisions`, `create`, `lint`, `render`, `chart` | Build and validate service configs |
 | **GitOps** | `daemon`, `reconcile`, `trigger`, `drift` | Automated deployment pipeline |
 | **Radio** | `radio test/status` | Webhook and tunnel connectivity |
+| **Alerts** | `alert status/test` | Deploy notification testing and status |
 | **Diagnostics** | `status`, `log`, `doctor`, `validate` | Health monitoring and debugging |
-| **Emergency** | `mayday`, `overboard` | Error triage, rollback, force-remove |
+| **Emergency** | `mayday`, `overboard`, `restore` | Error triage, rollback, force-remove, backup restore |
+| **Utilities** | `update`, `completion` | Self-update, shell completions |
 
 For complete command details with all flags and examples, see `@resources/commands.md`.
 
@@ -192,6 +194,9 @@ For the full config file reference and environment variables, see `@resources/co
 | Scaffold new service | `bosun create webapp myapp` |
 | Validate manifests | `bosun lint` |
 | Check system health | `bosun status` |
+| Restore from backup | `bosun restore` or `bosun restore -l` |
+| Test alert providers | `bosun alert test` |
+| Set up shell completions | `bosun completion bash \| sudo tee /etc/bash_completion.d/bosun` |
 
 ## Troubleshooting Quick Reference
 
