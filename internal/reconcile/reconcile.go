@@ -92,6 +92,7 @@ func DefaultConfig() *Config {
 type AlertSender interface {
 	SendDeploySuccess(ctx context.Context, commit, target string) error
 	SendDeployFailure(ctx context.Context, commit, target, reason string) error
+	SendDeployRecovery(ctx context.Context, commit, target string, priorFailures int) error
 	SendRollbackSuccess(ctx context.Context, target, backupName string) error
 	SendRollbackFailure(ctx context.Context, target, reason string) error
 }
@@ -246,6 +247,8 @@ func (r *Reconciler) Run(ctx context.Context) error {
 			Msg("Circuit breaker: too many consecutive failures on same commit, skipping (use --force to override)")
 		ui.Error("Circuit breaker: %d consecutive failures on commit %s (use --force to retry)",
 			state.AttemptCount, after[:MinLen(after, 8)])
+		r.sendThrottledFailureAlert(ctx, state,
+			fmt.Sprintf("circuit breaker: %d consecutive failures on commit %s", state.AttemptCount, after))
 		return fmt.Errorf("circuit breaker: %d consecutive failures on commit %s", state.AttemptCount, after)
 	}
 
@@ -274,7 +277,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	secrets, err := r.decryptSecrets(spanCtx)
 	finishSpan(err)
 	if err != nil {
-		r.sendFailureAlert(ctx, "failed to decrypt secrets")
+		r.sendThrottledFailureAlert(ctx, state, "failed to decrypt secrets")
 		return fmt.Errorf("failed to decrypt secrets: %w", err)
 	}
 
@@ -282,7 +285,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.template", "Template rendering")
 	if err := r.renderTemplates(spanCtx, secrets); err != nil {
 		finishSpan(err)
-		r.sendFailureAlert(ctx, "failed to render templates")
+		r.sendThrottledFailureAlert(ctx, state, "failed to render templates")
 		return fmt.Errorf("failed to render templates: %w", err)
 	}
 	finishSpan(nil)
@@ -315,7 +318,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.deploy", "Deployment")
 	if err := r.doDeploy(spanCtx, secrets); err != nil {
 		finishSpan(err)
-		r.sendFailureAlert(ctx, err.Error())
+		r.sendThrottledFailureAlert(ctx, state, err.Error())
 		return fmt.Errorf("deployment failed: %w", err)
 	}
 	finishSpan(nil)
@@ -325,12 +328,18 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		ui.Warning("Failed to cleanup staging directory: %v", err)
 	}
 
+	// Send recovery alert if this success follows previous failures.
+	if state.AttemptCount > 1 {
+		r.sendRecoveryAlert(ctx, state.AttemptCount-1)
+	}
+
 	// Record successful deployment in state file.
 	state.LastDeployedCommit = after
 	state.DeployedAt = time.Now()
 	state.DeployCount++
 	state.Source = r.config.Source
 	state.AttemptCount = 0
+	state.LastAlertedAttempt = 0
 	state.DeclaredServices = r.declaredServices
 	if err := SaveState(r.config.StateFile, state); err != nil {
 		logger.Error().
@@ -379,9 +388,14 @@ func (r *Reconciler) sendSuccessAlert(ctx context.Context) {
 	}
 }
 
-// sendFailureAlert sends a deployment failure notification.
-func (r *Reconciler) sendFailureAlert(ctx context.Context, reason string) {
+// sendThrottledFailureAlert sends a failure alert if the throttle schedule allows it.
+// Updates LastAlertedAttempt in the state and persists it.
+func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *DeployState, reason string) {
 	if r.alerter == nil {
+		return
+	}
+
+	if !ShouldAlert(state.AttemptCount, state.LastAlertedAttempt) {
 		return
 	}
 
@@ -392,6 +406,28 @@ func (r *Reconciler) sendFailureAlert(ctx context.Context, reason string) {
 
 	if err := r.alerter.SendDeployFailure(ctx, r.lastCommit, target, reason); err != nil {
 		ui.Warning("Failed to send failure alert: %v", err)
+		return
+	}
+
+	state.LastAlertedAttempt = state.AttemptCount
+	if err := SaveState(r.config.StateFile, state); err != nil {
+		log.Warn().Err(err).Msg("Failed to persist alert throttle state")
+	}
+}
+
+// sendRecoveryAlert sends a notification when deployment succeeds after failures.
+func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) {
+	if r.alerter == nil {
+		return
+	}
+
+	target := r.config.TargetHost
+	if target == "" {
+		target = "local"
+	}
+
+	if err := r.alerter.SendDeployRecovery(ctx, r.lastCommit, target, priorFailures); err != nil {
+		ui.Warning("Failed to send recovery alert: %v", err)
 	}
 }
 

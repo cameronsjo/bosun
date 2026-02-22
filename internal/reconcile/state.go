@@ -58,7 +58,8 @@ type DeployState struct {
 	DeployCount        int       `json:"deploy_count,omitempty"`
 	Source             string    `json:"source,omitempty"`
 	LastAttemptedCommit string   `json:"last_attempted_commit,omitempty"`
-	AttemptCount       int       `json:"attempt_count,omitempty"`
+	AttemptCount        int      `json:"attempt_count,omitempty"`
+	LastAlertedAttempt  int      `json:"last_alerted_attempt,omitempty"`
 
 	// Declared state snapshot from last successful deployment.
 	DeclaredServices []DeclaredService `json:"declared_services,omitempty"`
@@ -66,6 +67,42 @@ type DeployState struct {
 	// Drift detection results from last check.
 	DriftCheckedAt time.Time   `json:"drift_checked_at,omitempty"`
 	DriftItems     []DriftItem `json:"drift_items,omitempty"`
+}
+
+// alertThresholds defines the attempt counts at which failure alerts are sent.
+// After the last threshold, alerts repeat every alertRepeatInterval attempts.
+var alertThresholds = []int{1, 3, 10, 30}
+
+const alertRepeatInterval = 30
+
+// ShouldAlert returns true if a failure alert should be sent for the current
+// attempt count, given the last attempt that triggered an alert.
+// Schedule: alert on attempt 1, 3, 10, 30, then every 30th attempt.
+// Circuit breaker activation (attempt == MaxAttempts) always alerts.
+func ShouldAlert(attemptCount, lastAlertedAttempt int) bool {
+	if attemptCount <= lastAlertedAttempt {
+		return false
+	}
+
+	// Circuit breaker activation always alerts.
+	if attemptCount == MaxAttempts {
+		return true
+	}
+
+	// Check fixed thresholds.
+	for _, t := range alertThresholds {
+		if attemptCount == t {
+			return true
+		}
+	}
+
+	// After the last threshold, alert every alertRepeatInterval attempts.
+	lastThreshold := alertThresholds[len(alertThresholds)-1]
+	if attemptCount > lastThreshold && (attemptCount-lastThreshold)%alertRepeatInterval == 0 {
+		return true
+	}
+
+	return false
 }
 
 // LoadState reads the deploy state file. Returns zero state on missing or
