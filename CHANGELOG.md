@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0](https://github.com/cameronsjo/bosun/compare/v0.7.3...v0.8.0) (2026-02-22)
+
+
+### Features
+
+* **reconcile:** add post-sync hook delay controls ([002fb99](https://github.com/cameronsjo/bosun/commit/002fb99a30b39f6cf1068c95b890798926a9335d))
+* **reconcile:** add post-sync hook delay controls ([7c51f75](https://github.com/cameronsjo/bosun/commit/7c51f759b614e37599399e20d77b540a083e9aac))
+
 ## [0.7.3](https://github.com/cameronsjo/bosun/compare/v0.7.2...v0.7.3) (2026-02-22)
 
 
