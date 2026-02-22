@@ -6,7 +6,7 @@
 
 ## Goal
 
-Evaluate three related OpenSpec proposals that form a dependency chain for bosun's deploy reliability story, then implement the remaining ~20% of the third proposal (`add-deploy-resilience`). The trilogy covers state tracking, drift detection, and failure tolerance — the goal was to close out the entire body of work.
+Close out the deploy resilience body of work: evaluate three related OpenSpec proposals, identify the implementation gap, and ship it. Proposals #1 (state tracking) and #2 (drift detection) were already fully implemented. Proposal #3 (`add-deploy-resilience`) was ~80% done — the session's primary work was implementing the remaining three features: alert throttling, `--wait` removal, and post-sync container restart hooks.
 
 ## Architecture
 
@@ -31,6 +31,39 @@ Three distinct capabilities, each with its own beads issue:
 1. **Alert throttling** (bosun-tq0) — failure alerts fired on every attempt with no backoff
 2. **`--wait` removal** (bosun-bi3) — `docker compose up --wait` exits non-zero for ANY unhealthy container, blocking all deployments even when the unhealthy container is unrelated
 3. **Post-sync hooks** (bosun-65i) — no mechanism to restart containers when their config files change during a deploy
+
+## What We Built
+
+Three features implemented across 14 files (+550 lines), with 31 new test cases. Four commits on `feat/deploy-resilience`, merged to main.
+
+### 1. Alert Throttling (`internal/reconcile/state.go`, `reconcile.go`)
+
+- `ShouldAlert()` pure function with exponential backoff schedule
+- `LastAlertedAttempt` field on `DeployState` for persistence across restarts
+- `sendThrottledFailureAlert()` replaces the old `sendFailureAlert()` on all 3 failure paths (decrypt, template, deploy)
+- Circuit breaker path now alerts instead of failing silently
+- `sendRecoveryAlert()` fires when a deploy succeeds after previous failures
+- `SendDeployRecovery()` added to `AlertSender` interface and `alert.Manager`
+- 15 test cases in `TestShouldAlert`, 1 test for `TestManager_SendDeployRecovery`
+
+### 2. Compose `--wait` Removal (`internal/reconcile/deploy.go`, `reconcile.go`)
+
+- Removed `--wait` from `ComposeUpMultiple()` args
+- Enhanced `verifyPostDeploy()` to categorize drift items and collect unhealthy container names
+- `sendUnhealthyAlert()` fires targeted alerts for unhealthy containers
+- `SendUnhealthyContainers()` added to `AlertSender` interface and `alert.Manager`
+
+### 3. Post-Sync Hooks (`internal/reconcile/hooks.go`, `git.go`, `interfaces.go`, `daemon.go`)
+
+- New `PostSyncHook` type with `Paths`, `Action`, `Container` fields
+- `EvaluatePostSyncHooks()` matches changed files against hook path patterns
+- `matchGlob()` supports exact, `*`, and `prefix/**` patterns without external deps
+- `ExecutePostSyncHooks()` restarts matched containers via Docker SDK
+- `DiffFiles()` added to `GitOperations` interface, implemented on `GitOps` using go-git `object.DiffTree`
+- `BOSUN_POST_SYNC_HOOKS` env var parsing (JSON array) in daemon `ConfigFromEnv()`
+- `PostSyncHooks` field added to `reconcile.Config`
+- `executePostSyncHooks()` wired into reconcile pipeline after successful deploy
+- 10 test cases in `TestMatchGlob`, 6 test cases in `TestEvaluatePostSyncHooks`
 
 ## Decisions Made
 
