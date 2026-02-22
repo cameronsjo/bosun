@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0](https://github.com/cameronsjo/bosun/compare/v0.5.0...v0.6.0) (2026-02-22)
+
+
+### Features
+
+* add deploy resilience — alert throttling, --wait removal, post-sync hooks ([7b278d7](https://github.com/cameronsjo/bosun/commit/7b278d7c840fc4be6b4d95d5eaf92d1b20959bee))
+* **reconcile:** add alert throttling with exponential backoff ([f45498b](https://github.com/cameronsjo/bosun/commit/f45498be23bc02aa9baf55b8177971eb9782bcf5))
+* **reconcile:** add post-sync container restart hooks ([b71f494](https://github.com/cameronsjo/bosun/commit/b71f494f32e8847768fb60b855417adcaa0c4fe6))
+
+
+### Bug Fixes
+
+* **reconcile:** remove --wait from compose up, add unhealthy container alerts ([91bd3bb](https://github.com/cameronsjo/bosun/commit/91bd3bb8798d8e976e436f9fd0f8482c1ac41c70))
+
 ## [0.5.0](https://github.com/cameronsjo/bosun/compare/v0.4.1...v0.5.0) (2026-02-21)
 
 
