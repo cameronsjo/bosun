@@ -181,6 +181,42 @@ func (m *Manager) SendRollbackFailure(ctx context.Context, target, reason string
 	})
 }
 
+// SendDeployRecovery sends a notification when deployment succeeds after consecutive failures.
+func (m *Manager) SendDeployRecovery(ctx context.Context, commit, target string, priorFailures int) error {
+	shortCommit := commit
+	if len(commit) > 8 {
+		shortCommit = commit[:8]
+	}
+
+	return m.Send(ctx, &Alert{
+		Title:    "Deployment Recovered",
+		Message:  fmt.Sprintf("Deployment of commit %s to %s succeeded after %d prior failure(s)", shortCommit, target, priorFailures),
+		Severity: SeverityInfo,
+		Source:   "reconcile",
+		Metadata: map[string]string{
+			"commit":         commit,
+			"target":         target,
+			"prior_failures": fmt.Sprintf("%d", priorFailures),
+		},
+	})
+}
+
+// SendUnhealthyContainers sends a warning alert listing containers found unhealthy post-deploy.
+func (m *Manager) SendUnhealthyContainers(ctx context.Context, target string, containers []string) error {
+	summary := strings.Join(containers, ", ")
+	return m.Send(ctx, &Alert{
+		Title:    "Unhealthy Containers Detected",
+		Message:  fmt.Sprintf("Post-deploy health check on %s found unhealthy containers: %s", target, summary),
+		Severity: SeverityWarning,
+		Source:   "reconcile",
+		Metadata: map[string]string{
+			"target":     target,
+			"containers": summary,
+			"count":      fmt.Sprintf("%d", len(containers)),
+		},
+	})
+}
+
 // SendDriftDetected sends an alert for detected drift between declared and actual state.
 func (m *Manager) SendDriftDetected(ctx context.Context, target string, driftItems []string) error {
 	summary := strings.Join(driftItems, ", ")

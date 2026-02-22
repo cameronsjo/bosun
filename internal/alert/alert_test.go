@@ -193,6 +193,26 @@ func TestManager_SendDeploySuccess_ShortCommit(t *testing.T) {
 	assert.Contains(t, alerts[0].Message, "abc")
 }
 
+func TestManager_SendDeployRecovery(t *testing.T) {
+	m := NewManager()
+	p := newMockProvider("test", true)
+	m.AddProvider(p)
+
+	err := m.SendDeployRecovery(context.Background(), "abc123def456", "unraid", 5)
+	require.NoError(t, err)
+
+	alerts := p.getAlerts()
+	require.Len(t, alerts, 1)
+
+	alert := alerts[0]
+	assert.Equal(t, "Deployment Recovered", alert.Title)
+	assert.Contains(t, alert.Message, "abc123de")
+	assert.Contains(t, alert.Message, "5 prior failure(s)")
+	assert.Equal(t, SeverityInfo, alert.Severity)
+	assert.Equal(t, "reconcile", alert.Source)
+	assert.Equal(t, "5", alert.Metadata["prior_failures"])
+}
+
 func TestManager_SendRollbackSuccess(t *testing.T) {
 	m := NewManager()
 	p := newMockProvider("test", true)

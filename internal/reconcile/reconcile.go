@@ -65,6 +65,9 @@ type Config struct {
 	// StartupGracePeriod is how long to wait after compose up before reporting
 	// unhealthy containers as drift. Allows time for health checks to pass.
 	StartupGracePeriod time.Duration
+
+	// PostSyncHooks defines container restart actions triggered by file changes.
+	PostSyncHooks []PostSyncHook
 }
 
 // DefaultLockFile is the default path for the reconciliation lock file.
@@ -92,6 +95,8 @@ func DefaultConfig() *Config {
 type AlertSender interface {
 	SendDeploySuccess(ctx context.Context, commit, target string) error
 	SendDeployFailure(ctx context.Context, commit, target, reason string) error
+	SendDeployRecovery(ctx context.Context, commit, target string, priorFailures int) error
+	SendUnhealthyContainers(ctx context.Context, target string, containers []string) error
 	SendRollbackSuccess(ctx context.Context, target, backupName string) error
 	SendRollbackFailure(ctx context.Context, target, reason string) error
 }
@@ -246,6 +251,8 @@ func (r *Reconciler) Run(ctx context.Context) error {
 			Msg("Circuit breaker: too many consecutive failures on same commit, skipping (use --force to override)")
 		ui.Error("Circuit breaker: %d consecutive failures on commit %s (use --force to retry)",
 			state.AttemptCount, after[:MinLen(after, 8)])
+		r.sendThrottledFailureAlert(ctx, state,
+			fmt.Sprintf("circuit breaker: %d consecutive failures on commit %s", state.AttemptCount, after))
 		return fmt.Errorf("circuit breaker: %d consecutive failures on commit %s", state.AttemptCount, after)
 	}
 
@@ -274,7 +281,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	secrets, err := r.decryptSecrets(spanCtx)
 	finishSpan(err)
 	if err != nil {
-		r.sendFailureAlert(ctx, "failed to decrypt secrets")
+		r.sendThrottledFailureAlert(ctx, state, "failed to decrypt secrets")
 		return fmt.Errorf("failed to decrypt secrets: %w", err)
 	}
 
@@ -282,7 +289,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.template", "Template rendering")
 	if err := r.renderTemplates(spanCtx, secrets); err != nil {
 		finishSpan(err)
-		r.sendFailureAlert(ctx, "failed to render templates")
+		r.sendThrottledFailureAlert(ctx, state, "failed to render templates")
 		return fmt.Errorf("failed to render templates: %w", err)
 	}
 	finishSpan(nil)
@@ -315,7 +322,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.deploy", "Deployment")
 	if err := r.doDeploy(spanCtx, secrets); err != nil {
 		finishSpan(err)
-		r.sendFailureAlert(ctx, err.Error())
+		r.sendThrottledFailureAlert(ctx, state, err.Error())
 		return fmt.Errorf("deployment failed: %w", err)
 	}
 	finishSpan(nil)
@@ -325,18 +332,32 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		ui.Warning("Failed to cleanup staging directory: %v", err)
 	}
 
+	// Send recovery alert if this success follows previous failures.
+	if state.AttemptCount > 1 {
+		r.sendRecoveryAlert(ctx, state.AttemptCount-1)
+	}
+
+	// Capture previous commit before updating state (needed for post-sync hooks).
+	previousCommit := state.LastDeployedCommit
+
 	// Record successful deployment in state file.
 	state.LastDeployedCommit = after
 	state.DeployedAt = time.Now()
 	state.DeployCount++
 	state.Source = r.config.Source
 	state.AttemptCount = 0
+	state.LastAlertedAttempt = 0
 	state.DeclaredServices = r.declaredServices
 	if err := SaveState(r.config.StateFile, state); err != nil {
 		logger.Error().
 			Err(err).
 			Str(log.FieldPath, r.config.StateFile).
 			Msg("Failed to save deploy state after successful deployment")
+	}
+
+	// Execute post-sync hooks if any files changed and hooks are configured.
+	if r.dockerClientFn != nil && !r.config.DryRun && len(r.config.PostSyncHooks) > 0 {
+		r.executePostSyncHooks(ctx, previousCommit, after)
 	}
 
 	// Post-deploy verification: check declared vs actual state.
@@ -379,9 +400,14 @@ func (r *Reconciler) sendSuccessAlert(ctx context.Context) {
 	}
 }
 
-// sendFailureAlert sends a deployment failure notification.
-func (r *Reconciler) sendFailureAlert(ctx context.Context, reason string) {
+// sendThrottledFailureAlert sends a failure alert if the throttle schedule allows it.
+// Updates LastAlertedAttempt in the state and persists it.
+func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *DeployState, reason string) {
 	if r.alerter == nil {
+		return
+	}
+
+	if !ShouldAlert(state.AttemptCount, state.LastAlertedAttempt) {
 		return
 	}
 
@@ -392,6 +418,44 @@ func (r *Reconciler) sendFailureAlert(ctx context.Context, reason string) {
 
 	if err := r.alerter.SendDeployFailure(ctx, r.lastCommit, target, reason); err != nil {
 		ui.Warning("Failed to send failure alert: %v", err)
+		return
+	}
+
+	state.LastAlertedAttempt = state.AttemptCount
+	if err := SaveState(r.config.StateFile, state); err != nil {
+		log.Warn().Err(err).Msg("Failed to persist alert throttle state")
+	}
+}
+
+// sendUnhealthyAlert sends a warning notification for unhealthy containers found post-deploy.
+func (r *Reconciler) sendUnhealthyAlert(ctx context.Context, containers []string) {
+	if r.alerter == nil {
+		return
+	}
+
+	target := r.config.TargetHost
+	if target == "" {
+		target = "local"
+	}
+
+	if err := r.alerter.SendUnhealthyContainers(ctx, target, containers); err != nil {
+		ui.Warning("Failed to send unhealthy containers alert: %v", err)
+	}
+}
+
+// sendRecoveryAlert sends a notification when deployment succeeds after failures.
+func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) {
+	if r.alerter == nil {
+		return
+	}
+
+	target := r.config.TargetHost
+	if target == "" {
+		target = "local"
+	}
+
+	if err := r.alerter.SendDeployRecovery(ctx, r.lastCommit, target, priorFailures); err != nil {
+		ui.Warning("Failed to send recovery alert: %v", err)
 	}
 }
 
@@ -438,6 +502,8 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 		return
 	}
 
+	// Categorize drift items and log each one.
+	var unhealthyNames []string
 	for _, item := range report.Items {
 		logger.Warn().
 			Str(log.FieldReconcileID, reconcileID).
@@ -446,8 +512,55 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 			Str("declared", item.Declared).
 			Str("actual", item.Actual).
 			Msg("Post-deploy drift detected")
+
+		if item.Type == DriftUnhealthy {
+			unhealthyNames = append(unhealthyNames, item.Service)
+		}
 	}
 	ui.Warning("Post-deploy verification: %d drift item(s) detected", len(report.Items))
+
+	// Alert on unhealthy containers (warning severity, not a deploy failure).
+	if len(unhealthyNames) > 0 {
+		r.sendUnhealthyAlert(ctx, unhealthyNames)
+	}
+}
+
+// executePostSyncHooks detects changed files between commits and restarts
+// matching containers via configured hooks.
+func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, currentCommit string) {
+	logger := log.Component(log.ComponentReconcile)
+
+	if previousCommit == "" {
+		logger.Debug().Msg("No previous commit for post-sync hooks (first deploy), skipping")
+		return
+	}
+
+	changedFiles, err := r.git.DiffFiles(ctx, previousCommit, currentCommit)
+	if err != nil {
+		logger.Warn().Err(err).Msg("Failed to diff commits for post-sync hooks")
+		return
+	}
+
+	if len(changedFiles) == 0 {
+		return
+	}
+
+	matched := EvaluatePostSyncHooks(changedFiles, r.config.PostSyncHooks)
+	if len(matched) == 0 {
+		return
+	}
+
+	client := r.dockerClientFn()
+	if client == nil {
+		logger.Warn().Msg("Docker client unavailable for post-sync hooks")
+		return
+	}
+
+	ui.Info("Executing %d post-sync hook(s)...", len(matched))
+	if err := ExecutePostSyncHooks(ctx, client, matched); err != nil {
+		logger.Warn().Err(err).Msg("Some post-sync hooks failed")
+		ui.Warning("Post-sync hook errors: %v", err)
+	}
 }
 
 // cleanupStaging removes the staging directory after successful deployment.

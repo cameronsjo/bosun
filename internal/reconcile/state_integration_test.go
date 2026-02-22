@@ -24,6 +24,8 @@ func (m *mockGit) Sync(_ context.Context) (bool, string, string, error) {
 
 func (m *mockGit) IsRepo(_ context.Context) bool { return true }
 
+func (m *mockGit) DiffFiles(_ context.Context, _, _ string) ([]string, error) { return nil, nil }
+
 // mockSOPS is a test SecretsDecryptor that returns empty secrets.
 type mockSOPS struct{ err error }
 

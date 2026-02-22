@@ -136,6 +136,45 @@ func TestSaveState_PermissionError(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestShouldAlert(t *testing.T) {
+	tests := []struct {
+		name              string
+		attemptCount      int
+		lastAlertedAttempt int
+		expected          bool
+	}{
+		// Fixed thresholds: 1, 3, 10, 30
+		{"first attempt always alerts", 1, 0, true},
+		{"second attempt suppressed", 2, 1, false},
+		{"third attempt alerts", 3, 1, true},
+		{"fourth attempt suppressed", 4, 3, false},
+		{"tenth attempt alerts", 10, 3, true},
+		{"eleventh attempt suppressed", 11, 10, false},
+		{"thirtieth attempt alerts", 30, 10, true},
+
+		// Repeating every 30 after the last threshold
+		{"60th attempt alerts (30 after last threshold)", 60, 30, true},
+		{"61st attempt suppressed", 61, 60, false},
+		{"90th attempt alerts", 90, 60, true},
+
+		// Circuit breaker activation always alerts
+		{"circuit breaker attempt alerts", MaxAttempts, 0, true},
+		{"circuit breaker even if recently alerted", MaxAttempts, MaxAttempts - 1, true},
+
+		// Edge cases
+		{"attempt at or below last alerted is suppressed", 3, 3, false},
+		{"attempt below last alerted is suppressed", 2, 3, false},
+		{"zero attempt never alerts", 0, 0, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := ShouldAlert(tc.attemptCount, tc.lastAlertedAttempt)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
+
 func TestSaveState_SetsSchemaVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "deploy-state.json")
