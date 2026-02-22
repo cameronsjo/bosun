@@ -148,7 +148,7 @@ webhook/poll -> daemon process -> lock -> git pull -> decrypt -> template
 
 Three cooperating components: the API server handles requests/RBAC, the repo-server renders manifests, and the application controller reconciles state. Communication flows through the K8s API.
 
-```
+```text
 webhook/poll -> API server -> repo-server (render) -> controller (diff)
              -> controller (apply in waves) -> health assessment
 ```
@@ -165,7 +165,7 @@ webhook/poll -> API server -> repo-server (render) -> controller (diff)
 
 Each concern gets its own controller. Source-controller fetches artifacts, kustomize-controller applies plain/Kustomize manifests, helm-controller manages Helm releases. Controllers communicate through CRD status, not direct calls.
 
-```
+```text
 source-controller (fetch) -> artifact in cluster
 kustomize-controller (watch artifact) -> apply to cluster
 helm-controller (watch artifact) -> helm install/upgrade
