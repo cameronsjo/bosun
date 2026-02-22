@@ -1,0 +1,26 @@
+flowchart TB
+    subgraph Captain["Captain (GitHub)"]
+        GH[git push]
+    end
+
+    subgraph Yacht["Your Yacht (Server)"]
+        subgraph Bosun
+            Radio["Radio<br/>Webhook/Poll"]
+            Fetch["Fetch Orders<br/>git clone/pull"]
+            Decrypt["Decrypt Secrets<br/>SOPS + Age"]
+            Template["Prep Configs<br/>Go Templates"]
+            Deploy["Deploy<br/>tar-over-SSH / local copy"]
+            ComposeUp["Crew Up<br/>docker compose"]
+            Drift["Drift Watch<br/>Periodic check"]
+        end
+        Crew["Your Crew<br/>Containers"]
+    end
+
+    GH --> Radio
+    Radio --> Fetch
+    Fetch --> Decrypt
+    Decrypt --> Template
+    Template --> Deploy
+    Deploy --> ComposeUp
+    ComposeUp --> Crew
+    Drift -.->|verify| Crew

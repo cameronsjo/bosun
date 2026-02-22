@@ -1,40 +1,67 @@
 # Bosun
 
-**Helm for home.**
+<!-- TODO: Add mascot image once generated -->
+<!-- <p align="center"><img src="docs/mascot/bosun-reference-nobg.png" width="200" alt="Bosun mascot"></p> -->
 
-You're the captain of your homelab. 40 containers. Traefik. Secrets everywhere.
-You shouldn't have to swab the deck yourself. That's what the bosun is for.
+**GitOps for Docker Compose. No Kubernetes required.**
 
+Push to git. Bosun receives orders. Containers deploy. Smooth sailing.
+
+```mermaid
+graph LR
+    A[git push] --> B[Bosun receives orders]
+    B --> C[Clone & decrypt]
+    C --> D[Template configs]
+    D --> E[Deploy to target]
+    E --> F[docker compose up]
+    F --> G[Drift verification]
 ```
-git push -> bosun receives orders -> crew deployed -> yacht runs smooth
-```
 
-No Kubernetes. No drama. Just smooth sailing.
+## Why Bosun?
 
-```
-+------------------------------------------------------------------------------+
-|                              Your Yacht (Server)                             |
-|                                                                              |
-|  +------------------------------------------------------------------------+  |
-|  |                              Bosun                                     |  |
-|  |  +---------+  +---------+  +---------+  +---------+  +---------+       |  |
-|  |  |  Radio  |->|  Fetch  |->| Decrypt |->|  Prep   |->| Deploy  |       |  |
-|  |  |(Webhook)|  | Orders  |  | Secrets |  | Configs |  |  Crew   |       |  |
-|  |  +---------+  +---------+  +---------+  +---------+  +---------+       |  |
-|  +------------------------------------------------------------------------+  |
-|        ^                                                   |                 |
-|        |                                                   v                 |
-|  +-----+-----+                                    +--------------+           |
-|  | Tailscale |                                    |  Your Crew   |           |
-|  |  Funnel   |                                    | (Containers) |           |
-|  +-----+-----+                                    +--------------+           |
-+--------|---------------------------------------------------------------------+
-         |
-         v
-   +----------+
-   | Captain  |
-   | (GitHub) |
-   +----------+
+You run 40 containers on bare metal. Traefik routes traffic. Secrets are everywhere.
+You want GitOps -- push a change, everything updates -- but Kubernetes is overkill for a homelab.
+
+Bosun is **Helm for home**: a single binary that brings GitOps workflows to Docker Compose.
+
+| What you get | How it works |
+|---|---|
+| **Push-to-deploy** | Webhooks or polling trigger reconciliation |
+| **Secret management** | SOPS + Age encryption, decrypted at deploy time |
+| **Config templating** | Go templates + Sprig functions, DRY service definitions |
+| **Drift detection** | Periodic checks: is what's running what you declared? |
+| **Multi-provider alerts** | Discord, SendGrid, Twilio notifications on deploy events |
+| **Single binary** | No Python, no Node, no bash scripts on target |
+
+## Architecture
+
+```mermaid
+graph TB
+    subgraph Captain["Captain (GitHub)"]
+        GH[git push]
+    end
+
+    subgraph Yacht["Your Yacht (Server)"]
+        subgraph Bosun
+            Radio[Radio<br/>Webhook/Poll]
+            Fetch[Fetch Orders<br/>git clone/pull]
+            Decrypt[Decrypt Secrets<br/>SOPS + Age]
+            Template[Prep Configs<br/>Go Templates]
+            Deploy[Deploy<br/>tar-over-SSH / local copy]
+            Compose[Crew Up<br/>docker compose]
+            Drift[Drift Watch<br/>Periodic check]
+        end
+        Crew[Your Crew<br/>Containers]
+    end
+
+    GH --> Radio
+    Radio --> Fetch
+    Fetch --> Decrypt
+    Decrypt --> Template
+    Template --> Deploy
+    Deploy --> Compose
+    Compose --> Crew
+    Drift -.->|verify| Crew
 ```
 
 ## Installation
@@ -45,7 +72,7 @@ No Kubernetes. No drama. Just smooth sailing.
 curl -fsSL https://raw.githubusercontent.com/cameronsjo/bosun/main/scripts/install.sh | bash
 ```
 
-This downloads the latest release, verifies the SHA256 checksum, and installs to `/usr/local/bin`.
+Downloads the latest release, verifies the SHA256 checksum, and installs to `/usr/local/bin`.
 
 ### Other Methods
 
@@ -63,12 +90,12 @@ cd bosun && make build
 
 ```bash
 bosun update          # Download and install latest
-bosun update --check  # Check for updates without installing
+bosun update --check  # Check without installing
 ```
 
 ### Verify Release
 
-Releases are signed with [cosign](https://github.com/sigstore/cosign) and include [SLSA provenance](https://slsa.dev/).
+Releases are signed with [Cosign](https://github.com/sigstore/cosign) and include [SLSA provenance](https://slsa.dev/).
 
 ```bash
 # Verify checksum signature
@@ -102,6 +129,53 @@ bosun doctor
 bosun yacht up
 ```
 
+## Commands
+
+### Setup & Diagnostics
+
+| Command | Description |
+|---------|-------------|
+| `bosun init` | Interactive setup wizard (`--systemd` for unit files) |
+| `bosun doctor` | Pre-flight checks |
+| `bosun validate` | Validate config and daemon connectivity |
+| `bosun status` | Health dashboard |
+
+### GitOps
+
+| Command | Description |
+|---------|-------------|
+| `bosun daemon` | Run the GitOps daemon |
+| `bosun reconcile` | One-shot GitOps workflow |
+| `bosun trigger` | Trigger reconciliation via daemon |
+| `bosun daemon-status` | Show daemon health and state |
+| `bosun drift` | Detect config drift (`--live` for fresh check) |
+
+### Docker Management
+
+| Command | Description |
+|---------|-------------|
+| `bosun yacht up/down/restart/status` | Manage Docker Compose services |
+| `bosun crew list/logs/inspect/restart` | Manage individual containers |
+
+### Manifest & Provisioning
+
+| Command | Description |
+|---------|-------------|
+| `bosun provision [stack]` | Render manifest to compose/traefik/gatus |
+| `bosun provisions` | List available provisions |
+| `bosun create <template> <name>` | Scaffold new service |
+| `bosun lint` | Validate manifests |
+
+### Operations
+
+| Command | Description |
+|---------|-------------|
+| `bosun radio test/status` | Test webhook and Tailscale |
+| `bosun mayday` | Show errors, rollback snapshots |
+| `bosun webhook` | Run standalone webhook receiver |
+
+See **[Commands Reference](docs/commands.md)** for full documentation.
+
 ## Daemon Mode
 
 Run bosun as a long-running daemon for production GitOps:
@@ -118,22 +192,15 @@ bosun daemon
 ```
 
 The daemon provides:
-- **Unix socket API** - Primary interface at `/var/run/bosun.sock`
-- **Multi-provider webhooks** - GitHub, GitLab, Gitea, Bitbucket
-- **Polling** - Configurable interval reconciliation
-- **Health endpoints** - `/health`, `/ready` for orchestrators
 
-### Daemon Commands
+- **Unix socket API** at `/var/run/bosun.sock`
+- **Multi-provider webhooks** (GitHub, GitLab, Gitea, Bitbucket)
+- **Configurable polling** with interval-based reconciliation
+- **Health endpoints** (`/health`, `/ready`) for orchestrators
+- **Drift detection** with periodic declared-vs-actual state checks
+- **Circuit breaker** stops retrying after 3 consecutive failures
 
-```bash
-bosun daemon              # Run the daemon
-bosun trigger             # Trigger reconciliation
-bosun daemon-status       # Show daemon health
-bosun validate            # Validate configuration
-bosun webhook             # Run standalone webhook receiver
-```
-
-### Environment Variables (Daemon)
+### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -143,64 +210,13 @@ bosun webhook             # Run standalone webhook receiver
 | `BOSUN_SOCKET_PATH` | Unix socket path | `/var/run/bosun.sock` |
 | `WEBHOOK_SECRET` | Webhook signature validation | Optional |
 
-See [docs/architecture/daemon-split.md](docs/architecture/daemon-split.md) for the full daemon architecture.
-
-## Commands
-
-### Setup & Diagnostics
-
-| Command | Description |
-|---------|-------------|
-| `init` | Interactive setup wizard (`--systemd` for unit files) |
-| `doctor` | Pre-flight checks |
-| `validate` | Validate config and daemon connectivity |
-| `status` | Health dashboard |
-
-### Daemon
-
-| Command | Description |
-|---------|-------------|
-| `daemon` | Run the GitOps daemon |
-| `trigger` | Trigger reconciliation via daemon |
-| `daemon-status` | Show daemon health and state |
-| `webhook` | Run standalone webhook receiver |
-
-### Yacht (Docker Compose)
-
-| Command | Description |
-|---------|-------------|
-| `yacht up/down/restart/status` | Manage Docker Compose services |
-| `crew list/logs/inspect/restart` | Manage individual containers |
-
-### Manifest & Provisioning
-
-| Command | Description |
-|---------|-------------|
-| `provision [stack]` | Render manifest to compose/traefik/gatus |
-| `provisions` | List available provisions |
-| `create <template> <name>` | Scaffold new service |
-| `lint` | Validate manifests |
-| `drift` | Detect config drift |
-
-### Operations
-
-| Command | Description |
-|---------|-------------|
-| `reconcile` | Run GitOps workflow (one-shot) |
-| `radio test/status` | Test webhook and Tailscale |
-| `mayday` | Show errors, rollback snapshots |
-
-See [docs/commands.md](docs/commands.md) for the full command reference.
-
 ## Configuration
 
-Bosun looks for configuration in the following locations:
+Bosun looks for configuration in order:
 
 1. `bosun.yaml` in the current directory
 2. `.bosun.yaml` in the current directory
 3. `$HOME/.config/bosun/config.yaml`
-
-Example configuration:
 
 ```yaml
 # bosun.yaml
@@ -209,90 +225,99 @@ manifest_dir: manifest
 compose_file: docker-compose.yml
 ```
 
-### Environment Variables
+### Additional Environment Variables (Reconcile)
+
+> These variables are used by `bosun reconcile` and the daemon's reconciliation pipeline. `REPO_URL` and `REPO_BRANCH` are legacy aliases for `BOSUN_REPO_URL` and `BOSUN_REPO_BRANCH` — if both are set, the `BOSUN_`-prefixed variable takes precedence.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `REPO_URL` | Git repository URL (for reconcile) | Required for reconcile |
+| `REPO_URL` | Git repository URL | Required for reconcile |
 | `REPO_BRANCH` | Git branch to track | `main` |
 | `SOPS_AGE_KEY_FILE` | Path to age key file | `~/.config/sops/age/keys.txt` |
 | `DEPLOY_TARGET` | Remote host for deployment | Local if unset |
 
-## What's on Board
+## Reconciliation Pipeline
 
-| Component | Role |
-|-----------|------|
-| **Bosun CLI** | Single binary managing Docker, manifests, and GitOps |
-| **Manifest System** | Write 10 lines, generate compose + Traefik + Gatus configs |
-| **Provisions** | Reusable config templates - batteries included, all swappable |
+```mermaid
+graph LR
+    A[Lock] --> B[Git Sync]
+    B --> C[Load State]
+    C -->|same commit?| Skip[Skip - no changes]
+    C -->|new commit| D[Decrypt Secrets]
+    D --> E[Template Configs]
+    E --> F[Backup]
+    F --> G[Deploy]
+    G --> H[Compose Up]
+    H --> I[Drift Verify]
+    I --> J[Save State]
+    J --> K[Unlock]
+    G -->|failure| L[Circuit Breaker]
+    L -->|fewer than 3 failures| M[Alert + Retry Next Cycle]
+    L -->|3+ failures| N[Alert + Stop]
+```
+
+## The Nautical Theme
+
+Everything uses nautical terminology:
+
+| Term | Meaning |
+|------|---------|
+| **Bosun** | The CLI tool (receives orders, deploys crew) |
+| **Captain** | GitHub (gives the orders) |
+| **Yacht** | Your server running Docker Compose |
+| **Crew** | Containers |
+| **Manifest** | Service definitions (crew manifest) |
+| **Provisions** | Reusable config templates (supplies stocked aboard) |
+| **Radio** | Webhook/tunnel connection (Tailscale Funnel) |
 
 ## Documentation
 
-- **[Commands Reference](docs/commands.md)** - Full command documentation
-- **[Daemon Architecture](docs/architecture/daemon-split.md)** - Unix socket API, webhooks, security
-- **[Alerting Configuration](docs/alerting.md)** - Discord, SendGrid, Twilio notifications
-- **[GitOps Workflow](docs/gitops.md)** - Reconciliation, polling, triggers
-- **[Migration Guide](docs/migration.md)** - Migrating from bash/Python version
-- **[Concepts](docs/concepts.md)** - Architecture, components, diagrams
+| Doc | Description |
+|-----|-------------|
+| **[Commands Reference](docs/commands.md)** | Full CLI documentation |
+| **[Concepts](docs/concepts.md)** | Architecture and components |
+| **[GitOps Workflow](docs/gitops.md)** | Reconciliation, polling, triggers |
+| **[Manifest System](docs/manifest-system.md)** | DRY service definitions |
+| **[Daemon Architecture](docs/architecture/daemon-split.md)** | Unix socket API, webhooks, security |
+| **[Alerting](docs/alerting.md)** | Discord, SendGrid, Twilio notifications |
+| **[CI Pipeline](docs/ci.md)** | Dagger-based CI/CD |
+| **[Security](docs/security.md)** | Security considerations |
+| **[Troubleshooting](docs/troubleshooting.md)** | Common issues and solutions |
+| **[Migration Guide](docs/migration.md)** | From bash/Python version |
+| **[GitOps Comparison](docs/gitops-comparison.md)** | Bosun vs Argo CD vs Flux CD |
 
 ### Architecture Decisions
 
-| ADR | Status | Summary |
-|-----|--------|---------|
-| [Daemon Architecture](docs/architecture/daemon-split.md) | Accepted | Unix socket API, multi-provider webhooks |
-| [Council Review](docs/architecture/council-review.md) | Approved | Security-first daemon design (9/10) |
-| [0001: Manifest System](docs/adr/0001-manifest-system.md) | Accepted | DRY crew provisioning |
-| [0008: Container vs Daemon](docs/adr/0008-container-vs-daemon.md) | Accepted | When to use systemd |
-| [0010: Go Rewrite](docs/adr/0010-go-rewrite.md) | Accepted | Single-binary CLI |
+| ADR | Summary |
+|-----|---------|
+| [Daemon Architecture](docs/architecture/daemon-split.md) | Unix socket API, multi-provider webhooks |
+| [Council Review](docs/architecture/council-review.md) | Security-first daemon design (9/10) |
+| [0001: Manifest System](docs/adr/0001-manifest-system.md) | DRY crew provisioning |
+| [0008: Container vs Daemon](docs/adr/0008-container-vs-daemon.md) | When to use systemd |
+| [0010: Go Rewrite](docs/adr/0010-go-rewrite.md) | Single-binary CLI |
+| [0011: Helm Alignment](docs/adr/0011-helm-alignment.md) | Chart-based manifest format |
 
 ## Requirements
 
-- Go 1.24+ (for building from source)
-- Docker + Docker Compose v2
+- **Go 1.24+** (building from source)
+- **Docker + Docker Compose v2**
+- **Git** (for reconcile workflow)
+- **SOPS + Age** (for secret encryption)
 - Linux or macOS (tested: Unraid, Debian, Ubuntu, macOS)
-- Git (for reconcile workflow)
-- SOPS + Age (for secret encryption)
 
 ## Development
 
 ```bash
-# Build
-make build
-
-# Run tests
-make test
-
-# Run with coverage
-make test-cover
-
-# Build for all platforms
-make build-all
-
-# Development build (no optimizations)
-make dev
+make build          # Build binary
+make test           # Run tests
+make test-cover     # Run with coverage
+make dev            # Development build (no optimizations)
+make build-all      # Build for all platforms
+make ci             # Full Dagger CI pipeline
+make lint           # Run linter
 ```
 
-### Dagger CI
-
-Run the same CI pipeline locally that runs in GitHub Actions:
-
-```bash
-# Full CI pipeline (test + lint + build)
-make ci
-
-# Individual stages
-make dagger-test           # Run tests in container
-make dagger-lint           # Run linter in container
-make dagger-build          # Build all platforms in container
-make dagger-release-dry-run # Test goreleaser
-
-# Or use dagger directly
-dagger call ci --source .
-dagger call test --source .
-dagger call lint --source .
-```
-
-See [docs/ci.md](docs/ci.md) for the full CI pipeline documentation.
+See [docs/ci.md](docs/ci.md) for the full CI pipeline.
 
 ## Support
 

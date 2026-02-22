@@ -1,0 +1,7 @@
+flowchart LR
+    Push[git push] --> Receive[Bosun receives orders]
+    Receive --> Clone[Clone & decrypt]
+    Clone --> Template[Template configs]
+    Template --> Deploy[Deploy to target]
+    Deploy --> Compose[docker compose up]
+    Compose --> Verify[Drift verification]

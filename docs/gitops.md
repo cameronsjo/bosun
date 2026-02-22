@@ -753,7 +753,7 @@ When running as a container:
 
 Use `--dry-run` to:
 
-- Preview rsync changes without applying
+- Preview deploy changes without applying
 - Skip service restarts
 - Skip backup creation
 - Verify configuration without risk
