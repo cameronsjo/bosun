@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1](https://github.com/cameronsjo/bosun/compare/v0.6.0...v0.6.1) (2026-02-22)
+
+
+### Bug Fixes
+
+* add text language specifier to remaining code blocks in gitops comparison (MD040) ([d5ac933](https://github.com/cameronsjo/bosun/commit/d5ac9335b81bd2ea135149728d12c1058c69b9f5))
+* address CodeRabbit follow-up comments from PR [#42](https://github.com/cameronsjo/bosun/issues/42) round 2 ([0694912](https://github.com/cameronsjo/bosun/commit/0694912a386de9b7036cb8db4e18b63f81b44cc5))
+* address CodeRabbit PR [#42](https://github.com/cameronsjo/bosun/issues/42) review — 16 items across docs, specs, and scripts ([9e8e6ef](https://github.com/cameronsjo/bosun/commit/9e8e6ef6250bad854f241f71b23c5b3843470b37))
+
 ## [0.6.0](https://github.com/cameronsjo/bosun/compare/v0.5.0...v0.6.0) (2026-02-22)
 
 
