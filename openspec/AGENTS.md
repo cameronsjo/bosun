@@ -172,6 +172,7 @@ New request?
 ## Impact
 - Affected specs: [list capabilities]
 - Affected code: [key files/systems]
+- All consumers: [grep for existing usage of the type/config/interface being changed — list every file that reads, writes, or passes the affected data, even if it "already works" via a different mechanism]
 ```
 
 3. **Create spec deltas:** `specs/[capability]/spec.md`
@@ -252,7 +253,7 @@ Minimal `design.md` skeleton:
 ### Scenario: User login      ❌
 ```
 
-Every requirement MUST have at least one scenario.
+Every requirement MUST have at least one scenario. If a requirement names multiple consumers (e.g., "both daemon and CLI"), each consumer MUST have its own scenario.
 
 ### Requirement Wording
 - Use SHALL/MUST for normative requirements (avoid should/may unless intentionally non-normative)
@@ -386,6 +387,17 @@ Only add complexity with:
 - Performance data showing current solution too slow
 - Concrete scale requirements (>1000 users, >100MB data)
 - Multiple proven use cases requiring abstraction
+
+### Consumer Parity
+
+When a proposal adds or modifies a configuration surface, data type, or interface:
+
+1. **Grep for all consumers** of the affected type/config/env var across the codebase
+2. **List every consumer** in the proposal's "All consumers" field — even ones that "already work" via a different path
+3. **Write a scenario per consumer** in the spec — if the requirement says "both daemon and CLI," both need scenarios
+4. **Add a task per consumer** in `tasks.md` — untasked consumers don't get implemented
+
+The pattern that causes bugs: prose says "applies to X and Y," but scenarios only cover X. Implementation follows scenarios, not prose.
 
 ### Clear References
 - Use `file.ts:42` format for code locations
