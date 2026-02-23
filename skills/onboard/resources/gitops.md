@@ -39,7 +39,7 @@ Every reconciliation follows this sequence:
 
 ### Post-Sync Hooks
 
-After `docker compose up`, bosun checks if any configured hook patterns match the files that changed in this deploy. If so, it restarts the matched containers. This solves services like Traefik that don't detect config file changes on certain filesystems (e.g., Unraid's FUSE mount).
+After `docker compose up`, bosun determines which files changed and matches them against configured hook patterns. When content-hash sync is enabled (default), hooks use the list of files actually written to disk — skipping files whose content didn't change. When disabled or in remote mode, hooks fall back to git diff. This solves services like Traefik that don't detect config file changes on certain filesystems (e.g., Unraid's FUSE mount).
 
 Two timing controls are available:
 - **`hook_settle_delay`** — global pause after deploy, before any hooks run (filesystem propagation)

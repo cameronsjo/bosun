@@ -180,7 +180,7 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "file2.txt"), []byte("content2"), 0644))
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.DeployLocal(ctx, sourceDir, targetDir)
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir, nil)
 
 		require.NoError(t, err)
 
@@ -212,7 +212,7 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "subdir", "nested", "deep.txt"), []byte("deep"), 0644))
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.DeployLocal(ctx, sourceDir, targetDir)
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir, nil)
 
 		require.NoError(t, err)
 
@@ -238,7 +238,7 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "old.txt"), []byte("old"), 0644))
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.DeployLocal(ctx, sourceDir, targetDir)
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir, nil)
 
 		require.NoError(t, err)
 
@@ -261,7 +261,7 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "file.txt"), []byte("content"), 0644))
 
 		deploy := NewDeployOps(true, "")
-		err := deploy.DeployLocal(ctx, sourceDir, targetDir)
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir, nil)
 
 		require.NoError(t, err)
 
@@ -277,7 +277,7 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		targetDir := filepath.Join(tmpDir, "target")
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.DeployLocal(ctx, sourceDir, targetDir)
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir, nil)
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "source directory")
@@ -293,7 +293,7 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		require.NoError(t, os.WriteFile(sourceFile, []byte("content"), 0644))
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.DeployLocal(ctx, sourceFile, targetDir)
+		err := deploy.DeployLocal(ctx, sourceFile, targetDir, nil)
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "not a directory")
@@ -311,7 +311,7 @@ func TestDeployOps_DeployLocalFile(t *testing.T) {
 		require.NoError(t, os.WriteFile(sourceFile, []byte("content"), 0644))
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.DeployLocalFile(ctx, sourceFile, targetFile)
+		err := deploy.DeployLocalFile(ctx, sourceFile, targetFile, nil)
 
 		require.NoError(t, err)
 		assert.FileExists(t, targetFile)
@@ -331,7 +331,7 @@ func TestDeployOps_DeployLocalFile(t *testing.T) {
 		require.NoError(t, os.WriteFile(sourceFile, []byte("content"), 0644))
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.DeployLocalFile(ctx, sourceFile, targetFile)
+		err := deploy.DeployLocalFile(ctx, sourceFile, targetFile, nil)
 
 		require.NoError(t, err)
 		assert.FileExists(t, targetFile)
@@ -347,7 +347,7 @@ func TestDeployOps_DeployLocalFile(t *testing.T) {
 		require.NoError(t, os.WriteFile(sourceFile, []byte("content"), 0644))
 
 		deploy := NewDeployOps(true, "")
-		err := deploy.DeployLocalFile(ctx, sourceFile, targetFile)
+		err := deploy.DeployLocalFile(ctx, sourceFile, targetFile, nil)
 
 		require.NoError(t, err)
 		assert.NoFileExists(t, targetFile)
@@ -361,9 +361,117 @@ func TestDeployOps_DeployLocalFile(t *testing.T) {
 		targetFile := filepath.Join(tmpDir, "target.txt")
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.DeployLocalFile(ctx, sourceFile, targetFile)
+		err := deploy.DeployLocalFile(ctx, sourceFile, targetFile, nil)
 
 		require.Error(t, err)
+	})
+}
+
+func TestDeployOps_DeployLocal_ContentHash(t *testing.T) {
+	t.Run("skips unchanged files and reports written", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+
+		require.NoError(t, os.MkdirAll(sourceDir, 0755))
+		require.NoError(t, os.MkdirAll(targetDir, 0755))
+
+		// Source has two files; target already has one with matching content.
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "unchanged.txt"), []byte("same"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "changed.txt"), []byte("new"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "unchanged.txt"), []byte("same"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "changed.txt"), []byte("old"), 0644))
+
+		deploy := &DeployOps{ContentHashSync: true}
+		result := &DeployResult{}
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir, result)
+
+		require.NoError(t, err)
+		assert.Equal(t, []string{"changed.txt"}, result.WrittenFiles)
+	})
+
+	t.Run("removes stale files from target", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+
+		require.NoError(t, os.MkdirAll(sourceDir, 0755))
+		require.NoError(t, os.MkdirAll(targetDir, 0755))
+
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "keep.txt"), []byte("keep"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "keep.txt"), []byte("keep"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "stale.txt"), []byte("remove me"), 0644))
+
+		deploy := &DeployOps{ContentHashSync: true}
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir, nil)
+
+		require.NoError(t, err)
+		assert.FileExists(t, filepath.Join(targetDir, "keep.txt"))
+		assert.NoFileExists(t, filepath.Join(targetDir, "stale.txt"))
+	})
+
+	t.Run("empty result when all identical", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+
+		require.NoError(t, os.MkdirAll(sourceDir, 0755))
+		require.NoError(t, os.MkdirAll(targetDir, 0755))
+
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "a.txt"), []byte("same"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "a.txt"), []byte("same"), 0644))
+
+		deploy := &DeployOps{ContentHashSync: true}
+		result := &DeployResult{}
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir, result)
+
+		require.NoError(t, err)
+		assert.Empty(t, result.WrittenFiles)
+	})
+}
+
+func TestDeployOps_DeployLocalFile_ContentHash(t *testing.T) {
+	t.Run("skips unchanged file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		src := filepath.Join(tmpDir, "src.txt")
+		dst := filepath.Join(tmpDir, "dst.txt")
+		require.NoError(t, os.WriteFile(src, []byte("identical"), 0644))
+		require.NoError(t, os.WriteFile(dst, []byte("identical"), 0644))
+
+		deploy := &DeployOps{ContentHashSync: true}
+		result := &DeployResult{}
+		err := deploy.DeployLocalFile(ctx, src, dst, result)
+
+		require.NoError(t, err)
+		assert.Empty(t, result.WrittenFiles)
+	})
+
+	t.Run("writes changed file and records it", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		src := filepath.Join(tmpDir, "src.txt")
+		dst := filepath.Join(tmpDir, "dst.txt")
+		require.NoError(t, os.WriteFile(src, []byte("new"), 0644))
+		require.NoError(t, os.WriteFile(dst, []byte("old"), 0644))
+
+		deploy := &DeployOps{ContentHashSync: true}
+		result := &DeployResult{}
+		err := deploy.DeployLocalFile(ctx, src, dst, result)
+
+		require.NoError(t, err)
+		assert.Contains(t, result.WrittenFiles, dst)
+
+		got, _ := os.ReadFile(dst)
+		assert.Equal(t, "new", string(got))
 	})
 }
 

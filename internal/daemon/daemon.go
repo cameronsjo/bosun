@@ -59,6 +59,9 @@ type Config struct {
 	DriftAlertCooldown time.Duration // Cooldown between repeated drift alerts per item (default: 1h)
 	DriftResolveAlerts bool          // Send "drift resolved" alerts (default: true)
 
+	// Content-hash sync settings
+	ContentHashSync bool // Compare file hashes before writing (default: true)
+
 	// Alerting
 	AlertManager *alert.Manager
 
@@ -85,6 +88,7 @@ func DefaultConfig() *Config {
 		DriftInterval:      5 * time.Minute,
 		DriftAlertCooldown: time.Hour,
 		DriftResolveAlerts: true,
+		ContentHashSync:    true,
 	}
 }
 
@@ -952,6 +956,12 @@ func ConfigFromEnv() *Config {
 	if v := os.Getenv("BOSUN_DRIFT_RESOLVE_ALERTS"); v != "" {
 		cfg.DriftResolveAlerts = v != "false" && v != "0"
 	}
+
+	// Content-hash file sync (default: true)
+	if v := os.Getenv("BOSUN_CONTENT_HASH_SYNC"); v != "" {
+		cfg.ContentHashSync = v != "false" && v != "0"
+	}
+	rcfg.ContentHashSync = cfg.ContentHashSync
 
 	// Post-sync hooks and settle delay: load from project config, env var overrides.
 	if projectCfg, err := config.Load(); err == nil {

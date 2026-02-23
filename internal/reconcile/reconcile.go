@@ -72,6 +72,10 @@ type Config struct {
 	// HookSettleDelay is a global pause after deploy but before any post-sync hooks run.
 	// Allows filesystem propagation on FUSE mounts (e.g., Unraid's shfs).
 	HookSettleDelay time.Duration
+
+	// ContentHashSync if true, compares file content hashes before writing.
+	// Skips writes for unchanged files to avoid FUSE handle invalidation.
+	ContentHashSync bool
 }
 
 // DefaultLockFile is the default path for the reconciliation lock file.
@@ -135,7 +139,7 @@ func NewReconciler(cfg *Config, opts ...ReconcilerOption) *Reconciler {
 		config:   cfg,
 		git:      NewGitOps(cfg.RepoURL, cfg.RepoBranch, cfg.RepoDir),
 		sops:     NewSOPSOps(),
-		deploy:   NewDeployOps(cfg.DryRun, cfg.ProjectName),
+		deploy:   &DeployOps{DryRun: cfg.DryRun, ProjectName: cfg.ProjectName, ContentHashSync: cfg.ContentHashSync},
 		lockFile: lockFile,
 	}
 
@@ -324,7 +328,8 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 	// Step 5: Deploy.
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.deploy", "Deployment")
-	if err := r.doDeploy(spanCtx, secrets); err != nil {
+	deployResult, err := r.doDeploy(spanCtx, secrets)
+	if err != nil {
 		finishSpan(err)
 		r.sendThrottledFailureAlert(ctx, state, err.Error())
 		return fmt.Errorf("deployment failed: %w", err)
@@ -361,7 +366,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 	// Execute post-sync hooks if any files changed and hooks are configured.
 	if r.dockerClientFn != nil && !r.config.DryRun && len(r.config.PostSyncHooks) > 0 {
-		r.executePostSyncHooks(ctx, previousCommit, after)
+		r.executePostSyncHooks(ctx, previousCommit, after, deployResult)
 	}
 
 	// Post-deploy verification: check declared vs actual state.
@@ -529,9 +534,10 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 	}
 }
 
-// executePostSyncHooks detects changed files between commits and restarts
-// matching containers via configured hooks.
-func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, currentCommit string) {
+// executePostSyncHooks detects changed files and restarts matching containers via configured hooks.
+// When deployResult is non-nil and has written files, those are used for matching instead of git diff.
+// This ensures hooks only fire for files actually written to disk (content-hash sync).
+func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, currentCommit string, deployResult *DeployResult) {
 	logger := log.Component(log.ComponentReconcile)
 
 	if previousCommit == "" {
@@ -539,10 +545,18 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 		return
 	}
 
-	changedFiles, err := r.git.DiffFiles(ctx, previousCommit, currentCommit)
-	if err != nil {
-		logger.Warn().Err(err).Msg("Failed to diff commits for post-sync hooks")
-		return
+	// Prefer written-files from content-hash sync over git diff.
+	var changedFiles []string
+	if deployResult != nil && len(deployResult.WrittenFiles) > 0 {
+		changedFiles = deployResult.WrittenFiles
+		logger.Debug().Int("files", len(changedFiles)).Msg("Using written-files list for post-sync hooks")
+	} else {
+		var err error
+		changedFiles, err = r.git.DiffFiles(ctx, previousCommit, currentCommit)
+		if err != nil {
+			logger.Warn().Err(err).Msg("Failed to diff commits for post-sync hooks")
+			return
+		}
 	}
 
 	if len(changedFiles) == 0 {
@@ -756,11 +770,12 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any) e
 }
 
 // doDeploy performs the actual deployment.
-func (r *Reconciler) doDeploy(ctx context.Context, secrets map[string]any) error {
+// Returns a DeployResult with written files (local mode) or nil (remote mode).
+func (r *Reconciler) doDeploy(ctx context.Context, secrets map[string]any) (*DeployResult, error) {
 	if r.isLocalMode() {
 		return r.deployLocal(ctx)
 	}
-	return r.deployRemote(ctx, secrets)
+	return nil, r.deployRemote(ctx, secrets)
 }
 
 // isLocalMode returns true if running in local mode (appdata mounted).
@@ -789,51 +804,53 @@ func (r *Reconciler) getTargetHost(secrets map[string]any) string {
 }
 
 // deployLocal performs local deployment via mounted paths.
-func (r *Reconciler) deployLocal(ctx context.Context) error {
+// Returns a DeployResult with files actually written to disk.
+func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 	ui.Info("Using local deployment mode")
 	if r.config.DryRun {
 		ui.Warning("DRY RUN MODE - no changes will be made")
 	}
 
+	result := &DeployResult{}
 	stagingUnraid := filepath.Join(r.config.StagingDir, "unraid")
 	appdata := r.config.LocalAppdataPath
 
 	// Sync Traefik configs.
 	ui.Info("  Syncing Traefik configs...")
-	if err := r.deploy.DeployLocal(ctx, filepath.Join(stagingUnraid, "appdata", "traefik"), filepath.Join(appdata, "traefik")); err != nil {
-		return err
+	if err := r.deploy.DeployLocal(ctx, filepath.Join(stagingUnraid, "appdata", "traefik"), filepath.Join(appdata, "traefik"), result); err != nil {
+		return nil, err
 	}
 
 	// Sync agentgateway config.
 	ui.Info("  Syncing agentgateway config...")
-	if err := r.deploy.DeployLocalFile(ctx, filepath.Join(stagingUnraid, "appdata", "agentgateway", "config.yaml"), filepath.Join(appdata, "agentgateway", "config.yaml")); err != nil {
-		return err
+	if err := r.deploy.DeployLocalFile(ctx, filepath.Join(stagingUnraid, "appdata", "agentgateway", "config.yaml"), filepath.Join(appdata, "agentgateway", "config.yaml"), result); err != nil {
+		return nil, err
 	}
 
 	// Sync authelia config.
 	ui.Info("  Syncing authelia config...")
-	if err := r.deploy.DeployLocalFile(ctx, filepath.Join(stagingUnraid, "appdata", "authelia", "configuration.yml"), filepath.Join(appdata, "authelia", "configuration.yml")); err != nil {
-		return err
+	if err := r.deploy.DeployLocalFile(ctx, filepath.Join(stagingUnraid, "appdata", "authelia", "configuration.yml"), filepath.Join(appdata, "authelia", "configuration.yml"), result); err != nil {
+		return nil, err
 	}
 
 	// Sync gatus config.
 	ui.Info("  Syncing gatus config...")
-	if err := r.deploy.DeployLocalFile(ctx, filepath.Join(stagingUnraid, "appdata", "gatus", "config.yaml"), filepath.Join(appdata, "gatus", "config.yaml")); err != nil {
-		return err
+	if err := r.deploy.DeployLocalFile(ctx, filepath.Join(stagingUnraid, "appdata", "gatus", "config.yaml"), filepath.Join(appdata, "gatus", "config.yaml"), result); err != nil {
+		return nil, err
 	}
 
 	// Sync tailscale-gateway config.
 	ui.Info("  Syncing tailscale-gateway config...")
 	_ = os.MkdirAll(filepath.Join(appdata, "tailscale-gateway"), 0755)
-	if err := r.deploy.DeployLocalFile(ctx, filepath.Join(stagingUnraid, "appdata", "tailscale-gateway", "serve.json"), filepath.Join(appdata, "tailscale-gateway", "serve.json")); err != nil {
+	if err := r.deploy.DeployLocalFile(ctx, filepath.Join(stagingUnraid, "appdata", "tailscale-gateway", "serve.json"), filepath.Join(appdata, "tailscale-gateway", "serve.json"), result); err != nil {
 		ui.Warning("tailscale-gateway sync failed: %v", err)
 	}
 
 	// Sync compose files.
 	ui.Info("  Syncing compose files...")
 	_ = os.MkdirAll(filepath.Join(appdata, "compose"), 0755)
-	if err := r.deploy.DeployLocal(ctx, filepath.Join(stagingUnraid, "compose"), filepath.Join(appdata, "compose")); err != nil {
-		return err
+	if err := r.deploy.DeployLocal(ctx, filepath.Join(stagingUnraid, "compose"), filepath.Join(appdata, "compose"), result); err != nil {
+		return nil, err
 	}
 
 	// Reload services with rollback support.
@@ -842,7 +859,7 @@ func (r *Reconciler) deployLocal(ctx context.Context) error {
 		composeDir := filepath.Join(appdata, "compose")
 		composeFiles, err := filepath.Glob(filepath.Join(composeDir, "*.yml"))
 		if err != nil {
-			return fmt.Errorf("failed to glob compose files: %w", err)
+			return nil, fmt.Errorf("failed to glob compose files: %w", err)
 		}
 		if len(composeFiles) == 0 {
 			ui.Warning("No compose files found in %s", composeDir)
@@ -850,12 +867,12 @@ func (r *Reconciler) deployLocal(ctx context.Context) error {
 			if err := r.deploy.ComposeUpMultipleWithRollback(ctx, composeFiles, r.lastBackupPath); err != nil {
 				// Check if rollback succeeded or failed
 				if errors.Is(err, ErrRollbackFailed) {
-					return fmt.Errorf("CRITICAL: service reload and rollback both failed: %w", err)
+					return nil, fmt.Errorf("CRITICAL: service reload and rollback both failed: %w", err)
 				} else if errors.Is(err, ErrRollbackSucceeded) {
-					return fmt.Errorf("service reload failed but rollback succeeded: %w", err)
+					return nil, fmt.Errorf("service reload failed but rollback succeeded: %w", err)
 				}
 				// Other errors (no backup available, etc.)
-				return fmt.Errorf("service reload failed: %w", err)
+				return nil, fmt.Errorf("service reload failed: %w", err)
 			}
 		}
 		if err := r.deploy.SignalContainer(ctx, "agentgateway", "SIGHUP"); err != nil {
@@ -864,7 +881,7 @@ func (r *Reconciler) deployLocal(ctx context.Context) error {
 	}
 
 	ui.Success("Deployment complete!")
-	return nil
+	return result, nil
 }
 
 // deployRemote performs remote deployment via SSH.

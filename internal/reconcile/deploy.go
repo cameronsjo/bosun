@@ -42,6 +42,21 @@ type DeployOps struct {
 	DryRun bool
 	// ProjectName is the docker compose project name for consistent container namespacing.
 	ProjectName string
+	// ContentHashSync if true, skips writing files whose content has not changed.
+	// Reduces unnecessary FUSE handle invalidation on copy-on-write filesystems.
+	ContentHashSync bool
+}
+
+// DeployResult tracks which files were actually written during deployment.
+// Used to inform post-sync hooks about actual on-disk changes.
+type DeployResult struct {
+	// WrittenFiles contains relative paths of files that were written to disk.
+	WrittenFiles []string
+}
+
+// AddWritten appends file paths to the result's written files list.
+func (r *DeployResult) AddWritten(files ...string) {
+	r.WrittenFiles = append(r.WrittenFiles, files...)
 }
 
 // NewDeployOps creates a new DeployOps instance.
@@ -367,7 +382,7 @@ func (d *DeployOps) CleanupBackups(backupDir string, keep int) error {
 // DeployLocal syncs files locally using native Go file operations.
 // Performs atomic copy: copies to temp directory first, then replaces target.
 // Uses --delete semantics: removes files in target that don't exist in source.
-func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string) error {
+func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string, result *DeployResult) error {
 	start := time.Now()
 	logger := log.Component(log.ComponentDeploy)
 
@@ -396,19 +411,50 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 		return fmt.Errorf("source is not a directory: %s", sourceDir)
 	}
 
-	// Create parent of target directory if needed
+	// Content-hash mode: compare per-file against existing target, skip unchanged.
+	if d.ContentHashSync {
+		if err := os.MkdirAll(targetDir, 0755); err != nil {
+			return fmt.Errorf("create target directory: %w", err)
+		}
+
+		written, err := fileutil.CopyDirIfChanged(sourceDir, targetDir)
+		if err != nil {
+			return fmt.Errorf("copy with content hash: %w", err)
+		}
+
+		// Remove files in target that aren't in source (--delete semantics).
+		if err := removeStaleFiles(sourceDir, targetDir); err != nil {
+			return fmt.Errorf("remove stale files: %w", err)
+		}
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		if result != nil {
+			result.AddWritten(written...)
+		}
+
+		logger.Debug().
+			Str(log.FieldOperation, "deploy_local").
+			Str("target", targetDir).
+			Int("files_written", len(written)).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("Local deployment completed (content-hash sync)")
+		return nil
+	}
+
+	// Standard mode: nuke-and-replace for atomic directory swap.
 	targetParent := filepath.Dir(targetDir)
 	if err := os.MkdirAll(targetParent, 0755); err != nil {
 		return fmt.Errorf("create target parent: %w", err)
 	}
 
-	// Create temp directory in same parent for atomic rename
 	tmpDir, err := os.MkdirTemp(targetParent, ".deploy-tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temp directory: %w", err)
 	}
 
-	// Cleanup temp directory on failure
 	success := false
 	defer func() {
 		if !success {
@@ -416,24 +462,20 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 		}
 	}()
 
-	// Copy source to temp directory
 	if err := fileutil.CopyDir(sourceDir, tmpDir); err != nil {
 		return fmt.Errorf("copy to temp: %w", err)
 	}
 
-	// Check context for cancellation
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 
-	// Remove existing target if it exists
 	if _, err := os.Stat(targetDir); err == nil {
 		if err := os.RemoveAll(targetDir); err != nil {
 			return fmt.Errorf("remove existing target: %w", err)
 		}
 	}
 
-	// Atomic rename temp to target
 	if err := os.Rename(tmpDir, targetDir); err != nil {
 		logger.Error().Err(err).Str("target", targetDir).Msg("Failed to rename to target")
 		return fmt.Errorf("rename to target: %w", err)
@@ -448,16 +490,55 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 	return nil
 }
 
+// removeStaleFiles removes files in targetDir that don't exist in sourceDir.
+// Preserves --delete semantics when using per-file content-hash sync.
+func removeStaleFiles(sourceDir, targetDir string) error {
+	return filepath.WalkDir(targetDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		relPath, err := filepath.Rel(targetDir, path)
+		if err != nil {
+			return err
+		}
+		if relPath == "." {
+			return nil
+		}
+
+		srcPath := filepath.Join(sourceDir, relPath)
+		if _, err := os.Stat(srcPath); os.IsNotExist(err) {
+			if d.IsDir() {
+				os.RemoveAll(path)
+				return filepath.SkipDir
+			}
+			os.Remove(path)
+		}
+		return nil
+	})
+}
+
 // DeployLocalFile syncs a single file locally using native Go file operations.
-// Uses atomic copy via temp file.
-func (d *DeployOps) DeployLocalFile(ctx context.Context, sourceFile, targetFile string) error {
+// Uses atomic copy via temp file. When ContentHashSync is enabled, skips writing
+// if the file content has not changed.
+func (d *DeployOps) DeployLocalFile(ctx context.Context, sourceFile, targetFile string, result *DeployResult) error {
 	if d.DryRun {
 		return nil
 	}
 
-	// Check context for cancellation
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+
+	if d.ContentHashSync {
+		changed, err := fileutil.CopyFileIfChanged(sourceFile, targetFile)
+		if err != nil {
+			return err
+		}
+		if changed && result != nil {
+			result.AddWritten(targetFile)
+		}
+		return nil
 	}
 
 	return fileutil.CopyFile(sourceFile, targetFile)

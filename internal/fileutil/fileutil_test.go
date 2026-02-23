@@ -1,8 +1,10 @@
 package fileutil_test
 
 import (
+	"crypto/sha256"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/cameronsjo/bosun/internal/fileutil"
@@ -155,5 +157,215 @@ func TestCopyDir(t *testing.T) {
 
 		err := fileutil.CopyDir(srcDir, dstDir)
 		assert.Error(t, err)
+	})
+}
+
+func TestFileHash(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns consistent hash for same content", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		path := filepath.Join(tmpDir, "file.txt")
+		require.NoError(t, os.WriteFile(path, []byte("hello"), 0644))
+
+		hash1, err := fileutil.FileHash(path)
+		require.NoError(t, err)
+
+		hash2, err := fileutil.FileHash(path)
+		require.NoError(t, err)
+
+		assert.Equal(t, hash1, hash2)
+	})
+
+	t.Run("returns different hash for different content", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		path1 := filepath.Join(tmpDir, "a.txt")
+		path2 := filepath.Join(tmpDir, "b.txt")
+		require.NoError(t, os.WriteFile(path1, []byte("hello"), 0644))
+		require.NoError(t, os.WriteFile(path2, []byte("world"), 0644))
+
+		hash1, err := fileutil.FileHash(path1)
+		require.NoError(t, err)
+		hash2, err := fileutil.FileHash(path2)
+		require.NoError(t, err)
+
+		assert.NotEqual(t, hash1, hash2)
+	})
+
+	t.Run("returns error for non-existent file", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := fileutil.FileHash("/nonexistent/file.txt")
+		assert.Error(t, err)
+	})
+}
+
+func TestContentEqual(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns true for identical content", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		content := []byte("same content")
+		path := filepath.Join(tmpDir, "file.txt")
+		require.NoError(t, os.WriteFile(path, content, 0644))
+
+		srcHash := sha256.Sum256(content)
+		equal, err := fileutil.ContentEqual(path, srcHash)
+		require.NoError(t, err)
+		assert.True(t, equal)
+	})
+
+	t.Run("returns false for different content", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "file.txt"), []byte("original"), 0644))
+
+		srcHash := sha256.Sum256([]byte("different"))
+		equal, err := fileutil.ContentEqual(filepath.Join(tmpDir, "file.txt"), srcHash)
+		require.NoError(t, err)
+		assert.False(t, equal)
+	})
+
+	t.Run("returns false for non-existent file", func(t *testing.T) {
+		t.Parallel()
+
+		srcHash := sha256.Sum256([]byte("content"))
+		equal, err := fileutil.ContentEqual("/nonexistent/file.txt", srcHash)
+		require.NoError(t, err)
+		assert.False(t, equal)
+	})
+}
+
+func TestCopyFileIfChanged(t *testing.T) {
+	t.Parallel()
+
+	t.Run("writes new file and reports changed", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		src := filepath.Join(tmpDir, "src.txt")
+		dst := filepath.Join(tmpDir, "dst.txt")
+		require.NoError(t, os.WriteFile(src, []byte("new content"), 0644))
+
+		changed, err := fileutil.CopyFileIfChanged(src, dst)
+		require.NoError(t, err)
+		assert.True(t, changed)
+
+		got, err := os.ReadFile(dst)
+		require.NoError(t, err)
+		assert.Equal(t, "new content", string(got))
+	})
+
+	t.Run("skips write when content identical", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		src := filepath.Join(tmpDir, "src.txt")
+		dst := filepath.Join(tmpDir, "dst.txt")
+		content := []byte("identical content")
+		require.NoError(t, os.WriteFile(src, content, 0644))
+		require.NoError(t, os.WriteFile(dst, content, 0644))
+
+		// Record dst mod time before call
+		infoBefore, err := os.Stat(dst)
+		require.NoError(t, err)
+
+		changed, err := fileutil.CopyFileIfChanged(src, dst)
+		require.NoError(t, err)
+		assert.False(t, changed)
+
+		// File should not have been rewritten
+		infoAfter, err := os.Stat(dst)
+		require.NoError(t, err)
+		assert.Equal(t, infoBefore.ModTime(), infoAfter.ModTime())
+	})
+
+	t.Run("writes when content differs", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		src := filepath.Join(tmpDir, "src.txt")
+		dst := filepath.Join(tmpDir, "dst.txt")
+		require.NoError(t, os.WriteFile(src, []byte("new version"), 0644))
+		require.NoError(t, os.WriteFile(dst, []byte("old version"), 0644))
+
+		changed, err := fileutil.CopyFileIfChanged(src, dst)
+		require.NoError(t, err)
+		assert.True(t, changed)
+
+		got, err := os.ReadFile(dst)
+		require.NoError(t, err)
+		assert.Equal(t, "new version", string(got))
+	})
+}
+
+func TestCopyDirIfChanged(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns only changed files", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		srcDir := filepath.Join(tmpDir, "src")
+		dstDir := filepath.Join(tmpDir, "dst")
+
+		// Create source
+		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "sub"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "unchanged.txt"), []byte("same"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "changed.txt"), []byte("new"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "sub", "new.txt"), []byte("brand new"), 0644))
+
+		// Create pre-existing destination with one matching file
+		require.NoError(t, os.MkdirAll(dstDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "unchanged.txt"), []byte("same"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "changed.txt"), []byte("old"), 0644))
+
+		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		require.NoError(t, err)
+
+		sort.Strings(written)
+		assert.Equal(t, []string{"changed.txt", filepath.Join("sub", "new.txt")}, written)
+	})
+
+	t.Run("returns empty when all files identical", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		srcDir := filepath.Join(tmpDir, "src")
+		dstDir := filepath.Join(tmpDir, "dst")
+
+		require.NoError(t, os.MkdirAll(srcDir, 0755))
+		require.NoError(t, os.MkdirAll(dstDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "a.txt"), []byte("content"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "a.txt"), []byte("content"), 0644))
+
+		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		require.NoError(t, err)
+		assert.Empty(t, written)
+	})
+
+	t.Run("all files new returns all", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		srcDir := filepath.Join(tmpDir, "src")
+		dstDir := filepath.Join(tmpDir, "dst")
+
+		require.NoError(t, os.MkdirAll(srcDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "a.txt"), []byte("aaa"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "b.txt"), []byte("bbb"), 0644))
+
+		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		require.NoError(t, err)
+
+		sort.Strings(written)
+		assert.Equal(t, []string{"a.txt", "b.txt"}, written)
 	})
 }

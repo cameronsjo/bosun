@@ -43,6 +43,9 @@ func TestDefaultConfig_DriftAlertCooldown(t *testing.T) {
 	if !cfg.DriftResolveAlerts {
 		t.Error("DriftResolveAlerts should be true by default")
 	}
+	if !cfg.ContentHashSync {
+		t.Error("ContentHashSync should be true by default")
+	}
 }
 
 func TestValidateConfig(t *testing.T) {
@@ -841,6 +844,52 @@ func TestConfigFromEnv_DriftResolveAlerts(t *testing.T) {
 
 		if !cfg.DriftResolveAlerts {
 			t.Error("DriftResolveAlerts should be true when set to 'true'")
+		}
+	})
+}
+
+func TestConfigFromEnv_ContentHashSync(t *testing.T) {
+	t.Run("default true", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if !cfg.ContentHashSync {
+			t.Error("ContentHashSync should be true by default")
+		}
+		if cfg.ReconcileConfig == nil || !cfg.ReconcileConfig.ContentHashSync {
+			t.Error("ReconcileConfig.ContentHashSync should be true by default")
+		}
+	})
+
+	t.Run("disabled with false", func(t *testing.T) {
+		t.Setenv("BOSUN_CONTENT_HASH_SYNC", "false")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.ContentHashSync {
+			t.Error("ContentHashSync should be false when set to 'false'")
+		}
+		if cfg.ReconcileConfig != nil && cfg.ReconcileConfig.ContentHashSync {
+			t.Error("ReconcileConfig.ContentHashSync should be false")
+		}
+	})
+
+	t.Run("disabled with 0", func(t *testing.T) {
+		t.Setenv("BOSUN_CONTENT_HASH_SYNC", "0")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.ContentHashSync {
+			t.Error("ContentHashSync should be false when set to '0'")
+		}
+	})
+
+	t.Run("enabled with true", func(t *testing.T) {
+		t.Setenv("BOSUN_CONTENT_HASH_SYNC", "true")
+
+		cfg := ConfigFromEnv()
+
+		if !cfg.ContentHashSync {
+			t.Error("ContentHashSync should be true when set to 'true'")
 		}
 	})
 }
