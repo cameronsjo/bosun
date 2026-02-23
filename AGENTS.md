@@ -298,6 +298,8 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 | `BOSUN_SHUTDOWN_TIMEOUT` | daemon | Graceful shutdown timeout |
 | `BOSUN_API_TIMEOUT` | daemon | API request timeout |
 | `BOSUN_DRIFT_INTERVAL` | daemon | Drift check interval |
+| `BOSUN_DRIFT_ALERT_COOLDOWN` | daemon | Cooldown between repeated drift alerts (default: `1h`) |
+| `BOSUN_DRIFT_RESOLVE_ALERTS` | daemon | Send "drift resolved" notifications (default: `true`) |
 | `BOSUN_SSH_KEY` | reconcile | SSH key path for git operations |
 | `BOSUN_SSH_KNOWN_HOSTS` | reconcile | Known hosts file path |
 | `BOSUN_SSH_INSECURE_HOST_KEY` | reconcile | Skip host key verification (`true`/`false`) |

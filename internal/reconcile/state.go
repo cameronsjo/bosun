@@ -67,6 +67,10 @@ type DeployState struct {
 	// Drift detection results from last check.
 	DriftCheckedAt time.Time   `json:"drift_checked_at,omitempty"`
 	DriftItems     []DriftItem `json:"drift_items,omitempty"`
+
+	// Drift alert deduplication state.
+	DriftAlertedAt    time.Time            `json:"drift_alerted_at,omitempty"`
+	DriftAlertedItems map[string]time.Time `json:"drift_alerted_items,omitempty"`
 }
 
 // alertThresholds defines the attempt counts at which failure alerts are sent.
@@ -194,6 +198,42 @@ func SaveState(path string, state *DeployState) error {
 
 	success = true
 	return nil
+}
+
+// DriftAlertKey returns a deduplication key for a drift item in the format "service:type".
+func DriftAlertKey(item DriftItem) string {
+	return item.Service + ":" + string(item.Type)
+}
+
+// ShouldAlertDrift compares current drift items against previously alerted items
+// and returns which items should trigger new alerts and which have resolved.
+//
+// An item triggers an alert if it is new (not in alertedItems) or if its cooldown
+// has expired. A key is considered resolved if it exists in alertedItems but is
+// absent from currentItems.
+func ShouldAlertDrift(currentItems []DriftItem, alertedItems map[string]time.Time, cooldown time.Duration) (alertItems []DriftItem, resolvedKeys []string) {
+	now := time.Now()
+
+	// Build set of current keys for resolution detection.
+	currentKeys := make(map[string]bool, len(currentItems))
+	for _, item := range currentItems {
+		key := DriftAlertKey(item)
+		currentKeys[key] = true
+
+		lastAlerted, exists := alertedItems[key]
+		if !exists || now.Sub(lastAlerted) >= cooldown {
+			alertItems = append(alertItems, item)
+		}
+	}
+
+	// Find resolved: in alertedItems but not in currentItems.
+	for key := range alertedItems {
+		if !currentKeys[key] {
+			resolvedKeys = append(resolvedKeys, key)
+		}
+	}
+
+	return alertItems, resolvedKeys
 }
 
 // fsyncDir opens a directory and fsyncs it to make metadata changes durable.

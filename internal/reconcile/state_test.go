@@ -175,6 +175,139 @@ func TestShouldAlert(t *testing.T) {
 	}
 }
 
+func TestDriftAlertKey(t *testing.T) {
+	tests := []struct {
+		name     string
+		item     DriftItem
+		expected string
+	}{
+		{
+			name:     "unhealthy service",
+			item:     DriftItem{Service: "traefik", Type: DriftUnhealthy},
+			expected: "traefik:unhealthy",
+		},
+		{
+			name:     "missing service",
+			item:     DriftItem{Service: "authelia", Type: DriftMissing},
+			expected: "authelia:missing",
+		},
+		{
+			name:     "image mismatch",
+			item:     DriftItem{Service: "nginx", Type: DriftImageMismatch},
+			expected: "nginx:image_mismatch",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, DriftAlertKey(tc.item))
+		})
+	}
+}
+
+func TestShouldAlertDrift(t *testing.T) {
+	now := time.Now()
+	cooldown := time.Hour
+
+	tests := []struct {
+		name             string
+		currentItems     []DriftItem
+		alertedItems     map[string]time.Time
+		expectedAlerts   int
+		expectedResolved int
+	}{
+		{
+			name: "new item triggers alert",
+			currentItems: []DriftItem{
+				{Service: "traefik", Type: DriftUnhealthy},
+			},
+			alertedItems:     map[string]time.Time{},
+			expectedAlerts:   1,
+			expectedResolved: 0,
+		},
+		{
+			name: "same item within cooldown is suppressed",
+			currentItems: []DriftItem{
+				{Service: "traefik", Type: DriftUnhealthy},
+			},
+			alertedItems: map[string]time.Time{
+				"traefik:unhealthy": now.Add(-30 * time.Minute),
+			},
+			expectedAlerts:   0,
+			expectedResolved: 0,
+		},
+		{
+			name: "same item past cooldown re-alerts",
+			currentItems: []DriftItem{
+				{Service: "traefik", Type: DriftUnhealthy},
+			},
+			alertedItems: map[string]time.Time{
+				"traefik:unhealthy": now.Add(-2 * time.Hour),
+			},
+			expectedAlerts:   1,
+			expectedResolved: 0,
+		},
+		{
+			name:         "removed item is resolved",
+			currentItems: []DriftItem{},
+			alertedItems: map[string]time.Time{
+				"traefik:unhealthy": now.Add(-10 * time.Minute),
+			},
+			expectedAlerts:   0,
+			expectedResolved: 1,
+		},
+		{
+			name: "mix of new, suppressed, and resolved",
+			currentItems: []DriftItem{
+				{Service: "authelia", Type: DriftMissing},  // new
+				{Service: "traefik", Type: DriftUnhealthy}, // within cooldown
+			},
+			alertedItems: map[string]time.Time{
+				"traefik:unhealthy": now.Add(-30 * time.Minute), // suppressed
+				"nginx:missing":     now.Add(-10 * time.Minute), // resolved
+			},
+			expectedAlerts:   1, // only authelia
+			expectedResolved: 1, // only nginx
+		},
+		{
+			name:             "empty inputs produce no results",
+			currentItems:     []DriftItem{},
+			alertedItems:     map[string]time.Time{},
+			expectedAlerts:   0,
+			expectedResolved: 0,
+		},
+		{
+			name: "nil alertedItems treats all items as new",
+			currentItems: []DriftItem{
+				{Service: "traefik", Type: DriftUnhealthy},
+				{Service: "authelia", Type: DriftMissing},
+			},
+			alertedItems:     nil,
+			expectedAlerts:   2,
+			expectedResolved: 0,
+		},
+		{
+			name: "exact cooldown boundary re-alerts",
+			currentItems: []DriftItem{
+				{Service: "traefik", Type: DriftUnhealthy},
+			},
+			alertedItems: map[string]time.Time{
+				"traefik:unhealthy": now.Add(-cooldown),
+			},
+			expectedAlerts:   1,
+			expectedResolved: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			alertItems, resolvedKeys := ShouldAlertDrift(tc.currentItems, tc.alertedItems, cooldown)
+			assert.Len(t, alertItems, tc.expectedAlerts)
+			assert.Len(t, resolvedKeys, tc.expectedResolved)
+		})
+	}
+}
+
 func TestSaveState_SetsSchemaVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "deploy-state.json")

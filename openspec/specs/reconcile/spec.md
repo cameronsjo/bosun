@@ -590,10 +590,15 @@ The daemon SHALL perform periodic drift checks on a configurable interval,
 independent of the reconciliation poll interval.
 
 Periodic drift checks SHALL NOT trigger reconciliation. They SHALL only update
-the drift status in the state file and logs.
+the drift status in the state file, send deduplicated alerts, and log results.
 
 The drift check interval SHALL be configurable via `BOSUN_DRIFT_INTERVAL`
 environment variable. Setting it to 0 SHALL disable periodic drift checks.
+
+Critical drift items (missing or unhealthy) SHALL be subject to per-item alert
+deduplication with a configurable cooldown (see Alerting spec: Drift Alert
+Deduplication). The state file SHALL be saved after alert dedup updates so that
+alert timestamps are persisted atomically with drift results.
 
 #### Scenario: Periodic drift check detects crash
 
@@ -601,6 +606,7 @@ environment variable. Setting it to 0 SHALL disable periodic drift checks.
 - **AND** the next periodic drift check runs
 - **THEN** the drift is detected and logged at WARN level
 - **AND** the deploy state file is updated with the drift
+- **AND** a deduplicated alert is sent for the critical drift item
 
 #### Scenario: Periodic drift checks disabled
 
@@ -608,14 +614,23 @@ environment variable. Setting it to 0 SHALL disable periodic drift checks.
 - **THEN** no periodic drift checks run
 - **AND** drift is only checked after deployments
 
+#### Scenario: Persistent drift does not spam alerts
+
+- **WHEN** a drift item persists across multiple check cycles
+- **THEN** only the first check sends an alert
+- **AND** subsequent checks suppress the alert until the cooldown expires
+
 ### Requirement: Drift Status Persistence
 
 The deploy state file SHALL include drift check results: `drift_checked_at`
-timestamp and `drift_items` list (service name, drift type, declared value,
-actual value).
+timestamp, `drift_items` list (service name, drift type, declared value,
+actual value), `drift_alerted_at` timestamp of last drift alert sent, and
+`drift_alerted_items` map of `"service:type"` keys to last-alerted timestamps
+for per-item deduplication.
 
 The drift fields SHALL be updated after every drift check (post-deploy and
-periodic), not only after deployments.
+periodic), not only after deployments. The alert dedup fields SHALL be updated
+atomically with the drift results in the same state file save.
 
 Drift state updates SHALL use the same atomic write pattern as deploy state
 updates.

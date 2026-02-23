@@ -229,6 +229,18 @@ func (m *Manager) SendDriftDetected(ctx context.Context, target string, driftIte
 	})
 }
 
+// SendDriftResolved sends a notification when previously detected drift has cleared.
+func (m *Manager) SendDriftResolved(ctx context.Context, target string, resolvedItems []string) error {
+	summary := strings.Join(resolvedItems, ", ")
+	return m.Send(ctx, &Alert{
+		Title:    "Drift Resolved",
+		Message:  fmt.Sprintf("Drift resolved on %s: %s", target, summary),
+		Severity: SeverityInfo,
+		Source:   "drift",
+		Metadata: map[string]string{"target": target, "resolved_count": fmt.Sprintf("%d", len(resolvedItems))},
+	})
+}
+
 // SendDoctorAlert sends a health check alert.
 func (m *Manager) SendDoctorAlert(ctx context.Context, severity Severity, issues []string) error {
 	var title string

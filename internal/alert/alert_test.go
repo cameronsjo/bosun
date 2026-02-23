@@ -278,6 +278,27 @@ func TestManager_SendDoctorAlert(t *testing.T) {
 	}
 }
 
+func TestManager_SendDriftResolved(t *testing.T) {
+	m := NewManager()
+	p := newMockProvider("test", true)
+	m.AddProvider(p)
+
+	resolved := []string{"traefik:unhealthy", "authelia:missing"}
+	err := m.SendDriftResolved(context.Background(), "unraid", resolved)
+	require.NoError(t, err)
+
+	alerts := p.getAlerts()
+	require.Len(t, alerts, 1)
+
+	a := alerts[0]
+	assert.Equal(t, "Drift Resolved", a.Title)
+	assert.Contains(t, a.Message, "unraid")
+	assert.Contains(t, a.Message, "traefik:unhealthy")
+	assert.Equal(t, SeverityInfo, a.Severity)
+	assert.Equal(t, "drift", a.Source)
+	assert.Equal(t, "2", a.Metadata["resolved_count"])
+}
+
 func TestSeverityConstants(t *testing.T) {
 	assert.Equal(t, Severity("info"), SeverityInfo)
 	assert.Equal(t, Severity("warning"), SeverityWarning)

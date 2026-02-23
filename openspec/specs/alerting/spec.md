@@ -177,6 +177,7 @@ The alert system SHALL provide convenience methods for reconciliation lifecycle 
 - **Rollback Failure**: title "CRITICAL: Rollback Failed", severity critical, source "reconcile", includes target, error reason, and "Manual intervention required!" message
 - **Unhealthy Containers**: title "Unhealthy Containers Detected", severity warning, source "reconcile", includes target and comma-separated container names
 - **Drift Detected**: title "Drift Detected", severity warning, source "drift", includes target and comma-separated drift items
+- **Drift Resolved**: title "Drift Resolved", severity info, source "drift", includes target and comma-separated resolved item keys
 - **Doctor Alert**: severity-dependent title (critical: "CRITICAL: Health Check Failed", error: "Health Check Errors", warning: "Health Check Warnings", info: "Health Check Complete"), source "doctor", message is newline-joined issues
 
 #### Scenario: Deploy success alert formatting
@@ -228,3 +229,73 @@ When an alert is sent, `LastAlertedAttempt` SHALL be updated to the current atte
 - **WHEN** a deployment succeeds after failures
 - **THEN** `AttemptCount` is reset to 0
 - **AND** `LastAlertedAttempt` is reset to 0
+
+### Requirement: Drift Alert Deduplication
+
+The alert system SHALL deduplicate periodic drift alerts using per-item cooldowns to prevent notification spam from persistent drift (e.g., ~288 alerts/day from a 5-minute check interval).
+
+Each drift item SHALL be keyed by `"service:type"` (e.g., `traefik:unhealthy`). Two different drift types on the same service SHALL be treated as distinct alert items.
+
+An alert SHALL be sent for a drift item when it is newly detected (not in the alerted items map) or when its cooldown has expired. Items within their cooldown period SHALL be suppressed.
+
+The cooldown duration SHALL default to 1 hour and SHALL be configurable via the `BOSUN_DRIFT_ALERT_COOLDOWN` environment variable (accepts Go duration strings or bare seconds).
+
+Per-item alert timestamps SHALL be persisted in the deploy state file under `drift_alerted_items` (a map of key to timestamp) and `drift_alerted_at` (timestamp of the last alert sent). These fields SHALL use `omitempty` JSON tags for backwards compatibility with older bosun versions.
+
+#### Scenario: First drift detection alerts immediately
+
+- **WHEN** a drift item is detected for the first time
+- **AND** it is not present in the alerted items map
+- **THEN** an alert is sent for the item
+- **AND** the item's timestamp is recorded in `drift_alerted_items`
+
+#### Scenario: Repeated drift within cooldown is suppressed
+
+- **WHEN** the same drift item is detected on the next check cycle
+- **AND** its cooldown has not expired
+- **THEN** no alert is sent for the item
+
+#### Scenario: Drift re-alerts after cooldown expires
+
+- **WHEN** the same drift item persists past the cooldown period
+- **THEN** a new alert is sent for the item
+- **AND** the item's timestamp is updated in `drift_alerted_items`
+
+#### Scenario: New drift item added to existing set
+
+- **WHEN** a new drift item appears alongside an existing suppressed item
+- **THEN** an alert is sent only for the new item
+- **AND** the suppressed item remains silent
+
+#### Scenario: Fresh state treats all items as new
+
+- **WHEN** `drift_alerted_items` is nil or empty (daemon restart, first run)
+- **THEN** all current drift items trigger alerts
+
+### Requirement: Drift Resolution Alerts
+
+The alert system SHALL send resolution alerts when previously detected drift clears. A drift item SHALL be considered resolved when it is present in `drift_alerted_items` but absent from the current drift check results.
+
+Resolution alerts SHALL be opt-in, defaulting to enabled. The `BOSUN_DRIFT_RESOLVE_ALERTS` environment variable SHALL control this behavior (`false` or `0` disables, any other value enables).
+
+When all drift clears (no drift items remaining), the system SHALL send a single resolution alert listing all resolved keys and clear `drift_alerted_items`.
+
+#### Scenario: Single item resolves
+
+- **WHEN** a drift item was previously alerted and is no longer detected
+- **AND** `BOSUN_DRIFT_RESOLVE_ALERTS` is not `false`
+- **THEN** a resolution alert is sent listing the resolved item key
+- **AND** the resolved key is removed from `drift_alerted_items`
+
+#### Scenario: All drift resolves
+
+- **WHEN** all previously alerted drift items clear in a single check
+- **THEN** a single resolution alert is sent listing all resolved keys
+- **AND** `drift_alerted_items` is cleared
+
+#### Scenario: Resolution alerts disabled
+
+- **WHEN** `BOSUN_DRIFT_RESOLVE_ALERTS` is set to `false`
+- **AND** a drift item resolves
+- **THEN** no resolution alert is sent
+- **AND** the resolved key is still removed from `drift_alerted_items`

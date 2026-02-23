@@ -55,7 +55,9 @@ type Config struct {
 	APITimeout       time.Duration // Timeout for API handler requests (default: 30s)
 
 	// Drift check settings
-	DriftInterval time.Duration // Interval for periodic drift checks (0 disables, default: 5m)
+	DriftInterval      time.Duration // Interval for periodic drift checks (0 disables, default: 5m)
+	DriftAlertCooldown time.Duration // Cooldown between repeated drift alerts per item (default: 1h)
+	DriftResolveAlerts bool          // Send "drift resolved" alerts (default: true)
 
 	// Alerting
 	AlertManager *alert.Manager
@@ -80,7 +82,9 @@ func DefaultConfig() *Config {
 		ReconcileTimeout: 10 * time.Minute,
 		ShutdownTimeout:  30 * time.Second,
 		APITimeout:       30 * time.Second,
-		DriftInterval:    5 * time.Minute,
+		DriftInterval:      5 * time.Minute,
+		DriftAlertCooldown: time.Hour,
+		DriftResolveAlerts: true,
 	}
 }
 
@@ -617,26 +621,73 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	state := reconcile.LoadState(stateFile)
 	previouslyDrifted := len(state.DriftItems) > 0
 
-	// Update state file with drift results.
+	// Stage drift results — save happens after alert dedup updates the state.
 	state.DriftCheckedAt = report.CheckedAt
 	state.DriftItems = report.Items
-	if err := reconcile.SaveState(stateFile, state); err != nil {
-		logger.Warn().Err(err).Msg("Drift check: failed to save state")
-	}
 
 	if report.HasDrift() {
 		logger.Warn().
 			Int("drift_items", len(report.Items)).
 			Msg("Drift detected during periodic check")
 
-		// Send alert for critical drift (missing/unhealthy).
+		// Deduplicated alerting for critical drift (missing/unhealthy).
 		if report.HasCriticalDrift() && d.alerter != nil {
-			d.sendDriftAlert(ctx, report)
+			// Filter to critical items only.
+			var criticalItems []reconcile.DriftItem
+			for _, item := range report.Items {
+				if item.Type == reconcile.DriftMissing || item.Type == reconcile.DriftUnhealthy {
+					criticalItems = append(criticalItems, item)
+				}
+			}
+
+			if state.DriftAlertedItems == nil {
+				state.DriftAlertedItems = make(map[string]time.Time)
+			}
+
+			alertItems, resolvedKeys := reconcile.ShouldAlertDrift(
+				criticalItems, state.DriftAlertedItems, d.config.DriftAlertCooldown,
+			)
+
+			if len(alertItems) > 0 {
+				d.sendDriftAlert(ctx, &reconcile.DriftReport{
+					CheckedAt: report.CheckedAt,
+					Items:     alertItems,
+				})
+				now := time.Now()
+				for _, item := range alertItems {
+					state.DriftAlertedItems[reconcile.DriftAlertKey(item)] = now
+				}
+				state.DriftAlertedAt = now
+			}
+
+			if len(resolvedKeys) > 0 && d.config.DriftResolveAlerts {
+				d.sendDriftResolvedAlert(ctx, resolvedKeys)
+				for _, key := range resolvedKeys {
+					delete(state.DriftAlertedItems, key)
+				}
+			}
 		}
-	} else if previouslyDrifted {
-		logger.Info().Msg("Drift resolved: all declared services now match actual state")
 	} else {
-		logger.Debug().Msg("Drift check: no drift detected")
+		// No drift — check if we need to send resolution alerts.
+		if previouslyDrifted {
+			logger.Info().Msg("Drift resolved: all declared services now match actual state")
+		} else {
+			logger.Debug().Msg("Drift check: no drift detected")
+		}
+
+		if len(state.DriftAlertedItems) > 0 && d.alerter != nil && d.config.DriftResolveAlerts {
+			var resolvedKeys []string
+			for key := range state.DriftAlertedItems {
+				resolvedKeys = append(resolvedKeys, key)
+			}
+			d.sendDriftResolvedAlert(ctx, resolvedKeys)
+			state.DriftAlertedItems = nil
+		}
+	}
+
+	// Persist state with drift results and alert timestamps.
+	if err := reconcile.SaveState(stateFile, state); err != nil {
+		logger.Warn().Err(err).Msg("Drift check: failed to save state")
 	}
 }
 
@@ -659,6 +710,20 @@ func (d *Daemon) sendDriftAlert(ctx context.Context, report *reconcile.DriftRepo
 
 	if err := d.alerter.SendDriftDetected(ctx, target, driftItems); err != nil {
 		logger.Warn().Err(err).Msg("Failed to send drift alert")
+	}
+}
+
+// sendDriftResolvedAlert sends an alert for drift items that have cleared.
+func (d *Daemon) sendDriftResolvedAlert(ctx context.Context, resolvedKeys []string) {
+	logger := log.Component(log.ComponentDaemon)
+
+	target := "local"
+	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.TargetHost != "" {
+		target = d.config.ReconcileConfig.TargetHost
+	}
+
+	if err := d.alerter.SendDriftResolved(ctx, target, resolvedKeys); err != nil {
+		logger.Warn().Err(err).Msg("Failed to send drift resolved alert")
 	}
 }
 
@@ -876,6 +941,16 @@ func ConfigFromEnv() *Config {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			cfg.DriftInterval = d
 		}
+	}
+
+	// Drift alert deduplication
+	if v := os.Getenv("BOSUN_DRIFT_ALERT_COOLDOWN"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			cfg.DriftAlertCooldown = d
+		}
+	}
+	if v := os.Getenv("BOSUN_DRIFT_RESOLVE_ALERTS"); v != "" {
+		cfg.DriftResolveAlerts = v != "false" && v != "0"
 	}
 
 	// Post-sync hooks and settle delay: load from project config, env var overrides.

@@ -34,6 +34,17 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_DriftAlertCooldown(t *testing.T) {
+	cfg := DefaultConfig()
+
+	if cfg.DriftAlertCooldown != time.Hour {
+		t.Errorf("DriftAlertCooldown = %v, want 1h", cfg.DriftAlertCooldown)
+	}
+	if !cfg.DriftResolveAlerts {
+		t.Error("DriftResolveAlerts should be true by default")
+	}
+}
+
 func TestValidateConfig(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -750,6 +761,86 @@ func TestConfigFromEnv_InfraDir(t *testing.T) {
 		cfg := ConfigFromEnv()
 		if cfg.ReconcileConfig.InfraSubDir != "unraid" {
 			t.Errorf("InfraSubDir = %q, want unraid", cfg.ReconcileConfig.InfraSubDir)
+		}
+	})
+}
+
+func TestConfigFromEnv_DriftAlertCooldown(t *testing.T) {
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_ALERT_COOLDOWN", "30m")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.DriftAlertCooldown != 30*time.Minute {
+			t.Errorf("DriftAlertCooldown = %v, want 30m", cfg.DriftAlertCooldown)
+		}
+	})
+
+	t.Run("parses bare seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_ALERT_COOLDOWN", "3600")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.DriftAlertCooldown != time.Hour {
+			t.Errorf("DriftAlertCooldown = %v, want 1h", cfg.DriftAlertCooldown)
+		}
+	})
+
+	t.Run("defaults to 1h when not set", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if cfg.DriftAlertCooldown != time.Hour {
+			t.Errorf("DriftAlertCooldown = %v, want 1h (default)", cfg.DriftAlertCooldown)
+		}
+	})
+
+	t.Run("invalid value keeps default", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_ALERT_COOLDOWN", "not-a-duration")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.DriftAlertCooldown != time.Hour {
+			t.Errorf("DriftAlertCooldown = %v, want 1h (default)", cfg.DriftAlertCooldown)
+		}
+	})
+}
+
+func TestConfigFromEnv_DriftResolveAlerts(t *testing.T) {
+	t.Run("defaults to true when not set", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if !cfg.DriftResolveAlerts {
+			t.Error("DriftResolveAlerts should be true by default")
+		}
+	})
+
+	t.Run("false disables resolve alerts", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_RESOLVE_ALERTS", "false")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.DriftResolveAlerts {
+			t.Error("DriftResolveAlerts should be false when set to 'false'")
+		}
+	})
+
+	t.Run("0 disables resolve alerts", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_RESOLVE_ALERTS", "0")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.DriftResolveAlerts {
+			t.Error("DriftResolveAlerts should be false when set to '0'")
+		}
+	})
+
+	t.Run("true keeps resolve alerts enabled", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_RESOLVE_ALERTS", "true")
+
+		cfg := ConfigFromEnv()
+
+		if !cfg.DriftResolveAlerts {
+			t.Error("DriftResolveAlerts should be true when set to 'true'")
 		}
 	})
 }
