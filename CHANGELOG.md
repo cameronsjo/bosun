@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0](https://github.com/cameronsjo/bosun/compare/v0.12.1...v0.13.0) (2026-02-23)
+
+
+### Features
+
+* **reconcile:** add deploy_paths allowlist for path-aware deploy skipping ([03191a8](https://github.com/cameronsjo/bosun/commit/03191a8319e6fc7617baf7196b75c804669fef76)), closes [#56](https://github.com/cameronsjo/bosun/issues/56)
+
+
+### Bug Fixes
+
+* **reconcile:** address CodeRabbit review feedback ([1469ed9](https://github.com/cameronsjo/bosun/commit/1469ed9a0cbef90ed78e609b3d27eecac0efd194))
+* **reconcile:** fire post-sync hooks when DiffFiles fails on shallow repo ([a5757eb](https://github.com/cameronsjo/bosun/commit/a5757ebe86e6fbc3f8ad6c4e86fe7822eddc0074)), closes [#55](https://github.com/cameronsjo/bosun/issues/55)
+* **reconcile:** post-sync hooks regression + deploy_paths allowlist ([fa922da](https://github.com/cameronsjo/bosun/commit/fa922dabb4e7186b12b92bd05bbd442d87ced364))
+
 ## [0.12.1](https://github.com/cameronsjo/bosun/compare/v0.12.0...v0.12.1) (2026-02-23)
 
 
