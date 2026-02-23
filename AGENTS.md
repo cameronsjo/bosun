@@ -194,6 +194,10 @@ Common file operations (copy, ensure directory, atomic write).
 3. **Every crew member has a backup** - Batteries included, all swappable
 4. **One yacht, many ports** - Monorepo support for multi-server
 
+## Spec Before Code
+
+When a feature adds or changes behavior covered by `openspec/specs/`, **MUST** create a change proposal under `openspec/changes/<id>/` with spec deltas BEFORE writing implementation code. Plan mode plans inform the proposal but do not replace it. See `openspec/AGENTS.md` for the full workflow.
+
 ## Adding a New Command
 
 1. Create file in `internal/cmd/<name>.go`
