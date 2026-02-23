@@ -71,6 +71,15 @@ alerts:
 # Lets FUSE filesystems (e.g., Unraid's shfs) propagate writes.
 hook_settle_delay: "2s"
 
+# Deploy path allowlist: only run the full pipeline when changed files
+# match these globs. Commits touching only non-matching files (docs, beads)
+# are recorded as deployed and skipped. Omit to deploy on every commit.
+deploy_paths:
+  - "unraid/**"
+  - "compose/**"
+  - "traefik/**"
+  - "bosun.yaml"
+
 # Post-sync hooks: restart containers when specific config files change.
 # Solves services (like Traefik) not picking up config changes on FUSE mounts.
 post_sync_hooks:
@@ -96,6 +105,7 @@ post_sync_hooks:
 | `alerts.on_failure` | `true` | Send alerts on failed deploys |
 | `post_sync_hooks` | `[]` | Container restart hooks triggered by file changes |
 | `hook_settle_delay` | `0` (disabled) | Global pause after deploy before hooks run (e.g., `"2s"`) |
+| `deploy_paths` | `[]` (deploy all) | Glob allowlist — skip pipeline when no changed files match |
 
 ## Directory Structure
 

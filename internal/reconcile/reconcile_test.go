@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/cameronsjo/bosun/internal/docker"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -377,6 +379,275 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		require.Len(t, r.config.PostSyncHooks, 1)
 		assert.Equal(t, "existing", r.config.PostSyncHooks[0].Container)
 	})
+}
+
+func TestExecutePostSyncHooks_DiffFilesError_FiresAllHooks(t *testing.T) {
+	// Simulates the shallow clone scenario: DiffFiles fails because the previous
+	// commit is not in the shallow history. This is the root cause of GitHub #55.
+	cfg := &Config{
+		PostSyncHooks: []PostSyncHook{
+			{Paths: []string{"**"}, Action: "restart", Container: "traefik"},
+		},
+	}
+
+	diffErr := fmt.Errorf("resolve from-commit abc12345: object not found")
+	mockGitOps := &mockGitWithDiff{
+		diffFiles: nil,
+		diffErr:   diffErr,
+	}
+
+	dockerCalled := false
+	r := NewReconciler(cfg, WithGitOperations(mockGitOps))
+	r.dockerClientFn = func() *docker.Client {
+		dockerCalled = true
+		return nil // Would be a real client in production
+	}
+
+	// previousCommit is non-empty (second deploy), currentCommit is the new tip
+	r.executePostSyncHooks(context.Background(), "abc1234567890", "def9876543210", nil)
+
+	// BUG: DiffFiles fails on shallow clone, hooks are silently skipped.
+	// After the fix, the function should fall back to treating all files as changed
+	// and the docker client function should be called.
+	assert.True(t, dockerCalled, "expected docker client to be called when DiffFiles fails (hooks should still fire)")
+}
+
+func TestExecutePostSyncHooks_WrittenFiles_MatchesHooks(t *testing.T) {
+	// When content-hash sync provides WrittenFiles, hooks should match against those.
+	cfg := &Config{
+		PostSyncHooks: []PostSyncHook{
+			{Paths: []string{"**"}, Action: "restart", Container: "traefik"},
+		},
+	}
+
+	mockGitOps := &mockGitWithDiff{}
+	dockerCalled := false
+	r := NewReconciler(cfg, WithGitOperations(mockGitOps))
+	r.dockerClientFn = func() *docker.Client {
+		dockerCalled = true
+		return nil
+	}
+
+	deployResult := &DeployResult{
+		WrittenFiles: []string{"conf.d/router.yml", "traefik.yml"},
+	}
+
+	r.executePostSyncHooks(context.Background(), "abc1234567890", "def9876543210", deployResult)
+
+	assert.True(t, dockerCalled, "expected docker client to be called when WrittenFiles are present")
+}
+
+func TestExecutePostSyncHooks_EmptyPreviousCommit_Skips(t *testing.T) {
+	// First deploy: previousCommit is empty, hooks should be skipped (correct behavior).
+	cfg := &Config{
+		PostSyncHooks: []PostSyncHook{
+			{Paths: []string{"**"}, Action: "restart", Container: "traefik"},
+		},
+	}
+
+	mockGitOps := &mockGitWithDiff{}
+	dockerCalled := false
+	r := NewReconciler(cfg, WithGitOperations(mockGitOps))
+	r.dockerClientFn = func() *docker.Client {
+		dockerCalled = true
+		return nil
+	}
+
+	r.executePostSyncHooks(context.Background(), "", "def9876543210", nil)
+
+	assert.False(t, dockerCalled, "hooks should be skipped on first deploy (empty previousCommit)")
+}
+
+// mockGitWithDiff extends the basic mock with controllable DiffFiles behavior.
+type mockGitWithDiff struct {
+	syncChanged bool
+	syncBefore  string
+	syncAfter   string
+	syncErr     error
+	diffFiles   []string
+	diffErr     error
+}
+
+func (m *mockGitWithDiff) Sync(_ context.Context) (bool, string, string, error) {
+	return m.syncChanged, m.syncBefore, m.syncAfter, m.syncErr
+}
+func (m *mockGitWithDiff) IsRepo(_ context.Context) bool { return true }
+func (m *mockGitWithDiff) DiffFiles(_ context.Context, _, _ string) ([]string, error) {
+	return m.diffFiles, m.diffErr
+}
+
+func TestReloadProjectConfig_DeployPaths(t *testing.T) {
+	t.Run("updates deploy_paths when not from env", func(t *testing.T) {
+		cfg := &Config{}
+		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{
+				DeployPaths: []string{"unraid/**", "infra/**"},
+			}, nil
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		assert.Equal(t, []string{"unraid/**", "infra/**"}, r.config.DeployPaths)
+	})
+
+	t.Run("skips deploy_paths when from env", func(t *testing.T) {
+		cfg := &Config{
+			DeployPaths:        []string{"env/**"},
+			DeployPathsFromEnv: true,
+		}
+		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{
+				DeployPaths: []string{"repo/**"},
+			}, nil
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		assert.Equal(t, []string{"env/**"}, r.config.DeployPaths)
+	})
+}
+
+func TestRun_DeployPathsSkip(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFile := filepath.Join(tmpDir, "state.json")
+
+	cfg := &Config{
+		RepoDir:     tmpDir,
+		LockFile:    filepath.Join(tmpDir, "test.lock"),
+		StateFile:   stateFile,
+		DeployPaths: []string{"unraid/**"},
+	}
+
+	mockGit := &mockGitWithDiff{
+		syncChanged: true,
+		syncBefore:  "aaa111",
+		syncAfter:   "bbb222",
+		diffFiles:   []string{"docs/README.md", ".beads/issues/task-1.jsonl"},
+	}
+
+	r := NewReconciler(cfg,
+		WithGitOperations(mockGit),
+		WithSecretsDecryptor(&mockSOPS{}),
+	)
+
+	err := r.Run(context.Background())
+	require.NoError(t, err)
+
+	// Verify state was updated with skipped commit.
+	state := LoadState(stateFile)
+	assert.Equal(t, "bbb222", state.LastDeployedCommit)
+	assert.Equal(t, 0, state.DeployCount, "deploy count should not be incremented for skipped commits")
+}
+
+func TestRun_DeployPathsMatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFile := filepath.Join(tmpDir, "state.json")
+
+	cfg := &Config{
+		RepoDir:     tmpDir,
+		LockFile:    filepath.Join(tmpDir, "test.lock"),
+		StateFile:   stateFile,
+		StagingDir:  filepath.Join(tmpDir, "staging"),
+		DeployPaths: []string{"unraid/**"},
+		DryRun:      true,
+	}
+
+	mockGit := &mockGitWithDiff{
+		syncChanged: true,
+		syncBefore:  "aaa111",
+		syncAfter:   "bbb222",
+		diffFiles:   []string{"unraid/compose/core.yml", "docs/README.md"},
+	}
+
+	r := NewReconciler(cfg,
+		WithGitOperations(mockGit),
+		WithSecretsDecryptor(&mockSOPS{}),
+	)
+
+	// This will fail at decrypt/render stage because we don't have a full repo,
+	// but the key test is that it did NOT skip — it proceeded past the path check.
+	err := r.Run(context.Background())
+
+	// The error should be from a later pipeline stage, not path-aware skip.
+	// In dry-run with no secrets, it should succeed through to rendering.
+	// State should show it was attempted (not skip-deployed).
+	state := LoadState(stateFile)
+	if err == nil {
+		// If it succeeded (dry-run path), deploy count should be incremented.
+		assert.Equal(t, 1, state.DeployCount)
+	} else {
+		// If it failed at a later stage, that's fine — the point is it didn't skip.
+		assert.Equal(t, "bbb222", state.LastAttemptedCommit)
+	}
+}
+
+func TestRun_DeployPathsDiffFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFile := filepath.Join(tmpDir, "state.json")
+
+	cfg := &Config{
+		RepoDir:     tmpDir,
+		LockFile:    filepath.Join(tmpDir, "test.lock"),
+		StateFile:   stateFile,
+		StagingDir:  filepath.Join(tmpDir, "staging"),
+		DeployPaths: []string{"unraid/**"},
+		DryRun:      true,
+	}
+
+	mockGit := &mockGitWithDiff{
+		syncChanged: true,
+		syncBefore:  "aaa111",
+		syncAfter:   "bbb222",
+		diffErr:     fmt.Errorf("object not found"),
+	}
+
+	r := NewReconciler(cfg,
+		WithGitOperations(mockGit),
+		WithSecretsDecryptor(&mockSOPS{}),
+	)
+
+	// DiffFiles fails, so it should fall through to full deploy (not skip).
+	_ = r.Run(context.Background())
+
+	state := LoadState(stateFile)
+	// The pipeline should have been attempted (not skip-deployed).
+	assert.Equal(t, "bbb222", state.LastAttemptedCommit)
+}
+
+func TestRun_DeployPathsForceOverride(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFile := filepath.Join(tmpDir, "state.json")
+
+	cfg := &Config{
+		RepoDir:     tmpDir,
+		LockFile:    filepath.Join(tmpDir, "test.lock"),
+		StateFile:   stateFile,
+		StagingDir:  filepath.Join(tmpDir, "staging"),
+		DeployPaths: []string{"unraid/**"},
+		Force:       true,
+		DryRun:      true,
+	}
+
+	mockGit := &mockGitWithDiff{
+		syncChanged: true,
+		syncBefore:  "aaa111",
+		syncAfter:   "bbb222",
+		diffFiles:   []string{"docs/README.md"}, // Non-matching files
+	}
+
+	r := NewReconciler(cfg,
+		WithGitOperations(mockGit),
+		WithSecretsDecryptor(&mockSOPS{}),
+	)
+
+	// With --force, path check should be bypassed entirely.
+	_ = r.Run(context.Background())
+
+	state := LoadState(stateFile)
+	// Pipeline should have run (attempt tracked, not skip-deployed).
+	assert.Equal(t, "bbb222", state.LastAttemptedCommit)
 }
 
 func TestConfig_Validation(t *testing.T) {

@@ -20,23 +20,25 @@ Every reconciliation follows this sequence:
        |
 2. Clone/pull repository (go-git, in-process)
        |
-3. Reload project config from repo (hooks, settle delay)
+3. Reload project config from repo (hooks, settle delay, deploy paths)
        |
-4. Decrypt secrets (go-sops, in-process)
+4. Path-aware skip (if deploy_paths configured, skip when no files match)
        |
-5. Render templates (Go text/template + Sprig)
+5. Decrypt secrets (go-sops, in-process)
        |
-6. Create backup of current configs
+6. Render templates (Go text/template + Sprig)
        |
-7. Deploy files (local copy or tar-over-SSH)
+7. Create backup of current configs
        |
-8. Docker compose up
+8. Deploy files (local copy or tar-over-SSH)
        |
-9. Post-sync hooks (restart containers on config changes)
+9. Docker compose up
        |
-10. SIGHUP to agentgateway (if configured)
+10. Post-sync hooks (restart containers on config changes)
        |
-11. Release lock
+11. SIGHUP to agentgateway (if configured)
+       |
+12. Release lock
 ```
 
 ### Post-Sync Hooks
@@ -49,11 +51,20 @@ Two timing controls are available:
 
 Hooks are configured in `bosun.yaml` under `post_sync_hooks`. See the [Configuration guide](configuration.md#post-sync-hooks) for schema and examples.
 
+### Path-Aware Deploy Skipping
+
+When `deploy_paths` is configured in `bosun.yaml`, bosun diffs the previous and current commits after pulling and checks whether any changed files match the glob allowlist. If no files match, the commit is recorded as deployed and the rest of the pipeline is skipped (~80s savings). This avoids unnecessary file rewrites on FUSE filesystems and prevents stale file handles.
+
+- **Allowlist model** — only listed paths trigger a deploy; new directories require explicit opt-in
+- **`--force` bypasses** — `bosun reconcile -f` always runs the full pipeline regardless of path matching
+- **DiffFiles failure = full deploy** — if the git diff fails (e.g., shallow clone), the safe default is to run everything
+- **State updated on skip** — the commit is recorded as deployed so it isn't re-evaluated on the next poll
+
 ### Project Config Reload
 
-After pulling the repository (step 2), bosun re-reads `bosun.yaml` from the repo and updates `PostSyncHooks` and `HookSettleDelay` if the file has changed. This means config changes pushed to the repo take effect without a daemon restart.
+After pulling the repository (step 2), bosun re-reads `bosun.yaml` from the repo and updates `PostSyncHooks`, `HookSettleDelay`, and `DeployPaths` if the file has changed. This means config changes pushed to the repo take effect without a daemon restart.
 
-Environment variable overrides (`BOSUN_POST_SYNC_HOOKS`, `BOSUN_HOOK_SETTLE_DELAY`) still take precedence -- if set, the corresponding fields from `bosun.yaml` are ignored during reload. If the repo has no `bosun.yaml` or the file fails to parse, the existing config values are retained.
+Environment variable overrides (`BOSUN_POST_SYNC_HOOKS`, `BOSUN_HOOK_SETTLE_DELAY`, `BOSUN_DEPLOY_PATHS`) still take precedence -- if set, the corresponding fields from `bosun.yaml` are ignored during reload. If the repo has no `bosun.yaml` or the file fails to parse, the existing config values are retained.
 
 ### Lock Behavior
 
@@ -260,6 +271,7 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `FORCE` | `false` | Force deployment |
 | `BOSUN_POST_SYNC_HOOKS` | | JSON array of post-sync hooks (overrides config file) |
 | `BOSUN_HOOK_SETTLE_DELAY` | `0` | Global pause before post-sync hooks run (e.g., `2s`) |
+| `BOSUN_DEPLOY_PATHS` | | JSON array of glob patterns for deploy-relevant paths (overrides config file) |
 
 ## Systemd Deployment
 
