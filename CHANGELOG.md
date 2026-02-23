@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1](https://github.com/cameronsjo/bosun/compare/v0.12.0...v0.12.1) (2026-02-23)
+
+
+### Bug Fixes
+
+* **reconcile:** reload bosun.yaml from repo after git pull ([2e55bc2](https://github.com/cameronsjo/bosun/commit/2e55bc268f78dabf59ea3c559148c3a78a55ef42))
+
 ## [0.12.0](https://github.com/cameronsjo/bosun/compare/v0.11.0...v0.12.0) (2026-02-23)
 
 
