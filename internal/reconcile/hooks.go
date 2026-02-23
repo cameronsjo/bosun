@@ -97,6 +97,19 @@ func matchGlob(pattern, file string) bool {
 	return matched
 }
 
+// MatchAnyPath returns true if any file matches any of the glob patterns.
+// Used by deploy_paths to check if any changed files are deploy-relevant.
+func MatchAnyPath(files []string, patterns []string) bool {
+	for _, file := range files {
+		for _, pattern := range patterns {
+			if matchGlob(pattern, file) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ExecutePostSyncHooks runs matched hooks by restarting the specified containers.
 // settleDelay is a global pause before any hooks run (filesystem propagation).
 func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []PostSyncHook, settleDelay time.Duration) error {

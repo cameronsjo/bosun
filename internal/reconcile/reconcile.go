@@ -18,6 +18,7 @@ import (
 type ReloadedConfig struct {
 	PostSyncHooks   []PostSyncHook
 	HookSettleDelay time.Duration
+	DeployPaths     []string
 }
 
 // ConfigReloaderFunc loads project config from a directory path.
@@ -94,6 +95,14 @@ type Config struct {
 	// HookSettleDelayFromEnv is true when BOSUN_HOOK_SETTLE_DELAY env var is set.
 	// When true, repo config reload will not update HookSettleDelay.
 	HookSettleDelayFromEnv bool
+
+	// DeployPaths is an allowlist of glob patterns for deploy-relevant paths.
+	// When configured, commits that only touch files outside these patterns skip the pipeline.
+	DeployPaths []string
+
+	// DeployPathsFromEnv is true when BOSUN_DEPLOY_PATHS env var is set.
+	// When true, repo config reload will not update DeployPaths.
+	DeployPathsFromEnv bool
 
 	// ConfigReloader loads project config from a directory path.
 	// Set by daemon/CLI to break the config→reconcile import cycle.
@@ -274,6 +283,30 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	if state.LastDeployedCommit == after && !r.config.Force {
 		ui.Info("=== Already deployed commit %s, skipping ===", after[:MinLen(after, 8)])
 		return nil
+	}
+
+	// Path-aware skip: if deploy_paths is configured, check if any changed files
+	// match the allowlist. If not, record the commit as deployed and skip.
+	if len(r.config.DeployPaths) > 0 && changed && !r.config.Force {
+		changedFiles, err := r.git.DiffFiles(ctx, before, after)
+		if err != nil {
+			logger.Warn().Err(err).Msg("Cannot diff for deploy_paths check, proceeding with full deploy")
+		} else if !MatchAnyPath(changedFiles, r.config.DeployPaths) {
+			logger.Info().
+				Strs("changed_files", changedFiles).
+				Strs("deploy_paths", r.config.DeployPaths).
+				Msg("No deploy-relevant files changed, skipping reconciliation")
+			ui.Info("=== No deploy-relevant changes (%d files), skipping ===", len(changedFiles))
+
+			// Record commit as deployed to avoid re-evaluation on next poll.
+			state.LastDeployedCommit = after
+			state.DeployedAt = time.Now()
+			state.Source = r.config.Source
+			if err := SaveState(r.config.StateFile, state); err != nil {
+				logger.Error().Err(err).Msg("Failed to save state after path-aware skip")
+			}
+			return nil
+		}
 	}
 
 	// Circuit breaker: stop retrying after MaxAttempts consecutive failures on the same commit.
@@ -639,8 +672,8 @@ func (r *Reconciler) reloadProjectConfig() {
 		return
 	}
 
-	// If neither field has any value from the repo, there's nothing to reload.
-	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 {
+	// If no field has any value from the repo, there's nothing to reload.
+	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 && len(reloaded.DeployPaths) == 0 {
 		return
 	}
 
@@ -656,10 +689,16 @@ func (r *Reconciler) reloadProjectConfig() {
 		changed = true
 	}
 
+	if !r.config.DeployPathsFromEnv && len(reloaded.DeployPaths) > 0 {
+		r.config.DeployPaths = reloaded.DeployPaths
+		changed = true
+	}
+
 	if changed {
 		logger.Info().
 			Int("hooks", len(r.config.PostSyncHooks)).
 			Dur("settle_delay", r.config.HookSettleDelay).
+			Int("deploy_paths", len(r.config.DeployPaths)).
 			Msg("Reloaded project config from repo")
 	}
 }

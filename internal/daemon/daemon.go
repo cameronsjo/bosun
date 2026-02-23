@@ -963,10 +963,11 @@ func ConfigFromEnv() *Config {
 	}
 	rcfg.ContentHashSync = cfg.ContentHashSync
 
-	// Post-sync hooks and settle delay: load from project config, env var overrides.
+	// Post-sync hooks, settle delay, and deploy paths: load from project config, env var overrides.
 	if projectCfg, err := config.Load(); err == nil {
 		rcfg.PostSyncHooks = projectCfg.PostSyncHooks()
 		rcfg.HookSettleDelay = projectCfg.HookSettleDelay()
+		rcfg.DeployPaths = projectCfg.DeployPaths()
 	}
 
 	// Wire config reloader so the reconciler can re-read bosun.yaml from the repo.
@@ -978,6 +979,7 @@ func ConfigFromEnv() *Config {
 		return &reconcile.ReloadedConfig{
 			PostSyncHooks:   cfg.PostSyncHooks(),
 			HookSettleDelay: cfg.HookSettleDelay(),
+			DeployPaths:     cfg.DeployPaths(),
 		}, nil
 	}
 	if v := os.Getenv("BOSUN_POST_SYNC_HOOKS"); v != "" {
@@ -995,6 +997,15 @@ func ConfigFromEnv() *Config {
 			rcfg.HookSettleDelayFromEnv = true
 		} else {
 			log.Warn().Str("value", v).Msg("Failed to parse BOSUN_HOOK_SETTLE_DELAY, ignoring")
+		}
+	}
+	if v := os.Getenv("BOSUN_DEPLOY_PATHS"); v != "" {
+		var paths []string
+		if err := json.Unmarshal([]byte(v), &paths); err != nil {
+			log.Warn().Err(err).Msg("Failed to parse BOSUN_DEPLOY_PATHS, ignoring")
+		} else {
+			rcfg.DeployPaths = paths
+			rcfg.DeployPathsFromEnv = true
 		}
 	}
 

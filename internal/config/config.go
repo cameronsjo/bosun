@@ -55,6 +55,9 @@ type Config struct {
 
 	// hookSettleDelay is a global pause after deploy before any post-sync hooks run.
 	hookSettleDelay time.Duration
+
+	// deployPaths is an allowlist of glob patterns for deploy-relevant paths.
+	deployPaths []string
 }
 
 // TunnelConfig holds tunnel provider-specific configuration.
@@ -127,6 +130,10 @@ type configFile struct {
 
 	// HookSettleDelay is a global pause after deploy before post-sync hooks run.
 	HookSettleDelay reconcile.Duration `yaml:"hook_settle_delay"`
+
+	// DeployPaths is an allowlist of glob patterns for deploy-relevant paths.
+	// When configured, commits that only touch files outside these patterns skip the pipeline.
+	DeployPaths []string `yaml:"deploy_paths"`
 }
 
 // FindRoot searches upward from the current directory to find the project root.
@@ -188,11 +195,13 @@ func LoadFrom(dir string) (*Config, error) {
 	// type, we check for non-zero state in any field.
 	postSyncHooks := extractPostSyncHooks(fileCfg)
 	hookSettleDelay := extractHookSettleDelay(fileCfg)
+	deployPaths := extractDeployPaths(fileCfg)
 
 	return &Config{
 		Root:            dir,
 		postSyncHooks:   postSyncHooks,
 		hookSettleDelay: hookSettleDelay,
+		deployPaths:     deployPaths,
 	}, nil
 }
 
@@ -233,6 +242,7 @@ func Load() (*Config, error) {
 	alertConfig := extractAlertConfig(fileCfg)
 	postSyncHooks := extractPostSyncHooks(fileCfg)
 	hookSettleDelay := extractHookSettleDelay(fileCfg)
+	deployPaths := extractDeployPaths(fileCfg)
 
 	// Determine project name (defaults to directory name)
 	projectName := fileCfg.ProjectName
@@ -253,6 +263,7 @@ func Load() (*Config, error) {
 		alertConfig:     alertConfig,
 		postSyncHooks:   postSyncHooks,
 		hookSettleDelay: hookSettleDelay,
+		deployPaths:     deployPaths,
 	}
 
 	return cfg, nil
@@ -427,6 +438,16 @@ func (c *Config) PostSyncHooks() []reconcile.PostSyncHook {
 // extractPostSyncHooks extracts post-sync hooks from a parsed config.
 func extractPostSyncHooks(cfg configFile) []reconcile.PostSyncHook {
 	return cfg.PostSyncHooks
+}
+
+// DeployPaths returns the configured deploy-relevant path patterns.
+func (c *Config) DeployPaths() []string {
+	return c.deployPaths
+}
+
+// extractDeployPaths extracts deploy path patterns from a parsed config.
+func extractDeployPaths(cfg configFile) []string {
+	return cfg.DeployPaths
 }
 
 // HookSettleDelay returns the configured global settle delay for post-sync hooks.

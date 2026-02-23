@@ -143,10 +143,11 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		cfg.StateFile = filepath.Join(stateDir, reconcile.DefaultStateFile)
 	}
 
-	// Load post-sync hooks and settle delay from project config file.
+	// Load post-sync hooks, settle delay, and deploy paths from project config file.
 	if projectCfg, err := config.Load(); err == nil {
 		cfg.PostSyncHooks = projectCfg.PostSyncHooks()
 		cfg.HookSettleDelay = projectCfg.HookSettleDelay()
+		cfg.DeployPaths = projectCfg.DeployPaths()
 	}
 
 	// Wire config reloader so the reconciler can re-read bosun.yaml from the repo.
@@ -158,6 +159,7 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		return &reconcile.ReloadedConfig{
 			PostSyncHooks:   projectCfg.PostSyncHooks(),
 			HookSettleDelay: projectCfg.HookSettleDelay(),
+			DeployPaths:     projectCfg.DeployPaths(),
 		}, nil
 	}
 
@@ -182,6 +184,17 @@ func runReconcile(cmd *cobra.Command, args []string) {
 			cfg.HookSettleDelayFromEnv = true
 		} else {
 			log.Warn().Str("value", v).Msg("Failed to parse BOSUN_HOOK_SETTLE_DELAY, ignoring")
+		}
+	}
+
+	// Environment variable override for deploy paths (JSON array).
+	if v := os.Getenv("BOSUN_DEPLOY_PATHS"); v != "" {
+		var paths []string
+		if err := json.Unmarshal([]byte(v), &paths); err != nil {
+			log.Warn().Err(err).Msg("Failed to parse BOSUN_DEPLOY_PATHS, ignoring")
+		} else {
+			cfg.DeployPaths = paths
+			cfg.DeployPathsFromEnv = true
 		}
 	}
 

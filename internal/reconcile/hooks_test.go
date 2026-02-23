@@ -33,6 +33,31 @@ func TestMatchGlob(t *testing.T) {
 	}
 }
 
+func TestMatchAnyPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		files    []string
+		patterns []string
+		want     bool
+	}{
+		{"matching file", []string{"unraid/compose/core.yml"}, []string{"unraid/**"}, true},
+		{"no matching file", []string{"docs/README.md"}, []string{"unraid/**"}, false},
+		{"multiple patterns one matches", []string{"infra/traefik.yml"}, []string{"unraid/**", "infra/**"}, true},
+		{"mixed files one matches", []string{"docs/README.md", "unraid/compose/core.yml"}, []string{"unraid/**"}, true},
+		{"empty files", nil, []string{"unraid/**"}, false},
+		{"empty patterns", []string{"anything.txt"}, nil, false},
+		{"both empty", nil, nil, false},
+		{"exact match pattern", []string{"bosun.yaml"}, []string{"bosun.yaml"}, true},
+		{"doublestar root matches all", []string{"any/file.txt"}, []string{"**"}, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, MatchAnyPath(tc.files, tc.patterns))
+		})
+	}
+}
+
 func TestEvaluatePostSyncHooks(t *testing.T) {
 	hooks := []PostSyncHook{
 		{Paths: []string{"traefik/conf.d/**"}, Action: "restart", Container: "traefik"},
