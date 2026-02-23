@@ -1,7 +1,6 @@
 # Bosun
 
-<!-- TODO: Add mascot image once generated -->
-<!-- <p align="center"><img src="docs/mascot/bosun-reference-nobg.png" width="200" alt="Bosun mascot"></p> -->
+<p align="center"><img src="docs/mascot/bosun-reference-nobg.png" width="200" alt="Bosun mascot"></p>
 
 **GitOps for Docker Compose. No Kubernetes required.**
 
