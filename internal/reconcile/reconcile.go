@@ -291,7 +291,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		changedFiles, err := r.git.DiffFiles(ctx, before, after)
 		if err != nil {
 			logger.Warn().Err(err).Msg("Cannot diff for deploy_paths check, proceeding with full deploy")
-		} else if !MatchAnyPath(changedFiles, r.config.DeployPaths) {
+		} else if !matchAnyPath(changedFiles, r.config.DeployPaths) {
 			logger.Info().
 				Strs("changed_files", changedFiles).
 				Strs("deploy_paths", r.config.DeployPaths).

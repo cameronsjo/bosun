@@ -97,9 +97,9 @@ func matchGlob(pattern, file string) bool {
 	return matched
 }
 
-// MatchAnyPath returns true if any file matches any of the glob patterns.
+// matchAnyPath returns true if any file matches any of the glob patterns.
 // Used by deploy_paths to check if any changed files are deploy-relevant.
-func MatchAnyPath(files []string, patterns []string) bool {
+func matchAnyPath(files []string, patterns []string) bool {
 	for _, file := range files {
 		for _, pattern := range patterns {
 			if matchGlob(pattern, file) {

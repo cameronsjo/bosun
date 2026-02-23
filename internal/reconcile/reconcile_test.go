@@ -381,7 +381,7 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 	})
 }
 
-func TestExecutePostSyncHooks_DiffFilesError_SkipsHooks(t *testing.T) {
+func TestExecutePostSyncHooks_DiffFilesError_FiresAllHooks(t *testing.T) {
 	// Simulates the shallow clone scenario: DiffFiles fails because the previous
 	// commit is not in the shallow history. This is the root cause of GitHub #55.
 	cfg := &Config{
