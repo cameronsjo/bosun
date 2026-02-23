@@ -48,6 +48,21 @@ func EvaluatePostSyncHooks(changedFiles []string, hooks []PostSyncHook) []PostSy
 	return matched
 }
 
+// dedupeHooksByContainer returns hooks with duplicate containers removed (first wins).
+// Used as a fallback when DiffFiles fails and all hooks should fire unconditionally.
+func dedupeHooksByContainer(hooks []PostSyncHook) []PostSyncHook {
+	var result []PostSyncHook
+	seen := make(map[string]bool)
+	for _, hook := range hooks {
+		if seen[hook.Container] {
+			continue
+		}
+		result = append(result, hook)
+		seen[hook.Container] = true
+	}
+	return result
+}
+
 // hookMatchesAny returns true if any changed file matches any of the hook's path patterns.
 func hookMatchesAny(hook PostSyncHook, changedFiles []string) bool {
 	for _, pattern := range hook.Paths {

@@ -573,6 +573,7 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 
 	// Prefer written-files from content-hash sync over git diff.
 	var changedFiles []string
+	diffFailed := false
 	if deployResult != nil && len(deployResult.WrittenFiles) > 0 {
 		changedFiles = deployResult.WrittenFiles
 		logger.Debug().Int("files", len(changedFiles)).Msg("Using written-files list for post-sync hooks")
@@ -580,16 +581,28 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 		var err error
 		changedFiles, err = r.git.DiffFiles(ctx, previousCommit, currentCommit)
 		if err != nil {
-			logger.Warn().Err(err).Msg("Failed to diff commits for post-sync hooks")
-			return
+			// DiffFiles fails on shallow clones where the previous commit is no longer
+			// reachable. Rather than silently skipping hooks, fall back to evaluating
+			// all hooks unconditionally — a false positive restart is better than a
+			// stale config on a FUSE mount. See GitHub #55.
+			logger.Warn().Err(err).Msg("Failed to diff commits for post-sync hooks, will evaluate all hooks")
+			diffFailed = true
 		}
 	}
 
-	if len(changedFiles) == 0 {
+	if len(changedFiles) == 0 && !diffFailed {
 		return
 	}
 
-	matched := EvaluatePostSyncHooks(changedFiles, r.config.PostSyncHooks)
+	// When diff fails (shallow clone), fire all hooks unconditionally.
+	// A false-positive restart is safer than stale configs on FUSE mounts.
+	var matched []PostSyncHook
+	if diffFailed {
+		matched = dedupeHooksByContainer(r.config.PostSyncHooks)
+		logger.Info().Int("hooks", len(matched)).Msg("Diff unavailable, firing all configured hooks")
+	} else {
+		matched = EvaluatePostSyncHooks(changedFiles, r.config.PostSyncHooks)
+	}
 	if len(matched) == 0 {
 		return
 	}

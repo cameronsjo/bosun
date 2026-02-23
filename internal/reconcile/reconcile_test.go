@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/cameronsjo/bosun/internal/docker"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -377,6 +379,97 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		require.Len(t, r.config.PostSyncHooks, 1)
 		assert.Equal(t, "existing", r.config.PostSyncHooks[0].Container)
 	})
+}
+
+func TestExecutePostSyncHooks_DiffFilesError_SkipsHooks(t *testing.T) {
+	// Simulates the shallow clone scenario: DiffFiles fails because the previous
+	// commit is not in the shallow history. This is the root cause of GitHub #55.
+	cfg := &Config{
+		PostSyncHooks: []PostSyncHook{
+			{Paths: []string{"**"}, Action: "restart", Container: "traefik"},
+		},
+	}
+
+	diffErr := fmt.Errorf("resolve from-commit abc12345: object not found")
+	mockGitOps := &mockGitWithDiff{
+		diffFiles: nil,
+		diffErr:   diffErr,
+	}
+
+	dockerCalled := false
+	r := NewReconciler(cfg, WithGitOperations(mockGitOps))
+	r.dockerClientFn = func() *docker.Client {
+		dockerCalled = true
+		return nil // Would be a real client in production
+	}
+
+	// previousCommit is non-empty (second deploy), currentCommit is the new tip
+	r.executePostSyncHooks(context.Background(), "abc1234567890", "def9876543210", nil)
+
+	// BUG: DiffFiles fails on shallow clone, hooks are silently skipped.
+	// After the fix, the function should fall back to treating all files as changed
+	// and the docker client function should be called.
+	assert.True(t, dockerCalled, "expected docker client to be called when DiffFiles fails (hooks should still fire)")
+}
+
+func TestExecutePostSyncHooks_WrittenFiles_MatchesHooks(t *testing.T) {
+	// When content-hash sync provides WrittenFiles, hooks should match against those.
+	cfg := &Config{
+		PostSyncHooks: []PostSyncHook{
+			{Paths: []string{"**"}, Action: "restart", Container: "traefik"},
+		},
+	}
+
+	mockGitOps := &mockGitWithDiff{}
+	dockerCalled := false
+	r := NewReconciler(cfg, WithGitOperations(mockGitOps))
+	r.dockerClientFn = func() *docker.Client {
+		dockerCalled = true
+		return nil
+	}
+
+	deployResult := &DeployResult{
+		WrittenFiles: []string{"conf.d/router.yml", "traefik.yml"},
+	}
+
+	r.executePostSyncHooks(context.Background(), "abc1234567890", "def9876543210", deployResult)
+
+	assert.True(t, dockerCalled, "expected docker client to be called when WrittenFiles are present")
+}
+
+func TestExecutePostSyncHooks_EmptyPreviousCommit_Skips(t *testing.T) {
+	// First deploy: previousCommit is empty, hooks should be skipped (correct behavior).
+	cfg := &Config{
+		PostSyncHooks: []PostSyncHook{
+			{Paths: []string{"**"}, Action: "restart", Container: "traefik"},
+		},
+	}
+
+	mockGitOps := &mockGitWithDiff{}
+	dockerCalled := false
+	r := NewReconciler(cfg, WithGitOperations(mockGitOps))
+	r.dockerClientFn = func() *docker.Client {
+		dockerCalled = true
+		return nil
+	}
+
+	r.executePostSyncHooks(context.Background(), "", "def9876543210", nil)
+
+	assert.False(t, dockerCalled, "hooks should be skipped on first deploy (empty previousCommit)")
+}
+
+// mockGitWithDiff extends the basic mock with controllable DiffFiles behavior.
+type mockGitWithDiff struct {
+	diffFiles []string
+	diffErr   error
+}
+
+func (m *mockGitWithDiff) Sync(_ context.Context) (bool, string, string, error) {
+	return false, "", "", nil
+}
+func (m *mockGitWithDiff) IsRepo(_ context.Context) bool { return true }
+func (m *mockGitWithDiff) DiffFiles(_ context.Context, _, _ string) ([]string, error) {
+	return m.diffFiles, m.diffErr
 }
 
 func TestConfig_Validation(t *testing.T) {
