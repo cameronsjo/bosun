@@ -7,13 +7,13 @@
 Push to git. Bosun receives orders. Containers deploy. Smooth sailing.
 
 ```mermaid
-graph LR
-    A[git push] --> B[Bosun receives orders]
-    B --> C[Clone & decrypt]
-    C --> D[Template configs]
-    D --> E[Deploy to target]
-    E --> F[docker compose up]
-    F --> G[Drift verification]
+flowchart LR
+    Push[git push] --> Receive[Bosun receives orders]
+    Receive --> Clone[Clone & decrypt]
+    Clone --> Template[Template configs]
+    Template --> Deploy[Deploy to target]
+    Deploy --> Compose[docker compose up]
+    Compose --> Verify[Drift verification]
 ```
 
 ## Why Bosun?
@@ -35,25 +35,25 @@ Bosun is **Helm for home**: a single binary that brings GitOps workflows to Dock
 ## Architecture
 
 ```mermaid
-graph TB
+flowchart TB
     subgraph Captain["Captain (GitHub)"]
-        GH[git push]
+        Push[git push]
     end
 
     subgraph Yacht["Your Yacht (Server)"]
         subgraph Bosun
-            Radio[Radio<br/>Webhook/Poll]
-            Fetch[Fetch Orders<br/>git clone/pull]
-            Decrypt[Decrypt Secrets<br/>SOPS + Age]
-            Template[Prep Configs<br/>Go Templates]
-            Deploy[Deploy<br/>tar-over-SSH / local copy]
-            Compose[Crew Up<br/>docker compose]
-            Drift[Drift Watch<br/>Periodic check]
+            Radio["Radio<br/>Webhook/Poll"]
+            Fetch["Fetch Orders<br/>git clone/pull"]
+            Decrypt["Decrypt Secrets<br/>SOPS + Age"]
+            Template["Prep Configs<br/>Go Templates"]
+            Deploy["Deploy<br/>tar-over-SSH / local copy"]
+            Compose["Crew Up<br/>docker compose"]
+            Drift["Drift Watch<br/>Periodic check"]
         end
-        Crew[Your Crew<br/>Containers]
+        Crew["Your Crew<br/>Containers"]
     end
 
-    GH --> Radio
+    Push --> Radio
     Radio --> Fetch
     Fetch --> Decrypt
     Decrypt --> Template
@@ -238,21 +238,21 @@ compose_file: docker-compose.yml
 ## Reconciliation Pipeline
 
 ```mermaid
-graph LR
-    A[Lock] --> B[Git Sync]
-    B --> C[Load State]
-    C -->|same commit?| Skip[Skip - no changes]
-    C -->|new commit| D[Decrypt Secrets]
-    D --> E[Template Configs]
-    E --> F[Backup]
-    F --> G[Deploy]
-    G --> H[Compose Up]
-    H --> I[Drift Verify]
-    I --> J[Save State]
-    J --> K[Unlock]
-    G -->|failure| L[Circuit Breaker]
-    L -->|fewer than 3 failures| M[Alert + Retry Next Cycle]
-    L -->|3+ failures| N[Alert + Stop]
+flowchart LR
+    Lock[Lock] --> GitSync[Git Sync]
+    GitSync --> LoadState[Load State]
+    LoadState -->|same commit| Skip[Skip]
+    LoadState -->|new commit| Decrypt[Decrypt Secrets]
+    Decrypt --> Template[Template Configs]
+    Template --> Backup[Backup]
+    Backup --> DeployStep[Deploy]
+    DeployStep --> ComposeUp[Compose Up]
+    ComposeUp --> DriftVerify[Drift Verify]
+    DriftVerify --> SaveState[Save State]
+    SaveState --> Unlock[Unlock]
+    DeployStep -->|failure| CircuitBreaker[Circuit Breaker]
+    CircuitBreaker -->|< 3 failures| Retry[Alert + Retry]
+    CircuitBreaker -->|3+ failures| Stop[Alert + Stop]
 ```
 
 ## The Nautical Theme

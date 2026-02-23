@@ -89,48 +89,48 @@ internal/
 ## Layer Diagram
 
 ```mermaid
-graph TB
+flowchart TB
     subgraph CLI["CLI Layer (internal/cmd)"]
-        yacht[yacht up/down]
-        crew[crew list/logs]
-        provision[provision]
-        reconcile_cmd[reconcile]
-        emergency[mayday]
+        YachtCmd[yacht up/down]
+        CrewCmd[crew list/logs]
+        ProvisionCmd[provision]
+        ReconcileCmd[reconcile]
+        MaydayCmd[mayday]
     end
 
     subgraph Services["Service Layer"]
-        manifest[manifest/render]
-        reconcile_svc[reconcile/workflow]
-        snapshot_svc[snapshot/rollback]
+        ManifestSvc[manifest/render]
+        ReconcileSvc[reconcile/workflow]
+        SnapshotSvc[snapshot/rollback]
     end
 
-    subgraph Infrastructure["Infrastructure Layer"]
-        docker[docker/client]
-        git[reconcile/git]
-        sops[reconcile/sops]
-        deploy[reconcile/deploy]
+    subgraph Infra["Infrastructure Layer"]
+        DockerClient[docker/client]
+        GitOps[reconcile/git]
+        SopsDecrypt[reconcile/sops]
+        DeployOps[reconcile/deploy]
     end
 
     subgraph External["External Dependencies"]
-        docker_daemon[Docker Daemon]
-        git_repo[Git Repository]
-        ssh[SSH Client]
+        DockerDaemon[Docker Daemon]
+        GitRepo[Git Repository]
+        SSHClient[SSH Client]
     end
 
-    yacht --> docker
-    crew --> docker
-    provision --> manifest
-    reconcile_cmd --> reconcile_svc
-    emergency --> snapshot_svc
+    YachtCmd --> DockerClient
+    CrewCmd --> DockerClient
+    ProvisionCmd --> ManifestSvc
+    ReconcileCmd --> ReconcileSvc
+    MaydayCmd --> SnapshotSvc
 
-    manifest --> provision_files[(provisions/*.yml)]
-    reconcile_svc --> git
-    reconcile_svc --> sops
-    reconcile_svc --> deploy
+    ManifestSvc --> ProvisionFiles[(provisions/*.yml)]
+    ReconcileSvc --> GitOps
+    ReconcileSvc --> SopsDecrypt
+    ReconcileSvc --> DeployOps
 
-    docker --> docker_daemon
-    git --> git_repo
-    deploy --> ssh
+    DockerClient --> DockerDaemon
+    GitOps --> GitRepo
+    DeployOps --> SSHClient
 ```
 
 ## Key Abstractions

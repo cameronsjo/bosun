@@ -26,40 +26,34 @@ The provision workflow renders manifest files into Docker Compose, Traefik, and 
 
 ```mermaid
 flowchart TD
-    A[bosun provision stack] --> B{Load Config}
-    B -->|Success| C{Values Overlay?}
-    B -->|Failure| B_ERR[Error: load config failed]
+    Start[bosun provision stack] --> LoadConfig{Load Config}
+    LoadConfig -->|Failure| ConfigErr[Error: load config failed]
+    LoadConfig -->|Success| CheckValues{Values Overlay?}
 
-    C -->|Yes| D[Load Values File]
-    C -->|No| E{Check Stack/Service Path}
-    D -->|Success| E
-    D -->|Failure| D_ERR[Error: load values failed]
+    CheckValues -->|Yes| LoadValues[Load Values File]
+    CheckValues -->|No| CheckPath{Check Stack/Service Path}
+    LoadValues --> CheckPath
 
-    E -->|Stack exists| F[Render Stack]
-    E -->|Service exists| G[Render Service]
-    E -->|Neither| E_ERR[Error: stack or service not found]
+    CheckPath -->|Stack exists| RenderStack[Render Stack]
+    CheckPath -->|Service exists| RenderService[Render Service]
+    CheckPath -->|Neither| PathErr[Error: not found]
 
-    F --> H{Render Success?}
-    G --> H
+    RenderStack --> RenderCheck{Render Success?}
+    RenderService --> RenderCheck
 
-    H -->|Failure| H_ERR[Error: render failed]
-    H -->|Success| I{Dry Run Mode?}
+    RenderCheck -->|Failure| RenderErr[Error: render failed]
+    RenderCheck -->|Success| DryRun{Dry Run?}
 
-    I -->|Yes| J[Print YAML Output]
-    I -->|No| K{Diff Mode?}
+    DryRun -->|Yes| PrintYAML[Print YAML Output]
+    DryRun -->|No| DiffMode{Diff Mode?}
 
-    K -->|Yes| L[Show Diff]
-    K -->|No| M[Acquire Provision Lock]
+    DiffMode -->|Yes| ShowDiff[Show Diff]
+    DiffMode -->|No| AcquireLock[Acquire Provision Lock]
 
-    M -->|Lock Failed| M_ERR[Error: another provision in progress]
-    M -->|Success| N[Write Output Files]
-
-    N -->|Success| O[Success: Provisioned]
-    N -->|Failure| N_ERR[Error: write outputs failed]
-
-    J --> DONE[Done]
-    L --> DONE
-    O --> DONE
+    AcquireLock --> WriteFiles[Write Output Files]
+    WriteFiles --> Done[Done]
+    PrintYAML --> Done
+    ShowDiff --> Done
 ```
 
 ### Step-by-Step Description
@@ -106,36 +100,29 @@ The yacht commands manage Docker Compose services with nautical theming.
 
 ```mermaid
 flowchart TD
-    A[bosun yacht up] --> B{Load Config}
-    B -->|Failure| B_ERR[Error: load config failed]
-    B -->|Success| C{Validate Compose File}
+    Start[bosun yacht up] --> LoadConfig{Load Config}
+    LoadConfig -->|Failure| ConfigErr[Error: load config failed]
+    LoadConfig -->|Success| ValidateCompose{Validate Compose File}
 
-    C -->|Not Found| C_ERR1[Error: compose file not found]
-    C -->|Invalid Syntax| C_ERR2[Error: invalid compose file]
-    C -->|Valid| D{Services Specified?}
+    ValidateCompose -->|Invalid| ComposeErr[Error: invalid compose file]
+    ValidateCompose -->|Valid| CheckServices{Services Specified?}
 
-    D -->|Yes| E{Validate Service Names}
-    D -->|No| F[Connect to Docker]
+    CheckServices -->|Yes| ValidateNames{Validate Service Names}
+    CheckServices -->|No| ConnectDocker[Connect to Docker]
+    ValidateNames -->|Valid| ConnectDocker
 
-    E -->|Invalid| E_ERR[Error: unknown services]
-    E -->|Valid| F
+    ConnectDocker --> CheckTraefik{Check Traefik Status}
 
-    F -->|Failure| F_WARN[Warning: Docker unavailable]
-    F -->|Success| G{Check Traefik Status}
+    CheckTraefik -->|Running| TraefikOK[Traefik OK]
+    CheckTraefik -->|Stopped| StartTraefik[Start Traefik]
+    CheckTraefik -->|Not found| TraefikWarn[Warning: not deployed]
 
-    G -->|Running| H[Traefik OK]
-    G -->|Exists but stopped| I[Start Traefik]
-    G -->|Not found| J[Warning: Traefik not deployed]
+    StartTraefik --> TraefikOK
 
-    I -->|Failure| I_ERR[Error: start traefik failed]
-    I -->|Success| H
+    TraefikOK --> ComposeUp[docker compose up -d]
+    TraefikWarn --> ComposeUp
 
-    H --> K[Execute docker compose up -d]
-    J --> K
-    F_WARN --> K
-
-    K -->|Failure| K_ERR[Error: compose up failed]
-    K -->|Success| L[Success: Yacht underway]
+    ComposeUp --> Success[Yacht underway]
 ```
 
 ### Step-by-Step Description
@@ -177,57 +164,31 @@ The reconcile workflow implements GitOps: sync from git, decrypt secrets, render
 
 ```mermaid
 flowchart TD
-    A[bosun reconcile] --> B{Acquire Lock}
-    B -->|Already Held| B_SKIP[Skip: Another reconciliation in progress]
-    B -->|Acquired| C[Sync Repository]
+    Start[bosun reconcile] --> AcquireLock{Acquire Lock}
+    AcquireLock -->|Already held| LockSkip[Skip: in progress]
+    AcquireLock -->|Acquired| GitSync[Sync Repository]
 
-    C -->|Clone if needed| D{Clone/Pull Success?}
-    D -->|Clone Failed| D_ERR1[Error: git clone failed]
-    D -->|Pull Failed| D_ERR2[Error: git fetch/reset failed]
-    D -->|Timeout| D_ERR3[Error: git clone timed out]
-    D -->|Success| E{Changes Detected?}
+    GitSync --> ChangesCheck{Changes Detected?}
+    ChangesCheck -->|No changes| NoChangeSkip[Skip: no changes]
+    ChangesCheck -->|Changes or --force| Decrypt[Decrypt Secrets]
 
-    E -->|No Changes + No Force| E_SKIP[Skip: No changes]
-    E -->|Changes or Force| F[Decrypt Secrets]
+    Decrypt --> RenderTemplates[Render Templates]
+    RenderTemplates --> DryRunCheck{Dry Run?}
 
-    F -->|No Age Key| F_ERR1[Error: age key not found]
-    F -->|File Not Found| F_ERR2[Error: secrets file not found]
-    F -->|Not SOPS File| F_ERR3[Error: file is not SOPS-encrypted]
-    F -->|SOPS Failed| F_ERR4[Error: sops decrypt failed]
-    F -->|Success| G[Render Templates]
+    DryRunCheck -->|Yes| DryRunSkip[Skip: dry run]
+    DryRunCheck -->|No| CreateBackup[Create Backup]
 
-    G -->|Clear Staging| G1[Clear Staging Directory]
-    G1 --> G2[Copy Non-Template Files]
-    G2 --> G3[Execute Go Templates]
-    G3 -->|Template Error| G_ERR[Error: template render failed]
-    G3 -->|Success| H{Dry Run?}
+    CreateBackup --> DeployMode{Local or Remote?}
 
-    H -->|Yes| H_DRY[Skip: Dry run mode]
-    H -->|No| I[Create Backup]
+    DeployMode -->|Local mount| DeployLocal[Deploy via file copy]
+    DeployMode -->|SSH required| DeployRemote[Deploy via tar-over-SSH]
 
-    I -->|Partial Fail| I_WARN[Warning: Backup partially failed]
-    I -->|Success| J{Local or Remote Mode?}
+    DeployLocal --> ComposeUp[Compose Up + Signal Reload]
+    DeployRemote --> ComposeUp
 
-    J -->|Local Mount| K[Deploy Local]
-    J -->|SSH Required| L[Deploy Remote]
-
-    K --> M[Sync Configs via native file copy]
-    L --> N{SSH Connectivity OK?}
-
-    N -->|Permission Denied| N_ERR1[Error: SSH auth failed]
-    N -->|Connection Refused| N_ERR2[Error: SSH service not running]
-    N -->|Host Key Failed| N_ERR3[Error: Add host to known_hosts]
-    N -->|No Route| N_ERR4[Error: Network unreachable]
-    N -->|Success| O[Sync Configs via tar-over-SSH]
-
-    M --> P[Compose Up + Signal Reload]
-    O --> P
-
-    P -->|Compose Failed| P_WARN[Warning: Could not recreate stack]
-    P -->|Success| Q[Cleanup Staging]
-
-    Q --> R[Release Lock]
-    R --> S[Success: Reconciliation complete]
+    ComposeUp --> Cleanup[Cleanup Staging]
+    Cleanup --> ReleaseLock[Release Lock]
+    ReleaseLock --> Success[Reconciliation complete]
 ```
 
 ### Step-by-Step Description
@@ -304,76 +265,49 @@ The snapshot workflow provides point-in-time backups of manifest outputs for qui
 
 ```mermaid
 flowchart TD
-    A[bosun mayday --rollback] --> B{Load Config}
-    B -->|Failure| B_ERR[Error: Project root not found]
-    B -->|Success| C[List Available Snapshots]
+    Start[bosun mayday --rollback] --> LoadConfig{Load Config}
+    LoadConfig -->|Failure| ConfigErr[Error: project root not found]
+    LoadConfig -->|Success| ListSnapshots[List Available Snapshots]
 
-    C -->|No Snapshots| C_ERR[Error: No snapshots available]
-    C -->|Has Snapshots| D{Target Specified?}
+    ListSnapshots -->|None| NoSnapshots[Error: no snapshots available]
+    ListSnapshots -->|Has snapshots| SelectTarget{Target Specified?}
 
-    D -->|Interactive| E[Prompt User for Selection]
-    D -->|Name Given| F{Snapshot Exists?}
+    SelectTarget -->|Interactive| PromptUser[Prompt User]
+    SelectTarget -->|Name given| CheckExists{Snapshot Exists?}
+    PromptUser --> CheckExists
 
-    E -->|User Cancels| E_ABORT[Aborted]
-    E -->|User Selects| F
+    CheckExists -->|Not found| NotFound[Error: snapshot not found]
+    CheckExists -->|Found| CheckDisk[Check Disk Space]
 
-    F -->|Not Found| F_ERR[Error: Snapshot not found]
-    F -->|Found| G[Check Disk Space]
+    CheckDisk --> PreBackup{Output dir has content?}
+    PreBackup -->|Yes| CreateBackup[Create Pre-Rollback Backup]
+    PreBackup -->|No| AtomicSwap[Atomic Swap]
+    CreateBackup --> AtomicSwap
 
-    G -->|Insufficient| G_ERR[Error: Insufficient disk space]
-    G -->|OK| H{Output Dir Has Content?}
-
-    H -->|Yes| I[Create Pre-Rollback Backup]
-    H -->|No| J[Copy Snapshot to Temp]
-
-    I -->|Failure| I_ERR[Error: create pre-rollback backup]
-    I -->|Success| J
-
-    J -->|Failure| J_ERR[Error: copy snapshot to temp]
-    J -->|Success| K[Atomic Rename: output -> old]
-
-    K -->|Failure| K_ERR[Error: rename current output]
-    K_ERR --> K_CLEANUP[Cleanup temp dir]
-    K -->|Success| L[Atomic Rename: temp -> output]
-
-    L -->|Failure| L_ERR[Error: rename temp to output]
-    L_ERR --> L_RESTORE[Restore old dir]
-    L -->|Success| M[Remove Old Dir]
-
-    M --> N[Success: Rollback complete]
-    N --> O[Note: Run yacht up to apply]
+    AtomicSwap --> Success[Rollback complete]
+    Success --> Note[Run yacht up to apply]
 ```
 
 ### Flowchart (Reconcile Restore)
 
 ```mermaid
 flowchart TD
-    A[bosun restore backup-name] --> B[Determine Backup Dir]
-    B --> C{Backup Exists?}
+    Start[bosun restore backup-name] --> FindBackup{Backup Exists?}
 
-    C -->|Not Found| C_ERR[Error: backup not found]
-    C -->|Found| D{configs.tar.gz Exists?}
+    FindBackup -->|Not found| BackupErr[Error: backup not found]
+    FindBackup -->|Found| CheckArchive{configs.tar.gz Exists?}
 
-    D -->|Missing| D_ERR[Error: backup incomplete]
-    D -->|Found| E[Create Staging Directory]
+    CheckArchive -->|Missing| ArchiveErr[Error: backup incomplete]
+    CheckArchive -->|Found| ExtractStaging[Extract to Staging]
 
-    E --> F[Extract tar.gz to Staging]
-    F -->|Invalid Archive| F_ERR[Error: failed to extract]
-    F -->|Path Traversal| F_ERR2[Error: invalid file path]
-    F -->|Success| G[Determine Appdata Dir]
+    ExtractStaging --> DeployFiles[Deploy via tar-over-SSH]
+    DeployFiles --> CheckCompose{Compose File Exists?}
 
-    G -->|Not Found| G_ERR[Error: could not determine appdata]
-    G -->|Found| H[Deploy via tar-over-SSH]
+    CheckCompose -->|Yes| ComposeUp[docker compose up]
+    CheckCompose -->|No| SkipRestart[Skip restart]
 
-    H -->|Failure| H_ERR[Error: file sync failed]
-    H -->|Success| I{Compose File Exists?}
-
-    I -->|Yes| J[Run docker compose up]
-    I -->|No| K[Skip compose restart]
-
-    J -->|Failure| J_WARN[Warning: restart failed]
-    J -->|Success| L[Success: Restore complete]
-    K --> L
+    ComposeUp --> Done[Restore complete]
+    SkipRestart --> Done
 ```
 
 ### Step-by-Step Description
@@ -427,79 +361,24 @@ The doctor workflow runs pre-flight checks to verify the environment is properly
 
 ```mermaid
 flowchart TD
-    A[bosun doctor] --> B[Check Docker Running]
+    Start[bosun doctor] --> Required[Required Checks]
 
-    B -->|Ping Success| B_OK[* Docker is running]
-    B -->|Ping Fail| B_FAIL[x Docker is not running]
-    B -->|Not Installed| B_FAIL2[x Docker not installed]
+    Required --> CheckDocker[Docker Running?]
+    CheckDocker --> CheckCompose[Docker Compose v2?]
+    CheckCompose --> CheckGit[Git Installed?]
 
-    B_OK --> C
-    B_FAIL --> C
-    B_FAIL2 --> C
+    CheckGit --> Optional[Optional Checks]
 
-    C[Check Docker Compose v2] --> D{compose version?}
-    D -->|Found| D_OK[* Docker Compose v2 version]
-    D -->|Not Found| D_FAIL[x Docker Compose v2 not found]
+    Optional --> CheckRoot[Project Root?]
+    CheckRoot --> CheckAgeKey[Age Key?]
+    CheckAgeKey --> CheckSOPS[SOPS?]
+    CheckSOPS --> CheckManifest[Manifest Dir?]
+    CheckManifest --> CheckWebhook[Webhook?]
 
-    D_OK --> E
-    D_FAIL --> E
-
-    E[Check Git] --> F{git installed?}
-    F -->|Yes| F_OK[* Git is installed]
-    F -->|No| F_FAIL[x Git not found]
-
-    F_OK --> G
-    F_FAIL --> G
-
-    G[Check Project Root] --> H{config found?}
-    H -->|Yes| H_OK[* Project root found: path]
-    H -->|No| H_WARN[! Project root not found]
-
-    H_OK --> I
-    H_WARN --> I
-
-    I[Check Age Key] --> J{key exists?}
-    J -->|SOPS_AGE_KEY set| J_OK[* Age key found]
-    J -->|SOPS_AGE_KEY_FILE exists| J_OK
-    J -->|Default path exists| J_OK
-    J -->|Not Found| J_WARN[! Age key not found]
-
-    J_OK --> K
-    J_WARN --> K
-
-    K[Check SOPS] --> L{sops installed?}
-    L -->|Yes| L_OK[* SOPS is installed version]
-    L -->|No| L_WARN[! SOPS not found]
-
-    L_OK --> M
-    L_WARN --> M
-
-    M[Check uv] --> N{uv installed?}
-    N -->|Yes| N_OK[* uv is installed]
-    N -->|No| N_WARN[! uv not found]
-
-    N_OK --> O
-    N_WARN --> O
-
-    O[Check Manifest Directory] --> P{manifest dir exists?}
-    P -->|Yes| P_OK[* Manifest directory found]
-    P -->|No| P_WARN[! Manifest directory not found]
-
-    P_OK --> Q
-    P_WARN --> Q
-
-    Q[Check Webhook] --> R{HTTP health OK?}
-    R -->|200 OK| R_OK[* Webhook endpoint responding]
-    R -->|Other| R_WARN[! Webhook not responding]
-
-    R_OK --> S
-    R_WARN --> S
-
-    S[Summary] --> T{failed > 0?}
-    T -->|Yes| T_FAIL[Ship not seaworthy! Exit 1]
-    T -->|No| U{warned > 0?}
-    U -->|Yes| U_WARN[Ship can sail, check warnings]
-    U -->|No| V[All systems go! Ready to sail]
+    CheckWebhook --> Summary{Results}
+    Summary -->|Required failed| NotSeaworthy[Ship not seaworthy!]
+    Summary -->|Warnings only| CanSail[Ship can sail, check warnings]
+    Summary -->|All clear| ReadyToSail[All systems go!]
 ```
 
 ### Check Categories
@@ -558,26 +437,26 @@ The `bosun lint` command validates manifests:
 
 ```mermaid
 flowchart TD
-    A[Something is broken] --> B{What's broken?}
+    Broken[Something is broken] --> Triage{What's broken?}
 
-    B -->|Manifest outputs| C[bosun mayday --rollback]
-    B -->|Live configs| D[bosun restore backup-name]
-    B -->|Single container| E[docker logs container]
-    B -->|Environment| F[bosun doctor]
-    B -->|Unknown| G[bosun mayday]
+    Triage -->|Manifest outputs| Rollback[bosun mayday --rollback]
+    Triage -->|Live configs| Restore[bosun restore backup-name]
+    Triage -->|Single container| Logs[docker logs container]
+    Triage -->|Environment| Doctor[bosun doctor]
+    Triage -->|Unknown| Mayday[bosun mayday]
 
-    C --> H{Still broken?}
-    D --> H
+    Rollback --> StillBroken{Still broken?}
+    Restore --> StillBroken
 
-    H -->|Yes| I[Check older backup/snapshot]
-    H -->|No| J[Run bosun yacht up]
+    StillBroken -->|Yes| OlderBackup[Check older backup/snapshot]
+    StillBroken -->|No| YachtUp[Run bosun yacht up]
 
-    E --> K{Config issue?}
-    K -->|Yes| L[Fix config, bosun provision]
-    K -->|No| M[Check container logs for app error]
+    Logs --> ConfigIssue{Config issue?}
+    ConfigIssue -->|Yes| FixConfig[Fix config, bosun provision]
+    ConfigIssue -->|No| AppError[Check container logs for app error]
 
-    G --> N[Review recent errors]
-    N --> B
+    Mayday --> ReviewErrors[Review recent errors]
+    ReviewErrors --> Triage
 ```
 
 ---
