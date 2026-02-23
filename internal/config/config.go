@@ -177,6 +177,25 @@ func FindRoot() (string, error) {
 	return "", fmt.Errorf("project root not found (no bosun.yaml, bosun/, manifest/, or manifests/ directory)")
 }
 
+// LoadFrom loads project config from a specific directory path (skips FindRoot).
+// Returns nil with no error if no config file is found in the directory.
+// Returns nil with error only if a config file exists but fails to parse.
+func LoadFrom(dir string) (*Config, error) {
+	fileCfg := loadConfigFile(dir)
+
+	// Check if any config was actually loaded by testing whether
+	// loadConfigFile found and parsed a file. Since configFile is a value
+	// type, we check for non-zero state in any field.
+	postSyncHooks := extractPostSyncHooks(fileCfg)
+	hookSettleDelay := extractHookSettleDelay(fileCfg)
+
+	return &Config{
+		Root:            dir,
+		postSyncHooks:   postSyncHooks,
+		hookSettleDelay: hookSettleDelay,
+	}, nil
+}
+
 // Load finds the project root and returns a Config.
 func Load() (*Config, error) {
 	root, err := FindRoot()

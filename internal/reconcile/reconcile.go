@@ -14,6 +14,16 @@ import (
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
+// ReloadedConfig holds the fields that can be reloaded from the repo's bosun.yaml.
+type ReloadedConfig struct {
+	PostSyncHooks   []PostSyncHook
+	HookSettleDelay time.Duration
+}
+
+// ConfigReloaderFunc loads project config from a directory path.
+// Returns nil ReloadedConfig if no config file is found (not an error).
+type ConfigReloaderFunc func(dir string) (*ReloadedConfig, error)
+
 // Config holds the reconciliation configuration.
 type Config struct {
 	// RepoURL is the git repository URL.
@@ -76,6 +86,19 @@ type Config struct {
 	// ContentHashSync if true, compares file content hashes before writing.
 	// Skips writes for unchanged files to avoid FUSE handle invalidation.
 	ContentHashSync bool
+
+	// PostSyncHooksFromEnv is true when BOSUN_POST_SYNC_HOOKS env var is set.
+	// When true, repo config reload will not update PostSyncHooks.
+	PostSyncHooksFromEnv bool
+
+	// HookSettleDelayFromEnv is true when BOSUN_HOOK_SETTLE_DELAY env var is set.
+	// When true, repo config reload will not update HookSettleDelay.
+	HookSettleDelayFromEnv bool
+
+	// ConfigReloader loads project config from a directory path.
+	// Set by daemon/CLI to break the config→reconcile import cycle.
+	// When nil, config reload is skipped.
+	ConfigReloader ConfigReloaderFunc
 }
 
 // DefaultLockFile is the default path for the reconciliation lock file.
@@ -240,6 +263,9 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 	// Track commit for alerting.
 	r.lastCommit = after
+
+	// Step 2: Reload project config from repo (picks up hook changes).
+	r.reloadProjectConfig()
 
 	// Load persistent deploy state to determine if pipeline should run.
 	state := LoadState(r.config.StateFile)
@@ -578,6 +604,50 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	if err := ExecutePostSyncHooks(ctx, client, matched, r.config.HookSettleDelay); err != nil {
 		logger.Warn().Err(err).Msg("Some post-sync hooks failed")
 		ui.Warning("Post-sync hook errors: %v", err)
+	}
+}
+
+// reloadProjectConfig re-reads bosun.yaml from the repo working directory
+// and updates PostSyncHooks and HookSettleDelay if the file has changed.
+// Fields overridden by environment variables are not updated.
+func (r *Reconciler) reloadProjectConfig() {
+	if r.config.ConfigReloader == nil {
+		return
+	}
+
+	logger := log.Component(log.ComponentReconcile)
+
+	reloaded, err := r.config.ConfigReloader(r.config.RepoDir)
+	if err != nil {
+		logger.Warn().Err(err).Msg("Failed to reload project config from repo, keeping existing config")
+		return
+	}
+	if reloaded == nil {
+		return
+	}
+
+	// If neither field has any value from the repo, there's nothing to reload.
+	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 {
+		return
+	}
+
+	changed := false
+
+	if !r.config.PostSyncHooksFromEnv && len(reloaded.PostSyncHooks) > 0 {
+		r.config.PostSyncHooks = reloaded.PostSyncHooks
+		changed = true
+	}
+
+	if !r.config.HookSettleDelayFromEnv && reloaded.HookSettleDelay > 0 {
+		r.config.HookSettleDelay = reloaded.HookSettleDelay
+		changed = true
+	}
+
+	if changed {
+		logger.Info().
+			Int("hooks", len(r.config.PostSyncHooks)).
+			Dur("settle_delay", r.config.HookSettleDelay).
+			Msg("Reloaded project config from repo")
 	}
 }
 

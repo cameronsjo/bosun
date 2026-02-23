@@ -149,6 +149,18 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		cfg.HookSettleDelay = projectCfg.HookSettleDelay()
 	}
 
+	// Wire config reloader so the reconciler can re-read bosun.yaml from the repo.
+	cfg.ConfigReloader = func(dir string) (*reconcile.ReloadedConfig, error) {
+		projectCfg, err := config.LoadFrom(dir)
+		if err != nil {
+			return nil, err
+		}
+		return &reconcile.ReloadedConfig{
+			PostSyncHooks:   projectCfg.PostSyncHooks(),
+			HookSettleDelay: projectCfg.HookSettleDelay(),
+		}, nil
+	}
+
 	// Environment variable override for post-sync hooks (JSON, same as daemon).
 	if v := os.Getenv("BOSUN_POST_SYNC_HOOKS"); v != "" {
 		var hooks []reconcile.PostSyncHook
@@ -156,6 +168,7 @@ func runReconcile(cmd *cobra.Command, args []string) {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_POST_SYNC_HOOKS, ignoring")
 		} else {
 			cfg.PostSyncHooks = hooks
+			cfg.PostSyncHooksFromEnv = true
 		}
 	}
 
@@ -163,8 +176,10 @@ func runReconcile(cmd *cobra.Command, args []string) {
 	if v := os.Getenv("BOSUN_HOOK_SETTLE_DELAY"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.HookSettleDelay = d
+			cfg.HookSettleDelayFromEnv = true
 		} else if d, err := time.ParseDuration(v + "s"); err == nil {
 			cfg.HookSettleDelay = d
+			cfg.HookSettleDelayFromEnv = true
 		} else {
 			log.Warn().Str("value", v).Msg("Failed to parse BOSUN_HOOK_SETTLE_DELAY, ignoring")
 		}

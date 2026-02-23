@@ -848,6 +848,53 @@ func TestConfigFromEnv_DriftResolveAlerts(t *testing.T) {
 	})
 }
 
+func TestConfigFromEnv_EnvOverrideFlags(t *testing.T) {
+	t.Run("PostSyncHooksFromEnv set when env var present", func(t *testing.T) {
+		envHooks := `[{"paths":["traefik/**"],"action":"restart","container":"traefik"}]`
+		t.Setenv("BOSUN_POST_SYNC_HOOKS", envHooks)
+
+		cfg := ConfigFromEnv()
+
+		if !cfg.ReconcileConfig.PostSyncHooksFromEnv {
+			t.Error("PostSyncHooksFromEnv should be true when BOSUN_POST_SYNC_HOOKS is set")
+		}
+	})
+
+	t.Run("PostSyncHooksFromEnv false when env var absent", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.PostSyncHooksFromEnv {
+			t.Error("PostSyncHooksFromEnv should be false when BOSUN_POST_SYNC_HOOKS is not set")
+		}
+	})
+
+	t.Run("HookSettleDelayFromEnv set when env var present", func(t *testing.T) {
+		t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "3s")
+
+		cfg := ConfigFromEnv()
+
+		if !cfg.ReconcileConfig.HookSettleDelayFromEnv {
+			t.Error("HookSettleDelayFromEnv should be true when BOSUN_HOOK_SETTLE_DELAY is set")
+		}
+	})
+
+	t.Run("HookSettleDelayFromEnv false when env var absent", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.HookSettleDelayFromEnv {
+			t.Error("HookSettleDelayFromEnv should be false when BOSUN_HOOK_SETTLE_DELAY is not set")
+		}
+	})
+
+	t.Run("ConfigReloader is wired", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.ConfigReloader == nil {
+			t.Error("ConfigReloader should be set by ConfigFromEnv")
+		}
+	})
+}
+
 func TestConfigFromEnv_ContentHashSync(t *testing.T) {
 	t.Run("default true", func(t *testing.T) {
 		cfg := ConfigFromEnv()

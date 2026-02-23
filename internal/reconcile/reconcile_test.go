@@ -2,9 +2,11 @@ package reconcile
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -248,6 +250,132 @@ func TestReconciler_RenderTemplates(t *testing.T) {
 
 		// Old file should be removed
 		assert.NoFileExists(t, filepath.Join(stagingDir, "old.txt"))
+	})
+}
+
+func TestReconciler_ReloadProjectConfig(t *testing.T) {
+	t.Run("updates hooks when not from env", func(t *testing.T) {
+		cfg := &Config{
+			PostSyncHooks: []PostSyncHook{
+				{Paths: []string{"old/**"}, Action: "restart", Container: "old"},
+			},
+		}
+		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{
+				PostSyncHooks: []PostSyncHook{
+					{Paths: []string{"new/**"}, Action: "restart", Container: "new"},
+				},
+			}, nil
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		require.Len(t, r.config.PostSyncHooks, 1)
+		assert.Equal(t, "new", r.config.PostSyncHooks[0].Container)
+	})
+
+	t.Run("skips hooks when from env", func(t *testing.T) {
+		cfg := &Config{
+			PostSyncHooks: []PostSyncHook{
+				{Paths: []string{"env/**"}, Action: "restart", Container: "env-hook"},
+			},
+			PostSyncHooksFromEnv: true,
+		}
+		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{
+				PostSyncHooks: []PostSyncHook{
+					{Paths: []string{"repo/**"}, Action: "restart", Container: "repo-hook"},
+				},
+			}, nil
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		require.Len(t, r.config.PostSyncHooks, 1)
+		assert.Equal(t, "env-hook", r.config.PostSyncHooks[0].Container)
+	})
+
+	t.Run("updates settle delay when not from env", func(t *testing.T) {
+		cfg := &Config{
+			HookSettleDelay: 0,
+		}
+		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{
+				HookSettleDelay: 5 * time.Second,
+			}, nil
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		assert.Equal(t, 5*time.Second, r.config.HookSettleDelay)
+	})
+
+	t.Run("skips settle delay when from env", func(t *testing.T) {
+		cfg := &Config{
+			HookSettleDelay:        2 * time.Second,
+			HookSettleDelayFromEnv: true,
+		}
+		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{
+				HookSettleDelay: 10 * time.Second,
+			}, nil
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		assert.Equal(t, 2*time.Second, r.config.HookSettleDelay)
+	})
+
+	t.Run("keeps config on parse error", func(t *testing.T) {
+		cfg := &Config{
+			PostSyncHooks: []PostSyncHook{
+				{Paths: []string{"keep/**"}, Action: "restart", Container: "keep"},
+			},
+		}
+		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+			return nil, fmt.Errorf("YAML parse error")
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		require.Len(t, r.config.PostSyncHooks, 1)
+		assert.Equal(t, "keep", r.config.PostSyncHooks[0].Container)
+	})
+
+	t.Run("no-op when reloader is nil", func(t *testing.T) {
+		cfg := &Config{
+			PostSyncHooks: []PostSyncHook{
+				{Paths: []string{"unchanged/**"}, Action: "restart", Container: "unchanged"},
+			},
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		require.Len(t, r.config.PostSyncHooks, 1)
+		assert.Equal(t, "unchanged", r.config.PostSyncHooks[0].Container)
+	})
+
+	t.Run("no-op when repo has no config", func(t *testing.T) {
+		cfg := &Config{
+			PostSyncHooks: []PostSyncHook{
+				{Paths: []string{"existing/**"}, Action: "restart", Container: "existing"},
+			},
+		}
+		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{}, nil
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		require.Len(t, r.config.PostSyncHooks, 1)
+		assert.Equal(t, "existing", r.config.PostSyncHooks[0].Container)
 	})
 }
 

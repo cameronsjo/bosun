@@ -538,6 +538,53 @@ func TestPostSyncHooksFromConfig(t *testing.T) {
 	})
 }
 
+func TestLoadFrom(t *testing.T) {
+	t.Run("loads hooks from directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		content := `post_sync_hooks:
+  - paths: ["traefik/conf.d/**"]
+    action: restart
+    container: traefik
+hook_settle_delay: "3s"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		hooks := cfg.PostSyncHooks()
+		require.Len(t, hooks, 1)
+		assert.Equal(t, "traefik", hooks[0].Container)
+		assert.Equal(t, 3*time.Second, cfg.HookSettleDelay())
+	})
+
+	t.Run("returns empty config when no config file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Empty(t, cfg.PostSyncHooks())
+		assert.Equal(t, time.Duration(0), cfg.HookSettleDelay())
+	})
+
+	t.Run("returns empty config on malformed YAML", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		content := `not: valid: yaml:
+:::
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Empty(t, cfg.PostSyncHooks())
+	})
+}
+
 func TestHookSettleDelayFromConfig(t *testing.T) {
 	t.Run("parses duration string from bosun.yaml", func(t *testing.T) {
 		tmpDir := evalSymlinks(t, t.TempDir())

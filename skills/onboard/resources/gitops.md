@@ -20,21 +20,23 @@ Every reconciliation follows this sequence:
        |
 2. Clone/pull repository (go-git, in-process)
        |
-3. Decrypt secrets (go-sops, in-process)
+3. Reload project config from repo (hooks, settle delay)
        |
-4. Render templates (Go text/template + Sprig)
+4. Decrypt secrets (go-sops, in-process)
        |
-5. Create backup of current configs
+5. Render templates (Go text/template + Sprig)
        |
-6. Deploy files (local copy or tar-over-SSH)
+6. Create backup of current configs
        |
-7. Docker compose up
+7. Deploy files (local copy or tar-over-SSH)
        |
-8. Post-sync hooks (restart containers on config changes)
+8. Docker compose up
        |
-9. SIGHUP to agentgateway (if configured)
+9. Post-sync hooks (restart containers on config changes)
        |
-10. Release lock
+10. SIGHUP to agentgateway (if configured)
+       |
+11. Release lock
 ```
 
 ### Post-Sync Hooks
@@ -46,6 +48,12 @@ Two timing controls are available:
 - **`delay`** — per-hook pause before restarting a specific container
 
 Hooks are configured in `bosun.yaml` under `post_sync_hooks`. See the [Configuration guide](configuration.md#post-sync-hooks) for schema and examples.
+
+### Project Config Reload
+
+After pulling the repository (step 2), bosun re-reads `bosun.yaml` from the repo and updates `PostSyncHooks` and `HookSettleDelay` if the file has changed. This means config changes pushed to the repo take effect without a daemon restart.
+
+Environment variable overrides (`BOSUN_POST_SYNC_HOOKS`, `BOSUN_HOOK_SETTLE_DELAY`) still take precedence -- if set, the corresponding fields from `bosun.yaml` are ignored during reload. If the repo has no `bosun.yaml` or the file fails to parse, the existing config values are retained.
 
 ### Lock Behavior
 

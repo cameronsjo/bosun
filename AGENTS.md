@@ -321,7 +321,7 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 - **Circuit breaker**: after 3 consecutive deploy failures, daemon stops retrying. Reset with `bosun trigger -f`
 - **FUSE mounts**: Traefik (and similar services) don't detect config changes on Unraid's FUSE filesystem — this is why post-sync hooks exist
 - **macOS temp dirs**: `/var` symlinks to `/private/var`, so `t.TempDir()` paths need `filepath.EvalSymlinks()` in tests
-- **Config graceful degradation**: `config.Load()` errors are swallowed in `reconcile.go` — reconcile works without a project config file
+- **Config graceful degradation**: `config.Load()` errors are swallowed at startup, and `config.LoadFrom()` failures during reconciliation are logged as warnings — reconcile works without a project config file. The reconciler re-reads `bosun.yaml` from the repo after each git pull to pick up hook changes
 - **Env var precedence**: `BOSUN_POST_SYNC_HOOKS` (JSON) completely *replaces* hooks from `bosun.yaml`, it does not merge
 - **Dirty repo is non-fatal**: `Pull()` warns on uncommitted changes and proceeds — the hard reset discards them. Don't add a dirty-state failure gate; these are stale reconciliation artifacts
 

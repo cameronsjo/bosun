@@ -968,17 +968,31 @@ func ConfigFromEnv() *Config {
 		rcfg.PostSyncHooks = projectCfg.PostSyncHooks()
 		rcfg.HookSettleDelay = projectCfg.HookSettleDelay()
 	}
+
+	// Wire config reloader so the reconciler can re-read bosun.yaml from the repo.
+	rcfg.ConfigReloader = func(dir string) (*reconcile.ReloadedConfig, error) {
+		cfg, err := config.LoadFrom(dir)
+		if err != nil {
+			return nil, err
+		}
+		return &reconcile.ReloadedConfig{
+			PostSyncHooks:   cfg.PostSyncHooks(),
+			HookSettleDelay: cfg.HookSettleDelay(),
+		}, nil
+	}
 	if v := os.Getenv("BOSUN_POST_SYNC_HOOKS"); v != "" {
 		var hooks []reconcile.PostSyncHook
 		if err := json.Unmarshal([]byte(v), &hooks); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_POST_SYNC_HOOKS, ignoring")
 		} else {
 			rcfg.PostSyncHooks = hooks
+			rcfg.PostSyncHooksFromEnv = true
 		}
 	}
 	if v := os.Getenv("BOSUN_HOOK_SETTLE_DELAY"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			rcfg.HookSettleDelay = d
+			rcfg.HookSettleDelayFromEnv = true
 		} else {
 			log.Warn().Str("value", v).Msg("Failed to parse BOSUN_HOOK_SETTLE_DELAY, ignoring")
 		}
