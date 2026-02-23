@@ -38,7 +38,7 @@ flowchart LR
     end
 
     subgraph Manifest
-        R[manifest.py render]
+        R[bosun provision]
     end
 
     subgraph Output
@@ -90,18 +90,18 @@ flowchart TB
 
 ```mermaid
 flowchart TD
-    A[1. Load Manifest] --> B[2. Load Provisions<br/>raw YAML strings]
-    B --> C[3. Interpolate Variables<br/>before parsing]
-    C --> D[4. Parse YAML<br/>normalize env/labels to dicts]
-    D --> E[5. Deep Merge<br/>into 3 accumulators]
-    E --> F{Crew sidecars<br/>defined?}
-    F -->|Yes| G[6. Inject env vars<br/>+ depends_on]
-    F -->|No| H[7. Apply Overrides]
-    G --> H
-    H --> I[8. Render Output Files]
+    LoadManifest[1. Load Manifest] --> LoadProvisions[2. Load Provisions<br/>raw YAML strings]
+    LoadProvisions --> Interpolate[3. Interpolate Variables<br/>before parsing]
+    Interpolate --> ParseYAML[4. Parse YAML<br/>normalize env/labels to dicts]
+    ParseYAML --> DeepMerge[5. Deep Merge<br/>into 3 accumulators]
+    DeepMerge --> CheckCrew{Crew sidecars<br/>defined?}
+    CheckCrew -->|Yes| InjectEnv[6. Inject env vars<br/>+ depends_on]
+    CheckCrew -->|No| ApplyOverrides[7. Apply Overrides]
+    InjectEnv --> ApplyOverrides
+    ApplyOverrides --> RenderOutput[8. Render Output Files]
 
-    style C fill:#ffd,stroke:#333
-    style G fill:#dfd,stroke:#333
+    style Interpolate fill:#ffd,stroke:#333
+    style InjectEnv fill:#dfd,stroke:#333
 ```
 
 ### Merge Semantics
@@ -160,8 +160,8 @@ flowchart LR
 ```mermaid
 flowchart LR
     subgraph "Local Dev"
-        EDIT[Edit manifest<br/>or profile]
-        RENDER[compose.py render]
+        EDIT[Edit manifest<br/>or provision]
+        RENDER[bosun provision]
         COMMIT[git commit + push]
     end
 
@@ -170,7 +170,7 @@ flowchart LR
     end
 
     subgraph "Unraid"
-        GR[gitops-runner]
+        BOSUN[bosun daemon]
         SOPS[SOPS decrypt]
         TMPL[Go template render]
         DEPLOY[docker compose up]
@@ -179,13 +179,13 @@ flowchart LR
     EDIT --> RENDER
     RENDER --> COMMIT
     COMMIT --> HOOK
-    HOOK --> GR
-    GR --> SOPS
+    HOOK --> BOSUN
+    BOSUN --> SOPS
     SOPS --> TMPL
     TMPL --> DEPLOY
 
     style RENDER fill:#ffd
-    style GR fill:#dfd
+    style BOSUN fill:#dfd
 ```
 
 ### Provision Composition (Mixin Pattern)

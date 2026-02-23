@@ -1,6 +1,6 @@
 flowchart TB
     subgraph Captain["Captain (GitHub)"]
-        GH[git push]
+        Push[git push]
     end
 
     subgraph Yacht["Your Yacht (Server)"]
@@ -10,17 +10,17 @@ flowchart TB
             Decrypt["Decrypt Secrets<br/>SOPS + Age"]
             Template["Prep Configs<br/>Go Templates"]
             Deploy["Deploy<br/>tar-over-SSH / local copy"]
-            ComposeUp["Crew Up<br/>docker compose"]
+            Compose["Crew Up<br/>docker compose"]
             Drift["Drift Watch<br/>Periodic check"]
         end
         Crew["Your Crew<br/>Containers"]
     end
 
-    GH --> Radio
+    Push --> Radio
     Radio --> Fetch
     Fetch --> Decrypt
     Decrypt --> Template
     Template --> Deploy
-    Deploy --> ComposeUp
-    ComposeUp --> Crew
+    Deploy --> Compose
+    Compose --> Crew
     Drift -.->|verify| Crew
