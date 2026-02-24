@@ -638,6 +638,7 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	if report.HasDrift() {
 		logger.Warn().
 			Int("drift_items", len(report.Items)).
+			Strs("drift_containers", report.DriftSummaries()).
 			Msg("Drift detected during periodic check")
 
 		// Deduplicated alerting for critical drift (missing/unhealthy).

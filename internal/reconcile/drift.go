@@ -40,6 +40,20 @@ func (r *DriftReport) HasDrift() bool {
 	return len(r.Items) > 0
 }
 
+// DriftSummaries returns a slice of "service:type" strings for each drift item.
+// Suitable for structured log fields where the full list of drifting containers
+// needs to be queryable (not just the count).
+func (r *DriftReport) DriftSummaries() []string {
+	if len(r.Items) == 0 {
+		return nil
+	}
+	summaries := make([]string, len(r.Items))
+	for i, item := range r.Items {
+		summaries[i] = item.Service + ":" + string(item.Type)
+	}
+	return summaries
+}
+
 // HasCriticalDrift returns true if drift includes missing or unhealthy services.
 func (r *DriftReport) HasCriticalDrift() bool {
 	for _, item := range r.Items {
@@ -324,13 +338,16 @@ func RunDriftCheck(ctx context.Context, client *docker.Client, stateFile, projec
 
 	report := CompareDrift(state.DeclaredServices, actual)
 
-	logger.Info().
+	logEvent := logger.Info().
 		Int("declared_services", len(state.DeclaredServices)).
 		Int("actual_services", len(actual)).
 		Int("drift_items", len(report.Items)).
 		Bool("has_drift", report.HasDrift()).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-		Msg("Drift check completed")
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds())
+	if report.HasDrift() {
+		logEvent = logEvent.Strs("drift_containers", report.DriftSummaries())
+	}
+	logEvent.Msg("Drift check completed")
 
 	return report, nil
 }
