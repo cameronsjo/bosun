@@ -109,6 +109,10 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 			r = r.WithContext(log.WithRequestID(r.Context(), requestID))
 		}
 
+		// Stash enriched logger on context for downstream handlers.
+		enriched := log.FromContext(r.Context())
+		r = r.WithContext(log.WithContext(r.Context(), &enriched))
+
 		// Add request ID to response headers.
 		w.Header().Set("X-Request-ID", requestID)
 

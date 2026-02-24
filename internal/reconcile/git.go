@@ -99,7 +99,7 @@ func getSSHAuth(url string) (transport.AuthMethod, error) {
 // If BOSUN_SSH_INSECURE_HOST_KEY=true, verification is skipped entirely.
 // If no known_hosts file is found, falls back to insecure with a warning.
 func getHostKeyCallback() xssh.HostKeyCallback {
-	logger := log.Component(log.ComponentGit)
+	logger := log.Component(log.ComponentGit) // No ctx available in this utility function.
 
 	if strings.EqualFold(os.Getenv("BOSUN_SSH_INSECURE_HOST_KEY"), "true") {
 		logger.Warn().Msg("SSH host key verification disabled via BOSUN_SSH_INSECURE_HOST_KEY")
@@ -191,7 +191,7 @@ func getSSHKeyFileAuth() (transport.AuthMethod, error) {
 // Uses GitCloneTimeout if the parent context has no deadline.
 func (g *GitOps) Clone(ctx context.Context, depth int) error {
 	start := time.Now()
-	logger := log.Component(log.ComponentGit)
+	logger := log.ComponentCtx(ctx, log.ComponentGit)
 
 	if err := validateBranch(g.Branch); err != nil {
 		return fmt.Errorf("invalid branch: %w", err)
@@ -265,7 +265,7 @@ func (g *GitOps) Clone(ctx context.Context, depth int) error {
 // Uses GitFetchTimeout for network operations.
 func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 	start := time.Now()
-	logger := log.Component(log.ComponentGit)
+	logger := log.ComponentCtx(ctx, log.ComponentGit)
 
 	if err := validateBranch(g.Branch); err != nil {
 		return false, "", "", fmt.Errorf("invalid branch: %w", err)
@@ -517,7 +517,7 @@ func (g *GitOps) IsRepo(ctx context.Context) bool {
 // Returns (changed, beforeCommit, afterCommit, error).
 // For fresh clones, changed is always true.
 func (g *GitOps) Sync(ctx context.Context) (bool, string, string, error) {
-	logger := log.Component(log.ComponentGit)
+	logger := log.ComponentCtx(ctx, log.ComponentGit)
 
 	if !g.IsRepo(ctx) {
 		logger.Info().Str(log.FieldPath, g.Dir).Msg("Repository not found, cloning")

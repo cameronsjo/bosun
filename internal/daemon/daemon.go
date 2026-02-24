@@ -416,8 +416,12 @@ func (d *Daemon) DockerClient() (*docker.Client, error) {
 // The running reconcile will check the pending flag and re-run if set.
 // The force flag is sticky: if any trigger requests force, the coalesced run will be forced.
 func (d *Daemon) TriggerReconcile(ctx context.Context, source string, force bool) error {
-	// Add reconcile ID to context for correlation.
-	ctx, reconcileID := log.NewReconcileContext(ctx)
+	// Add reconcile ID to context and stash enriched logger for downstream propagation.
+	ctx, _ = log.NewReconcileContext(ctx)
+	enriched := log.FromContext(ctx)
+	ctx = log.WithContext(ctx, &enriched)
+
+	logger := log.ComponentCtx(ctx, log.ComponentDaemon)
 
 	d.reconcileMu.Lock()
 
@@ -429,10 +433,8 @@ func (d *Daemon) TriggerReconcile(ctx context.Context, source string, force bool
 		d.triggerForce = d.triggerForce || force
 		d.reconcileMu.Unlock()
 
-		log.Info().
-			Str(log.FieldComponent, log.ComponentDaemon).
+		logger.Info().
 			Str(log.FieldSource, source).
-			Str(log.FieldReconcileID, reconcileID).
 			Bool("force", force).
 			Msg("Reconcile already in progress, queued trigger")
 
@@ -483,7 +485,7 @@ func (d *Daemon) reconcileLoop(ctx context.Context, source string, force bool) e
 // executeReconcile runs a single reconciliation and updates state.
 func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool) error {
 	start := time.Now()
-	reconcileID := log.ReconcileIDFromContext(ctx)
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
 	// Start a Sentry transaction for performance monitoring.
 	ctx, finishTx := sentrypkg.ReconcileTransaction(ctx, source)
@@ -492,9 +494,7 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 	// skip logic and attempt tracking have the right context.
 	d.reconciler.SetRunOptions(source, force)
 
-	log.Info().
-		Str(log.FieldComponent, log.ComponentReconcile).
-		Str(log.FieldReconcileID, reconcileID).
+	logger.Info().
 		Str(log.FieldSource, source).
 		Bool("force", force).
 		Msg("Starting reconciliation")
@@ -515,9 +515,7 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 	finishTx(err)
 
 	if err != nil {
-		log.Error().
-			Str(log.FieldComponent, log.ComponentReconcile).
-			Str(log.FieldReconcileID, reconcileID).
+		logger.Error().
 			Str(log.FieldSource, source).
 			Int64(log.FieldDurationMS, durationMS).
 			Err(err).
@@ -527,9 +525,7 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 		return err
 	}
 
-	log.Info().
-		Str(log.FieldComponent, log.ComponentReconcile).
-		Str(log.FieldReconcileID, reconcileID).
+	logger.Info().
 		Str(log.FieldSource, source).
 		Int64(log.FieldDurationMS, durationMS).
 		Bool("success", true).

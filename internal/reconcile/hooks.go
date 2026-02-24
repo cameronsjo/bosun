@@ -117,7 +117,7 @@ func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []Po
 		return nil
 	}
 
-	logger := log.Component(log.ComponentReconcile)
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
 	// Global settle delay: wait for filesystem propagation before restarting anything.
 	if settleDelay > 0 {
