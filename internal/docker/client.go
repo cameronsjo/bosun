@@ -134,7 +134,7 @@ type ContainerStats struct {
 // ListContainers returns all containers (running and stopped).
 func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]ContainerInfo, error) {
 	start := time.Now()
-	logger := log.Component(log.ComponentDocker)
+	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	logger.Debug().Bool("running_only", runningOnly).Msg("Listing containers")
 
 	containers, err := c.api.ContainerList(ctx, container.ListOptions{
@@ -239,7 +239,7 @@ func (c *Client) GetContainerImage(ctx context.Context, name string) (string, er
 
 // RemoveContainer forcefully removes a container by name.
 func (c *Client) RemoveContainer(ctx context.Context, name string) error {
-	logger := log.Component(log.ComponentDocker)
+	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	logger.Info().Str(log.FieldContainer, name).Msg("Removing container")
 
 	err := c.api.ContainerRemove(ctx, name, container.RemoveOptions{
@@ -256,7 +256,7 @@ func (c *Client) RemoveContainer(ctx context.Context, name string) error {
 
 // RestartContainer restarts a container by name.
 func (c *Client) RestartContainer(ctx context.Context, name string) error {
-	logger := log.Component(log.ComponentDocker)
+	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	logger.Info().Str(log.FieldContainer, name).Msg("Restarting container")
 
 	timeout := 10
@@ -276,7 +276,7 @@ const MaxLogSize = 100 * 1024 * 1024
 // GetContainerLogs returns the last n lines of logs from a container.
 // Logs are limited to MaxLogSize (100MB) to prevent memory exhaustion.
 func (c *Client) GetContainerLogs(ctx context.Context, name string, tail int) (string, error) {
-	logger := log.Component(log.ComponentDocker)
+	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	logger.Debug().Str(log.FieldContainer, name).Int("tail", tail).Msg("Fetching container logs")
 
 	options := container.LogsOptions{
@@ -308,7 +308,7 @@ func (c *Client) GetContainerLogs(ctx context.Context, name string, tail int) (s
 
 // GetContainerStats returns resource usage for a container.
 func (c *Client) GetContainerStats(ctx context.Context, name string) (*ContainerStats, error) {
-	logger := log.Component(log.ComponentDocker)
+	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	logger.Debug().Str(log.FieldContainer, name).Msg("Fetching container stats")
 
 	stats, err := c.api.ContainerStats(ctx, name, false)
@@ -359,12 +359,12 @@ func (c *Client) GetAllContainerStats(ctx context.Context) ([]ContainerStats, er
 		return nil, err
 	}
 
+	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	stats := make([]ContainerStats, 0, len(containers))
 	for _, ctr := range containers {
 		s, err := c.GetContainerStats(ctx, ctr.Name)
 		if err != nil {
-			log.Debug().
-				Str(log.FieldComponent, log.ComponentDocker).
+			logger.Debug().
 				Str(log.FieldContainer, ctr.Name).
 				Err(err).
 				Msg("Skipping container stats due to error")

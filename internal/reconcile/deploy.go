@@ -110,6 +110,7 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 		maxRetries = DefaultMaxRetries
 	}
 
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 	var lastErr error
 	backoff := InitialBackoff
 
@@ -131,6 +132,13 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 
 		// Don't sleep after the last attempt
 		if attempt < maxRetries {
+			logger.Warn().
+				Err(lastErr).
+				Int("attempt", attempt).
+				Int("max_retries", maxRetries).
+				Dur("next_backoff", backoff).
+				Msg("Transient SSH error, retrying")
+
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
