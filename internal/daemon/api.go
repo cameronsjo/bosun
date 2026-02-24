@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 )
 
@@ -141,6 +142,8 @@ func (d *Daemon) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 
 // handleAPIContainers handles GET /api/containers.
 func (d *Daemon) handleAPIContainers(w http.ResponseWriter, r *http.Request) {
+	logger := log.ComponentCtx(r.Context(), log.ComponentHTTP)
+
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -148,6 +151,7 @@ func (d *Daemon) handleAPIContainers(w http.ResponseWriter, r *http.Request) {
 
 	client, err := d.DockerClient()
 	if err != nil {
+		logger.Warn().Err(err).Msg("Docker unavailable for containers list")
 		http.Error(w, "Docker unavailable: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
@@ -157,6 +161,7 @@ func (d *Daemon) handleAPIContainers(w http.ResponseWriter, r *http.Request) {
 
 	containers, err := client.ListContainers(ctx, false)
 	if err != nil {
+		logger.Error().Err(err).Msg("Failed to list containers")
 		http.Error(w, "Failed to list containers: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -221,6 +226,8 @@ func (d *Daemon) handleAPIContainerAction(w http.ResponseWriter, r *http.Request
 
 // handleAPIContainerLogs handles GET /api/containers/:id/logs.
 func (d *Daemon) handleAPIContainerLogs(w http.ResponseWriter, r *http.Request, containerID string) {
+	logger := log.ComponentCtx(r.Context(), log.ComponentHTTP)
+
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -240,6 +247,7 @@ func (d *Daemon) handleAPIContainerLogs(w http.ResponseWriter, r *http.Request, 
 
 	client, err := d.DockerClient()
 	if err != nil {
+		logger.Warn().Err(err).Str(log.FieldContainer, containerID).Msg("Docker unavailable for container logs")
 		http.Error(w, "Docker unavailable: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
@@ -249,6 +257,7 @@ func (d *Daemon) handleAPIContainerLogs(w http.ResponseWriter, r *http.Request, 
 
 	logs, err := client.GetContainerLogs(ctx, containerID, lines)
 	if err != nil {
+		logger.Error().Err(err).Str(log.FieldContainer, containerID).Msg("Failed to get container logs")
 		http.Error(w, "Failed to get logs: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -265,13 +274,18 @@ func (d *Daemon) handleAPIContainerLogs(w http.ResponseWriter, r *http.Request, 
 
 // handleAPIContainerRestart handles POST /api/containers/:id/restart.
 func (d *Daemon) handleAPIContainerRestart(w http.ResponseWriter, r *http.Request, containerID string) {
+	logger := log.ComponentCtx(r.Context(), log.ComponentHTTP)
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	logger.Info().Str(log.FieldContainer, containerID).Msg("Container restart requested via API")
+
 	client, err := d.DockerClient()
 	if err != nil {
+		logger.Warn().Err(err).Str(log.FieldContainer, containerID).Msg("Docker unavailable for container restart")
 		http.Error(w, "Docker unavailable: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
@@ -280,9 +294,12 @@ func (d *Daemon) handleAPIContainerRestart(w http.ResponseWriter, r *http.Reques
 	defer cancel()
 
 	if err := client.RestartContainer(ctx, containerID); err != nil {
+		logger.Error().Err(err).Str(log.FieldContainer, containerID).Msg("Failed to restart container")
 		http.Error(w, "Failed to restart container: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	logger.Info().Str(log.FieldContainer, containerID).Msg("Container restart succeeded")
 
 	resp := APIRestartResponse{
 		Status:    "success",
@@ -296,6 +313,8 @@ func (d *Daemon) handleAPIContainerRestart(w http.ResponseWriter, r *http.Reques
 
 // handleAPITrigger handles POST /api/trigger.
 func (d *Daemon) handleAPITrigger(w http.ResponseWriter, r *http.Request) {
+	logger := log.ComponentCtx(r.Context(), log.ComponentHTTP)
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -305,6 +324,7 @@ func (d *Daemon) handleAPITrigger(w http.ResponseWriter, r *http.Request) {
 	var req TriggerRequest
 	if r.Body != nil && r.ContentLength > 0 {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			logger.Warn().Err(err).Msg("Invalid JSON in trigger request")
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
 			return
 		}
@@ -314,6 +334,11 @@ func (d *Daemon) handleAPITrigger(w http.ResponseWriter, r *http.Request) {
 	if source == "" {
 		source = "webui"
 	}
+
+	logger.Info().
+		Str(log.FieldSource, source).
+		Bool("force", req.Force).
+		Msg("Reconciliation trigger accepted via API")
 
 	// Trigger reconcile
 	go func() {
