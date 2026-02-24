@@ -110,12 +110,19 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 		maxRetries = DefaultMaxRetries
 	}
 
+	logger := log.Component(log.ComponentDeploy)
 	var lastErr error
 	backoff := InitialBackoff
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		lastErr = operation()
 		if lastErr == nil {
+			if attempt > 1 {
+				logger.Info().
+					Int("attempt", attempt).
+					Int("max_attempts", maxRetries).
+					Msg("Operation succeeded after retry")
+			}
 			return nil
 		}
 
@@ -129,14 +136,27 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 			return lastErr
 		}
 
-		// Don't sleep after the last attempt
+		// Log the transient failure and upcoming retry
 		if attempt < maxRetries {
+			logger.Warn().
+				Err(lastErr).
+				Int("attempt", attempt).
+				Int("max_attempts", maxRetries).
+				Int64("backoff_ms", backoff.Milliseconds()).
+				Msg("Transient error, retrying after backoff")
+
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-time.After(backoff):
 				backoff *= 2 // Exponential backoff
 			}
+		} else {
+			logger.Warn().
+				Err(lastErr).
+				Int("attempt", attempt).
+				Int("max_attempts", maxRetries).
+				Msg("Final attempt failed")
 		}
 	}
 

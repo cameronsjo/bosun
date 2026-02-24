@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -270,6 +271,7 @@ func (s *SocketServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 // auditMiddleware logs all requests with peer credentials.
 func (s *SocketServer) auditMiddleware(next http.Handler) http.Handler {
+	logger := log.Component(log.ComponentDaemon)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
@@ -279,14 +281,19 @@ func (s *SocketServer) auditMiddleware(next http.Handler) http.Handler {
 		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(wrapped, r)
 
-		// Audit log
+		// Structured audit log with queryable fields
+		event := logger.Info().
+			Str(log.FieldOperation, "audit").
+			Str(log.FieldMethod, r.Method).
+			Str(log.FieldURL, r.URL.Path).
+			Int(log.FieldStatus, wrapped.statusCode).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds())
+
 		if peerInfo != "" {
-			ui.Info("AUDIT: %s %s from %s -> %d (%s)",
-				r.Method, r.URL.Path, peerInfo, wrapped.statusCode, time.Since(start))
-		} else {
-			ui.Info("AUDIT: %s %s -> %d (%s)",
-				r.Method, r.URL.Path, wrapped.statusCode, time.Since(start))
+			event.Str("peer", peerInfo)
 		}
+
+		event.Msg("Socket request handled")
 	})
 }
 

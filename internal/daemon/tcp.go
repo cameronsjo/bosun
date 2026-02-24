@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -98,7 +99,13 @@ func (s *TCPServer) authMiddleware(next http.Handler) http.Handler {
 
 		// Constant-time comparison to prevent timing attacks
 		if subtle.ConstantTimeCompare([]byte(token), []byte(s.bearerToken)) != 1 {
-			ui.Warning("TCP auth failed from %s", r.RemoteAddr)
+			authLogger := log.Component(log.ComponentDaemon)
+			authLogger.Warn().
+				Str(log.FieldOperation, "auth").
+				Str(log.FieldMethod, r.Method).
+				Str(log.FieldURL, r.URL.Path).
+				Str("remote_addr", r.RemoteAddr).
+				Msg("TCP authentication failed")
 			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
@@ -109,14 +116,21 @@ func (s *TCPServer) authMiddleware(next http.Handler) http.Handler {
 
 // auditMiddleware logs all requests.
 func (s *TCPServer) auditMiddleware(next http.Handler) http.Handler {
+	logger := log.Component(log.ComponentDaemon)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
 		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(wrapped, r)
 
-		ui.Info("TCP AUDIT: %s %s from %s -> %d (%s)",
-			r.Method, r.URL.Path, r.RemoteAddr, wrapped.statusCode, time.Since(start))
+		logger.Info().
+			Str(log.FieldOperation, "audit").
+			Str(log.FieldMethod, r.Method).
+			Str(log.FieldURL, r.URL.Path).
+			Str("remote_addr", r.RemoteAddr).
+			Int(log.FieldStatus, wrapped.statusCode).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("TCP request handled")
 	})
 }
 
