@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/getsops/sops/v3/decrypt"
 	"gopkg.in/yaml.v3"
 )
@@ -35,14 +36,18 @@ func NewSOPSOps() *SOPSOps {
 //
 // Returns nil if a key is found, or an error with setup instructions if not.
 func (s *SOPSOps) CheckAgeKey() error {
+	logger := log.Component(log.ComponentSOPS)
+
 	// Check SOPS_AGE_KEY environment variable
 	if key := os.Getenv("SOPS_AGE_KEY"); key != "" {
+		logger.Debug().Str("source", "SOPS_AGE_KEY").Msg("Age key found via environment variable")
 		return nil
 	}
 
 	// Check SOPS_AGE_KEY_FILE environment variable
 	if keyFile := os.Getenv("SOPS_AGE_KEY_FILE"); keyFile != "" {
 		if _, err := os.Stat(keyFile); err == nil {
+			logger.Debug().Str("source", "SOPS_AGE_KEY_FILE").Str(log.FieldPath, keyFile).Msg("Age key found via key file")
 			return nil
 		}
 		return fmt.Errorf("%w: SOPS_AGE_KEY_FILE is set to %q but file does not exist.\n\nTo fix:\n  1. Create the key file at the specified path\n  2. Or set SOPS_AGE_KEY_FILE to an existing key file\n  3. Or run: age-keygen -o ~/.config/sops/age/keys.txt", ErrAgeKeyNotFound, keyFile)
@@ -56,6 +61,7 @@ func (s *SOPSOps) CheckAgeKey() error {
 
 	defaultKeyPath := filepath.Join(homeDir, ".config", "sops", "age", "keys.txt")
 	if _, err := os.Stat(defaultKeyPath); err == nil {
+		logger.Debug().Str("source", "default").Str(log.FieldPath, defaultKeyPath).Msg("Age key found at default location")
 		return nil
 	}
 
@@ -97,6 +103,8 @@ func ValidateSOPSFile(path string) error {
 // It first validates the file is SOPS-encrypted and checks that an age key is available.
 // Uses go-sops library for in-process decryption - no external binary required.
 func (s *SOPSOps) Decrypt(ctx context.Context, file string) ([]byte, error) {
+	logger := log.Component(log.ComponentSOPS)
+
 	// Validate SOPS file before attempting decryption
 	if err := ValidateSOPSFile(file); err != nil {
 		return nil, err
@@ -106,11 +114,20 @@ func (s *SOPSOps) Decrypt(ctx context.Context, file string) ([]byte, error) {
 		return nil, err
 	}
 
+	logger.Debug().
+		Str(log.FieldOperation, "decrypt").
+		Str(log.FieldPath, file).
+		Msg("Decrypting SOPS file")
+
 	// Use go-sops library for in-process decryption
 	// The decrypt.File function reads the age key from SOPS_AGE_KEY or SOPS_AGE_KEY_FILE
 	// or the default location ~/.config/sops/age/keys.txt
 	plaintext, err := decrypt.File(file, "yaml")
 	if err != nil {
+		logger.Debug().
+			Err(sanitizeDecryptError(err)).
+			Str(log.FieldPath, file).
+			Msg("SOPS decryption failed")
 		return nil, fmt.Errorf("sops decrypt failed for %s: %w", file, sanitizeDecryptError(err))
 	}
 
