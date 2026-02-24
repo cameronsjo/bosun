@@ -71,8 +71,19 @@ func (t *Twilio) Send(ctx context.Context, alert *Alert) error {
 
 	// Only send SMS for error or critical severity (SMS is expensive)
 	if alert.Severity != SeverityError && alert.Severity != SeverityCritical {
+		log.Debug().
+			Str("provider", "twilio").
+			Str("severity", string(alert.Severity)).
+			Msg("Skipping SMS alert. Reason: severity below threshold")
 		return nil
 	}
+
+	start := time.Now()
+	log.Debug().
+		Str("provider", "twilio").
+		Str("title", alert.Title).
+		Int("recipient_count", len(t.config.ToNumbers)).
+		Msg("Preparing to send SMS alerts")
 
 	message := t.formatMessage(alert)
 	var lastErr error
@@ -97,7 +108,16 @@ func (t *Twilio) Send(ctx context.Context, alert *Alert) error {
 			Int("failed", failCount).
 			Int("total", len(t.config.ToNumbers)).
 			Str("title", alert.Title).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 			Msg("Partial SMS delivery failure")
+	}
+
+	if failCount == 0 {
+		log.Debug().
+			Str("provider", "twilio").
+			Int("recipient_count", len(t.config.ToNumbers)).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("Successfully sent SMS alerts")
 	}
 
 	return lastErr

@@ -134,16 +134,20 @@ func getHostKeyCallback() xssh.HostKeyCallback {
 
 // getSSHAgentAuth attempts to get auth from SSH agent.
 func getSSHAgentAuth() transport.AuthMethod {
+	logger := log.Component(log.ComponentGit)
 	socket := os.Getenv("SSH_AUTH_SOCK")
 	if socket == "" {
+		logger.Debug().Msg("Skipping SSH agent auth. Reason: SSH_AUTH_SOCK not set")
 		return nil
 	}
 
 	conn, err := net.Dial("unix", socket)
 	if err != nil {
+		logger.Debug().Err(err).Str("socket", socket).Msg("Skipping SSH agent auth. Reason: cannot connect to agent socket")
 		return nil
 	}
 
+	logger.Debug().Str("socket", socket).Msg("Successfully connected to SSH agent")
 	agentClient := agent.NewClient(conn)
 	return &ssh.PublicKeysCallback{
 		User: "git",
@@ -159,6 +163,7 @@ func getSSHAgentAuth() transport.AuthMethod {
 // getSSHKeyFileAuth attempts to get auth from a key file.
 // Checks BOSUN_SSH_KEY env var, then common paths.
 func getSSHKeyFileAuth() (transport.AuthMethod, error) {
+	logger := log.Component(log.ComponentGit)
 	keyPaths := []string{
 		os.Getenv("BOSUN_SSH_KEY"),
 		"/config/deploy-key",
@@ -172,17 +177,21 @@ func getSSHKeyFileAuth() (transport.AuthMethod, error) {
 			continue
 		}
 		if _, err := os.Stat(keyPath); err != nil {
+			logger.Debug().Str(log.FieldPath, keyPath).Msg("Skipping SSH key. Reason: file not found")
 			continue
 		}
 
 		auth, err := ssh.NewPublicKeysFromFile("git", keyPath, "")
 		if err != nil {
+			logger.Debug().Err(err).Str(log.FieldPath, keyPath).Msg("Skipping SSH key. Reason: failed to parse key file")
 			continue
 		}
 		auth.HostKeyCallback = getHostKeyCallback()
+		logger.Debug().Str(log.FieldPath, keyPath).Msg("Successfully loaded SSH key file")
 		return auth, nil
 	}
 
+	logger.Debug().Msg("No SSH key file found in any candidate path")
 	return nil, nil
 }
 
@@ -538,6 +547,14 @@ func (g *GitOps) Sync(ctx context.Context) (bool, string, string, error) {
 // DiffFiles returns the list of changed file paths between two commits.
 // If fromCommit is empty, returns all files in toCommit.
 func (g *GitOps) DiffFiles(ctx context.Context, fromCommit, toCommit string) ([]string, error) {
+	logger := log.Component(log.ComponentGit)
+
+	logger.Debug().
+		Str(log.FieldOperation, "diff").
+		Str("from_commit", fromCommit[:MinLen(fromCommit, 8)]).
+		Str("to_commit", toCommit[:MinLen(toCommit, 8)]).
+		Msg("Preparing to diff commits")
+
 	repo, err := git.PlainOpen(g.Dir)
 	if err != nil {
 		return nil, fmt.Errorf("open repo: %w", err)
@@ -579,6 +596,11 @@ func (g *GitOps) DiffFiles(ctx context.Context, fromCommit, toCommit string) ([]
 		}
 		files = append(files, name)
 	}
+
+	logger.Debug().
+		Str(log.FieldOperation, "diff").
+		Int("changed_files", len(files)).
+		Msg("Successfully diffed commits")
 
 	return files, nil
 }

@@ -207,6 +207,7 @@ func LoadFrom(dir string) (*Config, error) {
 
 // Load finds the project root and returns a Config.
 func Load() (*Config, error) {
+	start := time.Now()
 	root, err := FindRoot()
 	if err != nil {
 		return nil, err
@@ -265,6 +266,11 @@ func Load() (*Config, error) {
 		hookSettleDelay: hookSettleDelay,
 		deployPaths:     deployPaths,
 	}
+
+	log.Debug().
+		Str(log.FieldPath, root).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Successfully loaded project configuration")
 
 	return cfg, nil
 }

@@ -55,12 +55,13 @@ func (s *SendGrid) Send(ctx context.Context, alert *Alert) error {
 		return fmt.Errorf("sendgrid not configured")
 	}
 
+	start := time.Now()
 	log.Debug().
 		Str("provider", "sendgrid").
 		Str("title", alert.Title).
 		Str("severity", string(alert.Severity)).
 		Int("recipient_count", len(s.config.ToEmails)).
-		Msg("Preparing SendGrid email alert")
+		Msg("Preparing to send SendGrid email alert")
 
 	payload := s.buildPayload(alert)
 	body, err := json.Marshal(payload)
@@ -103,6 +104,12 @@ func (s *SendGrid) Send(ctx context.Context, alert *Alert) error {
 			Msg("SendGrid API returned error status")
 		return fmt.Errorf("sendgrid api error: status %d", resp.StatusCode)
 	}
+
+	log.Debug().
+		Str("provider", "sendgrid").
+		Int("recipient_count", len(s.config.ToEmails)).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Successfully sent SendGrid email alert")
 
 	return nil
 }

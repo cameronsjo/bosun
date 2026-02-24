@@ -883,11 +883,15 @@ func ConfigFromEnv() *Config {
 	if interval := os.Getenv("POLL_INTERVAL"); interval != "" {
 		if d, ok := parseDurationOrSeconds(interval); ok {
 			cfg.PollInterval = d
+		} else {
+			log.Warn().Str("env", "POLL_INTERVAL").Str("value", interval).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 	if interval := os.Getenv("BOSUN_POLL_INTERVAL"); interval != "" {
 		if d, ok := parseDurationOrSeconds(interval); ok {
 			cfg.PollInterval = d
+		} else {
+			log.Warn().Str("env", "BOSUN_POLL_INTERVAL").Str("value", interval).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 
@@ -933,16 +937,22 @@ func ConfigFromEnv() *Config {
 	if v := os.Getenv("BOSUN_RECONCILE_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			cfg.ReconcileTimeout = d
+		} else {
+			log.Warn().Str("env", "BOSUN_RECONCILE_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 	if v := os.Getenv("BOSUN_SHUTDOWN_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			cfg.ShutdownTimeout = d
+		} else {
+			log.Warn().Str("env", "BOSUN_SHUTDOWN_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 	if v := os.Getenv("BOSUN_API_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			cfg.APITimeout = d
+		} else {
+			log.Warn().Str("env", "BOSUN_API_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 
@@ -950,6 +960,8 @@ func ConfigFromEnv() *Config {
 	if v := os.Getenv("BOSUN_DRIFT_INTERVAL"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			cfg.DriftInterval = d
+		} else {
+			log.Warn().Str("env", "BOSUN_DRIFT_INTERVAL").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 
@@ -957,6 +969,8 @@ func ConfigFromEnv() *Config {
 	if v := os.Getenv("BOSUN_DRIFT_ALERT_COOLDOWN"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			cfg.DriftAlertCooldown = d
+		} else {
+			log.Warn().Str("env", "BOSUN_DRIFT_ALERT_COOLDOWN").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 	if v := os.Getenv("BOSUN_DRIFT_RESOLVE_ALERTS"); v != "" {

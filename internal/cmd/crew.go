@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cameronsjo/bosun/internal/docker"
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -176,12 +177,20 @@ var crewRestartCmd = &cobra.Command{
 		name := args[0]
 
 		return withDockerClient(func(ctx context.Context, client *docker.Client) error {
+			log.Info().
+				Str(log.FieldOperation, "container_restart").
+				Str(log.FieldContainer, name).
+				Msg("Preparing to restart container")
 			ui.Blue.Printf("Sending %s for a coffee break...\n", name)
 
 			if err := client.RestartContainer(ctx, name); err != nil {
 				return fmt.Errorf("restart container: %w", err)
 			}
 
+			log.Info().
+				Str(log.FieldOperation, "container_restart").
+				Str(log.FieldContainer, name).
+				Msg("Successfully restarted container")
 			ui.Success("%s is back on duty!", name)
 			return nil
 		})

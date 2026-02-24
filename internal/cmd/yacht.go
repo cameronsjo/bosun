@@ -13,6 +13,7 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/docker"
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -105,6 +106,10 @@ var yachtDownCmd = &cobra.Command{
 			return fmt.Errorf("%w. Run 'docker compose config' to debug", err)
 		}
 
+		log.Info().
+			Str(log.FieldOperation, "compose_down").
+			Str(log.FieldPath, cfg.ComposeFile).
+			Msg("Preparing to stop all services")
 		ui.Yellow.Println("Dropping anchor...")
 		compose, err := docker.NewComposeClient(cfg.ComposeFile, cfg.ProjectName())
 		if err != nil {
@@ -114,6 +119,7 @@ var yachtDownCmd = &cobra.Command{
 			return fmt.Errorf("compose down: %w", err)
 		}
 
+		log.Info().Str(log.FieldOperation, "compose_down").Msg("Successfully stopped all services")
 		ui.Yellow.Println("Yacht is docked.")
 		return nil
 	},
@@ -144,6 +150,11 @@ var yachtRestartCmd = &cobra.Command{
 			}
 		}
 
+		log.Info().
+			Str(log.FieldOperation, "compose_restart").
+			Str(log.FieldPath, cfg.ComposeFile).
+			Int("service_count", len(args)).
+			Msg("Preparing to restart services")
 		ui.Blue.Println("Quick turnaround...")
 		compose, err := docker.NewComposeClient(cfg.ComposeFile, cfg.ProjectName())
 		if err != nil {
@@ -153,6 +164,7 @@ var yachtRestartCmd = &cobra.Command{
 			return fmt.Errorf("compose restart: %w", err)
 		}
 
+		log.Info().Str(log.FieldOperation, "compose_restart").Msg("Successfully restarted services")
 		ui.Success("Turnaround complete!")
 		return nil
 	},

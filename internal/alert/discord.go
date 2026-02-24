@@ -85,11 +85,12 @@ func (d *DiscordProvider) Send(ctx context.Context, alert *Alert) error {
 		return nil
 	}
 
+	start := time.Now()
 	log.Debug().
 		Str("provider", "discord").
 		Str("title", alert.Title).
 		Str("severity", string(alert.Severity)).
-		Msg("Preparing Discord alert")
+		Msg("Preparing to send Discord alert")
 
 	embed := discordEmbed{
 		Title:       alert.Title,
@@ -148,6 +149,11 @@ func (d *DiscordProvider) Send(ctx context.Context, alert *Alert) error {
 			Msg("Discord webhook returned error status")
 		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
+
+	log.Debug().
+		Str("provider", "discord").
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Successfully sent Discord alert")
 
 	return nil
 }
