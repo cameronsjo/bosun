@@ -94,3 +94,11 @@ func NewReconcileContext(ctx context.Context) (context.Context, string) {
 	id := uuid.New().String()
 	return WithReconcileID(ctx, id), id
 }
+
+// ComponentCtx returns a logger from context with the component field added.
+// The returned logger inherits all correlation IDs (request_id, reconcile_id)
+// from the context. Use this for code paths that have a context.Context.
+// For code paths without context (CLI commands, init), use Component instead.
+func ComponentCtx(ctx context.Context, component string) zerolog.Logger {
+	return Ctx(ctx).With().Str(FieldComponent, component).Logger()
+}
