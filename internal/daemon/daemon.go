@@ -541,15 +541,21 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 
 // pollLoop runs periodic reconciliation.
 func (d *Daemon) pollLoop(ctx context.Context) {
+	logger := log.Component(log.ComponentDaemon)
 	ticker := time.NewTicker(d.config.PollInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			ui.Info("Poll triggered")
+			logger.Info().
+				Str(log.FieldSource, log.SourcePoll).
+				Msg("Poll triggered")
 			if err := d.TriggerReconcile(ctx, "poll", false); err != nil {
-				ui.Error("Poll reconciliation failed: %v", err)
+				logger.Error().
+					Err(err).
+					Str(log.FieldSource, log.SourcePoll).
+					Msg("Poll reconciliation failed")
 			}
 		case <-d.stopLoops:
 			return

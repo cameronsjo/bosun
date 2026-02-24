@@ -213,7 +213,11 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(context.Background(), s.daemon.config.ReconcileTimeout)
 		defer cancel()
 		if err := s.daemon.TriggerReconcile(ctx, "webhook", false); err != nil {
-			ui.Error("Webhook-triggered reconciliation failed: %v", err)
+			webhookLogger := log.Component(log.ComponentWebhook)
+			webhookLogger.Error().
+				Err(err).
+				Str(log.FieldSource, log.SourceWebhook).
+				Msg("Webhook-triggered reconciliation failed")
 		}
 	}()
 
@@ -292,7 +296,13 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ui.Info("GitHub push to %s by %s: %s", payload.Ref, payload.Pusher.Name, payload.HeadCommit.Message)
+	ghLogger := log.Component(log.ComponentWebhook)
+	ghLogger.Info().
+		Str(log.FieldSource, log.SourceGitHub).
+		Str(log.FieldBranch, payload.Ref).
+		Str("pusher", payload.Pusher.Name).
+		Str(log.FieldCommit, payload.After).
+		Msg("GitHub push received")
 
 	// Trigger reconciliation with goroutine tracking
 	s.wg.Add(1)
@@ -302,7 +312,11 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		source := fmt.Sprintf("github:%s", payload.Pusher.Name)
 		if err := s.daemon.TriggerReconcile(ctx, source, false); err != nil {
-			ui.Error("GitHub webhook reconciliation failed: %v", err)
+			ghErrLogger := log.Component(log.ComponentWebhook)
+			ghErrLogger.Error().
+				Err(err).
+				Str(log.FieldSource, log.SourceGitHub).
+				Msg("GitHub webhook reconciliation failed")
 		}
 	}()
 
@@ -353,7 +367,11 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(context.Background(), s.daemon.config.ReconcileTimeout)
 		defer cancel()
 		if err := s.daemon.TriggerReconcile(ctx, "manual", false); err != nil {
-			ui.Error("Manual trigger reconciliation failed: %v", err)
+			manualLogger := log.Component(log.ComponentWebhook)
+			manualLogger.Error().
+				Err(err).
+				Str(log.FieldSource, log.SourceManual).
+				Msg("Manual trigger reconciliation failed")
 		}
 	}()
 
