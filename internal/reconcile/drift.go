@@ -23,10 +23,11 @@ const ComposeServiceLabel = "com.docker.compose.service"
 
 // ActualService represents the observed state of a running container.
 type ActualService struct {
-	Name   string
-	Image  string
-	State  string
-	Health string
+	Name          string
+	ContainerName string // Full Docker container name (for inspect calls)
+	Image         string
+	State         string
+	Health        string
 }
 
 // DriftReport is the result of comparing declared vs actual state.
@@ -167,10 +168,11 @@ func CollectActualState(ctx context.Context, client *docker.Client, projectName 
 		seen[serviceName] = true
 
 		actual = append(actual, ActualService{
-			Name:   serviceName,
-			Image:  c.Image,
-			State:  c.State,
-			Health: c.Health,
+			Name:          serviceName,
+			ContainerName: c.Name,
+			Image:         c.Image,
+			State:         c.State,
+			Health:        c.Health,
 		})
 	}
 
@@ -296,6 +298,75 @@ func CompareDrift(declared []DeclaredService, actual []ActualService) *DriftRepo
 	return report
 }
 
+// maxHealthOutput is the maximum length of health check output to include in drift items.
+// Keeps log lines reasonable while providing enough diagnostic context.
+const maxHealthOutput = 200
+
+// EnrichUnhealthyItems inspects unhealthy containers to populate DriftItem.Actual
+// with the last health check result (exit code + output). Only calls Docker Inspect
+// for containers with DriftUnhealthy type, so the cost scales with the number of
+// unhealthy containers, not total containers.
+func EnrichUnhealthyItems(ctx context.Context, client *docker.Client, report *DriftReport, actual []ActualService) {
+	if !report.HasDrift() {
+		return
+	}
+
+	logger := log.Component(log.ComponentReconcile)
+
+	// Build service→container name lookup from actual services.
+	containerNames := make(map[string]string, len(actual))
+	for _, svc := range actual {
+		containerNames[svc.Name] = svc.ContainerName
+	}
+
+	for i := range report.Items {
+		item := &report.Items[i]
+		if item.Type != DriftUnhealthy {
+			continue
+		}
+
+		containerName, ok := containerNames[item.Service]
+		if !ok {
+			continue
+		}
+
+		details, err := client.Inspect(ctx, containerName)
+		if err != nil {
+			logger.Debug().
+				Err(err).
+				Str(log.FieldContainer, containerName).
+				Msg("Skipping health enrichment. Reason: inspect failed")
+			continue
+		}
+
+		item.Actual = formatHealthDetail(details)
+	}
+}
+
+// formatHealthDetail extracts a diagnostic string from container inspect results.
+// Format: "failing_streak=N, last_exit=X, output=<truncated output>"
+func formatHealthDetail(details *docker.ContainerDetails) string {
+	if details.HealthLog == nil {
+		return "unhealthy (no health log)"
+	}
+
+	result := fmt.Sprintf("failing_streak=%d", details.HealthFailingStreak)
+
+	if details.HealthLog.ExitCode >= 0 {
+		result += fmt.Sprintf(", last_exit=%d", details.HealthLog.ExitCode)
+	}
+
+	if details.HealthLog.Output != "" {
+		output := strings.TrimSpace(details.HealthLog.Output)
+		if len(output) > maxHealthOutput {
+			output = output[:maxHealthOutput-3] + "..."
+		}
+		result += fmt.Sprintf(", output=%s", output)
+	}
+
+	return result
+}
+
 // imagesMatch compares two image references, handling tag normalization.
 // "nginx" matches "nginx:latest", "nginx:latest" matches "nginx:latest".
 func imagesMatch(declared, actual string) bool {
@@ -337,6 +408,9 @@ func RunDriftCheck(ctx context.Context, client *docker.Client, stateFile, projec
 	}
 
 	report := CompareDrift(state.DeclaredServices, actual)
+
+	// Enrich unhealthy items with last health check output (inspects only drifting containers).
+	EnrichUnhealthyItems(ctx, client, report, actual)
 
 	logEvent := logger.Info().
 		Int("declared_services", len(state.DeclaredServices)).
