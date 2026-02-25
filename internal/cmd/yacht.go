@@ -13,6 +13,7 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/docker"
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -105,6 +106,11 @@ var yachtDownCmd = &cobra.Command{
 			return fmt.Errorf("%w. Run 'docker compose config' to debug", err)
 		}
 
+		logger := log.Component("cmd")
+		logger.Info().
+			Str(log.FieldOperation, "compose_down").
+			Str(log.FieldPath, cfg.ComposeFile).
+			Msg("Preparing to stop all services")
 		ui.Yellow.Println("Dropping anchor...")
 		compose, err := docker.NewComposeClient(cfg.ComposeFile, cfg.ProjectName())
 		if err != nil {
@@ -114,6 +120,10 @@ var yachtDownCmd = &cobra.Command{
 			return fmt.Errorf("compose down: %w", err)
 		}
 
+		logger.Info().
+			Str(log.FieldOperation, "compose_down").
+			Str(log.FieldPath, cfg.ComposeFile).
+			Msg("Successfully stopped all services")
 		ui.Yellow.Println("Yacht is docked.")
 		return nil
 	},
@@ -144,6 +154,16 @@ var yachtRestartCmd = &cobra.Command{
 			}
 		}
 
+		logger := log.Component("cmd")
+		restartEvent := logger.Info().
+			Str(log.FieldOperation, "compose_restart").
+			Str(log.FieldPath, cfg.ComposeFile)
+		if len(args) > 0 {
+			restartEvent = restartEvent.Int("service_count", len(args)).Strs("services", args)
+		} else {
+			restartEvent = restartEvent.Str("scope", "all")
+		}
+		restartEvent.Msg("Preparing to restart services")
 		ui.Blue.Println("Quick turnaround...")
 		compose, err := docker.NewComposeClient(cfg.ComposeFile, cfg.ProjectName())
 		if err != nil {
@@ -153,6 +173,15 @@ var yachtRestartCmd = &cobra.Command{
 			return fmt.Errorf("compose restart: %w", err)
 		}
 
+		successEvent := logger.Info().
+			Str(log.FieldOperation, "compose_restart").
+			Str(log.FieldPath, cfg.ComposeFile)
+		if len(args) > 0 {
+			successEvent = successEvent.Int("service_count", len(args)).Strs("services", args)
+		} else {
+			successEvent = successEvent.Str("scope", "all")
+		}
+		successEvent.Msg("Successfully restarted services")
 		ui.Success("Turnaround complete!")
 		return nil
 	},

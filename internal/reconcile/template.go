@@ -12,6 +12,7 @@ import (
 
 	"github.com/Masterminds/sprig/v3"
 	"github.com/cameronsjo/bosun/internal/fileutil"
+	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // TemplateOps provides template rendering operations using Go's text/template with sprig functions.
@@ -116,6 +117,7 @@ func bosunTemplateFuncs() template.FuncMap {
 // RenderDirectory processes all .tmpl files in sourceDir and renders them to stagingDir.
 // Non-template files are copied as-is.
 func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir, subDir string) error {
+	logger := log.Component(log.ComponentTemplate)
 	infraDir := filepath.Join(sourceDir, subDir)
 	outDir := filepath.Join(stagingDir, subDir)
 
@@ -125,6 +127,7 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 	}
 
 	// Find and render all .tmpl files in the entire sourceDir (not just subDir).
+	templatesRendered := 0
 	err := filepath.WalkDir(sourceDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -148,6 +151,7 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 		if err := t.ExecuteTemplate(ctx, path, outputPath); err != nil {
 			return err
 		}
+		templatesRendered++
 
 		return nil
 	})
@@ -155,6 +159,13 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 	if err != nil {
 		return fmt.Errorf("failed to render templates: %w", err)
 	}
+
+	logger.Debug().
+		Str(log.FieldOperation, "render_directory").
+		Str("source", sourceDir).
+		Str("sub_dir", subDir).
+		Int("templates_rendered", templatesRendered).
+		Msg("Successfully rendered templates")
 
 	return nil
 }

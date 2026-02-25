@@ -117,6 +117,12 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		lastErr = operation()
 		if lastErr == nil {
+			if attempt > 1 {
+				logger.Info().
+					Int("attempt", attempt).
+					Int("max_attempts", maxRetries).
+					Msg("Operation succeeded after retry")
+			}
 			return nil
 		}
 
@@ -130,14 +136,14 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 			return lastErr
 		}
 
-		// Don't sleep after the last attempt
+		// Log the transient failure and upcoming retry
 		if attempt < maxRetries {
 			logger.Warn().
 				Err(lastErr).
 				Int("attempt", attempt).
-				Int("max_retries", maxRetries).
-				Dur("next_backoff", backoff).
-				Msg("Transient SSH error, retrying")
+				Int("max_attempts", maxRetries).
+				Int64("backoff_ms", backoff.Milliseconds()).
+				Msg("Transient error, retrying after backoff")
 
 			select {
 			case <-ctx.Done():
@@ -145,6 +151,12 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 			case <-time.After(backoff):
 				backoff *= 2 // Exponential backoff
 			}
+		} else {
+			logger.Warn().
+				Err(lastErr).
+				Int("attempt", attempt).
+				Int("max_attempts", maxRetries).
+				Msg("Final attempt failed")
 		}
 	}
 
@@ -300,6 +312,9 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 // BackupRemote creates a backup from a remote host via SSH.
 // Retries on transient SSH errors with exponential backoff.
 func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, remotePaths []string) (string, error) {
+	start := time.Now()
+	logger := log.Component(log.ComponentDeploy)
+
 	if err := validateHost(host); err != nil {
 		return "", fmt.Errorf("invalid SSH host: %w", err)
 	}
@@ -308,7 +323,15 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 	backupName := fmt.Sprintf("backup-%s", timestamp)
 	backupPath := filepath.Join(backupDir, backupName)
 
+	logger.Info().
+		Str(log.FieldOperation, "backup_remote").
+		Str(log.FieldTarget, host).
+		Str(log.FieldPath, backupPath).
+		Int("path_count", len(remotePaths)).
+		Msg("Creating remote backup")
+
 	if err := os.MkdirAll(backupPath, 0755); err != nil {
+		logger.Error().Err(err).Str(log.FieldPath, backupPath).Msg("Failed to create backup directory")
 		return "", fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
@@ -346,8 +369,16 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 	if err := d.VerifyBackup(backupPath); err != nil {
 		// Clean up invalid backup on verification failure
 		os.RemoveAll(backupPath)
+		logger.Error().Err(err).Str(log.FieldPath, backupPath).Msg("Remote backup verification failed")
 		return "", fmt.Errorf("backup verification failed: %w", err)
 	}
+
+	logger.Info().
+		Str(log.FieldOperation, "backup_remote").
+		Str(log.FieldTarget, host).
+		Str(log.FieldPath, backupPath).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Remote backup created successfully")
 
 	return backupName, nil
 }
@@ -376,12 +407,18 @@ func (d *DeployOps) CleanupBackups(backupDir string, keep int) error {
 	// Remove old backups.
 	if len(backups) > keep {
 		toRemove := backups[:len(backups)-keep]
+		logger := log.Component(log.ComponentDeploy)
 		for _, name := range toRemove {
 			path := filepath.Join(backupDir, name)
 			if err := os.RemoveAll(path); err != nil {
 				return fmt.Errorf("failed to remove backup %s: %w", name, err)
 			}
 		}
+		logger.Debug().
+			Str(log.FieldOperation, "cleanup_backups").
+			Int("removed", len(toRemove)).
+			Int("kept", keep).
+			Msg("Old backups removed")
 	}
 
 	return nil
@@ -676,13 +713,28 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 // Retries on transient SSH errors with exponential backoff.
 // Performs atomic copy: scp to temp file, then move to target.
 func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost, targetFile string) error {
+	start := time.Now()
+	logger := log.Component(log.ComponentDeploy)
+
 	if err := validateHost(targetHost); err != nil {
 		return fmt.Errorf("invalid SSH host: %w", err)
 	}
 
 	if d.DryRun {
+		logger.Debug().
+			Str("source", sourceFile).
+			Str(log.FieldTarget, targetHost).
+			Str("target_file", targetFile).
+			Msg("Dry run: would deploy remote file")
 		return nil
 	}
+
+	logger.Debug().
+		Str(log.FieldOperation, "deploy_remote_file").
+		Str("source", sourceFile).
+		Str(log.FieldTarget, targetHost).
+		Str("target_file", targetFile).
+		Msg("Deploying file remotely")
 
 	// Apply timeout if context doesn't have one
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
@@ -700,7 +752,7 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 	// Create temp file path for atomic copy
 	tmpFile := fmt.Sprintf("%s.tmp.%d", targetFile, time.Now().UnixNano())
 
-	return retryWithBackoff(ctx, DefaultMaxRetries, func() error {
+	err := retryWithBackoff(ctx, DefaultMaxRetries, func() error {
 		// SCP to temp file
 		target := fmt.Sprintf("%s:%s", targetHost, tmpFile)
 		scpCmd := exec.CommandContext(ctx, "scp", "-q", sourceFile, target)
@@ -728,15 +780,32 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 
 		return nil
 	})
+	if err == nil {
+		logger.Debug().
+			Str(log.FieldOperation, "deploy_remote_file").
+			Str(log.FieldTarget, targetHost).
+			Str("target_file", targetFile).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("Remote file deployment completed")
+	}
+	return err
 }
 
 // EnsureRemoteDir ensures a directory exists on a remote host via SSH.
 // Uses SSHTimeout if the parent context has no deadline.
 // Retries on transient SSH errors with exponential backoff.
 func (d *DeployOps) EnsureRemoteDir(ctx context.Context, host, dir string) error {
+	logger := log.Component(log.ComponentDeploy)
+
 	if err := validateHost(host); err != nil {
 		return fmt.Errorf("invalid SSH host: %w", err)
 	}
+
+	logger.Debug().
+		Str(log.FieldOperation, "ensure_remote_dir").
+		Str(log.FieldTarget, host).
+		Str(log.FieldPath, dir).
+		Msg("Ensuring remote directory exists")
 
 	// Apply timeout if context doesn't have one
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
@@ -948,13 +1017,27 @@ func (d *DeployOps) VerifyContainerHealth(ctx context.Context, composeFile strin
 // ComposeUpRemote runs docker compose up on a remote host via SSH.
 // Retries on transient SSH errors with exponential backoff.
 func (d *DeployOps) ComposeUpRemote(ctx context.Context, host, composeDir string) error {
+	start := time.Now()
+	logger := log.Component(log.ComponentDeploy)
+
 	if err := validateHost(host); err != nil {
 		return fmt.Errorf("invalid SSH host: %w", err)
 	}
 
 	if d.DryRun {
+		logger.Debug().
+			Str(log.FieldTarget, host).
+			Str(log.FieldPath, composeDir).
+			Msg("Dry run: would run remote compose up")
 		return nil
 	}
+
+	logger.Info().
+		Str(log.FieldOperation, "compose_up_remote").
+		Str(log.FieldTarget, host).
+		Str(log.FieldPath, composeDir).
+		Str("project", d.ProjectName).
+		Msg("Starting remote docker compose up")
 
 	// Build compose command with project name if set
 	composeCmd := "docker compose"
@@ -963,7 +1046,7 @@ func (d *DeployOps) ComposeUpRemote(ctx context.Context, host, composeDir string
 	}
 	sshCmd := fmt.Sprintf("cd %s && %s up -d --remove-orphans", composeDir, composeCmd)
 
-	return retryWithBackoff(ctx, DefaultMaxRetries, func() error {
+	err := retryWithBackoff(ctx, DefaultMaxRetries, func() error {
 		cmd := exec.CommandContext(ctx, "ssh", host, sshCmd)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
@@ -973,10 +1056,27 @@ func (d *DeployOps) ComposeUpRemote(ctx context.Context, host, composeDir string
 		}
 		return nil
 	})
+	if err != nil {
+		logger.Error().
+			Err(err).
+			Str(log.FieldOperation, "compose_up_remote").
+			Str(log.FieldTarget, host).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("Remote docker compose up failed")
+	} else {
+		logger.Info().
+			Str(log.FieldOperation, "compose_up_remote").
+			Str(log.FieldTarget, host).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("Remote docker compose up completed successfully")
+	}
+	return err
 }
 
 // SignalContainer sends a signal to a Docker container.
 func (d *DeployOps) SignalContainer(ctx context.Context, containerName, signal string) error {
+	logger := log.Component(log.ComponentDeploy)
+
 	if err := validateContainerName(containerName); err != nil {
 		return fmt.Errorf("invalid container name: %w", err)
 	}
@@ -987,6 +1087,12 @@ func (d *DeployOps) SignalContainer(ctx context.Context, containerName, signal s
 	if d.DryRun {
 		return nil
 	}
+
+	logger.Debug().
+		Str(log.FieldOperation, "signal_container").
+		Str(log.FieldContainer, containerName).
+		Str("signal", signal).
+		Msg("Sending signal to container")
 
 	cmd := exec.CommandContext(ctx, "docker", "kill", "--signal="+signal, containerName)
 	var stderr bytes.Buffer
@@ -1001,6 +1107,8 @@ func (d *DeployOps) SignalContainer(ctx context.Context, containerName, signal s
 // SignalContainerRemote sends a signal to a Docker container on a remote host.
 // Retries on transient SSH errors with exponential backoff.
 func (d *DeployOps) SignalContainerRemote(ctx context.Context, host, containerName, signal string) error {
+	logger := log.Component(log.ComponentDeploy)
+
 	if err := validateHost(host); err != nil {
 		return fmt.Errorf("invalid SSH host: %w", err)
 	}
@@ -1014,6 +1122,13 @@ func (d *DeployOps) SignalContainerRemote(ctx context.Context, host, containerNa
 	if d.DryRun {
 		return nil
 	}
+
+	logger.Debug().
+		Str(log.FieldOperation, "signal_container_remote").
+		Str(log.FieldTarget, host).
+		Str(log.FieldContainer, containerName).
+		Str("signal", signal).
+		Msg("Sending signal to remote container")
 
 	sshCmd := fmt.Sprintf("docker kill --signal=%s %s 2>/dev/null", signal, containerName)
 

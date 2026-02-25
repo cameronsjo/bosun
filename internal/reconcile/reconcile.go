@@ -471,7 +471,12 @@ func (r *Reconciler) sendSuccessAlert(ctx context.Context) {
 	}
 
 	if err := r.alerter.SendDeploySuccess(ctx, r.lastCommit, target); err != nil {
-		ui.Warning("Failed to send success alert: %v", err)
+		logger := log.Component(log.ComponentReconcile)
+		logger.Warn().
+			Err(err).
+			Str(log.FieldOperation, "alert_success").
+			Str(log.FieldTarget, target).
+			Msg("Failed to send success alert")
 	}
 }
 
@@ -492,7 +497,12 @@ func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *Deplo
 	}
 
 	if err := r.alerter.SendDeployFailure(ctx, r.lastCommit, target, reason); err != nil {
-		ui.Warning("Failed to send failure alert: %v", err)
+		logger := log.Component(log.ComponentReconcile)
+		logger.Warn().
+			Err(err).
+			Str(log.FieldOperation, "alert_failure").
+			Str(log.FieldTarget, target).
+			Msg("Failed to send failure alert")
 		return
 	}
 
@@ -514,7 +524,13 @@ func (r *Reconciler) sendUnhealthyAlert(ctx context.Context, containers []string
 	}
 
 	if err := r.alerter.SendUnhealthyContainers(ctx, target, containers); err != nil {
-		ui.Warning("Failed to send unhealthy containers alert: %v", err)
+		logger := log.Component(log.ComponentReconcile)
+		logger.Warn().
+			Err(err).
+			Str(log.FieldOperation, "alert_unhealthy").
+			Str(log.FieldTarget, target).
+			Int("container_count", len(containers)).
+			Msg("Failed to send unhealthy containers alert")
 	}
 }
 
@@ -530,7 +546,13 @@ func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) {
 	}
 
 	if err := r.alerter.SendDeployRecovery(ctx, r.lastCommit, target, priorFailures); err != nil {
-		ui.Warning("Failed to send recovery alert: %v", err)
+		logger := log.Component(log.ComponentReconcile)
+		logger.Warn().
+			Err(err).
+			Str(log.FieldOperation, "alert_recovery").
+			Str(log.FieldTarget, target).
+			Int("prior_failures", priorFailures).
+			Msg("Failed to send recovery alert")
 	}
 }
 

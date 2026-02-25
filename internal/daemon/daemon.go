@@ -544,15 +544,21 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 
 // pollLoop runs periodic reconciliation.
 func (d *Daemon) pollLoop(ctx context.Context) {
+	logger := log.Component(log.ComponentDaemon)
 	ticker := time.NewTicker(d.config.PollInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			ui.Info("Poll triggered")
+			logger.Info().
+				Str(log.FieldSource, log.SourcePoll).
+				Msg("Poll triggered")
 			if err := d.TriggerReconcile(ctx, "poll", false); err != nil {
-				ui.Error("Poll reconciliation failed: %v", err)
+				logger.Error().
+					Err(err).
+					Str(log.FieldSource, log.SourcePoll).
+					Msg("Poll reconciliation failed")
 			}
 		case <-d.stopLoops:
 			return
@@ -635,6 +641,7 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	if report.HasDrift() {
 		logger.Warn().
 			Int("drift_items", len(report.Items)).
+			Strs("drift_containers", report.DriftSummaries()).
 			Msg("Drift detected during periodic check")
 
 		// Deduplicated alerting for critical drift (missing/unhealthy).
@@ -880,11 +887,15 @@ func ConfigFromEnv() *Config {
 	if interval := os.Getenv("POLL_INTERVAL"); interval != "" {
 		if d, ok := parseDurationOrSeconds(interval); ok {
 			cfg.PollInterval = d
+		} else {
+			log.Warn().Str("env", "POLL_INTERVAL").Str("value", interval).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 	if interval := os.Getenv("BOSUN_POLL_INTERVAL"); interval != "" {
 		if d, ok := parseDurationOrSeconds(interval); ok {
 			cfg.PollInterval = d
+		} else {
+			log.Warn().Str("env", "BOSUN_POLL_INTERVAL").Str("value", interval).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 
@@ -930,16 +941,22 @@ func ConfigFromEnv() *Config {
 	if v := os.Getenv("BOSUN_RECONCILE_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			cfg.ReconcileTimeout = d
+		} else {
+			log.Warn().Str("env", "BOSUN_RECONCILE_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 	if v := os.Getenv("BOSUN_SHUTDOWN_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			cfg.ShutdownTimeout = d
+		} else {
+			log.Warn().Str("env", "BOSUN_SHUTDOWN_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 	if v := os.Getenv("BOSUN_API_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			cfg.APITimeout = d
+		} else {
+			log.Warn().Str("env", "BOSUN_API_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 
@@ -947,6 +964,8 @@ func ConfigFromEnv() *Config {
 	if v := os.Getenv("BOSUN_DRIFT_INTERVAL"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			cfg.DriftInterval = d
+		} else {
+			log.Warn().Str("env", "BOSUN_DRIFT_INTERVAL").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 
@@ -954,6 +973,8 @@ func ConfigFromEnv() *Config {
 	if v := os.Getenv("BOSUN_DRIFT_ALERT_COOLDOWN"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			cfg.DriftAlertCooldown = d
+		} else {
+			log.Warn().Str("env", "BOSUN_DRIFT_ALERT_COOLDOWN").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 	if v := os.Getenv("BOSUN_DRIFT_RESOLVE_ALERTS"); v != "" {

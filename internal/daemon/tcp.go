@@ -110,10 +110,11 @@ func (s *TCPServer) authMiddleware(next http.Handler) http.Handler {
 		if subtle.ConstantTimeCompare([]byte(token), []byte(s.bearerToken)) != 1 {
 			logger := log.ComponentCtx(r.Context(), log.ComponentDaemon)
 			logger.Warn().
-				Str("remote_addr", r.RemoteAddr).
+				Str(log.FieldOperation, "auth").
 				Str(log.FieldMethod, r.Method).
 				Str(log.FieldURL, r.URL.Path).
-				Msg("TCP auth failed: invalid bearer token")
+				Str("remote_addr", r.RemoteAddr).
+				Msg("TCP authentication failed")
 			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
@@ -132,12 +133,13 @@ func (s *TCPServer) auditMiddleware(next http.Handler) http.Handler {
 
 		logger := log.ComponentCtx(r.Context(), log.ComponentDaemon)
 		logger.Info().
+			Str(log.FieldOperation, "audit").
 			Str(log.FieldMethod, r.Method).
 			Str(log.FieldURL, r.URL.Path).
 			Str("remote_addr", r.RemoteAddr).
 			Int(log.FieldStatus, wrapped.statusCode).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-			Msg("TCP request completed")
+			Msg("TCP request handled")
 	})
 }
 

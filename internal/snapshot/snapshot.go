@@ -48,12 +48,19 @@ func outputDir(manifestDir string) string {
 // Create creates a snapshot of the current output directory.
 // Returns the snapshot name, or an empty string if there was nothing to snapshot.
 func Create(manifestDir string) (string, error) {
+	start := time.Now()
+	logger := log.Component("snapshot")
 	outDir := outputDir(manifestDir)
 
 	// Check if output directory exists and has content
 	if !dirHasContent(outDir) {
 		return "", nil
 	}
+
+	logger.Info().
+		Str(log.FieldOperation, "create").
+		Str(log.FieldPath, manifestDir).
+		Msg("Creating snapshot")
 
 	snapDir := snapshotsDir(manifestDir)
 
@@ -97,6 +104,12 @@ func Create(manifestDir string) (string, error) {
 		// Log but don't fail on cleanup errors
 		log.Warn().Err(err).Str(log.FieldPath, snapDir).Msg("Failed to cleanup old snapshots")
 	}
+
+	logger.Info().
+		Str(log.FieldOperation, "create").
+		Str("snapshot", snapshotName).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Snapshot created successfully")
 
 	return snapshotName, nil
 }
@@ -161,9 +174,17 @@ func List(manifestDir string) ([]SnapshotInfo, error) {
 // Restore restores a snapshot atomically, creating a pre-rollback backup first.
 // Uses temp directory + atomic rename pattern to prevent broken state on failure.
 func Restore(manifestDir, snapshotName string) error {
+	start := time.Now()
+	logger := log.Component("snapshot")
 	snapDir := snapshotsDir(manifestDir)
 	snapshotPath := filepath.Join(snapDir, snapshotName)
 	outDir := outputDir(manifestDir)
+
+	logger.Info().
+		Str(log.FieldOperation, "restore").
+		Str("snapshot", snapshotName).
+		Str(log.FieldPath, manifestDir).
+		Msg("Restoring snapshot")
 
 	// Verify snapshot exists
 	if _, err := os.Stat(snapshotPath); os.IsNotExist(err) {
@@ -241,12 +262,19 @@ func Restore(manifestDir, snapshotName string) error {
 		os.RemoveAll(oldDir)
 	}
 
+	logger.Info().
+		Str(log.FieldOperation, "restore").
+		Str("snapshot", snapshotName).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Snapshot restored successfully")
+
 	return nil
 }
 
 // Cleanup removes snapshots beyond the retention limit.
 // Continues deleting even if individual removals fail, returning a summary of all errors.
 func Cleanup(manifestDir string) error {
+	logger := log.Component("snapshot")
 	snapshots, err := List(manifestDir)
 	if err != nil {
 		return err
@@ -258,11 +286,21 @@ func Cleanup(manifestDir string) error {
 
 	// Remove oldest snapshots (keeping MaxSnapshots)
 	// Continue on errors to clean up as many as possible
+	toRemove := snapshots[MaxSnapshots:]
 	var errs []string
-	for _, snap := range snapshots[MaxSnapshots:] {
+	for _, snap := range toRemove {
 		if err := removeWithRetry(snap.Path, 3); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", snap.Name, err))
 		}
+	}
+
+	removed := len(toRemove) - len(errs)
+	if removed > 0 {
+		logger.Debug().
+			Str(log.FieldOperation, "cleanup").
+			Int("removed", removed).
+			Int("kept", MaxSnapshots).
+			Msg("Old snapshots removed")
 	}
 
 	if len(errs) > 0 {

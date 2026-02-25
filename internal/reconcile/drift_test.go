@@ -3,6 +3,7 @@ package reconcile
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cameronsjo/bosun/internal/docker"
@@ -94,6 +95,106 @@ func TestCompareDrift_UnhealthyService(t *testing.T) {
 	assert.True(t, report.HasCriticalDrift())
 	require.Len(t, report.Items, 1)
 	assert.Equal(t, DriftUnhealthy, report.Items[0].Type)
+}
+
+func TestDriftSummaries(t *testing.T) {
+	tests := []struct {
+		name     string
+		items    []DriftItem
+		expected []string
+	}{
+		{
+			name:     "empty report",
+			items:    nil,
+			expected: nil,
+		},
+		{
+			name: "multiple drift types",
+			items: []DriftItem{
+				{Service: "web", Type: DriftUnhealthy},
+				{Service: "api", Type: DriftMissing},
+				{Service: "redis", Type: DriftImageMismatch},
+			},
+			expected: []string{"web:unhealthy", "api:missing", "redis:image_mismatch"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			report := &DriftReport{Items: tt.items}
+			summaries := report.DriftSummaries()
+			if tt.expected == nil {
+				assert.Nil(t, summaries)
+			} else {
+				assert.Equal(t, tt.expected, summaries)
+			}
+		})
+	}
+}
+
+func TestFormatHealthDetail(t *testing.T) {
+	tests := []struct {
+		name     string
+		details  *docker.ContainerDetails
+		expected string
+	}{
+		{
+			name:     "no health log",
+			details:  &docker.ContainerDetails{HealthLog: nil},
+			expected: "unhealthy (no health log)",
+		},
+		{
+			name: "with exit code and output",
+			details: &docker.ContainerDetails{
+				HealthFailingStreak: 5,
+				HealthLog: &docker.HealthCheckLog{
+					ExitCode: 1,
+					Output:   "curl: (7) Failed to connect to localhost port 8080",
+				},
+			},
+			expected: "failing_streak=5, last_exit=1, output=curl: (7) Failed to connect to localhost port 8080",
+		},
+		{
+			name: "exit code zero but failing streak",
+			details: &docker.ContainerDetails{
+				HealthFailingStreak: 3,
+				HealthLog: &docker.HealthCheckLog{
+					ExitCode: 0,
+					Output:   "OK",
+				},
+			},
+			expected: "failing_streak=3, last_exit=0, output=OK",
+		},
+		{
+			name: "long output truncated",
+			details: &docker.ContainerDetails{
+				HealthFailingStreak: 1,
+				HealthLog: &docker.HealthCheckLog{
+					ExitCode: 1,
+					Output:   strings.Repeat("x", 300),
+				},
+			},
+			expected: "failing_streak=1, last_exit=1, output=" + strings.Repeat("x", 197) + "...",
+		},
+		{
+			name: "negative exit code from signal",
+			details: &docker.ContainerDetails{
+				HealthFailingStreak: 2,
+				HealthLog: &docker.HealthCheckLog{
+					ExitCode: -1,
+					Output:   "killed",
+				},
+			},
+			expected: "failing_streak=2, last_exit=-1, output=killed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := formatHealthDetail(tt.details)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }
 
 func TestCompareDrift_MultipleDriftTypes(t *testing.T) {

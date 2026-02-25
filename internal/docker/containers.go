@@ -10,24 +10,32 @@ import (
 	"github.com/docker/docker/api/types/container"
 )
 
+// HealthCheckLog holds the last health check result for a container.
+type HealthCheckLog struct {
+	ExitCode int
+	Output   string
+}
+
 // ContainerDetails holds detailed container information.
 type ContainerDetails struct {
-	ID           string
-	Name         string
-	Image        string
-	State        string
-	Status       string
-	Health       string
-	Ports        []PortBinding
-	Networks     []string
-	Volumes      []string
-	Environment  []string
-	Labels       map[string]string
-	Created      time.Time
-	Started      time.Time
-	RestartCount int
-	Platform     string
-	Driver       string
+	ID                   string
+	Name                 string
+	Image                string
+	State                string
+	Status               string
+	Health               string
+	HealthFailingStreak  int
+	HealthLog            *HealthCheckLog // Last health check result (nil if no health checks)
+	Ports                []PortBinding
+	Networks             []string
+	Volumes              []string
+	Environment          []string
+	Labels               map[string]string
+	Created              time.Time
+	Started              time.Time
+	RestartCount         int
+	Platform             string
+	Driver               string
 }
 
 // PortBinding represents a container port binding.
@@ -100,6 +108,14 @@ func (c *Client) Inspect(ctx context.Context, name string) (*ContainerDetails, e
 	// Health status
 	if info.State.Health != nil {
 		details.Health = info.State.Health.Status
+		details.HealthFailingStreak = info.State.Health.FailingStreak
+		if len(info.State.Health.Log) > 0 {
+			last := info.State.Health.Log[len(info.State.Health.Log)-1]
+			details.HealthLog = &HealthCheckLog{
+				ExitCode: last.ExitCode,
+				Output:   last.Output,
+			}
+		}
 	}
 
 	// Port bindings
