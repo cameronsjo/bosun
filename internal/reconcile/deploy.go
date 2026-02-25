@@ -891,7 +891,7 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 	}
 
 	// Attempt rollback with previous config
-	rollbackCtx, cancel := context.WithTimeout(context.Background(), ComposeUpTimeout)
+	rollbackCtx, cancel := context.WithTimeout(ctx, ComposeUpTimeout)
 	defer cancel()
 
 	// Build rollback args

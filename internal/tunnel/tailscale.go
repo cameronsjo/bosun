@@ -186,6 +186,8 @@ func (t *Tailscale) GetPlainStatus(ctx context.Context) (string, error) {
 	cmd := exec.CommandContext(ctx, t.binaryPath, "status")
 	cmd.Stderr = &stderr
 
+	logger.Debug().Str(log.FieldOperation, "plain_status").Msg("Executing tailscale status")
+
 	output, err := cmd.Output()
 	if err != nil {
 		logger.Error().

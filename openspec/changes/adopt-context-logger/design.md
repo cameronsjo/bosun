@@ -1,3 +1,5 @@
+# Adopt Context-Aware Logger
+
 ## Context
 
 Bosun's `internal/log` package has two logger construction paths:

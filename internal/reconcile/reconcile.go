@@ -736,6 +736,14 @@ func (r *Reconciler) syncRepo(ctx context.Context) (bool, string, string, error)
 	ui.Info("Syncing repository...")
 
 	changed, before, after, err := r.git.Sync(ctx)
+	if err != nil {
+		logger.Error().
+			Err(err).
+			Str(log.FieldOperation, "sync").
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("Repository sync failed")
+		return changed, before, after, err
+	}
 
 	logger.Info().
 		Str(log.FieldOperation, "sync").
@@ -745,7 +753,7 @@ func (r *Reconciler) syncRepo(ctx context.Context) (bool, string, string, error)
 		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 		Msg("Repository sync completed")
 
-	return changed, before, after, err
+	return changed, before, after, nil
 }
 
 // decryptSecrets decrypts SOPS secret files.

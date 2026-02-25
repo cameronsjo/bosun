@@ -472,6 +472,8 @@ func (d *Daemon) reconcileLoop(ctx context.Context, source string, force bool) e
 			d.triggerForce = false
 			d.reconcileMu.Unlock()
 			ui.Info("Processing queued trigger from %s (force=%t)", source, force)
+			// Generate a fresh reconcile_id for the coalesced run so logs are distinct.
+			ctx, _ = log.NewReconcileContext(ctx)
 			continue
 		}
 

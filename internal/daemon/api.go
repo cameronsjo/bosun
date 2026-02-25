@@ -340,9 +340,12 @@ func (d *Daemon) handleAPITrigger(w http.ResponseWriter, r *http.Request) {
 		Bool("force", req.Force).
 		Msg("Reconciliation trigger accepted via API")
 
+	// Propagate enriched logger into background context (request ctx is cancelled after response).
+	bgCtx := log.WithContext(context.Background(), log.Ctx(r.Context()))
+
 	// Trigger reconcile
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), d.config.ReconcileTimeout)
+		ctx, cancel := context.WithTimeout(bgCtx, d.config.ReconcileTimeout)
 		defer cancel()
 		_ = d.TriggerReconcile(ctx, source, req.Force)
 	}()

@@ -322,6 +322,8 @@ func (c *Cloudflare) GetVersion(ctx context.Context) (string, error) {
 	cmd := exec.CommandContext(ctx, c.binaryPath, "version")
 	cmd.Stderr = &stderr
 
+	logger.Debug().Str(log.FieldOperation, "version").Msg("Executing cloudflared version")
+
 	output, err := cmd.Output()
 	if err != nil {
 		logger.Error().
@@ -331,6 +333,10 @@ func (c *Cloudflare) GetVersion(ctx context.Context) (string, error) {
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 			Msg("cloudflared version check failed")
 		return "", err
+	}
+
+	if stderrStr := stderr.String(); stderrStr != "" {
+		logger.Debug().Str("stderr", stderrStr).Msg("cloudflared version stderr")
 	}
 
 	version := strings.TrimSpace(string(output))

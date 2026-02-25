@@ -99,8 +99,8 @@ func (s *TCPServer) authMiddleware(next http.Handler) http.Handler {
 
 		// Constant-time comparison to prevent timing attacks
 		if subtle.ConstantTimeCompare([]byte(token), []byte(s.bearerToken)) != 1 {
-			log.Warn().
-				Str(log.FieldComponent, log.ComponentDaemon).
+			logger := log.ComponentCtx(r.Context(), log.ComponentDaemon)
+			logger.Warn().
 				Str("remote_addr", r.RemoteAddr).
 				Str(log.FieldMethod, r.Method).
 				Str(log.FieldURL, r.URL.Path).
@@ -121,8 +121,8 @@ func (s *TCPServer) auditMiddleware(next http.Handler) http.Handler {
 		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(wrapped, r)
 
-		log.Info().
-			Str(log.FieldComponent, log.ComponentHTTP).
+		logger := log.ComponentCtx(r.Context(), log.ComponentDaemon)
+		logger.Info().
 			Str(log.FieldMethod, r.Method).
 			Str(log.FieldURL, r.URL.Path).
 			Str("remote_addr", r.RemoteAddr).
