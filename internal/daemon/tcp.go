@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -74,6 +75,15 @@ func (s *TCPServer) Shutdown(ctx context.Context) error {
 // authMiddleware validates bearer token authentication.
 func (s *TCPServer) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Enrich request context with a request ID so downstream logs carry it.
+		ctx := r.Context()
+		if log.RequestIDFromContext(ctx) == "" {
+			ctx = log.WithRequestID(ctx, "")
+		}
+		enriched := log.FromContext(ctx)
+		ctx = log.WithContext(ctx, &enriched)
+		r = r.WithContext(ctx)
+
 		// Health endpoint is public for load balancer checks
 		if r.URL.Path == "/health" {
 			next.ServeHTTP(w, r)
@@ -98,7 +108,12 @@ func (s *TCPServer) authMiddleware(next http.Handler) http.Handler {
 
 		// Constant-time comparison to prevent timing attacks
 		if subtle.ConstantTimeCompare([]byte(token), []byte(s.bearerToken)) != 1 {
-			ui.Warning("TCP auth failed from %s", r.RemoteAddr)
+			logger := log.ComponentCtx(r.Context(), log.ComponentDaemon)
+			logger.Warn().
+				Str("remote_addr", r.RemoteAddr).
+				Str(log.FieldMethod, r.Method).
+				Str(log.FieldURL, r.URL.Path).
+				Msg("TCP auth failed: invalid bearer token")
 			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
@@ -107,7 +122,7 @@ func (s *TCPServer) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// auditMiddleware logs all requests.
+// auditMiddleware logs all TCP requests with structured fields.
 func (s *TCPServer) auditMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -115,8 +130,14 @@ func (s *TCPServer) auditMiddleware(next http.Handler) http.Handler {
 		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(wrapped, r)
 
-		ui.Info("TCP AUDIT: %s %s from %s -> %d (%s)",
-			r.Method, r.URL.Path, r.RemoteAddr, wrapped.statusCode, time.Since(start))
+		logger := log.ComponentCtx(r.Context(), log.ComponentDaemon)
+		logger.Info().
+			Str(log.FieldMethod, r.Method).
+			Str(log.FieldURL, r.URL.Path).
+			Str("remote_addr", r.RemoteAddr).
+			Int(log.FieldStatus, wrapped.statusCode).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("TCP request completed")
 	})
 }
 

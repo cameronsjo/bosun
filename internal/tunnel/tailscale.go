@@ -1,9 +1,13 @@
 package tunnel
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os/exec"
+	"time"
+
+	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // Tailscale implements the Provider interface for Tailscale.
@@ -17,10 +21,10 @@ type Tailscale struct {
 
 // tailscaleStatus represents the JSON output of `tailscale status --json`.
 type tailscaleStatus struct {
-	BackendState   string                     `json:"BackendState"`
-	Self           tailscalePeer              `json:"Self"`
-	Peer           map[string]tailscalePeer   `json:"Peer"`
-	MagicDNSSuffix string                     `json:"MagicDNSSuffix"`
+	BackendState   string                   `json:"BackendState"`
+	Self           tailscalePeer            `json:"Self"`
+	Peer           map[string]tailscalePeer `json:"Peer"`
+	MagicDNSSuffix string                   `json:"MagicDNSSuffix"`
 }
 
 // tailscalePeer represents a peer in the Tailscale network.
@@ -61,18 +65,40 @@ func (t *Tailscale) Name() string {
 
 // Status returns the current Tailscale status.
 func (t *Tailscale) Status(ctx context.Context) (*Status, error) {
+	start := time.Now()
+	logger := log.ComponentCtx(ctx, log.ComponentTunnel)
+
+	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, t.binaryPath, "status", "--json")
+	cmd.Stderr = &stderr
+
+	logger.Debug().Str(log.FieldOperation, "status").Msg("Executing tailscale status")
+
 	output, err := cmd.Output()
 	if err != nil {
 		// Check if Tailscale is not connected
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			logger.Debug().
+				Str(log.FieldOperation, "status").
+				Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+				Msg("Tailscale not connected (exit code 1)")
 			return &Status{
 				Connected:    false,
 				Provider:     string(ProviderTailscale),
 				BackendState: "Unknown",
 			}, nil
 		}
+		logger.Error().
+			Err(err).
+			Str(log.FieldOperation, "status").
+			Str("stderr", stderr.String()).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("tailscale status failed")
 		return nil, err
+	}
+
+	if stderrStr := stderr.String(); stderrStr != "" {
+		logger.Debug().Str("stderr", stderrStr).Msg("tailscale status stderr")
 	}
 
 	var tsStatus tailscaleStatus
@@ -114,6 +140,14 @@ func (t *Tailscale) Status(ctx context.Context) (*Status, error) {
 		status.Peers = append(status.Peers, peer)
 	}
 
+	logger.Info().
+		Str(log.FieldOperation, "status").
+		Str("backend_state", tsStatus.BackendState).
+		Bool("connected", status.Connected).
+		Int("peers", len(status.Peers)).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Tailscale status check completed")
+
 	return status, nil
 }
 
@@ -145,10 +179,34 @@ func (t *Tailscale) GetHostname() string {
 // GetPlainStatus runs `tailscale status` and returns the plain text output.
 // This is useful when JSON parsing fails or for display purposes.
 func (t *Tailscale) GetPlainStatus(ctx context.Context) (string, error) {
+	start := time.Now()
+	logger := log.ComponentCtx(ctx, log.ComponentTunnel)
+
+	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, t.binaryPath, "status")
+	cmd.Stderr = &stderr
+
+	logger.Debug().Str(log.FieldOperation, "plain_status").Msg("Executing tailscale status")
+
 	output, err := cmd.Output()
 	if err != nil {
+		logger.Error().
+			Err(err).
+			Str(log.FieldOperation, "plain_status").
+			Str("stderr", stderr.String()).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("tailscale plain status failed")
 		return "", err
 	}
+
+	if stderrStr := stderr.String(); stderrStr != "" {
+		logger.Debug().Str("stderr", stderrStr).Msg("tailscale plain status stderr")
+	}
+
+	logger.Debug().
+		Str(log.FieldOperation, "plain_status").
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Tailscale plain status completed")
+
 	return string(output), nil
 }

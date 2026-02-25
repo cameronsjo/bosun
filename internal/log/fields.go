@@ -66,6 +66,7 @@ const (
 	ComponentManifest  = "manifest"
 	ComponentWebhook   = "webhook"
 	ComponentHTTP      = "http"
+	ComponentTunnel    = "tunnel"
 )
 
 // Source values for FieldSource.
@@ -80,6 +81,8 @@ const (
 )
 
 // Component returns a logger with the component field set.
+// Use this for code paths without a context (CLI commands, package init).
+// When a context.Context is available, prefer ComponentCtx.
 func Component(component string) zerolog.Logger {
 	return logger.With().Str(FieldComponent, component).Logger()
 }
