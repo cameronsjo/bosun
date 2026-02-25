@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0](https://github.com/cameronsjo/bosun/compare/v0.13.0...v0.14.0) (2026-02-25)
+
+
+### Features
+
+* **daemon:** add structured logging to API handlers and TCP auth ([8ca9409](https://github.com/cameronsjo/bosun/commit/8ca940926112c1628664b05d9f1f088633251c44))
+* **log:** add ComponentCtx for context-aware logger construction ([cacb01e](https://github.com/cameronsjo/bosun/commit/cacb01e2fa9489f41f6fde23d9c1782a5d7492de))
+* **log:** adopt context-aware logger across codebase ([664f795](https://github.com/cameronsjo/bosun/commit/664f79538de70019415dfbd33b70c2d70ec61eb1))
+* **log:** adopt context-aware logger across codebase ([#63](https://github.com/cameronsjo/bosun/issues/63)) ([664f795](https://github.com/cameronsjo/bosun/commit/664f79538de70019415dfbd33b70c2d70ec61eb1))
+* **log:** enrich context at pipeline entry points and migrate sub-operations ([832fa8c](https://github.com/cameronsjo/bosun/commit/832fa8c1c4adee155d04a5fc5dcaebea77860aa7))
+* **log:** migrate docker client and add retry logging ([98d2200](https://github.com/cameronsjo/bosun/commit/98d220059489932743d2c949f324835fb3c7a732))
+* **tunnel:** add structured logging to cloudflare and tailscale providers ([bcc1724](https://github.com/cameronsjo/bosun/commit/bcc1724a937efd5051453d9cd1b7a824da102a9c))
+
+
+### Bug Fixes
+
+* **log:** address CodeRabbit review feedback ([18af41b](https://github.com/cameronsjo/bosun/commit/18af41b89ae1634cb6a18879d148a10d1789c385))
+* **log:** address CodeRabbit round 2 review feedback ([0f378a8](https://github.com/cameronsjo/bosun/commit/0f378a80ab6dfa02910b6c859bf85f09bf5af538))
+* **log:** use FromContext to avoid zerolog key duplication ([170915e](https://github.com/cameronsjo/bosun/commit/170915e45a7e1fcece598355c5d4a9e0d3c572db))
+
 ## [0.13.0](https://github.com/cameronsjo/bosun/compare/v0.12.1...v0.13.0) (2026-02-23)
 
 
