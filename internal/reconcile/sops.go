@@ -132,6 +132,11 @@ func (s *SOPSOps) Decrypt(ctx context.Context, file string) ([]byte, error) {
 		return nil, fmt.Errorf("sops decrypt failed for %s: %w", file, safeErr)
 	}
 
+	logger.Debug().
+		Str(log.FieldOperation, "decrypt").
+		Str(log.FieldPath, file).
+		Msg("Successfully decrypted SOPS file")
+
 	// Parse the YAML and convert to JSON for consistent output
 	var data map[string]any
 	if err := yaml.Unmarshal(plaintext, &data); err != nil {

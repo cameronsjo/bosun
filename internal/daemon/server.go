@@ -207,13 +207,13 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Trigger reconciliation with goroutine tracking
+	webhookLogger := log.Component(log.ComponentWebhook)
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), s.daemon.config.ReconcileTimeout)
 		defer cancel()
 		if err := s.daemon.TriggerReconcile(ctx, "webhook", false); err != nil {
-			webhookLogger := log.Component(log.ComponentWebhook)
 			webhookLogger.Error().
 				Err(err).
 				Str(log.FieldSource, log.SourceWebhook).
@@ -360,13 +360,13 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Trigger reconciliation with goroutine tracking
+	manualLogger := log.Component(log.ComponentWebhook)
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), s.daemon.config.ReconcileTimeout)
 		defer cancel()
 		if err := s.daemon.TriggerReconcile(ctx, "manual", false); err != nil {
-			manualLogger := log.Component(log.ComponentWebhook)
 			manualLogger.Error().
 				Err(err).
 				Str(log.FieldSource, log.SourceManual).

@@ -185,6 +185,11 @@ var crewRestartCmd = &cobra.Command{
 			ui.Blue.Printf("Sending %s for a coffee break...\n", name)
 
 			if err := client.RestartContainer(ctx, name); err != nil {
+				logger.Error().
+					Err(err).
+					Str(log.FieldOperation, "container_restart").
+					Str(log.FieldContainer, name).
+					Msg("Failed to restart container")
 				return fmt.Errorf("restart container: %w", err)
 			}
 

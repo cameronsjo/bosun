@@ -120,7 +120,10 @@ var yachtDownCmd = &cobra.Command{
 			return fmt.Errorf("compose down: %w", err)
 		}
 
-		logger.Info().Str(log.FieldOperation, "compose_down").Msg("Successfully stopped all services")
+		logger.Info().
+			Str(log.FieldOperation, "compose_down").
+			Str(log.FieldPath, cfg.ComposeFile).
+			Msg("Successfully stopped all services")
 		ui.Yellow.Println("Yacht is docked.")
 		return nil
 	},
@@ -170,7 +173,15 @@ var yachtRestartCmd = &cobra.Command{
 			return fmt.Errorf("compose restart: %w", err)
 		}
 
-		logger.Info().Str(log.FieldOperation, "compose_restart").Msg("Successfully restarted services")
+		successEvent := logger.Info().
+			Str(log.FieldOperation, "compose_restart").
+			Str(log.FieldPath, cfg.ComposeFile)
+		if len(args) > 0 {
+			successEvent = successEvent.Int("service_count", len(args)).Strs("services", args)
+		} else {
+			successEvent = successEvent.Str("scope", "all")
+		}
+		successEvent.Msg("Successfully restarted services")
 		ui.Success("Turnaround complete!")
 		return nil
 	},

@@ -293,7 +293,7 @@ func (s *SocketServer) auditMiddleware(next http.Handler) http.Handler {
 			event = event.Str("peer", peerInfo)
 		}
 
-		event.Msg("Socket request handled")
+		event.Msg("Successfully handled socket request")
 	})
 }
 

@@ -98,24 +98,38 @@ func TestCompareDrift_UnhealthyService(t *testing.T) {
 }
 
 func TestDriftSummaries(t *testing.T) {
-	report := &DriftReport{
-		Items: []DriftItem{
-			{Service: "web", Type: DriftUnhealthy},
-			{Service: "api", Type: DriftMissing},
-			{Service: "redis", Type: DriftImageMismatch},
+	tests := []struct {
+		name     string
+		items    []DriftItem
+		expected []string
+	}{
+		{
+			name:     "empty report",
+			items:    nil,
+			expected: nil,
+		},
+		{
+			name: "multiple drift types",
+			items: []DriftItem{
+				{Service: "web", Type: DriftUnhealthy},
+				{Service: "api", Type: DriftMissing},
+				{Service: "redis", Type: DriftImageMismatch},
+			},
+			expected: []string{"web:unhealthy", "api:missing", "redis:image_mismatch"},
 		},
 	}
 
-	summaries := report.DriftSummaries()
-	require.Len(t, summaries, 3)
-	assert.Equal(t, "web:unhealthy", summaries[0])
-	assert.Equal(t, "api:missing", summaries[1])
-	assert.Equal(t, "redis:image_mismatch", summaries[2])
-}
-
-func TestDriftSummaries_Empty(t *testing.T) {
-	report := &DriftReport{}
-	assert.Nil(t, report.DriftSummaries())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			report := &DriftReport{Items: tt.items}
+			summaries := report.DriftSummaries()
+			if tt.expected == nil {
+				assert.Nil(t, summaries)
+			} else {
+				assert.Equal(t, tt.expected, summaries)
+			}
+		})
+	}
 }
 
 func TestFormatHealthDetail(t *testing.T) {
