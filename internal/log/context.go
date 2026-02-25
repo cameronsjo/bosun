@@ -66,7 +66,12 @@ func WithContext(ctx context.Context, l *zerolog.Logger) context.Context {
 	return l.WithContext(ctx)
 }
 
-// FromContext creates a logger with request/reconcile IDs from the context.
+// FromContext creates a logger from the global logger with request_id and
+// reconcile_id read from raw context values. It intentionally rebuilds from
+// scratch rather than reading the stashed zerolog.Logger, which avoids
+// zerolog's append-only key duplication when called in loops (e.g. coalesced
+// reconcile iterations). Only FieldRequestID and FieldReconcileID are
+// propagated; no other stashed logger fields survive the rebuild.
 func FromContext(ctx context.Context) zerolog.Logger {
 	l := logger.With()
 
