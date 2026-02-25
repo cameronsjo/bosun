@@ -417,8 +417,11 @@ func (d *Daemon) DockerClient() (*docker.Client, error) {
 // The force flag is sticky: if any trigger requests force, the coalesced run will be forced.
 func (d *Daemon) TriggerReconcile(ctx context.Context, source string, force bool) error {
 	// Add reconcile ID to context and stash enriched logger for downstream propagation.
-	ctx, _ = log.NewReconcileContext(ctx)
-	enriched := log.FromContext(ctx)
+	// Use Ctx (reads stashed logger) so any existing fields are preserved.
+	ctx, reconcileID := log.NewReconcileContext(ctx)
+	enriched := log.Ctx(ctx).With().
+		Str(log.FieldReconcileID, reconcileID).
+		Logger()
 	ctx = log.WithContext(ctx, &enriched)
 
 	logger := log.ComponentCtx(ctx, log.ComponentDaemon)
@@ -473,7 +476,13 @@ func (d *Daemon) reconcileLoop(ctx context.Context, source string, force bool) e
 			d.reconcileMu.Unlock()
 			ui.Info("Processing queued trigger from %s (force=%t)", source, force)
 			// Generate a fresh reconcile_id for the coalesced run so logs are distinct.
-			ctx, _ = log.NewReconcileContext(ctx)
+			// Preserve stashed logger fields, refresh only the reconcile_id.
+			var newID string
+			ctx, newID = log.NewReconcileContext(ctx)
+			refreshed := log.Ctx(ctx).With().
+				Str(log.FieldReconcileID, newID).
+				Logger()
+			ctx = log.WithContext(ctx, &refreshed)
 			continue
 		}
 

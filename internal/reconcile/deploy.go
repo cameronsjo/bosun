@@ -890,8 +890,12 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 		return fmt.Errorf("deployment failed (no backup files found for rollback): %w", deployErr)
 	}
 
-	// Attempt rollback with previous config
-	rollbackCtx, cancel := context.WithTimeout(ctx, ComposeUpTimeout)
+	// Attempt rollback with independent timeout so it can execute even if ctx is cancelled.
+	// Copy enriched logger so reconcile_id flows into rollback logs.
+	rollbackCtx, cancel := context.WithTimeout(
+		log.WithContext(context.Background(), log.Ctx(ctx)),
+		ComposeUpTimeout,
+	)
 	defer cancel()
 
 	// Build rollback args

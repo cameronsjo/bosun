@@ -75,6 +75,15 @@ func (s *TCPServer) Shutdown(ctx context.Context) error {
 // authMiddleware validates bearer token authentication.
 func (s *TCPServer) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Enrich request context with a request ID so downstream logs carry it.
+		ctx := r.Context()
+		if log.RequestIDFromContext(ctx) == "" {
+			ctx = log.WithRequestID(ctx, "")
+		}
+		enriched := log.FromContext(ctx)
+		ctx = log.WithContext(ctx, &enriched)
+		r = r.WithContext(ctx)
+
 		// Health endpoint is public for load balancer checks
 		if r.URL.Path == "/health" {
 			next.ServeHTTP(w, r)
