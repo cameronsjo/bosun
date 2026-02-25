@@ -165,7 +165,7 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 		Str("source", sourceDir).
 		Str("sub_dir", subDir).
 		Int("templates_rendered", templatesRendered).
-		Msg("Template rendering completed")
+		Msg("Successfully rendered templates")
 
 	return nil
 }

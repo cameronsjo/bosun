@@ -162,6 +162,17 @@ func TestFormatHealthDetail(t *testing.T) {
 			},
 			expected: "failing_streak=1, last_exit=1, output=" + strings.Repeat("x", 197) + "...",
 		},
+		{
+			name: "negative exit code from signal",
+			details: &docker.ContainerDetails{
+				HealthFailingStreak: 2,
+				HealthLog: &docker.HealthCheckLog{
+					ExitCode: -1,
+					Output:   "killed",
+				},
+			},
+			expected: "failing_streak=2, last_exit=-1, output=killed",
+		},
 	}
 
 	for _, tt := range tests {

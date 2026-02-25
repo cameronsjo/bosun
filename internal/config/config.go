@@ -267,7 +267,8 @@ func Load() (*Config, error) {
 		deployPaths:     deployPaths,
 	}
 
-	log.Debug().
+	logger := log.Component("config")
+	logger.Debug().
 		Str(log.FieldPath, root).
 		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 		Msg("Successfully loaded project configuration")

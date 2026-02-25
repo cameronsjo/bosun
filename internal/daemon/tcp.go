@@ -74,6 +74,7 @@ func (s *TCPServer) Shutdown(ctx context.Context) error {
 
 // authMiddleware validates bearer token authentication.
 func (s *TCPServer) authMiddleware(next http.Handler) http.Handler {
+	logger := log.Component(log.ComponentDaemon)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Health endpoint is public for load balancer checks
 		if r.URL.Path == "/health" {
@@ -99,8 +100,7 @@ func (s *TCPServer) authMiddleware(next http.Handler) http.Handler {
 
 		// Constant-time comparison to prevent timing attacks
 		if subtle.ConstantTimeCompare([]byte(token), []byte(s.bearerToken)) != 1 {
-			authLogger := log.Component(log.ComponentDaemon)
-			authLogger.Warn().
+			logger.Warn().
 				Str(log.FieldOperation, "auth").
 				Str(log.FieldMethod, r.Method).
 				Str(log.FieldURL, r.URL.Path).

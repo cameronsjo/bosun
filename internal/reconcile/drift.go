@@ -350,11 +350,7 @@ func formatHealthDetail(details *docker.ContainerDetails) string {
 		return "unhealthy (no health log)"
 	}
 
-	result := fmt.Sprintf("failing_streak=%d", details.HealthFailingStreak)
-
-	if details.HealthLog.ExitCode >= 0 {
-		result += fmt.Sprintf(", last_exit=%d", details.HealthLog.ExitCode)
-	}
+	result := fmt.Sprintf("failing_streak=%d, last_exit=%d", details.HealthFailingStreak, details.HealthLog.ExitCode)
 
 	if details.HealthLog.Output != "" {
 		output := strings.TrimSpace(details.HealthLog.Output)

@@ -85,9 +85,9 @@ func (d *DiscordProvider) Send(ctx context.Context, alert *Alert) error {
 		return nil
 	}
 
+	logger := log.Component("discord")
 	start := time.Now()
-	log.Debug().
-		Str("provider", "discord").
+	logger.Debug().
 		Str("title", alert.Title).
 		Str("severity", string(alert.Severity)).
 		Msg("Preparing to send Discord alert")
@@ -133,9 +133,8 @@ func (d *DiscordProvider) Send(ctx context.Context, alert *Alert) error {
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		log.Error().
+		logger.Error().
 			Err(err).
-			Str("provider", "discord").
 			Msg("Discord webhook request failed")
 		return fmt.Errorf("send request: %w", err)
 	}
@@ -143,15 +142,13 @@ func (d *DiscordProvider) Send(ctx context.Context, alert *Alert) error {
 
 	// Discord returns 204 No Content on success.
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-		log.Error().
-			Str("provider", "discord").
+		logger.Error().
 			Int("status_code", resp.StatusCode).
 			Msg("Discord webhook returned error status")
 		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
 
-	log.Debug().
-		Str("provider", "discord").
+	logger.Debug().
 		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 		Msg("Successfully sent Discord alert")
 

@@ -69,18 +69,18 @@ func (t *Twilio) Send(ctx context.Context, alert *Alert) error {
 		return fmt.Errorf("twilio is not configured")
 	}
 
+	logger := log.Component("twilio")
+
 	// Only send SMS for error or critical severity (SMS is expensive)
 	if alert.Severity != SeverityError && alert.Severity != SeverityCritical {
-		log.Debug().
-			Str("provider", "twilio").
+		logger.Debug().
 			Str("severity", string(alert.Severity)).
 			Msg("Skipping SMS alert. Reason: severity below threshold")
 		return nil
 	}
 
 	start := time.Now()
-	log.Debug().
-		Str("provider", "twilio").
+	logger.Debug().
 		Str("title", alert.Title).
 		Int("recipient_count", len(t.config.ToNumbers)).
 		Msg("Preparing to send SMS alerts")
@@ -92,7 +92,7 @@ func (t *Twilio) Send(ctx context.Context, alert *Alert) error {
 	for _, toNumber := range t.config.ToNumbers {
 		if err := t.sendSMS(ctx, toNumber, message); err != nil {
 			failCount++
-			log.Error().
+			logger.Error().
 				Err(err).
 				Str("to", maskPhoneNumber(toNumber)).
 				Str("severity", string(alert.Severity)).
@@ -102,19 +102,22 @@ func (t *Twilio) Send(ctx context.Context, alert *Alert) error {
 		}
 	}
 
-	// Log summary if there were partial failures
-	if failCount > 0 && failCount < len(t.config.ToNumbers) {
-		log.Warn().
+	switch {
+	case failCount == len(t.config.ToNumbers):
+		logger.Error().
+			Int("failed", failCount).
+			Str("title", alert.Title).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("Failed to send SMS alerts to all recipients")
+	case failCount > 0:
+		logger.Warn().
 			Int("failed", failCount).
 			Int("total", len(t.config.ToNumbers)).
 			Str("title", alert.Title).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 			Msg("Partial SMS delivery failure")
-	}
-
-	if failCount == 0 {
-		log.Debug().
-			Str("provider", "twilio").
+	default:
+		logger.Debug().
 			Int("recipient_count", len(t.config.ToNumbers)).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 			Msg("Successfully sent SMS alerts")

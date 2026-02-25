@@ -290,7 +290,7 @@ func (s *SocketServer) auditMiddleware(next http.Handler) http.Handler {
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds())
 
 		if peerInfo != "" {
-			event.Str("peer", peerInfo)
+			event = event.Str("peer", peerInfo)
 		}
 
 		event.Msg("Socket request handled")

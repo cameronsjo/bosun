@@ -124,11 +124,12 @@ func (s *SOPSOps) Decrypt(ctx context.Context, file string) ([]byte, error) {
 	// or the default location ~/.config/sops/age/keys.txt
 	plaintext, err := decrypt.File(file, "yaml")
 	if err != nil {
+		safeErr := sanitizeDecryptError(err)
 		logger.Debug().
-			Err(sanitizeDecryptError(err)).
+			Err(safeErr).
 			Str(log.FieldPath, file).
 			Msg("SOPS decryption failed")
-		return nil, fmt.Errorf("sops decrypt failed for %s: %w", file, sanitizeDecryptError(err))
+		return nil, fmt.Errorf("sops decrypt failed for %s: %w", file, safeErr)
 	}
 
 	// Parse the YAML and convert to JSON for consistent output

@@ -312,8 +312,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		source := fmt.Sprintf("github:%s", payload.Pusher.Name)
 		if err := s.daemon.TriggerReconcile(ctx, source, false); err != nil {
-			ghErrLogger := log.Component(log.ComponentWebhook)
-			ghErrLogger.Error().
+			ghLogger.Error().
 				Err(err).
 				Str(log.FieldSource, log.SourceGitHub).
 				Msg("GitHub webhook reconciliation failed")
