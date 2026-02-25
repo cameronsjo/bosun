@@ -138,7 +138,7 @@ func extractServicesFromCompose(path string) ([]DeclaredService, error) {
 // CollectActualState queries Docker for running containers filtered by the
 // compose project label to scope to bosun-managed services.
 func CollectActualState(ctx context.Context, client *docker.Client, projectName string) ([]ActualService, error) {
-	logger := log.Component(log.ComponentReconcile)
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
 	logger.Debug().
 		Str("project_name", projectName).
@@ -385,7 +385,7 @@ func normalizeImage(image string) string {
 // RunDriftCheck performs a full drift check: loads declared state from the
 // state file and compares against actual Docker state.
 func RunDriftCheck(ctx context.Context, client *docker.Client, stateFile, projectName string) (*DriftReport, error) {
-	logger := log.Component(log.ComponentReconcile)
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 	start := time.Now()
 
 	state := LoadState(stateFile)

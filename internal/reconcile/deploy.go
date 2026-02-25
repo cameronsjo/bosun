@@ -110,7 +110,7 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 		maxRetries = DefaultMaxRetries
 	}
 
-	logger := log.Component(log.ComponentDeploy)
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 	var lastErr error
 	backoff := InitialBackoff
 
@@ -253,7 +253,7 @@ func (d *DeployOps) VerifyBackup(backupPath string) error {
 // Backup creates a timestamped tar.gz backup of the specified paths.
 func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string) (string, error) {
 	start := time.Now()
-	logger := log.Component(log.ComponentDeploy)
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
 	timestamp := time.Now().Format("20060102-150405")
 	backupName := fmt.Sprintf("backup-%s", timestamp)
@@ -429,7 +429,7 @@ func (d *DeployOps) CleanupBackups(backupDir string, keep int) error {
 // Uses --delete semantics: removes files in target that don't exist in source.
 func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string, result *DeployResult) error {
 	start := time.Now()
-	logger := log.Component(log.ComponentDeploy)
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
 	if d.DryRun {
 		logger.Debug().
@@ -595,7 +595,7 @@ func (d *DeployOps) DeployLocalFile(ctx context.Context, sourceFile, targetFile 
 // Performs atomic deployment: tar to temp dir, then move to target.
 func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, targetDir string) error {
 	start := time.Now()
-	logger := log.Component(log.ComponentDeploy)
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
 	if err := validateHost(targetHost); err != nil {
 		return fmt.Errorf("invalid SSH host: %w", err)
@@ -841,7 +841,7 @@ func (d *DeployOps) ComposeUp(ctx context.Context, composeFile string) error {
 // Returns an error if compose up fails (caller should handle rollback).
 func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string) error {
 	start := time.Now()
-	logger := log.Component(log.ComponentDeploy)
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
 	if d.DryRun {
 		logger.Debug().
@@ -921,7 +921,7 @@ func (d *DeployOps) ComposeUpWithRollback(ctx context.Context, composeFile, back
 //   - ErrRollbackFailed wrapped with both errors if rollback also failed
 //   - Original error if no backup available
 func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFiles []string, backupPath string) error {
-	logger := log.Component(log.ComponentDeploy)
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
 	deployErr := d.ComposeUpMultiple(ctx, composeFiles)
 	if deployErr == nil {
@@ -959,8 +959,12 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 		return fmt.Errorf("deployment failed (no backup files found for rollback): %w", deployErr)
 	}
 
-	// Attempt rollback with previous config
-	rollbackCtx, cancel := context.WithTimeout(context.Background(), ComposeUpTimeout)
+	// Attempt rollback with independent timeout so it can execute even if ctx is cancelled.
+	// Copy enriched logger so reconcile_id flows into rollback logs.
+	rollbackCtx, cancel := context.WithTimeout(
+		log.WithContext(context.Background(), log.Ctx(ctx)),
+		ComposeUpTimeout,
+	)
 	defer cancel()
 
 	// Build rollback args

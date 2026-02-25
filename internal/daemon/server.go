@@ -109,16 +109,19 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 			r = r.WithContext(log.WithRequestID(r.Context(), requestID))
 		}
 
+		// Stash enriched logger on context for downstream handlers.
+		enriched := log.FromContext(r.Context())
+		r = r.WithContext(log.WithContext(r.Context(), &enriched))
+
 		// Add request ID to response headers.
 		w.Header().Set("X-Request-ID", requestID)
 
 		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(wrapped, r)
 
-		// Log with structured fields.
-		log.Info().
+		// Log with enriched logger that already carries request_id.
+		enriched.Info().
 			Str(log.FieldComponent, log.ComponentHTTP).
-			Str(log.FieldRequestID, requestID).
 			Str(log.FieldMethod, r.Method).
 			Str(log.FieldURL, r.URL.Path).
 			Int(log.FieldStatus, wrapped.statusCode).
@@ -172,8 +175,6 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 
 // handleWebhook handles generic webhook requests.
 func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
-	requestID := log.RequestIDFromContext(r.Context())
-
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -195,9 +196,8 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 		if !s.validateSignature(body, sig) {
 			// Log security event for failed signature validation
-			log.Warn().
-				Str(log.FieldComponent, log.ComponentHTTP).
-				Str(log.FieldRequestID, requestID).
+			secLogger := log.ComponentCtx(r.Context(), log.ComponentHTTP)
+			secLogger.Warn().
 				Str("remote_addr", r.RemoteAddr).
 				Str("endpoint", r.URL.Path).
 				Msg("Webhook signature validation failed")
@@ -206,12 +206,15 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Propagate enriched logger into background context (request ctx is cancelled after response).
+	bgCtx := log.WithContext(context.Background(), log.Ctx(r.Context()))
+
 	// Trigger reconciliation with goroutine tracking
 	webhookLogger := log.Component(log.ComponentWebhook)
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), s.daemon.config.ReconcileTimeout)
+		ctx, cancel := context.WithTimeout(bgCtx, s.daemon.config.ReconcileTimeout)
 		defer cancel()
 		if err := s.daemon.TriggerReconcile(ctx, "webhook", false); err != nil {
 			webhookLogger.Error().
@@ -230,8 +233,6 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 // handleGitHubWebhook handles GitHub-specific webhook requests.
 func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
-	requestID := log.RequestIDFromContext(r.Context())
-
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -249,9 +250,8 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		sig := r.Header.Get("X-Hub-Signature-256")
 		if !s.validateGitHubSignature(body, sig) {
 			// Log security event for failed signature validation
-			log.Warn().
-				Str(log.FieldComponent, log.ComponentHTTP).
-				Str(log.FieldRequestID, requestID).
+			secLogger := log.ComponentCtx(r.Context(), log.ComponentHTTP)
+			secLogger.Warn().
 				Str("remote_addr", r.RemoteAddr).
 				Str("endpoint", r.URL.Path).
 				Str("event_type", r.Header.Get("X-GitHub-Event")).
@@ -304,11 +304,14 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		Str(log.FieldCommit, payload.After).
 		Msg("GitHub push received")
 
+	// Propagate enriched logger into background context (request ctx is cancelled after response).
+	bgCtx := log.WithContext(context.Background(), log.Ctx(r.Context()))
+
 	// Trigger reconciliation with goroutine tracking
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), s.daemon.config.ReconcileTimeout)
+		ctx, cancel := context.WithTimeout(bgCtx, s.daemon.config.ReconcileTimeout)
 		defer cancel()
 		source := fmt.Sprintf("github:%s", payload.Pusher.Name)
 		if err := s.daemon.TriggerReconcile(ctx, source, false); err != nil {
@@ -329,8 +332,6 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 
 // handleManualTrigger handles manual reconciliation triggers.
 func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
-	requestID := log.RequestIDFromContext(r.Context())
-
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -348,9 +349,8 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 		sig := r.Header.Get("X-Signature")
 		if !s.validateSignature(body, sig) {
 			// Log security event for failed signature validation
-			log.Warn().
-				Str(log.FieldComponent, log.ComponentHTTP).
-				Str(log.FieldRequestID, requestID).
+			secLogger := log.ComponentCtx(r.Context(), log.ComponentHTTP)
+			secLogger.Warn().
 				Str("remote_addr", r.RemoteAddr).
 				Str("endpoint", r.URL.Path).
 				Msg("Manual trigger signature validation failed")
@@ -359,12 +359,15 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Propagate enriched logger into background context (request ctx is cancelled after response).
+	bgCtx := log.WithContext(context.Background(), log.Ctx(r.Context()))
+
 	// Trigger reconciliation with goroutine tracking
 	manualLogger := log.Component(log.ComponentWebhook)
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), s.daemon.config.ReconcileTimeout)
+		ctx, cancel := context.WithTimeout(bgCtx, s.daemon.config.ReconcileTimeout)
 		defer cancel()
 		if err := s.daemon.TriggerReconcile(ctx, "manual", false); err != nil {
 			manualLogger.Error().

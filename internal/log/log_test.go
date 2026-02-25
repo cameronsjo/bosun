@@ -201,3 +201,63 @@ func TestWithErrorNil(t *testing.T) {
 	output := buf.String()
 	assert.False(t, strings.Contains(output, "error\":"))
 }
+
+func TestComponentCtxWithFullContext(t *testing.T) {
+	var buf bytes.Buffer
+	logger = zerolog.New(&buf)
+
+	// Build context with correlation IDs and stash enriched logger.
+	ctx := context.Background()
+	ctx = WithReconcileID(ctx, "rec-123")
+	ctx = WithRequestID(ctx, "req-456")
+	l := FromContext(ctx)
+	ctx = WithContext(ctx, &l)
+
+	// ComponentCtx should inherit both IDs plus add component.
+	cl := ComponentCtx(ctx, ComponentGit)
+	cl.Info().Msg("cloning")
+
+	var logEntry map[string]interface{}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &logEntry))
+	assert.Equal(t, ComponentGit, logEntry[FieldComponent])
+	assert.Equal(t, "rec-123", logEntry[FieldReconcileID])
+	assert.Equal(t, "req-456", logEntry[FieldRequestID])
+}
+
+func TestComponentCtxWithEmptyContext(t *testing.T) {
+	var buf bytes.Buffer
+	logger = zerolog.New(&buf)
+
+	// Empty context — should behave like Component().
+	ctx := context.Background()
+	cl := ComponentCtx(ctx, ComponentDeploy)
+	cl.Info().Msg("deploying")
+
+	var logEntry map[string]interface{}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &logEntry))
+	assert.Equal(t, ComponentDeploy, logEntry[FieldComponent])
+	assert.Nil(t, logEntry[FieldReconcileID])
+	assert.Nil(t, logEntry[FieldRequestID])
+}
+
+func TestComponentCtxIsChainable(t *testing.T) {
+	var buf bytes.Buffer
+	logger = zerolog.New(&buf)
+
+	ctx := context.Background()
+	ctx = WithReconcileID(ctx, "rec-789")
+	l := FromContext(ctx)
+	ctx = WithContext(ctx, &l)
+
+	// Chain additional fields on top of ComponentCtx.
+	cl := ComponentCtx(ctx, ComponentDeploy).With().
+		Str(FieldTarget, "unraid").
+		Logger()
+	cl.Info().Msg("deploying to target")
+
+	var logEntry map[string]interface{}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &logEntry))
+	assert.Equal(t, ComponentDeploy, logEntry[FieldComponent])
+	assert.Equal(t, "rec-789", logEntry[FieldReconcileID])
+	assert.Equal(t, "unraid", logEntry[FieldTarget])
+}

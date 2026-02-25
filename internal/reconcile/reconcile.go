@@ -244,8 +244,12 @@ func (r *Reconciler) SetRunOptions(source string, force bool) {
 // Run executes the full reconciliation workflow.
 func (r *Reconciler) Run(ctx context.Context) error {
 	startTime := time.Now()
-	reconcileID := log.ReconcileIDFromContext(ctx)
-	logger := log.Component(log.ComponentReconcile)
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+
+	logger.Info().
+		Str(log.FieldSource, r.config.Source).
+		Bool("force", r.config.Force).
+		Msg("Reconcile pipeline starting")
 
 	// Reset per-run state to avoid stale data from a previous Run().
 	r.declaredServices = nil
@@ -253,7 +257,6 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	// Acquire lock to prevent concurrent runs.
 	if err := r.acquireLock(); err != nil {
 		logger.Error().
-			Str(log.FieldReconcileID, reconcileID).
 			Err(err).
 			Msg("Failed to acquire reconcile lock")
 		return fmt.Errorf("failed to acquire lock (another reconciliation may be in progress): %w", err)
@@ -312,7 +315,6 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	// Circuit breaker: stop retrying after MaxAttempts consecutive failures on the same commit.
 	if state.LastAttemptedCommit == after && state.AttemptCount >= MaxAttempts && !r.config.Force {
 		logger.Error().
-			Str(log.FieldReconcileID, reconcileID).
 			Str("commit", after).
 			Int("attempts", state.AttemptCount).
 			Msg("Circuit breaker: too many consecutive failures on same commit, skipping (use --force to override)")
@@ -369,7 +371,6 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	} else {
 		r.declaredServices = declared
 		logger.Info().
-			Str(log.FieldReconcileID, reconcileID).
 			Int("declared_services", len(declared)).
 			Msg("Extracted declared state from rendered compose")
 	}
@@ -436,6 +437,12 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	}
 
 	duration := time.Since(startTime)
+
+	logger.Info().
+		Int64(log.FieldDurationMS, duration.Milliseconds()).
+		Str(log.FieldCommit, after).
+		Msg("Reconcile pipeline completed")
+
 	ui.Success("=== Reconciliation completed in %s ===", duration.Round(time.Second))
 
 	// Send success alert.
@@ -552,8 +559,7 @@ func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) {
 // verifyPostDeploy performs a drift check after deployment to verify declared
 // services are running. Logs warnings but does not fail the reconciliation.
 func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, client *docker.Client) {
-	logger := log.Component(log.ComponentReconcile)
-	reconcileID := log.ReconcileIDFromContext(ctx)
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
 	// Wait for startup grace period to let containers start and pass health checks.
 	if r.config.StartupGracePeriod > 0 {
@@ -568,7 +574,6 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 	actual, err := CollectActualState(ctx, client, r.config.ProjectName)
 	if err != nil {
 		logger.Warn().
-			Str(log.FieldReconcileID, reconcileID).
 			Err(err).
 			Msg("Post-deploy verification: failed to collect actual state")
 		return
@@ -585,7 +590,6 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 
 	if !report.HasDrift() {
 		logger.Info().
-			Str(log.FieldReconcileID, reconcileID).
 			Int("declared_services", len(r.declaredServices)).
 			Msg("Post-deploy verification: all declared services running")
 		ui.Success("Post-deploy verification: all %d declared services running", len(r.declaredServices))
@@ -596,7 +600,6 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 	var unhealthyNames []string
 	for _, item := range report.Items {
 		logger.Warn().
-			Str(log.FieldReconcileID, reconcileID).
 			Str("service", item.Service).
 			Str("drift_type", string(item.Type)).
 			Str("declared", item.Declared).
@@ -619,7 +622,7 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 // When deployResult is non-nil and has written files, those are used for matching instead of git diff.
 // This ensures hooks only fire for files actually written to disk (content-hash sync).
 func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, currentCommit string, deployResult *DeployResult) {
-	logger := log.Component(log.ComponentReconcile)
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
 	if previousCommit == "" {
 		logger.Debug().Msg("No previous commit for post-sync hooks (first deploy), skipping")
@@ -683,7 +686,7 @@ func (r *Reconciler) reloadProjectConfig() {
 		return
 	}
 
-	logger := log.Component(log.ComponentReconcile)
+	logger := log.Component(log.ComponentReconcile) // No ctx available in this method.
 
 	reloaded, err := r.config.ConfigReloader(r.config.RepoDir)
 	if err != nil {
@@ -746,21 +749,25 @@ func (r *Reconciler) cleanupStaging() error {
 // syncRepo syncs the git repository.
 func (r *Reconciler) syncRepo(ctx context.Context) (bool, string, string, error) {
 	start := time.Now()
-	reconcileID := log.ReconcileIDFromContext(ctx)
+	logger := log.ComponentCtx(ctx, log.ComponentGit)
 
-	log.Info().
-		Str(log.FieldComponent, log.ComponentGit).
-		Str(log.FieldReconcileID, reconcileID).
+	logger.Info().
 		Str(log.FieldOperation, "sync").
 		Msg("Syncing repository")
 
 	ui.Info("Syncing repository...")
 
 	changed, before, after, err := r.git.Sync(ctx)
+	if err != nil {
+		logger.Error().
+			Err(err).
+			Str(log.FieldOperation, "sync").
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("Repository sync failed")
+		return changed, before, after, err
+	}
 
-	log.Info().
-		Str(log.FieldComponent, log.ComponentGit).
-		Str(log.FieldReconcileID, reconcileID).
+	logger.Info().
 		Str(log.FieldOperation, "sync").
 		Bool("changed", changed).
 		Str("commit_before", before).
@@ -768,17 +775,15 @@ func (r *Reconciler) syncRepo(ctx context.Context) (bool, string, string, error)
 		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 		Msg("Repository sync completed")
 
-	return changed, before, after, err
+	return changed, before, after, nil
 }
 
 // decryptSecrets decrypts SOPS secret files.
 func (r *Reconciler) decryptSecrets(ctx context.Context) (map[string]any, error) {
 	start := time.Now()
-	reconcileID := log.ReconcileIDFromContext(ctx)
+	logger := log.ComponentCtx(ctx, log.ComponentSOPS)
 
-	log.Info().
-		Str(log.FieldComponent, log.ComponentSOPS).
-		Str(log.FieldReconcileID, reconcileID).
+	logger.Info().
 		Str(log.FieldOperation, "decrypt").
 		Int("file_count", len(r.config.SecretsFiles)).
 		Msg("Decrypting secrets")
@@ -794,9 +799,7 @@ func (r *Reconciler) decryptSecrets(ctx context.Context) (map[string]any, error)
 	for _, f := range r.config.SecretsFiles {
 		path := filepath.Join(r.config.RepoDir, f)
 		if _, err := os.Stat(path); err != nil {
-			log.Error().
-				Str(log.FieldComponent, log.ComponentSOPS).
-				Str(log.FieldReconcileID, reconcileID).
+			logger.Error().
 				Str(log.FieldPath, path).
 				Msg("Secrets file not found")
 			return nil, fmt.Errorf("secrets file not found: %s", path)
@@ -806,17 +809,13 @@ func (r *Reconciler) decryptSecrets(ctx context.Context) (map[string]any, error)
 
 	secrets, err := r.sops.DecryptFiles(ctx, files)
 	if err != nil {
-		log.Error().
-			Str(log.FieldComponent, log.ComponentSOPS).
-			Str(log.FieldReconcileID, reconcileID).
+		logger.Error().
 			Err(err).
 			Msg("Failed to decrypt secrets")
 		return nil, err
 	}
 
-	log.Info().
-		Str(log.FieldComponent, log.ComponentSOPS).
-		Str(log.FieldReconcileID, reconcileID).
+	logger.Info().
 		Int("file_count", len(files)).
 		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 		Msg("Secrets decrypted successfully")
@@ -828,11 +827,9 @@ func (r *Reconciler) decryptSecrets(ctx context.Context) (map[string]any, error)
 // renderTemplates renders all templates to the staging directory.
 func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any) error {
 	start := time.Now()
-	reconcileID := log.ReconcileIDFromContext(ctx)
+	logger := log.ComponentCtx(ctx, log.ComponentTemplate)
 
-	log.Info().
-		Str(log.FieldComponent, log.ComponentTemplate).
-		Str(log.FieldReconcileID, reconcileID).
+	logger.Info().
 		Str(log.FieldOperation, "render").
 		Str("staging_dir", r.config.StagingDir).
 		Msg("Rendering templates")
@@ -852,17 +849,13 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 
 	infraDir := filepath.Join(r.config.RepoDir, r.config.InfraSubDir)
 	if err := r.template.RenderDirectory(ctx, infraDir, r.config.StagingDir, "unraid"); err != nil {
-		log.Error().
-			Str(log.FieldComponent, log.ComponentTemplate).
-			Str(log.FieldReconcileID, reconcileID).
+		logger.Error().
 			Err(err).
 			Msg("Failed to render templates")
 		return err
 	}
 
-	log.Info().
-		Str(log.FieldComponent, log.ComponentTemplate).
-		Str(log.FieldReconcileID, reconcileID).
+	logger.Info().
 		Str("staging_dir", r.config.StagingDir).
 		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 		Msg("Templates rendered successfully")

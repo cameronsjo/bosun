@@ -1,12 +1,15 @@
 package tunnel
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // CloudflareConfig holds configuration for the Cloudflare provider.
@@ -36,19 +39,19 @@ type Cloudflare struct {
 
 // cloudflaredTunnelInfo represents the output of `cloudflared tunnel info`.
 type cloudflaredTunnelInfo struct {
-	ID          string                `json:"id"`
-	Name        string                `json:"name"`
-	CreatedAt   string                `json:"createdAt"`
+	ID          string                 `json:"id"`
+	Name        string                 `json:"name"`
+	CreatedAt   string                 `json:"createdAt"`
 	Connections []cloudflaredConnection `json:"connections"`
 }
 
 // cloudflaredConnection represents a tunnel connection.
 type cloudflaredConnection struct {
-	ColoName       string `json:"colo_name"`
-	ID             string `json:"id"`
-	IsPendingReconnect bool `json:"is_pending_reconnect"`
-	ClientID       string `json:"clientId"`
-	ClientVersion  string `json:"client_version"`
+	ColoName           string `json:"colo_name"`
+	ID                 string `json:"id"`
+	IsPendingReconnect bool   `json:"is_pending_reconnect"`
+	ClientID           string `json:"clientId"`
+	ClientVersion      string `json:"client_version"`
 }
 
 // DefaultHealthTimeout is the default timeout for health checks.
@@ -106,6 +109,8 @@ func (c *Cloudflare) Name() string {
 
 // Status returns the current Cloudflare Tunnel status.
 func (c *Cloudflare) Status(ctx context.Context) (*Status, error) {
+	logger := log.ComponentCtx(ctx, log.ComponentTunnel)
+
 	status := &Status{
 		Provider: string(ProviderCloudflare),
 		Hostname: c.config.Hostname,
@@ -121,8 +126,10 @@ func (c *Cloudflare) Status(ctx context.Context) (*Status, error) {
 			} else {
 				status.BackendState = "Disconnected"
 			}
+			logger.Debug().Bool("connected", connected).Str("tunnel", c.config.TunnelName).Msg("Cloudflare tunnel info check completed")
 			return status, nil
 		}
+		logger.Debug().Err(err).Str("tunnel", c.config.TunnelName).Msg("Cloudflare tunnel info check failed, trying fallback")
 	}
 
 	// Fall back to health endpoint check
@@ -134,6 +141,7 @@ func (c *Cloudflare) Status(ctx context.Context) (*Status, error) {
 		} else {
 			status.BackendState = "Unknown"
 		}
+		logger.Debug().Bool("connected", connected).Str("endpoint", c.config.HealthEndpoint).Msg("Cloudflare health endpoint check completed")
 		return status, nil
 	}
 
@@ -151,10 +159,28 @@ func (c *Cloudflare) Status(ctx context.Context) (*Status, error) {
 
 // checkTunnelInfo attempts to get tunnel info using `cloudflared tunnel info`.
 func (c *Cloudflare) checkTunnelInfo(ctx context.Context) (bool, error) {
+	start := time.Now()
+	logger := log.ComponentCtx(ctx, log.ComponentTunnel)
+
+	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, c.binaryPath, "tunnel", "info", "--output", "json", c.config.TunnelName)
+	cmd.Stderr = &stderr
+
+	logger.Debug().Str(log.FieldOperation, "tunnel_info").Str("tunnel", c.config.TunnelName).Msg("Executing cloudflared tunnel info")
+
 	output, err := cmd.Output()
 	if err != nil {
+		logger.Error().
+			Err(err).
+			Str(log.FieldOperation, "tunnel_info").
+			Str("stderr", stderr.String()).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("cloudflared tunnel info failed")
 		return false, err
+	}
+
+	if stderrStr := stderr.String(); stderrStr != "" {
+		logger.Debug().Str("stderr", stderrStr).Msg("cloudflared tunnel info stderr")
 	}
 
 	var info cloudflaredTunnelInfo
@@ -162,26 +188,47 @@ func (c *Cloudflare) checkTunnelInfo(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
+	logger.Info().
+		Str(log.FieldOperation, "tunnel_info").
+		Int("connections", len(info.Connections)).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("cloudflared tunnel info completed")
+
 	// Tunnel is connected if it has active connections
 	return len(info.Connections) > 0, nil
 }
 
 // checkHealthEndpoint checks the configured health endpoint.
 func (c *Cloudflare) checkHealthEndpoint(ctx context.Context) bool {
+	start := time.Now()
+	logger := log.ComponentCtx(ctx, log.ComponentTunnel)
+
 	client := &http.Client{
 		Timeout: c.config.HealthTimeout,
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.config.HealthEndpoint, nil)
 	if err != nil {
+		logger.Error().Err(err).Str("endpoint", c.config.HealthEndpoint).Msg("Failed to create health check request")
 		return false
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
+		logger.Debug().
+			Err(err).
+			Str("endpoint", c.config.HealthEndpoint).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("Cloudflare health endpoint unreachable")
 		return false
 	}
 	defer resp.Body.Close()
+
+	logger.Debug().
+		Int(log.FieldStatus, resp.StatusCode).
+		Str("endpoint", c.config.HealthEndpoint).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Cloudflare health endpoint check completed")
 
 	return resp.StatusCode == http.StatusOK
 }
@@ -220,10 +267,28 @@ func (c *Cloudflare) GetHostname() string {
 
 // GetTunnelList returns a list of configured tunnels.
 func (c *Cloudflare) GetTunnelList(ctx context.Context) ([]string, error) {
+	start := time.Now()
+	logger := log.ComponentCtx(ctx, log.ComponentTunnel)
+
+	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, c.binaryPath, "tunnel", "list", "--output", "json")
+	cmd.Stderr = &stderr
+
+	logger.Debug().Str(log.FieldOperation, "tunnel_list").Msg("Executing cloudflared tunnel list")
+
 	output, err := cmd.Output()
 	if err != nil {
+		logger.Error().
+			Err(err).
+			Str(log.FieldOperation, "tunnel_list").
+			Str("stderr", stderr.String()).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("cloudflared tunnel list failed")
 		return nil, err
+	}
+
+	if stderrStr := stderr.String(); stderrStr != "" {
+		logger.Debug().Str("stderr", stderrStr).Msg("cloudflared tunnel list stderr")
 	}
 
 	// Parse the JSON output
@@ -239,15 +304,48 @@ func (c *Cloudflare) GetTunnelList(ctx context.Context) ([]string, error) {
 		names = append(names, t.Name)
 	}
 
+	logger.Info().
+		Str(log.FieldOperation, "tunnel_list").
+		Int("count", len(names)).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("cloudflared tunnel list completed")
+
 	return names, nil
 }
 
 // GetVersion returns the cloudflared version.
 func (c *Cloudflare) GetVersion(ctx context.Context) (string, error) {
+	start := time.Now()
+	logger := log.ComponentCtx(ctx, log.ComponentTunnel)
+
+	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, c.binaryPath, "version")
+	cmd.Stderr = &stderr
+
+	logger.Debug().Str(log.FieldOperation, "version").Msg("Executing cloudflared version")
+
 	output, err := cmd.Output()
 	if err != nil {
+		logger.Error().
+			Err(err).
+			Str(log.FieldOperation, "version").
+			Str("stderr", stderr.String()).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("cloudflared version check failed")
 		return "", err
 	}
-	return strings.TrimSpace(string(output)), nil
+
+	if stderrStr := stderr.String(); stderrStr != "" {
+		logger.Debug().Str("stderr", stderrStr).Msg("cloudflared version stderr")
+	}
+
+	version := strings.TrimSpace(string(output))
+
+	logger.Debug().
+		Str(log.FieldOperation, "version").
+		Str("version", version).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("cloudflared version check completed")
+
+	return version, nil
 }

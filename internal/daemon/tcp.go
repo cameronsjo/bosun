@@ -74,8 +74,16 @@ func (s *TCPServer) Shutdown(ctx context.Context) error {
 
 // authMiddleware validates bearer token authentication.
 func (s *TCPServer) authMiddleware(next http.Handler) http.Handler {
-	logger := log.Component(log.ComponentDaemon)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Enrich request context with a request ID so downstream logs carry it.
+		ctx := r.Context()
+		if log.RequestIDFromContext(ctx) == "" {
+			ctx = log.WithRequestID(ctx, "")
+		}
+		enriched := log.FromContext(ctx)
+		ctx = log.WithContext(ctx, &enriched)
+		r = r.WithContext(ctx)
+
 		// Health endpoint is public for load balancer checks
 		if r.URL.Path == "/health" {
 			next.ServeHTTP(w, r)
@@ -100,6 +108,7 @@ func (s *TCPServer) authMiddleware(next http.Handler) http.Handler {
 
 		// Constant-time comparison to prevent timing attacks
 		if subtle.ConstantTimeCompare([]byte(token), []byte(s.bearerToken)) != 1 {
+			logger := log.ComponentCtx(r.Context(), log.ComponentDaemon)
 			logger.Warn().
 				Str(log.FieldOperation, "auth").
 				Str(log.FieldMethod, r.Method).
@@ -114,15 +123,15 @@ func (s *TCPServer) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// auditMiddleware logs all requests.
+// auditMiddleware logs all TCP requests with structured fields.
 func (s *TCPServer) auditMiddleware(next http.Handler) http.Handler {
-	logger := log.Component(log.ComponentDaemon)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
 		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(wrapped, r)
 
+		logger := log.ComponentCtx(r.Context(), log.ComponentDaemon)
 		logger.Info().
 			Str(log.FieldOperation, "audit").
 			Str(log.FieldMethod, r.Method).
