@@ -22,10 +22,22 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+      # Use a GitHub App token for auto-merge so the resulting push event
+      # triggers workflows (GITHUB_TOKEN merges are invisible to CI).
+      # Without this, the release tag/goreleaser step never fires.
+      # See: https://github.com/googleapis/release-please/blob/main/docs/cli.md#github-credentials
+      - name: Generate App Token
+        if: ${{ steps.release.outputs.pr }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - name: Auto-merge release PR
         if: ${{ steps.release.outputs.pr }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_PR: ${{ steps.release.outputs.pr }}
         run: |
