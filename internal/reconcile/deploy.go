@@ -313,7 +313,7 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 // Retries on transient SSH errors with exponential backoff.
 func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, remotePaths []string) (string, error) {
 	start := time.Now()
-	logger := log.Component(log.ComponentDeploy)
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
 	if err := validateHost(host); err != nil {
 		return "", fmt.Errorf("invalid SSH host: %w", err)
@@ -714,7 +714,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 // Performs atomic copy: scp to temp file, then move to target.
 func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost, targetFile string) error {
 	start := time.Now()
-	logger := log.Component(log.ComponentDeploy)
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
 	if err := validateHost(targetHost); err != nil {
 		return fmt.Errorf("invalid SSH host: %w", err)
@@ -795,7 +795,7 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 // Uses SSHTimeout if the parent context has no deadline.
 // Retries on transient SSH errors with exponential backoff.
 func (d *DeployOps) EnsureRemoteDir(ctx context.Context, host, dir string) error {
-	logger := log.Component(log.ComponentDeploy)
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
 	if err := validateHost(host); err != nil {
 		return fmt.Errorf("invalid SSH host: %w", err)
@@ -1018,7 +1018,7 @@ func (d *DeployOps) VerifyContainerHealth(ctx context.Context, composeFile strin
 // Retries on transient SSH errors with exponential backoff.
 func (d *DeployOps) ComposeUpRemote(ctx context.Context, host, composeDir string) error {
 	start := time.Now()
-	logger := log.Component(log.ComponentDeploy)
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
 	if err := validateHost(host); err != nil {
 		return fmt.Errorf("invalid SSH host: %w", err)
@@ -1075,7 +1075,7 @@ func (d *DeployOps) ComposeUpRemote(ctx context.Context, host, composeDir string
 
 // SignalContainer sends a signal to a Docker container.
 func (d *DeployOps) SignalContainer(ctx context.Context, containerName, signal string) error {
-	logger := log.Component(log.ComponentDeploy)
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
 	if err := validateContainerName(containerName); err != nil {
 		return fmt.Errorf("invalid container name: %w", err)
@@ -1107,7 +1107,7 @@ func (d *DeployOps) SignalContainer(ctx context.Context, containerName, signal s
 // SignalContainerRemote sends a signal to a Docker container on a remote host.
 // Retries on transient SSH errors with exponential backoff.
 func (d *DeployOps) SignalContainerRemote(ctx context.Context, host, containerName, signal string) error {
-	logger := log.Component(log.ComponentDeploy)
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
 	if err := validateHost(host); err != nil {
 		return fmt.Errorf("invalid SSH host: %w", err)

@@ -471,7 +471,7 @@ func (r *Reconciler) sendSuccessAlert(ctx context.Context) {
 	}
 
 	if err := r.alerter.SendDeploySuccess(ctx, r.lastCommit, target); err != nil {
-		logger := log.Component(log.ComponentReconcile)
+		logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 		logger.Warn().
 			Err(err).
 			Str(log.FieldOperation, "alert_success").
@@ -497,7 +497,7 @@ func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *Deplo
 	}
 
 	if err := r.alerter.SendDeployFailure(ctx, r.lastCommit, target, reason); err != nil {
-		logger := log.Component(log.ComponentReconcile)
+		logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 		logger.Warn().
 			Err(err).
 			Str(log.FieldOperation, "alert_failure").
@@ -524,7 +524,7 @@ func (r *Reconciler) sendUnhealthyAlert(ctx context.Context, containers []string
 	}
 
 	if err := r.alerter.SendUnhealthyContainers(ctx, target, containers); err != nil {
-		logger := log.Component(log.ComponentReconcile)
+		logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 		logger.Warn().
 			Err(err).
 			Str(log.FieldOperation, "alert_unhealthy").
@@ -546,7 +546,7 @@ func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) {
 	}
 
 	if err := r.alerter.SendDeployRecovery(ctx, r.lastCommit, target, priorFailures); err != nil {
-		logger := log.Component(log.ComponentReconcile)
+		logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 		logger.Warn().
 			Err(err).
 			Str(log.FieldOperation, "alert_recovery").

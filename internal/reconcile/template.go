@@ -117,7 +117,7 @@ func bosunTemplateFuncs() template.FuncMap {
 // RenderDirectory processes all .tmpl files in sourceDir and renders them to stagingDir.
 // Non-template files are copied as-is.
 func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir, subDir string) error {
-	logger := log.Component(log.ComponentTemplate)
+	logger := log.ComponentCtx(ctx, log.ComponentTemplate)
 	infraDir := filepath.Join(sourceDir, subDir)
 	outDir := filepath.Join(stagingDir, subDir)
 

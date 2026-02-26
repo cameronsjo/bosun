@@ -547,7 +547,7 @@ func (g *GitOps) Sync(ctx context.Context) (bool, string, string, error) {
 // DiffFiles returns the list of changed file paths between two commits.
 // If fromCommit is empty, returns all files in toCommit.
 func (g *GitOps) DiffFiles(ctx context.Context, fromCommit, toCommit string) ([]string, error) {
-	logger := log.Component(log.ComponentGit)
+	logger := log.ComponentCtx(ctx, log.ComponentGit)
 
 	logger.Debug().
 		Str(log.FieldOperation, "diff").

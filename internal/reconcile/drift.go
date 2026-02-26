@@ -311,7 +311,7 @@ func EnrichUnhealthyItems(ctx context.Context, client *docker.Client, report *Dr
 		return
 	}
 
-	logger := log.Component(log.ComponentReconcile)
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
 	// Build service→container name lookup from actual services.
 	containerNames := make(map[string]string, len(actual))

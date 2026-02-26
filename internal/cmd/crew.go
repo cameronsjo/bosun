@@ -177,7 +177,7 @@ var crewRestartCmd = &cobra.Command{
 		name := args[0]
 
 		return withDockerClient(func(ctx context.Context, client *docker.Client) error {
-			logger := log.Component("cmd")
+			logger := log.ComponentCtx(ctx, "cmd")
 			logger.Info().
 				Str(log.FieldOperation, "container_restart").
 				Str(log.FieldContainer, name).
