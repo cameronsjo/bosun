@@ -326,6 +326,8 @@ Provisions are YAML fragments merged into the final output. No logic, just templ
 
 ### Outputs
 
+> **Note:** The CLI examples below reference `manifest.py` from the original Python implementation. The current Go implementation uses `bosun provision` (render), `bosun lint` (validate), and `bosun provisions` (list). See [Commands Reference](../commands.md) for current usage.
+
 Running `manifest.py render stacks/core.yml` generates:
 
 | Output | Description |
@@ -537,6 +539,7 @@ env:
 - auth provision
 - Generate traefik/dynamic.yml
 - `manifest.py import` command to scaffold manifests from existing yacht files
+  > **Note:** The `import` command referenced above was a planned Python feature. The Go implementation uses `bosun create` for scaffolding new services. See [Commands Reference](../commands.md).
 
 ### Phase 3: Gatus Integration
 - monitoring provision
