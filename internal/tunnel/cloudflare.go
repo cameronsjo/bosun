@@ -6,11 +6,28 @@ import (
 	"encoding/json"
 	"net/http"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
 )
+
+var (
+	bearerTokenPattern = regexp.MustCompile(`Bearer [A-Za-z0-9._-]+`)
+	authHeaderPattern  = regexp.MustCompile(`(?i)Authorization:.*`)
+	base64BlobPattern  = regexp.MustCompile(`[A-Za-z0-9+/=]{40,}`)
+)
+
+// redactSensitiveOutput replaces common sensitive patterns in cloudflared stderr output
+// before logging. Targets bearer tokens, authorization headers, and long base64 blobs
+// that may contain credentials.
+func redactSensitiveOutput(output string) string {
+	result := bearerTokenPattern.ReplaceAllString(output, "Bearer [REDACTED]")
+	result = authHeaderPattern.ReplaceAllString(result, "Authorization: [REDACTED]")
+	result = base64BlobPattern.ReplaceAllString(result, "[REDACTED-CREDENTIAL]")
+	return result
+}
 
 // CloudflareConfig holds configuration for the Cloudflare provider.
 type CloudflareConfig struct {
@@ -173,14 +190,14 @@ func (c *Cloudflare) checkTunnelInfo(ctx context.Context) (bool, error) {
 		logger.Error().
 			Err(err).
 			Str(log.FieldOperation, "tunnel_info").
-			Str("stderr", stderr.String()).
+			Str("stderr", redactSensitiveOutput(stderr.String())).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 			Msg("cloudflared tunnel info failed")
 		return false, err
 	}
 
 	if stderrStr := stderr.String(); stderrStr != "" {
-		logger.Debug().Str("stderr", stderrStr).Msg("cloudflared tunnel info stderr")
+		logger.Debug().Str("stderr", redactSensitiveOutput(stderrStr)).Msg("cloudflared tunnel info stderr")
 	}
 
 	var info cloudflaredTunnelInfo
@@ -281,14 +298,14 @@ func (c *Cloudflare) GetTunnelList(ctx context.Context) ([]string, error) {
 		logger.Error().
 			Err(err).
 			Str(log.FieldOperation, "tunnel_list").
-			Str("stderr", stderr.String()).
+			Str("stderr", redactSensitiveOutput(stderr.String())).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 			Msg("cloudflared tunnel list failed")
 		return nil, err
 	}
 
 	if stderrStr := stderr.String(); stderrStr != "" {
-		logger.Debug().Str("stderr", stderrStr).Msg("cloudflared tunnel list stderr")
+		logger.Debug().Str("stderr", redactSensitiveOutput(stderrStr)).Msg("cloudflared tunnel list stderr")
 	}
 
 	// Parse the JSON output
@@ -329,14 +346,14 @@ func (c *Cloudflare) GetVersion(ctx context.Context) (string, error) {
 		logger.Error().
 			Err(err).
 			Str(log.FieldOperation, "version").
-			Str("stderr", stderr.String()).
+			Str("stderr", redactSensitiveOutput(stderr.String())).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 			Msg("cloudflared version check failed")
 		return "", err
 	}
 
 	if stderrStr := stderr.String(); stderrStr != "" {
-		logger.Debug().Str("stderr", stderrStr).Msg("cloudflared version stderr")
+		logger.Debug().Str("stderr", redactSensitiveOutput(stderrStr)).Msg("cloudflared version stderr")
 	}
 
 	version := strings.TrimSpace(string(output))
