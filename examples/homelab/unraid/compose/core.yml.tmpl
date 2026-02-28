@@ -11,7 +11,7 @@ services:
     command:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
-      - --providers.docker.defaultRule=Host(`{{ "{{ .Name }}" }}.{{ $secrets.network.domain }}`)
+      - --providers.docker.defaultRule=Host(`{{ "{{ normalize .Name }}" }}.{{ $secrets.network.domain }}`)
       - --providers.file.directory=/config/conf.d
       - --providers.file.watch=true
       - --entrypoints.web.address=:80

@@ -663,7 +663,7 @@ func applyCommandFixes(composePath string, _ *traefikComposeService, flags []str
 		return fmt.Errorf("marshal compose file: %w", err)
 	}
 
-	return os.WriteFile(composePath, output, 0644)
+	return writeFilePreservePerms(composePath, output)
 }
 
 // addCommandFlagsToNode adds command flags to the Traefik service's command node.
@@ -819,7 +819,17 @@ func applyDynamicFixes(dynamicDir string, fixes []traefikCheck) error {
 		return err
 	}
 
-	return os.WriteFile(targetFile, data, 0644)
+	return writeFilePreservePerms(targetFile, data)
+}
+
+// writeFilePreservePerms writes data to a file, preserving existing permissions.
+// Falls back to 0644 if the file doesn't exist or can't be stat'd.
+func writeFilePreservePerms(path string, data []byte) error {
+	mode := os.FileMode(0644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
+	return os.WriteFile(path, data, mode)
 }
 
 // fileContainsGoTemplate checks if a file contains Go template syntax.
