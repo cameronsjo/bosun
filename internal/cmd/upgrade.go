@@ -438,9 +438,11 @@ http:
 }
 
 func runUpgradeTraefik(cmd *cobra.Command, args []string) {
+	upgradeLogger := log.Component("upgrade-traefik")
+
 	cfg, err := config.Load()
 	if err != nil {
-		log.Debug().Err(err).Msg("Could not load bosun config, continuing without project config")
+		upgradeLogger.Debug().Err(err).Msg("Could not load bosun config, continuing without project config")
 	}
 
 	ui.Blue.Println("Checking Traefik configuration...")
@@ -466,6 +468,12 @@ func runUpgradeTraefik(cmd *cobra.Command, args []string) {
 	// Parse Traefik service
 	svc, err := parseTraefikService(composePath)
 	if err != nil || svc == nil {
+		if isTemplate {
+			ui.Yellow.Println("  ! Could not parse template file as plain YAML — showing generic recommendations")
+			fmt.Println()
+			showGenericRecommendations()
+			return
+		}
 		ui.Red.Println("  x Failed to parse Traefik service from compose file")
 		return
 	}
@@ -606,10 +614,32 @@ func showFixes(fixes []traefikCheck, isTemplate bool) {
 	}
 }
 
+// showGenericRecommendations displays Traefik best practices when the compose
+// file cannot be parsed (e.g., Go template files with {{ }} syntax).
+func showGenericRecommendations() {
+	ui.Blue.Println("Recommended Traefik configuration:")
+	fmt.Println()
+	fmt.Println("  Command flags:")
+	ui.Yellow.Println("    + --entrypoints.web.http.redirections.entrypoint.to=websecure")
+	ui.Yellow.Println("    + --entrypoints.web.http.redirections.entrypoint.scheme=https")
+	ui.Yellow.Println("    + --providers.docker.exposedbydefault=false")
+	ui.Yellow.Println("    + --providers.docker.defaultRule=Host(`{{ normalize .Name }}.<domain>`)")
+	ui.Yellow.Println("    + --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web")
+	fmt.Println()
+	fmt.Println("  Dynamic config (conf.d/middlewares.yml):")
+	ui.Yellow.Println("    " + strings.ReplaceAll(securityHeadersMiddleware(), "\n", "\n    "))
+	fmt.Println()
+	ui.Yellow.Println("    " + strings.ReplaceAll(compressionMiddleware(), "\n", "\n    "))
+	fmt.Println()
+	ui.Yellow.Println("  Review your template file and apply these changes manually.")
+	fmt.Println("  See: bosun upgrade traefik --help")
+}
+
 // applyFixes writes the recommended fixes to the compose and dynamic config files.
 func applyFixes(fixes []traefikCheck, svc *traefikComposeService, composePath, dynamicDir string) {
 	var commandFlags []string
 	var dynamicFixes []traefikCheck
+	hadErrors := false
 
 	for _, f := range fixes {
 		if f.FixTarget == "command" {
@@ -623,6 +653,7 @@ func applyFixes(fixes []traefikCheck, svc *traefikComposeService, composePath, d
 	if len(commandFlags) > 0 {
 		if err := applyCommandFixes(composePath, svc, commandFlags); err != nil {
 			ui.Red.Printf("  x Failed to update compose file: %v\n", err)
+			hadErrors = true
 		} else {
 			ui.Green.Printf("  * Updated %s with %d command flags\n", composePath, len(commandFlags))
 		}
@@ -638,6 +669,7 @@ func applyFixes(fixes []traefikCheck, svc *traefikComposeService, composePath, d
 		} else {
 			if err := applyDynamicFixes(dynamicDir, dynamicFixes); err != nil {
 				ui.Red.Printf("  x Failed to update dynamic config: %v\n", err)
+				hadErrors = true
 			} else {
 				ui.Green.Printf("  * Updated dynamic config in %s\n", dynamicDir)
 			}
@@ -645,7 +677,11 @@ func applyFixes(fixes []traefikCheck, svc *traefikComposeService, composePath, d
 	}
 
 	fmt.Println()
-	ui.Green.Println("Fixes applied! Restart Traefik to pick up changes.")
+	if hadErrors {
+		ui.Yellow.Println("Some fixes could not be applied. Review the errors above and apply manually.")
+	} else {
+		ui.Green.Println("Fixes applied! Restart Traefik to pick up changes.")
+	}
 }
 
 // applyCommandFixes adds missing command flags to the Traefik service in a compose file.
@@ -785,7 +821,8 @@ func applyDynamicFixes(dynamicDir string, fixes []traefikCheck) error {
 		}
 
 		if err := yaml.Unmarshal([]byte(strings.Join(yamlLines, "\n")), &cfg); err != nil {
-			log.Debug().Err(err).Str("check", f.Name).Msg("Failed to parse fix YAML for dynamic config")
+			dynLogger := log.Component("upgrade-traefik")
+			dynLogger.Debug().Err(err).Str("check", f.Name).Msg("Failed to parse fix YAML for dynamic config")
 			continue
 		}
 		for name, mw := range cfg.HTTP.Middlewares {

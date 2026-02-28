@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"path/filepath"
 	"testing"
 )
 
@@ -22,6 +23,16 @@ func resetRootCmd(t *testing.T) *bytes.Buffer {
 		cmd.ResetFlags()
 	}
 	return buf
+}
+
+// evalSymlinks resolves symlinks for path comparison (macOS /var -> /private/var).
+func evalSymlinks(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return path
+	}
+	return resolved
 }
 
 // executeCmd executes the root command with the given args and returns the output.

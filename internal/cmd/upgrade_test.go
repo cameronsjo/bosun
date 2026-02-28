@@ -406,10 +406,7 @@ func TestFindTraefikDynamicDir(t *testing.T) {
 		}
 
 		result := findTraefikDynamicDir(svc, composePath)
-		// Resolve symlinks for macOS /var -> /private/var
-		expected, _ := filepath.EvalSymlinks(confDir)
-		actual, _ := filepath.EvalSymlinks(result)
-		assert.Equal(t, expected, actual)
+		assert.Equal(t, evalSymlinks(t, confDir), evalSymlinks(t, result))
 	})
 
 	t.Run("dynamic volume", func(t *testing.T) {
@@ -425,9 +422,7 @@ func TestFindTraefikDynamicDir(t *testing.T) {
 		}
 
 		result := findTraefikDynamicDir(svc, composePath)
-		expected, _ := filepath.EvalSymlinks(dynamicDir)
-		actual, _ := filepath.EvalSymlinks(result)
-		assert.Equal(t, expected, actual)
+		assert.Equal(t, evalSymlinks(t, dynamicDir), evalSymlinks(t, result))
 	})
 
 	t.Run("no dynamic dir", func(t *testing.T) {
