@@ -96,6 +96,11 @@ EMERGENCY
     --list, -l          List available snapshots
   overboard [name]      Force remove a problematic container
 
+UPGRADE
+  upgrade traefik       Check and apply Traefik security defaults
+    --dry-run           Show recommendations without applying
+    --yes, -y           Apply all recommendations without prompting
+
 MAINTENANCE
   update                Update bosun to the latest version
     --check             Only check for updates, don't install`,

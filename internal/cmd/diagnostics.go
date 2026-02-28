@@ -510,6 +510,104 @@ func capitalizeProviderName(name string) string {
 	}
 }
 
+// checkTraefikConfig validates Traefik configuration against recommended defaults.
+// Returns an empty CheckResult if no Traefik service is found (not all projects use Traefik).
+func checkTraefikConfig(cfg *config.Config) CheckResult {
+	var result CheckResult
+
+	composePath, err := findTraefikComposeFile(cfg, "")
+	if err != nil {
+		// No Traefik service found — skip silently
+		return result
+	}
+
+	svc, err := parseTraefikService(composePath)
+	if err != nil || svc == nil {
+		return result
+	}
+
+	fmt.Println()
+	ui.Blue.Println("--- Traefik Configuration ---")
+
+	// Check 1: HTTPS redirect
+	httpsCheck := checkHTTPSRedirect(svc)
+	switch httpsCheck.Status {
+	case "pass":
+		ui.Green.Println("  * Traefik: HTTPS redirect configured")
+		result.Passed++
+	default:
+		ui.Yellow.Println("  ! Traefik: HTTPS redirect not configured")
+		ui.Blue.Println("      To fix this:")
+		ui.Blue.Println("      - Add to Traefik command: --entrypoints.web.http.redirections.entrypoint.to=websecure")
+		ui.Blue.Println("      - Or run: bosun upgrade traefik")
+		result.Warned++
+	}
+
+	// Check 2: exposedByDefault
+	exposedCheck := checkExposedByDefault(svc)
+	switch exposedCheck.Status {
+	case "pass":
+		ui.Green.Println("  * Traefik: exposedByDefault is false")
+		result.Passed++
+	default:
+		ui.Yellow.Println("  ! Traefik: exposedByDefault not set to false")
+		ui.Blue.Println("      To fix this:")
+		ui.Blue.Println("      - Add to Traefik command: --providers.docker.exposedbydefault=false")
+		ui.Blue.Println("      - Or run: bosun upgrade traefik")
+		result.Warned++
+	}
+
+	// Check 3: Security headers middleware
+	dynamicDir := findTraefikDynamicDir(svc, composePath)
+	headersCheck := checkSecurityHeaders(dynamicDir)
+	switch headersCheck.Status {
+	case "pass":
+		ui.Green.Println("  * Traefik: Security headers middleware configured")
+		result.Passed++
+	default:
+		ui.Yellow.Println("  ! Traefik: No secure-defaults middleware found")
+		ui.Blue.Println("      To fix this:")
+		ui.Blue.Println("      - Add secure-defaults middleware to Traefik dynamic config")
+		ui.Blue.Println("      - Or run: bosun upgrade traefik")
+		result.Warned++
+	}
+
+	// Check 4: Docker socket exposure
+	socketCheck := checkDockerSocket(svc)
+	switch socketCheck.Status {
+	case "pass":
+		ui.Green.Printf("  * Traefik: %s\n", socketCheck.Description)
+		result.Passed++
+	case "warn":
+		ui.Yellow.Printf("  ! Traefik: %s\n", socketCheck.Description)
+		ui.Blue.Println("      To fix this:")
+		ui.Blue.Println("      - Use docker-socket-proxy instead of mounting /var/run/docker.sock directly")
+		ui.Blue.Println("      - See: https://github.com/Tecnativa/docker-socket-proxy")
+		result.Warned++
+	}
+
+	return result
+}
+
+// checkDockerSocket verifies whether the Docker socket is mounted directly.
+func checkDockerSocket(svc *traefikComposeService) traefikCheck {
+	check := traefikCheck{
+		Name: "Docker Socket",
+	}
+
+	for _, vol := range svc.Volumes {
+		if strings.Contains(vol, "/var/run/docker.sock") {
+			check.Status = "warn"
+			check.Description = "Docker socket mounted directly (consider docker-socket-proxy for security)"
+			return check
+		}
+	}
+
+	check.Status = "pass"
+	check.Description = "Docker socket not mounted directly"
+	return check
+}
+
 func runDoctor(cmd *cobra.Command, args []string) {
 	ui.Blue.Println("Running pre-flight checks...")
 	fmt.Println()
@@ -536,6 +634,9 @@ func runDoctor(cmd *cobra.Command, args []string) {
 	tunnelCtx, tunnelCancel := context.WithTimeout(context.Background(), doctorCheckTimeout)
 	result.Add(checkTunnel(tunnelCtx, cfg))
 	tunnelCancel()
+
+	// Check Traefik configuration (only if a Traefik service is found)
+	result.Add(checkTraefikConfig(cfg))
 
 	// Summary
 	fmt.Println()
