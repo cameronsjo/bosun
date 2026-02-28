@@ -58,6 +58,9 @@ type Config struct {
 
 	// deployPaths is an allowlist of glob patterns for deploy-relevant paths.
 	deployPaths []string
+
+	// domain is the project-level domain for Traefik defaultRule.
+	domain string
 }
 
 // TunnelConfig holds tunnel provider-specific configuration.
@@ -109,6 +112,9 @@ type configFile struct {
 	// This ensures all containers share a namespace and --remove-orphans works correctly.
 	// Defaults to the project root directory name.
 	ProjectName string `yaml:"project_name"`
+
+	// Domain is the project-level domain used for Traefik defaultRule.
+	Domain string `yaml:"domain"`
 
 	Infrastructure struct {
 		Containers []string `yaml:"containers"`
@@ -196,12 +202,14 @@ func LoadFrom(dir string) (*Config, error) {
 	postSyncHooks := extractPostSyncHooks(fileCfg)
 	hookSettleDelay := extractHookSettleDelay(fileCfg)
 	deployPaths := extractDeployPaths(fileCfg)
+	domain := extractDomain(fileCfg)
 
 	return &Config{
 		Root:            dir,
 		postSyncHooks:   postSyncHooks,
 		hookSettleDelay: hookSettleDelay,
 		deployPaths:     deployPaths,
+		domain:          domain,
 	}, nil
 }
 
@@ -244,6 +252,7 @@ func Load() (*Config, error) {
 	postSyncHooks := extractPostSyncHooks(fileCfg)
 	hookSettleDelay := extractHookSettleDelay(fileCfg)
 	deployPaths := extractDeployPaths(fileCfg)
+	domain := extractDomain(fileCfg)
 
 	// Determine project name (defaults to directory name)
 	projectName := fileCfg.ProjectName
@@ -265,6 +274,7 @@ func Load() (*Config, error) {
 		postSyncHooks:   postSyncHooks,
 		hookSettleDelay: hookSettleDelay,
 		deployPaths:     deployPaths,
+		domain:          domain,
 	}
 
 	logger := log.Component("config")
@@ -382,6 +392,11 @@ func (c *Config) ProjectName() string {
 	return c.projectName
 }
 
+// Domain returns the project-level domain for Traefik defaultRule.
+// Returns an empty string if not configured.
+func (c *Config) Domain() string {
+	return c.domain
+}
 
 // InfraContainers returns the list of infrastructure container names.
 // These containers are shown separately in status displays and excluded from orphan detection.
@@ -465,6 +480,11 @@ func (c *Config) HookSettleDelay() time.Duration {
 // extractHookSettleDelay extracts the hook settle delay from a parsed config.
 func extractHookSettleDelay(cfg configFile) time.Duration {
 	return cfg.HookSettleDelay.Duration
+}
+
+// extractDomain extracts the domain from a parsed config.
+func extractDomain(cfg configFile) string {
+	return cfg.Domain
 }
 
 // extractAlertConfig extracts alert configuration from a parsed config.

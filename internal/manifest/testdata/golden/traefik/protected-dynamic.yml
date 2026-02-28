@@ -1,17 +1,18 @@
 http:
     routers:
-        mywebapp:
+        secretapp:
             entrypoints:
                 - websecure
             middlewares:
+                - authelia@file
                 - secure-defaults@file
                 - default-compress@file
-            rule: Host(`mywebapp.example.com`)
-            service: mywebapp
+            rule: Host(`secretapp.example.com`)
+            service: secretapp
             tls:
                 certResolver: letsencrypt
     services:
-        mywebapp:
+        secretapp:
             loadBalancer:
                 servers:
-                    - url: http://mywebapp:8080
+                    - url: http://secretapp:8080

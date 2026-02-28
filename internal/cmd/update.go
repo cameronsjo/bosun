@@ -12,7 +12,7 @@ import (
 
 var updateCmd = &cobra.Command{
 	Use:     "update",
-	Aliases: []string{"upgrade", "selfupdate"},
+	Aliases: []string{"selfupdate"},
 	Short:   "Update bosun to the latest version",
 	Long: `Update bosun to the latest version from GitHub releases.
 

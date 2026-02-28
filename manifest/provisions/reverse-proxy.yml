@@ -9,6 +9,7 @@ compose:
         traefik.http.routers.${name}.rule: Host(`${subdomain}.${domain}`)
         traefik.http.routers.${name}.entrypoints: websecure
         traefik.http.routers.${name}.tls.certresolver: letsencrypt
+        traefik.http.routers.${name}.middlewares: secure-defaults@file,default-compress@file
         traefik.http.services.${name}.loadbalancer.server.port: "${port}"
 
 traefik:
@@ -21,6 +22,9 @@ traefik:
           - websecure
         tls:
           certResolver: letsencrypt
+        middlewares:
+          - secure-defaults@file
+          - default-compress@file
     services:
       ${name}:
         loadBalancer:

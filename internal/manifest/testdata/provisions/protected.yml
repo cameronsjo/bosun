@@ -1,0 +1,19 @@
+apiVersion: bosun.io/v1
+kind: Provision
+# Protected reverse proxy profile - Traefik integration with auth middleware
+includes:
+  - reverse-proxy
+compose:
+  services:
+    ${name}:
+      labels:
+        traefik.http.routers.${name}.middlewares: ${auth_middleware},secure-defaults@file,default-compress@file
+
+traefik:
+  http:
+    routers:
+      ${name}:
+        middlewares:
+          - ${auth_middleware}
+          - secure-defaults@file
+          - default-compress@file
