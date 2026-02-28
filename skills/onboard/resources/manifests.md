@@ -144,12 +144,33 @@ Provisions live in `manifest/provisions/` and are YAML files with `${variable}` 
 | `container` | Base Docker Compose service definition (image, name, restart, networks) |
 | `healthcheck` | Docker health check configuration |
 | `homepage` | Homepage dashboard entry (labels for homepage integration) |
-| `reverse-proxy` | Traefik routing labels and dynamic config |
+| `reverse-proxy` | Traefik routing labels and dynamic config (includes `secure-defaults@file,default-compress@file` middleware chain) |
+| `protected` | Extends `reverse-proxy` with auth middleware (`${auth_middleware}`, default: `authelia@file`). Use for services behind SSO |
 | `monitoring` | Gatus monitoring endpoint |
 | `postgres` | PostgreSQL sidecar container with volume, network, and env |
 | `redis` | Redis sidecar container |
 
 Run `bosun provisions` to see all available provisions in your project.
+
+### Protected Provision
+
+The `protected` provision extends `reverse-proxy` by prepending an auth middleware to the router chain. Use it for services that should sit behind SSO (e.g., Authelia, Authentik):
+
+```yaml
+name: myapp
+provisions:
+  - container
+  - healthcheck
+  - protected       # instead of reverse-proxy
+config:
+  image: myimage:latest
+  port: 8080
+  subdomain: myapp
+  domain: example.com
+  auth_middleware: authelia@file   # optional, defaults to authelia@file
+```
+
+This produces router middlewares: `authelia@file,secure-defaults@file,default-compress@file`. The `${auth_middleware}` variable lets you swap auth providers without changing the provision.
 
 ### Provision Structure
 

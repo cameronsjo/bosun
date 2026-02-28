@@ -374,6 +374,44 @@ func TestGoldenFile_TraefikOutput(t *testing.T) {
 	assert.Equal(t, string(expected), string(actual))
 }
 
+func TestGoldenFile_ProtectedTraefikOutput(t *testing.T) {
+	goldenPath := filepath.Join("testdata", "golden", "traefik", "protected-dynamic.yml")
+	provisionsDir := filepath.Join("testdata", "provisions")
+
+	manifest := &ServiceManifest{
+		Name:       "secretapp",
+		Provisions: []string{"protected"},
+		Config: map[string]any{
+			"port":            "8080",
+			"subdomain":       "secretapp",
+			"domain":          "example.com",
+			"auth_middleware": "authelia@file",
+		},
+	}
+
+	output, err := RenderService(manifest, provisionsDir)
+	require.NoError(t, err)
+
+	actual, err := yaml.Marshal(output.Traefik)
+	require.NoError(t, err)
+
+	if *update {
+		err := os.WriteFile(goldenPath, actual, 0644)
+		require.NoError(t, err)
+		return
+	}
+
+	expected, err := os.ReadFile(goldenPath)
+	if os.IsNotExist(err) {
+		t.Logf("Golden file %s does not exist, creating it", goldenPath)
+		err := os.WriteFile(goldenPath, actual, 0644)
+		require.NoError(t, err)
+		return
+	}
+	require.NoError(t, err)
+	assert.Equal(t, string(expected), string(actual))
+}
+
 func TestGoldenFile_GatusOutput(t *testing.T) {
 	goldenPath := filepath.Join("testdata", "golden", "gatus", "webapp-endpoints.yml")
 	provisionsDir := filepath.Join("testdata", "provisions")

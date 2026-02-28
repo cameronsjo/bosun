@@ -358,6 +358,11 @@ Checks:
 - SOPS installed
 - Manifest directory exists
 - Webhook responding
+- Traefik configuration (if Traefik service detected):
+  - HTTPS redirect configured
+  - `exposedByDefault` set to false
+  - Security headers middleware present
+  - Docker socket not mounted directly (recommends docker-socket-proxy)
 
 ### lint
 
@@ -375,6 +380,44 @@ Validates:
 - Stack manifests are valid
 - Dependencies are correct
 - No port conflicts
+
+## Upgrade Commands
+
+### upgrade traefik
+
+Check and apply Traefik security and performance defaults.
+
+```bash
+bosun upgrade traefik                # Show recommendations (dry-run by default)
+bosun upgrade traefik --yes          # Apply all recommendations without prompting
+bosun upgrade traefik --dry-run      # Explicit dry-run mode
+bosun upgrade traefik --compose ./compose/core.yml  # Specify compose file
+bosun upgrade traefik --dynamic ./traefik/conf.d     # Specify dynamic config dir
+```
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Show recommendations without applying |
+| `-y`, `--yes` | Apply all recommendations without prompting |
+| `--compose` | Path to compose file containing Traefik service |
+| `--dynamic` | Path to Traefik dynamic config directory |
+
+**Checks performed:**
+
+| Check | What It Looks For | Status If Missing |
+|-------|-------------------|-------------------|
+| HTTPS Redirect | `--entrypoints.web.http.redirections.entrypoint.to=websecure` | missing |
+| Exposed By Default | `--providers.docker.exposedbydefault=false` | warn |
+| Default Rule | `--providers.docker.defaultRule` | missing |
+| Security Headers | `secure-defaults` middleware in dynamic config | missing |
+| Compression | `default-compress` middleware in dynamic config | missing |
+| ACME Resolver | `--certificatesresolvers.*.acme.*` flags | missing |
+
+**Auto-detection:** If `--compose` is not specified, bosun scans the output directory, project root, and `bosun/` directory for compose files containing a `traefik:*` image or a service named `traefik`. Dynamic config directory is detected from Traefik volume mounts (paths containing `conf.d`, `dynamic`, or `rules`).
+
+**Template safety:** If the compose file is a Go template (`.tmpl` extension or contains `{{`), fixes are displayed but not auto-applied.
 
 ## Emergency Commands
 

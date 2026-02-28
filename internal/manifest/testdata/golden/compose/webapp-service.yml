@@ -21,6 +21,7 @@ services:
             homepage.name: mywebapp
             traefik.enable: "true"
             traefik.http.routers.mywebapp.entrypoints: websecure
+            traefik.http.routers.mywebapp.middlewares: secure-defaults@file,default-compress@file
             traefik.http.routers.mywebapp.rule: Host(`mywebapp.example.com`)
             traefik.http.routers.mywebapp.tls.certresolver: letsencrypt
             traefik.http.services.mywebapp.loadbalancer.server.port: "8080"

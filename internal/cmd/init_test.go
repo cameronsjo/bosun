@@ -149,6 +149,114 @@ func TestStarterTemplates(t *testing.T) {
 	})
 }
 
+func TestGenerateBosunYaml(t *testing.T) {
+	t.Run("with domain", func(t *testing.T) {
+		result := generateBosunYaml("example.com")
+		assert.Contains(t, result, "domain: example.com")
+		assert.Contains(t, result, "infrastructure:")
+		assert.Contains(t, result, "traefik")
+		assert.NotContains(t, result, "# domain:")
+	})
+
+	t.Run("without domain", func(t *testing.T) {
+		result := generateBosunYaml("")
+		assert.Contains(t, result, "# domain: example.com")
+		assert.Contains(t, result, "infrastructure:")
+		assert.NotContains(t, result, "\ndomain:")
+	})
+}
+
+func TestGenerateTraefikConfigs(t *testing.T) {
+	t.Run("creates traefik directory structure", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		err := generateTraefikConfigs(tmpDir, "example.com")
+		require.NoError(t, err)
+
+		// Check directories created
+		assert.DirExists(t, filepath.Join(tmpDir, "traefik", "conf.d"))
+		assert.DirExists(t, filepath.Join(tmpDir, "traefik", "acme"))
+
+		// Check middlewares.yml created
+		middlewaresFile := filepath.Join(tmpDir, "traefik", "conf.d", "middlewares.yml")
+		assert.FileExists(t, middlewaresFile)
+
+		data, err := os.ReadFile(middlewaresFile)
+		require.NoError(t, err)
+		content := string(data)
+		assert.Contains(t, content, "secure-defaults")
+		assert.Contains(t, content, "default-compress")
+		assert.Contains(t, content, "stsSeconds")
+		assert.Contains(t, content, "minResponseBodyBytes")
+	})
+
+	t.Run("creates traefik flags doc with domain", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		err := generateTraefikConfigs(tmpDir, "mylab.dev")
+		require.NoError(t, err)
+
+		flagsDoc := filepath.Join(tmpDir, "traefik", "TRAEFIK-FLAGS.md")
+		assert.FileExists(t, flagsDoc)
+
+		data, err := os.ReadFile(flagsDoc)
+		require.NoError(t, err)
+		content := string(data)
+		assert.Contains(t, content, "mylab.dev")
+		assert.Contains(t, content, "exposedbydefault=false")
+		assert.Contains(t, content, "redirections.entrypoint.to=websecure")
+		assert.Contains(t, content, "certificatesresolvers")
+	})
+
+	t.Run("does not overwrite existing files", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create the directory and file first
+		dynamicDir := filepath.Join(tmpDir, "traefik", "conf.d")
+		require.NoError(t, os.MkdirAll(dynamicDir, 0755))
+		existingContent := "existing content"
+		require.NoError(t, os.WriteFile(filepath.Join(dynamicDir, "middlewares.yml"), []byte(existingContent), 0644))
+
+		err := generateTraefikConfigs(tmpDir, "example.com")
+		require.NoError(t, err)
+
+		// Original content preserved
+		data, err := os.ReadFile(filepath.Join(dynamicDir, "middlewares.yml"))
+		require.NoError(t, err)
+		assert.Equal(t, existingContent, string(data))
+	})
+}
+
+func TestTraefikMiddlewaresYML(t *testing.T) {
+	t.Run("has secure-defaults middleware", func(t *testing.T) {
+		assert.Contains(t, traefikMiddlewaresYML, "secure-defaults:")
+		assert.Contains(t, traefikMiddlewaresYML, "stsSeconds: 31536000")
+		assert.Contains(t, traefikMiddlewaresYML, "frameDeny: true")
+		assert.Contains(t, traefikMiddlewaresYML, "referrerPolicy:")
+	})
+
+	t.Run("has default-compress middleware", func(t *testing.T) {
+		assert.Contains(t, traefikMiddlewaresYML, "default-compress:")
+		assert.Contains(t, traefikMiddlewaresYML, "minResponseBodyBytes: 1024")
+	})
+}
+
+func TestPromptInput_NonTTY(t *testing.T) {
+	t.Run("returns default when stdin is not a TTY", func(t *testing.T) {
+		if isTerminal() {
+			t.Skip("test must run in non-TTY environment")
+		}
+		result := promptInput("test prompt", "default-value")
+		assert.Equal(t, "default-value", result)
+	})
+
+	t.Run("returns empty string when no default and non-TTY", func(t *testing.T) {
+		if isTerminal() {
+			t.Skip("test must run in non-TTY environment")
+		}
+		result := promptInput("test prompt", "")
+		assert.Equal(t, "", result)
+	})
+}
+
 func TestInitCmd_DirectoryStructure(t *testing.T) {
 	// This test verifies the expected directory structure
 	t.Run("expected directories", func(t *testing.T) {

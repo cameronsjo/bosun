@@ -1211,3 +1211,83 @@ func TestExtractDependencyGraph_EdgeCases(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckTraefikConfig(t *testing.T) {
+	t.Run("no traefik service", func(t *testing.T) {
+		// When no Traefik service is found, checkTraefikConfig should return empty result
+		result := checkTraefikConfig(nil)
+		assert.Equal(t, 0, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 0, result.Warned)
+	})
+
+	t.Run("with well-configured traefik", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create compose file with well-configured Traefik
+		composePath := filepath.Join(tmpDir, "docker-compose.yml")
+		content := `services:
+  traefik:
+    image: traefik:v3.2
+    command:
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--providers.docker.exposedbydefault=false"
+    volumes:
+      - ./conf.d:/etc/traefik/conf.d
+`
+		require.NoError(t, os.WriteFile(composePath, []byte(content), 0644))
+
+		// Create dynamic config directory with security headers
+		confDir := filepath.Join(tmpDir, "conf.d")
+		require.NoError(t, os.MkdirAll(confDir, 0755))
+		middleware := `http:
+  middlewares:
+    secure-defaults:
+      headers:
+        stsSeconds: 31536000
+`
+		require.NoError(t, os.WriteFile(filepath.Join(confDir, "middlewares.yml"), []byte(middleware), 0644))
+
+		// Create manifest dir to make config.Load work
+		manifestDir := filepath.Join(tmpDir, "manifest")
+		require.NoError(t, os.MkdirAll(manifestDir, 0755))
+
+		cfg := &config.Config{
+			Root:        tmpDir,
+			ManifestDir: manifestDir,
+		}
+
+		result := checkTraefikConfig(cfg)
+		// HTTPS redirect: pass, exposedByDefault: pass, security headers: pass, docker socket: pass (no socket mount)
+		assert.Equal(t, 4, result.Passed)
+		assert.Equal(t, 0, result.Warned)
+	})
+
+	t.Run("with minimal traefik", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		composePath := filepath.Join(tmpDir, "docker-compose.yml")
+		content := `services:
+  traefik:
+    image: traefik:v3.2
+    command:
+      - "--api.dashboard=true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+`
+		require.NoError(t, os.WriteFile(composePath, []byte(content), 0644))
+
+		manifestDir := filepath.Join(tmpDir, "manifest")
+		require.NoError(t, os.MkdirAll(manifestDir, 0755))
+
+		cfg := &config.Config{
+			Root:        tmpDir,
+			ManifestDir: manifestDir,
+		}
+
+		result := checkTraefikConfig(cfg)
+		// All 4 checks should warn: HTTPS, exposedByDefault, headers, docker socket
+		assert.Equal(t, 0, result.Passed)
+		assert.Equal(t, 4, result.Warned)
+	})
+}
