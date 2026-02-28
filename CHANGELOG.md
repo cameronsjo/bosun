@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.1](https://github.com/cameronsjo/bosun/compare/v0.15.0...v0.15.1) (2026-02-28)
+
+
+### Bug Fixes
+
+* **ci:** graceful fallback when release App token is not configured ([197f460](https://github.com/cameronsjo/bosun/commit/197f46019818f015dfb683a8c3775a5c7a75ae71))
+* **ci:** use GitHub App token for release PR auto-merge ([3cee031](https://github.com/cameronsjo/bosun/commit/3cee031bfdb4d9a4aba07011d66b1b26dc51f1a5))
+* **daemon,tunnel:** neutralize audit log message and redact cloudflared stderr ([83c242f](https://github.com/cameronsjo/bosun/commit/83c242f9a51d6b83f77e316c5725161766603a73))
+* **log:** complete ComponentCtx migration for remaining call sites ([6e8d510](https://github.com/cameronsjo/bosun/commit/6e8d51076e1a7bdfdf72f818ef5b092f99c03d49))
+
 ## [0.15.0](https://github.com/cameronsjo/bosun/compare/v0.14.0...v0.15.0) (2026-02-25)
 
 
