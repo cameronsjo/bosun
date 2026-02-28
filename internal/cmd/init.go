@@ -42,6 +42,7 @@ Use --yes to skip all interactive prompts (useful for non-TTY environments).`,
 var (
 	initYes     bool
 	initSystemd bool
+	initDomain  string
 )
 
 func runInit(cmd *cobra.Command, args []string) error {
@@ -139,8 +140,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 5: Ask for domain (used for Traefik routing)
-	var domain string
-	if !initYes {
+	domain := initDomain
+	if domain == "" && !initYes {
 		ui.Info("Configuring Traefik defaults...")
 		fmt.Println("  Your base domain is used for automatic subdomain routing.")
 		fmt.Println("  A service named 'myapp' becomes myapp.<domain>.")
@@ -597,6 +598,7 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 	initCmd.Flags().BoolVarP(&initYes, "yes", "y", false, "Skip all interactive prompts (assume yes for all questions)")
 	initCmd.Flags().BoolVar(&initSystemd, "systemd", false, "Generate systemd unit files for daemon mode")
+	initCmd.Flags().StringVar(&initDomain, "domain", "", "Base domain for Traefik routing (e.g., example.com)")
 }
 
 // generateSystemdUnits creates systemd service and socket unit files.

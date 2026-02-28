@@ -241,11 +241,17 @@ func TestTraefikMiddlewaresYML(t *testing.T) {
 
 func TestPromptInput_NonTTY(t *testing.T) {
 	t.Run("returns default when stdin is not a TTY", func(t *testing.T) {
+		if isTerminal() {
+			t.Skip("test must run in non-TTY environment")
+		}
 		result := promptInput("test prompt", "default-value")
 		assert.Equal(t, "default-value", result)
 	})
 
 	t.Run("returns empty string when no default and non-TTY", func(t *testing.T) {
+		if isTerminal() {
+			t.Skip("test must run in non-TTY environment")
+		}
 		result := promptInput("test prompt", "")
 		assert.Equal(t, "", result)
 	})

@@ -138,7 +138,7 @@ func TestCheckDefaultRule(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := &traefikComposeService{Command: tc.command}
-			check := checkDefaultRule(svc)
+			check := checkDefaultRule(svc, "")
 			assert.Equal(t, tc.wantStatus, check.Status)
 			assert.Equal(t, "Default Rule", check.Name)
 			if tc.wantStatus == "missing" {
@@ -146,6 +146,23 @@ func TestCheckDefaultRule(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCheckDefaultRule_DomainAware(t *testing.T) {
+	t.Run("uses configured domain in fix", func(t *testing.T) {
+		svc := &traefikComposeService{Command: []any{"--api.dashboard=true"}}
+		check := checkDefaultRule(svc, "mylab.dev")
+		assert.Equal(t, "missing", check.Status)
+		assert.Contains(t, check.Fix, "mylab.dev")
+		assert.NotContains(t, check.Fix, "example.com")
+	})
+
+	t.Run("falls back to example.com when no domain", func(t *testing.T) {
+		svc := &traefikComposeService{Command: []any{"--api.dashboard=true"}}
+		check := checkDefaultRule(svc, "")
+		assert.Equal(t, "missing", check.Status)
+		assert.Contains(t, check.Fix, "example.com")
+	})
 }
 
 func TestCheckSecurityHeaders(t *testing.T) {

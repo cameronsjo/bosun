@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/cameronsjo/bosun/internal/config"
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -273,7 +274,8 @@ func checkExposedByDefault(svc *traefikComposeService) traefikCheck {
 }
 
 // checkDefaultRule verifies that a defaultRule is configured.
-func checkDefaultRule(svc *traefikComposeService) traefikCheck {
+// domain is used to suggest a concrete defaultRule fix; falls back to "example.com".
+func checkDefaultRule(svc *traefikComposeService, domain string) traefikCheck {
 	check := traefikCheck{
 		Name:      "Default Rule",
 		FixTarget: "command",
@@ -285,9 +287,12 @@ func checkDefaultRule(svc *traefikComposeService) traefikCheck {
 		return check
 	}
 
+	if domain == "" {
+		domain = "example.com"
+	}
 	check.Status = "missing"
 	check.Description = "No defaultRule — each service must define its own routing rule"
-	check.Fix = "--providers.docker.defaultRule=Host(`{{ index .Labels \"bosun.subdomain\" }}.example.com`)"
+	check.Fix = fmt.Sprintf("--providers.docker.defaultRule=Host(`{{ index .Labels \"bosun.subdomain\" }}.%s`)", domain)
 	return check
 }
 
@@ -433,7 +438,10 @@ http:
 }
 
 func runUpgradeTraefik(cmd *cobra.Command, args []string) {
-	cfg, _ := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Debug().Err(err).Msg("Could not load bosun config, continuing without project config")
+	}
 
 	ui.Blue.Println("Checking Traefik configuration...")
 	fmt.Println()
@@ -478,7 +486,7 @@ func runUpgradeTraefik(cmd *cobra.Command, args []string) {
 	checks := []traefikCheck{
 		checkHTTPSRedirect(svc),
 		checkExposedByDefault(svc),
-		checkDefaultRule(svc),
+		checkDefaultRule(svc, configDomain(cfg)),
 		checkSecurityHeaders(dynamicDir),
 		checkCompression(dynamicDir),
 		checkACMEResolver(svc),
@@ -777,6 +785,7 @@ func applyDynamicFixes(dynamicDir string, fixes []traefikCheck) error {
 		}
 
 		if err := yaml.Unmarshal([]byte(strings.Join(yamlLines, "\n")), &cfg); err != nil {
+			log.Debug().Err(err).Str("check", f.Name).Msg("Failed to parse fix YAML for dynamic config")
 			continue
 		}
 		for name, mw := range cfg.HTTP.Middlewares {
@@ -830,6 +839,14 @@ func writeFilePreservePerms(path string, data []byte) error {
 		mode = info.Mode().Perm()
 	}
 	return os.WriteFile(path, data, mode)
+}
+
+// configDomain returns the domain from config, or empty string if config is nil.
+func configDomain(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.Domain()
 }
 
 // fileContainsGoTemplate checks if a file contains Go template syntax.

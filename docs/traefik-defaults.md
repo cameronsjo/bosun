@@ -40,7 +40,7 @@ traefik.http.routers.myservice.middlewares: authelia@file,secure-defaults@file,d
 
 `bosun doctor` automatically checks for Traefik configuration issues when a Traefik service is detected:
 
-```
+```text
   * Traefik: HTTPS redirect configured
   * Traefik: exposedByDefault set to false
   ! Traefik: No secure-defaults middleware found
