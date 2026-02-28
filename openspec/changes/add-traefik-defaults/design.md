@@ -105,4 +105,4 @@ Secrets can still override via Go template in the static config template (`{{ $s
 
 - **Rate limiting**: Opt-in only. Not in the default middleware chain. Rate limits are context-dependent — an API backend and a static site have very different thresholds. Available as a separate provision.
 - **Upgrade command scope**: Top-level `bosun upgrade` with subcommands (`bosun upgrade traefik`, future: `bosun upgrade provisions`, `bosun upgrade config`). Follows existing CLI patterns (`bosun crew`, `bosun yacht`).
-- **Domain optionality**: Optional, with scoped fallback. See [ADR-0012](../../docs/adr/0012-optional-domain-scoped-fallback.md) for full analysis of happy/unhappy paths and the decision to use scoped injection (only `domain` falls back to project config, not arbitrary keys).
+- **Domain optionality**: Optional, with scoped fallback. See [ADR-0012](../../../docs/adr/0012-optional-domain-scoped-fallback.md) for full analysis of happy/unhappy paths and the decision to use scoped injection (only `domain` falls back to project config, not arbitrary keys).

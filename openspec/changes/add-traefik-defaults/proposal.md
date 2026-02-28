@@ -29,6 +29,9 @@ Bosun's Traefik integration currently requires explicit per-service configuratio
   - `internal/manifest/render.go` — renders provisions (no change needed, provision format unchanged)
   - `internal/reconcile/reconcile.go` — deploys Traefik configs (no change needed)
   - `internal/config/config.go` — may need new config fields for default domain
+  - `manifest/provisions/webapp.yml` — includes `reverse-proxy`, inherits middleware chain changes
+  - `internal/manifest/render_test.go` — golden tests for provision rendering
+  - `internal/manifest/provision_test.go` — provision loading/validation tests
   - `docs/commands.md` — new `upgrade` command docs
   - `skills/onboard/resources/commands.md` — skill docs update
   - `skills/onboard/resources/configuration.md` — new config fields
