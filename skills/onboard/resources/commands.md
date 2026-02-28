@@ -25,7 +25,7 @@ Creates: `bosun/`, `manifest/{provisions,services,stacks}/`, `.sops.yaml`, `.git
 
 ### `bosun doctor`
 
-Pre-flight checks. Validates Docker, Compose v2, Git, SOPS, Age key, project root, manifest directory, and webhook status.
+Pre-flight checks. Validates Docker, Compose v2, Git, SOPS, Age key, project root, manifest directory, webhook status, and Traefik configuration (HTTPS redirect, exposedByDefault, security headers, Docker socket proxy).
 
 ```bash
 bosun doctor
@@ -358,6 +358,31 @@ bosun validate --full                  # Include full dry-run reconciliation
 | `--full` | Run full dry-run reconciliation |
 | `--socket` | Path to daemon socket |
 | `-t`, `--timeout` | Timeout in seconds (default: 30) |
+
+---
+
+## Upgrade Commands
+
+### `bosun upgrade traefik`
+
+Check Traefik configuration against Bosun's recommended security and performance defaults and interactively apply improvements.
+
+```bash
+bosun upgrade traefik                # Show recommendations (dry-run by default)
+bosun upgrade traefik --yes          # Apply all recommendations
+bosun upgrade traefik --dry-run      # Explicit dry-run
+bosun upgrade traefik --compose ./compose/core.yml  # Specify compose file
+bosun upgrade traefik --dynamic ./traefik/conf.d     # Specify dynamic config dir
+```
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Show recommendations without applying |
+| `-y`, `--yes` | Apply all recommendations without prompting |
+| `--compose` | Path to compose file containing Traefik service |
+| `--dynamic` | Path to Traefik dynamic config directory |
+
+**6 checks:** HTTPS redirect, exposedByDefault, defaultRule, security headers, compression, ACME resolver. Additive only — never removes existing config. Template files (`.tmpl`) get display-only output.
 
 ---
 

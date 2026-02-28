@@ -53,10 +53,10 @@
 
 ## 8. Documentation & Skills
 
-- [ ] 8.1 Update `docs/commands.md` with `upgrade traefik` command
-- [ ] 8.2 Update `skills/onboard/resources/commands.md` with upgrade command
-- [ ] 8.3 Update `skills/onboard/resources/configuration.md` with `domain` field
-- [ ] 8.4 Document the Traefik defaults baseline in `docs/` (what's included and why)
+- [x] 8.1 Update `docs/commands.md` with `upgrade traefik` command
+- [x] 8.2 Update `skills/onboard/resources/commands.md` with upgrade command
+- [x] 8.3 Update `skills/onboard/resources/configuration.md` with `domain` field
+- [x] 8.4 Document the Traefik defaults baseline in `docs/` (what's included and why)
 
 ## 9. Testing
 

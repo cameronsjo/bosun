@@ -19,6 +19,9 @@ Optional but recommended. Controls project-level settings.
 ```yaml
 # bosun.yaml
 
+# Base domain for Traefik routing (used by defaultRule and upgrade traefik)
+domain: example.com
+
 # Override the manifest directory (default: manifest/)
 manifest_dir: manifest
 
@@ -99,6 +102,7 @@ post_sync_hooks:
 | `manifest_dir` | `manifest` | Path to manifest directory (relative to project root) |
 | `provisions_dir` | `manifest/provisions` | Path to provisions directory |
 | `project_name` | *(directory name)* | Docker Compose project name for all stacks |
+| `domain` | *(empty)* | Base domain for Traefik routing (e.g., `example.com`). Used by `defaultRule` and `upgrade traefik` |
 | `infrastructure.containers` | `[traefik, authelia, gatus]` | Infrastructure container names |
 | `tunnel.provider` | `tailscale` | Tunnel provider: `tailscale` or `cloudflare` |
 | `alerts.on_success` | `false` | Send alerts on successful deploys |
