@@ -101,8 +101,8 @@ Secrets can still override via Go template in the static config template (`{{ $s
 
 **Rollback:** All changes are git-tracked. `git revert` the config changes, push, daemon deploys the previous config. Bosun's built-in backup system also snapshots the pre-deploy config.
 
-## Open Questions
+## Resolved Questions
 
-- Should `default-ratelimit` be included in the standard middleware chain, or kept as a separate opt-in provision? (Leaning opt-in — rate limits are context-dependent)
-- Should `bosun upgrade` be a top-level command that supports future upgrade targets (e.g., `bosun upgrade provisions`, `bosun upgrade config`), or should it be Traefik-specific? (Leaning top-level with subcommands for extensibility)
-- Should the `domain` field in `bosun.yaml` be required or optional? (Leaning optional — existing configs without it should continue to work, provisions still require explicit `domain` in service config if not set globally)
+- **Rate limiting**: Opt-in only. Not in the default middleware chain. Rate limits are context-dependent — an API backend and a static site have very different thresholds. Available as a separate provision.
+- **Upgrade command scope**: Top-level `bosun upgrade` with subcommands (`bosun upgrade traefik`, future: `bosun upgrade provisions`, `bosun upgrade config`). Follows existing CLI patterns (`bosun crew`, `bosun yacht`).
+- **Domain optionality**: Optional, with scoped fallback. See [ADR-0012](../../docs/adr/0012-optional-domain-scoped-fallback.md) for full analysis of happy/unhappy paths and the decision to use scoped injection (only `domain` falls back to project config, not arbitrary keys).
