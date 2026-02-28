@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0](https://github.com/cameronsjo/bosun/compare/v0.15.1...v0.16.0) (2026-02-28)
+
+
+### Features
+
+* **init:** add domain prompt and Traefik config generation ([b1fe645](https://github.com/cameronsjo/bosun/commit/b1fe6452bd5baeef19dc2a461ace10974ad11583))
+* **traefik:** add batteries-included security defaults (Phase 1) ([999d25d](https://github.com/cameronsjo/bosun/commit/999d25d45cf5e5803b415c05451061ffb878c669))
+* **traefik:** add upgrade command and doctor diagnostics (Phase 2) ([e9b1e01](https://github.com/cameronsjo/bosun/commit/e9b1e0140aecc44e8cfb755505f87a804ba60cc7))
+* **traefik:** batteries-included security defaults ([bec448c](https://github.com/cameronsjo/bosun/commit/bec448c26f02c06e363b2341ccf908d8b727b10f))
+
+
+### Bug Fixes
+
+* address CodeRabbit review feedback ([03ae721](https://github.com/cameronsjo/bosun/commit/03ae721edebb2e87886d1347998f622436b931b8))
+* address CodeRabbit round 2 review feedback ([307c4b9](https://github.com/cameronsjo/bosun/commit/307c4b972fde77cd3b2292ab9bedc8d2dc8150a2))
+* address CodeRabbit round 3 review feedback ([e7a57db](https://github.com/cameronsjo/bosun/commit/e7a57db548531a758204eaed4b66f4220332efa4))
+
 ## [0.15.1](https://github.com/cameronsjo/bosun/compare/v0.15.0...v0.15.1) (2026-02-28)
 
 
