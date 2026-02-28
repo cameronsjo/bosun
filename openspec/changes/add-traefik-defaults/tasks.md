@@ -46,10 +46,10 @@
 
 ## 7. Init Wizard Updates
 
-- [ ] 7.1 Add domain prompt to `bosun init` wizard
-- [ ] 7.2 Generate Traefik static config with all defaults using provided domain
-- [ ] 7.3 Generate Traefik dynamic config with secure-defaults and compress middleware
-- [ ] 7.4 Store domain in generated `bosun.yaml`
+- [x] 7.1 Add domain prompt to `bosun init` wizard
+- [x] 7.2 Generate Traefik static config with all defaults using provided domain
+- [x] 7.3 Generate Traefik dynamic config with secure-defaults and compress middleware
+- [x] 7.4 Store domain in generated `bosun.yaml`
 
 ## 8. Documentation & Skills
 

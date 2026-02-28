@@ -138,7 +138,18 @@ func runInit(cmd *cobra.Command, args []string) error {
 		ui.Success("Git repository exists")
 	}
 
-	// Step 5: Create starter files
+	// Step 5: Ask for domain (used for Traefik routing)
+	var domain string
+	if !initYes {
+		ui.Info("Configuring Traefik defaults...")
+		fmt.Println("  Your base domain is used for automatic subdomain routing.")
+		fmt.Println("  A service named 'myapp' becomes myapp.<domain>.")
+		fmt.Println("  Leave blank to skip (you can set this later in bosun.yaml).")
+		fmt.Println()
+		domain = promptInput("  Base domain:", "")
+	}
+
+	// Step 6: Create starter files
 	ui.Info("Creating starter files...")
 
 	// bosun docker-compose.yml
@@ -150,6 +161,20 @@ func runInit(cmd *cobra.Command, args []string) error {
 	exampleService := filepath.Join(targetDir, "manifest", "services", "example.yml")
 	if err := createFileIfNotExists(exampleService, starterExampleService); err != nil {
 		return fmt.Errorf("create example service: %w", err)
+	}
+
+	// bosun.yaml
+	bosunYamlFile := filepath.Join(targetDir, "bosun.yaml")
+	bosunYamlContent := generateBosunYaml(domain)
+	if err := createFileIfNotExists(bosunYamlFile, bosunYamlContent); err != nil {
+		return fmt.Errorf("create bosun.yaml: %w", err)
+	}
+
+	// Traefik configs (only if domain was provided)
+	if domain != "" {
+		if err := generateTraefikConfigs(targetDir, domain); err != nil {
+			ui.Warning("Traefik config generation: %v", err)
+		}
 	}
 
 	// .gitignore
@@ -164,7 +189,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("create README.md: %w", err)
 	}
 
-	// Step 6: Generate systemd unit files if requested
+	// Step 7: Generate systemd unit files if requested
 	if initSystemd {
 		ui.Info("Generating systemd unit files...")
 		if err := generateSystemdUnits(targetDir); err != nil {
@@ -177,10 +202,20 @@ func runInit(cmd *cobra.Command, args []string) error {
 	ui.Anchor("Yacht christened! Here's your checklist:")
 	fmt.Println()
 	fmt.Println("  1. Review .sops.yaml and update the age public key if needed")
-	fmt.Println("  2. Edit manifest/services/example.yml or create your own")
-	fmt.Println("  3. Run 'bosun doctor' to verify your setup")
-	fmt.Println("  4. Run 'bosun yacht up' to start the webhook receiver")
-	fmt.Println("  5. Push to git to deploy!")
+	if domain != "" {
+		fmt.Println("  2. Review traefik/ configs and update your ACME email")
+		fmt.Println("  3. Edit manifest/services/example.yml or create your own")
+		fmt.Println("  4. Run 'bosun doctor' to verify your setup")
+		fmt.Println("  5. Run 'bosun upgrade traefik' to check Traefik configuration")
+		fmt.Println("  6. Run 'bosun yacht up' to start services")
+		fmt.Println("  7. Push to git to deploy!")
+	} else {
+		fmt.Println("  2. Set your domain in bosun.yaml")
+		fmt.Println("  3. Edit manifest/services/example.yml or create your own")
+		fmt.Println("  4. Run 'bosun doctor' to verify your setup")
+		fmt.Println("  5. Run 'bosun yacht up' to start the webhook receiver")
+		fmt.Println("  6. Push to git to deploy!")
+	}
 	fmt.Println()
 	ui.Info("Run 'bosun --help' for all commands.")
 
@@ -281,6 +316,32 @@ func extractAgePublicKey(keyFile string) (string, error) {
 // isTerminal checks if stdin is a TTY.
 func isTerminal() bool {
 	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+// promptInput asks the user for text input with a default value.
+// Returns the default if stdin is not a TTY.
+func promptInput(question, defaultVal string) string {
+	if !isTerminal() {
+		return defaultVal
+	}
+
+	if defaultVal != "" {
+		fmt.Printf("%s [%s] ", question, defaultVal)
+	} else {
+		fmt.Printf("%s ", question)
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		return defaultVal
+	}
+
+	response = strings.TrimSpace(response)
+	if response == "" {
+		return defaultVal
+	}
+	return response
 }
 
 // promptYesNo asks the user a yes/no question.
@@ -412,6 +473,124 @@ bosun yacht up
 │   └── stacks/      # Service groups
 └── .sops.yaml       # Encryption config
 ` + "```" + `
+`
+
+// generateBosunYaml creates the bosun.yaml content with optional domain.
+func generateBosunYaml(domain string) string {
+	var b strings.Builder
+	b.WriteString("# bosun.yaml - Project configuration\n")
+	b.WriteString("# See: bosun doctor (pre-flight checks)\n\n")
+
+	if domain != "" {
+		b.WriteString("# Base domain for Traefik routing\n")
+		b.WriteString(fmt.Sprintf("domain: %s\n\n", domain))
+	} else {
+		b.WriteString("# Base domain for Traefik routing (uncomment and set your domain)\n")
+		b.WriteString("# domain: example.com\n\n")
+	}
+
+	b.WriteString("# Infrastructure containers (shown separately in bosun status)\n")
+	b.WriteString("infrastructure:\n")
+	b.WriteString("  containers:\n")
+	b.WriteString("    - traefik\n")
+	b.WriteString("    - authelia\n")
+	b.WriteString("    - gatus\n")
+
+	return b.String()
+}
+
+// generateTraefikConfigs creates Traefik static and dynamic config files
+// with Bosun's recommended security defaults.
+func generateTraefikConfigs(targetDir, domain string) error {
+	// Create traefik config directories
+	dynamicDir := filepath.Join(targetDir, "traefik", "conf.d")
+	if err := os.MkdirAll(dynamicDir, 0755); err != nil {
+		return fmt.Errorf("create traefik config directory: %w", err)
+	}
+
+	// Create traefik/acme directory for certificate storage
+	acmeDir := filepath.Join(targetDir, "traefik", "acme")
+	if err := os.MkdirAll(acmeDir, 0755); err != nil {
+		return fmt.Errorf("create acme directory: %w", err)
+	}
+
+	// Dynamic config: security headers + compression middleware
+	middlewaresFile := filepath.Join(dynamicDir, "middlewares.yml")
+	if err := createFileIfNotExists(middlewaresFile, traefikMiddlewaresYML); err != nil {
+		return fmt.Errorf("create middlewares.yml: %w", err)
+	}
+
+	// Static config hint file (command flags reference)
+	staticHintFile := filepath.Join(targetDir, "traefik", "TRAEFIK-FLAGS.md")
+	staticContent := generateTraefikFlagsDoc(domain)
+	if err := createFileIfNotExists(staticHintFile, staticContent); err != nil {
+		return fmt.Errorf("create traefik flags doc: %w", err)
+	}
+
+	ui.Success("Created Traefik configs with security defaults")
+	return nil
+}
+
+// generateTraefikFlagsDoc creates a reference doc for Traefik command flags.
+func generateTraefikFlagsDoc(domain string) string {
+	return fmt.Sprintf(`# Traefik Command Flags
+
+Add these flags to your Traefik service's command section in your compose file.
+
+`+"```yaml"+`
+services:
+  traefik:
+    image: traefik:v3
+    command:
+      # API and dashboard
+      - "--api.dashboard=true"
+      # Docker provider
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.defaultRule=Host(`+"`"+`{{ index .Labels \"bosun.subdomain\" }}.%s`+"`"+`)"
+      # Dynamic config from file
+      - "--providers.file.directory=/etc/traefik/conf.d"
+      - "--providers.file.watch=true"
+      # Entrypoints
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # HTTP to HTTPS redirect
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      # Let's Encrypt
+      - "--certificatesresolvers.letsencrypt.acme.email=you@example.com"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+`+"```"+`
+
+These flags implement Bosun's recommended security baseline.
+Run `+"`bosun upgrade traefik`"+` to check your configuration at any time.
+`, domain)
+}
+
+const traefikMiddlewaresYML = `# Traefik Dynamic Config - Security Defaults
+# Generated by bosun init
+# See: bosun upgrade traefik (check configuration)
+# See: docs/traefik-defaults.md (what each header does)
+
+http:
+  middlewares:
+    # Security headers - apply to all public-facing routers
+    secure-defaults:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        contentTypeNosniff: true
+        frameDeny: true
+        browserXssFilter: true
+        referrerPolicy: strict-origin-when-cross-origin
+        permissionsPolicy: camera=(), microphone=(), geolocation=()
+
+    # Compression - gzip/brotli for responses over 1KB
+    default-compress:
+      compress:
+        minResponseBodyBytes: 1024
 `
 
 func init() {
