@@ -90,12 +90,14 @@ All three agents delivered successfully. Final tally:
 
 ### Coverage Movement
 
-| Package | Before | After Extraction | After Wrappers | After Integration | Total Delta |
-|---------|-------:|-----------------:|---------------:|------------------:|------------:|
-| config | 73.1% | 77.8% | — | — | **+4.7%** |
-| daemon | 50.5% | 53.7% | 65.4% | **82.5%** | **+32.0%** |
-| docker | 68.7% | 69.8% | — | — | **+1.1%** |
-| reconcile | 65.0% | 65.7% | — | **68.4%** | **+3.4%** |
+| Package | Before | After Extraction | After Wrappers | After Integration | After Coverage Rounds | Total Delta |
+|---------|-------:|-----------------:|---------------:|------------------:|---------------------:|------------:|
+| alert | 89.3% | — | — | — | **97.6%** | **+8.3%** |
+| config | 73.1% | 77.8% | — | — | **98.4%** | **+25.3%** |
+| daemon | 50.5% | 53.7% | 65.4% | **82.5%** | 82.5% | **+32.0%** |
+| docker | 68.7% | 69.8% | — | — | **94.3%** | **+25.6%** |
+| reconcile | 65.0% | 65.7% | — | 68.4% | **77.3%** | **+12.3%** |
+| ui | 57.6% | — | — | — | **100.0%** | **+42.4%** |
 
 *Higher coverage is better.*
 
@@ -204,71 +206,22 @@ Three-agent team, parallel worktrees, ~10 min wall-clock. All exceeded targets.
 
 *Higher coverage is better.*
 
-### Round 3: Coverage Targets (PLANNED)
+### Round 3: Coverage Targets (COMPLETED 2026-03-01)
 
-Remaining gaps cluster into two packages: reconcile (68.4%) and ui (57.6%).
+Two-agent team, parallel worktrees. UI agent delivered 100% (vs 80% target). Reconcile already exceeded target from accumulated round 1+2 work.
 
-| ID | Package | Current | Target | Approach | ROI |
-|----|---------|--------:|-------:|----------|-----|
-| bosun-bxv | reconcile | 68.4% | 75%+ | Drift enrichment, hook execution, deploy rollback, git branch ops | Medium |
-| bosun-vjm | ui | 57.6% | 80%+ | JSON mode branch, Debug, Logger, WithComponent | **High** |
+| ID | Package | Before | After | Target | Delta | Production Changes |
+|----|---------|-------:|------:|-------:|------:|-------------------|
+| ~~bosun-vjm~~ | ui | 57.6% | **100.0%** | 80%+ | **+42.4** | Injectable `exitFn` for Fatal/Fatalf |
+| ~~bosun-bxv~~ | reconcile | 68.4% | **77.3%** | 75%+ | **+8.9** | None (accumulated from rounds 1+2) |
 
-#### UI Package Plan (57.6% → 80%+)
+*Higher coverage is better.*
 
-**Why it's high ROI:** Every function has the same pattern — `if isConsoleMode() { color } else { log }`. The existing tests ONLY cover console mode because `init()` sets `FormatConsole`. Adding a JSON mode test helper covers the `else` branch of all 13 functions at once.
+**UI approach:** `captureJSONOutput()` helper redirects `os.Stdout` before `log.Init()` in JSON mode, covering the `else` branch of all 13 output functions in one sweep. Injectable `exitFn = os.Exit` enables direct Fatal/Fatalf testing. 28 test cases across 10 new test functions.
 
-**Work items:**
+**Reconcile note:** The round 3 agent's worktree branched from `main` (not the feature branch), so it re-derived work already done in rounds 1+2. The branch already had 77.3% from prior commits. Lesson: worktree-isolated agents must start from the feature branch HEAD when prior work exists.
 
-1. **JSON mode helper** — Create `captureJSONOutput(fn)` that sets `log.FormatJSON`, captures log output, and restores. Test every function in JSON mode (Success→Info log with `success=true`, Error→Error log, etc.).
-
-2. **Debug function** — 0% coverage. Call in both console and JSON mode.
-
-3. **Logger and WithComponent** — 0% coverage. Trivial: call, assert non-nil return.
-
-4. **Fatal/Fatalf** — 0% coverage. These call `os.Exit(1)` so they can't be tested directly. Options:
-   - Make the exit function injectable (`var exitFn = os.Exit`) — test by replacing with noop
-   - Accept 0% on these 2 functions (they're 12 lines total, identical to Error)
-   - **Recommended:** inject `exitFn`, covers both the formatting AND exit logic
-
-**Expected: ~25 new test cases, all in `color_test.go`.**
-
-#### Reconcile Package Plan (68.4% → 75%+)
-
-**Why it's medium ROI:** The uncovered code splits into two categories:
-- **Testable without I/O** (~6.6% gain possible): drift enrichment, hook execution, rollback logic, git branch helpers
-- **Requires real git/SSH/Docker** (~25% gap): Clone, Pull, DeployRemote, SSH auth — too expensive for unit tests
-
-**Work items (target the testable gaps):**
-
-1. **EnrichUnhealthyItems** (55.6%) — Test via `MockDockerAPI` injection. Cases: no drift, non-unhealthy items skipped, inspect error skipped, health log present, health log nil, output truncation at 200 chars.
-
-2. **ExecutePostSyncHooks** (0%) — Needs a Docker client mock for `RestartContainer`. Test: empty hooks (noop), restart action, unsupported action skipped, per-hook delay with cancelled context, settle delay. **Requires making Docker client injectable** — add `restarter` interface or accept a `RestartContainer` func.
-
-3. **ComposeUpMultipleWithRollback** (55.2%) — Partially tested. Missing: backup file missing (skip), all backup files missing, rollback exec failure. These need `exec.Command` injection similar to docker compose — the `DeployOps` struct already has a `DryRun` field but no command runner. **May need `commandRunner` injection on `DeployOps`** (same pattern as docker compose).
-
-4. **Git branch operations** — `RemoteBranchExists` (58.3%), `IsDirty` (66.7%), `GetCommitMessage` (71.4%), `DiffFiles` (0%). These use go-git in-process, so they're testable with a temp git repo. Create a `testRepo(t)` helper that inits a bare repo with a commit.
-
-5. **serviceNameFromContainer** (81.8%) — Missing edge cases in name extraction. Table-driven test additions.
-
-**NOT targeting (diminishing returns):**
-- `CheckSSHConnectivity` (15.4%) — needs real SSH
-- `DeployRemote`/`DeployRemoteFile`/`EnsureRemoteDir` (12-19%) — needs SSH + tar
-- `ComposeUpRemote` (30.4%) — needs remote Docker
-- `getSSHAuth`/`getHostKeyCallback`/`getSSHAgentAuth`/`getSSHKeyFileAuth` (0-40%) — SSH agent/key file handling
-- `reconcile.Run` (82.2%) — already high, remaining paths are I/O orchestration
-
-**Expected: ~40 new test cases across drift, hooks, deploy, and git test files. Target 75%+, stretch 78%.**
-
-#### Execution Plan
-
-Two agents, parallel worktrees:
-
-| Agent | Package | Files Touched | Estimated Cases |
-|-------|---------|---------------|----------------:|
-| ui-tester | internal/ui | `color.go` (exitFn), `color_test.go` | ~25 |
-| reconcile-tester | internal/reconcile | `hooks.go` (restarter), `drift_test.go`, `hooks_test.go`, `deploy_test.go`, `git_test.go` | ~40 |
-
-No file overlap. Same merge strategy as round 2.
+**Gotcha: Worktree base branch.** `isolation: "worktree"` creates a new branch from the current repo HEAD. If the session is on a feature branch with prior commits, the worktree correctly inherits those commits. But in this case, the reconcile agent's worktree resolved to `main` instead of `feat/test-coverage-boost`, losing 4 commits of prior work. This may be a race condition with how agent worktrees resolve their base.
 
 **Not worth chasing (unchanged):**
 - **cmd** (40%) — orchestrators calling Docker/Tailscale/filesystem. E2E territory.
