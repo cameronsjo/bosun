@@ -31,11 +31,12 @@ func computeDriftStatus(driftItemCount int, lastDeployedCommit string) string {
 // buildAPIStatusResponse constructs an APIStatusResponse from daemon state.
 // The caller is responsible for reading daemon state under appropriate locks.
 func buildAPIStatusResponse(lastReconcile time.Time, lastErr error, reconciling bool, health string, uptime time.Duration, pollInterval time.Duration) APIStatusResponse {
+	rounded := uptime.Round(time.Second)
 	resp := APIStatusResponse{
 		Health:        health,
 		State:         reconcileStateString(reconciling),
-		Uptime:        uptime.Round(time.Second).String(),
-		UptimeSeconds: int64(uptime.Seconds()),
+		Uptime:        rounded.String(),
+		UptimeSeconds: int64(rounded.Seconds()),
 	}
 
 	if !lastReconcile.IsZero() {

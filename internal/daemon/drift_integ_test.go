@@ -35,7 +35,7 @@ func TestDaemonRunDriftCheck_SkipsWhenReconciling(t *testing.T) {
 
 func TestDaemonRunDriftCheck_UpdatesStateFile(t *testing.T) {
 	tmpDir := t.TempDir()
-	tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+	tmpDir = evalSymlinks(t, tmpDir)
 	stateFile := filepath.Join(tmpDir, "state.json")
 
 	// Pre-populate state with declared services so drift check runs.
@@ -85,7 +85,7 @@ func TestDaemonRunDriftCheck_NoStateFile(t *testing.T) {
 	mock := dockertest.NewMockDockerAPI()
 
 	tmpDir := t.TempDir()
-	tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+	tmpDir = evalSymlinks(t, tmpDir)
 
 	cfg := DefaultConfig()
 	cfg.SocketPath = filepath.Join(tmpDir, "test.sock")

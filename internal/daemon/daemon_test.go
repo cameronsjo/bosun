@@ -570,7 +570,7 @@ func TestConfigFromEnv_PostSyncHooksFromConfig(t *testing.T) {
 	t.Run("loads hooks from bosun.yaml", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		// macOS: /var -> /private/var symlink resolution.
-		tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+		tmpDir = evalSymlinks(t, tmpDir)
 
 		yamlContent := `manifest_dir: manifest
 post_sync_hooks:
@@ -585,9 +585,10 @@ post_sync_hooks:
 			t.Fatalf("Failed to create manifest dir: %v", err)
 		}
 
-		origDir, _ := os.Getwd()
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
 		defer func() { _ = os.Chdir(origDir) }()
-		_ = os.Chdir(tmpDir)
+		require.NoError(t, os.Chdir(tmpDir))
 
 		cfg := ConfigFromEnv()
 
@@ -605,7 +606,7 @@ post_sync_hooks:
 
 	t.Run("env var overrides bosun.yaml hooks", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+		tmpDir = evalSymlinks(t, tmpDir)
 
 		yamlContent := `manifest_dir: manifest
 post_sync_hooks:
@@ -620,9 +621,10 @@ post_sync_hooks:
 			t.Fatalf("Failed to create manifest dir: %v", err)
 		}
 
-		origDir, _ := os.Getwd()
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
 		defer func() { _ = os.Chdir(origDir) }()
-		_ = os.Chdir(tmpDir)
+		require.NoError(t, os.Chdir(tmpDir))
 
 		envHooks := []reconcile.PostSyncHook{{
 			Paths:     []string{"authelia/**"},
@@ -645,11 +647,12 @@ post_sync_hooks:
 
 	t.Run("no config file uses env var only", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+		tmpDir = evalSymlinks(t, tmpDir)
 
-		origDir, _ := os.Getwd()
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
 		defer func() { _ = os.Chdir(origDir) }()
-		_ = os.Chdir(tmpDir)
+		require.NoError(t, os.Chdir(tmpDir))
 
 		envHooks := []reconcile.PostSyncHook{{
 			Paths:     []string{"nginx/**"},
@@ -957,7 +960,7 @@ func TestConfigFromEnv_ContentHashSync(t *testing.T) {
 func newConcurrencyDaemon(t *testing.T) *Daemon {
 	t.Helper()
 	tmpDir := t.TempDir()
-	tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+	tmpDir = evalSymlinks(t, tmpDir)
 
 	cfg := DefaultConfig()
 	cfg.EnableHTTP = false
@@ -1074,7 +1077,7 @@ func TestTriggerReconcile_ContextCancellation(t *testing.T) {
 func TestHealthStatus_Accessors(t *testing.T) {
 	t.Run("healthy by default", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+		tmpDir = evalSymlinks(t, tmpDir)
 
 		d := &Daemon{
 			config: &Config{
@@ -1091,7 +1094,7 @@ func TestHealthStatus_Accessors(t *testing.T) {
 
 	t.Run("degraded after setting lastError", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+		tmpDir = evalSymlinks(t, tmpDir)
 
 		d := &Daemon{
 			config: &Config{
@@ -1171,7 +1174,7 @@ func TestVersionOrDev(t *testing.T) {
 
 func TestWidgetData_Structure(t *testing.T) {
 	tmpDir := t.TempDir()
-	tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+	tmpDir = evalSymlinks(t, tmpDir)
 
 	d := &Daemon{
 		config: &Config{
@@ -1216,7 +1219,7 @@ func (p *testAlertProvider) Send(_ context.Context, a *alert.Alert) error {
 func newAlertDaemon(t *testing.T, provider *testAlertProvider) *Daemon {
 	t.Helper()
 	tmpDir := t.TempDir()
-	tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+	tmpDir = evalSymlinks(t, tmpDir)
 
 	mgr := alert.NewManager()
 	mgr.AddProvider(provider)
@@ -1281,7 +1284,7 @@ func TestSendDriftAlert(t *testing.T) {
 
 	t.Run("no alerter configured does not panic", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+		tmpDir = evalSymlinks(t, tmpDir)
 
 		d := &Daemon{
 			config: &Config{
@@ -1331,7 +1334,7 @@ func TestSendDriftResolvedAlert(t *testing.T) {
 
 	t.Run("no alerter configured panics", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+		tmpDir = evalSymlinks(t, tmpDir)
 
 		d := &Daemon{
 			config: &Config{

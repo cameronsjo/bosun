@@ -11,7 +11,6 @@ import (
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
-	"github.com/docker/go-connections/nat"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -713,9 +712,6 @@ func makeTestInspectResponse(name, image string, health *container.Health) conta
 			Env:    []string{},
 		},
 		NetworkSettings: &container.NetworkSettings{
-			NetworkSettingsBase: container.NetworkSettingsBase{
-				Ports: nat.PortMap{},
-			},
 			Networks: map[string]*network.EndpointSettings{},
 		},
 		Mounts: []container.MountPoint{},

@@ -39,7 +39,7 @@ Total: **84 extraction candidates** identified across the codebase.
 
 ### Prioritization
 
-We triered the candidates by ROI (coverage gain per LOC of effort):
+We tiered the candidates by ROI (coverage gain per LOC of effort):
 
 - **Tier 1** (highest ROI): reconcile circuit breaker, skip logic, target host resolution; daemon drift status, status response, container summary
 - **Tier 2** (medium ROI): docker stats math, config env overrides, cmd port parsing, diff formatting

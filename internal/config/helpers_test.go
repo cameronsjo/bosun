@@ -67,16 +67,26 @@ func TestGetEnvOrDefault(t *testing.T) {
 	}
 }
 
+// clearAlertEnvVars clears all alert-related environment variables (both
+// BOSUN_-prefixed and legacy unprefixed) so tests start from a clean state.
+func clearAlertEnvVars(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"BOSUN_DISCORD_WEBHOOK_URL", "DISCORD_WEBHOOK_URL",
+		"BOSUN_SENDGRID_API_KEY", "SENDGRID_API_KEY",
+		"BOSUN_SENDGRID_FROM_EMAIL", "SENDGRID_FROM_EMAIL",
+		"BOSUN_SENDGRID_FROM_NAME", "SENDGRID_FROM_NAME",
+		"BOSUN_TWILIO_ACCOUNT_SID", "TWILIO_ACCOUNT_SID",
+		"BOSUN_TWILIO_AUTH_TOKEN", "TWILIO_AUTH_TOKEN",
+		"BOSUN_TWILIO_FROM_NUMBER", "TWILIO_FROM_NUMBER",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
 func TestExtractAlertConfig(t *testing.T) {
 	t.Run("defaults OnFailure to true when neither flag set", func(t *testing.T) {
-		// Clear env vars that would interfere
-		t.Setenv("DISCORD_WEBHOOK_URL", "")
-		t.Setenv("SENDGRID_API_KEY", "")
-		t.Setenv("SENDGRID_FROM_EMAIL", "")
-		t.Setenv("SENDGRID_FROM_NAME", "")
-		t.Setenv("TWILIO_ACCOUNT_SID", "")
-		t.Setenv("TWILIO_AUTH_TOKEN", "")
-		t.Setenv("TWILIO_FROM_NUMBER", "")
+		clearAlertEnvVars(t)
 
 		cfg := configFile{}
 		alertCfg := extractAlertConfig(cfg)
@@ -86,13 +96,7 @@ func TestExtractAlertConfig(t *testing.T) {
 	})
 
 	t.Run("respects OnSuccess when explicitly set", func(t *testing.T) {
-		t.Setenv("DISCORD_WEBHOOK_URL", "")
-		t.Setenv("SENDGRID_API_KEY", "")
-		t.Setenv("SENDGRID_FROM_EMAIL", "")
-		t.Setenv("SENDGRID_FROM_NAME", "")
-		t.Setenv("TWILIO_ACCOUNT_SID", "")
-		t.Setenv("TWILIO_AUTH_TOKEN", "")
-		t.Setenv("TWILIO_FROM_NUMBER", "")
+		clearAlertEnvVars(t)
 
 		cfg := configFile{
 			Alerts: AlertConfig{OnSuccess: true},
@@ -104,7 +108,8 @@ func TestExtractAlertConfig(t *testing.T) {
 		assert.False(t, alertCfg.OnFailure)
 	})
 
-	t.Run("env vars override config file values", func(t *testing.T) {
+	t.Run("legacy env vars override config file values", func(t *testing.T) {
+		clearAlertEnvVars(t)
 		t.Setenv("DISCORD_WEBHOOK_URL", "https://discord.com/env")
 		t.Setenv("SENDGRID_API_KEY", "SG.env-key")
 		t.Setenv("SENDGRID_FROM_EMAIL", "env@example.com")
@@ -135,14 +140,33 @@ func TestExtractAlertConfig(t *testing.T) {
 		assert.Equal(t, "+15550000000", alertCfg.TwilioFromNumber)
 	})
 
+	t.Run("BOSUN_ prefix takes precedence over legacy env vars", func(t *testing.T) {
+		clearAlertEnvVars(t)
+		// Set both legacy and BOSUN_-prefixed — prefixed should win
+		t.Setenv("DISCORD_WEBHOOK_URL", "https://discord.com/legacy")
+		t.Setenv("BOSUN_DISCORD_WEBHOOK_URL", "https://discord.com/bosun")
+		t.Setenv("SENDGRID_API_KEY", "SG.legacy")
+		t.Setenv("BOSUN_SENDGRID_API_KEY", "SG.bosun")
+		t.Setenv("TWILIO_ACCOUNT_SID", "AC-legacy")
+		t.Setenv("BOSUN_TWILIO_ACCOUNT_SID", "AC-bosun")
+
+		cfg := configFile{
+			Alerts: AlertConfig{
+				DiscordWebhookURL: "https://discord.com/config",
+				SendGridAPIKey:    "SG.config",
+				TwilioAccountSID:  "AC-config",
+				OnFailure:         true,
+			},
+		}
+		alertCfg := extractAlertConfig(cfg)
+
+		assert.Equal(t, "https://discord.com/bosun", alertCfg.DiscordWebhookURL)
+		assert.Equal(t, "SG.bosun", alertCfg.SendGridAPIKey)
+		assert.Equal(t, "AC-bosun", alertCfg.TwilioAccountSID)
+	})
+
 	t.Run("empty env vars fall back to config file values", func(t *testing.T) {
-		t.Setenv("DISCORD_WEBHOOK_URL", "")
-		t.Setenv("SENDGRID_API_KEY", "")
-		t.Setenv("SENDGRID_FROM_EMAIL", "")
-		t.Setenv("SENDGRID_FROM_NAME", "")
-		t.Setenv("TWILIO_ACCOUNT_SID", "")
-		t.Setenv("TWILIO_AUTH_TOKEN", "")
-		t.Setenv("TWILIO_FROM_NUMBER", "")
+		clearAlertEnvVars(t)
 
 		cfg := configFile{
 			Alerts: AlertConfig{
@@ -160,13 +184,7 @@ func TestExtractAlertConfig(t *testing.T) {
 	})
 
 	t.Run("preserves list fields untouched by env override", func(t *testing.T) {
-		t.Setenv("DISCORD_WEBHOOK_URL", "")
-		t.Setenv("SENDGRID_API_KEY", "")
-		t.Setenv("SENDGRID_FROM_EMAIL", "")
-		t.Setenv("SENDGRID_FROM_NAME", "")
-		t.Setenv("TWILIO_ACCOUNT_SID", "")
-		t.Setenv("TWILIO_AUTH_TOKEN", "")
-		t.Setenv("TWILIO_FROM_NUMBER", "")
+		clearAlertEnvVars(t)
 
 		cfg := configFile{
 			Alerts: AlertConfig{

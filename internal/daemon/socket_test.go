@@ -20,7 +20,7 @@ import (
 func newTestSocketServer(t *testing.T) (*SocketServer, *Daemon) {
 	t.Helper()
 	tmpDir := t.TempDir()
-	tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+	tmpDir = evalSymlinks(t, tmpDir)
 
 	cfg := DefaultConfig()
 	cfg.EnableHTTP = false

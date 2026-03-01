@@ -23,7 +23,7 @@ func shortSocketDir(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "bs")
 	require.NoError(t, err)
-	dir, _ = filepath.EvalSymlinks(dir)
+	dir = evalSymlinks(t, dir)
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	return dir
 }
@@ -143,7 +143,7 @@ func TestSocketLifecycle_StaleSocketCleanup(t *testing.T) {
 
 func TestTCPLifecycle_StartAcceptShutdown(t *testing.T) {
 	tmpDir := t.TempDir()
-	tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+	tmpDir = evalSymlinks(t, tmpDir)
 	token := "test-bearer-token"
 
 	cfg := DefaultConfig()
@@ -202,7 +202,7 @@ func TestTCPLifecycle_StartAcceptShutdown(t *testing.T) {
 
 func TestTCPLifecycle_AuthRequired(t *testing.T) {
 	tmpDir := t.TempDir()
-	tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+	tmpDir = evalSymlinks(t, tmpDir)
 	token := "correct-token"
 
 	cfg := DefaultConfig()

@@ -27,7 +27,7 @@ func newTestDaemon(t *testing.T) (*Daemon, *Server) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	// macOS: /var -> /private/var symlink resolution.
-	tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+	tmpDir = evalSymlinks(t, tmpDir)
 
 	cfg := DefaultConfig()
 	cfg.EnableHTTP = false
@@ -72,7 +72,7 @@ func TestValidateSignature(t *testing.T) {
 	cfg.WebhookSecret = secret
 
 	tmpDir := t.TempDir()
-	tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+	tmpDir = evalSymlinks(t, tmpDir)
 	cfg.SocketPath = filepath.Join(tmpDir, "test.sock")
 
 	d, err := New(cfg)
@@ -144,7 +144,7 @@ func TestValidateGitHubSignature(t *testing.T) {
 	cfg.WebhookSecret = secret
 
 	tmpDir := t.TempDir()
-	tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+	tmpDir = evalSymlinks(t, tmpDir)
 	cfg.SocketPath = filepath.Join(tmpDir, "test.sock")
 
 	d, err := New(cfg)

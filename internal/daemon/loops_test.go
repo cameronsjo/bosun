@@ -18,7 +18,7 @@ import (
 func newLoopDaemon(t *testing.T, pollInterval, driftInterval time.Duration) *Daemon {
 	t.Helper()
 	tmpDir := t.TempDir()
-	tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+	tmpDir = evalSymlinks(t, tmpDir)
 
 	cfg := DefaultConfig()
 	cfg.SocketPath = filepath.Join(tmpDir, "test.sock")

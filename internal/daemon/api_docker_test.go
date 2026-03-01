@@ -24,7 +24,7 @@ import (
 func newDockerDaemon(t *testing.T, mockAPI *dockertest.MockDockerAPI) *Daemon {
 	t.Helper()
 	tmpDir := t.TempDir()
-	tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+	tmpDir = evalSymlinks(t, tmpDir)
 
 	cfg := DefaultConfig()
 	cfg.SocketPath = filepath.Join(tmpDir, "test.sock")

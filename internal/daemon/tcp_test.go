@@ -123,7 +123,7 @@ func TestTCPServer_auditMiddleware(t *testing.T) {
 func newTestTCPServer(t *testing.T) (*TCPServer, *Daemon) {
 	t.Helper()
 	tmpDir := t.TempDir()
-	tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+	tmpDir = evalSymlinks(t, tmpDir)
 
 	cfg := DefaultConfig()
 	cfg.EnableHTTP = false

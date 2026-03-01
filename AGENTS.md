@@ -306,6 +306,13 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 | `BOSUN_DRIFT_ALERT_COOLDOWN` | daemon | Cooldown between repeated drift alerts (default: `1h`) |
 | `BOSUN_DRIFT_RESOLVE_ALERTS` | daemon | Send "drift resolved" notifications (default: `true`) |
 | `BOSUN_CONTENT_HASH_SYNC` | daemon, reconcile | Compare file hashes before writing to skip unchanged files (default: `true`) |
+| `BOSUN_DISCORD_WEBHOOK_URL` | config | Discord webhook URL (overrides config file; legacy: `DISCORD_WEBHOOK_URL`) |
+| `BOSUN_SENDGRID_API_KEY` | config | SendGrid API key (overrides config file; legacy: `SENDGRID_API_KEY`) |
+| `BOSUN_SENDGRID_FROM_EMAIL` | config | SendGrid sender email (overrides config file; legacy: `SENDGRID_FROM_EMAIL`) |
+| `BOSUN_SENDGRID_FROM_NAME` | config | SendGrid sender name (overrides config file; legacy: `SENDGRID_FROM_NAME`) |
+| `BOSUN_TWILIO_ACCOUNT_SID` | config | Twilio account SID (overrides config file; legacy: `TWILIO_ACCOUNT_SID`) |
+| `BOSUN_TWILIO_AUTH_TOKEN` | config | Twilio auth token (overrides config file; legacy: `TWILIO_AUTH_TOKEN`) |
+| `BOSUN_TWILIO_FROM_NUMBER` | config | Twilio sender number (overrides config file; legacy: `TWILIO_FROM_NUMBER`) |
 | `BOSUN_SSH_KEY` | reconcile | SSH key path for git operations |
 | `BOSUN_SSH_KNOWN_HOSTS` | reconcile | Known hosts file path |
 | `BOSUN_SSH_INSECURE_HOST_KEY` | reconcile | Skip host key verification (`true`/`false`) |

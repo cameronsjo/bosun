@@ -790,7 +790,7 @@ func TestDeployOps_ComposeUpMultiple_EmptyFiles(t *testing.T) {
 }
 
 func TestDeployOps_DeployLocal_ContextCancelled(t *testing.T) {
-	tmpDir := t.TempDir()
+	tmpDir := evalSymlinks(t, t.TempDir())
 	sourceDir := filepath.Join(tmpDir, "source")
 	targetDir := filepath.Join(tmpDir, "target")
 	require.NoError(t, os.MkdirAll(sourceDir, 0755))

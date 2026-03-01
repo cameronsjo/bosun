@@ -236,7 +236,7 @@ func TestAPIContainerUnknownAction(t *testing.T) {
 func TestAPIDrift(t *testing.T) {
 	t.Run("no state file returns 503", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+		tmpDir = evalSymlinks(t, tmpDir)
 
 		// Construct daemon directly — New() backfills ReconcileConfig with defaults
 		// that include a state file path, so we bypass it to test the nil/empty path.
@@ -260,7 +260,7 @@ func TestAPIDrift(t *testing.T) {
 
 	t.Run("nil reconcile config returns 503", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+		tmpDir = evalSymlinks(t, tmpDir)
 
 		d := &Daemon{
 			config: &Config{
@@ -282,7 +282,7 @@ func TestAPIDrift(t *testing.T) {
 
 	t.Run("state file with drift items returns 200 with items", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+		tmpDir = evalSymlinks(t, tmpDir)
 
 		stateFile := filepath.Join(tmpDir, "state.json")
 		checkedAt := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
@@ -330,7 +330,7 @@ func TestAPIDrift(t *testing.T) {
 
 	t.Run("clean state returns 200 with clean status", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+		tmpDir = evalSymlinks(t, tmpDir)
 
 		stateFile := filepath.Join(tmpDir, "state.json")
 		state := &reconcile.DeployState{
@@ -364,7 +364,7 @@ func TestAPIDrift(t *testing.T) {
 
 	t.Run("POST returns 405", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+		tmpDir = evalSymlinks(t, tmpDir)
 
 		stateFile := filepath.Join(tmpDir, "state.json")
 		cfg := &Config{

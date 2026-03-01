@@ -507,13 +507,14 @@ func extractAlertConfig(cfg configFile) AlertConfig {
 	}
 
 	// Environment variable overrides for sensitive values.
-	alertCfg.DiscordWebhookURL = getEnvOrDefault("DISCORD_WEBHOOK_URL", alertCfg.DiscordWebhookURL)
-	alertCfg.SendGridAPIKey = getEnvOrDefault("SENDGRID_API_KEY", alertCfg.SendGridAPIKey)
-	alertCfg.SendGridFromEmail = getEnvOrDefault("SENDGRID_FROM_EMAIL", alertCfg.SendGridFromEmail)
-	alertCfg.SendGridFromName = getEnvOrDefault("SENDGRID_FROM_NAME", alertCfg.SendGridFromName)
-	alertCfg.TwilioAccountSID = getEnvOrDefault("TWILIO_ACCOUNT_SID", alertCfg.TwilioAccountSID)
-	alertCfg.TwilioAuthToken = getEnvOrDefault("TWILIO_AUTH_TOKEN", alertCfg.TwilioAuthToken)
-	alertCfg.TwilioFromNumber = getEnvOrDefault("TWILIO_FROM_NUMBER", alertCfg.TwilioFromNumber)
+	// BOSUN_-prefixed vars take precedence; legacy unprefixed vars are fallback.
+	alertCfg.DiscordWebhookURL = getEnvOrDefault("BOSUN_DISCORD_WEBHOOK_URL", getEnvOrDefault("DISCORD_WEBHOOK_URL", alertCfg.DiscordWebhookURL))
+	alertCfg.SendGridAPIKey = getEnvOrDefault("BOSUN_SENDGRID_API_KEY", getEnvOrDefault("SENDGRID_API_KEY", alertCfg.SendGridAPIKey))
+	alertCfg.SendGridFromEmail = getEnvOrDefault("BOSUN_SENDGRID_FROM_EMAIL", getEnvOrDefault("SENDGRID_FROM_EMAIL", alertCfg.SendGridFromEmail))
+	alertCfg.SendGridFromName = getEnvOrDefault("BOSUN_SENDGRID_FROM_NAME", getEnvOrDefault("SENDGRID_FROM_NAME", alertCfg.SendGridFromName))
+	alertCfg.TwilioAccountSID = getEnvOrDefault("BOSUN_TWILIO_ACCOUNT_SID", getEnvOrDefault("TWILIO_ACCOUNT_SID", alertCfg.TwilioAccountSID))
+	alertCfg.TwilioAuthToken = getEnvOrDefault("BOSUN_TWILIO_AUTH_TOKEN", getEnvOrDefault("TWILIO_AUTH_TOKEN", alertCfg.TwilioAuthToken))
+	alertCfg.TwilioFromNumber = getEnvOrDefault("BOSUN_TWILIO_FROM_NUMBER", getEnvOrDefault("TWILIO_FROM_NUMBER", alertCfg.TwilioFromNumber))
 
 	return alertCfg
 }

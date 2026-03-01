@@ -751,7 +751,7 @@ func TestCleanupStaging(t *testing.T) {
 		cfg := &Config{StagingDir: stagingDir}
 		r := NewReconciler(cfg)
 
-		r.cleanupStaging()
+		_ = r.cleanupStaging()
 		assert.NoDirExists(t, stagingDir)
 	})
 
@@ -759,8 +759,8 @@ func TestCleanupStaging(t *testing.T) {
 		cfg := &Config{StagingDir: "/nonexistent/staging/dir"}
 		r := NewReconciler(cfg)
 
-		// Should not panic.
-		r.cleanupStaging()
+		// Should not panic or error on missing dir.
+		_ = r.cleanupStaging()
 	})
 }
 

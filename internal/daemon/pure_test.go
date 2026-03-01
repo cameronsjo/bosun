@@ -119,7 +119,7 @@ func TestBuildAPIStatusResponse(t *testing.T) {
 			pollInterval:  0,
 			check: func(t *testing.T, resp APIStatusResponse) {
 				assert.Equal(t, "5m1s", resp.Uptime)
-				assert.Equal(t, int64(300), resp.UptimeSeconds)
+				assert.Equal(t, int64(301), resp.UptimeSeconds)
 			},
 		},
 	}

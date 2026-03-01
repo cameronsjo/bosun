@@ -106,7 +106,7 @@ func TestSocketClient_Ping(t *testing.T) {
 
 func TestTCPClient_Health(t *testing.T) {
 	tmpDir := t.TempDir()
-	tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+	tmpDir = evalSymlinks(t, tmpDir)
 	token := "tcp-test-token"
 
 	cfg := DefaultConfig()
@@ -160,7 +160,7 @@ func TestTCPClient_Health(t *testing.T) {
 
 func TestTCPClient_WrongToken(t *testing.T) {
 	tmpDir := t.TempDir()
-	tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+	tmpDir = evalSymlinks(t, tmpDir)
 	token := "correct-token-rt"
 
 	cfg := DefaultConfig()
