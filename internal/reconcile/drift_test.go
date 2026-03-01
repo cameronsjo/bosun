@@ -1,15 +1,59 @@
 package reconcile
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/cameronsjo/bosun/internal/docker"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/network"
+	"github.com/docker/go-connections/nat"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestExtractServicesFromCompose(t *testing.T) {
+	t.Run("valid file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		f := filepath.Join(tmpDir, "compose.yml")
+		require.NoError(t, os.WriteFile(f, []byte("services:\n  web:\n    image: nginx\n"), 0644))
+
+		services, err := extractServicesFromCompose(f)
+		require.NoError(t, err)
+		assert.Len(t, services, 1)
+		assert.Equal(t, "web", services[0].Name)
+	})
+
+	t.Run("missing file returns error", func(t *testing.T) {
+		_, err := extractServicesFromCompose("/nonexistent.yml")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "read file")
+	})
+
+	t.Run("invalid YAML returns error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		f := filepath.Join(tmpDir, "bad.yml")
+		require.NoError(t, os.WriteFile(f, []byte("[broken{{{"), 0644))
+
+		_, err := extractServicesFromCompose(f)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "parse YAML")
+	})
+
+	t.Run("compose without services returns empty", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		f := filepath.Join(tmpDir, "empty.yml")
+		require.NoError(t, os.WriteFile(f, []byte("version: '3'\n"), 0644))
+
+		services, err := extractServicesFromCompose(f)
+		require.NoError(t, err)
+		assert.Empty(t, services)
+	})
+}
 
 func TestCompareDrift_NoDrift(t *testing.T) {
 	declared := []DeclaredService{
@@ -478,4 +522,482 @@ func TestDeployState_BackwardsCompatibleLoad(t *testing.T) {
 	assert.Equal(t, "old123", loaded.LastDeployedCommit)
 	assert.Empty(t, loaded.DeclaredServices)
 	assert.Empty(t, loaded.DriftItems)
+}
+
+func TestServiceNameFromContainer(t *testing.T) {
+	tests := []struct {
+		name          string
+		containerName string
+		projectName   string
+		want          string
+	}{
+		{
+			name:          "simple service with replica",
+			containerName: "core-web-1",
+			projectName:   "core",
+			want:          "web",
+		},
+		{
+			name:          "hyphenated service with replica",
+			containerName: "core-my-service-1",
+			projectName:   "core",
+			want:          "my-service",
+		},
+		{
+			name:          "service name without replica number",
+			containerName: "core-web",
+			projectName:   "core",
+			want:          "web",
+		},
+		{
+			name:          "service with non-numeric suffix",
+			containerName: "core-web-abc",
+			projectName:   "core",
+			want:          "web-abc",
+		},
+		{
+			name:          "numeric service name with replica",
+			containerName: "proj-3-1",
+			projectName:   "proj",
+			want:          "3",
+		},
+		{
+			name:          "container name equals project prefix only",
+			containerName: "core-",
+			projectName:   "core",
+			want:          "",
+		},
+		{
+			name:          "multi-digit replica number",
+			containerName: "core-redis-12",
+			projectName:   "core",
+			want:          "redis",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := serviceNameFromContainer(tt.containerName, tt.projectName)
+			assert.Equal(t, tt.want, result)
+		})
+	}
+}
+
+// makeTestInspectResponse creates a container.InspectResponse for testing.
+func makeTestInspectResponse(name, image string, health *container.Health) container.InspectResponse {
+	state := &container.State{
+		Status:    "running",
+		Running:   true,
+		StartedAt: "2024-01-01T00:00:00.000000000Z",
+	}
+	if health != nil {
+		state.Health = health
+	}
+
+	return container.InspectResponse{
+		ContainerJSONBase: &container.ContainerJSONBase{
+			ID:      "abc1234567890000",
+			Name:    "/" + name,
+			Created: "2024-01-01T00:00:00.000000000Z",
+			State:   state,
+			Driver:  "overlay2",
+		},
+		Config: &container.Config{
+			Image:  image,
+			Labels: map[string]string{},
+			Env:    []string{},
+		},
+		NetworkSettings: &container.NetworkSettings{
+			NetworkSettingsBase: container.NetworkSettingsBase{
+				Ports: nat.PortMap{},
+			},
+			Networks: map[string]*network.EndpointSettings{},
+		},
+		Mounts: []container.MountPoint{},
+	}
+}
+
+func TestCollectActualState(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns matching containers sorted by name", func(t *testing.T) {
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+			return []container.Summary{
+				{
+					ID:    "aaa0000000000000",
+					Names: []string{"/core-web-1"},
+					Image: "nginx:latest",
+					State: "running",
+					Labels: map[string]string{
+						ComposeProjectLabel: "core",
+						ComposeServiceLabel: "web",
+					},
+					Status: "Up 10 minutes (healthy)",
+				},
+				{
+					ID:    "bbb0000000000000",
+					Names: []string{"/core-api-1"},
+					Image: "myapp:v1",
+					State: "running",
+					Labels: map[string]string{
+						ComposeProjectLabel: "core",
+						ComposeServiceLabel: "api",
+					},
+					Status: "Up 10 minutes",
+				},
+				{
+					ID:    "ccc0000000000000",
+					Names: []string{"/other-db-1"},
+					Image: "postgres:16",
+					State: "running",
+					Labels: map[string]string{
+						ComposeProjectLabel: "other",
+						ComposeServiceLabel: "db",
+					},
+					Status: "Up 10 minutes",
+				},
+			}, nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		actual, err := CollectActualState(ctx, client, "core")
+		require.NoError(t, err)
+		require.Len(t, actual, 2)
+		assert.Equal(t, "api", actual[0].Name)
+		assert.Equal(t, "web", actual[1].Name)
+		assert.Equal(t, "nginx:latest", actual[1].Image)
+	})
+
+	t.Run("empty project name returns all containers", func(t *testing.T) {
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+			return []container.Summary{
+				{
+					ID:    "aaa0000000000000",
+					Names: []string{"/web"},
+					Image: "nginx:latest",
+					State: "running",
+					Labels: map[string]string{
+						ComposeProjectLabel: "core",
+						ComposeServiceLabel: "web",
+					},
+					Status: "Up 10 minutes",
+				},
+			}, nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		actual, err := CollectActualState(ctx, client, "")
+		require.NoError(t, err)
+		assert.Len(t, actual, 1)
+	})
+
+	t.Run("docker list error propagates", func(t *testing.T) {
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+			return nil, fmt.Errorf("docker daemon not running")
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		_, err := CollectActualState(ctx, client, "core")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "list containers")
+	})
+
+	t.Run("deduplicates replica containers", func(t *testing.T) {
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+			return []container.Summary{
+				{
+					ID:    "aaa0000000000000",
+					Names: []string{"/core-web-1"},
+					Image: "nginx:latest",
+					State: "running",
+					Labels: map[string]string{
+						ComposeProjectLabel: "core",
+						ComposeServiceLabel: "web",
+					},
+					Status: "Up 10 minutes",
+				},
+				{
+					ID:    "bbb0000000000000",
+					Names: []string{"/core-web-2"},
+					Image: "nginx:latest",
+					State: "running",
+					Labels: map[string]string{
+						ComposeProjectLabel: "core",
+						ComposeServiceLabel: "web",
+					},
+					Status: "Up 10 minutes",
+				},
+			}, nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		actual, err := CollectActualState(ctx, client, "core")
+		require.NoError(t, err)
+		assert.Len(t, actual, 1, "replicas should be deduplicated")
+	})
+}
+
+func TestRunDriftCheck(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("no declared services returns error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		stateFile := filepath.Join(tmpDir, "state.json")
+
+		// Empty state - no declared services.
+		state := &DeployState{}
+		require.NoError(t, SaveState(stateFile, state))
+
+		mockAPI := newReconcileMockDockerAPI()
+		client := docker.NewClientWithAPI(mockAPI)
+
+		_, err := RunDriftCheck(ctx, client, stateFile, "core")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no declared services")
+	})
+
+	t.Run("returns drift report comparing declared vs actual", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		stateFile := filepath.Join(tmpDir, "state.json")
+
+		state := &DeployState{
+			DeclaredServices: []DeclaredService{
+				{Name: "web", Image: "nginx:latest"},
+				{Name: "api", Image: "myapp:v2"},
+			},
+		}
+		require.NoError(t, SaveState(stateFile, state))
+
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+			return []container.Summary{
+				{
+					ID:    "aaa0000000000000",
+					Names: []string{"/core-web-1"},
+					Image: "nginx:latest",
+					State: "running",
+					Labels: map[string]string{
+						ComposeProjectLabel: "core",
+						ComposeServiceLabel: "web",
+					},
+					Status: "Up 10 minutes",
+				},
+				// api is missing
+			}, nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		report, err := RunDriftCheck(ctx, client, stateFile, "core")
+		require.NoError(t, err)
+		assert.True(t, report.HasDrift())
+		require.Len(t, report.Items, 1)
+		assert.Equal(t, "api", report.Items[0].Service)
+		assert.Equal(t, DriftMissing, report.Items[0].Type)
+	})
+
+	t.Run("no drift when all services match", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		stateFile := filepath.Join(tmpDir, "state.json")
+
+		state := &DeployState{
+			DeclaredServices: []DeclaredService{
+				{Name: "web", Image: "nginx:latest"},
+			},
+		}
+		require.NoError(t, SaveState(stateFile, state))
+
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+			return []container.Summary{
+				{
+					ID:    "aaa0000000000000",
+					Names: []string{"/core-web-1"},
+					Image: "nginx:latest",
+					State: "running",
+					Labels: map[string]string{
+						ComposeProjectLabel: "core",
+						ComposeServiceLabel: "web",
+					},
+					Status: "Up 10 minutes",
+				},
+			}, nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		report, err := RunDriftCheck(ctx, client, stateFile, "core")
+		require.NoError(t, err)
+		assert.False(t, report.HasDrift())
+	})
+}
+
+func TestEnrichUnhealthyItems(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("no drift items returns immediately", func(t *testing.T) {
+		report := &DriftReport{}
+		// No client needed since we return early.
+		EnrichUnhealthyItems(ctx, nil, report, nil)
+		assert.Empty(t, report.Items)
+	})
+
+	t.Run("non-unhealthy items are not inspected", func(t *testing.T) {
+		inspected := false
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
+			inspected = true
+			return container.InspectResponse{}, nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		report := &DriftReport{
+			Items: []DriftItem{
+				{Service: "web", Type: DriftImageMismatch, Declared: "nginx:1.25", Actual: "nginx:1.24"},
+				{Service: "api", Type: DriftMissing, Declared: "myapp:v1"},
+			},
+		}
+		actual := []ActualService{
+			{Name: "web", ContainerName: "core-web-1"},
+			{Name: "api", ContainerName: "core-api-1"},
+		}
+
+		EnrichUnhealthyItems(ctx, client, report, actual)
+		assert.False(t, inspected, "non-unhealthy items should not trigger inspect")
+	})
+
+	t.Run("unhealthy item with container not in actual list is skipped", func(t *testing.T) {
+		inspected := false
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
+			inspected = true
+			return container.InspectResponse{}, nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		report := &DriftReport{
+			Items: []DriftItem{
+				{Service: "ghost-service", Type: DriftUnhealthy},
+			},
+		}
+		// Actual list does not contain "ghost-service".
+		actual := []ActualService{
+			{Name: "web", ContainerName: "core-web-1"},
+		}
+
+		EnrichUnhealthyItems(ctx, client, report, actual)
+		assert.False(t, inspected, "should not inspect a container not in actual list")
+		assert.Empty(t, report.Items[0].Actual, "Actual should remain empty")
+	})
+
+	t.Run("inspect error leaves item.Actual empty", func(t *testing.T) {
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
+			return container.InspectResponse{}, fmt.Errorf("connection refused")
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		report := &DriftReport{
+			Items: []DriftItem{
+				{Service: "web", Type: DriftUnhealthy},
+			},
+		}
+		actual := []ActualService{
+			{Name: "web", ContainerName: "core-web-1"},
+		}
+
+		EnrichUnhealthyItems(ctx, client, report, actual)
+		assert.Empty(t, report.Items[0].Actual, "Actual should remain empty on inspect error")
+	})
+
+	t.Run("inspect succeeds with health data", func(t *testing.T) {
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
+			return makeTestInspectResponse("core-web-1", "nginx:latest", &container.Health{
+				Status:        "unhealthy",
+				FailingStreak: 5,
+				Log: []*container.HealthcheckResult{
+					{ExitCode: 1, Output: "connection refused"},
+				},
+			}), nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		report := &DriftReport{
+			Items: []DriftItem{
+				{Service: "web", Type: DriftUnhealthy},
+			},
+		}
+		actual := []ActualService{
+			{Name: "web", ContainerName: "core-web-1"},
+		}
+
+		EnrichUnhealthyItems(ctx, client, report, actual)
+		assert.Contains(t, report.Items[0].Actual, "failing_streak=5")
+		assert.Contains(t, report.Items[0].Actual, "last_exit=1")
+		assert.Contains(t, report.Items[0].Actual, "connection refused")
+	})
+
+	t.Run("inspect succeeds with no health log", func(t *testing.T) {
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
+			// Return inspect response with nil Health (no health checks configured).
+			return makeTestInspectResponse("core-web-1", "nginx:latest", nil), nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		report := &DriftReport{
+			Items: []DriftItem{
+				{Service: "web", Type: DriftUnhealthy},
+			},
+		}
+		actual := []ActualService{
+			{Name: "web", ContainerName: "core-web-1"},
+		}
+
+		EnrichUnhealthyItems(ctx, client, report, actual)
+		assert.Equal(t, "unhealthy (no health log)", report.Items[0].Actual)
+	})
+
+	t.Run("only unhealthy items get inspected in mixed report", func(t *testing.T) {
+		inspectedContainers := []string{}
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
+			inspectedContainers = append(inspectedContainers, containerID)
+			return makeTestInspectResponse(containerID, "img", &container.Health{
+				Status:        "unhealthy",
+				FailingStreak: 3,
+				Log: []*container.HealthcheckResult{
+					{ExitCode: 1, Output: "fail"},
+				},
+			}), nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		report := &DriftReport{
+			Items: []DriftItem{
+				{Service: "web", Type: DriftUnhealthy},
+				{Service: "api", Type: DriftImageMismatch, Declared: "v2", Actual: "v1"},
+				{Service: "db", Type: DriftUnhealthy},
+				{Service: "cache", Type: DriftMissing, Declared: "redis:7"},
+			},
+		}
+		actual := []ActualService{
+			{Name: "web", ContainerName: "core-web-1"},
+			{Name: "api", ContainerName: "core-api-1"},
+			{Name: "db", ContainerName: "core-db-1"},
+		}
+
+		EnrichUnhealthyItems(ctx, client, report, actual)
+
+		assert.Len(t, inspectedContainers, 2, "only 2 unhealthy items should be inspected")
+		assert.Contains(t, inspectedContainers, "core-web-1")
+		assert.Contains(t, inspectedContainers, "core-db-1")
+		assert.NotEmpty(t, report.Items[0].Actual, "web should be enriched")
+		assert.Equal(t, "v1", report.Items[1].Actual, "api Actual should remain unchanged")
+		assert.NotEmpty(t, report.Items[2].Actual, "db should be enriched")
+		assert.Equal(t, "redis:7", report.Items[3].Declared, "cache should remain unchanged")
+	})
 }
