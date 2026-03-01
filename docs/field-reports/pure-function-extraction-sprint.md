@@ -90,12 +90,12 @@ All three agents delivered successfully. Final tally:
 
 ### Coverage Movement
 
-| Package | Before | After | Delta |
-|---------|-------:|------:|------:|
-| config | 73.1% | 77.8% | **+4.7%** |
-| daemon | 50.5% | 53.7% | **+3.2%** |
-| docker | 68.7% | 69.8% | **+1.1%** |
-| reconcile | 65.0% | 65.7% | **+0.7%** |
+| Package | Before | After Extraction | After Wrappers | Total Delta |
+|---------|-------:|-----------------:|---------------:|------------:|
+| config | 73.1% | 77.8% | — | **+4.7%** |
+| daemon | 50.5% | 53.7% | **65.4%** | **+14.9%** |
+| docker | 68.7% | 69.8% | — | **+1.1%** |
+| reconcile | 65.0% | 65.7% | — | **+0.7%** |
 
 *Higher coverage is better.*
 
@@ -152,9 +152,10 @@ Committed to `cameronsjo/rules` repo (`e48d1ae`).
 
 ### Next Steps for Coverage
 
-1. **Test the simplified wrappers** — the original `run*` and handler functions are now thin enough to test with minimal mocking. Each wrapper needs only 2-3 test cases: "skip path taken," "circuit breaker path taken," "happy path completes."
-2. **Target daemon wrappers first** — they went from "impossible to test" to "easy to test" with the highest coverage gap (53.7%).
+1. ~~**Test the simplified wrappers**~~ — **Done.** Added 35 test cases in a follow-up session. Daemon coverage: 53.7% → 65.4%.
+2. ~~**Target daemon wrappers first**~~ — **Done.** Socket, TCP, and API handlers plus alert sender wrappers all tested.
 3. **Don't chase cmd/diagnostics coverage** — the uncovered code is interactive wizards and Docker-dependent status output. Integration tests are more appropriate than unit tests there.
+4. **Remaining daemon gap (~35%)** — Docker SDK calls, SSH transport, `net.Listen` lifecycle. Needs integration tests or significant interface injection.
 
 ### Beads Created This Session
 
