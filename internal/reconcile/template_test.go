@@ -237,6 +237,53 @@ func TestTemplateOps_ExecuteTemplate(t *testing.T) {
 	})
 }
 
+func TestTemplateOps_ExecuteTemplate_ExecutionError(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctx := context.Background()
+
+	// Template that calls a function which returns an error.
+	templateFile := filepath.Join(tmpDir, "bad.tmpl")
+	require.NoError(t, os.WriteFile(templateFile, []byte(`{{ include "/nonexistent/required/file.txt" }}`), 0644))
+
+	outputFile := filepath.Join(tmpDir, "output.txt")
+
+	tmpl := NewTemplateOps(map[string]any{})
+	err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to execute template")
+}
+
+func TestBosunTemplateFuncs_FromJsonFileNonExistent(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctx := context.Background()
+
+	templateFile := filepath.Join(tmpDir, "test.tmpl")
+	require.NoError(t, os.WriteFile(templateFile, []byte(`{{ fromJsonFile "/nonexistent/data.json" }}`), 0644))
+
+	outputFile := filepath.Join(tmpDir, "output.txt")
+
+	tmpl := NewTemplateOps(map[string]any{})
+	err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+	assert.Error(t, err)
+}
+
+func TestBosunTemplateFuncs_FromJsonFileInvalidJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	ctx := context.Background()
+
+	jsonFile := filepath.Join(tmpDir, "bad.json")
+	require.NoError(t, os.WriteFile(jsonFile, []byte("not json{{{"), 0644))
+
+	templateFile := filepath.Join(tmpDir, "test.tmpl")
+	require.NoError(t, os.WriteFile(templateFile, []byte(fmt.Sprintf(`{{ fromJsonFile "%s" }}`, jsonFile)), 0644))
+
+	outputFile := filepath.Join(tmpDir, "output.txt")
+
+	tmpl := NewTemplateOps(map[string]any{})
+	err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+	assert.Error(t, err)
+}
+
 func TestTemplateOps_RenderDirectory(t *testing.T) {
 	t.Run("render directory with templates and static files", func(t *testing.T) {
 		tmpDir := t.TempDir()

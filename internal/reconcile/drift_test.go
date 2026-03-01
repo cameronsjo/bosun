@@ -466,6 +466,172 @@ func TestDeployState_WithDriftFields(t *testing.T) {
 	assert.Equal(t, DriftMissing, loaded.DriftItems[0].Type)
 }
 
+func TestServiceNameFromContainer(t *testing.T) {
+	tests := []struct {
+		name          string
+		containerName string
+		projectName   string
+		expected      string
+	}{
+		{"simple service with replica", "myproject-web-1", "myproject", "web"},
+		{"service with hyphen and replica", "myproject-my-service-1", "myproject", "my-service"},
+		{"service without replica number", "myproject-worker", "myproject", "worker"},
+		{"multi-digit replica", "myproject-api-12", "myproject", "api"},
+		{"service name ending with number", "proj-web3-1", "proj", "web3"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := serviceNameFromContainer(tc.containerName, tc.projectName)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
+
+func TestExtractServicesFromCompose(t *testing.T) {
+	t.Run("valid compose file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		f := filepath.Join(tmpDir, "compose.yml")
+		content := `services:
+  web:
+    image: nginx:latest
+  api:
+    image: myapp:v1
+`
+		require.NoError(t, os.WriteFile(f, []byte(content), 0644))
+
+		services, err := extractServicesFromCompose(f)
+		require.NoError(t, err)
+		assert.Len(t, services, 2)
+
+		names := make(map[string]string)
+		for _, s := range services {
+			names[s.Name] = s.Image
+		}
+		assert.Equal(t, "nginx:latest", names["web"])
+		assert.Equal(t, "myapp:v1", names["api"])
+	})
+
+	t.Run("non-existent file", func(t *testing.T) {
+		_, err := extractServicesFromCompose("/nonexistent/compose.yml")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "read file")
+	})
+
+	t.Run("invalid YAML", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		f := filepath.Join(tmpDir, "bad.yml")
+		require.NoError(t, os.WriteFile(f, []byte("{{bad yaml"), 0644))
+
+		_, err := extractServicesFromCompose(f)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "parse YAML")
+	})
+
+	t.Run("empty services", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		f := filepath.Join(tmpDir, "empty.yml")
+		require.NoError(t, os.WriteFile(f, []byte("services: {}"), 0644))
+
+		services, err := extractServicesFromCompose(f)
+		require.NoError(t, err)
+		assert.Empty(t, services)
+	})
+}
+
+func TestExtractDeclaredState_NonYAMLIgnored(t *testing.T) {
+	tmpDir := t.TempDir()
+	composeDir := filepath.Join(tmpDir, "compose")
+	require.NoError(t, os.MkdirAll(composeDir, 0755))
+
+	// Write a .txt file (should be ignored).
+	require.NoError(t, os.WriteFile(filepath.Join(composeDir, "readme.txt"), []byte("not yaml"), 0644))
+
+	services, err := ExtractDeclaredState(tmpDir)
+	require.NoError(t, err)
+	assert.Empty(t, services)
+}
+
+func TestExtractDeclaredState_InvalidYAMLSkipped(t *testing.T) {
+	tmpDir := t.TempDir()
+	composeDir := filepath.Join(tmpDir, "compose")
+	require.NoError(t, os.MkdirAll(composeDir, 0755))
+
+	// Write one valid and one invalid compose file.
+	require.NoError(t, os.WriteFile(filepath.Join(composeDir, "valid.yml"), []byte(`services:
+  web:
+    image: nginx:latest
+`), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(composeDir, "broken.yml"), []byte("{{invalid yaml"), 0644))
+
+	services, err := ExtractDeclaredState(tmpDir)
+	require.NoError(t, err)
+
+	// The valid file's services should still be returned.
+	assert.Len(t, services, 1)
+	assert.Equal(t, "web", services[0].Name)
+}
+
+func TestMatchContainer(t *testing.T) {
+	t.Run("with compose service label", func(t *testing.T) {
+		c := docker.ContainerInfo{
+			Name:   "proj-web-1",
+			Labels: map[string]string{ComposeProjectLabel: "proj", ComposeServiceLabel: "web"},
+		}
+		name, ok := matchContainer(c, "proj")
+		assert.True(t, ok)
+		assert.Equal(t, "web", name)
+	})
+
+	t.Run("label with wrong project", func(t *testing.T) {
+		c := docker.ContainerInfo{
+			Name:   "other-web-1",
+			Labels: map[string]string{ComposeProjectLabel: "other", ComposeServiceLabel: "web"},
+		}
+		_, ok := matchContainer(c, "proj")
+		assert.False(t, ok)
+	})
+
+	t.Run("without label falls back to name parsing", func(t *testing.T) {
+		c := docker.ContainerInfo{
+			Name:   "proj-api-1",
+			Labels: map[string]string{},
+		}
+		name, ok := matchContainer(c, "proj")
+		assert.True(t, ok)
+		assert.Equal(t, "api", name)
+	})
+
+	t.Run("wrong project prefix", func(t *testing.T) {
+		c := docker.ContainerInfo{
+			Name:   "other-web-1",
+			Labels: map[string]string{},
+		}
+		_, ok := matchContainer(c, "proj")
+		assert.False(t, ok)
+	})
+
+	t.Run("empty project name returns container name", func(t *testing.T) {
+		c := docker.ContainerInfo{
+			Name:   "standalone-web",
+			Labels: map[string]string{},
+		}
+		name, ok := matchContainer(c, "")
+		assert.True(t, ok)
+		assert.Equal(t, "standalone-web", name)
+	})
+
+	t.Run("label with empty project name matches any", func(t *testing.T) {
+		c := docker.ContainerInfo{
+			Name:   "proj-db-1",
+			Labels: map[string]string{ComposeProjectLabel: "proj", ComposeServiceLabel: "db"},
+		}
+		name, ok := matchContainer(c, "")
+		assert.True(t, ok)
+		assert.Equal(t, "db", name)
+	})
+}
+
 func TestDeployState_BackwardsCompatibleLoad(t *testing.T) {
 	// V1 state file (no drift fields) should load fine.
 	data := `{"schema_version": 1, "last_deployed_commit": "old123"}`

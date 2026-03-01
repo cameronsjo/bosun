@@ -125,3 +125,33 @@ func TestEvaluatePostSyncHooks(t *testing.T) {
 		assert.Equal(t, time.Duration(0), matched[1].Delay.Duration)
 	})
 }
+
+func TestDedupeHooksByContainer(t *testing.T) {
+	t.Run("removes duplicates", func(t *testing.T) {
+		hooks := []PostSyncHook{
+			{Paths: []string{"a/**"}, Container: "traefik", Action: "restart"},
+			{Paths: []string{"b/**"}, Container: "traefik", Action: "restart"},
+			{Paths: []string{"c/**"}, Container: "gatus", Action: "restart"},
+		}
+
+		result := dedupeHooksByContainer(hooks)
+		assert.Len(t, result, 2)
+		assert.Equal(t, "traefik", result[0].Container)
+		assert.Equal(t, "gatus", result[1].Container)
+	})
+
+	t.Run("no duplicates unchanged", func(t *testing.T) {
+		hooks := []PostSyncHook{
+			{Paths: []string{"a/**"}, Container: "traefik", Action: "restart"},
+			{Paths: []string{"b/**"}, Container: "gatus", Action: "restart"},
+		}
+
+		result := dedupeHooksByContainer(hooks)
+		assert.Len(t, result, 2)
+	})
+
+	t.Run("empty input", func(t *testing.T) {
+		result := dedupeHooksByContainer(nil)
+		assert.Empty(t, result)
+	})
+}
