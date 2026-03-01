@@ -90,12 +90,12 @@ All three agents delivered successfully. Final tally:
 
 ### Coverage Movement
 
-| Package | Before | After Extraction | After Wrappers | Total Delta |
-|---------|-------:|-----------------:|---------------:|------------:|
-| config | 73.1% | 77.8% | — | **+4.7%** |
-| daemon | 50.5% | 53.7% | **65.4%** | **+14.9%** |
-| docker | 68.7% | 69.8% | — | **+1.1%** |
-| reconcile | 65.0% | 65.7% | — | **+0.7%** |
+| Package | Before | After Extraction | After Wrappers | After Integration | Total Delta |
+|---------|-------:|-----------------:|---------------:|------------------:|------------:|
+| config | 73.1% | 77.8% | — | — | **+4.7%** |
+| daemon | 50.5% | 53.7% | 65.4% | **82.5%** | **+32.0%** |
+| docker | 68.7% | 69.8% | — | — | **+1.1%** |
+| reconcile | 65.0% | 65.7% | — | **68.4%** | **+3.4%** |
 
 *Higher coverage is better.*
 
@@ -107,6 +107,28 @@ Both happy and unhappy paths covered. Standout examples:
 - `calculateCPUPercent`: 10 cases including zero/negative deltas, zero CPUs (real Docker edge cases from cgroup v1/v2 differences)
 - `shouldTriggerCircuitBreaker`: 7 cases including force override, zero attempts, empty last attempted
 - `classifySSHError`: 9 cases covering all error classes plus case insensitivity and empty input
+
+### Integration Tests (Phase 3)
+
+Following the extraction and wrapper sessions, a third phase added integration tests to exercise real listeners, mock Docker injection, and client-server roundtrips.
+
+**Infrastructure changes:**
+
+- Exported `MockDockerAPI` to `internal/docker/dockertest/mock.go` — usable from any package
+- Added `dockerClientOverride` field to `Daemon` (2-line production change) — checked before `sync.Once` lazy init
+
+**Test files created:**
+
+| File | Tests | What It Covers |
+|------|------:|---------------|
+| `lifecycle_test.go` | 5 | Real Unix socket `Start()`/`Shutdown()`, TCP lifecycle, `Run()` cancellation |
+| `roundtrip_test.go` | 8 | `Client` → real socket server health/status/trigger/config/ping, TCP auth |
+| `api_docker_test.go` | 10 | Docker API handlers (containers/logs/restart) via injected mock |
+| `drift_docker_test.go` | 8 | `CollectActualState` label filtering, `RunDriftCheck` missing/mismatch/clean |
+| `drift_integ_test.go` | 3 | Daemon drift wrapper: skip-when-reconciling, state file update, no-state-file |
+| `loops_test.go` | 5 | `pollLoop`/`driftCheckLoop` with short intervals and context cancellation |
+
+**Gotcha:** macOS limits Unix socket paths to 104 bytes. `t.TempDir()` + `filepath.EvalSymlinks()` produced ~120 char paths, causing `bind: invalid argument`. Fix: `os.MkdirTemp("", "bs")` with a 2-char prefix keeps paths under 90 bytes.
 
 ### Diagnostics Already Pure
 
@@ -154,8 +176,10 @@ Committed to `cameronsjo/rules` repo (`e48d1ae`).
 
 1. ~~**Test the simplified wrappers**~~ — **Done.** Added 35 test cases in a follow-up session. Daemon coverage: 53.7% → 65.4%.
 2. ~~**Target daemon wrappers first**~~ — **Done.** Socket, TCP, and API handlers plus alert sender wrappers all tested.
-3. **Don't chase cmd/diagnostics coverage** — the uncovered code is interactive wizards and Docker-dependent status output. Integration tests are more appropriate than unit tests there.
-4. **Remaining daemon gap (~35%)** — Docker SDK calls, SSH transport, `net.Listen` lifecycle. Needs integration tests or significant interface injection.
+3. ~~**Integration tests for daemon**~~ — **Done.** 6 phases: exported mock, Docker injection, lifecycle, roundtrip, Docker API, drift, loops. Daemon coverage: 65.4% → 82.5% (+17.1%).
+4. **Don't chase cmd/diagnostics coverage** — the uncovered code is interactive wizards and Docker-dependent status output. Integration tests are more appropriate than unit tests there.
+5. **Remaining daemon gap (~17.5%)** — primarily `daemon.go:Run()` full lifecycle (signal handling, initial delay timer), `server.go` webhook handlers, and some pure.go error paths. Diminishing returns territory.
+6. **Reconcile gap (~31.6%)** — `reconcile.go` orchestrator (21 zero-coverage functions), `deploy.go` SSH/remote deploy (9), `drift.go` state persistence paths (9). These are I/O-heavy functions requiring git repos and Docker.
 
 ### Beads Created This Session
 
