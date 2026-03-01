@@ -244,6 +244,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Start Unix socket server (primary API)
 	logger.Debug().Str("socket", d.config.SocketPath).Msg("Starting Unix socket server")
 	go func() {
+		defer sentrypkg.Recover()
 		if err := d.socketServer.Start(); err != nil {
 			logger.Error().Err(err).Str("socket", d.config.SocketPath).Msg("Unix socket server failed")
 			errCh <- fmt.Errorf("socket server: %w", err)
@@ -254,6 +255,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if d.config.EnableTCP && d.tcpServer != nil {
 		logger.Debug().Str("addr", d.config.TCPAddr).Msg("Starting TCP server")
 		go func() {
+			defer sentrypkg.Recover()
 			if err := d.tcpServer.Start(); err != nil {
 				logger.Error().Err(err).Str("addr", d.config.TCPAddr).Msg("TCP server failed")
 				errCh <- fmt.Errorf("TCP server: %w", err)
@@ -265,6 +267,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if d.config.EnableHTTP && d.httpServer != nil {
 		logger.Debug().Int("port", d.config.Port).Msg("Starting HTTP server")
 		go func() {
+			defer sentrypkg.Recover()
 			if err := d.httpServer.Start(d.config.Port); err != nil {
 				logger.Error().Err(err).Int("port", d.config.Port).Msg("HTTP server failed")
 				errCh <- fmt.Errorf("HTTP server: %w", err)
@@ -276,6 +279,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
+		defer sentrypkg.Recover()
 		logger.Info().Dur("delay", d.config.InitialDelay).Msg("Waiting before initial reconciliation")
 
 		// Use a select to allow cancellation during delay
@@ -300,6 +304,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.wg.Add(1)
 		go func() {
 			defer d.wg.Done()
+			defer sentrypkg.Recover()
 			d.pollLoop(ctx)
 		}()
 	}
@@ -309,6 +314,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.wg.Add(1)
 		go func() {
 			defer d.wg.Done()
+			defer sentrypkg.Recover()
 			d.driftCheckLoop(ctx)
 		}()
 	}
