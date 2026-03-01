@@ -308,6 +308,61 @@ func TestShouldAlertDrift(t *testing.T) {
 	}
 }
 
+func TestSaveState_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deploy-state.json")
+
+	now := time.Now().Truncate(time.Second)
+	original := &DeployState{
+		LastDeployedCommit:  "abc123",
+		DeployedAt:          now,
+		DeployCount:         5,
+		Source:              "webhook:github",
+		LastAttemptedCommit: "def456",
+		AttemptCount:        2,
+		LastAlertedAttempt:  1,
+		DeclaredServices: []DeclaredService{
+			{Name: "web", Image: "nginx:latest"},
+			{Name: "api", Image: "golang:1.24"},
+		},
+		DriftCheckedAt: now,
+		DriftItems: []DriftItem{
+			{Service: "db", Type: DriftMissing, Declared: "postgres:16"},
+		},
+	}
+
+	require.NoError(t, SaveState(path, original))
+	loaded := LoadState(path)
+
+	assert.Equal(t, currentSchemaVersion, loaded.SchemaVersion)
+	assert.Equal(t, original.LastDeployedCommit, loaded.LastDeployedCommit)
+	assert.Equal(t, original.DeployCount, loaded.DeployCount)
+	assert.Equal(t, original.Source, loaded.Source)
+	assert.Equal(t, original.AttemptCount, loaded.AttemptCount)
+	assert.Equal(t, original.LastAlertedAttempt, loaded.LastAlertedAttempt)
+	require.Len(t, loaded.DeclaredServices, 2)
+	assert.Equal(t, "web", loaded.DeclaredServices[0].Name)
+	require.Len(t, loaded.DriftItems, 1)
+	assert.Equal(t, DriftMissing, loaded.DriftItems[0].Type)
+}
+
+func TestLoadState_ReadError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipping permission test when running as root")
+	}
+
+	// Create a directory (not a file) at the state path -> reading it fails with a
+	// non-IsNotExist error, hitting the "other read error" branch.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deploy-state.json")
+	require.NoError(t, os.MkdirAll(path, 0755))
+
+	state := LoadState(path)
+
+	assert.Equal(t, currentSchemaVersion, state.SchemaVersion)
+	assert.Empty(t, state.LastDeployedCommit)
+}
+
 func TestSaveState_SetsSchemaVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "deploy-state.json")

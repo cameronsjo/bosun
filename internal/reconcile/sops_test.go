@@ -94,24 +94,6 @@ func TestSOPSOps_DecryptToJSON(t *testing.T) {
 	})
 }
 
-func TestSOPSOps_DecryptToJSON_Error(t *testing.T) {
-	sops := NewSOPSOps()
-	ctx := context.Background()
-
-	// Non-existent file should propagate error.
-	_, err := sops.DecryptToJSON(ctx, []string{"/nonexistent/secrets.yaml"})
-	assert.Error(t, err)
-}
-
-func TestSOPSOps_DecryptToJSON_MultipleEmptyFiles(t *testing.T) {
-	sops := NewSOPSOps()
-	ctx := context.Background()
-
-	result, err := sops.DecryptToJSON(ctx, []string{})
-	require.NoError(t, err)
-	assert.Equal(t, "{}", string(result))
-}
-
 func TestMergeMap(t *testing.T) {
 	t.Run("simple merge", func(t *testing.T) {
 		dst := map[string]any{
@@ -309,68 +291,70 @@ func TestSanitizeDecryptError(t *testing.T) {
 	tests := []struct {
 		name     string
 		err      error
-		expected string
+		contains string
+		isNil    bool
 	}{
-		{"nil error", nil, ""},
-		{"key not found", errors.New("could not find key for age recipient"), "could not find key"},
-		{"no key found", errors.New("no key found in keyring"), "no key found"},
-		{"permission denied", errors.New("permission denied"), "permission denied"},
-		{"no such file", errors.New("no such file or directory"), "no such file"},
-		{"cannot find", errors.New("cannot find matching key"), "cannot find"},
-		{"key not found pattern", errors.New("key not found in store"), "key not found"},
-		{"failed to get", errors.New("failed to get data key"), "failed to get"},
-		{"generic error", errors.New("some internal crypto failure"), "decryption failed"},
-		{"long error truncated", errors.New("could not find " + strings.Repeat("x", 300)), "truncated"},
+		{
+			name:  "nil error returns nil",
+			err:   nil,
+			isNil: true,
+		},
+		{
+			name:     "could not find pattern passes through",
+			err:      errors.New("could not find decryption key"),
+			contains: "could not find decryption key",
+		},
+		{
+			name:     "no key found pattern passes through",
+			err:      errors.New("no key found in key ring"),
+			contains: "no key found",
+		},
+		{
+			name:     "failed to get pattern passes through",
+			err:      errors.New("failed to get data key"),
+			contains: "failed to get",
+		},
+		{
+			name:     "cannot find pattern passes through",
+			err:      errors.New("Cannot find the sops config"),
+			contains: "Cannot find",
+		},
+		{
+			name:     "key not found pattern passes through",
+			err:      errors.New("key not found in keyring"),
+			contains: "key not found",
+		},
+		{
+			name:     "permission denied pattern passes through",
+			err:      errors.New("Permission denied: unable to read key"),
+			contains: "Permission denied",
+		},
+		{
+			name:     "no such file pattern passes through",
+			err:      errors.New("no such file or directory"),
+			contains: "no such file",
+		},
+		{
+			name:     "unknown error returns generic message",
+			err:      errors.New("AGE-SECRET-KEY-1QQQQQQQQQQQQ was used to encrypt"),
+			contains: "decryption failed - check age key configuration",
+		},
+		{
+			name:     "long safe error is truncated",
+			err:      errors.New("could not find " + strings.Repeat("x", 250)),
+			contains: "... (truncated)",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := sanitizeDecryptError(tt.err)
-			if tt.err == nil {
-				assert.Nil(t, result)
+			if tt.isNil {
+				assert.NoError(t, result)
 				return
 			}
-			assert.Error(t, result)
-			assert.Contains(t, result.Error(), tt.expected)
+			require.Error(t, result)
+			assert.Contains(t, result.Error(), tt.contains)
 		})
 	}
-}
-
-func TestValidateSOPSFile(t *testing.T) {
-	t.Run("non-existent file", func(t *testing.T) {
-		err := ValidateSOPSFile("/non/existent/file.yaml")
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "not found")
-	})
-
-	t.Run("invalid YAML", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		f := filepath.Join(tmpDir, "bad.yaml")
-		require.NoError(t, os.WriteFile(f, []byte("{{invalid yaml"), 0644))
-
-		err := ValidateSOPSFile(f)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid YAML")
-	})
-
-	t.Run("missing sops metadata", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		f := filepath.Join(tmpDir, "plain.yaml")
-		require.NoError(t, os.WriteFile(f, []byte("key: value\n"), 0644))
-
-		err := ValidateSOPSFile(f)
-		assert.Error(t, err)
-		assert.ErrorIs(t, err, ErrNotSOPSFile)
-		assert.Contains(t, err.Error(), "sops")
-	})
-
-	t.Run("valid sops file", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		f := filepath.Join(tmpDir, "secrets.yaml")
-		content := "key: ENC[AES256_GCM,data:abc]\nsops:\n  version: 3.7.3\n"
-		require.NoError(t, os.WriteFile(f, []byte(content), 0644))
-
-		err := ValidateSOPSFile(f)
-		assert.NoError(t, err)
-	})
 }

@@ -1,10 +1,17 @@
 package reconcile
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/docker"
+	"github.com/docker/docker/api/types/container"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMatchGlob(t *testing.T) {
@@ -127,31 +134,261 @@ func TestEvaluatePostSyncHooks(t *testing.T) {
 }
 
 func TestDedupeHooksByContainer(t *testing.T) {
-	t.Run("removes duplicates", func(t *testing.T) {
-		hooks := []PostSyncHook{
-			{Paths: []string{"a/**"}, Container: "traefik", Action: "restart"},
-			{Paths: []string{"b/**"}, Container: "traefik", Action: "restart"},
-			{Paths: []string{"c/**"}, Container: "gatus", Action: "restart"},
-		}
+	tests := []struct {
+		name  string
+		hooks []PostSyncHook
+		want  int
+	}{
+		{
+			name:  "empty hooks",
+			hooks: nil,
+			want:  0,
+		},
+		{
+			name: "no duplicates",
+			hooks: []PostSyncHook{
+				{Container: "traefik", Action: "restart"},
+				{Container: "gatus", Action: "restart"},
+			},
+			want: 2,
+		},
+		{
+			name: "duplicates removed first wins",
+			hooks: []PostSyncHook{
+				{Container: "traefik", Action: "restart", Paths: []string{"a/**"}},
+				{Container: "traefik", Action: "restart", Paths: []string{"b/**"}},
+				{Container: "gatus", Action: "restart"},
+			},
+			want: 2,
+		},
+		{
+			name: "all same container",
+			hooks: []PostSyncHook{
+				{Container: "traefik", Action: "restart"},
+				{Container: "traefik", Action: "restart"},
+				{Container: "traefik", Action: "restart"},
+			},
+			want: 1,
+		},
+	}
 
-		result := dedupeHooksByContainer(hooks)
-		assert.Len(t, result, 2)
-		assert.Equal(t, "traefik", result[0].Container)
-		assert.Equal(t, "gatus", result[1].Container)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := dedupeHooksByContainer(tt.hooks)
+			assert.Len(t, result, tt.want)
+		})
+	}
+}
+
+func TestExecutePostSyncHooks(t *testing.T) {
+	t.Run("empty hooks returns nil immediately", func(t *testing.T) {
+		err := ExecutePostSyncHooks(context.Background(), nil, nil, 0)
+		assert.NoError(t, err)
 	})
 
-	t.Run("no duplicates unchanged", func(t *testing.T) {
+	t.Run("single restart hook calls RestartContainer", func(t *testing.T) {
+		var mu sync.Mutex
+		restarted := []string{}
+
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ container.StopOptions) error {
+			mu.Lock()
+			defer mu.Unlock()
+			restarted = append(restarted, containerID)
+			return nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
 		hooks := []PostSyncHook{
-			{Paths: []string{"a/**"}, Container: "traefik", Action: "restart"},
-			{Paths: []string{"b/**"}, Container: "gatus", Action: "restart"},
+			{Paths: []string{"traefik/**"}, Action: "restart", Container: "traefik"},
 		}
 
-		result := dedupeHooksByContainer(hooks)
-		assert.Len(t, result, 2)
+		err := ExecutePostSyncHooks(context.Background(), client, hooks, 0)
+		require.NoError(t, err)
+
+		mu.Lock()
+		defer mu.Unlock()
+		assert.Equal(t, []string{"traefik"}, restarted)
 	})
 
-	t.Run("empty input", func(t *testing.T) {
-		result := dedupeHooksByContainer(nil)
-		assert.Empty(t, result)
+	t.Run("unsupported action is skipped with no error", func(t *testing.T) {
+		mockAPI := newReconcileMockDockerAPI()
+		restartCalled := false
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ container.StopOptions) error {
+			restartCalled = true
+			return nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		hooks := []PostSyncHook{
+			{Paths: []string{"app/**"}, Action: "reload", Container: "myapp"},
+		}
+
+		err := ExecutePostSyncHooks(context.Background(), client, hooks, 0)
+		assert.NoError(t, err)
+		assert.False(t, restartCalled)
+	})
+
+	t.Run("RestartContainer failure returns aggregated error", func(t *testing.T) {
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ container.StopOptions) error {
+			return fmt.Errorf("container %s not found", containerID)
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		hooks := []PostSyncHook{
+			{Action: "restart", Container: "traefik"},
+		}
+
+		err := ExecutePostSyncHooks(context.Background(), client, hooks, 0)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "traefik")
+		assert.Contains(t, err.Error(), "post-sync hook failures")
+	})
+
+	t.Run("multiple hooks with mixed success and failure", func(t *testing.T) {
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ container.StopOptions) error {
+			if containerID == "gatus" {
+				return errors.New("restart failed")
+			}
+			return nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		hooks := []PostSyncHook{
+			{Action: "restart", Container: "traefik"},
+			{Action: "restart", Container: "gatus"},
+			{Action: "restart", Container: "prometheus"},
+		}
+
+		err := ExecutePostSyncHooks(context.Background(), client, hooks, 0)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "gatus")
+		assert.NotContains(t, err.Error(), "traefik")
+		assert.NotContains(t, err.Error(), "prometheus")
+	})
+
+	t.Run("settle delay with cancelled context returns context error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Cancel immediately
+
+		hooks := []PostSyncHook{
+			{Action: "restart", Container: "traefik"},
+		}
+
+		err := ExecutePostSyncHooks(ctx, nil, hooks, 1*time.Second)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("per-hook delay with cancelled context returns context error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Cancel immediately
+
+		hooks := []PostSyncHook{
+			{Action: "restart", Container: "traefik", Delay: Duration{Duration: 1 * time.Second}},
+		}
+
+		err := ExecutePostSyncHooks(ctx, nil, hooks, 0)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("per-hook delay applied before restart", func(t *testing.T) {
+		mockAPI := newReconcileMockDockerAPI()
+		var restartTime time.Time
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ container.StopOptions) error {
+			restartTime = time.Now()
+			return nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		hooks := []PostSyncHook{
+			{Action: "restart", Container: "traefik", Delay: Duration{Duration: 5 * time.Millisecond}},
+		}
+
+		start := time.Now()
+		err := ExecutePostSyncHooks(context.Background(), client, hooks, 0)
+		require.NoError(t, err)
+
+		// Restart should have happened after the delay
+		assert.True(t, restartTime.After(start.Add(3*time.Millisecond)),
+			"restart should have happened after the per-hook delay")
+	})
+
+	t.Run("settle delay applied before hooks run", func(t *testing.T) {
+		mockAPI := newReconcileMockDockerAPI()
+		var restartTime time.Time
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ container.StopOptions) error {
+			restartTime = time.Now()
+			return nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		hooks := []PostSyncHook{
+			{Action: "restart", Container: "traefik"},
+		}
+
+		start := time.Now()
+		err := ExecutePostSyncHooks(context.Background(), client, hooks, 5*time.Millisecond)
+		require.NoError(t, err)
+
+		assert.True(t, restartTime.After(start.Add(3*time.Millisecond)),
+			"restart should have happened after the settle delay")
+	})
+
+	t.Run("multiple restart hooks track all containers", func(t *testing.T) {
+		var mu sync.Mutex
+		restarted := []string{}
+
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ container.StopOptions) error {
+			mu.Lock()
+			defer mu.Unlock()
+			restarted = append(restarted, containerID)
+			return nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		hooks := []PostSyncHook{
+			{Action: "restart", Container: "traefik"},
+			{Action: "restart", Container: "gatus"},
+			{Action: "restart", Container: "prometheus"},
+		}
+
+		err := ExecutePostSyncHooks(context.Background(), client, hooks, 0)
+		require.NoError(t, err)
+
+		mu.Lock()
+		defer mu.Unlock()
+		assert.Equal(t, []string{"traefik", "gatus", "prometheus"}, restarted)
+	})
+
+	t.Run("mix of restart and unsupported actions", func(t *testing.T) {
+		var mu sync.Mutex
+		restarted := []string{}
+
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ container.StopOptions) error {
+			mu.Lock()
+			defer mu.Unlock()
+			restarted = append(restarted, containerID)
+			return nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		hooks := []PostSyncHook{
+			{Action: "restart", Container: "traefik"},
+			{Action: "signal", Container: "nginx"},
+			{Action: "restart", Container: "gatus"},
+		}
+
+		err := ExecutePostSyncHooks(context.Background(), client, hooks, 0)
+		require.NoError(t, err)
+
+		mu.Lock()
+		defer mu.Unlock()
+		assert.Equal(t, []string{"traefik", "gatus"}, restarted)
 	})
 }

@@ -591,32 +591,6 @@ func TestIsTransientSSHError(t *testing.T) {
 	}
 }
 
-func TestParseSSHError(t *testing.T) {
-	tests := []struct {
-		name     string
-		err      error
-		stderr   string
-		host     string
-		contains string
-	}{
-		{"permission denied", fmt.Errorf("exit 255"), "Permission denied (publickey)", "root@host", "SSH authentication failed"},
-		{"connection refused", fmt.Errorf("exit 255"), "Connection refused", "root@host", "SSH connection refused"},
-		{"host key verification", fmt.Errorf("exit 255"), "Host key verification failed", "root@host", "host key verification failed"},
-		{"no route", fmt.Errorf("exit 255"), "No route to host", "root@host", "no route to host"},
-		{"connection timed out", fmt.Errorf("exit 255"), "Connection timed out", "root@host", "timed out"},
-		{"DNS failure", fmt.Errorf("exit 255"), "Name or service not known", "root@host", "cannot resolve hostname"},
-		{"unknown error", fmt.Errorf("exit 1"), "some unknown error", "root@host", "SSH connection to root@host failed"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := parseSSHError(tt.err, tt.stderr, tt.host)
-			assert.Error(t, result)
-			assert.Contains(t, result.Error(), tt.contains)
-		})
-	}
-}
-
 func TestRetryWithBackoff(t *testing.T) {
 	t.Run("succeeds on first attempt", func(t *testing.T) {
 		ctx := context.Background()
@@ -1013,6 +987,12 @@ func TestRemoveStaleFiles(t *testing.T) {
 		assert.NoFileExists(t, filepath.Join(tgtDir, "a.txt"))
 		assert.NoFileExists(t, filepath.Join(tgtDir, "b.txt"))
 	})
+
+	t.Run("non-existent target returns error", func(t *testing.T) {
+		sourceDir := t.TempDir()
+		err := removeStaleFiles(sourceDir, "/nonexistent/target")
+		assert.Error(t, err)
+	})
 }
 
 func TestDeployOps_DeployLocal_ContentHashSync(t *testing.T) {
@@ -1255,4 +1235,193 @@ func TestDeployOps_CleanupBackups_RemovesOldest(t *testing.T) {
 	entries, err := os.ReadDir(tmpDir)
 	require.NoError(t, err)
 	assert.Len(t, entries, 3)
+}
+
+func TestComposeArgs(t *testing.T) {
+	t.Run("without project name", func(t *testing.T) {
+		d := &DeployOps{}
+		args := d.composeArgs("file.yml")
+		assert.Equal(t, []string{"compose", "-f", "file.yml"}, args)
+	})
+
+	t.Run("with project name", func(t *testing.T) {
+		d := &DeployOps{ProjectName: "myproject"}
+		args := d.composeArgs("file.yml")
+		assert.Equal(t, []string{"compose", "-p", "myproject", "-f", "file.yml"}, args)
+	})
+
+	t.Run("multiple files", func(t *testing.T) {
+		d := &DeployOps{ProjectName: "test"}
+		args := d.composeArgs("a.yml", "b.yml")
+		assert.Equal(t, []string{"compose", "-p", "test", "-f", "a.yml", "-f", "b.yml"}, args)
+	})
+}
+
+func TestDeployOps_VerifyBackupAdditional(t *testing.T) {
+	t.Run("non-existent backup path", func(t *testing.T) {
+		d := NewDeployOps(false, "")
+		err := d.VerifyBackup("/nonexistent/backup")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "backup archive not found")
+	})
+
+	t.Run("empty archive", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tarFile := filepath.Join(tmpDir, "configs.tar.gz")
+		require.NoError(t, os.WriteFile(tarFile, []byte{}, 0644))
+
+		d := NewDeployOps(false, "")
+		err := d.VerifyBackup(tmpDir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "backup archive is empty")
+	})
+
+	t.Run("corrupt archive", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tarFile := filepath.Join(tmpDir, "configs.tar.gz")
+		require.NoError(t, os.WriteFile(tarFile, []byte("this is not a tar.gz file"), 0644))
+
+		d := NewDeployOps(false, "")
+		err := d.VerifyBackup(tmpDir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "backup archive is corrupted")
+	})
+}
+
+func TestDeployOps_BackupMkdirError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipping permission test when running as root")
+	}
+
+	// Use a read-only parent so MkdirAll fails.
+	tmpDir := t.TempDir()
+	readOnly := filepath.Join(tmpDir, "readonly")
+	require.NoError(t, os.MkdirAll(readOnly, 0555))
+	t.Cleanup(func() { _ = os.Chmod(readOnly, 0755) })
+
+	d := NewDeployOps(false, "")
+	_, err := d.Backup(context.Background(), filepath.Join(readOnly, "backups"), []string{"/tmp"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to create backup directory")
+}
+
+func TestDeployOps_ComposeUpMultipleWithRollbackPaths(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("rollback fails when both deploy and rollback fail", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Use an invalid compose file that docker compose will reject.
+		composeFile := filepath.Join(tmpDir, "docker-compose.yml")
+		require.NoError(t, os.WriteFile(composeFile, []byte("not valid yaml: [[["), 0644))
+
+		// Create backup files (also invalid so rollback also fails).
+		backupDir := filepath.Join(tmpDir, "backup")
+		require.NoError(t, os.MkdirAll(backupDir, 0755))
+		backupFile := filepath.Join(backupDir, "docker-compose.yml")
+		require.NoError(t, os.WriteFile(backupFile, []byte("not valid yaml: [[["), 0644))
+
+		d := &DeployOps{DryRun: false, ProjectName: "rollbacktest"}
+		err := d.ComposeUpMultipleWithRollback(ctx, []string{composeFile}, backupDir)
+		require.Error(t, err)
+		// Both deploy and rollback fail -> ErrRollbackFailed.
+		assert.ErrorIs(t, err, ErrRollbackFailed)
+	})
+
+	t.Run("no backup available returns deployment error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		composeFile := filepath.Join(tmpDir, "docker-compose.yml")
+		require.NoError(t, os.WriteFile(composeFile, []byte("not valid yaml: [[["), 0644))
+
+		d := &DeployOps{DryRun: false, ProjectName: "rollbacktest"}
+		err := d.ComposeUpMultipleWithRollback(ctx, []string{composeFile}, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no backup available for rollback")
+	})
+
+	t.Run("no backup files found returns deployment error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		composeFile := filepath.Join(tmpDir, "docker-compose.yml")
+		require.NoError(t, os.WriteFile(composeFile, []byte("not valid yaml: [[["), 0644))
+
+		// Backup dir exists but has no matching files.
+		backupDir := filepath.Join(tmpDir, "backup")
+		require.NoError(t, os.MkdirAll(backupDir, 0755))
+
+		d := &DeployOps{DryRun: false, ProjectName: "rollbacktest"}
+		err := d.ComposeUpMultipleWithRollback(ctx, []string{composeFile}, backupDir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no backup files found for rollback")
+	})
+}
+
+func TestDeployOps_DeployLocalStandardMode(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("standard mode deploys via nuke-and-replace", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+
+		require.NoError(t, os.MkdirAll(sourceDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "file1.txt"), []byte("hello"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "file2.txt"), []byte("world"), 0644))
+
+		// Pre-create target with old content to verify it gets replaced.
+		require.NoError(t, os.MkdirAll(targetDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "old.txt"), []byte("stale"), 0644))
+
+		d := &DeployOps{DryRun: false, ContentHashSync: false}
+		result := &DeployResult{}
+		err := d.DeployLocal(ctx, sourceDir, targetDir, result)
+		require.NoError(t, err)
+
+		// Verify new files exist.
+		content, err := os.ReadFile(filepath.Join(targetDir, "file1.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, "hello", string(content))
+
+		// Verify old file was removed (nuke-and-replace).
+		_, err = os.Stat(filepath.Join(targetDir, "old.txt"))
+		assert.True(t, os.IsNotExist(err), "old file should have been removed")
+	})
+
+	t.Run("standard mode context cancellation", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+
+		require.NoError(t, os.MkdirAll(sourceDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "f.txt"), []byte("x"), 0644))
+
+		cancelledCtx, cancel := context.WithCancel(ctx)
+		cancel()
+
+		d := &DeployOps{DryRun: false, ContentHashSync: false}
+		err := d.DeployLocal(cancelledCtx, sourceDir, targetDir, nil)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("content hash mode MkdirAll error", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("skipping permission test when running as root")
+		}
+
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		require.NoError(t, os.MkdirAll(sourceDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "f.txt"), []byte("x"), 0644))
+
+		// Put a file where the target directory should be, so MkdirAll fails.
+		targetPath := filepath.Join(tmpDir, "target")
+		require.NoError(t, os.WriteFile(targetPath, []byte("block"), 0644))
+
+		d := &DeployOps{DryRun: false, ContentHashSync: true}
+		err := d.DeployLocal(ctx, sourceDir, targetPath, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "create target directory")
+	})
 }

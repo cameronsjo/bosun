@@ -343,6 +343,100 @@ func TestTemplateOps_RenderDirectory(t *testing.T) {
 	})
 }
 
+func TestTemplateOps_ExecuteTemplateErrors(t *testing.T) {
+	t.Run("template execution error with call on wrong type", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		// Template calls a method on a type that doesn't have it, causing Execute error
+		templateFile := filepath.Join(tmpDir, "test.tmpl")
+		templateContent := `{{ call .config }}`
+		require.NoError(t, os.WriteFile(templateFile, []byte(templateContent), 0644))
+
+		outputFile := filepath.Join(tmpDir, "output", "test.txt")
+
+		tmpl := NewTemplateOps(map[string]any{
+			"config": "not-a-function", // string, not callable
+		})
+		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to execute template")
+	})
+
+	t.Run("include function with missing file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		templateFile := filepath.Join(tmpDir, "test.tmpl")
+		templateContent := `{{ include "/nonexistent/file.txt" }}`
+		require.NoError(t, os.WriteFile(templateFile, []byte(templateContent), 0644))
+
+		outputFile := filepath.Join(tmpDir, "output", "test.txt")
+
+		tmpl := NewTemplateOps(map[string]any{})
+		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to execute template")
+	})
+
+	t.Run("fromJsonFile with invalid JSON", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		// Create a file with invalid JSON
+		jsonFile := filepath.Join(tmpDir, "bad.json")
+		require.NoError(t, os.WriteFile(jsonFile, []byte("{invalid json"), 0644))
+
+		templateFile := filepath.Join(tmpDir, "test.tmpl")
+		templateContent := fmt.Sprintf(`{{ $data := fromJsonFile "%s" }}{{ $data }}`, jsonFile)
+		require.NoError(t, os.WriteFile(templateFile, []byte(templateContent), 0644))
+
+		outputFile := filepath.Join(tmpDir, "output", "test.txt")
+
+		tmpl := NewTemplateOps(map[string]any{})
+		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to execute template")
+	})
+
+	t.Run("fromJsonFile with missing file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ctx := context.Background()
+
+		templateFile := filepath.Join(tmpDir, "test.tmpl")
+		templateContent := `{{ $data := fromJsonFile "/nonexistent/file.json" }}{{ $data }}`
+		require.NoError(t, os.WriteFile(templateFile, []byte(templateContent), 0644))
+
+		outputFile := filepath.Join(tmpDir, "output", "test.txt")
+
+		tmpl := NewTemplateOps(map[string]any{})
+		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to execute template")
+	})
+}
+
+func TestTemplateOps_RenderDirectoryErrors(t *testing.T) {
+	t.Run("template parse error propagates", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		stagingDir := filepath.Join(tmpDir, "staging")
+		infraDir := filepath.Join(sourceDir, "infra")
+		ctx := context.Background()
+
+		require.NoError(t, os.MkdirAll(infraDir, 0755))
+
+		// Create a template with invalid syntax
+		tmplFile := filepath.Join(sourceDir, "bad.yaml.tmpl")
+		require.NoError(t, os.WriteFile(tmplFile, []byte(`{{ .name | noSuchFunc }}`), 0644))
+
+		tmpl := NewTemplateOps(map[string]any{})
+		err := tmpl.RenderDirectory(ctx, sourceDir, stagingDir, "infra")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to render templates")
+	})
+}
+
 func TestCopyNonTemplateFiles(t *testing.T) {
 	t.Run("copy mixed files", func(t *testing.T) {
 		tmpDir := t.TempDir()
