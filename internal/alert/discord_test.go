@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -144,6 +145,18 @@ func TestDiscordProvider_Send(t *testing.T) {
 		err := p.Send(ctx, &Alert{Title: "Test", Source: "test"})
 		require.Error(t, err)
 	})
+}
+
+func TestDiscordProvider_Send_NetworkError(t *testing.T) {
+	// Use an invalid URL to trigger the HTTP client error path.
+	p := &DiscordProvider{
+		webhookURL: "http://192.0.2.1:1", // RFC 5737 TEST-NET, will fail to connect
+		client:     &http.Client{Timeout: 50 * time.Millisecond},
+	}
+
+	err := p.Send(context.Background(), &Alert{Title: "Test", Source: "test"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "send request")
 }
 
 func TestSeverityToColor(t *testing.T) {

@@ -96,19 +96,15 @@ func TestSendGrid_Send_Success(t *testing.T) {
 	var receivedReq sendGridRequest
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader != "Bearer SG.test-api-key" {
-			t.Errorf("Authorization = %q, want %q", authHeader, "Bearer SG.test-api-key")
+		if r.Header.Get("Authorization") != "Bearer SG.test-api-key" {
+			t.Errorf("Authorization = %q, want %q", r.Header.Get("Authorization"), "Bearer SG.test-api-key")
 		}
-
 		if r.Header.Get("Content-Type") != "application/json" {
 			t.Errorf("Content-Type = %q, want %q", r.Header.Get("Content-Type"), "application/json")
 		}
-
 		if err := json.NewDecoder(r.Body).Decode(&receivedReq); err != nil {
 			t.Fatalf("Failed to decode request body: %v", err)
 		}
-
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer server.Close()
@@ -120,20 +116,10 @@ func TestSendGrid_Send_Success(t *testing.T) {
 			FromName:  "Bosun Alerts",
 			ToEmails:  []string{"ops@example.com", "backup@example.com"},
 		},
-		client: &http.Client{Timeout: 5 * time.Second},
+		client:   server.Client(),
+		endpoint: server.URL,
 	}
 
-	// Override endpoint for testing
-	originalEndpoint := sendGridAPIEndpoint
-	defer func() {
-		// Restore original (not actually possible in Go without refactoring, but documenting intent)
-		_ = originalEndpoint
-	}()
-
-	// Create a custom client that intercepts requests
-	sg.client = server.Client()
-
-	// We need to intercept the actual request - let's use a test helper
 	alert := &Alert{
 		Title:    "Test Alert",
 		Message:  "This is a test message",
@@ -142,51 +128,26 @@ func TestSendGrid_Send_Success(t *testing.T) {
 		Metadata: map[string]string{"key1": "value1", "key2": "value2"},
 	}
 
-	// Build payload to verify structure
-	payload := sg.buildPayload(alert)
-
-	// Verify payload structure
-	if len(payload.Personalizations) != 1 {
-		t.Errorf("Personalizations count = %d, want 1", len(payload.Personalizations))
+	err := sg.Send(context.Background(), alert)
+	if err != nil {
+		t.Fatalf("Send() returned unexpected error: %v", err)
 	}
 
-	if len(payload.Personalizations[0].To) != 2 {
-		t.Errorf("To recipients count = %d, want 2", len(payload.Personalizations[0].To))
+	// Verify the payload that was received by the server.
+	if len(receivedReq.Personalizations) != 1 {
+		t.Errorf("Personalizations count = %d, want 1", len(receivedReq.Personalizations))
 	}
-
-	if payload.From.Email != "alerts@example.com" {
-		t.Errorf("From.Email = %q, want %q", payload.From.Email, "alerts@example.com")
+	if len(receivedReq.Personalizations[0].To) != 2 {
+		t.Errorf("To recipients = %d, want 2", len(receivedReq.Personalizations[0].To))
 	}
-
-	if payload.From.Name != "Bosun Alerts" {
-		t.Errorf("From.Name = %q, want %q", payload.From.Name, "Bosun Alerts")
+	if receivedReq.From.Email != "alerts@example.com" {
+		t.Errorf("From.Email = %q, want %q", receivedReq.From.Email, "alerts@example.com")
 	}
-
-	expectedSubject := "[ERROR] Test Alert"
-	if payload.Subject != expectedSubject {
-		t.Errorf("Subject = %q, want %q", payload.Subject, expectedSubject)
+	if receivedReq.Subject != "[ERROR] Test Alert" {
+		t.Errorf("Subject = %q, want %q", receivedReq.Subject, "[ERROR] Test Alert")
 	}
-
-	if len(payload.Content) != 2 {
-		t.Errorf("Content count = %d, want 2", len(payload.Content))
-	}
-
-	// Verify content types
-	hasPlain := false
-	hasHTML := false
-	for _, c := range payload.Content {
-		if c.Type == "text/plain" {
-			hasPlain = true
-		}
-		if c.Type == "text/html" {
-			hasHTML = true
-		}
-	}
-	if !hasPlain {
-		t.Error("Missing text/plain content")
-	}
-	if !hasHTML {
-		t.Error("Missing text/html content")
+	if len(receivedReq.Content) != 2 {
+		t.Errorf("Content count = %d, want 2", len(receivedReq.Content))
 	}
 }
 
@@ -203,8 +164,8 @@ func TestSendGrid_Send_NotConfigured(t *testing.T) {
 	}
 }
 
-func TestSendGrid_Send_APIError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestSendGrid_Send_APIErrorWithJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -215,23 +176,56 @@ func TestSendGrid_Send_APIError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	sg := NewSendGrid(SendGridConfig{
-		APIKey:    "SG.test-key",
-		FromEmail: "sender@example.com",
-		ToEmails:  []string{"invalid"},
-	})
+	sg := &SendGrid{
+		config: SendGridConfig{
+			APIKey:    "SG.test-key",
+			FromEmail: "sender@example.com",
+			ToEmails:  []string{"invalid"},
+		},
+		client:   server.Client(),
+		endpoint: server.URL,
+	}
 
-	// We can't easily override the endpoint, so we'll test the error parsing logic
-	// by directly testing buildPayload and formatSubject
-	alert := &Alert{
+	err := sg.Send(context.Background(), &Alert{
 		Title:    "Test",
 		Message:  "Test",
 		Severity: SeverityCritical,
+	})
+	if err == nil {
+		t.Fatal("Send() should return error for API error response")
+	}
+	if !containsString(err.Error(), "Invalid email address") {
+		t.Errorf("error should contain API message, got: %v", err)
+	}
+}
+
+func TestSendGrid_Send_APIErrorNonJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("internal server error"))
+	}))
+	defer server.Close()
+
+	sg := &SendGrid{
+		config: SendGridConfig{
+			APIKey:    "SG.test-key",
+			FromEmail: "sender@example.com",
+			ToEmails:  []string{"recipient@example.com"},
+		},
+		client:   server.Client(),
+		endpoint: server.URL,
 	}
 
-	subject := sg.formatSubject(alert)
-	if subject != "[CRITICAL] Test" {
-		t.Errorf("formatSubject() = %q, want %q", subject, "[CRITICAL] Test")
+	err := sg.Send(context.Background(), &Alert{
+		Title:    "Test",
+		Message:  "Test",
+		Severity: SeverityInfo,
+	})
+	if err == nil {
+		t.Fatal("Send() should return error for non-2xx status")
+	}
+	if !containsString(err.Error(), "status 500") {
+		t.Errorf("error should contain status code, got: %v", err)
 	}
 }
 
@@ -337,6 +331,29 @@ func TestSendGrid_getSeverityColor(t *testing.T) {
 		t.Run(string(tt.severity), func(t *testing.T) {
 			if got := sg.getSeverityColor(tt.severity); got != tt.wantHex {
 				t.Errorf("getSeverityColor(%s) = %q, want %q", tt.severity, got, tt.wantHex)
+			}
+		})
+	}
+}
+
+func TestSendGrid_getSeverityBgColor(t *testing.T) {
+	sg := NewSendGrid(SendGridConfig{})
+
+	tests := []struct {
+		severity Severity
+		wantHex  string
+	}{
+		{SeverityCritical, "#fef2f2"},
+		{SeverityError, "#fff7ed"},
+		{SeverityWarning, "#fefce8"},
+		{SeverityInfo, "#eff6ff"},
+		{Severity("unknown"), "#f9fafb"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.severity), func(t *testing.T) {
+			if got := sg.getSeverityBgColor(tt.severity); got != tt.wantHex {
+				t.Errorf("getSeverityBgColor(%s) = %q, want %q", tt.severity, got, tt.wantHex)
 			}
 		})
 	}

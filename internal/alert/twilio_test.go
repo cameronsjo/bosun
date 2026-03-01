@@ -354,54 +354,158 @@ func TestTwilio_Send_NotConfigured(t *testing.T) {
 	}
 }
 
-func TestTwilio_Send_HTTPServer(t *testing.T) {
-	var receivedRequest *http.Request
+func TestTwilio_Send_HTTPSuccess(t *testing.T) {
 	var receivedBody string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedRequest = r
-
-		// Read the body
-		buf := make([]byte, 1024)
+		if r.Method != http.MethodPost {
+			t.Errorf("Method = %q, want POST", r.Method)
+		}
+		if r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
+			t.Errorf("Content-Type = %q, want application/x-www-form-urlencoded", r.Header.Get("Content-Type"))
+		}
+		buf := make([]byte, 4096)
 		n, _ := r.Body.Read(buf)
 		receivedBody = string(buf[:n])
-
 		w.WriteHeader(http.StatusCreated)
 		fmt.Fprint(w, `{"sid": "SM123"}`)
 	}))
 	defer server.Close()
 
-	// Create Twilio instance with custom client
-	config := TwilioConfig{
-		AccountSID: "AC123456789",
-		AuthToken:  "secrettoken",
-		FromNumber: "+15551234567",
-		ToNumbers:  []string{"+15559876543"},
-	}
-	tw := NewTwilio(config)
-
-	// Override the API URL for testing by using a custom transport
-	// For this simple test, we'll just verify the request format
-	// A more complete test would use a custom HTTP client
-	_ = server // Server is available for more advanced testing
-
-	// Just verify the auth header building works correctly
-	authHeader := tw.buildAuthHeader()
-	if authHeader == "" {
-		t.Error("buildAuthHeader() returned empty string")
+	tw := &Twilio{
+		config: TwilioConfig{
+			AccountSID: "AC123456789",
+			AuthToken:  "secrettoken",
+			FromNumber: "+15551234567",
+			ToNumbers:  []string{"+15559876543"},
+		},
+		client: server.Client(),
+		apiURL: server.URL,
 	}
 
-	// Verify the formatted auth contains the expected structure
-	if len(authHeader) < 10 {
-		t.Errorf("buildAuthHeader() seems too short: %q", authHeader)
+	err := tw.Send(context.Background(), &Alert{
+		Title:    "Deploy Failed",
+		Message:  "commit abc failed",
+		Severity: SeverityError,
+		Source:   "reconcile",
+	})
+	if err != nil {
+		t.Fatalf("Send() returned unexpected error: %v", err)
 	}
 
-	// Silence unused variable warnings
-	_ = receivedRequest
-	_ = receivedBody
+	// Verify the SMS body was sent in the form data.
+	if !containsString(receivedBody, "Body=") {
+		t.Error("request body missing Body field")
+	}
+	if !containsString(receivedBody, "To=") {
+		t.Error("request body missing To field")
+	}
+	if !containsString(receivedBody, "From=") {
+		t.Error("request body missing From field")
+	}
+}
+
+func TestTwilio_Send_APIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"code": 21211, "message": "Invalid 'To' Phone Number"}`)
+	}))
+	defer server.Close()
+
+	tw := &Twilio{
+		config: TwilioConfig{
+			AccountSID: "AC123",
+			AuthToken:  "token",
+			FromNumber: "+15551234567",
+			ToNumbers:  []string{"+15559876543"},
+		},
+		client: server.Client(),
+		apiURL: server.URL,
+	}
+
+	err := tw.Send(context.Background(), &Alert{
+		Title:    "Test",
+		Message:  "Test",
+		Severity: SeverityError,
+	})
+	if err == nil {
+		t.Fatal("Send() should return error for API error response")
+	}
+	if !containsString(err.Error(), "status 400") {
+		t.Errorf("error should contain status code, got: %v", err)
+	}
+}
+
+func TestTwilio_Send_MultipleRecipients_PartialFailure(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount++
+		if callCount == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"message": "Invalid number"}`)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"sid": "SM123"}`)
+	}))
+	defer server.Close()
+
+	tw := &Twilio{
+		config: TwilioConfig{
+			AccountSID: "AC123",
+			AuthToken:  "token",
+			FromNumber: "+15551234567",
+			ToNumbers:  []string{"+15551111111", "+15552222222"},
+		},
+		client: server.Client(),
+		apiURL: server.URL,
+	}
+
+	err := tw.Send(context.Background(), &Alert{
+		Title:    "Test",
+		Message:  "Test",
+		Severity: SeverityCritical,
+	})
+
+	// Should return error from the first failed recipient.
+	if err == nil {
+		t.Fatal("Send() should return error for partial failure")
+	}
+	// Both recipients should have been attempted.
+	if callCount != 2 {
+		t.Errorf("expected 2 API calls, got %d", callCount)
+	}
+}
+
+func TestTwilio_Send_AllRecipientsFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"message": "Server error"}`)
+	}))
+	defer server.Close()
+
+	tw := &Twilio{
+		config: TwilioConfig{
+			AccountSID: "AC123",
+			AuthToken:  "token",
+			FromNumber: "+15551234567",
+			ToNumbers:  []string{"+15551111111", "+15552222222"},
+		},
+		client: server.Client(),
+		apiURL: server.URL,
+	}
+
+	err := tw.Send(context.Background(), &Alert{
+		Title:    "Test",
+		Message:  "Test",
+		Severity: SeverityError,
+	})
+
+	if err == nil {
+		t.Fatal("Send() should return error when all recipients fail")
+	}
 }
 
 func TestTwilio_InterfaceCompliance(t *testing.T) {
-	// Verify Twilio implements the Provider interface
 	var _ Provider = (*Twilio)(nil)
 }

@@ -299,6 +299,49 @@ func TestManager_SendDriftResolved(t *testing.T) {
 	assert.Equal(t, "2", a.Metadata["resolved_count"])
 }
 
+func TestManager_SendUnhealthyContainers(t *testing.T) {
+	m := NewManager()
+	p := newMockProvider("test", true)
+	m.AddProvider(p)
+
+	err := m.SendUnhealthyContainers(context.Background(), "unraid", []string{"traefik", "authelia"})
+	require.NoError(t, err)
+
+	alerts := p.getAlerts()
+	require.Len(t, alerts, 1)
+
+	a := alerts[0]
+	assert.Equal(t, "Unhealthy Containers Detected", a.Title)
+	assert.Contains(t, a.Message, "traefik, authelia")
+	assert.Contains(t, a.Message, "unraid")
+	assert.Equal(t, SeverityWarning, a.Severity)
+	assert.Equal(t, "reconcile", a.Source)
+	assert.Equal(t, "2", a.Metadata["count"])
+	assert.Equal(t, "traefik, authelia", a.Metadata["containers"])
+	assert.Equal(t, "unraid", a.Metadata["target"])
+}
+
+func TestManager_SendDriftDetected(t *testing.T) {
+	m := NewManager()
+	p := newMockProvider("test", true)
+	m.AddProvider(p)
+
+	err := m.SendDriftDetected(context.Background(), "unraid", []string{"traefik:unhealthy", "authelia:missing"})
+	require.NoError(t, err)
+
+	alerts := p.getAlerts()
+	require.Len(t, alerts, 1)
+
+	a := alerts[0]
+	assert.Equal(t, "Drift Detected", a.Title)
+	assert.Contains(t, a.Message, "traefik:unhealthy, authelia:missing")
+	assert.Contains(t, a.Message, "unraid")
+	assert.Equal(t, SeverityWarning, a.Severity)
+	assert.Equal(t, "drift", a.Source)
+	assert.Equal(t, "2", a.Metadata["drift_count"])
+	assert.Equal(t, "unraid", a.Metadata["target"])
+}
+
 func TestSeverityConstants(t *testing.T) {
 	assert.Equal(t, Severity("info"), SeverityInfo)
 	assert.Equal(t, Severity("warning"), SeverityWarning)
