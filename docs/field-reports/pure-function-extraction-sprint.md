@@ -192,21 +192,87 @@ Committed to `cameronsjo/rules` repo (`e48d1ae`).
 | bosun-d9e | Refactor diagnostics.go: split 1240-line god file | task | Open |
 | bosun-eln | Refactor reconcile.go + deploy.go: split 2200-line core | task | Open |
 
-### Next Round: Coverage Targets
+### Round 2: Coverage Targets (COMPLETED 2026-03-01)
 
-Full project coverage: **61.2%**. The remaining gaps cluster by testability:
+Three-agent team, parallel worktrees, ~10 min wall-clock. All exceeded targets.
+
+| ID | Package | Before | After | Target | Delta | Production Changes |
+|----|---------|-------:|------:|-------:|------:|-------------------|
+| ~~bosun-sal~~ | config | 77.8% | **98.4%** | 85%+ | **+20.6** | None |
+| ~~bosun-d5j~~ | docker | 69.8% | **94.3%** | 80%+ | **+24.5** | `commandRunner` injection in compose.go |
+| ~~bosun-g15~~ | alert | 89.3% | **97.6%** | 95%+ | **+8.3** | Injectable endpoints (sendgrid, twilio) |
+
+*Higher coverage is better.*
+
+### Round 3: Coverage Targets (PLANNED)
+
+Remaining gaps cluster into two packages: reconcile (68.4%) and ui (57.6%).
 
 | ID | Package | Current | Target | Approach | ROI |
 |----|---------|--------:|-------:|----------|-----|
-| bosun-sal | config | 77.8% | 85%+ | YAML parsing branches, env overrides, `Load()` with temp files | **High** |
-| bosun-d5j | docker | 69.8% | 80%+ | Container ops via exported `MockDockerAPI` | **High** |
-| bosun-bxv | reconcile | 68.4% | 75%+ | Drift state, hook eval, skip logic (avoid git/SSH paths) | Medium |
-| bosun-vjm | ui | 57.6% | 75%+ | Output formatting, nautical helpers | Medium |
-| bosun-g15 | alert | 89.3% | 95%+ | 2 untested `Send*` methods + provider HTTP paths | Quick win |
+| bosun-bxv | reconcile | 68.4% | 75%+ | Drift enrichment, hook execution, deploy rollback, git branch ops | Medium |
+| bosun-vjm | ui | 57.6% | 80%+ | JSON mode branch, Debug, Logger, WithComponent | **High** |
 
-**Not worth chasing:**
+#### UI Package Plan (57.6% → 80%+)
+
+**Why it's high ROI:** Every function has the same pattern — `if isConsoleMode() { color } else { log }`. The existing tests ONLY cover console mode because `init()` sets `FormatConsole`. Adding a JSON mode test helper covers the `else` branch of all 13 functions at once.
+
+**Work items:**
+
+1. **JSON mode helper** — Create `captureJSONOutput(fn)` that sets `log.FormatJSON`, captures log output, and restores. Test every function in JSON mode (Success→Info log with `success=true`, Error→Error log, etc.).
+
+2. **Debug function** — 0% coverage. Call in both console and JSON mode.
+
+3. **Logger and WithComponent** — 0% coverage. Trivial: call, assert non-nil return.
+
+4. **Fatal/Fatalf** — 0% coverage. These call `os.Exit(1)` so they can't be tested directly. Options:
+   - Make the exit function injectable (`var exitFn = os.Exit`) — test by replacing with noop
+   - Accept 0% on these 2 functions (they're 12 lines total, identical to Error)
+   - **Recommended:** inject `exitFn`, covers both the formatting AND exit logic
+
+**Expected: ~25 new test cases, all in `color_test.go`.**
+
+#### Reconcile Package Plan (68.4% → 75%+)
+
+**Why it's medium ROI:** The uncovered code splits into two categories:
+- **Testable without I/O** (~6.6% gain possible): drift enrichment, hook execution, rollback logic, git branch helpers
+- **Requires real git/SSH/Docker** (~25% gap): Clone, Pull, DeployRemote, SSH auth — too expensive for unit tests
+
+**Work items (target the testable gaps):**
+
+1. **EnrichUnhealthyItems** (55.6%) — Test via `MockDockerAPI` injection. Cases: no drift, non-unhealthy items skipped, inspect error skipped, health log present, health log nil, output truncation at 200 chars.
+
+2. **ExecutePostSyncHooks** (0%) — Needs a Docker client mock for `RestartContainer`. Test: empty hooks (noop), restart action, unsupported action skipped, per-hook delay with cancelled context, settle delay. **Requires making Docker client injectable** — add `restarter` interface or accept a `RestartContainer` func.
+
+3. **ComposeUpMultipleWithRollback** (55.2%) — Partially tested. Missing: backup file missing (skip), all backup files missing, rollback exec failure. These need `exec.Command` injection similar to docker compose — the `DeployOps` struct already has a `DryRun` field but no command runner. **May need `commandRunner` injection on `DeployOps`** (same pattern as docker compose).
+
+4. **Git branch operations** — `RemoteBranchExists` (58.3%), `IsDirty` (66.7%), `GetCommitMessage` (71.4%), `DiffFiles` (0%). These use go-git in-process, so they're testable with a temp git repo. Create a `testRepo(t)` helper that inits a bare repo with a commit.
+
+5. **serviceNameFromContainer** (81.8%) — Missing edge cases in name extraction. Table-driven test additions.
+
+**NOT targeting (diminishing returns):**
+- `CheckSSHConnectivity` (15.4%) — needs real SSH
+- `DeployRemote`/`DeployRemoteFile`/`EnsureRemoteDir` (12-19%) — needs SSH + tar
+- `ComposeUpRemote` (30.4%) — needs remote Docker
+- `getSSHAuth`/`getHostKeyCallback`/`getSSHAgentAuth`/`getSSHKeyFileAuth` (0-40%) — SSH agent/key file handling
+- `reconcile.Run` (82.2%) — already high, remaining paths are I/O orchestration
+
+**Expected: ~40 new test cases across drift, hooks, deploy, and git test files. Target 75%+, stretch 78%.**
+
+#### Execution Plan
+
+Two agents, parallel worktrees:
+
+| Agent | Package | Files Touched | Estimated Cases |
+|-------|---------|---------------|----------------:|
+| ui-tester | internal/ui | `color.go` (exitFn), `color_test.go` | ~25 |
+| reconcile-tester | internal/reconcile | `hooks.go` (restarter), `drift_test.go`, `hooks_test.go`, `deploy_test.go`, `git_test.go` | ~40 |
+
+No file overlap. Same merge strategy as round 2.
+
+**Not worth chasing (unchanged):**
 - **cmd** (40%) — orchestrators calling Docker/Tailscale/filesystem. E2E territory.
-- **daemon** (82.5%) — diminishing returns. Signal handling, full `Run()` lifecycle.
+- **daemon** (82.6%) — diminishing returns. Signal handling, full `Run()` lifecycle.
 - **update** (0%) — self-update from GitHub releases. Network-dependent, low value.
 
 ### Refactor Candidates Noted by Agents (Not Implemented)
