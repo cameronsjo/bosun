@@ -487,6 +487,15 @@ func extractDomain(cfg configFile) string {
 	return cfg.Domain
 }
 
+// getEnvOrDefault returns the value of the environment variable if set and non-empty,
+// otherwise returns the provided default value.
+func getEnvOrDefault(envKey, defaultValue string) string {
+	if v := os.Getenv(envKey); v != "" {
+		return v
+	}
+	return defaultValue
+}
+
 // extractAlertConfig extracts alert configuration from a parsed config.
 // Supports environment variable overrides for sensitive values.
 func extractAlertConfig(cfg configFile) AlertConfig {
@@ -498,27 +507,13 @@ func extractAlertConfig(cfg configFile) AlertConfig {
 	}
 
 	// Environment variable overrides for sensitive values.
-	if v := os.Getenv("DISCORD_WEBHOOK_URL"); v != "" {
-		alertCfg.DiscordWebhookURL = v
-	}
-	if v := os.Getenv("SENDGRID_API_KEY"); v != "" {
-		alertCfg.SendGridAPIKey = v
-	}
-	if v := os.Getenv("SENDGRID_FROM_EMAIL"); v != "" {
-		alertCfg.SendGridFromEmail = v
-	}
-	if v := os.Getenv("SENDGRID_FROM_NAME"); v != "" {
-		alertCfg.SendGridFromName = v
-	}
-	if v := os.Getenv("TWILIO_ACCOUNT_SID"); v != "" {
-		alertCfg.TwilioAccountSID = v
-	}
-	if v := os.Getenv("TWILIO_AUTH_TOKEN"); v != "" {
-		alertCfg.TwilioAuthToken = v
-	}
-	if v := os.Getenv("TWILIO_FROM_NUMBER"); v != "" {
-		alertCfg.TwilioFromNumber = v
-	}
+	alertCfg.DiscordWebhookURL = getEnvOrDefault("DISCORD_WEBHOOK_URL", alertCfg.DiscordWebhookURL)
+	alertCfg.SendGridAPIKey = getEnvOrDefault("SENDGRID_API_KEY", alertCfg.SendGridAPIKey)
+	alertCfg.SendGridFromEmail = getEnvOrDefault("SENDGRID_FROM_EMAIL", alertCfg.SendGridFromEmail)
+	alertCfg.SendGridFromName = getEnvOrDefault("SENDGRID_FROM_NAME", alertCfg.SendGridFromName)
+	alertCfg.TwilioAccountSID = getEnvOrDefault("TWILIO_ACCOUNT_SID", alertCfg.TwilioAccountSID)
+	alertCfg.TwilioAuthToken = getEnvOrDefault("TWILIO_AUTH_TOKEN", alertCfg.TwilioAuthToken)
+	alertCfg.TwilioFromNumber = getEnvOrDefault("TWILIO_FROM_NUMBER", alertCfg.TwilioFromNumber)
 
 	return alertCfg
 }

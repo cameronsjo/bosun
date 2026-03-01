@@ -263,17 +263,17 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 
 	// Check event type
 	eventType := r.Header.Get("X-GitHub-Event")
-	if eventType == "ping" {
+	action, reason := shouldProcessGitHubEvent(eventType)
+	switch action {
+	case "ping":
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("pong"))
 		return
-	}
-
-	if eventType != "push" {
+	case "ignore":
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"status":  "ignored",
-			"message": fmt.Sprintf("Event type '%s' not handled", eventType),
+			"message": reason,
 		})
 		return
 	}
@@ -286,12 +286,12 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if it's the branch we care about
-	expectedRef := "refs/heads/" + s.daemon.config.ReconcileConfig.RepoBranch
-	if payload.Ref != expectedRef {
+	process, branchReason := shouldProcessGitHubPush(payload.Ref, s.daemon.config.ReconcileConfig.RepoBranch)
+	if !process {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"status":  "ignored",
-			"message": fmt.Sprintf("Push to %s ignored (tracking %s)", payload.Ref, expectedRef),
+			"message": branchReason,
 		})
 		return
 	}

@@ -66,14 +66,7 @@ func NewDeployOps(dryRun bool, projectName string) *DeployOps {
 
 // composeArgs returns docker compose arguments with project name if set.
 func (d *DeployOps) composeArgs(files ...string) []string {
-	args := []string{"compose"}
-	if d.ProjectName != "" {
-		args = append(args, "-p", d.ProjectName)
-	}
-	for _, f := range files {
-		args = append(args, "-f", f)
-	}
-	return args
+	return buildComposeArgs(d.ProjectName, files)
 }
 
 // isTransientSSHError checks if an error is transient and worth retrying.
@@ -194,21 +187,22 @@ func (d *DeployOps) CheckSSHConnectivity(ctx context.Context, host string) error
 
 // parseSSHError converts SSH errors into actionable error messages.
 func parseSSHError(err error, stderr, host string) error {
-	stderrLower := strings.ToLower(stderr)
-
-	switch {
-	case strings.Contains(stderrLower, "permission denied"):
+	category := classifySSHError(stderr)
+	switch category {
+	case "auth":
 		return fmt.Errorf("SSH authentication failed for %s: permission denied. Check that your SSH key is added to the remote host's authorized_keys", host)
-	case strings.Contains(stderrLower, "connection refused"):
+	case "connection":
+		stderrLower := strings.ToLower(stderr)
+		if strings.Contains(stderrLower, "no route to host") {
+			return fmt.Errorf("cannot reach %s: no route to host. Check network connectivity and that the host is online", host)
+		}
 		return fmt.Errorf("SSH connection refused by %s: the SSH service may not be running or the port may be blocked", host)
-	case strings.Contains(stderrLower, "host key verification failed"):
+	case "host_key":
 		return fmt.Errorf("SSH host key verification failed for %s: run 'ssh-keyscan %s >> ~/.ssh/known_hosts' to add the host key", host, host)
-	case strings.Contains(stderrLower, "no route to host"):
-		return fmt.Errorf("cannot reach %s: no route to host. Check network connectivity and that the host is online", host)
-	case strings.Contains(stderrLower, "connection timed out"):
-		return fmt.Errorf("SSH connection to %s timed out: check network connectivity and firewall rules", host)
-	case strings.Contains(stderrLower, "name or service not known"):
+	case "dns":
 		return fmt.Errorf("cannot resolve hostname %s: check that the hostname is correct and DNS is working", host)
+	case "timeout":
+		return fmt.Errorf("SSH connection to %s timed out: check network connectivity and firewall rules", host)
 	default:
 		return fmt.Errorf("SSH connection to %s failed: %w: %s", host, err, stderr)
 	}

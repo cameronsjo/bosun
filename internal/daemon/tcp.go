@@ -196,13 +196,8 @@ func (s *TCPServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	reconciling := s.daemon.reconciling
 	s.daemon.reconcileMu.Unlock()
 
-	state := "idle"
-	if reconciling {
-		state = "reconciling"
-	}
-
 	resp := StatusResponse{
-		State:  state,
+		State:  reconcileStateString(reconciling),
 		Uptime: time.Since(startTime).Round(time.Second).String(),
 	}
 

@@ -106,16 +106,9 @@ func getHostKeyCallback() xssh.HostKeyCallback {
 		return xssh.InsecureIgnoreHostKey()
 	}
 
-	knownHostsPaths := []string{
-		os.Getenv("BOSUN_SSH_KNOWN_HOSTS"),
-		filepath.Join(os.Getenv("HOME"), ".ssh", "known_hosts"),
-		"/config/known_hosts",
-	}
+	knownHostsPaths := buildKnownHostsPaths(os.Getenv("BOSUN_SSH_KNOWN_HOSTS"), os.Getenv("HOME"))
 
 	for _, path := range knownHostsPaths {
-		if path == "" {
-			continue
-		}
 		if _, err := os.Stat(path); err != nil {
 			continue
 		}
@@ -164,18 +157,9 @@ func getSSHAgentAuth() transport.AuthMethod {
 // Checks BOSUN_SSH_KEY env var, then common paths.
 func getSSHKeyFileAuth() (transport.AuthMethod, error) {
 	logger := log.Component(log.ComponentGit)
-	keyPaths := []string{
-		os.Getenv("BOSUN_SSH_KEY"),
-		"/config/deploy-key",
-		"/config/ssh-key",
-		filepath.Join(os.Getenv("HOME"), ".ssh", "id_ed25519"),
-		filepath.Join(os.Getenv("HOME"), ".ssh", "id_rsa"),
-	}
+	keyPaths := buildSSHKeyPaths(os.Getenv("BOSUN_SSH_KEY"), os.Getenv("HOME"))
 
 	for _, keyPath := range keyPaths {
-		if keyPath == "" {
-			continue
-		}
 		if _, err := os.Stat(keyPath); err != nil {
 			logger.Debug().Str(log.FieldPath, keyPath).Msg("Skipping SSH key. Reason: file not found")
 			continue
