@@ -1291,3 +1291,270 @@ func TestCheckTraefikConfig(t *testing.T) {
 		assert.Equal(t, 4, result.Warned)
 	})
 }
+
+func TestShowProvisionTimestamps(t *testing.T) {
+	t.Run("lists yml files with timestamps", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		outputDir := filepath.Join(tmpDir, "output")
+		require.NoError(t, os.MkdirAll(outputDir, 0755))
+
+		require.NoError(t, os.WriteFile(filepath.Join(outputDir, "test.yml"), []byte("test"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(outputDir, "test2.yml"), []byte("test2"), 0644))
+
+		// Should not panic -- output goes to stdout.
+		showProvisionTimestamps(outputDir, tmpDir)
+	})
+
+	t.Run("handles empty directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		outputDir := filepath.Join(tmpDir, "output")
+		require.NoError(t, os.MkdirAll(outputDir, 0755))
+
+		showProvisionTimestamps(outputDir, tmpDir)
+	})
+
+	t.Run("handles non-existent directory", func(t *testing.T) {
+		showProvisionTimestamps("/nonexistent/dir", "/tmp")
+	})
+}
+
+func TestCheckDependencies(t *testing.T) {
+	t.Run("no compose files returns zero warnings", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifestDir := filepath.Join(tmpDir, "manifest")
+		require.NoError(t, os.MkdirAll(filepath.Join(manifestDir, "output", "compose"), 0755))
+
+		cfg := &config.Config{
+			Root:        tmpDir,
+			ManifestDir: manifestDir,
+		}
+
+		warnings := checkDependencies(cfg)
+		assert.Equal(t, 0, warnings)
+	})
+
+	t.Run("warns on missing depends_on for db service", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifestDir := filepath.Join(tmpDir, "manifest")
+		composeDir := filepath.Join(manifestDir, "output", "compose")
+		require.NoError(t, os.MkdirAll(composeDir, 0755))
+
+		// Create compose file with myapp and myapp-db, but myapp lacks depends_on.
+		content := `services:
+    myapp:
+      image: myapp:latest
+      ports:
+        - "8080:80"
+    myapp-db:
+      image: postgres:16
+`
+		require.NoError(t, os.WriteFile(filepath.Join(composeDir, "stack.yml"), []byte(content), 0644))
+
+		cfg := &config.Config{
+			Root:        tmpDir,
+			ManifestDir: manifestDir,
+		}
+
+		warnings := checkDependencies(cfg)
+		assert.Greater(t, warnings, 0, "should warn about missing depends_on")
+	})
+
+	t.Run("no warning when depends_on is present", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifestDir := filepath.Join(tmpDir, "manifest")
+		composeDir := filepath.Join(manifestDir, "output", "compose")
+		require.NoError(t, os.MkdirAll(composeDir, 0755))
+
+		content := `services:
+    myapp:
+      image: myapp:latest
+      depends_on:
+        - myapp-db
+    myapp-db:
+      image: postgres:16
+`
+		require.NoError(t, os.WriteFile(filepath.Join(composeDir, "stack.yml"), []byte(content), 0644))
+
+		cfg := &config.Config{
+			Root:        tmpDir,
+			ManifestDir: manifestDir,
+		}
+
+		warnings := checkDependencies(cfg)
+		assert.Equal(t, 0, warnings)
+	})
+
+	t.Run("warns on traefik labels without proxynet", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifestDir := filepath.Join(tmpDir, "manifest")
+		composeDir := filepath.Join(manifestDir, "output", "compose")
+		require.NoError(t, os.MkdirAll(composeDir, 0755))
+
+		content := `services:
+    web:
+      image: nginx:latest
+      labels:
+        traefik.enable: "true"
+        traefik.http.routers.web.rule: "Host('web.example.com')"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(composeDir, "stack.yml"), []byte(content), 0644))
+
+		cfg := &config.Config{
+			Root:        tmpDir,
+			ManifestDir: manifestDir,
+		}
+
+		warnings := checkDependencies(cfg)
+		assert.Greater(t, warnings, 0, "should warn about missing proxynet")
+	})
+}
+
+func TestCheckPortConflicts(t *testing.T) {
+	t.Run("no compose files returns zero conflicts", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifestDir := filepath.Join(tmpDir, "manifest")
+		require.NoError(t, os.MkdirAll(filepath.Join(manifestDir, "output", "compose"), 0755))
+
+		cfg := &config.Config{
+			Root:        tmpDir,
+			ManifestDir: manifestDir,
+		}
+
+		conflicts := checkPortConflicts(cfg)
+		assert.Equal(t, 0, conflicts)
+	})
+
+	t.Run("no conflicts with unique ports", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifestDir := filepath.Join(tmpDir, "manifest")
+		composeDir := filepath.Join(manifestDir, "output", "compose")
+		require.NoError(t, os.MkdirAll(composeDir, 0755))
+
+		content := `services:
+  web:
+    image: nginx
+    ports:
+      - "8080:80"
+  api:
+    image: myapi
+    ports:
+      - "3000:3000"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(composeDir, "stack.yml"), []byte(content), 0644))
+
+		cfg := &config.Config{
+			Root:        tmpDir,
+			ManifestDir: manifestDir,
+		}
+
+		conflicts := checkPortConflicts(cfg)
+		assert.Equal(t, 0, conflicts)
+	})
+
+	t.Run("detects conflicts across stacks", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifestDir := filepath.Join(tmpDir, "manifest")
+		composeDir := filepath.Join(manifestDir, "output", "compose")
+		require.NoError(t, os.MkdirAll(composeDir, 0755))
+
+		// Two stacks using the same port.
+		stack1 := `services:
+  web:
+    image: nginx
+    ports:
+      - "8080:80"
+`
+		stack2 := `services:
+  api:
+    image: myapi
+    ports:
+      - "8080:3000"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(composeDir, "stack1.yml"), []byte(stack1), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(composeDir, "stack2.yml"), []byte(stack2), 0644))
+
+		cfg := &config.Config{
+			Root:        tmpDir,
+			ManifestDir: manifestDir,
+		}
+
+		conflicts := checkPortConflicts(cfg)
+		assert.Greater(t, conflicts, 0, "should detect port conflict on 8080")
+	})
+}
+
+func TestCheckDependencyCycles_WithFiles(t *testing.T) {
+	t.Run("no compose files returns empty", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifestDir := filepath.Join(tmpDir, "manifest")
+		require.NoError(t, os.MkdirAll(filepath.Join(manifestDir, "output", "compose"), 0755))
+
+		cfg := &config.Config{
+			Root:        tmpDir,
+			ManifestDir: manifestDir,
+		}
+
+		cycles := checkDependencyCycles(cfg)
+		assert.Empty(t, cycles)
+	})
+
+	t.Run("detects cycle in compose file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifestDir := filepath.Join(tmpDir, "manifest")
+		composeDir := filepath.Join(manifestDir, "output", "compose")
+		require.NoError(t, os.MkdirAll(composeDir, 0755))
+
+		content := `services:
+  a:
+    image: a:latest
+    depends_on:
+      - b
+  b:
+    image: b:latest
+    depends_on:
+      - a
+`
+		require.NoError(t, os.WriteFile(filepath.Join(composeDir, "cycle.yml"), []byte(content), 0644))
+
+		cfg := &config.Config{
+			Root:        tmpDir,
+			ManifestDir: manifestDir,
+		}
+
+		cycles := checkDependencyCycles(cfg)
+		assert.NotEmpty(t, cycles)
+	})
+
+	t.Run("no cycle in compose file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifestDir := filepath.Join(tmpDir, "manifest")
+		composeDir := filepath.Join(manifestDir, "output", "compose")
+		require.NoError(t, os.MkdirAll(composeDir, 0755))
+
+		content := `services:
+  web:
+    image: nginx
+    depends_on:
+      - db
+  db:
+    image: postgres
+`
+		require.NoError(t, os.WriteFile(filepath.Join(composeDir, "nocycle.yml"), []byte(content), 0644))
+
+		cfg := &config.Config{
+			Root:        tmpDir,
+			ManifestDir: manifestDir,
+		}
+
+		cycles := checkDependencyCycles(cfg)
+		assert.Empty(t, cycles)
+	})
+}
+
+func TestCheckPortConflictsFromStacks(t *testing.T) {
+	t.Run("returns zero (no rendered files needed)", func(t *testing.T) {
+		portMap := make(map[int]string)
+		result := checkPortConflictsFromStacks(nil, portMap)
+		assert.Equal(t, 0, result)
+	})
+}
