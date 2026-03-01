@@ -181,16 +181,33 @@ Committed to `cameronsjo/rules` repo (`e48d1ae`).
 5. **Remaining daemon gap (~17.5%)** — primarily `daemon.go:Run()` full lifecycle (signal handling, initial delay timer), `server.go` webhook handlers, and some pure.go error paths. Diminishing returns territory.
 6. **Reconcile gap (~31.6%)** — `reconcile.go` orchestrator (21 zero-coverage functions), `deploy.go` SSH/remote deploy (9), `drift.go` state persistence paths (9). These are I/O-heavy functions requiring git repos and Docker.
 
-### Beads Created This Session
+### Beads Created During Sprint
 
-| ID | Title | Type |
-|----|-------|------|
-| bosun-8yn | Epic: Alert provider plugin architecture | feature |
-| bosun-yj0 | Extract pure functions from internal/reconcile | task |
-| bosun-ytt | Extract pure functions from internal/daemon | task |
-| bosun-d9e | Refactor diagnostics.go: split 1240-line god file | task |
-| bosun-5bc | Extract pure functions from docker, tunnel, config, ui, preflight | task |
-| bosun-eln | Refactor reconcile.go + deploy.go: split 2200-line core | task |
+| ID | Title | Type | Status |
+|----|-------|------|--------|
+| ~~bosun-yj0~~ | ~~Extract pure functions from internal/reconcile~~ | task | **Closed** |
+| ~~bosun-ytt~~ | ~~Extract pure functions from internal/daemon~~ | task | **Closed** |
+| ~~bosun-5bc~~ | ~~Extract pure functions from docker, tunnel, config, ui, preflight~~ | task | **Closed** |
+| bosun-8yn | Epic: Alert provider plugin architecture | feature | Open |
+| bosun-d9e | Refactor diagnostics.go: split 1240-line god file | task | Open |
+| bosun-eln | Refactor reconcile.go + deploy.go: split 2200-line core | task | Open |
+
+### Next Round: Coverage Targets
+
+Full project coverage: **61.2%**. The remaining gaps cluster by testability:
+
+| ID | Package | Current | Target | Approach | ROI |
+|----|---------|--------:|-------:|----------|-----|
+| bosun-sal | config | 77.8% | 85%+ | YAML parsing branches, env overrides, `Load()` with temp files | **High** |
+| bosun-d5j | docker | 69.8% | 80%+ | Container ops via exported `MockDockerAPI` | **High** |
+| bosun-bxv | reconcile | 68.4% | 75%+ | Drift state, hook eval, skip logic (avoid git/SSH paths) | Medium |
+| bosun-vjm | ui | 57.6% | 75%+ | Output formatting, nautical helpers | Medium |
+| bosun-g15 | alert | 89.3% | 95%+ | 2 untested `Send*` methods + provider HTTP paths | Quick win |
+
+**Not worth chasing:**
+- **cmd** (40%) — orchestrators calling Docker/Tailscale/filesystem. E2E territory.
+- **daemon** (82.5%) — diminishing returns. Signal handling, full `Run()` lifecycle.
+- **update** (0%) — self-update from GitHub releases. Network-dependent, low value.
 
 ### Refactor Candidates Noted by Agents (Not Implemented)
 
