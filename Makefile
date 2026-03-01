@@ -1,4 +1,4 @@
-.PHONY: build install clean test lint lint-new run release release-dry-run completion ci all dagger-test dagger-lint dagger-build dagger-webui dagger-release-dry-run
+.PHONY: build install clean test lint lint-new run release release-dry-run completion ci all dagger-test dagger-lint dagger-build dagger-webui dagger-release-dry-run diagrams
 
 # Binary name
 BINARY := bosun
@@ -138,6 +138,10 @@ dagger-webui:
 dagger-release-dry-run:
 	dagger call release-dry-run --source .
 
+# Render .mmd diagram sources to ASCII art in README.md
+diagrams:
+	cd scripts/diagrams && pnpm install --frozen-lockfile && pnpm run render
+
 # Help
 help:
 	@echo "Available targets:"
@@ -164,6 +168,9 @@ help:
 	@echo "  dagger-build          - Build all platforms in container"
 	@echo "  dagger-webui          - Build WebUI in container"
 	@echo "  dagger-release-dry-run - Test goreleaser in container"
+	@echo ""
+	@echo "Documentation:"
+	@echo "  diagrams        - Render .mmd diagrams to ASCII art in README.md"
 	@echo ""
 	@echo "Release:"
 	@echo "  release-dry-run - Test release locally (no publish)"
