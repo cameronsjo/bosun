@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/alert"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1194,6 +1195,158 @@ func TestWidgetData_Structure(t *testing.T) {
 	assert.Equal(t, "", data["last_deploy"])
 	assert.Equal(t, "ok", data["status"])
 	assert.Equal(t, "", data["git_sha"])
+}
+
+// ---------------------------------------------------------------------------
+// Alert Wrapper Tests
+// ---------------------------------------------------------------------------
+
+// testAlertProvider implements alert.Provider for test assertions.
+type testAlertProvider struct {
+	alerts []*alert.Alert
+}
+
+func (p *testAlertProvider) Name() string                                { return "test" }
+func (p *testAlertProvider) IsConfigured() bool                          { return true }
+func (p *testAlertProvider) Send(_ context.Context, a *alert.Alert) error {
+	p.alerts = append(p.alerts, a)
+	return nil
+}
+
+func newAlertDaemon(t *testing.T, provider *testAlertProvider) *Daemon {
+	t.Helper()
+	tmpDir := t.TempDir()
+	tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+
+	mgr := alert.NewManager()
+	mgr.AddProvider(provider)
+
+	cfg := DefaultConfig()
+	cfg.EnableHTTP = false
+	cfg.AlertManager = mgr
+	cfg.ReconcileConfig = reconcile.DefaultConfig()
+	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
+	cfg.ReconcileConfig.DryRun = true
+	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
+	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "test.lock")
+	cfg.ReconcileConfig.StateFile = filepath.Join(tmpDir, "state.json")
+	cfg.SocketPath = filepath.Join(tmpDir, "test.sock")
+
+	d, err := New(cfg)
+	require.NoError(t, err)
+	return d
+}
+
+func TestSendDriftAlert(t *testing.T) {
+	t.Run("report with missing and unhealthy items sends alert", func(t *testing.T) {
+		provider := &testAlertProvider{}
+		d := newAlertDaemon(t, provider)
+
+		report := &reconcile.DriftReport{
+			CheckedAt: time.Now(),
+			Items: []reconcile.DriftItem{
+				{Service: "api", Type: reconcile.DriftMissing},
+				{Service: "web", Type: reconcile.DriftUnhealthy},
+				{Service: "redis", Type: reconcile.DriftImageMismatch}, // should be excluded from alert text
+			},
+		}
+
+		d.sendDriftAlert(context.Background(), report)
+
+		require.Len(t, provider.alerts, 1)
+		assert.Equal(t, "Drift Detected", provider.alerts[0].Title)
+		assert.Contains(t, provider.alerts[0].Message, "api (missing)")
+		assert.Contains(t, provider.alerts[0].Message, "web (unhealthy)")
+		// image_mismatch is filtered out of the drift items list
+		assert.NotContains(t, provider.alerts[0].Message, "redis")
+	})
+
+	t.Run("report with only image mismatch sends alert with empty items", func(t *testing.T) {
+		provider := &testAlertProvider{}
+		d := newAlertDaemon(t, provider)
+
+		report := &reconcile.DriftReport{
+			CheckedAt: time.Now(),
+			Items: []reconcile.DriftItem{
+				{Service: "redis", Type: reconcile.DriftImageMismatch},
+			},
+		}
+
+		d.sendDriftAlert(context.Background(), report)
+
+		require.Len(t, provider.alerts, 1)
+		// Alert is still sent but with empty drift items (just the target)
+		assert.Equal(t, "Drift Detected", provider.alerts[0].Title)
+	})
+
+	t.Run("no alerter configured does not panic", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+
+		d := &Daemon{
+			config: &Config{
+				ReconcileConfig: &reconcile.Config{
+					StateFile: filepath.Join(tmpDir, "state.json"),
+				},
+			},
+			alerter:   nil,
+			stopLoops: make(chan struct{}),
+		}
+
+		// This would panic if sendDriftAlert didn't handle nil alerter.
+		// The function calls d.alerter.SendDriftDetected — nil dereference check.
+		assert.Panics(t, func() {
+			d.sendDriftAlert(context.Background(), &reconcile.DriftReport{
+				Items: []reconcile.DriftItem{{Service: "x", Type: reconcile.DriftMissing}},
+			})
+		}, "sendDriftAlert with nil alerter panics because the guard is in the caller")
+	})
+}
+
+func TestSendDriftResolvedAlert(t *testing.T) {
+	t.Run("resolved keys sends alert with target", func(t *testing.T) {
+		provider := &testAlertProvider{}
+		d := newAlertDaemon(t, provider)
+
+		d.sendDriftResolvedAlert(context.Background(), []string{"api:missing", "web:unhealthy"})
+
+		require.Len(t, provider.alerts, 1)
+		assert.Equal(t, "Drift Resolved", provider.alerts[0].Title)
+		assert.Contains(t, provider.alerts[0].Message, "local") // default target
+		assert.Contains(t, provider.alerts[0].Message, "api:missing")
+		assert.Contains(t, provider.alerts[0].Message, "web:unhealthy")
+	})
+
+	t.Run("custom TargetHost uses it instead of local", func(t *testing.T) {
+		provider := &testAlertProvider{}
+		d := newAlertDaemon(t, provider)
+		d.config.ReconcileConfig.TargetHost = "unraid.local"
+
+		d.sendDriftResolvedAlert(context.Background(), []string{"api:missing"})
+
+		require.Len(t, provider.alerts, 1)
+		assert.Contains(t, provider.alerts[0].Message, "unraid.local")
+		assert.NotContains(t, provider.alerts[0].Message, "local,") // shouldn't be "local" fallback
+	})
+
+	t.Run("no alerter configured panics", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tmpDir, _ = filepath.EvalSymlinks(tmpDir)
+
+		d := &Daemon{
+			config: &Config{
+				ReconcileConfig: &reconcile.Config{
+					StateFile: filepath.Join(tmpDir, "state.json"),
+				},
+			},
+			alerter:   nil,
+			stopLoops: make(chan struct{}),
+		}
+
+		assert.Panics(t, func() {
+			d.sendDriftResolvedAlert(context.Background(), []string{"api:missing"})
+		}, "sendDriftResolvedAlert with nil alerter panics because the guard is in the caller")
+	})
 }
 
 func TestParseDurationOrSeconds(t *testing.T) {
