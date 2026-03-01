@@ -19,14 +19,43 @@ go test -v ./internal/manifest/  # Verbose, specific package
 - Test helpers: `test_helpers_test.go` in cmd package
 - Mocks: `mock_test.go` in docker package
 
-## Coverage Expectations
+## Coverage
 
-| Package | Target |
-|---------|--------|
-| manifest | >90% |
-| docker | >70% |
-| reconcile | >60% |
-| cmd | >50% |
+Current coverage as of 2026-03-01 (sorted by coverage):
+
+| Package | Coverage | Notes |
+|---------|-------:|-------|
+| ui | **100.0%** | Console + JSON mode, injectable `exitFn` |
+| config | **98.4%** | Getters + `Load()` integration |
+| alert | **97.6%** | Manager methods + provider HTTP |
+| docker | **94.3%** | Compose runner injection + interface |
+| manifest | 84.6% | Render + merge + interpolation |
+| lock | 83.8% | File-based locking |
+| daemon | 82.6% | Lifecycle, roundtrip, Docker API, drift loops |
+| sentry | 79.4% | Integration setup |
+| snapshot | 77.4% | Snapshot management |
+| reconcile | 77.3% | Pure functions, deploy, drift, hooks, git |
+| log | 75.8% | Init, format detection |
+| fileutil | 75.5% | Copy, atomic write |
+| preflight | 73.3% | Doctor checks |
+| tunnel | 69.2% | Provider abstraction |
+| cmd | 40.0% | Orchestrators — E2E territory |
+| update | 0.0% | Self-update from GitHub — network-dependent |
+
+*Higher coverage is better.*
+
+### Coverage Targets
+
+| Tier | Threshold | Packages |
+|------|--------:|----------|
+| Critical | 90%+ | ui, config, alert, docker |
+| Core | 75%+ | manifest, daemon, reconcile, lock, sentry, snapshot, log, fileutil |
+| Best effort | 60%+ | preflight, tunnel |
+| E2E only | — | cmd, update |
+
+### Testing Patterns
+
+See `docs/field-reports/pure-function-extraction-sprint.md` for the full coverage sprint methodology: pure function extraction, agent teams, worktree isolation, and the functional core principle.
 
 ## Writing Tests
 
@@ -37,4 +66,7 @@ go test -v ./internal/manifest/  # Verbose, specific package
 
 ## Mocking
 
-The docker package provides MockDockerAPI for testing container operations without a real Docker daemon.
+- **Docker**: `internal/docker/dockertest.MockDockerAPI` — injectable via `docker.NewClientWithAPI(mockAPI)`
+- **Exit functions**: `var exitFn = os.Exit` pattern for Fatal-like functions
+- **Command runners**: `commandRunner` injection on structs that shell out
+- **Endpoints**: Injectable URL fields on HTTP provider structs

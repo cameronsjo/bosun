@@ -190,6 +190,11 @@ Committed to `cameronsjo/rules` repo (`e48d1ae`).
 | ~~bosun-yj0~~ | ~~Extract pure functions from internal/reconcile~~ | task | **Closed** |
 | ~~bosun-ytt~~ | ~~Extract pure functions from internal/daemon~~ | task | **Closed** |
 | ~~bosun-5bc~~ | ~~Extract pure functions from docker, tunnel, config, ui, preflight~~ | task | **Closed** |
+| ~~bosun-sal~~ | ~~Boost config coverage to 85%+~~ | task | **Closed** |
+| ~~bosun-d5j~~ | ~~Boost docker coverage to 80%+~~ | task | **Closed** |
+| ~~bosun-g15~~ | ~~Boost alert coverage to 95%+~~ | task | **Closed** |
+| ~~bosun-vjm~~ | ~~Boost ui coverage to 80%+~~ | task | **Closed** |
+| ~~bosun-bxv~~ | ~~Boost reconcile coverage to 75%+~~ | task | **Closed** |
 | bosun-8yn | Epic: Alert provider plugin architecture | feature | Open |
 | bosun-d9e | Refactor diagnostics.go: split 1240-line god file | task | Open |
 | bosun-eln | Refactor reconcile.go + deploy.go: split 2200-line core | task | Open |
