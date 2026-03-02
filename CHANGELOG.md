@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1](https://github.com/cameronsjo/bosun/compare/v0.16.0...v0.16.1) (2026-03-02)
+
+
+### Bug Fixes
+
+* address CodeRabbit review and CI lint failures ([774f98b](https://github.com/cameronsjo/bosun/commit/774f98bc4032225d35ae43db6dea21cd0d5618fc))
+* address CodeRabbit review round 8 findings ([f1984fe](https://github.com/cameronsjo/bosun/commit/f1984fedb9177cbf76eca9aa306203bc831dd5b4))
+* **alert:** wire httptest server in severity skip test and move assertions out of handler goroutine ([fd38c96](https://github.com/cameronsjo/bosun/commit/fd38c9602259ba5e9a0336835ea0b1e7becf8ad2))
+
 ## [0.16.0](https://github.com/cameronsjo/bosun/compare/v0.15.1...v0.16.0) (2026-02-28)
 
 
