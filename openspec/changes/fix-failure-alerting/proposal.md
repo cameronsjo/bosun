@@ -2,7 +2,7 @@
 
 ## Why
 
-When reconciliation fails (git sync failure, dirty repo, compose exit 1, etc.), Bosun logs the error and returns 503 on `/health`, but does NOT send a failure alert via Discord or other providers. Successful deploys DO send alerts. This asymmetry caused a 7+ day outage to go unnoticed -- Bosun was stuck at 503, and only a manual health check discovered it.
+When reconciliation fails (git sync failure, compose exit 1, etc.), Bosun logs the error and returns 503 on `/health`, but does NOT send a failure alert via Discord or other providers. Note: dirty repo warnings are intentionally non-fatal -- `Pull()` warns on uncommitted changes and proceeds (the hard reset discards them) -- so they are excluded from failure alerting scope. Successful deploys DO send alerts. This asymmetry caused a 7+ day outage to go unnoticed -- Bosun was stuck at 503, and only a manual health check discovered it.
 
 Two bugs contribute to this:
 
