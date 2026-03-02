@@ -26,7 +26,7 @@ Two bugs contribute to this:
   - `internal/daemon/daemon.go` -- pass alert config flags to reconciler
   - `internal/cmd/daemon.go` -- wire `on_failure`/`on_success` from alert config into reconciler config
 - All consumers:
-  - `internal/reconcile/reconcile.go:Run()` -- success alert path, 4 failure alert paths, 2 missing failure paths
+  - `internal/reconcile/reconcile.go:Run()` -- success alert path, 4 failure alert paths, 1 missing failure path (syncRepo)
   - `internal/daemon/daemon.go:executeReconcile()` -- calls `reconciler.Run()`, handles errors
   - `internal/cmd/daemon.go:createDaemonAlertManager()` -- creates alert manager, does not read config flags
   - `internal/cmd/alert.go:displayAlertStatus()` -- displays `on_success`/`on_failure` (read-only, no change needed)
