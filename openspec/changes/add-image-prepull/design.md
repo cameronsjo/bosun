@@ -27,9 +27,10 @@ Structured log events emitted during the pre-pull stage MUST include the followi
 - `image` -- fully qualified image reference (where applicable, e.g., per-image progress)
 - `elapsed` -- wall-clock duration of the phase
 - `timeout` -- configured timeout for the phase
+- `timeout_phase` -- phase that timed out, either `pull` or `up` (present only in timeout error logs, disambiguates which phase's budget was exceeded)
 - `status` -- one of `started`, `completed`, or `failed`
 
-These fields align with the existing `internal/log` field helper conventions and enable filtering pull-phase telemetry in log aggregation tools.
+These fields align with the existing `internal/log` field helper conventions and enable filtering pull-phase telemetry in log aggregation tools. The `timeout_phase` field is critical for healthcheck debugging: when a container fails to become healthy after pull, operators need to distinguish whether the timeout occurred during image pull or during compose up (which includes container healthcheck evaluation).
 
 ## Decisions
 
@@ -52,7 +53,7 @@ The pre-pull stage runs after "Extract declared state" and before "Create backup
 
 ### Decision: Independent configurable timeouts
 
-Introduce `BOSUN_IMAGE_PULL_TIMEOUT` (default 15m) and `BOSUN_COMPOSE_UP_TIMEOUT` (default 5m) to replace the single `ComposeUpTimeout` constant. The defaults sum to 20m, slightly more than the old 10m, reflecting the reality that multi-image pulls can be slow. A new `ComposeUpTimeoutDefault` constant (5m) provides the default for `BOSUN_COMPOSE_UP_TIMEOUT`, replacing the previous single 10m timeout.
+Introduce `BOSUN_IMAGE_PULL_TIMEOUT` (default 15m) and `BOSUN_COMPOSE_UP_TIMEOUT` (default 5m) to replace the single `ComposeUpTimeout` constant. The combined default (20m) is double the previous single 10m timeout, giving more room for large image pulls while keeping compose-up snappy at 5m. A new `ComposeUpTimeoutDefault` constant (5m) provides the default for `BOSUN_COMPOSE_UP_TIMEOUT`, replacing the previous single 10m timeout.
 
 **Alternatives considered:**
 - Single shared timeout pool: Simpler but doesn't solve the "pull ate all the timeout budget" problem. Rejected.
