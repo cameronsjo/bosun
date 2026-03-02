@@ -38,7 +38,7 @@ The pre-pull stage runs after "Extract declared state" and before "Create backup
 
 ### Decision: Independent configurable timeouts
 
-Introduce `BOSUN_IMAGE_PULL_TIMEOUT` (default 15m) and `BOSUN_COMPOSE_UP_TIMEOUT` (default 5m) to replace the single `ComposeUpTimeout` constant. The defaults sum to 20m, slightly more than the old 10m, reflecting the reality that multi-image pulls can be slow. The existing `ComposeUpTimeout` constant becomes the default for `BOSUN_COMPOSE_UP_TIMEOUT`.
+Introduce `BOSUN_IMAGE_PULL_TIMEOUT` (default 15m) and `BOSUN_COMPOSE_UP_TIMEOUT` (default 5m) to replace the single `ComposeUpTimeout` constant. The defaults sum to 20m, slightly more than the old 10m, reflecting the reality that multi-image pulls can be slow. A new `ComposeUpTimeoutDefault` constant (5m) provides the default for `BOSUN_COMPOSE_UP_TIMEOUT`, replacing the previous single 10m timeout.
 
 **Alternatives considered:**
 - Single shared timeout pool: Simpler but doesn't solve the "pull ate all the timeout budget" problem. Rejected.
