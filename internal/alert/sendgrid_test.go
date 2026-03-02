@@ -14,9 +14,7 @@ import (
 
 func TestSendGrid_Name(t *testing.T) {
 	sg := NewSendGrid(SendGridConfig{})
-	if got := sg.Name(); got != "sendgrid" {
-		t.Errorf("Name() = %q, want %q", got, "sendgrid")
-	}
+	assert.Equal(t, "sendgrid", sg.Name())
 }
 
 func TestSendGrid_IsConfigured(t *testing.T) {
@@ -88,9 +86,7 @@ func TestSendGrid_IsConfigured(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sg := NewSendGrid(tt.config)
-			if got := sg.IsConfigured(); got != tt.want {
-				t.Errorf("IsConfigured() = %v, want %v", got, tt.want)
-			}
+			assert.Equal(t, tt.want, sg.IsConfigured())
 		})
 	}
 }
@@ -99,15 +95,9 @@ func TestSendGrid_Send_Success(t *testing.T) {
 	var receivedReq sendGridRequest
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer SG.test-api-key" {
-			t.Errorf("Authorization = %q, want %q", r.Header.Get("Authorization"), "Bearer SG.test-api-key")
-		}
-		if r.Header.Get("Content-Type") != "application/json" {
-			t.Errorf("Content-Type = %q, want %q", r.Header.Get("Content-Type"), "application/json")
-		}
-		if err := json.NewDecoder(r.Body).Decode(&receivedReq); err != nil {
-			t.Fatalf("Failed to decode request body: %v", err)
-		}
+		assert.Equal(t, "Bearer SG.test-api-key", r.Header.Get("Authorization"))
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedReq))
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer server.Close()
@@ -132,26 +122,14 @@ func TestSendGrid_Send_Success(t *testing.T) {
 	}
 
 	err := sg.Send(context.Background(), alert)
-	if err != nil {
-		t.Fatalf("Send() returned unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Verify the payload that was received by the server.
-	if len(receivedReq.Personalizations) != 1 {
-		t.Errorf("Personalizations count = %d, want 1", len(receivedReq.Personalizations))
-	}
-	if len(receivedReq.Personalizations[0].To) != 2 {
-		t.Errorf("To recipients = %d, want 2", len(receivedReq.Personalizations[0].To))
-	}
-	if receivedReq.From.Email != "alerts@example.com" {
-		t.Errorf("From.Email = %q, want %q", receivedReq.From.Email, "alerts@example.com")
-	}
-	if receivedReq.Subject != "[ERROR] Test Alert" {
-		t.Errorf("Subject = %q, want %q", receivedReq.Subject, "[ERROR] Test Alert")
-	}
-	if len(receivedReq.Content) != 2 {
-		t.Errorf("Content count = %d, want 2", len(receivedReq.Content))
-	}
+	require.Len(t, receivedReq.Personalizations, 1)
+	assert.Len(t, receivedReq.Personalizations[0].To, 2)
+	assert.Equal(t, "alerts@example.com", receivedReq.From.Email)
+	assert.Equal(t, "[ERROR] Test Alert", receivedReq.Subject)
+	assert.Len(t, receivedReq.Content, 2)
 }
 
 func TestSendGrid_Send_NotConfigured(t *testing.T) {
@@ -162,9 +140,7 @@ func TestSendGrid_Send_NotConfigured(t *testing.T) {
 		Severity: SeverityInfo,
 	})
 
-	if err == nil {
-		t.Error("Expected error for unconfigured SendGrid")
-	}
+	require.Error(t, err, "Expected error for unconfigured SendGrid")
 }
 
 func TestSendGrid_Send_APIErrorWithJSON(t *testing.T) {
@@ -242,9 +218,7 @@ func TestSendGrid_formatSubject(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(string(tt.severity), func(t *testing.T) {
 			alert := &Alert{Title: tt.title, Severity: tt.severity}
-			if got := sg.formatSubject(alert); got != tt.want {
-				t.Errorf("formatSubject() = %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, sg.formatSubject(alert))
 		})
 	}
 }
@@ -305,9 +279,7 @@ func TestSendGrid_getSeverityColor(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.severity), func(t *testing.T) {
-			if got := sg.getSeverityColor(tt.severity); got != tt.wantHex {
-				t.Errorf("getSeverityColor(%s) = %q, want %q", tt.severity, got, tt.wantHex)
-			}
+			assert.Equal(t, tt.wantHex, sg.getSeverityColor(tt.severity))
 		})
 	}
 }
@@ -328,9 +300,7 @@ func TestSendGrid_getSeverityBgColor(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.severity), func(t *testing.T) {
-			if got := sg.getSeverityBgColor(tt.severity); got != tt.wantHex {
-				t.Errorf("getSeverityBgColor(%s) = %q, want %q", tt.severity, got, tt.wantHex)
-			}
+			assert.Equal(t, tt.wantHex, sg.getSeverityBgColor(tt.severity))
 		})
 	}
 }
@@ -352,20 +322,12 @@ func TestSendGrid_buildPayload_MultipleRecipients(t *testing.T) {
 
 	payload := sg.buildPayload(alert)
 
-	if len(payload.Personalizations) != 1 {
-		t.Fatalf("Expected 1 personalization, got %d", len(payload.Personalizations))
-	}
-
-	recipients := payload.Personalizations[0].To
-	if len(recipients) != 3 {
-		t.Errorf("Expected 3 recipients, got %d", len(recipients))
-	}
+	require.Len(t, payload.Personalizations, 1)
+	require.Len(t, payload.Personalizations[0].To, 3)
 
 	expectedEmails := []string{"one@example.com", "two@example.com", "three@example.com"}
 	for i, email := range expectedEmails {
-		if recipients[i].Email != email {
-			t.Errorf("Recipient[%d] = %q, want %q", i, recipients[i].Email, email)
-		}
+		assert.Equal(t, email, payload.Personalizations[0].To[i].Email)
 	}
 }
 
@@ -397,8 +359,5 @@ func TestSendGrid_ContextCancellation(t *testing.T) {
 		Severity: SeverityInfo,
 	})
 
-	if err == nil {
-		t.Error("Expected error for cancelled context")
-	}
+	require.Error(t, err, "Expected error for cancelled context")
 }
-

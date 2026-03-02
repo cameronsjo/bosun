@@ -3,18 +3,18 @@ package alert
 import (
 	"context"
 	"encoding/base64"
-	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTwilio_Name(t *testing.T) {
 	tw := NewTwilio(TwilioConfig{})
-	if tw.Name() != "twilio" {
-		t.Errorf("Name() = %q, want %q", tw.Name(), "twilio")
-	}
+	assert.Equal(t, "twilio", tw.Name())
 }
 
 func TestTwilio_IsConfigured(t *testing.T) {
@@ -90,9 +90,7 @@ func TestTwilio_IsConfigured(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tw := NewTwilio(tt.config)
-			if got := tw.IsConfigured(); got != tt.want {
-				t.Errorf("IsConfigured() = %v, want %v", got, tt.want)
-			}
+			assert.Equal(t, tt.want, tw.IsConfigured())
 		})
 	}
 }
@@ -132,9 +130,7 @@ func TestTruncateMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := truncateMessage(tt.msg, tt.maxLen); got != tt.want {
-				t.Errorf("truncateMessage() = %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, truncateMessage(tt.msg, tt.maxLen))
 		})
 	}
 }
@@ -174,9 +170,7 @@ func TestFormatPhoneNumber(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := formatPhoneNumber(tt.number); got != tt.want {
-				t.Errorf("formatPhoneNumber() = %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, formatPhoneNumber(tt.number))
 		})
 	}
 }
@@ -206,9 +200,7 @@ func TestMaskPhoneNumber(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := maskPhoneNumber(tt.number); got != tt.want {
-				t.Errorf("maskPhoneNumber() = %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, maskPhoneNumber(tt.number))
 		})
 	}
 }
@@ -221,22 +213,14 @@ func TestTwilio_buildAuthHeader(t *testing.T) {
 
 	got := tw.buildAuthHeader()
 
-	// Verify it's a valid Basic auth header
-	if len(got) < 7 || got[:6] != "Basic " {
-		t.Fatalf("buildAuthHeader() = %q, want Basic auth header", got)
-	}
+	// Verify it's a valid Basic auth header.
+	require.Greater(t, len(got), 6)
+	assert.Equal(t, "Basic ", got[:6])
 
-	// Decode and verify credentials
-	encoded := got[6:]
-	decoded, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		t.Fatalf("failed to decode auth header: %v", err)
-	}
-
-	want := "AC123456:authtoken789"
-	if string(decoded) != want {
-		t.Errorf("decoded auth = %q, want %q", string(decoded), want)
-	}
+	// Decode and verify credentials.
+	decoded, err := base64.StdEncoding.DecodeString(got[6:])
+	require.NoError(t, err)
+	assert.Equal(t, "AC123456:authtoken789", string(decoded))
 }
 
 func TestTwilio_formatMessage(t *testing.T) {
@@ -278,9 +262,7 @@ func TestTwilio_formatMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tw.formatMessage(tt.alert); got != tt.want {
-				t.Errorf("formatMessage() = %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, tw.formatMessage(tt.alert))
 		})
 	}
 }
@@ -308,13 +290,13 @@ func TestTwilio_Send_SkipsNonErrorSeverity(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusCreated)
-				fmt.Fprint(w, `{"sid": "SM123"}`)
+				_, _ = w.Write([]byte(`{"sid": "SM123"}`))
 			}))
 			defer server.Close()
 
 			// For this test, we can't easily override the URL, so we just check
 			// that the Send method returns nil for non-error severities
-			// (it won't make any HTTP calls for those)
+			// (it won't make any HTTP calls for those).
 			alert := &Alert{
 				Title:    "Test",
 				Message:  "Test message",
@@ -325,11 +307,7 @@ func TestTwilio_Send_SkipsNonErrorSeverity(t *testing.T) {
 			err := tw.Send(context.Background(), alert)
 
 			if tt.wantSkip {
-				if err != nil {
-					t.Errorf("Send() returned error for skipped severity: %v", err)
-				}
-				// Note: We can't easily check if HTTP was called without mocking
-				// the URL, but the function should return early for non-error severities
+				assert.NoError(t, err, "Send() returned error for skipped severity")
 			}
 		})
 	}
@@ -345,31 +323,21 @@ func TestTwilio_Send_NotConfigured(t *testing.T) {
 	}
 
 	err := tw.Send(context.Background(), alert)
-	if err == nil {
-		t.Error("Send() should return error when not configured")
-	}
-
-	want := "twilio is not configured"
-	if err.Error() != want {
-		t.Errorf("Send() error = %q, want %q", err.Error(), want)
-	}
+	require.Error(t, err, "Send() should return error when not configured")
+	assert.Equal(t, "twilio is not configured", err.Error())
 }
 
 func TestTwilio_Send_HTTPSuccess(t *testing.T) {
 	var receivedBody string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("Method = %q, want POST", r.Method)
-		}
-		if r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
-			t.Errorf("Content-Type = %q, want application/x-www-form-urlencoded", r.Header.Get("Content-Type"))
-		}
-		buf := make([]byte, 4096)
-		n, _ := r.Body.Read(buf)
-		receivedBody = string(buf[:n])
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "application/x-www-form-urlencoded", r.Header.Get("Content-Type"))
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		receivedBody = string(body)
 		w.WriteHeader(http.StatusCreated)
-		fmt.Fprint(w, `{"sid": "SM123"}`)
+		_, _ = w.Write([]byte(`{"sid": "SM123"}`))
 	}))
 	defer server.Close()
 
@@ -390,26 +358,18 @@ func TestTwilio_Send_HTTPSuccess(t *testing.T) {
 		Severity: SeverityError,
 		Source:   "reconcile",
 	})
-	if err != nil {
-		t.Fatalf("Send() returned unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Verify the SMS body was sent in the form data.
-	if !strings.Contains(receivedBody, "Body=") {
-		t.Error("request body missing Body field")
-	}
-	if !strings.Contains(receivedBody, "To=") {
-		t.Error("request body missing To field")
-	}
-	if !strings.Contains(receivedBody, "From=") {
-		t.Error("request body missing From field")
-	}
+	assert.Contains(t, receivedBody, "Body=")
+	assert.Contains(t, receivedBody, "To=")
+	assert.Contains(t, receivedBody, "From=")
 }
 
 func TestTwilio_Send_APIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"code": 21211, "message": "Invalid 'To' Phone Number"}`)
+		_, _ = w.Write([]byte(`{"code": 21211, "message": "Invalid 'To' Phone Number"}`))
 	}))
 	defer server.Close()
 
@@ -429,12 +389,8 @@ func TestTwilio_Send_APIError(t *testing.T) {
 		Message:  "Test",
 		Severity: SeverityError,
 	})
-	if err == nil {
-		t.Fatal("Send() should return error for API error response")
-	}
-	if !strings.Contains(err.Error(), "status 400") {
-		t.Errorf("error should contain status code, got: %v", err)
-	}
+	require.Error(t, err, "Send() should return error for API error response")
+	assert.Contains(t, err.Error(), "status 400")
 }
 
 func TestTwilio_Send_MultipleRecipients_PartialFailure(t *testing.T) {
@@ -443,11 +399,11 @@ func TestTwilio_Send_MultipleRecipients_PartialFailure(t *testing.T) {
 		callCount++
 		if callCount == 1 {
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprint(w, `{"message": "Invalid number"}`)
+			_, _ = w.Write([]byte(`{"message": "Invalid number"}`))
 			return
 		}
 		w.WriteHeader(http.StatusCreated)
-		fmt.Fprint(w, `{"sid": "SM123"}`)
+		_, _ = w.Write([]byte(`{"sid": "SM123"}`))
 	}))
 	defer server.Close()
 
@@ -469,19 +425,15 @@ func TestTwilio_Send_MultipleRecipients_PartialFailure(t *testing.T) {
 	})
 
 	// Should return error from the first failed recipient.
-	if err == nil {
-		t.Fatal("Send() should return error for partial failure")
-	}
+	require.Error(t, err, "Send() should return error for partial failure")
 	// Both recipients should have been attempted.
-	if callCount != 2 {
-		t.Errorf("expected 2 API calls, got %d", callCount)
-	}
+	assert.Equal(t, 2, callCount)
 }
 
 func TestTwilio_Send_AllRecipientsFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprint(w, `{"message": "Server error"}`)
+		_, _ = w.Write([]byte(`{"message": "Server error"}`))
 	}))
 	defer server.Close()
 
@@ -502,9 +454,7 @@ func TestTwilio_Send_AllRecipientsFailure(t *testing.T) {
 		Severity: SeverityError,
 	})
 
-	if err == nil {
-		t.Fatal("Send() should return error when all recipients fail")
-	}
+	require.Error(t, err, "Send() should return error when all recipients fail")
 }
 
 func TestTwilio_InterfaceCompliance(t *testing.T) {
