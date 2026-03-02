@@ -12,9 +12,9 @@ Two bugs contribute to this:
 
 ## What Changes
 
-- Clarify the reconcile spec's Pipeline Orchestration requirement to mandate that ALL pipeline stage failures (including git sync and lock acquisition) send throttled failure alerts
+- Clarify the reconcile spec's Pipeline Orchestration requirement to mandate that most pipeline stage failures (including git sync) send throttled failure alerts; lock acquisition failures remain excluded as they are transient and lack state context
 - Clarify the alerting spec's Reconciliation Lifecycle Alerts to state that the `on_failure` flag SHALL gate failure alert dispatch, and `on_success` SHALL gate success alert dispatch
-- Add scenarios covering the pre-state-load failure paths (git sync, lock) which currently have no alert coverage
+- Add scenarios covering the pre-state-load git sync failure path which currently has no alert coverage
 
 ## Impact
 

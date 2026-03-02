@@ -64,7 +64,7 @@ The alert system SHALL provide convenience methods for reconciliation lifecycle 
 - **Drift Resolved**: title "Drift Resolved", severity info, source "drift", includes target and comma-separated resolved item keys
 - **Doctor Alert**: severity-dependent title (critical: "CRITICAL: Health Check Failed", error: "Health Check Errors", warning: "Health Check Warnings", info: "Health Check Complete"), source "doctor", message is newline-joined issues
 
-The reconciler SHALL send failure alerts for ALL pipeline stage failures, including git sync failures that occur before the deploy state file is loaded. For pre-state-load failures, the reconciler SHALL load the state file before sending the alert to ensure throttle state is available.
+The reconciler SHALL send failure alerts for pipeline stage failures (stages 2-14), including git sync failures (stage 2) that occur before the deploy state file is loaded. Lock acquisition failures (stage 1) SHALL NOT trigger alerts because they are transient and no state context is available. For git sync failures, the reconciler SHALL load the state file before sending the alert to ensure throttle state is available.
 
 #### Scenario: Deploy success alert formatting
 

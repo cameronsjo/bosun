@@ -25,3 +25,7 @@
 - [ ] 4.1 Run `make test` -- all tests pass
 - [ ] 4.2 Run `make build` -- binary compiles
 - [ ] 4.3 Manual smoke test: `bosun alert status` still shows on_failure/on_success flags correctly
+
+## 5. Documentation
+
+- [ ] 5.1 Update `skills/onboard/resources/gitops.md` to document the failure alerting behavior and 14-stage reconcile pipeline

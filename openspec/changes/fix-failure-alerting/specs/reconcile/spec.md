@@ -22,7 +22,9 @@ The reconciler SHALL execute stages in this fixed order:
 A failure at any stage SHALL abort the remaining stages and release the lock.
 The lock SHALL always be released via defer, even on panic.
 
-A failure at any stage after git sync (stages 3-13) SHALL send a throttled failure alert when `on_failure` is enabled. A failure at the git sync stage (stage 2) SHALL also send a throttled failure alert; because the deploy state file has not been loaded yet, the reconciler SHALL load the state file before sending the alert to ensure throttle state is available.
+A failure at any stage after git sync (stages 3-13) SHALL send a throttled failure alert when `on_failure` is enabled.
+
+A failure at the git sync stage (stage 2) SHALL also send a throttled failure alert when `on_failure` is enabled. Because the deploy state file has not been loaded yet, the reconciler SHALL load the state file before sending the alert to ensure throttle state is available.
 
 Lock acquisition failures (stage 1) SHALL NOT send alerts because the failure is transient (another reconciliation is running) and no state context is available.
 
