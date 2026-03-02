@@ -1,6 +1,6 @@
 ## Context
 
-The drift alert pipeline currently operates as: detect -> dedup (per-item cooldown) -> send. The dedup layer prevents repeated alerts for the same persistent drift item within a cooldown window, but the very first detection of any drift item always fires an alert immediately. In homelab environments, transient drift is common: Unraid's mover creates I/O pressure that briefly starves containers, Watchtower pulls new images and restarts containers, and Docker daemon pressure causes momentary health check failures. These events self-resolve within 5-15 minutes but generate unnecessary alert noise.
+The drift alert pipeline currently operates as: detect -> dedup (per-item cooldown) -> send. The dedup layer prevents repeated alerts for the same persistent drift item within a cooldown window, but the very first detection of any drift item always fires an alert immediately. In homelab environments, transient drift is common: Unraid's mover creates I/O pressure that briefly starves containers, Watchtower pulls new images and restarts containers, and Docker daemon pressure causes momentary health check failures. These events self-resolve within 5-15 minutes but generate unnecessary alert noise. A 5-minute debounce default covers the majority of transient events; operators experiencing longer transients (e.g., Unraid mover runs) can tune `BOSUN_DRIFT_ALERT_DEBOUNCE` higher (e.g., 10-15m).
 
 ## Goals / Non-Goals
 
@@ -29,7 +29,7 @@ Alternatives considered:
 
 ### State stored in `drift_debounce_items` map
 
-A new `drift_debounce_items` field on `DeployState` tracks `"service:type" -> first_seen_at` timestamps. This parallels the existing `drift_alerted_items` pattern. Items are added on first detection and removed when drift resolves or when the item passes the debounce window and enters the dedup pipeline.
+A new `drift_debounce_items` field on `DeployState` tracks `"service:type" -> first_seen_at` timestamps. This parallels the existing `drift_alerted_items` pattern. Items are added on first detection and removed under two conditions: (1) when an item passes the debounce window and an alert is sent, it is removed from `drift_debounce_items` immediately (it graduates to the dedup layer which handles further suppression), or (2) when drift resolves before the window expires, the item is also removed.
 
 ### Default disabled for backwards compatibility
 
@@ -42,7 +42,7 @@ When drift clears, the resolution alert fires immediately regardless of debounce
 ## Risks / Trade-offs
 
 - **Delayed first alert**: Genuine drift (crashed container, bad image) will not alert for the debounce duration. Mitigation: default is 0 (disabled), and the recommended value is 5 minutes, which is short enough for homelab response times.
-- **State file growth**: Adds one more map to `DeployState`. Minimal impact since drift items are typically < 10 entries.
+- **State file growth**: Adds one more map to `DeployState`. Minimal impact since `drift_debounce_items` only holds items currently within their debounce window — items are removed upon graduation to the dedup layer or upon resolution (see State stored section above), so the map does not grow with persistent drift. Long-lived drift is handled by the dedup layer, not the debounce map. Typical size is < 10 entries.
 - **Daemon restart during debounce window**: If the daemon restarts during a debounce window, `drift_debounce_items` is persisted so the timer continues from where it left off.
 
 ## Open Questions
