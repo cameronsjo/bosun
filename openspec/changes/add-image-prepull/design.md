@@ -1,3 +1,5 @@
+# Image Pre-Pull Design
+
 ## Context
 
 The reconcile pipeline currently runs `docker compose up -d --remove-orphans` as a single step with a 10-minute timeout covering both image pulls and container startup. On first deploy or image tag change, the pull phase can consume most of that budget, leaving insufficient time for startup, or timing out entirely on slow registries (GHCR, self-hosted registries over WAN).
