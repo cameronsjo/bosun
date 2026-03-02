@@ -12,12 +12,24 @@ This is a cross-cutting change: it adds a new pipeline stage, introduces new con
   - Separate image pull from container startup with independent timeouts
   - Provide clear, actionable errors distinguishing pull failures from startup failures
   - Log pull progress with structured fields for observability
-  - Maintain backward compatibility (no config changes required to keep current behavior)
+  - Maintain backward compatibility (existing deployments require no new env vars -- defaults apply automatically). Note: the default timeout budget changes from a single 10m phase to a 15m pull + 5m up split, increasing the total from 10m to 20m
 - Non-Goals:
   - Per-image pull concurrency control (Docker Compose handles this)
   - Image caching or registry mirroring
   - Pull policy configuration (`--pull always` vs `--pull missing`) - compose defaults are sufficient
   - Remote deploy pre-pull (remote deploys use SSH-piped compose commands with different constraints)
+
+## Logging Contract
+
+Structured log events emitted during the pre-pull stage MUST include the following fields:
+
+- `phase` -- pipeline phase, either `pull` or `up`
+- `image` -- fully qualified image reference (where applicable, e.g., per-image progress)
+- `elapsed` -- wall-clock duration of the phase
+- `timeout` -- configured timeout for the phase
+- `status` -- one of `started`, `completed`, or `failed`
+
+These fields align with the existing `internal/log` field helper conventions and enable filtering pull-phase telemetry in log aggregation tools.
 
 ## Decisions
 
