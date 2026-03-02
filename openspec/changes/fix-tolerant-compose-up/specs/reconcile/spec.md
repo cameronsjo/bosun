@@ -109,15 +109,9 @@ with rollback.
 #### Scenario: Compose up exits non-zero with genuine start failure
 
 - **WHEN** compose up exits non-zero
-- **AND** container state inspection shows one or more containers exited or not found
+- **AND** container state inspection shows one or more containers exited, not found, or the compose error indicates an invalid image
 - **THEN** the deployment is marked as failed
 - **AND** rollback is triggered
-- **AND** a failure alert is sent
-
-#### Scenario: Container fails to start
-
-- **WHEN** compose up exits non-zero due to an invalid image
-- **THEN** the deployment is marked as failed
 - **AND** a failure alert is sent
 
 ## ADDED Requirements
