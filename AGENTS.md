@@ -198,6 +198,19 @@ Common file operations (copy, ensure directory, atomic write).
 
 When a feature adds or changes behavior covered by `openspec/specs/`, **MUST** create a change proposal under `openspec/changes/<id>/` with spec deltas BEFORE writing implementation code. Plan mode plans inform the proposal but do not replace it. See `openspec/AGENTS.md` for the full workflow.
 
+## Spec Review Workflow
+
+Spec PRs follow an iterative review cycle before implementation begins:
+
+1. **Open PR** from spec branch (`spec/<change-id>`) targeting `main`
+2. **CodeRabbit reviews** automatically on push
+3. **Fix all findings** — including nitpicks (consistency prevents implementation bugs)
+4. **Iterate** until convergence (0 actionable or only stale findings)
+5. **Label `ready-to-build`** — spec is stable, implementation can begin
+6. **Rate-limit handling**: If CodeRabbit doesn't review within ~5min, trigger manually with `@coderabbitai review`
+
+The `ready-to-build` label is a gate: do not start implementation until it's applied. Use `/spec-review` to automate the cycle.
+
 ## Adding a New Command
 
 1. Create file in `internal/cmd/<name>.go`
