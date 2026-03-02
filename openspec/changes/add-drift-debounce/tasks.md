@@ -1,3 +1,5 @@
+# Tasks
+
 ## 1. State and Core Logic
 
 - [ ] 1.1 Add `DriftDebounceItems map[string]time.Time` field to `DeployState` in `internal/reconcile/state.go` with `json:"drift_debounce_items,omitempty"` tag

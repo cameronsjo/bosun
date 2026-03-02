@@ -43,7 +43,7 @@ When drift clears, the resolution alert fires immediately regardless of debounce
 
 - **Delayed first alert**: Genuine drift (crashed container, bad image) will not alert for the debounce duration. Mitigation: default is 0 (disabled), and the recommended value is 5 minutes, which is short enough for homelab response times.
 - **State file growth**: Adds one more map to `DeployState`. Minimal impact since drift items are typically < 10 entries.
-- **Daemon restart resets debounce timers**: If the daemon restarts during a debounce window, `drift_debounce_items` is persisted so the timer continues from where it left off.
+- **Daemon restart during debounce window**: If the daemon restarts during a debounce window, `drift_debounce_items` is persisted so the timer continues from where it left off.
 
 ## Open Questions
 
