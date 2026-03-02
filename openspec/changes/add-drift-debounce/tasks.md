@@ -25,7 +25,7 @@
 
 - [ ] 4.1 Integrate `FilterDebounced()` into the periodic drift check handler in `daemon.go`, between drift detection and the existing `ShouldAlertDrift()` dedup call
 - [ ] 4.2 Update `drift_debounce_items` in state:
-  - [ ] 4.2a Remove debounce items upon graduation to dedup layer (debounce window expired, alert sent)
+  - [ ] 4.2a Remove debounce items upon graduation to dedup layer (debounce window expired), regardless of whether dedup emits or suppresses the alert
   - [ ] 4.2b Remove debounce items upon drift resolution before window expires
   - [ ] 4.2c Ensure cleanup timing is deterministic (checked on each drift evaluation cycle)
 - [ ] 4.3 Ensure debounce state is persisted atomically with drift results in the same `SaveState()` call
