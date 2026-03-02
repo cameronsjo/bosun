@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/fatih/color"
@@ -13,6 +14,12 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/log"
 )
+
+// isNumeric returns true if s parses as a number (used for JSON field matching).
+func isNumeric(s string) bool {
+	_, err := strconv.ParseFloat(s, 64)
+	return err == nil
+}
 
 // init ensures tests run in console mode for consistent output testing.
 func init() {
@@ -526,8 +533,8 @@ func TestOutputFunctions_JSONMode(t *testing.T) {
 			assert.Contains(t, output, `"level":"`+tt.wantLevel+`"`)
 
 			for key, val := range tt.wantFields {
-				// Numeric fields don't get quoted in JSON.
-				if val == "true" || val == "false" || (val >= "0" && val <= "9") {
+				// Booleans and numbers are unquoted in JSON output.
+				if val == "true" || val == "false" || isNumeric(val) {
 					assert.Contains(t, output, `"`+key+`":`+val)
 				} else {
 					assert.Contains(t, output, `"`+key+`":"`+val+`"`)

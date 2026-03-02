@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSendGrid_Name(t *testing.T) {
@@ -191,12 +194,8 @@ func TestSendGrid_Send_APIErrorWithJSON(t *testing.T) {
 		Message:  "Test",
 		Severity: SeverityCritical,
 	})
-	if err == nil {
-		t.Fatal("Send() should return error for API error response")
-	}
-	if !containsString(err.Error(), "Invalid email address") {
-		t.Errorf("error should contain API message, got: %v", err)
-	}
+	require.Error(t, err, "Send() should return error for API error response")
+	assert.Contains(t, err.Error(), "Invalid email address")
 }
 
 func TestSendGrid_Send_APIErrorNonJSON(t *testing.T) {
@@ -221,12 +220,8 @@ func TestSendGrid_Send_APIErrorNonJSON(t *testing.T) {
 		Message:  "Test",
 		Severity: SeverityInfo,
 	})
-	if err == nil {
-		t.Fatal("Send() should return error for non-2xx status")
-	}
-	if !containsString(err.Error(), "status 500") {
-		t.Errorf("error should contain status code, got: %v", err)
-	}
+	require.Error(t, err, "Send() should return error for non-2xx status")
+	assert.Contains(t, err.Error(), "status 500")
 }
 
 func TestSendGrid_formatSubject(t *testing.T) {
@@ -267,22 +262,11 @@ func TestSendGrid_formatPlainBody(t *testing.T) {
 
 	body := sg.formatPlainBody(alert)
 
-	// Check for key elements
-	if !containsString(body, "Test Alert") {
-		t.Error("Plain body missing title")
-	}
-	if !containsString(body, "error") {
-		t.Error("Plain body missing severity")
-	}
-	if !containsString(body, "Something happened") {
-		t.Error("Plain body missing message")
-	}
-	if !containsString(body, "commit: abc123") {
-		t.Error("Plain body missing metadata")
-	}
-	if !containsString(body, "test-source") {
-		t.Error("Plain body missing source")
-	}
+	assert.Contains(t, body, "Test Alert")
+	assert.Contains(t, body, "error")
+	assert.Contains(t, body, "Something happened")
+	assert.Contains(t, body, "commit: abc123")
+	assert.Contains(t, body, "test-source")
 }
 
 func TestSendGrid_formatHTMLBody(t *testing.T) {
@@ -298,19 +282,11 @@ func TestSendGrid_formatHTMLBody(t *testing.T) {
 
 	body := sg.formatHTMLBody(alert)
 
-	// Check for key elements
-	if !containsString(body, "Test Alert") {
-		t.Error("HTML body missing title")
-	}
-	if !containsString(body, "#ea580c") { // orange-600 for error
-		t.Error("HTML body missing error color")
-	}
-	if !containsString(body, "&lt;script&gt;") {
-		t.Error("HTML body not escaping script tags")
-	}
-	if !containsString(body, "commit") && !containsString(body, "abc123") {
-		t.Error("HTML body missing metadata")
-	}
+	assert.Contains(t, body, "Test Alert")
+	assert.Contains(t, body, "#ea580c") // orange-600 for error
+	assert.Contains(t, body, "&lt;script&gt;")
+	assert.Contains(t, body, "commit")
+	assert.Contains(t, body, "abc123")
 }
 
 func TestSendGrid_getSeverityColor(t *testing.T) {
@@ -394,20 +370,24 @@ func TestSendGrid_buildPayload_MultipleRecipients(t *testing.T) {
 }
 
 func TestSendGrid_ContextCancellation(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Simulate slow response
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Simulate slow response.
 		time.Sleep(100 * time.Millisecond)
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer server.Close()
 
-	sg := NewSendGrid(SendGridConfig{
-		APIKey:    "SG.test-key",
-		FromEmail: "sender@example.com",
-		ToEmails:  []string{"recipient@example.com"},
-	})
+	sg := &SendGrid{
+		config: SendGridConfig{
+			APIKey:    "SG.test-key",
+			FromEmail: "sender@example.com",
+			ToEmails:  []string{"recipient@example.com"},
+		},
+		client:   server.Client(),
+		endpoint: server.URL,
+	}
 
-	// Context already cancelled
+	// Context already cancelled.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -422,17 +402,3 @@ func TestSendGrid_ContextCancellation(t *testing.T) {
 	}
 }
 
-// containsString is a simple helper to check if a string contains a substring.
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}

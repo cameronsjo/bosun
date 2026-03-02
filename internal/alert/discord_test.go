@@ -148,9 +148,13 @@ func TestDiscordProvider_Send(t *testing.T) {
 }
 
 func TestDiscordProvider_Send_NetworkError(t *testing.T) {
-	// Use an invalid URL to trigger the HTTP client error path.
+	// Start and immediately close a server to get a guaranteed-refused local port.
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	closedURL := server.URL
+	server.Close()
+
 	p := &DiscordProvider{
-		webhookURL: "http://192.0.2.1:1", // RFC 5737 TEST-NET, will fail to connect
+		webhookURL: closedURL,
 		client:     &http.Client{Timeout: 50 * time.Millisecond},
 	}
 

@@ -1282,7 +1282,7 @@ func TestSendDriftAlert(t *testing.T) {
 		assert.Equal(t, "Drift Detected", provider.alerts[0].Title)
 	})
 
-	t.Run("no alerter configured does not panic", func(t *testing.T) {
+	t.Run("no alerter configured panics", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		tmpDir = evalSymlinks(t, tmpDir)
 

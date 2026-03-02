@@ -5,9 +5,8 @@ reviews:
   # Let CodeRabbit review everything by default
   auto_review:
     enabled: true
-
-pre_merge_checks:
-  # Go uses golint/go vet for doc conventions on exported symbols.
-  # A blanket 80% threshold is inappropriate for Go codebases.
-  docstrings:
-    mode: "off"
+  pre_merge_checks:
+    # Go uses golint/go vet for doc conventions on exported symbols.
+    # A blanket 80% threshold is inappropriate for Go codebases.
+    docstrings:
+      mode: "off"

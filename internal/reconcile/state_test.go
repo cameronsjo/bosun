@@ -309,7 +309,7 @@ func TestShouldAlertDrift(t *testing.T) {
 }
 
 func TestSaveState_RoundTrip(t *testing.T) {
-	dir := t.TempDir()
+	dir := evalSymlinks(t, t.TempDir())
 	path := filepath.Join(dir, "deploy-state.json")
 
 	now := time.Now().Truncate(time.Second)
@@ -353,7 +353,7 @@ func TestLoadState_ReadError(t *testing.T) {
 
 	// Create a directory (not a file) at the state path -> reading it fails with a
 	// non-IsNotExist error, hitting the "other read error" branch.
-	dir := t.TempDir()
+	dir := evalSymlinks(t, t.TempDir())
 	path := filepath.Join(dir, "deploy-state.json")
 	require.NoError(t, os.MkdirAll(path, 0755))
 

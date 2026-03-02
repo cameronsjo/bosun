@@ -84,6 +84,9 @@ func clearAlertEnvVars(t *testing.T) {
 	}
 }
 
+// boolPtr returns a pointer to a bool value.
+func boolPtr(b bool) *bool { return &b }
+
 func TestExtractAlertConfig(t *testing.T) {
 	t.Run("defaults OnFailure to true when neither flag set", func(t *testing.T) {
 		clearAlertEnvVars(t)
@@ -99,13 +102,40 @@ func TestExtractAlertConfig(t *testing.T) {
 		clearAlertEnvVars(t)
 
 		cfg := configFile{
-			Alerts: AlertConfig{OnSuccess: true},
+			Alerts: alertConfigRaw{OnSuccess: boolPtr(true)},
 		}
 		alertCfg := extractAlertConfig(cfg)
 
 		assert.True(t, alertCfg.OnSuccess)
-		// When OnSuccess is set, the default-OnFailure logic doesn't fire
+		// When OnSuccess is explicitly set, OnFailure stays at zero value (false).
 		assert.False(t, alertCfg.OnFailure)
+	})
+
+	t.Run("explicit false for both flags is respected", func(t *testing.T) {
+		clearAlertEnvVars(t)
+
+		cfg := configFile{
+			Alerts: alertConfigRaw{
+				OnSuccess: boolPtr(false),
+				OnFailure: boolPtr(false),
+			},
+		}
+		alertCfg := extractAlertConfig(cfg)
+
+		assert.False(t, alertCfg.OnSuccess)
+		assert.False(t, alertCfg.OnFailure)
+	})
+
+	t.Run("explicit OnFailure true is preserved", func(t *testing.T) {
+		clearAlertEnvVars(t)
+
+		cfg := configFile{
+			Alerts: alertConfigRaw{OnFailure: boolPtr(true)},
+		}
+		alertCfg := extractAlertConfig(cfg)
+
+		assert.True(t, alertCfg.OnFailure)
+		assert.False(t, alertCfg.OnSuccess)
 	})
 
 	t.Run("legacy env vars override config file values", func(t *testing.T) {
@@ -119,7 +149,7 @@ func TestExtractAlertConfig(t *testing.T) {
 		t.Setenv("TWILIO_FROM_NUMBER", "+15550000000")
 
 		cfg := configFile{
-			Alerts: AlertConfig{
+			Alerts: alertConfigRaw{
 				DiscordWebhookURL: "https://discord.com/config",
 				SendGridAPIKey:    "SG.config-key",
 				SendGridFromEmail: "config@example.com",
@@ -142,7 +172,7 @@ func TestExtractAlertConfig(t *testing.T) {
 
 	t.Run("BOSUN_ prefix takes precedence over legacy env vars", func(t *testing.T) {
 		clearAlertEnvVars(t)
-		// Set both legacy and BOSUN_-prefixed — prefixed should win
+		// Set both legacy and BOSUN_-prefixed — prefixed should win.
 		t.Setenv("DISCORD_WEBHOOK_URL", "https://discord.com/legacy")
 		t.Setenv("BOSUN_DISCORD_WEBHOOK_URL", "https://discord.com/bosun")
 		t.Setenv("SENDGRID_API_KEY", "SG.legacy")
@@ -151,11 +181,11 @@ func TestExtractAlertConfig(t *testing.T) {
 		t.Setenv("BOSUN_TWILIO_ACCOUNT_SID", "AC-bosun")
 
 		cfg := configFile{
-			Alerts: AlertConfig{
+			Alerts: alertConfigRaw{
 				DiscordWebhookURL: "https://discord.com/config",
 				SendGridAPIKey:    "SG.config",
 				TwilioAccountSID:  "AC-config",
-				OnFailure:         true,
+				OnFailure:         boolPtr(true),
 			},
 		}
 		alertCfg := extractAlertConfig(cfg)
@@ -169,11 +199,11 @@ func TestExtractAlertConfig(t *testing.T) {
 		clearAlertEnvVars(t)
 
 		cfg := configFile{
-			Alerts: AlertConfig{
+			Alerts: alertConfigRaw{
 				DiscordWebhookURL: "https://discord.com/config",
 				SendGridAPIKey:    "SG.config-key",
 				TwilioAccountSID:  "AC-config",
-				OnFailure:         true,
+				OnFailure:         boolPtr(true),
 			},
 		}
 		alertCfg := extractAlertConfig(cfg)
@@ -187,10 +217,10 @@ func TestExtractAlertConfig(t *testing.T) {
 		clearAlertEnvVars(t)
 
 		cfg := configFile{
-			Alerts: AlertConfig{
+			Alerts: alertConfigRaw{
 				SendGridToEmails: []string{"a@b.com", "c@d.com"},
 				TwilioToNumbers:  []string{"+15551234567"},
-				OnFailure:        true,
+				OnFailure:        boolPtr(true),
 			},
 		}
 		alertCfg := extractAlertConfig(cfg)

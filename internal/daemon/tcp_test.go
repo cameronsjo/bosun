@@ -142,7 +142,7 @@ func newTestTCPServer(t *testing.T) (*TCPServer, *Daemon) {
 	require.NoError(t, err)
 
 	// Wait for background trigger goroutines to finish before temp dir cleanup.
-	t.Cleanup(func() { waitForReconcileIdle(d) })
+	t.Cleanup(func() { waitForReconcileIdle(t, d) })
 
 	return d.tcpServer, d
 }
@@ -150,7 +150,8 @@ func newTestTCPServer(t *testing.T) (*TCPServer, *Daemon) {
 // waitForReconcileIdle spins until the daemon's reconciling flag clears.
 // Trigger handlers spawn background goroutines that use temp dir paths;
 // we must wait for them to finish before the test's TempDir cleanup runs.
-func waitForReconcileIdle(d *Daemon) {
+func waitForReconcileIdle(t *testing.T, d *Daemon) {
+	t.Helper()
 	for i := 0; i < 200; i++ {
 		d.reconcileMu.Lock()
 		busy := d.reconciling
@@ -160,6 +161,7 @@ func waitForReconcileIdle(d *Daemon) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	t.Fatal("daemon stayed reconciling during cleanup")
 }
 
 func TestTCPHandleTrigger(t *testing.T) {

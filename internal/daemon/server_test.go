@@ -440,7 +440,7 @@ func TestHandleGitHubWebhook(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
 
-	t.Run("POST with no event header treats as push", func(t *testing.T) {
+	t.Run("POST with no event header returns ignored", func(t *testing.T) {
 		_, s := newTestDaemon(t)
 
 		// No X-GitHub-Event header means eventType == "", which is not "ping"

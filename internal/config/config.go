@@ -97,6 +97,22 @@ type AlertConfig struct {
 	OnFailure bool `yaml:"on_failure"` // Alert on failed deploys (default: true)
 }
 
+// alertConfigRaw is the YAML DTO for alert settings.
+// Pointer booleans distinguish "unset" (nil → apply default) from explicit false.
+type alertConfigRaw struct {
+	DiscordWebhookURL string   `yaml:"discord_webhook_url"`
+	SendGridAPIKey    string   `yaml:"sendgrid_api_key"`
+	SendGridFromEmail string   `yaml:"sendgrid_from_email"`
+	SendGridFromName  string   `yaml:"sendgrid_from_name"`
+	SendGridToEmails  []string `yaml:"sendgrid_to_emails"`
+	TwilioAccountSID  string   `yaml:"twilio_account_sid"`
+	TwilioAuthToken   string   `yaml:"twilio_auth_token"`
+	TwilioFromNumber  string   `yaml:"twilio_from_number"`
+	TwilioToNumbers   []string `yaml:"twilio_to_numbers"`
+	OnSuccess         *bool    `yaml:"on_success"`
+	OnFailure         *bool    `yaml:"on_failure"`
+}
+
 // configFile represents the structure of .bosun/config.yml or bosun.yml.
 type configFile struct {
 	// Root is the project root (relative paths are resolved from here).
@@ -128,8 +144,8 @@ type configFile struct {
 		HealthEndpoint string `yaml:"health_endpoint"`
 	} `yaml:"tunnel"`
 
-	// Alerts configuration
-	Alerts AlertConfig `yaml:"alerts"`
+	// Alerts configuration (uses pointer booleans for unset detection).
+	Alerts alertConfigRaw `yaml:"alerts"`
 
 	// PostSyncHooks defines container restart actions triggered by file changes.
 	PostSyncHooks []reconcile.PostSyncHook `yaml:"post_sync_hooks"`
@@ -499,10 +515,29 @@ func getEnvOrDefault(envKey, defaultValue string) string {
 // extractAlertConfig extracts alert configuration from a parsed config.
 // Supports environment variable overrides for sensitive values.
 func extractAlertConfig(cfg configFile) AlertConfig {
-	alertCfg := cfg.Alerts
+	raw := cfg.Alerts
 
-	// Ensure default for OnFailure if not explicitly set.
-	if !cfg.Alerts.OnSuccess && !cfg.Alerts.OnFailure {
+	alertCfg := AlertConfig{
+		DiscordWebhookURL: raw.DiscordWebhookURL,
+		SendGridAPIKey:    raw.SendGridAPIKey,
+		SendGridFromEmail: raw.SendGridFromEmail,
+		SendGridFromName:  raw.SendGridFromName,
+		SendGridToEmails:  raw.SendGridToEmails,
+		TwilioAccountSID:  raw.TwilioAccountSID,
+		TwilioAuthToken:   raw.TwilioAuthToken,
+		TwilioFromNumber:  raw.TwilioFromNumber,
+		TwilioToNumbers:   raw.TwilioToNumbers,
+	}
+
+	// Resolve pointer booleans: nil = unset (apply default), non-nil = explicit.
+	// Default: OnFailure=true when neither flag was explicitly set.
+	if raw.OnSuccess != nil {
+		alertCfg.OnSuccess = *raw.OnSuccess
+	}
+	if raw.OnFailure != nil {
+		alertCfg.OnFailure = *raw.OnFailure
+	} else if raw.OnSuccess == nil {
+		// Neither flag set → default OnFailure to true.
 		alertCfg.OnFailure = true
 	}
 

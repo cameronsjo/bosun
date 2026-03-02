@@ -25,6 +25,12 @@ func startSocketDaemonForClient(t *testing.T) (*Client, func()) {
 	}()
 
 	require.Eventually(t, func() bool {
+		select {
+		case err := <-errCh:
+			require.NoError(t, err, "socket server failed to start")
+			return false
+		default:
+		}
 		resp, err := httpGetOverSocket(socketPath, "/health")
 		if err != nil {
 			return false

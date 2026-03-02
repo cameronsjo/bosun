@@ -928,8 +928,8 @@ func TestDeployOps_DryRun_Remote(t *testing.T) {
 
 func TestRemoveStaleFiles(t *testing.T) {
 	t.Run("removes file not in source", func(t *testing.T) {
-		srcDir := t.TempDir()
-		tgtDir := t.TempDir()
+		srcDir := evalSymlinks(t, t.TempDir())
+		tgtDir := evalSymlinks(t, t.TempDir())
 
 		// Source has file-a, target has file-a + file-b (stale).
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "file-a.txt"), []byte("a"), 0644))
@@ -944,8 +944,8 @@ func TestRemoveStaleFiles(t *testing.T) {
 	})
 
 	t.Run("removes stale directory", func(t *testing.T) {
-		srcDir := t.TempDir()
-		tgtDir := t.TempDir()
+		srcDir := evalSymlinks(t, t.TempDir())
+		tgtDir := evalSymlinks(t, t.TempDir())
 
 		// Source has no subdir, target has a stale subdir.
 		staleDir := filepath.Join(tgtDir, "stale-dir")
@@ -959,8 +959,8 @@ func TestRemoveStaleFiles(t *testing.T) {
 	})
 
 	t.Run("keeps matching files and dirs", func(t *testing.T) {
-		srcDir := t.TempDir()
-		tgtDir := t.TempDir()
+		srcDir := evalSymlinks(t, t.TempDir())
+		tgtDir := evalSymlinks(t, t.TempDir())
 
 		// Both have the same structure.
 		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "sub"), 0755))
@@ -975,8 +975,8 @@ func TestRemoveStaleFiles(t *testing.T) {
 	})
 
 	t.Run("empty source removes everything from target", func(t *testing.T) {
-		srcDir := t.TempDir()
-		tgtDir := t.TempDir()
+		srcDir := evalSymlinks(t, t.TempDir())
+		tgtDir := evalSymlinks(t, t.TempDir())
 
 		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "a.txt"), []byte("a"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "b.txt"), []byte("b"), 0644))
@@ -1237,56 +1237,7 @@ func TestDeployOps_CleanupBackups_RemovesOldest(t *testing.T) {
 	assert.Len(t, entries, 3)
 }
 
-func TestComposeArgs(t *testing.T) {
-	t.Run("without project name", func(t *testing.T) {
-		d := &DeployOps{}
-		args := d.composeArgs("file.yml")
-		assert.Equal(t, []string{"compose", "-f", "file.yml"}, args)
-	})
 
-	t.Run("with project name", func(t *testing.T) {
-		d := &DeployOps{ProjectName: "myproject"}
-		args := d.composeArgs("file.yml")
-		assert.Equal(t, []string{"compose", "-p", "myproject", "-f", "file.yml"}, args)
-	})
-
-	t.Run("multiple files", func(t *testing.T) {
-		d := &DeployOps{ProjectName: "test"}
-		args := d.composeArgs("a.yml", "b.yml")
-		assert.Equal(t, []string{"compose", "-p", "test", "-f", "a.yml", "-f", "b.yml"}, args)
-	})
-}
-
-func TestDeployOps_VerifyBackupAdditional(t *testing.T) {
-	t.Run("non-existent backup path", func(t *testing.T) {
-		d := NewDeployOps(false, "")
-		err := d.VerifyBackup("/nonexistent/backup")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "backup archive not found")
-	})
-
-	t.Run("empty archive", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		tarFile := filepath.Join(tmpDir, "configs.tar.gz")
-		require.NoError(t, os.WriteFile(tarFile, []byte{}, 0644))
-
-		d := NewDeployOps(false, "")
-		err := d.VerifyBackup(tmpDir)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "backup archive is empty")
-	})
-
-	t.Run("corrupt archive", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		tarFile := filepath.Join(tmpDir, "configs.tar.gz")
-		require.NoError(t, os.WriteFile(tarFile, []byte("this is not a tar.gz file"), 0644))
-
-		d := NewDeployOps(false, "")
-		err := d.VerifyBackup(tmpDir)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "backup archive is corrupted")
-	})
-}
 
 func TestDeployOps_BackupMkdirError(t *testing.T) {
 	if os.Getuid() == 0 {

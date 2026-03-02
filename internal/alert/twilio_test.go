@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -394,13 +395,13 @@ func TestTwilio_Send_HTTPSuccess(t *testing.T) {
 	}
 
 	// Verify the SMS body was sent in the form data.
-	if !containsString(receivedBody, "Body=") {
+	if !strings.Contains(receivedBody, "Body=") {
 		t.Error("request body missing Body field")
 	}
-	if !containsString(receivedBody, "To=") {
+	if !strings.Contains(receivedBody, "To=") {
 		t.Error("request body missing To field")
 	}
-	if !containsString(receivedBody, "From=") {
+	if !strings.Contains(receivedBody, "From=") {
 		t.Error("request body missing From field")
 	}
 }
@@ -431,7 +432,7 @@ func TestTwilio_Send_APIError(t *testing.T) {
 	if err == nil {
 		t.Fatal("Send() should return error for API error response")
 	}
-	if !containsString(err.Error(), "status 400") {
+	if !strings.Contains(err.Error(), "status 400") {
 		t.Errorf("error should contain status code, got: %v", err)
 	}
 }

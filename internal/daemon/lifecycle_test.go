@@ -177,8 +177,14 @@ func TestTCPLifecycle_StartAcceptShutdown(t *testing.T) {
 		errCh <- d.tcpServer.httpServer.Serve(listener)
 	}()
 
-	// Wait for server to be ready.
+	// Wait for server to be ready; surface startup errors immediately.
 	require.Eventually(t, func() bool {
+		select {
+		case err := <-errCh:
+			require.NoError(t, err, "TCP server failed to start")
+			return false
+		default:
+		}
 		conn, err := net.DialTimeout("tcp", actualAddr, time.Second)
 		if err != nil {
 			return false

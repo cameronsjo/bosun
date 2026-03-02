@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/stretchr/testify/assert"
@@ -38,17 +37,7 @@ func newTestSocketServer(t *testing.T) (*SocketServer, *Daemon) {
 	require.NoError(t, err)
 
 	// Wait for background trigger goroutines to finish before temp dir cleanup.
-	t.Cleanup(func() {
-		for i := 0; i < 200; i++ {
-			d.reconcileMu.Lock()
-			busy := d.reconciling
-			d.reconcileMu.Unlock()
-			if !busy {
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-	})
+	t.Cleanup(func() { waitForReconcileIdle(t, d) })
 
 	return d.socketServer, d
 }
