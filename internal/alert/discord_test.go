@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -144,6 +145,22 @@ func TestDiscordProvider_Send(t *testing.T) {
 		err := p.Send(ctx, &Alert{Title: "Test", Source: "test"})
 		require.Error(t, err)
 	})
+}
+
+func TestDiscordProvider_Send_NetworkError(t *testing.T) {
+	// Start and immediately close a server to get a guaranteed-refused local port.
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	closedURL := server.URL
+	server.Close()
+
+	p := &DiscordProvider{
+		webhookURL: closedURL,
+		client:     &http.Client{Timeout: 50 * time.Millisecond},
+	}
+
+	err := p.Send(context.Background(), &Alert{Title: "Test", Source: "test"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "send request")
 }
 
 func TestSeverityToColor(t *testing.T) {

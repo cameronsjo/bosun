@@ -97,6 +97,22 @@ type AlertConfig struct {
 	OnFailure bool `yaml:"on_failure"` // Alert on failed deploys (default: true)
 }
 
+// alertConfigRaw is the YAML DTO for alert settings.
+// Pointer booleans distinguish "unset" (nil → apply default) from explicit false.
+type alertConfigRaw struct {
+	DiscordWebhookURL string   `yaml:"discord_webhook_url"`
+	SendGridAPIKey    string   `yaml:"sendgrid_api_key"`
+	SendGridFromEmail string   `yaml:"sendgrid_from_email"`
+	SendGridFromName  string   `yaml:"sendgrid_from_name"`
+	SendGridToEmails  []string `yaml:"sendgrid_to_emails"`
+	TwilioAccountSID  string   `yaml:"twilio_account_sid"`
+	TwilioAuthToken   string   `yaml:"twilio_auth_token"`
+	TwilioFromNumber  string   `yaml:"twilio_from_number"`
+	TwilioToNumbers   []string `yaml:"twilio_to_numbers"`
+	OnSuccess         *bool    `yaml:"on_success"`
+	OnFailure         *bool    `yaml:"on_failure"`
+}
+
 // configFile represents the structure of .bosun/config.yml or bosun.yml.
 type configFile struct {
 	// Root is the project root (relative paths are resolved from here).
@@ -128,8 +144,8 @@ type configFile struct {
 		HealthEndpoint string `yaml:"health_endpoint"`
 	} `yaml:"tunnel"`
 
-	// Alerts configuration
-	Alerts AlertConfig `yaml:"alerts"`
+	// Alerts configuration (uses pointer booleans for unset detection).
+	Alerts alertConfigRaw `yaml:"alerts"`
 
 	// PostSyncHooks defines container restart actions triggered by file changes.
 	PostSyncHooks []reconcile.PostSyncHook `yaml:"post_sync_hooks"`
@@ -487,38 +503,53 @@ func extractDomain(cfg configFile) string {
 	return cfg.Domain
 }
 
+// getEnvOrDefault returns the value of the environment variable if set and non-empty,
+// otherwise returns the provided default value.
+func getEnvOrDefault(envKey, defaultValue string) string {
+	if v := os.Getenv(envKey); v != "" {
+		return v
+	}
+	return defaultValue
+}
+
 // extractAlertConfig extracts alert configuration from a parsed config.
 // Supports environment variable overrides for sensitive values.
 func extractAlertConfig(cfg configFile) AlertConfig {
-	alertCfg := cfg.Alerts
+	raw := cfg.Alerts
 
-	// Ensure default for OnFailure if not explicitly set.
-	if !cfg.Alerts.OnSuccess && !cfg.Alerts.OnFailure {
+	alertCfg := AlertConfig{
+		DiscordWebhookURL: raw.DiscordWebhookURL,
+		SendGridAPIKey:    raw.SendGridAPIKey,
+		SendGridFromEmail: raw.SendGridFromEmail,
+		SendGridFromName:  raw.SendGridFromName,
+		SendGridToEmails:  raw.SendGridToEmails,
+		TwilioAccountSID:  raw.TwilioAccountSID,
+		TwilioAuthToken:   raw.TwilioAuthToken,
+		TwilioFromNumber:  raw.TwilioFromNumber,
+		TwilioToNumbers:   raw.TwilioToNumbers,
+	}
+
+	// Resolve pointer booleans: nil = unset (apply default), non-nil = explicit.
+	// Default: OnFailure=true when neither flag was explicitly set.
+	if raw.OnSuccess != nil {
+		alertCfg.OnSuccess = *raw.OnSuccess
+	}
+	if raw.OnFailure != nil {
+		alertCfg.OnFailure = *raw.OnFailure
+	} else if raw.OnSuccess == nil {
+		// Neither flag set → default OnFailure to true.
 		alertCfg.OnFailure = true
 	}
 
 	// Environment variable overrides for sensitive values.
-	if v := os.Getenv("DISCORD_WEBHOOK_URL"); v != "" {
-		alertCfg.DiscordWebhookURL = v
-	}
-	if v := os.Getenv("SENDGRID_API_KEY"); v != "" {
-		alertCfg.SendGridAPIKey = v
-	}
-	if v := os.Getenv("SENDGRID_FROM_EMAIL"); v != "" {
-		alertCfg.SendGridFromEmail = v
-	}
-	if v := os.Getenv("SENDGRID_FROM_NAME"); v != "" {
-		alertCfg.SendGridFromName = v
-	}
-	if v := os.Getenv("TWILIO_ACCOUNT_SID"); v != "" {
-		alertCfg.TwilioAccountSID = v
-	}
-	if v := os.Getenv("TWILIO_AUTH_TOKEN"); v != "" {
-		alertCfg.TwilioAuthToken = v
-	}
-	if v := os.Getenv("TWILIO_FROM_NUMBER"); v != "" {
-		alertCfg.TwilioFromNumber = v
-	}
+	// BOSUN_-prefixed vars take precedence; legacy unprefixed vars are fallback.
+	alertCfg.DiscordWebhookURL = getEnvOrDefault("BOSUN_DISCORD_WEBHOOK_URL", getEnvOrDefault("DISCORD_WEBHOOK_URL", alertCfg.DiscordWebhookURL))
+	alertCfg.SendGridAPIKey = getEnvOrDefault("BOSUN_SENDGRID_API_KEY", getEnvOrDefault("SENDGRID_API_KEY", alertCfg.SendGridAPIKey))
+	alertCfg.SendGridFromEmail = getEnvOrDefault("BOSUN_SENDGRID_FROM_EMAIL", getEnvOrDefault("SENDGRID_FROM_EMAIL", alertCfg.SendGridFromEmail))
+	alertCfg.SendGridFromName = getEnvOrDefault("BOSUN_SENDGRID_FROM_NAME", getEnvOrDefault("SENDGRID_FROM_NAME", alertCfg.SendGridFromName))
+	alertCfg.TwilioAccountSID = getEnvOrDefault("BOSUN_TWILIO_ACCOUNT_SID", getEnvOrDefault("TWILIO_ACCOUNT_SID", alertCfg.TwilioAccountSID))
+	alertCfg.TwilioAuthToken = getEnvOrDefault("BOSUN_TWILIO_AUTH_TOKEN", getEnvOrDefault("TWILIO_AUTH_TOKEN", alertCfg.TwilioAuthToken))
+	alertCfg.TwilioFromNumber = getEnvOrDefault("BOSUN_TWILIO_FROM_NUMBER", getEnvOrDefault("TWILIO_FROM_NUMBER", alertCfg.TwilioFromNumber))
 
 	return alertCfg
 }

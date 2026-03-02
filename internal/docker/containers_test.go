@@ -430,6 +430,106 @@ func TestClient_Exists(t *testing.T) {
 	}
 }
 
+func TestClient_Inspect_WithPlatformAndHealthLog(t *testing.T) {
+	mock := NewMockDockerAPI()
+	mock.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
+		return container.InspectResponse{
+			ContainerJSONBase: &container.ContainerJSONBase{
+				ID:      "abc1234567890000",
+				Name:    "/api",
+				Created: "2024-06-15T10:30:00.000000000Z",
+				State: &container.State{
+					Status:    "running",
+					Running:   true,
+					StartedAt: "2024-06-15T10:30:00.000000000Z",
+					Health: &container.Health{
+						Status:        "unhealthy",
+						FailingStreak: 3,
+						Log: []*container.HealthcheckResult{
+							{ExitCode: 0, Output: "first check"},
+							{ExitCode: 1, Output: "curl: connection refused"},
+						},
+					},
+				},
+				Driver:   "overlay2",
+				Platform: "linux/amd64",
+			},
+			Config: &container.Config{
+				Image:  "api:v2",
+				Labels: map[string]string{},
+				Env:    []string{},
+			},
+			NetworkSettings: &container.NetworkSettings{
+				NetworkSettingsBase: container.NetworkSettingsBase{ //nolint:staticcheck // deprecated but still required
+					Ports: nat.PortMap{
+						"8080/tcp": []nat.PortBinding{
+							{HostPort: "8080"},
+						},
+					},
+				},
+				Networks: map[string]*network.EndpointSettings{},
+			},
+			Mounts: []container.MountPoint{},
+		}, nil
+	}
+	client := NewClientWithAPI(mock)
+
+	details, err := client.Inspect(context.Background(), "api")
+	require.NoError(t, err)
+
+	assert.Equal(t, "linux/amd64", details.Platform)
+	assert.Equal(t, "unhealthy", details.Health)
+	assert.Equal(t, 3, details.HealthFailingStreak)
+	require.NotNil(t, details.HealthLog)
+	assert.Equal(t, 1, details.HealthLog.ExitCode)
+	assert.Equal(t, "curl: connection refused", details.HealthLog.Output)
+	assert.Len(t, details.Ports, 1)
+	assert.Equal(t, "8080", details.Ports[0].ContainerPort)
+	assert.Equal(t, "8080", details.Ports[0].HostPort)
+}
+
+func TestClient_Inspect_WithVolumes(t *testing.T) {
+	mock := NewMockDockerAPI()
+	mock.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
+		return container.InspectResponse{
+			ContainerJSONBase: &container.ContainerJSONBase{
+				ID:      "vol1234567890000",
+				Name:    "/storage",
+				Created: "2024-01-01T00:00:00.000000000Z",
+				State: &container.State{
+					Status:    "running",
+					Running:   true,
+					StartedAt: "2024-01-01T00:00:00.000000000Z",
+				},
+				Driver: "overlay2",
+			},
+			Config: &container.Config{
+				Image:  "minio:latest",
+				Labels: map[string]string{},
+				Env:    []string{},
+			},
+			NetworkSettings: &container.NetworkSettings{
+				NetworkSettingsBase: container.NetworkSettingsBase{ //nolint:staticcheck // deprecated but still required
+					Ports: nat.PortMap{},
+				},
+				Networks: map[string]*network.EndpointSettings{},
+			},
+			Mounts: []container.MountPoint{
+				{Source: "/host/data", Destination: "/data"},
+				{Source: "/host/config", Destination: "/config"},
+			},
+		}, nil
+	}
+	client := NewClientWithAPI(mock)
+
+	details, err := client.Inspect(context.Background(), "storage")
+	require.NoError(t, err)
+
+	require.Len(t, details.Volumes, 2)
+	assert.Equal(t, "/host/data:/data", details.Volumes[0])
+	assert.Equal(t, "/host/config:/config", details.Volumes[1])
+}
+
 func TestFormatContainerStatus(t *testing.T) {
 	tests := []struct {
 		name  string

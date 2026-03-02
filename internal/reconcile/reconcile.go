@@ -283,7 +283,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	state := LoadState(r.config.StateFile)
 
 	// State-based skip logic: compare last *deployed* commit, not last *fetched* commit.
-	if state.LastDeployedCommit == after && !r.config.Force {
+	if shouldSkipDeploy(state.LastDeployedCommit, after, r.config.Force) {
 		ui.Info("=== Already deployed commit %s, skipping ===", after[:MinLen(after, 8)])
 		return nil
 	}
@@ -313,7 +313,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	}
 
 	// Circuit breaker: stop retrying after MaxAttempts consecutive failures on the same commit.
-	if state.LastAttemptedCommit == after && state.AttemptCount >= MaxAttempts && !r.config.Force {
+	if shouldTriggerCircuitBreaker(state.LastAttemptedCommit, after, state.AttemptCount, MaxAttempts, r.config.Force) {
 		logger.Error().
 			Str("commit", after).
 			Int("attempts", state.AttemptCount).
@@ -326,12 +326,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	}
 
 	// Track this attempt before executing the pipeline.
-	if state.LastAttemptedCommit == after {
-		state.AttemptCount++
-	} else {
-		state.LastAttemptedCommit = after
-		state.AttemptCount = 1
-	}
+	state.LastAttemptedCommit, state.AttemptCount = nextAttemptState(state.LastAttemptedCommit, after, state.AttemptCount)
 	if err := SaveState(r.config.StateFile, state); err != nil {
 		logger.Error().Err(err).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save attempt tracking state")
 	}
@@ -926,18 +921,7 @@ func (r *Reconciler) isLocalMode() bool {
 
 // getTargetHost returns the target host for remote deployment.
 func (r *Reconciler) getTargetHost(secrets map[string]any) string {
-	if r.config.TargetHost != "" {
-		return r.config.TargetHost
-	}
-
-	// Try to get from secrets.
-	if network, ok := secrets["network"].(map[string]any); ok {
-		if ip, ok := network["unraid_ip"].(string); ok {
-			return "root@" + ip
-		}
-	}
-
-	return ""
+	return resolveTargetHost(r.config.TargetHost, secrets)
 }
 
 // deployLocal performs local deployment via mounted paths.

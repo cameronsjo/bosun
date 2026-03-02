@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/cameronsjo/bosun/internal/tunnel"
 )
 
 func TestRadioCmd_Help(t *testing.T) {
@@ -197,6 +199,139 @@ func TestRadioTest_MockServer(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 		resp.Body.Close()
+	})
+}
+
+func TestDisplayInstallInstructions(t *testing.T) {
+	t.Run("tailscale", func(t *testing.T) {
+		// Verify doesn't panic
+		displayInstallInstructions("tailscale")
+	})
+
+	t.Run("cloudflare", func(t *testing.T) {
+		displayInstallInstructions("cloudflare")
+	})
+
+	t.Run("unknown provider", func(t *testing.T) {
+		displayInstallInstructions("wireguard")
+	})
+}
+
+func TestDisplayConnectionState(t *testing.T) {
+	t.Run("running", func(t *testing.T) {
+		status := &tunnel.Status{Provider: "tailscale", BackendState: "Running"}
+		displayConnectionState(status)
+	})
+
+	t.Run("stopped", func(t *testing.T) {
+		status := &tunnel.Status{Provider: "tailscale", BackendState: "Stopped"}
+		displayConnectionState(status)
+	})
+
+	t.Run("needs login", func(t *testing.T) {
+		status := &tunnel.Status{Provider: "tailscale", BackendState: "NeedsLogin"}
+		displayConnectionState(status)
+	})
+
+	t.Run("disconnected", func(t *testing.T) {
+		status := &tunnel.Status{Provider: "cloudflare", BackendState: "Disconnected"}
+		displayConnectionState(status)
+	})
+
+	t.Run("unknown state", func(t *testing.T) {
+		status := &tunnel.Status{Provider: "tailscale", BackendState: "Unknown"}
+		displayConnectionState(status)
+	})
+
+	t.Run("default connected", func(t *testing.T) {
+		status := &tunnel.Status{Provider: "tailscale", BackendState: "CustomState", Connected: true}
+		displayConnectionState(status)
+	})
+
+	t.Run("default disconnected", func(t *testing.T) {
+		status := &tunnel.Status{Provider: "tailscale", BackendState: "CustomState", Connected: false}
+		displayConnectionState(status)
+	})
+}
+
+func TestDisplayTunnelStatus(t *testing.T) {
+	t.Run("full status with peers", func(t *testing.T) {
+		status := &tunnel.Status{
+			Provider:     "tailscale",
+			BackendState: "Running",
+			Connected:    true,
+			Hostname:     "myhost",
+			IP:           "100.100.100.1",
+			TailnetName:  "tailnet.ts.net",
+			Peers: []tunnel.Peer{
+				{Name: "peer1", IP: "100.100.100.2", Online: true},
+				{Name: "peer2", IP: "100.100.100.3", Online: false},
+			},
+		}
+		displayTunnelStatus(status)
+	})
+
+	t.Run("minimal status", func(t *testing.T) {
+		status := &tunnel.Status{
+			Provider:     "cloudflare",
+			BackendState: "Running",
+			Connected:    true,
+		}
+		displayTunnelStatus(status)
+	})
+}
+
+func TestDisplayStartInstructions(t *testing.T) {
+	t.Run("tailscale", func(t *testing.T) {
+		displayStartInstructions("tailscale")
+	})
+
+	t.Run("cloudflare", func(t *testing.T) {
+		displayStartInstructions("cloudflare")
+	})
+
+	t.Run("unknown", func(t *testing.T) {
+		displayStartInstructions("wireguard")
+	})
+}
+
+func TestDisplayLoginInstructions(t *testing.T) {
+	t.Run("tailscale", func(t *testing.T) {
+		displayLoginInstructions("tailscale")
+	})
+
+	t.Run("cloudflare", func(t *testing.T) {
+		displayLoginInstructions("cloudflare")
+	})
+
+	t.Run("unknown", func(t *testing.T) {
+		displayLoginInstructions("wireguard")
+	})
+}
+
+func TestDisplayPeerInfo(t *testing.T) {
+	t.Run("mixed online and offline", func(t *testing.T) {
+		peers := []tunnel.Peer{
+			{Name: "host-a", IP: "100.100.100.1", Online: true},
+			{Name: "host-b", IP: "100.100.100.2", Online: false},
+			{Name: "host-c", IP: "100.100.100.3", Online: true, ExitNode: true},
+		}
+		displayPeerInfo(peers)
+	})
+
+	t.Run("all offline", func(t *testing.T) {
+		peers := []tunnel.Peer{
+			{Name: "host-a", Online: false},
+			{Name: "host-b", Online: false},
+		}
+		displayPeerInfo(peers)
+	})
+
+	t.Run("peer without name uses DNSName", func(t *testing.T) {
+		peers := []tunnel.Peer{
+			{DNSName: "peer.tailnet.ts.net", IP: "100.100.100.1", Online: true},
+		}
+		displayPeerInfo(peers)
 	})
 }
 

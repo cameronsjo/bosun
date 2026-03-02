@@ -106,6 +106,7 @@ type Daemon struct {
 	dockerOnce    sync.Once      // Lazily initialize Docker client
 	dockerClient  *docker.Client // Shared Docker client for API handlers
 	dockerErr     error          // Error from Docker client initialization
+	dockerClientOverride *docker.Client // Test injection point: bypasses sync.Once
 	ready         bool
 	readyMu       sync.RWMutex
 	stopLoops      chan struct{}
@@ -405,6 +406,9 @@ func (d *Daemon) shutdown() error {
 
 // DockerClient returns the shared Docker client, creating it on first use.
 func (d *Daemon) DockerClient() (*docker.Client, error) {
+	if d.dockerClientOverride != nil {
+		return d.dockerClientOverride, nil
+	}
 	d.dockerOnce.Do(func() {
 		d.dockerClient, d.dockerErr = docker.NewClient()
 	})

@@ -862,3 +862,41 @@ type errorReader struct{}
 func (e *errorReader) Read(p []byte) (n int, err error) {
 	return 0, errors.New("read error")
 }
+
+func TestClient_GetContainerLogs_ReadError(t *testing.T) {
+	mock := NewMockDockerAPI()
+	mock.ContainerLogsFunc = func(ctx context.Context, ctr string, options container.LogsOptions) (io.ReadCloser, error) {
+		return io.NopCloser(&errorReader{}), nil
+	}
+	client := NewClientWithAPI(mock)
+
+	_, err := client.GetContainerLogs(context.Background(), "web", 100)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read logs")
+}
+
+func TestClient_GetContainerStats_ParseError(t *testing.T) {
+	mock := NewMockDockerAPI()
+	mock.ContainerStatsFunc = func(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error) {
+		return container.StatsResponseReader{
+			Body: io.NopCloser(bytes.NewReader([]byte("not json"))),
+		}, nil
+	}
+	client := NewClientWithAPI(mock)
+
+	_, err := client.GetContainerStats(context.Background(), "web")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse stats")
+}
+
+func TestClient_Close_Error(t *testing.T) {
+	mock := NewMockDockerAPI()
+	mock.CloseFunc = func() error {
+		return errors.New("close failed")
+	}
+	client := NewClientWithAPI(mock)
+
+	err := client.Close()
+	require.Error(t, err)
+	assert.Equal(t, "close failed", err.Error())
+}

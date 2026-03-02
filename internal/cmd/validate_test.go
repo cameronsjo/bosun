@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIsValidGitURL(t *testing.T) {
@@ -152,4 +153,132 @@ func TestIsValidGitURL(t *testing.T) {
 			assert.Equal(t, tt.want, got, "isValidGitURL(%q)", tt.url)
 		})
 	}
+}
+
+func TestValidateCmd_Registration(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"validate"})
+	require.NoError(t, err)
+	assert.Equal(t, "validate", cmd.Name())
+}
+
+func TestValidateCmd_Help(t *testing.T) {
+	output, err := executeCmd(t, "validate", "--help")
+	require.NoError(t, err)
+	assert.Contains(t, output, "Validate")
+	assert.Contains(t, output, "configuration")
+	assert.Contains(t, output, "connectivity")
+}
+
+func TestValidateEnvironment(t *testing.T) {
+	t.Run("returns 0 errors when REPO_URL set", func(t *testing.T) {
+		t.Setenv("REPO_URL", "https://github.com/user/repo")
+		t.Setenv("BOSUN_REPO_URL", "")
+		t.Setenv("REPO_BRANCH", "")
+		t.Setenv("BOSUN_REPO_BRANCH", "")
+		t.Setenv("WEBHOOK_SECRET", "")
+		t.Setenv("GITHUB_WEBHOOK_SECRET", "")
+		t.Setenv("DEPLOY_TARGET", "")
+
+		errors := validateEnvironment()
+		assert.Equal(t, 0, errors)
+	})
+
+	t.Run("returns 0 errors when BOSUN_REPO_URL set", func(t *testing.T) {
+		t.Setenv("REPO_URL", "")
+		t.Setenv("BOSUN_REPO_URL", "https://github.com/user/repo")
+		t.Setenv("REPO_BRANCH", "")
+		t.Setenv("BOSUN_REPO_BRANCH", "")
+		t.Setenv("WEBHOOK_SECRET", "")
+		t.Setenv("GITHUB_WEBHOOK_SECRET", "")
+		t.Setenv("DEPLOY_TARGET", "")
+
+		errors := validateEnvironment()
+		assert.Equal(t, 0, errors)
+	})
+
+	t.Run("returns 1 error when no repo URL set", func(t *testing.T) {
+		t.Setenv("REPO_URL", "")
+		t.Setenv("BOSUN_REPO_URL", "")
+		t.Setenv("REPO_BRANCH", "")
+		t.Setenv("BOSUN_REPO_BRANCH", "")
+		t.Setenv("WEBHOOK_SECRET", "")
+		t.Setenv("GITHUB_WEBHOOK_SECRET", "")
+		t.Setenv("DEPLOY_TARGET", "")
+
+		errors := validateEnvironment()
+		assert.Equal(t, 1, errors)
+	})
+
+	t.Run("handles custom branch", func(t *testing.T) {
+		t.Setenv("REPO_URL", "https://github.com/user/repo")
+		t.Setenv("BOSUN_REPO_URL", "")
+		t.Setenv("REPO_BRANCH", "develop")
+		t.Setenv("BOSUN_REPO_BRANCH", "")
+		t.Setenv("WEBHOOK_SECRET", "")
+		t.Setenv("GITHUB_WEBHOOK_SECRET", "")
+		t.Setenv("DEPLOY_TARGET", "")
+
+		errors := validateEnvironment()
+		assert.Equal(t, 0, errors)
+	})
+
+	t.Run("handles webhook secret", func(t *testing.T) {
+		t.Setenv("REPO_URL", "https://github.com/user/repo")
+		t.Setenv("BOSUN_REPO_URL", "")
+		t.Setenv("REPO_BRANCH", "")
+		t.Setenv("BOSUN_REPO_BRANCH", "")
+		t.Setenv("WEBHOOK_SECRET", "mysecret")
+		t.Setenv("GITHUB_WEBHOOK_SECRET", "")
+		t.Setenv("DEPLOY_TARGET", "")
+
+		errors := validateEnvironment()
+		assert.Equal(t, 0, errors)
+	})
+
+	t.Run("handles deploy target", func(t *testing.T) {
+		t.Setenv("REPO_URL", "https://github.com/user/repo")
+		t.Setenv("BOSUN_REPO_URL", "")
+		t.Setenv("REPO_BRANCH", "")
+		t.Setenv("BOSUN_REPO_BRANCH", "")
+		t.Setenv("WEBHOOK_SECRET", "")
+		t.Setenv("GITHUB_WEBHOOK_SECRET", "")
+		t.Setenv("DEPLOY_TARGET", "user@server:/opt/deploy")
+
+		errors := validateEnvironment()
+		assert.Equal(t, 0, errors)
+	})
+}
+
+func TestValidateReconcileConfig(t *testing.T) {
+	t.Run("returns 1 error when no repo URL", func(t *testing.T) {
+		t.Setenv("REPO_URL", "")
+		t.Setenv("BOSUN_REPO_URL", "")
+
+		errors := validateReconcileConfig()
+		assert.Equal(t, 1, errors)
+	})
+
+	t.Run("returns 0 errors with valid repo URL", func(t *testing.T) {
+		t.Setenv("REPO_URL", "https://github.com/user/repo")
+		t.Setenv("BOSUN_REPO_URL", "")
+
+		errors := validateReconcileConfig()
+		assert.Equal(t, 0, errors)
+	})
+
+	t.Run("returns 1 error with invalid repo URL", func(t *testing.T) {
+		t.Setenv("REPO_URL", "not-a-valid-url")
+		t.Setenv("BOSUN_REPO_URL", "")
+
+		errors := validateReconcileConfig()
+		assert.Equal(t, 1, errors)
+	})
+
+	t.Run("BOSUN_REPO_URL takes precedence when REPO_URL empty", func(t *testing.T) {
+		t.Setenv("REPO_URL", "")
+		t.Setenv("BOSUN_REPO_URL", "git@github.com:user/repo.git")
+
+		errors := validateReconcileConfig()
+		assert.Equal(t, 0, errors)
+	})
 }

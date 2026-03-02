@@ -123,3 +123,41 @@ func TestDuration_IsZero(t *testing.T) {
 	assert.True(t, Duration{Duration: 0}.IsZero())
 	assert.False(t, Duration{Duration: time.Second}.IsZero())
 }
+
+func TestDuration_UnmarshalYAML_Error(t *testing.T) {
+	// YAML unmarshaling into Duration should fail for non-string types like map.
+	var out struct {
+		Delay Duration `yaml:"delay"`
+	}
+	err := yaml.Unmarshal([]byte("delay:\n  nested: value"), &out)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "duration must be a string")
+}
+
+func TestDuration_MarshalYAML_ZeroReturnsNil(t *testing.T) {
+	d := Duration{Duration: 0}
+	result, err := d.MarshalYAML()
+	require.NoError(t, err)
+	assert.Nil(t, result)
+}
+
+func TestDuration_MarshalYAML_NonZero(t *testing.T) {
+	d := Duration{Duration: 10 * time.Second}
+	result, err := d.MarshalYAML()
+	require.NoError(t, err)
+	assert.Equal(t, "10s", result)
+}
+
+func TestDuration_YAMLRoundTrip(t *testing.T) {
+	type wrapper struct {
+		Delay Duration `yaml:"delay"`
+	}
+
+	original := wrapper{Delay: Duration{Duration: 3*time.Minute + 15*time.Second}}
+	data, err := yaml.Marshal(original)
+	require.NoError(t, err)
+
+	var decoded wrapper
+	require.NoError(t, yaml.Unmarshal(data, &decoded))
+	assert.Equal(t, original.Delay.Duration, decoded.Delay.Duration)
+}

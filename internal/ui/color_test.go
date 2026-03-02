@@ -4,13 +4,22 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/fatih/color"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/cameronsjo/bosun/internal/log"
 )
+
+// isNumeric returns true if s parses as a number (used for JSON field matching).
+func isNumeric(s string) bool {
+	_, err := strconv.ParseFloat(s, 64)
+	return err == nil
+}
 
 // init ensures tests run in console mode for consistent output testing.
 func init() {
@@ -328,4 +337,354 @@ func TestConcurrentOutput(t *testing.T) {
 		})
 		assert.Contains(t, output, "message")
 	}
+}
+
+// captureJSONOutput captures zerolog JSON output by redirecting os.Stdout
+// before initializing the logger in JSON mode. Restores console mode after.
+func captureJSONOutput(t *testing.T, fn func()) string {
+	t.Helper()
+
+	// Create pipe and redirect stdout BEFORE init so zerolog writes to the pipe.
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+
+	oldStdout := os.Stdout
+	os.Stdout = w
+
+	// Initialize JSON mode — logger is created writing to the redirected stdout.
+	log.Init(&log.Options{
+		Format: log.FormatJSON,
+		Level:  log.DebugLevel,
+		LevelSet: true,
+	})
+
+	// Run the function under test.
+	fn()
+
+	// Close writer, read output.
+	w.Close()
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	r.Close()
+
+	// Restore stdout and console mode.
+	os.Stdout = oldStdout
+	log.Init(&log.Options{
+		Format: log.FormatConsole,
+	})
+
+	return buf.String()
+}
+
+func TestOutputFunctions_JSONMode(t *testing.T) {
+	tests := []struct {
+		name       string
+		fn         func()
+		wantMsg    string
+		wantLevel  string
+		wantFields map[string]string
+	}{
+		{
+			name:      "Success",
+			fn:        func() { Success("deploy completed") },
+			wantMsg:   "deploy completed",
+			wantLevel: "info",
+			wantFields: map[string]string{
+				"success": "true",
+			},
+		},
+		{
+			name:      "Success_WithArgs",
+			fn:        func() { Success("processed %d items", 5) },
+			wantMsg:   "processed 5 items",
+			wantLevel: "info",
+			wantFields: map[string]string{
+				"success": "true",
+			},
+		},
+		{
+			name:      "Error",
+			fn:        func() { Error("connection refused") },
+			wantMsg:   "connection refused",
+			wantLevel: "error",
+		},
+		{
+			name:      "Error_WithArgs",
+			fn:        func() { Error("port %d busy", 8080) },
+			wantMsg:   "port 8080 busy",
+			wantLevel: "error",
+		},
+		{
+			name:      "Warning",
+			fn:        func() { Warning("disk nearly full") },
+			wantMsg:   "disk nearly full",
+			wantLevel: "warn",
+		},
+		{
+			name:      "Warning_WithArgs",
+			fn:        func() { Warning("%d%% used", 90) },
+			wantMsg:   "90% used",
+			wantLevel: "warn",
+		},
+		{
+			name:      "Info",
+			fn:        func() { Info("server started") },
+			wantMsg:   "server started",
+			wantLevel: "info",
+		},
+		{
+			name:      "Info_WithArgs",
+			fn:        func() { Info("listening on %s", ":8080") },
+			wantMsg:   "listening on :8080",
+			wantLevel: "info",
+		},
+		{
+			name:      "Debug",
+			fn:        func() { Debug("trace detail") },
+			wantMsg:   "trace detail",
+			wantLevel: "debug",
+		},
+		{
+			name:      "Debug_WithArgs",
+			fn:        func() { Debug("key=%s val=%d", "foo", 42) },
+			wantMsg:   "key=foo val=42",
+			wantLevel: "debug",
+		},
+		{
+			name:      "Step",
+			fn:        func() { Step(2, "cloning repo") },
+			wantMsg:   "cloning repo",
+			wantLevel: "info",
+			wantFields: map[string]string{
+				"step": "2",
+			},
+		},
+		{
+			name:      "Header",
+			fn:        func() { Header("Deploy Summary") },
+			wantMsg:   "Deploy Summary",
+			wantLevel: "info",
+			wantFields: map[string]string{
+				"type": "header",
+			},
+		},
+		{
+			name:      "Anchor",
+			fn:        func() { Anchor("anchored to port") },
+			wantMsg:   "anchored to port",
+			wantLevel: "info",
+			wantFields: map[string]string{
+				"icon": "anchor",
+			},
+		},
+		{
+			name:      "Ship",
+			fn:        func() { Ship("setting sail") },
+			wantMsg:   "setting sail",
+			wantLevel: "info",
+			wantFields: map[string]string{
+				"icon": "ship",
+			},
+		},
+		{
+			name:      "Compass",
+			fn:        func() { Compass("heading north") },
+			wantMsg:   "heading north",
+			wantLevel: "info",
+			wantFields: map[string]string{
+				"icon": "compass",
+			},
+		},
+		{
+			name:      "Mayday",
+			fn:        func() { Mayday("all hands on deck") },
+			wantMsg:   "all hands on deck",
+			wantLevel: "error",
+			wantFields: map[string]string{
+				"icon": "mayday",
+			},
+		},
+		{
+			name:      "Snapshot",
+			fn:        func() { Snapshot("snapshot taken") },
+			wantMsg:   "snapshot taken",
+			wantLevel: "info",
+			wantFields: map[string]string{
+				"icon": "snapshot",
+			},
+		},
+		{
+			name:      "Package",
+			fn:        func() { Package("bundled release") },
+			wantMsg:   "bundled release",
+			wantLevel: "info",
+			wantFields: map[string]string{
+				"icon": "package",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := captureJSONOutput(t, tt.fn)
+			require.NotEmpty(t, output, "expected JSON output")
+
+			assert.Contains(t, output, tt.wantMsg)
+			assert.Contains(t, output, `"level":"`+tt.wantLevel+`"`)
+
+			for key, val := range tt.wantFields {
+				// Booleans and numbers are unquoted in JSON output.
+				if val == "true" || val == "false" || isNumeric(val) {
+					assert.Contains(t, output, `"`+key+`":`+val)
+				} else {
+					assert.Contains(t, output, `"`+key+`":"`+val+`"`)
+				}
+			}
+		})
+	}
+}
+
+func TestDebug_ConsoleMode(t *testing.T) {
+	output := captureColorOutput(func() {
+		Debug("debug trace info")
+	})
+	assert.Contains(t, output, "debug trace info")
+}
+
+func TestDebug_ConsoleMode_WithArgs(t *testing.T) {
+	output := captureColorOutput(func() {
+		Debug("value is %d", 99)
+	})
+	assert.Contains(t, output, "value is 99")
+}
+
+func TestLogger(t *testing.T) {
+	l := Logger()
+	require.NotNil(t, l)
+
+	// Verify it returns a usable zerolog.Logger pointer.
+	var _ *zerolog.Logger = l
+}
+
+func TestWithComponent(t *testing.T) {
+	// WithComponent returns a zerolog.Logger derived from the global logger.
+	// Capture JSON output and call WithComponent inside so it uses the redirected logger.
+	output := captureJSONOutput(t, func() {
+		l := WithComponent("test-comp")
+		l.Info().Msg("component log")
+	})
+	assert.Contains(t, output, "component log")
+	assert.Contains(t, output, "test-comp")
+}
+
+func TestFatal_ConsoleMode(t *testing.T) {
+	var exitCode int
+	oldExit := exitFn
+	exitFn = func(code int) { exitCode = code }
+	defer func() { exitFn = oldExit }()
+
+	// Fatal writes to os.Stderr in console mode, so capture stderr.
+	oldStderr := os.Stderr
+	oldNoColor := color.NoColor
+	oldErrOutput := color.Error
+
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+
+	os.Stderr = w
+	color.Error = w
+	color.NoColor = true
+
+	// Ensure console mode.
+	log.Init(&log.Options{Format: log.FormatConsole})
+
+	Fatal("fatal error happened")
+
+	w.Close()
+	os.Stderr = oldStderr
+	color.Error = oldErrOutput
+	color.NoColor = oldNoColor
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	r.Close()
+
+	assert.Equal(t, 1, exitCode)
+	assert.Contains(t, buf.String(), "fatal error happened")
+}
+
+func TestFatal_JSONMode(t *testing.T) {
+	var exitCode int
+	oldExit := exitFn
+	exitFn = func(code int) { exitCode = code }
+	defer func() { exitFn = oldExit }()
+
+	output := captureJSONOutput(t, func() {
+		Fatal("json fatal error")
+	})
+
+	assert.Equal(t, 1, exitCode)
+	assert.Contains(t, output, "json fatal error")
+	assert.Contains(t, output, `"level":"error"`)
+}
+
+func TestFatalf_ConsoleMode(t *testing.T) {
+	var exitCode int
+	oldExit := exitFn
+	exitFn = func(code int) { exitCode = code }
+	defer func() { exitFn = oldExit }()
+
+	oldStderr := os.Stderr
+	oldNoColor := color.NoColor
+	oldErrOutput := color.Error
+
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+
+	os.Stderr = w
+	color.Error = w
+	color.NoColor = true
+
+	log.Init(&log.Options{Format: log.FormatConsole})
+
+	Fatalf("fatal: %s at line %d", "null pointer", 42)
+
+	w.Close()
+	os.Stderr = oldStderr
+	color.Error = oldErrOutput
+	color.NoColor = oldNoColor
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	r.Close()
+
+	assert.Equal(t, 1, exitCode)
+	assert.Contains(t, buf.String(), "fatal: null pointer at line 42")
+}
+
+func TestFatalf_JSONMode(t *testing.T) {
+	var exitCode int
+	oldExit := exitFn
+	exitFn = func(code int) { exitCode = code }
+	defer func() { exitFn = oldExit }()
+
+	output := captureJSONOutput(t, func() {
+		Fatalf("fatal: %s crashed", "daemon")
+	})
+
+	assert.Equal(t, 1, exitCode)
+	assert.Contains(t, output, "fatal: daemon crashed")
+	assert.Contains(t, output, `"level":"error"`)
+}
+
+func TestIsConsoleMode(t *testing.T) {
+	// Verify that isConsoleMode reflects the configured format.
+	log.Init(&log.Options{Format: log.FormatConsole})
+	assert.True(t, isConsoleMode())
+
+	log.Init(&log.Options{Format: log.FormatJSON})
+	assert.False(t, isConsoleMode())
+
+	// Restore console mode for other tests.
+	log.Init(&log.Options{Format: log.FormatConsole})
 }

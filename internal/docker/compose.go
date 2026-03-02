@@ -18,10 +18,23 @@ type ServiceStatus struct {
 	Running bool
 }
 
+// commandRunner creates exec commands. Defaults to exec.CommandContext.
+type commandRunner func(ctx context.Context, name string, args ...string) *exec.Cmd
+
 // ComposeClient handles docker compose operations.
 type ComposeClient struct {
 	file    string
 	project string
+	runner  commandRunner // nil = exec.CommandContext
+}
+
+// command creates an exec.Cmd using the configured runner (or exec.CommandContext by default).
+func (c *ComposeClient) command(ctx context.Context, args ...string) *exec.Cmd {
+	r := c.runner
+	if r == nil {
+		r = exec.CommandContext
+	}
+	return r(ctx, "docker", args...)
 }
 
 // NewComposeClient creates a new compose client for the given compose file and project name.
@@ -53,7 +66,7 @@ func (c *ComposeClient) Up(ctx context.Context, services ...string) error {
 	args = append(args, "up", "-d")
 	args = append(args, services...)
 
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := c.command(ctx, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("docker compose up: %w\n%s", err, output)
@@ -67,7 +80,7 @@ func (c *ComposeClient) Down(ctx context.Context) error {
 	args := c.baseArgs()
 	args = append(args, "down")
 
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := c.command(ctx, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("docker compose down: %w\n%s", err, output)
@@ -82,7 +95,7 @@ func (c *ComposeClient) Restart(ctx context.Context, services ...string) error {
 	args = append(args, "restart")
 	args = append(args, services...)
 
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := c.command(ctx, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("docker compose restart: %w\n%s", err, output)
@@ -95,7 +108,7 @@ func (c *ComposeClient) Restart(ctx context.Context, services ...string) error {
 func (c *ComposeClient) Status(ctx context.Context) ([]ServiceStatus, error) {
 	args := c.baseArgs()
 	args = append(args, "ps", "--format", "{{.Name}}\t{{.State}}\t{{.Status}}\t{{.Ports}}")
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := c.command(ctx, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -137,7 +150,7 @@ func (c *ComposeClient) Ps(ctx context.Context) (string, error) {
 	args := c.baseArgs()
 	args = append(args, "ps")
 
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := c.command(ctx, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("docker compose ps: %w\n%s", err, output)

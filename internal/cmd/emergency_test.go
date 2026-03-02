@@ -1,10 +1,45 @@
 package cmd
 
 import (
+	"archive/tar"
+	"compress/gzip"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestMaydayCmd_Registration(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"mayday"})
+	require.NoError(t, err)
+	assert.Equal(t, "mayday", cmd.Name())
+}
+
+func TestMaydayCmd_MutinyAlias(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"mutiny"})
+	require.NoError(t, err)
+	assert.Equal(t, "mayday", cmd.Name())
+}
+
+func TestOverboardCmd_Registration(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"overboard"})
+	require.NoError(t, err)
+	assert.Equal(t, "overboard", cmd.Name())
+}
+
+func TestOverboardCmd_PlankAlias(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"plank"})
+	require.NoError(t, err)
+	assert.Equal(t, "overboard", cmd.Name())
+}
+
+func TestRestoreCmd_Registration(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"restore"})
+	require.NoError(t, err)
+	assert.Equal(t, "restore", cmd.Name())
+}
 
 func TestMaydayCmd_Help(t *testing.T) {
 	t.Run("mayday --help", func(t *testing.T) {
@@ -124,5 +159,227 @@ func TestRestoreCmd_Flags(t *testing.T) {
 	t.Run("has list flag", func(t *testing.T) {
 		resetRootCmd(t)
 		assert.False(t, restoreList) // default value
+	})
+}
+
+func TestGetBackups(t *testing.T) {
+	t.Run("non-existent directory returns nil", func(t *testing.T) {
+		backups, err := getBackups("/nonexistent/backup/dir")
+		assert.NoError(t, err)
+		assert.Nil(t, backups)
+	})
+
+	t.Run("empty directory returns nil", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		backups, err := getBackups(tmpDir)
+		assert.NoError(t, err)
+		assert.Nil(t, backups)
+	})
+
+	t.Run("ignores non-backup directories", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "not-a-backup"), 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "other-dir"), 0755))
+
+		backups, err := getBackups(tmpDir)
+		assert.NoError(t, err)
+		assert.Nil(t, backups)
+	})
+
+	t.Run("finds backup directories", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "backup-2024-01-01"), 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "backup-2024-01-02"), 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "not-a-backup"), 0755))
+
+		backups, err := getBackups(tmpDir)
+		require.NoError(t, err)
+		assert.Len(t, backups, 2)
+	})
+
+	t.Run("sorted newest first", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "backup-2024-01-01"), 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "backup-2024-01-15"), 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "backup-2024-01-10"), 0755))
+
+		backups, err := getBackups(tmpDir)
+		require.NoError(t, err)
+		assert.Equal(t, "backup-2024-01-15", backups[0].Name)
+		assert.Equal(t, "backup-2024-01-10", backups[1].Name)
+		assert.Equal(t, "backup-2024-01-01", backups[2].Name)
+	})
+
+	t.Run("detects tar.gz presence", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		backupDir := filepath.Join(tmpDir, "backup-2024-01-01")
+		require.NoError(t, os.MkdirAll(backupDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(backupDir, "configs.tar.gz"), []byte("fake"), 0644))
+
+		backups, err := getBackups(tmpDir)
+		require.NoError(t, err)
+		assert.True(t, backups[0].HasTar)
+	})
+
+	t.Run("reports missing tar.gz", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "backup-2024-01-01"), 0755))
+
+		backups, err := getBackups(tmpDir)
+		require.NoError(t, err)
+		assert.False(t, backups[0].HasTar)
+	})
+}
+
+func TestExtractTarGz(t *testing.T) {
+	// Helper to create a valid .tar.gz with specified files.
+	createTarGz := func(t *testing.T, files map[string]string) string {
+		t.Helper()
+		tarPath := filepath.Join(t.TempDir(), "test.tar.gz")
+		f, err := os.Create(tarPath)
+		require.NoError(t, err)
+
+		gw := gzip.NewWriter(f)
+		tw := tar.NewWriter(gw)
+
+		for name, content := range files {
+			hdr := &tar.Header{
+				Name: name,
+				Mode: 0644,
+				Size: int64(len(content)),
+			}
+			require.NoError(t, tw.WriteHeader(hdr))
+			_, err := tw.Write([]byte(content))
+			require.NoError(t, err)
+		}
+
+		tw.Close()
+		gw.Close()
+		f.Close()
+
+		return tarPath
+	}
+
+	t.Run("extracts single file", func(t *testing.T) {
+		tarPath := createTarGz(t, map[string]string{
+			"hello.txt": "hello world",
+		})
+		destDir := t.TempDir()
+
+		err := extractTarGz(tarPath, destDir)
+		require.NoError(t, err)
+
+		content, err := os.ReadFile(filepath.Join(destDir, "hello.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, "hello world", string(content))
+	})
+
+	t.Run("extracts multiple files", func(t *testing.T) {
+		tarPath := createTarGz(t, map[string]string{
+			"a.txt": "aaa",
+			"b.txt": "bbb",
+		})
+		destDir := t.TempDir()
+
+		err := extractTarGz(tarPath, destDir)
+		require.NoError(t, err)
+
+		content, err := os.ReadFile(filepath.Join(destDir, "a.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, "aaa", string(content))
+
+		content, err = os.ReadFile(filepath.Join(destDir, "b.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, "bbb", string(content))
+	})
+
+	t.Run("extracts nested directories", func(t *testing.T) {
+		tarPath := filepath.Join(t.TempDir(), "test.tar.gz")
+		f, err := os.Create(tarPath)
+		require.NoError(t, err)
+
+		gw := gzip.NewWriter(f)
+		tw := tar.NewWriter(gw)
+
+		require.NoError(t, tw.WriteHeader(&tar.Header{
+			Name:     "subdir/",
+			Typeflag: tar.TypeDir,
+			Mode:     0755,
+		}))
+
+		content := "nested content"
+		require.NoError(t, tw.WriteHeader(&tar.Header{
+			Name: "subdir/file.txt",
+			Mode: 0644,
+			Size: int64(len(content)),
+		}))
+		_, err = tw.Write([]byte(content))
+		require.NoError(t, err)
+
+		tw.Close()
+		gw.Close()
+		f.Close()
+
+		destDir := t.TempDir()
+		err = extractTarGz(tarPath, destDir)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filepath.Join(destDir, "subdir", "file.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, "nested content", string(data))
+	})
+
+	t.Run("rejects path traversal", func(t *testing.T) {
+		tarPath := filepath.Join(t.TempDir(), "evil.tar.gz")
+		f, err := os.Create(tarPath)
+		require.NoError(t, err)
+
+		gw := gzip.NewWriter(f)
+		tw := tar.NewWriter(gw)
+
+		content := "evil content"
+		require.NoError(t, tw.WriteHeader(&tar.Header{
+			Name: "../../../etc/passwd",
+			Mode: 0644,
+			Size: int64(len(content)),
+		}))
+		_, err = tw.Write([]byte(content))
+		require.NoError(t, err)
+
+		tw.Close()
+		gw.Close()
+		f.Close()
+
+		destDir := t.TempDir()
+		err = extractTarGz(tarPath, destDir)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid file path")
+	})
+
+	t.Run("rejects non-existent archive", func(t *testing.T) {
+		err := extractTarGz("/nonexistent/archive.tar.gz", t.TempDir())
+		assert.Error(t, err)
+	})
+}
+
+func TestListBackups(t *testing.T) {
+	t.Run("non-existent directory", func(t *testing.T) {
+		err := listBackups("/nonexistent/backup/dir")
+		assert.NoError(t, err)
+	})
+
+	t.Run("empty directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		err := listBackups(tmpDir)
+		assert.NoError(t, err)
+	})
+
+	t.Run("with backup directories", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "backup-2024-01-01"), 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "backup-2024-01-02"), 0755))
+
+		err := listBackups(tmpDir)
+		assert.NoError(t, err)
 	})
 }

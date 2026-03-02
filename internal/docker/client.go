@@ -156,11 +156,7 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 
 		ports := make([]string, 0, len(ctr.Ports))
 		for _, p := range ctr.Ports {
-			if p.PublicPort > 0 {
-				ports = append(ports, fmt.Sprintf("%d:%d/%s", p.PublicPort, p.PrivatePort, p.Type))
-			} else {
-				ports = append(ports, fmt.Sprintf("%d/%s", p.PrivatePort, p.Type))
-			}
+			ports = append(ports, formatPortString(p.PublicPort, p.PrivatePort, p.Type))
 		}
 
 		result = append(result, ContainerInfo{
@@ -329,18 +325,12 @@ func (c *Client) GetContainerStats(ctx context.Context, name string) (*Container
 	}
 
 	// Calculate CPU percentage
-	cpuPercent := 0.0
 	cpuDelta := float64(v.CPUStats.CPUUsage.TotalUsage - v.PreCPUStats.CPUUsage.TotalUsage)
 	systemDelta := float64(v.CPUStats.SystemUsage - v.PreCPUStats.SystemUsage)
-	if systemDelta > 0 && cpuDelta > 0 {
-		cpuPercent = (cpuDelta / systemDelta) * float64(len(v.CPUStats.CPUUsage.PercpuUsage)) * 100.0
-	}
+	cpuPercent := calculateCPUPercent(cpuDelta, systemDelta, len(v.CPUStats.CPUUsage.PercpuUsage))
 
 	// Calculate memory percentage
-	memPercent := 0.0
-	if v.MemoryStats.Limit > 0 {
-		memPercent = float64(v.MemoryStats.Usage) / float64(v.MemoryStats.Limit) * 100.0
-	}
+	memPercent := calculateMemPercent(v.MemoryStats.Usage, v.MemoryStats.Limit)
 
 	return &ContainerStats{
 		Name:       name,
@@ -401,6 +391,33 @@ func parseHealthFromStatus(status string) string {
 	default:
 		return ""
 	}
+}
+
+// calculateCPUPercent computes the CPU usage percentage from delta values.
+// Returns 0 if either delta is non-positive (avoids divide-by-zero).
+func calculateCPUPercent(cpuDelta, systemDelta float64, numCPUs int) float64 {
+	if systemDelta <= 0 || cpuDelta <= 0 {
+		return 0.0
+	}
+	return (cpuDelta / systemDelta) * float64(numCPUs) * 100.0
+}
+
+// calculateMemPercent computes the memory usage percentage.
+// Returns 0 if the limit is zero (avoids divide-by-zero).
+func calculateMemPercent(usage, limit uint64) float64 {
+	if limit == 0 {
+		return 0.0
+	}
+	return float64(usage) / float64(limit) * 100.0
+}
+
+// formatPortString formats a Docker port binding into a human-readable string.
+// Public port of 0 means the port is not published to the host.
+func formatPortString(publicPort, privatePort uint16, protocol string) string {
+	if publicPort > 0 {
+		return fmt.Sprintf("%d:%d/%s", publicPort, privatePort, protocol)
+	}
+	return fmt.Sprintf("%d/%s", privatePort, protocol)
 }
 
 // readJSONStats reads a single JSON stats object from the reader.
