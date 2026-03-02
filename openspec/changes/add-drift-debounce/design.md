@@ -1,3 +1,5 @@
+# Drift Alert Debounce Design
+
 ## Context
 
 The drift alert pipeline currently operates as: detect -> dedup (per-item cooldown) -> send. The dedup layer prevents repeated alerts for the same persistent drift item within a cooldown window, but the very first detection of any drift item always fires an alert immediately. In homelab environments, transient drift is common: Unraid's mover creates I/O pressure that briefly starves containers, Watchtower pulls new images and restarts containers, and Docker daemon pressure causes momentary health check failures. These events self-resolve within 5-15 minutes but generate unnecessary alert noise. A 5-minute debounce default covers the majority of transient events; operators experiencing longer transients (e.g., Unraid mover runs) can tune `BOSUN_DRIFT_ALERT_DEBOUNCE` higher (e.g., 10-15m).

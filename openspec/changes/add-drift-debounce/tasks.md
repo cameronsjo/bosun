@@ -24,18 +24,27 @@
 ## 4. Daemon Integration
 
 - [ ] 4.1 Integrate `FilterDebounced()` into the periodic drift check handler in `daemon.go`, between drift detection and the existing `ShouldAlertDrift()` dedup call
-- [ ] 4.2 Update `drift_debounce_items` in state: add new items on first detection, remove resolved items, remove items from `drift_debounce_items` immediately upon graduation to the dedup layer (when they pass the debounce window and an alert is sent)
+- [ ] 4.2 Update `drift_debounce_items` in state:
+  - [ ] 4.2a Remove debounce items upon graduation to dedup layer (debounce window expired, alert sent)
+  - [ ] 4.2b Remove debounce items upon drift resolution before window expires
+  - [ ] 4.2c Ensure cleanup timing is deterministic (checked on each drift evaluation cycle)
 - [ ] 4.3 Ensure debounce state is persisted atomically with drift results in the same `SaveState()` call
-- [ ] 4.4 Ensure resolution alerts only fire for items that were previously alerted (not items still in debounce)
+- [ ] 4.4 In the drift resolution handler, ensure resolution alerts only fire for items that were previously alerted; skip items present in `drift_debounce_items` (still in debounce, never alerted)
 
-## 5. Integration Tests
+## 5. Observability
 
-- [ ] 5.1 E2E: drift appears, persists beyond debounce window, alert fires, drift resolves, resolution alert fires
-- [ ] 5.2 E2E: drift appears, resolves before debounce window expires, no alerts fire
-- [ ] 5.3 E2E: drift persists, alert fires, repeat alerts respect dedup cooldown
+- [ ] 5.1 Add debug logging when drift items are filtered out by debounce (item key, time remaining in window)
+- [ ] 5.2 Add info logging when debounce items graduate to the dedup layer (item key, debounce duration elapsed)
+- [ ] 5.3 Add debug logging when debounce items are removed upon drift resolution before window expires
 
-## 6. Documentation
+## 6. Integration Tests
 
-- [ ] 6.1 Add `BOSUN_DRIFT_ALERT_DEBOUNCE` to env var table in `AGENTS.md`
-- [ ] 6.2 Document `drift_alert_debounce` config key and `BOSUN_DRIFT_ALERT_DEBOUNCE` env var in `docs/gitops.md`
-- [ ] 6.3 Update `skills/onboard/resources/gitops.md` with debounce documentation
+- [ ] 6.1 E2E: drift appears, persists beyond debounce window, alert fires, drift resolves, resolution alert fires
+- [ ] 6.2 E2E: drift appears, resolves before debounce window expires, no alerts fire
+- [ ] 6.3 E2E: drift persists, alert fires, repeat alerts respect dedup cooldown
+
+## 7. Documentation
+
+- [ ] 7.1 Add `BOSUN_DRIFT_ALERT_DEBOUNCE` to env var table in `AGENTS.md`
+- [ ] 7.2 Document `drift_alert_debounce` config key and `BOSUN_DRIFT_ALERT_DEBOUNCE` env var in `docs/gitops.md`
+- [ ] 7.3 Update `skills/onboard/resources/gitops.md` with debounce documentation
