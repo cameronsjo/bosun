@@ -268,13 +268,6 @@ func TestTwilio_formatMessage(t *testing.T) {
 }
 
 func TestTwilio_Send_SkipsNonErrorSeverity(t *testing.T) {
-	tw := NewTwilio(TwilioConfig{
-		AccountSID: "AC123",
-		AuthToken:  "token",
-		FromNumber: "+15551234567",
-		ToNumbers:  []string{"+15559876543"},
-	})
-
 	tests := []struct {
 		name     string
 		severity Severity
@@ -288,15 +281,25 @@ func TestTwilio_Send_SkipsNonErrorSeverity(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			callCount := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				callCount++
 				w.WriteHeader(http.StatusCreated)
 				_, _ = w.Write([]byte(`{"sid": "SM123"}`))
 			}))
 			defer server.Close()
 
-			// For this test, we can't easily override the URL, so we just check
-			// that the Send method returns nil for non-error severities
-			// (it won't make any HTTP calls for those).
+			tw := &Twilio{
+				config: TwilioConfig{
+					AccountSID: "AC123",
+					AuthToken:  "token",
+					FromNumber: "+15551234567",
+					ToNumbers:  []string{"+15559876543"},
+				},
+				client: server.Client(),
+				apiURL: server.URL,
+			}
+
 			alert := &Alert{
 				Title:    "Test",
 				Message:  "Test message",
@@ -305,9 +308,12 @@ func TestTwilio_Send_SkipsNonErrorSeverity(t *testing.T) {
 			}
 
 			err := tw.Send(context.Background(), alert)
+			require.NoError(t, err)
 
 			if tt.wantSkip {
-				assert.NoError(t, err, "Send() returned error for skipped severity")
+				assert.Equal(t, 0, callCount, "skipped severities should not trigger HTTP calls")
+			} else {
+				assert.Equal(t, 1, callCount, "error/critical severities should trigger one HTTP call")
 			}
 		})
 	}
@@ -328,13 +334,20 @@ func TestTwilio_Send_NotConfigured(t *testing.T) {
 }
 
 func TestTwilio_Send_HTTPSuccess(t *testing.T) {
-	var receivedBody string
+	var (
+		receivedBody   string
+		receivedMethod string
+		receivedCT     string
+		handlerErr     error
+	)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodPost, r.Method)
-		assert.Equal(t, "application/x-www-form-urlencoded", r.Header.Get("Content-Type"))
+		receivedMethod = r.Method
+		receivedCT = r.Header.Get("Content-Type")
 		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
+		if err != nil {
+			handlerErr = err
+		}
 		receivedBody = string(body)
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"sid": "SM123"}`))
@@ -359,6 +372,11 @@ func TestTwilio_Send_HTTPSuccess(t *testing.T) {
 		Source:   "reconcile",
 	})
 	require.NoError(t, err)
+
+	// Assertions moved out of handler goroutine (t.FailNow is unsafe there).
+	require.NoError(t, handlerErr)
+	assert.Equal(t, http.MethodPost, receivedMethod)
+	assert.Equal(t, "application/x-www-form-urlencoded", receivedCT)
 
 	// Verify the SMS body was sent in the form data.
 	assert.Contains(t, receivedBody, "Body=")
