@@ -44,10 +44,10 @@ These flags SHALL be propagated from the alert configuration to the reconciler c
 - **WHEN** a reconciliation succeeds
 - **THEN** no success alert is sent
 
-#### Scenario: on_failure true sends alerts for all failure stages
+#### Scenario: on_failure true sends alerts for alert-eligible failure stages
 
 - **GIVEN** `on_failure` is true (default)
-- **WHEN** a reconciliation fails at any pipeline stage including git sync
+- **WHEN** a reconciliation fails at an alert-eligible pipeline stage (stages 2-14, including git sync)
 - **THEN** a throttled failure alert is sent
 
 ### Requirement: Reconciliation Lifecycle Alerts

@@ -6,7 +6,7 @@ When reconciliation fails (git sync failure, dirty repo, compose exit 1, etc.), 
 
 Two bugs contribute to this:
 
-1. **Missing alert calls on early pipeline failures.** The `syncRepo` failure path (the most common failure mode) and the lock acquisition failure path both return errors without calling `sendThrottledFailureAlert`. Only failures in decrypt, template, and deploy stages send alerts.
+1. **Missing alert calls on early pipeline failures.** The `syncRepo` failure path (the most common failure mode) returns an error without calling `sendThrottledFailureAlert`. Only failures in decrypt, template, and deploy stages send alerts. Lock acquisition failures (stage 1) are intentionally excluded from alerting because they are transient and lack state context.
 
 2. **`on_success`/`on_failure` config flags are dead config.** The spec defines these flags and `extractAlertConfig()` defaults `on_failure` to true, but neither the reconciler nor the daemon checks these flags before sending alerts. The success alert always fires; the failure alert fires whenever the alerter is wired (for stages that call it).
 
@@ -20,7 +20,7 @@ Two bugs contribute to this:
 
 - Affected specs: `alerting`, `reconcile`
 - Affected code:
-  - `internal/reconcile/reconcile.go` -- add alert calls to `syncRepo` and lock failure paths; pass `on_failure`/`on_success` config to reconciler
+  - `internal/reconcile/reconcile.go` -- add alert calls to the `syncRepo` failure path (lock failures excluded); pass `on_failure`/`on_success` config to reconciler
   - `internal/reconcile/reconcile.go` -- gate `sendSuccessAlert` on `on_success`, gate `sendThrottledFailureAlert` on `on_failure`
   - `internal/config/config.go` -- no changes needed (defaults are already correct)
   - `internal/daemon/daemon.go` -- pass alert config flags to reconciler
