@@ -13,32 +13,54 @@ Both follow the same reconciliation pipeline. The daemon just runs it automatica
 
 ## Reconciliation Pipeline
 
-Every reconciliation follows this sequence:
+Every reconciliation follows this 14-stage sequence:
 
 ```
-1. Acquire lock (prevent concurrent runs)
-       |
-2. Clone/pull repository (go-git, in-process)
-       |
-3. Reload project config from repo (hooks, settle delay, deploy paths)
-       |
-4. Path-aware skip (if deploy_paths configured, skip when no files match)
-       |
-5. Decrypt secrets (go-sops, in-process)
-       |
-6. Render templates (Go text/template + Sprig)
-       |
-7. Create backup of current configs
-       |
-8. Deploy files (local copy or tar-over-SSH)
-       |
-9. Docker compose up
-       |
-10. Post-sync hooks (restart containers on config changes)
-       |
-11. SIGHUP to agentgateway (if configured)
-       |
-12. Release lock
+ 1. Acquire lock (prevent concurrent runs)
+        |
+ 2. Git repository sync (clone/pull via go-git)
+        |
+ 3. Load deploy state and evaluate skip/circuit-breaker
+        |
+ 4. Decrypt secrets (SOPS)
+        |
+ 5. Render templates (Go text/template + Sprig)
+        |
+ 6. Extract declared state from rendered compose
+        |
+ 7. Create configuration backup
+        |
+ 8. Deploy files (local copy or tar-over-SSH)
+        |
+ 9. Run docker compose up
+        |
+10. Clean up staging directory
+        |
+11. Record successful deployment in state file
+        |
+12. Execute post-sync hooks
+        |
+13. Post-deploy verification (drift check)
+        |
+14. Release lock
+```
+
+### Failure Alerting
+
+When a pipeline stage fails, bosun sends a throttled failure alert to all configured alert providers (Discord, SendGrid, Twilio). This behavior is controlled by the `on_failure` config flag (default: `true`).
+
+- **Stages 3-13**: failures send throttled failure alerts when `on_failure` is enabled
+- **Stage 2 (git sync)**: also sends a throttled failure alert, but loads the state file first so throttle state is available
+- **Stage 1 (lock acquisition)**: logged as a warning only, no alert sent (transient condition, no state context)
+
+Success alerts are controlled by the `on_success` flag (default: `false`). When enabled, a success alert is sent after a successful deployment.
+
+Configure these flags in `bosun.yaml` under `alerts`:
+
+```yaml
+alerts:
+  on_failure: true   # Send alerts on pipeline failures (default)
+  on_success: false  # Send alerts on successful deploys (opt-in)
 ```
 
 ### Post-Sync Hooks

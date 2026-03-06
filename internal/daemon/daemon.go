@@ -991,11 +991,15 @@ func ConfigFromEnv() *Config {
 	}
 	rcfg.ContentHashSync = cfg.ContentHashSync
 
-	// Post-sync hooks, settle delay, and deploy paths: load from project config, env var overrides.
+	// Post-sync hooks, settle delay, deploy paths, and alert flags: load from project config, env var overrides.
 	if projectCfg, err := config.Load(); err == nil {
 		rcfg.PostSyncHooks = projectCfg.PostSyncHooks()
 		rcfg.HookSettleDelay = projectCfg.HookSettleDelay()
 		rcfg.DeployPaths = projectCfg.DeployPaths()
+
+		alertCfg := projectCfg.GetAlertConfig()
+		rcfg.OnFailure = alertCfg.OnFailure
+		rcfg.OnSuccess = alertCfg.OnSuccess
 	}
 
 	// Wire config reloader so the reconciler can re-read bosun.yaml from the repo.

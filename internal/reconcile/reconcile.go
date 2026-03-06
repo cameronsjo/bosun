@@ -104,6 +104,13 @@ type Config struct {
 	// When true, repo config reload will not update DeployPaths.
 	DeployPathsFromEnv bool
 
+	// OnFailure gates failure alert dispatch. When false, no failure alerts are sent.
+	// Defaults to true for backwards compatibility.
+	OnFailure bool
+
+	// OnSuccess gates success alert dispatch. When false, no success alerts are sent.
+	OnSuccess bool
+
 	// ConfigReloader loads project config from a directory path.
 	// Set by daemon/CLI to break the config→reconcile import cycle.
 	// When nil, config reload is skipped.
@@ -128,6 +135,7 @@ func DefaultConfig() *Config {
 		InfraSubDir:        ".",
 		BackupsToKeep:      5,
 		StartupGracePeriod: 30 * time.Second,
+		OnFailure:          true,
 	}
 }
 
@@ -255,10 +263,12 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	r.declaredServices = nil
 
 	// Acquire lock to prevent concurrent runs.
+	// Lock failures are transient (another reconciliation is running) and lack state context,
+	// so they are logged as warnings without sending alerts.
 	if err := r.acquireLock(); err != nil {
-		logger.Error().
+		logger.Warn().
 			Err(err).
-			Msg("Failed to acquire reconcile lock")
+			Msg("Failed to acquire reconcile lock, another reconciliation may be in progress")
 		return fmt.Errorf("failed to acquire lock (another reconciliation may be in progress): %w", err)
 	}
 	defer r.releaseLock()
@@ -270,6 +280,13 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	changed, before, after, err := r.syncRepo(spanCtx)
 	finishSpan(err)
 	if err != nil {
+		// Load state before alerting so throttle state is available.
+		state := LoadState(r.config.StateFile)
+		state.LastAttemptedCommit, state.AttemptCount = nextAttemptState(state.LastAttemptedCommit, "", state.AttemptCount)
+		if saveErr := SaveState(r.config.StateFile, state); saveErr != nil {
+			logger.Error().Err(saveErr).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save attempt tracking state for git sync failure")
+		}
+		r.sendThrottledFailureAlert(ctx, state, fmt.Sprintf("failed to sync repository: %v", err))
 		return fmt.Errorf("failed to sync repository: %w", err)
 	}
 
@@ -455,8 +472,13 @@ func MinLen(s string, n int) int {
 }
 
 // sendSuccessAlert sends a deployment success notification.
+// Gated on config.OnSuccess: when false, no success alerts are sent.
 func (r *Reconciler) sendSuccessAlert(ctx context.Context) {
 	if r.alerter == nil {
+		return
+	}
+
+	if !r.config.OnSuccess {
 		return
 	}
 
@@ -477,8 +499,13 @@ func (r *Reconciler) sendSuccessAlert(ctx context.Context) {
 
 // sendThrottledFailureAlert sends a failure alert if the throttle schedule allows it.
 // Updates LastAlertedAttempt in the state and persists it.
+// Gated on config.OnFailure: when false, no failure alerts are sent.
 func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *DeployState, reason string) {
 	if r.alerter == nil {
+		return
+	}
+
+	if !r.config.OnFailure {
 		return
 	}
 
