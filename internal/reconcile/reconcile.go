@@ -19,6 +19,7 @@ type ReloadedConfig struct {
 	PostSyncHooks   []PostSyncHook
 	HookSettleDelay time.Duration
 	DeployPaths     []string
+	RemoveOrphans   *bool
 }
 
 // ConfigReloaderFunc loads project config from a directory path.
@@ -109,6 +110,10 @@ type Config struct {
 	// When true, repo config reload will not update DeployPaths.
 	DeployPathsFromEnv bool
 
+	// RemoveOrphansFromEnv is true when BOSUN_REMOVE_ORPHANS env var is set.
+	// When true, repo config reload will not update RemoveOrphans.
+	RemoveOrphansFromEnv bool
+
 	// ConfigReloader loads project config from a directory path.
 	// Set by daemon/CLI to break the config→reconcile import cycle.
 	// When nil, config reload is skipped.
@@ -133,6 +138,7 @@ func DefaultConfig() *Config {
 		InfraSubDir:        ".",
 		BackupsToKeep:      5,
 		StartupGracePeriod: 30 * time.Second,
+		RemoveOrphans:      true,
 	}
 }
 
@@ -698,7 +704,7 @@ func (r *Reconciler) reloadProjectConfig() {
 	}
 
 	// If no field has any value from the repo, there's nothing to reload.
-	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 && len(reloaded.DeployPaths) == 0 {
+	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 && len(reloaded.DeployPaths) == 0 && reloaded.RemoveOrphans == nil {
 		return
 	}
 
@@ -719,11 +725,18 @@ func (r *Reconciler) reloadProjectConfig() {
 		changed = true
 	}
 
+	if !r.config.RemoveOrphansFromEnv && reloaded.RemoveOrphans != nil {
+		r.config.RemoveOrphans = *reloaded.RemoveOrphans
+		r.deploy.RemoveOrphans = *reloaded.RemoveOrphans
+		changed = true
+	}
+
 	if changed {
 		logger.Info().
 			Int("hooks", len(r.config.PostSyncHooks)).
 			Dur("settle_delay", r.config.HookSettleDelay).
 			Int("deploy_paths", len(r.config.DeployPaths)).
+			Bool("remove_orphans", r.config.RemoveOrphans).
 			Msg("Reloaded project config from repo")
 	}
 }

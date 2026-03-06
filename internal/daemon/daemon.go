@@ -996,8 +996,10 @@ func ConfigFromEnv() *Config {
 	rcfg.ContentHashSync = cfg.ContentHashSync
 
 	// Orphan container cleanup (default: true)
+	removeOrphansFromEnv := false
 	if v := os.Getenv("BOSUN_REMOVE_ORPHANS"); v != "" {
 		cfg.RemoveOrphans = v != "false" && v != "0"
+		removeOrphansFromEnv = true
 	}
 	rcfg.RemoveOrphans = cfg.RemoveOrphans
 
@@ -1014,16 +1016,21 @@ func ConfigFromEnv() *Config {
 		}
 	}
 
+	// Set env-override flags so the reconciler preserves env var precedence on reload.
+	rcfg.RemoveOrphansFromEnv = removeOrphansFromEnv
+
 	// Wire config reloader so the reconciler can re-read bosun.yaml from the repo.
 	rcfg.ConfigReloader = func(dir string) (*reconcile.ReloadedConfig, error) {
 		cfg, err := config.LoadFrom(dir)
 		if err != nil {
 			return nil, err
 		}
+		removeOrphans := cfg.RemoveOrphans()
 		return &reconcile.ReloadedConfig{
 			PostSyncHooks:   cfg.PostSyncHooks(),
 			HookSettleDelay: cfg.HookSettleDelay(),
 			DeployPaths:     cfg.DeployPaths(),
+			RemoveOrphans:   &removeOrphans,
 		}, nil
 	}
 	if v := os.Getenv("BOSUN_POST_SYNC_HOOKS"); v != "" {

@@ -242,6 +242,7 @@ Used by `bosun daemon` and `bosun reconcile`:
 
 | Variable | Description |
 |----------|-------------|
+| `BOSUN_REMOVE_ORPHANS` | Pass `--remove-orphans` to docker compose up (default: `true`; overrides config file). Set to `false` in shared environments where Bosun doesn't own all containers |
 | `BOSUN_SECRETS_FILE` | Default secrets file for `bosun render` |
 | `SOPS_AGE_KEY_FILE` | Path to Age key file (default: `~/.config/sops/age/keys.txt`) |
 

@@ -64,12 +64,35 @@ func (r *DeployResult) AddWritten(files ...string) {
 
 // NewDeployOps creates a new DeployOps instance.
 func NewDeployOps(dryRun bool, projectName string) *DeployOps {
-	return &DeployOps{DryRun: dryRun, ProjectName: projectName}
+	return &DeployOps{DryRun: dryRun, ProjectName: projectName, RemoveOrphans: true}
 }
 
 // composeArgs returns docker compose arguments with project name if set.
 func (d *DeployOps) composeArgs(files ...string) []string {
 	return buildComposeArgs(d.ProjectName, files)
+}
+
+// composeUpArgs returns the full argument list for a local docker compose up command.
+func (d *DeployOps) composeUpArgs(composeFiles []string) []string {
+	args := d.composeArgs(composeFiles...)
+	args = append(args, "up", "-d")
+	if d.RemoveOrphans {
+		args = append(args, "--remove-orphans")
+	}
+	return args
+}
+
+// remoteComposeUpCmd returns the SSH command string for running docker compose up on a remote host.
+func (d *DeployOps) remoteComposeUpCmd(composeDir string) string {
+	composeCmd := "docker compose"
+	if d.ProjectName != "" {
+		composeCmd = fmt.Sprintf("docker compose -p %s", d.ProjectName)
+	}
+	upArgs := "up -d"
+	if d.RemoveOrphans {
+		upArgs += " --remove-orphans"
+	}
+	return fmt.Sprintf("cd %s && %s %s", composeDir, composeCmd, upArgs)
 }
 
 // isTransientSSHError checks if an error is transient and worth retrying.
@@ -868,11 +891,7 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 	// Note: --wait is intentionally omitted. It exits non-zero when ANY container is
 	// unhealthy, even pre-existing ones, which would block all deployments. Post-deploy
 	// verification (verifyPostDeploy) handles health inspection separately.
-	args := d.composeArgs(composeFiles...)
-	args = append(args, "up", "-d")
-	if d.RemoveOrphans {
-		args = append(args, "--remove-orphans")
-	}
+	args := d.composeUpArgs(composeFiles)
 
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	var stderr bytes.Buffer
@@ -968,11 +987,7 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 	defer cancel()
 
 	// Build rollback args
-	args := d.composeArgs(backupFiles...)
-	args = append(args, "up", "-d")
-	if d.RemoveOrphans {
-		args = append(args, "--remove-orphans")
-	}
+	args := d.composeUpArgs(backupFiles)
 
 	rollbackCmd := exec.CommandContext(rollbackCtx, "docker", args...)
 	var rollbackStderr bytes.Buffer
@@ -1042,16 +1057,7 @@ func (d *DeployOps) ComposeUpRemote(ctx context.Context, host, composeDir string
 		Str("project", d.ProjectName).
 		Msg("Starting remote docker compose up")
 
-	// Build compose command with project name if set
-	composeCmd := "docker compose"
-	if d.ProjectName != "" {
-		composeCmd = fmt.Sprintf("docker compose -p %s", d.ProjectName)
-	}
-	upArgs := "up -d"
-	if d.RemoveOrphans {
-		upArgs += " --remove-orphans"
-	}
-	sshCmd := fmt.Sprintf("cd %s && %s %s", composeDir, composeCmd, upArgs)
+	sshCmd := d.remoteComposeUpCmd(composeDir)
 
 	err := retryWithBackoff(ctx, DefaultMaxRetries, func() error {
 		cmd := exec.CommandContext(ctx, "ssh", host, sshCmd)
