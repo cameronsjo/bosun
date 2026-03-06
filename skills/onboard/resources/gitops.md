@@ -209,6 +209,18 @@ Drift is the difference between what you declared (in your deploy state) and wha
 | `unhealthy` | Critical | Service is running but health check is failing |
 | `image_mismatch` | Warning | Running image differs from declared image |
 
+### Drift Alert Debounce
+
+Transient drift (I/O pressure, image pulls, daemon restarts) self-resolves within minutes. The debounce layer suppresses alerts until drift persists beyond a configurable window, eliminating noise from self-healing transients.
+
+Alert pipeline: **detect -> debounce filter -> dedup (per-item cooldown) -> send**
+
+- **`BOSUN_DRIFT_ALERT_DEBOUNCE`** or **`drift_alert_debounce`** in `bosun.yaml`: Duration before first alert fires. Default `0` (disabled). Recommended: `5m`.
+- Drift that resolves before the window expires is silently suppressed.
+- Drift that persists past the window enters the normal dedup/cooldown pipeline.
+- Resolution alerts bypass debounce (fire immediately for previously alerted items).
+- Debounce state persists across daemon restarts.
+
 ### Checking Drift
 
 ```bash

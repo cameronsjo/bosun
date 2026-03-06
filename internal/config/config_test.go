@@ -1094,3 +1094,84 @@ func TestHookSettleDelayFromConfig(t *testing.T) {
 		assert.Equal(t, time.Duration(0), cfg.HookSettleDelay())
 	})
 }
+
+func TestDriftAlertDebounceFromConfig(t *testing.T) {
+	t.Run("parses duration string from bosun.yaml", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `drift_alert_debounce: "5m"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, 5*time.Minute, cfg.DriftAlertDebounce())
+	})
+
+	t.Run("defaults to zero when not configured", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `infrastructure:
+  containers:
+    - traefik
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce())
+	})
+
+	t.Run("defaults to zero when no config file", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce())
+	})
+}
+
+func TestLoadFrom_DriftAlertDebounce(t *testing.T) {
+	t.Run("loads drift_alert_debounce from directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		content := `drift_alert_debounce: "10m"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Equal(t, 10*time.Minute, cfg.DriftAlertDebounce())
+	})
+
+	t.Run("returns zero when no drift_alert_debounce", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce())
+	})
+}
