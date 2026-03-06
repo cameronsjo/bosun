@@ -1049,8 +1049,18 @@ func (d *DeployOps) VerifyContainerHealth(ctx context.Context, composeFile strin
 		return fmt.Errorf("failed to check container status: %w: %s", err, stderr.String())
 	}
 
-	// For now, just verify the command succeeded
-	// A more complete implementation would parse the JSON and check health status
+	entries, err := parseComposePSOutput(stdout.Bytes())
+	if err != nil {
+		return fmt.Errorf("failed to parse container status: %w", err)
+	}
+
+	result := classifyComposePS(entries)
+	if len(result.Failed) > 0 {
+		return fmt.Errorf("containers not running: %s", strings.Join(result.Failed, ", "))
+	}
+	if len(result.Unhealthy) > 0 {
+		return fmt.Errorf("%w: %s", ErrComposeUnhealthy, strings.Join(result.Unhealthy, ", "))
+	}
 	return nil
 }
 
