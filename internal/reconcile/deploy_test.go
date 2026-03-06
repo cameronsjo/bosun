@@ -29,11 +29,12 @@ func TestNewDeployOps(t *testing.T) {
 
 func TestDeployOps_ComposeUpArgs_RemoveOrphans(t *testing.T) {
 	tests := []struct {
-		name          string
-		removeOrphans bool
-		projectName   string
-		wantContains  string
-		wantMissing   string
+		name           string
+		removeOrphans  bool
+		projectName    string
+		wantContains   string
+		wantMissing    string
+		useConstructor bool
 	}{
 		{
 			name:          "remove orphans enabled includes flag",
@@ -48,17 +49,17 @@ func TestDeployOps_ComposeUpArgs_RemoveOrphans(t *testing.T) {
 			wantMissing:   "--remove-orphans",
 		},
 		{
-			name:          "default NewDeployOps includes remove-orphans",
-			removeOrphans: true,
-			projectName:   "bosun",
-			wantContains:  "--remove-orphans",
+			name:           "default NewDeployOps includes remove-orphans",
+			projectName:    "bosun",
+			wantContains:   "--remove-orphans",
+			useConstructor: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var d *DeployOps
-			if tt.name == "default NewDeployOps includes remove-orphans" {
+			if tt.useConstructor {
 				d = NewDeployOps(false, tt.projectName)
 			} else {
 				d = &DeployOps{
