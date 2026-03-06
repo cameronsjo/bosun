@@ -19,6 +19,8 @@ type ReloadedConfig struct {
 	PostSyncHooks   []PostSyncHook
 	HookSettleDelay time.Duration
 	DeployPaths     []string
+	OnFailure       *bool
+	OnSuccess       *bool
 }
 
 // ConfigReloaderFunc loads project config from a directory path.
@@ -280,6 +282,9 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	changed, before, after, err := r.syncRepo(spanCtx)
 	finishSpan(err)
 	if err != nil {
+		// Use the post-sync commit (may be empty on sync failure) to avoid reporting a stale SHA.
+		r.lastCommit = after
+
 		// Load state before alerting so throttle state is available.
 		state := LoadState(r.config.StateFile)
 		state.LastAttemptedCommit, state.AttemptCount = nextAttemptState(state.LastAttemptedCommit, "", state.AttemptCount)
@@ -720,7 +725,7 @@ func (r *Reconciler) reloadProjectConfig() {
 	}
 
 	// If no field has any value from the repo, there's nothing to reload.
-	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 && len(reloaded.DeployPaths) == 0 {
+	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 && len(reloaded.DeployPaths) == 0 && reloaded.OnFailure == nil && reloaded.OnSuccess == nil {
 		return
 	}
 
@@ -741,11 +746,23 @@ func (r *Reconciler) reloadProjectConfig() {
 		changed = true
 	}
 
+	if reloaded.OnFailure != nil {
+		r.config.OnFailure = *reloaded.OnFailure
+		changed = true
+	}
+
+	if reloaded.OnSuccess != nil {
+		r.config.OnSuccess = *reloaded.OnSuccess
+		changed = true
+	}
+
 	if changed {
 		logger.Info().
 			Int("hooks", len(r.config.PostSyncHooks)).
 			Dur("settle_delay", r.config.HookSettleDelay).
 			Int("deploy_paths", len(r.config.DeployPaths)).
+			Bool("on_failure", r.config.OnFailure).
+			Bool("on_success", r.config.OnSuccess).
 			Msg("Reloaded project config from repo")
 	}
 }

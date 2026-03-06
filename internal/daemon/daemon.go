@@ -1008,10 +1008,13 @@ func ConfigFromEnv() *Config {
 		if err != nil {
 			return nil, err
 		}
+		alertCfg := cfg.GetAlertConfig()
 		return &reconcile.ReloadedConfig{
 			PostSyncHooks:   cfg.PostSyncHooks(),
 			HookSettleDelay: cfg.HookSettleDelay(),
 			DeployPaths:     cfg.DeployPaths(),
+			OnFailure:       &alertCfg.OnFailure,
+			OnSuccess:       &alertCfg.OnSuccess,
 		}, nil
 	}
 	if v := os.Getenv("BOSUN_POST_SYNC_HOOKS"); v != "" {

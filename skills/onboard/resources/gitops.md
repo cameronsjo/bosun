@@ -49,9 +49,13 @@ Every reconciliation follows this 14-stage sequence:
 
 When a pipeline stage fails, bosun sends a throttled failure alert to all configured alert providers (Discord, SendGrid, Twilio). This behavior is controlled by the `on_failure` config flag (default: `true`).
 
-- **Stages 3-13**: failures send throttled failure alerts when `on_failure` is enabled
-- **Stage 2 (git sync)**: also sends a throttled failure alert, but loads the state file first so throttle state is available
-- **Stage 1 (lock acquisition)**: logged as a warning only, no alert sent (transient condition, no state context)
+- **Git sync (stage 2)**: sends a throttled failure alert (loads state file first so throttle state is available)
+- **Circuit breaker trip (stage 3)**: sends a throttled failure alert
+- **Decrypt failure (stage 5)**: sends a throttled failure alert
+- **Template failure (stage 6)**: sends a throttled failure alert
+- **Deploy failure (stages 8-9)**: sends a throttled failure alert
+- **Lock acquisition (stage 1)**: logged as a warning only, no alert (transient condition)
+- **Backup, cleanup, post-sync hooks, state save, drift check**: logged as warnings only, no failure alert
 
 Success alerts are controlled by the `on_success` flag (default: `false`). When enabled, a success alert is sent after a successful deployment.
 
