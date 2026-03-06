@@ -855,6 +855,30 @@ func TestDefaultConfig_DriftAlertDebounce(t *testing.T) {
 	assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce, "DriftAlertDebounce should default to 0 (disabled)")
 }
 
+func TestConfigFromEnv_DriftAlertDebounce_EnvZeroOverridesConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmpDir = evalSymlinks(t, tmpDir)
+
+	yamlContent := `manifest_dir: manifest
+drift_alert_debounce: "10m"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(yamlContent), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0o755))
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() { _ = os.Chdir(origDir) }()
+	require.NoError(t, os.Chdir(tmpDir))
+
+	// Explicitly set env var to "0" to disable debouncing.
+	t.Setenv("BOSUN_DRIFT_ALERT_DEBOUNCE", "0")
+
+	cfg := ConfigFromEnv()
+
+	assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce,
+		"env var set to '0' should disable debounce, not fall through to config file value")
+}
+
 func TestConfigFromEnv_DriftResolveAlerts(t *testing.T) {
 	t.Run("defaults to true when not set", func(t *testing.T) {
 		cfg := ConfigFromEnv()

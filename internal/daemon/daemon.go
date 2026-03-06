@@ -1030,9 +1030,11 @@ func ConfigFromEnv() *Config {
 	}
 
 	// Drift alert debounce (0 = disabled)
+	var driftAlertDebounceFromEnv bool
 	if v := os.Getenv("BOSUN_DRIFT_ALERT_DEBOUNCE"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			cfg.DriftAlertDebounce = d
+			driftAlertDebounceFromEnv = true
 		} else {
 			log.Warn().Str("env", "BOSUN_DRIFT_ALERT_DEBOUNCE").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
@@ -1063,7 +1065,7 @@ func ConfigFromEnv() *Config {
 		rcfg.DeployPaths = projectCfg.DeployPaths()
 
 		// Config file debounce value: env var takes precedence (already parsed above).
-		if cfg.DriftAlertDebounce == 0 && projectCfg.DriftAlertDebounce() > 0 {
+		if !driftAlertDebounceFromEnv && projectCfg.DriftAlertDebounce() > 0 {
 			cfg.DriftAlertDebounce = projectCfg.DriftAlertDebounce()
 		}
 	}
