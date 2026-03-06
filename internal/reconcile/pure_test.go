@@ -402,6 +402,170 @@ func TestBuildKnownHostsPaths(t *testing.T) {
 	}
 }
 
+func TestClassifyComposePS(t *testing.T) {
+	tests := []struct {
+		name          string
+		entries       []composePSEntry
+		wantKind      composeFailureKind
+		wantUnhealthy []string
+		wantFailed    []string
+	}{
+		{
+			name: "all healthy",
+			entries: []composePSEntry{
+				{Name: "app", State: "running", Health: "healthy"},
+				{Name: "db", State: "running", Health: ""},
+			},
+			wantKind:      failureUnhealthyOnly,
+			wantUnhealthy: nil,
+			wantFailed:    nil,
+		},
+		{
+			name: "one unhealthy container",
+			entries: []composePSEntry{
+				{Name: "app", State: "running", Health: "healthy"},
+				{Name: "obsidian", State: "running", Health: "unhealthy"},
+			},
+			wantKind:      failureUnhealthyOnly,
+			wantUnhealthy: []string{"obsidian"},
+			wantFailed:    nil,
+		},
+		{
+			name: "multiple unhealthy containers",
+			entries: []composePSEntry{
+				{Name: "app", State: "running", Health: "unhealthy"},
+				{Name: "db", State: "running", Health: "unhealthy"},
+				{Name: "redis", State: "running", Health: "healthy"},
+			},
+			wantKind:      failureUnhealthyOnly,
+			wantUnhealthy: []string{"app", "db"},
+			wantFailed:    nil,
+		},
+		{
+			name: "exited container is start failure",
+			entries: []composePSEntry{
+				{Name: "app", State: "running", Health: "healthy"},
+				{Name: "broken", State: "exited", Health: ""},
+			},
+			wantKind:      failureStartFailure,
+			wantUnhealthy: nil,
+			wantFailed:    []string{"broken"},
+		},
+		{
+			name: "restarting container is start failure",
+			entries: []composePSEntry{
+				{Name: "app", State: "running", Health: "healthy"},
+				{Name: "crashloop", State: "restarting", Health: ""},
+			},
+			wantKind:      failureStartFailure,
+			wantUnhealthy: nil,
+			wantFailed:    []string{"crashloop"},
+		},
+		{
+			name: "dead container is start failure",
+			entries: []composePSEntry{
+				{Name: "app", State: "running", Health: "healthy"},
+				{Name: "gone", State: "dead", Health: ""},
+			},
+			wantKind:      failureStartFailure,
+			wantUnhealthy: nil,
+			wantFailed:    []string{"gone"},
+		},
+		{
+			name: "mixed unhealthy and failed",
+			entries: []composePSEntry{
+				{Name: "app", State: "running", Health: "unhealthy"},
+				{Name: "broken", State: "exited", Health: ""},
+			},
+			wantKind:      failureStartFailure,
+			wantUnhealthy: []string{"app"},
+			wantFailed:    []string{"broken"},
+		},
+		{
+			name:          "empty entries",
+			entries:       []composePSEntry{},
+			wantKind:      failureUnhealthyOnly,
+			wantUnhealthy: nil,
+			wantFailed:    nil,
+		},
+		{
+			name: "case insensitive state",
+			entries: []composePSEntry{
+				{Name: "app", State: "Running", Health: "Unhealthy"},
+			},
+			wantKind:      failureUnhealthyOnly,
+			wantUnhealthy: []string{"app"},
+			wantFailed:    nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := classifyComposePS(tt.entries)
+			assert.Equal(t, tt.wantKind, result.Kind)
+			assert.Equal(t, tt.wantUnhealthy, result.Unhealthy)
+			assert.Equal(t, tt.wantFailed, result.Failed)
+		})
+	}
+}
+
+func TestParseComposePSOutput(t *testing.T) {
+	tests := []struct {
+		name    string
+		output  string
+		want    []composePSEntry
+		wantErr bool
+	}{
+		{
+			name:   "single container NDJSON",
+			output: `{"Name":"app","State":"running","Health":"healthy"}`,
+			want:   []composePSEntry{{Name: "app", State: "running", Health: "healthy"}},
+		},
+		{
+			name: "multiple containers NDJSON",
+			output: `{"Name":"app","State":"running","Health":"healthy"}
+{"Name":"db","State":"running","Health":"unhealthy"}`,
+			want: []composePSEntry{
+				{Name: "app", State: "running", Health: "healthy"},
+				{Name: "db", State: "running", Health: "unhealthy"},
+			},
+		},
+		{
+			name:   "empty output",
+			output: "",
+			want:   nil,
+		},
+		{
+			name:   "whitespace only",
+			output: "  \n  \n  ",
+			want:   nil,
+		},
+		{
+			name:    "invalid JSON",
+			output:  `not json at all`,
+			wantErr: true,
+		},
+		{
+			name: "trailing newline",
+			output: `{"Name":"app","State":"running","Health":""}
+`,
+			want: []composePSEntry{{Name: "app", State: "running", Health: ""}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseComposePSOutput([]byte(tt.output))
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestBuildSSHKeyPaths(t *testing.T) {
 	tests := []struct {
 		name    string
