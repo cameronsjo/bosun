@@ -25,6 +25,98 @@ func TestNewDeployOps(t *testing.T) {
 	})
 }
 
+func TestDeployOps_ComposeUpArgs_RemoveOrphans(t *testing.T) {
+	tests := []struct {
+		name          string
+		removeOrphans bool
+		projectName   string
+		wantContains  string
+		wantMissing   string
+	}{
+		{
+			name:          "remove orphans enabled includes flag",
+			removeOrphans: true,
+			projectName:   "bosun",
+			wantContains:  "--remove-orphans",
+		},
+		{
+			name:          "remove orphans disabled omits flag",
+			removeOrphans: false,
+			projectName:   "bosun",
+			wantMissing:   "--remove-orphans",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &DeployOps{
+				ProjectName:   tt.projectName,
+				RemoveOrphans: tt.removeOrphans,
+			}
+			args := d.composeArgs("docker-compose.yml")
+			args = append(args, "up", "-d")
+			if d.RemoveOrphans {
+				args = append(args, "--remove-orphans")
+			}
+
+			if tt.wantContains != "" {
+				assert.Contains(t, args, tt.wantContains)
+			}
+			if tt.wantMissing != "" {
+				assert.NotContains(t, args, tt.wantMissing)
+			}
+		})
+	}
+}
+
+func TestDeployOps_ComposeUpRemoteCmd_RemoveOrphans(t *testing.T) {
+	tests := []struct {
+		name          string
+		removeOrphans bool
+		projectName   string
+		wantContains  string
+		wantMissing   string
+	}{
+		{
+			name:          "remote compose up includes remove-orphans",
+			removeOrphans: true,
+			projectName:   "bosun",
+			wantContains:  "--remove-orphans",
+		},
+		{
+			name:          "remote compose up omits remove-orphans",
+			removeOrphans: false,
+			projectName:   "bosun",
+			wantMissing:   "--remove-orphans",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &DeployOps{
+				ProjectName:   tt.projectName,
+				RemoveOrphans: tt.removeOrphans,
+			}
+			composeCmd := "docker compose"
+			if d.ProjectName != "" {
+				composeCmd = fmt.Sprintf("docker compose -p %s", d.ProjectName)
+			}
+			upArgs := "up -d"
+			if d.RemoveOrphans {
+				upArgs += " --remove-orphans"
+			}
+			sshCmd := fmt.Sprintf("cd /opt/compose && %s %s", composeCmd, upArgs)
+
+			if tt.wantContains != "" {
+				assert.Contains(t, sshCmd, tt.wantContains)
+			}
+			if tt.wantMissing != "" {
+				assert.NotContains(t, sshCmd, tt.wantMissing)
+			}
+		})
+	}
+}
+
 func TestDeployOps_Backup(t *testing.T) {
 	if _, err := exec.LookPath("tar"); err != nil {
 		t.Skip("tar not installed")

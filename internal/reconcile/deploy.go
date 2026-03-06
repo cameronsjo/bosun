@@ -45,6 +45,9 @@ type DeployOps struct {
 	// ContentHashSync if true, skips writing files whose content has not changed.
 	// Reduces unnecessary FUSE handle invalidation on copy-on-write filesystems.
 	ContentHashSync bool
+	// RemoveOrphans if true, passes --remove-orphans to docker compose up.
+	// Removes containers belonging to services deleted from the compose file.
+	RemoveOrphans bool
 }
 
 // DeployResult tracks which files were actually written during deployment.
@@ -861,12 +864,15 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 		defer cancel()
 	}
 
-	// Build args: docker compose -p project -f file1.yml -f file2.yml up -d --remove-orphans
+	// Build args: docker compose -p project -f file1.yml -f file2.yml up -d [--remove-orphans]
 	// Note: --wait is intentionally omitted. It exits non-zero when ANY container is
 	// unhealthy, even pre-existing ones, which would block all deployments. Post-deploy
 	// verification (verifyPostDeploy) handles health inspection separately.
 	args := d.composeArgs(composeFiles...)
-	args = append(args, "up", "-d", "--remove-orphans")
+	args = append(args, "up", "-d")
+	if d.RemoveOrphans {
+		args = append(args, "--remove-orphans")
+	}
 
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	var stderr bytes.Buffer
@@ -963,7 +969,10 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 
 	// Build rollback args
 	args := d.composeArgs(backupFiles...)
-	args = append(args, "up", "-d", "--remove-orphans")
+	args = append(args, "up", "-d")
+	if d.RemoveOrphans {
+		args = append(args, "--remove-orphans")
+	}
 
 	rollbackCmd := exec.CommandContext(rollbackCtx, "docker", args...)
 	var rollbackStderr bytes.Buffer
@@ -1038,7 +1047,11 @@ func (d *DeployOps) ComposeUpRemote(ctx context.Context, host, composeDir string
 	if d.ProjectName != "" {
 		composeCmd = fmt.Sprintf("docker compose -p %s", d.ProjectName)
 	}
-	sshCmd := fmt.Sprintf("cd %s && %s up -d --remove-orphans", composeDir, composeCmd)
+	upArgs := "up -d"
+	if d.RemoveOrphans {
+		upArgs += " --remove-orphans"
+	}
+	sshCmd := fmt.Sprintf("cd %s && %s %s", composeDir, composeCmd, upArgs)
 
 	err := retryWithBackoff(ctx, DefaultMaxRetries, func() error {
 		cmd := exec.CommandContext(ctx, "ssh", host, sshCmd)

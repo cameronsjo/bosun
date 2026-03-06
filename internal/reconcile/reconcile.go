@@ -88,6 +88,11 @@ type Config struct {
 	// Skips writes for unchanged files to avoid FUSE handle invalidation.
 	ContentHashSync bool
 
+	// RemoveOrphans if true, passes --remove-orphans to docker compose up.
+	// Removes containers belonging to services deleted from the compose file.
+	// Defaults to true.
+	RemoveOrphans bool
+
 	// PostSyncHooksFromEnv is true when BOSUN_POST_SYNC_HOOKS env var is set.
 	// When true, repo config reload will not update PostSyncHooks.
 	PostSyncHooksFromEnv bool
@@ -171,7 +176,7 @@ func NewReconciler(cfg *Config, opts ...ReconcilerOption) *Reconciler {
 		config:   cfg,
 		git:      NewGitOps(cfg.RepoURL, cfg.RepoBranch, cfg.RepoDir),
 		sops:     NewSOPSOps(),
-		deploy:   &DeployOps{DryRun: cfg.DryRun, ProjectName: cfg.ProjectName, ContentHashSync: cfg.ContentHashSync},
+		deploy:   &DeployOps{DryRun: cfg.DryRun, ProjectName: cfg.ProjectName, ContentHashSync: cfg.ContentHashSync, RemoveOrphans: cfg.RemoveOrphans},
 		lockFile: lockFile,
 	}
 
