@@ -176,15 +176,37 @@ func classifyComposePS(entries []composePSEntry) composeFailureResult {
 	if len(failed) > 0 {
 		return composeFailureResult{Kind: failureStartFailure, Unhealthy: unhealthy, Failed: failed}
 	}
-	return composeFailureResult{Kind: failureUnhealthyOnly, Unhealthy: unhealthy, Failed: failed}
+	if len(unhealthy) > 0 {
+		return composeFailureResult{Kind: failureUnhealthyOnly, Unhealthy: unhealthy, Failed: failed}
+	}
+	// All containers running and healthy but compose still exited non-zero.
+	return composeFailureResult{Kind: failureStartFailure}
 }
 
-// parseComposePSOutput parses NDJSON output from `docker compose ps --format json`.
-// Docker Compose v2 emits one JSON object per line.
+// parseComposePSOutput parses output from `docker compose ps --format json`.
+// Handles both JSON array format (Docker Compose docs spec) and NDJSON
+// (one JSON object per line, emitted by Compose v2.21.0+).
 func parseComposePSOutput(output []byte) ([]composePSEntry, error) {
-	var entries []composePSEntry
+	trimmed := strings.TrimSpace(string(output))
+	if trimmed == "" {
+		return nil, nil
+	}
 
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	// JSON array format: [{...},{...}]
+	if strings.HasPrefix(trimmed, "[") {
+		var entries []composePSEntry
+		if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
+			return nil, err
+		}
+		if len(entries) == 0 {
+			return nil, nil
+		}
+		return entries, nil
+	}
+
+	// NDJSON format: one JSON object per line
+	var entries []composePSEntry
+	lines := strings.Split(trimmed, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {

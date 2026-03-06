@@ -1372,37 +1372,57 @@ func TestDeployOps_DeployLocalStandardMode(t *testing.T) {
 		assert.ErrorIs(t, err, context.Canceled)
 	})
 
-	t.Run("rollback skipped on ErrComposeUnhealthy", func(t *testing.T) {
-		if _, err := exec.LookPath("docker"); err != nil {
-			t.Skip("docker not installed")
+	t.Run("rollback decision with injected compose errors", func(t *testing.T) {
+		tests := []struct {
+			name            string
+			composeErr      error
+			wantErr         error
+			wantNoRollback  bool // true if rollback should be skipped
+		}{
+			{
+				name:           "ErrComposeUnhealthy skips rollback",
+				composeErr:     fmt.Errorf("%w: obsidian", ErrComposeUnhealthy),
+				wantErr:        ErrComposeUnhealthy,
+				wantNoRollback: true,
+			},
+			{
+				name:           "generic error triggers rollback",
+				composeErr:     fmt.Errorf("compose up failed: exit code 1"),
+				wantErr:        ErrRollbackFailed,
+				wantNoRollback: false,
+			},
 		}
 
-		tmpDir := t.TempDir()
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				tmpDir := t.TempDir()
+				composeFile := filepath.Join(tmpDir, "docker-compose.yml")
+				require.NoError(t, os.WriteFile(composeFile, []byte("version: '3'"), 0644))
 
-		// Create a minimal valid compose file that will succeed.
-		// We test the sentinel error path by crafting a scenario where
-		// ComposeUpMultiple returns ErrComposeUnhealthy.
-		// Since we can't easily mock docker compose, we test the
-		// ComposeUpMultipleWithRollback logic by verifying the error
-		// propagation pattern.
+				backupDir := filepath.Join(tmpDir, "backup")
+				require.NoError(t, os.MkdirAll(backupDir, 0755))
+				backupFile := filepath.Join(backupDir, "docker-compose.yml")
+				require.NoError(t, os.WriteFile(backupFile, []byte("not valid yaml: [[["), 0644))
 
-		// Use an invalid compose file to trigger a failure.
-		composeFile := filepath.Join(tmpDir, "docker-compose.yml")
-		require.NoError(t, os.WriteFile(composeFile, []byte("not valid yaml: [[["), 0644))
+				d := &DeployOps{
+					DryRun:      false,
+					ProjectName: "rollbacktest",
+					composeUpFn: func(_ context.Context, _ []string) error {
+						return tt.composeErr
+					},
+				}
 
-		// Create backup files.
-		backupDir := filepath.Join(tmpDir, "backup")
-		require.NoError(t, os.MkdirAll(backupDir, 0755))
-		backupFile := filepath.Join(backupDir, "docker-compose.yml")
-		require.NoError(t, os.WriteFile(backupFile, []byte("not valid yaml: [[["), 0644))
+				err := d.ComposeUpMultipleWithRollback(ctx, []string{composeFile}, backupDir)
+				require.Error(t, err)
+				assert.ErrorIs(t, err, tt.wantErr)
 
-		d := &DeployOps{DryRun: false, ProjectName: "unhealthytest"}
-		err := d.ComposeUpMultipleWithRollback(ctx, []string{composeFile}, backupDir)
-		require.Error(t, err)
-
-		// Invalid YAML causes a parse error, not an unhealthy classification.
-		// This confirms rollback IS triggered for genuine failures.
-		assert.ErrorIs(t, err, ErrRollbackFailed)
+				if tt.wantNoRollback {
+					// Should NOT contain rollback-related error text.
+					assert.NotErrorIs(t, err, ErrRollbackFailed)
+					assert.NotErrorIs(t, err, ErrRollbackSucceeded)
+				}
+			})
+		}
 	})
 
 	t.Run("content hash mode MkdirAll error", func(t *testing.T) {

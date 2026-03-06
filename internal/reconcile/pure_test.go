@@ -411,12 +411,12 @@ func TestClassifyComposePS(t *testing.T) {
 		wantFailed    []string
 	}{
 		{
-			name: "all healthy",
+			name: "all healthy returns start failure for unclassified compose error",
 			entries: []composePSEntry{
 				{Name: "app", State: "running", Health: "healthy"},
 				{Name: "db", State: "running", Health: ""},
 			},
-			wantKind:      failureUnhealthyOnly,
+			wantKind:      failureStartFailure,
 			wantUnhealthy: nil,
 			wantFailed:    nil,
 		},
@@ -482,9 +482,9 @@ func TestClassifyComposePS(t *testing.T) {
 			wantFailed:    []string{"broken"},
 		},
 		{
-			name:          "empty entries",
+			name:          "empty entries returns start failure",
 			entries:       []composePSEntry{},
-			wantKind:      failureUnhealthyOnly,
+			wantKind:      failureStartFailure,
 			wantUnhealthy: nil,
 			wantFailed:    nil,
 		},
@@ -550,6 +550,29 @@ func TestParseComposePSOutput(t *testing.T) {
 			output: `{"Name":"app","State":"running","Health":""}
 `,
 			want: []composePSEntry{{Name: "app", State: "running", Health: ""}},
+		},
+		{
+			name:   "JSON array single container",
+			output: `[{"Name":"app","State":"running","Health":"healthy"}]`,
+			want:   []composePSEntry{{Name: "app", State: "running", Health: "healthy"}},
+		},
+		{
+			name:   "JSON array multiple containers",
+			output: `[{"Name":"app","State":"running","Health":"healthy"},{"Name":"db","State":"running","Health":"unhealthy"}]`,
+			want: []composePSEntry{
+				{Name: "app", State: "running", Health: "healthy"},
+				{Name: "db", State: "running", Health: "unhealthy"},
+			},
+		},
+		{
+			name:   "JSON array empty",
+			output: `[]`,
+			want:   nil,
+		},
+		{
+			name:    "JSON array invalid",
+			output:  `[not json]`,
+			wantErr: true,
 		},
 	}
 

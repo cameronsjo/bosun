@@ -49,6 +49,11 @@ type DeployOps struct {
 	// ContentHashSync if true, skips writing files whose content has not changed.
 	// Reduces unnecessary FUSE handle invalidation on copy-on-write filesystems.
 	ContentHashSync bool
+
+	// composeUpFn overrides the compose-up call in ComposeUpMultipleWithRollback.
+	// Defaults to ComposeUpMultiple when nil. Exposed for testing the rollback
+	// decision logic without requiring Docker.
+	composeUpFn func(ctx context.Context, files []string) error
 }
 
 // DeployResult tracks which files were actually written during deployment.
@@ -945,7 +950,12 @@ func (d *DeployOps) ComposeUpWithRollback(ctx context.Context, composeFile, back
 func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFiles []string, backupPath string) error {
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
-	deployErr := d.ComposeUpMultiple(ctx, composeFiles)
+	upFn := d.composeUpFn
+	if upFn == nil {
+		upFn = d.ComposeUpMultiple
+	}
+
+	deployErr := upFn(ctx, composeFiles)
 	if deployErr == nil {
 		return nil
 	}
@@ -1029,7 +1039,7 @@ func (d *DeployOps) VerifyContainerHealth(ctx context.Context, composeFile strin
 
 	// Use docker compose ps to check container status
 	args := d.composeArgs(composeFile)
-	args = append(args, "ps", "--format", "json")
+	args = append(args, "ps", "--all", "--format", "json")
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -1122,7 +1132,7 @@ func (d *DeployOps) classifyComposeFailureRemote(ctx context.Context, host, comp
 	if d.ProjectName != "" {
 		psCmd = fmt.Sprintf("docker compose -p %s", d.ProjectName)
 	}
-	sshCmd := fmt.Sprintf("cd %s && %s ps --format json", composeDir, psCmd)
+	sshCmd := fmt.Sprintf("cd %s && %s ps --all --format json", composeDir, psCmd)
 
 	cmd := exec.CommandContext(ctx, "ssh", host, sshCmd)
 	var stdout, stderr bytes.Buffer
@@ -1158,7 +1168,7 @@ func (d *DeployOps) classifyComposeFailure(ctx context.Context, composeFiles []s
 	}
 
 	args := d.composeArgs(composeFiles...)
-	args = append(args, "ps", "--format", "json")
+	args = append(args, "ps", "--all", "--format", "json")
 
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	var stdout, stderr bytes.Buffer
