@@ -15,7 +15,7 @@ Both follow the same reconciliation pipeline. The daemon just runs it automatica
 
 Every reconciliation follows this 14-stage sequence:
 
-```
+```text
  1. Acquire lock (prevent concurrent runs)
         |
  2. Git repository sync (clone/pull via go-git)
@@ -47,12 +47,12 @@ Every reconciliation follows this 14-stage sequence:
 
 ### Failure Alerting
 
-When a pipeline stage fails, bosun sends a throttled failure alert to all configured alert providers (Discord, SendGrid, Twilio). This behavior is controlled by the `on_failure` config flag (default: `true`).
+Specific pipeline stages send throttled failure alerts to all configured alert providers (Discord, SendGrid, Twilio) when they fail. This behavior is controlled by the `on_failure` config flag (default: `true`).
 
 - **Git sync (stage 2)**: sends a throttled failure alert (loads state file first so throttle state is available)
 - **Circuit breaker trip (stage 3)**: sends a throttled failure alert
-- **Decrypt failure (stage 5)**: sends a throttled failure alert
-- **Template failure (stage 6)**: sends a throttled failure alert
+- **Decrypt failure (stage 4)**: sends a throttled failure alert
+- **Template failure (stage 5)**: sends a throttled failure alert
 - **Deploy failure (stages 8-9)**: sends a throttled failure alert
 - **Lock acquisition (stage 1)**: logged as a warning only, no alert (transient condition)
 - **Backup, cleanup, post-sync hooks, state save, drift check**: logged as warnings only, no failure alert

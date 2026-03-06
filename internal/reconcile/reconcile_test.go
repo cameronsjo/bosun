@@ -901,7 +901,7 @@ func TestSendRecoveryAlert(t *testing.T) {
 
 	t.Run("sends recovery alert", func(t *testing.T) {
 		alerter := &mockAlertSender{}
-		cfg := &Config{TargetHost: "user@host"}
+		cfg := &Config{TargetHost: "user@host", OnSuccess: true}
 		r := NewReconciler(cfg, WithAlerter(alerter))
 		r.lastCommit = "def456"
 
@@ -909,9 +909,19 @@ func TestSendRecoveryAlert(t *testing.T) {
 		assert.Equal(t, 1, alerter.deployRecoveryCalls)
 	})
 
+	t.Run("suppressed when OnSuccess is false", func(t *testing.T) {
+		alerter := &mockAlertSender{}
+		cfg := &Config{TargetHost: "user@host", OnSuccess: false}
+		r := NewReconciler(cfg, WithAlerter(alerter))
+		r.lastCommit = "def456"
+
+		r.sendRecoveryAlert(context.Background(), 5)
+		assert.Equal(t, 0, alerter.deployRecoveryCalls)
+	})
+
 	t.Run("alert error is logged not returned", func(t *testing.T) {
 		alerter := &mockAlertSender{lastErr: fmt.Errorf("send failed")}
-		cfg := &Config{}
+		cfg := &Config{OnSuccess: true}
 		r := NewReconciler(cfg, WithAlerter(alerter))
 		r.sendRecoveryAlert(context.Background(), 2)
 		assert.Equal(t, 1, alerter.deployRecoveryCalls)

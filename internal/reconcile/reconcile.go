@@ -562,8 +562,13 @@ func (r *Reconciler) sendUnhealthyAlert(ctx context.Context, containers []string
 }
 
 // sendRecoveryAlert sends a notification when deployment succeeds after failures.
+// Gated on config.OnSuccess: recovery is a success-side alert.
 func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) {
 	if r.alerter == nil {
+		return
+	}
+
+	if !r.config.OnSuccess {
 		return
 	}
 
