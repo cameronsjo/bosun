@@ -655,7 +655,9 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 			Msg("Drift detected during periodic check")
 
 		// Deduplicated alerting for critical drift (missing/unhealthy).
-		if report.HasCriticalDrift() && d.alerter != nil {
+		// Always run cleanup when alerting is enabled so resolved items are cleared
+		// even if only non-critical drift remains.
+		if d.alerter != nil {
 			// Filter to critical items only.
 			var criticalItems []reconcile.DriftItem
 			for _, item := range report.Items {
@@ -1033,8 +1035,12 @@ func ConfigFromEnv() *Config {
 	var driftAlertDebounceFromEnv bool
 	if v := os.Getenv("BOSUN_DRIFT_ALERT_DEBOUNCE"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
-			cfg.DriftAlertDebounce = d
-			driftAlertDebounceFromEnv = true
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_DRIFT_ALERT_DEBOUNCE").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
+			} else {
+				cfg.DriftAlertDebounce = d
+				driftAlertDebounceFromEnv = true
+			}
 		} else {
 			log.Warn().Str("env", "BOSUN_DRIFT_ALERT_DEBOUNCE").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
