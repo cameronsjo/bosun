@@ -107,10 +107,11 @@ type Config struct {
 	DeployPathsFromEnv bool
 
 	// OnFailure gates failure alert dispatch. When false, no failure alerts are sent.
-	// Defaults to true for backwards compatibility.
+	// Defaults to true via DefaultConfig(). A bare Config{} leaves this false.
 	OnFailure bool
 
-	// OnSuccess gates success alert dispatch. When false, no success alerts are sent.
+	// OnSuccess gates success and recovery alert dispatch. When false, neither
+	// success nor recovery alerts are sent. Defaults to false.
 	OnSuccess bool
 
 	// ConfigReloader loads project config from a directory path.

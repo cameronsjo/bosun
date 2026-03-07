@@ -57,15 +57,17 @@ Specific pipeline stages send throttled failure alerts to all configured alert p
 - **Lock acquisition (stage 1)**: logged as a warning only, no alert (transient condition)
 - **Backup, cleanup, post-sync hooks, state save, drift check**: logged as warnings only, no failure alert
 
-Success alerts are controlled by the `on_success` flag (default: `false`). When enabled, a success alert is sent after a successful deployment.
+Success and recovery alerts are controlled by the `on_success` flag (default: `false`). When enabled, a success alert is sent after a successful deployment, and a recovery alert is sent when a deploy succeeds after prior failures.
 
 Configure these flags in `bosun.yaml` under `alerts`:
 
 ```yaml
 alerts:
   on_failure: true   # Send alerts on pipeline failures (default)
-  on_success: false  # Send alerts on successful deploys (opt-in)
+  on_success: false  # Send alerts on successful deploys and recoveries (opt-in)
 ```
+
+Both flags are re-read from `bosun.yaml` after each git pull, so changes take effect on the next reconciliation without restarting the daemon. Other reload-eligible fields include hooks, settle delay, and deploy paths.
 
 ### Post-Sync Hooks
 

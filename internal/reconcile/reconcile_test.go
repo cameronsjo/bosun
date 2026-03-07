@@ -2862,6 +2862,45 @@ func TestDefaultConfigOnFailureDefault(t *testing.T) {
 	assert.False(t, cfg.OnSuccess, "OnSuccess should default to false")
 }
 
+func TestReloadProjectConfig_AlertGates(t *testing.T) {
+	t.Run("reload updates OnFailure and OnSuccess from repo config", func(t *testing.T) {
+		onFailure := false
+		onSuccess := true
+		cfg := &Config{
+			OnFailure: true,
+			OnSuccess: false,
+			ConfigReloader: func(string) (*ReloadedConfig, error) {
+				return &ReloadedConfig{
+					OnFailure: &onFailure,
+					OnSuccess: &onSuccess,
+				}, nil
+			},
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		assert.False(t, r.config.OnFailure, "OnFailure should be updated to false from repo config")
+		assert.True(t, r.config.OnSuccess, "OnSuccess should be updated to true from repo config")
+	})
+
+	t.Run("nil values in ReloadedConfig preserve existing config", func(t *testing.T) {
+		cfg := &Config{
+			OnFailure: true,
+			OnSuccess: false,
+			ConfigReloader: func(string) (*ReloadedConfig, error) {
+				return &ReloadedConfig{}, nil
+			},
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		assert.True(t, r.config.OnFailure, "OnFailure should remain true when not reloaded")
+		assert.False(t, r.config.OnSuccess, "OnSuccess should remain false when not reloaded")
+	})
+}
+
 // --- MinLen tests ---
 
 func TestMinLen(t *testing.T) {
