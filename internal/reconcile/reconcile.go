@@ -287,7 +287,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 		// Load state before alerting so throttle state is available.
 		state := LoadState(r.config.StateFile)
-		state.LastAttemptedCommit, state.AttemptCount = nextAttemptState(state.LastAttemptedCommit, "", state.AttemptCount)
+		state.LastAttemptedCommit, state.AttemptCount = nextAttemptState(state.LastAttemptedCommit, after, state.AttemptCount)
 		if saveErr := SaveState(r.config.StateFile, state); saveErr != nil {
 			logger.Error().Err(saveErr).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save attempt tracking state for git sync failure")
 		}
