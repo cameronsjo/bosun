@@ -489,6 +489,15 @@ func TestClassifyComposePS(t *testing.T) {
 			wantFailed:    nil,
 		},
 		{
+			name: "starting health treated as unhealthy",
+			entries: []composePSEntry{
+				{Name: "app", State: "running", Health: "starting"},
+			},
+			wantKind:      failureUnhealthyOnly,
+			wantUnhealthy: []string{"app"},
+			wantFailed:    nil,
+		},
+		{
 			name: "case insensitive state",
 			entries: []composePSEntry{
 				{Name: "app", State: "Running", Health: "Unhealthy"},

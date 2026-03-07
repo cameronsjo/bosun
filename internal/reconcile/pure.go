@@ -165,7 +165,7 @@ func classifyComposePS(entries []composePSEntry) composeFailureResult {
 		switch strings.ToLower(e.State) {
 		case "running":
 			health := strings.ToLower(e.Health)
-			if health == "unhealthy" {
+			if health == "unhealthy" || health == "starting" {
 				unhealthy = append(unhealthy, e.Name)
 			}
 			// "healthy" or "" (no healthcheck) are fine
