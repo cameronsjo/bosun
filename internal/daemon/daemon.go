@@ -692,8 +692,8 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 					Dur("debounce_window", d.config.DriftAlertDebounce).
 					Msg("Drift items filtered by debounce window")
 			}
-			if len(criticalItems) > 0 && d.config.DriftAlertDebounce > 0 {
-				for _, item := range criticalItems {
+			if len(pendingItems) > 0 && d.config.DriftAlertDebounce > 0 {
+				for _, item := range pendingItems {
 					logger.Info().
 						Str("item", reconcile.DriftAlertKey(item)).
 						Dur("debounce_window", d.config.DriftAlertDebounce).
