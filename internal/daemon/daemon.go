@@ -667,11 +667,24 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 			}
 
 			// Debounce layer: filter items that haven't persisted past the debounce window.
-			// FilterDebounced mutates state.DriftDebounceItems in place (adds new, removes graduated/resolved).
-			preDebounceCount := len(criticalItems)
-			criticalItems = reconcile.FilterDebounced(criticalItems, state.DriftDebounceItems, d.config.DriftAlertDebounce)
+			// Only debounce items not yet in the dedup/cooldown layer. Once an item
+			// has alerted, keep it flowing through ShouldAlertDrift directly.
+			var pendingItems []reconcile.DriftItem
+			var alreadyAlerted []reconcile.DriftItem
+			for _, item := range criticalItems {
+				if _, alerted := state.DriftAlertedItems[reconcile.DriftAlertKey(item)]; alerted {
+					alreadyAlerted = append(alreadyAlerted, item)
+				} else {
+					pendingItems = append(pendingItems, item)
+				}
+			}
 
-			filteredCount := preDebounceCount - len(criticalItems)
+			// FilterDebounced mutates state.DriftDebounceItems in place (adds new, removes graduated/resolved).
+			preDebounceCount := len(pendingItems)
+			pendingItems = reconcile.FilterDebounced(pendingItems, state.DriftDebounceItems, d.config.DriftAlertDebounce)
+			criticalItems = append(alreadyAlerted, pendingItems...)
+
+			filteredCount := preDebounceCount - len(pendingItems)
 			if filteredCount > 0 {
 				logger.Debug().
 					Int("filtered", filteredCount).
