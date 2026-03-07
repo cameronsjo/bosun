@@ -128,10 +128,12 @@ func buildSSHKeyPaths(envKey, homeDir string) []string {
 type composeFailureKind int
 
 const (
-	// failureUnhealthyOnly means all containers are running but some are unhealthy.
-	failureUnhealthyOnly composeFailureKind = iota
 	// failureStartFailure means one or more containers failed to start.
-	failureStartFailure
+	// This is the zero value so that an uninitialized result defaults to
+	// the conservative "trigger rollback" path (fail-safe).
+	failureStartFailure composeFailureKind = iota
+	// failureUnhealthyOnly means all containers are running but some are unhealthy.
+	failureUnhealthyOnly
 )
 
 // composeFailureResult holds the classification of a compose-up failure.
