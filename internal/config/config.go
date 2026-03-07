@@ -61,6 +61,9 @@ type Config struct {
 
 	// domain is the project-level domain for Traefik defaultRule.
 	domain string
+
+	// removeOrphans controls whether --remove-orphans is passed to docker compose up.
+	removeOrphans bool
 }
 
 // TunnelConfig holds tunnel provider-specific configuration.
@@ -156,6 +159,11 @@ type configFile struct {
 	// DeployPaths is an allowlist of glob patterns for deploy-relevant paths.
 	// When configured, commits that only touch files outside these patterns skip the pipeline.
 	DeployPaths []string `yaml:"deploy_paths"`
+
+	// RemoveOrphans controls whether --remove-orphans is passed to docker compose up.
+	// Defaults to true (preserving existing behavior). Set to false in shared environments
+	// where Bosun does not own all containers on the Docker host.
+	RemoveOrphans *bool `yaml:"remove_orphans"`
 }
 
 // FindRoot searches upward from the current directory to find the project root.
@@ -219,6 +227,7 @@ func LoadFrom(dir string) (*Config, error) {
 	hookSettleDelay := extractHookSettleDelay(fileCfg)
 	deployPaths := extractDeployPaths(fileCfg)
 	domain := extractDomain(fileCfg)
+	removeOrphans := extractRemoveOrphans(fileCfg)
 
 	return &Config{
 		Root:            dir,
@@ -226,6 +235,7 @@ func LoadFrom(dir string) (*Config, error) {
 		hookSettleDelay: hookSettleDelay,
 		deployPaths:     deployPaths,
 		domain:          domain,
+		removeOrphans:   removeOrphans,
 	}, nil
 }
 
@@ -269,6 +279,7 @@ func Load() (*Config, error) {
 	hookSettleDelay := extractHookSettleDelay(fileCfg)
 	deployPaths := extractDeployPaths(fileCfg)
 	domain := extractDomain(fileCfg)
+	removeOrphans := extractRemoveOrphans(fileCfg)
 
 	// Determine project name (defaults to directory name)
 	projectName := fileCfg.ProjectName
@@ -291,6 +302,7 @@ func Load() (*Config, error) {
 		hookSettleDelay: hookSettleDelay,
 		deployPaths:     deployPaths,
 		domain:          domain,
+		removeOrphans:   removeOrphans,
 	}
 
 	logger := log.Component("config")
@@ -501,6 +513,21 @@ func extractHookSettleDelay(cfg configFile) time.Duration {
 // extractDomain extracts the domain from a parsed config.
 func extractDomain(cfg configFile) string {
 	return cfg.Domain
+}
+
+// extractRemoveOrphans extracts the remove_orphans setting from a parsed config.
+// Defaults to true when not explicitly set (preserving existing behavior).
+func extractRemoveOrphans(cfg configFile) bool {
+	if cfg.RemoveOrphans != nil {
+		return *cfg.RemoveOrphans
+	}
+	return true
+}
+
+// RemoveOrphans returns whether --remove-orphans should be passed to docker compose up.
+// Defaults to true.
+func (c *Config) RemoveOrphans() bool {
+	return c.removeOrphans
 }
 
 // getEnvOrDefault returns the value of the environment variable if set and non-empty,
