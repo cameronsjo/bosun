@@ -62,6 +62,9 @@ type Config struct {
 	// Content-hash sync settings
 	ContentHashSync bool // Compare file hashes before writing (default: true)
 
+	// Orphan container cleanup settings
+	RemoveOrphans bool // Pass --remove-orphans to docker compose up (default: true)
+
 	// Alerting
 	AlertManager *alert.Manager
 
@@ -89,6 +92,7 @@ func DefaultConfig() *Config {
 		DriftAlertCooldown: time.Hour,
 		DriftResolveAlerts: true,
 		ContentHashSync:    true,
+		RemoveOrphans:      true,
 	}
 }
 
@@ -991,12 +995,29 @@ func ConfigFromEnv() *Config {
 	}
 	rcfg.ContentHashSync = cfg.ContentHashSync
 
-	// Post-sync hooks, settle delay, and deploy paths: load from project config, env var overrides.
+	// Orphan container cleanup (default: true)
+	removeOrphansFromEnv := false
+	if v := os.Getenv("BOSUN_REMOVE_ORPHANS"); v != "" {
+		cfg.RemoveOrphans = v != "false" && v != "0"
+		removeOrphansFromEnv = true
+	}
+	rcfg.RemoveOrphans = cfg.RemoveOrphans
+
+	// Post-sync hooks, settle delay, deploy paths, and remove_orphans: load from project config, env var overrides.
 	if projectCfg, err := config.Load(); err == nil {
 		rcfg.PostSyncHooks = projectCfg.PostSyncHooks()
 		rcfg.HookSettleDelay = projectCfg.HookSettleDelay()
 		rcfg.DeployPaths = projectCfg.DeployPaths()
+
+		// Load remove_orphans from project config; env var (parsed above) takes precedence.
+		if os.Getenv("BOSUN_REMOVE_ORPHANS") == "" {
+			cfg.RemoveOrphans = projectCfg.RemoveOrphans()
+			rcfg.RemoveOrphans = cfg.RemoveOrphans
+		}
 	}
+
+	// Set env-override flags so the reconciler preserves env var precedence on reload.
+	rcfg.RemoveOrphansFromEnv = removeOrphansFromEnv
 
 	// Wire config reloader so the reconciler can re-read bosun.yaml from the repo.
 	rcfg.ConfigReloader = func(dir string) (*reconcile.ReloadedConfig, error) {
@@ -1004,10 +1025,12 @@ func ConfigFromEnv() *Config {
 		if err != nil {
 			return nil, err
 		}
+		removeOrphans := cfg.RemoveOrphans()
 		return &reconcile.ReloadedConfig{
 			PostSyncHooks:   cfg.PostSyncHooks(),
 			HookSettleDelay: cfg.HookSettleDelay(),
 			DeployPaths:     cfg.DeployPaths(),
+			RemoveOrphans:   &removeOrphans,
 		}, nil
 	}
 	if v := os.Getenv("BOSUN_POST_SYNC_HOOKS"); v != "" {

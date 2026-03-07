@@ -52,6 +52,9 @@ func TestDefaultConfig_DriftAlertCooldown(t *testing.T) {
 	if !cfg.ContentHashSync {
 		t.Error("ContentHashSync should be true by default")
 	}
+	if !cfg.RemoveOrphans {
+		t.Error("RemoveOrphans should be true by default")
+	}
 }
 
 func TestValidateConfig(t *testing.T) {
@@ -946,6 +949,52 @@ func TestConfigFromEnv_ContentHashSync(t *testing.T) {
 
 		if !cfg.ContentHashSync {
 			t.Error("ContentHashSync should be true when set to 'true'")
+		}
+	})
+}
+
+func TestConfigFromEnv_RemoveOrphans(t *testing.T) {
+	t.Run("default true", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if !cfg.RemoveOrphans {
+			t.Error("RemoveOrphans should be true by default")
+		}
+		if cfg.ReconcileConfig == nil || !cfg.ReconcileConfig.RemoveOrphans {
+			t.Error("ReconcileConfig.RemoveOrphans should be true by default")
+		}
+	})
+
+	t.Run("disabled with false", func(t *testing.T) {
+		t.Setenv("BOSUN_REMOVE_ORPHANS", "false")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.RemoveOrphans {
+			t.Error("RemoveOrphans should be false when set to 'false'")
+		}
+		if cfg.ReconcileConfig != nil && cfg.ReconcileConfig.RemoveOrphans {
+			t.Error("ReconcileConfig.RemoveOrphans should be false")
+		}
+	})
+
+	t.Run("disabled with 0", func(t *testing.T) {
+		t.Setenv("BOSUN_REMOVE_ORPHANS", "0")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.RemoveOrphans {
+			t.Error("RemoveOrphans should be false when set to '0'")
+		}
+	})
+
+	t.Run("enabled with true", func(t *testing.T) {
+		t.Setenv("BOSUN_REMOVE_ORPHANS", "true")
+
+		cfg := ConfigFromEnv()
+
+		if !cfg.RemoveOrphans {
+			t.Error("RemoveOrphans should be true when set to 'true'")
 		}
 	})
 }
