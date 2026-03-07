@@ -850,6 +850,9 @@ deploy_paths:
 	assert.Equal(t, "traefik", cfg.PostSyncHooks()[0].Container)
 	assert.Equal(t, 3*time.Second, cfg.HookSettleDelay())
 	assert.Equal(t, []string{"infra/**", "services/**"}, cfg.DeployPaths())
+
+	// RemoveOrphans defaults to true when not set in config
+	assert.True(t, cfg.RemoveOrphans())
 }
 
 func TestConfig_Format(t *testing.T) {
@@ -1173,5 +1176,124 @@ func TestLoadFrom_DriftAlertDebounce(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 		assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce())
+	})
+}
+
+func TestRemoveOrphansFromConfig(t *testing.T) {
+	t.Run("defaults to true when not configured", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `infrastructure:
+  containers:
+    - traefik
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.True(t, cfg.RemoveOrphans())
+	})
+
+	t.Run("defaults to true when no config file", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.True(t, cfg.RemoveOrphans())
+	})
+
+	t.Run("parses false from bosun.yaml", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `remove_orphans: false
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.False(t, cfg.RemoveOrphans())
+	})
+
+	t.Run("parses true from bosun.yaml", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `remove_orphans: true
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.True(t, cfg.RemoveOrphans())
+	})
+}
+
+func TestLoadFrom_RemoveOrphans(t *testing.T) {
+	t.Run("loads false from directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		content := `remove_orphans: false
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.False(t, cfg.RemoveOrphans())
+	})
+
+	t.Run("defaults to true when not set", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.True(t, cfg.RemoveOrphans())
+	})
+}
+
+func TestExtractRemoveOrphans(t *testing.T) {
+	t.Run("returns true when nil", func(t *testing.T) {
+		cfg := configFile{}
+		assert.True(t, extractRemoveOrphans(cfg))
+	})
+
+	t.Run("returns false when explicitly false", func(t *testing.T) {
+		f := false
+		cfg := configFile{RemoveOrphans: &f}
+		assert.False(t, extractRemoveOrphans(cfg))
+	})
+
+	t.Run("returns true when explicitly true", func(t *testing.T) {
+		tr := true
+		cfg := configFile{RemoveOrphans: &tr}
+		assert.True(t, extractRemoveOrphans(cfg))
 	})
 }
