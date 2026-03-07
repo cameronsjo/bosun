@@ -1035,8 +1035,8 @@ func ConfigFromEnv() *Config {
 	var driftAlertDebounceFromEnv bool
 	if v := os.Getenv("BOSUN_DRIFT_ALERT_DEBOUNCE"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
-			if d <= 0 {
-				log.Warn().Str("env", "BOSUN_DRIFT_ALERT_DEBOUNCE").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
+			if d < 0 {
+				log.Warn().Str("env", "BOSUN_DRIFT_ALERT_DEBOUNCE").Str("value", v).Msg("Skipping env var. Reason: duration must not be negative")
 			} else {
 				cfg.DriftAlertDebounce = d
 				driftAlertDebounceFromEnv = true
