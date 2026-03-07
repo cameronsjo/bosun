@@ -90,7 +90,7 @@ When `deploy_paths` is configured in `bosun.yaml`, bosun diffs the previous and 
 
 ### Project Config Reload
 
-After pulling the repository (step 2), bosun re-reads `bosun.yaml` from the repo and updates `PostSyncHooks`, `HookSettleDelay`, and `DeployPaths` if the file has changed. This means config changes pushed to the repo take effect without a daemon restart.
+After pulling the repository (step 2), bosun re-reads `bosun.yaml` from the repo and updates `PostSyncHooks`, `HookSettleDelay`, `DeployPaths`, `on_failure`, and `on_success` if the file has changed. This means config changes pushed to the repo take effect without a daemon restart.
 
 Environment variable overrides (`BOSUN_POST_SYNC_HOOKS`, `BOSUN_HOOK_SETTLE_DELAY`, `BOSUN_DEPLOY_PATHS`) still take precedence -- if set, the corresponding fields from `bosun.yaml` are ignored during reload. If the repo has no `bosun.yaml` or the file fails to parse, the existing config values are retained.
 
