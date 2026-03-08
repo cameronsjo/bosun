@@ -88,6 +88,11 @@ deploy_paths:
   - "traefik/**"
   - "bosun.yaml"
 
+# Drift alert debounce: suppress alerts for transient drift that self-resolves.
+# Items must persist past this window before the first alert fires.
+# Default: 0 (disabled, alerts fire immediately). Recommended: 5m.
+drift_alert_debounce: "5m"
+
 # Post-sync hooks: restart containers when specific config files change.
 # Solves services (like Traefik) not picking up config changes on FUSE mounts.
 post_sync_hooks:
@@ -116,6 +121,7 @@ post_sync_hooks:
 | `post_sync_hooks` | `[]` | Container restart hooks triggered by file changes |
 | `hook_settle_delay` | `0` (disabled) | Global pause after deploy before hooks run (e.g., `"2s"`) |
 | `deploy_paths` | `[]` (deploy all) | Glob allowlist — skip pipeline when no changed files match |
+| `drift_alert_debounce` | `0` (disabled) | Debounce window before first drift alert fires (e.g., `"5m"`) |
 
 ## Directory Structure
 
