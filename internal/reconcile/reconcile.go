@@ -21,6 +21,7 @@ type ReloadedConfig struct {
 	DeployPaths     []string
 	OnFailure       *bool
 	OnSuccess       *bool
+	RemoveOrphans   *bool
 }
 
 // ConfigReloaderFunc loads project config from a directory path.
@@ -90,6 +91,11 @@ type Config struct {
 	// Skips writes for unchanged files to avoid FUSE handle invalidation.
 	ContentHashSync bool
 
+	// RemoveOrphans if true, passes --remove-orphans to docker compose up.
+	// Removes containers belonging to services deleted from the compose file.
+	// Defaults to true.
+	RemoveOrphans bool
+
 	// PostSyncHooksFromEnv is true when BOSUN_POST_SYNC_HOOKS env var is set.
 	// When true, repo config reload will not update PostSyncHooks.
 	PostSyncHooksFromEnv bool
@@ -113,6 +119,10 @@ type Config struct {
 	// OnSuccess gates success and recovery alert dispatch. When false, neither
 	// success nor recovery alerts are sent. Defaults to false.
 	OnSuccess bool
+
+	// RemoveOrphansFromEnv is true when BOSUN_REMOVE_ORPHANS env var is set.
+	// When true, repo config reload will not update RemoveOrphans.
+	RemoveOrphansFromEnv bool
 
 	// ConfigReloader loads project config from a directory path.
 	// Set by daemon/CLI to break the config→reconcile import cycle.
@@ -139,6 +149,7 @@ func DefaultConfig() *Config {
 		BackupsToKeep:      5,
 		StartupGracePeriod: 30 * time.Second,
 		OnFailure:          true,
+		RemoveOrphans:      true,
 	}
 }
 
@@ -182,7 +193,7 @@ func NewReconciler(cfg *Config, opts ...ReconcilerOption) *Reconciler {
 		config:   cfg,
 		git:      NewGitOps(cfg.RepoURL, cfg.RepoBranch, cfg.RepoDir),
 		sops:     NewSOPSOps(),
-		deploy:   &DeployOps{DryRun: cfg.DryRun, ProjectName: cfg.ProjectName, ContentHashSync: cfg.ContentHashSync},
+		deploy:   &DeployOps{DryRun: cfg.DryRun, ProjectName: cfg.ProjectName, ContentHashSync: cfg.ContentHashSync, RemoveOrphans: cfg.RemoveOrphans},
 		lockFile: lockFile,
 	}
 
@@ -731,7 +742,7 @@ func (r *Reconciler) reloadProjectConfig() {
 	}
 
 	// If no field has any value from the repo, there's nothing to reload.
-	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 && len(reloaded.DeployPaths) == 0 && reloaded.OnFailure == nil && reloaded.OnSuccess == nil {
+	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 && len(reloaded.DeployPaths) == 0 && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil {
 		return
 	}
 
@@ -762,6 +773,12 @@ func (r *Reconciler) reloadProjectConfig() {
 		changed = true
 	}
 
+	if !r.config.RemoveOrphansFromEnv && reloaded.RemoveOrphans != nil {
+		r.config.RemoveOrphans = *reloaded.RemoveOrphans
+		r.deploy.RemoveOrphans = *reloaded.RemoveOrphans
+		changed = true
+	}
+
 	if changed {
 		logger.Info().
 			Int("hooks", len(r.config.PostSyncHooks)).
@@ -769,6 +786,7 @@ func (r *Reconciler) reloadProjectConfig() {
 			Int("deploy_paths", len(r.config.DeployPaths)).
 			Bool("on_failure", r.config.OnFailure).
 			Bool("on_success", r.config.OnSuccess).
+			Bool("remove_orphans", r.config.RemoveOrphans).
 			Msg("Reloaded project config from repo")
 	}
 }

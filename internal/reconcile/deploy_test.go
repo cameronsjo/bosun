@@ -17,12 +17,128 @@ func TestNewDeployOps(t *testing.T) {
 	t.Run("with dry run", func(t *testing.T) {
 		deploy := NewDeployOps(true, "")
 		assert.True(t, deploy.DryRun)
+		assert.True(t, deploy.RemoveOrphans, "RemoveOrphans should default to true")
 	})
 
 	t.Run("without dry run", func(t *testing.T) {
 		deploy := NewDeployOps(false, "")
 		assert.False(t, deploy.DryRun)
+		assert.True(t, deploy.RemoveOrphans, "RemoveOrphans should default to true")
 	})
+}
+
+func TestDeployOps_ComposeUpArgs_RemoveOrphans(t *testing.T) {
+	tests := []struct {
+		name           string
+		removeOrphans  bool
+		projectName    string
+		wantContains   string
+		wantMissing    string
+		useConstructor bool
+	}{
+		{
+			name:          "remove orphans enabled includes flag",
+			removeOrphans: true,
+			projectName:   "bosun",
+			wantContains:  "--remove-orphans",
+		},
+		{
+			name:          "remove orphans disabled omits flag",
+			removeOrphans: false,
+			projectName:   "bosun",
+			wantMissing:   "--remove-orphans",
+		},
+		{
+			name:           "default NewDeployOps includes remove-orphans",
+			projectName:    "bosun",
+			wantContains:   "--remove-orphans",
+			useConstructor: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var d *DeployOps
+			if tt.useConstructor {
+				d = NewDeployOps(false, tt.projectName)
+			} else {
+				d = &DeployOps{
+					ProjectName:   tt.projectName,
+					RemoveOrphans: tt.removeOrphans,
+				}
+			}
+			args := d.composeUpArgs([]string{"docker-compose.yml"})
+
+			if tt.wantContains != "" {
+				assert.Contains(t, args, tt.wantContains)
+			}
+			if tt.wantMissing != "" {
+				assert.NotContains(t, args, tt.wantMissing)
+			}
+		})
+	}
+}
+
+func TestDeployOps_ComposeUpRemoteCmd_RemoveOrphans(t *testing.T) {
+	tests := []struct {
+		name          string
+		removeOrphans bool
+		projectName   string
+		wantContains  string
+		wantMissing   string
+	}{
+		{
+			name:          "remote compose up includes remove-orphans",
+			removeOrphans: true,
+			projectName:   "bosun",
+			wantContains:  "--remove-orphans",
+		},
+		{
+			name:          "remote compose up omits remove-orphans",
+			removeOrphans: false,
+			projectName:   "bosun",
+			wantMissing:   "--remove-orphans",
+		},
+		{
+			name:          "default NewDeployOps remote includes remove-orphans",
+			removeOrphans: true,
+			projectName:   "bosun",
+			wantContains:  "--remove-orphans",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var d *DeployOps
+			if tt.name == "default NewDeployOps remote includes remove-orphans" {
+				d = NewDeployOps(false, tt.projectName)
+			} else {
+				d = &DeployOps{
+					ProjectName:   tt.projectName,
+					RemoveOrphans: tt.removeOrphans,
+				}
+			}
+			sshCmd := d.remoteComposeUpCmd("/opt/compose")
+
+			if tt.wantContains != "" {
+				assert.Contains(t, sshCmd, tt.wantContains)
+			}
+			if tt.wantMissing != "" {
+				assert.NotContains(t, sshCmd, tt.wantMissing)
+			}
+		})
+	}
+}
+
+func TestDeployOps_ZeroValueDeployOps_RemoveOrphansDisabled(t *testing.T) {
+	// Zero-value DeployOps{} has RemoveOrphans=false; NewDeployOps defaults to true.
+	zero := &DeployOps{}
+	assert.False(t, zero.RemoveOrphans, "zero-value DeployOps should have RemoveOrphans=false")
+	assert.NotContains(t, zero.composeUpArgs([]string{"f.yml"}), "--remove-orphans")
+
+	constructed := NewDeployOps(false, "test")
+	assert.True(t, constructed.RemoveOrphans, "NewDeployOps should default RemoveOrphans to true")
+	assert.Contains(t, constructed.composeUpArgs([]string{"f.yml"}), "--remove-orphans")
 }
 
 func TestDeployOps_Backup(t *testing.T) {

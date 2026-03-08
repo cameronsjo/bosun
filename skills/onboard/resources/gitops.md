@@ -67,7 +67,11 @@ alerts:
   on_success: false  # Send alerts on successful deploys and recoveries (opt-in)
 ```
 
-Both flags are re-read from `bosun.yaml` after each git pull, so changes take effect on the next reconciliation without restarting the daemon. Other reload-eligible fields include hooks, settle delay, and deploy paths.
+Both flags are re-read from `bosun.yaml` after each git pull, so changes take effect on the next reconciliation without restarting the daemon. Other reload-eligible fields include hooks, settle delay, deploy paths, and remove_orphans.
+
+### Orphan Container Cleanup
+
+During `docker compose up`, bosun passes `--remove-orphans` by default. This removes containers belonging to services that have been deleted from the compose file. In shared environments where Bosun does not own all containers on the Docker host, set `remove_orphans: false` in `bosun.yaml` or `BOSUN_REMOVE_ORPHANS=false` to disable this behavior. The environment variable takes precedence over the config file. Emergency restore (`bosun mayday`) always uses `--remove-orphans` regardless of this setting.
 
 ### Post-Sync Hooks
 
