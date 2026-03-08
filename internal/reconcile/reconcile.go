@@ -1054,14 +1054,16 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 			ui.Warning("No compose files found in %s", composeDir)
 		} else {
 			if err := r.deploy.ComposeUpMultipleWithRollback(ctx, composeFiles, r.lastBackupPath); err != nil {
-				// Check if rollback succeeded or failed
-				if errors.Is(err, ErrRollbackFailed) {
+				// Unhealthy containers are warnings, not failures.
+				if errors.Is(err, ErrComposeUnhealthy) {
+					ui.Warning("Some containers are unhealthy: %v", err)
+				} else if errors.Is(err, ErrRollbackFailed) {
 					return nil, fmt.Errorf("CRITICAL: service reload and rollback both failed: %w", err)
 				} else if errors.Is(err, ErrRollbackSucceeded) {
 					return nil, fmt.Errorf("service reload failed but rollback succeeded: %w", err)
+				} else {
+					return nil, fmt.Errorf("service reload failed: %w", err)
 				}
-				// Other errors (no backup available, etc.)
-				return nil, fmt.Errorf("service reload failed: %w", err)
 			}
 		}
 		if err := r.deploy.SignalContainer(ctx, "agentgateway", "SIGHUP"); err != nil {

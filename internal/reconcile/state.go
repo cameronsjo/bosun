@@ -71,6 +71,11 @@ type DeployState struct {
 	// Drift alert deduplication state.
 	DriftAlertedAt    time.Time            `json:"drift_alerted_at,omitempty"`
 	DriftAlertedItems map[string]time.Time `json:"drift_alerted_items,omitempty"`
+
+	// Drift alert debounce state: tracks first-seen timestamps for items
+	// within their debounce window. Items graduate to the dedup layer
+	// when the debounce duration elapses, or are removed if drift resolves.
+	DriftDebounceItems map[string]time.Time `json:"drift_debounce_items,omitempty"`
 }
 
 // alertThresholds defines the attempt counts at which failure alerts are sent.
@@ -234,6 +239,59 @@ func ShouldAlertDrift(currentItems []DriftItem, alertedItems map[string]time.Tim
 	}
 
 	return alertItems, resolvedKeys
+}
+
+// FilterDebounced filters drift items through the debounce layer. Items that have
+// not persisted beyond the debounce duration are held back. Items that have persisted
+// past the debounce window are returned (graduated) for normal dedup processing.
+//
+// The debounceItems map is mutated in place:
+//   - New items are added with the current timestamp
+//   - Graduated items (past window) are removed
+//   - Items no longer in currentItems are removed (resolved)
+//
+// When debounce is zero (disabled), all items pass through unchanged.
+func FilterDebounced(currentItems []DriftItem, debounceItems map[string]time.Time, debounce time.Duration) []DriftItem {
+	// Zero debounce = disabled, pass everything through.
+	if debounce == 0 {
+		return currentItems
+	}
+
+	now := time.Now()
+
+	// Build set of current keys for resolution cleanup.
+	currentKeys := make(map[string]bool, len(currentItems))
+	for _, item := range currentItems {
+		currentKeys[DriftAlertKey(item)] = true
+	}
+
+	// Remove resolved items from debounce map (drift cleared before window expired).
+	for key := range debounceItems {
+		if !currentKeys[key] {
+			delete(debounceItems, key)
+		}
+	}
+
+	// Filter current items through debounce window.
+	var graduated []DriftItem
+	for _, item := range currentItems {
+		key := DriftAlertKey(item)
+		firstSeen, exists := debounceItems[key]
+		if !exists {
+			// New item: start debounce timer.
+			debounceItems[key] = now
+			continue
+		}
+
+		if now.Sub(firstSeen) >= debounce {
+			// Debounce window elapsed: graduate to dedup layer.
+			delete(debounceItems, key)
+			graduated = append(graduated, item)
+		}
+		// Otherwise: still within window, hold back (filtered out).
+	}
+
+	return graduated
 }
 
 // fsyncDir opens a directory and fsyncs it to make metadata changes durable.

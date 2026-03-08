@@ -55,9 +55,10 @@ type Config struct {
 	APITimeout       time.Duration // Timeout for API handler requests (default: 30s)
 
 	// Drift check settings
-	DriftInterval      time.Duration // Interval for periodic drift checks (0 disables, default: 5m)
-	DriftAlertCooldown time.Duration // Cooldown between repeated drift alerts per item (default: 1h)
-	DriftResolveAlerts bool          // Send "drift resolved" alerts (default: true)
+	DriftInterval       time.Duration // Interval for periodic drift checks (0 disables, default: 5m)
+	DriftAlertCooldown  time.Duration // Cooldown between repeated drift alerts per item (default: 1h)
+	DriftAlertDebounce  time.Duration // Debounce window before first drift alert fires (0 = disabled, default: 0)
+	DriftResolveAlerts  bool          // Send "drift resolved" alerts (default: true)
 
 	// Content-hash sync settings
 	ContentHashSync bool // Compare file hashes before writing (default: true)
@@ -646,6 +647,11 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	state.DriftCheckedAt = report.CheckedAt
 	state.DriftItems = report.Items
 
+	// Initialize debounce map for FilterDebounced mutation.
+	if state.DriftDebounceItems == nil {
+		state.DriftDebounceItems = make(map[string]time.Time)
+	}
+
 	if report.HasDrift() {
 		logger.Warn().
 			Int("drift_items", len(report.Items)).
@@ -653,12 +659,49 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 			Msg("Drift detected during periodic check")
 
 		// Deduplicated alerting for critical drift (missing/unhealthy).
-		if report.HasCriticalDrift() && d.alerter != nil {
+		// Always run cleanup when alerting is enabled so resolved items are cleared
+		// even if only non-critical drift remains.
+		if d.alerter != nil {
 			// Filter to critical items only.
 			var criticalItems []reconcile.DriftItem
 			for _, item := range report.Items {
 				if item.Type == reconcile.DriftMissing || item.Type == reconcile.DriftUnhealthy {
 					criticalItems = append(criticalItems, item)
+				}
+			}
+
+			// Debounce layer: filter items that haven't persisted past the debounce window.
+			// Only debounce items not yet in the dedup/cooldown layer. Once an item
+			// has alerted, keep it flowing through ShouldAlertDrift directly.
+			var pendingItems []reconcile.DriftItem
+			var alreadyAlerted []reconcile.DriftItem
+			for _, item := range criticalItems {
+				if _, alerted := state.DriftAlertedItems[reconcile.DriftAlertKey(item)]; alerted {
+					alreadyAlerted = append(alreadyAlerted, item)
+				} else {
+					pendingItems = append(pendingItems, item)
+				}
+			}
+
+			// FilterDebounced mutates state.DriftDebounceItems in place (adds new, removes graduated/resolved).
+			preDebounceCount := len(pendingItems)
+			pendingItems = reconcile.FilterDebounced(pendingItems, state.DriftDebounceItems, d.config.DriftAlertDebounce)
+			criticalItems = append(alreadyAlerted, pendingItems...)
+
+			filteredCount := preDebounceCount - len(pendingItems)
+			if filteredCount > 0 {
+				logger.Debug().
+					Int("filtered", filteredCount).
+					Int("debounce_pending", len(state.DriftDebounceItems)).
+					Dur("debounce_window", d.config.DriftAlertDebounce).
+					Msg("Drift items filtered by debounce window")
+			}
+			if len(pendingItems) > 0 && d.config.DriftAlertDebounce > 0 {
+				for _, item := range pendingItems {
+					logger.Info().
+						Str("item", reconcile.DriftAlertKey(item)).
+						Dur("debounce_window", d.config.DriftAlertDebounce).
+						Msg("Drift item graduated from debounce to dedup layer")
 				}
 			}
 
@@ -682,15 +725,38 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 				state.DriftAlertedAt = now
 			}
 
+			// Resolution alerts: only fire for items that were previously alerted.
+			// Skip items still in debounce (never alerted).
 			if len(resolvedKeys) > 0 && d.config.DriftResolveAlerts {
-				d.sendDriftResolvedAlert(ctx, resolvedKeys)
+				var actuallyResolved []string
 				for _, key := range resolvedKeys {
-					delete(state.DriftAlertedItems, key)
+					if _, inDebounce := state.DriftDebounceItems[key]; inDebounce {
+						// Item resolved while still in debounce — no alert was ever sent.
+						logger.Debug().
+							Str("item", key).
+							Msg("Drift item resolved before debounce window expired, no resolution alert")
+						delete(state.DriftDebounceItems, key)
+						continue
+					}
+					actuallyResolved = append(actuallyResolved, key)
+				}
+				if len(actuallyResolved) > 0 {
+					d.sendDriftResolvedAlert(ctx, actuallyResolved)
+					for _, key := range actuallyResolved {
+						delete(state.DriftAlertedItems, key)
+					}
 				}
 			}
 		}
 	} else {
-		// No drift — check if we need to send resolution alerts.
+		// No drift — clean up debounce items and check if we need to send resolution alerts.
+		if len(state.DriftDebounceItems) > 0 {
+			logger.Debug().
+				Int("cleared", len(state.DriftDebounceItems)).
+				Msg("Drift resolved: clearing debounce items")
+			state.DriftDebounceItems = nil
+		}
+
 		if previouslyDrifted {
 			logger.Info().Msg("Drift resolved: all declared services now match actual state")
 		} else {
@@ -705,6 +771,11 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 			d.sendDriftResolvedAlert(ctx, resolvedKeys)
 			state.DriftAlertedItems = nil
 		}
+	}
+
+	// Clean up empty debounce map for omitempty serialization.
+	if len(state.DriftDebounceItems) == 0 {
+		state.DriftDebounceItems = nil
 	}
 
 	// Persist state with drift results and alert timestamps.
@@ -977,6 +1048,21 @@ func ConfigFromEnv() *Config {
 		}
 	}
 
+	// Drift alert debounce (0 = disabled)
+	var driftAlertDebounceFromEnv bool
+	if v := os.Getenv("BOSUN_DRIFT_ALERT_DEBOUNCE"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			if d < 0 {
+				log.Warn().Str("env", "BOSUN_DRIFT_ALERT_DEBOUNCE").Str("value", v).Msg("Skipping env var. Reason: duration must not be negative")
+			} else {
+				cfg.DriftAlertDebounce = d
+				driftAlertDebounceFromEnv = true
+			}
+		} else {
+			log.Warn().Str("env", "BOSUN_DRIFT_ALERT_DEBOUNCE").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
+
 	// Drift alert deduplication
 	if v := os.Getenv("BOSUN_DRIFT_ALERT_COOLDOWN"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
@@ -1003,7 +1089,7 @@ func ConfigFromEnv() *Config {
 	}
 	rcfg.RemoveOrphans = cfg.RemoveOrphans
 
-	// Post-sync hooks, settle delay, deploy paths, alert flags, and remove_orphans: load from project config, env var overrides.
+	// Post-sync hooks, settle delay, deploy paths, alert flags, drift debounce, and remove_orphans: load from project config, env var overrides.
 	if projectCfg, err := config.Load(); err == nil {
 		rcfg.PostSyncHooks = projectCfg.PostSyncHooks()
 		rcfg.HookSettleDelay = projectCfg.HookSettleDelay()
@@ -1012,6 +1098,11 @@ func ConfigFromEnv() *Config {
 		alertCfg := projectCfg.GetAlertConfig()
 		rcfg.OnFailure = alertCfg.OnFailure
 		rcfg.OnSuccess = alertCfg.OnSuccess
+
+		// Config file debounce value: env var takes precedence (already parsed above).
+		if !driftAlertDebounceFromEnv && projectCfg.DriftAlertDebounce() > 0 {
+			cfg.DriftAlertDebounce = projectCfg.DriftAlertDebounce()
+		}
 
 		// Load remove_orphans from project config; env var (parsed above) takes precedence.
 		if os.Getenv("BOSUN_REMOVE_ORPHANS") == "" {
