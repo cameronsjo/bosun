@@ -1089,12 +1089,15 @@ func ConfigFromEnv() *Config {
 	}
 	rcfg.RemoveOrphans = cfg.RemoveOrphans
 
-	// Post-sync hooks, settle delay, deploy paths, drift debounce, and remove_orphans: load from project config, env var overrides.
+	// Post-sync hooks, settle delay, deploy paths, alert flags, drift debounce, and remove_orphans: load from project config, env var overrides.
 	if projectCfg, err := config.Load(); err == nil {
 		rcfg.PostSyncHooks = projectCfg.PostSyncHooks()
 		rcfg.HookSettleDelay = projectCfg.HookSettleDelay()
 		rcfg.DeployPaths = projectCfg.DeployPaths()
 
+		alertCfg := projectCfg.GetAlertConfig()
+		rcfg.OnFailure = alertCfg.OnFailure
+		rcfg.OnSuccess = alertCfg.OnSuccess
 
 		// Config file debounce value: env var takes precedence (already parsed above).
 		if !driftAlertDebounceFromEnv && projectCfg.DriftAlertDebounce() > 0 {
@@ -1117,11 +1120,14 @@ func ConfigFromEnv() *Config {
 		if err != nil {
 			return nil, err
 		}
+		alertCfg := cfg.GetAlertConfig()
 		removeOrphans := cfg.RemoveOrphans()
 		return &reconcile.ReloadedConfig{
 			PostSyncHooks:   cfg.PostSyncHooks(),
 			HookSettleDelay: cfg.HookSettleDelay(),
 			DeployPaths:     cfg.DeployPaths(),
+			OnFailure:       &alertCfg.OnFailure,
+			OnSuccess:       &alertCfg.OnSuccess,
 			RemoveOrphans:   &removeOrphans,
 		}, nil
 	}

@@ -809,7 +809,7 @@ func TestSendSuccessAlert(t *testing.T) {
 
 	t.Run("calls alerter with target", func(t *testing.T) {
 		alerter := &mockAlertSender{}
-		cfg := &Config{TargetHost: "user@host"}
+		cfg := &Config{TargetHost: "user@host", OnSuccess: true}
 		r := NewReconciler(cfg, WithAlerter(alerter))
 		r.lastCommit = "abc123"
 		r.sendSuccessAlert(context.Background())
@@ -818,7 +818,7 @@ func TestSendSuccessAlert(t *testing.T) {
 
 	t.Run("uses local when target host is empty", func(t *testing.T) {
 		alerter := &mockAlertSender{}
-		cfg := &Config{}
+		cfg := &Config{OnSuccess: true}
 		r := NewReconciler(cfg, WithAlerter(alerter))
 		r.sendSuccessAlert(context.Background())
 		assert.Equal(t, 1, alerter.deploySuccessCalls)
@@ -826,7 +826,7 @@ func TestSendSuccessAlert(t *testing.T) {
 
 	t.Run("alert error is logged not returned", func(t *testing.T) {
 		alerter := &mockAlertSender{lastErr: fmt.Errorf("send failed")}
-		cfg := &Config{}
+		cfg := &Config{OnSuccess: true}
 		r := NewReconciler(cfg, WithAlerter(alerter))
 		r.sendSuccessAlert(context.Background()) // Should not panic
 		assert.Equal(t, 1, alerter.deploySuccessCalls)
@@ -846,7 +846,7 @@ func TestSendThrottledFailureAlert(t *testing.T) {
 		stateFile := filepath.Join(tmpDir, "state.json")
 
 		alerter := &mockAlertSender{}
-		cfg := &Config{StateFile: stateFile}
+		cfg := &Config{StateFile: stateFile, OnFailure: true}
 		r := NewReconciler(cfg, WithAlerter(alerter))
 		r.lastCommit = "abc123"
 
@@ -858,7 +858,7 @@ func TestSendThrottledFailureAlert(t *testing.T) {
 
 	t.Run("throttled on second attempt", func(t *testing.T) {
 		alerter := &mockAlertSender{}
-		cfg := &Config{}
+		cfg := &Config{OnFailure: true}
 		r := NewReconciler(cfg, WithAlerter(alerter))
 
 		state := &DeployState{AttemptCount: 2, LastAlertedAttempt: 1}
@@ -901,7 +901,7 @@ func TestSendRecoveryAlert(t *testing.T) {
 
 	t.Run("sends recovery alert", func(t *testing.T) {
 		alerter := &mockAlertSender{}
-		cfg := &Config{TargetHost: "user@host"}
+		cfg := &Config{TargetHost: "user@host", OnSuccess: true}
 		r := NewReconciler(cfg, WithAlerter(alerter))
 		r.lastCommit = "def456"
 
@@ -909,9 +909,19 @@ func TestSendRecoveryAlert(t *testing.T) {
 		assert.Equal(t, 1, alerter.deployRecoveryCalls)
 	})
 
+	t.Run("suppressed when OnSuccess is false", func(t *testing.T) {
+		alerter := &mockAlertSender{}
+		cfg := &Config{TargetHost: "user@host", OnSuccess: false}
+		r := NewReconciler(cfg, WithAlerter(alerter))
+		r.lastCommit = "def456"
+
+		r.sendRecoveryAlert(context.Background(), 5)
+		assert.Equal(t, 0, alerter.deployRecoveryCalls)
+	})
+
 	t.Run("alert error is logged not returned", func(t *testing.T) {
 		alerter := &mockAlertSender{lastErr: fmt.Errorf("send failed")}
-		cfg := &Config{}
+		cfg := &Config{OnSuccess: true}
 		r := NewReconciler(cfg, WithAlerter(alerter))
 		r.sendRecoveryAlert(context.Background(), 2)
 		assert.Equal(t, 1, alerter.deployRecoveryCalls)
@@ -1843,7 +1853,7 @@ func TestSendThrottledFailureAlertErrorPaths(t *testing.T) {
 		stateFile := filepath.Join(tmpDir, "state.json")
 
 		alerter := &mockAlertSender{lastErr: fmt.Errorf("network error")}
-		cfg := &Config{StateFile: stateFile}
+		cfg := &Config{StateFile: stateFile, OnFailure: true}
 		r := NewReconciler(cfg, WithAlerter(alerter))
 		r.lastCommit = "abc123"
 
@@ -1860,7 +1870,7 @@ func TestSendThrottledFailureAlertErrorPaths(t *testing.T) {
 		stateFile := "/nonexistent/dir/state.json"
 
 		alerter := &mockAlertSender{}
-		cfg := &Config{StateFile: stateFile}
+		cfg := &Config{StateFile: stateFile, OnFailure: true}
 		r := NewReconciler(cfg, WithAlerter(alerter))
 		r.lastCommit = "abc123"
 
@@ -1877,7 +1887,7 @@ func TestSendThrottledFailureAlertErrorPaths(t *testing.T) {
 		stateFile := filepath.Join(tmpDir, "state.json")
 
 		alerter := &mockAlertSender{}
-		cfg := &Config{StateFile: stateFile} // No TargetHost
+		cfg := &Config{StateFile: stateFile, OnFailure: true} // No TargetHost
 		r := NewReconciler(cfg, WithAlerter(alerter))
 
 		state := &DeployState{AttemptCount: 1, LastAlertedAttempt: 0}
@@ -2420,6 +2430,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 			LocalAppdataPath: appdataDir,
 			InfraSubDir:      ".",
 			SecretsFiles:     []string{"secrets.yaml"},
+			OnFailure:        true,
 		}
 		r := NewReconciler(cfg,
 			WithGitOperations(gitOps),
@@ -2467,6 +2478,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 			LocalAppdataPath: appdataDir,
 			InfraSubDir:      ".",
 			SecretsFiles:     []string{},
+			OnFailure:        true,
 		}
 		r := NewReconciler(cfg,
 			WithGitOperations(gitOps),
@@ -2573,6 +2585,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 			LocalAppdataPath: "/nonexistent/appdata", // Force remote mode
 			InfraSubDir:      ".",
 			SecretsFiles:     []string{},
+			OnFailure:        true,
 		}
 		r := NewReconciler(cfg,
 			WithGitOperations(gitOps),
@@ -2624,6 +2637,8 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 			LocalAppdataPath: appdataDir,
 			InfraSubDir:      ".",
 			SecretsFiles:     []string{},
+			OnFailure:        true,
+			OnSuccess:        true,
 		}
 		r := NewReconciler(cfg,
 			WithGitOperations(gitOps),
@@ -2636,6 +2651,253 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 		// Recovery alert should be sent (AttemptCount was 3 before success)
 		assert.Equal(t, 1, alerter.deployRecoveryCalls)
 		assert.Equal(t, 1, alerter.deploySuccessCalls)
+	})
+}
+
+// --- OnFailure / OnSuccess gate tests ---
+
+func TestSyncRepoFailureSendsAlert(t *testing.T) {
+	t.Run("syncRepo failure triggers failure alert when OnFailure=true", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		stateFile := filepath.Join(tmpDir, "state.json")
+
+		gitOps := &mockGitOps{
+			syncErr: fmt.Errorf("network timeout"),
+		}
+		alerter := &mockAlertSender{}
+
+		cfg := &Config{
+			LockFile:  lockFile,
+			StateFile: stateFile,
+			OnFailure: true,
+		}
+		r := NewReconciler(cfg,
+			WithGitOperations(gitOps),
+			WithAlerter(alerter),
+		)
+
+		err := r.Run(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to sync repository")
+		assert.Equal(t, 1, alerter.deployFailureCalls)
+
+		// State should have been saved with attempt tracking.
+		state := LoadState(stateFile)
+		assert.Equal(t, 1, state.AttemptCount)
+	})
+
+	t.Run("syncRepo failure does NOT trigger alert when OnFailure=false", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		stateFile := filepath.Join(tmpDir, "state.json")
+
+		gitOps := &mockGitOps{
+			syncErr: fmt.Errorf("network timeout"),
+		}
+		alerter := &mockAlertSender{}
+
+		cfg := &Config{
+			LockFile:  lockFile,
+			StateFile: stateFile,
+			OnFailure: false,
+		}
+		r := NewReconciler(cfg,
+			WithGitOperations(gitOps),
+			WithAlerter(alerter),
+		)
+
+		err := r.Run(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to sync repository")
+		assert.Equal(t, 0, alerter.deployFailureCalls)
+	})
+}
+
+func TestOnSuccessGate(t *testing.T) {
+	t.Run("success alert suppressed when OnSuccess=false", func(t *testing.T) {
+		alerter := &mockAlertSender{}
+		cfg := &Config{OnSuccess: false}
+		r := NewReconciler(cfg, WithAlerter(alerter))
+		r.lastCommit = "abc123"
+		r.sendSuccessAlert(context.Background())
+		assert.Equal(t, 0, alerter.deploySuccessCalls)
+	})
+}
+
+func TestOnFailureGate(t *testing.T) {
+	t.Run("failure alert suppressed when OnFailure=false for decrypt failure", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		stateFile := filepath.Join(tmpDir, "state.json")
+		repoDir := filepath.Join(tmpDir, "repo")
+		appdataDir := filepath.Join(tmpDir, "appdata")
+
+		require.NoError(t, os.MkdirAll(appdataDir, 0755))
+
+		infraDir := filepath.Join(repoDir, "unraid")
+		require.NoError(t, os.MkdirAll(infraDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(repoDir, "secrets.yaml"), []byte("dummy"), 0644))
+
+		gitOps := &mockGitOps{
+			syncChanged: true,
+			syncBefore:  "aaa",
+			syncAfter:   "bbb",
+		}
+		mockSops := &mockSecretsDecryptor{
+			decryptErr: fmt.Errorf("age key not available"),
+		}
+		alerter := &mockAlertSender{}
+
+		cfg := &Config{
+			LockFile:         lockFile,
+			StateFile:        stateFile,
+			RepoDir:          repoDir,
+			StagingDir:       filepath.Join(tmpDir, "staging"),
+			LocalAppdataPath: appdataDir,
+			InfraSubDir:      ".",
+			SecretsFiles:     []string{"secrets.yaml"},
+			OnFailure:        false,
+		}
+		r := NewReconciler(cfg,
+			WithGitOperations(gitOps),
+			WithSecretsDecryptor(mockSops),
+			WithAlerter(alerter),
+		)
+
+		err := r.Run(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to decrypt secrets")
+		assert.Equal(t, 0, alerter.deployFailureCalls)
+	})
+
+	t.Run("failure alert suppressed when OnFailure=false for template failure", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		stateFile := filepath.Join(tmpDir, "state.json")
+		repoDir := filepath.Join(tmpDir, "repo")
+		appdataDir := filepath.Join(tmpDir, "appdata")
+
+		require.NoError(t, os.MkdirAll(appdataDir, 0755))
+
+		infraDir := filepath.Join(repoDir, "unraid")
+		require.NoError(t, os.MkdirAll(infraDir, 0755))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(repoDir, "config.yaml.tmpl"),
+			[]byte("{{ .x | badFunc }}"),
+			0644,
+		))
+
+		gitOps := &mockGitOps{
+			syncChanged: true,
+			syncBefore:  "aaa111",
+			syncAfter:   "bbb222",
+		}
+		alerter := &mockAlertSender{}
+
+		cfg := &Config{
+			LockFile:         lockFile,
+			StateFile:        stateFile,
+			RepoDir:          repoDir,
+			StagingDir:       filepath.Join(tmpDir, "staging"),
+			LocalAppdataPath: appdataDir,
+			InfraSubDir:      ".",
+			SecretsFiles:     []string{},
+			OnFailure:        false,
+		}
+		r := NewReconciler(cfg,
+			WithGitOperations(gitOps),
+			WithAlerter(alerter),
+		)
+
+		err := r.Run(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to render templates")
+		assert.Equal(t, 0, alerter.deployFailureCalls)
+	})
+
+	t.Run("failure alert suppressed when OnFailure=false for deploy failure", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		stateFile := filepath.Join(tmpDir, "state.json")
+		repoDir := filepath.Join(tmpDir, "repo")
+		stagingDir := filepath.Join(tmpDir, "staging")
+
+		infraDir := filepath.Join(repoDir, "unraid")
+		require.NoError(t, os.MkdirAll(infraDir, 0755))
+
+		gitOps := &mockGitOps{
+			syncChanged: true,
+			syncBefore:  "aaa111",
+			syncAfter:   "bbb222",
+		}
+		alerter := &mockAlertSender{}
+
+		cfg := &Config{
+			DryRun:           false,
+			LockFile:         lockFile,
+			StateFile:        stateFile,
+			RepoDir:          repoDir,
+			StagingDir:       stagingDir,
+			LocalAppdataPath: "/nonexistent/appdata",
+			InfraSubDir:      ".",
+			SecretsFiles:     []string{},
+			OnFailure:        false,
+		}
+		r := NewReconciler(cfg,
+			WithGitOperations(gitOps),
+			WithAlerter(alerter),
+		)
+
+		err := r.Run(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "deployment failed")
+		assert.Equal(t, 0, alerter.deployFailureCalls)
+	})
+}
+
+func TestDefaultConfigOnFailureDefault(t *testing.T) {
+	cfg := DefaultConfig()
+	assert.True(t, cfg.OnFailure, "OnFailure should default to true")
+	assert.False(t, cfg.OnSuccess, "OnSuccess should default to false")
+}
+
+func TestReloadProjectConfig_AlertGates(t *testing.T) {
+	t.Run("reload updates OnFailure and OnSuccess from repo config", func(t *testing.T) {
+		onFailure := false
+		onSuccess := true
+		cfg := &Config{
+			OnFailure: true,
+			OnSuccess: false,
+			ConfigReloader: func(string) (*ReloadedConfig, error) {
+				return &ReloadedConfig{
+					OnFailure: &onFailure,
+					OnSuccess: &onSuccess,
+				}, nil
+			},
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		assert.False(t, r.config.OnFailure, "OnFailure should be updated to false from repo config")
+		assert.True(t, r.config.OnSuccess, "OnSuccess should be updated to true from repo config")
+	})
+
+	t.Run("nil values in ReloadedConfig preserve existing config", func(t *testing.T) {
+		cfg := &Config{
+			OnFailure: true,
+			OnSuccess: false,
+			ConfigReloader: func(string) (*ReloadedConfig, error) {
+				return &ReloadedConfig{}, nil
+			},
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		assert.True(t, r.config.OnFailure, "OnFailure should remain true when not reloaded")
+		assert.False(t, r.config.OnSuccess, "OnSuccess should remain false when not reloaded")
 	})
 }
 

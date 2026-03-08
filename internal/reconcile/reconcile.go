@@ -19,6 +19,8 @@ type ReloadedConfig struct {
 	PostSyncHooks   []PostSyncHook
 	HookSettleDelay time.Duration
 	DeployPaths     []string
+	OnFailure       *bool
+	OnSuccess       *bool
 	RemoveOrphans   *bool
 }
 
@@ -110,6 +112,14 @@ type Config struct {
 	// When true, repo config reload will not update DeployPaths.
 	DeployPathsFromEnv bool
 
+	// OnFailure gates failure alert dispatch. When false, no failure alerts are sent.
+	// Defaults to true via DefaultConfig(). A bare Config{} leaves this false.
+	OnFailure bool
+
+	// OnSuccess gates success and recovery alert dispatch. When false, neither
+	// success nor recovery alerts are sent. Defaults to false.
+	OnSuccess bool
+
 	// RemoveOrphansFromEnv is true when BOSUN_REMOVE_ORPHANS env var is set.
 	// When true, repo config reload will not update RemoveOrphans.
 	RemoveOrphansFromEnv bool
@@ -138,6 +148,7 @@ func DefaultConfig() *Config {
 		InfraSubDir:        ".",
 		BackupsToKeep:      5,
 		StartupGracePeriod: 30 * time.Second,
+		OnFailure:          true,
 		RemoveOrphans:      true,
 	}
 }
@@ -266,10 +277,12 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	r.declaredServices = nil
 
 	// Acquire lock to prevent concurrent runs.
+	// Lock failures are transient (another reconciliation is running) and lack state context,
+	// so they are logged as warnings without sending alerts.
 	if err := r.acquireLock(); err != nil {
-		logger.Error().
+		logger.Warn().
 			Err(err).
-			Msg("Failed to acquire reconcile lock")
+			Msg("Failed to acquire reconcile lock, another reconciliation may be in progress")
 		return fmt.Errorf("failed to acquire lock (another reconciliation may be in progress): %w", err)
 	}
 	defer r.releaseLock()
@@ -281,6 +294,16 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	changed, before, after, err := r.syncRepo(spanCtx)
 	finishSpan(err)
 	if err != nil {
+		// Use the post-sync commit (may be empty on sync failure) to avoid reporting a stale SHA.
+		r.lastCommit = after
+
+		// Load state before alerting so throttle state is available.
+		state := LoadState(r.config.StateFile)
+		state.LastAttemptedCommit, state.AttemptCount = nextAttemptState(state.LastAttemptedCommit, after, state.AttemptCount)
+		if saveErr := SaveState(r.config.StateFile, state); saveErr != nil {
+			logger.Error().Err(saveErr).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save attempt tracking state for git sync failure")
+		}
+		r.sendThrottledFailureAlert(ctx, state, fmt.Sprintf("failed to sync repository: %v", err))
 		return fmt.Errorf("failed to sync repository: %w", err)
 	}
 
@@ -466,8 +489,13 @@ func MinLen(s string, n int) int {
 }
 
 // sendSuccessAlert sends a deployment success notification.
+// Gated on config.OnSuccess: when false, no success alerts are sent.
 func (r *Reconciler) sendSuccessAlert(ctx context.Context) {
 	if r.alerter == nil {
+		return
+	}
+
+	if !r.config.OnSuccess {
 		return
 	}
 
@@ -488,8 +516,13 @@ func (r *Reconciler) sendSuccessAlert(ctx context.Context) {
 
 // sendThrottledFailureAlert sends a failure alert if the throttle schedule allows it.
 // Updates LastAlertedAttempt in the state and persists it.
+// Gated on config.OnFailure: when false, no failure alerts are sent.
 func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *DeployState, reason string) {
 	if r.alerter == nil {
+		return
+	}
+
+	if !r.config.OnFailure {
 		return
 	}
 
@@ -541,8 +574,13 @@ func (r *Reconciler) sendUnhealthyAlert(ctx context.Context, containers []string
 }
 
 // sendRecoveryAlert sends a notification when deployment succeeds after failures.
+// Gated on config.OnSuccess: recovery is a success-side alert.
 func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) {
 	if r.alerter == nil {
+		return
+	}
+
+	if !r.config.OnSuccess {
 		return
 	}
 
@@ -704,7 +742,7 @@ func (r *Reconciler) reloadProjectConfig() {
 	}
 
 	// If no field has any value from the repo, there's nothing to reload.
-	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 && len(reloaded.DeployPaths) == 0 && reloaded.RemoveOrphans == nil {
+	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 && len(reloaded.DeployPaths) == 0 && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil {
 		return
 	}
 
@@ -725,6 +763,16 @@ func (r *Reconciler) reloadProjectConfig() {
 		changed = true
 	}
 
+	if reloaded.OnFailure != nil {
+		r.config.OnFailure = *reloaded.OnFailure
+		changed = true
+	}
+
+	if reloaded.OnSuccess != nil {
+		r.config.OnSuccess = *reloaded.OnSuccess
+		changed = true
+	}
+
 	if !r.config.RemoveOrphansFromEnv && reloaded.RemoveOrphans != nil {
 		r.config.RemoveOrphans = *reloaded.RemoveOrphans
 		r.deploy.RemoveOrphans = *reloaded.RemoveOrphans
@@ -736,6 +784,8 @@ func (r *Reconciler) reloadProjectConfig() {
 			Int("hooks", len(r.config.PostSyncHooks)).
 			Dur("settle_delay", r.config.HookSettleDelay).
 			Int("deploy_paths", len(r.config.DeployPaths)).
+			Bool("on_failure", r.config.OnFailure).
+			Bool("on_success", r.config.OnSuccess).
 			Bool("remove_orphans", r.config.RemoveOrphans).
 			Msg("Reloaded project config from repo")
 	}

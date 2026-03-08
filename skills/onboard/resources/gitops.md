@@ -13,33 +13,61 @@ Both follow the same reconciliation pipeline. The daemon just runs it automatica
 
 ## Reconciliation Pipeline
 
-Every reconciliation follows this sequence:
+Every reconciliation follows this 14-stage sequence:
 
+```text
+ 1. Acquire lock (prevent concurrent runs)
+        |
+ 2. Git repository sync (clone/pull via go-git)
+        |
+ 3. Load deploy state and evaluate skip/circuit-breaker
+        |
+ 4. Decrypt secrets (SOPS)
+        |
+ 5. Render templates (Go text/template + Sprig)
+        |
+ 6. Extract declared state from rendered compose
+        |
+ 7. Create configuration backup
+        |
+ 8. Deploy files (local copy or tar-over-SSH)
+        |
+ 9. Run docker compose up
+        |
+10. Clean up staging directory
+        |
+11. Record successful deployment in state file
+        |
+12. Execute post-sync hooks
+        |
+13. Post-deploy verification (drift check)
+        |
+14. Release lock
 ```
-1. Acquire lock (prevent concurrent runs)
-       |
-2. Clone/pull repository (go-git, in-process)
-       |
-3. Reload project config from repo (hooks, settle delay, deploy paths)
-       |
-4. Path-aware skip (if deploy_paths configured, skip when no files match)
-       |
-5. Decrypt secrets (go-sops, in-process)
-       |
-6. Render templates (Go text/template + Sprig)
-       |
-7. Create backup of current configs
-       |
-8. Deploy files (local copy or tar-over-SSH)
-       |
-9. Docker compose up
-       |
-10. Post-sync hooks (restart containers on config changes)
-       |
-11. SIGHUP to agentgateway (if configured)
-       |
-12. Release lock
+
+### Failure Alerting
+
+Specific pipeline stages send throttled failure alerts to all configured alert providers (Discord, SendGrid, Twilio) when they fail. This behavior is controlled by the `on_failure` config flag (default: `true`).
+
+- **Git sync (stage 2)**: sends a throttled failure alert (loads state file first so throttle state is available)
+- **Circuit breaker trip (stage 3)**: sends a throttled failure alert
+- **Decrypt failure (stage 4)**: sends a throttled failure alert
+- **Template failure (stage 5)**: sends a throttled failure alert
+- **Deploy failure (stages 8-9)**: sends a throttled failure alert
+- **Lock acquisition (stage 1)**: logged as a warning only, no alert (transient condition)
+- **Backup, cleanup, post-sync hooks, state save, drift check**: logged as warnings only, no failure alert
+
+Success and recovery alerts are controlled by the `on_success` flag (default: `false`). When enabled, a success alert is sent after a successful deployment, and a recovery alert is sent when a deploy succeeds after prior failures.
+
+Configure these flags in `bosun.yaml` under `alerts`:
+
+```yaml
+alerts:
+  on_failure: true   # Send alerts on pipeline failures (default)
+  on_success: false  # Send alerts on successful deploys and recoveries (opt-in)
 ```
+
+Both flags are re-read from `bosun.yaml` after each git pull, so changes take effect on the next reconciliation without restarting the daemon. Other reload-eligible fields include hooks, settle delay, deploy paths, and remove_orphans.
 
 ### Orphan Container Cleanup
 
@@ -66,7 +94,7 @@ When `deploy_paths` is configured in `bosun.yaml`, bosun diffs the previous and 
 
 ### Project Config Reload
 
-After pulling the repository (step 2), bosun re-reads `bosun.yaml` from the repo and updates `PostSyncHooks`, `HookSettleDelay`, and `DeployPaths` if the file has changed. This means config changes pushed to the repo take effect without a daemon restart.
+After pulling the repository (step 2), bosun re-reads `bosun.yaml` from the repo and updates `PostSyncHooks`, `HookSettleDelay`, `DeployPaths`, `on_failure`, and `on_success` if the file has changed. This means config changes pushed to the repo take effect without a daemon restart.
 
 Environment variable overrides (`BOSUN_POST_SYNC_HOOKS`, `BOSUN_HOOK_SETTLE_DELAY`, `BOSUN_DEPLOY_PATHS`) still take precedence -- if set, the corresponding fields from `bosun.yaml` are ignored during reload. If the repo has no `bosun.yaml` or the file fails to parse, the existing config values are retained.
 
