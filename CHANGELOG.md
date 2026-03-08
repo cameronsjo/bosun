@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0](https://github.com/cameronsjo/bosun/compare/v0.17.0...v0.18.0) (2026-03-08)
+
+
+### Features
+
+* **alert:** add drift alert debounce to suppress transient flaps ([#94](https://github.com/cameronsjo/bosun/issues/94)) ([8dc2d9b](https://github.com/cameronsjo/bosun/commit/8dc2d9b85850eb279d7381bcd339a80b5e42a0f4))
+
+
+### Bug Fixes
+
+* **reconcile:** classify compose failures to tolerate unhealthy containers ([#92](https://github.com/cameronsjo/bosun/issues/92)) ([d73332e](https://github.com/cameronsjo/bosun/commit/d73332edceae9141ae257f5fcd2e4018f0062c34))
+
 ## [0.17.0](https://github.com/cameronsjo/bosun/compare/v0.16.2...v0.17.0) (2026-03-07)
 
 
