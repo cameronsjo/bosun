@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -32,4 +33,17 @@ func withDockerClientContext(ctx context.Context, fn func(*docker.Client) error)
 	defer client.Close()
 
 	return fn(client)
+}
+
+// parseJSONHeaders parses a JSON string into a map of HTTP headers.
+// Returns nil if the input is empty or invalid JSON.
+func parseJSONHeaders(raw string) map[string]string {
+	if raw == "" {
+		return nil
+	}
+	var headers map[string]string
+	if err := json.Unmarshal([]byte(raw), &headers); err != nil {
+		return nil
+	}
+	return headers
 }

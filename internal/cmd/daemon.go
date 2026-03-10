@@ -129,6 +129,14 @@ func createDaemonAlertManager() *alert.Manager {
 	})
 	mgr.AddProvider(twilio)
 
+	// Add Webhook provider
+	webhook := alert.NewWebhookProvider(alert.WebhookConfig{
+		URL:     os.Getenv("BOSUN_WEBHOOK_URL"),
+		Headers: parseJSONHeaders(os.Getenv("BOSUN_WEBHOOK_HEADERS")),
+		Method:  os.Getenv("BOSUN_WEBHOOK_METHOD"),
+	})
+	mgr.AddProvider(webhook)
+
 	if mgr.HasProviders() {
 		ui.Info("Alert providers: %v", mgr.ProviderNames())
 	}
