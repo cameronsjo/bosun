@@ -1,9 +1,11 @@
 package reconcile
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"io"
+	"net"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -14,9 +16,12 @@ import (
 // Only the methods needed by reconcile are given real function overrides;
 // the rest return safe defaults.
 type reconcileMockDockerAPI struct {
-	containerRestartFunc func(ctx context.Context, containerID string, options container.StopOptions) error
-	containerInspectFunc func(ctx context.Context, containerID string) (container.InspectResponse, error)
-	containerListFunc    func(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
+	containerRestartFunc     func(ctx context.Context, containerID string, options container.StopOptions) error
+	containerInspectFunc     func(ctx context.Context, containerID string) (container.InspectResponse, error)
+	containerListFunc        func(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
+	containerExecCreateFunc  func(ctx context.Context, ctr string, config container.ExecOptions) (container.ExecCreateResponse, error)
+	containerExecAttachFunc  func(ctx context.Context, execID string, config container.ExecAttachOptions) (types.HijackedResponse, error)
+	containerExecInspectFunc func(ctx context.Context, execID string) (container.ExecInspect, error)
 }
 
 func newReconcileMockDockerAPI() *reconcileMockDockerAPI {
@@ -58,6 +63,38 @@ func (m *reconcileMockDockerAPI) ContainerRestart(ctx context.Context, container
 
 func (m *reconcileMockDockerAPI) ContainerRemove(_ context.Context, _ string, _ container.RemoveOptions) error {
 	return nil
+}
+
+func (m *reconcileMockDockerAPI) ContainerExecCreate(ctx context.Context, ctr string, config container.ExecOptions) (container.ExecCreateResponse, error) {
+	if m.containerExecCreateFunc != nil {
+		return m.containerExecCreateFunc(ctx, ctr, config)
+	}
+	return container.ExecCreateResponse{ID: "mock-exec-id"}, nil
+}
+
+func (m *reconcileMockDockerAPI) ContainerExecAttach(ctx context.Context, execID string, config container.ExecAttachOptions) (types.HijackedResponse, error) {
+	if m.containerExecAttachFunc != nil {
+		return m.containerExecAttachFunc(ctx, execID, config)
+	}
+	return mockHijackedResponse(), nil
+}
+
+// mockHijackedResponse creates a HijackedResponse with a valid net.Conn
+// so that Close() does not panic.
+func mockHijackedResponse() types.HijackedResponse {
+	server, client := net.Pipe()
+	server.Close()
+	return types.HijackedResponse{
+		Conn:   client,
+		Reader: bufio.NewReader(bytes.NewReader([]byte{})),
+	}
+}
+
+func (m *reconcileMockDockerAPI) ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error) {
+	if m.containerExecInspectFunc != nil {
+		return m.containerExecInspectFunc(ctx, execID)
+	}
+	return container.ExecInspect{ExitCode: 0}, nil
 }
 
 func (m *reconcileMockDockerAPI) ContainerStats(_ context.Context, _ string, _ bool) (container.StatsResponseReader, error) {

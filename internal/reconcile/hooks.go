@@ -16,17 +16,28 @@ import (
 type PostSyncHook struct {
 	// Paths are glob patterns matched against changed files (relative to repo root).
 	Paths []string `json:"paths" yaml:"paths"`
-	// Action is the operation to perform (currently only "restart" is supported).
+	// Action is the operation to perform: "restart" (default) or "exec".
 	Action string `json:"action" yaml:"action"`
 	// Container is the name of the container to act on.
 	Container string `json:"container" yaml:"container"`
-	// Delay is an optional pause before restarting this specific container.
+	// Command is the command to execute inside the container (for action: "exec").
+	// Accepts a list of strings (e.g., ["nginx", "-s", "reload"]).
+	Command []string `json:"command,omitempty" yaml:"command,omitempty"`
+	// Delay is an optional pause before executing this hook's action.
 	// Useful when a container needs extra time for config propagation.
 	Delay Duration `json:"delay,omitempty" yaml:"delay,omitempty"`
 }
 
+// hookKey returns a deduplication key for a hook.
+// Different actions on the same container are distinct hooks (e.g., restart + exec).
+func hookKey(h PostSyncHook) string {
+	return h.Container + ":" + h.Action
+}
+
 // EvaluatePostSyncHooks matches changed file paths against hook glob patterns
 // and returns the hooks that should be executed.
+// Deduplication keys on container+action, so a container can have both a restart
+// and an exec hook fire from the same change set.
 func EvaluatePostSyncHooks(changedFiles []string, hooks []PostSyncHook) []PostSyncHook {
 	if len(hooks) == 0 || len(changedFiles) == 0 {
 		return nil
@@ -36,29 +47,32 @@ func EvaluatePostSyncHooks(changedFiles []string, hooks []PostSyncHook) []PostSy
 	seen := make(map[string]bool)
 
 	for _, hook := range hooks {
-		if seen[hook.Container] {
+		key := hookKey(hook)
+		if seen[key] {
 			continue
 		}
 		if hookMatchesAny(hook, changedFiles) {
 			matched = append(matched, hook)
-			seen[hook.Container] = true
+			seen[key] = true
 		}
 	}
 
 	return matched
 }
 
-// dedupeHooksByContainer returns hooks with duplicate containers removed (first wins).
-// Used as a fallback when DiffFiles fails and all hooks should fire unconditionally.
+// dedupeHooksByContainer returns hooks with duplicate container+action pairs removed
+// (first wins). Used as a fallback when DiffFiles fails and all hooks should fire
+// unconditionally.
 func dedupeHooksByContainer(hooks []PostSyncHook) []PostSyncHook {
 	var result []PostSyncHook
 	seen := make(map[string]bool)
 	for _, hook := range hooks {
-		if seen[hook.Container] {
+		key := hookKey(hook)
+		if seen[key] {
 			continue
 		}
 		result = append(result, hook)
-		seen[hook.Container] = true
+		seen[key] = true
 	}
 	return result
 }
@@ -110,7 +124,7 @@ func matchAnyPath(files []string, patterns []string) bool {
 	return false
 }
 
-// ExecutePostSyncHooks runs matched hooks by restarting the specified containers.
+// ExecutePostSyncHooks runs matched hooks by performing the specified action on containers.
 // settleDelay is a global pause before any hooks run (filesystem propagation).
 func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []PostSyncHook, settleDelay time.Duration) error {
 	if len(hooks) == 0 {
@@ -119,7 +133,7 @@ func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []Po
 
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
-	// Global settle delay: wait for filesystem propagation before restarting anything.
+	// Global settle delay: wait for filesystem propagation before running hooks.
 	if settleDelay > 0 {
 		logger.Info().Dur("settle_delay", settleDelay).Msg("Waiting for filesystem settle before post-sync hooks")
 		ui.Info("  Waiting %s for filesystem settle...", settleDelay)
@@ -132,18 +146,10 @@ func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []Po
 
 	var errs []string
 	for _, hook := range hooks {
-		if hook.Action != "restart" {
-			logger.Warn().
-				Str("action", hook.Action).
-				Str("container", hook.Container).
-				Msg("Unsupported post-sync hook action, skipping")
-			continue
-		}
-
-		// Per-hook delay: wait before restarting this specific container.
+		// Per-hook delay: wait before executing this hook's action.
 		if hook.Delay.Duration > 0 {
-			logger.Info().Dur("delay", hook.Delay.Duration).Str("container", hook.Container).Msg("Waiting before container restart")
-			ui.Info("  Waiting %s before restarting %s...", hook.Delay.Duration, hook.Container)
+			logger.Info().Dur("delay", hook.Delay.Duration).Str("container", hook.Container).Str("action", hook.Action).Msg("Waiting before hook execution")
+			ui.Info("  Waiting %s before %s on %s...", hook.Delay.Duration, hook.Action, hook.Container)
 			select {
 			case <-time.After(hook.Delay.Duration):
 			case <-ctx.Done():
@@ -151,20 +157,55 @@ func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []Po
 			}
 		}
 
-		logger.Info().
-			Str("container", hook.Container).
-			Strs("patterns", hook.Paths).
-			Msg("Executing post-sync hook: restarting container")
-		ui.Info("  Restarting %s (config files changed)...", hook.Container)
-
-		if err := client.RestartContainer(ctx, hook.Container); err != nil {
-			logger.Error().
-				Err(err).
+		switch hook.Action {
+		case "restart":
+			logger.Info().
 				Str("container", hook.Container).
-				Msg("Post-sync hook failed: container restart error")
-			errs = append(errs, fmt.Sprintf("%s: %v", hook.Container, err))
-		} else {
-			ui.Success("  Restarted %s", hook.Container)
+				Strs("patterns", hook.Paths).
+				Msg("Executing post-sync hook: restarting container")
+			ui.Info("  Restarting %s (config files changed)...", hook.Container)
+
+			if err := client.RestartContainer(ctx, hook.Container); err != nil {
+				logger.Error().
+					Err(err).
+					Str("container", hook.Container).
+					Msg("Post-sync hook failed: container restart error")
+				errs = append(errs, fmt.Sprintf("%s: %v", hook.Container, err))
+			} else {
+				ui.Success("  Restarted %s", hook.Container)
+			}
+
+		case "exec":
+			if len(hook.Command) == 0 {
+				logger.Warn().
+					Str("container", hook.Container).
+					Msg("Exec hook has no command, skipping")
+				continue
+			}
+
+			logger.Info().
+				Str("container", hook.Container).
+				Strs("command", hook.Command).
+				Strs("patterns", hook.Paths).
+				Msg("Executing post-sync hook: exec in container")
+			ui.Info("  Executing %q in %s (config files changed)...", strings.Join(hook.Command, " "), hook.Container)
+
+			if err := client.ExecContainer(ctx, hook.Container, hook.Command); err != nil {
+				logger.Error().
+					Err(err).
+					Str("container", hook.Container).
+					Strs("command", hook.Command).
+					Msg("Post-sync hook failed: container exec error")
+				errs = append(errs, fmt.Sprintf("%s exec: %v", hook.Container, err))
+			} else {
+				ui.Success("  Executed command in %s", hook.Container)
+			}
+
+		default:
+			logger.Warn().
+				Str("action", hook.Action).
+				Str("container", hook.Container).
+				Msg("Unsupported post-sync hook action, skipping")
 		}
 	}
 

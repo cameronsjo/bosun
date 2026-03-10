@@ -536,6 +536,47 @@ func TestPostSyncHooksFromConfig(t *testing.T) {
 		assert.Equal(t, 5*time.Second, hooks[0].Delay.Duration)
 		assert.Equal(t, time.Duration(0), hooks[1].Delay.Duration)
 	})
+
+	t.Run("parses exec hooks with command field", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `post_sync_hooks:
+  - paths: ["traefik/**"]
+    action: exec
+    container: traefik
+    command: ["traefik", "reload"]
+  - paths: ["nginx/**"]
+    action: restart
+    container: nginx
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+
+		hooks := cfg.PostSyncHooks()
+		require.Len(t, hooks, 2)
+
+		assert.Equal(t, reconcile.PostSyncHook{
+			Paths:     []string{"traefik/**"},
+			Action:    "exec",
+			Container: "traefik",
+			Command:   []string{"traefik", "reload"},
+		}, hooks[0])
+
+		assert.Equal(t, reconcile.PostSyncHook{
+			Paths:     []string{"nginx/**"},
+			Action:    "restart",
+			Container: "nginx",
+		}, hooks[1])
+	})
 }
 
 func TestLoadFrom(t *testing.T) {

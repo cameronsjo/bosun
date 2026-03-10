@@ -1,11 +1,13 @@
 package docker
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -31,30 +33,36 @@ var (
 // MockDockerAPI is a mock implementation of DockerAPI for testing.
 type MockDockerAPI struct {
 	// Function overrides for each method
-	PingFunc            func(ctx context.Context) (types.Ping, error)
-	ContainerListFunc   func(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
-	ContainerInspectFunc func(ctx context.Context, containerID string) (container.InspectResponse, error)
-	ContainerLogsFunc   func(ctx context.Context, ctr string, options container.LogsOptions) (io.ReadCloser, error)
-	ContainerStartFunc  func(ctx context.Context, containerID string, options container.StartOptions) error
-	ContainerRestartFunc func(ctx context.Context, containerID string, options container.StopOptions) error
-	ContainerRemoveFunc func(ctx context.Context, containerID string, options container.RemoveOptions) error
-	ContainerStatsFunc  func(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error)
-	DiskUsageFunc       func(ctx context.Context, options types.DiskUsageOptions) (types.DiskUsage, error)
-	InfoFunc            func(ctx context.Context) (system.Info, error)
-	CloseFunc           func() error
+	PingFunc                func(ctx context.Context) (types.Ping, error)
+	ContainerListFunc       func(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
+	ContainerInspectFunc    func(ctx context.Context, containerID string) (container.InspectResponse, error)
+	ContainerLogsFunc       func(ctx context.Context, ctr string, options container.LogsOptions) (io.ReadCloser, error)
+	ContainerStartFunc      func(ctx context.Context, containerID string, options container.StartOptions) error
+	ContainerRestartFunc    func(ctx context.Context, containerID string, options container.StopOptions) error
+	ContainerRemoveFunc     func(ctx context.Context, containerID string, options container.RemoveOptions) error
+	ContainerStatsFunc      func(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error)
+	ContainerExecCreateFunc func(ctx context.Context, ctr string, config container.ExecOptions) (container.ExecCreateResponse, error)
+	ContainerExecAttachFunc func(ctx context.Context, execID string, config container.ExecAttachOptions) (types.HijackedResponse, error)
+	ContainerExecInspectFunc func(ctx context.Context, execID string) (container.ExecInspect, error)
+	DiskUsageFunc           func(ctx context.Context, options types.DiskUsageOptions) (types.DiskUsage, error)
+	InfoFunc                func(ctx context.Context) (system.Info, error)
+	CloseFunc               func() error
 
 	// Call tracking
-	PingCalls           int
-	ContainerListCalls  int
-	ContainerInspectCalls int
-	ContainerLogsCalls  int
-	ContainerStartCalls int
-	ContainerRestartCalls int
-	ContainerRemoveCalls int
-	ContainerStatsCalls int
-	DiskUsageCalls      int
-	InfoCalls           int
-	CloseCalls          int
+	PingCalls                int
+	ContainerListCalls       int
+	ContainerInspectCalls    int
+	ContainerLogsCalls       int
+	ContainerStartCalls      int
+	ContainerRestartCalls    int
+	ContainerRemoveCalls     int
+	ContainerStatsCalls      int
+	ContainerExecCreateCalls int
+	ContainerExecAttachCalls int
+	ContainerExecInspectCalls int
+	DiskUsageCalls           int
+	InfoCalls                int
+	CloseCalls               int
 }
 
 // NewMockDockerAPI creates a new mock with default no-op implementations.
@@ -125,6 +133,43 @@ func (m *MockDockerAPI) ContainerRemove(ctx context.Context, containerID string,
 	return nil
 }
 
+// ContainerExecCreate implements DockerAPI.
+func (m *MockDockerAPI) ContainerExecCreate(ctx context.Context, ctr string, config container.ExecOptions) (container.ExecCreateResponse, error) {
+	m.ContainerExecCreateCalls++
+	if m.ContainerExecCreateFunc != nil {
+		return m.ContainerExecCreateFunc(ctx, ctr, config)
+	}
+	return container.ExecCreateResponse{ID: "mock-exec-id"}, nil
+}
+
+// ContainerExecAttach implements DockerAPI.
+func (m *MockDockerAPI) ContainerExecAttach(ctx context.Context, execID string, config container.ExecAttachOptions) (types.HijackedResponse, error) {
+	m.ContainerExecAttachCalls++
+	if m.ContainerExecAttachFunc != nil {
+		return m.ContainerExecAttachFunc(ctx, execID, config)
+	}
+	return mockHijackedResponse(), nil
+}
+
+// mockHijackedResponse creates a HijackedResponse with a valid net.Conn.
+func mockHijackedResponse() types.HijackedResponse {
+	server, client := net.Pipe()
+	server.Close()
+	return types.HijackedResponse{
+		Conn:   client,
+		Reader: bufio.NewReader(bytes.NewReader([]byte{})),
+	}
+}
+
+// ContainerExecInspect implements DockerAPI.
+func (m *MockDockerAPI) ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error) {
+	m.ContainerExecInspectCalls++
+	if m.ContainerExecInspectFunc != nil {
+		return m.ContainerExecInspectFunc(ctx, execID)
+	}
+	return container.ExecInspect{ExitCode: 0}, nil
+}
+
 // ContainerStats implements DockerAPI.
 func (m *MockDockerAPI) ContainerStats(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error) {
 	m.ContainerStatsCalls++
@@ -176,6 +221,9 @@ func (m *MockDockerAPI) Reset() {
 	m.ContainerRestartCalls = 0
 	m.ContainerRemoveCalls = 0
 	m.ContainerStatsCalls = 0
+	m.ContainerExecCreateCalls = 0
+	m.ContainerExecAttachCalls = 0
+	m.ContainerExecInspectCalls = 0
 	m.DiskUsageCalls = 0
 	m.InfoCalls = 0
 	m.CloseCalls = 0
