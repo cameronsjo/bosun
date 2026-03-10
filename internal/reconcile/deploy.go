@@ -544,15 +544,33 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 		return ctx.Err()
 	}
 
+	// Rename-aside pattern: move existing target out of the way, rename new
+	// into place, then clean up. This avoids the window where the target is
+	// missing (between remove and rename) that the old remove-then-rename
+	// approach had.
+	backupDir := targetDir + ".bak"
+	hadExisting := false
+
 	if _, err := os.Stat(targetDir); err == nil {
-		if err := os.RemoveAll(targetDir); err != nil {
-			return fmt.Errorf("remove existing target: %w", err)
+		hadExisting = true
+		if err := os.Rename(targetDir, backupDir); err != nil {
+			return fmt.Errorf("rename existing target aside: %w", err)
 		}
 	}
 
 	if err := os.Rename(tmpDir, targetDir); err != nil {
 		logger.Error().Err(err).Str("target", targetDir).Msg("Failed to rename to target")
+		// Restore the backup so the original target is not lost.
+		if hadExisting {
+			if rbErr := os.Rename(backupDir, targetDir); rbErr != nil {
+				logger.Error().Err(rbErr).Msg("Failed to restore backup after rename failure")
+			}
+		}
 		return fmt.Errorf("rename to target: %w", err)
+	}
+
+	if hadExisting {
+		os.RemoveAll(backupDir)
 	}
 
 	success = true
