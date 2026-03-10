@@ -841,32 +841,114 @@ func (d *Daemon) LastReconcile() (time.Time, error) {
 	return d.lastReconcile, d.lastError
 }
 
-// HealthStatus returns the daemon health status.
+// HealthStatus returns the daemon health status with subsystem breakdown.
 func (d *Daemon) HealthStatus() HealthStatus {
 	lastReconcile, lastError := d.LastReconcile()
 
+	subsystems := make(map[string]SubsystemStatus)
+
+	// Docker subsystem: check if the client can be created.
+	dockerSub := SubsystemStatus{Status: StatusHealthy}
+	if _, err := d.DockerClient(); err != nil {
+		dockerSub.Status = StatusUnhealthy
+		dockerSub.Message = err.Error()
+	}
+	subsystems["docker"] = dockerSub
+
+	// Git subsystem: report healthy if repo URL is configured.
+	gitSub := SubsystemStatus{Status: StatusHealthy}
+	if d.config.ReconcileConfig == nil || d.config.ReconcileConfig.RepoURL == "" {
+		gitSub.Status = StatusUnhealthy
+		gitSub.Message = "no repository URL configured"
+	}
+	subsystems["git"] = gitSub
+
+	// Reconciler subsystem: report last run time and error.
+	reconcilerSub := SubsystemStatus{Status: StatusHealthy}
+	if !lastReconcile.IsZero() {
+		ts := lastReconcile.UTC().Format(time.RFC3339)
+		reconcilerSub.LastRun = ts
+	}
+	if lastError != nil {
+		reconcilerSub.Status = StatusDegraded
+		reconcilerSub.Message = lastError.Error()
+	}
+	subsystems["reconciler"] = reconcilerSub
+
+	// Circuit breaker subsystem: read from deploy state file.
+	cbSub := SubsystemStatus{Status: StatusClosed}
+	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.StateFile != "" {
+		state := reconcile.LoadState(d.config.ReconcileConfig.StateFile)
+		cbSub.Failures = state.AttemptCount
+		if state.AttemptCount >= reconcile.MaxAttempts && state.LastAttemptedCommit != "" && state.LastAttemptedCommit == state.LastDeployedCommit {
+			// Circuit breaker tripped but commit matched deployed — reset scenario.
+			// Keep closed.
+		} else if state.AttemptCount >= reconcile.MaxAttempts {
+			cbSub.Status = StatusOpen
+		}
+	}
+	subsystems["circuit_breaker"] = cbSub
+
+	// Compute top-level status from subsystems.
+	topLevel := computeTopLevelStatus(subsystems)
+
 	status := HealthStatus{
-		Status:        "healthy",
+		Status:        topLevel,
 		Ready:         d.IsReady(),
 		LastReconcile: lastReconcile,
 		Uptime:        time.Since(startTime),
+		Subsystems:    subsystems,
 	}
 
 	if lastError != nil {
-		status.Status = "degraded"
 		status.LastError = lastError.Error()
 	}
 
 	return status
 }
 
-// HealthStatus represents the daemon health.
+// Status constants for subsystem health.
+const (
+	StatusHealthy   = "healthy"
+	StatusDegraded  = "degraded"
+	StatusUnhealthy = "unhealthy"
+	StatusClosed    = "closed"
+	StatusOpen      = "open"
+)
+
+// SubsystemStatus represents the health of an individual subsystem.
+type SubsystemStatus struct {
+	Status   string `json:"status"`
+	Message  string `json:"message,omitempty"`
+	LastRun  string `json:"last_run,omitempty"`
+	Failures int    `json:"failures,omitempty"`
+}
+
+// HealthStatus represents the daemon health with subsystem breakdown.
 type HealthStatus struct {
-	Status        string        `json:"status"`
-	Ready         bool          `json:"ready"`
-	LastReconcile time.Time     `json:"last_reconcile,omitempty"`
-	LastError     string        `json:"last_error,omitempty"`
-	Uptime        time.Duration `json:"uptime"`
+	Status        string                       `json:"status"`
+	Ready         bool                         `json:"ready"`
+	LastReconcile time.Time                    `json:"last_reconcile,omitempty"`
+	LastError     string                       `json:"last_error,omitempty"`
+	Uptime        time.Duration                `json:"uptime"`
+	Subsystems    map[string]SubsystemStatus   `json:"subsystems"`
+}
+
+// computeTopLevelStatus derives the top-level health status from subsystems.
+// Docker down = "unhealthy" (critical). Any other subsystem degraded/unhealthy/open = "degraded".
+func computeTopLevelStatus(subsystems map[string]SubsystemStatus) string {
+	if docker, ok := subsystems["docker"]; ok && docker.Status == StatusUnhealthy {
+		return StatusUnhealthy
+	}
+
+	for _, sub := range subsystems {
+		switch sub.Status {
+		case StatusDegraded, StatusUnhealthy, StatusOpen:
+			return StatusDegraded
+		}
+	}
+
+	return StatusHealthy
 }
 
 // WidgetData returns lightweight stats for Homepage's customapi widget.

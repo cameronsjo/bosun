@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/docker"
+	"github.com/cameronsjo/bosun/internal/docker/dockertest"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -140,6 +142,9 @@ func newTestTCPServer(t *testing.T) (*TCPServer, *Daemon) {
 
 	d, err := New(cfg)
 	require.NoError(t, err)
+
+	// Inject mock Docker client so health checks report docker as healthy.
+	d.dockerClientOverride = docker.NewClientWithAPI(&dockertest.MockDockerAPI{})
 
 	// Wait for background trigger goroutines to finish before temp dir cleanup.
 	t.Cleanup(func() { waitForReconcileIdle(t, d) })

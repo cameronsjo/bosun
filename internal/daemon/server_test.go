@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cameronsjo/bosun/internal/docker"
+	"github.com/cameronsjo/bosun/internal/docker/dockertest"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -41,6 +43,9 @@ func newTestDaemon(t *testing.T) (*Daemon, *Server) {
 
 	d, err := New(cfg)
 	require.NoError(t, err)
+
+	// Inject mock Docker client so health checks report docker as healthy.
+	d.dockerClientOverride = docker.NewClientWithAPI(&dockertest.MockDockerAPI{})
 
 	s := NewServer(d)
 
@@ -192,7 +197,7 @@ func TestValidateGitHubSignature(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleHealth(t *testing.T) {
-	t.Run("GET returns 200 with healthy JSON", func(t *testing.T) {
+	t.Run("GET returns 200 with healthy JSON and subsystems", func(t *testing.T) {
 		_, s := newTestDaemon(t)
 
 		req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -205,6 +210,11 @@ func TestHandleHealth(t *testing.T) {
 		var status HealthStatus
 		require.NoError(t, json.NewDecoder(w.Body).Decode(&status))
 		assert.Equal(t, "healthy", status.Status)
+		require.NotNil(t, status.Subsystems)
+		assert.Equal(t, "healthy", status.Subsystems["docker"].Status)
+		assert.Equal(t, "healthy", status.Subsystems["git"].Status)
+		assert.Equal(t, "healthy", status.Subsystems["reconciler"].Status)
+		assert.Equal(t, "closed", status.Subsystems["circuit_breaker"].Status)
 	})
 
 	t.Run("POST returns 405", func(t *testing.T) {
@@ -234,6 +244,7 @@ func TestHandleHealth(t *testing.T) {
 		require.NoError(t, json.NewDecoder(w.Body).Decode(&status))
 		assert.Equal(t, "degraded", status.Status)
 		assert.NotEmpty(t, status.LastError)
+		assert.Equal(t, "degraded", status.Subsystems["reconciler"].Status)
 	})
 }
 

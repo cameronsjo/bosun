@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/docker"
+	"github.com/cameronsjo/bosun/internal/docker/dockertest"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -133,6 +135,7 @@ func TestTCPClient_Health(t *testing.T) {
 
 	d, err := New(cfg)
 	require.NoError(t, err)
+	d.dockerClientOverride = docker.NewClientWithAPI(&dockertest.MockDockerAPI{})
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -187,6 +190,7 @@ func TestTCPClient_WrongToken(t *testing.T) {
 
 	d, err := New(cfg)
 	require.NoError(t, err)
+	d.dockerClientOverride = docker.NewClientWithAPI(&dockertest.MockDockerAPI{})
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
