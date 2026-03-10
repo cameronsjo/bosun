@@ -109,6 +109,10 @@ func createDaemonAlertManager() *alert.Manager {
 	discord := alert.NewDiscordProvider(os.Getenv("DISCORD_WEBHOOK_URL"))
 	mgr.AddProvider(discord)
 
+	// Add Slack provider
+	slack := alert.NewSlackProvider(os.Getenv("SLACK_WEBHOOK_URL"))
+	mgr.AddProvider(slack)
+
 	// Add SendGrid provider
 	toEmails := filterEmptyStrings(strings.Split(os.Getenv("SENDGRID_TO_EMAILS"), ","))
 	sendgrid := alert.NewSendGrid(alert.SendGridConfig{

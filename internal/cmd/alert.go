@@ -53,7 +53,7 @@ var (
 
 func init() {
 	// Add test command flags
-	alertTestCmd.Flags().StringVarP(&alertTestProvider, "provider", "p", "", "Test specific provider (discord, sendgrid, twilio)")
+	alertTestCmd.Flags().StringVarP(&alertTestProvider, "provider", "p", "", "Test specific provider (discord, slack, sendgrid, twilio)")
 	alertTestCmd.Flags().StringVarP(&alertTestMessage, "message", "m", "", "Custom test message")
 	alertTestCmd.Flags().StringVarP(&alertTestSeverity, "severity", "s", "info", "Test severity level (info, warning, error)")
 
@@ -88,6 +88,9 @@ func displayAlertStatusFromEnv() {
 	if v := os.Getenv("DISCORD_WEBHOOK_URL"); v != "" {
 		alertCfg.DiscordWebhookURL = v
 	}
+	if v := os.Getenv("SLACK_WEBHOOK_URL"); v != "" {
+		alertCfg.SlackWebhookURL = v
+	}
 	if v := os.Getenv("SENDGRID_API_KEY"); v != "" {
 		alertCfg.SendGridAPIKey = v
 	}
@@ -111,6 +114,17 @@ func displayAlertStatus(alertCfg config.AlertConfig) {
 	} else {
 		ui.Warning("Discord: not configured")
 		fmt.Println("  Set DISCORD_WEBHOOK_URL or add discord_webhook_url to bosun.yaml")
+	}
+	fmt.Println()
+
+	// Slack
+	if alertCfg.SlackWebhookURL != "" {
+		ui.Success("Slack: configured")
+		fmt.Printf("  Webhook URL: %s...%s\n", alertCfg.SlackWebhookURL[:30], alertCfg.SlackWebhookURL[len(alertCfg.SlackWebhookURL)-10:])
+		hasProvider = true
+	} else {
+		ui.Warning("Slack: not configured")
+		fmt.Println("  Set SLACK_WEBHOOK_URL or add slack_webhook_url to bosun.yaml")
 	}
 	fmt.Println()
 
@@ -191,6 +205,9 @@ func runAlertTest(cmd *cobra.Command, args []string) {
 		if v := os.Getenv("DISCORD_WEBHOOK_URL"); v != "" {
 			alertCfg.DiscordWebhookURL = v
 		}
+		if v := os.Getenv("SLACK_WEBHOOK_URL"); v != "" {
+			alertCfg.SlackWebhookURL = v
+		}
 		if v := os.Getenv("SENDGRID_API_KEY"); v != "" {
 			alertCfg.SendGridAPIKey = v
 		}
@@ -228,6 +245,24 @@ func runAlertTest(cmd *cobra.Command, args []string) {
 			fmt.Println()
 		} else if alertTestProvider == "discord" {
 			ui.Error("Discord not configured")
+			os.Exit(1)
+		}
+	}
+
+	if alertTestProvider == "" || alertTestProvider == "slack" {
+		if alertCfg.SlackWebhookURL != "" {
+			tested++
+			ui.Info("Testing Slack...")
+			if err := testSlackAlert(alertCfg.SlackWebhookURL, message, alertTestSeverity); err != nil {
+				ui.Error("Slack test failed: %v", err)
+				failed++
+			} else {
+				ui.Success("Slack test passed")
+				succeeded++
+			}
+			fmt.Println()
+		} else if alertTestProvider == "slack" {
+			ui.Error("Slack not configured")
 			os.Exit(1)
 		}
 	}
@@ -280,6 +315,30 @@ func runAlertTest(cmd *cobra.Command, args []string) {
 	if failed > 0 {
 		os.Exit(1)
 	}
+}
+
+// testSlackAlert sends a test message to Slack.
+func testSlackAlert(webhookURL, message, severity string) error {
+	provider := alert.NewSlackProvider(webhookURL)
+	if !provider.IsConfigured() {
+		return fmt.Errorf("slack webhook URL not configured")
+	}
+
+	testAlert := &alert.Alert{
+		Title:    "Test Alert from Bosun",
+		Message:  message,
+		Severity: parseSeverity(severity),
+		Source:   "alert-test",
+		Metadata: map[string]string{
+			"type": "test",
+			"time": time.Now().Format(time.RFC3339),
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return provider.Send(ctx, testAlert)
 }
 
 // testDiscordAlert sends a test message to Discord.
