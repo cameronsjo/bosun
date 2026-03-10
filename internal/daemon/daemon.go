@@ -108,6 +108,7 @@ type Daemon struct {
 	httpServer    *Server       // HTTP server for webhooks (optional)
 	reconciler    *reconcile.Reconciler
 	alerter       *alert.Manager
+	metrics       *Metrics       // Prometheus metrics (nil when HTTP is disabled)
 	dockerOnce    sync.Once      // Lazily initialize Docker client
 	dockerClient  *docker.Client // Shared Docker client for API handlers
 	dockerErr     error          // Error from Docker client initialization
@@ -180,6 +181,7 @@ func New(cfg *Config) (*Daemon, error) {
 	// Create HTTP server for webhooks (optional, for backwards compat)
 	if cfg.EnableHTTP {
 		d.httpServer = NewServer(d)
+		d.metrics = d.httpServer.metrics
 	}
 
 	// Create TCP server for remote access (optional)
@@ -530,7 +532,13 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 	// Finish the Sentry transaction with the result status.
 	finishTx(err)
 
+	durationSec := time.Since(start).Seconds()
+
 	if err != nil {
+		if d.metrics != nil {
+			d.metrics.RecordReconcileFailure(durationSec)
+		}
+
 		logger.Error().
 			Str(log.FieldSource, source).
 			Int64(log.FieldDurationMS, durationMS).
@@ -539,6 +547,11 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 
 		ui.Error("Reconciliation failed after %s: %v", time.Since(start), err)
 		return err
+	}
+
+	if d.metrics != nil {
+		d.metrics.RecordReconcileSuccess(durationSec)
+		d.metrics.SetLastReconcileTime(float64(d.lastReconcile.Unix()))
 	}
 
 	logger.Info().
@@ -650,6 +663,10 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	// Initialize debounce map for FilterDebounced mutation.
 	if state.DriftDebounceItems == nil {
 		state.DriftDebounceItems = make(map[string]time.Time)
+	}
+
+	if d.metrics != nil {
+		d.metrics.RecordDriftCheck(report.HasDrift())
 	}
 
 	if report.HasDrift() {
@@ -827,11 +844,14 @@ func (d *Daemon) IsReady() bool {
 	return d.ready
 }
 
-// setReady sets the readiness state.
+// setReady sets the readiness state and updates the Prometheus gauge.
 func (d *Daemon) setReady(ready bool) {
 	d.readyMu.Lock()
 	defer d.readyMu.Unlock()
 	d.ready = ready
+	if d.metrics != nil {
+		d.metrics.SetReady(ready)
+	}
 }
 
 // LastReconcile returns the time of the last reconciliation and any error.
