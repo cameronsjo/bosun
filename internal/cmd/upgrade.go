@@ -445,36 +445,36 @@ func runUpgradeTraefik(cmd *cobra.Command, args []string) {
 		upgradeLogger.Debug().Err(err).Msg("Could not load bosun config, continuing without project config")
 	}
 
-	ui.Blue.Println("Checking Traefik configuration...")
+	ui.Info("Checking Traefik configuration...")
 	fmt.Println()
 
 	// Find Traefik compose file
 	composePath, err := findTraefikComposeFile(cfg, upgradeComposePath)
 	if err != nil {
-		ui.Yellow.Printf("  ! %v\n", err)
+		ui.Warning("%v", err)
 		fmt.Println()
 		fmt.Println("Specify the compose file with --compose <path>")
 		return
 	}
 
-	ui.Green.Printf("  Found Traefik in: %s\n", composePath)
+	ui.Success("Found Traefik in: %s", composePath)
 
 	// Check for template files
 	isTemplate := strings.HasSuffix(composePath, ".tmpl") || fileContainsGoTemplate(composePath)
 	if isTemplate {
-		ui.Yellow.Println("  ! Compose file is a template — fixes will be shown but not auto-applied")
+		ui.Warning("Compose file is a template — fixes will be shown but not auto-applied")
 	}
 
 	// Parse Traefik service
 	svc, err := parseTraefikService(composePath)
 	if err != nil || svc == nil {
 		if isTemplate {
-			ui.Yellow.Println("  ! Could not parse template file as plain YAML — showing generic recommendations")
+			ui.Warning("Could not parse template file as plain YAML — showing generic recommendations")
 			fmt.Println()
 			showGenericRecommendations()
 			return
 		}
-		ui.Red.Println("  x Failed to parse Traefik service from compose file")
+		ui.Error("Failed to parse Traefik service from compose file")
 		return
 	}
 
@@ -506,13 +506,13 @@ func runUpgradeTraefik(cmd *cobra.Command, args []string) {
 		switch c.Status {
 		case "pass":
 			passed++
-			ui.Green.Printf("  * %s: %s\n", c.Name, c.Description)
+			ui.Success("%s: %s", c.Name, c.Description)
 		case "warn":
 			warned++
-			ui.Yellow.Printf("  ! %s: %s\n", c.Name, c.Description)
+			ui.Warning("%s: %s", c.Name, c.Description)
 		case "missing":
 			missing++
-			ui.Red.Printf("  x %s: %s\n", c.Name, c.Description)
+			ui.Error("%s: %s", c.Name, c.Description)
 		}
 	}
 
@@ -527,7 +527,7 @@ func runUpgradeTraefik(cmd *cobra.Command, args []string) {
 
 	if warned == 0 && missing == 0 {
 		fmt.Println()
-		ui.Green.Println("All Traefik defaults are in place!")
+		ui.Success("All Traefik defaults are in place!")
 		return
 	}
 
@@ -553,7 +553,7 @@ func runUpgradeTraefik(cmd *cobra.Command, args []string) {
 	fmt.Println()
 	apply, err := promptYesNo("Apply these fixes?")
 	if err != nil {
-		ui.Yellow.Printf("  ! %v\n", err)
+		ui.Warning("%v", err)
 		return
 	}
 	if apply {
@@ -576,7 +576,7 @@ func collectFixes(checks []traefikCheck) []traefikCheck {
 
 // showFixes displays the recommended fixes.
 func showFixes(fixes []traefikCheck, isTemplate bool) {
-	ui.Blue.Println("Recommended fixes:")
+	ui.Info("Recommended fixes:")
 	fmt.Println()
 
 	// Group by target
@@ -610,14 +610,14 @@ func showFixes(fixes []traefikCheck, isTemplate bool) {
 	}
 
 	if isTemplate {
-		ui.Yellow.Println("  Template file detected — review and apply these changes manually.")
+		ui.Warning("Template file detected — review and apply these changes manually.")
 	}
 }
 
 // showGenericRecommendations displays Traefik best practices when the compose
 // file cannot be parsed (e.g., Go template files with {{ }} syntax).
 func showGenericRecommendations() {
-	ui.Blue.Println("Recommended Traefik configuration:")
+	ui.Info("Recommended Traefik configuration:")
 	fmt.Println()
 	fmt.Println("  Command flags:")
 	ui.Yellow.Println("    + --entrypoints.web.http.redirections.entrypoint.to=websecure")
@@ -652,35 +652,35 @@ func applyFixes(fixes []traefikCheck, svc *traefikComposeService, composePath, d
 	// Apply command flag fixes to compose file
 	if len(commandFlags) > 0 {
 		if err := applyCommandFixes(composePath, svc, commandFlags); err != nil {
-			ui.Red.Printf("  x Failed to update compose file: %v\n", err)
+			ui.Error("Failed to update compose file: %v", err)
 			hadErrors = true
 		} else {
-			ui.Green.Printf("  * Updated %s with %d command flags\n", composePath, len(commandFlags))
+			ui.Success("Updated %s with %d command flags", composePath, len(commandFlags))
 		}
 	}
 
 	// Apply dynamic config fixes
 	if len(dynamicFixes) > 0 {
 		if dynamicDir == "" {
-			ui.Yellow.Println("  ! No dynamic config directory — showing fixes for manual application")
+			ui.Warning("No dynamic config directory — showing fixes for manual application")
 			for _, f := range dynamicFixes {
 				fmt.Println(f.Fix)
 			}
 		} else {
 			if err := applyDynamicFixes(dynamicDir, dynamicFixes); err != nil {
-				ui.Red.Printf("  x Failed to update dynamic config: %v\n", err)
+				ui.Error("Failed to update dynamic config: %v", err)
 				hadErrors = true
 			} else {
-				ui.Green.Printf("  * Updated dynamic config in %s\n", dynamicDir)
+				ui.Success("Updated dynamic config in %s", dynamicDir)
 			}
 		}
 	}
 
 	fmt.Println()
 	if hadErrors {
-		ui.Yellow.Println("Some fixes could not be applied. Review the errors above and apply manually.")
+		ui.Warning("Some fixes could not be applied. Review the errors above and apply manually.")
 	} else {
-		ui.Green.Println("Fixes applied! Restart Traefik to pick up changes.")
+		ui.Success("Fixes applied! Restart Traefik to pick up changes.")
 	}
 }
 
