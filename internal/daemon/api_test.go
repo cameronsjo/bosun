@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/docker"
+	"github.com/cameronsjo/bosun/internal/docker/dockertest"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,6 +29,9 @@ func TestAPIStatusEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create daemon: %v", err)
 	}
+
+	// Inject mock Docker client so health checks report docker as healthy.
+	d.dockerClientOverride = docker.NewClientWithAPI(&dockertest.MockDockerAPI{})
 
 	mux := http.NewServeMux()
 	d.RegisterAPIRoutes(mux)
