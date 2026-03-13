@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -778,9 +779,58 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 		state.DriftDebounceItems = nil
 	}
 
+	// Restart circuit breaker: detect containers in restart loops and stop them.
+	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.RestartBreakerEnabled {
+		d.runRestartBreaker(checkCtx, client, state, projectName)
+	}
+
+	// Clean up empty restart tracking for omitempty serialization.
+	if len(state.RestartTracking) == 0 {
+		state.RestartTracking = nil
+	}
+
 	// Persist state with drift results and alert timestamps.
 	if err := reconcile.SaveState(stateFile, state); err != nil {
 		logger.Warn().Err(err).Msg("Drift check: failed to save state")
+	}
+}
+
+// runRestartBreaker checks running containers for restart loops and stops offenders.
+func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, state *reconcile.DeployState, projectName string) {
+	logger := log.Component(log.ComponentDaemon)
+	rcfg := d.config.ReconcileConfig
+
+	actual, err := reconcile.CollectActualState(ctx, client, projectName)
+	if err != nil {
+		logger.Warn().Err(err).Msg("Restart breaker: failed to collect container state")
+		return
+	}
+
+	result, err := reconcile.RunRestartBreaker(
+		ctx, client, actual, state,
+		rcfg.RestartThreshold, rcfg.RestartWindow,
+	)
+	if err != nil {
+		logger.Warn().Err(err).Msg("Restart breaker: action failed")
+	}
+
+	// Update state with new tracking data.
+	state.RestartTracking = result.Updated
+
+	// Alert on tripped containers.
+	if len(result.Tripped) > 0 && d.alerter != nil {
+		target := projectName
+		if err := d.alerter.SendRestartBreakerTripped(ctx, target, result.Tripped); err != nil {
+			logger.Warn().Err(err).Msg("Failed to send restart breaker alert")
+		}
+	}
+
+	// Alert on resolved containers.
+	if len(result.Resolved) > 0 && d.alerter != nil {
+		target := projectName
+		if err := d.alerter.SendRestartBreakerResolved(ctx, target, result.Resolved); err != nil {
+			logger.Warn().Err(err).Msg("Failed to send restart breaker resolved alert")
+		}
 	}
 }
 
@@ -1048,6 +1098,33 @@ func ConfigFromEnv() *Config {
 			}
 		} else {
 			log.Warn().Str("env", "BOSUN_HEALTH_CHECK_INTERVAL").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
+
+	// Restart circuit breaker configuration
+	if v := os.Getenv("BOSUN_RESTART_BREAKER"); v != "" {
+		rcfg.RestartBreakerEnabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("BOSUN_RESTART_THRESHOLD"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				log.Warn().Str("env", "BOSUN_RESTART_THRESHOLD").Str("value", v).Msg("Skipping env var. Reason: threshold must be positive")
+			} else {
+				rcfg.RestartThreshold = n
+			}
+		} else {
+			log.Warn().Str("env", "BOSUN_RESTART_THRESHOLD").Str("value", v).Msg("Skipping env var. Reason: invalid integer")
+		}
+	}
+	if v := os.Getenv("BOSUN_RESTART_WINDOW"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_RESTART_WINDOW").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
+			} else {
+				rcfg.RestartWindow = d
+			}
+		} else {
+			log.Warn().Str("env", "BOSUN_RESTART_WINDOW").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 

@@ -36,6 +36,7 @@ type MockDockerAPI struct {
 	ContainerInspectFunc func(ctx context.Context, containerID string) (container.InspectResponse, error)
 	ContainerLogsFunc   func(ctx context.Context, ctr string, options container.LogsOptions) (io.ReadCloser, error)
 	ContainerStartFunc  func(ctx context.Context, containerID string, options container.StartOptions) error
+	ContainerStopFunc   func(ctx context.Context, containerID string, options container.StopOptions) error
 	ContainerRestartFunc func(ctx context.Context, containerID string, options container.StopOptions) error
 	ContainerRemoveFunc func(ctx context.Context, containerID string, options container.RemoveOptions) error
 	ContainerStatsFunc  func(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error)
@@ -49,6 +50,7 @@ type MockDockerAPI struct {
 	ContainerInspectCalls int
 	ContainerLogsCalls  int
 	ContainerStartCalls int
+	ContainerStopCalls  int
 	ContainerRestartCalls int
 	ContainerRemoveCalls int
 	ContainerStatsCalls int
@@ -103,6 +105,15 @@ func (m *MockDockerAPI) ContainerStart(ctx context.Context, containerID string, 
 	m.ContainerStartCalls++
 	if m.ContainerStartFunc != nil {
 		return m.ContainerStartFunc(ctx, containerID, options)
+	}
+	return nil
+}
+
+// ContainerStop implements DockerAPI.
+func (m *MockDockerAPI) ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error {
+	m.ContainerStopCalls++
+	if m.ContainerStopFunc != nil {
+		return m.ContainerStopFunc(ctx, containerID, options)
 	}
 	return nil
 }

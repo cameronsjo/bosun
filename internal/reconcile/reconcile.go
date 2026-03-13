@@ -84,6 +84,14 @@ type Config struct {
 	// post-deploy verification. Default 5s.
 	HealthCheckInterval time.Duration
 
+	// RestartBreakerEnabled controls whether the restart circuit breaker runs
+	// during drift checks. Default true.
+	RestartBreakerEnabled bool
+	// RestartThreshold is the restart count delta that trips the breaker. Default 5.
+	RestartThreshold int
+	// RestartWindow is the time window for measuring restart velocity. Default 10m.
+	RestartWindow time.Duration
+
 	// PostSyncHooks defines container restart actions triggered by file changes.
 	PostSyncHooks []PostSyncHook
 
@@ -156,9 +164,12 @@ func DefaultConfig() *Config {
 		InfraSubDir:        ".",
 		BackupsToKeep:      5,
 		HealthCheckTimeout:  60 * time.Second,
-		HealthCheckInterval: 5 * time.Second,
-		OnFailure:          true,
-		RemoveOrphans:      true,
+		HealthCheckInterval:   5 * time.Second,
+		RestartBreakerEnabled: true,
+		RestartThreshold:      5,
+		RestartWindow:         10 * time.Minute,
+		OnFailure:             true,
+		RemoveOrphans:         true,
 	}
 }
 

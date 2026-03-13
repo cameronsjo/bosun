@@ -1762,6 +1762,93 @@ func TestDriftDebounce_E2E_PersistWithDedupCooldown(t *testing.T) {
 	_ = graduated2
 }
 
+func TestConfigFromEnv_RestartBreaker(t *testing.T) {
+	t.Run("default enabled with default threshold and window", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.True(t, cfg.ReconcileConfig.RestartBreakerEnabled)
+		assert.Equal(t, 5, cfg.ReconcileConfig.RestartThreshold)
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileConfig.RestartWindow)
+	})
+
+	t.Run("BOSUN_RESTART_BREAKER false disables", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_BREAKER", "false")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.False(t, cfg.ReconcileConfig.RestartBreakerEnabled)
+	})
+
+	t.Run("BOSUN_RESTART_BREAKER 1 enables", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_BREAKER", "1")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.True(t, cfg.ReconcileConfig.RestartBreakerEnabled)
+	})
+
+	t.Run("BOSUN_RESTART_THRESHOLD valid integer", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_THRESHOLD", "10")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10, cfg.ReconcileConfig.RestartThreshold)
+	})
+
+	t.Run("BOSUN_RESTART_THRESHOLD zero retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_THRESHOLD", "0")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5, cfg.ReconcileConfig.RestartThreshold)
+	})
+
+	t.Run("BOSUN_RESTART_THRESHOLD negative retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_THRESHOLD", "-3")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5, cfg.ReconcileConfig.RestartThreshold)
+	})
+
+	t.Run("BOSUN_RESTART_THRESHOLD invalid retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_THRESHOLD", "not-a-number")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5, cfg.ReconcileConfig.RestartThreshold)
+	})
+
+	t.Run("BOSUN_RESTART_WINDOW parses duration", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_WINDOW", "30m")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 30*time.Minute, cfg.ReconcileConfig.RestartWindow)
+	})
+
+	t.Run("BOSUN_RESTART_WINDOW parses plain seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_WINDOW", "600")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileConfig.RestartWindow)
+	})
+
+	t.Run("BOSUN_RESTART_WINDOW zero retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_WINDOW", "0")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileConfig.RestartWindow)
+	})
+
+	t.Run("BOSUN_RESTART_WINDOW negative retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_WINDOW", "-5m")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileConfig.RestartWindow)
+	})
+
+	t.Run("BOSUN_RESTART_WINDOW invalid retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_WINDOW", "not-a-duration")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileConfig.RestartWindow)
+	})
+}
+
 func TestParseDurationOrSeconds(t *testing.T) {
 	tests := []struct {
 		name    string
