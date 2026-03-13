@@ -847,11 +847,18 @@ func (d *Daemon) HealthStatus() HealthStatus {
 
 	subsystems := make(map[string]SubsystemStatus)
 
-	// Docker subsystem: check if the client can be created.
+	// Docker subsystem: live ping check (not cached).
 	dockerSub := SubsystemStatus{Status: StatusHealthy}
-	if _, err := d.DockerClient(); err != nil {
+	if client, err := d.DockerClient(); err != nil {
 		dockerSub.Status = StatusUnhealthy
 		dockerSub.Message = err.Error()
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := client.Ping(ctx); err != nil {
+			dockerSub.Status = StatusUnhealthy
+			dockerSub.Message = fmt.Sprintf("ping failed: %v", err)
+		}
 	}
 	subsystems["docker"] = dockerSub
 
