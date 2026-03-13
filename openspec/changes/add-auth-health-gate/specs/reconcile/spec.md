@@ -12,6 +12,7 @@ Health status classification for critical containers:
 - **healthy**: pass (container is running and Docker healthcheck reports healthy)
 - **no healthcheck defined**: pass (cannot gate on undefined checks)
 - **unhealthy**: fail (Docker healthcheck reports unhealthy after timeout)
+- **starting**: fail if still starting at timeout (treated as not-yet-healthy)
 - **missing or not running**: fail (container does not exist or is not in running state)
 
 When the critical container list is empty (default), the health gate SHALL be skipped entirely, preserving backwards compatibility.
@@ -101,9 +102,9 @@ The reconciler SHALL execute stages in this fixed order:
 9. Run `docker compose up`
 10. Clean up staging directory
 11. Critical container health gate (if configured)
-12. Record successful deployment in state file
-13. Execute post-sync hooks
-14. Post-deploy verification (drift check)
+12. Execute post-sync hooks
+13. Post-deploy verification (drift check)
+14. Record successful deployment in state file
 15. Release lock
 
 A failure at any stage SHALL abort the remaining stages and release the lock. The health gate (stage 11) failing SHALL trigger rollback before aborting.
