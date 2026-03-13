@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0](https://github.com/cameronsjo/bosun/compare/v0.19.0...v0.20.0) (2026-03-13)
+
+
+### Features
+
+* **reconcile:** add restart circuit breaker ([b959fc3](https://github.com/cameronsjo/bosun/commit/b959fc30cc2a748be34c8df3904aac4ddc0db7ae))
+* **reconcile:** add restart circuit breaker to detect crash-looping containers ([36d3ac4](https://github.com/cameronsjo/bosun/commit/36d3ac4ae302a04f30bd5b669ac83258f7874efd))
+
+
+### Bug Fixes
+
+* **reconcile:** address CodeRabbit review findings for restart breaker ([9321408](https://github.com/cameronsjo/bosun/commit/93214081eb2d8b736751f1ea8b99f70cfafce9c1))
+
 ## [0.19.0](https://github.com/cameronsjo/bosun/compare/v0.18.1...v0.19.0) (2026-03-13)
 
 
