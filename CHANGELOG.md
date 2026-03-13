@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0](https://github.com/cameronsjo/bosun/compare/v0.22.0...v0.23.0) (2026-03-13)
+
+
+### Features
+
+* **daemon:** add subsystem breakdown to health endpoint ([f4e3aa5](https://github.com/cameronsjo/bosun/commit/f4e3aa597639e47f03a0d82d36bdf007523a8bbd))
+
+
+### Bug Fixes
+
+* **daemon:** panic recovery and template path validation ([cc4d378](https://github.com/cameronsjo/bosun/commit/cc4d37800195622c1fb1f387c856833963992694))
+
 ## [0.22.0](https://github.com/cameronsjo/bosun/compare/v0.21.0...v0.22.0) (2026-03-13)
 
 
