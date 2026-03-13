@@ -551,6 +551,13 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 	backupDir := targetDir + ".bak"
 	hadExisting := false
 
+	// Guard against stale backup from a previous crash.
+	if _, err := os.Stat(backupDir); err == nil {
+		return fmt.Errorf("stale deploy backup exists at %s; restore or remove it before redeploying", backupDir)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat backup path: %w", err)
+	}
+
 	if _, err := os.Stat(targetDir); err == nil {
 		hadExisting = true
 		if err := os.Rename(targetDir, backupDir); err != nil {
@@ -564,13 +571,16 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 		if hadExisting {
 			if rbErr := os.Rename(backupDir, targetDir); rbErr != nil {
 				logger.Error().Err(rbErr).Msg("Failed to restore backup after rename failure")
+				return fmt.Errorf("rename to target failed: %w; restore backup from %s failed: %v", err, backupDir, rbErr)
 			}
 		}
 		return fmt.Errorf("rename to target: %w", err)
 	}
 
 	if hadExisting {
-		os.RemoveAll(backupDir)
+		if err := os.RemoveAll(backupDir); err != nil {
+			logger.Warn().Err(err).Str(log.FieldPath, backupDir).Msg("Deployment succeeded but backup cleanup failed")
+		}
 	}
 
 	success = true
