@@ -15,6 +15,8 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const (
@@ -25,8 +27,10 @@ const (
 
 // Server handles HTTP requests for webhooks and health checks.
 type Server struct {
-	daemon *Daemon
-	server *http.Server
+	daemon   *Daemon
+	server   *http.Server
+	registry *prometheus.Registry
+	metrics  *Metrics
 
 	// Track in-flight reconciliation goroutines for graceful shutdown
 	wg sync.WaitGroup
@@ -34,7 +38,14 @@ type Server struct {
 
 // NewServer creates a new HTTP server for the daemon.
 func NewServer(d *Daemon) *Server {
-	s := &Server{daemon: d}
+	reg := prometheus.NewRegistry()
+	metrics := newMetrics(reg)
+
+	s := &Server{
+		daemon:   d,
+		registry: reg,
+		metrics:  metrics,
+	}
 
 	mux := http.NewServeMux()
 
@@ -50,8 +61,8 @@ func NewServer(d *Daemon) *Server {
 	// Widget endpoint for Homepage dashboard
 	mux.HandleFunc("/api/widget", s.handleWidget)
 
-	// Metrics (placeholder for future)
-	mux.HandleFunc("/metrics", s.handleMetrics)
+	// Prometheus metrics endpoint
+	mux.Handle("/metrics", s.metricsMiddleware(s.promHandler()))
 
 	s.server = &http.Server{
 		Handler:      s.loggingMiddleware(mux),
@@ -209,6 +220,8 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	// Propagate enriched logger into background context (request ctx is cancelled after response).
 	bgCtx := log.WithContext(context.Background(), log.Ctx(r.Context()))
 
+	s.metrics.RecordWebhookTrigger("generic")
+
 	// Trigger reconciliation with goroutine tracking
 	webhookLogger := log.Component(log.ComponentWebhook)
 	s.wg.Add(1)
@@ -304,6 +317,8 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		Str(log.FieldCommit, payload.After).
 		Msg("GitHub push received")
 
+	s.metrics.RecordWebhookTrigger("github")
+
 	// Propagate enriched logger into background context (request ctx is cancelled after response).
 	bgCtx := log.WithContext(context.Background(), log.Ctx(r.Context()))
 
@@ -362,6 +377,8 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 	// Propagate enriched logger into background context (request ctx is cancelled after response).
 	bgCtx := log.WithContext(context.Background(), log.Ctx(r.Context()))
 
+	s.metrics.RecordWebhookTrigger("manual")
+
 	// Trigger reconciliation with goroutine tracking
 	manualLogger := log.Component(log.ComponentWebhook)
 	s.wg.Add(1)
@@ -395,40 +412,30 @@ func (s *Server) handleWidget(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(s.daemon.WidgetData())
 }
 
-// handleMetrics serves Prometheus metrics (placeholder).
-func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+// promHandler returns the Prometheus HTTP handler for the server's registry.
+func (s *Server) promHandler() http.Handler {
+	return promhttp.HandlerFor(s.registry, promhttp.HandlerOpts{})
+}
 
-	status := s.daemon.HealthStatus()
+// metricsMiddleware refreshes point-in-time gauges (uptime, ready, last reconcile)
+// before delegating to the Prometheus HTTP handler.
+func (s *Server) metricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 
-	// Simple Prometheus-style metrics
-	w.Header().Set("Content-Type", "text/plain")
-	fmt.Fprintf(w, "# HELP bosun_ready Whether the daemon is ready\n")
-	fmt.Fprintf(w, "# TYPE bosun_ready gauge\n")
-	if status.Ready {
-		fmt.Fprintf(w, "bosun_ready 1\n")
-	} else {
-		fmt.Fprintf(w, "bosun_ready 0\n")
-	}
+		status := s.daemon.HealthStatus()
+		s.metrics.SetReady(status.Ready)
+		s.metrics.SetUptime(status.Uptime.Seconds())
 
-	fmt.Fprintf(w, "# HELP bosun_uptime_seconds Daemon uptime in seconds\n")
-	fmt.Fprintf(w, "# TYPE bosun_uptime_seconds counter\n")
-	fmt.Fprintf(w, "bosun_uptime_seconds %f\n", status.Uptime.Seconds())
+		if !status.LastReconcile.IsZero() {
+			s.metrics.SetLastReconcileTime(float64(status.LastReconcile.Unix()))
+		}
 
-	if !status.LastReconcile.IsZero() {
-		fmt.Fprintf(w, "# HELP bosun_last_reconcile_timestamp Unix timestamp of last reconciliation\n")
-		fmt.Fprintf(w, "# TYPE bosun_last_reconcile_timestamp gauge\n")
-		fmt.Fprintf(w, "bosun_last_reconcile_timestamp %d\n", status.LastReconcile.Unix())
-	}
-
-	if status.LastError != "" {
-		fmt.Fprintf(w, "# HELP bosun_reconcile_errors_total Total reconciliation errors\n")
-		fmt.Fprintf(w, "# TYPE bosun_reconcile_errors_total counter\n")
-		fmt.Fprintf(w, "bosun_reconcile_errors_total 1\n")
-	}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // validateSignature validates a generic HMAC-SHA256 signature.
