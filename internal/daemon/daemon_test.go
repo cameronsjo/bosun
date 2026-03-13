@@ -1061,6 +1061,128 @@ func TestConfigFromEnv_RemoveOrphans(t *testing.T) {
 	})
 }
 
+func TestConfigFromEnv_ComposeUpTimeout(t *testing.T) {
+	t.Run("default not set (zero, uses deploy package default)", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Zero(t, cfg.ReconcileConfig.ComposeUpTimeout)
+	})
+
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_COMPOSE_UP_TIMEOUT", "30m")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 30*time.Minute, cfg.ReconcileConfig.ComposeUpTimeout)
+	})
+
+	t.Run("parses plain seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_COMPOSE_UP_TIMEOUT", "1800")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 30*time.Minute, cfg.ReconcileConfig.ComposeUpTimeout)
+	})
+
+	t.Run("invalid value is skipped", func(t *testing.T) {
+		t.Setenv("BOSUN_COMPOSE_UP_TIMEOUT", "not-a-duration")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Zero(t, cfg.ReconcileConfig.ComposeUpTimeout)
+	})
+
+	t.Run("non-positive value is skipped", func(t *testing.T) {
+		t.Setenv("BOSUN_COMPOSE_UP_TIMEOUT", "-5m")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Zero(t, cfg.ReconcileConfig.ComposeUpTimeout)
+	})
+}
+
+func TestConfigFromEnv_HealthCheckTimeout(t *testing.T) {
+	t.Run("default uses reconcile package default", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 60*time.Second, cfg.ReconcileConfig.HealthCheckTimeout)
+	})
+
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_TIMEOUT", "2m")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 2*time.Minute, cfg.ReconcileConfig.HealthCheckTimeout)
+	})
+
+	t.Run("parses plain seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_TIMEOUT", "120")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 2*time.Minute, cfg.ReconcileConfig.HealthCheckTimeout)
+	})
+
+	t.Run("invalid value retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_TIMEOUT", "not-a-duration")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 60*time.Second, cfg.ReconcileConfig.HealthCheckTimeout)
+	})
+
+	t.Run("negative value retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_TIMEOUT", "-30s")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 60*time.Second, cfg.ReconcileConfig.HealthCheckTimeout)
+	})
+
+	t.Run("zero disables health check", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_TIMEOUT", "0")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Zero(t, cfg.ReconcileConfig.HealthCheckTimeout)
+	})
+}
+
+func TestConfigFromEnv_HealthCheckInterval(t *testing.T) {
+	t.Run("default uses reconcile package default", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5*time.Second, cfg.ReconcileConfig.HealthCheckInterval)
+	})
+
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_INTERVAL", "10s")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Second, cfg.ReconcileConfig.HealthCheckInterval)
+	})
+
+	t.Run("parses plain seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_INTERVAL", "10")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Second, cfg.ReconcileConfig.HealthCheckInterval)
+	})
+
+	t.Run("invalid value retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_INTERVAL", "not-a-duration")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5*time.Second, cfg.ReconcileConfig.HealthCheckInterval)
+	})
+
+	t.Run("zero value retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_INTERVAL", "0")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5*time.Second, cfg.ReconcileConfig.HealthCheckInterval)
+	})
+
+	t.Run("negative value retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_INTERVAL", "-1s")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5*time.Second, cfg.ReconcileConfig.HealthCheckInterval)
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Phase 1C: TriggerReconcile Concurrency
 // ---------------------------------------------------------------------------
@@ -1638,6 +1760,107 @@ func TestDriftDebounce_E2E_PersistWithDedupCooldown(t *testing.T) {
 	assert.Len(t, alertItems3, 1, "should re-alert after cooldown expires")
 
 	_ = graduated2
+}
+
+func TestConfigFromEnv_RestartBreaker(t *testing.T) {
+	t.Run("default enabled with default threshold and window", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.True(t, cfg.ReconcileConfig.RestartBreakerEnabled)
+		assert.Equal(t, 5, cfg.ReconcileConfig.RestartThreshold)
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileConfig.RestartWindow)
+	})
+
+	t.Run("BOSUN_RESTART_BREAKER false disables", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_BREAKER", "false")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.False(t, cfg.ReconcileConfig.RestartBreakerEnabled)
+	})
+
+	t.Run("BOSUN_RESTART_BREAKER 0 disables", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_BREAKER", "0")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.False(t, cfg.ReconcileConfig.RestartBreakerEnabled)
+	})
+
+	t.Run("BOSUN_RESTART_BREAKER 1 enables", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_BREAKER", "1")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.True(t, cfg.ReconcileConfig.RestartBreakerEnabled)
+	})
+
+	t.Run("BOSUN_RESTART_BREAKER non-canonical truthy keeps enabled", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_BREAKER", "yes")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.True(t, cfg.ReconcileConfig.RestartBreakerEnabled)
+	})
+
+	t.Run("BOSUN_RESTART_THRESHOLD valid integer", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_THRESHOLD", "10")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10, cfg.ReconcileConfig.RestartThreshold)
+	})
+
+	t.Run("BOSUN_RESTART_THRESHOLD zero retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_THRESHOLD", "0")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5, cfg.ReconcileConfig.RestartThreshold)
+	})
+
+	t.Run("BOSUN_RESTART_THRESHOLD negative retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_THRESHOLD", "-3")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5, cfg.ReconcileConfig.RestartThreshold)
+	})
+
+	t.Run("BOSUN_RESTART_THRESHOLD invalid retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_THRESHOLD", "not-a-number")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5, cfg.ReconcileConfig.RestartThreshold)
+	})
+
+	t.Run("BOSUN_RESTART_WINDOW parses duration", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_WINDOW", "30m")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 30*time.Minute, cfg.ReconcileConfig.RestartWindow)
+	})
+
+	t.Run("BOSUN_RESTART_WINDOW parses plain seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_WINDOW", "600")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileConfig.RestartWindow)
+	})
+
+	t.Run("BOSUN_RESTART_WINDOW zero retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_WINDOW", "0")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileConfig.RestartWindow)
+	})
+
+	t.Run("BOSUN_RESTART_WINDOW negative retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_WINDOW", "-5m")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileConfig.RestartWindow)
+	})
+
+	t.Run("BOSUN_RESTART_WINDOW invalid retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_WINDOW", "not-a-duration")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileConfig.RestartWindow)
+	})
 }
 
 func TestParseDurationOrSeconds(t *testing.T) {

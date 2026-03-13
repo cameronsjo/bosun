@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0](https://github.com/cameronsjo/bosun/compare/v0.21.0...v0.22.0) (2026-03-13)
+
+
+### Features
+
+* **alert:** add generic webhook alert provider ([2cd2ca7](https://github.com/cameronsjo/bosun/commit/2cd2ca7e88ea889b8402d48ceda99cbb46cf9028))
+* **alert:** add Slack webhook alert provider ([f2f2e73](https://github.com/cameronsjo/bosun/commit/f2f2e7303905e3c030bab41fb0d8a268b1df0e17))
+* **openspec:** formalize spec review workflow with Stage 1.5 gate ([9f1b827](https://github.com/cameronsjo/bosun/commit/9f1b827dd72714c8258a5d851e6542b467ce47ff))
+* **retry:** add retry utility with exponential backoff and jitter ([cf45845](https://github.com/cameronsjo/bosun/commit/cf45845722cfd9b019a7eac47893cd45fb228d12))
+
+## [0.21.0](https://github.com/cameronsjo/bosun/compare/v0.20.0...v0.21.0) (2026-03-13)
+
+
+### Features
+
+* **daemon:** replace hand-rolled metrics with Prometheus ([2cfcf14](https://github.com/cameronsjo/bosun/commit/2cfcf14efb048b826b7474f2009635c9f21f45f8))
+
+
+### Bug Fixes
+
+* **reconcile:** address CodeRabbit findings on atomic deploy ([c8c8e05](https://github.com/cameronsjo/bosun/commit/c8c8e05d570c403c2a8e7f3267b1f5384aac6f64))
+* **reconcile:** use atomic rename-aside pattern in DeployLocal ([ebc918c](https://github.com/cameronsjo/bosun/commit/ebc918cfdbb42cb4ea1751649bdec6dde5b56c29))
+
+## [0.20.0](https://github.com/cameronsjo/bosun/compare/v0.19.0...v0.20.0) (2026-03-13)
+
+
+### Features
+
+* **reconcile:** add restart circuit breaker ([b959fc3](https://github.com/cameronsjo/bosun/commit/b959fc30cc2a748be34c8df3904aac4ddc0db7ae))
+* **reconcile:** add restart circuit breaker to detect crash-looping containers ([36d3ac4](https://github.com/cameronsjo/bosun/commit/36d3ac4ae302a04f30bd5b669ac83258f7874efd))
+
+
+### Bug Fixes
+
+* **reconcile:** address CodeRabbit review findings for restart breaker ([9321408](https://github.com/cameronsjo/bosun/commit/93214081eb2d8b736751f1ea8b99f70cfafce9c1))
+
+## [0.19.0](https://github.com/cameronsjo/bosun/compare/v0.18.1...v0.19.0) (2026-03-13)
+
+
+### Features
+
+* **reconcile:** add post-deploy health verification with polling ([16a434f](https://github.com/cameronsjo/bosun/commit/16a434f2d6f50918424c3a4cd4d111df1888c5d3))
+
+
+### Bug Fixes
+
+* **daemon:** validate non-positive duration env vars for timeouts ([f288e76](https://github.com/cameronsjo/bosun/commit/f288e76a058536a4191f3d64324f336ff6932070))
+* **reconcile:** make compose up timeout configurable via BOSUN_COMPOSE_UP_TIMEOUT ([b3e0b8a](https://github.com/cameronsjo/bosun/commit/b3e0b8a7906efe4e7b00aa7b875c1be3ef5d652f)), closes [#83](https://github.com/cameronsjo/bosun/issues/83)
+
 ## [0.18.1](https://github.com/cameronsjo/bosun/compare/v0.18.0...v0.18.1) (2026-03-08)
 
 

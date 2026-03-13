@@ -109,6 +109,10 @@ func createDaemonAlertManager() *alert.Manager {
 	discord := alert.NewDiscordProvider(os.Getenv("DISCORD_WEBHOOK_URL"))
 	mgr.AddProvider(discord)
 
+	// Add Slack provider
+	slack := alert.NewSlackProvider(os.Getenv("SLACK_WEBHOOK_URL"))
+	mgr.AddProvider(slack)
+
 	// Add SendGrid provider
 	toEmails := filterEmptyStrings(strings.Split(os.Getenv("SENDGRID_TO_EMAILS"), ","))
 	sendgrid := alert.NewSendGrid(alert.SendGridConfig{
@@ -128,6 +132,14 @@ func createDaemonAlertManager() *alert.Manager {
 		ToNumbers:  toNumbers,
 	})
 	mgr.AddProvider(twilio)
+
+	// Add Webhook provider
+	webhook := alert.NewWebhookProvider(alert.WebhookConfig{
+		URL:     os.Getenv("BOSUN_WEBHOOK_URL"),
+		Headers: parseJSONHeaders(os.Getenv("BOSUN_WEBHOOK_HEADERS")),
+		Method:  os.Getenv("BOSUN_WEBHOOK_METHOD"),
+	})
+	mgr.AddProvider(webhook)
 
 	if mgr.HasProviders() {
 		ui.Info("Alert providers: %v", mgr.ProviderNames())

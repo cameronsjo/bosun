@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -86,6 +87,9 @@ type AlertConfig struct {
 	// Discord
 	DiscordWebhookURL string `yaml:"discord_webhook_url"`
 
+	// Slack
+	SlackWebhookURL string `yaml:"slack_webhook_url"`
+
 	// SendGrid
 	SendGridAPIKey    string   `yaml:"sendgrid_api_key"`
 	SendGridFromEmail string   `yaml:"sendgrid_from_email"`
@@ -98,6 +102,11 @@ type AlertConfig struct {
 	TwilioFromNumber string   `yaml:"twilio_from_number"`
 	TwilioToNumbers  []string `yaml:"twilio_to_numbers"`
 
+	// Webhook
+	WebhookURL     string            `yaml:"webhook_url"`
+	WebhookHeaders map[string]string `yaml:"webhook_headers"`
+	WebhookMethod  string            `yaml:"webhook_method"`
+
 	// Settings
 	OnSuccess bool `yaml:"on_success"` // Alert on successful deploys
 	OnFailure bool `yaml:"on_failure"` // Alert on failed deploys (default: true)
@@ -107,16 +116,20 @@ type AlertConfig struct {
 // Pointer booleans distinguish "unset" (nil → apply default) from explicit false.
 type alertConfigRaw struct {
 	DiscordWebhookURL string   `yaml:"discord_webhook_url"`
+	SlackWebhookURL   string   `yaml:"slack_webhook_url"`
 	SendGridAPIKey    string   `yaml:"sendgrid_api_key"`
 	SendGridFromEmail string   `yaml:"sendgrid_from_email"`
 	SendGridFromName  string   `yaml:"sendgrid_from_name"`
 	SendGridToEmails  []string `yaml:"sendgrid_to_emails"`
-	TwilioAccountSID  string   `yaml:"twilio_account_sid"`
-	TwilioAuthToken   string   `yaml:"twilio_auth_token"`
-	TwilioFromNumber  string   `yaml:"twilio_from_number"`
-	TwilioToNumbers   []string `yaml:"twilio_to_numbers"`
-	OnSuccess         *bool    `yaml:"on_success"`
-	OnFailure         *bool    `yaml:"on_failure"`
+	TwilioAccountSID  string            `yaml:"twilio_account_sid"`
+	TwilioAuthToken   string            `yaml:"twilio_auth_token"`
+	TwilioFromNumber  string            `yaml:"twilio_from_number"`
+	TwilioToNumbers   []string          `yaml:"twilio_to_numbers"`
+	WebhookURL        string            `yaml:"webhook_url"`
+	WebhookHeaders    map[string]string `yaml:"webhook_headers"`
+	WebhookMethod     string            `yaml:"webhook_method"`
+	OnSuccess         *bool             `yaml:"on_success"`
+	OnFailure         *bool             `yaml:"on_failure"`
 }
 
 // configFile represents the structure of .bosun/config.yml or bosun.yml.
@@ -568,6 +581,7 @@ func extractAlertConfig(cfg configFile) AlertConfig {
 
 	alertCfg := AlertConfig{
 		DiscordWebhookURL: raw.DiscordWebhookURL,
+		SlackWebhookURL:   raw.SlackWebhookURL,
 		SendGridAPIKey:    raw.SendGridAPIKey,
 		SendGridFromEmail: raw.SendGridFromEmail,
 		SendGridFromName:  raw.SendGridFromName,
@@ -576,6 +590,9 @@ func extractAlertConfig(cfg configFile) AlertConfig {
 		TwilioAuthToken:   raw.TwilioAuthToken,
 		TwilioFromNumber:  raw.TwilioFromNumber,
 		TwilioToNumbers:   raw.TwilioToNumbers,
+		WebhookURL:        raw.WebhookURL,
+		WebhookHeaders:    raw.WebhookHeaders,
+		WebhookMethod:     raw.WebhookMethod,
 	}
 
 	// Resolve pointer booleans: nil = unset (apply default), non-nil = explicit.
@@ -593,12 +610,27 @@ func extractAlertConfig(cfg configFile) AlertConfig {
 	// Environment variable overrides for sensitive values.
 	// BOSUN_-prefixed vars take precedence; legacy unprefixed vars are fallback.
 	alertCfg.DiscordWebhookURL = getEnvOrDefault("BOSUN_DISCORD_WEBHOOK_URL", getEnvOrDefault("DISCORD_WEBHOOK_URL", alertCfg.DiscordWebhookURL))
+	alertCfg.SlackWebhookURL = getEnvOrDefault("BOSUN_SLACK_WEBHOOK_URL", getEnvOrDefault("SLACK_WEBHOOK_URL", alertCfg.SlackWebhookURL))
 	alertCfg.SendGridAPIKey = getEnvOrDefault("BOSUN_SENDGRID_API_KEY", getEnvOrDefault("SENDGRID_API_KEY", alertCfg.SendGridAPIKey))
 	alertCfg.SendGridFromEmail = getEnvOrDefault("BOSUN_SENDGRID_FROM_EMAIL", getEnvOrDefault("SENDGRID_FROM_EMAIL", alertCfg.SendGridFromEmail))
 	alertCfg.SendGridFromName = getEnvOrDefault("BOSUN_SENDGRID_FROM_NAME", getEnvOrDefault("SENDGRID_FROM_NAME", alertCfg.SendGridFromName))
 	alertCfg.TwilioAccountSID = getEnvOrDefault("BOSUN_TWILIO_ACCOUNT_SID", getEnvOrDefault("TWILIO_ACCOUNT_SID", alertCfg.TwilioAccountSID))
 	alertCfg.TwilioAuthToken = getEnvOrDefault("BOSUN_TWILIO_AUTH_TOKEN", getEnvOrDefault("TWILIO_AUTH_TOKEN", alertCfg.TwilioAuthToken))
 	alertCfg.TwilioFromNumber = getEnvOrDefault("BOSUN_TWILIO_FROM_NUMBER", getEnvOrDefault("TWILIO_FROM_NUMBER", alertCfg.TwilioFromNumber))
+
+	// Webhook environment variable overrides.
+	alertCfg.WebhookURL = getEnvOrDefault("BOSUN_WEBHOOK_URL", alertCfg.WebhookURL)
+	if headersJSON := os.Getenv("BOSUN_WEBHOOK_HEADERS"); headersJSON != "" {
+		var headers map[string]string
+		if err := json.Unmarshal([]byte(headersJSON), &headers); err == nil {
+			alertCfg.WebhookHeaders = headers
+		} else {
+			log.Warn().
+				Err(err).
+				Msg("Failed to parse BOSUN_WEBHOOK_HEADERS as JSON, ignoring")
+		}
+	}
+	alertCfg.WebhookMethod = getEnvOrDefault("BOSUN_WEBHOOK_METHOD", alertCfg.WebhookMethod)
 
 	return alertCfg
 }

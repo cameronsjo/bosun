@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -108,6 +109,7 @@ type Daemon struct {
 	httpServer    *Server       // HTTP server for webhooks (optional)
 	reconciler    *reconcile.Reconciler
 	alerter       *alert.Manager
+	metrics       *Metrics       // Prometheus metrics (nil when HTTP is disabled)
 	dockerOnce    sync.Once      // Lazily initialize Docker client
 	dockerClient  *docker.Client // Shared Docker client for API handlers
 	dockerErr     error          // Error from Docker client initialization
@@ -180,6 +182,7 @@ func New(cfg *Config) (*Daemon, error) {
 	// Create HTTP server for webhooks (optional, for backwards compat)
 	if cfg.EnableHTTP {
 		d.httpServer = NewServer(d)
+		d.metrics = d.httpServer.metrics
 	}
 
 	// Create TCP server for remote access (optional)
@@ -530,7 +533,13 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 	// Finish the Sentry transaction with the result status.
 	finishTx(err)
 
+	durationSec := time.Since(start).Seconds()
+
 	if err != nil {
+		if d.metrics != nil {
+			d.metrics.RecordReconcileFailure(durationSec)
+		}
+
 		logger.Error().
 			Str(log.FieldSource, source).
 			Int64(log.FieldDurationMS, durationMS).
@@ -539,6 +548,11 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 
 		ui.Error("Reconciliation failed after %s: %v", time.Since(start), err)
 		return err
+	}
+
+	if d.metrics != nil {
+		d.metrics.RecordReconcileSuccess(durationSec)
+		d.metrics.SetLastReconcileTime(float64(d.lastReconcile.Unix()))
 	}
 
 	logger.Info().
@@ -650,6 +664,10 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	// Initialize debounce map for FilterDebounced mutation.
 	if state.DriftDebounceItems == nil {
 		state.DriftDebounceItems = make(map[string]time.Time)
+	}
+
+	if d.metrics != nil {
+		d.metrics.RecordDriftCheck(report.HasDrift())
 	}
 
 	if report.HasDrift() {
@@ -778,9 +796,58 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 		state.DriftDebounceItems = nil
 	}
 
+	// Restart circuit breaker: detect containers in restart loops and stop them.
+	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.RestartBreakerEnabled {
+		d.runRestartBreaker(checkCtx, client, state, projectName)
+	}
+
+	// Clean up empty restart tracking for omitempty serialization.
+	if len(state.RestartTracking) == 0 {
+		state.RestartTracking = nil
+	}
+
 	// Persist state with drift results and alert timestamps.
 	if err := reconcile.SaveState(stateFile, state); err != nil {
 		logger.Warn().Err(err).Msg("Drift check: failed to save state")
+	}
+}
+
+// runRestartBreaker checks running containers for restart loops and stops offenders.
+func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, state *reconcile.DeployState, projectName string) {
+	logger := log.Component(log.ComponentDaemon)
+	rcfg := d.config.ReconcileConfig
+
+	actual, err := reconcile.CollectActualState(ctx, client, projectName)
+	if err != nil {
+		logger.Warn().Err(err).Msg("Restart breaker: failed to collect container state")
+		return
+	}
+
+	result, err := reconcile.RunRestartBreaker(
+		ctx, client, actual, state,
+		rcfg.RestartThreshold, rcfg.RestartWindow,
+	)
+	if err != nil {
+		logger.Warn().Err(err).Msg("Restart breaker: action failed")
+	}
+
+	// Update state with new tracking data.
+	state.RestartTracking = result.Updated
+
+	// Alert on tripped containers.
+	if len(result.Tripped) > 0 && d.alerter != nil {
+		target := projectName
+		if err := d.alerter.SendRestartBreakerTripped(ctx, target, result.Tripped); err != nil {
+			logger.Warn().Err(err).Msg("Failed to send restart breaker alert")
+		}
+	}
+
+	// Alert on resolved containers.
+	if len(result.Resolved) > 0 && d.alerter != nil {
+		target := projectName
+		if err := d.alerter.SendRestartBreakerResolved(ctx, target, result.Resolved); err != nil {
+			logger.Warn().Err(err).Msg("Failed to send restart breaker resolved alert")
+		}
 	}
 }
 
@@ -827,11 +894,14 @@ func (d *Daemon) IsReady() bool {
 	return d.ready
 }
 
-// setReady sets the readiness state.
+// setReady sets the readiness state and updates the Prometheus gauge.
 func (d *Daemon) setReady(ready bool) {
 	d.readyMu.Lock()
 	defer d.readyMu.Unlock()
 	d.ready = ready
+	if d.metrics != nil {
+		d.metrics.SetReady(ready)
+	}
 }
 
 // LastReconcile returns the time of the last reconciliation and any error.
@@ -1015,6 +1085,68 @@ func ConfigFromEnv() *Config {
 	}
 
 	cfg.ReconcileConfig = rcfg
+
+	// Compose up timeout override
+	if v := os.Getenv("BOSUN_COMPOSE_UP_TIMEOUT"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_COMPOSE_UP_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
+			} else {
+				rcfg.ComposeUpTimeout = d
+			}
+		} else {
+			log.Warn().Str("env", "BOSUN_COMPOSE_UP_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
+	if v := os.Getenv("BOSUN_HEALTH_CHECK_TIMEOUT"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			if d < 0 {
+				log.Warn().Str("env", "BOSUN_HEALTH_CHECK_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must not be negative")
+			} else {
+				rcfg.HealthCheckTimeout = d
+			}
+		} else {
+			log.Warn().Str("env", "BOSUN_HEALTH_CHECK_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
+	if v := os.Getenv("BOSUN_HEALTH_CHECK_INTERVAL"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_HEALTH_CHECK_INTERVAL").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
+			} else {
+				rcfg.HealthCheckInterval = d
+			}
+		} else {
+			log.Warn().Str("env", "BOSUN_HEALTH_CHECK_INTERVAL").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
+
+	// Restart circuit breaker configuration
+	if v := os.Getenv("BOSUN_RESTART_BREAKER"); v != "" {
+		rcfg.RestartBreakerEnabled = v != "false" && v != "0"
+	}
+	if v := os.Getenv("BOSUN_RESTART_THRESHOLD"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				log.Warn().Str("env", "BOSUN_RESTART_THRESHOLD").Str("value", v).Msg("Skipping env var. Reason: threshold must be positive")
+			} else {
+				rcfg.RestartThreshold = n
+			}
+		} else {
+			log.Warn().Str("env", "BOSUN_RESTART_THRESHOLD").Str("value", v).Msg("Skipping env var. Reason: invalid integer")
+		}
+	}
+	if v := os.Getenv("BOSUN_RESTART_WINDOW"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_RESTART_WINDOW").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
+			} else {
+				rcfg.RestartWindow = d
+			}
+		} else {
+			log.Warn().Str("env", "BOSUN_RESTART_WINDOW").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
 
 	// Timeout overrides
 	if v := os.Getenv("BOSUN_RECONCILE_TIMEOUT"); v != "" {

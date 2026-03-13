@@ -34,10 +34,10 @@ const (
 
 // Deploy operation timeouts
 const (
-	SSHConnectTimeout  = 5 * time.Second
-	SSHTimeout         = 30 * time.Second
-	RemoteDeployTimeout = 5 * time.Minute
-	ComposeUpTimeout   = 10 * time.Minute
+	SSHConnectTimeout         = 5 * time.Second
+	SSHTimeout                = 30 * time.Second
+	RemoteDeployTimeout       = 5 * time.Minute
+	DefaultComposeUpTimeout   = 10 * time.Minute
 )
 
 // DeployOps provides deployment operations including backup, file sync, and service management.
@@ -52,11 +52,22 @@ type DeployOps struct {
 	// RemoveOrphans if true, passes --remove-orphans to docker compose up.
 	// Removes containers belonging to services deleted from the compose file.
 	RemoveOrphans bool
+	// ComposeUpTimeout is the maximum time allowed for docker compose up.
+	// Zero means use DefaultComposeUpTimeout.
+	ComposeUpTimeout time.Duration
 
 	// composeUpFn overrides the compose-up call in ComposeUpMultipleWithRollback.
 	// Defaults to ComposeUpMultiple when nil. Exposed for testing the rollback
 	// decision logic without requiring Docker.
 	composeUpFn func(ctx context.Context, files []string) error
+}
+
+// composeUpTimeout returns the configured timeout or the default.
+func (d *DeployOps) composeUpTimeout() time.Duration {
+	if d.ComposeUpTimeout > 0 {
+		return d.ComposeUpTimeout
+	}
+	return DefaultComposeUpTimeout
 }
 
 // DeployResult tracks which files were actually written during deployment.
@@ -544,15 +555,43 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 		return ctx.Err()
 	}
 
+	// Rename-aside pattern: move existing target out of the way, rename new
+	// into place, then clean up. This avoids the window where the target is
+	// missing (between remove and rename) that the old remove-then-rename
+	// approach had.
+	backupDir := targetDir + ".bak"
+	hadExisting := false
+
+	// Guard against stale backup from a previous crash.
+	if _, err := os.Stat(backupDir); err == nil {
+		return fmt.Errorf("stale deploy backup exists at %s; restore or remove it before redeploying", backupDir)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat backup path: %w", err)
+	}
+
 	if _, err := os.Stat(targetDir); err == nil {
-		if err := os.RemoveAll(targetDir); err != nil {
-			return fmt.Errorf("remove existing target: %w", err)
+		hadExisting = true
+		if err := os.Rename(targetDir, backupDir); err != nil {
+			return fmt.Errorf("rename existing target aside: %w", err)
 		}
 	}
 
 	if err := os.Rename(tmpDir, targetDir); err != nil {
 		logger.Error().Err(err).Str("target", targetDir).Msg("Failed to rename to target")
+		// Restore the backup so the original target is not lost.
+		if hadExisting {
+			if rbErr := os.Rename(backupDir, targetDir); rbErr != nil {
+				logger.Error().Err(rbErr).Msg("Failed to restore backup after rename failure")
+				return fmt.Errorf("rename to target failed: %w; restore backup from %s failed: %v", err, backupDir, rbErr)
+			}
+		}
 		return fmt.Errorf("rename to target: %w", err)
+	}
+
+	if hadExisting {
+		if err := os.RemoveAll(backupDir); err != nil {
+			logger.Warn().Err(err).Str(log.FieldPath, backupDir).Msg("Deployment succeeded but backup cleanup failed")
+		}
 	}
 
 	success = true
@@ -859,14 +898,14 @@ func (d *DeployOps) EnsureRemoteDir(ctx context.Context, host, dir string) error
 }
 
 // ComposeUp runs docker compose up for the specified compose file.
-// Uses ComposeUpTimeout if the parent context has no deadline.
+// Uses the configured compose up timeout if the parent context has no deadline.
 // Returns an error if compose up fails (caller should handle rollback).
 func (d *DeployOps) ComposeUp(ctx context.Context, composeFile string) error {
 	return d.ComposeUpMultiple(ctx, []string{composeFile})
 }
 
 // ComposeUpMultiple runs docker compose up for multiple compose files.
-// Uses ComposeUpTimeout if the parent context has no deadline.
+// Uses the configured compose up timeout if the parent context has no deadline.
 // Returns an error if compose up fails (caller should handle rollback).
 func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string) error {
 	start := time.Now()
@@ -890,9 +929,10 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 		Msg("Starting docker compose up")
 
 	// Apply timeout if context doesn't have one
+	timeout := d.composeUpTimeout()
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, ComposeUpTimeout)
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 
@@ -912,7 +952,7 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 				Str(log.FieldOperation, "compose_up").
 				Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 				Msg("Docker compose up timed out")
-			return fmt.Errorf("docker compose up timed out after %v", ComposeUpTimeout)
+			return fmt.Errorf("docker compose up timed out after %v", timeout)
 		}
 
 		originalErr := fmt.Errorf("docker compose up failed: %w: %s", err, stderr.String())
@@ -1028,7 +1068,7 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 	// Copy enriched logger so reconcile_id flows into rollback logs.
 	rollbackCtx, cancel := context.WithTimeout(
 		log.WithContext(context.Background(), log.Ctx(ctx)),
-		ComposeUpTimeout,
+		d.composeUpTimeout(),
 	)
 	defer cancel()
 
@@ -1192,7 +1232,7 @@ func (d *DeployOps) classifyComposeFailure(ctx context.Context, composeFiles []s
 	// Use same timeout as compose up for the ps query.
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, ComposeUpTimeout)
+		ctx, cancel = context.WithTimeout(ctx, d.composeUpTimeout())
 		defer cancel()
 	}
 

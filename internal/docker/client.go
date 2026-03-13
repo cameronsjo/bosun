@@ -250,6 +250,21 @@ func (c *Client) RemoveContainer(ctx context.Context, name string) error {
 	return nil
 }
 
+// StopContainer gracefully stops a container with the given timeout.
+func (c *Client) StopContainer(ctx context.Context, name string, timeout int) error {
+	logger := log.ComponentCtx(ctx, log.ComponentDocker)
+	logger.Info().Str(log.FieldContainer, name).Int("timeout", timeout).Msg("Stopping container")
+
+	err := c.api.ContainerStop(ctx, name, container.StopOptions{Timeout: &timeout})
+	if err != nil {
+		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to stop container")
+		return fmt.Errorf("stop container %s: %w", name, err)
+	}
+
+	logger.Info().Str(log.FieldContainer, name).Msg("Container stopped successfully")
+	return nil
+}
+
 // RestartContainer restarts a container by name.
 func (c *Client) RestartContainer(ctx context.Context, name string) error {
 	logger := log.ComponentCtx(ctx, log.ComponentDocker)

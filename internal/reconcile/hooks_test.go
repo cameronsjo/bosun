@@ -547,10 +547,19 @@ func TestDedupeHooksByContainerWithExec(t *testing.T) {
 		assert.Len(t, result, 2)
 	})
 
-	t.Run("same action on same container deduplicates", func(t *testing.T) {
+	t.Run("different exec commands on same container are kept", func(t *testing.T) {
 		hooks := []PostSyncHook{
 			{Container: "traefik", Action: "exec", Command: []string{"cmd1"}},
 			{Container: "traefik", Action: "exec", Command: []string{"cmd2"}},
+		}
+		result := dedupeHooksByContainer(hooks)
+		assert.Len(t, result, 2)
+	})
+
+	t.Run("same exec command on same container deduplicates", func(t *testing.T) {
+		hooks := []PostSyncHook{
+			{Container: "traefik", Action: "exec", Command: []string{"reload"}},
+			{Container: "traefik", Action: "exec", Command: []string{"reload"}},
 		}
 		result := dedupeHooksByContainer(hooks)
 		assert.Len(t, result, 1)

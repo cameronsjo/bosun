@@ -28,6 +28,24 @@ func TestNewDeployOps(t *testing.T) {
 	})
 }
 
+func TestDeployOps_ComposeUpTimeout(t *testing.T) {
+	t.Run("returns default when not configured", func(t *testing.T) {
+		d := &DeployOps{}
+		assert.Equal(t, DefaultComposeUpTimeout, d.composeUpTimeout())
+	})
+
+	t.Run("returns configured value", func(t *testing.T) {
+		d := &DeployOps{ComposeUpTimeout: 30 * time.Minute}
+		assert.Equal(t, 30*time.Minute, d.composeUpTimeout())
+	})
+
+	t.Run("NewDeployOps leaves timeout at zero (uses default)", func(t *testing.T) {
+		d := NewDeployOps(false, "test")
+		assert.Zero(t, d.ComposeUpTimeout)
+		assert.Equal(t, DefaultComposeUpTimeout, d.composeUpTimeout())
+	})
+}
+
 func TestDeployOps_ComposeUpArgs_RemoveOrphans(t *testing.T) {
 	tests := []struct {
 		name           string
