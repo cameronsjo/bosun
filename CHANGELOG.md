@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0](https://github.com/cameronsjo/bosun/compare/v0.21.0...v0.22.0) (2026-03-13)
+
+
+### Features
+
+* **alert:** add generic webhook alert provider ([2cd2ca7](https://github.com/cameronsjo/bosun/commit/2cd2ca7e88ea889b8402d48ceda99cbb46cf9028))
+* **alert:** add Slack webhook alert provider ([f2f2e73](https://github.com/cameronsjo/bosun/commit/f2f2e7303905e3c030bab41fb0d8a268b1df0e17))
+* **openspec:** formalize spec review workflow with Stage 1.5 gate ([9f1b827](https://github.com/cameronsjo/bosun/commit/9f1b827dd72714c8258a5d851e6542b467ce47ff))
+* **retry:** add retry utility with exponential backoff and jitter ([cf45845](https://github.com/cameronsjo/bosun/commit/cf45845722cfd9b019a7eac47893cd45fb228d12))
+
 ## [0.21.0](https://github.com/cameronsjo/bosun/compare/v0.20.0...v0.21.0) (2026-03-13)
 
 
