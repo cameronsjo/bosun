@@ -42,8 +42,11 @@ type SlackProvider struct {
 }
 
 // NewSlackProvider creates a new Slack provider.
-// If webhookURL is empty, it reads from SLACK_WEBHOOK_URL environment variable.
+// If webhookURL is empty, it falls back to BOSUN_SLACK_WEBHOOK_URL then SLACK_WEBHOOK_URL.
 func NewSlackProvider(webhookURL string) *SlackProvider {
+	if webhookURL == "" {
+		webhookURL = os.Getenv("BOSUN_SLACK_WEBHOOK_URL")
+	}
 	if webhookURL == "" {
 		webhookURL = os.Getenv("SLACK_WEBHOOK_URL")
 	}

@@ -120,7 +120,11 @@ func displayAlertStatus(alertCfg config.AlertConfig) {
 	// Slack
 	if alertCfg.SlackWebhookURL != "" {
 		ui.Success("Slack: configured")
-		fmt.Printf("  Webhook URL: %s...%s\n", alertCfg.SlackWebhookURL[:30], alertCfg.SlackWebhookURL[len(alertCfg.SlackWebhookURL)-10:])
+		if len(alertCfg.SlackWebhookURL) > 40 {
+			fmt.Printf("  Webhook URL: %s...%s\n", alertCfg.SlackWebhookURL[:30], alertCfg.SlackWebhookURL[len(alertCfg.SlackWebhookURL)-10:])
+		} else {
+			fmt.Println("  Webhook URL: [configured]")
+		}
 		hasProvider = true
 	} else {
 		ui.Warning("Slack: not configured")
