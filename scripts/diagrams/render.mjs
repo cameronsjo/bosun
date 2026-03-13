@@ -35,6 +35,10 @@ function patchReadme(readme, id, asciiArt) {
     throw new Error(`Marker pair not found for diagram "${id}"`);
   }
 
+  if (startIdx >= endIdx) {
+    throw new Error(`Markers out of order for diagram "${id}"`);
+  }
+
   const before = readme.slice(0, startIdx + open.length);
   const after = readme.slice(endIdx);
   const block = `\n\`\`\`text\n${asciiArt}\n\`\`\`\n`;
@@ -48,11 +52,10 @@ function main() {
   let errors = 0;
 
   for (const { id, src } of DIAGRAMS) {
-    const srcPath = resolve(ROOT, src);
-    const raw = readFileSync(srcPath, "utf-8");
-    const processed = preprocess(raw);
-
     try {
+      const srcPath = resolve(ROOT, src);
+      const raw = readFileSync(srcPath, "utf-8");
+      const processed = preprocess(raw);
       const ascii = renderMermaidAscii(processed);
       readme = patchReadme(readme, id, ascii);
       console.log(`  rendered: ${id}`);
