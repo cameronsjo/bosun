@@ -59,8 +59,14 @@ type Config struct {
 	// deployPaths is an allowlist of glob patterns for deploy-relevant paths.
 	deployPaths []string
 
+	// driftAlertDebounce is the debounce window before first drift alert fires.
+	driftAlertDebounce time.Duration
+
 	// domain is the project-level domain for Traefik defaultRule.
 	domain string
+
+	// removeOrphans controls whether --remove-orphans is passed to docker compose up.
+	removeOrphans bool
 }
 
 // TunnelConfig holds tunnel provider-specific configuration.
@@ -156,6 +162,16 @@ type configFile struct {
 	// DeployPaths is an allowlist of glob patterns for deploy-relevant paths.
 	// When configured, commits that only touch files outside these patterns skip the pipeline.
 	DeployPaths []string `yaml:"deploy_paths"`
+
+
+	// DriftAlertDebounce is the debounce window before first drift alert fires.
+	// Items must persist past this duration before alerting. 0 = disabled (default).
+	DriftAlertDebounce reconcile.Duration `yaml:"drift_alert_debounce"`
+
+	// RemoveOrphans controls whether --remove-orphans is passed to docker compose up.
+	// Defaults to true (preserving existing behavior). Set to false in shared environments
+	// where Bosun does not own all containers on the Docker host.
+	RemoveOrphans *bool `yaml:"remove_orphans"`
 }
 
 // FindRoot searches upward from the current directory to find the project root.
@@ -218,14 +234,18 @@ func LoadFrom(dir string) (*Config, error) {
 	postSyncHooks := extractPostSyncHooks(fileCfg)
 	hookSettleDelay := extractHookSettleDelay(fileCfg)
 	deployPaths := extractDeployPaths(fileCfg)
+	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
 	domain := extractDomain(fileCfg)
+	removeOrphans := extractRemoveOrphans(fileCfg)
 
 	return &Config{
-		Root:            dir,
-		postSyncHooks:   postSyncHooks,
-		hookSettleDelay: hookSettleDelay,
-		deployPaths:     deployPaths,
-		domain:          domain,
+		Root:               dir,
+		postSyncHooks:      postSyncHooks,
+		hookSettleDelay:    hookSettleDelay,
+		deployPaths:        deployPaths,
+		driftAlertDebounce: driftAlertDebounce,
+		domain:             domain,
+		removeOrphans:      removeOrphans,
 	}, nil
 }
 
@@ -268,7 +288,9 @@ func Load() (*Config, error) {
 	postSyncHooks := extractPostSyncHooks(fileCfg)
 	hookSettleDelay := extractHookSettleDelay(fileCfg)
 	deployPaths := extractDeployPaths(fileCfg)
+	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
 	domain := extractDomain(fileCfg)
+	removeOrphans := extractRemoveOrphans(fileCfg)
 
 	// Determine project name (defaults to directory name)
 	projectName := fileCfg.ProjectName
@@ -287,10 +309,12 @@ func Load() (*Config, error) {
 		tunnelProvider:  tunnelProvider,
 		tunnelConfig:    tunnelConfig,
 		alertConfig:     alertConfig,
-		postSyncHooks:   postSyncHooks,
-		hookSettleDelay: hookSettleDelay,
-		deployPaths:     deployPaths,
-		domain:          domain,
+		postSyncHooks:      postSyncHooks,
+		hookSettleDelay:    hookSettleDelay,
+		deployPaths:        deployPaths,
+		driftAlertDebounce: driftAlertDebounce,
+		domain:             domain,
+		removeOrphans:      removeOrphans,
 	}
 
 	logger := log.Component("config")
@@ -501,6 +525,31 @@ func extractHookSettleDelay(cfg configFile) time.Duration {
 // extractDomain extracts the domain from a parsed config.
 func extractDomain(cfg configFile) string {
 	return cfg.Domain
+}
+
+// DriftAlertDebounce returns the configured drift alert debounce duration.
+func (c *Config) DriftAlertDebounce() time.Duration {
+	return c.driftAlertDebounce
+}
+
+// extractDriftAlertDebounce extracts the drift alert debounce from a parsed config.
+func extractDriftAlertDebounce(cfg configFile) time.Duration {
+	return cfg.DriftAlertDebounce.Duration
+}
+
+// extractRemoveOrphans extracts the remove_orphans setting from a parsed config.
+// Defaults to true when not explicitly set (preserving existing behavior).
+func extractRemoveOrphans(cfg configFile) bool {
+	if cfg.RemoveOrphans != nil {
+		return *cfg.RemoveOrphans
+	}
+	return true
+}
+
+// RemoveOrphans returns whether --remove-orphans should be passed to docker compose up.
+// Defaults to true.
+func (c *Config) RemoveOrphans() bool {
+	return c.removeOrphans
 }
 
 // getEnvOrDefault returns the value of the environment variable if set and non-empty,

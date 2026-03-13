@@ -363,6 +363,144 @@ func TestLoadState_ReadError(t *testing.T) {
 	assert.Empty(t, state.LastDeployedCommit)
 }
 
+func TestFilterDebounced(t *testing.T) {
+	now := time.Now()
+	debounce := 5 * time.Minute
+
+	t.Run("zero debounce passes all items through", func(t *testing.T) {
+		items := []DriftItem{
+			{Service: "traefik", Type: DriftUnhealthy},
+			{Service: "authelia", Type: DriftMissing},
+		}
+		debounceMap := map[string]time.Time{}
+
+		result := FilterDebounced(items, debounceMap, 0)
+
+		assert.Len(t, result, 2)
+		assert.Empty(t, debounceMap)
+	})
+
+	t.Run("new item added to debounce map and filtered out", func(t *testing.T) {
+		items := []DriftItem{
+			{Service: "traefik", Type: DriftUnhealthy},
+		}
+		debounceMap := map[string]time.Time{}
+
+		result := FilterDebounced(items, debounceMap, debounce)
+
+		assert.Empty(t, result, "new item should be filtered out")
+		assert.Contains(t, debounceMap, "traefik:unhealthy")
+	})
+
+	t.Run("item within debounce window is filtered out", func(t *testing.T) {
+		items := []DriftItem{
+			{Service: "traefik", Type: DriftUnhealthy},
+		}
+		debounceMap := map[string]time.Time{
+			"traefik:unhealthy": now.Add(-3 * time.Minute), // 3min ago, within 5min window
+		}
+
+		result := FilterDebounced(items, debounceMap, debounce)
+
+		assert.Empty(t, result, "item within window should be filtered out")
+		assert.Contains(t, debounceMap, "traefik:unhealthy")
+	})
+
+	t.Run("item past debounce window graduates", func(t *testing.T) {
+		items := []DriftItem{
+			{Service: "traefik", Type: DriftUnhealthy},
+		}
+		debounceMap := map[string]time.Time{
+			"traefik:unhealthy": now.Add(-6 * time.Minute), // 6min ago, past 5min window
+		}
+
+		result := FilterDebounced(items, debounceMap, debounce)
+
+		require.Len(t, result, 1)
+		assert.Equal(t, "traefik", result[0].Service)
+		assert.NotContains(t, debounceMap, "traefik:unhealthy", "graduated item removed from debounce map")
+	})
+
+	t.Run("resolved item removed from debounce map", func(t *testing.T) {
+		items := []DriftItem{} // traefik resolved
+		debounceMap := map[string]time.Time{
+			"traefik:unhealthy": now.Add(-2 * time.Minute),
+		}
+
+		result := FilterDebounced(items, debounceMap, debounce)
+
+		assert.Empty(t, result)
+		assert.Empty(t, debounceMap, "resolved item should be removed from debounce map")
+	})
+
+	t.Run("mix of new, within window, graduated, and resolved", func(t *testing.T) {
+		items := []DriftItem{
+			{Service: "api", Type: DriftMissing},       // new
+			{Service: "traefik", Type: DriftUnhealthy},  // within window
+			{Service: "authelia", Type: DriftUnhealthy},  // past window
+		}
+		debounceMap := map[string]time.Time{
+			"traefik:unhealthy":  now.Add(-2 * time.Minute), // within window
+			"authelia:unhealthy": now.Add(-6 * time.Minute), // past window
+			"nginx:missing":     now.Add(-1 * time.Minute), // resolved (not in items)
+		}
+
+		result := FilterDebounced(items, debounceMap, debounce)
+
+		// Only authelia should graduate.
+		require.Len(t, result, 1)
+		assert.Equal(t, "authelia", result[0].Service)
+
+		// api:missing added, traefik still in map, authelia and nginx removed.
+		assert.Contains(t, debounceMap, "api:missing")
+		assert.Contains(t, debounceMap, "traefik:unhealthy")
+		assert.NotContains(t, debounceMap, "authelia:unhealthy")
+		assert.NotContains(t, debounceMap, "nginx:missing")
+	})
+
+	t.Run("exact debounce boundary graduates", func(t *testing.T) {
+		items := []DriftItem{
+			{Service: "traefik", Type: DriftUnhealthy},
+		}
+		debounceMap := map[string]time.Time{
+			"traefik:unhealthy": now.Add(-debounce), // exactly at boundary
+		}
+
+		result := FilterDebounced(items, debounceMap, debounce)
+
+		require.Len(t, result, 1)
+		assert.Equal(t, "traefik", result[0].Service)
+	})
+}
+
+func TestFilterDebounced_Persistence(t *testing.T) {
+	// Verify debounce state round-trips through state file persistence.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deploy-state.json")
+
+	now := time.Now().Truncate(time.Second)
+	state := &DeployState{
+		LastDeployedCommit: "abc123",
+		DriftDebounceItems: map[string]time.Time{
+			"traefik:unhealthy": now.Add(-2 * time.Minute),
+			"authelia:missing":  now.Add(-1 * time.Minute),
+		},
+	}
+
+	require.NoError(t, SaveState(path, state))
+	loaded := LoadState(path)
+
+	require.Len(t, loaded.DriftDebounceItems, 2)
+	assert.Equal(t,
+		state.DriftDebounceItems["traefik:unhealthy"].UTC().Truncate(time.Second),
+		loaded.DriftDebounceItems["traefik:unhealthy"].UTC().Truncate(time.Second),
+	)
+	assert.Equal(t,
+		state.DriftDebounceItems["authelia:missing"].UTC().Truncate(time.Second),
+		loaded.DriftDebounceItems["authelia:missing"].UTC().Truncate(time.Second),
+	)
+}
+
 func TestSaveState_SetsSchemaVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "deploy-state.json")
