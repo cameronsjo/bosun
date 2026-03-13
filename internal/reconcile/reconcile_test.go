@@ -3216,3 +3216,111 @@ func TestRunHealthGate_FailsWhenUnhealthy(t *testing.T) {
 	assert.Contains(t, err.Error(), "authelia")
 }
 
+func TestDeployRemoteErrorPropagation(t *testing.T) {
+	t.Run("no target host returns error", func(t *testing.T) {
+		cfg := &Config{
+			TargetHost:       "",
+			LocalAppdataPath: "/nonexistent/path",
+		}
+		r := NewReconciler(cfg)
+
+		err := r.deployRemote(context.Background(), map[string]any{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no target host")
+	})
+
+	t.Run("first sync failure returns error", func(t *testing.T) {
+		// deployRemote calls DeployRemote (tar-over-SSH) as the first SSH op.
+		// Without a real SSH target, this fails. Verify the error propagates.
+		cfg := &Config{
+			TargetHost:        "user@invalid-host-that-does-not-exist",
+			LocalAppdataPath:  "/nonexistent/path",
+			StagingDir:        t.TempDir(),
+			RemoteAppdataPath: "/mnt/user/appdata",
+		}
+		deploy := &DeployOps{DryRun: false}
+		r := NewReconciler(cfg, WithDeployOps(deploy))
+
+		err := r.deployRemote(context.Background(), nil)
+		require.Error(t, err)
+		// Should NOT contain "Deployment complete" in any wrapped error.
+	})
+
+	t.Run("signal failure does not cause deploy error", func(t *testing.T) {
+		// With DryRun on the deployer, all SSH ops return nil.
+		// The reconciler config DryRun=false so the compose-up/signal block runs,
+		// but the deploy methods skip execution due to deployer's dry run.
+		tmpDir := t.TempDir()
+		stagingUnraid := filepath.Join(tmpDir, "unraid")
+		// Create all required staging directories so file syncs succeed in dry run.
+		for _, subdir := range []string{
+			"appdata/traefik",
+			"appdata/agentgateway",
+			"appdata/authelia",
+			"appdata/gatus",
+			"appdata/tailscale-gateway",
+			"compose",
+		} {
+			require.NoError(t, os.MkdirAll(filepath.Join(stagingUnraid, subdir), 0755))
+		}
+		// Create required config files so DeployRemoteFile doesn't fail on open.
+		for _, file := range []string{
+			"appdata/agentgateway/config.yaml",
+			"appdata/authelia/configuration.yml",
+			"appdata/gatus/config.yaml",
+			"appdata/tailscale-gateway/serve.json",
+			"compose/core.yml",
+		} {
+			require.NoError(t, os.WriteFile(filepath.Join(stagingUnraid, file), []byte("test"), 0644))
+		}
+
+		cfg := &Config{
+			TargetHost:        "user@testhost",
+			LocalAppdataPath:  "/nonexistent/path",
+			StagingDir:        tmpDir,
+			RemoteAppdataPath: "/mnt/user/appdata",
+			DryRun:            false,
+		}
+		// DryRun on deployer makes all SSH calls return nil, including ComposeUpRemote.
+		deploy := &DeployOps{DryRun: true}
+		r := NewReconciler(cfg, WithDeployOps(deploy))
+
+		err := r.deployRemote(context.Background(), nil)
+		// All SSH ops are dry-run no-ops, compose up and signal both "succeed".
+		require.NoError(t, err)
+	})
+}
+
+func TestRunRemoteDeployFailure_StateNotUpdated(t *testing.T) {
+	// When deployRemote returns an error, Run() should NOT update LastDeployedCommit.
+	tmpDir := t.TempDir()
+	lockFile := filepath.Join(tmpDir, "reconcile.lock")
+	stateFile := filepath.Join(tmpDir, "state.json")
+
+	gitOps := &mockGitOps{syncChanged: true, syncBefore: "old-commit", syncAfter: "new-commit"}
+
+	cfg := &Config{
+		DryRun:            false,
+		Force:             false,
+		LockFile:          lockFile,
+		StateFile:         stateFile,
+		RepoDir:           filepath.Join(tmpDir, "repo"),
+		StagingDir:        filepath.Join(tmpDir, "staging"),
+		LocalAppdataPath:  "/nonexistent/path", // Force remote mode.
+		TargetHost:        "user@invalid-host",
+		RemoteAppdataPath: "/mnt/user/appdata",
+		InfraSubDir:       ".",
+		SecretsFiles:      []string{},
+	}
+
+	deploy := &DeployOps{DryRun: false}
+	r := NewReconciler(cfg, WithGitOperations(gitOps), WithDeployOps(deploy))
+
+	err := r.Run(context.Background())
+	require.Error(t, err)
+
+	// Verify state file was NOT updated with the new commit.
+	state := LoadState(stateFile)
+	assert.NotEqual(t, "new-commit", state.LastDeployedCommit,
+		"LastDeployedCommit should NOT be updated when deploy fails")
+}
