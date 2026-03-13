@@ -213,6 +213,7 @@ type Reconciler struct {
 	lockFile         string
 	lockFd           *os.File
 	lastBackupPath   string            // Path to the last backup for rollback support
+	lastComposeFiles []string          // Compose files from last deploy (for health gate rollback)
 	lastCommit       string            // Track commit for alerting
 	declaredServices []DeclaredService // Extracted from rendered compose after templating
 }
@@ -310,6 +311,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 	// Reset per-run state to avoid stale data from a previous Run().
 	r.declaredServices = nil
+	r.lastComposeFiles = nil
 
 	// Acquire lock to prevent concurrent runs.
 	// Lock failures are transient (another reconciliation is running) and lack state context,
@@ -463,6 +465,11 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	// Step 6: Cleanup staging directory after successful deployment.
 	if err := r.cleanupStaging(); err != nil {
 		ui.Warning("Failed to cleanup staging directory: %v", err)
+	}
+
+	// Step 7: Critical container health gate (if configured).
+	if err := r.runHealthGate(ctx, state); err != nil {
+		return fmt.Errorf("health gate failed: %w", err)
 	}
 
 	// Send recovery alert if this success follows previous failures.
@@ -864,6 +871,68 @@ func (r *Reconciler) cleanupStaging() error {
 	return nil
 }
 
+// runHealthGate checks critical container health after compose up.
+// Skipped when: DryRun, remote deploy (TargetHost set), no Docker client,
+// or empty CriticalContainers list.
+// On failure: triggers rollback and sends a throttled failure alert.
+func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState) error {
+	containers := r.config.CriticalContainers
+	if len(containers) == 0 {
+		return nil
+	}
+
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+
+	if r.config.DryRun {
+		logger.Debug().Msg("Health gate skipped. Reason: dry run")
+		return nil
+	}
+
+	if r.config.TargetHost != "" {
+		logger.Warn().
+			Strs("containers", containers).
+			Msg("Health gate skipped for remote deploy. Docker API is local-only")
+		return nil
+	}
+
+	if r.dockerClientFn == nil {
+		logger.Warn().Msg("Health gate skipped. Reason: no Docker client")
+		return nil
+	}
+
+	client := r.dockerClientFn()
+	if client == nil {
+		logger.Warn().Msg("Health gate skipped. Reason: Docker client unavailable")
+		return nil
+	}
+
+	timeout := r.config.HealthGateTimeout
+	if timeout == 0 {
+		timeout = 60 * time.Second
+	}
+
+	err := CheckCriticalContainerHealth(ctx, client, containers, timeout)
+	if err != nil {
+		logger.Error().
+			Err(err).
+			Strs("containers", containers).
+			Msg("Critical container health gate failed. Triggering rollback")
+
+		// Trigger rollback via existing mechanism.
+		if r.lastBackupPath != "" && len(r.lastComposeFiles) > 0 {
+			rollbackErr := r.deploy.ComposeUpMultipleWithRollback(ctx, r.lastComposeFiles, r.lastBackupPath)
+			if rollbackErr != nil {
+				logger.Error().Err(rollbackErr).Msg("Rollback after health gate failure also failed")
+			}
+		}
+
+		r.sendThrottledFailureAlert(ctx, state, err.Error())
+		return err
+	}
+
+	return nil
+}
+
 // syncRepo syncs the git repository.
 func (r *Reconciler) syncRepo(ctx context.Context) (bool, string, string, error) {
 	start := time.Now()
@@ -1108,6 +1177,7 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 		if len(composeFiles) == 0 {
 			ui.Warning("No compose files found in %s", composeDir)
 		} else {
+			r.lastComposeFiles = composeFiles
 			if err := r.deploy.ComposeUpMultipleWithRollback(ctx, composeFiles, r.lastBackupPath); err != nil {
 				// Unhealthy containers are warnings, not failures.
 				if errors.Is(err, ErrComposeUnhealthy) {

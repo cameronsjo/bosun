@@ -3127,3 +3127,89 @@ func TestRunSaveStateErrorInAttemptTracking(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// --- Health Gate pipeline integration tests ---
+
+func TestRunHealthGate_SkipsWhenNoCriticalContainers(t *testing.T) {
+	cfg := &Config{}
+	r := NewReconciler(cfg)
+	state := &DeployState{}
+
+	err := r.runHealthGate(context.Background(), state)
+	require.NoError(t, err)
+}
+
+func TestRunHealthGate_SkipsWhenDryRun(t *testing.T) {
+	cfg := &Config{
+		DryRun:             true,
+		CriticalContainers: []string{"traefik"},
+	}
+	r := NewReconciler(cfg)
+	state := &DeployState{}
+
+	err := r.runHealthGate(context.Background(), state)
+	require.NoError(t, err)
+}
+
+func TestRunHealthGate_SkipsForRemoteDeploy(t *testing.T) {
+	cfg := &Config{
+		TargetHost:         "user@remote",
+		CriticalContainers: []string{"traefik"},
+	}
+	r := NewReconciler(cfg)
+	state := &DeployState{}
+
+	err := r.runHealthGate(context.Background(), state)
+	require.NoError(t, err)
+}
+
+func TestRunHealthGate_SkipsWhenNoDockerClient(t *testing.T) {
+	cfg := &Config{
+		CriticalContainers: []string{"traefik"},
+	}
+	r := NewReconciler(cfg)
+	state := &DeployState{}
+
+	err := r.runHealthGate(context.Background(), state)
+	require.NoError(t, err)
+}
+
+func TestRunHealthGate_PassesWhenAllHealthy(t *testing.T) {
+	mockAPI := newReconcileMockDockerAPI()
+	mockAPI.containerInspectFunc = func(_ context.Context, name string) (container.InspectResponse, error) {
+		return makeInspectResponse(name, "running", &container.Health{Status: "healthy"}), nil
+	}
+	client := docker.NewClientWithAPI(mockAPI)
+
+	cfg := &Config{
+		CriticalContainers: []string{"traefik", "authelia"},
+		HealthGateTimeout:  5 * time.Second,
+	}
+	r := NewReconciler(cfg, WithDockerClient(client))
+	state := &DeployState{}
+
+	err := r.runHealthGate(context.Background(), state)
+	require.NoError(t, err)
+}
+
+func TestRunHealthGate_FailsWhenUnhealthy(t *testing.T) {
+	mockAPI := newReconcileMockDockerAPI()
+	mockAPI.containerInspectFunc = func(_ context.Context, name string) (container.InspectResponse, error) {
+		if name == "authelia" {
+			return makeInspectResponse(name, "running", &container.Health{Status: "unhealthy"}), nil
+		}
+		return makeInspectResponse(name, "running", &container.Health{Status: "healthy"}), nil
+	}
+	client := docker.NewClientWithAPI(mockAPI)
+
+	cfg := &Config{
+		CriticalContainers: []string{"traefik", "authelia"},
+		HealthGateTimeout:  1 * time.Second,
+	}
+	r := NewReconciler(cfg, WithDockerClient(client))
+	state := &DeployState{}
+
+	err := r.runHealthGate(context.Background(), state)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authelia")
+}
+
