@@ -69,7 +69,21 @@ func CheckCriticalContainerHealth(
 
 		select {
 		case <-deadline:
-			return formatHealthGateError(failed)
+			// Final check: a container may have become healthy since the last poll.
+			finalResults := inspectCriticalContainers(ctx, client, containers)
+			var finalFailed []ContainerHealthResult
+			for _, r := range finalResults {
+				if r.Status != "healthy" && r.Status != "no_healthcheck" {
+					finalFailed = append(finalFailed, r)
+				}
+			}
+			if len(finalFailed) == 0 {
+				logger.Info().
+					Strs("containers", containers).
+					Msg("All critical containers healthy (final check)")
+				return nil
+			}
+			return formatHealthGateError(finalFailed)
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:

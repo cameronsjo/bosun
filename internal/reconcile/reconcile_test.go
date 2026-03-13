@@ -3165,6 +3165,7 @@ func TestRunHealthGate_SkipsForRemoteDeploy(t *testing.T) {
 func TestRunHealthGate_SkipsWhenNoDockerClient(t *testing.T) {
 	cfg := &Config{
 		CriticalContainers: []string{"traefik"},
+		LocalAppdataPath:   t.TempDir(), // Ensures isLocalMode() returns true.
 	}
 	r := NewReconciler(cfg)
 	state := &DeployState{}
@@ -3183,6 +3184,7 @@ func TestRunHealthGate_PassesWhenAllHealthy(t *testing.T) {
 	cfg := &Config{
 		CriticalContainers: []string{"traefik", "authelia"},
 		HealthGateTimeout:  5 * time.Second,
+		LocalAppdataPath:   t.TempDir(), // Ensures isLocalMode() returns true.
 	}
 	r := NewReconciler(cfg, WithDockerClient(client))
 	state := &DeployState{}
@@ -3204,6 +3206,7 @@ func TestRunHealthGate_FailsWhenUnhealthy(t *testing.T) {
 	cfg := &Config{
 		CriticalContainers: []string{"traefik", "authelia"},
 		HealthGateTimeout:  1 * time.Second,
+		LocalAppdataPath:   t.TempDir(), // Ensures isLocalMode() returns true.
 	}
 	r := NewReconciler(cfg, WithDockerClient(client))
 	state := &DeployState{}

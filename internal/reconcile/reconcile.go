@@ -311,6 +311,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 	// Reset per-run state to avoid stale data from a previous Run().
 	r.declaredServices = nil
+	r.lastBackupPath = ""
 	r.lastComposeFiles = nil
 
 	// Acquire lock to prevent concurrent runs.
@@ -872,7 +873,7 @@ func (r *Reconciler) cleanupStaging() error {
 }
 
 // runHealthGate checks critical container health after compose up.
-// Skipped when: DryRun, remote deploy (TargetHost set), no Docker client,
+// Skipped when: DryRun, remote deploy (!isLocalMode), no Docker client,
 // or empty CriticalContainers list.
 // On failure: triggers rollback and sends a throttled failure alert.
 func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState) error {
@@ -888,7 +889,7 @@ func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState) erro
 		return nil
 	}
 
-	if r.config.TargetHost != "" {
+	if !r.isLocalMode() {
 		logger.Warn().
 			Strs("containers", containers).
 			Msg("Health gate skipped for remote deploy. Docker API is local-only")
