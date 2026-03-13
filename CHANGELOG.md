@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.1](https://github.com/cameronsjo/bosun/compare/v0.25.0...v0.25.1) (2026-03-13)
+
+
+### Bug Fixes
+
+* **reconcile:** propagate remote compose up failure ([b56697a](https://github.com/cameronsjo/bosun/commit/b56697a3a6880e1f7cf467ded4174de3b98e0a6d))
+* **reconcile:** propagate remote compose up failure instead of swallowing ([540e99f](https://github.com/cameronsjo/bosun/commit/540e99ff4c63149e6bc3014ba577967fe893a9a5))
+
 ## [0.25.0](https://github.com/cameronsjo/bosun/compare/v0.24.0...v0.25.0) (2026-03-13)
 
 
