@@ -1175,7 +1175,7 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) e
 	if !r.config.DryRun {
 		ui.Info("  Reloading services...")
 		if err := r.deploy.ComposeUpRemote(ctx, host, composeManagerDir); err != nil {
-			ui.Warning("Could not recreate core stack: %v", err)
+			return fmt.Errorf("remote compose up failed: %w", err)
 		}
 		if err := r.deploy.SignalContainerRemote(ctx, host, "agentgateway", "SIGHUP"); err != nil {
 			ui.Warning("Could not reload agentgateway: %v", err)
