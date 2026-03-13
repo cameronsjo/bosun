@@ -74,10 +74,11 @@ deployment. Health inspection is handled separately by post-deploy verification.
 
 Multiple compose files SHALL be supported via multiple `-f` flags.
 
-On compose up failure, the reconciler SHALL attempt rollback using the backup
-compose files. Rollback results are distinguished via sentinel errors:
-`ErrRollbackSucceeded` (deploy failed, rollback worked) and `ErrRollbackFailed`
-(both failed, critical state).
+On compose up failure for local deployments, the reconciler SHALL attempt rollback
+using the backup compose files. Rollback results are distinguished via sentinel
+errors: `ErrRollbackSucceeded` (deploy failed, rollback worked) and
+`ErrRollbackFailed` (both failed, critical state). Remote deployments do not
+support rollback — the error is propagated directly to the pipeline.
 
 A configurable `ComposeUpTimeout` (default 10 minutes) SHALL apply to compose
 operations.
