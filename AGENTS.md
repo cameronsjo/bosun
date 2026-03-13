@@ -302,6 +302,9 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 | `BOSUN_COMPOSE_UP_TIMEOUT` | daemon, reconcile | Timeout for `docker compose up` (default: `10m`; accepts Go durations or plain seconds) |
 | `BOSUN_HEALTH_CHECK_TIMEOUT` | daemon, reconcile | Post-deploy health verification timeout (default: `60s`; set to `0` to disable) |
 | `BOSUN_HEALTH_CHECK_INTERVAL` | daemon, reconcile | Poll interval for health verification (default: `5s`) |
+| `BOSUN_RESTART_BREAKER` | daemon, reconcile | Enable restart circuit breaker (default: `true`) |
+| `BOSUN_RESTART_THRESHOLD` | daemon, reconcile | Restart count delta to trip breaker (default: `5`; must be positive) |
+| `BOSUN_RESTART_WINDOW` | daemon, reconcile | Time window for restart delta evaluation (default: `10m`) |
 | `BOSUN_RECONCILE_TIMEOUT` | daemon | Reconciliation timeout |
 | `BOSUN_SHUTDOWN_TIMEOUT` | daemon | Graceful shutdown timeout |
 | `BOSUN_API_TIMEOUT` | daemon | API request timeout |

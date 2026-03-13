@@ -49,6 +49,10 @@ func (m *reconcileMockDockerAPI) ContainerStart(_ context.Context, _ string, _ c
 	return nil
 }
 
+func (m *reconcileMockDockerAPI) ContainerStop(_ context.Context, _ string, _ container.StopOptions) error {
+	return nil
+}
+
 func (m *reconcileMockDockerAPI) ContainerRestart(ctx context.Context, containerID string, options container.StopOptions) error {
 	if m.containerRestartFunc != nil {
 		return m.containerRestartFunc(ctx, containerID, options)

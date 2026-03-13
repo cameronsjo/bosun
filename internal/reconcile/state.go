@@ -80,6 +80,17 @@ type DeployState struct {
 	// Health verification results from last post-deploy check.
 	HealthVerifiedAt         time.Time `json:"health_verified_at,omitempty"`
 	HealthVerificationPassed bool      `json:"health_verification_passed,omitempty"`
+
+	// Restart circuit breaker: tracks per-container restart counts to detect crash loops.
+	RestartTracking map[string]RestartTrackingEntry `json:"restart_tracking,omitempty"`
+}
+
+// RestartTrackingEntry tracks the restart count for a container across drift checks.
+type RestartTrackingEntry struct {
+	RestartCount int       `json:"restart_count"`
+	CheckedAt    time.Time `json:"checked_at"`
+	Tripped      bool      `json:"tripped"`
+	TrippedAt    time.Time `json:"tripped_at,omitempty"`
 }
 
 // alertThresholds defines the attempt counts at which failure alerts are sent.

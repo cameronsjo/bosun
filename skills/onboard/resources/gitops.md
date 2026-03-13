@@ -276,7 +276,9 @@ The daemon tracks deploy state in a JSON file (default: `/var/lib/bosun/deploy-s
 - Declared services (what should be running)
 - Drift check results
 
-**Circuit breaker:** After 3 consecutive deployment failures, the daemon stops retrying automatically. A manual `bosun trigger -f` (force) resets the circuit breaker and tries again.
+**Deploy circuit breaker:** After 3 consecutive deployment failures, the daemon stops retrying automatically. A manual `bosun trigger -f` (force) resets the circuit breaker and tries again.
+
+**Restart circuit breaker:** Detects containers in restart loops by tracking restart count deltas within a sliding window. When a container accumulates `BOSUN_RESTART_THRESHOLD` (default: 5) restarts within `BOSUN_RESTART_WINDOW` (default: 10m), the breaker trips and stops the container to prevent resource exhaustion. Runs during each drift check cycle. Sends critical alerts on trip and info alerts on resolution. Disabled with `BOSUN_RESTART_BREAKER=false`.
 
 ## Deployment Targets
 
