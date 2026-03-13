@@ -505,6 +505,11 @@ func TestCommandList(t *testing.T) {
 			command:  []any{},
 			expected: nil,
 		},
+		{
+			name:     "scalar command with spaced template flags",
+			command:  "--providers.docker.defaultRule=Host(`{{ .subdomain }}.{{ .domain }}`)",
+			expected: []string{"--providers.docker.defaultRule=Host(`{{", ".subdomain", "}}.{{", ".domain", "}}`)"}, // strings.Fields splits on spaces
+		},
 	}
 
 	for _, tc := range testCases {
