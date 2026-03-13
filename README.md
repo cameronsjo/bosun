@@ -6,15 +6,15 @@
 
 Push to git. Bosun receives orders. Containers deploy. Smooth sailing.
 
-```mermaid
-flowchart LR
-    Push[git push] --> Receive[Bosun receives orders]
-    Receive --> Clone[Clone & decrypt]
-    Clone --> Template[Template configs]
-    Template --> Deploy[Deploy to target]
-    Deploy --> Compose[docker compose up]
-    Compose --> Verify[Drift verification]
+<!-- DIAGRAM:pipeline-overview -->
+```text
+┌──────────┐     ┌───────────────────────┐     ┌─────────────────┐     ┌──────────────────┐     ┌──────────────────┐     ┌───────────────────┐     ┌────────────────────┐
+│          │     │                       │     │                 │     │                  │     │                  │     │                   │     │                    │
+│ git push ├────►│ Bosun receives orders ├────►│ Clone & decrypt ├────►│ Template configs ├────►│ Deploy to target ├────►│ docker compose up ├────►│ Drift verification │
+│          │     │                       │     │                 │     │                  │     │                  │     │                   │     │                    │
+└──────────┘     └───────────────────────┘     └─────────────────┘     └──────────────────┘     └──────────────────┘     └───────────────────┘     └────────────────────┘
 ```
+<!-- /DIAGRAM:pipeline-overview -->
 
 ## Why Bosun?
 
@@ -34,34 +34,101 @@ Bosun is **Helm for home**: a single binary that brings GitOps workflows to Dock
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    subgraph Captain["Captain (GitHub)"]
-        Push[git push]
-    end
-
-    subgraph Yacht["Your Yacht (Server)"]
-        subgraph Bosun
-            Radio["Radio<br/>Webhook/Poll"]
-            Fetch["Fetch Orders<br/>git clone/pull"]
-            Decrypt["Decrypt Secrets<br/>SOPS + Age"]
-            Template["Prep Configs<br/>Go Templates"]
-            Deploy["Deploy<br/>tar-over-SSH / local copy"]
-            Compose["Crew Up<br/>docker compose"]
-            Drift["Drift Watch<br/>Periodic check"]
-        end
-        Crew["Your Crew<br/>Containers"]
-    end
-
-    Push --> Radio
-    Radio --> Fetch
-    Fetch --> Decrypt
-    Decrypt --> Template
-    Template --> Deploy
-    Deploy --> Compose
-    Compose --> Crew
-    Drift -.->|verify| Crew
+<!-- DIAGRAM:architecture -->
+```text
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                               Your Yacht (Server)                               │
+│                                                                                 │
+│                                                                                 │
+│ ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│ │                                    Bosun                                    │ │
+│ │                                                                             │ │
+│ │                                                                             │ │
+│ │ ┌────────────────────────────────────┐     ┌──────────────────────────────┐ │ │
+│ │ │                                    │     │                              │ │ │
+│ │ │              git push              │  ┌┄┄┤ Drift Watch / Periodic check │ │ │
+│ │ │                                    │  ┆  │                              │ │ │
+│ │ └──────────────────┬─────────────────┘  ┆  └──────────────────────────────┘ │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    ▼                    ┆                                   │ │
+│ │ ┌────────────────────────────────────┐  ┆                                   │ │
+│ │ │                                    │  ┆                                   │ │
+│ │ │        Radio / Webhook/Poll        │  ┆                                   │ │
+│ │ │                                    │  ┆                                   │ │
+│ │ └──────────────────┬─────────────────┘  ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    ▼                    ┆                                   │ │
+│ │ ┌────────────────────────────────────┐  ┆                                   │ │
+│ │ │                                    │  ┆                                   │ │
+│ │ │   Fetch Orders / git clone/pull    │  ┆                                   │ │
+│ │ │                                    │  ┆                                   │ │
+│ │ └──────────────────┬─────────────────┘  ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    ▼                    ┆                                   │ │
+│ │ ┌────────────────────────────────────┐  ┆                                   │ │
+│ │ │                                    │  ┆                                   │ │
+│ │ │    Decrypt Secrets / SOPS + Age    │  ┆                                   │ │
+│ │ │                                    │  ┆                                   │ │
+│ │ └──────────────────┬─────────────────┘  ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    ▼                    ┆                                   │ │
+│ │ ┌────────────────────────────────────┐  ┆                                   │ │
+│ │ │                                    │  ┆                                   │ │
+│ │ │    Prep Configs / Go Templates     │  ┆                                   │ │
+│ │ │                                    │  ┆                                   │ │
+│ │ └──────────────────┬─────────────────┘  ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    ▼                    ┆                                   │ │
+│ │ ┌────────────────────────────────────┐  ┆                                   │ │
+│ │ │                                    │  ┆                                   │ │
+│ │ │ Deploy / tar-over-SSH / local copy │  ┆                                   │ │
+│ │ │                                    │  ┆                                   │ │
+│ │ └──────────────────┬─────────────────┘  ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ │                    ▼                    ┆                                   │ │
+│ │ ┌────────────────────────────────────┐  ┆                                   │ │
+│ │ │                                    │  ┆                                   │ │
+│ │ │      Crew Up / docker compose      │  ┆                                   │ │
+│ │ │                                    │  ┆                                   │ │
+│ │ └──────────────────┬─────────────────┘  ┆                                   │ │
+│ │                    │                    ┆                                   │ │
+│ └────────────────────┼────────────────────┆───────────────────────────────────┘ │
+│                   verify┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┘                                     │
+│                      ┆                                                          │
+│                      ▼                                                          │
+│   ┌────────────────────────────────────┐                                        │
+│   │                                    │                                        │
+│   │       Your Crew / Containers       │                                        │
+│   │                                    │                                        │
+│   └────────────────────────────────────┘                                        │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                                                                                   
+                                                                                   
 ```
+<!-- /DIAGRAM:architecture -->
 
 ## Installation
 
@@ -237,23 +304,35 @@ compose_file: docker-compose.yml
 
 ## Reconciliation Pipeline
 
-```mermaid
-flowchart LR
-    Lock[Lock] --> GitSync[Git Sync]
-    GitSync --> LoadState[Load State]
-    LoadState -->|same commit| Skip[Skip]
-    LoadState -->|new commit| Decrypt[Decrypt Secrets]
-    Decrypt --> Template[Template Configs]
-    Template --> Backup[Backup]
-    Backup --> DeployStep[Deploy]
-    DeployStep --> ComposeUp[Compose Up]
-    ComposeUp --> DriftVerify[Drift Verify]
-    DriftVerify --> SaveState[Save State]
-    SaveState --> Unlock[Unlock]
-    DeployStep -->|failure| CircuitBreaker[Circuit Breaker]
-    CircuitBreaker -->|< 3 failures| Retry[Alert + Retry]
-    CircuitBreaker -->|3+ failures| Stop[Alert + Stop]
+<!-- DIAGRAM:reconcile-pipeline -->
+```text
+┌──────┐     ┌──────────┐     ┌────────────┐                        ┌─────────────────┐     ┌──────────────────┐     ┌────────┐     ┌────────┐             ┌─────────────────┐                          ┌───────────────┐     ┌────────────┐     ┌────────┐
+│      │     │          │     │            │                        │                 │     │                  │     │        │     │        │             │                 │                          │               │     │            │     │        │
+│ Lock ├────►│ Git Sync ├────►│ Load State │     ├───same─commit───►│       Skip      │     │ Template Configs ├────►│ Backup ├────►│ Deploy │   ├────────►│    Compose Up   │     ├───────────────────►│  Drift Verify ├────►│ Save State ├────►│ Unlock │
+│      │     │          │     │            │                        │                 │     │                  │     │        │     │        │             │                 │                          │               │     │            │     │        │
+└──────┘     └──────────┘     └──────┬─────┘                        └─────────────────┘     └──────────────────┘     └────────┘     └────┬───┘             └─────────────────┘                          └───────────────┘     └────────────┘     └────────┘
+                                     │                                                                ▲                                  │                                                                                                                 
+                                     │                                                                │                                  │                                                                                                                 
+                                     │                                                                │                                  │                                                                                                                 
+                                     │                                                                │                                  │                                                                                                                 
+                                     │                                                                │                                  │                                                                                                                 
+                                     │                              ┌─────────────────┐               │                                  │                 ┌─────────────────┐                          ┌───────────────┐                                  
+                                     │                              │                 │               │                                  │                 │                 │                          │               │                                  
+                                     └─────────new─commit──────────►│ Decrypt Secrets ├───────────────┘                                  └─────failure────►│ Circuit Breaker │     ├───<─3─failures────►│ Alert + Retry │                                  
+                                                                    │                 │                                                                    │                 │                          │               │                                  
+                                                                    └─────────────────┘                                                                    └────────┬────────┘                          └───────────────┘                                  
+                                                                                                                                                                    │                                                                                      
+                                                                                                                                                                    │                                                                                      
+                                                                                                                                                                    │                                                                                      
+                                                                                                                                                                    │                                                                                      
+                                                                                                                                                                    │                                                                                      
+                                                                                                                                                                    │                                   ┌───────────────┐                                  
+                                                                                                                                                                    │                                   │               │                                  
+                                                                                                                                                                    └────────────3+─failures───────────►│  Alert + Stop │                                  
+                                                                                                                                                                                                        │               │                                  
+                                                                                                                                                                                                        └───────────────┘                                  
 ```
+<!-- /DIAGRAM:reconcile-pipeline -->
 
 ## The Nautical Theme
 
