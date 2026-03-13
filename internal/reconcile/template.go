@@ -19,6 +19,10 @@ import (
 type TemplateOps struct {
 	// Data is the template data available during rendering.
 	Data map[string]any
+
+	// SourceDir restricts include/fromJsonFile to paths within this directory.
+	// When empty, path validation is skipped (backwards-compatible).
+	SourceDir string
 }
 
 // NewTemplateOps creates a new TemplateOps instance with the given data.
@@ -37,7 +41,7 @@ func (t *TemplateOps) ExecuteTemplate(_ context.Context, templateFile, outputFil
 	}
 
 	// Create template with sprig functions and custom bosun functions.
-	tmpl := template.New(filepath.Base(templateFile)).Funcs(sprig.TxtFuncMap()).Funcs(bosunTemplateFuncs())
+	tmpl := template.New(filepath.Base(templateFile)).Funcs(sprig.TxtFuncMap()).Funcs(bosunTemplateFuncs(t.SourceDir))
 
 	// Parse the template.
 	tmpl, err = tmpl.Parse(string(content))
@@ -83,13 +87,60 @@ func (t *TemplateOps) ExecuteTemplate(_ context.Context, templateFile, outputFil
 	return nil
 }
 
+// validateIncludePath checks that the resolved path is within the allowed source directory.
+// Returns an error if the path escapes the source tree via traversal or symlinks.
+func validateIncludePath(path, sourceDir string) error {
+	if sourceDir == "" {
+		return nil
+	}
+
+	absSource, err := filepath.Abs(sourceDir)
+	if err != nil {
+		return fmt.Errorf("failed to resolve source directory: %w", err)
+	}
+
+	// Clean the path first to resolve ".." segments lexically.
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("failed to resolve include path: %w", err)
+	}
+	cleanPath := filepath.Clean(absPath)
+	cleanSource := filepath.Clean(absSource)
+
+	// First check: lexical containment catches traversal even for non-existent paths.
+	if !strings.HasPrefix(cleanPath, cleanSource+string(filepath.Separator)) && cleanPath != cleanSource {
+		return fmt.Errorf("include path %s escapes source directory %s", path, sourceDir)
+	}
+
+	// Second check: resolve symlinks to catch symlink-based escapes (only if the file exists).
+	realPath, err := filepath.EvalSymlinks(cleanPath)
+	if err != nil {
+		// File doesn't exist — the lexical check above is sufficient.
+		return nil
+	}
+
+	realSource, err := filepath.EvalSymlinks(cleanSource)
+	if err != nil {
+		return fmt.Errorf("failed to resolve symlinks for source directory: %w", err)
+	}
+
+	if !strings.HasPrefix(realPath, realSource+string(filepath.Separator)) && realPath != realSource {
+		return fmt.Errorf("include path %s escapes source directory %s", path, sourceDir)
+	}
+
+	return nil
+}
+
 // bosunTemplateFuncs returns custom template functions for bosun templates.
-// These extend the standard Sprig functions with bosun-specific utilities.
-func bosunTemplateFuncs() template.FuncMap {
+// sourceDir restricts file reads to within the source tree when non-empty.
+func bosunTemplateFuncs(sourceDir string) template.FuncMap {
 	return template.FuncMap{
 		// include reads and returns the contents of a file.
 		// Usage: {{ include "/path/to/file" }}
 		"include": func(path string) (string, error) {
+			if err := validateIncludePath(path, sourceDir); err != nil {
+				return "", err
+			}
 			data, err := os.ReadFile(path)
 			if err != nil {
 				return "", fmt.Errorf("include %s: %w", path, err)
@@ -101,6 +152,9 @@ func bosunTemplateFuncs() template.FuncMap {
 		// This is a convenience function that combines include + fromJson.
 		// Usage: {{ $data := fromJsonFile "/path/to/file.json" }}
 		"fromJsonFile": func(path string) (any, error) {
+			if err := validateIncludePath(path, sourceDir); err != nil {
+				return nil, err
+			}
 			data, err := os.ReadFile(path)
 			if err != nil {
 				return nil, fmt.Errorf("fromJsonFile %s: %w", path, err)
@@ -120,6 +174,9 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 	logger := log.ComponentCtx(ctx, log.ComponentTemplate)
 	infraDir := filepath.Join(sourceDir, subDir)
 	outDir := filepath.Join(stagingDir, subDir)
+
+	// Restrict include/fromJsonFile to the source directory tree.
+	t.SourceDir = sourceDir
 
 	// First, copy non-template files.
 	if err := copyNonTemplateFiles(infraDir, outDir); err != nil {

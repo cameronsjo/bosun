@@ -487,6 +487,118 @@ func TestCopyNonTemplateFiles(t *testing.T) {
 	})
 }
 
+func TestValidateIncludePath(t *testing.T) {
+	t.Run("allows path within source directory", func(t *testing.T) {
+		tmpDir, _ := filepath.EvalSymlinks(t.TempDir())
+		includeFile := filepath.Join(tmpDir, "sub", "file.txt")
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "sub"), 0755))
+		require.NoError(t, os.WriteFile(includeFile, []byte("ok"), 0644))
+
+		err := validateIncludePath(includeFile, tmpDir)
+		assert.NoError(t, err)
+	})
+
+	t.Run("blocks path traversal via dot-dot", func(t *testing.T) {
+		tmpDir, _ := filepath.EvalSymlinks(t.TempDir())
+		outsidePath := filepath.Join(tmpDir, "..", "escape.txt")
+
+		err := validateIncludePath(outsidePath, tmpDir)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "escapes source directory")
+	})
+
+	t.Run("blocks absolute path outside source", func(t *testing.T) {
+		tmpDir, _ := filepath.EvalSymlinks(t.TempDir())
+
+		err := validateIncludePath("/etc/passwd", tmpDir)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "escapes source directory")
+	})
+
+	t.Run("blocks symlink escape", func(t *testing.T) {
+		tmpDir, _ := filepath.EvalSymlinks(t.TempDir())
+		outsideDir, _ := filepath.EvalSymlinks(t.TempDir())
+
+		// Create a target file outside the source tree.
+		targetFile := filepath.Join(outsideDir, "secret.txt")
+		require.NoError(t, os.WriteFile(targetFile, []byte("secret"), 0644))
+
+		// Create a symlink inside the source tree pointing outside.
+		symlinkPath := filepath.Join(tmpDir, "escape-link")
+		require.NoError(t, os.Symlink(targetFile, symlinkPath))
+
+		err := validateIncludePath(symlinkPath, tmpDir)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "escapes source directory")
+	})
+
+	t.Run("skips validation when source dir is empty", func(t *testing.T) {
+		err := validateIncludePath("/any/path", "")
+		assert.NoError(t, err)
+	})
+}
+
+func TestTemplateOps_IncludePathValidation(t *testing.T) {
+	t.Run("include blocked outside source dir", func(t *testing.T) {
+		tmpDir, _ := filepath.EvalSymlinks(t.TempDir())
+		ctx := context.Background()
+
+		// Create template that tries to include /etc/hosts.
+		templateFile := filepath.Join(tmpDir, "test.tmpl")
+		templateContent := `{{ include "/etc/hosts" }}`
+		require.NoError(t, os.WriteFile(templateFile, []byte(templateContent), 0644))
+
+		outputFile := filepath.Join(tmpDir, "output", "test.txt")
+
+		tmpl := &TemplateOps{Data: map[string]any{}, SourceDir: tmpDir}
+		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "escapes source directory")
+	})
+
+	t.Run("include allowed within source dir", func(t *testing.T) {
+		tmpDir, _ := filepath.EvalSymlinks(t.TempDir())
+		ctx := context.Background()
+
+		// Create a file to include within the source dir.
+		includeFile := filepath.Join(tmpDir, "data.txt")
+		require.NoError(t, os.WriteFile(includeFile, []byte("safe content"), 0644))
+
+		templateFile := filepath.Join(tmpDir, "test.tmpl")
+		templateContent := fmt.Sprintf(`{{ include "%s" }}`, includeFile)
+		require.NoError(t, os.WriteFile(templateFile, []byte(templateContent), 0644))
+
+		outputFile := filepath.Join(tmpDir, "output", "test.txt")
+
+		tmpl := &TemplateOps{Data: map[string]any{}, SourceDir: tmpDir}
+		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+
+		require.NoError(t, err)
+
+		content, err := os.ReadFile(outputFile)
+		require.NoError(t, err)
+		assert.Equal(t, "safe content", string(content))
+	})
+
+	t.Run("fromJsonFile blocked outside source dir", func(t *testing.T) {
+		tmpDir, _ := filepath.EvalSymlinks(t.TempDir())
+		ctx := context.Background()
+
+		templateFile := filepath.Join(tmpDir, "test.tmpl")
+		templateContent := `{{ fromJsonFile "/etc/hosts" }}`
+		require.NoError(t, os.WriteFile(templateFile, []byte(templateContent), 0644))
+
+		outputFile := filepath.Join(tmpDir, "output", "test.txt")
+
+		tmpl := &TemplateOps{Data: map[string]any{}, SourceDir: tmpDir}
+		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "escapes source directory")
+	})
+}
+
 func TestCopyFile(t *testing.T) {
 	t.Run("copy file", func(t *testing.T) {
 		tmpDir := t.TempDir()
