@@ -34,10 +34,10 @@ const (
 
 // Deploy operation timeouts
 const (
-	SSHConnectTimeout  = 5 * time.Second
-	SSHTimeout         = 30 * time.Second
-	RemoteDeployTimeout = 5 * time.Minute
-	ComposeUpTimeout   = 10 * time.Minute
+	SSHConnectTimeout         = 5 * time.Second
+	SSHTimeout                = 30 * time.Second
+	RemoteDeployTimeout       = 5 * time.Minute
+	DefaultComposeUpTimeout   = 10 * time.Minute
 )
 
 // DeployOps provides deployment operations including backup, file sync, and service management.
@@ -52,11 +52,22 @@ type DeployOps struct {
 	// RemoveOrphans if true, passes --remove-orphans to docker compose up.
 	// Removes containers belonging to services deleted from the compose file.
 	RemoveOrphans bool
+	// ComposeUpTimeout is the maximum time allowed for docker compose up.
+	// Zero means use DefaultComposeUpTimeout.
+	ComposeUpTimeout time.Duration
 
 	// composeUpFn overrides the compose-up call in ComposeUpMultipleWithRollback.
 	// Defaults to ComposeUpMultiple when nil. Exposed for testing the rollback
 	// decision logic without requiring Docker.
 	composeUpFn func(ctx context.Context, files []string) error
+}
+
+// composeUpTimeout returns the configured timeout or the default.
+func (d *DeployOps) composeUpTimeout() time.Duration {
+	if d.ComposeUpTimeout > 0 {
+		return d.ComposeUpTimeout
+	}
+	return DefaultComposeUpTimeout
 }
 
 // DeployResult tracks which files were actually written during deployment.
@@ -859,14 +870,14 @@ func (d *DeployOps) EnsureRemoteDir(ctx context.Context, host, dir string) error
 }
 
 // ComposeUp runs docker compose up for the specified compose file.
-// Uses ComposeUpTimeout if the parent context has no deadline.
+// Uses the configured compose up timeout if the parent context has no deadline.
 // Returns an error if compose up fails (caller should handle rollback).
 func (d *DeployOps) ComposeUp(ctx context.Context, composeFile string) error {
 	return d.ComposeUpMultiple(ctx, []string{composeFile})
 }
 
 // ComposeUpMultiple runs docker compose up for multiple compose files.
-// Uses ComposeUpTimeout if the parent context has no deadline.
+// Uses the configured compose up timeout if the parent context has no deadline.
 // Returns an error if compose up fails (caller should handle rollback).
 func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string) error {
 	start := time.Now()
@@ -890,9 +901,10 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 		Msg("Starting docker compose up")
 
 	// Apply timeout if context doesn't have one
+	timeout := d.composeUpTimeout()
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, ComposeUpTimeout)
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 
@@ -912,7 +924,7 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 				Str(log.FieldOperation, "compose_up").
 				Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 				Msg("Docker compose up timed out")
-			return fmt.Errorf("docker compose up timed out after %v", ComposeUpTimeout)
+			return fmt.Errorf("docker compose up timed out after %v", timeout)
 		}
 
 		originalErr := fmt.Errorf("docker compose up failed: %w: %s", err, stderr.String())
@@ -1028,7 +1040,7 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 	// Copy enriched logger so reconcile_id flows into rollback logs.
 	rollbackCtx, cancel := context.WithTimeout(
 		log.WithContext(context.Background(), log.Ctx(ctx)),
-		ComposeUpTimeout,
+		d.composeUpTimeout(),
 	)
 	defer cancel()
 
@@ -1192,7 +1204,7 @@ func (d *DeployOps) classifyComposeFailure(ctx context.Context, composeFiles []s
 	// Use same timeout as compose up for the ps query.
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, ComposeUpTimeout)
+		ctx, cancel = context.WithTimeout(ctx, d.composeUpTimeout())
 		defer cancel()
 	}
 

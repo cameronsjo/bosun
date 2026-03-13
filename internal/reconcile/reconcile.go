@@ -76,9 +76,13 @@ type Config struct {
 	// StateFile is the path to the deploy state file that tracks last successful deployment.
 	StateFile string
 
-	// StartupGracePeriod is how long to wait after compose up before reporting
-	// unhealthy containers as drift. Allows time for health checks to pass.
-	StartupGracePeriod time.Duration
+	// HealthCheckTimeout is the maximum time to poll container health after
+	// compose up. Zero disables health verification entirely. Default 60s.
+	HealthCheckTimeout time.Duration
+
+	// HealthCheckInterval is how often to poll container health during
+	// post-deploy verification. Default 5s.
+	HealthCheckInterval time.Duration
 
 	// PostSyncHooks defines container restart actions triggered by file changes.
 	PostSyncHooks []PostSyncHook
@@ -124,6 +128,10 @@ type Config struct {
 	// When true, repo config reload will not update RemoveOrphans.
 	RemoveOrphansFromEnv bool
 
+	// ComposeUpTimeout is the maximum time allowed for docker compose up.
+	// Zero means use DefaultComposeUpTimeout (10 minutes).
+	ComposeUpTimeout time.Duration
+
 	// ConfigReloader loads project config from a directory path.
 	// Set by daemon/CLI to break the config→reconcile import cycle.
 	// When nil, config reload is skipped.
@@ -147,7 +155,8 @@ func DefaultConfig() *Config {
 		RemoteAppdataPath: "/mnt/user/appdata",
 		InfraSubDir:        ".",
 		BackupsToKeep:      5,
-		StartupGracePeriod: 30 * time.Second,
+		HealthCheckTimeout:  60 * time.Second,
+		HealthCheckInterval: 5 * time.Second,
 		OnFailure:          true,
 		RemoveOrphans:      true,
 	}
@@ -193,7 +202,7 @@ func NewReconciler(cfg *Config, opts ...ReconcilerOption) *Reconciler {
 		config:   cfg,
 		git:      NewGitOps(cfg.RepoURL, cfg.RepoBranch, cfg.RepoDir),
 		sops:     NewSOPSOps(),
-		deploy:   &DeployOps{DryRun: cfg.DryRun, ProjectName: cfg.ProjectName, ContentHashSync: cfg.ContentHashSync, RemoveOrphans: cfg.RemoveOrphans},
+		deploy:   &DeployOps{DryRun: cfg.DryRun, ProjectName: cfg.ProjectName, ContentHashSync: cfg.ContentHashSync, RemoveOrphans: cfg.RemoveOrphans, ComposeUpTimeout: cfg.ComposeUpTimeout},
 		lockFile: lockFile,
 	}
 
@@ -458,10 +467,14 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		r.executePostSyncHooks(ctx, previousCommit, after, deployResult)
 	}
 
-	// Post-deploy verification: check declared vs actual state.
+	// Post-deploy health verification: poll container health.
 	if r.dockerClientFn != nil && !r.config.DryRun && len(r.declaredServices) > 0 {
 		if client := r.dockerClientFn(); client != nil {
-			r.verifyPostDeploy(ctx, state, client)
+			if healthErr := r.verifyPostDeploy(ctx, state, client); healthErr != nil {
+				// Health verification failed — treat as a deploy failure.
+				r.sendThrottledFailureAlert(ctx, state, healthErr.Error())
+				return fmt.Errorf("post-deploy health verification failed: %w", healthErr)
+			}
 		}
 	}
 
@@ -600,66 +613,77 @@ func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) {
 	}
 }
 
-// verifyPostDeploy performs a drift check after deployment to verify declared
-// services are running. Logs warnings but does not fail the reconciliation.
-func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, client *docker.Client) {
+// verifyPostDeploy polls container health after deployment. Returns an error
+// if health verification times out with unhealthy containers.
+// When HealthCheckTimeout is zero, verification is disabled (returns nil).
+func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, client *docker.Client) error {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
-	// Wait for startup grace period to let containers start and pass health checks.
-	if r.config.StartupGracePeriod > 0 {
-		ui.Info("Waiting %s for services to start before verification...", r.config.StartupGracePeriod)
-		select {
-		case <-time.After(r.config.StartupGracePeriod):
-		case <-ctx.Done():
-			return
-		}
+	if r.config.HealthCheckTimeout <= 0 {
+		logger.Debug().Msg("Post-deploy health verification disabled (timeout=0)")
+		return nil
 	}
 
-	actual, err := CollectActualState(ctx, client, r.config.ProjectName)
+	ui.Info("Verifying container health (timeout: %s, interval: %s)...",
+		r.config.HealthCheckTimeout, r.config.HealthCheckInterval)
+
+	result, err := pollContainerHealth(
+		ctx, client, r.declaredServices, r.config.ProjectName,
+		r.config.HealthCheckTimeout, r.config.HealthCheckInterval,
+	)
+
+	// Record health verdict in state file.
+	now := time.Now()
+	state.HealthVerifiedAt = now
+	if result != nil {
+		state.HealthVerificationPassed = result.Passed
+	}
+
 	if err != nil {
-		logger.Warn().
+		logger.Error().
 			Err(err).
-			Msg("Post-deploy verification: failed to collect actual state")
-		return
-	}
+			Strs("unhealthy", result.Unhealthy).
+			Int("iterations", result.Iterations).
+			Int64(log.FieldDurationMS, result.Duration.Milliseconds()).
+			Msg("Post-deploy health verification failed")
+		ui.Error("Health verification failed after %s: %s", result.Duration.Round(time.Second), err)
 
-	report := CompareDrift(r.declaredServices, actual)
-
-	// Update drift status in state file.
-	state.DriftCheckedAt = report.CheckedAt
-	state.DriftItems = report.Items
-	if err := SaveState(r.config.StateFile, state); err != nil {
-		logger.Warn().Err(err).Msg("Failed to save drift state after post-deploy verification")
-	}
-
-	if !report.HasDrift() {
-		logger.Info().
-			Int("declared_services", len(r.declaredServices)).
-			Msg("Post-deploy verification: all declared services running")
-		ui.Success("Post-deploy verification: all %d declared services running", len(r.declaredServices))
-		return
-	}
-
-	// Categorize drift items and log each one.
-	var unhealthyNames []string
-	for _, item := range report.Items {
-		logger.Warn().
-			Str("service", item.Service).
-			Str("drift_type", string(item.Type)).
-			Str("declared", item.Declared).
-			Str("actual", item.Actual).
-			Msg("Post-deploy drift detected")
-
-		if item.Type == DriftUnhealthy {
-			unhealthyNames = append(unhealthyNames, item.Service)
+		// Also run a drift check to populate state.DriftItems for consistency.
+		actual, collectErr := CollectActualState(ctx, client, r.config.ProjectName)
+		if collectErr == nil {
+			report := CompareDrift(r.declaredServices, actual)
+			state.DriftCheckedAt = report.CheckedAt
+			state.DriftItems = report.Items
 		}
-	}
-	ui.Warning("Post-deploy verification: %d drift item(s) detected", len(report.Items))
 
-	// Alert on unhealthy containers (warning severity, not a deploy failure).
-	if len(unhealthyNames) > 0 {
-		r.sendUnhealthyAlert(ctx, unhealthyNames)
+		if saveErr := SaveState(r.config.StateFile, state); saveErr != nil {
+			logger.Warn().Err(saveErr).Msg("Failed to save state after health verification failure")
+		}
+
+		return err
 	}
+
+	logger.Info().
+		Int("declared_services", len(r.declaredServices)).
+		Int("iterations", result.Iterations).
+		Int64(log.FieldDurationMS, result.Duration.Milliseconds()).
+		Msg("Post-deploy health verification passed")
+	ui.Success("Health verification passed: all %d declared services healthy (%s)",
+		len(r.declaredServices), result.Duration.Round(time.Second))
+
+	// Run drift check for state consistency.
+	actual, collectErr := CollectActualState(ctx, client, r.config.ProjectName)
+	if collectErr == nil {
+		report := CompareDrift(r.declaredServices, actual)
+		state.DriftCheckedAt = report.CheckedAt
+		state.DriftItems = report.Items
+	}
+
+	if saveErr := SaveState(r.config.StateFile, state); saveErr != nil {
+		logger.Warn().Err(saveErr).Msg("Failed to save state after health verification")
+	}
+
+	return nil
 }
 
 // executePostSyncHooks detects changed files and restarts matching containers via configured hooks.

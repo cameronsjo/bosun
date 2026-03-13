@@ -76,6 +76,10 @@ type DeployState struct {
 	// within their debounce window. Items graduate to the dedup layer
 	// when the debounce duration elapses, or are removed if drift resolves.
 	DriftDebounceItems map[string]time.Time `json:"drift_debounce_items,omitempty"`
+
+	// Health verification results from last post-deploy check.
+	HealthVerifiedAt         time.Time `json:"health_verified_at,omitempty"`
+	HealthVerificationPassed bool      `json:"health_verification_passed,omitempty"`
 }
 
 // alertThresholds defines the attempt counts at which failure alerts are sent.
