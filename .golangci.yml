@@ -1,2 +1,4 @@
+version: "2"
+
 linters:
-  enable: [errcheck, govet, staticcheck, unused, gosimple, ineffassign]
+  enable: [errcheck, govet, staticcheck, unused, ineffassign]
