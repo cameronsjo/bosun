@@ -289,8 +289,10 @@ func (c *Client) ExecContainer(ctx context.Context, name string, cmd []string) e
 	}
 	defer attachResp.Close()
 
-	// Drain output to allow the exec to complete
-	_, _ = io.Copy(io.Discard, attachResp.Reader)
+	// Drain output to allow the exec to complete.
+	if _, err := io.Copy(io.Discard, attachResp.Reader); err != nil {
+		logger.Warn().Str(log.FieldContainer, name).Err(err).Msg("Error reading exec stream")
+	}
 
 	// Check exit code
 	inspectResp, err := c.api.ContainerExecInspect(ctx, createResp.ID)

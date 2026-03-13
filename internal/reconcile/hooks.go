@@ -30,8 +30,18 @@ type PostSyncHook struct {
 
 // hookKey returns a deduplication key for a hook.
 // Different actions on the same container are distinct hooks (e.g., restart + exec).
+// For exec hooks, the command is included so two different commands on the same
+// container are treated as separate hooks.
 func hookKey(h PostSyncHook) string {
-	return h.Container + ":" + h.Action
+	action := h.Action
+	if action == "" {
+		action = "restart"
+	}
+	key := h.Container + ":" + action
+	if action == "exec" && len(h.Command) > 0 {
+		key += ":" + strings.Join(h.Command, " ")
+	}
+	return key
 }
 
 // EvaluatePostSyncHooks matches changed file paths against hook glob patterns
@@ -185,16 +195,15 @@ func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []Po
 
 			logger.Info().
 				Str("container", hook.Container).
-				Strs("command", hook.Command).
+				Int("command_args", len(hook.Command)).
 				Strs("patterns", hook.Paths).
 				Msg("Executing post-sync hook: exec in container")
-			ui.Info("  Executing %q in %s (config files changed)...", strings.Join(hook.Command, " "), hook.Container)
+			ui.Info("  Executing command in %s (config files changed)...", hook.Container)
 
 			if err := client.ExecContainer(ctx, hook.Container, hook.Command); err != nil {
 				logger.Error().
 					Err(err).
 					Str("container", hook.Container).
-					Strs("command", hook.Command).
 					Msg("Post-sync hook failed: container exec error")
 				errs = append(errs, fmt.Sprintf("%s exec: %v", hook.Container, err))
 			} else {
