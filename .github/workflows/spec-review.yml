@@ -1,0 +1,56 @@
+name: Spec Review Gate
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  ready-to-build:
+    name: Spec PR Review Gate
+    if: startsWith(github.head_ref, 'spec/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check ready-to-build label
+        env:
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          if echo "$PR_LABELS" | grep -q '"ready-to-build"'; then
+            echo "Spec PR has ready-to-build label -- review complete"
+          else
+            echo "::error::Spec PR is missing the ready-to-build label."
+            echo ""
+            echo "Spec PRs must pass CodeRabbit review before merge."
+            echo "Run /spec-review to iterate on findings and apply the label."
+            echo ""
+            echo "See openspec/AGENTS.md Stage 1.5 for the full workflow."
+            exit 1
+          fi
+
+  validate-spec:
+    name: Validate Spec
+    if: startsWith(github.head_ref, 'spec/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OpenSpec
+        run: npm install -g openspec-cli
+
+      - name: Extract change ID from branch
+        id: change-id
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          CHANGE_ID="${BRANCH#spec/}"
+          echo "id=$CHANGE_ID" >> "$GITHUB_OUTPUT"
+          echo "Validating change: $CHANGE_ID"
+
+      - name: Validate spec
+        env:
+          CHANGE_ID: ${{ steps.change-id.outputs.id }}
+        run: openspec validate "$CHANGE_ID" --strict
