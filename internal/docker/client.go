@@ -265,13 +265,19 @@ func (c *Client) StopContainer(ctx context.Context, name string, timeout int) er
 	return nil
 }
 
-// RestartContainer restarts a container by name.
-func (c *Client) RestartContainer(ctx context.Context, name string) error {
+// RestartContainer restarts a container by name with the given timeout (seconds).
+// The timeout controls the grace period between SIGTERM and SIGKILL during the stop phase.
+func (c *Client) RestartContainer(ctx context.Context, name string, timeout ...int) error {
 	logger := log.ComponentCtx(ctx, log.ComponentDocker)
-	logger.Info().Str(log.FieldContainer, name).Msg("Restarting container")
 
-	timeout := 10
-	err := c.api.ContainerRestart(ctx, name, container.StopOptions{Timeout: &timeout})
+	t := 10
+	if len(timeout) > 0 && timeout[0] > 0 {
+		t = timeout[0]
+	}
+
+	logger.Info().Str(log.FieldContainer, name).Int("timeout", t).Msg("Restarting container")
+
+	err := c.api.ContainerRestart(ctx, name, container.StopOptions{Timeout: &t})
 	if err != nil {
 		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to restart container")
 		return err

@@ -1420,3 +1420,134 @@ func TestExtractCriticalContainers(t *testing.T) {
 		assert.Nil(t, extractCriticalContainers(cfg))
 	})
 }
+
+func TestShutdownTimeoutFromConfig(t *testing.T) {
+	t.Run("defaults to 30s when not configured", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `infrastructure:
+  containers:
+    - traefik
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, 30*time.Second, cfg.ShutdownTimeout())
+	})
+
+	t.Run("parses duration from bosun.yaml", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `shutdown_timeout: 120s
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, 120*time.Second, cfg.ShutdownTimeout())
+	})
+
+	t.Run("respects BOSUN_STOP_TIMEOUT env var", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		// No shutdown_timeout in YAML
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(""), 0644))
+
+		t.Setenv("BOSUN_STOP_TIMEOUT", "90s")
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, 90*time.Second, cfg.ShutdownTimeout())
+	})
+
+	t.Run("YAML takes precedence over env var", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `shutdown_timeout: 60s
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		t.Setenv("BOSUN_STOP_TIMEOUT", "90s")
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, 60*time.Second, cfg.ShutdownTimeout())
+	})
+}
+
+func TestLoadFrom_ShutdownTimeout(t *testing.T) {
+	t.Run("loads shutdown_timeout from directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		content := `shutdown_timeout: 45s
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Equal(t, 45*time.Second, cfg.ShutdownTimeout())
+	})
+
+	t.Run("defaults to 30s when not set", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Equal(t, 30*time.Second, cfg.ShutdownTimeout())
+	})
+}
+
+func TestExtractShutdownTimeout(t *testing.T) {
+	t.Run("returns default when zero", func(t *testing.T) {
+		cfg := configFile{}
+		assert.Equal(t, 30*time.Second, extractShutdownTimeout(cfg))
+	})
+
+	t.Run("returns configured duration", func(t *testing.T) {
+		cfg := configFile{ShutdownTimeout: reconcile.Duration{Duration: 120 * time.Second}}
+		assert.Equal(t, 120*time.Second, extractShutdownTimeout(cfg))
+	})
+
+	t.Run("respects env var when config is zero", func(t *testing.T) {
+		t.Setenv("BOSUN_STOP_TIMEOUT", "45s")
+		cfg := configFile{}
+		assert.Equal(t, 45*time.Second, extractShutdownTimeout(cfg))
+	})
+
+	t.Run("ignores invalid env var", func(t *testing.T) {
+		t.Setenv("BOSUN_STOP_TIMEOUT", "not-a-duration")
+		cfg := configFile{}
+		assert.Equal(t, 30*time.Second, extractShutdownTimeout(cfg))
+	})
+}

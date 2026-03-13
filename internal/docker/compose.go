@@ -89,6 +89,21 @@ func (c *ComposeClient) Down(ctx context.Context) error {
 	return nil
 }
 
+// DownWithTimeout stops and removes services with a custom shutdown timeout.
+// The timeout is the grace period (in seconds) between SIGTERM and SIGKILL for each container.
+func (c *ComposeClient) DownWithTimeout(ctx context.Context, timeoutSeconds int) error {
+	args := c.baseArgs()
+	args = append(args, "down", "--timeout", fmt.Sprintf("%d", timeoutSeconds))
+
+	cmd := c.command(ctx, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker compose down: %w\n%s", err, output)
+	}
+
+	return nil
+}
+
 // Restart restarts services defined in the compose file.
 func (c *ComposeClient) Restart(ctx context.Context, services ...string) error {
 	args := c.baseArgs()

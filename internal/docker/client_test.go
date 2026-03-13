@@ -520,18 +520,37 @@ func TestClient_RemoveContainer(t *testing.T) {
 	}
 }
 
-func TestClient_RestartContainer(t *testing.T) {
+func TestClient_StopContainer(t *testing.T) {
 	tests := []struct {
 		name      string
 		container string
+		timeout   int
 		setup     func(*MockDockerAPI)
 		wantErr   bool
+		errMsg    string
 	}{
 		{
 			name:      "success",
 			container: "web",
+			timeout:   30,
 			setup: func(m *MockDockerAPI) {
-				m.ContainerRestartFunc = func(ctx context.Context, containerID string, options container.StopOptions) error {
+				m.ContainerStopFunc = func(ctx context.Context, containerID string, options container.StopOptions) error {
+					assert.Equal(t, "web", containerID)
+					require.NotNil(t, options.Timeout)
+					assert.Equal(t, 30, *options.Timeout)
+					return nil
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name:      "custom timeout",
+			container: "api",
+			timeout:   120,
+			setup: func(m *MockDockerAPI) {
+				m.ContainerStopFunc = func(ctx context.Context, containerID string, options container.StopOptions) error {
+					require.NotNil(t, options.Timeout)
+					assert.Equal(t, 120, *options.Timeout)
 					return nil
 				}
 			},
@@ -540,6 +559,79 @@ func TestClient_RestartContainer(t *testing.T) {
 		{
 			name:      "failure",
 			container: "web",
+			timeout:   10,
+			setup: func(m *MockDockerAPI) {
+				m.ContainerStopFunc = func(ctx context.Context, containerID string, options container.StopOptions) error {
+					return errors.New("mock: container stop failed")
+				}
+			},
+			wantErr: true,
+			errMsg:  "stop container web",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := NewMockDockerAPI()
+			tt.setup(mock)
+			client := NewClientWithAPI(mock)
+
+			err := client.StopContainer(context.Background(), tt.container, tt.timeout)
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errMsg != "" {
+					assert.Contains(t, err.Error(), tt.errMsg)
+				}
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, 1, mock.ContainerStopCalls)
+		})
+	}
+}
+
+func TestClient_RestartContainer(t *testing.T) {
+	tests := []struct {
+		name        string
+		container   string
+		timeout     []int
+		wantTimeout int
+		setup       func(*MockDockerAPI)
+		wantErr     bool
+	}{
+		{
+			name:        "success with default timeout",
+			container:   "web",
+			timeout:     nil,
+			wantTimeout: 10,
+			setup: func(m *MockDockerAPI) {
+				m.ContainerRestartFunc = func(ctx context.Context, containerID string, options container.StopOptions) error {
+					require.NotNil(t, options.Timeout)
+					assert.Equal(t, 10, *options.Timeout)
+					return nil
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name:        "success with custom timeout",
+			container:   "web",
+			timeout:     []int{60},
+			wantTimeout: 60,
+			setup: func(m *MockDockerAPI) {
+				m.ContainerRestartFunc = func(ctx context.Context, containerID string, options container.StopOptions) error {
+					require.NotNil(t, options.Timeout)
+					assert.Equal(t, 60, *options.Timeout)
+					return nil
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name:        "failure",
+			container:   "web",
+			timeout:     nil,
+			wantTimeout: 10,
 			setup: func(m *MockDockerAPI) {
 				m.ContainerRestartFunc = func(ctx context.Context, containerID string, options container.StopOptions) error {
 					return errMockRestart
@@ -555,7 +647,7 @@ func TestClient_RestartContainer(t *testing.T) {
 			tt.setup(mock)
 			client := NewClientWithAPI(mock)
 
-			err := client.RestartContainer(context.Background(), tt.container)
+			err := client.RestartContainer(context.Background(), tt.container, tt.timeout...)
 			if tt.wantErr {
 				require.Error(t, err)
 			} else {
