@@ -1088,6 +1088,13 @@ func TestConfigFromEnv_ComposeUpTimeout(t *testing.T) {
 		require.NotNil(t, cfg.ReconcileConfig)
 		assert.Zero(t, cfg.ReconcileConfig.ComposeUpTimeout)
 	})
+
+	t.Run("non-positive value is skipped", func(t *testing.T) {
+		t.Setenv("BOSUN_COMPOSE_UP_TIMEOUT", "-5m")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Zero(t, cfg.ReconcileConfig.ComposeUpTimeout)
+	})
 }
 
 func TestConfigFromEnv_HealthCheckTimeout(t *testing.T) {
@@ -1117,6 +1124,20 @@ func TestConfigFromEnv_HealthCheckTimeout(t *testing.T) {
 		require.NotNil(t, cfg.ReconcileConfig)
 		assert.Equal(t, 60*time.Second, cfg.ReconcileConfig.HealthCheckTimeout)
 	})
+
+	t.Run("negative value retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_TIMEOUT", "-30s")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 60*time.Second, cfg.ReconcileConfig.HealthCheckTimeout)
+	})
+
+	t.Run("zero disables health check", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_TIMEOUT", "0")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Zero(t, cfg.ReconcileConfig.HealthCheckTimeout)
+	})
 }
 
 func TestConfigFromEnv_HealthCheckInterval(t *testing.T) {
@@ -1142,6 +1163,20 @@ func TestConfigFromEnv_HealthCheckInterval(t *testing.T) {
 
 	t.Run("invalid value retains default", func(t *testing.T) {
 		t.Setenv("BOSUN_HEALTH_CHECK_INTERVAL", "not-a-duration")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5*time.Second, cfg.ReconcileConfig.HealthCheckInterval)
+	})
+
+	t.Run("zero value retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_INTERVAL", "0")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5*time.Second, cfg.ReconcileConfig.HealthCheckInterval)
+	})
+
+	t.Run("negative value retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_INTERVAL", "-1s")
 		cfg := ConfigFromEnv()
 		require.NotNil(t, cfg.ReconcileConfig)
 		assert.Equal(t, 5*time.Second, cfg.ReconcileConfig.HealthCheckInterval)

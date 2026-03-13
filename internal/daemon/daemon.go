@@ -1019,21 +1019,33 @@ func ConfigFromEnv() *Config {
 	// Compose up timeout override
 	if v := os.Getenv("BOSUN_COMPOSE_UP_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
-			rcfg.ComposeUpTimeout = d
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_COMPOSE_UP_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
+			} else {
+				rcfg.ComposeUpTimeout = d
+			}
 		} else {
 			log.Warn().Str("env", "BOSUN_COMPOSE_UP_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 	if v := os.Getenv("BOSUN_HEALTH_CHECK_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
-			rcfg.HealthCheckTimeout = d
+			if d < 0 {
+				log.Warn().Str("env", "BOSUN_HEALTH_CHECK_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must not be negative")
+			} else {
+				rcfg.HealthCheckTimeout = d
+			}
 		} else {
 			log.Warn().Str("env", "BOSUN_HEALTH_CHECK_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 	if v := os.Getenv("BOSUN_HEALTH_CHECK_INTERVAL"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
-			rcfg.HealthCheckInterval = d
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_HEALTH_CHECK_INTERVAL").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
+			} else {
+				rcfg.HealthCheckInterval = d
+			}
 		} else {
 			log.Warn().Str("env", "BOSUN_HEALTH_CHECK_INTERVAL").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
