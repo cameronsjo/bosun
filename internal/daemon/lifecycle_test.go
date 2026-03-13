@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/docker"
+	"github.com/cameronsjo/bosun/internal/docker/dockertest"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,6 +54,9 @@ func startDaemonSocket(t *testing.T) (*Daemon, string) {
 
 	d, err := New(cfg)
 	require.NoError(t, err)
+
+	// Inject mock Docker client so health checks report docker as healthy.
+	d.dockerClientOverride = docker.NewClientWithAPI(&dockertest.MockDockerAPI{})
 
 	return d, socketPath
 }
@@ -164,6 +169,9 @@ func TestTCPLifecycle_StartAcceptShutdown(t *testing.T) {
 
 	d, err := New(cfg)
 	require.NoError(t, err)
+
+	// Inject mock Docker client so health checks report docker as healthy.
+	d.dockerClientOverride = docker.NewClientWithAPI(&dockertest.MockDockerAPI{})
 
 	// Pre-bind listener so we can get the actual port.
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

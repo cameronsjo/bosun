@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/alert"
+	"github.com/cameronsjo/bosun/internal/docker"
+	"github.com/cameronsjo/bosun/internal/docker/dockertest"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -119,6 +121,12 @@ func TestHealthStatus_JSON(t *testing.T) {
 		Ready:         true,
 		LastReconcile: time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC),
 		Uptime:        5 * time.Minute,
+		Subsystems: map[string]SubsystemStatus{
+			"docker":          {Status: "healthy"},
+			"git":             {Status: "healthy"},
+			"reconciler":      {Status: "healthy"},
+			"circuit_breaker": {Status: "closed"},
+		},
 	}
 
 	data, err := json.Marshal(status)
@@ -137,6 +145,9 @@ func TestHealthStatus_JSON(t *testing.T) {
 	if decoded.Ready != status.Ready {
 		t.Errorf("Ready = %v, want %v", decoded.Ready, status.Ready)
 	}
+	assert.Len(t, decoded.Subsystems, 4)
+	assert.Equal(t, "healthy", decoded.Subsystems["docker"].Status)
+	assert.Equal(t, "closed", decoded.Subsystems["circuit_breaker"].Status)
 }
 
 func TestTriggerRequest_JSON(t *testing.T) {
@@ -1308,40 +1319,158 @@ func TestTriggerReconcile_ContextCancellation(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHealthStatus_Accessors(t *testing.T) {
-	t.Run("healthy by default", func(t *testing.T) {
+	t.Run("healthy with all subsystems ok", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		tmpDir = evalSymlinks(t, tmpDir)
+
+		mockAPI := &dockertest.MockDockerAPI{}
+		mockClient := docker.NewClientWithAPI(mockAPI)
 
 		d := &Daemon{
 			config: &Config{
 				ReconcileConfig: &reconcile.Config{
+					RepoURL:   "https://github.com/test/repo",
 					StateFile: filepath.Join(tmpDir, "state.json"),
 				},
 			},
-			stopLoops: make(chan struct{}),
+			dockerClientOverride: mockClient,
+			stopLoops:            make(chan struct{}),
 		}
 
 		status := d.HealthStatus()
 		assert.Equal(t, "healthy", status.Status)
+		require.NotNil(t, status.Subsystems)
+		assert.Equal(t, "healthy", status.Subsystems["docker"].Status)
+		assert.Equal(t, "healthy", status.Subsystems["git"].Status)
+		assert.Equal(t, "healthy", status.Subsystems["reconciler"].Status)
+		assert.Equal(t, "closed", status.Subsystems["circuit_breaker"].Status)
 	})
 
 	t.Run("degraded after setting lastError", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		tmpDir = evalSymlinks(t, tmpDir)
 
+		mockAPI := &dockertest.MockDockerAPI{}
+		mockClient := docker.NewClientWithAPI(mockAPI)
+
+		d := &Daemon{
+			config: &Config{
+				ReconcileConfig: &reconcile.Config{
+					RepoURL:   "https://github.com/test/repo",
+					StateFile: filepath.Join(tmpDir, "state.json"),
+				},
+			},
+			dockerClientOverride: mockClient,
+			lastError:            errors.New("deploy failed"),
+			stopLoops:            make(chan struct{}),
+		}
+
+		status := d.HealthStatus()
+		assert.Equal(t, "degraded", status.Status)
+		assert.Equal(t, "deploy failed", status.LastError)
+		assert.Equal(t, "degraded", status.Subsystems["reconciler"].Status)
+		assert.Equal(t, "deploy failed", status.Subsystems["reconciler"].Message)
+	})
+
+	t.Run("unhealthy when docker unavailable", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tmpDir = evalSymlinks(t, tmpDir)
+
+		// Simulate docker failure by pre-populating the sync.Once result with an error.
+		d := &Daemon{
+			config: &Config{
+				ReconcileConfig: &reconcile.Config{
+					RepoURL:   "https://github.com/test/repo",
+					StateFile: filepath.Join(tmpDir, "state.json"),
+				},
+			},
+			dockerErr: fmt.Errorf("docker daemon not reachable"),
+			stopLoops: make(chan struct{}),
+		}
+		// Force sync.Once to be "done" so DockerClient() returns the error.
+		d.dockerOnce.Do(func() {})
+
+		status := d.HealthStatus()
+		assert.Equal(t, "unhealthy", status.Status)
+		assert.Equal(t, "unhealthy", status.Subsystems["docker"].Status)
+		assert.NotEmpty(t, status.Subsystems["docker"].Message)
+	})
+
+	t.Run("degraded when git repo not configured", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tmpDir = evalSymlinks(t, tmpDir)
+
+		mockAPI := &dockertest.MockDockerAPI{}
+		mockClient := docker.NewClientWithAPI(mockAPI)
+
 		d := &Daemon{
 			config: &Config{
 				ReconcileConfig: &reconcile.Config{
 					StateFile: filepath.Join(tmpDir, "state.json"),
 				},
 			},
-			lastError: errors.New("deploy failed"),
-			stopLoops: make(chan struct{}),
+			dockerClientOverride: mockClient,
+			stopLoops:            make(chan struct{}),
 		}
 
 		status := d.HealthStatus()
 		assert.Equal(t, "degraded", status.Status)
-		assert.Equal(t, "deploy failed", status.LastError)
+		assert.Equal(t, "unhealthy", status.Subsystems["git"].Status)
+		assert.Equal(t, "no repository URL configured", status.Subsystems["git"].Message)
+	})
+
+	t.Run("circuit breaker open after max failures", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tmpDir = evalSymlinks(t, tmpDir)
+
+		stateFile := filepath.Join(tmpDir, "state.json")
+		state := &reconcile.DeployState{
+			AttemptCount:        reconcile.MaxAttempts,
+			LastAttemptedCommit: "abc123",
+		}
+		require.NoError(t, reconcile.SaveState(stateFile, state))
+
+		mockAPI := &dockertest.MockDockerAPI{}
+		mockClient := docker.NewClientWithAPI(mockAPI)
+
+		d := &Daemon{
+			config: &Config{
+				ReconcileConfig: &reconcile.Config{
+					RepoURL:   "https://github.com/test/repo",
+					StateFile: stateFile,
+				},
+			},
+			dockerClientOverride: mockClient,
+			stopLoops:            make(chan struct{}),
+		}
+
+		status := d.HealthStatus()
+		assert.Equal(t, "degraded", status.Status)
+		assert.Equal(t, "open", status.Subsystems["circuit_breaker"].Status)
+		assert.Equal(t, reconcile.MaxAttempts, status.Subsystems["circuit_breaker"].Failures)
+	})
+
+	t.Run("reconciler reports last_run when set", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tmpDir = evalSymlinks(t, tmpDir)
+
+		mockAPI := &dockertest.MockDockerAPI{}
+		mockClient := docker.NewClientWithAPI(mockAPI)
+
+		d := &Daemon{
+			config: &Config{
+				ReconcileConfig: &reconcile.Config{
+					RepoURL:   "https://github.com/test/repo",
+					StateFile: filepath.Join(tmpDir, "state.json"),
+				},
+			},
+			dockerClientOverride: mockClient,
+			lastReconcile:        time.Date(2025, 3, 10, 12, 0, 0, 0, time.UTC),
+			stopLoops:            make(chan struct{}),
+		}
+
+		status := d.HealthStatus()
+		assert.Equal(t, "2025-03-10T12:00:00Z", status.Subsystems["reconciler"].LastRun)
 	})
 }
 

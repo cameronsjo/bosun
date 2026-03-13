@@ -131,6 +131,80 @@ func TestBuildAPIStatusResponse(t *testing.T) {
 	}
 }
 
+func TestComputeTopLevelStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		subsystems map[string]SubsystemStatus
+		want       string
+	}{
+		{
+			name: "all healthy",
+			subsystems: map[string]SubsystemStatus{
+				"docker":          {Status: StatusHealthy},
+				"git":             {Status: StatusHealthy},
+				"reconciler":      {Status: StatusHealthy},
+				"circuit_breaker": {Status: StatusClosed},
+			},
+			want: StatusHealthy,
+		},
+		{
+			name: "docker down is unhealthy",
+			subsystems: map[string]SubsystemStatus{
+				"docker":          {Status: StatusUnhealthy},
+				"git":             {Status: StatusHealthy},
+				"reconciler":      {Status: StatusHealthy},
+				"circuit_breaker": {Status: StatusClosed},
+			},
+			want: StatusUnhealthy,
+		},
+		{
+			name: "reconciler degraded is degraded",
+			subsystems: map[string]SubsystemStatus{
+				"docker":          {Status: StatusHealthy},
+				"git":             {Status: StatusHealthy},
+				"reconciler":      {Status: StatusDegraded},
+				"circuit_breaker": {Status: StatusClosed},
+			},
+			want: StatusDegraded,
+		},
+		{
+			name: "circuit breaker open is degraded",
+			subsystems: map[string]SubsystemStatus{
+				"docker":          {Status: StatusHealthy},
+				"git":             {Status: StatusHealthy},
+				"reconciler":      {Status: StatusHealthy},
+				"circuit_breaker": {Status: StatusOpen},
+			},
+			want: StatusDegraded,
+		},
+		{
+			name: "git unhealthy is degraded",
+			subsystems: map[string]SubsystemStatus{
+				"docker":          {Status: StatusHealthy},
+				"git":             {Status: StatusUnhealthy},
+				"reconciler":      {Status: StatusHealthy},
+				"circuit_breaker": {Status: StatusClosed},
+			},
+			want: StatusDegraded,
+		},
+		{
+			name: "docker down trumps other degraded",
+			subsystems: map[string]SubsystemStatus{
+				"docker":          {Status: StatusUnhealthy},
+				"git":             {Status: StatusUnhealthy},
+				"reconciler":      {Status: StatusDegraded},
+				"circuit_breaker": {Status: StatusOpen},
+			},
+			want: StatusUnhealthy,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, computeTopLevelStatus(tt.subsystems))
+		})
+	}
+}
+
 func TestComputeContainerSummary(t *testing.T) {
 	tests := []struct {
 		name       string
