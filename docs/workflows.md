@@ -471,7 +471,7 @@ flowchart TD
 | SSH connect | 5 seconds | `SSHConnectTimeout` |
 | SSH operations | 30 seconds | `SSHTimeout` |
 | File sync | 5 minutes | `FileSyncTimeout` |
-| Docker compose up | 10 minutes | `ComposeUpTimeout` |
+| Docker compose up | 10 minutes (configurable via `BOSUN_COMPOSE_UP_TIMEOUT`) | `DefaultComposeUpTimeout` |
 | Doctor checks | 10 seconds | `doctorCheckTimeout` |
 | HTTP client | 5 seconds | `httpClientTimeout` |
 | Docker ping | 5 seconds | `dockerPingTimeout` |

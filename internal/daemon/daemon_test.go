@@ -1061,6 +1061,35 @@ func TestConfigFromEnv_RemoveOrphans(t *testing.T) {
 	})
 }
 
+func TestConfigFromEnv_ComposeUpTimeout(t *testing.T) {
+	t.Run("default not set (zero, uses deploy package default)", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Zero(t, cfg.ReconcileConfig.ComposeUpTimeout)
+	})
+
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_COMPOSE_UP_TIMEOUT", "30m")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 30*time.Minute, cfg.ReconcileConfig.ComposeUpTimeout)
+	})
+
+	t.Run("parses plain seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_COMPOSE_UP_TIMEOUT", "1800")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 30*time.Minute, cfg.ReconcileConfig.ComposeUpTimeout)
+	})
+
+	t.Run("invalid value is skipped", func(t *testing.T) {
+		t.Setenv("BOSUN_COMPOSE_UP_TIMEOUT", "not-a-duration")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Zero(t, cfg.ReconcileConfig.ComposeUpTimeout)
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Phase 1C: TriggerReconcile Concurrency
 // ---------------------------------------------------------------------------

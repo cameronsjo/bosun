@@ -1016,6 +1016,15 @@ func ConfigFromEnv() *Config {
 
 	cfg.ReconcileConfig = rcfg
 
+	// Compose up timeout override
+	if v := os.Getenv("BOSUN_COMPOSE_UP_TIMEOUT"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			rcfg.ComposeUpTimeout = d
+		} else {
+			log.Warn().Str("env", "BOSUN_COMPOSE_UP_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
+
 	// Timeout overrides
 	if v := os.Getenv("BOSUN_RECONCILE_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {

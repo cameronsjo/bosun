@@ -258,7 +258,7 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 | SSH connect check | 5s | `SSHConnectTimeout` |
 | SSH commands | 30s | `SSHTimeout` |
 | File sync transfers | 5m | `FileSyncTimeout` |
-| Docker compose up | 10m | `ComposeUpTimeout` |
+| Docker compose up | 10m (configurable via `BOSUN_COMPOSE_UP_TIMEOUT`) | `DefaultComposeUpTimeout` |
 | Git clone | 5m | `GitCloneTimeout` |
 | Git fetch | 2m | `GitFetchTimeout` |
 | Git local ops | 30s | `GitLocalTimeout` |

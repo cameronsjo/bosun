@@ -124,6 +124,10 @@ type Config struct {
 	// When true, repo config reload will not update RemoveOrphans.
 	RemoveOrphansFromEnv bool
 
+	// ComposeUpTimeout is the maximum time allowed for docker compose up.
+	// Zero means use DefaultComposeUpTimeout (10 minutes).
+	ComposeUpTimeout time.Duration
+
 	// ConfigReloader loads project config from a directory path.
 	// Set by daemon/CLI to break the config→reconcile import cycle.
 	// When nil, config reload is skipped.
@@ -193,7 +197,7 @@ func NewReconciler(cfg *Config, opts ...ReconcilerOption) *Reconciler {
 		config:   cfg,
 		git:      NewGitOps(cfg.RepoURL, cfg.RepoBranch, cfg.RepoDir),
 		sops:     NewSOPSOps(),
-		deploy:   &DeployOps{DryRun: cfg.DryRun, ProjectName: cfg.ProjectName, ContentHashSync: cfg.ContentHashSync, RemoveOrphans: cfg.RemoveOrphans},
+		deploy:   &DeployOps{DryRun: cfg.DryRun, ProjectName: cfg.ProjectName, ContentHashSync: cfg.ContentHashSync, RemoveOrphans: cfg.RemoveOrphans, ComposeUpTimeout: cfg.ComposeUpTimeout},
 		lockFile: lockFile,
 	}
 
