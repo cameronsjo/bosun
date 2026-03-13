@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0](https://github.com/cameronsjo/bosun/compare/v0.18.1...v0.19.0) (2026-03-13)
+
+
+### Features
+
+* **reconcile:** add post-deploy health verification with polling ([16a434f](https://github.com/cameronsjo/bosun/commit/16a434f2d6f50918424c3a4cd4d111df1888c5d3))
+
+
+### Bug Fixes
+
+* **daemon:** validate non-positive duration env vars for timeouts ([f288e76](https://github.com/cameronsjo/bosun/commit/f288e76a058536a4191f3d64324f336ff6932070))
+* **reconcile:** make compose up timeout configurable via BOSUN_COMPOSE_UP_TIMEOUT ([b3e0b8a](https://github.com/cameronsjo/bosun/commit/b3e0b8a7906efe4e7b00aa7b875c1be3ef5d652f)), closes [#83](https://github.com/cameronsjo/bosun/issues/83)
+
 ## [0.18.1](https://github.com/cameronsjo/bosun/compare/v0.18.0...v0.18.1) (2026-03-08)
 
 
