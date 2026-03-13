@@ -66,13 +66,13 @@ func Do(ctx context.Context, cfg Config, operation string, fn func(ctx context.C
 
 	var lastErr error
 	delay := cfg.InitialDelay
+	if delay > cfg.MaxDelay {
+		delay = cfg.MaxDelay
+	}
 
 	for attempt := 1; attempt <= cfg.MaxAttempts; attempt++ {
 		// Check context before each attempt.
 		if err := ctx.Err(); err != nil {
-			if lastErr != nil {
-				return lastErr
-			}
 			return err
 		}
 
@@ -116,7 +116,7 @@ func Do(ctx context.Context, cfg Config, operation string, fn func(ctx context.C
 		// Wait for backoff or context cancellation.
 		select {
 		case <-ctx.Done():
-			return lastErr
+			return ctx.Err()
 		case <-time.After(jitteredDelay):
 		}
 
@@ -175,10 +175,21 @@ func IsTransient(err error) bool {
 		return true
 	}
 
-	// Connection refused / reset via OpError.
+	// Connection refused / reset via OpError — but only for transient ops.
+	// OpError can also wrap permanent failures (EACCES, EADDRINUSE).
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
-		return true
+		if opErr.Timeout() {
+			return true
+		}
+		// Check for specific transient syscall errors via string matching.
+		opMsg := strings.ToLower(opErr.Err.Error())
+		if strings.Contains(opMsg, "connection refused") ||
+			strings.Contains(opMsg, "connection reset") ||
+			strings.Contains(opMsg, "broken pipe") {
+			return true
+		}
+		return false
 	}
 
 	// OS-level errors: connection refused, reset, broken pipe.

@@ -90,6 +90,7 @@ func TestDo_RespectsContextCancellation(t *testing.T) {
 	})
 
 	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled, "should return context error, not operation error")
 	// Should stop after 1 call because context was cancelled during backoff wait.
 	assert.LessOrEqual(t, calls, 2)
 }
@@ -184,9 +185,10 @@ func TestDo_BackoffIncreases(t *testing.T) {
 	for i := 2; i < len(timestamps); i++ {
 		prevGap := timestamps[i-1].Sub(timestamps[i-2])
 		currGap := timestamps[i].Sub(timestamps[i-1])
-		// Current gap should be at least 50% of previous (accounting for jitter).
-		assert.Greater(t, currGap.Nanoseconds(), prevGap.Nanoseconds()/4,
-			"backoff delay should generally increase between attempt %d and %d", i-1, i)
+		// Current gap should be at least 75% of previous (accounting for jitter).
+		// With 2x multiplier and [d/2, d] jitter, minimum growth ratio is 0.5.
+		assert.Greater(t, currGap.Nanoseconds(), prevGap.Nanoseconds()*3/4,
+			"backoff delay should grow between attempt %d and %d (prev=%v, curr=%v)", i-1, i, prevGap, currGap)
 	}
 }
 
