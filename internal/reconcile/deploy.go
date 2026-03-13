@@ -22,6 +22,10 @@ var ErrRollbackSucceeded = errors.New("deployment failed, rollback succeeded")
 // ErrRollbackFailed indicates both deployment and rollback failed.
 var ErrRollbackFailed = errors.New("deployment and rollback both failed")
 
+// ErrComposeUnhealthy indicates compose exited non-zero but all containers are
+// running (some unhealthy). This is recoverable and should not trigger rollback.
+var ErrComposeUnhealthy = errors.New("compose up completed with unhealthy containers")
+
 // SSH retry configuration
 const (
 	DefaultMaxRetries = 3
@@ -30,10 +34,10 @@ const (
 
 // Deploy operation timeouts
 const (
-	SSHConnectTimeout  = 5 * time.Second
-	SSHTimeout         = 30 * time.Second
-	RemoteDeployTimeout = 5 * time.Minute
-	ComposeUpTimeout   = 10 * time.Minute
+	SSHConnectTimeout         = 5 * time.Second
+	SSHTimeout                = 30 * time.Second
+	RemoteDeployTimeout       = 5 * time.Minute
+	DefaultComposeUpTimeout   = 10 * time.Minute
 )
 
 // DeployOps provides deployment operations including backup, file sync, and service management.
@@ -45,6 +49,25 @@ type DeployOps struct {
 	// ContentHashSync if true, skips writing files whose content has not changed.
 	// Reduces unnecessary FUSE handle invalidation on copy-on-write filesystems.
 	ContentHashSync bool
+	// RemoveOrphans if true, passes --remove-orphans to docker compose up.
+	// Removes containers belonging to services deleted from the compose file.
+	RemoveOrphans bool
+	// ComposeUpTimeout is the maximum time allowed for docker compose up.
+	// Zero means use DefaultComposeUpTimeout.
+	ComposeUpTimeout time.Duration
+
+	// composeUpFn overrides the compose-up call in ComposeUpMultipleWithRollback.
+	// Defaults to ComposeUpMultiple when nil. Exposed for testing the rollback
+	// decision logic without requiring Docker.
+	composeUpFn func(ctx context.Context, files []string) error
+}
+
+// composeUpTimeout returns the configured timeout or the default.
+func (d *DeployOps) composeUpTimeout() time.Duration {
+	if d.ComposeUpTimeout > 0 {
+		return d.ComposeUpTimeout
+	}
+	return DefaultComposeUpTimeout
 }
 
 // DeployResult tracks which files were actually written during deployment.
@@ -61,19 +84,35 @@ func (r *DeployResult) AddWritten(files ...string) {
 
 // NewDeployOps creates a new DeployOps instance.
 func NewDeployOps(dryRun bool, projectName string) *DeployOps {
-	return &DeployOps{DryRun: dryRun, ProjectName: projectName}
+	return &DeployOps{DryRun: dryRun, ProjectName: projectName, RemoveOrphans: true}
 }
 
 // composeArgs returns docker compose arguments with project name if set.
 func (d *DeployOps) composeArgs(files ...string) []string {
-	args := []string{"compose"}
-	if d.ProjectName != "" {
-		args = append(args, "-p", d.ProjectName)
-	}
-	for _, f := range files {
-		args = append(args, "-f", f)
+	return buildComposeArgs(d.ProjectName, files)
+}
+
+// composeUpArgs returns the full argument list for a local docker compose up command.
+func (d *DeployOps) composeUpArgs(composeFiles []string) []string {
+	args := d.composeArgs(composeFiles...)
+	args = append(args, "up", "-d")
+	if d.RemoveOrphans {
+		args = append(args, "--remove-orphans")
 	}
 	return args
+}
+
+// remoteComposeUpCmd returns the SSH command string for running docker compose up on a remote host.
+func (d *DeployOps) remoteComposeUpCmd(composeDir string) string {
+	composeCmd := "docker compose"
+	if d.ProjectName != "" {
+		composeCmd = fmt.Sprintf("docker compose -p %s", d.ProjectName)
+	}
+	upArgs := "up -d"
+	if d.RemoveOrphans {
+		upArgs += " --remove-orphans"
+	}
+	return fmt.Sprintf("cd %s && %s %s", composeDir, composeCmd, upArgs)
 }
 
 // isTransientSSHError checks if an error is transient and worth retrying.
@@ -194,21 +233,22 @@ func (d *DeployOps) CheckSSHConnectivity(ctx context.Context, host string) error
 
 // parseSSHError converts SSH errors into actionable error messages.
 func parseSSHError(err error, stderr, host string) error {
-	stderrLower := strings.ToLower(stderr)
-
-	switch {
-	case strings.Contains(stderrLower, "permission denied"):
+	category := classifySSHError(stderr)
+	switch category {
+	case "auth":
 		return fmt.Errorf("SSH authentication failed for %s: permission denied. Check that your SSH key is added to the remote host's authorized_keys", host)
-	case strings.Contains(stderrLower, "connection refused"):
+	case "connection":
+		stderrLower := strings.ToLower(stderr)
+		if strings.Contains(stderrLower, "no route to host") {
+			return fmt.Errorf("cannot reach %s: no route to host. Check network connectivity and that the host is online", host)
+		}
 		return fmt.Errorf("SSH connection refused by %s: the SSH service may not be running or the port may be blocked", host)
-	case strings.Contains(stderrLower, "host key verification failed"):
+	case "host_key":
 		return fmt.Errorf("SSH host key verification failed for %s: run 'ssh-keyscan %s >> ~/.ssh/known_hosts' to add the host key", host, host)
-	case strings.Contains(stderrLower, "no route to host"):
-		return fmt.Errorf("cannot reach %s: no route to host. Check network connectivity and that the host is online", host)
-	case strings.Contains(stderrLower, "connection timed out"):
-		return fmt.Errorf("SSH connection to %s timed out: check network connectivity and firewall rules", host)
-	case strings.Contains(stderrLower, "name or service not known"):
+	case "dns":
 		return fmt.Errorf("cannot resolve hostname %s: check that the hostname is correct and DNS is working", host)
+	case "timeout":
+		return fmt.Errorf("SSH connection to %s timed out: check network connectivity and firewall rules", host)
 	default:
 		return fmt.Errorf("SSH connection to %s failed: %w: %s", host, err, stderr)
 	}
@@ -515,15 +555,43 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 		return ctx.Err()
 	}
 
+	// Rename-aside pattern: move existing target out of the way, rename new
+	// into place, then clean up. This avoids the window where the target is
+	// missing (between remove and rename) that the old remove-then-rename
+	// approach had.
+	backupDir := targetDir + ".bak"
+	hadExisting := false
+
+	// Guard against stale backup from a previous crash.
+	if _, err := os.Stat(backupDir); err == nil {
+		return fmt.Errorf("stale deploy backup exists at %s; restore or remove it before redeploying", backupDir)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat backup path: %w", err)
+	}
+
 	if _, err := os.Stat(targetDir); err == nil {
-		if err := os.RemoveAll(targetDir); err != nil {
-			return fmt.Errorf("remove existing target: %w", err)
+		hadExisting = true
+		if err := os.Rename(targetDir, backupDir); err != nil {
+			return fmt.Errorf("rename existing target aside: %w", err)
 		}
 	}
 
 	if err := os.Rename(tmpDir, targetDir); err != nil {
 		logger.Error().Err(err).Str("target", targetDir).Msg("Failed to rename to target")
+		// Restore the backup so the original target is not lost.
+		if hadExisting {
+			if rbErr := os.Rename(backupDir, targetDir); rbErr != nil {
+				logger.Error().Err(rbErr).Msg("Failed to restore backup after rename failure")
+				return fmt.Errorf("rename to target failed: %w; restore backup from %s failed: %v", err, backupDir, rbErr)
+			}
+		}
 		return fmt.Errorf("rename to target: %w", err)
+	}
+
+	if hadExisting {
+		if err := os.RemoveAll(backupDir); err != nil {
+			logger.Warn().Err(err).Str(log.FieldPath, backupDir).Msg("Deployment succeeded but backup cleanup failed")
+		}
 	}
 
 	success = true
@@ -830,14 +898,14 @@ func (d *DeployOps) EnsureRemoteDir(ctx context.Context, host, dir string) error
 }
 
 // ComposeUp runs docker compose up for the specified compose file.
-// Uses ComposeUpTimeout if the parent context has no deadline.
+// Uses the configured compose up timeout if the parent context has no deadline.
 // Returns an error if compose up fails (caller should handle rollback).
 func (d *DeployOps) ComposeUp(ctx context.Context, composeFile string) error {
 	return d.ComposeUpMultiple(ctx, []string{composeFile})
 }
 
 // ComposeUpMultiple runs docker compose up for multiple compose files.
-// Uses ComposeUpTimeout if the parent context has no deadline.
+// Uses the configured compose up timeout if the parent context has no deadline.
 // Returns an error if compose up fails (caller should handle rollback).
 func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string) error {
 	start := time.Now()
@@ -861,18 +929,18 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 		Msg("Starting docker compose up")
 
 	// Apply timeout if context doesn't have one
+	timeout := d.composeUpTimeout()
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, ComposeUpTimeout)
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 
-	// Build args: docker compose -p project -f file1.yml -f file2.yml up -d --remove-orphans
+	// Build args: docker compose -p project -f file1.yml -f file2.yml up -d [--remove-orphans]
 	// Note: --wait is intentionally omitted. It exits non-zero when ANY container is
 	// unhealthy, even pre-existing ones, which would block all deployments. Post-deploy
 	// verification (verifyPostDeploy) handles health inspection separately.
-	args := d.composeArgs(composeFiles...)
-	args = append(args, "up", "-d", "--remove-orphans")
+	args := d.composeUpArgs(composeFiles)
 
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	var stderr bytes.Buffer
@@ -884,14 +952,38 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 				Str(log.FieldOperation, "compose_up").
 				Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 				Msg("Docker compose up timed out")
-			return fmt.Errorf("docker compose up timed out after %v", ComposeUpTimeout)
+			return fmt.Errorf("docker compose up timed out after %v", timeout)
 		}
+
+		originalErr := fmt.Errorf("docker compose up failed: %w: %s", err, stderr.String())
+
+		// Classify the failure by inspecting container state.
+		result, classifyErr := d.classifyComposeFailure(ctx, composeFiles)
+		if classifyErr != nil {
+			// Classification failed — fail-safe: treat as genuine start failure.
+			logger.Warn().
+				Err(classifyErr).
+				Str(log.FieldOperation, "compose_up").
+				Msg("Failed to classify compose failure, treating as start failure")
+			return originalErr
+		}
+
+		if result.Kind == failureUnhealthyOnly {
+			logger.Warn().
+				Str(log.FieldOperation, "compose_up").
+				Strs("unhealthy_containers", result.Unhealthy).
+				Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+				Msg("Compose up exited non-zero but all containers running (some unhealthy)")
+			return fmt.Errorf("%w: %s", ErrComposeUnhealthy, strings.Join(result.Unhealthy, ", "))
+		}
+
 		logger.Error().
 			Err(err).
 			Str(log.FieldOperation, "compose_up").
+			Strs("failed_containers", result.Failed).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-			Msg("Docker compose up failed")
-		return fmt.Errorf("docker compose up failed: %w: %s", err, stderr.String())
+			Msg("Docker compose up failed with container start failures")
+		return originalErr
 	}
 
 	logger.Info().
@@ -923,9 +1015,22 @@ func (d *DeployOps) ComposeUpWithRollback(ctx context.Context, composeFile, back
 func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFiles []string, backupPath string) error {
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
-	deployErr := d.ComposeUpMultiple(ctx, composeFiles)
+	upFn := d.composeUpFn
+	if upFn == nil {
+		upFn = d.ComposeUpMultiple
+	}
+
+	deployErr := upFn(ctx, composeFiles)
 	if deployErr == nil {
 		return nil
+	}
+
+	// Unhealthy containers are recoverable — skip rollback, return as warning.
+	if errors.Is(deployErr, ErrComposeUnhealthy) {
+		logger.Warn().
+			Err(deployErr).
+			Msg("Compose up completed with unhealthy containers, skipping rollback")
+		return deployErr
 	}
 
 	// Compose failed - attempt rollback if backup exists
@@ -963,13 +1068,12 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 	// Copy enriched logger so reconcile_id flows into rollback logs.
 	rollbackCtx, cancel := context.WithTimeout(
 		log.WithContext(context.Background(), log.Ctx(ctx)),
-		ComposeUpTimeout,
+		d.composeUpTimeout(),
 	)
 	defer cancel()
 
 	// Build rollback args
-	args := d.composeArgs(backupFiles...)
-	args = append(args, "up", "-d", "--remove-orphans")
+	args := d.composeUpArgs(backupFiles)
 
 	rollbackCmd := exec.CommandContext(rollbackCtx, "docker", args...)
 	var rollbackStderr bytes.Buffer
@@ -999,7 +1103,7 @@ func (d *DeployOps) VerifyContainerHealth(ctx context.Context, composeFile strin
 
 	// Use docker compose ps to check container status
 	args := d.composeArgs(composeFile)
-	args = append(args, "ps", "--format", "json")
+	args = append(args, "ps", "--all", "--format", "json")
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -1009,8 +1113,18 @@ func (d *DeployOps) VerifyContainerHealth(ctx context.Context, composeFile strin
 		return fmt.Errorf("failed to check container status: %w: %s", err, stderr.String())
 	}
 
-	// For now, just verify the command succeeded
-	// A more complete implementation would parse the JSON and check health status
+	entries, err := parseComposePSOutput(stdout.Bytes())
+	if err != nil {
+		return fmt.Errorf("failed to parse container status: %w", err)
+	}
+
+	result := classifyComposePS(entries)
+	if len(result.Failed) > 0 {
+		return fmt.Errorf("containers not running: %s", strings.Join(result.Failed, ", "))
+	}
+	if len(result.Unhealthy) > 0 {
+		return fmt.Errorf("%w: %s", ErrComposeUnhealthy, strings.Join(result.Unhealthy, ", "))
+	}
 	return nil
 }
 
@@ -1039,12 +1153,7 @@ func (d *DeployOps) ComposeUpRemote(ctx context.Context, host, composeDir string
 		Str("project", d.ProjectName).
 		Msg("Starting remote docker compose up")
 
-	// Build compose command with project name if set
-	composeCmd := "docker compose"
-	if d.ProjectName != "" {
-		composeCmd = fmt.Sprintf("docker compose -p %s", d.ProjectName)
-	}
-	sshCmd := fmt.Sprintf("cd %s && %s up -d --remove-orphans", composeDir, composeCmd)
+	sshCmd := d.remoteComposeUpCmd(composeDir)
 
 	err := retryWithBackoff(ctx, DefaultMaxRetries, func() error {
 		cmd := exec.CommandContext(ctx, "ssh", host, sshCmd)
@@ -1057,6 +1166,18 @@ func (d *DeployOps) ComposeUpRemote(ctx context.Context, host, composeDir string
 		return nil
 	})
 	if err != nil {
+		// Classify the remote failure by inspecting container state via SSH.
+		result, classifyErr := d.classifyComposeFailureRemote(ctx, host, composeDir)
+		if classifyErr == nil && result.Kind == failureUnhealthyOnly {
+			logger.Warn().
+				Str(log.FieldOperation, "compose_up_remote").
+				Str(log.FieldTarget, host).
+				Strs("unhealthy_containers", result.Unhealthy).
+				Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+				Msg("Remote compose up exited non-zero but all containers running (some unhealthy)")
+			return fmt.Errorf("%w: %s", ErrComposeUnhealthy, strings.Join(result.Unhealthy, ", "))
+		}
+
 		logger.Error().
 			Err(err).
 			Str(log.FieldOperation, "compose_up_remote").
@@ -1071,6 +1192,74 @@ func (d *DeployOps) ComposeUpRemote(ctx context.Context, host, composeDir string
 			Msg("Remote docker compose up completed successfully")
 	}
 	return err
+}
+
+// classifyComposeFailureRemote inspects container state on a remote host after
+// a compose up failure. Uses SSH to run `docker compose ps --format json`.
+func (d *DeployOps) classifyComposeFailureRemote(ctx context.Context, host, composeDir string) (*composeFailureResult, error) {
+	psCmd := "docker compose"
+	if d.ProjectName != "" {
+		psCmd = fmt.Sprintf("docker compose -p %s", d.ProjectName)
+	}
+	sshCmd := fmt.Sprintf("cd %s && %s ps --all --format json", composeDir, psCmd)
+
+	cmd := exec.CommandContext(ctx, "ssh", host, sshCmd)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("remote docker compose ps failed: %w: %s", err, stderr.String())
+	}
+
+	entries, err := parseComposePSOutput(stdout.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse remote compose ps output: %w", err)
+	}
+
+	if len(entries) == 0 {
+		return &composeFailureResult{Kind: failureStartFailure}, nil
+	}
+
+	result := classifyComposePS(entries)
+	return &result, nil
+}
+
+// classifyComposeFailure inspects container state after a compose up failure.
+// Uses `docker compose ps --format json` with the same project name and compose
+// files. Returns a classification result or an error if the inspection fails.
+func (d *DeployOps) classifyComposeFailure(ctx context.Context, composeFiles []string) (*composeFailureResult, error) {
+	// Use same timeout as compose up for the ps query.
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, d.composeUpTimeout())
+		defer cancel()
+	}
+
+	args := d.composeArgs(composeFiles...)
+	args = append(args, "ps", "--all", "--format", "json")
+
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("docker compose ps failed: %w: %s", err, stderr.String())
+	}
+
+	entries, err := parseComposePSOutput(stdout.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse compose ps output: %w", err)
+	}
+
+	// No containers found at all — treat as start failure.
+	if len(entries) == 0 {
+		return &composeFailureResult{Kind: failureStartFailure}, nil
+	}
+
+	result := classifyComposePS(entries)
+	return &result, nil
 }
 
 // SignalContainer sends a signal to a Docker container.

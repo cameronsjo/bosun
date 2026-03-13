@@ -10,7 +10,9 @@ Instructions for AI coding assistants using OpenSpec for spec-driven development
 - Scaffold: `proposal.md`, `tasks.md`, `design.md` (only if needed), and delta specs per affected capability
 - Write deltas: use `## ADDED|MODIFIED|REMOVED|RENAMED Requirements`; include at least one `#### Scenario:` per requirement
 - Validate: `openspec validate [change-id] --strict` and fix issues
-- Request approval: Do not start implementation until proposal is approved
+- Open spec PR: push branch, open PR targeting `main`, iterate on CodeRabbit review
+- Label `ready-to-build`: spec is stable, implementation can begin
+- Request approval: Do not start implementation until proposal is approved and PR is labeled
 
 ## Three-Stage Workflow
 
@@ -46,6 +48,21 @@ Skip proposal for:
 3. Draft spec deltas using `## ADDED|MODIFIED|REMOVED Requirements` with at least one `#### Scenario:` per requirement.
 4. Run `openspec validate <id> --strict` and resolve any issues before sharing the proposal.
 
+### Stage 1.5: Spec Review
+
+Spec PRs follow an iterative review cycle before implementation begins.
+
+1. **Open PR** from spec branch (`spec/<change-id>`) targeting `main`
+2. **CodeRabbit reviews** automatically on push
+3. **Fix all findings** — including nitpicks (consistency prevents implementation bugs)
+4. **Iterate** until convergence (0 actionable comments or only stale/repeated findings)
+5. **Label `ready-to-build`** — spec is stable, implementation can begin
+6. **Rate-limit handling**: If CodeRabbit doesn't review within ~5min, trigger manually with `@coderabbitai review`
+
+The `ready-to-build` label is a gate: do not start Stage 2 until it is applied.
+
+Use `/spec-review` to automate the check/fix/iterate/label cycle across open spec PRs.
+
 ### Stage 2: Implementing Changes
 Track these steps as TODOs and complete them one by one.
 1. **Read proposal.md** - Understand what's being built
@@ -54,7 +71,7 @@ Track these steps as TODOs and complete them one by one.
 4. **Implement tasks sequentially** - Complete in order
 5. **Confirm completion** - Ensure every item in `tasks.md` is finished before updating statuses
 6. **Update checklist** - After all work is done, set every task to `- [x]` so the list reflects reality
-7. **Approval gate** - Do not start implementation until the proposal is reviewed and approved
+7. **Approval gate** - Do not start implementation until the spec PR carries `ready-to-build` (see Stage 1.5)
 
 ### Stage 3: Archiving Changes
 After deployment, create separate PR to:

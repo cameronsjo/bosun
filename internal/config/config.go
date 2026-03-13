@@ -59,8 +59,14 @@ type Config struct {
 	// deployPaths is an allowlist of glob patterns for deploy-relevant paths.
 	deployPaths []string
 
+	// driftAlertDebounce is the debounce window before first drift alert fires.
+	driftAlertDebounce time.Duration
+
 	// domain is the project-level domain for Traefik defaultRule.
 	domain string
+
+	// removeOrphans controls whether --remove-orphans is passed to docker compose up.
+	removeOrphans bool
 }
 
 // TunnelConfig holds tunnel provider-specific configuration.
@@ -97,6 +103,22 @@ type AlertConfig struct {
 	OnFailure bool `yaml:"on_failure"` // Alert on failed deploys (default: true)
 }
 
+// alertConfigRaw is the YAML DTO for alert settings.
+// Pointer booleans distinguish "unset" (nil → apply default) from explicit false.
+type alertConfigRaw struct {
+	DiscordWebhookURL string   `yaml:"discord_webhook_url"`
+	SendGridAPIKey    string   `yaml:"sendgrid_api_key"`
+	SendGridFromEmail string   `yaml:"sendgrid_from_email"`
+	SendGridFromName  string   `yaml:"sendgrid_from_name"`
+	SendGridToEmails  []string `yaml:"sendgrid_to_emails"`
+	TwilioAccountSID  string   `yaml:"twilio_account_sid"`
+	TwilioAuthToken   string   `yaml:"twilio_auth_token"`
+	TwilioFromNumber  string   `yaml:"twilio_from_number"`
+	TwilioToNumbers   []string `yaml:"twilio_to_numbers"`
+	OnSuccess         *bool    `yaml:"on_success"`
+	OnFailure         *bool    `yaml:"on_failure"`
+}
+
 // configFile represents the structure of .bosun/config.yml or bosun.yml.
 type configFile struct {
 	// Root is the project root (relative paths are resolved from here).
@@ -128,8 +150,8 @@ type configFile struct {
 		HealthEndpoint string `yaml:"health_endpoint"`
 	} `yaml:"tunnel"`
 
-	// Alerts configuration
-	Alerts AlertConfig `yaml:"alerts"`
+	// Alerts configuration (uses pointer booleans for unset detection).
+	Alerts alertConfigRaw `yaml:"alerts"`
 
 	// PostSyncHooks defines container restart actions triggered by file changes.
 	PostSyncHooks []reconcile.PostSyncHook `yaml:"post_sync_hooks"`
@@ -140,6 +162,16 @@ type configFile struct {
 	// DeployPaths is an allowlist of glob patterns for deploy-relevant paths.
 	// When configured, commits that only touch files outside these patterns skip the pipeline.
 	DeployPaths []string `yaml:"deploy_paths"`
+
+
+	// DriftAlertDebounce is the debounce window before first drift alert fires.
+	// Items must persist past this duration before alerting. 0 = disabled (default).
+	DriftAlertDebounce reconcile.Duration `yaml:"drift_alert_debounce"`
+
+	// RemoveOrphans controls whether --remove-orphans is passed to docker compose up.
+	// Defaults to true (preserving existing behavior). Set to false in shared environments
+	// where Bosun does not own all containers on the Docker host.
+	RemoveOrphans *bool `yaml:"remove_orphans"`
 }
 
 // FindRoot searches upward from the current directory to find the project root.
@@ -202,14 +234,18 @@ func LoadFrom(dir string) (*Config, error) {
 	postSyncHooks := extractPostSyncHooks(fileCfg)
 	hookSettleDelay := extractHookSettleDelay(fileCfg)
 	deployPaths := extractDeployPaths(fileCfg)
+	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
 	domain := extractDomain(fileCfg)
+	removeOrphans := extractRemoveOrphans(fileCfg)
 
 	return &Config{
-		Root:            dir,
-		postSyncHooks:   postSyncHooks,
-		hookSettleDelay: hookSettleDelay,
-		deployPaths:     deployPaths,
-		domain:          domain,
+		Root:               dir,
+		postSyncHooks:      postSyncHooks,
+		hookSettleDelay:    hookSettleDelay,
+		deployPaths:        deployPaths,
+		driftAlertDebounce: driftAlertDebounce,
+		domain:             domain,
+		removeOrphans:      removeOrphans,
 	}, nil
 }
 
@@ -252,7 +288,9 @@ func Load() (*Config, error) {
 	postSyncHooks := extractPostSyncHooks(fileCfg)
 	hookSettleDelay := extractHookSettleDelay(fileCfg)
 	deployPaths := extractDeployPaths(fileCfg)
+	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
 	domain := extractDomain(fileCfg)
+	removeOrphans := extractRemoveOrphans(fileCfg)
 
 	// Determine project name (defaults to directory name)
 	projectName := fileCfg.ProjectName
@@ -271,10 +309,12 @@ func Load() (*Config, error) {
 		tunnelProvider:  tunnelProvider,
 		tunnelConfig:    tunnelConfig,
 		alertConfig:     alertConfig,
-		postSyncHooks:   postSyncHooks,
-		hookSettleDelay: hookSettleDelay,
-		deployPaths:     deployPaths,
-		domain:          domain,
+		postSyncHooks:      postSyncHooks,
+		hookSettleDelay:    hookSettleDelay,
+		deployPaths:        deployPaths,
+		driftAlertDebounce: driftAlertDebounce,
+		domain:             domain,
+		removeOrphans:      removeOrphans,
 	}
 
 	logger := log.Component("config")
@@ -487,38 +527,78 @@ func extractDomain(cfg configFile) string {
 	return cfg.Domain
 }
 
+// DriftAlertDebounce returns the configured drift alert debounce duration.
+func (c *Config) DriftAlertDebounce() time.Duration {
+	return c.driftAlertDebounce
+}
+
+// extractDriftAlertDebounce extracts the drift alert debounce from a parsed config.
+func extractDriftAlertDebounce(cfg configFile) time.Duration {
+	return cfg.DriftAlertDebounce.Duration
+}
+
+// extractRemoveOrphans extracts the remove_orphans setting from a parsed config.
+// Defaults to true when not explicitly set (preserving existing behavior).
+func extractRemoveOrphans(cfg configFile) bool {
+	if cfg.RemoveOrphans != nil {
+		return *cfg.RemoveOrphans
+	}
+	return true
+}
+
+// RemoveOrphans returns whether --remove-orphans should be passed to docker compose up.
+// Defaults to true.
+func (c *Config) RemoveOrphans() bool {
+	return c.removeOrphans
+}
+
+// getEnvOrDefault returns the value of the environment variable if set and non-empty,
+// otherwise returns the provided default value.
+func getEnvOrDefault(envKey, defaultValue string) string {
+	if v := os.Getenv(envKey); v != "" {
+		return v
+	}
+	return defaultValue
+}
+
 // extractAlertConfig extracts alert configuration from a parsed config.
 // Supports environment variable overrides for sensitive values.
 func extractAlertConfig(cfg configFile) AlertConfig {
-	alertCfg := cfg.Alerts
+	raw := cfg.Alerts
 
-	// Ensure default for OnFailure if not explicitly set.
-	if !cfg.Alerts.OnSuccess && !cfg.Alerts.OnFailure {
+	alertCfg := AlertConfig{
+		DiscordWebhookURL: raw.DiscordWebhookURL,
+		SendGridAPIKey:    raw.SendGridAPIKey,
+		SendGridFromEmail: raw.SendGridFromEmail,
+		SendGridFromName:  raw.SendGridFromName,
+		SendGridToEmails:  raw.SendGridToEmails,
+		TwilioAccountSID:  raw.TwilioAccountSID,
+		TwilioAuthToken:   raw.TwilioAuthToken,
+		TwilioFromNumber:  raw.TwilioFromNumber,
+		TwilioToNumbers:   raw.TwilioToNumbers,
+	}
+
+	// Resolve pointer booleans: nil = unset (apply default), non-nil = explicit.
+	// Default: OnFailure=true when neither flag was explicitly set.
+	if raw.OnSuccess != nil {
+		alertCfg.OnSuccess = *raw.OnSuccess
+	}
+	if raw.OnFailure != nil {
+		alertCfg.OnFailure = *raw.OnFailure
+	} else if raw.OnSuccess == nil {
+		// Neither flag set → default OnFailure to true.
 		alertCfg.OnFailure = true
 	}
 
 	// Environment variable overrides for sensitive values.
-	if v := os.Getenv("DISCORD_WEBHOOK_URL"); v != "" {
-		alertCfg.DiscordWebhookURL = v
-	}
-	if v := os.Getenv("SENDGRID_API_KEY"); v != "" {
-		alertCfg.SendGridAPIKey = v
-	}
-	if v := os.Getenv("SENDGRID_FROM_EMAIL"); v != "" {
-		alertCfg.SendGridFromEmail = v
-	}
-	if v := os.Getenv("SENDGRID_FROM_NAME"); v != "" {
-		alertCfg.SendGridFromName = v
-	}
-	if v := os.Getenv("TWILIO_ACCOUNT_SID"); v != "" {
-		alertCfg.TwilioAccountSID = v
-	}
-	if v := os.Getenv("TWILIO_AUTH_TOKEN"); v != "" {
-		alertCfg.TwilioAuthToken = v
-	}
-	if v := os.Getenv("TWILIO_FROM_NUMBER"); v != "" {
-		alertCfg.TwilioFromNumber = v
-	}
+	// BOSUN_-prefixed vars take precedence; legacy unprefixed vars are fallback.
+	alertCfg.DiscordWebhookURL = getEnvOrDefault("BOSUN_DISCORD_WEBHOOK_URL", getEnvOrDefault("DISCORD_WEBHOOK_URL", alertCfg.DiscordWebhookURL))
+	alertCfg.SendGridAPIKey = getEnvOrDefault("BOSUN_SENDGRID_API_KEY", getEnvOrDefault("SENDGRID_API_KEY", alertCfg.SendGridAPIKey))
+	alertCfg.SendGridFromEmail = getEnvOrDefault("BOSUN_SENDGRID_FROM_EMAIL", getEnvOrDefault("SENDGRID_FROM_EMAIL", alertCfg.SendGridFromEmail))
+	alertCfg.SendGridFromName = getEnvOrDefault("BOSUN_SENDGRID_FROM_NAME", getEnvOrDefault("SENDGRID_FROM_NAME", alertCfg.SendGridFromName))
+	alertCfg.TwilioAccountSID = getEnvOrDefault("BOSUN_TWILIO_ACCOUNT_SID", getEnvOrDefault("TWILIO_ACCOUNT_SID", alertCfg.TwilioAccountSID))
+	alertCfg.TwilioAuthToken = getEnvOrDefault("BOSUN_TWILIO_AUTH_TOKEN", getEnvOrDefault("TWILIO_AUTH_TOKEN", alertCfg.TwilioAuthToken))
+	alertCfg.TwilioFromNumber = getEnvOrDefault("BOSUN_TWILIO_FROM_NUMBER", getEnvOrDefault("TWILIO_FROM_NUMBER", alertCfg.TwilioFromNumber))
 
 	return alertCfg
 }

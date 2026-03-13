@@ -28,6 +28,9 @@ type DockerAPI interface {
 	// ContainerStart starts a stopped container.
 	ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error
 
+	// ContainerStop stops a container with a grace period.
+	ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error
+
 	// ContainerRestart restarts a container.
 	ContainerRestart(ctx context.Context, containerID string, options container.StopOptions) error
 
@@ -59,6 +62,7 @@ type dockerAPIAdapter interface {
 	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
 	ContainerLogs(ctx context.Context, ctr string, options container.LogsOptions) (io.ReadCloser, error)
 	ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error
+	ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error
 	ContainerRestart(ctx context.Context, containerID string, options container.StopOptions) error
 	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
 	ContainerStats(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error)

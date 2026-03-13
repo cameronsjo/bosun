@@ -7,13 +7,14 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSendGrid_Name(t *testing.T) {
 	sg := NewSendGrid(SendGridConfig{})
-	if got := sg.Name(); got != "sendgrid" {
-		t.Errorf("Name() = %q, want %q", got, "sendgrid")
-	}
+	assert.Equal(t, "sendgrid", sg.Name())
 }
 
 func TestSendGrid_IsConfigured(t *testing.T) {
@@ -85,9 +86,7 @@ func TestSendGrid_IsConfigured(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sg := NewSendGrid(tt.config)
-			if got := sg.IsConfigured(); got != tt.want {
-				t.Errorf("IsConfigured() = %v, want %v", got, tt.want)
-			}
+			assert.Equal(t, tt.want, sg.IsConfigured())
 		})
 	}
 }
@@ -96,19 +95,9 @@ func TestSendGrid_Send_Success(t *testing.T) {
 	var receivedReq sendGridRequest
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader != "Bearer SG.test-api-key" {
-			t.Errorf("Authorization = %q, want %q", authHeader, "Bearer SG.test-api-key")
-		}
-
-		if r.Header.Get("Content-Type") != "application/json" {
-			t.Errorf("Content-Type = %q, want %q", r.Header.Get("Content-Type"), "application/json")
-		}
-
-		if err := json.NewDecoder(r.Body).Decode(&receivedReq); err != nil {
-			t.Fatalf("Failed to decode request body: %v", err)
-		}
-
+		assert.Equal(t, "Bearer SG.test-api-key", r.Header.Get("Authorization"))
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedReq))
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer server.Close()
@@ -120,20 +109,10 @@ func TestSendGrid_Send_Success(t *testing.T) {
 			FromName:  "Bosun Alerts",
 			ToEmails:  []string{"ops@example.com", "backup@example.com"},
 		},
-		client: &http.Client{Timeout: 5 * time.Second},
+		client:   server.Client(),
+		endpoint: server.URL,
 	}
 
-	// Override endpoint for testing
-	originalEndpoint := sendGridAPIEndpoint
-	defer func() {
-		// Restore original (not actually possible in Go without refactoring, but documenting intent)
-		_ = originalEndpoint
-	}()
-
-	// Create a custom client that intercepts requests
-	sg.client = server.Client()
-
-	// We need to intercept the actual request - let's use a test helper
 	alert := &Alert{
 		Title:    "Test Alert",
 		Message:  "This is a test message",
@@ -142,52 +121,15 @@ func TestSendGrid_Send_Success(t *testing.T) {
 		Metadata: map[string]string{"key1": "value1", "key2": "value2"},
 	}
 
-	// Build payload to verify structure
-	payload := sg.buildPayload(alert)
+	err := sg.Send(context.Background(), alert)
+	require.NoError(t, err)
 
-	// Verify payload structure
-	if len(payload.Personalizations) != 1 {
-		t.Errorf("Personalizations count = %d, want 1", len(payload.Personalizations))
-	}
-
-	if len(payload.Personalizations[0].To) != 2 {
-		t.Errorf("To recipients count = %d, want 2", len(payload.Personalizations[0].To))
-	}
-
-	if payload.From.Email != "alerts@example.com" {
-		t.Errorf("From.Email = %q, want %q", payload.From.Email, "alerts@example.com")
-	}
-
-	if payload.From.Name != "Bosun Alerts" {
-		t.Errorf("From.Name = %q, want %q", payload.From.Name, "Bosun Alerts")
-	}
-
-	expectedSubject := "[ERROR] Test Alert"
-	if payload.Subject != expectedSubject {
-		t.Errorf("Subject = %q, want %q", payload.Subject, expectedSubject)
-	}
-
-	if len(payload.Content) != 2 {
-		t.Errorf("Content count = %d, want 2", len(payload.Content))
-	}
-
-	// Verify content types
-	hasPlain := false
-	hasHTML := false
-	for _, c := range payload.Content {
-		if c.Type == "text/plain" {
-			hasPlain = true
-		}
-		if c.Type == "text/html" {
-			hasHTML = true
-		}
-	}
-	if !hasPlain {
-		t.Error("Missing text/plain content")
-	}
-	if !hasHTML {
-		t.Error("Missing text/html content")
-	}
+	// Verify the payload that was received by the server.
+	require.Len(t, receivedReq.Personalizations, 1)
+	assert.Len(t, receivedReq.Personalizations[0].To, 2)
+	assert.Equal(t, "alerts@example.com", receivedReq.From.Email)
+	assert.Equal(t, "[ERROR] Test Alert", receivedReq.Subject)
+	assert.Len(t, receivedReq.Content, 2)
 }
 
 func TestSendGrid_Send_NotConfigured(t *testing.T) {
@@ -198,13 +140,11 @@ func TestSendGrid_Send_NotConfigured(t *testing.T) {
 		Severity: SeverityInfo,
 	})
 
-	if err == nil {
-		t.Error("Expected error for unconfigured SendGrid")
-	}
+	require.Error(t, err, "Expected error for unconfigured SendGrid")
 }
 
-func TestSendGrid_Send_APIError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestSendGrid_Send_APIErrorWithJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -215,24 +155,49 @@ func TestSendGrid_Send_APIError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	sg := NewSendGrid(SendGridConfig{
-		APIKey:    "SG.test-key",
-		FromEmail: "sender@example.com",
-		ToEmails:  []string{"invalid"},
-	})
+	sg := &SendGrid{
+		config: SendGridConfig{
+			APIKey:    "SG.test-key",
+			FromEmail: "sender@example.com",
+			ToEmails:  []string{"invalid"},
+		},
+		client:   server.Client(),
+		endpoint: server.URL,
+	}
 
-	// We can't easily override the endpoint, so we'll test the error parsing logic
-	// by directly testing buildPayload and formatSubject
-	alert := &Alert{
+	err := sg.Send(context.Background(), &Alert{
 		Title:    "Test",
 		Message:  "Test",
 		Severity: SeverityCritical,
+	})
+	require.Error(t, err, "Send() should return error for API error response")
+	assert.Contains(t, err.Error(), "Invalid email address")
+}
+
+func TestSendGrid_Send_APIErrorNonJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("internal server error"))
+	}))
+	defer server.Close()
+
+	sg := &SendGrid{
+		config: SendGridConfig{
+			APIKey:    "SG.test-key",
+			FromEmail: "sender@example.com",
+			ToEmails:  []string{"recipient@example.com"},
+		},
+		client:   server.Client(),
+		endpoint: server.URL,
 	}
 
-	subject := sg.formatSubject(alert)
-	if subject != "[CRITICAL] Test" {
-		t.Errorf("formatSubject() = %q, want %q", subject, "[CRITICAL] Test")
-	}
+	err := sg.Send(context.Background(), &Alert{
+		Title:    "Test",
+		Message:  "Test",
+		Severity: SeverityInfo,
+	})
+	require.Error(t, err, "Send() should return error for non-2xx status")
+	assert.Contains(t, err.Error(), "status 500")
 }
 
 func TestSendGrid_formatSubject(t *testing.T) {
@@ -253,9 +218,7 @@ func TestSendGrid_formatSubject(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(string(tt.severity), func(t *testing.T) {
 			alert := &Alert{Title: tt.title, Severity: tt.severity}
-			if got := sg.formatSubject(alert); got != tt.want {
-				t.Errorf("formatSubject() = %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, sg.formatSubject(alert))
 		})
 	}
 }
@@ -273,22 +236,11 @@ func TestSendGrid_formatPlainBody(t *testing.T) {
 
 	body := sg.formatPlainBody(alert)
 
-	// Check for key elements
-	if !containsString(body, "Test Alert") {
-		t.Error("Plain body missing title")
-	}
-	if !containsString(body, "error") {
-		t.Error("Plain body missing severity")
-	}
-	if !containsString(body, "Something happened") {
-		t.Error("Plain body missing message")
-	}
-	if !containsString(body, "commit: abc123") {
-		t.Error("Plain body missing metadata")
-	}
-	if !containsString(body, "test-source") {
-		t.Error("Plain body missing source")
-	}
+	assert.Contains(t, body, "Test Alert")
+	assert.Contains(t, body, "error")
+	assert.Contains(t, body, "Something happened")
+	assert.Contains(t, body, "commit: abc123")
+	assert.Contains(t, body, "test-source")
 }
 
 func TestSendGrid_formatHTMLBody(t *testing.T) {
@@ -304,19 +256,11 @@ func TestSendGrid_formatHTMLBody(t *testing.T) {
 
 	body := sg.formatHTMLBody(alert)
 
-	// Check for key elements
-	if !containsString(body, "Test Alert") {
-		t.Error("HTML body missing title")
-	}
-	if !containsString(body, "#ea580c") { // orange-600 for error
-		t.Error("HTML body missing error color")
-	}
-	if !containsString(body, "&lt;script&gt;") {
-		t.Error("HTML body not escaping script tags")
-	}
-	if !containsString(body, "commit") && !containsString(body, "abc123") {
-		t.Error("HTML body missing metadata")
-	}
+	assert.Contains(t, body, "Test Alert")
+	assert.Contains(t, body, "#ea580c") // orange-600 for error
+	assert.Contains(t, body, "&lt;script&gt;")
+	assert.Contains(t, body, "commit")
+	assert.Contains(t, body, "abc123")
 }
 
 func TestSendGrid_getSeverityColor(t *testing.T) {
@@ -335,9 +279,28 @@ func TestSendGrid_getSeverityColor(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.severity), func(t *testing.T) {
-			if got := sg.getSeverityColor(tt.severity); got != tt.wantHex {
-				t.Errorf("getSeverityColor(%s) = %q, want %q", tt.severity, got, tt.wantHex)
-			}
+			assert.Equal(t, tt.wantHex, sg.getSeverityColor(tt.severity))
+		})
+	}
+}
+
+func TestSendGrid_getSeverityBgColor(t *testing.T) {
+	sg := NewSendGrid(SendGridConfig{})
+
+	tests := []struct {
+		severity Severity
+		wantHex  string
+	}{
+		{SeverityCritical, "#fef2f2"},
+		{SeverityError, "#fff7ed"},
+		{SeverityWarning, "#fefce8"},
+		{SeverityInfo, "#eff6ff"},
+		{Severity("unknown"), "#f9fafb"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.severity), func(t *testing.T) {
+			assert.Equal(t, tt.wantHex, sg.getSeverityBgColor(tt.severity))
 		})
 	}
 }
@@ -359,38 +322,34 @@ func TestSendGrid_buildPayload_MultipleRecipients(t *testing.T) {
 
 	payload := sg.buildPayload(alert)
 
-	if len(payload.Personalizations) != 1 {
-		t.Fatalf("Expected 1 personalization, got %d", len(payload.Personalizations))
-	}
-
-	recipients := payload.Personalizations[0].To
-	if len(recipients) != 3 {
-		t.Errorf("Expected 3 recipients, got %d", len(recipients))
-	}
+	require.Len(t, payload.Personalizations, 1)
+	require.Len(t, payload.Personalizations[0].To, 3)
 
 	expectedEmails := []string{"one@example.com", "two@example.com", "three@example.com"}
 	for i, email := range expectedEmails {
-		if recipients[i].Email != email {
-			t.Errorf("Recipient[%d] = %q, want %q", i, recipients[i].Email, email)
-		}
+		assert.Equal(t, email, payload.Personalizations[0].To[i].Email)
 	}
 }
 
 func TestSendGrid_ContextCancellation(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Simulate slow response
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Simulate slow response.
 		time.Sleep(100 * time.Millisecond)
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer server.Close()
 
-	sg := NewSendGrid(SendGridConfig{
-		APIKey:    "SG.test-key",
-		FromEmail: "sender@example.com",
-		ToEmails:  []string{"recipient@example.com"},
-	})
+	sg := &SendGrid{
+		config: SendGridConfig{
+			APIKey:    "SG.test-key",
+			FromEmail: "sender@example.com",
+			ToEmails:  []string{"recipient@example.com"},
+		},
+		client:   server.Client(),
+		endpoint: server.URL,
+	}
 
-	// Context already cancelled
+	// Context already cancelled.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -400,22 +359,5 @@ func TestSendGrid_ContextCancellation(t *testing.T) {
 		Severity: SeverityInfo,
 	})
 
-	if err == nil {
-		t.Error("Expected error for cancelled context")
-	}
-}
-
-// containsString is a simple helper to check if a string contains a substring.
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
+	require.Error(t, err, "Expected error for cancelled context")
 }

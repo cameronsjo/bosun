@@ -241,6 +241,30 @@ func (m *Manager) SendDriftResolved(ctx context.Context, target string, resolved
 	})
 }
 
+// SendRestartBreakerTripped sends a critical alert when a container's restart circuit breaker trips.
+func (m *Manager) SendRestartBreakerTripped(ctx context.Context, target string, services []string) error {
+	summary := strings.Join(services, ", ")
+	return m.Send(ctx, &Alert{
+		Title:    "Restart Circuit Breaker Tripped",
+		Message:  fmt.Sprintf("Container restart loop detected on %s — stopped: %s", target, summary),
+		Severity: SeverityCritical,
+		Source:   "restart_breaker",
+		Metadata: map[string]string{"target": target, "service_count": fmt.Sprintf("%d", len(services))},
+	})
+}
+
+// SendRestartBreakerResolved sends an info alert when a restart-looping container stabilizes.
+func (m *Manager) SendRestartBreakerResolved(ctx context.Context, target string, services []string) error {
+	summary := strings.Join(services, ", ")
+	return m.Send(ctx, &Alert{
+		Title:    "Restart Circuit Breaker Resolved",
+		Message:  fmt.Sprintf("Container restart loop resolved on %s: %s", target, summary),
+		Severity: SeverityInfo,
+		Source:   "restart_breaker",
+		Metadata: map[string]string{"target": target, "resolved_count": fmt.Sprintf("%d", len(services))},
+	})
+}
+
 // SendDoctorAlert sends a health check alert.
 func (m *Manager) SendDoctorAlert(ctx context.Context, severity Severity, issues []string) error {
 	var title string

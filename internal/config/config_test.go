@@ -751,6 +751,277 @@ func TestLoadFrom_Domain(t *testing.T) {
 	})
 }
 
+// TestLoad_FullYAMLIntegration creates a bosun.yaml with ALL sections populated
+// and verifies every getter returns the expected value. This single test covers
+// most zero-coverage getters: ProjectName, TunnelProvider, TunnelHostname,
+// TunnelName, TunnelHealthEndpoint, GetTunnelConfig, GetAlertConfig.
+func TestLoad_FullYAMLIntegration(t *testing.T) {
+	tmpDir := evalSymlinks(t, t.TempDir())
+
+	// Create manifest directory
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest", "provisions"), 0755))
+
+	content := `project_name: my-homelab
+domain: home.example.com
+
+infrastructure:
+  containers:
+    - traefik
+    - authelia
+
+tunnel:
+  provider: cloudflare
+  hostname: tunnel.example.com
+  tunnel_name: my-tunnel
+  health_endpoint: http://localhost:8080/health
+
+alerts:
+  discord_webhook_url: https://discord.example.com/hook
+  sendgrid_api_key: sg-key
+  sendgrid_from_email: noreply@example.com
+  sendgrid_from_name: Bosun Alerts
+  sendgrid_to_emails:
+    - admin@example.com
+  twilio_account_sid: AC123
+  twilio_auth_token: token
+  twilio_from_number: "+15551234567"
+  twilio_to_numbers:
+    - "+15559876543"
+  on_success: true
+  on_failure: true
+
+post_sync_hooks:
+  - paths: ["traefik/**"]
+    action: restart
+    container: traefik
+
+hook_settle_delay: "3s"
+
+deploy_paths:
+  - "infra/**"
+  - "services/**"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+	originalWd, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() { _ = os.Chdir(originalWd) }()
+	require.NoError(t, os.Chdir(tmpDir))
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+
+	// Project identity
+	assert.Equal(t, "my-homelab", cfg.ProjectName())
+	assert.Equal(t, "home.example.com", cfg.Domain())
+
+	// Infrastructure
+	assert.Equal(t, []string{"traefik", "authelia"}, cfg.InfraContainers())
+
+	// Tunnel getters
+	assert.Equal(t, "cloudflare", cfg.TunnelProvider())
+	assert.Equal(t, "tunnel.example.com", cfg.TunnelHostname())
+	assert.Equal(t, "my-tunnel", cfg.TunnelName())
+	assert.Equal(t, "http://localhost:8080/health", cfg.TunnelHealthEndpoint())
+	tunnelCfg := cfg.GetTunnelConfig()
+	assert.Equal(t, TunnelConfig{
+		Hostname:       "tunnel.example.com",
+		TunnelName:     "my-tunnel",
+		HealthEndpoint: "http://localhost:8080/health",
+	}, tunnelCfg)
+
+	// Alert config
+	alertCfg := cfg.GetAlertConfig()
+	assert.Equal(t, "https://discord.example.com/hook", alertCfg.DiscordWebhookURL)
+	assert.Equal(t, "sg-key", alertCfg.SendGridAPIKey)
+	assert.Equal(t, "noreply@example.com", alertCfg.SendGridFromEmail)
+	assert.Equal(t, "Bosun Alerts", alertCfg.SendGridFromName)
+	assert.Equal(t, []string{"admin@example.com"}, alertCfg.SendGridToEmails)
+	assert.Equal(t, "AC123", alertCfg.TwilioAccountSID)
+	assert.Equal(t, "token", alertCfg.TwilioAuthToken)
+	assert.Equal(t, "+15551234567", alertCfg.TwilioFromNumber)
+	assert.Equal(t, []string{"+15559876543"}, alertCfg.TwilioToNumbers)
+	assert.True(t, alertCfg.OnSuccess)
+	assert.True(t, alertCfg.OnFailure)
+
+	// Hooks and deploy paths
+	require.Len(t, cfg.PostSyncHooks(), 1)
+	assert.Equal(t, "traefik", cfg.PostSyncHooks()[0].Container)
+	assert.Equal(t, 3*time.Second, cfg.HookSettleDelay())
+	assert.Equal(t, []string{"infra/**", "services/**"}, cfg.DeployPaths())
+
+	// RemoveOrphans defaults to true when not set in config
+	assert.True(t, cfg.RemoveOrphans())
+}
+
+func TestConfig_Format(t *testing.T) {
+	t.Run("helm format with Chart.yaml in subdirectory", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		// Create charts/myapp/Chart.yaml (Helm-aligned format)
+		chartDir := filepath.Join(tmpDir, "charts", "myapp")
+		require.NoError(t, os.MkdirAll(chartDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(chartDir, "Chart.yaml"), []byte("name: myapp"), 0644))
+
+		cfg := &Config{Root: tmpDir, ManifestDir: filepath.Join(tmpDir, "manifest")}
+		assert.Equal(t, "helm", cfg.Format())
+	})
+
+	t.Run("legacy format with provisions directory", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		// Create manifest/provisions (legacy format)
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest", "provisions"), 0755))
+
+		cfg := &Config{Root: tmpDir, ManifestDir: filepath.Join(tmpDir, "manifest")}
+		assert.Equal(t, "legacy", cfg.Format())
+	})
+
+	t.Run("unknown format when no charts or provisions", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		cfg := &Config{Root: tmpDir, ManifestDir: filepath.Join(tmpDir, "manifest")}
+		assert.Equal(t, "unknown", cfg.Format())
+	})
+
+	t.Run("charts/templates only does not match helm", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		// Create charts/templates (should be skipped — not a service chart)
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "charts", "templates"), 0755))
+
+		cfg := &Config{Root: tmpDir, ManifestDir: filepath.Join(tmpDir, "manifest")}
+		assert.Equal(t, "unknown", cfg.Format())
+	})
+
+	t.Run("chart subdirectory without Chart.yaml does not match helm", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		// Create charts/myapp but no Chart.yaml inside it
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "charts", "myapp"), 0755))
+
+		cfg := &Config{Root: tmpDir, ManifestDir: filepath.Join(tmpDir, "manifest")}
+		assert.Equal(t, "unknown", cfg.Format())
+	})
+}
+
+func TestConfig_HelmDirGetters(t *testing.T) {
+	cfg := &Config{Root: "/project"}
+
+	assert.Equal(t, "/project/charts", cfg.ChartsDir())
+	assert.Equal(t, "/project/charts/templates", cfg.TemplatesDir())
+	assert.Equal(t, "/project/stacks", cfg.HelmStacksDir())
+}
+
+func TestConfig_ProvisionsDir_Explicit(t *testing.T) {
+	cfg := &Config{
+		ManifestDir:   "/project/manifest",
+		provisionsDir: "/project/custom-provisions",
+	}
+	assert.Equal(t, "/project/custom-provisions", cfg.ProvisionsDir())
+}
+
+func TestConfig_TunnelDefaultProvider(t *testing.T) {
+	// When no tunnel provider is configured, Load defaults to "tailscale"
+	tmpDir := evalSymlinks(t, t.TempDir())
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+	// Empty config
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte("domain: test.com\n"), 0644))
+
+	originalWd, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() { _ = os.Chdir(originalWd) }()
+	require.NoError(t, os.Chdir(tmpDir))
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, "tailscale", cfg.TunnelProvider())
+}
+
+func TestLoad_ManifestsPluralFallback(t *testing.T) {
+	tmpDir := evalSymlinks(t, t.TempDir())
+
+	// Create manifests/ (plural) instead of manifest/ (singular)
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifests"), 0755))
+
+	originalWd, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() { _ = os.Chdir(originalWd) }()
+	require.NoError(t, os.Chdir(tmpDir))
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+
+	// ManifestDir should use manifests/ (plural)
+	assert.Equal(t, filepath.Join(tmpDir, "manifests"), cfg.ManifestDir)
+}
+
+func TestLoad_CustomManifestDir(t *testing.T) {
+	tmpDir := evalSymlinks(t, t.TempDir())
+
+	// Create both a default manifest/ and a custom one
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "my-manifests"), 0755))
+
+	content := `manifest_dir: my-manifests
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+	originalWd, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() { _ = os.Chdir(originalWd) }()
+	require.NoError(t, os.Chdir(tmpDir))
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+
+	assert.Equal(t, filepath.Join(tmpDir, "my-manifests"), cfg.ManifestDir)
+}
+
+func TestLoad_CustomProvisionsDir(t *testing.T) {
+	tmpDir := evalSymlinks(t, t.TempDir())
+
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "custom-provisions"), 0755))
+
+	content := `provisions_dir: custom-provisions
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+	originalWd, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() { _ = os.Chdir(originalWd) }()
+	require.NoError(t, os.Chdir(tmpDir))
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+
+	assert.Equal(t, filepath.Join(tmpDir, "custom-provisions"), cfg.ProvisionsDir())
+}
+
+func TestLoad_DefaultProjectName(t *testing.T) {
+	tmpDir := evalSymlinks(t, t.TempDir())
+
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+	// No config file — project name defaults to directory basename
+
+	originalWd, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() { _ = os.Chdir(originalWd) }()
+	require.NoError(t, os.Chdir(tmpDir))
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+
+	assert.Equal(t, filepath.Base(tmpDir), cfg.ProjectName())
+}
+
 func TestHookSettleDelayFromConfig(t *testing.T) {
 	t.Run("parses duration string from bosun.yaml", func(t *testing.T) {
 		tmpDir := evalSymlinks(t, t.TempDir())
@@ -824,5 +1095,205 @@ func TestHookSettleDelayFromConfig(t *testing.T) {
 		cfg, err := Load()
 		require.NoError(t, err)
 		assert.Equal(t, time.Duration(0), cfg.HookSettleDelay())
+	})
+}
+
+func TestDriftAlertDebounceFromConfig(t *testing.T) {
+	t.Run("parses duration string from bosun.yaml", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `drift_alert_debounce: "5m"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, 5*time.Minute, cfg.DriftAlertDebounce())
+	})
+
+	t.Run("defaults to zero when not configured", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `infrastructure:
+  containers:
+    - traefik
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce())
+	})
+
+	t.Run("defaults to zero when no config file", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce())
+	})
+}
+
+func TestLoadFrom_DriftAlertDebounce(t *testing.T) {
+	t.Run("loads drift_alert_debounce from directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		content := `drift_alert_debounce: "10m"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Equal(t, 10*time.Minute, cfg.DriftAlertDebounce())
+	})
+
+	t.Run("returns zero when no drift_alert_debounce", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce())
+	})
+}
+
+func TestRemoveOrphansFromConfig(t *testing.T) {
+	t.Run("defaults to true when not configured", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `infrastructure:
+  containers:
+    - traefik
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.True(t, cfg.RemoveOrphans())
+	})
+
+	t.Run("defaults to true when no config file", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.True(t, cfg.RemoveOrphans())
+	})
+
+	t.Run("parses false from bosun.yaml", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `remove_orphans: false
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.False(t, cfg.RemoveOrphans())
+	})
+
+	t.Run("parses true from bosun.yaml", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `remove_orphans: true
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.True(t, cfg.RemoveOrphans())
+	})
+}
+
+func TestLoadFrom_RemoveOrphans(t *testing.T) {
+	t.Run("loads false from directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		content := `remove_orphans: false
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.False(t, cfg.RemoveOrphans())
+	})
+
+	t.Run("defaults to true when not set", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.True(t, cfg.RemoveOrphans())
+	})
+}
+
+func TestExtractRemoveOrphans(t *testing.T) {
+	t.Run("returns true when nil", func(t *testing.T) {
+		cfg := configFile{}
+		assert.True(t, extractRemoveOrphans(cfg))
+	})
+
+	t.Run("returns false when explicitly false", func(t *testing.T) {
+		f := false
+		cfg := configFile{RemoveOrphans: &f}
+		assert.False(t, extractRemoveOrphans(cfg))
+	})
+
+	t.Run("returns true when explicitly true", func(t *testing.T) {
+		tr := true
+		cfg := configFile{RemoveOrphans: &tr}
+		assert.True(t, extractRemoveOrphans(cfg))
 	})
 }

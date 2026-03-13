@@ -21,6 +21,9 @@ var (
 	Cyan   = color.New(color.FgCyan)
 	Gray   = color.New(color.FgHiBlack)
 	Bold   = color.New(color.Bold)
+
+	// exitFn is the function called to terminate the process. Replaceable in tests.
+	exitFn = os.Exit
 )
 
 // isConsoleMode returns true if we should use colored console output.
@@ -174,7 +177,7 @@ func Fatal(format string, args ...any) {
 	} else {
 		log.Error().Msg(msg)
 	}
-	os.Exit(1)
+	exitFn(1)
 }
 
 // Fatalf prints a formatted error and exits with code 1.
@@ -185,7 +188,7 @@ func Fatalf(format string, args ...any) {
 	} else {
 		log.Error().Msg(msg)
 	}
-	os.Exit(1)
+	exitFn(1)
 }
 
 // Logger returns a zerolog.Logger for structured logging with additional fields.

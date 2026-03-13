@@ -104,37 +104,10 @@ func (d *Daemon) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 	reconciling := d.reconciling
 	d.reconcileMu.Unlock()
 
-	state := "idle"
-	if reconciling {
-		state = "reconciling"
-	}
-
 	health := d.HealthStatus()
 	uptime := time.Since(startTime)
 
-	resp := APIStatusResponse{
-		Health:        health.Status,
-		State:         state,
-		Uptime:        uptime.Round(time.Second).String(),
-		UptimeSeconds: int64(uptime.Seconds()),
-	}
-
-	if !lastReconcile.IsZero() {
-		resp.LastReconcile = &lastReconcile
-	}
-
-	if lastErr != nil {
-		resp.LastError = lastErr.Error()
-	}
-
-	// Calculate next poll time
-	if d.config.PollInterval > 0 {
-		resp.PollInterval = int(d.config.PollInterval.Seconds())
-		if !lastReconcile.IsZero() {
-			nextPoll := lastReconcile.Add(d.config.PollInterval)
-			resp.NextPoll = &nextPoll
-		}
-	}
+	resp := buildAPIStatusResponse(lastReconcile, lastErr, reconciling, health.Status, uptime, d.config.PollInterval)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
@@ -166,15 +139,9 @@ func (d *Daemon) handleAPIContainers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := APIContainersResponse{
-		Containers: make([]APIContainerResponse, 0, len(containers)),
-		Summary: ContainerSummary{
-			Total: len(containers),
-		},
-	}
-
+	apiContainers := make([]APIContainerResponse, 0, len(containers))
 	for _, c := range containers {
-		resp.Containers = append(resp.Containers, APIContainerResponse{
+		apiContainers = append(apiContainers, APIContainerResponse{
 			ID:      c.ID,
 			Name:    c.Name,
 			Image:   c.Image,
@@ -184,16 +151,11 @@ func (d *Daemon) handleAPIContainers(w http.ResponseWriter, r *http.Request) {
 			Created: c.Created.Format(time.RFC3339),
 			Ports:   c.Ports,
 		})
+	}
 
-		// Update summary counts
-		if c.State == "running" {
-			resp.Summary.Running++
-		} else {
-			resp.Summary.Stopped++
-		}
-		if c.Health == "unhealthy" {
-			resp.Summary.Unhealthy++
-		}
+	resp := APIContainersResponse{
+		Containers: apiContainers,
+		Summary:    computeContainerSummary(containers),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -376,29 +338,11 @@ func (d *Daemon) handleAPIDrift(w http.ResponseWriter, r *http.Request) {
 
 	state := reconcile.LoadState(stateFile)
 
-	status := "clean"
-	if len(state.DriftItems) > 0 {
-		status = "drifted"
-	}
-	if state.LastDeployedCommit == "" {
-		status = "unknown"
-	}
-
-	items := make([]APIDriftItem, 0, len(state.DriftItems))
-	for _, item := range state.DriftItems {
-		items = append(items, APIDriftItem{
-			Service:  item.Service,
-			Type:     string(item.Type),
-			Declared: item.Declared,
-			Actual:   item.Actual,
-		})
-	}
-
 	resp := APIDriftResponse{
-		Status:         status,
+		Status:         computeDriftStatus(len(state.DriftItems), state.LastDeployedCommit),
 		DeclaredCount:  len(state.DeclaredServices),
 		DriftItemCount: len(state.DriftItems),
-		Items:          items,
+		Items:          convertDriftItems(state.DriftItems),
 	}
 
 	if !state.DriftCheckedAt.IsZero() {

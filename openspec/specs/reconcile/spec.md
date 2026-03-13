@@ -288,8 +288,9 @@ compose files. Rollback results are distinguished via sentinel errors:
 `ErrRollbackSucceeded` (deploy failed, rollback worked) and `ErrRollbackFailed`
 (both failed, critical state).
 
-A configurable `ComposeUpTimeout` (default 10 minutes) SHALL apply to compose
-operations.
+A configurable compose up timeout (default 10 minutes, overridable via
+`BOSUN_COMPOSE_UP_TIMEOUT` env var or `DeployOps.ComposeUpTimeout` field) SHALL
+apply to compose operations.
 
 #### Scenario: Compose up with project name
 

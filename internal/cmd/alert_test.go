@@ -205,6 +205,41 @@ func TestTestTwilioAlert(t *testing.T) {
 	})
 }
 
+func TestDisplayAlertStatusFromEnv(t *testing.T) {
+	t.Run("reads discord from env", func(t *testing.T) {
+		t.Setenv("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1234567890/abcdefghijklmnopqrstuvwxyz")
+		t.Setenv("SENDGRID_API_KEY", "")
+		t.Setenv("TWILIO_ACCOUNT_SID", "")
+
+		// displayAlertStatusFromEnv writes to stdout; verify no panic
+		displayAlertStatusFromEnv()
+	})
+
+	t.Run("reads sendgrid from env", func(t *testing.T) {
+		t.Setenv("DISCORD_WEBHOOK_URL", "")
+		t.Setenv("SENDGRID_API_KEY", "SG.abcdefghijklmnopqrstuvwxyz.1234567890")
+		t.Setenv("TWILIO_ACCOUNT_SID", "")
+
+		displayAlertStatusFromEnv()
+	})
+
+	t.Run("reads twilio from env", func(t *testing.T) {
+		t.Setenv("DISCORD_WEBHOOK_URL", "")
+		t.Setenv("SENDGRID_API_KEY", "")
+		t.Setenv("TWILIO_ACCOUNT_SID", "AC1234567890abcdefghijklmnopqrstuv")
+
+		displayAlertStatusFromEnv()
+	})
+
+	t.Run("no providers configured", func(t *testing.T) {
+		t.Setenv("DISCORD_WEBHOOK_URL", "")
+		t.Setenv("SENDGRID_API_KEY", "")
+		t.Setenv("TWILIO_ACCOUNT_SID", "")
+
+		displayAlertStatusFromEnv()
+	})
+}
+
 func TestParseSeverity(t *testing.T) {
 	tests := []struct {
 		input    string

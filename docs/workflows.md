@@ -471,7 +471,9 @@ flowchart TD
 | SSH connect | 5 seconds | `SSHConnectTimeout` |
 | SSH operations | 30 seconds | `SSHTimeout` |
 | File sync | 5 minutes | `FileSyncTimeout` |
-| Docker compose up | 10 minutes | `ComposeUpTimeout` |
+| Docker compose up | 10 minutes (configurable via `BOSUN_COMPOSE_UP_TIMEOUT`) | `DefaultComposeUpTimeout` |
+| Post-deploy health check | 60 seconds (configurable via `BOSUN_HEALTH_CHECK_TIMEOUT`) | `HealthCheckTimeout` |
+| Health check poll interval | 5 seconds (configurable via `BOSUN_HEALTH_CHECK_INTERVAL`) | `HealthCheckInterval` |
 | Doctor checks | 10 seconds | `doctorCheckTimeout` |
 | HTTP client | 5 seconds | `httpClientTimeout` |
 | Docker ping | 5 seconds | `dockerPingTimeout` |
