@@ -391,4 +391,177 @@ func TestExecutePostSyncHooks(t *testing.T) {
 		defer mu.Unlock()
 		assert.Equal(t, []string{"traefik", "gatus"}, restarted)
 	})
+
+	t.Run("exec hook calls ExecContainer", func(t *testing.T) {
+		var mu sync.Mutex
+		var execCalls []struct {
+			container string
+			cmd       []string
+		}
+
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerExecCreateFunc = func(ctx context.Context, ctr string, config container.ExecOptions) (container.ExecCreateResponse, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			execCalls = append(execCalls, struct {
+				container string
+				cmd       []string
+			}{ctr, config.Cmd})
+			return container.ExecCreateResponse{ID: "exec-123"}, nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		hooks := []PostSyncHook{
+			{Paths: []string{"traefik/**"}, Action: "exec", Container: "traefik", Command: []string{"traefik", "reload"}},
+		}
+
+		err := ExecutePostSyncHooks(context.Background(), client, hooks, 0)
+		require.NoError(t, err)
+
+		mu.Lock()
+		defer mu.Unlock()
+		require.Len(t, execCalls, 1)
+		assert.Equal(t, "traefik", execCalls[0].container)
+		assert.Equal(t, []string{"traefik", "reload"}, execCalls[0].cmd)
+	})
+
+	t.Run("exec hook with empty command is skipped", func(t *testing.T) {
+		mockAPI := newReconcileMockDockerAPI()
+		execCalled := false
+		mockAPI.containerExecCreateFunc = func(ctx context.Context, ctr string, config container.ExecOptions) (container.ExecCreateResponse, error) {
+			execCalled = true
+			return container.ExecCreateResponse{ID: "exec-123"}, nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		hooks := []PostSyncHook{
+			{Paths: []string{"app/**"}, Action: "exec", Container: "myapp"},
+		}
+
+		err := ExecutePostSyncHooks(context.Background(), client, hooks, 0)
+		assert.NoError(t, err)
+		assert.False(t, execCalled)
+	})
+
+	t.Run("exec hook failure returns aggregated error", func(t *testing.T) {
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerExecCreateFunc = func(ctx context.Context, ctr string, config container.ExecOptions) (container.ExecCreateResponse, error) {
+			return container.ExecCreateResponse{}, fmt.Errorf("container %s not found", ctr)
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		hooks := []PostSyncHook{
+			{Action: "exec", Container: "traefik", Command: []string{"traefik", "reload"}},
+		}
+
+		err := ExecutePostSyncHooks(context.Background(), client, hooks, 0)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "traefik exec")
+		assert.Contains(t, err.Error(), "post-sync hook failures")
+	})
+
+	t.Run("exec hook with non-zero exit code returns error", func(t *testing.T) {
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerExecInspectFunc = func(ctx context.Context, execID string) (container.ExecInspect, error) {
+			return container.ExecInspect{ExitCode: 1}, nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		hooks := []PostSyncHook{
+			{Action: "exec", Container: "nginx", Command: []string{"nginx", "-s", "reload"}},
+		}
+
+		err := ExecutePostSyncHooks(context.Background(), client, hooks, 0)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "nginx exec")
+		assert.Contains(t, err.Error(), "exited with code 1")
+	})
+
+	t.Run("mix of restart and exec hooks", func(t *testing.T) {
+		var mu sync.Mutex
+		restarted := []string{}
+		executed := []string{}
+
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ container.StopOptions) error {
+			mu.Lock()
+			defer mu.Unlock()
+			restarted = append(restarted, containerID)
+			return nil
+		}
+		mockAPI.containerExecCreateFunc = func(ctx context.Context, ctr string, config container.ExecOptions) (container.ExecCreateResponse, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			executed = append(executed, ctr)
+			return container.ExecCreateResponse{ID: "exec-123"}, nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		hooks := []PostSyncHook{
+			{Action: "restart", Container: "gatus"},
+			{Action: "exec", Container: "traefik", Command: []string{"traefik", "reload"}},
+			{Action: "exec", Container: "nginx", Command: []string{"nginx", "-s", "reload"}},
+		}
+
+		err := ExecutePostSyncHooks(context.Background(), client, hooks, 0)
+		require.NoError(t, err)
+
+		mu.Lock()
+		defer mu.Unlock()
+		assert.Equal(t, []string{"gatus"}, restarted)
+		assert.Equal(t, []string{"traefik", "nginx"}, executed)
+	})
+}
+
+func TestEvaluatePostSyncHooksWithExec(t *testing.T) {
+	t.Run("same container with different actions both match", func(t *testing.T) {
+		hooks := []PostSyncHook{
+			{Paths: []string{"traefik/**"}, Action: "restart", Container: "traefik"},
+			{Paths: []string{"traefik/**"}, Action: "exec", Container: "traefik", Command: []string{"traefik", "reload"}},
+		}
+		changed := []string{"traefik/conf.d/dynamic.yml"}
+		matched := EvaluatePostSyncHooks(changed, hooks)
+		assert.Len(t, matched, 2)
+		assert.Equal(t, "restart", matched[0].Action)
+		assert.Equal(t, "exec", matched[1].Action)
+	})
+
+	t.Run("same container same action deduplicates", func(t *testing.T) {
+		hooks := []PostSyncHook{
+			{Paths: []string{"traefik/conf.d/**"}, Action: "exec", Container: "traefik", Command: []string{"traefik", "reload"}},
+			{Paths: []string{"traefik/traefik.yml"}, Action: "exec", Container: "traefik", Command: []string{"traefik", "reload"}},
+		}
+		changed := []string{"traefik/conf.d/x.yml", "traefik/traefik.yml"}
+		matched := EvaluatePostSyncHooks(changed, hooks)
+		assert.Len(t, matched, 1)
+	})
+}
+
+func TestDedupeHooksByContainerWithExec(t *testing.T) {
+	t.Run("different actions on same container are kept", func(t *testing.T) {
+		hooks := []PostSyncHook{
+			{Container: "traefik", Action: "restart"},
+			{Container: "traefik", Action: "exec", Command: []string{"traefik", "reload"}},
+		}
+		result := dedupeHooksByContainer(hooks)
+		assert.Len(t, result, 2)
+	})
+
+	t.Run("different exec commands on same container are kept", func(t *testing.T) {
+		hooks := []PostSyncHook{
+			{Container: "traefik", Action: "exec", Command: []string{"cmd1"}},
+			{Container: "traefik", Action: "exec", Command: []string{"cmd2"}},
+		}
+		result := dedupeHooksByContainer(hooks)
+		assert.Len(t, result, 2)
+	})
+
+	t.Run("same exec command on same container deduplicates", func(t *testing.T) {
+		hooks := []PostSyncHook{
+			{Container: "traefik", Action: "exec", Command: []string{"reload"}},
+			{Container: "traefik", Action: "exec", Command: []string{"reload"}},
+		}
+		result := dedupeHooksByContainer(hooks)
+		assert.Len(t, result, 1)
+	})
 }

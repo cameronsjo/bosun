@@ -40,6 +40,15 @@ type DockerAPI interface {
 	// ContainerStats returns container resource usage statistics.
 	ContainerStats(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error)
 
+	// ContainerExecCreate creates an exec instance in a container.
+	ContainerExecCreate(ctx context.Context, container string, config container.ExecOptions) (container.ExecCreateResponse, error)
+
+	// ContainerExecAttach attaches to an exec instance and returns a connection.
+	ContainerExecAttach(ctx context.Context, execID string, config container.ExecAttachOptions) (types.HijackedResponse, error)
+
+	// ContainerExecInspect returns information about an exec instance.
+	ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error)
+
 	// DiskUsage returns Docker system disk usage information.
 	DiskUsage(ctx context.Context, options types.DiskUsageOptions) (types.DiskUsage, error)
 
@@ -66,6 +75,9 @@ type dockerAPIAdapter interface {
 	ContainerRestart(ctx context.Context, containerID string, options container.StopOptions) error
 	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
 	ContainerStats(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error)
+	ContainerExecCreate(ctx context.Context, ctr string, config container.ExecOptions) (container.ExecCreateResponse, error)
+	ContainerExecAttach(ctx context.Context, execID string, config container.ExecAttachOptions) (types.HijackedResponse, error)
+	ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error)
 	DiskUsage(ctx context.Context, options types.DiskUsageOptions) (types.DiskUsage, error)
 	Info(ctx context.Context) (system.Info, error)
 	Close() error

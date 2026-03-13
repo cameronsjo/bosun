@@ -281,6 +281,50 @@ func (c *Client) RestartContainer(ctx context.Context, name string) error {
 	return nil
 }
 
+// ExecContainer runs a command inside a running container and waits for completion.
+// Returns an error if the command exits with a non-zero status.
+func (c *Client) ExecContainer(ctx context.Context, name string, cmd []string) error {
+	logger := log.ComponentCtx(ctx, log.ComponentDocker)
+	logger.Info().Str(log.FieldContainer, name).Strs("command", cmd).Msg("Executing command in container")
+
+	createResp, err := c.api.ContainerExecCreate(ctx, name, container.ExecOptions{
+		Cmd:          cmd,
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to create exec instance")
+		return fmt.Errorf("create exec in %s: %w", name, err)
+	}
+
+	attachResp, err := c.api.ContainerExecAttach(ctx, createResp.ID, container.ExecAttachOptions{})
+	if err != nil {
+		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to attach to exec instance")
+		return fmt.Errorf("attach exec in %s: %w", name, err)
+	}
+	defer attachResp.Close()
+
+	// Drain output to allow the exec to complete.
+	if _, err := io.Copy(io.Discard, attachResp.Reader); err != nil {
+		logger.Warn().Str(log.FieldContainer, name).Err(err).Msg("Error reading exec stream")
+	}
+
+	// Check exit code
+	inspectResp, err := c.api.ContainerExecInspect(ctx, createResp.ID)
+	if err != nil {
+		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to inspect exec instance")
+		return fmt.Errorf("inspect exec in %s: %w", name, err)
+	}
+
+	if inspectResp.ExitCode != 0 {
+		logger.Error().Str(log.FieldContainer, name).Int("exit_code", inspectResp.ExitCode).Msg("Exec command failed with non-zero exit code")
+		return fmt.Errorf("exec in %s exited with code %d", name, inspectResp.ExitCode)
+	}
+
+	logger.Info().Str(log.FieldContainer, name).Msg("Exec command completed successfully")
+	return nil
+}
+
 // MaxLogSize is the maximum size of logs to read (100MB).
 const MaxLogSize = 100 * 1024 * 1024
 
