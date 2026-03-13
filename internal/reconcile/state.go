@@ -77,6 +77,12 @@ type DeployState struct {
 	// when the debounce duration elapses, or are removed if drift resolves.
 	DriftDebounceItems map[string]time.Time `json:"drift_debounce_items,omitempty"`
 
+	// NeedsRedeploy indicates that a previous deploy partially succeeded
+	// (configs were synced to disk) but compose up failed. When true, the
+	// next reconcile will re-run the deploy pipeline even if there are no
+	// new git changes, bypassing the shouldSkipDeploy check.
+	NeedsRedeploy bool `json:"needs_redeploy,omitempty"`
+
 	// Health verification results from last post-deploy check.
 	HealthVerifiedAt         time.Time `json:"health_verified_at,omitempty"`
 	HealthVerificationPassed bool      `json:"health_verification_passed,omitempty"`
