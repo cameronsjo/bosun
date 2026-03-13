@@ -128,34 +128,65 @@ func (m *Manager) ProviderNames() []string {
 }
 
 // SendDeploySuccess sends a deployment success notification.
-func (m *Manager) SendDeploySuccess(ctx context.Context, commit, target string) error {
+func (m *Manager) SendDeploySuccess(ctx context.Context, commit, target string, services []string, duration time.Duration) error {
 	shortCommit := commit
 	if len(commit) > 8 {
 		shortCommit = commit[:8]
+	}
+
+	msg := fmt.Sprintf("Successfully deployed commit %s to %s in %s", shortCommit, target, duration.Round(time.Second))
+	if len(services) > 0 {
+		msg += fmt.Sprintf("\nServices: %s", strings.Join(services, ", "))
+	}
+
+	metadata := map[string]string{
+		"commit":   commit,
+		"target":   target,
+		"duration": duration.Round(time.Second).String(),
+	}
+	if len(services) > 0 {
+		metadata["services"] = strings.Join(services, ", ")
+		metadata["service_count"] = fmt.Sprintf("%d", len(services))
 	}
 
 	return m.Send(ctx, &Alert{
 		Title:    "Deployment Successful",
-		Message:  fmt.Sprintf("Successfully deployed commit %s to %s", shortCommit, target),
+		Message:  msg,
 		Severity: SeverityInfo,
 		Source:   "reconcile",
-		Metadata: map[string]string{"commit": commit, "target": target},
+		Metadata: metadata,
 	})
 }
 
 // SendDeployFailure sends a deployment failure notification.
-func (m *Manager) SendDeployFailure(ctx context.Context, commit, target, reason string) error {
+func (m *Manager) SendDeployFailure(ctx context.Context, commit, target, reason string, services []string, duration time.Duration) error {
 	shortCommit := commit
 	if len(commit) > 8 {
 		shortCommit = commit[:8]
 	}
 
+	msg := fmt.Sprintf("Failed to deploy commit %s to %s after %s: %s", shortCommit, target, duration.Round(time.Second), reason)
+	if len(services) > 0 {
+		msg += fmt.Sprintf("\nServices: %s", strings.Join(services, ", "))
+	}
+
+	metadata := map[string]string{
+		"commit":   commit,
+		"target":   target,
+		"error":    reason,
+		"duration": duration.Round(time.Second).String(),
+	}
+	if len(services) > 0 {
+		metadata["services"] = strings.Join(services, ", ")
+		metadata["service_count"] = fmt.Sprintf("%d", len(services))
+	}
+
 	return m.Send(ctx, &Alert{
 		Title:    "Deployment Failed",
-		Message:  fmt.Sprintf("Failed to deploy commit %s to %s: %s", shortCommit, target, reason),
+		Message:  msg,
 		Severity: SeverityError,
 		Source:   "reconcile",
-		Metadata: map[string]string{"commit": commit, "target": target, "error": reason},
+		Metadata: metadata,
 	})
 }
 
