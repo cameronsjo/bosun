@@ -1281,6 +1281,37 @@ func TestReloadProjectConfig(t *testing.T) {
 		r.reloadProjectConfig()
 		assert.Equal(t, "orig", r.config.PostSyncHooks[0].Container)
 	})
+
+	t.Run("critical containers reloaded from repo", func(t *testing.T) {
+		cfg := &Config{
+			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
+				return &ReloadedConfig{
+					CriticalContainers: []string{"traefik", "authelia"},
+				}, nil
+			},
+		}
+		r := NewReconciler(cfg)
+		r.reloadProjectConfig()
+		require.Len(t, r.config.CriticalContainers, 2)
+		assert.Equal(t, "traefik", r.config.CriticalContainers[0])
+		assert.Equal(t, "authelia", r.config.CriticalContainers[1])
+	})
+
+	t.Run("env override prevents critical containers reload", func(t *testing.T) {
+		cfg := &Config{
+			CriticalContainersFromEnv: true,
+			CriticalContainers:        []string{"env-container"},
+			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
+				return &ReloadedConfig{
+					CriticalContainers: []string{"repo-container"},
+				}, nil
+			},
+		}
+		r := NewReconciler(cfg)
+		r.reloadProjectConfig()
+		require.Len(t, r.config.CriticalContainers, 1)
+		assert.Equal(t, "env-container", r.config.CriticalContainers[0])
+	})
 }
 
 // --- Reconciler.cleanupStaging additional tests ---

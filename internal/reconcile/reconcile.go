@@ -16,12 +16,13 @@ import (
 
 // ReloadedConfig holds the fields that can be reloaded from the repo's bosun.yaml.
 type ReloadedConfig struct {
-	PostSyncHooks   []PostSyncHook
-	HookSettleDelay time.Duration
-	DeployPaths     []string
-	OnFailure       *bool
-	OnSuccess       *bool
-	RemoveOrphans   *bool
+	PostSyncHooks      []PostSyncHook
+	HookSettleDelay    time.Duration
+	DeployPaths        []string
+	CriticalContainers []string
+	OnFailure          *bool
+	OnSuccess          *bool
+	RemoveOrphans      *bool
 }
 
 // ConfigReloaderFunc loads project config from a directory path.
@@ -124,6 +125,19 @@ type Config struct {
 	// When true, repo config reload will not update DeployPaths.
 	DeployPathsFromEnv bool
 
+	// CriticalContainers is a list of container names that must be healthy after compose up.
+	// When configured, the health gate runs after startup grace period before state save.
+	// Empty list (default) skips the health gate entirely.
+	CriticalContainers []string
+
+	// CriticalContainersFromEnv is true when BOSUN_CRITICAL_CONTAINERS env var is set.
+	// When true, repo config reload will not update CriticalContainers.
+	CriticalContainersFromEnv bool
+
+	// HealthGateTimeout is the maximum time to poll critical container health.
+	// Default 60s. Configurable via BOSUN_HEALTH_GATE_TIMEOUT.
+	HealthGateTimeout time.Duration
+
 	// OnFailure gates failure alert dispatch. When false, no failure alerts are sent.
 	// Defaults to true via DefaultConfig(). A bare Config{} leaves this false.
 	OnFailure bool
@@ -170,6 +184,7 @@ func DefaultConfig() *Config {
 		RestartWindow:         10 * time.Minute,
 		OnFailure:             true,
 		RemoveOrphans:         true,
+		HealthGateTimeout:     60 * time.Second,
 	}
 }
 
@@ -777,7 +792,7 @@ func (r *Reconciler) reloadProjectConfig() {
 	}
 
 	// If no field has any value from the repo, there's nothing to reload.
-	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 && len(reloaded.DeployPaths) == 0 && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil {
+	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 && len(reloaded.DeployPaths) == 0 && len(reloaded.CriticalContainers) == 0 && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil {
 		return
 	}
 
@@ -795,6 +810,11 @@ func (r *Reconciler) reloadProjectConfig() {
 
 	if !r.config.DeployPathsFromEnv && len(reloaded.DeployPaths) > 0 {
 		r.config.DeployPaths = reloaded.DeployPaths
+		changed = true
+	}
+
+	if !r.config.CriticalContainersFromEnv && len(reloaded.CriticalContainers) > 0 {
+		r.config.CriticalContainers = reloaded.CriticalContainers
 		changed = true
 	}
 

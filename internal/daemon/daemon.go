@@ -1321,6 +1321,7 @@ func ConfigFromEnv() *Config {
 		rcfg.PostSyncHooks = projectCfg.PostSyncHooks()
 		rcfg.HookSettleDelay = projectCfg.HookSettleDelay()
 		rcfg.DeployPaths = projectCfg.DeployPaths()
+		rcfg.CriticalContainers = projectCfg.CriticalContainers()
 
 		alertCfg := projectCfg.GetAlertConfig()
 		rcfg.OnFailure = alertCfg.OnFailure
@@ -1350,12 +1351,13 @@ func ConfigFromEnv() *Config {
 		alertCfg := cfg.GetAlertConfig()
 		removeOrphans := cfg.RemoveOrphans()
 		return &reconcile.ReloadedConfig{
-			PostSyncHooks:   cfg.PostSyncHooks(),
-			HookSettleDelay: cfg.HookSettleDelay(),
-			DeployPaths:     cfg.DeployPaths(),
-			OnFailure:       &alertCfg.OnFailure,
-			OnSuccess:       &alertCfg.OnSuccess,
-			RemoveOrphans:   &removeOrphans,
+			PostSyncHooks:      cfg.PostSyncHooks(),
+			HookSettleDelay:    cfg.HookSettleDelay(),
+			DeployPaths:        cfg.DeployPaths(),
+			CriticalContainers: cfg.CriticalContainers(),
+			OnFailure:          &alertCfg.OnFailure,
+			OnSuccess:          &alertCfg.OnSuccess,
+			RemoveOrphans:      &removeOrphans,
 		}, nil
 	}
 	if v := os.Getenv("BOSUN_POST_SYNC_HOOKS"); v != "" {
@@ -1382,6 +1384,22 @@ func ConfigFromEnv() *Config {
 		} else {
 			rcfg.DeployPaths = paths
 			rcfg.DeployPathsFromEnv = true
+		}
+	}
+	if v := os.Getenv("BOSUN_CRITICAL_CONTAINERS"); v != "" {
+		var containers []string
+		if err := json.Unmarshal([]byte(v), &containers); err != nil {
+			log.Warn().Err(err).Msg("Failed to parse BOSUN_CRITICAL_CONTAINERS, ignoring")
+		} else {
+			rcfg.CriticalContainers = containers
+			rcfg.CriticalContainersFromEnv = true
+		}
+	}
+	if v := os.Getenv("BOSUN_HEALTH_GATE_TIMEOUT"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			rcfg.HealthGateTimeout = d
+		} else {
+			log.Warn().Str("value", v).Msg("Failed to parse BOSUN_HEALTH_GATE_TIMEOUT, ignoring")
 		}
 	}
 
