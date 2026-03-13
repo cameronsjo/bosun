@@ -86,6 +86,9 @@ type AlertConfig struct {
 	// Discord
 	DiscordWebhookURL string `yaml:"discord_webhook_url"`
 
+	// Slack
+	SlackWebhookURL string `yaml:"slack_webhook_url"`
+
 	// SendGrid
 	SendGridAPIKey    string   `yaml:"sendgrid_api_key"`
 	SendGridFromEmail string   `yaml:"sendgrid_from_email"`
@@ -107,6 +110,7 @@ type AlertConfig struct {
 // Pointer booleans distinguish "unset" (nil → apply default) from explicit false.
 type alertConfigRaw struct {
 	DiscordWebhookURL string   `yaml:"discord_webhook_url"`
+	SlackWebhookURL   string   `yaml:"slack_webhook_url"`
 	SendGridAPIKey    string   `yaml:"sendgrid_api_key"`
 	SendGridFromEmail string   `yaml:"sendgrid_from_email"`
 	SendGridFromName  string   `yaml:"sendgrid_from_name"`
@@ -568,6 +572,7 @@ func extractAlertConfig(cfg configFile) AlertConfig {
 
 	alertCfg := AlertConfig{
 		DiscordWebhookURL: raw.DiscordWebhookURL,
+		SlackWebhookURL:   raw.SlackWebhookURL,
 		SendGridAPIKey:    raw.SendGridAPIKey,
 		SendGridFromEmail: raw.SendGridFromEmail,
 		SendGridFromName:  raw.SendGridFromName,
@@ -593,6 +598,7 @@ func extractAlertConfig(cfg configFile) AlertConfig {
 	// Environment variable overrides for sensitive values.
 	// BOSUN_-prefixed vars take precedence; legacy unprefixed vars are fallback.
 	alertCfg.DiscordWebhookURL = getEnvOrDefault("BOSUN_DISCORD_WEBHOOK_URL", getEnvOrDefault("DISCORD_WEBHOOK_URL", alertCfg.DiscordWebhookURL))
+	alertCfg.SlackWebhookURL = getEnvOrDefault("BOSUN_SLACK_WEBHOOK_URL", getEnvOrDefault("SLACK_WEBHOOK_URL", alertCfg.SlackWebhookURL))
 	alertCfg.SendGridAPIKey = getEnvOrDefault("BOSUN_SENDGRID_API_KEY", getEnvOrDefault("SENDGRID_API_KEY", alertCfg.SendGridAPIKey))
 	alertCfg.SendGridFromEmail = getEnvOrDefault("BOSUN_SENDGRID_FROM_EMAIL", getEnvOrDefault("SENDGRID_FROM_EMAIL", alertCfg.SendGridFromEmail))
 	alertCfg.SendGridFromName = getEnvOrDefault("BOSUN_SENDGRID_FROM_NAME", getEnvOrDefault("SENDGRID_FROM_NAME", alertCfg.SendGridFromName))
