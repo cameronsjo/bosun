@@ -2,8 +2,10 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -283,4 +285,76 @@ func TestSOPSOps_CheckAgeKey(t *testing.T) {
 		assert.Contains(t, err.Error(), "To fix:")
 		assert.Contains(t, err.Error(), "age-keygen")
 	})
+}
+
+func TestSanitizeDecryptError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		contains string
+		isNil    bool
+	}{
+		{
+			name:  "nil error returns nil",
+			err:   nil,
+			isNil: true,
+		},
+		{
+			name:     "could not find pattern passes through",
+			err:      errors.New("could not find decryption key"),
+			contains: "could not find decryption key",
+		},
+		{
+			name:     "no key found pattern passes through",
+			err:      errors.New("no key found in key ring"),
+			contains: "no key found",
+		},
+		{
+			name:     "failed to get pattern passes through",
+			err:      errors.New("failed to get data key"),
+			contains: "failed to get",
+		},
+		{
+			name:     "cannot find pattern passes through",
+			err:      errors.New("Cannot find the sops config"),
+			contains: "Cannot find",
+		},
+		{
+			name:     "key not found pattern passes through",
+			err:      errors.New("key not found in keyring"),
+			contains: "key not found",
+		},
+		{
+			name:     "permission denied pattern passes through",
+			err:      errors.New("Permission denied: unable to read key"),
+			contains: "Permission denied",
+		},
+		{
+			name:     "no such file pattern passes through",
+			err:      errors.New("no such file or directory"),
+			contains: "no such file",
+		},
+		{
+			name:     "unknown error returns generic message",
+			err:      errors.New("AGE-SECRET-KEY-1QQQQQQQQQQQQ was used to encrypt"),
+			contains: "decryption failed - check age key configuration",
+		},
+		{
+			name:     "long safe error is truncated",
+			err:      errors.New("could not find " + strings.Repeat("x", 250)),
+			contains: "... (truncated)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sanitizeDecryptError(tt.err)
+			if tt.isNil {
+				assert.NoError(t, result)
+				return
+			}
+			require.Error(t, result)
+			assert.Contains(t, result.Error(), tt.contains)
+		})
+	}
 }

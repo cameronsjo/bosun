@@ -19,6 +19,9 @@ type ReloadedConfig struct {
 	PostSyncHooks   []PostSyncHook
 	HookSettleDelay time.Duration
 	DeployPaths     []string
+	OnFailure       *bool
+	OnSuccess       *bool
+	RemoveOrphans   *bool
 }
 
 // ConfigReloaderFunc loads project config from a directory path.
@@ -73,9 +76,21 @@ type Config struct {
 	// StateFile is the path to the deploy state file that tracks last successful deployment.
 	StateFile string
 
-	// StartupGracePeriod is how long to wait after compose up before reporting
-	// unhealthy containers as drift. Allows time for health checks to pass.
-	StartupGracePeriod time.Duration
+	// HealthCheckTimeout is the maximum time to poll container health after
+	// compose up. Zero disables health verification entirely. Default 60s.
+	HealthCheckTimeout time.Duration
+
+	// HealthCheckInterval is how often to poll container health during
+	// post-deploy verification. Default 5s.
+	HealthCheckInterval time.Duration
+
+	// RestartBreakerEnabled controls whether the restart circuit breaker runs
+	// during drift checks. Default true.
+	RestartBreakerEnabled bool
+	// RestartThreshold is the restart count delta that trips the breaker. Default 5.
+	RestartThreshold int
+	// RestartWindow is the time window for measuring restart velocity. Default 10m.
+	RestartWindow time.Duration
 
 	// PostSyncHooks defines container restart actions triggered by file changes.
 	PostSyncHooks []PostSyncHook
@@ -87,6 +102,11 @@ type Config struct {
 	// ContentHashSync if true, compares file content hashes before writing.
 	// Skips writes for unchanged files to avoid FUSE handle invalidation.
 	ContentHashSync bool
+
+	// RemoveOrphans if true, passes --remove-orphans to docker compose up.
+	// Removes containers belonging to services deleted from the compose file.
+	// Defaults to true.
+	RemoveOrphans bool
 
 	// PostSyncHooksFromEnv is true when BOSUN_POST_SYNC_HOOKS env var is set.
 	// When true, repo config reload will not update PostSyncHooks.
@@ -103,6 +123,22 @@ type Config struct {
 	// DeployPathsFromEnv is true when BOSUN_DEPLOY_PATHS env var is set.
 	// When true, repo config reload will not update DeployPaths.
 	DeployPathsFromEnv bool
+
+	// OnFailure gates failure alert dispatch. When false, no failure alerts are sent.
+	// Defaults to true via DefaultConfig(). A bare Config{} leaves this false.
+	OnFailure bool
+
+	// OnSuccess gates success and recovery alert dispatch. When false, neither
+	// success nor recovery alerts are sent. Defaults to false.
+	OnSuccess bool
+
+	// RemoveOrphansFromEnv is true when BOSUN_REMOVE_ORPHANS env var is set.
+	// When true, repo config reload will not update RemoveOrphans.
+	RemoveOrphansFromEnv bool
+
+	// ComposeUpTimeout is the maximum time allowed for docker compose up.
+	// Zero means use DefaultComposeUpTimeout (10 minutes).
+	ComposeUpTimeout time.Duration
 
 	// ConfigReloader loads project config from a directory path.
 	// Set by daemon/CLI to break the config→reconcile import cycle.
@@ -127,7 +163,13 @@ func DefaultConfig() *Config {
 		RemoteAppdataPath: "/mnt/user/appdata",
 		InfraSubDir:        ".",
 		BackupsToKeep:      5,
-		StartupGracePeriod: 30 * time.Second,
+		HealthCheckTimeout:  60 * time.Second,
+		HealthCheckInterval:   5 * time.Second,
+		RestartBreakerEnabled: true,
+		RestartThreshold:      5,
+		RestartWindow:         10 * time.Minute,
+		OnFailure:             true,
+		RemoveOrphans:         true,
 	}
 }
 
@@ -171,7 +213,7 @@ func NewReconciler(cfg *Config, opts ...ReconcilerOption) *Reconciler {
 		config:   cfg,
 		git:      NewGitOps(cfg.RepoURL, cfg.RepoBranch, cfg.RepoDir),
 		sops:     NewSOPSOps(),
-		deploy:   &DeployOps{DryRun: cfg.DryRun, ProjectName: cfg.ProjectName, ContentHashSync: cfg.ContentHashSync},
+		deploy:   &DeployOps{DryRun: cfg.DryRun, ProjectName: cfg.ProjectName, ContentHashSync: cfg.ContentHashSync, RemoveOrphans: cfg.RemoveOrphans, ComposeUpTimeout: cfg.ComposeUpTimeout},
 		lockFile: lockFile,
 	}
 
@@ -255,10 +297,12 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	r.declaredServices = nil
 
 	// Acquire lock to prevent concurrent runs.
+	// Lock failures are transient (another reconciliation is running) and lack state context,
+	// so they are logged as warnings without sending alerts.
 	if err := r.acquireLock(); err != nil {
-		logger.Error().
+		logger.Warn().
 			Err(err).
-			Msg("Failed to acquire reconcile lock")
+			Msg("Failed to acquire reconcile lock, another reconciliation may be in progress")
 		return fmt.Errorf("failed to acquire lock (another reconciliation may be in progress): %w", err)
 	}
 	defer r.releaseLock()
@@ -270,6 +314,16 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	changed, before, after, err := r.syncRepo(spanCtx)
 	finishSpan(err)
 	if err != nil {
+		// Use the post-sync commit (may be empty on sync failure) to avoid reporting a stale SHA.
+		r.lastCommit = after
+
+		// Load state before alerting so throttle state is available.
+		state := LoadState(r.config.StateFile)
+		state.LastAttemptedCommit, state.AttemptCount = nextAttemptState(state.LastAttemptedCommit, after, state.AttemptCount)
+		if saveErr := SaveState(r.config.StateFile, state); saveErr != nil {
+			logger.Error().Err(saveErr).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save attempt tracking state for git sync failure")
+		}
+		r.sendThrottledFailureAlert(ctx, state, fmt.Sprintf("failed to sync repository: %v", err))
 		return fmt.Errorf("failed to sync repository: %w", err)
 	}
 
@@ -283,7 +337,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	state := LoadState(r.config.StateFile)
 
 	// State-based skip logic: compare last *deployed* commit, not last *fetched* commit.
-	if state.LastDeployedCommit == after && !r.config.Force {
+	if shouldSkipDeploy(state.LastDeployedCommit, after, r.config.Force) {
 		ui.Info("=== Already deployed commit %s, skipping ===", after[:MinLen(after, 8)])
 		return nil
 	}
@@ -313,7 +367,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	}
 
 	// Circuit breaker: stop retrying after MaxAttempts consecutive failures on the same commit.
-	if state.LastAttemptedCommit == after && state.AttemptCount >= MaxAttempts && !r.config.Force {
+	if shouldTriggerCircuitBreaker(state.LastAttemptedCommit, after, state.AttemptCount, MaxAttempts, r.config.Force) {
 		logger.Error().
 			Str("commit", after).
 			Int("attempts", state.AttemptCount).
@@ -326,12 +380,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	}
 
 	// Track this attempt before executing the pipeline.
-	if state.LastAttemptedCommit == after {
-		state.AttemptCount++
-	} else {
-		state.LastAttemptedCommit = after
-		state.AttemptCount = 1
-	}
+	state.LastAttemptedCommit, state.AttemptCount = nextAttemptState(state.LastAttemptedCommit, after, state.AttemptCount)
 	if err := SaveState(r.config.StateFile, state); err != nil {
 		logger.Error().Err(err).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save attempt tracking state")
 	}
@@ -429,10 +478,14 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		r.executePostSyncHooks(ctx, previousCommit, after, deployResult)
 	}
 
-	// Post-deploy verification: check declared vs actual state.
+	// Post-deploy health verification: poll container health.
 	if r.dockerClientFn != nil && !r.config.DryRun && len(r.declaredServices) > 0 {
 		if client := r.dockerClientFn(); client != nil {
-			r.verifyPostDeploy(ctx, state, client)
+			if healthErr := r.verifyPostDeploy(ctx, state, client); healthErr != nil {
+				// Health verification failed — treat as a deploy failure.
+				r.sendThrottledFailureAlert(ctx, state, healthErr.Error())
+				return fmt.Errorf("post-deploy health verification failed: %w", healthErr)
+			}
 		}
 	}
 
@@ -460,8 +513,13 @@ func MinLen(s string, n int) int {
 }
 
 // sendSuccessAlert sends a deployment success notification.
+// Gated on config.OnSuccess: when false, no success alerts are sent.
 func (r *Reconciler) sendSuccessAlert(ctx context.Context) {
 	if r.alerter == nil {
+		return
+	}
+
+	if !r.config.OnSuccess {
 		return
 	}
 
@@ -482,8 +540,13 @@ func (r *Reconciler) sendSuccessAlert(ctx context.Context) {
 
 // sendThrottledFailureAlert sends a failure alert if the throttle schedule allows it.
 // Updates LastAlertedAttempt in the state and persists it.
+// Gated on config.OnFailure: when false, no failure alerts are sent.
 func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *DeployState, reason string) {
 	if r.alerter == nil {
+		return
+	}
+
+	if !r.config.OnFailure {
 		return
 	}
 
@@ -535,8 +598,13 @@ func (r *Reconciler) sendUnhealthyAlert(ctx context.Context, containers []string
 }
 
 // sendRecoveryAlert sends a notification when deployment succeeds after failures.
+// Gated on config.OnSuccess: recovery is a success-side alert.
 func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) {
 	if r.alerter == nil {
+		return
+	}
+
+	if !r.config.OnSuccess {
 		return
 	}
 
@@ -556,66 +624,77 @@ func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) {
 	}
 }
 
-// verifyPostDeploy performs a drift check after deployment to verify declared
-// services are running. Logs warnings but does not fail the reconciliation.
-func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, client *docker.Client) {
+// verifyPostDeploy polls container health after deployment. Returns an error
+// if health verification times out with unhealthy containers.
+// When HealthCheckTimeout is zero, verification is disabled (returns nil).
+func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, client *docker.Client) error {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
-	// Wait for startup grace period to let containers start and pass health checks.
-	if r.config.StartupGracePeriod > 0 {
-		ui.Info("Waiting %s for services to start before verification...", r.config.StartupGracePeriod)
-		select {
-		case <-time.After(r.config.StartupGracePeriod):
-		case <-ctx.Done():
-			return
-		}
+	if r.config.HealthCheckTimeout <= 0 {
+		logger.Debug().Msg("Post-deploy health verification disabled (timeout=0)")
+		return nil
 	}
 
-	actual, err := CollectActualState(ctx, client, r.config.ProjectName)
+	ui.Info("Verifying container health (timeout: %s, interval: %s)...",
+		r.config.HealthCheckTimeout, r.config.HealthCheckInterval)
+
+	result, err := pollContainerHealth(
+		ctx, client, r.declaredServices, r.config.ProjectName,
+		r.config.HealthCheckTimeout, r.config.HealthCheckInterval,
+	)
+
+	// Record health verdict in state file.
+	now := time.Now()
+	state.HealthVerifiedAt = now
+	if result != nil {
+		state.HealthVerificationPassed = result.Passed
+	}
+
 	if err != nil {
-		logger.Warn().
+		logger.Error().
 			Err(err).
-			Msg("Post-deploy verification: failed to collect actual state")
-		return
-	}
+			Strs("unhealthy", result.Unhealthy).
+			Int("iterations", result.Iterations).
+			Int64(log.FieldDurationMS, result.Duration.Milliseconds()).
+			Msg("Post-deploy health verification failed")
+		ui.Error("Health verification failed after %s: %s", result.Duration.Round(time.Second), err)
 
-	report := CompareDrift(r.declaredServices, actual)
-
-	// Update drift status in state file.
-	state.DriftCheckedAt = report.CheckedAt
-	state.DriftItems = report.Items
-	if err := SaveState(r.config.StateFile, state); err != nil {
-		logger.Warn().Err(err).Msg("Failed to save drift state after post-deploy verification")
-	}
-
-	if !report.HasDrift() {
-		logger.Info().
-			Int("declared_services", len(r.declaredServices)).
-			Msg("Post-deploy verification: all declared services running")
-		ui.Success("Post-deploy verification: all %d declared services running", len(r.declaredServices))
-		return
-	}
-
-	// Categorize drift items and log each one.
-	var unhealthyNames []string
-	for _, item := range report.Items {
-		logger.Warn().
-			Str("service", item.Service).
-			Str("drift_type", string(item.Type)).
-			Str("declared", item.Declared).
-			Str("actual", item.Actual).
-			Msg("Post-deploy drift detected")
-
-		if item.Type == DriftUnhealthy {
-			unhealthyNames = append(unhealthyNames, item.Service)
+		// Also run a drift check to populate state.DriftItems for consistency.
+		actual, collectErr := CollectActualState(ctx, client, r.config.ProjectName)
+		if collectErr == nil {
+			report := CompareDrift(r.declaredServices, actual)
+			state.DriftCheckedAt = report.CheckedAt
+			state.DriftItems = report.Items
 		}
-	}
-	ui.Warning("Post-deploy verification: %d drift item(s) detected", len(report.Items))
 
-	// Alert on unhealthy containers (warning severity, not a deploy failure).
-	if len(unhealthyNames) > 0 {
-		r.sendUnhealthyAlert(ctx, unhealthyNames)
+		if saveErr := SaveState(r.config.StateFile, state); saveErr != nil {
+			logger.Warn().Err(saveErr).Msg("Failed to save state after health verification failure")
+		}
+
+		return err
 	}
+
+	logger.Info().
+		Int("declared_services", len(r.declaredServices)).
+		Int("iterations", result.Iterations).
+		Int64(log.FieldDurationMS, result.Duration.Milliseconds()).
+		Msg("Post-deploy health verification passed")
+	ui.Success("Health verification passed: all %d declared services healthy (%s)",
+		len(r.declaredServices), result.Duration.Round(time.Second))
+
+	// Run drift check for state consistency.
+	actual, collectErr := CollectActualState(ctx, client, r.config.ProjectName)
+	if collectErr == nil {
+		report := CompareDrift(r.declaredServices, actual)
+		state.DriftCheckedAt = report.CheckedAt
+		state.DriftItems = report.Items
+	}
+
+	if saveErr := SaveState(r.config.StateFile, state); saveErr != nil {
+		logger.Warn().Err(saveErr).Msg("Failed to save state after health verification")
+	}
+
+	return nil
 }
 
 // executePostSyncHooks detects changed files and restarts matching containers via configured hooks.
@@ -698,7 +777,7 @@ func (r *Reconciler) reloadProjectConfig() {
 	}
 
 	// If no field has any value from the repo, there's nothing to reload.
-	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 && len(reloaded.DeployPaths) == 0 {
+	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 && len(reloaded.DeployPaths) == 0 && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil {
 		return
 	}
 
@@ -719,11 +798,30 @@ func (r *Reconciler) reloadProjectConfig() {
 		changed = true
 	}
 
+	if reloaded.OnFailure != nil {
+		r.config.OnFailure = *reloaded.OnFailure
+		changed = true
+	}
+
+	if reloaded.OnSuccess != nil {
+		r.config.OnSuccess = *reloaded.OnSuccess
+		changed = true
+	}
+
+	if !r.config.RemoveOrphansFromEnv && reloaded.RemoveOrphans != nil {
+		r.config.RemoveOrphans = *reloaded.RemoveOrphans
+		r.deploy.RemoveOrphans = *reloaded.RemoveOrphans
+		changed = true
+	}
+
 	if changed {
 		logger.Info().
 			Int("hooks", len(r.config.PostSyncHooks)).
 			Dur("settle_delay", r.config.HookSettleDelay).
 			Int("deploy_paths", len(r.config.DeployPaths)).
+			Bool("on_failure", r.config.OnFailure).
+			Bool("on_success", r.config.OnSuccess).
+			Bool("remove_orphans", r.config.RemoveOrphans).
 			Msg("Reloaded project config from repo")
 	}
 }
@@ -926,18 +1024,7 @@ func (r *Reconciler) isLocalMode() bool {
 
 // getTargetHost returns the target host for remote deployment.
 func (r *Reconciler) getTargetHost(secrets map[string]any) string {
-	if r.config.TargetHost != "" {
-		return r.config.TargetHost
-	}
-
-	// Try to get from secrets.
-	if network, ok := secrets["network"].(map[string]any); ok {
-		if ip, ok := network["unraid_ip"].(string); ok {
-			return "root@" + ip
-		}
-	}
-
-	return ""
+	return resolveTargetHost(r.config.TargetHost, secrets)
 }
 
 // deployLocal performs local deployment via mounted paths.
@@ -1002,14 +1089,16 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 			ui.Warning("No compose files found in %s", composeDir)
 		} else {
 			if err := r.deploy.ComposeUpMultipleWithRollback(ctx, composeFiles, r.lastBackupPath); err != nil {
-				// Check if rollback succeeded or failed
-				if errors.Is(err, ErrRollbackFailed) {
+				// Unhealthy containers are warnings, not failures.
+				if errors.Is(err, ErrComposeUnhealthy) {
+					ui.Warning("Some containers are unhealthy: %v", err)
+				} else if errors.Is(err, ErrRollbackFailed) {
 					return nil, fmt.Errorf("CRITICAL: service reload and rollback both failed: %w", err)
 				} else if errors.Is(err, ErrRollbackSucceeded) {
 					return nil, fmt.Errorf("service reload failed but rollback succeeded: %w", err)
+				} else {
+					return nil, fmt.Errorf("service reload failed: %w", err)
 				}
-				// Other errors (no backup available, etc.)
-				return nil, fmt.Errorf("service reload failed: %w", err)
 			}
 		}
 		if err := r.deploy.SignalContainer(ctx, "agentgateway", "SIGHUP"); err != nil {

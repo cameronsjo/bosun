@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -55,12 +56,16 @@ type Config struct {
 	APITimeout       time.Duration // Timeout for API handler requests (default: 30s)
 
 	// Drift check settings
-	DriftInterval      time.Duration // Interval for periodic drift checks (0 disables, default: 5m)
-	DriftAlertCooldown time.Duration // Cooldown between repeated drift alerts per item (default: 1h)
-	DriftResolveAlerts bool          // Send "drift resolved" alerts (default: true)
+	DriftInterval       time.Duration // Interval for periodic drift checks (0 disables, default: 5m)
+	DriftAlertCooldown  time.Duration // Cooldown between repeated drift alerts per item (default: 1h)
+	DriftAlertDebounce  time.Duration // Debounce window before first drift alert fires (0 = disabled, default: 0)
+	DriftResolveAlerts  bool          // Send "drift resolved" alerts (default: true)
 
 	// Content-hash sync settings
 	ContentHashSync bool // Compare file hashes before writing (default: true)
+
+	// Orphan container cleanup settings
+	RemoveOrphans bool // Pass --remove-orphans to docker compose up (default: true)
 
 	// Alerting
 	AlertManager *alert.Manager
@@ -89,6 +94,7 @@ func DefaultConfig() *Config {
 		DriftAlertCooldown: time.Hour,
 		DriftResolveAlerts: true,
 		ContentHashSync:    true,
+		RemoveOrphans:      true,
 	}
 }
 
@@ -103,9 +109,11 @@ type Daemon struct {
 	httpServer    *Server       // HTTP server for webhooks (optional)
 	reconciler    *reconcile.Reconciler
 	alerter       *alert.Manager
+	metrics       *Metrics       // Prometheus metrics (nil when HTTP is disabled)
 	dockerOnce    sync.Once      // Lazily initialize Docker client
 	dockerClient  *docker.Client // Shared Docker client for API handlers
 	dockerErr     error          // Error from Docker client initialization
+	dockerClientOverride *docker.Client // Test injection point: bypasses sync.Once
 	ready         bool
 	readyMu       sync.RWMutex
 	stopLoops      chan struct{}
@@ -174,6 +182,7 @@ func New(cfg *Config) (*Daemon, error) {
 	// Create HTTP server for webhooks (optional, for backwards compat)
 	if cfg.EnableHTTP {
 		d.httpServer = NewServer(d)
+		d.metrics = d.httpServer.metrics
 	}
 
 	// Create TCP server for remote access (optional)
@@ -411,6 +420,9 @@ func (d *Daemon) shutdown() error {
 
 // DockerClient returns the shared Docker client, creating it on first use.
 func (d *Daemon) DockerClient() (*docker.Client, error) {
+	if d.dockerClientOverride != nil {
+		return d.dockerClientOverride, nil
+	}
 	d.dockerOnce.Do(func() {
 		d.dockerClient, d.dockerErr = docker.NewClient()
 	})
@@ -527,7 +539,13 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 	// Finish the Sentry transaction with the result status.
 	finishTx(err)
 
+	durationSec := time.Since(start).Seconds()
+
 	if err != nil {
+		if d.metrics != nil {
+			d.metrics.RecordReconcileFailure(durationSec)
+		}
+
 		logger.Error().
 			Str(log.FieldSource, source).
 			Int64(log.FieldDurationMS, durationMS).
@@ -536,6 +554,11 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 
 		ui.Error("Reconciliation failed after %s: %v", time.Since(start), err)
 		return err
+	}
+
+	if d.metrics != nil {
+		d.metrics.RecordReconcileSuccess(durationSec)
+		d.metrics.SetLastReconcileTime(float64(d.lastReconcile.Unix()))
 	}
 
 	logger.Info().
@@ -644,6 +667,15 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	state.DriftCheckedAt = report.CheckedAt
 	state.DriftItems = report.Items
 
+	// Initialize debounce map for FilterDebounced mutation.
+	if state.DriftDebounceItems == nil {
+		state.DriftDebounceItems = make(map[string]time.Time)
+	}
+
+	if d.metrics != nil {
+		d.metrics.RecordDriftCheck(report.HasDrift())
+	}
+
 	if report.HasDrift() {
 		logger.Warn().
 			Int("drift_items", len(report.Items)).
@@ -651,12 +683,49 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 			Msg("Drift detected during periodic check")
 
 		// Deduplicated alerting for critical drift (missing/unhealthy).
-		if report.HasCriticalDrift() && d.alerter != nil {
+		// Always run cleanup when alerting is enabled so resolved items are cleared
+		// even if only non-critical drift remains.
+		if d.alerter != nil {
 			// Filter to critical items only.
 			var criticalItems []reconcile.DriftItem
 			for _, item := range report.Items {
 				if item.Type == reconcile.DriftMissing || item.Type == reconcile.DriftUnhealthy {
 					criticalItems = append(criticalItems, item)
+				}
+			}
+
+			// Debounce layer: filter items that haven't persisted past the debounce window.
+			// Only debounce items not yet in the dedup/cooldown layer. Once an item
+			// has alerted, keep it flowing through ShouldAlertDrift directly.
+			var pendingItems []reconcile.DriftItem
+			var alreadyAlerted []reconcile.DriftItem
+			for _, item := range criticalItems {
+				if _, alerted := state.DriftAlertedItems[reconcile.DriftAlertKey(item)]; alerted {
+					alreadyAlerted = append(alreadyAlerted, item)
+				} else {
+					pendingItems = append(pendingItems, item)
+				}
+			}
+
+			// FilterDebounced mutates state.DriftDebounceItems in place (adds new, removes graduated/resolved).
+			preDebounceCount := len(pendingItems)
+			pendingItems = reconcile.FilterDebounced(pendingItems, state.DriftDebounceItems, d.config.DriftAlertDebounce)
+			criticalItems = append(alreadyAlerted, pendingItems...)
+
+			filteredCount := preDebounceCount - len(pendingItems)
+			if filteredCount > 0 {
+				logger.Debug().
+					Int("filtered", filteredCount).
+					Int("debounce_pending", len(state.DriftDebounceItems)).
+					Dur("debounce_window", d.config.DriftAlertDebounce).
+					Msg("Drift items filtered by debounce window")
+			}
+			if len(pendingItems) > 0 && d.config.DriftAlertDebounce > 0 {
+				for _, item := range pendingItems {
+					logger.Info().
+						Str("item", reconcile.DriftAlertKey(item)).
+						Dur("debounce_window", d.config.DriftAlertDebounce).
+						Msg("Drift item graduated from debounce to dedup layer")
 				}
 			}
 
@@ -680,15 +749,38 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 				state.DriftAlertedAt = now
 			}
 
+			// Resolution alerts: only fire for items that were previously alerted.
+			// Skip items still in debounce (never alerted).
 			if len(resolvedKeys) > 0 && d.config.DriftResolveAlerts {
-				d.sendDriftResolvedAlert(ctx, resolvedKeys)
+				var actuallyResolved []string
 				for _, key := range resolvedKeys {
-					delete(state.DriftAlertedItems, key)
+					if _, inDebounce := state.DriftDebounceItems[key]; inDebounce {
+						// Item resolved while still in debounce — no alert was ever sent.
+						logger.Debug().
+							Str("item", key).
+							Msg("Drift item resolved before debounce window expired, no resolution alert")
+						delete(state.DriftDebounceItems, key)
+						continue
+					}
+					actuallyResolved = append(actuallyResolved, key)
+				}
+				if len(actuallyResolved) > 0 {
+					d.sendDriftResolvedAlert(ctx, actuallyResolved)
+					for _, key := range actuallyResolved {
+						delete(state.DriftAlertedItems, key)
+					}
 				}
 			}
 		}
 	} else {
-		// No drift — check if we need to send resolution alerts.
+		// No drift — clean up debounce items and check if we need to send resolution alerts.
+		if len(state.DriftDebounceItems) > 0 {
+			logger.Debug().
+				Int("cleared", len(state.DriftDebounceItems)).
+				Msg("Drift resolved: clearing debounce items")
+			state.DriftDebounceItems = nil
+		}
+
 		if previouslyDrifted {
 			logger.Info().Msg("Drift resolved: all declared services now match actual state")
 		} else {
@@ -705,9 +797,63 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 		}
 	}
 
+	// Clean up empty debounce map for omitempty serialization.
+	if len(state.DriftDebounceItems) == 0 {
+		state.DriftDebounceItems = nil
+	}
+
+	// Restart circuit breaker: detect containers in restart loops and stop them.
+	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.RestartBreakerEnabled {
+		d.runRestartBreaker(checkCtx, client, state, projectName)
+	}
+
+	// Clean up empty restart tracking for omitempty serialization.
+	if len(state.RestartTracking) == 0 {
+		state.RestartTracking = nil
+	}
+
 	// Persist state with drift results and alert timestamps.
 	if err := reconcile.SaveState(stateFile, state); err != nil {
 		logger.Warn().Err(err).Msg("Drift check: failed to save state")
+	}
+}
+
+// runRestartBreaker checks running containers for restart loops and stops offenders.
+func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, state *reconcile.DeployState, projectName string) {
+	logger := log.Component(log.ComponentDaemon)
+	rcfg := d.config.ReconcileConfig
+
+	actual, err := reconcile.CollectActualState(ctx, client, projectName)
+	if err != nil {
+		logger.Warn().Err(err).Msg("Restart breaker: failed to collect container state")
+		return
+	}
+
+	result, err := reconcile.RunRestartBreaker(
+		ctx, client, actual, state,
+		rcfg.RestartThreshold, rcfg.RestartWindow,
+	)
+	if err != nil {
+		logger.Warn().Err(err).Msg("Restart breaker: action failed")
+	}
+
+	// Update state with new tracking data.
+	state.RestartTracking = result.Updated
+
+	// Alert on tripped containers.
+	if len(result.Tripped) > 0 && d.alerter != nil {
+		target := projectName
+		if err := d.alerter.SendRestartBreakerTripped(ctx, target, result.Tripped); err != nil {
+			logger.Warn().Err(err).Msg("Failed to send restart breaker alert")
+		}
+	}
+
+	// Alert on resolved containers.
+	if len(result.Resolved) > 0 && d.alerter != nil {
+		target := projectName
+		if err := d.alerter.SendRestartBreakerResolved(ctx, target, result.Resolved); err != nil {
+			logger.Warn().Err(err).Msg("Failed to send restart breaker resolved alert")
+		}
 	}
 }
 
@@ -754,11 +900,14 @@ func (d *Daemon) IsReady() bool {
 	return d.ready
 }
 
-// setReady sets the readiness state.
+// setReady sets the readiness state and updates the Prometheus gauge.
 func (d *Daemon) setReady(ready bool) {
 	d.readyMu.Lock()
 	defer d.readyMu.Unlock()
 	d.ready = ready
+	if d.metrics != nil {
+		d.metrics.SetReady(ready)
+	}
 }
 
 // LastReconcile returns the time of the last reconciliation and any error.
@@ -943,6 +1092,68 @@ func ConfigFromEnv() *Config {
 
 	cfg.ReconcileConfig = rcfg
 
+	// Compose up timeout override
+	if v := os.Getenv("BOSUN_COMPOSE_UP_TIMEOUT"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_COMPOSE_UP_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
+			} else {
+				rcfg.ComposeUpTimeout = d
+			}
+		} else {
+			log.Warn().Str("env", "BOSUN_COMPOSE_UP_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
+	if v := os.Getenv("BOSUN_HEALTH_CHECK_TIMEOUT"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			if d < 0 {
+				log.Warn().Str("env", "BOSUN_HEALTH_CHECK_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must not be negative")
+			} else {
+				rcfg.HealthCheckTimeout = d
+			}
+		} else {
+			log.Warn().Str("env", "BOSUN_HEALTH_CHECK_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
+	if v := os.Getenv("BOSUN_HEALTH_CHECK_INTERVAL"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_HEALTH_CHECK_INTERVAL").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
+			} else {
+				rcfg.HealthCheckInterval = d
+			}
+		} else {
+			log.Warn().Str("env", "BOSUN_HEALTH_CHECK_INTERVAL").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
+
+	// Restart circuit breaker configuration
+	if v := os.Getenv("BOSUN_RESTART_BREAKER"); v != "" {
+		rcfg.RestartBreakerEnabled = v != "false" && v != "0"
+	}
+	if v := os.Getenv("BOSUN_RESTART_THRESHOLD"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				log.Warn().Str("env", "BOSUN_RESTART_THRESHOLD").Str("value", v).Msg("Skipping env var. Reason: threshold must be positive")
+			} else {
+				rcfg.RestartThreshold = n
+			}
+		} else {
+			log.Warn().Str("env", "BOSUN_RESTART_THRESHOLD").Str("value", v).Msg("Skipping env var. Reason: invalid integer")
+		}
+	}
+	if v := os.Getenv("BOSUN_RESTART_WINDOW"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_RESTART_WINDOW").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
+			} else {
+				rcfg.RestartWindow = d
+			}
+		} else {
+			log.Warn().Str("env", "BOSUN_RESTART_WINDOW").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
+
 	// Timeout overrides
 	if v := os.Getenv("BOSUN_RECONCILE_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
@@ -975,6 +1186,21 @@ func ConfigFromEnv() *Config {
 		}
 	}
 
+	// Drift alert debounce (0 = disabled)
+	var driftAlertDebounceFromEnv bool
+	if v := os.Getenv("BOSUN_DRIFT_ALERT_DEBOUNCE"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			if d < 0 {
+				log.Warn().Str("env", "BOSUN_DRIFT_ALERT_DEBOUNCE").Str("value", v).Msg("Skipping env var. Reason: duration must not be negative")
+			} else {
+				cfg.DriftAlertDebounce = d
+				driftAlertDebounceFromEnv = true
+			}
+		} else {
+			log.Warn().Str("env", "BOSUN_DRIFT_ALERT_DEBOUNCE").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
+
 	// Drift alert deduplication
 	if v := os.Getenv("BOSUN_DRIFT_ALERT_COOLDOWN"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
@@ -993,12 +1219,38 @@ func ConfigFromEnv() *Config {
 	}
 	rcfg.ContentHashSync = cfg.ContentHashSync
 
-	// Post-sync hooks, settle delay, and deploy paths: load from project config, env var overrides.
+	// Orphan container cleanup (default: true)
+	removeOrphansFromEnv := false
+	if v := os.Getenv("BOSUN_REMOVE_ORPHANS"); v != "" {
+		cfg.RemoveOrphans = v != "false" && v != "0"
+		removeOrphansFromEnv = true
+	}
+	rcfg.RemoveOrphans = cfg.RemoveOrphans
+
+	// Post-sync hooks, settle delay, deploy paths, alert flags, drift debounce, and remove_orphans: load from project config, env var overrides.
 	if projectCfg, err := config.Load(); err == nil {
 		rcfg.PostSyncHooks = projectCfg.PostSyncHooks()
 		rcfg.HookSettleDelay = projectCfg.HookSettleDelay()
 		rcfg.DeployPaths = projectCfg.DeployPaths()
+
+		alertCfg := projectCfg.GetAlertConfig()
+		rcfg.OnFailure = alertCfg.OnFailure
+		rcfg.OnSuccess = alertCfg.OnSuccess
+
+		// Config file debounce value: env var takes precedence (already parsed above).
+		if !driftAlertDebounceFromEnv && projectCfg.DriftAlertDebounce() > 0 {
+			cfg.DriftAlertDebounce = projectCfg.DriftAlertDebounce()
+		}
+
+		// Load remove_orphans from project config; env var (parsed above) takes precedence.
+		if os.Getenv("BOSUN_REMOVE_ORPHANS") == "" {
+			cfg.RemoveOrphans = projectCfg.RemoveOrphans()
+			rcfg.RemoveOrphans = cfg.RemoveOrphans
+		}
 	}
+
+	// Set env-override flags so the reconciler preserves env var precedence on reload.
+	rcfg.RemoveOrphansFromEnv = removeOrphansFromEnv
 
 	// Wire config reloader so the reconciler can re-read bosun.yaml from the repo.
 	rcfg.ConfigReloader = func(dir string) (*reconcile.ReloadedConfig, error) {
@@ -1006,10 +1258,15 @@ func ConfigFromEnv() *Config {
 		if err != nil {
 			return nil, err
 		}
+		alertCfg := cfg.GetAlertConfig()
+		removeOrphans := cfg.RemoveOrphans()
 		return &reconcile.ReloadedConfig{
 			PostSyncHooks:   cfg.PostSyncHooks(),
 			HookSettleDelay: cfg.HookSettleDelay(),
 			DeployPaths:     cfg.DeployPaths(),
+			OnFailure:       &alertCfg.OnFailure,
+			OnSuccess:       &alertCfg.OnSuccess,
+			RemoveOrphans:   &removeOrphans,
 		}, nil
 	}
 	if v := os.Getenv("BOSUN_POST_SYNC_HOOKS"); v != "" {

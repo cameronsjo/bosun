@@ -272,3 +272,86 @@ func TestInitCmd_DirectoryStructure(t *testing.T) {
 		}
 	})
 }
+
+func TestGenerateSystemdUnits(t *testing.T) {
+	t.Run("creates all systemd files", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		err := generateSystemdUnits(tmpDir)
+		require.NoError(t, err)
+
+		systemdDir := filepath.Join(tmpDir, "systemd")
+		assert.DirExists(t, systemdDir)
+		assert.FileExists(t, filepath.Join(systemdDir, "bosund.service"))
+		assert.FileExists(t, filepath.Join(systemdDir, "bosund.socket"))
+		assert.FileExists(t, filepath.Join(systemdDir, "bosund.env.example"))
+		assert.FileExists(t, filepath.Join(systemdDir, "install.sh"))
+	})
+
+	t.Run("service file has correct content", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, generateSystemdUnits(tmpDir))
+
+		data, err := os.ReadFile(filepath.Join(tmpDir, "systemd", "bosund.service"))
+		require.NoError(t, err)
+		content := string(data)
+		assert.Contains(t, content, "[Unit]")
+		assert.Contains(t, content, "bosun daemon")
+		assert.Contains(t, content, "[Service]")
+		assert.Contains(t, content, "[Install]")
+	})
+
+	t.Run("socket file has correct content", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, generateSystemdUnits(tmpDir))
+
+		data, err := os.ReadFile(filepath.Join(tmpDir, "systemd", "bosund.socket"))
+		require.NoError(t, err)
+		content := string(data)
+		assert.Contains(t, content, "[Socket]")
+		assert.Contains(t, content, "bosun.sock")
+	})
+
+	t.Run("install script is executable", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, generateSystemdUnits(tmpDir))
+
+		info, err := os.Stat(filepath.Join(tmpDir, "systemd", "install.sh"))
+		require.NoError(t, err)
+		assert.NotZero(t, info.Mode()&0111, "install script should be executable")
+	})
+
+	t.Run("does not overwrite existing files", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		systemdDir := filepath.Join(tmpDir, "systemd")
+		require.NoError(t, os.MkdirAll(systemdDir, 0755))
+
+		originalContent := "original service content"
+		require.NoError(t, os.WriteFile(filepath.Join(systemdDir, "bosund.service"), []byte(originalContent), 0644))
+
+		require.NoError(t, generateSystemdUnits(tmpDir))
+
+		data, err := os.ReadFile(filepath.Join(systemdDir, "bosund.service"))
+		require.NoError(t, err)
+		assert.Equal(t, originalContent, string(data))
+	})
+}
+
+func TestSystemdTemplateConstants(t *testing.T) {
+	t.Run("service unit template", func(t *testing.T) {
+		assert.Contains(t, systemdServiceUnit, "bosun daemon")
+		assert.Contains(t, systemdServiceUnit, "Restart=on-failure")
+	})
+
+	t.Run("socket unit template", func(t *testing.T) {
+		assert.Contains(t, systemdSocketUnit, "bosun.sock")
+		assert.Contains(t, systemdSocketUnit, "[Socket]")
+	})
+
+	t.Run("env file template", func(t *testing.T) {
+		assert.Contains(t, systemdEnvFile, "BOSUN_REPO_URL")
+	})
+
+	t.Run("install script template", func(t *testing.T) {
+		assert.Contains(t, systemdInstallScript, "systemctl")
+	})
+}

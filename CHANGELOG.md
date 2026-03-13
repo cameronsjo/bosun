@@ -5,6 +5,87 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0](https://github.com/cameronsjo/bosun/compare/v0.20.0...v0.21.0) (2026-03-13)
+
+
+### Features
+
+* **daemon:** replace hand-rolled metrics with Prometheus ([2cfcf14](https://github.com/cameronsjo/bosun/commit/2cfcf14efb048b826b7474f2009635c9f21f45f8))
+
+
+### Bug Fixes
+
+* **reconcile:** address CodeRabbit findings on atomic deploy ([c8c8e05](https://github.com/cameronsjo/bosun/commit/c8c8e05d570c403c2a8e7f3267b1f5384aac6f64))
+* **reconcile:** use atomic rename-aside pattern in DeployLocal ([ebc918c](https://github.com/cameronsjo/bosun/commit/ebc918cfdbb42cb4ea1751649bdec6dde5b56c29))
+
+## [0.20.0](https://github.com/cameronsjo/bosun/compare/v0.19.0...v0.20.0) (2026-03-13)
+
+
+### Features
+
+* **reconcile:** add restart circuit breaker ([b959fc3](https://github.com/cameronsjo/bosun/commit/b959fc30cc2a748be34c8df3904aac4ddc0db7ae))
+* **reconcile:** add restart circuit breaker to detect crash-looping containers ([36d3ac4](https://github.com/cameronsjo/bosun/commit/36d3ac4ae302a04f30bd5b669ac83258f7874efd))
+
+
+### Bug Fixes
+
+* **reconcile:** address CodeRabbit review findings for restart breaker ([9321408](https://github.com/cameronsjo/bosun/commit/93214081eb2d8b736751f1ea8b99f70cfafce9c1))
+
+## [0.19.0](https://github.com/cameronsjo/bosun/compare/v0.18.1...v0.19.0) (2026-03-13)
+
+
+### Features
+
+* **reconcile:** add post-deploy health verification with polling ([16a434f](https://github.com/cameronsjo/bosun/commit/16a434f2d6f50918424c3a4cd4d111df1888c5d3))
+
+
+### Bug Fixes
+
+* **daemon:** validate non-positive duration env vars for timeouts ([f288e76](https://github.com/cameronsjo/bosun/commit/f288e76a058536a4191f3d64324f336ff6932070))
+* **reconcile:** make compose up timeout configurable via BOSUN_COMPOSE_UP_TIMEOUT ([b3e0b8a](https://github.com/cameronsjo/bosun/commit/b3e0b8a7906efe4e7b00aa7b875c1be3ef5d652f)), closes [#83](https://github.com/cameronsjo/bosun/issues/83)
+
+## [0.18.1](https://github.com/cameronsjo/bosun/compare/v0.18.0...v0.18.1) (2026-03-08)
+
+
+### Bug Fixes
+
+* **reconcile:** alert on all pipeline failure stages with on_failure/on_success gates ([#95](https://github.com/cameronsjo/bosun/issues/95)) ([3974504](https://github.com/cameronsjo/bosun/commit/39745046a602aa2a6fc9c2b1cc70c32d4bf01483))
+
+## [0.18.0](https://github.com/cameronsjo/bosun/compare/v0.17.0...v0.18.0) (2026-03-08)
+
+
+### Features
+
+* **alert:** add drift alert debounce to suppress transient flaps ([#94](https://github.com/cameronsjo/bosun/issues/94)) ([8dc2d9b](https://github.com/cameronsjo/bosun/commit/8dc2d9b85850eb279d7381bcd339a80b5e42a0f4))
+
+
+### Bug Fixes
+
+* **reconcile:** classify compose failures to tolerate unhealthy containers ([#92](https://github.com/cameronsjo/bosun/issues/92)) ([d73332e](https://github.com/cameronsjo/bosun/commit/d73332edceae9141ae257f5fcd2e4018f0062c34))
+
+## [0.17.0](https://github.com/cameronsjo/bosun/compare/v0.16.2...v0.17.0) (2026-03-07)
+
+
+### Features
+
+* **config:** add configurable orphan container cleanup ([#93](https://github.com/cameronsjo/bosun/issues/93)) ([aa90339](https://github.com/cameronsjo/bosun/commit/aa903397397a08c75a004f19b564f14646e3b478))
+
+## [0.16.2](https://github.com/cameronsjo/bosun/compare/v0.16.1...v0.16.2) (2026-03-07)
+
+
+### Bug Fixes
+
+* **deps:** bump go.opentelemetry.io/otel/sdk to v1.40.0 ([#103](https://github.com/cameronsjo/bosun/issues/103)) ([d5bb4a0](https://github.com/cameronsjo/bosun/commit/d5bb4a05fef822c6ff33e368099a44bc7d5bd83d))
+
+## [0.16.1](https://github.com/cameronsjo/bosun/compare/v0.16.0...v0.16.1) (2026-03-02)
+
+
+### Bug Fixes
+
+* address CodeRabbit review and CI lint failures ([774f98b](https://github.com/cameronsjo/bosun/commit/774f98bc4032225d35ae43db6dea21cd0d5618fc))
+* address CodeRabbit review round 8 findings ([f1984fe](https://github.com/cameronsjo/bosun/commit/f1984fedb9177cbf76eca9aa306203bc831dd5b4))
+* **alert:** wire httptest server in severity skip test and move assertions out of handler goroutine ([fd38c96](https://github.com/cameronsjo/bosun/commit/fd38c9602259ba5e9a0336835ea0b1e7becf8ad2))
+
 ## [0.16.0](https://github.com/cameronsjo/bosun/compare/v0.15.1...v0.16.0) (2026-02-28)
 
 

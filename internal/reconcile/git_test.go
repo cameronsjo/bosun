@@ -245,6 +245,119 @@ func TestGitOps_IsDirty(t *testing.T) {
 	})
 }
 
+func TestGitOps_IsDirtyErrors(t *testing.T) {
+	t.Run("not a repo returns error", func(t *testing.T) {
+		gitOps := NewGitOps("", "", t.TempDir())
+		_, err := gitOps.IsDirty(context.Background())
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to open repository")
+	})
+
+	t.Run("cancelled context returns error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		repo, err := git.PlainInit(tmpDir, false)
+		require.NoError(t, err)
+
+		testFile := filepath.Join(tmpDir, "test.txt")
+		require.NoError(t, os.WriteFile(testFile, []byte("test"), 0644))
+
+		wt, err := repo.Worktree()
+		require.NoError(t, err)
+		_, err = wt.Add("test.txt")
+		require.NoError(t, err)
+		_, err = wt.Commit("init", &git.CommitOptions{
+			Author: &object.Signature{Name: "Test", Email: "t@t.com", When: time.Now()},
+		})
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		gitOps := NewGitOps("", "", tmpDir)
+		_, err = gitOps.IsDirty(ctx)
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+}
+
+func TestGitOps_GetLatestCommitErrors(t *testing.T) {
+	t.Run("not a repo", func(t *testing.T) {
+		gitOps := NewGitOps("", "", t.TempDir())
+		_, err := gitOps.GetLatestCommit(context.Background())
+		assert.Error(t, err)
+	})
+
+	t.Run("cancelled context", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		repo, err := git.PlainInit(tmpDir, false)
+		require.NoError(t, err)
+
+		testFile := filepath.Join(tmpDir, "test.txt")
+		require.NoError(t, os.WriteFile(testFile, []byte("test"), 0644))
+
+		wt, err := repo.Worktree()
+		require.NoError(t, err)
+		_, err = wt.Add("test.txt")
+		require.NoError(t, err)
+		_, err = wt.Commit("init", &git.CommitOptions{
+			Author: &object.Signature{Name: "Test", Email: "t@t.com", When: time.Now()},
+		})
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		gitOps := NewGitOps("", "", tmpDir)
+		_, err = gitOps.GetLatestCommit(ctx)
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+}
+
+func TestGitOps_GetCommitMessageErrors(t *testing.T) {
+	t.Run("not a repo", func(t *testing.T) {
+		gitOps := NewGitOps("", "", t.TempDir())
+		_, err := gitOps.GetCommitMessage(context.Background())
+		assert.Error(t, err)
+	})
+
+	t.Run("cancelled context", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		repo, err := git.PlainInit(tmpDir, false)
+		require.NoError(t, err)
+
+		testFile := filepath.Join(tmpDir, "test.txt")
+		require.NoError(t, os.WriteFile(testFile, []byte("test"), 0644))
+
+		wt, err := repo.Worktree()
+		require.NoError(t, err)
+		_, err = wt.Add("test.txt")
+		require.NoError(t, err)
+		_, err = wt.Commit("init", &git.CommitOptions{
+			Author: &object.Signature{Name: "Test", Email: "t@t.com", When: time.Now()},
+		})
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		gitOps := NewGitOps("", "", tmpDir)
+		_, err = gitOps.GetCommitMessage(ctx)
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("no commits", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		_, err := git.PlainInit(tmpDir, false)
+		require.NoError(t, err)
+
+		gitOps := NewGitOps("", "", tmpDir)
+		_, err = gitOps.GetCommitMessage(context.Background())
+		assert.Error(t, err)
+	})
+}
+
 func TestGitOps_Sync(t *testing.T) {
 	t.Run("sync clones when repo doesn't exist", func(t *testing.T) {
 		// Create source repo with a commit
@@ -388,5 +501,273 @@ func TestGitOps_Pull(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, changed)
 		assert.NotEqual(t, before, after)
+	})
+}
+
+// testRepoWithCommits creates a temp git repo with the given files committed.
+// Returns the repo directory and the commit hash.
+func testRepoWithCommits(t *testing.T, files map[string]string) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+
+	repo, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
+
+	for name, content := range files {
+		fullPath := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0755))
+		require.NoError(t, os.WriteFile(fullPath, []byte(content), 0644))
+		_, err = wt.Add(name)
+		require.NoError(t, err)
+	}
+
+	hash, err := wt.Commit("initial commit", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test",
+			Email: "test@test.com",
+			When:  time.Now(),
+		},
+	})
+	require.NoError(t, err)
+
+	return dir, hash.String()
+}
+
+func TestGitOps_DiffFiles(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("diff between two commits with changed files", func(t *testing.T) {
+		// Create initial commit
+		dir, commit1 := testRepoWithCommits(t, map[string]string{
+			"file1.txt": "original",
+			"file2.txt": "content",
+		})
+
+		// Open repo and make a second commit
+		repo, err := git.PlainOpen(dir)
+		require.NoError(t, err)
+		wt, err := repo.Worktree()
+		require.NoError(t, err)
+
+		// Modify file1 and add file3
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "file1.txt"), []byte("modified"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "file3.txt"), []byte("new file"), 0644))
+		_, err = wt.Add("file1.txt")
+		require.NoError(t, err)
+		_, err = wt.Add("file3.txt")
+		require.NoError(t, err)
+
+		hash2, err := wt.Commit("second commit", &git.CommitOptions{
+			Author: &object.Signature{
+				Name:  "Test",
+				Email: "test@test.com",
+				When:  time.Now(),
+			},
+		})
+		require.NoError(t, err)
+		commit2 := hash2.String()
+
+		gitOps := NewGitOps("", "", dir)
+		files, err := gitOps.DiffFiles(ctx, commit1, commit2)
+		require.NoError(t, err)
+		assert.Len(t, files, 2)
+		assert.Contains(t, files, "file1.txt")
+		assert.Contains(t, files, "file3.txt")
+	})
+
+	t.Run("diff with empty fromCommit returns all files in toCommit", func(t *testing.T) {
+		dir, commitHash := testRepoWithCommits(t, map[string]string{
+			"a.txt":     "aaa",
+			"b.txt":     "bbb",
+			"dir/c.txt": "ccc",
+		})
+
+		gitOps := NewGitOps("", "", dir)
+		files, err := gitOps.DiffFiles(ctx, "", commitHash)
+		require.NoError(t, err)
+		assert.Len(t, files, 3)
+		assert.Contains(t, files, "a.txt")
+		assert.Contains(t, files, "b.txt")
+		assert.Contains(t, files, "dir/c.txt")
+	})
+
+	t.Run("diff with deleted file uses From name", func(t *testing.T) {
+		dir, commit1 := testRepoWithCommits(t, map[string]string{
+			"keep.txt":   "staying",
+			"delete.txt": "going away",
+		})
+
+		repo, err := git.PlainOpen(dir)
+		require.NoError(t, err)
+		wt, err := repo.Worktree()
+		require.NoError(t, err)
+
+		// Delete a file
+		require.NoError(t, os.Remove(filepath.Join(dir, "delete.txt")))
+		_, err = wt.Remove("delete.txt")
+		require.NoError(t, err)
+
+		hash2, err := wt.Commit("delete file", &git.CommitOptions{
+			Author: &object.Signature{
+				Name:  "Test",
+				Email: "test@test.com",
+				When:  time.Now(),
+			},
+		})
+		require.NoError(t, err)
+
+		gitOps := NewGitOps("", "", dir)
+		files, err := gitOps.DiffFiles(ctx, commit1, hash2.String())
+		require.NoError(t, err)
+		assert.Contains(t, files, "delete.txt")
+	})
+
+	t.Run("diff with no changes returns empty", func(t *testing.T) {
+		dir, commitHash := testRepoWithCommits(t, map[string]string{
+			"file.txt": "content",
+		})
+
+		gitOps := NewGitOps("", "", dir)
+		files, err := gitOps.DiffFiles(ctx, commitHash, commitHash)
+		require.NoError(t, err)
+		assert.Empty(t, files)
+	})
+
+	t.Run("invalid toCommit returns error", func(t *testing.T) {
+		dir, _ := testRepoWithCommits(t, map[string]string{
+			"file.txt": "content",
+		})
+
+		gitOps := NewGitOps("", "", dir)
+		_, err := gitOps.DiffFiles(ctx, "", "0000000000000000000000000000000000000000")
+		assert.Error(t, err)
+	})
+}
+
+func TestGitOps_RemoteBranchExists(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a source repo with a commit on master
+	sourceDir := t.TempDir()
+	sourceDir, err := filepath.EvalSymlinks(sourceDir)
+	require.NoError(t, err)
+
+	sourceRepo, err := git.PlainInit(sourceDir, false)
+	require.NoError(t, err)
+
+	testFile := filepath.Join(sourceDir, "test.txt")
+	require.NoError(t, os.WriteFile(testFile, []byte("test"), 0644))
+
+	wt, err := sourceRepo.Worktree()
+	require.NoError(t, err)
+	_, err = wt.Add("test.txt")
+	require.NoError(t, err)
+	_, err = wt.Commit("initial", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test",
+			Email: "test@test.com",
+			When:  time.Now(),
+		},
+	})
+	require.NoError(t, err)
+
+	// Clone to target
+	targetDir := filepath.Join(t.TempDir(), "target")
+	_, err = git.PlainClone(targetDir, false, &git.CloneOptions{URL: sourceDir})
+	require.NoError(t, err)
+
+	gitOps := NewGitOps(sourceDir, "master", targetDir)
+
+	t.Run("existing branch returns true", func(t *testing.T) {
+		exists, err := gitOps.RemoteBranchExists(ctx, "master")
+		require.NoError(t, err)
+		assert.True(t, exists)
+	})
+
+	t.Run("non-existent branch returns false with nil error", func(t *testing.T) {
+		exists, err := gitOps.RemoteBranchExists(ctx, "nonexistent-branch")
+		require.NoError(t, err)
+		assert.False(t, exists)
+	})
+
+	t.Run("cancelled context returns error", func(t *testing.T) {
+		cancelledCtx, cancel := context.WithCancel(ctx)
+		cancel()
+
+		_, err := gitOps.RemoteBranchExists(cancelledCtx, "master")
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("invalid repo dir returns error", func(t *testing.T) {
+		badOps := NewGitOps("", "", "/nonexistent/dir")
+		_, err := badOps.RemoteBranchExists(ctx, "master")
+		assert.Error(t, err)
+	})
+}
+
+func TestGitOps_PullErrorPaths(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("pull with invalid branch returns error", func(t *testing.T) {
+		gitOps := NewGitOps("", "", t.TempDir())
+		gitOps.Branch = "--upload-pack=evil" // Starts with '-', rejected by validateBranch
+
+		_, _, _, err := gitOps.Pull(ctx)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid branch")
+	})
+
+	t.Run("pull on non-repo returns error", func(t *testing.T) {
+		gitOps := NewGitOps("", "main", t.TempDir())
+
+		_, _, _, err := gitOps.Pull(ctx)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to get current commit")
+	})
+
+	t.Run("pull with dirty working tree warns and continues", func(t *testing.T) {
+		// Create source repo
+		sourceDir := t.TempDir()
+		sourceDir, err := filepath.EvalSymlinks(sourceDir)
+		require.NoError(t, err)
+
+		sourceRepo, err := git.PlainInit(sourceDir, false)
+		require.NoError(t, err)
+
+		wt, err := sourceRepo.Worktree()
+		require.NoError(t, err)
+
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "test.txt"), []byte("content"), 0644))
+		_, err = wt.Add("test.txt")
+		require.NoError(t, err)
+		_, err = wt.Commit("initial", &git.CommitOptions{
+			Author: &object.Signature{Name: "Test", Email: "t@t.com", When: time.Now()},
+		})
+		require.NoError(t, err)
+
+		// Clone to target
+		targetDir := filepath.Join(t.TempDir(), "target")
+		targetDir, err = filepath.EvalSymlinks(filepath.Dir(targetDir))
+		require.NoError(t, err)
+		targetDir = filepath.Join(targetDir, "target")
+
+		_, err = git.PlainClone(targetDir, false, &git.CloneOptions{URL: sourceDir})
+		require.NoError(t, err)
+
+		// Make target dirty by modifying a tracked file
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "test.txt"), []byte("dirty"), 0644))
+
+		gitOps := NewGitOps(sourceDir, "master", targetDir)
+
+		// Pull should succeed despite dirty working tree (hard reset discards changes)
+		changed, _, _, err := gitOps.Pull(ctx)
+		require.NoError(t, err)
+		assert.False(t, changed)
 	})
 }

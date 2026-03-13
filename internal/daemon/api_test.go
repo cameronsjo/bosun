@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/reconcile"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAPIStatusEndpoint(t *testing.T) {
@@ -224,4 +227,161 @@ func TestAPIContainerUnknownAction(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Errorf("Expected status 404, got %d", w.Code)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// handleAPIDrift handler tests
+// ---------------------------------------------------------------------------
+
+func TestAPIDrift(t *testing.T) {
+	t.Run("no state file returns 503", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tmpDir = evalSymlinks(t, tmpDir)
+
+		// Construct daemon directly — New() backfills ReconcileConfig with defaults
+		// that include a state file path, so we bypass it to test the nil/empty path.
+		d := &Daemon{
+			config: &Config{
+				SocketPath:      filepath.Join(tmpDir, "test.sock"),
+				ReconcileConfig: &reconcile.Config{StateFile: ""},
+			},
+			stopLoops: make(chan struct{}),
+		}
+
+		mux := http.NewServeMux()
+		d.RegisterAPIRoutes(mux)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/drift", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	})
+
+	t.Run("nil reconcile config returns 503", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tmpDir = evalSymlinks(t, tmpDir)
+
+		d := &Daemon{
+			config: &Config{
+				SocketPath:      filepath.Join(tmpDir, "test.sock"),
+				ReconcileConfig: nil,
+			},
+			stopLoops: make(chan struct{}),
+		}
+
+		mux := http.NewServeMux()
+		d.RegisterAPIRoutes(mux)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/drift", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	})
+
+	t.Run("state file with drift items returns 200 with items", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tmpDir = evalSymlinks(t, tmpDir)
+
+		stateFile := filepath.Join(tmpDir, "state.json")
+		checkedAt := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+		state := &reconcile.DeployState{
+			LastDeployedCommit: "abc1234",
+			DriftCheckedAt:     checkedAt,
+			DriftItems: []reconcile.DriftItem{
+				{Service: "api", Type: reconcile.DriftMissing, Declared: "myapp:v1"},
+				{Service: "web", Type: reconcile.DriftUnhealthy},
+			},
+			DeclaredServices: []reconcile.DeclaredService{
+				{Name: "api", Image: "myapp:v1"},
+				{Name: "web", Image: "nginx:latest"},
+			},
+		}
+		require.NoError(t, reconcile.SaveState(stateFile, state))
+
+		cfg := &Config{
+			SocketPath:      filepath.Join(tmpDir, "test.sock"),
+			ReconcileConfig: &reconcile.Config{StateFile: stateFile},
+		}
+
+		d, err := New(cfg)
+		require.NoError(t, err)
+
+		mux := http.NewServeMux()
+		d.RegisterAPIRoutes(mux)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/drift", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var resp APIDriftResponse
+		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+		assert.Equal(t, "drifted", resp.Status)
+		assert.Equal(t, 2, resp.DriftItemCount)
+		assert.Equal(t, 2, resp.DeclaredCount)
+		require.Len(t, resp.Items, 2)
+		assert.Equal(t, "api", resp.Items[0].Service)
+		assert.Equal(t, "missing", resp.Items[0].Type)
+		assert.NotNil(t, resp.CheckedAt)
+	})
+
+	t.Run("clean state returns 200 with clean status", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tmpDir = evalSymlinks(t, tmpDir)
+
+		stateFile := filepath.Join(tmpDir, "state.json")
+		state := &reconcile.DeployState{
+			LastDeployedCommit: "abc1234",
+			DriftItems:         nil, // no drift
+		}
+		require.NoError(t, reconcile.SaveState(stateFile, state))
+
+		cfg := &Config{
+			SocketPath:      filepath.Join(tmpDir, "test.sock"),
+			ReconcileConfig: &reconcile.Config{StateFile: stateFile},
+		}
+
+		d, err := New(cfg)
+		require.NoError(t, err)
+
+		mux := http.NewServeMux()
+		d.RegisterAPIRoutes(mux)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/drift", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var resp APIDriftResponse
+		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+		assert.Equal(t, "clean", resp.Status)
+		assert.Equal(t, 0, resp.DriftItemCount)
+	})
+
+	t.Run("POST returns 405", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tmpDir = evalSymlinks(t, tmpDir)
+
+		stateFile := filepath.Join(tmpDir, "state.json")
+		cfg := &Config{
+			SocketPath:      filepath.Join(tmpDir, "test.sock"),
+			ReconcileConfig: &reconcile.Config{StateFile: stateFile},
+		}
+
+		d, err := New(cfg)
+		require.NoError(t, err)
+
+		mux := http.NewServeMux()
+		d.RegisterAPIRoutes(mux)
+
+		req := httptest.NewRequest(http.MethodPost, "/api/drift", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+	})
 }

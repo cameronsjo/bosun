@@ -2,14 +2,64 @@ package docker
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestHelperProcess is a helper process for mocking exec.Command in tests.
+// It is not a real test -- it is invoked as a subprocess by the mock runner.
+func TestHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
+		return
+	}
+	// Print the configured stdout if any
+	if stdout := os.Getenv("HELPER_STDOUT"); stdout != "" {
+		fmt.Fprint(os.Stdout, stdout)
+	}
+	// Print stderr if configured
+	if stderr := os.Getenv("HELPER_STDERR"); stderr != "" {
+		fmt.Fprint(os.Stderr, stderr)
+	}
+	// Exit with configured code
+	if os.Getenv("HELPER_EXIT_CODE") == "1" {
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+// mockRunner returns a commandRunner that records the args passed and produces
+// a helper subprocess with the given behavior.
+type mockRunnerOpts struct {
+	stdout   string
+	stderr   string
+	exitCode string // "0" or "1"
+}
+
+func newMockRunner(opts mockRunnerOpts, recorded *[][]string) commandRunner {
+	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if recorded != nil {
+			*recorded = append(*recorded, append([]string{name}, args...))
+		}
+		cs := []string{"-test.run=TestHelperProcess", "--"}
+		cs = append(cs, name)
+		cs = append(cs, args...)
+		cmd := exec.CommandContext(ctx, os.Args[0], cs...) //nolint:gosec // test helper only
+		cmd.Env = []string{
+			"GO_WANT_HELPER_PROCESS=1",
+			"HELPER_STDOUT=" + opts.stdout,
+			"HELPER_STDERR=" + opts.stderr,
+			"HELPER_EXIT_CODE=" + opts.exitCode,
+		}
+		return cmd
+	}
+}
 
 func TestNewComposeClient(t *testing.T) {
 	t.Run("valid file", func(t *testing.T) {
@@ -334,4 +384,565 @@ func TestComposeClient_RestartCommandBuilding(t *testing.T) {
 			assert.Equal(t, tt.wantArgs, args)
 		})
 	}
+}
+
+func TestComposeClient_baseArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		file     string
+		project  string
+		wantArgs []string
+	}{
+		{
+			name:     "with project",
+			file:     "/path/to/compose.yml",
+			project:  "myproject",
+			wantArgs: []string{"compose", "-p", "myproject", "-f", "/path/to/compose.yml"},
+		},
+		{
+			name:     "without project",
+			file:     "/path/to/compose.yml",
+			project:  "",
+			wantArgs: []string{"compose", "-f", "/path/to/compose.yml"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &ComposeClient{file: tt.file, project: tt.project}
+			got := c.baseArgs()
+			assert.Equal(t, tt.wantArgs, got)
+		})
+	}
+}
+
+func TestComposeClient_command_defaultsToExecCommandContext(t *testing.T) {
+	c := &ComposeClient{file: "compose.yml", project: "test"}
+	cmd := c.command(context.Background(), "compose", "-f", "compose.yml", "ps")
+	// The command should have "docker" as the path
+	assert.Contains(t, cmd.Path, "docker")
+}
+
+func TestComposeClient_Up_WithMockRunner(t *testing.T) {
+	tests := []struct {
+		name     string
+		file     string
+		project  string
+		services []string
+		opts     mockRunnerOpts
+		wantArgs []string
+		wantErr  bool
+		errMsg   string
+	}{
+		{
+			name:     "success no services",
+			file:     "compose.yml",
+			project:  "proj",
+			services: nil,
+			opts:     mockRunnerOpts{exitCode: "0"},
+			wantArgs: []string{"docker", "compose", "-p", "proj", "-f", "compose.yml", "up", "-d"},
+			wantErr:  false,
+		},
+		{
+			name:     "success with services",
+			file:     "compose.yml",
+			project:  "proj",
+			services: []string{"web", "db"},
+			opts:     mockRunnerOpts{exitCode: "0"},
+			wantArgs: []string{"docker", "compose", "-p", "proj", "-f", "compose.yml", "up", "-d", "web", "db"},
+			wantErr:  false,
+		},
+		{
+			name:     "success no project",
+			file:     "compose.yml",
+			project:  "",
+			services: nil,
+			opts:     mockRunnerOpts{exitCode: "0"},
+			wantArgs: []string{"docker", "compose", "-f", "compose.yml", "up", "-d"},
+			wantErr:  false,
+		},
+		{
+			name:     "failure",
+			file:     "compose.yml",
+			project:  "proj",
+			services: nil,
+			opts:     mockRunnerOpts{exitCode: "1", stderr: "error: something broke"},
+			wantErr:  true,
+			errMsg:   "docker compose up",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var recorded [][]string
+			c := &ComposeClient{
+				file:    tt.file,
+				project: tt.project,
+				runner:  newMockRunner(tt.opts, &recorded),
+			}
+
+			err := c.Up(context.Background(), tt.services...)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
+				require.Len(t, recorded, 1)
+				assert.Equal(t, tt.wantArgs, recorded[0])
+			}
+		})
+	}
+}
+
+func TestComposeClient_Down_WithMockRunner(t *testing.T) {
+	tests := []struct {
+		name     string
+		file     string
+		project  string
+		opts     mockRunnerOpts
+		wantArgs []string
+		wantErr  bool
+		errMsg   string
+	}{
+		{
+			name:     "success with project",
+			file:     "compose.yml",
+			project:  "homelab",
+			opts:     mockRunnerOpts{exitCode: "0"},
+			wantArgs: []string{"docker", "compose", "-p", "homelab", "-f", "compose.yml", "down"},
+			wantErr:  false,
+		},
+		{
+			name:     "success without project",
+			file:     "compose.yml",
+			project:  "",
+			opts:     mockRunnerOpts{exitCode: "0"},
+			wantArgs: []string{"docker", "compose", "-f", "compose.yml", "down"},
+			wantErr:  false,
+		},
+		{
+			name:    "failure",
+			file:    "compose.yml",
+			project: "proj",
+			opts:    mockRunnerOpts{exitCode: "1"},
+			wantErr: true,
+			errMsg:  "docker compose down",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var recorded [][]string
+			c := &ComposeClient{
+				file:    tt.file,
+				project: tt.project,
+				runner:  newMockRunner(tt.opts, &recorded),
+			}
+
+			err := c.Down(context.Background())
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
+				require.Len(t, recorded, 1)
+				assert.Equal(t, tt.wantArgs, recorded[0])
+			}
+		})
+	}
+}
+
+func TestComposeClient_Restart_WithMockRunner(t *testing.T) {
+	tests := []struct {
+		name     string
+		file     string
+		project  string
+		services []string
+		opts     mockRunnerOpts
+		wantArgs []string
+		wantErr  bool
+		errMsg   string
+	}{
+		{
+			name:     "restart all services",
+			file:     "compose.yml",
+			project:  "proj",
+			services: nil,
+			opts:     mockRunnerOpts{exitCode: "0"},
+			wantArgs: []string{"docker", "compose", "-p", "proj", "-f", "compose.yml", "restart"},
+			wantErr:  false,
+		},
+		{
+			name:     "restart specific services",
+			file:     "compose.yml",
+			project:  "proj",
+			services: []string{"traefik", "nginx"},
+			opts:     mockRunnerOpts{exitCode: "0"},
+			wantArgs: []string{"docker", "compose", "-p", "proj", "-f", "compose.yml", "restart", "traefik", "nginx"},
+			wantErr:  false,
+		},
+		{
+			name:     "failure",
+			file:     "compose.yml",
+			project:  "proj",
+			services: []string{"web"},
+			opts:     mockRunnerOpts{exitCode: "1"},
+			wantErr:  true,
+			errMsg:   "docker compose restart",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var recorded [][]string
+			c := &ComposeClient{
+				file:    tt.file,
+				project: tt.project,
+				runner:  newMockRunner(tt.opts, &recorded),
+			}
+
+			err := c.Restart(context.Background(), tt.services...)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
+				require.Len(t, recorded, 1)
+				assert.Equal(t, tt.wantArgs, recorded[0])
+			}
+		})
+	}
+}
+
+func TestComposeClient_Status_WithMockRunner(t *testing.T) {
+	tests := []struct {
+		name         string
+		file         string
+		project      string
+		opts         mockRunnerOpts
+		wantServices []ServiceStatus
+		wantErr      bool
+		errMsg       string
+	}{
+		{
+			name:    "single running service",
+			file:    "compose.yml",
+			project: "proj",
+			opts: mockRunnerOpts{
+				exitCode: "0",
+				stdout:   "web\trunning\tUp 10 minutes\t0.0.0.0:8080->80/tcp",
+			},
+			wantServices: []ServiceStatus{
+				{Name: "web", State: "running", Status: "Up 10 minutes", Ports: "0.0.0.0:8080->80/tcp", Running: true},
+			},
+			wantErr: false,
+		},
+		{
+			name:    "multiple services",
+			file:    "compose.yml",
+			project: "proj",
+			opts: mockRunnerOpts{
+				exitCode: "0",
+				stdout:   "web\trunning\tUp 10 minutes\t8080:80/tcp\ndb\texited\tExited (0)\t",
+			},
+			wantServices: []ServiceStatus{
+				{Name: "web", State: "running", Status: "Up 10 minutes", Ports: "8080:80/tcp", Running: true},
+				{Name: "db", State: "exited", Status: "Exited (0)", Ports: "", Running: false},
+			},
+			wantErr: false,
+		},
+		{
+			name:    "no services running",
+			file:    "compose.yml",
+			project: "proj",
+			opts: mockRunnerOpts{
+				exitCode: "0",
+				stdout:   "",
+			},
+			wantServices: nil,
+			wantErr:      false,
+		},
+		{
+			name:    "service without ports column",
+			file:    "compose.yml",
+			project: "proj",
+			opts: mockRunnerOpts{
+				exitCode: "0",
+				stdout:   "worker\trunning\tUp 5 minutes",
+			},
+			wantServices: []ServiceStatus{
+				{Name: "worker", State: "running", Status: "Up 5 minutes", Running: true},
+			},
+			wantErr: false,
+		},
+		{
+			name:    "incomplete line skipped",
+			file:    "compose.yml",
+			project: "proj",
+			opts: mockRunnerOpts{
+				exitCode: "0",
+				stdout:   "web\trunning",
+			},
+			wantServices: nil,
+			wantErr:      false,
+		},
+		{
+			name:    "command failure",
+			file:    "compose.yml",
+			project: "proj",
+			opts:    mockRunnerOpts{exitCode: "1", stderr: "no such file"},
+			wantErr: true,
+			errMsg:  "docker compose ps",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &ComposeClient{
+				file:    tt.file,
+				project: tt.project,
+				runner:  newMockRunner(tt.opts, nil),
+			}
+
+			services, err := c.Status(context.Background())
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantServices, services)
+			}
+		})
+	}
+}
+
+func TestComposeClient_Ps_WithMockRunner(t *testing.T) {
+	tests := []struct {
+		name         string
+		file         string
+		project      string
+		opts         mockRunnerOpts
+		wantArgs     []string
+		wantContains string
+		wantErr      bool
+		errMsg       string
+	}{
+		{
+			name:         "success",
+			file:         "compose.yml",
+			project:      "proj",
+			opts:         mockRunnerOpts{exitCode: "0", stdout: "NAME   STATUS\nweb    running\n"},
+			wantArgs:     []string{"docker", "compose", "-p", "proj", "-f", "compose.yml", "ps"},
+			wantContains: "NAME   STATUS\nweb    running",
+			wantErr:      false,
+		},
+		{
+			name:         "success no project",
+			file:         "compose.yml",
+			project:      "",
+			opts:         mockRunnerOpts{exitCode: "0", stdout: "NAME   STATUS\n"},
+			wantArgs:     []string{"docker", "compose", "-f", "compose.yml", "ps"},
+			wantContains: "NAME   STATUS",
+			wantErr:      false,
+		},
+		{
+			name:    "failure",
+			file:    "compose.yml",
+			project: "proj",
+			opts:    mockRunnerOpts{exitCode: "1"},
+			wantErr: true,
+			errMsg:  "docker compose ps",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var recorded [][]string
+			c := &ComposeClient{
+				file:    tt.file,
+				project: tt.project,
+				runner:  newMockRunner(tt.opts, &recorded),
+			}
+
+			got, err := c.Ps(context.Background())
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
+				assert.Contains(t, got, tt.wantContains)
+				require.Len(t, recorded, 1)
+				assert.Equal(t, tt.wantArgs, recorded[0])
+			}
+		})
+	}
+}
+
+// TestComposeClient_DownCommandBuilding verifies Down builds the correct args.
+func TestComposeClient_DownCommandBuilding(t *testing.T) {
+	tests := []struct {
+		name     string
+		file     string
+		project  string
+		wantArgs []string
+	}{
+		{
+			name:     "down with project",
+			file:     "compose.yml",
+			project:  "homelab",
+			wantArgs: []string{"compose", "-p", "homelab", "-f", "compose.yml", "down"},
+		},
+		{
+			name:     "down without project",
+			file:     "compose.yml",
+			project:  "",
+			wantArgs: []string{"compose", "-f", "compose.yml", "down"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &ComposeClient{file: tt.file, project: tt.project}
+			args := c.baseArgs()
+			args = append(args, "down")
+			assert.Equal(t, tt.wantArgs, args)
+		})
+	}
+}
+
+// TestComposeClient_StatusCommandBuilding verifies Status builds the correct format args.
+func TestComposeClient_StatusCommandBuilding(t *testing.T) {
+	c := &ComposeClient{file: "compose.yml", project: "proj"}
+	args := c.baseArgs()
+	args = append(args, "ps", "--format", "{{.Name}}\t{{.State}}\t{{.Status}}\t{{.Ports}}")
+
+	expected := []string{
+		"compose", "-p", "proj", "-f", "compose.yml",
+		"ps", "--format", "{{.Name}}\t{{.State}}\t{{.Status}}\t{{.Ports}}",
+	}
+	assert.Equal(t, expected, args)
+}
+
+// TestComposeClient_PsCommandBuilding verifies Ps builds the correct args.
+func TestComposeClient_PsCommandBuilding(t *testing.T) {
+	c := &ComposeClient{file: "compose.yml", project: "proj"}
+	args := c.baseArgs()
+	args = append(args, "ps")
+
+	expected := []string{"compose", "-p", "proj", "-f", "compose.yml", "ps"}
+	assert.Equal(t, expected, args)
+}
+
+// TestParseStatusOutput_EdgeCases tests additional edge cases for status output parsing.
+func TestParseStatusOutput_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantLen  int
+		validate func(t *testing.T, services []ServiceStatus)
+	}{
+		{
+			name:    "service without ports",
+			input:   "worker\trunning\tUp 5 minutes",
+			wantLen: 1,
+			validate: func(t *testing.T, services []ServiceStatus) {
+				assert.Equal(t, "worker", services[0].Name)
+				assert.Equal(t, "running", services[0].State)
+				assert.True(t, services[0].Running)
+				assert.Empty(t, services[0].Ports)
+			},
+		},
+		{
+			name:    "exited service not running",
+			input:   "db\texited\tExited (0)\t",
+			wantLen: 1,
+			validate: func(t *testing.T, services []ServiceStatus) {
+				assert.Equal(t, "db", services[0].Name)
+				assert.Equal(t, "exited", services[0].State)
+				assert.False(t, services[0].Running)
+			},
+		},
+		{
+			name:    "blank lines between services",
+			input:   "web\trunning\tUp 10 minutes\t8080:80/tcp\n\ndb\trunning\tUp 10 minutes\t5432:5432/tcp",
+			wantLen: 2,
+			validate: func(t *testing.T, services []ServiceStatus) {
+				assert.Equal(t, "web", services[0].Name)
+				assert.Equal(t, "db", services[1].Name)
+			},
+		},
+		{
+			name:    "only whitespace",
+			input:   "   \t  ",
+			wantLen: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			services := parseStatusOutput(tt.input)
+			assert.Len(t, services, tt.wantLen)
+			if tt.validate != nil && len(services) > 0 {
+				tt.validate(t, services)
+			}
+		})
+	}
+}
+
+// splitLines and splitByTab helpers used by parseStatusOutput
+func TestSplitLines(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"single line", "hello", []string{"hello"}},
+		{"two lines", "a\nb", []string{"a", "b"}},
+		{"trailing newline", "a\n", []string{"a"}},
+		{"empty string", "", nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := splitLines(tt.in)
+			if tt.want == nil {
+				assert.Empty(t, got)
+			} else {
+				assert.Equal(t, tt.want, got)
+			}
+		})
+	}
+}
+
+func TestSplitByTab(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"single field", "hello", []string{"hello"}},
+		{"two fields", "a\tb", []string{"a", "b"}},
+		{"four fields", "a\tb\tc\td", []string{"a", "b", "c", "d"}},
+		{"trailing tab", "a\t", []string{"a"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := splitByTab(tt.in)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// Verify the mock runner captures correct docker binary name.
+func TestMockRunner_CapturesFullCommand(t *testing.T) {
+	var recorded [][]string
+	runner := newMockRunner(mockRunnerOpts{exitCode: "0"}, &recorded)
+
+	cmd := runner(context.Background(), "docker", "compose", "-f", "test.yml", "up")
+	_ = cmd.Run()
+
+	require.Len(t, recorded, 1)
+	assert.Equal(t, "docker", recorded[0][0])
+	assert.True(t, strings.HasSuffix(strings.Join(recorded[0], " "), "compose -f test.yml up"))
 }

@@ -200,13 +200,8 @@ func (s *SocketServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	reconciling := s.daemon.reconciling
 	s.daemon.reconcileMu.Unlock()
 
-	state := "idle"
-	if reconciling {
-		state = "reconciling"
-	}
-
 	resp := StatusResponse{
-		State:  state,
+		State:  reconcileStateString(reconciling),
 		Uptime: time.Since(startTime).Round(time.Second).String(),
 	}
 
@@ -248,22 +243,7 @@ func (s *SocketServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build config response from daemon config
-	cfg := s.daemon.config
-	resp := ConfigResponse{
-		WebhookSecret: cfg.WebhookSecret,
-	}
-
-	// Include poll interval in seconds
-	if cfg.PollInterval > 0 {
-		resp.PollInterval = int(cfg.PollInterval.Seconds())
-	}
-
-	// Include repo info if available
-	if cfg.ReconcileConfig != nil {
-		resp.RepoURL = cfg.ReconcileConfig.RepoURL
-		resp.RepoBranch = cfg.ReconcileConfig.RepoBranch
-	}
+	resp := buildConfigResponse(s.daemon.config)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)

@@ -32,6 +32,7 @@ type TwilioConfig struct {
 type Twilio struct {
 	config TwilioConfig
 	client *http.Client
+	apiURL string // overridable for testing; empty uses default
 }
 
 // twilioAPIURL is the base URL for the Twilio REST API.
@@ -128,7 +129,11 @@ func (t *Twilio) Send(ctx context.Context, alert *Alert) error {
 
 // sendSMS sends a single SMS message to one recipient.
 func (t *Twilio) sendSMS(ctx context.Context, toNumber, message string) error {
-	endpoint := fmt.Sprintf("%s/Accounts/%s/Messages.json", twilioAPIURL, t.config.AccountSID)
+	base := t.apiURL
+	if base == "" {
+		base = twilioAPIURL
+	}
+	endpoint := fmt.Sprintf("%s/Accounts/%s/Messages.json", base, t.config.AccountSID)
 
 	formData := url.Values{}
 	formData.Set("To", formatPhoneNumber(toNumber))

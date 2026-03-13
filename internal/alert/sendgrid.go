@@ -25,8 +25,9 @@ type SendGridConfig struct {
 
 // SendGrid implements the Provider interface for email alerts via SendGrid.
 type SendGrid struct {
-	config SendGridConfig
-	client *http.Client
+	config   SendGridConfig
+	client   *http.Client
+	endpoint string // overridable for testing; empty uses default
 }
 
 // NewSendGrid creates a new SendGrid alert provider.
@@ -69,7 +70,12 @@ func (s *SendGrid) Send(ctx context.Context, alert *Alert) error {
 		return fmt.Errorf("marshaling request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, sendGridAPIEndpoint, bytes.NewReader(body))
+	ep := s.endpoint
+	if ep == "" {
+		ep = sendGridAPIEndpoint
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ep, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
 	}
