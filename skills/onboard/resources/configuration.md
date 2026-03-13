@@ -93,6 +93,13 @@ deploy_paths:
 # Default: 0 (disabled, alerts fire immediately). Recommended: 5m.
 drift_alert_debounce: "5m"
 
+# Critical containers: must be healthy after compose up for deploy to succeed.
+# When any container is unhealthy or missing after the health gate timeout,
+# rollback is triggered. Empty list (default) skips the health gate.
+critical_containers:
+  - traefik
+  - authelia
+
 # Post-sync hooks: restart containers when specific config files change.
 # Solves services (like Traefik) not picking up config changes on FUSE mounts.
 post_sync_hooks:
@@ -121,6 +128,7 @@ post_sync_hooks:
 | `post_sync_hooks` | `[]` | Container restart hooks triggered by file changes |
 | `hook_settle_delay` | `0` (disabled) | Global pause after deploy before hooks run (e.g., `"2s"`) |
 | `deploy_paths` | `[]` (deploy all) | Glob allowlist — skip pipeline when no changed files match |
+| `critical_containers` | `[]` (disabled) | Container names that must be healthy after deploy — triggers rollback on failure |
 | `drift_alert_debounce` | `0` (disabled) | Debounce window before first drift alert fires (e.g., `"5m"`) |
 
 ## Directory Structure
@@ -249,6 +257,8 @@ Used by `bosun daemon` and `bosun reconcile`:
 | Variable | Description |
 |----------|-------------|
 | `BOSUN_REMOVE_ORPHANS` | Pass `--remove-orphans` to docker compose up (default: `true`; overrides config file). Set to `false` in shared environments where Bosun doesn't own all containers |
+| `BOSUN_CRITICAL_CONTAINERS` | JSON array of container names that must be healthy after deploy (overrides config file) |
+| `BOSUN_HEALTH_GATE_TIMEOUT` | Health gate polling timeout (default: `60s`). Accepts Go duration strings or bare seconds |
 | `BOSUN_SECRETS_FILE` | Default secrets file for `bosun render` |
 | `SOPS_AGE_KEY_FILE` | Path to Age key file (default: `~/.config/sops/age/keys.txt`) |
 

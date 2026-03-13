@@ -16,12 +16,13 @@ import (
 
 // ReloadedConfig holds the fields that can be reloaded from the repo's bosun.yaml.
 type ReloadedConfig struct {
-	PostSyncHooks   []PostSyncHook
-	HookSettleDelay time.Duration
-	DeployPaths     []string
-	OnFailure       *bool
-	OnSuccess       *bool
-	RemoveOrphans   *bool
+	PostSyncHooks      []PostSyncHook
+	HookSettleDelay    time.Duration
+	DeployPaths        []string
+	CriticalContainers []string
+	OnFailure          *bool
+	OnSuccess          *bool
+	RemoveOrphans      *bool
 }
 
 // ConfigReloaderFunc loads project config from a directory path.
@@ -124,6 +125,19 @@ type Config struct {
 	// When true, repo config reload will not update DeployPaths.
 	DeployPathsFromEnv bool
 
+	// CriticalContainers is a list of container names that must be healthy after compose up.
+	// When configured, the health gate runs after startup grace period before state save.
+	// Empty list (default) skips the health gate entirely.
+	CriticalContainers []string
+
+	// CriticalContainersFromEnv is true when BOSUN_CRITICAL_CONTAINERS env var is set.
+	// When true, repo config reload will not update CriticalContainers.
+	CriticalContainersFromEnv bool
+
+	// HealthGateTimeout is the maximum time to poll critical container health.
+	// Default 60s. Configurable via BOSUN_HEALTH_GATE_TIMEOUT.
+	HealthGateTimeout time.Duration
+
 	// OnFailure gates failure alert dispatch. When false, no failure alerts are sent.
 	// Defaults to true via DefaultConfig(). A bare Config{} leaves this false.
 	OnFailure bool
@@ -170,6 +184,7 @@ func DefaultConfig() *Config {
 		RestartWindow:         10 * time.Minute,
 		OnFailure:             true,
 		RemoveOrphans:         true,
+		HealthGateTimeout:     60 * time.Second,
 	}
 }
 
@@ -198,6 +213,7 @@ type Reconciler struct {
 	lockFile         string
 	lockFd           *os.File
 	lastBackupPath   string            // Path to the last backup for rollback support
+	lastComposeFiles []string          // Compose files from last deploy (for health gate rollback)
 	lastCommit       string            // Track commit for alerting
 	declaredServices []DeclaredService // Extracted from rendered compose after templating
 }
@@ -295,6 +311,8 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 	// Reset per-run state to avoid stale data from a previous Run().
 	r.declaredServices = nil
+	r.lastBackupPath = ""
+	r.lastComposeFiles = nil
 
 	// Acquire lock to prevent concurrent runs.
 	// Lock failures are transient (another reconciliation is running) and lack state context,
@@ -448,6 +466,11 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	// Step 6: Cleanup staging directory after successful deployment.
 	if err := r.cleanupStaging(); err != nil {
 		ui.Warning("Failed to cleanup staging directory: %v", err)
+	}
+
+	// Step 7: Critical container health gate (if configured).
+	if err := r.runHealthGate(ctx, state); err != nil {
+		return fmt.Errorf("health gate failed: %w", err)
 	}
 
 	// Send recovery alert if this success follows previous failures.
@@ -777,7 +800,7 @@ func (r *Reconciler) reloadProjectConfig() {
 	}
 
 	// If no field has any value from the repo, there's nothing to reload.
-	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 && len(reloaded.DeployPaths) == 0 && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil {
+	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 && len(reloaded.DeployPaths) == 0 && len(reloaded.CriticalContainers) == 0 && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil {
 		return
 	}
 
@@ -795,6 +818,11 @@ func (r *Reconciler) reloadProjectConfig() {
 
 	if !r.config.DeployPathsFromEnv && len(reloaded.DeployPaths) > 0 {
 		r.config.DeployPaths = reloaded.DeployPaths
+		changed = true
+	}
+
+	if !r.config.CriticalContainersFromEnv && len(reloaded.CriticalContainers) > 0 {
+		r.config.CriticalContainers = reloaded.CriticalContainers
 		changed = true
 	}
 
@@ -841,6 +869,68 @@ func (r *Reconciler) cleanupStaging() error {
 	}
 
 	ui.Info("Cleaned up staging directory")
+	return nil
+}
+
+// runHealthGate checks critical container health after compose up.
+// Skipped when: DryRun, remote deploy (!isLocalMode), no Docker client,
+// or empty CriticalContainers list.
+// On failure: triggers rollback and sends a throttled failure alert.
+func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState) error {
+	containers := r.config.CriticalContainers
+	if len(containers) == 0 {
+		return nil
+	}
+
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+
+	if r.config.DryRun {
+		logger.Debug().Msg("Health gate skipped. Reason: dry run")
+		return nil
+	}
+
+	if !r.isLocalMode() {
+		logger.Warn().
+			Strs("containers", containers).
+			Msg("Health gate skipped for remote deploy. Docker API is local-only")
+		return nil
+	}
+
+	if r.dockerClientFn == nil {
+		logger.Warn().Msg("Health gate skipped. Reason: no Docker client")
+		return nil
+	}
+
+	client := r.dockerClientFn()
+	if client == nil {
+		logger.Warn().Msg("Health gate skipped. Reason: Docker client unavailable")
+		return nil
+	}
+
+	timeout := r.config.HealthGateTimeout
+	if timeout == 0 {
+		timeout = 60 * time.Second
+	}
+
+	err := CheckCriticalContainerHealth(ctx, client, containers, timeout)
+	if err != nil {
+		logger.Error().
+			Err(err).
+			Strs("containers", containers).
+			Msg("Critical container health gate failed. Triggering rollback")
+
+		// Trigger rollback via existing mechanism.
+		if r.lastBackupPath != "" && len(r.lastComposeFiles) > 0 {
+			rollbackErr := r.deploy.ComposeUpMultipleWithRollback(ctx, r.lastComposeFiles, r.lastBackupPath)
+			if rollbackErr != nil {
+				logger.Error().Err(rollbackErr).Msg("Rollback after health gate failure also failed")
+			}
+		}
+
+		r.sendThrottledFailureAlert(ctx, state, err.Error())
+		return err
+	}
+
 	return nil
 }
 
@@ -1088,6 +1178,7 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 		if len(composeFiles) == 0 {
 			ui.Warning("No compose files found in %s", composeDir)
 		} else {
+			r.lastComposeFiles = composeFiles
 			if err := r.deploy.ComposeUpMultipleWithRollback(ctx, composeFiles, r.lastBackupPath); err != nil {
 				// Unhealthy containers are warnings, not failures.
 				if errors.Is(err, ErrComposeUnhealthy) {

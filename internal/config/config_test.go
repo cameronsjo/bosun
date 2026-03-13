@@ -1338,3 +1338,85 @@ func TestExtractRemoveOrphans(t *testing.T) {
 		assert.True(t, extractRemoveOrphans(cfg))
 	})
 }
+
+func TestCriticalContainersFromConfig(t *testing.T) {
+	t.Run("parses critical_containers from bosun.yaml", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `critical_containers:
+  - "traefik"
+  - "authelia"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, []string{"traefik", "authelia"}, cfg.CriticalContainers())
+	})
+
+	t.Run("returns nil when not configured", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `infrastructure:
+  containers:
+    - traefik
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Empty(t, cfg.CriticalContainers())
+	})
+}
+
+func TestLoadFrom_CriticalContainers(t *testing.T) {
+	t.Run("loads critical_containers from directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		content := `critical_containers:
+  - "traefik"
+  - "authelia"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Equal(t, []string{"traefik", "authelia"}, cfg.CriticalContainers())
+	})
+
+	t.Run("returns empty when not configured", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Empty(t, cfg.CriticalContainers())
+	})
+}
+
+func TestExtractCriticalContainers(t *testing.T) {
+	t.Run("returns containers from config", func(t *testing.T) {
+		cfg := configFile{CriticalContainers: []string{"traefik", "authelia"}}
+		assert.Equal(t, []string{"traefik", "authelia"}, extractCriticalContainers(cfg))
+	})
+
+	t.Run("returns nil when empty", func(t *testing.T) {
+		cfg := configFile{}
+		assert.Nil(t, extractCriticalContainers(cfg))
+	})
+}

@@ -60,6 +60,9 @@ type Config struct {
 	// deployPaths is an allowlist of glob patterns for deploy-relevant paths.
 	deployPaths []string
 
+	// criticalContainers is a list of container names that must be healthy after compose up.
+	criticalContainers []string
+
 	// driftAlertDebounce is the debounce window before first drift alert fires.
 	driftAlertDebounce time.Duration
 
@@ -176,6 +179,9 @@ type configFile struct {
 	// When configured, commits that only touch files outside these patterns skip the pipeline.
 	DeployPaths []string `yaml:"deploy_paths"`
 
+	// CriticalContainers is a list of container names that must be healthy after compose up.
+	// When configured, the health gate runs after startup grace period and before state save.
+	CriticalContainers []string `yaml:"critical_containers"`
 
 	// DriftAlertDebounce is the debounce window before first drift alert fires.
 	// Items must persist past this duration before alerting. 0 = disabled (default).
@@ -247,6 +253,7 @@ func LoadFrom(dir string) (*Config, error) {
 	postSyncHooks := extractPostSyncHooks(fileCfg)
 	hookSettleDelay := extractHookSettleDelay(fileCfg)
 	deployPaths := extractDeployPaths(fileCfg)
+	criticalContainers := extractCriticalContainers(fileCfg)
 	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
 	domain := extractDomain(fileCfg)
 	removeOrphans := extractRemoveOrphans(fileCfg)
@@ -256,6 +263,7 @@ func LoadFrom(dir string) (*Config, error) {
 		postSyncHooks:      postSyncHooks,
 		hookSettleDelay:    hookSettleDelay,
 		deployPaths:        deployPaths,
+		criticalContainers: criticalContainers,
 		driftAlertDebounce: driftAlertDebounce,
 		domain:             domain,
 		removeOrphans:      removeOrphans,
@@ -301,6 +309,7 @@ func Load() (*Config, error) {
 	postSyncHooks := extractPostSyncHooks(fileCfg)
 	hookSettleDelay := extractHookSettleDelay(fileCfg)
 	deployPaths := extractDeployPaths(fileCfg)
+	criticalContainers := extractCriticalContainers(fileCfg)
 	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
 	domain := extractDomain(fileCfg)
 	removeOrphans := extractRemoveOrphans(fileCfg)
@@ -325,6 +334,7 @@ func Load() (*Config, error) {
 		postSyncHooks:      postSyncHooks,
 		hookSettleDelay:    hookSettleDelay,
 		deployPaths:        deployPaths,
+		criticalContainers: criticalContainers,
 		driftAlertDebounce: driftAlertDebounce,
 		domain:             domain,
 		removeOrphans:      removeOrphans,
@@ -523,6 +533,16 @@ func (c *Config) DeployPaths() []string {
 // extractDeployPaths extracts deploy path patterns from a parsed config.
 func extractDeployPaths(cfg configFile) []string {
 	return cfg.DeployPaths
+}
+
+// CriticalContainers returns the list of container names that must be healthy after deploy.
+func (c *Config) CriticalContainers() []string {
+	return c.criticalContainers
+}
+
+// extractCriticalContainers extracts critical container names from a parsed config.
+func extractCriticalContainers(cfg configFile) []string {
+	return cfg.CriticalContainers
 }
 
 // HookSettleDelay returns the configured global settle delay for post-sync hooks.

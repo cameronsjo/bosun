@@ -36,7 +36,7 @@ Every reconciliation follows this 14-stage sequence:
         |
 10. Clean up staging directory
         |
-11. Record successful deployment in state file
+11. Critical container health gate (if configured)
         |
 12. Execute post-sync hooks
         |
@@ -44,7 +44,9 @@ Every reconciliation follows this 14-stage sequence:
         |
 14. Post-deploy drift check
         |
-15. Release lock
+15. Record successful deployment in state file
+        |
+16. Release lock
 ```
 
 ### Failure Alerting
@@ -56,6 +58,7 @@ Specific pipeline stages send throttled failure alerts to all configured alert p
 - **Decrypt failure (stage 4)**: sends a throttled failure alert
 - **Template failure (stage 5)**: sends a throttled failure alert
 - **Deploy failure (stages 8-9)**: sends a throttled failure alert
+- **Health gate failure (stage 11)**: sends a throttled failure alert; triggers rollback to backup compose files
 - **Health verification failure (stage 13)**: sends a throttled failure alert; counts toward circuit breaker
 - **Lock acquisition (stage 1)**: logged as a warning only, no alert (transient condition)
 - **Backup, cleanup, post-sync hooks, state save, drift check**: logged as warnings only, no failure alert
@@ -75,6 +78,20 @@ Both flags are re-read from `bosun.yaml` after each git pull, so changes take ef
 ### Orphan Container Cleanup
 
 During `docker compose up`, bosun passes `--remove-orphans` by default. This removes containers belonging to services that have been deleted from the compose file. In shared environments where Bosun does not own all containers on the Docker host, set `remove_orphans: false` in `bosun.yaml` or `BOSUN_REMOVE_ORPHANS=false` to disable this behavior. The environment variable takes precedence over the config file. Emergency restore (`bosun mayday`) always uses `--remove-orphans` regardless of this setting.
+
+### Critical Container Health Gate
+
+When `critical_containers` is configured, bosun polls each listed container via Docker API after compose up. Containers must be running and healthy (or have no healthcheck defined) within the `HealthGateTimeout` (default 60s, configurable via `BOSUN_HEALTH_GATE_TIMEOUT`). If any container fails the gate, rollback is triggered using the backup compose files.
+
+The health gate is skipped when: dry run is active, the deploy is remote (`TargetHost` set — Docker API is local-only), no Docker client is available, or the critical containers list is empty.
+
+Configure in `bosun.yaml` or via `BOSUN_CRITICAL_CONTAINERS` (JSON array, completely replaces config file value):
+
+```yaml
+critical_containers:
+  - traefik
+  - authelia
+```
 
 ### Post-Sync Hooks
 
@@ -321,6 +338,8 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `BOSUN_POST_SYNC_HOOKS` | | JSON array of post-sync hooks (overrides config file) |
 | `BOSUN_HOOK_SETTLE_DELAY` | `0` | Global pause before post-sync hooks run (e.g., `2s`) |
 | `BOSUN_DEPLOY_PATHS` | | JSON array of glob patterns for deploy-relevant paths (overrides config file) |
+| `BOSUN_CRITICAL_CONTAINERS` | | JSON array of container names that must be healthy after deploy (overrides config file) |
+| `BOSUN_HEALTH_GATE_TIMEOUT` | `60s` | Health gate polling timeout (accepts Go duration strings or bare seconds) |
 
 ## Systemd Deployment
 

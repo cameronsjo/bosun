@@ -978,6 +978,101 @@ func TestConfigFromEnv_EnvOverrideFlags(t *testing.T) {
 			t.Error("ConfigReloader should be set by ConfigFromEnv")
 		}
 	})
+
+	t.Run("CriticalContainersFromEnv set when env var present", func(t *testing.T) {
+		t.Setenv("BOSUN_CRITICAL_CONTAINERS", `["traefik","authelia"]`)
+
+		cfg := ConfigFromEnv()
+
+		if !cfg.ReconcileConfig.CriticalContainersFromEnv {
+			t.Error("CriticalContainersFromEnv should be true when BOSUN_CRITICAL_CONTAINERS is set")
+		}
+	})
+
+	t.Run("CriticalContainersFromEnv false when env var absent", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.CriticalContainersFromEnv {
+			t.Error("CriticalContainersFromEnv should be false when BOSUN_CRITICAL_CONTAINERS is not set")
+		}
+	})
+}
+
+func TestConfigFromEnv_CriticalContainers(t *testing.T) {
+	t.Run("parses JSON array", func(t *testing.T) {
+		t.Setenv("BOSUN_CRITICAL_CONTAINERS", `["traefik","authelia"]`)
+
+		cfg := ConfigFromEnv()
+
+		containers := cfg.ReconcileConfig.CriticalContainers
+		if len(containers) != 2 {
+			t.Fatalf("expected 2 critical containers, got %d", len(containers))
+		}
+		if containers[0] != "traefik" || containers[1] != "authelia" {
+			t.Errorf("unexpected containers: %v", containers)
+		}
+	})
+
+	t.Run("invalid JSON ignored", func(t *testing.T) {
+		t.Setenv("BOSUN_CRITICAL_CONTAINERS", "not-json")
+
+		cfg := ConfigFromEnv()
+
+		if len(cfg.ReconcileConfig.CriticalContainers) != 0 {
+			t.Errorf("expected empty containers, got %v", cfg.ReconcileConfig.CriticalContainers)
+		}
+	})
+
+	t.Run("empty array", func(t *testing.T) {
+		t.Setenv("BOSUN_CRITICAL_CONTAINERS", `[]`)
+
+		cfg := ConfigFromEnv()
+
+		if len(cfg.ReconcileConfig.CriticalContainers) != 0 {
+			t.Errorf("expected empty containers, got %v", cfg.ReconcileConfig.CriticalContainers)
+		}
+	})
+}
+
+func TestConfigFromEnv_HealthGateTimeout(t *testing.T) {
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_GATE_TIMEOUT", "90s")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.HealthGateTimeout != 90*time.Second {
+			t.Errorf("HealthGateTimeout = %v, want 90s", cfg.ReconcileConfig.HealthGateTimeout)
+		}
+	})
+
+	t.Run("parses bare seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_GATE_TIMEOUT", "120")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.HealthGateTimeout != 120*time.Second {
+			t.Errorf("HealthGateTimeout = %v, want 120s", cfg.ReconcileConfig.HealthGateTimeout)
+		}
+	})
+
+	t.Run("default 60s when not set", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.HealthGateTimeout != 60*time.Second {
+			t.Errorf("HealthGateTimeout = %v, want 60s (default)", cfg.ReconcileConfig.HealthGateTimeout)
+		}
+	})
+
+	t.Run("invalid value ignored", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_GATE_TIMEOUT", "not-a-duration")
+
+		cfg := ConfigFromEnv()
+
+		// Should keep default (60s from DefaultConfig)
+		if cfg.ReconcileConfig.HealthGateTimeout != 60*time.Second {
+			t.Errorf("HealthGateTimeout = %v, want 60s (default)", cfg.ReconcileConfig.HealthGateTimeout)
+		}
+	})
 }
 
 func TestConfigFromEnv_ContentHashSync(t *testing.T) {
