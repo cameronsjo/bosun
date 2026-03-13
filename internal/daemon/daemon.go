@@ -1103,7 +1103,7 @@ func ConfigFromEnv() *Config {
 
 	// Restart circuit breaker configuration
 	if v := os.Getenv("BOSUN_RESTART_BREAKER"); v != "" {
-		rcfg.RestartBreakerEnabled = v == "true" || v == "1"
+		rcfg.RestartBreakerEnabled = v != "false" && v != "0"
 	}
 	if v := os.Getenv("BOSUN_RESTART_THRESHOLD"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {

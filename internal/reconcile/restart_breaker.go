@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -166,7 +167,8 @@ func RunRestartBreaker(
 
 	result := evaluateRestartBreaker(counts, state.RestartTracking, threshold, window, time.Now())
 
-	// Stop tripped containers.
+	// Stop tripped containers (best-effort: attempt all, collect errors).
+	var stopErrs []error
 	for _, service := range result.Tripped {
 		containerName := containerNameForService(actual, service)
 		if containerName == "" {
@@ -184,10 +186,13 @@ func RunRestartBreaker(
 				Str(log.FieldContainer, containerName).
 				Err(err).
 				Msg("Failed to stop restart-looping container")
-			return result, fmt.Errorf("stop container %s: %w", containerName, err)
+			stopErrs = append(stopErrs, fmt.Errorf("stop container %s: %w", containerName, err))
 		}
 	}
 
+	if len(stopErrs) > 0 {
+		return result, errors.Join(stopErrs...)
+	}
 	return result, nil
 }
 

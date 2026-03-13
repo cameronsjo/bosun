@@ -1778,8 +1778,22 @@ func TestConfigFromEnv_RestartBreaker(t *testing.T) {
 		assert.False(t, cfg.ReconcileConfig.RestartBreakerEnabled)
 	})
 
+	t.Run("BOSUN_RESTART_BREAKER 0 disables", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_BREAKER", "0")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.False(t, cfg.ReconcileConfig.RestartBreakerEnabled)
+	})
+
 	t.Run("BOSUN_RESTART_BREAKER 1 enables", func(t *testing.T) {
 		t.Setenv("BOSUN_RESTART_BREAKER", "1")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.True(t, cfg.ReconcileConfig.RestartBreakerEnabled)
+	})
+
+	t.Run("BOSUN_RESTART_BREAKER non-canonical truthy keeps enabled", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_BREAKER", "yes")
 		cfg := ConfigFromEnv()
 		require.NotNil(t, cfg.ReconcileConfig)
 		assert.True(t, cfg.ReconcileConfig.RestartBreakerEnabled)
