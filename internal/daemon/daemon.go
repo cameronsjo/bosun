@@ -1024,6 +1024,20 @@ func ConfigFromEnv() *Config {
 			log.Warn().Str("env", "BOSUN_COMPOSE_UP_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
+	if v := os.Getenv("BOSUN_HEALTH_CHECK_TIMEOUT"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			rcfg.HealthCheckTimeout = d
+		} else {
+			log.Warn().Str("env", "BOSUN_HEALTH_CHECK_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
+	if v := os.Getenv("BOSUN_HEALTH_CHECK_INTERVAL"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			rcfg.HealthCheckInterval = d
+		} else {
+			log.Warn().Str("env", "BOSUN_HEALTH_CHECK_INTERVAL").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
 
 	// Timeout overrides
 	if v := os.Getenv("BOSUN_RECONCILE_TIMEOUT"); v != "" {

@@ -40,9 +40,11 @@ Every reconciliation follows this 14-stage sequence:
         |
 12. Execute post-sync hooks
         |
-13. Post-deploy verification (drift check)
+13. Post-deploy health verification (poll containers until healthy or timeout)
         |
-14. Release lock
+14. Post-deploy drift check
+        |
+15. Release lock
 ```
 
 ### Failure Alerting
@@ -54,6 +56,7 @@ Specific pipeline stages send throttled failure alerts to all configured alert p
 - **Decrypt failure (stage 4)**: sends a throttled failure alert
 - **Template failure (stage 5)**: sends a throttled failure alert
 - **Deploy failure (stages 8-9)**: sends a throttled failure alert
+- **Health verification failure (stage 13)**: sends a throttled failure alert; counts toward circuit breaker
 - **Lock acquisition (stage 1)**: logged as a warning only, no alert (transient condition)
 - **Backup, cleanup, post-sync hooks, state save, drift check**: logged as warnings only, no failure alert
 

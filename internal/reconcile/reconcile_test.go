@@ -971,42 +971,39 @@ func (m *mockSecretsDecryptor) CheckAgeKey() error {
 // --- Reconciler.verifyPostDeploy tests ---
 
 func TestVerifyPostDeploy(t *testing.T) {
-	t.Run("context cancelled skips verification", func(t *testing.T) {
+	t.Run("disabled when HealthCheckTimeout is zero", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		stateFile := filepath.Join(tmpDir, "state.json")
 
 		cfg := &Config{
 			StateFile:          stateFile,
-			StartupGracePeriod: 5 * time.Minute, // Long grace period
+			HealthCheckTimeout: 0, // Disabled
 		}
 		r := NewReconciler(cfg)
 		r.declaredServices = []DeclaredService{{Name: "web", Image: "nginx"}}
-
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel() // Cancel immediately
 
 		mockAPI := newReconcileMockDockerAPI()
 		client := docker.NewClientWithAPI(mockAPI)
 		state := &DeployState{}
 
-		r.verifyPostDeploy(ctx, state, client)
-		// Should return early without saving drift state
-		assert.True(t, state.DriftCheckedAt.IsZero())
+		err := r.verifyPostDeploy(context.Background(), state, client)
+		assert.NoError(t, err)
+		assert.True(t, state.HealthVerifiedAt.IsZero())
 	})
 
-	t.Run("no drift reports success", func(t *testing.T) {
+	t.Run("all healthy returns nil", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		stateFile := filepath.Join(tmpDir, "state.json")
 
 		cfg := &Config{
-			StateFile:          stateFile,
-			ProjectName:        "test",
-			StartupGracePeriod: 0, // No grace period
+			StateFile:           stateFile,
+			ProjectName:         "test",
+			HealthCheckTimeout:  10 * time.Second,
+			HealthCheckInterval: 100 * time.Millisecond,
 		}
 		r := NewReconciler(cfg)
 		r.declaredServices = []DeclaredService{{Name: "web", Image: "nginx:latest"}}
 
-		// Mock docker API returning matching container
 		mockAPI := newReconcileMockDockerAPI()
 		mockAPI.containerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
 			return []container.Summary{
@@ -1025,21 +1022,23 @@ func TestVerifyPostDeploy(t *testing.T) {
 		client := docker.NewClientWithAPI(mockAPI)
 		state := &DeployState{}
 
-		r.verifyPostDeploy(context.Background(), state, client)
-		assert.False(t, state.DriftCheckedAt.IsZero())
+		err := r.verifyPostDeploy(context.Background(), state, client)
+		assert.NoError(t, err)
+		assert.True(t, state.HealthVerificationPassed)
+		assert.False(t, state.HealthVerifiedAt.IsZero())
 	})
 
-	t.Run("drift detected with unhealthy containers", func(t *testing.T) {
+	t.Run("unhealthy timeout returns error", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		stateFile := filepath.Join(tmpDir, "state.json")
 
-		alerter := &mockAlertSender{}
 		cfg := &Config{
-			StateFile:          stateFile,
-			ProjectName:        "test",
-			StartupGracePeriod: 0,
+			StateFile:           stateFile,
+			ProjectName:         "test",
+			HealthCheckTimeout:  300 * time.Millisecond,
+			HealthCheckInterval: 50 * time.Millisecond,
 		}
-		r := NewReconciler(cfg, WithAlerter(alerter))
+		r := NewReconciler(cfg)
 		r.declaredServices = []DeclaredService{
 			{Name: "web", Image: "nginx:latest"},
 			{Name: "missing-svc", Image: "alpine:latest"},
@@ -1057,41 +1056,42 @@ func TestVerifyPostDeploy(t *testing.T) {
 						"com.docker.compose.project": "test",
 						"com.docker.compose.service": "web",
 					},
-					Status: "Up 5 minutes (unhealthy)",
 				},
+				// missing-svc not present = unhealthy
 			}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 		state := &DeployState{}
 
-		r.verifyPostDeploy(context.Background(), state, client)
-		assert.False(t, state.DriftCheckedAt.IsZero())
-		assert.Greater(t, len(state.DriftItems), 0)
-		assert.Equal(t, 1, alerter.unhealthyContainerCall)
+		err := r.verifyPostDeploy(context.Background(), state, client)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "missing-svc")
+		assert.False(t, state.HealthVerificationPassed)
+		assert.False(t, state.HealthVerifiedAt.IsZero())
 	})
 
-	t.Run("docker error is non-fatal", func(t *testing.T) {
+	t.Run("context cancelled returns error", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		stateFile := filepath.Join(tmpDir, "state.json")
 
 		cfg := &Config{
-			StateFile:          stateFile,
-			ProjectName:        "test",
-			StartupGracePeriod: 0,
+			StateFile:           stateFile,
+			HealthCheckTimeout:  10 * time.Second,
+			HealthCheckInterval: 100 * time.Millisecond,
 		}
 		r := NewReconciler(cfg)
 		r.declaredServices = []DeclaredService{{Name: "web", Image: "nginx"}}
 
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Cancel immediately
+
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-			return nil, fmt.Errorf("docker unavailable")
-		}
 		client := docker.NewClientWithAPI(mockAPI)
 		state := &DeployState{}
 
-		r.verifyPostDeploy(context.Background(), state, client)
-		// Should not have saved drift state since collection failed
-		assert.True(t, state.DriftCheckedAt.IsZero())
+		err := r.verifyPostDeploy(ctx, state, client)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cancelled")
 	})
 }
 

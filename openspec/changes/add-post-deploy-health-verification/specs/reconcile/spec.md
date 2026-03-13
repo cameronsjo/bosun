@@ -25,17 +25,17 @@ When all declared services are healthy, verification SHALL succeed immediately
 When the timeout expires with unhealthy containers remaining, verification SHALL
 fail and return an error. The reconciliation SHALL treat this as a deployment
 failure: a failure alert SHALL be sent, the circuit breaker attempt count SHALL
-be incremented, but rollback SHALL NOT be attempted (the containers are running,
-and rollback could make things worse).
+be incremented, but rollback SHALL NOT be attempted.
 
-When `HealthCheckTimeout` is zero (not configured) and `StartupGracePeriod` is
-set, the reconciler SHALL fall back to the legacy behavior: wait the grace
-period, perform a single-shot drift check, log warnings, but NOT fail the
-reconciliation. This preserves backwards compatibility.
+When `HealthCheckTimeout` is zero, health verification SHALL be disabled entirely
+and `verifyPostDeploy` SHALL return nil without checking.
 
 The health verification timeout and interval SHALL be configurable via
 `BOSUN_HEALTH_CHECK_TIMEOUT` and `BOSUN_HEALTH_CHECK_INTERVAL` environment
 variables. Both SHALL accept Go duration strings or plain seconds.
+
+The deploy state file SHALL include `health_verified_at` (timestamp of last
+verification) and `health_verification_passed` (boolean verdict).
 
 Post-deploy verification SHALL only run when a Docker client is available, dry
 run is false, and declared services were extracted.
@@ -47,6 +47,7 @@ run is false, and declared services were extracted.
 - **THEN** the verification exits early at 15 seconds (not waiting the full 60s)
 - **AND** the reconciler logs success with the count of declared services
 - **AND** records zero drift items in the state file
+- **AND** `health_verification_passed` is set to true
 
 #### Scenario: Container stays unhealthy until timeout
 
@@ -55,6 +56,8 @@ run is false, and declared services were extracted.
 - **THEN** the verification fails with an error listing the unhealthy containers
 - **AND** the reconciliation is marked as a deployment failure
 - **AND** a failure alert is sent
+- **AND** the circuit breaker attempt count is incremented
+- **AND** `health_verification_passed` is set to false
 
 #### Scenario: Container without HEALTHCHECK treated as healthy
 
@@ -70,12 +73,11 @@ run is false, and declared services were extracted.
 - **AND** the circuit breaker attempt count is incremented
 - **AND** the failure is reported via alert
 
-#### Scenario: Legacy behavior when HealthCheckTimeout is zero
+#### Scenario: Verification disabled with timeout zero
 
-- **WHEN** `HealthCheckTimeout` is not configured (zero)
-- **AND** `StartupGracePeriod` is set to 30s
-- **THEN** the reconciler waits 30 seconds, performs a single drift check
-- **AND** drift is logged as a warning but the reconciliation succeeds
+- **WHEN** `BOSUN_HEALTH_CHECK_TIMEOUT` is set to 0
+- **THEN** post-deploy health verification is skipped entirely
+- **AND** the reconciliation succeeds regardless of container health
 
 #### Scenario: Unhealthy containers trigger alert via daemon
 

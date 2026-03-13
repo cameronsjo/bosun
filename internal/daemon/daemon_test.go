@@ -1090,6 +1090,64 @@ func TestConfigFromEnv_ComposeUpTimeout(t *testing.T) {
 	})
 }
 
+func TestConfigFromEnv_HealthCheckTimeout(t *testing.T) {
+	t.Run("default uses reconcile package default", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 60*time.Second, cfg.ReconcileConfig.HealthCheckTimeout)
+	})
+
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_TIMEOUT", "2m")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 2*time.Minute, cfg.ReconcileConfig.HealthCheckTimeout)
+	})
+
+	t.Run("parses plain seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_TIMEOUT", "120")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 2*time.Minute, cfg.ReconcileConfig.HealthCheckTimeout)
+	})
+
+	t.Run("invalid value retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_TIMEOUT", "not-a-duration")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 60*time.Second, cfg.ReconcileConfig.HealthCheckTimeout)
+	})
+}
+
+func TestConfigFromEnv_HealthCheckInterval(t *testing.T) {
+	t.Run("default uses reconcile package default", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5*time.Second, cfg.ReconcileConfig.HealthCheckInterval)
+	})
+
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_INTERVAL", "10s")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Second, cfg.ReconcileConfig.HealthCheckInterval)
+	})
+
+	t.Run("parses plain seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_INTERVAL", "10")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Second, cfg.ReconcileConfig.HealthCheckInterval)
+	})
+
+	t.Run("invalid value retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_INTERVAL", "not-a-duration")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5*time.Second, cfg.ReconcileConfig.HealthCheckInterval)
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Phase 1C: TriggerReconcile Concurrency
 // ---------------------------------------------------------------------------
