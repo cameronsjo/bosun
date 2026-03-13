@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0](https://github.com/cameronsjo/bosun/compare/v0.20.0...v0.21.0) (2026-03-13)
+
+
+### Features
+
+* **daemon:** replace hand-rolled metrics with Prometheus ([2cfcf14](https://github.com/cameronsjo/bosun/commit/2cfcf14efb048b826b7474f2009635c9f21f45f8))
+
+
+### Bug Fixes
+
+* **reconcile:** address CodeRabbit findings on atomic deploy ([c8c8e05](https://github.com/cameronsjo/bosun/commit/c8c8e05d570c403c2a8e7f3267b1f5384aac6f64))
+* **reconcile:** use atomic rename-aside pattern in DeployLocal ([ebc918c](https://github.com/cameronsjo/bosun/commit/ebc918cfdbb42cb4ea1751649bdec6dde5b56c29))
+
 ## [0.20.0](https://github.com/cameronsjo/bosun/compare/v0.19.0...v0.20.0) (2026-03-13)
 
 
