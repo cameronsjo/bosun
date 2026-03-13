@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
@@ -67,7 +68,7 @@ func (w *WebhookProvider) Send(ctx context.Context, alert *Alert) error {
 	logger.Debug().
 		Str("title", alert.Title).
 		Str("severity", string(alert.Severity)).
-		Str("url", w.config.URL).
+		Str("url_host", maskURL(w.config.URL)).
 		Msg("Preparing to send webhook alert")
 
 	payload := webhookPayload{
@@ -117,4 +118,13 @@ func (w *WebhookProvider) Send(ctx context.Context, alert *Alert) error {
 		Msg("Successfully sent webhook alert")
 
 	return nil
+}
+
+// maskURL returns only the host portion of a URL for safe logging.
+func maskURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return "[invalid]"
+	}
+	return u.Host
 }
