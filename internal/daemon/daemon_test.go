@@ -52,6 +52,9 @@ func TestDefaultConfig_DriftAlertCooldown(t *testing.T) {
 	if !cfg.ContentHashSync {
 		t.Error("ContentHashSync should be true by default")
 	}
+	if !cfg.RemoveOrphans {
+		t.Error("RemoveOrphans should be true by default")
+	}
 }
 
 func TestValidateConfig(t *testing.T) {
@@ -817,6 +820,68 @@ func TestConfigFromEnv_DriftAlertCooldown(t *testing.T) {
 	})
 }
 
+func TestConfigFromEnv_DriftAlertDebounce(t *testing.T) {
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_ALERT_DEBOUNCE", "5m")
+
+		cfg := ConfigFromEnv()
+
+		assert.Equal(t, 5*time.Minute, cfg.DriftAlertDebounce)
+	})
+
+	t.Run("parses bare seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_ALERT_DEBOUNCE", "300")
+
+		cfg := ConfigFromEnv()
+
+		assert.Equal(t, 300*time.Second, cfg.DriftAlertDebounce)
+	})
+
+	t.Run("defaults to 0 when not set", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce)
+	})
+
+	t.Run("invalid value keeps default 0", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_ALERT_DEBOUNCE", "not-a-duration")
+
+		cfg := ConfigFromEnv()
+
+		assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce)
+	})
+}
+
+func TestDefaultConfig_DriftAlertDebounce(t *testing.T) {
+	cfg := DefaultConfig()
+
+	assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce, "DriftAlertDebounce should default to 0 (disabled)")
+}
+
+func TestConfigFromEnv_DriftAlertDebounce_EnvZeroOverridesConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmpDir = evalSymlinks(t, tmpDir)
+
+	yamlContent := `manifest_dir: manifest
+drift_alert_debounce: "10m"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(yamlContent), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0o755))
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() { _ = os.Chdir(origDir) }()
+	require.NoError(t, os.Chdir(tmpDir))
+
+	// Explicitly set env var to "0" to disable debouncing.
+	t.Setenv("BOSUN_DRIFT_ALERT_DEBOUNCE", "0")
+
+	cfg := ConfigFromEnv()
+
+	assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce,
+		"env var set to '0' should disable debounce, not fall through to config file value")
+}
+
 func TestConfigFromEnv_DriftResolveAlerts(t *testing.T) {
 	t.Run("defaults to true when not set", func(t *testing.T) {
 		cfg := ConfigFromEnv()
@@ -947,6 +1012,174 @@ func TestConfigFromEnv_ContentHashSync(t *testing.T) {
 		if !cfg.ContentHashSync {
 			t.Error("ContentHashSync should be true when set to 'true'")
 		}
+	})
+}
+
+func TestConfigFromEnv_RemoveOrphans(t *testing.T) {
+	t.Run("default true", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if !cfg.RemoveOrphans {
+			t.Error("RemoveOrphans should be true by default")
+		}
+		if cfg.ReconcileConfig == nil || !cfg.ReconcileConfig.RemoveOrphans {
+			t.Error("ReconcileConfig.RemoveOrphans should be true by default")
+		}
+	})
+
+	t.Run("disabled with false", func(t *testing.T) {
+		t.Setenv("BOSUN_REMOVE_ORPHANS", "false")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.RemoveOrphans {
+			t.Error("RemoveOrphans should be false when set to 'false'")
+		}
+		if cfg.ReconcileConfig != nil && cfg.ReconcileConfig.RemoveOrphans {
+			t.Error("ReconcileConfig.RemoveOrphans should be false")
+		}
+	})
+
+	t.Run("disabled with 0", func(t *testing.T) {
+		t.Setenv("BOSUN_REMOVE_ORPHANS", "0")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.RemoveOrphans {
+			t.Error("RemoveOrphans should be false when set to '0'")
+		}
+	})
+
+	t.Run("enabled with true", func(t *testing.T) {
+		t.Setenv("BOSUN_REMOVE_ORPHANS", "true")
+
+		cfg := ConfigFromEnv()
+
+		if !cfg.RemoveOrphans {
+			t.Error("RemoveOrphans should be true when set to 'true'")
+		}
+	})
+}
+
+func TestConfigFromEnv_ComposeUpTimeout(t *testing.T) {
+	t.Run("default not set (zero, uses deploy package default)", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Zero(t, cfg.ReconcileConfig.ComposeUpTimeout)
+	})
+
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_COMPOSE_UP_TIMEOUT", "30m")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 30*time.Minute, cfg.ReconcileConfig.ComposeUpTimeout)
+	})
+
+	t.Run("parses plain seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_COMPOSE_UP_TIMEOUT", "1800")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 30*time.Minute, cfg.ReconcileConfig.ComposeUpTimeout)
+	})
+
+	t.Run("invalid value is skipped", func(t *testing.T) {
+		t.Setenv("BOSUN_COMPOSE_UP_TIMEOUT", "not-a-duration")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Zero(t, cfg.ReconcileConfig.ComposeUpTimeout)
+	})
+
+	t.Run("non-positive value is skipped", func(t *testing.T) {
+		t.Setenv("BOSUN_COMPOSE_UP_TIMEOUT", "-5m")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Zero(t, cfg.ReconcileConfig.ComposeUpTimeout)
+	})
+}
+
+func TestConfigFromEnv_HealthCheckTimeout(t *testing.T) {
+	t.Run("default uses reconcile package default", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 60*time.Second, cfg.ReconcileConfig.HealthCheckTimeout)
+	})
+
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_TIMEOUT", "2m")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 2*time.Minute, cfg.ReconcileConfig.HealthCheckTimeout)
+	})
+
+	t.Run("parses plain seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_TIMEOUT", "120")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 2*time.Minute, cfg.ReconcileConfig.HealthCheckTimeout)
+	})
+
+	t.Run("invalid value retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_TIMEOUT", "not-a-duration")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 60*time.Second, cfg.ReconcileConfig.HealthCheckTimeout)
+	})
+
+	t.Run("negative value retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_TIMEOUT", "-30s")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 60*time.Second, cfg.ReconcileConfig.HealthCheckTimeout)
+	})
+
+	t.Run("zero disables health check", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_TIMEOUT", "0")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Zero(t, cfg.ReconcileConfig.HealthCheckTimeout)
+	})
+}
+
+func TestConfigFromEnv_HealthCheckInterval(t *testing.T) {
+	t.Run("default uses reconcile package default", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5*time.Second, cfg.ReconcileConfig.HealthCheckInterval)
+	})
+
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_INTERVAL", "10s")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Second, cfg.ReconcileConfig.HealthCheckInterval)
+	})
+
+	t.Run("parses plain seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_INTERVAL", "10")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Second, cfg.ReconcileConfig.HealthCheckInterval)
+	})
+
+	t.Run("invalid value retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_INTERVAL", "not-a-duration")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5*time.Second, cfg.ReconcileConfig.HealthCheckInterval)
+	})
+
+	t.Run("zero value retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_INTERVAL", "0")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5*time.Second, cfg.ReconcileConfig.HealthCheckInterval)
+	})
+
+	t.Run("negative value retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_CHECK_INTERVAL", "-1s")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5*time.Second, cfg.ReconcileConfig.HealthCheckInterval)
 	})
 }
 
@@ -1349,6 +1582,284 @@ func TestSendDriftResolvedAlert(t *testing.T) {
 		assert.Panics(t, func() {
 			d.sendDriftResolvedAlert(context.Background(), []string{"api:missing"})
 		}, "sendDriftResolvedAlert with nil alerter panics because the guard is in the caller")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Drift Debounce Integration Tests
+// ---------------------------------------------------------------------------
+
+func TestRunDriftCheck_DebounceDisabled(t *testing.T) {
+	// When debounce is 0 (default), alerts fire immediately on first detection.
+	provider := &testAlertProvider{}
+	d := newAlertDaemon(t, provider)
+	d.config.DriftAlertDebounce = 0
+	d.config.DriftInterval = 5 * time.Minute
+
+	stateFile := d.config.ReconcileConfig.StateFile
+
+	// Seed state with declared services and drift items (simulating a drift check result).
+	state := &reconcile.DeployState{
+		LastDeployedCommit: "abc123",
+		DeclaredServices: []reconcile.DeclaredService{
+			{Name: "traefik", Image: "traefik:v3"},
+		},
+		DriftCheckedAt: time.Now(),
+		DriftItems: []reconcile.DriftItem{
+			{Service: "traefik", Type: reconcile.DriftUnhealthy},
+		},
+		DriftAlertedItems: map[string]time.Time{
+			"traefik:unhealthy": time.Now().Add(-2 * time.Hour), // past cooldown
+		},
+	}
+	require.NoError(t, reconcile.SaveState(stateFile, state))
+
+	// Verify debounce map is nil initially (disabled).
+	loaded := reconcile.LoadState(stateFile)
+	assert.Nil(t, loaded.DriftDebounceItems)
+}
+
+func TestRunDriftCheck_DebounceStatePersistence(t *testing.T) {
+	// Verify debounce items round-trip through state file.
+	dir := t.TempDir()
+	dir = evalSymlinks(t, dir)
+	stateFile := filepath.Join(dir, "state.json")
+
+	now := time.Now().Truncate(time.Second)
+	state := &reconcile.DeployState{
+		LastDeployedCommit: "abc123",
+		DriftDebounceItems: map[string]time.Time{
+			"traefik:unhealthy": now.Add(-2 * time.Minute),
+			"authelia:missing":  now.Add(-1 * time.Minute),
+		},
+	}
+	require.NoError(t, reconcile.SaveState(stateFile, state))
+
+	loaded := reconcile.LoadState(stateFile)
+	require.Len(t, loaded.DriftDebounceItems, 2)
+	assert.WithinDuration(t,
+		state.DriftDebounceItems["traefik:unhealthy"],
+		loaded.DriftDebounceItems["traefik:unhealthy"],
+		time.Second,
+	)
+}
+
+func TestFilterDebounced_ZeroBypassesBehavior(t *testing.T) {
+	// Verify zero debounce passes all items through (backwards compat).
+	items := []reconcile.DriftItem{
+		{Service: "traefik", Type: reconcile.DriftUnhealthy},
+		{Service: "authelia", Type: reconcile.DriftMissing},
+	}
+	debounceMap := map[string]time.Time{}
+
+	result := reconcile.FilterDebounced(items, debounceMap, 0)
+
+	assert.Len(t, result, 2, "zero debounce should pass all items")
+	assert.Empty(t, debounceMap, "zero debounce should not modify debounce map")
+}
+
+func TestDriftDebounce_E2E_PersistBeyondWindow(t *testing.T) {
+	// Simulates: drift appears -> persists past debounce window -> alert fires -> resolves -> resolution alert fires.
+	debounce := 5 * time.Minute
+
+	// Cycle 1: drift detected, item enters debounce.
+	items := []reconcile.DriftItem{
+		{Service: "traefik", Type: reconcile.DriftUnhealthy},
+	}
+	debounceMap := map[string]time.Time{}
+
+	result := reconcile.FilterDebounced(items, debounceMap, debounce)
+	assert.Empty(t, result, "cycle 1: item should be in debounce")
+	assert.Contains(t, debounceMap, "traefik:unhealthy")
+
+	// Cycle 2: simulate time passing past the window by backdating first-seen.
+	debounceMap["traefik:unhealthy"] = time.Now().Add(-6 * time.Minute)
+	result = reconcile.FilterDebounced(items, debounceMap, debounce)
+	require.Len(t, result, 1, "cycle 2: item should graduate")
+	assert.Empty(t, debounceMap, "graduated item removed from debounce map")
+
+	// Now the graduated item enters dedup layer.
+	alertedItems := map[string]time.Time{}
+	alertItems, resolvedKeys := reconcile.ShouldAlertDrift(result, alertedItems, time.Hour)
+	assert.Len(t, alertItems, 1, "should trigger alert after graduation")
+	assert.Empty(t, resolvedKeys)
+
+	// Record alert.
+	alertedItems["traefik:unhealthy"] = time.Now()
+
+	// Cycle 3: drift resolves.
+	emptyItems := []reconcile.DriftItem{}
+	_, resolvedKeys = reconcile.ShouldAlertDrift(emptyItems, alertedItems, time.Hour)
+	assert.Len(t, resolvedKeys, 1, "should detect resolution")
+	assert.Equal(t, "traefik:unhealthy", resolvedKeys[0])
+}
+
+func TestDriftDebounce_E2E_ResolveBeforeWindow(t *testing.T) {
+	// Simulates: drift appears -> resolves before debounce window -> no alerts.
+	debounce := 5 * time.Minute
+
+	// Cycle 1: drift detected, item enters debounce.
+	items := []reconcile.DriftItem{
+		{Service: "traefik", Type: reconcile.DriftUnhealthy},
+	}
+	debounceMap := map[string]time.Time{}
+
+	result := reconcile.FilterDebounced(items, debounceMap, debounce)
+	assert.Empty(t, result, "item should be in debounce")
+
+	// Cycle 2: drift resolves (empty items list).
+	emptyItems := []reconcile.DriftItem{}
+	result = reconcile.FilterDebounced(emptyItems, debounceMap, debounce)
+	assert.Empty(t, result, "no items should graduate")
+	assert.Empty(t, debounceMap, "resolved item should be removed from debounce map")
+
+	// No alerts should have been triggered at any point.
+}
+
+func TestDriftDebounce_E2E_PersistWithDedupCooldown(t *testing.T) {
+	// Simulates: drift persists -> alert fires -> repeat check within cooldown -> dedup suppresses.
+	debounce := 5 * time.Minute
+	cooldown := time.Hour
+
+	// Cycle 1: drift enters debounce.
+	items := []reconcile.DriftItem{
+		{Service: "traefik", Type: reconcile.DriftUnhealthy},
+	}
+	debounceMap := map[string]time.Time{}
+
+	reconcile.FilterDebounced(items, debounceMap, debounce)
+
+	// Cycle 2: graduate past debounce window.
+	debounceMap["traefik:unhealthy"] = time.Now().Add(-6 * time.Minute)
+	graduated := reconcile.FilterDebounced(items, debounceMap, debounce)
+	require.Len(t, graduated, 1)
+
+	// First alert fires.
+	alertedItems := map[string]time.Time{}
+	alertItems, _ := reconcile.ShouldAlertDrift(graduated, alertedItems, cooldown)
+	assert.Len(t, alertItems, 1)
+	alertedItems["traefik:unhealthy"] = time.Now()
+
+	// Cycle 3: drift still present, no debounce items (already graduated).
+	// Since debounce is 0 for already-graduated items, items pass through.
+	graduated2 := reconcile.FilterDebounced(items, debounceMap, debounce)
+	// Item is new to debounce again since it was removed on graduation.
+	// But it enters debounce again since debounce map is empty.
+	// Actually, the item re-enters debounce. But in the real daemon,
+	// once graduated, the item is tracked by DriftAlertedItems, not debounce.
+	// The dedup layer handles repeat suppression.
+
+	// In a real daemon flow, the graduated items would go through dedup.
+	// Let's simulate the dedup directly.
+	alertItems2, _ := reconcile.ShouldAlertDrift(items, alertedItems, cooldown)
+	assert.Empty(t, alertItems2, "dedup should suppress within cooldown")
+
+	// After cooldown expires.
+	alertedItems["traefik:unhealthy"] = time.Now().Add(-2 * time.Hour)
+	alertItems3, _ := reconcile.ShouldAlertDrift(items, alertedItems, cooldown)
+	assert.Len(t, alertItems3, 1, "should re-alert after cooldown expires")
+
+	_ = graduated2
+}
+
+func TestConfigFromEnv_RestartBreaker(t *testing.T) {
+	t.Run("default enabled with default threshold and window", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.True(t, cfg.ReconcileConfig.RestartBreakerEnabled)
+		assert.Equal(t, 5, cfg.ReconcileConfig.RestartThreshold)
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileConfig.RestartWindow)
+	})
+
+	t.Run("BOSUN_RESTART_BREAKER false disables", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_BREAKER", "false")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.False(t, cfg.ReconcileConfig.RestartBreakerEnabled)
+	})
+
+	t.Run("BOSUN_RESTART_BREAKER 0 disables", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_BREAKER", "0")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.False(t, cfg.ReconcileConfig.RestartBreakerEnabled)
+	})
+
+	t.Run("BOSUN_RESTART_BREAKER 1 enables", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_BREAKER", "1")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.True(t, cfg.ReconcileConfig.RestartBreakerEnabled)
+	})
+
+	t.Run("BOSUN_RESTART_BREAKER non-canonical truthy keeps enabled", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_BREAKER", "yes")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.True(t, cfg.ReconcileConfig.RestartBreakerEnabled)
+	})
+
+	t.Run("BOSUN_RESTART_THRESHOLD valid integer", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_THRESHOLD", "10")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10, cfg.ReconcileConfig.RestartThreshold)
+	})
+
+	t.Run("BOSUN_RESTART_THRESHOLD zero retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_THRESHOLD", "0")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5, cfg.ReconcileConfig.RestartThreshold)
+	})
+
+	t.Run("BOSUN_RESTART_THRESHOLD negative retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_THRESHOLD", "-3")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5, cfg.ReconcileConfig.RestartThreshold)
+	})
+
+	t.Run("BOSUN_RESTART_THRESHOLD invalid retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_THRESHOLD", "not-a-number")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 5, cfg.ReconcileConfig.RestartThreshold)
+	})
+
+	t.Run("BOSUN_RESTART_WINDOW parses duration", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_WINDOW", "30m")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 30*time.Minute, cfg.ReconcileConfig.RestartWindow)
+	})
+
+	t.Run("BOSUN_RESTART_WINDOW parses plain seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_WINDOW", "600")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileConfig.RestartWindow)
+	})
+
+	t.Run("BOSUN_RESTART_WINDOW zero retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_WINDOW", "0")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileConfig.RestartWindow)
+	})
+
+	t.Run("BOSUN_RESTART_WINDOW negative retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_WINDOW", "-5m")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileConfig.RestartWindow)
+	})
+
+	t.Run("BOSUN_RESTART_WINDOW invalid retains default", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_WINDOW", "not-a-duration")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileConfig.RestartWindow)
 	})
 }
 

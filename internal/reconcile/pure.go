@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 )
@@ -121,4 +122,104 @@ func buildSSHKeyPaths(envKey, homeDir string) []string {
 		}
 	}
 	return result
+}
+
+// composeFailureKind indicates whether a compose-up failure is recoverable.
+type composeFailureKind int
+
+const (
+	// failureStartFailure means one or more containers failed to start.
+	// This is the zero value so that an uninitialized result defaults to
+	// the conservative "trigger rollback" path (fail-safe).
+	failureStartFailure composeFailureKind = iota
+	// failureUnhealthyOnly means all containers are running but some are unhealthy.
+	failureUnhealthyOnly
+)
+
+// composeFailureResult holds the classification of a compose-up failure.
+type composeFailureResult struct {
+	Kind      composeFailureKind
+	Unhealthy []string // container names that are running but unhealthy
+	Failed    []string // container names that failed to start
+}
+
+// composePSEntry represents a single container from `docker compose ps --format json`.
+// Docker Compose v2 emits one JSON object per line (NDJSON).
+type composePSEntry struct {
+	Name   string `json:"Name"`
+	State  string `json:"State"`
+	Health string `json:"Health"`
+}
+
+// classifyComposePS inspects parsed `docker compose ps` output to classify the
+// failure. Each container is categorized as running-healthy, running-unhealthy,
+// or failed (exited/restarting/dead/absent).
+//
+// Returns failureUnhealthyOnly when every container is running (some unhealthy).
+// Returns failureStartFailure when any container is not running.
+func classifyComposePS(entries []composePSEntry) composeFailureResult {
+	var unhealthy []string
+	var failed []string
+
+	for _, e := range entries {
+		switch strings.ToLower(e.State) {
+		case "running":
+			health := strings.ToLower(e.Health)
+			if health == "unhealthy" || health == "starting" {
+				unhealthy = append(unhealthy, e.Name)
+			}
+			// "healthy" or "" (no healthcheck) are fine
+		default:
+			// exited, restarting, dead, created, paused, removing, etc.
+			failed = append(failed, e.Name)
+		}
+	}
+
+	if len(failed) > 0 {
+		return composeFailureResult{Kind: failureStartFailure, Unhealthy: unhealthy, Failed: failed}
+	}
+	if len(unhealthy) > 0 {
+		return composeFailureResult{Kind: failureUnhealthyOnly, Unhealthy: unhealthy, Failed: failed}
+	}
+	// All containers running and healthy but compose still exited non-zero.
+	return composeFailureResult{Kind: failureStartFailure}
+}
+
+// parseComposePSOutput parses output from `docker compose ps --format json`.
+// Handles both JSON array format (Docker Compose docs spec) and NDJSON
+// (one JSON object per line, emitted by Compose v2.21.0+).
+func parseComposePSOutput(output []byte) ([]composePSEntry, error) {
+	trimmed := strings.TrimSpace(string(output))
+	if trimmed == "" {
+		return nil, nil
+	}
+
+	// JSON array format: [{...},{...}]
+	if strings.HasPrefix(trimmed, "[") {
+		var entries []composePSEntry
+		if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
+			return nil, err
+		}
+		if len(entries) == 0 {
+			return nil, nil
+		}
+		return entries, nil
+	}
+
+	// NDJSON format: one JSON object per line
+	var entries []composePSEntry
+	lines := strings.Split(trimmed, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry composePSEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+
+	return entries, nil
 }

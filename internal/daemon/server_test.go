@@ -603,15 +603,17 @@ func TestHandleWidget(t *testing.T) {
 }
 
 func TestHandleMetrics(t *testing.T) {
-	t.Run("GET returns 200 text/plain with prometheus output", func(t *testing.T) {
+	t.Run("GET returns 200 with prometheus output", func(t *testing.T) {
 		_, s := newTestDaemon(t)
 
 		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 		w := httptest.NewRecorder()
-		s.handleMetrics(w, req)
+
+		handler := s.metricsMiddleware(s.promHandler())
+		handler.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusOK, w.Code)
-		assert.Equal(t, "text/plain", w.Header().Get("Content-Type"))
+		assert.Contains(t, w.Header().Get("Content-Type"), "text/plain")
 
 		body := w.Body.String()
 		assert.Contains(t, body, "bosun_ready")
@@ -629,22 +631,23 @@ func TestHandleMetrics(t *testing.T) {
 
 		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 		w := httptest.NewRecorder()
-		s.handleMetrics(w, req)
+
+		handler := s.metricsMiddleware(s.promHandler())
+		handler.ServeHTTP(w, req)
 
 		assert.Contains(t, w.Body.String(), "bosun_last_reconcile_timestamp")
 	})
 
-	t.Run("includes error metric when degraded", func(t *testing.T) {
-		d, s := newTestDaemon(t)
-
-		d.stateMu.Lock()
-		d.lastError = assert.AnError
-		d.stateMu.Unlock()
+	t.Run("includes error metric", func(t *testing.T) {
+		_, s := newTestDaemon(t)
 
 		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 		w := httptest.NewRecorder()
-		s.handleMetrics(w, req)
 
+		handler := s.metricsMiddleware(s.promHandler())
+		handler.ServeHTTP(w, req)
+
+		// bosun_reconcile_errors_total is always present as a gauge (value 0 when healthy).
 		assert.Contains(t, w.Body.String(), "bosun_reconcile_errors_total")
 	})
 
@@ -653,7 +656,9 @@ func TestHandleMetrics(t *testing.T) {
 
 		req := httptest.NewRequest(http.MethodPost, "/metrics", nil)
 		w := httptest.NewRecorder()
-		s.handleMetrics(w, req)
+
+		handler := s.metricsMiddleware(s.promHandler())
+		handler.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
 	})

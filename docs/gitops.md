@@ -256,10 +256,25 @@ When running as a daemon, drift checks run on a configurable interval (default: 
 1. Skips if a reconciliation is in progress (avoids state file race conditions)
 2. Loads declared state from the deploy state file
 3. Queries Docker for actual state
-4. Updates the state file with drift results
-5. Sends an alert if critical drift is detected (missing or unhealthy services)
+4. Filters through the debounce layer (if enabled via `BOSUN_DRIFT_ALERT_DEBOUNCE`)
+5. Filters through the dedup layer (per-item cooldown via `BOSUN_DRIFT_ALERT_COOLDOWN`)
+6. Updates the state file with drift results and debounce/dedup timestamps
+7. Sends an alert if critical drift persists past both layers
 
 Set `BOSUN_DRIFT_INTERVAL=0` to disable periodic drift checks.
+
+#### Drift Alert Debounce
+
+Transient drift from I/O pressure, image updates, or daemon restarts generates alert noise that self-resolves within minutes. The debounce layer suppresses alerts until drift persists beyond a configurable window.
+
+The alert pipeline flows: **detect -> debounce filter -> dedup (per-item cooldown) -> send**.
+
+- **`BOSUN_DRIFT_ALERT_DEBOUNCE`** (env var) or **`drift_alert_debounce`** (bosun.yaml): Duration before first alert fires. Default `0` (disabled, alerts fire immediately). Recommended starting value: `5m`.
+- First detection records the item in `drift_debounce_items` without alerting.
+- If drift resolves before the window expires, the item is silently removed (no alert).
+- If drift persists past the window, the item graduates to the dedup/cooldown layer.
+- Resolution alerts bypass debounce: they fire immediately for previously alerted items, but not for items that were still in debounce (never alerted).
+- Debounce state persists across daemon restarts via the state file.
 
 ### Post-Deploy Verification
 
@@ -316,6 +331,9 @@ Status values: `clean` (no drift), `drifted` (items detected), `unknown` (no dep
 | `FORCE` | No | `false` | Deploy even without changes |
 | `BOSUN_STATE_DIR` | No | `/var/lib/bosun` | Directory for deploy state file |
 | `BOSUN_DRIFT_INTERVAL` | No | `5m` | Drift check interval (0 to disable) |
+| `BOSUN_DRIFT_ALERT_COOLDOWN` | No | `1h` | Cooldown between repeated drift alerts per item |
+| `BOSUN_DRIFT_ALERT_DEBOUNCE` | No | `0` | Debounce window before first drift alert (0 = disabled) |
+| `BOSUN_DRIFT_RESOLVE_ALERTS` | No | `true` | Send "drift resolved" notifications |
 
 ### Command-Line Flags
 

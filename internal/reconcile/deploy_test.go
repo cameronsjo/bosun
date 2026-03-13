@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,12 +18,146 @@ func TestNewDeployOps(t *testing.T) {
 	t.Run("with dry run", func(t *testing.T) {
 		deploy := NewDeployOps(true, "")
 		assert.True(t, deploy.DryRun)
+		assert.True(t, deploy.RemoveOrphans, "RemoveOrphans should default to true")
 	})
 
 	t.Run("without dry run", func(t *testing.T) {
 		deploy := NewDeployOps(false, "")
 		assert.False(t, deploy.DryRun)
+		assert.True(t, deploy.RemoveOrphans, "RemoveOrphans should default to true")
 	})
+}
+
+func TestDeployOps_ComposeUpTimeout(t *testing.T) {
+	t.Run("returns default when not configured", func(t *testing.T) {
+		d := &DeployOps{}
+		assert.Equal(t, DefaultComposeUpTimeout, d.composeUpTimeout())
+	})
+
+	t.Run("returns configured value", func(t *testing.T) {
+		d := &DeployOps{ComposeUpTimeout: 30 * time.Minute}
+		assert.Equal(t, 30*time.Minute, d.composeUpTimeout())
+	})
+
+	t.Run("NewDeployOps leaves timeout at zero (uses default)", func(t *testing.T) {
+		d := NewDeployOps(false, "test")
+		assert.Zero(t, d.ComposeUpTimeout)
+		assert.Equal(t, DefaultComposeUpTimeout, d.composeUpTimeout())
+	})
+}
+
+func TestDeployOps_ComposeUpArgs_RemoveOrphans(t *testing.T) {
+	tests := []struct {
+		name           string
+		removeOrphans  bool
+		projectName    string
+		wantContains   string
+		wantMissing    string
+		useConstructor bool
+	}{
+		{
+			name:          "remove orphans enabled includes flag",
+			removeOrphans: true,
+			projectName:   "bosun",
+			wantContains:  "--remove-orphans",
+		},
+		{
+			name:          "remove orphans disabled omits flag",
+			removeOrphans: false,
+			projectName:   "bosun",
+			wantMissing:   "--remove-orphans",
+		},
+		{
+			name:           "default NewDeployOps includes remove-orphans",
+			projectName:    "bosun",
+			wantContains:   "--remove-orphans",
+			useConstructor: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var d *DeployOps
+			if tt.useConstructor {
+				d = NewDeployOps(false, tt.projectName)
+			} else {
+				d = &DeployOps{
+					ProjectName:   tt.projectName,
+					RemoveOrphans: tt.removeOrphans,
+				}
+			}
+			args := d.composeUpArgs([]string{"docker-compose.yml"})
+
+			if tt.wantContains != "" {
+				assert.Contains(t, args, tt.wantContains)
+			}
+			if tt.wantMissing != "" {
+				assert.NotContains(t, args, tt.wantMissing)
+			}
+		})
+	}
+}
+
+func TestDeployOps_ComposeUpRemoteCmd_RemoveOrphans(t *testing.T) {
+	tests := []struct {
+		name          string
+		removeOrphans bool
+		projectName   string
+		wantContains  string
+		wantMissing   string
+	}{
+		{
+			name:          "remote compose up includes remove-orphans",
+			removeOrphans: true,
+			projectName:   "bosun",
+			wantContains:  "--remove-orphans",
+		},
+		{
+			name:          "remote compose up omits remove-orphans",
+			removeOrphans: false,
+			projectName:   "bosun",
+			wantMissing:   "--remove-orphans",
+		},
+		{
+			name:          "default NewDeployOps remote includes remove-orphans",
+			removeOrphans: true,
+			projectName:   "bosun",
+			wantContains:  "--remove-orphans",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var d *DeployOps
+			if tt.name == "default NewDeployOps remote includes remove-orphans" {
+				d = NewDeployOps(false, tt.projectName)
+			} else {
+				d = &DeployOps{
+					ProjectName:   tt.projectName,
+					RemoveOrphans: tt.removeOrphans,
+				}
+			}
+			sshCmd := d.remoteComposeUpCmd("/opt/compose")
+
+			if tt.wantContains != "" {
+				assert.Contains(t, sshCmd, tt.wantContains)
+			}
+			if tt.wantMissing != "" {
+				assert.NotContains(t, sshCmd, tt.wantMissing)
+			}
+		})
+	}
+}
+
+func TestDeployOps_ZeroValueDeployOps_RemoveOrphansDisabled(t *testing.T) {
+	// Zero-value DeployOps{} has RemoveOrphans=false; NewDeployOps defaults to true.
+	zero := &DeployOps{}
+	assert.False(t, zero.RemoveOrphans, "zero-value DeployOps should have RemoveOrphans=false")
+	assert.NotContains(t, zero.composeUpArgs([]string{"f.yml"}), "--remove-orphans")
+
+	constructed := NewDeployOps(false, "test")
+	assert.True(t, constructed.RemoveOrphans, "NewDeployOps should default RemoveOrphans to true")
+	assert.Contains(t, constructed.composeUpArgs([]string{"f.yml"}), "--remove-orphans")
 }
 
 func TestDeployOps_Backup(t *testing.T) {
@@ -1308,6 +1443,21 @@ func TestDeployOps_ComposeUpMultipleWithRollbackPaths(t *testing.T) {
 	})
 }
 
+func TestErrComposeUnhealthy_SentinelBehavior(t *testing.T) {
+	t.Run("error wrapping preserves sentinel", func(t *testing.T) {
+		err := fmt.Errorf("%w: obsidian, mealie", ErrComposeUnhealthy)
+		assert.ErrorIs(t, err, ErrComposeUnhealthy)
+		assert.Contains(t, err.Error(), "obsidian")
+		assert.Contains(t, err.Error(), "mealie")
+	})
+
+	t.Run("sentinel is distinct from rollback errors", func(t *testing.T) {
+		err := fmt.Errorf("%w: obsidian", ErrComposeUnhealthy)
+		assert.False(t, errors.Is(err, ErrRollbackSucceeded))
+		assert.False(t, errors.Is(err, ErrRollbackFailed))
+	})
+}
+
 func TestDeployOps_DeployLocalStandardMode(t *testing.T) {
 	ctx := context.Background()
 
@@ -1354,6 +1504,59 @@ func TestDeployOps_DeployLocalStandardMode(t *testing.T) {
 		err := d.DeployLocal(cancelledCtx, sourceDir, targetDir, nil)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("rollback decision with injected compose errors", func(t *testing.T) {
+		tests := []struct {
+			name            string
+			composeErr      error
+			wantErr         error
+			wantNoRollback  bool // true if rollback should be skipped
+		}{
+			{
+				name:           "ErrComposeUnhealthy skips rollback",
+				composeErr:     fmt.Errorf("%w: obsidian", ErrComposeUnhealthy),
+				wantErr:        ErrComposeUnhealthy,
+				wantNoRollback: true,
+			},
+			{
+				name:           "generic error triggers rollback",
+				composeErr:     fmt.Errorf("compose up failed: exit code 1"),
+				wantErr:        ErrRollbackFailed,
+				wantNoRollback: false,
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				tmpDir := t.TempDir()
+				composeFile := filepath.Join(tmpDir, "docker-compose.yml")
+				require.NoError(t, os.WriteFile(composeFile, []byte("version: '3'"), 0644))
+
+				backupDir := filepath.Join(tmpDir, "backup")
+				require.NoError(t, os.MkdirAll(backupDir, 0755))
+				backupFile := filepath.Join(backupDir, "docker-compose.yml")
+				require.NoError(t, os.WriteFile(backupFile, []byte("not valid yaml: [[["), 0644))
+
+				d := &DeployOps{
+					DryRun:      false,
+					ProjectName: "rollbacktest",
+					composeUpFn: func(_ context.Context, _ []string) error {
+						return tt.composeErr
+					},
+				}
+
+				err := d.ComposeUpMultipleWithRollback(ctx, []string{composeFile}, backupDir)
+				require.Error(t, err)
+				assert.ErrorIs(t, err, tt.wantErr)
+
+				if tt.wantNoRollback {
+					// Should NOT contain rollback-related error text.
+					assert.NotErrorIs(t, err, ErrRollbackFailed)
+					assert.NotErrorIs(t, err, ErrRollbackSucceeded)
+				}
+			})
+		}
 	})
 
 	t.Run("content hash mode MkdirAll error", func(t *testing.T) {

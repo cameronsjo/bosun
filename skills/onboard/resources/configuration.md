@@ -70,6 +70,11 @@ alerts:
   twilio_to_numbers:
     - "+1987654321"
 
+# Whether to pass --remove-orphans to docker compose up.
+# Set to false in shared environments where Bosun doesn't own all containers.
+# Default: true (orphan containers from removed services are cleaned up).
+remove_orphans: true
+
 # Global pause after deploy, before any post-sync hooks run.
 # Lets FUSE filesystems (e.g., Unraid's shfs) propagate writes.
 hook_settle_delay: "2s"
@@ -82,6 +87,11 @@ deploy_paths:
   - "compose/**"
   - "traefik/**"
   - "bosun.yaml"
+
+# Drift alert debounce: suppress alerts for transient drift that self-resolves.
+# Items must persist past this window before the first alert fires.
+# Default: 0 (disabled, alerts fire immediately). Recommended: 5m.
+drift_alert_debounce: "5m"
 
 # Post-sync hooks: restart containers when specific config files change.
 # Solves services (like Traefik) not picking up config changes on FUSE mounts.
@@ -107,9 +117,11 @@ post_sync_hooks:
 | `tunnel.provider` | `tailscale` | Tunnel provider: `tailscale` or `cloudflare` |
 | `alerts.on_success` | `false` | Send alerts on successful deploys |
 | `alerts.on_failure` | `true` | Send alerts on failed deploys |
+| `remove_orphans` | `true` | Pass `--remove-orphans` to docker compose up |
 | `post_sync_hooks` | `[]` | Container restart hooks triggered by file changes |
 | `hook_settle_delay` | `0` (disabled) | Global pause after deploy before hooks run (e.g., `"2s"`) |
 | `deploy_paths` | `[]` (deploy all) | Glob allowlist — skip pipeline when no changed files match |
+| `drift_alert_debounce` | `0` (disabled) | Debounce window before first drift alert fires (e.g., `"5m"`) |
 
 ## Directory Structure
 
@@ -236,6 +248,7 @@ Used by `bosun daemon` and `bosun reconcile`:
 
 | Variable | Description |
 |----------|-------------|
+| `BOSUN_REMOVE_ORPHANS` | Pass `--remove-orphans` to docker compose up (default: `true`; overrides config file). Set to `false` in shared environments where Bosun doesn't own all containers |
 | `BOSUN_SECRETS_FILE` | Default secrets file for `bosun render` |
 | `SOPS_AGE_KEY_FILE` | Path to Age key file (default: `~/.config/sops/age/keys.txt`) |
 
