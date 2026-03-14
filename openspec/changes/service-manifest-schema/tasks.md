@@ -30,6 +30,7 @@
 - [ ] 4.3 Add `DriftPortMismatch`, `DriftVolumeMismatch`, `DriftHealthcheckMissing` drift types
 - [ ] 4.4 Update `CompareDrift()` to compare ports, volumes, healthcheck against Docker inspect data
 - [ ] 4.5 Update drift CLI output to display enriched drift details
+- [ ] 4.6 Update `skills/onboard/resources/gitops.md` to document enriched drift types (port, volume, healthcheck) and Docker inspect requirement
 
 ## 5. CLI Integration
 

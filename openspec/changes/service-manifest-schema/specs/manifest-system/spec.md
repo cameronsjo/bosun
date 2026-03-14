@@ -4,11 +4,9 @@
 
 The system SHALL provide a typed `ServiceSpec` schema that captures the canonical definition of a service's runtime characteristics. `ServiceSpec` is a normalization target — it is extracted from rendered compose output, not authored directly by users.
 
-A `ServiceSpec` MUST contain:
-
-- `image`: Container image reference (registry/name:tag)
-
 A `ServiceSpec` MAY contain:
+
+- `image`: Container image reference (registry/name:tag). May be empty for build-only services that define a `build` context instead of a pre-built image
 
 - `ports`: List of `PortMapping` entries (host port, container port, protocol)
 - `volumes`: List of `VolumeMount` entries (source, target, read-only)
@@ -96,7 +94,7 @@ The system SHALL validate `ServiceSpec` fields for correctness and consistency. 
 #### Scenario: Traefik rule syntax validation
 
 - **WHEN** a `TraefikRoute` has a `rule` field
-- **THEN** validation checks for common syntax issues (unmatched backticks, missing Host/PathPrefix)
+- **THEN** validation checks for common syntax issues (unmatched backticks, at least one valid Traefik matcher such as Host, PathPrefix, Path, Method, Header, Query, ClientIP, etc.)
 
 ### Requirement: Enriched Drift Detection
 
