@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0](https://github.com/cameronsjo/bosun/compare/v0.26.0...v0.27.0) (2026-03-14)
+
+
+### Features
+
+* **docker:** add graceful container shutdown with configurable timeout ([4186310](https://github.com/cameronsjo/bosun/commit/41863106bfbc39b134212a1ba9de74cdc5ee81c0))
+* **docker:** add graceful container shutdown with configurable timeout ([6eb33bd](https://github.com/cameronsjo/bosun/commit/6eb33bda9c48f1bc54abc37240ad1daccf2ae30a)), closes [#375](https://github.com/cameronsjo/bosun/issues/375)
+* **docker:** add graceful container shutdown with configurable timeout ([#135](https://github.com/cameronsjo/bosun/issues/135)) ([4186310](https://github.com/cameronsjo/bosun/commit/41863106bfbc39b134212a1ba9de74cdc5ee81c0))
+
+
+### Bug Fixes
+
+* **openspec:** address CodeRabbit findings on deploy paths proposal ([ba9d64e](https://github.com/cameronsjo/bosun/commit/ba9d64e26aef3fd404d528147e6cd83309b5076e))
+* **reconcile:** fail fast when pre-deploy NeedsRedeploy persistence fails ([c838c1f](https://github.com/cameronsjo/bosun/commit/c838c1f685677ec9b7eef3354a9144236d1681fb))
+* **reconcile:** track partial deploy failure for retry on next reconcile ([dda6ea8](https://github.com/cameronsjo/bosun/commit/dda6ea8907004b71c408c83b000077a47e3ab314))
+* **reconcile:** track partial deploy failure for retry on next reconcile ([cc3aa0f](https://github.com/cameronsjo/bosun/commit/cc3aa0fe01fec80056d91f1d9a2d65402d6f44ee))
+* **reconcile:** track partial deploy failure for retry on next reconcile ([#132](https://github.com/cameronsjo/bosun/issues/132)) ([dda6ea8](https://github.com/cameronsjo/bosun/commit/dda6ea8907004b71c408c83b000077a47e3ab314))
+
 ## [0.26.0](https://github.com/cameronsjo/bosun/compare/v0.25.1...v0.26.0) (2026-03-13)
 
 
