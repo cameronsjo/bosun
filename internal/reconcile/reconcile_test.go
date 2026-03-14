@@ -3122,9 +3122,11 @@ func TestRunSaveStateErrorInAttemptTracking(t *testing.T) {
 	}
 	r := NewReconciler(cfg, WithGitOperations(gitOps), WithDeployOps(deploy))
 
-	// Run should succeed despite SaveState errors (they're logged, not fatal).
+	// Run should fail because the pre-deploy NeedsRedeploy marker cannot be persisted.
+	// Without the safety net, a partial deploy failure would not be retried.
 	err := r.Run(context.Background())
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to persist pre-deploy redeploy marker")
 }
 
 // --- Health Gate pipeline integration tests ---

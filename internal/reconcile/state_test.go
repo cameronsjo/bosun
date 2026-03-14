@@ -501,6 +501,54 @@ func TestFilterDebounced_Persistence(t *testing.T) {
 	)
 }
 
+func TestNeedsRedeploy_RoundTrip(t *testing.T) {
+	dir := evalSymlinks(t, t.TempDir())
+	path := filepath.Join(dir, "deploy-state.json")
+
+	state := &DeployState{
+		LastDeployedCommit:  "abc123",
+		LastAttemptedCommit: "def456",
+		AttemptCount:        1,
+		NeedsRedeploy:       true,
+	}
+
+	require.NoError(t, SaveState(path, state))
+	loaded := LoadState(path)
+
+	assert.True(t, loaded.NeedsRedeploy, "NeedsRedeploy should persist through save/load")
+	assert.Equal(t, "abc123", loaded.LastDeployedCommit)
+	assert.Equal(t, "def456", loaded.LastAttemptedCommit)
+}
+
+func TestNeedsRedeploy_OmittedWhenFalse(t *testing.T) {
+	dir := evalSymlinks(t, t.TempDir())
+	path := filepath.Join(dir, "deploy-state.json")
+
+	state := &DeployState{
+		LastDeployedCommit: "abc123",
+		NeedsRedeploy:      false,
+	}
+
+	require.NoError(t, SaveState(path, state))
+
+	// Verify the JSON does not contain needs_redeploy when false (omitempty).
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "needs_redeploy")
+}
+
+func TestNeedsRedeploy_BackwardsCompatible(t *testing.T) {
+	// State files from before NeedsRedeploy was added should load with NeedsRedeploy=false.
+	data := `{"schema_version": 2, "last_deployed_commit": "abc123"}`
+	path := filepath.Join(t.TempDir(), "deploy-state.json")
+	require.NoError(t, os.WriteFile(path, []byte(data), 0644))
+
+	state := LoadState(path)
+
+	assert.False(t, state.NeedsRedeploy, "old state files without NeedsRedeploy should default to false")
+	assert.Equal(t, "abc123", state.LastDeployedCommit)
+}
+
 func TestSaveState_SetsSchemaVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "deploy-state.json")
