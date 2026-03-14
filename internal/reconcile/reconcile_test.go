@@ -853,7 +853,8 @@ func TestSendSuccessAlert(t *testing.T) {
 		r.sendSuccessAlert(context.Background())
 		assert.Equal(t, 1, alerter.deploySuccessCalls)
 		assert.Equal(t, []string{"traefik", "authelia"}, alerter.lastSuccessServices)
-		assert.True(t, alerter.lastSuccessDuration >= 29*time.Second)
+		assert.GreaterOrEqual(t, alerter.lastSuccessDuration, 29*time.Second)
+		assert.Less(t, alerter.lastSuccessDuration, 31*time.Second)
 	})
 
 	t.Run("nil services when no declared services", func(t *testing.T) {
@@ -918,7 +919,8 @@ func TestSendThrottledFailureAlert(t *testing.T) {
 		r.sendThrottledFailureAlert(context.Background(), state, "compose up failed")
 		assert.Equal(t, 1, alerter.deployFailureCalls)
 		assert.Equal(t, []string{"nginx"}, alerter.lastFailureServices)
-		assert.True(t, alerter.lastFailureDuration >= 14*time.Second)
+		assert.GreaterOrEqual(t, alerter.lastFailureDuration, 14*time.Second)
+		assert.Less(t, alerter.lastFailureDuration, 16*time.Second)
 	})
 }
 

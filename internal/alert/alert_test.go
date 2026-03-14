@@ -184,8 +184,8 @@ func TestManager_SendDeploySuccess(t *testing.T) {
 
 		a := alerts[0]
 		assert.NotContains(t, a.Message, "Services:")
-		assert.Empty(t, a.Metadata["services"])
-		assert.Empty(t, a.Metadata["service_count"])
+		assert.NotContains(t, a.Metadata, "services")
+		assert.NotContains(t, a.Metadata, "service_count")
 	})
 
 	t.Run("short commit not truncated", func(t *testing.T) {
@@ -242,7 +242,8 @@ func TestManager_SendDeployFailure(t *testing.T) {
 
 		a := alerts[0]
 		assert.NotContains(t, a.Message, "Services:")
-		assert.Empty(t, a.Metadata["services"])
+		assert.NotContains(t, a.Metadata, "services")
+		assert.NotContains(t, a.Metadata, "service_count")
 	})
 }
 
