@@ -190,8 +190,8 @@ func DefaultConfig() *Config {
 
 // AlertSender sends alerts for reconciliation events.
 type AlertSender interface {
-	SendDeploySuccess(ctx context.Context, commit, target string) error
-	SendDeployFailure(ctx context.Context, commit, target, reason string) error
+	SendDeploySuccess(ctx context.Context, commit, target string, services []string, duration time.Duration) error
+	SendDeployFailure(ctx context.Context, commit, target, reason string, services []string, duration time.Duration) error
 	SendDeployRecovery(ctx context.Context, commit, target string, priorFailures int) error
 	SendUnhealthyContainers(ctx context.Context, target string, containers []string) error
 	SendRollbackSuccess(ctx context.Context, target, backupName string) error
@@ -216,6 +216,7 @@ type Reconciler struct {
 	lastComposeFiles []string          // Compose files from last deploy (for health gate rollback)
 	lastCommit       string            // Track commit for alerting
 	declaredServices []DeclaredService // Extracted from rendered compose after templating
+	runStartTime     time.Time         // Pipeline start time for duration reporting
 }
 
 // NewReconciler creates a new Reconciler with the given configuration.
@@ -313,6 +314,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	r.declaredServices = nil
 	r.lastBackupPath = ""
 	r.lastComposeFiles = nil
+	r.runStartTime = startTime
 
 	// Acquire lock to prevent concurrent runs.
 	// Lock failures are transient (another reconciliation is running) and lack state context,
@@ -565,7 +567,10 @@ func (r *Reconciler) sendSuccessAlert(ctx context.Context) {
 		target = "local"
 	}
 
-	if err := r.alerter.SendDeploySuccess(ctx, r.lastCommit, target); err != nil {
+	services := r.serviceNames()
+	duration := time.Since(r.runStartTime)
+
+	if err := r.alerter.SendDeploySuccess(ctx, r.lastCommit, target, services, duration); err != nil {
 		logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 		logger.Warn().
 			Err(err).
@@ -573,6 +578,18 @@ func (r *Reconciler) sendSuccessAlert(ctx context.Context) {
 			Str(log.FieldTarget, target).
 			Msg("Failed to send success alert")
 	}
+}
+
+// serviceNames extracts service names from declared services.
+func (r *Reconciler) serviceNames() []string {
+	if len(r.declaredServices) == 0 {
+		return nil
+	}
+	names := make([]string, len(r.declaredServices))
+	for i, s := range r.declaredServices {
+		names[i] = s.Name
+	}
+	return names
 }
 
 // sendThrottledFailureAlert sends a failure alert if the throttle schedule allows it.
@@ -596,7 +613,10 @@ func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *Deplo
 		target = "local"
 	}
 
-	if err := r.alerter.SendDeployFailure(ctx, r.lastCommit, target, reason); err != nil {
+	services := r.serviceNames()
+	duration := time.Since(r.runStartTime)
+
+	if err := r.alerter.SendDeployFailure(ctx, r.lastCommit, target, reason, services, duration); err != nil {
 		logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 		logger.Warn().
 			Err(err).

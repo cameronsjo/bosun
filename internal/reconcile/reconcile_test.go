@@ -773,14 +773,22 @@ type mockAlertSender struct {
 	rollbackSuccessCalls   int
 	rollbackFailureCalls   int
 	lastErr                error
+	lastSuccessServices    []string
+	lastSuccessDuration    time.Duration
+	lastFailureServices    []string
+	lastFailureDuration    time.Duration
 }
 
-func (m *mockAlertSender) SendDeploySuccess(_ context.Context, _, _ string) error {
+func (m *mockAlertSender) SendDeploySuccess(_ context.Context, _, _ string, services []string, duration time.Duration) error {
 	m.deploySuccessCalls++
+	m.lastSuccessServices = services
+	m.lastSuccessDuration = duration
 	return m.lastErr
 }
-func (m *mockAlertSender) SendDeployFailure(_ context.Context, _, _, _ string) error {
+func (m *mockAlertSender) SendDeployFailure(_ context.Context, _, _, _ string, services []string, duration time.Duration) error {
 	m.deployFailureCalls++
+	m.lastFailureServices = services
+	m.lastFailureDuration = duration
 	return m.lastErr
 }
 func (m *mockAlertSender) SendDeployRecovery(_ context.Context, _, _ string, _ int) error {
@@ -831,6 +839,34 @@ func TestSendSuccessAlert(t *testing.T) {
 		r.sendSuccessAlert(context.Background()) // Should not panic
 		assert.Equal(t, 1, alerter.deploySuccessCalls)
 	})
+
+	t.Run("passes services and duration", func(t *testing.T) {
+		alerter := &mockAlertSender{}
+		cfg := &Config{OnSuccess: true}
+		r := NewReconciler(cfg, WithAlerter(alerter))
+		r.lastCommit = "abc123"
+		r.runStartTime = time.Now().Add(-30 * time.Second)
+		r.declaredServices = []DeclaredService{
+			{Name: "traefik", Image: "traefik:v3"},
+			{Name: "authelia", Image: "authelia:latest"},
+		}
+		r.sendSuccessAlert(context.Background())
+		assert.Equal(t, 1, alerter.deploySuccessCalls)
+		assert.Equal(t, []string{"traefik", "authelia"}, alerter.lastSuccessServices)
+		assert.GreaterOrEqual(t, alerter.lastSuccessDuration, 29*time.Second)
+		assert.Less(t, alerter.lastSuccessDuration, 31*time.Second)
+	})
+
+	t.Run("nil services when no declared services", func(t *testing.T) {
+		alerter := &mockAlertSender{}
+		cfg := &Config{OnSuccess: true}
+		r := NewReconciler(cfg, WithAlerter(alerter))
+		r.lastCommit = "abc123"
+		r.runStartTime = time.Now()
+		r.sendSuccessAlert(context.Background())
+		assert.Equal(t, 1, alerter.deploySuccessCalls)
+		assert.Nil(t, alerter.lastSuccessServices)
+	})
 }
 
 func TestSendThrottledFailureAlert(t *testing.T) {
@@ -864,6 +900,27 @@ func TestSendThrottledFailureAlert(t *testing.T) {
 		state := &DeployState{AttemptCount: 2, LastAlertedAttempt: 1}
 		r.sendThrottledFailureAlert(context.Background(), state, "deploy failed")
 		assert.Equal(t, 0, alerter.deployFailureCalls, "should be throttled")
+	})
+
+	t.Run("passes services and duration", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		stateFile := filepath.Join(tmpDir, "state.json")
+
+		alerter := &mockAlertSender{}
+		cfg := &Config{StateFile: stateFile, OnFailure: true}
+		r := NewReconciler(cfg, WithAlerter(alerter))
+		r.lastCommit = "abc123"
+		r.runStartTime = time.Now().Add(-15 * time.Second)
+		r.declaredServices = []DeclaredService{
+			{Name: "nginx", Image: "nginx:latest"},
+		}
+
+		state := &DeployState{AttemptCount: 1, LastAlertedAttempt: 0}
+		r.sendThrottledFailureAlert(context.Background(), state, "compose up failed")
+		assert.Equal(t, 1, alerter.deployFailureCalls)
+		assert.Equal(t, []string{"nginx"}, alerter.lastFailureServices)
+		assert.GreaterOrEqual(t, alerter.lastFailureDuration, 14*time.Second)
+		assert.Less(t, alerter.lastFailureDuration, 16*time.Second)
 	})
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -141,56 +142,109 @@ func TestManager_Send(t *testing.T) {
 }
 
 func TestManager_SendDeploySuccess(t *testing.T) {
-	m := NewManager()
-	p := newMockProvider("test", true)
-	m.AddProvider(p)
+	t.Run("basic with services and duration", func(t *testing.T) {
+		m := NewManager()
+		p := newMockProvider("test", true)
+		m.AddProvider(p)
 
-	err := m.SendDeploySuccess(context.Background(), "abc123def456", "unraid")
-	require.NoError(t, err)
+		services := []string{"traefik", "authelia", "portainer"}
+		duration := 45 * time.Second
 
-	alerts := p.getAlerts()
-	require.Len(t, alerts, 1)
+		err := m.SendDeploySuccess(context.Background(), "abc123def456", "unraid", services, duration)
+		require.NoError(t, err)
 
-	alert := alerts[0]
-	assert.Equal(t, "Deployment Successful", alert.Title)
-	assert.Contains(t, alert.Message, "abc123de") // Short commit.
-	assert.Contains(t, alert.Message, "unraid")
-	assert.Equal(t, SeverityInfo, alert.Severity)
-	assert.Equal(t, "reconcile", alert.Source)
-	assert.Equal(t, "abc123def456", alert.Metadata["commit"])
-	assert.Equal(t, "unraid", alert.Metadata["target"])
+		alerts := p.getAlerts()
+		require.Len(t, alerts, 1)
+
+		a := alerts[0]
+		assert.Equal(t, "Deployment Successful", a.Title)
+		assert.Contains(t, a.Message, "abc123de") // Short commit.
+		assert.Contains(t, a.Message, "unraid")
+		assert.Contains(t, a.Message, "45s")
+		assert.Contains(t, a.Message, "traefik, authelia, portainer")
+		assert.Equal(t, SeverityInfo, a.Severity)
+		assert.Equal(t, "reconcile", a.Source)
+		assert.Equal(t, "abc123def456", a.Metadata["commit"])
+		assert.Equal(t, "unraid", a.Metadata["target"])
+		assert.Equal(t, "45s", a.Metadata["duration"])
+		assert.Equal(t, "traefik, authelia, portainer", a.Metadata["services"])
+		assert.Equal(t, "3", a.Metadata["service_count"])
+	})
+
+	t.Run("no services omits service metadata", func(t *testing.T) {
+		m := NewManager()
+		p := newMockProvider("test", true)
+		m.AddProvider(p)
+
+		err := m.SendDeploySuccess(context.Background(), "abc123def456", "unraid", nil, 10*time.Second)
+		require.NoError(t, err)
+
+		alerts := p.getAlerts()
+		require.Len(t, alerts, 1)
+
+		a := alerts[0]
+		assert.NotContains(t, a.Message, "Services:")
+		assert.NotContains(t, a.Metadata, "services")
+		assert.NotContains(t, a.Metadata, "service_count")
+	})
+
+	t.Run("short commit not truncated", func(t *testing.T) {
+		m := NewManager()
+		p := newMockProvider("test", true)
+		m.AddProvider(p)
+
+		err := m.SendDeploySuccess(context.Background(), "abc", "unraid", nil, 5*time.Second)
+		require.NoError(t, err)
+
+		alerts := p.getAlerts()
+		require.Len(t, alerts, 1)
+		assert.Contains(t, alerts[0].Message, "abc")
+	})
 }
 
 func TestManager_SendDeployFailure(t *testing.T) {
-	m := NewManager()
-	p := newMockProvider("test", true)
-	m.AddProvider(p)
+	t.Run("basic with services and duration", func(t *testing.T) {
+		m := NewManager()
+		p := newMockProvider("test", true)
+		m.AddProvider(p)
 
-	err := m.SendDeployFailure(context.Background(), "abc123def456", "unraid", "connection timeout")
-	require.NoError(t, err)
+		services := []string{"traefik", "authelia"}
+		duration := 2 * time.Minute
 
-	alerts := p.getAlerts()
-	require.Len(t, alerts, 1)
+		err := m.SendDeployFailure(context.Background(), "abc123def456", "unraid", "connection timeout", services, duration)
+		require.NoError(t, err)
 
-	alert := alerts[0]
-	assert.Equal(t, "Deployment Failed", alert.Title)
-	assert.Contains(t, alert.Message, "connection timeout")
-	assert.Equal(t, SeverityError, alert.Severity)
-	assert.Equal(t, "connection timeout", alert.Metadata["error"])
-}
+		alerts := p.getAlerts()
+		require.Len(t, alerts, 1)
 
-func TestManager_SendDeploySuccess_ShortCommit(t *testing.T) {
-	m := NewManager()
-	p := newMockProvider("test", true)
-	m.AddProvider(p)
+		a := alerts[0]
+		assert.Equal(t, "Deployment Failed", a.Title)
+		assert.Contains(t, a.Message, "connection timeout")
+		assert.Contains(t, a.Message, "2m0s")
+		assert.Contains(t, a.Message, "traefik, authelia")
+		assert.Equal(t, SeverityError, a.Severity)
+		assert.Equal(t, "connection timeout", a.Metadata["error"])
+		assert.Equal(t, "2m0s", a.Metadata["duration"])
+		assert.Equal(t, "traefik, authelia", a.Metadata["services"])
+		assert.Equal(t, "2", a.Metadata["service_count"])
+	})
 
-	// Test with short commit that doesn't need truncation.
-	err := m.SendDeploySuccess(context.Background(), "abc", "unraid")
-	require.NoError(t, err)
+	t.Run("no services omits service metadata", func(t *testing.T) {
+		m := NewManager()
+		p := newMockProvider("test", true)
+		m.AddProvider(p)
 
-	alerts := p.getAlerts()
-	require.Len(t, alerts, 1)
-	assert.Contains(t, alerts[0].Message, "abc")
+		err := m.SendDeployFailure(context.Background(), "abc123def456", "unraid", "timeout", nil, 30*time.Second)
+		require.NoError(t, err)
+
+		alerts := p.getAlerts()
+		require.Len(t, alerts, 1)
+
+		a := alerts[0]
+		assert.NotContains(t, a.Message, "Services:")
+		assert.NotContains(t, a.Metadata, "services")
+		assert.NotContains(t, a.Metadata, "service_count")
+	})
 }
 
 func TestManager_SendDeployRecovery(t *testing.T) {
