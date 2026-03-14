@@ -35,3 +35,5 @@
 - [ ] 5.1 Update `skills/onboard/resources/configuration.md` with new config fields
 - [ ] 5.2 Update `skills/onboard/resources/gitops.md` with deploy path discovery behavior
 - [ ] 5.3 Update `AGENTS.md` env var table with new env vars
+- [ ] 5.4 Update `skills/onboard/resources/commands.md` with deploy-sync env/config usage examples
+- [ ] 5.5 Update `skills/onboard/resources/manifests.md` to reflect staging/discovery path conventions

@@ -5,10 +5,11 @@
 The reconciler SHALL support two deployment modes: local (direct file
 operations) and remote (SSH+tar or SCP).
 
-Deploy targets SHALL be discovered by scanning the staging directory after
-template rendering completes. Each top-level entry (directory or file) in the
-staging output becomes a deploy target. The reconciler SHALL sync each
-discovered target to the corresponding path under the appdata directory.
+Deploy targets SHALL be discovered by scanning staging subdirectories after
+template rendering completes, following staging conventions (e.g.
+`appdata/<service>/...` and `compose/...`). Each discovered subdirectory or file
+becomes a deploy target. The reconciler SHALL sync each discovered target to the
+corresponding path under the appdata directory.
 
 When `DeploySyncPaths` is configured (non-empty list of relative path patterns),
 only targets matching at least one pattern SHALL be synced. When
@@ -97,8 +98,6 @@ and reject strings starting with `-` to prevent SSH option injection.
 - **WHEN** template rendering produces an empty staging directory
 - **THEN** the reconciler logs a warning that no deploy targets were found
 - **AND** proceeds to compose up with no file changes
-
-## MODIFIED Requirements
 
 ### Requirement: Configuration Backup
 
