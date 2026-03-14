@@ -43,7 +43,7 @@ Services without an explicit policy default to `pinned`. This preserves current 
 
 ### Decision: Selective `docker compose pull` with service arguments
 
-`docker compose pull` accepts service name arguments to pull only specific services. When `auto` services exist, the pre-pull stage runs `docker compose pull <svc1> <svc2>` instead of pulling all services. When no `auto` services exist, the pre-pull stage is skipped entirely (or runs for all services if `add-image-prepull` is configured independently).
+`docker compose pull` accepts service name arguments to pull only specific services. When `auto` services exist, the pre-pull stage runs `docker compose pull <svc1> <svc2>` instead of pulling all services. When no `auto` services exist, the pre-pull stage is skipped entirely. If `add-image-prepull` is configured but `image_policies` are also present, selective pull takes precedence — only `auto` services are pulled. `add-image-prepull` acts as the fallback behavior only when no `image_policies` are configured at all.
 
 ### Decision: `BOSUN_IMAGE_POLICY` sets global default, not per-service
 

@@ -77,6 +77,37 @@ Image policies SHALL always be reloaded from the repo's `bosun.yaml` after each 
 - **THEN** the selective pull stage is skipped entirely
 - **AND** compose up proceeds without an explicit pull
 
+#### Scenario: Selective pull takes precedence over blanket pre-pull
+
+- **WHEN** `add-image-prepull` is configured
+- **AND** `image_policies` are also configured with per-service entries
+- **THEN** selective pull takes precedence — only `auto` services are pulled
+- **AND** `add-image-prepull` does NOT cause a blanket pull of all services
+- **AND** if all services resolve to `pinned`, the pull stage is skipped entirely
+- **NOTE** `add-image-prepull` acts as the fallback only when no `image_policies` are configured
+
+#### Scenario: Pull failure for auto service aborts pipeline
+
+- **WHEN** `image_policies` maps service `homepage` to `auto`
+- **AND** `docker compose pull homepage` fails (e.g., registry unreachable)
+- **THEN** the pipeline aborts with an error identifying `homepage` as the failed service
+- **AND** compose up is NOT executed
+- **AND** a throttled failure alert is sent
+
+#### Scenario: Invalid policy value rejected at config load
+
+- **WHEN** `image_policies` contains `homepage: always`
+- **THEN** config loading rejects the value with a validation error
+- **AND** the error message lists `always` as the invalid value and `pinned`, `auto` as valid options
+
+#### Scenario: Unknown service name in policy map logs warning
+
+- **WHEN** `image_policies` maps `nonexistent-service` to `auto`
+- **AND** no compose file declares a service named `nonexistent-service`
+- **THEN** a warning is logged identifying the unknown service name
+- **AND** reconciliation continues without error
+- **AND** the unknown entry is ignored during selective pull
+
 #### Scenario: Selective pull for auto services in daemon
 
 - **WHEN** the daemon triggers reconciliation
