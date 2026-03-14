@@ -6,7 +6,7 @@ The system SHALL provide a typed `ServiceSpec` schema that captures the canonica
 
 A `ServiceSpec` MAY contain:
 
-- `image`: Container image reference (registry/name:tag). May be empty for build-only services that define a `build` context instead of a pre-built image
+- `image`: Container image reference (registry/name:tag); the `image` field MAY be empty for build-only services that define a `build` context instead of a pre-built image
 
 - `ports`: List of `PortMapping` entries (host port, container port, protocol)
 - `volumes`: List of `VolumeMount` entries (source, target, read-only)
@@ -94,7 +94,7 @@ The system SHALL validate `ServiceSpec` fields for correctness and consistency. 
 #### Scenario: Traefik rule syntax validation
 
 - **WHEN** a `TraefikRoute` has a `rule` field
-- **THEN** validation checks for common syntax issues (unmatched backticks, at least one valid Traefik matcher such as Host, PathPrefix, Path, Method, Header, Query, ClientIP, etc.)
+- **THEN** validation checks for common syntax issues (unmatched backticks, at least one recognized Traefik matcher: Host, HostRegexp, Path, PathPrefix, PathRegexp, Method, Header/Headers, HeaderRegexp/HeadersRegexp, Query, QueryRegexp, ClientIP)
 
 ### Requirement: Enriched Drift Detection
 
