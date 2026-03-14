@@ -19,6 +19,8 @@ type ReloadedConfig struct {
 	PostSyncHooks      []PostSyncHook
 	HookSettleDelay    time.Duration
 	DeployPaths        []string
+	DeploySyncPaths    []string
+	DeploySyncExclude  []string
 	CriticalContainers []string
 	OnFailure          *bool
 	OnSuccess          *bool
@@ -124,6 +126,22 @@ type Config struct {
 	// DeployPathsFromEnv is true when BOSUN_DEPLOY_PATHS env var is set.
 	// When true, repo config reload will not update DeployPaths.
 	DeployPathsFromEnv bool
+
+	// DeploySyncPaths is an allowlist of glob patterns for deploy sync targets.
+	// When non-empty, only staging directory entries matching these patterns are deployed.
+	DeploySyncPaths []string
+
+	// DeploySyncPathsFromEnv is true when BOSUN_DEPLOY_SYNC_PATHS env var is set.
+	// When true, repo config reload will not update DeploySyncPaths.
+	DeploySyncPathsFromEnv bool
+
+	// DeploySyncExclude is a blocklist of glob patterns for deploy sync targets.
+	// Matching entries are excluded from deployment. Exclude wins over include.
+	DeploySyncExclude []string
+
+	// DeploySyncExcludeFromEnv is true when BOSUN_DEPLOY_SYNC_EXCLUDE env var is set.
+	// When true, repo config reload will not update DeploySyncExclude.
+	DeploySyncExcludeFromEnv bool
 
 	// CriticalContainers is a list of container names that must be healthy after compose up.
 	// When configured, the health gate runs after startup grace period before state save.
@@ -438,8 +456,8 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	finishSpan(nil)
 
 	// Extract declared state from rendered compose files.
-	stagingUnraid := filepath.Join(r.config.StagingDir, "unraid")
-	declared, err := ExtractDeclaredState(stagingUnraid)
+	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
+	declared, err := ExtractDeclaredState(stagingSubDir)
 	if err != nil {
 		logger.Warn().Err(err).Msg("Failed to extract declared state from rendered compose")
 	} else {
@@ -834,7 +852,7 @@ func (r *Reconciler) reloadProjectConfig() {
 	}
 
 	// If no field has any value from the repo, there's nothing to reload.
-	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 && len(reloaded.DeployPaths) == 0 && len(reloaded.CriticalContainers) == 0 && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil {
+	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 && len(reloaded.DeployPaths) == 0 && len(reloaded.DeploySyncPaths) == 0 && len(reloaded.DeploySyncExclude) == 0 && len(reloaded.CriticalContainers) == 0 && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil {
 		return
 	}
 
@@ -852,6 +870,16 @@ func (r *Reconciler) reloadProjectConfig() {
 
 	if !r.config.DeployPathsFromEnv && len(reloaded.DeployPaths) > 0 {
 		r.config.DeployPaths = reloaded.DeployPaths
+		changed = true
+	}
+
+	if !r.config.DeploySyncPathsFromEnv && len(reloaded.DeploySyncPaths) > 0 {
+		r.config.DeploySyncPaths = reloaded.DeploySyncPaths
+		changed = true
+	}
+
+	if !r.config.DeploySyncExcludeFromEnv && len(reloaded.DeploySyncExclude) > 0 {
+		r.config.DeploySyncExclude = reloaded.DeploySyncExclude
 		changed = true
 	}
 
@@ -1070,7 +1098,7 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 	r.template = NewTemplateOps(secrets)
 
 	infraDir := filepath.Join(r.config.RepoDir, r.config.InfraSubDir)
-	if err := r.template.RenderDirectory(ctx, infraDir, r.config.StagingDir, "unraid"); err != nil {
+	if err := r.template.RenderDirectory(ctx, infraDir, r.config.StagingDir, r.config.InfraSubDir); err != nil {
 		logger.Error().
 			Err(err).
 			Msg("Failed to render templates")
@@ -1090,26 +1118,22 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any) error {
 	ui.Info("Creating backup...")
 
+	// Discover targets from staging to know what to back up.
+	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
+	targets, err := discoverDeployTargets(stagingSubDir, r.config.DeploySyncPaths, r.config.DeploySyncExclude)
+	if err != nil {
+		return fmt.Errorf("discover deploy targets for backup: %w", err)
+	}
+
 	var backupName string
-	var err error
 
 	if r.isLocalMode() {
-		paths := []string{
-			filepath.Join(r.config.LocalAppdataPath, "traefik"),
-			filepath.Join(r.config.LocalAppdataPath, "authelia", "configuration.yml"),
-			filepath.Join(r.config.LocalAppdataPath, "agentgateway", "config.yaml"),
-			filepath.Join(r.config.LocalAppdataPath, "gatus", "config.yaml"),
-		}
+		paths := backupPathsFromTargets(targets, r.config.LocalAppdataPath)
 		backupName, err = r.deploy.Backup(ctx, r.config.BackupDir, paths)
 	} else {
 		host := r.getTargetHost(secrets)
-		remotePaths := []string{
-			filepath.Join(r.config.RemoteAppdataPath, "traefik"),
-			filepath.Join(r.config.RemoteAppdataPath, "authelia", "configuration.yml"),
-			filepath.Join(r.config.RemoteAppdataPath, "agentgateway", "config.yaml"),
-			filepath.Join(r.config.RemoteAppdataPath, "gatus", "config.yaml"),
-		}
-		backupName, err = r.deploy.BackupRemote(ctx, host, r.config.BackupDir, remotePaths)
+		paths := backupPathsFromTargets(targets, r.config.RemoteAppdataPath)
+		backupName, err = r.deploy.BackupRemote(ctx, host, r.config.BackupDir, paths)
 	}
 
 	if err != nil {
@@ -1126,6 +1150,19 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any) e
 
 	ui.Success("Backup saved: %s", backupName)
 	return nil
+}
+
+// backupPathsFromTargets derives backup paths from discovered deploy targets.
+// Compose targets are excluded because compose has its own rollback mechanism.
+func backupPathsFromTargets(targets []DeployTarget, appdataBase string) []string {
+	var paths []string
+	for _, t := range targets {
+		if t.RelPath == "compose" {
+			continue
+		}
+		paths = append(paths, filepath.Join(appdataBase, t.TargetPath))
+	}
+	return paths
 }
 
 // doDeploy performs the actual deployment.
@@ -1160,57 +1197,54 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 	}
 
 	result := &DeployResult{}
-	stagingUnraid := filepath.Join(r.config.StagingDir, "unraid")
+	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
 	appdata := r.config.LocalAppdataPath
 
-	// Sync Traefik configs.
-	ui.Info("  Syncing Traefik configs...")
-	if err := r.deploy.DeployLocal(ctx, filepath.Join(stagingUnraid, "appdata", "traefik"), filepath.Join(appdata, "traefik"), result); err != nil {
-		return nil, err
+	targets, err := discoverDeployTargets(stagingSubDir, r.config.DeploySyncPaths, r.config.DeploySyncExclude)
+	if err != nil {
+		return nil, fmt.Errorf("discover deploy targets: %w", err)
 	}
 
-	// Sync agentgateway config.
-	ui.Info("  Syncing agentgateway config...")
-	if err := r.deploy.DeployLocalFile(ctx, filepath.Join(stagingUnraid, "appdata", "agentgateway", "config.yaml"), filepath.Join(appdata, "agentgateway", "config.yaml"), result); err != nil {
-		return nil, err
+	// Sync discovered targets (excluding compose, which has special handling).
+	for _, t := range targets {
+		if t.RelPath == "compose" {
+			continue
+		}
+		src := filepath.Join(stagingSubDir, t.RelPath)
+		dst := filepath.Join(appdata, t.TargetPath)
+		ui.Info("  Syncing %s...", t.RelPath)
+		if t.IsDir {
+			if err := r.deploy.DeployLocal(ctx, src, dst, result); err != nil {
+				return nil, err
+			}
+		} else {
+			_ = os.MkdirAll(filepath.Dir(dst), 0755)
+			if err := r.deploy.DeployLocalFile(ctx, src, dst, result); err != nil {
+				return nil, err
+			}
+		}
 	}
 
-	// Sync authelia config.
-	ui.Info("  Syncing authelia config...")
-	if err := r.deploy.DeployLocalFile(ctx, filepath.Join(stagingUnraid, "appdata", "authelia", "configuration.yml"), filepath.Join(appdata, "authelia", "configuration.yml"), result); err != nil {
-		return nil, err
-	}
-
-	// Sync gatus config.
-	ui.Info("  Syncing gatus config...")
-	if err := r.deploy.DeployLocalFile(ctx, filepath.Join(stagingUnraid, "appdata", "gatus", "config.yaml"), filepath.Join(appdata, "gatus", "config.yaml"), result); err != nil {
-		return nil, err
-	}
-
-	// Sync tailscale-gateway config.
-	ui.Info("  Syncing tailscale-gateway config...")
-	_ = os.MkdirAll(filepath.Join(appdata, "tailscale-gateway"), 0755)
-	if err := r.deploy.DeployLocalFile(ctx, filepath.Join(stagingUnraid, "appdata", "tailscale-gateway", "serve.json"), filepath.Join(appdata, "tailscale-gateway", "serve.json"), result); err != nil {
-		ui.Warning("tailscale-gateway sync failed: %v", err)
-	}
-
-	// Sync compose files.
-	ui.Info("  Syncing compose files...")
-	_ = os.MkdirAll(filepath.Join(appdata, "compose"), 0755)
-	if err := r.deploy.DeployLocal(ctx, filepath.Join(stagingUnraid, "compose"), filepath.Join(appdata, "compose"), result); err != nil {
-		return nil, err
+	// Sync compose files (special handling: glob .yml files for ComposeUpMultipleWithRollback).
+	composeStaging := filepath.Join(stagingSubDir, "compose")
+	composeTarget := filepath.Join(appdata, "compose")
+	if hasTarget(targets, "compose") {
+		ui.Info("  Syncing compose files...")
+		_ = os.MkdirAll(composeTarget, 0755)
+		if err := r.deploy.DeployLocal(ctx, composeStaging, composeTarget, result); err != nil {
+			return nil, err
+		}
 	}
 
 	// Reload services with rollback support.
 	if !r.config.DryRun {
 		ui.Info("  Reloading services...")
-		composeDir := filepath.Join(appdata, "compose")
-		composeFiles, err := filepath.Glob(filepath.Join(composeDir, "*.yml"))
+		composeFiles, err := filepath.Glob(filepath.Join(composeTarget, "*.yml"))
 		if err != nil {
 			return nil, fmt.Errorf("failed to glob compose files: %w", err)
 		}
 		if len(composeFiles) == 0 {
-			ui.Warning("No compose files found in %s", composeDir)
+			ui.Warning("No compose files found in %s", composeTarget)
 		} else {
 			r.lastComposeFiles = composeFiles
 			if err := r.deploy.ComposeUpMultipleWithRollback(ctx, composeFiles, r.lastBackupPath); err != nil {
@@ -1235,6 +1269,16 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 	return result, nil
 }
 
+// hasTarget returns true if the target list contains a target with the given RelPath.
+func hasTarget(targets []DeployTarget, relPath string) bool {
+	for _, t := range targets {
+		if t.RelPath == relPath {
+			return true
+		}
+	}
+	return false
+}
+
 // deployRemote performs remote deployment via SSH.
 func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) error {
 	ui.Info("Using remote deployment mode (SSH)")
@@ -1247,52 +1291,48 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) e
 		return fmt.Errorf("no target host specified and could not find unraid_ip in secrets")
 	}
 
-	stagingUnraid := filepath.Join(r.config.StagingDir, "unraid")
+	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
 	appdata := r.config.RemoteAppdataPath
 
-	// Sync Traefik configs.
-	ui.Info("  Syncing Traefik configs...")
-	if err := r.deploy.DeployRemote(ctx, filepath.Join(stagingUnraid, "appdata", "traefik"), host, filepath.Join(appdata, "traefik")); err != nil {
-		return err
+	targets, err := discoverDeployTargets(stagingSubDir, r.config.DeploySyncPaths, r.config.DeploySyncExclude)
+	if err != nil {
+		return fmt.Errorf("discover deploy targets: %w", err)
 	}
 
-	// Sync agentgateway config.
-	ui.Info("  Syncing agentgateway config...")
-	if err := r.deploy.DeployRemoteFile(ctx, filepath.Join(stagingUnraid, "appdata", "agentgateway", "config.yaml"), host, filepath.Join(appdata, "agentgateway", "config.yaml")); err != nil {
-		return err
+	// Sync discovered targets (excluding compose, which has special handling).
+	for _, t := range targets {
+		if t.RelPath == "compose" {
+			continue
+		}
+		src := filepath.Join(stagingSubDir, t.RelPath)
+		dst := filepath.Join(appdata, t.TargetPath)
+		ui.Info("  Syncing %s...", t.RelPath)
+		if t.IsDir {
+			if err := r.deploy.DeployRemote(ctx, src, host, dst); err != nil {
+				return err
+			}
+		} else {
+			_ = r.deploy.EnsureRemoteDir(ctx, host, filepath.Dir(dst))
+			if err := r.deploy.DeployRemoteFile(ctx, src, host, dst); err != nil {
+				return err
+			}
+		}
 	}
 
-	// Sync authelia config.
-	ui.Info("  Syncing authelia config...")
-	if err := r.deploy.DeployRemoteFile(ctx, filepath.Join(stagingUnraid, "appdata", "authelia", "configuration.yml"), host, filepath.Join(appdata, "authelia", "configuration.yml")); err != nil {
-		return err
+	// Sync compose files (special handling for remote compose up).
+	if hasTarget(targets, "compose") {
+		ui.Info("  Syncing compose files...")
+		_ = r.deploy.EnsureRemoteDir(ctx, host, filepath.Join(appdata, "compose"))
+		if err := r.deploy.DeployRemote(ctx, filepath.Join(stagingSubDir, "compose"), host, filepath.Join(appdata, "compose")); err != nil {
+			return err
+		}
 	}
 
-	// Sync gatus config.
-	ui.Info("  Syncing gatus config...")
-	if err := r.deploy.DeployRemoteFile(ctx, filepath.Join(stagingUnraid, "appdata", "gatus", "config.yaml"), host, filepath.Join(appdata, "gatus", "config.yaml")); err != nil {
-		return err
-	}
-
-	// Sync tailscale-gateway config.
-	ui.Info("  Syncing tailscale-gateway config...")
-	_ = r.deploy.EnsureRemoteDir(ctx, host, filepath.Join(appdata, "tailscale-gateway"))
-	if err := r.deploy.DeployRemoteFile(ctx, filepath.Join(stagingUnraid, "appdata", "tailscale-gateway", "serve.json"), host, filepath.Join(appdata, "tailscale-gateway", "serve.json")); err != nil {
-		ui.Warning("tailscale-gateway sync failed: %v", err)
-	}
-
-	// Sync compose files.
-	ui.Info("  Syncing compose files...")
-	_ = r.deploy.EnsureRemoteDir(ctx, host, filepath.Join(appdata, "compose"))
-	if err := r.deploy.DeployRemote(ctx, filepath.Join(stagingUnraid, "compose"), host, filepath.Join(appdata, "compose")); err != nil {
-		return err
-	}
-
-	// Sync to Compose Manager.
+	// Sync to Compose Manager (Unraid-specific, remote-only).
 	ui.Info("  Syncing core compose to Compose Manager...")
 	composeManagerDir := "/boot/config/plugins/compose.manager/projects/core"
 	_ = r.deploy.EnsureRemoteDir(ctx, host, composeManagerDir)
-	if err := r.deploy.DeployRemoteFile(ctx, filepath.Join(stagingUnraid, "compose", "core.yml"), host, filepath.Join(composeManagerDir, "docker-compose.yml")); err != nil {
+	if err := r.deploy.DeployRemoteFile(ctx, filepath.Join(stagingSubDir, "compose", "core.yml"), host, filepath.Join(composeManagerDir, "docker-compose.yml")); err != nil {
 		ui.Warning("Compose Manager sync failed: %v", err)
 	}
 

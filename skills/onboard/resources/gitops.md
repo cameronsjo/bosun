@@ -299,6 +299,14 @@ The daemon tracks deploy state in a JSON file (default: `/var/lib/bosun/deploy-s
 
 ## Deployment Targets
 
+Deploy targets are **auto-discovered** from the staging directory after template rendering. The staging directory structure determines what gets synced:
+
+- `appdata/` children are expanded one level (per-service granularity)
+- `compose/` is handled specially (feeds `docker compose up` with rollback)
+- All other top-level entries are synced as-is
+
+Use `deploy_sync_paths` (allowlist) and `deploy_sync_exclude` (blocklist) in `bosun.yaml` or via `BOSUN_DEPLOY_SYNC_PATHS`/`BOSUN_DEPLOY_SYNC_EXCLUDE` env vars to filter which targets are deployed. Exclude wins over include.
+
 ### Local Deployment
 
 Default mode. Copies rendered files directly to the local filesystem and runs `docker compose up`.

@@ -128,6 +128,8 @@ post_sync_hooks:
 | `post_sync_hooks` | `[]` | Container restart hooks triggered by file changes |
 | `hook_settle_delay` | `0` (disabled) | Global pause after deploy before hooks run (e.g., `"2s"`) |
 | `deploy_paths` | `[]` (deploy all) | Glob allowlist — skip pipeline when no changed files match |
+| `deploy_sync_paths` | `[]` (sync all) | Glob allowlist — only sync staging entries matching these patterns |
+| `deploy_sync_exclude` | `[]` (exclude none) | Glob blocklist — exclude matching staging entries from sync (wins over include) |
 | `critical_containers` | `[]` (disabled) | Container names that must be healthy after deploy — triggers rollback on failure |
 | `drift_alert_debounce` | `0` (disabled) | Debounce window before first drift alert fires (e.g., `"5m"`) |
 

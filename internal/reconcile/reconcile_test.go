@@ -1610,10 +1610,12 @@ func TestDoDeploy(t *testing.T) {
 		stagingDir := filepath.Join(tmpDir, "staging")
 		appdataDir := filepath.Join(tmpDir, "appdata")
 		require.NoError(t, os.MkdirAll(appdataDir, 0755))
+		require.NoError(t, os.MkdirAll(stagingDir, 0755))
 
 		cfg := &Config{
 			DryRun:           true,
 			StagingDir:       stagingDir,
+			InfraSubDir:      ".",
 			LocalAppdataPath: appdataDir,
 		}
 		r := NewReconciler(cfg)
@@ -1798,10 +1800,15 @@ func TestCreateBackup(t *testing.T) {
 	t.Run("local mode calls Backup", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		backupDir := filepath.Join(tmpDir, "backups")
+		stagingDir := filepath.Join(tmpDir, "staging")
 		appdataDir := filepath.Join(tmpDir, "appdata")
 		require.NoError(t, os.MkdirAll(appdataDir, 0755))
+		// Create staging structure so discoverDeployTargets can scan it.
+		require.NoError(t, os.MkdirAll(filepath.Join(stagingDir, "appdata", "traefik"), 0755))
 
 		cfg := &Config{
+			StagingDir:       stagingDir,
+			InfraSubDir:      ".",
 			BackupDir:        backupDir,
 			LocalAppdataPath: appdataDir,
 			BackupsToKeep:    3,
@@ -2019,6 +2026,7 @@ func TestDeployLocalFullPath(t *testing.T) {
 		cfg := &Config{
 			DryRun:           true, // DryRun on reconciler skips compose up
 			StagingDir:       stagingDir,
+			InfraSubDir:      "unraid",
 			LocalAppdataPath: appdataDir,
 		}
 		r := NewReconciler(cfg, WithDeployOps(deploy))
@@ -2059,6 +2067,7 @@ func TestDeployLocalFullPath(t *testing.T) {
 		cfg := &Config{
 			DryRun:           false, // Non-dry-run to exercise compose path
 			StagingDir:       stagingDir,
+			InfraSubDir:      "unraid",
 			LocalAppdataPath: appdataDir,
 		}
 		r := NewReconciler(cfg, WithDeployOps(deploy))
@@ -2105,6 +2114,7 @@ func TestDeployLocalFullPath(t *testing.T) {
 		cfg := &Config{
 			DryRun:           false,
 			StagingDir:       stagingDir,
+			InfraSubDir:      "unraid",
 			LocalAppdataPath: appdataDir,
 		}
 		r := NewReconciler(cfg, WithDeployOps(deploy))
@@ -2123,24 +2133,26 @@ func TestDeployLocalFullPath(t *testing.T) {
 		}
 	})
 
-	t.Run("deploy local with traefik sync error returns error", func(t *testing.T) {
+	t.Run("deploy local with missing staging dir returns error", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		stagingDir := filepath.Join(tmpDir, "staging")
 		appdataDir := filepath.Join(tmpDir, "appdata")
 
-		// Don't create staging structure -> DeployLocal will fail on missing source
+		// Don't create staging structure -> discovery will fail on missing dir
 		require.NoError(t, os.MkdirAll(appdataDir, 0755))
 
 		deploy := &DeployOps{DryRun: false, ContentHashSync: true}
 
 		cfg := &Config{
 			StagingDir:       stagingDir,
+			InfraSubDir:      "unraid",
 			LocalAppdataPath: appdataDir,
 		}
 		r := NewReconciler(cfg, WithDeployOps(deploy))
 
 		_, err := r.deployLocal(context.Background())
-		require.Error(t, err, "should fail when staging traefik dir doesn't exist")
+		require.Error(t, err, "should fail when staging dir doesn't exist")
+		assert.Contains(t, err.Error(), "discover deploy targets")
 	})
 }
 
@@ -3044,41 +3056,25 @@ func TestRunLockContention(t *testing.T) {
 }
 
 func TestDeployLocalSyncErrors(t *testing.T) {
-	t.Run("agentgateway sync error returns deployment error", func(t *testing.T) {
+	t.Run("missing staging subdirectory returns discovery error", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
-		stateFile := filepath.Join(tmpDir, "state.json")
-		repoDir := filepath.Join(tmpDir, "repo")
 		stagingDir := filepath.Join(tmpDir, "staging")
 		appdataDir := filepath.Join(tmpDir, "appdata")
-
 		require.NoError(t, os.MkdirAll(appdataDir, 0755))
+		// Don't create the staging subdir — discovery will fail.
 
-		// Create infra with traefik (empty dir is fine for DeployLocal) but
-		// agentgateway config pointing to a nonexistent path (file won't exist
-		// after rendering, causing DeployLocalFile to fail).
-		infraDir := filepath.Join(repoDir, "unraid")
-		require.NoError(t, os.MkdirAll(filepath.Join(infraDir, "appdata", "traefik"), 0755))
-		// Intentionally skip creating agentgateway/config.yaml so it fails.
-
-		gitOps := &mockGitOps{syncChanged: true, syncBefore: "a", syncAfter: "b"}
 		deploy := &DeployOps{DryRun: false, ContentHashSync: true}
-
 		cfg := &Config{
 			DryRun:           false,
-			LockFile:         lockFile,
-			StateFile:        stateFile,
-			RepoDir:          repoDir,
 			StagingDir:       stagingDir,
+			InfraSubDir:      "unraid",
 			LocalAppdataPath: appdataDir,
-			InfraSubDir:      ".",
-			SecretsFiles:     []string{},
 		}
-		r := NewReconciler(cfg, WithGitOperations(gitOps), WithDeployOps(deploy))
+		r := NewReconciler(cfg, WithDeployOps(deploy))
 
-		err := r.Run(context.Background())
+		_, err := r.deployLocal(context.Background())
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "deployment failed")
+		assert.Contains(t, err.Error(), "discover deploy targets")
 	})
 
 	t.Run("compose file present triggers compose up error", func(t *testing.T) {
@@ -3091,20 +3087,19 @@ func TestDeployLocalSyncErrors(t *testing.T) {
 
 		require.NoError(t, os.MkdirAll(appdataDir, 0755))
 
-		// Create full infra structure including a compose file.
-		infraDir := filepath.Join(repoDir, "unraid")
-		require.NoError(t, os.MkdirAll(filepath.Join(infraDir, "appdata", "traefik"), 0755))
-		require.NoError(t, os.MkdirAll(filepath.Join(infraDir, "appdata", "agentgateway"), 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(infraDir, "appdata", "agentgateway", "config.yaml"), []byte("port: 8080"), 0644))
-		require.NoError(t, os.MkdirAll(filepath.Join(infraDir, "appdata", "authelia"), 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(infraDir, "appdata", "authelia", "configuration.yml"), []byte("server: {}"), 0644))
-		require.NoError(t, os.MkdirAll(filepath.Join(infraDir, "appdata", "gatus"), 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(infraDir, "appdata", "gatus", "config.yaml"), []byte("endpoints: []"), 0644))
-		require.NoError(t, os.MkdirAll(filepath.Join(infraDir, "appdata", "tailscale-gateway"), 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(infraDir, "appdata", "tailscale-gateway", "serve.json"), []byte("{}"), 0644))
-		require.NoError(t, os.MkdirAll(filepath.Join(infraDir, "compose"), 0755))
+		// Create infra structure directly in repo root (InfraSubDir: ".").
+		require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "appdata", "traefik"), 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "appdata", "agentgateway"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(repoDir, "appdata", "agentgateway", "config.yaml"), []byte("port: 8080"), 0644))
+		require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "appdata", "authelia"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(repoDir, "appdata", "authelia", "configuration.yml"), []byte("server: {}"), 0644))
+		require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "appdata", "gatus"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(repoDir, "appdata", "gatus", "config.yaml"), []byte("endpoints: []"), 0644))
+		require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "appdata", "tailscale-gateway"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(repoDir, "appdata", "tailscale-gateway", "serve.json"), []byte("{}"), 0644))
+		require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "compose"), 0755))
 		// This compose file triggers the compose-up path in deployLocal (non-dry-run).
-		require.NoError(t, os.WriteFile(filepath.Join(infraDir, "compose", "docker-compose.yml"), []byte("version: '3'"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(repoDir, "compose", "docker-compose.yml"), []byte("version: '3'"), 0644))
 
 		gitOps := &mockGitOps{syncChanged: true, syncBefore: "a", syncAfter: "b"}
 		deploy := &DeployOps{DryRun: false, ProjectName: "test", ContentHashSync: true}
@@ -3144,18 +3139,17 @@ func TestRunSaveStateErrorInAttemptTracking(t *testing.T) {
 
 	require.NoError(t, os.MkdirAll(appdataDir, 0755))
 
-	// Create a directory structure for templates.
-	infraDir := filepath.Join(repoDir, "unraid")
-	require.NoError(t, os.MkdirAll(filepath.Join(infraDir, "appdata", "traefik"), 0755))
-	require.NoError(t, os.MkdirAll(filepath.Join(infraDir, "appdata", "agentgateway"), 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(infraDir, "appdata", "agentgateway", "config.yaml"), []byte("port: 8080"), 0644))
-	require.NoError(t, os.MkdirAll(filepath.Join(infraDir, "appdata", "authelia"), 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(infraDir, "appdata", "authelia", "configuration.yml"), []byte("server: {}"), 0644))
-	require.NoError(t, os.MkdirAll(filepath.Join(infraDir, "appdata", "gatus"), 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(infraDir, "appdata", "gatus", "config.yaml"), []byte("endpoints: []"), 0644))
-	require.NoError(t, os.MkdirAll(filepath.Join(infraDir, "appdata", "tailscale-gateway"), 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(infraDir, "appdata", "tailscale-gateway", "serve.json"), []byte("{}"), 0644))
-	require.NoError(t, os.MkdirAll(filepath.Join(infraDir, "compose"), 0755))
+	// Create infra structure directly in repo root (InfraSubDir: ".").
+	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "appdata", "traefik"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "appdata", "agentgateway"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "appdata", "agentgateway", "config.yaml"), []byte("port: 8080"), 0644))
+	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "appdata", "authelia"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "appdata", "authelia", "configuration.yml"), []byte("server: {}"), 0644))
+	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "appdata", "gatus"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "appdata", "gatus", "config.yaml"), []byte("endpoints: []"), 0644))
+	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "appdata", "tailscale-gateway"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "appdata", "tailscale-gateway", "serve.json"), []byte("{}"), 0644))
+	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "compose"), 0755))
 
 	// State dir is read-only, so SaveState calls will fail.
 	stateDir := filepath.Join(tmpDir, "state-ro")
@@ -3337,6 +3331,7 @@ func TestDeployRemoteErrorPropagation(t *testing.T) {
 			TargetHost:        "user@testhost",
 			LocalAppdataPath:  "/nonexistent/path",
 			StagingDir:        tmpDir,
+			InfraSubDir:       "unraid",
 			RemoteAppdataPath: "/mnt/user/appdata",
 			DryRun:            false,
 		}

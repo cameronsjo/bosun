@@ -1354,6 +1354,8 @@ func ConfigFromEnv() *Config {
 			PostSyncHooks:      cfg.PostSyncHooks(),
 			HookSettleDelay:    cfg.HookSettleDelay(),
 			DeployPaths:        cfg.DeployPaths(),
+			DeploySyncPaths:    cfg.DeploySyncPaths(),
+			DeploySyncExclude:  cfg.DeploySyncExclude(),
 			CriticalContainers: cfg.CriticalContainers(),
 			OnFailure:          &alertCfg.OnFailure,
 			OnSuccess:          &alertCfg.OnSuccess,
@@ -1384,6 +1386,24 @@ func ConfigFromEnv() *Config {
 		} else {
 			rcfg.DeployPaths = paths
 			rcfg.DeployPathsFromEnv = true
+		}
+	}
+	if v := os.Getenv("BOSUN_DEPLOY_SYNC_PATHS"); v != "" {
+		var paths []string
+		if err := json.Unmarshal([]byte(v), &paths); err != nil {
+			log.Warn().Err(err).Msg("Failed to parse BOSUN_DEPLOY_SYNC_PATHS, ignoring")
+		} else {
+			rcfg.DeploySyncPaths = paths
+			rcfg.DeploySyncPathsFromEnv = true
+		}
+	}
+	if v := os.Getenv("BOSUN_DEPLOY_SYNC_EXCLUDE"); v != "" {
+		var paths []string
+		if err := json.Unmarshal([]byte(v), &paths); err != nil {
+			log.Warn().Err(err).Msg("Failed to parse BOSUN_DEPLOY_SYNC_EXCLUDE, ignoring")
+		} else {
+			rcfg.DeploySyncExclude = paths
+			rcfg.DeploySyncExcludeFromEnv = true
 		}
 	}
 	if v := os.Getenv("BOSUN_CRITICAL_CONTAINERS"); v != "" {

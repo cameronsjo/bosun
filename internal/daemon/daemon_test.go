@@ -996,6 +996,42 @@ func TestConfigFromEnv_EnvOverrideFlags(t *testing.T) {
 			t.Error("CriticalContainersFromEnv should be false when BOSUN_CRITICAL_CONTAINERS is not set")
 		}
 	})
+
+	t.Run("DeploySyncPathsFromEnv set when env var present", func(t *testing.T) {
+		t.Setenv("BOSUN_DEPLOY_SYNC_PATHS", `["appdata/traefik","compose"]`)
+
+		cfg := ConfigFromEnv()
+
+		if !cfg.ReconcileConfig.DeploySyncPathsFromEnv {
+			t.Error("DeploySyncPathsFromEnv should be true when BOSUN_DEPLOY_SYNC_PATHS is set")
+		}
+	})
+
+	t.Run("DeploySyncPathsFromEnv false when env var absent", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.DeploySyncPathsFromEnv {
+			t.Error("DeploySyncPathsFromEnv should be false when BOSUN_DEPLOY_SYNC_PATHS is not set")
+		}
+	})
+
+	t.Run("DeploySyncExcludeFromEnv set when env var present", func(t *testing.T) {
+		t.Setenv("BOSUN_DEPLOY_SYNC_EXCLUDE", `["appdata/legacy"]`)
+
+		cfg := ConfigFromEnv()
+
+		if !cfg.ReconcileConfig.DeploySyncExcludeFromEnv {
+			t.Error("DeploySyncExcludeFromEnv should be true when BOSUN_DEPLOY_SYNC_EXCLUDE is set")
+		}
+	})
+
+	t.Run("DeploySyncExcludeFromEnv false when env var absent", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.DeploySyncExcludeFromEnv {
+			t.Error("DeploySyncExcludeFromEnv should be false when BOSUN_DEPLOY_SYNC_EXCLUDE is not set")
+		}
+	})
 }
 
 func TestConfigFromEnv_CriticalContainers(t *testing.T) {
@@ -1030,6 +1066,58 @@ func TestConfigFromEnv_CriticalContainers(t *testing.T) {
 
 		if len(cfg.ReconcileConfig.CriticalContainers) != 0 {
 			t.Errorf("expected empty containers, got %v", cfg.ReconcileConfig.CriticalContainers)
+		}
+	})
+}
+
+func TestConfigFromEnv_DeploySyncPaths(t *testing.T) {
+	t.Run("parses JSON array", func(t *testing.T) {
+		t.Setenv("BOSUN_DEPLOY_SYNC_PATHS", `["appdata/traefik","compose"]`)
+
+		cfg := ConfigFromEnv()
+
+		paths := cfg.ReconcileConfig.DeploySyncPaths
+		if len(paths) != 2 {
+			t.Fatalf("expected 2 deploy sync paths, got %d", len(paths))
+		}
+		if paths[0] != "appdata/traefik" || paths[1] != "compose" {
+			t.Errorf("unexpected paths: %v", paths)
+		}
+	})
+
+	t.Run("invalid JSON ignored", func(t *testing.T) {
+		t.Setenv("BOSUN_DEPLOY_SYNC_PATHS", "not-json")
+
+		cfg := ConfigFromEnv()
+
+		if len(cfg.ReconcileConfig.DeploySyncPaths) != 0 {
+			t.Errorf("expected empty paths, got %v", cfg.ReconcileConfig.DeploySyncPaths)
+		}
+	})
+}
+
+func TestConfigFromEnv_DeploySyncExclude(t *testing.T) {
+	t.Run("parses JSON array", func(t *testing.T) {
+		t.Setenv("BOSUN_DEPLOY_SYNC_EXCLUDE", `["appdata/legacy"]`)
+
+		cfg := ConfigFromEnv()
+
+		paths := cfg.ReconcileConfig.DeploySyncExclude
+		if len(paths) != 1 {
+			t.Fatalf("expected 1 deploy sync exclude, got %d", len(paths))
+		}
+		if paths[0] != "appdata/legacy" {
+			t.Errorf("unexpected paths: %v", paths)
+		}
+	})
+
+	t.Run("invalid JSON ignored", func(t *testing.T) {
+		t.Setenv("BOSUN_DEPLOY_SYNC_EXCLUDE", "not-json")
+
+		cfg := ConfigFromEnv()
+
+		if len(cfg.ReconcileConfig.DeploySyncExclude) != 0 {
+			t.Errorf("expected empty paths, got %v", cfg.ReconcileConfig.DeploySyncExclude)
 		}
 	})
 }
