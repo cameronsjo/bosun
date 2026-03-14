@@ -464,6 +464,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	state.NeedsRedeploy = true
 	if err := SaveState(r.config.StateFile, state); err != nil {
 		logger.Error().Err(err).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save pre-deploy state")
+		return fmt.Errorf("failed to persist pre-deploy redeploy marker: %w", err)
 	}
 
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.deploy", "Deployment")
