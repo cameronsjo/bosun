@@ -8,7 +8,7 @@ Two update mechanisms (Watchtower and Bosun) don't know about each other. Watcht
 
 - Add `image_policies` map to `bosun.yaml` with per-service `pinned` or `auto` policy (default: `pinned`)
 - Add `BOSUN_IMAGE_POLICY` env var for a global default override
-- Before compose up, run `docker compose pull --include-deps <services...>` for services tagged `auto`
+- Before compose up, run `docker compose pull <services...>` for services tagged `auto`
 - The `add-image-prepull` change handles the blanket pre-pull mechanism; this change adds the per-service filtering layer on top
 - Extend `ReloadedConfig` to carry image policies so the repo's `bosun.yaml` is re-read after each git pull
 - Record per-service policy in deploy state for drift reporting context

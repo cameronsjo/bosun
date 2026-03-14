@@ -27,7 +27,7 @@ The effective policy for a service SHALL be resolved in order:
 2. `BOSUN_IMAGE_POLICY` env var (global default override)
 3. `pinned` (hardcoded default)
 
-Image policies SHALL be reloaded from the repo's `bosun.yaml` after each git pull, unless `BOSUN_IMAGE_POLICY` is set (in which case the env var controls the global default but per-service entries from the config file still apply).
+Image policies SHALL always be reloaded from the repo's `bosun.yaml` after each git pull. `BOSUN_IMAGE_POLICY` provides a global default that per-service entries in the config file override.
 
 #### Scenario: Service with auto policy gets pulled
 
@@ -91,12 +91,12 @@ Image policies SHALL be reloaded from the repo's `bosun.yaml` after each git pul
 - **THEN** the selective pull is skipped
 - **AND** a debug log indicates the skip
 
-#### Scenario: Selective pull skipped for remote deploy
+#### Scenario: Selective pull runs on remote deploy via SSH
 
 - **WHEN** the deployment target is a remote host
 - **AND** `auto` services are configured
-- **THEN** the selective pull is skipped
-- **AND** the remote `docker compose up` handles image pulling as before
+- **THEN** the selective pull runs `docker compose pull <auto-services>` on the remote host via SSH before compose up
+- **AND** the auto/pinned guarantees are consistent across local and remote deploy targets
 
 ### Requirement: Image Policy in Drift Context
 

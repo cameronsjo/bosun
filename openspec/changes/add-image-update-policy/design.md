@@ -53,7 +53,7 @@ The env var sets the default policy for services not listed in `image_policies`.
 
 - **Race with Watchtower**: During migration, both tools may run simultaneously. Mitigation: document the migration path (configure `auto` in Bosun, then disable Watchtower for those services).
 - **Mutable tag drift**: `auto` services will show `image_mismatch` drift between reconciliations when a new image is pushed to the registry. This is expected behavior; the drift report should note the policy as context.
-- **Network dependency**: `auto` policy adds a registry pull on every reconciliation. If the registry is unreachable, the pre-pull fails and aborts the pipeline. Mitigation: pre-pull failure is non-fatal for `pinned` services (they continue with cached images); only `auto` services require successful pulls.
+- **Network dependency**: `auto` policy adds a registry pull on every reconciliation. If the registry is unreachable, the pre-pull fails for `auto` services and aborts the pipeline — those services explicitly require a fresh image. For `pinned` services, no pull is attempted, so registry outages have no effect (they continue with cached images).
 
 ## Migration Plan
 
@@ -64,5 +64,5 @@ The env var sets the default policy for services not listed in `image_policies`.
 
 ## Open Questions
 
-- Should `auto` policy failure be non-fatal (warn and continue with cached image) or fatal (abort pipeline)? Current proposal: fatal, matching `add-image-prepull` behavior. Operators can switch to `pinned` if registry reliability is a concern.
+- ~~Should `auto` policy failure be non-fatal or fatal?~~ **Resolved**: Fatal for `auto` services (abort pipeline — a fresh pull is the whole point of `auto`). `pinned` services are unaffected since they skip the pull stage entirely. Operators can switch unreliable services to `pinned` if needed.
 - Should the policy affect drift reporting (suppress `image_mismatch` for `auto` services between reconciliations)?
