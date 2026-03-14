@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
@@ -177,14 +178,21 @@ var crewRestartCmd = &cobra.Command{
 		name := args[0]
 
 		return withDockerClient(func(ctx context.Context, client *docker.Client) error {
+			// Load config for shutdown timeout (non-fatal if missing)
+			timeoutSec := 30
+			if cfg, err := config.Load(); err == nil {
+				timeoutSec = int(cfg.ShutdownTimeout().Seconds())
+			}
+
 			logger := log.ComponentCtx(ctx, "cmd")
 			logger.Info().
 				Str(log.FieldOperation, "container_restart").
 				Str(log.FieldContainer, name).
+				Int("shutdown_timeout_sec", timeoutSec).
 				Msg("Preparing to restart container")
 			ui.Blue.Printf("Sending %s for a coffee break...\n", name)
 
-			if err := client.RestartContainer(ctx, name); err != nil {
+			if err := client.RestartContainer(ctx, name, timeoutSec); err != nil {
 				logger.Error().
 					Err(err).
 					Str(log.FieldOperation, "container_restart").

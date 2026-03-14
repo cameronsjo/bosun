@@ -71,6 +71,9 @@ type Config struct {
 
 	// removeOrphans controls whether --remove-orphans is passed to docker compose up.
 	removeOrphans bool
+
+	// shutdownTimeout is the grace period for container stop operations (SIGTERM → SIGKILL).
+	shutdownTimeout time.Duration
 }
 
 // TunnelConfig holds tunnel provider-specific configuration.
@@ -191,6 +194,10 @@ type configFile struct {
 	// Defaults to true (preserving existing behavior). Set to false in shared environments
 	// where Bosun does not own all containers on the Docker host.
 	RemoveOrphans *bool `yaml:"remove_orphans"`
+
+	// ShutdownTimeout is the grace period for container stop operations (SIGTERM → SIGKILL).
+	// Defaults to 30s. Docker's default is 10s; increase for containers with long-running requests.
+	ShutdownTimeout reconcile.Duration `yaml:"shutdown_timeout"`
 }
 
 // FindRoot searches upward from the current directory to find the project root.
@@ -257,6 +264,7 @@ func LoadFrom(dir string) (*Config, error) {
 	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
 	domain := extractDomain(fileCfg)
 	removeOrphans := extractRemoveOrphans(fileCfg)
+	shutdownTimeout := extractShutdownTimeout(fileCfg)
 
 	return &Config{
 		Root:               dir,
@@ -267,6 +275,7 @@ func LoadFrom(dir string) (*Config, error) {
 		driftAlertDebounce: driftAlertDebounce,
 		domain:             domain,
 		removeOrphans:      removeOrphans,
+		shutdownTimeout:    shutdownTimeout,
 	}, nil
 }
 
@@ -313,6 +322,7 @@ func Load() (*Config, error) {
 	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
 	domain := extractDomain(fileCfg)
 	removeOrphans := extractRemoveOrphans(fileCfg)
+	shutdownTimeout := extractShutdownTimeout(fileCfg)
 
 	// Determine project name (defaults to directory name)
 	projectName := fileCfg.ProjectName
@@ -338,6 +348,7 @@ func Load() (*Config, error) {
 		driftAlertDebounce: driftAlertDebounce,
 		domain:             domain,
 		removeOrphans:      removeOrphans,
+		shutdownTimeout:    shutdownTimeout,
 	}
 
 	logger := log.Component("config")
@@ -583,6 +594,31 @@ func extractRemoveOrphans(cfg configFile) bool {
 // Defaults to true.
 func (c *Config) RemoveOrphans() bool {
 	return c.removeOrphans
+}
+
+// defaultShutdownTimeout is the default grace period for container stop operations.
+const defaultShutdownTimeout = 30 * time.Second
+
+// ShutdownTimeout returns the configured grace period for container stop operations.
+// Defaults to 30s. This is the time between SIGTERM and SIGKILL during container stops.
+func (c *Config) ShutdownTimeout() time.Duration {
+	return c.shutdownTimeout
+}
+
+// extractShutdownTimeout extracts the shutdown timeout from a parsed config.
+// Defaults to 30s when not configured.
+func extractShutdownTimeout(cfg configFile) time.Duration {
+	if cfg.ShutdownTimeout.Duration > 0 {
+		return cfg.ShutdownTimeout.Duration
+	}
+	// Check environment variable override
+	if v := os.Getenv("BOSUN_STOP_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+		log.Warn().Str("env", "BOSUN_STOP_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+	}
+	return defaultShutdownTimeout
 }
 
 // getEnvOrDefault returns the value of the environment variable if set and non-empty,

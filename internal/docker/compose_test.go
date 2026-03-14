@@ -552,6 +552,68 @@ func TestComposeClient_Down_WithMockRunner(t *testing.T) {
 	}
 }
 
+func TestComposeClient_DownWithTimeout_WithMockRunner(t *testing.T) {
+	tests := []struct {
+		name     string
+		file     string
+		project  string
+		timeout  int
+		opts     mockRunnerOpts
+		wantArgs []string
+		wantErr  bool
+		errMsg   string
+	}{
+		{
+			name:     "success with 30s timeout",
+			file:     "compose.yml",
+			project:  "proj",
+			timeout:  30,
+			opts:     mockRunnerOpts{exitCode: "0"},
+			wantArgs: []string{"docker", "compose", "-p", "proj", "-f", "compose.yml", "down", "--timeout", "30"},
+			wantErr:  false,
+		},
+		{
+			name:     "success with 120s timeout",
+			file:     "compose.yml",
+			project:  "homelab",
+			timeout:  120,
+			opts:     mockRunnerOpts{exitCode: "0"},
+			wantArgs: []string{"docker", "compose", "-p", "homelab", "-f", "compose.yml", "down", "--timeout", "120"},
+			wantErr:  false,
+		},
+		{
+			name:    "failure",
+			file:    "compose.yml",
+			project: "proj",
+			timeout: 30,
+			opts:    mockRunnerOpts{exitCode: "1", stderr: "error"},
+			wantErr: true,
+			errMsg:  "docker compose down",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var recorded [][]string
+			c := &ComposeClient{
+				file:    tt.file,
+				project: tt.project,
+				runner:  newMockRunner(tt.opts, &recorded),
+			}
+
+			err := c.DownWithTimeout(context.Background(), tt.timeout)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
+				require.Len(t, recorded, 1)
+				assert.Equal(t, tt.wantArgs, recorded[0])
+			}
+		})
+	}
+}
+
 func TestComposeClient_Restart_WithMockRunner(t *testing.T) {
 	tests := []struct {
 		name     string

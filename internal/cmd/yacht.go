@@ -106,17 +106,21 @@ var yachtDownCmd = &cobra.Command{
 			return fmt.Errorf("%w. Run 'docker compose config' to debug", err)
 		}
 
+		// Determine shutdown timeout from config
+		timeoutSec := int(cfg.ShutdownTimeout().Seconds())
+
 		logger := log.Component("cmd")
 		logger.Info().
 			Str(log.FieldOperation, "compose_down").
 			Str(log.FieldPath, cfg.ComposeFile).
+			Int("shutdown_timeout_sec", timeoutSec).
 			Msg("Preparing to stop all services")
 		ui.Yellow.Println("Dropping anchor...")
 		compose, err := docker.NewComposeClient(cfg.ComposeFile, cfg.ProjectName())
 		if err != nil {
 			return fmt.Errorf("compose client: %w", err)
 		}
-		if err := compose.Down(ctx); err != nil {
+		if err := compose.DownWithTimeout(ctx, timeoutSec); err != nil {
 			return fmt.Errorf("compose down: %w", err)
 		}
 
