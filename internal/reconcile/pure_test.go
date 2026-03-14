@@ -8,11 +8,12 @@ import (
 
 func TestShouldSkipDeploy(t *testing.T) {
 	tests := []struct {
-		name         string
-		lastDeployed string
-		current      string
-		force        bool
-		want         bool
+		name           string
+		lastDeployed   string
+		current        string
+		force          bool
+		needsRedeploy  bool
+		want           bool
 	}{
 		{
 			name:         "same commit without force skips",
@@ -49,11 +50,34 @@ func TestShouldSkipDeploy(t *testing.T) {
 			force:        false,
 			want:         true,
 		},
+		{
+			name:          "same commit with needsRedeploy does not skip",
+			lastDeployed:  "abc123",
+			current:       "abc123",
+			needsRedeploy: true,
+			want:          false,
+		},
+		{
+			name:          "needsRedeploy overrides same commit match",
+			lastDeployed:  "abc123",
+			current:       "abc123",
+			force:         false,
+			needsRedeploy: true,
+			want:          false,
+		},
+		{
+			name:          "needsRedeploy false with same commit still skips",
+			lastDeployed:  "abc123",
+			current:       "abc123",
+			force:         false,
+			needsRedeploy: false,
+			want:          true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := shouldSkipDeploy(tt.lastDeployed, tt.current, tt.force)
+			got := shouldSkipDeploy(tt.lastDeployed, tt.current, tt.force, tt.needsRedeploy)
 			assert.Equal(t, tt.want, got)
 		})
 	}

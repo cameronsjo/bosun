@@ -7,9 +7,13 @@ import (
 )
 
 // shouldSkipDeploy returns true if the deploy should be skipped because the
-// current commit has already been deployed and force mode is not enabled.
-func shouldSkipDeploy(lastDeployed, currentCommit string, force bool) bool {
-	return lastDeployed == currentCommit && !force
+// current commit has already been deployed, force mode is not enabled, and
+// there is no pending redeploy from a previous partial failure.
+func shouldSkipDeploy(lastDeployed, currentCommit string, force, needsRedeploy bool) bool {
+	if force || needsRedeploy {
+		return false
+	}
+	return lastDeployed == currentCommit
 }
 
 // shouldTriggerCircuitBreaker returns true if the circuit breaker should

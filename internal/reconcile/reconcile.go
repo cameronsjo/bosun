@@ -355,9 +355,14 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	state := LoadState(r.config.StateFile)
 
 	// State-based skip logic: compare last *deployed* commit, not last *fetched* commit.
-	if shouldSkipDeploy(state.LastDeployedCommit, after, r.config.Force) {
+	// Also re-run if NeedsRedeploy is set from a previous partial failure.
+	if shouldSkipDeploy(state.LastDeployedCommit, after, r.config.Force, state.NeedsRedeploy) {
 		ui.Info("=== Already deployed commit %s, skipping ===", after[:MinLen(after, 8)])
 		return nil
+	}
+
+	if state.NeedsRedeploy {
+		ui.Info("Previous deploy partially failed (configs synced, compose up failed), retrying")
 	}
 
 	// Path-aware skip: if deploy_paths is configured, check if any changed files
@@ -454,6 +459,13 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	}
 
 	// Step 5: Deploy.
+	// Mark NeedsRedeploy before deploy starts so partial failures
+	// (configs synced but compose up failed) trigger a retry next cycle.
+	state.NeedsRedeploy = true
+	if err := SaveState(r.config.StateFile, state); err != nil {
+		logger.Error().Err(err).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save pre-deploy state")
+	}
+
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.deploy", "Deployment")
 	deployResult, err := r.doDeploy(spanCtx, secrets)
 	if err != nil {
@@ -488,6 +500,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	state.Source = r.config.Source
 	state.AttemptCount = 0
 	state.LastAlertedAttempt = 0
+	state.NeedsRedeploy = false
 	state.DeclaredServices = r.declaredServices
 	if err := SaveState(r.config.StateFile, state); err != nil {
 		logger.Error().
