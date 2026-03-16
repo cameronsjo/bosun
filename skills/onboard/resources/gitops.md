@@ -346,6 +346,8 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `BOSUN_POST_SYNC_HOOKS` | | JSON array of post-sync hooks (overrides config file) |
 | `BOSUN_HOOK_SETTLE_DELAY` | `0` | Global pause before post-sync hooks run (e.g., `2s`) |
 | `BOSUN_DEPLOY_PATHS` | | JSON array of glob patterns for deploy-relevant paths (overrides config file) |
+| `BOSUN_DEPLOY_SYNC_PATHS` | | JSON array of glob patterns for deploy sync target allowlist (overrides config file) |
+| `BOSUN_DEPLOY_SYNC_EXCLUDE` | | JSON array of glob patterns for deploy sync target blocklist (overrides config file; exclude wins over include) |
 | `BOSUN_CRITICAL_CONTAINERS` | | JSON array of container names that must be healthy after deploy (overrides config file) |
 | `BOSUN_HEALTH_GATE_TIMEOUT` | `60s` | Health gate polling timeout (accepts Go duration strings or bare seconds) |
 

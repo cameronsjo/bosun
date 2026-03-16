@@ -852,7 +852,9 @@ func (r *Reconciler) reloadProjectConfig() {
 	}
 
 	// If no field has any value from the repo, there's nothing to reload.
-	if len(reloaded.PostSyncHooks) == 0 && reloaded.HookSettleDelay == 0 && len(reloaded.DeployPaths) == 0 && len(reloaded.DeploySyncPaths) == 0 && len(reloaded.DeploySyncExclude) == 0 && len(reloaded.CriticalContainers) == 0 && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil {
+	// Use nil checks (not len==0) for slices so explicitly empty lists (e.g. `deploy_sync_paths: []`)
+	// can clear in-memory filters during hot-reload.
+	if reloaded.PostSyncHooks == nil && reloaded.HookSettleDelay == 0 && reloaded.DeployPaths == nil && reloaded.DeploySyncPaths == nil && reloaded.DeploySyncExclude == nil && reloaded.CriticalContainers == nil && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil {
 		return
 	}
 
@@ -873,12 +875,12 @@ func (r *Reconciler) reloadProjectConfig() {
 		changed = true
 	}
 
-	if !r.config.DeploySyncPathsFromEnv && len(reloaded.DeploySyncPaths) > 0 {
+	if !r.config.DeploySyncPathsFromEnv && reloaded.DeploySyncPaths != nil {
 		r.config.DeploySyncPaths = reloaded.DeploySyncPaths
 		changed = true
 	}
 
-	if !r.config.DeploySyncExcludeFromEnv && len(reloaded.DeploySyncExclude) > 0 {
+	if !r.config.DeploySyncExcludeFromEnv && reloaded.DeploySyncExclude != nil {
 		r.config.DeploySyncExclude = reloaded.DeploySyncExclude
 		changed = true
 	}
