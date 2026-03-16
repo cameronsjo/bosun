@@ -273,6 +273,32 @@ Alert pipeline: **detect -> debounce filter -> dedup (per-item cooldown) -> send
 - Resolution alerts bypass debounce (fire immediately for previously alerted items).
 - Debounce state persists across daemon restarts.
 
+### Drift Ignore Rules
+
+Some containers produce known drift noise (labels that change at runtime, environment variables injected by orchestrators). Drift ignore rules suppress these items from reports and alerts.
+
+Configure in `bosun.yaml`:
+
+```yaml
+drift_ignore:
+  - service: "traefik"
+    type: "unhealthy"          # Ignore unhealthy drift for traefik
+  - service: "monitoring-*"
+    type: "*"                  # Ignore all drift for monitoring services
+```
+
+Or via `BOSUN_DRIFT_IGNORE` environment variable (JSON array, completely replaces config file value):
+
+```bash
+BOSUN_DRIFT_IGNORE='[{"service":"traefik","type":"unhealthy"}]'
+```
+
+- **`service`** — glob pattern matching service name (`filepath.Match` syntax: `*`, `?`, `[chars]`)
+- **`type`** — drift type to ignore: `missing`, `stopped`, `image_mismatch`, `unhealthy`, `extra`, or `*` for all types
+- Ignored items are filtered out before alerting and before display in `bosun drift`
+- The ignore rules are reloaded from `bosun.yaml` after each git pull (like other config fields)
+- Environment variable takes precedence over config file
+
 ### Checking Drift
 
 ```bash
@@ -349,6 +375,7 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `BOSUN_DEPLOY_SYNC_PATHS` | | JSON array of glob patterns for deploy sync target allowlist (overrides config file) |
 | `BOSUN_DEPLOY_SYNC_EXCLUDE` | | JSON array of glob patterns for deploy sync target blocklist (overrides config file; exclude wins over include) |
 | `BOSUN_CRITICAL_CONTAINERS` | | JSON array of container names that must be healthy after deploy (overrides config file) |
+| `BOSUN_DRIFT_IGNORE` | | JSON array of `{"service","type"}` rules to suppress known drift noise (overrides config file) |
 | `BOSUN_HEALTH_GATE_TIMEOUT` | `60s` | Health gate polling timeout (accepts Go duration strings or bare seconds) |
 | `BOSUN_OTEL_ENDPOINT` | *(disabled)* | OpenTelemetry OTLP HTTP endpoint (e.g., `http://localhost:4318`). When set, spans are exported for each reconciliation pipeline phase. When empty, a noop provider is used (zero overhead) |
 

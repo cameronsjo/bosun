@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/cameronsjo/bosun/internal/ui"
@@ -109,6 +110,14 @@ func runLiveDriftCheck(state *reconcile.DeployState) {
 
 	report := reconcile.CompareDrift(state.DeclaredServices, actual)
 
+	// Apply drift ignore rules from project config.
+	ignoreRules := loadDriftIgnoreRules()
+	if len(ignoreRules) > 0 {
+		preFilterCount := len(report.Items)
+		report.Items = reconcile.FilterIgnoredDriftItems(report.Items, ignoreRules)
+		report.IgnoredCount = preFilterCount - len(report.Items)
+	}
+
 	// Update state file with live results.
 	state.DriftCheckedAt = report.CheckedAt
 	state.DriftItems = report.Items
@@ -205,4 +214,25 @@ func printDriftHuman(state *reconcile.DeployState) {
 		}
 	}
 	fmt.Println()
+}
+
+// loadDriftIgnoreRules loads drift ignore rules from environment variable
+// (BOSUN_DRIFT_IGNORE) or project config. Env var takes precedence.
+func loadDriftIgnoreRules() []reconcile.DriftIgnoreRule {
+	// Environment variable override.
+	if v := os.Getenv("BOSUN_DRIFT_IGNORE"); v != "" {
+		var rules []reconcile.DriftIgnoreRule
+		if err := json.Unmarshal([]byte(v), &rules); err != nil {
+			ui.Warning("Failed to parse BOSUN_DRIFT_IGNORE: %v", err)
+			return nil
+		}
+		return rules
+	}
+
+	// Fall back to project config.
+	cfg, err := config.Load()
+	if err != nil {
+		return nil
+	}
+	return cfg.DriftIgnore()
 }
