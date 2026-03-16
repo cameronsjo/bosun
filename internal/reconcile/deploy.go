@@ -92,14 +92,20 @@ func (d *DeployOps) composeArgs(files ...string) []string {
 	return buildComposeArgs(d.ProjectName, files)
 }
 
-// composeUpArgs returns the full argument list for a local docker compose up command.
-func (d *DeployOps) composeUpArgs(composeFiles []string) []string {
+// buildUpArgs returns the argument list for docker compose up with explicit orphan control.
+func (d *DeployOps) buildUpArgs(composeFiles []string, removeOrphans bool) []string {
 	args := d.composeArgs(composeFiles...)
 	args = append(args, "up", "-d")
-	if d.RemoveOrphans {
+	if removeOrphans {
 		args = append(args, "--remove-orphans")
 	}
 	return args
+}
+
+// composeUpArgs returns the full argument list for a local docker compose up command.
+// Uses the DeployOps-level RemoveOrphans setting.
+func (d *DeployOps) composeUpArgs(composeFiles []string) []string {
+	return d.buildUpArgs(composeFiles, d.RemoveOrphans)
 }
 
 // remoteComposeUpCmd returns the SSH command string for running docker compose up on a remote host.
@@ -1093,6 +1099,133 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 		Str(log.FieldPath, backupPath).
 		Msg("Rollback completed successfully")
 	return fmt.Errorf("%w: %v", ErrRollbackSucceeded, deployErr)
+}
+
+// ComposeUpIsolated runs compose up per-file with isolated failure handling.
+// Phase 1: each file gets its own compose up (no --remove-orphans). On failure,
+// the single file is rolled back from backup if available.
+// Phase 2: a single orphan-reconciliation pass with all files and --remove-orphans.
+func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string, backupPath string) (*ComposeUpSummary, error) {
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
+
+	if d.DryRun {
+		logger.Debug().
+			Int("file_count", len(composeFiles)).
+			Msg("Dry run: would run isolated compose up per file")
+		results := make([]ComposeFileResult, len(composeFiles))
+		for i, f := range composeFiles {
+			results[i] = ComposeFileResult{File: f, Success: true}
+		}
+		summary := classifyComposeResults(results)
+		return &summary, nil
+	}
+
+	upFn := d.composeUpFn
+	if upFn == nil {
+		// Clone DeployOps with RemoveOrphans disabled for Phase 1.
+		// Phase 1 runs each file individually — --remove-orphans would kill
+		// containers from other files not passed to the command.
+		noOrphanOps := *d
+		noOrphanOps.RemoveOrphans = false
+		upFn = noOrphanOps.ComposeUpMultiple
+	}
+
+	// Phase 1: per-file compose up without --remove-orphans.
+	results := make([]ComposeFileResult, 0, len(composeFiles))
+	for _, f := range composeFiles {
+		logger.Info().
+			Str(log.FieldPath, f).
+			Msg("Starting isolated compose up for file")
+
+		err := upFn(ctx, []string{f})
+		if err == nil {
+			results = append(results, ComposeFileResult{File: f, Success: true})
+			continue
+		}
+
+		// Unhealthy-only is a warning, not a failure — treat as success.
+		if errors.Is(err, ErrComposeUnhealthy) {
+			logger.Warn().
+				Err(err).
+				Str(log.FieldPath, f).
+				Msg("Compose file has unhealthy containers, continuing")
+			results = append(results, ComposeFileResult{File: f, Success: true, Err: err})
+			continue
+		}
+
+		// Real failure — attempt per-file rollback.
+		logger.Warn().
+			Err(err).
+			Str(log.FieldPath, f).
+			Msg("Compose up failed for file")
+
+		rolledBack := false
+		if backupPath != "" {
+			backupFile := filepath.Join(backupPath, filepath.Base(f))
+			if _, statErr := os.Stat(backupFile); statErr == nil {
+				logger.Info().
+					Str(log.FieldPath, backupFile).
+					Msg("Rolling back single file from backup")
+
+				rollbackCtx, cancel := context.WithTimeout(
+					log.WithContext(context.Background(), log.Ctx(ctx)),
+					d.composeUpTimeout(),
+				)
+				rollbackArgs := d.buildUpArgs([]string{backupFile}, false)
+				rollbackCmd := exec.CommandContext(rollbackCtx, "docker", rollbackArgs...)
+				var rollbackStderr bytes.Buffer
+				rollbackCmd.Stderr = &rollbackStderr
+
+				if rollbackErr := rollbackCmd.Run(); rollbackErr != nil {
+					logger.Error().
+						Err(rollbackErr).
+						Str(log.FieldPath, backupFile).
+						Msg("Per-file rollback failed")
+				} else {
+					logger.Info().
+						Str(log.FieldPath, backupFile).
+						Msg("Per-file rollback succeeded")
+					rolledBack = true
+				}
+				cancel()
+			}
+		}
+
+		results = append(results, ComposeFileResult{File: f, Success: false, RolledBack: rolledBack, Err: err})
+	}
+
+	summary := classifyComposeResults(results)
+
+	// Phase 2: orphan reconciliation pass with all files.
+	if d.RemoveOrphans && summary.Succeeded > 0 {
+		orphanFiles := buildOrphanPassFiles(results, backupPath)
+		logger.Info().
+			Int("file_count", len(orphanFiles)).
+			Msg("Running orphan reconciliation pass")
+
+		orphanArgs := d.buildUpArgs(orphanFiles, true)
+		orphanCtx, orphanCancel := context.WithTimeout(ctx, d.composeUpTimeout())
+		defer orphanCancel()
+		orphanCmd := exec.CommandContext(orphanCtx, "docker", orphanArgs...)
+		var orphanStderr bytes.Buffer
+		orphanCmd.Stderr = &orphanStderr
+
+		if orphanErr := orphanCmd.Run(); orphanErr != nil {
+			logger.Warn().
+				Err(orphanErr).
+				Str("stderr", orphanStderr.String()).
+				Msg("Orphan reconciliation pass failed (non-fatal)")
+		} else {
+			logger.Info().Msg("Orphan reconciliation pass completed")
+		}
+	}
+
+	// Determine overall error.
+	if len(composeFiles) > 0 && summary.Failed == len(composeFiles) {
+		return &summary, fmt.Errorf("all %d compose files failed to deploy", summary.Failed)
+	}
+
+	return &summary, nil
 }
 
 // VerifyContainerHealth checks if containers from a compose file are healthy.

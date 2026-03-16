@@ -1,6 +1,8 @@
 package reconcile
 
 import (
+	"fmt"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -622,6 +624,121 @@ func TestParseComposePSOutput(t *testing.T) {
 	}
 }
 
+func TestFilterIgnoredDrift(t *testing.T) {
+	tests := []struct {
+		name      string
+		items     []DriftItem
+		rules     []DriftIgnoreRule
+		wantItems []DriftItem
+	}{
+		{
+			name: "no rules returns all items",
+			items: []DriftItem{
+				{Service: "traefik", Type: DriftMissing},
+			},
+			rules:     nil,
+			wantItems: []DriftItem{{Service: "traefik", Type: DriftMissing}},
+		},
+		{
+			name:      "no items returns nil",
+			items:     nil,
+			rules:     []DriftIgnoreRule{{Service: "traefik", Type: "*"}},
+			wantItems: nil,
+		},
+		{
+			name: "exact service and type match",
+			items: []DriftItem{
+				{Service: "traefik", Type: DriftUnhealthy},
+				{Service: "api", Type: DriftMissing},
+			},
+			rules:     []DriftIgnoreRule{{Service: "traefik", Type: "unhealthy"}},
+			wantItems: []DriftItem{{Service: "api", Type: DriftMissing}},
+		},
+		{
+			name: "wildcard type matches all drift types",
+			items: []DriftItem{
+				{Service: "traefik", Type: DriftUnhealthy},
+				{Service: "traefik", Type: DriftImageMismatch},
+				{Service: "api", Type: DriftMissing},
+			},
+			rules:     []DriftIgnoreRule{{Service: "traefik", Type: "*"}},
+			wantItems: []DriftItem{{Service: "api", Type: DriftMissing}},
+		},
+		{
+			name: "glob pattern on service name",
+			items: []DriftItem{
+				{Service: "monitoring-grafana", Type: DriftUnhealthy},
+				{Service: "monitoring-prometheus", Type: DriftMissing},
+				{Service: "api", Type: DriftMissing},
+			},
+			rules:     []DriftIgnoreRule{{Service: "monitoring-*", Type: "*"}},
+			wantItems: []DriftItem{{Service: "api", Type: DriftMissing}},
+		},
+		{
+			name: "multiple rules applied",
+			items: []DriftItem{
+				{Service: "traefik", Type: DriftUnhealthy},
+				{Service: "gatus", Type: DriftImageMismatch},
+				{Service: "api", Type: DriftMissing},
+			},
+			rules: []DriftIgnoreRule{
+				{Service: "traefik", Type: "unhealthy"},
+				{Service: "gatus", Type: "image_mismatch"},
+			},
+			wantItems: []DriftItem{{Service: "api", Type: DriftMissing}},
+		},
+		{
+			name: "type mismatch does not filter",
+			items: []DriftItem{
+				{Service: "traefik", Type: DriftMissing},
+			},
+			rules:     []DriftIgnoreRule{{Service: "traefik", Type: "unhealthy"}},
+			wantItems: []DriftItem{{Service: "traefik", Type: DriftMissing}},
+		},
+		{
+			name: "service mismatch does not filter",
+			items: []DriftItem{
+				{Service: "api", Type: DriftUnhealthy},
+			},
+			rules:     []DriftIgnoreRule{{Service: "traefik", Type: "unhealthy"}},
+			wantItems: []DriftItem{{Service: "api", Type: DriftUnhealthy}},
+		},
+		{
+			name: "invalid glob pattern is silently skipped",
+			items: []DriftItem{
+				{Service: "traefik", Type: DriftUnhealthy},
+			},
+			rules:     []DriftIgnoreRule{{Service: "[invalid", Type: "*"}},
+			wantItems: []DriftItem{{Service: "traefik", Type: DriftUnhealthy}},
+		},
+		{
+			name: "all items filtered returns nil",
+			items: []DriftItem{
+				{Service: "traefik", Type: DriftUnhealthy},
+			},
+			rules:     []DriftIgnoreRule{{Service: "traefik", Type: "*"}},
+			wantItems: nil,
+		},
+		{
+			name: "question mark glob pattern",
+			items: []DriftItem{
+				{Service: "db1", Type: DriftMissing},
+				{Service: "db2", Type: DriftMissing},
+				{Service: "api", Type: DriftMissing},
+			},
+			rules:     []DriftIgnoreRule{{Service: "db?", Type: "missing"}},
+			wantItems: []DriftItem{{Service: "api", Type: DriftMissing}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterIgnoredDrift(tt.items, tt.rules)
+			assert.Equal(t, tt.wantItems, got)
+		})
+	}
+}
+
 func TestBuildSSHKeyPaths(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -668,6 +785,122 @@ func TestBuildSSHKeyPaths(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := buildSSHKeyPaths(tt.envKey, tt.homeDir)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestClassifyComposeResults(t *testing.T) {
+	tests := []struct {
+		name       string
+		results    []ComposeFileResult
+		wantSucc   int
+		wantFail   int
+		wantRB     int
+	}{
+		{
+			name: "all succeed",
+			results: []ComposeFileResult{
+				{File: "a.yml", Success: true},
+				{File: "b.yml", Success: true},
+			},
+			wantSucc: 2, wantFail: 0, wantRB: 0,
+		},
+		{
+			name: "one fails with rollback",
+			results: []ComposeFileResult{
+				{File: "a.yml", Success: true},
+				{File: "b.yml", Success: false, RolledBack: true, Err: fmt.Errorf("bad image")},
+			},
+			wantSucc: 1, wantFail: 1, wantRB: 1,
+		},
+		{
+			name: "one fails without rollback",
+			results: []ComposeFileResult{
+				{File: "a.yml", Success: false, Err: fmt.Errorf("bad image")},
+				{File: "b.yml", Success: true},
+			},
+			wantSucc: 1, wantFail: 1, wantRB: 0,
+		},
+		{
+			name: "all fail",
+			results: []ComposeFileResult{
+				{File: "a.yml", Success: false, Err: fmt.Errorf("err1")},
+				{File: "b.yml", Success: false, RolledBack: true, Err: fmt.Errorf("err2")},
+			},
+			wantSucc: 0, wantFail: 2, wantRB: 1,
+		},
+		{
+			name:     "empty results",
+			results:  nil,
+			wantSucc: 0, wantFail: 0, wantRB: 0,
+		},
+		{
+			name: "mixed with unhealthy (counted as success)",
+			results: []ComposeFileResult{
+				{File: "a.yml", Success: true, Err: ErrComposeUnhealthy},
+				{File: "b.yml", Success: false, RolledBack: true, Err: fmt.Errorf("fail")},
+				{File: "c.yml", Success: true},
+			},
+			wantSucc: 2, wantFail: 1, wantRB: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := classifyComposeResults(tt.results)
+			assert.Equal(t, tt.wantSucc, s.Succeeded)
+			assert.Equal(t, tt.wantFail, s.Failed)
+			assert.Equal(t, tt.wantRB, s.RolledBack)
+			assert.Equal(t, tt.results, s.Results)
+		})
+	}
+}
+
+func TestBuildOrphanPassFiles(t *testing.T) {
+	backupPath := "/backups/2024-01-01"
+
+	tests := []struct {
+		name    string
+		results []ComposeFileResult
+		want    []string
+	}{
+		{
+			name: "all succeed use original paths",
+			results: []ComposeFileResult{
+				{File: "/compose/a.yml", Success: true},
+				{File: "/compose/b.yml", Success: true},
+			},
+			want: []string{"/compose/a.yml", "/compose/b.yml"},
+		},
+		{
+			name: "rolled back uses backup path",
+			results: []ComposeFileResult{
+				{File: "/compose/a.yml", Success: true},
+				{File: "/compose/b.yml", Success: false, RolledBack: true},
+			},
+			want: []string{
+				"/compose/a.yml",
+				filepath.Join(backupPath, "b.yml"),
+			},
+		},
+		{
+			name: "failed without rollback uses original",
+			results: []ComposeFileResult{
+				{File: "/compose/a.yml", Success: false, RolledBack: false},
+			},
+			want: []string{"/compose/a.yml"},
+		},
+		{
+			name:    "empty results",
+			results: nil,
+			want:    nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildOrphanPassFiles(tt.results, backupPath)
 			assert.Equal(t, tt.want, got)
 		})
 	}

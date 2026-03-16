@@ -8,9 +8,12 @@ import (
 	"path/filepath"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/log"
 	sentrypkg "github.com/cameronsjo/bosun/internal/sentry"
+	"github.com/cameronsjo/bosun/internal/telemetry"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -22,6 +25,7 @@ type ReloadedConfig struct {
 	DeploySyncPaths    []string
 	DeploySyncExclude  []string
 	CriticalContainers []string
+	DriftIgnore        []DriftIgnoreRule
 	OnFailure          *bool
 	OnSuccess          *bool
 	RemoveOrphans      *bool
@@ -151,6 +155,13 @@ type Config struct {
 	// CriticalContainersFromEnv is true when BOSUN_CRITICAL_CONTAINERS env var is set.
 	// When true, repo config reload will not update CriticalContainers.
 	CriticalContainersFromEnv bool
+
+	// DriftIgnore is a list of rules for suppressing known drift noise.
+	DriftIgnore []DriftIgnoreRule
+
+	// DriftIgnoreFromEnv is true when BOSUN_DRIFT_IGNORE env var is set.
+	// When true, repo config reload will not update DriftIgnore.
+	DriftIgnoreFromEnv bool
 
 	// HealthGateTimeout is the maximum time to poll critical container health.
 	// Default 60s. Configurable via BOSUN_HEALTH_GATE_TIMEOUT.
@@ -319,8 +330,30 @@ func (r *Reconciler) SetRunOptions(source string, force bool) {
 }
 
 // Run executes the full reconciliation workflow.
-func (r *Reconciler) Run(ctx context.Context) error {
+func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	startTime := time.Now()
+
+	// Root OTel span for the entire reconciliation pipeline.
+	ctx, rootSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile",
+		trace.WithAttributes(
+			telemetry.StringAttr("source", r.config.Source),
+			telemetry.BoolAttr("force", r.config.Force),
+		),
+	)
+	defer func() {
+		if runErr != nil {
+			telemetry.SpanError(rootSpan, runErr)
+		} else {
+			telemetry.SpanOK(rootSpan)
+		}
+		rootSpan.End()
+	}()
+
+	// Bridge correlation IDs into the span.
+	if reconcileID := log.ReconcileIDFromContext(ctx); reconcileID != "" {
+		rootSpan.SetAttributes(telemetry.StringAttr("reconcile_id", reconcileID))
+	}
+
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
 	logger.Info().
@@ -349,8 +382,15 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 	// Step 1: Sync repository.
 	spanCtx, finishSpan := sentrypkg.StartSpan(ctx, "reconcile.git_sync", "Git repository sync")
+	spanCtx, otelGitSpan := telemetry.Tracer("reconcile").Start(spanCtx, "reconcile.git_sync")
 	changed, before, after, err := r.syncRepo(spanCtx)
 	finishSpan(err)
+	if err != nil {
+		telemetry.SpanError(otelGitSpan, err)
+	} else {
+		telemetry.SpanOK(otelGitSpan)
+	}
+	otelGitSpan.End()
 	if err != nil {
 		// Use the post-sync commit (may be empty on sync failure) to avoid reporting a stale SHA.
 		r.lastCommit = after
@@ -439,21 +479,31 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 	// Step 2: Decrypt secrets.
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.decrypt", "SOPS secret decryption")
+	spanCtx, otelDecryptSpan := telemetry.Tracer("reconcile").Start(spanCtx, "reconcile.decrypt")
 	secrets, err := r.decryptSecrets(spanCtx)
 	finishSpan(err)
 	if err != nil {
+		telemetry.SpanError(otelDecryptSpan, err)
+		otelDecryptSpan.End()
 		r.sendThrottledFailureAlert(ctx, state, "failed to decrypt secrets")
 		return fmt.Errorf("failed to decrypt secrets: %w", err)
 	}
+	telemetry.SpanOK(otelDecryptSpan)
+	otelDecryptSpan.End()
 
 	// Step 3: Render templates.
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.template", "Template rendering")
+	spanCtx, otelTemplateSpan := telemetry.Tracer("reconcile").Start(spanCtx, "reconcile.template")
 	if err := r.renderTemplates(spanCtx, secrets); err != nil {
 		finishSpan(err)
+		telemetry.SpanError(otelTemplateSpan, err)
+		otelTemplateSpan.End()
 		r.sendThrottledFailureAlert(ctx, state, "failed to render templates")
 		return fmt.Errorf("failed to render templates: %w", err)
 	}
 	finishSpan(nil)
+	telemetry.SpanOK(otelTemplateSpan)
+	otelTemplateSpan.End()
 
 	// Extract declared state from rendered compose files.
 	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
@@ -470,11 +520,16 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	// Step 4: Create backup (unless dry run).
 	if !r.config.DryRun {
 		spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.backup", "Configuration backup")
+		spanCtx, otelBackupSpan := telemetry.Tracer("reconcile").Start(spanCtx, "reconcile.backup")
 		if err := r.createBackup(spanCtx, secrets); err != nil {
 			finishSpan(err)
+			telemetry.SpanError(otelBackupSpan, err)
+			otelBackupSpan.End()
 			ui.Warning("Backup partially failed: %v", err)
 		} else {
 			finishSpan(nil)
+			telemetry.SpanOK(otelBackupSpan)
+			otelBackupSpan.End()
 		}
 	}
 
@@ -488,13 +543,18 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	}
 
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.deploy", "Deployment")
+	spanCtx, otelDeploySpan := telemetry.Tracer("reconcile").Start(spanCtx, "reconcile.deploy")
 	deployResult, err := r.doDeploy(spanCtx, secrets)
 	if err != nil {
 		finishSpan(err)
+		telemetry.SpanError(otelDeploySpan, err)
+		otelDeploySpan.End()
 		r.sendThrottledFailureAlert(ctx, state, err.Error())
 		return fmt.Errorf("deployment failed: %w", err)
 	}
 	finishSpan(nil)
+	telemetry.SpanOK(otelDeploySpan)
+	otelDeploySpan.End()
 
 	// Step 6: Cleanup staging directory after successful deployment.
 	if err := r.cleanupStaging(); err != nil {
@@ -502,9 +562,14 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	}
 
 	// Step 7: Critical container health gate (if configured).
+	_, otelHealthGateSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.health_gate")
 	if err := r.runHealthGate(ctx, state); err != nil {
+		telemetry.SpanError(otelHealthGateSpan, err)
+		otelHealthGateSpan.End()
 		return fmt.Errorf("health gate failed: %w", err)
 	}
+	telemetry.SpanOK(otelHealthGateSpan)
+	otelHealthGateSpan.End()
 
 	// Send recovery alert if this success follows previous failures.
 	if state.AttemptCount > 1 {
@@ -532,17 +597,27 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 	// Execute post-sync hooks if any files changed and hooks are configured.
 	if r.dockerClientFn != nil && !r.config.DryRun && len(r.config.PostSyncHooks) > 0 {
+		_, otelHooksSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.post_sync_hooks",
+			trace.WithAttributes(telemetry.IntAttr("hook_count", len(r.config.PostSyncHooks))),
+		)
 		r.executePostSyncHooks(ctx, previousCommit, after, deployResult)
+		telemetry.SpanOK(otelHooksSpan)
+		otelHooksSpan.End()
 	}
 
 	// Post-deploy health verification: poll container health.
 	if r.dockerClientFn != nil && !r.config.DryRun && len(r.declaredServices) > 0 {
 		if client := r.dockerClientFn(); client != nil {
+			_, otelDriftSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.drift_check")
 			if healthErr := r.verifyPostDeploy(ctx, state, client); healthErr != nil {
+				telemetry.SpanError(otelDriftSpan, healthErr)
+				otelDriftSpan.End()
 				// Health verification failed — treat as a deploy failure.
 				r.sendThrottledFailureAlert(ctx, state, healthErr.Error())
 				return fmt.Errorf("post-deploy health verification failed: %w", healthErr)
 			}
+			telemetry.SpanOK(otelDriftSpan)
+			otelDriftSpan.End()
 		}
 	}
 
@@ -854,7 +929,7 @@ func (r *Reconciler) reloadProjectConfig() {
 	// If no field has any value from the repo, there's nothing to reload.
 	// Use nil checks (not len==0) for slices so explicitly empty lists (e.g. `deploy_sync_paths: []`)
 	// can clear in-memory filters during hot-reload.
-	if reloaded.PostSyncHooks == nil && reloaded.HookSettleDelay == 0 && reloaded.DeployPaths == nil && reloaded.DeploySyncPaths == nil && reloaded.DeploySyncExclude == nil && reloaded.CriticalContainers == nil && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil {
+	if reloaded.PostSyncHooks == nil && reloaded.HookSettleDelay == 0 && reloaded.DeployPaths == nil && reloaded.DeploySyncPaths == nil && reloaded.DeploySyncExclude == nil && reloaded.CriticalContainers == nil && reloaded.DriftIgnore == nil && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil {
 		return
 	}
 
@@ -887,6 +962,11 @@ func (r *Reconciler) reloadProjectConfig() {
 
 	if !r.config.CriticalContainersFromEnv && len(reloaded.CriticalContainers) > 0 {
 		r.config.CriticalContainers = reloaded.CriticalContainers
+		changed = true
+	}
+
+	if !r.config.DriftIgnoreFromEnv && reloaded.DriftIgnore != nil {
+		r.config.DriftIgnore = reloaded.DriftIgnore
 		changed = true
 	}
 
@@ -1155,13 +1235,10 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any) e
 }
 
 // backupPathsFromTargets derives backup paths from discovered deploy targets.
-// Compose targets are excluded because compose has its own rollback mechanism.
+// All targets including compose are backed up so per-file rollback has files to restore from.
 func backupPathsFromTargets(targets []DeployTarget, appdataBase string) []string {
 	var paths []string
 	for _, t := range targets {
-		if t.RelPath == "compose" {
-			continue
-		}
 		paths = append(paths, filepath.Join(appdataBase, t.TargetPath))
 	}
 	return paths
@@ -1238,7 +1315,7 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 		}
 	}
 
-	// Reload services with rollback support.
+	// Reload services with per-file isolated compose up and rollback.
 	if !r.config.DryRun {
 		ui.Info("  Reloading services...")
 		composeFiles, err := filepath.Glob(filepath.Join(composeTarget, "*.yml"))
@@ -1249,16 +1326,29 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 			ui.Warning("No compose files found in %s", composeTarget)
 		} else {
 			r.lastComposeFiles = composeFiles
-			if err := r.deploy.ComposeUpMultipleWithRollback(ctx, composeFiles, r.lastBackupPath); err != nil {
-				// Unhealthy containers are warnings, not failures.
-				if errors.Is(err, ErrComposeUnhealthy) {
-					ui.Warning("Some containers are unhealthy: %v", err)
-				} else if errors.Is(err, ErrRollbackFailed) {
-					return nil, fmt.Errorf("CRITICAL: service reload and rollback both failed: %w", err)
-				} else if errors.Is(err, ErrRollbackSucceeded) {
-					return nil, fmt.Errorf("service reload failed but rollback succeeded: %w", err)
-				} else {
-					return nil, fmt.Errorf("service reload failed: %w", err)
+			summary, composeErr := r.deploy.ComposeUpIsolated(ctx, composeFiles, r.lastBackupPath)
+			if composeErr != nil {
+				// All files failed — fatal.
+				return nil, fmt.Errorf("CRITICAL: all compose files failed to deploy: %w", composeErr)
+			}
+			if summary.Failed > 0 {
+				// Partial failure — log warnings for each failed file, continue.
+				for _, res := range summary.Results {
+					if !res.Success {
+						if res.RolledBack {
+							ui.Warning("Compose file %s failed, rolled back: %v", filepath.Base(res.File), res.Err)
+						} else {
+							ui.Warning("Compose file %s failed: %v", filepath.Base(res.File), res.Err)
+						}
+					}
+				}
+				ui.Warning("Partial deploy: %d/%d files succeeded, %d failed (%d rolled back)",
+					summary.Succeeded, len(composeFiles), summary.Failed, summary.RolledBack)
+			}
+			// Check for unhealthy warnings.
+			for _, res := range summary.Results {
+				if res.Success && res.Err != nil && errors.Is(res.Err, ErrComposeUnhealthy) {
+					ui.Warning("Some containers are unhealthy in %s: %v", filepath.Base(res.File), res.Err)
 				}
 			}
 		}

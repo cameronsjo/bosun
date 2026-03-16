@@ -1594,6 +1594,97 @@ func TestLoadFrom_ShutdownTimeout(t *testing.T) {
 	})
 }
 
+func TestDriftIgnoreFromConfig(t *testing.T) {
+	t.Run("parses drift_ignore from bosun.yaml", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `drift_ignore:
+  - service: "traefik"
+    type: "unhealthy"
+  - service: "monitoring-*"
+    type: "*"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		require.Len(t, cfg.DriftIgnore(), 2)
+		assert.Equal(t, "traefik", cfg.DriftIgnore()[0].Service)
+		assert.Equal(t, "unhealthy", cfg.DriftIgnore()[0].Type)
+		assert.Equal(t, "monitoring-*", cfg.DriftIgnore()[1].Service)
+		assert.Equal(t, "*", cfg.DriftIgnore()[1].Type)
+	})
+
+	t.Run("returns nil when not configured", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(""), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Empty(t, cfg.DriftIgnore())
+	})
+}
+
+func TestLoadFrom_DriftIgnore(t *testing.T) {
+	t.Run("loads drift_ignore from directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		content := `drift_ignore:
+  - service: "traefik"
+    type: "*"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		require.Len(t, cfg.DriftIgnore(), 1)
+		assert.Equal(t, "traefik", cfg.DriftIgnore()[0].Service)
+		assert.Equal(t, "*", cfg.DriftIgnore()[0].Type)
+	})
+
+	t.Run("returns empty when not configured", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Empty(t, cfg.DriftIgnore())
+	})
+}
+
+func TestExtractDriftIgnore(t *testing.T) {
+	t.Run("returns rules from config", func(t *testing.T) {
+		cfg := configFile{
+			DriftIgnore: []reconcile.DriftIgnoreRule{
+				{Service: "traefik", Type: "unhealthy"},
+			},
+		}
+		rules := extractDriftIgnore(cfg)
+		require.Len(t, rules, 1)
+		assert.Equal(t, "traefik", rules[0].Service)
+	})
+
+	t.Run("returns nil when empty", func(t *testing.T) {
+		cfg := configFile{}
+		assert.Nil(t, extractDriftIgnore(cfg))
+	})
+}
+
 func TestExtractShutdownTimeout(t *testing.T) {
 	t.Run("returns default when zero", func(t *testing.T) {
 		cfg := configFile{}

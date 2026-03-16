@@ -16,12 +16,15 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/cameronsjo/bosun/internal/alert"
 	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	sentrypkg "github.com/cameronsjo/bosun/internal/sentry"
+	"github.com/cameronsjo/bosun/internal/telemetry"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -521,6 +524,14 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 	// Start a Sentry transaction for performance monitoring.
 	ctx, finishTx := sentrypkg.ReconcileTransaction(ctx, source)
 
+	// Start OTel span for daemon-level reconciliation orchestration.
+	ctx, otelSpan := telemetry.Tracer("daemon").Start(ctx, "daemon.reconcile",
+		trace.WithAttributes(
+			telemetry.StringAttr("source", source),
+			telemetry.BoolAttr("force", force),
+		),
+	)
+
 	// Set source and force on the reconciler config so the state-based
 	// skip logic and attempt tracking have the right context.
 	d.reconciler.SetRunOptions(source, force)
@@ -533,6 +544,12 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 	ui.Info("Starting reconciliation (source: %s, force: %t)", source, force)
 
 	err := d.reconciler.Run(ctx)
+	if err != nil {
+		telemetry.SpanError(otelSpan, err)
+	} else {
+		telemetry.SpanOK(otelSpan)
+	}
+	otelSpan.End()
 
 	// Update state (use stateMu for thread-safe reads from health checks).
 	d.stateMu.Lock()
@@ -657,13 +674,24 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	checkCtx, cancel := context.WithTimeout(ctx, d.config.APITimeout)
 	defer cancel()
 
+	// Collect drift ignore rules from reconcile config.
+	var ignoreRules []reconcile.DriftIgnoreRule
+	if d.config.ReconcileConfig != nil {
+		ignoreRules = d.config.ReconcileConfig.DriftIgnore
+	}
+
 	checkCtx, finishSpan := sentrypkg.StartSpan(checkCtx, "drift.periodic_check", "Periodic drift check")
-	report, err := reconcile.RunDriftCheck(checkCtx, client, stateFile, projectName)
+	checkCtx, otelDriftSpan := telemetry.Tracer("daemon").Start(checkCtx, "daemon.drift_check")
+	report, err := reconcile.RunDriftCheck(checkCtx, client, stateFile, projectName, ignoreRules)
 	finishSpan(err)
 	if err != nil {
+		telemetry.SpanError(otelDriftSpan, err)
+		otelDriftSpan.End()
 		logger.Warn().Err(err).Msg("Drift check failed")
 		return
 	}
+	telemetry.SpanOK(otelDriftSpan)
+	otelDriftSpan.End()
 
 	// Load previous state to detect drift resolution.
 	state := reconcile.LoadState(stateFile)
@@ -1440,6 +1468,7 @@ func ConfigFromEnv() *Config {
 			DeploySyncPaths:    cfg.DeploySyncPaths(),
 			DeploySyncExclude:  cfg.DeploySyncExclude(),
 			CriticalContainers: cfg.CriticalContainers(),
+			DriftIgnore:        cfg.DriftIgnore(),
 			OnFailure:          &alertCfg.OnFailure,
 			OnSuccess:          &alertCfg.OnSuccess,
 			RemoveOrphans:      &removeOrphans,
@@ -1496,6 +1525,15 @@ func ConfigFromEnv() *Config {
 		} else {
 			rcfg.CriticalContainers = containers
 			rcfg.CriticalContainersFromEnv = true
+		}
+	}
+	if v := os.Getenv("BOSUN_DRIFT_IGNORE"); v != "" {
+		var rules []reconcile.DriftIgnoreRule
+		if err := json.Unmarshal([]byte(v), &rules); err != nil {
+			log.Warn().Err(err).Msg("Failed to parse BOSUN_DRIFT_IGNORE, ignoring")
+		} else {
+			rcfg.DriftIgnore = rules
+			rcfg.DriftIgnoreFromEnv = true
 		}
 	}
 	if v := os.Getenv("BOSUN_HEALTH_GATE_TIMEOUT"); v != "" {

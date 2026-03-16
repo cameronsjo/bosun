@@ -128,6 +128,105 @@ func buildSSHKeyPaths(envKey, homeDir string) []string {
 	return result
 }
 
+// FilterIgnoredDriftItems returns only the drift items that do not match any ignore rule.
+// This is the exported entry point for callers outside the reconcile package.
+func FilterIgnoredDriftItems(items []DriftItem, rules []DriftIgnoreRule) []DriftItem {
+	return filterIgnoredDrift(items, rules)
+}
+
+// filterIgnoredDrift returns only the drift items that do not match any ignore rule.
+// Service matching uses filepath.Match for glob support. Type matching is exact
+// or "*" for wildcard. Invalid glob patterns in rules are silently skipped
+// (the rule never matches).
+func filterIgnoredDrift(items []DriftItem, rules []DriftIgnoreRule) []DriftItem {
+	if len(rules) == 0 {
+		return items
+	}
+
+	var kept []DriftItem
+	for _, item := range items {
+		if !driftItemMatchesAnyRule(item, rules) {
+			kept = append(kept, item)
+		}
+	}
+	return kept
+}
+
+// driftItemMatchesAnyRule returns true if the item matches at least one ignore rule.
+func driftItemMatchesAnyRule(item DriftItem, rules []DriftIgnoreRule) bool {
+	for _, rule := range rules {
+		if driftItemMatchesRule(item, rule) {
+			return true
+		}
+	}
+	return false
+}
+
+// driftItemMatchesRule returns true if the item matches the given ignore rule.
+func driftItemMatchesRule(item DriftItem, rule DriftIgnoreRule) bool {
+	// Match service name using glob.
+	matched, err := filepath.Match(rule.Service, item.Service)
+	if err != nil || !matched {
+		return false
+	}
+
+	// Match type: "*" matches all, otherwise exact match.
+	return rule.Type == "*" || rule.Type == string(item.Type)
+}
+
+// ComposeFileResult records the outcome of a single compose file's deployment.
+type ComposeFileResult struct {
+	File       string // absolute path to the compose file
+	Success    bool   // true if compose up succeeded (including unhealthy-only)
+	RolledBack bool   // true if the file was rolled back from backup after failure
+	Err        error  // nil on success, the compose-up error on failure
+}
+
+// ComposeUpSummary aggregates per-file compose up results.
+type ComposeUpSummary struct {
+	Results    []ComposeFileResult
+	Succeeded  int
+	Failed     int
+	RolledBack int
+}
+
+// classifyComposeResults tallies per-file outcomes into a summary.
+func classifyComposeResults(results []ComposeFileResult) ComposeUpSummary {
+	s := ComposeUpSummary{Results: results}
+	for _, r := range results {
+		if r.Success {
+			s.Succeeded++
+		} else {
+			s.Failed++
+			if r.RolledBack {
+				s.RolledBack++
+			}
+		}
+	}
+	return s
+}
+
+// buildOrphanPassFiles constructs the file list for the orphan-reconciliation pass.
+// Succeeded files use their original (new) path. Rolled-back files use the backup
+// copy so Docker sees the previous service set. Failed files with no backup use
+// the original path (best-effort).
+func buildOrphanPassFiles(results []ComposeFileResult, backupPath string) []string {
+	var files []string
+	for _, r := range results {
+		if r.Success {
+			files = append(files, r.File)
+			continue
+		}
+		if r.RolledBack && backupPath != "" {
+			backupFile := filepath.Join(backupPath, filepath.Base(r.File))
+			files = append(files, backupFile)
+			continue
+		}
+		// Failed without rollback — include original so orphan pass at least knows about it.
+		files = append(files, r.File)
+	}
+	return files
+}
 // composeFailureKind indicates whether a compose-up failure is recoverable.
 type composeFailureKind int
 

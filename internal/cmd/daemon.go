@@ -10,6 +10,7 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/alert"
 	"github.com/cameronsjo/bosun/internal/daemon"
+	"github.com/cameronsjo/bosun/internal/telemetry"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -84,15 +85,27 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	// Set up alert manager
 	cfg.AlertManager = createDaemonAlertManager()
 
-	// Create and run daemon
-	d, err := daemon.New(cfg)
+	// Initialize OpenTelemetry tracing (noop if BOSUN_OTEL_ENDPOINT is unset).
+	ctx := context.Background()
+	otelShutdown, err := telemetry.Init(ctx, "bosun", version, os.Getenv("BOSUN_OTEL_ENDPOINT"))
 	if err != nil {
-		ui.Fatal("Failed to create daemon: %v", err)
+		ui.Warning("Failed to initialize OpenTelemetry: %v", err)
+	} else {
+		defer func() {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer shutdownCancel()
+			_ = otelShutdown(shutdownCtx)
+		}()
 	}
 
-	ctx := context.Background()
-	if err := d.Run(ctx); err != nil {
-		ui.Fatal("Daemon failed: %v", err)
+	// Create and run daemon.
+	d, daemonErr := daemon.New(cfg)
+	if daemonErr != nil {
+		ui.Fatal("Failed to create daemon: %v", daemonErr)
+	}
+
+	if runErr := d.Run(ctx); runErr != nil {
+		ui.Fatal("Daemon failed: %v", runErr)
 	}
 }
 
