@@ -30,9 +30,9 @@
 
 ## 4. Output and Display
 
-- [ ] 4.1 Update `WriteOutputs` to iterate `TargetRegistry` with sorted target names
-- [ ] 4.2 Update `RenderToYAML` to iterate targets with sorted names
-- [ ] 4.3 Update `showDiff` (provision.go) to use `TargetRegistry`
+- [ ] 4.1 Update `WriteOutputs` to iterate `TargetRegistry` with sorted target names; log warning and skip unregistered targets
+- [ ] 4.2 Update `RenderToYAML` to iterate targets with sorted names; include unregistered targets for diagnostic visibility
+- [ ] 4.3 Update `showDiff` (provision.go) to use `TargetRegistry`; skip unregistered targets
 - [ ] 4.4 Update compose name injection in provision.go to use `Target()` accessor
 
 ## 5. Tests
@@ -46,5 +46,7 @@
 - [ ] 5.7 Add test: `Target()` accessor auto-initializes nil map
 - [ ] 5.8 Add test: `WriteOutputs` produces sorted, reproducible output
 - [ ] 5.9 Add integration test: full render pipeline (service → provision → WriteOutputs) with all three targets
-- [ ] 5.10 Verify migration completeness: grep for old field access patterns (`.Compose`, `.Traefik`, `.Gatus` on `RenderOutput`/`Provision`/`Template`) to confirm no stale references remain
-- [ ] 5.11 Run full test suite, verify no regressions
+- [ ] 5.10 Add test: `WriteOutputs` warns and skips unregistered target names
+- [ ] 5.11 Add test: `RenderToYAML` includes unregistered targets in output
+- [ ] 5.12 Verify migration completeness: grep for old field access patterns (`.Compose`, `.Traefik`, `.Gatus` on `RenderOutput`/`Provision`/`Template`) to confirm no stale references remain
+- [ ] 5.13 Run full test suite, verify no regressions

@@ -202,3 +202,10 @@ The system SHALL iterate targets in sorted order (by target name) to produce det
 
 - **WHEN** multiple targets have content
 - **THEN** `WriteOutputs` and `RenderToYAML` process targets in alphabetical order by target name
+
+#### Scenario: Unregistered target in RenderOutput
+
+- **WHEN** `RenderOutput.Targets` contains a target name that is not present in the `TargetRegistry`
+- **THEN** `WriteOutputs` logs a warning identifying the unregistered target name and skips it
+- **AND** `RenderToYAML` includes the unregistered target in the combined YAML output (for diagnostic visibility)
+- **AND** `showDiff` skips the unregistered target
