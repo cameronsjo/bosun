@@ -1330,12 +1330,14 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) e
 		}
 	}
 
-	// Sync to Compose Manager (Unraid-specific, remote-only).
-	ui.Info("  Syncing core compose to Compose Manager...")
+	// Sync to Compose Manager (Unraid-specific, remote-only) only when compose is a deploy target.
 	composeManagerDir := "/boot/config/plugins/compose.manager/projects/core"
-	_ = r.deploy.EnsureRemoteDir(ctx, host, composeManagerDir)
-	if err := r.deploy.DeployRemoteFile(ctx, filepath.Join(stagingSubDir, "compose", "core.yml"), host, filepath.Join(composeManagerDir, "docker-compose.yml")); err != nil {
-		ui.Warning("Compose Manager sync failed: %v", err)
+	if hasTarget(targets, "compose") {
+		ui.Info("  Syncing core compose to Compose Manager...")
+		_ = r.deploy.EnsureRemoteDir(ctx, host, composeManagerDir)
+		if err := r.deploy.DeployRemoteFile(ctx, filepath.Join(stagingSubDir, "compose", "core.yml"), host, filepath.Join(composeManagerDir, "docker-compose.yml")); err != nil {
+			ui.Warning("Compose Manager sync failed: %v", err)
+		}
 	}
 
 	// Reload services.
