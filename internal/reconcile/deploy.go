@@ -1122,7 +1122,12 @@ func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string
 
 	upFn := d.composeUpFn
 	if upFn == nil {
-		upFn = d.ComposeUpMultiple
+		// Clone DeployOps with RemoveOrphans disabled for Phase 1.
+		// Phase 1 runs each file individually — --remove-orphans would kill
+		// containers from other files not passed to the command.
+		noOrphanOps := *d
+		noOrphanOps.RemoveOrphans = false
+		upFn = noOrphanOps.ComposeUpMultiple
 	}
 
 	// Phase 1: per-file compose up without --remove-orphans.
@@ -1214,7 +1219,7 @@ func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string
 	}
 
 	// Determine overall error.
-	if summary.Failed == len(composeFiles) {
+	if len(composeFiles) > 0 && summary.Failed == len(composeFiles) {
 		return &summary, fmt.Errorf("all %d compose files failed to deploy", summary.Failed)
 	}
 
