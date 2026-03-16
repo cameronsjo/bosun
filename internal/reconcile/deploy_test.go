@@ -1579,3 +1579,109 @@ func TestDeployOps_DeployLocalStandardMode(t *testing.T) {
 		assert.Contains(t, err.Error(), "create target directory")
 	})
 }
+
+func TestDeployOps_ComposeUpIsolated(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("all succeed", func(t *testing.T) {
+		d := &DeployOps{
+			DryRun:        false,
+			RemoveOrphans: true,
+			composeUpFn: func(_ context.Context, files []string) error {
+				return nil
+			},
+		}
+
+		summary, err := d.ComposeUpIsolated(ctx, []string{"/a.yml", "/b.yml"}, "")
+		require.NoError(t, err)
+		assert.Equal(t, 2, summary.Succeeded)
+		assert.Equal(t, 0, summary.Failed)
+	})
+
+	t.Run("one fails with backup triggers rollback", func(t *testing.T) {
+		backupDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(backupDir, "bad.yml"), []byte("version: '3'"), 0644))
+
+		callCount := 0
+		d := &DeployOps{
+			DryRun:        false,
+			RemoveOrphans: false,
+			composeUpFn: func(_ context.Context, files []string) error {
+				callCount++
+				if filepath.Base(files[0]) == "bad.yml" {
+					return fmt.Errorf("bad image tag")
+				}
+				return nil
+			},
+		}
+
+		summary, err := d.ComposeUpIsolated(ctx, []string{"/compose/good.yml", "/compose/bad.yml"}, backupDir)
+		require.NoError(t, err) // partial failure is not a fatal error
+		assert.Equal(t, 1, summary.Succeeded)
+		assert.Equal(t, 1, summary.Failed)
+		// Rollback doesn't go through composeUpFn — it calls docker directly.
+		// So we can't verify RolledBack=true in unit tests without Docker.
+		// But we verify the structure is correct.
+		assert.Equal(t, 2, len(summary.Results))
+	})
+
+	t.Run("one fails without backup", func(t *testing.T) {
+		d := &DeployOps{
+			DryRun:        false,
+			RemoveOrphans: false,
+			composeUpFn: func(_ context.Context, files []string) error {
+				if filepath.Base(files[0]) == "bad.yml" {
+					return fmt.Errorf("image not found")
+				}
+				return nil
+			},
+		}
+
+		summary, err := d.ComposeUpIsolated(ctx, []string{"/compose/good.yml", "/compose/bad.yml"}, "")
+		require.NoError(t, err)
+		assert.Equal(t, 1, summary.Succeeded)
+		assert.Equal(t, 1, summary.Failed)
+		assert.Equal(t, 0, summary.RolledBack)
+	})
+
+	t.Run("all fail returns error", func(t *testing.T) {
+		d := &DeployOps{
+			DryRun:        false,
+			RemoveOrphans: false,
+			composeUpFn: func(_ context.Context, _ []string) error {
+				return fmt.Errorf("compose up failed")
+			},
+		}
+
+		summary, err := d.ComposeUpIsolated(ctx, []string{"/a.yml", "/b.yml"}, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "all 2 compose files failed")
+		assert.Equal(t, 0, summary.Succeeded)
+		assert.Equal(t, 2, summary.Failed)
+	})
+
+	t.Run("unhealthy treated as success", func(t *testing.T) {
+		d := &DeployOps{
+			DryRun:        false,
+			RemoveOrphans: false,
+			composeUpFn: func(_ context.Context, _ []string) error {
+				return fmt.Errorf("%w: mealie", ErrComposeUnhealthy)
+			},
+		}
+
+		summary, err := d.ComposeUpIsolated(ctx, []string{"/a.yml"}, "")
+		require.NoError(t, err)
+		assert.Equal(t, 1, summary.Succeeded)
+		assert.Equal(t, 0, summary.Failed)
+		// The unhealthy error is preserved on the result.
+		assert.ErrorIs(t, summary.Results[0].Err, ErrComposeUnhealthy)
+	})
+
+	t.Run("dry run succeeds immediately", func(t *testing.T) {
+		d := &DeployOps{DryRun: true}
+		summary, err := d.ComposeUpIsolated(ctx, []string{"/a.yml", "/b.yml"}, "/backup")
+		require.NoError(t, err)
+		assert.Equal(t, 2, summary.Succeeded)
+		assert.Equal(t, 0, summary.Failed)
+	})
+}

@@ -13,7 +13,10 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/cameronsjo/bosun/internal/log"
+	"github.com/cameronsjo/bosun/internal/telemetry"
 	"github.com/cameronsjo/bosun/internal/ui"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -222,19 +225,27 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	s.metrics.RecordWebhookTrigger("generic")
 
-	// Trigger reconciliation with goroutine tracking
+	// Trigger reconciliation with goroutine tracking.
 	webhookLogger := log.Component(log.ComponentWebhook)
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
 		ctx, cancel := context.WithTimeout(bgCtx, s.daemon.config.ReconcileTimeout)
 		defer cancel()
-		if err := s.daemon.TriggerReconcile(ctx, "webhook", false); err != nil {
+		ctx, webhookSpan := telemetry.Tracer("daemon").Start(ctx, "daemon.webhook",
+			trace.WithAttributes(telemetry.StringAttr("webhook_type", "generic")),
+		)
+		err := s.daemon.TriggerReconcile(ctx, "webhook", false)
+		if err != nil {
+			telemetry.SpanError(webhookSpan, err)
 			webhookLogger.Error().
 				Err(err).
 				Str(log.FieldSource, log.SourceWebhook).
 				Msg("Webhook-triggered reconciliation failed")
+		} else {
+			telemetry.SpanOK(webhookSpan)
 		}
+		webhookSpan.End()
 	}()
 
 	w.WriteHeader(http.StatusAccepted)

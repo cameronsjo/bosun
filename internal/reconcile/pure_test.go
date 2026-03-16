@@ -1,6 +1,8 @@
 package reconcile
 
 import (
+	"fmt"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -783,6 +785,122 @@ func TestBuildSSHKeyPaths(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := buildSSHKeyPaths(tt.envKey, tt.homeDir)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestClassifyComposeResults(t *testing.T) {
+	tests := []struct {
+		name       string
+		results    []ComposeFileResult
+		wantSucc   int
+		wantFail   int
+		wantRB     int
+	}{
+		{
+			name: "all succeed",
+			results: []ComposeFileResult{
+				{File: "a.yml", Success: true},
+				{File: "b.yml", Success: true},
+			},
+			wantSucc: 2, wantFail: 0, wantRB: 0,
+		},
+		{
+			name: "one fails with rollback",
+			results: []ComposeFileResult{
+				{File: "a.yml", Success: true},
+				{File: "b.yml", Success: false, RolledBack: true, Err: fmt.Errorf("bad image")},
+			},
+			wantSucc: 1, wantFail: 1, wantRB: 1,
+		},
+		{
+			name: "one fails without rollback",
+			results: []ComposeFileResult{
+				{File: "a.yml", Success: false, Err: fmt.Errorf("bad image")},
+				{File: "b.yml", Success: true},
+			},
+			wantSucc: 1, wantFail: 1, wantRB: 0,
+		},
+		{
+			name: "all fail",
+			results: []ComposeFileResult{
+				{File: "a.yml", Success: false, Err: fmt.Errorf("err1")},
+				{File: "b.yml", Success: false, RolledBack: true, Err: fmt.Errorf("err2")},
+			},
+			wantSucc: 0, wantFail: 2, wantRB: 1,
+		},
+		{
+			name:     "empty results",
+			results:  nil,
+			wantSucc: 0, wantFail: 0, wantRB: 0,
+		},
+		{
+			name: "mixed with unhealthy (counted as success)",
+			results: []ComposeFileResult{
+				{File: "a.yml", Success: true, Err: ErrComposeUnhealthy},
+				{File: "b.yml", Success: false, RolledBack: true, Err: fmt.Errorf("fail")},
+				{File: "c.yml", Success: true},
+			},
+			wantSucc: 2, wantFail: 1, wantRB: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := classifyComposeResults(tt.results)
+			assert.Equal(t, tt.wantSucc, s.Succeeded)
+			assert.Equal(t, tt.wantFail, s.Failed)
+			assert.Equal(t, tt.wantRB, s.RolledBack)
+			assert.Equal(t, tt.results, s.Results)
+		})
+	}
+}
+
+func TestBuildOrphanPassFiles(t *testing.T) {
+	backupPath := "/backups/2024-01-01"
+
+	tests := []struct {
+		name    string
+		results []ComposeFileResult
+		want    []string
+	}{
+		{
+			name: "all succeed use original paths",
+			results: []ComposeFileResult{
+				{File: "/compose/a.yml", Success: true},
+				{File: "/compose/b.yml", Success: true},
+			},
+			want: []string{"/compose/a.yml", "/compose/b.yml"},
+		},
+		{
+			name: "rolled back uses backup path",
+			results: []ComposeFileResult{
+				{File: "/compose/a.yml", Success: true},
+				{File: "/compose/b.yml", Success: false, RolledBack: true},
+			},
+			want: []string{
+				"/compose/a.yml",
+				filepath.Join(backupPath, "b.yml"),
+			},
+		},
+		{
+			name: "failed without rollback uses original",
+			results: []ComposeFileResult{
+				{File: "/compose/a.yml", Success: false, RolledBack: false},
+			},
+			want: []string{"/compose/a.yml"},
+		},
+		{
+			name:    "empty results",
+			results: nil,
+			want:    nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildOrphanPassFiles(tt.results, backupPath)
 			assert.Equal(t, tt.want, got)
 		})
 	}

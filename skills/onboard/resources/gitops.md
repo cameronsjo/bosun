@@ -32,7 +32,7 @@ Every reconciliation follows this 14-stage sequence:
         |
  8. Deploy files (local copy or tar-over-SSH)
         |
- 9. Run docker compose up
+ 9. Run docker compose up (per-file isolated, with rollback)
         |
 10. Clean up staging directory
         |
@@ -328,14 +328,14 @@ The daemon tracks deploy state in a JSON file (default: `/var/lib/bosun/deploy-s
 Deploy targets are **auto-discovered** from the staging directory after template rendering. The staging directory structure determines what gets synced:
 
 - `appdata/` children are expanded one level (per-service granularity)
-- `compose/` is handled specially (feeds `docker compose up` with rollback)
+- `compose/` is handled specially (per-file isolated `docker compose up` with per-file rollback)
 - All other top-level entries are synced as-is
 
 Use `deploy_sync_paths` (allowlist) and `deploy_sync_exclude` (blocklist) in `bosun.yaml` or via `BOSUN_DEPLOY_SYNC_PATHS`/`BOSUN_DEPLOY_SYNC_EXCLUDE` env vars to filter which targets are deployed. Exclude wins over include.
 
 ### Local Deployment
 
-Default mode. Copies rendered files directly to the local filesystem and runs `docker compose up`.
+Default mode. Copies rendered files directly to the local filesystem and runs `docker compose up` per-file with isolated rollback. Each compose file is deployed independently — if one file fails (e.g., bad image tag), only that file is rolled back from backup while other files continue. A final orphan-reconciliation pass runs `--remove-orphans` across all files to clean up stale containers.
 
 ```bash
 bosun reconcile -l             # Force local mode
@@ -377,6 +377,32 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `BOSUN_CRITICAL_CONTAINERS` | | JSON array of container names that must be healthy after deploy (overrides config file) |
 | `BOSUN_DRIFT_IGNORE` | | JSON array of `{"service","type"}` rules to suppress known drift noise (overrides config file) |
 | `BOSUN_HEALTH_GATE_TIMEOUT` | `60s` | Health gate polling timeout (accepts Go duration strings or bare seconds) |
+| `BOSUN_OTEL_ENDPOINT` | *(disabled)* | OpenTelemetry OTLP HTTP endpoint (e.g., `http://localhost:4318`). When set, spans are exported for each reconciliation pipeline phase. When empty, a noop provider is used (zero overhead) |
+
+## OpenTelemetry Tracing
+
+Bosun supports distributed tracing via OpenTelemetry. Set `BOSUN_OTEL_ENDPOINT` to the OTLP HTTP collector endpoint (e.g., `http://localhost:4318`) to enable span export.
+
+### Instrumented Spans
+
+The reconciliation pipeline emits these spans:
+
+| Span Name | Scope | Description |
+|-----------|-------|-------------|
+| `reconcile` | Root | Entire reconciliation run |
+| `reconcile.git_sync` | Child | Git clone/pull |
+| `reconcile.decrypt` | Child | SOPS secret decryption |
+| `reconcile.template` | Child | Go template rendering |
+| `reconcile.backup` | Child | Configuration backup |
+| `reconcile.deploy` | Child | File deployment + compose up |
+| `reconcile.health_gate` | Child | Critical container health gate |
+| `reconcile.post_sync_hooks` | Child | Post-sync hook execution |
+| `reconcile.drift_check` | Child | Post-deploy health verification |
+| `daemon.reconcile` | Daemon | Daemon-level reconcile orchestration |
+| `daemon.drift_check` | Daemon | Periodic drift check |
+| `daemon.webhook` | Daemon | Webhook-triggered reconciliation |
+
+Span attributes include `source`, `force`, `reconcile_id`, and `hook_count` where applicable. When `BOSUN_OTEL_ENDPOINT` is empty, a noop provider is used with zero overhead.
 
 ## Systemd Deployment
 

@@ -179,6 +179,10 @@ Snapshot management for manifest output files. Used for rollback via `bosun mayd
 
 Abstraction layer for tunnel providers (Tailscale Funnel, Cloudflare Tunnel). Used by `bosun radio`.
 
+### internal/telemetry
+
+OpenTelemetry tracing. `Init()` configures an OTLP HTTP exporter when `BOSUN_OTEL_ENDPOINT` is set; otherwise installs a noop provider (zero overhead). `Tracer(name)` returns a named tracer safe to call before Init. Helper functions: `SpanError()`, `SpanOK()`, `StringAttr()`, `BoolAttr()`, `IntAttr()`.
+
 ### internal/update
 
 Self-update via GitHub releases. Used by `bosun update`.
@@ -348,6 +352,7 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 | `BOSUN_SENTRY_DSN` | sentry | Sentry DSN (empty = disabled) |
 | `BOSUN_SENTRY_ENVIRONMENT` | sentry | Sentry environment tag |
 | `BOSUN_SENTRY_TRACES_SAMPLE_RATE` | sentry | Trace sample rate (0.0–1.0) |
+| `BOSUN_OTEL_ENDPOINT` | telemetry | OpenTelemetry OTLP HTTP endpoint (e.g., `http://localhost:4318`; empty disables tracing) |
 
 ## Gotchas
 

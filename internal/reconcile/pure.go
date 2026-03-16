@@ -174,6 +174,59 @@ func driftItemMatchesRule(item DriftItem, rule DriftIgnoreRule) bool {
 	return rule.Type == "*" || rule.Type == string(item.Type)
 }
 
+// ComposeFileResult records the outcome of a single compose file's deployment.
+type ComposeFileResult struct {
+	File       string // absolute path to the compose file
+	Success    bool   // true if compose up succeeded (including unhealthy-only)
+	RolledBack bool   // true if the file was rolled back from backup after failure
+	Err        error  // nil on success, the compose-up error on failure
+}
+
+// ComposeUpSummary aggregates per-file compose up results.
+type ComposeUpSummary struct {
+	Results    []ComposeFileResult
+	Succeeded  int
+	Failed     int
+	RolledBack int
+}
+
+// classifyComposeResults tallies per-file outcomes into a summary.
+func classifyComposeResults(results []ComposeFileResult) ComposeUpSummary {
+	s := ComposeUpSummary{Results: results}
+	for _, r := range results {
+		if r.Success {
+			s.Succeeded++
+		} else {
+			s.Failed++
+			if r.RolledBack {
+				s.RolledBack++
+			}
+		}
+	}
+	return s
+}
+
+// buildOrphanPassFiles constructs the file list for the orphan-reconciliation pass.
+// Succeeded files use their original (new) path. Rolled-back files use the backup
+// copy so Docker sees the previous service set. Failed files with no backup use
+// the original path (best-effort).
+func buildOrphanPassFiles(results []ComposeFileResult, backupPath string) []string {
+	var files []string
+	for _, r := range results {
+		if r.Success {
+			files = append(files, r.File)
+			continue
+		}
+		if r.RolledBack && backupPath != "" {
+			backupFile := filepath.Join(backupPath, filepath.Base(r.File))
+			files = append(files, backupFile)
+			continue
+		}
+		// Failed without rollback — include original so orphan pass at least knows about it.
+		files = append(files, r.File)
+	}
+	return files
+}
 // composeFailureKind indicates whether a compose-up failure is recoverable.
 type composeFailureKind int
 
