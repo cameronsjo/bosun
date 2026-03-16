@@ -665,9 +665,17 @@ func (c *Config) DriftSelfHealCooldown() time.Duration {
 	return c.driftSelfHealCooldown
 }
 
+// defaultDriftSelfHealCooldown is the default cooldown between drift self-heal reconciliations.
+const defaultDriftSelfHealCooldown = 15 * time.Minute
+
 // extractDriftSelfHealCooldown extracts the drift self-heal cooldown from a parsed config.
+// Returns the documented default (15m) when unset so callers of Config.DriftSelfHealCooldown()
+// get the correct value without relying on daemon.DefaultConfig().
 func extractDriftSelfHealCooldown(cfg configFile) time.Duration {
-	return cfg.DriftSelfHealCooldown.Duration
+	if cfg.DriftSelfHealCooldown.Duration > 0 {
+		return cfg.DriftSelfHealCooldown.Duration
+	}
+	return defaultDriftSelfHealCooldown
 }
 
 // extractRemoveOrphans extracts the remove_orphans setting from a parsed config.

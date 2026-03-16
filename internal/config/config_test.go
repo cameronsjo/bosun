@@ -1697,14 +1697,14 @@ drift_self_heal_cooldown: "20m"
 		assert.Equal(t, 20*time.Minute, cfg.DriftSelfHealCooldown())
 	})
 
-	t.Run("returns false and zero cooldown when not configured", func(t *testing.T) {
+	t.Run("returns false and default cooldown when not configured", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		cfg, err := LoadFrom(tmpDir)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 		assert.False(t, cfg.DriftSelfHeal())
-		assert.Equal(t, time.Duration(0), cfg.DriftSelfHealCooldown())
+		assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown())
 	})
 }
 
