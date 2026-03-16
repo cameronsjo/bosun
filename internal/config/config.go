@@ -71,6 +71,9 @@ type Config struct {
 	// criticalContainers is a list of container names that must be healthy after compose up.
 	criticalContainers []string
 
+	// driftIgnore is a list of rules for suppressing known drift noise.
+	driftIgnore []reconcile.DriftIgnoreRule
+
 	// driftAlertDebounce is the debounce window before first drift alert fires.
 	driftAlertDebounce time.Duration
 
@@ -202,6 +205,10 @@ type configFile struct {
 	// When configured, the health gate runs after startup grace period and before state save.
 	CriticalContainers []string `yaml:"critical_containers"`
 
+	// DriftIgnore is a list of rules for suppressing known drift noise.
+	// Each rule matches a service name (glob) and drift type.
+	DriftIgnore []reconcile.DriftIgnoreRule `yaml:"drift_ignore"`
+
 	// DriftAlertDebounce is the debounce window before first drift alert fires.
 	// Items must persist past this duration before alerting. 0 = disabled (default).
 	DriftAlertDebounce reconcile.Duration `yaml:"drift_alert_debounce"`
@@ -279,6 +286,7 @@ func LoadFrom(dir string) (*Config, error) {
 	deploySyncPaths := extractDeploySyncPaths(fileCfg)
 	deploySyncExclude := extractDeploySyncExclude(fileCfg)
 	criticalContainers := extractCriticalContainers(fileCfg)
+	driftIgnore := extractDriftIgnore(fileCfg)
 	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
 	domain := extractDomain(fileCfg)
 	removeOrphans := extractRemoveOrphans(fileCfg)
@@ -292,6 +300,7 @@ func LoadFrom(dir string) (*Config, error) {
 		deploySyncPaths:    deploySyncPaths,
 		deploySyncExclude:  deploySyncExclude,
 		criticalContainers: criticalContainers,
+		driftIgnore:        driftIgnore,
 		driftAlertDebounce: driftAlertDebounce,
 		domain:             domain,
 		removeOrphans:      removeOrphans,
@@ -341,6 +350,7 @@ func Load() (*Config, error) {
 	deploySyncPaths := extractDeploySyncPaths(fileCfg)
 	deploySyncExclude := extractDeploySyncExclude(fileCfg)
 	criticalContainers := extractCriticalContainers(fileCfg)
+	driftIgnore := extractDriftIgnore(fileCfg)
 	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
 	domain := extractDomain(fileCfg)
 	removeOrphans := extractRemoveOrphans(fileCfg)
@@ -369,6 +379,7 @@ func Load() (*Config, error) {
 		deploySyncPaths:    deploySyncPaths,
 		deploySyncExclude:  deploySyncExclude,
 		criticalContainers: criticalContainers,
+		driftIgnore:        driftIgnore,
 		driftAlertDebounce: driftAlertDebounce,
 		domain:             domain,
 		removeOrphans:      removeOrphans,
@@ -615,9 +626,19 @@ func extractDomain(cfg configFile) string {
 	return cfg.Domain
 }
 
+// DriftIgnore returns the configured drift ignore rules.
+func (c *Config) DriftIgnore() []reconcile.DriftIgnoreRule {
+	return c.driftIgnore
+}
+
 // DriftAlertDebounce returns the configured drift alert debounce duration.
 func (c *Config) DriftAlertDebounce() time.Duration {
 	return c.driftAlertDebounce
+}
+
+// extractDriftIgnore extracts drift ignore rules from a parsed config.
+func extractDriftIgnore(cfg configFile) []reconcile.DriftIgnoreRule {
+	return cfg.DriftIgnore
 }
 
 // extractDriftAlertDebounce extracts the drift alert debounce from a parsed config.

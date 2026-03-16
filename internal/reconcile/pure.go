@@ -128,6 +128,52 @@ func buildSSHKeyPaths(envKey, homeDir string) []string {
 	return result
 }
 
+// FilterIgnoredDriftItems returns only the drift items that do not match any ignore rule.
+// This is the exported entry point for callers outside the reconcile package.
+func FilterIgnoredDriftItems(items []DriftItem, rules []DriftIgnoreRule) []DriftItem {
+	return filterIgnoredDrift(items, rules)
+}
+
+// filterIgnoredDrift returns only the drift items that do not match any ignore rule.
+// Service matching uses filepath.Match for glob support. Type matching is exact
+// or "*" for wildcard. Invalid glob patterns in rules are silently skipped
+// (the rule never matches).
+func filterIgnoredDrift(items []DriftItem, rules []DriftIgnoreRule) []DriftItem {
+	if len(rules) == 0 {
+		return items
+	}
+
+	var kept []DriftItem
+	for _, item := range items {
+		if !driftItemMatchesAnyRule(item, rules) {
+			kept = append(kept, item)
+		}
+	}
+	return kept
+}
+
+// driftItemMatchesAnyRule returns true if the item matches at least one ignore rule.
+func driftItemMatchesAnyRule(item DriftItem, rules []DriftIgnoreRule) bool {
+	for _, rule := range rules {
+		if driftItemMatchesRule(item, rule) {
+			return true
+		}
+	}
+	return false
+}
+
+// driftItemMatchesRule returns true if the item matches the given ignore rule.
+func driftItemMatchesRule(item DriftItem, rule DriftIgnoreRule) bool {
+	// Match service name using glob.
+	matched, err := filepath.Match(rule.Service, item.Service)
+	if err != nil || !matched {
+		return false
+	}
+
+	// Match type: "*" matches all, otherwise exact match.
+	return rule.Type == "*" || rule.Type == string(item.Type)
+}
+
 // composeFailureKind indicates whether a compose-up failure is recoverable.
 type composeFailureKind int
 

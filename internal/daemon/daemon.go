@@ -651,8 +651,14 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	checkCtx, cancel := context.WithTimeout(ctx, d.config.APITimeout)
 	defer cancel()
 
+	// Collect drift ignore rules from reconcile config.
+	var ignoreRules []reconcile.DriftIgnoreRule
+	if d.config.ReconcileConfig != nil {
+		ignoreRules = d.config.ReconcileConfig.DriftIgnore
+	}
+
 	checkCtx, finishSpan := sentrypkg.StartSpan(checkCtx, "drift.periodic_check", "Periodic drift check")
-	report, err := reconcile.RunDriftCheck(checkCtx, client, stateFile, projectName)
+	report, err := reconcile.RunDriftCheck(checkCtx, client, stateFile, projectName, ignoreRules)
 	finishSpan(err)
 	if err != nil {
 		logger.Warn().Err(err).Msg("Drift check failed")
@@ -1357,6 +1363,7 @@ func ConfigFromEnv() *Config {
 			DeploySyncPaths:    cfg.DeploySyncPaths(),
 			DeploySyncExclude:  cfg.DeploySyncExclude(),
 			CriticalContainers: cfg.CriticalContainers(),
+			DriftIgnore:        cfg.DriftIgnore(),
 			OnFailure:          &alertCfg.OnFailure,
 			OnSuccess:          &alertCfg.OnSuccess,
 			RemoveOrphans:      &removeOrphans,
@@ -1413,6 +1420,15 @@ func ConfigFromEnv() *Config {
 		} else {
 			rcfg.CriticalContainers = containers
 			rcfg.CriticalContainersFromEnv = true
+		}
+	}
+	if v := os.Getenv("BOSUN_DRIFT_IGNORE"); v != "" {
+		var rules []reconcile.DriftIgnoreRule
+		if err := json.Unmarshal([]byte(v), &rules); err != nil {
+			log.Warn().Err(err).Msg("Failed to parse BOSUN_DRIFT_IGNORE, ignoring")
+		} else {
+			rcfg.DriftIgnore = rules
+			rcfg.DriftIgnoreFromEnv = true
 		}
 	}
 	if v := os.Getenv("BOSUN_HEALTH_GATE_TIMEOUT"); v != "" {

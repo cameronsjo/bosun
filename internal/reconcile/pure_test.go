@@ -622,6 +622,121 @@ func TestParseComposePSOutput(t *testing.T) {
 	}
 }
 
+func TestFilterIgnoredDrift(t *testing.T) {
+	tests := []struct {
+		name      string
+		items     []DriftItem
+		rules     []DriftIgnoreRule
+		wantItems []DriftItem
+	}{
+		{
+			name: "no rules returns all items",
+			items: []DriftItem{
+				{Service: "traefik", Type: DriftMissing},
+			},
+			rules:     nil,
+			wantItems: []DriftItem{{Service: "traefik", Type: DriftMissing}},
+		},
+		{
+			name:      "no items returns nil",
+			items:     nil,
+			rules:     []DriftIgnoreRule{{Service: "traefik", Type: "*"}},
+			wantItems: nil,
+		},
+		{
+			name: "exact service and type match",
+			items: []DriftItem{
+				{Service: "traefik", Type: DriftUnhealthy},
+				{Service: "api", Type: DriftMissing},
+			},
+			rules:     []DriftIgnoreRule{{Service: "traefik", Type: "unhealthy"}},
+			wantItems: []DriftItem{{Service: "api", Type: DriftMissing}},
+		},
+		{
+			name: "wildcard type matches all drift types",
+			items: []DriftItem{
+				{Service: "traefik", Type: DriftUnhealthy},
+				{Service: "traefik", Type: DriftImageMismatch},
+				{Service: "api", Type: DriftMissing},
+			},
+			rules:     []DriftIgnoreRule{{Service: "traefik", Type: "*"}},
+			wantItems: []DriftItem{{Service: "api", Type: DriftMissing}},
+		},
+		{
+			name: "glob pattern on service name",
+			items: []DriftItem{
+				{Service: "monitoring-grafana", Type: DriftUnhealthy},
+				{Service: "monitoring-prometheus", Type: DriftMissing},
+				{Service: "api", Type: DriftMissing},
+			},
+			rules:     []DriftIgnoreRule{{Service: "monitoring-*", Type: "*"}},
+			wantItems: []DriftItem{{Service: "api", Type: DriftMissing}},
+		},
+		{
+			name: "multiple rules applied",
+			items: []DriftItem{
+				{Service: "traefik", Type: DriftUnhealthy},
+				{Service: "gatus", Type: DriftImageMismatch},
+				{Service: "api", Type: DriftMissing},
+			},
+			rules: []DriftIgnoreRule{
+				{Service: "traefik", Type: "unhealthy"},
+				{Service: "gatus", Type: "image_mismatch"},
+			},
+			wantItems: []DriftItem{{Service: "api", Type: DriftMissing}},
+		},
+		{
+			name: "type mismatch does not filter",
+			items: []DriftItem{
+				{Service: "traefik", Type: DriftMissing},
+			},
+			rules:     []DriftIgnoreRule{{Service: "traefik", Type: "unhealthy"}},
+			wantItems: []DriftItem{{Service: "traefik", Type: DriftMissing}},
+		},
+		{
+			name: "service mismatch does not filter",
+			items: []DriftItem{
+				{Service: "api", Type: DriftUnhealthy},
+			},
+			rules:     []DriftIgnoreRule{{Service: "traefik", Type: "unhealthy"}},
+			wantItems: []DriftItem{{Service: "api", Type: DriftUnhealthy}},
+		},
+		{
+			name: "invalid glob pattern is silently skipped",
+			items: []DriftItem{
+				{Service: "traefik", Type: DriftUnhealthy},
+			},
+			rules:     []DriftIgnoreRule{{Service: "[invalid", Type: "*"}},
+			wantItems: []DriftItem{{Service: "traefik", Type: DriftUnhealthy}},
+		},
+		{
+			name: "all items filtered returns nil",
+			items: []DriftItem{
+				{Service: "traefik", Type: DriftUnhealthy},
+			},
+			rules:     []DriftIgnoreRule{{Service: "traefik", Type: "*"}},
+			wantItems: nil,
+		},
+		{
+			name: "question mark glob pattern",
+			items: []DriftItem{
+				{Service: "db1", Type: DriftMissing},
+				{Service: "db2", Type: DriftMissing},
+				{Service: "api", Type: DriftMissing},
+			},
+			rules:     []DriftIgnoreRule{{Service: "db?", Type: "missing"}},
+			wantItems: []DriftItem{{Service: "api", Type: DriftMissing}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterIgnoredDrift(tt.items, tt.rules)
+			assert.Equal(t, tt.wantItems, got)
+		})
+	}
+}
+
 func TestBuildSSHKeyPaths(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -160,6 +160,7 @@ func runReconcile(cmd *cobra.Command, args []string) {
 			PostSyncHooks:   projectCfg.PostSyncHooks(),
 			HookSettleDelay: projectCfg.HookSettleDelay(),
 			DeployPaths:     projectCfg.DeployPaths(),
+			DriftIgnore:     projectCfg.DriftIgnore(),
 		}, nil
 	}
 

@@ -856,7 +856,7 @@ func TestRunDriftCheck(t *testing.T) {
 		mockAPI := newReconcileMockDockerAPI()
 		client := docker.NewClientWithAPI(mockAPI)
 
-		_, err := RunDriftCheck(ctx, client, stateFile, "core")
+		_, err := RunDriftCheck(ctx, client, stateFile, "core", nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no declared services")
 	})
@@ -892,7 +892,7 @@ func TestRunDriftCheck(t *testing.T) {
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
-		report, err := RunDriftCheck(ctx, client, stateFile, "core")
+		report, err := RunDriftCheck(ctx, client, stateFile, "core", nil)
 		require.NoError(t, err)
 		assert.True(t, report.HasDrift())
 		require.Len(t, report.Items, 1)
@@ -929,7 +929,7 @@ func TestRunDriftCheck(t *testing.T) {
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
-		report, err := RunDriftCheck(ctx, client, stateFile, "core")
+		report, err := RunDriftCheck(ctx, client, stateFile, "core", nil)
 		require.NoError(t, err)
 		assert.False(t, report.HasDrift())
 	})

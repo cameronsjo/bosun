@@ -88,7 +88,7 @@ func TestRunDriftCheck_DetectsMissing(t *testing.T) {
 	require.NoError(t, SaveState(stateFile, state))
 
 	client := docker.NewClientWithAPI(mock)
-	report, err := RunDriftCheck(context.Background(), client, stateFile, "myapp")
+	report, err := RunDriftCheck(context.Background(), client, stateFile, "myapp", nil)
 	require.NoError(t, err)
 	assert.True(t, report.HasDrift())
 
@@ -123,7 +123,7 @@ func TestRunDriftCheck_DetectsImageMismatch(t *testing.T) {
 	require.NoError(t, SaveState(stateFile, state))
 
 	client := docker.NewClientWithAPI(mock)
-	report, err := RunDriftCheck(context.Background(), client, stateFile, "myapp")
+	report, err := RunDriftCheck(context.Background(), client, stateFile, "myapp", nil)
 	require.NoError(t, err)
 	assert.True(t, report.HasDrift())
 
@@ -161,7 +161,7 @@ func TestRunDriftCheck_CleanState(t *testing.T) {
 	require.NoError(t, SaveState(stateFile, state))
 
 	client := docker.NewClientWithAPI(mock)
-	report, err := RunDriftCheck(context.Background(), client, stateFile, "myapp")
+	report, err := RunDriftCheck(context.Background(), client, stateFile, "myapp", nil)
 	require.NoError(t, err)
 	assert.False(t, report.HasDrift(), "all services match — no drift expected")
 }
@@ -178,7 +178,7 @@ func TestRunDriftCheck_NoDeclaredServices(t *testing.T) {
 	require.NoError(t, SaveState(stateFile, state))
 
 	client := docker.NewClientWithAPI(mock)
-	_, err := RunDriftCheck(context.Background(), client, stateFile, "myapp")
+	_, err := RunDriftCheck(context.Background(), client, stateFile, "myapp", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no declared services")
 
@@ -194,7 +194,7 @@ func TestRunDriftCheck_NoStateFile(t *testing.T) {
 	stateFile := filepath.Join(tmpDir, "nonexistent.json")
 
 	client := docker.NewClientWithAPI(mock)
-	_, err := RunDriftCheck(context.Background(), client, stateFile, "myapp")
+	_, err := RunDriftCheck(context.Background(), client, stateFile, "myapp", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no declared services")
 }
@@ -236,7 +236,7 @@ func TestRunDriftCheck_PersistsStateFile(t *testing.T) {
 	require.NoError(t, SaveState(stateFile, state))
 
 	client := docker.NewClientWithAPI(mock)
-	_, err := RunDriftCheck(context.Background(), client, stateFile, "myapp")
+	_, err := RunDriftCheck(context.Background(), client, stateFile, "myapp", nil)
 	require.NoError(t, err)
 
 	// State file should still exist.

@@ -22,6 +22,7 @@ type ReloadedConfig struct {
 	DeploySyncPaths    []string
 	DeploySyncExclude  []string
 	CriticalContainers []string
+	DriftIgnore        []DriftIgnoreRule
 	OnFailure          *bool
 	OnSuccess          *bool
 	RemoveOrphans      *bool
@@ -151,6 +152,13 @@ type Config struct {
 	// CriticalContainersFromEnv is true when BOSUN_CRITICAL_CONTAINERS env var is set.
 	// When true, repo config reload will not update CriticalContainers.
 	CriticalContainersFromEnv bool
+
+	// DriftIgnore is a list of rules for suppressing known drift noise.
+	DriftIgnore []DriftIgnoreRule
+
+	// DriftIgnoreFromEnv is true when BOSUN_DRIFT_IGNORE env var is set.
+	// When true, repo config reload will not update DriftIgnore.
+	DriftIgnoreFromEnv bool
 
 	// HealthGateTimeout is the maximum time to poll critical container health.
 	// Default 60s. Configurable via BOSUN_HEALTH_GATE_TIMEOUT.
@@ -887,6 +895,11 @@ func (r *Reconciler) reloadProjectConfig() {
 
 	if !r.config.CriticalContainersFromEnv && len(reloaded.CriticalContainers) > 0 {
 		r.config.CriticalContainers = reloaded.CriticalContainers
+		changed = true
+	}
+
+	if !r.config.DriftIgnoreFromEnv && reloaded.DriftIgnore != nil {
+		r.config.DriftIgnore = reloaded.DriftIgnore
 		changed = true
 	}
 
