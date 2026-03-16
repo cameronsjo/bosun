@@ -4,6 +4,27 @@
 
 The system SHALL render a `ServiceManifest` into output targets by loading provisions, expanding sidecars, and applying compose overrides. Output targets are data-driven: a `TargetRegistry` maps target names to output file metadata. The default registry includes `compose`, `traefik`, and `gatus`.
 
+The `TargetRegistry` is a package-level map of target name (string) to `TargetConfig`. Each `TargetConfig` contains:
+
+- `Dir`: Output subdirectory name (defaults to the target name, e.g., `"compose"`)
+- `Filename`: A function `func(stackName string) string` that returns the output filename for a given stack
+
+The registry provides:
+
+- Lookup by target name
+- Iteration over all registered targets (sorted by name for determinism)
+- Registration of new targets (code-defined at package init; not config-driven)
+
+Default entries:
+
+| Target | Dir | Filename |
+|--------|-----|----------|
+| `compose` | `compose` | `{stackName}.yml.tmpl` |
+| `traefik` | `traefik` | `dynamic.yml` |
+| `gatus` | `gatus` | `endpoints.yml` |
+
+`RenderOutput` holds rendering results in `Targets map[string]map[string]any` — a map keyed by target name where each value is a `map[string]any` representing the target's YAML content.
+
 A `ServiceManifest` MUST contain:
 
 - `name`: Service identifier used for interpolation and output naming
@@ -54,7 +75,7 @@ A `ServiceManifest` MAY contain:
 
 ### Requirement: Provision System
 
-The system SHALL support reusable provision templates that produce outputs for any registered target. Provisions are loaded from YAML files, interpolated with variables, and support inheritance via an `includes` key. Target outputs are stored in a `Targets` map keyed by target name.
+The system SHALL support reusable provision templates that produce outputs for any registered target. Provisions are loaded from YAML files, interpolated with variables, and support inheritance via an `includes` key. Target outputs are stored in `Targets map[string]map[string]any` — a map keyed by target name where each value is a `map[string]any` representing the target's YAML content.
 
 A `Provision` MAY contain:
 
@@ -148,6 +169,7 @@ Templates use `{{ .Chart.Name }}`, `{{ .Values.port }}`, and `{{ .Deps.postgres.
 - **WHEN** a template renders YAML with top-level keys matching registered target names
 - **THEN** the engine extracts each matching key into the corresponding target in the `RenderOutput`
 - **AND** metadata keys (`apiVersion`, `kind`, `includes`) are stripped before extraction
+- **AND** top-level keys that are neither metadata nor registered target names are silently ignored
 
 ### Requirement: Output Writing
 

@@ -45,4 +45,6 @@
 - [ ] 5.6 Add test: custom YAML unmarshaling round-trips for Template
 - [ ] 5.7 Add test: `Target()` accessor auto-initializes nil map
 - [ ] 5.8 Add test: `WriteOutputs` produces sorted, reproducible output
-- [ ] 5.9 Run full test suite, verify no regressions
+- [ ] 5.9 Add integration test: full render pipeline (service → provision → WriteOutputs) with all three targets
+- [ ] 5.10 Verify migration completeness: grep for old field access patterns (`.Compose`, `.Traefik`, `.Gatus` on `RenderOutput`/`Provision`/`Template`) to confirm no stale references remain
+- [ ] 5.11 Run full test suite, verify no regressions

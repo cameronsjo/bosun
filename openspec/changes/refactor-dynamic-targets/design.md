@@ -16,8 +16,8 @@ The `Provision` and `Template` structs also have three concrete YAML fields (`co
 - Non-Goals:
   - Adding new targets (that's a follow-up, this change only enables it)
   - Config-driven target registration (the registry is code-defined for now)
-  - Changing the `ServiceManifest.Compose` field (this stays — it's a compose-specific override, not a generic target)
-  - Changing the `Chart.Compose` field (same reason — chart-level compose overrides are compose-specific)
+  - Changing the `ServiceManifest.Compose` field — this is a compose-specific *input* override (user says "merge this into the compose output"), not a generic target output. Generalizing input overrides to arbitrary targets is a future phase if demand materializes; this change focuses on the output side
+  - Changing the `Chart.Compose` field (same reasoning as ServiceManifest.Compose)
 
 ## Decisions
 
@@ -29,7 +29,9 @@ The `Provision` and `Template` structs also have three concrete YAML fields (`co
 - `Target` interface with `Name()`, `Merge()`, `WriteFile()` methods — over-engineered for what is fundamentally YAML-in, YAML-out with no per-target behavior differences today
 - Slice of `TargetOutput{Name, Content}` — loses O(1) lookup by name, makes merge harder
 
-**Rationale:** All three current targets share identical merge, write, and render semantics. A map is the simplest structure that removes the concrete-field ceiling. If per-target behavior diverges later, an interface can wrap the map values.
+**Rationale:** All three current targets share identical merge, write, and render semantics. A map is the simplest structure that removes the concrete-field ceiling.
+
+**When to reconsider:** Move to an interface if two or more targets need distinct merge/write behavior (e.g., a target that requires non-YAML output, or per-target validation beyond map structure). The migration path: define a `Target` interface wrapping `map[string]any`, adapt existing map values behind it, and update callers incrementally. Until then, the map is simpler and sufficient.
 
 ### Custom YAML unmarshaling for Provision and Template
 
@@ -56,14 +58,18 @@ The compose filename is stack-dependent (parameterized by stack name), while tra
 
 **Decision:** Add `RenderOutput.Target(name string) map[string]any` accessor. The `provision.go` code that injects `output.Compose["name"]` becomes `output.Target("compose")["name"]`.
 
-**Rationale:** Direct map access (`output.Targets["compose"]`) works but is verbose and loses nil-safety. The accessor initializes the map if nil, preventing panics on assignment to nil maps.
+**Rationale:** Direct map access (`output.Targets["compose"]`) works but is verbose and loses nil-safety. The accessor initializes the map if nil, preventing panics on assignment to nil maps. The accessor does not validate against the registry — it's a convenience for nil-safe map access. Callers using target name constants (`TargetCompose`, etc.) get correctness via the constants, not runtime validation.
+
+### showDiff uses TargetRegistry
+
+**Decision:** `showDiff` (in `provision.go`) SHALL use `TargetRegistry` to resolve filenames instead of maintaining its own hardcoded list.
+
+**Rationale:** Single source of truth. When a new target is registered, showDiff picks it up automatically without a parallel code change.
 
 ## Risks / Trade-offs
 
+- **Loss of compile-time safety**: Replacing typed struct fields with `map[string]map[string]any` trades compile-time field access for runtime map lookups. Mitigation: target name constants (`TargetCompose`, etc.) prevent typos, and the `Target()` accessor prevents nil-map panics. The existing code already uses `map[string]any` for all values within each target — the change moves one level up, from struct-field dispatch to map-key dispatch. The trade-off is acceptable because the three hardcoded fields were never meaningfully type-checked beyond "is it a map?"
 - **Migration of test assertions**: Every test that references `.Compose`, `.Traefik`, `.Gatus` must change to `.Target("compose")` etc. This is mechanical but touches ~50 assertions across 4 test files. Risk: typos in string keys. Mitigation: define `TargetCompose`, `TargetTraefik`, `TargetGatus` constants.
+- **Merge semantics are unchanged**: The existing `DeepMerge` function (spec: Deep Merge requirement) handles all target merging today and will continue to do so. Merging iterates the `Targets` map and calls `DeepMerge` per target. No per-target merge customization is needed — all targets use identical recursive merge with union keys for networks/depends_on and extend keys for endpoints.
 - **YAML marshal symmetry**: `MarshalYAML` must produce the same flat top-level structure as before (not nest under a `targets:` key). This is needed for `RenderToYAML` dry-run output.
 - **Performance**: Map iteration order is non-deterministic in Go. `WriteOutputs` and `RenderToYAML` should sort target names for reproducible output.
-
-## Open Questions
-
-- Should `showDiff` (in `provision.go`) use the `TargetRegistry` for filenames, or should it keep its own hardcoded list? (Recommendation: use registry — single source of truth.)

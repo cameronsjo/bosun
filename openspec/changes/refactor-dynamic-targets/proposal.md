@@ -14,6 +14,10 @@
 - Introduce a `TargetRegistry` that maps target name to output filename (replacing the unused `TargetNames` var)
 - Default registry ships with `compose`, `traefik`, `gatus` — identical to today's behavior
 
+**Trade-off: compile-time safety.** Replacing typed struct fields with `map[string]map[string]any` moves dispatch from compile-time field access to runtime map lookup. This is acceptable because: (1) the existing field values are already `map[string]any` — no type safety is lost within a target; (2) target name constants (`TargetCompose`, etc.) prevent string typos; (3) the `Target()` accessor prevents nil-map panics. See `design.md` for full rationale.
+
+**Merge semantics are unchanged.** All target merging continues to use the existing `DeepMerge` function (spec: Deep Merge requirement). The change replaces three explicit `DeepMerge` calls with a loop over `Targets` calling `DeepMerge` per entry — same semantics, fewer code paths.
+
 ## Impact
 
 - Affected specs: `manifest-system` (Output Writing, Service Rendering, Provision System, Chart Template Engine)
