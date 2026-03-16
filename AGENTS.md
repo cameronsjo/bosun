@@ -331,6 +331,8 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 | `BOSUN_DRIFT_ALERT_COOLDOWN` | daemon | Cooldown between repeated drift alerts (default: `1h`) |
 | `BOSUN_DRIFT_ALERT_DEBOUNCE` | daemon | Debounce window before first drift alert fires (default: `0` = disabled) |
 | `BOSUN_DRIFT_RESOLVE_ALERTS` | daemon | Send "drift resolved" notifications (default: `true`) |
+| `BOSUN_DRIFT_SELF_HEAL` | daemon | Trigger reconciliation when drift detected (default: `false`) |
+| `BOSUN_DRIFT_SELF_HEAL_COOLDOWN` | daemon | Minimum interval between self-heal reconciliations (default: `15m`) |
 | `BOSUN_CONTENT_HASH_SYNC` | daemon, reconcile | Compare file hashes before writing to skip unchanged files (default: `true`) |
 | `BOSUN_REMOVE_ORPHANS` | daemon, reconcile | Pass `--remove-orphans` to docker compose up (default: `true`; overrides config file) |
 | `BOSUN_CRITICAL_CONTAINERS` | daemon, reconcile | JSON array of container names that must be healthy after deploy (overrides config file) |

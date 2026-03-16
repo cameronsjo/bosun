@@ -1708,3 +1708,112 @@ func TestExtractShutdownTimeout(t *testing.T) {
 		assert.Equal(t, 30*time.Second, extractShutdownTimeout(cfg))
 	})
 }
+
+func TestDriftSelfHealFromConfig(t *testing.T) {
+	t.Run("parses drift_self_heal true from bosun.yaml", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `drift_self_heal: true
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.True(t, cfg.DriftSelfHeal())
+	})
+
+	t.Run("defaults to false when not configured", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `infrastructure:
+  containers:
+    - traefik
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.False(t, cfg.DriftSelfHeal())
+	})
+
+	t.Run("parses drift_self_heal_cooldown from bosun.yaml", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `drift_self_heal: true
+drift_self_heal_cooldown: "10m"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.True(t, cfg.DriftSelfHeal())
+		assert.Equal(t, 10*time.Minute, cfg.DriftSelfHealCooldown())
+	})
+}
+
+func TestLoadFrom_DriftSelfHeal(t *testing.T) {
+	t.Run("loads drift_self_heal from directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		content := `drift_self_heal: true
+drift_self_heal_cooldown: "20m"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.True(t, cfg.DriftSelfHeal())
+		assert.Equal(t, 20*time.Minute, cfg.DriftSelfHealCooldown())
+	})
+
+	t.Run("returns false and default cooldown when not configured", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.False(t, cfg.DriftSelfHeal())
+		assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown())
+	})
+}
+
+func TestExtractDriftSelfHeal(t *testing.T) {
+	t.Run("nil pointer returns false", func(t *testing.T) {
+		cfg := configFile{}
+		assert.False(t, extractDriftSelfHeal(cfg))
+	})
+
+	t.Run("explicit true", func(t *testing.T) {
+		v := true
+		cfg := configFile{DriftSelfHeal: &v}
+		assert.True(t, extractDriftSelfHeal(cfg))
+	})
+
+	t.Run("explicit false", func(t *testing.T) {
+		v := false
+		cfg := configFile{DriftSelfHeal: &v}
+		assert.False(t, extractDriftSelfHeal(cfg))
+	})
+}

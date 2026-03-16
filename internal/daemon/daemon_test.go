@@ -2199,3 +2199,190 @@ func TestParseDurationOrSeconds(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Drift Self-Heal
+// ---------------------------------------------------------------------------
+
+func TestDefaultConfig_DriftSelfHeal(t *testing.T) {
+	cfg := DefaultConfig()
+
+	assert.False(t, cfg.DriftSelfHeal, "DriftSelfHeal should be false by default")
+	assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown, "DriftSelfHealCooldown should default to 15m")
+}
+
+func TestConfigFromEnv_DriftSelfHeal(t *testing.T) {
+	t.Run("true enables self-heal", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_SELF_HEAL", "true")
+
+		cfg := ConfigFromEnv()
+
+		assert.True(t, cfg.DriftSelfHeal)
+	})
+
+	t.Run("1 enables self-heal", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_SELF_HEAL", "1")
+
+		cfg := ConfigFromEnv()
+
+		assert.True(t, cfg.DriftSelfHeal)
+	})
+
+	t.Run("false disables self-heal", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_SELF_HEAL", "false")
+
+		cfg := ConfigFromEnv()
+
+		assert.False(t, cfg.DriftSelfHeal)
+	})
+
+	t.Run("defaults to false when not set", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		assert.False(t, cfg.DriftSelfHeal)
+	})
+}
+
+func TestConfigFromEnv_DriftSelfHealCooldown(t *testing.T) {
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_SELF_HEAL_COOLDOWN", "10m")
+
+		cfg := ConfigFromEnv()
+
+		assert.Equal(t, 10*time.Minute, cfg.DriftSelfHealCooldown)
+	})
+
+	t.Run("parses bare seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_SELF_HEAL_COOLDOWN", "600")
+
+		cfg := ConfigFromEnv()
+
+		assert.Equal(t, 600*time.Second, cfg.DriftSelfHealCooldown)
+	})
+
+	t.Run("defaults to 15m when not set", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown)
+	})
+
+	t.Run("invalid value keeps default", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_SELF_HEAL_COOLDOWN", "not-a-duration")
+
+		cfg := ConfigFromEnv()
+
+		assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown)
+	})
+
+	t.Run("zero or negative keeps default", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_SELF_HEAL_COOLDOWN", "0")
+
+		cfg := ConfigFromEnv()
+
+		assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown)
+	})
+}
+
+func TestMaybeSelfHeal_TriggersWhenEnabled(t *testing.T) {
+	provider := &testAlertProvider{}
+	d := newAlertDaemon(t, provider)
+	d.config.DriftSelfHeal = true
+	d.config.DriftSelfHealCooldown = 15 * time.Minute
+
+	report := &reconcile.DriftReport{
+		CheckedAt: time.Now(),
+		Items: []reconcile.DriftItem{
+			{Service: "traefik", Type: reconcile.DriftMissing},
+		},
+	}
+
+	ctx := context.Background()
+	d.maybeSelfHeal(ctx, report)
+
+	// Give the goroutine a moment to start.
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify lastSelfHeal was updated.
+	assert.False(t, d.lastSelfHeal.IsZero(), "lastSelfHeal should be set after triggering")
+}
+
+func TestMaybeSelfHeal_SkipsWhenReconciling(t *testing.T) {
+	provider := &testAlertProvider{}
+	d := newAlertDaemon(t, provider)
+	d.config.DriftSelfHeal = true
+	d.config.DriftSelfHealCooldown = 15 * time.Minute
+
+	// Simulate reconciliation in progress.
+	d.reconcileMu.Lock()
+	d.reconciling = true
+	d.reconcileMu.Unlock()
+
+	report := &reconcile.DriftReport{
+		CheckedAt: time.Now(),
+		Items: []reconcile.DriftItem{
+			{Service: "traefik", Type: reconcile.DriftMissing},
+		},
+	}
+
+	ctx := context.Background()
+	d.maybeSelfHeal(ctx, report)
+
+	// lastSelfHeal should NOT be updated when skipped.
+	assert.True(t, d.lastSelfHeal.IsZero(), "lastSelfHeal should remain zero when reconciling")
+
+	// Clean up.
+	d.reconcileMu.Lock()
+	d.reconciling = false
+	d.reconcileMu.Unlock()
+}
+
+func TestMaybeSelfHeal_RespectsCooldown(t *testing.T) {
+	provider := &testAlertProvider{}
+	d := newAlertDaemon(t, provider)
+	d.config.DriftSelfHeal = true
+	d.config.DriftSelfHealCooldown = 15 * time.Minute
+
+	// Simulate a recent self-heal.
+	d.lastSelfHeal = time.Now().Add(-5 * time.Minute) // 5 minutes ago, within 15m cooldown
+
+	report := &reconcile.DriftReport{
+		CheckedAt: time.Now(),
+		Items: []reconcile.DriftItem{
+			{Service: "traefik", Type: reconcile.DriftMissing},
+		},
+	}
+
+	originalSelfHeal := d.lastSelfHeal
+	ctx := context.Background()
+	d.maybeSelfHeal(ctx, report)
+
+	// lastSelfHeal should NOT be updated during cooldown.
+	assert.Equal(t, originalSelfHeal, d.lastSelfHeal, "lastSelfHeal should not change during cooldown")
+}
+
+func TestMaybeSelfHeal_TriggersAfterCooldownExpires(t *testing.T) {
+	provider := &testAlertProvider{}
+	d := newAlertDaemon(t, provider)
+	d.config.DriftSelfHeal = true
+	d.config.DriftSelfHealCooldown = 15 * time.Minute
+
+	// Simulate a self-heal that happened 20 minutes ago (past the 15m cooldown).
+	d.lastSelfHeal = time.Now().Add(-20 * time.Minute)
+
+	report := &reconcile.DriftReport{
+		CheckedAt: time.Now(),
+		Items: []reconcile.DriftItem{
+			{Service: "traefik", Type: reconcile.DriftMissing},
+		},
+	}
+
+	ctx := context.Background()
+	d.maybeSelfHeal(ctx, report)
+
+	// Give the goroutine a moment to start.
+	time.Sleep(50 * time.Millisecond)
+
+	// lastSelfHeal should be updated since cooldown expired.
+	assert.True(t, d.lastSelfHeal.After(time.Now().Add(-1*time.Second)),
+		"lastSelfHeal should be updated to roughly now")
+}

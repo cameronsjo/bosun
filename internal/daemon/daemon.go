@@ -59,10 +59,12 @@ type Config struct {
 	APITimeout       time.Duration // Timeout for API handler requests (default: 30s)
 
 	// Drift check settings
-	DriftInterval       time.Duration // Interval for periodic drift checks (0 disables, default: 5m)
-	DriftAlertCooldown  time.Duration // Cooldown between repeated drift alerts per item (default: 1h)
-	DriftAlertDebounce  time.Duration // Debounce window before first drift alert fires (0 = disabled, default: 0)
-	DriftResolveAlerts  bool          // Send "drift resolved" alerts (default: true)
+	DriftInterval          time.Duration // Interval for periodic drift checks (0 disables, default: 5m)
+	DriftAlertCooldown     time.Duration // Cooldown between repeated drift alerts per item (default: 1h)
+	DriftAlertDebounce     time.Duration // Debounce window before first drift alert fires (0 = disabled, default: 0)
+	DriftResolveAlerts     bool          // Send "drift resolved" alerts (default: true)
+	DriftSelfHeal          bool          // Trigger reconciliation when drift detected (default: false)
+	DriftSelfHealCooldown  time.Duration // Minimum interval between self-heal reconciliations (default: 15m)
 
 	// Content-hash sync settings
 	ContentHashSync bool // Compare file hashes before writing (default: true)
@@ -93,9 +95,10 @@ func DefaultConfig() *Config {
 		ReconcileTimeout: 10 * time.Minute,
 		ShutdownTimeout:  30 * time.Second,
 		APITimeout:       30 * time.Second,
-		DriftInterval:      5 * time.Minute,
-		DriftAlertCooldown: time.Hour,
-		DriftResolveAlerts: true,
+		DriftInterval:          5 * time.Minute,
+		DriftAlertCooldown:     time.Hour,
+		DriftResolveAlerts:     true,
+		DriftSelfHealCooldown:  15 * time.Minute,
 		ContentHashSync:    true,
 		RemoveOrphans:      true,
 	}
@@ -135,6 +138,9 @@ type Daemon struct {
 	pendingTrigger bool       // Dirty flag: another trigger arrived during reconcile
 	triggerSource  string     // Source of pending trigger (for logging)
 	triggerForce   bool       // Force flag for pending trigger (sticky: once set, stays set)
+
+	// Drift self-heal cooldown tracking
+	lastSelfHeal time.Time // Last time drift self-heal triggered a reconciliation
 }
 
 // New creates a new Daemon with the given configuration.
@@ -844,6 +850,55 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	if err := reconcile.SaveState(stateFile, state); err != nil {
 		logger.Warn().Err(err).Msg("Drift check: failed to save state")
 	}
+
+	// Self-heal: trigger reconciliation when drift is detected and self-healing is enabled.
+	if report.HasDrift() && d.config.DriftSelfHeal {
+		d.maybeSelfHeal(ctx, report)
+	}
+}
+
+// maybeSelfHeal triggers a reconciliation in response to drift, subject to guards:
+// - skips if already reconciling (prevents infinite loops)
+// - skips if cooldown period hasn't elapsed since last self-heal
+func (d *Daemon) maybeSelfHeal(ctx context.Context, report *reconcile.DriftReport) {
+	logger := log.Component(log.ComponentDaemon)
+
+	// Guard: skip if already reconciling to prevent infinite loops.
+	d.reconcileMu.Lock()
+	busy := d.reconciling
+	d.reconcileMu.Unlock()
+	if busy {
+		logger.Debug().Msg("Drift self-heal: skipping, reconciliation already in progress")
+		return
+	}
+
+	// Guard: respect cooldown to prevent rapid-fire reconciliations.
+	now := time.Now()
+	if !d.lastSelfHeal.IsZero() && now.Sub(d.lastSelfHeal) < d.config.DriftSelfHealCooldown {
+		remaining := d.config.DriftSelfHealCooldown - now.Sub(d.lastSelfHeal)
+		logger.Debug().
+			Dur("remaining_cooldown", remaining).
+			Msg("Drift self-heal: skipping, cooldown active")
+		return
+	}
+
+	d.lastSelfHeal = now
+
+	logger.Info().
+		Int("drift_items", len(report.Items)).
+		Strs("drift_containers", report.DriftSummaries()).
+		Msg("Drift self-heal: triggering reconciliation to resolve detected drift")
+
+	ui.Info("Drift self-heal: triggering reconciliation (%d drift items)", len(report.Items))
+
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		defer sentrypkg.Recover()
+		if err := d.TriggerReconcile(ctx, "drift-self-heal", false); err != nil {
+			logger.Warn().Err(err).Msg("Drift self-heal: reconciliation failed")
+		}
+	}()
 }
 
 // runRestartBreaker checks running containers for restart loops and stops offenders.
@@ -1330,6 +1385,26 @@ func ConfigFromEnv() *Config {
 		cfg.DriftResolveAlerts = v != "false" && v != "0"
 	}
 
+	// Drift self-healing (default: false)
+	var driftSelfHealFromEnv bool
+	if v := os.Getenv("BOSUN_DRIFT_SELF_HEAL"); v != "" {
+		cfg.DriftSelfHeal = v == "true" || v == "1"
+		driftSelfHealFromEnv = true
+	}
+	var driftSelfHealCooldownFromEnv bool
+	if v := os.Getenv("BOSUN_DRIFT_SELF_HEAL_COOLDOWN"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_DRIFT_SELF_HEAL_COOLDOWN").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
+			} else {
+				cfg.DriftSelfHealCooldown = d
+				driftSelfHealCooldownFromEnv = true
+			}
+		} else {
+			log.Warn().Str("env", "BOSUN_DRIFT_SELF_HEAL_COOLDOWN").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
+
 	// Content-hash file sync (default: true)
 	if v := os.Getenv("BOSUN_CONTENT_HASH_SYNC"); v != "" {
 		cfg.ContentHashSync = v != "false" && v != "0"
@@ -1358,6 +1433,14 @@ func ConfigFromEnv() *Config {
 		// Config file debounce value: env var takes precedence (already parsed above).
 		if !driftAlertDebounceFromEnv && projectCfg.DriftAlertDebounce() > 0 {
 			cfg.DriftAlertDebounce = projectCfg.DriftAlertDebounce()
+		}
+
+		// Drift self-heal from config file; env var takes precedence.
+		if !driftSelfHealFromEnv {
+			cfg.DriftSelfHeal = projectCfg.DriftSelfHeal()
+		}
+		if !driftSelfHealCooldownFromEnv && projectCfg.DriftSelfHealCooldown() > 0 {
+			cfg.DriftSelfHealCooldown = projectCfg.DriftSelfHealCooldown()
 		}
 
 		// Load remove_orphans from project config; env var (parsed above) takes precedence.

@@ -77,6 +77,12 @@ type Config struct {
 	// driftAlertDebounce is the debounce window before first drift alert fires.
 	driftAlertDebounce time.Duration
 
+	// driftSelfHeal enables automatic reconciliation when drift is detected.
+	driftSelfHeal bool
+
+	// driftSelfHealCooldown is the minimum interval between self-heal reconciliations.
+	driftSelfHealCooldown time.Duration
+
 	// domain is the project-level domain for Traefik defaultRule.
 	domain string
 
@@ -213,6 +219,14 @@ type configFile struct {
 	// Items must persist past this duration before alerting. 0 = disabled (default).
 	DriftAlertDebounce reconcile.Duration `yaml:"drift_alert_debounce"`
 
+	// DriftSelfHeal enables automatic reconciliation when drift is detected.
+	// When true, the daemon triggers a reconcile after detecting drift. Default: false.
+	DriftSelfHeal *bool `yaml:"drift_self_heal"`
+
+	// DriftSelfHealCooldown is the minimum interval between self-heal reconciliations.
+	// Prevents rapid-fire reconciliations. Default: 15m.
+	DriftSelfHealCooldown reconcile.Duration `yaml:"drift_self_heal_cooldown"`
+
 	// RemoveOrphans controls whether --remove-orphans is passed to docker compose up.
 	// Defaults to true (preserving existing behavior). Set to false in shared environments
 	// where Bosun does not own all containers on the Docker host.
@@ -288,23 +302,27 @@ func LoadFrom(dir string) (*Config, error) {
 	criticalContainers := extractCriticalContainers(fileCfg)
 	driftIgnore := extractDriftIgnore(fileCfg)
 	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
+	driftSelfHeal := extractDriftSelfHeal(fileCfg)
+	driftSelfHealCooldown := extractDriftSelfHealCooldown(fileCfg)
 	domain := extractDomain(fileCfg)
 	removeOrphans := extractRemoveOrphans(fileCfg)
 	shutdownTimeout := extractShutdownTimeout(fileCfg)
 
 	return &Config{
-		Root:               dir,
-		postSyncHooks:      postSyncHooks,
-		hookSettleDelay:    hookSettleDelay,
-		deployPaths:        deployPaths,
-		deploySyncPaths:    deploySyncPaths,
-		deploySyncExclude:  deploySyncExclude,
-		criticalContainers: criticalContainers,
-		driftIgnore:        driftIgnore,
-		driftAlertDebounce: driftAlertDebounce,
-		domain:             domain,
-		removeOrphans:      removeOrphans,
-		shutdownTimeout:    shutdownTimeout,
+		Root:                  dir,
+		postSyncHooks:         postSyncHooks,
+		hookSettleDelay:       hookSettleDelay,
+		deployPaths:           deployPaths,
+		deploySyncPaths:       deploySyncPaths,
+		deploySyncExclude:     deploySyncExclude,
+		criticalContainers:    criticalContainers,
+		driftIgnore:           driftIgnore,
+		driftAlertDebounce:    driftAlertDebounce,
+		driftSelfHeal:         driftSelfHeal,
+		driftSelfHealCooldown: driftSelfHealCooldown,
+		domain:                domain,
+		removeOrphans:         removeOrphans,
+		shutdownTimeout:       shutdownTimeout,
 	}, nil
 }
 
@@ -352,6 +370,8 @@ func Load() (*Config, error) {
 	criticalContainers := extractCriticalContainers(fileCfg)
 	driftIgnore := extractDriftIgnore(fileCfg)
 	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
+	driftSelfHeal := extractDriftSelfHeal(fileCfg)
+	driftSelfHealCooldown := extractDriftSelfHealCooldown(fileCfg)
 	domain := extractDomain(fileCfg)
 	removeOrphans := extractRemoveOrphans(fileCfg)
 	shutdownTimeout := extractShutdownTimeout(fileCfg)
@@ -373,17 +393,19 @@ func Load() (*Config, error) {
 		tunnelProvider:  tunnelProvider,
 		tunnelConfig:    tunnelConfig,
 		alertConfig:     alertConfig,
-		postSyncHooks:      postSyncHooks,
-		hookSettleDelay:    hookSettleDelay,
-		deployPaths:        deployPaths,
-		deploySyncPaths:    deploySyncPaths,
-		deploySyncExclude:  deploySyncExclude,
-		criticalContainers: criticalContainers,
-		driftIgnore:        driftIgnore,
-		driftAlertDebounce: driftAlertDebounce,
-		domain:             domain,
-		removeOrphans:      removeOrphans,
-		shutdownTimeout:    shutdownTimeout,
+		postSyncHooks:         postSyncHooks,
+		hookSettleDelay:       hookSettleDelay,
+		deployPaths:           deployPaths,
+		deploySyncPaths:       deploySyncPaths,
+		deploySyncExclude:     deploySyncExclude,
+		criticalContainers:    criticalContainers,
+		driftIgnore:           driftIgnore,
+		driftAlertDebounce:    driftAlertDebounce,
+		driftSelfHeal:         driftSelfHeal,
+		driftSelfHealCooldown: driftSelfHealCooldown,
+		domain:                domain,
+		removeOrphans:         removeOrphans,
+		shutdownTimeout:       shutdownTimeout,
 	}
 
 	logger := log.Component("config")
@@ -644,6 +666,37 @@ func extractDriftIgnore(cfg configFile) []reconcile.DriftIgnoreRule {
 // extractDriftAlertDebounce extracts the drift alert debounce from a parsed config.
 func extractDriftAlertDebounce(cfg configFile) time.Duration {
 	return cfg.DriftAlertDebounce.Duration
+}
+
+// DriftSelfHeal returns whether drift self-healing is enabled.
+func (c *Config) DriftSelfHeal() bool {
+	return c.driftSelfHeal
+}
+
+// extractDriftSelfHeal extracts the drift self-heal setting from a parsed config.
+func extractDriftSelfHeal(cfg configFile) bool {
+	if cfg.DriftSelfHeal != nil {
+		return *cfg.DriftSelfHeal
+	}
+	return false
+}
+
+// DriftSelfHealCooldown returns the configured drift self-heal cooldown duration.
+func (c *Config) DriftSelfHealCooldown() time.Duration {
+	return c.driftSelfHealCooldown
+}
+
+// defaultDriftSelfHealCooldown is the default cooldown between drift self-heal reconciliations.
+const defaultDriftSelfHealCooldown = 15 * time.Minute
+
+// extractDriftSelfHealCooldown extracts the drift self-heal cooldown from a parsed config.
+// Returns the documented default (15m) when unset so callers of Config.DriftSelfHealCooldown()
+// get the correct value without relying on daemon.DefaultConfig().
+func extractDriftSelfHealCooldown(cfg configFile) time.Duration {
+	if cfg.DriftSelfHealCooldown.Duration > 0 {
+		return cfg.DriftSelfHealCooldown.Duration
+	}
+	return defaultDriftSelfHealCooldown
 }
 
 // extractRemoveOrphans extracts the remove_orphans setting from a parsed config.
