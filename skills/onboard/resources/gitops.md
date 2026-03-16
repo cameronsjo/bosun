@@ -273,6 +273,21 @@ Alert pipeline: **detect -> debounce filter -> dedup (per-item cooldown) -> send
 - Resolution alerts bypass debounce (fire immediately for previously alerted items).
 - Debounce state persists across daemon restarts.
 
+### Drift Self-Healing
+
+When drift is detected, bosun normally only sends alerts. With self-healing enabled, the daemon automatically triggers a reconciliation to resolve drift.
+
+- **`BOSUN_DRIFT_SELF_HEAL`** or **`drift_self_heal`** in `bosun.yaml`: Enable self-healing on drift detection. Default `false`.
+- **`BOSUN_DRIFT_SELF_HEAL_COOLDOWN`** or **`drift_self_heal_cooldown`** in `bosun.yaml`: Minimum interval between self-heal reconciliations. Default `15m`.
+- Self-heal skips when a reconciliation is already in progress (prevents infinite loops).
+- Self-heal fires asynchronously so it does not block the drift check loop.
+- The cooldown timer resets each time a self-heal triggers, preventing rapid-fire reconciliations.
+
+```yaml
+drift_self_heal: true
+drift_self_heal_cooldown: "15m"
+```
+
 ### Checking Drift
 
 ```bash
