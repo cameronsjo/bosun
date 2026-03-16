@@ -866,6 +866,7 @@ func (d *Daemon) maybeSelfHeal(ctx context.Context, report *reconcile.DriftRepor
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
+		defer sentrypkg.Recover()
 		if err := d.TriggerReconcile(ctx, "drift-self-heal", false); err != nil {
 			logger.Warn().Err(err).Msg("Drift self-heal: reconciliation failed")
 		}
