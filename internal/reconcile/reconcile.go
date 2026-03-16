@@ -8,9 +8,12 @@ import (
 	"path/filepath"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/log"
 	sentrypkg "github.com/cameronsjo/bosun/internal/sentry"
+	"github.com/cameronsjo/bosun/internal/telemetry"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -319,8 +322,30 @@ func (r *Reconciler) SetRunOptions(source string, force bool) {
 }
 
 // Run executes the full reconciliation workflow.
-func (r *Reconciler) Run(ctx context.Context) error {
+func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	startTime := time.Now()
+
+	// Root OTel span for the entire reconciliation pipeline.
+	ctx, rootSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile",
+		trace.WithAttributes(
+			telemetry.StringAttr("source", r.config.Source),
+			telemetry.BoolAttr("force", r.config.Force),
+		),
+	)
+	defer func() {
+		if runErr != nil {
+			telemetry.SpanError(rootSpan, runErr)
+		} else {
+			telemetry.SpanOK(rootSpan)
+		}
+		rootSpan.End()
+	}()
+
+	// Bridge correlation IDs into the span.
+	if reconcileID := log.ReconcileIDFromContext(ctx); reconcileID != "" {
+		rootSpan.SetAttributes(telemetry.StringAttr("reconcile_id", reconcileID))
+	}
+
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
 	logger.Info().
@@ -349,8 +374,15 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 	// Step 1: Sync repository.
 	spanCtx, finishSpan := sentrypkg.StartSpan(ctx, "reconcile.git_sync", "Git repository sync")
+	spanCtx, otelGitSpan := telemetry.Tracer("reconcile").Start(spanCtx, "reconcile.git_sync")
 	changed, before, after, err := r.syncRepo(spanCtx)
 	finishSpan(err)
+	if err != nil {
+		telemetry.SpanError(otelGitSpan, err)
+	} else {
+		telemetry.SpanOK(otelGitSpan)
+	}
+	otelGitSpan.End()
 	if err != nil {
 		// Use the post-sync commit (may be empty on sync failure) to avoid reporting a stale SHA.
 		r.lastCommit = after
@@ -439,21 +471,31 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 	// Step 2: Decrypt secrets.
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.decrypt", "SOPS secret decryption")
+	spanCtx, otelDecryptSpan := telemetry.Tracer("reconcile").Start(spanCtx, "reconcile.decrypt")
 	secrets, err := r.decryptSecrets(spanCtx)
 	finishSpan(err)
 	if err != nil {
+		telemetry.SpanError(otelDecryptSpan, err)
+		otelDecryptSpan.End()
 		r.sendThrottledFailureAlert(ctx, state, "failed to decrypt secrets")
 		return fmt.Errorf("failed to decrypt secrets: %w", err)
 	}
+	telemetry.SpanOK(otelDecryptSpan)
+	otelDecryptSpan.End()
 
 	// Step 3: Render templates.
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.template", "Template rendering")
+	spanCtx, otelTemplateSpan := telemetry.Tracer("reconcile").Start(spanCtx, "reconcile.template")
 	if err := r.renderTemplates(spanCtx, secrets); err != nil {
 		finishSpan(err)
+		telemetry.SpanError(otelTemplateSpan, err)
+		otelTemplateSpan.End()
 		r.sendThrottledFailureAlert(ctx, state, "failed to render templates")
 		return fmt.Errorf("failed to render templates: %w", err)
 	}
 	finishSpan(nil)
+	telemetry.SpanOK(otelTemplateSpan)
+	otelTemplateSpan.End()
 
 	// Extract declared state from rendered compose files.
 	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
@@ -470,11 +512,16 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	// Step 4: Create backup (unless dry run).
 	if !r.config.DryRun {
 		spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.backup", "Configuration backup")
+		spanCtx, otelBackupSpan := telemetry.Tracer("reconcile").Start(spanCtx, "reconcile.backup")
 		if err := r.createBackup(spanCtx, secrets); err != nil {
 			finishSpan(err)
+			telemetry.SpanError(otelBackupSpan, err)
+			otelBackupSpan.End()
 			ui.Warning("Backup partially failed: %v", err)
 		} else {
 			finishSpan(nil)
+			telemetry.SpanOK(otelBackupSpan)
+			otelBackupSpan.End()
 		}
 	}
 
@@ -488,13 +535,18 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	}
 
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.deploy", "Deployment")
+	spanCtx, otelDeploySpan := telemetry.Tracer("reconcile").Start(spanCtx, "reconcile.deploy")
 	deployResult, err := r.doDeploy(spanCtx, secrets)
 	if err != nil {
 		finishSpan(err)
+		telemetry.SpanError(otelDeploySpan, err)
+		otelDeploySpan.End()
 		r.sendThrottledFailureAlert(ctx, state, err.Error())
 		return fmt.Errorf("deployment failed: %w", err)
 	}
 	finishSpan(nil)
+	telemetry.SpanOK(otelDeploySpan)
+	otelDeploySpan.End()
 
 	// Step 6: Cleanup staging directory after successful deployment.
 	if err := r.cleanupStaging(); err != nil {
@@ -502,9 +554,14 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	}
 
 	// Step 7: Critical container health gate (if configured).
+	_, otelHealthGateSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.health_gate")
 	if err := r.runHealthGate(ctx, state); err != nil {
+		telemetry.SpanError(otelHealthGateSpan, err)
+		otelHealthGateSpan.End()
 		return fmt.Errorf("health gate failed: %w", err)
 	}
+	telemetry.SpanOK(otelHealthGateSpan)
+	otelHealthGateSpan.End()
 
 	// Send recovery alert if this success follows previous failures.
 	if state.AttemptCount > 1 {
@@ -532,17 +589,27 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 	// Execute post-sync hooks if any files changed and hooks are configured.
 	if r.dockerClientFn != nil && !r.config.DryRun && len(r.config.PostSyncHooks) > 0 {
+		_, otelHooksSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.post_sync_hooks",
+			trace.WithAttributes(telemetry.IntAttr("hook_count", len(r.config.PostSyncHooks))),
+		)
 		r.executePostSyncHooks(ctx, previousCommit, after, deployResult)
+		telemetry.SpanOK(otelHooksSpan)
+		otelHooksSpan.End()
 	}
 
 	// Post-deploy health verification: poll container health.
 	if r.dockerClientFn != nil && !r.config.DryRun && len(r.declaredServices) > 0 {
 		if client := r.dockerClientFn(); client != nil {
+			_, otelDriftSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.drift_check")
 			if healthErr := r.verifyPostDeploy(ctx, state, client); healthErr != nil {
+				telemetry.SpanError(otelDriftSpan, healthErr)
+				otelDriftSpan.End()
 				// Health verification failed — treat as a deploy failure.
 				r.sendThrottledFailureAlert(ctx, state, healthErr.Error())
 				return fmt.Errorf("post-deploy health verification failed: %w", healthErr)
 			}
+			telemetry.SpanOK(otelDriftSpan)
+			otelDriftSpan.End()
 		}
 	}
 
