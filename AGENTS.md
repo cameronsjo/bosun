@@ -347,6 +347,7 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 | `BOSUN_SENTRY_DSN` | sentry | Sentry DSN (empty = disabled) |
 | `BOSUN_SENTRY_ENVIRONMENT` | sentry | Sentry environment tag |
 | `BOSUN_SENTRY_TRACES_SAMPLE_RATE` | sentry | Trace sample rate (0.0–1.0) |
+| `BOSUN_OTEL_ENDPOINT` | telemetry | OpenTelemetry OTLP HTTP endpoint (e.g., `http://localhost:4318`; empty disables tracing) |
 
 ## Gotchas
 

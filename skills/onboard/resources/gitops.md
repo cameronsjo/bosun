@@ -350,6 +350,32 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `BOSUN_DEPLOY_SYNC_EXCLUDE` | | JSON array of glob patterns for deploy sync target blocklist (overrides config file; exclude wins over include) |
 | `BOSUN_CRITICAL_CONTAINERS` | | JSON array of container names that must be healthy after deploy (overrides config file) |
 | `BOSUN_HEALTH_GATE_TIMEOUT` | `60s` | Health gate polling timeout (accepts Go duration strings or bare seconds) |
+| `BOSUN_OTEL_ENDPOINT` | *(disabled)* | OpenTelemetry OTLP HTTP endpoint (e.g., `http://localhost:4318`). When set, spans are exported for each reconciliation pipeline phase. When empty, a noop provider is used (zero overhead) |
+
+## OpenTelemetry Tracing
+
+Bosun supports distributed tracing via OpenTelemetry. Set `BOSUN_OTEL_ENDPOINT` to the OTLP HTTP collector endpoint (e.g., `http://localhost:4318`) to enable span export.
+
+### Instrumented Spans
+
+The reconciliation pipeline emits these spans:
+
+| Span Name | Scope | Description |
+|-----------|-------|-------------|
+| `reconcile` | Root | Entire reconciliation run |
+| `reconcile.git_sync` | Child | Git clone/pull |
+| `reconcile.decrypt` | Child | SOPS secret decryption |
+| `reconcile.template` | Child | Go template rendering |
+| `reconcile.backup` | Child | Configuration backup |
+| `reconcile.deploy` | Child | File deployment + compose up |
+| `reconcile.health_gate` | Child | Critical container health gate |
+| `reconcile.post_sync_hooks` | Child | Post-sync hook execution |
+| `reconcile.drift_check` | Child | Post-deploy health verification |
+| `daemon.reconcile` | Daemon | Daemon-level reconcile orchestration |
+| `daemon.drift_check` | Daemon | Periodic drift check |
+| `daemon.webhook` | Daemon | Webhook-triggered reconciliation |
+
+Span attributes include `source`, `force`, `reconcile_id`, and `hook_count` where applicable. When `BOSUN_OTEL_ENDPOINT` is empty, a noop provider is used with zero overhead.
 
 ## Systemd Deployment
 

@@ -17,6 +17,7 @@ import (
 	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/reconcile"
+	"github.com/cameronsjo/bosun/internal/telemetry"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -200,6 +201,15 @@ func runReconcile(cmd *cobra.Command, args []string) {
 
 	// Set source for state tracking.
 	cfg.Source = "cli"
+
+	// Initialize OpenTelemetry tracing (noop if BOSUN_OTEL_ENDPOINT is unset).
+	initCtx := context.Background()
+	otelShutdown, otelErr := telemetry.Init(initCtx, "bosun", version, os.Getenv("BOSUN_OTEL_ENDPOINT"))
+	if otelErr != nil {
+		ui.Warning("Failed to initialize OpenTelemetry: %v", otelErr)
+	} else {
+		defer func() { _ = otelShutdown(initCtx) }()
+	}
 
 	// Create context with cancellation on SIGINT/SIGTERM.
 	ctx, cancel := context.WithCancel(context.Background())
