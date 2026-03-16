@@ -1204,7 +1204,9 @@ func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string
 			Msg("Running orphan reconciliation pass")
 
 		orphanArgs := d.buildUpArgs(orphanFiles, true)
-		orphanCmd := exec.CommandContext(ctx, "docker", orphanArgs...)
+		orphanCtx, orphanCancel := context.WithTimeout(ctx, d.composeUpTimeout())
+		defer orphanCancel()
+		orphanCmd := exec.CommandContext(orphanCtx, "docker", orphanArgs...)
 		var orphanStderr bytes.Buffer
 		orphanCmd.Stderr = &orphanStderr
 
