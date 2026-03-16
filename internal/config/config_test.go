@@ -711,6 +711,72 @@ func TestLoadFrom_DeployPaths(t *testing.T) {
 	})
 }
 
+func TestDeploySyncPathsFromConfig(t *testing.T) {
+	t.Run("parses deploy_sync_paths from bosun.yaml", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `deploy_sync_paths:
+  - "appdata/traefik"
+  - "appdata/authelia"
+  - "compose"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+		cfg := loadConfigFile(tmpDir)
+		assert.Equal(t, []string{"appdata/traefik", "appdata/authelia", "compose"}, extractDeploySyncPaths(cfg))
+	})
+
+	t.Run("returns nil when not configured", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(""), 0644))
+
+		cfg := loadConfigFile(tmpDir)
+		assert.Empty(t, extractDeploySyncPaths(cfg))
+	})
+}
+
+func TestDeploySyncExcludeFromConfig(t *testing.T) {
+	t.Run("parses deploy_sync_exclude from bosun.yaml", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		content := `deploy_sync_exclude:
+  - "appdata/legacy-service"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+		cfg := loadConfigFile(tmpDir)
+		assert.Equal(t, []string{"appdata/legacy-service"}, extractDeploySyncExclude(cfg))
+	})
+
+	t.Run("returns nil when not configured", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(""), 0644))
+
+		cfg := loadConfigFile(tmpDir)
+		assert.Empty(t, extractDeploySyncExclude(cfg))
+	})
+}
+
+func TestLoadFrom_DeploySyncPaths(t *testing.T) {
+	t.Run("loads deploy_sync_paths from directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		content := `deploy_sync_paths:
+  - "appdata/**"
+deploy_sync_exclude:
+  - "appdata/deprecated"
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Equal(t, []string{"appdata/**"}, cfg.DeploySyncPaths())
+		assert.Equal(t, []string{"appdata/deprecated"}, cfg.DeploySyncExclude())
+	})
+}
+
 func TestLoadConfig_Domain(t *testing.T) {
 	t.Run("loads domain from bosun.yaml", func(t *testing.T) {
 		tmpDir := evalSymlinks(t, t.TempDir())

@@ -75,9 +75,9 @@ func runRender(cmd *cobra.Command, args []string) {
 	// Check if secrets file exists
 	if _, err := os.Stat(secretsFile); os.IsNotExist(err) {
 		ui.Error("Secrets file not found: %s", secretsFile)
-		ui.Yellow.Println("\nTry one of:")
-		ui.Yellow.Println("  bosun render -s /path/to/secrets.sops.yaml template.tmpl")
-		ui.Yellow.Println("  export BOSUN_SECRETS_FILE=/path/to/secrets.sops.yaml")
+		_, _ = ui.Yellow.Println("\nTry one of:")
+		_, _ = ui.Yellow.Println("  bosun render -s /path/to/secrets.sops.yaml template.tmpl")
+		_, _ = ui.Yellow.Println("  export BOSUN_SECRETS_FILE=/path/to/secrets.sops.yaml")
 		os.Exit(1)
 	}
 
@@ -88,7 +88,7 @@ func runRender(cmd *cobra.Command, args []string) {
 		ui.Error("Failed to decrypt secrets: %v", err)
 		os.Exit(1)
 	}
-	ui.Green.Printf("✓ Decrypted secrets from %s\n", secretsFile)
+	_, _ = ui.Green.Printf("✓ Decrypted secrets from %s\n", secretsFile)
 
 	// Find templates to render
 	var templates []string
@@ -140,7 +140,7 @@ func runRender(cmd *cobra.Command, args []string) {
 	}
 
 	if len(templates) == 0 {
-		ui.Yellow.Println("No .tmpl files found")
+		_, _ = ui.Yellow.Println("No .tmpl files found")
 		os.Exit(0)
 	}
 
@@ -156,10 +156,10 @@ func runRender(cmd *cobra.Command, args []string) {
 	}
 
 	if errors > 0 {
-		ui.Red.Printf("\n✗ %d template(s) failed\n", errors)
+		_, _ = ui.Red.Printf("\n✗ %d template(s) failed\n", errors)
 		os.Exit(1)
 	}
-	ui.Green.Printf("\n✓ All templates rendered successfully\n")
+	_, _ = ui.Green.Printf("\n✓ All templates rendered successfully\n")
 }
 
 func renderTemplate(ctx context.Context, tmplPath string, secrets map[string]any, outputDir string) error {
@@ -181,7 +181,7 @@ func renderTemplate(ctx context.Context, tmplPath string, secrets map[string]any
 	// Determine output destination
 	if outputDir == "" {
 		// Print to stdout with separator
-		ui.Blue.Printf("--- %s ---\n", tmplPath)
+		_, _ = ui.Blue.Printf("--- %s ---\n", tmplPath)
 		if err := tmpl.Execute(os.Stdout, secrets); err != nil {
 			return fmt.Errorf("render error: %w", err)
 		}
@@ -199,13 +199,13 @@ func renderTemplate(ctx context.Context, tmplPath string, secrets map[string]any
 	if err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
-	defer outFile.Close()
+	defer func() { _ = outFile.Close() }()
 
 	if err := tmpl.Execute(outFile, secrets); err != nil {
 		return fmt.Errorf("render error: %w", err)
 	}
 
-	ui.Green.Printf("  ✓ %s → %s\n", tmplPath, outputPath)
+	_, _ = ui.Green.Printf("  ✓ %s → %s\n", tmplPath, outputPath)
 	return nil
 }
 

@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/fatih/color"
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -57,7 +56,7 @@ func captureColorOutput(fn func()) string {
 	fn()
 
 	// Close writer.
-	w.Close()
+	_ = w.Close()
 
 	// Restore.
 	color.Output = oldOutput
@@ -67,7 +66,7 @@ func captureColorOutput(fn func()) string {
 	// Read output.
 	var buf bytes.Buffer
 	_, _ = io.Copy(&buf, r)
-	r.Close()
+	_ = r.Close()
 
 	return buf.String()
 }
@@ -362,10 +361,10 @@ func captureJSONOutput(t *testing.T, fn func()) string {
 	fn()
 
 	// Close writer, read output.
-	w.Close()
+	_ = w.Close()
 	var buf bytes.Buffer
 	_, _ = io.Copy(&buf, r)
-	r.Close()
+	_ = r.Close()
 
 	// Restore stdout and console mode.
 	os.Stdout = oldStdout
@@ -563,7 +562,7 @@ func TestLogger(t *testing.T) {
 	require.NotNil(t, l)
 
 	// Verify it returns a usable zerolog.Logger pointer.
-	var _ *zerolog.Logger = l
+	var _ = l
 }
 
 func TestWithComponent(t *testing.T) {
@@ -600,14 +599,14 @@ func TestFatal_ConsoleMode(t *testing.T) {
 
 	Fatal("fatal error happened")
 
-	w.Close()
+	_ = w.Close()
 	os.Stderr = oldStderr
 	color.Error = oldErrOutput
 	color.NoColor = oldNoColor
 
 	var buf bytes.Buffer
 	_, _ = io.Copy(&buf, r)
-	r.Close()
+	_ = r.Close()
 
 	assert.Equal(t, 1, exitCode)
 	assert.Contains(t, buf.String(), "fatal error happened")
@@ -649,14 +648,14 @@ func TestFatalf_ConsoleMode(t *testing.T) {
 
 	Fatalf("fatal: %s at line %d", "null pointer", 42)
 
-	w.Close()
+	_ = w.Close()
 	os.Stderr = oldStderr
 	color.Error = oldErrOutput
 	color.NoColor = oldNoColor
 
 	var buf bytes.Buffer
 	_, _ = io.Copy(&buf, r)
-	r.Close()
+	_ = r.Close()
 
 	assert.Equal(t, 1, exitCode)
 	assert.Contains(t, buf.String(), "fatal: null pointer at line 42")

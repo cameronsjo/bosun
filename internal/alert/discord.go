@@ -138,7 +138,7 @@ func (d *DiscordProvider) Send(ctx context.Context, alert *Alert) error {
 			Msg("Discord webhook request failed")
 		return fmt.Errorf("send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Discord returns 204 No Content on success.
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {

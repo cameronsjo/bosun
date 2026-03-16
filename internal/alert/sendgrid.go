@@ -90,7 +90,7 @@ func (s *SendGrid) Send(ctx context.Context, alert *Alert) error {
 			Msg("SendGrid API request failed")
 		return fmt.Errorf("sending request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// SendGrid returns 202 Accepted on success
 	if resp.StatusCode != http.StatusAccepted {
@@ -207,20 +207,20 @@ func (s *SendGrid) formatHTMLBody(alert *Alert) string {
 `)
 
 	// Header with severity color
-	sb.WriteString(fmt.Sprintf(`<div style="background-color: %s; color: #ffffff; padding: 20px;">
+	_, _ = fmt.Fprintf(&sb, `<div style="background-color: %s; color: #ffffff; padding: 20px;">
 <h1 style="margin: 0; font-size: 20px;">%s</h1>
 <span style="display: inline-block; margin-top: 8px; padding: 4px 12px; background-color: rgba(255,255,255,0.2); border-radius: 4px; font-size: 12px; text-transform: uppercase;">%s</span>
 </div>
-`, severityColor, html.EscapeString(alert.Title), html.EscapeString(string(alert.Severity))))
+`, severityColor, html.EscapeString(alert.Title), html.EscapeString(string(alert.Severity)))
 
 	// Body
 	sb.WriteString(`<div style="padding: 20px;">`)
 
 	// Message
-	sb.WriteString(fmt.Sprintf(`<div style="background-color: %s; border-left: 4px solid %s; padding: 15px; margin-bottom: 20px; border-radius: 0 4px 4px 0;">
+	_, _ = fmt.Fprintf(&sb, `<div style="background-color: %s; border-left: 4px solid %s; padding: 15px; margin-bottom: 20px; border-radius: 0 4px 4px 0;">
 <p style="margin: 0; color: #333333; line-height: 1.5;">%s</p>
 </div>
-`, severityBg, severityColor, html.EscapeString(alert.Message)))
+`, severityBg, severityColor, html.EscapeString(alert.Message))
 
 	// Metadata
 	if len(alert.Metadata) > 0 {
@@ -228,11 +228,11 @@ func (s *SendGrid) formatHTMLBody(alert *Alert) string {
 <table style="width: 100%; border-collapse: collapse;">
 `)
 		for key, value := range alert.Metadata {
-			sb.WriteString(fmt.Sprintf(`<tr>
+			_, _ = fmt.Fprintf(&sb, `<tr>
 <td style="padding: 8px 12px; border-bottom: 1px solid #eeeeee; color: #666666; font-weight: 600; width: 120px;">%s</td>
 <td style="padding: 8px 12px; border-bottom: 1px solid #eeeeee; color: #333333; font-family: 'Menlo', 'Monaco', 'Courier New', monospace; font-size: 13px;">%s</td>
 </tr>
-`, html.EscapeString(key), html.EscapeString(value)))
+`, html.EscapeString(key), html.EscapeString(value))
 		}
 		sb.WriteString(`</table>`)
 	}
@@ -240,10 +240,10 @@ func (s *SendGrid) formatHTMLBody(alert *Alert) string {
 	sb.WriteString(`</div>`)
 
 	// Footer
-	sb.WriteString(fmt.Sprintf(`<div style="background-color: #f8f8f8; padding: 15px 20px; border-top: 1px solid #eeeeee; font-size: 12px; color: #999999;">
+	_, _ = fmt.Fprintf(&sb, `<div style="background-color: #f8f8f8; padding: 15px 20px; border-top: 1px solid #eeeeee; font-size: 12px; color: #999999;">
 Source: %s | Sent by Bosun
 </div>
-`, html.EscapeString(alert.Source)))
+`, html.EscapeString(alert.Source))
 
 	sb.WriteString(`</div>
 </body>
@@ -256,8 +256,8 @@ Source: %s | Sent by Bosun
 func (s *SendGrid) formatPlainBody(alert *Alert) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("%s\n", alert.Title))
-	sb.WriteString(fmt.Sprintf("Severity: %s\n", alert.Severity))
+	_, _ = fmt.Fprintf(&sb, "%s\n", alert.Title)
+	_, _ = fmt.Fprintf(&sb, "Severity: %s\n", alert.Severity)
 	sb.WriteString(strings.Repeat("=", 50) + "\n\n")
 	sb.WriteString(alert.Message + "\n")
 
@@ -265,11 +265,11 @@ func (s *SendGrid) formatPlainBody(alert *Alert) string {
 		sb.WriteString("\nDetails:\n")
 		sb.WriteString(strings.Repeat("-", 30) + "\n")
 		for key, value := range alert.Metadata {
-			sb.WriteString(fmt.Sprintf("  %s: %s\n", key, value))
+			_, _ = fmt.Fprintf(&sb, "  %s: %s\n", key, value)
 		}
 	}
 
-	sb.WriteString(fmt.Sprintf("\n---\nSource: %s | Sent by Bosun\n", alert.Source))
+	_, _ = fmt.Fprintf(&sb, "\n---\nSource: %s | Sent by Bosun\n", alert.Source)
 
 	return sb.String()
 }

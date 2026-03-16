@@ -210,7 +210,7 @@ func Restore(manifestDir, snapshotName string) error {
 		}
 
 		if err := fileutil.CopyDir(outDir, backupPath); err != nil {
-			os.RemoveAll(backupPath)
+			_ = os.RemoveAll(backupPath)
 			return fmt.Errorf("create pre-rollback backup: %w", err)
 		}
 	}
@@ -227,7 +227,7 @@ func Restore(manifestDir, snapshotName string) error {
 	}
 
 	if err := fileutil.CopyDir(snapshotPath, tempDir); err != nil {
-		os.RemoveAll(tempDir)
+		_ = os.RemoveAll(tempDir)
 		return fmt.Errorf("copy snapshot to temp: %w", err)
 	}
 
@@ -238,7 +238,7 @@ func Restore(manifestDir, snapshotName string) error {
 	// Step 3: Atomic swap - rename current output to old (if exists)
 	if outputExists {
 		if err := os.Rename(outDir, oldDir); err != nil {
-			os.RemoveAll(tempDir)
+			_ = os.RemoveAll(tempDir)
 			return fmt.Errorf("rename current output: %w", err)
 		}
 	}
@@ -249,17 +249,17 @@ func Restore(manifestDir, snapshotName string) error {
 		if outputExists {
 			if recoverErr := os.Rename(oldDir, outDir); recoverErr != nil {
 				// Recovery failed - surface both errors
-				os.RemoveAll(tempDir) // Best effort cleanup
+				_ = os.RemoveAll(tempDir) // Best effort cleanup
 				return fmt.Errorf("rename temp to output: %w (recovery also failed: %v)", err, recoverErr)
 			}
 		}
-		os.RemoveAll(tempDir) // Best effort cleanup
+		_ = os.RemoveAll(tempDir) // Best effort cleanup
 		return fmt.Errorf("rename temp to output: %w", err)
 	}
 
 	// Step 5: Cleanup old directory
 	if outputExists {
-		os.RemoveAll(oldDir)
+		_ = os.RemoveAll(oldDir)
 	}
 
 	logger.Info().

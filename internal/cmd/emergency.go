@@ -117,14 +117,14 @@ func showRecentErrors() {
 				// Clean up Docker log prefix (first 8 bytes are header)
 				cleanLine := stripDockerLogPrefix(line)
 				if errorLogRegex.MatchString(cleanLine) {
-					ui.Red.Printf("[%s] %s\n", ctr.Name, cleanLine)
+					_, _ = ui.Red.Printf("[%s] %s\n", ctr.Name, cleanLine)
 					errorCount++
 				}
 			}
 		}
 
 		if errorCount == 0 {
-			ui.Green.Println("No recent errors found")
+			_, _ = ui.Green.Println("No recent errors found")
 		}
 		return nil
 	})
@@ -136,7 +136,7 @@ func showRecentErrors() {
 
 func showSnapshots(cfg *config.Config) {
 	if cfg == nil {
-		ui.Yellow.Println("No snapshots found")
+		_, _ = ui.Yellow.Println("No snapshots found")
 		fmt.Println("Snapshots are created automatically before each provision")
 		return
 	}
@@ -148,7 +148,7 @@ func showSnapshots(cfg *config.Config) {
 	}
 
 	if len(snapshots) == 0 {
-		ui.Yellow.Println("No snapshots found")
+		_, _ = ui.Yellow.Println("No snapshots found")
 		fmt.Println("Snapshots are created automatically before each provision")
 		return
 	}
@@ -163,7 +163,7 @@ func showSnapshots(cfg *config.Config) {
 			break
 		}
 
-		ui.Green.Printf("  %s\n", snap.Name)
+		_, _ = ui.Green.Printf("  %s\n", snap.Name)
 		fmt.Printf("    Created: %s\n", snap.Created.Format("2006-01-02 15:04:05"))
 		fmt.Printf("    Files: %d\n", snap.FileCount)
 		fmt.Println()
@@ -216,7 +216,7 @@ func doRollback(cfg *config.Config, target string) {
 		Str(log.FieldPath, cfg.ManifestDir).
 		Msg("Snapshot rollback initiated")
 
-	ui.Yellow.Printf("Rolling back to: %s\n", target)
+	_, _ = ui.Yellow.Printf("Rolling back to: %s\n", target)
 	fmt.Println()
 
 	if err := snapshot.Restore(cfg.ManifestDir, target); err != nil {
@@ -248,11 +248,11 @@ func doRollback(cfg *config.Config, target string) {
 		fmt.Println()
 	}
 
-	ui.Yellow.Println("Note: Run 'bosun yacht up' to apply restored configuration")
+	_, _ = ui.Yellow.Println("Note: Run 'bosun yacht up' to apply restored configuration")
 }
 
 func promptForSnapshot(snapshots []snapshot.SnapshotInfo) string {
-	ui.Blue.Println("Available snapshots:")
+	_, _ = ui.Blue.Println("Available snapshots:")
 	fmt.Println()
 
 	maxShow := MaxSnapshotPrompt
@@ -326,7 +326,7 @@ func runOverboard(cmd *cobra.Command, args []string) {
 		Str(log.FieldContainer, name).
 		Msg("Emergency container removal initiated")
 
-	ui.Red.Printf("Man overboard! Removing %s...\n", name)
+	_, _ = ui.Red.Printf("Man overboard! Removing %s...\n", name)
 
 	err := withDockerClient(func(ctx context.Context, client *docker.Client) error {
 		if err := client.RemoveContainer(ctx, name); err != nil {
@@ -415,13 +415,13 @@ func listBackups(backupDir string) error {
 	}
 
 	if len(backups) == 0 {
-		ui.Yellow.Println("No backups found")
+		_, _ = ui.Yellow.Println("No backups found")
 		fmt.Printf("Backup directory: %s\n", backupDir)
 		fmt.Println("Backups are created automatically by 'bosun reconcile' before each deployment.")
 		return nil
 	}
 
-	ui.Blue.Println("Available backups:")
+	_, _ = ui.Blue.Println("Available backups:")
 	fmt.Println()
 
 	for i, backup := range backups {
@@ -435,10 +435,10 @@ func listBackups(backupDir string) error {
 		if !backup.HasTar {
 			statusIcon = "!"
 		}
-		ui.Green.Printf("  %s %s\n", statusIcon, backup.Name)
+		_, _ = ui.Green.Printf("  %s %s\n", statusIcon, backup.Name)
 		fmt.Printf("      Modified: %s\n", backup.ModTime)
 		if !backup.HasTar {
-			ui.Yellow.Printf("      Warning: configs.tar.gz missing\n")
+			_, _ = ui.Yellow.Printf("      Warning: configs.tar.gz missing\n")
 		}
 	}
 
@@ -511,7 +511,7 @@ func doRestore(backupDir, backupName string) error {
 		Str(log.FieldPath, backupPath).
 		Msg("Backup restore initiated")
 
-	ui.Yellow.Printf("Restoring from backup: %s\n", backupName)
+	_, _ = ui.Yellow.Printf("Restoring from backup: %s\n", backupName)
 	fmt.Println()
 
 	// Determine target directory (appdata)
@@ -525,7 +525,7 @@ func doRestore(backupDir, backupName string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create staging directory: %w", err)
 	}
-	defer os.RemoveAll(stagingDir)
+	defer func() { _ = os.RemoveAll(stagingDir) }()
 
 	// Extract backup to staging
 	ui.Info("  Extracting backup...")
@@ -573,7 +573,7 @@ func doRestore(backupDir, backupName string) error {
 		ui.Info("  Restarting services...")
 		if err := runComposeUp(composeFile); err != nil {
 			ui.Warning("Could not restart services: %v", err)
-			ui.Yellow.Println("  Run 'docker compose -f " + composeFile + " up -d' manually")
+			_, _ = ui.Yellow.Println("  Run 'docker compose -f " + composeFile + " up -d' manually")
 		}
 	}
 
@@ -611,13 +611,13 @@ func extractTarGz(tarPath, destDir string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	gzr, err := gzip.NewReader(file)
 	if err != nil {
 		return err
 	}
-	defer gzr.Close()
+	defer func() { _ = gzr.Close() }()
 
 	tr := tar.NewReader(gzr)
 

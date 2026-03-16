@@ -74,7 +74,7 @@ var yachtUpCmd = &cobra.Command{
 			ui.Warning("%v", err)
 		}
 
-		ui.Green.Println("Raising anchor...")
+		_, _ = ui.Green.Println("Raising anchor...")
 		compose, err := docker.NewComposeClient(cfg.ComposeFile, cfg.ProjectName())
 		if err != nil {
 			return fmt.Errorf("compose client: %w", err)
@@ -115,7 +115,7 @@ var yachtDownCmd = &cobra.Command{
 			Str(log.FieldPath, cfg.ComposeFile).
 			Int("shutdown_timeout_sec", timeoutSec).
 			Msg("Preparing to stop all services")
-		ui.Yellow.Println("Dropping anchor...")
+		_, _ = ui.Yellow.Println("Dropping anchor...")
 		compose, err := docker.NewComposeClient(cfg.ComposeFile, cfg.ProjectName())
 		if err != nil {
 			return fmt.Errorf("compose client: %w", err)
@@ -128,7 +128,7 @@ var yachtDownCmd = &cobra.Command{
 			Str(log.FieldOperation, "compose_down").
 			Str(log.FieldPath, cfg.ComposeFile).
 			Msg("Successfully stopped all services")
-		ui.Yellow.Println("Yacht is docked.")
+		_, _ = ui.Yellow.Println("Yacht is docked.")
 		return nil
 	},
 }
@@ -168,7 +168,7 @@ var yachtRestartCmd = &cobra.Command{
 			restartEvent = restartEvent.Str("scope", "all")
 		}
 		restartEvent.Msg("Preparing to restart services")
-		ui.Blue.Println("Quick turnaround...")
+		_, _ = ui.Blue.Println("Quick turnaround...")
 		compose, err := docker.NewComposeClient(cfg.ComposeFile, cfg.ProjectName())
 		if err != nil {
 			return fmt.Errorf("compose client: %w", err)

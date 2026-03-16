@@ -175,16 +175,8 @@ func TestMergeMap(t *testing.T) {
 
 func TestSOPSOps_CheckAgeKey(t *testing.T) {
 	t.Run("key found via SOPS_AGE_KEY env var", func(t *testing.T) {
-		// Save and restore env vars
-		origKey := os.Getenv("SOPS_AGE_KEY")
-		origKeyFile := os.Getenv("SOPS_AGE_KEY_FILE")
-		defer func() {
-			os.Setenv("SOPS_AGE_KEY", origKey)
-			os.Setenv("SOPS_AGE_KEY_FILE", origKeyFile)
-		}()
-
-		os.Setenv("SOPS_AGE_KEY", "AGE-SECRET-KEY-TEST")
-		os.Unsetenv("SOPS_AGE_KEY_FILE")
+		t.Setenv("SOPS_AGE_KEY", "AGE-SECRET-KEY-TEST")
+		t.Setenv("SOPS_AGE_KEY_FILE", "")
 
 		sops := NewSOPSOps()
 		err := sops.CheckAgeKey()
@@ -192,21 +184,13 @@ func TestSOPSOps_CheckAgeKey(t *testing.T) {
 	})
 
 	t.Run("key found via SOPS_AGE_KEY_FILE env var", func(t *testing.T) {
-		// Save and restore env vars
-		origKey := os.Getenv("SOPS_AGE_KEY")
-		origKeyFile := os.Getenv("SOPS_AGE_KEY_FILE")
-		defer func() {
-			os.Setenv("SOPS_AGE_KEY", origKey)
-			os.Setenv("SOPS_AGE_KEY_FILE", origKeyFile)
-		}()
-
 		// Create a temp key file
 		tmpDir := t.TempDir()
 		keyFile := filepath.Join(tmpDir, "key.txt")
 		require.NoError(t, os.WriteFile(keyFile, []byte("AGE-SECRET-KEY-TEST"), 0600))
 
-		os.Unsetenv("SOPS_AGE_KEY")
-		os.Setenv("SOPS_AGE_KEY_FILE", keyFile)
+		t.Setenv("SOPS_AGE_KEY", "")
+		t.Setenv("SOPS_AGE_KEY_FILE", keyFile)
 
 		sops := NewSOPSOps()
 		err := sops.CheckAgeKey()
@@ -214,16 +198,8 @@ func TestSOPSOps_CheckAgeKey(t *testing.T) {
 	})
 
 	t.Run("SOPS_AGE_KEY_FILE set but file does not exist", func(t *testing.T) {
-		// Save and restore env vars
-		origKey := os.Getenv("SOPS_AGE_KEY")
-		origKeyFile := os.Getenv("SOPS_AGE_KEY_FILE")
-		defer func() {
-			os.Setenv("SOPS_AGE_KEY", origKey)
-			os.Setenv("SOPS_AGE_KEY_FILE", origKeyFile)
-		}()
-
-		os.Unsetenv("SOPS_AGE_KEY")
-		os.Setenv("SOPS_AGE_KEY_FILE", "/nonexistent/path/key.txt")
+		t.Setenv("SOPS_AGE_KEY", "")
+		t.Setenv("SOPS_AGE_KEY_FILE", "/nonexistent/path/key.txt")
 
 		sops := NewSOPSOps()
 		err := sops.CheckAgeKey()
@@ -242,16 +218,8 @@ func TestSOPSOps_CheckAgeKey(t *testing.T) {
 			t.Skip("default age key file does not exist")
 		}
 
-		// Save and restore env vars
-		origKey := os.Getenv("SOPS_AGE_KEY")
-		origKeyFile := os.Getenv("SOPS_AGE_KEY_FILE")
-		defer func() {
-			os.Setenv("SOPS_AGE_KEY", origKey)
-			os.Setenv("SOPS_AGE_KEY_FILE", origKeyFile)
-		}()
-
-		os.Unsetenv("SOPS_AGE_KEY")
-		os.Unsetenv("SOPS_AGE_KEY_FILE")
+		t.Setenv("SOPS_AGE_KEY", "")
+		t.Setenv("SOPS_AGE_KEY_FILE", "")
 
 		sops := NewSOPSOps()
 		err = sops.CheckAgeKey()
@@ -259,16 +227,8 @@ func TestSOPSOps_CheckAgeKey(t *testing.T) {
 	})
 
 	t.Run("error when no key found", func(t *testing.T) {
-		// Save and restore env vars
-		origKey := os.Getenv("SOPS_AGE_KEY")
-		origKeyFile := os.Getenv("SOPS_AGE_KEY_FILE")
-		defer func() {
-			os.Setenv("SOPS_AGE_KEY", origKey)
-			os.Setenv("SOPS_AGE_KEY_FILE", origKeyFile)
-		}()
-
-		os.Unsetenv("SOPS_AGE_KEY")
-		os.Unsetenv("SOPS_AGE_KEY_FILE")
+		t.Setenv("SOPS_AGE_KEY", "")
+		t.Setenv("SOPS_AGE_KEY_FILE", "")
 
 		// Check if default key file exists - if so, skip this test
 		homeDir, err := os.UserHomeDir()

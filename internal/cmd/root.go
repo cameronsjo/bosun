@@ -116,7 +116,7 @@ var yarrCmd = &cobra.Command{
 	Hidden: true,
 	Short:  "Pirate mode",
 	Run: func(cmd *cobra.Command, args []string) {
-		ui.Yellow.Println("Ahoy! Ye found the secret pirate mode!")
+		_, _ = ui.Yellow.Println("Ahoy! Ye found the secret pirate mode!")
 		fmt.Println("")
 		fmt.Println("Command aliases for true pirates:")
 		fmt.Println("  init       → christen")
@@ -135,7 +135,7 @@ var yarrCmd = &cobra.Command{
 		fmt.Println("  mayday     → mutiny")
 		fmt.Println("  overboard  → plank")
 		fmt.Println("")
-		ui.Blue.Println("Run 'bosun --help' for all commands.")
+		_, _ = ui.Blue.Println("Run 'bosun --help' for all commands.")
 	},
 }
 

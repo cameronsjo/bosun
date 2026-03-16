@@ -18,7 +18,7 @@ func (r *Reconciler) acquireLock() error {
 
 	// Try non-blocking exclusive lock.
 	if err := syscall.Flock(int(fd.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		fd.Close()
+		_ = fd.Close()
 		return fmt.Errorf("lock already held: %w", err)
 	}
 
@@ -30,7 +30,7 @@ func (r *Reconciler) acquireLock() error {
 func (r *Reconciler) releaseLock() {
 	if r.lockFd != nil {
 		_ = syscall.Flock(int(r.lockFd.Fd()), syscall.LOCK_UN)
-		r.lockFd.Close()
+		_ = r.lockFd.Close()
 		r.lockFd = nil
 	}
 }

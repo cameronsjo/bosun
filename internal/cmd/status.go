@@ -84,7 +84,7 @@ func printStatusHuman(status *daemon.StatusResponse, health *daemon.HealthStatus
 		stateColor = ui.Yellow
 		stateIcon = "◐"
 	}
-	stateColor.Printf("  %s State: %s\n", stateIcon, status.State)
+	_, _ = stateColor.Printf("  %s State: %s\n", stateIcon, status.State)
 
 	// Uptime
 	fmt.Printf("    Uptime: %s\n", status.Uptime)
@@ -99,7 +99,7 @@ func printStatusHuman(status *daemon.StatusResponse, health *daemon.HealthStatus
 
 	// Last error
 	if status.LastError != "" {
-		ui.Red.Printf("  ✗ Last Error: %s\n", status.LastError)
+		_, _ = ui.Red.Printf("  ✗ Last Error: %s\n", status.LastError)
 	}
 
 	// Health status
@@ -111,7 +111,7 @@ func printStatusHuman(status *daemon.StatusResponse, health *daemon.HealthStatus
 			healthColor = ui.Yellow
 			healthIcon = "⚠"
 		}
-		healthColor.Printf("  %s Health: %s\n", healthIcon, health.Status)
+		_, _ = healthColor.Printf("  %s Health: %s\n", healthIcon, health.Status)
 
 		readyIcon := "✓"
 		readyColor := ui.Green
@@ -119,7 +119,7 @@ func printStatusHuman(status *daemon.StatusResponse, health *daemon.HealthStatus
 			readyIcon = "✗"
 			readyColor = ui.Red
 		}
-		readyColor.Printf("  %s Ready: %v\n", readyIcon, health.Ready)
+		_, _ = readyColor.Printf("  %s Ready: %v\n", readyIcon, health.Ready)
 	}
 
 	fmt.Println()

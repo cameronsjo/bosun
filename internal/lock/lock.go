@@ -47,7 +47,7 @@ func (l *Lock) Acquire() error {
 
 	// Try to acquire exclusive lock (non-blocking)
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
+		_ = f.Close()
 		// Don't modify l.file here - leave it as-is (either nil from creation or previous state)
 		if err == syscall.EWOULDBLOCK {
 			return fmt.Errorf("another %s operation is already running", filepath.Base(l.path[:len(l.path)-5]))
@@ -58,7 +58,7 @@ func (l *Lock) Acquire() error {
 	// Write PID to lock file for debugging
 	_ = f.Truncate(0)
 	_, _ = f.Seek(0, 0)
-	fmt.Fprintf(f, "%d\n", os.Getpid())
+	_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
 
 	l.file = f
 	return nil
@@ -76,14 +76,14 @@ func (l *Lock) Release() error {
 
 	// Unlock the file
 	if err := syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN); err != nil {
-		l.file.Close()
+		_ = l.file.Close()
 		l.file = nil
 		return fmt.Errorf("release lock: %w", err)
 	}
 
 	// Close and remove the lock file
-	l.file.Close()
-	os.Remove(l.path)
+	_ = l.file.Close()
+	_ = os.Remove(l.path)
 	l.file = nil
 
 	return nil

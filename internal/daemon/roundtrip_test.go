@@ -37,7 +37,7 @@ func startSocketDaemonForClient(t *testing.T) (*Client, func()) {
 		if err != nil {
 			return false
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return resp.StatusCode == http.StatusOK
 	}, 2*time.Second, 10*time.Millisecond, "socket server should be ready")
 
@@ -154,7 +154,7 @@ func TestTCPClient_Health(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		conn.Close()
+		_ = conn.Close()
 		return true
 	}, 2*time.Second, 10*time.Millisecond)
 
@@ -209,7 +209,7 @@ func TestTCPClient_WrongToken(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		conn.Close()
+		_ = conn.Close()
 		return true
 	}, 2*time.Second, 10*time.Millisecond)
 

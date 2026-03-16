@@ -180,28 +180,28 @@ func printDriftHuman(state *reconcile.DeployState) {
 	fmt.Println()
 
 	if len(state.DriftItems) == 0 {
-		ui.Green.Printf("  %s No drift detected\n", "✓")
+		_, _ = ui.Green.Printf("  %s No drift detected\n", "✓")
 		fmt.Println()
 		return
 	}
 
-	ui.Yellow.Printf("  %s %d drift item(s) detected\n", "⚠", len(state.DriftItems))
+	_, _ = ui.Yellow.Printf("  %s %d drift item(s) detected\n", "⚠", len(state.DriftItems))
 	fmt.Println()
 
 	for _, item := range state.DriftItems {
 		switch item.Type {
 		case reconcile.DriftMissing:
-			ui.Red.Printf("    ✗ %s: missing", item.Service)
+			_, _ = ui.Red.Printf("    ✗ %s: missing", item.Service)
 			if item.Actual != "" {
 				fmt.Printf(" (%s)", item.Actual)
 			}
 			fmt.Println()
 		case reconcile.DriftImageMismatch:
-			ui.Yellow.Printf("    ⚠ %s: image mismatch\n", item.Service)
+			_, _ = ui.Yellow.Printf("    ⚠ %s: image mismatch\n", item.Service)
 			fmt.Printf("        declared: %s\n", item.Declared)
 			fmt.Printf("        actual:   %s\n", item.Actual)
 		case reconcile.DriftUnhealthy:
-			ui.Red.Printf("    ✗ %s: unhealthy\n", item.Service)
+			_, _ = ui.Red.Printf("    ✗ %s: unhealthy\n", item.Service)
 		}
 	}
 	fmt.Println()

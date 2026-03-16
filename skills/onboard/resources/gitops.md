@@ -299,6 +299,14 @@ The daemon tracks deploy state in a JSON file (default: `/var/lib/bosun/deploy-s
 
 ## Deployment Targets
 
+Deploy targets are **auto-discovered** from the staging directory after template rendering. The staging directory structure determines what gets synced:
+
+- `appdata/` children are expanded one level (per-service granularity)
+- `compose/` is handled specially (feeds `docker compose up` with rollback)
+- All other top-level entries are synced as-is
+
+Use `deploy_sync_paths` (allowlist) and `deploy_sync_exclude` (blocklist) in `bosun.yaml` or via `BOSUN_DEPLOY_SYNC_PATHS`/`BOSUN_DEPLOY_SYNC_EXCLUDE` env vars to filter which targets are deployed. Exclude wins over include.
+
 ### Local Deployment
 
 Default mode. Copies rendered files directly to the local filesystem and runs `docker compose up`.
@@ -338,6 +346,8 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `BOSUN_POST_SYNC_HOOKS` | | JSON array of post-sync hooks (overrides config file) |
 | `BOSUN_HOOK_SETTLE_DELAY` | `0` | Global pause before post-sync hooks run (e.g., `2s`) |
 | `BOSUN_DEPLOY_PATHS` | | JSON array of glob patterns for deploy-relevant paths (overrides config file) |
+| `BOSUN_DEPLOY_SYNC_PATHS` | | JSON array of glob patterns for deploy sync target allowlist (overrides config file) |
+| `BOSUN_DEPLOY_SYNC_EXCLUDE` | | JSON array of glob patterns for deploy sync target blocklist (overrides config file; exclude wins over include) |
 | `BOSUN_CRITICAL_CONTAINERS` | | JSON array of container names that must be healthy after deploy (overrides config file) |
 | `BOSUN_HEALTH_GATE_TIMEOUT` | `60s` | Health gate polling timeout (accepts Go duration strings or bare seconds) |
 

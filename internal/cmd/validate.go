@@ -55,54 +55,54 @@ func runValidate(cmd *cobra.Command, args []string) {
 	var errors, warnings int
 
 	// 1. Check environment configuration
-	ui.Blue.Println("--- Environment Configuration ---")
+	_, _ = ui.Blue.Println("--- Environment Configuration ---")
 	errors += validateEnvironment()
 	fmt.Println()
 
 	// 2. Check daemon connectivity (if socket exists)
-	ui.Blue.Println("--- Daemon Connectivity ---")
+	_, _ = ui.Blue.Println("--- Daemon Connectivity ---")
 	warnings += validateDaemonConnection()
 	fmt.Println()
 
 	// 3. Check reconcile configuration
-	ui.Blue.Println("--- Reconcile Configuration ---")
+	_, _ = ui.Blue.Println("--- Reconcile Configuration ---")
 	errors += validateReconcileConfig()
 	fmt.Println()
 
 	// 4. Full dry-run if requested
 	if validateFull {
-		ui.Blue.Println("--- Full Dry-Run ---")
+		_, _ = ui.Blue.Println("--- Full Dry-Run ---")
 		if err := runFullDryRun(); err != nil {
 			ui.Error("Dry-run failed: %v", err)
 			errors++
 		} else {
-			ui.Green.Println("  * Dry-run completed successfully")
+			_, _ = ui.Green.Println("  * Dry-run completed successfully")
 		}
 		fmt.Println()
 	}
 
 	// Summary
-	ui.Blue.Println("--- Summary ---")
+	_, _ = ui.Blue.Println("--- Summary ---")
 	if errors > 0 {
-		ui.Red.Printf("  Errors: %d\n", errors)
+		_, _ = ui.Red.Printf("  Errors: %d\n", errors)
 	}
 	if warnings > 0 {
-		ui.Yellow.Printf("  Warnings: %d\n", warnings)
+		_, _ = ui.Yellow.Printf("  Warnings: %d\n", warnings)
 	}
 
 	if errors == 0 && warnings == 0 {
-		ui.Green.Println("  * All validations passed")
+		_, _ = ui.Green.Println("  * All validations passed")
 	}
 
 	fmt.Println()
 
 	if errors > 0 {
-		ui.Red.Println("Validation failed. Fix errors before deploying.")
+		_, _ = ui.Red.Println("Validation failed. Fix errors before deploying.")
 		os.Exit(1)
 	} else if warnings > 0 {
-		ui.Yellow.Println("Validation passed with warnings.")
+		_, _ = ui.Yellow.Println("Validation passed with warnings.")
 	} else {
-		ui.Green.Println("Configuration is valid!")
+		_, _ = ui.Green.Println("Configuration is valid!")
 	}
 }
 
@@ -116,9 +116,9 @@ func validateEnvironment() int {
 	}
 
 	if repoURL != "" {
-		ui.Green.Printf("  * REPO_URL: %s\n", repoURL)
+		_, _ = ui.Green.Printf("  * REPO_URL: %s\n", repoURL)
 	} else {
-		ui.Red.Println("  x REPO_URL or BOSUN_REPO_URL not set")
+		_, _ = ui.Red.Println("  x REPO_URL or BOSUN_REPO_URL not set")
 		errors++
 	}
 
@@ -130,7 +130,7 @@ func validateEnvironment() int {
 	if branch == "" {
 		branch = "main (default)"
 	}
-	ui.Green.Printf("  * Branch: %s\n", branch)
+	_, _ = ui.Green.Printf("  * Branch: %s\n", branch)
 
 	// Check webhook secret
 	webhookSecret := os.Getenv("WEBHOOK_SECRET")
@@ -138,17 +138,17 @@ func validateEnvironment() int {
 		webhookSecret = os.Getenv("GITHUB_WEBHOOK_SECRET")
 	}
 	if webhookSecret != "" {
-		ui.Green.Println("  * Webhook secret: configured")
+		_, _ = ui.Green.Println("  * Webhook secret: configured")
 	} else {
-		ui.Yellow.Println("  ! Webhook secret: not set (webhooks will be insecure)")
+		_, _ = ui.Yellow.Println("  ! Webhook secret: not set (webhooks will be insecure)")
 	}
 
 	// Check deploy target
 	target := os.Getenv("DEPLOY_TARGET")
 	if target != "" {
-		ui.Green.Printf("  * Deploy target: %s\n", target)
+		_, _ = ui.Green.Printf("  * Deploy target: %s\n", target)
 	} else {
-		ui.Green.Println("  * Deploy target: local (no remote)")
+		_, _ = ui.Green.Println("  * Deploy target: local (no remote)")
 	}
 
 	return errors
@@ -159,8 +159,8 @@ func validateDaemonConnection() int {
 
 	// Check if socket exists
 	if _, err := os.Stat(validateSocket); os.IsNotExist(err) {
-		ui.Yellow.Printf("  ! Socket not found: %s\n", validateSocket)
-		ui.Yellow.Println("    (Daemon may not be running)")
+		_, _ = ui.Yellow.Printf("  ! Socket not found: %s\n", validateSocket)
+		_, _ = ui.Yellow.Println("    (Daemon may not be running)")
 		return 1
 	}
 
@@ -171,33 +171,33 @@ func validateDaemonConnection() int {
 
 	// Try to ping daemon
 	if err := client.Ping(ctx); err != nil {
-		ui.Yellow.Printf("  ! Cannot connect to daemon: %v\n", err)
+		_, _ = ui.Yellow.Printf("  ! Cannot connect to daemon: %v\n", err)
 		return 1
 	}
 
-	ui.Green.Println("  * Daemon is reachable")
+	_, _ = ui.Green.Println("  * Daemon is reachable")
 
 	// Get health status
 	health, err := client.Health(ctx)
 	if err != nil {
-		ui.Yellow.Printf("  ! Cannot get health: %v\n", err)
+		_, _ = ui.Yellow.Printf("  ! Cannot get health: %v\n", err)
 		return 1
 	}
 
 	if health.Status == "healthy" {
-		ui.Green.Printf("  * Daemon health: %s\n", health.Status)
+		_, _ = ui.Green.Printf("  * Daemon health: %s\n", health.Status)
 	} else {
-		ui.Yellow.Printf("  ! Daemon health: %s\n", health.Status)
+		_, _ = ui.Yellow.Printf("  ! Daemon health: %s\n", health.Status)
 		if health.LastError != "" {
-			ui.Yellow.Printf("    Last error: %s\n", health.LastError)
+			_, _ = ui.Yellow.Printf("    Last error: %s\n", health.LastError)
 		}
 		warnings++
 	}
 
 	if health.Ready {
-		ui.Green.Println("  * Daemon ready: yes")
+		_, _ = ui.Green.Println("  * Daemon ready: yes")
 	} else {
-		ui.Yellow.Println("  ! Daemon ready: no (still initializing?)")
+		_, _ = ui.Yellow.Println("  ! Daemon ready: no (still initializing?)")
 		warnings++
 	}
 
@@ -216,25 +216,25 @@ func validateReconcileConfig() int {
 	}
 
 	if cfg.RepoURL == "" {
-		ui.Red.Println("  x Repository URL not configured")
+		_, _ = ui.Red.Println("  x Repository URL not configured")
 		errors++
 		return errors
 	}
 
 	// Validate URL format
 	if !isValidGitURL(cfg.RepoURL) {
-		ui.Red.Printf("  x Invalid repository URL: %s\n", cfg.RepoURL)
+		_, _ = ui.Red.Printf("  x Invalid repository URL: %s\n", cfg.RepoURL)
 		errors++
 	} else {
-		ui.Green.Printf("  * Repository URL format: valid\n")
+		_, _ = ui.Green.Printf("  * Repository URL format: valid\n")
 	}
 
 	// Check directories
 	if cfg.RepoDir != "" {
 		if _, err := os.Stat(cfg.RepoDir); err == nil {
-			ui.Green.Printf("  * Repo directory exists: %s\n", cfg.RepoDir)
+			_, _ = ui.Green.Printf("  * Repo directory exists: %s\n", cfg.RepoDir)
 		} else {
-			ui.Yellow.Printf("  ! Repo directory will be created: %s\n", cfg.RepoDir)
+			_, _ = ui.Yellow.Printf("  ! Repo directory will be created: %s\n", cfg.RepoDir)
 		}
 	}
 

@@ -60,6 +60,14 @@ type Config struct {
 	// deployPaths is an allowlist of glob patterns for deploy-relevant paths.
 	deployPaths []string
 
+	// deploySyncPaths is an allowlist of glob patterns for deploy sync targets.
+	// When non-empty, only staging directory entries matching these patterns are deployed.
+	deploySyncPaths []string
+
+	// deploySyncExclude is a blocklist of glob patterns for deploy sync targets.
+	// Matching entries are excluded from deployment. Exclude wins over include.
+	deploySyncExclude []string
+
 	// criticalContainers is a list of container names that must be healthy after compose up.
 	criticalContainers []string
 
@@ -182,6 +190,14 @@ type configFile struct {
 	// When configured, commits that only touch files outside these patterns skip the pipeline.
 	DeployPaths []string `yaml:"deploy_paths"`
 
+	// DeploySyncPaths is an allowlist of glob patterns for deploy sync targets.
+	// When non-empty, only staging directory entries matching these patterns are deployed.
+	DeploySyncPaths []string `yaml:"deploy_sync_paths"`
+
+	// DeploySyncExclude is a blocklist of glob patterns for deploy sync targets.
+	// Matching entries are excluded from deployment. Exclude wins over include.
+	DeploySyncExclude []string `yaml:"deploy_sync_exclude"`
+
 	// CriticalContainers is a list of container names that must be healthy after compose up.
 	// When configured, the health gate runs after startup grace period and before state save.
 	CriticalContainers []string `yaml:"critical_containers"`
@@ -260,6 +276,8 @@ func LoadFrom(dir string) (*Config, error) {
 	postSyncHooks := extractPostSyncHooks(fileCfg)
 	hookSettleDelay := extractHookSettleDelay(fileCfg)
 	deployPaths := extractDeployPaths(fileCfg)
+	deploySyncPaths := extractDeploySyncPaths(fileCfg)
+	deploySyncExclude := extractDeploySyncExclude(fileCfg)
 	criticalContainers := extractCriticalContainers(fileCfg)
 	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
 	domain := extractDomain(fileCfg)
@@ -271,6 +289,8 @@ func LoadFrom(dir string) (*Config, error) {
 		postSyncHooks:      postSyncHooks,
 		hookSettleDelay:    hookSettleDelay,
 		deployPaths:        deployPaths,
+		deploySyncPaths:    deploySyncPaths,
+		deploySyncExclude:  deploySyncExclude,
 		criticalContainers: criticalContainers,
 		driftAlertDebounce: driftAlertDebounce,
 		domain:             domain,
@@ -318,6 +338,8 @@ func Load() (*Config, error) {
 	postSyncHooks := extractPostSyncHooks(fileCfg)
 	hookSettleDelay := extractHookSettleDelay(fileCfg)
 	deployPaths := extractDeployPaths(fileCfg)
+	deploySyncPaths := extractDeploySyncPaths(fileCfg)
+	deploySyncExclude := extractDeploySyncExclude(fileCfg)
 	criticalContainers := extractCriticalContainers(fileCfg)
 	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
 	domain := extractDomain(fileCfg)
@@ -344,6 +366,8 @@ func Load() (*Config, error) {
 		postSyncHooks:      postSyncHooks,
 		hookSettleDelay:    hookSettleDelay,
 		deployPaths:        deployPaths,
+		deploySyncPaths:    deploySyncPaths,
+		deploySyncExclude:  deploySyncExclude,
 		criticalContainers: criticalContainers,
 		driftAlertDebounce: driftAlertDebounce,
 		domain:             domain,
@@ -544,6 +568,26 @@ func (c *Config) DeployPaths() []string {
 // extractDeployPaths extracts deploy path patterns from a parsed config.
 func extractDeployPaths(cfg configFile) []string {
 	return cfg.DeployPaths
+}
+
+// DeploySyncPaths returns the configured deploy sync path allowlist patterns.
+func (c *Config) DeploySyncPaths() []string {
+	return c.deploySyncPaths
+}
+
+// extractDeploySyncPaths extracts deploy sync path patterns from a parsed config.
+func extractDeploySyncPaths(cfg configFile) []string {
+	return cfg.DeploySyncPaths
+}
+
+// DeploySyncExclude returns the configured deploy sync exclude patterns.
+func (c *Config) DeploySyncExclude() []string {
+	return c.deploySyncExclude
+}
+
+// extractDeploySyncExclude extracts deploy sync exclude patterns from a parsed config.
+func extractDeploySyncExclude(cfg configFile) []string {
+	return cfg.DeploySyncExclude
 }
 
 // CriticalContainers returns the list of container names that must be healthy after deploy.

@@ -68,18 +68,18 @@ var crewListCmd = &cobra.Command{
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tSTATUS\tPORTS")
-			fmt.Fprintln(w, "----\t------\t-----")
+			_, _ = fmt.Fprintln(w, "NAME\tSTATUS\tPORTS")
+			_, _ = fmt.Fprintln(w, "----\t------\t-----")
 
 			for _, c := range containers {
 				ports := strings.Join(c.Ports, ", ")
 				if len(ports) > MaxPortDisplayLength {
 					ports = ports[:TruncatedPortLength] + "..."
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\n", c.Name, c.Status, ports)
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", c.Name, c.Status, ports)
 			}
 
-			w.Flush()
+			_ = w.Flush()
 			return nil
 		})
 	},
@@ -190,7 +190,7 @@ var crewRestartCmd = &cobra.Command{
 				Str(log.FieldContainer, name).
 				Int("shutdown_timeout_sec", timeoutSec).
 				Msg("Preparing to restart container")
-			ui.Blue.Printf("Sending %s for a coffee break...\n", name)
+			_, _ = ui.Blue.Printf("Sending %s for a coffee break...\n", name)
 
 			if err := client.RestartContainer(ctx, name, timeoutSec); err != nil {
 				logger.Error().

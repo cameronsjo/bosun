@@ -186,7 +186,7 @@ func TestRadioTest_MockServer(t *testing.T) {
 		resp, err := http.Get(server.URL + "/health")
 		assert.NoError(t, err)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	})
 
 	t.Run("failed health check", func(t *testing.T) {
@@ -198,7 +198,7 @@ func TestRadioTest_MockServer(t *testing.T) {
 		resp, err := http.Get(server.URL + "/health")
 		assert.NoError(t, err)
 		assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	})
 }
 

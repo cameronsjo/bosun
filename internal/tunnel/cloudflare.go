@@ -239,7 +239,7 @@ func (c *Cloudflare) checkHealthEndpoint(ctx context.Context) bool {
 			Msg("Cloudflare health endpoint unreachable")
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	logger.Debug().
 		Int(log.FieldStatus, resp.StatusCode).

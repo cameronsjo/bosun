@@ -33,7 +33,7 @@ func completeContainerNames(runningOnly bool) func(*cobra.Command, []string, str
 		if err != nil {
 			return nil, cobra.ShellCompDirectiveError
 		}
-		defer client.Close()
+		defer func() { _ = client.Close() }()
 
 		containers, err := client.ListContainers(ctx, runningOnly)
 		if err != nil {

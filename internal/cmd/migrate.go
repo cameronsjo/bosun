@@ -92,7 +92,7 @@ func init() {
 func runMigrateVersion(cmd *cobra.Command, args []string) {
 	cfg, err := config.Load()
 	if err != nil {
-		ui.Red.Printf("Error: %v\n", err)
+		_, _ = ui.Red.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -114,9 +114,9 @@ func runMigrateVersion(cmd *cobra.Command, args []string) {
 	dirs := []string{provDir, servDir, stacksDir}
 
 	if migrateWrite {
-		ui.Yellow.Println("Migrating manifests...")
+		_, _ = ui.Yellow.Println("Migrating manifests...")
 	} else {
-		ui.Blue.Println("Scanning for unversioned manifests (dry-run mode)...")
+		_, _ = ui.Blue.Println("Scanning for unversioned manifests (dry-run mode)...")
 		fmt.Println("Use --write to apply changes")
 		fmt.Println()
 	}
@@ -128,7 +128,7 @@ func runMigrateVersion(cmd *cobra.Command, args []string) {
 
 	results, err := manifest.MigrateDirectory(dirs, opts)
 	if err != nil {
-		ui.Red.Printf("Error: %v\n", err)
+		_, _ = ui.Red.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -142,14 +142,14 @@ func runMigrateVersion(cmd *cobra.Command, args []string) {
 	for _, r := range results {
 		if r.Error != nil {
 			errors++
-			ui.Red.Printf("  ERROR: %s - %v\n", r.Path, r.Error)
+			_, _ = ui.Red.Printf("  ERROR: %s - %v\n", r.Path, r.Error)
 		} else if r.Migrated {
 			migrated++
 			action := "would migrate"
 			if migrateWrite {
 				action = "migrated"
 			}
-			ui.Green.Printf("  %s: %s (kind: %s)\n", action, r.Path, r.Kind)
+			_, _ = ui.Green.Printf("  %s: %s (kind: %s)\n", action, r.Path, r.Kind)
 		} else if r.WasVersioned {
 			skipped++
 			fmt.Printf("  skipped: %s (already versioned)\n", r.Path)
@@ -160,18 +160,18 @@ func runMigrateVersion(cmd *cobra.Command, args []string) {
 
 	// Summary
 	if migrateWrite {
-		ui.Green.Printf("Migrated: %d files\n", migrated)
+		_, _ = ui.Green.Printf("Migrated: %d files\n", migrated)
 	} else {
-		ui.Blue.Printf("Would migrate: %d files\n", migrated)
+		_, _ = ui.Blue.Printf("Would migrate: %d files\n", migrated)
 	}
 	fmt.Printf("Already versioned: %d files\n", skipped)
 	if errors > 0 {
-		ui.Red.Printf("Errors: %d files\n", errors)
+		_, _ = ui.Red.Printf("Errors: %d files\n", errors)
 	}
 
 	if !migrateWrite && migrated > 0 {
 		fmt.Println()
-		ui.Yellow.Println("Run 'bosun migrate version --write' to apply changes.")
+		_, _ = ui.Yellow.Println("Run 'bosun migrate version --write' to apply changes.")
 	}
 }
 
@@ -194,10 +194,10 @@ func runMigrateHelm(cmd *cobra.Command, args []string) error {
 	isDryRun := !migrateForce && format != "helm"
 
 	if isDryRun {
-		ui.Blue.Println("Migrating from legacy to Helm-aligned format (dry-run)...")
+		_, _ = ui.Blue.Println("Migrating from legacy to Helm-aligned format (dry-run)...")
 		fmt.Println("Use --force to apply changes")
 	} else {
-		ui.Blue.Println("Migrating from legacy to Helm-aligned format...")
+		_, _ = ui.Blue.Println("Migrating from legacy to Helm-aligned format...")
 	}
 	fmt.Println()
 
@@ -232,9 +232,9 @@ func runMigrateHelm(cmd *cobra.Command, args []string) error {
 
 	fmt.Println()
 	if isDryRun {
-		ui.Yellow.Println("Dry run complete. Use 'bosun migrate helm --force' to apply changes.")
+		_, _ = ui.Yellow.Println("Dry run complete. Use 'bosun migrate helm --force' to apply changes.")
 	} else {
-		ui.Green.Println("Migration complete!")
+		_, _ = ui.Green.Println("Migration complete!")
 		fmt.Println()
 		fmt.Println("Next steps:")
 		fmt.Println("  1. Review the generated charts in charts/")
@@ -256,7 +256,7 @@ func migrateProvisions(provisionsDir, templatesDir string, isDryRun bool) error 
 		return err
 	}
 
-	ui.Blue.Println("Migrating provisions -> templates:")
+	_, _ = ui.Blue.Println("Migrating provisions -> templates:")
 
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -311,7 +311,7 @@ func migrateServices(servicesDir, chartsDir string, isDryRun bool) error {
 		return err
 	}
 
-	ui.Blue.Println("Migrating services -> charts:")
+	_, _ = ui.Blue.Println("Migrating services -> charts:")
 
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -328,7 +328,7 @@ func migrateServices(servicesDir, chartsDir string, isDryRun bool) error {
 		// Load legacy service manifest
 		svcManifest, err := manifest.LoadServiceManifest(srcPath)
 		if err != nil {
-			ui.Yellow.Printf("  [WARN] Failed to parse %s: %v\n", name, err)
+			_, _ = ui.Yellow.Printf("  [WARN] Failed to parse %s: %v\n", name, err)
 			continue
 		}
 
@@ -389,7 +389,7 @@ func migrateStacks(legacyStacksDir, helmStacksDir string, isDryRun bool) error {
 		return err
 	}
 
-	ui.Blue.Println("Migrating stacks:")
+	_, _ = ui.Blue.Println("Migrating stacks:")
 
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -412,7 +412,7 @@ func migrateStacks(legacyStacksDir, helmStacksDir string, isDryRun bool) error {
 
 		var legacyStack manifest.Stack
 		if err := yaml.Unmarshal(content, &legacyStack); err != nil {
-			ui.Yellow.Printf("  [WARN] Failed to parse %s: %v\n", name, err)
+			_, _ = ui.Yellow.Printf("  [WARN] Failed to parse %s: %v\n", name, err)
 			continue
 		}
 

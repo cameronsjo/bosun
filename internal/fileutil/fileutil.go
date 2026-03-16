@@ -32,7 +32,7 @@ func CopyFile(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("open source: %w", err)
 	}
-	defer srcFile.Close()
+	defer func() { _ = srcFile.Close() }()
 
 	// Get source file info for permissions.
 	srcInfo, err := srcFile.Stat()
@@ -57,8 +57,8 @@ func CopyFile(src, dst string) error {
 	success := false
 	defer func() {
 		if !success {
-			tmpFile.Close()
-			os.Remove(tmpPath)
+			_ = tmpFile.Close()
+			_ = os.Remove(tmpPath)
 		}
 	}()
 
@@ -98,7 +98,7 @@ func FileHash(path string) ([sha256.Size]byte, error) {
 	if err != nil {
 		return [sha256.Size]byte{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
