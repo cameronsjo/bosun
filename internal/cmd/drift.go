@@ -113,7 +113,9 @@ func runLiveDriftCheck(state *reconcile.DeployState) {
 	// Apply drift ignore rules from project config.
 	ignoreRules := loadDriftIgnoreRules()
 	if len(ignoreRules) > 0 {
+		preFilterCount := len(report.Items)
 		report.Items = reconcile.FilterIgnoredDriftItems(report.Items, ignoreRules)
+		report.IgnoredCount = preFilterCount - len(report.Items)
 	}
 
 	// Update state file with live results.

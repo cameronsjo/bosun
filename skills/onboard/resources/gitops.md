@@ -375,6 +375,7 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `BOSUN_DEPLOY_SYNC_PATHS` | | JSON array of glob patterns for deploy sync target allowlist (overrides config file) |
 | `BOSUN_DEPLOY_SYNC_EXCLUDE` | | JSON array of glob patterns for deploy sync target blocklist (overrides config file; exclude wins over include) |
 | `BOSUN_CRITICAL_CONTAINERS` | | JSON array of container names that must be healthy after deploy (overrides config file) |
+| `BOSUN_DRIFT_IGNORE` | | JSON array of `{"service","type"}` rules to suppress known drift noise (overrides config file) |
 | `BOSUN_HEALTH_GATE_TIMEOUT` | `60s` | Health gate polling timeout (accepts Go duration strings or bare seconds) |
 
 ## Systemd Deployment

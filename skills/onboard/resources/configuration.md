@@ -95,7 +95,7 @@ drift_alert_debounce: "5m"
 
 # Drift ignore rules: suppress known drift noise from reports and alerts.
 # Each rule matches a service name (glob) and drift type.
-# type can be: missing, image_mismatch, unhealthy, or * for all types.
+# type can be: missing, stopped, image_mismatch, unhealthy, extra, or * for all types.
 drift_ignore:
   - service: "traefik"
     type: "unhealthy"
@@ -140,7 +140,7 @@ post_sync_hooks:
 | `deploy_sync_paths` | `[]` (sync all) | Glob allowlist — only sync staging entries matching these patterns |
 | `deploy_sync_exclude` | `[]` (exclude none) | Glob blocklist — exclude matching staging entries from sync (wins over include) |
 | `critical_containers` | `[]` (disabled) | Container names that must be healthy after deploy — triggers rollback on failure |
-| `drift_ignore` | `[]` (disabled) | Suppress known drift noise by service glob + type |
+| `drift_ignore` | `[]` (disabled) | Suppress known drift noise by service glob + type (`missing`, `stopped`, `image_mismatch`, `unhealthy`, `extra`, or `*`) |
 | `drift_alert_debounce` | `0` (disabled) | Debounce window before first drift alert fires (e.g., `"5m"`) |
 
 ## Directory Structure
