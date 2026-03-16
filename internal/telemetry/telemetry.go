@@ -5,6 +5,7 @@ package telemetry
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"go.opentelemetry.io/otel"
@@ -40,12 +41,23 @@ func Init(ctx context.Context, serviceName, serviceVersion, endpoint string) (fu
 		return state.shutdown, nil
 	}
 
-	// Use WithEndpoint (not WithEndpointURL) so the SDK auto-appends /v1/traces.
-	// This lets BOSUN_OTEL_ENDPOINT be a simple base URL like "localhost:4318"
-	// or "http://localhost:4318" without requiring the full path.
-	opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(endpoint)}
-	// Default to insecure (HTTP) unless endpoint explicitly uses HTTPS.
-	if len(endpoint) < 5 || endpoint[:5] != "https" {
+	// WithEndpoint expects host:port only (no scheme, no path).
+	// Parse the endpoint to extract host:port and determine TLS.
+	insecure := true
+	hostPort := endpoint
+	if strings.HasPrefix(endpoint, "https://") {
+		hostPort = strings.TrimPrefix(endpoint, "https://")
+		insecure = false
+	} else if strings.HasPrefix(endpoint, "http://") {
+		hostPort = strings.TrimPrefix(endpoint, "http://")
+	}
+	// Strip any trailing path (e.g., /v1/traces) — the SDK appends it.
+	if idx := strings.Index(hostPort, "/"); idx != -1 {
+		hostPort = hostPort[:idx]
+	}
+
+	opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(hostPort)}
+	if insecure {
 		opts = append(opts, otlptracehttp.WithInsecure())
 	}
 	exporter, err := otlptracehttp.New(ctx, opts...)
