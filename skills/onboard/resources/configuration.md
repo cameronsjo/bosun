@@ -140,7 +140,7 @@ post_sync_hooks:
 | `deploy_sync_paths` | `[]` (sync all) | Glob allowlist — only sync staging entries matching these patterns |
 | `deploy_sync_exclude` | `[]` (exclude none) | Glob blocklist — exclude matching staging entries from sync (wins over include) |
 | `critical_containers` | `[]` (disabled) | Container names that must be healthy after deploy — triggers rollback on failure |
-| `drift_ignore` | `[]` (disabled) | Suppress known drift noise by service glob + type (`missing`, `stopped`, `image_mismatch`, `unhealthy`, `extra`, or `*`) |
+| `drift_ignore` | `[]` (disabled) | Suppress known drift noise by service glob + type (`missing`, `stopped`, `image_mismatch`, `unhealthy`, `extra`, or `*`). Overridden by `BOSUN_DRIFT_IGNORE` env var (JSON array) |
 | `drift_alert_debounce` | `0` (disabled) | Debounce window before first drift alert fires (e.g., `"5m"`) |
 
 ## Directory Structure
