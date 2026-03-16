@@ -91,7 +91,11 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	if err != nil {
 		ui.Warning("Failed to initialize OpenTelemetry: %v", err)
 	} else {
-		defer func() { _ = otelShutdown(ctx) }()
+		defer func() {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer shutdownCancel()
+			_ = otelShutdown(shutdownCtx)
+		}()
 	}
 
 	// Create and run daemon.

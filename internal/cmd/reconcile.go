@@ -208,7 +208,11 @@ func runReconcile(cmd *cobra.Command, args []string) {
 	if otelErr != nil {
 		ui.Warning("Failed to initialize OpenTelemetry: %v", otelErr)
 	} else {
-		defer func() { _ = otelShutdown(initCtx) }()
+		defer func() {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer shutdownCancel()
+			_ = otelShutdown(shutdownCtx)
+		}()
 	}
 
 	// Create context with cancellation on SIGINT/SIGTERM.

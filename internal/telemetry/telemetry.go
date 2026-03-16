@@ -40,9 +40,15 @@ func Init(ctx context.Context, serviceName, serviceVersion, endpoint string) (fu
 		return state.shutdown, nil
 	}
 
-	exporter, err := otlptracehttp.New(ctx,
-		otlptracehttp.WithEndpointURL(endpoint),
-	)
+	// Use WithEndpoint (not WithEndpointURL) so the SDK auto-appends /v1/traces.
+	// This lets BOSUN_OTEL_ENDPOINT be a simple base URL like "localhost:4318"
+	// or "http://localhost:4318" without requiring the full path.
+	opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(endpoint)}
+	// Default to insecure (HTTP) unless endpoint explicitly uses HTTPS.
+	if len(endpoint) < 5 || endpoint[:5] != "https" {
+		opts = append(opts, otlptracehttp.WithInsecure())
+	}
+	exporter, err := otlptracehttp.New(ctx, opts...)
 	if err != nil {
 		return nil, err
 	}

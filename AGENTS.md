@@ -179,6 +179,10 @@ Snapshot management for manifest output files. Used for rollback via `bosun mayd
 
 Abstraction layer for tunnel providers (Tailscale Funnel, Cloudflare Tunnel). Used by `bosun radio`.
 
+### internal/telemetry
+
+OpenTelemetry tracing. `Init()` configures an OTLP HTTP exporter when `BOSUN_OTEL_ENDPOINT` is set; otherwise installs a noop provider (zero overhead). `Tracer(name)` returns a named tracer safe to call before Init. Helper functions: `SpanError()`, `SpanOK()`, `StringAttr()`, `BoolAttr()`, `IntAttr()`.
+
 ### internal/update
 
 Self-update via GitHub releases. Used by `bosun update`.
