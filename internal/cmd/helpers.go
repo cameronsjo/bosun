@@ -31,7 +31,7 @@ func withDockerClientContext(ctx context.Context, fn func(*docker.Client) error)
 	if err != nil {
 		return fmt.Errorf("connect to docker: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	return fn(client)
 }

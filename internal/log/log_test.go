@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -41,9 +40,8 @@ func TestParseLevel(t *testing.T) {
 
 func TestDetectFormat(t *testing.T) {
 	// Test daemon mode detection.
-	os.Setenv("BOSUN_DAEMON_MODE", "true")
+	t.Setenv("BOSUN_DAEMON_MODE", "true")
 	assert.Equal(t, FormatJSON, detectFormat())
-	os.Unsetenv("BOSUN_DAEMON_MODE")
 
 	// Non-terminal defaults to JSON (can't easily test terminal detection).
 	// In a pipe or test context, stdout is not a terminal.
@@ -61,15 +59,11 @@ func TestInit(t *testing.T) {
 	assert.Equal(t, DebugLevel, GetLevel())
 
 	// Test with env vars.
-	os.Setenv("BOSUN_LOG_FORMAT", "console")
-	os.Setenv("BOSUN_LOG_LEVEL", "warn")
+	t.Setenv("BOSUN_LOG_FORMAT", "console")
+	t.Setenv("BOSUN_LOG_LEVEL", "warn")
 	Init(nil)
 	assert.Equal(t, FormatConsole, GetFormat())
 	assert.Equal(t, WarnLevel, GetLevel())
-
-	// Cleanup.
-	os.Unsetenv("BOSUN_LOG_FORMAT")
-	os.Unsetenv("BOSUN_LOG_LEVEL")
 
 	// Reset to defaults.
 	Init(&Options{

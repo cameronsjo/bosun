@@ -253,9 +253,9 @@ func TestExtractTarGz(t *testing.T) {
 			require.NoError(t, err)
 		}
 
-		tw.Close()
-		gw.Close()
-		f.Close()
+		_ = tw.Close()
+		_ = gw.Close()
+		_ = f.Close()
 
 		return tarPath
 	}
@@ -316,9 +316,9 @@ func TestExtractTarGz(t *testing.T) {
 		_, err = tw.Write([]byte(content))
 		require.NoError(t, err)
 
-		tw.Close()
-		gw.Close()
-		f.Close()
+		_ = tw.Close()
+		_ = gw.Close()
+		_ = f.Close()
 
 		destDir := t.TempDir()
 		err = extractTarGz(tarPath, destDir)
@@ -346,9 +346,9 @@ func TestExtractTarGz(t *testing.T) {
 		_, err = tw.Write([]byte(content))
 		require.NoError(t, err)
 
-		tw.Close()
-		gw.Close()
-		f.Close()
+		_ = tw.Close()
+		_ = gw.Close()
+		_ = f.Close()
 
 		destDir := t.TempDir()
 		err = extractTarGz(tarPath, destDir)

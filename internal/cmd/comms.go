@@ -62,7 +62,7 @@ func runRadioTest(cmd *cobra.Command, args []string) {
 		fmt.Printf("  Error: %v\n", err)
 		os.Exit(1)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusOK {
 		ui.Success("Radio is loud and clear!")
@@ -141,7 +141,7 @@ func displayTunnelStatus(status *tunnel.Status) {
 
 	// Device info
 	fmt.Println()
-	ui.Blue.Println("--- This Device ---")
+	_, _ = ui.Blue.Println("--- This Device ---")
 	if status.Hostname != "" {
 		fmt.Printf("  Hostname: %s\n", status.Hostname)
 	}
@@ -216,12 +216,12 @@ func displayPeerInfo(peers []tunnel.Peer) {
 	}
 
 	fmt.Println()
-	ui.Blue.Println("--- Network ---")
+	_, _ = ui.Blue.Println("--- Network ---")
 	fmt.Printf("  Peers: %d online / %d total\n", onlinePeers, len(peers))
 
 	if onlinePeers > 0 {
 		fmt.Println()
-		ui.Blue.Println("--- Online Peers ---")
+		_, _ = ui.Blue.Println("--- Online Peers ---")
 
 		// Sort peers by name for deterministic output
 		sortedPeers := make([]tunnel.Peer, len(peers))
@@ -250,7 +250,7 @@ func displayPeerInfo(peers []tunnel.Peer) {
 				indicator = "E"
 			}
 
-			ui.Green.Printf("  %s %s", indicator, name)
+			_, _ = ui.Green.Printf("  %s %s", indicator, name)
 			if peer.IP != "" {
 				fmt.Printf(" (%s)", peer.IP)
 			}

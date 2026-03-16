@@ -170,7 +170,7 @@ func (m *MockDockerAPI) ContainerExecAttach(ctx context.Context, execID string, 
 // mockHijackedResponse creates a HijackedResponse with a valid net.Conn.
 func mockHijackedResponse() types.HijackedResponse {
 	server, client := net.Pipe()
-	server.Close()
+	_ = server.Close()
 	return types.HijackedResponse{
 		Conn:   client,
 		Reader: bufio.NewReader(bytes.NewReader([]byte{})),

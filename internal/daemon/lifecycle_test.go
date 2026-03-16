@@ -26,7 +26,7 @@ func shortSocketDir(t *testing.T) string {
 	dir, err := os.MkdirTemp("", "bs")
 	require.NoError(t, err)
 	dir = evalSymlinks(t, dir)
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return dir
 }
 
@@ -92,7 +92,7 @@ func TestSocketLifecycle_StartAcceptShutdown(t *testing.T) {
 	// Send HTTP GET /health over Unix socket.
 	resp, err := httpGetOverSocket(socketPath, "/health")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var health HealthStatus
@@ -136,7 +136,7 @@ func TestSocketLifecycle_StaleSocketCleanup(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return resp.StatusCode == http.StatusOK
 	}, 2*time.Second, 10*time.Millisecond, "server should start despite stale socket")
 
@@ -197,7 +197,7 @@ func TestTCPLifecycle_StartAcceptShutdown(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		conn.Close()
+		_ = conn.Close()
 		return true
 	}, 2*time.Second, 10*time.Millisecond, "TCP server should be listening")
 
@@ -205,7 +205,7 @@ func TestTCPLifecycle_StartAcceptShutdown(t *testing.T) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(fmt.Sprintf("http://%s/health", actualAddr))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	// Graceful shutdown.
@@ -257,7 +257,7 @@ func TestTCPLifecycle_AuthRequired(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		conn.Close()
+		_ = conn.Close()
 		return true
 	}, 2*time.Second, 10*time.Millisecond)
 
@@ -266,7 +266,7 @@ func TestTCPLifecycle_AuthRequired(t *testing.T) {
 	t.Run("no token returns 401", func(t *testing.T) {
 		resp, err := client.Get(fmt.Sprintf("http://%s/status", actualAddr))
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	})
 
@@ -275,7 +275,7 @@ func TestTCPLifecycle_AuthRequired(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer wrong-token")
 		resp, err := client.Do(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	})
 
@@ -284,7 +284,7 @@ func TestTCPLifecycle_AuthRequired(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer "+token)
 		resp, err := client.Do(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
 }

@@ -288,7 +288,7 @@ func extractAgePublicKey(keyFile string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("open key file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -484,7 +484,7 @@ func generateBosunYaml(domain string) string {
 
 	if domain != "" {
 		b.WriteString("# Base domain for Traefik routing\n")
-		b.WriteString(fmt.Sprintf("domain: %s\n\n", domain))
+		_, _ = fmt.Fprintf(&b, "domain: %s\n\n", domain)
 	} else {
 		b.WriteString("# Base domain for Traefik routing (uncomment and set your domain)\n")
 		b.WriteString("# domain: example.com\n\n")

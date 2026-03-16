@@ -101,7 +101,7 @@ func displayAlertStatusFromEnv() {
 }
 
 func displayAlertStatus(alertCfg config.AlertConfig) {
-	ui.Blue.Println("--- Alert Providers ---")
+	_, _ = ui.Blue.Println("--- Alert Providers ---")
 	fmt.Println()
 
 	hasProvider := false
@@ -171,7 +171,7 @@ func displayAlertStatus(alertCfg config.AlertConfig) {
 	fmt.Println()
 
 	// Settings
-	ui.Blue.Println("--- Settings ---")
+	_, _ = ui.Blue.Println("--- Settings ---")
 	fmt.Println()
 	if alertCfg.OnSuccess {
 		fmt.Println("  Alert on success: yes")
@@ -313,7 +313,7 @@ func runAlertTest(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	ui.Blue.Println("--- Summary ---")
+	_, _ = ui.Blue.Println("--- Summary ---")
 	fmt.Printf("  Tested: %d, Passed: %d, Failed: %d\n", tested, succeeded, failed)
 
 	if failed > 0 {

@@ -40,7 +40,7 @@ func runUpdate(cmd *cobra.Command, args []string) {
 	currentVersion := version
 	platform := update.GetPlatformInfo()
 
-	ui.Blue.Printf("Current version: %s (%s)\n", currentVersion, platform)
+	_, _ = ui.Blue.Printf("Current version: %s (%s)\n", currentVersion, platform)
 
 	if checkOnly {
 		checkForUpdate(currentVersion)
@@ -51,7 +51,7 @@ func runUpdate(cmd *cobra.Command, args []string) {
 }
 
 func checkForUpdate(currentVersion string) {
-	ui.Blue.Println("Checking for updates...")
+	_, _ = ui.Blue.Println("Checking for updates...")
 
 	release, available, err := update.CheckForUpdate(currentVersion)
 	if err != nil {
@@ -66,11 +66,11 @@ func checkForUpdate(currentVersion string) {
 
 	ui.Success("New version available: %s (released %s)", release.Version, release.PublishedAt)
 	fmt.Println()
-	ui.Blue.Println("To update, run: bosun update")
+	_, _ = ui.Blue.Println("To update, run: bosun update")
 	fmt.Println()
 
 	if release.Changelog != "" {
-		ui.Yellow.Println("What's new:")
+		_, _ = ui.Yellow.Println("What's new:")
 		// Print first few lines of changelog
 		lines := strings.Split(release.Changelog, "\n")
 		maxLines := 10
@@ -87,7 +87,7 @@ func checkForUpdate(currentVersion string) {
 }
 
 func performUpdate(currentVersion string) {
-	ui.Blue.Println("Checking for updates...")
+	_, _ = ui.Blue.Println("Checking for updates...")
 
 	release, err := update.Update(currentVersion)
 	if err != nil {
@@ -105,7 +105,7 @@ func performUpdate(currentVersion string) {
 	fmt.Println()
 
 	if release.Changelog != "" {
-		ui.Yellow.Println("What's new:")
+		_, _ = ui.Yellow.Println("What's new:")
 		lines := strings.Split(release.Changelog, "\n")
 		maxLines := 10
 		if len(lines) < maxLines {
@@ -120,5 +120,5 @@ func performUpdate(currentVersion string) {
 	}
 
 	fmt.Println()
-	ui.Blue.Println("Restart bosun to use the new version.")
+	_, _ = ui.Blue.Println("Restart bosun to use the new version.")
 }

@@ -128,7 +128,7 @@ func (s *SlackProvider) Send(ctx context.Context, alert *Alert) error {
 			Msg("Slack webhook request failed")
 		return fmt.Errorf("send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Slack returns 200 OK on success.
 	if resp.StatusCode != http.StatusOK {

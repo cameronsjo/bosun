@@ -221,7 +221,7 @@ func runProvision(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("write outputs: %w", err)
 	}
 
-	ui.Green.Printf("Successfully provisioned %s\n", outputName)
+	_, _ = ui.Green.Printf("Successfully provisioned %s\n", outputName)
 	return nil
 }
 
@@ -235,7 +235,7 @@ func provisionHelm(cfg *config.Config, name string, valuesOverlay map[string]any
 	// Check for stack first
 	stackPath := filepath.Join(cfg.HelmStacksDir(), name, "Stack.yaml")
 	if _, err := os.Stat(stackPath); err == nil {
-		ui.Blue.Printf("Rendering stack: %s (Helm-aligned)\n", name)
+		_, _ = ui.Blue.Printf("Rendering stack: %s (Helm-aligned)\n", name)
 		output, err := loader.RenderStack(stackPath, valuesOverlay)
 		if err != nil {
 			return nil, "", fmt.Errorf("render stack: %w", err)
@@ -246,7 +246,7 @@ func provisionHelm(cfg *config.Config, name string, valuesOverlay map[string]any
 	// Check for stack file without directory
 	stackFilePath := filepath.Join(cfg.HelmStacksDir(), name+".yaml")
 	if _, err := os.Stat(stackFilePath); err == nil {
-		ui.Blue.Printf("Rendering stack: %s (Helm-aligned)\n", name)
+		_, _ = ui.Blue.Printf("Rendering stack: %s (Helm-aligned)\n", name)
 		output, err := loader.RenderStack(stackFilePath, valuesOverlay)
 		if err != nil {
 			return nil, "", fmt.Errorf("render stack: %w", err)
@@ -256,7 +256,7 @@ func provisionHelm(cfg *config.Config, name string, valuesOverlay map[string]any
 
 	// Try as chart
 	if loader.ChartExists(name) {
-		ui.Blue.Printf("Rendering chart: %s (Helm-aligned)\n", name)
+		_, _ = ui.Blue.Printf("Rendering chart: %s (Helm-aligned)\n", name)
 		output, err := loader.RenderChart(name, valuesOverlay)
 		if err != nil {
 			return nil, "", fmt.Errorf("render chart: %w", err)
@@ -275,7 +275,7 @@ func provisionLegacy(cfg *config.Config, name string, valuesOverlay map[string]a
 
 	if _, err := os.Stat(stackPath); err == nil {
 		// Render stack
-		ui.Blue.Printf("Rendering stack: %s (legacy)\n", name)
+		_, _ = ui.Blue.Printf("Rendering stack: %s (legacy)\n", name)
 		output, err := manifest.RenderStack(stackPath, cfg.ProvisionsDir(), cfg.ServicesDir(), valuesOverlay)
 		if err != nil {
 			return nil, "", fmt.Errorf("render stack: %w", err)
@@ -285,7 +285,7 @@ func provisionLegacy(cfg *config.Config, name string, valuesOverlay map[string]a
 
 	if _, err := os.Stat(servicePath); err == nil {
 		// Render single service
-		ui.Blue.Printf("Rendering service: %s (legacy)\n", name)
+		_, _ = ui.Blue.Printf("Rendering service: %s (legacy)\n", name)
 		svcManifest, err := manifest.LoadServiceManifest(servicePath)
 		if err != nil {
 			return nil, "", fmt.Errorf("load service: %w", err)
@@ -325,7 +325,7 @@ func runListProvisions(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	ui.Blue.Println("Available provisions:")
+	_, _ = ui.Blue.Println("Available provisions:")
 	for _, p := range provisions {
 		fmt.Printf("  - %s\n", p)
 	}
@@ -370,7 +370,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("write service file: %w", err)
 	}
 
-	ui.Green.Printf("Created service: %s\n", servicePath)
+	_, _ = ui.Green.Printf("Created service: %s\n", servicePath)
 	fmt.Printf("Edit the file and run 'bosun provision %s' to generate outputs\n", name)
 
 	return nil
@@ -539,7 +539,7 @@ func runListCharts(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	ui.Blue.Println("Available charts:")
+	_, _ = ui.Blue.Println("Available charts:")
 	for _, c := range charts {
 		chart, err := loader.GetChartInfo(c)
 		if err != nil {
@@ -583,7 +583,7 @@ func runShowChart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load chart: %w", err)
 	}
 
-	ui.Blue.Printf("Chart: %s\n", chart.Name)
+	_, _ = ui.Blue.Printf("Chart: %s\n", chart.Name)
 	if chart.Version != "" {
 		fmt.Printf("Version: %s\n", chart.Version)
 	}
@@ -641,7 +641,7 @@ func runListTemplates(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	ui.Blue.Println("Available templates:")
+	_, _ = ui.Blue.Println("Available templates:")
 	for _, t := range templates {
 		fmt.Printf("  - %s\n", t)
 	}

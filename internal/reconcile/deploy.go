@@ -396,7 +396,7 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 	// Close the file before verification
 	if closeErr := outFile.Close(); closeErr != nil {
 		// Clean up on close failure
-		os.RemoveAll(backupPath)
+		_ = os.RemoveAll(backupPath)
 		return "", fmt.Errorf("failed to close backup file: %w", closeErr)
 	}
 
@@ -408,7 +408,7 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 	// Verify the backup was created successfully
 	if err := d.VerifyBackup(backupPath); err != nil {
 		// Clean up invalid backup on verification failure
-		os.RemoveAll(backupPath)
+		_ = os.RemoveAll(backupPath)
 		logger.Error().Err(err).Str(log.FieldPath, backupPath).Msg("Remote backup verification failed")
 		return "", fmt.Errorf("backup verification failed: %w", err)
 	}
@@ -543,7 +543,7 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 	success := false
 	defer func() {
 		if !success {
-			os.RemoveAll(tmpDir)
+			_ = os.RemoveAll(tmpDir)
 		}
 	}()
 
@@ -622,10 +622,10 @@ func removeStaleFiles(sourceDir, targetDir string) error {
 		srcPath := filepath.Join(sourceDir, relPath)
 		if _, err := os.Stat(srcPath); os.IsNotExist(err) {
 			if d.IsDir() {
-				os.RemoveAll(path)
+				_ = os.RemoveAll(path)
 				return filepath.SkipDir
 			}
-			os.Remove(path)
+			_ = os.Remove(path)
 		}
 		return nil
 	})

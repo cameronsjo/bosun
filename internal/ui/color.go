@@ -36,7 +36,7 @@ func isConsoleMode() bool {
 func Success(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if isConsoleMode() {
-		Green.Printf("✓ %s\n", msg)
+		_, _ = Green.Printf("✓ %s\n", msg)
 	} else {
 		log.Info().Bool("success", true).Msg(msg)
 	}
@@ -47,7 +47,7 @@ func Success(format string, args ...any) {
 func Error(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if isConsoleMode() {
-		Red.Printf("✗ %s\n", msg)
+		_, _ = Red.Printf("✗ %s\n", msg)
 	} else {
 		log.Error().Msg(msg)
 	}
@@ -58,7 +58,7 @@ func Error(format string, args ...any) {
 func Warning(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if isConsoleMode() {
-		Yellow.Printf("⚠ %s\n", msg)
+		_, _ = Yellow.Printf("⚠ %s\n", msg)
 	} else {
 		log.Warn().Msg(msg)
 	}
@@ -69,7 +69,7 @@ func Warning(format string, args ...any) {
 func Info(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if isConsoleMode() {
-		Blue.Printf("%s\n", msg)
+		_, _ = Blue.Printf("%s\n", msg)
 	} else {
 		log.Info().Msg(msg)
 	}
@@ -80,7 +80,7 @@ func Info(format string, args ...any) {
 func Debug(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if isConsoleMode() {
-		Gray.Println(msg)
+		_, _ = Gray.Println(msg)
 	} else {
 		log.Debug().Msg(msg)
 	}
@@ -90,7 +90,7 @@ func Debug(format string, args ...any) {
 func Step(n int, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if isConsoleMode() {
-		Cyan.Printf("[%d] ", n)
+		_, _ = Cyan.Printf("[%d] ", n)
 		fmt.Printf("%s\n", msg)
 	} else {
 		log.Info().Int("step", n).Msg(msg)
@@ -101,7 +101,7 @@ func Step(n int, format string, args ...any) {
 func Header(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if isConsoleMode() {
-		Bold.Printf("%s\n", msg)
+		_, _ = Bold.Printf("%s\n", msg)
 	} else {
 		log.Info().Str("type", "header").Msg(msg)
 	}
@@ -113,7 +113,7 @@ func Header(format string, args ...any) {
 func Anchor(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if isConsoleMode() {
-		Blue.Printf("⚓ %s\n", msg)
+		_, _ = Blue.Printf("⚓ %s\n", msg)
 	} else {
 		log.Info().Str("icon", "anchor").Msg(msg)
 	}
@@ -123,7 +123,7 @@ func Anchor(format string, args ...any) {
 func Ship(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if isConsoleMode() {
-		Green.Printf("🚢 %s\n", msg)
+		_, _ = Green.Printf("🚢 %s\n", msg)
 	} else {
 		log.Info().Str("icon", "ship").Msg(msg)
 	}
@@ -133,7 +133,7 @@ func Ship(format string, args ...any) {
 func Compass(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if isConsoleMode() {
-		Cyan.Printf("🧭 %s\n", msg)
+		_, _ = Cyan.Printf("🧭 %s\n", msg)
 	} else {
 		log.Info().Str("icon", "compass").Msg(msg)
 	}
@@ -143,7 +143,7 @@ func Compass(format string, args ...any) {
 func Mayday(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if isConsoleMode() {
-		Red.Printf("🆘 %s\n", msg)
+		_, _ = Red.Printf("🆘 %s\n", msg)
 	} else {
 		log.Error().Str("icon", "mayday").Msg(msg)
 	}
@@ -153,7 +153,7 @@ func Mayday(format string, args ...any) {
 func Snapshot(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if isConsoleMode() {
-		Blue.Printf("📸 %s\n", msg)
+		_, _ = Blue.Printf("📸 %s\n", msg)
 	} else {
 		log.Info().Str("icon", "snapshot").Msg(msg)
 	}
@@ -163,7 +163,7 @@ func Snapshot(format string, args ...any) {
 func Package(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if isConsoleMode() {
-		Green.Printf("📦 %s\n", msg)
+		_, _ = Green.Printf("📦 %s\n", msg)
 	} else {
 		log.Info().Str("icon", "package").Msg(msg)
 	}
@@ -173,7 +173,7 @@ func Package(format string, args ...any) {
 func Fatal(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if isConsoleMode() {
-		Red.Fprintf(os.Stderr, "✗ %s\n", msg)
+		_, _ = Red.Fprintf(os.Stderr, "✗ %s\n", msg)
 	} else {
 		log.Error().Msg(msg)
 	}
@@ -184,7 +184,7 @@ func Fatal(format string, args ...any) {
 func Fatalf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if isConsoleMode() {
-		Red.Fprintf(os.Stderr, "%s\n", msg)
+		_, _ = Red.Fprintf(os.Stderr, "%s\n", msg)
 	} else {
 		log.Error().Msg(msg)
 	}

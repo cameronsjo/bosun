@@ -273,17 +273,17 @@ func FormatMigrationSummary(results []*MigrationResult, dryRun bool) string {
 		action = "Would migrate"
 	}
 
-	sb.WriteString(fmt.Sprintf("\n%s: %d files\n", action, migrated))
-	sb.WriteString(fmt.Sprintf("Already versioned: %d files\n", skipped))
+	_, _ = fmt.Fprintf(&sb, "\n%s: %d files\n", action, migrated)
+	_, _ = fmt.Fprintf(&sb, "Already versioned: %d files\n", skipped)
 	if errors > 0 {
-		sb.WriteString(fmt.Sprintf("Errors: %d files\n", errors))
+		_, _ = fmt.Fprintf(&sb, "Errors: %d files\n", errors)
 	}
 
 	if migrated > 0 {
 		sb.WriteString("\nFiles requiring migration:\n")
 		for _, r := range results {
 			if r.Migrated {
-				sb.WriteString(fmt.Sprintf("  - %s (detected: %s)\n", r.Path, r.Kind))
+				_, _ = fmt.Fprintf(&sb, "  - %s (detected: %s)\n", r.Path, r.Kind)
 			}
 		}
 	}
@@ -292,7 +292,7 @@ func FormatMigrationSummary(results []*MigrationResult, dryRun bool) string {
 		sb.WriteString("\nFiles with errors:\n")
 		for _, r := range results {
 			if r.Error != nil {
-				sb.WriteString(fmt.Sprintf("  - %s: %v\n", r.Path, r.Error))
+				_, _ = fmt.Fprintf(&sb, "  - %s: %v\n", r.Path, r.Error)
 			}
 		}
 	}

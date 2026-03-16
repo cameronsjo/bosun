@@ -86,7 +86,7 @@ func (s *SocketServer) Start() error {
 
 	// Set socket permissions
 	if err := os.Chmod(s.socketPath, 0660); err != nil {
-		listener.Close()
+		_ = listener.Close()
 		return fmt.Errorf("failed to set socket permissions: %w", err)
 	}
 
@@ -107,7 +107,7 @@ func (s *SocketServer) Shutdown(ctx context.Context) error {
 		}
 	}
 	// Clean up socket file
-	os.Remove(s.socketPath)
+	_ = os.Remove(s.socketPath)
 	return nil
 }
 

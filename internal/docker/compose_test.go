@@ -21,7 +21,7 @@ func TestHelperProcess(t *testing.T) {
 	}
 	// Print the configured stdout if any
 	if stdout := os.Getenv("HELPER_STDOUT"); stdout != "" {
-		fmt.Fprint(os.Stdout, stdout)
+		_, _ = fmt.Fprint(os.Stdout, stdout)
 	}
 	// Print stderr if configured
 	if stderr := os.Getenv("HELPER_STDERR"); stderr != "" {

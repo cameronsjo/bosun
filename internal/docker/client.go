@@ -62,7 +62,7 @@ func NewClient() (*Client, error) {
 	defer cancel()
 
 	if _, err := cli.Ping(ctx); err != nil {
-		cli.Close()
+		_ = cli.Close()
 		logger.Error().Err(err).Msg("Docker daemon not reachable")
 		return nil, fmt.Errorf("docker daemon not reachable: %w", err)
 	}
@@ -351,7 +351,7 @@ func (c *Client) GetContainerLogs(ctx context.Context, name string, tail int) (s
 		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to get container logs")
 		return "", fmt.Errorf("get container logs: %w", err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	// Read logs with size limit to prevent memory exhaustion
 	limitedReader := io.LimitReader(reader, MaxLogSize)
@@ -380,7 +380,7 @@ func (c *Client) GetContainerStats(ctx context.Context, name string) (*Container
 	defer func() {
 		// Drain any remaining data before closing to ensure proper connection reuse
 		_, _ = io.Copy(io.Discard, stats.Body)
-		stats.Body.Close()
+		_ = stats.Body.Close()
 	}()
 
 	// Parse the stats JSON

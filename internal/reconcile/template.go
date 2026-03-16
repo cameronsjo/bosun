@@ -62,11 +62,11 @@ func (t *TemplateOps) ExecuteTemplate(_ context.Context, templateFile, outputFil
 		return fmt.Errorf("failed to create temp file for %s: %w", outputFile, err)
 	}
 	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath) // Cleanup on failure
+	defer func() { _ = os.Remove(tmpPath) }() // Cleanup on failure
 
 	// Execute template with data.
 	if err := tmpl.Execute(tmpFile, t.Data); err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		return fmt.Errorf("failed to execute template %s: %w", templateFile, err)
 	}
 

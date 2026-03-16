@@ -74,7 +74,7 @@ func (c *Client) Trigger(ctx context.Context, source string, force bool) (*Trigg
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to daemon at %s: %w", c.endpoint(), err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusAccepted {
 		body, _ := io.ReadAll(resp.Body)
@@ -116,7 +116,7 @@ func (c *Client) Status(ctx context.Context) (*StatusResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to daemon at %s: %w", c.endpoint(), err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -143,7 +143,7 @@ func (c *Client) Health(ctx context.Context) (*HealthStatus, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to daemon at %s: %w", c.endpoint(), err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result HealthStatus
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -178,7 +178,7 @@ func (c *Client) Config(ctx context.Context) (*ConfigResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to daemon at %s: %w", c.endpoint(), err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

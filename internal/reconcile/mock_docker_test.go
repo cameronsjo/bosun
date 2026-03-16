@@ -87,7 +87,7 @@ func (m *reconcileMockDockerAPI) ContainerExecAttach(ctx context.Context, execID
 // so that Close() does not panic.
 func mockHijackedResponse() types.HijackedResponse {
 	server, client := net.Pipe()
-	server.Close()
+	_ = server.Close()
 	return types.HijackedResponse{
 		Conn:   client,
 		Reader: bufio.NewReader(bytes.NewReader([]byte{})),
