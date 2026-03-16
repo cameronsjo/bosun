@@ -65,7 +65,7 @@ func (m *Bosun) Lint(ctx context.Context, source *Directory) *Container {
 	lintCache := dag.CacheVolume("golangci-lint")
 
 	return dag.Container().
-		From("golangci/golangci-lint:v2.1-alpine").
+		From("golangci/golangci-lint:v1.64-alpine").
 		WithMountedCache("/go/pkg/mod", goCache).
 		WithMountedCache("/root/.cache/go-build", goBuildCache).
 		WithMountedCache("/root/.cache/golangci-lint", lintCache).
