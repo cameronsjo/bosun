@@ -2125,8 +2125,8 @@ func TestDeployLocalFullPath(t *testing.T) {
 
 		// compose up will fail since docker isn't running in test
 		if err != nil {
-			// Should be a compose-related error
-			assert.Contains(t, err.Error(), "service reload failed")
+			// Should be a compose-related error (all files failed in isolated mode)
+			assert.Contains(t, err.Error(), "all compose files failed to deploy")
 		} else {
 			// If docker compose happens to succeed, that's fine too
 			assert.NotNil(t, result)
@@ -3119,8 +3119,8 @@ func TestDeployLocalSyncErrors(t *testing.T) {
 		// Will fail at compose-up because docker isn't available in tests.
 		err := r.Run(context.Background())
 		require.Error(t, err)
-		// The error comes from compose-up or the service reload failure.
-		assert.Contains(t, err.Error(), "service reload failed")
+		// The error comes from compose-up: all files failed in isolated mode.
+		assert.Contains(t, err.Error(), "all compose files failed to deploy")
 	})
 }
 

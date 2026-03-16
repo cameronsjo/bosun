@@ -1155,13 +1155,10 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any) e
 }
 
 // backupPathsFromTargets derives backup paths from discovered deploy targets.
-// Compose targets are excluded because compose has its own rollback mechanism.
+// All targets including compose are backed up so per-file rollback has files to restore from.
 func backupPathsFromTargets(targets []DeployTarget, appdataBase string) []string {
 	var paths []string
 	for _, t := range targets {
-		if t.RelPath == "compose" {
-			continue
-		}
 		paths = append(paths, filepath.Join(appdataBase, t.TargetPath))
 	}
 	return paths
@@ -1238,7 +1235,7 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 		}
 	}
 
-	// Reload services with rollback support.
+	// Reload services with per-file isolated compose up and rollback.
 	if !r.config.DryRun {
 		ui.Info("  Reloading services...")
 		composeFiles, err := filepath.Glob(filepath.Join(composeTarget, "*.yml"))
@@ -1249,16 +1246,29 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 			ui.Warning("No compose files found in %s", composeTarget)
 		} else {
 			r.lastComposeFiles = composeFiles
-			if err := r.deploy.ComposeUpMultipleWithRollback(ctx, composeFiles, r.lastBackupPath); err != nil {
-				// Unhealthy containers are warnings, not failures.
-				if errors.Is(err, ErrComposeUnhealthy) {
-					ui.Warning("Some containers are unhealthy: %v", err)
-				} else if errors.Is(err, ErrRollbackFailed) {
-					return nil, fmt.Errorf("CRITICAL: service reload and rollback both failed: %w", err)
-				} else if errors.Is(err, ErrRollbackSucceeded) {
-					return nil, fmt.Errorf("service reload failed but rollback succeeded: %w", err)
-				} else {
-					return nil, fmt.Errorf("service reload failed: %w", err)
+			summary, composeErr := r.deploy.ComposeUpIsolated(ctx, composeFiles, r.lastBackupPath)
+			if composeErr != nil {
+				// All files failed — fatal.
+				return nil, fmt.Errorf("CRITICAL: all compose files failed to deploy: %w", composeErr)
+			}
+			if summary.Failed > 0 {
+				// Partial failure — log warnings for each failed file, continue.
+				for _, res := range summary.Results {
+					if !res.Success {
+						if res.RolledBack {
+							ui.Warning("Compose file %s failed, rolled back: %v", filepath.Base(res.File), res.Err)
+						} else {
+							ui.Warning("Compose file %s failed: %v", filepath.Base(res.File), res.Err)
+						}
+					}
+				}
+				ui.Warning("Partial deploy: %d/%d files succeeded, %d failed (%d rolled back)",
+					summary.Succeeded, len(composeFiles), summary.Failed, summary.RolledBack)
+			}
+			// Check for unhealthy warnings.
+			for _, res := range summary.Results {
+				if res.Success && res.Err != nil && errors.Is(res.Err, ErrComposeUnhealthy) {
+					ui.Warning("Some containers are unhealthy in %s: %v", filepath.Base(res.File), res.Err)
 				}
 			}
 		}

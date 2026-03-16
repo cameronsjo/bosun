@@ -32,7 +32,7 @@ Every reconciliation follows this 14-stage sequence:
         |
  8. Deploy files (local copy or tar-over-SSH)
         |
- 9. Run docker compose up
+ 9. Run docker compose up (per-file isolated, with rollback)
         |
 10. Clean up staging directory
         |
@@ -302,14 +302,14 @@ The daemon tracks deploy state in a JSON file (default: `/var/lib/bosun/deploy-s
 Deploy targets are **auto-discovered** from the staging directory after template rendering. The staging directory structure determines what gets synced:
 
 - `appdata/` children are expanded one level (per-service granularity)
-- `compose/` is handled specially (feeds `docker compose up` with rollback)
+- `compose/` is handled specially (per-file isolated `docker compose up` with per-file rollback)
 - All other top-level entries are synced as-is
 
 Use `deploy_sync_paths` (allowlist) and `deploy_sync_exclude` (blocklist) in `bosun.yaml` or via `BOSUN_DEPLOY_SYNC_PATHS`/`BOSUN_DEPLOY_SYNC_EXCLUDE` env vars to filter which targets are deployed. Exclude wins over include.
 
 ### Local Deployment
 
-Default mode. Copies rendered files directly to the local filesystem and runs `docker compose up`.
+Default mode. Copies rendered files directly to the local filesystem and runs `docker compose up` per-file with isolated rollback. Each compose file is deployed independently — if one file fails (e.g., bad image tag), only that file is rolled back from backup while other files continue. A final orphan-reconciliation pass runs `--remove-orphans` across all files to clean up stale containers.
 
 ```bash
 bosun reconcile -l             # Force local mode

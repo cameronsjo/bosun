@@ -160,13 +160,14 @@ func TestBackupPathsFromTargets(t *testing.T) {
 	targets := []DeployTarget{
 		{RelPath: "appdata/traefik", TargetPath: "traefik", IsDir: true},
 		{RelPath: "appdata/authelia", TargetPath: "authelia", IsDir: true},
-		{RelPath: "compose", TargetPath: "compose", IsDir: true}, // should be excluded
+		{RelPath: "compose", TargetPath: "compose", IsDir: true}, // now included for per-file rollback
 	}
 
 	paths := backupPathsFromTargets(targets, "/mnt/appdata")
 	assert.Equal(t, []string{
 		"/mnt/appdata/traefik",
 		"/mnt/appdata/authelia",
+		"/mnt/appdata/compose",
 	}, paths)
 }
 
