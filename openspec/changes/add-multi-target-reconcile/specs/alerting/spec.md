@@ -18,12 +18,13 @@ When multiple targets are configured, each alert SHALL clearly identify which ta
 
 When only the implicit default target is configured, the target name SHALL be omitted from alert titles to preserve backwards-compatible alert formatting.
 
-#### Scenario: Deploy success alert formatting
+#### Scenario: Deploy success alert formatting with single target
 
-- **WHEN** a deploy success alert is sent for commit `abc123def456` to target `unraid`
-- **THEN** the alert title is "Deployment Successful"
+- **WHEN** only the implicit default target is configured
+- **AND** a deploy success alert is sent for commit `abc123def456`
+- **THEN** the alert title is "Deployment Successful" (no target suffix)
 - **AND** the message contains the short commit `abc123de`
-- **AND** metadata includes the full commit hash and target
+- **AND** metadata includes the full commit hash
 
 #### Scenario: Multi-target alert includes target name in title
 

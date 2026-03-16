@@ -80,18 +80,35 @@ Per-target state files SHALL track the same fields as today (schema version, las
 - **THEN** subsequent reconciliation cycles skip `pi` (circuit breaker)
 - **AND** `unraid` continues to deploy normally
 
-### Requirement: Per-Target Locking
+### Requirement: Two-Layer Reconciliation Locking
 
-Each target SHALL have an independent lock file: `<LockDir>/reconcile-<target.Name>.lock`. The implicit default target SHALL use the existing `reconcile.lock` path. Locking SHALL use the same `flock(2)` / `LockFileEx` mechanism as today.
+Reconciliation SHALL use a two-layer locking model to protect both the shared git worktree and per-target state.
 
-Per-target locking SHALL allow a CLI `bosun reconcile --target=pi` to execute concurrently with a daemon reconciling `unraid`, while preventing two concurrent reconciliations of the same target.
+**Layer 1: Process-wide single-flight gate.** An in-memory mutex SHALL serialize all reconciliation entry points within a process (daemon loop, CLI, webhook triggers). Only one reconciliation cycle SHALL run at a time. Incoming triggers while a cycle is running SHALL set a dirty flag to coalesce a follow-up run after the current cycle completes, rather than queuing or starting concurrently.
 
-#### Scenario: Per-target lock prevents concurrent reconciliation
+**Layer 2: Per-target file locks.** Each target SHALL have an independent lock file: `<LockDir>/reconcile-<target.Name>.lock`. The implicit default target SHALL use the existing `reconcile.lock` path. File locking SHALL use `flock(2)` / `LockFileEx` as today. Per-target file locks SHALL be acquired inside the single-flight gate, after the process-wide gate is held.
 
-- **WHEN** the daemon is reconciling target `unraid`
-- **AND** a CLI `bosun reconcile --target=unraid` is run
-- **THEN** the CLI fails with "lock already held" for `unraid`
-- **AND** a concurrent `bosun reconcile --target=pi` would succeed
+The single-flight gate protects the shared git worktree from concurrent access. Per-target file locks protect against cross-process overlap (e.g., two separate bosun processes sharing a lock directory).
+
+#### Scenario: Single-flight gate serializes daemon and CLI
+
+- **WHEN** the daemon is mid-cycle reconciling target `unraid`
+- **AND** a CLI `bosun reconcile --target=pi` is invoked
+- **THEN** the CLI blocks on the single-flight gate until the daemon cycle completes
+- **AND** then the CLI acquires the gate and the per-target lock for `pi`
+
+#### Scenario: Dirty-flag coalesces concurrent triggers
+
+- **WHEN** the daemon is mid-cycle
+- **AND** a webhook trigger arrives
+- **THEN** the trigger sets the dirty flag and returns immediately
+- **AND** after the current cycle completes, the daemon runs another cycle
+
+#### Scenario: Per-target file lock prevents cross-process overlap
+
+- **WHEN** process A holds the per-target lock for `unraid`
+- **AND** process B attempts to reconcile `unraid`
+- **THEN** process B fails with "lock already held" for `unraid`
 
 #### Scenario: Default target uses legacy lock file
 
@@ -158,44 +175,55 @@ Overridden keys SHALL be logged at debug level to aid troubleshooting.
 
 ### Requirement: Pipeline Orchestration
 
-The reconciler SHALL execute stages in this fixed order:
+The reconciler SHALL execute a two-phase pipeline: cycle-level stages run once, then per-target stages run for each target sequentially.
 
-1. Acquire lock (per-target)
-2. Git repository sync (shared — runs once per cycle, before target iteration)
-3. Load deploy state and evaluate skip/circuit-breaker logic (per-target)
-4. Decrypt secrets (shared) and apply per-target scoping
-5. Render templates (per-target, to isolated staging directory)
-6. Extract declared state from rendered compose (per-target)
-7. Create configuration backup (per-target)
-8. Deploy files (per-target — local or remote)
-9. Run `docker compose up` (per-target)
-10. Clean up staging directory (per-target)
-11. Critical container health gate (per-target, if configured)
-12. Execute post-sync hooks (per-target)
-13. Post-deploy verification (per-target — drift check)
-14. Record successful deployment in state file (per-target)
-15. Release lock (per-target)
+**Cycle-level stages** (run once per reconciliation cycle):
 
-A failure at any stage SHALL abort the remaining stages for that target and release its lock. The health gate (stage 11) failing SHALL trigger rollback for that target before aborting. Other targets in the cycle SHALL continue unaffected.
+1. Acquire process-wide single-flight gate
+2. Git repository sync (clone or pull)
+3. Decrypt secrets (shared SOPS files)
 
-The lock SHALL always be released via defer, even on panic.
+**Per-target stages** (run for each target in list order):
+
+4. Acquire per-target file lock
+5. Load deploy state and evaluate skip/circuit-breaker logic
+6. Apply per-target secrets scoping
+7. Render templates (to isolated staging directory)
+8. Extract declared state from rendered compose
+9. Create configuration backup
+10. Deploy files (local or remote)
+11. Run `docker compose up`
+12. Clean up staging directory
+13. Critical container health gate (if configured)
+14. Execute post-sync hooks
+15. Post-deploy verification (drift check)
+16. Record successful deployment in state file
+17. Release per-target file lock
+
+**Post-cycle:** Release process-wide single-flight gate. If dirty flag is set, start another cycle.
+
+A failure at any per-target stage SHALL abort the remaining stages for that target and release its per-target lock. The health gate (stage 13) failing SHALL trigger rollback for that target before aborting. Other targets in the cycle SHALL continue unaffected.
+
+Per-target locks SHALL always be released via defer, even on panic. The single-flight gate SHALL always be released after all targets complete.
 
 When only one target is configured (implicit default), behavior SHALL be identical to the pre-multi-target pipeline.
 
 #### Scenario: Full pipeline succeeds for all targets
 
 - **WHEN** a reconciliation cycle triggers with a new commit and two targets
-- **THEN** git sync runs once
-- **AND** both targets execute stages 1, 3-15 in order
+- **THEN** the single-flight gate is acquired and git sync runs once
+- **AND** secrets are decrypted once
+- **AND** both targets execute per-target stages 4–17 in order
 - **AND** both targets' state files record the deployed commit
+- **AND** the single-flight gate is released
 
 #### Scenario: Pipeline aborts on stage failure for one target
 
-- **WHEN** target `unraid` fails during secret decryption
-- **THEN** remaining stages for `unraid` are skipped
+- **WHEN** target `unraid` fails during template rendering
+- **THEN** remaining per-target stages for `unraid` are skipped
 - **AND** a throttled failure alert is sent for `unraid`
-- **AND** `unraid`'s lock is released
-- **AND** target `pi` proceeds with its full pipeline
+- **AND** `unraid`'s per-target lock is released
+- **AND** target `pi` proceeds with its full per-target pipeline
 
 #### Scenario: Dry run mode with multiple targets
 

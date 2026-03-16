@@ -8,7 +8,7 @@ Bosun's design principle is "one yacht, many ports" — a single monorepo can de
 
 - **Target descriptors** — introduce a `Target` struct that captures per-target configuration: host, appdata path, project name, state file, staging directory, secrets scope, critical containers, post-sync hooks, and deploy sync filters
 - **Config targets list** — `reconcile.Config` gains a `Targets []Target` field; the existing flat fields become the "default target" for backwards compatibility (single-target configs still work unchanged)
-- **Per-target staging directories** — each target gets an isolated staging directory to enable concurrent reconciliation without file collisions
+- **Per-target staging directories** — each target gets an isolated staging directory for execution isolation and future parallelization
 - **Per-target state files** — each target tracks its own deploy state (last commit, attempt count, drift) independently
 - **Namespaced secrets** — secrets can be scoped per-target via a naming convention (e.g., `targets.<name>.db_password`) alongside shared secrets accessible to all targets
 - **Sequential target reconciliation** — the daemon iterates targets in order, running the full pipeline for each; a failure on one target does not block others

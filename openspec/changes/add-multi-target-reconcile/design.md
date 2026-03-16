@@ -119,16 +119,28 @@ When `targets:` is absent from `bosun.yaml` (or empty), the reconciler creates a
 
 When `targets:` is present, flat target fields (`target_host`, `project_name`, etc.) are ignored with a deprecation warning.
 
-### Decision: Locking strategy for multi-target
+### Decision: Two-layer locking for multi-target
 
-Each target gets its own lock file: `<LockDir>/reconcile-<target-name>.lock`. This allows independent locking per target (important for future parallelism) while preventing concurrent runs of the same target.
+Reconciliation uses a two-layer locking model:
 
-A global lock is NOT used — sequential execution in the daemon loop provides ordering, and per-target locks protect against concurrent CLI triggers.
+1. **Process-wide single-flight gate** — an in-memory mutex that serializes all reconciliation entry points (daemon loop, CLI `bosun reconcile`, webhook triggers). Only one reconciliation cycle runs at a time within a process. Incoming triggers while a cycle is running set a dirty flag to coalesce a follow-up run after the current cycle completes.
+
+2. **Per-target file locks** — each target gets `<LockDir>/reconcile-<target-name>.lock` (the implicit default target uses `reconcile.lock`). These prevent the same target from being reconciled by two separate processes (e.g., daemon on host A and CLI on host B sharing a lock directory via NFS). Per-target file locks are acquired inside the single-flight gate.
+
+**Why two layers:**
+- The single-flight gate protects the shared git worktree. Without it, a CLI `bosun reconcile --target=pi` could race with the daemon mid-cycle on `unraid`, both touching the same git clone.
+- Per-target file locks protect cross-process overlap. The in-memory gate only serializes within one process; file locks extend protection across processes.
+- Dirty-flag coalescing prevents trigger storms from queuing N redundant cycles.
+
+**Why not per-target locks alone:**
+- Per-target locks would allow concurrent reconciliation of different targets, but all targets share one git working tree. Concurrent git operations on the same worktree are unsafe.
+
+**Future path to parallel:** Replace the single-flight gate with a per-target gate + per-target git clones. The file lock layer is already per-target and needs no changes.
 
 ## Risks / Trade-offs
 
 - **Increased config complexity** → Mitigated by backwards compatibility. Single-target users see no change. Multi-target users opt in via `targets:` section.
-- **Sequential latency** → For 3 targets at ~30s each, total cycle is ~90s. Acceptable for GitOps polling (typical interval 5-60min). Webhook-triggered deploys may feel slower.
+- **Sequential latency** → For 3 targets at ~30s each, total cycle is ~90s. Acceptable for GitOps polling (typical interval 5–60 min). Webhook-triggered deploys may feel slower.
 - **Secrets merge precedence** → Target-scoped secrets override shared secrets. If a user accidentally scopes a secret, the shared value is silently shadowed. Mitigated by logging which secrets are overridden at debug level.
 - **State file proliferation** → N targets = N state files. Manageable for typical counts (2-5). `bosun status` aggregates all targets.
 

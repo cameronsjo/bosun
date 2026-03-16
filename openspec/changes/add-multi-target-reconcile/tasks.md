@@ -23,7 +23,9 @@
 - [ ] 3.2 On each reconciliation cycle, iterate targets and create/run a `Reconciler` per target
 - [ ] 3.3 Failure on target N logs error + sends alert, then target N+1 proceeds
 - [ ] 3.4 Add target name to logger context for all reconciliation log messages
-- [ ] 3.5 Write integration test: two targets, one fails, second still runs
+- [ ] 3.5 Preserve single-flight reconciliation semantics: process-wide gate serializes all entry points, dirty-flag coalesces concurrent triggers into follow-up cycle
+- [ ] 3.6 Write integration test: two targets, one fails, second still runs
+- [ ] 3.7 Write test: concurrent trigger during active cycle sets dirty flag and coalesces
 
 ## 4. Secrets scoping
 
