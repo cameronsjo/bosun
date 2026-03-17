@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.1](https://github.com/cameronsjo/bosun/compare/v0.29.0...v0.29.1) (2026-03-17)
+
+
+### Bug Fixes
+
+* **openspec:** address round 3 nitpicks ([309307f](https://github.com/cameronsjo/bosun/commit/309307fa2773f9a44aa87c94a7553bfd45a81a50))
+* **openspec:** define unregistered target behavior ([8b60aaf](https://github.com/cameronsjo/bosun/commit/8b60aaf6bd0c85d3ef9cc754d52db780ddb3cd17))
+
 ## [0.29.0](https://github.com/cameronsjo/bosun/compare/v0.28.0...v0.29.0) (2026-03-16)
 
 
