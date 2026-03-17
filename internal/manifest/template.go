@@ -176,16 +176,12 @@ func (e *TemplateEngine) RenderTemplate(name string, ctx *TemplateContext) (*Ren
 	delete(rawOutput, "kind")
 	delete(rawOutput, "includes")
 
-	// Extract target outputs
+	// Extract target outputs dynamically from rendered YAML keys
 	output := NewRenderOutput()
-	if compose, ok := rawOutput["compose"].(map[string]any); ok {
-		output.Compose = compose
-	}
-	if traefik, ok := rawOutput["traefik"].(map[string]any); ok {
-		output.Traefik = traefik
-	}
-	if gatus, ok := rawOutput["gatus"].(map[string]any); ok {
-		output.Gatus = gatus
+	for key, val := range rawOutput {
+		if m, ok := val.(map[string]any); ok {
+			output.Targets[key] = m
+		}
 	}
 
 	return output, nil
@@ -242,7 +238,7 @@ func (e *TemplateEngine) RenderChart(chart *Chart, values map[string]any) (*Rend
 			return nil, fmt.Errorf("parse rendered compose: %w", err)
 		}
 
-		output.Compose["services"] = compose
+		output.Target(TargetCompose)["services"] = compose
 		return output, nil
 	}
 
@@ -281,7 +277,7 @@ func (e *TemplateEngine) RenderChart(chart *Chart, values map[string]any) (*Rend
 			return nil, fmt.Errorf("parse compose override: %w", err)
 		}
 
-		output.Compose = DeepMerge(output.Compose, composeOverride)
+		output.Targets[TargetCompose] = DeepMerge(output.Target(TargetCompose), composeOverride)
 	}
 
 	return output, nil
@@ -354,7 +350,7 @@ func (e *TemplateEngine) renderDependency(chart *Chart, dep *ChartDependency, ct
 			},
 		}
 
-		output.Compose = DeepMerge(output.Compose, override)
+		output.Targets[TargetCompose] = DeepMerge(output.Target(TargetCompose), override)
 	}
 
 	return output, nil
@@ -362,14 +358,10 @@ func (e *TemplateEngine) renderDependency(chart *Chart, dep *ChartDependency, ct
 
 // mergeOutput merges source into dest.
 func mergeOutput(dest, source *RenderOutput) {
-	if source.Compose != nil {
-		dest.Compose = DeepMerge(dest.Compose, source.Compose)
-	}
-	if source.Traefik != nil {
-		dest.Traefik = DeepMerge(dest.Traefik, source.Traefik)
-	}
-	if source.Gatus != nil {
-		dest.Gatus = DeepMerge(dest.Gatus, source.Gatus)
+	for name, content := range source.Targets {
+		if content != nil {
+			dest.Targets[name] = DeepMerge(dest.Target(name), content)
+		}
 	}
 }
 

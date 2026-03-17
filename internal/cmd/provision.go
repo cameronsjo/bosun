@@ -213,8 +213,8 @@ func runProvision(cmd *cobra.Command, args []string) error {
 	// Inject project name into compose output for consistent container namespacing.
 	// This ensures all stacks share the same docker compose project, so
 	// --remove-orphans works correctly and container name conflicts are avoided.
-	if output.Compose != nil {
-		output.Compose["name"] = cfg.ProjectName()
+	if compose := output.Targets[manifest.TargetCompose]; len(compose) > 0 {
+		output.Target(manifest.TargetCompose)["name"] = cfg.ProjectName()
 	}
 
 	if err := manifest.WriteOutputs(output, cfg.OutputDir(), outputName); err != nil {
@@ -410,14 +410,30 @@ config:
 }
 
 func showDiff(output *manifest.RenderOutput, outputDir, stackName string) error {
-	targets := []struct {
+	type diffTarget struct {
 		name     string
+		dir      string
 		filename string
 		content  map[string]any
-	}{
-		{"compose", stackName + ".yml", output.Compose},
-		{"traefik", "dynamic.yml", output.Traefik},
-		{"gatus", "endpoints.yml", output.Gatus},
+	}
+
+	// Build targets from registry in sorted order
+	var targets []diffTarget
+	for _, name := range manifest.TargetNames() {
+		cfg, registered := manifest.TargetRegistry[name]
+		if !registered {
+			continue
+		}
+		content := output.Targets[name]
+		if content == nil {
+			continue
+		}
+		targets = append(targets, diffTarget{
+			name:     name,
+			dir:      cfg.Dir,
+			filename: cfg.Filename(stackName),
+			content:  content,
+		})
 	}
 
 	hasDiff := false
@@ -432,7 +448,7 @@ func showDiff(output *manifest.RenderOutput, outputDir, stackName string) error 
 		}
 		newContent := string(newBytes)
 
-		path := filepath.Join(outputDir, t.name, t.filename)
+		path := filepath.Join(outputDir, t.dir, t.filename)
 		existingBytes, err := os.ReadFile(path)
 		if err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("read existing %s: %w", path, err)
