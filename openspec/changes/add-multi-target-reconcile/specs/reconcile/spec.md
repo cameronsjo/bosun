@@ -117,9 +117,9 @@ The single-flight gate protects the shared git worktree from concurrent access. 
 
 ### Requirement: Sequential Target Reconciliation
 
-The daemon SHALL reconcile targets sequentially in the order they appear in the `targets:` list. For each target, the full pipeline executes: lock, git sync (shared), secrets, render, backup, deploy, compose up, health gate, hooks, drift check, state save, unlock.
+The daemon SHALL reconcile targets sequentially in the order they appear in the `targets:` list. Git sync and secret decryption are cycle-level stages that run once before target iteration (see Pipeline Orchestration). For each target, the per-target pipeline executes: acquire lock, apply secrets scoping, render, backup, deploy, compose up, health gate, hooks, drift check, state save, release lock.
 
-Git sync SHALL run once per reconciliation cycle (shared across all targets). The git clone/pull result (commit hash, changed files) SHALL be reused for all targets in the cycle.
+The git clone/pull result (commit hash, changed files) SHALL be reused for all targets in the cycle.
 
 A failure on one target SHALL be logged and alerted, then the next target proceeds. The daemon SHALL NOT abort the cycle on a per-target failure.
 

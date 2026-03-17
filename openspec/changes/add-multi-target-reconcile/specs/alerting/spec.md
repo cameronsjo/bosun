@@ -18,13 +18,14 @@ When multiple targets are configured, each alert SHALL clearly identify which ta
 
 When only the implicit default target is configured, the target name SHALL be omitted from alert titles to preserve backwards-compatible alert formatting.
 
-#### Scenario: Deploy success alert formatting with single target
+#### Scenario: Single default target omits target name from title
 
 - **WHEN** only the implicit default target is configured
 - **AND** a deploy success alert is sent for commit `abc123def456`
 - **THEN** the alert title is "Deployment Successful" (no target suffix)
 - **AND** the message contains the short commit `abc123de`
 - **AND** metadata includes the full commit hash
+- **AND** alert formatting is identical to pre-multi-target versions
 
 #### Scenario: Multi-target alert includes target name in title
 
@@ -32,13 +33,6 @@ When only the implicit default target is configured, the target name SHALL be om
 - **AND** a deploy failure alert is sent for target `pi`
 - **THEN** the alert title is "Deployment Failed [pi]"
 - **AND** the message body includes the target name
-
-#### Scenario: Single default target omits target name from title
-
-- **WHEN** only the implicit default target is configured
-- **AND** a deploy success alert is sent
-- **THEN** the alert title is "Deployment Successful" (no target suffix)
-- **AND** alert formatting is identical to pre-multi-target versions
 
 #### Scenario: Rollback failure triggers critical severity
 
