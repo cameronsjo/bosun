@@ -20,7 +20,7 @@
 
 - [ ] 3.1 Update `mergeProvision` (render.go) to iterate `Targets` map
 - [ ] 3.2 Update `mergeOutput` (template.go) to iterate `Targets` map
-- [ ] 3.3 Update `RenderTemplate` target extraction to iterate known keys dynamically
+- [ ] 3.3 Update `RenderTemplate` target extraction to iterate target keys from rendered YAML (not hardcoded fields)
 - [ ] 3.4 Update `RenderService` to use `Target()` accessor
 - [ ] 3.5 Update `RenderStack` (render.go) to use `Target()` accessor for merge and networks
 - [ ] 3.6 Update `RenderChart` (template.go) to use `Target()` accessor

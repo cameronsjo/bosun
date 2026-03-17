@@ -183,10 +183,10 @@ Default target configuration:
 
 The system SHALL iterate targets in sorted order (by target name) to produce deterministic output.
 
-#### Scenario: Write all non-empty targets
+#### Scenario: Write all non-empty registered targets
 
 - **WHEN** `WriteOutputs` is called with a `RenderOutput` containing non-empty targets
-- **THEN** each non-empty target is written to its respective subdirectory under the output directory
+- **THEN** each non-empty target that is present in the `TargetRegistry` is written to its respective subdirectory under the output directory
 
 #### Scenario: Empty targets are not written
 
