@@ -111,6 +111,10 @@ type Config struct {
 
 	// SecretsFiles is the list of SOPS-encrypted secret files to decrypt.
 	SecretsFiles []string
+	// SecretsScope is the key prefix for per-target secrets scoping.
+	// When set, keys under "targets.<scope>.*" in the decrypted secrets
+	// override same-named top-level keys for this target's template rendering.
+	SecretsScope string
 	// InfraSubDir is the subdirectory within the repo containing infrastructure configs.
 	// Use "." for repos where the root is the infrastructure (dedicated infra repos).
 	// Use a path like "infrastructure" for repos where infra is nested (e.g., dotfiles).
@@ -275,6 +279,8 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 	if len(t.DeploySyncExclude) > 0 {
 		cp.DeploySyncExclude = t.DeploySyncExclude
 	}
+
+	cp.SecretsScope = t.SecretsScope
 
 	return &cp
 }
@@ -638,6 +644,11 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	}
 	telemetry.SpanOK(otelDecryptSpan)
 	otelDecryptSpan.End()
+
+	// Step 2b: Apply per-target secrets scoping.
+	if r.config.SecretsScope != "" {
+		secrets = MergeTargetSecrets(secrets, r.config.SecretsScope)
+	}
 
 	// Step 3: Render templates.
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.template", "Template rendering")
@@ -1302,6 +1313,55 @@ func (r *Reconciler) decryptSecrets(ctx context.Context) (map[string]any, error)
 
 	ui.Success("Secrets decrypted successfully")
 	return secrets, nil
+}
+
+// MergeTargetSecrets creates a copy of the secrets map with per-target
+// overrides applied. Keys under "targets.<scope>.*" override same-named
+// top-level keys. The original map is not modified.
+//
+// Example: if secrets contains {"db_password": "shared", "targets": {"unraid": {"db_password": "secret1"}}}
+// and scope is "unraid", the result has {"db_password": "secret1", "targets": {...}}.
+func MergeTargetSecrets(secrets map[string]any, scope string) map[string]any {
+	if scope == "" || secrets == nil {
+		return secrets
+	}
+
+	targetsRaw, ok := secrets["targets"]
+	if !ok {
+		return secrets
+	}
+
+	targetsMap, ok := targetsRaw.(map[string]any)
+	if !ok {
+		return secrets
+	}
+
+	scopedRaw, ok := targetsMap[scope]
+	if !ok {
+		return secrets
+	}
+
+	scopedMap, ok := scopedRaw.(map[string]any)
+	if !ok {
+		return secrets
+	}
+
+	// Shallow copy the base map, then overlay scoped keys.
+	merged := make(map[string]any, len(secrets))
+	for k, v := range secrets {
+		merged[k] = v
+	}
+
+	logger := log.Component("secrets")
+	for k, v := range scopedMap {
+		logger.Debug().
+			Str("key", k).
+			Str("target_scope", scope).
+			Msg("Per-target secret overriding shared key")
+		merged[k] = v
+	}
+
+	return merged
 }
 
 // renderTemplates renders all templates to the staging directory.

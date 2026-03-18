@@ -3615,3 +3615,81 @@ func TestConfigForTarget_PartialOverrides(t *testing.T) {
 	assert.Equal(t, base.LocalAppdataPath, cfg.LocalAppdataPath, "should keep base when target is empty")
 	assert.Equal(t, base.RemoteAppdataPath, cfg.RemoteAppdataPath, "should keep base when target is empty")
 }
+
+func TestMergeTargetSecrets(t *testing.T) {
+	t.Run("scoped override replaces shared key", func(t *testing.T) {
+		secrets := map[string]any{
+			"db_password": "shared",
+			"api_key":     "shared-api",
+			"targets": map[string]any{
+				"unraid": map[string]any{
+					"db_password": "secret1",
+				},
+			},
+		}
+
+		merged := MergeTargetSecrets(secrets, "unraid")
+		assert.Equal(t, "secret1", merged["db_password"])
+		assert.Equal(t, "shared-api", merged["api_key"], "non-overridden keys preserved")
+	})
+
+	t.Run("no scope returns original", func(t *testing.T) {
+		secrets := map[string]any{"db_password": "shared"}
+		merged := MergeTargetSecrets(secrets, "")
+		assert.Equal(t, secrets, merged)
+	})
+
+	t.Run("nil secrets returns nil", func(t *testing.T) {
+		merged := MergeTargetSecrets(nil, "unraid")
+		assert.Nil(t, merged)
+	})
+
+	t.Run("no targets key in secrets", func(t *testing.T) {
+		secrets := map[string]any{"db_password": "shared"}
+		merged := MergeTargetSecrets(secrets, "unraid")
+		assert.Equal(t, "shared", merged["db_password"])
+	})
+
+	t.Run("scope not found in targets", func(t *testing.T) {
+		secrets := map[string]any{
+			"db_password": "shared",
+			"targets": map[string]any{
+				"pi": map[string]any{"db_password": "pi-secret"},
+			},
+		}
+		merged := MergeTargetSecrets(secrets, "unraid")
+		assert.Equal(t, "shared", merged["db_password"])
+	})
+
+	t.Run("does not mutate original", func(t *testing.T) {
+		secrets := map[string]any{
+			"db_password": "shared",
+			"targets": map[string]any{
+				"unraid": map[string]any{"db_password": "secret1"},
+			},
+		}
+
+		merged := MergeTargetSecrets(secrets, "unraid")
+		assert.Equal(t, "secret1", merged["db_password"])
+		assert.Equal(t, "shared", secrets["db_password"], "original map should be unchanged")
+	})
+
+	t.Run("multiple scoped keys", func(t *testing.T) {
+		secrets := map[string]any{
+			"db_password":  "shared",
+			"db_host":      "shared-host",
+			"other_secret": "keep-me",
+			"targets": map[string]any{
+				"pi": map[string]any{
+					"db_password": "pi-pw",
+					"db_host":     "pi-host",
+				},
+			},
+		}
+
+		merged := MergeTargetSecrets(secrets, "pi")
+		assert.Equal(t, "pi-pw", merged["db_password"])
+		assert.Equal(t, "pi-host", merged["db_host"])
+		assert.Equal(t, "keep-me", merged["other_secret"])
+	})
+}
