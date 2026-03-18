@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/docker/dockertest"
@@ -25,6 +26,7 @@ func newTestSocketServer(t *testing.T) (*SocketServer, *Daemon) {
 
 	cfg := DefaultConfig()
 	cfg.EnableHTTP = false
+	cfg.ReconcileTimeout = 50 * time.Millisecond // Short timeout so fire-and-forget goroutines from handleTrigger bail quickly during test cleanup
 	cfg.ReconcileConfig = reconcile.DefaultConfig()
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
 	cfg.ReconcileConfig.DryRun = true

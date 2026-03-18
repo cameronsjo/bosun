@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -63,7 +64,7 @@ func RenderService(manifest *ServiceManifest, provisionsDir string) (*RenderOutp
 	// Handle raw passthrough mode
 	if manifest.Type == "raw" {
 		if manifest.Compose != nil {
-			output.Compose["services"] = manifest.Compose
+			output.Target(TargetCompose)["services"] = manifest.Compose
 		}
 		logger.Debug().Str("service", manifest.Name).Msg("Service rendered as raw passthrough")
 		return output, nil
@@ -166,7 +167,7 @@ func RenderService(manifest *ServiceManifest, provisionsDir string) (*RenderOutp
 			return nil, fmt.Errorf("parse compose override: %w", err)
 		}
 
-		output.Compose = DeepMerge(output.Compose, composeOverride)
+		output.Targets[TargetCompose] = DeepMerge(output.Target(TargetCompose), composeOverride)
 	}
 
 	logger.Debug().Str("service", manifest.Name).Msg("Service rendering completed")
@@ -175,14 +176,10 @@ func RenderService(manifest *ServiceManifest, provisionsDir string) (*RenderOutp
 
 // mergeProvision merges a provision's outputs into the render output.
 func mergeProvision(output *RenderOutput, provision *Provision) {
-	if provision.Compose != nil {
-		output.Compose = DeepMerge(output.Compose, provision.Compose)
-	}
-	if provision.Traefik != nil {
-		output.Traefik = DeepMerge(output.Traefik, provision.Traefik)
-	}
-	if provision.Gatus != nil {
-		output.Gatus = DeepMerge(output.Gatus, provision.Gatus)
+	for name, content := range provision.Targets {
+		if content != nil {
+			output.Targets[name] = DeepMerge(output.Target(name), content)
+		}
 	}
 }
 
@@ -284,17 +281,20 @@ func RenderStack(stackPath, provisionsDir, servicesDir string, valuesOverlay map
 			return nil, fmt.Errorf("render service %s: %w", manifest.Name, err)
 		}
 
-		output.Compose = DeepMerge(output.Compose, serviceOutput.Compose)
-		output.Traefik = DeepMerge(output.Traefik, serviceOutput.Traefik)
-		output.Gatus = DeepMerge(output.Gatus, serviceOutput.Gatus)
+		for name, content := range serviceOutput.Targets {
+			if content != nil {
+				output.Targets[name] = DeepMerge(output.Target(name), content)
+			}
+		}
 	}
 
 	// Merge network definitions from stack (don't overwrite service networks)
 	if stack.Networks != nil {
-		if existing, ok := output.Compose["networks"].(map[string]any); ok {
-			output.Compose["networks"] = DeepMerge(existing, stack.Networks)
+		compose := output.Target(TargetCompose)
+		if existing, ok := compose["networks"].(map[string]any); ok {
+			compose["networks"] = DeepMerge(existing, stack.Networks)
 		} else {
-			output.Compose["networks"] = stack.Networks
+			compose["networks"] = stack.Networks
 		}
 	}
 
@@ -307,52 +307,81 @@ func RenderStack(stackPath, provisionsDir, servicesDir string, valuesOverlay map
 }
 
 // WriteOutputs writes rendered outputs to files in the output directory.
+// Iterates registered targets in sorted order for reproducible output.
+// Unregistered targets are logged as warnings and skipped.
 func WriteOutputs(output *RenderOutput, outputDir, stackName string) error {
+	logger := log.Component(log.ComponentManifest)
+
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
 
-	targets := map[string]struct {
-		content  map[string]any
-		filename string
-	}{
-		"compose": {output.Compose, stackName + ".yml.tmpl"},
-		"traefik": {output.Traefik, "dynamic.yml"},
-		"gatus":   {output.Gatus, "endpoints.yml"},
-	}
-
-	for target, cfg := range targets {
-		if len(cfg.content) == 0 {
+	// Write registered targets in sorted order
+	for _, name := range TargetNames() {
+		cfg, registered := TargetRegistry[name]
+		if !registered {
 			continue
 		}
 
-		targetDir := filepath.Join(outputDir, target)
-		if err := os.MkdirAll(targetDir, 0755); err != nil {
-			return fmt.Errorf("create %s directory: %w", target, err)
+		// Validate target directory stays within outputDir to prevent path traversal
+		targetDir, err := validatePathWithinDir(outputDir, cfg.Dir)
+		if err != nil {
+			return fmt.Errorf("resolve %s directory: %w", name, err)
 		}
 
-		outputPath := filepath.Join(targetDir, cfg.filename)
-		data, err := yaml.Marshal(cfg.content)
+		outputPath := filepath.Join(targetDir, cfg.Filename(stackName))
+
+		content := output.Targets[name]
+		if len(content) == 0 {
+			// Clean up stale file if the target is now empty
+			if err := os.Remove(outputPath); err == nil {
+				logger.Info().Str("target", name).Str(log.FieldPath, outputPath).Msg("Removed stale target file")
+			}
+			continue
+		}
+
+		if err := os.MkdirAll(targetDir, 0755); err != nil {
+			return fmt.Errorf("create %s directory: %w", name, err)
+		}
+
+		data, err := yaml.Marshal(content)
 		if err != nil {
-			return fmt.Errorf("marshal %s output: %w", target, err)
+			return fmt.Errorf("marshal %s output: %w", name, err)
 		}
 
 		if err := os.WriteFile(outputPath, data, 0644); err != nil {
-			return fmt.Errorf("write %s output: %w", target, err)
+			return fmt.Errorf("write %s output: %w", name, err)
 		}
 
 		fmt.Printf("Wrote: %s\n", outputPath)
+	}
+
+	// Warn about unregistered targets
+	for name := range output.Targets {
+		if _, registered := TargetRegistry[name]; !registered {
+			logger.Warn().
+				Str("target", name).
+				Msg("Skipping unregistered target in WriteOutputs")
+		}
 	}
 
 	return nil
 }
 
 // RenderToYAML renders an output to YAML string for dry-run display.
+// Includes all targets (registered and unregistered) in sorted order
+// for diagnostic visibility.
 func RenderToYAML(output *RenderOutput) (string, error) {
-	combined := map[string]any{
-		"compose": output.Compose,
-		"traefik": output.Traefik,
-		"gatus":   output.Gatus,
+	// Collect all target names and sort for deterministic output
+	names := make([]string, 0, len(output.Targets))
+	for name := range output.Targets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	combined := make(map[string]any, len(names))
+	for _, name := range names {
+		combined[name] = output.Targets[name]
 	}
 
 	data, err := yaml.Marshal(combined)

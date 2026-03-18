@@ -193,17 +193,20 @@ func (l *ChartLoader) RenderStack(stackPath string, stackValuesOverride map[stri
 			return nil, fmt.Errorf("render chart %s: %w", chartRef.Name, err)
 		}
 
-		output.Compose = DeepMerge(output.Compose, chartOutput.Compose)
-		output.Traefik = DeepMerge(output.Traefik, chartOutput.Traefik)
-		output.Gatus = DeepMerge(output.Gatus, chartOutput.Gatus)
+		for name, content := range chartOutput.Targets {
+			if content != nil {
+				output.Targets[name] = DeepMerge(output.Target(name), content)
+			}
+		}
 	}
 
 	// Merge network definitions from stack
 	if stack.Networks != nil {
-		if existing, ok := output.Compose["networks"].(map[string]any); ok {
-			output.Compose["networks"] = DeepMerge(existing, stack.Networks)
+		compose := output.Target(TargetCompose)
+		if existing, ok := compose["networks"].(map[string]any); ok {
+			compose["networks"] = DeepMerge(existing, stack.Networks)
 		} else {
-			output.Compose["networks"] = stack.Networks
+			compose["networks"] = stack.Networks
 		}
 	}
 

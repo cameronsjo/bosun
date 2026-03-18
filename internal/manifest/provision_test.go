@@ -30,8 +30,8 @@ func TestLoadProvision(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Provision) {
-				require.NotNil(t, p.Compose)
-				services, ok := p.Compose["services"].(map[string]any)
+				require.NotNil(t, p.Targets[TargetCompose])
+				services, ok := p.Targets[TargetCompose]["services"].(map[string]any)
 				require.True(t, ok)
 
 				myapp, ok := services["myapp"].(map[string]any)
@@ -49,8 +49,8 @@ func TestLoadProvision(t *testing.T) {
 			},
 			wantErr: false,
 			validate: func(t *testing.T, p *Provision) {
-				require.NotNil(t, p.Compose)
-				services, ok := p.Compose["services"].(map[string]any)
+				require.NotNil(t, p.Targets[TargetCompose])
+				services, ok := p.Targets[TargetCompose]["services"].(map[string]any)
 				require.True(t, ok)
 
 				svc, ok := services["testservice"].(map[string]any)
@@ -83,8 +83,8 @@ func TestLoadProvision(t *testing.T) {
 			wantErr: false,
 			validate: func(t *testing.T, p *Provision) {
 				// Should have compose from container, healthcheck, reverse-proxy, homepage
-				require.NotNil(t, p.Compose)
-				services, ok := p.Compose["services"].(map[string]any)
+				require.NotNil(t, p.Targets[TargetCompose])
+				services, ok := p.Targets[TargetCompose]["services"].(map[string]any)
 				require.True(t, ok)
 
 				svc, ok := services["webtest"].(map[string]any)
@@ -104,10 +104,10 @@ func TestLoadProvision(t *testing.T) {
 				}
 
 				// Should have traefik output from reverse-proxy
-				require.NotNil(t, p.Traefik)
+				require.NotNil(t, p.Targets[TargetTraefik])
 
 				// Should have gatus output from monitoring
-				require.NotNil(t, p.Gatus)
+				require.NotNil(t, p.Targets[TargetGatus])
 			},
 		},
 		{
@@ -244,7 +244,7 @@ compose:
 	}, tmpDir)
 	require.NoError(t, err)
 
-	services, ok := provision.Compose["services"].(map[string]any)
+	services, ok := provision.Targets[TargetCompose]["services"].(map[string]any)
 	require.True(t, ok)
 
 	svc, ok := services["testapp"].(map[string]any)
@@ -316,9 +316,7 @@ func TestLoadProvision_EmptyProvision(t *testing.T) {
 	provision, err := LoadProvision("empty", map[string]any{}, tmpDir)
 	require.NoError(t, err)
 	require.NotNil(t, provision)
-	assert.Nil(t, provision.Compose)
-	assert.Nil(t, provision.Traefik)
-	assert.Nil(t, provision.Gatus)
+	assert.Empty(t, provision.Targets)
 }
 
 func TestLoadProvision_StringIncludes(t *testing.T) {
@@ -343,7 +341,7 @@ compose:
 
 	provision, err := LoadProvision("with-includes", map[string]any{}, tmpDir)
 	require.NoError(t, err)
-	require.NotNil(t, provision.Compose)
+	require.NotNil(t, provision.Targets[TargetCompose])
 }
 
 func TestListProvisions_ReadDirError(t *testing.T) {
@@ -398,7 +396,7 @@ gatus:
 
 	provision, err := LoadProvision("full", map[string]any{}, tmpDir)
 	require.NoError(t, err)
-	require.NotNil(t, provision.Compose)
-	require.NotNil(t, provision.Traefik)
-	require.NotNil(t, provision.Gatus)
+	require.NotNil(t, provision.Targets[TargetCompose])
+	require.NotNil(t, provision.Targets[TargetTraefik])
+	require.NotNil(t, provision.Targets[TargetGatus])
 }

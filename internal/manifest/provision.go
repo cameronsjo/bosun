@@ -91,9 +91,6 @@ func loadProvisionInternal(provisionName string, variables map[string]any, provi
 	// Handle inheritance - load included provisions first, then merge this on top
 	if len(includes) > 0 {
 		result := make(map[string]map[string]any)
-		for _, target := range TargetNames {
-			result[target] = make(map[string]any)
-		}
 
 		for _, included := range includes {
 			includedProvision, err := loadProvisionInternal(included, variables, provisionsDir, loaded)
@@ -102,44 +99,40 @@ func loadProvisionInternal(provisionName string, variables map[string]any, provi
 			}
 
 			// Merge included provision's targets
-			if includedProvision.Compose != nil {
-				result["compose"] = DeepMerge(result["compose"], includedProvision.Compose)
-			}
-			if includedProvision.Traefik != nil {
-				result["traefik"] = DeepMerge(result["traefik"], includedProvision.Traefik)
-			}
-			if includedProvision.Gatus != nil {
-				result["gatus"] = DeepMerge(result["gatus"], includedProvision.Gatus)
-			}
-		}
-
-		// Merge this provision on top of included ones
-		for _, target := range TargetNames {
-			if targetData, ok := rawProvision[target].(map[string]any); ok {
-				result[target] = DeepMerge(result[target], targetData)
+			for name, content := range includedProvision.Targets {
+				if content != nil {
+					existing := result[name]
+					if existing == nil {
+						existing = make(map[string]any)
+					}
+					result[name] = DeepMerge(existing, content)
+				}
 			}
 		}
 
-		return &Provision{
-			Compose: result["compose"],
-			Traefik: result["traefik"],
-			Gatus:   result["gatus"],
-		}, nil
+		// Merge this provision's targets on top of included ones
+		for key, val := range rawProvision {
+			if targetData, ok := val.(map[string]any); ok {
+				existing := result[key]
+				if existing == nil {
+					existing = make(map[string]any)
+				}
+				result[key] = DeepMerge(existing, targetData)
+			}
+		}
+
+		return &Provision{Targets: result}, nil
 	}
 
-	// No includes - return provision directly
-	provision := &Provision{}
-	if compose, ok := rawProvision["compose"].(map[string]any); ok {
-		provision.Compose = compose
-	}
-	if traefik, ok := rawProvision["traefik"].(map[string]any); ok {
-		provision.Traefik = traefik
-	}
-	if gatus, ok := rawProvision["gatus"].(map[string]any); ok {
-		provision.Gatus = gatus
+	// No includes - extract target maps from raw provision
+	targets := make(map[string]map[string]any)
+	for key, val := range rawProvision {
+		if m, ok := val.(map[string]any); ok {
+			targets[key] = m
+		}
 	}
 
-	return provision, nil
+	return &Provision{Targets: targets}, nil
 }
 
 // ListProvisions returns the names of all available provisions.

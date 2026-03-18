@@ -87,7 +87,7 @@ func TestChartLoader_RenderChart(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, output)
 
-		services, ok := output.Compose["services"].(map[string]any)
+		services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
 		require.True(t, ok)
 
 		// Main service
@@ -107,7 +107,7 @@ func TestChartLoader_RenderChart(t *testing.T) {
 		require.NotNil(t, output)
 
 		// Raw mode puts compose directly under services key
-		services, ok := output.Compose["services"].(map[string]any)
+		services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
 		require.True(t, ok)
 
 		rawapp, ok := services["rawapp"].(map[string]any)
@@ -123,7 +123,7 @@ func TestChartLoader_RenderChart(t *testing.T) {
 		output, err := loader.RenderChart("testapp", overrides)
 		require.NoError(t, err)
 
-		services, ok := output.Compose["services"].(map[string]any)
+		services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
 		require.True(t, ok)
 
 		testapp, ok := services["testapp"].(map[string]any)
@@ -179,7 +179,7 @@ func TestChartLoader_RenderStack(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, output)
 
-		services, ok := output.Compose["services"].(map[string]any)
+		services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
 		require.True(t, ok)
 
 		// Should have services from both charts
@@ -194,7 +194,7 @@ func TestChartLoader_RenderStack(t *testing.T) {
 		output, err := loader.RenderStack(stackPath, nil)
 		require.NoError(t, err)
 
-		services, ok := output.Compose["services"].(map[string]any)
+		services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
 		require.True(t, ok)
 
 		// testapp should have its values applied
@@ -208,7 +208,7 @@ func TestChartLoader_RenderStack(t *testing.T) {
 		output, err := loader.RenderStack(stackPath, nil)
 		require.NoError(t, err)
 
-		networks, ok := output.Compose["networks"].(map[string]any)
+		networks, ok := output.Targets[TargetCompose]["networks"].(map[string]any)
 		require.True(t, ok)
 
 		proxynet, ok := networks["proxynet"].(map[string]any)

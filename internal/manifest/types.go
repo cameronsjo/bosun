@@ -8,6 +8,8 @@
 // See ADR-0011 for the Helm alignment decision.
 package manifest
 
+import "sort"
+
 // API version and kind constants for manifest versioning.
 const (
 	// APIVersionV1 is the current API version for bosun manifests.
@@ -28,6 +30,40 @@ const (
 	// KindChart identifies a Chart manifest (Helm-aligned).
 	KindChart = "Chart"
 )
+
+// Target name constants prevent string typos in map key access.
+const (
+	TargetCompose = "compose"
+	TargetTraefik = "traefik"
+	TargetGatus   = "gatus"
+)
+
+// TargetConfig defines output metadata for a provisioning target.
+type TargetConfig struct {
+	// Dir is the subdirectory name under the output directory (e.g., "compose").
+	Dir string
+
+	// Filename returns the output filename for this target.
+	// Accepts the stack name for targets with stack-dependent filenames.
+	Filename func(stackName string) string
+}
+
+// TargetRegistry maps target names to their output configuration.
+// Used by WriteOutputs and showDiff to resolve filenames and directories.
+var TargetRegistry = map[string]TargetConfig{
+	TargetCompose: {
+		Dir:      "compose",
+		Filename: func(stackName string) string { return stackName + ".yml.tmpl" },
+	},
+	TargetTraefik: {
+		Dir:      "traefik",
+		Filename: func(_ string) string { return "dynamic.yml" },
+	},
+	TargetGatus: {
+		Dir:      "gatus",
+		Filename: func(_ string) string { return "endpoints.yml" },
+	},
+}
 
 // SupportedAPIVersions lists all API versions that can be loaded.
 var SupportedAPIVersions = []string{APIVersionV1}
@@ -78,38 +114,99 @@ type Provision struct {
 	// Kind identifies the manifest type (e.g., "Provision").
 	Kind string `yaml:"kind,omitempty"`
 
-	// Compose output for docker-compose.yml.
-	Compose map[string]any `yaml:"compose,omitempty"`
-
-	// Traefik output for dynamic.yml.
-	Traefik map[string]any `yaml:"traefik,omitempty"`
-
-	// Gatus output for endpoints.yml.
-	Gatus map[string]any `yaml:"gatus,omitempty"`
+	// Targets maps target name to its content (e.g., "compose" → {...}).
+	// Populated by UnmarshalYAML from flat top-level YAML keys.
+	Targets map[string]map[string]any `yaml:"-"`
 
 	// Includes lists other provisions to inherit from.
 	Includes []string `yaml:"includes,omitempty"`
 }
 
-// RenderOutput holds the combined output from rendering a service or stack.
-type RenderOutput struct {
-	// Compose output for docker-compose.yml.
-	Compose map[string]any
-
-	// Traefik output for dynamic.yml.
-	Traefik map[string]any
-
-	// Gatus output for endpoints.yml.
-	Gatus map[string]any
+// provisionMetadataKeys are YAML keys that are not target outputs.
+var provisionMetadataKeys = map[string]bool{
+	"apiVersion": true,
+	"kind":       true,
+	"includes":   true,
 }
 
-// NewRenderOutput creates an initialized RenderOutput with empty maps.
-func NewRenderOutput() *RenderOutput {
-	return &RenderOutput{
-		Compose: make(map[string]any),
-		Traefik: make(map[string]any),
-		Gatus:   make(map[string]any),
+// UnmarshalYAML reads flat top-level keys into the Targets map.
+// Metadata keys (apiVersion, kind, includes) are handled separately.
+// Any other top-level key with a map value is treated as a target.
+func (p *Provision) UnmarshalYAML(unmarshal func(any) error) error {
+	// First pass: unmarshal metadata fields via default struct handling
+	type provisionAlias Provision
+	var alias provisionAlias
+	if err := unmarshal(&alias); err != nil {
+		return err
 	}
+	p.APIVersion = alias.APIVersion
+	p.Kind = alias.Kind
+	p.Includes = alias.Includes
+
+	// Second pass: unmarshal raw map to extract target keys
+	var raw map[string]any
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+
+	p.Targets = make(map[string]map[string]any)
+	for key, val := range raw {
+		if provisionMetadataKeys[key] {
+			continue
+		}
+		if m, ok := val.(map[string]any); ok {
+			p.Targets[key] = m
+		}
+	}
+
+	return nil
+}
+
+// MarshalYAML writes Targets as flat top-level keys for round-trip symmetry.
+func (p Provision) MarshalYAML() (any, error) {
+	result := make(map[string]any)
+	if p.APIVersion != "" {
+		result["apiVersion"] = p.APIVersion
+	}
+	if p.Kind != "" {
+		result["kind"] = p.Kind
+	}
+	if len(p.Includes) > 0 {
+		result["includes"] = p.Includes
+	}
+	for name, content := range p.Targets {
+		result[name] = content
+	}
+	return result, nil
+}
+
+// RenderOutput holds the combined output from rendering a service or stack.
+// Targets maps target name (e.g., "compose", "traefik", "gatus") to its content.
+type RenderOutput struct {
+	Targets map[string]map[string]any
+}
+
+// NewRenderOutput creates an initialized RenderOutput with empty maps
+// for each registered target.
+func NewRenderOutput() *RenderOutput {
+	targets := make(map[string]map[string]any, len(TargetRegistry))
+	for name := range TargetRegistry {
+		targets[name] = make(map[string]any)
+	}
+	return &RenderOutput{Targets: targets}
+}
+
+// Target returns the content map for a named target, initializing it if nil.
+// This prevents nil-map panics when assigning into a target that hasn't been
+// populated yet (e.g., output.Target("compose")["name"] = "foo").
+func (o *RenderOutput) Target(name string) map[string]any {
+	if o.Targets == nil {
+		o.Targets = make(map[string]map[string]any)
+	}
+	if o.Targets[name] == nil {
+		o.Targets[name] = make(map[string]any)
+	}
+	return o.Targets[name]
 }
 
 // Stack defines a collection of services to render together.
@@ -244,17 +341,66 @@ type Template struct {
 	// Kind identifies the manifest type ("Template").
 	Kind string `yaml:"kind,omitempty"`
 
-	// Compose output for docker-compose.yml.
-	Compose map[string]any `yaml:"compose,omitempty"`
-
-	// Traefik output for dynamic.yml.
-	Traefik map[string]any `yaml:"traefik,omitempty"`
-
-	// Gatus output for endpoints.yml.
-	Gatus map[string]any `yaml:"gatus,omitempty"`
+	// Targets maps target name to its content (e.g., "compose" → {...}).
+	// Populated by UnmarshalYAML from flat top-level YAML keys.
+	Targets map[string]map[string]any `yaml:"-"`
 
 	// Includes lists other templates to inherit from (using {{ include }}).
 	Includes []string `yaml:"includes,omitempty"`
+}
+
+// templateMetadataKeys are YAML keys that are not target outputs.
+var templateMetadataKeys = map[string]bool{
+	"apiVersion": true,
+	"kind":       true,
+	"includes":   true,
+}
+
+// UnmarshalYAML reads flat top-level keys into the Targets map.
+func (t *Template) UnmarshalYAML(unmarshal func(any) error) error {
+	type templateAlias Template
+	var alias templateAlias
+	if err := unmarshal(&alias); err != nil {
+		return err
+	}
+	t.APIVersion = alias.APIVersion
+	t.Kind = alias.Kind
+	t.Includes = alias.Includes
+
+	var raw map[string]any
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+
+	t.Targets = make(map[string]map[string]any)
+	for key, val := range raw {
+		if templateMetadataKeys[key] {
+			continue
+		}
+		if m, ok := val.(map[string]any); ok {
+			t.Targets[key] = m
+		}
+	}
+
+	return nil
+}
+
+// MarshalYAML writes Targets as flat top-level keys for round-trip symmetry.
+func (t Template) MarshalYAML() (any, error) {
+	result := make(map[string]any)
+	if t.APIVersion != "" {
+		result["apiVersion"] = t.APIVersion
+	}
+	if t.Kind != "" {
+		result["kind"] = t.Kind
+	}
+	if len(t.Includes) > 0 {
+		result["includes"] = t.Includes
+	}
+	for name, content := range t.Targets {
+		result[name] = content
+	}
+	return result, nil
 }
 
 // SidecarDefaults provides default configuration for common sidecars.
@@ -281,8 +427,16 @@ var DependencyDefaults = map[string]struct {
 	"chrome":   {Version: "latest", Port: 3000, Values: nil},
 }
 
-// TargetNames lists the output targets for provisioning.
-var TargetNames = []string{"compose", "traefik", "gatus"}
+// TargetNames returns the registered target names in sorted order.
+// Used by provision loading and other contexts that need deterministic iteration.
+func TargetNames() []string {
+	names := make([]string, 0, len(TargetRegistry))
+	for name := range TargetRegistry {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
 
 // NewTemplateContext creates a TemplateContext from a Chart and values.
 func NewTemplateContext(chart *Chart, values map[string]any) *TemplateContext {
