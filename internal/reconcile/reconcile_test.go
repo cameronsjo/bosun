@@ -3539,3 +3539,79 @@ func TestTargetLockFile(t *testing.T) {
 		})
 	}
 }
+
+func TestConfigForTarget_DefaultTarget(t *testing.T) {
+	base := DefaultConfig()
+	base.TargetHost = "user@original"
+	base.ProjectName = "original-project"
+
+	target := Target{
+		Name:              DefaultTargetName,
+		TargetHost:        "user@original",
+		LocalAppdataPath:  "/mnt/appdata",
+		RemoteAppdataPath: "/mnt/user/appdata",
+		ProjectName:       "original-project",
+	}
+
+	cfg := base.ConfigForTarget(target)
+
+	// Default target preserves the base paths (no subdirectory nesting).
+	assert.Equal(t, base.StagingDir, cfg.StagingDir, "default target should use base staging dir")
+	assert.Equal(t, filepath.Join(filepath.Dir(base.StateFile), DefaultStateFile), cfg.StateFile, "default target should use legacy state file")
+	assert.Equal(t, filepath.Join(DefaultLockDir, "reconcile.lock"), cfg.LockFile, "default target should use legacy lock file")
+	assert.Equal(t, "user@original", cfg.TargetHost)
+	assert.Equal(t, "original-project", cfg.ProjectName)
+}
+
+func TestConfigForTarget_NamedTarget(t *testing.T) {
+	base := DefaultConfig()
+
+	target := Target{
+		Name:               "unraid",
+		TargetHost:         "user@unraid",
+		LocalAppdataPath:   "/mnt/custom/appdata",
+		RemoteAppdataPath:  "/mnt/user/custom/appdata",
+		ProjectName:        "homelab-unraid",
+		CriticalContainers: []string{"traefik"},
+		PostSyncHooks:      []PostSyncHook{{Container: "traefik", Paths: []string{"*.toml"}}},
+		DeploySyncPaths:    []string{"compose/**"},
+		DeploySyncExclude:  []string{"*.bak"},
+	}
+
+	cfg := base.ConfigForTarget(target)
+
+	// Named target gets subdirectory paths.
+	assert.Equal(t, filepath.Join(base.StagingDir, "unraid"), cfg.StagingDir)
+	assert.Equal(t, filepath.Join(filepath.Dir(base.StateFile), "deploy-state-unraid.json"), cfg.StateFile)
+	assert.Equal(t, filepath.Join(DefaultLockDir, "reconcile-unraid.lock"), cfg.LockFile)
+	assert.Equal(t, "user@unraid", cfg.TargetHost)
+	assert.Equal(t, "/mnt/custom/appdata", cfg.LocalAppdataPath)
+	assert.Equal(t, "/mnt/user/custom/appdata", cfg.RemoteAppdataPath)
+	assert.Equal(t, "homelab-unraid", cfg.ProjectName)
+	assert.Equal(t, []string{"traefik"}, cfg.CriticalContainers)
+	require.Len(t, cfg.PostSyncHooks, 1)
+	assert.Equal(t, "traefik", cfg.PostSyncHooks[0].Container)
+	assert.Equal(t, []string{"compose/**"}, cfg.DeploySyncPaths)
+	assert.Equal(t, []string{"*.bak"}, cfg.DeploySyncExclude)
+
+	// Base config should be unmodified.
+	assert.Equal(t, DefaultConfig().StagingDir, base.StagingDir)
+}
+
+func TestConfigForTarget_PartialOverrides(t *testing.T) {
+	base := DefaultConfig()
+	base.CriticalContainers = []string{"global-container"}
+	base.PostSyncHooks = []PostSyncHook{{Container: "global", Paths: []string{"*"}}}
+
+	// Target with no overrides — inherits from base.
+	target := Target{
+		Name:       "pi",
+		TargetHost: "user@pi",
+	}
+
+	cfg := base.ConfigForTarget(target)
+	assert.Equal(t, []string{"global-container"}, cfg.CriticalContainers, "should inherit from base when target has none")
+	assert.Len(t, cfg.PostSyncHooks, 1, "should inherit from base when target has none")
+	assert.Equal(t, base.LocalAppdataPath, cfg.LocalAppdataPath, "should keep base when target is empty")
+	assert.Equal(t, base.RemoteAppdataPath, cfg.RemoteAppdataPath, "should keep base when target is empty")
+}

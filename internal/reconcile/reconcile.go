@@ -235,6 +235,50 @@ type Config struct {
 // DefaultLockFile is the default path for the reconciliation lock file.
 const DefaultLockFile = "/var/run/bosun/reconcile.lock"
 
+// ConfigForTarget returns a shallow copy of the base config with per-target
+// fields (TargetHost, appdata paths, ProjectName, StagingDir, StateFile,
+// LockFile, CriticalContainers, PostSyncHooks, DeploySyncPaths/Exclude)
+// overridden from the given Target. This lets the existing pipeline run
+// unchanged per-target — the daemon creates a ConfigForTarget copy before
+// each reconciler instantiation.
+func (c *Config) ConfigForTarget(t Target) *Config {
+	cp := *c // shallow copy
+
+	// Override per-target fields.
+	cp.TargetHost = t.TargetHost
+	if t.LocalAppdataPath != "" {
+		cp.LocalAppdataPath = t.LocalAppdataPath
+	}
+	if t.RemoteAppdataPath != "" {
+		cp.RemoteAppdataPath = t.RemoteAppdataPath
+	}
+	if t.ProjectName != "" {
+		cp.ProjectName = t.ProjectName
+	}
+
+	// Derive per-target paths.
+	stateDir := filepath.Dir(c.StateFile)
+	cp.StateFile = TargetStateFile(stateDir, t)
+	cp.StagingDir = TargetStagingDir(c.StagingDir, t)
+	cp.LockFile = TargetLockFile(DefaultLockDir, t)
+
+	// Per-target overrides for operational config (non-empty means override).
+	if len(t.CriticalContainers) > 0 {
+		cp.CriticalContainers = t.CriticalContainers
+	}
+	if len(t.PostSyncHooks) > 0 {
+		cp.PostSyncHooks = t.PostSyncHooks
+	}
+	if len(t.DeploySyncPaths) > 0 {
+		cp.DeploySyncPaths = t.DeploySyncPaths
+	}
+	if len(t.DeploySyncExclude) > 0 {
+		cp.DeploySyncExclude = t.DeploySyncExclude
+	}
+
+	return &cp
+}
+
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
