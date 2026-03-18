@@ -49,7 +49,7 @@ func TestTemplateEngine_RenderTemplate(t *testing.T) {
 		require.NotNil(t, output)
 
 		// Check compose output
-		services, ok := output.Compose["services"].(map[string]any)
+		services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
 		require.True(t, ok)
 
 		myapp, ok := services["myapp"].(map[string]any)
@@ -73,7 +73,7 @@ func TestTemplateEngine_RenderTemplate(t *testing.T) {
 		output, err := engine.RenderTemplate("container", ctx)
 		require.NoError(t, err)
 
-		services, ok := output.Compose["services"].(map[string]any)
+		services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
 		require.True(t, ok)
 
 		svc, ok := services["helpertest"].(map[string]any)

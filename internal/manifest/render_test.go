@@ -29,8 +29,8 @@ func TestRenderService_Simple(t *testing.T) {
 	require.NotNil(t, output)
 
 	// Verify compose output
-	require.NotNil(t, output.Compose)
-	services, ok := output.Compose["services"].(map[string]any)
+	require.NotNil(t, output.Targets[TargetCompose])
+	services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
 	require.True(t, ok)
 
 	myapp, ok := services["myapp"].(map[string]any)
@@ -56,7 +56,7 @@ func TestRenderService_WithNeedsShorthand(t *testing.T) {
 	output, err := RenderService(manifest, provisionsDir)
 	require.NoError(t, err)
 
-	services, ok := output.Compose["services"].(map[string]any)
+	services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
 	require.True(t, ok)
 
 	// Should have main service
@@ -93,7 +93,7 @@ func TestRenderService_WithExplicitSidecars(t *testing.T) {
 	output, err := RenderService(manifest, provisionsDir)
 	require.NoError(t, err)
 
-	services, ok := output.Compose["services"].(map[string]any)
+	services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
 	require.True(t, ok)
 
 	// Should have postgres sidecar
@@ -107,7 +107,7 @@ func TestRenderService_WithExplicitSidecars(t *testing.T) {
 	assert.Contains(t, redisService["image"], "redis:7")
 
 	// Should have volumes for both
-	volumes, ok := output.Compose["volumes"].(map[string]any)
+	volumes, ok := output.Targets[TargetCompose]["volumes"].(map[string]any)
 	require.True(t, ok)
 	_, hasDBVolume := volumes["fullapp_db_data"]
 	assert.True(t, hasDBVolume)
@@ -130,7 +130,7 @@ func TestRenderService_RawPassthrough(t *testing.T) {
 	output, err := RenderService(manifest, "")
 	require.NoError(t, err)
 
-	services, ok := output.Compose["services"].(map[string]any)
+	services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
 	require.True(t, ok)
 
 	raw, ok := services["rawservice"].(map[string]any)
@@ -156,8 +156,8 @@ func TestRenderService_WithTraefikOutput(t *testing.T) {
 	require.NoError(t, err)
 
 	// Should have traefik output
-	require.NotNil(t, output.Traefik)
-	http, ok := output.Traefik["http"].(map[string]any)
+	require.NotNil(t, output.Targets[TargetTraefik])
+	http, ok := output.Targets[TargetTraefik]["http"].(map[string]any)
 	require.True(t, ok)
 
 	routers, ok := http["routers"].(map[string]any)
@@ -185,8 +185,8 @@ func TestRenderService_WithGatusOutput(t *testing.T) {
 	require.NoError(t, err)
 
 	// Should have gatus output
-	require.NotNil(t, output.Gatus)
-	endpoints, ok := output.Gatus["endpoints"].([]any)
+	require.NotNil(t, output.Targets[TargetGatus])
+	endpoints, ok := output.Targets[TargetGatus]["endpoints"].([]any)
 	require.True(t, ok)
 	require.Len(t, endpoints, 1)
 
@@ -206,13 +206,13 @@ func TestRenderStack(t *testing.T) {
 	require.NotNil(t, output)
 
 	// Should have services
-	services, ok := output.Compose["services"].(map[string]any)
+	services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
 	require.True(t, ok)
 	_, hasMyapp := services["myapp"]
 	assert.True(t, hasMyapp)
 
 	// Should have networks from stack
-	networks, ok := output.Compose["networks"].(map[string]any)
+	networks, ok := output.Targets[TargetCompose]["networks"].(map[string]any)
 	require.True(t, ok)
 	_, hasDefault := networks["default"]
 	assert.True(t, hasDefault)
@@ -230,7 +230,7 @@ func TestRenderStack_WithValuesOverlay(t *testing.T) {
 	output, err := RenderStack(stackPath, provisionsDir, servicesDir, values)
 	require.NoError(t, err)
 
-	services, ok := output.Compose["services"].(map[string]any)
+	services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
 	require.True(t, ok)
 
 	myapp, ok := services["myapp"].(map[string]any)
@@ -240,18 +240,20 @@ func TestRenderStack_WithValuesOverlay(t *testing.T) {
 
 func TestRenderToYAML(t *testing.T) {
 	output := &RenderOutput{
-		Compose: map[string]any{
-			"services": map[string]any{
-				"test": map[string]any{
-					"image": "test:latest",
+		Targets: map[string]map[string]any{
+			TargetCompose: {
+				"services": map[string]any{
+					"test": map[string]any{
+						"image": "test:latest",
+					},
 				},
 			},
-		},
-		Traefik: map[string]any{
-			"http": map[string]any{},
-		},
-		Gatus: map[string]any{
-			"endpoints": []any{},
+			TargetTraefik: {
+				"http": map[string]any{},
+			},
+			TargetGatus: {
+				"endpoints": []any{},
+			},
 		},
 	}
 
@@ -276,7 +278,7 @@ func TestGoldenFile_SimpleService(t *testing.T) {
 	output, err := RenderService(manifest, provisionsDir)
 	require.NoError(t, err)
 
-	actual, err := yaml.Marshal(output.Compose)
+	actual, err := yaml.Marshal(output.Targets[TargetCompose])
 	require.NoError(t, err)
 
 	if *update {
@@ -317,7 +319,7 @@ func TestGoldenFile_WebappService(t *testing.T) {
 	output, err := RenderService(manifest, provisionsDir)
 	require.NoError(t, err)
 
-	actual, err := yaml.Marshal(output.Compose)
+	actual, err := yaml.Marshal(output.Targets[TargetCompose])
 	require.NoError(t, err)
 
 	if *update {
@@ -354,7 +356,7 @@ func TestGoldenFile_TraefikOutput(t *testing.T) {
 	output, err := RenderService(manifest, provisionsDir)
 	require.NoError(t, err)
 
-	actual, err := yaml.Marshal(output.Traefik)
+	actual, err := yaml.Marshal(output.Targets[TargetTraefik])
 	require.NoError(t, err)
 
 	if *update {
@@ -392,7 +394,7 @@ func TestGoldenFile_ProtectedTraefikOutput(t *testing.T) {
 	output, err := RenderService(manifest, provisionsDir)
 	require.NoError(t, err)
 
-	actual, err := yaml.Marshal(output.Traefik)
+	actual, err := yaml.Marshal(output.Targets[TargetTraefik])
 	require.NoError(t, err)
 
 	if *update {
@@ -429,7 +431,7 @@ func TestGoldenFile_GatusOutput(t *testing.T) {
 	output, err := RenderService(manifest, provisionsDir)
 	require.NoError(t, err)
 
-	actual, err := yaml.Marshal(output.Gatus)
+	actual, err := yaml.Marshal(output.Targets[TargetGatus])
 	require.NoError(t, err)
 
 	if *update {
@@ -488,34 +490,36 @@ nested:
 func TestNewRenderOutput(t *testing.T) {
 	output := NewRenderOutput()
 	require.NotNil(t, output)
-	require.NotNil(t, output.Compose)
-	require.NotNil(t, output.Traefik)
-	require.NotNil(t, output.Gatus)
+	require.NotNil(t, output.Targets[TargetCompose])
+	require.NotNil(t, output.Targets[TargetTraefik])
+	require.NotNil(t, output.Targets[TargetGatus])
 
 	// Should be empty but not nil
-	assert.Empty(t, output.Compose)
-	assert.Empty(t, output.Traefik)
-	assert.Empty(t, output.Gatus)
+	assert.Empty(t, output.Targets[TargetCompose])
+	assert.Empty(t, output.Targets[TargetTraefik])
+	assert.Empty(t, output.Targets[TargetGatus])
 }
 
 func TestWriteOutputs(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	output := &RenderOutput{
-		Compose: map[string]any{
-			"services": map[string]any{
-				"test": map[string]any{
-					"image": "test:latest",
+		Targets: map[string]map[string]any{
+			TargetCompose: {
+				"services": map[string]any{
+					"test": map[string]any{
+						"image": "test:latest",
+					},
 				},
 			},
-		},
-		Traefik: map[string]any{
-			"http": map[string]any{
-				"routers": map[string]any{},
+			TargetTraefik: {
+				"http": map[string]any{
+					"routers": map[string]any{},
+				},
 			},
-		},
-		Gatus: map[string]any{
-			"endpoints": []any{},
+			TargetGatus: {
+				"endpoints": []any{},
+			},
 		},
 	}
 
@@ -547,9 +551,11 @@ func TestWriteOutputs_EmptyOutput(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	output := &RenderOutput{
-		Compose: map[string]any{},
-		Traefik: map[string]any{},
-		Gatus:   map[string]any{},
+		Targets: map[string]map[string]any{
+			TargetCompose: {},
+			TargetTraefik: {},
+			TargetGatus:   {},
+		},
 	}
 
 	err := WriteOutputs(output, tmpDir, "empty-stack")
@@ -565,11 +571,11 @@ func TestWriteOutputs_PartialOutput(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	output := &RenderOutput{
-		Compose: map[string]any{
-			"services": map[string]any{},
+		Targets: map[string]map[string]any{
+			TargetCompose: {"services": map[string]any{}},
+			TargetTraefik: {},
+			TargetGatus:   {},
 		},
-		Traefik: map[string]any{}, // Empty - should not be written
-		Gatus:   map[string]any{}, // Empty - should not be written
 	}
 
 	err := WriteOutputs(output, tmpDir, "partial-stack")
@@ -691,9 +697,11 @@ func TestRenderService_SidecarWithError(t *testing.T) {
 func TestRenderToYAML_Error(t *testing.T) {
 	// Create output with valid data - RenderToYAML should succeed
 	output := &RenderOutput{
-		Compose: map[string]any{"key": "value"},
-		Traefik: map[string]any{},
-		Gatus:   map[string]any{},
+		Targets: map[string]map[string]any{
+			TargetCompose: {"key": "value"},
+			TargetTraefik: {},
+			TargetGatus:   {},
+		},
 	}
 
 	yamlStr, err := RenderToYAML(output)
@@ -739,7 +747,7 @@ func TestRenderService_WithComposeOverride(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, output)
 
-	services, ok := output.Compose["services"].(map[string]any)
+	services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
 	require.True(t, ok)
 
 	app, ok := services["override-app"].(map[string]any)
@@ -778,7 +786,7 @@ func TestRenderService_WithChromeSidecar(t *testing.T) {
 	output, err := RenderService(manifest, provisionsDir)
 	require.NoError(t, err)
 
-	services, ok := output.Compose["services"].(map[string]any)
+	services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
 	require.True(t, ok)
 
 	// Should have main service
@@ -816,7 +824,7 @@ func TestRenderService_ComposeOverridePreservesGoTemplates(t *testing.T) {
 	output, err := RenderService(manifest, provisionsDir)
 	require.NoError(t, err)
 
-	services, ok := output.Compose["services"].(map[string]any)
+	services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
 	require.True(t, ok)
 
 	app, ok := services["secret-app"].(map[string]any)
@@ -854,7 +862,7 @@ func TestRenderService_ComposeOverrideMergesEnvironment(t *testing.T) {
 	output, err := RenderService(manifest, provisionsDir)
 	require.NoError(t, err)
 
-	services, ok := output.Compose["services"].(map[string]any)
+	services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
 	require.True(t, ok)
 
 	app, ok := services["merge-env-app"].(map[string]any)
@@ -897,7 +905,7 @@ func TestRenderService_ComposeOverrideAddsNetworks(t *testing.T) {
 	output, err := RenderService(manifest, provisionsDir)
 	require.NoError(t, err)
 
-	services, ok := output.Compose["services"].(map[string]any)
+	services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
 	require.True(t, ok)
 
 	app, ok := services["network-app"].(map[string]any)
@@ -909,8 +917,58 @@ func TestRenderService_ComposeOverrideAddsNetworks(t *testing.T) {
 	assert.Contains(t, networks, "custom-net")
 
 	// Should have network definition
-	networkDefs, ok := output.Compose["networks"].(map[string]any)
+	networkDefs, ok := output.Targets[TargetCompose]["networks"].(map[string]any)
 	require.True(t, ok)
 	_, hasCustomNet := networkDefs["custom-net"]
 	assert.True(t, hasCustomNet)
+}
+
+func TestWriteOutputs_CleansUpStaleFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// First write: compose + traefik both populated
+	output := &RenderOutput{
+		Targets: map[string]map[string]any{
+			TargetCompose: {"services": map[string]any{"web": map[string]any{"image": "nginx"}}},
+			TargetTraefik: {"http": map[string]any{"routers": map[string]any{}}},
+		},
+	}
+	require.NoError(t, WriteOutputs(output, tmpDir, "stale-test"))
+
+	traefikPath := filepath.Join(tmpDir, "traefik", "dynamic.yml")
+	_, err := os.Stat(traefikPath)
+	require.NoError(t, err, "traefik file should exist after first write")
+
+	// Second write: traefik is now empty — stale file should be removed
+	output2 := &RenderOutput{
+		Targets: map[string]map[string]any{
+			TargetCompose: {"services": map[string]any{"web": map[string]any{"image": "nginx:latest"}}},
+			TargetTraefik: {},
+		},
+	}
+	require.NoError(t, WriteOutputs(output2, tmpDir, "stale-test"))
+
+	_, err = os.Stat(traefikPath)
+	assert.True(t, os.IsNotExist(err), "stale traefik file should be removed when target becomes empty")
+}
+
+func TestWriteOutputs_PathTraversalBlocked(t *testing.T) {
+	// Temporarily register a malicious target config with path traversal
+	const maliciousTarget = "evil-target"
+	TargetRegistry[maliciousTarget] = TargetConfig{
+		Dir:      "../../../etc",
+		Filename: func(_ string) string { return "passwd" },
+	}
+	t.Cleanup(func() { delete(TargetRegistry, maliciousTarget) })
+
+	tmpDir := t.TempDir()
+	output := &RenderOutput{
+		Targets: map[string]map[string]any{
+			maliciousTarget: {"pwned": true},
+		},
+	}
+
+	err := WriteOutputs(output, tmpDir, "test")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrPathTraversal)
 }

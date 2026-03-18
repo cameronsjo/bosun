@@ -3,12 +3,31 @@
 ## Purpose
 
 The manifest system transforms service definitions into Docker Compose, Traefik, and Gatus configuration files. It supports two formats: a legacy provision-based format using `${var}` interpolation, and a Helm-aligned chart format using Go templates (`{{ .Values.var }}`).
-
 ## Requirements
-
 ### Requirement: Service Rendering
 
-The system SHALL render a `ServiceManifest` into compose, traefik, and gatus outputs by loading provisions, expanding sidecars, and applying compose overrides.
+The system SHALL render a `ServiceManifest` into output targets by loading provisions, expanding sidecars, and applying compose overrides. Output targets are data-driven: a `TargetRegistry` maps target names to output file metadata. The default registry includes `compose`, `traefik`, and `gatus`.
+
+The `TargetRegistry` is a package-level map of target name (string) to `TargetConfig`. Each `TargetConfig` contains:
+
+- `Dir`: Output subdirectory name (defaults to the target name, e.g., `"compose"`)
+- `Filename`: A function `func(stackName string) string` that returns the output filename for a given stack
+
+The registry provides:
+
+- Lookup by target name
+- Iteration over all registered targets (sorted by name for determinism)
+- Registration of new targets (code-defined at package init; not config-driven)
+
+Default entries:
+
+| Target | Dir | Filename |
+|--------|-----|----------|
+| `compose` | `compose` | `{stackName}.yml.tmpl` |
+| `traefik` | `traefik` | `dynamic.yml` |
+| `gatus` | `gatus` | `endpoints.yml` |
+
+`RenderOutput` holds rendering results in `Targets map[string]map[string]any` — a map keyed by target name where each value is a `map[string]any` representing the target's YAML content.
 
 A `ServiceManifest` MUST contain:
 
@@ -28,19 +47,19 @@ A `ServiceManifest` MAY contain:
 #### Scenario: Simple service with provisions
 
 - **WHEN** a `ServiceManifest` has `name: myapp`, `provisions: [container]`, and `config.image: myapp:latest`
-- **THEN** the system loads the `container` provision, interpolates variables, and produces a compose output with the service configured
+- **THEN** the system loads the `container` provision, interpolates variables, and produces output targets with the service configured
 
 #### Scenario: Raw passthrough mode
 
 - **WHEN** a `ServiceManifest` has `type: raw` and a `compose` block
-- **THEN** the system uses the compose block directly as the service output without loading any provisions
-- **AND** the compose block is placed under the `services` key in the output
+- **THEN** the system uses the compose block directly as the compose target output without loading any provisions
+- **AND** the compose block is placed under the `services` key in the compose target
 
 #### Scenario: Needs shorthand expands sidecars
 
 - **WHEN** a `ServiceManifest` has `needs: [postgres]`
 - **THEN** the system applies `SidecarDefaults` for postgres, interpolates default values using the service's config, and loads the postgres provision
-- **AND** the sidecar service appears in the compose output (e.g., `myapp-db`)
+- **AND** the sidecar service appears in the compose target (e.g., `myapp-db`)
 
 #### Scenario: Unknown needs are silently skipped
 
@@ -55,32 +74,30 @@ A `ServiceManifest` MAY contain:
 #### Scenario: Compose overrides are deep-merged
 
 - **WHEN** a `ServiceManifest` includes a `compose` block alongside provisions
-- **THEN** the compose block is interpolated with variables and deep-merged on top of provision-generated output
+- **THEN** the compose block is interpolated with variables and deep-merged on top of provision-generated compose target
 - **AND** `${var}` placeholders in the compose block are replaced with values from config
 
 ### Requirement: Provision System
 
-The system SHALL support reusable provision templates that produce compose, traefik, and gatus output sections. Provisions are loaded from YAML files, interpolated with variables, and support inheritance via an `includes` key.
+The system SHALL support reusable provision templates that produce outputs for any registered target. Provisions are loaded from YAML files, interpolated with variables, and support inheritance via an `includes` key. Target outputs are stored in `Targets map[string]map[string]any` — a map keyed by target name where each value is a `map[string]any` representing the target's YAML content.
 
 A `Provision` MAY contain:
 
 - `apiVersion`: Schema version
 - `kind`: Manifest type (`Provision`)
-- `compose`: Docker Compose output section
-- `traefik`: Traefik dynamic configuration output section
-- `gatus`: Gatus endpoint monitoring output section
 - `includes`: List of other provision names to inherit from
+- Any registered target name as a top-level key (e.g., `compose`, `traefik`, `gatus`) with a map value
 
 #### Scenario: Load and interpolate a provision
 
 - **WHEN** a provision file contains `${name}` and `${image}` placeholders
 - **THEN** the system replaces them with values from the variables map before YAML parsing
-- **AND** returns a `Provision` struct with populated compose, traefik, and gatus fields
+- **AND** returns a `Provision` with populated targets
 
 #### Scenario: Provision inheritance via includes
 
 - **WHEN** a provision has `includes: [base, extension]`
-- **THEN** the system loads each included provision first, deep-merges their outputs, then deep-merges the current provision's content on top
+- **THEN** the system loads each included provision first, deep-merges their target outputs, then deep-merges the current provision's content on top
 - **AND** the current provision's values take precedence over included values
 
 #### Scenario: Circular include detection
@@ -102,6 +119,16 @@ A `Provision` MAY contain:
 
 - **WHEN** `ListProvisions` is called with a provisions directory
 - **THEN** it returns the names (without file extension) of all `.yml` and `.yaml` files in the directory, excluding subdirectories
+
+#### Scenario: Backwards-compatible YAML deserialization
+
+- **WHEN** a provision file uses top-level `compose:`, `traefik:`, `gatus:` keys (existing format)
+- **THEN** the system unmarshals these into `Targets["compose"]`, `Targets["traefik"]`, `Targets["gatus"]` respectively
+
+#### Scenario: YAML round-trip preserves flat structure
+
+- **WHEN** a `Provision` is marshaled back to YAML
+- **THEN** the output uses flat top-level keys (e.g., `compose:`, `traefik:`) not a nested `targets:` wrapper
 
 ### Requirement: Stack Rendering (Legacy)
 
@@ -353,7 +380,7 @@ Default dependency configurations are provided via `DependencyDefaults` for comm
 
 ### Requirement: Chart Template Engine
 
-The system SHALL render charts using a Go template engine with Sprig functions, custom helpers, and structured template context.
+The system SHALL render charts using a Go template engine with Sprig functions, custom helpers, and structured template context. Template output targets are extracted dynamically from the rendered YAML by matching keys against the target registry.
 
 Templates use `{{ .Chart.Name }}`, `{{ .Values.port }}`, and `{{ .Deps.postgres.Host }}` syntax. The engine provides:
 
@@ -388,6 +415,13 @@ Templates use `{{ .Chart.Name }}`, `{{ .Values.port }}`, and `{{ .Deps.postgres.
 
 - **WHEN** a template name does not correspond to a file in the templates directory
 - **THEN** the engine returns a "template not found" error
+
+#### Scenario: Dynamic target extraction from rendered output
+
+- **WHEN** a template renders YAML with top-level keys matching registered target names
+- **THEN** the engine extracts each matching key into the corresponding target in the `RenderOutput`
+- **AND** metadata keys (`apiVersion`, `kind`, `includes`) are stripped before extraction
+- **AND** top-level keys that are neither metadata nor registered target names are silently ignored
 
 ### Requirement: Values Precedence
 
@@ -493,25 +527,40 @@ The system SHALL migrate unversioned manifest files to v1 by adding `apiVersion`
 
 ### Requirement: Output Writing
 
-The system SHALL write rendered outputs to target-specific directories as YAML files.
+The system SHALL write rendered outputs to target-specific directories as YAML files. Target names, output directories, and filenames are determined by the `TargetRegistry`.
 
-Output targets:
+Default target configuration:
 
-- `compose/{stackName}.yml.tmpl`: Docker Compose output (uses `.yml.tmpl` extension for Go template processing during reconcile)
-- `traefik/dynamic.yml`: Traefik dynamic configuration
-- `gatus/endpoints.yml`: Gatus monitoring endpoints
+- `compose` → `compose/{stackName}.yml.tmpl`
+- `traefik` → `traefik/dynamic.yml`
+- `gatus` → `gatus/endpoints.yml`
 
-#### Scenario: Write all non-empty targets
+The system SHALL iterate targets in sorted order (by target name) to produce deterministic output.
 
-- **WHEN** `WriteOutputs` is called with compose, traefik, and gatus content
-- **THEN** each non-empty target is written to its respective subdirectory under the output directory
+#### Scenario: Write all non-empty registered targets
+
+- **WHEN** `WriteOutputs` is called with a `RenderOutput` containing non-empty targets
+- **THEN** each non-empty target that is present in the `TargetRegistry` is written to its respective subdirectory under the output directory
 
 #### Scenario: Empty targets are not written
 
-- **WHEN** a target (e.g., traefik) has no content (empty map)
+- **WHEN** a target has no content (empty map)
 - **THEN** no file or directory is created for that target
 
 #### Scenario: Dry-run rendering
 
 - **WHEN** `RenderToYAML` is called with a `RenderOutput`
-- **THEN** it returns a combined YAML string of all targets for display purposes
+- **THEN** it returns a combined YAML string of all non-empty targets in sorted order for display purposes
+
+#### Scenario: Deterministic output order
+
+- **WHEN** multiple targets have content
+- **THEN** `WriteOutputs` and `RenderToYAML` process targets in alphabetical order by target name
+
+#### Scenario: Unregistered target in RenderOutput
+
+- **WHEN** `RenderOutput.Targets` contains a target name that is not present in the `TargetRegistry`
+- **THEN** `WriteOutputs` logs a warning identifying the unregistered target name and skips it
+- **AND** `RenderToYAML` includes the unregistered target in the combined YAML output (for diagnostic visibility)
+- **AND** `showDiff` skips the unregistered target
+
