@@ -35,6 +35,44 @@ type ReloadedConfig struct {
 // Returns nil ReloadedConfig if no config file is found (not an error).
 type ConfigReloaderFunc func(dir string) (*ReloadedConfig, error)
 
+// DefaultTargetName is the name used for the implicit single-target backwards-compat target.
+const DefaultTargetName = "default"
+
+// Target describes a single deployment target (a server/host to deploy to).
+// Each target has its own host, appdata paths, project name, state file,
+// staging directory, secrets scope, and operational overrides.
+type Target struct {
+	// Name identifies this target (e.g., "unraid", "pi"). Used in file paths and logs.
+	Name string
+	// TargetHost is empty for local deployment, or "user@host" for remote.
+	TargetHost string
+	// LocalAppdataPath is the path to appdata when running locally.
+	LocalAppdataPath string
+	// RemoteAppdataPath is the path to appdata on the remote host.
+	RemoteAppdataPath string
+	// ProjectName is the docker compose project name for this target.
+	ProjectName string
+	// StateFile overrides the derived state file path. When empty, derived from Name.
+	StateFile string
+	// StagingDir overrides the derived staging directory. When empty, derived from Name.
+	StagingDir string
+	// SecretsScope is the key prefix for per-target secrets (e.g., "unraid" → targets.unraid.*).
+	SecretsScope string
+	// CriticalContainers overrides the global list for this target.
+	CriticalContainers []string
+	// PostSyncHooks overrides the global hooks for this target.
+	PostSyncHooks []PostSyncHook
+	// DeploySyncPaths overrides the global allowlist for this target.
+	DeploySyncPaths []string
+	// DeploySyncExclude overrides the global blocklist for this target.
+	DeploySyncExclude []string
+}
+
+// IsDefault returns true if this is the implicit default target.
+func (t Target) IsDefault() bool {
+	return t.Name == DefaultTargetName
+}
+
 // Config holds the reconciliation configuration.
 type Config struct {
 	// RepoURL is the git repository URL.
@@ -58,6 +96,11 @@ type Config struct {
 	LocalAppdataPath string
 	// RemoteAppdataPath is the path to appdata on the remote host.
 	RemoteAppdataPath string
+
+	// Targets is the list of deployment targets. When empty, an implicit default
+	// target is synthesized from the flat config fields above (TargetHost,
+	// LocalAppdataPath, RemoteAppdataPath, ProjectName).
+	Targets []Target
 
 	// DryRun if true, only shows what would be done.
 	DryRun bool
@@ -215,6 +258,67 @@ func DefaultConfig() *Config {
 		RemoveOrphans:         true,
 		HealthGateTimeout:     60 * time.Second,
 	}
+}
+
+// DefaultLockDir is the default directory for per-target lock files.
+const DefaultLockDir = "/var/run/bosun"
+
+// ResolveTargets returns the effective target list for this config.
+// When Targets is non-empty, returns it as-is.
+// When Targets is empty, synthesizes a single implicit default target
+// from the flat config fields for backwards compatibility.
+func (c *Config) ResolveTargets() []Target {
+	if len(c.Targets) > 0 {
+		return c.Targets
+	}
+	return []Target{
+		{
+			Name:               DefaultTargetName,
+			TargetHost:         c.TargetHost,
+			LocalAppdataPath:   c.LocalAppdataPath,
+			RemoteAppdataPath:  c.RemoteAppdataPath,
+			ProjectName:        c.ProjectName,
+			StateFile:          c.StateFile,
+			StagingDir:         c.StagingDir,
+			CriticalContainers: c.CriticalContainers,
+			PostSyncHooks:      c.PostSyncHooks,
+			DeploySyncPaths:    c.DeploySyncPaths,
+			DeploySyncExclude:  c.DeploySyncExclude,
+		},
+	}
+}
+
+// TargetStateFile returns the state file path for a target.
+// The default target uses the legacy path; named targets use deploy-state-<name>.json.
+func TargetStateFile(baseStateDir string, t Target) string {
+	if t.StateFile != "" {
+		return t.StateFile
+	}
+	if t.IsDefault() {
+		return filepath.Join(baseStateDir, DefaultStateFile)
+	}
+	return filepath.Join(baseStateDir, fmt.Sprintf("deploy-state-%s.json", t.Name))
+}
+
+// TargetStagingDir returns the staging directory for a target.
+// The default target uses the base staging dir; named targets use <staging>/<name>/.
+func TargetStagingDir(baseStagingDir string, t Target) string {
+	if t.StagingDir != "" {
+		return t.StagingDir
+	}
+	if t.IsDefault() {
+		return baseStagingDir
+	}
+	return filepath.Join(baseStagingDir, t.Name)
+}
+
+// TargetLockFile returns the lock file path for a target.
+// The default target uses the legacy path; named targets use reconcile-<name>.lock.
+func TargetLockFile(baseLockDir string, t Target) string {
+	if t.IsDefault() {
+		return filepath.Join(baseLockDir, "reconcile.lock")
+	}
+	return filepath.Join(baseLockDir, fmt.Sprintf("reconcile-%s.lock", t.Name))
 }
 
 // AlertSender sends alerts for reconciliation events.

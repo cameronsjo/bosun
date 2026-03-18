@@ -1262,6 +1262,16 @@ func ConfigFromEnv() *Config {
 		rcfg.StateFile = filepath.Join(stateDir, reconcile.DefaultStateFile)
 	}
 
+	// Multi-target configuration: BOSUN_TARGETS (JSON array) overrides bosun.yaml targets.
+	if v := os.Getenv("BOSUN_TARGETS"); v != "" {
+		var targets []reconcile.Target
+		if err := json.Unmarshal([]byte(v), &targets); err != nil {
+			log.Warn().Err(err).Msg("Failed to parse BOSUN_TARGETS, ignoring")
+		} else {
+			rcfg.Targets = targets
+		}
+	}
+
 	cfg.ReconcileConfig = rcfg
 
 	// Compose up timeout override
@@ -1419,12 +1429,17 @@ func ConfigFromEnv() *Config {
 	}
 	rcfg.RemoveOrphans = cfg.RemoveOrphans
 
-	// Post-sync hooks, settle delay, deploy paths, alert flags, drift debounce, and remove_orphans: load from project config, env var overrides.
+	// Post-sync hooks, settle delay, deploy paths, alert flags, drift debounce, remove_orphans, and targets: load from project config, env var overrides.
 	if projectCfg, err := config.Load(); err == nil {
 		rcfg.PostSyncHooks = projectCfg.PostSyncHooks()
 		rcfg.HookSettleDelay = projectCfg.HookSettleDelay()
 		rcfg.DeployPaths = projectCfg.DeployPaths()
 		rcfg.CriticalContainers = projectCfg.CriticalContainers()
+
+		// Load targets from project config; BOSUN_TARGETS env var (parsed above) takes precedence.
+		if len(rcfg.Targets) == 0 && len(projectCfg.Targets()) > 0 {
+			rcfg.Targets = projectCfg.Targets()
+		}
 
 		alertCfg := projectCfg.GetAlertConfig()
 		rcfg.OnFailure = alertCfg.OnFailure

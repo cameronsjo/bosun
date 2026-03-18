@@ -1817,3 +1817,116 @@ func TestExtractDriftSelfHeal(t *testing.T) {
 		assert.False(t, extractDriftSelfHeal(cfg))
 	})
 }
+
+// --- Multi-target config tests ---
+
+func TestTargetsFromConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmpDir = evalSymlinks(t, tmpDir)
+
+	yamlContent := `
+targets:
+  - name: unraid
+    target_host: "user@unraid"
+    local_appdata_path: /mnt/appdata
+    remote_appdata_path: /mnt/user/appdata
+    project_name: homelab-unraid
+    secrets_scope: unraid
+    critical_containers:
+      - traefik
+      - authelia
+    post_sync_hooks:
+      - container: traefik
+        paths:
+          - "*.toml"
+    deploy_sync_paths:
+      - "compose/**"
+    deploy_sync_exclude:
+      - "*.bak"
+  - name: pi
+    target_host: "user@pi"
+    project_name: homelab-pi
+    secrets_scope: pi
+`
+	err := os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(yamlContent), 0644)
+	require.NoError(t, err)
+
+	cfg, err := LoadFrom(tmpDir)
+	require.NoError(t, err)
+
+	targets := cfg.Targets()
+	require.Len(t, targets, 2)
+
+	unraid := targets[0]
+	assert.Equal(t, "unraid", unraid.Name)
+	assert.Equal(t, "user@unraid", unraid.TargetHost)
+	assert.Equal(t, "/mnt/appdata", unraid.LocalAppdataPath)
+	assert.Equal(t, "/mnt/user/appdata", unraid.RemoteAppdataPath)
+	assert.Equal(t, "homelab-unraid", unraid.ProjectName)
+	assert.Equal(t, "unraid", unraid.SecretsScope)
+	assert.Equal(t, []string{"traefik", "authelia"}, unraid.CriticalContainers)
+	require.Len(t, unraid.PostSyncHooks, 1)
+	assert.Equal(t, "traefik", unraid.PostSyncHooks[0].Container)
+	assert.Equal(t, []string{"compose/**"}, unraid.DeploySyncPaths)
+	assert.Equal(t, []string{"*.bak"}, unraid.DeploySyncExclude)
+
+	pi := targets[1]
+	assert.Equal(t, "pi", pi.Name)
+	assert.Equal(t, "user@pi", pi.TargetHost)
+	assert.Equal(t, "homelab-pi", pi.ProjectName)
+	assert.Equal(t, "pi", pi.SecretsScope)
+}
+
+func TestTargetsFromConfig_NoTargetsSection(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmpDir = evalSymlinks(t, tmpDir)
+
+	yamlContent := `
+project_name: homelab
+domain: example.com
+`
+	err := os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(yamlContent), 0644)
+	require.NoError(t, err)
+
+	cfg, err := LoadFrom(tmpDir)
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Targets(), "Targets should be nil when not configured")
+}
+
+func TestTargetsFromConfig_EmptyNameSkipped(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmpDir = evalSymlinks(t, tmpDir)
+
+	yamlContent := `
+targets:
+  - name: ""
+    target_host: "user@bad"
+  - name: pi
+    target_host: "user@pi"
+`
+	err := os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(yamlContent), 0644)
+	require.NoError(t, err)
+
+	cfg, err := LoadFrom(tmpDir)
+	require.NoError(t, err)
+
+	targets := cfg.Targets()
+	require.Len(t, targets, 1)
+	assert.Equal(t, "pi", targets[0].Name)
+}
+
+func TestExtractTargets_DeprecationWarning(t *testing.T) {
+	// When both targets: and target_host are present, extractTargets logs a warning
+	// and returns only the targets: section entries.
+	cfg := configFile{
+		TargetHost: "user@old-host",
+		Targets: []targetRaw{
+			{Name: "pi", TargetHost: "user@pi"},
+		},
+	}
+
+	targets := extractTargets(cfg)
+	require.Len(t, targets, 1)
+	assert.Equal(t, "pi", targets[0].Name)
+	assert.Equal(t, "user@pi", targets[0].TargetHost)
+}

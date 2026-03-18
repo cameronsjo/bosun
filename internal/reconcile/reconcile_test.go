@@ -3378,3 +3378,164 @@ func TestRunRemoteDeployFailure_StateNotUpdated(t *testing.T) {
 	assert.NotEqual(t, "new-commit", state.LastDeployedCommit,
 		"LastDeployedCommit should NOT be updated when deploy fails")
 }
+
+// --- Multi-target tests ---
+
+func TestTarget_IsDefault(t *testing.T) {
+	tests := []struct {
+		name     string
+		target   Target
+		expected bool
+	}{
+		{"default target", Target{Name: DefaultTargetName}, true},
+		{"named target", Target{Name: "unraid"}, false},
+		{"empty name", Target{Name: ""}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.target.IsDefault())
+		})
+	}
+}
+
+func TestResolveTargets_ImplicitDefault(t *testing.T) {
+	cfg := &Config{
+		TargetHost:         "user@pi",
+		LocalAppdataPath:   "/mnt/appdata",
+		RemoteAppdataPath:  "/mnt/user/appdata",
+		ProjectName:        "homelab",
+		StateFile:          "/var/lib/bosun/deploy-state.json",
+		StagingDir:         "/app/staging",
+		CriticalContainers: []string{"traefik"},
+		PostSyncHooks:      []PostSyncHook{{Container: "traefik", Paths: []string{"*.toml"}}},
+		DeploySyncPaths:    []string{"compose/**"},
+		DeploySyncExclude:  []string{"*.bak"},
+	}
+
+	targets := cfg.ResolveTargets()
+	require.Len(t, targets, 1)
+
+	def := targets[0]
+	assert.Equal(t, DefaultTargetName, def.Name)
+	assert.True(t, def.IsDefault())
+	assert.Equal(t, "user@pi", def.TargetHost)
+	assert.Equal(t, "/mnt/appdata", def.LocalAppdataPath)
+	assert.Equal(t, "/mnt/user/appdata", def.RemoteAppdataPath)
+	assert.Equal(t, "homelab", def.ProjectName)
+	assert.Equal(t, "/var/lib/bosun/deploy-state.json", def.StateFile)
+	assert.Equal(t, "/app/staging", def.StagingDir)
+	assert.Equal(t, []string{"traefik"}, def.CriticalContainers)
+	assert.Len(t, def.PostSyncHooks, 1)
+	assert.Equal(t, []string{"compose/**"}, def.DeploySyncPaths)
+	assert.Equal(t, []string{"*.bak"}, def.DeploySyncExclude)
+}
+
+func TestResolveTargets_ExplicitTargets(t *testing.T) {
+	cfg := &Config{
+		TargetHost: "should-be-ignored",
+		Targets: []Target{
+			{Name: "unraid", TargetHost: "user@unraid"},
+			{Name: "pi", TargetHost: "user@pi"},
+		},
+	}
+
+	targets := cfg.ResolveTargets()
+	require.Len(t, targets, 2)
+	assert.Equal(t, "unraid", targets[0].Name)
+	assert.Equal(t, "user@unraid", targets[0].TargetHost)
+	assert.Equal(t, "pi", targets[1].Name)
+	assert.Equal(t, "user@pi", targets[1].TargetHost)
+}
+
+func TestTargetStateFile(t *testing.T) {
+	tests := []struct {
+		name     string
+		baseDir  string
+		target   Target
+		expected string
+	}{
+		{
+			"default target uses legacy path",
+			"/var/lib/bosun",
+			Target{Name: DefaultTargetName},
+			"/var/lib/bosun/deploy-state.json",
+		},
+		{
+			"named target uses name suffix",
+			"/var/lib/bosun",
+			Target{Name: "unraid"},
+			"/var/lib/bosun/deploy-state-unraid.json",
+		},
+		{
+			"custom state file override",
+			"/var/lib/bosun",
+			Target{Name: "pi", StateFile: "/custom/state.json"},
+			"/custom/state.json",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, TargetStateFile(tt.baseDir, tt.target))
+		})
+	}
+}
+
+func TestTargetStagingDir(t *testing.T) {
+	tests := []struct {
+		name     string
+		baseDir  string
+		target   Target
+		expected string
+	}{
+		{
+			"default target uses base dir",
+			"/app/staging",
+			Target{Name: DefaultTargetName},
+			"/app/staging",
+		},
+		{
+			"named target uses subdirectory",
+			"/app/staging",
+			Target{Name: "pi"},
+			"/app/staging/pi",
+		},
+		{
+			"custom staging dir override",
+			"/app/staging",
+			Target{Name: "unraid", StagingDir: "/custom/staging"},
+			"/custom/staging",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, TargetStagingDir(tt.baseDir, tt.target))
+		})
+	}
+}
+
+func TestTargetLockFile(t *testing.T) {
+	tests := []struct {
+		name     string
+		baseDir  string
+		target   Target
+		expected string
+	}{
+		{
+			"default target uses legacy lock",
+			"/var/run/bosun",
+			Target{Name: DefaultTargetName},
+			"/var/run/bosun/reconcile.lock",
+		},
+		{
+			"named target uses name suffix",
+			"/var/run/bosun",
+			Target{Name: "unraid"},
+			"/var/run/bosun/reconcile-unraid.lock",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, TargetLockFile(tt.baseDir, tt.target))
+		})
+	}
+}
