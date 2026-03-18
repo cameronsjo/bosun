@@ -318,22 +318,32 @@ func WriteOutputs(output *RenderOutput, outputDir, stackName string) error {
 
 	// Write registered targets in sorted order
 	for _, name := range TargetNames() {
-		content := output.Targets[name]
-		if len(content) == 0 {
-			continue
-		}
-
 		cfg, registered := TargetRegistry[name]
 		if !registered {
 			continue
 		}
 
-		targetDir := filepath.Join(outputDir, cfg.Dir)
+		// Validate target directory stays within outputDir to prevent path traversal
+		targetDir, err := validatePathWithinDir(outputDir, cfg.Dir)
+		if err != nil {
+			return fmt.Errorf("resolve %s directory: %w", name, err)
+		}
+
+		outputPath := filepath.Join(targetDir, cfg.Filename(stackName))
+
+		content := output.Targets[name]
+		if len(content) == 0 {
+			// Clean up stale file if the target is now empty
+			if err := os.Remove(outputPath); err == nil {
+				logger.Info().Str("target", name).Str(log.FieldPath, outputPath).Msg("Removed stale target file")
+			}
+			continue
+		}
+
 		if err := os.MkdirAll(targetDir, 0755); err != nil {
 			return fmt.Errorf("create %s directory: %w", name, err)
 		}
 
-		outputPath := filepath.Join(targetDir, cfg.Filename(stackName))
 		data, err := yaml.Marshal(content)
 		if err != nil {
 			return fmt.Errorf("marshal %s output: %w", name, err)

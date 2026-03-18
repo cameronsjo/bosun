@@ -186,6 +186,14 @@ func runProvision(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Inject project name into compose output for consistent container namespacing.
+	// This ensures all stacks share the same docker compose project, so
+	// --remove-orphans works correctly and container name conflicts are avoided.
+	// Runs before dry-run/diff so all output paths see the same normalized compose.
+	if compose := output.Targets[manifest.TargetCompose]; len(compose) > 0 {
+		output.Target(manifest.TargetCompose)["name"] = cfg.ProjectName()
+	}
+
 	if provisionDryRun {
 		yamlOutput, err := manifest.RenderToYAML(output)
 		if err != nil {
@@ -209,13 +217,6 @@ func runProvision(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("acquire provision lock: %w", err)
 	}
 	defer func() { _ = provisionLock.Release() }()
-
-	// Inject project name into compose output for consistent container namespacing.
-	// This ensures all stacks share the same docker compose project, so
-	// --remove-orphans works correctly and container name conflicts are avoided.
-	if compose := output.Targets[manifest.TargetCompose]; len(compose) > 0 {
-		output.Target(manifest.TargetCompose)["name"] = cfg.ProjectName()
-	}
 
 	if err := manifest.WriteOutputs(output, cfg.OutputDir(), outputName); err != nil {
 		return fmt.Errorf("write outputs: %w", err)
@@ -473,6 +474,13 @@ func showDiff(output *manifest.RenderOutput, outputDir, stackName string) error 
 		// Unified diff between existing and generated.
 		_, _ = ui.Blue.Printf("\n--- %s\n+++ %s (generated)\n", path, path)
 		printUnifiedDiff(existingContent, newContent)
+	}
+
+	// Warn about unregistered targets that won't appear in diff output
+	for name := range output.Targets {
+		if _, registered := manifest.TargetRegistry[name]; !registered {
+			_, _ = ui.Yellow.Printf("  ⚠ target %q is not registered — skipped in diff\n", name)
+		}
 	}
 
 	if !hasDiff {

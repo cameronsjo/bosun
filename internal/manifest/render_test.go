@@ -922,3 +922,53 @@ func TestRenderService_ComposeOverrideAddsNetworks(t *testing.T) {
 	_, hasCustomNet := networkDefs["custom-net"]
 	assert.True(t, hasCustomNet)
 }
+
+func TestWriteOutputs_CleansUpStaleFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// First write: compose + traefik both populated
+	output := &RenderOutput{
+		Targets: map[string]map[string]any{
+			TargetCompose: {"services": map[string]any{"web": map[string]any{"image": "nginx"}}},
+			TargetTraefik: {"http": map[string]any{"routers": map[string]any{}}},
+		},
+	}
+	require.NoError(t, WriteOutputs(output, tmpDir, "stale-test"))
+
+	traefikPath := filepath.Join(tmpDir, "traefik", "dynamic.yml")
+	_, err := os.Stat(traefikPath)
+	require.NoError(t, err, "traefik file should exist after first write")
+
+	// Second write: traefik is now empty — stale file should be removed
+	output2 := &RenderOutput{
+		Targets: map[string]map[string]any{
+			TargetCompose: {"services": map[string]any{"web": map[string]any{"image": "nginx:latest"}}},
+			TargetTraefik: {},
+		},
+	}
+	require.NoError(t, WriteOutputs(output2, tmpDir, "stale-test"))
+
+	_, err = os.Stat(traefikPath)
+	assert.True(t, os.IsNotExist(err), "stale traefik file should be removed when target becomes empty")
+}
+
+func TestWriteOutputs_PathTraversalBlocked(t *testing.T) {
+	// Temporarily register a malicious target config with path traversal
+	const maliciousTarget = "evil-target"
+	TargetRegistry[maliciousTarget] = TargetConfig{
+		Dir:      "../../../etc",
+		Filename: func(_ string) string { return "passwd" },
+	}
+	t.Cleanup(func() { delete(TargetRegistry, maliciousTarget) })
+
+	tmpDir := t.TempDir()
+	output := &RenderOutput{
+		Targets: map[string]map[string]any{
+			maliciousTarget: {"pwned": true},
+		},
+	}
+
+	err := WriteOutputs(output, tmpDir, "test")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrPathTraversal)
+}
