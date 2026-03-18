@@ -113,7 +113,8 @@ type Daemon struct {
 	socketServer  *SocketServer // Unix socket API (primary)
 	tcpServer     *TCPServer    // TCP API with bearer auth (optional)
 	httpServer    *Server       // HTTP server for webhooks (optional)
-	reconciler    *reconcile.Reconciler
+	reconciler    *reconcile.Reconciler      // Single-target fallback (used when only one target)
+	reconcileOpts []reconcile.ReconcilerOption // Options applied to each per-target reconciler
 	alerter       *alert.Manager
 	metrics       *Metrics       // Prometheus metrics (nil when HTTP is disabled)
 	dockerOnce    sync.Once      // Lazily initialize Docker client
@@ -175,6 +176,7 @@ func New(cfg *Config) (*Daemon, error) {
 		return client
 	}))
 
+	d.reconcileOpts = opts
 	d.reconciler = reconcile.NewReconciler(cfg.ReconcileConfig, opts...)
 
 	// Create Unix socket server (primary API)
@@ -516,7 +518,9 @@ func (d *Daemon) reconcileLoop(ctx context.Context, source string, force bool) e
 	}
 }
 
-// executeReconcile runs a single reconciliation and updates state.
+// executeReconcile runs a reconciliation cycle across all configured targets.
+// Each target is reconciled sequentially; a failure on one target does not
+// prevent the next target from running.
 func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool) error {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
@@ -532,20 +536,52 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 		),
 	)
 
-	// Set source and force on the reconciler config so the state-based
-	// skip logic and attempt tracking have the right context.
-	d.reconciler.SetRunOptions(source, force)
+	targets := d.config.ReconcileConfig.ResolveTargets()
 
 	logger.Info().
 		Str(log.FieldSource, source).
 		Bool("force", force).
-		Msg("Starting reconciliation")
+		Int("target_count", len(targets)).
+		Msg("Starting reconciliation cycle")
 
-	ui.Info("Starting reconciliation (source: %s, force: %t)", source, force)
+	ui.Info("Starting reconciliation (source: %s, force: %t, targets: %d)", source, force, len(targets))
 
-	err := d.reconciler.Run(ctx)
-	if err != nil {
-		telemetry.SpanError(otelSpan, err)
+	var firstErr error
+	successCount := 0
+
+	for _, target := range targets {
+		targetLogger := logger.With().Str("target", target.Name).Logger()
+
+		// Create a per-target config and reconciler.
+		targetCfg := d.config.ReconcileConfig.ConfigForTarget(target)
+		targetCfg.Source = source
+		targetCfg.Force = force
+
+		r := reconcile.NewReconciler(targetCfg, d.reconcileOpts...)
+
+		targetLogger.Info().Msg("Reconciling target")
+		if !target.IsDefault() {
+			ui.Info("Reconciling target: %s", target.Name)
+		}
+
+		err := r.Run(ctx)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("target %s: %w", target.Name, err)
+			}
+			targetLogger.Error().Err(err).Msg("Target reconciliation failed")
+			ui.Error("Target %s failed: %v", target.Name, err)
+			continue
+		}
+
+		successCount++
+		targetLogger.Info().Msg("Target reconciliation completed")
+	}
+
+	// Determine overall cycle result.
+	cycleErr := firstErr
+	if cycleErr != nil {
+		telemetry.SpanError(otelSpan, cycleErr)
 	} else {
 		telemetry.SpanOK(otelSpan)
 	}
@@ -554,17 +590,17 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 	// Update state (use stateMu for thread-safe reads from health checks).
 	d.stateMu.Lock()
 	d.lastReconcile = time.Now()
-	d.lastError = err
+	d.lastError = cycleErr
 	d.stateMu.Unlock()
 
 	durationMS := time.Since(start).Milliseconds()
 
 	// Finish the Sentry transaction with the result status.
-	finishTx(err)
+	finishTx(cycleErr)
 
 	durationSec := time.Since(start).Seconds()
 
-	if err != nil {
+	if cycleErr != nil {
 		if d.metrics != nil {
 			d.metrics.RecordReconcileFailure(durationSec)
 		}
@@ -572,11 +608,14 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 		logger.Error().
 			Str(log.FieldSource, source).
 			Int64(log.FieldDurationMS, durationMS).
-			Err(err).
-			Msg("Reconciliation failed")
+			Int("success_count", successCount).
+			Int("target_count", len(targets)).
+			Err(cycleErr).
+			Msg("Reconciliation cycle completed with errors")
 
-		ui.Error("Reconciliation failed after %s: %v", time.Since(start), err)
-		return err
+		ui.Error("Reconciliation completed with errors after %s (%d/%d targets succeeded)",
+			time.Since(start), successCount, len(targets))
+		return cycleErr
 	}
 
 	if d.metrics != nil {
@@ -587,10 +626,11 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 	logger.Info().
 		Str(log.FieldSource, source).
 		Int64(log.FieldDurationMS, durationMS).
+		Int("target_count", len(targets)).
 		Bool("success", true).
-		Msg("Reconciliation completed")
+		Msg("Reconciliation cycle completed")
 
-	ui.Success("Reconciliation completed in %s", time.Since(start))
+	ui.Success("Reconciliation completed in %s (%d targets)", time.Since(start), len(targets))
 	return nil
 }
 
