@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
@@ -334,7 +335,19 @@ const DefaultLockDir = "/var/run/bosun"
 // from the flat config fields for backwards compatibility.
 func (c *Config) ResolveTargets() []Target {
 	if len(c.Targets) > 0 {
-		return c.Targets
+		// Validate target names before returning to prevent path traversal.
+		valid := make([]Target, 0, len(c.Targets))
+		for _, t := range c.Targets {
+			if err := ValidateTargetName(t.Name); err != nil {
+				log.Warn().Str("target", t.Name).Err(err).Msg("Skipping target with invalid name")
+				continue
+			}
+			valid = append(valid, t)
+		}
+		if len(valid) > 0 {
+			return valid
+		}
+		// Fall through to default if all targets were invalid.
 	}
 	return []Target{
 		{
@@ -351,6 +364,24 @@ func (c *Config) ResolveTargets() []Target {
 			DeploySyncExclude:  c.DeploySyncExclude,
 		},
 	}
+}
+
+// safeTargetNamePattern matches only safe target names: lowercase alphanumeric, hyphens, underscores.
+var safeTargetNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+// ValidateTargetName checks that a target name is safe for use in filesystem paths.
+// Rejects empty names, path traversal attempts, absolute paths, and special characters.
+func ValidateTargetName(name string) error {
+	if name == "" {
+		return fmt.Errorf("target name must not be empty")
+	}
+	if name == DefaultTargetName {
+		return nil // The implicit default is always valid
+	}
+	if !safeTargetNamePattern.MatchString(name) {
+		return fmt.Errorf("target name %q contains unsafe characters (allowed: alphanumeric, hyphens, underscores)", name)
+	}
+	return nil
 }
 
 // TargetStateFile returns the state file path for a target.

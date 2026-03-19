@@ -553,6 +553,11 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 	var firstErr error
 	successCount := 0
 
+	// NOTE: Daemon-level drift checks (runDriftCheck), health status (HealthStatus),
+	// and circuit-breaker state still read from the base config's single state file.
+	// In multi-target mode, each target writes its own state file, but these daemon
+	// subsystems are not yet fan-out aware. This means periodic drift alerts and
+	// health reporting only reflect the default/base target until these are refactored.
 	for _, target := range targets {
 		targetLogger := logger.With().Str("target", target.Name).Logger()
 

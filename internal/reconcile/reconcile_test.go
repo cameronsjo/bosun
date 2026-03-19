@@ -3662,6 +3662,48 @@ func TestConfigForTarget_LockFilePreservesCustomDir(t *testing.T) {
 	assert.Contains(t, cfg.LockFile, "nas", "per-target lock should include target name")
 }
 
+func TestValidateTargetName(t *testing.T) {
+	tests := []struct {
+		name    string
+		wantErr bool
+	}{
+		{"unraid", false},
+		{"pi-4", false},
+		{"nas_backup", false},
+		{DefaultTargetName, false},
+		{"../../etc", true},
+		{"/tmp/evil", true},
+		{"", true},
+		{"has spaces", true},
+		{"has.dots", true},
+		{"-starts-with-dash", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateTargetName(tt.name)
+			if tt.wantErr {
+				assert.Error(t, err, "name %q should be rejected", tt.name)
+			} else {
+				assert.NoError(t, err, "name %q should be accepted", tt.name)
+			}
+		})
+	}
+}
+
+func TestResolveTargets_SkipsInvalidNames(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Targets = []Target{
+		{Name: "good-target", TargetHost: "user@good"},
+		{Name: "../../evil", TargetHost: "user@evil"},
+		{Name: "also-good", TargetHost: "user@also"},
+	}
+
+	targets := cfg.ResolveTargets()
+	assert.Len(t, targets, 2, "should skip the invalid target")
+	assert.Equal(t, "good-target", targets[0].Name)
+	assert.Equal(t, "also-good", targets[1].Name)
+}
+
 func TestConfigForTarget_DefaultTargetPreservesExactPaths(t *testing.T) {
 	base := DefaultConfig()
 	base.LockFile = "/tmp/custom.lock"
