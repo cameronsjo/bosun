@@ -21,6 +21,7 @@ var (
 	driftJSON        bool
 	driftStateFile   string
 	driftProjectName string
+	driftTarget      string
 )
 
 var driftCmd = &cobra.Command{
@@ -31,9 +32,10 @@ running containers. By default reads cached drift status from the
 deploy state file. Use --live to perform a fresh check against Docker.
 
 Examples:
-  bosun drift                # Show last drift check result
-  bosun drift --live         # Check Docker right now
-  bosun drift --json         # Machine-readable output`,
+  bosun drift                       # Show last drift check result
+  bosun drift --live                # Check Docker right now
+  bosun drift --json                # Machine-readable output
+  bosun drift --target=unraid       # Show drift for a specific target`,
 	Run: runDrift,
 }
 
@@ -42,6 +44,7 @@ func init() {
 	driftCmd.Flags().BoolVar(&driftJSON, "json", false, "Output as JSON")
 	driftCmd.Flags().StringVar(&driftStateFile, "state-file", filepath.Join(reconcile.DefaultStateDir, reconcile.DefaultStateFile), "Path to deploy state file")
 	driftCmd.Flags().StringVar(&driftProjectName, "project", "", "Docker Compose project name for filtering")
+	driftCmd.Flags().StringVarP(&driftTarget, "target", "t", "", "Show drift for a specific named target")
 
 	rootCmd.AddCommand(driftCmd)
 }
@@ -58,6 +61,22 @@ type driftJSONOutput struct {
 }
 
 func runDrift(cmd *cobra.Command, args []string) {
+	// If --target is specified, derive the correct state file for that target.
+	if driftTarget != "" {
+		stateDir := filepath.Dir(driftStateFile)
+		t := reconcile.Target{Name: driftTarget}
+		driftStateFile = reconcile.TargetStateFile(stateDir, t)
+	}
+
+	// Check if we should show drift for all targets (no --target, multi-target config).
+	if driftTarget == "" {
+		targets := loadConfiguredTargets()
+		if len(targets) > 1 {
+			runMultiTargetDrift(targets)
+			return
+		}
+	}
+
 	state := reconcile.LoadState(driftStateFile)
 
 	if state.LastDeployedCommit == "" {
@@ -79,6 +98,43 @@ func runDrift(cmd *cobra.Command, args []string) {
 
 	// Show cached drift status from state file.
 	printDriftStatus(state)
+}
+
+// loadConfiguredTargets returns targets from config or env, or nil.
+func loadConfiguredTargets() []reconcile.Target {
+	if v := os.Getenv("BOSUN_TARGETS"); v != "" {
+		var targets []reconcile.Target
+		if err := json.Unmarshal([]byte(v), &targets); err == nil && len(targets) > 0 {
+			return targets
+		}
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return nil
+	}
+	return cfg.Targets()
+}
+
+// runMultiTargetDrift shows drift status for all configured targets.
+func runMultiTargetDrift(targets []reconcile.Target) {
+	stateDir := filepath.Dir(driftStateFile)
+
+	for i, t := range targets {
+		if i > 0 {
+			fmt.Println()
+		}
+		ui.Header("Target: %s", t.Name)
+
+		sf := reconcile.TargetStateFile(stateDir, t)
+		state := reconcile.LoadState(sf)
+
+		if state.LastDeployedCommit == "" {
+			ui.Warning("No deployments recorded for target %s", t.Name)
+			continue
+		}
+
+		printDriftStatus(state)
+	}
 }
 
 func runLiveDriftCheck(state *reconcile.DeployState) {
