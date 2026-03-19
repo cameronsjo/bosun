@@ -1307,12 +1307,16 @@ func ConfigFromEnv() *Config {
 	}
 
 	// Multi-target configuration: BOSUN_TARGETS (JSON array) overrides bosun.yaml targets.
+	// An explicit empty array ("[]") clears repo-defined targets, falling back to the
+	// implicit default target.
+	targetsFromEnv := false
 	if v := os.Getenv("BOSUN_TARGETS"); v != "" {
 		var targets []reconcile.Target
 		if err := json.Unmarshal([]byte(v), &targets); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_TARGETS, ignoring")
 		} else {
 			rcfg.Targets = targets
+			targetsFromEnv = true
 		}
 	}
 
@@ -1481,7 +1485,8 @@ func ConfigFromEnv() *Config {
 		rcfg.CriticalContainers = projectCfg.CriticalContainers()
 
 		// Load targets from project config; BOSUN_TARGETS env var (parsed above) takes precedence.
-		if len(rcfg.Targets) == 0 && len(projectCfg.Targets()) > 0 {
+		// Skip if env explicitly set targets (even to empty — that's an intentional override).
+		if !targetsFromEnv && len(rcfg.Targets) == 0 && len(projectCfg.Targets()) > 0 {
 			rcfg.Targets = projectCfg.Targets()
 		}
 

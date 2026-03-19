@@ -3662,6 +3662,20 @@ func TestConfigForTarget_LockFilePreservesCustomDir(t *testing.T) {
 	assert.Contains(t, cfg.LockFile, "nas", "per-target lock should include target name")
 }
 
+func TestConfigForTarget_DefaultTargetPreservesExactPaths(t *testing.T) {
+	base := DefaultConfig()
+	base.LockFile = "/tmp/custom.lock"
+	base.StateFile = "/tmp/custom-state.json"
+	base.StagingDir = "/tmp/custom-staging"
+
+	target := Target{Name: DefaultTargetName}
+
+	cfg := base.ConfigForTarget(target)
+	assert.Equal(t, "/tmp/custom.lock", cfg.LockFile, "default target should preserve exact lock path")
+	assert.Equal(t, "/tmp/custom-state.json", cfg.StateFile, "default target should preserve exact state path")
+	assert.Equal(t, "/tmp/custom-staging", cfg.StagingDir, "default target should preserve exact staging path")
+}
+
 func TestMergeTargetSecrets(t *testing.T) {
 	t.Run("scoped override replaces shared key", func(t *testing.T) {
 		secrets := map[string]any{

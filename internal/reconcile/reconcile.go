@@ -269,11 +269,15 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 
 	// Derive per-target paths from the base config's directories,
 	// preserving any custom paths the caller configured.
-	stateDir := filepath.Dir(c.StateFile)
-	cp.StateFile = TargetStateFile(stateDir, t)
-	cp.StagingDir = TargetStagingDir(c.StagingDir, t)
-	lockDir := filepath.Dir(c.LockFile)
-	cp.LockFile = TargetLockFile(lockDir, t)
+	// For the default (implicit) target, keep the original paths unchanged
+	// so the daemon/CLI share the same lock and state files as pre-multi-target.
+	if !t.IsDefault() {
+		stateDir := filepath.Dir(c.StateFile)
+		cp.StateFile = TargetStateFile(stateDir, t)
+		cp.StagingDir = TargetStagingDir(c.StagingDir, t)
+		lockDir := filepath.Dir(c.LockFile)
+		cp.LockFile = TargetLockFile(lockDir, t)
+	}
 
 	// Per-target overrides for operational config.
 	// Use nil checks (not len > 0) so targets can explicitly clear inherited
