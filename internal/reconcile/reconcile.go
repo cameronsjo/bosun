@@ -849,8 +849,6 @@ func MinLen(s string, n int) int {
 	return n
 }
 
-// sendSuccessAlert sends a deployment success notification.
-// Gated on config.OnSuccess: when false, no success alerts are sent.
 // alertTarget returns the target identifier for alert messages.
 // Uses TargetName when set (multi-target mode); falls back to TargetHost or "local".
 func (r *Reconciler) alertTarget() string {
@@ -863,6 +861,8 @@ func (r *Reconciler) alertTarget() string {
 	return "local"
 }
 
+// sendSuccessAlert sends a deployment success notification.
+// Gated on config.OnSuccess: when false, no success alerts are sent.
 func (r *Reconciler) sendSuccessAlert(ctx context.Context) {
 	if r.alerter == nil {
 		return
