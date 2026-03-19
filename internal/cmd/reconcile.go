@@ -26,6 +26,7 @@ var (
 	reconcileForce  bool
 	reconcileLocal  bool
 	reconcileRemote string
+	reconcileTarget string
 )
 
 // reconcileCmd represents the reconcile command.
@@ -65,6 +66,7 @@ func init() {
 	reconcileCmd.Flags().BoolVarP(&reconcileForce, "force", "f", false, "Force deployment even if no changes detected")
 	reconcileCmd.Flags().BoolVarP(&reconcileLocal, "local", "l", false, "Force local deployment mode")
 	reconcileCmd.Flags().StringVarP(&reconcileRemote, "remote", "r", "", "Target host for remote deployment (e.g., root@192.168.1.8)")
+	reconcileCmd.Flags().StringVarP(&reconcileTarget, "target", "t", "", "Reconcile a single named target (from bosun.yaml targets: section)")
 
 	rootCmd.AddCommand(reconcileCmd)
 }
@@ -237,18 +239,79 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		safeCancel()
 	}()
 
+	// Load targets and operational defaults from project config if available.
+	if projectCfg, err := config.Load(); err == nil {
+		if len(cfg.Targets) == 0 {
+			if targets := projectCfg.Targets(); len(targets) > 0 {
+				cfg.Targets = targets
+			}
+		}
+		// Hydrate base config with project-level operational defaults so
+		// ConfigForTarget can inherit them for named targets.
+		if len(cfg.CriticalContainers) == 0 && !cfg.CriticalContainersFromEnv {
+			cfg.CriticalContainers = projectCfg.CriticalContainers()
+		}
+		if len(cfg.DeploySyncPaths) == 0 && !cfg.DeploySyncPathsFromEnv {
+			cfg.DeploySyncPaths = projectCfg.DeploySyncPaths()
+		}
+		if len(cfg.DeploySyncExclude) == 0 && !cfg.DeploySyncExcludeFromEnv {
+			cfg.DeploySyncExclude = projectCfg.DeploySyncExclude()
+		}
+	}
+
+	// BOSUN_TARGETS env var overrides config file targets.
+	if v := os.Getenv("BOSUN_TARGETS"); v != "" {
+		var targets []reconcile.Target
+		if err := json.Unmarshal([]byte(v), &targets); err != nil {
+			log.Warn().Err(err).Msg("Failed to parse BOSUN_TARGETS, ignoring")
+		} else {
+			cfg.Targets = targets
+		}
+	}
+
 	// Set up alert manager.
 	alerter := createAlertManager()
 
-	// Run reconciliation.
 	opts := []reconcile.ReconcilerOption{}
 	if alerter != nil {
 		opts = append(opts, reconcile.WithAlerter(alerter))
 	}
 
-	r := reconcile.NewReconciler(cfg, opts...)
-	if err := r.Run(ctx); err != nil {
-		ui.Fatal("Reconciliation failed: %v", err)
+	// Resolve targets and optionally filter by --target flag.
+	targets := cfg.ResolveTargets()
+	if reconcileTarget != "" {
+		var found bool
+		for _, t := range targets {
+			if t.Name == reconcileTarget {
+				targets = []reconcile.Target{t}
+				found = true
+				break
+			}
+		}
+		if !found {
+			ui.Fatal("Target %q not found in configuration", reconcileTarget)
+		}
+	}
+
+	// Run reconciliation for each target.
+	var hadError bool
+	for _, target := range targets {
+		targetCfg := cfg.ConfigForTarget(target)
+		r := reconcile.NewReconciler(targetCfg, opts...)
+
+		if !target.IsDefault() {
+			ui.Info("Reconciling target: %s", target.Name)
+		}
+
+		if err := r.Run(ctx); err != nil {
+			ui.Error("Target %s failed: %v", target.Name, err)
+			hadError = true
+			continue
+		}
+	}
+
+	if hadError {
+		ui.Fatal("Reconciliation completed with errors")
 	}
 }
 

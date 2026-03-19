@@ -132,6 +132,7 @@ func newTestTCPServer(t *testing.T) (*TCPServer, *Daemon) {
 	cfg.EnableTCP = true
 	cfg.BearerToken = "test-token"
 	cfg.TCPAddr = ":0"
+	cfg.ReconcileTimeout = 50 * time.Millisecond // Short timeout so fire-and-forget goroutines from handleTrigger bail quickly during test cleanup
 	cfg.ReconcileConfig = reconcile.DefaultConfig()
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
 	cfg.ReconcileConfig.DryRun = true

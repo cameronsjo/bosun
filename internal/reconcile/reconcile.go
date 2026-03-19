@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
@@ -29,11 +30,52 @@ type ReloadedConfig struct {
 	OnFailure          *bool
 	OnSuccess          *bool
 	RemoveOrphans      *bool
+	// Targets is the reloaded target list from the repo's bosun.yaml.
+	// When non-nil, the daemon uses these targets for the next reconciliation cycle.
+	Targets []Target
 }
 
 // ConfigReloaderFunc loads project config from a directory path.
 // Returns nil ReloadedConfig if no config file is found (not an error).
 type ConfigReloaderFunc func(dir string) (*ReloadedConfig, error)
+
+// DefaultTargetName is the name used for the implicit single-target backwards-compat target.
+const DefaultTargetName = "default"
+
+// Target describes a single deployment target (a server/host to deploy to).
+// Each target has its own host, appdata paths, project name, state file,
+// staging directory, secrets scope, and operational overrides.
+type Target struct {
+	// Name identifies this target (e.g., "unraid", "pi"). Used in file paths and logs.
+	Name string
+	// TargetHost is empty for local deployment, or "user@host" for remote.
+	TargetHost string
+	// LocalAppdataPath is the path to appdata when running locally.
+	LocalAppdataPath string
+	// RemoteAppdataPath is the path to appdata on the remote host.
+	RemoteAppdataPath string
+	// ProjectName is the docker compose project name for this target.
+	ProjectName string
+	// StateFile overrides the derived state file path. When empty, derived from Name.
+	StateFile string
+	// StagingDir overrides the derived staging directory. When empty, derived from Name.
+	StagingDir string
+	// SecretsScope is the key prefix for per-target secrets (e.g., "unraid" → targets.unraid.*).
+	SecretsScope string
+	// CriticalContainers overrides the global list for this target.
+	CriticalContainers []string
+	// PostSyncHooks overrides the global hooks for this target.
+	PostSyncHooks []PostSyncHook
+	// DeploySyncPaths overrides the global allowlist for this target.
+	DeploySyncPaths []string
+	// DeploySyncExclude overrides the global blocklist for this target.
+	DeploySyncExclude []string
+}
+
+// IsDefault returns true if this is the implicit default target.
+func (t Target) IsDefault() bool {
+	return t.Name == DefaultTargetName
+}
 
 // Config holds the reconciliation configuration.
 type Config struct {
@@ -52,12 +94,20 @@ type Config struct {
 	// LockFile is the path to the reconciliation lock file.
 	LockFile string
 
+	// TargetName identifies the deployment target (e.g., "unraid", "pi", "default").
+	// Set by ConfigForTarget; used in alert messages and log context.
+	TargetName string
 	// TargetHost is empty for local deployment, or "user@host" for remote.
 	TargetHost string
 	// LocalAppdataPath is the path to appdata when running locally.
 	LocalAppdataPath string
 	// RemoteAppdataPath is the path to appdata on the remote host.
 	RemoteAppdataPath string
+
+	// Targets is the list of deployment targets. When empty, an implicit default
+	// target is synthesized from the flat config fields above (TargetHost,
+	// LocalAppdataPath, RemoteAppdataPath, ProjectName).
+	Targets []Target
 
 	// DryRun if true, only shows what would be done.
 	DryRun bool
@@ -68,6 +118,10 @@ type Config struct {
 
 	// SecretsFiles is the list of SOPS-encrypted secret files to decrypt.
 	SecretsFiles []string
+	// SecretsScope is the key prefix for per-target secrets scoping.
+	// When set, keys under "targets.<scope>.*" in the decrypted secrets
+	// override same-named top-level keys for this target's template rendering.
+	SecretsScope string
 	// InfraSubDir is the subdirectory within the repo containing infrastructure configs.
 	// Use "." for repos where the root is the infrastructure (dedicated infra repos).
 	// Use a path like "infrastructure" for repos where infra is nested (e.g., dotfiles).
@@ -192,6 +246,61 @@ type Config struct {
 // DefaultLockFile is the default path for the reconciliation lock file.
 const DefaultLockFile = "/var/run/bosun/reconcile.lock"
 
+// ConfigForTarget returns a shallow copy of the base config with per-target
+// fields (TargetHost, appdata paths, ProjectName, StagingDir, StateFile,
+// LockFile, CriticalContainers, PostSyncHooks, DeploySyncPaths/Exclude)
+// overridden from the given Target. This lets the existing pipeline run
+// unchanged per-target — the daemon creates a ConfigForTarget copy before
+// each reconciler instantiation.
+func (c *Config) ConfigForTarget(t Target) *Config {
+	cp := *c // shallow copy
+
+	// Override per-target fields.
+	cp.TargetName = t.Name
+	cp.TargetHost = t.TargetHost
+	if t.LocalAppdataPath != "" {
+		cp.LocalAppdataPath = t.LocalAppdataPath
+	}
+	if t.RemoteAppdataPath != "" {
+		cp.RemoteAppdataPath = t.RemoteAppdataPath
+	}
+	if t.ProjectName != "" {
+		cp.ProjectName = t.ProjectName
+	}
+
+	// Derive per-target paths from the base config's directories,
+	// preserving any custom paths the caller configured.
+	// For the default (implicit) target, keep the original paths unchanged
+	// so the daemon/CLI share the same lock and state files as pre-multi-target.
+	if !t.IsDefault() {
+		stateDir := filepath.Dir(c.StateFile)
+		cp.StateFile = TargetStateFile(stateDir, t)
+		cp.StagingDir = TargetStagingDir(c.StagingDir, t)
+		lockDir := filepath.Dir(c.LockFile)
+		cp.LockFile = TargetLockFile(lockDir, t)
+	}
+
+	// Per-target overrides for operational config.
+	// Use nil checks (not len > 0) so targets can explicitly clear inherited
+	// slices with an empty list (e.g., critical_containers: []).
+	if t.CriticalContainers != nil {
+		cp.CriticalContainers = t.CriticalContainers
+	}
+	if t.PostSyncHooks != nil {
+		cp.PostSyncHooks = t.PostSyncHooks
+	}
+	if t.DeploySyncPaths != nil {
+		cp.DeploySyncPaths = t.DeploySyncPaths
+	}
+	if t.DeploySyncExclude != nil {
+		cp.DeploySyncExclude = t.DeploySyncExclude
+	}
+
+	cp.SecretsScope = t.SecretsScope
+
+	return &cp
+}
+
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -215,6 +324,97 @@ func DefaultConfig() *Config {
 		RemoveOrphans:         true,
 		HealthGateTimeout:     60 * time.Second,
 	}
+}
+
+// DefaultLockDir is the default directory for per-target lock files.
+const DefaultLockDir = "/var/run/bosun"
+
+// ResolveTargets returns the effective target list for this config.
+// When Targets is non-empty, returns it as-is.
+// When Targets is empty, synthesizes a single implicit default target
+// from the flat config fields for backwards compatibility.
+func (c *Config) ResolveTargets() []Target {
+	if len(c.Targets) > 0 {
+		// Validate target names before returning to prevent path traversal.
+		valid := make([]Target, 0, len(c.Targets))
+		for _, t := range c.Targets {
+			if err := ValidateTargetName(t.Name); err != nil {
+				log.Warn().Str("target", t.Name).Err(err).Msg("Skipping target with invalid name")
+				continue
+			}
+			valid = append(valid, t)
+		}
+		if len(valid) > 0 {
+			return valid
+		}
+		// Fall through to default if all targets were invalid.
+	}
+	return []Target{
+		{
+			Name:               DefaultTargetName,
+			TargetHost:         c.TargetHost,
+			LocalAppdataPath:   c.LocalAppdataPath,
+			RemoteAppdataPath:  c.RemoteAppdataPath,
+			ProjectName:        c.ProjectName,
+			StateFile:          c.StateFile,
+			StagingDir:         c.StagingDir,
+			CriticalContainers: c.CriticalContainers,
+			PostSyncHooks:      c.PostSyncHooks,
+			DeploySyncPaths:    c.DeploySyncPaths,
+			DeploySyncExclude:  c.DeploySyncExclude,
+		},
+	}
+}
+
+// safeTargetNamePattern matches only safe target names: lowercase alphanumeric, hyphens, underscores.
+var safeTargetNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+// ValidateTargetName checks that a target name is safe for use in filesystem paths.
+// Rejects empty names, path traversal attempts, absolute paths, and special characters.
+func ValidateTargetName(name string) error {
+	if name == "" {
+		return fmt.Errorf("target name must not be empty")
+	}
+	if name == DefaultTargetName {
+		return nil // The implicit default is always valid
+	}
+	if !safeTargetNamePattern.MatchString(name) {
+		return fmt.Errorf("target name %q contains unsafe characters (allowed: alphanumeric, hyphens, underscores)", name)
+	}
+	return nil
+}
+
+// TargetStateFile returns the state file path for a target.
+// The default target uses the legacy path; named targets use deploy-state-<name>.json.
+func TargetStateFile(baseStateDir string, t Target) string {
+	if t.StateFile != "" {
+		return t.StateFile
+	}
+	if t.IsDefault() {
+		return filepath.Join(baseStateDir, DefaultStateFile)
+	}
+	return filepath.Join(baseStateDir, fmt.Sprintf("deploy-state-%s.json", t.Name))
+}
+
+// TargetStagingDir returns the staging directory for a target.
+// The default target uses the base staging dir; named targets use <staging>/<name>/.
+func TargetStagingDir(baseStagingDir string, t Target) string {
+	if t.StagingDir != "" {
+		return t.StagingDir
+	}
+	if t.IsDefault() {
+		return baseStagingDir
+	}
+	return filepath.Join(baseStagingDir, t.Name)
+}
+
+// TargetLockFile returns the lock file path for a target.
+// The default target uses the legacy path; named targets use reconcile-<name>.lock.
+func TargetLockFile(baseLockDir string, t Target) string {
+	if t.IsDefault() {
+		return filepath.Join(baseLockDir, "reconcile.lock")
+	}
+	return filepath.Join(baseLockDir, fmt.Sprintf("reconcile-%s.lock", t.Name))
 }
 
 // AlertSender sends alerts for reconciliation events.
@@ -491,6 +691,11 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	telemetry.SpanOK(otelDecryptSpan)
 	otelDecryptSpan.End()
 
+	// Step 2b: Apply per-target secrets scoping.
+	if r.config.SecretsScope != "" {
+		secrets = MergeTargetSecrets(secrets, r.config.SecretsScope)
+	}
+
 	// Step 3: Render templates.
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.template", "Template rendering")
 	spanCtx, otelTemplateSpan := telemetry.Tracer("reconcile").Start(spanCtx, "reconcile.template")
@@ -644,6 +849,18 @@ func MinLen(s string, n int) int {
 	return n
 }
 
+// alertTarget returns the target identifier for alert messages.
+// Uses TargetName when set (multi-target mode); falls back to TargetHost or "local".
+func (r *Reconciler) alertTarget() string {
+	if r.config.TargetName != "" && r.config.TargetName != DefaultTargetName {
+		return r.config.TargetName
+	}
+	if r.config.TargetHost != "" {
+		return r.config.TargetHost
+	}
+	return "local"
+}
+
 // sendSuccessAlert sends a deployment success notification.
 // Gated on config.OnSuccess: when false, no success alerts are sent.
 func (r *Reconciler) sendSuccessAlert(ctx context.Context) {
@@ -655,10 +872,7 @@ func (r *Reconciler) sendSuccessAlert(ctx context.Context) {
 		return
 	}
 
-	target := r.config.TargetHost
-	if target == "" {
-		target = "local"
-	}
+	target := r.alertTarget()
 
 	services := r.serviceNames()
 	duration := time.Since(r.runStartTime)
@@ -701,10 +915,7 @@ func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *Deplo
 		return
 	}
 
-	target := r.config.TargetHost
-	if target == "" {
-		target = "local"
-	}
+	target := r.alertTarget()
 
 	services := r.serviceNames()
 	duration := time.Since(r.runStartTime)
@@ -731,10 +942,7 @@ func (r *Reconciler) sendUnhealthyAlert(ctx context.Context, containers []string
 		return
 	}
 
-	target := r.config.TargetHost
-	if target == "" {
-		target = "local"
-	}
+	target := r.alertTarget()
 
 	if err := r.alerter.SendUnhealthyContainers(ctx, target, containers); err != nil {
 		logger := log.ComponentCtx(ctx, log.ComponentReconcile)
@@ -758,10 +966,7 @@ func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) {
 		return
 	}
 
-	target := r.config.TargetHost
-	if target == "" {
-		target = "local"
-	}
+	target := r.alertTarget()
 
 	if err := r.alerter.SendDeployRecovery(ctx, r.lastCommit, target, priorFailures); err != nil {
 		logger := log.ComponentCtx(ctx, log.ComponentReconcile)
@@ -1154,6 +1359,55 @@ func (r *Reconciler) decryptSecrets(ctx context.Context) (map[string]any, error)
 
 	ui.Success("Secrets decrypted successfully")
 	return secrets, nil
+}
+
+// MergeTargetSecrets creates a copy of the secrets map with per-target
+// overrides applied. Keys under "targets.<scope>.*" override same-named
+// top-level keys. The original map is not modified.
+//
+// Example: if secrets contains {"db_password": "shared", "targets": {"unraid": {"db_password": "secret1"}}}
+// and scope is "unraid", the result has {"db_password": "secret1", "targets": {...}}.
+func MergeTargetSecrets(secrets map[string]any, scope string) map[string]any {
+	if scope == "" || secrets == nil {
+		return secrets
+	}
+
+	targetsRaw, ok := secrets["targets"]
+	if !ok {
+		return secrets
+	}
+
+	targetsMap, ok := targetsRaw.(map[string]any)
+	if !ok {
+		return secrets
+	}
+
+	scopedRaw, ok := targetsMap[scope]
+	if !ok {
+		return secrets
+	}
+
+	scopedMap, ok := scopedRaw.(map[string]any)
+	if !ok {
+		return secrets
+	}
+
+	// Shallow copy the base map, then overlay scoped keys.
+	merged := make(map[string]any, len(secrets))
+	for k, v := range secrets {
+		merged[k] = v
+	}
+
+	logger := log.Component("secrets")
+	for k, v := range scopedMap {
+		logger.Debug().
+			Str("key", k).
+			Str("target_scope", scope).
+			Msg("Per-target secret overriding shared key")
+		merged[k] = v
+	}
+
+	return merged
 }
 
 // renderTemplates renders all templates to the staging directory.

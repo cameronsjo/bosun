@@ -3378,3 +3378,420 @@ func TestRunRemoteDeployFailure_StateNotUpdated(t *testing.T) {
 	assert.NotEqual(t, "new-commit", state.LastDeployedCommit,
 		"LastDeployedCommit should NOT be updated when deploy fails")
 }
+
+// --- Multi-target tests ---
+
+func TestTarget_IsDefault(t *testing.T) {
+	tests := []struct {
+		name     string
+		target   Target
+		expected bool
+	}{
+		{"default target", Target{Name: DefaultTargetName}, true},
+		{"named target", Target{Name: "unraid"}, false},
+		{"empty name", Target{Name: ""}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.target.IsDefault())
+		})
+	}
+}
+
+func TestResolveTargets_ImplicitDefault(t *testing.T) {
+	cfg := &Config{
+		TargetHost:         "user@pi",
+		LocalAppdataPath:   "/mnt/appdata",
+		RemoteAppdataPath:  "/mnt/user/appdata",
+		ProjectName:        "homelab",
+		StateFile:          "/var/lib/bosun/deploy-state.json",
+		StagingDir:         "/app/staging",
+		CriticalContainers: []string{"traefik"},
+		PostSyncHooks:      []PostSyncHook{{Container: "traefik", Paths: []string{"*.toml"}}},
+		DeploySyncPaths:    []string{"compose/**"},
+		DeploySyncExclude:  []string{"*.bak"},
+	}
+
+	targets := cfg.ResolveTargets()
+	require.Len(t, targets, 1)
+
+	def := targets[0]
+	assert.Equal(t, DefaultTargetName, def.Name)
+	assert.True(t, def.IsDefault())
+	assert.Equal(t, "user@pi", def.TargetHost)
+	assert.Equal(t, "/mnt/appdata", def.LocalAppdataPath)
+	assert.Equal(t, "/mnt/user/appdata", def.RemoteAppdataPath)
+	assert.Equal(t, "homelab", def.ProjectName)
+	assert.Equal(t, "/var/lib/bosun/deploy-state.json", def.StateFile)
+	assert.Equal(t, "/app/staging", def.StagingDir)
+	assert.Equal(t, []string{"traefik"}, def.CriticalContainers)
+	assert.Len(t, def.PostSyncHooks, 1)
+	assert.Equal(t, []string{"compose/**"}, def.DeploySyncPaths)
+	assert.Equal(t, []string{"*.bak"}, def.DeploySyncExclude)
+}
+
+func TestResolveTargets_ExplicitTargets(t *testing.T) {
+	cfg := &Config{
+		TargetHost: "should-be-ignored",
+		Targets: []Target{
+			{Name: "unraid", TargetHost: "user@unraid"},
+			{Name: "pi", TargetHost: "user@pi"},
+		},
+	}
+
+	targets := cfg.ResolveTargets()
+	require.Len(t, targets, 2)
+	assert.Equal(t, "unraid", targets[0].Name)
+	assert.Equal(t, "user@unraid", targets[0].TargetHost)
+	assert.Equal(t, "pi", targets[1].Name)
+	assert.Equal(t, "user@pi", targets[1].TargetHost)
+}
+
+func TestTargetStateFile(t *testing.T) {
+	tests := []struct {
+		name     string
+		baseDir  string
+		target   Target
+		expected string
+	}{
+		{
+			"default target uses legacy path",
+			"/var/lib/bosun",
+			Target{Name: DefaultTargetName},
+			"/var/lib/bosun/deploy-state.json",
+		},
+		{
+			"named target uses name suffix",
+			"/var/lib/bosun",
+			Target{Name: "unraid"},
+			"/var/lib/bosun/deploy-state-unraid.json",
+		},
+		{
+			"custom state file override",
+			"/var/lib/bosun",
+			Target{Name: "pi", StateFile: "/custom/state.json"},
+			"/custom/state.json",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, TargetStateFile(tt.baseDir, tt.target))
+		})
+	}
+}
+
+func TestTargetStagingDir(t *testing.T) {
+	tests := []struct {
+		name     string
+		baseDir  string
+		target   Target
+		expected string
+	}{
+		{
+			"default target uses base dir",
+			"/app/staging",
+			Target{Name: DefaultTargetName},
+			"/app/staging",
+		},
+		{
+			"named target uses subdirectory",
+			"/app/staging",
+			Target{Name: "pi"},
+			"/app/staging/pi",
+		},
+		{
+			"custom staging dir override",
+			"/app/staging",
+			Target{Name: "unraid", StagingDir: "/custom/staging"},
+			"/custom/staging",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, TargetStagingDir(tt.baseDir, tt.target))
+		})
+	}
+}
+
+func TestTargetLockFile(t *testing.T) {
+	tests := []struct {
+		name     string
+		baseDir  string
+		target   Target
+		expected string
+	}{
+		{
+			"default target uses legacy lock",
+			"/var/run/bosun",
+			Target{Name: DefaultTargetName},
+			"/var/run/bosun/reconcile.lock",
+		},
+		{
+			"named target uses name suffix",
+			"/var/run/bosun",
+			Target{Name: "unraid"},
+			"/var/run/bosun/reconcile-unraid.lock",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, TargetLockFile(tt.baseDir, tt.target))
+		})
+	}
+}
+
+func TestConfigForTarget_DefaultTarget(t *testing.T) {
+	base := DefaultConfig()
+	base.TargetHost = "user@original"
+	base.ProjectName = "original-project"
+
+	target := Target{
+		Name:              DefaultTargetName,
+		TargetHost:        "user@original",
+		LocalAppdataPath:  "/mnt/appdata",
+		RemoteAppdataPath: "/mnt/user/appdata",
+		ProjectName:       "original-project",
+	}
+
+	cfg := base.ConfigForTarget(target)
+
+	// Default target preserves the base paths (no subdirectory nesting).
+	assert.Equal(t, base.StagingDir, cfg.StagingDir, "default target should use base staging dir")
+	assert.Equal(t, filepath.Join(filepath.Dir(base.StateFile), DefaultStateFile), cfg.StateFile, "default target should use legacy state file")
+	assert.Equal(t, filepath.Join(DefaultLockDir, "reconcile.lock"), cfg.LockFile, "default target should use legacy lock file")
+	assert.Equal(t, "user@original", cfg.TargetHost)
+	assert.Equal(t, "original-project", cfg.ProjectName)
+}
+
+func TestConfigForTarget_NamedTarget(t *testing.T) {
+	base := DefaultConfig()
+
+	target := Target{
+		Name:               "unraid",
+		TargetHost:         "user@unraid",
+		LocalAppdataPath:   "/mnt/custom/appdata",
+		RemoteAppdataPath:  "/mnt/user/custom/appdata",
+		ProjectName:        "homelab-unraid",
+		CriticalContainers: []string{"traefik"},
+		PostSyncHooks:      []PostSyncHook{{Container: "traefik", Paths: []string{"*.toml"}}},
+		DeploySyncPaths:    []string{"compose/**"},
+		DeploySyncExclude:  []string{"*.bak"},
+	}
+
+	cfg := base.ConfigForTarget(target)
+
+	// Named target gets subdirectory paths.
+	assert.Equal(t, filepath.Join(base.StagingDir, "unraid"), cfg.StagingDir)
+	assert.Equal(t, filepath.Join(filepath.Dir(base.StateFile), "deploy-state-unraid.json"), cfg.StateFile)
+	assert.Equal(t, filepath.Join(DefaultLockDir, "reconcile-unraid.lock"), cfg.LockFile)
+	assert.Equal(t, "user@unraid", cfg.TargetHost)
+	assert.Equal(t, "/mnt/custom/appdata", cfg.LocalAppdataPath)
+	assert.Equal(t, "/mnt/user/custom/appdata", cfg.RemoteAppdataPath)
+	assert.Equal(t, "homelab-unraid", cfg.ProjectName)
+	assert.Equal(t, []string{"traefik"}, cfg.CriticalContainers)
+	require.Len(t, cfg.PostSyncHooks, 1)
+	assert.Equal(t, "traefik", cfg.PostSyncHooks[0].Container)
+	assert.Equal(t, []string{"compose/**"}, cfg.DeploySyncPaths)
+	assert.Equal(t, []string{"*.bak"}, cfg.DeploySyncExclude)
+
+	// Base config should be unmodified.
+	assert.Equal(t, DefaultConfig().StagingDir, base.StagingDir)
+}
+
+func TestConfigForTarget_PartialOverrides(t *testing.T) {
+	base := DefaultConfig()
+	base.CriticalContainers = []string{"global-container"}
+	base.PostSyncHooks = []PostSyncHook{{Container: "global", Paths: []string{"*"}}}
+
+	// Target with no overrides — inherits from base.
+	target := Target{
+		Name:       "pi",
+		TargetHost: "user@pi",
+	}
+
+	cfg := base.ConfigForTarget(target)
+	assert.Equal(t, []string{"global-container"}, cfg.CriticalContainers, "should inherit from base when target has none")
+	assert.Len(t, cfg.PostSyncHooks, 1, "should inherit from base when target has none")
+	assert.Equal(t, base.LocalAppdataPath, cfg.LocalAppdataPath, "should keep base when target is empty")
+	assert.Equal(t, base.RemoteAppdataPath, cfg.RemoteAppdataPath, "should keep base when target is empty")
+}
+
+func TestConfigForTarget_ExplicitEmptySliceOverrides(t *testing.T) {
+	base := DefaultConfig()
+	base.CriticalContainers = []string{"global-container"}
+	base.PostSyncHooks = []PostSyncHook{{Container: "global", Paths: []string{"*"}}}
+	base.DeploySyncPaths = []string{"infra/**"}
+
+	// Target with explicit empty slices — should opt out of base defaults.
+	target := Target{
+		Name:               "minimal",
+		TargetHost:         "user@minimal",
+		CriticalContainers: []string{},
+		PostSyncHooks:      []PostSyncHook{},
+		DeploySyncPaths:    []string{},
+	}
+
+	cfg := base.ConfigForTarget(target)
+	assert.Empty(t, cfg.CriticalContainers, "explicit empty should override base, not inherit")
+	assert.Empty(t, cfg.PostSyncHooks, "explicit empty should override base, not inherit")
+	assert.Empty(t, cfg.DeploySyncPaths, "explicit empty should override base, not inherit")
+}
+
+func TestConfigForTarget_NilSliceInherits(t *testing.T) {
+	base := DefaultConfig()
+	base.CriticalContainers = []string{"global-container"}
+
+	// Target with nil (unset) — should inherit from base.
+	target := Target{
+		Name:       "inherit",
+		TargetHost: "user@inherit",
+	}
+
+	cfg := base.ConfigForTarget(target)
+	assert.Equal(t, []string{"global-container"}, cfg.CriticalContainers, "nil should inherit from base")
+}
+
+func TestConfigForTarget_LockFilePreservesCustomDir(t *testing.T) {
+	base := DefaultConfig()
+	base.LockFile = "/custom/locks/reconcile.lock"
+
+	target := Target{Name: "nas"}
+
+	cfg := base.ConfigForTarget(target)
+	assert.Contains(t, cfg.LockFile, "/custom/locks/", "per-target lock should use base config's lock directory")
+	assert.Contains(t, cfg.LockFile, "nas", "per-target lock should include target name")
+}
+
+func TestValidateTargetName(t *testing.T) {
+	tests := []struct {
+		name    string
+		wantErr bool
+	}{
+		{"unraid", false},
+		{"pi-4", false},
+		{"nas_backup", false},
+		{DefaultTargetName, false},
+		{"../../etc", true},
+		{"/tmp/evil", true},
+		{"", true},
+		{"has spaces", true},
+		{"has.dots", true},
+		{"-starts-with-dash", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateTargetName(tt.name)
+			if tt.wantErr {
+				assert.Error(t, err, "name %q should be rejected", tt.name)
+			} else {
+				assert.NoError(t, err, "name %q should be accepted", tt.name)
+			}
+		})
+	}
+}
+
+func TestResolveTargets_SkipsInvalidNames(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Targets = []Target{
+		{Name: "good-target", TargetHost: "user@good"},
+		{Name: "../../evil", TargetHost: "user@evil"},
+		{Name: "also-good", TargetHost: "user@also"},
+	}
+
+	targets := cfg.ResolveTargets()
+	assert.Len(t, targets, 2, "should skip the invalid target")
+	assert.Equal(t, "good-target", targets[0].Name)
+	assert.Equal(t, "also-good", targets[1].Name)
+}
+
+func TestConfigForTarget_DefaultTargetPreservesExactPaths(t *testing.T) {
+	base := DefaultConfig()
+	base.LockFile = "/tmp/custom.lock"
+	base.StateFile = "/tmp/custom-state.json"
+	base.StagingDir = "/tmp/custom-staging"
+
+	target := Target{Name: DefaultTargetName}
+
+	cfg := base.ConfigForTarget(target)
+	assert.Equal(t, "/tmp/custom.lock", cfg.LockFile, "default target should preserve exact lock path")
+	assert.Equal(t, "/tmp/custom-state.json", cfg.StateFile, "default target should preserve exact state path")
+	assert.Equal(t, "/tmp/custom-staging", cfg.StagingDir, "default target should preserve exact staging path")
+}
+
+func TestMergeTargetSecrets(t *testing.T) {
+	t.Run("scoped override replaces shared key", func(t *testing.T) {
+		secrets := map[string]any{
+			"db_password": "shared",
+			"api_key":     "shared-api",
+			"targets": map[string]any{
+				"unraid": map[string]any{
+					"db_password": "secret1",
+				},
+			},
+		}
+
+		merged := MergeTargetSecrets(secrets, "unraid")
+		assert.Equal(t, "secret1", merged["db_password"])
+		assert.Equal(t, "shared-api", merged["api_key"], "non-overridden keys preserved")
+	})
+
+	t.Run("no scope returns original", func(t *testing.T) {
+		secrets := map[string]any{"db_password": "shared"}
+		merged := MergeTargetSecrets(secrets, "")
+		assert.Equal(t, secrets, merged)
+	})
+
+	t.Run("nil secrets returns nil", func(t *testing.T) {
+		merged := MergeTargetSecrets(nil, "unraid")
+		assert.Nil(t, merged)
+	})
+
+	t.Run("no targets key in secrets", func(t *testing.T) {
+		secrets := map[string]any{"db_password": "shared"}
+		merged := MergeTargetSecrets(secrets, "unraid")
+		assert.Equal(t, "shared", merged["db_password"])
+	})
+
+	t.Run("scope not found in targets", func(t *testing.T) {
+		secrets := map[string]any{
+			"db_password": "shared",
+			"targets": map[string]any{
+				"pi": map[string]any{"db_password": "pi-secret"},
+			},
+		}
+		merged := MergeTargetSecrets(secrets, "unraid")
+		assert.Equal(t, "shared", merged["db_password"])
+	})
+
+	t.Run("does not mutate original", func(t *testing.T) {
+		secrets := map[string]any{
+			"db_password": "shared",
+			"targets": map[string]any{
+				"unraid": map[string]any{"db_password": "secret1"},
+			},
+		}
+
+		merged := MergeTargetSecrets(secrets, "unraid")
+		assert.Equal(t, "secret1", merged["db_password"])
+		assert.Equal(t, "shared", secrets["db_password"], "original map should be unchanged")
+	})
+
+	t.Run("multiple scoped keys", func(t *testing.T) {
+		secrets := map[string]any{
+			"db_password":  "shared",
+			"db_host":      "shared-host",
+			"other_secret": "keep-me",
+			"targets": map[string]any{
+				"pi": map[string]any{
+					"db_password": "pi-pw",
+					"db_host":     "pi-host",
+				},
+			},
+		}
+
+		merged := MergeTargetSecrets(secrets, "pi")
+		assert.Equal(t, "pi-pw", merged["db_password"])
+		assert.Equal(t, "pi-host", merged["db_host"])
+		assert.Equal(t, "keep-me", merged["other_secret"])
+	})
+}

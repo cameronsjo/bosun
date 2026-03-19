@@ -142,6 +142,42 @@ post_sync_hooks:
 | `critical_containers` | `[]` (disabled) | Container names that must be healthy after deploy — triggers rollback on failure |
 | `drift_ignore` | `[]` (disabled) | Suppress known drift noise by service glob + type (`missing`, `stopped`, `image_mismatch`, `unhealthy`, `extra`, or `*`). Overridden by `BOSUN_DRIFT_IGNORE` env var (JSON array) |
 | `drift_alert_debounce` | `0` (disabled) | Debounce window before first drift alert fires (e.g., `"5m"`) |
+| `targets` | `[]` (implicit default) | Named deployment targets with per-target overrides. Overridden by `BOSUN_TARGETS` env var (JSON array) |
+
+## Multi-Target Deployment
+
+Define multiple deployment targets when a single repo deploys to more than one host or appdata layout. When `targets:` is absent, bosun uses a single implicit default target (backwards compatible).
+
+```yaml
+# bosun.yaml
+targets:
+  - name: nas
+    target_host: ""                      # Local deployment
+    local_appdata_path: /mnt/appdata
+    remote_appdata_path: /mnt/user/appdata
+    project_name: homelab
+    secrets_scope: nas                   # Decrypt targets.nas.* from secrets
+    critical_containers: [traefik, authelia]
+    post_sync_hooks:
+      - paths: ["traefik/conf.d/**"]
+        action: restart
+        container: traefik
+    deploy_sync_paths: ["compose/**", "appdata/**"]
+    deploy_sync_exclude: ["appdata/temp/**"]
+
+  - name: media
+    target_host: user@media-server
+    local_appdata_path: /mnt/appdata
+    remote_appdata_path: /mnt/user/appdata
+    project_name: media-stack
+    secrets_scope: media
+```
+
+Each target gets isolated state: `deploy-state-<name>.json`, `<staging>/<name>/`, and `reconcile-<name>.lock`. Targets are reconciled sequentially; failure on one does not block others.
+
+Per-target secrets scoping: when `secrets_scope` is set, keys under `targets.<scope>.*` in the decrypted secrets override top-level keys for that target.
+
+Override via environment: `BOSUN_TARGETS` (JSON array) completely replaces the config file targets.
 
 ## Directory Structure
 

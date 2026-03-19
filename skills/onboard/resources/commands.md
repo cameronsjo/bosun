@@ -238,11 +238,12 @@ For full daemon architecture details, see `@gitops.md`.
 One-shot GitOps workflow. Clone repo, decrypt secrets, template configs, deploy, compose up.
 
 ```bash
-bosun reconcile                # Full reconciliation
+bosun reconcile                # Full reconciliation (all targets)
 bosun reconcile -n             # Dry run (show what would change)
 bosun reconcile -f             # Force deploy even if no changes
 bosun reconcile -l             # Force local deployment mode
 bosun reconcile -r user@host   # Deploy to remote host
+bosun reconcile --target=nas   # Reconcile only the "nas" target
 ```
 
 | Flag | Description |
@@ -251,6 +252,7 @@ bosun reconcile -r user@host   # Deploy to remote host
 | `-f`, `--force` | Force deployment even if no changes detected |
 | `-l`, `--local` | Force local deployment mode |
 | `-r`, `--remote` | Target host for remote deployment (SSH) |
+| `--target` | Reconcile a single named target (from `targets:` config) |
 
 ### `bosun trigger`
 
@@ -283,6 +285,7 @@ bosun drift --live             # Fresh check against Docker right now
 bosun drift --json             # Machine-readable output
 bosun drift --live --json      # Live check + JSON
 bosun drift --project core     # Filter to a compose project
+bosun drift --target=nas       # Show drift for a specific target
 ```
 
 | Flag | Default | Description |
@@ -291,6 +294,7 @@ bosun drift --project core     # Filter to a compose project
 | `--json` | `false` | Output as JSON |
 | `--state-file` | `/var/lib/bosun/deploy-state.json` | Path to deploy state file |
 | `--project` | | Docker Compose project name for filtering |
+| `--target` | | Show drift for a specific named target (from `targets:` config) |
 
 **Drift types detected:**
 

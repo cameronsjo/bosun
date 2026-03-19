@@ -91,6 +91,9 @@ type Config struct {
 
 	// shutdownTimeout is the grace period for container stop operations (SIGTERM → SIGKILL).
 	shutdownTimeout time.Duration
+
+	// targets holds the parsed deployment target descriptors.
+	targets []reconcile.Target
 }
 
 // TunnelConfig holds tunnel provider-specific configuration.
@@ -153,6 +156,20 @@ type alertConfigRaw struct {
 	WebhookMethod     string            `yaml:"webhook_method"`
 	OnSuccess         *bool             `yaml:"on_success"`
 	OnFailure         *bool             `yaml:"on_failure"`
+}
+
+// targetRaw is the YAML DTO for a deployment target.
+type targetRaw struct {
+	Name              string                   `yaml:"name"`
+	TargetHost        string                   `yaml:"target_host"`
+	LocalAppdataPath  string                   `yaml:"local_appdata_path"`
+	RemoteAppdataPath string                   `yaml:"remote_appdata_path"`
+	ProjectName       string                   `yaml:"project_name"`
+	SecretsScope      string                   `yaml:"secrets_scope"`
+	CriticalContainers []string                `yaml:"critical_containers"`
+	PostSyncHooks     []reconcile.PostSyncHook `yaml:"post_sync_hooks"`
+	DeploySyncPaths   []string                 `yaml:"deploy_sync_paths"`
+	DeploySyncExclude []string                 `yaml:"deploy_sync_exclude"`
 }
 
 // configFile represents the structure of .bosun/config.yml or bosun.yml.
@@ -235,6 +252,15 @@ type configFile struct {
 	// ShutdownTimeout is the grace period for container stop operations (SIGTERM → SIGKILL).
 	// Defaults to 30s. Docker's default is 10s; increase for containers with long-running requests.
 	ShutdownTimeout reconcile.Duration `yaml:"shutdown_timeout"`
+
+	// Targets defines multiple deployment targets. Each target has its own host,
+	// paths, and per-target overrides. When absent or empty, the reconciler uses
+	// an implicit default target from the flat config fields.
+	Targets []targetRaw `yaml:"targets"`
+
+	// TargetHost is the legacy flat field for a single remote target.
+	// Deprecated: use targets: section instead.
+	TargetHost string `yaml:"target_host"`
 }
 
 // FindRoot searches upward from the current directory to find the project root.
@@ -307,6 +333,7 @@ func LoadFrom(dir string) (*Config, error) {
 	domain := extractDomain(fileCfg)
 	removeOrphans := extractRemoveOrphans(fileCfg)
 	shutdownTimeout := extractShutdownTimeout(fileCfg)
+	targets := extractTargets(fileCfg)
 
 	return &Config{
 		Root:                  dir,
@@ -323,6 +350,7 @@ func LoadFrom(dir string) (*Config, error) {
 		domain:                domain,
 		removeOrphans:         removeOrphans,
 		shutdownTimeout:       shutdownTimeout,
+		targets:               targets,
 	}, nil
 }
 
@@ -375,6 +403,7 @@ func Load() (*Config, error) {
 	domain := extractDomain(fileCfg)
 	removeOrphans := extractRemoveOrphans(fileCfg)
 	shutdownTimeout := extractShutdownTimeout(fileCfg)
+	targets := extractTargets(fileCfg)
 
 	// Determine project name (defaults to directory name)
 	projectName := fileCfg.ProjectName
@@ -406,6 +435,7 @@ func Load() (*Config, error) {
 		domain:                domain,
 		removeOrphans:         removeOrphans,
 		shutdownTimeout:       shutdownTimeout,
+		targets:               targets,
 	}
 
 	logger := log.Component("config")
@@ -737,6 +767,50 @@ func extractShutdownTimeout(cfg configFile) time.Duration {
 		log.Warn().Str("env", "BOSUN_STOP_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 	}
 	return defaultShutdownTimeout
+}
+
+// Targets returns the configured deployment target descriptors.
+// Returns nil when no targets are configured (use reconcile.Config.ResolveTargets()
+// to get the effective target list with the implicit default).
+func (c *Config) Targets() []reconcile.Target {
+	return c.targets
+}
+
+// extractTargets converts raw YAML target entries into reconcile.Target descriptors.
+// Logs a deprecation warning when both targets: and flat target_host are present.
+func extractTargets(cfg configFile) []reconcile.Target {
+	if len(cfg.Targets) == 0 {
+		return nil
+	}
+
+	// Warn when both targets: and flat target_host are set (mixed config).
+	if cfg.TargetHost != "" {
+		log.Warn().
+			Msg("Both 'targets:' section and flat 'target_host' field are present in config. " +
+				"The flat field is deprecated and will be ignored. Use 'targets:' exclusively.")
+	}
+
+	targets := make([]reconcile.Target, 0, len(cfg.Targets))
+	for _, raw := range cfg.Targets {
+		if raw.Name == "" {
+			log.Warn().Msg("Skipping target with empty name in config")
+			continue
+		}
+		targets = append(targets, reconcile.Target{
+			Name:               raw.Name,
+			TargetHost:         raw.TargetHost,
+			LocalAppdataPath:   raw.LocalAppdataPath,
+			RemoteAppdataPath:  raw.RemoteAppdataPath,
+			ProjectName:        raw.ProjectName,
+			SecretsScope:       raw.SecretsScope,
+			CriticalContainers: raw.CriticalContainers,
+			PostSyncHooks:      raw.PostSyncHooks,
+			DeploySyncPaths:    raw.DeploySyncPaths,
+			DeploySyncExclude:  raw.DeploySyncExclude,
+		})
+	}
+
+	return targets
 }
 
 // getEnvOrDefault returns the value of the environment variable if set and non-empty,

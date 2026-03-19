@@ -157,7 +157,7 @@ func TestManager_SendDeploySuccess(t *testing.T) {
 		require.Len(t, alerts, 1)
 
 		a := alerts[0]
-		assert.Equal(t, "Deployment Successful", a.Title)
+		assert.Equal(t, "Deployment Successful [unraid]", a.Title)
 		assert.Contains(t, a.Message, "abc123de") // Short commit.
 		assert.Contains(t, a.Message, "unraid")
 		assert.Contains(t, a.Message, "45s")
@@ -218,7 +218,7 @@ func TestManager_SendDeployFailure(t *testing.T) {
 		require.Len(t, alerts, 1)
 
 		a := alerts[0]
-		assert.Equal(t, "Deployment Failed", a.Title)
+		assert.Equal(t, "Deployment Failed [unraid]", a.Title)
 		assert.Contains(t, a.Message, "connection timeout")
 		assert.Contains(t, a.Message, "2m0s")
 		assert.Contains(t, a.Message, "traefik, authelia")
@@ -259,7 +259,7 @@ func TestManager_SendDeployRecovery(t *testing.T) {
 	require.Len(t, alerts, 1)
 
 	alert := alerts[0]
-	assert.Equal(t, "Deployment Recovered", alert.Title)
+	assert.Equal(t, "Deployment Recovered [unraid]", alert.Title)
 	assert.Contains(t, alert.Message, "abc123de")
 	assert.Contains(t, alert.Message, "5 prior failure(s)")
 	assert.Equal(t, SeverityInfo, alert.Severity)
@@ -279,7 +279,7 @@ func TestManager_SendRollbackSuccess(t *testing.T) {
 	require.Len(t, alerts, 1)
 
 	alert := alerts[0]
-	assert.Equal(t, "Rollback Successful", alert.Title)
+	assert.Equal(t, "Rollback Successful [unraid]", alert.Title)
 	assert.Equal(t, SeverityWarning, alert.Severity)
 	assert.Equal(t, "backup-2024-01-01", alert.Metadata["backup"])
 }
@@ -296,7 +296,7 @@ func TestManager_SendRollbackFailure(t *testing.T) {
 	require.Len(t, alerts, 1)
 
 	alert := alerts[0]
-	assert.Equal(t, "CRITICAL: Rollback Failed", alert.Title)
+	assert.Equal(t, "CRITICAL: Rollback Failed [unraid]", alert.Title)
 	assert.Equal(t, SeverityCritical, alert.Severity)
 	assert.Contains(t, alert.Message, "Manual intervention required")
 }
@@ -345,7 +345,7 @@ func TestManager_SendDriftResolved(t *testing.T) {
 	require.Len(t, alerts, 1)
 
 	a := alerts[0]
-	assert.Equal(t, "Drift Resolved", a.Title)
+	assert.Equal(t, "Drift Resolved [unraid]", a.Title)
 	assert.Contains(t, a.Message, "unraid")
 	assert.Contains(t, a.Message, "traefik:unhealthy")
 	assert.Equal(t, SeverityInfo, a.Severity)
@@ -365,7 +365,7 @@ func TestManager_SendUnhealthyContainers(t *testing.T) {
 	require.Len(t, alerts, 1)
 
 	a := alerts[0]
-	assert.Equal(t, "Unhealthy Containers Detected", a.Title)
+	assert.Equal(t, "Unhealthy Containers Detected [unraid]", a.Title)
 	assert.Contains(t, a.Message, "traefik, authelia")
 	assert.Contains(t, a.Message, "unraid")
 	assert.Equal(t, SeverityWarning, a.Severity)
@@ -387,7 +387,7 @@ func TestManager_SendDriftDetected(t *testing.T) {
 	require.Len(t, alerts, 1)
 
 	a := alerts[0]
-	assert.Equal(t, "Drift Detected", a.Title)
+	assert.Equal(t, "Drift Detected [unraid]", a.Title)
 	assert.Contains(t, a.Message, "traefik:unhealthy, authelia:missing")
 	assert.Contains(t, a.Message, "unraid")
 	assert.Equal(t, SeverityWarning, a.Severity)
@@ -401,4 +401,36 @@ func TestSeverityConstants(t *testing.T) {
 	assert.Equal(t, Severity("warning"), SeverityWarning)
 	assert.Equal(t, Severity("error"), SeverityError)
 	assert.Equal(t, Severity("critical"), SeverityCritical)
+}
+
+func TestTargetTitle(t *testing.T) {
+	tests := []struct {
+		name     string
+		title    string
+		target   string
+		expected string
+	}{
+		{"named target appends suffix", "Deployment Successful", "unraid", "Deployment Successful [unraid]"},
+		{"local target omits suffix", "Deployment Failed", "local", "Deployment Failed"},
+		{"empty target omits suffix", "Drift Detected", "", "Drift Detected"},
+		{"critical with suffix", "CRITICAL: Rollback Failed", "pi", "CRITICAL: Rollback Failed [pi]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, targetTitle(tt.title, tt.target))
+		})
+	}
+}
+
+func TestManager_SendDeploySuccess_LocalTarget(t *testing.T) {
+	p := newMockProvider("test", true)
+	mgr := NewManager()
+	mgr.AddProvider(p)
+
+	err := mgr.SendDeploySuccess(context.Background(), "abc123", "local", []string{"traefik"}, 30*time.Second)
+	require.NoError(t, err)
+
+	alerts := p.getAlerts()
+	require.Len(t, alerts, 1)
+	assert.Equal(t, "Deployment Successful", alerts[0].Title, "local target should not have suffix")
 }

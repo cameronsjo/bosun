@@ -113,7 +113,8 @@ type Daemon struct {
 	socketServer  *SocketServer // Unix socket API (primary)
 	tcpServer     *TCPServer    // TCP API with bearer auth (optional)
 	httpServer    *Server       // HTTP server for webhooks (optional)
-	reconciler    *reconcile.Reconciler
+	reconciler    *reconcile.Reconciler      // Single-target fallback (used when only one target)
+	reconcileOpts []reconcile.ReconcilerOption // Options applied to each per-target reconciler
 	alerter       *alert.Manager
 	metrics       *Metrics       // Prometheus metrics (nil when HTTP is disabled)
 	dockerOnce    sync.Once      // Lazily initialize Docker client
@@ -175,6 +176,7 @@ func New(cfg *Config) (*Daemon, error) {
 		return client
 	}))
 
+	d.reconcileOpts = opts
 	d.reconciler = reconcile.NewReconciler(cfg.ReconcileConfig, opts...)
 
 	// Create Unix socket server (primary API)
@@ -516,7 +518,9 @@ func (d *Daemon) reconcileLoop(ctx context.Context, source string, force bool) e
 	}
 }
 
-// executeReconcile runs a single reconciliation and updates state.
+// executeReconcile runs a reconciliation cycle across all configured targets.
+// Each target is reconciled sequentially; a failure on one target does not
+// prevent the next target from running.
 func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool) error {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
@@ -532,20 +536,61 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 		),
 	)
 
-	// Set source and force on the reconciler config so the state-based
-	// skip logic and attempt tracking have the right context.
-	d.reconciler.SetRunOptions(source, force)
+	// NOTE: Targets are resolved from the startup config snapshot. The config
+	// reloader (which reads bosun.yaml from the repo) runs inside each target's
+	// reconciler.Run(), so ReloadedConfig.Targets is populated but never fed
+	// back into this loop. Target changes in bosun.yaml require a daemon restart.
+	targets := d.config.ReconcileConfig.ResolveTargets()
 
 	logger.Info().
 		Str(log.FieldSource, source).
 		Bool("force", force).
-		Msg("Starting reconciliation")
+		Int("target_count", len(targets)).
+		Msg("Starting reconciliation cycle")
 
-	ui.Info("Starting reconciliation (source: %s, force: %t)", source, force)
+	ui.Info("Starting reconciliation (source: %s, force: %t, targets: %d)", source, force, len(targets))
 
-	err := d.reconciler.Run(ctx)
-	if err != nil {
-		telemetry.SpanError(otelSpan, err)
+	var firstErr error
+	successCount := 0
+
+	// NOTE: Daemon-level drift checks (runDriftCheck), health status (HealthStatus),
+	// and circuit-breaker state still read from the base config's single state file.
+	// In multi-target mode, each target writes its own state file, but these daemon
+	// subsystems are not yet fan-out aware. This means periodic drift alerts and
+	// health reporting only reflect the default/base target until these are refactored.
+	for _, target := range targets {
+		targetLogger := logger.With().Str("target", target.Name).Logger()
+
+		// Create a per-target config and reconciler.
+		targetCfg := d.config.ReconcileConfig.ConfigForTarget(target)
+		targetCfg.Source = source
+		targetCfg.Force = force
+
+		r := reconcile.NewReconciler(targetCfg, d.reconcileOpts...)
+
+		targetLogger.Info().Msg("Reconciling target")
+		if !target.IsDefault() {
+			ui.Info("Reconciling target: %s", target.Name)
+		}
+
+		err := r.Run(ctx)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("target %s: %w", target.Name, err)
+			}
+			targetLogger.Error().Err(err).Msg("Target reconciliation failed")
+			ui.Error("Target %s failed: %v", target.Name, err)
+			continue
+		}
+
+		successCount++
+		targetLogger.Info().Msg("Target reconciliation completed")
+	}
+
+	// Determine overall cycle result.
+	cycleErr := firstErr
+	if cycleErr != nil {
+		telemetry.SpanError(otelSpan, cycleErr)
 	} else {
 		telemetry.SpanOK(otelSpan)
 	}
@@ -554,17 +599,17 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 	// Update state (use stateMu for thread-safe reads from health checks).
 	d.stateMu.Lock()
 	d.lastReconcile = time.Now()
-	d.lastError = err
+	d.lastError = cycleErr
 	d.stateMu.Unlock()
 
 	durationMS := time.Since(start).Milliseconds()
 
 	// Finish the Sentry transaction with the result status.
-	finishTx(err)
+	finishTx(cycleErr)
 
 	durationSec := time.Since(start).Seconds()
 
-	if err != nil {
+	if cycleErr != nil {
 		if d.metrics != nil {
 			d.metrics.RecordReconcileFailure(durationSec)
 		}
@@ -572,11 +617,14 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 		logger.Error().
 			Str(log.FieldSource, source).
 			Int64(log.FieldDurationMS, durationMS).
-			Err(err).
-			Msg("Reconciliation failed")
+			Int("success_count", successCount).
+			Int("target_count", len(targets)).
+			Err(cycleErr).
+			Msg("Reconciliation cycle completed with errors")
 
-		ui.Error("Reconciliation failed after %s: %v", time.Since(start), err)
-		return err
+		ui.Error("Reconciliation completed with errors after %s (%d/%d targets succeeded)",
+			time.Since(start), successCount, len(targets))
+		return cycleErr
 	}
 
 	if d.metrics != nil {
@@ -587,10 +635,11 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 	logger.Info().
 		Str(log.FieldSource, source).
 		Int64(log.FieldDurationMS, durationMS).
+		Int("target_count", len(targets)).
 		Bool("success", true).
-		Msg("Reconciliation completed")
+		Msg("Reconciliation cycle completed")
 
-	ui.Success("Reconciliation completed in %s", time.Since(start))
+	ui.Success("Reconciliation completed in %s (%d targets)", time.Since(start), len(targets))
 	return nil
 }
 
@@ -1262,6 +1311,20 @@ func ConfigFromEnv() *Config {
 		rcfg.StateFile = filepath.Join(stateDir, reconcile.DefaultStateFile)
 	}
 
+	// Multi-target configuration: BOSUN_TARGETS (JSON array) overrides bosun.yaml targets.
+	// An explicit empty array ("[]") clears repo-defined targets, falling back to the
+	// implicit default target.
+	targetsFromEnv := false
+	if v := os.Getenv("BOSUN_TARGETS"); v != "" {
+		var targets []reconcile.Target
+		if err := json.Unmarshal([]byte(v), &targets); err != nil {
+			log.Warn().Err(err).Msg("Failed to parse BOSUN_TARGETS, ignoring")
+		} else {
+			rcfg.Targets = targets
+			targetsFromEnv = true
+		}
+	}
+
 	cfg.ReconcileConfig = rcfg
 
 	// Compose up timeout override
@@ -1419,12 +1482,18 @@ func ConfigFromEnv() *Config {
 	}
 	rcfg.RemoveOrphans = cfg.RemoveOrphans
 
-	// Post-sync hooks, settle delay, deploy paths, alert flags, drift debounce, and remove_orphans: load from project config, env var overrides.
+	// Post-sync hooks, settle delay, deploy paths, alert flags, drift debounce, remove_orphans, and targets: load from project config, env var overrides.
 	if projectCfg, err := config.Load(); err == nil {
 		rcfg.PostSyncHooks = projectCfg.PostSyncHooks()
 		rcfg.HookSettleDelay = projectCfg.HookSettleDelay()
 		rcfg.DeployPaths = projectCfg.DeployPaths()
 		rcfg.CriticalContainers = projectCfg.CriticalContainers()
+
+		// Load targets from project config; BOSUN_TARGETS env var (parsed above) takes precedence.
+		// Skip if env explicitly set targets (even to empty — that's an intentional override).
+		if !targetsFromEnv && len(rcfg.Targets) == 0 && len(projectCfg.Targets()) > 0 {
+			rcfg.Targets = projectCfg.Targets()
+		}
 
 		alertCfg := projectCfg.GetAlertConfig()
 		rcfg.OnFailure = alertCfg.OnFailure
@@ -1472,6 +1541,7 @@ func ConfigFromEnv() *Config {
 			OnFailure:          &alertCfg.OnFailure,
 			OnSuccess:          &alertCfg.OnSuccess,
 			RemoveOrphans:      &removeOrphans,
+			Targets:            cfg.Targets(),
 		}, nil
 	}
 	if v := os.Getenv("BOSUN_POST_SYNC_HOOKS"); v != "" {
