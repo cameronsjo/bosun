@@ -127,6 +127,20 @@ func (m *Manager) ProviderNames() []string {
 	return names
 }
 
+// targetTitle appends a target suffix to a title when the target is a named
+// multi-target (not "local" or empty). This preserves backwards-compatible
+// alert formatting for single-target/default-target deployments while clearly
+// identifying which target is affected in multi-target setups.
+//
+// Example: targetTitle("Deployment Successful", "unraid") → "Deployment Successful [unraid]"
+// Example: targetTitle("Deployment Successful", "local")  → "Deployment Successful"
+func targetTitle(title, target string) string {
+	if target == "" || target == "local" {
+		return title
+	}
+	return fmt.Sprintf("%s [%s]", title, target)
+}
+
 // SendDeploySuccess sends a deployment success notification.
 func (m *Manager) SendDeploySuccess(ctx context.Context, commit, target string, services []string, duration time.Duration) error {
 	shortCommit := commit
@@ -150,7 +164,7 @@ func (m *Manager) SendDeploySuccess(ctx context.Context, commit, target string, 
 	}
 
 	return m.Send(ctx, &Alert{
-		Title:    "Deployment Successful",
+		Title:    targetTitle("Deployment Successful", target),
 		Message:  msg,
 		Severity: SeverityInfo,
 		Source:   "reconcile",
@@ -182,7 +196,7 @@ func (m *Manager) SendDeployFailure(ctx context.Context, commit, target, reason 
 	}
 
 	return m.Send(ctx, &Alert{
-		Title:    "Deployment Failed",
+		Title:    targetTitle("Deployment Failed", target),
 		Message:  msg,
 		Severity: SeverityError,
 		Source:   "reconcile",
@@ -193,7 +207,7 @@ func (m *Manager) SendDeployFailure(ctx context.Context, commit, target, reason 
 // SendRollbackSuccess sends a rollback success notification.
 func (m *Manager) SendRollbackSuccess(ctx context.Context, target, backupName string) error {
 	return m.Send(ctx, &Alert{
-		Title:    "Rollback Successful",
+		Title:    targetTitle("Rollback Successful", target),
 		Message:  fmt.Sprintf("Successfully rolled back %s to backup %s", target, backupName),
 		Severity: SeverityWarning,
 		Source:   "reconcile",
@@ -204,7 +218,7 @@ func (m *Manager) SendRollbackSuccess(ctx context.Context, target, backupName st
 // SendRollbackFailure sends a rollback failure notification (critical severity).
 func (m *Manager) SendRollbackFailure(ctx context.Context, target, reason string) error {
 	return m.Send(ctx, &Alert{
-		Title:    "CRITICAL: Rollback Failed",
+		Title:    targetTitle("CRITICAL: Rollback Failed", target),
 		Message:  fmt.Sprintf("Failed to rollback %s: %s. Manual intervention required!", target, reason),
 		Severity: SeverityCritical,
 		Source:   "reconcile",
@@ -220,7 +234,7 @@ func (m *Manager) SendDeployRecovery(ctx context.Context, commit, target string,
 	}
 
 	return m.Send(ctx, &Alert{
-		Title:    "Deployment Recovered",
+		Title:    targetTitle("Deployment Recovered", target),
 		Message:  fmt.Sprintf("Deployment of commit %s to %s succeeded after %d prior failure(s)", shortCommit, target, priorFailures),
 		Severity: SeverityInfo,
 		Source:   "reconcile",
@@ -236,7 +250,7 @@ func (m *Manager) SendDeployRecovery(ctx context.Context, commit, target string,
 func (m *Manager) SendUnhealthyContainers(ctx context.Context, target string, containers []string) error {
 	summary := strings.Join(containers, ", ")
 	return m.Send(ctx, &Alert{
-		Title:    "Unhealthy Containers Detected",
+		Title:    targetTitle("Unhealthy Containers Detected", target),
 		Message:  fmt.Sprintf("Post-deploy health check on %s found unhealthy containers: %s", target, summary),
 		Severity: SeverityWarning,
 		Source:   "reconcile",
@@ -252,7 +266,7 @@ func (m *Manager) SendUnhealthyContainers(ctx context.Context, target string, co
 func (m *Manager) SendDriftDetected(ctx context.Context, target string, driftItems []string) error {
 	summary := strings.Join(driftItems, ", ")
 	return m.Send(ctx, &Alert{
-		Title:    "Drift Detected",
+		Title:    targetTitle("Drift Detected", target),
 		Message:  fmt.Sprintf("Drift detected on %s: %s", target, summary),
 		Severity: SeverityWarning,
 		Source:   "drift",
@@ -264,7 +278,7 @@ func (m *Manager) SendDriftDetected(ctx context.Context, target string, driftIte
 func (m *Manager) SendDriftResolved(ctx context.Context, target string, resolvedItems []string) error {
 	summary := strings.Join(resolvedItems, ", ")
 	return m.Send(ctx, &Alert{
-		Title:    "Drift Resolved",
+		Title:    targetTitle("Drift Resolved", target),
 		Message:  fmt.Sprintf("Drift resolved on %s: %s", target, summary),
 		Severity: SeverityInfo,
 		Source:   "drift",
@@ -276,7 +290,7 @@ func (m *Manager) SendDriftResolved(ctx context.Context, target string, resolved
 func (m *Manager) SendRestartBreakerTripped(ctx context.Context, target string, services []string) error {
 	summary := strings.Join(services, ", ")
 	return m.Send(ctx, &Alert{
-		Title:    "Restart Circuit Breaker Tripped",
+		Title:    targetTitle("Restart Circuit Breaker Tripped", target),
 		Message:  fmt.Sprintf("Container restart loop detected on %s — stopped: %s", target, summary),
 		Severity: SeverityCritical,
 		Source:   "restart_breaker",
@@ -288,7 +302,7 @@ func (m *Manager) SendRestartBreakerTripped(ctx context.Context, target string, 
 func (m *Manager) SendRestartBreakerResolved(ctx context.Context, target string, services []string) error {
 	summary := strings.Join(services, ", ")
 	return m.Send(ctx, &Alert{
-		Title:    "Restart Circuit Breaker Resolved",
+		Title:    targetTitle("Restart Circuit Breaker Resolved", target),
 		Message:  fmt.Sprintf("Container restart loop resolved on %s: %s", target, summary),
 		Severity: SeverityInfo,
 		Source:   "restart_breaker",

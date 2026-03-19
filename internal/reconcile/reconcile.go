@@ -90,6 +90,9 @@ type Config struct {
 	// LockFile is the path to the reconciliation lock file.
 	LockFile string
 
+	// TargetName identifies the deployment target (e.g., "unraid", "pi", "default").
+	// Set by ConfigForTarget; used in alert messages and log context.
+	TargetName string
 	// TargetHost is empty for local deployment, or "user@host" for remote.
 	TargetHost string
 	// LocalAppdataPath is the path to appdata when running locally.
@@ -249,6 +252,7 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 	cp := *c // shallow copy
 
 	// Override per-target fields.
+	cp.TargetName = t.Name
 	cp.TargetHost = t.TargetHost
 	if t.LocalAppdataPath != "" {
 		cp.LocalAppdataPath = t.LocalAppdataPath
@@ -805,6 +809,18 @@ func MinLen(s string, n int) int {
 
 // sendSuccessAlert sends a deployment success notification.
 // Gated on config.OnSuccess: when false, no success alerts are sent.
+// alertTarget returns the target identifier for alert messages.
+// Uses TargetName when set (multi-target mode); falls back to TargetHost or "local".
+func (r *Reconciler) alertTarget() string {
+	if r.config.TargetName != "" && r.config.TargetName != DefaultTargetName {
+		return r.config.TargetName
+	}
+	if r.config.TargetHost != "" {
+		return r.config.TargetHost
+	}
+	return "local"
+}
+
 func (r *Reconciler) sendSuccessAlert(ctx context.Context) {
 	if r.alerter == nil {
 		return
@@ -814,10 +830,7 @@ func (r *Reconciler) sendSuccessAlert(ctx context.Context) {
 		return
 	}
 
-	target := r.config.TargetHost
-	if target == "" {
-		target = "local"
-	}
+	target := r.alertTarget()
 
 	services := r.serviceNames()
 	duration := time.Since(r.runStartTime)
@@ -860,10 +873,7 @@ func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *Deplo
 		return
 	}
 
-	target := r.config.TargetHost
-	if target == "" {
-		target = "local"
-	}
+	target := r.alertTarget()
 
 	services := r.serviceNames()
 	duration := time.Since(r.runStartTime)
@@ -890,10 +900,7 @@ func (r *Reconciler) sendUnhealthyAlert(ctx context.Context, containers []string
 		return
 	}
 
-	target := r.config.TargetHost
-	if target == "" {
-		target = "local"
-	}
+	target := r.alertTarget()
 
 	if err := r.alerter.SendUnhealthyContainers(ctx, target, containers); err != nil {
 		logger := log.ComponentCtx(ctx, log.ComponentReconcile)
@@ -917,10 +924,7 @@ func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) {
 		return
 	}
 
-	target := r.config.TargetHost
-	if target == "" {
-		target = "local"
-	}
+	target := r.alertTarget()
 
 	if err := r.alerter.SendDeployRecovery(ctx, r.lastCommit, target, priorFailures); err != nil {
 		logger := log.ComponentCtx(ctx, log.ComponentReconcile)
