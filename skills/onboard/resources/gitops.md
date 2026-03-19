@@ -122,14 +122,23 @@ Environment variable overrides (`BOSUN_POST_SYNC_HOOKS`, `BOSUN_HOOK_SETTLE_DELA
 
 Only one reconciliation runs at a time. If a trigger arrives during reconciliation, it sets a "pending" flag. After the current run completes, it checks the flag and runs again if set. This coalesces rapid-fire triggers into a single run.
 
+### Multi-Target Reconciliation
+
+When `targets:` is defined in `bosun.yaml`, the pipeline runs sequentially for each target. Each target gets its own lock file (`reconcile-<name>.lock`), state file (`deploy-state-<name>.json`), and staging subdirectory (`<staging>/<name>/`). Failure on one target does not block the others.
+
+Use `--target=NAME` to reconcile a single target instead of all targets. When `targets:` is absent, behavior is identical to before (a single implicit default target).
+
+Alert titles include `[targetName]` for named targets so notifications identify which target was affected.
+
 ### One-Shot Mode
 
 ```bash
-bosun reconcile                # Full pipeline
+bosun reconcile                # Full pipeline (all targets)
 bosun reconcile -n             # Dry run (preview changes)
 bosun reconcile -f             # Force deploy even if no changes
 bosun reconcile -l             # Force local deployment
 bosun reconcile -r user@host   # Deploy to remote host via SSH
+bosun reconcile --target=nas   # Reconcile only the "nas" target
 ```
 
 ## Daemon Mode
@@ -321,6 +330,7 @@ bosun drift                    # Cached result from last daemon check
 bosun drift --live             # Fresh check against Docker right now
 bosun drift --json             # Machine-readable output
 bosun drift --project core     # Filter to one compose project
+bosun drift --target=nas       # Show drift for a specific target
 ```
 
 ## Deploy State and Circuit Breaker
@@ -391,6 +401,7 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `BOSUN_DEPLOY_SYNC_EXCLUDE` | | JSON array of glob patterns for deploy sync target blocklist (overrides config file; exclude wins over include) |
 | `BOSUN_CRITICAL_CONTAINERS` | | JSON array of container names that must be healthy after deploy (overrides config file) |
 | `BOSUN_DRIFT_IGNORE` | | JSON array of `{"service","type"}` rules to suppress known drift noise (overrides config file) |
+| `BOSUN_TARGETS` | | JSON array of target definitions (overrides `targets:` in config file) |
 | `BOSUN_HEALTH_GATE_TIMEOUT` | `60s` | Health gate polling timeout (accepts Go duration strings or bare seconds) |
 | `BOSUN_OTEL_ENDPOINT` | *(disabled)* | OpenTelemetry OTLP HTTP endpoint (e.g., `http://localhost:4318`). When set, spans are exported for each reconciliation pipeline phase. When empty, a noop provider is used (zero overhead) |
 

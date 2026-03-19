@@ -319,6 +319,7 @@ bosun drift --live             # Check Docker right now
 bosun drift --json             # Machine-readable output
 bosun drift --live --json      # Live check with JSON output
 bosun drift --project core     # Filter to a specific compose project
+bosun drift --target=nas       # Show drift for a specific target
 ```
 
 **Flags:**
@@ -329,6 +330,7 @@ bosun drift --project core     # Filter to a specific compose project
 | `--json` | `false` | Output as JSON |
 | `--state-file` | `/var/lib/bosun/deploy-state.json` | Path to deploy state file |
 | `--project` | `""` | Docker Compose project name for filtering |
+| `--target` | `""` | Show drift for a specific named target (from `targets:` config) |
 
 **Drift types:**
 
@@ -637,6 +639,7 @@ bosun reconcile -n
 bosun reconcile -f
 bosun reconcile -l
 bosun reconcile -r user@host
+bosun reconcile --target=nas
 ```
 
 **Flags:**
@@ -647,6 +650,7 @@ bosun reconcile -r user@host
 | `-f`, `--force` | Force deployment even if no changes |
 | `-l`, `--local` | Force local deployment mode |
 | `-r`, `--remote` | Target host for remote deployment |
+| `--target` | Reconcile a single named target (from `targets:` config) |
 
 **Workflow:**
 
