@@ -1527,6 +1527,7 @@ func ConfigFromEnv() *Config {
 			OnFailure:          &alertCfg.OnFailure,
 			OnSuccess:          &alertCfg.OnSuccess,
 			RemoveOrphans:      &removeOrphans,
+			Targets:            cfg.Targets(),
 		}, nil
 	}
 	if v := os.Getenv("BOSUN_POST_SYNC_HOOKS"); v != "" {

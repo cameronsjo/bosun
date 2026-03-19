@@ -29,6 +29,9 @@ type ReloadedConfig struct {
 	OnFailure          *bool
 	OnSuccess          *bool
 	RemoveOrphans      *bool
+	// Targets is the reloaded target list from the repo's bosun.yaml.
+	// When non-nil, the daemon uses these targets for the next reconciliation cycle.
+	Targets []Target
 }
 
 // ConfigReloaderFunc loads project config from a directory path.
