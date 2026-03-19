@@ -3616,6 +3616,52 @@ func TestConfigForTarget_PartialOverrides(t *testing.T) {
 	assert.Equal(t, base.RemoteAppdataPath, cfg.RemoteAppdataPath, "should keep base when target is empty")
 }
 
+func TestConfigForTarget_ExplicitEmptySliceOverrides(t *testing.T) {
+	base := DefaultConfig()
+	base.CriticalContainers = []string{"global-container"}
+	base.PostSyncHooks = []PostSyncHook{{Container: "global", Paths: []string{"*"}}}
+	base.DeploySyncPaths = []string{"infra/**"}
+
+	// Target with explicit empty slices — should opt out of base defaults.
+	target := Target{
+		Name:               "minimal",
+		TargetHost:         "user@minimal",
+		CriticalContainers: []string{},
+		PostSyncHooks:      []PostSyncHook{},
+		DeploySyncPaths:    []string{},
+	}
+
+	cfg := base.ConfigForTarget(target)
+	assert.Empty(t, cfg.CriticalContainers, "explicit empty should override base, not inherit")
+	assert.Empty(t, cfg.PostSyncHooks, "explicit empty should override base, not inherit")
+	assert.Empty(t, cfg.DeploySyncPaths, "explicit empty should override base, not inherit")
+}
+
+func TestConfigForTarget_NilSliceInherits(t *testing.T) {
+	base := DefaultConfig()
+	base.CriticalContainers = []string{"global-container"}
+
+	// Target with nil (unset) — should inherit from base.
+	target := Target{
+		Name:       "inherit",
+		TargetHost: "user@inherit",
+	}
+
+	cfg := base.ConfigForTarget(target)
+	assert.Equal(t, []string{"global-container"}, cfg.CriticalContainers, "nil should inherit from base")
+}
+
+func TestConfigForTarget_LockFilePreservesCustomDir(t *testing.T) {
+	base := DefaultConfig()
+	base.LockFile = "/custom/locks/reconcile.lock"
+
+	target := Target{Name: "nas"}
+
+	cfg := base.ConfigForTarget(target)
+	assert.Contains(t, cfg.LockFile, "/custom/locks/", "per-target lock should use base config's lock directory")
+	assert.Contains(t, cfg.LockFile, "nas", "per-target lock should include target name")
+}
+
 func TestMergeTargetSecrets(t *testing.T) {
 	t.Run("scoped override replaces shared key", func(t *testing.T) {
 		secrets := map[string]any{

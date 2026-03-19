@@ -267,23 +267,27 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 		cp.ProjectName = t.ProjectName
 	}
 
-	// Derive per-target paths.
+	// Derive per-target paths from the base config's directories,
+	// preserving any custom paths the caller configured.
 	stateDir := filepath.Dir(c.StateFile)
 	cp.StateFile = TargetStateFile(stateDir, t)
 	cp.StagingDir = TargetStagingDir(c.StagingDir, t)
-	cp.LockFile = TargetLockFile(DefaultLockDir, t)
+	lockDir := filepath.Dir(c.LockFile)
+	cp.LockFile = TargetLockFile(lockDir, t)
 
-	// Per-target overrides for operational config (non-empty means override).
-	if len(t.CriticalContainers) > 0 {
+	// Per-target overrides for operational config.
+	// Use nil checks (not len > 0) so targets can explicitly clear inherited
+	// slices with an empty list (e.g., critical_containers: []).
+	if t.CriticalContainers != nil {
 		cp.CriticalContainers = t.CriticalContainers
 	}
-	if len(t.PostSyncHooks) > 0 {
+	if t.PostSyncHooks != nil {
 		cp.PostSyncHooks = t.PostSyncHooks
 	}
-	if len(t.DeploySyncPaths) > 0 {
+	if t.DeploySyncPaths != nil {
 		cp.DeploySyncPaths = t.DeploySyncPaths
 	}
-	if len(t.DeploySyncExclude) > 0 {
+	if t.DeploySyncExclude != nil {
 		cp.DeploySyncExclude = t.DeploySyncExclude
 	}
 

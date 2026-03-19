@@ -536,6 +536,10 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 		),
 	)
 
+	// NOTE: Targets are resolved from the startup config snapshot. The config
+	// reloader (which reads bosun.yaml from the repo) runs inside each target's
+	// reconciler.Run(), so ReloadedConfig.Targets is populated but never fed
+	// back into this loop. Target changes in bosun.yaml require a daemon restart.
 	targets := d.config.ReconcileConfig.ResolveTargets()
 
 	logger.Info().

@@ -239,10 +239,23 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		safeCancel()
 	}()
 
-	// Load targets from project config if available.
-	if projectCfg, err := config.Load(); err == nil && len(cfg.Targets) == 0 {
-		if targets := projectCfg.Targets(); len(targets) > 0 {
-			cfg.Targets = targets
+	// Load targets and operational defaults from project config if available.
+	if projectCfg, err := config.Load(); err == nil {
+		if len(cfg.Targets) == 0 {
+			if targets := projectCfg.Targets(); len(targets) > 0 {
+				cfg.Targets = targets
+			}
+		}
+		// Hydrate base config with project-level operational defaults so
+		// ConfigForTarget can inherit them for named targets.
+		if len(cfg.CriticalContainers) == 0 && !cfg.CriticalContainersFromEnv {
+			cfg.CriticalContainers = projectCfg.CriticalContainers()
+		}
+		if len(cfg.DeploySyncPaths) == 0 && !cfg.DeploySyncPathsFromEnv {
+			cfg.DeploySyncPaths = projectCfg.DeploySyncPaths()
+		}
+		if len(cfg.DeploySyncExclude) == 0 && !cfg.DeploySyncExcludeFromEnv {
+			cfg.DeploySyncExclude = projectCfg.DeploySyncExclude()
 		}
 	}
 
