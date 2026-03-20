@@ -26,6 +26,14 @@ var (
 	exitFn = os.Exit
 )
 
+// SetExitFn replaces the exit function used by Fatal/Fatalf and returns the previous one.
+// Use in tests to intercept fatal exits: `restore := ui.SetExitFn(func(int) {}); defer restore(1)`
+func SetExitFn(fn func(int)) func(int) {
+	old := exitFn
+	exitFn = fn
+	return old
+}
+
 // isConsoleMode returns true if we should use colored console output.
 func isConsoleMode() bool {
 	return log.GetFormat() == log.FormatConsole

@@ -2386,3 +2386,140 @@ func TestMaybeSelfHeal_TriggersAfterCooldownExpires(t *testing.T) {
 	assert.True(t, d.lastSelfHeal.After(time.Now().Add(-1*time.Second)),
 		"lastSelfHeal should be updated to roughly now")
 }
+
+// ---------------------------------------------------------------------------
+// Multi-target: ConfigFromEnv BOSUN_TARGETS parsing
+// ---------------------------------------------------------------------------
+
+func TestConfigFromEnv_BOSUN_TARGETS(t *testing.T) {
+	t.Run("parses_valid_JSON_array", func(t *testing.T) {
+		// JSON field names match Go struct fields (no json tags on Target)
+		t.Setenv("BOSUN_TARGETS", `[{"Name":"unraid","TargetHost":"root@192.168.1.8"}]`)
+
+		cfg := ConfigFromEnv()
+
+		targets := cfg.ReconcileConfig.Targets
+		require.Len(t, targets, 1)
+		assert.Equal(t, "unraid", targets[0].Name)
+		assert.Equal(t, "root@192.168.1.8", targets[0].TargetHost)
+	})
+
+	t.Run("invalid_JSON_ignored", func(t *testing.T) {
+		t.Setenv("BOSUN_TARGETS", "not-json")
+
+		cfg := ConfigFromEnv()
+
+		assert.Empty(t, cfg.ReconcileConfig.Targets)
+	})
+
+	t.Run("empty_array_is_explicit_override", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tmpDir = evalSymlinks(t, tmpDir)
+
+		yamlContent := `manifest_dir: manifest
+targets:
+  - name: from-config
+    target_host: user@host
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(yamlContent), 0o644))
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0o755))
+
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(origDir) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		t.Setenv("BOSUN_TARGETS", "[]")
+
+		cfg := ConfigFromEnv()
+
+		// Empty array from env should NOT be repopulated from config file
+		assert.Empty(t, cfg.ReconcileConfig.Targets,
+			"BOSUN_TARGETS=[] should override config file targets")
+	})
+
+	t.Run("env_overrides_config_file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tmpDir = evalSymlinks(t, tmpDir)
+
+		yamlContent := `manifest_dir: manifest
+targets:
+  - name: from-config
+    target_host: user@config-host
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(yamlContent), 0o644))
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0o755))
+
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(origDir) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		t.Setenv("BOSUN_TARGETS", `[{"Name":"from-env","TargetHost":"user@env-host"}]`)
+
+		cfg := ConfigFromEnv()
+
+		targets := cfg.ReconcileConfig.Targets
+		require.Len(t, targets, 1)
+		assert.Equal(t, "from-env", targets[0].Name,
+			"env should override config file")
+		assert.Equal(t, "user@env-host", targets[0].TargetHost)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Multi-target: executeReconcile loop behavior
+// ---------------------------------------------------------------------------
+
+func TestExecuteReconcile_MultipleTargets(t *testing.T) {
+	t.Run("two_targets_both_attempted", func(t *testing.T) {
+		d := newConcurrencyDaemon(t)
+		d.config.ReconcileConfig.Targets = []reconcile.Target{
+			{Name: "alpha", TargetHost: "user@alpha"},
+			{Name: "beta", TargetHost: "user@beta"},
+		}
+
+		ctx := context.Background()
+		err := d.executeReconcile(ctx, "test", false)
+
+		// Both fail (no git repo), but both should be attempted
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "alpha", "error should reference first failing target")
+	})
+
+	t.Run("lastReconcile_updated", func(t *testing.T) {
+		d := newConcurrencyDaemon(t)
+		before := d.lastReconcile
+
+		ctx := context.Background()
+		_ = d.executeReconcile(ctx, "test", false)
+
+		d.stateMu.Lock()
+		after := d.lastReconcile
+		d.stateMu.Unlock()
+		assert.True(t, after.After(before), "lastReconcile should be updated")
+	})
+
+	t.Run("lastError_set_on_failure", func(t *testing.T) {
+		d := newConcurrencyDaemon(t)
+
+		ctx := context.Background()
+		_ = d.executeReconcile(ctx, "test", false)
+
+		d.stateMu.Lock()
+		lastErr := d.lastError
+		d.stateMu.Unlock()
+		assert.Error(t, lastErr, "lastError should be set after failed reconcile")
+	})
+
+	t.Run("default_single_target", func(t *testing.T) {
+		d := newConcurrencyDaemon(t)
+		// No explicit targets — implicit default
+
+		ctx := context.Background()
+		err := d.executeReconcile(ctx, "test", false)
+
+		// Should still run (and fail at git), not panic or skip
+		assert.Error(t, err, "should attempt reconcile even with implicit default target")
+	})
+}
