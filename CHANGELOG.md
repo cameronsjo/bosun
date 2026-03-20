@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0](https://github.com/cameronsjo/bosun/compare/v0.29.2...v0.30.0) (2026-03-20)
+
+
+### Features
+
+* **alert:** add per-target context to alert titles ([823eba5](https://github.com/cameronsjo/bosun/commit/823eba56efd5a8a153a9400a2df8f6245644af09))
+* **cmd:** add --target flag to reconcile and drift commands ([e04e914](https://github.com/cameronsjo/bosun/commit/e04e914c488f6f9b8e06389ccda90f81e6a2f0c3))
+* multi-target reconciliation (one yacht, many ports) ([3fdb569](https://github.com/cameronsjo/bosun/commit/3fdb5695aabddd97dcf12f233fb8a95e91781490))
+* **reconcile:** add Targets to ReloadedConfig for hot-reload ([93d9f7d](https://github.com/cameronsjo/bosun/commit/93d9f7dc714852802a9dcb59827ce862e526eb9e))
+
+
+### Bug Fixes
+
+* address CodeRabbit findings on test coverage PR ([9402acd](https://github.com/cameronsjo/bosun/commit/9402acddf7518dc12774da38e598dfc0429a31d8))
+* address round 2 CodeRabbit findings ([00e0986](https://github.com/cameronsjo/bosun/commit/00e0986ea32d337a41fa430231a40a50102ce522))
+* **reconcile:** address CodeRabbit review findings on multi-target ([c4e4b74](https://github.com/cameronsjo/bosun/commit/c4e4b749da192a8b5d5fcc071ee7e3c9dfbc429d))
+* **reconcile:** address round 2 CodeRabbit findings ([f0393e3](https://github.com/cameronsjo/bosun/commit/f0393e36e6d4f02e69d6a02eb8eda5635adb2464))
+* **reconcile:** move orphaned sendSuccessAlert docstring to correct function ([bd6780f](https://github.com/cameronsjo/bosun/commit/bd6780f438d86fc68c0965e6aebf24e6750ed9ea))
+* **reconcile:** validate target names and document daemon limitations ([7d437d7](https://github.com/cameronsjo/bosun/commit/7d437d7159864c4f97a965a1ff352bf91463f7c6))
+
 ## [0.29.2](https://github.com/cameronsjo/bosun/compare/v0.29.1...v0.29.2) (2026-03-18)
 
 
