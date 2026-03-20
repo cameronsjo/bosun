@@ -8,30 +8,87 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
-  ci:
-    name: CI
+  test:
+    name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run CI pipeline (Go + WebUI)
-        uses: dagger/dagger-for-github@v8.2.0
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          version: "latest"
-          call: all --source .
+          go-version-file: go.mod
 
-      - name: Extract coverage
-        uses: dagger/dagger-for-github@v8.2.0
-        with:
-          version: "latest"
-          call: coverage --source . -o coverage.out
+      - name: Run tests with coverage
+        run: go test -v -race -coverprofile=coverage.out ./...
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: coverage.out
+          use_oidc: true
           fail_ci_if_error: false
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.11
+
+  webui:
+    name: WebUI
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webui
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run type check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    env:
+      COMMIT_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binary
+        run: >
+          go build
+          -ldflags "-s -w -X github.com/cameronsjo/bosun/internal/cmd.version=dev -X github.com/cameronsjo/bosun/internal/cmd.commit=${COMMIT_SHA}"
+          -o build/bosun
+          ./cmd/bosun

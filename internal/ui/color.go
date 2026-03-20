@@ -26,6 +26,16 @@ var (
 	exitFn = os.Exit
 )
 
+// SetExitFn replaces the exit function used by Fatal/Fatalf and returns the previous one.
+// Intended for test use only — not goroutine-safe. Call from the test goroutine before
+// exercising code that may call Fatal.
+// Usage: `old := ui.SetExitFn(func(int) {}); defer ui.SetExitFn(old)`
+func SetExitFn(fn func(int)) func(int) {
+	old := exitFn
+	exitFn = fn
+	return old
+}
+
 // isConsoleMode returns true if we should use colored console output.
 func isConsoleMode() bool {
 	return log.GetFormat() == log.FormatConsole

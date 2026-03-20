@@ -1,12 +1,135 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 language: en-US
 
+# Pedantic, security-conscious review persona (250 char limit)
+tone_instructions: >
+  Pedantic and direct. Flag inconsistencies, missing error checks, Go idiom violations, security concerns (injection, TOCTOU, secrets). Prefer concrete code suggestions. Do not soften feedback.
+
 reviews:
-  # Let CodeRabbit review everything by default
+  profile: "assertive"
+  request_changes_workflow: true
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  sequence_diagrams: true
+  collapse_walkthrough: false
+  changed_files_summary: true
+  poem: false
+  related_issues: true
+  related_prs: true
+  suggested_labels: true
+  suggested_reviewers: false
+  assess_linked_issues: true
+  commit_status: true
+  fail_commit_status: true
+
   auto_review:
     enabled: true
+    drafts: false
+    ignore_title_keywords:
+      - "WIP"
+      - "DO NOT MERGE"
+
+  # Per-path review instructions
+  path_instructions:
+    - path: "internal/**/*.go"
+      instructions: >
+        Review for Go idioms: error wrapping with %w, exhaustive switch
+        statements, nil-safe receiver methods, context propagation. Flag any
+        exported symbol missing a godoc comment. Check that structured logging
+        uses constant message templates with parameterized fields (not
+        fmt.Sprintf). Verify error handling is not silently swallowed.
+
+    - path: "internal/**/*_test.go"
+      instructions: >
+        Verify tests use testify/assert or testify/require (not stdlib
+        assertions). Confirm table-driven subtests with t.Run. Check for
+        t.TempDir() usage with filepath.EvalSymlinks on path comparisons
+        (macOS /var -> /private/var). Flag tests that mock behavior already
+        covered by integration tests. Ensure test names describe the scenario,
+        not the implementation.
+
+    - path: "internal/cmd/**/*.go"
+      instructions: >
+        Verify Cobra command patterns: Use/Aliases/Short/Long fields present,
+        init() registers with parent, Run function is separate (not inline).
+        Check that flags use consistent naming (kebab-case). Flag any command
+        that calls os.Exit directly instead of returning errors.
+
+    - path: "internal/reconcile/**/*.go"
+      instructions: >
+        This is the GitOps engine — highest scrutiny. Review for: race
+        conditions in concurrent reconciliation, proper lock acquisition/release,
+        file permission handling, TOCTOU vulnerabilities in file operations,
+        and correct git operation error handling. Verify SOPS decryption
+        errors are surfaced, not swallowed.
+
+    - path: "internal/config/**/*.go"
+      instructions: >
+        Verify env var precedence (BOSUN_ prefix takes priority over legacy
+        unprefixed vars). Check that new config fields have both YAML tags
+        and env var support. Flag any config that fails silently instead of
+        returning a validation error.
+
+    - path: "dagger/**/*.go"
+      instructions: >
+        Review Dagger pipeline for: cache volume reuse, minimal container
+        layers, correct dependency ordering (test before build). Verify
+        CGO_ENABLED=0 is set for Alpine builds.
+
+    - path: ".github/workflows/**/*.yml"
+      instructions: >
+        Check for: pinned action versions (no @main or @latest except
+        Dagger), minimal permissions, proper secret handling, and that
+        GITHUB_TOKEN is not used where an App token is needed (see
+        forge-bellows pattern). Verify job dependencies are correct.
+
+    - path: "**/*.md"
+      instructions: >
+        Check markdown for: proper heading hierarchy (no skipped levels),
+        consistent list markers, fenced code blocks with language identifiers,
+        and RFC 2119 keywords in requirements docs. Flag broken links.
+
+  # Pre-merge checks
   pre_merge_checks:
-    # Go uses golint/go vet for doc conventions on exported symbols.
-    # A blanket 80% threshold is inappropriate for Go codebases.
+    # Go uses godoc for documentation conventions, not blanket docstring coverage
     docstrings:
       mode: "off"
+
+  # Finishing touches
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: true
+
+  # Static analysis tools
+  tools:
+    golangci-lint:
+      enabled: true
+    gitleaks:
+      enabled: true
+    actionlint:
+      enabled: true
+    markdownlint:
+      enabled: true
+    checkmake:
+      enabled: true
+    languagetool:
+      enabled: true
+      level: "picky"
+    github-checks:
+      enabled: true
+      timeout_ms: 120000
+    # Disable tools irrelevant to this Go project
+    biome:
+      enabled: false
+    eslint:
+      enabled: false
+    rubocop:
+      enabled: false
+    phpstan:
+      enabled: false
+    pylint:
+      enabled: false
+    clippy:
+      enabled: false

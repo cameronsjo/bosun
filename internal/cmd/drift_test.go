@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -254,6 +255,380 @@ func TestPrintDriftStatus_RoutesToHuman(t *testing.T) {
 	// Should produce human-readable output
 	assert.Contains(t, output, "Deployed commit: abc123de")
 	assert.Contains(t, output, "Declared services: 1")
+}
+
+// saveDriftFlags saves and restores all package-level drift flag vars.
+func saveDriftFlags(t *testing.T) {
+	t.Helper()
+	oldLive, oldJSON, oldStateFile, oldProjectName, oldTarget :=
+		driftLive, driftJSON, driftStateFile, driftProjectName, driftTarget
+	t.Cleanup(func() {
+		driftLive = oldLive
+		driftJSON = oldJSON
+		driftStateFile = oldStateFile
+		driftProjectName = oldProjectName
+		driftTarget = oldTarget
+	})
+}
+
+// makeState creates a deploy state file in the given directory at the target-specific path.
+func makeState(t *testing.T, dir string, target reconcile.Target, state *reconcile.DeployState) {
+	t.Helper()
+	sf := reconcile.TargetStateFile(dir, target)
+	require.NoError(t, os.MkdirAll(filepath.Dir(sf), 0o755))
+	require.NoError(t, reconcile.SaveState(sf, state))
+}
+
+func TestLoadConfiguredTargets(t *testing.T) {
+	t.Run("from_env_valid_JSON", func(t *testing.T) {
+		t.Setenv("BOSUN_TARGETS", `[{"name":"alpha"},{"name":"beta"}]`)
+		targets := loadConfiguredTargets()
+		require.Len(t, targets, 2)
+		assert.Equal(t, "alpha", targets[0].Name)
+		assert.Equal(t, "beta", targets[1].Name)
+	})
+
+	t.Run("from_env_invalid_JSON_returns_nil", func(t *testing.T) {
+		t.Setenv("BOSUN_TARGETS", "not-json")
+		targets := loadConfiguredTargets()
+		assert.Nil(t, targets)
+	})
+
+	t.Run("from_env_empty_array_returns_nil", func(t *testing.T) {
+		t.Setenv("BOSUN_TARGETS", "[]")
+		targets := loadConfiguredTargets()
+		assert.Nil(t, targets)
+	})
+
+	t.Run("no_env_no_config_returns_nil", func(t *testing.T) {
+		t.Setenv("BOSUN_TARGETS", "")
+		targets := loadConfiguredTargets()
+		assert.Nil(t, targets)
+	})
+}
+
+func TestRunMultiTargetDriftJSON(t *testing.T) {
+	t.Run("two_targets_clean", func(t *testing.T) {
+		saveDriftFlags(t)
+		tmpDir := evalSymlinks(t, t.TempDir())
+		driftStateFile = filepath.Join(tmpDir, reconcile.DefaultStateFile)
+		driftLive = false
+
+		targets := []reconcile.Target{
+			{Name: "primary"},
+			{Name: "secondary"},
+		}
+		for _, tgt := range targets {
+			makeState(t, tmpDir, tgt, &reconcile.DeployState{
+				LastDeployedCommit: "abc123",
+				DeclaredServices:   []reconcile.DeclaredService{{Name: "web", Image: "nginx"}},
+			})
+		}
+
+		output := captureStdout(t, func() {
+			runMultiTargetDriftJSON(targets)
+		})
+
+		var result multiTargetDriftJSON
+		require.NoError(t, json.Unmarshal([]byte(output), &result))
+		require.Len(t, result.Targets, 2)
+		assert.Equal(t, "primary", result.Targets[0].Target)
+		assert.Equal(t, "clean", result.Targets[0].Status)
+		assert.Equal(t, "secondary", result.Targets[1].Target)
+		assert.Equal(t, "clean", result.Targets[1].Status)
+	})
+
+	t.Run("one_drifted_one_unknown", func(t *testing.T) {
+		saveDriftFlags(t)
+		tmpDir := evalSymlinks(t, t.TempDir())
+		driftStateFile = filepath.Join(tmpDir, reconcile.DefaultStateFile)
+		driftLive = false
+
+		targets := []reconcile.Target{
+			{Name: "alpha"},
+			{Name: "beta"},
+		}
+		makeState(t, tmpDir, targets[0], &reconcile.DeployState{
+			LastDeployedCommit: "abc123",
+			DeclaredServices:   []reconcile.DeclaredService{{Name: "web", Image: "nginx"}},
+			DriftItems:         []reconcile.DriftItem{{Service: "web", Type: reconcile.DriftMissing}},
+		})
+		// beta has no state file — LoadState returns empty commit
+
+		output := captureStdout(t, func() {
+			runMultiTargetDriftJSON(targets)
+		})
+
+		var result multiTargetDriftJSON
+		require.NoError(t, json.Unmarshal([]byte(output), &result))
+		require.Len(t, result.Targets, 2)
+		assert.Equal(t, "drifted", result.Targets[0].Status)
+		assert.Equal(t, "unknown", result.Targets[1].Status)
+	})
+
+	t.Run("items_array_never_null", func(t *testing.T) {
+		saveDriftFlags(t)
+		tmpDir := evalSymlinks(t, t.TempDir())
+		driftStateFile = filepath.Join(tmpDir, reconcile.DefaultStateFile)
+		driftLive = false
+
+		targets := []reconcile.Target{{Name: "clean-target"}}
+		makeState(t, tmpDir, targets[0], &reconcile.DeployState{
+			LastDeployedCommit: "abc123",
+			DeclaredServices:   []reconcile.DeclaredService{{Name: "web", Image: "nginx"}},
+		})
+
+		output := captureStdout(t, func() {
+			runMultiTargetDriftJSON(targets)
+		})
+
+		// Verify items is [] not null in raw JSON
+		assert.Contains(t, output, `"items": []`)
+	})
+}
+
+func TestRunMultiTargetDrift_Human(t *testing.T) {
+	t.Run("two_targets_both_deployed", func(t *testing.T) {
+		saveDriftFlags(t)
+		tmpDir := evalSymlinks(t, t.TempDir())
+		driftStateFile = filepath.Join(tmpDir, reconcile.DefaultStateFile)
+		driftLive = false
+		driftJSON = false
+
+		targets := []reconcile.Target{
+			{Name: "unraid"},
+			{Name: "pi"},
+		}
+		for _, tgt := range targets {
+			makeState(t, tmpDir, tgt, &reconcile.DeployState{
+				LastDeployedCommit: "abc123",
+				DeclaredServices:   []reconcile.DeclaredService{{Name: "web", Image: "nginx"}},
+			})
+		}
+
+		output := captureStdout(t, func() {
+			runMultiTargetDrift(targets)
+		})
+
+		assert.Contains(t, output, "Deployed commit: abc123")
+	})
+
+	t.Run("one_deployed_one_not", func(t *testing.T) {
+		saveDriftFlags(t)
+		tmpDir := evalSymlinks(t, t.TempDir())
+		driftStateFile = filepath.Join(tmpDir, reconcile.DefaultStateFile)
+		driftLive = false
+		driftJSON = false
+
+		targets := []reconcile.Target{
+			{Name: "deployed"},
+			{Name: "fresh"},
+		}
+		makeState(t, tmpDir, targets[0], &reconcile.DeployState{
+			LastDeployedCommit: "abc123",
+			DeclaredServices:   []reconcile.DeclaredService{{Name: "web", Image: "nginx"}},
+		})
+		// fresh has no state file
+
+		output := captureStdout(t, func() {
+			runMultiTargetDrift(targets)
+		})
+
+		assert.Contains(t, output, "Deployed commit: abc123")
+		// The "No deployments recorded" warning goes through ui.Warning (colored output),
+		// not fmt.Printf, so it won't appear in stdout capture.
+	})
+}
+
+func TestRunDrift_MultiTargetAutoDetection(t *testing.T) {
+	t.Run("multi_target_routes_to_json", func(t *testing.T) {
+		saveDriftFlags(t)
+		tmpDir := evalSymlinks(t, t.TempDir())
+		driftStateFile = filepath.Join(tmpDir, reconcile.DefaultStateFile)
+		driftTarget = ""
+		driftJSON = true
+		driftLive = false
+
+		t.Setenv("BOSUN_TARGETS", `[{"name":"a"},{"name":"b"}]`)
+		makeState(t, tmpDir, reconcile.Target{Name: "a"}, &reconcile.DeployState{
+			LastDeployedCommit: "commit-a",
+			DeclaredServices:   []reconcile.DeclaredService{{Name: "web", Image: "nginx"}},
+		})
+		makeState(t, tmpDir, reconcile.Target{Name: "b"}, &reconcile.DeployState{
+			LastDeployedCommit: "commit-b",
+			DeclaredServices:   []reconcile.DeclaredService{{Name: "api", Image: "app:v1"}},
+		})
+
+		output := captureStdout(t, func() {
+			runDrift(nil, nil)
+		})
+
+		var result multiTargetDriftJSON
+		require.NoError(t, json.Unmarshal([]byte(output), &result), "should produce valid multi-target JSON")
+		require.Len(t, result.Targets, 2)
+		assert.Equal(t, "a", result.Targets[0].Target)
+		assert.Equal(t, "b", result.Targets[1].Target)
+	})
+
+	t.Run("single_target_falls_through_to_normal", func(t *testing.T) {
+		saveDriftFlags(t)
+		tmpDir := evalSymlinks(t, t.TempDir())
+		driftStateFile = filepath.Join(tmpDir, reconcile.DefaultStateFile)
+		driftTarget = ""
+		driftJSON = true
+		driftLive = false
+
+		t.Setenv("BOSUN_TARGETS", `[{"name":"solo"}]`)
+		// Write state at the DEFAULT path since single target falls through
+		require.NoError(t, reconcile.SaveState(driftStateFile, &reconcile.DeployState{
+			LastDeployedCommit: "commit-solo",
+			DeclaredServices:   []reconcile.DeclaredService{{Name: "web", Image: "nginx"}},
+		}))
+
+		output := captureStdout(t, func() {
+			runDrift(nil, nil)
+		})
+
+		// Single-target path produces driftJSONOutput, not multiTargetDriftJSON
+		var result driftJSONOutput
+		require.NoError(t, json.Unmarshal([]byte(output), &result))
+		assert.Equal(t, "clean", result.Status)
+	})
+}
+
+func TestRunDrift_TargetFlag(t *testing.T) {
+	t.Run("target_found_resolves_project_name", func(t *testing.T) {
+		saveDriftFlags(t)
+		tmpDir := evalSymlinks(t, t.TempDir())
+		driftStateFile = filepath.Join(tmpDir, reconcile.DefaultStateFile)
+		driftTarget = "nas"
+		driftJSON = true
+		driftLive = false
+		driftProjectName = ""
+
+		t.Setenv("BOSUN_TARGETS", `[{"name":"nas","project_name":"homelab"}]`)
+		makeState(t, tmpDir, reconcile.Target{Name: "nas"}, &reconcile.DeployState{
+			LastDeployedCommit: "abc123",
+			DeclaredServices:   []reconcile.DeclaredService{{Name: "web", Image: "nginx"}},
+		})
+
+		output := captureStdout(t, func() {
+			runDrift(nil, nil)
+		})
+
+		var result driftJSONOutput
+		require.NoError(t, json.Unmarshal([]byte(output), &result))
+		assert.Equal(t, "clean", result.Status)
+		assert.Equal(t, "abc123", result.DeployedCommit)
+	})
+
+	t.Run("target_not_in_config_derives_by_name", func(t *testing.T) {
+		saveDriftFlags(t)
+		tmpDir := evalSymlinks(t, t.TempDir())
+		driftStateFile = filepath.Join(tmpDir, reconcile.DefaultStateFile)
+		driftTarget = "unknown"
+		driftJSON = true
+		driftLive = false
+
+		t.Setenv("BOSUN_TARGETS", "")
+		// Create state at derived path
+		makeState(t, tmpDir, reconcile.Target{Name: "unknown"}, &reconcile.DeployState{
+			LastDeployedCommit: "xyz789",
+			DeclaredServices:   []reconcile.DeclaredService{{Name: "app", Image: "app:v1"}},
+		})
+
+		output := captureStdout(t, func() {
+			runDrift(nil, nil)
+		})
+
+		var result driftJSONOutput
+		require.NoError(t, json.Unmarshal([]byte(output), &result))
+		assert.Equal(t, "clean", result.Status)
+		assert.Equal(t, "xyz789", result.DeployedCommit)
+	})
+
+	t.Run("no_deployment_returns_unknown_json", func(t *testing.T) {
+		saveDriftFlags(t)
+		tmpDir := evalSymlinks(t, t.TempDir())
+		driftStateFile = filepath.Join(tmpDir, reconcile.DefaultStateFile)
+		driftTarget = "empty"
+		driftJSON = true
+		driftLive = false
+
+		t.Setenv("BOSUN_TARGETS", "")
+		// No state file exists
+
+		output := captureStdout(t, func() {
+			runDrift(nil, nil)
+		})
+
+		var result driftJSONOutput
+		require.NoError(t, json.Unmarshal([]byte(output), &result))
+		assert.Equal(t, "unknown", result.Status)
+	})
+}
+
+func TestBuildDriftJSON(t *testing.T) {
+	t.Run("clean_state", func(t *testing.T) {
+		state := &reconcile.DeployState{
+			LastDeployedCommit: "abc123",
+			DeclaredServices:   []reconcile.DeclaredService{{Name: "web", Image: "nginx"}},
+		}
+		out := buildDriftJSON(state)
+		assert.Equal(t, "clean", out.Status)
+		assert.Equal(t, 1, out.DeclaredCount)
+		assert.Equal(t, 0, out.DriftItemCount)
+		assert.NotNil(t, out.Items)
+		assert.Empty(t, out.Items)
+	})
+
+	t.Run("drifted_state", func(t *testing.T) {
+		state := &reconcile.DeployState{
+			LastDeployedCommit: "abc123",
+			DeclaredServices:   []reconcile.DeclaredService{{Name: "web", Image: "nginx"}},
+			DriftItems:         []reconcile.DriftItem{{Service: "web", Type: reconcile.DriftMissing}},
+		}
+		out := buildDriftJSON(state)
+		assert.Equal(t, "drifted", out.Status)
+		assert.Equal(t, 1, out.DriftItemCount)
+		require.Len(t, out.Items, 1)
+	})
+
+	t.Run("timestamps_formatted", func(t *testing.T) {
+		checkedAt := time.Date(2026, 3, 19, 12, 0, 0, 0, time.UTC)
+		deployedAt := time.Date(2026, 3, 19, 11, 0, 0, 0, time.UTC)
+		state := &reconcile.DeployState{
+			LastDeployedCommit: "abc123",
+			DriftCheckedAt:     checkedAt,
+			DeployedAt:         deployedAt,
+		}
+		out := buildDriftJSON(state)
+		require.NotNil(t, out.CheckedAt)
+		require.NotNil(t, out.DeployedAt)
+		assert.Contains(t, *out.CheckedAt, "2026-03-19")
+		assert.Contains(t, *out.DeployedAt, "2026-03-19")
+	})
+}
+
+func TestLoadDriftIgnoreRules(t *testing.T) {
+	t.Run("from_env_valid", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_IGNORE", `[{"service":"traefik","type":"image_mismatch"}]`)
+		rules := loadDriftIgnoreRules()
+		require.Len(t, rules, 1)
+		assert.Equal(t, "traefik", rules[0].Service)
+	})
+
+	t.Run("from_env_invalid_JSON_returns_nil", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_IGNORE", "not-json")
+		rules := loadDriftIgnoreRules()
+		assert.Nil(t, rules)
+	})
+
+	t.Run("no_env_no_config_returns_nil", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_IGNORE", "")
+		rules := loadDriftIgnoreRules()
+		assert.Nil(t, rules)
+	})
 }
 
 func TestDriftJSONOutput_Structure(t *testing.T) {
