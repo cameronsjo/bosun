@@ -47,29 +47,29 @@ const DefaultTargetName = "default"
 // staging directory, secrets scope, and operational overrides.
 type Target struct {
 	// Name identifies this target (e.g., "unraid", "pi"). Used in file paths and logs.
-	Name string
+	Name string `json:"name"`
 	// TargetHost is empty for local deployment, or "user@host" for remote.
-	TargetHost string
+	TargetHost string `json:"target_host,omitempty"`
 	// LocalAppdataPath is the path to appdata when running locally.
-	LocalAppdataPath string
+	LocalAppdataPath string `json:"local_appdata_path,omitempty"`
 	// RemoteAppdataPath is the path to appdata on the remote host.
-	RemoteAppdataPath string
+	RemoteAppdataPath string `json:"remote_appdata_path,omitempty"`
 	// ProjectName is the docker compose project name for this target.
-	ProjectName string
+	ProjectName string `json:"project_name,omitempty"`
 	// StateFile overrides the derived state file path. When empty, derived from Name.
-	StateFile string
+	StateFile string `json:"state_file,omitempty"`
 	// StagingDir overrides the derived staging directory. When empty, derived from Name.
-	StagingDir string
+	StagingDir string `json:"staging_dir,omitempty"`
 	// SecretsScope is the key prefix for per-target secrets (e.g., "unraid" → targets.unraid.*).
-	SecretsScope string
+	SecretsScope string `json:"secrets_scope,omitempty"`
 	// CriticalContainers overrides the global list for this target.
-	CriticalContainers []string
+	CriticalContainers []string `json:"critical_containers,omitempty"`
 	// PostSyncHooks overrides the global hooks for this target.
-	PostSyncHooks []PostSyncHook
+	PostSyncHooks []PostSyncHook `json:"post_sync_hooks,omitempty"`
 	// DeploySyncPaths overrides the global allowlist for this target.
-	DeploySyncPaths []string
+	DeploySyncPaths []string `json:"deploy_sync_paths,omitempty"`
 	// DeploySyncExclude overrides the global blocklist for this target.
-	DeploySyncExclude []string
+	DeploySyncExclude []string `json:"deploy_sync_exclude,omitempty"`
 }
 
 // IsDefault returns true if this is the implicit default target.

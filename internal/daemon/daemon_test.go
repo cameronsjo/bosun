@@ -2393,8 +2393,7 @@ func TestMaybeSelfHeal_TriggersAfterCooldownExpires(t *testing.T) {
 
 func TestConfigFromEnv_BOSUN_TARGETS(t *testing.T) {
 	t.Run("parses_valid_JSON_array", func(t *testing.T) {
-		// JSON field names match Go struct fields (no json tags on Target)
-		t.Setenv("BOSUN_TARGETS", `[{"Name":"unraid","TargetHost":"root@192.168.1.8"}]`)
+		t.Setenv("BOSUN_TARGETS", `[{"name":"unraid","target_host":"root@192.168.1.8"}]`)
 
 		cfg := ConfigFromEnv()
 
@@ -2455,7 +2454,7 @@ targets:
 		defer func() { _ = os.Chdir(origDir) }()
 		require.NoError(t, os.Chdir(tmpDir))
 
-		t.Setenv("BOSUN_TARGETS", `[{"Name":"from-env","TargetHost":"user@env-host"}]`)
+		t.Setenv("BOSUN_TARGETS", `[{"name":"from-env","target_host":"user@env-host"}]`)
 
 		cfg := ConfigFromEnv()
 
@@ -2489,7 +2488,9 @@ func TestExecuteReconcile_MultipleTargets(t *testing.T) {
 
 	t.Run("lastReconcile_updated", func(t *testing.T) {
 		d := newConcurrencyDaemon(t)
+		d.stateMu.Lock()
 		before := d.lastReconcile
+		d.stateMu.Unlock()
 
 		ctx := context.Background()
 		_ = d.executeReconcile(ctx, "test", false)

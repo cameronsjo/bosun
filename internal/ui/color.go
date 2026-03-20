@@ -27,7 +27,7 @@ var (
 )
 
 // SetExitFn replaces the exit function used by Fatal/Fatalf and returns the previous one.
-// Use in tests to intercept fatal exits: `restore := ui.SetExitFn(func(int) {}); defer restore(1)`
+// Use in tests: `old := ui.SetExitFn(func(int) {}); defer ui.SetExitFn(old)`
 func SetExitFn(fn func(int)) func(int) {
 	old := exitFn
 	exitFn = fn
