@@ -4,6 +4,8 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -286,7 +288,7 @@ func (d *Daemon) handleAPITrigger(w http.ResponseWriter, r *http.Request) {
 	// when the client does not set it explicitly.
 	var req TriggerRequest
 	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 			logger.Warn().Err(err).Msg("Invalid JSON in trigger request")
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
 			return

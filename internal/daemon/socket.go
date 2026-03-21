@@ -4,7 +4,9 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -153,7 +155,7 @@ func (s *SocketServer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	// -1 (unknown) when the client does not set it explicitly.
 	var req TriggerRequest
 	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
 			return
 		}

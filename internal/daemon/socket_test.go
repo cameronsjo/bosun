@@ -116,7 +116,7 @@ func TestSocketHandleTrigger_ForcePropagation(t *testing.T) {
 		{
 			name:          "force=true with explicit ContentLength",
 			body:          `{"source":"cli","force":true}`,
-			contentLength: 28,
+			contentLength: int64(len(`{"source":"cli","force":true}`)),
 			wantForce:     true,
 		},
 		{
@@ -170,20 +170,13 @@ func TestSocketHandleTrigger_ForcePropagation(t *testing.T) {
 			require.Eventually(t, func() bool {
 				d.reconcileMu.Lock()
 				defer d.reconcileMu.Unlock()
-				// Either a pending trigger arrived (body case) or we just need
-				// the goroutine to have exited for the no-body case.
-				if tc.wantForce {
-					return d.pendingTrigger && d.triggerForce == tc.wantForce
-				}
-				return d.pendingTrigger || true // no-body: goroutine always coalesces
+				return d.pendingTrigger
 			}, 200*time.Millisecond, 5*time.Millisecond)
 
-			if tc.wantForce {
-				d.reconcileMu.Lock()
-				gotForce := d.triggerForce
-				d.reconcileMu.Unlock()
-				assert.True(t, gotForce, "expected force=true to reach daemon state")
-			}
+			d.reconcileMu.Lock()
+			gotForce := d.triggerForce
+			d.reconcileMu.Unlock()
+			assert.Equal(t, tc.wantForce, gotForce, "force flag mismatch")
 		})
 	}
 }
