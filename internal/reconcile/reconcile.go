@@ -406,8 +406,31 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	// State-based skip logic: compare last *deployed* commit, not last *fetched* commit.
 	// Also re-run if NeedsRedeploy is set from a previous partial failure.
 	if shouldSkipDeploy(state.LastDeployedCommit, after, r.config.Force, state.NeedsRedeploy) {
-		ui.Info("=== Already deployed commit %s, skipping ===", after[:MinLen(after, 8)])
-		return nil
+		// Commit hash matches, but verify that all declared services are actually
+		// running. A service added to the compose file in this commit may have never
+		// started (e.g., the first deploy of the commit was interrupted, or the
+		// container was removed after the fact). If any service is missing, proceed
+		// with the full pipeline instead of skipping.
+		skipConfirmed := true
+		if r.dockerClientFn != nil {
+			if client := r.dockerClientFn(); client != nil {
+				actual, collectErr := CollectActualState(ctx, client, r.config.ProjectName)
+				if collectErr != nil {
+					logger.Warn().Err(collectErr).Msg("Could not verify service health for skip check, proceeding with deploy")
+					skipConfirmed = false
+				} else if hasMissingDeclaredServices(state.DeclaredServices, actual) {
+					logger.Info().
+						Int("declared_services", len(state.DeclaredServices)).
+						Msg("Commit already deployed but declared services are missing containers, re-running pipeline")
+					ui.Info("=== Commit %s deployed but services missing, re-running pipeline ===", after[:MinLen(after, 8)])
+					skipConfirmed = false
+				}
+			}
+		}
+		if skipConfirmed {
+			ui.Info("=== Already deployed commit %s, skipping ===", after[:MinLen(after, 8)])
+			return nil
+		}
 	}
 
 	if state.NeedsRedeploy {
