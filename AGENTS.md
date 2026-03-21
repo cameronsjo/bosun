@@ -253,8 +253,9 @@ import (
 var exampleCmd = &cobra.Command{
     Use:   "example",
     Short: "Example command",
-    Run: func(cmd *cobra.Command, args []string) {
+    RunE: func(cmd *cobra.Command, args []string) error {
         ui.Success("Example ran!")
+        return nil
     },
 }
 
