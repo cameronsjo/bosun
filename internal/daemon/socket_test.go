@@ -103,6 +103,84 @@ func TestSocketHandleTrigger(t *testing.T) {
 	})
 }
 
+// TestSocketHandleTrigger_ForcePropagation verifies that force=true in the
+// request body reaches TriggerReconcile regardless of ContentLength.
+// Regression test for: body not parsed when ContentLength was 0 or -1.
+func TestSocketHandleTrigger_ForcePropagation(t *testing.T) {
+	tests := []struct {
+		name          string
+		body          string
+		contentLength int64 // -1 = unknown, 0 = none, >0 = explicit
+		wantForce     bool
+	}{
+		{
+			name:          "force=true with explicit ContentLength",
+			body:          `{"source":"cli","force":true}`,
+			contentLength: int64(len(`{"source":"cli","force":true}`)),
+			wantForce:     true,
+		},
+		{
+			name:          "force=true with ContentLength=-1 (unknown, pre-fix client bug)",
+			body:          `{"source":"cli","force":true}`,
+			contentLength: -1,
+			wantForce:     true,
+		},
+		{
+			name:          "force=false with no body",
+			body:          "",
+			contentLength: 0,
+			wantForce:     false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ss, d := newTestSocketServer(t)
+
+			// Pre-set reconciling so the goroutine coalesces into pendingTrigger
+			// instead of running a full reconcile pipeline.
+			d.reconcileMu.Lock()
+			d.reconciling = true
+			d.reconcileMu.Unlock()
+			t.Cleanup(func() {
+				d.reconcileMu.Lock()
+				d.reconciling = false
+				d.pendingTrigger = false
+				d.triggerForce = false
+				d.reconcileMu.Unlock()
+			})
+
+			var req *http.Request
+			if tc.body != "" {
+				req = httptest.NewRequest(http.MethodPost, "/trigger", strings.NewReader(tc.body))
+				req.ContentLength = tc.contentLength
+				req.Header.Set("Content-Type", "application/json")
+			} else {
+				req = httptest.NewRequest(http.MethodPost, "/trigger", nil)
+				req.ContentLength = 0
+			}
+
+			w := httptest.NewRecorder()
+			ss.handleTrigger(w, req)
+
+			require.Equal(t, http.StatusAccepted, w.Code)
+
+			// The goroutine in handleTrigger calls TriggerReconcile which, seeing
+			// d.reconciling=true, sets d.triggerForce. Give it a moment to run.
+			require.Eventually(t, func() bool {
+				d.reconcileMu.Lock()
+				defer d.reconcileMu.Unlock()
+				return d.pendingTrigger
+			}, 200*time.Millisecond, 5*time.Millisecond)
+
+			d.reconcileMu.Lock()
+			gotForce := d.triggerForce
+			d.reconcileMu.Unlock()
+			assert.Equal(t, tc.wantForce, gotForce, "force flag mismatch")
+		})
+	}
+}
+
 func TestSocketHandleStatus(t *testing.T) {
 	t.Run("GET idle state returns 200 with idle", func(t *testing.T) {
 		ss, _ := newTestSocketServer(t)
