@@ -202,7 +202,8 @@ func TestAddPortsFromCompose_PortRange(t *testing.T) {
 
 func TestAddPortsFromCompose_NonexistentFile(t *testing.T) {
 	registry := manifest.NewPortRegistry()
-	err := addPortsFromCompose(registry, "/nonexistent/file.yml", "stack")
+	missing := filepath.Join(t.TempDir(), "does-not-exist.yml")
+	err := addPortsFromCompose(registry, missing, "stack")
 	assert.Error(t, err)
 }
 
