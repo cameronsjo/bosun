@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
@@ -87,29 +88,28 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 		cp.LockFile = TargetLockFile(lockDir, t)
 	}
 
-	// Deep-copy inherited slices to prevent mutation of the base config
-	// (shallow copy shares backing arrays). Then apply per-target overrides.
+	// Deep-copy all slices so the returned config has independent backing arrays.
+	// Both inherited slices (from base) and overrides (from target) are cloned
+	// to prevent mutation of either source.
 	// Use nil checks (not len > 0) so targets can explicitly clear inherited
 	// slices with an empty list (e.g., critical_containers: []).
 	if t.CriticalContainers != nil {
-		cp.CriticalContainers = t.CriticalContainers
+		cp.CriticalContainers = append([]string(nil), t.CriticalContainers...)
 	} else if cp.CriticalContainers != nil {
 		cp.CriticalContainers = append([]string(nil), cp.CriticalContainers...)
 	}
 	if t.PostSyncHooks != nil {
-		cp.PostSyncHooks = t.PostSyncHooks
+		cp.PostSyncHooks = clonePostSyncHooks(t.PostSyncHooks)
 	} else if cp.PostSyncHooks != nil {
-		hooks := make([]PostSyncHook, len(cp.PostSyncHooks))
-		copy(hooks, cp.PostSyncHooks)
-		cp.PostSyncHooks = hooks
+		cp.PostSyncHooks = clonePostSyncHooks(cp.PostSyncHooks)
 	}
 	if t.DeploySyncPaths != nil {
-		cp.DeploySyncPaths = t.DeploySyncPaths
+		cp.DeploySyncPaths = append([]string(nil), t.DeploySyncPaths...)
 	} else if cp.DeploySyncPaths != nil {
 		cp.DeploySyncPaths = append([]string(nil), cp.DeploySyncPaths...)
 	}
 	if t.DeploySyncExclude != nil {
-		cp.DeploySyncExclude = t.DeploySyncExclude
+		cp.DeploySyncExclude = append([]string(nil), t.DeploySyncExclude...)
 	} else if cp.DeploySyncExclude != nil {
 		cp.DeploySyncExclude = append([]string(nil), cp.DeploySyncExclude...)
 	}
@@ -117,6 +117,19 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 	cp.SecretsScope = t.SecretsScope
 
 	return &cp
+}
+
+// clonePostSyncHooks returns a deep copy of a PostSyncHook slice,
+// including each hook's Paths slice.
+func clonePostSyncHooks(hooks []PostSyncHook) []PostSyncHook {
+	cloned := make([]PostSyncHook, len(hooks))
+	for i, h := range hooks {
+		cloned[i] = h
+		if h.Paths != nil {
+			cloned[i].Paths = append([]string(nil), h.Paths...)
+		}
+	}
+	return cloned
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -150,13 +163,20 @@ func DefaultConfig() *Config {
 // from the flat config fields for backwards compatibility.
 func (c *Config) ResolveTargets() []Target {
 	if len(c.Targets) > 0 {
-		// Validate target names before returning to prevent path traversal.
+		// Validate target names and reject duplicates to prevent path collisions.
 		valid := make([]Target, 0, len(c.Targets))
+		seen := make(map[string]bool, len(c.Targets))
 		for _, t := range c.Targets {
 			if err := ValidateTargetName(t.Name); err != nil {
 				log.Warn().Str("target", t.Name).Err(err).Msg("Skipping target with invalid name")
 				continue
 			}
+			lower := strings.ToLower(t.Name)
+			if seen[lower] {
+				log.Warn().Str("target", t.Name).Msg("Skipping duplicate target name (case-insensitive)")
+				continue
+			}
+			seen[lower] = true
 			valid = append(valid, t)
 		}
 		if len(valid) > 0 {

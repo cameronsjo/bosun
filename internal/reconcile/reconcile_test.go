@@ -3637,6 +3637,32 @@ func TestConfigForTarget_ExplicitEmptySliceOverrides(t *testing.T) {
 	assert.Empty(t, cfg.DeploySyncPaths, "explicit empty should override base, not inherit")
 }
 
+func TestResolveTargets_RejectsDuplicateNames(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Targets = []Target{
+		{Name: "alpha", TargetHost: "user@alpha"},
+		{Name: "Alpha", TargetHost: "user@alpha2"},
+		{Name: "beta", TargetHost: "user@beta"},
+	}
+
+	targets := cfg.ResolveTargets()
+	assert.Len(t, targets, 2, "case-insensitive duplicate should be rejected")
+	assert.Equal(t, "alpha", targets[0].Name)
+	assert.Equal(t, "beta", targets[1].Name)
+}
+
+func TestConfigForTarget_SlicesAreIndependent(t *testing.T) {
+	base := DefaultConfig()
+	base.CriticalContainers = []string{"traefik", "authelia"}
+
+	target := Target{Name: "nas", TargetHost: "user@nas"}
+	cfg := base.ConfigForTarget(target)
+
+	// Mutate the copy — should not affect base
+	cfg.CriticalContainers = append(cfg.CriticalContainers, "injected")
+	assert.Len(t, base.CriticalContainers, 2, "base should not be mutated by per-target copy")
+}
+
 func TestConfigForTarget_NilSliceInherits(t *testing.T) {
 	base := DefaultConfig()
 	base.CriticalContainers = []string{"global-container"}
