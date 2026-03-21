@@ -149,10 +149,11 @@ func (s *SocketServer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse request (optional body)
+	// Parse request (optional body). Do not gate on ContentLength — it may be
+	// -1 (unknown) when the client does not set it explicitly.
 	var req TriggerRequest
-	if r.Body != nil && r.ContentLength > 0 {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
 			return
 		}
