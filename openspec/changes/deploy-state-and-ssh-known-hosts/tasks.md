@@ -1,15 +1,17 @@
+# Tasks: Deploy state tracking and SSH known_hosts resolution
+
 ## 1. Deploy-relevance diff base (Bug #170)
 
 - [ ] 1.1 Update `internal/reconcile/reconcile.go`: pass `state.CommitHash`
       (not `PullResult.CommitBefore`) as the base commit when evaluating
       post-sync hooks and deploy-path diffs
 - [ ] 1.2 Handle the empty-state case: when `state.CommitHash == ""` (first
-      deploy or missing state file), treat all files as changed — do not skip
-      hooks or deploy-path evaluation
+      deploy or missing state file), skip post-sync hooks entirely (no diff
+      base available; existing first-deploy guard is preserved)
 - [ ] 1.3 Add/update unit tests in `internal/reconcile/reconcile_test.go`:
       - Failed pipeline does not advance the diff base
-      - First deploy (no prior state) treats all files as changed
-      - Successful deploy uses the new commit as the next diff base
+      - First deploy (no prior state) skips post-sync hooks
+      - Successful deploy uses `state.CommitHash` as the base for the next run
 
 ## 2. SSH known_hosts resolution (Bug #173)
 
@@ -22,3 +24,11 @@
       - `BOSUN_SSH_KNOWN_HOSTS` is used when set
       - `/config/known_hosts` is used when present and env var is unset
       - Falls back to insecure mode with a warning when neither path exists
+
+## 3. Onboarding documentation
+
+- [ ] 3.1 Update `skills/onboard/resources/gitops.md` to reflect:
+      - deploy-relevance diff uses `state.CommitHash` (last successful deploy),
+        not the pull's `commit_before`
+      - SSH known_hosts resolution excludes `~/.ssh/known_hosts`; only
+        `BOSUN_SSH_KNOWN_HOSTS` and `/config/known_hosts` are consulted

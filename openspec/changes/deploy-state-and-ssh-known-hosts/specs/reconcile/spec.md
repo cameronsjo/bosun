@@ -1,3 +1,5 @@
+# Reconcile spec delta: deploy state tracking and SSH known_hosts resolution
+
 ## MODIFIED Requirements
 
 ### Requirement: Git Repository Sync
@@ -110,13 +112,14 @@ perform, currently only `restart`), and `Container` (the container name to act o
 
 After a successful deployment, the reconciler SHALL diff the last successfully
 deployed commit (from `state.CommitHash`) against the current HEAD to determine
-which files changed. When no prior deployment exists (`state.CommitHash` is
-empty), all files SHALL be treated as changed. Hooks SHALL then be matched
-against the changed file set and matching actions executed. Each container SHALL
-be restarted at most once per deployment, even if multiple patterns match.
+which files changed. Hooks SHALL then be matched against the changed file set
+and matching actions executed. Each container SHALL be restarted at most once
+per deployment, even if multiple patterns match.
 
-Hooks SHALL only execute when a Docker client is available, dry run is false, hooks
-are configured, and a previous commit exists (not on first deploy).
+Hooks SHALL only execute when a Docker client is available, dry run is false,
+hooks are configured, and `state.CommitHash` is non-empty (i.e., a previous
+successful deployment exists). When `state.CommitHash` is empty (first deploy
+or no prior state), hooks SHALL NOT execute.
 
 Glob patterns SHALL support `**` for recursive directory matching.
 
@@ -151,9 +154,8 @@ Glob patterns SHALL support `**` for recursive directory matching.
 - **AND** the hook diff is computed from commit A, not from commit B
 - **AND** files changed between A and the new commit are evaluated for hook patterns
 
-#### Scenario: No prior deploy treats all files as changed for hooks
+#### Scenario: No prior deploy skips hooks
 
 - **WHEN** `state.CommitHash` is empty (no prior successful deployment recorded)
 - **AND** post-sync hooks are configured
-- **THEN** the reconciler treats all files in the repository as changed
-- **AND** evaluates hooks against the full file set
+- **THEN** the reconciler does not evaluate or execute post-sync hooks

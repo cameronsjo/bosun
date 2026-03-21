@@ -18,7 +18,7 @@ deployments:
 
 ## What Changes
 
-- **Deploy-relevance diff base**: The diff used by post-sync hooks (stage 12) and
+- **Deploy-relevance diff base**: The diff used by post-sync hooks (stage 8) and
   any deploy-path evaluation SHALL use `state.CommitHash` (last successfully
   deployed commit from the state file) rather than the pull's `commit_before`
   value. If no prior deploy exists (state file absent or `CommitHash` is empty),
