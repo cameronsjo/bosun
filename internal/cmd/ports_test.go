@@ -236,22 +236,29 @@ func TestIsYAMLFile(t *testing.T) {
 
 func TestRunPortsFree(t *testing.T) {
 	tests := []struct {
-		name      string
-		rangeStr  string
-		wantErr   bool
-		errSubstr string
+		name        string
+		rangeStr    string
+		seedEntries []manifest.PortEntry
+		wantErr     bool
+		errSubstr   string
 	}{
-		{"invalid format", "notarange", true, "invalid range"},
-		{"reversed range", "9000-8000", true, "must not exceed"},
-		{"invalid start", "abc-9000", true, "invalid range start"},
-		{"valid range", "9000-9002", false, ""},
+		{"invalid format", "notarange", nil, true, "invalid range"},
+		{"reversed range", "9000-8000", nil, true, "must not exceed"},
+		{"invalid start", "abc-9000", nil, true, "invalid range start"},
+		{
+			name:     "valid range",
+			rangeStr: "9000-9002",
+			seedEntries: []manifest.PortEntry{
+				{Port: 9001, Protocol: "tcp", ServiceName: "web", StackName: "s1"},
+			},
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			registry := manifest.NewPortRegistry()
-			if tc.name == "valid range" {
-				registry.AddEntry(manifest.PortEntry{Port: 9001, Protocol: "tcp", ServiceName: "web", StackName: "s1"})
+			for _, e := range tc.seedEntries {
+				registry.AddEntry(e)
 			}
 
 			err := runPortsFree(registry, tc.rangeStr)
