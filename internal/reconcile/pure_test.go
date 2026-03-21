@@ -85,6 +85,74 @@ func TestShouldSkipDeploy(t *testing.T) {
 	}
 }
 
+func TestHasMissingDeclaredServices(t *testing.T) {
+	tests := []struct {
+		name     string
+		declared []DeclaredService
+		actual   []ActualService
+		want     bool
+	}{
+		{
+			name:     "empty declared returns false",
+			declared: nil,
+			actual:   []ActualService{{Name: "web", State: "running"}},
+			want:     false,
+		},
+		{
+			name:     "all declared services running",
+			declared: []DeclaredService{{Name: "web"}, {Name: "api"}},
+			actual: []ActualService{
+				{Name: "web", State: "running"},
+				{Name: "api", State: "running"},
+			},
+			want: false,
+		},
+		{
+			name:     "one service missing",
+			declared: []DeclaredService{{Name: "web"}, {Name: "db"}},
+			actual:   []ActualService{{Name: "web", State: "running"}},
+			want:     true,
+		},
+		{
+			name:     "service exists but not running",
+			declared: []DeclaredService{{Name: "web"}},
+			actual:   []ActualService{{Name: "web", State: "exited"}},
+			want:     true,
+		},
+		{
+			name:     "no actual containers at all",
+			declared: []DeclaredService{{Name: "web"}},
+			actual:   nil,
+			want:     true,
+		},
+		{
+			name:     "extra actual services are ignored",
+			declared: []DeclaredService{{Name: "web"}},
+			actual: []ActualService{
+				{Name: "web", State: "running"},
+				{Name: "extra", State: "running"},
+			},
+			want: false,
+		},
+		{
+			name:     "newly added service not yet running",
+			declared: []DeclaredService{{Name: "web"}, {Name: "api"}, {Name: "newservice"}},
+			actual: []ActualService{
+				{Name: "web", State: "running"},
+				{Name: "api", State: "running"},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasMissingDeclaredServices(tt.declared, tt.actual)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestShouldTriggerCircuitBreaker(t *testing.T) {
 	tests := []struct {
 		name          string

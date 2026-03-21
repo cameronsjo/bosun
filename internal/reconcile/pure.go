@@ -16,6 +16,33 @@ func shouldSkipDeploy(lastDeployed, currentCommit string, force, needsRedeploy b
 	return lastDeployed == currentCommit
 }
 
+// hasMissingDeclaredServices returns true if any declared service has no
+// corresponding running container in the actual state. This is used to detect
+// the case where a commit was marked as deployed but one or more services were
+// never actually started (e.g., the service was added to the compose file in a
+// commit that was already recorded as deployed due to a prior run).
+//
+// When declared is empty, returns false — there is nothing to compare against.
+func hasMissingDeclaredServices(declared []DeclaredService, actual []ActualService) bool {
+	if len(declared) == 0 {
+		return false
+	}
+
+	running := make(map[string]bool, len(actual))
+	for _, svc := range actual {
+		if svc.State == "running" {
+			running[svc.Name] = true
+		}
+	}
+
+	for _, decl := range declared {
+		if !running[decl.Name] {
+			return true
+		}
+	}
+	return false
+}
+
 // shouldTriggerCircuitBreaker returns true if the circuit breaker should
 // activate: the same commit has been attempted too many times and force
 // mode is not enabled.
