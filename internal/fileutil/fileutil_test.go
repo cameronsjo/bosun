@@ -82,6 +82,27 @@ func TestCopyFile(t *testing.T) {
 		assert.Error(t, err)
 		assert.True(t, os.IsNotExist(err))
 	})
+
+	t.Run("returns ErrSymlinkSkipped for symlink source", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+
+		// Create a real file and a symlink pointing to it.
+		realFile := filepath.Join(tmpDir, "real.txt")
+		require.NoError(t, os.WriteFile(realFile, []byte("real content"), 0644))
+		symlinkPath := filepath.Join(tmpDir, "link.txt")
+		require.NoError(t, os.Symlink(realFile, symlinkPath))
+
+		dstPath := filepath.Join(tmpDir, "dest.txt")
+		err = fileutil.CopyFile(symlinkPath, dstPath)
+		assert.ErrorIs(t, err, fileutil.ErrSymlinkSkipped)
+
+		// Destination must not have been created.
+		_, statErr := os.Lstat(dstPath)
+		assert.True(t, os.IsNotExist(statErr), "symlink target should not be copied")
+	})
 }
 
 func TestCopyDir(t *testing.T) {
@@ -157,6 +178,35 @@ func TestCopyDir(t *testing.T) {
 
 		err := fileutil.CopyDir(srcDir, dstDir)
 		assert.Error(t, err)
+	})
+
+	t.Run("skips symlinks and copies regular files", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+		srcDir := filepath.Join(tmpDir, "source")
+		dstDir := filepath.Join(tmpDir, "dest")
+
+		require.NoError(t, os.MkdirAll(srcDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "regular.txt"), []byte("regular"), 0644))
+
+		// Create a symlink inside the source directory.
+		outsideFile := filepath.Join(tmpDir, "outside.txt")
+		require.NoError(t, os.WriteFile(outsideFile, []byte("outside"), 0644))
+		require.NoError(t, os.Symlink(outsideFile, filepath.Join(srcDir, "link.txt")))
+
+		err = fileutil.CopyDir(srcDir, dstDir)
+		require.NoError(t, err)
+
+		// Regular file was copied.
+		content, readErr := os.ReadFile(filepath.Join(dstDir, "regular.txt"))
+		require.NoError(t, readErr)
+		assert.Equal(t, "regular", string(content))
+
+		// Symlink was not copied to destination.
+		_, statErr := os.Lstat(filepath.Join(dstDir, "link.txt"))
+		assert.True(t, os.IsNotExist(statErr), "symlink should not appear in destination")
 	})
 }
 
@@ -367,5 +417,32 @@ func TestCopyDirIfChanged(t *testing.T) {
 
 		sort.Strings(written)
 		assert.Equal(t, []string{"a.txt", "b.txt"}, written)
+	})
+
+	t.Run("skips symlinks and reports only regular changed files", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+		srcDir := filepath.Join(tmpDir, "src")
+		dstDir := filepath.Join(tmpDir, "dst")
+
+		require.NoError(t, os.MkdirAll(srcDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "real.txt"), []byte("content"), 0644))
+
+		// Add a symlink alongside the regular file.
+		outsideFile := filepath.Join(tmpDir, "outside.txt")
+		require.NoError(t, os.WriteFile(outsideFile, []byte("outside"), 0644))
+		require.NoError(t, os.Symlink(outsideFile, filepath.Join(srcDir, "link.txt")))
+
+		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		require.NoError(t, err)
+
+		// Only the regular file appears in the written list.
+		assert.Equal(t, []string{"real.txt"}, written)
+
+		// Symlink was not copied to destination.
+		_, statErr := os.Lstat(filepath.Join(dstDir, "link.txt"))
+		assert.True(t, os.IsNotExist(statErr), "symlink should not appear in destination")
 	})
 }
