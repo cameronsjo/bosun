@@ -9,6 +9,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// evalDir resolves symlinks on a temp directory so macOS /var → /private/var
+// comparisons don't cause false mismatches.
+func evalDir(t *testing.T, dir string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+	return resolved
+}
+
 func TestCheckSSHKeyPermissions_NoKeyFound(t *testing.T) {
 	t.Setenv("BOSUN_SSH_KEY", "")
 	t.Setenv("HOME", t.TempDir()) // HOME with no .ssh dir → no candidates exist
@@ -30,7 +39,7 @@ func TestCheckSSHKeyPermissions_SafePermissions(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
+			dir := evalDir(t, t.TempDir())
 			keyPath := filepath.Join(dir, "id_ed25519")
 			require.NoError(t, os.WriteFile(keyPath, []byte("fake key"), tc.mode))
 
@@ -56,7 +65,7 @@ func TestCheckSSHKeyPermissions_UnsafePermissions(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
+			dir := evalDir(t, t.TempDir())
 			keyPath := filepath.Join(dir, "deploy-key")
 			// Write with a safe mode first, then chmod to the target mode so
 			// the umask does not silently reduce the permission bits.
@@ -76,12 +85,12 @@ func TestCheckSSHKeyPermissions_UnsafePermissions(t *testing.T) {
 }
 
 func TestCheckSSHKeyPermissions_EnvVarTakesPrecedence(t *testing.T) {
-	dir := t.TempDir()
+	dir := evalDir(t, t.TempDir())
 	envKeyPath := filepath.Join(dir, "custom-key")
 	require.NoError(t, os.WriteFile(envKeyPath, []byte("fake key"), 0600))
 
 	// Also place a key in HOME/.ssh — should NOT be selected.
-	home := t.TempDir()
+	home := evalDir(t, t.TempDir())
 	sshDir := filepath.Join(home, ".ssh")
 	require.NoError(t, os.MkdirAll(sshDir, 0700))
 	homeKeyPath := filepath.Join(sshDir, "id_ed25519")
@@ -96,7 +105,7 @@ func TestCheckSSHKeyPermissions_EnvVarTakesPrecedence(t *testing.T) {
 }
 
 func TestCheckSSHKeyPermissions_FallsBackToHomeSSH(t *testing.T) {
-	home := t.TempDir()
+	home := evalDir(t, t.TempDir())
 	sshDir := filepath.Join(home, ".ssh")
 	require.NoError(t, os.MkdirAll(sshDir, 0700))
 	keyPath := filepath.Join(sshDir, "id_ed25519")

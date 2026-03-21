@@ -248,8 +248,13 @@ func CheckSSHKeyPermissions() SSHKeyPermResult {
 	for _, path := range sshKeyCandidates() {
 		info, err := os.Stat(path)
 		if err != nil {
-			// File does not exist — try the next candidate.
-			continue
+			if os.IsNotExist(err) {
+				// File does not exist — try the next candidate.
+				continue
+			}
+			// Any other error (e.g., permission denied on the parent directory)
+			// is surfaced immediately so it isn't silently ignored.
+			return SSHKeyPermResult{Path: path, Err: fmt.Errorf("reading SSH key metadata: %w", err)}
 		}
 
 		mode := info.Mode().Perm()

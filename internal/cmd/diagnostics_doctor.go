@@ -362,9 +362,9 @@ func checkDeployKeyPermissions() CheckResult {
 		_, _ = ui.Yellow.Println("  ! SSH deploy key not found (using agent or HTTPS?)")
 		return CheckResult{Warned: 1}
 	case res.Err != nil:
+		// res.Err already contains the chmod remediation command; print it
+		// directly to avoid duplicating the hint.
 		_, _ = ui.Red.Printf("  x %s\n", res.Err)
-		_, _ = ui.Blue.Println("      To fix this:")
-		_, _ = ui.Blue.Printf("      - Run: chmod 600 %s\n", res.Path)
 		return CheckResult{Failed: 1}
 	default:
 		_, _ = ui.Green.Printf("  * SSH deploy key permissions OK (%04o): %s\n", res.Mode, res.Path)
