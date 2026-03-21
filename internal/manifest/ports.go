@@ -313,15 +313,15 @@ func splitPortRight(portStr string) (hostPart string, bindAddr string) {
 	// Parse from the right: last segment = container port, second-to-last = host port.
 	// Count colons to decide format.
 	colonCount := strings.Count(portStr, ":")
-	switch {
-	case colonCount == 0:
+	switch colonCount {
+	case 0:
 		// Container port only (e.g. "80").
 		return "", ""
-	case colonCount == 1:
+	case 1:
 		// "hostPort:containerPort"
 		parts := strings.SplitN(portStr, ":", 2)
 		return parts[0], ""
-	case colonCount == 2:
+	case 2:
 		// "bindAddr:hostPort:containerPort" — standard IPv4 (e.g. "127.0.0.1:8080:80")
 		parts := strings.SplitN(portStr, ":", 3)
 		return parts[1], parts[0]
