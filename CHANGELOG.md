@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.0](https://github.com/cameronsjo/bosun/compare/v0.30.4...v0.31.0) (2026-03-21)
+
+
+### Features
+
+* **daemon:** hot-reload bosun.yaml config on changes ([4db0bbc](https://github.com/cameronsjo/bosun/commit/4db0bbc40cd01e188ca8ec5711af4a8d9660c90f))
+
+
+### Bug Fixes
+
+* **daemon:** address CodeRabbit findings on force-flag PR ([1fcd7cd](https://github.com/cameronsjo/bosun/commit/1fcd7cdcc46907ef92b5593da8565d40571e67c8))
+* **daemon:** address CodeRabbit findings on hot-reload PR ([ba7d151](https://github.com/cameronsjo/bosun/commit/ba7d1518f1d41d0b0cf0ba2cb0e996246f0f0b5e))
+* **daemon:** propagate --force flag through socket trigger handler ([a3aa348](https://github.com/cameronsjo/bosun/commit/a3aa3488ec6ae62c57ef95e9a9135502d61e058a))
+* **daemon:** use DefaultConfig for cooldown fallback, clarify reload design ([8267a72](https://github.com/cameronsjo/bosun/commit/8267a72becc80f904e8d8d0aefc8d5f078b1e911))
+
 ## [0.30.4](https://github.com/cameronsjo/bosun/compare/v0.30.3...v0.30.4) (2026-03-21)
 
 
