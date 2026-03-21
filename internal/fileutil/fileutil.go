@@ -12,6 +12,14 @@ import (
 	"github.com/cameronsjo/bosun/internal/log"
 )
 
+// warnSymlinkSkipped emits a structured warning when a symlink is encountered
+// during a file copy operation and will be skipped.
+func warnSymlinkSkipped(path string) {
+	linkTarget, _ := os.Readlink(path)
+	l := log.Component(log.ComponentReconcile)
+	l.Warn().Str(log.FieldPath, path).Str("target", linkTarget).Msg("Skipping symlink during file copy")
+}
+
 // CopyFile copies a single file from src to dst.
 // It creates parent directories if needed and preserves permissions.
 // Uses atomic write via temp file to prevent partial writes on failure.
@@ -23,9 +31,7 @@ func CopyFile(src, dst string) error {
 		return err // Return unwrapped to preserve os.IsNotExist compatibility
 	}
 	if srcLstat.Mode()&os.ModeSymlink != 0 {
-		linkTarget, _ := os.Readlink(src)
-		l := log.Component(log.ComponentReconcile)
-		l.Warn().Str("path", src).Str("target", linkTarget).Msg("Skipping symlink during file copy")
+		warnSymlinkSkipped(src)
 		return nil
 	}
 
@@ -159,9 +165,7 @@ func CopyDirIfChanged(src, dst string) ([]string, error) {
 		}
 
 		if d.Type()&os.ModeSymlink != 0 {
-			linkTarget, _ := os.Readlink(path)
-			l := log.Component(log.ComponentReconcile)
-			l.Warn().Str("path", path).Str("target", linkTarget).Msg("Skipping symlink during file copy")
+			warnSymlinkSkipped(path)
 			return nil
 		}
 
@@ -198,9 +202,7 @@ func CopyDir(src, dst string) error {
 		// Symlinks are skipped: they may reference paths outside the staging dir
 		// and are not meaningful for the deploy target.
 		if d.Type()&os.ModeSymlink != 0 {
-			linkTarget, _ := os.Readlink(path)
-			l := log.Component(log.ComponentReconcile)
-			l.Warn().Str("path", path).Str("target", linkTarget).Msg("Skipping symlink during file copy")
+			warnSymlinkSkipped(path)
 			return nil
 		}
 
