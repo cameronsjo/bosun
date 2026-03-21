@@ -87,20 +87,31 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 		cp.LockFile = TargetLockFile(lockDir, t)
 	}
 
-	// Per-target overrides for operational config.
+	// Deep-copy inherited slices to prevent mutation of the base config
+	// (shallow copy shares backing arrays). Then apply per-target overrides.
 	// Use nil checks (not len > 0) so targets can explicitly clear inherited
 	// slices with an empty list (e.g., critical_containers: []).
 	if t.CriticalContainers != nil {
 		cp.CriticalContainers = t.CriticalContainers
+	} else if cp.CriticalContainers != nil {
+		cp.CriticalContainers = append([]string(nil), cp.CriticalContainers...)
 	}
 	if t.PostSyncHooks != nil {
 		cp.PostSyncHooks = t.PostSyncHooks
+	} else if cp.PostSyncHooks != nil {
+		hooks := make([]PostSyncHook, len(cp.PostSyncHooks))
+		copy(hooks, cp.PostSyncHooks)
+		cp.PostSyncHooks = hooks
 	}
 	if t.DeploySyncPaths != nil {
 		cp.DeploySyncPaths = t.DeploySyncPaths
+	} else if cp.DeploySyncPaths != nil {
+		cp.DeploySyncPaths = append([]string(nil), cp.DeploySyncPaths...)
 	}
 	if t.DeploySyncExclude != nil {
 		cp.DeploySyncExclude = t.DeploySyncExclude
+	} else if cp.DeploySyncExclude != nil {
+		cp.DeploySyncExclude = append([]string(nil), cp.DeploySyncExclude...)
 	}
 
 	cp.SecretsScope = t.SecretsScope
@@ -151,7 +162,8 @@ func (c *Config) ResolveTargets() []Target {
 		if len(valid) > 0 {
 			return valid
 		}
-		// Fall through to default if all targets were invalid.
+		// All configured targets had invalid names — fall through to implicit default.
+		log.Warn().Int("configured", len(c.Targets)).Msg("All configured targets have invalid names, falling back to default target")
 	}
 	return []Target{
 		{
