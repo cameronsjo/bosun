@@ -32,22 +32,20 @@ var lintCmd = &cobra.Command{
 	Short:   "Validate all manifests before deploy",
 	Long:    "Validate provisions, services, dependencies, and port conflicts.",
 	Args:    cobra.MaximumNArgs(1),
-	Run:     runLint,
+	RunE:    runLint,
 }
 
-func runLint(cmd *cobra.Command, args []string) {
+func runLint(cmd *cobra.Command, args []string) error {
 	_, _ = ui.Blue.Println("Linting manifests...")
 	fmt.Println()
 
 	cfg, err := config.Load()
 	if err != nil {
-		ui.Error("Failed to load config: %v", err)
-		os.Exit(1)
+		return fmt.Errorf("load config: %w", err)
 	}
 
 	if _, err := os.Stat(cfg.ManifestDir); os.IsNotExist(err) {
-		ui.Error("Manifest directory not found")
-		os.Exit(1)
+		return fmt.Errorf("manifest directory not found: %s", cfg.ManifestDir)
 	}
 
 	errors := 0
@@ -71,7 +69,7 @@ func runLint(cmd *cobra.Command, args []string) {
 
 		for _, serviceFile := range serviceFiles {
 			name := filepath.Base(serviceFile)
-			if validateServiceFile(serviceFile, cfg.ManifestDir) {
+			if validateServiceFile(serviceFile) {
 				_, _ = ui.Green.Printf("  * %s\n", name)
 			} else {
 				_, _ = ui.Red.Printf("  x %s\n", name)
@@ -89,7 +87,7 @@ func runLint(cmd *cobra.Command, args []string) {
 
 		for _, stackFile := range stackFiles {
 			name := filepath.Base(stackFile)
-			if validateStackFile(stackFile, cfg.ManifestDir) {
+			if validateStackFile(stackFile) {
 				_, _ = ui.Green.Printf("  * %s\n", name)
 			} else {
 				_, _ = ui.Red.Printf("  x %s\n", name)
@@ -133,13 +131,14 @@ func runLint(cmd *cobra.Command, args []string) {
 	fmt.Println()
 	if errors > 0 {
 		_, _ = ui.Red.Printf("Found %d error(s). Fix before deploying.\n", errors)
-		os.Exit(1)
-	} else {
-		_, _ = ui.Green.Println("* All manifests valid!")
+		return fmt.Errorf("%d lint error(s) found", errors)
 	}
+
+	_, _ = ui.Green.Println("* All manifests valid!")
+	return nil
 }
 
-func validateServiceFile(filename, _ string) bool {
+func validateServiceFile(filename string) bool {
 	content, err := os.ReadFile(filename)
 	if err != nil {
 		return false
@@ -156,7 +155,7 @@ func validateServiceFile(filename, _ string) bool {
 	return doc.Name != "" && len(doc.Provisions) > 0
 }
 
-func validateStackFile(filename, _ string) bool {
+func validateStackFile(filename string) bool {
 	content, err := os.ReadFile(filename)
 	if err != nil {
 		return false

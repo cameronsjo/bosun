@@ -203,6 +203,3 @@ func TestFormatBytes_AdditionalCases(t *testing.T) {
 	}
 }
 
-// TestDriftCmd_NoContainers tests drift when no containers are running.
-
-// TestExtractServicesFromCompose_EdgeCases tests edge cases in compose service extraction.

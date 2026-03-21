@@ -41,7 +41,7 @@ config:
 		require.NoError(t, os.WriteFile(serviceFile, []byte(content), 0644))
 
 		// The validateServiceFile checks for name: and provisions: keywords
-		result := validateServiceFile(serviceFile, tmpDir)
+		result := validateServiceFile(serviceFile)
 		assert.True(t, result)
 	})
 
@@ -54,7 +54,7 @@ config:
 `
 		require.NoError(t, os.WriteFile(serviceFile, []byte(content), 0644))
 
-		result := validateServiceFile(serviceFile, tmpDir)
+		result := validateServiceFile(serviceFile)
 		assert.False(t, result)
 	})
 
@@ -68,12 +68,12 @@ config:
 `
 		require.NoError(t, os.WriteFile(serviceFile, []byte(content), 0644))
 
-		result := validateServiceFile(serviceFile, tmpDir)
+		result := validateServiceFile(serviceFile)
 		assert.False(t, result)
 	})
 
 	t.Run("non-existent file", func(t *testing.T) {
-		result := validateServiceFile("/non/existent/file.yml", "/tmp")
+		result := validateServiceFile("/non/existent/file.yml")
 		assert.False(t, result)
 	})
 }
@@ -89,7 +89,7 @@ func TestValidateStackFile(t *testing.T) {
 `
 		require.NoError(t, os.WriteFile(stackFile, []byte(content), 0644))
 
-		result := validateStackFile(stackFile, tmpDir)
+		result := validateStackFile(stackFile)
 		assert.True(t, result)
 	})
 
@@ -101,12 +101,12 @@ func TestValidateStackFile(t *testing.T) {
 `
 		require.NoError(t, os.WriteFile(stackFile, []byte(content), 0644))
 
-		result := validateStackFile(stackFile, tmpDir)
+		result := validateStackFile(stackFile)
 		assert.True(t, result) // Warning, not error
 	})
 
 	t.Run("non-existent file", func(t *testing.T) {
-		result := validateStackFile("/non/existent/file.yml", "/tmp")
+		result := validateStackFile("/non/existent/file.yml")
 		assert.False(t, result)
 	})
 }
@@ -308,7 +308,7 @@ func TestValidateServiceFile_EdgeCases(t *testing.T) {
 		tmpDir := t.TempDir()
 		serviceFile := filepath.Join(tmpDir, "service.yml")
 		require.NoError(t, os.WriteFile(serviceFile, []byte(""), 0644))
-		result := validateServiceFile(serviceFile, tmpDir)
+		result := validateServiceFile(serviceFile)
 		assert.False(t, result)
 	})
 
@@ -321,7 +321,7 @@ provisions:
   - webapp
 `
 		require.NoError(t, os.WriteFile(serviceFile, []byte(content), 0644))
-		result := validateServiceFile(serviceFile, tmpDir)
+		result := validateServiceFile(serviceFile)
 		assert.False(t, result)
 	})
 
@@ -333,7 +333,7 @@ config:
   port: 8080
 `
 		require.NoError(t, os.WriteFile(serviceFile, []byte(content), 0644))
-		result := validateServiceFile(serviceFile, tmpDir)
+		result := validateServiceFile(serviceFile)
 		assert.False(t, result)
 	})
 
@@ -344,7 +344,7 @@ config:
   - webapp
 `
 		require.NoError(t, os.WriteFile(serviceFile, []byte(content), 0644))
-		result := validateServiceFile(serviceFile, tmpDir)
+		result := validateServiceFile(serviceFile)
 		assert.False(t, result)
 	})
 }
@@ -357,7 +357,7 @@ func TestValidateStackFile_EdgeCases(t *testing.T) {
 		content := `name: mystack
 `
 		require.NoError(t, os.WriteFile(stackFile, []byte(content), 0644))
-		result := validateStackFile(stackFile, tmpDir)
+		result := validateStackFile(stackFile)
 		// validateStackFile returns true for "no include" as it's just a warning
 		assert.True(t, result)
 	})
@@ -366,13 +366,13 @@ func TestValidateStackFile_EdgeCases(t *testing.T) {
 		tmpDir := t.TempDir()
 		stackFile := filepath.Join(tmpDir, "stack.yml")
 		require.NoError(t, os.WriteFile(stackFile, []byte(""), 0644))
-		result := validateStackFile(stackFile, tmpDir)
+		result := validateStackFile(stackFile)
 		// validateStackFile returns true for empty (no include) as it's just a warning
 		assert.True(t, result)
 	})
 
 	t.Run("non-existent file returns false", func(t *testing.T) {
-		result := validateStackFile("/non/existent/file.yml", "/tmp")
+		result := validateStackFile("/non/existent/file.yml")
 		assert.False(t, result)
 	})
 }

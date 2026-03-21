@@ -72,11 +72,15 @@ func detectCycles(graph map[string][]string) []string {
 	var dfs func(node string, path []string)
 	dfs = func(node string, path []string) {
 		color[node] = gray
-		currentPath := append(path, node)
+		// Copy to avoid slice aliasing: append may reuse the backing array,
+		// causing sibling DFS branches to corrupt each other's paths.
+		currentPath := make([]string, len(path)+1)
+		copy(currentPath, path)
+		currentPath[len(path)] = node
 
 		for _, neighbor := range graph[node] {
-			if color[neighbor] == gray { //nolint:staticcheck
-				// Back edge found - construct cycle from current path
+			if color[neighbor] == gray {
+				// Back edge found — construct cycle from current path
 				cycle := buildCyclePathFromSlice(currentPath, neighbor)
 				if !cycleSet[cycle] {
 					cycleSet[cycle] = true
@@ -116,7 +120,11 @@ func buildCyclePathFromSlice(path []string, cycleStart string) string {
 		return path[len(path)-1] + " -> " + cycleStart
 	}
 
-	// Build cycle path from startIdx to end, then back to cycleStart
-	cyclePath := append(path[startIdx:], cycleStart)
+	// Build cycle path from startIdx to end, then back to cycleStart.
+	// Use explicit copy to avoid mutating the caller's path slice.
+	segment := path[startIdx:]
+	cyclePath := make([]string, len(segment)+1)
+	copy(cyclePath, segment)
+	cyclePath[len(segment)] = cycleStart
 	return strings.Join(cyclePath, " -> ")
 }

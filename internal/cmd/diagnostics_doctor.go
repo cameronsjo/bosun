@@ -3,6 +3,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -24,7 +25,7 @@ var doctorCmd = &cobra.Command{
 	Aliases: []string{"checkup"},
 	Short:   "Pre-flight checks - is the ship seaworthy?",
 	Long:    "Run diagnostic checks for Docker, Git, SOPS, and other dependencies.",
-	Run:     runDoctor,
+	RunE:    runDoctor,
 }
 
 // checkDocker verifies Docker is running and accessible.
@@ -106,7 +107,11 @@ func checkProjectRoot(cfg *config.Config) CheckResult {
 func checkAgeKey() CheckResult {
 	ageKeyFile := os.Getenv("SOPS_AGE_KEY_FILE")
 	if ageKeyFile == "" {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			_, _ = ui.Yellow.Println("  ! Cannot determine home directory for Age key check")
+			return CheckResult{Warned: 1}
+		}
 		ageKeyFile = filepath.Join(home, ".config", "sops", "age", "keys.txt")
 	}
 	if _, err := os.Stat(ageKeyFile); err == nil {
@@ -172,7 +177,7 @@ func checkWebhook() CheckResult {
 	}
 	_, _ = ui.Yellow.Println("  ! Webhook not responding (bosun container not running?)")
 	_, _ = ui.Blue.Println("      To fix this:")
-	_, _ = ui.Blue.Println("      - Start bosun container: docker-compose up -d bosun")
+	_, _ = ui.Blue.Println("      - Start bosun container: docker compose up -d bosun")
 	_, _ = ui.Blue.Println("      - Check logs: docker logs bosun")
 	_, _ = ui.Blue.Println("      - Verify port 8080 is available and not in use")
 	return CheckResult{Warned: 1}
@@ -187,7 +192,8 @@ func checkTunnel(ctx context.Context, cfg *config.Config) CheckResult {
 
 	provider, err := tunnel.NewProvider(providerName)
 	if err != nil {
-		if _, ok := err.(tunnel.ErrNotInstalled); ok {
+		var notInstalled tunnel.ErrNotInstalled
+		if errors.As(err, &notInstalled) {
 			_, _ = ui.Yellow.Printf("  ! %s not installed\n", capitalizeProviderName(providerName))
 			_, _ = ui.Blue.Println("      To fix this:")
 			switch providerName {
@@ -211,11 +217,11 @@ func checkTunnel(ctx context.Context, cfg *config.Config) CheckResult {
 	}
 
 	if status.Connected {
-		_, _ = ui.Green.Printf("  * %s is connected", capitalizeProviderName(providerName))
 		if status.Hostname != "" {
-			fmt.Printf(" (%s)", status.Hostname)
+			_, _ = ui.Green.Printf("  * %s is connected (%s)\n", capitalizeProviderName(providerName), status.Hostname)
+		} else {
+			_, _ = ui.Green.Printf("  * %s is connected\n", capitalizeProviderName(providerName))
 		}
-		fmt.Println()
 		return CheckResult{Passed: 1}
 	}
 
@@ -344,7 +350,7 @@ func checkDockerSocket(svc *traefikComposeService) traefikCheck {
 	return check
 }
 
-func runDoctor(cmd *cobra.Command, args []string) {
+func runDoctor(cmd *cobra.Command, args []string) error {
 	_, _ = ui.Blue.Println("Running pre-flight checks...")
 	fmt.Println()
 
@@ -355,8 +361,8 @@ func runDoctor(cmd *cobra.Command, args []string) {
 
 	// Run all checks with timeout context for Docker
 	ctx, cancel := context.WithTimeout(context.Background(), dockerPingTimeout)
+	defer cancel()
 	result.Add(checkDocker(ctx))
-	cancel()
 
 	result.Add(checkDockerCompose())
 	result.Add(checkGit())
@@ -386,7 +392,7 @@ func runDoctor(cmd *cobra.Command, args []string) {
 	if result.Failed > 0 {
 		fmt.Println()
 		_, _ = ui.Red.Println("Ship not seaworthy! Fix errors above.")
-		os.Exit(1)
+		return fmt.Errorf("%d check(s) failed", result.Failed)
 	} else if result.Warned > 0 {
 		fmt.Println()
 		_, _ = ui.Yellow.Println("Ship can sail, but check warnings.")
@@ -394,6 +400,7 @@ func runDoctor(cmd *cobra.Command, args []string) {
 		fmt.Println()
 		_, _ = ui.Green.Println("All systems go! Ready to sail.")
 	}
+	return nil
 }
 
 func init() {
