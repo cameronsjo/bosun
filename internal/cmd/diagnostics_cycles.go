@@ -16,6 +16,7 @@ type ComposeFileWithDeps struct {
 }
 
 // extractDependencyGraph parses a compose file and returns a map of service -> dependencies.
+// Returns an empty graph if the file cannot be read or parsed (callers treat this as "no deps").
 func extractDependencyGraph(filename string) map[string][]string {
 	graph := make(map[string][]string)
 

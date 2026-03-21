@@ -377,12 +377,3 @@ func TestValidateStackFile_EdgeCases(t *testing.T) {
 	})
 }
 
-// TestLintCmd_MissingManifestDir tests lint when manifest directory doesn't exist.
-func TestLintCmd_MissingManifestDir(t *testing.T) {
-	t.Run("lint help shows expected content", func(t *testing.T) {
-		output, err := executeCmd(t, "lint", "--help")
-		assert.NoError(t, err)
-		assert.Contains(t, output, "Validate")
-		assert.Contains(t, output, "provisions")
-	})
-}

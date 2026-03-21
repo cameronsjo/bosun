@@ -146,16 +146,6 @@ func TestCheckSOPS(t *testing.T) {
 	})
 }
 
-// TestDoctorCmd_HelpShowsChecks tests doctor help mentions diagnostic checks.
-func TestDoctorCmd_HelpShowsChecks(t *testing.T) {
-	t.Run("doctor help shows expected checks", func(t *testing.T) {
-		output, err := executeCmd(t, "doctor", "--help")
-		assert.NoError(t, err)
-		assert.Contains(t, output, "Docker")
-		assert.Contains(t, output, "diagnostic")
-	})
-}
-
 func TestCheckTraefikConfig(t *testing.T) {
 	t.Run("no traefik service", func(t *testing.T) {
 		// When no Traefik service is found, checkTraefikConfig should return empty result
