@@ -32,6 +32,11 @@ func TestParsePortEntry(t *testing.T) {
 		{"long syntax string published", map[string]any{"published": "9090", "target": 80}, 1, 9090, "tcp", ""},
 		{"long syntax udp", map[string]any{"published": 5353, "target": 5353, "protocol": "udp"}, 1, 5353, "udp", ""},
 		{"long syntax missing published", map[string]any{"target": 80}, 0, 0, "", ""},
+		{"long syntax with host_ip", map[string]any{"published": 8080, "target": 80, "host_ip": "127.0.0.1"}, 1, 8080, "tcp", "127.0.0.1"},
+		{"long syntax port range", map[string]any{"published": "8000-8002", "target": 8000}, 3, 8000, "tcp", ""},
+		{"long syntax port range with host_ip", map[string]any{"published": "9000-9001", "target": 9000, "host_ip": "10.0.0.1"}, 2, 9000, "tcp", "10.0.0.1"},
+		{"bracketed IPv6 bind", "[::1]:8080:80", 1, 8080, "tcp", "::1"},
+		{"IPv4 bind with range", "10.0.0.1:8000-8002:8000-8002", 3, 8000, "tcp", "10.0.0.1"},
 	}
 
 	for _, tc := range tests {
@@ -53,6 +58,35 @@ func TestParsePortEntry_PortRange(t *testing.T) {
 	assert.Equal(t, 8000, result[0].HostPort)
 	assert.Equal(t, 8001, result[1].HostPort)
 	assert.Equal(t, 8002, result[2].HostPort)
+}
+
+// =============================================================================
+// splitPortRight
+// =============================================================================
+
+func TestSplitPortRight(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantHost string
+		wantBind string
+	}{
+		{"container only", "80", "", ""},
+		{"host:container", "8080:80", "8080", ""},
+		{"ipv4 bind", "127.0.0.1:8080:80", "8080", "127.0.0.1"},
+		{"bracketed ipv6", "[::1]:8080:80", "8080", "::1"},
+		{"unbracketed ipv6", "::1:8080:80", "8080", "::1"},
+		{"host range", "8000-8003:8000-8003", "8000-8003", ""},
+		{"ipv4 bind with range", "10.0.0.1:8000-8003:8000-8003", "8000-8003", "10.0.0.1"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			host, bind := splitPortRight(tc.input)
+			assert.Equal(t, tc.wantHost, host, "hostPart")
+			assert.Equal(t, tc.wantBind, bind, "bindAddr")
+		})
+	}
 }
 
 // =============================================================================

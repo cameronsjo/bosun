@@ -91,7 +91,9 @@ func (r *PortRegistry) AddEntry(entry PortEntry) {
 
 // Conflicts returns all detected port conflicts.
 func (r *PortRegistry) Conflicts() []PortConflict {
-	return r.conflicts
+	out := make([]PortConflict, len(r.conflicts))
+	copy(out, r.conflicts)
+	return out
 }
 
 // Entries returns all recorded port allocations sorted by port then protocol.
@@ -177,11 +179,12 @@ func ParsePortEntry(entry any) []ParsedPort {
 }
 
 // parsePortStringFull parses a port string such as:
-//   - "8080:80"           → host 8080 (explicit mapping)
-//   - "8080:80/udp"       → host 8080, UDP
-//   - "127.0.0.1:8080:80" → host 8080 on 127.0.0.1
-//   - "8000-8003:8000-8003" → host range
-//   - "80"                → container-only (ephemeral host port, skipped)
+//   - "8080:80"              → host 8080 (explicit mapping)
+//   - "8080:80/udp"          → host 8080, UDP
+//   - "127.0.0.1:8080:80"    → host 8080 on 127.0.0.1
+//   - "[::1]:8080:80"        → host 8080 on IPv6 ::1
+//   - "8000-8003:8000-8003"  → host range
+//   - "80"                   → container-only (ephemeral host port, skipped)
 func parsePortStringFull(portStr string) []ParsedPort {
 	protocol := "tcp"
 	if idx := strings.Index(portStr, "/"); idx != -1 {
@@ -192,18 +195,12 @@ func parsePortStringFull(portStr string) []ParsedPort {
 		portStr = portStr[:idx]
 	}
 
-	parts := strings.Split(portStr, ":")
+	// Parse from the right to handle IPv6 bind addresses (e.g. "[::1]:8080:80").
+	// The rightmost segment is always the container port, the second-to-last is
+	// the host port, and anything before that is the bind address.
 	var hostPart, bindAddr string
-	switch len(parts) {
-	case 1:
-		// Single value = container port only (ephemeral host port); skip.
-		return nil
-	case 2:
-		hostPart = parts[0]
-	case 3:
-		bindAddr = parts[0]
-		hostPart = parts[1]
-	default:
+	hostPart, bindAddr = splitPortRight(portStr)
+	if hostPart == "" {
 		return nil
 	}
 
@@ -224,10 +221,16 @@ func parsePortStringFull(portStr string) []ParsedPort {
 //	- published: 8080
 //	  target: 80
 //	  protocol: tcp
+//	  host_ip: 127.0.0.1
 func parseLongSyntaxPort(m map[string]any) []ParsedPort {
 	protocol := "tcp"
 	if p, ok := m["protocol"].(string); ok && strings.ToLower(p) == "udp" {
 		protocol = "udp"
+	}
+
+	bindAddr := ""
+	if ip, ok := m["host_ip"].(string); ok {
+		bindAddr = ip
 	}
 
 	published, ok := m["published"]
@@ -235,24 +238,26 @@ func parseLongSyntaxPort(m map[string]any) []ParsedPort {
 		return nil
 	}
 
-	var port int
 	switch p := published.(type) {
 	case int:
-		port = p
-	case string:
-		var err error
-		port, err = strconv.Atoi(p)
-		if err != nil {
+		if p <= 0 {
 			return nil
 		}
+		return []ParsedPort{{HostPort: p, Protocol: protocol, BindAddr: bindAddr}}
+	case string:
+		// Handle port ranges like "8000-8003".
+		ports := expandPortRange(p)
+		if len(ports) == 0 {
+			return nil
+		}
+		out := make([]ParsedPort, 0, len(ports))
+		for _, port := range ports {
+			out = append(out, ParsedPort{HostPort: port, Protocol: protocol, BindAddr: bindAddr})
+		}
+		return out
 	default:
 		return nil
 	}
-
-	if port <= 0 {
-		return nil
-	}
-	return []ParsedPort{{HostPort: port, Protocol: protocol}}
 }
 
 // expandPortRange converts a host-part string ("8080" or "8000-8003") into a
@@ -278,4 +283,59 @@ func expandPortRange(hostPart string) []int {
 		out = append(out, p)
 	}
 	return out
+}
+
+// splitPortRight parses a Docker Compose short-syntax port string from the
+// right, returning (hostPart, bindAddr). This handles IPv6 bind addresses
+// like "[::1]:8080:80" and "::1:8080:6000" correctly.
+//
+// Returns ("", "") for container-only ports (single value, no colon mapping).
+func splitPortRight(portStr string) (hostPart string, bindAddr string) {
+	// Bracketed IPv6: [::1]:8080:80
+	if strings.HasPrefix(portStr, "[") {
+		closeBracket := strings.Index(portStr, "]")
+		if closeBracket == -1 {
+			return "", ""
+		}
+		bindAddr = portStr[1:closeBracket]
+		rest := portStr[closeBracket+1:] // e.g. ":8080:80"
+		if !strings.HasPrefix(rest, ":") {
+			return "", ""
+		}
+		rest = rest[1:] // "8080:80"
+		parts := strings.SplitN(rest, ":", 2)
+		if len(parts) < 1 {
+			return "", ""
+		}
+		return parts[0], bindAddr
+	}
+
+	// Parse from the right: last segment = container port, second-to-last = host port.
+	// Count colons to decide format.
+	colonCount := strings.Count(portStr, ":")
+	switch {
+	case colonCount == 0:
+		// Container port only (e.g. "80").
+		return "", ""
+	case colonCount == 1:
+		// "hostPort:containerPort"
+		parts := strings.SplitN(portStr, ":", 2)
+		return parts[0], ""
+	case colonCount == 2:
+		// "bindAddr:hostPort:containerPort" — standard IPv4 (e.g. "127.0.0.1:8080:80")
+		parts := strings.SplitN(portStr, ":", 3)
+		return parts[1], parts[0]
+	default:
+		// Unbracketed IPv6: "::1:8080:80" has 4 colons.
+		// Split from the right: last two segments are containerPort and hostPort.
+		lastColon := strings.LastIndex(portStr, ":")
+		beforeLast := portStr[:lastColon] // everything before container port
+		secondLastColon := strings.LastIndex(beforeLast, ":")
+		if secondLastColon == -1 {
+			return "", ""
+		}
+		hostPart = beforeLast[secondLastColon+1:]
+		bindAddr = beforeLast[:secondLastColon]
+		return hostPart, bindAddr
+	}
 }
