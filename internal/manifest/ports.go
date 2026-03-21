@@ -158,12 +158,16 @@ type ParsedPort struct {
 
 // ParsePortEntry extracts fully-resolved port information from a compose port
 // entry. Supports short string, integer, and long-syntax map formats.
+//
+// Per the Docker Compose spec, a bare integer or single-value string (e.g. 3000
+// or "8080") specifies only a container port — Docker assigns an ephemeral host
+// port at runtime. These are excluded because no deterministic host port exists
+// for conflict detection.
 func ParsePortEntry(entry any) []ParsedPort {
 	switch v := entry.(type) {
 	case int:
-		if v > 0 {
-			return []ParsedPort{{HostPort: v, Protocol: "tcp"}}
-		}
+		// Bare integer is container-port-only (ephemeral host port); skip.
+		_ = v
 	case string:
 		return parsePortStringFull(v)
 	case map[string]any:
@@ -173,11 +177,11 @@ func ParsePortEntry(entry any) []ParsedPort {
 }
 
 // parsePortStringFull parses a port string such as:
-//   - "80"
-//   - "8080:80"
-//   - "8080:80/udp"
-//   - "127.0.0.1:8080:80"
-//   - "8000-8003:8000-8003"
+//   - "8080:80"           → host 8080 (explicit mapping)
+//   - "8080:80/udp"       → host 8080, UDP
+//   - "127.0.0.1:8080:80" → host 8080 on 127.0.0.1
+//   - "8000-8003:8000-8003" → host range
+//   - "80"                → container-only (ephemeral host port, skipped)
 func parsePortStringFull(portStr string) []ParsedPort {
 	protocol := "tcp"
 	if idx := strings.Index(portStr, "/"); idx != -1 {
@@ -192,7 +196,8 @@ func parsePortStringFull(portStr string) []ParsedPort {
 	var hostPart, bindAddr string
 	switch len(parts) {
 	case 1:
-		hostPart = parts[0]
+		// Single value = container port only (ephemeral host port); skip.
+		return nil
 	case 2:
 		hostPart = parts[0]
 	case 3:

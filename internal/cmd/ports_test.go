@@ -70,7 +70,7 @@ func TestBuildPortRegistry(t *testing.T) {
 		{
 			name: "single stack with multiple services",
 			files: map[string]string{
-				"apps.yml": "services:\n  web:\n    image: nginx\n    ports:\n      - \"8080:80\"\n      - \"8443:443\"\n  api:\n    image: myapi\n    ports:\n      - 3000\n",
+				"apps.yml": "services:\n  web:\n    image: nginx\n    ports:\n      - \"8080:80\"\n      - \"8443:443\"\n  api:\n    image: myapi\n    ports:\n      - \"3000:3000\"\n",
 			},
 			wantEntries:    3,
 			wantConflicts:  0,

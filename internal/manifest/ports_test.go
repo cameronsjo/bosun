@@ -20,10 +20,10 @@ func TestParsePortEntry(t *testing.T) {
 		wantProto string
 		wantBind string
 	}{
-		{"integer port", 80, 1, 80, "tcp", ""},
+		{"integer port (container-only, ephemeral host)", 80, 0, 0, "", ""},
 		{"zero integer", 0, 0, 0, "", ""},
 		{"nil entry", nil, 0, 0, "", ""},
-		{"short syntax", "8080", 1, 8080, "tcp", ""},
+		{"short syntax (container-only, ephemeral host)", "8080", 0, 0, "", ""},
 		{"mapped ports", "8080:80", 1, 8080, "tcp", ""},
 		{"explicit tcp", "8080:80/tcp", 1, 8080, "tcp", ""},
 		{"udp protocol", "53:53/udp", 1, 53, "udp", ""},
