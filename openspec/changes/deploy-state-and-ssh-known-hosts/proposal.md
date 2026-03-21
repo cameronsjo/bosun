@@ -21,8 +21,8 @@ deployments:
 - **Deploy-relevance diff base**: The diff used by post-sync hooks (stage 8) and
   any deploy-path evaluation SHALL use `state.CommitHash` (last successfully
   deployed commit from the state file) rather than the pull's `commit_before`
-  value. If no prior deploy exists (state file absent or `CommitHash` is empty),
-  treat everything as changed.
+  value. When `state.CommitHash` is empty (no prior successful deploy), post-sync
+  hooks SHALL NOT execute; the existing first-deploy guard is preserved.
 
 - **SSH known_hosts search order**: Remove `~/.ssh/known_hosts` from the default
   resolution chain. The new order SHALL be:
@@ -41,4 +41,4 @@ deployments:
   - `internal/reconcile/git.go` — builds the `knownHostsCallback` using the
     three-path search order; must drop `~/.ssh/known_hosts`
   - `internal/reconcile/reconcile_test.go` — tests that assert hook diff base
-  - `internal/reconcile/git_test.go` — tests that assert known_hosts resolution
+  - `internal/reconcile/git_test.go` — tests that assert known_hosts resolution.

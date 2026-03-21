@@ -143,7 +143,7 @@ Glob patterns SHALL support `**` for recursive directory matching.
 
 #### Scenario: First deploy skips hooks
 
-- **WHEN** there is no previous commit (first deployment)
+- **WHEN** `state.CommitHash` is empty (first deployment or no prior successful deploy recorded)
 - **THEN** post-sync hooks are not evaluated
 
 #### Scenario: Failed pipeline does not advance hook diff base
@@ -154,8 +154,3 @@ Glob patterns SHALL support `**` for recursive directory matching.
 - **AND** the hook diff is computed from commit A, not from commit B
 - **AND** files changed between A and the new commit are evaluated for hook patterns
 
-#### Scenario: No prior deploy skips hooks
-
-- **WHEN** `state.CommitHash` is empty (no prior successful deployment recorded)
-- **AND** post-sync hooks are configured
-- **THEN** the reconciler does not evaluate or execute post-sync hooks
