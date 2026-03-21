@@ -170,7 +170,8 @@ func (c *Config) ResolveTargets() []Target {
 	}
 }
 
-// safeTargetNamePattern matches only safe target names: lowercase alphanumeric, hyphens, underscores.
+// safeTargetNamePattern matches safe target names: alphanumeric, hyphens, underscores.
+// Must start with a letter or digit.
 var safeTargetNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
 // ValidateTargetName checks that a target name is safe for use in filesystem paths.

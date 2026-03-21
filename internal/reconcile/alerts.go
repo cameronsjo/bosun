@@ -74,12 +74,12 @@ func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *Deplo
 	}
 
 	target := r.alertTarget()
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
 	services := r.serviceNames()
 	duration := time.Since(r.runStartTime)
 
 	if err := r.alerter.SendDeployFailure(ctx, r.lastCommit, target, reason, services, duration); err != nil {
-		logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 		logger.Warn().
 			Err(err).
 			Str(log.FieldOperation, "alert_failure").
@@ -90,7 +90,7 @@ func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *Deplo
 
 	state.LastAlertedAttempt = state.AttemptCount
 	if err := SaveState(r.config.StateFile, state); err != nil {
-		log.Warn().Err(err).Msg("Failed to persist alert throttle state")
+		logger.Warn().Err(err).Msg("Failed to persist alert throttle state")
 	}
 }
 

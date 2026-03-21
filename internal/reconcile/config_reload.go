@@ -5,7 +5,8 @@ import (
 )
 
 // reloadProjectConfig re-reads bosun.yaml from the repo working directory
-// and updates PostSyncHooks and HookSettleDelay if the file has changed.
+// and updates operational config fields (hooks, deploy paths, alert gates,
+// critical containers, drift ignore rules, remove-orphans) if the file changed.
 // Fields overridden by environment variables are not updated.
 func (r *Reconciler) reloadProjectConfig() {
 	if r.config.ConfigReloader == nil {
@@ -32,7 +33,7 @@ func (r *Reconciler) reloadProjectConfig() {
 
 	changed := false
 
-	if !r.config.PostSyncHooksFromEnv && len(reloaded.PostSyncHooks) > 0 {
+	if !r.config.PostSyncHooksFromEnv && reloaded.PostSyncHooks != nil {
 		r.config.PostSyncHooks = reloaded.PostSyncHooks
 		changed = true
 	}
@@ -42,7 +43,7 @@ func (r *Reconciler) reloadProjectConfig() {
 		changed = true
 	}
 
-	if !r.config.DeployPathsFromEnv && len(reloaded.DeployPaths) > 0 {
+	if !r.config.DeployPathsFromEnv && reloaded.DeployPaths != nil {
 		r.config.DeployPaths = reloaded.DeployPaths
 		changed = true
 	}
@@ -57,7 +58,7 @@ func (r *Reconciler) reloadProjectConfig() {
 		changed = true
 	}
 
-	if !r.config.CriticalContainersFromEnv && len(reloaded.CriticalContainers) > 0 {
+	if !r.config.CriticalContainersFromEnv && reloaded.CriticalContainers != nil {
 		r.config.CriticalContainers = reloaded.CriticalContainers
 		changed = true
 	}
@@ -79,7 +80,9 @@ func (r *Reconciler) reloadProjectConfig() {
 
 	if !r.config.RemoveOrphansFromEnv && reloaded.RemoveOrphans != nil {
 		r.config.RemoveOrphans = *reloaded.RemoveOrphans
-		r.deploy.RemoveOrphans = *reloaded.RemoveOrphans
+		if r.deploy != nil {
+			r.deploy.RemoveOrphans = *reloaded.RemoveOrphans
+		}
 		changed = true
 	}
 
