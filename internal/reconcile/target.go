@@ -128,6 +128,9 @@ func clonePostSyncHooks(hooks []PostSyncHook) []PostSyncHook {
 		if h.Paths != nil {
 			cloned[i].Paths = append([]string(nil), h.Paths...)
 		}
+		if h.Command != nil {
+			cloned[i].Command = append([]string(nil), h.Command...)
+		}
 	}
 	return cloned
 }
