@@ -63,6 +63,7 @@ func NewPortRegistry() *PortRegistry {
 // same (port, protocol) key. A conflict is recorded when two entries overlap:
 // same bind address, or either uses the wildcard (empty BindAddr = 0.0.0.0).
 func (r *PortRegistry) AddEntry(entry PortEntry) {
+	entry.BindAddr = normalizeBindAddr(entry.BindAddr)
 	key := PortKey{Port: entry.Port, Protocol: entry.Protocol}
 	for _, existing := range r.entries[key] {
 		// Same service+stack+bind is idempotent (e.g. duplicate port line).
@@ -149,6 +150,15 @@ type ComposePortFile struct {
 type ComposePortService struct {
 	Ports  []any             `yaml:"ports"`
 	Labels map[string]string `yaml:"labels"`
+}
+
+// normalizeBindAddr converts explicit wildcard addresses ("0.0.0.0", "::")
+// to empty string so conflict detection treats them the same as an omitted bind.
+func normalizeBindAddr(addr string) string {
+	if addr == "0.0.0.0" || addr == "::" {
+		return ""
+	}
+	return addr
 }
 
 // ParsedPort is the fully-resolved port information from a single port entry.

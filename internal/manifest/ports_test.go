@@ -185,6 +185,22 @@ func TestPortRegistry_Conflicts(t *testing.T) {
 			wantConflicts: 2,
 		},
 		{
+			name: "explicit 0.0.0.0 wildcard conflicts with specific bind",
+			entries: []PortEntry{
+				{Port: 8080, Protocol: "tcp", BindAddr: "0.0.0.0", ServiceName: "web", StackName: "s1"},
+				{Port: 8080, Protocol: "tcp", BindAddr: "127.0.0.1", ServiceName: "api", StackName: "s2"},
+			},
+			wantConflicts: 1,
+		},
+		{
+			name: "explicit :: wildcard conflicts with specific bind",
+			entries: []PortEntry{
+				{Port: 8080, Protocol: "tcp", BindAddr: "::", ServiceName: "web", StackName: "s1"},
+				{Port: 8080, Protocol: "tcp", BindAddr: "192.168.1.1", ServiceName: "api", StackName: "s2"},
+			},
+			wantConflicts: 1,
+		},
+		{
 			name: "three-way pairwise conflict with wildcard",
 			entries: []PortEntry{
 				{Port: 8080, Protocol: "tcp", BindAddr: "127.0.0.1", ServiceName: "web", StackName: "s1"},
