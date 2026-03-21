@@ -180,6 +180,9 @@ func ParsePortEntry(entry any) []ParsedPort {
 	case int:
 		// Bare integer is container-port-only (ephemeral host port); skip.
 		_ = v
+	case float64:
+		// Some YAML decoders produce float64 for bare numbers; same semantics.
+		_ = v
 	case string:
 		return parsePortStringFull(v)
 	case map[string]any:

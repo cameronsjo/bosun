@@ -145,6 +145,10 @@ func runPortsFree(registry *manifest.PortRegistry, rangeStr string) error {
 	if start > end {
 		return fmt.Errorf("range start %d must not exceed end %d", start, end)
 	}
+	const maxPort = 65535
+	if start > maxPort || end > maxPort {
+		return fmt.Errorf("port values must not exceed %d", maxPort)
+	}
 
 	free := registry.FreePorts(start, end)
 

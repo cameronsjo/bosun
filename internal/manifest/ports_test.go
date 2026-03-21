@@ -22,6 +22,7 @@ func TestParsePortEntry(t *testing.T) {
 	}{
 		{"integer port (container-only, ephemeral host)", 80, 0, 0, "", ""},
 		{"zero integer", 0, 0, 0, "", ""},
+		{"float64 port (container-only, ephemeral host)", float64(3000), 0, 0, "", ""},
 		{"nil entry", nil, 0, 0, "", ""},
 		{"short syntax (container-only, ephemeral host)", "8080", 0, 0, "", ""},
 		{"mapped ports", "8080:80", 1, 8080, "tcp", ""},
