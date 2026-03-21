@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.4](https://github.com/cameronsjo/bosun/compare/v0.30.3...v0.30.4) (2026-03-21)
+
+
+### Bug Fixes
+
+* **reconcile:** detect missing services in already-deployed commits ([9319717](https://github.com/cameronsjo/bosun/commit/93197178c9f11d9b5e59eeec2581c379234637d3))
+* **reconcile:** skip symlinks during template file copy ([8a0bb18](https://github.com/cameronsjo/bosun/commit/8a0bb18f5479be2da6b4f091e164c7a704b7551b))
+
+## [0.30.3](https://github.com/cameronsjo/bosun/compare/v0.30.2...v0.30.3) (2026-03-21)
+
+
+### Bug Fixes
+
+* **preflight:** address CodeRabbit review findings ([4f4077b](https://github.com/cameronsjo/bosun/commit/4f4077b80d6a5792e3183bd936ea2de2511406e6))
+* **preflight:** validate SSH deploy key permissions ([1808a33](https://github.com/cameronsjo/bosun/commit/1808a33fe08e85b355534f64a99e0ee561551e4d))
+* **preflight:** validate SSH deploy key permissions ([b04a8ac](https://github.com/cameronsjo/bosun/commit/b04a8ac799c60dfd242cf1795bfacca64d86c514)), closes [#172](https://github.com/cameronsjo/bosun/issues/172)
+
 ## [0.30.2](https://github.com/cameronsjo/bosun/compare/v0.30.1...v0.30.2) (2026-03-21)
 
 

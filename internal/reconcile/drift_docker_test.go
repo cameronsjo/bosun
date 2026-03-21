@@ -243,3 +243,70 @@ func TestRunDriftCheck_PersistsStateFile(t *testing.T) {
 	_, err = os.Stat(stateFile)
 	assert.NoError(t, err, "state file should still exist after drift check")
 }
+
+// TestHasMissingDeclaredServices_Integration tests the Docker-backed missing
+// service detection used to override the commit-hash skip in the reconcile pipeline.
+func TestHasMissingDeclaredServices_Integration(t *testing.T) {
+	t.Run("new service not yet running overrides skip", func(t *testing.T) {
+		mock := dockertest.NewMockDockerAPI()
+		mock.ContainerListFunc = func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+			// web and api are running, but newservice is not present.
+			return []container.Summary{
+				dockertest.MakeTestContainer("a1", "myapp-web-1", "nginx:latest", "running", "myapp", "web"),
+				dockertest.MakeTestContainer("a2", "myapp-api-1", "myapp:v1", "running", "myapp", "api"),
+			}, nil
+		}
+
+		client := docker.NewClientWithAPI(mock)
+		actual, err := CollectActualState(context.Background(), client, "myapp")
+		require.NoError(t, err)
+
+		declared := []DeclaredService{
+			{Name: "web", Image: "nginx:latest"},
+			{Name: "api", Image: "myapp:v1"},
+			{Name: "newservice", Image: "myapp:v2"},
+		}
+
+		assert.True(t, hasMissingDeclaredServices(declared, actual),
+			"newservice missing from Docker should indicate missing services")
+	})
+
+	t.Run("all services running does not override skip", func(t *testing.T) {
+		mock := dockertest.NewMockDockerAPI()
+		mock.ContainerListFunc = func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+			return []container.Summary{
+				dockertest.MakeTestContainer("a1", "myapp-web-1", "nginx:latest", "running", "myapp", "web"),
+				dockertest.MakeTestContainer("a2", "myapp-api-1", "myapp:v1", "running", "myapp", "api"),
+			}, nil
+		}
+
+		client := docker.NewClientWithAPI(mock)
+		actual, err := CollectActualState(context.Background(), client, "myapp")
+		require.NoError(t, err)
+
+		declared := []DeclaredService{
+			{Name: "web", Image: "nginx:latest"},
+			{Name: "api", Image: "myapp:v1"},
+		}
+
+		assert.False(t, hasMissingDeclaredServices(declared, actual),
+			"all declared services running — skip should proceed normally")
+	})
+
+	t.Run("empty declared state does not override skip", func(t *testing.T) {
+		mock := dockertest.NewMockDockerAPI()
+		mock.ContainerListFunc = func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+			return []container.Summary{
+				dockertest.MakeTestContainer("a1", "myapp-web-1", "nginx:latest", "running", "myapp", "web"),
+			}, nil
+		}
+
+		client := docker.NewClientWithAPI(mock)
+		actual, err := CollectActualState(context.Background(), client, "myapp")
+		require.NoError(t, err)
+
+		// Empty declared — no deployment has been recorded yet.
+		assert.False(t, hasMissingDeclaredServices(nil, actual),
+			"empty declared services should not override skip")
+	})
+}
