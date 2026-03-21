@@ -3,21 +3,19 @@ package fileutil
 
 import (
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
-)
 
-// ErrSymlinkNotSupported indicates symlinks are not supported for this operation.
-var ErrSymlinkNotSupported = errors.New("symlinks are not supported")
+	"github.com/cameronsjo/bosun/internal/log"
+)
 
 // CopyFile copies a single file from src to dst.
 // It creates parent directories if needed and preserves permissions.
 // Uses atomic write via temp file to prevent partial writes on failure.
-// Returns ErrSymlinkNotSupported if src is a symlink.
+// Symlinks are skipped with a warning rather than causing an error.
 func CopyFile(src, dst string) error {
 	// Check if source is a symlink - Lstat doesn't follow symlinks
 	srcLstat, err := os.Lstat(src)
@@ -25,7 +23,10 @@ func CopyFile(src, dst string) error {
 		return err // Return unwrapped to preserve os.IsNotExist compatibility
 	}
 	if srcLstat.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%s: %w", src, ErrSymlinkNotSupported)
+		linkTarget, _ := os.Readlink(src)
+		l := log.Component(log.ComponentReconcile)
+		l.Warn().Str("path", src).Str("target", linkTarget).Msg("Skipping symlink during file copy")
+		return nil
 	}
 
 	srcFile, err := os.Open(src)
@@ -149,7 +150,7 @@ func CopyFileIfChanged(src, dst string) (bool, error) {
 // CopyDirIfChanged recursively copies a directory from src to dst,
 // skipping files whose content has not changed. Returns relative paths
 // of files that were actually written.
-// Returns ErrSymlinkNotSupported if any symlinks are encountered.
+// Symlinks are skipped with a warning rather than causing an error.
 func CopyDirIfChanged(src, dst string) ([]string, error) {
 	var written []string
 	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
@@ -158,7 +159,10 @@ func CopyDirIfChanged(src, dst string) ([]string, error) {
 		}
 
 		if d.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%s: %w", path, ErrSymlinkNotSupported)
+			linkTarget, _ := os.Readlink(path)
+			l := log.Component(log.ComponentReconcile)
+			l.Warn().Str("path", path).Str("target", linkTarget).Msg("Skipping symlink during file copy")
+			return nil
 		}
 
 		relPath, err := filepath.Rel(src, path)
@@ -184,16 +188,20 @@ func CopyDirIfChanged(src, dst string) ([]string, error) {
 }
 
 // CopyDir recursively copies a directory from src to dst.
-// Returns ErrSymlinkNotSupported if any symlinks are encountered.
+// Symlinks are skipped with a warning rather than causing an error.
 func CopyDir(src, dst string) error {
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
-		// Check for symlinks - d.Type() includes symlink info
+		// Symlinks are skipped: they may reference paths outside the staging dir
+		// and are not meaningful for the deploy target.
 		if d.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%s: %w", path, ErrSymlinkNotSupported)
+			linkTarget, _ := os.Readlink(path)
+			l := log.Component(log.ComponentReconcile)
+			l.Warn().Str("path", path).Str("target", linkTarget).Msg("Skipping symlink during file copy")
+			return nil
 		}
 
 		// Calculate destination path.
