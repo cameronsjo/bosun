@@ -63,8 +63,6 @@ func NewPortRegistry() *PortRegistry {
 // same (port, protocol) key. A conflict is recorded when two entries overlap:
 // same bind address, or either uses the wildcard (empty BindAddr = 0.0.0.0).
 func (r *PortRegistry) AddEntry(entry PortEntry) {
-	r.allEntries = append(r.allEntries, entry)
-
 	key := PortKey{Port: entry.Port, Protocol: entry.Protocol}
 	for _, existing := range r.entries[key] {
 		// Same service+stack+bind is idempotent (e.g. duplicate port line).
@@ -88,6 +86,7 @@ func (r *PortRegistry) AddEntry(entry PortEntry) {
 		})
 	}
 	r.entries[key] = append(r.entries[key], entry)
+	r.allEntries = append(r.allEntries, entry)
 }
 
 // Conflicts returns all detected port conflicts.

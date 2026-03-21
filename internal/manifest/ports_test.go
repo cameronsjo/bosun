@@ -89,6 +89,7 @@ func TestPortRegistry_Conflicts(t *testing.T) {
 		name          string
 		entries       []PortEntry
 		wantConflicts int
+		wantEntries   int // 0 = len(entries), >0 = exact count
 	}{
 		{
 			name: "no conflicts on different ports",
@@ -121,6 +122,7 @@ func TestPortRegistry_Conflicts(t *testing.T) {
 				{Port: 8080, Protocol: "tcp", ServiceName: "web", StackName: "stack1"},
 			},
 			wantConflicts: 0,
+			wantEntries:   1, // duplicate discarded, not double-counted
 		},
 		{
 			name: "different bind addresses do not conflict",
@@ -166,6 +168,9 @@ func TestPortRegistry_Conflicts(t *testing.T) {
 				r.AddEntry(e)
 			}
 			assert.Len(t, r.Conflicts(), tc.wantConflicts)
+			if tc.wantEntries > 0 {
+				assert.Len(t, r.Entries(), tc.wantEntries)
+			}
 		})
 	}
 }
