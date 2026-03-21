@@ -114,7 +114,9 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 		cp.DeploySyncExclude = append([]string(nil), cp.DeploySyncExclude...)
 	}
 
-	cp.SecretsScope = t.SecretsScope
+	if t.SecretsScope != "" {
+		cp.SecretsScope = t.SecretsScope
+	}
 
 	return &cp
 }
@@ -170,6 +172,10 @@ func (c *Config) ResolveTargets() []Target {
 		valid := make([]Target, 0, len(c.Targets))
 		seen := make(map[string]bool, len(c.Targets))
 		for _, t := range c.Targets {
+			if t.Name == DefaultTargetName {
+				log.Warn().Str("target", t.Name).Msg("Skipping target: reserved name (used internally for implicit single-target mode)")
+				continue
+			}
 			if err := ValidateTargetName(t.Name); err != nil {
 				log.Warn().Str("target", t.Name).Err(err).Msg("Skipping target with invalid name")
 				continue
