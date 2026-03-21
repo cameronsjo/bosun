@@ -3,6 +3,7 @@ package fileutil
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -12,12 +13,22 @@ import (
 	"github.com/cameronsjo/bosun/internal/log"
 )
 
+// ErrSymlinkSkipped is returned by CopyFile when the source is a symlink.
+// Callers that walk directories should treat this as "not written" rather than
+// a failure.
+var ErrSymlinkSkipped = errors.New("symlink skipped")
+
 // warnSymlinkSkipped emits a structured warning when a symlink is encountered
 // during a file copy operation and will be skipped.
 func warnSymlinkSkipped(path string) {
-	linkTarget, _ := os.Readlink(path)
+	linkTarget, readErr := os.Readlink(path)
 	l := log.Component(log.ComponentReconcile)
-	l.Warn().Str(log.FieldPath, path).Str("target", linkTarget).Msg("Skipping symlink during file copy")
+	e := l.Warn().Str(log.FieldPath, path)
+	if readErr != nil {
+		e.Err(readErr).Msg("Skipping symlink during file copy")
+	} else {
+		e.Str("target", linkTarget).Msg("Skipping symlink during file copy")
+	}
 }
 
 // CopyFile copies a single file from src to dst.
@@ -32,7 +43,7 @@ func CopyFile(src, dst string) error {
 	}
 	if srcLstat.Mode()&os.ModeSymlink != 0 {
 		warnSymlinkSkipped(src)
-		return nil
+		return ErrSymlinkSkipped
 	}
 
 	srcFile, err := os.Open(src)
@@ -148,6 +159,9 @@ func CopyFileIfChanged(src, dst string) (bool, error) {
 	}
 
 	if err := CopyFile(src, dst); err != nil {
+		if errors.Is(err, ErrSymlinkSkipped) {
+			return false, nil
+		}
 		return false, err
 	}
 	return true, nil

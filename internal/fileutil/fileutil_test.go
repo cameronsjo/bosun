@@ -83,7 +83,7 @@ func TestCopyFile(t *testing.T) {
 		assert.True(t, os.IsNotExist(err))
 	})
 
-	t.Run("skips symlink without error", func(t *testing.T) {
+	t.Run("returns ErrSymlinkSkipped for symlink source", func(t *testing.T) {
 		t.Parallel()
 
 		tmpDir, err := filepath.EvalSymlinks(t.TempDir())
@@ -97,7 +97,7 @@ func TestCopyFile(t *testing.T) {
 
 		dstPath := filepath.Join(tmpDir, "dest.txt")
 		err = fileutil.CopyFile(symlinkPath, dstPath)
-		require.NoError(t, err)
+		assert.ErrorIs(t, err, fileutil.ErrSymlinkSkipped)
 
 		// Destination must not have been created.
 		_, statErr := os.Lstat(dstPath)
