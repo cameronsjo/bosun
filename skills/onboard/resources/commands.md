@@ -306,6 +306,8 @@ bosun drift --target=nas       # Show drift for a specific target
 
 By default reads from the daemon's cached drift state. Use `--live` for a fresh Docker check.
 
+**Multi-target behavior:** When no `--target` is specified and the config has multiple targets, drift automatically shows status for all targets. With `--json`, this produces a `{"targets": [...]}` array instead of a single object.
+
 ---
 
 ## Diagnostics Commands
