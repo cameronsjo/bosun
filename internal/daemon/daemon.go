@@ -545,11 +545,16 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 		),
 	)
 
-	// Reload daemon-level config from local bosun.yaml before each cycle.
-	// This reads the project-root config (not the repo clone), so changes to
-	// drift settings take effect on the next cycle after the file is saved.
-	// Repo-scoped config (hooks, deploy_paths) is reloaded separately inside
-	// each target's reconciler.Run() via ConfigReloader.
+	// Reload daemon-level config from the operator's local bosun.yaml.
+	//
+	// Drift settings (debounce, self-heal, cooldown) are daemon-level concerns
+	// controlled by the operator on the host, so they read from config.Load()
+	// (project root), not from the git-cloned repo. Changes take effect on
+	// the next cycle after the file is saved.
+	//
+	// Per-target settings (hooks, deploy_paths, critical_containers) are
+	// deployment concerns pushed via git, so they reload from the repo clone
+	// inside each target's reconciler.Run() via ConfigReloader.
 	d.reloadDaemonConfig()
 
 	// NOTE: Targets are resolved from the startup config snapshot. The config
@@ -1124,7 +1129,7 @@ func (d *Daemon) reloadDaemonConfig() {
 	if !d.config.DriftSelfHealCooldownFromEnv {
 		newVal := projectCfg.DriftSelfHealCooldown()
 		if newVal == 0 {
-			newVal = 15 * time.Minute // default when config field is absent
+			newVal = DefaultConfig().DriftSelfHealCooldown
 		}
 		if newVal != d.config.DriftSelfHealCooldown {
 			d.config.DriftSelfHealCooldown = newVal
