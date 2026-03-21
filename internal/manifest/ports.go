@@ -41,8 +41,8 @@ type PortConflict struct {
 // PortRegistry collects port allocations across all compose outputs and
 // detects host-port conflicts.
 type PortRegistry struct {
-	// entries maps PortKey to the first claimant. Populated by AddEntry.
-	entries map[PortKey]PortEntry
+	// entries maps PortKey to every claimant seen for that port/protocol.
+	entries map[PortKey][]PortEntry
 
 	// conflicts accumulates conflicts found during AddEntry.
 	conflicts []PortConflict
@@ -54,40 +54,40 @@ type PortRegistry struct {
 // NewPortRegistry creates an empty PortRegistry.
 func NewPortRegistry() *PortRegistry {
 	return &PortRegistry{
-		entries: make(map[PortKey]PortEntry),
+		entries: make(map[PortKey][]PortEntry),
 	}
 }
 
 // AddEntry registers a port allocation.
-// If the same (port, protocol) pair is already claimed by a different
-// service on the same bind address (or both on 0.0.0.0), a conflict is recorded.
+// Each new entry is checked pairwise against every existing claimant for the
+// same (port, protocol) key. A conflict is recorded when two entries overlap:
+// same bind address, or either uses the wildcard (empty BindAddr = 0.0.0.0).
 func (r *PortRegistry) AddEntry(entry PortEntry) {
 	r.allEntries = append(r.allEntries, entry)
 
 	key := PortKey{Port: entry.Port, Protocol: entry.Protocol}
-	existing, seen := r.entries[key]
-	if !seen {
-		r.entries[key] = entry
-		return
-	}
+	for _, existing := range r.entries[key] {
+		// Same service+stack+bind is idempotent (e.g. duplicate port line).
+		if existing.ServiceName == entry.ServiceName &&
+			existing.StackName == entry.StackName &&
+			existing.BindAddr == entry.BindAddr {
+			return
+		}
 
-	// Same service in the same stack is not a conflict (idempotent).
-	if existing.ServiceName == entry.ServiceName && existing.StackName == entry.StackName {
-		return
-	}
+		// Two distinct non-empty bind addresses do not conflict because they
+		// listen on separate interfaces. A wildcard (empty BindAddr, i.e.
+		// 0.0.0.0) conflicts with any address because it captures all interfaces.
+		if existing.BindAddr != "" && entry.BindAddr != "" && existing.BindAddr != entry.BindAddr {
+			continue
+		}
 
-	// Two distinct non-empty bind addresses do not conflict because they listen
-	// on separate interfaces. A wildcard (empty BindAddr, i.e. 0.0.0.0) does
-	// conflict with any specific address because it captures all interfaces.
-	if existing.BindAddr != "" && entry.BindAddr != "" && existing.BindAddr != entry.BindAddr {
-		return
+		r.conflicts = append(r.conflicts, PortConflict{
+			Key:    key,
+			First:  existing,
+			Second: entry,
+		})
 	}
-
-	r.conflicts = append(r.conflicts, PortConflict{
-		Key:    key,
-		First:  existing,
-		Second: entry,
-	})
+	r.entries[key] = append(r.entries[key], entry)
 }
 
 // Conflicts returns all detected port conflicts.
@@ -131,8 +131,7 @@ func (r *PortRegistry) FreePorts(start, end int) []int {
 }
 
 func (r *PortRegistry) isPortUsed(port int, proto string) bool {
-	_, ok := r.entries[PortKey{Port: port, Protocol: proto}]
-	return ok
+	return len(r.entries[PortKey{Port: port, Protocol: proto}]) > 0
 }
 
 // =============================================================================

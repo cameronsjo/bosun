@@ -16,6 +16,25 @@ import (
 // buildPortRegistry
 // =============================================================================
 
+// newTestComposeDir creates a temp dir with manifest/output/compose/ and writes
+// compose files from the provided map (filename → content).
+func newTestComposeDir(t *testing.T, files map[string]string) *config.Config {
+	t.Helper()
+	tmpDir := t.TempDir()
+	manifestDir := filepath.Join(tmpDir, "manifest")
+	composeDir := filepath.Join(manifestDir, "output", "compose")
+	require.NoError(t, os.MkdirAll(composeDir, 0755))
+
+	for name, content := range files {
+		require.NoError(t, os.WriteFile(filepath.Join(composeDir, name), []byte(content), 0644))
+	}
+
+	return &config.Config{
+		Root:        tmpDir,
+		ManifestDir: manifestDir,
+	}
+}
+
 func TestBuildPortRegistry_NoComposeDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &config.Config{
@@ -23,241 +42,139 @@ func TestBuildPortRegistry_NoComposeDir(t *testing.T) {
 		ManifestDir: filepath.Join(tmpDir, "manifest"),
 	}
 
-	registry, err := buildPortRegistry(cfg)
+	registry, loaded, err := buildPortRegistry(cfg)
 	require.NoError(t, err)
+	assert.False(t, loaded)
 	assert.Empty(t, registry.Entries())
 }
 
 func TestBuildPortRegistry_EmptyComposeDir(t *testing.T) {
-	tmpDir := t.TempDir()
-	manifestDir := filepath.Join(tmpDir, "manifest")
-	composeDir := filepath.Join(manifestDir, "output", "compose")
-	require.NoError(t, os.MkdirAll(composeDir, 0755))
+	cfg := newTestComposeDir(t, nil)
 
-	cfg := &config.Config{
-		Root:        tmpDir,
-		ManifestDir: manifestDir,
-	}
-
-	registry, err := buildPortRegistry(cfg)
+	registry, loaded, err := buildPortRegistry(cfg)
 	require.NoError(t, err)
+	assert.False(t, loaded)
 	assert.Empty(t, registry.Entries())
 }
 
-func TestBuildPortRegistry_SingleStack(t *testing.T) {
-	tmpDir := t.TempDir()
-	manifestDir := filepath.Join(tmpDir, "manifest")
-	composeDir := filepath.Join(manifestDir, "output", "compose")
-	require.NoError(t, os.MkdirAll(composeDir, 0755))
-
-	content := `services:
-  web:
-    image: nginx
-    ports:
-      - "8080:80"
-      - "8443:443"
-  api:
-    image: myapi
-    ports:
-      - 3000
-`
-	require.NoError(t, os.WriteFile(filepath.Join(composeDir, "apps.yml"), []byte(content), 0644))
-
-	cfg := &config.Config{
-		Root:        tmpDir,
-		ManifestDir: manifestDir,
+func TestBuildPortRegistry(t *testing.T) {
+	tests := []struct {
+		name           string
+		files          map[string]string
+		wantEntries    int
+		wantConflicts  int
+		wantLoaded     bool
+		checkPorts     []int
+		checkStackName string
+	}{
+		{
+			name: "single stack with multiple services",
+			files: map[string]string{
+				"apps.yml": "services:\n  web:\n    image: nginx\n    ports:\n      - \"8080:80\"\n      - \"8443:443\"\n  api:\n    image: myapi\n    ports:\n      - 3000\n",
+			},
+			wantEntries:    3,
+			wantConflicts:  0,
+			wantLoaded:     true,
+			checkPorts:     []int{3000, 8080, 8443},
+			checkStackName: "apps",
+		},
+		{
+			name: "multiple stacks no conflicts",
+			files: map[string]string{
+				"stack1.yml": "services:\n  web:\n    image: nginx\n    ports:\n      - \"8080:80\"\n",
+				"stack2.yml": "services:\n  api:\n    image: myapi\n    ports:\n      - \"3000:3000\"\n",
+			},
+			wantEntries:   2,
+			wantConflicts: 0,
+			wantLoaded:    true,
+		},
+		{
+			name: "conflict detected across stacks",
+			files: map[string]string{
+				"stack1.yml": "services:\n  web:\n    image: nginx\n    ports:\n      - \"8080:80\"\n",
+				"stack2.yml": "services:\n  api:\n    image: myapi\n    ports:\n      - \"8080:3000\"\n",
+			},
+			wantEntries:   2,
+			wantConflicts: 1,
+			wantLoaded:    true,
+		},
+		{
+			name: "long syntax ports",
+			files: map[string]string{
+				"stack.yml": "services:\n  web:\n    image: nginx\n    ports:\n      - published: 8080\n        target: 80\n      - published: \"9090\"\n        target: 90\n",
+			},
+			wantEntries:   2,
+			wantConflicts: 0,
+			wantLoaded:    true,
+			checkPorts:    []int{8080, 9090},
+		},
+		{
+			name: "invalid YAML skipped gracefully",
+			files: map[string]string{
+				"valid.yml":   "services:\n  web:\n    image: nginx\n    ports:\n      - \"8080:80\"\n",
+				"invalid.yml": "not: valid: yaml: content",
+			},
+			wantEntries:   1,
+			wantConflicts: 0,
+			wantLoaded:    true,
+		},
+		{
+			name: "host bound port preserves bind address",
+			files: map[string]string{
+				"stack.yml": "services:\n  web:\n    image: nginx\n    ports:\n      - \"127.0.0.1:8080:80\"\n",
+			},
+			wantEntries:   1,
+			wantConflicts: 0,
+			wantLoaded:    true,
+		},
+		{
+			name: "udp and tcp on same port are distinct",
+			files: map[string]string{
+				"stack.yml": "services:\n  dns:\n    image: pihole\n    ports:\n      - \"53:53/udp\"\n      - \"53:53/tcp\"\n",
+			},
+			wantEntries:   2,
+			wantConflicts: 0,
+			wantLoaded:    true,
+		},
 	}
 
-	registry, err := buildPortRegistry(cfg)
-	require.NoError(t, err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := newTestComposeDir(t, tc.files)
 
-	entries := registry.Entries()
-	assert.Len(t, entries, 3)
+			registry, loaded, err := buildPortRegistry(cfg)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantLoaded, loaded)
+			assert.Len(t, registry.Entries(), tc.wantEntries)
+			assert.Len(t, registry.Conflicts(), tc.wantConflicts)
 
-	portNumbers := make([]int, 0, len(entries))
-	for _, e := range entries {
-		portNumbers = append(portNumbers, e.Port)
-		assert.Equal(t, "apps", e.StackName)
+			if tc.checkPorts != nil {
+				ports := make([]int, 0, len(registry.Entries()))
+				for _, e := range registry.Entries() {
+					ports = append(ports, e.Port)
+				}
+				assert.ElementsMatch(t, tc.checkPorts, ports)
+			}
+			if tc.checkStackName != "" {
+				for _, e := range registry.Entries() {
+					assert.Equal(t, tc.checkStackName, e.StackName)
+				}
+			}
+		})
 	}
-	assert.ElementsMatch(t, []int{3000, 8080, 8443}, portNumbers)
 }
 
-func TestBuildPortRegistry_MultipleStacks(t *testing.T) {
-	tmpDir := t.TempDir()
-	manifestDir := filepath.Join(tmpDir, "manifest")
-	composeDir := filepath.Join(manifestDir, "output", "compose")
-	require.NoError(t, os.MkdirAll(composeDir, 0755))
+func TestBuildPortRegistry_HostBoundPortBindAddr(t *testing.T) {
+	cfg := newTestComposeDir(t, map[string]string{
+		"stack.yml": "services:\n  web:\n    image: nginx\n    ports:\n      - \"127.0.0.1:8080:80\"\n",
+	})
 
-	stack1 := `services:
-  web:
-    image: nginx
-    ports:
-      - "8080:80"
-`
-	stack2 := `services:
-  api:
-    image: myapi
-    ports:
-      - "3000:3000"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(composeDir, "stack1.yml"), []byte(stack1), 0644))
-	require.NoError(t, os.WriteFile(filepath.Join(composeDir, "stack2.yml"), []byte(stack2), 0644))
-
-	cfg := &config.Config{
-		Root:        tmpDir,
-		ManifestDir: manifestDir,
-	}
-
-	registry, err := buildPortRegistry(cfg)
-	require.NoError(t, err)
-	assert.Len(t, registry.Entries(), 2)
-	assert.Empty(t, registry.Conflicts())
-}
-
-func TestBuildPortRegistry_ConflictDetected(t *testing.T) {
-	tmpDir := t.TempDir()
-	manifestDir := filepath.Join(tmpDir, "manifest")
-	composeDir := filepath.Join(manifestDir, "output", "compose")
-	require.NoError(t, os.MkdirAll(composeDir, 0755))
-
-	stack1 := `services:
-  web:
-    image: nginx
-    ports:
-      - "8080:80"
-`
-	stack2 := `services:
-  api:
-    image: myapi
-    ports:
-      - "8080:3000"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(composeDir, "stack1.yml"), []byte(stack1), 0644))
-	require.NoError(t, os.WriteFile(filepath.Join(composeDir, "stack2.yml"), []byte(stack2), 0644))
-
-	cfg := &config.Config{
-		Root:        tmpDir,
-		ManifestDir: manifestDir,
-	}
-
-	registry, err := buildPortRegistry(cfg)
-	require.NoError(t, err)
-	assert.Len(t, registry.Conflicts(), 1)
-	assert.Equal(t, 8080, registry.Conflicts()[0].Key.Port)
-}
-
-func TestBuildPortRegistry_LongSyntaxPorts(t *testing.T) {
-	tmpDir := t.TempDir()
-	manifestDir := filepath.Join(tmpDir, "manifest")
-	composeDir := filepath.Join(manifestDir, "output", "compose")
-	require.NoError(t, os.MkdirAll(composeDir, 0755))
-
-	content := `services:
-  web:
-    image: nginx
-    ports:
-      - published: 8080
-        target: 80
-      - published: "9090"
-        target: 90
-`
-	require.NoError(t, os.WriteFile(filepath.Join(composeDir, "stack.yml"), []byte(content), 0644))
-
-	cfg := &config.Config{
-		Root:        tmpDir,
-		ManifestDir: manifestDir,
-	}
-
-	registry, err := buildPortRegistry(cfg)
-	require.NoError(t, err)
-
-	entries := registry.Entries()
-	ports := make([]int, 0, len(entries))
-	for _, e := range entries {
-		ports = append(ports, e.Port)
-	}
-	assert.ElementsMatch(t, []int{8080, 9090}, ports)
-}
-
-func TestBuildPortRegistry_InvalidYAMLSkipped(t *testing.T) {
-	tmpDir := t.TempDir()
-	manifestDir := filepath.Join(tmpDir, "manifest")
-	composeDir := filepath.Join(manifestDir, "output", "compose")
-	require.NoError(t, os.MkdirAll(composeDir, 0755))
-
-	valid := `services:
-  web:
-    image: nginx
-    ports:
-      - "8080:80"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(composeDir, "valid.yml"), []byte(valid), 0644))
-	require.NoError(t, os.WriteFile(filepath.Join(composeDir, "invalid.yml"), []byte("not: valid: yaml: content"), 0644))
-
-	cfg := &config.Config{
-		Root:        tmpDir,
-		ManifestDir: manifestDir,
-	}
-
-	// Invalid file emits a warning but does not return an error.
-	registry, err := buildPortRegistry(cfg)
-	require.NoError(t, err)
-	assert.Len(t, registry.Entries(), 1)
-}
-
-func TestBuildPortRegistry_HostBoundPort(t *testing.T) {
-	tmpDir := t.TempDir()
-	manifestDir := filepath.Join(tmpDir, "manifest")
-	composeDir := filepath.Join(manifestDir, "output", "compose")
-	require.NoError(t, os.MkdirAll(composeDir, 0755))
-
-	content := `services:
-  web:
-    image: nginx
-    ports:
-      - "127.0.0.1:8080:80"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(composeDir, "stack.yml"), []byte(content), 0644))
-
-	cfg := &config.Config{
-		Root:        tmpDir,
-		ManifestDir: manifestDir,
-	}
-
-	registry, err := buildPortRegistry(cfg)
+	registry, _, err := buildPortRegistry(cfg)
 	require.NoError(t, err)
 
 	entries := registry.Entries()
 	require.Len(t, entries, 1)
 	assert.Equal(t, "127.0.0.1", entries[0].BindAddr)
-}
-
-func TestBuildPortRegistry_UDPPort(t *testing.T) {
-	tmpDir := t.TempDir()
-	manifestDir := filepath.Join(tmpDir, "manifest")
-	composeDir := filepath.Join(manifestDir, "output", "compose")
-	require.NoError(t, os.MkdirAll(composeDir, 0755))
-
-	content := `services:
-  dns:
-    image: pihole
-    ports:
-      - "53:53/udp"
-      - "53:53/tcp"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(composeDir, "stack.yml"), []byte(content), 0644))
-
-	cfg := &config.Config{
-		Root:        tmpDir,
-		ManifestDir: manifestDir,
-	}
-
-	registry, err := buildPortRegistry(cfg)
-	require.NoError(t, err)
-
-	// TCP and UDP on the same port are two distinct entries, no conflict.
-	assert.Len(t, registry.Entries(), 2)
-	assert.Empty(t, registry.Conflicts())
 }
 
 // =============================================================================
@@ -268,12 +185,7 @@ func TestAddPortsFromCompose_PortRange(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "compose.yml")
 
-	content := `services:
-  proxy:
-    image: haproxy
-    ports:
-      - "8000-8002:8000-8002"
-`
+	content := "services:\n  proxy:\n    image: haproxy\n    ports:\n      - \"8000-8002:8000-8002\"\n"
 	require.NoError(t, os.WriteFile(filePath, []byte(content), 0644))
 
 	registry := manifest.NewPortRegistry()
@@ -299,40 +211,55 @@ func TestAddPortsFromCompose_NonexistentFile(t *testing.T) {
 // =============================================================================
 
 func TestIsYAMLFile(t *testing.T) {
-	assert.True(t, isYAMLFile("stack.yml"))
-	assert.True(t, isYAMLFile("stack.yaml"))
-	assert.True(t, isYAMLFile("STACK.YML"))
-	assert.False(t, isYAMLFile("stack.json"))
-	assert.False(t, isYAMLFile("stack.tmpl"))
-	assert.False(t, isYAMLFile("stack"))
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"stack.yml", true},
+		{"stack.yaml", true},
+		{"STACK.YML", true},
+		{"stack.json", false},
+		{"stack.tmpl", false},
+		{"stack", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isYAMLFile(tc.name))
+		})
+	}
 }
 
 // =============================================================================
 // runPortsFree - range parsing
 // =============================================================================
 
-func TestRunPortsFree_InvalidRange(t *testing.T) {
-	registry := manifest.NewPortRegistry()
-	err := runPortsFree(registry, "notarange")
-	assert.ErrorContains(t, err, "invalid range")
-}
+func TestRunPortsFree(t *testing.T) {
+	tests := []struct {
+		name      string
+		rangeStr  string
+		wantErr   bool
+		errSubstr string
+	}{
+		{"invalid format", "notarange", true, "invalid range"},
+		{"reversed range", "9000-8000", true, "must not exceed"},
+		{"invalid start", "abc-9000", true, "invalid range start"},
+		{"valid range", "9000-9002", false, ""},
+	}
 
-func TestRunPortsFree_ReversedRange(t *testing.T) {
-	registry := manifest.NewPortRegistry()
-	err := runPortsFree(registry, "9000-8000")
-	assert.ErrorContains(t, err, "must not exceed")
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := manifest.NewPortRegistry()
+			if tc.name == "valid range" {
+				registry.AddEntry(manifest.PortEntry{Port: 9001, Protocol: "tcp", ServiceName: "web", StackName: "s1"})
+			}
 
-func TestRunPortsFree_InvalidStart(t *testing.T) {
-	registry := manifest.NewPortRegistry()
-	err := runPortsFree(registry, "abc-9000")
-	assert.Error(t, err)
-}
-
-func TestRunPortsFree_ValidRange(t *testing.T) {
-	registry := manifest.NewPortRegistry()
-	registry.AddEntry(manifest.PortEntry{Port: 9001, Protocol: "tcp", ServiceName: "web", StackName: "s1"})
-
-	err := runPortsFree(registry, "9000-9002")
-	assert.NoError(t, err)
+			err := runPortsFree(registry, tc.rangeStr)
+			if tc.wantErr {
+				assert.ErrorContains(t, err, tc.errSubstr)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }

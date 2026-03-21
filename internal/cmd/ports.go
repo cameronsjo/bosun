@@ -45,16 +45,22 @@ func runPorts(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	registry, err := buildPortRegistry(cfg)
+	registry, loaded, err := buildPortRegistry(cfg)
 	if err != nil {
 		return fmt.Errorf("build port registry: %w", err)
 	}
 
 	if portsFreeRange != "" {
+		if !loaded {
+			return fmt.Errorf("no compose files loaded; run 'bosun provision' first")
+		}
 		return runPortsFree(registry, portsFreeRange)
 	}
 
 	if portsService != "" {
+		if !loaded {
+			return fmt.Errorf("no compose files loaded; run 'bosun provision' first")
+		}
 		return runPortsService(registry, portsService)
 	}
 
@@ -85,14 +91,14 @@ func runPortsList(registry *manifest.PortRegistry) error {
 	fmt.Println()
 
 	if len(conflicts) == 0 {
-		_, _ = ui.Green.Println("No port conflicts detected.")
+		ui.Success("No port conflicts detected.")
 		return nil
 	}
 
-	_, _ = ui.Red.Printf("%d port conflict(s) detected:\n", len(conflicts))
+	ui.Error("%d port conflict(s) detected:", len(conflicts))
 	fmt.Println()
 	for _, c := range conflicts {
-		_, _ = ui.Red.Printf("  ! Port %d/%s claimed by %s and %s\n",
+		ui.Error("Port %d/%s claimed by %s and %s",
 			c.Key.Port, c.Key.Protocol,
 			c.First.Qualifier(), c.Second.Qualifier())
 	}
@@ -158,7 +164,7 @@ func runPortsFree(registry *manifest.PortRegistry, rangeStr string) error {
 	}
 	fmt.Println()
 	fmt.Println()
-	_, _ = ui.Green.Printf("%d free port(s) in range.\n", len(free))
+	ui.Success("%d free port(s) in range.", len(free))
 	return nil
 }
 
@@ -167,18 +173,22 @@ func runPortsFree(registry *manifest.PortRegistry, rangeStr string) error {
 // =============================================================================
 
 // buildPortRegistry loads all rendered compose files and builds a PortRegistry.
-func buildPortRegistry(cfg *config.Config) (*manifest.PortRegistry, error) {
+// Returns (registry, loaded, error) where loaded indicates whether at least one
+// compose file was successfully parsed. Callers should treat an unloaded registry
+// as incomplete rather than authoritative.
+func buildPortRegistry(cfg *config.Config) (*manifest.PortRegistry, bool, error) {
 	registry := manifest.NewPortRegistry()
 
 	composeDir := filepath.Join(cfg.OutputDir(), "compose")
 	entries, err := os.ReadDir(composeDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return registry, nil
+			return registry, false, nil
 		}
-		return nil, fmt.Errorf("read compose output dir: %w", err)
+		return nil, false, fmt.Errorf("read compose output dir: %w", err)
 	}
 
+	loaded := 0
 	for _, entry := range entries {
 		if entry.IsDir() || !isYAMLFile(entry.Name()) {
 			continue
@@ -190,10 +200,12 @@ func buildPortRegistry(cfg *config.Config) (*manifest.PortRegistry, error) {
 		if err := addPortsFromCompose(registry, filePath, stackName); err != nil {
 			// Non-fatal: log warning and continue with remaining stacks.
 			ui.Warning("Failed to parse compose file %s: %v", entry.Name(), err)
+			continue
 		}
+		loaded++
 	}
 
-	return registry, nil
+	return registry, loaded > 0, nil
 }
 
 // addPortsFromCompose reads a compose YAML file and registers all its port
