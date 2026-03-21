@@ -2524,3 +2524,165 @@ func TestExecuteReconcile_MultipleTargets(t *testing.T) {
 		assert.Error(t, err, "should attempt reconcile even with implicit default target")
 	})
 }
+
+// --- reloadDaemonConfig tests ---
+
+func TestReloadDaemonConfig_UpdatesFieldsFromBosunYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmpDir = evalSymlinks(t, tmpDir)
+
+	yamlContent := `manifest_dir: manifest
+drift_alert_debounce: "5m"
+drift_self_heal: true
+drift_self_heal_cooldown: "20m"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(yamlContent), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0o755))
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() { _ = os.Chdir(origDir) }()
+	require.NoError(t, os.Chdir(tmpDir))
+
+	d := &Daemon{
+		config: &Config{
+			DriftAlertDebounce:   0,
+			DriftSelfHeal:        false,
+			DriftSelfHealCooldown: 15 * time.Minute,
+		},
+	}
+
+	d.reloadDaemonConfig()
+
+	d.configMu.RLock()
+	defer d.configMu.RUnlock()
+	assert.Equal(t, 5*time.Minute, d.config.DriftAlertDebounce)
+	assert.True(t, d.config.DriftSelfHeal)
+	assert.Equal(t, 20*time.Minute, d.config.DriftSelfHealCooldown)
+}
+
+func TestReloadDaemonConfig_EnvVarsPreventsOverride(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmpDir = evalSymlinks(t, tmpDir)
+
+	yamlContent := `manifest_dir: manifest
+drift_alert_debounce: "5m"
+drift_self_heal: true
+drift_self_heal_cooldown: "20m"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(yamlContent), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0o755))
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() { _ = os.Chdir(origDir) }()
+	require.NoError(t, os.Chdir(tmpDir))
+
+	// All three fields are locked by env vars.
+	d := &Daemon{
+		config: &Config{
+			DriftAlertDebounce:           2 * time.Minute,
+			DriftAlertDebounceFromEnv:    true,
+			DriftSelfHeal:                false,
+			DriftSelfHealFromEnv:         true,
+			DriftSelfHealCooldown:        10 * time.Minute,
+			DriftSelfHealCooldownFromEnv: true,
+		},
+	}
+
+	d.reloadDaemonConfig()
+
+	d.configMu.RLock()
+	defer d.configMu.RUnlock()
+	// Values must stay as set by "env vars" — bosun.yaml must not overwrite them.
+	assert.Equal(t, 2*time.Minute, d.config.DriftAlertDebounce, "DriftAlertDebounce must not change when locked by env")
+	assert.False(t, d.config.DriftSelfHeal, "DriftSelfHeal must not change when locked by env")
+	assert.Equal(t, 10*time.Minute, d.config.DriftSelfHealCooldown, "DriftSelfHealCooldown must not change when locked by env")
+}
+
+func TestReloadDaemonConfig_NoConfigFile_IsNoop(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmpDir = evalSymlinks(t, tmpDir)
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() { _ = os.Chdir(origDir) }()
+	require.NoError(t, os.Chdir(tmpDir))
+
+	d := &Daemon{
+		config: &Config{
+			DriftAlertDebounce:   3 * time.Minute,
+			DriftSelfHeal:        true,
+			DriftSelfHealCooldown: 12 * time.Minute,
+		},
+	}
+
+	// Should not panic or change any values when no bosun.yaml is present.
+	d.reloadDaemonConfig()
+
+	d.configMu.RLock()
+	defer d.configMu.RUnlock()
+	assert.Equal(t, 3*time.Minute, d.config.DriftAlertDebounce)
+	assert.True(t, d.config.DriftSelfHeal)
+	assert.Equal(t, 12*time.Minute, d.config.DriftSelfHealCooldown)
+}
+
+func TestDriftConfig_ReturnsConsistentSnapshot(t *testing.T) {
+	d := &Daemon{
+		config: &Config{
+			DriftAlertDebounce:   7 * time.Minute,
+			DriftSelfHeal:        true,
+			DriftSelfHealCooldown: 25 * time.Minute,
+		},
+	}
+
+	snap := d.driftConfig()
+
+	assert.Equal(t, 7*time.Minute, snap.driftAlertDebounce)
+	assert.True(t, snap.driftSelfHeal)
+	assert.Equal(t, 25*time.Minute, snap.driftSelfHealCooldown)
+}
+
+func TestConfigFromEnv_DriftFromEnvFlags(t *testing.T) {
+	t.Run("DriftAlertDebounceFromEnv set when env var present", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_ALERT_DEBOUNCE", "5m")
+
+		cfg := ConfigFromEnv()
+
+		assert.True(t, cfg.DriftAlertDebounceFromEnv)
+	})
+
+	t.Run("DriftAlertDebounceFromEnv false when env var absent", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		assert.False(t, cfg.DriftAlertDebounceFromEnv)
+	})
+
+	t.Run("DriftSelfHealFromEnv set when env var present", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_SELF_HEAL", "true")
+
+		cfg := ConfigFromEnv()
+
+		assert.True(t, cfg.DriftSelfHealFromEnv)
+	})
+
+	t.Run("DriftSelfHealFromEnv false when env var absent", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		assert.False(t, cfg.DriftSelfHealFromEnv)
+	})
+
+	t.Run("DriftSelfHealCooldownFromEnv set when env var present", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_SELF_HEAL_COOLDOWN", "30m")
+
+		cfg := ConfigFromEnv()
+
+		assert.True(t, cfg.DriftSelfHealCooldownFromEnv)
+	})
+
+	t.Run("DriftSelfHealCooldownFromEnv false when env var absent", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		assert.False(t, cfg.DriftSelfHealCooldownFromEnv)
+	})
+}

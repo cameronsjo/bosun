@@ -66,6 +66,11 @@ type Config struct {
 	DriftSelfHeal          bool          // Trigger reconciliation when drift detected (default: false)
 	DriftSelfHealCooldown  time.Duration // Minimum interval between self-heal reconciliations (default: 15m)
 
+	// "from env" flags: when true, the corresponding field must not be overwritten by bosun.yaml hot-reload.
+	DriftAlertDebounceFromEnv    bool
+	DriftSelfHealFromEnv         bool
+	DriftSelfHealCooldownFromEnv bool
+
 	// Content-hash sync settings
 	ContentHashSync bool // Compare file hashes before writing (default: true)
 
@@ -142,6 +147,10 @@ type Daemon struct {
 
 	// Drift self-heal cooldown tracking
 	lastSelfHeal time.Time // Last time drift self-heal triggered a reconciliation
+
+	// configMu guards daemon-level config fields that are hot-reloaded from bosun.yaml.
+	// Only covers DriftAlertDebounce, DriftSelfHeal, DriftSelfHealCooldown.
+	configMu sync.RWMutex
 }
 
 // New creates a new Daemon with the given configuration.
@@ -536,6 +545,10 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 		),
 	)
 
+	// Reload daemon-level config from local bosun.yaml before each cycle.
+	// This keeps drift settings (debounce, self-heal) in sync without a restart.
+	d.reloadDaemonConfig()
+
 	// NOTE: Targets are resolved from the startup config snapshot. The config
 	// reloader (which reads bosun.yaml from the repo) runs inside each target's
 	// reconciler.Run(), so ReloadedConfig.Targets is populated but never fed
@@ -704,6 +717,9 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 		return
 	}
 
+	// Snapshot reloadable config fields once so we hold the lock only briefly.
+	dcfg := d.driftConfig()
+
 	stateFile := ""
 	projectName := ""
 	if d.config.ReconcileConfig != nil {
@@ -792,7 +808,7 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 
 			// FilterDebounced mutates state.DriftDebounceItems in place (adds new, removes graduated/resolved).
 			preDebounceCount := len(pendingItems)
-			pendingItems = reconcile.FilterDebounced(pendingItems, state.DriftDebounceItems, d.config.DriftAlertDebounce)
+			pendingItems = reconcile.FilterDebounced(pendingItems, state.DriftDebounceItems, dcfg.driftAlertDebounce)
 			criticalItems = append(alreadyAlerted, pendingItems...)
 
 			filteredCount := preDebounceCount - len(pendingItems)
@@ -800,14 +816,14 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 				logger.Debug().
 					Int("filtered", filteredCount).
 					Int("debounce_pending", len(state.DriftDebounceItems)).
-					Dur("debounce_window", d.config.DriftAlertDebounce).
+					Dur("debounce_window", dcfg.driftAlertDebounce).
 					Msg("Drift items filtered by debounce window")
 			}
-			if len(pendingItems) > 0 && d.config.DriftAlertDebounce > 0 {
+			if len(pendingItems) > 0 && dcfg.driftAlertDebounce > 0 {
 				for _, item := range pendingItems {
 					logger.Info().
 						Str("item", reconcile.DriftAlertKey(item)).
-						Dur("debounce_window", d.config.DriftAlertDebounce).
+						Dur("debounce_window", dcfg.driftAlertDebounce).
 						Msg("Drift item graduated from debounce to dedup layer")
 				}
 			}
@@ -901,7 +917,7 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	}
 
 	// Self-heal: trigger reconciliation when drift is detected and self-healing is enabled.
-	if report.HasDrift() && d.config.DriftSelfHeal {
+	if report.HasDrift() && dcfg.driftSelfHeal {
 		d.maybeSelfHeal(ctx, report)
 	}
 }
@@ -922,9 +938,10 @@ func (d *Daemon) maybeSelfHeal(ctx context.Context, report *reconcile.DriftRepor
 	}
 
 	// Guard: respect cooldown to prevent rapid-fire reconciliations.
+	cooldown := d.driftConfig().driftSelfHealCooldown
 	now := time.Now()
-	if !d.lastSelfHeal.IsZero() && now.Sub(d.lastSelfHeal) < d.config.DriftSelfHealCooldown {
-		remaining := d.config.DriftSelfHealCooldown - now.Sub(d.lastSelfHeal)
+	if !d.lastSelfHeal.IsZero() && now.Sub(d.lastSelfHeal) < cooldown {
+		remaining := cooldown - now.Sub(d.lastSelfHeal)
 		logger.Debug().
 			Dur("remaining_cooldown", remaining).
 			Msg("Drift self-heal: skipping, cooldown active")
@@ -1047,6 +1064,76 @@ func (d *Daemon) LastReconcile() (time.Time, error) {
 	d.stateMu.RLock()
 	defer d.stateMu.RUnlock()
 	return d.lastReconcile, d.lastError
+}
+
+// driftRuntimeConfig is a snapshot of daemon config fields used during drift checks.
+type driftRuntimeConfig struct {
+	driftAlertDebounce    time.Duration
+	driftSelfHeal         bool
+	driftSelfHealCooldown time.Duration
+}
+
+// driftConfig returns a consistent snapshot of drift-related config fields.
+func (d *Daemon) driftConfig() driftRuntimeConfig {
+	d.configMu.RLock()
+	defer d.configMu.RUnlock()
+	return driftRuntimeConfig{
+		driftAlertDebounce:    d.config.DriftAlertDebounce,
+		driftSelfHeal:         d.config.DriftSelfHeal,
+		driftSelfHealCooldown: d.config.DriftSelfHealCooldown,
+	}
+}
+
+// reloadDaemonConfig re-reads bosun.yaml from the local project root and updates
+// daemon-level config fields that are safe to change at runtime. Fields locked by
+// environment variables are not updated.
+func (d *Daemon) reloadDaemonConfig() {
+	logger := log.Component(log.ComponentDaemon)
+
+	projectCfg, err := config.Load()
+	if err != nil {
+		// Missing project config is non-fatal — daemon can run without bosun.yaml.
+		logger.Debug().Err(err).Msg("Daemon config reload: no project config found, keeping existing values")
+		return
+	}
+
+	d.configMu.Lock()
+	defer d.configMu.Unlock()
+
+	changed := false
+
+	if !d.config.DriftAlertDebounceFromEnv {
+		newVal := projectCfg.DriftAlertDebounce()
+		if newVal != d.config.DriftAlertDebounce {
+			d.config.DriftAlertDebounce = newVal
+			changed = true
+		}
+	}
+
+	if !d.config.DriftSelfHealFromEnv {
+		newVal := projectCfg.DriftSelfHeal()
+		if newVal != d.config.DriftSelfHeal {
+			d.config.DriftSelfHeal = newVal
+			changed = true
+		}
+	}
+
+	if !d.config.DriftSelfHealCooldownFromEnv {
+		newVal := projectCfg.DriftSelfHealCooldown()
+		// Only apply non-zero values from config; zero means "not set" (keep current default).
+		if newVal > 0 && newVal != d.config.DriftSelfHealCooldown {
+			d.config.DriftSelfHealCooldown = newVal
+			changed = true
+		}
+	}
+
+	if changed {
+		logger.Info().
+			Dur("drift_alert_debounce", d.config.DriftAlertDebounce).
+			Bool("drift_self_heal", d.config.DriftSelfHeal).
+			Dur("drift_self_heal_cooldown", d.config.DriftSelfHealCooldown).
+			Msg("Daemon config reloaded from bosun.yaml")
+	}
 }
 
 // HealthStatus returns the daemon health status with subsystem breakdown.
@@ -1422,14 +1509,13 @@ func ConfigFromEnv() *Config {
 	}
 
 	// Drift alert debounce (0 = disabled)
-	var driftAlertDebounceFromEnv bool
 	if v := os.Getenv("BOSUN_DRIFT_ALERT_DEBOUNCE"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			if d < 0 {
 				log.Warn().Str("env", "BOSUN_DRIFT_ALERT_DEBOUNCE").Str("value", v).Msg("Skipping env var. Reason: duration must not be negative")
 			} else {
 				cfg.DriftAlertDebounce = d
-				driftAlertDebounceFromEnv = true
+				cfg.DriftAlertDebounceFromEnv = true
 			}
 		} else {
 			log.Warn().Str("env", "BOSUN_DRIFT_ALERT_DEBOUNCE").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
@@ -1449,19 +1535,17 @@ func ConfigFromEnv() *Config {
 	}
 
 	// Drift self-healing (default: false)
-	var driftSelfHealFromEnv bool
 	if v := os.Getenv("BOSUN_DRIFT_SELF_HEAL"); v != "" {
 		cfg.DriftSelfHeal = v == "true" || v == "1"
-		driftSelfHealFromEnv = true
+		cfg.DriftSelfHealFromEnv = true
 	}
-	var driftSelfHealCooldownFromEnv bool
 	if v := os.Getenv("BOSUN_DRIFT_SELF_HEAL_COOLDOWN"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			if d <= 0 {
 				log.Warn().Str("env", "BOSUN_DRIFT_SELF_HEAL_COOLDOWN").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
 			} else {
 				cfg.DriftSelfHealCooldown = d
-				driftSelfHealCooldownFromEnv = true
+				cfg.DriftSelfHealCooldownFromEnv = true
 			}
 		} else {
 			log.Warn().Str("env", "BOSUN_DRIFT_SELF_HEAL_COOLDOWN").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
@@ -1500,15 +1584,15 @@ func ConfigFromEnv() *Config {
 		rcfg.OnSuccess = alertCfg.OnSuccess
 
 		// Config file debounce value: env var takes precedence (already parsed above).
-		if !driftAlertDebounceFromEnv && projectCfg.DriftAlertDebounce() > 0 {
+		if !cfg.DriftAlertDebounceFromEnv && projectCfg.DriftAlertDebounce() > 0 {
 			cfg.DriftAlertDebounce = projectCfg.DriftAlertDebounce()
 		}
 
 		// Drift self-heal from config file; env var takes precedence.
-		if !driftSelfHealFromEnv {
+		if !cfg.DriftSelfHealFromEnv {
 			cfg.DriftSelfHeal = projectCfg.DriftSelfHeal()
 		}
-		if !driftSelfHealCooldownFromEnv && projectCfg.DriftSelfHealCooldown() > 0 {
+		if !cfg.DriftSelfHealCooldownFromEnv && projectCfg.DriftSelfHealCooldown() > 0 {
 			cfg.DriftSelfHealCooldown = projectCfg.DriftSelfHealCooldown()
 		}
 
