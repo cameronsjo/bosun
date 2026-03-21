@@ -79,14 +79,15 @@ func detectCycles(graph map[string][]string) []string {
 		currentPath[len(path)] = node
 
 		for _, neighbor := range graph[node] {
-			if color[neighbor] == gray {
+			switch color[neighbor] {
+			case gray:
 				// Back edge found — construct cycle from current path
 				cycle := buildCyclePathFromSlice(currentPath, neighbor)
 				if !cycleSet[cycle] {
 					cycleSet[cycle] = true
 					cycles = append(cycles, cycle)
 				}
-			} else if color[neighbor] == white {
+			case white:
 				dfs(neighbor, currentPath)
 			}
 		}
