@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.1](https://github.com/cameronsjo/bosun/compare/v0.30.0...v0.30.1) (2026-03-21)
+
+
+### Bug Fixes
+
+* **cmd:** address CodeRabbit findings on diagnostics split ([918d83d](https://github.com/cameronsjo/bosun/commit/918d83d015de3d0926bef7cbc262fe91079de6bf))
+* **cmd:** address round 2 CodeRabbit nitpicks on diagnostics split ([cf37256](https://github.com/cameronsjo/bosun/commit/cf372565bb36033365cfbcc69f0d0a30ca315792))
+* **cmd:** use tagged switch to satisfy staticcheck QF1003 ([1c94c7b](https://github.com/cameronsjo/bosun/commit/1c94c7b17c60370685cb404c08d524e6787a7bb3))
+
 ## [0.30.0](https://github.com/cameronsjo/bosun/compare/v0.29.2...v0.30.0) (2026-03-20)
 
 
