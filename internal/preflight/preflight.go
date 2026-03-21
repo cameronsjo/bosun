@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -200,4 +202,73 @@ func GetRequiredBinaries() []BinaryCheck {
 // GetOptionalBinaries returns only optional binaries.
 func GetOptionalBinaries() []BinaryCheck {
 	return optionalBinaries
+}
+
+// SSHKeyPermResult is the result of an SSH key permission check.
+type SSHKeyPermResult struct {
+	// Path is the key file that was checked (empty if no key file was found).
+	Path string
+	// Mode is the actual permission bits of the key file.
+	Mode os.FileMode
+	// Err is non-nil when the key file exists but has unsafe permissions.
+	Err error
+}
+
+// sshKeyCandidates returns the ordered list of SSH key paths to check.
+// Mirrors the resolution order used by the reconcile package's git.go so
+// that preflight validates exactly the key that would be used at runtime.
+func sshKeyCandidates() []string {
+	candidates := []string{
+		os.Getenv("BOSUN_SSH_KEY"),
+		"/config/deploy-key",
+		"/config/ssh-key",
+	}
+	if home := os.Getenv("HOME"); home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, ".ssh", "id_ed25519"),
+			filepath.Join(home, ".ssh", "id_rsa"),
+		)
+	}
+
+	// Filter empty strings from unset env vars.
+	var result []string
+	for _, p := range candidates {
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// CheckSSHKeyPermissions validates that the first SSH key file found has
+// safe permissions (0400 or 0600). Returns a result with an empty Path when
+// no key file is found — that is not treated as an error because SSH auth
+// may use an agent or an HTTPS URL.
+func CheckSSHKeyPermissions() SSHKeyPermResult {
+	for _, path := range sshKeyCandidates() {
+		info, err := os.Stat(path)
+		if err != nil {
+			// File does not exist — try the next candidate.
+			continue
+		}
+
+		mode := info.Mode().Perm()
+		// Only 0400 (read-only owner) and 0600 (read-write owner) are safe.
+		// SSH will refuse a key with group or world read bits set.
+		if mode != 0400 && mode != 0600 {
+			return SSHKeyPermResult{
+				Path: path,
+				Mode: mode,
+				Err: fmt.Errorf(
+					"SSH deploy key has unsafe permissions %04o (want 0400 or 0600): chmod 600 %s",
+					mode, path,
+				),
+			}
+		}
+
+		return SSHKeyPermResult{Path: path, Mode: mode}
+	}
+
+	// No key file found — not an error here; runtime will use agent or HTTPS.
+	return SSHKeyPermResult{}
 }
