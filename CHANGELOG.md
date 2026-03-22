@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.0](https://github.com/cameronsjo/bosun/compare/v0.31.0...v0.32.0) (2026-03-21)
+
+
+### Features
+
+* **manifest:** add port registry with conflict detection ([ce97f07](https://github.com/cameronsjo/bosun/commit/ce97f073738966ed31cb94fe42e48fff5b9511d6))
+
+
+### Bug Fixes
+
+* **ports:** cap free-port range at 65535, handle float64 port entries ([58abb85](https://github.com/cameronsjo/bosun/commit/58abb859a7a611b51640c8d57335534d00d0831b))
+* **ports:** normalize 0.0.0.0 and :: as wildcard bind addresses ([e82bbe6](https://github.com/cameronsjo/bosun/commit/e82bbe69f1542f11384290aad6b47d7ee105544d))
+
+## [0.31.0](https://github.com/cameronsjo/bosun/compare/v0.30.4...v0.31.0) (2026-03-21)
+
+
+### Features
+
+* **daemon:** hot-reload bosun.yaml config on changes ([4db0bbc](https://github.com/cameronsjo/bosun/commit/4db0bbc40cd01e188ca8ec5711af4a8d9660c90f))
+
+
+### Bug Fixes
+
+* **daemon:** address CodeRabbit findings on force-flag PR ([1fcd7cd](https://github.com/cameronsjo/bosun/commit/1fcd7cdcc46907ef92b5593da8565d40571e67c8))
+* **daemon:** address CodeRabbit findings on hot-reload PR ([ba7d151](https://github.com/cameronsjo/bosun/commit/ba7d1518f1d41d0b0cf0ba2cb0e996246f0f0b5e))
+* **daemon:** propagate --force flag through socket trigger handler ([a3aa348](https://github.com/cameronsjo/bosun/commit/a3aa3488ec6ae62c57ef95e9a9135502d61e058a))
+* **daemon:** use DefaultConfig for cooldown fallback, clarify reload design ([8267a72](https://github.com/cameronsjo/bosun/commit/8267a72becc80f904e8d8d0aefc8d5f078b1e911))
+
+## [0.30.4](https://github.com/cameronsjo/bosun/compare/v0.30.3...v0.30.4) (2026-03-21)
+
+
+### Bug Fixes
+
+* **reconcile:** detect missing services in already-deployed commits ([9319717](https://github.com/cameronsjo/bosun/commit/93197178c9f11d9b5e59eeec2581c379234637d3))
+* **reconcile:** skip symlinks during template file copy ([8a0bb18](https://github.com/cameronsjo/bosun/commit/8a0bb18f5479be2da6b4f091e164c7a704b7551b))
+
+## [0.30.3](https://github.com/cameronsjo/bosun/compare/v0.30.2...v0.30.3) (2026-03-21)
+
+
+### Bug Fixes
+
+* **preflight:** address CodeRabbit review findings ([4f4077b](https://github.com/cameronsjo/bosun/commit/4f4077b80d6a5792e3183bd936ea2de2511406e6))
+* **preflight:** validate SSH deploy key permissions ([1808a33](https://github.com/cameronsjo/bosun/commit/1808a33fe08e85b355534f64a99e0ee561551e4d))
+* **preflight:** validate SSH deploy key permissions ([b04a8ac](https://github.com/cameronsjo/bosun/commit/b04a8ac799c60dfd242cf1795bfacca64d86c514)), closes [#172](https://github.com/cameronsjo/bosun/issues/172)
+
 ## [0.30.2](https://github.com/cameronsjo/bosun/compare/v0.30.1...v0.30.2) (2026-03-21)
 
 

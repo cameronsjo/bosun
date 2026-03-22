@@ -15,6 +15,7 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/docker"
+	"github.com/cameronsjo/bosun/internal/preflight"
 	"github.com/cameronsjo/bosun/internal/tunnel"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
@@ -350,6 +351,27 @@ func checkDockerSocket(svc *traefikComposeService) traefikCheck {
 	return check
 }
 
+// checkDeployKeyPermissions validates SSH deploy key file permissions using the
+// preflight package's resolution order (BOSUN_SSH_KEY → /config/deploy-key →
+// /config/ssh-key → ~/.ssh/id_ed25519 → ~/.ssh/id_rsa).
+func checkDeployKeyPermissions() CheckResult {
+	res := preflight.CheckSSHKeyPermissions()
+	switch {
+	case res.Path == "":
+		// No key file found — not an error; SSH agent or HTTPS may be used.
+		_, _ = ui.Yellow.Println("  ! SSH deploy key not found (using agent or HTTPS?)")
+		return CheckResult{Warned: 1}
+	case res.Err != nil:
+		// res.Err already contains the chmod remediation command; print it
+		// directly to avoid duplicating the hint.
+		_, _ = ui.Red.Printf("  x %s\n", res.Err)
+		return CheckResult{Failed: 1}
+	default:
+		_, _ = ui.Green.Printf("  * SSH deploy key permissions OK (%04o): %s\n", res.Mode, res.Path)
+		return CheckResult{Passed: 1}
+	}
+}
+
 func runDoctor(cmd *cobra.Command, args []string) error {
 	_, _ = ui.Blue.Println("Running pre-flight checks...")
 	fmt.Println()
@@ -366,6 +388,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 
 	result.Add(checkDockerCompose())
 	result.Add(checkGit())
+	result.Add(checkDeployKeyPermissions())
 	result.Add(checkProjectRoot(cfg))
 	result.Add(checkAgeKey())
 	result.Add(checkSOPS())
