@@ -56,7 +56,7 @@ make test-cover         # With coverage (creates coverage.out + coverage.html)
 - Config tests: `loadConfigFile(tmpDir)` + `extract*()` (unit) or `Load()` with chdir (integration)
 - Drift tests: `reconcile.SaveState()` to create fixtures, save/restore package-level flag vars (`driftJSON`, `driftTarget`, etc.)
 - Daemon tests: `newConcurrencyDaemon(t)` for DryRun reconcile, `dockertest.MockDockerAPI` for Docker mocks
-- `captureStdout(t, func())` in `cmd/drift_test.go` for output assertions (note: `ui.*` colored output goes to fatih/color writer, not stdout)
+- `captureStdout(t, func()) string` in `cmd/drift_test.go` captures stdout during a function call and returns it for assertions: `output := captureStdout(t, func() { runDrift(cmd, args) })` then `assert.Contains(t, output, "expected")`. Note: `ui.*` colored output goes to fatih/color writer, not stdout
 
 ## Key Packages
 
@@ -380,7 +380,7 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 - **ConfigForTarget deep-copies slices** — all slice fields are cloned to prevent mutation aliasing between base and per-target configs
 - **"default" is a reserved target name** — `ResolveTargets()` rejects user-provided targets named "default" (used internally for implicit single-target mode)
 - **Cobra `resetRootCmd` strips flags** — `ResetFlags()` in test helpers wipes registered flags; don't test flag existence after calling `executeCmd` on a different command
-- **handleTrigger spawns fire-and-forget goroutines** — use short `ReconcileTimeout` (50ms) in socket/TCP test daemons to prevent temp dir cleanup races
+- **handleTrigger spawns fire-and-forget goroutines** — tests using socket/TCP daemons should set a short `ReconcileTimeout` to prevent temp dir cleanup races; tune the value to the test environment rather than hardcoding
 - **CLAUDE.md is a symlink** to `AGENTS.md`. When staging for git, `git add AGENTS.md` (not `CLAUDE.md`)
 - **Circuit breaker**: after 3 consecutive deploy failures, daemon stops retrying. Reset with `bosun trigger -f`
 - **FUSE mounts**: Traefik (and similar services) don't detect config changes on Unraid's FUSE filesystem — this is why post-sync hooks exist
