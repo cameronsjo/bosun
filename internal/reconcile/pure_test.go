@@ -471,11 +471,6 @@ func TestBuildKnownHostsPaths(t *testing.T) {
 			envKnownHosts: "",
 			want:          []string{"/config/known_hosts"},
 		},
-		{
-			name:          "home ssh dir is never consulted",
-			envKnownHosts: "",
-			want:          []string{"/config/known_hosts"},
-		},
 	}
 
 	for _, tt := range tests {
