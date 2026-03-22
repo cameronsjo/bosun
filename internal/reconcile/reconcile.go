@@ -439,8 +439,12 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 
 	// Path-aware skip: if deploy_paths is configured, check if any changed files
 	// match the allowlist. If not, record the commit as deployed and skip.
-	if len(r.config.DeployPaths) > 0 && changed && !r.config.Force {
-		changedFiles, err := r.git.DiffFiles(ctx, before, after)
+	// Use state.LastDeployedCommit (not the pull's commit_before) so that files
+	// from a previously failed deploy are still considered deploy-relevant.
+	// When there is no prior successful deploy, skip this check entirely —
+	// everything is deploy-relevant on first run.
+	if len(r.config.DeployPaths) > 0 && changed && !r.config.Force && state.LastDeployedCommit != "" {
+		changedFiles, err := r.git.DiffFiles(ctx, state.LastDeployedCommit, after)
 		if err != nil {
 			logger.Warn().Err(err).Msg("Cannot diff for deploy_paths check, proceeding with full deploy")
 		} else if !matchAnyPath(changedFiles, r.config.DeployPaths) {
