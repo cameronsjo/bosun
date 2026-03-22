@@ -53,6 +53,16 @@ func (r *DeployResult) AddWritten(files ...string) {
 	r.WrittenFiles = append(r.WrittenFiles, files...)
 }
 
+// PrefixLatest prepends prefix to all WrittenFiles entries added after
+// the snapshot index. Call with len(r.WrittenFiles) before a DeployLocal
+// call, then PrefixLatest after, to give the new entries context needed
+// for hook glob matching.
+func (r *DeployResult) PrefixLatest(snapshot int, prefix string) {
+	for i := snapshot; i < len(r.WrittenFiles); i++ {
+		r.WrittenFiles[i] = filepath.Join(prefix, r.WrittenFiles[i])
+	}
+}
+
 // NewDeployOps creates a new DeployOps instance.
 func NewDeployOps(dryRun bool, projectName string) *DeployOps {
 	return &DeployOps{DryRun: dryRun, ProjectName: projectName, RemoveOrphans: true}

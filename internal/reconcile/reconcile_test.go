@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -2140,6 +2141,55 @@ func TestDeployLocalFullPath(t *testing.T) {
 		result, err := r.deployLocal(context.Background())
 		require.NoError(t, err)
 		assert.NotNil(t, result)
+	})
+
+	t.Run("written files have infra-relative paths for hook matching", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		stagingDir := filepath.Join(tmpDir, "staging")
+		appdataDir := filepath.Join(tmpDir, "appdata")
+
+		// Create staging structure: staging/unraid/appdata/authelia/configuration.yml
+		stagingUnraid := filepath.Join(stagingDir, "unraid")
+		require.NoError(t, os.MkdirAll(filepath.Join(stagingUnraid, "appdata", "authelia"), 0755))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(stagingUnraid, "appdata", "authelia", "configuration.yml"),
+			[]byte("server:\n  host: 0.0.0.0"), 0644,
+		))
+
+		require.NoError(t, os.MkdirAll(appdataDir, 0755))
+
+		deploy := &DeployOps{ContentHashSync: true}
+		cfg := &Config{
+			DryRun:           true,
+			StagingDir:       stagingDir,
+			InfraSubDir:      "unraid",
+			LocalAppdataPath: appdataDir,
+		}
+		r := NewReconciler(cfg, WithDeployOps(deploy))
+
+		result, err := r.deployLocal(context.Background())
+		require.NoError(t, err)
+		require.NotNil(t, result)
+
+		// WrittenFiles must use infra-relative paths (unraid/appdata/authelia/...)
+		// so post-sync hook globs like "unraid/appdata/authelia/**" can match.
+		// Bug #186: without the prefix, hooks see "configuration.yml" and the
+		// glob "unraid/appdata/authelia/**" fails to match.
+		require.NotEmpty(t, result.WrittenFiles, "expected at least one written file")
+
+		for _, f := range result.WrittenFiles {
+			assert.True(t, strings.HasPrefix(f, "appdata/authelia/"),
+				"written file %q should have infra-relative prefix appdata/authelia/", f)
+		}
+
+		// Verify hook matching would succeed with the written paths.
+		hooks := []PostSyncHook{{
+			Paths:     []string{"appdata/authelia/**"},
+			Action:    "restart",
+			Container: "authelia",
+		}}
+		matched := EvaluatePostSyncHooks(result.WrittenFiles, hooks)
+		assert.Len(t, matched, 1, "hook should match the written file path")
 	})
 
 	t.Run("non-dry-run local deployment syncs files and signals", func(t *testing.T) {
