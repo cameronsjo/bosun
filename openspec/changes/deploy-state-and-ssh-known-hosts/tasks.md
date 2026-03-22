@@ -2,13 +2,13 @@
 
 ## 1. Deploy-relevance diff base (Bug #170)
 
-- [ ] 1.1 Update `internal/reconcile/reconcile.go`: pass `state.CommitHash`
+- [x] 1.1 Update `internal/reconcile/reconcile.go`: pass `state.CommitHash`
       (not `PullResult.CommitBefore`) as the base commit when evaluating
       post-sync hooks and deploy-path diffs
-- [ ] 1.2 Handle the empty-state case: when `state.CommitHash == ""` (first
+- [x] 1.2 Handle the empty-state case: when `state.CommitHash == ""` (first
       deploy or missing state file), skip post-sync hooks entirely (no diff
       base available; existing first-deploy guard is preserved)
-- [ ] 1.3 Add/update unit tests in `internal/reconcile/reconcile_test.go`:
+- [x] 1.3 Add/update unit tests in `internal/reconcile/reconcile_test.go`:
       - Failed pipeline does not advance the diff base
       - First deploy (no prior state) skips post-sync hooks
       - Successful deploy uses `state.CommitHash` as the base for the next run

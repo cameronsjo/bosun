@@ -468,13 +468,16 @@ type mockGitWithDiff struct {
 	syncErr     error
 	diffFiles   []string
 	diffErr     error
+	// diffCalledWith records the (base, head) arguments from each DiffFiles call.
+	diffCalledWith [][2]string
 }
 
 func (m *mockGitWithDiff) Sync(_ context.Context) (bool, string, string, error) {
 	return m.syncChanged, m.syncBefore, m.syncAfter, m.syncErr
 }
 func (m *mockGitWithDiff) IsRepo(_ context.Context) bool { return true }
-func (m *mockGitWithDiff) DiffFiles(_ context.Context, _, _ string) ([]string, error) {
+func (m *mockGitWithDiff) DiffFiles(_ context.Context, base, head string) ([]string, error) {
+	m.diffCalledWith = append(m.diffCalledWith, [2]string{base, head})
 	return m.diffFiles, m.diffErr
 }
 
@@ -515,6 +518,12 @@ func TestRun_DeployPathsSkip(t *testing.T) {
 	tmpDir := t.TempDir()
 	stateFile := filepath.Join(tmpDir, "state.json")
 
+	// Seed a prior successful deploy so the path-aware check activates.
+	// Without prior state, state.LastDeployedCommit is empty and the check
+	// is skipped entirely (first deploy runs the full pipeline).
+	seedState := &DeployState{LastDeployedCommit: "aaa111", DeployCount: 1}
+	require.NoError(t, SaveState(stateFile, seedState))
+
 	cfg := &Config{
 		RepoDir:     tmpDir,
 		LockFile:    filepath.Join(tmpDir, "test.lock"),
@@ -540,12 +549,20 @@ func TestRun_DeployPathsSkip(t *testing.T) {
 	// Verify state was updated with skipped commit.
 	state := LoadState(stateFile)
 	assert.Equal(t, "bbb222", state.LastDeployedCommit)
-	assert.Equal(t, 0, state.DeployCount, "deploy count should not be incremented for skipped commits")
+	assert.Equal(t, 1, state.DeployCount, "deploy count should not be incremented for skipped commits")
+
+	// Verify diff was computed from the last deployed commit, not the pull's commit_before.
+	require.Len(t, mockGit.diffCalledWith, 1)
+	assert.Equal(t, "aaa111", mockGit.diffCalledWith[0][0], "diff base should be state.LastDeployedCommit")
+	assert.Equal(t, "bbb222", mockGit.diffCalledWith[0][1], "diff head should be the new commit")
 }
 
 func TestRun_DeployPathsMatch(t *testing.T) {
 	tmpDir := t.TempDir()
 	stateFile := filepath.Join(tmpDir, "state.json")
+
+	// Seed prior deploy so the path-aware check activates.
+	require.NoError(t, SaveState(stateFile, &DeployState{LastDeployedCommit: "aaa111", DeployCount: 1}))
 
 	cfg := &Config{
 		RepoDir:     tmpDir,
@@ -588,6 +605,9 @@ func TestRun_DeployPathsMatch(t *testing.T) {
 func TestRun_DeployPathsDiffFails(t *testing.T) {
 	tmpDir := t.TempDir()
 	stateFile := filepath.Join(tmpDir, "state.json")
+
+	// Seed prior deploy so the path-aware check activates.
+	require.NoError(t, SaveState(stateFile, &DeployState{LastDeployedCommit: "aaa111", DeployCount: 1}))
 
 	cfg := &Config{
 		RepoDir:     tmpDir,
@@ -650,6 +670,89 @@ func TestRun_DeployPathsForceOverride(t *testing.T) {
 	state := LoadState(stateFile)
 	// Pipeline should have run (attempt tracked, not skip-deployed).
 	assert.Equal(t, "bbb222", state.LastAttemptedCommit)
+}
+
+func TestRun_DeployPathsFirstDeploySkipsPathCheck(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFile := filepath.Join(tmpDir, "state.json")
+
+	// No prior state: first deploy. The path-aware check should be skipped
+	// entirely because there is no diff base (state.LastDeployedCommit == "").
+	cfg := &Config{
+		RepoDir:     tmpDir,
+		LockFile:    filepath.Join(tmpDir, "test.lock"),
+		StateFile:   stateFile,
+		StagingDir:  filepath.Join(tmpDir, "staging"),
+		DeployPaths: []string{"unraid/**"},
+		DryRun:      true,
+	}
+
+	mockGit := &mockGitWithDiff{
+		syncChanged: true,
+		syncBefore:  "",
+		syncAfter:   "bbb222",
+		// Non-matching files that would trigger a skip if the check ran.
+		diffFiles: []string{"docs/README.md"},
+	}
+
+	r := NewReconciler(cfg,
+		WithGitOperations(mockGit),
+		WithSecretsDecryptor(&mockSOPS{}),
+	)
+
+	_ = r.Run(context.Background())
+
+	// Path check should NOT have called DiffFiles (no diff base available).
+	assert.Empty(t, mockGit.diffCalledWith, "DiffFiles should not be called on first deploy")
+
+	// Pipeline should have proceeded past the path check.
+	state := LoadState(stateFile)
+	assert.Equal(t, "bbb222", state.LastAttemptedCommit)
+}
+
+func TestRun_DeployPathsUsesLastDeployedCommitAfterFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFile := filepath.Join(tmpDir, "state.json")
+
+	// Simulate a failed prior deploy: state records commit A as last deployed,
+	// but git has advanced to B (the failed attempt). A new commit C arrives.
+	seedState := &DeployState{
+		LastDeployedCommit:  "aaa111",
+		LastAttemptedCommit: "bbb222",
+		AttemptCount:        1,
+		DeployCount:         1,
+	}
+	require.NoError(t, SaveState(stateFile, seedState))
+
+	cfg := &Config{
+		RepoDir:     tmpDir,
+		LockFile:    filepath.Join(tmpDir, "test.lock"),
+		StateFile:   stateFile,
+		DeployPaths: []string{"unraid/**"},
+	}
+
+	mockGit := &mockGitWithDiff{
+		syncChanged: true,
+		syncBefore:  "bbb222", // git pull sees B -> C
+		syncAfter:   "ccc333",
+		// Files changed between A and C include deploy-relevant files,
+		// but between B and C they wouldn't (the fix for the deploy was in B).
+		diffFiles: []string{"unraid/compose/core.yml"},
+	}
+
+	r := NewReconciler(cfg,
+		WithGitOperations(mockGit),
+		WithSecretsDecryptor(&mockSOPS{}),
+	)
+
+	// Run will fail at a later stage (no real repo), but the important thing
+	// is that DiffFiles was called with state.LastDeployedCommit as the base.
+	_ = r.Run(context.Background())
+
+	require.Len(t, mockGit.diffCalledWith, 1)
+	assert.Equal(t, "aaa111", mockGit.diffCalledWith[0][0],
+		"diff base should be state.LastDeployedCommit (aaa111), not pull's commit_before (bbb222)")
+	assert.Equal(t, "ccc333", mockGit.diffCalledWith[0][1])
 }
 
 func TestConfig_Validation(t *testing.T) {
@@ -1770,6 +1873,9 @@ func TestReconcilerRun(t *testing.T) {
 		tmpDir := t.TempDir()
 		lockFile := filepath.Join(tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
+
+		// Seed prior deploy so the path-aware check activates.
+		require.NoError(t, SaveState(stateFile, &DeployState{LastDeployedCommit: "aaa111", DeployCount: 1}))
 
 		gitOps := &mockGitOps{
 			syncChanged: true,
