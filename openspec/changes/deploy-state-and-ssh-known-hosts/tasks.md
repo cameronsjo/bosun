@@ -31,3 +31,4 @@
         not the pull's `commit_before`
       - SSH known_hosts resolution excludes `~/.ssh/known_hosts`; only
         `BOSUN_SSH_KNOWN_HOSTS` and `/config/known_hosts` are consulted
+      - Tracked as follow-up: bead `bosun-bwh7`

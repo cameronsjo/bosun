@@ -477,10 +477,15 @@ func TestBuildKnownHostsPaths(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := buildKnownHostsPaths(tt.envKnownHosts)
 			assert.Equal(t, tt.want, got)
-			// Verify ~/.ssh/known_hosts is never in the result.
+			// Verify no implicit home-dir known_hosts sneaks in.
+			// Only check paths that were NOT explicitly provided via envKnownHosts,
+			// since a caller could legitimately pass a path containing ".ssh".
 			for _, p := range got {
+				if p == tt.envKnownHosts {
+					continue
+				}
 				assert.NotContains(t, p, ".ssh/known_hosts",
-					"~/.ssh/known_hosts must not be consulted — ephemeral user-profile entries can break go-git")
+					"implicit ~/.ssh/known_hosts must not be consulted")
 			}
 		})
 	}
