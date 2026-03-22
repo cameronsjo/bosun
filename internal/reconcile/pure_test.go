@@ -459,39 +459,34 @@ func TestBuildKnownHostsPaths(t *testing.T) {
 	tests := []struct {
 		name          string
 		envKnownHosts string
-		homeDir       string
 		want          []string
 	}{
 		{
-			name:          "all paths populated",
+			name:          "env var set includes both paths",
 			envKnownHosts: "/custom/known_hosts",
-			homeDir:       "/home/user",
-			want:          []string{"/custom/known_hosts", "/home/user/.ssh/known_hosts", "/config/known_hosts"},
+			want:          []string{"/custom/known_hosts", "/config/known_hosts"},
 		},
 		{
-			name:          "env not set filters empty string",
+			name:          "env not set returns only container path",
 			envKnownHosts: "",
-			homeDir:       "/home/user",
-			want:          []string{"/home/user/.ssh/known_hosts", "/config/known_hosts"},
+			want:          []string{"/config/known_hosts"},
 		},
 		{
-			name:          "empty home dir still produces paths",
+			name:          "home ssh dir is never consulted",
 			envKnownHosts: "",
-			homeDir:       "",
-			want:          []string{".ssh/known_hosts", "/config/known_hosts"},
-		},
-		{
-			name:          "env path only",
-			envKnownHosts: "/only/this",
-			homeDir:       "/root",
-			want:          []string{"/only/this", "/root/.ssh/known_hosts", "/config/known_hosts"},
+			want:          []string{"/config/known_hosts"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildKnownHostsPaths(tt.envKnownHosts, tt.homeDir)
+			got := buildKnownHostsPaths(tt.envKnownHosts)
 			assert.Equal(t, tt.want, got)
+			// Verify ~/.ssh/known_hosts is never in the result.
+			for _, p := range got {
+				assert.NotContains(t, p, ".ssh/known_hosts",
+					"~/.ssh/known_hosts must not be consulted — ephemeral user-profile entries can break go-git")
+			}
 		})
 	}
 }

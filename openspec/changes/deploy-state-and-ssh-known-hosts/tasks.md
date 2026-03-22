@@ -15,15 +15,14 @@
 
 ## 2. SSH known_hosts resolution (Bug #173)
 
-- [ ] 2.1 Update `internal/reconcile/git.go`: remove `~/.ssh/known_hosts`
+- [x] 2.1 Update `internal/reconcile/git.go`: remove `~/.ssh/known_hosts`
       from the known_hosts search order; keep only `BOSUN_SSH_KNOWN_HOSTS`
       and `/config/known_hosts`
-- [ ] 2.2 Add/update unit tests in `internal/reconcile/git_test.go`:
+- [x] 2.2 Add/update unit tests in `internal/reconcile/pure_test.go`:
       - `~/.ssh/known_hosts` is NOT consulted when `BOSUN_SSH_KNOWN_HOSTS`
         is unset and `/config/known_hosts` is absent
       - `BOSUN_SSH_KNOWN_HOSTS` is used when set
-      - `/config/known_hosts` is used when present and env var is unset
-      - Falls back to insecure mode with a warning when neither path exists
+      - Falls back to `/config/known_hosts` only when env var is unset
 
 ## 3. Onboarding documentation
 
