@@ -26,7 +26,7 @@
 
 ## 3. Onboarding documentation
 
-- [ ] 3.1 Update `skills/onboard/resources/gitops.md` to reflect:
+- [x] 3.1 Update `skills/onboard/resources/gitops.md` to reflect:
       - deploy-relevance diff uses `state.LastDeployedCommit` (last successful deploy),
         not the pull's `commit_before`
       - SSH known_hosts resolution excludes `~/.ssh/known_hosts`; only

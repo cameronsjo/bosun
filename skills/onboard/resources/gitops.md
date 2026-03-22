@@ -105,8 +105,10 @@ Hooks are configured in `bosun.yaml` under `post_sync_hooks`. See the [Configura
 
 ### Path-Aware Deploy Skipping
 
-When `deploy_paths` is configured in `bosun.yaml`, bosun diffs the previous and current commits after pulling and checks whether any changed files match the glob allowlist. If no files match, the commit is recorded as deployed and the rest of the pipeline is skipped (~80s savings). This avoids unnecessary file rewrites on FUSE filesystems and prevents stale file handles.
+When `deploy_paths` is configured in `bosun.yaml`, bosun diffs the last *successfully deployed* commit (`state.LastDeployedCommit`) against the current commit and checks whether any changed files match the glob allowlist. If no files match, the commit is recorded as deployed and the rest of the pipeline is skipped (~80s savings). This avoids unnecessary file rewrites on FUSE filesystems and prevents stale file handles.
 
+- **Diff base is the last successful deploy** — uses `state.LastDeployedCommit`, not the git pull's `commit_before`. After a failed reconciliation, the next diff covers all files since the last successful deploy, ensuring files from failed attempts are re-evaluated
+- **First deploy runs full pipeline** — when there is no prior deploy state, the path-aware check is skipped entirely (everything is deploy-relevant)
 - **Allowlist model** — only listed paths trigger a deploy; new directories require explicit opt-in
 - **`--force` bypasses** — `bosun reconcile -f` always runs the full pipeline regardless of path matching
 - **DiffFiles failure = full deploy** — if the git diff fails (e.g., shallow clone), the safe default is to run everything
@@ -375,6 +377,15 @@ bosun reconcile -r user@host
 ```
 
 Requires SSH key authentication. Test connectivity first: `ssh user@host exit`.
+
+### SSH Host Key Verification
+
+Bosun verifies SSH host keys using only config-controlled paths:
+
+1. `BOSUN_SSH_KNOWN_HOSTS` (explicit override)
+2. `/config/known_hosts` (container convention)
+
+`~/.ssh/known_hosts` is intentionally excluded — ephemeral entries from manual `ssh` commands inside a container can cause go-git key mismatches. If neither path exists, verification falls back to insecure mode with a warning. Set `BOSUN_SSH_INSECURE_HOST_KEY=true` to disable verification entirely.
 
 ## Environment Variables
 
