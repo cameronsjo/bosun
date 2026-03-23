@@ -95,7 +95,9 @@ func getSSHAuth(url string) (transport.AuthMethod, error) {
 }
 
 // getHostKeyCallback returns an SSH host key callback for verifying server identity.
-// Search order: BOSUN_SSH_KNOWN_HOSTS env var, ~/.ssh/known_hosts, /config/known_hosts.
+// Search order: BOSUN_SSH_KNOWN_HOSTS env var, /config/known_hosts.
+// ~/.ssh/known_hosts is intentionally excluded — ephemeral user-profile entries
+// (e.g. from manual ssh commands inside a container) can cause go-git key mismatches.
 // If BOSUN_SSH_INSECURE_HOST_KEY=true, verification is skipped entirely.
 // If no known_hosts file is found, falls back to insecure with a warning.
 func getHostKeyCallback() xssh.HostKeyCallback {
@@ -106,7 +108,7 @@ func getHostKeyCallback() xssh.HostKeyCallback {
 		return xssh.InsecureIgnoreHostKey()
 	}
 
-	knownHostsPaths := buildKnownHostsPaths(os.Getenv("BOSUN_SSH_KNOWN_HOSTS"), os.Getenv("HOME"))
+	knownHostsPaths := buildKnownHostsPaths(os.Getenv("BOSUN_SSH_KNOWN_HOSTS"))
 
 	for _, path := range knownHostsPaths {
 		if _, err := os.Stat(path); err != nil {
@@ -121,7 +123,7 @@ func getHostKeyCallback() xssh.HostKeyCallback {
 		return callback
 	}
 
-	logger.Warn().Msg("No known_hosts file found, SSH host key verification disabled. Set BOSUN_SSH_KNOWN_HOSTS or populate ~/.ssh/known_hosts")
+	logger.Warn().Msg("No known_hosts file found, SSH host key verification disabled. Set BOSUN_SSH_KNOWN_HOSTS or place known_hosts at /config/known_hosts")
 	return xssh.InsecureIgnoreHostKey()
 }
 

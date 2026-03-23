@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.1](https://github.com/cameronsjo/bosun/compare/v0.32.0...v0.32.1) (2026-03-22)
+
+
+### Bug Fixes
+
+* address CodeRabbit findings on deploy-state PR ([92c67a2](https://github.com/cameronsjo/bosun/commit/92c67a2aafb3e2bb515a78729bbe1252c9540f54))
+* address CodeRabbit R3 findings ([7bccfdd](https://github.com/cameronsjo/bosun/commit/7bccfddda146219abdc8361f121145626816b8f9))
+* **reconcile:** remove ~/.ssh/known_hosts from SSH host key resolution ([9c2f513](https://github.com/cameronsjo/bosun/commit/9c2f513340e72dcab43977519c476b621026b956)), closes [#173](https://github.com/cameronsjo/bosun/issues/173)
+* **reconcile:** use last deployed commit for deploy-path relevance diff ([3240691](https://github.com/cameronsjo/bosun/commit/3240691d82767025190f63ff5b6d0d7c11fd9a2b))
+* **reconcile:** use last deployed commit for deploy-path relevance diff ([d1a7ad6](https://github.com/cameronsjo/bosun/commit/d1a7ad6fee447fd29b712aa27cca859aa3bc9467)), closes [#170](https://github.com/cameronsjo/bosun/issues/170)
+
 ## [0.32.0](https://github.com/cameronsjo/bosun/compare/v0.31.0...v0.32.0) (2026-03-21)
 
 

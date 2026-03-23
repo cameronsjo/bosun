@@ -114,12 +114,12 @@ func classifySSHError(stderr string) string {
 }
 
 // buildKnownHostsPaths returns the candidate known_hosts file paths in
-// priority order. Paths are constructed from the environment variable and
-// home directory; no filesystem checks are performed.
-func buildKnownHostsPaths(envKnownHosts, homeDir string) []string {
+// priority order. Only config-controlled paths are consulted;
+// ~/.ssh/known_hosts is excluded to prevent ephemeral user-profile
+// entries (e.g. from manual ssh commands) from interfering with go-git.
+func buildKnownHostsPaths(envKnownHosts string) []string {
 	paths := []string{
 		envKnownHosts,
-		filepath.Join(homeDir, ".ssh", "known_hosts"),
 		"/config/known_hosts",
 	}
 
