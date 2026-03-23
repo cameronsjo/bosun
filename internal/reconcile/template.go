@@ -172,14 +172,13 @@ func bosunTemplateFuncs(sourceDir string) template.FuncMap {
 // Non-template files are copied as-is.
 func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir, subDir string) error {
 	logger := log.ComponentCtx(ctx, log.ComponentTemplate)
-	infraDir := filepath.Join(sourceDir, subDir)
 	outDir := filepath.Join(stagingDir, subDir)
 
 	// Restrict include/fromJsonFile to the source directory tree.
 	t.SourceDir = sourceDir
 
-	// First, copy non-template files.
-	if err := copyNonTemplateFiles(infraDir, outDir); err != nil {
+	// Copy non-template files from sourceDir (caller already joined InfraSubDir).
+	if err := copyNonTemplateFiles(sourceDir, outDir); err != nil {
 		return fmt.Errorf("failed to copy non-template files: %w", err)
 	}
 
@@ -202,8 +201,9 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 			return fmt.Errorf("failed to compute relative path for %s: %w", path, err)
 		}
 
-		// Remove .tmpl extension for output.
-		outputPath := filepath.Join(stagingDir, strings.TrimSuffix(relPath, ".tmpl"))
+		// Remove .tmpl extension for output. Use outDir (stagingDir/subDir)
+		// so rendered files land where deployLocal expects them.
+		outputPath := filepath.Join(outDir, strings.TrimSuffix(relPath, ".tmpl"))
 
 		if err := t.ExecuteTemplate(ctx, path, outputPath); err != nil {
 			return err
