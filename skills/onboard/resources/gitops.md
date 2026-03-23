@@ -335,7 +335,7 @@ bosun drift --project core     # Filter to one compose project
 bosun drift --target=nas       # Show drift for a specific target
 ```
 
-**Multi-target behavior:** When no `--target` is specified and the config defines multiple targets, drift reports all targets. With `--json`, this wraps the output in `{"targets": [...]}` instead of a single drift object.
+**Multi-target behavior:** When no `--target` is specified and the configuration defines multiple targets, the CLI MUST report drift for all targets. When `--json` is specified in this multi-target mode, the CLI MUST wrap the output in `{"targets": [...]}` instead of a single drift object.
 
 ## Deploy State and Circuit Breaker
 
