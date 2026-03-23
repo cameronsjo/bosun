@@ -55,6 +55,7 @@ make test-cover         # With coverage (creates coverage.out + coverage.html)
 - Project root tests: create `manifest/` or `bosun.yaml` in temp dir, `os.Chdir()`, defer restore
 - Config tests: `loadConfigFile(tmpDir)` + `extract*()` (unit) or `Load()` with chdir (integration)
 - Drift tests: `reconcile.SaveState()` to create fixtures, save/restore package-level flag vars (`driftJSON`, `driftTarget`, etc.)
+- Deploy-path tests: seed prior state with `SaveState(stateFile, &DeployState{LastDeployedCommit: "aaa111"})` — path-aware skip requires a non-empty `state.LastDeployedCommit` as diff base
 - Daemon tests: `newConcurrencyDaemon(t)` for DryRun reconcile, `dockertest.MockDockerAPI` for Docker mocks
 - `captureStdout(t, func()) string` in `cmd/drift_test.go` captures stdout during a function call and returns it for assertions: `output := captureStdout(t, func() { runDrift(cmd, args) })` then `assert.Contains(t, output, "expected")`. Note: `ui.*` colored output goes to fatih/color writer, not stdout
 
@@ -388,6 +389,9 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 - **Config graceful degradation**: `config.Load()` errors are swallowed at startup, and `config.LoadFrom()` failures during reconciliation are logged as warnings — reconcile works without a project config file. The reconciler re-reads `bosun.yaml` from the repo after each git pull to pick up hook changes
 - **Env var precedence**: `BOSUN_POST_SYNC_HOOKS` (JSON) completely *replaces* hooks from `bosun.yaml`, it does not merge
 - **Dirty repo is non-fatal**: `Pull()` warns on uncommitted changes and proceeds — the hard reset discards them. Don't add a dirty-state failure gate; these are stale reconciliation artifacts
+- **WrittenFiles paths are staging-relative**: Content-hash sync (`CopyDirIfChanged`) returns paths relative to each deploy target dir. `deployLocal` prefixes them with `t.RelPath` via `PrefixLatest`. Hook globs must use staging-relative paths (e.g., `appdata/authelia/**`), not repo-relative. Git-diff fallback uses different (repo-relative) paths — the two code paths are not interchangeable
+- **`filepath.Join` silently drops prefix for absolute paths**: `filepath.Join("prefix", "/absolute/path")` returns `/absolute/path`. When adding paths to `WrittenFiles`, always use relative paths (e.g., `filepath.Base()`) so `PrefixLatest` works correctly
+- **CLAUDE.md symlink and the Edit tool**: `Read` must target `AGENTS.md` before `Edit` will work. The Edit tool tracks file modification times — if the symlink target was modified externally, Edit refuses with "file modified since read"
 
 ## Landing the Plane (Session Completion)
 
