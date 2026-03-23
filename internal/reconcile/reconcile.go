@@ -1136,6 +1136,9 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 	}
 
 	// Sync discovered targets (excluding compose, which has special handling).
+	// After each DeployLocal call, prefix the newly written file paths with
+	// the target's RelPath so hook globs (which use staging-relative paths
+	// like "appdata/authelia/**") can match correctly.
 	for _, t := range targets {
 		if t.RelPath == "compose" {
 			continue
@@ -1143,15 +1146,20 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 		src := filepath.Join(stagingSubDir, t.RelPath)
 		dst := filepath.Join(appdata, t.TargetPath)
 		ui.Info("  Syncing %s...", t.RelPath)
+		snapshot := len(result.WrittenFiles)
 		if t.IsDir {
 			if err := r.deploy.DeployLocal(ctx, src, dst, result); err != nil {
 				return nil, err
 			}
+			result.PrefixLatest(snapshot, t.RelPath)
 		} else {
 			_ = os.MkdirAll(filepath.Dir(dst), 0755)
 			if err := r.deploy.DeployLocalFile(ctx, src, dst, result); err != nil {
 				return nil, err
 			}
+			// For file targets, t.RelPath includes the filename (e.g., "appdata/foo.yml").
+			// DeployLocalFile records filepath.Base, so prefix with the directory only.
+			result.PrefixLatest(snapshot, filepath.Dir(t.RelPath))
 		}
 	}
 
@@ -1161,9 +1169,11 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 	if hasTarget(targets, "compose") {
 		ui.Info("  Syncing compose files...")
 		_ = os.MkdirAll(composeTarget, 0755)
+		snapshot := len(result.WrittenFiles)
 		if err := r.deploy.DeployLocal(ctx, composeStaging, composeTarget, result); err != nil {
 			return nil, err
 		}
+		result.PrefixLatest(snapshot, "compose")
 	}
 
 	// Reload services with per-file isolated compose up and rollback.
