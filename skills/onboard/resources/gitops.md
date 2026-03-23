@@ -380,7 +380,7 @@ bosun reconcile -r user@host
 
 Requires SSH key authentication. Test connectivity first: `ssh user@host exit`.
 
-### SSH Host Key Verification
+#### SSH Host Key Verification
 
 Bosun verifies SSH host keys using only config-controlled paths:
 
