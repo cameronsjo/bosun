@@ -335,6 +335,8 @@ bosun drift --project core     # Filter to one compose project
 bosun drift --target=nas       # Show drift for a specific target
 ```
 
+**Multi-target behavior:** When no `--target` is specified and the configuration defines multiple targets, the CLI MUST report drift for all targets. When `--json` is specified in this multi-target mode, the CLI MUST wrap the output in `{"targets": [...]}` instead of a single drift object.
+
 ## Deploy State and Circuit Breaker
 
 The daemon tracks deploy state in a JSON file (default: `/var/lib/bosun/deploy-state.json`).
@@ -378,7 +380,7 @@ bosun reconcile -r user@host
 
 Requires SSH key authentication. Test connectivity first: `ssh user@host exit`.
 
-### SSH Host Key Verification
+#### SSH Host Key Verification
 
 Bosun verifies SSH host keys using only config-controlled paths:
 

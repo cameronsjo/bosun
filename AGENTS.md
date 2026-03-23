@@ -54,6 +54,9 @@ make test-cover         # With coverage (creates coverage.out + coverage.html)
 - Temp dirs via `t.TempDir()` with `evalSymlinks()` helper for macOS `/var` → `/private/var`
 - Project root tests: create `manifest/` or `bosun.yaml` in temp dir, `os.Chdir()`, defer restore
 - Config tests: `loadConfigFile(tmpDir)` + `extract*()` (unit) or `Load()` with chdir (integration)
+- Drift tests: `reconcile.SaveState()` to create fixtures, save/restore package-level flag vars (`driftJSON`, `driftTarget`, etc.)
+- Daemon tests: `newConcurrencyDaemon(t)` for DryRun reconcile, `dockertest.MockDockerAPI` for Docker mocks
+- `captureStdout(t, func()) string` in `cmd/drift_test.go` captures stdout during a function call and returns it for assertions: `output := captureStdout(t, func() { runDrift(cmd, args) })` then `assert.Contains(t, output, "expected")`. Note: `ui.*` colored output goes to fatih/color writer, not stdout
 
 ## Key Packages
 
@@ -67,11 +70,12 @@ var exampleCmd = &cobra.Command{
     Aliases: []string{"alias"},
     Short:   "Short description",
     Long:    "Long description...",
-    Run:     runExample,
+    RunE:    runExample,
 }
 
-func runExample(cmd *cobra.Command, args []string) {
+func runExample(cmd *cobra.Command, args []string) error {
     // Implementation
+    return nil
 }
 
 func init() {
@@ -124,9 +128,21 @@ GitOps engine. Pipeline:
 
 1. Lock → 2. Git clone/pull → 3. SOPS decrypt → 4. Go text/template + Sprig → 5. Backup → 6. Deploy (local copy or tar-over-SSH) → 7. Docker compose up → 8. Post-sync hooks → 9. Unlock
 
-- **`PostSyncHook`** — glob-matched container restarts on file changes
-- **`EvaluatePostSyncHooks()`** — match changed files against hook patterns (deduped by container)
-- **Deploy modes**: local (file copy) or remote (tar-over-SSH)
+Split into focused modules:
+
+- **`reconcile.go`** — `Reconciler` struct, `Run()` pipeline, state tracking, circuit breaker
+- **`target.go`** — `Target` type, `ConfigForTarget()`, `ResolveTargets()`, `ValidateTargetName()`, path derivation
+- **`alerts.go`** — alert dispatch (success, failure, recovery, unhealthy), throttling
+- **`config_reload.go`** — hot-reload of `bosun.yaml` during reconciliation
+- **`compose.go`** — Docker Compose orchestration (up, rollback, health gate)
+- **`ssh.go`** — SSH connectivity, retry logic, remote deploy/file sync
+- **`backup.go`** — backup creation, verification, cleanup
+- **`hooks.go`** — `PostSyncHook` type, `EvaluatePostSyncHooks()`, glob matching
+
+Key multi-target types:
+- **`Target`** — named deployment target with per-target config overrides (JSON tags for `BOSUN_TARGETS` env var)
+- **`ConfigForTarget(t)`** — deep-copies base config with target-specific paths, hooks, containers
+- **`ResolveTargets()`** — validates names (path traversal, duplicates, reserved "default"), falls back to implicit default
 
 ### internal/alert
 
@@ -237,8 +253,9 @@ import (
 var exampleCmd = &cobra.Command{
     Use:   "example",
     Short: "Example command",
-    Run: func(cmd *cobra.Command, args []string) {
+    RunE: func(cmd *cobra.Command, args []string) error {
         ui.Success("Example ran!")
+        return nil
     },
 }
 
@@ -358,6 +375,12 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 
 ## Gotchas
 
+- **Target struct has JSON tags** — `BOSUN_TARGETS` env var uses snake_case (`target_host`, `project_name`) matching YAML config, not Go field names
+- **`ui.SetExitFn()`** — exported test helper to intercept `ui.Fatal`; not goroutine-safe, test-only
+- **ConfigForTarget deep-copies slices** — all slice fields are cloned to prevent mutation aliasing between base and per-target configs
+- **"default" is a reserved target name** — `ResolveTargets()` rejects user-provided targets named "default" (used internally for implicit single-target mode)
+- **Cobra `resetRootCmd` strips flags** — `ResetFlags()` in test helpers wipes registered flags; don't test flag existence after calling `executeCmd` on a different command
+- **handleTrigger spawns fire-and-forget goroutines** — tests using socket/TCP daemons should set a short `ReconcileTimeout` to prevent temp dir cleanup races; tune the value to the test environment rather than hardcoding
 - **CLAUDE.md is a symlink** to `AGENTS.md`. When staging for git, `git add AGENTS.md` (not `CLAUDE.md`)
 - **Circuit breaker**: after 3 consecutive deploy failures, daemon stops retrying. Reset with `bosun trigger -f`
 - **FUSE mounts**: Traefik (and similar services) don't detect config changes on Unraid's FUSE filesystem — this is why post-sync hooks exist

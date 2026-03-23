@@ -177,7 +177,9 @@ Each target gets isolated state: `deploy-state-<name>.json`, `<staging>/<name>/`
 
 Per-target secrets scoping: when `secrets_scope` is set, keys under `targets.<scope>.*` in the decrypted secrets override top-level keys for that target.
 
-Override via environment: `BOSUN_TARGETS` (JSON array) completely replaces the config file targets.
+Override via environment: `BOSUN_TARGETS` (JSON array) completely replaces the config file targets. Uses snake_case field names matching the YAML: `[{"name":"nas","target_host":"user@host","project_name":"homelab"}]`. Setting `BOSUN_TARGETS=[]` explicitly clears all targets (falls back to implicit default).
+
+**Constraints:** Target names must be alphanumeric with hyphens/underscores (no dots, spaces, or path separators). The name `"default"` is reserved. Duplicate names (case-insensitive) are rejected.
 
 ## Directory Structure
 
