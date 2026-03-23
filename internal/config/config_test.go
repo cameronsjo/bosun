@@ -258,7 +258,9 @@ func TestLoadInfraContainers(t *testing.T) {
 `
 		require.NoError(t, os.WriteFile(filepath.Join(bosunDir, "config.yml"), []byte(content), 0644))
 
-		containers := extractInfraContainers(loadConfigFile(tmpDir))
+		cfg, err := loadConfigFile(tmpDir)
+		require.NoError(t, err)
+		containers := extractInfraContainers(cfg)
 		assert.Equal(t, []string{"nginx", "redis", "postgres"}, containers)
 	})
 
@@ -272,7 +274,9 @@ func TestLoadInfraContainers(t *testing.T) {
 `
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yml"), []byte(content), 0644))
 
-		containers := extractInfraContainers(loadConfigFile(tmpDir))
+		cfg, err := loadConfigFile(tmpDir)
+		require.NoError(t, err)
+		containers := extractInfraContainers(cfg)
 		assert.Equal(t, []string{"custom1", "custom2"}, containers)
 	})
 
@@ -297,14 +301,18 @@ func TestLoadInfraContainers(t *testing.T) {
 `
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yml"), []byte(content2), 0644))
 
-		containers := extractInfraContainers(loadConfigFile(tmpDir))
+		cfg, err := loadConfigFile(tmpDir)
+		require.NoError(t, err)
+		containers := extractInfraContainers(cfg)
 		assert.Equal(t, []string{"from-root"}, containers)
 	})
 
 	t.Run("returns defaults when no config file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		containers := extractInfraContainers(loadConfigFile(tmpDir))
+		cfg, err := loadConfigFile(tmpDir)
+		require.NoError(t, err)
+		containers := extractInfraContainers(cfg)
 		assert.Equal(t, defaultInfraContainers, containers)
 	})
 
@@ -316,11 +324,13 @@ func TestLoadInfraContainers(t *testing.T) {
 `
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yml"), []byte(content), 0644))
 
-		containers := extractInfraContainers(loadConfigFile(tmpDir))
+		cfg, err := loadConfigFile(tmpDir)
+		require.NoError(t, err)
+		containers := extractInfraContainers(cfg)
 		assert.Equal(t, defaultInfraContainers, containers)
 	})
 
-	t.Run("returns defaults when config is malformed", func(t *testing.T) {
+	t.Run("returns error when config is malformed", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		content := `not: valid: yaml:
@@ -328,8 +338,9 @@ func TestLoadInfraContainers(t *testing.T) {
 `
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yml"), []byte(content), 0644))
 
-		containers := extractInfraContainers(loadConfigFile(tmpDir))
-		assert.Equal(t, defaultInfraContainers, containers)
+		_, err := loadConfigFile(tmpDir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to parse config file")
 	})
 
 	t.Run("returns defaults when infrastructure section missing", func(t *testing.T) {
@@ -340,8 +351,52 @@ func TestLoadInfraContainers(t *testing.T) {
 `
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yml"), []byte(content), 0644))
 
-		containers := extractInfraContainers(loadConfigFile(tmpDir))
+		cfg, err := loadConfigFile(tmpDir)
+		require.NoError(t, err)
+		containers := extractInfraContainers(cfg)
 		assert.Equal(t, defaultInfraContainers, containers)
+	})
+}
+
+func TestLoadConfigFile(t *testing.T) {
+	t.Run("valid YAML parses successfully", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		content := `infrastructure:
+  containers:
+    - traefik
+    - portainer
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		cfg, err := loadConfigFile(tmpDir)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"traefik", "portainer"}, cfg.Infrastructure.Containers)
+	})
+
+	t.Run("invalid YAML returns error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		content := `infrastructure:
+  containers:
+    - traefik
+  broken: [unterminated
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+
+		_, err := loadConfigFile(tmpDir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to parse config file")
+		assert.Contains(t, err.Error(), "bosun.yaml")
+	})
+
+	t.Run("missing file returns zero-value without error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		cfg, err := loadConfigFile(tmpDir)
+		require.NoError(t, err)
+		assert.Empty(t, cfg.Infrastructure.Containers)
+		assert.Empty(t, cfg.PostSyncHooks)
 	})
 }
 
@@ -611,7 +666,7 @@ hook_settle_delay: "3s"
 		assert.Equal(t, time.Duration(0), cfg.HookSettleDelay())
 	})
 
-	t.Run("returns empty config on malformed YAML", func(t *testing.T) {
+	t.Run("returns error on malformed YAML", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		content := `not: valid: yaml:
@@ -620,9 +675,9 @@ hook_settle_delay: "3s"
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
 
 		cfg, err := LoadFrom(tmpDir)
-		require.NoError(t, err)
-		require.NotNil(t, cfg)
-		assert.Empty(t, cfg.PostSyncHooks())
+		require.Error(t, err)
+		assert.Nil(t, cfg)
+		assert.Contains(t, err.Error(), "failed to parse config file")
 	})
 }
 
@@ -722,7 +777,8 @@ func TestDeploySyncPathsFromConfig(t *testing.T) {
   - "compose"
 `
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
-		cfg := loadConfigFile(tmpDir)
+		cfg, err := loadConfigFile(tmpDir)
+		require.NoError(t, err)
 		assert.Equal(t, []string{"appdata/traefik", "appdata/authelia", "compose"}, extractDeploySyncPaths(cfg))
 	})
 
@@ -731,7 +787,8 @@ func TestDeploySyncPathsFromConfig(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(""), 0644))
 
-		cfg := loadConfigFile(tmpDir)
+		cfg, err := loadConfigFile(tmpDir)
+		require.NoError(t, err)
 		assert.Empty(t, extractDeploySyncPaths(cfg))
 	})
 }
@@ -745,7 +802,8 @@ func TestDeploySyncExcludeFromConfig(t *testing.T) {
   - "appdata/legacy-service"
 `
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
-		cfg := loadConfigFile(tmpDir)
+		cfg, err := loadConfigFile(tmpDir)
+		require.NoError(t, err)
 		assert.Equal(t, []string{"appdata/legacy-service"}, extractDeploySyncExclude(cfg))
 	})
 
@@ -754,7 +812,8 @@ func TestDeploySyncExcludeFromConfig(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(""), 0644))
 
-		cfg := loadConfigFile(tmpDir)
+		cfg, err := loadConfigFile(tmpDir)
+		require.NoError(t, err)
 		assert.Empty(t, extractDeploySyncExclude(cfg))
 	})
 }
