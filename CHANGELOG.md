@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.2](https://github.com/cameronsjo/bosun/compare/v0.32.1...v0.32.2) (2026-03-23)
+
+
+### Bug Fixes
+
+* add bounds check to PrefixLatest ([ba66397](https://github.com/cameronsjo/bosun/commit/ba663970a2067f3bfe6926eea1c53d26bbefb82a))
+* **reconcile:** prefix written file paths for post-sync hook matching ([6d6f047](https://github.com/cameronsjo/bosun/commit/6d6f0471dedeb5b44a4e8c623ebc3ec48c3c8240))
+* **reconcile:** prefix written file paths for post-sync hook matching ([820045d](https://github.com/cameronsjo/bosun/commit/820045d94352aee7b7a39a947958d4618637c70c)), closes [#186](https://github.com/cameronsjo/bosun/issues/186)
+* use filepath.Dir for file target prefix in PrefixLatest ([9ef0ea4](https://github.com/cameronsjo/bosun/commit/9ef0ea4f524e87b993e5b43388e2d160d7cf0473))
+* use relative paths in DeployLocalFile WrittenFiles ([cbb398e](https://github.com/cameronsjo/bosun/commit/cbb398e75ed8727836814f70819d282d5a61fea1))
+
 ## [0.32.1](https://github.com/cameronsjo/bosun/compare/v0.32.0...v0.32.1) (2026-03-22)
 
 
