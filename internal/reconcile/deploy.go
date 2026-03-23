@@ -58,6 +58,12 @@ func (r *DeployResult) AddWritten(files ...string) {
 // call, then PrefixLatest after, to give the new entries context needed
 // for hook glob matching.
 func (r *DeployResult) PrefixLatest(snapshot int, prefix string) {
+	if snapshot < 0 {
+		snapshot = 0
+	}
+	if snapshot >= len(r.WrittenFiles) {
+		return
+	}
 	for i := snapshot; i < len(r.WrittenFiles); i++ {
 		r.WrittenFiles[i] = filepath.Join(prefix, r.WrittenFiles[i])
 	}
