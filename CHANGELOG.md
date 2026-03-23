@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.4](https://github.com/cameronsjo/bosun/compare/v0.32.3...v0.32.4) (2026-03-23)
+
+
+### Bug Fixes
+
+* **reconcile:** render templates to correct staging path when InfraSubDir is set ([43f29b5](https://github.com/cameronsjo/bosun/commit/43f29b511cf824276c244a60271729b9c7987493))
+* **reconcile:** render templates to correct staging path when InfraSubDir is set ([95b131e](https://github.com/cameronsjo/bosun/commit/95b131e411994efa1dc7ec9bee58f87c4277d9e0)), closes [#190](https://github.com/cameronsjo/bosun/issues/190)
+
 ## [0.32.3](https://github.com/cameronsjo/bosun/compare/v0.32.2...v0.32.3) (2026-03-23)
 
 
