@@ -1151,13 +1151,16 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 			if err := r.deploy.DeployLocal(ctx, src, dst, result); err != nil {
 				return nil, err
 			}
+			result.PrefixLatest(snapshot, t.RelPath)
 		} else {
 			_ = os.MkdirAll(filepath.Dir(dst), 0755)
 			if err := r.deploy.DeployLocalFile(ctx, src, dst, result); err != nil {
 				return nil, err
 			}
+			// For file targets, t.RelPath includes the filename (e.g., "appdata/foo.yml").
+			// DeployLocalFile records filepath.Base, so prefix with the directory only.
+			result.PrefixLatest(snapshot, filepath.Dir(t.RelPath))
 		}
-		result.PrefixLatest(snapshot, t.RelPath)
 	}
 
 	// Sync compose files (special handling: glob .yml files for ComposeUpMultipleWithRollback).
