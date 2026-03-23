@@ -287,20 +287,21 @@ func TestBosunTemplateFuncs_FromJsonFileInvalidJSON(t *testing.T) {
 func TestTemplateOps_RenderDirectory(t *testing.T) {
 	t.Run("render directory with templates and static files", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		sourceDir := filepath.Join(tmpDir, "source")
+		// sourceDir simulates RepoDir/InfraSubDir — the caller already joins them.
+		sourceDir := filepath.Join(tmpDir, "repo", "infra")
 		stagingDir := filepath.Join(tmpDir, "staging")
 		ctx := context.Background()
 
-		// Create source structure
-		infraDir := filepath.Join(sourceDir, "infra")
-		require.NoError(t, os.MkdirAll(infraDir, 0755))
+		// Create source structure (everything inside sourceDir, like production).
+		composeDir := filepath.Join(sourceDir, "compose")
+		require.NoError(t, os.MkdirAll(composeDir, 0755))
 
-		// Create template file
-		templateFile := filepath.Join(sourceDir, "config.yaml.tmpl")
+		// Create template file inside sourceDir.
+		templateFile := filepath.Join(composeDir, "stack.yml.tmpl")
 		require.NoError(t, os.WriteFile(templateFile, []byte("key: value"), 0644))
 
-		// Create static file in infra
-		staticFile := filepath.Join(infraDir, "static.yml")
+		// Create static file inside sourceDir.
+		staticFile := filepath.Join(sourceDir, "static.yml")
 		require.NoError(t, os.WriteFile(staticFile, []byte("static: content"), 0644))
 
 		tmpl := NewTemplateOps(map[string]any{})
@@ -308,11 +309,11 @@ func TestTemplateOps_RenderDirectory(t *testing.T) {
 
 		require.NoError(t, err)
 
-		// Verify template was rendered (without .tmpl extension)
-		renderedTemplate := filepath.Join(stagingDir, "config.yaml")
+		// Verify template was rendered inside stagingDir/subDir.
+		renderedTemplate := filepath.Join(stagingDir, "infra", "compose", "stack.yml")
 		assert.FileExists(t, renderedTemplate)
 
-		// Verify static file was copied
+		// Verify static file was copied to stagingDir/subDir.
 		copiedStatic := filepath.Join(stagingDir, "infra", "static.yml")
 		assert.FileExists(t, copiedStatic)
 	})
@@ -340,6 +341,38 @@ func TestTemplateOps_RenderDirectory(t *testing.T) {
 		err := tmpl.RenderDirectory(ctx, sourceDir, stagingDir, "infra")
 
 		require.NoError(t, err)
+	})
+
+	t.Run("non-root InfraSubDir renders to correct staging path", func(t *testing.T) {
+		// Regression test for #190: when InfraSubDir != ".", rendered files
+		// must land in stagingDir/subDir/ so deployLocal can find them.
+		tmpDir := t.TempDir()
+		// Simulate the caller: sourceDir = RepoDir/InfraSubDir
+		sourceDir := filepath.Join(tmpDir, "repo", "unraid")
+		stagingDir := filepath.Join(tmpDir, "staging")
+		ctx := context.Background()
+
+		// Create repo structure: unraid/compose/stack.yml.tmpl + unraid/appdata/traefik/conf.yml
+		composeDir := filepath.Join(sourceDir, "compose")
+		appdataDir := filepath.Join(sourceDir, "appdata", "traefik")
+		require.NoError(t, os.MkdirAll(composeDir, 0755))
+		require.NoError(t, os.MkdirAll(appdataDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(composeDir, "stack.yml.tmpl"), []byte("services: {}"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(appdataDir, "conf.yml"), []byte("static: true"), 0644))
+
+		tmpl := NewTemplateOps(map[string]any{})
+		err := tmpl.RenderDirectory(ctx, sourceDir, stagingDir, "unraid")
+		require.NoError(t, err)
+
+		// deployLocal reads from staging/unraid/ — verify files land there.
+		assert.FileExists(t, filepath.Join(stagingDir, "unraid", "compose", "stack.yml"),
+			"rendered template must be in staging/unraid/compose/, not staging/compose/")
+		assert.FileExists(t, filepath.Join(stagingDir, "unraid", "appdata", "traefik", "conf.yml"),
+			"static file must be in staging/unraid/appdata/, not staging/appdata/")
+
+		// Verify files do NOT exist at the wrong (old buggy) paths.
+		assert.NoFileExists(t, filepath.Join(stagingDir, "compose", "stack.yml"),
+			"rendered template must not be at staging root (missing subDir prefix)")
 	})
 }
 
