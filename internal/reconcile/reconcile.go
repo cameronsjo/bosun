@@ -753,7 +753,13 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	// Prefer written-files from content-hash sync over git diff.
 	var changedFiles []string
 	diffFailed := false
-	if deployResult != nil && len(deployResult.WrittenFiles) > 0 {
+	remoteMode := deployResult == nil && r.config.TargetHost != ""
+	if remoteMode {
+		// Remote deploys return nil DeployResult (no file-level tracking).
+		// Fire all hooks unconditionally — a false-positive restart is better
+		// than stale configs on a FUSE mount. See GitHub #197.
+		logger.Info().Msg("Remote deploy: firing all post-sync hooks (no file-level tracking available)")
+	} else if deployResult != nil && len(deployResult.WrittenFiles) > 0 {
 		changedFiles = deployResult.WrittenFiles
 		logger.Debug().Int("files", len(changedFiles)).Msg("Using written-files list for post-sync hooks")
 	} else {
@@ -769,16 +775,18 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 		}
 	}
 
-	if len(changedFiles) == 0 && !diffFailed {
+	if len(changedFiles) == 0 && !diffFailed && !remoteMode {
 		return
 	}
 
-	// When diff fails (shallow clone), fire all hooks unconditionally.
+	// When diff fails (shallow clone) or deploy is remote, fire all hooks unconditionally.
 	// A false-positive restart is safer than stale configs on FUSE mounts.
 	var matched []PostSyncHook
-	if diffFailed {
+	if diffFailed || remoteMode {
 		matched = dedupeHooksByContainer(r.config.PostSyncHooks)
-		logger.Info().Int("hooks", len(matched)).Msg("Diff unavailable, firing all configured hooks")
+		if diffFailed {
+			logger.Info().Int("hooks", len(matched)).Msg("Diff unavailable, firing all configured hooks")
+		}
 	} else {
 		matched = EvaluatePostSyncHooks(changedFiles, r.config.PostSyncHooks)
 	}
