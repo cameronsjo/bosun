@@ -603,7 +603,9 @@ func TestDeployOps_DeployLocalFile_ContentHash(t *testing.T) {
 		err := deploy.DeployLocalFile(ctx, src, dst, result)
 
 		require.NoError(t, err)
-		assert.Contains(t, result.WrittenFiles, dst)
+		// WrittenFiles now stores basename (relative), not absolute path.
+		// The caller (deployLocal) prefixes with the target's RelPath.
+		assert.Contains(t, result.WrittenFiles, filepath.Base(dst))
 
 		got, _ := os.ReadFile(dst)
 		assert.Equal(t, "new", string(got))
@@ -1227,7 +1229,7 @@ func TestDeployOps_DeployLocalFile_ContentHashSync(t *testing.T) {
 	data, err := os.ReadFile(tgtFile)
 	require.NoError(t, err)
 	assert.Equal(t, "content: original", string(data))
-	assert.Contains(t, result.WrittenFiles, tgtFile)
+	assert.Contains(t, result.WrittenFiles, filepath.Base(tgtFile))
 }
 
 func TestDeployOps_DeployLocalFile_NoChangeSkips(t *testing.T) {

@@ -287,7 +287,9 @@ func (d *DeployOps) DeployLocalFile(ctx context.Context, sourceFile, targetFile 
 			return err
 		}
 		if changed && result != nil {
-			result.AddWritten(targetFile)
+			// Use Base() so the path is relative (matches CopyDirIfChanged).
+			// The caller prefixes with the target's RelPath via PrefixLatest.
+			result.AddWritten(filepath.Base(targetFile))
 		}
 		return nil
 	}

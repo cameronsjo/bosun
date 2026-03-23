@@ -2171,10 +2171,10 @@ func TestDeployLocalFullPath(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, result)
 
-		// WrittenFiles must use infra-relative paths (unraid/appdata/authelia/...)
-		// so post-sync hook globs like "unraid/appdata/authelia/**" can match.
+		// WrittenFiles must use staging-relative paths (appdata/authelia/...)
+		// so post-sync hook globs like "appdata/authelia/**" can match.
 		// Bug #186: without the prefix, hooks see "configuration.yml" and the
-		// glob "unraid/appdata/authelia/**" fails to match.
+		// glob "appdata/authelia/**" fails to match.
 		require.NotEmpty(t, result.WrittenFiles, "expected at least one written file")
 
 		for _, f := range result.WrittenFiles {
@@ -2448,7 +2448,7 @@ func TestDeployOps_DeployLocalFileContentHash(t *testing.T) {
 		content, err := os.ReadFile(targetFile)
 		require.NoError(t, err)
 		assert.Equal(t, "key: value", string(content))
-		assert.Contains(t, result.WrittenFiles, targetFile)
+		assert.Contains(t, result.WrittenFiles, filepath.Base(targetFile))
 	})
 
 	t.Run("content hash mode skips unchanged file", func(t *testing.T) {
