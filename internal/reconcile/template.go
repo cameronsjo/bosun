@@ -229,10 +229,27 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 
 // copyNonTemplateFiles copies all non-.tmpl files from src to dst.
 func copyNonTemplateFiles(src, dst string) error {
+	// Validate the source directory exists before walking. A missing root
+	// indicates an InfraSubDir misconfiguration and must surface as an error.
+	info, err := os.Stat(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("source directory does not exist: %w", err)
+		}
+		return fmt.Errorf("failed to stat source directory %s: %w", src, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("source path is not a directory: %s", src)
+	}
+
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			// Skip if source doesn't exist.
+			// Individual files may disappear mid-walk (race condition safety).
 			if os.IsNotExist(err) {
+				// Root disappearing is not a per-file race; surface it.
+				if path == src {
+					return fmt.Errorf("source directory disappeared during walk: %w", err)
+				}
 				return nil
 			}
 			return err
