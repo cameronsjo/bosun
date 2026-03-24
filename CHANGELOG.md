@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.5](https://github.com/cameronsjo/bosun/compare/v0.32.4...v0.32.5) (2026-03-24)
+
+
+### Bug Fixes
+
+* **reconcile:** fire all post-sync hooks unconditionally for remote deploys ([1fe3b29](https://github.com/cameronsjo/bosun/commit/1fe3b29d6dd94015338aa753dc36cf51696094bf))
+* **reconcile:** fire all post-sync hooks unconditionally for remote deploys ([54d22eb](https://github.com/cameronsjo/bosun/commit/54d22ebc61e76676be7f42ee1d7dde9bc6d2f4eb)), closes [#197](https://github.com/cameronsjo/bosun/issues/197)
+
 ## [0.32.4](https://github.com/cameronsjo/bosun/compare/v0.32.3...v0.32.4) (2026-03-23)
 
 
