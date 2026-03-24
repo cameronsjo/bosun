@@ -1800,18 +1800,17 @@ func TestDoDeploy(t *testing.T) {
 		assert.NotNil(t, result)
 	})
 
-	t.Run("remote mode returns nil result", func(t *testing.T) {
-		// Remote deploy returns (nil, error) -- verify doDeploy routes correctly.
-		// Use an empty secrets map so getTargetHost returns "" and deployRemote
-		// fails immediately with a "no target host" error (no SSH involved).
+	t.Run("inaccessible appdata returns error", func(t *testing.T) {
+		// resolveDeployMode returns ErrAppdataInaccessible when the path is
+		// configured but cannot be stat'd and no remote host is set.
 		cfg := &Config{
-			LocalAppdataPath: "/nonexistent/path", // Force remote mode (stat fails)
+			LocalAppdataPath: "/nonexistent/path",
 		}
 		r := NewReconciler(cfg)
 
 		result, err := r.doDeploy(context.Background(), map[string]any{})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "no target host")
+		assert.ErrorIs(t, err, ErrAppdataInaccessible)
 		assert.Nil(t, result)
 	})
 }
@@ -4047,4 +4046,83 @@ func TestMergeTargetSecrets(t *testing.T) {
 		assert.Equal(t, "pi-host", merged["db_host"])
 		assert.Equal(t, "keep-me", merged["other_secret"])
 	})
+}
+
+func TestResolveDeployMode(t *testing.T) {
+	tests := []struct {
+		name           string
+		targetHost     string
+		appdataPath    string
+		createPath     bool
+		wantLocal      bool
+		wantErr        bool
+		wantErrContain string
+	}{
+		{
+			name:       "local mode when appdata path exists",
+			createPath: true,
+			wantLocal:  true,
+		},
+		{
+			name:       "remote mode when target host set",
+			targetHost: "user@remote",
+			wantLocal:  false,
+		},
+		{
+			name:       "remote mode when target host set even if appdata exists",
+			targetHost: "user@remote",
+			createPath: true,
+			wantLocal:  false,
+		},
+		{
+			name:      "remote mode when no appdata path configured",
+			wantLocal: false,
+		},
+		{
+			name:           "error when appdata path configured but inaccessible",
+			appdataPath:    "/nonexistent/mount/path/that/does/not/exist",
+			wantErr:        true,
+			wantErrContain: "inaccessible",
+		},
+		{
+			name:        "remote mode when target host set and appdata path is inaccessible",
+			targetHost:  "user@remote",
+			appdataPath: "/nonexistent/mount/path/that/does/not/exist",
+			wantLocal:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.TargetHost = tt.targetHost
+
+			if tt.createPath {
+				dir := t.TempDir()
+				cfg.LocalAppdataPath = evalSymlinks(t, dir)
+			} else if tt.appdataPath != "" {
+				cfg.LocalAppdataPath = tt.appdataPath
+			} else {
+				cfg.LocalAppdataPath = ""
+			}
+
+			r := &Reconciler{config: cfg}
+			ctx := context.Background()
+
+			local, err := r.resolveDeployMode(ctx)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, ErrAppdataInaccessible)
+				assert.Contains(t, err.Error(), tt.wantErrContain)
+				if tt.appdataPath != "" {
+					assert.Contains(t, err.Error(), tt.appdataPath)
+				}
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantLocal, local)
+		})
+	}
 }

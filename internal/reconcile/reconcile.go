@@ -1103,13 +1103,59 @@ func backupPathsFromTargets(targets []DeployTarget, appdataBase string) []string
 	return paths
 }
 
+// ErrAppdataInaccessible is returned when LocalAppdataPath is configured but
+// the path cannot be accessed (e.g. mount is down).
+var ErrAppdataInaccessible = errors.New("local appdata path is configured but inaccessible")
+
 // doDeploy performs the actual deployment.
 // Returns a DeployResult with written files (local mode) or nil (remote mode).
 func (r *Reconciler) doDeploy(ctx context.Context, secrets map[string]any) (*DeployResult, error) {
-	if r.isLocalMode() {
+	local, err := r.resolveDeployMode(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if local {
 		return r.deployLocal(ctx)
 	}
 	return nil, r.deployRemote(ctx, secrets)
+}
+
+// resolveDeployMode determines whether to use local or remote deployment.
+// Returns (true, nil) for local mode, (false, nil) for remote mode, or an
+// error when the configuration is invalid (e.g. appdata path configured but
+// inaccessible and no remote host to fall back to).
+func (r *Reconciler) resolveDeployMode(ctx context.Context) (bool, error) {
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+
+	// Explicit remote host always wins.
+	if r.config.TargetHost != "" {
+		logger.Debug().
+			Str("target_host", r.config.TargetHost).
+			Msg("Remote target host configured, using remote deploy mode")
+		return false, nil
+	}
+
+	// No local path configured — fall through to remote mode.
+	if r.config.LocalAppdataPath == "" {
+		logger.Debug().Msg("No local appdata path configured, using remote deploy mode")
+		return false, nil
+	}
+
+	// Local path configured — verify it's accessible.
+	_, err := os.Stat(r.config.LocalAppdataPath)
+	if err == nil {
+		logger.Debug().
+			Str(log.FieldPath, r.config.LocalAppdataPath).
+			Msg("Local appdata path accessible, using local deploy mode")
+		return true, nil
+	}
+
+	// Path configured but inaccessible (mount down, permissions, etc.).
+	logger.Error().
+		Str(log.FieldPath, r.config.LocalAppdataPath).
+		Err(err).
+		Msg("Local appdata path configured but inaccessible. Check that the mount is up")
+	return false, fmt.Errorf("%w: %s: %w", ErrAppdataInaccessible, r.config.LocalAppdataPath, err)
 }
 
 // isLocalMode returns true if running in local mode (appdata mounted).
