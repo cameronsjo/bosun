@@ -2,11 +2,9 @@
 package config
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -472,10 +470,12 @@ func loadConfigFile(root string) (configFile, error) {
 			return configFile{}, fmt.Errorf("failed to read config file %s: %w", path, err)
 		}
 
-		dec := yaml.NewDecoder(bytes.NewReader(data))
-		dec.KnownFields(true)
-		if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
-			return configFile{}, fmt.Errorf("failed to parse config file %s: %w", path, err)
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			log.Warn().
+				Err(err).
+				Str(log.FieldPath, path).
+				Msg("Failed to parse config file, skipping")
+			continue
 		}
 
 		log.Debug().

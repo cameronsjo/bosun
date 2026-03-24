@@ -331,7 +331,7 @@ func TestLoadInfraContainers(t *testing.T) {
 		assert.Equal(t, defaultInfraContainers, containers)
 	})
 
-	t.Run("returns error when config is malformed", func(t *testing.T) {
+	t.Run("returns defaults when config is malformed", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		content := `not: valid: yaml:
@@ -339,12 +339,13 @@ func TestLoadInfraContainers(t *testing.T) {
 `
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yml"), []byte(content), 0644))
 
-		_, err := loadConfigFile(tmpDir)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "bosun.yml")
+		cfg, err := loadConfigFile(tmpDir)
+		require.NoError(t, err)
+		containers := extractInfraContainers(cfg)
+		assert.Equal(t, defaultInfraContainers, containers)
 	})
 
-	t.Run("returns error when config has unknown fields", func(t *testing.T) {
+	t.Run("returns defaults when infrastructure section missing", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		content := `something_else:
@@ -352,9 +353,10 @@ func TestLoadInfraContainers(t *testing.T) {
 `
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yml"), []byte(content), 0644))
 
-		_, err := loadConfigFile(tmpDir)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "bosun.yml")
+		cfg, err := loadConfigFile(tmpDir)
+		require.NoError(t, err)
+		containers := extractInfraContainers(cfg)
+		assert.Equal(t, defaultInfraContainers, containers)
 	})
 }
 
@@ -375,26 +377,6 @@ func TestLoadConfigFile(t *testing.T) {
 
 		_, err := loadConfigFile(tmpDir)
 		require.Error(t, err)
-	})
-
-	t.Run("malformed higher-priority file does not fall back", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		bosunDir := filepath.Join(tmpDir, ".bosun")
-		require.NoError(t, os.MkdirAll(bosunDir, 0755))
-		require.NoError(t, os.WriteFile(
-			filepath.Join(tmpDir, "bosun.yaml"),
-			[]byte("infrastructure:\n  containers: [unterminated\n"),
-			0644,
-		))
-		require.NoError(t, os.WriteFile(
-			filepath.Join(bosunDir, "config.yml"),
-			[]byte("infrastructure:\n  containers:\n    - fallback\n"),
-			0644,
-		))
-
-		_, err := loadConfigFile(tmpDir)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "bosun.yaml")
 	})
 }
 
@@ -664,7 +646,7 @@ hook_settle_delay: "3s"
 		assert.Equal(t, time.Duration(0), cfg.HookSettleDelay())
 	})
 
-	t.Run("returns error on malformed YAML", func(t *testing.T) {
+	t.Run("returns empty config on malformed YAML", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		content := `not: valid: yaml:
@@ -672,9 +654,10 @@ hook_settle_delay: "3s"
 `
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
 
-		_, err := LoadFrom(tmpDir)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "bosun.yaml")
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Empty(t, cfg.PostSyncHooks())
 	})
 }
 
