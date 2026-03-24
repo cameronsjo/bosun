@@ -1729,18 +1729,17 @@ func TestDoDeploy(t *testing.T) {
 		assert.NotNil(t, result)
 	})
 
-	t.Run("remote mode returns nil result", func(t *testing.T) {
-		// Remote deploy returns (nil, error) -- verify doDeploy routes correctly.
-		// Use an empty secrets map so getTargetHost returns "" and deployRemote
-		// fails immediately with a "no target host" error (no SSH involved).
+	t.Run("inaccessible appdata returns error", func(t *testing.T) {
+		// resolveDeployMode returns ErrAppdataInaccessible when the path is
+		// configured but cannot be stat'd and no remote host is set.
 		cfg := &Config{
-			LocalAppdataPath: "/nonexistent/path", // Force remote mode (stat fails)
+			LocalAppdataPath: "/nonexistent/path",
 		}
 		r := NewReconciler(cfg)
 
 		result, err := r.doDeploy(context.Background(), map[string]any{})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "no target host")
+		assert.ErrorIs(t, err, ErrAppdataInaccessible)
 		assert.Nil(t, result)
 	})
 }
@@ -3989,10 +3988,9 @@ func TestResolveDeployMode(t *testing.T) {
 		wantErrContain string
 	}{
 		{
-			name:        "local mode when appdata path exists",
-			appdataPath: "will-be-replaced", // replaced with real temp dir
-			createPath:  true,
-			wantLocal:   true,
+			name:       "local mode when appdata path exists",
+			createPath: true,
+			wantLocal:  true,
 		},
 		{
 			name:       "remote mode when target host set",

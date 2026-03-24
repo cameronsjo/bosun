@@ -1122,7 +1122,7 @@ func (r *Reconciler) resolveDeployMode(ctx context.Context) (bool, error) {
 	// Explicit remote host always wins.
 	if r.config.TargetHost != "" {
 		logger.Debug().
-			Str(log.FieldPath, r.config.LocalAppdataPath).
+			Str("target_host", r.config.TargetHost).
 			Msg("Remote target host configured, using remote deploy mode")
 		return false, nil
 	}
