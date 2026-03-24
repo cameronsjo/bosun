@@ -2,9 +2,11 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -456,7 +458,7 @@ func Load() (*Config, error) {
 
 // loadConfigFile loads the bosun config file if present.
 // Returns a zero-value configFile with no error if no config file exists.
-// Returns an error if a config file cannot be read (non-ENOENT) or contains invalid YAML.
+// Returns an error if a config file exists but contains malformed YAML or unknown fields.
 func loadConfigFile(root string) (configFile, error) {
 	var cfg configFile
 
@@ -470,18 +472,16 @@ func loadConfigFile(root string) (configFile, error) {
 			return configFile{}, fmt.Errorf("failed to read config file %s: %w", path, err)
 		}
 
-		if err := yaml.Unmarshal(data, &cfg); err != nil {
-			log.Warn().
-				Err(err).
-				Str(log.FieldPath, path).
-				Msg("Failed to parse config file, skipping")
-			continue
+		dec := yaml.NewDecoder(bytes.NewReader(data))
+		dec.KnownFields(true)
+		if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
+			return configFile{}, fmt.Errorf("failed to parse config file %s: %w", path, err)
 		}
 
 		log.Debug().
 			Str(log.FieldPath, path).
 			Msg("Loaded config file")
-		break
+		return cfg, nil
 	}
 
 	return cfg, nil

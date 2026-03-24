@@ -1065,6 +1065,8 @@ func TestDeployOps_DryRun_Remote(t *testing.T) {
 }
 
 func TestRemoveStaleFiles(t *testing.T) {
+	ctx := context.Background()
+
 	t.Run("removes file not in source", func(t *testing.T) {
 		srcDir := evalSymlinks(t, t.TempDir())
 		tgtDir := evalSymlinks(t, t.TempDir())
@@ -1074,7 +1076,7 @@ func TestRemoveStaleFiles(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "file-a.txt"), []byte("a"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "file-b.txt"), []byte("b"), 0644))
 
-		err := removeStaleFiles(srcDir, tgtDir)
+		err := removeStaleFiles(ctx, srcDir, tgtDir)
 		require.NoError(t, err)
 
 		assert.FileExists(t, filepath.Join(tgtDir, "file-a.txt"))
@@ -1090,7 +1092,7 @@ func TestRemoveStaleFiles(t *testing.T) {
 		require.NoError(t, os.MkdirAll(staleDir, 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(staleDir, "deep.txt"), []byte("deep"), 0644))
 
-		err := removeStaleFiles(srcDir, tgtDir)
+		err := removeStaleFiles(ctx, srcDir, tgtDir)
 		require.NoError(t, err)
 
 		assert.NoDirExists(t, staleDir)
@@ -1106,7 +1108,7 @@ func TestRemoveStaleFiles(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(tgtDir, "sub"), 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "sub", "keep.txt"), []byte("keep"), 0644))
 
-		err := removeStaleFiles(srcDir, tgtDir)
+		err := removeStaleFiles(ctx, srcDir, tgtDir)
 		require.NoError(t, err)
 
 		assert.FileExists(t, filepath.Join(tgtDir, "sub", "keep.txt"))
@@ -1119,7 +1121,7 @@ func TestRemoveStaleFiles(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "a.txt"), []byte("a"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "b.txt"), []byte("b"), 0644))
 
-		err := removeStaleFiles(srcDir, tgtDir)
+		err := removeStaleFiles(ctx, srcDir, tgtDir)
 		require.NoError(t, err)
 
 		assert.NoFileExists(t, filepath.Join(tgtDir, "a.txt"))
@@ -1128,7 +1130,7 @@ func TestRemoveStaleFiles(t *testing.T) {
 
 	t.Run("non-existent target returns error", func(t *testing.T) {
 		sourceDir := t.TempDir()
-		err := removeStaleFiles(sourceDir, "/nonexistent/target")
+		err := removeStaleFiles(ctx, sourceDir, "/nonexistent/target")
 		assert.Error(t, err)
 	})
 
@@ -1143,22 +1145,29 @@ func TestRemoveStaleFiles(t *testing.T) {
 		srcDir := evalSymlinks(t, t.TempDir())
 		tgtDir := evalSymlinks(t, t.TempDir())
 
-		// Create a read-only directory in target with a file inside.
-		// The file is not in source, so removeStaleFiles should try to delete it.
+		// Create a stale file inside a read-only directory so os.Remove fails.
 		lockedDir := filepath.Join(tgtDir, "locked")
 		require.NoError(t, os.MkdirAll(lockedDir, 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(lockedDir, "stale.txt"), []byte("stale"), 0644))
+		staleFile := filepath.Join(lockedDir, "stale.txt")
+		require.NoError(t, os.WriteFile(staleFile, []byte("stale"), 0644))
 
-		// Make the parent directory read-only so RemoveAll cannot delete its children.
+		// Source has the locked dir but not the stale file.
+		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "locked"), 0755))
+
+		// Make the directory read-only so the file inside cannot be removed.
 		require.NoError(t, os.Chmod(lockedDir, 0555))
-		t.Cleanup(func() { _ = os.Chmod(lockedDir, 0755) })
+		t.Cleanup(func() {
+			// Restore permissions so t.TempDir() cleanup succeeds.
+			_ = os.Chmod(lockedDir, 0755)
+		})
 
-		// lockedDir itself is not in source, so the WalkDir will attempt os.RemoveAll on it.
-		// The read-only permission prevents deletion of the contents.
-		_ = removeStaleFiles(srcDir, tgtDir)
+		err := removeStaleFiles(ctx, srcDir, tgtDir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "stale file(s) could not be removed")
+		assert.Contains(t, err.Error(), "stale.txt")
 
-		// The locked directory should still exist since removal was blocked.
-		assert.DirExists(t, lockedDir)
+		// The file should still exist since removal failed.
+		assert.FileExists(t, staleFile)
 	})
 }
 
