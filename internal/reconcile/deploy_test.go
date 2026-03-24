@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -1134,6 +1135,13 @@ func TestRemoveStaleFiles(t *testing.T) {
 	})
 
 	t.Run("returns error when file removal fails", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("chmod-based delete permission behavior is not reliable on Windows")
+		}
+		if os.Getuid() == 0 {
+			t.Skip("skipping permission test when running as root")
+		}
+
 		srcDir := evalSymlinks(t, t.TempDir())
 		tgtDir := evalSymlinks(t, t.TempDir())
 

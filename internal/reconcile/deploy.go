@@ -270,7 +270,10 @@ func removeStaleFiles(ctx context.Context, sourceDir, targetDir string) error {
 		}
 
 		srcPath := filepath.Join(sourceDir, relPath)
-		if _, err := os.Stat(srcPath); os.IsNotExist(err) {
+		if _, err := os.Stat(srcPath); err != nil {
+			if !os.IsNotExist(err) {
+				return fmt.Errorf("stat source path %s: %w", relPath, err)
+			}
 			if d.IsDir() {
 				if rmErr := os.RemoveAll(path); rmErr != nil {
 					logger.Warn().Err(rmErr).Str(log.FieldPath, relPath).Msg("Failed to remove stale directory")
