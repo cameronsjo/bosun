@@ -704,7 +704,7 @@ func TestConfigFromEnv_HookSettleDelay(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "")
-			os.Unsetenv("BOSUN_HOOK_SETTLE_DELAY")
+			require.NoError(t, os.Unsetenv("BOSUN_HOOK_SETTLE_DELAY"))
 			if tt.setEnv {
 				t.Setenv("BOSUN_HOOK_SETTLE_DELAY", tt.envValue)
 			}
