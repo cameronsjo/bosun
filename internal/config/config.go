@@ -3,6 +3,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -463,7 +464,10 @@ func loadConfigFile(root string) (configFile, error) {
 		path := filepath.Join(root, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
-			continue
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return configFile{}, fmt.Errorf("failed to read config file %s: %w", path, err)
 		}
 
 		if err := yaml.Unmarshal(data, &cfg); err != nil {

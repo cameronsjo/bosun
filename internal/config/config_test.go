@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -397,6 +398,24 @@ func TestLoadConfigFile(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, cfg.Infrastructure.Containers)
 		assert.Empty(t, cfg.PostSyncHooks)
+	})
+
+	t.Run("unreadable file returns error", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("chmod is not supported on Windows")
+		}
+		if os.Getuid() == 0 {
+			t.Skip("root bypasses file permission checks")
+		}
+
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "bosun.yaml")
+		require.NoError(t, os.WriteFile(configPath, []byte("infrastructure:\n  containers: []\n"), 0644))
+		require.NoError(t, os.Chmod(configPath, 0000))
+		t.Cleanup(func() { _ = os.Chmod(configPath, 0644) })
+
+		_, err := loadConfigFile(tmpDir)
+		require.Error(t, err)
 	})
 }
 
