@@ -38,30 +38,12 @@ func (r *Reconciler) reloadProjectConfig() {
 	changed = reloadField(&r.config.PostSyncHooks, reloaded.PostSyncHooks, func(v []PostSyncHook) bool { return v != nil }) || changed
 	changed = reloadField(&r.config.HookSettleDelay, reloaded.HookSettleDelay, func(v time.Duration) bool { return v > 0 }) || changed
 
-	if !r.config.DeployPathsFromEnv && reloaded.DeployPaths != nil {
-		r.config.DeployPaths = reloaded.DeployPaths
-		changed = true
-	}
-
-	if !r.config.DeploySyncPathsFromEnv && reloaded.DeploySyncPaths != nil {
-		r.config.DeploySyncPaths = reloaded.DeploySyncPaths
-		changed = true
-	}
-
-	if !r.config.DeploySyncExcludeFromEnv && reloaded.DeploySyncExclude != nil {
-		r.config.DeploySyncExclude = reloaded.DeploySyncExclude
-		changed = true
-	}
-
-	if !r.config.CriticalContainersFromEnv && reloaded.CriticalContainers != nil {
-		r.config.CriticalContainers = reloaded.CriticalContainers
-		changed = true
-	}
-
-	if !r.config.DriftIgnoreFromEnv && reloaded.DriftIgnore != nil {
-		r.config.DriftIgnore = reloaded.DriftIgnore
-		changed = true
-	}
+	sliceSet := func(v []string) bool { return v != nil }
+	changed = reloadField(&r.config.DeployPaths, reloaded.DeployPaths, sliceSet) || changed
+	changed = reloadField(&r.config.DeploySyncPaths, reloaded.DeploySyncPaths, sliceSet) || changed
+	changed = reloadField(&r.config.DeploySyncExclude, reloaded.DeploySyncExclude, sliceSet) || changed
+	changed = reloadField(&r.config.CriticalContainers, reloaded.CriticalContainers, sliceSet) || changed
+	changed = reloadField(&r.config.DriftIgnore, reloaded.DriftIgnore, func(v []DriftIgnoreRule) bool { return v != nil }) || changed
 
 	if reloaded.OnFailure != nil {
 		r.config.OnFailure = *reloaded.OnFailure
@@ -73,22 +55,23 @@ func (r *Reconciler) reloadProjectConfig() {
 		changed = true
 	}
 
-	if !r.config.RemoveOrphansFromEnv && reloaded.RemoveOrphans != nil {
-		r.config.RemoveOrphans = *reloaded.RemoveOrphans
-		if r.deploy != nil {
-			r.deploy.RemoveOrphans = *reloaded.RemoveOrphans
+	if reloaded.RemoveOrphans != nil {
+		if reloadField(&r.config.RemoveOrphans, *reloaded.RemoveOrphans, func(v bool) bool { return true }) {
+			if r.deploy != nil {
+				r.deploy.RemoveOrphans = r.config.RemoveOrphans.Value
+			}
+			changed = true
 		}
-		changed = true
 	}
 
 	if changed {
 		logger.Info().
 			Int("hooks", len(r.config.PostSyncHooks.Value)).
 			Dur("settle_delay", r.config.HookSettleDelay.Value).
-			Int("deploy_paths", len(r.config.DeployPaths)).
+			Int("deploy_paths", len(r.config.DeployPaths.Value)).
 			Bool("on_failure", r.config.OnFailure).
 			Bool("on_success", r.config.OnSuccess).
-			Bool("remove_orphans", r.config.RemoveOrphans).
+			Bool("remove_orphans", r.config.RemoveOrphans.Value).
 			Msg("Reloaded project config from repo")
 	}
 }

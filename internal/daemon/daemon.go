@@ -750,7 +750,7 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	// Collect drift ignore rules from reconcile config.
 	var ignoreRules []reconcile.DriftIgnoreRule
 	if d.config.ReconcileConfig != nil {
-		ignoreRules = d.config.ReconcileConfig.DriftIgnore
+		ignoreRules = d.config.ReconcileConfig.DriftIgnore.Value
 	}
 
 	checkCtx, finishSpan := sentrypkg.StartSpan(checkCtx, "drift.periodic_check", "Periodic drift check")
@@ -1569,19 +1569,19 @@ func ConfigFromEnv() *Config {
 	rcfg.ContentHashSync = cfg.ContentHashSync
 
 	// Orphan container cleanup (default: true)
-	removeOrphansFromEnv := false
 	if v := os.Getenv("BOSUN_REMOVE_ORPHANS"); v != "" {
 		cfg.RemoveOrphans = v != "false" && v != "0"
-		removeOrphansFromEnv = true
+		rcfg.RemoveOrphans.SetFromEnv(cfg.RemoveOrphans)
+	} else {
+		rcfg.RemoveOrphans = reconcile.NewConfigField(cfg.RemoveOrphans)
 	}
-	rcfg.RemoveOrphans = cfg.RemoveOrphans
 
 	// Post-sync hooks, settle delay, deploy paths, alert flags, drift debounce, remove_orphans, and targets: load from project config, env var overrides.
 	if projectCfg, err := config.Load(); err == nil {
 		rcfg.PostSyncHooks.SetFromFile(projectCfg.PostSyncHooks())
 		rcfg.HookSettleDelay.SetFromFile(projectCfg.HookSettleDelay())
-		rcfg.DeployPaths = projectCfg.DeployPaths()
-		rcfg.CriticalContainers = projectCfg.CriticalContainers()
+		rcfg.DeployPaths.SetFromFile(projectCfg.DeployPaths())
+		rcfg.CriticalContainers.SetFromFile(projectCfg.CriticalContainers())
 
 		// Load targets from project config; BOSUN_TARGETS env var (parsed above) takes precedence.
 		// Skip if env explicitly set targets (even to empty — that's an intentional override).
@@ -1607,14 +1607,11 @@ func ConfigFromEnv() *Config {
 		}
 
 		// Load remove_orphans from project config; env var (parsed above) takes precedence.
-		if os.Getenv("BOSUN_REMOVE_ORPHANS") == "" {
+		if !rcfg.RemoveOrphans.FromEnv() {
 			cfg.RemoveOrphans = projectCfg.RemoveOrphans()
-			rcfg.RemoveOrphans = cfg.RemoveOrphans
+			rcfg.RemoveOrphans.SetFromFile(cfg.RemoveOrphans)
 		}
 	}
-
-	// Set env-override flags so the reconciler preserves env var precedence on reload.
-	rcfg.RemoveOrphansFromEnv = removeOrphansFromEnv
 
 	// Wire config reloader so the reconciler can re-read bosun.yaml from the repo.
 	rcfg.ConfigReloader = func(dir string) (*reconcile.ReloadedConfig, error) {
@@ -1658,8 +1655,7 @@ func ConfigFromEnv() *Config {
 		if err := json.Unmarshal([]byte(v), &paths); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_DEPLOY_PATHS, ignoring")
 		} else {
-			rcfg.DeployPaths = paths
-			rcfg.DeployPathsFromEnv = true
+			rcfg.DeployPaths.SetFromEnv(paths)
 		}
 	}
 	if v := os.Getenv("BOSUN_DEPLOY_SYNC_PATHS"); v != "" {
@@ -1667,8 +1663,7 @@ func ConfigFromEnv() *Config {
 		if err := json.Unmarshal([]byte(v), &paths); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_DEPLOY_SYNC_PATHS, ignoring")
 		} else {
-			rcfg.DeploySyncPaths = paths
-			rcfg.DeploySyncPathsFromEnv = true
+			rcfg.DeploySyncPaths.SetFromEnv(paths)
 		}
 	}
 	if v := os.Getenv("BOSUN_DEPLOY_SYNC_EXCLUDE"); v != "" {
@@ -1676,8 +1671,7 @@ func ConfigFromEnv() *Config {
 		if err := json.Unmarshal([]byte(v), &paths); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_DEPLOY_SYNC_EXCLUDE, ignoring")
 		} else {
-			rcfg.DeploySyncExclude = paths
-			rcfg.DeploySyncExcludeFromEnv = true
+			rcfg.DeploySyncExclude.SetFromEnv(paths)
 		}
 	}
 	if v := os.Getenv("BOSUN_CRITICAL_CONTAINERS"); v != "" {
@@ -1685,8 +1679,7 @@ func ConfigFromEnv() *Config {
 		if err := json.Unmarshal([]byte(v), &containers); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_CRITICAL_CONTAINERS, ignoring")
 		} else {
-			rcfg.CriticalContainers = containers
-			rcfg.CriticalContainersFromEnv = true
+			rcfg.CriticalContainers.SetFromEnv(containers)
 		}
 	}
 	if v := os.Getenv("BOSUN_DRIFT_IGNORE"); v != "" {
@@ -1694,8 +1687,7 @@ func ConfigFromEnv() *Config {
 		if err := json.Unmarshal([]byte(v), &rules); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_DRIFT_IGNORE, ignoring")
 		} else {
-			rcfg.DriftIgnore = rules
-			rcfg.DriftIgnoreFromEnv = true
+			rcfg.DriftIgnore.SetFromEnv(rules)
 		}
 	}
 	if v := os.Getenv("BOSUN_HEALTH_GATE_TIMEOUT"); v != "" {
