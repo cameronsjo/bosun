@@ -231,8 +231,15 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 func copyNonTemplateFiles(src, dst string) error {
 	// Validate the source directory exists before walking. A missing root
 	// indicates an InfraSubDir misconfiguration and must surface as an error.
-	if _, err := os.Stat(src); err != nil {
-		return fmt.Errorf("source directory does not exist: %w", err)
+	info, err := os.Stat(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("source directory does not exist: %w", err)
+		}
+		return fmt.Errorf("failed to stat source directory %s: %w", src, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("source path is not a directory: %s", src)
 	}
 
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {

@@ -519,7 +519,7 @@ func TestCopyNonTemplateFiles(t *testing.T) {
 		assert.Contains(t, err.Error(), "source directory does not exist")
 	})
 
-	t.Run("file disappearing mid-walk does not error", func(t *testing.T) {
+	t.Run("file missing before walk does not error", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		srcDir := filepath.Join(tmpDir, "src")
 		dstDir := filepath.Join(tmpDir, "dst")
@@ -527,9 +527,8 @@ func TestCopyNonTemplateFiles(t *testing.T) {
 		require.NoError(t, os.MkdirAll(srcDir, 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "keep.txt"), []byte("keep"), 0644))
 
-		// Create a file then remove it before the walk copies it.
-		// WalkDir reads directory entries first, so a file removed between
-		// readdir and stat should trigger IsNotExist inside the callback.
+		// Remove before walking starts. This validates tolerant behavior for
+		// absent entries at traversal time, not a true mid-walk race.
 		vanishFile := filepath.Join(srcDir, "vanish.txt")
 		require.NoError(t, os.WriteFile(vanishFile, []byte("gone"), 0644))
 		require.NoError(t, os.Remove(vanishFile))
