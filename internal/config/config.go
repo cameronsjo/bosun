@@ -458,7 +458,7 @@ func Load() (*Config, error) {
 
 // loadConfigFile loads the bosun config file if present.
 // Returns a zero-value configFile with no error if no config file exists.
-// Returns an error if a config file exists but contains invalid YAML.
+// Returns an error if a config file exists but contains malformed YAML or unknown fields.
 func loadConfigFile(root string) (configFile, error) {
 	var cfg configFile
 

@@ -354,6 +354,7 @@ func TestLoadInfraContainers(t *testing.T) {
 
 		_, err := loadConfigFile(tmpDir)
 		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to parse config file")
 		assert.Contains(t, err.Error(), "bosun.yml")
 	})
 }
