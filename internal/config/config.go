@@ -3,6 +3,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -315,7 +316,10 @@ func FindRoot() (string, error) {
 // Returns nil with no error if no config file is found in the directory.
 // Returns nil with error only if a config file exists but fails to parse.
 func LoadFrom(dir string) (*Config, error) {
-	fileCfg := loadConfigFile(dir)
+	fileCfg, err := loadConfigFile(dir)
+	if err != nil {
+		return nil, err
+	}
 
 	// Check if any config was actually loaded by testing whether
 	// loadConfigFile found and parsed a file. Since configFile is a value
@@ -363,7 +367,10 @@ func Load() (*Config, error) {
 	}
 
 	// Load config file if present
-	fileCfg := loadConfigFile(root)
+	fileCfg, err := loadConfigFile(root)
+	if err != nil {
+		return nil, err
+	}
 
 	// Determine manifest directory
 	manifestDir := filepath.Join(root, "manifest")
@@ -448,14 +455,19 @@ func Load() (*Config, error) {
 }
 
 // loadConfigFile loads the bosun config file if present.
-func loadConfigFile(root string) configFile {
+// Returns a zero-value configFile with no error if no config file exists.
+// Returns an error if a config file cannot be read (non-ENOENT) or contains invalid YAML.
+func loadConfigFile(root string) (configFile, error) {
 	var cfg configFile
 
 	for _, name := range []string{"bosun.yaml", "bosun.yml", ".bosun/config.yml"} {
 		path := filepath.Join(root, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
-			continue
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return configFile{}, fmt.Errorf("failed to read config file %s: %w", path, err)
 		}
 
 		if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -472,7 +484,7 @@ func loadConfigFile(root string) configFile {
 		break
 	}
 
-	return cfg
+	return cfg, nil
 }
 
 // extractInfraContainers extracts infrastructure container names from a parsed config.
