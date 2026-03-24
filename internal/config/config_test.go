@@ -344,7 +344,7 @@ func TestLoadInfraContainers(t *testing.T) {
 		assert.Contains(t, err.Error(), "failed to parse config file")
 	})
 
-	t.Run("returns defaults when infrastructure section missing", func(t *testing.T) {
+	t.Run("returns error when config has unknown fields", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		content := `something_else:
@@ -352,10 +352,9 @@ func TestLoadInfraContainers(t *testing.T) {
 `
 		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yml"), []byte(content), 0644))
 
-		cfg, err := loadConfigFile(tmpDir)
-		require.NoError(t, err)
-		containers := extractInfraContainers(cfg)
-		assert.Equal(t, defaultInfraContainers, containers)
+		_, err := loadConfigFile(tmpDir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "bosun.yml")
 	})
 }
 
@@ -416,6 +415,26 @@ func TestLoadConfigFile(t *testing.T) {
 
 		_, err := loadConfigFile(tmpDir)
 		require.Error(t, err)
+	})
+
+	t.Run("malformed higher-priority file does not fall back", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		bosunDir := filepath.Join(tmpDir, ".bosun")
+		require.NoError(t, os.MkdirAll(bosunDir, 0755))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(tmpDir, "bosun.yaml"),
+			[]byte("infrastructure:\n  containers: [unterminated\n"),
+			0644,
+		))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(bosunDir, "config.yml"),
+			[]byte("infrastructure:\n  containers:\n    - fallback\n"),
+			0644,
+		))
+
+		_, err := loadConfigFile(tmpDir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "bosun.yaml")
 	})
 }
 
