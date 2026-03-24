@@ -689,43 +689,29 @@ post_sync_hooks:
 }
 
 func TestConfigFromEnv_HookSettleDelay(t *testing.T) {
-	t.Run("parses Go duration string", func(t *testing.T) {
-		t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "2s")
+	tests := []struct {
+		name     string
+		envValue string
+		setEnv   bool
+		expected time.Duration
+	}{
+		{name: "parses Go duration string", envValue: "2s", setEnv: true, expected: 2 * time.Second},
+		{name: "parses bare seconds", envValue: "5", setEnv: true, expected: 5 * time.Second},
+		{name: "defaults to zero when not set", setEnv: false, expected: 0},
+		{name: "invalid value ignored", envValue: "not-a-duration", setEnv: true, expected: 0},
+	}
 
-		cfg := ConfigFromEnv()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.setEnv {
+				t.Setenv("BOSUN_HOOK_SETTLE_DELAY", tt.envValue)
+			}
 
-		if cfg.ReconcileConfig.HookSettleDelay.Value != 2*time.Second {
-			t.Errorf("HookSettleDelay = %v, want 2s", cfg.ReconcileConfig.HookSettleDelay.Value)
-		}
-	})
+			cfg := ConfigFromEnv()
 
-	t.Run("parses bare seconds", func(t *testing.T) {
-		t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "5")
-
-		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.HookSettleDelay.Value != 5*time.Second {
-			t.Errorf("HookSettleDelay = %v, want 5s", cfg.ReconcileConfig.HookSettleDelay.Value)
-		}
-	})
-
-	t.Run("defaults to zero when not set", func(t *testing.T) {
-		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.HookSettleDelay.Value != 0 {
-			t.Errorf("HookSettleDelay = %v, want 0", cfg.ReconcileConfig.HookSettleDelay.Value)
-		}
-	})
-
-	t.Run("invalid value ignored", func(t *testing.T) {
-		t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "not-a-duration")
-
-		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.HookSettleDelay.Value != 0 {
-			t.Errorf("HookSettleDelay = %v, want 0 (default)", cfg.ReconcileConfig.HookSettleDelay.Value)
-		}
-	})
+			assert.Equal(t, tt.expected, cfg.ReconcileConfig.HookSettleDelay.Value)
+		})
+	}
 }
 
 func TestConfigFromEnv_HooksWithDelay(t *testing.T) {
@@ -935,66 +921,44 @@ func TestConfigFromEnv_DriftResolveAlerts(t *testing.T) {
 
 func TestConfigFromEnv_EnvOverrideFlags(t *testing.T) {
 	t.Run("PostSyncHooks source is env when env var present", func(t *testing.T) {
-		envHooks := `[{"paths":["traefik/**"],"action":"restart","container":"traefik"}]`
-		t.Setenv("BOSUN_POST_SYNC_HOOKS", envHooks)
+		t.Setenv("BOSUN_POST_SYNC_HOOKS", `[{"paths":["traefik/**"],"action":"restart","container":"traefik"}]`)
 
 		cfg := ConfigFromEnv()
-
-		if !cfg.ReconcileConfig.PostSyncHooks.FromEnv() {
-			t.Error("PostSyncHooks.Source should be SourceEnv when BOSUN_POST_SYNC_HOOKS is set")
-		}
+		assert.True(t, cfg.ReconcileConfig.PostSyncHooks.FromEnv())
 	})
 
 	t.Run("PostSyncHooks source is not env when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.PostSyncHooks.FromEnv() {
-			t.Error("PostSyncHooks.Source should not be SourceEnv when BOSUN_POST_SYNC_HOOKS is not set")
-		}
+		assert.False(t, cfg.ReconcileConfig.PostSyncHooks.FromEnv())
 	})
 
 	t.Run("HookSettleDelay source is env when env var present", func(t *testing.T) {
 		t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "3s")
 
 		cfg := ConfigFromEnv()
-
-		if !cfg.ReconcileConfig.HookSettleDelay.FromEnv() {
-			t.Error("HookSettleDelay.Source should be SourceEnv when BOSUN_HOOK_SETTLE_DELAY is set")
-		}
+		assert.True(t, cfg.ReconcileConfig.HookSettleDelay.FromEnv())
 	})
 
 	t.Run("HookSettleDelay source is not env when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.HookSettleDelay.FromEnv() {
-			t.Error("HookSettleDelay.Source should not be SourceEnv when BOSUN_HOOK_SETTLE_DELAY is not set")
-		}
+		assert.False(t, cfg.ReconcileConfig.HookSettleDelay.FromEnv())
 	})
 
 	t.Run("ConfigReloader is wired", func(t *testing.T) {
 		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.ConfigReloader == nil {
-			t.Error("ConfigReloader should be set by ConfigFromEnv")
-		}
+		require.NotNil(t, cfg.ReconcileConfig.ConfigReloader)
 	})
 
 	t.Run("CriticalContainersFromEnv set when env var present", func(t *testing.T) {
 		t.Setenv("BOSUN_CRITICAL_CONTAINERS", `["traefik","authelia"]`)
 
 		cfg := ConfigFromEnv()
-
-		if !cfg.ReconcileConfig.CriticalContainersFromEnv {
-			t.Error("CriticalContainersFromEnv should be true when BOSUN_CRITICAL_CONTAINERS is set")
-		}
+		assert.True(t, cfg.ReconcileConfig.CriticalContainersFromEnv)
 	})
 
 	t.Run("CriticalContainersFromEnv false when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.CriticalContainersFromEnv {
-			t.Error("CriticalContainersFromEnv should be false when BOSUN_CRITICAL_CONTAINERS is not set")
-		}
+		assert.False(t, cfg.ReconcileConfig.CriticalContainersFromEnv)
 	})
 
 	t.Run("DeploySyncPathsFromEnv set when env var present", func(t *testing.T) {

@@ -98,7 +98,7 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 	} else if cp.CriticalContainers != nil {
 		cp.CriticalContainers = append([]string(nil), cp.CriticalContainers...)
 	}
-	if t.PostSyncHooks != nil {
+	if t.PostSyncHooks != nil && !cp.PostSyncHooks.FromEnv() {
 		cp.PostSyncHooks.Value = clonePostSyncHooks(t.PostSyncHooks)
 	} else if cp.PostSyncHooks.Value != nil {
 		cp.PostSyncHooks.Value = clonePostSyncHooks(cp.PostSyncHooks.Value)

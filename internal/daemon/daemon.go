@@ -1624,9 +1624,10 @@ func ConfigFromEnv() *Config {
 		}
 		alertCfg := cfg.GetAlertConfig()
 		removeOrphans := cfg.RemoveOrphans()
+		hookSettleDelay := cfg.HookSettleDelay()
 		return &reconcile.ReloadedConfig{
 			PostSyncHooks:      cfg.PostSyncHooks(),
-			HookSettleDelay:    cfg.HookSettleDelay(),
+			HookSettleDelay:    &hookSettleDelay,
 			DeployPaths:        cfg.DeployPaths(),
 			DeploySyncPaths:    cfg.DeploySyncPaths(),
 			DeploySyncExclude:  cfg.DeploySyncExclude(),
