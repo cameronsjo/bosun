@@ -246,6 +246,10 @@ func copyNonTemplateFiles(src, dst string) error {
 		if err != nil {
 			// Individual files may disappear mid-walk (race condition safety).
 			if os.IsNotExist(err) {
+				// Root disappearing is not a per-file race; surface it.
+				if path == src {
+					return fmt.Errorf("source directory disappeared during walk: %w", err)
+				}
 				return nil
 			}
 			return err
