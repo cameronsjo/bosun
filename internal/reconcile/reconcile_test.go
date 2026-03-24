@@ -1342,6 +1342,77 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 		r.executePostSyncHooks(context.Background(), "aaa", "bbb", nil)
 		assert.True(t, restartCalled)
 	})
+
+	t.Run("remote deploy fires all hooks unconditionally", func(t *testing.T) {
+		restartedContainers := map[string]bool{}
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts container.StopOptions) error {
+			restartedContainers[cID] = true
+			return nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		cfg := &Config{
+			TargetHost: "user@remote-host",
+			PostSyncHooks: []PostSyncHook{
+				{Container: "traefik", Paths: []string{"traefik/**"}, Action: "restart"},
+				{Container: "authelia", Paths: []string{"authelia/**"}, Action: "restart"},
+			},
+		}
+		r := NewReconciler(cfg)
+		r.dockerClientFn = func() *docker.Client { return client }
+
+		// deployResult is nil (remote mode), all hooks should fire
+		r.executePostSyncHooks(context.Background(), "aaa", "bbb", nil)
+		assert.True(t, restartedContainers["traefik"], "traefik hook should fire for remote deploy")
+		assert.True(t, restartedContainers["authelia"], "authelia hook should fire for remote deploy")
+	})
+
+	t.Run("local deploy with WrittenFiles fires only matching hooks", func(t *testing.T) {
+		restartedContainers := map[string]bool{}
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts container.StopOptions) error {
+			restartedContainers[cID] = true
+			return nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		cfg := &Config{
+			PostSyncHooks: []PostSyncHook{
+				{Container: "traefik", Paths: []string{"traefik/**"}, Action: "restart"},
+				{Container: "authelia", Paths: []string{"authelia/**"}, Action: "restart"},
+			},
+		}
+		r := NewReconciler(cfg)
+		r.dockerClientFn = func() *docker.Client { return client }
+
+		// Only traefik files changed — authelia hook should NOT fire
+		result := &DeployResult{WrittenFiles: []string{"traefik/dynamic.yml"}}
+		r.executePostSyncHooks(context.Background(), "aaa", "bbb", result)
+		assert.True(t, restartedContainers["traefik"], "traefik hook should fire for matching files")
+		assert.False(t, restartedContainers["authelia"], "authelia hook should NOT fire without matching files")
+	})
+
+	t.Run("nil deploy result without remote target uses git diff", func(t *testing.T) {
+		// When TargetHost is empty and deployResult is nil, fall back to git diff
+		// (not the remote-mode unconditional path).
+		gitOps := &mockGitOps{diffFiles: []string{}}
+		cfg := &Config{
+			PostSyncHooks: []PostSyncHook{
+				{Container: "traefik", Paths: []string{"traefik/**"}, Action: "restart"},
+			},
+		}
+		dockerCalled := false
+		r := NewReconciler(cfg, WithGitOperations(gitOps))
+		r.dockerClientFn = func() *docker.Client {
+			dockerCalled = true
+			return nil
+		}
+
+		// No TargetHost, nil deployResult, empty diff — hooks should NOT fire
+		r.executePostSyncHooks(context.Background(), "aaa", "bbb", nil)
+		assert.False(t, dockerCalled, "hooks should not fire when diff is empty and not remote mode")
+	})
 }
 
 // --- Reconciler.reloadProjectConfig tests ---
