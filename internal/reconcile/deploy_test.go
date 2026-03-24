@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -1129,6 +1130,35 @@ func TestRemoveStaleFiles(t *testing.T) {
 		sourceDir := t.TempDir()
 		err := removeStaleFiles(sourceDir, "/nonexistent/target")
 		assert.Error(t, err)
+	})
+
+	t.Run("returns error when file removal fails", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("chmod-based delete permission behavior is not reliable on Windows")
+		}
+		if os.Getuid() == 0 {
+			t.Skip("skipping permission test when running as root")
+		}
+
+		srcDir := evalSymlinks(t, t.TempDir())
+		tgtDir := evalSymlinks(t, t.TempDir())
+
+		// Create a read-only directory in target with a file inside.
+		// The file is not in source, so removeStaleFiles should try to delete it.
+		lockedDir := filepath.Join(tgtDir, "locked")
+		require.NoError(t, os.MkdirAll(lockedDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(lockedDir, "stale.txt"), []byte("stale"), 0644))
+
+		// Make the parent directory read-only so RemoveAll cannot delete its children.
+		require.NoError(t, os.Chmod(lockedDir, 0555))
+		t.Cleanup(func() { _ = os.Chmod(lockedDir, 0755) })
+
+		// lockedDir itself is not in source, so the WalkDir will attempt os.RemoveAll on it.
+		// The read-only permission prevents deletion of the contents.
+		_ = removeStaleFiles(srcDir, tgtDir)
+
+		// The locked directory should still exist since removal was blocked.
+		assert.DirExists(t, lockedDir)
 	})
 }
 

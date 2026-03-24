@@ -264,7 +264,10 @@ func removeStaleFiles(sourceDir, targetDir string) error {
 		}
 
 		srcPath := filepath.Join(sourceDir, relPath)
-		if _, err := os.Stat(srcPath); os.IsNotExist(err) {
+		if _, err := os.Stat(srcPath); err != nil {
+			if !os.IsNotExist(err) {
+				return fmt.Errorf("stat source path %s: %w", relPath, err)
+			}
 			if d.IsDir() {
 				_ = os.RemoveAll(path)
 				return filepath.SkipDir
