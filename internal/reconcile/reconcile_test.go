@@ -4013,6 +4013,12 @@ func TestResolveDeployMode(t *testing.T) {
 			wantErr:        true,
 			wantErrContain: "inaccessible",
 		},
+		{
+			name:        "remote mode when target host set and appdata path is inaccessible",
+			targetHost:  "user@remote",
+			appdataPath: "/nonexistent/mount/path/that/does/not/exist",
+			wantLocal:   false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -4038,6 +4044,9 @@ func TestResolveDeployMode(t *testing.T) {
 				require.Error(t, err)
 				assert.ErrorIs(t, err, ErrAppdataInaccessible)
 				assert.Contains(t, err.Error(), tt.wantErrContain)
+				if tt.appdataPath != "" {
+					assert.Contains(t, err.Error(), tt.appdataPath)
+				}
 				return
 			}
 

@@ -1147,7 +1147,7 @@ func (r *Reconciler) resolveDeployMode(ctx context.Context) (bool, error) {
 		Str(log.FieldPath, r.config.LocalAppdataPath).
 		Err(err).
 		Msg("Local appdata path configured but inaccessible. Check that the mount is up")
-	return false, fmt.Errorf("%w: %s (%v)", ErrAppdataInaccessible, r.config.LocalAppdataPath, err)
+	return false, fmt.Errorf("%w: %s: %w", ErrAppdataInaccessible, r.config.LocalAppdataPath, err)
 }
 
 // isLocalMode returns true if running in local mode (appdata mounted).
