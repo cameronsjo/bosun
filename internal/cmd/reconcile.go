@@ -148,8 +148,8 @@ func runReconcile(cmd *cobra.Command, args []string) {
 
 	// Load post-sync hooks, settle delay, and deploy paths from project config file.
 	if projectCfg, err := config.Load(); err == nil {
-		cfg.PostSyncHooks = projectCfg.PostSyncHooks()
-		cfg.HookSettleDelay = projectCfg.HookSettleDelay()
+		cfg.PostSyncHooks.SetFromFile(projectCfg.PostSyncHooks())
+		cfg.HookSettleDelay.SetFromFile(projectCfg.HookSettleDelay())
 		cfg.DeployPaths = projectCfg.DeployPaths()
 	}
 
@@ -173,19 +173,16 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		if err := json.Unmarshal([]byte(v), &hooks); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_POST_SYNC_HOOKS, ignoring")
 		} else {
-			cfg.PostSyncHooks = hooks
-			cfg.PostSyncHooksFromEnv = true
+			cfg.PostSyncHooks.SetFromEnv(hooks)
 		}
 	}
 
 	// Environment variable override for hook settle delay.
 	if v := os.Getenv("BOSUN_HOOK_SETTLE_DELAY"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
-			cfg.HookSettleDelay = d
-			cfg.HookSettleDelayFromEnv = true
+			cfg.HookSettleDelay.SetFromEnv(d)
 		} else if d, err := time.ParseDuration(v + "s"); err == nil {
-			cfg.HookSettleDelay = d
-			cfg.HookSettleDelayFromEnv = true
+			cfg.HookSettleDelay.SetFromEnv(d)
 		} else {
 			log.Warn().Str("value", v).Msg("Failed to parse BOSUN_HOOK_SETTLE_DELAY, ignoring")
 		}

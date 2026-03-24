@@ -116,11 +116,11 @@ type Config struct {
 	RestartWindow time.Duration
 
 	// PostSyncHooks defines container restart actions triggered by file changes.
-	PostSyncHooks []PostSyncHook
+	PostSyncHooks ConfigField[[]PostSyncHook]
 
 	// HookSettleDelay is a global pause after deploy but before any post-sync hooks run.
 	// Allows filesystem propagation on FUSE mounts (e.g., Unraid's shfs).
-	HookSettleDelay time.Duration
+	HookSettleDelay ConfigField[time.Duration]
 
 	// ContentHashSync if true, compares file content hashes before writing.
 	// Skips writes for unchanged files to avoid FUSE handle invalidation.
@@ -131,13 +131,6 @@ type Config struct {
 	// Defaults to true.
 	RemoveOrphans bool
 
-	// PostSyncHooksFromEnv is true when BOSUN_POST_SYNC_HOOKS env var is set.
-	// When true, repo config reload will not update PostSyncHooks.
-	PostSyncHooksFromEnv bool
-
-	// HookSettleDelayFromEnv is true when BOSUN_HOOK_SETTLE_DELAY env var is set.
-	// When true, repo config reload will not update HookSettleDelay.
-	HookSettleDelayFromEnv bool
 
 	// DeployPaths is an allowlist of glob patterns for deploy-relevant paths.
 	// When configured, commits that only touch files outside these patterns skip the pipeline.
@@ -617,9 +610,9 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	}
 
 	// Execute post-sync hooks if any files changed and hooks are configured.
-	if r.dockerClientFn != nil && !r.config.DryRun && len(r.config.PostSyncHooks) > 0 {
+	if r.dockerClientFn != nil && !r.config.DryRun && len(r.config.PostSyncHooks.Value) > 0 {
 		_, otelHooksSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.post_sync_hooks",
-			trace.WithAttributes(telemetry.IntAttr("hook_count", len(r.config.PostSyncHooks))),
+			trace.WithAttributes(telemetry.IntAttr("hook_count", len(r.config.PostSyncHooks.Value))),
 		)
 		r.executePostSyncHooks(ctx, previousCommit, after, deployResult)
 		telemetry.SpanOK(otelHooksSpan)
@@ -783,12 +776,12 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	// A false-positive restart is safer than stale configs on FUSE mounts.
 	var matched []PostSyncHook
 	if diffFailed || remoteMode {
-		matched = dedupeHooksByContainer(r.config.PostSyncHooks)
+		matched = dedupeHooksByContainer(r.config.PostSyncHooks.Value)
 		if diffFailed {
 			logger.Info().Int("hooks", len(matched)).Msg("Diff unavailable, firing all configured hooks")
 		}
 	} else {
-		matched = EvaluatePostSyncHooks(changedFiles, r.config.PostSyncHooks)
+		matched = EvaluatePostSyncHooks(changedFiles, r.config.PostSyncHooks.Value)
 	}
 	if len(matched) == 0 {
 		return
@@ -801,7 +794,7 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	}
 
 	ui.Info("Executing %d post-sync hook(s)...", len(matched))
-	if err := ExecutePostSyncHooks(ctx, client, matched, r.config.HookSettleDelay); err != nil {
+	if err := ExecutePostSyncHooks(ctx, client, matched, r.config.HookSettleDelay.Value); err != nil {
 		logger.Warn().Err(err).Msg("Some post-sync hooks failed")
 		ui.Warning("Post-sync hook errors: %v", err)
 	}

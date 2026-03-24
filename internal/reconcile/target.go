@@ -99,9 +99,9 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 		cp.CriticalContainers = append([]string(nil), cp.CriticalContainers...)
 	}
 	if t.PostSyncHooks != nil {
-		cp.PostSyncHooks = clonePostSyncHooks(t.PostSyncHooks)
-	} else if cp.PostSyncHooks != nil {
-		cp.PostSyncHooks = clonePostSyncHooks(cp.PostSyncHooks)
+		cp.PostSyncHooks.Value = clonePostSyncHooks(t.PostSyncHooks)
+	} else if cp.PostSyncHooks.Value != nil {
+		cp.PostSyncHooks.Value = clonePostSyncHooks(cp.PostSyncHooks.Value)
 	}
 	if t.DeploySyncPaths != nil {
 		cp.DeploySyncPaths = append([]string(nil), t.DeploySyncPaths...)
@@ -204,7 +204,7 @@ func (c *Config) ResolveTargets() []Target {
 			StateFile:          c.StateFile,
 			StagingDir:         c.StagingDir,
 			CriticalContainers: c.CriticalContainers,
-			PostSyncHooks:      c.PostSyncHooks,
+			PostSyncHooks:      c.PostSyncHooks.Value,
 			DeploySyncPaths:    c.DeploySyncPaths,
 			DeploySyncExclude:  c.DeploySyncExclude,
 		},

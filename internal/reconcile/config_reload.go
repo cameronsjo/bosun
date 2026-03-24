@@ -1,6 +1,8 @@
 package reconcile
 
 import (
+	"time"
+
 	"github.com/cameronsjo/bosun/internal/log"
 )
 
@@ -33,15 +35,8 @@ func (r *Reconciler) reloadProjectConfig() {
 
 	changed := false
 
-	if !r.config.PostSyncHooksFromEnv && reloaded.PostSyncHooks != nil {
-		r.config.PostSyncHooks = reloaded.PostSyncHooks
-		changed = true
-	}
-
-	if !r.config.HookSettleDelayFromEnv && reloaded.HookSettleDelay > 0 {
-		r.config.HookSettleDelay = reloaded.HookSettleDelay
-		changed = true
-	}
+	changed = reloadField(&r.config.PostSyncHooks, reloaded.PostSyncHooks, func(v []PostSyncHook) bool { return v != nil }) || changed
+	changed = reloadField(&r.config.HookSettleDelay, reloaded.HookSettleDelay, func(v time.Duration) bool { return v > 0 }) || changed
 
 	if !r.config.DeployPathsFromEnv && reloaded.DeployPaths != nil {
 		r.config.DeployPaths = reloaded.DeployPaths
@@ -88,8 +83,8 @@ func (r *Reconciler) reloadProjectConfig() {
 
 	if changed {
 		logger.Info().
-			Int("hooks", len(r.config.PostSyncHooks)).
-			Dur("settle_delay", r.config.HookSettleDelay).
+			Int("hooks", len(r.config.PostSyncHooks.Value)).
+			Dur("settle_delay", r.config.HookSettleDelay.Value).
 			Int("deploy_paths", len(r.config.DeployPaths)).
 			Bool("on_failure", r.config.OnFailure).
 			Bool("on_success", r.config.OnSuccess).
