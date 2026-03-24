@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -152,7 +153,7 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 		}
 
 		// Remove files in target that aren't in source (--delete semantics).
-		if err := removeStaleFiles(sourceDir, targetDir); err != nil {
+		if err := removeStaleFiles(ctx, sourceDir, targetDir); err != nil {
 			return fmt.Errorf("remove stale files: %w", err)
 		}
 
@@ -249,8 +250,13 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 
 // removeStaleFiles removes files in targetDir that don't exist in sourceDir.
 // Preserves --delete semantics when using per-file content-hash sync.
-func removeStaleFiles(sourceDir, targetDir string) error {
-	return filepath.WalkDir(targetDir, func(path string, d os.DirEntry, err error) error {
+// Logs a warning for each file that cannot be removed and returns a summary
+// error if any removals failed.
+func removeStaleFiles(ctx context.Context, sourceDir, targetDir string) error {
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
+	var removalErrors []error
+
+	walkErr := filepath.WalkDir(targetDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -264,15 +270,32 @@ func removeStaleFiles(sourceDir, targetDir string) error {
 		}
 
 		srcPath := filepath.Join(sourceDir, relPath)
-		if _, err := os.Stat(srcPath); os.IsNotExist(err) {
+		if _, err := os.Stat(srcPath); err != nil {
+			if !os.IsNotExist(err) {
+				return fmt.Errorf("stat source path %s: %w", relPath, err)
+			}
 			if d.IsDir() {
-				_ = os.RemoveAll(path)
+				if rmErr := os.RemoveAll(path); rmErr != nil {
+					logger.Warn().Err(rmErr).Str(log.FieldPath, relPath).Msg("Failed to remove stale directory")
+					removalErrors = append(removalErrors, fmt.Errorf("remove directory %s: %w", relPath, rmErr))
+				}
 				return filepath.SkipDir
 			}
-			_ = os.Remove(path)
+			if rmErr := os.Remove(path); rmErr != nil {
+				logger.Warn().Err(rmErr).Str(log.FieldPath, relPath).Msg("Failed to remove stale file")
+				removalErrors = append(removalErrors, fmt.Errorf("remove file %s: %w", relPath, rmErr))
+			}
 		}
 		return nil
 	})
+
+	if walkErr != nil {
+		return walkErr
+	}
+	if len(removalErrors) > 0 {
+		return fmt.Errorf("%d stale file(s) could not be removed: %w", len(removalErrors), errors.Join(removalErrors...))
+	}
+	return nil
 }
 
 // DeployLocalFile syncs a single file locally using native Go file operations.
