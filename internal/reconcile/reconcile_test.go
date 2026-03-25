@@ -261,9 +261,9 @@ func TestReconciler_RenderTemplates(t *testing.T) {
 func TestReconciler_ReloadProjectConfig(t *testing.T) {
 	t.Run("updates hooks when not from env", func(t *testing.T) {
 		cfg := &Config{
-			PostSyncHooks: []PostSyncHook{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
 				{Paths: []string{"old/**"}, Action: "restart", Container: "old"},
-			},
+			}),
 		}
 		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
 			return &ReloadedConfig{
@@ -276,16 +276,15 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 
 		r.reloadProjectConfig()
 
-		require.Len(t, r.config.PostSyncHooks, 1)
-		assert.Equal(t, "new", r.config.PostSyncHooks[0].Container)
+		require.Len(t, r.config.PostSyncHooks.Value, 1)
+		assert.Equal(t, "new", r.config.PostSyncHooks.Value[0].Container)
 	})
 
 	t.Run("skips hooks when from env", func(t *testing.T) {
 		cfg := &Config{
-			PostSyncHooks: []PostSyncHook{
+			PostSyncHooks: EnvConfigField([]PostSyncHook{
 				{Paths: []string{"env/**"}, Action: "restart", Container: "env-hook"},
-			},
-			PostSyncHooksFromEnv: true,
+			}),
 		}
 		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
 			return &ReloadedConfig{
@@ -298,48 +297,64 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 
 		r.reloadProjectConfig()
 
-		require.Len(t, r.config.PostSyncHooks, 1)
-		assert.Equal(t, "env-hook", r.config.PostSyncHooks[0].Container)
+		require.Len(t, r.config.PostSyncHooks.Value, 1)
+		assert.Equal(t, "env-hook", r.config.PostSyncHooks.Value[0].Container)
 	})
 
 	t.Run("updates settle delay when not from env", func(t *testing.T) {
-		cfg := &Config{
-			HookSettleDelay: 0,
-		}
+		cfg := &Config{}
+		delay := 5 * time.Second
 		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
 			return &ReloadedConfig{
-				HookSettleDelay: 5 * time.Second,
+				HookSettleDelay: &delay,
 			}, nil
 		}
 		r := NewReconciler(cfg)
 
 		r.reloadProjectConfig()
 
-		assert.Equal(t, 5*time.Second, r.config.HookSettleDelay)
+		assert.Equal(t, 5*time.Second, r.config.HookSettleDelay.Value)
 	})
 
 	t.Run("skips settle delay when from env", func(t *testing.T) {
 		cfg := &Config{
-			HookSettleDelay:        2 * time.Second,
-			HookSettleDelayFromEnv: true,
+			HookSettleDelay: EnvConfigField(2 * time.Second),
 		}
+		delay := 10 * time.Second
 		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
 			return &ReloadedConfig{
-				HookSettleDelay: 10 * time.Second,
+				HookSettleDelay: &delay,
 			}, nil
 		}
 		r := NewReconciler(cfg)
 
 		r.reloadProjectConfig()
 
-		assert.Equal(t, 2*time.Second, r.config.HookSettleDelay)
+		assert.Equal(t, 2*time.Second, r.config.HookSettleDelay.Value)
+	})
+
+	t.Run("clears settle delay to zero when repo sets zero", func(t *testing.T) {
+		cfg := &Config{
+			HookSettleDelay: FileConfigField(3 * time.Second),
+		}
+		zero := time.Duration(0)
+		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{
+				HookSettleDelay: &zero,
+			}, nil
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		assert.Equal(t, time.Duration(0), r.config.HookSettleDelay.Value)
 	})
 
 	t.Run("keeps config on parse error", func(t *testing.T) {
 		cfg := &Config{
-			PostSyncHooks: []PostSyncHook{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
 				{Paths: []string{"keep/**"}, Action: "restart", Container: "keep"},
-			},
+			}),
 		}
 		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
 			return nil, fmt.Errorf("YAML parse error")
@@ -348,29 +363,29 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 
 		r.reloadProjectConfig()
 
-		require.Len(t, r.config.PostSyncHooks, 1)
-		assert.Equal(t, "keep", r.config.PostSyncHooks[0].Container)
+		require.Len(t, r.config.PostSyncHooks.Value, 1)
+		assert.Equal(t, "keep", r.config.PostSyncHooks.Value[0].Container)
 	})
 
 	t.Run("no-op when reloader is nil", func(t *testing.T) {
 		cfg := &Config{
-			PostSyncHooks: []PostSyncHook{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
 				{Paths: []string{"unchanged/**"}, Action: "restart", Container: "unchanged"},
-			},
+			}),
 		}
 		r := NewReconciler(cfg)
 
 		r.reloadProjectConfig()
 
-		require.Len(t, r.config.PostSyncHooks, 1)
-		assert.Equal(t, "unchanged", r.config.PostSyncHooks[0].Container)
+		require.Len(t, r.config.PostSyncHooks.Value, 1)
+		assert.Equal(t, "unchanged", r.config.PostSyncHooks.Value[0].Container)
 	})
 
 	t.Run("no-op when repo has no config", func(t *testing.T) {
 		cfg := &Config{
-			PostSyncHooks: []PostSyncHook{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
 				{Paths: []string{"existing/**"}, Action: "restart", Container: "existing"},
-			},
+			}),
 		}
 		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
 			return &ReloadedConfig{}, nil
@@ -379,8 +394,8 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 
 		r.reloadProjectConfig()
 
-		require.Len(t, r.config.PostSyncHooks, 1)
-		assert.Equal(t, "existing", r.config.PostSyncHooks[0].Container)
+		require.Len(t, r.config.PostSyncHooks.Value, 1)
+		assert.Equal(t, "existing", r.config.PostSyncHooks.Value[0].Container)
 	})
 }
 
@@ -388,9 +403,9 @@ func TestExecutePostSyncHooks_DiffFilesError_FiresAllHooks(t *testing.T) {
 	// Simulates the shallow clone scenario: DiffFiles fails because the previous
 	// commit is not in the shallow history. This is the root cause of GitHub #55.
 	cfg := &Config{
-		PostSyncHooks: []PostSyncHook{
+		PostSyncHooks: NewConfigField([]PostSyncHook{
 			{Paths: []string{"**"}, Action: "restart", Container: "traefik"},
-		},
+		}),
 	}
 
 	diffErr := fmt.Errorf("resolve from-commit abc12345: object not found")
@@ -418,9 +433,9 @@ func TestExecutePostSyncHooks_DiffFilesError_FiresAllHooks(t *testing.T) {
 func TestExecutePostSyncHooks_WrittenFiles_MatchesHooks(t *testing.T) {
 	// When content-hash sync provides WrittenFiles, hooks should match against those.
 	cfg := &Config{
-		PostSyncHooks: []PostSyncHook{
+		PostSyncHooks: NewConfigField([]PostSyncHook{
 			{Paths: []string{"**"}, Action: "restart", Container: "traefik"},
-		},
+		}),
 	}
 
 	mockGitOps := &mockGitWithDiff{}
@@ -443,9 +458,9 @@ func TestExecutePostSyncHooks_WrittenFiles_MatchesHooks(t *testing.T) {
 func TestExecutePostSyncHooks_EmptyPreviousCommit_Skips(t *testing.T) {
 	// First deploy: previousCommit is empty, hooks should be skipped (correct behavior).
 	cfg := &Config{
-		PostSyncHooks: []PostSyncHook{
+		PostSyncHooks: NewConfigField([]PostSyncHook{
 			{Paths: []string{"**"}, Action: "restart", Container: "traefik"},
-		},
+		}),
 	}
 
 	mockGitOps := &mockGitWithDiff{}
@@ -494,13 +509,12 @@ func TestReloadProjectConfig_DeployPaths(t *testing.T) {
 
 		r.reloadProjectConfig()
 
-		assert.Equal(t, []string{"unraid/**", "infra/**"}, r.config.DeployPaths)
+		assert.Equal(t, []string{"unraid/**", "infra/**"}, r.config.DeployPaths.Value)
 	})
 
 	t.Run("skips deploy_paths when from env", func(t *testing.T) {
 		cfg := &Config{
-			DeployPaths:        []string{"env/**"},
-			DeployPathsFromEnv: true,
+			DeployPaths:        EnvConfigField([]string{"env/**"}),
 		}
 		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
 			return &ReloadedConfig{
@@ -511,7 +525,7 @@ func TestReloadProjectConfig_DeployPaths(t *testing.T) {
 
 		r.reloadProjectConfig()
 
-		assert.Equal(t, []string{"env/**"}, r.config.DeployPaths)
+		assert.Equal(t, []string{"env/**"}, r.config.DeployPaths.Value)
 	})
 }
 
@@ -529,7 +543,7 @@ func TestRun_DeployPathsSkip(t *testing.T) {
 		RepoDir:     tmpDir,
 		LockFile:    filepath.Join(tmpDir, "test.lock"),
 		StateFile:   stateFile,
-		DeployPaths: []string{"unraid/**"},
+		DeployPaths: NewConfigField([]string{"unraid/**"}),
 	}
 
 	mockGit := &mockGitWithDiff{
@@ -570,7 +584,7 @@ func TestRun_DeployPathsMatch(t *testing.T) {
 		LockFile:    filepath.Join(tmpDir, "test.lock"),
 		StateFile:   stateFile,
 		StagingDir:  filepath.Join(tmpDir, "staging"),
-		DeployPaths: []string{"unraid/**"},
+		DeployPaths: NewConfigField([]string{"unraid/**"}),
 		DryRun:      true,
 	}
 
@@ -615,7 +629,7 @@ func TestRun_DeployPathsDiffFails(t *testing.T) {
 		LockFile:    filepath.Join(tmpDir, "test.lock"),
 		StateFile:   stateFile,
 		StagingDir:  filepath.Join(tmpDir, "staging"),
-		DeployPaths: []string{"unraid/**"},
+		DeployPaths: NewConfigField([]string{"unraid/**"}),
 		DryRun:      true,
 	}
 
@@ -648,7 +662,7 @@ func TestRun_DeployPathsForceOverride(t *testing.T) {
 		LockFile:    filepath.Join(tmpDir, "test.lock"),
 		StateFile:   stateFile,
 		StagingDir:  filepath.Join(tmpDir, "staging"),
-		DeployPaths: []string{"unraid/**"},
+		DeployPaths: NewConfigField([]string{"unraid/**"}),
 		Force:       true,
 		DryRun:      true,
 	}
@@ -684,7 +698,7 @@ func TestRun_DeployPathsFirstDeploySkipsPathCheck(t *testing.T) {
 		LockFile:    filepath.Join(tmpDir, "test.lock"),
 		StateFile:   stateFile,
 		StagingDir:  filepath.Join(tmpDir, "staging"),
-		DeployPaths: []string{"unraid/**"},
+		DeployPaths: NewConfigField([]string{"unraid/**"}),
 		DryRun:      true,
 	}
 
@@ -729,7 +743,7 @@ func TestRun_DeployPathsUsesLastDeployedCommitAfterFailure(t *testing.T) {
 		RepoDir:     tmpDir,
 		LockFile:    filepath.Join(tmpDir, "test.lock"),
 		StateFile:   stateFile,
-		DeployPaths: []string{"unraid/**"},
+		DeployPaths: NewConfigField([]string{"unraid/**"}),
 	}
 
 	mockGit := &mockGitWithDiff{
@@ -1261,9 +1275,9 @@ func TestVerifyPostDeploy(t *testing.T) {
 func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 	t.Run("first deploy skips hooks (empty previous commit)", func(t *testing.T) {
 		cfg := &Config{
-			PostSyncHooks: []PostSyncHook{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
 				{Container: "traefik", Paths: []string{"traefik/**"}, Action: "restart"},
-			},
+			}),
 		}
 		r := NewReconciler(cfg)
 		r.dockerClientFn = func() *docker.Client { return nil }
@@ -1275,9 +1289,9 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 	t.Run("no changed files skips hooks", func(t *testing.T) {
 		gitOps := &mockGitOps{diffFiles: []string{}}
 		cfg := &Config{
-			PostSyncHooks: []PostSyncHook{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
 				{Container: "traefik", Paths: []string{"traefik/**"}, Action: "restart"},
-			},
+			}),
 		}
 		r := NewReconciler(cfg, WithGitOperations(gitOps))
 
@@ -1295,9 +1309,9 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 		client := docker.NewClientWithAPI(mockAPI)
 
 		cfg := &Config{
-			PostSyncHooks: []PostSyncHook{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
 				{Container: "traefik", Paths: []string{"traefik/**"}, Action: "restart"},
-			},
+			}),
 		}
 		r := NewReconciler(cfg)
 		r.dockerClientFn = func() *docker.Client { return client }
@@ -1310,9 +1324,9 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 	t.Run("docker client unavailable is non-fatal", func(t *testing.T) {
 		gitOps := &mockGitOps{diffFiles: []string{"traefik/dynamic.yml"}}
 		cfg := &Config{
-			PostSyncHooks: []PostSyncHook{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
 				{Container: "traefik", Paths: []string{"traefik/**"}, Action: "restart"},
-			},
+			}),
 		}
 		r := NewReconciler(cfg, WithGitOperations(gitOps))
 		r.dockerClientFn = func() *docker.Client { return nil }
@@ -1332,9 +1346,9 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 
 		gitOps := &mockGitOps{diffErr: fmt.Errorf("shallow clone")}
 		cfg := &Config{
-			PostSyncHooks: []PostSyncHook{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
 				{Container: "traefik", Paths: []string{"traefik/**"}, Action: "restart"},
-			},
+			}),
 		}
 		r := NewReconciler(cfg, WithGitOperations(gitOps))
 		r.dockerClientFn = func() *docker.Client { return client }
@@ -1354,10 +1368,10 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 
 		cfg := &Config{
 			TargetHost: "user@remote-host",
-			PostSyncHooks: []PostSyncHook{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
 				{Container: "traefik", Paths: []string{"traefik/**"}, Action: "restart"},
 				{Container: "authelia", Paths: []string{"authelia/**"}, Action: "restart"},
-			},
+			}),
 		}
 		r := NewReconciler(cfg)
 		r.dockerClientFn = func() *docker.Client { return client }
@@ -1378,10 +1392,10 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 		client := docker.NewClientWithAPI(mockAPI)
 
 		cfg := &Config{
-			PostSyncHooks: []PostSyncHook{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
 				{Container: "traefik", Paths: []string{"traefik/**"}, Action: "restart"},
 				{Container: "authelia", Paths: []string{"authelia/**"}, Action: "restart"},
-			},
+			}),
 		}
 		r := NewReconciler(cfg)
 		r.dockerClientFn = func() *docker.Client { return client }
@@ -1398,9 +1412,9 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 		// (not the remote-mode unconditional path).
 		gitOps := &mockGitOps{diffFiles: []string{}}
 		cfg := &Config{
-			PostSyncHooks: []PostSyncHook{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
 				{Container: "traefik", Paths: []string{"traefik/**"}, Action: "restart"},
-			},
+			}),
 		}
 		dockerCalled := false
 		r := NewReconciler(cfg, WithGitOperations(gitOps))
@@ -1426,14 +1440,14 @@ func TestReloadProjectConfig(t *testing.T) {
 
 	t.Run("reloader error keeps existing config", func(t *testing.T) {
 		cfg := &Config{
-			PostSyncHooks: []PostSyncHook{{Container: "orig"}},
+			PostSyncHooks: NewConfigField([]PostSyncHook{{Container: "orig"}}),
 			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
 				return nil, fmt.Errorf("parse error")
 			},
 		}
 		r := NewReconciler(cfg)
 		r.reloadProjectConfig()
-		assert.Equal(t, "orig", r.config.PostSyncHooks[0].Container)
+		assert.Equal(t, "orig", r.config.PostSyncHooks.Value[0].Container)
 	})
 
 	t.Run("reloader returns nil is no-op", func(t *testing.T) {
@@ -1456,14 +1470,13 @@ func TestReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 		r.reloadProjectConfig()
-		require.Len(t, r.config.PostSyncHooks, 1)
-		assert.Equal(t, "new-container", r.config.PostSyncHooks[0].Container)
+		require.Len(t, r.config.PostSyncHooks.Value, 1)
+		assert.Equal(t, "new-container", r.config.PostSyncHooks.Value[0].Container)
 	})
 
 	t.Run("env override prevents hook reload", func(t *testing.T) {
 		cfg := &Config{
-			PostSyncHooksFromEnv: true,
-			PostSyncHooks:        []PostSyncHook{{Container: "env-container"}},
+			PostSyncHooks: EnvConfigField([]PostSyncHook{{Container: "env-container"}}),
 			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
 				return &ReloadedConfig{
 					PostSyncHooks: []PostSyncHook{{Container: "repo-container"}},
@@ -1472,7 +1485,7 @@ func TestReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 		r.reloadProjectConfig()
-		assert.Equal(t, "env-container", r.config.PostSyncHooks[0].Container)
+		assert.Equal(t, "env-container", r.config.PostSyncHooks.Value[0].Container)
 	})
 
 	t.Run("deploy paths reloaded from repo", func(t *testing.T) {
@@ -1485,33 +1498,34 @@ func TestReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 		r.reloadProjectConfig()
-		require.Len(t, r.config.DeployPaths, 1)
-		assert.Equal(t, "infra/**", r.config.DeployPaths[0])
+		require.Len(t, r.config.DeployPaths.Value, 1)
+		assert.Equal(t, "infra/**", r.config.DeployPaths.Value[0])
 	})
 
 	t.Run("settle delay reloaded from repo", func(t *testing.T) {
+		delay := 5 * time.Second
 		cfg := &Config{
 			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
 				return &ReloadedConfig{
-					HookSettleDelay: 5 * time.Second,
+					HookSettleDelay: &delay,
 				}, nil
 			},
 		}
 		r := NewReconciler(cfg)
 		r.reloadProjectConfig()
-		assert.Equal(t, 5*time.Second, r.config.HookSettleDelay)
+		assert.Equal(t, 5*time.Second, r.config.HookSettleDelay.Value)
 	})
 
 	t.Run("empty reloaded config is no-op", func(t *testing.T) {
 		cfg := &Config{
-			PostSyncHooks: []PostSyncHook{{Container: "orig"}},
+			PostSyncHooks: NewConfigField([]PostSyncHook{{Container: "orig"}}),
 			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
 				return &ReloadedConfig{}, nil
 			},
 		}
 		r := NewReconciler(cfg)
 		r.reloadProjectConfig()
-		assert.Equal(t, "orig", r.config.PostSyncHooks[0].Container)
+		assert.Equal(t, "orig", r.config.PostSyncHooks.Value[0].Container)
 	})
 
 	t.Run("critical containers reloaded from repo", func(t *testing.T) {
@@ -1524,15 +1538,14 @@ func TestReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 		r.reloadProjectConfig()
-		require.Len(t, r.config.CriticalContainers, 2)
-		assert.Equal(t, "traefik", r.config.CriticalContainers[0])
-		assert.Equal(t, "authelia", r.config.CriticalContainers[1])
+		require.Len(t, r.config.CriticalContainers.Value, 2)
+		assert.Equal(t, "traefik", r.config.CriticalContainers.Value[0])
+		assert.Equal(t, "authelia", r.config.CriticalContainers.Value[1])
 	})
 
 	t.Run("env override prevents critical containers reload", func(t *testing.T) {
 		cfg := &Config{
-			CriticalContainersFromEnv: true,
-			CriticalContainers:        []string{"env-container"},
+						CriticalContainers:        EnvConfigField([]string{"env-container"}),
 			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
 				return &ReloadedConfig{
 					CriticalContainers: []string{"repo-container"},
@@ -1541,8 +1554,8 @@ func TestReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 		r.reloadProjectConfig()
-		require.Len(t, r.config.CriticalContainers, 1)
-		assert.Equal(t, "env-container", r.config.CriticalContainers[0])
+		require.Len(t, r.config.CriticalContainers.Value, 1)
+		assert.Equal(t, "env-container", r.config.CriticalContainers.Value[0])
 	})
 }
 
@@ -1958,7 +1971,7 @@ func TestReconcilerRun(t *testing.T) {
 		cfg := &Config{
 			LockFile:    lockFile,
 			StateFile:   stateFile,
-			DeployPaths: []string{"infra/**", "compose/**"},
+			DeployPaths: NewConfigField([]string{"infra/**", "compose/**"}),
 		}
 		r := NewReconciler(cfg, WithGitOperations(gitOps))
 
@@ -3420,7 +3433,7 @@ func TestRunHealthGate_SkipsWhenNoCriticalContainers(t *testing.T) {
 func TestRunHealthGate_SkipsWhenDryRun(t *testing.T) {
 	cfg := &Config{
 		DryRun:             true,
-		CriticalContainers: []string{"traefik"},
+		CriticalContainers: NewConfigField([]string{"traefik"}),
 	}
 	r := NewReconciler(cfg)
 	state := &DeployState{}
@@ -3432,7 +3445,7 @@ func TestRunHealthGate_SkipsWhenDryRun(t *testing.T) {
 func TestRunHealthGate_SkipsForRemoteDeploy(t *testing.T) {
 	cfg := &Config{
 		TargetHost:         "user@remote",
-		CriticalContainers: []string{"traefik"},
+		CriticalContainers: NewConfigField([]string{"traefik"}),
 	}
 	r := NewReconciler(cfg)
 	state := &DeployState{}
@@ -3443,7 +3456,7 @@ func TestRunHealthGate_SkipsForRemoteDeploy(t *testing.T) {
 
 func TestRunHealthGate_SkipsWhenNoDockerClient(t *testing.T) {
 	cfg := &Config{
-		CriticalContainers: []string{"traefik"},
+		CriticalContainers: NewConfigField([]string{"traefik"}),
 		LocalAppdataPath:   t.TempDir(), // Ensures isLocalMode() returns true.
 	}
 	r := NewReconciler(cfg)
@@ -3461,7 +3474,7 @@ func TestRunHealthGate_PassesWhenAllHealthy(t *testing.T) {
 	client := docker.NewClientWithAPI(mockAPI)
 
 	cfg := &Config{
-		CriticalContainers: []string{"traefik", "authelia"},
+		CriticalContainers: NewConfigField([]string{"traefik", "authelia"}),
 		HealthGateTimeout:  5 * time.Second,
 		LocalAppdataPath:   t.TempDir(), // Ensures isLocalMode() returns true.
 	}
@@ -3483,7 +3496,7 @@ func TestRunHealthGate_FailsWhenUnhealthy(t *testing.T) {
 	client := docker.NewClientWithAPI(mockAPI)
 
 	cfg := &Config{
-		CriticalContainers: []string{"traefik", "authelia"},
+		CriticalContainers: NewConfigField([]string{"traefik", "authelia"}),
 		HealthGateTimeout:  1 * time.Second,
 		LocalAppdataPath:   t.TempDir(), // Ensures isLocalMode() returns true.
 	}
@@ -3632,10 +3645,10 @@ func TestResolveTargets_ImplicitDefault(t *testing.T) {
 		ProjectName:        "homelab",
 		StateFile:          "/var/lib/bosun/deploy-state.json",
 		StagingDir:         "/app/staging",
-		CriticalContainers: []string{"traefik"},
-		PostSyncHooks:      []PostSyncHook{{Container: "traefik", Paths: []string{"*.toml"}}},
-		DeploySyncPaths:    []string{"compose/**"},
-		DeploySyncExclude:  []string{"*.bak"},
+		CriticalContainers: NewConfigField([]string{"traefik"}),
+		PostSyncHooks:      NewConfigField([]PostSyncHook{{Container: "traefik", Paths: []string{"*.toml"}}}),
+		DeploySyncPaths:    NewConfigField([]string{"compose/**"}),
+		DeploySyncExclude:  NewConfigField([]string{"*.bak"}),
 	}
 
 	targets := cfg.ResolveTargets()
@@ -3814,11 +3827,11 @@ func TestConfigForTarget_NamedTarget(t *testing.T) {
 	assert.Equal(t, "/mnt/custom/appdata", cfg.LocalAppdataPath)
 	assert.Equal(t, "/mnt/user/custom/appdata", cfg.RemoteAppdataPath)
 	assert.Equal(t, "homelab-unraid", cfg.ProjectName)
-	assert.Equal(t, []string{"traefik"}, cfg.CriticalContainers)
-	require.Len(t, cfg.PostSyncHooks, 1)
-	assert.Equal(t, "traefik", cfg.PostSyncHooks[0].Container)
-	assert.Equal(t, []string{"compose/**"}, cfg.DeploySyncPaths)
-	assert.Equal(t, []string{"*.bak"}, cfg.DeploySyncExclude)
+	assert.Equal(t, []string{"traefik"}, cfg.CriticalContainers.Value)
+	require.Len(t, cfg.PostSyncHooks.Value, 1)
+	assert.Equal(t, "traefik", cfg.PostSyncHooks.Value[0].Container)
+	assert.Equal(t, []string{"compose/**"}, cfg.DeploySyncPaths.Value)
+	assert.Equal(t, []string{"*.bak"}, cfg.DeploySyncExclude.Value)
 
 	// Base config should be unmodified.
 	assert.Equal(t, DefaultConfig().StagingDir, base.StagingDir)
@@ -3826,8 +3839,8 @@ func TestConfigForTarget_NamedTarget(t *testing.T) {
 
 func TestConfigForTarget_PartialOverrides(t *testing.T) {
 	base := DefaultConfig()
-	base.CriticalContainers = []string{"global-container"}
-	base.PostSyncHooks = []PostSyncHook{{Container: "global", Paths: []string{"*"}}}
+	base.CriticalContainers = NewConfigField([]string{"global-container"})
+	base.PostSyncHooks = NewConfigField([]PostSyncHook{{Container: "global", Paths: []string{"*"}}})
 
 	// Target with no overrides — inherits from base.
 	target := Target{
@@ -3836,17 +3849,17 @@ func TestConfigForTarget_PartialOverrides(t *testing.T) {
 	}
 
 	cfg := base.ConfigForTarget(target)
-	assert.Equal(t, []string{"global-container"}, cfg.CriticalContainers, "should inherit from base when target has none")
-	assert.Len(t, cfg.PostSyncHooks, 1, "should inherit from base when target has none")
+	assert.Equal(t, []string{"global-container"}, cfg.CriticalContainers.Value, "should inherit from base when target has none")
+	assert.Len(t, cfg.PostSyncHooks.Value, 1, "should inherit from base when target has none")
 	assert.Equal(t, base.LocalAppdataPath, cfg.LocalAppdataPath, "should keep base when target is empty")
 	assert.Equal(t, base.RemoteAppdataPath, cfg.RemoteAppdataPath, "should keep base when target is empty")
 }
 
 func TestConfigForTarget_ExplicitEmptySliceOverrides(t *testing.T) {
 	base := DefaultConfig()
-	base.CriticalContainers = []string{"global-container"}
-	base.PostSyncHooks = []PostSyncHook{{Container: "global", Paths: []string{"*"}}}
-	base.DeploySyncPaths = []string{"infra/**"}
+	base.CriticalContainers = NewConfigField([]string{"global-container"})
+	base.PostSyncHooks = NewConfigField([]PostSyncHook{{Container: "global", Paths: []string{"*"}}})
+	base.DeploySyncPaths = NewConfigField([]string{"infra/**"})
 
 	// Target with explicit empty slices — should opt out of base defaults.
 	target := Target{
@@ -3858,9 +3871,9 @@ func TestConfigForTarget_ExplicitEmptySliceOverrides(t *testing.T) {
 	}
 
 	cfg := base.ConfigForTarget(target)
-	assert.Empty(t, cfg.CriticalContainers, "explicit empty should override base, not inherit")
-	assert.Empty(t, cfg.PostSyncHooks, "explicit empty should override base, not inherit")
-	assert.Empty(t, cfg.DeploySyncPaths, "explicit empty should override base, not inherit")
+	assert.Empty(t, cfg.CriticalContainers.Value, "explicit empty should override base, not inherit")
+	assert.Empty(t, cfg.PostSyncHooks.Value, "explicit empty should override base, not inherit")
+	assert.Empty(t, cfg.DeploySyncPaths.Value, "explicit empty should override base, not inherit")
 }
 
 func TestResolveTargets_RejectsDuplicateNames(t *testing.T) {
@@ -3879,19 +3892,19 @@ func TestResolveTargets_RejectsDuplicateNames(t *testing.T) {
 
 func TestConfigForTarget_SlicesAreIndependent(t *testing.T) {
 	base := DefaultConfig()
-	base.CriticalContainers = []string{"traefik", "authelia"}
+	base.CriticalContainers = NewConfigField([]string{"traefik", "authelia"})
 
 	target := Target{Name: "nas", TargetHost: "user@nas"}
 	cfg := base.ConfigForTarget(target)
 
 	// Mutate the copy — should not affect base
-	cfg.CriticalContainers = append(cfg.CriticalContainers, "injected")
-	assert.Len(t, base.CriticalContainers, 2, "base should not be mutated by per-target copy")
+	cfg.CriticalContainers.Value = append(cfg.CriticalContainers.Value, "injected")
+	assert.Len(t, base.CriticalContainers.Value, 2, "base should not be mutated by per-target copy")
 }
 
 func TestConfigForTarget_NilSliceInherits(t *testing.T) {
 	base := DefaultConfig()
-	base.CriticalContainers = []string{"global-container"}
+	base.CriticalContainers = NewConfigField([]string{"global-container"})
 
 	// Target with nil (unset) — should inherit from base.
 	target := Target{
@@ -3900,7 +3913,7 @@ func TestConfigForTarget_NilSliceInherits(t *testing.T) {
 	}
 
 	cfg := base.ConfigForTarget(target)
-	assert.Equal(t, []string{"global-container"}, cfg.CriticalContainers, "nil should inherit from base")
+	assert.Equal(t, []string{"global-container"}, cfg.CriticalContainers.Value, "nil should inherit from base")
 }
 
 func TestConfigForTarget_LockFilePreservesCustomDir(t *testing.T) {
@@ -3968,6 +3981,21 @@ func TestConfigForTarget_DefaultTargetPreservesExactPaths(t *testing.T) {
 	assert.Equal(t, "/tmp/custom.lock", cfg.LockFile, "default target should preserve exact lock path")
 	assert.Equal(t, "/tmp/custom-state.json", cfg.StateFile, "default target should preserve exact state path")
 	assert.Equal(t, "/tmp/custom-staging", cfg.StagingDir, "default target should preserve exact staging path")
+}
+
+func TestConfigForTarget_EnvHooksNotOverriddenByTarget(t *testing.T) {
+	envHooks := []PostSyncHook{{Container: "env-hook", Action: "restart"}}
+	base := DefaultConfig()
+	base.PostSyncHooks = EnvConfigField(envHooks)
+
+	target := Target{
+		Name:          "pi",
+		PostSyncHooks: []PostSyncHook{{Container: "target-hook", Action: "restart"}},
+	}
+
+	cfg := base.ConfigForTarget(target)
+	assert.Equal(t, "env-hook", cfg.PostSyncHooks.Value[0].Container, "env-sourced hooks must not be overridden by target")
+	assert.True(t, cfg.PostSyncHooks.FromEnv(), "source must remain SourceEnv")
 }
 
 func TestMergeTargetSecrets(t *testing.T) {

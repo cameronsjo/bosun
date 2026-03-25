@@ -606,7 +606,7 @@ post_sync_hooks:
 
 		cfg := ConfigFromEnv()
 
-		hooks := cfg.ReconcileConfig.PostSyncHooks
+		hooks := cfg.ReconcileConfig.PostSyncHooks.Value
 		if len(hooks) != 1 {
 			t.Fatalf("PostSyncHooks len = %d, want 1", len(hooks))
 		}
@@ -650,7 +650,7 @@ post_sync_hooks:
 
 		cfg := ConfigFromEnv()
 
-		hooks := cfg.ReconcileConfig.PostSyncHooks
+		hooks := cfg.ReconcileConfig.PostSyncHooks.Value
 		if len(hooks) != 1 {
 			t.Fatalf("PostSyncHooks len = %d, want 1", len(hooks))
 		}
@@ -678,7 +678,7 @@ post_sync_hooks:
 
 		cfg := ConfigFromEnv()
 
-		hooks := cfg.ReconcileConfig.PostSyncHooks
+		hooks := cfg.ReconcileConfig.PostSyncHooks.Value
 		if len(hooks) != 1 {
 			t.Fatalf("PostSyncHooks len = %d, want 1", len(hooks))
 		}
@@ -689,43 +689,31 @@ post_sync_hooks:
 }
 
 func TestConfigFromEnv_HookSettleDelay(t *testing.T) {
-	t.Run("parses Go duration string", func(t *testing.T) {
-		t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "2s")
+	tests := []struct {
+		name     string
+		envValue string
+		setEnv   bool
+		expected time.Duration
+	}{
+		{name: "parses Go duration string", envValue: "2s", setEnv: true, expected: 2 * time.Second},
+		{name: "parses bare seconds", envValue: "5", setEnv: true, expected: 5 * time.Second},
+		{name: "defaults to zero when not set", setEnv: false, expected: 0},
+		{name: "invalid value ignored", envValue: "not-a-duration", setEnv: true, expected: 0},
+	}
 
-		cfg := ConfigFromEnv()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "")
+			require.NoError(t, os.Unsetenv("BOSUN_HOOK_SETTLE_DELAY"))
+			if tt.setEnv {
+				t.Setenv("BOSUN_HOOK_SETTLE_DELAY", tt.envValue)
+			}
 
-		if cfg.ReconcileConfig.HookSettleDelay != 2*time.Second {
-			t.Errorf("HookSettleDelay = %v, want 2s", cfg.ReconcileConfig.HookSettleDelay)
-		}
-	})
+			cfg := ConfigFromEnv()
 
-	t.Run("parses bare seconds", func(t *testing.T) {
-		t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "5")
-
-		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.HookSettleDelay != 5*time.Second {
-			t.Errorf("HookSettleDelay = %v, want 5s", cfg.ReconcileConfig.HookSettleDelay)
-		}
-	})
-
-	t.Run("defaults to zero when not set", func(t *testing.T) {
-		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.HookSettleDelay != 0 {
-			t.Errorf("HookSettleDelay = %v, want 0", cfg.ReconcileConfig.HookSettleDelay)
-		}
-	})
-
-	t.Run("invalid value ignored", func(t *testing.T) {
-		t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "not-a-duration")
-
-		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.HookSettleDelay != 0 {
-			t.Errorf("HookSettleDelay = %v, want 0 (default)", cfg.ReconcileConfig.HookSettleDelay)
-		}
-	})
+			assert.Equal(t, tt.expected, cfg.ReconcileConfig.HookSettleDelay.Value)
+		})
+	}
 }
 
 func TestConfigFromEnv_HooksWithDelay(t *testing.T) {
@@ -735,7 +723,7 @@ func TestConfigFromEnv_HooksWithDelay(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		hooks := cfg.ReconcileConfig.PostSyncHooks
+		hooks := cfg.ReconcileConfig.PostSyncHooks.Value
 		if len(hooks) != 1 {
 			t.Fatalf("PostSyncHooks len = %d, want 1", len(hooks))
 		}
@@ -753,7 +741,7 @@ func TestConfigFromEnv_HooksWithDelay(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		hooks := cfg.ReconcileConfig.PostSyncHooks
+		hooks := cfg.ReconcileConfig.PostSyncHooks.Value
 		if len(hooks) != 1 {
 			t.Fatalf("PostSyncHooks len = %d, want 1", len(hooks))
 		}
@@ -837,7 +825,7 @@ func TestConfigFromEnv_DriftAlertDebounce(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.Equal(t, 5*time.Minute, cfg.DriftAlertDebounce)
+		assert.Equal(t, 5*time.Minute, cfg.DriftAlertDebounce.Value)
 	})
 
 	t.Run("parses bare seconds", func(t *testing.T) {
@@ -845,13 +833,13 @@ func TestConfigFromEnv_DriftAlertDebounce(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.Equal(t, 300*time.Second, cfg.DriftAlertDebounce)
+		assert.Equal(t, 300*time.Second, cfg.DriftAlertDebounce.Value)
 	})
 
 	t.Run("defaults to 0 when not set", func(t *testing.T) {
 		cfg := ConfigFromEnv()
 
-		assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce)
+		assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce.Value)
 	})
 
 	t.Run("invalid value keeps default 0", func(t *testing.T) {
@@ -859,14 +847,14 @@ func TestConfigFromEnv_DriftAlertDebounce(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce)
+		assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce.Value)
 	})
 }
 
 func TestDefaultConfig_DriftAlertDebounce(t *testing.T) {
 	cfg := DefaultConfig()
 
-	assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce, "DriftAlertDebounce should default to 0 (disabled)")
+	assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce.Value, "DriftAlertDebounce should default to 0 (disabled)")
 }
 
 func TestConfigFromEnv_DriftAlertDebounce_EnvZeroOverridesConfig(t *testing.T) {
@@ -889,7 +877,7 @@ drift_alert_debounce: "10m"
 
 	cfg := ConfigFromEnv()
 
-	assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce,
+	assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce.Value,
 		"env var set to '0' should disable debounce, not fall through to config file value")
 }
 
@@ -934,104 +922,100 @@ func TestConfigFromEnv_DriftResolveAlerts(t *testing.T) {
 }
 
 func TestConfigFromEnv_EnvOverrideFlags(t *testing.T) {
-	t.Run("PostSyncHooksFromEnv set when env var present", func(t *testing.T) {
-		envHooks := `[{"paths":["traefik/**"],"action":"restart","container":"traefik"}]`
-		t.Setenv("BOSUN_POST_SYNC_HOOKS", envHooks)
+	t.Run("PostSyncHooks source is env when env var present", func(t *testing.T) {
+		t.Setenv("BOSUN_POST_SYNC_HOOKS", `[{"paths":["traefik/**"],"action":"restart","container":"traefik"}]`)
 
 		cfg := ConfigFromEnv()
-
-		if !cfg.ReconcileConfig.PostSyncHooksFromEnv {
-			t.Error("PostSyncHooksFromEnv should be true when BOSUN_POST_SYNC_HOOKS is set")
-		}
+		assert.True(t, cfg.ReconcileConfig.PostSyncHooks.FromEnv())
 	})
 
-	t.Run("PostSyncHooksFromEnv false when env var absent", func(t *testing.T) {
+	t.Run("PostSyncHooks source is not env when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.PostSyncHooksFromEnv {
-			t.Error("PostSyncHooksFromEnv should be false when BOSUN_POST_SYNC_HOOKS is not set")
-		}
+		assert.False(t, cfg.ReconcileConfig.PostSyncHooks.FromEnv())
 	})
 
-	t.Run("HookSettleDelayFromEnv set when env var present", func(t *testing.T) {
+	t.Run("HookSettleDelay source is env when env var present", func(t *testing.T) {
 		t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "3s")
 
 		cfg := ConfigFromEnv()
-
-		if !cfg.ReconcileConfig.HookSettleDelayFromEnv {
-			t.Error("HookSettleDelayFromEnv should be true when BOSUN_HOOK_SETTLE_DELAY is set")
-		}
+		assert.True(t, cfg.ReconcileConfig.HookSettleDelay.FromEnv())
 	})
 
-	t.Run("HookSettleDelayFromEnv false when env var absent", func(t *testing.T) {
+	t.Run("HookSettleDelay source is not env when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.HookSettleDelayFromEnv {
-			t.Error("HookSettleDelayFromEnv should be false when BOSUN_HOOK_SETTLE_DELAY is not set")
-		}
+		assert.False(t, cfg.ReconcileConfig.HookSettleDelay.FromEnv())
 	})
 
 	t.Run("ConfigReloader is wired", func(t *testing.T) {
 		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.ConfigReloader == nil {
-			t.Error("ConfigReloader should be set by ConfigFromEnv")
-		}
+		require.NotNil(t, cfg.ReconcileConfig.ConfigReloader)
 	})
 
 	t.Run("CriticalContainersFromEnv set when env var present", func(t *testing.T) {
 		t.Setenv("BOSUN_CRITICAL_CONTAINERS", `["traefik","authelia"]`)
 
 		cfg := ConfigFromEnv()
-
-		if !cfg.ReconcileConfig.CriticalContainersFromEnv {
-			t.Error("CriticalContainersFromEnv should be true when BOSUN_CRITICAL_CONTAINERS is set")
-		}
+		assert.True(t, cfg.ReconcileConfig.CriticalContainers.FromEnv())
 	})
 
-	t.Run("CriticalContainersFromEnv false when env var absent", func(t *testing.T) {
+	t.Run("CriticalContainers source is not env when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.CriticalContainersFromEnv {
-			t.Error("CriticalContainersFromEnv should be false when BOSUN_CRITICAL_CONTAINERS is not set")
-		}
+		assert.False(t, cfg.ReconcileConfig.CriticalContainers.FromEnv())
 	})
 
-	t.Run("DeploySyncPathsFromEnv set when env var present", func(t *testing.T) {
+	t.Run("DeploySyncPaths source is env when env var present", func(t *testing.T) {
 		t.Setenv("BOSUN_DEPLOY_SYNC_PATHS", `["appdata/traefik","compose"]`)
 
 		cfg := ConfigFromEnv()
 
-		if !cfg.ReconcileConfig.DeploySyncPathsFromEnv {
-			t.Error("DeploySyncPathsFromEnv should be true when BOSUN_DEPLOY_SYNC_PATHS is set")
+		if !cfg.ReconcileConfig.DeploySyncPaths.FromEnv() {
+			t.Error("DeploySyncPaths.Source should be SourceEnv when BOSUN_DEPLOY_SYNC_PATHS is set")
 		}
 	})
 
-	t.Run("DeploySyncPathsFromEnv false when env var absent", func(t *testing.T) {
+	t.Run("DeploySyncPaths source is not env when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
 
-		if cfg.ReconcileConfig.DeploySyncPathsFromEnv {
-			t.Error("DeploySyncPathsFromEnv should be false when BOSUN_DEPLOY_SYNC_PATHS is not set")
+		if cfg.ReconcileConfig.DeploySyncPaths.FromEnv() {
+			t.Error("DeploySyncPaths.Source should not be SourceEnv when BOSUN_DEPLOY_SYNC_PATHS is not set")
 		}
 	})
 
-	t.Run("DeploySyncExcludeFromEnv set when env var present", func(t *testing.T) {
+	t.Run("DeploySyncExclude source is env when env var present", func(t *testing.T) {
 		t.Setenv("BOSUN_DEPLOY_SYNC_EXCLUDE", `["appdata/legacy"]`)
 
 		cfg := ConfigFromEnv()
 
-		if !cfg.ReconcileConfig.DeploySyncExcludeFromEnv {
-			t.Error("DeploySyncExcludeFromEnv should be true when BOSUN_DEPLOY_SYNC_EXCLUDE is set")
+		if !cfg.ReconcileConfig.DeploySyncExclude.FromEnv() {
+			t.Error("DeploySyncExclude.Source should be SourceEnv when BOSUN_DEPLOY_SYNC_EXCLUDE is set")
 		}
 	})
 
-	t.Run("DeploySyncExcludeFromEnv false when env var absent", func(t *testing.T) {
+	t.Run("DeploySyncExclude source is not env when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
 
-		if cfg.ReconcileConfig.DeploySyncExcludeFromEnv {
-			t.Error("DeploySyncExcludeFromEnv should be false when BOSUN_DEPLOY_SYNC_EXCLUDE is not set")
+		if cfg.ReconcileConfig.DeploySyncExclude.FromEnv() {
+			t.Error("DeploySyncExclude.Source should not be SourceEnv when BOSUN_DEPLOY_SYNC_EXCLUDE is not set")
 		}
 	})
+}
+
+func TestConfigFromEnv_ConfigReloaderCallable(t *testing.T) {
+	cfg := ConfigFromEnv()
+	require.NotNil(t, cfg.ReconcileConfig.ConfigReloader)
+
+	// Create a temp dir with a minimal bosun.yaml so the reloader can parse it.
+	tmpDir := t.TempDir()
+	yamlContent := "post_sync_hooks:\n  - paths: [\"traefik/**\"]\n    action: restart\n    container: traefik\nhook_settle_delay: 3s\n"
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(yamlContent), 0o644))
+
+	reloaded, err := cfg.ReconcileConfig.ConfigReloader(tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, reloaded)
+	assert.Len(t, reloaded.PostSyncHooks, 1)
+	assert.Equal(t, "traefik", reloaded.PostSyncHooks[0].Container)
+	require.NotNil(t, reloaded.HookSettleDelay)
+	assert.Equal(t, 3*time.Second, *reloaded.HookSettleDelay)
 }
 
 func TestConfigFromEnv_CriticalContainers(t *testing.T) {
@@ -1040,7 +1024,7 @@ func TestConfigFromEnv_CriticalContainers(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		containers := cfg.ReconcileConfig.CriticalContainers
+		containers := cfg.ReconcileConfig.CriticalContainers.Value
 		if len(containers) != 2 {
 			t.Fatalf("expected 2 critical containers, got %d", len(containers))
 		}
@@ -1054,8 +1038,8 @@ func TestConfigFromEnv_CriticalContainers(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		if len(cfg.ReconcileConfig.CriticalContainers) != 0 {
-			t.Errorf("expected empty containers, got %v", cfg.ReconcileConfig.CriticalContainers)
+		if len(cfg.ReconcileConfig.CriticalContainers.Value) != 0 {
+			t.Errorf("expected empty containers, got %v", cfg.ReconcileConfig.CriticalContainers.Value)
 		}
 	})
 
@@ -1064,8 +1048,8 @@ func TestConfigFromEnv_CriticalContainers(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		if len(cfg.ReconcileConfig.CriticalContainers) != 0 {
-			t.Errorf("expected empty containers, got %v", cfg.ReconcileConfig.CriticalContainers)
+		if len(cfg.ReconcileConfig.CriticalContainers.Value) != 0 {
+			t.Errorf("expected empty containers, got %v", cfg.ReconcileConfig.CriticalContainers.Value)
 		}
 	})
 }
@@ -1076,7 +1060,7 @@ func TestConfigFromEnv_DeploySyncPaths(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		paths := cfg.ReconcileConfig.DeploySyncPaths
+		paths := cfg.ReconcileConfig.DeploySyncPaths.Value
 		if len(paths) != 2 {
 			t.Fatalf("expected 2 deploy sync paths, got %d", len(paths))
 		}
@@ -1090,8 +1074,8 @@ func TestConfigFromEnv_DeploySyncPaths(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		if len(cfg.ReconcileConfig.DeploySyncPaths) != 0 {
-			t.Errorf("expected empty paths, got %v", cfg.ReconcileConfig.DeploySyncPaths)
+		if len(cfg.ReconcileConfig.DeploySyncPaths.Value) != 0 {
+			t.Errorf("expected empty paths, got %v", cfg.ReconcileConfig.DeploySyncPaths.Value)
 		}
 	})
 }
@@ -1102,7 +1086,7 @@ func TestConfigFromEnv_DeploySyncExclude(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		paths := cfg.ReconcileConfig.DeploySyncExclude
+		paths := cfg.ReconcileConfig.DeploySyncExclude.Value
 		if len(paths) != 1 {
 			t.Fatalf("expected 1 deploy sync exclude, got %d", len(paths))
 		}
@@ -1116,8 +1100,8 @@ func TestConfigFromEnv_DeploySyncExclude(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		if len(cfg.ReconcileConfig.DeploySyncExclude) != 0 {
-			t.Errorf("expected empty paths, got %v", cfg.ReconcileConfig.DeploySyncExclude)
+		if len(cfg.ReconcileConfig.DeploySyncExclude.Value) != 0 {
+			t.Errorf("expected empty paths, got %v", cfg.ReconcileConfig.DeploySyncExclude.Value)
 		}
 	})
 }
@@ -1216,7 +1200,7 @@ func TestConfigFromEnv_RemoveOrphans(t *testing.T) {
 		if !cfg.RemoveOrphans {
 			t.Error("RemoveOrphans should be true by default")
 		}
-		if cfg.ReconcileConfig == nil || !cfg.ReconcileConfig.RemoveOrphans {
+		if cfg.ReconcileConfig == nil || !cfg.ReconcileConfig.RemoveOrphans.Value {
 			t.Error("ReconcileConfig.RemoveOrphans should be true by default")
 		}
 	})
@@ -1229,7 +1213,7 @@ func TestConfigFromEnv_RemoveOrphans(t *testing.T) {
 		if cfg.RemoveOrphans {
 			t.Error("RemoveOrphans should be false when set to 'false'")
 		}
-		if cfg.ReconcileConfig != nil && cfg.ReconcileConfig.RemoveOrphans {
+		if cfg.ReconcileConfig != nil && cfg.ReconcileConfig.RemoveOrphans.Value {
 			t.Error("ReconcileConfig.RemoveOrphans should be false")
 		}
 	})
@@ -1905,7 +1889,7 @@ func TestRunDriftCheck_DebounceDisabled(t *testing.T) {
 	// When debounce is 0 (default), alerts fire immediately on first detection.
 	provider := &testAlertProvider{}
 	d := newAlertDaemon(t, provider)
-	d.config.DriftAlertDebounce = 0
+	d.config.DriftAlertDebounce = reconcile.NewConfigField(time.Duration(0))
 	d.config.DriftInterval = 5 * time.Minute
 
 	stateFile := d.config.ReconcileConfig.StateFile
@@ -2207,8 +2191,8 @@ func TestParseDurationOrSeconds(t *testing.T) {
 func TestDefaultConfig_DriftSelfHeal(t *testing.T) {
 	cfg := DefaultConfig()
 
-	assert.False(t, cfg.DriftSelfHeal, "DriftSelfHeal should be false by default")
-	assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown, "DriftSelfHealCooldown should default to 15m")
+	assert.False(t, cfg.DriftSelfHeal.Value, "DriftSelfHeal should be false by default")
+	assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown.Value, "DriftSelfHealCooldown should default to 15m")
 }
 
 func TestConfigFromEnv_DriftSelfHeal(t *testing.T) {
@@ -2217,7 +2201,7 @@ func TestConfigFromEnv_DriftSelfHeal(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.True(t, cfg.DriftSelfHeal)
+		assert.True(t, cfg.DriftSelfHeal.Value)
 	})
 
 	t.Run("1 enables self-heal", func(t *testing.T) {
@@ -2225,7 +2209,7 @@ func TestConfigFromEnv_DriftSelfHeal(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.True(t, cfg.DriftSelfHeal)
+		assert.True(t, cfg.DriftSelfHeal.Value)
 	})
 
 	t.Run("false disables self-heal", func(t *testing.T) {
@@ -2233,13 +2217,13 @@ func TestConfigFromEnv_DriftSelfHeal(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.False(t, cfg.DriftSelfHeal)
+		assert.False(t, cfg.DriftSelfHeal.Value)
 	})
 
 	t.Run("defaults to false when not set", func(t *testing.T) {
 		cfg := ConfigFromEnv()
 
-		assert.False(t, cfg.DriftSelfHeal)
+		assert.False(t, cfg.DriftSelfHeal.Value)
 	})
 }
 
@@ -2249,7 +2233,7 @@ func TestConfigFromEnv_DriftSelfHealCooldown(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.Equal(t, 10*time.Minute, cfg.DriftSelfHealCooldown)
+		assert.Equal(t, 10*time.Minute, cfg.DriftSelfHealCooldown.Value)
 	})
 
 	t.Run("parses bare seconds", func(t *testing.T) {
@@ -2257,13 +2241,13 @@ func TestConfigFromEnv_DriftSelfHealCooldown(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.Equal(t, 600*time.Second, cfg.DriftSelfHealCooldown)
+		assert.Equal(t, 600*time.Second, cfg.DriftSelfHealCooldown.Value)
 	})
 
 	t.Run("defaults to 15m when not set", func(t *testing.T) {
 		cfg := ConfigFromEnv()
 
-		assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown)
+		assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown.Value)
 	})
 
 	t.Run("invalid value keeps default", func(t *testing.T) {
@@ -2271,7 +2255,7 @@ func TestConfigFromEnv_DriftSelfHealCooldown(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown)
+		assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown.Value)
 	})
 
 	t.Run("zero or negative keeps default", func(t *testing.T) {
@@ -2279,15 +2263,15 @@ func TestConfigFromEnv_DriftSelfHealCooldown(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown)
+		assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown.Value)
 	})
 }
 
 func TestMaybeSelfHeal_TriggersWhenEnabled(t *testing.T) {
 	provider := &testAlertProvider{}
 	d := newAlertDaemon(t, provider)
-	d.config.DriftSelfHeal = true
-	d.config.DriftSelfHealCooldown = 15 * time.Minute
+	d.config.DriftSelfHeal = reconcile.NewConfigField(true)
+	d.config.DriftSelfHealCooldown = reconcile.NewConfigField(15 * time.Minute)
 
 	report := &reconcile.DriftReport{
 		CheckedAt: time.Now(),
@@ -2309,8 +2293,8 @@ func TestMaybeSelfHeal_TriggersWhenEnabled(t *testing.T) {
 func TestMaybeSelfHeal_SkipsWhenReconciling(t *testing.T) {
 	provider := &testAlertProvider{}
 	d := newAlertDaemon(t, provider)
-	d.config.DriftSelfHeal = true
-	d.config.DriftSelfHealCooldown = 15 * time.Minute
+	d.config.DriftSelfHeal = reconcile.NewConfigField(true)
+	d.config.DriftSelfHealCooldown = reconcile.NewConfigField(15 * time.Minute)
 
 	// Simulate reconciliation in progress.
 	d.reconcileMu.Lock()
@@ -2339,8 +2323,8 @@ func TestMaybeSelfHeal_SkipsWhenReconciling(t *testing.T) {
 func TestMaybeSelfHeal_RespectsCooldown(t *testing.T) {
 	provider := &testAlertProvider{}
 	d := newAlertDaemon(t, provider)
-	d.config.DriftSelfHeal = true
-	d.config.DriftSelfHealCooldown = 15 * time.Minute
+	d.config.DriftSelfHeal = reconcile.NewConfigField(true)
+	d.config.DriftSelfHealCooldown = reconcile.NewConfigField(15 * time.Minute)
 
 	// Simulate a recent self-heal.
 	d.lastSelfHeal = time.Now().Add(-5 * time.Minute) // 5 minutes ago, within 15m cooldown
@@ -2363,8 +2347,8 @@ func TestMaybeSelfHeal_RespectsCooldown(t *testing.T) {
 func TestMaybeSelfHeal_TriggersAfterCooldownExpires(t *testing.T) {
 	provider := &testAlertProvider{}
 	d := newAlertDaemon(t, provider)
-	d.config.DriftSelfHeal = true
-	d.config.DriftSelfHealCooldown = 15 * time.Minute
+	d.config.DriftSelfHeal = reconcile.NewConfigField(true)
+	d.config.DriftSelfHealCooldown = reconcile.NewConfigField(15 * time.Minute)
 
 	// Simulate a self-heal that happened 20 minutes ago (past the 15m cooldown).
 	d.lastSelfHeal = time.Now().Add(-20 * time.Minute)
@@ -2546,9 +2530,9 @@ drift_self_heal_cooldown: "20m"
 
 	d := &Daemon{
 		config: &Config{
-			DriftAlertDebounce:   0,
-			DriftSelfHeal:        false,
-			DriftSelfHealCooldown: 15 * time.Minute,
+			DriftAlertDebounce:    reconcile.NewConfigField(time.Duration(0)),
+			DriftSelfHeal:         reconcile.NewConfigField(false),
+			DriftSelfHealCooldown: reconcile.NewConfigField(15 * time.Minute),
 		},
 	}
 
@@ -2556,9 +2540,9 @@ drift_self_heal_cooldown: "20m"
 
 	d.configMu.RLock()
 	defer d.configMu.RUnlock()
-	assert.Equal(t, 5*time.Minute, d.config.DriftAlertDebounce)
-	assert.True(t, d.config.DriftSelfHeal)
-	assert.Equal(t, 20*time.Minute, d.config.DriftSelfHealCooldown)
+	assert.Equal(t, 5*time.Minute, d.config.DriftAlertDebounce.Value)
+	assert.True(t, d.config.DriftSelfHeal.Value)
+	assert.Equal(t, 20*time.Minute, d.config.DriftSelfHealCooldown.Value)
 }
 
 func TestReloadDaemonConfig_EnvVarsPreventsOverride(t *testing.T) {
@@ -2581,12 +2565,9 @@ drift_self_heal_cooldown: "20m"
 	// All three fields are locked by env vars.
 	d := &Daemon{
 		config: &Config{
-			DriftAlertDebounce:           2 * time.Minute,
-			DriftAlertDebounceFromEnv:    true,
-			DriftSelfHeal:                false,
-			DriftSelfHealFromEnv:         true,
-			DriftSelfHealCooldown:        10 * time.Minute,
-			DriftSelfHealCooldownFromEnv: true,
+			DriftAlertDebounce:    reconcile.EnvConfigField(2 * time.Minute),
+			DriftSelfHeal:         reconcile.EnvConfigField(false),
+			DriftSelfHealCooldown: reconcile.EnvConfigField(10 * time.Minute),
 		},
 	}
 
@@ -2595,9 +2576,9 @@ drift_self_heal_cooldown: "20m"
 	d.configMu.RLock()
 	defer d.configMu.RUnlock()
 	// Values must stay as set by "env vars" — bosun.yaml must not overwrite them.
-	assert.Equal(t, 2*time.Minute, d.config.DriftAlertDebounce, "DriftAlertDebounce must not change when locked by env")
-	assert.False(t, d.config.DriftSelfHeal, "DriftSelfHeal must not change when locked by env")
-	assert.Equal(t, 10*time.Minute, d.config.DriftSelfHealCooldown, "DriftSelfHealCooldown must not change when locked by env")
+	assert.Equal(t, 2*time.Minute, d.config.DriftAlertDebounce.Value, "DriftAlertDebounce must not change when locked by env")
+	assert.False(t, d.config.DriftSelfHeal.Value, "DriftSelfHeal must not change when locked by env")
+	assert.Equal(t, 10*time.Minute, d.config.DriftSelfHealCooldown.Value, "DriftSelfHealCooldown must not change when locked by env")
 }
 
 func TestReloadDaemonConfig_NoConfigFile_IsNoop(t *testing.T) {
@@ -2611,9 +2592,9 @@ func TestReloadDaemonConfig_NoConfigFile_IsNoop(t *testing.T) {
 
 	d := &Daemon{
 		config: &Config{
-			DriftAlertDebounce:   3 * time.Minute,
-			DriftSelfHeal:        true,
-			DriftSelfHealCooldown: 12 * time.Minute,
+			DriftAlertDebounce:    reconcile.NewConfigField(3 * time.Minute),
+			DriftSelfHeal:         reconcile.NewConfigField(true),
+			DriftSelfHealCooldown: reconcile.NewConfigField(12 * time.Minute),
 		},
 	}
 
@@ -2622,17 +2603,17 @@ func TestReloadDaemonConfig_NoConfigFile_IsNoop(t *testing.T) {
 
 	d.configMu.RLock()
 	defer d.configMu.RUnlock()
-	assert.Equal(t, 3*time.Minute, d.config.DriftAlertDebounce)
-	assert.True(t, d.config.DriftSelfHeal)
-	assert.Equal(t, 12*time.Minute, d.config.DriftSelfHealCooldown)
+	assert.Equal(t, 3*time.Minute, d.config.DriftAlertDebounce.Value)
+	assert.True(t, d.config.DriftSelfHeal.Value)
+	assert.Equal(t, 12*time.Minute, d.config.DriftSelfHealCooldown.Value)
 }
 
 func TestDriftConfig_ReturnsConsistentSnapshot(t *testing.T) {
 	d := &Daemon{
 		config: &Config{
-			DriftAlertDebounce:   7 * time.Minute,
-			DriftSelfHeal:        true,
-			DriftSelfHealCooldown: 25 * time.Minute,
+			DriftAlertDebounce:    reconcile.NewConfigField(7 * time.Minute),
+			DriftSelfHeal:         reconcile.NewConfigField(true),
+			DriftSelfHealCooldown: reconcile.NewConfigField(25 * time.Minute),
 		},
 	}
 
@@ -2649,13 +2630,13 @@ func TestConfigFromEnv_DriftFromEnvFlags(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.True(t, cfg.DriftAlertDebounceFromEnv)
+		assert.True(t, cfg.DriftAlertDebounce.FromEnv())
 	})
 
 	t.Run("DriftAlertDebounceFromEnv false when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
 
-		assert.False(t, cfg.DriftAlertDebounceFromEnv)
+		assert.False(t, cfg.DriftAlertDebounce.FromEnv())
 	})
 
 	t.Run("DriftSelfHealFromEnv set when env var present", func(t *testing.T) {
@@ -2663,13 +2644,13 @@ func TestConfigFromEnv_DriftFromEnvFlags(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.True(t, cfg.DriftSelfHealFromEnv)
+		assert.True(t, cfg.DriftSelfHeal.FromEnv())
 	})
 
 	t.Run("DriftSelfHealFromEnv false when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
 
-		assert.False(t, cfg.DriftSelfHealFromEnv)
+		assert.False(t, cfg.DriftSelfHeal.FromEnv())
 	})
 
 	t.Run("DriftSelfHealCooldownFromEnv set when env var present", func(t *testing.T) {
@@ -2677,12 +2658,12 @@ func TestConfigFromEnv_DriftFromEnvFlags(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.True(t, cfg.DriftSelfHealCooldownFromEnv)
+		assert.True(t, cfg.DriftSelfHealCooldown.FromEnv())
 	})
 
 	t.Run("DriftSelfHealCooldownFromEnv false when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
 
-		assert.False(t, cfg.DriftSelfHealCooldownFromEnv)
+		assert.False(t, cfg.DriftSelfHealCooldown.FromEnv())
 	})
 }

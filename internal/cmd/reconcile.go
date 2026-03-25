@@ -148,9 +148,9 @@ func runReconcile(cmd *cobra.Command, args []string) {
 
 	// Load post-sync hooks, settle delay, and deploy paths from project config file.
 	if projectCfg, err := config.Load(); err == nil {
-		cfg.PostSyncHooks = projectCfg.PostSyncHooks()
-		cfg.HookSettleDelay = projectCfg.HookSettleDelay()
-		cfg.DeployPaths = projectCfg.DeployPaths()
+		cfg.PostSyncHooks.SetFromFile(projectCfg.PostSyncHooks())
+		cfg.HookSettleDelay.SetFromFile(projectCfg.HookSettleDelay())
+		cfg.DeployPaths.SetFromFile(projectCfg.DeployPaths())
 	}
 
 	// Wire config reloader so the reconciler can re-read bosun.yaml from the repo.
@@ -159,9 +159,10 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		if err != nil {
 			return nil, err
 		}
+		hookSettleDelay := projectCfg.HookSettleDelay()
 		return &reconcile.ReloadedConfig{
 			PostSyncHooks:   projectCfg.PostSyncHooks(),
-			HookSettleDelay: projectCfg.HookSettleDelay(),
+			HookSettleDelay: &hookSettleDelay,
 			DeployPaths:     projectCfg.DeployPaths(),
 			DriftIgnore:     projectCfg.DriftIgnore(),
 		}, nil
@@ -173,19 +174,16 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		if err := json.Unmarshal([]byte(v), &hooks); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_POST_SYNC_HOOKS, ignoring")
 		} else {
-			cfg.PostSyncHooks = hooks
-			cfg.PostSyncHooksFromEnv = true
+			cfg.PostSyncHooks.SetFromEnv(hooks)
 		}
 	}
 
 	// Environment variable override for hook settle delay.
 	if v := os.Getenv("BOSUN_HOOK_SETTLE_DELAY"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
-			cfg.HookSettleDelay = d
-			cfg.HookSettleDelayFromEnv = true
+			cfg.HookSettleDelay.SetFromEnv(d)
 		} else if d, err := time.ParseDuration(v + "s"); err == nil {
-			cfg.HookSettleDelay = d
-			cfg.HookSettleDelayFromEnv = true
+			cfg.HookSettleDelay.SetFromEnv(d)
 		} else {
 			log.Warn().Str("value", v).Msg("Failed to parse BOSUN_HOOK_SETTLE_DELAY, ignoring")
 		}
@@ -197,8 +195,7 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		if err := json.Unmarshal([]byte(v), &paths); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_DEPLOY_PATHS, ignoring")
 		} else {
-			cfg.DeployPaths = paths
-			cfg.DeployPathsFromEnv = true
+			cfg.DeployPaths.SetFromEnv(paths)
 		}
 	}
 
@@ -248,14 +245,14 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		}
 		// Hydrate base config with project-level operational defaults so
 		// ConfigForTarget can inherit them for named targets.
-		if len(cfg.CriticalContainers) == 0 && !cfg.CriticalContainersFromEnv {
-			cfg.CriticalContainers = projectCfg.CriticalContainers()
+		if len(cfg.CriticalContainers.Value) == 0 && !cfg.CriticalContainers.FromEnv() {
+			cfg.CriticalContainers.SetFromFile(projectCfg.CriticalContainers())
 		}
-		if len(cfg.DeploySyncPaths) == 0 && !cfg.DeploySyncPathsFromEnv {
-			cfg.DeploySyncPaths = projectCfg.DeploySyncPaths()
+		if len(cfg.DeploySyncPaths.Value) == 0 && !cfg.DeploySyncPaths.FromEnv() {
+			cfg.DeploySyncPaths.SetFromFile(projectCfg.DeploySyncPaths())
 		}
-		if len(cfg.DeploySyncExclude) == 0 && !cfg.DeploySyncExcludeFromEnv {
-			cfg.DeploySyncExclude = projectCfg.DeploySyncExclude()
+		if len(cfg.DeploySyncExclude.Value) == 0 && !cfg.DeploySyncExclude.FromEnv() {
+			cfg.DeploySyncExclude.SetFromFile(projectCfg.DeploySyncExclude())
 		}
 	}
 

@@ -20,7 +20,7 @@ import (
 // ReloadedConfig holds the fields that can be reloaded from the repo's bosun.yaml.
 type ReloadedConfig struct {
 	PostSyncHooks      []PostSyncHook
-	HookSettleDelay    time.Duration
+	HookSettleDelay    *time.Duration
 	DeployPaths        []string
 	DeploySyncPaths    []string
 	DeploySyncExclude  []string
@@ -116,11 +116,11 @@ type Config struct {
 	RestartWindow time.Duration
 
 	// PostSyncHooks defines container restart actions triggered by file changes.
-	PostSyncHooks []PostSyncHook
+	PostSyncHooks ConfigField[[]PostSyncHook]
 
 	// HookSettleDelay is a global pause after deploy but before any post-sync hooks run.
 	// Allows filesystem propagation on FUSE mounts (e.g., Unraid's shfs).
-	HookSettleDelay time.Duration
+	HookSettleDelay ConfigField[time.Duration]
 
 	// ContentHashSync if true, compares file content hashes before writing.
 	// Skips writes for unchanged files to avoid FUSE handle invalidation.
@@ -129,55 +129,27 @@ type Config struct {
 	// RemoveOrphans if true, passes --remove-orphans to docker compose up.
 	// Removes containers belonging to services deleted from the compose file.
 	// Defaults to true.
-	RemoveOrphans bool
-
-	// PostSyncHooksFromEnv is true when BOSUN_POST_SYNC_HOOKS env var is set.
-	// When true, repo config reload will not update PostSyncHooks.
-	PostSyncHooksFromEnv bool
-
-	// HookSettleDelayFromEnv is true when BOSUN_HOOK_SETTLE_DELAY env var is set.
-	// When true, repo config reload will not update HookSettleDelay.
-	HookSettleDelayFromEnv bool
+	RemoveOrphans ConfigField[bool]
 
 	// DeployPaths is an allowlist of glob patterns for deploy-relevant paths.
 	// When configured, commits that only touch files outside these patterns skip the pipeline.
-	DeployPaths []string
-
-	// DeployPathsFromEnv is true when BOSUN_DEPLOY_PATHS env var is set.
-	// When true, repo config reload will not update DeployPaths.
-	DeployPathsFromEnv bool
+	DeployPaths ConfigField[[]string]
 
 	// DeploySyncPaths is an allowlist of glob patterns for deploy sync targets.
 	// When non-empty, only staging directory entries matching these patterns are deployed.
-	DeploySyncPaths []string
-
-	// DeploySyncPathsFromEnv is true when BOSUN_DEPLOY_SYNC_PATHS env var is set.
-	// When true, repo config reload will not update DeploySyncPaths.
-	DeploySyncPathsFromEnv bool
+	DeploySyncPaths ConfigField[[]string]
 
 	// DeploySyncExclude is a blocklist of glob patterns for deploy sync targets.
 	// Matching entries are excluded from deployment. Exclude wins over include.
-	DeploySyncExclude []string
-
-	// DeploySyncExcludeFromEnv is true when BOSUN_DEPLOY_SYNC_EXCLUDE env var is set.
-	// When true, repo config reload will not update DeploySyncExclude.
-	DeploySyncExcludeFromEnv bool
+	DeploySyncExclude ConfigField[[]string]
 
 	// CriticalContainers is a list of container names that must be healthy after compose up.
 	// When configured, the health gate runs after startup grace period before state save.
 	// Empty list (default) skips the health gate entirely.
-	CriticalContainers []string
-
-	// CriticalContainersFromEnv is true when BOSUN_CRITICAL_CONTAINERS env var is set.
-	// When true, repo config reload will not update CriticalContainers.
-	CriticalContainersFromEnv bool
+	CriticalContainers ConfigField[[]string]
 
 	// DriftIgnore is a list of rules for suppressing known drift noise.
-	DriftIgnore []DriftIgnoreRule
-
-	// DriftIgnoreFromEnv is true when BOSUN_DRIFT_IGNORE env var is set.
-	// When true, repo config reload will not update DriftIgnore.
-	DriftIgnoreFromEnv bool
+	DriftIgnore ConfigField[[]DriftIgnoreRule]
 
 	// HealthGateTimeout is the maximum time to poll critical container health.
 	// Default 60s. Configurable via BOSUN_HEALTH_GATE_TIMEOUT.
@@ -190,10 +162,6 @@ type Config struct {
 	// OnSuccess gates success and recovery alert dispatch. When false, neither
 	// success nor recovery alerts are sent. Defaults to false.
 	OnSuccess bool
-
-	// RemoveOrphansFromEnv is true when BOSUN_REMOVE_ORPHANS env var is set.
-	// When true, repo config reload will not update RemoveOrphans.
-	RemoveOrphansFromEnv bool
 
 	// ComposeUpTimeout is the maximum time allowed for docker compose up.
 	// Zero means use DefaultComposeUpTimeout (10 minutes).
@@ -248,7 +216,7 @@ func NewReconciler(cfg *Config, opts ...ReconcilerOption) *Reconciler {
 		config:   cfg,
 		git:      NewGitOps(cfg.RepoURL, cfg.RepoBranch, cfg.RepoDir),
 		sops:     NewSOPSOps(),
-		deploy:   &DeployOps{DryRun: cfg.DryRun, ProjectName: cfg.ProjectName, ContentHashSync: cfg.ContentHashSync, RemoveOrphans: cfg.RemoveOrphans, ComposeUpTimeout: cfg.ComposeUpTimeout},
+		deploy:   &DeployOps{DryRun: cfg.DryRun, ProjectName: cfg.ProjectName, ContentHashSync: cfg.ContentHashSync, RemoveOrphans: cfg.RemoveOrphans.Value, ComposeUpTimeout: cfg.ComposeUpTimeout},
 		lockFile: lockFile,
 	}
 
@@ -443,14 +411,14 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	// from a previously failed deploy are still considered deploy-relevant.
 	// When there is no prior successful deploy, skip this check entirely —
 	// everything is deploy-relevant on first run.
-	if len(r.config.DeployPaths) > 0 && changed && !r.config.Force && state.LastDeployedCommit != "" {
+	if len(r.config.DeployPaths.Value) > 0 && changed && !r.config.Force && state.LastDeployedCommit != "" {
 		changedFiles, err := r.git.DiffFiles(ctx, state.LastDeployedCommit, after)
 		if err != nil {
 			logger.Warn().Err(err).Msg("Cannot diff for deploy_paths check, proceeding with full deploy")
-		} else if !matchAnyPath(changedFiles, r.config.DeployPaths) {
+		} else if !matchAnyPath(changedFiles, r.config.DeployPaths.Value) {
 			logger.Info().
 				Strs("changed_files", changedFiles).
-				Strs("deploy_paths", r.config.DeployPaths).
+				Strs("deploy_paths", r.config.DeployPaths.Value).
 				Msg("No deploy-relevant files changed, skipping reconciliation")
 			ui.Info("=== No deploy-relevant changes (%d files), skipping ===", len(changedFiles))
 
@@ -617,9 +585,9 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	}
 
 	// Execute post-sync hooks if any files changed and hooks are configured.
-	if r.dockerClientFn != nil && !r.config.DryRun && len(r.config.PostSyncHooks) > 0 {
+	if r.dockerClientFn != nil && !r.config.DryRun && len(r.config.PostSyncHooks.Value) > 0 {
 		_, otelHooksSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.post_sync_hooks",
-			trace.WithAttributes(telemetry.IntAttr("hook_count", len(r.config.PostSyncHooks))),
+			trace.WithAttributes(telemetry.IntAttr("hook_count", len(r.config.PostSyncHooks.Value))),
 		)
 		r.executePostSyncHooks(ctx, previousCommit, after, deployResult)
 		telemetry.SpanOK(otelHooksSpan)
@@ -783,12 +751,12 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	// A false-positive restart is safer than stale configs on FUSE mounts.
 	var matched []PostSyncHook
 	if diffFailed || remoteMode {
-		matched = dedupeHooksByContainer(r.config.PostSyncHooks)
+		matched = dedupeHooksByContainer(r.config.PostSyncHooks.Value)
 		if diffFailed {
 			logger.Info().Int("hooks", len(matched)).Msg("Diff unavailable, firing all configured hooks")
 		}
 	} else {
-		matched = EvaluatePostSyncHooks(changedFiles, r.config.PostSyncHooks)
+		matched = EvaluatePostSyncHooks(changedFiles, r.config.PostSyncHooks.Value)
 	}
 	if len(matched) == 0 {
 		return
@@ -801,7 +769,7 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	}
 
 	ui.Info("Executing %d post-sync hook(s)...", len(matched))
-	if err := ExecutePostSyncHooks(ctx, client, matched, r.config.HookSettleDelay); err != nil {
+	if err := ExecutePostSyncHooks(ctx, client, matched, r.config.HookSettleDelay.Value); err != nil {
 		logger.Warn().Err(err).Msg("Some post-sync hooks failed")
 		ui.Warning("Post-sync hook errors: %v", err)
 	}
@@ -831,7 +799,7 @@ func (r *Reconciler) cleanupStaging() error {
 // or empty CriticalContainers list.
 // On failure: triggers rollback and sends a throttled failure alert.
 func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState) error {
-	containers := r.config.CriticalContainers
+	containers := r.config.CriticalContainers.Value
 	if len(containers) == 0 {
 		return nil
 	}
@@ -1061,7 +1029,7 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any) e
 
 	// Discover targets from staging to know what to back up.
 	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
-	targets, err := discoverDeployTargets(stagingSubDir, r.config.DeploySyncPaths, r.config.DeploySyncExclude)
+	targets, err := discoverDeployTargets(stagingSubDir, r.config.DeploySyncPaths.Value, r.config.DeploySyncExclude.Value)
 	if err != nil {
 		return fmt.Errorf("discover deploy targets for backup: %w", err)
 	}
@@ -1184,7 +1152,7 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
 	appdata := r.config.LocalAppdataPath
 
-	targets, err := discoverDeployTargets(stagingSubDir, r.config.DeploySyncPaths, r.config.DeploySyncExclude)
+	targets, err := discoverDeployTargets(stagingSubDir, r.config.DeploySyncPaths.Value, r.config.DeploySyncExclude.Value)
 	if err != nil {
 		return nil, fmt.Errorf("discover deploy targets: %w", err)
 	}
@@ -1301,7 +1269,7 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) e
 	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
 	appdata := r.config.RemoteAppdataPath
 
-	targets, err := discoverDeployTargets(stagingSubDir, r.config.DeploySyncPaths, r.config.DeploySyncExclude)
+	targets, err := discoverDeployTargets(stagingSubDir, r.config.DeploySyncPaths.Value, r.config.DeploySyncExclude.Value)
 	if err != nil {
 		return fmt.Errorf("discover deploy targets: %w", err)
 	}

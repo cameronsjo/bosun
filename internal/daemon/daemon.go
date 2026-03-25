@@ -61,15 +61,10 @@ type Config struct {
 	// Drift check settings
 	DriftInterval          time.Duration // Interval for periodic drift checks (0 disables, default: 5m)
 	DriftAlertCooldown     time.Duration // Cooldown between repeated drift alerts per item (default: 1h)
-	DriftAlertDebounce     time.Duration // Debounce window before first drift alert fires (0 = disabled, default: 0)
-	DriftResolveAlerts     bool          // Send "drift resolved" alerts (default: true)
-	DriftSelfHeal          bool          // Trigger reconciliation when drift detected (default: false)
-	DriftSelfHealCooldown  time.Duration // Minimum interval between self-heal reconciliations (default: 15m)
-
-	// "from env" flags: when true, the corresponding field must not be overwritten by bosun.yaml hot-reload.
-	DriftAlertDebounceFromEnv    bool
-	DriftSelfHealFromEnv         bool
-	DriftSelfHealCooldownFromEnv bool
+	DriftAlertDebounce    reconcile.ConfigField[time.Duration] // Debounce window before first drift alert fires (0 = disabled, default: 0)
+	DriftResolveAlerts    bool                                // Send "drift resolved" alerts (default: true)
+	DriftSelfHeal         reconcile.ConfigField[bool]         // Trigger reconciliation when drift detected (default: false)
+	DriftSelfHealCooldown reconcile.ConfigField[time.Duration] // Minimum interval between self-heal reconciliations (default: 15m)
 
 	// Content-hash sync settings
 	ContentHashSync bool // Compare file hashes before writing (default: true)
@@ -103,7 +98,7 @@ func DefaultConfig() *Config {
 		DriftInterval:          5 * time.Minute,
 		DriftAlertCooldown:     time.Hour,
 		DriftResolveAlerts:     true,
-		DriftSelfHealCooldown:  15 * time.Minute,
+		DriftSelfHealCooldown:  reconcile.NewConfigField(15 * time.Minute),
 		ContentHashSync:    true,
 		RemoveOrphans:      true,
 	}
@@ -750,7 +745,7 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	// Collect drift ignore rules from reconcile config.
 	var ignoreRules []reconcile.DriftIgnoreRule
 	if d.config.ReconcileConfig != nil {
-		ignoreRules = d.config.ReconcileConfig.DriftIgnore
+		ignoreRules = d.config.ReconcileConfig.DriftIgnore.Value
 	}
 
 	checkCtx, finishSpan := sentrypkg.StartSpan(checkCtx, "drift.periodic_check", "Periodic drift check")
@@ -1086,9 +1081,9 @@ func (d *Daemon) driftConfig() driftRuntimeConfig {
 	d.configMu.RLock()
 	defer d.configMu.RUnlock()
 	return driftRuntimeConfig{
-		driftAlertDebounce:    d.config.DriftAlertDebounce,
-		driftSelfHeal:         d.config.DriftSelfHeal,
-		driftSelfHealCooldown: d.config.DriftSelfHealCooldown,
+		driftAlertDebounce:    d.config.DriftAlertDebounce.Value,
+		driftSelfHeal:         d.config.DriftSelfHeal.Value,
+		driftSelfHealCooldown: d.config.DriftSelfHealCooldown.Value,
 	}
 }
 
@@ -1110,38 +1105,38 @@ func (d *Daemon) reloadDaemonConfig() {
 
 	changed := false
 
-	if !d.config.DriftAlertDebounceFromEnv {
+	if !d.config.DriftAlertDebounce.FromEnv() {
 		newVal := projectCfg.DriftAlertDebounce()
-		if newVal != d.config.DriftAlertDebounce {
-			d.config.DriftAlertDebounce = newVal
+		if newVal != d.config.DriftAlertDebounce.Value {
+			d.config.DriftAlertDebounce.SetFromFile(newVal)
 			changed = true
 		}
 	}
 
-	if !d.config.DriftSelfHealFromEnv {
+	if !d.config.DriftSelfHeal.FromEnv() {
 		newVal := projectCfg.DriftSelfHeal()
-		if newVal != d.config.DriftSelfHeal {
-			d.config.DriftSelfHeal = newVal
+		if newVal != d.config.DriftSelfHeal.Value {
+			d.config.DriftSelfHeal.SetFromFile(newVal)
 			changed = true
 		}
 	}
 
-	if !d.config.DriftSelfHealCooldownFromEnv {
+	if !d.config.DriftSelfHealCooldown.FromEnv() {
 		newVal := projectCfg.DriftSelfHealCooldown()
 		if newVal == 0 {
-			newVal = DefaultConfig().DriftSelfHealCooldown
+			newVal = DefaultConfig().DriftSelfHealCooldown.Value
 		}
-		if newVal != d.config.DriftSelfHealCooldown {
-			d.config.DriftSelfHealCooldown = newVal
+		if newVal != d.config.DriftSelfHealCooldown.Value {
+			d.config.DriftSelfHealCooldown.SetFromFile(newVal)
 			changed = true
 		}
 	}
 
 	if changed {
 		logger.Info().
-			Dur("drift_alert_debounce", d.config.DriftAlertDebounce).
-			Bool("drift_self_heal", d.config.DriftSelfHeal).
-			Dur("drift_self_heal_cooldown", d.config.DriftSelfHealCooldown).
+			Dur("drift_alert_debounce", d.config.DriftAlertDebounce.Value).
+			Bool("drift_self_heal", d.config.DriftSelfHeal.Value).
+			Dur("drift_self_heal_cooldown", d.config.DriftSelfHealCooldown.Value).
 			Msg("Daemon config reloaded from bosun.yaml")
 	}
 }
@@ -1524,8 +1519,7 @@ func ConfigFromEnv() *Config {
 			if d < 0 {
 				log.Warn().Str("env", "BOSUN_DRIFT_ALERT_DEBOUNCE").Str("value", v).Msg("Skipping env var. Reason: duration must not be negative")
 			} else {
-				cfg.DriftAlertDebounce = d
-				cfg.DriftAlertDebounceFromEnv = true
+				cfg.DriftAlertDebounce.SetFromEnv(d)
 			}
 		} else {
 			log.Warn().Str("env", "BOSUN_DRIFT_ALERT_DEBOUNCE").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
@@ -1546,16 +1540,14 @@ func ConfigFromEnv() *Config {
 
 	// Drift self-healing (default: false)
 	if v := os.Getenv("BOSUN_DRIFT_SELF_HEAL"); v != "" {
-		cfg.DriftSelfHeal = v == "true" || v == "1"
-		cfg.DriftSelfHealFromEnv = true
+		cfg.DriftSelfHeal.SetFromEnv(v == "true" || v == "1")
 	}
 	if v := os.Getenv("BOSUN_DRIFT_SELF_HEAL_COOLDOWN"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			if d <= 0 {
 				log.Warn().Str("env", "BOSUN_DRIFT_SELF_HEAL_COOLDOWN").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
 			} else {
-				cfg.DriftSelfHealCooldown = d
-				cfg.DriftSelfHealCooldownFromEnv = true
+				cfg.DriftSelfHealCooldown.SetFromEnv(d)
 			}
 		} else {
 			log.Warn().Str("env", "BOSUN_DRIFT_SELF_HEAL_COOLDOWN").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
@@ -1569,19 +1561,19 @@ func ConfigFromEnv() *Config {
 	rcfg.ContentHashSync = cfg.ContentHashSync
 
 	// Orphan container cleanup (default: true)
-	removeOrphansFromEnv := false
 	if v := os.Getenv("BOSUN_REMOVE_ORPHANS"); v != "" {
 		cfg.RemoveOrphans = v != "false" && v != "0"
-		removeOrphansFromEnv = true
+		rcfg.RemoveOrphans.SetFromEnv(cfg.RemoveOrphans)
+	} else {
+		rcfg.RemoveOrphans = reconcile.NewConfigField(cfg.RemoveOrphans)
 	}
-	rcfg.RemoveOrphans = cfg.RemoveOrphans
 
 	// Post-sync hooks, settle delay, deploy paths, alert flags, drift debounce, remove_orphans, and targets: load from project config, env var overrides.
 	if projectCfg, err := config.Load(); err == nil {
-		rcfg.PostSyncHooks = projectCfg.PostSyncHooks()
-		rcfg.HookSettleDelay = projectCfg.HookSettleDelay()
-		rcfg.DeployPaths = projectCfg.DeployPaths()
-		rcfg.CriticalContainers = projectCfg.CriticalContainers()
+		rcfg.PostSyncHooks.SetFromFile(projectCfg.PostSyncHooks())
+		rcfg.HookSettleDelay.SetFromFile(projectCfg.HookSettleDelay())
+		rcfg.DeployPaths.SetFromFile(projectCfg.DeployPaths())
+		rcfg.CriticalContainers.SetFromFile(projectCfg.CriticalContainers())
 
 		// Load targets from project config; BOSUN_TARGETS env var (parsed above) takes precedence.
 		// Skip if env explicitly set targets (even to empty — that's an intentional override).
@@ -1594,27 +1586,24 @@ func ConfigFromEnv() *Config {
 		rcfg.OnSuccess = alertCfg.OnSuccess
 
 		// Config file debounce value: env var takes precedence (already parsed above).
-		if !cfg.DriftAlertDebounceFromEnv && projectCfg.DriftAlertDebounce() > 0 {
-			cfg.DriftAlertDebounce = projectCfg.DriftAlertDebounce()
+		if !cfg.DriftAlertDebounce.FromEnv() && projectCfg.DriftAlertDebounce() > 0 {
+			cfg.DriftAlertDebounce.SetFromFile(projectCfg.DriftAlertDebounce())
 		}
 
 		// Drift self-heal from config file; env var takes precedence.
-		if !cfg.DriftSelfHealFromEnv {
-			cfg.DriftSelfHeal = projectCfg.DriftSelfHeal()
+		if !cfg.DriftSelfHeal.FromEnv() {
+			cfg.DriftSelfHeal.SetFromFile(projectCfg.DriftSelfHeal())
 		}
-		if !cfg.DriftSelfHealCooldownFromEnv && projectCfg.DriftSelfHealCooldown() > 0 {
-			cfg.DriftSelfHealCooldown = projectCfg.DriftSelfHealCooldown()
+		if !cfg.DriftSelfHealCooldown.FromEnv() && projectCfg.DriftSelfHealCooldown() > 0 {
+			cfg.DriftSelfHealCooldown.SetFromFile(projectCfg.DriftSelfHealCooldown())
 		}
 
 		// Load remove_orphans from project config; env var (parsed above) takes precedence.
-		if os.Getenv("BOSUN_REMOVE_ORPHANS") == "" {
+		if !rcfg.RemoveOrphans.FromEnv() {
 			cfg.RemoveOrphans = projectCfg.RemoveOrphans()
-			rcfg.RemoveOrphans = cfg.RemoveOrphans
+			rcfg.RemoveOrphans.SetFromFile(cfg.RemoveOrphans)
 		}
 	}
-
-	// Set env-override flags so the reconciler preserves env var precedence on reload.
-	rcfg.RemoveOrphansFromEnv = removeOrphansFromEnv
 
 	// Wire config reloader so the reconciler can re-read bosun.yaml from the repo.
 	rcfg.ConfigReloader = func(dir string) (*reconcile.ReloadedConfig, error) {
@@ -1624,9 +1613,10 @@ func ConfigFromEnv() *Config {
 		}
 		alertCfg := cfg.GetAlertConfig()
 		removeOrphans := cfg.RemoveOrphans()
+		hookSettleDelay := cfg.HookSettleDelay()
 		return &reconcile.ReloadedConfig{
 			PostSyncHooks:      cfg.PostSyncHooks(),
-			HookSettleDelay:    cfg.HookSettleDelay(),
+			HookSettleDelay:    &hookSettleDelay,
 			DeployPaths:        cfg.DeployPaths(),
 			DeploySyncPaths:    cfg.DeploySyncPaths(),
 			DeploySyncExclude:  cfg.DeploySyncExclude(),
@@ -1643,14 +1633,12 @@ func ConfigFromEnv() *Config {
 		if err := json.Unmarshal([]byte(v), &hooks); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_POST_SYNC_HOOKS, ignoring")
 		} else {
-			rcfg.PostSyncHooks = hooks
-			rcfg.PostSyncHooksFromEnv = true
+			rcfg.PostSyncHooks.SetFromEnv(hooks)
 		}
 	}
 	if v := os.Getenv("BOSUN_HOOK_SETTLE_DELAY"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
-			rcfg.HookSettleDelay = d
-			rcfg.HookSettleDelayFromEnv = true
+			rcfg.HookSettleDelay.SetFromEnv(d)
 		} else {
 			log.Warn().Str("value", v).Msg("Failed to parse BOSUN_HOOK_SETTLE_DELAY, ignoring")
 		}
@@ -1660,8 +1648,7 @@ func ConfigFromEnv() *Config {
 		if err := json.Unmarshal([]byte(v), &paths); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_DEPLOY_PATHS, ignoring")
 		} else {
-			rcfg.DeployPaths = paths
-			rcfg.DeployPathsFromEnv = true
+			rcfg.DeployPaths.SetFromEnv(paths)
 		}
 	}
 	if v := os.Getenv("BOSUN_DEPLOY_SYNC_PATHS"); v != "" {
@@ -1669,8 +1656,7 @@ func ConfigFromEnv() *Config {
 		if err := json.Unmarshal([]byte(v), &paths); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_DEPLOY_SYNC_PATHS, ignoring")
 		} else {
-			rcfg.DeploySyncPaths = paths
-			rcfg.DeploySyncPathsFromEnv = true
+			rcfg.DeploySyncPaths.SetFromEnv(paths)
 		}
 	}
 	if v := os.Getenv("BOSUN_DEPLOY_SYNC_EXCLUDE"); v != "" {
@@ -1678,8 +1664,7 @@ func ConfigFromEnv() *Config {
 		if err := json.Unmarshal([]byte(v), &paths); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_DEPLOY_SYNC_EXCLUDE, ignoring")
 		} else {
-			rcfg.DeploySyncExclude = paths
-			rcfg.DeploySyncExcludeFromEnv = true
+			rcfg.DeploySyncExclude.SetFromEnv(paths)
 		}
 	}
 	if v := os.Getenv("BOSUN_CRITICAL_CONTAINERS"); v != "" {
@@ -1687,8 +1672,7 @@ func ConfigFromEnv() *Config {
 		if err := json.Unmarshal([]byte(v), &containers); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_CRITICAL_CONTAINERS, ignoring")
 		} else {
-			rcfg.CriticalContainers = containers
-			rcfg.CriticalContainersFromEnv = true
+			rcfg.CriticalContainers.SetFromEnv(containers)
 		}
 	}
 	if v := os.Getenv("BOSUN_DRIFT_IGNORE"); v != "" {
@@ -1696,8 +1680,7 @@ func ConfigFromEnv() *Config {
 		if err := json.Unmarshal([]byte(v), &rules); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_DRIFT_IGNORE, ignoring")
 		} else {
-			rcfg.DriftIgnore = rules
-			rcfg.DriftIgnoreFromEnv = true
+			rcfg.DriftIgnore.SetFromEnv(rules)
 		}
 	}
 	if v := os.Getenv("BOSUN_HEALTH_GATE_TIMEOUT"); v != "" {
