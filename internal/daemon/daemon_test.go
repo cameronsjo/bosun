@@ -951,6 +951,7 @@ func TestConfigFromEnv_EnvOverrideFlags(t *testing.T) {
 		require.NotNil(t, cfg.ReconcileConfig.ConfigReloader)
 	})
 
+	// CriticalContainers, DeploySyncPaths, DeploySyncExclude use legacy boolean pattern (migrated in PR #208).
 	t.Run("CriticalContainersFromEnv set when env var present", func(t *testing.T) {
 		t.Setenv("BOSUN_CRITICAL_CONTAINERS", `["traefik","authelia"]`)
 
