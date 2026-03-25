@@ -2,6 +2,8 @@ package reconcile
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -75,6 +77,33 @@ func resolveTargetHost(configHost string, secrets map[string]any) string {
 	}
 
 	return ""
+}
+
+// resolveDeployModeWithSecrets determines local vs remote deploy mode using
+// both config fields and decrypted secrets. Returns (true, nil) for local,
+// (false, nil) for remote, or an error when local appdata is configured but
+// inaccessible and no remote host is available from either config or secrets.
+func resolveDeployModeWithSecrets(configHost, localAppdataPath string, secrets map[string]any, statFn func(string) (os.FileInfo, error)) (bool, error) {
+	effectiveHost := resolveTargetHost(configHost, secrets)
+
+	// Any remote host (config or secrets) → remote mode.
+	if effectiveHost != "" {
+		return false, nil
+	}
+
+	// No local path configured and no remote host → remote mode.
+	// deployRemote will fail with "no target host" but that's a config error, not a mode error.
+	if localAppdataPath == "" {
+		return false, nil
+	}
+
+	// Local path configured — verify accessible.
+	if _, err := statFn(localAppdataPath); err == nil {
+		return true, nil
+	}
+
+	// Local path inaccessible, no remote fallback.
+	return false, fmt.Errorf("%w: %s", ErrAppdataInaccessible, localAppdataPath)
 }
 
 // buildComposeArgs constructs the docker compose argument list with an

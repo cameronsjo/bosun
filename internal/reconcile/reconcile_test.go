@@ -119,36 +119,6 @@ func TestReconciler_ReleaseLock(t *testing.T) {
 	})
 }
 
-func TestReconciler_IsLocalMode(t *testing.T) {
-	t.Run("local mode with target host", func(t *testing.T) {
-		cfg := &Config{
-			TargetHost:       "user@host",
-			LocalAppdataPath: "/non/existent/path",
-		}
-		r := NewReconciler(cfg)
-
-		assert.False(t, r.isLocalMode())
-	})
-
-	t.Run("local mode with existing appdata", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		cfg := &Config{
-			LocalAppdataPath: tmpDir,
-		}
-		r := NewReconciler(cfg)
-
-		assert.True(t, r.isLocalMode())
-	})
-
-	t.Run("remote mode with non-existent appdata", func(t *testing.T) {
-		cfg := &Config{
-			LocalAppdataPath: "/non/existent/path",
-		}
-		r := NewReconciler(cfg)
-
-		assert.False(t, r.isLocalMode())
-	})
-}
 
 func TestReconciler_GetTargetHost(t *testing.T) {
 	t.Run("explicit target host", func(t *testing.T) {
@@ -1559,6 +1529,121 @@ func TestReloadProjectConfig(t *testing.T) {
 	})
 }
 
+// --- reloadProjectConfig per-target override tests ---
+
+func TestReloadProjectConfig_TargetOverrides(t *testing.T) {
+	t.Run("named target PostSyncHooks override applied", func(t *testing.T) {
+		cfg := &Config{
+			TargetName: "unraid",
+			PostSyncHooks: NewConfigField([]PostSyncHook{{Container: "root-hook"}}),
+			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
+				return &ReloadedConfig{
+					Targets: []Target{
+						{Name: "unraid", PostSyncHooks: []PostSyncHook{{Container: "target-hook"}}},
+					},
+				}, nil
+			},
+		}
+		r := NewReconciler(cfg)
+		r.reloadProjectConfig()
+		require.Len(t, r.config.PostSyncHooks.Value, 1)
+		assert.Equal(t, "target-hook", r.config.PostSyncHooks.Value[0].Container)
+	})
+
+	t.Run("env precedence prevents target override", func(t *testing.T) {
+		cfg := &Config{
+			TargetName:    "unraid",
+			PostSyncHooks: EnvConfigField([]PostSyncHook{{Container: "env-hook"}}),
+			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
+				return &ReloadedConfig{
+					Targets: []Target{
+						{Name: "unraid", PostSyncHooks: []PostSyncHook{{Container: "target-hook"}}},
+					},
+				}, nil
+			},
+		}
+		r := NewReconciler(cfg)
+		r.reloadProjectConfig()
+		assert.Equal(t, "env-hook", r.config.PostSyncHooks.Value[0].Container)
+	})
+
+	t.Run("default target skips target overrides", func(t *testing.T) {
+		cfg := &Config{
+			TargetName:    DefaultTargetName,
+			PostSyncHooks: NewConfigField([]PostSyncHook{{Container: "root-hook"}}),
+			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
+				return &ReloadedConfig{
+					Targets: []Target{
+						{Name: "unraid", PostSyncHooks: []PostSyncHook{{Container: "target-hook"}}},
+					},
+				}, nil
+			},
+		}
+		r := NewReconciler(cfg)
+		r.reloadProjectConfig()
+		assert.Equal(t, "root-hook", r.config.PostSyncHooks.Value[0].Container)
+	})
+
+	t.Run("no matching target is no-op", func(t *testing.T) {
+		cfg := &Config{
+			TargetName:    "pi",
+			PostSyncHooks: NewConfigField([]PostSyncHook{{Container: "root-hook"}}),
+			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
+				return &ReloadedConfig{
+					Targets: []Target{
+						{Name: "unraid", PostSyncHooks: []PostSyncHook{{Container: "target-hook"}}},
+					},
+				}, nil
+			},
+		}
+		r := NewReconciler(cfg)
+		r.reloadProjectConfig()
+		assert.Equal(t, "root-hook", r.config.PostSyncHooks.Value[0].Container)
+	})
+
+	t.Run("fast-path not short-circuited when only Targets present", func(t *testing.T) {
+		cfg := &Config{
+			TargetName: "unraid",
+			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
+				return &ReloadedConfig{
+					Targets: []Target{
+						{Name: "unraid", CriticalContainers: []string{"traefik"}},
+					},
+				}, nil
+			},
+		}
+		r := NewReconciler(cfg)
+		r.reloadProjectConfig()
+		require.Len(t, r.config.CriticalContainers.Value, 1)
+		assert.Equal(t, "traefik", r.config.CriticalContainers.Value[0])
+	})
+
+	t.Run("all overlayable fields applied from target", func(t *testing.T) {
+		cfg := &Config{
+			TargetName: "unraid",
+			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
+				return &ReloadedConfig{
+					Targets: []Target{
+						{
+							Name:               "unraid",
+							PostSyncHooks:      []PostSyncHook{{Container: "hook"}},
+							CriticalContainers: []string{"traefik"},
+							DeploySyncPaths:    []string{"appdata/**"},
+							DeploySyncExclude:  []string{"logs/**"},
+						},
+					},
+				}, nil
+			},
+		}
+		r := NewReconciler(cfg)
+		r.reloadProjectConfig()
+		assert.Len(t, r.config.PostSyncHooks.Value, 1)
+		assert.Len(t, r.config.CriticalContainers.Value, 1)
+		assert.Len(t, r.config.DeploySyncPaths.Value, 1)
+		assert.Len(t, r.config.DeploySyncExclude.Value, 1)
+	})
+}
+
 // --- Reconciler.cleanupStaging additional tests ---
 
 func TestCleanupStagingAdditional(t *testing.T) {
@@ -1738,26 +1823,6 @@ func TestRenderTemplatesFailure(t *testing.T) {
 
 // --- Reconciler.isLocalMode / getTargetHost tests ---
 
-func TestIsLocalMode(t *testing.T) {
-	t.Run("remote host set returns false", func(t *testing.T) {
-		cfg := &Config{TargetHost: "root@10.0.0.1"}
-		r := NewReconciler(cfg)
-		assert.False(t, r.isLocalMode())
-	})
-
-	t.Run("local appdata exists returns true", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		cfg := &Config{LocalAppdataPath: tmpDir}
-		r := NewReconciler(cfg)
-		assert.True(t, r.isLocalMode())
-	})
-
-	t.Run("local appdata missing returns false", func(t *testing.T) {
-		cfg := &Config{LocalAppdataPath: "/nonexistent/path"}
-		r := NewReconciler(cfg)
-		assert.False(t, r.isLocalMode())
-	})
-}
 
 func TestGetTargetHost(t *testing.T) {
 	t.Run("explicit target host", func(t *testing.T) {
@@ -1808,23 +1873,9 @@ func TestDoDeploy(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		result, err := r.doDeploy(context.Background(), nil)
+		result, err := r.doDeploy(context.Background(), nil, true)
 		require.NoError(t, err)
 		assert.NotNil(t, result)
-	})
-
-	t.Run("inaccessible appdata returns error", func(t *testing.T) {
-		// resolveDeployMode returns ErrAppdataInaccessible when the path is
-		// configured but cannot be stat'd and no remote host is set.
-		cfg := &Config{
-			LocalAppdataPath: "/nonexistent/path",
-		}
-		r := NewReconciler(cfg)
-
-		result, err := r.doDeploy(context.Background(), map[string]any{})
-		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrAppdataInaccessible)
-		assert.Nil(t, result)
 	})
 }
 
@@ -2006,7 +2057,7 @@ func TestCreateBackup(t *testing.T) {
 		r := NewReconciler(cfg)
 
 		// Backup will succeed (no files to back up returns name, no error)
-		err := r.createBackup(context.Background(), nil)
+		err := r.createBackup(context.Background(), nil, true)
 		require.NoError(t, err)
 		assert.NotEmpty(t, r.lastBackupPath)
 	})
@@ -2921,7 +2972,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 			StateFile:        stateFile,
 			RepoDir:          repoDir,
 			StagingDir:       stagingDir,
-			LocalAppdataPath: "/nonexistent/appdata", // Force remote mode
+			LocalAppdataPath: "/nonexistent/appdata", // Inaccessible, no remote host → mode resolution fails
 			InfraSubDir:      ".",
 			SecretsFiles:     []string{},
 			OnFailure:        true,
@@ -2933,7 +2984,8 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 
 		err := r.Run(context.Background())
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "deployment failed")
+		assert.Contains(t, err.Error(), "failed to resolve deploy mode")
+		assert.ErrorIs(t, err, ErrAppdataInaccessible)
 		assert.Equal(t, 1, alerter.deployFailureCalls)
 	})
 
@@ -3178,7 +3230,7 @@ func TestOnFailureGate(t *testing.T) {
 			StateFile:        stateFile,
 			RepoDir:          repoDir,
 			StagingDir:       stagingDir,
-			LocalAppdataPath: "/nonexistent/appdata",
+			LocalAppdataPath: "/nonexistent/appdata", // Inaccessible, no remote host → mode resolution fails
 			InfraSubDir:      ".",
 			SecretsFiles:     []string{},
 			OnFailure:        false,
@@ -3190,7 +3242,7 @@ func TestOnFailureGate(t *testing.T) {
 
 		err := r.Run(context.Background())
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "deployment failed")
+		assert.Contains(t, err.Error(), "failed to resolve deploy mode")
 		assert.Equal(t, 0, alerter.deployFailureCalls)
 	})
 }
@@ -3426,7 +3478,7 @@ func TestRunHealthGate_SkipsWhenNoCriticalContainers(t *testing.T) {
 	r := NewReconciler(cfg)
 	state := &DeployState{}
 
-	err := r.runHealthGate(context.Background(), state)
+	err := r.runHealthGate(context.Background(), state, true)
 	require.NoError(t, err)
 }
 
@@ -3438,7 +3490,7 @@ func TestRunHealthGate_SkipsWhenDryRun(t *testing.T) {
 	r := NewReconciler(cfg)
 	state := &DeployState{}
 
-	err := r.runHealthGate(context.Background(), state)
+	err := r.runHealthGate(context.Background(), state, true)
 	require.NoError(t, err)
 }
 
@@ -3450,7 +3502,7 @@ func TestRunHealthGate_SkipsForRemoteDeploy(t *testing.T) {
 	r := NewReconciler(cfg)
 	state := &DeployState{}
 
-	err := r.runHealthGate(context.Background(), state)
+	err := r.runHealthGate(context.Background(), state, false)
 	require.NoError(t, err)
 }
 
@@ -3462,7 +3514,7 @@ func TestRunHealthGate_SkipsWhenNoDockerClient(t *testing.T) {
 	r := NewReconciler(cfg)
 	state := &DeployState{}
 
-	err := r.runHealthGate(context.Background(), state)
+	err := r.runHealthGate(context.Background(), state, true)
 	require.NoError(t, err)
 }
 
@@ -3481,7 +3533,7 @@ func TestRunHealthGate_PassesWhenAllHealthy(t *testing.T) {
 	r := NewReconciler(cfg, WithDockerClient(client))
 	state := &DeployState{}
 
-	err := r.runHealthGate(context.Background(), state)
+	err := r.runHealthGate(context.Background(), state, true)
 	require.NoError(t, err)
 }
 
@@ -3503,7 +3555,7 @@ func TestRunHealthGate_FailsWhenUnhealthy(t *testing.T) {
 	r := NewReconciler(cfg, WithDockerClient(client))
 	state := &DeployState{}
 
-	err := r.runHealthGate(context.Background(), state)
+	err := r.runHealthGate(context.Background(), state, true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "authelia")
 }
@@ -4082,6 +4134,7 @@ func TestResolveDeployMode(t *testing.T) {
 		targetHost     string
 		appdataPath    string
 		createPath     bool
+		secrets        map[string]any
 		wantLocal      bool
 		wantErr        bool
 		wantErrContain string
@@ -4118,6 +4171,16 @@ func TestResolveDeployMode(t *testing.T) {
 			appdataPath: "/nonexistent/mount/path/that/does/not/exist",
 			wantLocal:   false,
 		},
+		{
+			name:    "remote mode when secrets host available and no config host",
+			secrets: map[string]any{"network": map[string]any{"unraid_ip": "192.168.1.100"}},
+		},
+		{
+			name:        "remote fallback via secrets when appdata inaccessible",
+			appdataPath: "/nonexistent/mount/path",
+			secrets:     map[string]any{"network": map[string]any{"unraid_ip": "192.168.1.100"}},
+			wantLocal:   false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -4137,7 +4200,7 @@ func TestResolveDeployMode(t *testing.T) {
 			r := &Reconciler{config: cfg}
 			ctx := context.Background()
 
-			local, err := r.resolveDeployMode(ctx)
+			local, err := r.resolveDeployMode(ctx, tt.secrets)
 
 			if tt.wantErr {
 				require.Error(t, err)
