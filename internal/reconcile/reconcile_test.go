@@ -1314,6 +1314,28 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 		assert.Equal(t, 1, matched, "hook matched but could not execute")
 	})
 
+	t.Run("restart failure returns matched count and error", func(t *testing.T) {
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts container.StopOptions) error {
+			return fmt.Errorf("connection refused")
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		gitOps := &mockGitOps{diffFiles: []string{"traefik/dynamic.yml"}}
+		cfg := &Config{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
+				{Container: "traefik", Paths: []string{"traefik/**"}, Action: "restart"},
+			}),
+		}
+		r := NewReconciler(cfg, WithGitOperations(gitOps))
+		r.dockerClientFn = func() *docker.Client { return client }
+
+		matched, err := r.executePostSyncHooks(context.Background(), "aaa", "bbb", nil, true)
+		assert.Error(t, err)
+		assert.Equal(t, 1, matched)
+		assert.Contains(t, err.Error(), "connection refused")
+	})
+
 	t.Run("diff failure fires all hooks unconditionally", func(t *testing.T) {
 		restartCalled := false
 		mockAPI := newReconcileMockDockerAPI()
