@@ -27,7 +27,7 @@ func (r *Reconciler) reloadProjectConfig() {
 	// If no field has any value from the repo, there's nothing to reload.
 	// Use nil checks (not len==0) for slices so explicitly empty lists (e.g. `deploy_sync_paths: []`)
 	// can clear in-memory filters during hot-reload.
-	if reloaded.PostSyncHooks == nil && reloaded.HookSettleDelay == nil && reloaded.DeployPaths == nil && reloaded.DeploySyncPaths == nil && reloaded.DeploySyncExclude == nil && reloaded.CriticalContainers == nil && reloaded.DriftIgnore == nil && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil {
+	if reloaded.PostSyncHooks == nil && reloaded.HookSettleDelay == nil && reloaded.DeployPaths == nil && reloaded.DeploySyncPaths == nil && reloaded.DeploySyncExclude == nil && reloaded.CriticalContainers == nil && reloaded.DriftIgnore == nil && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil && reloaded.Targets == nil {
 		return
 	}
 
@@ -66,6 +66,17 @@ func (r *Reconciler) reloadProjectConfig() {
 		}
 	}
 
+	// Apply per-target operational overrides (hooks, critical containers, sync paths).
+	// Named targets can override these fields in bosun.yaml; the default target uses root-level values.
+	if r.config.TargetName != "" && r.config.TargetName != DefaultTargetName && reloaded.Targets != nil {
+		for _, t := range reloaded.Targets {
+			if t.Name == r.config.TargetName {
+				changed = applyTargetOverrides(r, t) || changed
+				break
+			}
+		}
+	}
+
 	if changed {
 		logger.Info().
 			Int("hooks", len(r.config.PostSyncHooks.Value)).
@@ -76,4 +87,27 @@ func (r *Reconciler) reloadProjectConfig() {
 			Bool("remove_orphans", r.config.RemoveOrphans.Value).
 			Msg("Reloaded project config from repo")
 	}
+}
+
+// applyTargetOverrides overlays per-target field overrides onto the reconciler's config.
+// Only fields that the Target struct can override are applied. Fields set from
+// environment variables are never overwritten (reloadField checks FromEnv).
+func applyTargetOverrides(r *Reconciler, t Target) bool {
+	changed := false
+	sliceSet := func(v []string) bool { return v != nil }
+
+	if t.PostSyncHooks != nil {
+		changed = reloadField(&r.config.PostSyncHooks, t.PostSyncHooks, func(v []PostSyncHook) bool { return v != nil }) || changed
+	}
+	if t.CriticalContainers != nil {
+		changed = reloadField(&r.config.CriticalContainers, t.CriticalContainers, sliceSet) || changed
+	}
+	if t.DeploySyncPaths != nil {
+		changed = reloadField(&r.config.DeploySyncPaths, t.DeploySyncPaths, sliceSet) || changed
+	}
+	if t.DeploySyncExclude != nil {
+		changed = reloadField(&r.config.DeploySyncExclude, t.DeploySyncExclude, sliceSet) || changed
+	}
+
+	return changed
 }
