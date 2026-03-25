@@ -596,7 +596,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 		_, otelHooksSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.post_sync_hooks",
 			trace.WithAttributes(telemetry.IntAttr("hook_count", len(r.config.PostSyncHooks.Value))),
 		)
-		r.executePostSyncHooks(ctx, previousCommit, after, deployResult)
+		r.executePostSyncHooks(ctx, previousCommit, after, deployResult, localDeploy)
 		telemetry.SpanOK(otelHooksSpan)
 		otelHooksSpan.End()
 	}
@@ -717,7 +717,7 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 // executePostSyncHooks detects changed files and restarts matching containers via configured hooks.
 // When deployResult is non-nil and has written files, those are used for matching instead of git diff.
 // This ensures hooks only fire for files actually written to disk (content-hash sync).
-func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, currentCommit string, deployResult *DeployResult) {
+func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, currentCommit string, deployResult *DeployResult, local bool) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
 	if previousCommit == "" {
@@ -728,7 +728,7 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	// Prefer written-files from content-hash sync over git diff.
 	var changedFiles []string
 	diffFailed := false
-	remoteMode := deployResult == nil && r.config.TargetHost != ""
+	remoteMode := !local
 	if remoteMode {
 		// Remote deploys return nil DeployResult (no file-level tracking).
 		// Fire all hooks unconditionally — a false-positive restart is better
