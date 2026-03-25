@@ -951,52 +951,51 @@ func TestConfigFromEnv_EnvOverrideFlags(t *testing.T) {
 		require.NotNil(t, cfg.ReconcileConfig.ConfigReloader)
 	})
 
-	// CriticalContainers, DeploySyncPaths, DeploySyncExclude use legacy boolean pattern (migrated in PR #208).
 	t.Run("CriticalContainersFromEnv set when env var present", func(t *testing.T) {
 		t.Setenv("BOSUN_CRITICAL_CONTAINERS", `["traefik","authelia"]`)
 
 		cfg := ConfigFromEnv()
-		assert.True(t, cfg.ReconcileConfig.CriticalContainersFromEnv)
+		assert.True(t, cfg.ReconcileConfig.CriticalContainers.FromEnv())
 	})
 
-	t.Run("CriticalContainersFromEnv false when env var absent", func(t *testing.T) {
+	t.Run("CriticalContainers source is not env when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
-		assert.False(t, cfg.ReconcileConfig.CriticalContainersFromEnv)
+		assert.False(t, cfg.ReconcileConfig.CriticalContainers.FromEnv())
 	})
 
-	t.Run("DeploySyncPathsFromEnv set when env var present", func(t *testing.T) {
+	t.Run("DeploySyncPaths source is env when env var present", func(t *testing.T) {
 		t.Setenv("BOSUN_DEPLOY_SYNC_PATHS", `["appdata/traefik","compose"]`)
 
 		cfg := ConfigFromEnv()
 
-		if !cfg.ReconcileConfig.DeploySyncPathsFromEnv {
-			t.Error("DeploySyncPathsFromEnv should be true when BOSUN_DEPLOY_SYNC_PATHS is set")
+		if !cfg.ReconcileConfig.DeploySyncPaths.FromEnv() {
+			t.Error("DeploySyncPaths.Source should be SourceEnv when BOSUN_DEPLOY_SYNC_PATHS is set")
 		}
 	})
 
-	t.Run("DeploySyncPathsFromEnv false when env var absent", func(t *testing.T) {
+	t.Run("DeploySyncPaths source is not env when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
 
-		if cfg.ReconcileConfig.DeploySyncPathsFromEnv {
-			t.Error("DeploySyncPathsFromEnv should be false when BOSUN_DEPLOY_SYNC_PATHS is not set")
+		if cfg.ReconcileConfig.DeploySyncPaths.FromEnv() {
+			t.Error("DeploySyncPaths.Source should not be SourceEnv when BOSUN_DEPLOY_SYNC_PATHS is not set")
 		}
 	})
 
-	t.Run("DeploySyncExcludeFromEnv set when env var present", func(t *testing.T) {
+	t.Run("DeploySyncExclude source is env when env var present", func(t *testing.T) {
 		t.Setenv("BOSUN_DEPLOY_SYNC_EXCLUDE", `["appdata/legacy"]`)
 
 		cfg := ConfigFromEnv()
 
-		if !cfg.ReconcileConfig.DeploySyncExcludeFromEnv {
-			t.Error("DeploySyncExcludeFromEnv should be true when BOSUN_DEPLOY_SYNC_EXCLUDE is set")
+		if !cfg.ReconcileConfig.DeploySyncExclude.FromEnv() {
+			t.Error("DeploySyncExclude.Source should be SourceEnv when BOSUN_DEPLOY_SYNC_EXCLUDE is set")
 		}
 	})
 
-	t.Run("DeploySyncExcludeFromEnv false when env var absent", func(t *testing.T) {
+	t.Run("DeploySyncExclude source is not env when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
 
-		if cfg.ReconcileConfig.DeploySyncExcludeFromEnv {
-			t.Error("DeploySyncExcludeFromEnv should be false when BOSUN_DEPLOY_SYNC_EXCLUDE is not set")
+		if cfg.ReconcileConfig.DeploySyncExclude.FromEnv() {
+			t.Error("DeploySyncExclude.Source should not be SourceEnv when BOSUN_DEPLOY_SYNC_EXCLUDE is not set")
 		}
 	})
 }
@@ -1025,7 +1024,7 @@ func TestConfigFromEnv_CriticalContainers(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		containers := cfg.ReconcileConfig.CriticalContainers
+		containers := cfg.ReconcileConfig.CriticalContainers.Value
 		if len(containers) != 2 {
 			t.Fatalf("expected 2 critical containers, got %d", len(containers))
 		}
@@ -1039,8 +1038,8 @@ func TestConfigFromEnv_CriticalContainers(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		if len(cfg.ReconcileConfig.CriticalContainers) != 0 {
-			t.Errorf("expected empty containers, got %v", cfg.ReconcileConfig.CriticalContainers)
+		if len(cfg.ReconcileConfig.CriticalContainers.Value) != 0 {
+			t.Errorf("expected empty containers, got %v", cfg.ReconcileConfig.CriticalContainers.Value)
 		}
 	})
 
@@ -1049,8 +1048,8 @@ func TestConfigFromEnv_CriticalContainers(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		if len(cfg.ReconcileConfig.CriticalContainers) != 0 {
-			t.Errorf("expected empty containers, got %v", cfg.ReconcileConfig.CriticalContainers)
+		if len(cfg.ReconcileConfig.CriticalContainers.Value) != 0 {
+			t.Errorf("expected empty containers, got %v", cfg.ReconcileConfig.CriticalContainers.Value)
 		}
 	})
 }
@@ -1061,7 +1060,7 @@ func TestConfigFromEnv_DeploySyncPaths(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		paths := cfg.ReconcileConfig.DeploySyncPaths
+		paths := cfg.ReconcileConfig.DeploySyncPaths.Value
 		if len(paths) != 2 {
 			t.Fatalf("expected 2 deploy sync paths, got %d", len(paths))
 		}
@@ -1075,8 +1074,8 @@ func TestConfigFromEnv_DeploySyncPaths(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		if len(cfg.ReconcileConfig.DeploySyncPaths) != 0 {
-			t.Errorf("expected empty paths, got %v", cfg.ReconcileConfig.DeploySyncPaths)
+		if len(cfg.ReconcileConfig.DeploySyncPaths.Value) != 0 {
+			t.Errorf("expected empty paths, got %v", cfg.ReconcileConfig.DeploySyncPaths.Value)
 		}
 	})
 }
@@ -1087,7 +1086,7 @@ func TestConfigFromEnv_DeploySyncExclude(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		paths := cfg.ReconcileConfig.DeploySyncExclude
+		paths := cfg.ReconcileConfig.DeploySyncExclude.Value
 		if len(paths) != 1 {
 			t.Fatalf("expected 1 deploy sync exclude, got %d", len(paths))
 		}
@@ -1101,8 +1100,8 @@ func TestConfigFromEnv_DeploySyncExclude(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		if len(cfg.ReconcileConfig.DeploySyncExclude) != 0 {
-			t.Errorf("expected empty paths, got %v", cfg.ReconcileConfig.DeploySyncExclude)
+		if len(cfg.ReconcileConfig.DeploySyncExclude.Value) != 0 {
+			t.Errorf("expected empty paths, got %v", cfg.ReconcileConfig.DeploySyncExclude.Value)
 		}
 	})
 }
@@ -1201,7 +1200,7 @@ func TestConfigFromEnv_RemoveOrphans(t *testing.T) {
 		if !cfg.RemoveOrphans {
 			t.Error("RemoveOrphans should be true by default")
 		}
-		if cfg.ReconcileConfig == nil || !cfg.ReconcileConfig.RemoveOrphans {
+		if cfg.ReconcileConfig == nil || !cfg.ReconcileConfig.RemoveOrphans.Value {
 			t.Error("ReconcileConfig.RemoveOrphans should be true by default")
 		}
 	})
@@ -1214,7 +1213,7 @@ func TestConfigFromEnv_RemoveOrphans(t *testing.T) {
 		if cfg.RemoveOrphans {
 			t.Error("RemoveOrphans should be false when set to 'false'")
 		}
-		if cfg.ReconcileConfig != nil && cfg.ReconcileConfig.RemoveOrphans {
+		if cfg.ReconcileConfig != nil && cfg.ReconcileConfig.RemoveOrphans.Value {
 			t.Error("ReconcileConfig.RemoveOrphans should be false")
 		}
 	})

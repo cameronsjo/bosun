@@ -94,9 +94,9 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 	// Use nil checks (not len > 0) so targets can explicitly clear inherited
 	// slices with an empty list (e.g., critical_containers: []).
 	if t.CriticalContainers != nil {
-		cp.CriticalContainers = append([]string(nil), t.CriticalContainers...)
-	} else if cp.CriticalContainers != nil {
-		cp.CriticalContainers = append([]string(nil), cp.CriticalContainers...)
+		cp.CriticalContainers.Value = append([]string(nil), t.CriticalContainers...)
+	} else if cp.CriticalContainers.Value != nil {
+		cp.CriticalContainers.Value = append([]string(nil), cp.CriticalContainers.Value...)
 	}
 	if t.PostSyncHooks != nil && !cp.PostSyncHooks.FromEnv() {
 		cp.PostSyncHooks.Value = clonePostSyncHooks(t.PostSyncHooks)
@@ -104,14 +104,14 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 		cp.PostSyncHooks.Value = clonePostSyncHooks(cp.PostSyncHooks.Value)
 	}
 	if t.DeploySyncPaths != nil {
-		cp.DeploySyncPaths = append([]string(nil), t.DeploySyncPaths...)
-	} else if cp.DeploySyncPaths != nil {
-		cp.DeploySyncPaths = append([]string(nil), cp.DeploySyncPaths...)
+		cp.DeploySyncPaths.Value = append([]string(nil), t.DeploySyncPaths...)
+	} else if cp.DeploySyncPaths.Value != nil {
+		cp.DeploySyncPaths.Value = append([]string(nil), cp.DeploySyncPaths.Value...)
 	}
 	if t.DeploySyncExclude != nil {
-		cp.DeploySyncExclude = append([]string(nil), t.DeploySyncExclude...)
-	} else if cp.DeploySyncExclude != nil {
-		cp.DeploySyncExclude = append([]string(nil), cp.DeploySyncExclude...)
+		cp.DeploySyncExclude.Value = append([]string(nil), t.DeploySyncExclude...)
+	} else if cp.DeploySyncExclude.Value != nil {
+		cp.DeploySyncExclude.Value = append([]string(nil), cp.DeploySyncExclude.Value...)
 	}
 
 	if t.SecretsScope != "" {
@@ -157,7 +157,7 @@ func DefaultConfig() *Config {
 		RestartThreshold:      5,
 		RestartWindow:         10 * time.Minute,
 		OnFailure:             true,
-		RemoveOrphans:         true,
+		RemoveOrphans:         NewConfigField(true),
 		HealthGateTimeout:     60 * time.Second,
 	}
 }
@@ -203,10 +203,10 @@ func (c *Config) ResolveTargets() []Target {
 			ProjectName:        c.ProjectName,
 			StateFile:          c.StateFile,
 			StagingDir:         c.StagingDir,
-			CriticalContainers: c.CriticalContainers,
+			CriticalContainers: c.CriticalContainers.Value,
 			PostSyncHooks:      c.PostSyncHooks.Value,
-			DeploySyncPaths:    c.DeploySyncPaths,
-			DeploySyncExclude:  c.DeploySyncExclude,
+			DeploySyncPaths:    c.DeploySyncPaths.Value,
+			DeploySyncExclude:  c.DeploySyncExclude.Value,
 		},
 	}
 }

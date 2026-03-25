@@ -509,13 +509,12 @@ func TestReloadProjectConfig_DeployPaths(t *testing.T) {
 
 		r.reloadProjectConfig()
 
-		assert.Equal(t, []string{"unraid/**", "infra/**"}, r.config.DeployPaths)
+		assert.Equal(t, []string{"unraid/**", "infra/**"}, r.config.DeployPaths.Value)
 	})
 
 	t.Run("skips deploy_paths when from env", func(t *testing.T) {
 		cfg := &Config{
-			DeployPaths:        []string{"env/**"},
-			DeployPathsFromEnv: true,
+			DeployPaths:        EnvConfigField([]string{"env/**"}),
 		}
 		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
 			return &ReloadedConfig{
@@ -526,7 +525,7 @@ func TestReloadProjectConfig_DeployPaths(t *testing.T) {
 
 		r.reloadProjectConfig()
 
-		assert.Equal(t, []string{"env/**"}, r.config.DeployPaths)
+		assert.Equal(t, []string{"env/**"}, r.config.DeployPaths.Value)
 	})
 }
 
@@ -544,7 +543,7 @@ func TestRun_DeployPathsSkip(t *testing.T) {
 		RepoDir:     tmpDir,
 		LockFile:    filepath.Join(tmpDir, "test.lock"),
 		StateFile:   stateFile,
-		DeployPaths: []string{"unraid/**"},
+		DeployPaths: NewConfigField([]string{"unraid/**"}),
 	}
 
 	mockGit := &mockGitWithDiff{
@@ -585,7 +584,7 @@ func TestRun_DeployPathsMatch(t *testing.T) {
 		LockFile:    filepath.Join(tmpDir, "test.lock"),
 		StateFile:   stateFile,
 		StagingDir:  filepath.Join(tmpDir, "staging"),
-		DeployPaths: []string{"unraid/**"},
+		DeployPaths: NewConfigField([]string{"unraid/**"}),
 		DryRun:      true,
 	}
 
@@ -630,7 +629,7 @@ func TestRun_DeployPathsDiffFails(t *testing.T) {
 		LockFile:    filepath.Join(tmpDir, "test.lock"),
 		StateFile:   stateFile,
 		StagingDir:  filepath.Join(tmpDir, "staging"),
-		DeployPaths: []string{"unraid/**"},
+		DeployPaths: NewConfigField([]string{"unraid/**"}),
 		DryRun:      true,
 	}
 
@@ -663,7 +662,7 @@ func TestRun_DeployPathsForceOverride(t *testing.T) {
 		LockFile:    filepath.Join(tmpDir, "test.lock"),
 		StateFile:   stateFile,
 		StagingDir:  filepath.Join(tmpDir, "staging"),
-		DeployPaths: []string{"unraid/**"},
+		DeployPaths: NewConfigField([]string{"unraid/**"}),
 		Force:       true,
 		DryRun:      true,
 	}
@@ -699,7 +698,7 @@ func TestRun_DeployPathsFirstDeploySkipsPathCheck(t *testing.T) {
 		LockFile:    filepath.Join(tmpDir, "test.lock"),
 		StateFile:   stateFile,
 		StagingDir:  filepath.Join(tmpDir, "staging"),
-		DeployPaths: []string{"unraid/**"},
+		DeployPaths: NewConfigField([]string{"unraid/**"}),
 		DryRun:      true,
 	}
 
@@ -744,7 +743,7 @@ func TestRun_DeployPathsUsesLastDeployedCommitAfterFailure(t *testing.T) {
 		RepoDir:     tmpDir,
 		LockFile:    filepath.Join(tmpDir, "test.lock"),
 		StateFile:   stateFile,
-		DeployPaths: []string{"unraid/**"},
+		DeployPaths: NewConfigField([]string{"unraid/**"}),
 	}
 
 	mockGit := &mockGitWithDiff{
@@ -1499,8 +1498,8 @@ func TestReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 		r.reloadProjectConfig()
-		require.Len(t, r.config.DeployPaths, 1)
-		assert.Equal(t, "infra/**", r.config.DeployPaths[0])
+		require.Len(t, r.config.DeployPaths.Value, 1)
+		assert.Equal(t, "infra/**", r.config.DeployPaths.Value[0])
 	})
 
 	t.Run("settle delay reloaded from repo", func(t *testing.T) {
@@ -1539,15 +1538,14 @@ func TestReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 		r.reloadProjectConfig()
-		require.Len(t, r.config.CriticalContainers, 2)
-		assert.Equal(t, "traefik", r.config.CriticalContainers[0])
-		assert.Equal(t, "authelia", r.config.CriticalContainers[1])
+		require.Len(t, r.config.CriticalContainers.Value, 2)
+		assert.Equal(t, "traefik", r.config.CriticalContainers.Value[0])
+		assert.Equal(t, "authelia", r.config.CriticalContainers.Value[1])
 	})
 
 	t.Run("env override prevents critical containers reload", func(t *testing.T) {
 		cfg := &Config{
-			CriticalContainersFromEnv: true,
-			CriticalContainers:        []string{"env-container"},
+						CriticalContainers:        EnvConfigField([]string{"env-container"}),
 			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
 				return &ReloadedConfig{
 					CriticalContainers: []string{"repo-container"},
@@ -1556,8 +1554,8 @@ func TestReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 		r.reloadProjectConfig()
-		require.Len(t, r.config.CriticalContainers, 1)
-		assert.Equal(t, "env-container", r.config.CriticalContainers[0])
+		require.Len(t, r.config.CriticalContainers.Value, 1)
+		assert.Equal(t, "env-container", r.config.CriticalContainers.Value[0])
 	})
 }
 
@@ -1973,7 +1971,7 @@ func TestReconcilerRun(t *testing.T) {
 		cfg := &Config{
 			LockFile:    lockFile,
 			StateFile:   stateFile,
-			DeployPaths: []string{"infra/**", "compose/**"},
+			DeployPaths: NewConfigField([]string{"infra/**", "compose/**"}),
 		}
 		r := NewReconciler(cfg, WithGitOperations(gitOps))
 
@@ -3435,7 +3433,7 @@ func TestRunHealthGate_SkipsWhenNoCriticalContainers(t *testing.T) {
 func TestRunHealthGate_SkipsWhenDryRun(t *testing.T) {
 	cfg := &Config{
 		DryRun:             true,
-		CriticalContainers: []string{"traefik"},
+		CriticalContainers: NewConfigField([]string{"traefik"}),
 	}
 	r := NewReconciler(cfg)
 	state := &DeployState{}
@@ -3447,7 +3445,7 @@ func TestRunHealthGate_SkipsWhenDryRun(t *testing.T) {
 func TestRunHealthGate_SkipsForRemoteDeploy(t *testing.T) {
 	cfg := &Config{
 		TargetHost:         "user@remote",
-		CriticalContainers: []string{"traefik"},
+		CriticalContainers: NewConfigField([]string{"traefik"}),
 	}
 	r := NewReconciler(cfg)
 	state := &DeployState{}
@@ -3458,7 +3456,7 @@ func TestRunHealthGate_SkipsForRemoteDeploy(t *testing.T) {
 
 func TestRunHealthGate_SkipsWhenNoDockerClient(t *testing.T) {
 	cfg := &Config{
-		CriticalContainers: []string{"traefik"},
+		CriticalContainers: NewConfigField([]string{"traefik"}),
 		LocalAppdataPath:   t.TempDir(), // Ensures isLocalMode() returns true.
 	}
 	r := NewReconciler(cfg)
@@ -3476,7 +3474,7 @@ func TestRunHealthGate_PassesWhenAllHealthy(t *testing.T) {
 	client := docker.NewClientWithAPI(mockAPI)
 
 	cfg := &Config{
-		CriticalContainers: []string{"traefik", "authelia"},
+		CriticalContainers: NewConfigField([]string{"traefik", "authelia"}),
 		HealthGateTimeout:  5 * time.Second,
 		LocalAppdataPath:   t.TempDir(), // Ensures isLocalMode() returns true.
 	}
@@ -3498,7 +3496,7 @@ func TestRunHealthGate_FailsWhenUnhealthy(t *testing.T) {
 	client := docker.NewClientWithAPI(mockAPI)
 
 	cfg := &Config{
-		CriticalContainers: []string{"traefik", "authelia"},
+		CriticalContainers: NewConfigField([]string{"traefik", "authelia"}),
 		HealthGateTimeout:  1 * time.Second,
 		LocalAppdataPath:   t.TempDir(), // Ensures isLocalMode() returns true.
 	}
@@ -3647,10 +3645,10 @@ func TestResolveTargets_ImplicitDefault(t *testing.T) {
 		ProjectName:        "homelab",
 		StateFile:          "/var/lib/bosun/deploy-state.json",
 		StagingDir:         "/app/staging",
-		CriticalContainers: []string{"traefik"},
+		CriticalContainers: NewConfigField([]string{"traefik"}),
 		PostSyncHooks:      NewConfigField([]PostSyncHook{{Container: "traefik", Paths: []string{"*.toml"}}}),
-		DeploySyncPaths:    []string{"compose/**"},
-		DeploySyncExclude:  []string{"*.bak"},
+		DeploySyncPaths:    NewConfigField([]string{"compose/**"}),
+		DeploySyncExclude:  NewConfigField([]string{"*.bak"}),
 	}
 
 	targets := cfg.ResolveTargets()
@@ -3829,11 +3827,11 @@ func TestConfigForTarget_NamedTarget(t *testing.T) {
 	assert.Equal(t, "/mnt/custom/appdata", cfg.LocalAppdataPath)
 	assert.Equal(t, "/mnt/user/custom/appdata", cfg.RemoteAppdataPath)
 	assert.Equal(t, "homelab-unraid", cfg.ProjectName)
-	assert.Equal(t, []string{"traefik"}, cfg.CriticalContainers)
+	assert.Equal(t, []string{"traefik"}, cfg.CriticalContainers.Value)
 	require.Len(t, cfg.PostSyncHooks.Value, 1)
 	assert.Equal(t, "traefik", cfg.PostSyncHooks.Value[0].Container)
-	assert.Equal(t, []string{"compose/**"}, cfg.DeploySyncPaths)
-	assert.Equal(t, []string{"*.bak"}, cfg.DeploySyncExclude)
+	assert.Equal(t, []string{"compose/**"}, cfg.DeploySyncPaths.Value)
+	assert.Equal(t, []string{"*.bak"}, cfg.DeploySyncExclude.Value)
 
 	// Base config should be unmodified.
 	assert.Equal(t, DefaultConfig().StagingDir, base.StagingDir)
@@ -3841,7 +3839,7 @@ func TestConfigForTarget_NamedTarget(t *testing.T) {
 
 func TestConfigForTarget_PartialOverrides(t *testing.T) {
 	base := DefaultConfig()
-	base.CriticalContainers = []string{"global-container"}
+	base.CriticalContainers = NewConfigField([]string{"global-container"})
 	base.PostSyncHooks = NewConfigField([]PostSyncHook{{Container: "global", Paths: []string{"*"}}})
 
 	// Target with no overrides — inherits from base.
@@ -3851,7 +3849,7 @@ func TestConfigForTarget_PartialOverrides(t *testing.T) {
 	}
 
 	cfg := base.ConfigForTarget(target)
-	assert.Equal(t, []string{"global-container"}, cfg.CriticalContainers, "should inherit from base when target has none")
+	assert.Equal(t, []string{"global-container"}, cfg.CriticalContainers.Value, "should inherit from base when target has none")
 	assert.Len(t, cfg.PostSyncHooks.Value, 1, "should inherit from base when target has none")
 	assert.Equal(t, base.LocalAppdataPath, cfg.LocalAppdataPath, "should keep base when target is empty")
 	assert.Equal(t, base.RemoteAppdataPath, cfg.RemoteAppdataPath, "should keep base when target is empty")
@@ -3859,9 +3857,9 @@ func TestConfigForTarget_PartialOverrides(t *testing.T) {
 
 func TestConfigForTarget_ExplicitEmptySliceOverrides(t *testing.T) {
 	base := DefaultConfig()
-	base.CriticalContainers = []string{"global-container"}
+	base.CriticalContainers = NewConfigField([]string{"global-container"})
 	base.PostSyncHooks = NewConfigField([]PostSyncHook{{Container: "global", Paths: []string{"*"}}})
-	base.DeploySyncPaths = []string{"infra/**"}
+	base.DeploySyncPaths = NewConfigField([]string{"infra/**"})
 
 	// Target with explicit empty slices — should opt out of base defaults.
 	target := Target{
@@ -3873,9 +3871,9 @@ func TestConfigForTarget_ExplicitEmptySliceOverrides(t *testing.T) {
 	}
 
 	cfg := base.ConfigForTarget(target)
-	assert.Empty(t, cfg.CriticalContainers, "explicit empty should override base, not inherit")
+	assert.Empty(t, cfg.CriticalContainers.Value, "explicit empty should override base, not inherit")
 	assert.Empty(t, cfg.PostSyncHooks.Value, "explicit empty should override base, not inherit")
-	assert.Empty(t, cfg.DeploySyncPaths, "explicit empty should override base, not inherit")
+	assert.Empty(t, cfg.DeploySyncPaths.Value, "explicit empty should override base, not inherit")
 }
 
 func TestResolveTargets_RejectsDuplicateNames(t *testing.T) {
@@ -3894,19 +3892,19 @@ func TestResolveTargets_RejectsDuplicateNames(t *testing.T) {
 
 func TestConfigForTarget_SlicesAreIndependent(t *testing.T) {
 	base := DefaultConfig()
-	base.CriticalContainers = []string{"traefik", "authelia"}
+	base.CriticalContainers = NewConfigField([]string{"traefik", "authelia"})
 
 	target := Target{Name: "nas", TargetHost: "user@nas"}
 	cfg := base.ConfigForTarget(target)
 
 	// Mutate the copy — should not affect base
-	cfg.CriticalContainers = append(cfg.CriticalContainers, "injected")
-	assert.Len(t, base.CriticalContainers, 2, "base should not be mutated by per-target copy")
+	cfg.CriticalContainers.Value = append(cfg.CriticalContainers.Value, "injected")
+	assert.Len(t, base.CriticalContainers.Value, 2, "base should not be mutated by per-target copy")
 }
 
 func TestConfigForTarget_NilSliceInherits(t *testing.T) {
 	base := DefaultConfig()
-	base.CriticalContainers = []string{"global-container"}
+	base.CriticalContainers = NewConfigField([]string{"global-container"})
 
 	// Target with nil (unset) — should inherit from base.
 	target := Target{
@@ -3915,7 +3913,7 @@ func TestConfigForTarget_NilSliceInherits(t *testing.T) {
 	}
 
 	cfg := base.ConfigForTarget(target)
-	assert.Equal(t, []string{"global-container"}, cfg.CriticalContainers, "nil should inherit from base")
+	assert.Equal(t, []string{"global-container"}, cfg.CriticalContainers.Value, "nil should inherit from base")
 }
 
 func TestConfigForTarget_LockFilePreservesCustomDir(t *testing.T) {
