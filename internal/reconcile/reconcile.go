@@ -20,7 +20,7 @@ import (
 // ReloadedConfig holds the fields that can be reloaded from the repo's bosun.yaml.
 type ReloadedConfig struct {
 	PostSyncHooks      []PostSyncHook
-	HookSettleDelay    time.Duration
+	HookSettleDelay    *time.Duration
 	DeployPaths        []string
 	DeploySyncPaths    []string
 	DeploySyncExclude  []string

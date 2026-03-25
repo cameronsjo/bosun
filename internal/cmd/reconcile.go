@@ -159,9 +159,10 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		if err != nil {
 			return nil, err
 		}
+		hookSettleDelay := projectCfg.HookSettleDelay()
 		return &reconcile.ReloadedConfig{
 			PostSyncHooks:   projectCfg.PostSyncHooks(),
-			HookSettleDelay: projectCfg.HookSettleDelay(),
+			HookSettleDelay: &hookSettleDelay,
 			DeployPaths:     projectCfg.DeployPaths(),
 			DriftIgnore:     projectCfg.DriftIgnore(),
 		}, nil

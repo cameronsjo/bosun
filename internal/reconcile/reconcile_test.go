@@ -303,9 +303,10 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 
 	t.Run("updates settle delay when not from env", func(t *testing.T) {
 		cfg := &Config{}
+		delay := 5 * time.Second
 		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
 			return &ReloadedConfig{
-				HookSettleDelay: 5 * time.Second,
+				HookSettleDelay: &delay,
 			}, nil
 		}
 		r := NewReconciler(cfg)
@@ -319,9 +320,10 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		cfg := &Config{
 			HookSettleDelay: EnvConfigField(2 * time.Second),
 		}
+		delay := 10 * time.Second
 		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
 			return &ReloadedConfig{
-				HookSettleDelay: 10 * time.Second,
+				HookSettleDelay: &delay,
 			}, nil
 		}
 		r := NewReconciler(cfg)
@@ -329,6 +331,23 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		r.reloadProjectConfig()
 
 		assert.Equal(t, 2*time.Second, r.config.HookSettleDelay.Value)
+	})
+
+	t.Run("clears settle delay to zero when repo sets zero", func(t *testing.T) {
+		cfg := &Config{
+			HookSettleDelay: FileConfigField(3 * time.Second),
+		}
+		zero := time.Duration(0)
+		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{
+				HookSettleDelay: &zero,
+			}, nil
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		assert.Equal(t, time.Duration(0), r.config.HookSettleDelay.Value)
 	})
 
 	t.Run("keeps config on parse error", func(t *testing.T) {
@@ -1484,10 +1503,11 @@ func TestReloadProjectConfig(t *testing.T) {
 	})
 
 	t.Run("settle delay reloaded from repo", func(t *testing.T) {
+		delay := 5 * time.Second
 		cfg := &Config{
 			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
 				return &ReloadedConfig{
-					HookSettleDelay: 5 * time.Second,
+					HookSettleDelay: &delay,
 				}, nil
 			},
 		}
@@ -3961,6 +3981,21 @@ func TestConfigForTarget_DefaultTargetPreservesExactPaths(t *testing.T) {
 	assert.Equal(t, "/tmp/custom.lock", cfg.LockFile, "default target should preserve exact lock path")
 	assert.Equal(t, "/tmp/custom-state.json", cfg.StateFile, "default target should preserve exact state path")
 	assert.Equal(t, "/tmp/custom-staging", cfg.StagingDir, "default target should preserve exact staging path")
+}
+
+func TestConfigForTarget_EnvHooksNotOverriddenByTarget(t *testing.T) {
+	envHooks := []PostSyncHook{{Container: "env-hook", Action: "restart"}}
+	base := DefaultConfig()
+	base.PostSyncHooks = EnvConfigField(envHooks)
+
+	target := Target{
+		Name:          "pi",
+		PostSyncHooks: []PostSyncHook{{Container: "target-hook", Action: "restart"}},
+	}
+
+	cfg := base.ConfigForTarget(target)
+	assert.Equal(t, "env-hook", cfg.PostSyncHooks.Value[0].Container, "env-sourced hooks must not be overridden by target")
+	assert.True(t, cfg.PostSyncHooks.FromEnv(), "source must remain SourceEnv")
 }
 
 func TestMergeTargetSecrets(t *testing.T) {
