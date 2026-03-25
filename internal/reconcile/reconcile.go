@@ -596,8 +596,13 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 		_, otelHooksSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.post_sync_hooks",
 			trace.WithAttributes(telemetry.IntAttr("hook_count", len(r.config.PostSyncHooks.Value))),
 		)
-		r.executePostSyncHooks(ctx, previousCommit, after, deployResult, localDeploy)
-		telemetry.SpanOK(otelHooksSpan)
+		matchedCount, hookErr := r.executePostSyncHooks(ctx, previousCommit, after, deployResult, localDeploy)
+		otelHooksSpan.SetAttributes(telemetry.IntAttr("hooks_matched", matchedCount))
+		if hookErr != nil {
+			telemetry.SpanError(otelHooksSpan, hookErr)
+		} else {
+			telemetry.SpanOK(otelHooksSpan)
+		}
 		otelHooksSpan.End()
 	}
 
@@ -717,12 +722,12 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 // executePostSyncHooks detects changed files and restarts matching containers via configured hooks.
 // When deployResult is non-nil and has written files, those are used for matching instead of git diff.
 // This ensures hooks only fire for files actually written to disk (content-hash sync).
-func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, currentCommit string, deployResult *DeployResult, local bool) {
+func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, currentCommit string, deployResult *DeployResult, local bool) (int, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
 	if previousCommit == "" {
 		logger.Debug().Msg("No previous commit for post-sync hooks (first deploy), skipping")
-		return
+		return 0, nil
 	}
 
 	// Prefer written-files from content-hash sync over git diff.
@@ -751,7 +756,7 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	}
 
 	if len(changedFiles) == 0 && !diffFailed && !remoteMode {
-		return
+		return 0, nil
 	}
 
 	// When diff fails (shallow clone) or deploy is remote, fire all hooks unconditionally.
@@ -766,20 +771,23 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 		matched = EvaluatePostSyncHooks(changedFiles, r.config.PostSyncHooks.Value)
 	}
 	if len(matched) == 0 {
-		return
+		return 0, nil
 	}
 
 	client := r.dockerClientFn()
 	if client == nil {
 		logger.Warn().Msg("Docker client unavailable for post-sync hooks")
-		return
+		return 0, nil
 	}
 
 	ui.Info("Executing %d post-sync hook(s)...", len(matched))
 	if err := ExecutePostSyncHooks(ctx, client, matched, r.config.HookSettleDelay.Value); err != nil {
 		logger.Warn().Err(err).Msg("Some post-sync hooks failed")
 		ui.Warning("Post-sync hook errors: %v", err)
+		return len(matched), err
 	}
+
+	return len(matched), nil
 }
 
 

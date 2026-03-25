@@ -392,7 +392,7 @@ func TestExecutePostSyncHooks_DiffFilesError_FiresAllHooks(t *testing.T) {
 	}
 
 	// previousCommit is non-empty (second deploy), currentCommit is the new tip
-	r.executePostSyncHooks(context.Background(), "abc1234567890", "def9876543210", nil, true)
+	_, _ = r.executePostSyncHooks(context.Background(), "abc1234567890", "def9876543210", nil, true)
 
 	// BUG: DiffFiles fails on shallow clone, hooks are silently skipped.
 	// After the fix, the function should fall back to treating all files as changed
@@ -420,7 +420,7 @@ func TestExecutePostSyncHooks_WrittenFiles_MatchesHooks(t *testing.T) {
 		WrittenFiles: []string{"conf.d/router.yml", "traefik.yml"},
 	}
 
-	r.executePostSyncHooks(context.Background(), "abc1234567890", "def9876543210", deployResult, true)
+	_, _ = r.executePostSyncHooks(context.Background(), "abc1234567890", "def9876543210", deployResult, true)
 
 	assert.True(t, dockerCalled, "expected docker client to be called when WrittenFiles are present")
 }
@@ -441,8 +441,10 @@ func TestExecutePostSyncHooks_EmptyPreviousCommit_Skips(t *testing.T) {
 		return nil
 	}
 
-	r.executePostSyncHooks(context.Background(), "", "def9876543210", nil, true)
+	matched, err := r.executePostSyncHooks(context.Background(), "", "def9876543210", nil, true)
 
+	assert.NoError(t, err)
+	assert.Equal(t, 0, matched, "no hooks should match on first deploy")
 	assert.False(t, dockerCalled, "hooks should be skipped on first deploy (empty previousCommit)")
 }
 
@@ -1253,7 +1255,7 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 		r.dockerClientFn = func() *docker.Client { return nil }
 
 		// Should not panic -- previous commit is empty
-		r.executePostSyncHooks(context.Background(), "", "abc123", nil, true)
+		_, _ = r.executePostSyncHooks(context.Background(), "", "abc123", nil, true)
 	})
 
 	t.Run("no changed files skips hooks", func(t *testing.T) {
@@ -1265,7 +1267,7 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 		}
 		r := NewReconciler(cfg, WithGitOperations(gitOps))
 
-		r.executePostSyncHooks(context.Background(), "aaa", "bbb", nil, true)
+		_, _ = r.executePostSyncHooks(context.Background(), "aaa", "bbb", nil, true)
 		// No crash, no hooks fired
 	})
 
@@ -1287,7 +1289,7 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 		r.dockerClientFn = func() *docker.Client { return client }
 
 		result := &DeployResult{WrittenFiles: []string{"traefik/dynamic.yml"}}
-		r.executePostSyncHooks(context.Background(), "aaa", "bbb", result, true)
+		_, _ = r.executePostSyncHooks(context.Background(), "aaa", "bbb", result, true)
 		assert.True(t, restartCalled)
 	})
 
@@ -1301,7 +1303,7 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 		r := NewReconciler(cfg, WithGitOperations(gitOps))
 		r.dockerClientFn = func() *docker.Client { return nil }
 
-		r.executePostSyncHooks(context.Background(), "aaa", "bbb", nil, true)
+		_, _ = r.executePostSyncHooks(context.Background(), "aaa", "bbb", nil, true)
 		// Should not panic
 	})
 
@@ -1323,7 +1325,7 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 		r := NewReconciler(cfg, WithGitOperations(gitOps))
 		r.dockerClientFn = func() *docker.Client { return client }
 
-		r.executePostSyncHooks(context.Background(), "aaa", "bbb", nil, true)
+		_, _ = r.executePostSyncHooks(context.Background(), "aaa", "bbb", nil, true)
 		assert.True(t, restartCalled)
 	})
 
@@ -1347,7 +1349,9 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 		r.dockerClientFn = func() *docker.Client { return client }
 
 		// deployResult is nil (remote mode), all hooks should fire
-		r.executePostSyncHooks(context.Background(), "aaa", "bbb", nil, false)
+		matched, err := r.executePostSyncHooks(context.Background(), "aaa", "bbb", nil, false)
+		assert.NoError(t, err)
+		assert.Equal(t, 2, matched, "both hooks should match for remote deploy")
 		assert.True(t, restartedContainers["traefik"], "traefik hook should fire for remote deploy")
 		assert.True(t, restartedContainers["authelia"], "authelia hook should fire for remote deploy")
 	})
@@ -1372,7 +1376,7 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 
 		// Only traefik files changed — authelia hook should NOT fire
 		result := &DeployResult{WrittenFiles: []string{"traefik/dynamic.yml"}}
-		r.executePostSyncHooks(context.Background(), "aaa", "bbb", result, true)
+		_, _ = r.executePostSyncHooks(context.Background(), "aaa", "bbb", result, true)
 		assert.True(t, restartedContainers["traefik"], "traefik hook should fire for matching files")
 		assert.False(t, restartedContainers["authelia"], "authelia hook should NOT fire without matching files")
 	})
@@ -1394,7 +1398,7 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 		}
 
 		// No TargetHost, nil deployResult, empty diff — hooks should NOT fire
-		r.executePostSyncHooks(context.Background(), "aaa", "bbb", nil, true)
+		_, _ = r.executePostSyncHooks(context.Background(), "aaa", "bbb", nil, true)
 		assert.False(t, dockerCalled, "hooks should not fire when diff is empty and not remote mode")
 	})
 }
