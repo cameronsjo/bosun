@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.0](https://github.com/cameronsjo/bosun/compare/v0.32.6...v0.33.0) (2026-03-25)
+
+
+### Features
+
+* **reconcile:** hot-reload per-target operational overrides ([b1c749a](https://github.com/cameronsjo/bosun/commit/b1c749abadf798164b3928b28410c981b3c4ae2b))
+
+
+### Bug Fixes
+
+* address CodeRabbit review findings on ConfigField[T] PR ([931bc83](https://github.com/cameronsjo/bosun/commit/931bc8360d9e42e998c14af881ff988a11ad52ce))
+* check os.Unsetenv error to satisfy errcheck lint ([1a76409](https://github.com/cameronsjo/bosun/commit/1a764095e681fd83fbe8b130748150fea151a9ab))
+* **config:** return error when bosun.yaml exists but fails to parse ([200fd28](https://github.com/cameronsjo/bosun/commit/200fd2818a6274977085a5510ba97f35fe3e0453))
+* ensure deterministic env state in HookSettleDelay test cases ([9dd5f6d](https://github.com/cameronsjo/bosun/commit/9dd5f6d42867997ae3357c154ef9e8dd297009be))
+* **reconcile:** deploy mode secrets gap + per-target hot-reload ([fd19ed3](https://github.com/cameronsjo/bosun/commit/fd19ed324f35d9bd29b66bb1162c482f76319d8a))
+* **reconcile:** propagate deploy mode to post-sync hooks and strengthen test assertions ([8a54cc5](https://github.com/cameronsjo/bosun/commit/8a54cc584ccaf942927bc719bf9dde9d68186c15))
+* **reconcile:** resolve deploy mode using secrets-based target host ([1d2fcda](https://github.com/cameronsjo/bosun/commit/1d2fcdac3a10770b7b21158e355881d6dbed2b99))
+* **reconcile:** surface clear error when appdata mount is inaccessible ([2777b96](https://github.com/cameronsjo/bosun/commit/2777b96fb57f92c765e0226f0966cdfbf3b3f2b5))
+* **reconcile:** validate source directory exists in copyNonTemplateFiles ([ccffa64](https://github.com/cameronsjo/bosun/commit/ccffa64b93140956c8226d9a57677dd0c887ac54))
+
 ## [0.32.6](https://github.com/cameronsjo/bosun/compare/v0.32.5...v0.32.6) (2026-03-24)
 
 
