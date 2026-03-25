@@ -27,19 +27,16 @@ func (r *Reconciler) reloadProjectConfig() {
 	// If no field has any value from the repo, there's nothing to reload.
 	// Use nil checks (not len==0) for slices so explicitly empty lists (e.g. `deploy_sync_paths: []`)
 	// can clear in-memory filters during hot-reload.
-	if reloaded.PostSyncHooks == nil && reloaded.HookSettleDelay == 0 && reloaded.DeployPaths == nil && reloaded.DeploySyncPaths == nil && reloaded.DeploySyncExclude == nil && reloaded.CriticalContainers == nil && reloaded.DriftIgnore == nil && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil {
+	if reloaded.PostSyncHooks == nil && reloaded.HookSettleDelay == nil && reloaded.DeployPaths == nil && reloaded.DeploySyncPaths == nil && reloaded.DeploySyncExclude == nil && reloaded.CriticalContainers == nil && reloaded.DriftIgnore == nil && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil {
 		return
 	}
 
 	changed := false
 
-	if !r.config.PostSyncHooksFromEnv && reloaded.PostSyncHooks != nil {
-		r.config.PostSyncHooks = reloaded.PostSyncHooks
-		changed = true
-	}
+	changed = reloadField(&r.config.PostSyncHooks, reloaded.PostSyncHooks, func(v []PostSyncHook) bool { return v != nil }) || changed
 
-	if !r.config.HookSettleDelayFromEnv && reloaded.HookSettleDelay > 0 {
-		r.config.HookSettleDelay = reloaded.HookSettleDelay
+	if !r.config.HookSettleDelay.FromEnv() && reloaded.HookSettleDelay != nil {
+		r.config.HookSettleDelay.SetFromFile(*reloaded.HookSettleDelay)
 		changed = true
 	}
 
@@ -88,8 +85,8 @@ func (r *Reconciler) reloadProjectConfig() {
 
 	if changed {
 		logger.Info().
-			Int("hooks", len(r.config.PostSyncHooks)).
-			Dur("settle_delay", r.config.HookSettleDelay).
+			Int("hooks", len(r.config.PostSyncHooks.Value)).
+			Dur("settle_delay", r.config.HookSettleDelay.Value).
 			Int("deploy_paths", len(r.config.DeployPaths)).
 			Bool("on_failure", r.config.OnFailure).
 			Bool("on_success", r.config.OnSuccess).

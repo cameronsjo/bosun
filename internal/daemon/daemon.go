@@ -1578,8 +1578,8 @@ func ConfigFromEnv() *Config {
 
 	// Post-sync hooks, settle delay, deploy paths, alert flags, drift debounce, remove_orphans, and targets: load from project config, env var overrides.
 	if projectCfg, err := config.Load(); err == nil {
-		rcfg.PostSyncHooks = projectCfg.PostSyncHooks()
-		rcfg.HookSettleDelay = projectCfg.HookSettleDelay()
+		rcfg.PostSyncHooks.SetFromFile(projectCfg.PostSyncHooks())
+		rcfg.HookSettleDelay.SetFromFile(projectCfg.HookSettleDelay())
 		rcfg.DeployPaths = projectCfg.DeployPaths()
 		rcfg.CriticalContainers = projectCfg.CriticalContainers()
 
@@ -1624,9 +1624,10 @@ func ConfigFromEnv() *Config {
 		}
 		alertCfg := cfg.GetAlertConfig()
 		removeOrphans := cfg.RemoveOrphans()
+		hookSettleDelay := cfg.HookSettleDelay()
 		return &reconcile.ReloadedConfig{
 			PostSyncHooks:      cfg.PostSyncHooks(),
-			HookSettleDelay:    cfg.HookSettleDelay(),
+			HookSettleDelay:    &hookSettleDelay,
 			DeployPaths:        cfg.DeployPaths(),
 			DeploySyncPaths:    cfg.DeploySyncPaths(),
 			DeploySyncExclude:  cfg.DeploySyncExclude(),
@@ -1643,14 +1644,12 @@ func ConfigFromEnv() *Config {
 		if err := json.Unmarshal([]byte(v), &hooks); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_POST_SYNC_HOOKS, ignoring")
 		} else {
-			rcfg.PostSyncHooks = hooks
-			rcfg.PostSyncHooksFromEnv = true
+			rcfg.PostSyncHooks.SetFromEnv(hooks)
 		}
 	}
 	if v := os.Getenv("BOSUN_HOOK_SETTLE_DELAY"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
-			rcfg.HookSettleDelay = d
-			rcfg.HookSettleDelayFromEnv = true
+			rcfg.HookSettleDelay.SetFromEnv(d)
 		} else {
 			log.Warn().Str("value", v).Msg("Failed to parse BOSUN_HOOK_SETTLE_DELAY, ignoring")
 		}

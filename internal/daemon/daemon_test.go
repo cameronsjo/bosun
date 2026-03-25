@@ -606,7 +606,7 @@ post_sync_hooks:
 
 		cfg := ConfigFromEnv()
 
-		hooks := cfg.ReconcileConfig.PostSyncHooks
+		hooks := cfg.ReconcileConfig.PostSyncHooks.Value
 		if len(hooks) != 1 {
 			t.Fatalf("PostSyncHooks len = %d, want 1", len(hooks))
 		}
@@ -650,7 +650,7 @@ post_sync_hooks:
 
 		cfg := ConfigFromEnv()
 
-		hooks := cfg.ReconcileConfig.PostSyncHooks
+		hooks := cfg.ReconcileConfig.PostSyncHooks.Value
 		if len(hooks) != 1 {
 			t.Fatalf("PostSyncHooks len = %d, want 1", len(hooks))
 		}
@@ -678,7 +678,7 @@ post_sync_hooks:
 
 		cfg := ConfigFromEnv()
 
-		hooks := cfg.ReconcileConfig.PostSyncHooks
+		hooks := cfg.ReconcileConfig.PostSyncHooks.Value
 		if len(hooks) != 1 {
 			t.Fatalf("PostSyncHooks len = %d, want 1", len(hooks))
 		}
@@ -689,43 +689,31 @@ post_sync_hooks:
 }
 
 func TestConfigFromEnv_HookSettleDelay(t *testing.T) {
-	t.Run("parses Go duration string", func(t *testing.T) {
-		t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "2s")
+	tests := []struct {
+		name     string
+		envValue string
+		setEnv   bool
+		expected time.Duration
+	}{
+		{name: "parses Go duration string", envValue: "2s", setEnv: true, expected: 2 * time.Second},
+		{name: "parses bare seconds", envValue: "5", setEnv: true, expected: 5 * time.Second},
+		{name: "defaults to zero when not set", setEnv: false, expected: 0},
+		{name: "invalid value ignored", envValue: "not-a-duration", setEnv: true, expected: 0},
+	}
 
-		cfg := ConfigFromEnv()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "")
+			require.NoError(t, os.Unsetenv("BOSUN_HOOK_SETTLE_DELAY"))
+			if tt.setEnv {
+				t.Setenv("BOSUN_HOOK_SETTLE_DELAY", tt.envValue)
+			}
 
-		if cfg.ReconcileConfig.HookSettleDelay != 2*time.Second {
-			t.Errorf("HookSettleDelay = %v, want 2s", cfg.ReconcileConfig.HookSettleDelay)
-		}
-	})
+			cfg := ConfigFromEnv()
 
-	t.Run("parses bare seconds", func(t *testing.T) {
-		t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "5")
-
-		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.HookSettleDelay != 5*time.Second {
-			t.Errorf("HookSettleDelay = %v, want 5s", cfg.ReconcileConfig.HookSettleDelay)
-		}
-	})
-
-	t.Run("defaults to zero when not set", func(t *testing.T) {
-		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.HookSettleDelay != 0 {
-			t.Errorf("HookSettleDelay = %v, want 0", cfg.ReconcileConfig.HookSettleDelay)
-		}
-	})
-
-	t.Run("invalid value ignored", func(t *testing.T) {
-		t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "not-a-duration")
-
-		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.HookSettleDelay != 0 {
-			t.Errorf("HookSettleDelay = %v, want 0 (default)", cfg.ReconcileConfig.HookSettleDelay)
-		}
-	})
+			assert.Equal(t, tt.expected, cfg.ReconcileConfig.HookSettleDelay.Value)
+		})
+	}
 }
 
 func TestConfigFromEnv_HooksWithDelay(t *testing.T) {
@@ -735,7 +723,7 @@ func TestConfigFromEnv_HooksWithDelay(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		hooks := cfg.ReconcileConfig.PostSyncHooks
+		hooks := cfg.ReconcileConfig.PostSyncHooks.Value
 		if len(hooks) != 1 {
 			t.Fatalf("PostSyncHooks len = %d, want 1", len(hooks))
 		}
@@ -753,7 +741,7 @@ func TestConfigFromEnv_HooksWithDelay(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		hooks := cfg.ReconcileConfig.PostSyncHooks
+		hooks := cfg.ReconcileConfig.PostSyncHooks.Value
 		if len(hooks) != 1 {
 			t.Fatalf("PostSyncHooks len = %d, want 1", len(hooks))
 		}
@@ -934,67 +922,46 @@ func TestConfigFromEnv_DriftResolveAlerts(t *testing.T) {
 }
 
 func TestConfigFromEnv_EnvOverrideFlags(t *testing.T) {
-	t.Run("PostSyncHooksFromEnv set when env var present", func(t *testing.T) {
-		envHooks := `[{"paths":["traefik/**"],"action":"restart","container":"traefik"}]`
-		t.Setenv("BOSUN_POST_SYNC_HOOKS", envHooks)
+	t.Run("PostSyncHooks source is env when env var present", func(t *testing.T) {
+		t.Setenv("BOSUN_POST_SYNC_HOOKS", `[{"paths":["traefik/**"],"action":"restart","container":"traefik"}]`)
 
 		cfg := ConfigFromEnv()
-
-		if !cfg.ReconcileConfig.PostSyncHooksFromEnv {
-			t.Error("PostSyncHooksFromEnv should be true when BOSUN_POST_SYNC_HOOKS is set")
-		}
+		assert.True(t, cfg.ReconcileConfig.PostSyncHooks.FromEnv())
 	})
 
-	t.Run("PostSyncHooksFromEnv false when env var absent", func(t *testing.T) {
+	t.Run("PostSyncHooks source is not env when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.PostSyncHooksFromEnv {
-			t.Error("PostSyncHooksFromEnv should be false when BOSUN_POST_SYNC_HOOKS is not set")
-		}
+		assert.False(t, cfg.ReconcileConfig.PostSyncHooks.FromEnv())
 	})
 
-	t.Run("HookSettleDelayFromEnv set when env var present", func(t *testing.T) {
+	t.Run("HookSettleDelay source is env when env var present", func(t *testing.T) {
 		t.Setenv("BOSUN_HOOK_SETTLE_DELAY", "3s")
 
 		cfg := ConfigFromEnv()
-
-		if !cfg.ReconcileConfig.HookSettleDelayFromEnv {
-			t.Error("HookSettleDelayFromEnv should be true when BOSUN_HOOK_SETTLE_DELAY is set")
-		}
+		assert.True(t, cfg.ReconcileConfig.HookSettleDelay.FromEnv())
 	})
 
-	t.Run("HookSettleDelayFromEnv false when env var absent", func(t *testing.T) {
+	t.Run("HookSettleDelay source is not env when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.HookSettleDelayFromEnv {
-			t.Error("HookSettleDelayFromEnv should be false when BOSUN_HOOK_SETTLE_DELAY is not set")
-		}
+		assert.False(t, cfg.ReconcileConfig.HookSettleDelay.FromEnv())
 	})
 
 	t.Run("ConfigReloader is wired", func(t *testing.T) {
 		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.ConfigReloader == nil {
-			t.Error("ConfigReloader should be set by ConfigFromEnv")
-		}
+		require.NotNil(t, cfg.ReconcileConfig.ConfigReloader)
 	})
 
+	// CriticalContainers, DeploySyncPaths, DeploySyncExclude use legacy boolean pattern (migrated in PR #208).
 	t.Run("CriticalContainersFromEnv set when env var present", func(t *testing.T) {
 		t.Setenv("BOSUN_CRITICAL_CONTAINERS", `["traefik","authelia"]`)
 
 		cfg := ConfigFromEnv()
-
-		if !cfg.ReconcileConfig.CriticalContainersFromEnv {
-			t.Error("CriticalContainersFromEnv should be true when BOSUN_CRITICAL_CONTAINERS is set")
-		}
+		assert.True(t, cfg.ReconcileConfig.CriticalContainersFromEnv)
 	})
 
 	t.Run("CriticalContainersFromEnv false when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
-
-		if cfg.ReconcileConfig.CriticalContainersFromEnv {
-			t.Error("CriticalContainersFromEnv should be false when BOSUN_CRITICAL_CONTAINERS is not set")
-		}
+		assert.False(t, cfg.ReconcileConfig.CriticalContainersFromEnv)
 	})
 
 	t.Run("DeploySyncPathsFromEnv set when env var present", func(t *testing.T) {
@@ -1032,6 +999,24 @@ func TestConfigFromEnv_EnvOverrideFlags(t *testing.T) {
 			t.Error("DeploySyncExcludeFromEnv should be false when BOSUN_DEPLOY_SYNC_EXCLUDE is not set")
 		}
 	})
+}
+
+func TestConfigFromEnv_ConfigReloaderCallable(t *testing.T) {
+	cfg := ConfigFromEnv()
+	require.NotNil(t, cfg.ReconcileConfig.ConfigReloader)
+
+	// Create a temp dir with a minimal bosun.yaml so the reloader can parse it.
+	tmpDir := t.TempDir()
+	yamlContent := "post_sync_hooks:\n  - paths: [\"traefik/**\"]\n    action: restart\n    container: traefik\nhook_settle_delay: 3s\n"
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(yamlContent), 0o644))
+
+	reloaded, err := cfg.ReconcileConfig.ConfigReloader(tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, reloaded)
+	assert.Len(t, reloaded.PostSyncHooks, 1)
+	assert.Equal(t, "traefik", reloaded.PostSyncHooks[0].Container)
+	require.NotNil(t, reloaded.HookSettleDelay)
+	assert.Equal(t, 3*time.Second, *reloaded.HookSettleDelay)
 }
 
 func TestConfigFromEnv_CriticalContainers(t *testing.T) {
