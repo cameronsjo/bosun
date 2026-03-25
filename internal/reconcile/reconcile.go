@@ -480,6 +480,13 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 		secrets = MergeTargetSecrets(secrets, r.config.SecretsScope)
 	}
 
+	// Resolve deploy mode once with full context (config + secrets).
+	localDeploy, err := r.resolveDeployMode(ctx, secrets)
+	if err != nil {
+		r.sendThrottledFailureAlert(ctx, state, err.Error())
+		return fmt.Errorf("failed to resolve deploy mode: %w", err)
+	}
+
 	// Step 3: Render templates.
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.template", "Template rendering")
 	spanCtx, otelTemplateSpan := telemetry.Tracer("reconcile").Start(spanCtx, "reconcile.template")
@@ -510,7 +517,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	if !r.config.DryRun {
 		spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.backup", "Configuration backup")
 		spanCtx, otelBackupSpan := telemetry.Tracer("reconcile").Start(spanCtx, "reconcile.backup")
-		if err := r.createBackup(spanCtx, secrets); err != nil {
+		if err := r.createBackup(spanCtx, secrets, localDeploy); err != nil {
 			finishSpan(err)
 			telemetry.SpanError(otelBackupSpan, err)
 			otelBackupSpan.End()
@@ -533,7 +540,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.deploy", "Deployment")
 	spanCtx, otelDeploySpan := telemetry.Tracer("reconcile").Start(spanCtx, "reconcile.deploy")
-	deployResult, err := r.doDeploy(spanCtx, secrets)
+	deployResult, err := r.doDeploy(spanCtx, secrets, localDeploy)
 	if err != nil {
 		finishSpan(err)
 		telemetry.SpanError(otelDeploySpan, err)
@@ -552,7 +559,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 
 	// Step 7: Critical container health gate (if configured).
 	_, otelHealthGateSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.health_gate")
-	if err := r.runHealthGate(ctx, state); err != nil {
+	if err := r.runHealthGate(ctx, state, localDeploy); err != nil {
 		telemetry.SpanError(otelHealthGateSpan, err)
 		otelHealthGateSpan.End()
 		return fmt.Errorf("health gate failed: %w", err)
@@ -589,7 +596,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 		_, otelHooksSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.post_sync_hooks",
 			trace.WithAttributes(telemetry.IntAttr("hook_count", len(r.config.PostSyncHooks.Value))),
 		)
-		r.executePostSyncHooks(ctx, previousCommit, after, deployResult)
+		r.executePostSyncHooks(ctx, previousCommit, after, deployResult, localDeploy)
 		telemetry.SpanOK(otelHooksSpan)
 		otelHooksSpan.End()
 	}
@@ -710,7 +717,7 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 // executePostSyncHooks detects changed files and restarts matching containers via configured hooks.
 // When deployResult is non-nil and has written files, those are used for matching instead of git diff.
 // This ensures hooks only fire for files actually written to disk (content-hash sync).
-func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, currentCommit string, deployResult *DeployResult) {
+func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, currentCommit string, deployResult *DeployResult, local bool) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
 	if previousCommit == "" {
@@ -721,7 +728,7 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	// Prefer written-files from content-hash sync over git diff.
 	var changedFiles []string
 	diffFailed := false
-	remoteMode := deployResult == nil && r.config.TargetHost != ""
+	remoteMode := !local
 	if remoteMode {
 		// Remote deploys return nil DeployResult (no file-level tracking).
 		// Fire all hooks unconditionally — a false-positive restart is better
@@ -798,7 +805,7 @@ func (r *Reconciler) cleanupStaging() error {
 // Skipped when: DryRun, remote deploy (!isLocalMode), no Docker client,
 // or empty CriticalContainers list.
 // On failure: triggers rollback and sends a throttled failure alert.
-func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState) error {
+func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState, local bool) error {
 	containers := r.config.CriticalContainers.Value
 	if len(containers) == 0 {
 		return nil
@@ -811,7 +818,7 @@ func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState) erro
 		return nil
 	}
 
-	if !r.isLocalMode() {
+	if !local {
 		logger.Warn().
 			Strs("containers", containers).
 			Msg("Health gate skipped for remote deploy. Docker API is local-only")
@@ -1024,7 +1031,7 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 }
 
 // createBackup creates a backup of current configs.
-func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any) error {
+func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, local bool) error {
 	ui.Info("Creating backup...")
 
 	// Discover targets from staging to know what to back up.
@@ -1036,7 +1043,7 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any) e
 
 	var backupName string
 
-	if r.isLocalMode() {
+	if local {
 		paths := backupPathsFromTargets(targets, r.config.LocalAppdataPath)
 		backupName, err = r.deploy.Backup(ctx, r.config.BackupDir, paths)
 	} else {
@@ -1077,11 +1084,7 @@ var ErrAppdataInaccessible = errors.New("local appdata path is configured but in
 
 // doDeploy performs the actual deployment.
 // Returns a DeployResult with written files (local mode) or nil (remote mode).
-func (r *Reconciler) doDeploy(ctx context.Context, secrets map[string]any) (*DeployResult, error) {
-	local, err := r.resolveDeployMode(ctx)
-	if err != nil {
-		return nil, err
-	}
+func (r *Reconciler) doDeploy(ctx context.Context, secrets map[string]any, local bool) (*DeployResult, error) {
 	if local {
 		return r.deployLocal(ctx)
 	}
@@ -1092,47 +1095,28 @@ func (r *Reconciler) doDeploy(ctx context.Context, secrets map[string]any) (*Dep
 // Returns (true, nil) for local mode, (false, nil) for remote mode, or an
 // error when the configuration is invalid (e.g. appdata path configured but
 // inaccessible and no remote host to fall back to).
-func (r *Reconciler) resolveDeployMode(ctx context.Context) (bool, error) {
+// Secrets are consulted for the target host fallback (e.g. network.unraid_ip).
+func (r *Reconciler) resolveDeployMode(ctx context.Context, secrets map[string]any) (bool, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
-	// Explicit remote host always wins.
-	if r.config.TargetHost != "" {
-		logger.Debug().
-			Str("target_host", r.config.TargetHost).
-			Msg("Remote target host configured, using remote deploy mode")
-		return false, nil
+	local, err := resolveDeployModeWithSecrets(r.config.TargetHost, r.config.LocalAppdataPath, secrets, os.Stat)
+	if err != nil {
+		logger.Error().
+			Str(log.FieldPath, r.config.LocalAppdataPath).
+			Err(err).
+			Msg("Local appdata path configured but inaccessible. Check that the mount is up")
+		return false, err
 	}
 
-	// No local path configured — fall through to remote mode.
-	if r.config.LocalAppdataPath == "" {
-		logger.Debug().Msg("No local appdata path configured, using remote deploy mode")
-		return false, nil
-	}
-
-	// Local path configured — verify it's accessible.
-	_, err := os.Stat(r.config.LocalAppdataPath)
-	if err == nil {
+	if local {
 		logger.Debug().
 			Str(log.FieldPath, r.config.LocalAppdataPath).
 			Msg("Local appdata path accessible, using local deploy mode")
-		return true, nil
+	} else {
+		logger.Debug().Msg("Using remote deploy mode")
 	}
 
-	// Path configured but inaccessible (mount down, permissions, etc.).
-	logger.Error().
-		Str(log.FieldPath, r.config.LocalAppdataPath).
-		Err(err).
-		Msg("Local appdata path configured but inaccessible. Check that the mount is up")
-	return false, fmt.Errorf("%w: %s: %w", ErrAppdataInaccessible, r.config.LocalAppdataPath, err)
-}
-
-// isLocalMode returns true if running in local mode (appdata mounted).
-func (r *Reconciler) isLocalMode() bool {
-	if r.config.TargetHost != "" {
-		return false
-	}
-	_, err := os.Stat(r.config.LocalAppdataPath)
-	return err == nil
+	return local, nil
 }
 
 // getTargetHost returns the target host for remote deployment.

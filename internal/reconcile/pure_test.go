@@ -2,10 +2,12 @@ package reconcile
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestShouldSkipDeploy(t *testing.T) {
@@ -343,6 +345,79 @@ func TestResolveTargetHost(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := resolveTargetHost(tt.configHost, tt.secrets)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestResolveDeployModeWithSecrets(t *testing.T) {
+	existingStat := func(path string) (os.FileInfo, error) { return nil, nil }
+	missingStat := func(path string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	secretsWithIP := map[string]any{"network": map[string]any{"unraid_ip": "192.168.1.100"}}
+
+	tests := []struct {
+		name           string
+		configHost     string
+		localAppdata   string
+		secrets        map[string]any
+		statFn         func(string) (os.FileInfo, error)
+		wantLocal      bool
+		wantErr        bool
+	}{
+		{
+			name:       "config host set forces remote",
+			configHost: "user@remote",
+			statFn:     existingStat,
+			wantLocal:  false,
+		},
+		{
+			name:      "secrets host forces remote",
+			secrets:   secretsWithIP,
+			statFn:    existingStat,
+			wantLocal: false,
+		},
+		{
+			name:         "local path accessible and no host returns local",
+			localAppdata: "/mnt/appdata",
+			statFn:       existingStat,
+			wantLocal:    true,
+		},
+		{
+			name:         "local path inaccessible with secrets host falls back to remote",
+			localAppdata: "/mnt/appdata",
+			secrets:      secretsWithIP,
+			statFn:       missingStat,
+			wantLocal:    false,
+		},
+		{
+			name:         "local path inaccessible with config host falls back to remote",
+			configHost:   "user@remote",
+			localAppdata: "/mnt/appdata",
+			statFn:       missingStat,
+			wantLocal:    false,
+		},
+		{
+			name:         "local path inaccessible with no host returns error",
+			localAppdata: "/mnt/appdata",
+			statFn:       missingStat,
+			wantErr:      true,
+		},
+		{
+			name:      "no local path and no host returns remote",
+			statFn:    existingStat,
+			wantLocal: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			local, err := resolveDeployModeWithSecrets(tt.configHost, tt.localAppdata, tt.secrets, tt.statFn)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, ErrAppdataInaccessible)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantLocal, local)
 		})
 	}
 }
