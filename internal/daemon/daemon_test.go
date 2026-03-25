@@ -825,7 +825,7 @@ func TestConfigFromEnv_DriftAlertDebounce(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.Equal(t, 5*time.Minute, cfg.DriftAlertDebounce)
+		assert.Equal(t, 5*time.Minute, cfg.DriftAlertDebounce.Value)
 	})
 
 	t.Run("parses bare seconds", func(t *testing.T) {
@@ -833,13 +833,13 @@ func TestConfigFromEnv_DriftAlertDebounce(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.Equal(t, 300*time.Second, cfg.DriftAlertDebounce)
+		assert.Equal(t, 300*time.Second, cfg.DriftAlertDebounce.Value)
 	})
 
 	t.Run("defaults to 0 when not set", func(t *testing.T) {
 		cfg := ConfigFromEnv()
 
-		assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce)
+		assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce.Value)
 	})
 
 	t.Run("invalid value keeps default 0", func(t *testing.T) {
@@ -847,14 +847,14 @@ func TestConfigFromEnv_DriftAlertDebounce(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce)
+		assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce.Value)
 	})
 }
 
 func TestDefaultConfig_DriftAlertDebounce(t *testing.T) {
 	cfg := DefaultConfig()
 
-	assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce, "DriftAlertDebounce should default to 0 (disabled)")
+	assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce.Value, "DriftAlertDebounce should default to 0 (disabled)")
 }
 
 func TestConfigFromEnv_DriftAlertDebounce_EnvZeroOverridesConfig(t *testing.T) {
@@ -877,7 +877,7 @@ drift_alert_debounce: "10m"
 
 	cfg := ConfigFromEnv()
 
-	assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce,
+	assert.Equal(t, time.Duration(0), cfg.DriftAlertDebounce.Value,
 		"env var set to '0' should disable debounce, not fall through to config file value")
 }
 
@@ -1889,7 +1889,7 @@ func TestRunDriftCheck_DebounceDisabled(t *testing.T) {
 	// When debounce is 0 (default), alerts fire immediately on first detection.
 	provider := &testAlertProvider{}
 	d := newAlertDaemon(t, provider)
-	d.config.DriftAlertDebounce = 0
+	d.config.DriftAlertDebounce = reconcile.NewConfigField(time.Duration(0))
 	d.config.DriftInterval = 5 * time.Minute
 
 	stateFile := d.config.ReconcileConfig.StateFile
@@ -2191,8 +2191,8 @@ func TestParseDurationOrSeconds(t *testing.T) {
 func TestDefaultConfig_DriftSelfHeal(t *testing.T) {
 	cfg := DefaultConfig()
 
-	assert.False(t, cfg.DriftSelfHeal, "DriftSelfHeal should be false by default")
-	assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown, "DriftSelfHealCooldown should default to 15m")
+	assert.False(t, cfg.DriftSelfHeal.Value, "DriftSelfHeal should be false by default")
+	assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown.Value, "DriftSelfHealCooldown should default to 15m")
 }
 
 func TestConfigFromEnv_DriftSelfHeal(t *testing.T) {
@@ -2201,7 +2201,7 @@ func TestConfigFromEnv_DriftSelfHeal(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.True(t, cfg.DriftSelfHeal)
+		assert.True(t, cfg.DriftSelfHeal.Value)
 	})
 
 	t.Run("1 enables self-heal", func(t *testing.T) {
@@ -2209,7 +2209,7 @@ func TestConfigFromEnv_DriftSelfHeal(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.True(t, cfg.DriftSelfHeal)
+		assert.True(t, cfg.DriftSelfHeal.Value)
 	})
 
 	t.Run("false disables self-heal", func(t *testing.T) {
@@ -2217,13 +2217,13 @@ func TestConfigFromEnv_DriftSelfHeal(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.False(t, cfg.DriftSelfHeal)
+		assert.False(t, cfg.DriftSelfHeal.Value)
 	})
 
 	t.Run("defaults to false when not set", func(t *testing.T) {
 		cfg := ConfigFromEnv()
 
-		assert.False(t, cfg.DriftSelfHeal)
+		assert.False(t, cfg.DriftSelfHeal.Value)
 	})
 }
 
@@ -2233,7 +2233,7 @@ func TestConfigFromEnv_DriftSelfHealCooldown(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.Equal(t, 10*time.Minute, cfg.DriftSelfHealCooldown)
+		assert.Equal(t, 10*time.Minute, cfg.DriftSelfHealCooldown.Value)
 	})
 
 	t.Run("parses bare seconds", func(t *testing.T) {
@@ -2241,13 +2241,13 @@ func TestConfigFromEnv_DriftSelfHealCooldown(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.Equal(t, 600*time.Second, cfg.DriftSelfHealCooldown)
+		assert.Equal(t, 600*time.Second, cfg.DriftSelfHealCooldown.Value)
 	})
 
 	t.Run("defaults to 15m when not set", func(t *testing.T) {
 		cfg := ConfigFromEnv()
 
-		assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown)
+		assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown.Value)
 	})
 
 	t.Run("invalid value keeps default", func(t *testing.T) {
@@ -2255,7 +2255,7 @@ func TestConfigFromEnv_DriftSelfHealCooldown(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown)
+		assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown.Value)
 	})
 
 	t.Run("zero or negative keeps default", func(t *testing.T) {
@@ -2263,15 +2263,15 @@ func TestConfigFromEnv_DriftSelfHealCooldown(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown)
+		assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown.Value)
 	})
 }
 
 func TestMaybeSelfHeal_TriggersWhenEnabled(t *testing.T) {
 	provider := &testAlertProvider{}
 	d := newAlertDaemon(t, provider)
-	d.config.DriftSelfHeal = true
-	d.config.DriftSelfHealCooldown = 15 * time.Minute
+	d.config.DriftSelfHeal = reconcile.NewConfigField(true)
+	d.config.DriftSelfHealCooldown = reconcile.NewConfigField(15 * time.Minute)
 
 	report := &reconcile.DriftReport{
 		CheckedAt: time.Now(),
@@ -2293,8 +2293,8 @@ func TestMaybeSelfHeal_TriggersWhenEnabled(t *testing.T) {
 func TestMaybeSelfHeal_SkipsWhenReconciling(t *testing.T) {
 	provider := &testAlertProvider{}
 	d := newAlertDaemon(t, provider)
-	d.config.DriftSelfHeal = true
-	d.config.DriftSelfHealCooldown = 15 * time.Minute
+	d.config.DriftSelfHeal = reconcile.NewConfigField(true)
+	d.config.DriftSelfHealCooldown = reconcile.NewConfigField(15 * time.Minute)
 
 	// Simulate reconciliation in progress.
 	d.reconcileMu.Lock()
@@ -2323,8 +2323,8 @@ func TestMaybeSelfHeal_SkipsWhenReconciling(t *testing.T) {
 func TestMaybeSelfHeal_RespectsCooldown(t *testing.T) {
 	provider := &testAlertProvider{}
 	d := newAlertDaemon(t, provider)
-	d.config.DriftSelfHeal = true
-	d.config.DriftSelfHealCooldown = 15 * time.Minute
+	d.config.DriftSelfHeal = reconcile.NewConfigField(true)
+	d.config.DriftSelfHealCooldown = reconcile.NewConfigField(15 * time.Minute)
 
 	// Simulate a recent self-heal.
 	d.lastSelfHeal = time.Now().Add(-5 * time.Minute) // 5 minutes ago, within 15m cooldown
@@ -2347,8 +2347,8 @@ func TestMaybeSelfHeal_RespectsCooldown(t *testing.T) {
 func TestMaybeSelfHeal_TriggersAfterCooldownExpires(t *testing.T) {
 	provider := &testAlertProvider{}
 	d := newAlertDaemon(t, provider)
-	d.config.DriftSelfHeal = true
-	d.config.DriftSelfHealCooldown = 15 * time.Minute
+	d.config.DriftSelfHeal = reconcile.NewConfigField(true)
+	d.config.DriftSelfHealCooldown = reconcile.NewConfigField(15 * time.Minute)
 
 	// Simulate a self-heal that happened 20 minutes ago (past the 15m cooldown).
 	d.lastSelfHeal = time.Now().Add(-20 * time.Minute)
@@ -2530,9 +2530,9 @@ drift_self_heal_cooldown: "20m"
 
 	d := &Daemon{
 		config: &Config{
-			DriftAlertDebounce:   0,
-			DriftSelfHeal:        false,
-			DriftSelfHealCooldown: 15 * time.Minute,
+			DriftAlertDebounce:    reconcile.NewConfigField(time.Duration(0)),
+			DriftSelfHeal:         reconcile.NewConfigField(false),
+			DriftSelfHealCooldown: reconcile.NewConfigField(15 * time.Minute),
 		},
 	}
 
@@ -2540,9 +2540,9 @@ drift_self_heal_cooldown: "20m"
 
 	d.configMu.RLock()
 	defer d.configMu.RUnlock()
-	assert.Equal(t, 5*time.Minute, d.config.DriftAlertDebounce)
-	assert.True(t, d.config.DriftSelfHeal)
-	assert.Equal(t, 20*time.Minute, d.config.DriftSelfHealCooldown)
+	assert.Equal(t, 5*time.Minute, d.config.DriftAlertDebounce.Value)
+	assert.True(t, d.config.DriftSelfHeal.Value)
+	assert.Equal(t, 20*time.Minute, d.config.DriftSelfHealCooldown.Value)
 }
 
 func TestReloadDaemonConfig_EnvVarsPreventsOverride(t *testing.T) {
@@ -2565,12 +2565,9 @@ drift_self_heal_cooldown: "20m"
 	// All three fields are locked by env vars.
 	d := &Daemon{
 		config: &Config{
-			DriftAlertDebounce:           2 * time.Minute,
-			DriftAlertDebounceFromEnv:    true,
-			DriftSelfHeal:                false,
-			DriftSelfHealFromEnv:         true,
-			DriftSelfHealCooldown:        10 * time.Minute,
-			DriftSelfHealCooldownFromEnv: true,
+			DriftAlertDebounce:    reconcile.EnvConfigField(2 * time.Minute),
+			DriftSelfHeal:         reconcile.EnvConfigField(false),
+			DriftSelfHealCooldown: reconcile.EnvConfigField(10 * time.Minute),
 		},
 	}
 
@@ -2579,9 +2576,9 @@ drift_self_heal_cooldown: "20m"
 	d.configMu.RLock()
 	defer d.configMu.RUnlock()
 	// Values must stay as set by "env vars" — bosun.yaml must not overwrite them.
-	assert.Equal(t, 2*time.Minute, d.config.DriftAlertDebounce, "DriftAlertDebounce must not change when locked by env")
-	assert.False(t, d.config.DriftSelfHeal, "DriftSelfHeal must not change when locked by env")
-	assert.Equal(t, 10*time.Minute, d.config.DriftSelfHealCooldown, "DriftSelfHealCooldown must not change when locked by env")
+	assert.Equal(t, 2*time.Minute, d.config.DriftAlertDebounce.Value, "DriftAlertDebounce must not change when locked by env")
+	assert.False(t, d.config.DriftSelfHeal.Value, "DriftSelfHeal must not change when locked by env")
+	assert.Equal(t, 10*time.Minute, d.config.DriftSelfHealCooldown.Value, "DriftSelfHealCooldown must not change when locked by env")
 }
 
 func TestReloadDaemonConfig_NoConfigFile_IsNoop(t *testing.T) {
@@ -2595,9 +2592,9 @@ func TestReloadDaemonConfig_NoConfigFile_IsNoop(t *testing.T) {
 
 	d := &Daemon{
 		config: &Config{
-			DriftAlertDebounce:   3 * time.Minute,
-			DriftSelfHeal:        true,
-			DriftSelfHealCooldown: 12 * time.Minute,
+			DriftAlertDebounce:    reconcile.NewConfigField(3 * time.Minute),
+			DriftSelfHeal:         reconcile.NewConfigField(true),
+			DriftSelfHealCooldown: reconcile.NewConfigField(12 * time.Minute),
 		},
 	}
 
@@ -2606,17 +2603,17 @@ func TestReloadDaemonConfig_NoConfigFile_IsNoop(t *testing.T) {
 
 	d.configMu.RLock()
 	defer d.configMu.RUnlock()
-	assert.Equal(t, 3*time.Minute, d.config.DriftAlertDebounce)
-	assert.True(t, d.config.DriftSelfHeal)
-	assert.Equal(t, 12*time.Minute, d.config.DriftSelfHealCooldown)
+	assert.Equal(t, 3*time.Minute, d.config.DriftAlertDebounce.Value)
+	assert.True(t, d.config.DriftSelfHeal.Value)
+	assert.Equal(t, 12*time.Minute, d.config.DriftSelfHealCooldown.Value)
 }
 
 func TestDriftConfig_ReturnsConsistentSnapshot(t *testing.T) {
 	d := &Daemon{
 		config: &Config{
-			DriftAlertDebounce:   7 * time.Minute,
-			DriftSelfHeal:        true,
-			DriftSelfHealCooldown: 25 * time.Minute,
+			DriftAlertDebounce:    reconcile.NewConfigField(7 * time.Minute),
+			DriftSelfHeal:         reconcile.NewConfigField(true),
+			DriftSelfHealCooldown: reconcile.NewConfigField(25 * time.Minute),
 		},
 	}
 
@@ -2633,13 +2630,13 @@ func TestConfigFromEnv_DriftFromEnvFlags(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.True(t, cfg.DriftAlertDebounceFromEnv)
+		assert.True(t, cfg.DriftAlertDebounce.FromEnv())
 	})
 
 	t.Run("DriftAlertDebounceFromEnv false when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
 
-		assert.False(t, cfg.DriftAlertDebounceFromEnv)
+		assert.False(t, cfg.DriftAlertDebounce.FromEnv())
 	})
 
 	t.Run("DriftSelfHealFromEnv set when env var present", func(t *testing.T) {
@@ -2647,13 +2644,13 @@ func TestConfigFromEnv_DriftFromEnvFlags(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.True(t, cfg.DriftSelfHealFromEnv)
+		assert.True(t, cfg.DriftSelfHeal.FromEnv())
 	})
 
 	t.Run("DriftSelfHealFromEnv false when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
 
-		assert.False(t, cfg.DriftSelfHealFromEnv)
+		assert.False(t, cfg.DriftSelfHeal.FromEnv())
 	})
 
 	t.Run("DriftSelfHealCooldownFromEnv set when env var present", func(t *testing.T) {
@@ -2661,12 +2658,12 @@ func TestConfigFromEnv_DriftFromEnvFlags(t *testing.T) {
 
 		cfg := ConfigFromEnv()
 
-		assert.True(t, cfg.DriftSelfHealCooldownFromEnv)
+		assert.True(t, cfg.DriftSelfHealCooldown.FromEnv())
 	})
 
 	t.Run("DriftSelfHealCooldownFromEnv false when env var absent", func(t *testing.T) {
 		cfg := ConfigFromEnv()
 
-		assert.False(t, cfg.DriftSelfHealCooldownFromEnv)
+		assert.False(t, cfg.DriftSelfHealCooldown.FromEnv())
 	})
 }
