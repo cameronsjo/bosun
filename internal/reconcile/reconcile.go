@@ -776,8 +776,9 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 
 	client := r.dockerClientFn()
 	if client == nil {
-		logger.Warn().Msg("Docker client unavailable for post-sync hooks")
-		return 0, nil
+		hookErr := fmt.Errorf("docker client unavailable for post-sync hooks")
+		logger.Warn().Int("hooks_matched", len(matched)).Msg("Cannot execute post-sync hooks: Docker client unavailable")
+		return len(matched), hookErr
 	}
 
 	ui.Info("Executing %d post-sync hook(s)...", len(matched))
