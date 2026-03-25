@@ -1000,6 +1000,24 @@ func TestConfigFromEnv_EnvOverrideFlags(t *testing.T) {
 	})
 }
 
+func TestConfigFromEnv_ConfigReloaderCallable(t *testing.T) {
+	cfg := ConfigFromEnv()
+	require.NotNil(t, cfg.ReconcileConfig.ConfigReloader)
+
+	// Create a temp dir with a minimal bosun.yaml so the reloader can parse it.
+	tmpDir := t.TempDir()
+	yamlContent := "post_sync_hooks:\n  - paths: [\"traefik/**\"]\n    action: restart\n    container: traefik\nhook_settle_delay: 3s\n"
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(yamlContent), 0o644))
+
+	reloaded, err := cfg.ReconcileConfig.ConfigReloader(tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, reloaded)
+	assert.Len(t, reloaded.PostSyncHooks, 1)
+	assert.Equal(t, "traefik", reloaded.PostSyncHooks[0].Container)
+	require.NotNil(t, reloaded.HookSettleDelay)
+	assert.Equal(t, 3*time.Second, *reloaded.HookSettleDelay)
+}
+
 func TestConfigFromEnv_CriticalContainers(t *testing.T) {
 	t.Run("parses JSON array", func(t *testing.T) {
 		t.Setenv("BOSUN_CRITICAL_CONTAINERS", `["traefik","authelia"]`)
