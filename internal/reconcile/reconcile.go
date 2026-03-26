@@ -709,17 +709,14 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 	return nil
 }
 
-// executePostSyncHooks detects changed files and restarts matching containers via configured hooks.
-// When deployResult is non-nil and has written files, those are used for matching instead of git diff.
-// This ensures hooks only fire for files actually written to disk (content-hash sync).
 // runPostSyncHooksWithSpan wraps executePostSyncHooks with OTel tracing.
 func (r *Reconciler) runPostSyncHooksWithSpan(ctx context.Context, previousCommit, currentCommit string, deployResult *DeployResult, local bool) {
-	_, span := telemetry.Tracer("reconcile").Start(ctx, "reconcile.post_sync_hooks",
+	spanCtx, span := telemetry.Tracer("reconcile").Start(ctx, "reconcile.post_sync_hooks",
 		trace.WithAttributes(telemetry.IntAttr("hook_count", len(r.config.PostSyncHooks.Value))),
 	)
 	defer span.End()
 
-	matched, err := r.executePostSyncHooks(ctx, previousCommit, currentCommit, deployResult, local)
+	matched, err := r.executePostSyncHooks(spanCtx, previousCommit, currentCommit, deployResult, local)
 	span.SetAttributes(telemetry.IntAttr("hooks_matched", matched))
 	if err != nil {
 		telemetry.SpanError(span, err)
@@ -728,6 +725,9 @@ func (r *Reconciler) runPostSyncHooksWithSpan(ctx context.Context, previousCommi
 	}
 }
 
+// executePostSyncHooks detects changed files and restarts matching containers via configured hooks.
+// When deployResult is non-nil and has written files, those are used for matching instead of git diff.
+// This ensures hooks only fire for files actually written to disk (content-hash sync).
 func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, currentCommit string, deployResult *DeployResult, local bool) (int, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
