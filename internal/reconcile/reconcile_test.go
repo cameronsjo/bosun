@@ -1246,6 +1246,43 @@ func TestVerifyPostDeploy(t *testing.T) {
 
 // --- Reconciler.executePostSyncHooks tests ---
 
+func TestRunPostSyncHooksWithSpan(t *testing.T) {
+	t.Run("success path sets span OK", func(t *testing.T) {
+		gitOps := &mockGitOps{diffFiles: []string{"traefik/dynamic.yml"}}
+		mockAPI := newReconcileMockDockerAPI()
+		client := docker.NewClientWithAPI(mockAPI)
+		cfg := &Config{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
+				{Container: "traefik", Paths: []string{"traefik/**"}, Action: "restart"},
+			}),
+		}
+		r := NewReconciler(cfg, WithGitOperations(gitOps))
+		r.dockerClientFn = func() *docker.Client { return client }
+
+		// Should not panic and should exercise the span wrapping.
+		r.runPostSyncHooksWithSpan(context.Background(), "aaa", "bbb", nil, true)
+	})
+
+	t.Run("error path sets span error", func(t *testing.T) {
+		gitOps := &mockGitOps{diffFiles: []string{"traefik/dynamic.yml"}}
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts container.StopOptions) error {
+			return fmt.Errorf("connection refused")
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+		cfg := &Config{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
+				{Container: "traefik", Paths: []string{"traefik/**"}, Action: "restart"},
+			}),
+		}
+		r := NewReconciler(cfg, WithGitOperations(gitOps))
+		r.dockerClientFn = func() *docker.Client { return client }
+
+		// Should not panic; exercises the SpanError branch.
+		r.runPostSyncHooksWithSpan(context.Background(), "aaa", "bbb", nil, true)
+	})
+}
+
 func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 	t.Run("first deploy skips hooks (empty previous commit)", func(t *testing.T) {
 		cfg := &Config{

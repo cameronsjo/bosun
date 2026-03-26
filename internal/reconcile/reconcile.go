@@ -593,17 +593,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 
 	// Execute post-sync hooks if any files changed and hooks are configured.
 	if r.dockerClientFn != nil && !r.config.DryRun && len(r.config.PostSyncHooks.Value) > 0 {
-		_, otelHooksSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.post_sync_hooks",
-			trace.WithAttributes(telemetry.IntAttr("hook_count", len(r.config.PostSyncHooks.Value))),
-		)
-		matchedCount, hookErr := r.executePostSyncHooks(ctx, previousCommit, after, deployResult, localDeploy)
-		otelHooksSpan.SetAttributes(telemetry.IntAttr("hooks_matched", matchedCount))
-		if hookErr != nil {
-			telemetry.SpanError(otelHooksSpan, hookErr)
-		} else {
-			telemetry.SpanOK(otelHooksSpan)
-		}
-		otelHooksSpan.End()
+		r.runPostSyncHooksWithSpan(ctx, previousCommit, after, deployResult, localDeploy)
 	}
 
 	// Post-deploy health verification: poll container health.
@@ -722,6 +712,22 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 // executePostSyncHooks detects changed files and restarts matching containers via configured hooks.
 // When deployResult is non-nil and has written files, those are used for matching instead of git diff.
 // This ensures hooks only fire for files actually written to disk (content-hash sync).
+// runPostSyncHooksWithSpan wraps executePostSyncHooks with OTel tracing.
+func (r *Reconciler) runPostSyncHooksWithSpan(ctx context.Context, previousCommit, currentCommit string, deployResult *DeployResult, local bool) {
+	_, span := telemetry.Tracer("reconcile").Start(ctx, "reconcile.post_sync_hooks",
+		trace.WithAttributes(telemetry.IntAttr("hook_count", len(r.config.PostSyncHooks.Value))),
+	)
+	defer span.End()
+
+	matched, err := r.executePostSyncHooks(ctx, previousCommit, currentCommit, deployResult, local)
+	span.SetAttributes(telemetry.IntAttr("hooks_matched", matched))
+	if err != nil {
+		telemetry.SpanError(span, err)
+	} else {
+		telemetry.SpanOK(span)
+	}
+}
+
 func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, currentCommit string, deployResult *DeployResult, local bool) (int, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
