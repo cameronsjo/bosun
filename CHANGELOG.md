@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.1](https://github.com/cameronsjo/bosun/compare/v0.33.0...v0.33.1) (2026-03-26)
+
+
+### Bug Fixes
+
+* propagate span context and fix orphaned doc comment ([d653e25](https://github.com/cameronsjo/bosun/commit/d653e25950ebed33f6ea58941bc36f07226d3e4f))
+* return matched count and error when Docker client unavailable ([b72df0b](https://github.com/cameronsjo/bosun/commit/b72df0bae2b792992672b8ea02fd5278bd67c838))
+
 ## [0.33.0](https://github.com/cameronsjo/bosun/compare/v0.32.6...v0.33.0) (2026-03-25)
 
 
