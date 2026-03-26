@@ -30,6 +30,9 @@ Thumbs.db
 # Scripts
 scripts/diagrams/node_modules/
 
+# Reconcile artifacts
+internal/reconcile/backup-*/
+
 # Go
 *.exe
 *.exe~
