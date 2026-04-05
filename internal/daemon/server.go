@@ -363,9 +363,11 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var req TriggerRequest
+
 	// Validate signature if configured
 	if s.daemon.config.WebhookSecret != "" {
-		// Limit body size to prevent DoS
+		// Limit body size to prevent DoS; bytes needed for both HMAC and JSON decode.
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
 		if err != nil {
 			http.Error(w, "Failed to read body", http.StatusBadRequest)
@@ -383,6 +385,46 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Invalid signature", http.StatusUnauthorized)
 			return
 		}
+
+		// Decode optional JSON body from the already-read bytes.
+		if len(body) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				parseLogger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
+				parseLogger.Debug().
+					Err(err).
+					Str(log.FieldSource, log.SourceManual).
+					Msg("Failed to parse trigger request body, proceeding without force flag")
+			}
+		}
+	} else if r.Body != nil {
+		// No secret configured — read and decode body directly.
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
+		if err != nil {
+			http.Error(w, "Failed to read body", http.StatusBadRequest)
+			return
+		}
+		if len(body) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				parseLogger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
+				parseLogger.Debug().
+					Err(err).
+					Str(log.FieldSource, log.SourceManual).
+					Msg("Failed to parse trigger request body, proceeding without force flag")
+			}
+		}
+	}
+
+	// Log the incoming trigger, distinguishing force from normal.
+	triggerLogger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
+	if req.Force {
+		triggerLogger.Info().
+			Str(log.FieldSource, log.SourceManual).
+			Bool("force", true).
+			Msg("Force trigger request received via HTTP")
+	} else {
+		triggerLogger.Info().
+			Str(log.FieldSource, log.SourceManual).
+			Msg("Manual trigger request received via HTTP")
 	}
 
 	// Propagate enriched logger into background context (request ctx is cancelled after response).
@@ -397,7 +439,7 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 		defer s.wg.Done()
 		ctx, cancel := context.WithTimeout(bgCtx, s.daemon.config.ReconcileTimeout)
 		defer cancel()
-		if err := s.daemon.TriggerReconcile(ctx, "manual", false); err != nil {
+		if err := s.daemon.TriggerReconcile(ctx, "manual", req.Force); err != nil {
 			manualLogger.Error().
 				Err(err).
 				Str(log.FieldSource, log.SourceManual).

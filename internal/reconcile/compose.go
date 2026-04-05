@@ -8,10 +8,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
+	"github.com/cameronsjo/bosun/internal/ui"
 )
 
 // DefaultComposeUpTimeout is the maximum time allowed for docker compose up.
@@ -85,7 +87,32 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 			return fmt.Errorf("docker compose up timed out after %v", timeout)
 		}
 
-		originalErr := fmt.Errorf("docker compose up failed: %w: %s", err, stderr.String())
+		stderrStr := stderr.String()
+		originalErr := fmt.Errorf("docker compose up failed: %w: %s", err, stderrStr)
+
+		// Detect container name conflicts from project name mismatch.
+		logger.Debug().
+			Str(log.FieldOperation, "compose_up").
+			Int("file_count", len(composeFiles)).
+			Msg("Scanning stderr for container name conflicts")
+		if conflicts := detectNameConflicts(stderrStr); len(conflicts) > 0 {
+			logger.Error().
+				Str(log.FieldOperation, "compose_up").
+				Strs("conflicting_containers", conflicts).
+				Str("project", d.ProjectName).
+				Msg("Container name conflict detected — existing containers were created under a different project name")
+			ui.Warning("Container name conflict: existing containers were created under a different project name")
+			for _, name := range conflicts {
+				logger.Warn().
+					Str(log.FieldContainer, name).
+					Msgf("Remediation: docker rm -f %s", name)
+				ui.Warning("  Conflicting container %q — remediation: docker rm -f %s", name, name)
+			}
+			logger.Info().
+				Str(log.FieldOperation, "compose_up").
+				Int("conflict_count", len(conflicts)).
+				Msg("Container name conflicts detected, remediation commands logged")
+		}
 
 		// Classify the failure by inspecting container state.
 		result, classifyErr := d.classifyComposeFailure(ctx, composeFiles)
@@ -588,4 +615,24 @@ func (d *DeployOps) SignalContainerRemote(ctx context.Context, host, containerNa
 		}
 		return nil
 	})
+}
+
+// nameConflictPattern matches Docker's container name conflict error message.
+// Example: `Conflict. The container name "/agregarr" is already in use`
+var nameConflictPattern = regexp.MustCompile(`container name "/?([^"]+)" is already in use`)
+
+// detectNameConflicts extracts container names from Docker's name conflict errors.
+// Returns nil if no conflicts are found.
+func detectNameConflicts(stderr string) []string {
+	matches := nameConflictPattern.FindAllStringSubmatch(stderr, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(matches))
+	for _, m := range matches {
+		if len(m) > 1 {
+			names = append(names, m[1])
+		}
+	}
+	return names
 }

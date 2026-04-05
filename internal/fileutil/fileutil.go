@@ -2,6 +2,7 @@
 package fileutil
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -144,6 +145,8 @@ func ContentEqual(path string, srcHash [sha256.Size]byte) (bool, error) {
 // CopyFileIfChanged copies src to dst only if the content differs.
 // Returns true if the file was written, false if skipped (content identical).
 // Uses SHA-256 content comparison to avoid unnecessary writes on FUSE filesystems.
+// Includes a size-based confidence check to catch FUSE stale-read scenarios where
+// the cached hash appears to match but the actual file content has diverged.
 func CopyFileIfChanged(src, dst string) (bool, error) {
 	srcHash, err := FileHash(src)
 	if err != nil {
@@ -155,7 +158,49 @@ func CopyFileIfChanged(src, dst string) (bool, error) {
 		return false, fmt.Errorf("compare destination: %w", err)
 	}
 	if equal {
-		return false, nil
+		logger := log.Component(log.ComponentReconcile)
+		logger.Debug().
+			Str("src", src).
+			Str("dst", dst).
+			Msg("Content hash matched, verifying file content before skip")
+
+		// Confidence check: compare file sizes to catch FUSE stale-read scenarios.
+		// If the kernel-level file sizes differ, the hashes cannot truly match —
+		// the FUSE cache served stale content during hash comparison.
+		if sizesDiffer(src, dst) {
+			logger.Warn().
+				Str("src", src).
+				Str("dst", dst).
+				Msg("FUSE staleness detected: content hash matched but file sizes differ, forcing write")
+		} else {
+			// Read-back verification: compare raw bytes to catch hash computation
+			// bugs or FUSE cache inconsistencies that the size check didn't catch.
+			srcBytes, srcErr := os.ReadFile(src)
+			dstBytes, dstErr := os.ReadFile(dst)
+			if srcErr != nil || dstErr != nil {
+				// Read-back failed — log a warning and proceed with copy to be safe.
+				// Silently skipping on I/O error could mask disk failures.
+				logger.Warn().
+					AnErr("src_err", srcErr).
+					AnErr("dst_err", dstErr).
+					Str("src", src).
+					Str("dst", dst).
+					Msg("Read-back verification failed, proceeding with copy as precaution")
+				// fall through to copy
+			} else if !bytes.Equal(srcBytes, dstBytes) {
+				logger.Warn().
+					Str("src", src).
+					Str("dst", dst).
+					Msg("FUSE staleness detected: content hash matched but byte comparison differs, forcing write")
+				// fall through to copy
+			} else {
+				logger.Debug().
+					Str("src", src).
+					Str("dst", dst).
+					Msg("Content verified, skip confirmed")
+				return false, nil
+			}
+		}
 	}
 
 	if err := CopyFile(src, dst); err != nil {
@@ -164,7 +209,35 @@ func CopyFileIfChanged(src, dst string) (bool, error) {
 		}
 		return false, err
 	}
+
+	// Post-write verification: re-read destination hash to confirm the write landed.
+	// On FUSE mounts, the atomic rename may not immediately invalidate cached handles.
+	verifyLogger := log.Component(log.ComponentReconcile)
+	verifyLogger.Debug().Str(log.FieldPath, dst).Msg("Post-write verification: re-reading destination hash")
+	dstHash, verifyErr := FileHash(dst)
+	if verifyErr != nil {
+		return false, fmt.Errorf("post-write verification failed: cannot re-read destination %s: %w", dst, verifyErr)
+	} else if dstHash != srcHash {
+		return false, fmt.Errorf("post-write verification failed: destination hash mismatch after write (possible FUSE cache staleness): %s", dst)
+	} else {
+		verifyLogger.Debug().Str(log.FieldPath, dst).Msg("Post-write verification: destination hash confirmed")
+	}
+
 	return true, nil
+}
+
+// sizesDiffer returns true if the two files have different sizes.
+// Returns false if either file cannot be stat'd (caller falls through to byte comparison).
+func sizesDiffer(a, b string) bool {
+	aInfo, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bInfo, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return aInfo.Size() != bInfo.Size()
 }
 
 // CopyDirIfChanged recursively copies a directory from src to dst,

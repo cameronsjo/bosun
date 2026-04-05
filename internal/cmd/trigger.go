@@ -38,8 +38,17 @@ Examples:
 	Run: runTrigger,
 }
 
+// resolveSocketPath returns BOSUN_SOCKET_PATH if set, otherwise the compiled default.
+// Used by all daemon-client commands (trigger, webhook, validate, status).
+func resolveSocketPath() string {
+	if p := os.Getenv("BOSUN_SOCKET_PATH"); p != "" {
+		return p
+	}
+	return daemon.DefaultSocketPath
+}
+
 func init() {
-	triggerCmd.Flags().StringVar(&triggerSocket, "socket", daemon.DefaultSocketPath, "Path to daemon socket")
+	triggerCmd.Flags().StringVar(&triggerSocket, "socket", resolveSocketPath(), "Path to daemon socket")
 	triggerCmd.Flags().StringVar(&triggerTCP, "tcp", "", "TCP address for remote daemon (e.g., host:9090)")
 	triggerCmd.Flags().StringVar(&triggerToken, "token", "", "Bearer token for TCP auth (or BOSUN_BEARER_TOKEN)")
 	triggerCmd.Flags().StringVarP(&triggerSource, "source", "s", "cli", "Source identifier for this trigger")

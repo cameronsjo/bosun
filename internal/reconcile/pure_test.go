@@ -995,6 +995,63 @@ func TestClassifyComposeResults(t *testing.T) {
 	}
 }
 
+func TestDetectNameConflicts(t *testing.T) {
+	tests := []struct {
+		name   string
+		stderr string
+		want   []string
+	}{
+		{
+			name:   "no conflicts returns nil",
+			stderr: "some unrelated docker error",
+			want:   nil,
+		},
+		{
+			name:   "empty stderr returns nil",
+			stderr: "",
+			want:   nil,
+		},
+		{
+			name:   "single conflict without leading slash",
+			stderr: `Conflict. The container name "agregarr" is already in use by container "abc123". You have to remove (or rename) that container to be able to reuse that name.`,
+			want:   []string{"agregarr"},
+		},
+		{
+			name:   "single conflict with leading slash (docker format)",
+			stderr: `Conflict. The container name "/agregarr" is already in use by container "abc123".`,
+			want:   []string{"agregarr"},
+		},
+		{
+			name: "multiple conflicts across lines",
+			stderr: `Conflict. The container name "/web" is already in use by container "abc".
+Conflict. The container name "/db" is already in use by container "def".`,
+			want: []string{"web", "db"},
+		},
+		{
+			name:   "conflict embedded in larger error block",
+			stderr: "Error response from daemon: driver failed programming\nConflict. The container name \"/traefik\" is already in use by container \"xyz\".\nAdditional context here.",
+			want:   []string{"traefik"},
+		},
+		{
+			name:   "container name with hyphens and underscores",
+			stderr: `Conflict. The container name "/my-app_1" is already in use`,
+			want:   []string{"my-app_1"},
+		},
+		{
+			name:   "duplicate conflict names are preserved",
+			stderr: "Conflict. The container name \"/traefik\" is already in use by container \"abc\".\nConflict. The container name \"/traefik\" is already in use by container \"def\".",
+			want:   []string{"traefik", "traefik"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := detectNameConflicts(tt.stderr)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestBuildOrphanPassFiles(t *testing.T) {
 	backupPath := "/backups/2024-01-01"
 
