@@ -216,7 +216,7 @@ func CopyFileIfChanged(src, dst string) (bool, error) {
 	verifyLogger.Debug().Str(log.FieldPath, dst).Msg("Post-write verification: re-reading destination hash")
 	dstHash, verifyErr := FileHash(dst)
 	if verifyErr != nil {
-		verifyLogger.Warn().Err(verifyErr).Str(log.FieldPath, dst).Msg("Post-write verification: failed to re-read destination")
+		return false, fmt.Errorf("post-write verification failed: cannot re-read destination %s: %w", dst, verifyErr)
 	} else if dstHash != srcHash {
 		return false, fmt.Errorf("post-write verification failed: destination hash mismatch after write (possible FUSE cache staleness): %s", dst)
 	} else {
