@@ -46,6 +46,6 @@ bosun/bosun
 
 # Beads / Dolt files (added by bd init)
 /.dolt/
-.beads/**/*.db
+/.beads/**/*.db
 /.beads-credential-key
 /.review-loop.local.md
