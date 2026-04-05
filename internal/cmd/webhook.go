@@ -49,7 +49,7 @@ DAEMON-INJECTED SECRETS:
 
 Configuration:
   --port          HTTP port to listen on (default: 8080)
-  --socket        Path to daemon socket (default: /var/run/bosun.sock)
+  --socket        Path to daemon socket (default: $BOSUN_SOCKET_PATH or /var/run/bosun.sock)
   --secret        Webhook secret for signature validation
   --fetch-secret  Fetch secret from daemon (never stored on disk)
 
@@ -63,7 +63,7 @@ Examples:
 
 func init() {
 	webhookCmd.Flags().IntVarP(&webhookPort, "port", "p", 8080, "HTTP port to listen on")
-	webhookCmd.Flags().StringVar(&webhookSocket, "socket", daemon.DefaultSocketPath, "Path to daemon socket")
+	webhookCmd.Flags().StringVar(&webhookSocket, "socket", resolveSocketPath(), "Path to daemon socket")
 	webhookCmd.Flags().StringVar(&webhookSecret, "secret", "", "Webhook secret for signature validation")
 	webhookCmd.Flags().BoolVar(&webhookFetchSecret, "fetch-secret", false, "Fetch webhook secret from daemon (daemon-injected secrets)")
 

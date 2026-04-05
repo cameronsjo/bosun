@@ -4298,4 +4298,51 @@ func TestResolveDeployMode(t *testing.T) {
 			assert.Equal(t, tt.wantLocal, local)
 		})
 	}
+
+	// DeployMode override tests — these bypass all auto-detection heuristics.
+	t.Run("DeployMode=local forces local even with target host", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.TargetHost = "user@remote"
+		cfg.DeployMode = "local"
+		cfg.LocalAppdataPath = evalSymlinks(t, t.TempDir())
+		r := &Reconciler{config: cfg}
+		local, err := r.resolveDeployMode(context.Background(), nil)
+		require.NoError(t, err)
+		assert.True(t, local)
+	})
+
+	t.Run("DeployMode=remote forces remote even with accessible appdata", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.LocalAppdataPath = evalSymlinks(t, t.TempDir())
+		cfg.DeployMode = "remote"
+		r := &Reconciler{config: cfg}
+		local, err := r.resolveDeployMode(context.Background(), nil)
+		require.NoError(t, err)
+		assert.False(t, local)
+	})
+
+	t.Run("DeployMode=local overrides secrets-based remote", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.LocalAppdataPath = ""
+		cfg.DeployMode = "local"
+		secrets := map[string]any{"network": map[string]any{"unraid_ip": "192.168.1.100"}}
+		r := &Reconciler{config: cfg}
+		local, err := r.resolveDeployMode(context.Background(), secrets)
+		require.NoError(t, err)
+		assert.True(t, local)
+	})
+
+	// Implicit secrets-only remote: no target_host, no appdata configured, but
+	// secrets contain network.unraid_ip. This triggers the structured warning log
+	// that nudges operators toward explicit configuration.
+	t.Run("implicit secrets-only remote with no appdata configured", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.LocalAppdataPath = ""
+		cfg.TargetHost = ""
+		secrets := map[string]any{"network": map[string]any{"unraid_ip": "10.0.0.5"}}
+		r := &Reconciler{config: cfg}
+		local, err := r.resolveDeployMode(context.Background(), secrets)
+		require.NoError(t, err)
+		assert.False(t, local, "should select remote mode when only secrets provide a host")
+	})
 }

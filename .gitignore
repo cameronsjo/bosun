@@ -43,4 +43,9 @@ internal/reconcile/backup-*/
 coverage.out
 coverage.html
 bosun/bosun
-.claude/reviews/
+
+# Beads / Dolt files (added by bd init)
+/.dolt/
+/.beads/**/*.db
+/.beads-credential-key
+/.review-loop.local.md

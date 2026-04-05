@@ -71,6 +71,11 @@ type Config struct {
 	// LocalAppdataPath, RemoteAppdataPath, ProjectName).
 	Targets []Target
 
+	// DeployMode overrides automatic deploy mode detection.
+	// Valid values: "" (auto-detect), "local", "remote".
+	// When set, resolveDeployMode skips heuristics and uses the specified mode.
+	DeployMode string
+
 	// DryRun if true, only shows what would be done.
 	DryRun bool
 	// Force if true, runs deployment even if no changes detected.
@@ -1111,8 +1116,33 @@ func (r *Reconciler) doDeploy(ctx context.Context, secrets map[string]any, local
 // error when the configuration is invalid (e.g. appdata path configured but
 // inaccessible and no remote host to fall back to).
 // Secrets are consulted for the target host fallback (e.g. network.unraid_ip).
+// When DeployMode is explicitly set ("local" or "remote"), auto-detection is skipped.
 func (r *Reconciler) resolveDeployMode(ctx context.Context, secrets map[string]any) (bool, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+
+	// Explicit deploy mode overrides auto-detection.
+	switch r.config.DeployMode {
+	case "local":
+		// Verify the appdata path is accessible when configured — forcing local mode with an
+		// unmounted path would silently fail during deployLocal().
+		if r.config.LocalAppdataPath != "" {
+			if _, err := os.Stat(r.config.LocalAppdataPath); err != nil {
+				return false, fmt.Errorf("BOSUN_DEPLOY_MODE=local but local_appdata_path %q is inaccessible: %w",
+					r.config.LocalAppdataPath, err)
+			}
+		}
+		logger.Info().Msg("Deploy mode forced to local via BOSUN_DEPLOY_MODE")
+		return true, nil
+	case "remote":
+		logger.Info().Msg("Deploy mode forced to remote via BOSUN_DEPLOY_MODE")
+		return false, nil
+	case "":
+		// Auto-detect — fall through.
+	default:
+		logger.Warn().
+			Str("deploy_mode", r.config.DeployMode).
+			Msg("Unknown BOSUN_DEPLOY_MODE value, falling back to auto-detection")
+	}
 
 	local, err := resolveDeployModeWithSecrets(r.config.TargetHost, r.config.LocalAppdataPath, secrets, os.Stat)
 	if err != nil {
@@ -1128,6 +1158,17 @@ func (r *Reconciler) resolveDeployMode(ctx context.Context, secrets map[string]a
 			Str(log.FieldPath, r.config.LocalAppdataPath).
 			Msg("Local appdata path accessible, using local deploy mode")
 	} else {
+		// Warn when remote mode was selected purely from secrets (network.unraid_ip)
+		// with no explicit target_host in config. Implicit fallback is convenient
+		// but hard to debug — nudge users toward explicit configuration.
+		if r.config.TargetHost == "" && resolveTargetHost("", secrets) != "" {
+			logger.Warn().
+				Str("resolved_via", "secrets").
+				Str("secrets_key", "network.unraid_ip").
+				Str("recommendation", "set target_host in bosun.yaml or BOSUN_DEPLOY_MODE env var").
+				Msg("Remote deploy mode resolved from secrets fallback — explicit config recommended for predictable behavior")
+			ui.Warning("Remote deploy mode selected from secrets (network.unraid_ip) — set target_host in config or BOSUN_DEPLOY_MODE for explicit control")
+		}
 		logger.Debug().Msg("Using remote deploy mode")
 	}
 
@@ -1303,6 +1344,7 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) e
 	}
 
 	// Sync to Compose Manager (Unraid-specific, remote-only) only when compose is a deploy target.
+	// This is optional — failure is non-fatal because not all hosts have the Compose Manager plugin.
 	composeManagerDir := "/boot/config/plugins/compose.manager/projects/core"
 	if hasTarget(targets, "compose") {
 		ui.Info("  Syncing core compose to Compose Manager...")
@@ -1312,10 +1354,11 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) e
 		}
 	}
 
-	// Reload services.
+	// Reload services from the actual compose directory (not Compose Manager).
+	composeDir := filepath.Join(appdata, "compose")
 	if !r.config.DryRun {
 		ui.Info("  Reloading services...")
-		if err := r.deploy.ComposeUpRemote(ctx, host, composeManagerDir); err != nil {
+		if err := r.deploy.ComposeUpRemote(ctx, host, composeDir); err != nil {
 			return fmt.Errorf("remote compose up failed: %w", err)
 		}
 		if err := r.deploy.SignalContainerRemote(ctx, host, "agentgateway", "SIGHUP"); err != nil {

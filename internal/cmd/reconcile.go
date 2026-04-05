@@ -122,7 +122,7 @@ func runReconcile(cmd *cobra.Command, args []string) {
 
 	// Force local mode if --local flag is set.
 	if reconcileLocal {
-		cfg.TargetHost = ""
+		cfg.DeployMode = "local"
 	}
 
 	// Dry run from environment or flags.

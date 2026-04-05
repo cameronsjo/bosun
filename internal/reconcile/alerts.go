@@ -8,8 +8,12 @@ import (
 )
 
 // alertTarget returns the target identifier for alert messages.
-// Uses TargetName when set (multi-target mode); falls back to TargetHost or "local".
+// DeployMode takes precedence when explicitly set; then TargetName (multi-target mode);
+// falls back to TargetHost or "local".
 func (r *Reconciler) alertTarget() string {
+	if r.config.DeployMode == "local" {
+		return "local"
+	}
 	if r.config.TargetName != "" && r.config.TargetName != DefaultTargetName {
 		return r.config.TargetName
 	}

@@ -41,7 +41,7 @@ Examples:
 }
 
 func init() {
-	validateCmd.Flags().StringVar(&validateSocket, "socket", daemon.DefaultSocketPath, "Path to daemon socket")
+	validateCmd.Flags().StringVar(&validateSocket, "socket", resolveSocketPath(), "Path to daemon socket")
 	validateCmd.Flags().IntVarP(&validateTimeout, "timeout", "t", 30, "Timeout in seconds")
 	validateCmd.Flags().BoolVar(&validateFull, "full", false, "Run full dry-run reconciliation")
 
