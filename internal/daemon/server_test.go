@@ -581,6 +581,80 @@ func TestHandleManualTrigger(t *testing.T) {
 
 		assert.Equal(t, http.StatusUnauthorized, w.Code)
 	})
+
+	t.Run("POST with force=true body returns 202", func(t *testing.T) {
+		_, s := newTestDaemon(t)
+
+		req := httptest.NewRequest(http.MethodPost, "/webhook/manual", strings.NewReader(`{"force":true}`))
+		w := httptest.NewRecorder()
+		s.handleManualTrigger(w, req)
+
+		assert.Equal(t, http.StatusAccepted, w.Code)
+
+		var resp map[string]string
+		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+		assert.Equal(t, "accepted", resp["status"])
+	})
+
+	t.Run("POST with empty body is backward compatible", func(t *testing.T) {
+		_, s := newTestDaemon(t)
+
+		req := httptest.NewRequest(http.MethodPost, "/webhook/manual", strings.NewReader(""))
+		w := httptest.NewRecorder()
+		s.handleManualTrigger(w, req)
+
+		assert.Equal(t, http.StatusAccepted, w.Code)
+	})
+
+	t.Run("POST with malformed JSON body degrades gracefully", func(t *testing.T) {
+		_, s := newTestDaemon(t)
+
+		req := httptest.NewRequest(http.MethodPost, "/webhook/manual", strings.NewReader(`{not valid json`))
+		w := httptest.NewRecorder()
+		s.handleManualTrigger(w, req)
+
+		// Malformed body should not block the trigger — force defaults to false.
+		assert.Equal(t, http.StatusAccepted, w.Code)
+
+		var resp map[string]string
+		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+		assert.Equal(t, "accepted", resp["status"])
+	})
+
+	t.Run("with secret: force=true body accepted after valid signature", func(t *testing.T) {
+		d, s := newTestDaemon(t)
+		d.config.WebhookSecret = "manual-secret"
+
+		body := []byte(`{"force":true}`)
+		sig := computeHMACSHA256(body, "manual-secret")
+
+		req := httptest.NewRequest(http.MethodPost, "/webhook/manual", strings.NewReader(string(body)))
+		req.Header.Set("X-Signature", sig)
+		w := httptest.NewRecorder()
+		s.handleManualTrigger(w, req)
+
+		assert.Equal(t, http.StatusAccepted, w.Code)
+
+		var resp map[string]string
+		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+		assert.Equal(t, "accepted", resp["status"])
+	})
+
+	t.Run("with secret: malformed JSON after valid signature degrades gracefully", func(t *testing.T) {
+		d, s := newTestDaemon(t)
+		d.config.WebhookSecret = "manual-secret"
+
+		body := []byte(`{not valid json`)
+		sig := computeHMACSHA256(body, "manual-secret")
+
+		req := httptest.NewRequest(http.MethodPost, "/webhook/manual", strings.NewReader(string(body)))
+		req.Header.Set("X-Signature", sig)
+		w := httptest.NewRecorder()
+		s.handleManualTrigger(w, req)
+
+		// Signature is valid, body is unreadable — trigger proceeds without force.
+		assert.Equal(t, http.StatusAccepted, w.Code)
+	})
 }
 
 func TestHandleWidget(t *testing.T) {

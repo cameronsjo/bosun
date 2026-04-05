@@ -291,6 +291,26 @@ func TestContentEqual(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, equal)
 	})
+
+	t.Run("returns error when path is unreadable", func(t *testing.T) {
+		t.Parallel()
+
+		if os.Getuid() == 0 {
+			t.Skip("root bypasses file permission checks")
+		}
+
+		tmpDir := t.TempDir()
+		path := filepath.Join(tmpDir, "locked.txt")
+		require.NoError(t, os.WriteFile(path, []byte("locked"), 0000))
+
+		srcHash := sha256.Sum256([]byte("locked"))
+		equal, err := fileutil.ContentEqual(path, srcHash)
+		assert.Error(t, err)
+		assert.False(t, equal)
+
+		// Restore permissions so t.TempDir() cleanup succeeds.
+		_ = os.Chmod(path, 0644)
+	})
 }
 
 func TestCopyFileIfChanged(t *testing.T) {
@@ -353,6 +373,31 @@ func TestCopyFileIfChanged(t *testing.T) {
 		got, err := os.ReadFile(dst)
 		require.NoError(t, err)
 		assert.Equal(t, "new version", string(got))
+	})
+
+	t.Run("symlink source skips gracefully", func(t *testing.T) {
+		t.Parallel()
+
+		// FileHash follows symlinks (via os.Open), so the src hash is computed
+		// from the target file's content. CopyFile then detects the symlink via
+		// Lstat and returns ErrSymlinkSkipped. CopyFileIfChanged must surface
+		// this as (false, nil) — not written, not an error.
+		tmpDir, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+
+		realFile := filepath.Join(tmpDir, "real.txt")
+		require.NoError(t, os.WriteFile(realFile, []byte("real content"), 0644))
+		symlinkPath := filepath.Join(tmpDir, "link.txt")
+		require.NoError(t, os.Symlink(realFile, symlinkPath))
+
+		dst := filepath.Join(tmpDir, "dst.txt")
+		changed, err := fileutil.CopyFileIfChanged(symlinkPath, dst)
+		require.NoError(t, err)
+		assert.False(t, changed)
+
+		// Destination must not exist — symlink content was never written.
+		_, statErr := os.Lstat(dst)
+		assert.True(t, os.IsNotExist(statErr), "symlink content should not be written to destination")
 	})
 }
 

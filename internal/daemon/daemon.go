@@ -1394,6 +1394,11 @@ func ConfigFromEnv() *Config {
 
 	rcfg.DryRun = os.Getenv("DRY_RUN") == "true"
 
+	// Deploy mode override: "local" or "remote" skips auto-detection.
+	if mode := os.Getenv("BOSUN_DEPLOY_MODE"); mode != "" {
+		rcfg.DeployMode = mode
+	}
+
 	if infraDir := os.Getenv("BOSUN_INFRA_DIR"); infraDir != "" {
 		rcfg.InfraSubDir = infraDir
 	}
