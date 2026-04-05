@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.3](https://github.com/cameronsjo/bosun/compare/v0.33.2...v0.33.3) (2026-04-05)
+
+
+### Bug Fixes
+
+* deploy bug fixes — FUSE guard, HTTP force-trigger, name conflict warnings ([#222](https://github.com/cameronsjo/bosun/issues/222)) ([912260f](https://github.com/cameronsjo/bosun/commit/912260f7ff1c6bfe32525cf7b15cda525867a306))
+
 ## [0.33.2](https://github.com/cameronsjo/bosun/compare/v0.33.1...v0.33.2) (2026-04-05)
 
 
