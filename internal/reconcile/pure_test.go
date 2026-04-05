@@ -1037,6 +1037,11 @@ Conflict. The container name "/db" is already in use by container "def".`,
 			stderr: `Conflict. The container name "/my-app_1" is already in use`,
 			want:   []string{"my-app_1"},
 		},
+		{
+			name:   "duplicate conflict names are preserved",
+			stderr: "Conflict. The container name \"/traefik\" is already in use by container \"abc\".\nConflict. The container name \"/traefik\" is already in use by container \"def\".",
+			want:   []string{"traefik", "traefik"},
+		},
 	}
 
 	for _, tt := range tests {

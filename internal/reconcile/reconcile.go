@@ -1123,11 +1123,27 @@ func (r *Reconciler) resolveDeployMode(ctx context.Context, secrets map[string]a
 	// Explicit deploy mode overrides auto-detection.
 	switch r.config.DeployMode {
 	case "local":
+		// Verify the appdata path is accessible when configured — forcing local mode with an
+		// unmounted path would silently fail during deployLocal().
+		if r.config.LocalAppdataPath != "" {
+			if _, err := os.Stat(r.config.LocalAppdataPath); err != nil {
+				logger.Warn().
+					Str(log.FieldPath, r.config.LocalAppdataPath).
+					Err(err).
+					Msg("BOSUN_DEPLOY_MODE=local but local_appdata_path is inaccessible — deployment may fail")
+			}
+		}
 		logger.Info().Msg("Deploy mode forced to local via BOSUN_DEPLOY_MODE")
 		return true, nil
 	case "remote":
 		logger.Info().Msg("Deploy mode forced to remote via BOSUN_DEPLOY_MODE")
 		return false, nil
+	case "":
+		// Auto-detect — fall through.
+	default:
+		logger.Warn().
+			Str("deploy_mode", r.config.DeployMode).
+			Msg("Unknown BOSUN_DEPLOY_MODE value, falling back to auto-detection")
 	}
 
 	local, err := resolveDeployModeWithSecrets(r.config.TargetHost, r.config.LocalAppdataPath, secrets, os.Stat)

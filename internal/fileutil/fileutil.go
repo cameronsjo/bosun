@@ -177,7 +177,17 @@ func CopyFileIfChanged(src, dst string) (bool, error) {
 			// bugs or FUSE cache inconsistencies that the size check didn't catch.
 			srcBytes, srcErr := os.ReadFile(src)
 			dstBytes, dstErr := os.ReadFile(dst)
-			if srcErr == nil && dstErr == nil && !bytes.Equal(srcBytes, dstBytes) {
+			if srcErr != nil || dstErr != nil {
+				// Read-back failed — log a warning and proceed with copy to be safe.
+				// Silently skipping on I/O error could mask disk failures.
+				logger.Warn().
+					AnErr("src_err", srcErr).
+					AnErr("dst_err", dstErr).
+					Str("src", src).
+					Str("dst", dst).
+					Msg("Read-back verification failed, proceeding with copy as precaution")
+				// fall through to copy
+			} else if !bytes.Equal(srcBytes, dstBytes) {
 				logger.Warn().
 					Str("src", src).
 					Str("dst", dst).

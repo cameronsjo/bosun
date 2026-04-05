@@ -582,8 +582,14 @@ func TestHandleManualTrigger(t *testing.T) {
 		assert.Equal(t, http.StatusUnauthorized, w.Code)
 	})
 
-	t.Run("POST with force=true body returns 202", func(t *testing.T) {
-		_, s := newTestDaemon(t)
+	t.Run("POST with force=true body returns 202 and propagates force flag", func(t *testing.T) {
+		d, s := newTestDaemon(t)
+
+		// Pre-lock the reconcile mutex so TriggerReconcile queues the trigger
+		// instead of executing immediately. This lets us assert on the sticky force flag.
+		d.reconcileMu.Lock()
+		d.reconciling = true
+		d.reconcileMu.Unlock()
 
 		req := httptest.NewRequest(http.MethodPost, "/webhook/manual", strings.NewReader(`{"force":true}`))
 		w := httptest.NewRecorder()
@@ -594,6 +600,15 @@ func TestHandleManualTrigger(t *testing.T) {
 		var resp map[string]string
 		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
 		assert.Equal(t, "accepted", resp["status"])
+
+		// Wait for the handler goroutine to call TriggerReconcile and queue the force flag.
+		s.wg.Wait()
+
+		d.reconcileMu.Lock()
+		assert.True(t, d.triggerForce, "force flag should be queued via sticky trigger")
+		assert.True(t, d.pendingTrigger, "pending trigger should be set")
+		d.reconciling = false
+		d.reconcileMu.Unlock()
 	})
 
 	t.Run("POST with empty body is backward compatible", func(t *testing.T) {

@@ -12,7 +12,7 @@
 | Quality issues found & fixed | 2 |
 | Narrative logging arcs added | 3 |
 
-**Scope:** GH#214 (FUSE stale read), GH#215 (deploy mode warning), GH#218 (local appdata priority), GH#220 (HTTP force-trigger), GH#221 (container name conflict warning).
+**Scope:** GH#221 (FUSE stale read), GH#215 (deploy mode warning), GH#218 (local appdata priority), GH#220 (HTTP force-trigger), GH#219 (container name conflict warning).
 
 ---
 

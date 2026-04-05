@@ -91,7 +91,7 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 		originalErr := fmt.Errorf("docker compose up failed: %w: %s", err, stderrStr)
 
 		// Detect container name conflicts from project name mismatch.
-		logger.Info().
+		logger.Debug().
 			Str(log.FieldOperation, "compose_up").
 			Int("file_count", len(composeFiles)).
 			Msg("Scanning stderr for container name conflicts")
