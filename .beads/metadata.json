@@ -1,3 +1,7 @@
 {
-  "database": ""
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "bosun",
+  "project_id": "f9841683-a578-4aa2-b99e-a1bbb93cea17"
 }

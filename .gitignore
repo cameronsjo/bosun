@@ -44,3 +44,8 @@ coverage.out
 coverage.html
 bosun/bosun
 .claude/reviews/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
