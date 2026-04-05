@@ -218,7 +218,7 @@ func CopyFileIfChanged(src, dst string) (bool, error) {
 	if verifyErr != nil {
 		verifyLogger.Warn().Err(verifyErr).Str(log.FieldPath, dst).Msg("Post-write verification: failed to re-read destination")
 	} else if dstHash != srcHash {
-		verifyLogger.Warn().Str(log.FieldPath, dst).Msg("Post-write verification: destination hash mismatch after write (FUSE cache stale)")
+		return false, fmt.Errorf("post-write verification failed: destination hash mismatch after write (possible FUSE cache staleness): %s", dst)
 	} else {
 		verifyLogger.Debug().Str(log.FieldPath, dst).Msg("Post-write verification: destination hash confirmed")
 	}
@@ -227,7 +227,7 @@ func CopyFileIfChanged(src, dst string) (bool, error) {
 }
 
 // sizesDiffer returns true if the two files have different sizes.
-// Returns false if either file cannot be stat'd (caller falls through to hash).
+// Returns false if either file cannot be stat'd (caller falls through to byte comparison).
 func sizesDiffer(a, b string) bool {
 	aInfo, err := os.Stat(a)
 	if err != nil {

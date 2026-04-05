@@ -60,7 +60,7 @@
 
 ### 3. `internal/reconcile/compose.go` — Name Conflict Detection Arc
 
-- **Start:** `Info` — `"checking for container name conflicts"` with `file_count` (failed stacks context)
+- **Start:** `Debug` — `"Scanning stderr for container name conflicts"` with `file_count` (failed stacks context)
 - **Per-item:** `Warn` — per-container conflict with remediation command
 - **Summary:** `Info` — `"container name conflicts detected, remediation commands logged"` with `conflict_count` (machine-parseable for alerting)
 

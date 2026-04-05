@@ -49,4 +49,4 @@ bosun/bosun
 .dolt/
 .beads/**/*.db
 .beads-credential-key
-*.local.md
+/.review-loop.local.md

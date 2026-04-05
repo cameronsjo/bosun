@@ -4304,6 +4304,7 @@ func TestResolveDeployMode(t *testing.T) {
 		cfg := DefaultConfig()
 		cfg.TargetHost = "user@remote"
 		cfg.DeployMode = "local"
+		cfg.LocalAppdataPath = evalSymlinks(t, t.TempDir())
 		r := &Reconciler{config: cfg}
 		local, err := r.resolveDeployMode(context.Background(), nil)
 		require.NoError(t, err)

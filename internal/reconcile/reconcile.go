@@ -1127,10 +1127,8 @@ func (r *Reconciler) resolveDeployMode(ctx context.Context, secrets map[string]a
 		// unmounted path would silently fail during deployLocal().
 		if r.config.LocalAppdataPath != "" {
 			if _, err := os.Stat(r.config.LocalAppdataPath); err != nil {
-				logger.Warn().
-					Str(log.FieldPath, r.config.LocalAppdataPath).
-					Err(err).
-					Msg("BOSUN_DEPLOY_MODE=local but local_appdata_path is inaccessible — deployment may fail")
+				return false, fmt.Errorf("BOSUN_DEPLOY_MODE=local but local_appdata_path %q is inaccessible: %w",
+					r.config.LocalAppdataPath, err)
 			}
 		}
 		logger.Info().Msg("Deploy mode forced to local via BOSUN_DEPLOY_MODE")
