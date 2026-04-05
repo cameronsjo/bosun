@@ -83,27 +83,41 @@ func resolveTargetHost(configHost string, secrets map[string]any) string {
 // both config fields and decrypted secrets. Returns (true, nil) for local,
 // (false, nil) for remote, or an error when local appdata is configured but
 // inaccessible and no remote host is available from either config or secrets.
+//
+// Priority: explicit configHost forces remote mode. If no configHost is set,
+// an accessible localAppdataPath forces local mode (even if secrets contain
+// a network.unraid_ip fallback). The secrets-based host is only used when
+// neither configHost nor localAppdataPath is configured.
 func resolveDeployModeWithSecrets(configHost, localAppdataPath string, secrets map[string]any, statFn func(string) (os.FileInfo, error)) (bool, error) {
-	effectiveHost := resolveTargetHost(configHost, secrets)
+	// Explicit config host always means remote mode.
+	if configHost != "" {
+		return false, nil
+	}
 
-	// Any remote host (config or secrets) → remote mode.
+	// Local path configured and accessible → local mode.
+	// This takes priority over the secrets-based host fallback,
+	// because configuring local_appdata_path is an explicit signal
+	// that the container has direct filesystem access.
+	if localAppdataPath != "" {
+		if _, err := statFn(localAppdataPath); err == nil {
+			return true, nil
+		}
+		// Local path inaccessible — fall through to secrets-based remote.
+	}
+
+	// Check secrets for a fallback host (e.g., network.unraid_ip).
+	effectiveHost := resolveTargetHost("", secrets)
 	if effectiveHost != "" {
 		return false, nil
 	}
 
-	// No local path configured and no remote host → remote mode.
-	// deployRemote will fail with "no target host" but that's a config error, not a mode error.
-	if localAppdataPath == "" {
-		return false, nil
+	// No local path and no remote host → error if local was configured.
+	if localAppdataPath != "" {
+		return false, fmt.Errorf("%w: %s", ErrAppdataInaccessible, localAppdataPath)
 	}
 
-	// Local path configured — verify accessible.
-	if _, err := statFn(localAppdataPath); err == nil {
-		return true, nil
-	}
-
-	// Local path inaccessible, no remote fallback.
-	return false, fmt.Errorf("%w: %s", ErrAppdataInaccessible, localAppdataPath)
+	// No local path, no remote host → remote mode (will fail with "no target host").
+	return false, nil
 }
 
 // buildComposeArgs constructs the docker compose argument list with an

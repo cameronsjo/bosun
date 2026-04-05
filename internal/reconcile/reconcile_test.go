@@ -4252,10 +4252,10 @@ func TestResolveDeployMode(t *testing.T) {
 			wantLocal:   false,
 		},
 		{
-			name:       "remote mode when secrets host available even with accessible appdata",
+			name:       "local mode when appdata accessible even with secrets host available",
 			createPath: true,
 			secrets:    map[string]any{"network": map[string]any{"unraid_ip": "192.168.1.100"}},
-			wantLocal:  false,
+			wantLocal:  true,
 		},
 		{
 			name:        "remote fallback via secrets when appdata inaccessible",
