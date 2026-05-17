@@ -112,6 +112,38 @@ func TestVerifyDeployTarget_MissingDestination_Errors(t *testing.T) {
 	assert.Contains(t, err.Error(), "a.yml")
 }
 
+func TestVerifyDeployTarget_MtimeExactlyEqualToStartTime_Passes(t *testing.T) {
+	// Boundary: mt.Before(st) is strict less-than, so mtime == startTime
+	// (after second-truncation) must pass. Captures the invariant edge case
+	// where a write completes in the same second the reconcile began.
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+
+	exact := time.Now().Truncate(time.Second)
+	touchFile(t, filepath.Join(src, "a.yml"), "a", exact)
+	touchFile(t, filepath.Join(dst, "a.yml"), "a", exact)
+
+	err := verifyDeployTarget(src, dst, []string{"a.yml"}, exact)
+	assert.NoError(t, err, "mtime exactly equal to startTime must pass (Before is strict)")
+}
+
+func TestVerifyDeployTarget_ZeroByteSourceFile_Healthy(t *testing.T) {
+	// A 0-byte file in src and dst is legitimate (empty config, empty .gitkeep).
+	// The mtime check should still apply but size should not be a signal.
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+
+	now := time.Now()
+	touchFile(t, filepath.Join(src, "empty.yml"), "", now)
+	touchFile(t, filepath.Join(dst, "empty.yml"), "", now)
+
+	startTime := now.Add(-1 * time.Minute)
+	err := verifyDeployTarget(src, dst, []string{"empty.yml"}, startTime)
+	assert.NoError(t, err)
+}
+
 func TestVerifyDeployTarget_SubSecondMtime_Tolerated(t *testing.T) {
 	// FAT/FUSE filesystems have second-resolution mtime. A write completing
 	// within the same wall-clock second as startTime must not be flagged as
