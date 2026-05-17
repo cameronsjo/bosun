@@ -13,7 +13,7 @@ Both follow the same reconciliation pipeline. The daemon just runs it automatica
 
 ## Reconciliation Pipeline
 
-Every reconciliation follows this 14-stage sequence:
+Every reconciliation follows this 16-stage sequence:
 
 ```text
  1. Acquire lock (prevent concurrent runs)
@@ -26,28 +26,44 @@ Every reconciliation follows this 14-stage sequence:
         |
  5. Render templates (Go text/template + Sprig)
         |
- 6. Extract declared state from rendered compose
+ 6. Extract declared state from rendered compose (FATAL if dir missing;
+    fatal on zero services unless BOSUN_ALLOW_EMPTY_DECLARED_STATE=true)
         |
  7. Create configuration backup
         |
  8. Deploy files (local copy or tar-over-SSH)
         |
- 9. Run docker compose up (per-file isolated, with rollback)
+ 9. Verify deploy-sync invariants — every WrittenFiles entry must exist
+    with fresh mtime; empty WrittenFiles against non-empty source is an
+    error. Skipped if BOSUN_SKIP_DEPLOY_INVARIANT=true.
         |
-10. Clean up staging directory
+10. Run docker compose up (per-file isolated, with rollback)
         |
-11. Critical container health gate (if configured)
+11. Clean up staging directory
         |
-12. Execute post-sync hooks
+12. Critical container health gate (if configured)
         |
-13. Post-deploy health verification (poll containers until healthy or timeout)
+13. Execute post-sync hooks
         |
-14. Post-deploy drift check
+14. Post-deploy health verification (poll containers until healthy or timeout)
         |
-15. Record successful deployment in state file
+15. Post-deploy drift check
         |
-16. Release lock
+16. Record successful deployment in state file
+        |
+17. Release lock
 ```
+
+### Deploy-Sync Invariants (stage 6 + stage 9)
+
+Bosun enforces two invariant gates that turn the GH#214 silent-success failure mode into a loud error:
+
+- **Declared-state invariant (stage 6)** — if `ExtractDeclaredState` returns `ErrComposeDirMissing` the reconcile fails unconditionally (no override). If it returns `ErrNoDeclaredServices` the reconcile fails unless `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true` is set; the override logs at `Warn` level with `override=true`.
+- **Post-deploy invariant (stage 9)** — for every file in `DeployResult.WrittenFiles`, the destination must exist at `mtime >= reconcileStartTime`. If a deploy target's source staging dir contains regular files but the target's `WrittenFiles` is empty, that is the GH#214 silent-sync signature and fails the reconcile before `docker compose up` runs.
+
+Operators can bypass the post-deploy invariant for diagnostic deploys via `BOSUN_SKIP_DEPLOY_INVARIANT=true`. The skip is logged at `Warn` level with `override=true` so it shows up in monitoring; the declared-state invariant is not affected by this flag.
+
+Per-file write decisions are observable at `Debug` level: `CopyDirIfChanged` and `CopyFileIfChanged` emit `wrote src=… dst=… bytes=N` on every write and `skipped src=… dst=… reason=hash_match` on every hash-match skip. Use `BOSUN_LOG_LEVEL=debug` to see them.
 
 ### Failure Alerting
 

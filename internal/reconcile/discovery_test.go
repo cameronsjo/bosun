@@ -144,6 +144,41 @@ func TestDiscoverDeployTargets(t *testing.T) {
 	}
 }
 
+// TestDiscoverDeployTargets_TopLevelRepoDirs_DiscoveredCorrectly locks the
+// #214 reproduction shape: when InfraSubDir resolves to the staging root (a
+// misconfiguration), discoverDeployTargets walks every top-level entry —
+// including repo-internal dirs like .beads, .claude, unraid — and returns
+// them all as deploy targets. The field report from GH#214 shows logs like
+// "Syncing .beads/.claude/unraid" for exactly this reason.
+//
+// This test does NOT assert that the behavior is *correct* (Layer 3 will
+// address the misconfiguration root cause). It locks the current discovery
+// contract so that a future refactor of discoverDeployTargets — e.g., adding
+// a filter for hidden dirs, or requiring an explicit allowlist — cannot
+// silently change the set of returned targets without updating this test.
+func TestDiscoverDeployTargets_TopLevelRepoDirs_DiscoveredCorrectly(t *testing.T) {
+	base := evalSymlinks(t, t.TempDir())
+
+	// Mimic the field-report shape: staging IS the repo root, with hidden
+	// project dirs alongside the legitimate infra dir.
+	mkdirs(t, base, ".beads", ".claude", ".github", "unraid", "compose", "openspec", "internal")
+
+	got, err := discoverDeployTargets(base, nil, nil)
+	require.NoError(t, err)
+
+	want := []DeployTarget{
+		{RelPath: ".beads", TargetPath: ".beads", IsDir: true},
+		{RelPath: ".claude", TargetPath: ".claude", IsDir: true},
+		{RelPath: ".github", TargetPath: ".github", IsDir: true},
+		{RelPath: "compose", TargetPath: "compose", IsDir: true},
+		{RelPath: "internal", TargetPath: "internal", IsDir: true},
+		{RelPath: "openspec", TargetPath: "openspec", IsDir: true},
+		{RelPath: "unraid", TargetPath: "unraid", IsDir: true},
+	}
+	assert.Equal(t, want, got,
+		"discoverDeployTargets must return all top-level entries — locking the GH#214 'Syncing .beads/.claude/unraid' shape so refactors can't silently change discovery scope")
+}
+
 func TestHasTarget(t *testing.T) {
 	targets := []DeployTarget{
 		{RelPath: "appdata/traefik", TargetPath: "traefik", IsDir: true},

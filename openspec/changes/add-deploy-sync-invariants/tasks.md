@@ -26,25 +26,25 @@ Implementation runs in three layers. Layer 1 ships the invariants and observabil
 
 ### 1.3 Post-deploy mtime invariant
 
-- [ ] `internal/reconcile/deploy.go` — new `verifyDeploy(targets, startTime) error` helper
-- [ ] `internal/reconcile/deploy.go` — invariant: each `WrittenFiles` entry must exist at destination with `mtime >= startTime`
-- [ ] `internal/reconcile/deploy.go` — invariant: empty `WrittenFiles` against non-empty source is an error
-- [ ] `internal/reconcile/reconcile.go` — call `verifyDeploy` between deploy sync and compose-up
-- [ ] `internal/daemon/daemon.go` — parse `BOSUN_SKIP_DEPLOY_INVARIANT` in `ConfigFromEnv()`
-- [ ] `internal/reconcile/deploy_test.go` — `TestVerifyDeploy_StaleDestination_Errors`
-- [ ] `internal/reconcile/deploy_test.go` — `TestVerifyDeploy_EmptyWrittenFiles_Against_NonEmptySource_Errors`
-- [ ] `internal/reconcile/deploy_test.go` — `TestVerifyDeploy_SkippedViaEnv_NoError`
-- [ ] `internal/reconcile/deploy_test.go` — `TestVerifyDeploy_HealthyDeploy_Passes`
+- [x] `internal/reconcile/verify.go` (new file) — `verifyDeployTarget(src, dst, writtenRel, startTime) error` helper
+- [x] `internal/reconcile/verify.go` — invariant: each `WrittenFiles` entry must exist at destination with `mtime >= startTime`
+- [x] `internal/reconcile/verify.go` — invariant: empty `WrittenFiles` against non-empty source is an error
+- [x] `internal/reconcile/reconcile.go` — call `verifyDeployTarget` per-target inside `deployLocal` before `PrefixLatest`
+- [x] `internal/daemon/daemon.go` — parse `BOSUN_SKIP_DEPLOY_INVARIANT` in `ConfigFromEnv()` (landed in Layer 1.2 commit alongside `BOSUN_ALLOW_EMPTY_DECLARED_STATE`)
+- [x] `internal/reconcile/verify_test.go` — `TestVerifyDeployTarget_StaleDestination_Errors`
+- [x] `internal/reconcile/verify_test.go` — `TestVerifyDeployTarget_EmptyWrittenFiles_Against_NonEmptySource_Errors`
+- [x] `internal/reconcile/verify_test.go` — `TestDeployLocal_SkipDeployInvariant_BypassesCheck` (env wiring through `deployLocal`)
+- [x] `internal/reconcile/verify_test.go` — `TestVerifyDeployTarget_HealthyDeploy_Passes` + `TestDeployLocal_HealthyDeploy_PassesInvariant`
 
 ### 1.4 Regression guard
 
-- [ ] `internal/reconcile/deploy_test.go` — `TestDiscoverDeployTargets_TopLevelRepoDirs_DiscoveredCorrectly` (locks the `Syncing .beads/.claude/unraid` shape so refactors can't silently regress)
+- [x] `internal/reconcile/discovery_test.go` — `TestDiscoverDeployTargets_TopLevelRepoDirs_DiscoveredCorrectly` (locks the `Syncing .beads/.claude/unraid` shape so refactors can't silently regress)
 
 ### 1.5 Documentation
 
-- [ ] `AGENTS.md` — append `BOSUN_ALLOW_EMPTY_DECLARED_STATE` and `BOSUN_SKIP_DEPLOY_INVARIANT` to the env var table
-- [ ] `docs/troubleshooting.md` — add "Deploy reports success but files unchanged" section pointing operators at the new errors
-- [ ] `skills/onboard/resources/gitops.md` — document the invariant and the env-var escape hatches
+- [x] `AGENTS.md` — append `BOSUN_ALLOW_EMPTY_DECLARED_STATE` and `BOSUN_SKIP_DEPLOY_INVARIANT` to the env var table
+- [x] `docs/troubleshooting.md` — add "Deploy reports success but files unchanged" section pointing operators at the new errors
+- [x] `skills/onboard/resources/gitops.md` — document the invariant and the env-var escape hatches
 - [ ] `CHANGELOG.md` — release-please generates; verify the conventional commit message will produce the right entry
 
 ## Layer 2 — Diagnostic Run (post-merge)

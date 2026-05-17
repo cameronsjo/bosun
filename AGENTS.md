@@ -356,6 +356,8 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 | `BOSUN_CRITICAL_CONTAINERS` | daemon, reconcile | JSON array of container names that must be healthy after deploy (overrides config file) |
 | `BOSUN_DRIFT_IGNORE` | daemon, reconcile | JSON array of `{service, type}` rules to suppress known drift noise (overrides config file) |
 | `BOSUN_HEALTH_GATE_TIMEOUT` | daemon, reconcile | Health gate polling timeout (default: `60s`) |
+| `BOSUN_ALLOW_EMPTY_DECLARED_STATE` | daemon, reconcile | Allow reconcile to continue when the staging compose dir contains no declared services (default: `false` — strict). Set to `true` for genuinely empty repos. The dir-missing case is always fatal. |
+| `BOSUN_SKIP_DEPLOY_INVARIANT` | daemon, reconcile | Bypass the post-deploy mtime + WrittenFiles invariant check (default: `false`). Set to `true` for diagnostic deploys where silent-sync failures are acceptable. Logged at `Warn` with `override=true` when enabled. |
 | `BOSUN_DISCORD_WEBHOOK_URL` | config | Discord webhook URL (overrides config file; legacy: `DISCORD_WEBHOOK_URL`) |
 | `BOSUN_SENDGRID_API_KEY` | config | SendGrid API key (overrides config file; legacy: `SENDGRID_API_KEY`) |
 | `BOSUN_SENDGRID_FROM_EMAIL` | config | SendGrid sender email (overrides config file; legacy: `SENDGRID_FROM_EMAIL`) |

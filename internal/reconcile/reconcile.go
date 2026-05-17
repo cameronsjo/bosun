@@ -1220,6 +1220,18 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 		ui.Warning("DRY RUN MODE - no changes will be made")
 	}
 
+	// Capture start time for the post-deploy mtime invariant (Layer 1.3, #214).
+	// Truncated to the second to tolerate FAT/FUSE filesystems whose mtime
+	// resolution is coarser than the Go monotonic clock.
+	deployStart := time.Now()
+	invariantsActive := !r.config.SkipDeployInvariant && !r.config.DryRun
+	if r.config.SkipDeployInvariant && !r.config.DryRun {
+		logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+		logger.Warn().
+			Bool("override", true).
+			Msg("Deploy-sync invariants disabled by BOSUN_SKIP_DEPLOY_INVARIANT — silent-sync failures will not be caught")
+	}
+
 	result := &DeployResult{}
 	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
 	appdata := r.config.LocalAppdataPath
@@ -1227,6 +1239,16 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 	targets, err := discoverDeployTargets(stagingSubDir, r.config.DeploySyncPaths.Value, r.config.DeploySyncExclude.Value)
 	if err != nil {
 		return nil, fmt.Errorf("discover deploy targets: %w", err)
+	}
+
+	// verifyTarget runs the post-sync invariant against per-target writes
+	// BEFORE PrefixLatest renames the paths — at that point, written entries
+	// are still relative to src/dst, which is what verifyDeployTarget expects.
+	verifyTarget := func(src, dst string, writtenRel []string) error {
+		if !invariantsActive {
+			return nil
+		}
+		return verifyDeployTarget(src, dst, writtenRel, deployStart)
 	}
 
 	// Sync discovered targets (excluding compose, which has special handling).
@@ -1245,10 +1267,21 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 			if err := r.deploy.DeployLocal(ctx, src, dst, result); err != nil {
 				return nil, err
 			}
+			if err := verifyTarget(src, dst, append([]string(nil), result.WrittenFiles[snapshot:]...)); err != nil {
+				return nil, err
+			}
 			result.PrefixLatest(snapshot, t.RelPath)
 		} else {
 			_ = os.MkdirAll(filepath.Dir(dst), 0755)
 			if err := r.deploy.DeployLocalFile(ctx, src, dst, result); err != nil {
+				return nil, err
+			}
+			// For file targets, DeployLocalFile records the destination filename
+			// (filepath.Base), so we verify against dst's parent dir. For files,
+			// src is the source file itself — verifyDeployTarget handles that
+			// shape too. We pass filepath.Dir(dst) so writtenRel="<filename>"
+			// resolves to the actual destination file path.
+			if err := verifyTarget(src, filepath.Dir(dst), append([]string(nil), result.WrittenFiles[snapshot:]...)); err != nil {
 				return nil, err
 			}
 			// For file targets, t.RelPath includes the filename (e.g., "appdata/foo.yml").
@@ -1265,6 +1298,9 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 		_ = os.MkdirAll(composeTarget, 0755)
 		snapshot := len(result.WrittenFiles)
 		if err := r.deploy.DeployLocal(ctx, composeStaging, composeTarget, result); err != nil {
+			return nil, err
+		}
+		if err := verifyTarget(composeStaging, composeTarget, append([]string(nil), result.WrittenFiles[snapshot:]...)); err != nil {
 			return nil, err
 		}
 		result.PrefixLatest(snapshot, "compose")
