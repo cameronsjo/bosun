@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -74,10 +75,37 @@ func (r *DriftReport) HasCriticalDrift() bool {
 	return false
 }
 
+// ErrComposeDirMissing is returned by ExtractDeclaredState when the staging
+// compose directory does not exist on disk. This indicates a misconfigured
+// staging path and is always treated as a fatal reconcile error — operators
+// cannot opt out, because there is no way to distinguish "intentionally empty
+// repo" from "wrong path."
+var ErrComposeDirMissing = errors.New("staging compose directory does not exist")
+
+// ErrNoDeclaredServices is returned by ExtractDeclaredState when the staging
+// compose directory exists but contains no parseable services. This is
+// overridable via BOSUN_ALLOW_EMPTY_DECLARED_STATE=true for genuinely empty
+// repos (early scaffolding, archive branches).
+var ErrNoDeclaredServices = errors.New("no declared services in staging compose directory")
+
 // ExtractDeclaredState parses rendered compose files from a staging directory
 // and returns the list of declared services with their images.
+//
+// Returns ErrComposeDirMissing if the compose directory does not exist (always
+// fatal). Returns ErrNoDeclaredServices if the directory exists but no services
+// are declared (overridable). Other errors indicate I/O failures.
 func ExtractDeclaredState(stagingDir string) ([]DeclaredService, error) {
 	composeDir := filepath.Join(stagingDir, "compose")
+
+	// Distinguish "compose dir missing" (misconfigured) from "compose dir
+	// exists but empty" (genuinely empty, possibly intentional). The two
+	// failure modes have different remediation paths.
+	if _, statErr := os.Stat(composeDir); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return nil, fmt.Errorf("%w: %s", ErrComposeDirMissing, composeDir)
+		}
+		return nil, fmt.Errorf("stat compose dir: %w", statErr)
+	}
 
 	files, err := filepath.Glob(filepath.Join(composeDir, "*.yml"))
 	if err != nil {
@@ -85,7 +113,7 @@ func ExtractDeclaredState(stagingDir string) ([]DeclaredService, error) {
 	}
 
 	if len(files) == 0 {
-		return nil, nil
+		return nil, fmt.Errorf("%w: %s", ErrNoDeclaredServices, composeDir)
 	}
 
 	var declared []DeclaredService
@@ -108,6 +136,10 @@ func ExtractDeclaredState(stagingDir string) ([]DeclaredService, error) {
 				seen[svc.Name] = true
 			}
 		}
+	}
+
+	if len(declared) == 0 {
+		return nil, fmt.Errorf("%w: %s", ErrNoDeclaredServices, composeDir)
 	}
 
 	// Sort for deterministic output.

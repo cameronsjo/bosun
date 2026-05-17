@@ -176,6 +176,21 @@ type Config struct {
 	// Set by daemon/CLI to break the config→reconcile import cycle.
 	// When nil, config reload is skipped.
 	ConfigReloader ConfigReloaderFunc
+
+	// AllowEmptyDeclaredState relaxes the ErrNoDeclaredServices invariant when
+	// the staging compose directory exists but contains no parseable services.
+	// Use only for genuinely empty repos (early scaffolding, archive branches).
+	// Set via BOSUN_ALLOW_EMPTY_DECLARED_STATE=true. Default false.
+	// Note: ErrComposeDirMissing (compose dir does not exist at all) is always
+	// fatal regardless of this setting.
+	AllowEmptyDeclaredState bool
+
+	// SkipDeployInvariant disables the post-deploy mtime + WrittenFiles
+	// invariant check that runs between deploy sync and compose-up. Use for
+	// diagnostic or development scenarios only — silent-success deploys are
+	// the failure mode this guards against. Set via
+	// BOSUN_SKIP_DEPLOY_INVARIANT=true. Default false.
+	SkipDeployInvariant bool
 }
 
 
@@ -507,11 +522,28 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	otelTemplateSpan.End()
 
 	// Extract declared state from rendered compose files.
+	// ErrComposeDirMissing is always fatal — it indicates a misconfigured
+	// staging path. ErrNoDeclaredServices is fatal unless the operator opts
+	// in via BOSUN_ALLOW_EMPTY_DECLARED_STATE for genuinely empty repos.
+	// Other errors (parse failures, I/O) are non-fatal warnings as before.
 	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
 	declared, err := ExtractDeclaredState(stagingSubDir)
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrComposeDirMissing):
+		r.sendThrottledFailureAlert(ctx, state, "staging compose directory missing")
+		return fmt.Errorf("declared-state invariant: %w", err)
+	case errors.Is(err, ErrNoDeclaredServices):
+		if !r.config.AllowEmptyDeclaredState {
+			r.sendThrottledFailureAlert(ctx, state, "no declared services in staging compose")
+			return fmt.Errorf("declared-state invariant: %w (set BOSUN_ALLOW_EMPTY_DECLARED_STATE=true to override)", err)
+		}
+		logger.Warn().
+			Err(err).
+			Bool("override", true).
+			Msg("Empty declared state allowed by BOSUN_ALLOW_EMPTY_DECLARED_STATE; continuing")
+	case err != nil:
 		logger.Warn().Err(err).Msg("Failed to extract declared state from rendered compose")
-	} else {
+	default:
 		r.declaredServices = declared
 		logger.Info().
 			Int("declared_services", len(declared)).

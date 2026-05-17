@@ -448,6 +448,37 @@ func TestConfigFromEnv(t *testing.T) {
 			t.Errorf("PollInterval = %v, want 1h (default)", cfg.PollInterval)
 		}
 	})
+
+	t.Run("deploy-sync invariants default to strict", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.AllowEmptyDeclaredState {
+			t.Error("AllowEmptyDeclaredState should default to false")
+		}
+		if cfg.ReconcileConfig.SkipDeployInvariant {
+			t.Error("SkipDeployInvariant should default to false")
+		}
+	})
+
+	t.Run("BOSUN_ALLOW_EMPTY_DECLARED_STATE=true opts out of declared-state gate", func(t *testing.T) {
+		t.Setenv("BOSUN_ALLOW_EMPTY_DECLARED_STATE", "true")
+
+		cfg := ConfigFromEnv()
+
+		if !cfg.ReconcileConfig.AllowEmptyDeclaredState {
+			t.Error("AllowEmptyDeclaredState should be true when env var is 'true'")
+		}
+	})
+
+	t.Run("BOSUN_SKIP_DEPLOY_INVARIANT=true disables mtime invariant", func(t *testing.T) {
+		t.Setenv("BOSUN_SKIP_DEPLOY_INVARIANT", "true")
+
+		cfg := ConfigFromEnv()
+
+		if !cfg.ReconcileConfig.SkipDeployInvariant {
+			t.Error("SkipDeployInvariant should be true when env var is 'true'")
+		}
+	})
 }
 
 func TestSplitAndTrim(t *testing.T) {

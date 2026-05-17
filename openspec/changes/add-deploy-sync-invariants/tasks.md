@@ -6,23 +6,23 @@ Implementation runs in three layers. Layer 1 ships the invariants and observabil
 
 ### 1.1 Per-file write observability
 
-- [ ] `internal/fileutil/fileutil.go` — emit `Debug` log on file write in `CopyFileIfChanged` (src, dst, bytes)
-- [ ] `internal/fileutil/fileutil.go` — emit `Debug` log on skip in `CopyFileIfChanged` (reason=hash_match)
-- [ ] `internal/fileutil/fileutil.go` — emit `Debug` log on each call from `CopyDirIfChanged` per-file decision
-- [ ] Reuse `log.Component("fileutil")` — do not create a new component
-- [ ] `internal/fileutil/fileutil_test.go` — `TestCopyDirIfChanged_EmitsPerFileLogs`
-- [ ] `internal/fileutil/fileutil_test.go` — `TestCopyFileIfChanged_EmitsSkipReason`
+- [x] `internal/fileutil/fileutil.go` — emit `Debug` log on file write in `CopyFileIfChanged` (src, dst, bytes)
+- [x] `internal/fileutil/fileutil.go` — emit `Debug` log on skip in `CopyFileIfChanged` (reason=hash_match)
+- [x] `internal/fileutil/fileutil.go` — emit `Debug` log on each call from `CopyDirIfChanged` per-file decision
+- [x] Reuse `log.Component("fileutil")` — do not create a new component
+- [x] `internal/fileutil/fileutil_test.go` — `TestCopyDirIfChanged_EmitsPerFileLogs`
+- [x] `internal/fileutil/fileutil_test.go` — `TestCopyFileIfChanged_EmitsSkipReason`
 
 ### 1.2 Declared-state hard error
 
-- [ ] `internal/reconcile/drift.go` — split `ExtractDeclaredState` to return `ErrComposeDirMissing` vs `ErrNoDeclaredServices` (sentinel errors)
-- [ ] `internal/reconcile/reconcile.go` — fail the pipeline unconditionally when `ExtractDeclaredState` returns `ErrComposeDirMissing` (misconfigured staging path, not overridable)
-- [ ] `internal/reconcile/reconcile.go` — fail on `ErrNoDeclaredServices` unless `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true`; when the override is set, log at `Warn` level (not `Info`) and continue
-- [ ] `internal/daemon/daemon.go` — parse `BOSUN_ALLOW_EMPTY_DECLARED_STATE` in `ConfigFromEnv()`
-- [ ] `internal/reconcile/drift_test.go` — `TestExtractDeclaredState_MissingComposeDir_ReturnsErrComposeDirMissing`
-- [ ] `internal/reconcile/drift_test.go` — `TestExtractDeclaredState_EmptyComposeDir_ReturnsErrNoDeclaredServices`
-- [ ] `internal/reconcile/reconcile_test.go` — `TestReconcile_DeclaredStateZero_Errors_Default`
-- [ ] `internal/reconcile/reconcile_test.go` — `TestReconcile_DeclaredStateZero_AllowedViaEnv`
+- [x] `internal/reconcile/drift.go` — split `ExtractDeclaredState` to return `ErrComposeDirMissing` vs `ErrNoDeclaredServices` (sentinel errors)
+- [x] `internal/reconcile/reconcile.go` — fail the pipeline unconditionally when `ExtractDeclaredState` returns `ErrComposeDirMissing` (misconfigured staging path, not overridable)
+- [x] `internal/reconcile/reconcile.go` — fail on `ErrNoDeclaredServices` unless `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true`; when the override is set, log at `Warn` level (not `Info`) and continue
+- [x] `internal/daemon/daemon.go` — parse `BOSUN_ALLOW_EMPTY_DECLARED_STATE` in `ConfigFromEnv()`
+- [x] `internal/reconcile/drift_test.go` — `TestExtractDeclaredState_MissingComposeDir_ReturnsErrComposeDirMissing`
+- [x] `internal/reconcile/drift_test.go` — `TestExtractDeclaredState_EmptyComposeDir_ReturnsErrNoDeclaredServices`
+- [x] `internal/reconcile/reconcile_test.go` — `TestReconcile_DeclaredStateZero_Errors_Default`
+- [x] `internal/reconcile/reconcile_test.go` — `TestReconcile_DeclaredStateZero_AllowedViaEnv` (implemented as `TestReconcile_DeclaredStateZero_AllowedViaConfig` in `state_integration_test.go`; env-var wiring tested in `internal/daemon/daemon_test.go`)
 
 ### 1.3 Post-deploy mtime invariant
 

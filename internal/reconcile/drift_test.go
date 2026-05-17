@@ -301,10 +301,14 @@ func TestExtractDeclaredState_MultipleFiles(t *testing.T) {
 }
 
 func TestExtractDeclaredState_NoComposeDir(t *testing.T) {
+	// Missing compose dir is now a fatal error (ErrComposeDirMissing) —
+	// it indicates a misconfigured staging path, not an intentionally
+	// empty repo. Operators cannot opt out of this check.
 	dir := t.TempDir()
 
 	declared, err := ExtractDeclaredState(dir)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrComposeDirMissing)
 	assert.Empty(t, declared)
 }
 
@@ -529,8 +533,12 @@ func TestExtractDeclaredState_NonYAMLIgnored(t *testing.T) {
 	// Write a .txt file (should be ignored).
 	require.NoError(t, os.WriteFile(filepath.Join(composeDir, "readme.txt"), []byte("not yaml"), 0644))
 
+	// Compose dir exists but contains no .yml files: ErrNoDeclaredServices.
+	// This is overridable via BOSUN_ALLOW_EMPTY_DECLARED_STATE in the
+	// reconcile pipeline, but the extractor itself always reports it.
 	services, err := ExtractDeclaredState(tmpDir)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNoDeclaredServices)
 	assert.Empty(t, services)
 }
 
@@ -1101,4 +1109,43 @@ func TestEnrichUnhealthyItems(t *testing.T) {
 		assert.NotEmpty(t, report.Items[2].Actual, "db should be enriched")
 		assert.Equal(t, "redis:7", report.Items[3].Declared, "cache should remain unchanged")
 	})
+}
+
+func TestExtractDeclaredState_MissingComposeDir_ReturnsErrComposeDirMissing(t *testing.T) {
+	// staging dir exists but has no compose subdirectory.
+	tmpDir := t.TempDir()
+
+	services, err := ExtractDeclaredState(tmpDir)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrComposeDirMissing)
+	assert.Empty(t, services)
+}
+
+func TestExtractDeclaredState_EmptyComposeDir_ReturnsErrNoDeclaredServices(t *testing.T) {
+	// compose dir exists but is empty (no .yml files at all).
+	tmpDir := t.TempDir()
+	composeDir := filepath.Join(tmpDir, "compose")
+	require.NoError(t, os.MkdirAll(composeDir, 0755))
+
+	services, err := ExtractDeclaredState(tmpDir)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNoDeclaredServices)
+	assert.Empty(t, services)
+}
+
+func TestExtractDeclaredState_OnlyUnparseableYAML_ReturnsErrNoDeclaredServices(t *testing.T) {
+	// compose dir has .yml files but none parse to any service.
+	tmpDir := t.TempDir()
+	composeDir := filepath.Join(tmpDir, "compose")
+	require.NoError(t, os.MkdirAll(composeDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(composeDir, "broken.yml"),
+		[]byte("{not: valid: yaml: at all"), 0644))
+
+	services, err := ExtractDeclaredState(tmpDir)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNoDeclaredServices)
+	assert.Empty(t, services)
 }
