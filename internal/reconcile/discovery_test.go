@@ -145,17 +145,9 @@ func TestDiscoverDeployTargets(t *testing.T) {
 }
 
 // TestDiscoverDeployTargets_TopLevelRepoDirs_DiscoveredCorrectly locks the
-// #214 reproduction shape: when InfraSubDir resolves to the staging root (a
-// misconfiguration), discoverDeployTargets walks every top-level entry —
-// including repo-internal dirs like .beads, .claude, unraid — and returns
-// them all as deploy targets. The field report from GH#214 shows logs like
-// "Syncing .beads/.claude/unraid" for exactly this reason.
-//
-// This test does NOT assert that the behavior is *correct* (Layer 3 will
-// address the misconfiguration root cause). It locks the current discovery
-// contract so that a future refactor of discoverDeployTargets — e.g., adding
-// a filter for hidden dirs, or requiring an explicit allowlist — cannot
-// silently change the set of returned targets without updating this test.
+// current contract: every top-level entry under the staging dir becomes a
+// target, hidden dirs included. Future refactors that filter dirs (e.g.,
+// hidden-dir skip, allowlist-by-default) must update this test deliberately.
 func TestDiscoverDeployTargets_TopLevelRepoDirs_DiscoveredCorrectly(t *testing.T) {
 	base := evalSymlinks(t, t.TempDir())
 

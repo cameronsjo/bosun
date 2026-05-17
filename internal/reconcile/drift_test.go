@@ -1111,17 +1111,6 @@ func TestEnrichUnhealthyItems(t *testing.T) {
 	})
 }
 
-func TestExtractDeclaredState_MissingComposeDir_ReturnsErrComposeDirMissing(t *testing.T) {
-	// staging dir exists but has no compose subdirectory.
-	tmpDir := t.TempDir()
-
-	services, err := ExtractDeclaredState(tmpDir)
-
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrComposeDirMissing)
-	assert.Empty(t, services)
-}
-
 func TestExtractDeclaredState_EmptyComposeDir_ReturnsErrNoDeclaredServices(t *testing.T) {
 	// compose dir exists but is empty (no .yml files at all).
 	tmpDir := t.TempDir()

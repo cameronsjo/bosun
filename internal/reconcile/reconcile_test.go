@@ -37,10 +37,7 @@ func TestNewReconciler(t *testing.T) {
 		RepoBranch: "main",
 		RepoDir:    "/tmp/repo",
 		DryRun:     true,
-		AllowEmptyDeclaredState: true,
 	}
-
-	seedStubComposeService(t, cfg)
 
 	r := NewReconciler(cfg)
 

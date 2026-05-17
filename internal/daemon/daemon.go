@@ -1573,10 +1573,6 @@ func ConfigFromEnv() *Config {
 		rcfg.RemoveOrphans = reconcile.NewConfigField(cfg.RemoveOrphans)
 	}
 
-	// Deploy-sync invariants (#214): strict by default, escape hatches opt out.
-	// AllowEmptyDeclaredState lets ErrNoDeclaredServices continue past the
-	// declared-state gate; SkipDeployInvariant disables the post-deploy mtime
-	// check. Both default false — set to "true" to override.
 	rcfg.AllowEmptyDeclaredState = os.Getenv("BOSUN_ALLOW_EMPTY_DECLARED_STATE") == "true"
 	rcfg.SkipDeployInvariant = os.Getenv("BOSUN_SKIP_DEPLOY_INVARIANT") == "true"
 

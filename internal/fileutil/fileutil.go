@@ -204,6 +204,13 @@ func CopyFileIfChanged(src, dst string) (bool, error) {
 		}
 	}
 
+	// Capture source size once for the "wrote" log; src and dst sizes match
+	// after a successful hash-verified copy, so an extra stat(dst) is wasteful.
+	var srcSize int64 = -1
+	if info, statErr := os.Stat(src); statErr == nil {
+		srcSize = info.Size()
+	}
+
 	if err := CopyFile(src, dst); err != nil {
 		if errors.Is(err, ErrSymlinkSkipped) {
 			return false, nil
@@ -222,14 +229,10 @@ func CopyFileIfChanged(src, dst string) (bool, error) {
 		return false, fmt.Errorf("post-write verification failed: destination hash mismatch after write (possible FUSE cache staleness): %s", dst)
 	}
 
-	dstSize := int64(-1)
-	if info, statErr := os.Stat(dst); statErr == nil {
-		dstSize = info.Size()
-	}
 	verifyLogger.Debug().
 		Str("src", src).
 		Str("dst", dst).
-		Int64("bytes", dstSize).
+		Int64("bytes", srcSize).
 		Msg("wrote")
 
 	return true, nil

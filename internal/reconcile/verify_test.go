@@ -244,126 +244,103 @@ func TestDeployInvariantSentinels_AreDistinct(t *testing.T) {
 
 // --- Integration tests: invariant wiring through deployLocal ---
 
-// noopComposeUp stubs out compose-up so deployLocal tests can run with
-// cfg.DryRun=false (which is required for invariants to be active) without
-// requiring a Docker daemon.
+// noopComposeUp lets deployLocal tests run without a Docker daemon.
 func noopComposeUp(_ context.Context, _ []string) error { return nil }
 
-// TestDeployLocal_SilentEmptyWrite_FailsInvariant reproduces the GH#214
-// signature inside the deployLocal path: staging has content, but
-// content-hash sync finds matching destination content and skips every file,
-// so WrittenFiles is empty. The Layer-1.3 invariant must catch this even
-// though the file copy reports success.
-func TestDeployLocal_SilentEmptyWrite_FailsInvariant(t *testing.T) {
+// deployLocalFixture lays out the staging + appdata tree shared by the
+// deployLocal integration tests. Returns the two root paths so callers can
+// vary the seeded content per test. cfg.DryRun must be false for invariants
+// to run.
+type deployLocalFixture struct {
+	stagingDir, appdataDir string
+	freshrssStaging        string // staging/unraid/appdata/freshrss
+	freshrssAppdata        string // appdata/freshrss
+	composeStaging         string // staging/unraid/compose
+	composeAppdata         string // appdata/compose
+}
+
+func newDeployLocalFixture(t *testing.T) deployLocalFixture {
+	t.Helper()
 	tmpDir := t.TempDir()
 	stagingDir := filepath.Join(tmpDir, "staging")
 	appdataDir := filepath.Join(tmpDir, "appdata")
+	return deployLocalFixture{
+		stagingDir:      stagingDir,
+		appdataDir:      appdataDir,
+		freshrssStaging: filepath.Join(stagingDir, "unraid", "appdata", "freshrss"),
+		freshrssAppdata: filepath.Join(appdataDir, "freshrss"),
+		composeStaging:  filepath.Join(stagingDir, "unraid", "compose"),
+		composeAppdata:  filepath.Join(appdataDir, "compose"),
+	}
+}
 
-	// Seed staging/unraid/appdata/freshrss/config.yml AND a pre-existing
-	// matching appdata/freshrss/config.yml so CopyDirIfChanged hashes the two
-	// and decides "nothing to write" — the exact pattern that caused #214.
-	freshrssStaging := filepath.Join(stagingDir, "unraid", "appdata", "freshrss")
-	freshrssAppdata := filepath.Join(appdataDir, "freshrss")
-	composeStaging := filepath.Join(stagingDir, "unraid", "compose")
-	composeAppdata := filepath.Join(appdataDir, "compose")
-
-	now := time.Now()
-	touchFile(t, filepath.Join(freshrssStaging, "config.yml"), "identical", now)
-	touchFile(t, filepath.Join(freshrssAppdata, "config.yml"), "identical", now)
-	touchFile(t, filepath.Join(composeStaging, "stub.yml"), "services:\n  stub: {}\n", now)
-	touchFile(t, filepath.Join(composeAppdata, "stub.yml"), "services:\n  stub: {}\n", now)
-
-	deploy := &DeployOps{
+func newDeployLocalDeploy() *DeployOps {
+	return &DeployOps{
 		DryRun:          false,
 		ProjectName:     "test",
 		ContentHashSync: true,
 		composeUpFn:     noopComposeUp,
 	}
+}
+
+// silentSyncReproduction is the GH#214 shape: src and dst contain identical
+// bytes, so CopyDirIfChanged hashes the two and records zero writes despite
+// the deploy "succeeding."
+func TestDeployLocal_SilentEmptyWrite_FailsInvariant(t *testing.T) {
+	fx := newDeployLocalFixture(t)
+	now := time.Now()
+	touchFile(t, filepath.Join(fx.freshrssStaging, "config.yml"), "identical", now)
+	touchFile(t, filepath.Join(fx.freshrssAppdata, "config.yml"), "identical", now)
+	touchFile(t, filepath.Join(fx.composeStaging, "stub.yml"), "services:\n  stub: {}\n", now)
+	touchFile(t, filepath.Join(fx.composeAppdata, "stub.yml"), "services:\n  stub: {}\n", now)
+
 	cfg := &Config{
-		DryRun:           false, // invariants only run when not dry-run
-		StagingDir:       stagingDir,
+		StagingDir:       fx.stagingDir,
 		InfraSubDir:      "unraid",
-		LocalAppdataPath: appdataDir,
+		LocalAppdataPath: fx.appdataDir,
 	}
-	r := NewReconciler(cfg, WithDeployOps(deploy))
+	r := NewReconciler(cfg, WithDeployOps(newDeployLocalDeploy()))
 
 	_, err := r.deployLocal(context.Background())
 	require.Error(t, err, "deployLocal should fail when sync writes nothing against a non-empty source")
 	assert.ErrorIs(t, err, ErrDeployInvariantEmptyWrite)
 }
 
-// TestDeployLocal_SkipDeployInvariant_BypassesCheck confirms the env-var
-// escape hatch wiring: with SkipDeployInvariant=true the silent-empty-write
-// scenario above should NOT fail. Operators can use this for diagnostic
-// deploys where they explicitly accept the risk.
 func TestDeployLocal_SkipDeployInvariant_BypassesCheck(t *testing.T) {
-	tmpDir := t.TempDir()
-	stagingDir := filepath.Join(tmpDir, "staging")
-	appdataDir := filepath.Join(tmpDir, "appdata")
-
-	freshrssStaging := filepath.Join(stagingDir, "unraid", "appdata", "freshrss")
-	freshrssAppdata := filepath.Join(appdataDir, "freshrss")
-	composeStaging := filepath.Join(stagingDir, "unraid", "compose")
-	composeAppdata := filepath.Join(appdataDir, "compose")
-
+	fx := newDeployLocalFixture(t)
 	now := time.Now()
-	touchFile(t, filepath.Join(freshrssStaging, "config.yml"), "identical", now)
-	touchFile(t, filepath.Join(freshrssAppdata, "config.yml"), "identical", now)
-	touchFile(t, filepath.Join(composeStaging, "stub.yml"), "services:\n  stub: {}\n", now)
-	touchFile(t, filepath.Join(composeAppdata, "stub.yml"), "services:\n  stub: {}\n", now)
+	touchFile(t, filepath.Join(fx.freshrssStaging, "config.yml"), "identical", now)
+	touchFile(t, filepath.Join(fx.freshrssAppdata, "config.yml"), "identical", now)
+	touchFile(t, filepath.Join(fx.composeStaging, "stub.yml"), "services:\n  stub: {}\n", now)
+	touchFile(t, filepath.Join(fx.composeAppdata, "stub.yml"), "services:\n  stub: {}\n", now)
 
-	deploy := &DeployOps{
-		DryRun:          false,
-		ProjectName:     "test",
-		ContentHashSync: true,
-		composeUpFn:     noopComposeUp,
-	}
 	cfg := &Config{
-		DryRun:              false,
-		SkipDeployInvariant: true, // <-- the escape hatch under test
-		StagingDir:          stagingDir,
+		SkipDeployInvariant: true,
+		StagingDir:          fx.stagingDir,
 		InfraSubDir:         "unraid",
-		LocalAppdataPath:    appdataDir,
+		LocalAppdataPath:    fx.appdataDir,
 	}
-	r := NewReconciler(cfg, WithDeployOps(deploy))
+	r := NewReconciler(cfg, WithDeployOps(newDeployLocalDeploy()))
 
 	result, err := r.deployLocal(context.Background())
 	require.NoError(t, err, "SkipDeployInvariant=true should bypass the silent-write check")
 	assert.NotNil(t, result)
 }
 
-// TestDeployLocal_HealthyDeploy_PassesInvariant confirms the invariant is not
-// hyperactive: a real change (different src vs dst content) lets the sync
-// actually write the file, and the invariant signs off.
 func TestDeployLocal_HealthyDeploy_PassesInvariant(t *testing.T) {
-	tmpDir := t.TempDir()
-	stagingDir := filepath.Join(tmpDir, "staging")
-	appdataDir := filepath.Join(tmpDir, "appdata")
+	fx := newDeployLocalFixture(t)
+	// Different src vs dst forces a real write.
+	touchFile(t, filepath.Join(fx.freshrssStaging, "config.yml"), "new-content", time.Now())
+	touchFile(t, filepath.Join(fx.freshrssAppdata, "config.yml"), "old-content", time.Now().Add(-24*time.Hour))
+	touchFile(t, filepath.Join(fx.composeStaging, "stub.yml"), "services:\n  stub: {}\n", time.Now())
+	require.NoError(t, os.MkdirAll(fx.composeAppdata, 0755))
 
-	freshrssStaging := filepath.Join(stagingDir, "unraid", "appdata", "freshrss")
-	freshrssAppdata := filepath.Join(appdataDir, "freshrss")
-	composeStaging := filepath.Join(stagingDir, "unraid", "compose")
-	composeAppdata := filepath.Join(appdataDir, "compose")
-
-	// Different content forces CopyDirIfChanged to write — invariant should pass.
-	touchFile(t, filepath.Join(freshrssStaging, "config.yml"), "new-content", time.Now())
-	touchFile(t, filepath.Join(freshrssAppdata, "config.yml"), "old-content", time.Now().Add(-24*time.Hour))
-	touchFile(t, filepath.Join(composeStaging, "stub.yml"), "services:\n  stub: {}\n", time.Now())
-	require.NoError(t, os.MkdirAll(composeAppdata, 0755))
-
-	deploy := &DeployOps{
-		DryRun:          false,
-		ProjectName:     "test",
-		ContentHashSync: true,
-		composeUpFn:     noopComposeUp,
-	}
 	cfg := &Config{
-		DryRun:           false,
-		StagingDir:       stagingDir,
+		StagingDir:       fx.stagingDir,
 		InfraSubDir:      "unraid",
-		LocalAppdataPath: appdataDir,
+		LocalAppdataPath: fx.appdataDir,
 	}
-	r := NewReconciler(cfg, WithDeployOps(deploy))
+	r := NewReconciler(cfg, WithDeployOps(newDeployLocalDeploy()))
 
 	result, err := r.deployLocal(context.Background())
 	require.NoError(t, err)
