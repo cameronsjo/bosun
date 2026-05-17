@@ -11,15 +11,15 @@ The reconciler SHALL enforce three invariants between deploy sync (stage 8) and 
 
 `ErrComposeDirMissing` SHALL fail the reconcile run unconditionally; the override does not apply because a missing compose directory indicates a misconfigured staging path, not a genuinely empty repo.
 
-`ErrNoDeclaredServices` SHALL fail the reconcile run unless the operator opts in via `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true`. When the override is set, the reconciler SHALL log a clearly-formatted warning (not `info`) and continue.
+`ErrNoDeclaredServices` SHALL fail the reconcile run unless the operator opts in via `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true`. When the override is set, the reconciler SHALL log at `Warn` level (not `Info`) and continue.
 
 **Invariant 2 — Written files exist with fresh mtime.** After deploy sync completes, for each path in `WrittenFiles` across all targets, the reconciler SHALL stat the destination path and assert `mtime >= reconcileStartTime`. If any destination is missing or stale, the reconciler SHALL fail before compose-up runs.
 
 **Invariant 3 — Non-empty source must produce written files.** For each deploy target whose source staging directory contains at least one regular file, the reconciler SHALL assert that the target's `WrittenFiles` slice is non-empty. An empty `WrittenFiles` against a non-empty source indicates the sync silently no-op'd, and SHALL fail the reconcile run.
 
-The invariant check (invariants 2 and 3) MAY be skipped via `BOSUN_SKIP_DEPLOY_INVARIANT=true` for diagnostic or development scenarios. When skipped, the reconciler SHALL emit a `warn` log noting that invariants are disabled.
+The invariant check (invariants 2 and 3) MAY be skipped via `BOSUN_SKIP_DEPLOY_INVARIANT=true` for diagnostic or development scenarios. When skipped, the reconciler SHALL log at `Warn` level noting that invariants are disabled.
 
-Per-file write decisions SHALL be observable: `CopyDirIfChanged` and `CopyFileIfChanged` SHALL emit a `Debug` log on every file write (with `src`, `dst`, `bytes`) and every skip (with `reason=hash_match`). This gives operators a way to confirm sync behavior from the log stream without inspecting destination mtimes externally.
+Per-file write decisions SHALL be observable: `CopyDirIfChanged` and `CopyFileIfChanged` SHALL emit a `Debug` log on every file write (formatted `wrote src=<src> dst=<dst> bytes=<n>`) and every skip (formatted `skipped src=<src> dst=<dst> reason=hash_match`). This gives operators a way to confirm sync behavior from the log stream without inspecting destination mtimes externally.
 
 #### Scenario: Reconcile fails when declared services is zero
 
@@ -33,7 +33,7 @@ Per-file write decisions SHALL be observable: `CopyDirIfChanged` and `CopyFileIf
 
 - **WHEN** `ExtractDeclaredState` returns `ErrNoDeclaredServices`
 - **AND** `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true`
-- **THEN** the reconciler logs a warning and continues
+- **THEN** the reconciler logs at `Warn` level and continues
 - **AND** post-deploy verification still respects the existing "declared services were extracted" precondition
 
 #### Scenario: Missing compose directory always fails
@@ -70,7 +70,7 @@ Per-file write decisions SHALL be observable: `CopyDirIfChanged` and `CopyFileIf
 
 - **WHEN** `BOSUN_SKIP_DEPLOY_INVARIANT=true`
 - **THEN** invariants 2 and 3 are bypassed
-- **AND** the reconciler emits a `warn` log noting that invariants are disabled
+- **AND** the reconciler logs at `Warn` level noting that invariants are disabled
 - **AND** invariant 1 (declared services) is still enforced
 
 #### Scenario: Per-file write logs emitted on Debug level
@@ -79,7 +79,7 @@ Per-file write decisions SHALL be observable: `CopyDirIfChanged` and `CopyFileIf
 - **AND** the log level is `Debug` or finer
 - **THEN** five log lines are emitted total
 - **AND** each write line includes `src`, `dst`, and `bytes`
-- **AND** each skip line includes `reason=hash_match`
+- **AND** each skip line includes `src`, `dst`, and `reason=hash_match`
 
 ## MODIFIED Requirements
 

@@ -41,7 +41,7 @@ Make the silent failure surfaces loud.
 
 2. **Per-file write log line in `CopyDirIfChanged`.**
    - File: `internal/fileutil/fileutil.go:247-279`
-   - Change: when a file IS written (hash mismatch or new), emit a `Debug` log: `wrote src=<src> dst=<dst> bytes=<n>`. When a file is SKIPPED (hash match), emit a `Debug` log with `reason=hash_match`. Today this code path has zero per-file observability — the only way to know what happened is to compare mtimes externally.
+   - Change: when a file IS written (hash mismatch or new), emit a `Debug` log: `wrote src=<src> dst=<dst> bytes=<n>`. When a file is SKIPPED (hash match), emit a `Debug` log: `skipped src=<src> dst=<dst> reason=hash_match`. Today this code path has zero per-file observability — the only way to know what happened is to compare mtimes externally.
    - Use the existing `log.Component("fileutil")` pattern from `internal/log/`.
 
 3. **Post-deploy mtime invariant.**

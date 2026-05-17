@@ -17,7 +17,7 @@ Implementation runs in three layers. Layer 1 ships the invariants and observabil
 
 - [ ] `internal/reconcile/drift.go` — split `ExtractDeclaredState` to return `ErrComposeDirMissing` vs `ErrNoDeclaredServices` (sentinel errors)
 - [ ] `internal/reconcile/reconcile.go` — fail the pipeline unconditionally when `ExtractDeclaredState` returns `ErrComposeDirMissing` (misconfigured staging path, not overridable)
-- [ ] `internal/reconcile/reconcile.go` — fail on `ErrNoDeclaredServices` unless `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true`; when the override is set, log a clearly-formatted warning (not `info`) and continue
+- [ ] `internal/reconcile/reconcile.go` — fail on `ErrNoDeclaredServices` unless `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true`; when the override is set, log at `Warn` level (not `Info`) and continue
 - [ ] `internal/daemon/daemon.go` — parse `BOSUN_ALLOW_EMPTY_DECLARED_STATE` in `ConfigFromEnv()`
 - [ ] `internal/reconcile/drift_test.go` — `TestExtractDeclaredState_MissingComposeDir_ReturnsErrComposeDirMissing`
 - [ ] `internal/reconcile/drift_test.go` — `TestExtractDeclaredState_EmptyComposeDir_ReturnsErrNoDeclaredServices`
