@@ -72,6 +72,26 @@ var ErrNotSOPSFile = errors.New("file is not SOPS-encrypted")
 file is not SOPS-encrypted: secrets.yml does not contain 'sops' metadata key. Encrypt it with: sops --encrypt --in-place secrets.yml
 ```
 
+### Deploy-Sync Invariant Sentinels
+
+**Location**: `internal/reconcile/drift.go`, `internal/reconcile/verify.go`
+
+```go
+var ErrComposeDirMissing            = errors.New("staging compose directory does not exist")
+var ErrNoDeclaredServices           = errors.New("no declared services in staging compose directory")
+var ErrDeployInvariantEmptyWrite    = errors.New("deploy invariant: source has files but no writes recorded")
+var ErrDeployInvariantStaleMtime    = errors.New("deploy invariant: destination file has stale mtime")
+var ErrDeployInvariantMissingFile   = errors.New("deploy invariant: destination file missing")
+```
+
+**Purpose**: Surface the silent-success failure mode where reconcile reports success but no files actually land on disk. `ErrComposeDirMissing` is always fatal (misconfigured staging path); `ErrNoDeclaredServices` is overridable via `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true` for genuinely empty repos. The `ErrDeployInvariant*` set is overridable via `BOSUN_SKIP_DEPLOY_INVARIANT=true` for diagnostic deploys (logged at `Warn` with `override=true`).
+
+**When Returned**:
+- `ErrComposeDirMissing` / `ErrNoDeclaredServices` — from `ExtractDeclaredState` between stages 5 and 7 of the pipeline.
+- `ErrDeployInvariant*` — from the post-deploy invariant gate at stage 9, before `docker compose up` runs.
+
+See `docs/troubleshooting.md` for operator-facing remediation steps and `docs/gitops.md` for the full pipeline diagram showing where these gates fire.
+
 ## Error Categories
 
 ### Configuration Errors
