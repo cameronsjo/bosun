@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // Sentinel errors returned by verifyDeployTarget. Callers branch via errors.Is.
@@ -21,6 +23,12 @@ var (
 // an error. writtenRel paths are joined under dst — for directory targets dst
 // is the destination directory; for file targets dst is its parent dir.
 func verifyDeployTarget(src, dst string, writtenRel []string, startTime time.Time) error {
+	logger := log.Component(log.ComponentReconcile)
+	logger.Debug().
+		Str(log.FieldPath, src).
+		Str("destination", dst).
+		Int("written_count", len(writtenRel)).
+		Msg("Verifying deploy target invariant")
 	if len(writtenRel) == 0 {
 		hasFiles, err := dirHasRegularFiles(src)
 		if err != nil {

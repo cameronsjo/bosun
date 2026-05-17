@@ -95,6 +95,7 @@ var ErrNoDeclaredServices = errors.New("no declared services in staging compose 
 // fatal). Returns ErrNoDeclaredServices if the directory exists but no services
 // are declared (overridable). Other errors indicate I/O failures.
 func ExtractDeclaredState(stagingDir string) ([]DeclaredService, error) {
+	logger := log.Component(log.ComponentReconcile)
 	composeDir := filepath.Join(stagingDir, "compose")
 
 	// Distinguish "compose dir missing" (misconfigured) from "compose dir
@@ -102,6 +103,9 @@ func ExtractDeclaredState(stagingDir string) ([]DeclaredService, error) {
 	// failure modes have different remediation paths.
 	if _, statErr := os.Stat(composeDir); statErr != nil {
 		if os.IsNotExist(statErr) {
+			logger.Debug().
+				Str(log.FieldPath, composeDir).
+				Msg("Compose directory does not exist")
 			return nil, fmt.Errorf("%w: %s", ErrComposeDirMissing, composeDir)
 		}
 		return nil, fmt.Errorf("stat compose dir: %w", statErr)
@@ -113,6 +117,9 @@ func ExtractDeclaredState(stagingDir string) ([]DeclaredService, error) {
 	}
 
 	if len(files) == 0 {
+		logger.Debug().
+			Str(log.FieldPath, composeDir).
+			Msg("Compose directory exists but contains no .yml files")
 		return nil, fmt.Errorf("%w: %s", ErrNoDeclaredServices, composeDir)
 	}
 
