@@ -197,7 +197,8 @@ func CopyFileIfChanged(src, dst string) (bool, error) {
 				logger.Debug().
 					Str("src", src).
 					Str("dst", dst).
-					Msg("Content verified, skip confirmed")
+					Str("reason", "hash_match").
+					Msg("skipped")
 				return false, nil
 			}
 		}
@@ -219,9 +220,17 @@ func CopyFileIfChanged(src, dst string) (bool, error) {
 		return false, fmt.Errorf("post-write verification failed: cannot re-read destination %s: %w", dst, verifyErr)
 	} else if dstHash != srcHash {
 		return false, fmt.Errorf("post-write verification failed: destination hash mismatch after write (possible FUSE cache staleness): %s", dst)
-	} else {
-		verifyLogger.Debug().Str(log.FieldPath, dst).Msg("Post-write verification: destination hash confirmed")
 	}
+
+	dstSize := int64(-1)
+	if info, statErr := os.Stat(dst); statErr == nil {
+		dstSize = info.Size()
+	}
+	verifyLogger.Debug().
+		Str("src", src).
+		Str("dst", dst).
+		Int64("bytes", dstSize).
+		Msg("wrote")
 
 	return true, nil
 }
