@@ -45,7 +45,7 @@ Implementation runs in three layers. Layer 1 ships the invariants and observabil
 - [x] `AGENTS.md` — append `BOSUN_ALLOW_EMPTY_DECLARED_STATE` and `BOSUN_SKIP_DEPLOY_INVARIANT` to the env var table
 - [x] `docs/troubleshooting.md` — add "Deploy reports success but files unchanged" section pointing operators at the new errors
 - [x] `skills/onboard/resources/gitops.md` — document the invariant and the env-var escape hatches
-- [ ] `CHANGELOG.md` — release-please generates; verify the conventional commit message will produce the right entry
+- [x] `CHANGELOG.md` — release-please generates; verified all three commits use `feat(...)` conventional prefixes so the next release will list them as features under #214
 
 ## Layer 2 — Diagnostic Run (post-merge)
 
@@ -60,9 +60,9 @@ Implementation runs in three layers. Layer 1 ships the invariants and observabil
 
 ## Verification
 
-- [ ] `make test` passes
-- [ ] `openspec validate add-deploy-sync-invariants --strict` passes
-- [ ] Manual smoke: `BOSUN_LOG_LEVEL=debug bosun reconcile` against a known-good change shows per-file `wrote` lines
-- [ ] Manual smoke: `BOSUN_LOG_LEVEL=debug bosun reconcile` against a no-op change shows per-file skip lines with `reason=hash_match`
-- [ ] Manual smoke: `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true bosun reconcile` on an empty-template repo shows warning, not error
-- [ ] CodeRabbit converges on the spec PR; `ready-to-build` label applied before any implementation begins
+- [x] `go test ./internal/reconcile/ ./internal/daemon/ ./internal/fileutil/` passes (full suite — 22.6s reconcile, 3.2s daemon, 0.3s fileutil)
+- [x] `openspec validate add-deploy-sync-invariants --strict` passes
+- [ ] Manual smoke: `BOSUN_LOG_LEVEL=debug bosun reconcile` against a known-good change shows per-file `wrote` lines (Layer 2, post-merge)
+- [ ] Manual smoke: `BOSUN_LOG_LEVEL=debug bosun reconcile` against a no-op change shows per-file skip lines with `reason=hash_match` (Layer 2, post-merge)
+- [ ] Manual smoke: `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true bosun reconcile` on an empty-template repo shows warning, not error (Layer 2, post-merge)
+- [x] CodeRabbit converged on the spec PR (4 rounds); `ready-to-build` label applied before implementation
