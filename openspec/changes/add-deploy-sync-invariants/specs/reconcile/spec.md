@@ -9,7 +9,9 @@ The reconciler SHALL enforce three invariants between deploy sync (stage 8) and 
 - `ErrComposeDirMissing` — the configured staging compose directory does not exist on disk
 - `ErrNoDeclaredServices` — the compose directory exists but contains no parseable services
 
-Either error SHALL fail the reconcile run, unless the operator opts in via `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true`. When the override is set, the reconciler SHALL log a clearly-formatted warning (not `info`) and continue.
+`ErrComposeDirMissing` SHALL fail the reconcile run unconditionally; the override does not apply because a missing compose directory indicates a misconfigured staging path, not a genuinely empty repo.
+
+`ErrNoDeclaredServices` SHALL fail the reconcile run unless the operator opts in via `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true`. When the override is set, the reconciler SHALL log a clearly-formatted warning (not `info`) and continue.
 
 **Invariant 2 — Written files exist with fresh mtime.** After deploy sync completes, for each path in `WrittenFiles` across all targets, the reconciler SHALL stat the destination path and assert `mtime >= reconcileStartTime`. If any destination is missing or stale, the reconciler SHALL fail before compose-up runs.
 

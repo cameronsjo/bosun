@@ -63,6 +63,6 @@ Implementation runs in three layers. Layer 1 ships the invariants and observabil
 - [ ] `make test` passes
 - [ ] `openspec validate add-deploy-sync-invariants --strict` passes
 - [ ] Manual smoke: `BOSUN_LOG_LEVEL=debug bosun reconcile` against a known-good change shows per-file `wrote` lines
-- [ ] Manual smoke: `BOSUN_LOG_LEVEL=debug bosun reconcile` against a no-op change shows per-file `skipped (unchanged)` lines
+- [ ] Manual smoke: `BOSUN_LOG_LEVEL=debug bosun reconcile` against a no-op change shows per-file skip lines with `reason=hash_match`
 - [ ] Manual smoke: `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true bosun reconcile` on an empty-template repo shows warning, not error
 - [ ] CodeRabbit converges on the spec PR; `ready-to-build` label applied before any implementation begins
