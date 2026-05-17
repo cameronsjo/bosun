@@ -1573,6 +1573,9 @@ func ConfigFromEnv() *Config {
 		rcfg.RemoveOrphans = reconcile.NewConfigField(cfg.RemoveOrphans)
 	}
 
+	rcfg.AllowEmptyDeclaredState = os.Getenv("BOSUN_ALLOW_EMPTY_DECLARED_STATE") == "true"
+	rcfg.SkipDeployInvariant = os.Getenv("BOSUN_SKIP_DEPLOY_INVARIANT") == "true"
+
 	// Post-sync hooks, settle delay, deploy paths, alert flags, drift debounce, remove_orphans, and targets: load from project config, env var overrides.
 	if projectCfg, err := config.Load(); err == nil {
 		rcfg.PostSyncHooks.SetFromFile(projectCfg.PostSyncHooks())

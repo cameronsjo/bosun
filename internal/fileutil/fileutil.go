@@ -197,10 +197,18 @@ func CopyFileIfChanged(src, dst string) (bool, error) {
 				logger.Debug().
 					Str("src", src).
 					Str("dst", dst).
-					Msg("Content verified, skip confirmed")
+					Str("reason", "hash_match").
+					Msg("skipped")
 				return false, nil
 			}
 		}
+	}
+
+	// Capture source size once for the "wrote" log; src and dst sizes match
+	// after a successful hash-verified copy, so an extra stat(dst) is wasteful.
+	var srcSize int64 = -1
+	if info, statErr := os.Stat(src); statErr == nil {
+		srcSize = info.Size()
 	}
 
 	if err := CopyFile(src, dst); err != nil {
@@ -219,9 +227,13 @@ func CopyFileIfChanged(src, dst string) (bool, error) {
 		return false, fmt.Errorf("post-write verification failed: cannot re-read destination %s: %w", dst, verifyErr)
 	} else if dstHash != srcHash {
 		return false, fmt.Errorf("post-write verification failed: destination hash mismatch after write (possible FUSE cache staleness): %s", dst)
-	} else {
-		verifyLogger.Debug().Str(log.FieldPath, dst).Msg("Post-write verification: destination hash confirmed")
 	}
+
+	verifyLogger.Debug().
+		Str("src", src).
+		Str("dst", dst).
+		Int64("bytes", srcSize).
+		Msg("wrote")
 
 	return true, nil
 }

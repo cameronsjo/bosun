@@ -144,6 +144,33 @@ func TestDiscoverDeployTargets(t *testing.T) {
 	}
 }
 
+// TestDiscoverDeployTargets_TopLevelRepoDirs_DiscoveredCorrectly locks the
+// current contract: every top-level entry under the staging dir becomes a
+// target, hidden dirs included. Future refactors that filter dirs (e.g.,
+// hidden-dir skip, allowlist-by-default) must update this test deliberately.
+func TestDiscoverDeployTargets_TopLevelRepoDirs_DiscoveredCorrectly(t *testing.T) {
+	base := evalSymlinks(t, t.TempDir())
+
+	// Mimic the field-report shape: staging IS the repo root, with hidden
+	// project dirs alongside the legitimate infra dir.
+	mkdirs(t, base, ".beads", ".claude", ".github", "unraid", "compose", "openspec", "internal")
+
+	got, err := discoverDeployTargets(base, nil, nil)
+	require.NoError(t, err)
+
+	want := []DeployTarget{
+		{RelPath: ".beads", TargetPath: ".beads", IsDir: true},
+		{RelPath: ".claude", TargetPath: ".claude", IsDir: true},
+		{RelPath: ".github", TargetPath: ".github", IsDir: true},
+		{RelPath: "compose", TargetPath: "compose", IsDir: true},
+		{RelPath: "internal", TargetPath: "internal", IsDir: true},
+		{RelPath: "openspec", TargetPath: "openspec", IsDir: true},
+		{RelPath: "unraid", TargetPath: "unraid", IsDir: true},
+	}
+	assert.Equal(t, want, got,
+		"discoverDeployTargets must return all top-level entries — locking the GH#214 'Syncing .beads/.claude/unraid' shape so refactors can't silently change discovery scope")
+}
+
 func TestHasTarget(t *testing.T) {
 	targets := []DeployTarget{
 		{RelPath: "appdata/traefik", TargetPath: "traefik", IsDir: true},

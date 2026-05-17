@@ -39,7 +39,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install OpenSpec
-        run: npm install -g openspec-cli
+        run: npm install -g @fission-ai/openspec
 
       - name: Extract change ID from branch
         id: change-id

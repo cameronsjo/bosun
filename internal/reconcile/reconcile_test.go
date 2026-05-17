@@ -560,6 +560,7 @@ func TestRun_DeployPathsMatch(t *testing.T) {
 		StagingDir:  filepath.Join(tmpDir, "staging"),
 		DeployPaths: NewConfigField([]string{"unraid/**"}),
 		DryRun:      true,
+		AllowEmptyDeclaredState: true,
 	}
 
 	mockGit := &mockGitWithDiff{
@@ -569,6 +570,7 @@ func TestRun_DeployPathsMatch(t *testing.T) {
 		diffFiles:   []string{"unraid/compose/core.yml", "docs/README.md"},
 	}
 
+	seedStubComposeService(t, cfg)
 	r := NewReconciler(cfg,
 		WithGitOperations(mockGit),
 		WithSecretsDecryptor(&mockSOPS{}),
@@ -605,6 +607,7 @@ func TestRun_DeployPathsDiffFails(t *testing.T) {
 		StagingDir:  filepath.Join(tmpDir, "staging"),
 		DeployPaths: NewConfigField([]string{"unraid/**"}),
 		DryRun:      true,
+		AllowEmptyDeclaredState: true,
 	}
 
 	mockGit := &mockGitWithDiff{
@@ -614,6 +617,7 @@ func TestRun_DeployPathsDiffFails(t *testing.T) {
 		diffErr:     fmt.Errorf("object not found"),
 	}
 
+	seedStubComposeService(t, cfg)
 	r := NewReconciler(cfg,
 		WithGitOperations(mockGit),
 		WithSecretsDecryptor(&mockSOPS{}),
@@ -639,6 +643,7 @@ func TestRun_DeployPathsForceOverride(t *testing.T) {
 		DeployPaths: NewConfigField([]string{"unraid/**"}),
 		Force:       true,
 		DryRun:      true,
+		AllowEmptyDeclaredState: true,
 	}
 
 	mockGit := &mockGitWithDiff{
@@ -648,6 +653,7 @@ func TestRun_DeployPathsForceOverride(t *testing.T) {
 		diffFiles:   []string{"docs/README.md"}, // Non-matching files
 	}
 
+	seedStubComposeService(t, cfg)
 	r := NewReconciler(cfg,
 		WithGitOperations(mockGit),
 		WithSecretsDecryptor(&mockSOPS{}),
@@ -674,6 +680,7 @@ func TestRun_DeployPathsFirstDeploySkipsPathCheck(t *testing.T) {
 		StagingDir:  filepath.Join(tmpDir, "staging"),
 		DeployPaths: NewConfigField([]string{"unraid/**"}),
 		DryRun:      true,
+		AllowEmptyDeclaredState: true,
 	}
 
 	mockGit := &mockGitWithDiff{
@@ -684,6 +691,7 @@ func TestRun_DeployPathsFirstDeploySkipsPathCheck(t *testing.T) {
 		diffFiles: []string{"docs/README.md"},
 	}
 
+	seedStubComposeService(t, cfg)
 	r := NewReconciler(cfg,
 		WithGitOperations(mockGit),
 		WithSecretsDecryptor(&mockSOPS{}),
@@ -757,6 +765,7 @@ func TestConfig_Validation(t *testing.T) {
 			LocalAppdataPath:  "/local/appdata",
 			RemoteAppdataPath: "/remote/appdata",
 			DryRun:            true,
+			AllowEmptyDeclaredState: true,
 			Force:             true,
 			SecretsFiles:      []string{"secrets1.yaml", "secrets2.yaml"},
 			InfraSubDir:       "infra",
@@ -1947,10 +1956,12 @@ func TestDoDeploy(t *testing.T) {
 
 		cfg := &Config{
 			DryRun:           true,
+			AllowEmptyDeclaredState: true,
 			StagingDir:       stagingDir,
 			InfraSubDir:      ".",
 			LocalAppdataPath: appdataDir,
 		}
+		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg)
 
 		result, err := r.doDeploy(context.Background(), nil, true)
@@ -2053,6 +2064,7 @@ func TestReconcilerRun(t *testing.T) {
 		cfg := &Config{
 			Force:            true,
 			DryRun:           true, // Dry run to skip actual deployment
+			AllowEmptyDeclaredState: true,
 			LockFile:         lockFile,
 			StateFile:        stateFile,
 			RepoDir:          repoDir,
@@ -2060,6 +2072,7 @@ func TestReconcilerRun(t *testing.T) {
 			LocalAppdataPath: appdataDir,
 			InfraSubDir:      ".",
 		}
+		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg, WithGitOperations(gitOps))
 
 		err := r.Run(context.Background())
@@ -2346,10 +2359,12 @@ func TestDeployLocalFullPath(t *testing.T) {
 
 		cfg := &Config{
 			DryRun:           true, // DryRun on reconciler skips compose up
+			AllowEmptyDeclaredState: true,
 			StagingDir:       stagingDir,
 			InfraSubDir:      "unraid",
 			LocalAppdataPath: appdataDir,
 		}
+		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg, WithDeployOps(deploy))
 
 		result, err := r.deployLocal(context.Background())
@@ -2375,10 +2390,12 @@ func TestDeployLocalFullPath(t *testing.T) {
 		deploy := &DeployOps{ContentHashSync: true}
 		cfg := &Config{
 			DryRun:           true,
+			AllowEmptyDeclaredState: true,
 			StagingDir:       stagingDir,
 			InfraSubDir:      "unraid",
 			LocalAppdataPath: appdataDir,
 		}
+		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg, WithDeployOps(deploy))
 
 		result, err := r.deployLocal(context.Background())
@@ -2798,6 +2815,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 
 		cfg := &Config{
 			DryRun:           true,
+			AllowEmptyDeclaredState: true,
 			LockFile:         lockFile,
 			StateFile:        stateFile,
 			RepoDir:          repoDir,
@@ -2806,6 +2824,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 			InfraSubDir:      ".",
 			SecretsFiles:     []string{},
 		}
+		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg,
 			WithGitOperations(gitOps),
 			WithSecretsDecryptor(mockSops),
@@ -2848,6 +2867,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 
 		cfg := &Config{
 			DryRun:           true,
+			AllowEmptyDeclaredState: true,
 			LockFile:         lockFile,
 			StateFile:        stateFile,
 			RepoDir:          repoDir,
@@ -2856,6 +2876,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 			InfraSubDir:      ".",
 			SecretsFiles:     []string{},
 		}
+		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg, WithGitOperations(gitOps))
 
 		err := r.Run(context.Background())
@@ -3008,6 +3029,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 			InfraSubDir:      ".",
 			SecretsFiles:     []string{},
 		}
+		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg,
 			WithGitOperations(gitOps),
 			WithDeployOps(deploy),
@@ -3101,6 +3123,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 
 		cfg := &Config{
 			DryRun:           true,
+			AllowEmptyDeclaredState: true,
 			LockFile:         lockFile,
 			StateFile:        stateFile,
 			RepoDir:          repoDir,
@@ -3111,6 +3134,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 			OnFailure:        true,
 			OnSuccess:        true,
 		}
+		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg,
 			WithGitOperations(gitOps),
 			WithAlerter(alerter),
@@ -3408,6 +3432,7 @@ func TestRunLockContention(t *testing.T) {
 
 	cfg := &Config{
 		DryRun:     true,
+		AllowEmptyDeclaredState: true,
 		LockFile:   lockFile,
 		StateFile:  stateFile,
 		RepoDir:    repoDir,
@@ -3441,6 +3466,7 @@ func TestDeployLocalSyncErrors(t *testing.T) {
 			InfraSubDir:      "unraid",
 			LocalAppdataPath: appdataDir,
 		}
+		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg, WithDeployOps(deploy))
 
 		_, err := r.deployLocal(context.Background())
@@ -3469,8 +3495,11 @@ func TestDeployLocalSyncErrors(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "appdata", "tailscale-gateway"), 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(repoDir, "appdata", "tailscale-gateway", "serve.json"), []byte("{}"), 0644))
 		require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "compose"), 0755))
-		// This compose file triggers the compose-up path in deployLocal (non-dry-run).
-		require.NoError(t, os.WriteFile(filepath.Join(repoDir, "compose", "docker-compose.yml"), []byte("version: '3'"), 0644))
+		// Compose file with a declared service (passes declared-state invariant)
+		// pointing at a registry that will reliably fail to resolve — exercises
+		// the compose-up error path whether or not a Docker daemon is available.
+		require.NoError(t, os.WriteFile(filepath.Join(repoDir, "compose", "docker-compose.yml"),
+			[]byte("services:\n  stub:\n    image: nonexistent-registry.invalid/never-exists:test\n"), 0644))
 
 		gitOps := &mockGitOps{syncChanged: true, syncBefore: "a", syncAfter: "b"}
 		deploy := &DeployOps{DryRun: false, ProjectName: "test", ContentHashSync: true}
@@ -3534,6 +3563,7 @@ func TestRunSaveStateErrorInAttemptTracking(t *testing.T) {
 
 	cfg := &Config{
 		DryRun:           true,
+		AllowEmptyDeclaredState: true,
 		LockFile:         lockFile,
 		StateFile:        stateFile,
 		RepoDir:          repoDir,
@@ -3542,6 +3572,7 @@ func TestRunSaveStateErrorInAttemptTracking(t *testing.T) {
 		InfraSubDir:      ".",
 		SecretsFiles:     []string{},
 	}
+	seedStubComposeService(t, cfg)
 	r := NewReconciler(cfg, WithGitOperations(gitOps), WithDeployOps(deploy))
 
 	// Run should fail because the pre-deploy NeedsRedeploy marker cannot be persisted.
@@ -3565,8 +3596,10 @@ func TestRunHealthGate_SkipsWhenNoCriticalContainers(t *testing.T) {
 func TestRunHealthGate_SkipsWhenDryRun(t *testing.T) {
 	cfg := &Config{
 		DryRun:             true,
+		AllowEmptyDeclaredState: true,
 		CriticalContainers: NewConfigField([]string{"traefik"}),
 	}
+	seedStubComposeService(t, cfg)
 	r := NewReconciler(cfg)
 	state := &DeployState{}
 

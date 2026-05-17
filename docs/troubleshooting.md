@@ -34,6 +34,37 @@ Bosun requires Docker Compose v2:
 - Check SSH key is loaded: `ssh-add -l`
 - Verify host is reachable: `ping host`
 
+### Deploy reports success but files unchanged
+
+If `bosun reconcile` returns `success: true` and `docker compose up` exits 0, but the destination files at `/mnt/user/appdata/<path>` haven't been updated (compare mtimes, or `grep` for an expected token from the new template), one of two invariant errors will now surface the cause instead of letting the deploy claim success silently. Both were added in response to GH#214.
+
+**Invariant 1 — `declared-state invariant: no declared services in staging compose directory`**
+
+The render step produced no parseable services in `<staging>/compose/`. Either templates failed to write to the expected location, the compose dir is genuinely empty, or all files in it are unparseable YAML.
+
+- For genuinely empty repos: set `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true` to opt out — the reconciler will log at `Warn` level (with `override=true`) and continue.
+- For misconfigured staging paths (compose dir missing entirely): the error is unconditionally fatal — no override applies. Check `BOSUN_INFRA_DIR` and the rendered staging tree.
+
+**Invariant 2 — `deploy invariant: source has files but no writes recorded` / `destination file has stale mtime`**
+
+The deploy sync step claimed success but either wrote nothing against a non-empty source or the destination's mtime is older than the reconcile start. This is the GH#214 silent-success signature — content-hash sync may have matched against stale destination content, or the write path silently failed.
+
+To debug:
+
+```bash
+BOSUN_LOG_LEVEL=debug bosun reconcile
+```
+
+The per-file logs from `internal/fileutil` will show `wrote src=… dst=… bytes=N` for every actual write and `skipped src=… dst=… reason=hash_match` for every skip. Compare against the destination's mtime on disk.
+
+Emergency escape hatch (do NOT leave on):
+
+```bash
+BOSUN_SKIP_DEPLOY_INVARIANT=true bosun reconcile
+```
+
+The reconciler will log a `Warn` with `override=true` so the override is visible in monitoring. File a bug if you needed this — it indicates the invariant is misfiring or the underlying sync bug is reproducing.
+
 ## Debug Mode
 
 Set verbose output:

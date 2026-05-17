@@ -476,6 +476,37 @@ The auth stack — Traefik, Authelia, and Tailscale gateway — forms a dependen
 
 **Planned**: A dedicated health gate that verifies the full auth chain is healthy before declaring a deploy successful. See [bosun-r9n](https://github.com/cameronsjo/bosun/issues?q=bosun-r9n).
 
+## Operator Escape Hatches as Risk Surface
+
+Bosun ships several "escape hatch" environment variables that disable safety checks for legitimate operational scenarios (genuinely empty repos, diagnostic deploys, transient infrastructure conditions). These flags reduce the system's defense-in-depth and SHOULD be treated as a risk surface in their own right.
+
+### Inventory
+
+| Env var | What it disables | Default | Intended use |
+|---------|------------------|---------|--------------|
+| `BOSUN_ALLOW_EMPTY_DECLARED_STATE` | `ErrNoDeclaredServices` gate at pipeline stage 6 (no parseable services in staging compose dir) | `false` (strict) | Genuinely empty repos, scaffolding |
+| `BOSUN_SKIP_DEPLOY_INVARIANT` | Post-deploy mtime + WrittenFiles gate at pipeline stage 9 | `false` (strict) | Diagnostic deploys, repro of intermittent issues |
+| `BOSUN_SSH_INSECURE_HOST_KEY` | SSH host-key verification | `false` (strict) | Initial bootstrap before `known_hosts` is populated |
+
+`ErrComposeDirMissing` (stage 6) has no escape hatch by design — a missing staging compose directory always indicates a misconfigured deploy path, never an intentional state.
+
+### Attack scenarios these hatches enable
+
+- **Tampered-staging persistence**: an attacker who can write to the staging directory but cannot reach the destination filesystem (e.g., compromised renderer, leaked SOPS key without root) cannot persist tampered content past stage 9 by default. If `BOSUN_SKIP_DEPLOY_INVARIANT=true` is set in the daemon environment, the post-deploy gate is disabled and tampered content can land if the attacker also disables content-hash sync. The `override=true` log line is the canary.
+- **Misconfigured-staging masking**: an attacker who can manipulate `BOSUN_INFRA_DIR` (or the rendered staging path) to point at an empty directory would, by default, trip `ErrNoDeclaredServices` and halt the reconcile. With `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true` set, the deploy continues against an empty service set, which can be used to silently take services down by removing them from the apparent declared state.
+- **Bootstrap MITM**: `BOSUN_SSH_INSECURE_HOST_KEY=true` accepts any host key, opening a window for MITM during the bootstrap deploy. If this flag persists past first-deploy, an in-network attacker can substitute the deploy target.
+
+### Operator guidance
+
+1. **Never set escape hatches in the daemon's persistent environment** (systemd unit, Docker `env_file`, etc.). They should be set on the command line for a single one-shot `bosun reconcile` invocation and never persist.
+2. **Alert on `override=true` log lines** — the reconcile pipeline emits a `Warn`-level log with `override=true` every time a strict gate is bypassed. A monitoring rule on this field surfaces accidental persistence within one deploy cycle.
+3. **Treat any deploy with an escape hatch active as suspect for that cycle** — re-run a strict deploy as soon as the underlying condition (empty repo, FUSE issue, missing `known_hosts`) is resolved.
+4. **`bosun doctor` flags persistent escape hatches** — if any of these vars is set in the daemon environment at boot time, it appears in the diagnostic output as a `WARNING` (not `ERROR` — these are legitimate operational tools, just risky if forgotten).
+
+### Why we ship escape hatches anyway
+
+The alternative is forcing operators to patch and rebuild Bosun for every edge case. That moves the risk surface from a one-line env var (visible in monitoring, easy to roll back) to a forked binary (invisible, hard to roll back). Escape hatches make the unsafe path the *visible* path.
+
 ## Best Practices
 
 ### Key Management

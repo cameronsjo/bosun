@@ -176,6 +176,21 @@ type Config struct {
 	// Set by daemon/CLI to break the config→reconcile import cycle.
 	// When nil, config reload is skipped.
 	ConfigReloader ConfigReloaderFunc
+
+	// AllowEmptyDeclaredState relaxes the ErrNoDeclaredServices invariant when
+	// the staging compose directory exists but contains no parseable services.
+	// Use only for genuinely empty repos (early scaffolding, archive branches).
+	// Set via BOSUN_ALLOW_EMPTY_DECLARED_STATE=true. Default false.
+	// Note: ErrComposeDirMissing (compose dir does not exist at all) is always
+	// fatal regardless of this setting.
+	AllowEmptyDeclaredState bool
+
+	// SkipDeployInvariant disables the post-deploy mtime + WrittenFiles
+	// invariant check that runs between deploy sync and compose-up. Use for
+	// diagnostic or development scenarios only — silent-success deploys are
+	// the failure mode this guards against. Set via
+	// BOSUN_SKIP_DEPLOY_INVARIANT=true. Default false.
+	SkipDeployInvariant bool
 }
 
 
@@ -507,11 +522,28 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	otelTemplateSpan.End()
 
 	// Extract declared state from rendered compose files.
+	// ErrComposeDirMissing is always fatal — it indicates a misconfigured
+	// staging path. ErrNoDeclaredServices is fatal unless the operator opts
+	// in via BOSUN_ALLOW_EMPTY_DECLARED_STATE for genuinely empty repos.
+	// Other errors (parse failures, I/O) are non-fatal warnings as before.
 	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
 	declared, err := ExtractDeclaredState(stagingSubDir)
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrComposeDirMissing):
+		r.sendThrottledFailureAlert(ctx, state, "staging compose directory missing")
+		return fmt.Errorf("declared-state invariant: %w", err)
+	case errors.Is(err, ErrNoDeclaredServices):
+		if !r.config.AllowEmptyDeclaredState {
+			r.sendThrottledFailureAlert(ctx, state, "no declared services in staging compose")
+			return fmt.Errorf("declared-state invariant: %w (set BOSUN_ALLOW_EMPTY_DECLARED_STATE=true to override)", err)
+		}
+		logger.Warn().
+			Err(err).
+			Bool("override", true).
+			Msg("Empty declared state allowed by BOSUN_ALLOW_EMPTY_DECLARED_STATE; continuing")
+	case err != nil:
 		logger.Warn().Err(err).Msg("Failed to extract declared state from rendered compose")
-	} else {
+	default:
 		r.declaredServices = declared
 		logger.Info().
 			Int("declared_services", len(declared)).
@@ -1188,6 +1220,15 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 		ui.Warning("DRY RUN MODE - no changes will be made")
 	}
 
+	deployStart := time.Now()
+	invariantsActive := !r.config.SkipDeployInvariant && !r.config.DryRun
+	if !invariantsActive && !r.config.DryRun {
+		logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+		logger.Warn().
+			Bool("override", true).
+			Msg("Deploy-sync invariants disabled by BOSUN_SKIP_DEPLOY_INVARIANT — silent-sync failures will not be caught")
+	}
+
 	result := &DeployResult{}
 	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
 	appdata := r.config.LocalAppdataPath
@@ -1195,6 +1236,14 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 	targets, err := discoverDeployTargets(stagingSubDir, r.config.DeploySyncPaths.Value, r.config.DeploySyncExclude.Value)
 	if err != nil {
 		return nil, fmt.Errorf("discover deploy targets: %w", err)
+	}
+
+	// Invariants run against writtenRel BEFORE PrefixLatest renames the paths.
+	verifyTarget := func(src, dst string, writtenRel []string) error {
+		if !invariantsActive {
+			return nil
+		}
+		return verifyDeployTarget(src, dst, writtenRel, deployStart)
 	}
 
 	// Sync discovered targets (excluding compose, which has special handling).
@@ -1213,14 +1262,20 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 			if err := r.deploy.DeployLocal(ctx, src, dst, result); err != nil {
 				return nil, err
 			}
+			if err := verifyTarget(src, dst, result.WrittenFiles[snapshot:]); err != nil {
+				return nil, err
+			}
 			result.PrefixLatest(snapshot, t.RelPath)
 		} else {
 			_ = os.MkdirAll(filepath.Dir(dst), 0755)
 			if err := r.deploy.DeployLocalFile(ctx, src, dst, result); err != nil {
 				return nil, err
 			}
-			// For file targets, t.RelPath includes the filename (e.g., "appdata/foo.yml").
-			// DeployLocalFile records filepath.Base, so prefix with the directory only.
+			// DeployLocalFile records filepath.Base, so verify against dst's
+			// parent dir and prefix t.RelPath with its dir for hook matching.
+			if err := verifyTarget(src, filepath.Dir(dst), result.WrittenFiles[snapshot:]); err != nil {
+				return nil, err
+			}
 			result.PrefixLatest(snapshot, filepath.Dir(t.RelPath))
 		}
 	}
@@ -1233,6 +1288,9 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 		_ = os.MkdirAll(composeTarget, 0755)
 		snapshot := len(result.WrittenFiles)
 		if err := r.deploy.DeployLocal(ctx, composeStaging, composeTarget, result); err != nil {
+			return nil, err
+		}
+		if err := verifyTarget(composeStaging, composeTarget, result.WrittenFiles[snapshot:]); err != nil {
 			return nil, err
 		}
 		result.PrefixLatest(snapshot, "compose")

@@ -16,6 +16,8 @@ The reconcile workflow is the core GitOps engine for deploying infrastructure co
 - **rsync -> native Go file copy**: Uses tar-over-SSH for remote, native copy for local
 - **chezmoi -> native Go templates**: text/template + Sprig functions, no external process
 
+**Update (2026-05, [GH#214](https://github.com/cameronsjo/bosun/issues/214)):** The reconcile pipeline now ships defensive **invariant gates** that catch a class of "silent-success" failures where every component returned 0 but no work actually landed on disk. See [ADR-0013](adr/0013-deploy-sync-invariant-gates.md) for the pattern and [`docs/error-handling.md`](error-handling.md) for the sentinel reference. The invariants don't address every silent-failure finding below — sections 3.1 (missing template variables) and 5.1 (backup full) describe other silent-failure shapes and are cross-referenced from those entries.
+
 | Severity | Count | Status |
 |----------|-------|--------|
 | CRITICAL | 3 | 2 resolved, 1 remaining |
@@ -138,6 +140,8 @@ if _, err := os.Stat(path); err != nil {
 2. Use template Option("missingkey=error") for strict mode
 3. Consider schema validation for critical configs
 
+**Partial mitigation ([GH#214](https://github.com/cameronsjo/bosun/issues/214) invariant framework):** When a template renders to *empty* output for the staging compose directory, the stage-6 `ErrNoDeclaredServices` gate fires and halts the reconcile by default. This catches the most common consequence of missing variables (a compose file that rendered to whitespace) but not the more subtle case (a compose file with valid YAML but a missing-variable-induced wrong field value). The downstream invariant gate at stage 9 also catches the case where empty rendering means nothing got written to disk against a non-empty source. See [ADR-0013](adr/0013-deploy-sync-invariant-gates.md). Schema validation for rendered content (recommendation #3 above) remains the right long-term fix for the value-correctness case.
+
 ### 3.2 Invalid Template Syntax
 
 **File:** `internal/internal/reconcile/template.go`
@@ -253,6 +257,8 @@ _ = cmd.Run()
 **Impact:** Backup could fail completely (disk full) and deployment continues without backup.
 
 **Recommendation:** Distinguish between "some files missing" (OK) and "tar failed completely" (not OK).
+
+**Note ([GH#214](https://github.com/cameronsjo/bosun/issues/214) invariant framework):** Backup runs at pipeline stage 7, upstream of the post-deploy stage-9 invariant gate, so a silent backup failure is *not* caught by the new framework — the deploy then continues against an unbacked-up filesystem. A new backup-invariant gate matching the [ADR-0013](adr/0013-deploy-sync-invariant-gates.md) pattern (sentinel `ErrBackupInvariantEmptyArchive` or similar, override `BOSUN_SKIP_BACKUP_INVARIANT`) is the natural follow-up for this finding.
 
 ### 5.2 Corrupt Backup Detection
 

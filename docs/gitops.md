@@ -149,7 +149,9 @@ See [docs/architecture/daemon-split.md](architecture/daemon-split.md) for the fu
  5. Template Rendering (Go text/template + Sprig)
         |
         v
- 6. Extract Declared State (parse rendered compose files)
+ 6. Extract Declared State (parse rendered compose files;
+    fatal if compose dir missing; fatal on zero services unless
+    BOSUN_ALLOW_EMPTY_DECLARED_STATE=true)
         |
         v
  7. Backup Creation (tar.gz of current configs)
@@ -158,17 +160,25 @@ See [docs/architecture/daemon-split.md](architecture/daemon-split.md) for the fu
  8. Deployment (native file copy or tar-over-SSH)
         |
         v
- 9. Service Reload (docker compose up, SIGHUP)
+ 9. Deploy-Sync Invariant Check
+    (per-target: WrittenFiles must exist at destination with
+    mtime >= reconcile start; empty WrittenFiles against
+    non-empty source fails; bypass via BOSUN_SKIP_DEPLOY_INVARIANT)
         |
         v
-10. Record Deploy State (commit, declared services, timestamp)
+10. Service Reload (docker compose up, SIGHUP)
         |
         v
-11. Post-Deploy Verification (drift check against Docker)
+11. Record Deploy State (commit, declared services, timestamp)
         |
         v
-12. Cleanup & Lock Release
+12. Post-Deploy Verification (drift check against Docker)
+        |
+        v
+13. Cleanup & Lock Release
 ```
+
+> **Invariant gates at stages 6 and 9** prevent the silent-success failure mode where a deploy reports success but no files actually landed on disk. See [Deploy-Sync Invariants in the skill resource](../skills/onboard/resources/gitops.md) and the [troubleshooting guide](troubleshooting.md) for operator-facing detail on `BOSUN_ALLOW_EMPTY_DECLARED_STATE` and `BOSUN_SKIP_DEPLOY_INVARIANT`.
 
 ## Deploy State Tracking
 

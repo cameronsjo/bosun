@@ -448,6 +448,55 @@ func TestConfigFromEnv(t *testing.T) {
 			t.Errorf("PollInterval = %v, want 1h (default)", cfg.PollInterval)
 		}
 	})
+
+	t.Run("deploy-sync invariants default to strict", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.AllowEmptyDeclaredState {
+			t.Error("AllowEmptyDeclaredState should default to false")
+		}
+		if cfg.ReconcileConfig.SkipDeployInvariant {
+			t.Error("SkipDeployInvariant should default to false")
+		}
+	})
+
+	t.Run("BOSUN_ALLOW_EMPTY_DECLARED_STATE=true opts out of declared-state gate", func(t *testing.T) {
+		t.Setenv("BOSUN_ALLOW_EMPTY_DECLARED_STATE", "true")
+
+		cfg := ConfigFromEnv()
+
+		if !cfg.ReconcileConfig.AllowEmptyDeclaredState {
+			t.Error("AllowEmptyDeclaredState should be true when env var is 'true'")
+		}
+	})
+
+	t.Run("BOSUN_SKIP_DEPLOY_INVARIANT=true disables mtime invariant", func(t *testing.T) {
+		t.Setenv("BOSUN_SKIP_DEPLOY_INVARIANT", "true")
+
+		cfg := ConfigFromEnv()
+
+		if !cfg.ReconcileConfig.SkipDeployInvariant {
+			t.Error("SkipDeployInvariant should be true when env var is 'true'")
+		}
+	})
+
+	t.Run("invariant env vars use strict lowercase 'true' match", func(t *testing.T) {
+		cases := []string{"TRUE", "True", "yes", "1", "on", "enabled"}
+		for _, v := range cases {
+			v := v
+			t.Run(v, func(t *testing.T) {
+				t.Setenv("BOSUN_ALLOW_EMPTY_DECLARED_STATE", v)
+				t.Setenv("BOSUN_SKIP_DEPLOY_INVARIANT", v)
+				cfg := ConfigFromEnv()
+				if cfg.ReconcileConfig.AllowEmptyDeclaredState {
+					t.Errorf("BOSUN_ALLOW_EMPTY_DECLARED_STATE=%q should not enable override (strict %q match)", v, "true")
+				}
+				if cfg.ReconcileConfig.SkipDeployInvariant {
+					t.Errorf("BOSUN_SKIP_DEPLOY_INVARIANT=%q should not enable override (strict %q match)", v, "true")
+				}
+			})
+		}
+	})
 }
 
 func TestSplitAndTrim(t *testing.T) {
