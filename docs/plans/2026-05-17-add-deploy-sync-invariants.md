@@ -37,7 +37,7 @@ Make the silent failure surfaces loud.
 1. **Promote `declared_services: 0` to a hard error.**
    - File: `internal/reconcile/reconcile.go:511-519`
    - Change: when `ExtractDeclaredState` returns zero services, return an error from the reconcile run unless the operator opts in via `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true` (escape hatch for genuinely empty repos).
-   - Side fix: in `internal/reconcile/drift.go:79-119`, distinguish "no compose dir" from "compose dir exists but is empty." The first should error; the second should be a clearly logged warning.
+   - Side fix: in `internal/reconcile/drift.go:79-119`, distinguish "no compose dir" from "compose dir exists but is empty." The first should always error (misconfigured staging path, not overridable); the second should error unless `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true`, in which case emit a clearly-formatted warning and continue.
 
 2. **Per-file write log line in `CopyDirIfChanged`.**
    - File: `internal/fileutil/fileutil.go:247-279`
@@ -113,7 +113,7 @@ Spec PR follows the Spec Review Workflow from CLAUDE.md (CodeRabbit pass, `ready
 
 3. **Manual smoke** —
    - `BOSUN_LOG_LEVEL=debug bosun reconcile` against a known-good change → expect per-file `wrote` lines for each changed file.
-   - `BOSUN_LOG_LEVEL=debug bosun reconcile` against a no-op change → expect per-file `skipped (unchanged)` lines.
+   - `BOSUN_LOG_LEVEL=debug bosun reconcile` against a no-op change → expect per-file skip lines with `reason=hash_match`.
    - `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true bosun reconcile` on an empty-template repo → expect warning, not error.
 
 4. **Regression guard** — add a test fixture for the `Syncing .beads/.claude/unraid` shape (top-level repo dirs as targets) so the next refactor of `discoverDeployTargets` can't silently regress this case.
