@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.0](https://github.com/cameronsjo/bosun/compare/v0.33.3...v0.34.0) (2026-05-17)
+
+
+### Features
+
+* **docs:** revise pipeline and architecture diagrams ([0e0bbec](https://github.com/cameronsjo/bosun/commit/0e0bbec1cc86a4b1c11fc3e0b2bfe9f00af94eac))
+* **reconcile:** deploy-sync invariants and per-file write observability ([#214](https://github.com/cameronsjo/bosun/issues/214)) ([fd41601](https://github.com/cameronsjo/bosun/commit/fd41601a77eda18f26fbcb1140132198ae32ae3b))
+
 ## [0.33.3](https://github.com/cameronsjo/bosun/compare/v0.33.2...v0.33.3) (2026-04-05)
 
 
