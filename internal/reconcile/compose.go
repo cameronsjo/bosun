@@ -606,7 +606,8 @@ func (d *DeployOps) SignalContainerRemote(ctx context.Context, host, containerNa
 		Str("signal", signal).
 		Msg("Sending signal to remote container")
 
-	sshCmd := fmt.Sprintf("docker kill --signal=%s %s 2>/dev/null", signal, containerName)
+	killArgs := []string{"docker", "kill", "--signal=" + signal, containerName}
+	sshCmd := shellquote.Join(killArgs...)
 
 	return retryWithBackoff(ctx, DefaultMaxRetries, func() error {
 		cmd := exec.CommandContext(ctx, "ssh", host, sshCmd)
