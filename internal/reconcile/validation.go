@@ -20,6 +20,16 @@ var (
 	// Must start with alphanumeric and can contain alphanumeric, underscore, dot, and hyphen.
 	containerNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
+	// projectNamePattern validates docker compose project names.
+	// Must start with alphanumeric and can contain alphanumeric, underscore, hyphen, and dot.
+	// Length cap of 128 matches docker compose's own limit.
+	projectNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
+
+	// remotePathPattern validates remote filesystem paths passed to SSH commands.
+	// Allows absolute paths (starting with /) or relative paths using alphanumeric,
+	// underscore, hyphen, dot, and forward slash. Rejects path traversal (../).
+	remotePathPattern = regexp.MustCompile(`^[a-zA-Z0-9/_.-]+$`)
+
 	// shellMetachars contains shell metacharacters that could enable command injection.
 	shellMetachars = []string{";", "&", "|", "$", "`", "(", ")", "{", "}", "<", ">", "\\", "\n", "\r", "'", "\""}
 )
@@ -133,6 +143,63 @@ func validateContainerName(name string) error {
 	// Validate format
 	if !containerNamePattern.MatchString(name) {
 		return fmt.Errorf("invalid container name format: must start with alphanumeric and contain only alphanumeric, underscore, dot, or hyphen")
+	}
+
+	return nil
+}
+
+// ValidateProjectName validates a docker compose project name for use in shell commands.
+// Must start with alphanumeric and may contain alphanumeric, underscore, hyphen, or dot.
+// Maximum length is 128 characters (docker compose's own limit).
+// Rejects shell metacharacters that could enable command injection.
+func ValidateProjectName(name string) error {
+	if name == "" {
+		return fmt.Errorf("project name cannot be empty")
+	}
+
+	// Reject names starting with "-" (option injection)
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("invalid project name: cannot start with '-' (potential option injection)")
+	}
+
+	// Reject shell metacharacters
+	for _, char := range shellMetachars {
+		if strings.Contains(name, char) {
+			return fmt.Errorf("invalid project name: contains shell metacharacter %q", char)
+		}
+	}
+
+	// Validate format and length
+	if !projectNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid project name format: must start with alphanumeric and contain only alphanumeric, underscore, hyphen, or dot (max 128 chars)")
+	}
+
+	return nil
+}
+
+// ValidateRemotePath validates a filesystem path intended for use in SSH-executed shell commands.
+// Accepts absolute paths (starting with /) and relative paths using alphanumeric, underscore,
+// hyphen, dot, and forward slash. Rejects path traversal (../) and shell metacharacters.
+func ValidateRemotePath(path string) error {
+	if path == "" {
+		return fmt.Errorf("remote path cannot be empty")
+	}
+
+	// Reject path traversal
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("invalid remote path: path traversal (contains '..')")
+	}
+
+	// Reject shell metacharacters
+	for _, char := range shellMetachars {
+		if strings.Contains(path, char) {
+			return fmt.Errorf("invalid remote path: contains shell metacharacter %q", char)
+		}
+	}
+
+	// Validate format
+	if !remotePathPattern.MatchString(path) {
+		return fmt.Errorf("invalid remote path format: must contain only alphanumeric, underscore, hyphen, dot, and forward slash")
 	}
 
 	return nil

