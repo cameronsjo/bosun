@@ -2029,3 +2029,150 @@ func TestExtractTargets_DeprecationWarning(t *testing.T) {
 	assert.Equal(t, "pi", targets[0].Name)
 	assert.Equal(t, "user@pi", targets[0].TargetHost)
 }
+
+func TestAlertConfigFromEnv_Empty(t *testing.T) {
+	// Clear all alert env vars so we get a clean baseline.
+	for _, k := range []string{
+		"BOSUN_DISCORD_WEBHOOK_URL", "DISCORD_WEBHOOK_URL",
+		"BOSUN_SENDGRID_API_KEY", "SENDGRID_API_KEY",
+		"BOSUN_SENDGRID_FROM_EMAIL", "SENDGRID_FROM_EMAIL",
+		"BOSUN_SENDGRID_FROM_NAME", "SENDGRID_FROM_NAME",
+		"BOSUN_SENDGRID_TO_EMAILS",
+		"BOSUN_TWILIO_ACCOUNT_SID", "TWILIO_ACCOUNT_SID",
+		"BOSUN_TWILIO_AUTH_TOKEN", "TWILIO_AUTH_TOKEN",
+		"BOSUN_TWILIO_FROM_NUMBER", "TWILIO_FROM_NUMBER",
+		"BOSUN_TWILIO_TO_NUMBERS",
+		"BOSUN_WEBHOOK_URL", "BOSUN_WEBHOOK_METHOD",
+		"BOSUN_SLACK_WEBHOOK_URL", "SLACK_WEBHOOK_URL",
+	} {
+		t.Setenv(k, "")
+	}
+
+	cfg := AlertConfigFromEnv()
+	assert.Equal(t, "", cfg.DiscordWebhookURL)
+	assert.Equal(t, "", cfg.SendGridAPIKey)
+	assert.Nil(t, cfg.SendGridToEmails)
+	assert.Nil(t, cfg.TwilioToNumbers)
+	// OnFailure defaults to true when neither flag is set.
+	assert.True(t, cfg.OnFailure)
+}
+
+func TestAlertConfigFromEnv_BOSUNPrefixWins(t *testing.T) {
+	t.Setenv("DISCORD_WEBHOOK_URL", "https://legacy.discord.example.com/hook")
+	t.Setenv("BOSUN_DISCORD_WEBHOOK_URL", "https://bosun.discord.example.com/hook")
+	t.Setenv("SENDGRID_API_KEY", "legacy-key")
+	t.Setenv("BOSUN_SENDGRID_API_KEY", "bosun-key")
+	t.Setenv("BOSUN_SENDGRID_FROM_EMAIL", "from@example.com")
+	t.Setenv("SENDGRID_FROM_EMAIL", "")
+	t.Setenv("BOSUN_SENDGRID_FROM_NAME", "Bosun")
+	t.Setenv("SENDGRID_FROM_NAME", "")
+	t.Setenv("BOSUN_SENDGRID_TO_EMAILS", "")
+	t.Setenv("BOSUN_TWILIO_ACCOUNT_SID", "")
+	t.Setenv("TWILIO_ACCOUNT_SID", "")
+	t.Setenv("BOSUN_TWILIO_AUTH_TOKEN", "")
+	t.Setenv("TWILIO_AUTH_TOKEN", "")
+	t.Setenv("BOSUN_TWILIO_FROM_NUMBER", "")
+	t.Setenv("TWILIO_FROM_NUMBER", "")
+	t.Setenv("BOSUN_TWILIO_TO_NUMBERS", "")
+	t.Setenv("BOSUN_WEBHOOK_URL", "")
+	t.Setenv("BOSUN_WEBHOOK_METHOD", "")
+	t.Setenv("BOSUN_SLACK_WEBHOOK_URL", "")
+	t.Setenv("SLACK_WEBHOOK_URL", "")
+
+	cfg := AlertConfigFromEnv()
+	assert.Equal(t, "https://bosun.discord.example.com/hook", cfg.DiscordWebhookURL)
+	assert.Equal(t, "bosun-key", cfg.SendGridAPIKey)
+	assert.Equal(t, "from@example.com", cfg.SendGridFromEmail)
+	assert.Equal(t, "Bosun", cfg.SendGridFromName)
+}
+
+func TestAlertConfigFromEnv_LegacyFallback(t *testing.T) {
+	// BOSUN_ vars absent, legacy vars present.
+	t.Setenv("BOSUN_DISCORD_WEBHOOK_URL", "")
+	t.Setenv("DISCORD_WEBHOOK_URL", "https://legacy.discord.example.com/hook")
+	t.Setenv("BOSUN_SENDGRID_API_KEY", "")
+	t.Setenv("SENDGRID_API_KEY", "legacy-key")
+	t.Setenv("BOSUN_SENDGRID_FROM_EMAIL", "")
+	t.Setenv("SENDGRID_FROM_EMAIL", "legacy@example.com")
+	t.Setenv("BOSUN_SENDGRID_FROM_NAME", "")
+	t.Setenv("SENDGRID_FROM_NAME", "Legacy")
+	t.Setenv("BOSUN_SENDGRID_TO_EMAILS", "")
+	t.Setenv("BOSUN_TWILIO_ACCOUNT_SID", "")
+	t.Setenv("TWILIO_ACCOUNT_SID", "AClegacy")
+	t.Setenv("BOSUN_TWILIO_AUTH_TOKEN", "")
+	t.Setenv("TWILIO_AUTH_TOKEN", "legacy-token")
+	t.Setenv("BOSUN_TWILIO_FROM_NUMBER", "")
+	t.Setenv("TWILIO_FROM_NUMBER", "+10000000000")
+	t.Setenv("BOSUN_TWILIO_TO_NUMBERS", "")
+	t.Setenv("BOSUN_WEBHOOK_URL", "")
+	t.Setenv("BOSUN_WEBHOOK_METHOD", "")
+	t.Setenv("BOSUN_SLACK_WEBHOOK_URL", "")
+	t.Setenv("SLACK_WEBHOOK_URL", "")
+
+	cfg := AlertConfigFromEnv()
+	assert.Equal(t, "https://legacy.discord.example.com/hook", cfg.DiscordWebhookURL)
+	assert.Equal(t, "legacy-key", cfg.SendGridAPIKey)
+	assert.Equal(t, "legacy@example.com", cfg.SendGridFromEmail)
+	assert.Equal(t, "Legacy", cfg.SendGridFromName)
+	assert.Equal(t, "AClegacy", cfg.TwilioAccountSID)
+	assert.Equal(t, "legacy-token", cfg.TwilioAuthToken)
+	assert.Equal(t, "+10000000000", cfg.TwilioFromNumber)
+}
+
+func TestAlertConfigFromEnv_SendGridToEmails(t *testing.T) {
+	for _, k := range []string{
+		"BOSUN_DISCORD_WEBHOOK_URL", "DISCORD_WEBHOOK_URL",
+		"BOSUN_SENDGRID_API_KEY", "SENDGRID_API_KEY",
+		"BOSUN_SENDGRID_FROM_EMAIL", "SENDGRID_FROM_EMAIL",
+		"BOSUN_SENDGRID_FROM_NAME", "SENDGRID_FROM_NAME",
+		"BOSUN_TWILIO_ACCOUNT_SID", "TWILIO_ACCOUNT_SID",
+		"BOSUN_TWILIO_AUTH_TOKEN", "TWILIO_AUTH_TOKEN",
+		"BOSUN_TWILIO_FROM_NUMBER", "TWILIO_FROM_NUMBER",
+		"BOSUN_TWILIO_TO_NUMBERS",
+		"BOSUN_WEBHOOK_URL", "BOSUN_WEBHOOK_METHOD",
+		"BOSUN_SLACK_WEBHOOK_URL", "SLACK_WEBHOOK_URL",
+	} {
+		t.Setenv(k, "")
+	}
+
+	t.Run("populated", func(t *testing.T) {
+		t.Setenv("BOSUN_SENDGRID_TO_EMAILS", "a@example.com, b@example.com , c@example.com")
+		cfg := AlertConfigFromEnv()
+		assert.Equal(t, []string{"a@example.com", "b@example.com", "c@example.com"}, cfg.SendGridToEmails)
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		t.Setenv("BOSUN_SENDGRID_TO_EMAILS", "")
+		cfg := AlertConfigFromEnv()
+		assert.Nil(t, cfg.SendGridToEmails)
+	})
+}
+
+func TestAlertConfigFromEnv_TwilioToNumbers(t *testing.T) {
+	for _, k := range []string{
+		"BOSUN_DISCORD_WEBHOOK_URL", "DISCORD_WEBHOOK_URL",
+		"BOSUN_SENDGRID_API_KEY", "SENDGRID_API_KEY",
+		"BOSUN_SENDGRID_FROM_EMAIL", "SENDGRID_FROM_EMAIL",
+		"BOSUN_SENDGRID_FROM_NAME", "SENDGRID_FROM_NAME",
+		"BOSUN_SENDGRID_TO_EMAILS",
+		"BOSUN_TWILIO_ACCOUNT_SID", "TWILIO_ACCOUNT_SID",
+		"BOSUN_TWILIO_AUTH_TOKEN", "TWILIO_AUTH_TOKEN",
+		"BOSUN_TWILIO_FROM_NUMBER", "TWILIO_FROM_NUMBER",
+		"BOSUN_WEBHOOK_URL", "BOSUN_WEBHOOK_METHOD",
+		"BOSUN_SLACK_WEBHOOK_URL", "SLACK_WEBHOOK_URL",
+	} {
+		t.Setenv(k, "")
+	}
+
+	t.Run("populated", func(t *testing.T) {
+		t.Setenv("BOSUN_TWILIO_TO_NUMBERS", "+11111111111, +22222222222")
+		cfg := AlertConfigFromEnv()
+		assert.Equal(t, []string{"+11111111111", "+22222222222"}, cfg.TwilioToNumbers)
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		t.Setenv("BOSUN_TWILIO_TO_NUMBERS", "")
+		cfg := AlertConfigFromEnv()
+		assert.Nil(t, cfg.TwilioToNumbers)
+	})
+}
