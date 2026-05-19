@@ -101,14 +101,26 @@ func checkProjectRoot(cfg *config.Config, loadErr error) CheckResult {
 		return CheckResult{Passed: 1}
 	}
 
-	// Distinguish a YAML parse/decode error from a missing-project error so
+	// Distinguish specific load failures from a missing-project situation so
 	// operators see the actual root cause rather than the generic "not found".
-	//
-	// yaml.v3 surfaces syntax errors as plain *errors.errorString (not
-	// *yaml.TypeError, which is reserved for type-mismatch). We detect the
-	// parse-failure case by checking the sentinel phrase that loadConfigFile
-	// embeds in its error message — this phrase is specific to bosun's own
-	// config loading and will not appear for other error conditions.
+
+	// File-read failure (e.g. permission denied on an existing config file).
+	// loadConfigFile embeds the sentinel "failed to read config file" — the
+	// project root was found but the file is unreadable.
+	if loadErr != nil && strings.Contains(loadErr.Error(), "failed to read config file") {
+		_, _ = ui.Red.Printf("  x Project config file unreadable: %s\n", loadErr)
+		_, _ = ui.Blue.Println("      To fix this:")
+		_, _ = ui.Blue.Println("      - Check file permissions: ls -l bosun.yaml")
+		_, _ = ui.Blue.Println("      - Fix permissions: chmod 644 bosun.yaml")
+		return CheckResult{Failed: 1}
+	}
+
+	// YAML parse/decode error. yaml.v3 surfaces syntax errors as plain
+	// *errors.errorString, not *yaml.TypeError. *yaml.TypeError is reserved
+	// for type-mismatch failures (e.g. a field declared as int receives a
+	// string), which can occur during struct decode after successful parsing.
+	// We keep both checks: the sentinel string for the common syntax case and
+	// errors.As for future type-mismatch paths.
 	var yamlTypeErr *yaml.TypeError
 	if loadErr != nil && (errors.As(loadErr, &yamlTypeErr) || strings.Contains(loadErr.Error(), "failed to parse config file")) {
 		_, _ = ui.Red.Printf("  x Project config invalid YAML: %s\n", loadErr)

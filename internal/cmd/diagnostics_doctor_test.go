@@ -80,6 +80,34 @@ func TestCheckProjectRoot(t *testing.T) {
 		assert.Equal(t, 0, result.Warned)
 		assert.Equal(t, 0, result.Passed)
 	})
+
+	t.Run("with nil config and file-read error", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("cannot test permission denial as root")
+		}
+		tmpDir := t.TempDir()
+		bosunYAML := filepath.Join(tmpDir, "bosun.yaml")
+		require.NoError(t, os.WriteFile(bosunYAML, []byte("{}"), 0644))
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+		// Make the file unreadable so loadConfigFile returns a read error.
+		require.NoError(t, os.Chmod(bosunYAML, 0000))
+		defer func() { _ = os.Chmod(bosunYAML, 0644) }()
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		_, loadErr := config.Load()
+		require.Error(t, loadErr)
+
+		result := checkProjectRoot(nil, loadErr)
+		// File-read errors must be surfaced as failures with a distinct message,
+		// not the generic "project root not found" warning.
+		assert.Equal(t, 1, result.Failed, "file-read error should be a failure")
+		assert.Equal(t, 0, result.Warned)
+		assert.Equal(t, 0, result.Passed)
+	})
 }
 
 func TestCheckAgeKey(t *testing.T) {
