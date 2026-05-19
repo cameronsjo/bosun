@@ -44,17 +44,41 @@ func TestCheckProjectRoot(t *testing.T) {
 		cfg := &config.Config{
 			Root: "/some/path",
 		}
-		result := checkProjectRoot(cfg)
+		result := checkProjectRoot(cfg, nil)
 		assert.Equal(t, 1, result.Passed)
 		assert.Equal(t, 0, result.Failed)
 		assert.Equal(t, 0, result.Warned)
 	})
 
-	t.Run("with nil config", func(t *testing.T) {
-		result := checkProjectRoot(nil)
+	t.Run("with nil config and no error", func(t *testing.T) {
+		result := checkProjectRoot(nil, nil)
 		assert.Equal(t, 0, result.Passed)
 		assert.Equal(t, 0, result.Failed)
 		assert.Equal(t, 1, result.Warned)
+	})
+
+	t.Run("with nil config and YAML parse error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		// Write a syntactically invalid bosun.yaml
+		bosunYAML := filepath.Join(tmpDir, "bosun.yaml")
+		require.NoError(t, os.WriteFile(bosunYAML, []byte("key: [unclosed"), 0644))
+
+		// Also create a manifest dir so FindRoot anchors here
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		_, loadErr := config.Load()
+		require.Error(t, loadErr)
+
+		result := checkProjectRoot(nil, loadErr)
+		// YAML parse errors must be surfaced as failures, not generic warnings.
+		assert.Equal(t, 1, result.Failed, "YAML parse error should be a failure")
+		assert.Equal(t, 0, result.Warned)
+		assert.Equal(t, 0, result.Passed)
 	})
 }
 
@@ -224,4 +248,61 @@ func TestCheckTraefikConfig(t *testing.T) {
 		assert.Equal(t, 0, result.Passed)
 		assert.Equal(t, 4, result.Warned)
 	})
+}
+
+func TestCheckStateDir(t *testing.T) {
+	t.Run("writable custom dir via BOSUN_STATE_DIR", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("BOSUN_STATE_DIR", tmpDir)
+		result := checkStateDir()
+		assert.Equal(t, 1, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+	})
+
+	t.Run("non-writable dir fails", func(t *testing.T) {
+		// Point to a path under a non-existent root that cannot be created.
+		t.Setenv("BOSUN_STATE_DIR", "/proc/bosun-cannot-create-this")
+		result := checkStateDir()
+		assert.Equal(t, 1, result.Failed)
+		assert.Equal(t, 0, result.Passed)
+	})
+}
+
+func TestCheckSocketDir(t *testing.T) {
+	t.Run("writable custom socket path via BOSUN_SOCKET_PATH", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("BOSUN_SOCKET_PATH", filepath.Join(tmpDir, "bosun.sock"))
+		result := checkSocketDir()
+		assert.Equal(t, 1, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+	})
+
+	t.Run("non-writable socket dir fails", func(t *testing.T) {
+		t.Setenv("BOSUN_SOCKET_PATH", "/proc/bosun-cannot-create-this/bosun.sock")
+		result := checkSocketDir()
+		assert.Equal(t, 1, result.Failed)
+		assert.Equal(t, 0, result.Passed)
+	})
+}
+
+func TestWebhookAddr(t *testing.T) {
+	t.Run("defaults to localhost:8080", func(t *testing.T) {
+		t.Setenv("BOSUN_TCP_ADDR", "")
+		assert.Equal(t, "localhost:8080", webhookAddr())
+	})
+
+	t.Run("reads BOSUN_TCP_ADDR", func(t *testing.T) {
+		t.Setenv("BOSUN_TCP_ADDR", "192.168.1.10:9090")
+		assert.Equal(t, "192.168.1.10:9090", webhookAddr())
+	})
+}
+
+func TestCheckWebhook_UsesEnvAddr(t *testing.T) {
+	// Point at a port that is definitely not listening to confirm the address
+	// is respected (the check should warn, not panic or use a wrong address).
+	t.Setenv("BOSUN_TCP_ADDR", "127.0.0.1:19999")
+	result := checkWebhook()
+	assert.Equal(t, 0, result.Passed)
+	assert.Equal(t, 1, result.Warned)
+	assert.Equal(t, 0, result.Failed)
 }

@@ -12,10 +12,12 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/preflight"
+	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/cameronsjo/bosun/internal/tunnel"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
@@ -91,16 +93,36 @@ func checkGit() CheckResult {
 }
 
 // checkProjectRoot verifies the project root is accessible.
-func checkProjectRoot(cfg *config.Config) CheckResult {
+// loadErr is the error returned by config.Load(); when non-nil it is inspected
+// to distinguish a YAML parse failure from a plain "not found" situation.
+func checkProjectRoot(cfg *config.Config, loadErr error) CheckResult {
 	if cfg != nil {
 		_, _ = ui.Green.Printf("  * Project root found: %s\n", cfg.Root)
 		return CheckResult{Passed: 1}
 	}
+
+	// Distinguish a YAML parse/decode error from a missing-project error so
+	// operators see the actual root cause rather than the generic "not found".
+	//
+	// yaml.v3 surfaces syntax errors as plain *errors.errorString (not
+	// *yaml.TypeError, which is reserved for type-mismatch). We detect the
+	// parse-failure case by checking the sentinel phrase that loadConfigFile
+	// embeds in its error message — this phrase is specific to bosun's own
+	// config loading and will not appear for other error conditions.
+	var yamlTypeErr *yaml.TypeError
+	if loadErr != nil && (errors.As(loadErr, &yamlTypeErr) || strings.Contains(loadErr.Error(), "failed to parse config file")) {
+		_, _ = ui.Red.Printf("  x Project config invalid YAML: %s\n", loadErr)
+		_, _ = ui.Blue.Println("      To fix this:")
+		_, _ = ui.Blue.Println("      - Check bosun.yaml for syntax errors (tabs vs spaces, missing quotes, etc.)")
+		_, _ = ui.Blue.Println("      - Validate with: python3 -c \"import yaml,sys; yaml.safe_load(open('bosun.yaml'))\"")
+		return CheckResult{Failed: 1}
+	}
+
 	_, _ = ui.Yellow.Println("  ! Project root not found (run from project directory)")
 	_, _ = ui.Blue.Println("      To fix this:")
-	_, _ = ui.Blue.Println("      - Ensure config.yaml or manifest/ directory exists")
+	_, _ = ui.Blue.Println("      - Ensure bosun.yaml or manifest/ directory exists")
 	_, _ = ui.Blue.Println("      - Run bosun from the root of your project")
-	_, _ = ui.Blue.Println("      - Create config.yaml in project root if missing")
+	_, _ = ui.Blue.Println("      - Create bosun.yaml in project root if missing")
 	return CheckResult{Warned: 1}
 }
 
@@ -165,22 +187,107 @@ func checkManifestDirectory(cfg *config.Config) CheckResult {
 	return CheckResult{Warned: 1}
 }
 
+// checkStateDir verifies the deploy-state directory is writable.
+// The state dir defaults to reconcile.DefaultStateDir but is overridden by
+// the BOSUN_STATE_DIR environment variable (same logic as the daemon).
+func checkStateDir() CheckResult {
+	stateDir := reconcile.DefaultStateDir
+	if dir := os.Getenv("BOSUN_STATE_DIR"); dir != "" {
+		stateDir = dir
+	}
+
+	// Attempt to create the directory if it does not yet exist.
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		_, _ = ui.Red.Printf("  x State directory not writable: %s (%v)\n", stateDir, err)
+		_, _ = ui.Blue.Println("      To fix this:")
+		_, _ = ui.Blue.Printf("      - Create the directory: mkdir -p %s\n", stateDir)
+		_, _ = ui.Blue.Printf("      - Fix permissions: chmod 755 %s\n", stateDir)
+		_, _ = ui.Blue.Println("      - Or set BOSUN_STATE_DIR to a writable path")
+		return CheckResult{Failed: 1}
+	}
+
+	// Probe write access with a temp file.
+	probe, err := os.CreateTemp(stateDir, ".bosun-doctor-probe-*")
+	if err != nil {
+		_, _ = ui.Red.Printf("  x State directory not writable: %s (%v)\n", stateDir, err)
+		_, _ = ui.Blue.Println("      To fix this:")
+		_, _ = ui.Blue.Printf("      - Fix permissions: chmod 755 %s\n", stateDir)
+		_, _ = ui.Blue.Println("      - Or set BOSUN_STATE_DIR to a writable path")
+		return CheckResult{Failed: 1}
+	}
+	_ = probe.Close()
+	_ = os.Remove(probe.Name())
+
+	_, _ = ui.Green.Printf("  * State directory writable: %s\n", stateDir)
+	return CheckResult{Passed: 1}
+}
+
+// checkSocketDir verifies the directory that will hold the daemon Unix socket
+// is writable. The socket path defaults to daemon.DefaultSocketPath but is
+// overridden by BOSUN_SOCKET_PATH.
+func checkSocketDir() CheckResult {
+	socketPath := "/var/run/bosun.sock"
+	if p := os.Getenv("BOSUN_SOCKET_PATH"); p != "" {
+		socketPath = p
+	}
+	socketDir := filepath.Dir(socketPath)
+
+	if err := os.MkdirAll(socketDir, 0755); err != nil {
+		_, _ = ui.Red.Printf("  x Socket directory not writable: %s (%v)\n", socketDir, err)
+		_, _ = ui.Blue.Println("      To fix this:")
+		_, _ = ui.Blue.Printf("      - Create the directory: sudo mkdir -p %s\n", socketDir)
+		_, _ = ui.Blue.Printf("      - Fix permissions: sudo chmod 755 %s\n", socketDir)
+		_, _ = ui.Blue.Println("      - Or set BOSUN_SOCKET_PATH to a path in a writable directory")
+		return CheckResult{Failed: 1}
+	}
+
+	// Probe write access — only test if the socket doesn't already exist
+	// (an existing socket means the daemon is live, which is fine).
+	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
+		probe, err := os.CreateTemp(socketDir, ".bosun-doctor-probe-*")
+		if err != nil {
+			_, _ = ui.Red.Printf("  x Socket directory not writable: %s (%v)\n", socketDir, err)
+			_, _ = ui.Blue.Println("      To fix this:")
+			_, _ = ui.Blue.Printf("      - Fix permissions: sudo chmod 755 %s\n", socketDir)
+			_, _ = ui.Blue.Println("      - Or set BOSUN_SOCKET_PATH to a path in a writable directory")
+			return CheckResult{Failed: 1}
+		}
+		_ = probe.Close()
+		_ = os.Remove(probe.Name())
+	}
+
+	_, _ = ui.Green.Printf("  * Socket directory writable: %s\n", socketDir)
+	return CheckResult{Passed: 1}
+}
+
+// webhookAddr returns the HTTP webhook host:port to probe.
+// It reads BOSUN_TCP_ADDR as the override (matching the daemon's env-var
+// precedence chain) and falls back to "localhost:8080".
+func webhookAddr() string {
+	if addr := os.Getenv("BOSUN_TCP_ADDR"); addr != "" {
+		return addr
+	}
+	return "localhost:8080"
+}
+
 // checkWebhook verifies the webhook endpoint is responding.
 func checkWebhook() CheckResult {
+	addr := webhookAddr()
 	httpClient := &http.Client{Timeout: httpClientTimeout}
-	resp, err := httpClient.Get("http://localhost:8080/health")
+	resp, err := httpClient.Get("http://" + addr + "/health")
 	if err == nil {
 		_ = resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {
-			_, _ = ui.Green.Println("  * Webhook endpoint responding")
+			_, _ = ui.Green.Printf("  * Webhook endpoint responding (%s)\n", addr)
 			return CheckResult{Passed: 1}
 		}
 	}
-	_, _ = ui.Yellow.Println("  ! Webhook not responding (bosun container not running?)")
+	_, _ = ui.Yellow.Printf("  ! Webhook not responding at %s (bosun container not running?)\n", addr)
 	_, _ = ui.Blue.Println("      To fix this:")
 	_, _ = ui.Blue.Println("      - Start bosun container: docker compose up -d bosun")
 	_, _ = ui.Blue.Println("      - Check logs: docker logs bosun")
-	_, _ = ui.Blue.Println("      - Verify port 8080 is available and not in use")
+	_, _ = ui.Blue.Printf("      - Verify %s is available and not in use\n", addr)
+	_, _ = ui.Blue.Println("      - Set BOSUN_TCP_ADDR to override the default address")
 	return CheckResult{Warned: 1}
 }
 
@@ -378,8 +485,9 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 
 	var result CheckResult
 
-	// Load config once for checks that need it
-	cfg, _ := config.Load()
+	// Load config once for checks that need it; preserve the error so
+	// checkProjectRoot can distinguish a YAML parse failure from "not found".
+	cfg, cfgErr := config.Load()
 
 	// Run all checks with timeout context for Docker
 	ctx, cancel := context.WithTimeout(context.Background(), dockerPingTimeout)
@@ -389,10 +497,12 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	result.Add(checkDockerCompose())
 	result.Add(checkGit())
 	result.Add(checkDeployKeyPermissions())
-	result.Add(checkProjectRoot(cfg))
+	result.Add(checkProjectRoot(cfg, cfgErr))
 	result.Add(checkAgeKey())
 	result.Add(checkSOPS())
 	result.Add(checkManifestDirectory(cfg))
+	result.Add(checkStateDir())
+	result.Add(checkSocketDir())
 	result.Add(checkWebhook())
 
 	// Check tunnel provider with timeout
