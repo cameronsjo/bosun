@@ -173,6 +173,43 @@ func TestFindRoot_AcceptsHomeAnchorWithStrongMarker(t *testing.T) {
 	assert.Equal(t, fakeHome, root)
 }
 
+// TestFindRoot_RefusesHomeAnchorThroughSymlink verifies that the $HOME guard
+// still fires when $HOME contains a symlink component. os.UserHomeDir() returns
+// the raw $HOME value without resolving symlinks, while os.Getwd() returns the
+// resolved path — without EvalSymlinks normalization the equality check misses.
+func TestFindRoot_RefusesHomeAnchorThroughSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires elevated privileges on Windows")
+	}
+
+	// Create a real directory to act as the symlink target.
+	realHome := evalSymlinks(t, t.TempDir())
+	// Create a symlink that points at realHome.
+	symlinkHome := filepath.Join(t.TempDir(), "symlinked-home")
+	require.NoError(t, os.Symlink(realHome, symlinkHome))
+
+	// Set HOME to the symlink path (raw, unresolved).
+	t.Setenv("HOME", symlinkHome)
+
+	// Place only a manifest/ directory inside the real target — no bosun.yaml.
+	require.NoError(t, os.MkdirAll(filepath.Join(realHome, "manifest"), 0755))
+
+	// cd into a subdirectory so FindRoot walks up through the symlinked home.
+	subDir := filepath.Join(realHome, "projects", "myapp")
+	require.NoError(t, os.MkdirAll(subDir, 0755))
+
+	originalWd, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() { _ = os.Chdir(originalWd) }()
+	require.NoError(t, os.Chdir(subDir))
+
+	// FindRoot must refuse to anchor on manifest/ inside $HOME even when $HOME
+	// is a symlink and the resolved path is what dir reaches.
+	_, err = FindRoot()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "project root not found")
+}
+
 func TestFindRoot_FromProjectRoot(t *testing.T) {
 	tmpDir := evalSymlinks(t, t.TempDir())
 

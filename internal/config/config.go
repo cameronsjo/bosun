@@ -284,6 +284,18 @@ func FindRoot() (string, error) {
 	}
 
 	homeDir, _ := os.UserHomeDir()
+	// Normalize $HOME for comparison: os.Getwd() returns a symlink-resolved
+	// path on most platforms (macOS returns /private/var/... not /var/...),
+	// but os.UserHomeDir() returns the raw $HOME value. Without normalization
+	// the equality check in the weak-marker guard never fires when $HOME
+	// contains symlink components. If EvalSymlinks fails (deleted dir,
+	// permission issue), skip normalization and proceed — the guard may miss
+	// an edge case but the caller is not harmed.
+	if homeDir != "" {
+		if resolved, err := filepath.EvalSymlinks(homeDir); err == nil {
+			homeDir = resolved
+		}
+	}
 
 	for dir != "/" {
 		// Check for bosun.yaml or bosun.yml config file (strong marker — always accepted).
