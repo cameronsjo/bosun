@@ -7,6 +7,55 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestBosunEnvWithSource(t *testing.T) {
+	tests := []struct {
+		name       string
+		bosunVal   string
+		legacyVal  string
+		wantValue  string
+		wantSource string
+	}{
+		{
+			name:       "BOSUN_ only set — source is BOSUN_ key",
+			bosunVal:   "bosun-value",
+			legacyVal:  "",
+			wantValue:  "bosun-value",
+			wantSource: "BOSUN_TEST_VAR",
+		},
+		{
+			name:       "legacy only set — source is bare key",
+			bosunVal:   "",
+			legacyVal:  "legacy-value",
+			wantValue:  "legacy-value",
+			wantSource: "TEST_VAR",
+		},
+		{
+			name:       "both set — BOSUN_ wins, source is BOSUN_ key",
+			bosunVal:   "bosun-wins",
+			legacyVal:  "legacy-value",
+			wantValue:  "bosun-wins",
+			wantSource: "BOSUN_TEST_VAR",
+		},
+		{
+			name:       "neither set — empty value and source",
+			bosunVal:   "",
+			legacyVal:  "",
+			wantValue:  "",
+			wantSource: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("BOSUN_TEST_VAR", tt.bosunVal)
+			t.Setenv("TEST_VAR", tt.legacyVal)
+			gotVal, gotSrc := bosunEnvWithSource("TEST_VAR")
+			assert.Equal(t, tt.wantValue, gotVal)
+			assert.Equal(t, tt.wantSource, gotSrc)
+		})
+	}
+}
+
 func TestBosunEnv(t *testing.T) {
 	tests := []struct {
 		name     string
