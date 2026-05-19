@@ -337,8 +337,16 @@ func TestValidateRemotePath(t *testing.T) {
 		{"with underscore", "/mnt/app_data", false, ""},
 		{"with dot", "/mnt/app.data", false, ""},
 
+		// Valid: spaces are allowed for Unraid NAS paths
+		{"space in path (Unraid)", "/mnt/user/My Media/appdata", false, ""},
+		{"space in subdir", "/mnt/user/My Files/docker", false, ""},
+
 		// Invalid: empty
 		{"empty", "", true, "cannot be empty"},
+
+		// Invalid: starts with "-" (CLI flag injection)
+		{"-starts with dash", "-mybadpath", true, "cannot start with '-'"},
+		{"dash only", "-", true, "cannot start with '-'"},
 
 		// Invalid: path traversal
 		{"path traversal", "/mnt/../etc/passwd", true, "path traversal"},
@@ -356,8 +364,7 @@ func TestValidateRemotePath(t *testing.T) {
 		{"newline", "/mnt\nid", true, "shell metacharacter"},
 		{"backslash", "/mnt\\evil", true, "shell metacharacter"},
 
-		// Invalid: spaces and special chars rejected by regex
-		{"space in path", "/mnt/app data", true, "invalid remote path format"},
+		// Invalid: special chars rejected by regex
 		{"at sign", "/mnt/@data", true, "invalid remote path format"},
 	}
 

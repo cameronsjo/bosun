@@ -27,8 +27,10 @@ var (
 
 	// remotePathPattern validates remote filesystem paths passed to SSH commands.
 	// Allows absolute paths (starting with /) or relative paths using alphanumeric,
-	// underscore, hyphen, dot, and forward slash. Rejects path traversal (../).
-	remotePathPattern = regexp.MustCompile(`^[a-zA-Z0-9/_.-]+$`)
+	// underscore, hyphen, dot, space, and forward slash. Spaces are permitted because
+	// real-world Unraid NAS paths frequently include them (e.g. "/mnt/user/My Media/appdata");
+	// shellquote.Join handles quoting correctly. Rejects path traversal (../).
+	remotePathPattern = regexp.MustCompile(`^[a-zA-Z0-9/_. -]+$`)
 
 	// shellMetachars contains shell metacharacters that could enable command injection.
 	shellMetachars = []string{";", "&", "|", "$", "`", "(", ")", "{", "}", "<", ">", "\\", "\n", "\r", "'", "\""}
@@ -179,10 +181,17 @@ func ValidateProjectName(name string) error {
 
 // ValidateRemotePath validates a filesystem path intended for use in SSH-executed shell commands.
 // Accepts absolute paths (starting with /) and relative paths using alphanumeric, underscore,
-// hyphen, dot, and forward slash. Rejects path traversal (../) and shell metacharacters.
+// hyphen, dot, space, and forward slash. Spaces are permitted to support Unraid NAS paths
+// (e.g. "/mnt/user/My Media/appdata"); shellquote.Join handles quoting at call sites.
+// Rejects path traversal (../), shell metacharacters, and paths starting with "-" (CLI flag injection).
 func ValidateRemotePath(path string) error {
 	if path == "" {
 		return fmt.Errorf("remote path cannot be empty")
+	}
+
+	// Reject paths starting with "-" to prevent CLI flag injection via SSH
+	if strings.HasPrefix(path, "-") {
+		return fmt.Errorf("invalid remote path: cannot start with '-' (potential CLI flag injection)")
 	}
 
 	// Reject path traversal
@@ -197,9 +206,9 @@ func ValidateRemotePath(path string) error {
 		}
 	}
 
-	// Validate format
+	// Validate format — spaces are allowed (shellquote.Join quotes them correctly)
 	if !remotePathPattern.MatchString(path) {
-		return fmt.Errorf("invalid remote path format: must contain only alphanumeric, underscore, hyphen, dot, and forward slash")
+		return fmt.Errorf("invalid remote path format: must contain only alphanumeric, underscore, hyphen, dot, space, and forward slash")
 	}
 
 	return nil
