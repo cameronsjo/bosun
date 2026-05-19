@@ -1334,13 +1334,13 @@ func ConfigFromEnv() *Config {
 	}
 
 	// Disable HTTP server if explicitly set
-	if os.Getenv("BOSUN_DISABLE_HTTP") == "true" {
-		cfg.EnableHTTP = false
+	if v := os.Getenv("BOSUN_DISABLE_HTTP"); v != "" {
+		cfg.EnableHTTP = !parseBoolVal(v, false)
 	}
 
 	// TCP server configuration (opt-in)
-	if os.Getenv("BOSUN_ENABLE_TCP") == "true" {
-		cfg.EnableTCP = true
+	if v := os.Getenv("BOSUN_ENABLE_TCP"); v != "" {
+		cfg.EnableTCP = parseBoolVal(v, false)
 	}
 	if addr := os.Getenv("BOSUN_TCP_ADDR"); addr != "" {
 		cfg.TCPAddr = addr
@@ -1392,7 +1392,7 @@ func ConfigFromEnv() *Config {
 		rcfg.SecretsFiles = splitAndTrim(secrets)
 	}
 
-	rcfg.DryRun = os.Getenv("DRY_RUN") == "true"
+	rcfg.DryRun = parseBoolVal(os.Getenv("DRY_RUN"), false)
 
 	// Deploy mode override: "local" or "remote" skips auto-detection.
 	if mode := os.Getenv("BOSUN_DEPLOY_MODE"); mode != "" {
@@ -1461,7 +1461,7 @@ func ConfigFromEnv() *Config {
 
 	// Restart circuit breaker configuration
 	if v := os.Getenv("BOSUN_RESTART_BREAKER"); v != "" {
-		rcfg.RestartBreakerEnabled = v != "false" && v != "0"
+		rcfg.RestartBreakerEnabled = parseBoolVal(v, true)
 	}
 	if v := os.Getenv("BOSUN_RESTART_THRESHOLD"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -1540,12 +1540,12 @@ func ConfigFromEnv() *Config {
 		}
 	}
 	if v := os.Getenv("BOSUN_DRIFT_RESOLVE_ALERTS"); v != "" {
-		cfg.DriftResolveAlerts = v != "false" && v != "0"
+		cfg.DriftResolveAlerts = parseBoolVal(v, true)
 	}
 
 	// Drift self-healing (default: false)
 	if v := os.Getenv("BOSUN_DRIFT_SELF_HEAL"); v != "" {
-		cfg.DriftSelfHeal.SetFromEnv(v == "true" || v == "1")
+		cfg.DriftSelfHeal.SetFromEnv(parseBoolVal(v, false))
 	}
 	if v := os.Getenv("BOSUN_DRIFT_SELF_HEAL_COOLDOWN"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
@@ -1561,18 +1561,21 @@ func ConfigFromEnv() *Config {
 
 	// Content-hash file sync (default: true)
 	if v := os.Getenv("BOSUN_CONTENT_HASH_SYNC"); v != "" {
-		cfg.ContentHashSync = v != "false" && v != "0"
+		cfg.ContentHashSync = parseBoolVal(v, true)
 	}
 	rcfg.ContentHashSync = cfg.ContentHashSync
 
 	// Orphan container cleanup (default: true)
 	if v := os.Getenv("BOSUN_REMOVE_ORPHANS"); v != "" {
-		cfg.RemoveOrphans = v != "false" && v != "0"
+		cfg.RemoveOrphans = parseBoolVal(v, true)
 		rcfg.RemoveOrphans.SetFromEnv(cfg.RemoveOrphans)
 	} else {
 		rcfg.RemoveOrphans = reconcile.NewConfigField(cfg.RemoveOrphans)
 	}
 
+	// Safety overrides use strict lowercase "true" match — intentional.
+	// These gates guard against accidental activation of dangerous behavior;
+	// "yes", "1", "TRUE" etc. are rejected by design.
 	rcfg.AllowEmptyDeclaredState = os.Getenv("BOSUN_ALLOW_EMPTY_DECLARED_STATE") == "true"
 	rcfg.SkipDeployInvariant = os.Getenv("BOSUN_SKIP_DEPLOY_INVARIANT") == "true"
 
@@ -1700,6 +1703,26 @@ func ConfigFromEnv() *Config {
 	}
 
 	return cfg
+}
+
+// parseBoolVal parses a string as a boolean with consistent semantics:
+//
+//	"1", "true", "yes", "on"      -> true  (case-insensitive)
+//	"0", "false", "no", "off"     -> false (case-insensitive)
+//	anything else                 -> defaultVal
+//
+// This is the canonical boolean parser for all BOSUN_ env vars in the daemon.
+// Using a single helper prevents the scattered patterns ("== true", "!= false && != 0")
+// from diverging and ensures "no"/"yes" work everywhere (GH #263).
+func parseBoolVal(v string, defaultVal bool) bool {
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultVal
+	}
 }
 
 // splitAndTrim splits a comma-separated string and trims whitespace.
