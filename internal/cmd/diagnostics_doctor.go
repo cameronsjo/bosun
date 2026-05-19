@@ -261,11 +261,17 @@ func checkSocketDir() CheckResult {
 }
 
 // webhookAddr returns the HTTP webhook host:port to probe.
-// It reads BOSUN_TCP_ADDR as the override (matching the daemon's env-var
-// precedence chain) and falls back to "localhost:8080".
+//
+// The HTTP webhook server (always-on, serves /health and /webhook) reads its
+// port from PORT first, then WEBHOOK_PORT as a legacy alias. This mirrors the
+// precedence chain in daemon.ConfigFromEnv. BOSUN_TCP_ADDR is unrelated — it
+// configures the opt-in TCP API server, which is a distinct service.
 func webhookAddr() string {
-	if addr := os.Getenv("BOSUN_TCP_ADDR"); addr != "" {
-		return addr
+	if port := os.Getenv("PORT"); port != "" {
+		return "localhost:" + port
+	}
+	if port := os.Getenv("WEBHOOK_PORT"); port != "" {
+		return "localhost:" + port
 	}
 	return "localhost:8080"
 }
@@ -287,7 +293,7 @@ func checkWebhook() CheckResult {
 	_, _ = ui.Blue.Println("      - Start bosun container: docker compose up -d bosun")
 	_, _ = ui.Blue.Println("      - Check logs: docker logs bosun")
 	_, _ = ui.Blue.Printf("      - Verify %s is available and not in use\n", addr)
-	_, _ = ui.Blue.Println("      - Set BOSUN_TCP_ADDR to override the default address")
+	_, _ = ui.Blue.Println("      - Set PORT (or WEBHOOK_PORT) to override the default port")
 	return CheckResult{Warned: 1}
 }
 

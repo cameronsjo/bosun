@@ -287,20 +287,35 @@ func TestCheckSocketDir(t *testing.T) {
 
 func TestWebhookAddr(t *testing.T) {
 	t.Run("defaults to localhost:8080", func(t *testing.T) {
-		t.Setenv("BOSUN_TCP_ADDR", "")
+		t.Setenv("PORT", "")
+		t.Setenv("WEBHOOK_PORT", "")
 		assert.Equal(t, "localhost:8080", webhookAddr())
 	})
 
-	t.Run("reads BOSUN_TCP_ADDR", func(t *testing.T) {
-		t.Setenv("BOSUN_TCP_ADDR", "192.168.1.10:9090")
-		assert.Equal(t, "192.168.1.10:9090", webhookAddr())
+	t.Run("reads PORT", func(t *testing.T) {
+		t.Setenv("PORT", "9080")
+		t.Setenv("WEBHOOK_PORT", "")
+		assert.Equal(t, "localhost:9080", webhookAddr())
+	})
+
+	t.Run("reads WEBHOOK_PORT as legacy alias", func(t *testing.T) {
+		t.Setenv("PORT", "")
+		t.Setenv("WEBHOOK_PORT", "9081")
+		assert.Equal(t, "localhost:9081", webhookAddr())
+	})
+
+	t.Run("PORT takes precedence over WEBHOOK_PORT", func(t *testing.T) {
+		t.Setenv("PORT", "9080")
+		t.Setenv("WEBHOOK_PORT", "9081")
+		assert.Equal(t, "localhost:9080", webhookAddr())
 	})
 }
 
 func TestCheckWebhook_UsesEnvAddr(t *testing.T) {
 	// Point at a port that is definitely not listening to confirm the address
 	// is respected (the check should warn, not panic or use a wrong address).
-	t.Setenv("BOSUN_TCP_ADDR", "127.0.0.1:19999")
+	t.Setenv("PORT", "19999")
+	t.Setenv("WEBHOOK_PORT", "")
 	result := checkWebhook()
 	assert.Equal(t, 0, result.Passed)
 	assert.Equal(t, 1, result.Warned)
