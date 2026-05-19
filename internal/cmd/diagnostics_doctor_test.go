@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -348,4 +349,30 @@ func TestCheckWebhook_UsesEnvAddr(t *testing.T) {
 	assert.Equal(t, 0, result.Passed)
 	assert.Equal(t, 1, result.Warned)
 	assert.Equal(t, 0, result.Failed)
+}
+
+func TestCheckSocketDir_WindowsSkip(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only: verifies early return when no override is set")
+	}
+	// On Windows with no BOSUN_SOCKET_PATH, checkSocketDir must return an empty
+	// result (not a failure) — /var/run/bosun.sock is meaningless on Windows.
+	t.Setenv("BOSUN_SOCKET_PATH", "")
+	result := checkSocketDir()
+	assert.Equal(t, 0, result.Passed)
+	assert.Equal(t, 0, result.Failed)
+	assert.Equal(t, 0, result.Warned)
+}
+
+func TestCheckStateDir_WindowsSkip(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only: verifies early return when no override is set")
+	}
+	// On Windows with no BOSUN_STATE_DIR, checkStateDir must return an empty
+	// result (not a failure) — /var/lib/bosun is meaningless on Windows.
+	t.Setenv("BOSUN_STATE_DIR", "")
+	result := checkStateDir()
+	assert.Equal(t, 0, result.Passed)
+	assert.Equal(t, 0, result.Failed)
+	assert.Equal(t, 0, result.Warned)
 }

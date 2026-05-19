@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -202,7 +203,13 @@ func checkManifestDirectory(cfg *config.Config) CheckResult {
 // checkStateDir verifies the deploy-state directory is writable.
 // The state dir defaults to reconcile.DefaultStateDir but is overridden by
 // the BOSUN_STATE_DIR environment variable (same logic as the daemon).
+// On Windows the default path (/var/lib/bosun) is meaningless — the check
+// is skipped unless BOSUN_STATE_DIR overrides it with a valid path.
 func checkStateDir() CheckResult {
+	if runtime.GOOS == "windows" && os.Getenv("BOSUN_STATE_DIR") == "" {
+		_, _ = ui.Blue.Println("  - State directory check N/A on Windows (set BOSUN_STATE_DIR to enable)")
+		return CheckResult{}
+	}
 	stateDir := reconcile.DefaultStateDir
 	if dir := os.Getenv("BOSUN_STATE_DIR"); dir != "" {
 		stateDir = dir
@@ -237,7 +244,13 @@ func checkStateDir() CheckResult {
 // checkSocketDir verifies the directory that will hold the daemon Unix socket
 // is writable. The socket path defaults to daemon.DefaultSocketPath but is
 // overridden by BOSUN_SOCKET_PATH.
+// On Windows the daemon does not use Unix sockets at /var/run — the check
+// is skipped unless BOSUN_SOCKET_PATH overrides it with a valid path.
 func checkSocketDir() CheckResult {
+	if runtime.GOOS == "windows" && os.Getenv("BOSUN_SOCKET_PATH") == "" {
+		_, _ = ui.Blue.Println("  - Socket directory check N/A on Windows (set BOSUN_SOCKET_PATH to enable)")
+		return CheckResult{}
+	}
 	socketPath := "/var/run/bosun.sock"
 	if p := os.Getenv("BOSUN_SOCKET_PATH"); p != "" {
 		socketPath = p
