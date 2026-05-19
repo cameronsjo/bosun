@@ -834,6 +834,26 @@ func getEnvOrDefault(envKey, defaultValue string) string {
 	return defaultValue
 }
 
+// AlertConfigFromEnv builds an AlertConfig purely from environment variables,
+// applying BOSUN_-first precedence without needing a project config file.
+// This is used as a fallback when config.Load() fails (no bosun.yaml present).
+func AlertConfigFromEnv() AlertConfig {
+	return AlertConfig{
+		DiscordWebhookURL: getEnvOrDefault("BOSUN_DISCORD_WEBHOOK_URL", getEnvOrDefault("DISCORD_WEBHOOK_URL", "")),
+		SlackWebhookURL:   getEnvOrDefault("BOSUN_SLACK_WEBHOOK_URL", getEnvOrDefault("SLACK_WEBHOOK_URL", "")),
+		SendGridAPIKey:    getEnvOrDefault("BOSUN_SENDGRID_API_KEY", getEnvOrDefault("SENDGRID_API_KEY", "")),
+		SendGridFromEmail: getEnvOrDefault("BOSUN_SENDGRID_FROM_EMAIL", getEnvOrDefault("SENDGRID_FROM_EMAIL", "")),
+		SendGridFromName:  getEnvOrDefault("BOSUN_SENDGRID_FROM_NAME", getEnvOrDefault("SENDGRID_FROM_NAME", "")),
+		TwilioAccountSID:  getEnvOrDefault("BOSUN_TWILIO_ACCOUNT_SID", getEnvOrDefault("TWILIO_ACCOUNT_SID", "")),
+		TwilioAuthToken:   getEnvOrDefault("BOSUN_TWILIO_AUTH_TOKEN", getEnvOrDefault("TWILIO_AUTH_TOKEN", "")),
+		TwilioFromNumber:  getEnvOrDefault("BOSUN_TWILIO_FROM_NUMBER", getEnvOrDefault("TWILIO_FROM_NUMBER", "")),
+		WebhookURL:        getEnvOrDefault("BOSUN_WEBHOOK_URL", ""),
+		WebhookMethod:     getEnvOrDefault("BOSUN_WEBHOOK_METHOD", ""),
+		// OnFailure defaults to true when neither flag is set (same as extractAlertConfig).
+		OnFailure: true,
+	}
+}
+
 // extractAlertConfig extracts alert configuration from a parsed config.
 // Supports environment variable overrides for sensitive values.
 func extractAlertConfig(cfg configFile) AlertConfig {
