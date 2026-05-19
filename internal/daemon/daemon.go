@@ -1352,32 +1352,14 @@ func ConfigFromEnv() *Config {
 		cfg.WebhookSecret = secret
 	}
 
-	if interval := os.Getenv("POLL_INTERVAL"); interval != "" {
-		if d, ok := parseDurationOrSeconds(interval); ok {
-			cfg.PollInterval = d
-		} else {
-			log.Warn().Str("env", "POLL_INTERVAL").Str("value", interval).Msg("Skipping env var. Reason: invalid duration format")
-		}
-	}
-	if interval := os.Getenv("BOSUN_POLL_INTERVAL"); interval != "" {
-		if d, ok := parseDurationOrSeconds(interval); ok {
-			cfg.PollInterval = d
-		} else {
-			log.Warn().Str("env", "BOSUN_POLL_INTERVAL").Str("value", interval).Msg("Skipping env var. Reason: invalid duration format")
-		}
+	if d := config.BosunEnvDuration("POLL_INTERVAL", 0); d > 0 {
+		cfg.PollInterval = d
 	}
 
 	// Reconcile config from environment
 	rcfg := reconcile.DefaultConfig()
-	rcfg.RepoURL = os.Getenv("REPO_URL")
-	if url := os.Getenv("BOSUN_REPO_URL"); url != "" {
-		rcfg.RepoURL = url
-	}
-
-	if branch := os.Getenv("REPO_BRANCH"); branch != "" {
-		rcfg.RepoBranch = branch
-	}
-	if branch := os.Getenv("BOSUN_REPO_BRANCH"); branch != "" {
+	rcfg.RepoURL = config.BosunEnv("REPO_URL")
+	if branch := config.BosunEnv("REPO_BRANCH"); branch != "" {
 		rcfg.RepoBranch = branch
 	}
 
