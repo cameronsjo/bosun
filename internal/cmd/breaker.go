@@ -24,7 +24,15 @@ var breakerCmd = &cobra.Command{
 
 The circuit breaker trips after 3 consecutive deploy failures on the same
 commit, preventing infinite retry loops. Use these commands to inspect
-the breaker state and reset it when the root cause has been resolved.`,
+the breaker state and reset it when the root cause has been resolved.
+
+State directory resolution:
+  The --state-dir flag sets the base directory for state files. If the
+  BOSUN_STATE_DIR environment variable is set, it overrides --state-dir
+  at runtime (same precedence pattern as other BOSUN_ env vars).
+
+  Note: 'bosun drift --state-file' uses an explicit file path and does NOT
+  honour BOSUN_STATE_DIR. Unifying this behaviour is tracked as a follow-up.`,
 }
 
 // breakerStatusCmd shows circuit breaker state.
