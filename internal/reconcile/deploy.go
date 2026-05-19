@@ -10,6 +10,7 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/fileutil"
 	"github.com/cameronsjo/bosun/internal/log"
+	"github.com/kballard/go-shellquote"
 )
 
 // DeployOps provides deployment operations including backup, file sync, and service management.
@@ -97,16 +98,17 @@ func (d *DeployOps) composeUpArgs(composeFiles []string) []string {
 }
 
 // remoteComposeUpCmd returns the SSH command string for running docker compose up on a remote host.
+// Path and project name are shell-quoted to prevent injection from commit-authored config values.
 func (d *DeployOps) remoteComposeUpCmd(composeDir string) string {
-	composeCmd := "docker compose"
+	args := []string{"docker", "compose"}
 	if d.ProjectName != "" {
-		composeCmd = fmt.Sprintf("docker compose -p %s", d.ProjectName)
+		args = append(args, "-p", d.ProjectName)
 	}
-	upArgs := "up -d"
+	args = append(args, "up", "-d")
 	if d.RemoveOrphans {
-		upArgs += " --remove-orphans"
+		args = append(args, "--remove-orphans")
 	}
-	return fmt.Sprintf("cd %s && %s %s", composeDir, composeCmd, upArgs)
+	return fmt.Sprintf("cd %s && %s", shellquote.Join(composeDir), shellquote.Join(args...))
 }
 
 // DeployLocal syncs files locally using native Go file operations.

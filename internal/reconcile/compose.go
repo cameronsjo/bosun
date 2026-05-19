@@ -14,6 +14,7 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
+	"github.com/kballard/go-shellquote"
 )
 
 // DefaultComposeUpTimeout is the maximum time allowed for docker compose up.
@@ -480,12 +481,14 @@ func (d *DeployOps) ComposeUpRemote(ctx context.Context, host, composeDir string
 
 // classifyComposeFailureRemote inspects container state on a remote host after
 // a compose up failure. Uses SSH to run `docker compose ps --format json`.
+// Path and project name are shell-quoted to prevent injection from commit-authored config values.
 func (d *DeployOps) classifyComposeFailureRemote(ctx context.Context, host, composeDir string) (*composeFailureResult, error) {
-	psCmd := "docker compose"
+	args := []string{"docker", "compose"}
 	if d.ProjectName != "" {
-		psCmd = fmt.Sprintf("docker compose -p %s", d.ProjectName)
+		args = append(args, "-p", d.ProjectName)
 	}
-	sshCmd := fmt.Sprintf("cd %s && %s ps --all --format json", composeDir, psCmd)
+	args = append(args, "ps", "--all", "--format", "json")
+	sshCmd := fmt.Sprintf("cd %s && %s", shellquote.Join(composeDir), shellquote.Join(args...))
 
 	cmd := exec.CommandContext(ctx, "ssh", host, sshCmd)
 	var stdout, stderr bytes.Buffer
