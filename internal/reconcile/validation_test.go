@@ -381,6 +381,117 @@ func TestValidateRemotePath(t *testing.T) {
 	}
 }
 
+func TestValidateAndSanitizeTargets(t *testing.T) {
+	t.Run("clean targets are preserved unchanged", func(t *testing.T) {
+		targets := []Target{
+			{Name: "unraid", TargetHost: "user@unraid", ProjectName: "homelab", RemoteAppdataPath: "/mnt/user/appdata"},
+			{Name: "pi", TargetHost: "user@pi", ProjectName: "pistack", RemoteAppdataPath: "/home/pi/appdata"},
+		}
+		got := ValidateAndSanitizeTargets(targets, nil)
+		require.Len(t, got, 2)
+		assert.Equal(t, "homelab", got[0].ProjectName)
+		assert.Equal(t, "/mnt/user/appdata", got[0].RemoteAppdataPath)
+		assert.Equal(t, "pistack", got[1].ProjectName)
+		assert.Equal(t, "/home/pi/appdata", got[1].RemoteAppdataPath)
+	})
+
+	t.Run("empty project_name is left empty (no validation)", func(t *testing.T) {
+		targets := []Target{
+			{Name: "t1", TargetHost: "user@host"},
+		}
+		got := ValidateAndSanitizeTargets(targets, nil)
+		require.Len(t, got, 1)
+		assert.Equal(t, "", got[0].ProjectName)
+		assert.Equal(t, "", got[0].RemoteAppdataPath)
+	})
+
+	t.Run("invalid project_name is cleared and warn is called", func(t *testing.T) {
+		var warnedTarget, warnedField string
+		var warnedErr error
+		targets := []Target{
+			{Name: "evil", TargetHost: "user@host", ProjectName: "evil; rm -rf /", RemoteAppdataPath: "/mnt/appdata"},
+		}
+		got := ValidateAndSanitizeTargets(targets, func(target, field string, err error) {
+			warnedTarget = target
+			warnedField = field
+			warnedErr = err
+		})
+		require.Len(t, got, 1)
+		assert.Equal(t, "", got[0].ProjectName, "invalid project_name must be cleared")
+		assert.Equal(t, "/mnt/appdata", got[0].RemoteAppdataPath, "valid remote_appdata_path must be preserved")
+		assert.Equal(t, "evil", warnedTarget)
+		assert.Equal(t, "project_name", warnedField)
+		assert.Error(t, warnedErr)
+	})
+
+	t.Run("invalid remote_appdata_path is cleared and warn is called", func(t *testing.T) {
+		var warnedTarget, warnedField string
+		var warnedErr error
+		targets := []Target{
+			{Name: "badpath", TargetHost: "user@host", ProjectName: "myproject", RemoteAppdataPath: "/mnt;rm -rf /"},
+		}
+		got := ValidateAndSanitizeTargets(targets, func(target, field string, err error) {
+			warnedTarget = target
+			warnedField = field
+			warnedErr = err
+		})
+		require.Len(t, got, 1)
+		assert.Equal(t, "myproject", got[0].ProjectName, "valid project_name must be preserved")
+		assert.Equal(t, "", got[0].RemoteAppdataPath, "invalid remote_appdata_path must be cleared")
+		assert.Equal(t, "badpath", warnedTarget)
+		assert.Equal(t, "remote_appdata_path", warnedField)
+		assert.Error(t, warnedErr)
+	})
+
+	t.Run("multiple invalid fields on one target — each is independently cleared", func(t *testing.T) {
+		var warns []string
+		targets := []Target{
+			{Name: "double-bad", TargetHost: "user@host", ProjectName: "bad name", RemoteAppdataPath: "/mnt;evil"},
+		}
+		got := ValidateAndSanitizeTargets(targets, func(target, field string, err error) {
+			warns = append(warns, field)
+		})
+		require.Len(t, got, 1)
+		assert.Equal(t, "", got[0].ProjectName)
+		assert.Equal(t, "", got[0].RemoteAppdataPath)
+		assert.Contains(t, warns, "project_name")
+		assert.Contains(t, warns, "remote_appdata_path")
+	})
+
+	t.Run("multiple entries — only bad entries are cleared, others preserved", func(t *testing.T) {
+		var warnCount int
+		targets := []Target{
+			{Name: "good", TargetHost: "user@host", ProjectName: "myproject", RemoteAppdataPath: "/mnt/appdata"},
+			{Name: "bad", TargetHost: "user@host2", ProjectName: "evil$(id)", RemoteAppdataPath: "/mnt/appdata"},
+		}
+		got := ValidateAndSanitizeTargets(targets, func(target, field string, err error) {
+			warnCount++
+		})
+		require.Len(t, got, 2)
+		assert.Equal(t, "myproject", got[0].ProjectName, "clean target's project_name must be untouched")
+		assert.Equal(t, "/mnt/appdata", got[0].RemoteAppdataPath)
+		assert.Equal(t, "", got[1].ProjectName, "injected project_name must be cleared")
+		assert.Equal(t, 1, warnCount)
+	})
+
+	t.Run("empty slice is a no-op", func(t *testing.T) {
+		got := ValidateAndSanitizeTargets(nil, nil)
+		assert.Len(t, got, 0)
+
+		got = ValidateAndSanitizeTargets([]Target{}, nil)
+		assert.Len(t, got, 0)
+	})
+
+	t.Run("original slice is not mutated", func(t *testing.T) {
+		original := []Target{
+			{Name: "t1", ProjectName: "evil;cmd", RemoteAppdataPath: "/mnt/appdata"},
+		}
+		originalProjectName := original[0].ProjectName
+		_ = ValidateAndSanitizeTargets(original, nil)
+		assert.Equal(t, originalProjectName, original[0].ProjectName, "original slice must not be mutated")
+	})
+}
+
 // TestShellMetacharsCorpus verifies that every character in the shellMetachars
 // slice is rejected by both ValidateProjectName and ValidateRemotePath.
 func TestShellMetacharsCorpus(t *testing.T) {

@@ -213,3 +213,33 @@ func ValidateRemotePath(path string) error {
 
 	return nil
 }
+
+// ValidateAndSanitizeTargets validates security-sensitive fields on each target,
+// clearing invalid fields with a warning rather than dropping the whole target.
+// This mirrors the YAML-load semantics in extractTargets — a single bad field
+// must not block deployments to that host.
+//
+// The logger parameter receives structured warn entries; pass nil to suppress logging.
+func ValidateAndSanitizeTargets(targets []Target, warn func(target, field string, err error)) []Target {
+	out := make([]Target, len(targets))
+	copy(out, targets)
+	for i := range out {
+		if out[i].ProjectName != "" {
+			if err := ValidateProjectName(out[i].ProjectName); err != nil {
+				if warn != nil {
+					warn(out[i].Name, "project_name", err)
+				}
+				out[i].ProjectName = ""
+			}
+		}
+		if out[i].RemoteAppdataPath != "" {
+			if err := ValidateRemotePath(out[i].RemoteAppdataPath); err != nil {
+				if warn != nil {
+					warn(out[i].Name, "remote_appdata_path", err)
+				}
+				out[i].RemoteAppdataPath = ""
+			}
+		}
+	}
+	return out
+}

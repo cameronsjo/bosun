@@ -1420,26 +1420,12 @@ func ConfigFromEnv() *Config {
 			// Validate security-sensitive fields on each target parsed from env.
 			// Warn and clear (rather than skip) to mirror the YAML-load semantics
 			// in extractTargets — a single bad field must not block the whole target.
-			for i := range targets {
-				if targets[i].ProjectName != "" {
-					if err := reconcile.ValidateProjectName(targets[i].ProjectName); err != nil {
-						log.Warn().Err(err).
-							Str("target", targets[i].Name).
-							Str("project_name", targets[i].ProjectName).
-							Msg("BOSUN_TARGETS: invalid project_name — ignoring and inheriting global value")
-						targets[i].ProjectName = ""
-					}
-				}
-				if targets[i].RemoteAppdataPath != "" {
-					if err := reconcile.ValidateRemotePath(targets[i].RemoteAppdataPath); err != nil {
-						log.Warn().Err(err).
-							Str("target", targets[i].Name).
-							Str("remote_appdata_path", targets[i].RemoteAppdataPath).
-							Msg("BOSUN_TARGETS: invalid remote_appdata_path — ignoring")
-						targets[i].RemoteAppdataPath = ""
-					}
-				}
-			}
+			targets = reconcile.ValidateAndSanitizeTargets(targets, func(target, field string, err error) {
+				log.Warn().Err(err).
+					Str("target", target).
+					Str(field, "").
+					Msgf("BOSUN_TARGETS: invalid %s — ignoring and inheriting global value", field)
+			})
 			rcfg.Targets = targets
 			targetsFromEnv = true
 		}

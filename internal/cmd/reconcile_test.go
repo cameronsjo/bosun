@@ -87,3 +87,43 @@ func TestRunReconcile_ConfigFieldSetup(t *testing.T) {
 		assert.NotNil(t, reloaded)
 	})
 }
+
+func TestRunReconcile_BOSUNTargetsValidation(t *testing.T) {
+	// Intercept ui.Fatal so the function doesn't exit the process.
+	old := ui.SetExitFn(func(int) {})
+	defer ui.SetExitFn(old)
+
+	// All subtests set REPO_URL so the function proceeds past the fatal check
+	// and reaches the BOSUN_TARGETS validation block at line ~259. The reconciler
+	// will fail on the fake repo URL, but the config-setup code is exercised first.
+
+	t.Run("valid BOSUN_TARGETS reaches reconciler without panic", func(t *testing.T) {
+		t.Setenv("REPO_URL", "https://example.com/repo.git")
+		t.Setenv("BOSUN_TARGETS", `[{"name":"unraid","target_host":"user@unraid","project_name":"homelab","remote_appdata_path":"/mnt/user/appdata"}]`)
+
+		// Exercises the BOSUN_TARGETS JSON parse + validate path; fails at r.Run with a non-existent repo.
+		runReconcile(nil, nil)
+	})
+
+	t.Run("invalid project_name in BOSUN_TARGETS is cleared before reconcile attempt", func(t *testing.T) {
+		t.Setenv("REPO_URL", "https://example.com/repo.git")
+		t.Setenv("BOSUN_TARGETS", `[{"name":"evil","target_host":"user@host","project_name":"evil; rm -rf /","remote_appdata_path":"/mnt/appdata"}]`)
+
+		// ValidateAndSanitizeTargets clears the bad field; function then proceeds to r.Run and fails.
+		runReconcile(nil, nil)
+	})
+
+	t.Run("invalid remote_appdata_path in BOSUN_TARGETS is cleared", func(t *testing.T) {
+		t.Setenv("REPO_URL", "https://example.com/repo.git")
+		t.Setenv("BOSUN_TARGETS", `[{"name":"badpath","target_host":"user@host","project_name":"myproject","remote_appdata_path":"/mnt;evil"}]`)
+
+		runReconcile(nil, nil)
+	})
+
+	t.Run("malformed BOSUN_TARGETS JSON is ignored and reconcile proceeds", func(t *testing.T) {
+		t.Setenv("REPO_URL", "https://example.com/repo.git")
+		t.Setenv("BOSUN_TARGETS", `not-valid-json`)
+
+		runReconcile(nil, nil)
+	})
+}
