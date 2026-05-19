@@ -75,14 +75,14 @@ func runReconcile(cmd *cobra.Command, args []string) {
 	// Build configuration from environment and flags.
 	cfg := reconcile.DefaultConfig()
 
-	// Required: repo URL.
-	cfg.RepoURL = os.Getenv("REPO_URL")
+	// Required: repo URL. BOSUN_REPO_URL takes precedence over legacy REPO_URL.
+	cfg.RepoURL = config.BosunEnv("REPO_URL")
 	if cfg.RepoURL == "" {
-		ui.Fatal("REPO_URL environment variable is required")
+		ui.Fatal("BOSUN_REPO_URL (or legacy REPO_URL) environment variable is required")
 	}
 
 	// Optional settings from environment.
-	if branch := os.Getenv("REPO_BRANCH"); branch != "" {
+	if branch := config.BosunEnv("REPO_BRANCH"); branch != "" {
 		cfg.RepoBranch = branch
 	}
 	if repoDir := os.Getenv("REPO_DIR"); repoDir != "" {
@@ -313,50 +313,76 @@ func runReconcile(cmd *cobra.Command, args []string) {
 }
 
 // createAlertManager creates an alert manager with configured providers.
+// Returns nil when no providers are configured.
+// BOSUN_-prefixed env vars take precedence over legacy unprefixed vars;
+// project config (bosun.yaml) provides a further fallback via config.Load().
 func createAlertManager() *alert.Manager {
+	mgr := buildAlertManagerRaw()
+	if !mgr.HasProviders() {
+		return nil
+	}
+	ui.Info("Alert providers: %v", mgr.ProviderNames())
+	return mgr
+}
+
+// buildAlertManagerRaw assembles the alert.Manager from config + env.
+// Always returns a non-nil manager; callers check HasProviders() to decide
+// whether any providers were actually configured.
+func buildAlertManagerRaw() *alert.Manager {
 	mgr := alert.NewManager()
 
+	// Resolve credentials: config.Load() applies BOSUN_-first precedence for
+	// all alert env vars (BOSUN_DISCORD_WEBHOOK_URL > DISCORD_WEBHOOK_URL, etc.).
+	var alertCfg config.AlertConfig
+	if projectCfg, err := config.Load(); err == nil {
+		alertCfg = projectCfg.GetAlertConfig()
+	} else {
+		// No project config — fall back to raw env-var resolution.
+		alertCfg = config.AlertConfigFromEnv()
+	}
+
 	// Add Discord provider.
-	discord := alert.NewDiscordProvider(os.Getenv("DISCORD_WEBHOOK_URL"))
+	discord := alert.NewDiscordProvider(alertCfg.DiscordWebhookURL)
 	mgr.AddProvider(discord)
 
 	// Add Slack provider.
-	slack := alert.NewSlackProvider(os.Getenv("SLACK_WEBHOOK_URL"))
+	slack := alert.NewSlackProvider(alertCfg.SlackWebhookURL)
 	mgr.AddProvider(slack)
 
 	// Add SendGrid provider.
 	toEmails := filterEmptyStrings(strings.Split(os.Getenv("SENDGRID_TO_EMAILS"), ","))
+	if v := os.Getenv("BOSUN_SENDGRID_TO_EMAILS"); v != "" {
+		toEmails = filterEmptyStrings(strings.Split(v, ","))
+	}
 	sendgrid := alert.NewSendGrid(alert.SendGridConfig{
-		APIKey:    os.Getenv("SENDGRID_API_KEY"),
-		FromEmail: os.Getenv("SENDGRID_FROM_EMAIL"),
-		FromName:  os.Getenv("SENDGRID_FROM_NAME"),
+		APIKey:    alertCfg.SendGridAPIKey,
+		FromEmail: alertCfg.SendGridFromEmail,
+		FromName:  alertCfg.SendGridFromName,
 		ToEmails:  toEmails,
 	})
 	mgr.AddProvider(sendgrid)
 
 	// Add Twilio provider.
 	toNumbers := filterEmptyStrings(strings.Split(os.Getenv("TWILIO_TO_NUMBERS"), ","))
+	if v := os.Getenv("BOSUN_TWILIO_TO_NUMBERS"); v != "" {
+		toNumbers = filterEmptyStrings(strings.Split(v, ","))
+	}
 	twilio := alert.NewTwilio(alert.TwilioConfig{
-		AccountSID: os.Getenv("TWILIO_ACCOUNT_SID"),
-		AuthToken:  os.Getenv("TWILIO_AUTH_TOKEN"),
-		FromNumber: os.Getenv("TWILIO_FROM_NUMBER"),
+		AccountSID: alertCfg.TwilioAccountSID,
+		AuthToken:  alertCfg.TwilioAuthToken,
+		FromNumber: alertCfg.TwilioFromNumber,
 		ToNumbers:  toNumbers,
 	})
 	mgr.AddProvider(twilio)
 
 	// Add Webhook provider.
 	webhook := alert.NewWebhookProvider(alert.WebhookConfig{
-		URL:     os.Getenv("BOSUN_WEBHOOK_URL"),
-		Headers: parseJSONHeaders(os.Getenv("BOSUN_WEBHOOK_HEADERS")),
-		Method:  os.Getenv("BOSUN_WEBHOOK_METHOD"),
+		URL:     alertCfg.WebhookURL,
+		Headers: alertCfg.WebhookHeaders,
+		Method:  alertCfg.WebhookMethod,
 	})
 	mgr.AddProvider(webhook)
 
-	if !mgr.HasProviders() {
-		return nil
-	}
-
-	ui.Info("Alert providers: %v", mgr.ProviderNames())
 	return mgr
 }
 
