@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
@@ -427,6 +428,18 @@ func Load() (*Config, error) {
 				Msg("Config: invalid project_name — ignoring and falling back to directory name")
 			projectName = filepath.Base(root)
 		}
+	}
+	// Also validate the fallback value: the project directory name itself may
+	// contain characters invalid for docker compose project names (e.g. spaces).
+	// Sanitize by replacing spaces with underscores; log a warning so operators
+	// know the effective project name differs from their directory name.
+	if err := reconcile.ValidateProjectName(projectName); err != nil {
+		sanitized := strings.ReplaceAll(projectName, " ", "_")
+		log.Warn().Err(err).
+			Str("project_name", projectName).
+			Str("sanitized", sanitized).
+			Msg("Config: project name derived from directory contains invalid characters — using sanitized version")
+		projectName = sanitized
 	}
 
 	cfg := &Config{
