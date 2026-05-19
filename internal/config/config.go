@@ -270,15 +270,23 @@ type configFile struct {
 // The project root is identified by:
 // - bosun.yaml or bosun.yml config file
 // - bosun/ directory with docker-compose.yml
-// - manifest/ or manifests/ directory
+// - manifest/ or manifests/ directory (not accepted when candidate dir is $HOME)
+//
+// When the only matching marker in a candidate directory is manifest/ or manifests/
+// and that directory equals the user's home directory, FindRoot refuses to anchor
+// there. Generic directory names like "manifest/" are common in npm projects, OCI
+// tooling, and packaging pipelines; anchoring bosun to $HOME on their presence
+// would cause it to operate on the wrong directory silently.
 func FindRoot() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("get working directory: %w", err)
 	}
 
+	homeDir, _ := os.UserHomeDir()
+
 	for dir != "/" {
-		// Check for bosun.yaml or bosun.yml config file
+		// Check for bosun.yaml or bosun.yml config file (strong marker — always accepted).
 		for _, name := range []string{"bosun.yaml", "bosun.yml"} {
 			configPath := filepath.Join(dir, name)
 			if _, err := os.Stat(configPath); err == nil {
@@ -286,7 +294,7 @@ func FindRoot() (string, error) {
 			}
 		}
 
-		// Check for bosun directory with docker-compose.yml
+		// Check for bosun/ directory with docker-compose.yml (strong marker — always accepted).
 		bosunDir := filepath.Join(dir, "bosun")
 		if info, err := os.Stat(bosunDir); err == nil && info.IsDir() {
 			composeFile := filepath.Join(bosunDir, "docker-compose.yml")
@@ -295,11 +303,15 @@ func FindRoot() (string, error) {
 			}
 		}
 
-		// Check for manifest or manifests directory
-		for _, name := range []string{"manifest", "manifests"} {
-			manifestDir := filepath.Join(dir, name)
-			if info, err := os.Stat(manifestDir); err == nil && info.IsDir() {
-				return dir, nil
+		// Check for manifest/ or manifests/ directory (weak marker).
+		// Refuse to anchor on these alone when the candidate directory is $HOME —
+		// these names are too generic and collide with unrelated tooling.
+		if homeDir == "" || dir != homeDir {
+			for _, name := range []string{"manifest", "manifests"} {
+				manifestDir := filepath.Join(dir, name)
+				if info, err := os.Stat(manifestDir); err == nil && info.IsDir() {
+					return dir, nil
+				}
 			}
 		}
 
