@@ -281,4 +281,45 @@ func TestValidateReconcileConfig(t *testing.T) {
 		errors := validateReconcileConfig()
 		assert.Equal(t, 0, errors)
 	})
+
+	t.Run("BOSUN_REPO_URL wins over REPO_URL when both set", func(t *testing.T) {
+		// REPO_URL has an invalid URL; BOSUN_REPO_URL has a valid one.
+		// If precedence is correct (BOSUN_ wins), validateReconcileConfig
+		// should return 0 errors.
+		t.Setenv("REPO_URL", "not-a-valid-url")
+		t.Setenv("BOSUN_REPO_URL", "https://github.com/user/repo")
+
+		errors := validateReconcileConfig()
+		assert.Equal(t, 0, errors, "BOSUN_REPO_URL should win over REPO_URL")
+	})
+}
+
+func TestValidateEnvironment_BOSUNPrecedence(t *testing.T) {
+	t.Run("BOSUN_REPO_URL wins over REPO_URL when both set", func(t *testing.T) {
+		// REPO_URL is empty; BOSUN_REPO_URL is set — should succeed.
+		t.Setenv("BOSUN_REPO_URL", "https://bosun.example.com/repo")
+		t.Setenv("REPO_URL", "")
+		t.Setenv("BOSUN_REPO_BRANCH", "")
+		t.Setenv("REPO_BRANCH", "")
+		t.Setenv("WEBHOOK_SECRET", "")
+		t.Setenv("GITHUB_WEBHOOK_SECRET", "")
+		t.Setenv("DEPLOY_TARGET", "")
+
+		errors := validateEnvironment()
+		assert.Equal(t, 0, errors)
+	})
+
+	t.Run("BOSUN_REPO_URL beats non-empty REPO_URL", func(t *testing.T) {
+		// Both set — BOSUN_ value should be shown (no error).
+		t.Setenv("BOSUN_REPO_URL", "https://bosun.example.com/repo")
+		t.Setenv("REPO_URL", "https://legacy.example.com/repo")
+		t.Setenv("BOSUN_REPO_BRANCH", "")
+		t.Setenv("REPO_BRANCH", "")
+		t.Setenv("WEBHOOK_SECRET", "")
+		t.Setenv("GITHUB_WEBHOOK_SECRET", "")
+		t.Setenv("DEPLOY_TARGET", "")
+
+		errors := validateEnvironment()
+		assert.Equal(t, 0, errors)
+	})
 }

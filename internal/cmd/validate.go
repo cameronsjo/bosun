@@ -109,23 +109,25 @@ func runValidate(cmd *cobra.Command, args []string) {
 func validateEnvironment() int {
 	errors := 0
 
-	// Check for required environment variables
-	repoURL := os.Getenv("REPO_URL")
+	// Check for required environment variables.
+	// BOSUN_REPO_URL takes precedence over legacy REPO_URL.
+	repoURL := os.Getenv("BOSUN_REPO_URL")
 	if repoURL == "" {
-		repoURL = os.Getenv("BOSUN_REPO_URL")
+		repoURL = os.Getenv("REPO_URL")
 	}
 
 	if repoURL != "" {
 		_, _ = ui.Green.Printf("  * REPO_URL: %s\n", repoURL)
 	} else {
-		_, _ = ui.Red.Println("  x REPO_URL or BOSUN_REPO_URL not set")
+		_, _ = ui.Red.Println("  x BOSUN_REPO_URL (or legacy REPO_URL) not set")
 		errors++
 	}
 
-	// Check optional but important variables
-	branch := os.Getenv("REPO_BRANCH")
+	// Check optional but important variables.
+	// BOSUN_REPO_BRANCH takes precedence over legacy REPO_BRANCH.
+	branch := os.Getenv("BOSUN_REPO_BRANCH")
 	if branch == "" {
-		branch = os.Getenv("BOSUN_REPO_BRANCH")
+		branch = os.Getenv("REPO_BRANCH")
 	}
 	if branch == "" {
 		branch = "main (default)"
@@ -209,10 +211,10 @@ func validateReconcileConfig() int {
 
 	cfg := reconcile.DefaultConfig()
 
-	// Load from environment
-	cfg.RepoURL = os.Getenv("REPO_URL")
+	// Load from environment. BOSUN_REPO_URL takes precedence over legacy REPO_URL.
+	cfg.RepoURL = os.Getenv("BOSUN_REPO_URL")
 	if cfg.RepoURL == "" {
-		cfg.RepoURL = os.Getenv("BOSUN_REPO_URL")
+		cfg.RepoURL = os.Getenv("REPO_URL")
 	}
 
 	if cfg.RepoURL == "" {
@@ -244,16 +246,16 @@ func validateReconcileConfig() int {
 func runFullDryRun() error {
 	cfg := reconcile.DefaultConfig()
 
-	// Load from environment
-	cfg.RepoURL = os.Getenv("REPO_URL")
+	// Load from environment. BOSUN_REPO_URL takes precedence over legacy REPO_URL.
+	cfg.RepoURL = os.Getenv("BOSUN_REPO_URL")
 	if cfg.RepoURL == "" {
-		cfg.RepoURL = os.Getenv("BOSUN_REPO_URL")
+		cfg.RepoURL = os.Getenv("REPO_URL")
 	}
 
-	if branch := os.Getenv("REPO_BRANCH"); branch != "" {
-		cfg.RepoBranch = branch
-	}
+	// BOSUN_REPO_BRANCH takes precedence over legacy REPO_BRANCH.
 	if branch := os.Getenv("BOSUN_REPO_BRANCH"); branch != "" {
+		cfg.RepoBranch = branch
+	} else if branch := os.Getenv("REPO_BRANCH"); branch != "" {
 		cfg.RepoBranch = branch
 	}
 

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
@@ -832,6 +833,50 @@ func getEnvOrDefault(envKey, defaultValue string) string {
 		return v
 	}
 	return defaultValue
+}
+
+// splitCommaSeparated splits a comma-separated env-var value into a trimmed,
+// non-empty string slice. Returns nil when the input is empty or blank.
+func splitCommaSeparated(v string) []string {
+	if v == "" {
+		return nil
+	}
+	var result []string
+	for _, s := range strings.Split(v, ",") {
+		if t := strings.TrimSpace(s); t != "" {
+			result = append(result, t)
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// AlertConfigFromEnv builds an AlertConfig purely from environment variables,
+// applying BOSUN_-first precedence without needing a project config file.
+// This is used as a fallback when config.Load() fails (no bosun.yaml present).
+func AlertConfigFromEnv() AlertConfig {
+	return AlertConfig{
+		DiscordWebhookURL: getEnvOrDefault("BOSUN_DISCORD_WEBHOOK_URL", getEnvOrDefault("DISCORD_WEBHOOK_URL", "")),
+		SlackWebhookURL:   getEnvOrDefault("BOSUN_SLACK_WEBHOOK_URL", getEnvOrDefault("SLACK_WEBHOOK_URL", "")),
+		SendGridAPIKey:    getEnvOrDefault("BOSUN_SENDGRID_API_KEY", getEnvOrDefault("SENDGRID_API_KEY", "")),
+		SendGridFromEmail: getEnvOrDefault("BOSUN_SENDGRID_FROM_EMAIL", getEnvOrDefault("SENDGRID_FROM_EMAIL", "")),
+		SendGridFromName:  getEnvOrDefault("BOSUN_SENDGRID_FROM_NAME", getEnvOrDefault("SENDGRID_FROM_NAME", "")),
+		// BOSUN_SENDGRID_TO_EMAILS is a comma-separated list of recipient addresses.
+		// Without this, a provider initialized via env vars would have credentials but no
+		// recipients, causing IsConfigured() == false and silent alert drops.
+		SendGridToEmails: splitCommaSeparated(os.Getenv("BOSUN_SENDGRID_TO_EMAILS")),
+		TwilioAccountSID: getEnvOrDefault("BOSUN_TWILIO_ACCOUNT_SID", getEnvOrDefault("TWILIO_ACCOUNT_SID", "")),
+		TwilioAuthToken:  getEnvOrDefault("BOSUN_TWILIO_AUTH_TOKEN", getEnvOrDefault("TWILIO_AUTH_TOKEN", "")),
+		TwilioFromNumber: getEnvOrDefault("BOSUN_TWILIO_FROM_NUMBER", getEnvOrDefault("TWILIO_FROM_NUMBER", "")),
+		// BOSUN_TWILIO_TO_NUMBERS is a comma-separated list of recipient phone numbers.
+		TwilioToNumbers: splitCommaSeparated(os.Getenv("BOSUN_TWILIO_TO_NUMBERS")),
+		WebhookURL:      getEnvOrDefault("BOSUN_WEBHOOK_URL", ""),
+		WebhookMethod:   getEnvOrDefault("BOSUN_WEBHOOK_METHOD", ""),
+		// OnFailure defaults to true when neither flag is set (same as extractAlertConfig).
+		OnFailure: true,
+	}
 }
 
 // extractAlertConfig extracts alert configuration from a parsed config.
