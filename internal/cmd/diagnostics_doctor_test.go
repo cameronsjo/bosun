@@ -1,8 +1,12 @@
 package cmd
 
 import (
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -44,17 +48,69 @@ func TestCheckProjectRoot(t *testing.T) {
 		cfg := &config.Config{
 			Root: "/some/path",
 		}
-		result := checkProjectRoot(cfg)
+		result := checkProjectRoot(cfg, nil)
 		assert.Equal(t, 1, result.Passed)
 		assert.Equal(t, 0, result.Failed)
 		assert.Equal(t, 0, result.Warned)
 	})
 
-	t.Run("with nil config", func(t *testing.T) {
-		result := checkProjectRoot(nil)
+	t.Run("with nil config and no error", func(t *testing.T) {
+		result := checkProjectRoot(nil, nil)
 		assert.Equal(t, 0, result.Passed)
 		assert.Equal(t, 0, result.Failed)
 		assert.Equal(t, 1, result.Warned)
+	})
+
+	t.Run("with nil config and YAML parse error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		// Write a syntactically invalid bosun.yaml
+		bosunYAML := filepath.Join(tmpDir, "bosun.yaml")
+		require.NoError(t, os.WriteFile(bosunYAML, []byte("key: [unclosed"), 0644))
+
+		// Also create a manifest dir so FindRoot anchors here
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		_, loadErr := config.Load()
+		require.Error(t, loadErr)
+
+		result := checkProjectRoot(nil, loadErr)
+		// YAML parse errors must be surfaced as failures, not generic warnings.
+		assert.Equal(t, 1, result.Failed, "YAML parse error should be a failure")
+		assert.Equal(t, 0, result.Warned)
+		assert.Equal(t, 0, result.Passed)
+	})
+
+	t.Run("with nil config and file-read error", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("cannot test permission denial as root")
+		}
+		tmpDir := t.TempDir()
+		bosunYAML := filepath.Join(tmpDir, "bosun.yaml")
+		require.NoError(t, os.WriteFile(bosunYAML, []byte("{}"), 0644))
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+		// Make the file unreadable so loadConfigFile returns a read error.
+		require.NoError(t, os.Chmod(bosunYAML, 0000))
+		defer func() { _ = os.Chmod(bosunYAML, 0644) }()
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		_, loadErr := config.Load()
+		require.Error(t, loadErr)
+
+		result := checkProjectRoot(nil, loadErr)
+		// File-read errors must be surfaced as failures with a distinct message,
+		// not the generic "project root not found" warning.
+		assert.Equal(t, 1, result.Failed, "file-read error should be a failure")
+		assert.Equal(t, 0, result.Warned)
+		assert.Equal(t, 0, result.Passed)
 	})
 }
 
@@ -225,3 +281,209 @@ func TestCheckTraefikConfig(t *testing.T) {
 		assert.Equal(t, 4, result.Warned)
 	})
 }
+
+func TestCheckStateDir(t *testing.T) {
+	t.Run("writable custom dir via BOSUN_STATE_DIR", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("BOSUN_STATE_DIR", tmpDir)
+		result := checkStateDir()
+		assert.Equal(t, 1, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+	})
+
+	t.Run("non-writable dir fails", func(t *testing.T) {
+		// Point to a path under a non-existent root that cannot be created.
+		t.Setenv("BOSUN_STATE_DIR", "/proc/bosun-cannot-create-this")
+		result := checkStateDir()
+		assert.Equal(t, 1, result.Failed)
+		assert.Equal(t, 0, result.Passed)
+	})
+}
+
+func TestCheckSocketDir(t *testing.T) {
+	t.Run("writable custom socket path via BOSUN_SOCKET_PATH", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("BOSUN_SOCKET_PATH", filepath.Join(tmpDir, "bosun.sock"))
+		result := checkSocketDir()
+		assert.Equal(t, 1, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+	})
+
+	t.Run("non-writable socket dir fails", func(t *testing.T) {
+		t.Setenv("BOSUN_SOCKET_PATH", "/proc/bosun-cannot-create-this/bosun.sock")
+		result := checkSocketDir()
+		assert.Equal(t, 1, result.Failed)
+		assert.Equal(t, 0, result.Passed)
+	})
+}
+
+func TestWebhookAddr(t *testing.T) {
+	t.Run("defaults to localhost:8080", func(t *testing.T) {
+		t.Setenv("PORT", "")
+		t.Setenv("WEBHOOK_PORT", "")
+		assert.Equal(t, "localhost:8080", webhookAddr())
+	})
+
+	t.Run("reads PORT", func(t *testing.T) {
+		t.Setenv("PORT", "9080")
+		t.Setenv("WEBHOOK_PORT", "")
+		assert.Equal(t, "localhost:9080", webhookAddr())
+	})
+
+	t.Run("reads WEBHOOK_PORT as legacy alias", func(t *testing.T) {
+		t.Setenv("PORT", "")
+		t.Setenv("WEBHOOK_PORT", "9081")
+		assert.Equal(t, "localhost:9081", webhookAddr())
+	})
+
+	t.Run("PORT takes precedence over WEBHOOK_PORT", func(t *testing.T) {
+		t.Setenv("PORT", "9080")
+		t.Setenv("WEBHOOK_PORT", "9081")
+		assert.Equal(t, "localhost:9080", webhookAddr())
+	})
+}
+
+func TestCheckWebhook_UsesEnvAddr(t *testing.T) {
+	// Point at a port that is definitely not listening to confirm the address
+	// is respected (the check should warn, not panic or use a wrong address).
+	t.Setenv("PORT", "19999")
+	t.Setenv("WEBHOOK_PORT", "")
+	result := checkWebhook()
+	assert.Equal(t, 0, result.Passed)
+	assert.Equal(t, 1, result.Warned)
+	assert.Equal(t, 0, result.Failed)
+}
+
+func TestCheckSocketDir_WindowsSkip(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only: verifies early return when no override is set")
+	}
+	// On Windows with no BOSUN_SOCKET_PATH, checkSocketDir must return an empty
+	// result (not a failure) — /var/run/bosun.sock is meaningless on Windows.
+	t.Setenv("BOSUN_SOCKET_PATH", "")
+	result := checkSocketDir()
+	assert.Equal(t, 0, result.Passed)
+	assert.Equal(t, 0, result.Failed)
+	assert.Equal(t, 0, result.Warned)
+}
+
+func TestCheckStateDir_WindowsSkip(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only: verifies early return when no override is set")
+	}
+	// On Windows with no BOSUN_STATE_DIR, checkStateDir must return an empty
+	// result (not a failure) — /var/lib/bosun is meaningless on Windows.
+	t.Setenv("BOSUN_STATE_DIR", "")
+	result := checkStateDir()
+	assert.Equal(t, 0, result.Passed)
+	assert.Equal(t, 0, result.Failed)
+	assert.Equal(t, 0, result.Warned)
+}
+
+// TestCheckStateDir_UnwritableAfterMkdirAll covers the CreateTemp error branch:
+// MkdirAll succeeds but the directory is not writable for temp-file creation.
+func TestCheckStateDir_UnwritableAfterMkdirAll(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod semantics differ on Windows")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("cannot test permission denial as root")
+	}
+
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, "state")
+	require.NoError(t, os.MkdirAll(stateDir, 0755))
+
+	// Remove write bit so CreateTemp fails while MkdirAll (which is a no-op
+	// for an existing dir) succeeds.
+	require.NoError(t, os.Chmod(stateDir, 0555))
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0755) })
+
+	t.Setenv("BOSUN_STATE_DIR", stateDir)
+	result := checkStateDir()
+	assert.Equal(t, 1, result.Failed)
+	assert.Equal(t, 0, result.Passed)
+}
+
+// TestCheckSocketDir_UnwritableAfterMkdirAll covers the CreateTemp error branch
+// inside the os.IsNotExist guard: the directory exists but is not writable.
+func TestCheckSocketDir_UnwritableAfterMkdirAll(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod semantics differ on Windows")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("cannot test permission denial as root")
+	}
+
+	tmpDir := t.TempDir()
+	socketDir := filepath.Join(tmpDir, "run")
+	require.NoError(t, os.MkdirAll(socketDir, 0755))
+
+	// Remove write bit so CreateTemp inside the os.IsNotExist branch fails.
+	require.NoError(t, os.Chmod(socketDir, 0555))
+	t.Cleanup(func() { _ = os.Chmod(socketDir, 0755) })
+
+	t.Setenv("BOSUN_SOCKET_PATH", filepath.Join(socketDir, "bosun.sock"))
+	result := checkSocketDir()
+	assert.Equal(t, 1, result.Failed)
+	assert.Equal(t, 0, result.Passed)
+}
+
+// TestCheckSocketDir_SocketAlreadyExists covers the branch where the socket
+// file already exists (daemon is live). The write probe is skipped and the
+// check should pass.
+func TestCheckSocketDir_SocketAlreadyExists(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket semantics differ on Windows")
+	}
+
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(tmpDir, "bosun.sock")
+
+	// Create a placeholder file to simulate an existing socket.
+	require.NoError(t, os.WriteFile(socketPath, []byte{}, 0600))
+
+	t.Setenv("BOSUN_SOCKET_PATH", socketPath)
+	result := checkSocketDir()
+	assert.Equal(t, 1, result.Passed)
+	assert.Equal(t, 0, result.Failed)
+}
+
+// TestCheckWebhook_Responding covers the success branch: webhook returns 200 OK.
+func TestCheckWebhook_Responding(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Extract port from the test server address (host:port).
+	_, port, err := net.SplitHostPort(srv.Listener.Addr().String())
+	require.NoError(t, err)
+	t.Setenv("PORT", port)
+	t.Setenv("WEBHOOK_PORT", "")
+
+	result := checkWebhook()
+	assert.Equal(t, 1, result.Passed)
+	assert.Equal(t, 0, result.Warned)
+	assert.Equal(t, 0, result.Failed)
+}
+
+// TestCheckWebhook_NonOKStatus covers the branch where the server responds but
+// returns a non-200 status — should warn, not pass.
+func TestCheckWebhook_NonOKStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+
+	_, port, err := net.SplitHostPort(srv.Listener.Addr().String())
+	require.NoError(t, err)
+	t.Setenv("PORT", port)
+	t.Setenv("WEBHOOK_PORT", "")
+
+	result := checkWebhook()
+	assert.Equal(t, 0, result.Passed)
+	assert.Equal(t, 1, result.Warned)
+	assert.Equal(t, 0, result.Failed)
+}
+

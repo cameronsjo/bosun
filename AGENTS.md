@@ -394,6 +394,7 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 - **WrittenFiles paths are staging-relative**: Content-hash sync (`CopyDirIfChanged`) returns paths relative to each deploy target dir. `deployLocal` prefixes them with `t.RelPath` via `PrefixLatest`. Hook globs must use staging-relative paths (e.g., `appdata/authelia/**`), not repo-relative. Git-diff fallback uses different (repo-relative) paths — the two code paths are not interchangeable
 - **`filepath.Join` silently drops prefix for absolute paths**: `filepath.Join("prefix", "/absolute/path")` returns `/absolute/path`. When adding paths to `WrittenFiles`, always use relative paths (e.g., `filepath.Base()`) so `PrefixLatest` works correctly
 - **CLAUDE.md symlink and the Edit tool**: `Read` must target `AGENTS.md` before `Edit` will work. The Edit tool tracks file modification times — if the symlink target was modified externally, Edit refuses with "file modified since read"
+- **`FindRoot` `$HOME`-anchor refusal**: `FindRoot` refuses to anchor on `manifest/` or `manifests/` alone when the candidate dir equals `$HOME` (after `filepath.EvalSymlinks` normalization on both sides). These generic directory names collide with npm, OCI tooling, and packaging pipelines. Strong markers (`bosun.yaml`, `bosun.yml`, `bosun/docker-compose.yml`) are accepted unconditionally everywhere, including inside `$HOME`.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
 ## Beads Issue Tracker
