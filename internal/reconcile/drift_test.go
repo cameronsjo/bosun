@@ -312,6 +312,56 @@ func TestExtractDeclaredState_NoComposeDir(t *testing.T) {
 	assert.Empty(t, declared)
 }
 
+func TestFindComposeCandidates_SingleCandidate(t *testing.T) {
+	base := t.TempDir()
+	mkdirs(t, base, "unraid/compose", "docs", "scripts")
+
+	got := findComposeCandidates(base)
+	assert.Equal(t, []string{"unraid"}, got)
+}
+
+func TestFindComposeCandidates_MultipleCandidates(t *testing.T) {
+	base := t.TempDir()
+	mkdirs(t, base, "unraid/compose", "staging/compose", "docs")
+
+	got := findComposeCandidates(base)
+	// Sorted for deterministic suggestions.
+	assert.Equal(t, []string{"staging", "unraid"}, got)
+}
+
+func TestFindComposeCandidates_NoCandidate_Empty(t *testing.T) {
+	base := t.TempDir()
+	mkdirs(t, base, "docs", "scripts")
+
+	got := findComposeCandidates(base)
+	assert.Empty(t, got)
+}
+
+func TestFindComposeCandidates_SkipsDotDirsAndComposeFile(t *testing.T) {
+	base := t.TempDir()
+	// .beads/compose is a dot-dir (excluded); good/compose is legit;
+	// filey/compose is a file, not a directory (excluded).
+	mkdirs(t, base, ".beads/compose", "good/compose", "filey")
+	require.NoError(t, os.WriteFile(filepath.Join(base, "filey", "compose"), []byte("x"), 0644))
+
+	got := findComposeCandidates(base)
+	assert.Equal(t, []string{"good"}, got)
+}
+
+func TestExtractDeclaredState_MissingComposeDir_WithSibling_NamesCandidate(t *testing.T) {
+	// The configured dir has no compose/, but a sibling child does — the
+	// GH#214 InfraSubDir="." shape. The error must still be ErrComposeDirMissing
+	// but name the candidate so the operator knows what to set BOSUN_INFRA_DIR to.
+	dir := t.TempDir()
+	mkdirs(t, dir, "unraid/compose")
+
+	declared, err := ExtractDeclaredState(dir)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrComposeDirMissing)
+	assert.Contains(t, err.Error(), "unraid")
+	assert.Empty(t, declared)
+}
+
 func TestExtractDeclaredState_DeduplicatesServices(t *testing.T) {
 	dir := t.TempDir()
 	composeDir := filepath.Join(dir, "compose")

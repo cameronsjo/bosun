@@ -58,7 +58,7 @@ Every reconciliation follows this 16-stage sequence:
 
 Bosun enforces two invariant gates that turn the GH#214 silent-success failure mode into a loud error:
 
-- **Declared-state invariant (stage 6)** — if `ExtractDeclaredState` returns `ErrComposeDirMissing` the reconcile fails unconditionally (no override). If it returns `ErrNoDeclaredServices` the reconcile fails unless `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true` is set; the override logs at `Warn` level with `override=true`.
+- **Declared-state invariant (stage 6)** — if `ExtractDeclaredState` returns `ErrComposeDirMissing` the reconcile fails unconditionally (no override). When the infra dir has no `compose/` but a sibling directory does, the error names the candidate and suggests the `BOSUN_INFRA_DIR` value to set (e.g. `did you mean BOSUN_INFRA_DIR=unraid?`) — the GH#214 misconfiguration. If it returns `ErrNoDeclaredServices` the reconcile fails unless `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true` is set; the override logs at `Warn` level with `override=true`.
 - **Post-deploy invariant (stage 9)** — for every file in `DeployResult.WrittenFiles`, the destination must exist at `mtime >= reconcileStartTime`. If a deploy target's source staging dir contains regular files but the target's `WrittenFiles` is empty, that is the GH#214 silent-sync signature and fails the reconcile before `docker compose up` runs.
 
 Operators can bypass the post-deploy invariant for diagnostic deploys via `BOSUN_SKIP_DEPLOY_INVARIANT=true`. The skip is logged at `Warn` level with `override=true` so it shows up in monitoring; the declared-state invariant is not affected by this flag.

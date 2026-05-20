@@ -88,6 +88,31 @@ var ErrComposeDirMissing = errors.New("staging compose directory does not exist"
 // repos (early scaffolding, archive branches).
 var ErrNoDeclaredServices = errors.New("no declared services in staging compose directory")
 
+// findComposeCandidates returns the names of immediate child directories of dir
+// that themselves contain a compose/ subdirectory. Dot-prefixed children are
+// skipped (never legitimate infra roots), and a "compose" entry that is a file
+// rather than a directory does not count. Used to suggest a likely
+// BOSUN_INFRA_DIR when the configured compose directory is missing (GH#214).
+// Results are sorted for deterministic suggestions.
+func findComposeCandidates(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var candidates []string
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		composeInfo, statErr := os.Stat(filepath.Join(dir, entry.Name(), "compose"))
+		if statErr == nil && composeInfo.IsDir() {
+			candidates = append(candidates, entry.Name())
+		}
+	}
+	sort.Strings(candidates)
+	return candidates
+}
+
 // ExtractDeclaredState parses rendered compose files from a staging directory
 // and returns the list of declared services with their images.
 //
@@ -103,9 +128,15 @@ func ExtractDeclaredState(stagingDir string) ([]DeclaredService, error) {
 	// failure modes have different remediation paths.
 	if _, statErr := os.Stat(composeDir); statErr != nil {
 		if os.IsNotExist(statErr) {
+			candidates := findComposeCandidates(stagingDir)
 			logger.Debug().
 				Str(log.FieldPath, composeDir).
+				Strs("candidate_infra_dirs", candidates).
 				Msg("Compose directory does not exist")
+			if len(candidates) > 0 {
+				return nil, fmt.Errorf("%w: %s (compose/ found under sibling dir(s): %s)",
+					ErrComposeDirMissing, composeDir, strings.Join(candidates, ", "))
+			}
 			return nil, fmt.Errorf("%w: %s", ErrComposeDirMissing, composeDir)
 		}
 		return nil, fmt.Errorf("stat compose dir: %w", statErr)
