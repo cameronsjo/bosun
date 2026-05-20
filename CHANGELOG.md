@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.2](https://github.com/cameronsjo/bosun/compare/v0.34.1...v0.34.2) (2026-05-20)
+
+
+### Bug Fixes
+
+* doctor and discovery diagnostic accuracy (Cluster J) ([#299](https://github.com/cameronsjo/bosun/issues/299)) ([a9ccc58](https://github.com/cameronsjo/bosun/commit/a9ccc582165ef8c712f367567aafa7aad75aaf8b))
+
 ## [0.34.1](https://github.com/cameronsjo/bosun/compare/v0.34.0...v0.34.1) (2026-05-20)
 
 
