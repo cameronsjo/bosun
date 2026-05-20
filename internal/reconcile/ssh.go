@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
+	"github.com/kballard/go-shellquote"
 )
 
 // SSH retry configuration
@@ -222,7 +223,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 		// Tar source directory and pipe to SSH for extraction on remote
 		// tar -C sourceDir -cf - . | ssh host "tar -C tmpDir -xf -"
 		tarCmd := exec.CommandContext(ctx, "tar", "-C", sourceDir, "-cf", "-", ".")
-		sshCmd := exec.CommandContext(ctx, "ssh", targetHost, fmt.Sprintf("tar -C %s -xf -", tmpDir))
+		sshCmd := exec.CommandContext(ctx, "ssh", targetHost, fmt.Sprintf("tar -C %s -xf -", shellquote.Join(tmpDir)))
 
 		// Connect tar stdout to ssh stdin
 		pipe, err := tarCmd.StdoutPipe()
@@ -263,7 +264,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 
 		// Atomic move: remove old target and rename temp to target
 		// Using a shell command to ensure atomicity
-		moveCmd := fmt.Sprintf("rm -rf %s && mv %s %s", targetDir, tmpDir, targetDir)
+		moveCmd := fmt.Sprintf("rm -rf %s && mv %s %s", shellquote.Join(targetDir), shellquote.Join(tmpDir), shellquote.Join(targetDir))
 		atomicCmd := exec.CommandContext(ctx, "ssh", targetHost, moveCmd)
 		var atomicStderr bytes.Buffer
 		atomicCmd.Stderr = &atomicStderr

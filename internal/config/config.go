@@ -444,6 +444,27 @@ func Load() (*Config, error) {
 	if projectName == "" {
 		projectName = filepath.Base(root)
 	}
+	// Validate project name before it reaches shell commands. Warn and clear
+	// to avoid injecting attacker-controlled strings into SSH-built commands.
+	if fileCfg.ProjectName != "" {
+		if err := reconcile.ValidateProjectName(projectName); err != nil {
+			log.Warn().Err(err).Str("project_name", projectName).
+				Msg("Config: invalid project_name — ignoring and falling back to directory name")
+			projectName = filepath.Base(root)
+		}
+	}
+	// Also validate the fallback value: the project directory name itself may
+	// contain characters invalid for docker compose project names (e.g. spaces).
+	// Sanitize by replacing spaces with underscores; log a warning so operators
+	// know the effective project name differs from their directory name.
+	if err := reconcile.ValidateProjectName(projectName); err != nil {
+		sanitized := strings.ReplaceAll(projectName, " ", "_")
+		log.Warn().Err(err).
+			Str("project_name", projectName).
+			Str("sanitized", sanitized).
+			Msg("Config: project name derived from directory contains invalid characters — using sanitized version")
+		projectName = sanitized
+	}
 
 	cfg := &Config{
 		Root:            root,
@@ -833,12 +854,33 @@ func extractTargets(cfg configFile) []reconcile.Target {
 			log.Warn().Msg("Skipping target with empty name in config")
 			continue
 		}
+
+		// Validate security-sensitive fields that reach SSH shell commands.
+		// Warn and clear (rather than skip the whole target) so a single bad
+		// field does not block all deployments to that host.
+		projectName := raw.ProjectName
+		if projectName != "" {
+			if err := reconcile.ValidateProjectName(projectName); err != nil {
+				log.Warn().Err(err).Str("target", raw.Name).Str("project_name", projectName).
+					Msg("Config: invalid project_name on target — ignoring and inheriting global value")
+				projectName = ""
+			}
+		}
+		remoteAppdataPath := raw.RemoteAppdataPath
+		if remoteAppdataPath != "" {
+			if err := reconcile.ValidateRemotePath(remoteAppdataPath); err != nil {
+				log.Warn().Err(err).Str("target", raw.Name).Str("remote_appdata_path", remoteAppdataPath).
+					Msg("Config: invalid remote_appdata_path on target — ignoring")
+				remoteAppdataPath = ""
+			}
+		}
+
 		targets = append(targets, reconcile.Target{
 			Name:               raw.Name,
 			TargetHost:         raw.TargetHost,
 			LocalAppdataPath:   raw.LocalAppdataPath,
-			RemoteAppdataPath:  raw.RemoteAppdataPath,
-			ProjectName:        raw.ProjectName,
+			RemoteAppdataPath:  remoteAppdataPath,
+			ProjectName:        projectName,
 			SecretsScope:       raw.SecretsScope,
 			CriticalContainers: raw.CriticalContainers,
 			PostSyncHooks:      raw.PostSyncHooks,

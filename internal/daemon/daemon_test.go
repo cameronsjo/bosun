@@ -499,6 +499,75 @@ func TestConfigFromEnv(t *testing.T) {
 	})
 }
 
+func TestConfigFromEnv_BOSUNTargets(t *testing.T) {
+	t.Run("valid BOSUN_TARGETS JSON is parsed and stored", func(t *testing.T) {
+		t.Setenv("BOSUN_TARGETS", `[{"name":"unraid","target_host":"user@unraid","project_name":"homelab","remote_appdata_path":"/mnt/user/appdata"}]`)
+
+		cfg := ConfigFromEnv()
+
+		require.Len(t, cfg.ReconcileConfig.Targets, 1)
+		assert.Equal(t, "unraid", cfg.ReconcileConfig.Targets[0].Name)
+		assert.Equal(t, "homelab", cfg.ReconcileConfig.Targets[0].ProjectName)
+		assert.Equal(t, "/mnt/user/appdata", cfg.ReconcileConfig.Targets[0].RemoteAppdataPath)
+	})
+
+	t.Run("invalid project_name in one entry is cleared; other fields preserved", func(t *testing.T) {
+		t.Setenv("BOSUN_TARGETS", `[{"name":"evil","target_host":"user@host","project_name":"evil; rm -rf /","remote_appdata_path":"/mnt/appdata"}]`)
+
+		cfg := ConfigFromEnv()
+
+		require.Len(t, cfg.ReconcileConfig.Targets, 1)
+		assert.Equal(t, "", cfg.ReconcileConfig.Targets[0].ProjectName, "invalid project_name must be cleared")
+		assert.Equal(t, "/mnt/appdata", cfg.ReconcileConfig.Targets[0].RemoteAppdataPath, "valid remote_appdata_path must be preserved")
+	})
+
+	t.Run("invalid remote_appdata_path is cleared; project_name preserved", func(t *testing.T) {
+		t.Setenv("BOSUN_TARGETS", `[{"name":"badpath","target_host":"user@host","project_name":"myproject","remote_appdata_path":"/mnt;rm -rf /"}]`)
+
+		cfg := ConfigFromEnv()
+
+		require.Len(t, cfg.ReconcileConfig.Targets, 1)
+		assert.Equal(t, "myproject", cfg.ReconcileConfig.Targets[0].ProjectName, "valid project_name must be preserved")
+		assert.Equal(t, "", cfg.ReconcileConfig.Targets[0].RemoteAppdataPath, "invalid remote_appdata_path must be cleared")
+	})
+
+	t.Run("multiple entries — only bad fields cleared, clean entries untouched", func(t *testing.T) {
+		t.Setenv("BOSUN_TARGETS", `[
+			{"name":"clean","target_host":"user@host1","project_name":"goodproject","remote_appdata_path":"/mnt/appdata"},
+			{"name":"bad","target_host":"user@host2","project_name":"evil$(id)","remote_appdata_path":"/mnt/appdata"}
+		]`)
+
+		cfg := ConfigFromEnv()
+
+		require.Len(t, cfg.ReconcileConfig.Targets, 2)
+		assert.Equal(t, "goodproject", cfg.ReconcileConfig.Targets[0].ProjectName, "clean entry must be preserved")
+		assert.Equal(t, "", cfg.ReconcileConfig.Targets[1].ProjectName, "invalid entry must be cleared")
+	})
+
+	t.Run("malformed JSON is ignored", func(t *testing.T) {
+		t.Setenv("BOSUN_TARGETS", `not-valid-json`)
+
+		cfg := ConfigFromEnv()
+
+		assert.Empty(t, cfg.ReconcileConfig.Targets, "malformed JSON must result in empty targets")
+	})
+
+	t.Run("empty BOSUN_TARGETS env var is a no-op", func(t *testing.T) {
+		// No BOSUN_TARGETS set — targets remain empty.
+		cfg := ConfigFromEnv()
+
+		assert.Empty(t, cfg.ReconcileConfig.Targets)
+	})
+
+	t.Run("explicit empty array clears targets", func(t *testing.T) {
+		t.Setenv("BOSUN_TARGETS", `[]`)
+
+		cfg := ConfigFromEnv()
+
+		assert.Empty(t, cfg.ReconcileConfig.Targets, "explicit empty array must set empty targets slice")
+	})
+}
+
 func TestSplitAndTrim(t *testing.T) {
 	tests := []struct {
 		name  string

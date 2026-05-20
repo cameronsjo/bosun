@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
+	"github.com/kballard/go-shellquote"
 )
 
 // VerifyBackup checks that a backup archive is valid and non-empty.
@@ -137,9 +138,8 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 
 	tarFile := filepath.Join(backupPath, "configs.tar.gz")
 
-	// Build remote tar command.
-	tarArgs := strings.Join(remotePaths, " ")
-	sshCmd := fmt.Sprintf("tar -czf - %s 2>/dev/null", tarArgs)
+	// Build remote tar command with properly quoted paths to prevent shell injection.
+	sshCmd := fmt.Sprintf("tar -czf - %s", shellquote.Join(remotePaths...))
 
 	outFile, err := os.Create(tarFile)
 	if err != nil {
@@ -148,9 +148,14 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 
 	// Retry with backoff on transient SSH errors.
 	sshErr := retryWithBackoff(ctx, DefaultMaxRetries, func() error {
+		var stderr bytes.Buffer
 		cmd := exec.CommandContext(ctx, "ssh", host, sshCmd)
 		cmd.Stdout = outFile
-		return cmd.Run()
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("remote tar failed: %w: %s", err, stderr.String())
+		}
+		return nil
 	})
 
 	// Close the file before verification
@@ -160,10 +165,11 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 		return "", fmt.Errorf("failed to close backup file: %w", closeErr)
 	}
 
-	// Log SSH error but don't fail - tar may return non-zero for missing files.
-	// Only log if it's not a transient error we already retried.
-	// tar returning non-zero for missing files is expected.
-	_ = sshErr
+	// Log SSH/tar error but don't fail outright — the backup may still be usable.
+	// We verify it below; that check will surface any real corruption.
+	if sshErr != nil {
+		logger.Warn().Err(sshErr).Str(log.FieldPath, backupPath).Msg("Remote tar command returned error during backup")
+	}
 
 	// Verify the backup was created successfully
 	if err := d.VerifyBackup(backupPath); err != nil {

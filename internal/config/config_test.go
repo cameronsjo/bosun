@@ -2128,6 +2128,129 @@ func TestExtractTargets_DeprecationWarning(t *testing.T) {
 	assert.Equal(t, "user@pi", targets[0].TargetHost)
 }
 
+// TestLoad_ProjectNameFallbackValidation verifies that the Load() function
+// validates the project_name field and falls back to the directory name when
+// the configured name is invalid.
+func TestLoad_ProjectNameFallbackValidation(t *testing.T) {
+	t.Run("valid project_name in config is used as-is", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte("project_name: myhomelab\n"), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, "myhomelab", cfg.ProjectName())
+	})
+
+	t.Run("invalid project_name in config falls back to sanitized directory name", func(t *testing.T) {
+		// Use a directory name that is valid for project name purposes.
+		// The tmpDir name itself will be a valid hex string — we override project_name with injection.
+		tmpDir := evalSymlinks(t, t.TempDir())
+
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte("project_name: \"evil; rm -rf /\"\n"), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		// Project name must not contain shell metacharacters from the config.
+		projectName := cfg.ProjectName()
+		assert.NotContains(t, projectName, ";", "project name must not contain shell metachar ';'")
+		assert.NotContains(t, projectName, " ", "project name must not contain spaces from injection")
+	})
+}
+
+// TestLoad_DirectoryNameSanitization verifies that spaces in the repo directory name
+// are replaced with underscores so the project name is safe for docker compose.
+func TestLoad_DirectoryNameSanitization(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory names with spaces behave differently on Windows")
+	}
+
+	// Create a temp dir with spaces in its name by making a subdirectory.
+	baseDir := evalSymlinks(t, t.TempDir())
+	spacedDir := filepath.Join(baseDir, "my project")
+	require.NoError(t, os.MkdirAll(spacedDir, 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(spacedDir, "manifest"), 0755))
+	// No bosun.yaml — project_name defaults to directory name.
+
+	originalWd, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() { _ = os.Chdir(originalWd) }()
+	require.NoError(t, os.Chdir(spacedDir))
+
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	// The space must be replaced with underscore.
+	assert.Equal(t, "my_project", cfg.ProjectName(), "spaces in directory name must be replaced with underscores")
+}
+
+// TestExtractTargets_SecurityValidation verifies that extractTargets clears
+// security-sensitive fields that contain shell metacharacters.
+func TestExtractTargets_SecurityValidation(t *testing.T) {
+	t.Run("invalid project_name on target is cleared", func(t *testing.T) {
+		cfg := configFile{
+			Targets: []targetRaw{
+				{Name: "evil", TargetHost: "user@host", ProjectName: "evil; rm -rf /", RemoteAppdataPath: "/mnt/appdata"},
+			},
+		}
+
+		targets := extractTargets(cfg)
+		require.Len(t, targets, 1)
+		assert.Equal(t, "", targets[0].ProjectName, "invalid project_name must be cleared")
+		assert.Equal(t, "/mnt/appdata", targets[0].RemoteAppdataPath, "valid remote path must be preserved")
+	})
+
+	t.Run("invalid remote_appdata_path on target is cleared", func(t *testing.T) {
+		cfg := configFile{
+			Targets: []targetRaw{
+				{Name: "badpath", TargetHost: "user@host", ProjectName: "myproject", RemoteAppdataPath: "/mnt;evil"},
+			},
+		}
+
+		targets := extractTargets(cfg)
+		require.Len(t, targets, 1)
+		assert.Equal(t, "myproject", targets[0].ProjectName, "valid project_name must be preserved")
+		assert.Equal(t, "", targets[0].RemoteAppdataPath, "invalid remote_appdata_path must be cleared")
+	})
+
+	t.Run("valid project_name and remote_appdata_path are preserved", func(t *testing.T) {
+		cfg := configFile{
+			Targets: []targetRaw{
+				{Name: "clean", TargetHost: "user@host", ProjectName: "homelab", RemoteAppdataPath: "/mnt/user/appdata"},
+			},
+		}
+
+		targets := extractTargets(cfg)
+		require.Len(t, targets, 1)
+		assert.Equal(t, "homelab", targets[0].ProjectName)
+		assert.Equal(t, "/mnt/user/appdata", targets[0].RemoteAppdataPath)
+	})
+
+	t.Run("path traversal in remote_appdata_path is cleared", func(t *testing.T) {
+		cfg := configFile{
+			Targets: []targetRaw{
+				{Name: "traversal", TargetHost: "user@host", ProjectName: "myproject", RemoteAppdataPath: "/mnt/../etc/passwd"},
+			},
+		}
+
+		targets := extractTargets(cfg)
+		require.Len(t, targets, 1)
+		assert.Equal(t, "", targets[0].RemoteAppdataPath, "path traversal must be cleared")
+	})
+}
+
 func TestAlertConfigFromEnv_Empty(t *testing.T) {
 	// Clear all alert env vars so we get a clean baseline.
 	for _, k := range []string{

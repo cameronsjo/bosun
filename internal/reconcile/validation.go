@@ -20,6 +20,18 @@ var (
 	// Must start with alphanumeric and can contain alphanumeric, underscore, dot, and hyphen.
 	containerNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
+	// projectNamePattern validates docker compose project names.
+	// Must start with alphanumeric and can contain alphanumeric, underscore, hyphen, and dot.
+	// Length cap of 128 matches docker compose's own limit.
+	projectNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
+
+	// remotePathPattern validates remote filesystem paths passed to SSH commands.
+	// Allows absolute paths (starting with /) or relative paths using alphanumeric,
+	// underscore, hyphen, dot, space, and forward slash. Spaces are permitted because
+	// real-world Unraid NAS paths frequently include them (e.g. "/mnt/user/My Media/appdata");
+	// shellquote.Join handles quoting correctly. Rejects path traversal (../).
+	remotePathPattern = regexp.MustCompile(`^[a-zA-Z0-9/_. -]+$`)
+
 	// shellMetachars contains shell metacharacters that could enable command injection.
 	shellMetachars = []string{";", "&", "|", "$", "`", "(", ")", "{", "}", "<", ">", "\\", "\n", "\r", "'", "\""}
 )
@@ -136,4 +148,98 @@ func validateContainerName(name string) error {
 	}
 
 	return nil
+}
+
+// ValidateProjectName validates a docker compose project name for use in shell commands.
+// Must start with alphanumeric and may contain alphanumeric, underscore, hyphen, or dot.
+// Maximum length is 128 characters (docker compose's own limit).
+// Rejects shell metacharacters that could enable command injection.
+func ValidateProjectName(name string) error {
+	if name == "" {
+		return fmt.Errorf("project name cannot be empty")
+	}
+
+	// Reject names starting with "-" (option injection)
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("invalid project name: cannot start with '-' (potential option injection)")
+	}
+
+	// Reject shell metacharacters
+	for _, char := range shellMetachars {
+		if strings.Contains(name, char) {
+			return fmt.Errorf("invalid project name: contains shell metacharacter %q", char)
+		}
+	}
+
+	// Validate format and length
+	if !projectNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid project name format: must start with alphanumeric and contain only alphanumeric, underscore, hyphen, or dot (max 128 chars)")
+	}
+
+	return nil
+}
+
+// ValidateRemotePath validates a filesystem path intended for use in SSH-executed shell commands.
+// Accepts absolute paths (starting with /) and relative paths using alphanumeric, underscore,
+// hyphen, dot, space, and forward slash. Spaces are permitted to support Unraid NAS paths
+// (e.g. "/mnt/user/My Media/appdata"); shellquote.Join handles quoting at call sites.
+// Rejects path traversal (../), shell metacharacters, and paths starting with "-" (CLI flag injection).
+func ValidateRemotePath(path string) error {
+	if path == "" {
+		return fmt.Errorf("remote path cannot be empty")
+	}
+
+	// Reject paths starting with "-" to prevent CLI flag injection via SSH
+	if strings.HasPrefix(path, "-") {
+		return fmt.Errorf("invalid remote path: cannot start with '-' (potential CLI flag injection)")
+	}
+
+	// Reject path traversal
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("invalid remote path: path traversal (contains '..')")
+	}
+
+	// Reject shell metacharacters
+	for _, char := range shellMetachars {
+		if strings.Contains(path, char) {
+			return fmt.Errorf("invalid remote path: contains shell metacharacter %q", char)
+		}
+	}
+
+	// Validate format — spaces are allowed (shellquote.Join quotes them correctly)
+	if !remotePathPattern.MatchString(path) {
+		return fmt.Errorf("invalid remote path format: must contain only alphanumeric, underscore, hyphen, dot, space, and forward slash")
+	}
+
+	return nil
+}
+
+// ValidateAndSanitizeTargets validates security-sensitive fields on each target,
+// clearing invalid fields with a warning rather than dropping the whole target.
+// This mirrors the YAML-load semantics in extractTargets — a single bad field
+// must not block deployments to that host.
+//
+// The logger parameter receives structured warn entries; pass nil to suppress logging.
+func ValidateAndSanitizeTargets(targets []Target, warn func(target, field string, err error)) []Target {
+	out := make([]Target, len(targets))
+	copy(out, targets)
+	for i := range out {
+		if out[i].ProjectName != "" {
+			if err := ValidateProjectName(out[i].ProjectName); err != nil {
+				if warn != nil {
+					warn(out[i].Name, "project_name", err)
+				}
+				out[i].ProjectName = ""
+			}
+		}
+		if out[i].RemoteAppdataPath != "" {
+			if err := ValidateRemotePath(out[i].RemoteAppdataPath); err != nil {
+				if warn != nil {
+					warn(out[i].Name, "remote_appdata_path", err)
+				}
+				out[i].RemoteAppdataPath = ""
+			}
+		}
+	}
+	return out
 }

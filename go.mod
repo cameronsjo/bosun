@@ -13,6 +13,7 @@ require (
 	github.com/getsops/sops/v3 v3.11.0
 	github.com/go-git/go-git/v5 v5.17.2
 	github.com/google/uuid v1.6.0
+	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
 	github.com/prometheus/client_golang v1.22.0
 	github.com/rs/zerolog v1.34.0
 	github.com/spf13/cobra v1.8.1
