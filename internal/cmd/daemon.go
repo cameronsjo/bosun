@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -115,48 +114,12 @@ func secondsToDuration(seconds int) time.Duration {
 }
 
 // createDaemonAlertManager creates an alert manager for the daemon.
+// Always returns a non-nil manager (callers check HasProviders() to decide
+// whether to use it). Uses BOSUN_-first precedence for all alert env vars.
 func createDaemonAlertManager() *alert.Manager {
-	mgr := alert.NewManager()
-
-	// Add Discord provider
-	discord := alert.NewDiscordProvider(os.Getenv("DISCORD_WEBHOOK_URL"))
-	mgr.AddProvider(discord)
-
-	// Add Slack provider
-	slack := alert.NewSlackProvider(os.Getenv("SLACK_WEBHOOK_URL"))
-	mgr.AddProvider(slack)
-
-	// Add SendGrid provider
-	toEmails := filterEmptyStrings(strings.Split(os.Getenv("SENDGRID_TO_EMAILS"), ","))
-	sendgrid := alert.NewSendGrid(alert.SendGridConfig{
-		APIKey:    os.Getenv("SENDGRID_API_KEY"),
-		FromEmail: os.Getenv("SENDGRID_FROM_EMAIL"),
-		FromName:  os.Getenv("SENDGRID_FROM_NAME"),
-		ToEmails:  toEmails,
-	})
-	mgr.AddProvider(sendgrid)
-
-	// Add Twilio provider
-	toNumbers := filterEmptyStrings(strings.Split(os.Getenv("TWILIO_TO_NUMBERS"), ","))
-	twilio := alert.NewTwilio(alert.TwilioConfig{
-		AccountSID: os.Getenv("TWILIO_ACCOUNT_SID"),
-		AuthToken:  os.Getenv("TWILIO_AUTH_TOKEN"),
-		FromNumber: os.Getenv("TWILIO_FROM_NUMBER"),
-		ToNumbers:  toNumbers,
-	})
-	mgr.AddProvider(twilio)
-
-	// Add Webhook provider
-	webhook := alert.NewWebhookProvider(alert.WebhookConfig{
-		URL:     os.Getenv("BOSUN_WEBHOOK_URL"),
-		Headers: parseJSONHeaders(os.Getenv("BOSUN_WEBHOOK_HEADERS")),
-		Method:  os.Getenv("BOSUN_WEBHOOK_METHOD"),
-	})
-	mgr.AddProvider(webhook)
-
+	mgr := buildAlertManagerRaw() // defined in reconcile.go
 	if mgr.HasProviders() {
 		ui.Info("Alert providers: %v", mgr.ProviderNames())
 	}
-
 	return mgr
 }

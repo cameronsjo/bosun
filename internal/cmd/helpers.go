@@ -2,12 +2,10 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/docker"
-	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // DefaultOperationTimeout is the default timeout for Docker operations.
@@ -36,16 +34,3 @@ func withDockerClientContext(ctx context.Context, fn func(*docker.Client) error)
 	return fn(client)
 }
 
-// parseJSONHeaders parses a JSON string into a map of HTTP headers.
-// Returns nil if the input is empty. Logs a warning and returns nil on invalid JSON.
-func parseJSONHeaders(raw string) map[string]string {
-	if raw == "" {
-		return nil
-	}
-	var headers map[string]string
-	if err := json.Unmarshal([]byte(raw), &headers); err != nil {
-		log.Warn().Err(err).Msg("BOSUN_WEBHOOK_HEADERS contains invalid JSON; ignoring")
-		return nil
-	}
-	return headers
-}
