@@ -1060,9 +1060,13 @@ func suggestInfraDir(infraSubDir string, candidates []string) string {
 		vals[i] = filepath.Join(infraSubDir, c)
 	}
 	if len(vals) == 1 {
-		return fmt.Sprintf("did you mean BOSUN_INFRA_DIR=%s?", vals[0])
+		return fmt.Sprintf("did you mean BOSUN_INFRA_DIR=%q?", vals[0])
 	}
-	return fmt.Sprintf("set BOSUN_INFRA_DIR to one of: %s", strings.Join(vals, ", "))
+	quoted := make([]string, len(vals))
+	for i, v := range vals {
+		quoted[i] = fmt.Sprintf("%q", v)
+	}
+	return fmt.Sprintf("set BOSUN_INFRA_DIR to one of: %s", strings.Join(quoted, ", "))
 }
 
 // renderTemplates renders all templates to the staging directory.

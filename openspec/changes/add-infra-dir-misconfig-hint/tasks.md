@@ -1,4 +1,4 @@
-# Tasks: Infra Directory Misconfiguration Hint
+## Tasks: Infra Directory Misconfiguration Hint
 
 ## 1. Candidate scanning helper
 

@@ -45,10 +45,10 @@ The render step produced no parseable services in `<staging>/compose/`. Either t
 - For genuinely empty repos: set `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true` to opt out — the reconciler will log at `Warn` level (with `override=true`) and continue.
 - For misconfigured staging paths (compose dir missing entirely): the error is unconditionally fatal — no override applies. Check `BOSUN_INFRA_DIR` and the rendered staging tree. When the configured infra dir has no `compose/` but a sibling directory does, the error now names the candidate and suggests the fix, e.g.:
 
-  ```
+  ```text
   declared-state invariant: staging compose directory does not exist:
   /app/staging/compose (compose/ found under sibling dir(s): unraid)
-  — did you mean BOSUN_INFRA_DIR=unraid?
+  — did you mean BOSUN_INFRA_DIR="unraid"?
   ```
 
   This is the GH#214 root cause: `BOSUN_INFRA_DIR="."` while `compose/` and `appdata/` live under `unraid/`. Set `BOSUN_INFRA_DIR` to the named directory so render, discovery, and deploy all resolve the same infra root.

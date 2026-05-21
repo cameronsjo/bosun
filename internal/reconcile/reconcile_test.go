@@ -39,9 +39,9 @@ func TestSuggestInfraDir(t *testing.T) {
 		want        string
 	}{
 		{"no candidates", ".", nil, ""},
-		{"single candidate at root", ".", []string{"unraid"}, "did you mean BOSUN_INFRA_DIR=unraid?"},
-		{"single candidate nested", "foo", []string{"bar"}, "did you mean BOSUN_INFRA_DIR=foo/bar?"},
-		{"multiple candidates", ".", []string{"staging", "unraid"}, "set BOSUN_INFRA_DIR to one of: staging, unraid"},
+		{"single candidate at root", ".", []string{"unraid"}, `did you mean BOSUN_INFRA_DIR="unraid"?`},
+		{"single candidate nested", "foo", []string{"bar"}, `did you mean BOSUN_INFRA_DIR="foo/bar"?`},
+		{"multiple candidates", ".", []string{"staging", "unraid"}, `set BOSUN_INFRA_DIR to one of: "staging", "unraid"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
