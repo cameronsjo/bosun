@@ -61,3 +61,14 @@
 - [ ] 8.2 Update `skills/onboard/resources/gitops.md` with multi-target workflow
 - [ ] 8.3 Update `skills/onboard/resources/configuration.md` with `targets:` schema
 - [ ] 8.4 Add multi-target example to `docs/` or README
+
+## 9. Target validation and safety (folded from Cluster C bug hunt)
+- [ ] 9.1 `ResolveTargets` validates target-derived paths (state_file, lock_file, staging_dir, appdata) for traversal/root-confinement — same checks for YAML and `BOSUN_TARGETS` (GHSA-57r2)
+- [ ] 9.2 Reserved-name `default` check is case-insensitive, matching dedup (#228)
+- [ ] 9.3 Reject colliding state_file / lock_file / staging_dir across targets (#260)
+- [ ] 9.4 Reject/fail-fast on colliding Docker namespace (host+project_name) or deploy path across targets (#287)
+- [ ] 9.5 YAML and `BOSUN_TARGETS` expose identical per-target field sets; `BOSUN_TARGETS=[]` == absent targets (#272, #273)
+- [ ] 9.6 `ConfigForTarget` deep-copies ALL slice/map fields incl. SecretsFiles, DeployPaths, DriftIgnore (#270)
+- [ ] 9.7 `applyTargetOverrides` deep-copies caller-owned slices on hot-reload (#271)
+- [ ] 9.8 Explicit, documented empty-field inheritance; empty override never silently inherits a foreign host/path (GHSA-jxw8)
+- [ ] 9.9 Tests: path-traversal rejection, collision rejection, slice independence after derive + hot-reload, field parity
