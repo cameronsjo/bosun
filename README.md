@@ -233,7 +233,7 @@ bosun daemon
 The daemon provides:
 
 - **Unix socket API** at `/var/run/bosun.sock`
-- **Multi-provider webhooks** (GitHub, GitLab, Gitea, Bitbucket)
+- **GitHub webhooks** (`/webhook/github`) and a generic HMAC endpoint (`/webhook`). GitLab, Gitea, and Bitbucket run through the separate `bosun webhook` receiver, which normalizes each provider and forwards to the daemon
 - **Configurable polling** with interval-based reconciliation
 - **Health endpoints** (`/health`, `/ready`) for orchestrators
 - **Drift detection** with periodic declared-vs-actual state checks
@@ -341,7 +341,7 @@ Everything uses nautical terminology:
 
 | ADR | Summary |
 |-----|---------|
-| [Daemon Architecture](docs/architecture/daemon-split.md) | Unix socket API, multi-provider webhooks |
+| [Daemon Architecture](docs/architecture/daemon-split.md) | Unix socket API, webhook reception, standalone receiver split |
 | [Council Review](docs/architecture/council-review.md) | Security-first daemon design (9/10) |
 | [0001: Manifest System](docs/adr/0001-manifest-system.md) | DRY crew provisioning |
 | [0008: Container vs Daemon](docs/adr/0008-container-vs-daemon.md) | When to use systemd |
@@ -350,7 +350,7 @@ Everything uses nautical terminology:
 
 ## Requirements
 
-- **Go 1.24+** (building from source)
+- **Go 1.25+** (building from source)
 - **Docker + Docker Compose v2**
 - **Git** (for reconcile workflow)
 - **SOPS + Age** (for secret encryption)

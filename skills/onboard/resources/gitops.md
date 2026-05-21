@@ -225,24 +225,34 @@ Single-flight with dirty flag coalescing:
 
 ## Webhooks
 
-The daemon accepts webhooks from Git providers to trigger reconciliation on push.
+The daemon accepts webhooks to trigger reconciliation on push.
 
-### Webhook Endpoints
+### Daemon Webhook Endpoints
 
-| Provider | Path | Signature Header |
+The daemon serves GitHub and a generic HMAC endpoint:
+
+| Endpoint | Path | Signature Header |
 |----------|------|------------------|
+| GitHub | `/webhook/github` | `X-Hub-Signature-256` |
+| Generic | `/webhook` | `X-Signature`, or `X-Hub-Signature-256` |
+
+GitLab, Gitea, and Bitbucket are **not** handled by the daemon directly. Point them
+at the standalone `bosun webhook` receiver (below), which understands each provider
+and forwards normalized triggers to the daemon:
+
+| Provider | Path (receiver) | Signature Header |
+|----------|-----------------|------------------|
 | GitHub | `/webhook/github` | `X-Hub-Signature-256` |
 | GitLab | `/webhook/gitlab` | `X-Gitlab-Token` |
 | Gitea | `/webhook/gitea` | `X-Gitea-Signature` |
 | Bitbucket | `/webhook/bitbucket` | `X-Hub-Signature` |
-| Generic | `/webhook` | None |
 
 All signatures are validated using HMAC-SHA256 (or SHA1 for legacy) with constant-time comparison.
 
 ### Webhook Setup
 
 1. **Configure a webhook secret** in your bosun environment
-2. **Set up the webhook** in your Git provider pointing to `https://your-server/webhook/github` (or appropriate provider)
+2. **Set up the webhook** in your Git provider. For GitHub, point it at `https://your-server/webhook/github`. For GitLab/Gitea/Bitbucket, run the standalone `bosun webhook` receiver and point the provider at its provider-specific path
 3. **Expose the endpoint** via Tailscale Funnel or Cloudflare Tunnel (see Radio commands)
 
 ### Standalone Webhook Server

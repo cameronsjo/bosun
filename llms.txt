@@ -60,7 +60,7 @@ docker compose up -> post-deploy drift verification
 
 The daemon provides:
 - Unix socket API at `/var/run/bosun.sock`
-- Multi-provider webhooks (GitHub, GitLab, Gitea, Bitbucket)
+- GitHub webhooks (`/webhook/github`) plus a generic HMAC endpoint (`/webhook`, validates `X-Signature` or `X-Hub-Signature-256`). GitLab, Gitea, and Bitbucket are handled by the separate `bosun webhook` receiver, which normalizes each provider and forwards to the daemon's trigger endpoint — do not point them directly at the daemon
 - Configurable polling intervals
 - Health endpoints (`/health`, `/ready`)
 - Periodic drift detection (declared vs actual state)
@@ -87,7 +87,7 @@ bosun/
 
 ## Technology Stack
 
-- Go 1.24+
+- Go 1.25+
 - Docker + Docker Compose v2
 - SOPS + Age (secret encryption)
 - Go text/template + Sprig (templating)
