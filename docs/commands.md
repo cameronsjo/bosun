@@ -497,11 +497,14 @@ bosun daemon -i 1800
 |------|--------|-------------|
 | `/health` | GET | Health check (JSON) |
 | `/ready` | GET | Readiness check |
-| `/webhook` | POST | Generic webhook trigger |
+| `/webhook` | POST | Generic webhook trigger (validates `X-Signature` or `X-Hub-Signature-256`) |
 | `/webhook/github` | POST | GitHub push webhook |
-| `/webhook/gitlab` | POST | GitLab push webhook |
-| `/webhook/gitea` | POST | Gitea push webhook |
-| `/webhook/bitbucket` | POST | Bitbucket push webhook |
+| `/webhook/manual` | POST | Manual trigger |
+| `/metrics` | GET | Prometheus metrics |
+
+GitLab, Gitea, and Bitbucket are **not** served by the daemon directly — use the
+standalone `bosun webhook` receiver (see below), which forwards normalized triggers
+to the daemon.
 
 ### trigger
 

@@ -1,0 +1,113 @@
+name: llms.txt Sync Check
+
+# Nudges (does not block) when a PR changes capability-bearing code or claim-bearing
+# docs but leaves llms.txt untouched. Born from #293: instruction files (llms.txt,
+# CLAUDE.md) drifted ahead of the daemon's actual webhook support and actively misled
+# both agents and operators. This keeps the AI-facing summary diffed against reality.
+#
+# Security note: all dynamic values flow through actions/github-script API calls and
+# JS variables — no untrusted input is interpolated into a run: shell. Changed file
+# paths are repo-controlled and rendered inside Markdown code spans.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+# PR-scoped concurrency: a rapid second push (synchronize) cancels the in-flight
+# run, so two runs can't both create the sticky comment before either sees it.
+concurrency:
+  group: llms-txt-sync-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# Least privilege: read-only at the top; the job grants only what it calls.
+permissions:
+  contents: read
+
+jobs:
+  nudge:
+    name: Check llms.txt freshness
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read   # github.rest.pulls.listFiles
+      issues: write         # PR comments are issue comments (create/update/list)
+    steps:
+      - name: Evaluate diff and post sticky nudge
+        # Pinned to a commit SHA (supply-chain hardening); tag shown for readability.
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const MARKER = '<!-- llms-txt-nudge -->';
+
+            // Paths whose changes commonly invalidate claims in llms.txt.
+            // Capability-bearing code (commands, daemon endpoints, reconcile/manifest
+            // behavior) and the claim-bearing docs that mirror llms.txt.
+            const CLAIM_PATHS = [
+              /^internal\/cmd\//,
+              /^internal\/daemon\//,
+              /^internal\/reconcile\//,
+              /^internal\/manifest\//,
+              /^internal\/config\//,
+              /^cmd\//,
+              /^go\.mod$/,
+              /^README\.md$/,
+              /^docs\//,
+            ];
+
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+
+            // Collect every changed file in the PR (paginated).
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner, repo, pull_number: prNumber, per_page: 100,
+            });
+            const changed = files.map(f => f.filename);
+
+            const touchedLlms = changed.includes('llms.txt');
+            const touchedClaims = changed.filter(f => CLAIM_PATHS.some(rx => rx.test(f)));
+            const shouldNudge = touchedClaims.length > 0 && !touchedLlms;
+
+            // Find a prior nudge comment so we update in place instead of stacking.
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number: prNumber, per_page: 100,
+            });
+            const existing = comments.find(c => c.body && c.body.includes(MARKER));
+
+            if (shouldNudge) {
+              const sample = touchedClaims.slice(0, 10).map(f => `- \`${f}\``).join('\n');
+              const more = touchedClaims.length > 10 ? `\n- …and ${touchedClaims.length - 10} more` : '';
+              const body = [
+                MARKER,
+                '### 🪢 Does `llms.txt` need an update?',
+                '',
+                'This PR changes capability-bearing code or claim-bearing docs, but does not touch `llms.txt`.',
+                '',
+                '`llms.txt` is the AI-facing summary of what Bosun does. When the daemon, commands, or docs change, its claims can silently drift ahead of reality (see #293). Please confirm its statements still match the code — commands, daemon endpoints, supported providers, version requirements.',
+                '',
+                '<details><summary>Changed paths that triggered this</summary>',
+                '',
+                `${sample}${more}`,
+                '',
+                '</details>',
+                '',
+                '_If `llms.txt` is already accurate, no action needed — this is a reminder, not a gate._',
+              ].join('\n');
+
+              if (existing) {
+                await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+              } else {
+                await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+              }
+            } else if (existing) {
+              // Condition cleared (llms.txt now updated, or no claim paths left) — resolve the nudge.
+              const resolved = [
+                MARKER,
+                '### 🪢 `llms.txt` check',
+                '',
+                touchedLlms
+                  ? '✅ `llms.txt` was updated in this PR. Thanks for keeping the AI-facing summary in sync.'
+                  : '✅ No capability- or claim-bearing paths remain changed. Nothing to reconcile against `llms.txt`.',
+              ].join('\n');
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: resolved });
+            }

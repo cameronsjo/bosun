@@ -1,5 +1,5 @@
 ---
-name: bosun
+name: onboard
 description: "Get started with Bosun -- what it is, how to set it up, and how to use it"
 ---
 
@@ -32,7 +32,7 @@ Before setting up Bosun, ensure the following are installed:
 - **Docker + Docker Compose v2** -- `docker compose version` to verify
 - **Git** -- for repository operations
 - **SOPS + Age** -- for secret encryption (`age-keygen` to generate keys, `sops` CLI for encryption)
-- **Go 1.24+** -- only if building from source
+- **Go 1.25+** -- only if building from source
 - **Linux or macOS** -- tested on Unraid, Debian, Ubuntu, macOS
 - **Tailscale** (optional) -- for webhook tunnel via `bosun radio`
 

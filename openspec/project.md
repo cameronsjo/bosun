@@ -12,7 +12,7 @@ Bosun is a GitOps CLI tool for Docker Compose on bare metal - "Helm for home." I
 
 ## Tech Stack
 
-- **Language:** Go 1.24+
+- **Language:** Go 1.25+
 - **CLI Framework:** Cobra (`github.com/spf13/cobra`)
 - **Container Runtime:** Docker + Docker Compose v2 (`github.com/docker/docker`)
 - **Secret Management:** SOPS + Age (`github.com/getsops/sops/v3`, `filippo.io/age`)
@@ -124,7 +124,7 @@ template configs (chezmoi) -> rsync to target -> docker compose up
 - **Git Repository:** Source of truth for configurations
 - **SOPS/Age:** Optional secret encryption
 - **Chezmoi:** Optional templating engine (external binary)
-- **Webhook Providers:** GitHub, GitLab, Gitea, Bitbucket for push notifications
+- **Webhook Providers:** Daemon serves GitHub + a generic HMAC endpoint; the standalone `bosun webhook` receiver adds GitLab, Gitea, and Bitbucket and forwards to the daemon
 
 ## Build Commands
 

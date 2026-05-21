@@ -70,16 +70,28 @@ bosun validate                   # Validate config and connectivity
 
 ### Webhook Providers
 
-The daemon accepts webhooks from multiple Git providers at `/webhook/{provider}`:
+The daemon itself serves two webhook endpoints:
 
-| Provider | Path | Signature Header |
+| Endpoint | Path | Signature Header |
 |----------|------|------------------|
+| GitHub | `/webhook/github` | `X-Hub-Signature-256` |
+| Generic | `/webhook` | `X-Signature`, or `X-Hub-Signature-256` |
+
+GitLab, Gitea, and Bitbucket are **not** handled directly by the daemon. To receive
+them, run the standalone `bosun webhook` receiver, which understands each provider's
+signature scheme and forwards normalized triggers to the daemon over its Unix socket:
+
+| Provider | Path (receiver) | Signature Header |
+|----------|-----------------|------------------|
 | GitHub | `/webhook/github` | `X-Hub-Signature-256` |
 | GitLab | `/webhook/gitlab` | `X-Gitlab-Token` |
 | Gitea | `/webhook/gitea` | `X-Gitea-Signature` |
 | Bitbucket | `/webhook/bitbucket` | `X-Hub-Signature` |
 
-Signatures are validated using HMAC-SHA256 (or SHA1 for legacy) with constant-time comparison.
+Do not point a Gitea/GitLab/Bitbucket webhook directly at the daemon's `/webhook`
+endpoint — its generic handler expects `X-Signature`/`X-Hub-Signature-256`, so a
+provider-specific signature header will fail validation. Signatures are validated
+using HMAC-SHA256 (or SHA1 for legacy) with constant-time comparison.
 
 ### Polling Mode
 
