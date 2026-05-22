@@ -138,39 +138,46 @@ func ShouldAlert(attemptCount, lastAlertedAttempt int) bool {
 // LoadState reads the deploy state file. Returns zero state on missing or
 // corrupt files — this is correct fail-open behavior (triggers a full deploy).
 func LoadState(path string) *DeployState {
+	logger := log.Component(log.ComponentReconcile)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			logger.Debug().Str(log.FieldPath, path).Msg("State file not found, initializing fresh state")
 			return &DeployState{SchemaVersion: currentSchemaVersion}
 		}
-		log.Warn().
-			Str(log.FieldComponent, log.ComponentReconcile).
-			Str(log.FieldPath, path).
+		logger.Warn().
 			Err(err).
-			Msg("Failed to read state file, treating as never deployed")
+			Str(log.FieldPath, path).
+			Msg("Failed to load state. Reason: cannot read state file, treating as never deployed")
 		return &DeployState{SchemaVersion: currentSchemaVersion}
 	}
 
 	var state DeployState
 	if err := json.Unmarshal(data, &state); err != nil {
-		log.Warn().
-			Str(log.FieldComponent, log.ComponentReconcile).
-			Str(log.FieldPath, path).
+		logger.Warn().
 			Err(err).
-			Msg("Corrupt state file, treating as never deployed")
+			Str(log.FieldPath, path).
+			Msg("Failed to load state. Reason: state file is corrupt, treating as never deployed")
 		return &DeployState{SchemaVersion: currentSchemaVersion}
 	}
 
+	logger.Debug().
+		Str(log.FieldCommit, state.LastDeployedCommit).
+		Int("deploy_count", state.DeployCount).
+		Int("attempt_count", state.AttemptCount).
+		Msg("Successfully loaded deploy state")
 	return &state
 }
 
 // SaveState atomically writes the deploy state to disk.
 // Uses the pattern: write temp (same dir) → fsync temp → rename → fsync dir.
 func SaveState(path string, state *DeployState) error {
+	logger := log.Component(log.ComponentReconcile)
 	state.SchemaVersion = currentSchemaVersion
 
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
+		logger.Error().Err(err).Msg("Failed to save state. Reason: cannot marshal state to JSON")
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 	data = append(data, '\n')
@@ -180,6 +187,7 @@ func SaveState(path string, state *DeployState) error {
 	// Create temp file in same directory to avoid EXDEV on rename.
 	tmp, err := os.CreateTemp(dir, ".deploy-state-*.tmp")
 	if err != nil {
+		logger.Error().Err(err).Str(log.FieldPath, dir).Msg("Failed to save state. Reason: cannot create temp state file")
 		return fmt.Errorf("failed to create temp state file: %w", err)
 	}
 	tmpPath := tmp.Name()
@@ -194,35 +202,39 @@ func SaveState(path string, state *DeployState) error {
 
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
+		logger.Error().Err(err).Msg("Failed to save state. Reason: cannot write temp state file")
 		return fmt.Errorf("failed to write temp state file: %w", err)
 	}
 
 	// Fsync the temp file to ensure data hits disk before rename.
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
+		logger.Error().Err(err).Msg("Failed to save state. Reason: cannot fsync temp state file")
 		return fmt.Errorf("failed to fsync temp state file: %w", err)
 	}
 
 	if err := tmp.Close(); err != nil {
+		logger.Error().Err(err).Msg("Failed to save state. Reason: cannot close temp state file")
 		return fmt.Errorf("failed to close temp state file: %w", err)
 	}
 
 	// Atomic rename.
 	if err := os.Rename(tmpPath, path); err != nil {
+		logger.Error().Err(err).Str(log.FieldPath, path).Msg("Failed to save state. Reason: cannot rename temp to target")
 		return fmt.Errorf("failed to rename state file: %w", err)
 	}
 
 	// Fsync the directory to ensure the rename is durable.
 	if err := fsyncDir(dir); err != nil {
 		// Non-fatal: the rename succeeded, data is likely durable.
-		log.Warn().
-			Str(log.FieldComponent, log.ComponentReconcile).
-			Str(log.FieldPath, dir).
+		logger.Warn().
 			Err(err).
-			Msg("Failed to fsync state directory (rename succeeded)")
+			Str(log.FieldPath, dir).
+			Msg("State saved but fsync of state directory failed (rename succeeded, data is likely durable)")
 	}
 
 	success = true
+	logger.Debug().Str(log.FieldPath, path).Msg("Successfully saved deploy state")
 	return nil
 }
 

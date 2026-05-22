@@ -61,54 +61,59 @@ func (m *Manager) AddProvider(p Provider) {
 // Returns an aggregated error if any provider fails.
 func (m *Manager) Send(ctx context.Context, alert *Alert) error {
 	if len(m.providers) == 0 {
+		logger := log.ComponentCtx(ctx, "alert")
+		logger.Debug().
+			Str("severity", string(alert.Severity)).
+			Str("source", alert.Source).
+			Msg("Skipping alert dispatch. Reason: no providers configured")
 		return nil
 	}
 
+	logger := log.ComponentCtx(ctx, "alert")
 	start := time.Now()
-	log.Debug().
-		Str("title", alert.Title).
+	logger.Debug().
 		Str("severity", string(alert.Severity)).
 		Str("source", alert.Source).
 		Int("provider_count", len(m.providers)).
-		Msg("Sending alert to providers")
+		Msg("Preparing to dispatch alert to providers")
 
 	var errs []error
 	var successCount int
 	for _, p := range m.providers {
 		providerStart := time.Now()
 		if err := p.Send(ctx, alert); err != nil {
-			log.Error().
-				Err(err).
+			logger.Error().
 				Str("provider", p.Name()).
-				Str("title", alert.Title).
+				Str("severity", string(alert.Severity)).
 				Int64(log.FieldDurationMS, time.Since(providerStart).Milliseconds()).
-				Msg("Alert provider failed")
+				Err(err).
+				Msg("Failed to send alert to provider")
 			errs = append(errs, fmt.Errorf("%s: %w", p.Name(), err))
 		} else {
 			successCount++
-			log.Debug().
+			logger.Debug().
 				Str("provider", p.Name()).
 				Int64(log.FieldDurationMS, time.Since(providerStart).Milliseconds()).
-				Msg("Alert sent successfully")
+				Msg("Successfully sent alert to provider")
 		}
 	}
 
 	if len(errs) > 0 {
-		log.Warn().
-			Int("failed", len(errs)).
+		logger.Warn().
 			Int("succeeded", successCount).
+			Int("failed", len(errs)).
 			Int("total", len(m.providers)).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-			Msg("Alert delivery partially failed")
+			Msg("Alert delivery partially failed. Some providers succeeded, others failed")
 		return fmt.Errorf("alert errors: %w", errors.Join(errs...))
 	}
 
-	log.Info().
-		Str("title", alert.Title).
+	logger.Info().
 		Str("severity", string(alert.Severity)).
+		Str("source", alert.Source).
 		Int("provider_count", len(m.providers)).
 		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-		Msg("Alert sent to all providers")
+		Msg("Successfully dispatched alert to all providers")
 
 	return nil
 }

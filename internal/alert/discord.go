@@ -85,11 +85,11 @@ func (d *DiscordProvider) Send(ctx context.Context, alert *Alert) error {
 		return nil
 	}
 
-	logger := log.Component("discord")
+	logger := log.ComponentCtx(ctx, "alert").With().Str("provider", "discord").Logger()
 	start := time.Now()
 	logger.Debug().
-		Str("title", alert.Title).
 		Str("severity", string(alert.Severity)).
+		Str("source", alert.Source).
 		Msg("Preparing to send Discord alert")
 
 	embed := discordEmbed{
@@ -122,11 +122,17 @@ func (d *DiscordProvider) Send(ctx context.Context, alert *Alert) error {
 
 	body, err := json.Marshal(payload)
 	if err != nil {
+		logger.Error().
+			Err(err).
+			Msg("Failed to send Discord alert. Error: failed to marshal payload")
 		return fmt.Errorf("marshal payload: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.webhookURL, bytes.NewReader(body))
 	if err != nil {
+		logger.Error().
+			Err(err).
+			Msg("Failed to send Discord alert. Error: failed to create HTTP request")
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -135,7 +141,7 @@ func (d *DiscordProvider) Send(ctx context.Context, alert *Alert) error {
 	if err != nil {
 		logger.Error().
 			Err(err).
-			Msg("Discord webhook request failed")
+			Msg("Failed to send Discord alert. Error: HTTP request failed")
 		return fmt.Errorf("send request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -143,12 +149,13 @@ func (d *DiscordProvider) Send(ctx context.Context, alert *Alert) error {
 	// Discord returns 204 No Content on success.
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 		logger.Error().
-			Int("status_code", resp.StatusCode).
-			Msg("Discord webhook returned error status")
+			Int(log.FieldStatus, resp.StatusCode).
+			Msg("Failed to send Discord alert. Error: webhook returned error status")
 		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
 
-	logger.Debug().
+	logger.Info().
+		Int(log.FieldStatus, resp.StatusCode).
 		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 		Msg("Successfully sent Discord alert")
 

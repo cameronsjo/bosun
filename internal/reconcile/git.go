@@ -263,27 +263,30 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentGit)
 
 	if err := validateBranch(g.Branch); err != nil {
+		logger.Error().Err(err).Str(log.FieldBranch, g.Branch).Msg("Failed to pull repository. Reason: invalid branch")
 		return false, "", "", fmt.Errorf("invalid branch: %w", err)
 	}
 
 	logger.Debug().
-		Str(log.FieldOperation, "pull").
 		Str(log.FieldBranch, g.Branch).
-		Msg("Pulling repository")
+		Str(log.FieldURL, g.RepoURL).
+		Msg("Preparing to pull repository")
 
 	// Check for uncommitted changes. Warn but continue — the hard reset below
 	// will discard them. These are typically stale artifacts from a previous
 	// reconciliation (template renders, symlink diffs on FUSE mounts, etc.).
 	if dirty, err := g.IsDirty(ctx); err != nil {
-		logger.Warn().Err(err).Str(log.FieldPath, g.Dir).Msg("Failed to check repository status, proceeding with pull")
+		logger.Warn().Err(err).Str(log.FieldPath, g.Dir).Msg("Could not check repository status, proceeding with pull")
 	} else if dirty {
 		logger.Warn().Str(log.FieldPath, g.Dir).Msg("Repository has uncommitted changes, will be discarded by hard reset")
 	}
 
 	before, err := g.GetLatestCommit(ctx)
 	if err != nil {
+		logger.Error().Err(err).Msg("Failed to pull repository. Reason: cannot get current commit")
 		return false, "", "", fmt.Errorf("failed to get current commit: %w", err)
 	}
+	logger.Debug().Str(log.FieldCommit, before).Msg("Current HEAD commit")
 
 	// Open the repository
 	repo, err := git.PlainOpen(g.Dir)

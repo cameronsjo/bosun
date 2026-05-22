@@ -156,16 +156,31 @@ func (rw *responseWriter) WriteHeader(code int) {
 
 // handleHealth handles the health check endpoint.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	logger := log.ComponentCtx(r.Context(), log.ComponentHTTP)
 	if r.Method != http.MethodGet {
+		logger.Warn().
+			Str(log.FieldMethod, r.Method).
+			Msg("Health check with invalid method rejected")
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	logger.Debug().Msg("Processing health check request")
 	status := s.daemon.HealthStatus()
 
 	w.Header().Set("Content-Type", "application/json")
+	statusCode := http.StatusOK
 	if status.Status != "healthy" {
-		w.WriteHeader(http.StatusServiceUnavailable)
+		statusCode = http.StatusServiceUnavailable
+		w.WriteHeader(statusCode)
+		logger.Info().
+			Str("daemon_status", status.Status).
+			Int(log.FieldStatus, statusCode).
+			Msg("Health check returned degraded status")
+	} else {
+		logger.Debug().
+			Str("daemon_status", status.Status).
+			Msg("Health check passed")
 	}
 
 	_ = json.NewEncoder(w).Encode(status)
@@ -173,26 +188,38 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // handleReady handles the readiness check endpoint.
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	logger := log.ComponentCtx(r.Context(), log.ComponentHTTP)
 	if r.Method != http.MethodGet {
+		logger.Warn().
+			Str(log.FieldMethod, r.Method).
+			Msg("Readiness check with invalid method rejected")
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	if !s.daemon.IsReady() {
+		logger.Debug().Msg("Readiness check: daemon not yet ready")
 		http.Error(w, "Not ready", http.StatusServiceUnavailable)
 		return
 	}
 
+	logger.Debug().Msg("Readiness check passed")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("OK"))
 }
 
 // handleWebhook handles generic webhook requests.
 func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
+	logger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
 	if r.Method != http.MethodPost {
+		logger.Warn().
+			Str(log.FieldMethod, r.Method).
+			Msg("Webhook request with invalid method rejected")
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	logger.Debug().Msg("Preparing to process generic webhook request")
 
 	// Validate webhook secret if configured
 	if s.daemon.config.WebhookSecret != "" {
@@ -204,21 +231,27 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		// Limit body size to prevent DoS
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
 		if err != nil {
+			logger.Warn().
+				Err(err).
+				Msg("Failed to read webhook body")
 			http.Error(w, "Failed to read body", http.StatusBadRequest)
 			return
 		}
 
+		logger.Debug().Msg("Validating webhook signature")
 		if !s.validateSignature(body, sig) {
-			// Log security event for failed signature validation
-			secLogger := log.ComponentCtx(r.Context(), log.ComponentHTTP)
-			secLogger.Warn().
+			logger.Warn().
 				Str("remote_addr", r.RemoteAddr).
-				Str("endpoint", r.URL.Path).
 				Msg("Webhook signature validation failed")
 			http.Error(w, "Invalid signature", http.StatusUnauthorized)
 			return
 		}
+		logger.Debug().Msg("Webhook signature validation passed")
 	}
+
+	logger.Info().
+		Str(log.FieldSource, log.SourceWebhook).
+		Msg("Generic webhook received")
 
 	// Propagate enriched logger into background context (request ctx is cancelled after response).
 	bgCtx := log.WithContext(context.Background(), log.Ctx(r.Context()))
@@ -226,7 +259,6 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	s.metrics.RecordWebhookTrigger("generic")
 
 	// Trigger reconciliation with goroutine tracking.
-	webhookLogger := log.Component(log.ComponentWebhook)
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -235,15 +267,19 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		ctx, webhookSpan := telemetry.Tracer("daemon").Start(ctx, "daemon.webhook",
 			trace.WithAttributes(telemetry.StringAttr("webhook_type", "generic")),
 		)
-		err := s.daemon.TriggerReconcile(ctx, "webhook", false)
+		bgLogger := log.ComponentCtx(ctx, log.ComponentWebhook)
+		err := s.daemon.TriggerReconcile(ctx, log.SourceWebhook, false)
 		if err != nil {
 			telemetry.SpanError(webhookSpan, err)
-			webhookLogger.Error().
+			bgLogger.Error().
 				Err(err).
 				Str(log.FieldSource, log.SourceWebhook).
-				Msg("Webhook-triggered reconciliation failed")
+				Msg("Failed to trigger reconciliation from webhook")
 		} else {
 			telemetry.SpanOK(webhookSpan)
+			bgLogger.Debug().
+				Str(log.FieldSource, log.SourceWebhook).
+				Msg("Webhook reconciliation triggered successfully")
 		}
 		webhookSpan.End()
 	}()
@@ -257,43 +293,64 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 // handleGitHubWebhook handles GitHub-specific webhook requests.
 func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
+	logger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
 	if r.Method != http.MethodPost {
+		logger.Warn().
+			Str(log.FieldMethod, r.Method).
+			Msg("GitHub webhook request with invalid method rejected")
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	logger.Debug().Msg("Preparing to process GitHub webhook")
+
 	// Read body with size limit to prevent DoS
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
 	if err != nil {
+		logger.Warn().
+			Err(err).
+			Msg("Failed to read GitHub webhook body")
 		http.Error(w, "Failed to read body", http.StatusBadRequest)
 		return
 	}
 
 	// Validate GitHub signature
+	eventType := r.Header.Get("X-GitHub-Event")
 	if s.daemon.config.WebhookSecret != "" {
 		sig := r.Header.Get("X-Hub-Signature-256")
+		logger.Debug().
+			Str("event_type", eventType).
+			Msg("Validating GitHub signature")
 		if !s.validateGitHubSignature(body, sig) {
-			// Log security event for failed signature validation
-			secLogger := log.ComponentCtx(r.Context(), log.ComponentHTTP)
-			secLogger.Warn().
+			logger.Warn().
 				Str("remote_addr", r.RemoteAddr).
-				Str("endpoint", r.URL.Path).
-				Str("event_type", r.Header.Get("X-GitHub-Event")).
+				Str("event_type", eventType).
 				Msg("GitHub webhook signature validation failed")
 			http.Error(w, "Invalid signature", http.StatusUnauthorized)
 			return
 		}
+		logger.Debug().Msg("GitHub signature validation passed")
 	}
 
 	// Check event type
-	eventType := r.Header.Get("X-GitHub-Event")
+	logger.Debug().
+		Str("event_type", eventType).
+		Msg("Processing GitHub event type")
 	action, reason := shouldProcessGitHubEvent(eventType)
 	switch action {
 	case "ping":
+		logger.Info().
+			Str(log.FieldSource, log.SourceGitHub).
+			Str("event_type", eventType).
+			Msg("GitHub ping received")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("pong"))
 		return
 	case "ignore":
+		logger.Debug().
+			Str("event_type", eventType).
+			Str("reason", reason).
+			Msg("GitHub event ignored")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"status":  "ignored",
@@ -305,6 +362,9 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	// Parse push event
 	var payload GitHubPushPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
+		logger.Warn().
+			Err(err).
+			Msg("Failed to parse GitHub webhook JSON payload")
 		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
 		return
 	}
@@ -312,6 +372,10 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	// Check if it's the branch we care about
 	process, branchReason := shouldProcessGitHubPush(payload.Ref, s.daemon.config.ReconcileConfig.RepoBranch)
 	if !process {
+		logger.Debug().
+			Str(log.FieldBranch, payload.Ref).
+			Str("reason", branchReason).
+			Msg("GitHub push on non-tracked branch ignored")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"status":  "ignored",
@@ -320,13 +384,12 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ghLogger := log.Component(log.ComponentWebhook)
-	ghLogger.Info().
+	logger.Info().
 		Str(log.FieldSource, log.SourceGitHub).
 		Str(log.FieldBranch, payload.Ref).
 		Str("pusher", payload.Pusher.Name).
 		Str(log.FieldCommit, payload.After).
-		Msg("GitHub push received")
+		Msg("GitHub push received on tracked branch")
 
 	s.metrics.RecordWebhookTrigger("github")
 
@@ -340,11 +403,16 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(bgCtx, s.daemon.config.ReconcileTimeout)
 		defer cancel()
 		source := fmt.Sprintf("github:%s", payload.Pusher.Name)
+		bgLogger := log.ComponentCtx(ctx, log.ComponentWebhook)
 		if err := s.daemon.TriggerReconcile(ctx, source, false); err != nil {
-			ghLogger.Error().
+			bgLogger.Error().
 				Err(err).
 				Str(log.FieldSource, log.SourceGitHub).
-				Msg("GitHub webhook reconciliation failed")
+				Msg("Failed to trigger reconciliation from GitHub webhook")
+		} else {
+			bgLogger.Debug().
+				Str(log.FieldSource, log.SourceGitHub).
+				Msg("GitHub webhook reconciliation triggered successfully")
 		}
 	}()
 

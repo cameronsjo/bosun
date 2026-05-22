@@ -53,12 +53,20 @@ func NewTCPServer(d *Daemon, addr, bearerToken string) (*TCPServer, error) {
 
 // Start starts the TCP server.
 func (s *TCPServer) Start() error {
+	logger := log.Component(log.ComponentDaemon)
+	logger.Debug().Str("addr", s.addr).Msg("Preparing to bind TCP socket")
+
 	listener, err := net.Listen("tcp", s.addr)
 	if err != nil {
+		logger.Error().
+			Err(err).
+			Str("addr", s.addr).
+			Msg("Failed to bind TCP socket")
 		return err
 	}
 	s.listener = listener
 
+	logger.Info().Str("addr", s.addr).Msg("Successfully bound TCP socket, accepting connections")
 	ui.Info("TCP server listening on %s (bearer auth required)", s.addr)
 
 	return s.httpServer.Serve(listener)
@@ -84,15 +92,29 @@ func (s *TCPServer) authMiddleware(next http.Handler) http.Handler {
 		ctx = log.WithContext(ctx, &enriched)
 		r = r.WithContext(ctx)
 
+		logger := log.ComponentCtx(r.Context(), log.ComponentDaemon)
+
 		// Health endpoint is public for load balancer checks
 		if r.URL.Path == "/health" {
+			logger.Debug().
+				Str(log.FieldMethod, r.Method).
+				Str(log.FieldURL, r.URL.Path).
+				Msg("Public health check, skipping authentication")
 			next.ServeHTTP(w, r)
 			return
 		}
 
+		logger.Debug().
+			Str(log.FieldURL, r.URL.Path).
+			Msg("Preparing to validate TCP bearer token")
+
 		// Validate Authorization header
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
+			logger.Warn().
+				Str("remote_addr", r.RemoteAddr).
+				Str(log.FieldURL, r.URL.Path).
+				Msg("TCP request missing authorization header")
 			w.Header().Set("WWW-Authenticate", `Bearer realm="bosun"`)
 			http.Error(w, "Authorization required", http.StatusUnauthorized)
 			return
@@ -101,6 +123,10 @@ func (s *TCPServer) authMiddleware(next http.Handler) http.Handler {
 		// Parse bearer token
 		const bearerPrefix = "Bearer "
 		if !strings.HasPrefix(authHeader, bearerPrefix) {
+			logger.Warn().
+				Str("remote_addr", r.RemoteAddr).
+				Str(log.FieldURL, r.URL.Path).
+				Msg("TCP request with invalid authorization format")
 			http.Error(w, "Invalid authorization format", http.StatusUnauthorized)
 			return
 		}
@@ -108,16 +134,18 @@ func (s *TCPServer) authMiddleware(next http.Handler) http.Handler {
 
 		// Constant-time comparison to prevent timing attacks
 		if subtle.ConstantTimeCompare([]byte(token), []byte(s.bearerToken)) != 1 {
-			logger := log.ComponentCtx(r.Context(), log.ComponentDaemon)
 			logger.Warn().
-				Str(log.FieldOperation, "auth").
+				Str("remote_addr", r.RemoteAddr).
 				Str(log.FieldMethod, r.Method).
 				Str(log.FieldURL, r.URL.Path).
-				Str("remote_addr", r.RemoteAddr).
-				Msg("TCP authentication failed")
+				Msg("TCP authentication failed, invalid token")
 			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
+
+		logger.Debug().
+			Str(log.FieldURL, r.URL.Path).
+			Msg("TCP bearer token authentication passed")
 
 		next.ServeHTTP(w, r)
 	})

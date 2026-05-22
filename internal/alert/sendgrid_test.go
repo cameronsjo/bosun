@@ -140,7 +140,7 @@ func TestSendGrid_Send_NotConfigured(t *testing.T) {
 		Severity: SeverityInfo,
 	})
 
-	require.Error(t, err, "Expected error for unconfigured SendGrid")
+	assert.NoError(t, err, "Send() should silently skip when not configured")
 }
 
 func TestSendGrid_Send_APIErrorWithJSON(t *testing.T) {

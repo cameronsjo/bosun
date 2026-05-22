@@ -123,36 +123,44 @@ func ExtractDeclaredState(stagingDir string) ([]DeclaredService, error) {
 	logger := log.Component(log.ComponentReconcile)
 	composeDir := filepath.Join(stagingDir, "compose")
 
+	logger.Debug().
+		Str(log.FieldPath, composeDir).
+		Msg("Preparing to extract declared services from compose files")
+
 	// Distinguish "compose dir missing" (misconfigured) from "compose dir
 	// exists but empty" (genuinely empty, possibly intentional). The two
 	// failure modes have different remediation paths.
 	if _, statErr := os.Stat(composeDir); statErr != nil {
 		if os.IsNotExist(statErr) {
 			candidates := findComposeCandidates(stagingDir)
-			logger.Debug().
+			logger.Error().
 				Str(log.FieldPath, composeDir).
 				Strs("candidate_infra_dirs", candidates).
-				Msg("Compose directory does not exist")
+				Msg("Failed to extract declared state. Reason: compose directory does not exist")
 			if len(candidates) > 0 {
 				return nil, fmt.Errorf("%w: %s (compose/ found under sibling dir(s): %s)",
 					ErrComposeDirMissing, composeDir, strings.Join(candidates, ", "))
 			}
 			return nil, fmt.Errorf("%w: %s", ErrComposeDirMissing, composeDir)
 		}
+		logger.Error().Err(statErr).Str(log.FieldPath, composeDir).Msg("Failed to extract declared state. Reason: cannot stat compose directory")
 		return nil, fmt.Errorf("stat compose dir: %w", statErr)
 	}
 
 	files, err := filepath.Glob(filepath.Join(composeDir, "*.yml"))
 	if err != nil {
+		logger.Error().Err(err).Str(log.FieldPath, composeDir).Msg("Failed to extract declared state. Reason: cannot glob compose files")
 		return nil, fmt.Errorf("glob compose files: %w", err)
 	}
 
 	if len(files) == 0 {
-		logger.Debug().
+		logger.Warn().
 			Str(log.FieldPath, composeDir).
-			Msg("Compose directory exists but contains no .yml files")
+			Msg("Failed to extract declared state. Reason: no compose files found")
 		return nil, fmt.Errorf("%w: %s", ErrNoDeclaredServices, composeDir)
 	}
+
+	logger.Debug().Int("file_count", len(files)).Msg("Found compose files, parsing declared services")
 
 	var declared []DeclaredService
 	seen := make(map[string]bool)
@@ -160,11 +168,10 @@ func ExtractDeclaredState(stagingDir string) ([]DeclaredService, error) {
 	for _, f := range files {
 		services, err := extractServicesFromCompose(f)
 		if err != nil {
-			log.Warn().
-				Str(log.FieldComponent, log.ComponentReconcile).
+			logger.Warn().
 				Str(log.FieldPath, f).
 				Err(err).
-				Msg("Failed to parse compose file for declared state, skipping")
+				Msg("Failed to parse compose file, skipping")
 			continue
 		}
 
@@ -177,6 +184,9 @@ func ExtractDeclaredState(stagingDir string) ([]DeclaredService, error) {
 	}
 
 	if len(declared) == 0 {
+		logger.Warn().
+			Str(log.FieldPath, composeDir).
+			Msg("Failed to extract declared state. Reason: no services declared in any compose files")
 		return nil, fmt.Errorf("%w: %s", ErrNoDeclaredServices, composeDir)
 	}
 
@@ -185,6 +195,7 @@ func ExtractDeclaredState(stagingDir string) ([]DeclaredService, error) {
 		return declared[i].Name < declared[j].Name
 	})
 
+	logger.Info().Int("service_count", len(declared)).Msg("Successfully extracted declared state from compose files")
 	return declared, nil
 }
 
@@ -221,15 +232,18 @@ func CollectActualState(ctx context.Context, client *docker.Client, projectName 
 
 	logger.Debug().
 		Str("project_name", projectName).
-		Msg("Collecting actual container state from Docker")
+		Msg("Preparing to collect actual container state from Docker")
 
 	containers, err := client.ListContainers(ctx, false)
 	if err != nil {
-		logger.Error().Err(err).
+		logger.Error().
+			Err(err).
 			Str("project_name", projectName).
-			Msg("Failed to list containers from Docker")
+			Msg("Failed to collect actual state. Reason: cannot list containers from Docker")
 		return nil, fmt.Errorf("list containers: %w", err)
 	}
+
+	logger.Debug().Int("total_containers", len(containers)).Msg("Listed containers, filtering by project")
 
 	var actual []ActualService
 	seen := make(map[string]bool)
@@ -259,11 +273,10 @@ func CollectActualState(ctx context.Context, client *docker.Client, projectName 
 		return actual[i].Name < actual[j].Name
 	})
 
-	logger.Debug().
-		Int("total_containers", len(containers)).
+	logger.Info().
 		Int("matched_services", len(actual)).
-		Str("project_name", projectName).
-		Msg("Collected actual container state")
+		Int("total_containers", len(containers)).
+		Msg("Successfully collected actual container state")
 
 	return actual, nil
 }

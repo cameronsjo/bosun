@@ -63,11 +63,11 @@ func (w *WebhookProvider) Send(ctx context.Context, alert *Alert) error {
 		return nil
 	}
 
-	logger := log.Component("webhook")
+	logger := log.ComponentCtx(ctx, "alert").With().Str("provider", "webhook").Logger()
 	start := time.Now()
 	logger.Debug().
-		Str("title", alert.Title).
 		Str("severity", string(alert.Severity)).
+		Str("source", alert.Source).
 		Str("url_host", maskURL(w.config.URL)).
 		Msg("Preparing to send webhook alert")
 
@@ -82,11 +82,17 @@ func (w *WebhookProvider) Send(ctx context.Context, alert *Alert) error {
 
 	body, err := json.Marshal(payload)
 	if err != nil {
+		logger.Error().
+			Err(err).
+			Msg("Failed to send webhook alert. Error: failed to marshal payload")
 		return fmt.Errorf("marshal payload: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, w.config.Method, w.config.URL, bytes.NewReader(body))
 	if err != nil {
+		logger.Error().
+			Err(err).
+			Msg("Failed to send webhook alert. Error: failed to create HTTP request")
 		return fmt.Errorf("create request: %w", err)
 	}
 
@@ -100,20 +106,20 @@ func (w *WebhookProvider) Send(ctx context.Context, alert *Alert) error {
 	if err != nil {
 		logger.Error().
 			Err(err).
-			Msg("Webhook request failed")
+			Msg("Failed to send webhook alert. Error: HTTP request failed")
 		return fmt.Errorf("send request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		logger.Error().
-			Int("status_code", resp.StatusCode).
-			Msg("Webhook returned error status")
+			Int(log.FieldStatus, resp.StatusCode).
+			Msg("Failed to send webhook alert. Error: endpoint returned error status")
 		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
 
-	logger.Debug().
-		Int("status_code", resp.StatusCode).
+	logger.Info().
+		Int(log.FieldStatus, resp.StatusCode).
 		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 		Msg("Successfully sent webhook alert")
 
