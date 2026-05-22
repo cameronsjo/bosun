@@ -31,6 +31,25 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, 5, cfg.BackupsToKeep)
 }
 
+func TestSuggestInfraDir(t *testing.T) {
+	tests := []struct {
+		name        string
+		infraSubDir string
+		candidates  []string
+		want        string
+	}{
+		{"no candidates", ".", nil, ""},
+		{"single candidate at root", ".", []string{"unraid"}, `did you mean BOSUN_INFRA_DIR="unraid"?`},
+		{"single candidate nested", "foo", []string{"bar"}, `did you mean BOSUN_INFRA_DIR="foo/bar"?`},
+		{"multiple candidates", ".", []string{"staging", "unraid"}, `set BOSUN_INFRA_DIR to one of: "staging", "unraid"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, suggestInfraDir(tt.infraSubDir, tt.candidates))
+		})
+	}
+}
+
 func TestNewReconciler(t *testing.T) {
 	cfg := &Config{
 		RepoURL:    "https://github.com/test/repo.git",

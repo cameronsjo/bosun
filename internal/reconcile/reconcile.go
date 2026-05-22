@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
@@ -531,6 +532,9 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	switch {
 	case errors.Is(err, ErrComposeDirMissing):
 		r.sendThrottledFailureAlert(ctx, state, "staging compose directory missing")
+		if hint := suggestInfraDir(r.config.InfraSubDir, findComposeCandidates(stagingSubDir)); hint != "" {
+			return fmt.Errorf("declared-state invariant: %w — %s", err, hint)
+		}
 		return fmt.Errorf("declared-state invariant: %w", err)
 	case errors.Is(err, ErrNoDeclaredServices):
 		if !r.config.AllowEmptyDeclaredState {
@@ -1040,6 +1044,29 @@ func MergeTargetSecrets(secrets map[string]any, scope string) map[string]any {
 	}
 
 	return merged
+}
+
+// suggestInfraDir formats an operator hint naming the BOSUN_INFRA_DIR value(s)
+// that would point at a discovered infra root, given the current InfraSubDir and
+// candidate sibling directory names (from findComposeCandidates). Each candidate
+// is joined with InfraSubDir so the suggestion is the value to set, not just the
+// sibling name. Returns "" when there are no candidates. See GH#214.
+func suggestInfraDir(infraSubDir string, candidates []string) string {
+	if len(candidates) == 0 {
+		return ""
+	}
+	vals := make([]string, len(candidates))
+	for i, c := range candidates {
+		vals[i] = filepath.Join(infraSubDir, c)
+	}
+	if len(vals) == 1 {
+		return fmt.Sprintf("did you mean BOSUN_INFRA_DIR=%q?", vals[0])
+	}
+	quoted := make([]string, len(vals))
+	for i, v := range vals {
+		quoted[i] = fmt.Sprintf("%q", v)
+	}
+	return fmt.Sprintf("set BOSUN_INFRA_DIR to one of: %s", strings.Join(quoted, ", "))
 }
 
 // renderTemplates renders all templates to the staging directory.

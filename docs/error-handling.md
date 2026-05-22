@@ -86,6 +86,8 @@ var ErrDeployInvariantMissingFile   = errors.New("deploy invariant: destination 
 
 **Purpose**: Surface the silent-success failure mode where reconcile reports success but no files actually land on disk. `ErrComposeDirMissing` is always fatal (misconfigured staging path); `ErrNoDeclaredServices` is overridable via `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true` for genuinely empty repos. The `ErrDeployInvariant*` set is overridable via `BOSUN_SKIP_DEPLOY_INVARIANT=true` for diagnostic deploys (logged at `Warn` with `override=true`).
 
+When `ErrComposeDirMissing` fires, the reconciler scans the infra dir's sibling directories for one containing `compose/` and, if found, appends a `BOSUN_INFRA_DIR=<dir>` suggestion to the surfaced error (GH#214 — `BOSUN_INFRA_DIR="."` while infra was nested under `unraid/`). The hint is diagnostic only; the failure remains unconditional.
+
 **When Returned**:
 - `ErrComposeDirMissing` / `ErrNoDeclaredServices` — from `ExtractDeclaredState` between stages 5 and 7 of the pipeline.
 - `ErrDeployInvariant*` — from the post-deploy invariant gate at stage 9, before `docker compose up` runs.
