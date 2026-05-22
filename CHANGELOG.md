@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.35.0](https://github.com/cameronsjo/bosun/compare/v0.34.3...v0.35.0) (2026-05-22)
+
+
+### Features
+
+* **reconcile:** suggest BOSUN_INFRA_DIR when compose dir is missing (GH[#214](https://github.com/cameronsjo/bosun/issues/214) Layer 3) ([#307](https://github.com/cameronsjo/bosun/issues/307)) ([4e49b6a](https://github.com/cameronsjo/bosun/commit/4e49b6ae014989927be9f972baa6eff284fb5b91))
+
 ## [0.34.3](https://github.com/cameronsjo/bosun/compare/v0.34.2...v0.34.3) (2026-05-20)
 
 
