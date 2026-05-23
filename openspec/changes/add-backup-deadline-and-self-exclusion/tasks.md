@@ -1,4 +1,4 @@
-# Tasks
+## Tasks
 
 Implementation begins only after this proposal reaches the `ready-to-build` label.
 Each numbered group is a distinct commit.
