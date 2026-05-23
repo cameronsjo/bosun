@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,6 +23,24 @@ func TestRunComposeUp_HonorsCancelledContext(t *testing.T) {
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
+}
+
+// TestRunComposeUp_ReturnsErrorOnMissingComposeFile exercises the exec path
+// (timeout wrap + CommandContext + Run) with a live context: a nonexistent
+// compose file makes `docker compose up` fail fast, so the call returns an error
+// promptly rather than hanging — and does so regardless of Docker availability.
+func TestRunComposeUp_ReturnsErrorOnMissingComposeFile(t *testing.T) {
+	done := make(chan error, 1)
+	go func() {
+		done <- runComposeUp(context.Background(), filepath.Join(t.TempDir(), "does-not-exist.yml"))
+	}()
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("runComposeUp did not return promptly for a missing compose file")
+	}
 }
 
 // TestWebhookHandlers_RejectOversizedBody proves the standalone (tunnel-exposed)

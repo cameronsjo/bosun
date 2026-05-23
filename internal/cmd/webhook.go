@@ -124,7 +124,7 @@ func runWebhook(cmd *cobra.Command, args []string) {
 		ReadTimeout:    10 * time.Second,
 		WriteTimeout:   30 * time.Second,
 		IdleTimeout:    60 * time.Second,
-		MaxHeaderBytes: maxWebhookBodySize,
+		MaxHeaderBytes: maxWebhookHeaderBytes,
 	}
 
 	// Start server in goroutine
@@ -161,6 +161,11 @@ func runWebhook(cmd *cobra.Command, args []string) {
 // prevent unbounded reads from a tunnel-exposed endpoint (mirrors the daemon's
 // own 1MB limit in internal/daemon/server.go).
 const maxWebhookBodySize = 1 << 20 // 1MB
+
+// maxWebhookHeaderBytes caps request header size (request line + header fields),
+// which is distinct from the body limit above. 64KB is generous for webhook
+// headers while bounding header-based memory abuse.
+const maxWebhookHeaderBytes = 64 * 1024 // 64KB
 
 type webhookHandler struct {
 	client *daemon.Client
