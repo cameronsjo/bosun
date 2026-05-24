@@ -1124,6 +1124,12 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 	if timeout <= 0 {
 		timeout = DefaultBackupTimeout
 	}
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
+	logger.Debug().
+		Str(log.FieldOperation, "backup").
+		Int64("timeout_ms", timeout.Milliseconds()).
+		Bool("local", local).
+		Msg("Preparing to create backup with timeout")
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

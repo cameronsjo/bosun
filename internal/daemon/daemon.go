@@ -1433,6 +1433,7 @@ func ConfigFromEnv() *Config {
 			if d <= 0 {
 				log.Warn().Str("env", "BOSUN_BACKUP_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
 			} else {
+				log.Debug().Str("env", "BOSUN_BACKUP_TIMEOUT").Int64("duration_ms", d.Milliseconds()).Msg("Backup timeout configured from environment")
 				rcfg.BackupTimeout = d
 			}
 		} else {
