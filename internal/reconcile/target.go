@@ -151,6 +151,7 @@ func DefaultConfig() *Config {
 		RemoteAppdataPath:     "/mnt/user/appdata",
 		InfraSubDir:           ".",
 		BackupsToKeep:         5,
+		BackupTimeout:         DefaultBackupTimeout,
 		HealthCheckTimeout:    60 * time.Second,
 		HealthCheckInterval:   5 * time.Second,
 		RestartBreakerEnabled: true,

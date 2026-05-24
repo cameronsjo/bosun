@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -101,4 +102,50 @@ func TestVerifyBackup_HonorsCancelledContext(t *testing.T) {
 	require.Error(t, err, "verification under a cancelled context must fail")
 	assert.True(t, errors.Is(err, context.Canceled),
 		"error should wrap context.Canceled, got: %v", err)
+}
+
+// TestCreateBackup_HonorsBackupTimeout verifies that createBackup wraps the
+// pipeline context with a bounded BackupTimeout, so a backup that would
+// otherwise hang (the #319 wedge) is aborted and surfaced as a failure rather
+// than blocking the reconcile indefinitely.
+func TestCreateBackup_HonorsBackupTimeout(t *testing.T) {
+	if _, err := exec.LookPath("tar"); err != nil {
+		t.Skip("tar not installed")
+	}
+
+	tmpDir := evalSymlinks(t, t.TempDir())
+	appdataDir := filepath.Join(tmpDir, "appdata")
+	stagingDir := filepath.Join(tmpDir, "staging")
+	// Backup destination nested under appdata — the realistic #319 layout.
+	backupDir := filepath.Join(appdataDir, "bosun", "backups")
+
+	// Staging target so discoverDeployTargets finds the "bosun" service...
+	require.NoError(t, os.MkdirAll(filepath.Join(stagingDir, "appdata", "bosun"), 0755))
+	// ...and a real source path so Backup actually invokes tar (non-empty work).
+	require.NoError(t, os.MkdirAll(filepath.Join(appdataDir, "bosun"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(appdataDir, "bosun", "conf.yml"), []byte("config"), 0644))
+
+	cfg := &Config{
+		StagingDir:       stagingDir,
+		InfraSubDir:      ".",
+		BackupDir:        backupDir,
+		LocalAppdataPath: appdataDir,
+		BackupsToKeep:    3,
+		// Already-expired budget: the wrapped context fires immediately, so a
+		// correctly-bounded createBackup must fail fast instead of running tar.
+		BackupTimeout: time.Nanosecond,
+	}
+	r := NewReconciler(cfg)
+
+	done := make(chan error, 1)
+	go func() { done <- r.createBackup(context.Background(), nil, true) }()
+
+	select {
+	case err := <-done:
+		// Without the timeout wrap, createBackup(Background) would tar the real
+		// content and succeed; the bounded deadline must turn that into a failure.
+		require.Error(t, err, "expired BackupTimeout must surface as a backup failure")
+	case <-time.After(5 * time.Second):
+		t.Fatal("createBackup did not return within bound — BackupTimeout not honored")
+	}
 }

@@ -1427,6 +1427,18 @@ func ConfigFromEnv() *Config {
 			log.Warn().Str("env", "BOSUN_COMPOSE_UP_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
+	// Backup timeout override
+	if v := os.Getenv("BOSUN_BACKUP_TIMEOUT"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_BACKUP_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
+			} else {
+				rcfg.BackupTimeout = d
+			}
+		} else {
+			log.Warn().Str("env", "BOSUN_BACKUP_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
 	if v := os.Getenv("BOSUN_HEALTH_CHECK_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
 			if d < 0 {

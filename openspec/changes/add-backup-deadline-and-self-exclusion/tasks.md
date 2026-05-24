@@ -26,14 +26,16 @@ Each numbered group is a distinct commit.
 
 ## 3. Bounded backup deadline
 
-- [ ] `internal/reconcile/reconcile.go` — add `BackupTimeout time.Duration` to `Config`
-- [ ] `internal/reconcile/target.go` — default `BackupTimeout` to 5m in config defaults
-- [ ] Parse `BOSUN_BACKUP_TIMEOUT` (Go duration or plain seconds) mirroring the
-      `BOSUN_COMPOSE_UP_TIMEOUT` pattern
-- [ ] `internal/reconcile/reconcile.go` — `createBackup` wraps ctx in
+- [x] `internal/reconcile/reconcile.go` — add `BackupTimeout time.Duration` to `Config`
+- [x] `internal/reconcile/target.go` — default `BackupTimeout` to 5m in config defaults
+      (via `DefaultBackupTimeout` const in `backup.go`)
+- [x] Parse `BOSUN_BACKUP_TIMEOUT` (Go duration or plain seconds) mirroring the
+      `BOSUN_COMPOSE_UP_TIMEOUT` pattern (in `internal/daemon/daemon.go`)
+- [x] `internal/reconcile/reconcile.go` — `createBackup` wraps ctx in
       `context.WithTimeout(ctx, BackupTimeout)`; timeout → warn + continue
-- [ ] `internal/reconcile/backup_test.go` — `createBackup` returns within `BackupTimeout`
-      when tar would hang (inject a slow path / fake `DeployOps`)
+- [x] `internal/reconcile/backup_test.go` — `createBackup` returns within `BackupTimeout`
+      when tar would hang (expired-budget timeout, real `*DeployOps`); plus
+      `TestConfigFromEnv_BackupTimeout` covering the env-parse branch
 
 ## 4. Accompanying non-spec Tier-1 fixes (same PR)
 

@@ -15,6 +15,11 @@ import (
 	"github.com/kballard/go-shellquote"
 )
 
+// DefaultBackupTimeout bounds backup creation + verification when no
+// BackupTimeout is configured. Prevents the pre-deploy backup step from
+// wedging the reconcile indefinitely (#319).
+const DefaultBackupTimeout = 5 * time.Minute
+
 // VerifyBackup checks that a backup archive is valid and non-empty.
 // The archive listing runs under ctx so a caller deadline or cancellation
 // aborts verification rather than blocking on a large/growing archive (#319).
