@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -385,7 +386,7 @@ func runRestore(cmd *cobra.Command, args []string) error {
 	}
 
 	backupName := args[0]
-	return doRestore(backupDir, backupName)
+	return doRestore(cmd.Context(), backupDir, backupName)
 }
 
 // getBackupDir returns the backup directory path.
@@ -490,7 +491,7 @@ func getBackups(backupDir string) ([]BackupInfo, error) {
 	return backups, nil
 }
 
-func doRestore(backupDir, backupName string) error {
+func doRestore(ctx context.Context, backupDir, backupName string) error {
 	backupPath := filepath.Join(backupDir, backupName)
 
 	// Validate backup exists
@@ -571,7 +572,7 @@ func doRestore(backupDir, backupName string) error {
 	composeFile := filepath.Join(targetDir, "compose", "core.yml")
 	if _, err := os.Stat(composeFile); err == nil {
 		ui.Info("  Restarting services...")
-		if err := runComposeUp(composeFile); err != nil {
+		if err := runComposeUp(ctx, composeFile); err != nil {
 			ui.Warning("Could not restart services: %v", err)
 			_, _ = ui.Yellow.Println("  Run 'docker compose -f " + composeFile + " up -d' manually")
 		}
@@ -726,8 +727,17 @@ func deployRestoredConfigs(stagingDir, targetDir string) error {
 	return fileutil.CopyDir(stagingDir, targetDir)
 }
 
-func runComposeUp(composeFile string) error {
-	cmd := exec.Command("docker", "compose", "-f", composeFile, "up", "-d", "--remove-orphans")
+// recoveryComposeUpTimeout bounds the disaster-recovery compose-up so the
+// recovery path cannot wedge indefinitely the way the pre-deploy backup did (#319).
+const recoveryComposeUpTimeout = 10 * time.Minute
+
+func runComposeUp(ctx context.Context, composeFile string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, recoveryComposeUpTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", composeFile, "up", "-d", "--remove-orphans")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

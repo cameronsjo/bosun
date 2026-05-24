@@ -121,9 +121,10 @@ func runWebhook(cmd *cobra.Command, args []string) {
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", webhookPort),
 		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:    10 * time.Second,
+		WriteTimeout:   30 * time.Second,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: maxWebhookHeaderBytes,
 	}
 
 	// Start server in goroutine
@@ -156,6 +157,16 @@ func runWebhook(cmd *cobra.Command, args []string) {
 	ui.Success("Webhook server stopped")
 }
 
+// maxWebhookBodySize caps request bodies on the standalone webhook receiver to
+// prevent unbounded reads from a tunnel-exposed endpoint (mirrors the daemon's
+// own 1MB limit in internal/daemon/server.go).
+const maxWebhookBodySize = 1 << 20 // 1MB
+
+// maxWebhookHeaderBytes caps request header size (request line + header fields),
+// which is distinct from the body limit above. 64KB is generous for webhook
+// headers while bounding header-based memory abuse.
+const maxWebhookHeaderBytes = 64 * 1024 // 64KB
+
 type webhookHandler struct {
 	client *daemon.Client
 	secret string
@@ -168,7 +179,7 @@ func (h *webhookHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read body for signature validation
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBodySize))
 	if err != nil {
 		http.Error(w, "Failed to read body", http.StatusBadRequest)
 		return
@@ -212,7 +223,7 @@ func (h *webhookHandler) handleGitHubWebhook(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Read body
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBodySize))
 	if err != nil {
 		http.Error(w, "Failed to read body", http.StatusBadRequest)
 		return
@@ -282,7 +293,7 @@ func (h *webhookHandler) handleGitLabWebhook(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Read body
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBodySize))
 	if err != nil {
 		http.Error(w, "Failed to read body", http.StatusBadRequest)
 		return
@@ -345,7 +356,7 @@ func (h *webhookHandler) handleGiteaWebhook(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Read body
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBodySize))
 	if err != nil {
 		http.Error(w, "Failed to read body", http.StatusBadRequest)
 		return
@@ -410,7 +421,7 @@ func (h *webhookHandler) handleBitbucketWebhook(w http.ResponseWriter, r *http.R
 	}
 
 	// Read body
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBodySize))
 	if err != nil {
 		http.Error(w, "Failed to read body", http.StatusBadRequest)
 		return
