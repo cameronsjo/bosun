@@ -5,13 +5,13 @@ Each numbered group is a distinct commit.
 
 ## 1. Self-exclusion in the backup tar
 
-- [ ] `internal/reconcile/backup.go` — `Backup()`: compute and pass `--exclude` for the
+- [x] `internal/reconcile/backup.go` — `Backup()`: compute and pass `--exclude` for the
       backup destination so the creation tar cannot archive its own output tree
-- [ ] Confirm the archived-member path form (absolute `/mnt/appdata/...`) and make the
+- [x] Confirm the archived-member path form (absolute `/mnt/appdata/...`) and make the
       exclude pattern match that form, not the container-local `/app/backups`
-- [ ] `internal/reconcile/backup.go` — `BackupRemote()`: apply the same exclude to the
+- [x] `internal/reconcile/backup.go` — `BackupRemote()`: apply the same exclude to the
       `tar -czf -` over SSH
-- [ ] `internal/reconcile/backup_test.go` — backup dir nested under a backed-up path
+- [x] `internal/reconcile/backup_test.go` — backup dir nested under a backed-up path
       produces an archive that does NOT contain the backups subtree
 
 ## 2. Context-aware verification

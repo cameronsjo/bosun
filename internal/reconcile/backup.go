@@ -86,7 +86,15 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 		return backupName, nil
 	}
 
-	args := append([]string{"-czf", tarFile}, existingPaths...)
+	// Exclude the backup destination so tar cannot recursively archive its own
+	// growing output when backupDir is nested inside a backed-up path (#319).
+	// --exclude is matched against the path as tar walks it (the absolute
+	// argument), so the absolute form works on both GNU tar and bsdtar.
+	args := []string{"-czf", tarFile}
+	if absBackupDir, absErr := filepath.Abs(backupDir); absErr == nil {
+		args = append(args, "--exclude", absBackupDir)
+	}
+	args = append(args, existingPaths...)
 	cmd := exec.CommandContext(ctx, "tar", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -139,7 +147,10 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 	tarFile := filepath.Join(backupPath, "configs.tar.gz")
 
 	// Build remote tar command with properly quoted paths to prevent shell injection.
-	sshCmd := fmt.Sprintf("tar -czf - %s", shellquote.Join(remotePaths...))
+	// Exclude the backup destination so the archive cannot recursively include a
+	// nested backups subtree (#319), mirroring the local Backup() behavior.
+	sshCmd := fmt.Sprintf("tar -czf - --exclude %s %s",
+		shellquote.Join(backupDir), shellquote.Join(remotePaths...))
 
 	outFile, err := os.Create(tarFile)
 	if err != nil {
