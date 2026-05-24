@@ -3,6 +3,7 @@ package reconcile
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,4 +73,32 @@ func TestBackup_ExcludesBackupDestination(t *testing.T) {
 		}
 	}
 	assert.True(t, foundService, "archive should still contain the real service config")
+}
+
+// TestVerifyBackup_HonorsCancelledContext verifies that backup verification runs
+// under the caller's context, so a cancelled/deadline-exceeded context aborts the
+// `tar -tzf` listing rather than blocking indefinitely on a growing archive (#319).
+func TestVerifyBackup_HonorsCancelledContext(t *testing.T) {
+	if _, err := exec.LookPath("tar"); err != nil {
+		t.Skip("tar not installed")
+	}
+
+	tmpDir := evalSymlinks(t, t.TempDir())
+	backupPath := filepath.Join(tmpDir, "backup")
+	require.NoError(t, os.MkdirAll(backupPath, 0755))
+
+	// A valid, non-empty archive so the failure can only come from cancellation.
+	srcFile := filepath.Join(tmpDir, "test.txt")
+	require.NoError(t, os.WriteFile(srcFile, []byte("test content"), 0644))
+	tarFile := filepath.Join(backupPath, "configs.tar.gz")
+	require.NoError(t, exec.Command("tar", "-czf", tarFile, "-C", tmpDir, "test.txt").Run())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before verification runs
+
+	d := NewDeployOps(false, "")
+	err := d.VerifyBackup(ctx, backupPath)
+	require.Error(t, err, "verification under a cancelled context must fail")
+	assert.True(t, errors.Is(err, context.Canceled),
+		"error should wrap context.Canceled, got: %v", err)
 }

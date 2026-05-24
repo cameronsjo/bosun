@@ -16,11 +16,13 @@ Each numbered group is a distinct commit.
 
 ## 2. Context-aware verification
 
-- [ ] `internal/reconcile/backup.go` — `VerifyBackup(ctx, backupPath)` using
+- [x] `internal/reconcile/backup.go` — `VerifyBackup(ctx, backupPath)` using
       `exec.CommandContext`
-- [ ] Update callers (`Backup`, `BackupRemote`) and the `DeployOps` / interface
-      signature in `internal/reconcile/interfaces.go`
-- [ ] `internal/reconcile/backup_test.go` — `VerifyBackup` honors a cancelled ctx
+- [x] Update callers (`Backup`, `BackupRemote`) and the `DeployOps` / interface
+      signature in `internal/reconcile/interfaces.go` (VerifyBackup is an internal
+      helper, not part of the `DeployOps` interface — only the concrete method and
+      its 6 callers needed updating)
+- [x] `internal/reconcile/backup_test.go` — `VerifyBackup` honors a cancelled ctx
 
 ## 3. Bounded backup deadline
 

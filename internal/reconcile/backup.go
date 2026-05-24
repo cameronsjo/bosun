@@ -16,7 +16,9 @@ import (
 )
 
 // VerifyBackup checks that a backup archive is valid and non-empty.
-func (d *DeployOps) VerifyBackup(backupPath string) error {
+// The archive listing runs under ctx so a caller deadline or cancellation
+// aborts verification rather than blocking on a large/growing archive (#319).
+func (d *DeployOps) VerifyBackup(ctx context.Context, backupPath string) error {
 	tarFile := filepath.Join(backupPath, "configs.tar.gz")
 
 	// Check file exists
@@ -34,7 +36,7 @@ func (d *DeployOps) VerifyBackup(backupPath string) error {
 	}
 
 	// Verify archive integrity by listing contents
-	cmd := exec.Command("tar", "-tzf", tarFile)
+	cmd := exec.CommandContext(ctx, "tar", "-tzf", tarFile)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -103,7 +105,7 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 	_ = cmd.Run()
 
 	// Verify the backup was created successfully
-	if err := d.VerifyBackup(backupPath); err != nil {
+	if err := d.VerifyBackup(ctx, backupPath); err != nil {
 		logger.Error().Err(err).Str(log.FieldPath, backupPath).Msg("Backup verification failed")
 		return "", fmt.Errorf("backup verification failed: %w", err)
 	}
@@ -183,7 +185,7 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 	}
 
 	// Verify the backup was created successfully
-	if err := d.VerifyBackup(backupPath); err != nil {
+	if err := d.VerifyBackup(ctx, backupPath); err != nil {
 		// Clean up invalid backup on verification failure
 		_ = os.RemoveAll(backupPath)
 		logger.Error().Err(err).Str(log.FieldPath, backupPath).Msg("Remote backup verification failed")
