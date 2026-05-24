@@ -65,6 +65,27 @@ Operators can bypass the post-deploy invariant for diagnostic deploys via `BOSUN
 
 Per-file write decisions are observable at `Debug` level: `CopyDirIfChanged` and `CopyFileIfChanged` emit `wrote src=… dst=… bytes=N` on every write and `skipped src=… dst=… reason=hash_match` on every hash-match skip. Use `BOSUN_LOG_LEVEL=debug` to see them.
 
+### Configuration Backup (stage 7)
+
+Before deploying new configs, bosun tars each deploy target's appdata into a
+timestamped `backup-YYYYMMDD-HHMMSS/configs.tar.gz` under `BackupDir`, verifies
+it by listing the archive, and prunes to the most recent `BackupsToKeep`
+(default 5). Two guards keep the backup from wedging the reconcile (GH#319):
+
+- **Self-exclusion.** Bosun is itself a deploy target, and `BackupDir`
+  (default `/app/backups` → host `/mnt/appdata/bosun/backups`) lives *inside* a
+  backed-up path. The creation tar passes `--exclude` for the backup
+  destination so it can never archive its own growing output or any prior
+  backup nested under it. Applies to both local and remote (`tar -czf -`) paths.
+- **Bounded deadline.** Backup creation *and* verification run under
+  `BackupTimeout` (default 5m, overridable via `BOSUN_BACKUP_TIMEOUT` — accepts a
+  Go duration or plain seconds). Verification shares the same context, so the
+  deadline kills a stuck `tar -tzf` rather than blocking. On timeout the backup
+  is treated as a failure.
+
+Backup failures, **including timeouts**, are logged as warnings and never abort
+the deploy (see Failure Alerting below).
+
 ### Failure Alerting
 
 Specific pipeline stages send throttled failure alerts to all configured alert providers (Discord, SendGrid, Twilio) when they fail. This behavior is controlled by the `on_failure` config flag (default: `true`).

@@ -39,16 +39,21 @@ Each numbered group is a distinct commit.
 
 ## 4. Accompanying non-spec Tier-1 fixes (same PR)
 
-- [ ] `internal/cmd/emergency.go` — `runComposeUp(ctx, composeFile)` using
+- [x] `internal/cmd/emergency.go` — `runComposeUp(ctx, composeFile)` using
       `exec.CommandContext`; derive ctx from `cmd.Context()` + a sensible timeout
-- [ ] `internal/cmd/webhook.go` — wrap the 5 `io.ReadAll(r.Body)` calls in
-      `io.LimitReader(r.Body, maxWebhookBodySize)` and set `Server.MaxHeaderBytes`
-- [ ] Tests: `runComposeUp` honors a cancelled ctx; webhook receiver truncates a body
-      over `maxWebhookBodySize` (table-driven over the 5 handlers)
+      (shipped via PR #321 / bosun-9nm)
+- [x] `internal/cmd/webhook.go` — wrap the 5 `io.ReadAll(r.Body)` calls in
+      `http.MaxBytesReader(w, r.Body, maxWebhookBodySize)` and set `Server.MaxHeaderBytes`
+      (shipped via PR #321 / bosun-9nm)
+- [x] Tests: `runComposeUp` honors a cancelled ctx; webhook receiver rejects a body
+      over `maxWebhookBodySize` (table-driven over the 5 handlers) — `wedge_class_test.go`
+      (shipped via PR #321 / bosun-9nm)
 
 ## 5. Docs + validation
 
-- [ ] `skills/onboard/resources/gitops.md` — backup deadline + self-exclusion behavior
-- [ ] `AGENTS.md`/`CLAUDE.md` env-var table — `BOSUN_BACKUP_TIMEOUT`
-- [ ] `make test`
-- [ ] `openspec validate add-backup-deadline-and-self-exclusion --strict`
+- [x] `skills/onboard/resources/gitops.md` — backup deadline + self-exclusion behavior
+- [x] `AGENTS.md`/`CLAUDE.md` env-var table — `BOSUN_BACKUP_TIMEOUT`
+- [x] `make test` — new tests green; reconcile passes except a Docker-dependent
+      integration test (`TestReconcilerRunFullSuccess/full_non-dry-run...`) that
+      requires a live daemon (env-only; backup step itself succeeded in the run)
+- [x] `openspec validate add-backup-deadline-and-self-exclusion --strict` — valid
