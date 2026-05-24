@@ -1146,6 +1146,12 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 	}
 
 	if err != nil {
+		// Distinguish a timeout from a genuine backup failure so operators see
+		// "backup timed out" rather than a downstream symptom (e.g. "archive not
+		// found"). The call site treats either as non-fatal (warn + continue).
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("backup timed out after %s: %w", timeout, ctxErr)
+		}
 		return err
 	}
 

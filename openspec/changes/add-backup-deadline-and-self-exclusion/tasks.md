@@ -53,7 +53,10 @@ Each numbered group is a distinct commit.
 
 - [x] `skills/onboard/resources/gitops.md` — backup deadline + self-exclusion behavior
 - [x] `AGENTS.md`/`CLAUDE.md` env-var table — `BOSUN_BACKUP_TIMEOUT`
-- [x] `make test` — new tests green; reconcile passes except a Docker-dependent
-      integration test (`TestReconcilerRunFullSuccess/full_non-dry-run...`) that
-      requires a live daemon (env-only; backup step itself succeeded in the run)
+- [x] `make test` — new tests green. One pre-existing failure,
+      `TestReconcilerRunFullSuccess/full_non-dry-run…`, is environment-specific:
+      it requires a live Docker daemon and failed only because the local daemon
+      was down. The backup stage logged success in that run; the failure was the
+      downstream `docker compose up` reaching an unreachable daemon. CI provides
+      Docker, so it passes there. Not a regression and not a follow-up item.
 - [x] `openspec validate add-backup-deadline-and-self-exclusion --strict` — valid

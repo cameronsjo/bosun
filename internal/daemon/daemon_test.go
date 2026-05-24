@@ -1430,6 +1430,13 @@ func TestConfigFromEnv_BackupTimeout(t *testing.T) {
 		require.NotNil(t, cfg.ReconcileConfig)
 		assert.Equal(t, reconcile.DefaultBackupTimeout, cfg.ReconcileConfig.BackupTimeout)
 	})
+
+	t.Run("zero value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_BACKUP_TIMEOUT", "0")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, reconcile.DefaultBackupTimeout, cfg.ReconcileConfig.BackupTimeout)
+	})
 }
 
 func TestConfigFromEnv_HealthCheckTimeout(t *testing.T) {

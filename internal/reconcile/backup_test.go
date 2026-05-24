@@ -19,9 +19,10 @@ import (
 func listArchiveMembers(t *testing.T, tarFile string) []string {
 	t.Helper()
 	cmd := exec.Command("tar", "-tzf", tarFile)
-	var stdout bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
-	require.NoError(t, cmd.Run(), "listing archive members")
+	cmd.Stderr = &stderr
+	require.NoError(t, cmd.Run(), "listing archive members (stderr: %s)", stderr.String())
 	var members []string
 	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
 		if line != "" {
@@ -145,6 +146,8 @@ func TestCreateBackup_HonorsBackupTimeout(t *testing.T) {
 		// Without the timeout wrap, createBackup(Background) would tar the real
 		// content and succeed; the bounded deadline must turn that into a failure.
 		require.Error(t, err, "expired BackupTimeout must surface as a backup failure")
+		assert.True(t, errors.Is(err, context.DeadlineExceeded),
+			"timeout failure must wrap context.DeadlineExceeded, got: %v", err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("createBackup did not return within bound — BackupTimeout not honored")
 	}

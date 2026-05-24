@@ -100,6 +100,11 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 	args := []string{"-czf", tarFile}
 	if absBackupDir, absErr := filepath.Abs(backupDir); absErr == nil {
 		args = append(args, "--exclude", absBackupDir)
+	} else {
+		// Without the exclude, tar can recursively archive its own output —
+		// surface the failed safeguard rather than swallowing it.
+		logger.Warn().Err(absErr).Str(log.FieldPath, backupDir).
+			Msg("Failed to resolve absolute backup path; self-exclusion skipped")
 	}
 	args = append(args, existingPaths...)
 	cmd := exec.CommandContext(ctx, "tar", args...)
@@ -156,8 +161,19 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 	// Build remote tar command with properly quoted paths to prevent shell injection.
 	// Exclude the backup destination so the archive cannot recursively include a
 	// nested backups subtree (#319), mirroring the local Backup() behavior.
-	sshCmd := fmt.Sprintf("tar -czf - --exclude %s %s",
-		shellquote.Join(backupDir), shellquote.Join(remotePaths...))
+	// A remote path can only be resolved on the remote host — filepath.Abs here
+	// would resolve against the LOCAL cwd, which is wrong — so require an absolute
+	// backupDir for the exclude to match the path tar walks; skip (with a warning)
+	// otherwise rather than emit an exclude that silently matches nothing.
+	var sshCmd string
+	if filepath.IsAbs(backupDir) {
+		sshCmd = fmt.Sprintf("tar -czf - --exclude %s %s",
+			shellquote.Join(backupDir), shellquote.Join(remotePaths...))
+	} else {
+		logger.Warn().Str(log.FieldPath, backupDir).
+			Msg("Remote backup destination is not absolute; self-exclusion skipped")
+		sshCmd = fmt.Sprintf("tar -czf - %s", shellquote.Join(remotePaths...))
+	}
 
 	outFile, err := os.Create(tarFile)
 	if err != nil {
