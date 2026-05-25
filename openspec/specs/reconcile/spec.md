@@ -28,7 +28,7 @@ The reconciler SHALL execute stages in this fixed order:
 14. Record successful deployment in state file
 15. Release lock
 
-A failure at any stage SHALL abort the remaining stages and release the lock. The health gate (stage 11) failing SHALL trigger rollback before aborting.
+A failure at any stage SHALL abort the remaining stages and release the lock, except configuration backup (stage 7), whose failures — including timeouts — are non-fatal and SHALL NOT abort the pipeline (see the Configuration Backup requirement). The health gate (stage 11) failing SHALL trigger rollback before aborting.
 The lock SHALL always be released via defer, even on panic.
 
 #### Scenario: Full pipeline succeeds
