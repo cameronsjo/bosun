@@ -337,20 +337,12 @@ Status values: `clean` (no drift), `drifted` (items detected), `unknown` (no dep
 
 ### Environment Variables
 
+All bosun environment variables use the `BOSUN_` prefix. Legacy unprefixed variables (like `REPO_URL`, `DRY_RUN`, `STAGING_DIR`) are still supported for backwards compatibility, but the `BOSUN_`-prefixed variants take precedence. When both are set, the `BOSUN_` variant wins.
+
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `REPO_URL` | Yes | - | Git repository URL |
-| `REPO_BRANCH` | No | `main` | Branch to track |
-| `REPO_DIR` | No | `/app/repo` | Local clone directory |
-| `STAGING_DIR` | No | `/app/staging` | Rendered templates directory |
-| `BACKUP_DIR` | No | `/app/backups` | Configuration backups |
-| `LOG_DIR` | No | `/app/logs` | Log files directory |
-| `LOCAL_APPDATA` | No | `/mnt/appdata` | Local appdata path |
-| `REMOTE_APPDATA` | No | `/mnt/user/appdata` | Remote appdata path |
-| `DEPLOY_TARGET` | No | - | SSH target (e.g., `root@192.168.1.8`) |
-| `SECRETS_FILES` | No | - | Comma-separated SOPS files |
-| `DRY_RUN` | No | `false` | Preview mode |
-| `FORCE` | No | `false` | Deploy even without changes |
+| `BOSUN_REPO_URL` or `REPO_URL` | Yes | - | Git repository URL |
+| `BOSUN_REPO_BRANCH` or `REPO_BRANCH` | No | `main` | Branch to track |
 | `BOSUN_STATE_DIR` | No | `/var/lib/bosun` | Directory for deploy state file |
 | `BOSUN_DRIFT_INTERVAL` | No | `5m` | Drift check interval (0 to disable) |
 | `BOSUN_DRIFT_ALERT_COOLDOWN` | No | `1h` | Cooldown between repeated drift alerts per item |
@@ -641,7 +633,7 @@ The reconciler uses file-based locking to prevent concurrent runs.
 
 ### Lock File
 
-**Path**: `/tmp/reconcile.lock`
+**Path**: `/var/run/bosun/reconcile.lock`
 
 ### Unix Implementation
 

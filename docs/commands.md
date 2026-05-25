@@ -239,6 +239,50 @@ bosun create worker myworker
 
 Creates a service manifest in `manifest/services/<name>.yml`.
 
+### chart
+
+Manage charts (Helm-aligned format). A distinct command group from `bosun provision`, which renders them.
+
+```bash
+bosun chart list                    # List available charts
+bosun chart show <name>             # Show chart details
+```
+
+See `bosun provision` for rendering charts.
+
+### template
+
+Manage templates (Helm-aligned format). Alias: `templates`.
+
+```bash
+bosun template list                 # List available templates
+```
+
+### migrate
+
+Migrate manifests to new format or add apiVersion fields.
+
+```bash
+bosun migrate version               # Add apiVersion/kind fields (dry-run)
+bosun migrate version -w            # Actually apply version migration
+bosun migrate helm                  # Convert to Helm-aligned format (dry-run)
+bosun migrate helm --force          # Apply Helm migration
+```
+
+**Subcommands:**
+
+| Subcommand | Purpose |
+|-----------|---------|
+| `version` | Add `apiVersion` and `kind` fields to unversioned manifests |
+| `helm` | Convert legacy provisions format to Helm-aligned charts format |
+
+**Flags:**
+
+| Flag | Applies To | Description |
+|------|-----------|-------------|
+| `-w`, `--write` | `version` | Actually write changes (default is dry-run) |
+| `--force` | `helm` | Overwrite existing charts |
+
 ## Radio Commands
 
 Communication and connectivity commands.
@@ -383,6 +427,25 @@ Validates:
 - Dependencies are correct
 - No port conflicts
 
+### ports
+
+Show allocated ports across all stacks and detect conflicts.
+
+```bash
+bosun ports                       # List all allocated ports
+bosun ports --service traefik     # Show ports for specific service
+bosun ports --free 8000-9000      # Find free ports in range
+```
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `-s`, `--service` | Show ports for a specific service only |
+| `--free` | Show available ports in range (e.g., `8000-9000`) |
+
+Lists all host port allocations from rendered compose files and detects conflicts.
+
 ## Upgrade Commands
 
 ### upgrade traefik
@@ -420,6 +483,47 @@ bosun upgrade traefik --dynamic ./traefik/conf.d     # Specify dynamic config di
 **Auto-detection:** If `--compose` is not specified, bosun scans the output directory, project root, and `bosun/` directory for compose files containing a `traefik:*` image or a service named `traefik`. Dynamic config directory is detected from Traefik volume mounts (paths containing `conf.d`, `dynamic`, or `rules`).
 
 **Template safety:** If the compose file is a Go template (`.tmpl` extension or contains `{{`), fixes are displayed but not auto-applied.
+
+## State Management Commands
+
+### breaker
+
+Manage the deploy circuit breaker.
+
+```bash
+bosun breaker status                # Show circuit breaker state
+bosun breaker reset                 # Reset the circuit breaker
+bosun breaker status --target nas   # Check state for specific target
+```
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--state-dir` | State directory (default: `/var/lib/bosun`) |
+| `-t`, `--target` | Named deployment target from `bosun.yaml targets:` section |
+
+The circuit breaker trips after 3 consecutive deploy failures on the same commit to prevent infinite retries. Use `bosun breaker reset` after resolving the root cause to allow retries.
+
+### render
+
+Render templates with SOPS secrets.
+
+```bash
+bosun render config.yml.tmpl                    # Render single template
+bosun render unraid/compose/*.tmpl              # Render multiple templates
+bosun render -s secrets.sops.yaml config.tmpl   # Specify secrets file
+bosun render -o /tmp/rendered unraid/           # Render to output directory
+```
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `-s`, `--secrets` | SOPS secrets file (auto-detected from `BOSUN_SECRETS_FILE` if not set) |
+| `-o`, `--output` | Output directory (prints to stdout if not set) |
+
+Renders Go templates with decrypted SOPS secrets, using the same template engine as reconciliation. Useful for previewing rendered configs before pushing.
 
 ## Emergency Commands
 
@@ -459,6 +563,26 @@ bosun overboard <name>
 ```
 
 Forcefully removes a container. Use with caution.
+
+**Alias:** `plank`
+
+### restore
+
+Restore infrastructure configs from a previous backup.
+
+```bash
+bosun restore
+bosun restore --list
+bosun restore backup-20250125-143022
+```
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `-l`, `--list` | List available backups |
+
+Backups are created automatically before each `bosun reconcile`. Use `--list` to see available backups and pick one to restore.
 
 ## Daemon Commands
 

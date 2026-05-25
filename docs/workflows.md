@@ -195,7 +195,7 @@ flowchart TD
 
 | Step | Operation | Error Handling |
 |------|-----------|----------------|
-| 1 | Acquire exclusive file lock (`/tmp/reconcile.lock`) | Skips if lock held (non-blocking `LOCK_NB`) |
+| 1 | Acquire exclusive file lock (`/var/run/bosun/reconcile.lock`) | Skips if lock held (non-blocking `LOCK_NB`) |
 | 2 | Sync git repository (clone or pull) | Clone timeout: 5min, Fetch timeout: 2min |
 | 3 | Compare before/after commit hashes | Skip if no changes unless `--force` |
 | 4 | Validate SOPS files exist and have `sops` metadata key | Returns specific error with fix instructions |

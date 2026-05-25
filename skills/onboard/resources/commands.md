@@ -204,6 +204,27 @@ bosun chart show <name>        # Detailed chart info (templates, deps, version)
 bosun template list            # List available templates (alias: templates)
 ```
 
+### `bosun migrate`
+
+Migrate manifests to a versioned or Helm-aligned format.
+
+```bash
+bosun migrate version          # Add apiVersion/kind fields (dry-run)
+bosun migrate version -w       # Write the version migration
+bosun migrate helm             # Convert provisions to Helm-aligned charts (dry-run)
+bosun migrate helm --force     # Apply Helm migration, overwriting existing charts
+```
+
+| Subcommand | Purpose |
+|------------|---------|
+| `version` | Add `apiVersion`/`kind` fields to unversioned manifests |
+| `helm` | Convert legacy provisions layout to Helm-aligned charts |
+
+| Flag | Applies To | Description |
+|------|------------|-------------|
+| `-w`, `--write` | `version` | Write changes to files (default is dry-run) |
+| `--force` | `helm` | Overwrite existing charts |
+
 ---
 
 ## GitOps Commands
@@ -308,6 +329,21 @@ By default reads from the daemon's cached drift state. Use `--live` for a fresh 
 
 **Multi-target behavior:** When no `--target` is specified and the config has multiple targets, drift automatically shows status for all targets. With `--json`, this produces a `{"targets": [...]}` array instead of a single object.
 
+### `bosun breaker`
+
+Manage the deploy circuit breaker. After 3 consecutive deploy failures on the same commit, the breaker trips and stops retrying; reset it after fixing the root cause.
+
+```bash
+bosun breaker status           # Show circuit breaker state
+bosun breaker reset            # Reset the breaker to allow retries
+bosun breaker status -t nas    # Check state for a named target
+```
+
+| Flag | Description |
+|------|-------------|
+| `--state-dir` | State directory (default: `/var/lib/bosun`) |
+| `-t`, `--target` | Named deployment target (from `bosun.yaml targets:` section) |
+
 ---
 
 ## Diagnostics Commands
@@ -364,6 +400,23 @@ bosun validate --full                  # Include full dry-run reconciliation
 | `--full` | Run full dry-run reconciliation |
 | `--socket` | Path to daemon socket |
 | `-t`, `--timeout` | Timeout in seconds (default: 30) |
+
+### `bosun ports`
+
+Show host port allocations across all stacks and detect conflicts.
+
+```bash
+bosun ports                    # List all allocated ports
+bosun ports --service traefik  # Ports for a specific service
+bosun ports --free 8000-9000   # Find free ports in a range
+```
+
+| Flag | Description |
+|------|-------------|
+| `-s`, `--service` | Show ports for a specific service only |
+| `--free` | Show available ports in a range (e.g. `8000-9000`) |
+
+Reads host port mappings from rendered compose files and flags collisions.
 
 ---
 

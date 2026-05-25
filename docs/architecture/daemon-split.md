@@ -23,23 +23,29 @@ Split bosun into two components for resilience and flexibility:
 │  │  • Snapshot before deploy, rollback on failure              │ │
 │  │  • Discord/SendGrid/Twilio alerting                         │ │
 │  │                                                             │ │
-│  │  HTTP API (localhost:9999):                                 │ │
-│  │    POST /trigger      - Trigger reconcile                   │ │
-│  │    GET  /health       - Health check                        │ │
-│  │    GET  /status       - Current state, last reconcile       │ │
+│  │  APIs:                                                       │ │
+│  │    Unix socket:  /var/run/bosun.sock (primary)              │ │
+│  │      POST /trigger      - Trigger reconcile                 │ │
+│  │      GET  /status       - Current state                     │ │
+│  │      GET  /health       - Health check                      │ │
+│  │    HTTP webhooks: localhost:8080 (webhook server)           │ │
+│  │      POST /webhook/github  - GitHub push events             │ │
+│  │      POST /webhook         - Generic HMAC webhook           │ │
+│  │    Optional TCP API: 127.0.0.1:9090 (bearer-auth)          │ │
+│  │      Enabled via BOSUN_ENABLE_TCP, disabled by default      │ │
 │  │                                                             │ │
 │  └────────────────────────────────────────────────────────────┘ │
 │                              ▲                                   │
 │                              │ POST /trigger                     │
 │                              │                                   │
 │  ┌───────────────────────────┴────────────────────────────────┐ │
-│  │              bosun-webhook (Docker container)               │ │
+│  │              bosun webhook (standalone receiver)             │ │
 │  │                       OPTIONAL                              │ │
 │  │                                                             │ │
-│  │  • Receives GitHub webhook POST                             │ │
-│  │  • HMAC-SHA256 signature validation                         │ │
-│  │  • Filters by branch (only trigger on tracked branch)       │ │
-│  │  • Calls daemon at host.docker.internal:9999/trigger        │ │
+│  │  • Handles GitHub, GitLab, Gitea, Bitbucket webhooks       │ │
+│  │  • Provider-specific HMAC/token signature validation        │ │
+│  │  • Forwards normalized triggers to daemon socket            │ │
+│  │  • Connects via Unix socket or TCP API                      │ │
 │  │                                                             │ │
 │  │  Exposed via: Tailscale Funnel / Cloudflare Tunnel          │ │
 │  └─────────────────────────────────────────────────────────────┘ │
@@ -85,7 +91,8 @@ Split bosun into two components for resilience and flexibility:
 BOSUN_REPO_URL=git@github.com:user/infrastructure.git
 BOSUN_REPO_BRANCH=main
 BOSUN_POLL_INTERVAL=3600
-BOSUN_TRIGGER_PORT=9999
+BOSUN_SOCKET_PATH=/var/run/bosun.sock
+BOSUN_ENABLE_TCP=false
 SOPS_AGE_KEY_FILE=/boot/config/plugins/bosun/age-key.txt
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 ```
@@ -111,34 +118,45 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 
 **Image:** `ghcr.io/cameronsjo/bosun-webhook:latest`
 
-**docker-compose.yml:**
+**Standalone Webhook Receiver:**
+
+The `bosun webhook` command runs a standalone receiver that handles multiple Git providers. It validates signatures and forwards normalized triggers to the daemon.
+
+```bash
+bosun webhook --socket /var/run/bosun.sock --secret $WEBHOOK_SECRET
+```
+
+Or in docker-compose:
+
 ```yaml
 services:
   bosun-webhook:
-    image: ghcr.io/cameronsjo/bosun-webhook:latest
-    container_name: bosun-webhook
+    image: ghcr.io/cameronsjo/bosun:latest
+    entrypoint: ["bosun", "webhook", "--fetch-secret"]
     restart: unless-stopped
     environment:
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
-      DAEMON_URL: http://host.docker.internal:9999
-      TRACKED_BRANCH: main
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      BOSUN_SOCKET_PATH: /var/run/bosun.sock
+    volumes:
+      - /var/run/bosun.sock:/var/run/bosun.sock  # Connect to daemon socket
     ports:
-      - "8080:8080"  # Or expose via Tailscale/Cloudflare
-    # No volumes needed - stateless
+      - "8080:8080"  # Expose webhook receiver
 ```
 
 **Endpoints:**
-- `POST /webhook/github` - Receives GitHub push events
-- `GET /health` - Container health check
+- `POST /webhook/github` - GitHub push events
+- `POST /webhook/gitlab` - GitLab push events
+- `POST /webhook/gitea` - Gitea push events
+- `POST /webhook/bitbucket` - Bitbucket push events
+- `GET /health` - Health check
 
 **Flow:**
-1. GitHub sends push webhook to `https://bosun.example.com/webhook/github`
-2. Container validates `X-Hub-Signature-256` with `WEBHOOK_SECRET`
-3. Container checks if push is to `TRACKED_BRANCH`
-4. Container POSTs to `DAEMON_URL/trigger`
-5. Returns 202 Accepted to GitHub
+1. Provider sends webhook to `https://bosun.example.com/webhook/<provider>`
+2. Receiver validates signature using provider-specific header
+3. Receiver filters by branch (if configured)
+4. Receiver forwards to daemon Unix socket via POST /trigger
+5. Returns 202 Accepted to provider
+
+**Important:** Do NOT point GitLab, Gitea, or Bitbucket webhooks directly at the daemon. They use provider-specific signature headers that the daemon's generic `/webhook` handler does not understand. Always use the standalone `bosun webhook` receiver for these providers.
 
 **Security:**
 - No access to Docker socket
@@ -148,53 +166,48 @@ services:
 
 ## Communication Patterns
 
-### Container → Host Daemon
+### Webhook Receiver → Daemon
 
-**Option 1: host.docker.internal (recommended)**
+The standalone `bosun webhook` receiver connects to the daemon via Unix socket or TCP API.
+
+**Unix socket (recommended):**
 ```yaml
-extra_hosts:
-  - "host.docker.internal:host-gateway"
-environment:
-  DAEMON_URL: http://host.docker.internal:9999
+volumes:
+  - /var/run/bosun.sock:/var/run/bosun.sock
 ```
-Requires Docker 20.10+
+Mount the socket into the receiver container. Secure by file permissions (0660).
 
-**Option 2: Bridge Gateway IP**
-```yaml
-environment:
-  DAEMON_URL: http://172.17.0.1:9999
+**TCP API (optional, off by default):**
+Enable with `BOSUN_ENABLE_TCP=true` in daemon config. Requires bearer token auth:
+```bash
+bosun webhook --tcp 127.0.0.1:9090 --token mytoken
 ```
-Works on older Docker, but IP may vary.
 
-**Option 3: Host Network Mode**
-```yaml
-network_mode: host
-environment:
-  DAEMON_URL: http://localhost:9999
-```
-Loses network isolation.
+### Daemon APIs
 
-### Daemon Trigger API
-
-Simple authenticated trigger endpoint:
-
-```
+**Unix socket (primary, local-only):**
+```bash
 POST /trigger
-Authorization: Bearer <trigger-token>
-
-Response: 202 Accepted
-{
-  "status": "accepted",
-  "message": "Reconcile triggered"
-}
+GET  /status
+GET  /health
 ```
+File-based permissions (0660), kernel UID/PID logging. Always available.
 
-Or simpler - localhost-only, no auth needed (can't be reached externally):
+**HTTP webhooks (port 8080, configurable):**
 ```
-POST /trigger
+POST /webhook/github    - GitHub webhook
+POST /webhook           - Generic HMAC (X-Signature or X-Hub-Signature-256)
+GET  /health            - Health check
+```
+Accessible from outside (use reverse proxy for access control). GitLab/Gitea/Bitbucket should NOT be pointed at the daemon — use `bosun webhook` receiver instead.
 
-Response: 202 Accepted
+**TCP API (optional, off by default):**
 ```
+127.0.0.1:9090 (configurable via BOSUN_TCP_ADDR)
+Requires Authorization: Bearer <token>
+POST /trigger           - Trigger reconciliation
+```
+Enable with `BOSUN_ENABLE_TCP=true`. Localhost-only by default for safety.
 
 ## Failure Modes
 

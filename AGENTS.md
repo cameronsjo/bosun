@@ -326,7 +326,7 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 | `BOSUN_POLL_INTERVAL` | daemon | Polling interval in seconds (default: `3600`) |
 | `BOSUN_SOCKET_PATH` | daemon | Unix socket path (default: `/var/run/bosun.sock`) |
 | `BOSUN_ENABLE_TCP` | daemon | Enable TCP API (`true`/`false`) |
-| `BOSUN_TCP_ADDR` | daemon | TCP listen address (default: `:8080`) |
+| `BOSUN_TCP_ADDR` | daemon | TCP listen address (default: `127.0.0.1:9090`) |
 | `BOSUN_BEARER_TOKEN` | daemon, trigger | Bearer token for TCP auth |
 | `BOSUN_DISABLE_HTTP` | daemon | Disable HTTP webhook server |
 | `BOSUN_SECRETS_FILE` | daemon, render | SOPS secrets file path |
