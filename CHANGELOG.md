@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.0](https://github.com/cameronsjo/bosun/compare/v0.35.1...v0.36.0) (2026-05-25)
+
+
+### Features
+
+* **log:** structured logging for docker and manifest packages (bosun-ixv) ([#323](https://github.com/cameronsjo/bosun/issues/323)) ([e19a958](https://github.com/cameronsjo/bosun/commit/e19a9582d5e5d782362c26d03ce4daff7a6bb79d))
+
 ## [0.35.1](https://github.com/cameronsjo/bosun/compare/v0.35.0...v0.35.1) (2026-05-25)
 
 
