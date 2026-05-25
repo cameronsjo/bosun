@@ -15,6 +15,7 @@ Bosun's design principle is "one yacht, many ports" — a single monorepo can de
 - **Per-target alerting context** — alerts include the target name so operators know which server is affected
 - **Config file schema** — `bosun.yaml` gains an optional `targets:` section; when absent, behavior is identical to today
 - **Env var mapping** — `BOSUN_TARGETS` (JSON) defines targets; individual `BOSUN_TARGET_<NAME>_*` vars override per-target fields
+- **Target validation and safety** (folded from the Cluster C bug hunt) — target descriptors are validated at config-load for path traversal, colliding state/lock/staging paths, colliding Docker namespaces, case-insensitive reserved `default`, and YAML/env field parity; per-target configs deep-copy all slice/map fields on derivation and hot-reload; empty-field inheritance is explicit so a dev target cannot silently inherit a production host (GHSA-jxw8, GHSA-57r2, #228, #260, #270, #271, #272, #273, #287)
 
 ## Impact
 
