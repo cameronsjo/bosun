@@ -178,24 +178,29 @@ Overridden keys SHALL be logged at debug level to aid troubleshooting.
 The set of per-target fields settable via `BOSUN_TARGETS` SHALL be identical to the set settable via the `targets:` YAML section; neither source SHALL expose a field the other cannot set. An empty `BOSUN_TARGETS` value (`[]`) SHALL be treated identically to an absent `targets:` section (implicit `default` target).
 
 #### Scenario: Path traversal in target paths is rejected
+
 - **WHEN** a target sets `state_file`, `staging_dir`, or an appdata path containing `..` or escaping its permitted root, via either `bosun.yaml` or `BOSUN_TARGETS`
 - **THEN** the configuration is rejected at config-load with a path-validation error
 - **AND** no reconcile runs for any target
 
 #### Scenario: Reserved name matched case-insensitively
+
 - **WHEN** a user-defined target is named `Default` or `DEFAULT`
 - **THEN** it is rejected as using the reserved name, the same as lowercase `default`
 
 #### Scenario: Colliding state files are rejected
+
 - **WHEN** two targets resolve to the same explicit `state_file` path
 - **THEN** the configuration is rejected at config-load
 - **AND** the error names both colliding targets
 
 #### Scenario: Colliding Docker namespace is rejected
+
 - **WHEN** two distinct targets resolve to the same host and project name (and thus the same compose namespace and staging directory)
 - **THEN** the configuration is rejected or fails fast at config-load, rather than letting one target tear down the other's containers
 
 #### Scenario: YAML and env field parity
+
 - **WHEN** a per-target field (e.g. `state_file`, `staging_dir`) is settable via `BOSUN_TARGETS`
 - **THEN** the same field is settable via the `targets:` YAML section
 - **AND** an empty `BOSUN_TARGETS` (`[]`) yields the same implicit `default` target as an absent `targets:` section
@@ -205,14 +210,17 @@ The set of per-target fields settable via `BOSUN_TARGETS` SHALL be identical to 
 `ConfigForTarget` and hot-reload (`applyTargetOverrides`) SHALL produce per-target configurations that share no mutable backing storage. Every slice and map field on the per-target `Config` — including `SecretsFiles`, `DeployPaths`, `DriftIgnore`, `PostSyncHooks`, and `CriticalContainers` — SHALL be deep-copied, so that mutating one target's configuration never alters another target's or the base configuration. Empty per-target fields SHALL follow explicit, documented inheritance rules; an empty override SHALL NOT silently inherit a base value in a way that causes a target to deploy to an unintended host or path.
 
 #### Scenario: Mutating a per-target slice does not affect siblings
+
 - **WHEN** one target's `DeployPaths`, `SecretsFiles`, `DriftIgnore`, or `PostSyncHooks` slice is mutated after `ConfigForTarget`
 - **THEN** the base configuration and every other target's configuration are unchanged
 
 #### Scenario: Hot-reload preserves per-target independence
+
 - **WHEN** `bosun.yaml` is hot-reloaded during a multi-target cycle and `applyTargetOverrides` assigns per-target slices
 - **THEN** mutating one target's reloaded slice leaves sibling targets' slices unchanged
 
 #### Scenario: Empty override does not silently inherit a different host
+
 - **WHEN** a target leaves `target_host` empty
 - **THEN** inheritance follows the documented rule (empty means local, not "inherit the base/another target's host")
 - **AND** a dev target cannot accidentally resolve to a production host through silent inheritance

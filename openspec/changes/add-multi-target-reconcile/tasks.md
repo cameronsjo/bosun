@@ -63,6 +63,7 @@
 - [ ] 8.4 Add multi-target example to `docs/` or README
 
 ## 9. Target validation and safety (folded from Cluster C bug hunt)
+
 - [ ] 9.1 `ResolveTargets` validates target-derived paths (state_file, lock_file, staging_dir, appdata) for traversal/root-confinement — same checks for YAML and `BOSUN_TARGETS` (GHSA-57r2)
 - [ ] 9.2 Reserved-name `default` check is case-insensitive, matching dedup (#228)
 - [ ] 9.3 Reject colliding state_file / lock_file / staging_dir across targets (#260)
