@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/fileutil"
 	"github.com/cameronsjo/bosun/internal/log"
 )
 
@@ -19,9 +20,19 @@ var (
 )
 
 // verifyDeployTarget asserts every entry in writtenRel exists at dst with
-// mtime >= startTime, and that an empty writtenRel against a non-empty src is
-// an error. writtenRel paths are joined under dst — for directory targets dst
-// is the destination directory; for file targets dst is its parent dir.
+// mtime >= startTime. writtenRel paths are joined under dst — for directory
+// targets dst is the destination directory; for file targets dst is its parent
+// dir.
+//
+// When writtenRel is empty, the deploy recorded zero writes. This is NOT
+// inherently a failure: a content-hash sync legitimately writes nothing when
+// the destination already byte-matches the source (a no-op), and the standard
+// rename-aside path leaves dst content-identical to src without populating
+// writtenRel. So instead of inferring corruption from the write counter, verify
+// on-disk truth — every regular file in src must exist and be content-equal at
+// dst. ErrDeployInvariantEmptyWrite fires only for a genuine silent-sync
+// failure (a non-empty source whose files are missing or differ at dst), which
+// is the failure GH#214 added this guard for; a satisfied no-op passes (GH#330).
 func verifyDeployTarget(src, dst string, writtenRel []string, startTime time.Time) error {
 	logger := log.Component(log.ComponentReconcile)
 	logger.Debug().
@@ -31,19 +42,26 @@ func verifyDeployTarget(src, dst string, writtenRel []string, startTime time.Tim
 		Msg("Preparing to verify deploy target invariant")
 
 	if len(writtenRel) == 0 {
-		hasFiles, err := dirHasRegularFiles(src)
+		sawFiles, matched, err := destinationSatisfiesSource(src, dst)
 		if err != nil {
-			logger.Error().Err(err).Str(log.FieldPath, src).Msg("Failed to verify deploy target. Reason: cannot inspect source")
-			return fmt.Errorf("inspect source %q: %w", src, err)
+			logger.Error().Err(err).
+				Str(log.FieldPath, src).
+				Str("destination", dst).
+				Msg("Failed to verify deploy target. Reason: cannot compare source against destination")
+			return fmt.Errorf("compare source %q against destination %q: %w", src, dst, err)
 		}
-		if hasFiles {
+		if !sawFiles {
+			logger.Debug().Msg("Deploy target verification passed: source has no regular files to deploy")
+			return nil
+		}
+		if !matched {
 			logger.Error().
 				Str(log.FieldPath, src).
 				Str("destination", dst).
-				Msg("Failed to verify deploy target. Reason: empty write recorded against non-empty source")
+				Msg("Failed to verify deploy target. Reason: zero writes recorded and destination does not content-match source (silent-sync failure)")
 			return fmt.Errorf("%w: src=%q dst=%q", ErrDeployInvariantEmptyWrite, src, dst)
 		}
-		logger.Debug().Msg("Deploy target verification passed: empty source and no files written")
+		logger.Debug().Msg("Deploy target verification passed: no-op sync, destination already content-matches source")
 		return nil
 	}
 
@@ -109,4 +127,87 @@ func dirHasRegularFiles(src string) (bool, error) {
 		return false, walkErr
 	}
 	return found, nil
+}
+
+// destinationSatisfiesSource reports whether the destination already mirrors the
+// source when the deploy recorded zero writes. It is the on-disk truth check
+// behind the empty-write invariant: rather than treating "source has files but
+// no writes recorded" as corruption, it confirms each regular file in src has a
+// content-equal counterpart at dst.
+//
+// Symlinks are skipped (Lstat semantics) to match CopyDir/CopyDirIfChanged,
+// which never deploy them — so a symlink-only source imposes no requirement.
+// Content equality reuses fileutil.FileHash/ContentEqual, the same primitives
+// CopyFileIfChanged uses to decide a write is skippable, so "skipped because
+// equal" and "verified present" share one definition of equal.
+//
+// Returns:
+//   - sawFiles: whether src contained at least one regular file (Lstat).
+//   - matched:  whether every such file is present and content-equal at dst.
+//
+// For directory sources, dst is the parallel destination directory. For
+// single-file sources, dst is the destination's parent directory and the file
+// keeps its basename (discovery preserves the filename across the appdata
+// rebase).
+func destinationSatisfiesSource(src, dst string) (sawFiles bool, matched bool, err error) {
+	info, statErr := os.Lstat(src)
+	if statErr != nil {
+		if errors.Is(statErr, fs.ErrNotExist) {
+			return false, true, nil // nothing staged → nothing to verify
+		}
+		return false, false, statErr
+	}
+
+	// Single-file source: a symlink or other irregular file imposes no write
+	// requirement (it would have been skipped during deploy).
+	if !info.IsDir() {
+		if !info.Mode().IsRegular() {
+			return false, true, nil
+		}
+		eq, cmpErr := filesContentEqual(src, filepath.Join(dst, filepath.Base(src)))
+		if cmpErr != nil {
+			return true, false, cmpErr
+		}
+		return true, eq, nil
+	}
+
+	// Directory source: every regular file must content-match at the parallel
+	// destination path. One mismatch is enough to fail the invariant.
+	allMatched := true
+	walkErr := filepath.WalkDir(src, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !d.Type().IsRegular() { // skips directories and symlinks (Lstat semantics)
+			return nil
+		}
+		sawFiles = true
+		rel, relErr := filepath.Rel(src, path)
+		if relErr != nil {
+			return relErr
+		}
+		eq, cmpErr := filesContentEqual(path, filepath.Join(dst, rel))
+		if cmpErr != nil {
+			return cmpErr
+		}
+		if !eq {
+			allMatched = false
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return sawFiles, false, walkErr
+	}
+	return sawFiles, allMatched, nil
+}
+
+// filesContentEqual reports whether the files at src and dst have identical
+// content. A missing dst is reported as not-equal (false, nil), never an error.
+func filesContentEqual(src, dst string) (bool, error) {
+	srcHash, err := fileutil.FileHash(src)
+	if err != nil {
+		return false, fmt.Errorf("hash source %q: %w", src, err)
+	}
+	return fileutil.ContentEqual(dst, srcHash)
 }

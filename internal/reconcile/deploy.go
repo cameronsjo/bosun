@@ -361,5 +361,15 @@ func (d *DeployOps) DeployLocalFile(ctx context.Context, sourceFile, targetFile 
 		return nil
 	}
 
-	return fileutil.CopyFile(sourceFile, targetFile)
+	if err := fileutil.CopyFile(sourceFile, targetFile); err != nil {
+		// Symlink sources are intentionally skipped, matching content-hash mode
+		// (CopyFileIfChanged) and CopyDir. A skipped symlink records no write;
+		// the deploy invariant tolerates this via Lstat semantics, so surfacing
+		// the sentinel here would needlessly abort the reconcile.
+		if errors.Is(err, fileutil.ErrSymlinkSkipped) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }

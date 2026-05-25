@@ -1310,6 +1310,27 @@ func TestDeployOps_DeployLocalFile_StandardMode(t *testing.T) {
 	assert.Equal(t, "data", string(data))
 }
 
+// GH#330 sibling B2: a symlink source in standard mode must be skipped without
+// surfacing ErrSymlinkSkipped — matching content-hash mode and CopyDir. A raw
+// sentinel here would abort the whole reconcile over one symlinked file.
+func TestDeployOps_DeployLocalFile_StandardMode_SymlinkSkipped(t *testing.T) {
+	tmpDir := t.TempDir()
+	realFile := filepath.Join(tmpDir, "real.yml")
+	srcLink := filepath.Join(tmpDir, "link.yml")
+	tgtFile := filepath.Join(tmpDir, "out", "target.yml")
+
+	require.NoError(t, os.WriteFile(realFile, []byte("data"), 0644))
+	require.NoError(t, os.Symlink(realFile, srcLink))
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "out"), 0755))
+
+	d := NewDeployOps(false, "")
+	d.ContentHashSync = false
+
+	err := d.DeployLocalFile(context.Background(), srcLink, tgtFile, nil)
+	require.NoError(t, err, "symlink source must be skipped silently, not abort the deploy")
+	assert.NoFileExists(t, tgtFile, "symlink source should not be copied to the target")
+}
+
 func TestDeployOps_ComposeUpMultipleWithRollback_NoBackup(t *testing.T) {
 	// When backupPath is empty and compose up fails, should return error mentioning no backup.
 	d := NewDeployOps(false, "")

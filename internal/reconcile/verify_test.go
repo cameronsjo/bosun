@@ -70,6 +70,73 @@ func TestVerifyDeployTarget_EmptyWrittenFiles_Against_EmptySource_Passes(t *test
 	assert.NoError(t, err)
 }
 
+func TestVerifyDeployTarget_NoOpSync_DestinationMatches_Passes(t *testing.T) {
+	// GH#330: source has files and zero writes were recorded, but the
+	// destination already content-matches the source (a no-op content-hash
+	// sync). This is a success, not corruption.
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	startTime := time.Now().Add(-1 * time.Minute)
+
+	touchFile(t, filepath.Join(src, "config.yml"), "identical", time.Now())
+	touchFile(t, filepath.Join(src, "nested/inner.yml"), "same", time.Now())
+	touchFile(t, filepath.Join(dst, "config.yml"), "identical", time.Now())
+	touchFile(t, filepath.Join(dst, "nested/inner.yml"), "same", time.Now())
+
+	err := verifyDeployTarget(src, dst, nil, startTime)
+	assert.NoError(t, err, "no-op sync where dst content-matches src must pass")
+}
+
+func TestVerifyDeployTarget_NoOpSync_DestinationDiffers_Errors(t *testing.T) {
+	// GH#330 guard preserved: zero writes recorded but the destination does NOT
+	// match the source (genuine silent-sync) must still fail.
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	startTime := time.Now().Add(-1 * time.Minute)
+
+	touchFile(t, filepath.Join(src, "config.yml"), "rendered-fresh", time.Now())
+	touchFile(t, filepath.Join(dst, "config.yml"), "stale-different", time.Now())
+
+	err := verifyDeployTarget(src, dst, nil, startTime)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrDeployInvariantEmptyWrite)
+}
+
+func TestVerifyDeployTarget_SymlinkOnlySource_Passes(t *testing.T) {
+	// A source whose only entries are symlinks imposes no write requirement —
+	// CopyDir/CopyDirIfChanged skip symlinks, so an empty write list is correct.
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	startTime := time.Now().Add(-1 * time.Minute)
+
+	require.NoError(t, os.MkdirAll(src, 0755))
+	require.NoError(t, os.MkdirAll(dst, 0755))
+	target := filepath.Join(dir, "elsewhere.txt")
+	require.NoError(t, os.WriteFile(target, []byte("data"), 0644))
+	require.NoError(t, os.Symlink(target, filepath.Join(src, "link.txt")))
+
+	err := verifyDeployTarget(src, dst, nil, startTime)
+	assert.NoError(t, err, "symlink-only source must not demand a write")
+}
+
+func TestVerifyDeployTarget_SrcIsRegularFile_NoOp_Passes(t *testing.T) {
+	// Single-file target: dst is the parent dir, the file keeps its basename,
+	// and its content matches — a no-op that must pass.
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src", "single.yml")
+	dstParent := filepath.Join(dir, "dst")
+	startTime := time.Now().Add(-1 * time.Minute)
+
+	touchFile(t, src, "identical", time.Now())
+	touchFile(t, filepath.Join(dstParent, "single.yml"), "identical", time.Now())
+
+	err := verifyDeployTarget(src, dstParent, nil, startTime)
+	assert.NoError(t, err, "no-op single-file sync where dst matches must pass")
+}
+
 func TestVerifyDeployTarget_StaleDestination_Errors(t *testing.T) {
 	// Layer 1.3, #214: the freshrss-shape failure — CopyDirIfChanged claimed
 	// to write the file (or we recorded it as written), but the destination's
@@ -315,10 +382,15 @@ func newDeployLocalDeploy() *DeployOps {
 	}
 }
 
-// silentSyncReproduction is the GH#214 shape: src and dst contain identical
-// bytes, so CopyDirIfChanged hashes the two and records zero writes despite
-// the deploy "succeeding."
-func TestDeployLocal_SilentEmptyWrite_FailsInvariant(t *testing.T) {
+// GH#330 regression: src and dst contain identical bytes, so CopyDirIfChanged
+// records zero writes — a legitimate no-op, NOT corruption. The invariant must
+// verify on-disk content-match and let the deploy proceed to compose-up. (This
+// scenario previously asserted ErrDeployInvariantEmptyWrite, which was the bug:
+// it aborted a whole reconcile over an unchanged config and took down 62
+// containers.) A genuine silent-sync failure (0 writes + dst missing/differs)
+// is covered at the unit level by
+// TestVerifyDeployTarget_EmptyWrittenFiles_Against_NonEmptySource_Errors.
+func TestDeployLocal_NoOpSync_PassesInvariant(t *testing.T) {
 	fx := newDeployLocalFixture(t)
 	now := time.Now()
 	touchFile(t, filepath.Join(fx.freshrssStaging, "config.yml"), "identical", now)
@@ -333,9 +405,40 @@ func TestDeployLocal_SilentEmptyWrite_FailsInvariant(t *testing.T) {
 	}
 	r := NewReconciler(cfg, WithDeployOps(newDeployLocalDeploy()))
 
-	_, err := r.deployLocal(context.Background())
-	require.Error(t, err, "deployLocal should fail when sync writes nothing against a non-empty source")
-	assert.ErrorIs(t, err, ErrDeployInvariantEmptyWrite)
+	result, err := r.deployLocal(context.Background())
+	require.NoError(t, err, "a no-op sync (dst already content-matches src) must not trip the invariant")
+	assert.NotNil(t, result)
+}
+
+// GH#330 sibling B1: standard mode (ContentHashSync=false) never populates
+// WrittenFiles — it does an atomic rename-aside. With identical content the
+// destination ends up content-matching the source against an empty write list,
+// which previously tripped the empty-write invariant and aborted every reconcile
+// when the documented BOSUN_CONTENT_HASH_SYNC=false toggle was set.
+func TestDeployLocal_StandardMode_NoOp_PassesInvariant(t *testing.T) {
+	fx := newDeployLocalFixture(t)
+	now := time.Now()
+	touchFile(t, filepath.Join(fx.freshrssStaging, "config.yml"), "identical", now)
+	touchFile(t, filepath.Join(fx.freshrssAppdata, "config.yml"), "identical", now)
+	touchFile(t, filepath.Join(fx.composeStaging, "stub.yml"), "services:\n  stub: {}\n", now)
+	touchFile(t, filepath.Join(fx.composeAppdata, "stub.yml"), "services:\n  stub: {}\n", now)
+
+	cfg := &Config{
+		StagingDir:       fx.stagingDir,
+		InfraSubDir:      "unraid",
+		LocalAppdataPath: fx.appdataDir,
+	}
+	deploy := &DeployOps{
+		DryRun:          false,
+		ProjectName:     "test",
+		ContentHashSync: false, // standard nuke-and-replace path
+		composeUpFn:     noopComposeUp,
+	}
+	r := NewReconciler(cfg, WithDeployOps(deploy))
+
+	result, err := r.deployLocal(context.Background())
+	require.NoError(t, err, "standard-mode deploy must pass the invariant via on-disk content-match, not write count")
+	assert.NotNil(t, result)
 }
 
 func TestDeployLocal_SkipDeployInvariant_BypassesCheck(t *testing.T) {
