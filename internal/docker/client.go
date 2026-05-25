@@ -90,13 +90,13 @@ func (c *Client) Ping(ctx context.Context) error {
 	if err != nil {
 		logger.Error().
 			Err(err).
-			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Int64(log.FieldDurationMS, log.DurationMS(start)).
 			Msg("Failed to ping Docker daemon")
 		return fmt.Errorf("ping docker: %w", err)
 	}
 
 	logger.Debug().
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
 		Msg("Successfully pinged Docker daemon")
 	return nil
 }
@@ -152,7 +152,7 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 		All: !runningOnly,
 	})
 	if err != nil {
-		logger.Error().Err(err).Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).Msg("Failed to list containers")
+		logger.Error().Err(err).Int64(log.FieldDurationMS, log.DurationMS(start)).Msg("Failed to list containers")
 		return nil, fmt.Errorf("list containers: %w", err)
 	}
 
@@ -185,7 +185,7 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 
 	logger.Debug().
 		Int("count", len(result)).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
 		Msg("Listed containers successfully")
 	return result, nil
 }
@@ -216,7 +216,7 @@ func (c *Client) CountContainers(ctx context.Context) (running, total, unhealthy
 		Int("running", running).
 		Int("total", total).
 		Int("unhealthy", unhealthy).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
 		Msg("Container counts obtained")
 	return running, total, unhealthy, nil
 }

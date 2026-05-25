@@ -85,7 +85,7 @@ func (c *ComposeClient) Up(ctx context.Context, services ...string) error {
 			Err(err).
 			Str("project", c.project).
 			Int("service_count", serviceCount).
-			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Int64(log.FieldDurationMS, log.DurationMS(start)).
 			Msg("Failed to start services with docker compose up")
 		return fmt.Errorf("docker compose up: %w\n%s", err, output)
 	}
@@ -93,7 +93,7 @@ func (c *ComposeClient) Up(ctx context.Context, services ...string) error {
 	logger.Info().
 		Str("project", c.project).
 		Int("service_count", serviceCount).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
 		Msg("Successfully started services with docker compose up")
 	return nil
 }
@@ -113,14 +113,14 @@ func (c *ComposeClient) Down(ctx context.Context) error {
 		logger.Error().
 			Err(err).
 			Str("project", c.project).
-			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Int64(log.FieldDurationMS, log.DurationMS(start)).
 			Msg("Failed to stop and remove services with docker compose down")
 		return fmt.Errorf("docker compose down: %w\n%s", err, output)
 	}
 
 	logger.Info().
 		Str("project", c.project).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
 		Msg("Successfully stopped and removed services with docker compose down")
 	return nil
 }
@@ -145,7 +145,7 @@ func (c *ComposeClient) DownWithTimeout(ctx context.Context, timeoutSeconds int)
 			Err(err).
 			Str("project", c.project).
 			Int("timeout_seconds", timeoutSeconds).
-			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Int64(log.FieldDurationMS, log.DurationMS(start)).
 			Msg("Failed to stop and remove services with docker compose down")
 		return fmt.Errorf("docker compose down: %w\n%s", err, output)
 	}
@@ -153,7 +153,7 @@ func (c *ComposeClient) DownWithTimeout(ctx context.Context, timeoutSeconds int)
 	logger.Info().
 		Str("project", c.project).
 		Int("timeout_seconds", timeoutSeconds).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
 		Msg("Successfully stopped and removed services with docker compose down")
 	return nil
 }
@@ -180,7 +180,7 @@ func (c *ComposeClient) Restart(ctx context.Context, services ...string) error {
 			Err(err).
 			Str("project", c.project).
 			Int("service_count", serviceCount).
-			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Int64(log.FieldDurationMS, log.DurationMS(start)).
 			Msg("Failed to restart services with docker compose restart")
 		return fmt.Errorf("docker compose restart: %w\n%s", err, output)
 	}
@@ -188,7 +188,7 @@ func (c *ComposeClient) Restart(ctx context.Context, services ...string) error {
 	logger.Info().
 		Str("project", c.project).
 		Int("service_count", serviceCount).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
 		Msg("Successfully restarted services with docker compose restart")
 	return nil
 }
@@ -210,7 +210,7 @@ func (c *ComposeClient) Status(ctx context.Context) ([]ServiceStatus, error) {
 		logger.Error().
 			Err(err).
 			Str("project", c.project).
-			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Int64(log.FieldDurationMS, log.DurationMS(start)).
 			Msg("Failed to fetch service status with docker compose ps")
 		return nil, fmt.Errorf("docker compose ps: %w\n%s", err, stderr.String())
 	}
@@ -243,7 +243,7 @@ func (c *ComposeClient) Status(ctx context.Context) ([]ServiceStatus, error) {
 	logger.Info().
 		Str("project", c.project).
 		Int("service_count", len(services)).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
 		Msg("Successfully fetched service status")
 	return services, nil
 }
@@ -263,7 +263,7 @@ func (c *ComposeClient) Ps(ctx context.Context) (string, error) {
 		logger.Error().
 			Err(err).
 			Str("project", c.project).
-			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Int64(log.FieldDurationMS, log.DurationMS(start)).
 			Msg("Failed to run docker compose ps")
 		return "", fmt.Errorf("docker compose ps: %w\n%s", err, output)
 	}
@@ -271,7 +271,7 @@ func (c *ComposeClient) Ps(ctx context.Context) (string, error) {
 	logger.Debug().
 		Str("project", c.project).
 		Int("output_size", len(output)).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
 		Msg("Successfully ran docker compose ps")
 	return string(output), nil
 }

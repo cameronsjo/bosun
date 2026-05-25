@@ -313,7 +313,7 @@ func RenderStack(stackPath, provisionsDir, servicesDir string, valuesOverlay map
 		Str(log.FieldOperation, "render_stack").
 		Str(log.FieldPath, stackPath).
 		Int("service_count", len(stack.Include)).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
 		Msg("Successfully rendered stack")
 
 	return output, nil
@@ -397,7 +397,7 @@ func WriteOutputs(output *RenderOutput, outputDir, stackName string) error {
 		Str("stack", stackName).
 		Int("written", written).
 		Int("unregistered", unregistered).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
 		Msg("Successfully wrote manifest outputs")
 
 	return nil

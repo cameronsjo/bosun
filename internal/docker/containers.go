@@ -99,7 +99,7 @@ func (c *Client) Inspect(ctx context.Context, name string) (*ContainerDetails, e
 		logger.Error().
 			Str(log.FieldContainer, name).
 			Err(err).
-			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Int64(log.FieldDurationMS, log.DurationMS(start)).
 			Msg("Failed to inspect container")
 		return nil, fmt.Errorf("inspect container %s: %w", name, err)
 	}
@@ -172,7 +172,7 @@ func (c *Client) Inspect(ctx context.Context, name string) (*ContainerDetails, e
 		Str("state", details.State).
 		Str("health", details.Health).
 		Int("port_count", len(details.Ports)).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
 		Msg("Successfully inspected container")
 	return details, nil
 }
