@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.35.1](https://github.com/cameronsjo/bosun/compare/v0.35.0...v0.35.1) (2026-05-25)
+
+
+### Bug Fixes
+
+* **cmd:** bound recovery compose-up + cap webhook receiver body size (bosun-9nm) ([#321](https://github.com/cameronsjo/bosun/issues/321)) ([ded388e](https://github.com/cameronsjo/bosun/commit/ded388e91dee98630fa33cb9efc6617f2361e540))
+* **reconcile:** stop pre-deploy backup wedging the reconcile (GH[#319](https://github.com/cameronsjo/bosun/issues/319)) ([#324](https://github.com/cameronsjo/bosun/issues/324)) ([e0748aa](https://github.com/cameronsjo/bosun/commit/e0748aa945ee5d0d36669553699ff3a64beb7022))
+
 ## [0.35.0](https://github.com/cameronsjo/bosun/compare/v0.34.3...v0.35.0) (2026-05-22)
 
 
