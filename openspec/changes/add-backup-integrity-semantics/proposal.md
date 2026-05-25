@@ -71,11 +71,22 @@ target state**.
   rollback MUST re-apply the backed-up previous-good compose files and MUST NOT
   re-run the new (failing) file set; an idempotent `docker compose up` exit 0 on
   the failing files MUST NOT be treated as a successful rollback.
+- **Coordinated with #319 (already merged)** — #319 landed a bounded
+  `BackupTimeout` (`BOSUN_BACKUP_TIMEOUT`), context-bound verification, and a
+  backup self-exclusion invariant on the `Configuration Backup` requirement. This
+  change preserves all three clauses verbatim (so archiving does not revert them)
+  and is what makes fail-closed safe: a stuck backup now fails fast and loud
+  within the timeout rather than wedging the reconcile, so aborting on a required
+  backup failure cannot hang the pipeline. The stage-7 carve-out in
+  `Pipeline Orchestration` is updated from "backup failures are non-fatal" to the
+  conditional rule: nothing-to-back-up proceeds, a required-backup failure aborts
+  before state mutation.
 
 ## Impact
 
-- Affected specs: `reconcile` — MODIFIED `Configuration Backup` and
-  `File Deployment`; ADDED `Backup-Backed Rollback Integrity`.
+- Affected specs: `reconcile` — MODIFIED `Configuration Backup`,
+  `File Deployment`, and `Pipeline Orchestration`; ADDED
+  `Backup-Backed Rollback Integrity`.
 - Affected code:
   - `internal/reconcile/backup.go` — `Backup` (`:54-110`), `BackupRemote`
     discarded `sshErr` and `2>/dev/null` (`:150-184`), `VerifyBackup`,

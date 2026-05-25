@@ -34,6 +34,21 @@ reports success while leaving prod broken or unrecoverable.
   - Alternative considered: keep continuing-on-warning but mark the deploy
     "unrecoverable" — rejected; it preserves the silent-corruption window.
 
+- **Decision: Build fail-closed on top of #319's bounded timeout, not in place of
+  it.** #319 (already merged) gave `Configuration Backup` a `BackupTimeout`
+  (`BOSUN_BACKUP_TIMEOUT`), context-bound verification, and a self-exclusion
+  invariant — the original "non-fatal" rule existed only to stop a hung backup
+  from wedging the reconcile. With the timeout in place a stuck backup now fails
+  fast and loud, so the wedge risk that motivated "non-fatal" is gone, and
+  aborting on a required-backup failure cannot hang the pipeline. Because an
+  OpenSpec `MODIFIED` requirement replaces the whole block on archive, this change
+  re-states all three #319 clauses verbatim so archiving does not silently revert
+  them, and correspondingly updates the `Pipeline Orchestration` stage-7 carve-out
+  from "non-fatal" to the conditional rule (nothing-to-back-up proceeds; a
+  required-backup failure aborts before state mutation).
+  - This resolves the merge-ordering hazard between #319 and this change: the two
+    no longer contradict, and #319's behavior survives the archive.
+
 - **Decision: Deep verification, not "non-empty + listable".** A truncated gzip
   can still list. Verification must round-trip (extract to a scratch location or
   validate the gzip trailer / file-count manifest) so a partial archive fails.

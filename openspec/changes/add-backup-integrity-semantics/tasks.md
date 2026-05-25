@@ -5,6 +5,7 @@
 - [ ] 1.3 Make backup failure fail-closed: abort the reconcile before any target mutation when a required backup cannot be created/verified
 - [ ] 1.4 When there is genuinely nothing to back up, return `lastBackupPath == ""` (no empty directory) so rollback skips with a clear "no backup available" message
 - [ ] 1.5 Tests: SSH failure mid-stream fails the backup; truncated archive fails verification; empty-paths host yields no rollback target and a clean skip
+- [ ] 1.6 Preserve #319's already-merged behavior when reworking backup: keep `BackupTimeout`/`BOSUN_BACKUP_TIMEOUT`, context-bound verification, and the backup self-exclusion; route a timed-out *required* backup through the new fail-closed abort (not warn+continue), while a cold-state reconcile with nothing to back up is unaffected
 
 ## 2. Retention preserves last-known-good (#243)
 
