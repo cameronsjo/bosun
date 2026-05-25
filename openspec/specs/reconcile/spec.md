@@ -7,9 +7,7 @@ workflow: sync a git repository, decrypt secrets, render templates, back up
 existing configs, deploy files, and bring services up via Docker Compose. It
 includes persistent deploy state tracking, circuit breaker logic, drift
 detection, and post-deploy verification.
-
 ## Requirements
-
 ### Requirement: Pipeline Orchestration
 
 The reconciler SHALL execute stages in this fixed order:
@@ -210,11 +208,26 @@ configuration files before deploying new ones. Backups SHALL be named
 
 The reconciler SHALL verify backup integrity after creation by listing the
 archive contents. Empty or corrupted archives SHALL cause the backup to fail.
+Verification SHALL run under the same cancellation context as creation, so a
+caller deadline or cancellation aborts verification rather than blocking
+indefinitely.
+
+The backup archive SHALL NOT include the backup destination directory or any
+prior backup it contains. When the configured backup destination is nested
+within a backed-up path (for example, the reconciler's own appdata directory),
+the reconciler SHALL exclude the destination so the archive cannot recursively
+include its own growing output.
+
+Backup creation and verification SHALL run under a configurable timeout
+(`BackupTimeout`, default 5 minutes, overridable via `BOSUN_BACKUP_TIMEOUT`
+accepting a Go duration or a plain number of seconds). When the timeout
+elapses, the backup SHALL be treated as a failure.
 
 Old backups SHALL be pruned to retain only the most recent N backups
 (configurable via `BackupsToKeep`, default 5).
 
-Backup failures SHALL log a warning but SHALL NOT abort the deployment pipeline.
+Backup failures, including timeouts, SHALL log a warning but SHALL NOT abort the
+deployment pipeline.
 
 The last backup path SHALL be stored for potential rollback during compose up.
 
@@ -229,6 +242,19 @@ The last backup path SHALL be stored for potential rollback during compose up.
 - **WHEN** a remote deployment runs
 - **THEN** a tar command runs over SSH to create the archive
 - **AND** transient SSH errors are retried with exponential backoff
+
+#### Scenario: Backup destination excluded from the archive
+
+- **WHEN** the configured backup destination is nested within a backed-up path
+- **THEN** the created archive does not contain the backup destination directory or any prior backup
+- **AND** the archive size does not grow with the number of prior backups present
+
+#### Scenario: Backup exceeds its timeout
+
+- **WHEN** backup creation or verification runs longer than `BackupTimeout`
+- **THEN** the backup is aborted and treated as a failure
+- **AND** a warning is logged
+- **AND** the deployment continues
 
 #### Scenario: Old backups pruned
 
@@ -837,3 +863,4 @@ The `critical_containers` config SHALL be reloaded from the repo's `bosun.yaml` 
 - **AND** `critical_containers` is configured
 - **THEN** the health gate is skipped (Docker API is local-only)
 - **AND** a warning is logged indicating the health gate cannot run for remote deploys
+
