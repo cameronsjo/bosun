@@ -40,10 +40,20 @@ type tailscalePeer struct {
 // NewTailscale creates a new Tailscale provider.
 // Returns an error if Tailscale is not installed.
 func NewTailscale() (*Tailscale, error) {
+	logger := log.Component(log.ComponentTunnel)
+	logger.Debug().Msg("Preparing to initialize Tailscale provider")
+
 	path, err := exec.LookPath("tailscale")
 	if err != nil {
+		logger.Warn().
+			Err(err).
+			Msg("Tailscale binary not found in PATH")
 		return nil, ErrNotInstalled{Provider: "Tailscale"}
 	}
+
+	logger.Debug().
+		Str("path", path).
+		Msg("Successfully found Tailscale binary")
 
 	return &Tailscale{
 		binaryPath: path,
@@ -81,7 +91,7 @@ func (t *Tailscale) Status(ctx context.Context) (*Status, error) {
 			logger.Debug().
 				Str(log.FieldOperation, "status").
 				Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-				Msg("Tailscale not connected (exit code 1)")
+				Msg("Tailscale status check: not connected (exit code 1)")
 			return &Status{
 				Connected:    false,
 				Provider:     string(ProviderTailscale),
@@ -93,16 +103,21 @@ func (t *Tailscale) Status(ctx context.Context) (*Status, error) {
 			Str(log.FieldOperation, "status").
 			Str("stderr", stderr.String()).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-			Msg("tailscale status failed")
+			Msg("Failed to execute tailscale status command")
 		return nil, err
 	}
 
 	if stderrStr := stderr.String(); stderrStr != "" {
-		logger.Debug().Str("stderr", stderrStr).Msg("tailscale status stderr")
+		logger.Debug().
+			Str("stderr", stderrStr).
+			Msg("tailscale status command produced stderr output")
 	}
 
 	var tsStatus tailscaleStatus
 	if err := json.Unmarshal(output, &tsStatus); err != nil {
+		logger.Warn().
+			Err(err).
+			Msg("Failed to parse tailscale status JSON output")
 		return nil, err
 	}
 
@@ -186,7 +201,7 @@ func (t *Tailscale) GetPlainStatus(ctx context.Context) (string, error) {
 	cmd := exec.CommandContext(ctx, t.binaryPath, "status")
 	cmd.Stderr = &stderr
 
-	logger.Debug().Str(log.FieldOperation, "plain_status").Msg("Executing tailscale status")
+	logger.Debug().Str(log.FieldOperation, "plain_status").Msg("Executing tailscale status for plain text output")
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -195,18 +210,20 @@ func (t *Tailscale) GetPlainStatus(ctx context.Context) (string, error) {
 			Str(log.FieldOperation, "plain_status").
 			Str("stderr", stderr.String()).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-			Msg("tailscale plain status failed")
+			Msg("Failed to execute tailscale plain status command")
 		return "", err
 	}
 
 	if stderrStr := stderr.String(); stderrStr != "" {
-		logger.Debug().Str("stderr", stderrStr).Msg("tailscale plain status stderr")
+		logger.Debug().
+			Str("stderr", stderrStr).
+			Msg("tailscale plain status command produced stderr output")
 	}
 
 	logger.Debug().
 		Str(log.FieldOperation, "plain_status").
 		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-		Msg("Tailscale plain status completed")
+		Msg("Successfully retrieved Tailscale plain status")
 
 	return string(output), nil
 }

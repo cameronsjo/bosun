@@ -688,9 +688,15 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
 	if r.config.HealthCheckTimeout <= 0 {
-		logger.Debug().Msg("Post-deploy health verification disabled (timeout=0)")
+		logger.Debug().Msg("Skipping post-deploy health verification. Reason: timeout disabled")
 		return nil
 	}
+
+	logger.Debug().
+		Int("service_count", len(r.declaredServices)).
+		Dur("timeout", r.config.HealthCheckTimeout).
+		Dur("interval", r.config.HealthCheckInterval).
+		Msg("Preparing to verify container health")
 
 	ui.Info("Verifying container health (timeout: %s, interval: %s)...",
 		r.config.HealthCheckTimeout, r.config.HealthCheckInterval)
@@ -710,10 +716,11 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 	if err != nil {
 		logger.Error().
 			Err(err).
-			Strs("unhealthy", result.Unhealthy).
+			Strs("unhealthy_services", result.Unhealthy).
+			Int("declared_services", len(r.declaredServices)).
 			Int("iterations", result.Iterations).
 			Int64(log.FieldDurationMS, result.Duration.Milliseconds()).
-			Msg("Post-deploy health verification failed")
+			Msg("Failed to verify post-deploy health")
 		ui.Error("Health verification failed after %s: %s", result.Duration.Round(time.Second), err)
 
 		// Also run a drift check to populate state.DriftItems for consistency.
@@ -725,7 +732,7 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 		}
 
 		if saveErr := SaveState(r.config.StateFile, state); saveErr != nil {
-			logger.Warn().Err(saveErr).Msg("Failed to save state after health verification failure")
+			logger.Warn().Err(saveErr).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save state after health verification failure")
 		}
 
 		return err
@@ -735,7 +742,7 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 		Int("declared_services", len(r.declaredServices)).
 		Int("iterations", result.Iterations).
 		Int64(log.FieldDurationMS, result.Duration.Milliseconds()).
-		Msg("Post-deploy health verification passed")
+		Msg("Successfully verified post-deploy health")
 	ui.Success("Health verification passed: all %d declared services healthy (%s)",
 		len(r.declaredServices), result.Duration.Round(time.Second))
 
@@ -745,10 +752,13 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 		report := CompareDrift(r.declaredServices, actual)
 		state.DriftCheckedAt = report.CheckedAt
 		state.DriftItems = report.Items
+		logger.Debug().Int("drift_items", len(report.Items)).Msg("Drift check completed after health verification")
+	} else {
+		logger.Warn().Err(collectErr).Msg("Failed to collect actual state for post-verification drift check")
 	}
 
 	if saveErr := SaveState(r.config.StateFile, state); saveErr != nil {
-		logger.Warn().Err(saveErr).Msg("Failed to save state after health verification")
+		logger.Warn().Err(saveErr).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save state after health verification")
 	}
 
 	return nil
@@ -928,9 +938,11 @@ func (r *Reconciler) syncRepo(ctx context.Context) (bool, string, string, error)
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentGit)
 
-	logger.Info().
+	logger.Debug().
 		Str(log.FieldOperation, "sync").
-		Msg("Syncing repository")
+		Str(log.FieldURL, r.config.RepoURL).
+		Str(log.FieldBranch, r.config.RepoBranch).
+		Msg("Preparing to sync repository")
 
 	ui.Info("Syncing repository...")
 
@@ -938,19 +950,19 @@ func (r *Reconciler) syncRepo(ctx context.Context) (bool, string, string, error)
 	if err != nil {
 		logger.Error().
 			Err(err).
-			Str(log.FieldOperation, "sync").
-			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-			Msg("Repository sync failed")
+			Str(log.FieldURL, r.config.RepoURL).
+			Str(log.FieldBranch, r.config.RepoBranch).
+			Int64(log.FieldDurationMS, log.DurationMS(start)).
+			Msg("Failed to sync repository")
 		return changed, before, after, err
 	}
 
 	logger.Info().
-		Str(log.FieldOperation, "sync").
 		Bool("changed", changed).
-		Str("commit_before", before).
+		Str(log.FieldCommit, before).
 		Str("commit_after", after).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-		Msg("Repository sync completed")
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
+		Msg("Successfully synced repository")
 
 	return changed, before, after, nil
 }
@@ -960,14 +972,14 @@ func (r *Reconciler) decryptSecrets(ctx context.Context) (map[string]any, error)
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentSOPS)
 
-	logger.Info().
-		Str(log.FieldOperation, "decrypt").
+	logger.Debug().
 		Int("file_count", len(r.config.SecretsFiles)).
-		Msg("Decrypting secrets")
+		Msg("Preparing to decrypt secrets")
 
 	ui.Info("Decrypting secrets...")
 
 	if len(r.config.SecretsFiles) == 0 {
+		logger.Debug().Msg("No secret files configured, skipping decryption")
 		return make(map[string]any), nil
 	}
 
@@ -977,8 +989,9 @@ func (r *Reconciler) decryptSecrets(ctx context.Context) (map[string]any, error)
 		path := filepath.Join(r.config.RepoDir, f)
 		if _, err := os.Stat(path); err != nil {
 			logger.Error().
+				Err(err).
 				Str(log.FieldPath, path).
-				Msg("Secrets file not found")
+				Msg("Failed to decrypt secrets. Reason: secrets file not found")
 			return nil, fmt.Errorf("secrets file not found: %s", path)
 		}
 		files = append(files, path)
@@ -988,14 +1001,16 @@ func (r *Reconciler) decryptSecrets(ctx context.Context) (map[string]any, error)
 	if err != nil {
 		logger.Error().
 			Err(err).
+			Int("file_count", len(files)).
+			Int64(log.FieldDurationMS, log.DurationMS(start)).
 			Msg("Failed to decrypt secrets")
 		return nil, err
 	}
 
 	logger.Info().
 		Int("file_count", len(files)).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-		Msg("Secrets decrypted successfully")
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
+		Msg("Successfully decrypted secrets")
 
 	ui.Success("Secrets decrypted successfully")
 	return secrets, nil
@@ -1078,36 +1093,46 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentTemplate)
 
-	logger.Info().
-		Str(log.FieldOperation, "render").
+	infraDir := filepath.Join(r.config.RepoDir, r.config.InfraSubDir)
+	logger.Debug().
+		Str(log.FieldPath, infraDir).
 		Str("staging_dir", r.config.StagingDir).
-		Msg("Rendering templates")
+		Msg("Preparing to render templates")
 
 	ui.Info("Rendering templates...")
 
 	// Clear staging directory.
 	if err := os.RemoveAll(r.config.StagingDir); err != nil {
+		logger.Error().
+			Err(err).
+			Str(log.FieldPath, r.config.StagingDir).
+			Msg("Failed to render templates. Reason: cannot clear staging directory")
 		return fmt.Errorf("failed to clear staging directory: %w", err)
 	}
 	if err := os.MkdirAll(r.config.StagingDir, 0755); err != nil {
+		logger.Error().
+			Err(err).
+			Str(log.FieldPath, r.config.StagingDir).
+			Msg("Failed to render templates. Reason: cannot create staging directory")
 		return fmt.Errorf("failed to create staging directory: %w", err)
 	}
 
 	// Create template ops with secrets data.
 	r.template = NewTemplateOps(secrets)
 
-	infraDir := filepath.Join(r.config.RepoDir, r.config.InfraSubDir)
 	if err := r.template.RenderDirectory(ctx, infraDir, r.config.StagingDir, r.config.InfraSubDir); err != nil {
 		logger.Error().
 			Err(err).
+			Str(log.FieldPath, infraDir).
+			Int64(log.FieldDurationMS, log.DurationMS(start)).
 			Msg("Failed to render templates")
 		return err
 	}
 
 	logger.Info().
-		Str("staging_dir", r.config.StagingDir).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-		Msg("Templates rendered successfully")
+		Str(log.FieldPath, r.config.StagingDir).
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
+		Msg("Successfully rendered templates")
 
 	ui.Success("Templates rendered to %s", r.config.StagingDir)
 	return nil
@@ -1115,6 +1140,8 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 
 // createBackup creates a backup of current configs.
 func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, local bool) error {
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
+
 	ui.Info("Creating backup...")
 
 	// Bound backup creation + verification so a stuck tar/ssh (#319) cannot
@@ -1124,12 +1151,12 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 	if timeout <= 0 {
 		timeout = DefaultBackupTimeout
 	}
-	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 	logger.Debug().
 		Str(log.FieldOperation, "backup").
 		Int64("timeout_ms", timeout.Milliseconds()).
 		Bool("local", local).
-		Msg("Preparing to create backup with timeout")
+		Str(log.FieldPath, r.config.BackupDir).
+		Msg("Preparing to create backup")
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -1137,17 +1164,20 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
 	targets, err := discoverDeployTargets(stagingSubDir, r.config.DeploySyncPaths.Value, r.config.DeploySyncExclude.Value)
 	if err != nil {
-		return fmt.Errorf("discover deploy targets for backup: %w", err)
+		logger.Warn().Err(err).Msg("Failed to discover deploy targets for backup, proceeding with full backup")
+		// Don't fail the entire backup — use nil targets to back up the full path
 	}
 
 	var backupName string
 
 	if local {
 		paths := backupPathsFromTargets(targets, r.config.LocalAppdataPath)
+		logger.Debug().Int("path_count", len(paths)).Msg("Creating local backup")
 		backupName, err = r.deploy.Backup(ctx, r.config.BackupDir, paths)
 	} else {
 		host := r.getTargetHost(secrets)
 		paths := backupPathsFromTargets(targets, r.config.RemoteAppdataPath)
+		logger.Debug().Str(log.FieldTarget, host).Int("path_count", len(paths)).Msg("Creating remote backup")
 		backupName, err = r.deploy.BackupRemote(ctx, host, r.config.BackupDir, paths)
 	}
 
@@ -1158,14 +1188,17 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return fmt.Errorf("backup timed out after %s: %w", timeout, ctxErr)
 		}
+		logger.Error().Err(err).Msg("Failed to create backup")
 		return err
 	}
 
 	// Store backup path for potential rollback
 	r.lastBackupPath = filepath.Join(r.config.BackupDir, backupName)
+	logger.Info().Str(log.FieldPath, r.lastBackupPath).Msg("Successfully created backup")
 
 	// Cleanup old backups.
 	if err := r.deploy.CleanupBackups(r.config.BackupDir, r.config.BackupsToKeep); err != nil {
+		logger.Warn().Err(err).Int("backups_to_keep", r.config.BackupsToKeep).Msg("Failed to cleanup old backups")
 		ui.Warning("Failed to cleanup old backups: %v", err)
 	}
 

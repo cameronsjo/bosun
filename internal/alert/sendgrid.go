@@ -53,20 +53,26 @@ func (s *SendGrid) IsConfigured() bool {
 // Send sends an alert via SendGrid email.
 func (s *SendGrid) Send(ctx context.Context, alert *Alert) error {
 	if !s.IsConfigured() {
-		return fmt.Errorf("sendgrid not configured")
+		logger := log.ComponentCtx(ctx, "alert").With().Str("provider", "sendgrid").Logger()
+		logger.Debug().
+			Msg("Skipping SendGrid alert. Reason: provider not configured")
+		return nil
 	}
 
-	logger := log.Component("sendgrid")
+	logger := log.ComponentCtx(ctx, "alert").With().Str("provider", "sendgrid").Logger()
 	start := time.Now()
 	logger.Debug().
-		Str("title", alert.Title).
 		Str("severity", string(alert.Severity)).
+		Str("source", alert.Source).
 		Int("recipient_count", len(s.config.ToEmails)).
 		Msg("Preparing to send SendGrid email alert")
 
 	payload := s.buildPayload(alert)
 	body, err := json.Marshal(payload)
 	if err != nil {
+		logger.Error().
+			Err(err).
+			Msg("Failed to send SendGrid alert. Error: failed to marshal request")
 		return fmt.Errorf("marshaling request: %w", err)
 	}
 
@@ -77,6 +83,9 @@ func (s *SendGrid) Send(ctx context.Context, alert *Alert) error {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ep, bytes.NewReader(body))
 	if err != nil {
+		logger.Error().
+			Err(err).
+			Msg("Failed to send SendGrid alert. Error: failed to create HTTP request")
 		return fmt.Errorf("creating request: %w", err)
 	}
 
@@ -87,7 +96,7 @@ func (s *SendGrid) Send(ctx context.Context, alert *Alert) error {
 	if err != nil {
 		logger.Error().
 			Err(err).
-			Msg("SendGrid API request failed")
+			Msg("Failed to send SendGrid alert. Error: HTTP request failed")
 		return fmt.Errorf("sending request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -97,19 +106,19 @@ func (s *SendGrid) Send(ctx context.Context, alert *Alert) error {
 		var errResp sendGridErrorResponse
 		if err := json.NewDecoder(resp.Body).Decode(&errResp); err == nil && len(errResp.Errors) > 0 {
 			logger.Error().
-				Int("status_code", resp.StatusCode).
+				Int(log.FieldStatus, resp.StatusCode).
 				Str("error_message", errResp.Errors[0].Message).
-				Msg("SendGrid API returned error")
+				Msg("Failed to send SendGrid alert. Error: SendGrid API returned error")
 			return fmt.Errorf("sendgrid api error (status %d): %s", resp.StatusCode, errResp.Errors[0].Message)
 		}
 		logger.Error().
-			Int("status_code", resp.StatusCode).
-			Msg("SendGrid API returned error status")
+			Int(log.FieldStatus, resp.StatusCode).
+			Msg("Failed to send SendGrid alert. Error: SendGrid API returned error status")
 		return fmt.Errorf("sendgrid api error: status %d", resp.StatusCode)
 	}
 
-	logger.Debug().
-		Str("title", alert.Title).
+	logger.Info().
+		Int(log.FieldStatus, resp.StatusCode).
 		Int("recipient_count", len(s.config.ToEmails)).
 		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 		Msg("Successfully sent SendGrid email alert")

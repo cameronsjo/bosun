@@ -28,15 +28,22 @@ func verifyDeployTarget(src, dst string, writtenRel []string, startTime time.Tim
 		Str(log.FieldPath, src).
 		Str("destination", dst).
 		Int("written_count", len(writtenRel)).
-		Msg("Verifying deploy target invariant")
+		Msg("Preparing to verify deploy target invariant")
+
 	if len(writtenRel) == 0 {
 		hasFiles, err := dirHasRegularFiles(src)
 		if err != nil {
+			logger.Error().Err(err).Str(log.FieldPath, src).Msg("Failed to verify deploy target. Reason: cannot inspect source")
 			return fmt.Errorf("inspect source %q: %w", src, err)
 		}
 		if hasFiles {
+			logger.Error().
+				Str(log.FieldPath, src).
+				Str("destination", dst).
+				Msg("Failed to verify deploy target. Reason: empty write recorded against non-empty source")
 			return fmt.Errorf("%w: src=%q dst=%q", ErrDeployInvariantEmptyWrite, src, dst)
 		}
+		logger.Debug().Msg("Deploy target verification passed: empty source and no files written")
 		return nil
 	}
 
@@ -45,8 +52,12 @@ func verifyDeployTarget(src, dst string, writtenRel []string, startTime time.Tim
 		info, err := os.Stat(path)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
+				logger.Error().
+					Str(log.FieldPath, path).
+					Msg("Failed to verify deploy target. Reason: written file missing from destination")
 				return fmt.Errorf("%w: path=%q", ErrDeployInvariantMissingFile, path)
 			}
+			logger.Error().Err(err).Str(log.FieldPath, path).Msg("Failed to verify deploy target. Reason: cannot stat destination")
 			return fmt.Errorf("stat destination %q: %w", path, err)
 		}
 		// Truncate to seconds — some filesystems (notably FAT, and Unraid's
@@ -56,9 +67,16 @@ func verifyDeployTarget(src, dst string, writtenRel []string, startTime time.Tim
 		mt := info.ModTime().Truncate(time.Second)
 		st := startTime.Truncate(time.Second)
 		if mt.Before(st) {
+			logger.Error().
+				Str(log.FieldPath, path).
+				Time("file_mtime", info.ModTime()).
+				Time("start_time", startTime).
+				Msg("Failed to verify deploy target. Reason: file has stale mtime")
 			return fmt.Errorf("%w: path=%q mtime=%s start=%s", ErrDeployInvariantStaleMtime, path, info.ModTime(), startTime)
 		}
 	}
+
+	logger.Info().Int("written_count", len(writtenRel)).Msg("Successfully verified deploy target invariant")
 	return nil
 }
 

@@ -120,46 +120,53 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 
 	if d.DryRun {
 		logger.Debug().
-			Str("source", sourceDir).
+			Str(log.FieldPath, sourceDir).
 			Str("target", targetDir).
-			Msg("Dry run: would deploy locally")
+			Msg("Skipping local deployment. Reason: dry-run mode")
 		return nil
 	}
 
 	logger.Debug().
-		Str(log.FieldOperation, "deploy_local").
-		Str("source", sourceDir).
+		Str(log.FieldPath, sourceDir).
 		Str("target", targetDir).
-		Msg("Deploying files locally")
+		Msg("Preparing to deploy files locally")
 
 	// Verify source directory exists
 	srcInfo, err := os.Stat(sourceDir)
 	if err != nil {
-		logger.Error().Err(err).Str("source", sourceDir).Msg("Source directory error")
+		logger.Error().
+			Err(err).
+			Str(log.FieldPath, sourceDir).
+			Msg("Failed to deploy locally. Reason: cannot stat source directory")
 		return fmt.Errorf("source directory: %w", err)
 	}
 	if !srcInfo.IsDir() {
-		logger.Error().Str("source", sourceDir).Msg("Source is not a directory")
+		logger.Error().Str(log.FieldPath, sourceDir).Msg("Failed to deploy locally. Reason: source is not a directory")
 		return fmt.Errorf("source is not a directory: %s", sourceDir)
 	}
 
 	// Content-hash mode: compare per-file against existing target, skip unchanged.
 	if d.ContentHashSync {
+		logger.Debug().Msg("Using content-hash sync mode for deployment")
 		if err := os.MkdirAll(targetDir, 0755); err != nil {
+			logger.Error().Err(err).Str("target", targetDir).Msg("Failed to deploy locally. Reason: cannot create target directory")
 			return fmt.Errorf("create target directory: %w", err)
 		}
 
 		written, err := fileutil.CopyDirIfChanged(sourceDir, targetDir)
 		if err != nil {
+			logger.Error().Err(err).Msg("Failed to deploy locally. Reason: content-hash sync failed")
 			return fmt.Errorf("copy with content hash: %w", err)
 		}
 
 		// Remove files in target that aren't in source (--delete semantics).
 		if err := removeStaleFiles(ctx, sourceDir, targetDir); err != nil {
+			logger.Error().Err(err).Msg("Failed to deploy locally. Reason: stale file removal failed")
 			return fmt.Errorf("remove stale files: %w", err)
 		}
 
 		if ctx.Err() != nil {
+			logger.Error().Err(ctx.Err()).Msg("Local deployment cancelled by context")
 			return ctx.Err()
 		}
 
@@ -167,23 +174,25 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 			result.AddWritten(written...)
 		}
 
-		logger.Debug().
-			Str(log.FieldOperation, "deploy_local").
+		logger.Info().
 			Str("target", targetDir).
 			Int("files_written", len(written)).
-			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-			Msg("Local deployment completed (content-hash sync)")
+			Int64(log.FieldDurationMS, log.DurationMS(start)).
+			Msg("Successfully deployed files locally (content-hash sync)")
 		return nil
 	}
 
 	// Standard mode: nuke-and-replace for atomic directory swap.
+	logger.Debug().Msg("Using atomic swap mode for deployment")
 	targetParent := filepath.Dir(targetDir)
 	if err := os.MkdirAll(targetParent, 0755); err != nil {
+		logger.Error().Err(err).Str("target_parent", targetParent).Msg("Failed to deploy locally. Reason: cannot create target parent directory")
 		return fmt.Errorf("create target parent: %w", err)
 	}
 
 	tmpDir, err := os.MkdirTemp(targetParent, ".deploy-tmp-*")
 	if err != nil {
+		logger.Error().Err(err).Str("target_parent", targetParent).Msg("Failed to deploy locally. Reason: cannot create temp directory")
 		return fmt.Errorf("create temp directory: %w", err)
 	}
 
@@ -195,10 +204,12 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 	}()
 
 	if err := fileutil.CopyDir(sourceDir, tmpDir); err != nil {
+		logger.Error().Err(err).Msg("Failed to deploy locally. Reason: cannot copy to temp directory")
 		return fmt.Errorf("copy to temp: %w", err)
 	}
 
 	if ctx.Err() != nil {
+		logger.Error().Err(ctx.Err()).Msg("Local deployment cancelled by context")
 		return ctx.Err()
 	}
 
@@ -211,26 +222,31 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 
 	// Guard against stale backup from a previous crash.
 	if _, err := os.Stat(backupDir); err == nil {
+		logger.Error().Str(log.FieldPath, backupDir).Msg("Failed to deploy locally. Reason: stale backup exists from previous crash")
 		return fmt.Errorf("stale deploy backup exists at %s; restore or remove it before redeploying", backupDir)
 	} else if !os.IsNotExist(err) {
+		logger.Error().Err(err).Str(log.FieldPath, backupDir).Msg("Failed to deploy locally. Reason: cannot stat backup path")
 		return fmt.Errorf("stat backup path: %w", err)
 	}
 
 	if _, err := os.Stat(targetDir); err == nil {
 		hadExisting = true
+		logger.Debug().Str("target", targetDir).Msg("Moving existing target aside for atomic swap")
 		if err := os.Rename(targetDir, backupDir); err != nil {
+			logger.Error().Err(err).Msg("Failed to deploy locally. Reason: cannot move existing target aside")
 			return fmt.Errorf("rename existing target aside: %w", err)
 		}
 	}
 
 	if err := os.Rename(tmpDir, targetDir); err != nil {
-		logger.Error().Err(err).Str("target", targetDir).Msg("Failed to rename to target")
+		logger.Error().Err(err).Str("target", targetDir).Msg("Failed to deploy locally. Reason: cannot rename temp to target")
 		// Restore the backup so the original target is not lost.
 		if hadExisting {
 			if rbErr := os.Rename(backupDir, targetDir); rbErr != nil {
-				logger.Error().Err(rbErr).Msg("Failed to restore backup after rename failure")
+				logger.Error().Err(rbErr).Str(log.FieldPath, backupDir).Msg("Recovery failed: cannot restore backup after rename failure")
 				return fmt.Errorf("rename to target failed: %w; restore backup from %s failed: %v", err, backupDir, rbErr)
 			}
+			logger.Info().Str(log.FieldPath, backupDir).Msg("Restored backup after failed rename")
 		}
 		return fmt.Errorf("rename to target: %w", err)
 	}
@@ -242,11 +258,10 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 	}
 
 	success = true
-	logger.Debug().
-		Str(log.FieldOperation, "deploy_local").
+	logger.Info().
 		Str("target", targetDir).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-		Msg("Local deployment completed")
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
+		Msg("Successfully deployed files locally (atomic swap)")
 	return nil
 }
 
@@ -256,7 +271,13 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 // error if any removals failed.
 func removeStaleFiles(ctx context.Context, sourceDir, targetDir string) error {
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
+	logger.Debug().
+		Str(log.FieldPath, sourceDir).
+		Str("target", targetDir).
+		Msg("Preparing to remove stale files")
+
 	var removalErrors []error
+	var removedCount int
 
 	walkErr := filepath.WalkDir(targetDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -274,28 +295,43 @@ func removeStaleFiles(ctx context.Context, sourceDir, targetDir string) error {
 		srcPath := filepath.Join(sourceDir, relPath)
 		if _, err := os.Stat(srcPath); err != nil {
 			if !os.IsNotExist(err) {
+				logger.Warn().Err(err).Str(log.FieldPath, relPath).Msg("Failed to stat source for stale file check")
 				return fmt.Errorf("stat source path %s: %w", relPath, err)
 			}
 			if d.IsDir() {
 				if rmErr := os.RemoveAll(path); rmErr != nil {
 					logger.Warn().Err(rmErr).Str(log.FieldPath, relPath).Msg("Failed to remove stale directory")
 					removalErrors = append(removalErrors, fmt.Errorf("remove directory %s: %w", relPath, rmErr))
+				} else {
+					logger.Debug().Str(log.FieldPath, relPath).Msg("Removed stale directory")
+					removedCount++
 				}
 				return filepath.SkipDir
 			}
 			if rmErr := os.Remove(path); rmErr != nil {
 				logger.Warn().Err(rmErr).Str(log.FieldPath, relPath).Msg("Failed to remove stale file")
 				removalErrors = append(removalErrors, fmt.Errorf("remove file %s: %w", relPath, rmErr))
+			} else {
+				logger.Debug().Str(log.FieldPath, relPath).Msg("Removed stale file")
+				removedCount++
 			}
 		}
 		return nil
 	})
 
 	if walkErr != nil {
+		logger.Error().Err(walkErr).Msg("Failed to remove stale files. Reason: directory walk failed")
 		return walkErr
 	}
 	if len(removalErrors) > 0 {
+		logger.Warn().Int("failed_removals", len(removalErrors)).Msg("Some stale files could not be removed")
 		return fmt.Errorf("%d stale file(s) could not be removed: %w", len(removalErrors), errors.Join(removalErrors...))
+	}
+
+	if removedCount > 0 {
+		logger.Info().Int("removed", removedCount).Msg("Successfully removed stale files")
+	} else {
+		logger.Debug().Msg("No stale files found")
 	}
 	return nil
 }

@@ -329,8 +329,7 @@ func TestTwilio_Send_NotConfigured(t *testing.T) {
 	}
 
 	err := tw.Send(context.Background(), alert)
-	require.Error(t, err, "Send() should return error when not configured")
-	assert.Equal(t, "twilio is not configured", err.Error())
+	assert.NoError(t, err, "Send() should silently skip when not configured")
 }
 
 func TestTwilio_Send_HTTPSuccess(t *testing.T) {

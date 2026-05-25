@@ -77,10 +77,20 @@ const DefaultHealthTimeout = 5 * time.Second
 // NewCloudflare creates a new Cloudflare provider.
 // Returns an error if cloudflared is not installed.
 func NewCloudflare() (*Cloudflare, error) {
+	logger := log.Component(log.ComponentTunnel)
+	logger.Debug().Msg("Preparing to initialize Cloudflare Tunnel provider")
+
 	path, err := exec.LookPath("cloudflared")
 	if err != nil {
+		logger.Warn().
+			Err(err).
+			Msg("cloudflared binary not found in PATH")
 		return nil, ErrNotInstalled{Provider: "Cloudflare Tunnel (cloudflared)"}
 	}
+
+	logger.Debug().
+		Str("path", path).
+		Msg("Successfully found cloudflared binary")
 
 	return &Cloudflare{
 		binaryPath: path,
@@ -92,14 +102,28 @@ func NewCloudflare() (*Cloudflare, error) {
 
 // NewCloudflareWithConfig creates a new Cloudflare provider with custom configuration.
 func NewCloudflareWithConfig(config CloudflareConfig) (*Cloudflare, error) {
+	logger := log.Component(log.ComponentTunnel)
+	logger.Debug().
+		Str("tunnel", config.TunnelName).
+		Str("hostname", config.Hostname).
+		Msg("Preparing to initialize Cloudflare Tunnel provider with custom config")
+
 	path, err := exec.LookPath("cloudflared")
 	if err != nil {
+		logger.Warn().
+			Err(err).
+			Msg("cloudflared binary not found in PATH")
 		return nil, ErrNotInstalled{Provider: "Cloudflare Tunnel (cloudflared)"}
 	}
 
 	if config.HealthTimeout == 0 {
 		config.HealthTimeout = DefaultHealthTimeout
 	}
+
+	logger.Debug().
+		Str("path", path).
+		Dur("health_timeout", config.HealthTimeout).
+		Msg("Successfully found cloudflared binary with configuration")
 
 	return &Cloudflare{
 		binaryPath: path,
@@ -127,6 +151,7 @@ func (c *Cloudflare) Name() string {
 // Status returns the current Cloudflare Tunnel status.
 func (c *Cloudflare) Status(ctx context.Context) (*Status, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentTunnel)
+	logger.Debug().Msg("Preparing to check Cloudflare Tunnel status")
 
 	status := &Status{
 		Provider: string(ProviderCloudflare),
@@ -135,40 +160,58 @@ func (c *Cloudflare) Status(ctx context.Context) (*Status, error) {
 
 	// Try to get tunnel info if tunnel name is configured
 	if c.config.TunnelName != "" {
+		logger.Debug().
+			Str("tunnel", c.config.TunnelName).
+			Msg("Attempting to check tunnel via tunnel info")
 		connected, err := c.checkTunnelInfo(ctx)
 		if err == nil {
 			status.Connected = connected
 			if connected {
 				status.BackendState = "Running"
+				logger.Debug().
+					Str("tunnel", c.config.TunnelName).
+					Msg("Cloudflare tunnel is connected")
 			} else {
 				status.BackendState = "Disconnected"
+				logger.Debug().
+					Str("tunnel", c.config.TunnelName).
+					Msg("Cloudflare tunnel is disconnected")
 			}
-			logger.Debug().Bool("connected", connected).Str("tunnel", c.config.TunnelName).Msg("Cloudflare tunnel info check completed")
 			return status, nil
 		}
-		logger.Debug().Err(err).Str("tunnel", c.config.TunnelName).Msg("Cloudflare tunnel info check failed, trying fallback")
+		logger.Debug().
+			Err(err).
+			Str("tunnel", c.config.TunnelName).
+			Msg("Tunnel info check failed, falling back to health endpoint check")
 	}
 
 	// Fall back to health endpoint check
 	if c.config.HealthEndpoint != "" {
+		logger.Debug().
+			Str("endpoint", c.config.HealthEndpoint).
+			Msg("Attempting to check tunnel via health endpoint")
 		connected := c.checkHealthEndpoint(ctx)
 		status.Connected = connected
 		if connected {
 			status.BackendState = "Running"
+			logger.Debug().Str("endpoint", c.config.HealthEndpoint).Msg("Health endpoint check passed")
 		} else {
 			status.BackendState = "Unknown"
+			logger.Debug().Str("endpoint", c.config.HealthEndpoint).Msg("Health endpoint check failed")
 		}
-		logger.Debug().Bool("connected", connected).Str("endpoint", c.config.HealthEndpoint).Msg("Cloudflare health endpoint check completed")
 		return status, nil
 	}
 
 	// Check if cloudflared process is running
+	logger.Debug().Msg("Falling back to process check")
 	connected := c.checkProcess(ctx)
 	status.Connected = connected
 	if connected {
 		status.BackendState = "Running"
+		logger.Debug().Msg("cloudflared process is running")
 	} else {
 		status.BackendState = "Stopped"
+		logger.Debug().Msg("cloudflared process is not running")
 	}
 
 	return status, nil
@@ -197,11 +240,16 @@ func (c *Cloudflare) checkTunnelInfo(ctx context.Context) (bool, error) {
 	}
 
 	if stderrStr := stderr.String(); stderrStr != "" {
-		logger.Debug().Str("stderr", redactSensitiveOutput(stderrStr)).Msg("cloudflared tunnel info stderr")
+		logger.Debug().
+			Str("stderr", redactSensitiveOutput(stderrStr)).
+			Msg("cloudflared tunnel info command produced stderr")
 	}
 
 	var info cloudflaredTunnelInfo
 	if err := json.Unmarshal(output, &info); err != nil {
+		logger.Warn().
+			Err(err).
+			Msg("Failed to parse cloudflared tunnel info JSON output")
 		return false, err
 	}
 
@@ -220,51 +268,78 @@ func (c *Cloudflare) checkHealthEndpoint(ctx context.Context) bool {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentTunnel)
 
+	logger.Debug().
+		Str("endpoint", c.config.HealthEndpoint).
+		Dur("timeout", c.config.HealthTimeout).
+		Msg("Executing health endpoint check")
+
 	client := &http.Client{
 		Timeout: c.config.HealthTimeout,
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.config.HealthEndpoint, nil)
 	if err != nil {
-		logger.Error().Err(err).Str("endpoint", c.config.HealthEndpoint).Msg("Failed to create health check request")
+		logger.Error().
+			Err(err).
+			Str("endpoint", c.config.HealthEndpoint).
+			Msg("Failed to create health check request")
 		return false
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		logger.Debug().
+		logger.Warn().
 			Err(err).
 			Str("endpoint", c.config.HealthEndpoint).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-			Msg("Cloudflare health endpoint unreachable")
+			Msg("Health endpoint check failed, tunnel may be down")
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	logger.Debug().
-		Int(log.FieldStatus, resp.StatusCode).
-		Str("endpoint", c.config.HealthEndpoint).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-		Msg("Cloudflare health endpoint check completed")
+	success := resp.StatusCode == http.StatusOK
+	if success {
+		logger.Debug().
+			Int(log.FieldStatus, resp.StatusCode).
+			Str("endpoint", c.config.HealthEndpoint).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("Health endpoint check passed")
+	} else {
+		logger.Warn().
+			Int(log.FieldStatus, resp.StatusCode).
+			Str("endpoint", c.config.HealthEndpoint).
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+			Msg("Health endpoint returned error status")
+	}
 
-	return resp.StatusCode == http.StatusOK
+	return success
 }
 
 // checkProcess checks if cloudflared is running by looking for the process.
 func (c *Cloudflare) checkProcess(ctx context.Context) bool {
+	logger := log.ComponentCtx(ctx, log.ComponentTunnel)
+	logger.Debug().Msg("Checking if cloudflared process is running")
+
 	// Try running cloudflared version to verify it's accessible
 	cmd := exec.CommandContext(ctx, c.binaryPath, "version")
 	if err := cmd.Run(); err != nil {
+		logger.Warn().
+			Err(err).
+			Msg("cloudflared version check failed")
 		return false
 	}
+
+	logger.Debug().Msg("cloudflared binary is accessible")
 
 	// Check if there's a running tunnel process
 	// On Linux/macOS, we can check for running cloudflared processes
 	cmd = exec.CommandContext(ctx, "pgrep", "-x", "cloudflared")
 	if err := cmd.Run(); err != nil {
+		logger.Warn().Msg("cloudflared process not found (pgrep check failed)")
 		return false
 	}
 
+	logger.Debug().Msg("cloudflared process is running")
 	return true
 }
 

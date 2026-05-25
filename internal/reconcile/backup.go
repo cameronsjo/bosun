@@ -24,19 +24,25 @@ const DefaultBackupTimeout = 5 * time.Minute
 // The archive listing runs under ctx so a caller deadline or cancellation
 // aborts verification rather than blocking on a large/growing archive (#319).
 func (d *DeployOps) VerifyBackup(ctx context.Context, backupPath string) error {
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 	tarFile := filepath.Join(backupPath, "configs.tar.gz")
+
+	logger.Debug().Str(log.FieldPath, tarFile).Msg("Verifying backup archive")
 
 	// Check file exists
 	info, err := os.Stat(tarFile)
 	if err != nil {
 		if os.IsNotExist(err) {
+			logger.Error().Str(log.FieldPath, tarFile).Msg("Failed to verify backup. Reason: archive not found")
 			return fmt.Errorf("backup archive not found: %s", tarFile)
 		}
+		logger.Error().Err(err).Str(log.FieldPath, tarFile).Msg("Failed to verify backup. Reason: cannot stat archive")
 		return fmt.Errorf("failed to stat backup archive: %w", err)
 	}
 
 	// Check file is non-empty
 	if info.Size() == 0 {
+		logger.Error().Str(log.FieldPath, tarFile).Msg("Failed to verify backup. Reason: archive is empty")
 		return fmt.Errorf("backup archive is empty: %s", tarFile)
 	}
 
@@ -47,14 +53,17 @@ func (d *DeployOps) VerifyBackup(ctx context.Context, backupPath string) error {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		logger.Error().Err(err).Str(log.FieldPath, tarFile).Msg("Failed to verify backup. Reason: archive is corrupted")
 		return fmt.Errorf("backup archive is corrupted: %w: %s", err, stderr.String())
 	}
 
 	// Check archive has at least one file
 	if strings.TrimSpace(stdout.String()) == "" {
+		logger.Error().Str(log.FieldPath, tarFile).Msg("Failed to verify backup. Reason: archive contains no files")
 		return fmt.Errorf("backup archive contains no files: %s", tarFile)
 	}
 
+	logger.Debug().Str(log.FieldPath, tarFile).Int64("size_bytes", info.Size()).Msg("Backup archive verified")
 	return nil
 }
 
@@ -136,7 +145,13 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
+	logger.Debug().
+		Str(log.FieldTarget, host).
+		Int("path_count", len(remotePaths)).
+		Msg("Preparing to create remote backup")
+
 	if err := validateHost(host); err != nil {
+		logger.Error().Err(err).Str(log.FieldTarget, host).Msg("Failed to create remote backup. Reason: invalid SSH host")
 		return "", fmt.Errorf("invalid SSH host: %w", err)
 	}
 
@@ -144,15 +159,8 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 	backupName := fmt.Sprintf("backup-%s", timestamp)
 	backupPath := filepath.Join(backupDir, backupName)
 
-	logger.Info().
-		Str(log.FieldOperation, "backup_remote").
-		Str(log.FieldTarget, host).
-		Str(log.FieldPath, backupPath).
-		Int("path_count", len(remotePaths)).
-		Msg("Creating remote backup")
-
 	if err := os.MkdirAll(backupPath, 0755); err != nil {
-		logger.Error().Err(err).Str(log.FieldPath, backupPath).Msg("Failed to create backup directory")
+		logger.Error().Err(err).Str(log.FieldPath, backupPath).Msg("Failed to create remote backup. Reason: cannot create backup directory")
 		return "", fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
@@ -177,6 +185,7 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 
 	outFile, err := os.Create(tarFile)
 	if err != nil {
+		logger.Error().Err(err).Str(log.FieldPath, tarFile).Msg("Failed to create remote backup. Reason: cannot create backup file")
 		return "", fmt.Errorf("failed to create backup file: %w", err)
 	}
 
@@ -196,40 +205,48 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 	if closeErr := outFile.Close(); closeErr != nil {
 		// Clean up on close failure
 		_ = os.RemoveAll(backupPath)
+		logger.Error().Err(closeErr).Str(log.FieldPath, tarFile).Msg("Failed to create remote backup. Reason: cannot close backup file")
 		return "", fmt.Errorf("failed to close backup file: %w", closeErr)
 	}
 
 	// Log SSH/tar error but don't fail outright — the backup may still be usable.
 	// We verify it below; that check will surface any real corruption.
 	if sshErr != nil {
-		logger.Warn().Err(sshErr).Str(log.FieldPath, backupPath).Msg("Remote tar command returned error during backup")
+		logger.Warn().Err(sshErr).Str(log.FieldTarget, host).Msg("Remote tar command returned error, verifying backup integrity")
 	}
 
 	// Verify the backup was created successfully
 	if err := d.VerifyBackup(ctx, backupPath); err != nil {
 		// Clean up invalid backup on verification failure
 		_ = os.RemoveAll(backupPath)
-		logger.Error().Err(err).Str(log.FieldPath, backupPath).Msg("Remote backup verification failed")
+		logger.Error().Err(err).Str(log.FieldPath, backupPath).Msg("Failed to create remote backup. Reason: verification failed")
 		return "", fmt.Errorf("backup verification failed: %w", err)
 	}
 
 	logger.Info().
-		Str(log.FieldOperation, "backup_remote").
 		Str(log.FieldTarget, host).
 		Str(log.FieldPath, backupPath).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-		Msg("Remote backup created successfully")
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
+		Msg("Successfully created remote backup")
 
 	return backupName, nil
 }
 
 // CleanupBackups removes old backups, keeping only the most recent N.
 func (d *DeployOps) CleanupBackups(backupDir string, keep int) error {
+	logger := log.Component(log.ComponentDeploy)
+	logger.Debug().
+		Str(log.FieldPath, backupDir).
+		Int("keep_count", keep).
+		Msg("Preparing to cleanup old backups")
+
 	entries, err := os.ReadDir(backupDir)
 	if err != nil {
 		if os.IsNotExist(err) {
+			logger.Debug().Str(log.FieldPath, backupDir).Msg("Skipping backup cleanup. Reason: backup directory does not exist")
 			return nil
 		}
+		logger.Error().Err(err).Str(log.FieldPath, backupDir).Msg("Failed to cleanup backups. Reason: cannot read backup directory")
 		return fmt.Errorf("failed to read backup directory: %w", err)
 	}
 
@@ -247,18 +264,26 @@ func (d *DeployOps) CleanupBackups(backupDir string, keep int) error {
 	// Remove old backups.
 	if len(backups) > keep {
 		toRemove := backups[:len(backups)-keep]
-		logger := log.Component(log.ComponentDeploy)
+		logger.Debug().
+			Int("total_backups", len(backups)).
+			Int("removing", len(toRemove)).
+			Int("keeping", keep).
+			Msg("Removing old backups")
+
 		for _, name := range toRemove {
 			path := filepath.Join(backupDir, name)
 			if err := os.RemoveAll(path); err != nil {
+				logger.Error().Err(err).Str(log.FieldPath, path).Msg("Failed to remove old backup")
 				return fmt.Errorf("failed to remove backup %s: %w", name, err)
 			}
+			logger.Debug().Str(log.FieldPath, path).Msg("Removed old backup")
 		}
-		logger.Debug().
-			Str(log.FieldOperation, "cleanup_backups").
+		logger.Info().
 			Int("removed", len(toRemove)).
 			Int("kept", keep).
-			Msg("Old backups removed")
+			Msg("Successfully cleaned up old backups")
+	} else {
+		logger.Debug().Int("total_backups", len(backups)).Msg("Backup cleanup: no old backups to remove")
 	}
 
 	return nil

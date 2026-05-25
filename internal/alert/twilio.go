@@ -67,22 +67,26 @@ func (t *Twilio) IsConfigured() bool {
 // Only sends for error or critical severity to minimize SMS costs.
 func (t *Twilio) Send(ctx context.Context, alert *Alert) error {
 	if !t.IsConfigured() {
-		return fmt.Errorf("twilio is not configured")
+		logger := log.ComponentCtx(ctx, "alert").With().Str("provider", "twilio").Logger()
+		logger.Debug().
+			Msg("Skipping Twilio alert. Reason: provider not configured")
+		return nil
 	}
 
-	logger := log.Component("twilio")
+	logger := log.ComponentCtx(ctx, "alert").With().Str("provider", "twilio").Logger()
 
 	// Only send SMS for error or critical severity (SMS is expensive)
 	if alert.Severity != SeverityError && alert.Severity != SeverityCritical {
 		logger.Debug().
 			Str("severity", string(alert.Severity)).
-			Msg("Skipping SMS alert. Reason: severity below threshold")
+			Msg("Skipping SMS alert. Reason: severity below SMS threshold")
 		return nil
 	}
 
 	start := time.Now()
 	logger.Debug().
-		Str("title", alert.Title).
+		Str("severity", string(alert.Severity)).
+		Str("source", alert.Source).
 		Int("recipient_count", len(t.config.ToNumbers)).
 		Msg("Preparing to send SMS alerts")
 
@@ -94,11 +98,10 @@ func (t *Twilio) Send(ctx context.Context, alert *Alert) error {
 		if err := t.sendSMS(ctx, toNumber, message); err != nil {
 			failCount++
 			logger.Error().
-				Err(err).
 				Str("to", maskPhoneNumber(toNumber)).
 				Str("severity", string(alert.Severity)).
-				Str("title", alert.Title).
-				Msg("Failed to send SMS alert")
+				Err(err).
+				Msg("Failed to send SMS alert to recipient")
 			lastErr = fmt.Errorf("send to %s: %w", maskPhoneNumber(toNumber), err)
 		}
 	}
@@ -107,21 +110,23 @@ func (t *Twilio) Send(ctx context.Context, alert *Alert) error {
 	case failCount == len(t.config.ToNumbers):
 		logger.Error().
 			Int("failed", failCount).
-			Str("title", alert.Title).
+			Int("total", len(t.config.ToNumbers)).
+			Str("severity", string(alert.Severity)).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 			Msg("Failed to send SMS alerts to all recipients")
 	case failCount > 0:
 		logger.Warn().
 			Int("failed", failCount).
+			Int("succeeded", len(t.config.ToNumbers)-failCount).
 			Int("total", len(t.config.ToNumbers)).
-			Str("title", alert.Title).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-			Msg("Partial SMS delivery failure")
+			Msg("Partial SMS delivery failure. Some recipients succeeded, others failed")
 	default:
-		logger.Debug().
+		logger.Info().
 			Int("recipient_count", len(t.config.ToNumbers)).
+			Str("severity", string(alert.Severity)).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-			Msg("Successfully sent SMS alerts")
+			Msg("Successfully sent SMS alerts to all recipients")
 	}
 
 	return lastErr
@@ -129,6 +134,9 @@ func (t *Twilio) Send(ctx context.Context, alert *Alert) error {
 
 // sendSMS sends a single SMS message to one recipient.
 func (t *Twilio) sendSMS(ctx context.Context, toNumber, message string) error {
+	logger := log.ComponentCtx(ctx, "alert").With().Str("provider", "twilio").Logger()
+	start := time.Now()
+
 	base := t.apiURL
 	if base == "" {
 		base = twilioAPIURL
@@ -142,6 +150,9 @@ func (t *Twilio) sendSMS(ctx context.Context, toNumber, message string) error {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(formData.Encode()))
 	if err != nil {
+		logger.Error().
+			Err(err).
+			Msg("Failed to send SMS. Error: failed to create HTTP request")
 		return fmt.Errorf("create request: %w", err)
 	}
 
@@ -150,15 +161,25 @@ func (t *Twilio) sendSMS(ctx context.Context, toNumber, message string) error {
 
 	resp, err := t.client.Do(req)
 	if err != nil {
+		logger.Error().
+			Err(err).
+			Msg("Failed to send SMS. Error: HTTP request failed")
 		return fmt.Errorf("send request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
+		logger.Error().
+			Int(log.FieldStatus, resp.StatusCode).
+			Msg("Failed to send SMS. Error: Twilio API returned error status")
 		return fmt.Errorf("twilio API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
+	logger.Debug().
+		Int(log.FieldStatus, resp.StatusCode).
+		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Msg("Successfully sent SMS to recipient")
 	return nil
 }
 

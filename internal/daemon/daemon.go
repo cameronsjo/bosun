@@ -250,8 +250,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Ensure state directory exists for deploy state tracking.
 	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.StateFile != "" {
 		stateDir := filepath.Dir(d.config.ReconcileConfig.StateFile)
+		logger.Debug().Str(log.FieldPath, stateDir).Msg("Preparing to create state directory")
 		if err := os.MkdirAll(stateDir, 0755); err != nil {
-			logger.Warn().Err(err).Str("dir", stateDir).Msg("Failed to create state directory")
+			logger.Error().
+				Err(err).
+				Str(log.FieldPath, stateDir).
+				Msg("Failed to create state directory")
 		}
 	}
 
@@ -266,22 +270,28 @@ func (d *Daemon) Run(ctx context.Context) error {
 	errCh := make(chan error, 3)
 
 	// Start Unix socket server (primary API)
-	logger.Debug().Str("socket", d.config.SocketPath).Msg("Starting Unix socket server")
+	logger.Info().Str("socket", d.config.SocketPath).Msg("Preparing to start Unix socket server")
 	go func() {
 		defer sentrypkg.Recover()
 		if err := d.socketServer.Start(); err != nil {
-			logger.Error().Err(err).Str("socket", d.config.SocketPath).Msg("Unix socket server failed")
+			logger.Error().
+				Err(err).
+				Str("socket", d.config.SocketPath).
+				Msg("Failed to start Unix socket server")
 			errCh <- fmt.Errorf("socket server: %w", err)
 		}
 	}()
 
 	// Start TCP server for remote access (optional)
 	if d.config.EnableTCP && d.tcpServer != nil {
-		logger.Debug().Str("addr", d.config.TCPAddr).Msg("Starting TCP server")
+		logger.Info().Str("addr", d.config.TCPAddr).Msg("Preparing to start TCP server")
 		go func() {
 			defer sentrypkg.Recover()
 			if err := d.tcpServer.Start(); err != nil {
-				logger.Error().Err(err).Str("addr", d.config.TCPAddr).Msg("TCP server failed")
+				logger.Error().
+					Err(err).
+					Str("addr", d.config.TCPAddr).
+					Msg("Failed to start TCP server")
 				errCh <- fmt.Errorf("TCP server: %w", err)
 			}
 		}()
@@ -289,11 +299,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Start HTTP server for webhooks (optional)
 	if d.config.EnableHTTP && d.httpServer != nil {
-		logger.Debug().Int("port", d.config.Port).Msg("Starting HTTP server")
+		logger.Info().Int("port", d.config.Port).Msg("Preparing to start HTTP server")
 		go func() {
 			defer sentrypkg.Recover()
 			if err := d.httpServer.Start(d.config.Port); err != nil {
-				logger.Error().Err(err).Int("port", d.config.Port).Msg("HTTP server failed")
+				logger.Error().
+					Err(err).
+					Int("port", d.config.Port).
+					Msg("Failed to start HTTP server")
 				errCh <- fmt.Errorf("HTTP server: %w", err)
 			}
 		}()
@@ -360,7 +373,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 
 	// Graceful shutdown
-	return d.shutdown()
+	shutdownErr := d.shutdown()
+	if shutdownErr != nil {
+		logger.Error().Err(shutdownErr).Msg("Shutdown encountered error")
+		return shutdownErr
+	}
+	return nil
 }
 
 // shutdown performs graceful shutdown of all components.
@@ -370,9 +388,11 @@ func (d *Daemon) shutdown() error {
 	ui.Info("Shutting down...")
 
 	// Flush Sentry events before shutting down network servers.
+	logger.Debug().Dur("timeout", 5*time.Second).Msg("Preparing to flush Sentry events")
 	sentrypkg.Close(5 * time.Second)
 
 	// Stop polling
+	logger.Debug().Msg("Stopping background loops")
 	close(d.stopLoops)
 
 	// Shutdown timeout
@@ -381,28 +401,40 @@ func (d *Daemon) shutdown() error {
 
 	// Stop socket server
 	if d.socketServer != nil {
-		logger.Debug().Msg("Shutting down socket server")
+		logger.Info().Msg("Shutting down socket server")
 		if err := d.socketServer.Shutdown(ctx); err != nil {
-			logger.Warn().Err(err).Msg("Socket server shutdown error")
+			logger.Warn().
+				Err(err).
+				Msg("Socket server shutdown error")
 			ui.Warning("Socket server shutdown: %v", err)
+		} else {
+			logger.Debug().Msg("Socket server shut down successfully")
 		}
 	}
 
 	// Stop TCP server
 	if d.tcpServer != nil {
-		logger.Debug().Msg("Shutting down TCP server")
+		logger.Info().Msg("Shutting down TCP server")
 		if err := d.tcpServer.Shutdown(ctx); err != nil {
-			logger.Warn().Err(err).Msg("TCP server shutdown error")
+			logger.Warn().
+				Err(err).
+				Msg("TCP server shutdown error")
 			ui.Warning("TCP server shutdown: %v", err)
+		} else {
+			logger.Debug().Msg("TCP server shut down successfully")
 		}
 	}
 
 	// Stop HTTP server
 	if d.httpServer != nil {
-		logger.Debug().Msg("Shutting down HTTP server")
+		logger.Info().Msg("Shutting down HTTP server")
 		if err := d.httpServer.Shutdown(ctx); err != nil {
-			logger.Warn().Err(err).Msg("HTTP server shutdown error")
+			logger.Warn().
+				Err(err).
+				Msg("HTTP server shutdown error")
 			ui.Warning("HTTP server shutdown: %v", err)
+		} else {
+			logger.Debug().Msg("HTTP server shut down successfully")
 		}
 	}
 
@@ -423,12 +455,17 @@ func (d *Daemon) shutdown() error {
 
 	// Close shared Docker client.
 	if d.dockerClient != nil {
+		logger.Debug().Msg("Closing Docker client")
 		if err := d.dockerClient.Close(); err != nil {
-			logger.Warn().Err(err).Msg("Docker client close error")
+			logger.Warn().
+				Err(err).
+				Msg("Docker client close error")
+		} else {
+			logger.Debug().Msg("Docker client closed successfully")
 		}
 	}
 
-	logger.Info().Msg("Shutdown complete")
+	logger.Info().Msg("Successfully shut down daemon")
 	ui.Success("Shutdown complete")
 	return nil
 }
@@ -452,11 +489,17 @@ func (d *Daemon) TriggerReconcile(ctx context.Context, source string, force bool
 	// Add reconcile ID to context and stash enriched logger for downstream propagation.
 	// FromContext builds from the global logger + raw context values (request_id, reconcile_id),
 	// avoiding zerolog's append-only field duplication if called repeatedly.
-	ctx, _ = log.NewReconcileContext(ctx)
+	ctx, reconcileID := log.NewReconcileContext(ctx)
 	enriched := log.FromContext(ctx)
 	ctx = log.WithContext(ctx, &enriched)
 
 	logger := log.ComponentCtx(ctx, log.ComponentDaemon)
+
+	logger.Debug().
+		Str(log.FieldSource, source).
+		Bool("force", force).
+		Str(log.FieldReconcileID, reconcileID).
+		Msg("Preparing to trigger reconciliation")
 
 	d.reconcileMu.Lock()
 
@@ -481,12 +524,18 @@ func (d *Daemon) TriggerReconcile(ctx context.Context, source string, force bool
 	d.reconciling = true
 	d.reconcileMu.Unlock()
 
+	logger.Info().
+		Str(log.FieldSource, source).
+		Bool("force", force).
+		Msg("Dispatching reconciliation")
+
 	// Run the reconcile loop (may run multiple times if pending triggers arrive).
 	return d.reconcileLoop(ctx, source, force)
 }
 
 // reconcileLoop runs reconciliation, checking for pending triggers after each run.
 func (d *Daemon) reconcileLoop(ctx context.Context, source string, force bool) error {
+	logger := log.ComponentCtx(ctx, log.ComponentDaemon)
 	var lastErr error
 
 	for {
@@ -506,18 +555,34 @@ func (d *Daemon) reconcileLoop(ctx context.Context, source string, force bool) e
 			d.triggerSource = ""
 			d.triggerForce = false
 			d.reconcileMu.Unlock()
+			logger.Info().
+				Str(log.FieldSource, source).
+				Bool("force", force).
+				Msg("Processing queued trigger from coalescing")
 			ui.Info("Processing queued trigger from %s (force=%t)", source, force)
 			// Generate a fresh reconcile_id for the coalesced run so logs are distinct.
 			// Rebuild from global logger + raw context values to avoid zerolog key duplication.
-			ctx, _ = log.NewReconcileContext(ctx)
+			ctx, newID := log.NewReconcileContext(ctx)
 			refreshed := log.FromContext(ctx)
 			ctx = log.WithContext(ctx, &refreshed)
+			logger = log.ComponentCtx(ctx, log.ComponentDaemon)
+			logger.Debug().
+				Str(log.FieldReconcileID, newID).
+				Msg("Coalesced reconciliation assigned new reconcile ID")
 			continue
 		}
 
 		// No pending trigger - we're done
 		d.reconciling = false
 		d.reconcileMu.Unlock()
+		if lastErr != nil {
+			logger.Error().
+				Err(lastErr).
+				Msg("Reconciliation loop completed with error")
+		} else {
+			logger.Info().
+				Msg("Reconciliation loop completed successfully")
+		}
 		return lastErr
 	}
 }
@@ -662,24 +727,29 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 // pollLoop runs periodic reconciliation.
 func (d *Daemon) pollLoop(ctx context.Context) {
 	logger := log.Component(log.ComponentDaemon)
+	logger.Info().
+		Dur("interval", d.config.PollInterval).
+		Msg("Polling loop started")
 	ticker := time.NewTicker(d.config.PollInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			logger.Info().
+			logger.Debug().
 				Str(log.FieldSource, log.SourcePoll).
-				Msg("Poll triggered")
-			if err := d.TriggerReconcile(ctx, "poll", false); err != nil {
-				logger.Error().
+				Msg("Poll interval triggered, attempting reconciliation")
+			if err := d.TriggerReconcile(ctx, log.SourcePoll, false); err != nil {
+				logger.Warn().
 					Err(err).
 					Str(log.FieldSource, log.SourcePoll).
 					Msg("Poll reconciliation failed")
 			}
 		case <-d.stopLoops:
+			logger.Debug().Msg("Polling loop stopped")
 			return
 		case <-ctx.Done():
+			logger.Debug().Msg("Polling loop cancelled")
 			return
 		}
 	}
@@ -688,18 +758,24 @@ func (d *Daemon) pollLoop(ctx context.Context) {
 // driftCheckLoop runs periodic drift checks independent of reconciliation.
 func (d *Daemon) driftCheckLoop(ctx context.Context) {
 	logger := log.Component(log.ComponentDaemon)
+	logger.Info().
+		Dur("interval", d.config.DriftInterval).
+		Msg("Drift check loop started")
 	ticker := time.NewTicker(d.config.DriftInterval)
 	defer ticker.Stop()
-
-	logger.Info().Dur("interval", d.config.DriftInterval).Msg("Drift check loop started")
 
 	for {
 		select {
 		case <-ticker.C:
+			logger.Debug().
+				Dur("interval", d.config.DriftInterval).
+				Msg("Drift check interval triggered")
 			d.runDriftCheck(ctx)
 		case <-d.stopLoops:
+			logger.Debug().Msg("Drift check loop stopped")
 			return
 		case <-ctx.Done():
+			logger.Debug().Msg("Drift check loop cancelled")
 			return
 		}
 	}
@@ -716,7 +792,9 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	busy := d.reconciling
 	d.reconcileMu.Unlock()
 	if busy {
-		logger.Debug().Msg("Drift check: skipping, reconciliation in progress")
+		logger.Debug().
+			Str("reason", "reconciliation_in_progress").
+			Msg("Skipping drift check")
 		return
 	}
 
@@ -730,12 +808,22 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 		projectName = d.config.ReconcileConfig.ProjectName
 	}
 	if stateFile == "" {
+		logger.Debug().
+			Str("reason", "no_state_file_configured").
+			Msg("Skipping drift check")
 		return
 	}
 
+	logger.Debug().
+		Str(log.FieldPath, stateFile).
+		Str("project", projectName).
+		Msg("Preparing to collect Docker state for drift check")
+
 	client, err := d.DockerClient()
 	if err != nil {
-		logger.Warn().Err(err).Msg("Drift check: Docker unavailable")
+		logger.Warn().
+			Err(err).
+			Msg("Failed to get Docker client, skipping drift check")
 		return
 	}
 
@@ -931,12 +1019,18 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 func (d *Daemon) maybeSelfHeal(ctx context.Context, report *reconcile.DriftReport) {
 	logger := log.Component(log.ComponentDaemon)
 
+	logger.Debug().
+		Int("drift_items", len(report.Items)).
+		Msg("Preparing to evaluate drift self-heal conditions")
+
 	// Guard: skip if already reconciling to prevent infinite loops.
 	d.reconcileMu.Lock()
 	busy := d.reconciling
 	d.reconcileMu.Unlock()
 	if busy {
-		logger.Debug().Msg("Drift self-heal: skipping, reconciliation already in progress")
+		logger.Debug().
+			Str("reason", "reconciliation_in_progress").
+			Msg("Skipping drift self-heal")
 		return
 	}
 
@@ -947,7 +1041,8 @@ func (d *Daemon) maybeSelfHeal(ctx context.Context, report *reconcile.DriftRepor
 		remaining := cooldown - now.Sub(d.lastSelfHeal)
 		logger.Debug().
 			Dur("remaining_cooldown", remaining).
-			Msg("Drift self-heal: skipping, cooldown active")
+			Str("reason", "cooldown_active").
+			Msg("Skipping drift self-heal")
 		return
 	}
 
@@ -956,7 +1051,8 @@ func (d *Daemon) maybeSelfHeal(ctx context.Context, report *reconcile.DriftRepor
 	logger.Info().
 		Int("drift_items", len(report.Items)).
 		Strs("drift_containers", report.DriftSummaries()).
-		Msg("Drift self-heal: triggering reconciliation to resolve detected drift")
+		Dur("cooldown", cooldown).
+		Msg("Triggering reconciliation to resolve detected drift via self-heal")
 
 	ui.Info("Drift self-heal: triggering reconciliation (%d drift items)", len(report.Items))
 
@@ -965,7 +1061,12 @@ func (d *Daemon) maybeSelfHeal(ctx context.Context, report *reconcile.DriftRepor
 		defer d.wg.Done()
 		defer sentrypkg.Recover()
 		if err := d.TriggerReconcile(ctx, "drift-self-heal", false); err != nil {
-			logger.Warn().Err(err).Msg("Drift self-heal: reconciliation failed")
+			logger.Error().
+				Err(err).
+				Msg("Failed to trigger drift self-heal reconciliation")
+		} else {
+			logger.Debug().
+				Msg("Drift self-heal reconciliation triggered successfully")
 		}
 	}()
 }
@@ -973,11 +1074,17 @@ func (d *Daemon) maybeSelfHeal(ctx context.Context, report *reconcile.DriftRepor
 // runRestartBreaker checks running containers for restart loops and stops offenders.
 func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, state *reconcile.DeployState, projectName string) {
 	logger := log.Component(log.ComponentDaemon)
+	logger.Debug().
+		Str("project", projectName).
+		Msg("Preparing to run restart circuit breaker check")
 	rcfg := d.config.ReconcileConfig
 
 	actual, err := reconcile.CollectActualState(ctx, client, projectName)
 	if err != nil {
-		logger.Warn().Err(err).Msg("Restart breaker: failed to collect container state")
+		logger.Warn().
+			Err(err).
+			Str("project", projectName).
+			Msg("Failed to collect container state for restart breaker")
 		return
 	}
 
@@ -986,26 +1093,47 @@ func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, s
 		rcfg.RestartThreshold, rcfg.RestartWindow,
 	)
 	if err != nil {
-		logger.Warn().Err(err).Msg("Restart breaker: action failed")
+		logger.Error().
+			Err(err).
+			Msg("Restart breaker action failed")
+		return
 	}
 
 	// Update state with new tracking data.
 	state.RestartTracking = result.Updated
 
 	// Alert on tripped containers.
-	if len(result.Tripped) > 0 && d.alerter != nil {
-		target := projectName
-		if err := d.alerter.SendRestartBreakerTripped(ctx, target, result.Tripped); err != nil {
-			logger.Warn().Err(err).Msg("Failed to send restart breaker alert")
+	if len(result.Tripped) > 0 {
+		logger.Info().
+			Strs("containers", result.Tripped).
+			Msg("Restart circuit breaker tripped, stopping containers")
+		if d.alerter != nil {
+			target := projectName
+			if err := d.alerter.SendRestartBreakerTripped(ctx, target, result.Tripped); err != nil {
+				logger.Warn().
+					Err(err).
+					Str("target", target).
+					Msg("Failed to send restart breaker alert")
+			}
 		}
 	}
 
 	// Alert on resolved containers.
-	if len(result.Resolved) > 0 && d.alerter != nil {
-		target := projectName
-		if err := d.alerter.SendRestartBreakerResolved(ctx, target, result.Resolved); err != nil {
-			logger.Warn().Err(err).Msg("Failed to send restart breaker resolved alert")
+	if len(result.Resolved) > 0 {
+		logger.Info().
+			Strs("containers", result.Resolved).
+			Msg("Containers resolved from restart circuit breaker")
+		if d.alerter != nil {
+			target := projectName
+			if err := d.alerter.SendRestartBreakerResolved(ctx, target, result.Resolved); err != nil {
+				logger.Warn().
+					Err(err).
+					Str("target", target).
+					Msg("Failed to send restart breaker resolved alert")
+			}
 		}
+	} else if len(result.Tripped) == 0 {
+		logger.Debug().Msg("Restart breaker check complete: no containers in restart loops")
 	}
 }
 
