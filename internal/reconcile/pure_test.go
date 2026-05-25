@@ -1100,3 +1100,52 @@ func TestBuildOrphanPassFiles(t *testing.T) {
 		})
 	}
 }
+
+func TestPartialDeployError(t *testing.T) {
+	tests := []struct {
+		name      string
+		summary   *ComposeUpSummary
+		total     int
+		wantErr   bool
+		wantInMsg string
+	}{
+		{
+			name:    "nil summary is not an error",
+			summary: nil,
+			total:   0,
+			wantErr: false,
+		},
+		{
+			name:    "all succeeded is not an error",
+			summary: &ComposeUpSummary{Succeeded: 3, Failed: 0},
+			total:   3,
+			wantErr: false,
+		},
+		{
+			name:      "partial failure is an error",
+			summary:   &ComposeUpSummary{Succeeded: 2, Failed: 1},
+			total:     3,
+			wantErr:   true,
+			wantInMsg: "1 of 3 files failed",
+		},
+		{
+			name:      "all failed is an error",
+			summary:   &ComposeUpSummary{Succeeded: 0, Failed: 2},
+			total:     2,
+			wantErr:   true,
+			wantInMsg: "2 of 2 files failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := partialDeployError(tt.summary, tt.total)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantInMsg)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}

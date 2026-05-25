@@ -1399,7 +1399,11 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 				return nil, fmt.Errorf("CRITICAL: all compose files failed to deploy: %w", composeErr)
 			}
 			if summary.Failed > 0 {
-				// Partial failure — log warnings for each failed file, continue.
+				// Partial failure — the started stacks stay up, but the deploy is
+				// NOT a success: report it so NeedsRedeploy stays set, a failure
+				// alert fires, the breaker counts it, and the next reconcile retries
+				// the failed stack (healthy ones are idempotent no-ops). Mirrors the
+				// post-deploy health gate, which also treats failure as deploy failure.
 				for _, res := range summary.Results {
 					if !res.Success {
 						if res.RolledBack {
@@ -1411,6 +1415,7 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 				}
 				ui.Warning("Partial deploy: %d/%d files succeeded, %d failed (%d rolled back)",
 					summary.Succeeded, len(composeFiles), summary.Failed, summary.RolledBack)
+				return nil, partialDeployError(summary, len(composeFiles))
 			}
 			// Check for unhealthy warnings.
 			for _, res := range summary.Results {
