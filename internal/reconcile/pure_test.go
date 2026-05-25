@@ -1100,3 +1100,64 @@ func TestBuildOrphanPassFiles(t *testing.T) {
 		})
 	}
 }
+
+func TestFilterManagedForTarget(t *testing.T) {
+	manifest := []string{
+		"authelia/configuration.yml",
+		"authelia/users.yml",
+		"grafana/grafana.ini",
+		"compose/stack.yml",
+	}
+
+	tests := []struct {
+		name       string
+		manifest   []string
+		targetPath string
+		want       map[string]bool
+	}{
+		{
+			name:       "strips prefix and keeps only matching target",
+			manifest:   manifest,
+			targetPath: "authelia",
+			want:       map[string]bool{"configuration.yml": true, "users.yml": true},
+		},
+		{
+			name:       "compose target isolates compose files",
+			manifest:   manifest,
+			targetPath: "compose",
+			want:       map[string]bool{"stack.yml": true},
+		},
+		{
+			name:       "no match yields empty non-nil map",
+			manifest:   manifest,
+			targetPath: "vaultwarden",
+			want:       map[string]bool{},
+		},
+		{
+			name:       "nil manifest yields empty non-nil map",
+			manifest:   nil,
+			targetPath: "authelia",
+			want:       map[string]bool{},
+		},
+		{
+			name:       "bare prefix without child is dropped",
+			manifest:   []string{"authelia", "authelia/users.yml"},
+			targetPath: "authelia",
+			want:       map[string]bool{"users.yml": true},
+		},
+		{
+			name:       "prefix is not a substring false-positive",
+			manifest:   []string{"authelia-backup/x.yml"},
+			targetPath: "authelia",
+			want:       map[string]bool{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterManagedForTarget(tt.manifest, tt.targetPath)
+			require.NotNil(t, got)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

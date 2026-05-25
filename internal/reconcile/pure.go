@@ -276,6 +276,22 @@ func classifyComposeResults(results []ComposeFileResult) ComposeUpSummary {
 	return s
 }
 
+// filterManagedForTarget returns the subset of an appdata-relative deploy
+// manifest belonging to targetPath, with the "<targetPath>/" prefix stripped so
+// the keys are targetDir-relative — the form removeStaleFiles walks. Entries for
+// other targets are dropped. Returns an empty (non-nil) map when nothing matches,
+// which removeStaleFiles treats as "no prior manifest, prune nothing".
+func filterManagedForTarget(manifest []string, targetPath string) map[string]bool {
+	prefix := targetPath + "/"
+	out := make(map[string]bool)
+	for _, m := range manifest {
+		if rel, ok := strings.CutPrefix(m, prefix); ok && rel != "" {
+			out[rel] = true
+		}
+	}
+	return out
+}
+
 // buildOrphanPassFiles constructs the file list for the orphan-reconciliation pass.
 // Succeeded files use their original (new) path. Rolled-back files use the backup
 // copy so Docker sees the previous service set. Failed files with no backup use

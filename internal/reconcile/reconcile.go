@@ -585,7 +585,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.deploy", "Deployment")
 	spanCtx, otelDeploySpan := telemetry.Tracer("reconcile").Start(spanCtx, "reconcile.deploy")
-	deployResult, err := r.doDeploy(spanCtx, secrets, localDeploy)
+	deployResult, err := r.doDeploy(spanCtx, secrets, localDeploy, state.DeployedFiles)
 	if err != nil {
 		finishSpan(err)
 		telemetry.SpanError(otelDeploySpan, err)
@@ -629,6 +629,11 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	state.LastAlertedAttempt = 0
 	state.NeedsRedeploy = false
 	state.DeclaredServices = r.declaredServices
+	// Persist this deploy's manifest so the next reconcile prunes only files
+	// bosun itself wrote. Remote mode returns a nil result (no local manifest).
+	if deployResult != nil {
+		state.DeployedFiles = deployResult.ManagedFiles
+	}
 	if err := SaveState(r.config.StateFile, state); err != nil {
 		logger.Error().
 			Err(err).
@@ -1222,9 +1227,9 @@ var ErrAppdataInaccessible = errors.New("local appdata path is configured but in
 
 // doDeploy performs the actual deployment.
 // Returns a DeployResult with written files (local mode) or nil (remote mode).
-func (r *Reconciler) doDeploy(ctx context.Context, secrets map[string]any, local bool) (*DeployResult, error) {
+func (r *Reconciler) doDeploy(ctx context.Context, secrets map[string]any, local bool, prevManaged []string) (*DeployResult, error) {
 	if local {
-		return r.deployLocal(ctx)
+		return r.deployLocal(ctx, prevManaged)
 	}
 	return nil, r.deployRemote(ctx, secrets)
 }
@@ -1299,8 +1304,10 @@ func (r *Reconciler) getTargetHost(secrets map[string]any) string {
 }
 
 // deployLocal performs local deployment via mounted paths.
-// Returns a DeployResult with files actually written to disk.
-func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
+// Returns a DeployResult with files actually written to disk and the full
+// managed-file manifest for this deploy. prevManaged is the prior deploy's
+// manifest (appdata-relative), which scopes stale-file pruning.
+func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*DeployResult, error) {
 	ui.Info("Using local deployment mode")
 	if r.config.DryRun {
 		ui.Warning("DRY RUN MODE - no changes will be made")
@@ -1345,13 +1352,17 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 		ui.Info("  Syncing %s...", t.RelPath)
 		snapshot := len(result.WrittenFiles)
 		if t.IsDir {
-			if err := r.deploy.DeployLocal(ctx, src, dst, result); err != nil {
+			prevForTarget := filterManagedForTarget(prevManaged, t.TargetPath)
+			if err := r.deploy.DeployLocal(ctx, src, dst, result, prevForTarget); err != nil {
 				return nil, err
 			}
 			if err := verifyTarget(src, dst, result.WrittenFiles[snapshot:]); err != nil {
 				return nil, err
 			}
 			result.PrefixLatest(snapshot, t.RelPath)
+			if err := recordManaged(result, src, t.TargetPath); err != nil {
+				return nil, err
+			}
 		} else {
 			_ = os.MkdirAll(filepath.Dir(dst), 0755)
 			if err := r.deploy.DeployLocalFile(ctx, src, dst, result); err != nil {
@@ -1363,6 +1374,9 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 				return nil, err
 			}
 			result.PrefixLatest(snapshot, filepath.Dir(t.RelPath))
+			// Single-file targets are not walked by removeStaleFiles, but record
+			// them in the manifest so the set reflects everything bosun deployed.
+			result.AddManaged(filepath.ToSlash(t.TargetPath))
 		}
 	}
 
@@ -1373,13 +1387,17 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 		ui.Info("  Syncing compose files...")
 		_ = os.MkdirAll(composeTarget, 0755)
 		snapshot := len(result.WrittenFiles)
-		if err := r.deploy.DeployLocal(ctx, composeStaging, composeTarget, result); err != nil {
+		prevForCompose := filterManagedForTarget(prevManaged, "compose")
+		if err := r.deploy.DeployLocal(ctx, composeStaging, composeTarget, result, prevForCompose); err != nil {
 			return nil, err
 		}
 		if err := verifyTarget(composeStaging, composeTarget, result.WrittenFiles[snapshot:]); err != nil {
 			return nil, err
 		}
 		result.PrefixLatest(snapshot, "compose")
+		if err := recordManaged(result, composeStaging, "compose"); err != nil {
+			return nil, err
+		}
 	}
 
 	// Reload services with per-file isolated compose up and rollback.
@@ -1426,6 +1444,21 @@ func (r *Reconciler) deployLocal(ctx context.Context) (*DeployResult, error) {
 
 	ui.Success("Deployment complete!")
 	return result, nil
+}
+
+// recordManaged walks a deployed source dir and appends each regular file to the
+// result's managed-file manifest, prefixed with the target path (appdata-relative,
+// "/"-separated) so it round-trips through filterManagedForTarget on the next run.
+func recordManaged(result *DeployResult, sourceDir, targetPath string) error {
+	managed, err := listManagedFiles(sourceDir)
+	if err != nil {
+		return err
+	}
+	prefix := filepath.ToSlash(targetPath) + "/"
+	for _, m := range managed {
+		result.AddManaged(prefix + m)
+	}
+	return nil
 }
 
 // hasTarget returns true if the target list contains a target with the given RelPath.

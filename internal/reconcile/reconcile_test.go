@@ -1983,7 +1983,7 @@ func TestDoDeploy(t *testing.T) {
 		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg)
 
-		result, err := r.doDeploy(context.Background(), nil, true)
+		result, err := r.doDeploy(context.Background(), nil, true, nil)
 		require.NoError(t, err)
 		assert.NotNil(t, result)
 	})
@@ -2386,7 +2386,7 @@ func TestDeployLocalFullPath(t *testing.T) {
 		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg, WithDeployOps(deploy))
 
-		result, err := r.deployLocal(context.Background())
+		result, err := r.deployLocal(context.Background(), nil)
 		require.NoError(t, err)
 		assert.NotNil(t, result)
 	})
@@ -2417,7 +2417,7 @@ func TestDeployLocalFullPath(t *testing.T) {
 		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg, WithDeployOps(deploy))
 
-		result, err := r.deployLocal(context.Background())
+		result, err := r.deployLocal(context.Background(), nil)
 		require.NoError(t, err)
 		require.NotNil(t, result)
 
@@ -2478,7 +2478,7 @@ func TestDeployLocalFullPath(t *testing.T) {
 		}
 		r := NewReconciler(cfg, WithDeployOps(deploy))
 
-		result, err := r.deployLocal(context.Background())
+		result, err := r.deployLocal(context.Background(), nil)
 		require.NoError(t, err)
 		assert.NotNil(t, result)
 
@@ -2527,7 +2527,7 @@ func TestDeployLocalFullPath(t *testing.T) {
 
 		// This will fail at compose up (docker not available in test) but
 		// exercises the compose file discovery path and error classification
-		result, err := r.deployLocal(context.Background())
+		result, err := r.deployLocal(context.Background(), nil)
 
 		// compose up will fail since docker isn't running in test
 		if err != nil {
@@ -2556,10 +2556,84 @@ func TestDeployLocalFullPath(t *testing.T) {
 		}
 		r := NewReconciler(cfg, WithDeployOps(deploy))
 
-		_, err := r.deployLocal(context.Background())
+		_, err := r.deployLocal(context.Background(), nil)
 		require.Error(t, err, "should fail when staging dir doesn't exist")
 		assert.Contains(t, err.Error(), "discover deploy targets")
 	})
+}
+
+// TestDeployLocal_ManagedSetPrune is the #331 regression: a config-only source
+// deployed over a target dir holding container runtime data must NEVER delete
+// the runtime data, while a config file that was previously deployed and is now
+// gone from source IS pruned on the next deploy. This is the whole point of the
+// managed-set manifest — prune only what bosun itself last wrote.
+func TestDeployLocal_ManagedSetPrune(t *testing.T) {
+	tmpDir := t.TempDir()
+	stagingDir := filepath.Join(tmpDir, "staging")
+	appdataDir := filepath.Join(tmpDir, "appdata")
+
+	stagingUnraid := filepath.Join(stagingDir, "unraid")
+	stagingAuthelia := filepath.Join(stagingUnraid, "appdata", "authelia")
+	require.NoError(t, os.MkdirAll(stagingAuthelia, 0755))
+
+	// Source (deploy 1): two config files bosun owns.
+	require.NoError(t, os.WriteFile(filepath.Join(stagingAuthelia, "configuration.yml"), []byte("server: {}"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(stagingAuthelia, "extra.yml"), []byte("extra: true"), 0644))
+
+	// Live target: bosun's prior config PLUS container runtime data the repo
+	// never contains. db.sqlite3 must survive every reconcile.
+	targetAuthelia := filepath.Join(appdataDir, "authelia")
+	require.NoError(t, os.MkdirAll(targetAuthelia, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(targetAuthelia, "db.sqlite3"), []byte("RUNTIME-DATA"), 0644))
+
+	newCfg := func() *Config {
+		c := &Config{
+			DryRun:                  true, // skip compose up, still sync files
+			AllowEmptyDeclaredState: true,
+			StagingDir:              stagingDir,
+			InfraSubDir:             "unraid",
+			LocalAppdataPath:        appdataDir,
+		}
+		seedStubComposeService(t, c)
+		return c
+	}
+
+	// --- Deploy 1: empty prior manifest => prune nothing, seed the manifest. ---
+	r1 := NewReconciler(newCfg(), WithDeployOps(&DeployOps{ContentHashSync: true}))
+	result1, err := r1.deployLocal(context.Background(), nil)
+	require.NoError(t, err)
+	require.NotNil(t, result1)
+
+	assert.FileExists(t, filepath.Join(targetAuthelia, "configuration.yml"))
+	assert.FileExists(t, filepath.Join(targetAuthelia, "extra.yml"))
+	assert.FileExists(t, filepath.Join(targetAuthelia, "db.sqlite3"), "runtime data must survive deploy 1")
+
+	// Manifest records bosun's files in appdata-relative form (TargetPath-rooted,
+	// e.g. "authelia/configuration.yml" — distinct from the staging-relative
+	// "appdata/authelia/..." form WrittenFiles use for hook globs), and must NOT
+	// include the runtime file bosun never wrote.
+	assert.Contains(t, result1.ManagedFiles, "authelia/configuration.yml")
+	assert.Contains(t, result1.ManagedFiles, "authelia/extra.yml")
+	assert.NotContains(t, result1.ManagedFiles, "authelia/db.sqlite3")
+
+	// --- Between deploys: operator removes extra.yml from the repo source. ---
+	require.NoError(t, os.Remove(filepath.Join(stagingAuthelia, "extra.yml")))
+
+	// --- Deploy 2: prior manifest from deploy 1 drives the prune. ---
+	r2 := NewReconciler(newCfg(), WithDeployOps(&DeployOps{ContentHashSync: true}))
+	result2, err := r2.deployLocal(context.Background(), result1.ManagedFiles)
+	require.NoError(t, err)
+	require.NotNil(t, result2)
+
+	// extra.yml was managed and is gone from source => pruned.
+	assert.NoFileExists(t, filepath.Join(targetAuthelia, "extra.yml"), "removed config should be pruned")
+	// configuration.yml still in source => preserved.
+	assert.FileExists(t, filepath.Join(targetAuthelia, "configuration.yml"))
+	// db.sqlite3 was never in the manifest => preserved.
+	assert.FileExists(t, filepath.Join(targetAuthelia, "db.sqlite3"), "runtime data must survive deploy 2")
+
+	// New manifest no longer carries extra.yml.
+	assert.NotContains(t, result2.ManagedFiles, "authelia/extra.yml")
 }
 
 // --- DeployLocal content-hash mode tests ---
@@ -2576,7 +2650,7 @@ func TestDeployOps_DeployLocalContentHash(t *testing.T) {
 		deploy := &DeployOps{ContentHashSync: true}
 		result := &DeployResult{}
 
-		err := deploy.DeployLocal(context.Background(), sourceDir, targetDir, result)
+		err := deploy.DeployLocal(context.Background(), sourceDir, targetDir, result, nil)
 		require.NoError(t, err)
 
 		// Verify file was copied to target
@@ -2601,7 +2675,7 @@ func TestDeployOps_DeployLocalContentHash(t *testing.T) {
 		deploy := &DeployOps{ContentHashSync: true}
 		result := &DeployResult{}
 
-		err := deploy.DeployLocal(context.Background(), sourceDir, targetDir, result)
+		err := deploy.DeployLocal(context.Background(), sourceDir, targetDir, result, nil)
 		require.NoError(t, err)
 
 		// No files should be written since content is the same
@@ -2619,7 +2693,7 @@ func TestDeployOps_DeployLocalContentHash(t *testing.T) {
 		deploy := &DeployOps{ContentHashSync: false}
 		result := &DeployResult{}
 
-		err := deploy.DeployLocal(context.Background(), sourceDir, targetDir, result)
+		err := deploy.DeployLocal(context.Background(), sourceDir, targetDir, result, nil)
 		require.NoError(t, err)
 
 		// Verify file exists in target
@@ -2632,7 +2706,7 @@ func TestDeployOps_DeployLocalContentHash(t *testing.T) {
 		deploy := &DeployOps{DryRun: true}
 		result := &DeployResult{}
 
-		err := deploy.DeployLocal(context.Background(), "/nonexistent/source", "/nonexistent/target", result)
+		err := deploy.DeployLocal(context.Background(), "/nonexistent/source", "/nonexistent/target", result, nil)
 		require.NoError(t, err)
 		assert.Empty(t, result.WrittenFiles)
 	})
@@ -2641,7 +2715,7 @@ func TestDeployOps_DeployLocalContentHash(t *testing.T) {
 		deploy := &DeployOps{}
 		result := &DeployResult{}
 
-		err := deploy.DeployLocal(context.Background(), "/nonexistent/source", "/tmp/target", result)
+		err := deploy.DeployLocal(context.Background(), "/nonexistent/source", "/tmp/target", result, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "source directory")
 	})
@@ -2654,7 +2728,7 @@ func TestDeployOps_DeployLocalContentHash(t *testing.T) {
 		deploy := &DeployOps{}
 		result := &DeployResult{}
 
-		err := deploy.DeployLocal(context.Background(), sourceFile, filepath.Join(tmpDir, "target"), result)
+		err := deploy.DeployLocal(context.Background(), sourceFile, filepath.Join(tmpDir, "target"), result, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "not a directory")
 	})
@@ -2673,7 +2747,7 @@ func TestDeployOps_DeployLocalContentHash(t *testing.T) {
 		deploy := &DeployOps{ContentHashSync: true}
 		result := &DeployResult{}
 
-		err := deploy.DeployLocal(ctx, sourceDir, targetDir, result)
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir, result, nil)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, context.Canceled)
 	})
@@ -3488,7 +3562,7 @@ func TestDeployLocalSyncErrors(t *testing.T) {
 		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg, WithDeployOps(deploy))
 
-		_, err := r.deployLocal(context.Background())
+		_, err := r.deployLocal(context.Background(), nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "discover deploy targets")
 	})
