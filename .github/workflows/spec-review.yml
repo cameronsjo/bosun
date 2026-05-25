@@ -37,20 +37,45 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install OpenSpec
         run: npm install -g @fission-ai/openspec
 
-      - name: Extract change ID from branch
+      - name: Determine changed change IDs
         id: change-id
         env:
+          BASE_REF: ${{ github.base_ref }}
           BRANCH: ${{ github.head_ref }}
         run: |
-          CHANGE_ID="${BRANCH#spec/}"
-          echo "id=$CHANGE_ID" >> "$GITHUB_OUTPUT"
-          echo "Validating change: $CHANGE_ID"
+          # Derive change IDs from the dirs the PR actually touches under
+          # openspec/changes/<id>/, not from the branch name. The branch-name
+          # convention breaks for fold/refactor PRs whose branch (e.g.
+          # spec/fold-cluster-c-multitarget) differs from the change dir they
+          # edit (add-multi-target-reconcile). (bosun-6wu)
+          git fetch --no-tags origin "$BASE_REF"
+          BASE_SHA="$(git rev-parse "origin/$BASE_REF")"
+          mapfile -t ids < <(git diff --name-only "$BASE_SHA...HEAD" \
+            | sed -nE 's#^openspec/changes/([^/]+)/.*#\1#p' \
+            | grep -vx archive \
+            | sort -u)
+          if [ ${#ids[@]} -eq 0 ]; then
+            # Fall back to the branch-name convention for net-new proposals.
+            ids=("${BRANCH#spec/}")
+            echo "No changed change-dirs in diff; falling back to branch name: ${ids[*]}"
+          fi
+          echo "Validating change(s): ${ids[*]}"
+          echo "ids=${ids[*]}" >> "$GITHUB_OUTPUT"
 
       - name: Validate spec
         env:
-          CHANGE_ID: ${{ steps.change-id.outputs.id }}
-        run: openspec validate "$CHANGE_ID" --strict
+          IDS: ${{ steps.change-id.outputs.ids }}
+        run: |
+          rc=0
+          for id in $IDS; do
+            echo "::group::openspec validate $id --strict"
+            openspec validate "$id" --strict || rc=1
+            echo "::endgroup::"
+          done
+          exit "$rc"
