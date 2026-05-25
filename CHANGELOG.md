@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.0](https://github.com/cameronsjo/bosun/compare/v0.36.0...v0.37.0) (2026-05-25)
+
+
+### Features
+
+* **log:** narrative structured logging across operational core ([#316](https://github.com/cameronsjo/bosun/issues/316)) ([6057d3d](https://github.com/cameronsjo/bosun/commit/6057d3de57aaa2808307035e4466353ea937e2c4))
+
 ## [0.36.0](https://github.com/cameronsjo/bosun/compare/v0.35.1...v0.36.0) (2026-05-25)
 
 
