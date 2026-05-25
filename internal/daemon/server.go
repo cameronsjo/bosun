@@ -169,13 +169,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	status := s.daemon.HealthStatus()
 
 	w.Header().Set("Content-Type", "application/json")
-	statusCode := http.StatusOK
 	if status.Status != "healthy" {
-		statusCode = http.StatusServiceUnavailable
-		w.WriteHeader(statusCode)
+		w.WriteHeader(http.StatusServiceUnavailable)
 		logger.Info().
 			Str("daemon_status", status.Status).
-			Int(log.FieldStatus, statusCode).
+			Int(log.FieldStatus, http.StatusServiceUnavailable).
 			Msg("Health check returned degraded status")
 	} else {
 		logger.Debug().
