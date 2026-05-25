@@ -1,0 +1,8 @@
+flowchart TD
+    Trigger[trigger / poll / webhook] --> Check{reconciling?}
+    Check -->|yes| Pending[set pending, return 202]
+    Check -->|no| Flock[acquire flock, non-blocking]
+    Flock --> Run[run reconcile once]
+    Run --> Drain{pending set?}
+    Drain -->|yes| Run
+    Drain -->|no| Done[clear reconciling, unlock]
