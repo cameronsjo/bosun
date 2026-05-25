@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+
+	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // HealthCheckLog holds the last health check result for a container.
@@ -53,6 +55,13 @@ type PortBinding struct {
 //
 // For non-streaming use cases, prefer GetContainerLogs which handles cleanup automatically.
 func (c *Client) Logs(ctx context.Context, name string, tail int, follow bool) (io.ReadCloser, error) {
+	logger := log.ComponentCtx(ctx, log.ComponentDocker)
+	logger.Debug().
+		Str(log.FieldContainer, name).
+		Int("tail", tail).
+		Bool("follow", follow).
+		Msg("Opening log stream for container")
+
 	tailStr := "all"
 	if tail > 0 {
 		tailStr = fmt.Sprintf("%d", tail)
@@ -68,16 +77,30 @@ func (c *Client) Logs(ctx context.Context, name string, tail int, follow bool) (
 
 	reader, err := c.api.ContainerLogs(ctx, name, options)
 	if err != nil {
+		logger.Error().
+			Str(log.FieldContainer, name).
+			Err(err).
+			Msg("Failed to open log stream for container")
 		return nil, fmt.Errorf("get logs for %s: %w", name, err)
 	}
 
+	logger.Debug().Str(log.FieldContainer, name).Msg("Successfully opened log stream for container")
 	return reader, nil
 }
 
 // Inspect returns detailed information about a container.
 func (c *Client) Inspect(ctx context.Context, name string) (*ContainerDetails, error) {
+	start := time.Now()
+	logger := log.ComponentCtx(ctx, log.ComponentDocker)
+	logger.Debug().Str(log.FieldContainer, name).Msg("Inspecting container")
+
 	info, err := c.api.ContainerInspect(ctx, name)
 	if err != nil {
+		logger.Error().
+			Str(log.FieldContainer, name).
+			Err(err).
+			Int64(log.FieldDurationMS, log.DurationMS(start)).
+			Msg("Failed to inspect container")
 		return nil, fmt.Errorf("inspect container %s: %w", name, err)
 	}
 
@@ -144,6 +167,13 @@ func (c *Client) Inspect(ctx context.Context, name string) (*ContainerDetails, e
 		details.Platform = info.Platform
 	}
 
+	logger.Debug().
+		Str(log.FieldContainer, name).
+		Str("state", details.State).
+		Str("health", details.Health).
+		Int("port_count", len(details.Ports)).
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
+		Msg("Successfully inspected container")
 	return details, nil
 }
 
@@ -163,16 +193,29 @@ func (c *Client) Remove(ctx context.Context, name string, force bool) error {
 
 // Start starts a stopped container.
 func (c *Client) Start(ctx context.Context, name string) error {
+	logger := log.ComponentCtx(ctx, log.ComponentDocker)
+	logger.Info().Str(log.FieldContainer, name).Msg("Starting container")
+
 	if err := c.api.ContainerStart(ctx, name, container.StartOptions{}); err != nil {
+		logger.Error().
+			Str(log.FieldContainer, name).
+			Err(err).
+			Msg("Failed to start container")
 		return fmt.Errorf("start container %s: %w", name, err)
 	}
+
+	logger.Info().Str(log.FieldContainer, name).Msg("Container started successfully")
 	return nil
 }
 
 // Exists checks if a container with the given name exists (running or stopped).
 func (c *Client) Exists(ctx context.Context, name string) (bool, error) {
+	logger := log.ComponentCtx(ctx, log.ComponentDocker)
+	logger.Debug().Str(log.FieldContainer, name).Msg("Checking if container exists")
+
 	containers, err := c.api.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
+		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to list containers for existence check")
 		return false, fmt.Errorf("list containers: %w", err)
 	}
 
@@ -182,11 +225,13 @@ func (c *Client) Exists(ctx context.Context, name string) (bool, error) {
 	for _, ctr := range containers {
 		for _, n := range ctr.Names {
 			if strings.TrimPrefix(n, "/") == normalizedName {
+				logger.Debug().Str(log.FieldContainer, name).Msg("Container exists")
 				return true, nil
 			}
 		}
 	}
 
+	logger.Debug().Str(log.FieldContainer, name).Msg("Container does not exist")
 	return false, nil
 }
 

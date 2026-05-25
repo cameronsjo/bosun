@@ -18,18 +18,24 @@ func LoadProvision(provisionName string, variables map[string]any, provisionsDir
 }
 
 func loadProvisionInternal(provisionName string, variables map[string]any, provisionsDir string, loaded map[string]bool) (*Provision, error) {
+	logger := log.Component(log.ComponentManifest)
+
 	// Prevent circular includes - return error instead of silently ignoring
 	if loaded[provisionName] {
+		logger.Error().Str("provision", provisionName).Msg("Circular include detected")
 		return nil, fmt.Errorf("provision %s: %w", provisionName, ErrCircularInclude)
 	}
 	loaded[provisionName] = true
+	logger.Debug().Str("provision", provisionName).Msg("Loading provision")
 
 	provisionPath := filepath.Join(provisionsDir, provisionName+".yml")
 	rawContent, err := os.ReadFile(provisionPath)
 	if err != nil {
 		if os.IsNotExist(err) {
+			logger.Error().Str("provision", provisionName).Str(log.FieldPath, provisionPath).Msg("Provision file not found")
 			return nil, fmt.Errorf("provision not found: %s", provisionPath)
 		}
+		logger.Error().Str("provision", provisionName).Str(log.FieldPath, provisionPath).Err(err).Msg("Failed to read provision file")
 		return nil, fmt.Errorf("read provision %s: %w", provisionPath, err)
 	}
 
@@ -57,12 +63,14 @@ func loadProvisionInternal(provisionName string, variables map[string]any, provi
 	// Interpolate BEFORE YAML parsing
 	interpolated, err := Interpolate(string(rawContent), variables)
 	if err != nil {
+		logger.Error().Str("provision", provisionName).Err(err).Msg("Failed to interpolate provision variables")
 		return nil, fmt.Errorf("interpolate provision %s: %w", provisionName, err)
 	}
 
 	// Parse YAML into raw map to handle includes
 	var rawProvision map[string]any
 	if err := yaml.Unmarshal([]byte(interpolated), &rawProvision); err != nil {
+		logger.Error().Str("provision", provisionName).Err(err).Msg("Failed to parse provision YAML")
 		return nil, fmt.Errorf("parse provision %s: %w", provisionName, err)
 	}
 
@@ -90,11 +98,24 @@ func loadProvisionInternal(provisionName string, variables map[string]any, provi
 
 	// Handle inheritance - load included provisions first, then merge this on top
 	if len(includes) > 0 {
+		logger.Debug().
+			Str("provision", provisionName).
+			Int("include_count", len(includes)).
+			Msg("Processing provision includes")
 		result := make(map[string]map[string]any)
 
 		for _, included := range includes {
+			logger.Debug().
+				Str("provision", provisionName).
+				Str("included_provision", included).
+				Msg("Loading included provision")
 			includedProvision, err := loadProvisionInternal(included, variables, provisionsDir, loaded)
 			if err != nil {
+				logger.Error().
+					Str("provision", provisionName).
+					Str("included_provision", included).
+					Err(err).
+					Msg("Failed to load included provision")
 				return nil, fmt.Errorf("include %s in %s: %w", included, provisionName, err)
 			}
 
@@ -137,11 +158,16 @@ func loadProvisionInternal(provisionName string, variables map[string]any, provi
 
 // ListProvisions returns the names of all available provisions.
 func ListProvisions(provisionsDir string) ([]string, error) {
+	logger := log.Component(log.ComponentManifest)
+	logger.Debug().Str(log.FieldPath, provisionsDir).Msg("Listing available provisions")
+
 	entries, err := os.ReadDir(provisionsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
+			logger.Warn().Str(log.FieldPath, provisionsDir).Msg("Provisions directory not found")
 			return nil, fmt.Errorf("provisions directory not found: %s", provisionsDir)
 		}
+		logger.Error().Str(log.FieldPath, provisionsDir).Err(err).Msg("Failed to read provisions directory")
 		return nil, fmt.Errorf("read provisions directory: %w", err)
 	}
 
@@ -156,6 +182,10 @@ func ListProvisions(provisionsDir string) ([]string, error) {
 		}
 	}
 
+	logger.Debug().
+		Str(log.FieldPath, provisionsDir).
+		Int("provision_count", len(provisions)).
+		Msg("Listed available provisions")
 	return provisions, nil
 }
 

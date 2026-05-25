@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // varPattern matches ${varname} placeholders.
@@ -29,6 +31,10 @@ func Interpolate(template string, variables map[string]any) (string, error) {
 	})
 
 	if len(missingVars) > 0 {
+		logger := log.Component(log.ComponentManifest)
+		logger.Warn().
+			Strs("missing_variables", missingVars).
+			Msg("Variable interpolation failed due to missing variables")
 		return "", fmt.Errorf("missing variables: ${%s}", strings.Join(missingVars, "}, ${"))
 	}
 

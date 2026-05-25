@@ -79,14 +79,25 @@ func NewClientWithAPI(api DockerAPI) *Client {
 
 // Ping tests the connection to the Docker daemon.
 func (c *Client) Ping(ctx context.Context) error {
+	start := time.Now()
+	logger := log.ComponentCtx(ctx, log.ComponentDocker)
+	logger.Debug().Msg("Testing Docker daemon connection")
+
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	_, err := c.api.Ping(ctx)
 	if err != nil {
+		logger.Error().
+			Err(err).
+			Int64(log.FieldDurationMS, log.DurationMS(start)).
+			Msg("Failed to ping Docker daemon")
 		return fmt.Errorf("ping docker: %w", err)
 	}
 
+	logger.Debug().
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
+		Msg("Successfully pinged Docker daemon")
 	return nil
 }
 
@@ -141,7 +152,7 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 		All: !runningOnly,
 	})
 	if err != nil {
-		logger.Error().Err(err).Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).Msg("Failed to list containers")
+		logger.Error().Err(err).Int64(log.FieldDurationMS, log.DurationMS(start)).Msg("Failed to list containers")
 		return nil, fmt.Errorf("list containers: %w", err)
 	}
 
@@ -174,15 +185,20 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 
 	logger.Debug().
 		Int("count", len(result)).
-		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
 		Msg("Listed containers successfully")
 	return result, nil
 }
 
 // CountContainers returns counts of running, total, and unhealthy containers.
 func (c *Client) CountContainers(ctx context.Context) (running, total, unhealthy int, err error) {
+	start := time.Now()
+	logger := log.ComponentCtx(ctx, log.ComponentDocker)
+	logger.Debug().Msg("Counting containers by state")
+
 	containers, err := c.ListContainers(ctx, false)
 	if err != nil {
+		logger.Error().Err(err).Msg("Failed to count containers")
 		return 0, 0, 0, err
 	}
 
@@ -196,22 +212,34 @@ func (c *Client) CountContainers(ctx context.Context) (running, total, unhealthy
 		}
 	}
 
+	logger.Info().
+		Int("running", running).
+		Int("total", total).
+		Int("unhealthy", unhealthy).
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
+		Msg("Container counts obtained")
 	return running, total, unhealthy, nil
 }
 
 // GetContainerByName returns a container by its name.
 func (c *Client) GetContainerByName(ctx context.Context, name string) (*ContainerInfo, error) {
+	logger := log.ComponentCtx(ctx, log.ComponentDocker)
+	logger.Debug().Str(log.FieldContainer, name).Msg("Looking up container by name")
+
 	containers, err := c.ListContainers(ctx, false)
 	if err != nil {
+		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to list containers for lookup")
 		return nil, err
 	}
 
 	for _, ctr := range containers {
 		if ctr.Name == name {
+			logger.Debug().Str(log.FieldContainer, name).Msg("Found container")
 			return &ctr, nil
 		}
 	}
 
+	logger.Warn().Str(log.FieldContainer, name).Msg("Container not found")
 	return nil, fmt.Errorf("container not found: %s", name)
 }
 

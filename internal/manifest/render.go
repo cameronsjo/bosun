@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -185,15 +186,20 @@ func mergeProvision(output *RenderOutput, provision *Provision) {
 
 // RenderStack renders a stack file into compose/traefik/gatus outputs.
 func RenderStack(stackPath, provisionsDir, servicesDir string, valuesOverlay map[string]any) (*RenderOutput, error) {
+	start := time.Now()
 	logger := log.Component(log.ComponentManifest)
 	logger.Info().
 		Str(log.FieldOperation, "render_stack").
 		Str(log.FieldPath, stackPath).
-		Msg("Rendering stack")
+		Int("overlay_count", len(valuesOverlay)).
+		Msg("Preparing to render stack")
 
 	stackContent, err := os.ReadFile(stackPath)
 	if err != nil {
-		logger.Error().Err(err).Str(log.FieldPath, stackPath).Msg("Failed to read stack file")
+		logger.Error().
+			Err(err).
+			Str(log.FieldPath, stackPath).
+			Msg("Failed to read stack file")
 		return nil, fmt.Errorf("read stack file: %w", err)
 	}
 
@@ -277,7 +283,11 @@ func RenderStack(stackPath, provisionsDir, servicesDir string, valuesOverlay map
 
 		serviceOutput, err := RenderService(&manifest, provisionsDir)
 		if err != nil {
-			logger.Error().Err(err).Str("service", manifest.Name).Msg("Failed to render service")
+			logger.Error().
+				Err(err).
+				Str("service", manifest.Name).
+				Str("service_file", serviceFile).
+				Msg("Failed to render service in stack")
 			return nil, fmt.Errorf("render service %s: %w", manifest.Name, err)
 		}
 
@@ -290,6 +300,7 @@ func RenderStack(stackPath, provisionsDir, servicesDir string, valuesOverlay map
 
 	// Merge network definitions from stack (don't overwrite service networks)
 	if stack.Networks != nil {
+		logger.Debug().Int("network_count", len(stack.Networks)).Msg("Merging stack network definitions")
 		compose := output.Target(TargetCompose)
 		if existing, ok := compose["networks"].(map[string]any); ok {
 			compose["networks"] = DeepMerge(existing, stack.Networks)
@@ -300,8 +311,10 @@ func RenderStack(stackPath, provisionsDir, servicesDir string, valuesOverlay map
 
 	logger.Info().
 		Str(log.FieldOperation, "render_stack").
+		Str(log.FieldPath, stackPath).
 		Int("service_count", len(stack.Include)).
-		Msg("Stack rendering completed")
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
+		Msg("Successfully rendered stack")
 
 	return output, nil
 }
@@ -310,13 +323,21 @@ func RenderStack(stackPath, provisionsDir, servicesDir string, valuesOverlay map
 // Iterates registered targets in sorted order for reproducible output.
 // Unregistered targets are logged as warnings and skipped.
 func WriteOutputs(output *RenderOutput, outputDir, stackName string) error {
+	start := time.Now()
 	logger := log.Component(log.ComponentManifest)
+	logger.Debug().
+		Str(log.FieldPath, outputDir).
+		Str("stack", stackName).
+		Int("target_count", len(output.Targets)).
+		Msg("Preparing to write manifest outputs")
 
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		logger.Error().Str(log.FieldPath, outputDir).Err(err).Msg("Failed to create output directory")
 		return fmt.Errorf("create output directory: %w", err)
 	}
 
 	// Write registered targets in sorted order
+	written := 0
 	for _, name := range TargetNames() {
 		cfg, registered := TargetRegistry[name]
 		if !registered {
@@ -326,6 +347,7 @@ func WriteOutputs(output *RenderOutput, outputDir, stackName string) error {
 		// Validate target directory stays within outputDir to prevent path traversal
 		targetDir, err := validatePathWithinDir(outputDir, cfg.Dir)
 		if err != nil {
+			logger.Error().Str("target", name).Err(err).Msg("Failed to validate target directory")
 			return fmt.Errorf("resolve %s directory: %w", name, err)
 		}
 
@@ -335,35 +357,48 @@ func WriteOutputs(output *RenderOutput, outputDir, stackName string) error {
 		if len(content) == 0 {
 			// Clean up stale file if the target is now empty
 			if err := os.Remove(outputPath); err == nil {
-				logger.Info().Str("target", name).Str(log.FieldPath, outputPath).Msg("Removed stale target file")
+				logger.Debug().Str("target", name).Str(log.FieldPath, outputPath).Msg("Removed stale target file")
 			}
 			continue
 		}
 
 		if err := os.MkdirAll(targetDir, 0755); err != nil {
+			logger.Error().Str("target", name).Str(log.FieldPath, targetDir).Err(err).Msg("Failed to create target directory")
 			return fmt.Errorf("create %s directory: %w", name, err)
 		}
 
 		data, err := yaml.Marshal(content)
 		if err != nil {
+			logger.Error().Str("target", name).Err(err).Msg("Failed to marshal target output")
 			return fmt.Errorf("marshal %s output: %w", name, err)
 		}
 
 		if err := os.WriteFile(outputPath, data, 0644); err != nil {
+			logger.Error().Str("target", name).Str(log.FieldPath, outputPath).Err(err).Msg("Failed to write target output file")
 			return fmt.Errorf("write %s output: %w", name, err)
 		}
 
+		logger.Debug().Str("target", name).Str(log.FieldPath, outputPath).Int("bytes", len(data)).Msg("Wrote target output file")
+		written++
 		fmt.Printf("Wrote: %s\n", outputPath)
 	}
 
 	// Warn about unregistered targets
+	unregistered := 0
 	for name := range output.Targets {
 		if _, registered := TargetRegistry[name]; !registered {
-			logger.Warn().
-				Str("target", name).
-				Msg("Skipping unregistered target in WriteOutputs")
+			logger.Warn().Str("target", name).Msg("Skipping unregistered target")
+			unregistered++
 		}
 	}
+
+	logger.Info().
+		Str(log.FieldPath, outputDir).
+		Str("stack", stackName).
+		Int("written", written).
+		Int("unregistered", unregistered).
+		Int64(log.FieldDurationMS, log.DurationMS(start)).
+		Msg("Successfully wrote manifest outputs")
 
 	return nil
 }
@@ -394,8 +429,12 @@ func RenderToYAML(output *RenderOutput) (string, error) {
 
 // LoadServiceManifest loads a service manifest from a file.
 func LoadServiceManifest(path string) (*ServiceManifest, error) {
+	logger := log.Component(log.ComponentManifest)
+	logger.Debug().Str(log.FieldPath, path).Msg("Loading service manifest")
+
 	content, err := os.ReadFile(path)
 	if err != nil {
+		logger.Error().Str(log.FieldPath, path).Err(err).Msg("Failed to read service manifest")
 		return nil, fmt.Errorf("read manifest: %w", err)
 	}
 
@@ -422,23 +461,31 @@ func LoadServiceManifest(path string) (*ServiceManifest, error) {
 
 	var manifest ServiceManifest
 	if err := yaml.Unmarshal(content, &manifest); err != nil {
+		logger.Error().Str(log.FieldPath, path).Err(err).Msg("Failed to parse service manifest")
 		return nil, fmt.Errorf("parse manifest: %w", err)
 	}
 
+	logger.Debug().Str(log.FieldPath, path).Str("service", manifest.Name).Msg("Successfully loaded service manifest")
 	return &manifest, nil
 }
 
 // LoadValuesOverlay loads a values overlay file.
 func LoadValuesOverlay(path string) (map[string]any, error) {
+	logger := log.Component(log.ComponentManifest)
+	logger.Debug().Str(log.FieldPath, path).Msg("Loading values overlay")
+
 	content, err := os.ReadFile(path)
 	if err != nil {
+		logger.Error().Str(log.FieldPath, path).Err(err).Msg("Failed to read values overlay file")
 		return nil, fmt.Errorf("read values file: %w", err)
 	}
 
 	var values map[string]any
 	if err := yaml.Unmarshal(content, &values); err != nil {
+		logger.Error().Str(log.FieldPath, path).Err(err).Msg("Failed to parse values overlay file")
 		return nil, fmt.Errorf("parse values file: %w", err)
 	}
 
+	logger.Debug().Str(log.FieldPath, path).Int("value_count", len(values)).Msg("Successfully loaded values overlay")
 	return values, nil
 }
