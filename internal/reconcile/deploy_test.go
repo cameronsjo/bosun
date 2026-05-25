@@ -1353,6 +1353,18 @@ func TestDeployOps_DeployLocalFile_StandardMode(t *testing.T) {
 	assert.Equal(t, "data", string(data))
 }
 
+// writeBackupArchive creates backupDir/configs.tar.gz containing the given
+// absolute file paths, mirroring how Backup() stores them (tar strips the
+// leading '/', so member "/x/y" is stored as "x/y"). Used to exercise the
+// rollback paths, which extract this archive rather than reading loose files.
+func writeBackupArchive(t *testing.T, backupDir string, files ...string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(backupDir, 0755))
+	args := append([]string{"-czf", filepath.Join(backupDir, "configs.tar.gz")}, files...)
+	out, err := exec.Command("tar", args...).CombinedOutput()
+	require.NoError(t, err, "tar failed: %s", out)
+}
+
 func TestDeployOps_ComposeUpMultipleWithRollback_NoBackup(t *testing.T) {
 	// When backupPath is empty and compose up fails, should return error mentioning no backup.
 	d := NewDeployOps(false, "")
@@ -1363,9 +1375,28 @@ func TestDeployOps_ComposeUpMultipleWithRollback_NoBackup(t *testing.T) {
 	assert.Contains(t, err.Error(), "no backup available")
 }
 
-func TestDeployOps_ComposeUpMultipleWithRollback_NoBackupFiles(t *testing.T) {
+func TestDeployOps_ComposeUpMultipleWithRollback_NoArchive(t *testing.T) {
+	// Backup dir exists but holds no configs.tar.gz — extraction fails, so this
+	// is "no backup available" (there is no archive to extract).
 	d := NewDeployOps(false, "")
-	backupDir := t.TempDir() // Empty backup directory.
+	backupDir := t.TempDir()
+
+	err := d.ComposeUpMultipleWithRollback(context.Background(), []string{"/nonexistent/compose.yml"}, backupDir)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no backup available")
+}
+
+func TestDeployOps_ComposeUpMultipleWithRollback_NoBackupFiles(t *testing.T) {
+	// A valid archive exists but does not contain the compose file being rolled
+	// back — so after extraction no backup file resolves: "no backup files found".
+	d := NewDeployOps(false, "")
+	tmpDir := t.TempDir()
+
+	// Archive contains some unrelated file, not the compose file under test.
+	other := filepath.Join(tmpDir, "unrelated.yml")
+	require.NoError(t, os.WriteFile(other, []byte("version: '3'"), 0644))
+	backupDir := filepath.Join(tmpDir, "backup")
+	writeBackupArchive(t, backupDir, other)
 
 	err := d.ComposeUpMultipleWithRollback(context.Background(), []string{"/nonexistent/compose.yml"}, backupDir)
 	assert.Error(t, err)
@@ -1459,8 +1490,6 @@ func TestDeployOps_CleanupBackups_RemovesOldest(t *testing.T) {
 	assert.Len(t, entries, 3)
 }
 
-
-
 func TestDeployOps_BackupMkdirError(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("skipping permission test when running as root")
@@ -1488,11 +1517,10 @@ func TestDeployOps_ComposeUpMultipleWithRollbackPaths(t *testing.T) {
 		composeFile := filepath.Join(tmpDir, "docker-compose.yml")
 		require.NoError(t, os.WriteFile(composeFile, []byte("not valid yaml: [[["), 0644))
 
-		// Create backup files (also invalid so rollback also fails).
+		// Backup archive contains the same (invalid) file at its absolute path, so
+		// rollback resolves it from the extracted tree but also fails on it.
 		backupDir := filepath.Join(tmpDir, "backup")
-		require.NoError(t, os.MkdirAll(backupDir, 0755))
-		backupFile := filepath.Join(backupDir, "docker-compose.yml")
-		require.NoError(t, os.WriteFile(backupFile, []byte("not valid yaml: [[["), 0644))
+		writeBackupArchive(t, backupDir, composeFile)
 
 		d := &DeployOps{DryRun: false, ProjectName: "rollbacktest"}
 		err := d.ComposeUpMultipleWithRollback(ctx, []string{composeFile}, backupDir)
@@ -1519,9 +1547,12 @@ func TestDeployOps_ComposeUpMultipleWithRollbackPaths(t *testing.T) {
 		composeFile := filepath.Join(tmpDir, "docker-compose.yml")
 		require.NoError(t, os.WriteFile(composeFile, []byte("not valid yaml: [[["), 0644))
 
-		// Backup dir exists but has no matching files.
+		// Archive exists and is valid, but holds an unrelated file — the compose
+		// file under rollback does not resolve inside it.
+		other := filepath.Join(tmpDir, "unrelated.yml")
+		require.NoError(t, os.WriteFile(other, []byte("version: '3'"), 0644))
 		backupDir := filepath.Join(tmpDir, "backup")
-		require.NoError(t, os.MkdirAll(backupDir, 0755))
+		writeBackupArchive(t, backupDir, other)
 
 		d := &DeployOps{DryRun: false, ProjectName: "rollbacktest"}
 		err := d.ComposeUpMultipleWithRollback(ctx, []string{composeFile}, backupDir)
@@ -1595,10 +1626,10 @@ func TestDeployOps_DeployLocalStandardMode(t *testing.T) {
 
 	t.Run("rollback decision with injected compose errors", func(t *testing.T) {
 		tests := []struct {
-			name            string
-			composeErr      error
-			wantErr         error
-			wantNoRollback  bool // true if rollback should be skipped
+			name           string
+			composeErr     error
+			wantErr        error
+			wantNoRollback bool // true if rollback should be skipped
 		}{
 			{
 				name:           "ErrComposeUnhealthy skips rollback",
@@ -1617,13 +1648,16 @@ func TestDeployOps_DeployLocalStandardMode(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				tmpDir := t.TempDir()
+				// Invalid compose content so the docker rollback (run directly,
+				// not via composeUpFn) fails -> ErrRollbackFailed. The deploy
+				// failure itself comes from the injected composeUpFn.
 				composeFile := filepath.Join(tmpDir, "docker-compose.yml")
-				require.NoError(t, os.WriteFile(composeFile, []byte("version: '3'"), 0644))
+				require.NoError(t, os.WriteFile(composeFile, []byte("not valid yaml: [[["), 0644))
 
+				// Archive the file at its absolute path so rollback resolves it
+				// from the extracted tree (#332/#335).
 				backupDir := filepath.Join(tmpDir, "backup")
-				require.NoError(t, os.MkdirAll(backupDir, 0755))
-				backupFile := filepath.Join(backupDir, "docker-compose.yml")
-				require.NoError(t, os.WriteFile(backupFile, []byte("not valid yaml: [[["), 0644))
+				writeBackupArchive(t, backupDir, composeFile)
 
 				d := &DeployOps{
 					DryRun:      false,

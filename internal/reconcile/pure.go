@@ -293,18 +293,20 @@ func filterManagedForTarget(manifest []string, targetPath string) map[string]boo
 }
 
 // buildOrphanPassFiles constructs the file list for the orphan-reconciliation pass.
-// Succeeded files use their original (new) path. Rolled-back files use the backup
-// copy so Docker sees the previous service set. Failed files with no backup use
-// the original path (best-effort).
-func buildOrphanPassFiles(results []ComposeFileResult, backupPath string) []string {
+// Succeeded files use their original (new) path. Rolled-back files use their copy
+// inside backupRoot — the EXTRACTED backup tree, where tar's leading-'/' stripping
+// puts an absolute "/mnt/.../x.yml" at "<backupRoot>/mnt/.../x.yml" — so Docker
+// sees the previous service set. Failed files with no backup use the original path
+// (best-effort). backupRoot is empty when no rollback occurred.
+func buildOrphanPassFiles(results []ComposeFileResult, backupRoot string) []string {
 	var files []string
 	for _, r := range results {
 		if r.Success {
 			files = append(files, r.File)
 			continue
 		}
-		if r.RolledBack && backupPath != "" {
-			backupFile := filepath.Join(backupPath, filepath.Base(r.File))
+		if r.RolledBack && backupRoot != "" {
+			backupFile := filepath.Join(backupRoot, strings.TrimPrefix(filepath.ToSlash(r.File), "/"))
 			files = append(files, backupFile)
 			continue
 		}
@@ -313,6 +315,7 @@ func buildOrphanPassFiles(results []ComposeFileResult, backupPath string) []stri
 	}
 	return files
 }
+
 // composeFailureKind indicates whether a compose-up failure is recoverable.
 type composeFailureKind int
 

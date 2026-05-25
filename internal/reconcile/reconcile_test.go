@@ -138,7 +138,6 @@ func TestReconciler_ReleaseLock(t *testing.T) {
 	})
 }
 
-
 func TestReconciler_GetTargetHost(t *testing.T) {
 	t.Run("explicit target host", func(t *testing.T) {
 		cfg := &Config{
@@ -507,7 +506,7 @@ func TestReloadProjectConfig_DeployPaths(t *testing.T) {
 
 	t.Run("skips deploy_paths when from env", func(t *testing.T) {
 		cfg := &Config{
-			DeployPaths:        EnvConfigField([]string{"env/**"}),
+			DeployPaths: EnvConfigField([]string{"env/**"}),
 		}
 		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
 			return &ReloadedConfig{
@@ -573,12 +572,12 @@ func TestRun_DeployPathsMatch(t *testing.T) {
 	require.NoError(t, SaveState(stateFile, &DeployState{LastDeployedCommit: "aaa111", DeployCount: 1}))
 
 	cfg := &Config{
-		RepoDir:     tmpDir,
-		LockFile:    filepath.Join(tmpDir, "test.lock"),
-		StateFile:   stateFile,
-		StagingDir:  filepath.Join(tmpDir, "staging"),
-		DeployPaths: NewConfigField([]string{"unraid/**"}),
-		DryRun:      true,
+		RepoDir:                 tmpDir,
+		LockFile:                filepath.Join(tmpDir, "test.lock"),
+		StateFile:               stateFile,
+		StagingDir:              filepath.Join(tmpDir, "staging"),
+		DeployPaths:             NewConfigField([]string{"unraid/**"}),
+		DryRun:                  true,
 		AllowEmptyDeclaredState: true,
 	}
 
@@ -620,12 +619,12 @@ func TestRun_DeployPathsDiffFails(t *testing.T) {
 	require.NoError(t, SaveState(stateFile, &DeployState{LastDeployedCommit: "aaa111", DeployCount: 1}))
 
 	cfg := &Config{
-		RepoDir:     tmpDir,
-		LockFile:    filepath.Join(tmpDir, "test.lock"),
-		StateFile:   stateFile,
-		StagingDir:  filepath.Join(tmpDir, "staging"),
-		DeployPaths: NewConfigField([]string{"unraid/**"}),
-		DryRun:      true,
+		RepoDir:                 tmpDir,
+		LockFile:                filepath.Join(tmpDir, "test.lock"),
+		StateFile:               stateFile,
+		StagingDir:              filepath.Join(tmpDir, "staging"),
+		DeployPaths:             NewConfigField([]string{"unraid/**"}),
+		DryRun:                  true,
 		AllowEmptyDeclaredState: true,
 	}
 
@@ -655,13 +654,13 @@ func TestRun_DeployPathsForceOverride(t *testing.T) {
 	stateFile := filepath.Join(tmpDir, "state.json")
 
 	cfg := &Config{
-		RepoDir:     tmpDir,
-		LockFile:    filepath.Join(tmpDir, "test.lock"),
-		StateFile:   stateFile,
-		StagingDir:  filepath.Join(tmpDir, "staging"),
-		DeployPaths: NewConfigField([]string{"unraid/**"}),
-		Force:       true,
-		DryRun:      true,
+		RepoDir:                 tmpDir,
+		LockFile:                filepath.Join(tmpDir, "test.lock"),
+		StateFile:               stateFile,
+		StagingDir:              filepath.Join(tmpDir, "staging"),
+		DeployPaths:             NewConfigField([]string{"unraid/**"}),
+		Force:                   true,
+		DryRun:                  true,
 		AllowEmptyDeclaredState: true,
 	}
 
@@ -693,12 +692,12 @@ func TestRun_DeployPathsFirstDeploySkipsPathCheck(t *testing.T) {
 	// No prior state: first deploy. The path-aware check should be skipped
 	// entirely because there is no diff base (state.LastDeployedCommit == "").
 	cfg := &Config{
-		RepoDir:     tmpDir,
-		LockFile:    filepath.Join(tmpDir, "test.lock"),
-		StateFile:   stateFile,
-		StagingDir:  filepath.Join(tmpDir, "staging"),
-		DeployPaths: NewConfigField([]string{"unraid/**"}),
-		DryRun:      true,
+		RepoDir:                 tmpDir,
+		LockFile:                filepath.Join(tmpDir, "test.lock"),
+		StateFile:               stateFile,
+		StagingDir:              filepath.Join(tmpDir, "staging"),
+		DeployPaths:             NewConfigField([]string{"unraid/**"}),
+		DryRun:                  true,
 		AllowEmptyDeclaredState: true,
 	}
 
@@ -774,21 +773,21 @@ func TestRun_DeployPathsUsesLastDeployedCommitAfterFailure(t *testing.T) {
 func TestConfig_Validation(t *testing.T) {
 	t.Run("config fields", func(t *testing.T) {
 		cfg := &Config{
-			RepoURL:           "https://github.com/test/repo.git",
-			RepoBranch:        "develop",
-			RepoDir:           "/custom/repo",
-			StagingDir:        "/custom/staging",
-			BackupDir:         "/custom/backups",
-			LogDir:            "/custom/logs",
-			TargetHost:        "user@remote",
-			LocalAppdataPath:  "/local/appdata",
-			RemoteAppdataPath: "/remote/appdata",
-			DryRun:            true,
+			RepoURL:                 "https://github.com/test/repo.git",
+			RepoBranch:              "develop",
+			RepoDir:                 "/custom/repo",
+			StagingDir:              "/custom/staging",
+			BackupDir:               "/custom/backups",
+			LogDir:                  "/custom/logs",
+			TargetHost:              "user@remote",
+			LocalAppdataPath:        "/local/appdata",
+			RemoteAppdataPath:       "/remote/appdata",
+			DryRun:                  true,
 			AllowEmptyDeclaredState: true,
-			Force:             true,
-			SecretsFiles:      []string{"secrets1.yaml", "secrets2.yaml"},
-			InfraSubDir:       "infra",
-			BackupsToKeep:     10,
+			Force:                   true,
+			SecretsFiles:            []string{"secrets1.yaml", "secrets2.yaml"},
+			InfraSubDir:             "infra",
+			BackupsToKeep:           10,
 		}
 
 		assert.Equal(t, "https://github.com/test/repo.git", cfg.RepoURL)
@@ -1619,7 +1618,7 @@ func TestReloadProjectConfig(t *testing.T) {
 
 	t.Run("env override prevents critical containers reload", func(t *testing.T) {
 		cfg := &Config{
-						CriticalContainers:        EnvConfigField([]string{"env-container"}),
+			CriticalContainers: EnvConfigField([]string{"env-container"}),
 			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
 				return &ReloadedConfig{
 					CriticalContainers: []string{"repo-container"},
@@ -1638,7 +1637,7 @@ func TestReloadProjectConfig(t *testing.T) {
 func TestReloadProjectConfig_TargetOverrides(t *testing.T) {
 	t.Run("named target PostSyncHooks override applied", func(t *testing.T) {
 		cfg := &Config{
-			TargetName: "unraid",
+			TargetName:    "unraid",
 			PostSyncHooks: NewConfigField([]PostSyncHook{{Container: "root-hook"}}),
 			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
 				return &ReloadedConfig{
@@ -1931,7 +1930,6 @@ func TestRenderTemplatesFailure(t *testing.T) {
 
 // --- Reconciler.isLocalMode / getTargetHost tests ---
 
-
 func TestGetTargetHost(t *testing.T) {
 	t.Run("explicit target host", func(t *testing.T) {
 		cfg := &Config{TargetHost: "root@10.0.0.1"}
@@ -1974,11 +1972,11 @@ func TestDoDeploy(t *testing.T) {
 		require.NoError(t, os.MkdirAll(stagingDir, 0755))
 
 		cfg := &Config{
-			DryRun:           true,
+			DryRun:                  true,
 			AllowEmptyDeclaredState: true,
-			StagingDir:       stagingDir,
-			InfraSubDir:      ".",
-			LocalAppdataPath: appdataDir,
+			StagingDir:              stagingDir,
+			InfraSubDir:             ".",
+			LocalAppdataPath:        appdataDir,
 		}
 		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg)
@@ -2081,15 +2079,15 @@ func TestReconcilerRun(t *testing.T) {
 		require.NoError(t, os.MkdirAll(infraDir, 0755))
 
 		cfg := &Config{
-			Force:            true,
-			DryRun:           true, // Dry run to skip actual deployment
+			Force:                   true,
+			DryRun:                  true, // Dry run to skip actual deployment
 			AllowEmptyDeclaredState: true,
-			LockFile:         lockFile,
-			StateFile:        stateFile,
-			RepoDir:          repoDir,
-			StagingDir:       stagingDir,
-			LocalAppdataPath: appdataDir,
-			InfraSubDir:      ".",
+			LockFile:                lockFile,
+			StateFile:               stateFile,
+			RepoDir:                 repoDir,
+			StagingDir:              stagingDir,
+			LocalAppdataPath:        appdataDir,
+			InfraSubDir:             ".",
 		}
 		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg, WithGitOperations(gitOps))
@@ -2270,7 +2268,23 @@ func TestComposeUpMultipleWithRollback(t *testing.T) {
 		assert.Contains(t, err.Error(), "no backup available for rollback")
 	})
 
-	t.Run("backup dir with no matching files", func(t *testing.T) {
+	t.Run("backup archive with no matching files", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Valid archive that does not contain the compose file under rollback,
+		// so after extraction no backup file resolves.
+		other := filepath.Join(tmpDir, "unrelated.yml")
+		require.NoError(t, os.WriteFile(other, []byte("services: {}"), 0644))
+		backupDir := filepath.Join(tmpDir, "backup")
+		writeBackupArchive(t, backupDir, other)
+
+		deploy := NewDeployOps(false, "test")
+		err := deploy.ComposeUpMultipleWithRollback(context.Background(), []string{"/nonexistent.yml"}, backupDir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no backup files found for rollback")
+	})
+
+	t.Run("backup dir with no archive returns no backup available", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		backupDir := filepath.Join(tmpDir, "backup")
 		require.NoError(t, os.MkdirAll(backupDir, 0755))
@@ -2278,7 +2292,7 @@ func TestComposeUpMultipleWithRollback(t *testing.T) {
 		deploy := NewDeployOps(false, "test")
 		err := deploy.ComposeUpMultipleWithRollback(context.Background(), []string{"/nonexistent.yml"}, backupDir)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "no backup files found for rollback")
+		assert.Contains(t, err.Error(), "no backup available for rollback")
 	})
 }
 
@@ -2377,11 +2391,11 @@ func TestDeployLocalFullPath(t *testing.T) {
 		deploy := &DeployOps{DryRun: false, ProjectName: "test", ContentHashSync: true}
 
 		cfg := &Config{
-			DryRun:           true, // DryRun on reconciler skips compose up
+			DryRun:                  true, // DryRun on reconciler skips compose up
 			AllowEmptyDeclaredState: true,
-			StagingDir:       stagingDir,
-			InfraSubDir:      "unraid",
-			LocalAppdataPath: appdataDir,
+			StagingDir:              stagingDir,
+			InfraSubDir:             "unraid",
+			LocalAppdataPath:        appdataDir,
 		}
 		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg, WithDeployOps(deploy))
@@ -2408,11 +2422,11 @@ func TestDeployLocalFullPath(t *testing.T) {
 
 		deploy := &DeployOps{ContentHashSync: true}
 		cfg := &Config{
-			DryRun:           true,
+			DryRun:                  true,
 			AllowEmptyDeclaredState: true,
-			StagingDir:       stagingDir,
-			InfraSubDir:      "unraid",
-			LocalAppdataPath: appdataDir,
+			StagingDir:              stagingDir,
+			InfraSubDir:             "unraid",
+			LocalAppdataPath:        appdataDir,
 		}
 		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg, WithDeployOps(deploy))
@@ -2907,15 +2921,15 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 		}
 
 		cfg := &Config{
-			DryRun:           true,
+			DryRun:                  true,
 			AllowEmptyDeclaredState: true,
-			LockFile:         lockFile,
-			StateFile:        stateFile,
-			RepoDir:          repoDir,
-			StagingDir:       stagingDir,
-			LocalAppdataPath: appdataDir,
-			InfraSubDir:      ".",
-			SecretsFiles:     []string{},
+			LockFile:                lockFile,
+			StateFile:               stateFile,
+			RepoDir:                 repoDir,
+			StagingDir:              stagingDir,
+			LocalAppdataPath:        appdataDir,
+			InfraSubDir:             ".",
+			SecretsFiles:            []string{},
 		}
 		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg,
@@ -2959,15 +2973,15 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 		}
 
 		cfg := &Config{
-			DryRun:           true,
+			DryRun:                  true,
 			AllowEmptyDeclaredState: true,
-			LockFile:         lockFile,
-			StateFile:        stateFile,
-			RepoDir:          repoDir,
-			StagingDir:       stagingDir,
-			LocalAppdataPath: appdataDir,
-			InfraSubDir:      ".",
-			SecretsFiles:     []string{},
+			LockFile:                lockFile,
+			StateFile:               stateFile,
+			RepoDir:                 repoDir,
+			StagingDir:              stagingDir,
+			LocalAppdataPath:        appdataDir,
+			InfraSubDir:             ".",
+			SecretsFiles:            []string{},
 		}
 		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg, WithGitOperations(gitOps))
@@ -3215,17 +3229,17 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 		alerter := &mockAlertSender{}
 
 		cfg := &Config{
-			DryRun:           true,
+			DryRun:                  true,
 			AllowEmptyDeclaredState: true,
-			LockFile:         lockFile,
-			StateFile:        stateFile,
-			RepoDir:          repoDir,
-			StagingDir:       stagingDir,
-			LocalAppdataPath: appdataDir,
-			InfraSubDir:      ".",
-			SecretsFiles:     []string{},
-			OnFailure:        true,
-			OnSuccess:        true,
+			LockFile:                lockFile,
+			StateFile:               stateFile,
+			RepoDir:                 repoDir,
+			StagingDir:              stagingDir,
+			LocalAppdataPath:        appdataDir,
+			InfraSubDir:             ".",
+			SecretsFiles:            []string{},
+			OnFailure:               true,
+			OnSuccess:               true,
 		}
 		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg,
@@ -3524,12 +3538,12 @@ func TestRunLockContention(t *testing.T) {
 	gitOps := &mockGitOps{syncChanged: true, syncBefore: "a", syncAfter: "b"}
 
 	cfg := &Config{
-		DryRun:     true,
+		DryRun:                  true,
 		AllowEmptyDeclaredState: true,
-		LockFile:   lockFile,
-		StateFile:  stateFile,
-		RepoDir:    repoDir,
-		StagingDir: stagingDir,
+		LockFile:                lockFile,
+		StateFile:               stateFile,
+		RepoDir:                 repoDir,
+		StagingDir:              stagingDir,
 	}
 
 	// Acquire lock manually first.
@@ -3655,15 +3669,15 @@ func TestRunSaveStateErrorInAttemptTracking(t *testing.T) {
 	deploy := &DeployOps{DryRun: true, ContentHashSync: true}
 
 	cfg := &Config{
-		DryRun:           true,
+		DryRun:                  true,
 		AllowEmptyDeclaredState: true,
-		LockFile:         lockFile,
-		StateFile:        stateFile,
-		RepoDir:          repoDir,
-		StagingDir:       stagingDir,
-		LocalAppdataPath: appdataDir,
-		InfraSubDir:      ".",
-		SecretsFiles:     []string{},
+		LockFile:                lockFile,
+		StateFile:               stateFile,
+		RepoDir:                 repoDir,
+		StagingDir:              stagingDir,
+		LocalAppdataPath:        appdataDir,
+		InfraSubDir:             ".",
+		SecretsFiles:            []string{},
 	}
 	seedStubComposeService(t, cfg)
 	r := NewReconciler(cfg, WithGitOperations(gitOps), WithDeployOps(deploy))
@@ -3688,9 +3702,9 @@ func TestRunHealthGate_SkipsWhenNoCriticalContainers(t *testing.T) {
 
 func TestRunHealthGate_SkipsWhenDryRun(t *testing.T) {
 	cfg := &Config{
-		DryRun:             true,
+		DryRun:                  true,
 		AllowEmptyDeclaredState: true,
-		CriticalContainers: NewConfigField([]string{"traefik"}),
+		CriticalContainers:      NewConfigField([]string{"traefik"}),
 	}
 	seedStubComposeService(t, cfg)
 	r := NewReconciler(cfg)

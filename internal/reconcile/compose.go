@@ -5,9 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -204,15 +202,35 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 		Str(log.FieldPath, backupPath).
 		Msg("Deployment failed, attempting rollback")
 
-	// Build backup file list and verify they exist
+	// Attempt rollback with independent timeout so it can execute even if ctx is
+	// cancelled. Copy enriched logger so reconcile_id flows into rollback logs.
+	// Extraction shares this context for the same reason.
+	rollbackCtx, cancel := context.WithTimeout(
+		log.WithContext(context.Background(), log.Ctx(ctx)),
+		d.composeUpTimeout(),
+	)
+	defer cancel()
+
+	// Backup() writes configs.tar.gz (absolute paths inside), so the previous
+	// config files live inside the archive, not loose under backupPath. Extract
+	// it and resolve each compose file's backed-up copy (#332/#335). The old
+	// loose-file lookup never matched, making rollback a silent no-op.
+	backupRoot, cleanup, extractErr := extractBackupArchive(rollbackCtx, backupPath)
+	if extractErr != nil {
+		logger.Warn().
+			Err(extractErr).
+			Str(log.FieldPath, backupPath).
+			Msg("No backup archive available for rollback")
+		return fmt.Errorf("deployment failed (no backup available for rollback): %w", deployErr)
+	}
+	defer cleanup()
+
 	var backupFiles []string
 	for _, f := range composeFiles {
-		backupFile := filepath.Join(backupPath, filepath.Base(f))
-		if _, statErr := os.Stat(backupFile); os.IsNotExist(statErr) {
-			// Skip missing backup files - they may be new stacks
-			continue
+		if backupFile, ok := resolveBackupFile(backupRoot, f); ok {
+			backupFiles = append(backupFiles, backupFile)
 		}
-		backupFiles = append(backupFiles, backupFile)
+		// Missing backup file - may be a new stack, skip.
 	}
 
 	if len(backupFiles) == 0 {
@@ -221,14 +239,6 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 			Msg("No backup files found for rollback")
 		return fmt.Errorf("deployment failed (no backup files found for rollback): %w", deployErr)
 	}
-
-	// Attempt rollback with independent timeout so it can execute even if ctx is cancelled.
-	// Copy enriched logger so reconcile_id flows into rollback logs.
-	rollbackCtx, cancel := context.WithTimeout(
-		log.WithContext(context.Background(), log.Ctx(ctx)),
-		d.composeUpTimeout(),
-	)
-	defer cancel()
 
 	// Build rollback args
 	args := d.composeUpArgs(backupFiles)
@@ -282,6 +292,43 @@ func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string
 		upFn = noOrphanOps.ComposeUpMultiple
 	}
 
+	// Lazily extract the backup archive on first rollback need. Backup() writes
+	// configs.tar.gz (absolute paths inside), not loose files under backupPath,
+	// so rollback must consult the extracted tree (#332/#335). Extraction is
+	// skipped entirely on the happy path (no failures).
+	var backupRoot string
+	var backupCleanup func()
+	defer func() {
+		if backupCleanup != nil {
+			backupCleanup()
+		}
+	}()
+	ensureBackupExtracted := func() (string, bool) {
+		if backupPath == "" {
+			return "", false
+		}
+		if backupRoot != "" {
+			return backupRoot, true
+		}
+		// Independent timeout so extraction runs even if ctx was cancelled.
+		exCtx, exCancel := context.WithTimeout(
+			log.WithContext(context.Background(), log.Ctx(ctx)),
+			d.composeUpTimeout(),
+		)
+		defer exCancel()
+		root, cleanup, err := extractBackupArchive(exCtx, backupPath)
+		if err != nil {
+			logger.Warn().
+				Err(err).
+				Str(log.FieldPath, backupPath).
+				Msg("No backup archive available for rollback")
+			return "", false
+		}
+		backupRoot = root
+		backupCleanup = cleanup
+		return backupRoot, true
+	}
+
 	// Phase 1: per-file compose up without --remove-orphans.
 	results := make([]ComposeFileResult, 0, len(composeFiles))
 	for _, f := range composeFiles {
@@ -312,9 +359,8 @@ func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string
 			Msg("Compose up failed for file")
 
 		rolledBack := false
-		if backupPath != "" {
-			backupFile := filepath.Join(backupPath, filepath.Base(f))
-			if _, statErr := os.Stat(backupFile); statErr == nil {
+		if root, ok := ensureBackupExtracted(); ok {
+			if backupFile, exists := resolveBackupFile(root, f); exists {
 				logger.Info().
 					Str(log.FieldPath, backupFile).
 					Msg("Rolling back single file from backup")
@@ -348,9 +394,11 @@ func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string
 
 	summary := classifyComposeResults(results)
 
-	// Phase 2: orphan reconciliation pass with all files.
+	// Phase 2: orphan reconciliation pass with all files. Rolled-back files use
+	// their extracted backup copy (backupRoot is set iff a rollback occurred) so
+	// the pass reconciles Docker to the previous service set (#332/#335).
 	if d.RemoveOrphans && summary.Succeeded > 0 {
-		orphanFiles := buildOrphanPassFiles(results, backupPath)
+		orphanFiles := buildOrphanPassFiles(results, backupRoot)
 		logger.Info().
 			Int("file_count", len(orphanFiles)).
 			Msg("Running orphan reconciliation pass")
