@@ -1,0 +1,1 @@
+{"id":"int-2dd8cb03","kind":"field_change","created_at":"2026-05-21T23:59:35.626337Z","actor":"Cameron Sjo","issue_id":"bosun-7td","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Field report written to docs/field-reports/documentation-drift-daemon-vs-receiver-webhooks.md"}}

@@ -288,6 +288,7 @@ Releases are fully automated via **release-please** + **goreleaser**.
 - `version = "dev"` in `internal/cmd/root.go` — goreleaser injects the real version at build time via `-ldflags`
 - **Conventional Commits drive versioning**: `feat:` bumps minor, `fix:` bumps patch, `feat!:`/`BREAKING CHANGE:` bumps minor pre-1.0 (major post-1.0)
 - **Never manually edit version numbers** — release-please manages `.release-please-manifest.json` and `CHANGELOG.md`
+- **Squash-merge mixed-prefix PRs** — release-please reads commit subjects on `main`. A merge commit lands every branch commit (so an internal `fix(skill):`/`ci:` triggers a spurious release); squashing under one subject lets you pick the prefix release-please sees. Squash docs/chore PRs under `docs:`/`chore:` to avoid phantom version bumps
 
 **Release pipeline:**
 
