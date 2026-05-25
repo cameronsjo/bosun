@@ -15,8 +15,15 @@ import (
 	"github.com/kballard/go-shellquote"
 )
 
+// DefaultBackupTimeout bounds backup creation + verification when no
+// BackupTimeout is configured. Prevents the pre-deploy backup step from
+// wedging the reconcile indefinitely (#319).
+const DefaultBackupTimeout = 5 * time.Minute
+
 // VerifyBackup checks that a backup archive is valid and non-empty.
-func (d *DeployOps) VerifyBackup(backupPath string) error {
+// The archive listing runs under ctx so a caller deadline or cancellation
+// aborts verification rather than blocking on a large/growing archive (#319).
+func (d *DeployOps) VerifyBackup(ctx context.Context, backupPath string) error {
 	tarFile := filepath.Join(backupPath, "configs.tar.gz")
 
 	// Check file exists
@@ -34,7 +41,7 @@ func (d *DeployOps) VerifyBackup(backupPath string) error {
 	}
 
 	// Verify archive integrity by listing contents
-	cmd := exec.Command("tar", "-tzf", tarFile)
+	cmd := exec.CommandContext(ctx, "tar", "-tzf", tarFile)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -86,7 +93,20 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 		return backupName, nil
 	}
 
-	args := append([]string{"-czf", tarFile}, existingPaths...)
+	// Exclude the backup destination so tar cannot recursively archive its own
+	// growing output when backupDir is nested inside a backed-up path (#319).
+	// --exclude is matched against the path as tar walks it (the absolute
+	// argument), so the absolute form works on both GNU tar and bsdtar.
+	args := []string{"-czf", tarFile}
+	if absBackupDir, absErr := filepath.Abs(backupDir); absErr == nil {
+		args = append(args, "--exclude", absBackupDir)
+	} else {
+		// Without the exclude, tar can recursively archive its own output —
+		// surface the failed safeguard rather than swallowing it.
+		logger.Warn().Err(absErr).Str(log.FieldPath, backupDir).
+			Msg("Failed to resolve absolute backup path; self-exclusion skipped")
+	}
+	args = append(args, existingPaths...)
 	cmd := exec.CommandContext(ctx, "tar", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -95,7 +115,7 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 	_ = cmd.Run()
 
 	// Verify the backup was created successfully
-	if err := d.VerifyBackup(backupPath); err != nil {
+	if err := d.VerifyBackup(ctx, backupPath); err != nil {
 		logger.Error().Err(err).Str(log.FieldPath, backupPath).Msg("Backup verification failed")
 		return "", fmt.Errorf("backup verification failed: %w", err)
 	}
@@ -139,7 +159,21 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 	tarFile := filepath.Join(backupPath, "configs.tar.gz")
 
 	// Build remote tar command with properly quoted paths to prevent shell injection.
-	sshCmd := fmt.Sprintf("tar -czf - %s", shellquote.Join(remotePaths...))
+	// Exclude the backup destination so the archive cannot recursively include a
+	// nested backups subtree (#319), mirroring the local Backup() behavior.
+	// A remote path can only be resolved on the remote host — filepath.Abs here
+	// would resolve against the LOCAL cwd, which is wrong — so require an absolute
+	// backupDir for the exclude to match the path tar walks; skip (with a warning)
+	// otherwise rather than emit an exclude that silently matches nothing.
+	var sshCmd string
+	if filepath.IsAbs(backupDir) {
+		sshCmd = fmt.Sprintf("tar -czf - --exclude %s %s",
+			shellquote.Join(backupDir), shellquote.Join(remotePaths...))
+	} else {
+		logger.Warn().Str(log.FieldPath, backupDir).
+			Msg("Remote backup destination is not absolute; self-exclusion skipped")
+		sshCmd = fmt.Sprintf("tar -czf - %s", shellquote.Join(remotePaths...))
+	}
 
 	outFile, err := os.Create(tarFile)
 	if err != nil {
@@ -172,7 +206,7 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 	}
 
 	// Verify the backup was created successfully
-	if err := d.VerifyBackup(backupPath); err != nil {
+	if err := d.VerifyBackup(ctx, backupPath); err != nil {
 		// Clean up invalid backup on verification failure
 		_ = os.RemoveAll(backupPath)
 		logger.Error().Err(err).Str(log.FieldPath, backupPath).Msg("Remote backup verification failed")

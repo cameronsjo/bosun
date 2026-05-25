@@ -867,7 +867,7 @@ func TestDeployOps_VerifyBackup(t *testing.T) {
 	t.Run("archive not found", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		d := NewDeployOps(false, "")
-		err := d.VerifyBackup(filepath.Join(tmpDir, "nonexistent"))
+		err := d.VerifyBackup(context.Background(), filepath.Join(tmpDir, "nonexistent"))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "backup archive not found")
 	})
@@ -879,7 +879,7 @@ func TestDeployOps_VerifyBackup(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(backupPath, "configs.tar.gz"), []byte{}, 0644))
 
 		d := NewDeployOps(false, "")
-		err := d.VerifyBackup(backupPath)
+		err := d.VerifyBackup(context.Background(), backupPath)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "backup archive is empty")
 	})
@@ -894,7 +894,7 @@ func TestDeployOps_VerifyBackup(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(backupPath, "configs.tar.gz"), []byte("not a tar file"), 0644))
 
 		d := NewDeployOps(false, "")
-		err := d.VerifyBackup(backupPath)
+		err := d.VerifyBackup(context.Background(), backupPath)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "corrupted")
 	})
@@ -916,7 +916,7 @@ func TestDeployOps_VerifyBackup(t *testing.T) {
 		require.NoError(t, cmd.Run())
 
 		d := NewDeployOps(false, "")
-		err := d.VerifyBackup(backupPath)
+		err := d.VerifyBackup(context.Background(), backupPath)
 		assert.NoError(t, err)
 	})
 }

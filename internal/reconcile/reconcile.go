@@ -173,6 +173,10 @@ type Config struct {
 	// Zero means use DefaultComposeUpTimeout (10 minutes).
 	ComposeUpTimeout time.Duration
 
+	// BackupTimeout bounds backup creation + verification.
+	// Zero means use DefaultBackupTimeout (5 minutes).
+	BackupTimeout time.Duration
+
 	// ConfigReloader loads project config from a directory path.
 	// Set by daemon/CLI to break the config→reconcile import cycle.
 	// When nil, config reload is skipped.
@@ -1113,6 +1117,22 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, local bool) error {
 	ui.Info("Creating backup...")
 
+	// Bound backup creation + verification so a stuck tar/ssh (#319) cannot
+	// wedge the reconcile. On timeout the error propagates to the caller, which
+	// already treats backup failures as non-fatal (warn + continue).
+	timeout := r.config.BackupTimeout
+	if timeout <= 0 {
+		timeout = DefaultBackupTimeout
+	}
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
+	logger.Debug().
+		Str(log.FieldOperation, "backup").
+		Int64("timeout_ms", timeout.Milliseconds()).
+		Bool("local", local).
+		Msg("Preparing to create backup with timeout")
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	// Discover targets from staging to know what to back up.
 	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
 	targets, err := discoverDeployTargets(stagingSubDir, r.config.DeploySyncPaths.Value, r.config.DeploySyncExclude.Value)
@@ -1132,6 +1152,12 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 	}
 
 	if err != nil {
+		// Distinguish a timeout from a genuine backup failure so operators see
+		// "backup timed out" rather than a downstream symptom (e.g. "archive not
+		// found"). The call site treats either as non-fatal (warn + continue).
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("backup timed out after %s: %w", timeout, ctxErr)
+		}
 		return err
 	}
 

@@ -309,6 +309,7 @@ Used by `bosun daemon` and `bosun reconcile`:
 | `BOSUN_REMOVE_ORPHANS` | Pass `--remove-orphans` to docker compose up (default: `true`; overrides config file). Set to `false` in shared environments where Bosun doesn't own all containers |
 | `BOSUN_CRITICAL_CONTAINERS` | JSON array of container names that must be healthy after deploy (overrides config file) |
 | `BOSUN_HEALTH_GATE_TIMEOUT` | Health gate polling timeout (default: `60s`). Accepts Go duration strings or bare seconds |
+| `BOSUN_BACKUP_TIMEOUT` | Pre-deploy backup creation + verification timeout (default: `5m`). Accepts Go duration strings or bare seconds. On timeout the backup is treated as a failure but the deploy continues |
 | `BOSUN_SECRETS_FILE` | Default secrets file for `bosun render` |
 | `BOSUN_ALLOW_EMPTY_DECLARED_STATE` | Allow reconcile to continue when the staging compose dir contains no declared services (default: `false` — strict). Set to `true` for genuinely empty repos. The dir-missing case is always fatal. |
 | `BOSUN_SKIP_DEPLOY_INVARIANT` | Bypass the post-deploy mtime + WrittenFiles invariant check (default: `false`). Set to `true` for diagnostic deploys where silent-sync failures are acceptable. Logged at `Warn` with `override=true` when enabled. |

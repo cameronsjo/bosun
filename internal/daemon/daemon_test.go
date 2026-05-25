@@ -1393,6 +1393,52 @@ func TestConfigFromEnv_ComposeUpTimeout(t *testing.T) {
 	})
 }
 
+func TestConfigFromEnv_BackupTimeout(t *testing.T) {
+	// Unlike ComposeUpTimeout, BackupTimeout is set in reconcile.DefaultConfig()
+	// (spec: default 5m), so unset/invalid env values fall back to that default
+	// rather than zero.
+	t.Run("default is DefaultBackupTimeout when unset", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, reconcile.DefaultBackupTimeout, cfg.ReconcileConfig.BackupTimeout)
+	})
+
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_BACKUP_TIMEOUT", "10m")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileConfig.BackupTimeout)
+	})
+
+	t.Run("parses plain seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_BACKUP_TIMEOUT", "120")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, 2*time.Minute, cfg.ReconcileConfig.BackupTimeout)
+	})
+
+	t.Run("invalid value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_BACKUP_TIMEOUT", "not-a-duration")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, reconcile.DefaultBackupTimeout, cfg.ReconcileConfig.BackupTimeout)
+	})
+
+	t.Run("non-positive value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_BACKUP_TIMEOUT", "-5m")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, reconcile.DefaultBackupTimeout, cfg.ReconcileConfig.BackupTimeout)
+	})
+
+	t.Run("zero value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_BACKUP_TIMEOUT", "0")
+		cfg := ConfigFromEnv()
+		require.NotNil(t, cfg.ReconcileConfig)
+		assert.Equal(t, reconcile.DefaultBackupTimeout, cfg.ReconcileConfig.BackupTimeout)
+	})
+}
+
 func TestConfigFromEnv_HealthCheckTimeout(t *testing.T) {
 	t.Run("default uses reconcile package default", func(t *testing.T) {
 		cfg := ConfigFromEnv()
