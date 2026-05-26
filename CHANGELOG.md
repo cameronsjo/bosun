@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.1](https://github.com/cameronsjo/bosun/compare/v0.37.0...v0.37.1) (2026-05-26)
+
+
+### Bug Fixes
+
+* **reconcile:** managed-set prune ([#331](https://github.com/cameronsjo/bosun/issues/331)) + rollback archive extraction ([#332](https://github.com/cameronsjo/bosun/issues/332)/[#335](https://github.com/cameronsjo/bosun/issues/335)) ([#366](https://github.com/cameronsjo/bosun/issues/366)) ([c1ed700](https://github.com/cameronsjo/bosun/commit/c1ed70042009a4b87c351ae40b584db9e2f32788))
+
 ## [0.37.0](https://github.com/cameronsjo/bosun/compare/v0.36.0...v0.37.0) (2026-05-25)
 
 
