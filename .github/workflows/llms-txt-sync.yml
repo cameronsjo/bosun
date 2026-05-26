@@ -30,8 +30,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read   # github.rest.pulls.listFiles
-      issues: write         # PR comments are issue comments (create/update/list)
+      # PR comments go through POST /issues/{n}/comments, but when {n} is a pull
+      # request GitHub requires BOTH issues:write AND pull-requests:write (see the
+      # x-accepted-github-permissions header). pull-requests:write also covers
+      # github.rest.pulls.listFiles. Granting only pull-requests:read 403s the POST.
+      pull-requests: write
+      issues: write
     steps:
       - name: Evaluate diff and post sticky nudge
         # Pinned to a commit SHA (supply-chain hardening); tag shown for readability.
