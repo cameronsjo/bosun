@@ -2650,6 +2650,43 @@ func TestDeployLocal_ManagedSetPrune(t *testing.T) {
 	assert.NotContains(t, result2.ManagedFiles, "authelia/extra.yml")
 }
 
+// TestRun_DryRunDoesNotSeedDeployedFiles guards against a dry-run persisting the
+// managed-set manifest. deployLocal populates DeployResult.ManagedFiles from the
+// source walk regardless of dry-run, so without the guard the next real reconcile
+// would treat untouched paths as bosun-managed and prune them.
+func TestRun_DryRunDoesNotSeedDeployedFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	lockFile := filepath.Join(tmpDir, "reconcile.lock")
+	stateFile := filepath.Join(tmpDir, "state.json")
+	repoDir := filepath.Join(tmpDir, "repo")
+	stagingDir := filepath.Join(tmpDir, "staging")
+	appdataDir := filepath.Join(tmpDir, "appdata")
+	require.NoError(t, os.MkdirAll(appdataDir, 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "unraid"), 0755))
+
+	gitOps := &mockGitOps{syncChanged: true, syncBefore: "aaa111", syncAfter: "bbb222"}
+
+	cfg := &Config{
+		DryRun:                  true,
+		AllowEmptyDeclaredState: true,
+		LockFile:                lockFile,
+		StateFile:               stateFile,
+		RepoDir:                 repoDir,
+		StagingDir:              stagingDir,
+		LocalAppdataPath:        appdataDir,
+		InfraSubDir:             ".",
+	}
+	seedStubComposeService(t, cfg)
+	r := NewReconciler(cfg, WithGitOperations(gitOps))
+
+	require.NoError(t, r.Run(context.Background()))
+
+	// The stub compose service means deployLocal produced a non-empty manifest,
+	// but the dry-run guard must keep it out of persisted state.
+	state := LoadState(stateFile)
+	assert.Empty(t, state.DeployedFiles, "dry-run must not seed deployed_files")
+}
+
 // --- DeployLocal content-hash mode tests ---
 
 func TestDeployOps_DeployLocalContentHash(t *testing.T) {

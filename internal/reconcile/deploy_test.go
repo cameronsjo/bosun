@@ -1359,6 +1359,9 @@ func TestDeployOps_DeployLocalFile_StandardMode(t *testing.T) {
 // rollback paths, which extract this archive rather than reading loose files.
 func writeBackupArchive(t *testing.T, backupDir string, files ...string) {
 	t.Helper()
+	if _, err := exec.LookPath("tar"); err != nil {
+		t.Skip("tar not installed")
+	}
 	require.NoError(t, os.MkdirAll(backupDir, 0755))
 	args := append([]string{"-czf", filepath.Join(backupDir, "configs.tar.gz")}, files...)
 	out, err := exec.Command("tar", args...).CombinedOutput()

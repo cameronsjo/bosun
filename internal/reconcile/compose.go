@@ -298,6 +298,8 @@ func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string
 	// skipped entirely on the happy path (no failures).
 	var backupRoot string
 	var backupCleanup func()
+	var backupExtracted bool // memoize the attempt: one bad archive must not
+	var backupAvailable bool // re-invoke tar (and re-warn) for every failed file
 	defer func() {
 		if backupCleanup != nil {
 			backupCleanup()
@@ -307,9 +309,10 @@ func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string
 		if backupPath == "" {
 			return "", false
 		}
-		if backupRoot != "" {
-			return backupRoot, true
+		if backupExtracted {
+			return backupRoot, backupAvailable
 		}
+		backupExtracted = true
 		// Independent timeout so extraction runs even if ctx was cancelled.
 		exCtx, exCancel := context.WithTimeout(
 			log.WithContext(context.Background(), log.Ctx(ctx)),
@@ -326,6 +329,7 @@ func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string
 		}
 		backupRoot = root
 		backupCleanup = cleanup
+		backupAvailable = true
 		return backupRoot, true
 	}
 

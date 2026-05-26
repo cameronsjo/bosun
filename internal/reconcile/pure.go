@@ -282,7 +282,12 @@ func classifyComposeResults(results []ComposeFileResult) ComposeUpSummary {
 // other targets are dropped. Returns an empty (non-nil) map when nothing matches,
 // which removeStaleFiles treats as "no prior manifest, prune nothing".
 func filterManagedForTarget(manifest []string, targetPath string) map[string]bool {
-	prefix := targetPath + "/"
+	// Manifest entries are slash-normalized (see recordManaged), so normalize the
+	// caller's targetPath the same way and trim any trailing slash before building
+	// the prefix — otherwise OS-native separators or a stray trailing slash would
+	// miss every entry and silently disable pruning for the target.
+	normalized := strings.TrimRight(filepath.ToSlash(targetPath), "/")
+	prefix := normalized + "/"
 	out := make(map[string]bool)
 	for _, m := range manifest {
 		if rel, ok := strings.CutPrefix(m, prefix); ok && rel != "" {

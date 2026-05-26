@@ -39,7 +39,6 @@ type ReloadedConfig struct {
 // Returns nil ReloadedConfig if no config file is found (not an error).
 type ConfigReloaderFunc func(dir string) (*ReloadedConfig, error)
 
-
 // Config holds the reconciliation configuration.
 type Config struct {
 	// RepoURL is the git repository URL.
@@ -197,7 +196,6 @@ type Config struct {
 	// BOSUN_SKIP_DEPLOY_INVARIANT=true. Default false.
 	SkipDeployInvariant bool
 }
-
 
 // AlertSender sends alerts for reconciliation events.
 type AlertSender interface {
@@ -631,7 +629,10 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	state.DeclaredServices = r.declaredServices
 	// Persist this deploy's manifest so the next reconcile prunes only files
 	// bosun itself wrote. Remote mode returns a nil result (no local manifest).
-	if deployResult != nil {
+	// A dry-run still populates ManagedFiles (the source walk runs regardless of
+	// whether files were written), so guard against seeding the manifest from a
+	// dry-run — otherwise the next real reconcile could prune untouched paths.
+	if deployResult != nil && !r.config.DryRun {
 		state.DeployedFiles = deployResult.ManagedFiles
 	}
 	if err := SaveState(r.config.StateFile, state); err != nil {
@@ -684,7 +685,6 @@ func MinLen(s string, n int) int {
 	}
 	return n
 }
-
 
 // verifyPostDeploy polls container health after deployment. Returns an error
 // if health verification times out with unhealthy containers.
@@ -856,7 +856,6 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 
 	return len(matched), nil
 }
-
 
 // cleanupStaging removes the staging directory after successful deployment.
 func (r *Reconciler) cleanupStaging() error {

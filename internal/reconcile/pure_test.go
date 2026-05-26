@@ -1167,6 +1167,15 @@ func TestFilterManagedForTarget(t *testing.T) {
 			targetPath: "authelia",
 			want:       map[string]bool{},
 		},
+		{
+			// Trailing-slash trim is platform-independent. (filepath.ToSlash also
+			// normalizes OS-native separators, but only meaningfully on Windows,
+			// so a backslash case isn't portable to assert here.)
+			name:       "trailing slash on targetPath still matches",
+			manifest:   manifest,
+			targetPath: "authelia/",
+			want:       map[string]bool{"configuration.yml": true, "users.yml": true},
+		},
 	}
 
 	for _, tt := range tests {
