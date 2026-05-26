@@ -48,11 +48,22 @@ func (d *DeployOps) composeUpTimeout() time.Duration {
 type DeployResult struct {
 	// WrittenFiles contains relative paths of files that were written to disk.
 	WrittenFiles []string
+
+	// ManagedFiles is the full set of files bosun deployed this run (every
+	// regular file in the source tree, not just the changed ones in
+	// WrittenFiles), as appdata-relative paths. Persisted to DeployState as the
+	// manifest that scopes the next reconcile's stale-file pruning.
+	ManagedFiles []string
 }
 
 // AddWritten appends file paths to the result's written files list.
 func (r *DeployResult) AddWritten(files ...string) {
 	r.WrittenFiles = append(r.WrittenFiles, files...)
+}
+
+// AddManaged appends file paths to the result's managed-files manifest.
+func (r *DeployResult) AddManaged(files ...string) {
+	r.ManagedFiles = append(r.ManagedFiles, files...)
 }
 
 // PrefixLatest prepends prefix to all WrittenFiles entries added after
@@ -114,7 +125,7 @@ func (d *DeployOps) remoteComposeUpCmd(composeDir string) string {
 // DeployLocal syncs files locally using native Go file operations.
 // Performs atomic copy: copies to temp directory first, then replaces target.
 // Uses --delete semantics: removes files in target that don't exist in source.
-func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string, result *DeployResult) error {
+func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string, result *DeployResult, prevManaged map[string]bool) error {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
@@ -159,8 +170,8 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 			return fmt.Errorf("copy with content hash: %w", err)
 		}
 
-		// Remove files in target that aren't in source (--delete semantics).
-		if err := removeStaleFiles(ctx, sourceDir, targetDir); err != nil {
+		// Prune files bosun previously deployed that are gone from source.
+		if err := removeStaleFiles(ctx, sourceDir, targetDir, prevManaged); err != nil {
 			logger.Error().Err(err).Msg("Failed to deploy locally. Reason: stale file removal failed")
 			return fmt.Errorf("remove stale files: %w", err)
 		}
@@ -265,16 +276,46 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 	return nil
 }
 
-// removeStaleFiles removes files in targetDir that don't exist in sourceDir.
-// Preserves --delete semantics when using per-file content-hash sync.
-// Logs a warning for each file that cannot be removed and returns a summary
-// error if any removals failed.
-func removeStaleFiles(ctx context.Context, sourceDir, targetDir string) error {
+// removeStaleFiles prunes files under targetDir that bosun deployed on a prior
+// reconcile (present in prevManaged) but are now absent from sourceDir —
+// implementing --delete semantics scoped to bosun's own files. Files NOT in
+// prevManaged are never touched: bosun did not write them, so they are not ours
+// to delete (e.g. container runtime data like *.sqlite3 colocated with config).
+//
+// Two safety gates:
+//   - Empty manifest (prevManaged) — a fresh state file or first deploy after
+//     upgrade. Prune nothing; the caller seeds the manifest from this deploy.
+//   - Empty source — sourceDir has no regular files but prevManaged is non-empty,
+//     which signals a render failure rather than a legitimate full deletion.
+//     Prune nothing and warn, so a bad render cannot wipe a populated target.
+//
+// prevManaged keys are targetDir-relative paths. Logs a warning for each file
+// that cannot be removed and returns a summary error if any removals failed.
+func removeStaleFiles(ctx context.Context, sourceDir, targetDir string, prevManaged map[string]bool) error {
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 	logger.Debug().
 		Str(log.FieldPath, sourceDir).
 		Str("target", targetDir).
+		Int("managed_count", len(prevManaged)).
 		Msg("Preparing to remove stale files")
+
+	if len(prevManaged) == 0 {
+		logger.Debug().Str("target", targetDir).Msg("No prior managed-file manifest; skipping stale-file pruning")
+		return nil
+	}
+
+	hasFiles, err := dirHasRegularFiles(sourceDir)
+	if err != nil {
+		return fmt.Errorf("inspect source %q for stale-file pruning: %w", sourceDir, err)
+	}
+	if !hasFiles {
+		logger.Warn().
+			Str(log.FieldPath, sourceDir).
+			Str("target", targetDir).
+			Int("managed_count", len(prevManaged)).
+			Msg("Source has no regular files but a prior deploy did; skipping stale-file pruning (suspected render failure)")
+		return nil
+	}
 
 	var removalErrors []error
 	var removedCount int
@@ -283,30 +324,28 @@ func removeStaleFiles(ctx context.Context, sourceDir, targetDir string) error {
 		if err != nil {
 			return err
 		}
+		// Always descend directories — a managed file may live in a subdir whose
+		// own entry is not in the manifest. Never delete directories themselves.
+		if d.IsDir() {
+			return nil
+		}
 
 		relPath, err := filepath.Rel(targetDir, path)
 		if err != nil {
 			return err
 		}
-		if relPath == "." {
+		// Only files bosun deployed last time are ours to prune. Manifest keys
+		// are "/"-separated, so normalize before the lookup.
+		if !prevManaged[filepath.ToSlash(relPath)] {
 			return nil
 		}
 
+		// Managed file — remove it only if it is gone from the current source.
 		srcPath := filepath.Join(sourceDir, relPath)
-		if _, err := os.Stat(srcPath); err != nil {
-			if !os.IsNotExist(err) {
-				logger.Warn().Err(err).Str(log.FieldPath, relPath).Msg("Failed to stat source for stale file check")
-				return fmt.Errorf("stat source path %s: %w", relPath, err)
-			}
-			if d.IsDir() {
-				if rmErr := os.RemoveAll(path); rmErr != nil {
-					logger.Warn().Err(rmErr).Str(log.FieldPath, relPath).Msg("Failed to remove stale directory")
-					removalErrors = append(removalErrors, fmt.Errorf("remove directory %s: %w", relPath, rmErr))
-				} else {
-					logger.Debug().Str(log.FieldPath, relPath).Msg("Removed stale directory")
-					removedCount++
-				}
-				return filepath.SkipDir
+		if _, statErr := os.Lstat(srcPath); statErr != nil {
+			if !os.IsNotExist(statErr) {
+				logger.Warn().Err(statErr).Str(log.FieldPath, relPath).Msg("Failed to stat source for stale file check")
+				return fmt.Errorf("stat source path %s: %w", relPath, statErr)
 			}
 			if rmErr := os.Remove(path); rmErr != nil {
 				logger.Warn().Err(rmErr).Str(log.FieldPath, relPath).Msg("Failed to remove stale file")
@@ -334,6 +373,33 @@ func removeStaleFiles(ctx context.Context, sourceDir, targetDir string) error {
 		logger.Debug().Msg("No stale files found")
 	}
 	return nil
+}
+
+// listManagedFiles walks sourceDir and returns the targetDir-relative paths of
+// all regular files — the set of files bosun manages for this target. Symlinks
+// are skipped to match CopyDirIfChanged's Lstat-based handling, so a symlinked
+// entry is never recorded as managed (and thus never pruned). Returns paths with
+// "/" separators regardless of OS, matching how the manifest is persisted.
+func listManagedFiles(sourceDir string) ([]string, error) {
+	var files []string
+	walkErr := filepath.WalkDir(sourceDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(sourceDir, path)
+		if err != nil {
+			return err
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	if walkErr != nil {
+		return nil, fmt.Errorf("list managed files in %q: %w", sourceDir, walkErr)
+	}
+	return files, nil
 }
 
 // DeployLocalFile syncs a single file locally using native Go file operations.

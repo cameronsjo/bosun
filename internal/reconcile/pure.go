@@ -276,19 +276,42 @@ func classifyComposeResults(results []ComposeFileResult) ComposeUpSummary {
 	return s
 }
 
+// filterManagedForTarget returns the subset of an appdata-relative deploy
+// manifest belonging to targetPath, with the "<targetPath>/" prefix stripped so
+// the keys are targetDir-relative — the form removeStaleFiles walks. Entries for
+// other targets are dropped. Returns an empty (non-nil) map when nothing matches,
+// which removeStaleFiles treats as "no prior manifest, prune nothing".
+func filterManagedForTarget(manifest []string, targetPath string) map[string]bool {
+	// Manifest entries are slash-normalized (see recordManaged), so normalize the
+	// caller's targetPath the same way and trim any trailing slash before building
+	// the prefix — otherwise OS-native separators or a stray trailing slash would
+	// miss every entry and silently disable pruning for the target.
+	normalized := strings.TrimRight(filepath.ToSlash(targetPath), "/")
+	prefix := normalized + "/"
+	out := make(map[string]bool)
+	for _, m := range manifest {
+		if rel, ok := strings.CutPrefix(m, prefix); ok && rel != "" {
+			out[rel] = true
+		}
+	}
+	return out
+}
+
 // buildOrphanPassFiles constructs the file list for the orphan-reconciliation pass.
-// Succeeded files use their original (new) path. Rolled-back files use the backup
-// copy so Docker sees the previous service set. Failed files with no backup use
-// the original path (best-effort).
-func buildOrphanPassFiles(results []ComposeFileResult, backupPath string) []string {
+// Succeeded files use their original (new) path. Rolled-back files use their copy
+// inside backupRoot — the EXTRACTED backup tree, where tar's leading-'/' stripping
+// puts an absolute "/mnt/.../x.yml" at "<backupRoot>/mnt/.../x.yml" — so Docker
+// sees the previous service set. Failed files with no backup use the original path
+// (best-effort). backupRoot is empty when no rollback occurred.
+func buildOrphanPassFiles(results []ComposeFileResult, backupRoot string) []string {
 	var files []string
 	for _, r := range results {
 		if r.Success {
 			files = append(files, r.File)
 			continue
 		}
-		if r.RolledBack && backupPath != "" {
-			backupFile := filepath.Join(backupPath, filepath.Base(r.File))
+		if r.RolledBack && backupRoot != "" {
+			backupFile := filepath.Join(backupRoot, strings.TrimPrefix(filepath.ToSlash(r.File), "/"))
 			files = append(files, backupFile)
 			continue
 		}
@@ -297,6 +320,7 @@ func buildOrphanPassFiles(results []ComposeFileResult, backupPath string) []stri
 	}
 	return files
 }
+
 // composeFailureKind indicates whether a compose-up failure is recoverable.
 type composeFailureKind int
 

@@ -346,6 +346,40 @@ func TestSaveState_RoundTrip(t *testing.T) {
 	assert.Equal(t, DriftMissing, loaded.DriftItems[0].Type)
 }
 
+func TestSaveState_DeployedFilesRoundTrip(t *testing.T) {
+	dir := evalSymlinks(t, t.TempDir())
+	path := filepath.Join(dir, "deploy-state.json")
+
+	original := &DeployState{
+		LastDeployedCommit: "abc123",
+		DeployedFiles: []string{
+			"authelia/configuration.yml",
+			"authelia/users.yml",
+			"compose/stack.yml",
+		},
+	}
+
+	require.NoError(t, SaveState(path, original))
+	loaded := LoadState(path)
+
+	assert.Equal(t, original.DeployedFiles, loaded.DeployedFiles)
+}
+
+func TestLoadState_OldStateHasNoDeployedFiles(t *testing.T) {
+	// A state file written before the managed-set manifest existed has no
+	// "deployed_files" key. It must load with DeployedFiles nil/empty so the
+	// first post-upgrade deploy prunes nothing and simply seeds the manifest.
+	dir := evalSymlinks(t, t.TempDir())
+	path := filepath.Join(dir, "deploy-state.json")
+
+	legacy := `{"schema_version":1,"last_deployed_commit":"abc123","deploy_count":3}`
+	require.NoError(t, os.WriteFile(path, []byte(legacy), 0644))
+
+	loaded := LoadState(path)
+	assert.Empty(t, loaded.DeployedFiles)
+	assert.Equal(t, "abc123", loaded.LastDeployedCommit)
+}
+
 func TestLoadState_ReadError(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("skipping permission test when running as root")

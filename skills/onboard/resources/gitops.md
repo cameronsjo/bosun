@@ -413,6 +413,8 @@ Use `deploy_sync_paths` (allowlist) and `deploy_sync_exclude` (blocklist) in `bo
 
 Default mode. Copies rendered files directly to the local filesystem and runs `docker compose up` per-file with isolated rollback. Each compose file is deployed independently — if one file fails (e.g., bad image tag), only that file is rolled back from backup while other files continue. A final orphan-reconciliation pass runs `--remove-orphans` across all files to clean up stale containers.
 
+**Stale-file pruning is managed-set scoped.** When content-hash sync is on (default), bosun removes a target file only if it was in the *previous* deploy's manifest (`state.deployed_files`) **and** is absent from the current rendered source. Files bosun never wrote — container runtime data like `db.sqlite3`, `grafana.db`, or a service's `data/` dir living alongside config in the same appdata dir — are never in the manifest, so they are never deleted. A render that produces zero files also skips pruning entirely, so a templating failure can't wipe a populated target. The first deploy after upgrading (empty manifest) prunes nothing and simply seeds the manifest.
+
 ```bash
 bosun reconcile -l             # Force local mode
 ```

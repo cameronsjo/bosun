@@ -67,6 +67,51 @@ func (d *DeployOps) VerifyBackup(ctx context.Context, backupPath string) error {
 	return nil
 }
 
+// extractBackupArchive extracts a backup's configs.tar.gz into a fresh temp
+// directory and returns its root, a cleanup func, and any error. tar strips the
+// leading '/' from absolute member names, so a backed-up "/mnt/appdata/x.yml"
+// lands at "<root>/mnt/appdata/x.yml". Resolve a specific backed-up file with
+// resolveBackupFile, never filepath.Join(backupPath, base) — the loose-file
+// layout that Backup() never produced (#332/#335).
+//
+// Returns an error if the archive is absent or cannot be extracted; the caller
+// treats that as "no backup available". The returned cleanup func is always
+// safe to call (a no-op on the error paths).
+func extractBackupArchive(ctx context.Context, backupPath string) (root string, cleanup func(), err error) {
+	noop := func() {}
+	tarFile := filepath.Join(backupPath, "configs.tar.gz")
+	if _, statErr := os.Stat(tarFile); statErr != nil {
+		return "", noop, fmt.Errorf("backup archive not found: %s: %w", tarFile, statErr)
+	}
+
+	tmp, err := os.MkdirTemp("", "bosun-rollback-*")
+	if err != nil {
+		return "", noop, fmt.Errorf("failed to create rollback temp dir: %w", err)
+	}
+	cleanupTmp := func() { _ = os.RemoveAll(tmp) }
+
+	cmd := exec.CommandContext(ctx, "tar", "-xzf", tarFile, "-C", tmp)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if runErr := cmd.Run(); runErr != nil {
+		cleanupTmp()
+		return "", noop, fmt.Errorf("failed to extract backup archive %s: %w: %s", tarFile, runErr, stderr.String())
+	}
+
+	return tmp, cleanupTmp, nil
+}
+
+// resolveBackupFile maps an original (deployed) file path to its backed-up copy
+// inside an extracted backup root, accounting for tar's leading-'/' stripping.
+// Returns the resolved path and whether it exists on disk.
+func resolveBackupFile(root, originalPath string) (string, bool) {
+	candidate := filepath.Join(root, strings.TrimPrefix(filepath.ToSlash(originalPath), "/"))
+	if _, err := os.Stat(candidate); err != nil {
+		return "", false
+	}
+	return candidate, true
+}
+
 // Backup creates a timestamped tar.gz backup of the specified paths.
 func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string) (string, error) {
 	start := time.Now()

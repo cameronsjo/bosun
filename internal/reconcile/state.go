@@ -89,6 +89,14 @@ type DeployState struct {
 
 	// Restart circuit breaker: tracks per-container restart counts to detect crash loops.
 	RestartTracking map[string]RestartTrackingEntry `json:"restart_tracking,omitempty"`
+
+	// DeployedFiles is the manifest of files bosun wrote on the last successful
+	// deploy, as appdata-relative paths (e.g. "authelia/configuration.yml").
+	// Stale-file pruning deletes only files in this set that are gone from the
+	// current source — never files bosun did not deploy (e.g. container runtime
+	// data). Empty on a fresh state file, which makes the first deploy prune
+	// nothing and simply seed the manifest.
+	DeployedFiles []string `json:"deployed_files,omitempty"`
 }
 
 // RestartTrackingEntry tracks the restart count for a container across drift checks.

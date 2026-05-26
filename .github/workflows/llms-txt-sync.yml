@@ -30,8 +30,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read   # github.rest.pulls.listFiles
-      issues: write         # PR comments are issue comments (create/update/list)
+      # PR comments go through POST /issues/{n}/comments, but when {n} is a pull
+      # request GitHub requires BOTH issues:write AND pull-requests:write (see the
+      # x-accepted-github-permissions header). pull-requests:write also covers
+      # github.rest.pulls.listFiles. Granting only pull-requests:read 403s the POST.
+      pull-requests: write
+      issues: write
     steps:
       - name: Evaluate diff and post sticky nudge
         # Pinned to a commit SHA (supply-chain hardening); tag shown for readability.
@@ -57,6 +61,17 @@ jobs:
 
             const { owner, repo } = context.repo;
             const prNumber = context.payload.pull_request.number;
+
+            // This workflow only posts an advisory nudge — it must never gate a PR.
+            // Wrap every comment mutation so a transient API error or a permission
+            // regression degrades to a warning instead of failing the check.
+            const safeMutate = async (action, fn) => {
+              try {
+                await fn();
+              } catch (e) {
+                core.warning(`llms.txt nudge: could not ${action}: ${e.message}`);
+              }
+            };
 
             // Collect every changed file in the PR (paginated).
             const files = await github.paginate(github.rest.pulls.listFiles, {
@@ -95,9 +110,11 @@ jobs:
               ].join('\n');
 
               if (existing) {
-                await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+                await safeMutate('update nudge comment', () =>
+                  github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body }));
               } else {
-                await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+                await safeMutate('create nudge comment', () =>
+                  github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body }));
               }
             } else if (existing) {
               // Condition cleared (llms.txt now updated, or no claim paths left) — resolve the nudge.
@@ -109,5 +126,6 @@ jobs:
                   ? '✅ `llms.txt` was updated in this PR. Thanks for keeping the AI-facing summary in sync.'
                   : '✅ No capability- or claim-bearing paths remain changed. Nothing to reconcile against `llms.txt`.',
               ].join('\n');
-              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: resolved });
+              await safeMutate('resolve nudge comment', () =>
+                github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: resolved }));
             }

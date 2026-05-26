@@ -333,7 +333,7 @@ func TestDeployLocal_SilentEmptyWrite_FailsInvariant(t *testing.T) {
 	}
 	r := NewReconciler(cfg, WithDeployOps(newDeployLocalDeploy()))
 
-	_, err := r.deployLocal(context.Background())
+	_, err := r.deployLocal(context.Background(), nil)
 	require.Error(t, err, "deployLocal should fail when sync writes nothing against a non-empty source")
 	assert.ErrorIs(t, err, ErrDeployInvariantEmptyWrite)
 }
@@ -354,7 +354,7 @@ func TestDeployLocal_SkipDeployInvariant_BypassesCheck(t *testing.T) {
 	}
 	r := NewReconciler(cfg, WithDeployOps(newDeployLocalDeploy()))
 
-	result, err := r.deployLocal(context.Background())
+	result, err := r.deployLocal(context.Background(), nil)
 	require.NoError(t, err, "SkipDeployInvariant=true should bypass the silent-write check")
 	assert.NotNil(t, result)
 }
@@ -374,7 +374,7 @@ func TestDeployLocal_HealthyDeploy_PassesInvariant(t *testing.T) {
 	}
 	r := NewReconciler(cfg, WithDeployOps(newDeployLocalDeploy()))
 
-	result, err := r.deployLocal(context.Background())
+	result, err := r.deployLocal(context.Background(), nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.NotEmpty(t, result.WrittenFiles, "expected at least one file to be written")

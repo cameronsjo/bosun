@@ -12,12 +12,12 @@ import (
 
 func TestShouldSkipDeploy(t *testing.T) {
 	tests := []struct {
-		name           string
-		lastDeployed   string
-		current        string
-		force          bool
-		needsRedeploy  bool
-		want           bool
+		name          string
+		lastDeployed  string
+		current       string
+		force         bool
+		needsRedeploy bool
+		want          bool
 	}{
 		{
 			name:         "same commit without force skips",
@@ -240,12 +240,12 @@ func TestShouldTriggerCircuitBreaker(t *testing.T) {
 
 func TestNextAttemptState(t *testing.T) {
 	tests := []struct {
-		name             string
-		lastAttempted    string
-		current          string
-		currentCount     int
-		wantLastAttempt  string
-		wantCount        int
+		name            string
+		lastAttempted   string
+		current         string
+		currentCount    int
+		wantLastAttempt string
+		wantCount       int
 	}{
 		{
 			name:            "same commit increments count",
@@ -355,13 +355,13 @@ func TestResolveDeployModeWithSecrets(t *testing.T) {
 	secretsWithIP := map[string]any{"network": map[string]any{"unraid_ip": "192.168.1.100"}}
 
 	tests := []struct {
-		name           string
-		configHost     string
-		localAppdata   string
-		secrets        map[string]any
-		statFn         func(string) (os.FileInfo, error)
-		wantLocal      bool
-		wantErr        bool
+		name         string
+		configHost   string
+		localAppdata string
+		secrets      map[string]any
+		statFn       func(string) (os.FileInfo, error)
+		wantLocal    bool
+		wantErr      bool
 	}{
 		{
 			name:       "config host set forces remote",
@@ -930,11 +930,11 @@ func TestBuildSSHKeyPaths(t *testing.T) {
 
 func TestClassifyComposeResults(t *testing.T) {
 	tests := []struct {
-		name       string
-		results    []ComposeFileResult
-		wantSucc   int
-		wantFail   int
-		wantRB     int
+		name     string
+		results  []ComposeFileResult
+		wantSucc int
+		wantFail int
+		wantRB   int
 	}{
 		{
 			name: "all succeed",
@@ -1053,12 +1053,15 @@ Conflict. The container name "/db" is already in use by container "def".`,
 }
 
 func TestBuildOrphanPassFiles(t *testing.T) {
-	backupPath := "/backups/2024-01-01"
+	// backupRoot is the EXTRACTED archive root. Rolled-back files map to their
+	// member inside it via leading-'/'-stripped paths (#332/#335).
+	backupRoot := "/tmp/extracted"
 
 	tests := []struct {
-		name    string
-		results []ComposeFileResult
-		want    []string
+		name       string
+		results    []ComposeFileResult
+		backupRoot string
+		want       []string
 	}{
 		{
 			name: "all succeed use original paths",
@@ -1066,36 +1069,119 @@ func TestBuildOrphanPassFiles(t *testing.T) {
 				{File: "/compose/a.yml", Success: true},
 				{File: "/compose/b.yml", Success: true},
 			},
-			want: []string{"/compose/a.yml", "/compose/b.yml"},
+			backupRoot: backupRoot,
+			want:       []string{"/compose/a.yml", "/compose/b.yml"},
 		},
 		{
-			name: "rolled back uses backup path",
+			name: "rolled back uses extracted backup path",
 			results: []ComposeFileResult{
 				{File: "/compose/a.yml", Success: true},
 				{File: "/compose/b.yml", Success: false, RolledBack: true},
 			},
+			backupRoot: backupRoot,
 			want: []string{
 				"/compose/a.yml",
-				filepath.Join(backupPath, "b.yml"),
+				// /compose/b.yml -> <root>/compose/b.yml (leading slash stripped).
+				filepath.Join(backupRoot, "compose", "b.yml"),
 			},
+		},
+		{
+			name: "rolled back but no backup root uses original",
+			results: []ComposeFileResult{
+				{File: "/compose/b.yml", Success: false, RolledBack: true},
+			},
+			backupRoot: "",
+			want:       []string{"/compose/b.yml"},
 		},
 		{
 			name: "failed without rollback uses original",
 			results: []ComposeFileResult{
 				{File: "/compose/a.yml", Success: false, RolledBack: false},
 			},
-			want: []string{"/compose/a.yml"},
+			backupRoot: backupRoot,
+			want:       []string{"/compose/a.yml"},
 		},
 		{
-			name:    "empty results",
-			results: nil,
-			want:    nil,
+			name:       "empty results",
+			results:    nil,
+			backupRoot: backupRoot,
+			want:       nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildOrphanPassFiles(tt.results, backupPath)
+			got := buildOrphanPassFiles(tt.results, tt.backupRoot)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestFilterManagedForTarget(t *testing.T) {
+	manifest := []string{
+		"authelia/configuration.yml",
+		"authelia/users.yml",
+		"grafana/grafana.ini",
+		"compose/stack.yml",
+	}
+
+	tests := []struct {
+		name       string
+		manifest   []string
+		targetPath string
+		want       map[string]bool
+	}{
+		{
+			name:       "strips prefix and keeps only matching target",
+			manifest:   manifest,
+			targetPath: "authelia",
+			want:       map[string]bool{"configuration.yml": true, "users.yml": true},
+		},
+		{
+			name:       "compose target isolates compose files",
+			manifest:   manifest,
+			targetPath: "compose",
+			want:       map[string]bool{"stack.yml": true},
+		},
+		{
+			name:       "no match yields empty non-nil map",
+			manifest:   manifest,
+			targetPath: "vaultwarden",
+			want:       map[string]bool{},
+		},
+		{
+			name:       "nil manifest yields empty non-nil map",
+			manifest:   nil,
+			targetPath: "authelia",
+			want:       map[string]bool{},
+		},
+		{
+			name:       "bare prefix without child is dropped",
+			manifest:   []string{"authelia", "authelia/users.yml"},
+			targetPath: "authelia",
+			want:       map[string]bool{"users.yml": true},
+		},
+		{
+			name:       "prefix is not a substring false-positive",
+			manifest:   []string{"authelia-backup/x.yml"},
+			targetPath: "authelia",
+			want:       map[string]bool{},
+		},
+		{
+			// Trailing-slash trim is platform-independent. (filepath.ToSlash also
+			// normalizes OS-native separators, but only meaningfully on Windows,
+			// so a backslash case isn't portable to assert here.)
+			name:       "trailing slash on targetPath still matches",
+			manifest:   manifest,
+			targetPath: "authelia/",
+			want:       map[string]bool{"configuration.yml": true, "users.yml": true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterManagedForTarget(tt.manifest, tt.targetPath)
+			require.NotNil(t, got)
 			assert.Equal(t, tt.want, got)
 		})
 	}
