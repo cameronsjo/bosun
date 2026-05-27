@@ -55,7 +55,7 @@ The render step produced no parseable services in `<staging>/compose/`. Either t
 
 **Invariant 2 — `deploy invariant: source has files but no writes recorded` / `destination file has stale mtime`**
 
-The deploy sync step claimed success but either wrote nothing against a non-empty source or the destination's mtime is older than the reconcile start. This is the GH#214 silent-success signature — content-hash sync may have matched against stale destination content, or the write path silently failed.
+The deploy sync step claimed success but the destination doesn't reflect it. Two shapes trip this: (1) a written file's mtime is older than the reconcile start, or (2) zero files were written against a non-empty source **and a source file is missing from the destination**. Both are the GH#214 silent-sync signature — the write path silently failed. Note: a zero-write target whose destination already content-matches the source is a legitimate no-op and does **not** fail (fixed in GH#330); the error fires only when a file is genuinely absent. The `missing=…` field in the error names the first absent file.
 
 To debug:
 
