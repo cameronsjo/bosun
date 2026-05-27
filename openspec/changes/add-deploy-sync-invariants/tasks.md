@@ -28,7 +28,7 @@ Implementation runs in three layers. Layer 1 ships the invariants and observabil
 
 - [x] `internal/reconcile/verify.go` (new file) — `verifyDeployTarget(src, dst, writtenRel, startTime) error` helper
 - [x] `internal/reconcile/verify.go` — invariant: each `WrittenFiles` entry must exist at destination with `mtime >= startTime`
-- [x] `internal/reconcile/verify.go` — invariant: empty `WrittenFiles` against non-empty source is an error
+- [x] `internal/reconcile/verify.go` — invariant: empty `WrittenFiles` against non-empty source inspects the destination — passes on a content-matched no-op, errors (naming the missing file) when a source file is absent (refined per GH#330; `firstMissingSourceFile` helper)
 - [x] `internal/reconcile/reconcile.go` — call `verifyDeployTarget` per-target inside `deployLocal` before `PrefixLatest`
 - [x] `internal/daemon/daemon.go` — parse `BOSUN_SKIP_DEPLOY_INVARIANT` in `ConfigFromEnv()` (landed in Layer 1.2 commit alongside `BOSUN_ALLOW_EMPTY_DECLARED_STATE`)
 - [x] `internal/reconcile/verify_test.go` — `TestVerifyDeployTarget_StaleDestination_Errors`
