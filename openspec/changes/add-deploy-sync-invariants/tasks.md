@@ -32,7 +32,7 @@ Implementation runs in three layers. Layer 1 ships the invariants and observabil
 - [x] `internal/reconcile/reconcile.go` — call `verifyDeployTarget` per-target inside `deployLocal` before `PrefixLatest`
 - [x] `internal/daemon/daemon.go` — parse `BOSUN_SKIP_DEPLOY_INVARIANT` in `ConfigFromEnv()` (landed in Layer 1.2 commit alongside `BOSUN_ALLOW_EMPTY_DECLARED_STATE`)
 - [x] `internal/reconcile/verify_test.go` — `TestVerifyDeployTarget_StaleDestination_Errors`
-- [x] `internal/reconcile/verify_test.go` — `TestVerifyDeployTarget_EmptyWrittenFiles_Against_NonEmptySource_Errors`
+- [x] `internal/reconcile/verify_test.go` — `TestVerifyDeployTarget_ZeroWriteScenarios` (table-driven: no-op passes, missing-file errors; refined per GH#330)
 - [x] `internal/reconcile/verify_test.go` — `TestDeployLocal_SkipDeployInvariant_BypassesCheck` (env wiring through `deployLocal`)
 - [x] `internal/reconcile/verify_test.go` — `TestVerifyDeployTarget_HealthyDeploy_Passes` + `TestDeployLocal_HealthyDeploy_PassesInvariant`
 
