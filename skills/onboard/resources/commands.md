@@ -204,6 +204,25 @@ bosun chart show <name>        # Detailed chart info (templates, deps, version)
 bosun template list            # List available templates (alias: templates)
 ```
 
+### `bosun migrate`
+
+Migrate manifests to the current schema or convert legacy provision-based
+manifests to the Helm-aligned chart format. Both subcommands default to a
+dry-run; pass the write flag to apply changes.
+
+```bash
+bosun migrate version          # Add apiVersion/kind fields (dry-run)
+bosun migrate version --write  # Apply the apiVersion/kind migration
+bosun migrate helm             # Convert legacy manifests to Helm-aligned format
+bosun migrate helm --force     # Overwrite existing charts
+```
+
+| Subcommand | Flag | Default | Description |
+|------------|------|---------|-------------|
+| `version` | `-w`, `--write` | `false` | Write changes to files (default is dry-run) |
+| `version` | `--provisions` / `--services` / `--stacks` | | Override the directories to scan |
+| `helm` | `--force` | `false` | Overwrite existing charts |
+
 ---
 
 ## GitOps Commands
@@ -364,6 +383,38 @@ bosun validate --full                  # Include full dry-run reconciliation
 | `--full` | Run full dry-run reconciliation |
 | `--socket` | Path to daemon socket |
 | `-t`, `--timeout` | Timeout in seconds (default: 30) |
+
+### `bosun breaker`
+
+View and manage the deploy circuit breaker, which stops retrying after 3
+consecutive deploy failures.
+
+```bash
+bosun breaker status           # Show circuit breaker state (failure count, open/closed)
+bosun breaker reset            # Clear the failure counter to allow retries
+bosun breaker reset --target=nas   # Reset the breaker for a specific target
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--state-dir` | `/var/lib/bosun` | Deploy state directory |
+| `-t`, `--target` | | Named deployment target (from `targets:` in `bosun.yaml`) |
+
+### `bosun ports`
+
+List host-port allocations across all stacks (from rendered compose files) and
+detect conflicts.
+
+```bash
+bosun ports                    # All host-port allocations + conflict detection
+bosun ports --service traefik  # Ports for a specific service
+bosun ports --free 8000-9000   # Available ports in a range
+```
+
+| Flag | Description |
+|------|-------------|
+| `-s`, `--service` | Show ports for a specific service |
+| `--free` | Show available ports in a range (e.g. `8000-9000`) |
 
 ---
 

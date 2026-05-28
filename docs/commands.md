@@ -239,6 +239,25 @@ bosun create worker myworker
 
 Creates a service manifest in `manifest/services/<name>.yml`.
 
+### migrate
+
+Migrate manifests to the current schema, or convert legacy provision-based
+manifests to the Helm-aligned chart format. Both subcommands default to a
+dry-run.
+
+```bash
+bosun migrate version          # Add apiVersion/kind fields (dry-run)
+bosun migrate version --write  # Apply the migration
+bosun migrate helm             # Convert legacy manifests to Helm-aligned format
+bosun migrate helm --force     # Overwrite existing charts
+```
+
+| Subcommand | Flag | Description |
+|------------|------|-------------|
+| `version` | `-w`, `--write` | Write changes (default is dry-run) |
+| `version` | `--provisions` / `--services` / `--stacks` | Override directories to scan |
+| `helm` | `--force` | Overwrite existing charts |
+
 ## Radio Commands
 
 Communication and connectivity commands.
@@ -382,6 +401,38 @@ Validates:
 - Stack manifests are valid
 - Dependencies are correct
 - No port conflicts
+
+### breaker
+
+View and manage the deploy circuit breaker, which stops retrying after 3
+consecutive deploy failures.
+
+```bash
+bosun breaker status           # Show breaker state (failure count, open/closed)
+bosun breaker reset            # Clear the failure counter to allow retries
+bosun breaker reset --target=nas   # Reset for a specific target
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--state-dir` | `/var/lib/bosun` | Deploy state directory |
+| `-t`, `--target` | | Named deployment target (from `targets:` in `bosun.yaml`) |
+
+### ports
+
+List host-port allocations across all stacks (from rendered compose files) and
+detect conflicts.
+
+```bash
+bosun ports                    # All host-port allocations + conflict detection
+bosun ports --service traefik  # Ports for a specific service
+bosun ports --free 8000-9000   # Available ports in a range
+```
+
+| Flag | Description |
+|------|-------------|
+| `-s`, `--service` | Show ports for a specific service |
+| `--free` | Show available ports in a range (e.g. `8000-9000`) |
 
 ## Upgrade Commands
 
