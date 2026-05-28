@@ -69,11 +69,19 @@ Per-file write decisions are observable at `Debug` level: `CopyDirIfChanged` and
 
 ### Configuration Backup (stage 7)
 
-Before deploying new configs, bosun tars each deploy target's appdata into a
-timestamped `backup-YYYYMMDD-HHMMSS/configs.tar.gz` under `BackupDir`, verifies
+Before deploying new configs, bosun tars the **deployed config footprint** —
+the files it renders into staging, mapped onto their appdata destinations — into
+a timestamped `backup-YYYYMMDD-HHMMSS/configs.tar.gz` under `BackupDir`, verifies
 it by listing the archive, and prunes to the most recent `BackupsToKeep`
-(default 5). Two guards keep the backup from wedging the reconcile (GH#319):
+(default 5). Three guards keep the backup from wedging the reconcile (GH#319,
+bosun-5qx):
 
+- **Footprint scoping.** The backup captures only the files bosun manages (its
+  rendered staging footprint), not whole appdata target directories — those
+  co-locate large runtime data (media, databases, caches) that made the archive
+  grow without bound and burn the full timeout every reconcile. Symlinks are
+  skipped, matching the deploy path. The path list is fed to `tar` via stdin
+  (`-T -`) so a large footprint cannot overflow the argument list.
 - **Self-exclusion.** Bosun is itself a deploy target, and `BackupDir`
   (default `/app/backups` → host `/mnt/appdata/bosun/backups`) lives *inside* a
   backed-up path. The creation tar passes `--exclude` for the backup

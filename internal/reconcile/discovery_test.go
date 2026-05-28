@@ -183,24 +183,68 @@ func TestHasTarget(t *testing.T) {
 	assert.False(t, hasTarget(targets, ""))
 }
 
-func TestBackupPathsFromTargets(t *testing.T) {
+// TestBackupFilesFromTargets asserts the backup footprint is the set of regular
+// files bosun renders into staging, mapped onto appdata destinations — not the
+// whole target directories. Runtime data co-located in appdata is never in
+// staging, so it cannot leak into the list (bosun-5qx).
+func TestBackupFilesFromTargets(t *testing.T) {
+	staging := t.TempDir()
+	mkdirs(t, staging, "appdata/traefik/conf", "compose")
+	writeFile(t, filepath.Join(staging, "appdata/traefik/traefik.yml"), "root")
+	writeFile(t, filepath.Join(staging, "appdata/traefik/conf/dynamic.yml"), "nested")
+	writeFile(t, filepath.Join(staging, "compose/docker-compose.yml"), "stack")
+
 	targets := []DeployTarget{
 		{RelPath: "appdata/traefik", TargetPath: "traefik", IsDir: true},
-		{RelPath: "appdata/authelia", TargetPath: "authelia", IsDir: true},
-		{RelPath: "compose", TargetPath: "compose", IsDir: true}, // now included for per-file rollback
+		{RelPath: "compose", TargetPath: "compose", IsDir: true},
 	}
 
-	paths := backupPathsFromTargets(targets, "/mnt/appdata")
-	assert.Equal(t, []string{
-		"/mnt/appdata/traefik",
-		"/mnt/appdata/authelia",
-		"/mnt/appdata/compose",
+	paths, err := backupFilesFromTargets(staging, targets, "/mnt/appdata")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{
+		"/mnt/appdata/traefik/traefik.yml",
+		"/mnt/appdata/traefik/conf/dynamic.yml",
+		"/mnt/appdata/compose/docker-compose.yml",
 	}, paths)
 }
 
-func TestBackupPathsFromTargets_Empty(t *testing.T) {
-	paths := backupPathsFromTargets(nil, "/mnt/appdata")
+// TestBackupFilesFromTargets_SkipsSymlinks confirms symlinks in staging are not
+// enumerated, matching the deploy path which never copies them.
+func TestBackupFilesFromTargets_SkipsSymlinks(t *testing.T) {
+	staging := t.TempDir()
+	mkdirs(t, staging, "appdata/svc")
+	writeFile(t, filepath.Join(staging, "appdata/svc/config.yml"), "real")
+	require.NoError(t, os.Symlink("config.yml", filepath.Join(staging, "appdata/svc/link.yml")))
+
+	targets := []DeployTarget{{RelPath: "appdata/svc", TargetPath: "svc", IsDir: true}}
+	paths, err := backupFilesFromTargets(staging, targets, "/mnt/appdata")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/mnt/appdata/svc/config.yml"}, paths)
+}
+
+// TestBackupFilesFromTargets_FileTarget maps a single-file target directly to
+// its destination path.
+func TestBackupFilesFromTargets_FileTarget(t *testing.T) {
+	staging := t.TempDir()
+	writeFile(t, filepath.Join(staging, ".env"), "K=V")
+
+	targets := []DeployTarget{{RelPath: ".env", TargetPath: ".env", IsDir: false}}
+	paths, err := backupFilesFromTargets(staging, targets, "/mnt/appdata")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/mnt/appdata/.env"}, paths)
+}
+
+func TestBackupFilesFromTargets_Empty(t *testing.T) {
+	paths, err := backupFilesFromTargets(t.TempDir(), nil, "/mnt/appdata")
+	require.NoError(t, err)
 	assert.Nil(t, paths)
+}
+
+// writeFile creates a file with the given content, making parent dirs as needed.
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0755))
+	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
 }
 
 // mkdirs creates nested directory structures under base.

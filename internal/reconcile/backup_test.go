@@ -77,6 +77,50 @@ func TestBackup_ExcludesBackupDestination(t *testing.T) {
 	assert.True(t, foundService, "archive should still contain the real service config")
 }
 
+// TestBackup_ScopesToDeployedFiles verifies the end-to-end fix for bosun-5qx:
+// the backup footprint enumerated from the staging source (backupFilesFromTargets)
+// archives only bosun-managed config, so large runtime data co-located in the
+// same appdata directory — the cause of the 5m timeout — never enters the archive.
+func TestBackup_ScopesToDeployedFiles(t *testing.T) {
+	if _, err := exec.LookPath("tar"); err != nil {
+		t.Skip("tar not installed")
+	}
+
+	// Staging footprint: only the rendered config bosun deploys.
+	staging := evalSymlinks(t, t.TempDir())
+	require.NoError(t, os.MkdirAll(filepath.Join(staging, "appdata/svc"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(staging, "appdata/svc/config.yml"), []byte("managed"), 0644))
+
+	// Destination appdata: the managed config PLUS unrelated runtime data that is
+	// NOT part of the staging footprint (media/db/cache stand-in).
+	appdata := evalSymlinks(t, t.TempDir())
+	require.NoError(t, os.MkdirAll(filepath.Join(appdata, "svc/data"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(appdata, "svc/config.yml"), []byte("managed"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(appdata, "svc/data/runtime.bin"), make([]byte, 1<<20), 0644))
+
+	targets := []DeployTarget{{RelPath: "appdata/svc", TargetPath: "svc", IsDir: true}}
+	paths, err := backupFilesFromTargets(staging, targets, appdata)
+	require.NoError(t, err)
+	require.Equal(t, []string{filepath.Join(appdata, "svc/config.yml")}, paths,
+		"enumeration must scope to the staging footprint, excluding runtime data")
+
+	backupDir := evalSymlinks(t, t.TempDir())
+	d := NewDeployOps(false, "")
+	backupName, err := d.Backup(context.Background(), backupDir, paths)
+	require.NoError(t, err)
+
+	members := listArchiveMembers(t, filepath.Join(backupDir, backupName, "configs.tar.gz"))
+	var foundConfig bool
+	for _, m := range members {
+		assert.NotContains(t, m, "runtime.bin",
+			"runtime data must not enter the archive (member: %s)", m)
+		if strings.Contains(m, "svc/config.yml") {
+			foundConfig = true
+		}
+	}
+	assert.True(t, foundConfig, "archive should contain the managed config file")
+}
+
 // TestVerifyBackup_HonorsCancelledContext verifies that backup verification runs
 // under the caller's context, so a cancelled/deadline-exceeded context aborts the
 // `tar -tzf` listing rather than blocking indefinitely on a growing archive (#319).
@@ -120,9 +164,12 @@ func TestCreateBackup_HonorsBackupTimeout(t *testing.T) {
 	// Backup destination nested under appdata — the realistic #319 layout.
 	backupDir := filepath.Join(appdataDir, "bosun", "backups")
 
-	// Staging target so discoverDeployTargets finds the "bosun" service...
+	// Staging footprint defines what gets backed up: a real file in the staging
+	// source so backupFilesFromTargets enumerates it (the "bosun" service)...
 	require.NoError(t, os.MkdirAll(filepath.Join(stagingDir, "appdata", "bosun"), 0755))
-	// ...and a real source path so Backup actually invokes tar (non-empty work).
+	require.NoError(t, os.WriteFile(filepath.Join(stagingDir, "appdata", "bosun", "conf.yml"), []byte("config"), 0644))
+	// ...and the matching destination on disk so Backup keeps it and invokes tar
+	// (non-empty work, so the expired deadline surfaces instead of an early return).
 	require.NoError(t, os.MkdirAll(filepath.Join(appdataDir, "bosun"), 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(appdataDir, "bosun", "conf.yml"), []byte("config"), 0644))
 
