@@ -441,6 +441,71 @@ func TestDestinationSatisfiesSource(t *testing.T) {
 		_, _, err := destinationSatisfiesSource(src, filepath.Join(dir, "dst"))
 		require.Error(t, err)
 	})
+
+	t.Run("lstat error (non-directory parent) surfaces, not treated as missing", func(t *testing.T) {
+		dir := t.TempDir()
+		// A regular file used as a path's parent component yields ENOTDIR from
+		// Lstat — a real I/O error, distinct from fs.ErrNotExist (which would
+		// short-circuit to "no files, no mismatch").
+		notADir := filepath.Join(dir, "notadir")
+		touchFile(t, notADir, "x", time.Now())
+		sawFiles, mismatch, err := destinationSatisfiesSource(filepath.Join(notADir, "child"), filepath.Join(dir, "dst"))
+		require.Error(t, err)
+		assert.False(t, sawFiles)
+		assert.Empty(t, mismatch)
+	})
+
+	t.Run("unreadable regular file in dir source surfaces hash error", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("running as root bypasses file permissions")
+		}
+		dir := t.TempDir()
+		src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
+		touchFile(t, filepath.Join(src, "a.yml"), "a", time.Now())
+		require.NoError(t, os.Chmod(filepath.Join(src, "a.yml"), 0000))
+		t.Cleanup(func() { _ = os.Chmod(filepath.Join(src, "a.yml"), 0644) })
+
+		// Walk reaches the regular file, then FileHash(src) fails to open it.
+		_, _, err := destinationSatisfiesSource(src, dst)
+		require.Error(t, err)
+	})
+
+	t.Run("unreadable single-file source surfaces hash error", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("running as root bypasses file permissions")
+		}
+		dir := t.TempDir()
+		srcFile := filepath.Join(dir, "single.yml")
+		touchFile(t, srcFile, "v", time.Now())
+		require.NoError(t, os.Chmod(srcFile, 0000))
+		t.Cleanup(func() { _ = os.Chmod(srcFile, 0644) })
+
+		sawFiles, _, err := destinationSatisfiesSource(srcFile, filepath.Join(dir, "dst"))
+		require.Error(t, err)
+		assert.True(t, sawFiles, "a regular (if unreadable) file still counts as seen")
+	})
+}
+
+// TestVerifyDeployTarget_CompareError_Surfaces covers the empty-writes branch's
+// error path: when destinationSatisfiesSource cannot compare (an I/O failure
+// hashing the source), verifyDeployTarget wraps it as a "compare source" error
+// — distinct from the silent-sync sentinel, since the gate could not reach a
+// verdict.
+func TestVerifyDeployTarget_CompareError_Surfaces(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses file permissions")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	touchFile(t, filepath.Join(src, "a.yml"), "a", time.Now())
+	require.NoError(t, os.Chmod(filepath.Join(src, "a.yml"), 0000))
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(src, "a.yml"), 0644) })
+
+	err := verifyDeployTarget(src, dst, nil, time.Now().Add(-time.Minute))
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrDeployInvariantEmptyWrite, "an I/O comparison failure is not a silent-sync verdict")
+	assert.Contains(t, err.Error(), "compare source")
 }
 
 func TestDirHasRegularFiles(t *testing.T) {
