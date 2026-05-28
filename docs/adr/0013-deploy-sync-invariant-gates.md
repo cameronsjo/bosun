@@ -41,6 +41,14 @@ Future gates SHOULD follow this template:
 - Tests cover: each sentinel triggers the right error, the override bypasses (when applicable), boundary conditions where strict equality matters
 - Per-file `Debug` log at gate entry so operators tracing a deploy see the gate firing
 
+### Amendment — GH#330 (empty-write gate refinement)
+
+The `ErrDeployInvariantEmptyWrite` gate originally treated **any** zero-write deploy target with a non-empty source as a failure, on the assumption that "source has files but nothing was written" is the silent-sync signature. This was too aggressive: with content-hash sync, a target legitimately records zero writes when the destination already byte-matches the source. [GH#330](https://github.com/cameronsjo/bosun/issues/330) is the resulting outage — a single byte-identical config (`dnscrypt-proxy.toml`) tripped the gate and aborted the entire reconcile before `docker compose up`, taking down 62 containers.
+
+The gate now **inspects the destination** instead of inferring from the write count: on zero writes against a non-empty source it verifies each source file exists at the destination. All present → legitimate no-op, pass. Any missing → genuine silent-sync failure, fire `ErrDeployInvariantEmptyWrite` (the error now carries a `missing=…` field naming the first absent file). This preserves the gate's protective value — it still catches "files should be on disk but aren't" — while removing the false positive. The reframing also strengthens the gate: it asserts the post-condition (files present at destination) directly rather than via the `WrittenFiles` proxy.
+
+This is consistent with the original "fail loud, but only on genuine absence of work" intent; the bug was conflating "no write this run" with "no file on disk."
+
 ## Consequences
 
 ### Pros
