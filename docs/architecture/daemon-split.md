@@ -7,6 +7,24 @@ Split bosun into two components for resilience and flexibility:
 1. **Host Daemon** (`bosun daemon`) - Runs on Unraid host, survives array stop/start
 2. **Webhook Container** (`bosun-webhook`) - Optional, disposable, handles external triggers
 
+> **Implementation status.** This is the original split-architecture *design
+> proposal*; some details below were never implemented as written. The shipped
+> daemon's actual interfaces:
+>
+> - **Unix socket `/var/run/bosun.sock`** — primary control API (default).
+> - **HTTP webhooks on `:8080`** — GitHub (`/webhook/github`) plus a generic
+>   HMAC endpoint (`/webhook`), and `/health` / `/ready` probes.
+> - **Optional TCP API on `127.0.0.1:9090`** — disabled by default; enable with
+>   `BOSUN_ENABLE_TCP=true` and a required `BOSUN_BEARER_TOKEN`.
+> - Reconcile lock file: `/var/run/bosun/reconcile.lock`.
+> - **Webhook provider split:** the daemon natively parses GitHub plus a generic
+>   HMAC endpoint (`/webhook`). The optional `bosun webhook` receiver normalizes
+>   any provider and forwards to the daemon's trigger endpoint — its reason to
+>   exist is GitLab/Gitea/Bitbucket, which the daemon has no native parser for.
+>
+> There is **no `BOSUN_TRIGGER_PORT`** env var and **no port `9999`** in the
+> codebase — the `8080` references below are the real HTTP port.
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                         UNRAID HOST                              │
@@ -23,7 +41,7 @@ Split bosun into two components for resilience and flexibility:
 │  │  • Snapshot before deploy, rollback on failure              │ │
 │  │  • Discord/SendGrid/Twilio alerting                         │ │
 │  │                                                             │ │
-│  │  HTTP API (localhost:9999):                                 │ │
+│  │  HTTP API (localhost:8080):                                 │ │
 │  │    POST /trigger      - Trigger reconcile                   │ │
 │  │    GET  /health       - Health check                        │ │
 │  │    GET  /status       - Current state, last reconcile       │ │
@@ -39,7 +57,7 @@ Split bosun into two components for resilience and flexibility:
 │  │  • Receives GitHub webhook POST                             │ │
 │  │  • HMAC-SHA256 signature validation                         │ │
 │  │  • Filters by branch (only trigger on tracked branch)       │ │
-│  │  • Calls daemon at host.docker.internal:9999/trigger        │ │
+│  │  • Calls daemon at host.docker.internal:8080/trigger        │ │
 │  │                                                             │ │
 │  │  Exposed via: Tailscale Funnel / Cloudflare Tunnel          │ │
 │  └─────────────────────────────────────────────────────────────┘ │
@@ -85,7 +103,6 @@ Split bosun into two components for resilience and flexibility:
 BOSUN_REPO_URL=git@github.com:user/infrastructure.git
 BOSUN_REPO_BRANCH=main
 BOSUN_POLL_INTERVAL=3600
-BOSUN_TRIGGER_PORT=9999
 SOPS_AGE_KEY_FILE=/boot/config/plugins/bosun/age-key.txt
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 ```
@@ -120,7 +137,7 @@ services:
     restart: unless-stopped
     environment:
       WEBHOOK_SECRET: ${WEBHOOK_SECRET}
-      DAEMON_URL: http://host.docker.internal:9999
+      DAEMON_URL: http://host.docker.internal:8080
       TRACKED_BRANCH: main
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -155,14 +172,14 @@ services:
 extra_hosts:
   - "host.docker.internal:host-gateway"
 environment:
-  DAEMON_URL: http://host.docker.internal:9999
+  DAEMON_URL: http://host.docker.internal:8080
 ```
 Requires Docker 20.10+
 
 **Option 2: Bridge Gateway IP**
 ```yaml
 environment:
-  DAEMON_URL: http://172.17.0.1:9999
+  DAEMON_URL: http://172.17.0.1:8080
 ```
 Works on older Docker, but IP may vary.
 
@@ -170,7 +187,7 @@ Works on older Docker, but IP may vary.
 ```yaml
 network_mode: host
 environment:
-  DAEMON_URL: http://localhost:9999
+  DAEMON_URL: http://localhost:8080
 ```
 Loses network isolation.
 
