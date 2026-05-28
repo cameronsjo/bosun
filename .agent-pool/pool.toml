@@ -1,0 +1,33 @@
+[pool]
+name = "bosun"
+project_dir = "/Users/cameron/Projects/bosun"
+
+[concierge]
+model = "sonnet"
+
+[architect]
+model = "opus"
+session_timeout = "30m"
+approval_mode = "decomposition"
+human_inbox = "stdout"
+
+[defaults]
+model = "sonnet"
+session_timeout = "10m"
+allowed_tools = ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
+
+[experts.gitops-engine]
+# Core reconcile loop, git operations, template rendering, drift detection
+# Scope: internal/reconcile/, internal/manifest/, internal/git/
+
+[experts.docker]
+# Docker SDK, compose integration, container lifecycle
+# Scope: internal/docker/
+
+[experts.daemon-api]
+# Unix socket server, webhook listeners, health endpoints
+# Scope: internal/daemon/, internal/tunnel/
+
+[experts.config]
+# YAML manifest parsing, validation, stack/crew/yacht config
+# Scope: internal/config/, internal/preflight/

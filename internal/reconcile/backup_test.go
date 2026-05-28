@@ -152,3 +152,72 @@ func TestCreateBackup_HonorsBackupTimeout(t *testing.T) {
 		t.Fatal("createBackup did not return within bound — BackupTimeout not honored")
 	}
 }
+
+// TestExtractBackupArchive round-trips through the real Backup(): create an
+// archive, extract it, and confirm the backed-up file resolves under the
+// extracted root accounting for tar's leading-'/' stripping (#332/#335).
+func TestExtractBackupArchive(t *testing.T) {
+	if _, err := exec.LookPath("tar"); err != nil {
+		t.Skip("tar not installed")
+	}
+
+	tmpDir := evalSymlinks(t, t.TempDir())
+	appdata := filepath.Join(tmpDir, "appdata", "compose")
+	require.NoError(t, os.MkdirAll(appdata, 0755))
+	composeFile := filepath.Join(appdata, "stack.yml")
+	require.NoError(t, os.WriteFile(composeFile, []byte("services: {}"), 0644))
+
+	backupDir := filepath.Join(tmpDir, "backups")
+	d := NewDeployOps(false, "")
+	backupName, err := d.Backup(context.Background(), backupDir, []string{appdata})
+	require.NoError(t, err)
+	backupPath := filepath.Join(backupDir, backupName)
+
+	root, cleanup, err := extractBackupArchive(context.Background(), backupPath)
+	require.NoError(t, err)
+	defer cleanup()
+	require.NotEmpty(t, root)
+
+	// The deployed compose file's backed-up copy must resolve from the extracted
+	// tree using its original absolute path.
+	resolved, ok := resolveBackupFile(root, composeFile)
+	require.True(t, ok, "backed-up compose file should resolve under extracted root")
+	content, err := os.ReadFile(resolved)
+	require.NoError(t, err)
+	assert.Equal(t, "services: {}", string(content))
+
+	// cleanup must remove the temp tree.
+	cleanup()
+	_, statErr := os.Stat(root)
+	assert.True(t, os.IsNotExist(statErr), "cleanup should remove the extracted temp dir")
+}
+
+func TestExtractBackupArchive_MissingArchive(t *testing.T) {
+	backupPath := t.TempDir() // No configs.tar.gz inside.
+	root, cleanup, err := extractBackupArchive(context.Background(), backupPath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "backup archive not found")
+	assert.Empty(t, root)
+	assert.NotNil(t, cleanup, "cleanup must be safe to call even on error")
+	cleanup() // must not panic
+}
+
+func TestResolveBackupFile(t *testing.T) {
+	root := t.TempDir()
+	// Simulate an extracted tree: a member at <root>/mnt/appdata/compose/stack.yml.
+	member := filepath.Join(root, "mnt", "appdata", "compose", "stack.yml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(member), 0755))
+	require.NoError(t, os.WriteFile(member, []byte("x"), 0644))
+
+	t.Run("resolves absolute original path with leading slash stripped", func(t *testing.T) {
+		resolved, ok := resolveBackupFile(root, "/mnt/appdata/compose/stack.yml")
+		require.True(t, ok)
+		assert.Equal(t, member, resolved)
+	})
+
+	t.Run("reports missing file", func(t *testing.T) {
+		resolved, ok := resolveBackupFile(root, "/mnt/appdata/compose/absent.yml")
+		assert.False(t, ok)
+		assert.Empty(t, resolved)
+	})
+}

@@ -34,8 +34,9 @@ Every reconciliation follows this 16-stage sequence:
  8. Deploy files (local copy or tar-over-SSH)
         |
  9. Verify deploy-sync invariants — every WrittenFiles entry must exist
-    with fresh mtime; empty WrittenFiles against non-empty source is an
-    error. Skipped if BOSUN_SKIP_DEPLOY_INVARIANT=true.
+    with fresh mtime; empty WrittenFiles against a non-empty source fails
+    only when the destination is missing those files (a no-op sync that
+    already matches passes). Skipped if BOSUN_SKIP_DEPLOY_INVARIANT=true.
         |
 10. Run docker compose up (per-file isolated, with rollback)
         |
@@ -59,7 +60,7 @@ Every reconciliation follows this 16-stage sequence:
 Bosun enforces two invariant gates that turn the GH#214 silent-success failure mode into a loud error:
 
 - **Declared-state invariant (stage 6)** — if `ExtractDeclaredState` returns `ErrComposeDirMissing` the reconcile fails unconditionally (no override). When the infra dir has no `compose/` but a sibling directory does, the error names the candidate and suggests the `BOSUN_INFRA_DIR` value to set (e.g. `did you mean BOSUN_INFRA_DIR=unraid?`) — the GH#214 misconfiguration. If it returns `ErrNoDeclaredServices` the reconcile fails unless `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true` is set; the override logs at `Warn` level with `override=true`.
-- **Post-deploy invariant (stage 9)** — for every file in `DeployResult.WrittenFiles`, the destination must exist at `mtime >= reconcileStartTime`. If a deploy target's source staging dir contains regular files but the target's `WrittenFiles` is empty, that is the GH#214 silent-sync signature and fails the reconcile before `docker compose up` runs.
+- **Post-deploy invariant (stage 9)** — for every file in `DeployResult.WrittenFiles`, the destination must exist at `mtime >= reconcileStartTime`. When a deploy target records zero writes against a non-empty source, the gate inspects the destination directly: if every source file is already present it is a legitimate no-op sync (content-hash match) and passes; if any file is missing it is the GH#214 silent-sync failure and fails the reconcile before `docker compose up` runs. (The earlier behavior — treating *any* zero-write target as a failure — caused the GH#330 outage, where one byte-identical config aborted the entire deploy.)
 
 Operators can bypass the post-deploy invariant for diagnostic deploys via `BOSUN_SKIP_DEPLOY_INVARIANT=true`. The skip is logged at `Warn` level with `override=true` so it shows up in monitoring; the declared-state invariant is not affected by this flag.
 
@@ -412,6 +413,8 @@ Use `deploy_sync_paths` (allowlist) and `deploy_sync_exclude` (blocklist) in `bo
 ### Local Deployment
 
 Default mode. Copies rendered files directly to the local filesystem and runs `docker compose up` per-file with isolated rollback. Each compose file is deployed independently — if one file fails (e.g., bad image tag), only that file is rolled back from backup while other files continue. A final orphan-reconciliation pass runs `--remove-orphans` across all files to clean up stale containers.
+
+**Stale-file pruning is managed-set scoped.** When content-hash sync is on (default), bosun removes a target file only if it was in the *previous* deploy's manifest (`state.deployed_files`) **and** is absent from the current rendered source. Files bosun never wrote — container runtime data like `db.sqlite3`, `grafana.db`, or a service's `data/` dir living alongside config in the same appdata dir — are never in the manifest, so they are never deleted. A render that produces zero files also skips pruning entirely, so a templating failure can't wipe a populated target. The first deploy after upgrading (empty manifest) prunes nothing and simply seeds the manifest.
 
 ```bash
 bosun reconcile -l             # Force local mode

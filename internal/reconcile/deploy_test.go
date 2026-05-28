@@ -316,7 +316,7 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "file2.txt"), []byte("content2"), 0644))
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.DeployLocal(ctx, sourceDir, targetDir, nil)
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir, nil, nil)
 
 		require.NoError(t, err)
 
@@ -348,7 +348,7 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "subdir", "nested", "deep.txt"), []byte("deep"), 0644))
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.DeployLocal(ctx, sourceDir, targetDir, nil)
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir, nil, nil)
 
 		require.NoError(t, err)
 
@@ -374,7 +374,7 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "old.txt"), []byte("old"), 0644))
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.DeployLocal(ctx, sourceDir, targetDir, nil)
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir, nil, nil)
 
 		require.NoError(t, err)
 
@@ -397,7 +397,7 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "file.txt"), []byte("content"), 0644))
 
 		deploy := NewDeployOps(true, "")
-		err := deploy.DeployLocal(ctx, sourceDir, targetDir, nil)
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir, nil, nil)
 
 		require.NoError(t, err)
 
@@ -413,7 +413,7 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		targetDir := filepath.Join(tmpDir, "target")
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.DeployLocal(ctx, sourceDir, targetDir, nil)
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir, nil, nil)
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "source directory")
@@ -429,7 +429,7 @@ func TestDeployOps_DeployLocal(t *testing.T) {
 		require.NoError(t, os.WriteFile(sourceFile, []byte("content"), 0644))
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.DeployLocal(ctx, sourceFile, targetDir, nil)
+		err := deploy.DeployLocal(ctx, sourceFile, targetDir, nil, nil)
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "not a directory")
@@ -522,7 +522,7 @@ func TestDeployOps_DeployLocal_ContentHash(t *testing.T) {
 
 		deploy := &DeployOps{ContentHashSync: true}
 		result := &DeployResult{}
-		err := deploy.DeployLocal(ctx, sourceDir, targetDir, result)
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir, result, nil)
 
 		require.NoError(t, err)
 		assert.Equal(t, []string{"changed.txt"}, result.WrittenFiles)
@@ -542,8 +542,11 @@ func TestDeployOps_DeployLocal_ContentHash(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "keep.txt"), []byte("keep"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "stale.txt"), []byte("remove me"), 0644))
 
+		// Both files were in bosun's previous deploy manifest. stale.txt is gone
+		// from source, so the managed-set prune removes it; keep.txt survives.
+		prevManaged := map[string]bool{"keep.txt": true, "stale.txt": true}
 		deploy := &DeployOps{ContentHashSync: true}
-		err := deploy.DeployLocal(ctx, sourceDir, targetDir, nil)
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir, &DeployResult{}, prevManaged)
 
 		require.NoError(t, err)
 		assert.FileExists(t, filepath.Join(targetDir, "keep.txt"))
@@ -565,7 +568,7 @@ func TestDeployOps_DeployLocal_ContentHash(t *testing.T) {
 
 		deploy := &DeployOps{ContentHashSync: true}
 		result := &DeployResult{}
-		err := deploy.DeployLocal(ctx, sourceDir, targetDir, result)
+		err := deploy.DeployLocal(ctx, sourceDir, targetDir, result, nil)
 
 		require.NoError(t, err)
 		assert.Empty(t, result.WrittenFiles)
@@ -938,7 +941,7 @@ func TestDeployOps_DeployLocal_ContextCancelled(t *testing.T) {
 	cancel()
 
 	d := &DeployOps{ContentHashSync: true}
-	err := d.DeployLocal(ctx, sourceDir, targetDir, nil)
+	err := d.DeployLocal(ctx, sourceDir, targetDir, nil, nil)
 	// Context should propagate through the sync.
 	if err != nil {
 		assert.ErrorIs(t, err, context.Canceled)
@@ -1067,70 +1070,110 @@ func TestDeployOps_DryRun_Remote(t *testing.T) {
 func TestRemoveStaleFiles(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("removes file not in source", func(t *testing.T) {
+	t.Run("removes managed file gone from source", func(t *testing.T) {
 		srcDir := evalSymlinks(t, t.TempDir())
 		tgtDir := evalSymlinks(t, t.TempDir())
 
-		// Source has file-a, target has file-a + file-b (stale).
+		// Source has file-a; target has file-a + file-b. Both were managed last
+		// deploy; file-b is now gone from source, so it should be pruned.
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "file-a.txt"), []byte("a"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "file-a.txt"), []byte("a"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "file-b.txt"), []byte("b"), 0644))
 
-		err := removeStaleFiles(ctx, srcDir, tgtDir)
-		require.NoError(t, err)
+		prevManaged := map[string]bool{"file-a.txt": true, "file-b.txt": true}
+		require.NoError(t, removeStaleFiles(ctx, srcDir, tgtDir, prevManaged))
 
 		assert.FileExists(t, filepath.Join(tgtDir, "file-a.txt"))
 		assert.NoFileExists(t, filepath.Join(tgtDir, "file-b.txt"))
 	})
 
-	t.Run("removes stale directory", func(t *testing.T) {
+	t.Run("preserves unmanaged runtime file", func(t *testing.T) {
 		srcDir := evalSymlinks(t, t.TempDir())
 		tgtDir := evalSymlinks(t, t.TempDir())
 
-		// Source has no subdir, target has a stale subdir.
-		staleDir := filepath.Join(tgtDir, "stale-dir")
-		require.NoError(t, os.MkdirAll(staleDir, 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(staleDir, "deep.txt"), []byte("deep"), 0644))
+		// Repo deploys config-only; target also holds a runtime DB bosun never
+		// wrote. The DB is NOT in the manifest, so it must survive.
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "configuration.yml"), []byte("cfg"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "configuration.yml"), []byte("cfg"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "db.sqlite3"), []byte("data"), 0644))
 
-		err := removeStaleFiles(ctx, srcDir, tgtDir)
-		require.NoError(t, err)
+		// Manifest contains only the config file; db.sqlite3 is unmanaged.
+		prevManaged := map[string]bool{"configuration.yml": true}
+		require.NoError(t, removeStaleFiles(ctx, srcDir, tgtDir, prevManaged))
 
-		assert.NoDirExists(t, staleDir)
+		assert.FileExists(t, filepath.Join(tgtDir, "configuration.yml"))
+		assert.FileExists(t, filepath.Join(tgtDir, "db.sqlite3"), "unmanaged runtime data must not be pruned")
 	})
 
-	t.Run("keeps matching files and dirs", func(t *testing.T) {
+	t.Run("prunes managed file in subdir", func(t *testing.T) {
 		srcDir := evalSymlinks(t, t.TempDir())
 		tgtDir := evalSymlinks(t, t.TempDir())
 
-		// Both have the same structure.
+		// Managed nested file gone from source -> pruned; sibling unmanaged
+		// runtime file in the same subdir survives.
+		require.NoError(t, os.MkdirAll(filepath.Join(tgtDir, "sub"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "sub", "old.yml"), []byte("old"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "sub", "runtime.log"), []byte("log"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "keep.txt"), []byte("k"), 0644))
+
+		prevManaged := map[string]bool{"sub/old.yml": true, "keep.txt": true}
+		require.NoError(t, removeStaleFiles(ctx, srcDir, tgtDir, prevManaged))
+
+		assert.NoFileExists(t, filepath.Join(tgtDir, "sub", "old.yml"))
+		assert.FileExists(t, filepath.Join(tgtDir, "sub", "runtime.log"), "unmanaged file must survive")
+	})
+
+	t.Run("empty manifest prunes nothing", func(t *testing.T) {
+		srcDir := evalSymlinks(t, t.TempDir())
+		tgtDir := evalSymlinks(t, t.TempDir())
+
+		// First deploy after upgrade: no prior manifest. Target's existing files
+		// (e.g. runtime data) must be left untouched.
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "file-a.txt"), []byte("a"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "leftover.txt"), []byte("x"), 0644))
+
+		require.NoError(t, removeStaleFiles(ctx, srcDir, tgtDir, nil))
+
+		assert.FileExists(t, filepath.Join(tgtDir, "leftover.txt"))
+	})
+
+	t.Run("empty source skips pruning (render-failure guard)", func(t *testing.T) {
+		srcDir := evalSymlinks(t, t.TempDir())
+		tgtDir := evalSymlinks(t, t.TempDir())
+
+		// Source rendered empty but the manifest is non-empty -> suspected render
+		// failure. Pruning must be skipped so the populated target is preserved.
+		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "a.txt"), []byte("a"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "b.txt"), []byte("b"), 0644))
+
+		prevManaged := map[string]bool{"a.txt": true, "b.txt": true}
+		require.NoError(t, removeStaleFiles(ctx, srcDir, tgtDir, prevManaged))
+
+		assert.FileExists(t, filepath.Join(tgtDir, "a.txt"))
+		assert.FileExists(t, filepath.Join(tgtDir, "b.txt"))
+	})
+
+	t.Run("keeps managed files still in source", func(t *testing.T) {
+		srcDir := evalSymlinks(t, t.TempDir())
+		tgtDir := evalSymlinks(t, t.TempDir())
+
 		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "sub"), 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "sub", "keep.txt"), []byte("keep"), 0644))
 		require.NoError(t, os.MkdirAll(filepath.Join(tgtDir, "sub"), 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "sub", "keep.txt"), []byte("keep"), 0644))
 
-		err := removeStaleFiles(ctx, srcDir, tgtDir)
-		require.NoError(t, err)
+		prevManaged := map[string]bool{"sub/keep.txt": true}
+		require.NoError(t, removeStaleFiles(ctx, srcDir, tgtDir, prevManaged))
 
 		assert.FileExists(t, filepath.Join(tgtDir, "sub", "keep.txt"))
 	})
 
-	t.Run("empty source removes everything from target", func(t *testing.T) {
-		srcDir := evalSymlinks(t, t.TempDir())
-		tgtDir := evalSymlinks(t, t.TempDir())
-
-		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "a.txt"), []byte("a"), 0644))
-		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "b.txt"), []byte("b"), 0644))
-
-		err := removeStaleFiles(ctx, srcDir, tgtDir)
-		require.NoError(t, err)
-
-		assert.NoFileExists(t, filepath.Join(tgtDir, "a.txt"))
-		assert.NoFileExists(t, filepath.Join(tgtDir, "b.txt"))
-	})
-
 	t.Run("non-existent target returns error", func(t *testing.T) {
-		sourceDir := t.TempDir()
-		err := removeStaleFiles(ctx, sourceDir, "/nonexistent/target")
+		srcDir := evalSymlinks(t, t.TempDir())
+		// Source must have a regular file to pass the empty-source guard so the
+		// walk of the (missing) target is reached.
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "x.txt"), []byte("x"), 0644))
+		err := removeStaleFiles(ctx, srcDir, "/nonexistent/target", map[string]bool{"gone.txt": true})
 		assert.Error(t, err)
 	})
 
@@ -1145,23 +1188,23 @@ func TestRemoveStaleFiles(t *testing.T) {
 		srcDir := evalSymlinks(t, t.TempDir())
 		tgtDir := evalSymlinks(t, t.TempDir())
 
-		// Create a stale file inside a read-only directory so os.Remove fails.
+		// Create a managed stale file inside a read-only directory so os.Remove fails.
 		lockedDir := filepath.Join(tgtDir, "locked")
 		require.NoError(t, os.MkdirAll(lockedDir, 0755))
 		staleFile := filepath.Join(lockedDir, "stale.txt")
 		require.NoError(t, os.WriteFile(staleFile, []byte("stale"), 0644))
 
-		// Source has the locked dir but not the stale file.
-		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "locked"), 0755))
+		// Source has a regular file (passes the empty-source guard) but not the stale file.
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "present.txt"), []byte("p"), 0644))
 
 		// Make the directory read-only so the file inside cannot be removed.
 		require.NoError(t, os.Chmod(lockedDir, 0555))
 		t.Cleanup(func() {
-			// Restore permissions so t.TempDir() cleanup succeeds.
 			_ = os.Chmod(lockedDir, 0755)
 		})
 
-		err := removeStaleFiles(ctx, srcDir, tgtDir)
+		prevManaged := map[string]bool{"locked/stale.txt": true, "present.txt": true}
+		err := removeStaleFiles(ctx, srcDir, tgtDir, prevManaged)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "stale file(s) could not be removed")
 		assert.Contains(t, err.Error(), "stale.txt")
@@ -1182,7 +1225,7 @@ func TestDeployOps_DeployLocal_ContentHashSync(t *testing.T) {
 	d.ContentHashSync = true
 	result := &DeployResult{}
 
-	err := d.DeployLocal(context.Background(), srcDir, tgtDir, result)
+	err := d.DeployLocal(context.Background(), srcDir, tgtDir, result, nil)
 	require.NoError(t, err)
 
 	// Target should have the file.
@@ -1202,7 +1245,7 @@ func TestDeployOps_DeployLocal_StandardMode(t *testing.T) {
 	d.ContentHashSync = false
 	result := &DeployResult{}
 
-	err := d.DeployLocal(context.Background(), srcDir, tgtDir, result)
+	err := d.DeployLocal(context.Background(), srcDir, tgtDir, result, nil)
 	require.NoError(t, err)
 
 	// Target should have the file.
@@ -1216,14 +1259,14 @@ func TestDeployOps_DeployLocal_SourceNotDir(t *testing.T) {
 	require.NoError(t, os.WriteFile(srcFile, []byte("file"), 0644))
 
 	d := NewDeployOps(false, "")
-	err := d.DeployLocal(context.Background(), srcFile, filepath.Join(tmpDir, "tgt"), nil)
+	err := d.DeployLocal(context.Background(), srcFile, filepath.Join(tmpDir, "tgt"), nil, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not a directory")
 }
 
 func TestDeployOps_DeployLocal_SourceMissing(t *testing.T) {
 	d := NewDeployOps(false, "")
-	err := d.DeployLocal(context.Background(), "/nonexistent/source/dir", "/tmp/tgt", nil)
+	err := d.DeployLocal(context.Background(), "/nonexistent/source/dir", "/tmp/tgt", nil, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "source directory")
 }
@@ -1243,7 +1286,7 @@ func TestDeployOps_DeployLocal_ReplacesExistingTarget(t *testing.T) {
 	d := NewDeployOps(false, "")
 	d.ContentHashSync = false
 
-	err := d.DeployLocal(context.Background(), srcDir, tgtDir, nil)
+	err := d.DeployLocal(context.Background(), srcDir, tgtDir, nil, nil)
 	require.NoError(t, err)
 
 	assert.FileExists(t, filepath.Join(tgtDir, "new.yml"))
@@ -1310,6 +1353,21 @@ func TestDeployOps_DeployLocalFile_StandardMode(t *testing.T) {
 	assert.Equal(t, "data", string(data))
 }
 
+// writeBackupArchive creates backupDir/configs.tar.gz containing the given
+// absolute file paths, mirroring how Backup() stores them (tar strips the
+// leading '/', so member "/x/y" is stored as "x/y"). Used to exercise the
+// rollback paths, which extract this archive rather than reading loose files.
+func writeBackupArchive(t *testing.T, backupDir string, files ...string) {
+	t.Helper()
+	if _, err := exec.LookPath("tar"); err != nil {
+		t.Skip("tar not installed")
+	}
+	require.NoError(t, os.MkdirAll(backupDir, 0755))
+	args := append([]string{"-czf", filepath.Join(backupDir, "configs.tar.gz")}, files...)
+	out, err := exec.Command("tar", args...).CombinedOutput()
+	require.NoError(t, err, "tar failed: %s", out)
+}
+
 func TestDeployOps_ComposeUpMultipleWithRollback_NoBackup(t *testing.T) {
 	// When backupPath is empty and compose up fails, should return error mentioning no backup.
 	d := NewDeployOps(false, "")
@@ -1320,9 +1378,28 @@ func TestDeployOps_ComposeUpMultipleWithRollback_NoBackup(t *testing.T) {
 	assert.Contains(t, err.Error(), "no backup available")
 }
 
-func TestDeployOps_ComposeUpMultipleWithRollback_NoBackupFiles(t *testing.T) {
+func TestDeployOps_ComposeUpMultipleWithRollback_NoArchive(t *testing.T) {
+	// Backup dir exists but holds no configs.tar.gz — extraction fails, so this
+	// is "no backup available" (there is no archive to extract).
 	d := NewDeployOps(false, "")
-	backupDir := t.TempDir() // Empty backup directory.
+	backupDir := t.TempDir()
+
+	err := d.ComposeUpMultipleWithRollback(context.Background(), []string{"/nonexistent/compose.yml"}, backupDir)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no backup available")
+}
+
+func TestDeployOps_ComposeUpMultipleWithRollback_NoBackupFiles(t *testing.T) {
+	// A valid archive exists but does not contain the compose file being rolled
+	// back — so after extraction no backup file resolves: "no backup files found".
+	d := NewDeployOps(false, "")
+	tmpDir := t.TempDir()
+
+	// Archive contains some unrelated file, not the compose file under test.
+	other := filepath.Join(tmpDir, "unrelated.yml")
+	require.NoError(t, os.WriteFile(other, []byte("version: '3'"), 0644))
+	backupDir := filepath.Join(tmpDir, "backup")
+	writeBackupArchive(t, backupDir, other)
 
 	err := d.ComposeUpMultipleWithRollback(context.Background(), []string{"/nonexistent/compose.yml"}, backupDir)
 	assert.Error(t, err)
@@ -1380,7 +1457,10 @@ func TestDeployOps_DeployLocal_ContentHashSync_Stale(t *testing.T) {
 	d.ContentHashSync = true
 	result := &DeployResult{}
 
-	err := d.DeployLocal(context.Background(), srcDir, tgtDir, result)
+	// stale.yml was in the previous deploy manifest but is gone from source, so
+	// the managed-set prune removes it. keep.yml is still in source and survives.
+	prevManaged := map[string]bool{"keep.yml": true, "stale.yml": true}
+	err := d.DeployLocal(context.Background(), srcDir, tgtDir, result, prevManaged)
 	require.NoError(t, err)
 
 	// Stale file should be removed.
@@ -1413,8 +1493,6 @@ func TestDeployOps_CleanupBackups_RemovesOldest(t *testing.T) {
 	assert.Len(t, entries, 3)
 }
 
-
-
 func TestDeployOps_BackupMkdirError(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("skipping permission test when running as root")
@@ -1442,11 +1520,10 @@ func TestDeployOps_ComposeUpMultipleWithRollbackPaths(t *testing.T) {
 		composeFile := filepath.Join(tmpDir, "docker-compose.yml")
 		require.NoError(t, os.WriteFile(composeFile, []byte("not valid yaml: [[["), 0644))
 
-		// Create backup files (also invalid so rollback also fails).
+		// Backup archive contains the same (invalid) file at its absolute path, so
+		// rollback resolves it from the extracted tree but also fails on it.
 		backupDir := filepath.Join(tmpDir, "backup")
-		require.NoError(t, os.MkdirAll(backupDir, 0755))
-		backupFile := filepath.Join(backupDir, "docker-compose.yml")
-		require.NoError(t, os.WriteFile(backupFile, []byte("not valid yaml: [[["), 0644))
+		writeBackupArchive(t, backupDir, composeFile)
 
 		d := &DeployOps{DryRun: false, ProjectName: "rollbacktest"}
 		err := d.ComposeUpMultipleWithRollback(ctx, []string{composeFile}, backupDir)
@@ -1473,9 +1550,12 @@ func TestDeployOps_ComposeUpMultipleWithRollbackPaths(t *testing.T) {
 		composeFile := filepath.Join(tmpDir, "docker-compose.yml")
 		require.NoError(t, os.WriteFile(composeFile, []byte("not valid yaml: [[["), 0644))
 
-		// Backup dir exists but has no matching files.
+		// Archive exists and is valid, but holds an unrelated file — the compose
+		// file under rollback does not resolve inside it.
+		other := filepath.Join(tmpDir, "unrelated.yml")
+		require.NoError(t, os.WriteFile(other, []byte("version: '3'"), 0644))
 		backupDir := filepath.Join(tmpDir, "backup")
-		require.NoError(t, os.MkdirAll(backupDir, 0755))
+		writeBackupArchive(t, backupDir, other)
 
 		d := &DeployOps{DryRun: false, ProjectName: "rollbacktest"}
 		err := d.ComposeUpMultipleWithRollback(ctx, []string{composeFile}, backupDir)
@@ -1517,7 +1597,7 @@ func TestDeployOps_DeployLocalStandardMode(t *testing.T) {
 
 		d := &DeployOps{DryRun: false, ContentHashSync: false}
 		result := &DeployResult{}
-		err := d.DeployLocal(ctx, sourceDir, targetDir, result)
+		err := d.DeployLocal(ctx, sourceDir, targetDir, result, nil)
 		require.NoError(t, err)
 
 		// Verify new files exist.
@@ -1542,17 +1622,17 @@ func TestDeployOps_DeployLocalStandardMode(t *testing.T) {
 		cancel()
 
 		d := &DeployOps{DryRun: false, ContentHashSync: false}
-		err := d.DeployLocal(cancelledCtx, sourceDir, targetDir, nil)
+		err := d.DeployLocal(cancelledCtx, sourceDir, targetDir, nil, nil)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, context.Canceled)
 	})
 
 	t.Run("rollback decision with injected compose errors", func(t *testing.T) {
 		tests := []struct {
-			name            string
-			composeErr      error
-			wantErr         error
-			wantNoRollback  bool // true if rollback should be skipped
+			name           string
+			composeErr     error
+			wantErr        error
+			wantNoRollback bool // true if rollback should be skipped
 		}{
 			{
 				name:           "ErrComposeUnhealthy skips rollback",
@@ -1571,13 +1651,16 @@ func TestDeployOps_DeployLocalStandardMode(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				tmpDir := t.TempDir()
+				// Invalid compose content so the docker rollback (run directly,
+				// not via composeUpFn) fails -> ErrRollbackFailed. The deploy
+				// failure itself comes from the injected composeUpFn.
 				composeFile := filepath.Join(tmpDir, "docker-compose.yml")
-				require.NoError(t, os.WriteFile(composeFile, []byte("version: '3'"), 0644))
+				require.NoError(t, os.WriteFile(composeFile, []byte("not valid yaml: [[["), 0644))
 
+				// Archive the file at its absolute path so rollback resolves it
+				// from the extracted tree (#332/#335).
 				backupDir := filepath.Join(tmpDir, "backup")
-				require.NoError(t, os.MkdirAll(backupDir, 0755))
-				backupFile := filepath.Join(backupDir, "docker-compose.yml")
-				require.NoError(t, os.WriteFile(backupFile, []byte("not valid yaml: [[["), 0644))
+				writeBackupArchive(t, backupDir, composeFile)
 
 				d := &DeployOps{
 					DryRun:      false,
@@ -1615,7 +1698,7 @@ func TestDeployOps_DeployLocalStandardMode(t *testing.T) {
 		require.NoError(t, os.WriteFile(targetPath, []byte("block"), 0644))
 
 		d := &DeployOps{DryRun: false, ContentHashSync: true}
-		err := d.DeployLocal(ctx, sourceDir, targetPath, nil)
+		err := d.DeployLocal(ctx, sourceDir, targetPath, nil, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "create target directory")
 	})
