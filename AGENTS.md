@@ -229,7 +229,7 @@ Spec PRs follow an iterative review cycle before implementation begins:
 3. **Fix all findings** — including nitpicks (consistency prevents implementation bugs)
 4. **Iterate** until convergence (0 actionable or only stale findings)
 5. **Label `ready-to-build`** — spec is stable, implementation can begin
-6. **Rate-limit handling**: If CodeRabbit doesn't review within ~5min, trigger manually with `@coderabbitai review`
+6. **Rate-limit handling**: If CodeRabbit doesn't review within ~5min, trigger manually with `@coderabbitai review`. The "Review triggered" ack ≠ a review will run — rate limits drop reviews silently; trust the check's `startedAt`/`completedAt`, not the ack comment. CodeRabbit is **advisory** here (`main` has no branch protection → `mergeStateStatus: UNSTABLE`, never `BLOCKED`), so a persistent stall or stale `CHANGES_REQUESTED` doesn't hard-block a merge — fall back to green CI + your own verification and document the call on the PR.
 
 The `ready-to-build` label is a gate: do not start implementation until it's applied. Use `/spec-review` to automate the cycle.
 
