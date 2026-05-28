@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.5](https://github.com/cameronsjo/bosun/compare/v0.37.4...v0.37.5) (2026-05-28)
+
+
+### Bug Fixes
+
+* **reconcile:** scope pre-deploy backup to deployed config footprint ([#375](https://github.com/cameronsjo/bosun/issues/375)) ([ca1a30a](https://github.com/cameronsjo/bosun/commit/ca1a30ac20b42a736d5677107f6ddd53f40effe1))
+
 ## [0.37.4](https://github.com/cameronsjo/bosun/compare/v0.37.3...v0.37.4) (2026-05-28)
 
 
