@@ -58,6 +58,7 @@ make test-cover         # With coverage (creates coverage.out + coverage.html)
 - Deploy-path tests: seed prior state with `SaveState(stateFile, &DeployState{LastDeployedCommit: "aaa111"})` — path-aware skip requires a non-empty `state.LastDeployedCommit` as diff base
 - Daemon tests: `newConcurrencyDaemon(t)` for DryRun reconcile, `dockertest.MockDockerAPI` for Docker mocks
 - `captureStdout(t, func()) string` in `cmd/drift_test.go` captures stdout during a function call and returns it for assertions: `output := captureStdout(t, func() { runDrift(cmd, args) })` then `assert.Contains(t, output, "expected")`. Note: `ui.*` colored output goes to fatih/color writer, not stdout
+- codecov/patch gates the **diff** at 80% — new error-propagation branches (the `return err` lines behavioral tests skip) drag it under. Cover them with fault injection: `os.Chmod(path, 0000)` to fail `FileHash`/`os.Open`, or a regular file used as a path's parent dir to force `ENOTDIR` from `Lstat` (distinct from `fs.ErrNotExist`). Bit both #368 and #371.
 
 ## Key Packages
 
