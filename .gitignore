@@ -52,8 +52,11 @@ bosun/bosun
 /.review-loop.local.md
 .claude/intros/
 
-# Agent pool runtime (local domain-expert MCP state)
+# Agent pool runtime (local domain-expert MCP state) — but keep the one
+# tracked concierge identity that predates this ignore rule.
 /.agent-pool/
+!/.agent-pool/concierge/
+!/.agent-pool/concierge/identity.md
 
 # Local MCP server config
 /.mcp.json
