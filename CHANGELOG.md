@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.3](https://github.com/cameronsjo/bosun/compare/v0.37.2...v0.37.3) (2026-05-28)
+
+
+### Bug Fixes
+
+* **reconcile:** treat partial compose failure as deploy failure ([#333](https://github.com/cameronsjo/bosun/issues/333)) ([def175a](https://github.com/cameronsjo/bosun/commit/def175a660758779c224539b8dc8aebfd071ab23))
+
 ## [0.37.2](https://github.com/cameronsjo/bosun/compare/v0.37.1...v0.37.2) (2026-05-28)
 
 
