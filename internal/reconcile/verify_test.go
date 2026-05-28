@@ -98,6 +98,56 @@ func TestVerifyDeployTarget_ZeroWriteScenarios(t *testing.T) {
 			errContains: []string{"absent.yml"},
 		},
 		{
+			// Existence-only would PASS this (the file is present); content-
+			// equality catches the stale write the sync silently failed to replace.
+			name: "dir source, destination has stale content → silent failure errors",
+			setup: func(t *testing.T, dir string) (string, string) {
+				src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
+				touchFile(t, filepath.Join(src, "config.toml"), "server = \"new\"\n", stale)
+				touchFile(t, filepath.Join(dst, "config.toml"), "server = \"old\"\n", stale)
+				return src, dst
+			},
+			wantErr:     true,
+			errContains: []string{"config.toml"},
+		},
+		{
+			name: "dir source, nested file has stale content → silent failure errors",
+			setup: func(t *testing.T, dir string) (string, string) {
+				src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
+				touchFile(t, filepath.Join(src, "top.yml"), "a", stale)
+				touchFile(t, filepath.Join(src, "sub", "nested.yml"), "fresh", stale)
+				touchFile(t, filepath.Join(dst, "top.yml"), "a", stale)
+				touchFile(t, filepath.Join(dst, "sub", "nested.yml"), "stale", stale)
+				return src, dst
+			},
+			wantErr:     true,
+			errContains: []string{"nested.yml"},
+		},
+		{
+			name: "file source, destination has stale content → silent failure errors",
+			setup: func(t *testing.T, dir string) (string, string) {
+				srcFile := filepath.Join(dir, "src", "single.yml")
+				dstDir := filepath.Join(dir, "dst")
+				touchFile(t, srcFile, "v2", stale)
+				touchFile(t, filepath.Join(dstDir, "single.yml"), "v1", stale)
+				return srcFile, dstDir
+			},
+			wantErr:     true,
+			errContains: []string{"single.yml"},
+		},
+		{
+			// Symlink-only source: the copy path never deploys symlinks, so the
+			// invariant must impose no requirement and pass.
+			name: "dir source with only a symlink → passes (symlink not deployed)",
+			setup: func(t *testing.T, dir string) (string, string) {
+				src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
+				require.NoError(t, os.MkdirAll(src, 0755))
+				require.NoError(t, os.MkdirAll(dst, 0755))
+				require.NoError(t, os.Symlink("/nonexistent/target", filepath.Join(src, "link.yml")))
+				return src, dst
+			},
+		},
+		{
 			name: "file source, destination matches → no-op passes",
 			setup: func(t *testing.T, dir string) (string, string) {
 				srcFile := filepath.Join(dir, "src", "single.yml")
@@ -265,56 +315,119 @@ func TestVerifyDeployTarget_SrcIsRegularFile_HealthyPasses(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestFirstMissingSourceFile exercises the helper directly, including branches
-// verifyDeployTarget cannot reach (a missing source short-circuits earlier via
-// dirHasRegularFiles) and the stat-error path.
-func TestFirstMissingSourceFile(t *testing.T) {
-	t.Run("missing source returns nothing missing", func(t *testing.T) {
+// TestDestinationSatisfiesSource exercises the helper directly, including
+// branches verifyDeployTarget reaches only obliquely: the missing-source
+// short-circuit, content-equality (present-but-differing), symlink skipping
+// (Lstat semantics), and the walk stat-error path. The helper returns
+// (sawFiles, mismatch, err): sawFiles is whether the source held any regular
+// file; mismatch is the first absent-or-differing destination path ("" when
+// satisfied).
+func TestDestinationSatisfiesSource(t *testing.T) {
+	t.Run("missing source: no files, no mismatch", func(t *testing.T) {
 		dir := t.TempDir()
-		missing, err := firstMissingSourceFile(filepath.Join(dir, "nope"), dir)
+		sawFiles, mismatch, err := destinationSatisfiesSource(filepath.Join(dir, "nope"), dir)
 		require.NoError(t, err)
-		assert.Empty(t, missing)
+		assert.False(t, sawFiles)
+		assert.Empty(t, mismatch)
 	})
 
-	t.Run("dir source all present returns empty", func(t *testing.T) {
+	t.Run("dir source all present and content-equal: satisfied", func(t *testing.T) {
 		dir := t.TempDir()
 		src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
 		touchFile(t, filepath.Join(src, "a.yml"), "a", time.Now())
+		touchFile(t, filepath.Join(src, "sub", "b.yml"), "b", time.Now())
 		touchFile(t, filepath.Join(dst, "a.yml"), "a", time.Now())
-		missing, err := firstMissingSourceFile(src, dst)
+		touchFile(t, filepath.Join(dst, "sub", "b.yml"), "b", time.Now())
+		sawFiles, mismatch, err := destinationSatisfiesSource(src, dst)
 		require.NoError(t, err)
-		assert.Empty(t, missing)
+		assert.True(t, sawFiles)
+		assert.Empty(t, mismatch)
 	})
 
-	t.Run("dir source missing file returns its destination path", func(t *testing.T) {
+	t.Run("dir source missing file: mismatch names destination path", func(t *testing.T) {
 		dir := t.TempDir()
 		src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
 		touchFile(t, filepath.Join(src, "a.yml"), "a", time.Now())
 		require.NoError(t, os.MkdirAll(dst, 0755))
-		missing, err := firstMissingSourceFile(src, dst)
+		sawFiles, mismatch, err := destinationSatisfiesSource(src, dst)
 		require.NoError(t, err)
-		assert.Equal(t, filepath.Join(dst, "a.yml"), missing)
+		assert.True(t, sawFiles)
+		assert.Equal(t, filepath.Join(dst, "a.yml"), mismatch)
 	})
 
-	t.Run("file source present returns empty, absent returns path", func(t *testing.T) {
+	t.Run("dir source present but differing content: mismatch names destination path", func(t *testing.T) {
+		dir := t.TempDir()
+		src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
+		touchFile(t, filepath.Join(src, "a.yml"), "fresh", time.Now())
+		touchFile(t, filepath.Join(dst, "a.yml"), "stale", time.Now())
+		sawFiles, mismatch, err := destinationSatisfiesSource(src, dst)
+		require.NoError(t, err)
+		assert.True(t, sawFiles)
+		assert.Equal(t, filepath.Join(dst, "a.yml"), mismatch)
+	})
+
+	t.Run("file source: equal satisfied, differing and absent mismatch", func(t *testing.T) {
 		dir := t.TempDir()
 		srcFile := filepath.Join(dir, "single.yml")
 		touchFile(t, srcFile, "v", time.Now())
-		dstWith := filepath.Join(dir, "with")
-		touchFile(t, filepath.Join(dstWith, "single.yml"), "v", time.Now())
 
-		missing, err := firstMissingSourceFile(srcFile, dstWith)
+		dstEqual := filepath.Join(dir, "equal")
+		touchFile(t, filepath.Join(dstEqual, "single.yml"), "v", time.Now())
+		sawFiles, mismatch, err := destinationSatisfiesSource(srcFile, dstEqual)
 		require.NoError(t, err)
-		assert.Empty(t, missing)
+		assert.True(t, sawFiles)
+		assert.Empty(t, mismatch)
 
-		dstWithout := filepath.Join(dir, "without")
-		require.NoError(t, os.MkdirAll(dstWithout, 0755))
-		missing, err = firstMissingSourceFile(srcFile, dstWithout)
+		dstDiffer := filepath.Join(dir, "differ")
+		touchFile(t, filepath.Join(dstDiffer, "single.yml"), "other", time.Now())
+		sawFiles, mismatch, err = destinationSatisfiesSource(srcFile, dstDiffer)
 		require.NoError(t, err)
-		assert.Equal(t, filepath.Join(dstWithout, "single.yml"), missing)
+		assert.True(t, sawFiles)
+		assert.Equal(t, filepath.Join(dstDiffer, "single.yml"), mismatch)
+
+		dstAbsent := filepath.Join(dir, "absent")
+		require.NoError(t, os.MkdirAll(dstAbsent, 0755))
+		sawFiles, mismatch, err = destinationSatisfiesSource(srcFile, dstAbsent)
+		require.NoError(t, err)
+		assert.True(t, sawFiles)
+		assert.Equal(t, filepath.Join(dstAbsent, "single.yml"), mismatch)
 	})
 
-	t.Run("unreadable source subtree surfaces stat error", func(t *testing.T) {
+	t.Run("symlink source file: no requirement (not deployed)", func(t *testing.T) {
+		dir := t.TempDir()
+		srcLink := filepath.Join(dir, "link.yml")
+		require.NoError(t, os.Symlink("/nonexistent/target", srcLink))
+		sawFiles, mismatch, err := destinationSatisfiesSource(srcLink, filepath.Join(dir, "dst"))
+		require.NoError(t, err)
+		assert.False(t, sawFiles, "a symlink is not a regular file, so it imposes no requirement")
+		assert.Empty(t, mismatch)
+	})
+
+	t.Run("dir source: symlinks skipped, regular files still checked", func(t *testing.T) {
+		dir := t.TempDir()
+		src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
+		touchFile(t, filepath.Join(src, "real.yml"), "x", time.Now())
+		require.NoError(t, os.Symlink("/nonexistent/target", filepath.Join(src, "link.yml")))
+		touchFile(t, filepath.Join(dst, "real.yml"), "x", time.Now())
+		// dst has no link.yml — but the source symlink is skipped, so this is satisfied.
+		sawFiles, mismatch, err := destinationSatisfiesSource(src, dst)
+		require.NoError(t, err)
+		assert.True(t, sawFiles)
+		assert.Empty(t, mismatch, "the source symlink must not be required at the destination")
+	})
+
+	t.Run("dir source with only symlinks: no regular files seen", func(t *testing.T) {
+		dir := t.TempDir()
+		src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
+		require.NoError(t, os.MkdirAll(src, 0755))
+		require.NoError(t, os.Symlink("/nonexistent/target", filepath.Join(src, "link.yml")))
+		sawFiles, mismatch, err := destinationSatisfiesSource(src, dst)
+		require.NoError(t, err)
+		assert.False(t, sawFiles)
+		assert.Empty(t, mismatch)
+	})
+
+	t.Run("unreadable source subtree surfaces walk error", func(t *testing.T) {
 		if os.Geteuid() == 0 {
 			t.Skip("running as root bypasses directory permissions")
 		}
@@ -325,9 +438,74 @@ func TestFirstMissingSourceFile(t *testing.T) {
 		require.NoError(t, os.Chmod(filepath.Join(src, "sub"), 0000))
 		t.Cleanup(func() { _ = os.Chmod(filepath.Join(src, "sub"), 0755) })
 
-		_, err := firstMissingSourceFile(src, filepath.Join(dir, "dst"))
+		_, _, err := destinationSatisfiesSource(src, filepath.Join(dir, "dst"))
 		require.Error(t, err)
 	})
+
+	t.Run("lstat error (non-directory parent) surfaces, not treated as missing", func(t *testing.T) {
+		dir := t.TempDir()
+		// A regular file used as a path's parent component yields ENOTDIR from
+		// Lstat — a real I/O error, distinct from fs.ErrNotExist (which would
+		// short-circuit to "no files, no mismatch").
+		notADir := filepath.Join(dir, "notadir")
+		touchFile(t, notADir, "x", time.Now())
+		sawFiles, mismatch, err := destinationSatisfiesSource(filepath.Join(notADir, "child"), filepath.Join(dir, "dst"))
+		require.Error(t, err)
+		assert.False(t, sawFiles)
+		assert.Empty(t, mismatch)
+	})
+
+	t.Run("unreadable regular file in dir source surfaces hash error", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("running as root bypasses file permissions")
+		}
+		dir := t.TempDir()
+		src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
+		touchFile(t, filepath.Join(src, "a.yml"), "a", time.Now())
+		require.NoError(t, os.Chmod(filepath.Join(src, "a.yml"), 0000))
+		t.Cleanup(func() { _ = os.Chmod(filepath.Join(src, "a.yml"), 0644) })
+
+		// Walk reaches the regular file, then FileHash(src) fails to open it.
+		_, _, err := destinationSatisfiesSource(src, dst)
+		require.Error(t, err)
+	})
+
+	t.Run("unreadable single-file source surfaces hash error", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("running as root bypasses file permissions")
+		}
+		dir := t.TempDir()
+		srcFile := filepath.Join(dir, "single.yml")
+		touchFile(t, srcFile, "v", time.Now())
+		require.NoError(t, os.Chmod(srcFile, 0000))
+		t.Cleanup(func() { _ = os.Chmod(srcFile, 0644) })
+
+		sawFiles, _, err := destinationSatisfiesSource(srcFile, filepath.Join(dir, "dst"))
+		require.Error(t, err)
+		assert.True(t, sawFiles, "a regular (if unreadable) file still counts as seen")
+	})
+}
+
+// TestVerifyDeployTarget_CompareError_Surfaces covers the empty-writes branch's
+// error path: when destinationSatisfiesSource cannot compare (an I/O failure
+// hashing the source), verifyDeployTarget wraps it as a "compare source" error
+// — distinct from the silent-sync sentinel, since the gate could not reach a
+// verdict.
+func TestVerifyDeployTarget_CompareError_Surfaces(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses file permissions")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	touchFile(t, filepath.Join(src, "a.yml"), "a", time.Now())
+	require.NoError(t, os.Chmod(filepath.Join(src, "a.yml"), 0000))
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(src, "a.yml"), 0644) })
+
+	err := verifyDeployTarget(src, dst, nil, time.Now().Add(-time.Minute))
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrDeployInvariantEmptyWrite, "an I/O comparison failure is not a silent-sync verdict")
+	assert.Contains(t, err.Error(), "compare source")
 }
 
 func TestDirHasRegularFiles(t *testing.T) {
@@ -474,6 +652,43 @@ func TestDeployLocal_NoOpSync_PassesInvariant(t *testing.T) {
 	result, err := r.deployLocal(context.Background(), nil)
 	require.NoError(t, err, "a no-op sync against a content-matched destination must not trip the invariant")
 	assert.NotNil(t, result)
+}
+
+// TestDeployLocal_StandardMode_PassesInvariant is the B1 shape: standard
+// (non-content-hash) deploy nuke-and-replaces the target and records ZERO
+// writes (DeployLocal never calls AddWritten in this mode). The invariant must
+// not infer a silent-sync failure from the empty write list — it inspects the
+// destination directly and passes because the freshly copied files are
+// content-equal to the source. This locks in that the content-equality invariant
+// covers both deploy strategies, not just content-hash sync.
+func TestDeployLocal_StandardMode_PassesInvariant(t *testing.T) {
+	fx := newDeployLocalFixture(t)
+	now := time.Now()
+	// Differing dst content forces standard mode to actually overwrite; it still
+	// records no writes, so the invariant relies on post-deploy content equality.
+	touchFile(t, filepath.Join(fx.freshrssStaging, "config.yml"), "new-content", now)
+	touchFile(t, filepath.Join(fx.freshrssAppdata, "config.yml"), "old-content", now.Add(-24*time.Hour))
+	touchFile(t, filepath.Join(fx.composeStaging, "stub.yml"), "services:\n  stub: {}\n", now)
+	require.NoError(t, os.MkdirAll(fx.composeAppdata, 0755))
+
+	cfg := &Config{
+		StagingDir:       fx.stagingDir,
+		InfraSubDir:      "unraid",
+		LocalAppdataPath: fx.appdataDir,
+	}
+	// Standard mode: ContentHashSync disabled.
+	standard := &DeployOps{DryRun: false, ProjectName: "test", ContentHashSync: false, composeUpFn: noopComposeUp}
+	r := NewReconciler(cfg, WithDeployOps(standard))
+
+	result, err := r.deployLocal(context.Background(), nil)
+	require.NoError(t, err, "standard-mode deploy records zero writes but leaves dst content-equal; invariant must pass")
+	require.NotNil(t, result)
+	assert.Empty(t, result.WrittenFiles, "standard mode does not populate WrittenFiles")
+
+	// Confirm the deploy actually landed the new content (not just that the gate passed).
+	got, err := os.ReadFile(filepath.Join(fx.freshrssAppdata, "config.yml"))
+	require.NoError(t, err)
+	assert.Equal(t, "new-content", string(got))
 }
 
 func TestDeployLocal_SkipDeployInvariant_BypassesCheck(t *testing.T) {

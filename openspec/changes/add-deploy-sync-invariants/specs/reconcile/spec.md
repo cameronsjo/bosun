@@ -15,9 +15,18 @@ The reconciler SHALL enforce three invariants between deploy sync (stage 8) and 
 
 **Invariant 2 — Written files exist with fresh mtime.** After deploy sync completes, for each path in `WrittenFiles` across all targets, the reconciler SHALL stat the destination path and assert `mtime >= reconcileStartTime`. If any destination is missing or stale, the reconciler SHALL fail before compose-up runs.
 
-**Invariant 3 — Non-empty source must be reflected at the destination.** For each deploy target whose source staging directory contains at least one regular file but whose `WrittenFiles` slice is empty, the reconciler SHALL inspect the destination directly: it SHALL assert that every regular file in the source exists at its corresponding destination path (existence only — no mtime assertion, since a content-hash match means the files were written on a prior run). If every source file is present, the zero-write result is a legitimate no-op (the destination already byte-matches the source) and the invariant SHALL pass. If any source file is absent from the destination, the sync silently failed and the reconciler SHALL fail the run, naming the first missing file.
+**Invariant 3 — Non-empty source must be reflected at the destination.** For each deploy target whose source staging directory contains at least one regular file but whose `WrittenFiles` slice is empty, the reconciler SHALL:
 
-This refines the original formulation, which failed *any* zero-write target against a non-empty source. That was too aggressive: with content-hash sync a target legitimately records zero writes when the destination already matches, so a single byte-identical config could abort an entire reconcile (see GH#330). Asserting the real post-condition — files present at the destination — preserves protection against silent-sync failures while permitting genuine no-ops.
+- Inspect the destination directly rather than inferring corruption from the empty write list.
+- Assert that every regular file in the source is present at its corresponding destination path.
+- Assert that every such file is byte-identical to the source using SHA-256 content equality — the same comparison `CopyFileIfChanged` uses to decide a write is skippable. No mtime assertion is performed, since a content-hash match means the files were written on a prior run.
+- Skip symlinks in the source using Lstat semantics, matching the copy path, which never deploys them.
+- Pass the invariant when every source file is present and content-equal — a legitimate no-op, since the destination already byte-matches the source.
+- Fail the run when any source file is absent from the destination or differs in content, naming the first mismatching destination path.
+
+A symlink-only source therefore imposes no requirement on the destination.
+
+This refines the original formulation, which failed *any* zero-write target against a non-empty source. That was too aggressive: with content-hash sync a target legitimately records zero writes when the destination already matches, so a single byte-identical config could abort an entire reconcile (see GH#330). Asserting the real post-condition — files present *and content-equal* at the destination — preserves protection against silent-sync failures while permitting genuine no-ops. Existence alone is insufficient: a stale destination file occupying the right path would pass an existence check yet serve outdated config, so content equality closes that gap.
 
 The invariant check (invariants 2 and 3) MAY be skipped via `BOSUN_SKIP_DEPLOY_INVARIANT=true` for diagnostic or development scenarios. When skipped, the reconciler SHALL log at `Warn` level noting that invariants are disabled.
 
@@ -57,7 +66,7 @@ Per-file write decisions SHALL be observable: `CopyDirIfChanged` and `CopyFileIf
 
 - **WHEN** a deploy target's source staging directory contains regular files
 - **AND** the target's `WrittenFiles` returned by `CopyDirIfChanged` is empty
-- **AND** every source file already exists at its corresponding destination path
+- **AND** every source file already exists at its corresponding destination path and is byte-identical to the source
 - **THEN** the invariant check passes at stage 9 (legitimate no-op — destination already byte-matches)
 - **AND** compose up proceeds normally
 
@@ -68,7 +77,23 @@ Per-file write decisions SHALL be observable: `CopyDirIfChanged` and `CopyFileIf
 - **AND** at least one source file is absent from the destination
 - **THEN** the invariant check fails at stage 9
 - **AND** compose up does not run
-- **AND** the error message names the first source file missing from the destination
+- **AND** the error message names the first mismatching destination path
+
+#### Scenario: Empty WrittenFiles with a stale-content destination file blocks compose-up
+
+- **WHEN** a deploy target's source staging directory contains regular files
+- **AND** the target's `WrittenFiles` returned by `CopyDirIfChanged` is empty
+- **AND** a destination file exists at the corresponding path but its content differs from the source (a stale write the content-hash sync failed to replace)
+- **THEN** the invariant check fails at stage 9
+- **AND** compose up does not run
+- **AND** the error message names the first mismatching destination path
+
+#### Scenario: Symlinks in the source impose no destination requirement
+
+- **WHEN** a deploy target's source staging directory contains only symlinks (no regular files)
+- **AND** the target's `WrittenFiles` is empty
+- **THEN** the invariant check passes at stage 9 (symlinks are never deployed, so nothing is required at the destination)
+- **AND** compose up proceeds normally
 
 #### Scenario: Healthy deploy passes invariant check
 

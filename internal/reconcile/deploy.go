@@ -427,5 +427,14 @@ func (d *DeployOps) DeployLocalFile(ctx context.Context, sourceFile, targetFile 
 		return nil
 	}
 
-	return fileutil.CopyFile(sourceFile, targetFile)
+	// Standard mode. A symlink source is intentionally not deployed — CopyDir
+	// and CopyFileIfChanged both Lstat-skip symlinks, so the single-file path
+	// must too. Treat ErrSymlinkSkipped as a benign no-op, not a deploy failure.
+	if err := fileutil.CopyFile(sourceFile, targetFile); err != nil {
+		if errors.Is(err, fileutil.ErrSymlinkSkipped) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
