@@ -240,6 +240,29 @@ func TestBackupFilesFromTargets_Empty(t *testing.T) {
 	assert.Nil(t, paths)
 }
 
+// TestBackupFilesFromTargets_WalkError confirms an unreadable subtree surfaces as
+// a returned error (rather than being silently dropped), while files enumerated
+// before the error are still returned for a best-effort backup. The readable file
+// is named to sort before the locked dir so WalkDir visits it first.
+func TestBackupFilesFromTargets_WalkError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod 0000 does not deny root; skipping permission-based fault injection")
+	}
+	staging := t.TempDir()
+	mkdirs(t, staging, "appdata/svc/locked")
+	writeFile(t, filepath.Join(staging, "appdata/svc/aaa.yml"), "ok")
+	locked := filepath.Join(staging, "appdata/svc/locked")
+	require.NoError(t, os.Chmod(locked, 0000))
+	// Restore perms before t.TempDir's RemoveAll cleanup, which would otherwise fail.
+	t.Cleanup(func() { _ = os.Chmod(locked, 0755) })
+
+	targets := []DeployTarget{{RelPath: "appdata/svc", TargetPath: "svc", IsDir: true}}
+	paths, err := backupFilesFromTargets(staging, targets, "/mnt/appdata")
+	require.Error(t, err, "an unreadable subtree must surface as a walk error")
+	assert.Contains(t, paths, "/mnt/appdata/svc/aaa.yml",
+		"files enumerated before the error are still returned for best-effort backup")
+}
+
 // writeFile creates a file with the given content, making parent dirs as needed.
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()

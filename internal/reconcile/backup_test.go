@@ -200,6 +200,36 @@ func TestCreateBackup_HonorsBackupTimeout(t *testing.T) {
 	}
 }
 
+// TestCreateBackup_RemotePathPropagatesFailure drives the remote branch of
+// createBackup: with local=false it selects RemoteAppdataPath and calls
+// BackupRemote, whose validateHost guard rejects the unresolved host and fails
+// fast (no SSH attempt). The non-timeout failure must propagate to the caller.
+func TestCreateBackup_RemotePathPropagatesFailure(t *testing.T) {
+	tmpDir := evalSymlinks(t, t.TempDir())
+	stagingDir := filepath.Join(tmpDir, "staging")
+	backupDir := filepath.Join(tmpDir, "backups")
+
+	// A staging footprint so backupFilesFromTargets enumerates a remote path.
+	require.NoError(t, os.MkdirAll(filepath.Join(stagingDir, "appdata", "svc"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(stagingDir, "appdata", "svc", "conf.yml"), []byte("config"), 0644))
+
+	cfg := &Config{
+		StagingDir:        stagingDir,
+		InfraSubDir:       ".",
+		BackupDir:         backupDir,
+		RemoteAppdataPath: "/mnt/appdata",
+		BackupsToKeep:     3,
+		// No TargetHost and nil secrets -> getTargetHost yields an unusable host
+		// that validateHost rejects, so BackupRemote fails before any ssh call.
+	}
+	r := NewReconciler(cfg)
+
+	err := r.createBackup(context.Background(), nil, false)
+	require.Error(t, err, "remote backup with an invalid host must propagate a failure")
+	assert.False(t, errors.Is(err, context.DeadlineExceeded),
+		"failure must be the host/ssh error, not a timeout, got: %v", err)
+}
+
 // TestExtractBackupArchive round-trips through the real Backup(): create an
 // archive, extract it, and confirm the backed-up file resolves under the
 // extracted root accounting for tar's leading-'/' stripping (#332/#335).
