@@ -387,7 +387,7 @@ bosun validate --full                  # Include full dry-run reconciliation
 ### `bosun breaker`
 
 View and manage the deploy circuit breaker, which stops retrying after 3
-consecutive deploy failures.
+consecutive deploy failures on the same commit. A new commit resets the counter.
 
 ```bash
 bosun breaker status           # Show circuit breaker state (failure count, open/closed)

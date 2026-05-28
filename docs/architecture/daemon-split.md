@@ -17,9 +17,10 @@ Split bosun into two components for resilience and flexibility:
 > - **Optional TCP API on `127.0.0.1:9090`** — disabled by default; enable with
 >   `BOSUN_ENABLE_TCP=true` and a required `BOSUN_BEARER_TOKEN`.
 > - Reconcile lock file: `/var/run/bosun/reconcile.lock`.
-> - **Webhook provider split:** the daemon handles GitHub and the generic HMAC
->   endpoint directly; GitLab, Gitea, and Bitbucket are normalized by the
->   separate `bosun webhook` receiver, which forwards to the daemon.
+> - **Webhook provider split:** the daemon natively parses GitHub plus a generic
+>   HMAC endpoint (`/webhook`). The optional `bosun webhook` receiver normalizes
+>   any provider and forwards to the daemon's trigger endpoint — its reason to
+>   exist is GitLab/Gitea/Bitbucket, which the daemon has no native parser for.
 >
 > There is **no `BOSUN_TRIGGER_PORT`** env var and **no port `9999`** in the
 > codebase — the `8080` references below are the real HTTP port.

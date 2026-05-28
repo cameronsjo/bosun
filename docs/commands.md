@@ -405,7 +405,7 @@ Validates:
 ### breaker
 
 View and manage the deploy circuit breaker, which stops retrying after 3
-consecutive deploy failures.
+consecutive deploy failures on the same commit. A new commit resets the counter.
 
 ```bash
 bosun breaker status           # Show breaker state (failure count, open/closed)
