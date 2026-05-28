@@ -1353,6 +1353,31 @@ func TestDeployOps_DeployLocalFile_StandardMode(t *testing.T) {
 	assert.Equal(t, "data", string(data))
 }
 
+// TestDeployOps_DeployLocalFile_StandardMode_SymlinkSwallowed covers the B2 fix:
+// in standard (non-content-hash) mode a symlink source must be treated as a
+// benign no-op — CopyFile returns ErrSymlinkSkipped, which DeployLocalFile
+// swallows rather than aborting the deploy. Content-hash mode already did this
+// via CopyFileIfChanged; this asserts parity for the standard path.
+func TestDeployOps_DeployLocalFile_StandardMode_SymlinkSwallowed(t *testing.T) {
+	tmpDir := t.TempDir()
+	realFile := filepath.Join(tmpDir, "real.yml")
+	srcLink := filepath.Join(tmpDir, "link.yml")
+	tgtFile := filepath.Join(tmpDir, "out", "target.yml")
+
+	require.NoError(t, os.WriteFile(realFile, []byte("data"), 0644))
+	require.NoError(t, os.Symlink(realFile, srcLink))
+
+	d := NewDeployOps(false, "")
+	d.ContentHashSync = false
+
+	err := d.DeployLocalFile(context.Background(), srcLink, tgtFile, nil)
+	require.NoError(t, err, "a symlink source must be a no-op, not a deploy failure")
+
+	// The symlink was skipped, so no target file should have been created.
+	_, statErr := os.Stat(tgtFile)
+	assert.True(t, os.IsNotExist(statErr), "skipped symlink must not produce a destination file")
+}
+
 // writeBackupArchive creates backupDir/configs.tar.gz containing the given
 // absolute file paths, mirroring how Backup() stores them (tar strips the
 // leading '/', so member "/x/y" is stored as "x/y"). Used to exercise the

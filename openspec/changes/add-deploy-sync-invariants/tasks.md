@@ -28,13 +28,16 @@ Implementation runs in three layers. Layer 1 ships the invariants and observabil
 
 - [x] `internal/reconcile/verify.go` (new file) — `verifyDeployTarget(src, dst, writtenRel, startTime) error` helper
 - [x] `internal/reconcile/verify.go` — invariant: each `WrittenFiles` entry must exist at destination with `mtime >= startTime`
-- [x] `internal/reconcile/verify.go` — invariant: empty `WrittenFiles` against non-empty source inspects the destination — passes on a content-matched no-op, errors (naming the missing file) when a source file is absent (refined per GH#330; `firstMissingSourceFile` helper)
+- [x] `internal/reconcile/verify.go` — invariant: empty `WrittenFiles` against non-empty source inspects the destination — passes on a content-matched no-op, errors (naming the first mismatching path) when a source file is absent OR byte-differs at the destination; symlinks skipped (Lstat). Refined per GH#330 (existence) then GH#330 follow-up (content-equality); `destinationSatisfiesSource` + `fileEqual` helpers reusing `fileutil.FileHash`/`ContentEqual`
+- [x] `internal/reconcile/verify.go` — `dirHasRegularFiles` uses `os.Lstat` so a symlink-only source counts no regular files (matches the copy path, which never deploys symlinks)
+- [x] `internal/reconcile/deploy.go` — `DeployLocalFile` standard mode swallows the benign `fileutil.ErrSymlinkSkipped` instead of failing the deploy (B2; parity with content-hash mode and `CopyDir`)
 - [x] `internal/reconcile/reconcile.go` — call `verifyDeployTarget` per-target inside `deployLocal` before `PrefixLatest`
 - [x] `internal/daemon/daemon.go` — parse `BOSUN_SKIP_DEPLOY_INVARIANT` in `ConfigFromEnv()` (landed in Layer 1.2 commit alongside `BOSUN_ALLOW_EMPTY_DECLARED_STATE`)
 - [x] `internal/reconcile/verify_test.go` — `TestVerifyDeployTarget_StaleDestination_Errors`
-- [x] `internal/reconcile/verify_test.go` — `TestVerifyDeployTarget_ZeroWriteScenarios` (table-driven: no-op passes, missing-file errors; refined per GH#330)
+- [x] `internal/reconcile/verify_test.go` — `TestVerifyDeployTarget_ZeroWriteScenarios` (table-driven: no-op passes, missing-file errors, stale-content errors, symlink-only passes; refined per GH#330) + `TestDestinationSatisfiesSource` (helper-level: content-equality, symlink skip, stat-error)
 - [x] `internal/reconcile/verify_test.go` — `TestDeployLocal_SkipDeployInvariant_BypassesCheck` (env wiring through `deployLocal`)
-- [x] `internal/reconcile/verify_test.go` — `TestVerifyDeployTarget_HealthyDeploy_Passes` + `TestDeployLocal_HealthyDeploy_PassesInvariant`
+- [x] `internal/reconcile/verify_test.go` — `TestDeployLocal_StandardMode_PassesInvariant` (B1: zero recorded writes in standard mode still passes via content-equality) + `TestVerifyDeployTarget_HealthyDeploy_Passes` + `TestDeployLocal_HealthyDeploy_PassesInvariant`
+- [x] `internal/reconcile/deploy_test.go` — `TestDeployOps_DeployLocalFile_StandardMode_SymlinkSwallowed` (B2: symlink source is a no-op, not a deploy failure)
 
 ### 1.4 Regression guard
 
