@@ -20,15 +20,17 @@ The reconciler SHALL execute stages in this fixed order:
 6. Extract declared state from rendered compose
 7. Create configuration backup
 8. Deploy files (local or remote)
-9. Run `docker compose up`
-10. Clean up staging directory
-11. Critical container health gate (if configured)
-12. Execute post-sync hooks
-13. Post-deploy verification (drift check)
-14. Record successful deployment in state file
-15. Release lock
+9. Deploy sync invariant check (see Deploy Sync Invariants)
+10. Run `docker compose up`
+11. Clean up staging directory
+12. Critical container health gate (if configured)
+13. Execute post-sync hooks
+14. Post-deploy verification (drift check)
+15. Record successful deployment in state file
+16. Release lock
 
-A failure at any stage SHALL abort the remaining stages and release the lock, except configuration backup (stage 7), whose failures — including timeouts — are non-fatal and SHALL NOT abort the pipeline (see the Configuration Backup requirement). The health gate (stage 11) failing SHALL trigger rollback before aborting.
+A failure at any stage SHALL abort the remaining stages and release the lock. The health gate (stage 12) failing SHALL trigger rollback before aborting. The invariant check (stage 9) failing SHALL abort before compose up runs; no rollback is needed because no compose changes have been applied at that point.
+
 The lock SHALL always be released via defer, even on panic.
 
 #### Scenario: Full pipeline succeeds
@@ -41,14 +43,22 @@ The lock SHALL always be released via defer, even on panic.
 #### Scenario: Pipeline aborts on stage failure
 
 - **WHEN** secret decryption fails
-- **THEN** template rendering, backup, deploy, and compose stages are skipped
+- **THEN** template rendering, backup, deploy, invariant check, and compose stages are skipped
 - **AND** a throttled failure alert is sent
 - **AND** the lock is released
+
+#### Scenario: Invariant check aborts before compose
+
+- **WHEN** stage 9 invariants fail
+- **THEN** compose up, cleanup, health gate, hooks, and verification are skipped
+- **AND** the lock is released
+- **AND** a failure alert is sent
+- **AND** the state file is NOT updated
 
 #### Scenario: Dry run mode
 
 - **WHEN** `DryRun` is true
-- **THEN** backup, deploy, compose up, health gate, post-sync hooks, and post-deploy verification are skipped
+- **THEN** backup, deploy, invariant check, compose up, health gate, post-sync hooks, and post-deploy verification are skipped
 - **AND** template rendering still executes to validate templates
 
 #### Scenario: Health gate failure triggers rollback
@@ -78,10 +88,15 @@ SSH authentication SHALL be resolved in order: SSH agent (via `SSH_AUTH_SOCK`),
 then key files (`BOSUN_SSH_KEY`, `/config/deploy-key`, `/config/ssh-key`,
 `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`).
 
-SSH host key verification SHALL use known_hosts files (`BOSUN_SSH_KNOWN_HOSTS`,
-`~/.ssh/known_hosts`, `/config/known_hosts`), falling back to insecure mode
-with a warning when no known_hosts file is found. The `BOSUN_SSH_INSECURE_HOST_KEY`
-environment variable SHALL disable verification entirely.
+SSH host key verification SHALL use config-controlled known_hosts files,
+checked in order: `BOSUN_SSH_KNOWN_HOSTS` environment variable (explicit
+override), then `/config/known_hosts` (container convention). The user-profile
+path `~/.ssh/known_hosts` SHALL NOT be consulted, because it is an ephemeral
+location in container environments that can be polluted by manual `ssh`
+commands, causing key mismatches. When no known_hosts file is found, the
+reconciler SHALL fall back to insecure mode with a warning. The
+`BOSUN_SSH_INSECURE_HOST_KEY` environment variable SHALL disable verification
+entirely.
 
 #### Scenario: Fresh clone on first run
 
@@ -119,6 +134,39 @@ environment variable SHALL disable verification entirely.
 - **WHEN** `BOSUN_GIT_FETCH_DEPTH` is set to a value greater than 1
 - **THEN** git clone and fetch operations SHALL use the specified depth
 - **AND** the default depth SHALL remain 1 when unset
+
+#### Scenario: known_hosts resolved from BOSUN_SSH_KNOWN_HOSTS
+
+- **WHEN** `BOSUN_SSH_KNOWN_HOSTS` is set to a valid path
+- **THEN** host key verification uses that file exclusively
+- **AND** `/config/known_hosts` is not consulted
+
+#### Scenario: known_hosts resolved from container convention path
+
+- **WHEN** `BOSUN_SSH_KNOWN_HOSTS` is not set
+- **AND** `/config/known_hosts` exists
+- **THEN** host key verification uses `/config/known_hosts`
+
+#### Scenario: No known_hosts found falls back to insecure mode
+
+- **WHEN** `BOSUN_SSH_KNOWN_HOSTS` is not set
+- **AND** `/config/known_hosts` does not exist
+- **THEN** the reconciler falls back to insecure host key mode
+- **AND** logs a warning that host key verification is disabled
+
+#### Scenario: User-profile known_hosts not consulted
+
+- **WHEN** `BOSUN_SSH_KNOWN_HOSTS` is not set
+- **AND** `/config/known_hosts` does not exist
+- **AND** `~/.ssh/known_hosts` exists with valid host keys
+- **THEN** the reconciler does NOT use `~/.ssh/known_hosts`
+- **AND** falls back to insecure mode with a warning
+
+#### Scenario: BOSUN_SSH_INSECURE_HOST_KEY disables verification entirely
+
+- **WHEN** `BOSUN_SSH_INSECURE_HOST_KEY=true`
+- **THEN** no known_hosts file is consulted
+- **AND** all host keys are accepted without verification
 
 ### Requirement: Secret Decryption
 
@@ -715,13 +763,16 @@ Hooks SHALL be configured via `PostSyncHooks` with fields: `Paths` (glob pattern
 matched against changed files relative to repo root), `Action` (the action to
 perform, currently only `restart`), and `Container` (the container name to act on).
 
-After a successful deployment, the reconciler SHALL diff the previous and current
-commits, match changed files against hook glob patterns, and execute matching
-actions. Each container SHALL be restarted at most once per deployment, even if
-multiple patterns match.
+After a successful deployment, the reconciler SHALL diff the last successfully
+deployed commit (from `state.CommitHash`) against the current HEAD to determine
+which files changed. Hooks SHALL then be matched against the changed file set
+and matching actions executed. Each container SHALL be restarted at most once
+per deployment, even if multiple patterns match.
 
-Hooks SHALL only execute when a Docker client is available, dry run is false, hooks
-are configured, and a previous commit exists (not on first deploy).
+Hooks SHALL only execute when a Docker client is available, dry run is false,
+hooks are configured, and `state.CommitHash` is non-empty (i.e., a previous
+successful deployment exists). When `state.CommitHash` is empty (first deploy
+or no prior state), hooks SHALL NOT execute.
 
 Glob patterns SHALL support `**` for recursive directory matching.
 
@@ -745,8 +796,16 @@ Glob patterns SHALL support `**` for recursive directory matching.
 
 #### Scenario: First deploy skips hooks
 
-- **WHEN** there is no previous commit (first deployment)
+- **WHEN** `state.CommitHash` is empty (first deployment or no prior successful deploy recorded)
 - **THEN** post-sync hooks are not evaluated
+
+#### Scenario: Failed pipeline does not advance hook diff base
+
+- **WHEN** a reconciliation pulls commit B but fails at template rendering
+- **AND** the previous successful deploy was at commit A (recorded in `state.CommitHash`)
+- **THEN** on the next successful reconciliation (commit B or later commit C)
+- **AND** the hook diff is computed from commit A, not from commit B
+- **AND** files changed between A and the new commit are evaluated for hook patterns
 
 ### Requirement: Alert Throttling
 
@@ -863,4 +922,178 @@ The `critical_containers` config SHALL be reloaded from the repo's `bosun.yaml` 
 - **AND** `critical_containers` is configured
 - **THEN** the health gate is skipped (Docker API is local-only)
 - **AND** a warning is logged indicating the health gate cannot run for remote deploys
+
+### Requirement: Infra Directory Misconfiguration Hint
+
+The reconciler SHALL diagnose a likely `BOSUN_INFRA_DIR` misconfiguration when the configured infra/staging directory has no `compose/` child (the condition that produces `ErrComposeDirMissing`), before surfacing the failure.
+
+To do so, the reconciler SHALL scan the immediate child directories of the
+infra/staging directory and identify any whose own contents include a
+`compose/` subdirectory. Dot-prefixed children (e.g. `.beads`, `.git`) SHALL be excluded,
+and a `compose` entry that is a file rather than a directory SHALL NOT count as
+a candidate.
+
+- When one or more candidates are found, the surfaced `ErrComposeDirMissing`
+  failure SHALL name them and SHALL include a suggested `BOSUN_INFRA_DIR` value
+  formed by joining the current `InfraSubDir` with the candidate name.
+- When no candidate is found, the failure SHALL retain its existing bare message
+  naming the missing compose directory path, with no suggestion.
+
+The hint SHALL be diagnostic only. It SHALL NOT auto-correct `InfraSubDir`,
+SHALL NOT change which paths are deployed, and SHALL NOT alter the unconditional
+failure semantics of `ErrComposeDirMissing` defined by the Deploy Sync
+Invariants requirement. The scan SHALL run only on the failing path (compose
+directory absent), never on a successful reconcile.
+
+#### Scenario: Single candidate names the infra dir to set
+
+- **WHEN** `ExtractDeclaredState` finds no `compose/` under the configured infra dir
+- **AND** exactly one child directory (e.g. `unraid`) contains a `compose/` subdirectory
+- **THEN** the reconcile fails with `ErrComposeDirMissing`
+- **AND** the error names `unraid` as the candidate infra directory
+- **AND** the surfaced error includes a suggested `BOSUN_INFRA_DIR` value formed from the current `InfraSubDir` joined with `unraid`
+
+#### Scenario: Multiple candidates are all listed
+
+- **WHEN** `ExtractDeclaredState` finds no `compose/` under the configured infra dir
+- **AND** more than one child directory contains a `compose/` subdirectory
+- **THEN** the error lists every candidate directory
+- **AND** directs the operator to set `BOSUN_INFRA_DIR` to one of them
+
+#### Scenario: No candidate keeps the bare error
+
+- **WHEN** `ExtractDeclaredState` finds no `compose/` under the configured infra dir
+- **AND** no child directory contains a `compose/` subdirectory
+- **THEN** the reconcile fails with `ErrComposeDirMissing` naming the missing path
+- **AND** no `BOSUN_INFRA_DIR` suggestion is appended
+
+#### Scenario: Dot-directories and compose files are not candidates
+
+- **WHEN** scanning for candidate infra directories
+- **AND** a child is dot-prefixed (e.g. `.beads`) or its `compose` entry is a file
+- **THEN** that child is not offered as a candidate
+
+#### Scenario: Hint does not change failure semantics
+
+- **WHEN** a candidate infra directory is identified
+- **THEN** the reconcile still fails unconditionally on `ErrComposeDirMissing`
+- **AND** `BOSUN_ALLOW_EMPTY_DECLARED_STATE` does not suppress the failure
+- **AND** no deploy or `InfraSubDir` value is changed automatically
+
+### Requirement: Deploy Sync Invariants
+
+The reconciler SHALL enforce three invariants between deploy sync (stage 8) and `docker compose up` (stage 10) to prevent silent-success failures where rendered templates fail to overwrite the destination files.
+
+**Invariant 1 — Declared services present.** When template rendering completes and `ExtractDeclaredState` runs, the reconciler SHALL distinguish two failure modes:
+
+- `ErrComposeDirMissing` — the configured staging compose directory does not exist on disk
+- `ErrNoDeclaredServices` — the compose directory exists but contains no parseable services
+
+`ErrComposeDirMissing` SHALL fail the reconcile run unconditionally; the override does not apply because a missing compose directory indicates a misconfigured staging path, not a genuinely empty repo.
+
+`ErrNoDeclaredServices` SHALL fail the reconcile run unless the operator opts in via `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true`. When the override is set, the reconciler SHALL log at `Warn` level (not `Info`) and continue.
+
+**Invariant 2 — Written files exist with fresh mtime.** After deploy sync completes, for each path in `WrittenFiles` across all targets, the reconciler SHALL stat the destination path and assert `mtime >= reconcileStartTime`. If any destination is missing or stale, the reconciler SHALL fail before compose-up runs.
+
+**Invariant 3 — Non-empty source must be reflected at the destination.** For each deploy target whose source staging directory contains at least one regular file but whose `WrittenFiles` slice is empty, the reconciler SHALL:
+
+- Inspect the destination directly rather than inferring corruption from the empty write list.
+- Assert that every regular file in the source is present at its corresponding destination path.
+- Assert that every such file is byte-identical to the source using SHA-256 content equality — the same comparison `CopyFileIfChanged` uses to decide a write is skippable. No mtime assertion is performed, since a content-hash match means the files were written on a prior run.
+- Skip symlinks in the source using Lstat semantics, matching the copy path, which never deploys them.
+- Pass the invariant when every source file is present and content-equal — a legitimate no-op, since the destination already byte-matches the source.
+- Fail the run when any source file is absent from the destination or differs in content, naming the first mismatching destination path.
+
+A symlink-only source therefore imposes no requirement on the destination.
+
+This refines the original formulation, which failed *any* zero-write target against a non-empty source. That was too aggressive: with content-hash sync a target legitimately records zero writes when the destination already matches, so a single byte-identical config could abort an entire reconcile (see GH#330). Asserting the real post-condition — files present *and content-equal* at the destination — preserves protection against silent-sync failures while permitting genuine no-ops. Existence alone is insufficient: a stale destination file occupying the right path would pass an existence check yet serve outdated config, so content equality closes that gap.
+
+The invariant check (invariants 2 and 3) MAY be skipped via `BOSUN_SKIP_DEPLOY_INVARIANT=true` for diagnostic or development scenarios. When skipped, the reconciler SHALL log at `Warn` level noting that invariants are disabled.
+
+Per-file write decisions SHALL be observable: `CopyDirIfChanged` and `CopyFileIfChanged` SHALL emit a `Debug` log on every file write (formatted `wrote src=<src> dst=<dst> bytes=<n>`) and every skip (formatted `skipped src=<src> dst=<dst> reason=hash_match`). This gives operators a way to confirm sync behavior from the log stream without inspecting destination mtimes externally.
+
+#### Scenario: Reconcile fails when declared services is zero
+
+- **WHEN** `ExtractDeclaredState` returns `ErrNoDeclaredServices`
+- **AND** `BOSUN_ALLOW_EMPTY_DECLARED_STATE` is unset or `false`
+- **THEN** the reconciler fails the pipeline at stage 6
+- **AND** the error message names the staging compose directory path
+- **AND** compose up does not run
+
+#### Scenario: Override allows empty declared services
+
+- **WHEN** `ExtractDeclaredState` returns `ErrNoDeclaredServices`
+- **AND** `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true`
+- **THEN** the reconciler logs at `Warn` level and continues
+- **AND** post-deploy verification still respects the existing "declared services were extracted" precondition
+
+#### Scenario: Missing compose directory always fails
+
+- **WHEN** `ExtractDeclaredState` returns `ErrComposeDirMissing`
+- **THEN** the reconciler fails the pipeline regardless of `BOSUN_ALLOW_EMPTY_DECLARED_STATE`
+- **AND** the error message names the expected directory path
+- **AND** the operator is directed to verify the staging path configuration
+
+#### Scenario: Stale destination mtime blocks compose-up
+
+- **WHEN** deploy sync completes
+- **AND** a destination file in `WrittenFiles` has `mtime < reconcileStartTime`
+- **THEN** the invariant check fails at stage 9
+- **AND** compose up does not run
+- **AND** the error message names the stale destination path
+
+#### Scenario: No-op sync against a content-matched destination passes
+
+- **WHEN** a deploy target's source staging directory contains regular files
+- **AND** the target's `WrittenFiles` returned by `CopyDirIfChanged` is empty
+- **AND** every source file already exists at its corresponding destination path and is byte-identical to the source
+- **THEN** the invariant check passes at stage 9 (legitimate no-op — destination already byte-matches)
+- **AND** compose up proceeds normally
+
+#### Scenario: Empty WrittenFiles with a missing destination file blocks compose-up
+
+- **WHEN** a deploy target's source staging directory contains regular files
+- **AND** the target's `WrittenFiles` returned by `CopyDirIfChanged` is empty
+- **AND** at least one source file is absent from the destination
+- **THEN** the invariant check fails at stage 9
+- **AND** compose up does not run
+- **AND** the error message names the first mismatching destination path
+
+#### Scenario: Empty WrittenFiles with a stale-content destination file blocks compose-up
+
+- **WHEN** a deploy target's source staging directory contains regular files
+- **AND** the target's `WrittenFiles` returned by `CopyDirIfChanged` is empty
+- **AND** a destination file exists at the corresponding path but its content differs from the source (a stale write the content-hash sync failed to replace)
+- **THEN** the invariant check fails at stage 9
+- **AND** compose up does not run
+- **AND** the error message names the first mismatching destination path
+
+#### Scenario: Symlinks in the source impose no destination requirement
+
+- **WHEN** a deploy target's source staging directory contains only symlinks (no regular files)
+- **AND** the target's `WrittenFiles` is empty
+- **THEN** the invariant check passes at stage 9 (symlinks are never deployed, so nothing is required at the destination)
+- **AND** compose up proceeds normally
+
+#### Scenario: Healthy deploy passes invariant check
+
+- **WHEN** deploy sync writes at least one file per non-empty target
+- **AND** every destination has `mtime >= reconcileStartTime`
+- **THEN** the invariant check passes silently
+- **AND** compose up proceeds normally
+
+#### Scenario: Operator skips invariants for diagnostics
+
+- **WHEN** `BOSUN_SKIP_DEPLOY_INVARIANT=true`
+- **THEN** invariants 2 and 3 are bypassed
+- **AND** the reconciler logs at `Warn` level noting that invariants are disabled
+- **AND** invariant 1 (declared services) is still enforced
+
+#### Scenario: Per-file write logs emitted on Debug level
+
+- **WHEN** `CopyDirIfChanged` writes 3 files and skips 2 files
+- **AND** the log level is `Debug` or finer
+- **THEN** five log lines are emitted total
+- **AND** each write line includes `src`, `dst`, and `bytes`
+- **AND** each skip line includes `src`, `dst`, and `reason=hash_match`
 
