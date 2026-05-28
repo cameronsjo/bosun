@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.4](https://github.com/cameronsjo/bosun/compare/v0.37.3...v0.37.4) (2026-05-28)
+
+
+### Bug Fixes
+
+* **reconcile:** harden deploy invariant with content-equality + symlink semantics ([#371](https://github.com/cameronsjo/bosun/issues/371)) ([c616c51](https://github.com/cameronsjo/bosun/commit/c616c511d6a9f6f4b67e414b48f7763ed78d55c2))
+
 ## [0.37.3](https://github.com/cameronsjo/bosun/compare/v0.37.2...v0.37.3) (2026-05-28)
 
 
