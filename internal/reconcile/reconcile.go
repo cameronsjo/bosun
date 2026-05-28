@@ -1167,20 +1167,39 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 	// Discover targets from staging to know what to back up.
 	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
 	targets, err := discoverDeployTargets(stagingSubDir, r.config.DeploySyncPaths.Value, r.config.DeploySyncExclude.Value)
-	if err != nil {
-		logger.Warn().Err(err).Msg("Failed to discover deploy targets for backup, proceeding with full backup")
-		// Don't fail the entire backup — use nil targets to back up the full path
-	}
 
 	var backupName string
 
+	// Back up only the deployed config footprint (the files bosun renders into
+	// staging), not whole appdata target directories — those co-locate large
+	// runtime data (media, databases, caches) that made the archive grow without
+	// bound and time out (bosun-5qx).
+	appdataBase := r.config.LocalAppdataPath
+	if !local {
+		appdataBase = r.config.RemoteAppdataPath
+	}
+
+	var paths []string
+	if err != nil {
+		// Discovery failed, so the rendered footprint is unknown. Fall back to the
+		// full appdata path for rollback protection rather than a no-op backup; the
+		// BackupTimeout above bounds it so a large tree cannot wedge the deploy.
+		logger.Warn().Err(err).Str(log.FieldPath, appdataBase).
+			Msg("Failed to discover deploy targets for backup; falling back to full appdata backup")
+		paths = []string{appdataBase}
+	} else {
+		var ferr error
+		paths, ferr = backupFilesFromTargets(stagingSubDir, targets, appdataBase)
+		if ferr != nil {
+			logger.Warn().Err(ferr).Msg("Failed to enumerate full backup footprint; backing up the files discovered so far")
+		}
+	}
+
 	if local {
-		paths := backupPathsFromTargets(targets, r.config.LocalAppdataPath)
 		logger.Debug().Int("path_count", len(paths)).Msg("Creating local backup")
 		backupName, err = r.deploy.Backup(ctx, r.config.BackupDir, paths)
 	} else {
 		host := r.getTargetHost(secrets)
-		paths := backupPathsFromTargets(targets, r.config.RemoteAppdataPath)
 		logger.Debug().Str(log.FieldTarget, host).Int("path_count", len(paths)).Msg("Creating remote backup")
 		backupName, err = r.deploy.BackupRemote(ctx, host, r.config.BackupDir, paths)
 	}
@@ -1208,16 +1227,6 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 
 	ui.Success("Backup saved: %s", backupName)
 	return nil
-}
-
-// backupPathsFromTargets derives backup paths from discovered deploy targets.
-// All targets including compose are backed up so per-file rollback has files to restore from.
-func backupPathsFromTargets(targets []DeployTarget, appdataBase string) []string {
-	var paths []string
-	for _, t := range targets {
-		paths = append(paths, filepath.Join(appdataBase, t.TargetPath))
-	}
-	return paths
 }
 
 // ErrAppdataInaccessible is returned when LocalAppdataPath is configured but

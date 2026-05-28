@@ -160,8 +160,14 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 		logger.Warn().Err(absErr).Str(log.FieldPath, backupDir).
 			Msg("Failed to resolve absolute backup path; self-exclusion skipped")
 	}
-	args = append(args, existingPaths...)
+	// Feed the path list to tar via stdin rather than argv: the deployed footprint
+	// can be many files, which as an argument list would risk ARG_MAX. Use NUL
+	// delimiters (--null) so a filename containing a newline cannot corrupt the
+	// list — matching the shell-quoting safety the remote path already applies.
+	// Both GNU tar and bsdtar read NUL-separated names from "-" under --null.
+	args = append(args, "--null", "-T", "-")
 	cmd := exec.CommandContext(ctx, "tar", args...)
+	cmd.Stdin = strings.NewReader(strings.Join(existingPaths, "\x00") + "\x00")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
