@@ -1167,10 +1167,6 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 	// Discover targets from staging to know what to back up.
 	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
 	targets, err := discoverDeployTargets(stagingSubDir, r.config.DeploySyncPaths.Value, r.config.DeploySyncExclude.Value)
-	if err != nil {
-		logger.Warn().Err(err).Msg("Failed to discover deploy targets for backup, proceeding with full backup")
-		// Don't fail the entire backup — use nil targets to back up the full path
-	}
 
 	var backupName string
 
@@ -1182,9 +1178,21 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 	if !local {
 		appdataBase = r.config.RemoteAppdataPath
 	}
-	paths, ferr := backupFilesFromTargets(stagingSubDir, targets, appdataBase)
-	if ferr != nil {
-		logger.Warn().Err(ferr).Msg("Failed to enumerate full backup footprint; backing up the files discovered so far")
+
+	var paths []string
+	if err != nil {
+		// Discovery failed, so the rendered footprint is unknown. Fall back to the
+		// full appdata path for rollback protection rather than a no-op backup; the
+		// BackupTimeout above bounds it so a large tree cannot wedge the deploy.
+		logger.Warn().Err(err).Str(log.FieldPath, appdataBase).
+			Msg("Failed to discover deploy targets for backup; falling back to full appdata backup")
+		paths = []string{appdataBase}
+	} else {
+		var ferr error
+		paths, ferr = backupFilesFromTargets(stagingSubDir, targets, appdataBase)
+		if ferr != nil {
+			logger.Warn().Err(ferr).Msg("Failed to enumerate full backup footprint; backing up the files discovered so far")
+		}
 	}
 
 	if local {

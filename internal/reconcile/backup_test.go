@@ -230,6 +230,44 @@ func TestCreateBackup_RemotePathPropagatesFailure(t *testing.T) {
 		"failure must be the host/ssh error, not a timeout, got: %v", err)
 }
 
+// TestCreateBackup_DiscoveryFailureFallsBackToFullAppdata verifies that when
+// deploy-target discovery fails (here, a missing staging subtree), the backup
+// falls back to the full appdata path rather than producing a no-op archive —
+// preserving rollback protection exactly when the footprint is unknown.
+func TestCreateBackup_DiscoveryFailureFallsBackToFullAppdata(t *testing.T) {
+	if _, err := exec.LookPath("tar"); err != nil {
+		t.Skip("tar not installed")
+	}
+
+	tmpDir := evalSymlinks(t, t.TempDir())
+	appdataDir := filepath.Join(tmpDir, "appdata")
+	backupDir := filepath.Join(tmpDir, "backups")
+	require.NoError(t, os.MkdirAll(appdataDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(appdataDir, "live.conf"), []byte("existing"), 0644))
+
+	cfg := &Config{
+		// InfraSubDir points at a path that does not exist under StagingDir, so
+		// discoverDeployTargets fails and the full-appdata fallback engages.
+		StagingDir:       tmpDir,
+		InfraSubDir:      "missing-staging",
+		BackupDir:        backupDir,
+		LocalAppdataPath: appdataDir,
+		BackupsToKeep:    3,
+	}
+	r := NewReconciler(cfg)
+
+	require.NoError(t, r.createBackup(context.Background(), nil, true))
+
+	members := listArchiveMembers(t, filepath.Join(r.lastBackupPath, "configs.tar.gz"))
+	var found bool
+	for _, m := range members {
+		if strings.Contains(m, "live.conf") {
+			found = true
+		}
+	}
+	assert.True(t, found, "discovery-failure fallback must back up the full appdata path, not a no-op")
+}
+
 // TestExtractBackupArchive round-trips through the real Backup(): create an
 // archive, extract it, and confirm the backed-up file resolves under the
 // extracted root accounting for tar's leading-'/' stripping (#332/#335).
