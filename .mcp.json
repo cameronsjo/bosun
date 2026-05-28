@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "agent-pool": {
-      "command": "agent-pool",
-      "args": ["mcp", "--pool", "/Users/cameron/Projects/bosun/.agent-pool", "--role", "concierge"],
-      "type": "stdio"
-    }
-  }
-}
