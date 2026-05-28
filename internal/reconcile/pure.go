@@ -276,6 +276,19 @@ func classifyComposeResults(results []ComposeFileResult) ComposeUpSummary {
 	return s
 }
 
+// partialDeployError reports a partial compose deploy as an error. The
+// successfully-started stacks stay up, but a partial deploy is NOT a success:
+// surfacing it keeps NeedsRedeploy set, fires a failure alert, lets the circuit
+// breaker count the attempt, and triggers a retry next reconcile (healthy stacks
+// are idempotent no-ops). Returns nil when every file succeeded. This mirrors the
+// post-deploy health gate, which also treats a partial failure as a deploy failure.
+func partialDeployError(summary *ComposeUpSummary, totalFiles int) error {
+	if summary == nil || summary.Failed == 0 {
+		return nil
+	}
+	return fmt.Errorf("partial compose deploy: %d of %d files failed to start", summary.Failed, totalFiles)
+}
+
 // filterManagedForTarget returns the subset of an appdata-relative deploy
 // manifest belonging to targetPath, with the "<targetPath>/" prefix stripped so
 // the keys are targetDir-relative — the form removeStaleFiles walks. Entries for
