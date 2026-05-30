@@ -115,6 +115,8 @@ containers, err := client.ListContainers(ctx, onlyRunning)
 err := client.RestartContainer(ctx, name)
 ```
 
+- **Docker SDK is end-of-line at `v28.5.2+incompatible`.** Successor split modules are `github.com/moby/moby/api` (stable, v1.54.2+) and `github.com/moby/moby/client` (stable, v0.4.1+); or `github.com/moby/moby/v2` (beta). Migration is a real API port — `*Options` types moved from `api/types/container` to the `client` package, methods gained options parameters (`Ping(ctx)` → `Ping(ctx, PingOptions{})`), returns became `*Result` wrappers. Tracked in `bd show bosun-8wu`; field report at `~/Documents/The Compendium/Field Reports/bosun/docker-sdk-end-of-line-and-moby-split.md`. All remaining `docker/docker` CVEs flagged on the SDK are daemon-side (race conditions in `docker cp`, AuthZ plugin bypass, etc.) and **not reachable** from bosun's client-only usage — the Engine daemon version on Unraid is the actual security boundary.
+
 ### internal/manifest
 
 YAML rendering engine.
