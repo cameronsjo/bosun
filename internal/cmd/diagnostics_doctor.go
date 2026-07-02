@@ -200,6 +200,59 @@ func checkManifestDirectory(cfg *config.Config) CheckResult {
 	return CheckResult{Warned: 1}
 }
 
+// deployTargetsUnderFUSE reports whether any configured (or defaulted)
+// deploy path lives under Unraid's /mnt/user FUSE mount (the same check
+// reconcile.resolveHookSettleDelay applies at deploy time).
+// When targets: is configured, every target's appdata paths are checked.
+// Otherwise this mirrors the CLI/daemon's flat single-target resolution
+// order (REMOTE_APPDATA/LOCAL_APPDATA env override, falling back to
+// reconcile.DefaultConfig()'s hardcoded /mnt/user/appdata default).
+func deployTargetsUnderFUSE(cfg *config.Config) bool {
+	if targets := cfg.Targets(); len(targets) > 0 {
+		for _, t := range targets {
+			if reconcile.IsUnderFUSEDeployPath(t.RemoteAppdataPath) || reconcile.IsUnderFUSEDeployPath(t.LocalAppdataPath) {
+				return true
+			}
+		}
+		return false
+	}
+
+	if p := os.Getenv("REMOTE_APPDATA"); p != "" {
+		return reconcile.IsUnderFUSEDeployPath(p)
+	}
+	if p := os.Getenv("LOCAL_APPDATA"); p != "" {
+		return reconcile.IsUnderFUSEDeployPath(p)
+	}
+	return reconcile.IsUnderFUSEDeployPath(reconcile.DefaultConfig().RemoteAppdataPath)
+}
+
+// checkHookSettleDelayFUSE warns when hook_settle_delay is unconfigured
+// (zero) while the deploy target lives under Unraid's /mnt/user FUSE (shfs)
+// mount, where writes need extra time to settle before post-sync hooks read
+// them back. reconcile.resolveHookSettleDelay already applies a runtime
+// default in this situation, so a missed warning here isn't a silent
+// failure — but explicit config is easier to reason about than a heuristic
+// default, hence the nudge.
+func checkHookSettleDelayFUSE(cfg *config.Config) CheckResult {
+	if cfg == nil {
+		return CheckResult{}
+	}
+	if !deployTargetsUnderFUSE(cfg) {
+		return CheckResult{}
+	}
+
+	if cfg.HookSettleDelay() > 0 {
+		_, _ = ui.Green.Printf("  * hook_settle_delay is set (%s) for a /mnt/user (FUSE) deploy target\n", cfg.HookSettleDelay())
+		return CheckResult{Passed: 1}
+	}
+
+	_, _ = ui.Yellow.Println("  ! hook_settle_delay is unset for a /mnt/user (FUSE) deploy target")
+	_, _ = ui.Blue.Println("      To fix this:")
+	_, _ = ui.Blue.Println("      - Set hook_settle_delay: 2s (or higher) in bosun.yaml")
+	_, _ = ui.Blue.Println("      - Unraid's shfs FUSE layer can lag writes; post-sync hooks may otherwise fire before the write settles")
+	return CheckResult{Warned: 1}
+}
+
 // checkStateDir verifies the deploy-state directory is writable.
 // The state dir defaults to reconcile.DefaultStateDir but is overridden by
 // the BOSUN_STATE_DIR environment variable (same logic as the daemon).
@@ -532,6 +585,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	result.Add(checkAgeKey())
 	result.Add(checkSOPS())
 	result.Add(checkManifestDirectory(cfg))
+	result.Add(checkHookSettleDelayFUSE(cfg))
 	result.Add(checkStateDir())
 	result.Add(checkSocketDir())
 	result.Add(checkWebhook())

@@ -847,8 +847,17 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 		return len(matched), hookErr
 	}
 
+	// Resolve the effective settle delay: an explicitly configured delay
+	// always wins, otherwise a deploy path under Unraid's /mnt/user FUSE
+	// mount defaults to a non-zero delay (see resolveHookSettleDelay).
+	deployPath := r.config.RemoteAppdataPath
+	if local {
+		deployPath = r.config.LocalAppdataPath
+	}
+	settleDelay := resolveHookSettleDelay(r.config.HookSettleDelay.Value, deployPath)
+
 	ui.Info("Executing %d post-sync hook(s)...", len(matched))
-	if err := ExecutePostSyncHooks(ctx, client, matched, r.config.HookSettleDelay.Value); err != nil {
+	if err := ExecutePostSyncHooks(ctx, client, matched, settleDelay); err != nil {
 		logger.Warn().Err(err).Msg("Some post-sync hooks failed")
 		ui.Warning("Post-sync hook errors: %v", err)
 		return len(matched), err

@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/cameronsjo/bosun/internal/log"
 )
@@ -106,8 +107,31 @@ func CopyFile(src, dst string) error {
 		return fmt.Errorf("rename to destination: %w", err)
 	}
 
+	// fsync the destination directory so the rename's directory-entry update
+	// is durable and visible to any other process/handle observing this
+	// directory — notably a second FUSE handle on Unraid's shfs, which can
+	// otherwise keep serving a stale directory listing after an unfsynced
+	// rename. Windows has no equivalent directory-fsync semantics, so this
+	// is skipped there.
+	if runtime.GOOS != "windows" {
+		if err := syncDir(dstDir); err != nil {
+			return fmt.Errorf("sync destination directory: %w", err)
+		}
+	}
+
 	success = true
 	return nil
+}
+
+// syncDir opens dir and calls Sync on it, flushing the directory entry
+// (e.g. a rename target) to durable storage.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open directory: %w", err)
+	}
+	defer func() { _ = d.Close() }()
+	return d.Sync()
 }
 
 // FileHash computes the SHA-256 hash of a file's contents.

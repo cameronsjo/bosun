@@ -169,6 +169,85 @@ func TestCheckManifestDirectory(t *testing.T) {
 	})
 }
 
+// loadBosunYAML writes bosunYAML to a temp bosun.yaml and loads it via
+// config.LoadFrom. HookSettleDelay and Targets are unexported on
+// config.Config, so a real YAML round-trip is required to populate them
+// for tests (unlike ManifestDir/Root, which are exported and can be set
+// via struct literal).
+func loadBosunYAML(t *testing.T, bosunYAML string) *config.Config {
+	t.Helper()
+	tmpDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(bosunYAML), 0644))
+	cfg, err := config.LoadFrom(tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	return cfg
+}
+
+func TestCheckHookSettleDelayFUSE(t *testing.T) {
+	t.Run("with nil config", func(t *testing.T) {
+		result := checkHookSettleDelayFUSE(nil)
+		assert.Equal(t, 0, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 0, result.Warned)
+	})
+
+	t.Run("warns when hook_settle_delay unset for a /mnt/user target", func(t *testing.T) {
+		cfg := loadBosunYAML(t, `
+targets:
+  - name: unraid
+    remote_appdata_path: /mnt/user/appdata
+`)
+		result := checkHookSettleDelayFUSE(cfg)
+		assert.Equal(t, 0, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 1, result.Warned)
+	})
+
+	t.Run("passes when hook_settle_delay is set for a /mnt/user target", func(t *testing.T) {
+		cfg := loadBosunYAML(t, `
+hook_settle_delay: 2s
+targets:
+  - name: unraid
+    remote_appdata_path: /mnt/user/appdata
+`)
+		result := checkHookSettleDelayFUSE(cfg)
+		assert.Equal(t, 1, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 0, result.Warned)
+	})
+
+	t.Run("skips when no configured target is under /mnt/user", func(t *testing.T) {
+		cfg := loadBosunYAML(t, `
+targets:
+  - name: pi
+    remote_appdata_path: /home/pi/appdata
+    local_appdata_path: /mnt/appdata
+`)
+		result := checkHookSettleDelayFUSE(cfg)
+		assert.Equal(t, 0, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 0, result.Warned)
+	})
+
+	t.Run("warns when no targets configured and REMOTE_APPDATA env is under /mnt/user", func(t *testing.T) {
+		t.Setenv("REMOTE_APPDATA", "/mnt/user/appdata")
+		cfg := loadBosunYAML(t, "")
+		result := checkHookSettleDelayFUSE(cfg)
+		assert.Equal(t, 0, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 1, result.Warned)
+	})
+
+	t.Run("warns when no targets configured and no env override (hardcoded default is /mnt/user)", func(t *testing.T) {
+		cfg := loadBosunYAML(t, "")
+		result := checkHookSettleDelayFUSE(cfg)
+		assert.Equal(t, 0, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 1, result.Warned)
+	})
+}
+
 func TestCheckWebhook(t *testing.T) {
 	// Note: This test checks behavior when webhook is not running
 	// In a typical test environment, the webhook will not be running
