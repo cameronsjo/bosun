@@ -138,6 +138,39 @@ func TestReconciler_ReleaseLock(t *testing.T) {
 	})
 }
 
+// TestReconcilerRun_CreatesMissingLockDir proves Run() creates the lock file's
+// parent directory when it doesn't exist yet (e.g. a fresh install where
+// /var/run/bosun hasn't been created), instead of acquireLock's OpenFile
+// failing with ENOENT and being misreported as "another reconciliation may
+// be in progress" -- which would paralyze the daemon permanently.
+func TestReconcilerRun_CreatesMissingLockDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	lockDir := filepath.Join(tmpDir, "nested", "does-not-exist-yet")
+	lockFile := filepath.Join(lockDir, "reconcile.lock")
+	stateFile := filepath.Join(tmpDir, "state.json")
+
+	_, statErr := os.Stat(lockDir)
+	require.True(t, os.IsNotExist(statErr), "lock dir must not exist before Run()")
+
+	gitOps := &mockGitOps{syncErr: fmt.Errorf("injected sync boom")}
+
+	cfg := &Config{
+		LockFile:  lockFile,
+		StateFile: stateFile,
+	}
+	r := NewReconciler(cfg, WithGitOperations(gitOps))
+
+	err := r.Run(context.Background())
+
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "failed to acquire lock", "should get past lock acquisition, not fail there")
+	assert.Contains(t, err.Error(), "injected sync boom", "the injected sync error should surface, proving the pipeline ran past lock creation")
+
+	info, statErr := os.Stat(lockDir)
+	require.NoError(t, statErr, "lock directory should have been created by Run()")
+	assert.True(t, info.IsDir())
+}
+
 func TestReconciler_GetTargetHost(t *testing.T) {
 	t.Run("explicit target host", func(t *testing.T) {
 		cfg := &Config{
