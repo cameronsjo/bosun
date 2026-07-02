@@ -288,7 +288,7 @@ func runReconcile(cmd *cobra.Command, args []string) {
 	if reconcileTarget != "" {
 		var found bool
 		for _, t := range targets {
-			if t.Name == reconcileTarget {
+			if strings.EqualFold(t.Name, reconcileTarget) {
 				targets = []reconcile.Target{t}
 				found = true
 				break

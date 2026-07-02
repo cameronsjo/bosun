@@ -49,9 +49,11 @@ type Target struct {
 	DeploySyncExclude []string `json:"deploy_sync_exclude,omitempty"`
 }
 
-// IsDefault returns true if this is the implicit default target.
+// IsDefault returns true if this is the implicit default target. The comparison
+// is case-insensitive so a case-variant name ("Default", "DEFAULT") cannot slip
+// past as a distinct target and fragment state from the base (#228).
 func (t Target) IsDefault() bool {
-	return t.Name == DefaultTargetName
+	return strings.EqualFold(t.Name, DefaultTargetName)
 }
 
 // ConfigForTarget returns a shallow copy of the base config with per-target
@@ -173,7 +175,7 @@ func (c *Config) ResolveTargets() []Target {
 		valid := make([]Target, 0, len(c.Targets))
 		seen := make(map[string]bool, len(c.Targets))
 		for _, t := range c.Targets {
-			if t.Name == DefaultTargetName {
+			if strings.EqualFold(t.Name, DefaultTargetName) {
 				log.Warn().Str("target", t.Name).Msg("Skipping target: reserved name (used internally for implicit single-target mode)")
 				continue
 			}
@@ -222,8 +224,8 @@ func ValidateTargetName(name string) error {
 	if name == "" {
 		return fmt.Errorf("target name must not be empty")
 	}
-	if name == DefaultTargetName {
-		return nil // The implicit default is always valid
+	if strings.EqualFold(name, DefaultTargetName) {
+		return nil // The implicit default is always valid (case-insensitive, #228)
 	}
 	if !safeTargetNamePattern.MatchString(name) {
 		return fmt.Errorf("target name %q contains unsafe characters (allowed: alphanumeric, hyphens, underscores)", name)
