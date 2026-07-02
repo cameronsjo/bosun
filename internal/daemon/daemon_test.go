@@ -1647,6 +1647,44 @@ func TestTriggerReconcile_ContextCancellation(t *testing.T) {
 	d.reconcileMu.Unlock()
 }
 
+// blockingGitOps is a reconcile.GitOperations stub whose Sync blocks until the
+// context is done, simulating a wedged git sync so tests can prove a trigger
+// path is bounded by ReconcileTimeout rather than hanging forever.
+type blockingGitOps struct{}
+
+func (blockingGitOps) Sync(ctx context.Context) (bool, string, string, error) {
+	<-ctx.Done()
+	return false, "", "", ctx.Err()
+}
+
+func (blockingGitOps) IsRepo(context.Context) bool { return true }
+
+func (blockingGitOps) DiffFiles(context.Context, string, string) ([]string, error) {
+	return nil, nil
+}
+
+// TestTriggerReconcile_BoundedByReconcileTimeout proves that startup, poll, and
+// drift-self-heal triggers -- which call TriggerReconcile with the bare daemon
+// context instead of pre-wrapping it like the webhook/socket/tcp/api sites do --
+// still get unwedged by ReconcileTimeout rather than blocking d.reconciling forever.
+func TestTriggerReconcile_BoundedByReconcileTimeout(t *testing.T) {
+	d := newConcurrencyDaemon(t)
+	d.config.ReconcileTimeout = 100 * time.Millisecond
+	d.reconcileOpts = append(d.reconcileOpts, reconcile.WithGitOperations(blockingGitOps{}))
+
+	ctx := context.Background()
+	start := time.Now()
+	err := d.TriggerReconcile(ctx, "startup", false)
+	elapsed := time.Since(start)
+
+	require.Error(t, err, "a blocked sync should surface a timeout/cancellation error")
+	assert.Less(t, elapsed, 2*time.Second, "TriggerReconcile should return once ReconcileTimeout elapses, not hang")
+
+	d.reconcileMu.Lock()
+	assert.False(t, d.reconciling, "reconciling should clear after the timeout unwedges the run")
+	d.reconcileMu.Unlock()
+}
+
 // ---------------------------------------------------------------------------
 // Phase 1D: State Accessors
 // ---------------------------------------------------------------------------
