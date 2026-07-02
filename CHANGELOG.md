@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.10](https://github.com/cameronsjo/bosun/compare/v0.37.9...v0.37.10) (2026-07-02)
+
+
+### Bug Fixes
+
+* **reconcile:** BackupRemote fails on SSH error, verifies archive integrity, resets stream per retry ([#406](https://github.com/cameronsjo/bosun/issues/406)) ([e0eaa94](https://github.com/cameronsjo/bosun/commit/e0eaa9464d5de1c25f2d35ba4da5cf9a6e71f0d7))
+
 ## [0.37.9](https://github.com/cameronsjo/bosun/compare/v0.37.8...v0.37.9) (2026-07-02)
 
 
