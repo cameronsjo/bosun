@@ -3817,6 +3817,56 @@ func TestRunHealthGate_FailsWhenUnhealthy(t *testing.T) {
 	assert.Contains(t, err.Error(), "authelia")
 }
 
+func TestRunHealthGate_RollbackRestoresBackupInsteadOfRedeploying(t *testing.T) {
+	// #229 regression: on health-gate failure, `docker compose up -d` has
+	// already exited 0 against the now-unhealthy containers (see
+	// ComposeUpMultiple's --wait comment) — redeploying r.lastComposeFiles via
+	// ComposeUpMultipleWithRollback would just re-run that same no-op. The
+	// rollback must go straight to RollbackFromBackup and never touch the
+	// deploy path again.
+	mockAPI := newReconcileMockDockerAPI()
+	mockAPI.containerInspectFunc = func(_ context.Context, name string) (container.InspectResponse, error) {
+		return makeInspectResponse(name, "running", &container.Health{Status: "unhealthy"}), nil
+	}
+	client := docker.NewClientWithAPI(mockAPI)
+
+	tmpDir := t.TempDir()
+	composeFile := filepath.Join(tmpDir, "docker-compose.yml")
+
+	// Archive the last-known-good config as the backup.
+	require.NoError(t, os.WriteFile(composeFile, []byte("services:\n  web:\n    image: nginx\nbad: [[[\n"), 0644))
+	backupDir := filepath.Join(tmpDir, "backup")
+	writeBackupArchive(t, backupDir, composeFile)
+
+	// The file on disk now holds the broken config that triggered the health
+	// gate in the first place.
+	require.NoError(t, os.WriteFile(composeFile, []byte("not valid yaml: [[[\n"), 0644))
+
+	deployCalled := false
+	deploy := &DeployOps{
+		DryRun:      false,
+		ProjectName: "healthgatetest",
+		composeUpFn: func(_ context.Context, _ []string) error {
+			deployCalled = true
+			return nil
+		},
+	}
+
+	cfg := &Config{
+		CriticalContainers: NewConfigField([]string{"traefik"}),
+		HealthGateTimeout:  1 * time.Second,
+		LocalAppdataPath:   t.TempDir(), // Ensures isLocalMode() returns true.
+	}
+	r := NewReconciler(cfg, WithDockerClient(client), WithDeployOps(deploy))
+	r.lastComposeFiles = []string{composeFile}
+	r.lastBackupPath = backupDir
+
+	err := r.runHealthGate(context.Background(), &DeployState{}, true)
+	require.Error(t, err) // The health gate itself always reports the failure.
+	assert.False(t, deployCalled,
+		"health-gate rollback must not re-run compose up against the files that produced the unhealthy state")
+}
+
 func TestDeployRemoteErrorPropagation(t *testing.T) {
 	t.Run("no target host returns error", func(t *testing.T) {
 		cfg := &Config{

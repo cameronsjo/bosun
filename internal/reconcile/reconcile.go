@@ -922,9 +922,11 @@ func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState, loca
 			Strs("containers", containers).
 			Msg("Critical container health gate failed. Triggering rollback")
 
-		// Trigger rollback via existing mechanism.
+		// Trigger rollback. The health gate runs after `docker compose up -d`
+		// already exited 0 (against now-unhealthy containers), so re-running
+		// compose up here would be a silent no-op — restore the backup directly.
 		if r.lastBackupPath != "" && len(r.lastComposeFiles) > 0 {
-			rollbackErr := r.deploy.ComposeUpMultipleWithRollback(ctx, r.lastComposeFiles, r.lastBackupPath)
+			rollbackErr := r.deploy.RollbackFromBackup(ctx, r.lastComposeFiles, r.lastBackupPath)
 			if rollbackErr != nil {
 				logger.Error().Err(rollbackErr).Msg("Rollback after health gate failure also failed")
 			}
