@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.7](https://github.com/cameronsjo/bosun/compare/v0.37.6...v0.37.7) (2026-07-02)
+
+
+### Bug Fixes
+
+* **reconcile:** casefold reserved "default" target checks to prevent state fragmentation ([#407](https://github.com/cameronsjo/bosun/issues/407)) ([30aff14](https://github.com/cameronsjo/bosun/commit/30aff14b3f5250684ac13d7fce026b5ccb0153ef))
+
 ## [0.37.6](https://github.com/cameronsjo/bosun/compare/v0.37.5...v0.37.6) (2026-07-02)
 
 
