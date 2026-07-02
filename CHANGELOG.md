@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.8](https://github.com/cameronsjo/bosun/compare/v0.37.7...v0.37.8) (2026-07-02)
+
+
+### Bug Fixes
+
+* **daemon:** bound startup/poll/self-heal reconciles with ReconcileTimeout ([#410](https://github.com/cameronsjo/bosun/issues/410)) ([706ef2d](https://github.com/cameronsjo/bosun/commit/706ef2d04cc550074fcca3e1b8a8c79a7383a10f))
+* **drift:** don't advance alert throttle when delivery fails ([#408](https://github.com/cameronsjo/bosun/issues/408)) ([79a09e2](https://github.com/cameronsjo/bosun/commit/79a09e2e972109d45800230ce22dd13cd7852280))
+* **reconcile:** auto-create lock file directory to prevent fresh-install paralysis ([#411](https://github.com/cameronsjo/bosun/issues/411)) ([ee5856a](https://github.com/cameronsjo/bosun/commit/ee5856a8919406c19ca8faff4a01ee52ef7690cd))
+
 ## [0.37.7](https://github.com/cameronsjo/bosun/compare/v0.37.6...v0.37.7) (2026-07-02)
 
 
