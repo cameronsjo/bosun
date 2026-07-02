@@ -805,9 +805,13 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 		// Fire all hooks unconditionally — a false-positive restart is better
 		// than stale configs on a FUSE mount. See GitHub #197.
 		logger.Info().Msg("Remote deploy: firing all post-sync hooks (no file-level tracking available)")
-	} else if deployResult != nil && len(deployResult.WrittenFiles) > 0 {
-		changedFiles = deployResult.WrittenFiles
-		logger.Debug().Int("files", len(changedFiles)).Msg("Using written-files list for post-sync hooks")
+	} else if deployResult != nil && (len(deployResult.WrittenFiles) > 0 || len(deployResult.DeletedFiles) > 0) {
+		// Combine writes and deletions: a commit that both writes an unrelated
+		// file and deletes a hook-matched one must still fire that hook (#234).
+		changedFiles = make([]string, 0, len(deployResult.WrittenFiles)+len(deployResult.DeletedFiles))
+		changedFiles = append(changedFiles, deployResult.WrittenFiles...)
+		changedFiles = append(changedFiles, deployResult.DeletedFiles...)
+		logger.Debug().Int("files", len(changedFiles)).Msg("Using written+deleted files list for post-sync hooks")
 	} else {
 		var err error
 		changedFiles, err = r.git.DiffFiles(ctx, previousCommit, currentCommit)
@@ -1370,6 +1374,7 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 		dst := filepath.Join(appdata, t.TargetPath)
 		ui.Info("  Syncing %s...", t.RelPath)
 		snapshot := len(result.WrittenFiles)
+		deletedSnapshot := len(result.DeletedFiles)
 		if t.IsDir {
 			prevForTarget := filterManagedForTarget(prevManaged, t.TargetPath)
 			if err := r.deploy.DeployLocal(ctx, src, dst, result, prevForTarget); err != nil {
@@ -1379,6 +1384,7 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 				return nil, err
 			}
 			result.PrefixLatest(snapshot, t.RelPath)
+			result.PrefixLatestDeleted(deletedSnapshot, t.RelPath)
 			if err := recordManaged(result, src, t.TargetPath); err != nil {
 				return nil, err
 			}
@@ -1406,6 +1412,7 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 		ui.Info("  Syncing compose files...")
 		_ = os.MkdirAll(composeTarget, 0755)
 		snapshot := len(result.WrittenFiles)
+		deletedSnapshot := len(result.DeletedFiles)
 		prevForCompose := filterManagedForTarget(prevManaged, "compose")
 		if err := r.deploy.DeployLocal(ctx, composeStaging, composeTarget, result, prevForCompose); err != nil {
 			return nil, err
@@ -1414,6 +1421,7 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 			return nil, err
 		}
 		result.PrefixLatest(snapshot, "compose")
+		result.PrefixLatestDeleted(deletedSnapshot, "compose")
 		if err := recordManaged(result, composeStaging, "compose"); err != nil {
 			return nil, err
 		}

@@ -43,11 +43,18 @@ func (d *DeployOps) composeUpTimeout() time.Duration {
 	return DefaultComposeUpTimeout
 }
 
-// DeployResult tracks which files were actually written during deployment.
-// Used to inform post-sync hooks about actual on-disk changes.
+// DeployResult tracks which files were actually written or deleted during
+// deployment. Used to inform post-sync hooks about actual on-disk changes.
 type DeployResult struct {
 	// WrittenFiles contains relative paths of files that were written to disk.
 	WrittenFiles []string
+
+	// DeletedFiles contains relative paths of files removed from disk by
+	// removeStaleFiles's --delete-style pruning. Tracked separately from
+	// WrittenFiles because a deletion is not a write; callers that need "every
+	// file touched this deploy" (e.g. post-sync hook matching) combine both
+	// lists explicitly.
+	DeletedFiles []string
 
 	// ManagedFiles is the full set of files bosun deployed this run (every
 	// regular file in the source tree, not just the changed ones in
@@ -59,6 +66,11 @@ type DeployResult struct {
 // AddWritten appends file paths to the result's written files list.
 func (r *DeployResult) AddWritten(files ...string) {
 	r.WrittenFiles = append(r.WrittenFiles, files...)
+}
+
+// AddDeleted appends file paths to the result's deleted files list.
+func (r *DeployResult) AddDeleted(files ...string) {
+	r.DeletedFiles = append(r.DeletedFiles, files...)
 }
 
 // AddManaged appends file paths to the result's managed-files manifest.
@@ -79,6 +91,21 @@ func (r *DeployResult) PrefixLatest(snapshot int, prefix string) {
 	}
 	for i := snapshot; i < len(r.WrittenFiles); i++ {
 		r.WrittenFiles[i] = filepath.Join(prefix, r.WrittenFiles[i])
+	}
+}
+
+// PrefixLatestDeleted prepends prefix to all DeletedFiles entries added after
+// the snapshot index. Mirrors PrefixLatest so deleted paths get the same
+// staging-relative prefix needed for hook glob matching.
+func (r *DeployResult) PrefixLatestDeleted(snapshot int, prefix string) {
+	if snapshot < 0 {
+		snapshot = 0
+	}
+	if snapshot >= len(r.DeletedFiles) {
+		return
+	}
+	for i := snapshot; i < len(r.DeletedFiles); i++ {
+		r.DeletedFiles[i] = filepath.Join(prefix, r.DeletedFiles[i])
 	}
 }
 
@@ -171,7 +198,7 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 		}
 
 		// Prune files bosun previously deployed that are gone from source.
-		if err := removeStaleFiles(ctx, sourceDir, targetDir, prevManaged); err != nil {
+		if err := removeStaleFiles(ctx, sourceDir, targetDir, result, prevManaged); err != nil {
 			logger.Error().Err(err).Msg("Failed to deploy locally. Reason: stale file removal failed")
 			return fmt.Errorf("remove stale files: %w", err)
 		}
@@ -291,7 +318,10 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 //
 // prevManaged keys are targetDir-relative paths. Logs a warning for each file
 // that cannot be removed and returns a summary error if any removals failed.
-func removeStaleFiles(ctx context.Context, sourceDir, targetDir string, prevManaged map[string]bool) error {
+// Removed paths are recorded on result (targetDir-relative, "/"-separated) so
+// post-sync hooks can match against deletions, not just writes; result may be
+// nil when the caller doesn't need that tracking (e.g. direct unit tests).
+func removeStaleFiles(ctx context.Context, sourceDir, targetDir string, result *DeployResult, prevManaged map[string]bool) error {
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 	logger.Debug().
 		Str(log.FieldPath, sourceDir).
@@ -353,6 +383,9 @@ func removeStaleFiles(ctx context.Context, sourceDir, targetDir string, prevMana
 			} else {
 				logger.Debug().Str(log.FieldPath, relPath).Msg("Removed stale file")
 				removedCount++
+				if result != nil {
+					result.AddDeleted(filepath.ToSlash(relPath))
+				}
 			}
 		}
 		return nil
