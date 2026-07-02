@@ -1081,10 +1081,13 @@ func TestRemoveStaleFiles(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "file-b.txt"), []byte("b"), 0644))
 
 		prevManaged := map[string]bool{"file-a.txt": true, "file-b.txt": true}
-		require.NoError(t, removeStaleFiles(ctx, srcDir, tgtDir, prevManaged))
+		result := &DeployResult{}
+		require.NoError(t, removeStaleFiles(ctx, srcDir, tgtDir, result, prevManaged))
 
 		assert.FileExists(t, filepath.Join(tgtDir, "file-a.txt"))
 		assert.NoFileExists(t, filepath.Join(tgtDir, "file-b.txt"))
+		// #234: the deletion must be recorded so post-sync hooks can match it.
+		assert.Equal(t, []string{"file-b.txt"}, result.DeletedFiles)
 	})
 
 	t.Run("preserves unmanaged runtime file", func(t *testing.T) {
@@ -1099,10 +1102,12 @@ func TestRemoveStaleFiles(t *testing.T) {
 
 		// Manifest contains only the config file; db.sqlite3 is unmanaged.
 		prevManaged := map[string]bool{"configuration.yml": true}
-		require.NoError(t, removeStaleFiles(ctx, srcDir, tgtDir, prevManaged))
+		result := &DeployResult{}
+		require.NoError(t, removeStaleFiles(ctx, srcDir, tgtDir, result, prevManaged))
 
 		assert.FileExists(t, filepath.Join(tgtDir, "configuration.yml"))
 		assert.FileExists(t, filepath.Join(tgtDir, "db.sqlite3"), "unmanaged runtime data must not be pruned")
+		assert.Empty(t, result.DeletedFiles)
 	})
 
 	t.Run("prunes managed file in subdir", func(t *testing.T) {
@@ -1117,10 +1122,12 @@ func TestRemoveStaleFiles(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "keep.txt"), []byte("k"), 0644))
 
 		prevManaged := map[string]bool{"sub/old.yml": true, "keep.txt": true}
-		require.NoError(t, removeStaleFiles(ctx, srcDir, tgtDir, prevManaged))
+		result := &DeployResult{}
+		require.NoError(t, removeStaleFiles(ctx, srcDir, tgtDir, result, prevManaged))
 
 		assert.NoFileExists(t, filepath.Join(tgtDir, "sub", "old.yml"))
 		assert.FileExists(t, filepath.Join(tgtDir, "sub", "runtime.log"), "unmanaged file must survive")
+		assert.Equal(t, []string{"sub/old.yml"}, result.DeletedFiles)
 	})
 
 	t.Run("empty manifest prunes nothing", func(t *testing.T) {
@@ -1132,7 +1139,7 @@ func TestRemoveStaleFiles(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "file-a.txt"), []byte("a"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "leftover.txt"), []byte("x"), 0644))
 
-		require.NoError(t, removeStaleFiles(ctx, srcDir, tgtDir, nil))
+		require.NoError(t, removeStaleFiles(ctx, srcDir, tgtDir, nil, nil))
 
 		assert.FileExists(t, filepath.Join(tgtDir, "leftover.txt"))
 	})
@@ -1147,7 +1154,7 @@ func TestRemoveStaleFiles(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "b.txt"), []byte("b"), 0644))
 
 		prevManaged := map[string]bool{"a.txt": true, "b.txt": true}
-		require.NoError(t, removeStaleFiles(ctx, srcDir, tgtDir, prevManaged))
+		require.NoError(t, removeStaleFiles(ctx, srcDir, tgtDir, nil, prevManaged))
 
 		assert.FileExists(t, filepath.Join(tgtDir, "a.txt"))
 		assert.FileExists(t, filepath.Join(tgtDir, "b.txt"))
@@ -1163,7 +1170,7 @@ func TestRemoveStaleFiles(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(tgtDir, "sub", "keep.txt"), []byte("keep"), 0644))
 
 		prevManaged := map[string]bool{"sub/keep.txt": true}
-		require.NoError(t, removeStaleFiles(ctx, srcDir, tgtDir, prevManaged))
+		require.NoError(t, removeStaleFiles(ctx, srcDir, tgtDir, nil, prevManaged))
 
 		assert.FileExists(t, filepath.Join(tgtDir, "sub", "keep.txt"))
 	})
@@ -1173,7 +1180,7 @@ func TestRemoveStaleFiles(t *testing.T) {
 		// Source must have a regular file to pass the empty-source guard so the
 		// walk of the (missing) target is reached.
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "x.txt"), []byte("x"), 0644))
-		err := removeStaleFiles(ctx, srcDir, "/nonexistent/target", map[string]bool{"gone.txt": true})
+		err := removeStaleFiles(ctx, srcDir, "/nonexistent/target", nil, map[string]bool{"gone.txt": true})
 		assert.Error(t, err)
 	})
 
@@ -1204,7 +1211,7 @@ func TestRemoveStaleFiles(t *testing.T) {
 		})
 
 		prevManaged := map[string]bool{"locked/stale.txt": true, "present.txt": true}
-		err := removeStaleFiles(ctx, srcDir, tgtDir, prevManaged)
+		err := removeStaleFiles(ctx, srcDir, tgtDir, nil, prevManaged)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "stale file(s) could not be removed")
 		assert.Contains(t, err.Error(), "stale.txt")

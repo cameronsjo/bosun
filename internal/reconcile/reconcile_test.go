@@ -1363,6 +1363,38 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 		assert.True(t, restartCalled)
 	})
 
+	t.Run("mixed write and delete fires the deletion's hook", func(t *testing.T) {
+		// #234 regression: a mixed commit (a write to an unrelated service plus
+		// a hook-matched deletion) took the WrittenFiles-only branch and the
+		// deletion's hook never fired, because removeStaleFiles recorded
+		// nothing. DeletedFiles must be consulted too.
+		restartCalled := false
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts container.StopOptions) error {
+			restartCalled = true
+			return nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		cfg := &Config{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
+				{Container: "authelia", Paths: []string{"authelia/**"}, Action: "restart"},
+			}),
+		}
+		r := NewReconciler(cfg)
+		r.dockerClientFn = func() *docker.Client { return client }
+
+		result := &DeployResult{
+			WrittenFiles: []string{"traefik/dynamic.yml"},
+			DeletedFiles: []string{"authelia/old-config.yml"},
+		}
+		matched, err := r.executePostSyncHooks(context.Background(), "aaa", "bbb", result, true)
+		assert.NoError(t, err)
+		assert.Equal(t, 1, matched)
+		assert.True(t, restartCalled,
+			"deletion-matched hook must fire even when the same commit also wrote unrelated files")
+	})
+
 	t.Run("docker client unavailable is non-fatal", func(t *testing.T) {
 		gitOps := &mockGitOps{diffFiles: []string{"traefik/dynamic.yml"}}
 		cfg := &Config{
