@@ -928,15 +928,23 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 			)
 
 			if len(alertItems) > 0 {
-				d.sendDriftAlert(ctx, &reconcile.DriftReport{
+				if err := d.sendDriftAlert(ctx, &reconcile.DriftReport{
 					CheckedAt: report.CheckedAt,
 					Items:     alertItems,
-				})
-				now := time.Now()
-				for _, item := range alertItems {
-					state.DriftAlertedItems[reconcile.DriftAlertKey(item)] = now
+				}); err != nil {
+					// Delivery failed — leave dedup/cooldown state untouched so the
+					// next drift check retries the alert instead of silently dropping it.
+					logger.Warn().
+						Err(err).
+						Int("items", len(alertItems)).
+						Msg("Drift alert delivery failed, will retry on next check")
+				} else {
+					now := time.Now()
+					for _, item := range alertItems {
+						state.DriftAlertedItems[reconcile.DriftAlertKey(item)] = now
+					}
+					state.DriftAlertedAt = now
 				}
-				state.DriftAlertedAt = now
 			}
 
 			// Resolution alerts: only fire for items that were previously alerted.
@@ -955,9 +963,17 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 					actuallyResolved = append(actuallyResolved, key)
 				}
 				if len(actuallyResolved) > 0 {
-					d.sendDriftResolvedAlert(ctx, actuallyResolved)
-					for _, key := range actuallyResolved {
-						delete(state.DriftAlertedItems, key)
+					if err := d.sendDriftResolvedAlert(ctx, actuallyResolved); err != nil {
+						// Delivery failed — keep the items marked as alerted so the
+						// resolution alert is retried on the next drift check.
+						logger.Warn().
+							Err(err).
+							Int("items", len(actuallyResolved)).
+							Msg("Drift resolved alert delivery failed, will retry on next check")
+					} else {
+						for _, key := range actuallyResolved {
+							delete(state.DriftAlertedItems, key)
+						}
 					}
 				}
 			}
@@ -982,8 +998,16 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 			for key := range state.DriftAlertedItems {
 				resolvedKeys = append(resolvedKeys, key)
 			}
-			d.sendDriftResolvedAlert(ctx, resolvedKeys)
-			state.DriftAlertedItems = nil
+			if err := d.sendDriftResolvedAlert(ctx, resolvedKeys); err != nil {
+				// Delivery failed — leave DriftAlertedItems intact so the resolution
+				// alert is retried on the next drift check.
+				logger.Warn().
+					Err(err).
+					Int("items", len(resolvedKeys)).
+					Msg("Drift resolved alert delivery failed, will retry on next check")
+			} else {
+				state.DriftAlertedItems = nil
+			}
 		}
 	}
 
@@ -1137,8 +1161,10 @@ func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, s
 	}
 }
 
-// sendDriftAlert sends an alert for detected drift.
-func (d *Daemon) sendDriftAlert(ctx context.Context, report *reconcile.DriftReport) {
+// sendDriftAlert sends an alert for detected drift. Returns the delivery
+// error, if any, so callers can avoid advancing dedup/cooldown state for an
+// alert that never reached the provider.
+func (d *Daemon) sendDriftAlert(ctx context.Context, report *reconcile.DriftReport) error {
 	logger := log.Component(log.ComponentDaemon)
 
 	target := "local"
@@ -1156,11 +1182,15 @@ func (d *Daemon) sendDriftAlert(ctx context.Context, report *reconcile.DriftRepo
 
 	if err := d.alerter.SendDriftDetected(ctx, target, driftItems); err != nil {
 		logger.Warn().Err(err).Msg("Failed to send drift alert")
+		return err
 	}
+	return nil
 }
 
 // sendDriftResolvedAlert sends an alert for drift items that have cleared.
-func (d *Daemon) sendDriftResolvedAlert(ctx context.Context, resolvedKeys []string) {
+// Returns the delivery error, if any, so callers can avoid clearing alerted
+// state for a resolution alert that never reached the provider.
+func (d *Daemon) sendDriftResolvedAlert(ctx context.Context, resolvedKeys []string) error {
 	logger := log.Component(log.ComponentDaemon)
 
 	target := "local"
@@ -1170,7 +1200,9 @@ func (d *Daemon) sendDriftResolvedAlert(ctx context.Context, resolvedKeys []stri
 
 	if err := d.alerter.SendDriftResolved(ctx, target, resolvedKeys); err != nil {
 		logger.Warn().Err(err).Msg("Failed to send drift resolved alert")
+		return err
 	}
+	return nil
 }
 
 // IsReady returns whether the daemon is ready to serve requests.

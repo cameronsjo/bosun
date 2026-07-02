@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docker/docker/api/types/container"
+
 	"github.com/cameronsjo/bosun/internal/alert"
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/docker/dockertest"
@@ -1900,11 +1902,21 @@ func TestWidgetData_Structure(t *testing.T) {
 // testAlertProvider implements alert.Provider for test assertions.
 type testAlertProvider struct {
 	alerts []*alert.Alert
+	// err, when set, is returned by Send instead of recording the alert —
+	// simulates a delivery failure (network error, provider outage, etc).
+	err error
+	// attempts counts every Send call, success or failure, so tests can
+	// confirm a delivery was retried without depending on it succeeding.
+	attempts int
 }
 
-func (p *testAlertProvider) Name() string                                { return "test" }
-func (p *testAlertProvider) IsConfigured() bool                          { return true }
+func (p *testAlertProvider) Name() string       { return "test" }
+func (p *testAlertProvider) IsConfigured() bool { return true }
 func (p *testAlertProvider) Send(_ context.Context, a *alert.Alert) error {
+	p.attempts++
+	if p.err != nil {
+		return p.err
+	}
 	p.alerts = append(p.alerts, a)
 	return nil
 }
@@ -2077,6 +2089,107 @@ func TestRunDriftCheck_DebounceDisabled(t *testing.T) {
 	// Verify debounce map is nil initially (disabled).
 	loaded := reconcile.LoadState(stateFile)
 	assert.Nil(t, loaded.DriftDebounceItems)
+}
+
+func TestRunDriftCheck_AlertDeliveryFailure_StateNotAdvanced(t *testing.T) {
+	// A declared service with no matching running container produces a
+	// "missing" drift item. If alert delivery fails, DriftAlertedItems must
+	// NOT be updated -- otherwise the next check would treat the item as
+	// already-alerted and never retry delivery.
+	provider := &testAlertProvider{err: errors.New("provider unreachable")}
+	d := newAlertDaemon(t, provider)
+	d.dockerClientOverride = docker.NewClientWithAPI(&dockertest.MockDockerAPI{})
+	// Restart breaker is unrelated to this test; disable it explicitly rather
+	// than relying on the empty container list to skip its inspect calls.
+	d.config.ReconcileConfig.RestartBreakerEnabled = false
+
+	stateFile := d.config.ReconcileConfig.StateFile
+	state := &reconcile.DeployState{
+		LastDeployedCommit: "abc123",
+		DeclaredServices: []reconcile.DeclaredService{
+			{Name: "api", Image: "api:latest"},
+		},
+	}
+	require.NoError(t, reconcile.SaveState(stateFile, state))
+
+	d.runDriftCheck(context.Background())
+
+	assert.Equal(t, 1, provider.attempts, "delivery should have been attempted")
+	assert.Empty(t, provider.alerts, "delivery failed, no alert should have been recorded as sent")
+
+	loaded := reconcile.LoadState(stateFile)
+	assert.Empty(t, loaded.DriftAlertedItems, "DriftAlertedItems must not advance when delivery fails")
+
+	// Retry: once the provider recovers, the next check should alert successfully
+	// and only then mark the item as alerted.
+	provider.err = nil
+	d.runDriftCheck(context.Background())
+
+	assert.Equal(t, 2, provider.attempts, "delivery should be retried on the next check")
+	require.Len(t, provider.alerts, 1, "delivery succeeded, one alert should have been sent")
+
+	loaded = reconcile.LoadState(stateFile)
+	assert.Contains(t, loaded.DriftAlertedItems, "api:missing", "DriftAlertedItems should advance once delivery succeeds")
+}
+
+func TestRunDriftCheck_ResolvedAlertDeliveryFailure_StateNotCleared(t *testing.T) {
+	// Simulates drift that was previously alerted and has now resolved (the
+	// declared service is running again). If the resolution-alert delivery
+	// fails, DriftAlertedItems must remain intact so the resolution alert is
+	// retried on the next check instead of being silently dropped.
+	provider := &testAlertProvider{err: errors.New("provider unreachable")}
+	d := newAlertDaemon(t, provider)
+
+	mockAPI := &dockertest.MockDockerAPI{
+		ContainerListFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+			return []container.Summary{
+				{
+					ID:    "abc123456789",
+					Names: []string{"/api"},
+					State: "running",
+					Image: "api:latest",
+				},
+			}, nil
+		},
+	}
+	d.dockerClientOverride = docker.NewClientWithAPI(mockAPI)
+	// Restart breaker is unrelated to this test and its inspect path isn't
+	// backed by the mock; disable it so it doesn't interfere.
+	d.config.ReconcileConfig.RestartBreakerEnabled = false
+
+	stateFile := d.config.ReconcileConfig.StateFile
+	state := &reconcile.DeployState{
+		LastDeployedCommit: "abc123",
+		DeclaredServices: []reconcile.DeclaredService{
+			{Name: "api", Image: "api:latest"},
+		},
+		DriftItems: []reconcile.DriftItem{
+			{Service: "api", Type: reconcile.DriftMissing},
+		},
+		DriftAlertedItems: map[string]time.Time{
+			"api:missing": time.Now().Add(-2 * time.Hour),
+		},
+	}
+	require.NoError(t, reconcile.SaveState(stateFile, state))
+
+	d.runDriftCheck(context.Background())
+
+	assert.Equal(t, 1, provider.attempts, "resolution delivery should have been attempted")
+	assert.Empty(t, provider.alerts, "delivery failed, no alert should have been recorded as sent")
+
+	loaded := reconcile.LoadState(stateFile)
+	assert.Contains(t, loaded.DriftAlertedItems, "api:missing", "DriftAlertedItems must not clear when resolved-alert delivery fails")
+
+	// Retry: once the provider recovers, the resolution alert should succeed
+	// and only then clear the alerted state.
+	provider.err = nil
+	d.runDriftCheck(context.Background())
+
+	assert.Equal(t, 2, provider.attempts, "resolution delivery should be retried on the next check")
+	require.Len(t, provider.alerts, 1, "delivery succeeded, one resolution alert should have been sent")
+
+	loaded = reconcile.LoadState(stateFile)
+	assert.Empty(t, loaded.DriftAlertedItems, "DriftAlertedItems should clear once resolved-alert delivery succeeds")
 }
 
 func TestRunDriftCheck_DebounceStatePersistence(t *testing.T) {
