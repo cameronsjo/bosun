@@ -103,6 +103,30 @@ func TestCopyFile(t *testing.T) {
 		_, statErr := os.Lstat(dstPath)
 		assert.True(t, os.IsNotExist(statErr), "symlink target should not be copied")
 	})
+
+	t.Run("succeeds with content intact after destination directory fsync", func(t *testing.T) {
+		t.Parallel()
+
+		// CopyFile fsyncs the destination directory after the rename to make
+		// the rename's directory-entry update durable (see the FUSE staleness
+		// note on syncDir). This doesn't change CopyFile's observable
+		// contract, so this just re-asserts success and correct content —
+		// the dir-fsync itself isn't independently assertable from outside
+		// the package.
+		tmpDir := t.TempDir()
+		srcPath := filepath.Join(tmpDir, "source.txt")
+		dstPath := filepath.Join(tmpDir, "dest.txt")
+
+		content := []byte("fsync regression check")
+		require.NoError(t, os.WriteFile(srcPath, content, 0644))
+
+		err := fileutil.CopyFile(srcPath, dstPath)
+		require.NoError(t, err)
+
+		got, err := os.ReadFile(dstPath)
+		require.NoError(t, err)
+		assert.Equal(t, content, got)
+	})
 }
 
 func TestCopyDir(t *testing.T) {

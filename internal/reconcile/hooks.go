@@ -126,6 +126,48 @@ func matchAnyPath(files []string, patterns []string) bool {
 	return false
 }
 
+// FUSEDeployPathPrefix is Unraid's user-share FUSE (shfs) mount prefix.
+// Writes through this mount need extra time to settle before post-sync
+// hooks (or other consumers, e.g. the `bosun doctor` check) read the files
+// back — see resolveHookSettleDelay.
+const FUSEDeployPathPrefix = "/mnt/user"
+
+// defaultFUSESettleDelay is the settle delay applied when hook_settle_delay
+// is unconfigured and the deploy target lives under FUSEDeployPathPrefix.
+const defaultFUSESettleDelay = 2 * time.Second
+
+// IsUnderFUSEDeployPath reports whether path is FUSEDeployPathPrefix itself
+// or nested under it. Checks the path-segment boundary (not a bare string
+// prefix) so a lookalike sibling mount such as "/mnt/userdata" is not
+// mistaken for Unraid's "/mnt/user" share.
+func IsUnderFUSEDeployPath(path string) bool {
+	return path == FUSEDeployPathPrefix || strings.HasPrefix(path, FUSEDeployPathPrefix+"/")
+}
+
+// resolveHookSettleDelay returns the effective settle delay to use before
+// running post-sync hooks. An explicitly configured non-zero delay always
+// wins. When the configured delay is zero, a deploy path under Unraid's
+// /mnt/user FUSE mount defaults to defaultFUSESettleDelay, since FUSE writes
+// there need time to propagate before hooks fire (see GitHub #233). Any
+// other deploy path keeps the zero delay unchanged.
+//
+// Note: ConfigField[time.Duration] cannot currently distinguish "never
+// configured" from "explicitly configured as 0" — the CLI/daemon call
+// HookSettleDelay.SetFromFile(...) unconditionally after a successful config
+// load, even when hook_settle_delay is absent from bosun.yaml. So this gates
+// on the zero value: an explicit `hook_settle_delay: 0s` on a /mnt/user
+// target also receives the FUSE default rather than being honored as "no
+// delay". Revisit if ConfigField grows an explicit set/unset marker.
+func resolveHookSettleDelay(configured time.Duration, deployPath string) time.Duration {
+	if configured > 0 {
+		return configured
+	}
+	if IsUnderFUSEDeployPath(deployPath) {
+		return defaultFUSESettleDelay
+	}
+	return configured
+}
+
 // ExecutePostSyncHooks runs matched hooks by performing the specified action on containers.
 // settleDelay is a global pause before any hooks run (filesystem propagation).
 func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []PostSyncHook, settleDelay time.Duration) error {
