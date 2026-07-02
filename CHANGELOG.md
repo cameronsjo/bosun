@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.9](https://github.com/cameronsjo/bosun/compare/v0.37.8...v0.37.9) (2026-07-02)
+
+
+### Bug Fixes
+
+* **drift:** validate drift_ignore types and globs at config load; correct type docs ([#409](https://github.com/cameronsjo/bosun/issues/409)) ([5ca4db0](https://github.com/cameronsjo/bosun/commit/5ca4db0b5d8d40d5724eea4b02f5f7491e6cc28c))
+
 ## [0.37.8](https://github.com/cameronsjo/bosun/compare/v0.37.7...v0.37.8) (2026-07-02)
 
 
