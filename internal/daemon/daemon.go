@@ -594,6 +594,14 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
+	// Bound this reconcile cycle by ReconcileTimeout regardless of trigger source.
+	// Webhook/socket/tcp/api triggers already wrap their context before calling
+	// TriggerReconcile; startup, poll, and drift-self-heal do not, which left
+	// those paths (and any coalesced run) able to block d.reconciling forever
+	// on a wedged target. Applying it here covers every path uniformly.
+	ctx, cancel := context.WithTimeout(ctx, d.config.ReconcileTimeout)
+	defer cancel()
+
 	// Start a Sentry transaction for performance monitoring.
 	ctx, finishTx := sentrypkg.ReconcileTransaction(ctx, source)
 
