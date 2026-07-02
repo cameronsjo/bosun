@@ -41,15 +41,18 @@ func pollContainerHealth(
 	for {
 		iteration++
 
+		var unhealthy []string
 		actual, err := CollectActualState(ctx, client, projectName)
 		if err != nil {
 			logger.Warn().
 				Err(err).
 				Int("iteration", iteration).
 				Msg("Health poll: failed to collect container state")
-			// Continue polling — transient Docker API errors shouldn't abort verification.
+			// Continue polling — transient Docker API errors shouldn't abort
+			// verification, but the deadline check below still applies so a
+			// persistent Docker API failure can't poll forever.
 		} else {
-			unhealthy := classifyHealth(declared, actual)
+			unhealthy = classifyHealth(declared, actual)
 
 			logger.Debug().
 				Int("iteration", iteration).
@@ -65,21 +68,26 @@ func pollContainerHealth(
 				}
 				return result, nil
 			}
-
-			// Check if we've exceeded the timeout.
-			if time.Now().After(deadline) {
-				result := &HealthCheckResult{
-					Passed:     false,
-					Unhealthy:  unhealthy,
-					Duration:   time.Since(start),
-					Iterations: iteration,
-				}
-				return result, fmt.Errorf("health verification timed out after %v: unhealthy containers: %s",
-					timeout, strings.Join(unhealthy, ", "))
-			}
 		}
 
-		// Wait for the next poll interval or context cancellation.
+		// Check if we've exceeded the timeout. Evaluated every iteration —
+		// success or error — so a persistent CollectActualState error still
+		// respects the deadline instead of polling indefinitely.
+		if time.Now().After(deadline) {
+			result := &HealthCheckResult{
+				Passed:     false,
+				Unhealthy:  unhealthy,
+				Duration:   time.Since(start),
+				Iterations: iteration,
+			}
+			return result, fmt.Errorf("health verification timed out after %v: unhealthy containers: %s",
+				timeout, strings.Join(unhealthy, ", "))
+		}
+
+		// Wait for the next poll interval, the deadline, or context
+		// cancellation — whichever comes first. Without the deadline arm, an
+		// interval longer than the remaining time would overshoot the
+		// timeout by up to a full interval before the next check.
 		select {
 		case <-ctx.Done():
 			return &HealthCheckResult{
@@ -87,6 +95,7 @@ func pollContainerHealth(
 				Duration:   time.Since(start),
 				Iterations: iteration,
 			}, fmt.Errorf("health verification cancelled: %w", ctx.Err())
+		case <-time.After(time.Until(deadline)):
 		case <-time.After(interval):
 		}
 	}
