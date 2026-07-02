@@ -377,10 +377,11 @@ BOSUN_DRIFT_IGNORE='[{"service":"traefik","type":"unhealthy"}]'
 ```
 
 - **`service`** — glob pattern matching service name (`filepath.Match` syntax: `*`, `?`, `[chars]`)
-- **`type`** — drift type to ignore: `missing`, `stopped`, `image_mismatch`, `unhealthy`, `extra`, or `*` for all types
+- **`type`** — drift type to ignore: `missing`, `image_mismatch`, `unhealthy`, or `*` for all types
 - Ignored items are filtered out before alerting and before display in `bosun drift`
 - The ignore rules are reloaded from `bosun.yaml` after each git pull (like other config fields)
 - Environment variable takes precedence over config file
+- Rules are validated at config load (config file and `BOSUN_DRIFT_IGNORE` alike): an unknown `type` or an invalid `service` glob fails startup and `bosun validate`, rather than silently never matching. A rule with both `service: "*"` and `type: "*"` (suppresses all drift) fails `bosun validate` and logs a loud warning at daemon startup
 
 ### Checking Drift
 

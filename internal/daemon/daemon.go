@@ -1922,6 +1922,19 @@ func ValidateConfig(cfg *Config) error {
 		if cfg.ReconcileConfig.RepoURL == "" {
 			errs = append(errs, "REPO_URL or BOSUN_REPO_URL is required")
 		}
+
+		// Unknown drift_ignore types and invalid globs fail startup the same
+		// way a bad repo URL does -- such a rule silently never matches and
+		// leaves drift unreported. A total-suppression rule ("*"/"*") only
+		// warns here (unlike `bosun validate`, which errors on it) so an
+		// intentional full mute is possible but never silent.
+		if warnings, err := reconcile.ValidateDriftIgnoreRules(cfg.ReconcileConfig.DriftIgnore.Value); err != nil {
+			errs = append(errs, err.Error())
+		} else {
+			for _, w := range warnings {
+				log.Warn().Str("component", "drift_ignore").Msg(w)
+			}
+		}
 	}
 
 	if len(errs) > 0 {

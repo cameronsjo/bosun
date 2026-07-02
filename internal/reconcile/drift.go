@@ -36,7 +36,7 @@ type ActualService struct {
 // drift type or "*" to match all types.
 type DriftIgnoreRule struct {
 	Service string `yaml:"service" json:"service"` // Glob pattern matching service name (e.g., "traefik", "*.monitoring")
-	Type    string `yaml:"type" json:"type"`       // Drift type to ignore: "missing", "stopped", "image_mismatch", "unhealthy", "extra", or "*"
+	Type    string `yaml:"type" json:"type"`       // Drift type to ignore: "missing", "image_mismatch", "unhealthy", or "*"
 }
 
 // DriftReport is the result of comparing declared vs actual state.

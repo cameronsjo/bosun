@@ -509,3 +509,101 @@ func TestShellMetacharsCorpus(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateDriftIgnoreRules(t *testing.T) {
+	t.Run("valid rules accepted with no warnings", func(t *testing.T) {
+		rules := []DriftIgnoreRule{
+			{Service: "traefik", Type: "unhealthy"},
+			{Service: "monitoring-*", Type: "*"},
+			{Service: "api", Type: "image_mismatch"},
+		}
+		warnings, err := ValidateDriftIgnoreRules(rules)
+		require.NoError(t, err)
+		assert.Empty(t, warnings)
+	})
+
+	t.Run("empty rule set accepted", func(t *testing.T) {
+		warnings, err := ValidateDriftIgnoreRules(nil)
+		require.NoError(t, err)
+		assert.Empty(t, warnings)
+	})
+
+	t.Run("unknown type rejected", func(t *testing.T) {
+		rules := []DriftIgnoreRule{
+			{Service: "traefik", Type: "stopped"},
+		}
+		_, err := ValidateDriftIgnoreRules(rules)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "drift_ignore[0]")
+		assert.Contains(t, err.Error(), `unknown type "stopped"`)
+	})
+
+	t.Run("undocumented extra type rejected", func(t *testing.T) {
+		rules := []DriftIgnoreRule{
+			{Service: "traefik", Type: "extra"},
+		}
+		_, err := ValidateDriftIgnoreRules(rules)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `unknown type "extra"`)
+	})
+
+	t.Run("empty type rejected as unknown", func(t *testing.T) {
+		rules := []DriftIgnoreRule{
+			{Service: "traefik", Type: ""},
+		}
+		_, err := ValidateDriftIgnoreRules(rules)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `unknown type ""`)
+	})
+
+	t.Run("invalid service glob rejected", func(t *testing.T) {
+		rules := []DriftIgnoreRule{
+			{Service: "[unclosed", Type: "unhealthy"},
+		}
+		_, err := ValidateDriftIgnoreRules(rules)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "drift_ignore[0]")
+		assert.Contains(t, err.Error(), "invalid service glob")
+	})
+
+	t.Run("total suppression rule warned, not errored", func(t *testing.T) {
+		rules := []DriftIgnoreRule{
+			{Service: "*", Type: "*"},
+		}
+		warnings, err := ValidateDriftIgnoreRules(rules)
+		require.NoError(t, err, "a total-suppression rule is syntactically valid -- callers decide whether to escalate")
+		require.Len(t, warnings, 1)
+		assert.Contains(t, warnings[0], "suppresses ALL drift detection")
+	})
+
+	t.Run("wildcard service with specific type is not total suppression", func(t *testing.T) {
+		rules := []DriftIgnoreRule{
+			{Service: "*", Type: "unhealthy"},
+		}
+		warnings, err := ValidateDriftIgnoreRules(rules)
+		require.NoError(t, err)
+		assert.Empty(t, warnings)
+	})
+
+	t.Run("specific service with wildcard type is not total suppression", func(t *testing.T) {
+		rules := []DriftIgnoreRule{
+			{Service: "traefik", Type: "*"},
+		}
+		warnings, err := ValidateDriftIgnoreRules(rules)
+		require.NoError(t, err)
+		assert.Empty(t, warnings)
+	})
+
+	t.Run("multiple rules report all errors by index", func(t *testing.T) {
+		rules := []DriftIgnoreRule{
+			{Service: "traefik", Type: "unhealthy"},
+			{Service: "api", Type: "bogus"},
+			{Service: "[bad", Type: "missing"},
+		}
+		_, err := ValidateDriftIgnoreRules(rules)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "drift_ignore[1]")
+		assert.Contains(t, err.Error(), "drift_ignore[2]")
+		assert.NotContains(t, err.Error(), "drift_ignore[0]")
+	})
+}

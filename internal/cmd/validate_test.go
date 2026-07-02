@@ -292,6 +292,52 @@ func TestValidateReconcileConfig(t *testing.T) {
 		errors := validateReconcileConfig()
 		assert.Equal(t, 0, errors, "BOSUN_REPO_URL should win over REPO_URL")
 	})
+
+	t.Run("valid repo URL still fails when BOSUN_DRIFT_IGNORE has an invalid rule", func(t *testing.T) {
+		t.Setenv("REPO_URL", "")
+		t.Setenv("BOSUN_REPO_URL", "https://github.com/user/repo")
+		t.Setenv("BOSUN_DRIFT_IGNORE", `[{"service":"traefik","type":"stopped"}]`)
+
+		errors := validateReconcileConfig()
+		assert.Equal(t, 1, errors, "an invalid drift_ignore rule should fail validation even with a valid repo URL")
+	})
+}
+
+func TestValidateDriftIgnoreConfig(t *testing.T) {
+	t.Run("no rules configured returns 0 errors", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_IGNORE", "")
+
+		errors := validateDriftIgnoreConfig()
+		assert.Equal(t, 0, errors)
+	})
+
+	t.Run("valid rules return 0 errors", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_IGNORE", `[{"service":"traefik","type":"unhealthy"}]`)
+
+		errors := validateDriftIgnoreConfig()
+		assert.Equal(t, 0, errors)
+	})
+
+	t.Run("unknown type returns 1 error", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_IGNORE", `[{"service":"traefik","type":"stopped"}]`)
+
+		errors := validateDriftIgnoreConfig()
+		assert.Equal(t, 1, errors)
+	})
+
+	t.Run("invalid glob returns 1 error", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_IGNORE", `[{"service":"[unclosed","type":"unhealthy"}]`)
+
+		errors := validateDriftIgnoreConfig()
+		assert.Equal(t, 1, errors)
+	})
+
+	t.Run("total suppression rule is treated as an error by bosun validate", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_IGNORE", `[{"service":"*","type":"*"}]`)
+
+		errors := validateDriftIgnoreConfig()
+		assert.Equal(t, 1, errors, "bosun validate should escalate the total-suppression warning to an error")
+	})
 }
 
 func TestValidateEnvironment_BOSUNPrecedence(t *testing.T) {

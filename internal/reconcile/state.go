@@ -36,6 +36,21 @@ const (
 	DriftUnhealthy DriftType = "unhealthy"
 )
 
+// driftIgnoreWildcard matches any drift type or service name in a DriftIgnoreRule.
+const driftIgnoreWildcard = "*"
+
+// validDriftTypes returns the set of DriftType values a drift_ignore rule's
+// type field may name, keyed for O(1) membership checks. It does not include
+// the wildcard -- callers validating a rule's type field check that
+// separately since "*" is not itself a DriftType.
+func validDriftTypes() map[DriftType]bool {
+	return map[DriftType]bool{
+		DriftMissing:       true,
+		DriftImageMismatch: true,
+		DriftUnhealthy:     true,
+	}
+}
+
 // DeclaredService represents a service that should be running per the manifests.
 type DeclaredService struct {
 	Name  string `json:"name"`
