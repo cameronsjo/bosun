@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -194,6 +195,37 @@ func TestPollContainerHealth(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, result.Passed)
 		assert.Equal(t, 1, result.Iterations)
+	})
+
+	t.Run("persistent Docker API errors still respect the timeout", func(t *testing.T) {
+		// #230 regression: the deadline check used to live only in the
+		// success branch, so a Docker API that always errors never reached
+		// it — the loop's only exit was ctx.Done(), which never fires when
+		// the caller's ctx has no deadline of its own. This asserts the poll
+		// returns a timeout error within (roughly) the configured timeout
+		// instead of hanging.
+		mockAPI := &dockertest.MockDockerAPI{
+			ContainerListFunc: func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+				return nil, errors.New("docker daemon unreachable")
+			},
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		start := time.Now()
+		result, err := pollContainerHealth(
+			context.Background(), client,
+			[]DeclaredService{{Name: "web", Image: "nginx"}},
+			"test", 200*time.Millisecond, 500*time.Millisecond,
+		)
+		elapsed := time.Since(start)
+
+		require.Error(t, err)
+		assert.False(t, result.Passed)
+		assert.Contains(t, err.Error(), "timed out")
+		// Bounded well under the old behavior (hangs indefinitely on ctx.Done()
+		// with no caller deadline) and under one full poll interval past the
+		// configured timeout.
+		assert.Less(t, elapsed, 1*time.Second)
 	})
 
 	t.Run("context cancellation exits immediately", func(t *testing.T) {
