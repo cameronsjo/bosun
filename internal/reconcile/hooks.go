@@ -3,9 +3,10 @@ package reconcile
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/bmatcuk/doublestar/v4"
 
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/log"
@@ -100,21 +101,12 @@ func hookMatchesAny(hook PostSyncHook, changedFiles []string) bool {
 }
 
 // matchGlob checks if a file path matches a glob pattern.
-// Supports ** for recursive directory matching by checking if the file
-// starts with the pattern prefix (before **).
+// Delegates to doublestar, which gives "**" its full recursive-directory
+// meaning anywhere in the pattern (prefix, middle, or trailing), rather than
+// only recognizing it as a trailing wildcard and discarding any suffix that
+// follows (e.g. "**/foo.yml" or "appdata/**/dynamic.yml").
 func matchGlob(pattern, file string) bool {
-	// Handle ** patterns: "dir/**" matches anything under dir/
-	if strings.Contains(pattern, "**") {
-		prefix := strings.SplitN(pattern, "**", 2)[0]
-		prefix = strings.TrimRight(prefix, "/")
-		if prefix == "" {
-			return true
-		}
-		return strings.HasPrefix(file, prefix+"/") || file == prefix
-	}
-
-	// Use filepath.Match for simple glob patterns.
-	matched, err := filepath.Match(pattern, file)
+	matched, err := doublestar.Match(pattern, file)
 	if err != nil {
 		return false
 	}

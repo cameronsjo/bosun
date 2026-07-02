@@ -31,6 +31,13 @@ func TestMatchGlob(t *testing.T) {
 		{"doublestar root", "**", "anything/at/all.txt", true},
 		{"simple dir match", "traefik/**", "traefik/traefik.yml", true},
 		{"dir boundary", "traefik/**", "traefik-other/file.yml", false},
+		{"suffix after doublestar no match", "**/foo.yml", "unrelated/bar.yml", false},
+		{"suffix after doublestar nested match", "**/foo.yml", "a/b/foo.yml", true},
+		{"suffix after doublestar root match", "**/foo.yml", "foo.yml", true},
+		{"doublestar middle segment match", "appdata/**/dynamic.yml", "appdata/x/dynamic.yml", true},
+		{"doublestar middle segment no match", "appdata/**/dynamic.yml", "appdata/x/other.yml", false},
+		{"doublestar middle then trailing star", "traefik/**/*.yml", "traefik/conf.d/dynamic.yml", true},
+		{"doublestar middle then trailing star no match", "traefik/**/*.yml", "gatus/config.yaml", false},
 	}
 
 	for _, tc := range tests {
@@ -56,6 +63,8 @@ func TestMatchAnyPath(t *testing.T) {
 		{"both empty", nil, nil, false},
 		{"exact match pattern", []string{"bosun.yaml"}, []string{"bosun.yaml"}, true},
 		{"doublestar root matches all", []string{"any/file.txt"}, []string{"**"}, true},
+		{"suffix after doublestar matches", []string{"a/b/foo.yml"}, []string{"**/foo.yml"}, true},
+		{"suffix after doublestar no match", []string{"unrelated/bar.yml"}, []string{"**/foo.yml"}, false},
 	}
 
 	for _, tc := range tests {
