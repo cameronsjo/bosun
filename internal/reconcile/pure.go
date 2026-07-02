@@ -206,8 +206,10 @@ func FilterIgnoredDriftItems(items []DriftItem, rules []DriftIgnoreRule) []Drift
 
 // filterIgnoredDrift returns only the drift items that do not match any ignore rule.
 // Service matching uses filepath.Match for glob support. Type matching is exact
-// or "*" for wildcard. Invalid glob patterns in rules are silently skipped
-// (the rule never matches).
+// or "*" for wildcard. Rules with an invalid glob or an unknown type are
+// rejected by ValidateDriftIgnoreRules at config load, so this function does
+// not need to guard against them; a match error here would still fall through
+// to "no match" defensively.
 func filterIgnoredDrift(items []DriftItem, rules []DriftIgnoreRule) []DriftItem {
 	if len(rules) == 0 {
 		return items

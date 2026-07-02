@@ -217,6 +217,10 @@ func validateReconcileConfig() int {
 		cfg.RepoURL = os.Getenv("REPO_URL")
 	}
 
+	// Drift ignore rules are independent of repo config, so validate them
+	// even if the repo URL check below fails or short-circuits.
+	errors += validateDriftIgnoreConfig()
+
 	if cfg.RepoURL == "" {
 		_, _ = ui.Red.Println("  x Repository URL not configured")
 		errors++
@@ -240,6 +244,33 @@ func validateReconcileConfig() int {
 		}
 	}
 
+	return errors
+}
+
+// validateDriftIgnoreConfig validates drift_ignore rules loaded from the
+// project config file or the BOSUN_DRIFT_IGNORE environment override.
+// A total-suppression rule (service "*" and type "*") is reported as an error
+// here -- unlike daemon startup, which only warns -- so `bosun validate` never
+// passes silently on a rule that mutes all drift detection.
+func validateDriftIgnoreConfig() int {
+	rules := loadDriftIgnoreRules()
+	if len(rules) == 0 {
+		return 0
+	}
+
+	errors := 0
+	warnings, err := reconcile.ValidateDriftIgnoreRules(rules)
+	if err != nil {
+		_, _ = ui.Red.Printf("  x drift_ignore: %v\n", err)
+		errors++
+	}
+	for _, w := range warnings {
+		_, _ = ui.Red.Printf("  x drift_ignore: %s\n", w)
+		errors++
+	}
+	if errors == 0 {
+		_, _ = ui.Green.Printf("  * drift_ignore: %d rule(s) valid\n", len(rules))
+	}
 	return errors
 }
 

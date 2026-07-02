@@ -95,7 +95,10 @@ drift_alert_debounce: "5m"
 
 # Drift ignore rules: suppress known drift noise from reports and alerts.
 # Each rule matches a service name (glob) and drift type.
-# type can be: missing, stopped, image_mismatch, unhealthy, extra, or * for all types.
+# type can be: missing, image_mismatch, unhealthy, or * for all types.
+# Rules are validated at config load: an unknown type or invalid service glob
+# fails startup, and a "*"/"*" rule (suppresses all drift) errors in
+# `bosun validate` and warns at daemon startup.
 drift_ignore:
   - service: "traefik"
     type: "unhealthy"
@@ -140,7 +143,7 @@ post_sync_hooks:
 | `deploy_sync_paths` | `[]` (sync all) | Glob allowlist — only sync staging entries matching these patterns |
 | `deploy_sync_exclude` | `[]` (exclude none) | Glob blocklist — exclude matching staging entries from sync (wins over include) |
 | `critical_containers` | `[]` (disabled) | Container names that must be healthy after deploy — triggers rollback on failure |
-| `drift_ignore` | `[]` (disabled) | Suppress known drift noise by service glob + type (`missing`, `stopped`, `image_mismatch`, `unhealthy`, `extra`, or `*`). Overridden by `BOSUN_DRIFT_IGNORE` env var (JSON array) |
+| `drift_ignore` | `[]` (disabled) | Suppress known drift noise by service glob + type (`missing`, `image_mismatch`, `unhealthy`, or `*`). Validated at load: unknown types and invalid globs fail startup. Overridden by `BOSUN_DRIFT_IGNORE` env var (JSON array), validated identically |
 | `drift_alert_debounce` | `0` (disabled) | Debounce window before first drift alert fires (e.g., `"5m"`) |
 | `targets` | `[]` (implicit default) | Named deployment targets with per-target overrides. Overridden by `BOSUN_TARGETS` env var (JSON array) |
 

@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -212,6 +213,52 @@ func ValidateRemotePath(path string) error {
 	}
 
 	return nil
+}
+
+// ValidateDriftIgnoreRules validates drift_ignore rules -- from the config
+// file or the BOSUN_DRIFT_IGNORE environment override -- against the
+// implemented DriftType enum and glob syntax.
+//
+// A rule with an unknown type or an invalid service glob is returned as an
+// error, because such a rule silently never matches and leaves drift
+// unreported; the offending rule's index is named so operators can find it.
+// A rule that suppresses all drift (service "*" and type "*") is syntactically
+// valid but disables drift detection entirely, so it is reported separately as
+// a non-fatal warning: callers decide whether to treat it as an error (e.g.
+// `bosun validate`, where it should block) or a loud warning (daemon startup,
+// where an intentional full mute is allowed but never silent).
+func ValidateDriftIgnoreRules(rules []DriftIgnoreRule) (warnings []string, err error) {
+	validTypes := validDriftTypes()
+	var errs []string
+
+	for i, rule := range rules {
+		if rule.Type != driftIgnoreWildcard && !validTypes[DriftType(rule.Type)] {
+			errs = append(errs, fmt.Sprintf(
+				"drift_ignore[%d]: unknown type %q (must be one of missing, image_mismatch, unhealthy, or %q)",
+				i, rule.Type, driftIgnoreWildcard,
+			))
+			continue
+		}
+
+		if _, matchErr := filepath.Match(rule.Service, ""); matchErr != nil {
+			errs = append(errs, fmt.Sprintf(
+				"drift_ignore[%d]: invalid service glob %q: %v", i, rule.Service, matchErr,
+			))
+			continue
+		}
+
+		if rule.Service == driftIgnoreWildcard && rule.Type == driftIgnoreWildcard {
+			warnings = append(warnings, fmt.Sprintf(
+				"drift_ignore[%d]: service and type are both %q -- this suppresses ALL drift detection",
+				i, driftIgnoreWildcard,
+			))
+		}
+	}
+
+	if len(errs) > 0 {
+		return warnings, fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return warnings, nil
 }
 
 // ValidateAndSanitizeTargets validates security-sensitive fields on each target,

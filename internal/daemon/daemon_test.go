@@ -103,6 +103,58 @@ func TestValidateConfig(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "valid drift_ignore rules",
+			cfg: &Config{
+				Port: 8080,
+				ReconcileConfig: &reconcile.Config{
+					RepoURL: "https://github.com/example/repo",
+					DriftIgnore: reconcile.NewConfigField([]reconcile.DriftIgnoreRule{
+						{Service: "traefik", Type: "unhealthy"},
+					}),
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "unknown drift_ignore type fails startup",
+			cfg: &Config{
+				Port: 8080,
+				ReconcileConfig: &reconcile.Config{
+					RepoURL: "https://github.com/example/repo",
+					DriftIgnore: reconcile.NewConfigField([]reconcile.DriftIgnoreRule{
+						{Service: "traefik", Type: "stopped"},
+					}),
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid drift_ignore glob fails startup",
+			cfg: &Config{
+				Port: 8080,
+				ReconcileConfig: &reconcile.Config{
+					RepoURL: "https://github.com/example/repo",
+					DriftIgnore: reconcile.NewConfigField([]reconcile.DriftIgnoreRule{
+						{Service: "[unclosed", Type: "unhealthy"},
+					}),
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "total-suppression drift_ignore rule only warns, does not fail startup",
+			cfg: &Config{
+				Port: 8080,
+				ReconcileConfig: &reconcile.Config{
+					RepoURL: "https://github.com/example/repo",
+					DriftIgnore: reconcile.NewConfigField([]reconcile.DriftIgnoreRule{
+						{Service: "*", Type: "*"},
+					}),
+				},
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
