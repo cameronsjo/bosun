@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **hooks:** use doublestar so ** glob suffixes are honored ([#401](https://github.com/cameronsjo/bosun/issues/401)) ([e2670e6](https://github.com/cameronsjo/bosun/commit/e2670e61f6db92f3c943e6301fbdaa38144a799a))
 * **reconcile:** health-gate rollback redeploys backup files instead of re-running the failed deploy ([#403](https://github.com/cameronsjo/bosun/issues/403)) ([c4c8146](https://github.com/cameronsjo/bosun/commit/c4c8146c5ed9647b2edc670c3d00191cd59218ab))
 * **reconcile:** pollContainerHealth honors its timeout when the Docker API errors ([#404](https://github.com/cameronsjo/bosun/issues/404)) ([d69e759](https://github.com/cameronsjo/bosun/commit/d69e759bc80fda1af074c8ea62718fce09800a52))
+* **reconcile:** record removeStaleFiles deletions so post-sync hooks fire on mixed commits ([#405](https://github.com/cameronsjo/bosun/issues/405)) ([8cade1c](https://github.com/cameronsjo/bosun/commit/8cade1ca2ba0ab0a142f6b1ecde34e3a079f483f))
 
 ## [0.37.5](https://github.com/cameronsjo/bosun/compare/v0.37.4...v0.37.5) (2026-05-28)
 
