@@ -189,18 +189,49 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 		return deployErr
 	}
 
-	// Compose failed - attempt rollback if backup exists
-	if backupPath == "" {
-		logger.Warn().
-			Err(deployErr).
-			Msg("Deployment failed, no backup available for rollback")
-		return fmt.Errorf("deployment failed (no backup available for rollback): %w", deployErr)
-	}
-
+	// Compose failed - attempt rollback if backup exists.
 	logger.Warn().
 		Err(deployErr).
 		Str(log.FieldPath, backupPath).
 		Msg("Deployment failed, attempting rollback")
+
+	rollbackErr := d.RollbackFromBackup(ctx, composeFiles, backupPath)
+	if rollbackErr == nil {
+		// Rollback succeeded - return distinguishable error
+		return fmt.Errorf("%w: %v", ErrRollbackSucceeded, deployErr)
+	}
+
+	if errors.Is(rollbackErr, errRollbackNotAttempted) {
+		// No backup available or no matching backup files — rollback was never
+		// attempted, so this is not the "both failed" critical case.
+		return fmt.Errorf("deployment failed (%v): %w", rollbackErr, deployErr)
+	}
+
+	// Both deployment and rollback failed - critical state.
+	return fmt.Errorf("%w: deployment error: %v, rollback error: %v", ErrRollbackFailed, deployErr, rollbackErr)
+}
+
+// errRollbackNotAttempted marks a RollbackFromBackup failure that occurred
+// before any rollback command ran (no backup path, no archive, or no matching
+// backup files) — distinct from the rollback command itself failing.
+var errRollbackNotAttempted = errors.New("rollback not attempted")
+
+// RollbackFromBackup restores composeFiles from the backup archive at
+// backupPath, without first attempting a deploy. Used by the health gate
+// (runHealthGate): once `docker compose up -d` has already exited 0 against
+// already-created-but-unhealthy containers, re-running it is a silent no-op
+// (see ComposeUpMultiple's --wait comment) — so the rollback path must restore
+// the backup directly rather than deploy-then-rollback.
+// backupPath should be the value returned by Backup() (a configs.tar.gz
+// archive) — the previous config files live inside it, not loose under
+// backupPath.
+func (d *DeployOps) RollbackFromBackup(ctx context.Context, composeFiles []string, backupPath string) error {
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
+
+	if backupPath == "" {
+		logger.Warn().Msg("No backup available for rollback")
+		return fmt.Errorf("%w: no backup available for rollback", errRollbackNotAttempted)
+	}
 
 	// Attempt rollback with independent timeout so it can execute even if ctx is
 	// cancelled. Copy enriched logger so reconcile_id flows into rollback logs.
@@ -221,7 +252,7 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 			Err(extractErr).
 			Str(log.FieldPath, backupPath).
 			Msg("No backup archive available for rollback")
-		return fmt.Errorf("deployment failed (no backup available for rollback): %w", deployErr)
+		return fmt.Errorf("%w: no backup available for rollback: %v", errRollbackNotAttempted, extractErr)
 	}
 	defer cleanup()
 
@@ -237,7 +268,7 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 		logger.Warn().
 			Str(log.FieldPath, backupPath).
 			Msg("No backup files found for rollback")
-		return fmt.Errorf("deployment failed (no backup files found for rollback): %w", deployErr)
+		return fmt.Errorf("%w: no backup files found for rollback", errRollbackNotAttempted)
 	}
 
 	// Build rollback args
@@ -248,19 +279,17 @@ func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFi
 	rollbackCmd.Stderr = &rollbackStderr
 
 	if rollbackErr := rollbackCmd.Run(); rollbackErr != nil {
-		// Both deployment and rollback failed - critical state
 		logger.Error().
 			Err(rollbackErr).
 			Str(log.FieldPath, backupPath).
-			Msg("CRITICAL: Rollback also failed")
-		return fmt.Errorf("%w: deployment error: %v, rollback error: %v", ErrRollbackFailed, deployErr, rollbackErr)
+			Msg("CRITICAL: Rollback failed")
+		return fmt.Errorf("rollback failed: %w: %s", rollbackErr, rollbackStderr.String())
 	}
 
-	// Rollback succeeded - return distinguishable error
 	logger.Info().
 		Str(log.FieldPath, backupPath).
 		Msg("Rollback completed successfully")
-	return fmt.Errorf("%w: %v", ErrRollbackSucceeded, deployErr)
+	return nil
 }
 
 // ComposeUpIsolated runs compose up per-file with isolated failure handling.
