@@ -4199,6 +4199,41 @@ func TestResolveTargets_RejectsDuplicateNames(t *testing.T) {
 	assert.Equal(t, "beta", targets[1].Name)
 }
 
+// TestResolveTargets_SkipsReservedDefaultCaseInsensitive verifies that a
+// configured target whose name is a case-variant of the reserved "default"
+// ("Default", "DEFAULT", "DeFaUlT") is skipped as reserved rather than admitted
+// as a distinct named target. Before the #228 casefold, such a name passed the
+// case-sensitive reserved gate and became its own target, fragmenting state from
+// the implicit default (deploy-state-Default.json, staging/Default/,
+// reconcile-Default.lock — invisible to the drift/health/breaker that read the
+// base paths).
+func TestResolveTargets_SkipsReservedDefaultCaseInsensitive(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Targets = []Target{
+		{Name: "Default", TargetHost: "user@a"},
+		{Name: "unraid", TargetHost: "user@unraid"},
+		{Name: "DEFAULT", TargetHost: "user@b"},
+		{Name: "DeFaUlT", TargetHost: "user@c"},
+	}
+
+	targets := cfg.ResolveTargets()
+	require.Len(t, targets, 1, "every case-variant of the reserved default must be skipped")
+	assert.Equal(t, "unraid", targets[0].Name, "only the real named target survives")
+}
+
+// TestIsDefault_CaseInsensitive verifies IsDefault treats any case-variant of the
+// reserved name as the default, so ConfigForTarget keeps the base state/staging/
+// lock paths instead of deriving a fragmented per-name set (#228). Before the
+// casefold, Target{Name:"Default"}.IsDefault() was false.
+func TestIsDefault_CaseInsensitive(t *testing.T) {
+	for _, name := range []string{"default", "Default", "DEFAULT", "DeFaUlT"} {
+		assert.True(t, Target{Name: name}.IsDefault(), "%q must be recognized as the default target", name)
+	}
+	for _, name := range []string{"unraid", "default-2", "mydefault"} {
+		assert.False(t, Target{Name: name}.IsDefault(), "%q must not be treated as the default target", name)
+	}
+}
+
 func TestConfigForTarget_SlicesAreIndependent(t *testing.T) {
 	base := DefaultConfig()
 	base.CriticalContainers = NewConfigField([]string{"traefik", "authelia"})
@@ -4245,6 +4280,11 @@ func TestValidateTargetName(t *testing.T) {
 		{"pi-4", false},
 		{"nas_backup", false},
 		{DefaultTargetName, false},
+		// Case-variants of the reserved default are accepted as the reserved name
+		// (matched case-insensitively), not treated as unsafe (#228).
+		{"Default", false},
+		{"DEFAULT", false},
+		{"DeFaUlT", false},
 		{"../../etc", true},
 		{"/tmp/evil", true},
 		{"", true},
