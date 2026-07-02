@@ -564,7 +564,19 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 			finishSpan(err)
 			telemetry.SpanError(otelBackupSpan, err)
 			otelBackupSpan.End()
-			ui.Warning("Backup partially failed: %v", err)
+
+			// A failed backup leaves no fresh rollback anchor for this cycle.
+			// Policy: never deploy without a rollback anchor — otherwise a flaky
+			// or hostile remote could force a no-rollback deploy by failing the
+			// backup (any non-zero tar exit is now fatal, #240). Recover the most
+			// recent previously-verified backup as the anchor; if none exists,
+			// abort the deploy (fail-safe: no mutation without an anchor).
+			ui.Warning("Backup failed: %v", err)
+			if policyErr := r.applyBackupFailurePolicy(spanCtx, err); policyErr != nil {
+				r.sendThrottledFailureAlert(ctx, state, policyErr.Error())
+				return policyErr
+			}
+			ui.Warning("Using previous verified backup as rollback anchor: %s", r.lastBackupPath)
 		} else {
 			finishSpan(nil)
 			telemetry.SpanOK(otelBackupSpan)
@@ -1226,6 +1238,33 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 	}
 
 	ui.Success("Backup saved: %s", backupName)
+	return nil
+}
+
+// applyBackupFailurePolicy enforces the "never deploy without a rollback anchor"
+// invariant after a failed backup (#240). Because any non-zero remote tar exit is
+// now fatal, a flaky or hostile remote could otherwise force a no-rollback deploy
+// by failing the backup. This recovers the most recent previously-verified backup
+// as the rollback anchor (set on r.lastBackupPath); when no verified backup
+// exists, it returns an error so the caller aborts the deploy — no mutation
+// without an anchor.
+func (r *Reconciler) applyBackupFailurePolicy(ctx context.Context, backupErr error) error {
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
+
+	anchor, anchorErr := r.deploy.LatestVerifiedBackup(ctx, r.config.BackupDir)
+	if anchorErr != nil {
+		logger.Error().
+			Err(backupErr).
+			Str("anchor_lookup_error", anchorErr.Error()).
+			Msg("Backup failed and no verified prior backup exists; aborting deploy to preserve rollback safety")
+		return fmt.Errorf("backup failed and no verified prior backup available for rollback: %w", backupErr)
+	}
+
+	r.lastBackupPath = anchor
+	logger.Warn().
+		Err(backupErr).
+		Str(log.FieldPath, anchor).
+		Msg("Backup failed; using most recent verified backup as rollback anchor")
 	return nil
 }
 

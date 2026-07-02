@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,6 +23,20 @@ import (
 // BackupTimeout is configured. Prevents the pre-deploy backup step from
 // wedging the reconcile indefinitely (#319).
 const DefaultBackupTimeout = 5 * time.Minute
+
+// MaxVerifyDecompressedBytes caps the TOTAL decompressed size that
+// verifyArchiveIntegrity will read across an entire archive. A crafted gzip/tar
+// member can decompress to tens of GB (a decompression bomb), spinning CPU past
+// BackupTimeout during the integrity read-through (#240). The cap is a TOTAL
+// across all members (not per-member) because a bomb can be split across many
+// members each individually small — the total is the true bound on verify work.
+// 10 GiB is far above any real bosun config backup (rendered compose/config
+// files) yet small enough to reject a bomb well before it exhausts memory or CPU.
+const MaxVerifyDecompressedBytes int64 = 10 << 30 // 10 GiB
+
+// ErrBackupTooLarge is returned when a backup archive decompresses past
+// MaxVerifyDecompressedBytes during verification — a likely decompression bomb.
+var ErrBackupTooLarge = errors.New("backup archive exceeds maximum verifiable decompressed size")
 
 // VerifyBackup checks that a backup archive is valid and non-empty.
 // The archive listing runs under ctx so a caller deadline or cancellation
@@ -72,7 +87,7 @@ func (d *DeployOps) VerifyBackup(ctx context.Context, backupPath string) error {
 	// (all headers present, trailing data lost) without error — a truncated
 	// stream a rollback would then trust. Reading through gzip+tar surfaces that
 	// truncation (io.ErrUnexpectedEOF) the listing alone misses (#240).
-	if err := verifyArchiveIntegrity(ctx, tarFile); err != nil {
+	if err := verifyArchiveIntegrity(ctx, tarFile, MaxVerifyDecompressedBytes); err != nil {
 		logger.Error().Err(err).Str(log.FieldPath, tarFile).Msg("Failed to verify backup. Reason: archive integrity check failed")
 		return fmt.Errorf("backup archive failed integrity check: %w", err)
 	}
@@ -85,8 +100,16 @@ func (d *DeployOps) VerifyBackup(ctx context.Context, backupPath string) error {
 // and consuming every entry's data to EOF. Unlike `tar -tzf`, which only needs the
 // member headers, this forces decompression of every byte so a truncated data
 // stream fails with io.ErrUnexpectedEOF instead of being silently accepted (#240).
-// The read honors ctx so a caller deadline or cancellation aborts mid-archive.
-func verifyArchiveIntegrity(ctx context.Context, tarFile string) error {
+//
+// Two bounds keep a malicious archive from wedging verification (#240):
+//   - a TOTAL decompressed-byte budget (maxBytes): each entry is read through an
+//     io.LimitReader sized to the remaining budget, so a decompression bomb is
+//     stopped just past the cap rather than expanded in full. Overflow returns
+//     ErrBackupTooLarge.
+//   - context awareness DOWN TO the byte stream: the copy runs in bounded chunks
+//     checking ctx between them (copyCtx), so a caller deadline/cancellation
+//     interrupts a long member mid-read, not only at entry boundaries.
+func verifyArchiveIntegrity(ctx context.Context, tarFile string, maxBytes int64) error {
 	f, err := os.Open(tarFile)
 	if err != nil {
 		return fmt.Errorf("cannot open archive: %w", err)
@@ -100,6 +123,7 @@ func verifyArchiveIntegrity(ctx context.Context, tarFile string) error {
 	defer func() { _ = gz.Close() }()
 
 	tr := tar.NewReader(gz)
+	remaining := maxBytes
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -112,12 +136,48 @@ func verifyArchiveIntegrity(ctx context.Context, tarFile string) error {
 			return fmt.Errorf("cannot read archive entry header: %w", err)
 		}
 		// Consume the entry body to force decompression; a truncated stream fails
-		// here rather than being skipped over by a header-only listing.
-		if _, err := io.Copy(io.Discard, tr); err != nil {
+		// here rather than being skipped over by a header-only listing. Cap the
+		// read at remaining+1 so a bomb is halted one byte past budget instead of
+		// decompressed whole, and copy in ctx-checked chunks so the deadline bites
+		// mid-member.
+		n, err := copyCtx(ctx, io.Discard, io.LimitReader(tr, remaining+1))
+		if err != nil {
 			return fmt.Errorf("cannot read archive entry body: %w", err)
+		}
+		remaining -= n
+		if remaining < 0 {
+			return fmt.Errorf("%w: %s (limit %d bytes)", ErrBackupTooLarge, tarFile, maxBytes)
 		}
 	}
 	return nil
+}
+
+// copyCtx copies from src to dst in bounded chunks, checking ctx between chunks so
+// a caller deadline or cancellation interrupts a long copy mid-stream rather than
+// only at higher-level boundaries. Returns the number of bytes copied.
+func copyCtx(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	const chunk = 1 << 20 // 1 MiB — ctx is re-checked at least this often
+	buf := make([]byte, chunk)
+	var total int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		n, rerr := src.Read(buf)
+		if n > 0 {
+			w, werr := dst.Write(buf[:n])
+			total += int64(w)
+			if werr != nil {
+				return total, werr
+			}
+		}
+		if rerr == io.EOF {
+			return total, nil
+		}
+		if rerr != nil {
+			return total, rerr
+		}
+	}
 }
 
 // extractBackupArchive extracts a backup's configs.tar.gz into a fresh temp
@@ -340,6 +400,48 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 		Msg("Successfully created remote backup")
 
 	return backupName, nil
+}
+
+// LatestVerifiedBackup returns the path to the most recent backup directory
+// under backupDir whose archive passes VerifyBackup, scanning newest-first.
+// It is the rollback-anchor fallback when a fresh backup fails: a deploy must
+// never proceed without a verified anchor, so the caller uses this to recover a
+// prior good backup (and aborts if none qualifies) (#240).
+//
+// Verification runs under ctx; a caller deadline/cancellation aborts the scan.
+func (d *DeployOps) LatestVerifiedBackup(ctx context.Context, backupDir string) (string, error) {
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
+
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("no backup directory at %s", backupDir)
+		}
+		return "", fmt.Errorf("cannot read backup directory %s: %w", backupDir, err)
+	}
+
+	var backups []string
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), "backup-") {
+			backups = append(backups, e.Name())
+		}
+	}
+	// Names embed a sortable timestamp (backup-YYYYMMDD-HHMMSS); sort ascending
+	// then walk from the end so the newest verified backup wins.
+	sort.Strings(backups)
+	for i := len(backups) - 1; i >= 0; i-- {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		path := filepath.Join(backupDir, backups[i])
+		if verr := d.VerifyBackup(ctx, path); verr != nil {
+			logger.Warn().Err(verr).Str(log.FieldPath, path).
+				Msg("Skipping unverifiable prior backup while searching for a rollback anchor")
+			continue
+		}
+		return path, nil
+	}
+	return "", fmt.Errorf("no verified backup found in %s", backupDir)
 }
 
 // CleanupBackups removes old backups, keeping only the most recent N.
