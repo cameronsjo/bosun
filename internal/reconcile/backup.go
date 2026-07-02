@@ -1,9 +1,12 @@
 package reconcile
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,7 +49,8 @@ func (d *DeployOps) VerifyBackup(ctx context.Context, backupPath string) error {
 		return fmt.Errorf("backup archive is empty: %s", tarFile)
 	}
 
-	// Verify archive integrity by listing contents
+	// Fast pre-check: the archive lists. Runs under ctx so a caller deadline or
+	// cancellation aborts here before the full read-through (#319).
 	cmd := exec.CommandContext(ctx, "tar", "-tzf", tarFile)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -63,7 +67,56 @@ func (d *DeployOps) VerifyBackup(ctx context.Context, backupPath string) error {
 		return fmt.Errorf("backup archive contains no files: %s", tarFile)
 	}
 
+	// Integrity check: fully decompress and read every entry to EOF. `tar -tzf`
+	// reads member headers but some tar implementations list a truncated archive
+	// (all headers present, trailing data lost) without error — a truncated
+	// stream a rollback would then trust. Reading through gzip+tar surfaces that
+	// truncation (io.ErrUnexpectedEOF) the listing alone misses (#240).
+	if err := verifyArchiveIntegrity(ctx, tarFile); err != nil {
+		logger.Error().Err(err).Str(log.FieldPath, tarFile).Msg("Failed to verify backup. Reason: archive integrity check failed")
+		return fmt.Errorf("backup archive failed integrity check: %w", err)
+	}
+
 	logger.Debug().Str(log.FieldPath, tarFile).Int64("size_bytes", info.Size()).Msg("Backup archive verified")
+	return nil
+}
+
+// verifyArchiveIntegrity fully reads a gzip-compressed tar archive, decompressing
+// and consuming every entry's data to EOF. Unlike `tar -tzf`, which only needs the
+// member headers, this forces decompression of every byte so a truncated data
+// stream fails with io.ErrUnexpectedEOF instead of being silently accepted (#240).
+// The read honors ctx so a caller deadline or cancellation aborts mid-archive.
+func verifyArchiveIntegrity(ctx context.Context, tarFile string) error {
+	f, err := os.Open(tarFile)
+	if err != nil {
+		return fmt.Errorf("cannot open archive: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("cannot read gzip header: %w", err)
+	}
+	defer func() { _ = gz.Close() }()
+
+	tr := tar.NewReader(gz)
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		_, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("cannot read archive entry header: %w", err)
+		}
+		// Consume the entry body to force decompression; a truncated stream fails
+		// here rather than being skipped over by a header-only listing.
+		if _, err := io.Copy(io.Discard, tr); err != nil {
+			return fmt.Errorf("cannot read archive entry body: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -234,36 +287,42 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 		sshCmd = fmt.Sprintf("tar -czf - %s", shellquote.Join(remotePaths...))
 	}
 
-	outFile, err := os.Create(tarFile)
-	if err != nil {
-		logger.Error().Err(err).Str(log.FieldPath, tarFile).Msg("Failed to create remote backup. Reason: cannot create backup file")
-		return "", fmt.Errorf("failed to create backup file: %w", err)
-	}
-
-	// Retry with backoff on transient SSH errors.
+	// Retry with backoff on transient SSH errors. The output file is created
+	// (truncating) fresh INSIDE each attempt: a failed attempt that streamed a
+	// partial archive must not have its bytes concatenated ahead of a later
+	// attempt's stream — that produced a corrupt-but-listable archive. Each
+	// attempt starts from an empty file, so on success the file holds exactly
+	// one stream.
 	sshErr := retryWithBackoff(ctx, DefaultMaxRetries, func() error {
+		outFile, err := os.Create(tarFile)
+		if err != nil {
+			return fmt.Errorf("failed to create backup file: %w", err)
+		}
+
 		var stderr bytes.Buffer
 		cmd := exec.CommandContext(ctx, "ssh", host, sshCmd)
 		cmd.Stdout = outFile
 		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("remote tar failed: %w: %s", err, stderr.String())
+		runErr := cmd.Run()
+
+		// Close before returning so the bytes are flushed regardless of outcome.
+		closeErr := outFile.Close()
+		if runErr != nil {
+			return fmt.Errorf("remote tar failed: %w: %s", runErr, stderr.String())
+		}
+		if closeErr != nil {
+			return fmt.Errorf("failed to close backup file: %w", closeErr)
 		}
 		return nil
 	})
 
-	// Close the file before verification
-	if closeErr := outFile.Close(); closeErr != nil {
-		// Clean up on close failure
-		_ = os.RemoveAll(backupPath)
-		logger.Error().Err(closeErr).Str(log.FieldPath, tarFile).Msg("Failed to create remote backup. Reason: cannot close backup file")
-		return "", fmt.Errorf("failed to close backup file: %w", closeErr)
-	}
-
-	// Log SSH/tar error but don't fail outright — the backup may still be usable.
-	// We verify it below; that check will surface any real corruption.
+	// A non-nil SSH/tar error means the archive is untrustworthy even if it
+	// happens to list — treat it as fatal rather than verifying a possibly
+	// truncated stream. Remove the partial archive so no rollback trusts it (#240).
 	if sshErr != nil {
-		logger.Warn().Err(sshErr).Str(log.FieldTarget, host).Msg("Remote tar command returned error, verifying backup integrity")
+		_ = os.RemoveAll(backupPath)
+		logger.Error().Err(sshErr).Str(log.FieldTarget, host).Msg("Failed to create remote backup. Reason: remote tar command failed")
+		return "", fmt.Errorf("remote backup failed: %w", sshErr)
 	}
 
 	// Verify the backup was created successfully

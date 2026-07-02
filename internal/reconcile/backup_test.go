@@ -3,6 +3,7 @@ package reconcile
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
 	"errors"
 	"os"
 	"os/exec"
@@ -315,6 +316,195 @@ func TestExtractBackupArchive_MissingArchive(t *testing.T) {
 	assert.Empty(t, root)
 	assert.NotNil(t, cleanup, "cleanup must be safe to call even on error")
 	cleanup() // must not panic
+}
+
+// makeValidArchive writes a valid, non-empty tar.gz at dst containing a single
+// member (memberName -> content), using the real tar binary so the fixture
+// matches what Backup()/BackupRemote() produce in the field.
+func makeValidArchive(t *testing.T, dst, memberName string, content []byte) {
+	t.Helper()
+	srcDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, memberName), content, 0644))
+	cmd := exec.Command("tar", "-czf", dst, "-C", srcDir, memberName)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	require.NoError(t, cmd.Run(), "creating payload archive (stderr: %s)", stderr.String())
+}
+
+// writeFakeSSH installs a fake `ssh` executable on PATH for the duration of the
+// test so BackupRemote's exec.Command("ssh", ...) invokes it instead of the real
+// client. Behavior is driven by env vars the caller sets:
+//
+//	FAKE_SSH_PAYLOAD    path to a valid tar.gz emitted on a successful attempt
+//	FAKE_SSH_COUNTER    path to a file the script uses to count attempts
+//	FAKE_SSH_SUCCEED_ON 1-based attempt to succeed on; earlier attempts emit a
+//	                    partial stream + a transient error and exit non-zero
+//	FAKE_SSH_FATAL      "1" => emit the full payload then exit non-zero with a
+//	                    NON-transient error (a valid-looking but flagged backup)
+func writeFakeSSH(t *testing.T) {
+	t.Helper()
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+counter="$FAKE_SSH_COUNTER"
+n=$(cat "$counter" 2>/dev/null || echo 0)
+n=$((n + 1))
+printf '%s' "$n" > "$counter"
+
+if [ "$FAKE_SSH_FATAL" = "1" ]; then
+  cat "$FAKE_SSH_PAYLOAD"
+  echo "tar: some files changed as we read them" >&2
+  exit 1
+fi
+
+if [ -n "$FAKE_SSH_SUCCEED_ON" ] && [ "$n" -lt "$FAKE_SSH_SUCCEED_ON" ]; then
+  printf 'PARTIAL_ATTEMPT_%s' "$n"
+  echo "ssh: connect to host port 22: connection refused" >&2
+  exit 255
+fi
+
+cat "$FAKE_SSH_PAYLOAD"
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "ssh"), []byte(script), 0755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// assertNoBackupDirs asserts backupDir holds no backup-* archive directory, i.e.
+// a failed backup left nothing behind for a rollback to trust.
+func assertNoBackupDirs(t *testing.T, backupDir string) {
+	t.Helper()
+	entries, err := os.ReadDir(backupDir)
+	if os.IsNotExist(err) {
+		return
+	}
+	require.NoError(t, err)
+	for _, e := range entries {
+		assert.False(t, strings.HasPrefix(e.Name(), "backup-"),
+			"a failed backup must leave no archive behind (found: %s)", e.Name())
+	}
+}
+
+// TestBackupRemote_SSHErrorIsFatal verifies the #240 data-integrity fix: when the
+// remote ssh/tar command reports an error, BackupRemote MUST fail and remove the
+// partial archive — even when the streamed bytes happen to be a complete, listable
+// archive. The prior behavior logged the error, let VerifyBackup pass the valid
+// stream, and returned success — trusting a backup the remote flagged as bad.
+func TestBackupRemote_SSHErrorIsFatal(t *testing.T) {
+	if _, err := exec.LookPath("tar"); err != nil {
+		t.Skip("tar not installed")
+	}
+	writeFakeSSH(t)
+
+	tmp := evalSymlinks(t, t.TempDir())
+	payload := filepath.Join(tmp, "payload.tar.gz")
+	makeValidArchive(t, payload, "conf.yml", []byte("a complete, valid archive body"))
+
+	t.Setenv("FAKE_SSH_PAYLOAD", payload)
+	t.Setenv("FAKE_SSH_COUNTER", filepath.Join(tmp, "counter"))
+	t.Setenv("FAKE_SSH_FATAL", "1")
+
+	backupDir := filepath.Join(tmp, "backups")
+	d := NewDeployOps(false, "")
+	backupName, err := d.BackupRemote(context.Background(), "localhost", backupDir, []string{"/mnt/appdata/svc"})
+
+	require.Error(t, err, "a non-nil ssh/tar error must fail the backup even when the stream lists cleanly")
+	assert.Empty(t, backupName, "no backup name may be returned on failure")
+	assertNoBackupDirs(t, backupDir)
+}
+
+// TestBackupRemote_RetryDoesNotConcatenateStreams verifies the #240 stream-reset
+// fix: a transient failure that streamed a partial archive, followed by a
+// successful retry, MUST yield a file holding exactly the successful attempt's
+// single stream — not the failed attempt's bytes concatenated ahead of it.
+func TestBackupRemote_RetryDoesNotConcatenateStreams(t *testing.T) {
+	if _, err := exec.LookPath("tar"); err != nil {
+		t.Skip("tar not installed")
+	}
+	writeFakeSSH(t)
+
+	tmp := evalSymlinks(t, t.TempDir())
+	payload := filepath.Join(tmp, "payload.tar.gz")
+	makeValidArchive(t, payload, "conf.yml", []byte("retry payload config"))
+	payloadBytes, err := os.ReadFile(payload)
+	require.NoError(t, err)
+
+	t.Setenv("FAKE_SSH_PAYLOAD", payload)
+	t.Setenv("FAKE_SSH_COUNTER", filepath.Join(tmp, "counter"))
+	t.Setenv("FAKE_SSH_SUCCEED_ON", "2") // attempt 1 fails transiently, attempt 2 succeeds
+
+	backupDir := filepath.Join(tmp, "backups")
+	d := NewDeployOps(false, "")
+	backupName, err := d.BackupRemote(context.Background(), "localhost", backupDir, []string{"/mnt/appdata/svc"})
+	require.NoError(t, err, "a transient failure then success must yield a valid backup")
+	require.NotEmpty(t, backupName)
+
+	got, err := os.ReadFile(filepath.Join(backupDir, backupName, "configs.tar.gz"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(got), "PARTIAL_ATTEMPT_",
+		"a retried attempt must not keep the failed attempt's partial stream")
+	assert.Equal(t, payloadBytes, got,
+		"the archive must contain exactly the successful attempt's single stream")
+}
+
+// TestVerifyBackup_RejectsTruncatedArchive verifies the #240 integrity fix: a
+// truncated archive (headers intact, trailing data lost) MUST be rejected. The
+// prior listing-only check (`tar -tzf`) could accept such an archive; the full
+// gzip+tar read-through catches the truncated stream.
+func TestVerifyBackup_RejectsTruncatedArchive(t *testing.T) {
+	if _, err := exec.LookPath("tar"); err != nil {
+		t.Skip("tar not installed")
+	}
+
+	tmp := evalSymlinks(t, t.TempDir())
+	backupPath := filepath.Join(tmp, "backup")
+	require.NoError(t, os.MkdirAll(backupPath, 0755))
+	tarFile := filepath.Join(backupPath, "configs.tar.gz")
+
+	// Incompressible content so the compressed archive is substantial and a
+	// mid-file truncation reliably lands inside real deflate data, not padding.
+	body := make([]byte, 16<<10)
+	_, err := cryptorand.Read(body)
+	require.NoError(t, err)
+	makeValidArchive(t, tarFile, "data.bin", body)
+
+	d := NewDeployOps(false, "")
+	require.NoError(t, d.VerifyBackup(context.Background(), backupPath),
+		"a complete archive must pass verification")
+
+	// Truncate to half its size: the gzip stream is now incomplete.
+	info, err := os.Stat(tarFile)
+	require.NoError(t, err)
+	require.NoError(t, os.Truncate(tarFile, info.Size()/2))
+
+	require.Error(t, d.VerifyBackup(context.Background(), backupPath),
+		"a truncated archive must be rejected by verification")
+}
+
+// TestVerifyArchiveIntegrity covers the #240 read-through directly: a complete
+// archive reads to EOF cleanly, while a truncated one fails when the incomplete
+// gzip/tar stream cannot be fully decompressed — the corruption a header-only
+// listing can miss.
+func TestVerifyArchiveIntegrity(t *testing.T) {
+	if _, err := exec.LookPath("tar"); err != nil {
+		t.Skip("tar not installed")
+	}
+
+	tmp := evalSymlinks(t, t.TempDir())
+	tarFile := filepath.Join(tmp, "configs.tar.gz")
+	body := make([]byte, 16<<10)
+	_, err := cryptorand.Read(body)
+	require.NoError(t, err)
+	makeValidArchive(t, tarFile, "data.bin", body)
+
+	require.NoError(t, verifyArchiveIntegrity(context.Background(), tarFile),
+		"a complete archive must read through to EOF without error")
+
+	info, err := os.Stat(tarFile)
+	require.NoError(t, err)
+	require.NoError(t, os.Truncate(tarFile, info.Size()/2))
+
+	require.Error(t, verifyArchiveIntegrity(context.Background(), tarFile),
+		"a truncated stream must fail the full read-through")
 }
 
 func TestResolveBackupFile(t *testing.T) {
