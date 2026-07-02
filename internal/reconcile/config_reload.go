@@ -45,6 +45,25 @@ func (r *Reconciler) reloadProjectConfig() {
 	changed = reloadField(&r.config.DeploySyncPaths, reloaded.DeploySyncPaths, sliceSet) || changed
 	changed = reloadField(&r.config.DeploySyncExclude, reloaded.DeploySyncExclude, sliceSet) || changed
 	changed = reloadField(&r.config.CriticalContainers, reloaded.CriticalContainers, sliceSet) || changed
+
+	// Validate reloaded drift_ignore rules before applying them -- GitOps reload
+	// is the normal path for changing drift_ignore in production, so an invalid
+	// rule (unknown type, bad glob) must not silently take effect. On a hard
+	// error, reject the reload and keep the previous in-memory rules; nil-ing
+	// reloaded.DriftIgnore makes reloadField's isSet check treat it as "nothing
+	// to apply" so the rest of this reload proceeds normally. A total-suppression
+	// rule is still applied (it's valid config), but logs a loud warning, matching
+	// the daemon-startup posture in ValidateConfig.
+	if reloaded.DriftIgnore != nil {
+		if warnings, err := ValidateDriftIgnoreRules(reloaded.DriftIgnore); err != nil {
+			logger.Error().Err(err).Msg("Reloaded drift_ignore rules are invalid, keeping previous rules")
+			reloaded.DriftIgnore = nil
+		} else {
+			for _, w := range warnings {
+				logger.Warn().Msg(w)
+			}
+		}
+	}
 	changed = reloadField(&r.config.DriftIgnore, reloaded.DriftIgnore, func(v []DriftIgnoreRule) bool { return v != nil }) || changed
 
 	if reloaded.OnFailure != nil {

@@ -1630,6 +1630,82 @@ func TestReloadProjectConfig(t *testing.T) {
 		require.Len(t, r.config.CriticalContainers.Value, 1)
 		assert.Equal(t, "env-container", r.config.CriticalContainers.Value[0])
 	})
+
+	t.Run("invalid drift_ignore reload keeps previous rules", func(t *testing.T) {
+		cfg := &Config{
+			DriftIgnore: NewConfigField([]DriftIgnoreRule{
+				{Service: "traefik", Type: "unhealthy"},
+			}),
+			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
+				return &ReloadedConfig{
+					DriftIgnore: []DriftIgnoreRule{
+						{Service: "api", Type: "stopped"}, // unknown type -- must be rejected
+					},
+				}, nil
+			},
+		}
+		r := NewReconciler(cfg)
+		r.reloadProjectConfig()
+		require.Len(t, r.config.DriftIgnore.Value, 1, "invalid reload must not replace the previous rules")
+		assert.Equal(t, "traefik", r.config.DriftIgnore.Value[0].Service)
+		assert.Equal(t, "unhealthy", r.config.DriftIgnore.Value[0].Type)
+	})
+
+	t.Run("valid drift_ignore reload still applies", func(t *testing.T) {
+		cfg := &Config{
+			DriftIgnore: NewConfigField([]DriftIgnoreRule{
+				{Service: "traefik", Type: "unhealthy"},
+			}),
+			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
+				return &ReloadedConfig{
+					DriftIgnore: []DriftIgnoreRule{
+						{Service: "api", Type: "missing"},
+					},
+				}, nil
+			},
+		}
+		r := NewReconciler(cfg)
+		r.reloadProjectConfig()
+		require.Len(t, r.config.DriftIgnore.Value, 1)
+		assert.Equal(t, "api", r.config.DriftIgnore.Value[0].Service)
+		assert.Equal(t, "missing", r.config.DriftIgnore.Value[0].Type)
+	})
+
+	t.Run("total-suppression drift_ignore reload applies with a warning", func(t *testing.T) {
+		cfg := &Config{
+			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
+				return &ReloadedConfig{
+					DriftIgnore: []DriftIgnoreRule{
+						{Service: "*", Type: "*"},
+					},
+				}, nil
+			},
+		}
+		r := NewReconciler(cfg)
+		r.reloadProjectConfig()
+		require.Len(t, r.config.DriftIgnore.Value, 1, "a total-suppression rule is syntactically valid and should still apply")
+		assert.Equal(t, "*", r.config.DriftIgnore.Value[0].Service)
+		assert.Equal(t, "*", r.config.DriftIgnore.Value[0].Type)
+	})
+
+	t.Run("env override prevents drift_ignore reload", func(t *testing.T) {
+		cfg := &Config{
+			DriftIgnore: EnvConfigField([]DriftIgnoreRule{
+				{Service: "env-service", Type: "unhealthy"},
+			}),
+			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
+				return &ReloadedConfig{
+					DriftIgnore: []DriftIgnoreRule{
+						{Service: "repo-service", Type: "missing"},
+					},
+				}, nil
+			},
+		}
+		r := NewReconciler(cfg)
+		r.reloadProjectConfig()
+		require.Len(t, r.config.DriftIgnore.Value, 1)
+		assert.Equal(t, "env-service", r.config.DriftIgnore.Value[0].Service)
+	})
 }
 
 // --- reloadProjectConfig per-target override tests ---

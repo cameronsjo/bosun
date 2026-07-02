@@ -240,6 +240,9 @@ func ValidateDriftIgnoreRules(rules []DriftIgnoreRule) (warnings []string, err e
 			continue
 		}
 
+		// The "" target is a syntax probe, not a real match attempt -- filepath.Match
+		// validates pattern syntax before it ever compares against a name, so this
+		// only checks whether rule.Service itself parses; the returned bool is unused.
 		if _, matchErr := filepath.Match(rule.Service, ""); matchErr != nil {
 			errs = append(errs, fmt.Sprintf(
 				"drift_ignore[%d]: invalid service glob %q: %v", i, rule.Service, matchErr,
