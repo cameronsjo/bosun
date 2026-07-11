@@ -165,10 +165,72 @@ func parseSSHError(err error, stderr, host string) error {
 	}
 }
 
+// bosunOldSuffix marks the retained previous target tree during a swap
+// (<target>.bosun-old.<unix-nanos>). Crash recovery globs on it.
+const bosunOldSuffix = ".bosun-old."
+
+// buildRemoteSwapCommand returns the POSIX shell that promotes tmpDir into
+// targetDir while retaining the old tree until the new one is in place (#343):
+// move-aside → move-in → cleanup, with a rollback branch that restores the
+// old tree when the move-in fails. The rollback clears a partial targetDir
+// first — on Unraid's /mnt/user shfs a cross-device mv can fail after
+// creating a partial destination, and a naive `mv old target` would nest the
+// old tree INTO that partial dir instead of restoring it.
+//
+// This is "safe, not atomic": shfs renames are not kernel-atomic even for
+// same-parent paths (EXDEV persists), so the guarantee is that no sequence
+// deletes the live target before the replacement is durably in place — an
+// interrupted swap leaves the old OR the new tree, never neither.
+// withSync appends a `sync` after the move-in (FUSE settle discipline, #402).
+func buildRemoteSwapCommand(targetDir, tmpDir, oldDir string, withSync bool) string {
+	target := shellquote.Join(targetDir)
+	tmp := shellquote.Join(tmpDir)
+	old := shellquote.Join(oldDir)
+
+	syncStep := ""
+	if withSync {
+		syncStep = "sync; "
+	}
+
+	return "set -e; " +
+		"if [ -e " + target + " ]; then mv " + target + " " + old + "; fi; " +
+		"if mv " + tmp + " " + target + "; then " +
+		syncStep +
+		"rm -rf " + old + "; " +
+		"else " +
+		"status=$?; " +
+		"if [ -e " + target + " ]; then rm -rf " + target + "; fi; " +
+		"if [ -e " + old + " ]; then mv " + old + " " + target + "; fi; " +
+		"exit $status; " +
+		"fi"
+}
+
+// buildRemoteRecoverCommand returns the POSIX shell that heals an interrupted
+// swap at the start of the next deploy (#343 crash recovery): when targetDir
+// is missing but retained `.bosun-old.<ts>` siblings exist, the newest one is
+// promoted back to targetDir (timestamps are fixed-width unix nanos, so
+// lexical sort orders them), then remaining orphans are removed. A failed
+// promotion aborts (set -e) before the orphan cleanup can delete the only
+// surviving copy of the target.
+func buildRemoteRecoverCommand(targetDir string) string {
+	target := shellquote.Join(targetDir)
+	// The glob star must stay outside the quoting so the remote shell expands it.
+	oldGlob := shellquote.Join(targetDir+bosunOldSuffix) + "*"
+
+	return "set -e; " +
+		"if [ ! -e " + target + " ]; then " +
+		"newest=$(ls -d " + oldGlob + " 2>/dev/null | sort | tail -n 1); " +
+		"if [ -n \"$newest\" ]; then mv \"$newest\" " + target + "; fi; " +
+		"fi; " +
+		"rm -rf " + oldGlob + " 2>/dev/null || true"
+}
+
 // DeployRemote syncs files to a remote host using tar-over-SSH.
 // Uses RemoteDeployTimeout if the parent context has no deadline.
 // Retries on transient SSH errors with exponential backoff.
-// Performs atomic deployment: tar to temp dir, then move to target.
+// Deployment is safe-by-ordering: tar to a temp dir, then a retain-old
+// rename-swap that never deletes the live target before the replacement
+// is in place (#343), with crash recovery for interrupted swaps.
 func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, targetDir string) error {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
@@ -212,6 +274,17 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 	tmpDir := filepath.Join(targetParent, tmpDirName)
 
 	return retryWithBackoff(ctx, DefaultMaxRetries, func() error {
+		// Heal any interrupted swap from a prior run before staging this one:
+		// promote the newest retained tree when the target is missing, then
+		// clean orphaned .bosun-old.<ts> siblings (#343 crash recovery).
+		// Running it per attempt also self-heals between retries.
+		recoverCmd := exec.CommandContext(ctx, "ssh", targetHost, buildRemoteRecoverCommand(targetDir))
+		var recoverStderr bytes.Buffer
+		recoverCmd.Stderr = &recoverStderr
+		if err := recoverCmd.Run(); err != nil {
+			return fmt.Errorf("recover interrupted swap, expected target %s present or a promotable retained copy: %w: %s", targetDir, err, recoverStderr.String())
+		}
+
 		// Create temp directory on remote
 		mkdirCmd := exec.CommandContext(ctx, "ssh", targetHost, "mkdir", "-p", tmpDir)
 		var mkdirStderr bytes.Buffer
@@ -262,17 +335,34 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			return fmt.Errorf("ssh extract failed: %w: %s", sshErr, sshStderr.String())
 		}
 
-		// Atomic move: remove old target and rename temp to target
-		// Using a shell command to ensure atomicity
-		moveCmd := fmt.Sprintf("rm -rf %s && mv %s %s", shellquote.Join(targetDir), shellquote.Join(tmpDir), shellquote.Join(targetDir))
-		atomicCmd := exec.CommandContext(ctx, "ssh", targetHost, moveCmd)
-		var atomicStderr bytes.Buffer
-		atomicCmd.Stderr = &atomicStderr
+		// Retain-old rename-swap (#343): the live target is moved aside, not
+		// deleted, until the replacement is in place; a failed move-in rolls
+		// the old tree back (clearing any partial destination first).
+		underFUSE := IsUnderFUSEDeployPath(targetDir)
+		oldDir := fmt.Sprintf("%s%s%d", targetDir, bosunOldSuffix, time.Now().UnixNano())
+		swapCmd := exec.CommandContext(ctx, "ssh", targetHost, buildRemoteSwapCommand(targetDir, tmpDir, oldDir, underFUSE))
+		var swapStderr bytes.Buffer
+		swapCmd.Stderr = &swapStderr
 
-		if err := atomicCmd.Run(); err != nil {
-			// Try to cleanup temp dir
+		if err := swapCmd.Run(); err != nil {
+			// Try to cleanup temp dir; the swap's rollback branch already
+			// restored the old target (or the next attempt's recovery will).
 			_ = exec.CommandContext(ctx, "ssh", targetHost, "rm", "-rf", tmpDir).Run()
-			return fmt.Errorf("atomic move failed: %w: %s", err, atomicStderr.String())
+			return fmt.Errorf("swap staged tree into %s failed, old tree retained or restored: %w: %s", targetDir, err, swapStderr.String())
+		}
+
+		// FUSE settle discipline (#402): shfs writes need time to propagate
+		// before consumers (compose up, hooks, doctor) read the files back.
+		if underFUSE {
+			logger.Debug().
+				Str(log.FieldPath, targetDir).
+				Dur("settle_delay", defaultFUSESettleDelay).
+				Msg("Deploy target is on a FUSE mount, waiting for writes to settle")
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(defaultFUSESettleDelay):
+			}
 		}
 
 		logger.Debug().
