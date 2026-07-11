@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/cameronsjo/bosun/internal/alert"
@@ -226,6 +227,25 @@ func New(cfg *Config) (*Daemon, error) {
 	return d, nil
 }
 
+// warnWebhookAuthPosture announces the webhook auth posture at startup (#345):
+// fail-closed is the default, so a secret-less upgrade must never be a silent
+// 403, and an opted-out daemon must never hide its exposure. No-op when HTTP
+// is disabled or a secret is configured.
+func (d *Daemon) warnWebhookAuthPosture(logger zerolog.Logger) {
+	if !d.config.EnableHTTP || d.config.WebhookSecret != "" {
+		return
+	}
+	if d.config.AllowUnauthenticatedWebhook {
+		logger.Warn().
+			Msg("SECURITY: webhook endpoints accept UNAUTHENTICATED trigger requests. Reason: no webhook secret configured and BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true. Anyone who can reach the HTTP port can trigger a deploy")
+		ui.Warning("SECURITY: unauthenticated webhook triggers enabled (no secret, opt-out set)")
+		return
+	}
+	logger.Warn().
+		Msg("Webhook endpoints will REJECT all trigger requests, expected a webhook secret but none is configured — webhook auth fails closed. Set WEBHOOK_SECRET, or set BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true to accept unauthenticated triggers")
+	ui.Warning("Webhooks fail closed: no WEBHOOK_SECRET set, trigger requests will be rejected (403)")
+}
+
 // Run starts the daemon and blocks until shutdown.
 // It handles SIGTERM and SIGINT for graceful shutdown.
 func (d *Daemon) Run(ctx context.Context) error {
@@ -258,20 +278,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	ui.Info("Poll interval: %s", d.config.PollInterval)
 
-	// Webhook auth posture (#345): fail-closed is the default. Announce the
-	// posture loudly at startup either way, so a secret-less upgrade is never
-	// a silent 403 and an opted-out daemon never hides its exposure.
-	if d.config.EnableHTTP && d.config.WebhookSecret == "" {
-		if d.config.AllowUnauthenticatedWebhook {
-			logger.Warn().
-				Msg("SECURITY: webhook endpoints accept UNAUTHENTICATED trigger requests. Reason: no webhook secret configured and BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true. Anyone who can reach the HTTP port can trigger a deploy")
-			ui.Warning("SECURITY: unauthenticated webhook triggers enabled (no secret, opt-out set)")
-		} else {
-			logger.Warn().
-				Msg("Webhook endpoints will REJECT all trigger requests, expected a webhook secret but none is configured — webhook auth fails closed. Set WEBHOOK_SECRET, or set BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true to accept unauthenticated triggers")
-			ui.Warning("Webhooks fail closed: no WEBHOOK_SECRET set, trigger requests will be rejected (403)")
-		}
-	}
+	d.warnWebhookAuthPosture(logger)
 
 	// Ensure state directory exists for deploy state tracking.
 	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.StateFile != "" {

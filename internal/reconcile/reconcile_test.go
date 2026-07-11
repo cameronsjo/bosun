@@ -516,6 +516,39 @@ func TestReloadProjectConfig_ProjectName(t *testing.T) {
 
 		assert.Equal(t, "keep-me", r.config.ProjectName)
 	})
+
+	t.Run("reloaded multi-target list with a default is ignored with a warning, not adopted", func(t *testing.T) {
+		cfg := &Config{TargetName: DefaultTargetName, ProjectName: "keep-me"}
+		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{
+				Targets: []Target{
+					{Name: "default", ProjectName: "poisoned"},
+					{Name: "unraid", ProjectName: "other"},
+				},
+			}, nil
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		// The misconfiguration ResolveTargets fails loud on at startup must not
+		// silently apply overrides during reload either (#391).
+		assert.Equal(t, "keep-me", r.config.ProjectName)
+	})
+
+	t.Run("unchanged project_name is a no-op", func(t *testing.T) {
+		cfg := &Config{TargetName: DefaultTargetName, ProjectName: "same"}
+		name := "same"
+		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{ProjectName: &name}, nil
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		assert.Equal(t, "same", r.config.ProjectName)
+		assert.False(t, r.setProjectName("same"), "setting the identical value must report no change")
+	})
 }
 
 func TestExecutePostSyncHooks_DiffFilesError_FiresAllHooks(t *testing.T) {

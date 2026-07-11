@@ -99,6 +99,52 @@ func TestResolveTargets_HonorsLoneDefaultTarget(t *testing.T) {
 	})
 }
 
+// Every explicit-field branch of the lone-default merge, in one table: each
+// non-zero field on the explicit target must win over its flat counterpart.
+func TestResolveTargets_LoneDefaultFullMerge(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.TargetHost = "user@flat"
+	cfg.LocalAppdataPath = "/flat/local"
+	cfg.RemoteAppdataPath = "/flat/remote"
+	cfg.ProjectName = "flat-project"
+	cfg.CriticalContainers = NewConfigField([]string{"flat-cc"})
+	cfg.PostSyncHooks = NewConfigField([]PostSyncHook{{Container: "flat-hook"}})
+	cfg.DeploySyncPaths = NewConfigField([]string{"flat/**"})
+	cfg.DeploySyncExclude = NewConfigField([]string{"flat.bak"})
+	cfg.Targets = []Target{{
+		Name:               "default",
+		TargetHost:         "user@explicit",
+		LocalAppdataPath:   "/explicit/local",
+		RemoteAppdataPath:  "/explicit/remote",
+		ProjectName:        "explicit-project",
+		StateFile:          "/explicit/state.json",
+		StagingDir:         "/explicit/staging",
+		SecretsScope:       "explicit-scope",
+		CriticalContainers: []string{"explicit-cc"},
+		PostSyncHooks:      []PostSyncHook{{Container: "explicit-hook"}},
+		DeploySyncPaths:    []string{"explicit/**"},
+		DeploySyncExclude:  []string{"explicit.bak"},
+	}}
+
+	targets, err := cfg.ResolveTargets()
+	require.NoError(t, err)
+	require.Len(t, targets, 1)
+
+	def := targets[0]
+	assert.Equal(t, "user@explicit", def.TargetHost)
+	assert.Equal(t, "/explicit/local", def.LocalAppdataPath)
+	assert.Equal(t, "/explicit/remote", def.RemoteAppdataPath)
+	assert.Equal(t, "explicit-project", def.ProjectName)
+	assert.Equal(t, "/explicit/state.json", def.StateFile)
+	assert.Equal(t, "/explicit/staging", def.StagingDir)
+	assert.Equal(t, "explicit-scope", def.SecretsScope)
+	assert.Equal(t, []string{"explicit-cc"}, def.CriticalContainers)
+	require.Len(t, def.PostSyncHooks, 1)
+	assert.Equal(t, "explicit-hook", def.PostSyncHooks[0].Container)
+	assert.Equal(t, []string{"explicit/**"}, def.DeploySyncPaths)
+	assert.Equal(t, []string{"explicit.bak"}, def.DeploySyncExclude)
+}
+
 func TestResolveTargets_MultiTargetDefaultErrorMentionsRemedy(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Targets = []Target{
