@@ -9,7 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/cameronsjo/bosun/internal/log"
+	"github.com/cameronsjo/bosun/internal/telemetry"
 	"github.com/kballard/go-shellquote"
 )
 
@@ -217,6 +220,13 @@ func buildRemoteRecoverCommand(targetDir string) string {
 	// The glob star must stay outside the quoting so the remote shell expands it.
 	oldGlob := shellquote.Join(targetDir+bosunOldSuffix) + "*"
 
+	// The 2>/dev/null on ls silences the expected no-retained-copies case: an
+	// unmatched glob reaches ls as a literal and errors, but the pipeline's
+	// exit is tail's (0), so only the noise needs suppressing — an empty
+	// $newest already encodes "nothing to promote".
+	// The trailing 2>/dev/null || true lets the orphan cleanup tolerate the
+	// same unmatched-glob literal under set -e: no orphans is the healthy
+	// steady state, not a deploy failure.
 	return "set -e; " +
 		"if [ ! -e " + target + " ]; then " +
 		"newest=$(ls -d " + oldGlob + " 2>/dev/null | sort | tail -n 1); " +
@@ -262,10 +272,21 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 		defer cancel()
 	}
 
+	ctx, deploySpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.deploy_remote",
+		trace.WithAttributes(
+			telemetry.StringAttr("target_host", targetHost),
+			telemetry.StringAttr("target_dir", targetDir),
+			telemetry.BoolAttr("under_fuse", IsUnderFUSEDeployPath(targetDir)),
+		),
+	)
+	defer deploySpan.End()
+
 	// Ensure target directory parent exists on remote
 	targetParent := filepath.Dir(targetDir)
 	if err := d.EnsureRemoteDir(ctx, targetHost, targetParent); err != nil {
-		return fmt.Errorf("ensure remote parent dir: %w", err)
+		err = fmt.Errorf("ensure remote parent dir: %w", err)
+		telemetry.SpanError(deploySpan, err)
+		return err
 	}
 
 	// Create temp directory on remote for atomic deployment
@@ -273,11 +294,16 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 	tmpDirName := fmt.Sprintf(".deploy-tmp-%d", time.Now().UnixNano())
 	tmpDir := filepath.Join(targetParent, tmpDirName)
 
-	return retryWithBackoff(ctx, DefaultMaxRetries, func() error {
+	deployErr := retryWithBackoff(ctx, DefaultMaxRetries, func() error {
 		// Heal any interrupted swap from a prior run before staging this one:
 		// promote the newest retained tree when the target is missing, then
 		// clean orphaned .bosun-old.<ts> siblings (#343 crash recovery).
 		// Running it per attempt also self-heals between retries.
+		logger.Debug().
+			Str(log.FieldOperation, "recover_swap").
+			Str(log.FieldTarget, targetHost).
+			Str(log.FieldPath, targetDir).
+			Msg("Preparing to recover any interrupted swap from prior deploy")
 		recoverCmd := exec.CommandContext(ctx, "ssh", targetHost, buildRemoteRecoverCommand(targetDir))
 		var recoverStderr bytes.Buffer
 		recoverCmd.Stderr = &recoverStderr
@@ -286,6 +312,11 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 		}
 
 		// Create temp directory on remote
+		logger.Debug().
+			Str(log.FieldOperation, "prepare_staging").
+			Str(log.FieldTarget, targetHost).
+			Str(log.FieldPath, tmpDir).
+			Msg("Preparing to create staging directory on remote")
 		mkdirCmd := exec.CommandContext(ctx, "ssh", targetHost, "mkdir", "-p", tmpDir)
 		var mkdirStderr bytes.Buffer
 		mkdirCmd.Stderr = &mkdirStderr
@@ -295,6 +326,12 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 
 		// Tar source directory and pipe to SSH for extraction on remote
 		// tar -C sourceDir -cf - . | ssh host "tar -C tmpDir -xf -"
+		logger.Debug().
+			Str(log.FieldOperation, "tar_extract").
+			Str(log.FieldTarget, targetHost).
+			Str("source", sourceDir).
+			Str("dest", tmpDir).
+			Msg("Preparing to tar and extract staging directory to remote")
 		tarCmd := exec.CommandContext(ctx, "tar", "-C", sourceDir, "-cf", "-", ".")
 		sshCmd := exec.CommandContext(ctx, "ssh", targetHost, fmt.Sprintf("tar -C %s -xf -", shellquote.Join(tmpDir)))
 
@@ -340,6 +377,12 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 		// the old tree back (clearing any partial destination first).
 		underFUSE := IsUnderFUSEDeployPath(targetDir)
 		oldDir := fmt.Sprintf("%s%s%d", targetDir, bosunOldSuffix, time.Now().UnixNano())
+		logger.Debug().
+			Str(log.FieldOperation, "swap_deploy").
+			Str(log.FieldTarget, targetHost).
+			Str(log.FieldPath, targetDir).
+			Bool("under_fuse", underFUSE).
+			Msg("Preparing to swap staged directory into live target (retain-old-until-new pattern)")
 		swapCmd := exec.CommandContext(ctx, "ssh", targetHost, buildRemoteSwapCommand(targetDir, tmpDir, oldDir, underFUSE))
 		var swapStderr bytes.Buffer
 		swapCmd.Stderr = &swapStderr
@@ -350,6 +393,10 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			_ = exec.CommandContext(ctx, "ssh", targetHost, "rm", "-rf", tmpDir).Run()
 			return fmt.Errorf("swap staged tree into %s failed, old tree retained or restored: %w: %s", targetDir, err, swapStderr.String())
 		}
+		logger.Info().
+			Str(log.FieldOperation, "swap_deploy").
+			Str(log.FieldTarget, targetHost).
+			Msg("Successfully promoted staged tree to live target (old tree cleaned up)")
 
 		// FUSE settle discipline (#402): shfs writes need time to propagate
 		// before consumers (compose up, hooks, doctor) read the files back.
@@ -372,6 +419,12 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			Msg("Remote deployment completed")
 		return nil
 	})
+	if deployErr != nil {
+		telemetry.SpanError(deploySpan, deployErr)
+	} else {
+		telemetry.SpanOK(deploySpan)
+	}
+	return deployErr
 }
 
 // DeployRemoteFile syncs a single file to a remote host using scp.

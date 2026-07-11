@@ -590,7 +590,9 @@ Staging                    Target
 staging/unraid/appdata/ -> root@host:/mnt/user/appdata/
 ```
 
-The remote deployment creates a tar archive locally, streams it over SSH, and extracts it on the remote host. This avoids requiring rsync on the remote system.
+The remote deployment creates a tar archive locally, streams it over SSH, and extracts it into a temp directory on the remote host. This avoids requiring rsync on the remote system.
+
+The staged tree is then promoted with a **retain-old rename-swap**: the live target directory is moved aside to `<target>.bosun-old.<timestamp>` (never deleted first), the new tree is moved into place, and the retained copy is removed only after the swap succeeds. If the move-in fails, the retained copy is restored. An interrupted deploy therefore always leaves either the old or the new tree — never an empty target. On the next deploy, a missing target with a stray `.bosun-old.<timestamp>` sibling is self-healed by promoting the newest retained copy, and orphaned copies are cleaned up. On Unraid's `/mnt/user` FUSE mount the swap is safe (retain-old) rather than kernel-atomic, and a settle delay follows the move so writes propagate before `docker compose up` reads them.
 
 ### Deployed Paths
 

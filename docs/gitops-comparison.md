@@ -353,7 +353,7 @@ How does each tool get rendered configs onto the target?
 
 **Bosun: File push (local atomic copy or tar-over-SSH)**
 
-Rendered configs are deployed to the target directory. Local deploys use atomic directory replacement (copy to temp, rename into place). Remote deploys stream a tar archive over SSH to a temp directory on the target, then atomically move it into place. A pre-deploy backup is taken before any files are overwritten.
+Rendered configs are deployed to the target directory. Local deploys use atomic directory replacement (copy to temp, rename into place). Remote deploys stream a tar archive over SSH to a temp directory on the target, then run a retain-old rename-swap: the live target is moved aside (never deleted first), the new tree is moved in, and the retained copy is removed only once the swap succeeds — so an interrupted deploy leaves the old or the new tree, never an empty target. A pre-deploy backup is taken before any files are overwritten.
 
 | Pros | Cons |
 |---|---|

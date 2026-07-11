@@ -17,6 +17,10 @@ func (r *Reconciler) reloadProjectConfig() {
 
 	logger := log.Component(log.ComponentReconcile) // No ctx available in this method.
 
+	logger.Debug().
+		Str("repo_dir", r.config.RepoDir).
+		Msg("Preparing to reload project config from bosun.yaml")
+
 	reloaded, err := r.config.ConfigReloader(r.config.RepoDir)
 	if err != nil {
 		logger.Warn().Err(err).Msg("Failed to reload project config from repo, keeping existing config")
@@ -94,7 +98,12 @@ func (r *Reconciler) reloadProjectConfig() {
 	// BOSUN_TARGETS-provided config is never overwritten by the repo.
 	isDefaultTarget := r.config.TargetName == "" || strings.EqualFold(r.config.TargetName, DefaultTargetName)
 	if isDefaultTarget && !r.config.TargetsFromEnv && reloaded.ProjectName != nil && *reloaded.ProjectName != "" {
-		changed = r.setProjectName(*reloaded.ProjectName) || changed
+		if r.setProjectName(*reloaded.ProjectName) {
+			logger.Debug().
+				Str("project_name", *reloaded.ProjectName).
+				Msg("Reloaded root-level project_name from bosun.yaml for default target deployment")
+			changed = true
+		}
 	}
 
 	// Apply per-target operational overrides (hooks, critical containers, sync
@@ -110,6 +119,18 @@ func (r *Reconciler) reloadProjectConfig() {
 			}
 		} else if len(reloaded.Targets) == 1 && reloaded.Targets[0].IsDefault() {
 			changed = applyTargetOverrides(r, reloaded.Targets[0]) || changed
+		} else {
+			// A pushed multi-target config carrying a `default` target is the
+			// misconfiguration #391 fails loud on at startup — the reload path
+			// can't restart the daemon, so it must at least not be silent.
+			for _, t := range reloaded.Targets {
+				if t.IsDefault() {
+					logger.Warn().
+						Str("target", t.Name).
+						Msg("Reloaded config declares a reserved default-named target in a multi-target list, expected every target to carry a distinct name — its overrides are ignored (#391); rename it or make it the only target")
+					break
+				}
+			}
 		}
 	}
 
@@ -147,7 +168,14 @@ func applyTargetOverrides(r *Reconciler, t Target) bool {
 		changed = reloadField(&r.config.DeploySyncExclude, t.DeploySyncExclude, sliceSet) || changed
 	}
 	if t.ProjectName != "" && !r.config.TargetsFromEnv {
-		changed = r.setProjectName(t.ProjectName) || changed
+		if r.setProjectName(t.ProjectName) {
+			logger := log.Component(log.ComponentReconcile)
+			logger.Debug().
+				Str("target", t.Name).
+				Str("project_name", t.ProjectName).
+				Msg("Reloaded project_name override from target config")
+			changed = true
+		}
 	}
 
 	return changed

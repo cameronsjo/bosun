@@ -211,6 +211,11 @@ func (c *Config) ResolveTargets() ([]Target, error) {
 // its non-zero fields win over the flat values (#391) — the name itself is
 // normalized to the canonical DefaultTargetName so case variants ("Default")
 // share the legacy state/lock/staging paths (#228).
+//
+// Note this "is default" context differs from Target.IsDefault(): an empty
+// explicit.Name here means "no explicit target declared" (caller passes the
+// zero Target), while Target{Name: ""}.IsDefault() is false — don't try to
+// consolidate the two predicates.
 func (c *Config) implicitDefaultTarget(explicit Target) Target {
 	t := Target{
 		Name:               DefaultTargetName,

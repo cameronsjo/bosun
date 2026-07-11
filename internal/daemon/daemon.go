@@ -661,15 +661,15 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 		// name fails the cycle instead of silently dropping the target.
 		logger.Error().Err(targetsErr).Msg("Target resolution failed, aborting reconciliation cycle")
 		ui.Error("Target resolution failed: %v", targetsErr)
+	} else {
+		logger.Info().
+			Str(log.FieldSource, source).
+			Bool("force", force).
+			Int("target_count", len(targets)).
+			Msg("Starting reconciliation cycle")
+
+		ui.Info("Starting reconciliation (source: %s, force: %t, targets: %d)", source, force, len(targets))
 	}
-
-	logger.Info().
-		Str(log.FieldSource, source).
-		Bool("force", force).
-		Int("target_count", len(targets)).
-		Msg("Starting reconciliation cycle")
-
-	ui.Info("Starting reconciliation (source: %s, force: %t, targets: %d)", source, force, len(targets))
 
 	firstErr := targetsErr
 	successCount := 0

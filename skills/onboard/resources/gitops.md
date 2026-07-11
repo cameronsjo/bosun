@@ -31,7 +31,11 @@ Every reconciliation follows this 16-stage sequence:
         |
  7. Create configuration backup
         |
- 8. Deploy files (local copy or tar-over-SSH)
+ 8. Deploy files (local copy or tar-over-SSH). Remote deploys use a
+    retain-old rename-swap (move live target aside, move new tree in,
+    remove the retained copy on success; restore it on failure) so an
+    interrupted deploy never leaves an empty target; the next deploy
+    self-heals a missing target from the newest retained copy
         |
  9. Verify deploy-sync invariants — every WrittenFiles entry must exist
     with fresh mtime; empty WrittenFiles against a non-empty source fails
@@ -448,6 +452,8 @@ bosun reconcile -r user@host
 ```
 
 Requires SSH key authentication. Test connectivity first: `ssh user@host exit`.
+
+The staged tree is promoted with a retain-old rename-swap: the live target is moved aside (never deleted first), the new tree is moved in, and the retained copy is removed only on success — so an interrupted deploy leaves the old or the new tree, never an empty target. A missing target left by a prior interrupted deploy is self-healed on the next run from the newest retained copy.
 
 #### SSH Host Key Verification
 
