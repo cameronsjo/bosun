@@ -420,6 +420,104 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 	})
 }
 
+// #390: the cloned repo's project_name must reach the default-target
+// reconciler (config AND the live deploy ops) before the first deploy —
+// a project-less `docker compose up` collides containers.
+func TestReloadProjectConfig_ProjectName(t *testing.T) {
+	t.Run("root-level project_name adopted for the default target", func(t *testing.T) {
+		cfg := &Config{TargetName: DefaultTargetName}
+		name := "homelab"
+		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{ProjectName: &name}, nil
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		assert.Equal(t, "homelab", r.config.ProjectName)
+		assert.Equal(t, "homelab", r.deploy.ProjectName, "reloaded project_name must reach the live deploy ops, like RemoveOrphans")
+	})
+
+	t.Run("empty TargetName counts as the default target", func(t *testing.T) {
+		cfg := &Config{}
+		name := "homelab"
+		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{ProjectName: &name}, nil
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		assert.Equal(t, "homelab", r.config.ProjectName)
+	})
+
+	t.Run("lone default target's project_name wins over root-level", func(t *testing.T) {
+		cfg := &Config{TargetName: DefaultTargetName}
+		root := "root-project"
+		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{
+				ProjectName: &root,
+				Targets:     []Target{{Name: "default", ProjectName: "target-project"}},
+			}, nil
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		assert.Equal(t, "target-project", r.config.ProjectName)
+		assert.Equal(t, "target-project", r.deploy.ProjectName)
+	})
+
+	t.Run("named target adopts its own reloaded project_name, not root-level", func(t *testing.T) {
+		cfg := &Config{TargetName: "unraid", ProjectName: "startup-value"}
+		root := "root-project"
+		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{
+				ProjectName: &root,
+				Targets:     []Target{{Name: "unraid", ProjectName: "unraid-project"}},
+			}, nil
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		assert.Equal(t, "unraid-project", r.config.ProjectName, "named target adopts its own override")
+	})
+
+	t.Run("env-provided targets are never overwritten by the repo", func(t *testing.T) {
+		cfg := &Config{
+			TargetName:     DefaultTargetName,
+			ProjectName:    "env-project",
+			TargetsFromEnv: true,
+		}
+		root := "repo-project"
+		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{
+				ProjectName: &root,
+				Targets:     []Target{{Name: "default", ProjectName: "repo-target-project"}},
+			}, nil
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		assert.Equal(t, "env-project", r.config.ProjectName, "BOSUN_TARGETS-provided config must win over the repo")
+	})
+
+	t.Run("empty reloaded project_name leaves the current value", func(t *testing.T) {
+		cfg := &Config{TargetName: DefaultTargetName, ProjectName: "keep-me"}
+		empty := ""
+		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{ProjectName: &empty}, nil
+		}
+		r := NewReconciler(cfg)
+
+		r.reloadProjectConfig()
+
+		assert.Equal(t, "keep-me", r.config.ProjectName)
+	})
+}
+
 func TestExecutePostSyncHooks_DiffFilesError_FiresAllHooks(t *testing.T) {
 	// Simulates the shallow clone scenario: DiffFiles fails because the previous
 	// commit is not in the shallow history. This is the root cause of GitHub #55.

@@ -1615,6 +1615,7 @@ func ConfigFromEnv() *Config {
 			targetsFromEnv = true
 		}
 	}
+	rcfg.TargetsFromEnv = targetsFromEnv
 
 	cfg.ReconcileConfig = rcfg
 
@@ -1833,6 +1834,7 @@ func ConfigFromEnv() *Config {
 		alertCfg := cfg.GetAlertConfig()
 		removeOrphans := cfg.RemoveOrphans()
 		hookSettleDelay := cfg.HookSettleDelay()
+		projectName := cfg.ProjectName()
 		return &reconcile.ReloadedConfig{
 			PostSyncHooks:      cfg.PostSyncHooks(),
 			HookSettleDelay:    &hookSettleDelay,
@@ -1844,6 +1846,7 @@ func ConfigFromEnv() *Config {
 			OnFailure:          &alertCfg.OnFailure,
 			OnSuccess:          &alertCfg.OnSuccess,
 			RemoveOrphans:      &removeOrphans,
+			ProjectName:        &projectName,
 			Targets:            cfg.Targets(),
 		}, nil
 	}

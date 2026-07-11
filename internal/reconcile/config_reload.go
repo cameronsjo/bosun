@@ -1,6 +1,8 @@
 package reconcile
 
 import (
+	"strings"
+
 	"github.com/cameronsjo/bosun/internal/log"
 )
 
@@ -27,7 +29,7 @@ func (r *Reconciler) reloadProjectConfig() {
 	// If no field has any value from the repo, there's nothing to reload.
 	// Use nil checks (not len==0) for slices so explicitly empty lists (e.g. `deploy_sync_paths: []`)
 	// can clear in-memory filters during hot-reload.
-	if reloaded.PostSyncHooks == nil && reloaded.HookSettleDelay == nil && reloaded.DeployPaths == nil && reloaded.DeploySyncPaths == nil && reloaded.DeploySyncExclude == nil && reloaded.CriticalContainers == nil && reloaded.DriftIgnore == nil && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil && reloaded.Targets == nil {
+	if reloaded.PostSyncHooks == nil && reloaded.HookSettleDelay == nil && reloaded.DeployPaths == nil && reloaded.DeploySyncPaths == nil && reloaded.DeploySyncExclude == nil && reloaded.CriticalContainers == nil && reloaded.DriftIgnore == nil && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil && reloaded.ProjectName == nil && reloaded.Targets == nil {
 		return
 	}
 
@@ -85,14 +87,29 @@ func (r *Reconciler) reloadProjectConfig() {
 		}
 	}
 
-	// Apply per-target operational overrides (hooks, critical containers, sync paths).
-	// Named targets can override these fields in bosun.yaml; the default target uses root-level values.
-	if r.config.TargetName != "" && r.config.TargetName != DefaultTargetName && reloaded.Targets != nil {
-		for _, t := range reloaded.Targets {
-			if t.Name == r.config.TargetName {
-				changed = applyTargetOverrides(r, t) || changed
-				break
+	// Root-level project_name from the repo's bosun.yaml reaches the default
+	// target before the first deploy (#390): a project-less compose up
+	// collides containers. Applied before the per-target overrides below so a
+	// lone `default` target's project_name wins over the root value. Env wins:
+	// BOSUN_TARGETS-provided config is never overwritten by the repo.
+	isDefaultTarget := r.config.TargetName == "" || strings.EqualFold(r.config.TargetName, DefaultTargetName)
+	if isDefaultTarget && !r.config.TargetsFromEnv && reloaded.ProjectName != nil && *reloaded.ProjectName != "" {
+		changed = r.setProjectName(*reloaded.ProjectName) || changed
+	}
+
+	// Apply per-target operational overrides (hooks, critical containers, sync
+	// paths, project_name). Named targets match by name; the default target
+	// adopts a lone `default` target's overrides (#390/#391).
+	if reloaded.Targets != nil {
+		if !isDefaultTarget {
+			for _, t := range reloaded.Targets {
+				if t.Name == r.config.TargetName {
+					changed = applyTargetOverrides(r, t) || changed
+					break
+				}
 			}
+		} else if len(reloaded.Targets) == 1 && reloaded.Targets[0].IsDefault() {
+			changed = applyTargetOverrides(r, reloaded.Targets[0]) || changed
 		}
 	}
 
@@ -110,7 +127,9 @@ func (r *Reconciler) reloadProjectConfig() {
 
 // applyTargetOverrides overlays per-target field overrides onto the reconciler's config.
 // Only fields that the Target struct can override are applied. Fields set from
-// environment variables are never overwritten (reloadField checks FromEnv).
+// environment variables are never overwritten (reloadField checks FromEnv;
+// ProjectName checks TargetsFromEnv — it has no per-field env var, BOSUN_TARGETS
+// is its only env vector).
 func applyTargetOverrides(r *Reconciler, t Target) bool {
 	changed := false
 	sliceSet := func(v []string) bool { return v != nil }
@@ -127,6 +146,24 @@ func applyTargetOverrides(r *Reconciler, t Target) bool {
 	if t.DeploySyncExclude != nil {
 		changed = reloadField(&r.config.DeploySyncExclude, t.DeploySyncExclude, sliceSet) || changed
 	}
+	if t.ProjectName != "" && !r.config.TargetsFromEnv {
+		changed = r.setProjectName(t.ProjectName) || changed
+	}
 
 	return changed
+}
+
+// setProjectName updates the compose project name on the config and pushes it
+// onto the live deploy ops (the same double-write RemoveOrphans needs — the
+// reconciler copies config onto r.deploy at construction, so a reloaded value
+// must reach both). Returns true when the value changed.
+func (r *Reconciler) setProjectName(name string) bool {
+	if r.config.ProjectName == name {
+		return false
+	}
+	r.config.ProjectName = name
+	if r.deploy != nil {
+		r.deploy.ProjectName = name
+	}
+	return true
 }

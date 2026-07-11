@@ -272,6 +272,7 @@ func runReconcile(cmd *cobra.Command, args []string) {
 					Msgf("BOSUN_TARGETS: invalid %s — ignoring and inheriting global value", field)
 			})
 			cfg.Targets = targets
+			cfg.TargetsFromEnv = true
 		}
 	}
 
