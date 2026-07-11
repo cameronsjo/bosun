@@ -166,18 +166,24 @@ func DefaultConfig() *Config {
 }
 
 // ResolveTargets returns the effective target list for this config.
-// When Targets is non-empty, returns it as-is.
-// When Targets is empty, synthesizes a single implicit default target
-// from the flat config fields for backwards compatibility.
-func (c *Config) ResolveTargets() []Target {
+// When Targets is empty, it synthesizes a single implicit default target from
+// the flat config fields for backwards compatibility. A lone target named
+// `default` (case-insensitive) is the implicit default's configuration — its
+// fields (project_name above all) are honored, not discarded (#391). A
+// multi-target config that includes a `default` target is a hard error:
+// silently dropping it would deploy that target project-less and collide.
+func (c *Config) ResolveTargets() ([]Target, error) {
 	if len(c.Targets) > 0 {
+		if len(c.Targets) == 1 && c.Targets[0].IsDefault() {
+			return []Target{c.implicitDefaultTarget(c.Targets[0])}, nil
+		}
+
 		// Validate target names and reject duplicates to prevent path collisions.
 		valid := make([]Target, 0, len(c.Targets))
 		seen := make(map[string]bool, len(c.Targets))
 		for _, t := range c.Targets {
-			if strings.EqualFold(t.Name, DefaultTargetName) {
-				log.Warn().Str("target", t.Name).Msg("Skipping target: reserved name (used internally for implicit single-target mode)")
-				continue
+			if t.IsDefault() {
+				return nil, fmt.Errorf("target %q uses the reserved default name in a multi-target config, expected every target to carry a distinct name: rename it, or make it the only target to configure the implicit default", t.Name)
 			}
 			if err := ValidateTargetName(t.Name); err != nil {
 				log.Warn().Str("target", t.Name).Err(err).Msg("Skipping target with invalid name")
@@ -192,26 +198,69 @@ func (c *Config) ResolveTargets() []Target {
 			valid = append(valid, t)
 		}
 		if len(valid) > 0 {
-			return valid
+			return valid, nil
 		}
 		// All configured targets had invalid names — fall through to implicit default.
 		log.Warn().Int("configured", len(c.Targets)).Msg("All configured targets have invalid names, falling back to default target")
 	}
-	return []Target{
-		{
-			Name:               DefaultTargetName,
-			TargetHost:         c.TargetHost,
-			LocalAppdataPath:   c.LocalAppdataPath,
-			RemoteAppdataPath:  c.RemoteAppdataPath,
-			ProjectName:        c.ProjectName,
-			StateFile:          c.StateFile,
-			StagingDir:         c.StagingDir,
-			CriticalContainers: c.CriticalContainers.Value,
-			PostSyncHooks:      c.PostSyncHooks.Value,
-			DeploySyncPaths:    c.DeploySyncPaths.Value,
-			DeploySyncExclude:  c.DeploySyncExclude.Value,
-		},
+	return []Target{c.implicitDefaultTarget(Target{})}, nil
+}
+
+// implicitDefaultTarget synthesizes the implicit default target from the flat
+// config fields. When the config declared an explicit `name: default` target,
+// its non-zero fields win over the flat values (#391) — the name itself is
+// normalized to the canonical DefaultTargetName so case variants ("Default")
+// share the legacy state/lock/staging paths (#228).
+func (c *Config) implicitDefaultTarget(explicit Target) Target {
+	t := Target{
+		Name:               DefaultTargetName,
+		TargetHost:         c.TargetHost,
+		LocalAppdataPath:   c.LocalAppdataPath,
+		RemoteAppdataPath:  c.RemoteAppdataPath,
+		ProjectName:        c.ProjectName,
+		StateFile:          c.StateFile,
+		StagingDir:         c.StagingDir,
+		CriticalContainers: c.CriticalContainers.Value,
+		PostSyncHooks:      c.PostSyncHooks.Value,
+		DeploySyncPaths:    c.DeploySyncPaths.Value,
+		DeploySyncExclude:  c.DeploySyncExclude.Value,
 	}
+	if explicit.TargetHost != "" {
+		t.TargetHost = explicit.TargetHost
+	}
+	if explicit.LocalAppdataPath != "" {
+		t.LocalAppdataPath = explicit.LocalAppdataPath
+	}
+	if explicit.RemoteAppdataPath != "" {
+		t.RemoteAppdataPath = explicit.RemoteAppdataPath
+	}
+	if explicit.ProjectName != "" {
+		t.ProjectName = explicit.ProjectName
+	}
+	if explicit.StateFile != "" {
+		t.StateFile = explicit.StateFile
+	}
+	if explicit.StagingDir != "" {
+		t.StagingDir = explicit.StagingDir
+	}
+	if explicit.SecretsScope != "" {
+		t.SecretsScope = explicit.SecretsScope
+	}
+	// Slice overrides use nil checks so an explicit empty list can clear the
+	// inherited flat value, matching ConfigForTarget's semantics.
+	if explicit.CriticalContainers != nil {
+		t.CriticalContainers = explicit.CriticalContainers
+	}
+	if explicit.PostSyncHooks != nil {
+		t.PostSyncHooks = explicit.PostSyncHooks
+	}
+	if explicit.DeploySyncPaths != nil {
+		t.DeploySyncPaths = explicit.DeploySyncPaths
+	}
+	if explicit.DeploySyncExclude != nil {
+		t.DeploySyncExclude = explicit.DeploySyncExclude
+	}
+	return t
 }
 
 // safeTargetNamePattern matches safe target names: alphanumeric, hyphens, underscores.

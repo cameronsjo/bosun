@@ -4151,7 +4151,8 @@ func TestResolveTargets_ImplicitDefault(t *testing.T) {
 		DeploySyncExclude:  NewConfigField([]string{"*.bak"}),
 	}
 
-	targets := cfg.ResolveTargets()
+	targets, err := cfg.ResolveTargets()
+	require.NoError(t, err)
 	require.Len(t, targets, 1)
 
 	def := targets[0]
@@ -4178,7 +4179,8 @@ func TestResolveTargets_ExplicitTargets(t *testing.T) {
 		},
 	}
 
-	targets := cfg.ResolveTargets()
+	targets, err := cfg.ResolveTargets()
+	require.NoError(t, err)
 	require.Len(t, targets, 2)
 	assert.Equal(t, "unraid", targets[0].Name)
 	assert.Equal(t, "user@unraid", targets[0].TargetHost)
@@ -4384,32 +4386,29 @@ func TestResolveTargets_RejectsDuplicateNames(t *testing.T) {
 		{Name: "beta", TargetHost: "user@beta"},
 	}
 
-	targets := cfg.ResolveTargets()
+	targets, err := cfg.ResolveTargets()
+	require.NoError(t, err)
 	assert.Len(t, targets, 2, "case-insensitive duplicate should be rejected")
 	assert.Equal(t, "alpha", targets[0].Name)
 	assert.Equal(t, "beta", targets[1].Name)
 }
 
-// TestResolveTargets_SkipsReservedDefaultCaseInsensitive verifies that a
-// configured target whose name is a case-variant of the reserved "default"
-// ("Default", "DEFAULT", "DeFaUlT") is skipped as reserved rather than admitted
-// as a distinct named target. Before the #228 casefold, such a name passed the
-// case-sensitive reserved gate and became its own target, fragmenting state from
-// the implicit default (deploy-state-Default.json, staging/Default/,
-// reconcile-Default.lock — invisible to the drift/health/breaker that read the
-// base paths).
-func TestResolveTargets_SkipsReservedDefaultCaseInsensitive(t *testing.T) {
+// TestResolveTargets_FailsLoudOnMultiTargetDefault verifies that a
+// multi-target config carrying a target named the reserved "default" (any case
+// variant — #228 casefold) is a hard error rather than the former
+// skip-with-warn (#391). Silently dropping the target left its project_name
+// unhonored and collided deploys; the error names the offending target.
+func TestResolveTargets_FailsLoudOnMultiTargetDefault(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Targets = []Target{
 		{Name: "Default", TargetHost: "user@a"},
 		{Name: "unraid", TargetHost: "user@unraid"},
-		{Name: "DEFAULT", TargetHost: "user@b"},
-		{Name: "DeFaUlT", TargetHost: "user@c"},
 	}
 
-	targets := cfg.ResolveTargets()
-	require.Len(t, targets, 1, "every case-variant of the reserved default must be skipped")
-	assert.Equal(t, "unraid", targets[0].Name, "only the real named target survives")
+	targets, err := cfg.ResolveTargets()
+	require.Error(t, err, "multi-target config with a reserved default name must fail loud")
+	assert.Contains(t, err.Error(), "Default", "error must name the offending target")
+	assert.Nil(t, targets)
 }
 
 // TestIsDefault_CaseInsensitive verifies IsDefault treats any case-variant of the
@@ -4503,7 +4502,8 @@ func TestResolveTargets_SkipsInvalidNames(t *testing.T) {
 		{Name: "also-good", TargetHost: "user@also"},
 	}
 
-	targets := cfg.ResolveTargets()
+	targets, err := cfg.ResolveTargets()
+	require.NoError(t, err)
 	assert.Len(t, targets, 2, "should skip the invalid target")
 	assert.Equal(t, "good-target", targets[0].Name)
 	assert.Equal(t, "also-good", targets[1].Name)

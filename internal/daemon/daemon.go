@@ -655,7 +655,13 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 	// operational overrides (hooks, critical containers, deploy sync paths) hot-reload
 	// via ConfigReloader inside each reconciler.Run(). Structural target changes
 	// (adding/removing targets, changing host/paths) require a daemon restart.
-	targets := d.config.ReconcileConfig.ResolveTargets()
+	targets, targetsErr := d.config.ReconcileConfig.ResolveTargets()
+	if targetsErr != nil {
+		// Fail loud (#391): a multi-target config carrying a reserved `default`
+		// name fails the cycle instead of silently dropping the target.
+		logger.Error().Err(targetsErr).Msg("Target resolution failed, aborting reconciliation cycle")
+		ui.Error("Target resolution failed: %v", targetsErr)
+	}
 
 	logger.Info().
 		Str(log.FieldSource, source).
@@ -665,7 +671,7 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 
 	ui.Info("Starting reconciliation (source: %s, force: %t, targets: %d)", source, force, len(targets))
 
-	var firstErr error
+	firstErr := targetsErr
 	successCount := 0
 
 	// NOTE: Daemon-level drift checks (runDriftCheck), health status (HealthStatus),
