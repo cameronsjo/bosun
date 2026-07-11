@@ -266,6 +266,15 @@ The daemon serves GitHub and a generic HMAC endpoint:
 |----------|------|------------------|
 | GitHub | `/webhook/github` | `X-Hub-Signature-256` |
 | Generic | `/webhook` | `X-Signature`, or `X-Hub-Signature-256` |
+| Manual | `/webhook/manual` | `X-Signature` |
+
+**Webhook auth fails closed.** With no `WEBHOOK_SECRET` configured, all three
+endpoints reject every request with `403` and no reconcile runs — a missing
+secret is not an open door. On trusted networks, opt out explicitly with
+`BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true` (logs a security warning at startup
+and per accepted request). The Unix socket trigger (`bosun trigger`) is not
+affected. `BOSUN_LISTEN_ADDR` narrows the HTTP bind; the default stays
+all-interfaces so container-side callers reach the daemon over the docker bridge.
 
 GitLab, Gitea, and Bitbucket are **not** handled by the daemon directly. Point them
 at the standalone `bosun webhook` receiver (below), which understands each provider
@@ -282,7 +291,7 @@ All signatures are validated using HMAC-SHA256 (or SHA1 for legacy) with constan
 
 ### Webhook Setup
 
-1. **Configure a webhook secret** in your bosun environment
+1. **Configure a webhook secret** in your bosun environment (`WEBHOOK_SECRET` — required unless you explicitly opt out; see above)
 2. **Set up the webhook** in your Git provider. For GitHub, point it at `https://your-server/webhook/github`. For GitLab/Gitea/Bitbucket, run the standalone `bosun webhook` receiver and point the provider at its provider-specific path
 3. **Expose the endpoint** via Tailscale Funnel or Cloudflare Tunnel (see Radio commands)
 

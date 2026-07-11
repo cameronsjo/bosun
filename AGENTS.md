@@ -332,6 +332,8 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 | `BOSUN_TCP_ADDR` | daemon | TCP listen address (default: `127.0.0.1:9090`) |
 | `BOSUN_BEARER_TOKEN` | daemon, trigger | Bearer token for TCP auth |
 | `BOSUN_DISABLE_HTTP` | daemon | Disable HTTP webhook server |
+| `BOSUN_LISTEN_ADDR` | daemon | Host/IP the HTTP server binds to (default: empty = all interfaces — container-side callers reach bosun over the docker bridge; do not default to loopback) |
+| `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | daemon | Opt out of fail-closed webhook auth (default: `false`; strict `== "true"`). With no `WEBHOOK_SECRET`, trigger endpoints reject requests with `403` unless this is set. Logged loudly at startup and per accepted request |
 | `BOSUN_SECRETS_FILE` | daemon, render | SOPS secrets file path |
 | `BOSUN_INFRA_DIR` | daemon | Infrastructure directory |
 | `BOSUN_STATE_DIR` | daemon, reconcile | Deploy state directory |

@@ -46,6 +46,17 @@ type Config struct {
 	ReadyPath     string // Path for readiness endpoint (default: /ready)
 	WebhookSecret string // Secret for validating webhook signatures
 
+	// ListenAddr is the host/IP the HTTP server binds to (BOSUN_LISTEN_ADDR).
+	// Empty binds all interfaces — the default MUST stay all-interfaces
+	// because container-side callers (Traefik, Prometheus, Homepage) reach
+	// bosun over the docker bridge, not loopback.
+	ListenAddr string
+
+	// AllowUnauthenticatedWebhook opts out of fail-closed webhook auth (#345).
+	// When WebhookSecret is empty, trigger endpoints reject every request
+	// unless this is true (BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true, strict match).
+	AllowUnauthenticatedWebhook bool
+
 	// Polling settings
 	PollInterval time.Duration // Interval between polls (0 disables polling)
 	InitialDelay time.Duration // Delay before first poll (default: 10s)
@@ -246,6 +257,21 @@ func (d *Daemon) Run(ctx context.Context) error {
 		ui.Info("HTTP Port: %d", d.config.Port)
 	}
 	ui.Info("Poll interval: %s", d.config.PollInterval)
+
+	// Webhook auth posture (#345): fail-closed is the default. Announce the
+	// posture loudly at startup either way, so a secret-less upgrade is never
+	// a silent 403 and an opted-out daemon never hides its exposure.
+	if d.config.EnableHTTP && d.config.WebhookSecret == "" {
+		if d.config.AllowUnauthenticatedWebhook {
+			logger.Warn().
+				Msg("SECURITY: webhook endpoints accept UNAUTHENTICATED trigger requests. Reason: no webhook secret configured and BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true. Anyone who can reach the HTTP port can trigger a deploy")
+			ui.Warning("SECURITY: unauthenticated webhook triggers enabled (no secret, opt-out set)")
+		} else {
+			logger.Warn().
+				Msg("Webhook endpoints will REJECT all trigger requests, expected a webhook secret but none is configured — webhook auth fails closed. Set WEBHOOK_SECRET, or set BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true to accept unauthenticated triggers")
+			ui.Warning("Webhooks fail closed: no WEBHOOK_SECRET set, trigger requests will be rejected (403)")
+		}
+	}
 
 	// Ensure state directory exists for deploy state tracking.
 	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.StateFile != "" {
@@ -1520,6 +1546,9 @@ func ConfigFromEnv() *Config {
 		cfg.WebhookSecret = secret
 	}
 
+	// HTTP bind address (empty = all interfaces; see Config.ListenAddr).
+	cfg.ListenAddr = os.Getenv("BOSUN_LISTEN_ADDR")
+
 	if d := config.BosunEnvDuration("POLL_INTERVAL", 0); d > 0 {
 		cfg.PollInterval = d
 	}
@@ -1750,6 +1779,7 @@ func ConfigFromEnv() *Config {
 	// "yes", "1", "TRUE" etc. are rejected by design.
 	rcfg.AllowEmptyDeclaredState = os.Getenv("BOSUN_ALLOW_EMPTY_DECLARED_STATE") == "true"
 	rcfg.SkipDeployInvariant = os.Getenv("BOSUN_SKIP_DEPLOY_INVARIANT") == "true"
+	cfg.AllowUnauthenticatedWebhook = os.Getenv("BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK") == "true"
 
 	// Post-sync hooks, settle delay, deploy paths, alert flags, drift debounce, remove_orphans, and targets: load from project config, env var overrides.
 	if projectCfg, err := config.Load(); err == nil {

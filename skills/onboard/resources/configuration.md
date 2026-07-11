@@ -316,6 +316,9 @@ Used by `bosun daemon` and `bosun reconcile`:
 | `BOSUN_SECRETS_FILE` | Default secrets file for `bosun render` |
 | `BOSUN_ALLOW_EMPTY_DECLARED_STATE` | Allow reconcile to continue when the staging compose dir contains no declared services (default: `false` — strict). Set to `true` for genuinely empty repos. The dir-missing case is always fatal. |
 | `BOSUN_SKIP_DEPLOY_INVARIANT` | Bypass the post-deploy mtime + WrittenFiles invariant check (default: `false`). Set to `true` for diagnostic deploys where silent-sync failures are acceptable. Logged at `Warn` with `override=true` when enabled. |
+| `WEBHOOK_SECRET` | HMAC secret for daemon webhook endpoints. Required for webhook triggers — with no secret the endpoints fail closed (reject with `403`) |
+| `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | Opt out of fail-closed webhook auth (default: `false`; strict `== "true"` match). Accepts unauthenticated triggers on trusted networks; logs a security warning at startup and per accepted request |
+| `BOSUN_LISTEN_ADDR` | Host/IP the daemon HTTP server binds to (default: empty = all interfaces, so container-side callers like Traefik and Prometheus can reach it over the docker bridge) |
 | `SOPS_AGE_KEY_FILE` | Path to Age key file (default: `~/.config/sops/age/keys.txt`) |
 
 ## Tunnel Configuration

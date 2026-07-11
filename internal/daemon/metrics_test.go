@@ -173,7 +173,7 @@ func TestMetricsEndpointRejectsPost(t *testing.T) {
 }
 
 func TestWebhookTriggersIncrementMetric(t *testing.T) {
-	_, s := newTestDaemon(t)
+	_, s := newUnauthenticatedTestDaemon(t)
 
 	// Fire a generic webhook
 	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(`{}`))
@@ -186,7 +186,7 @@ func TestWebhookTriggersIncrementMetric(t *testing.T) {
 }
 
 func TestManualTriggerIncrementsMetric(t *testing.T) {
-	_, s := newTestDaemon(t)
+	_, s := newUnauthenticatedTestDaemon(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook/manual", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()

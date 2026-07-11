@@ -55,6 +55,16 @@ func newTestDaemon(t *testing.T) (*Daemon, *Server) {
 	return d, s
 }
 
+// newUnauthenticatedTestDaemon returns a daemon with the #345 fail-closed
+// opt-out set (BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK), preserving the legacy
+// no-secret accept behavior for handler tests that aren't about auth.
+func newUnauthenticatedTestDaemon(t *testing.T) (*Daemon, *Server) {
+	t.Helper()
+	d, s := newTestDaemon(t)
+	d.config.AllowUnauthenticatedWebhook = true
+	return d, s
+}
+
 // computeHMACSHA256 returns "sha256=<hex>" for the given body and secret.
 func computeHMACSHA256(body []byte, secret string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
@@ -138,7 +148,10 @@ func TestValidateSignature(t *testing.T) {
 	}
 }
 
-func TestValidateGitHubSignature(t *testing.T) {
+// TestValidateSignatureGitHubFormat exercises GitHub-format ("sha256=<hex>")
+// signatures through the consolidated validateSignature (the former
+// validateGitHubSignature duplicate was removed with the authorizeTrigger helper).
+func TestValidateSignatureGitHubFormat(t *testing.T) {
 	const secret = "gh-secret"
 	body := []byte(`{"ref":"refs/heads/main"}`)
 
@@ -186,7 +199,7 @@ func TestValidateGitHubSignature(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := s.validateGitHubSignature(tt.body, tt.signature)
+			got := s.validateSignature(tt.body, tt.signature)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -284,7 +297,7 @@ func TestHandleReady(t *testing.T) {
 
 func TestHandleWebhook(t *testing.T) {
 	t.Run("valid POST returns 202", func(t *testing.T) {
-		_, s := newTestDaemon(t)
+		_, s := newUnauthenticatedTestDaemon(t)
 
 		req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(`{}`))
 		w := httptest.NewRecorder()
@@ -365,7 +378,7 @@ func TestHandleWebhook(t *testing.T) {
 
 func TestHandleGitHubWebhook(t *testing.T) {
 	t.Run("ping event returns 200 pong", func(t *testing.T) {
-		_, s := newTestDaemon(t)
+		_, s := newUnauthenticatedTestDaemon(t)
 
 		req := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(`{}`))
 		req.Header.Set("X-GitHub-Event", "ping")
@@ -377,7 +390,7 @@ func TestHandleGitHubWebhook(t *testing.T) {
 	})
 
 	t.Run("push to correct branch returns 202", func(t *testing.T) {
-		_, s := newTestDaemon(t)
+		_, s := newUnauthenticatedTestDaemon(t)
 
 		payload := GitHubPushPayload{
 			Ref:   "refs/heads/main",
@@ -402,7 +415,7 @@ func TestHandleGitHubWebhook(t *testing.T) {
 	})
 
 	t.Run("push to wrong branch returns 200 ignored", func(t *testing.T) {
-		_, s := newTestDaemon(t)
+		_, s := newUnauthenticatedTestDaemon(t)
 
 		payload := GitHubPushPayload{
 			Ref:   "refs/heads/develop",
@@ -425,7 +438,7 @@ func TestHandleGitHubWebhook(t *testing.T) {
 	})
 
 	t.Run("non-push event returns 200 ignored", func(t *testing.T) {
-		_, s := newTestDaemon(t)
+		_, s := newUnauthenticatedTestDaemon(t)
 
 		req := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(`{}`))
 		req.Header.Set("X-GitHub-Event", "issues")
@@ -441,7 +454,7 @@ func TestHandleGitHubWebhook(t *testing.T) {
 	})
 
 	t.Run("invalid JSON returns 400", func(t *testing.T) {
-		_, s := newTestDaemon(t)
+		_, s := newUnauthenticatedTestDaemon(t)
 
 		req := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(`{not json`))
 		req.Header.Set("X-GitHub-Event", "push")
@@ -452,7 +465,7 @@ func TestHandleGitHubWebhook(t *testing.T) {
 	})
 
 	t.Run("POST with no event header returns ignored", func(t *testing.T) {
-		_, s := newTestDaemon(t)
+		_, s := newUnauthenticatedTestDaemon(t)
 
 		// No X-GitHub-Event header means eventType == "", which is not "ping"
 		// and not "push", so it should return 200 ignored.
@@ -530,7 +543,7 @@ func TestHandleGitHubWebhook(t *testing.T) {
 
 func TestHandleManualTrigger(t *testing.T) {
 	t.Run("POST returns 202", func(t *testing.T) {
-		_, s := newTestDaemon(t)
+		_, s := newUnauthenticatedTestDaemon(t)
 
 		req := httptest.NewRequest(http.MethodPost, "/webhook/manual", strings.NewReader(`{}`))
 		w := httptest.NewRecorder()
@@ -583,7 +596,7 @@ func TestHandleManualTrigger(t *testing.T) {
 	})
 
 	t.Run("POST with force=true body returns 202 and propagates force flag", func(t *testing.T) {
-		d, s := newTestDaemon(t)
+		d, s := newUnauthenticatedTestDaemon(t)
 
 		// Pre-lock the reconcile mutex so TriggerReconcile queues the trigger
 		// instead of executing immediately. This lets us assert on the sticky force flag.
@@ -612,7 +625,7 @@ func TestHandleManualTrigger(t *testing.T) {
 	})
 
 	t.Run("POST with empty body is backward compatible", func(t *testing.T) {
-		_, s := newTestDaemon(t)
+		_, s := newUnauthenticatedTestDaemon(t)
 
 		req := httptest.NewRequest(http.MethodPost, "/webhook/manual", strings.NewReader(""))
 		w := httptest.NewRecorder()
@@ -622,7 +635,7 @@ func TestHandleManualTrigger(t *testing.T) {
 	})
 
 	t.Run("POST with malformed JSON body degrades gracefully", func(t *testing.T) {
-		_, s := newTestDaemon(t)
+		_, s := newUnauthenticatedTestDaemon(t)
 
 		req := httptest.NewRequest(http.MethodPost, "/webhook/manual", strings.NewReader(`{not valid json`))
 		w := httptest.NewRecorder()
@@ -670,6 +683,125 @@ func TestHandleManualTrigger(t *testing.T) {
 		// Signature is valid, body is unreadable — trigger proceeds without force.
 		assert.Equal(t, http.StatusAccepted, w.Code)
 	})
+}
+
+// ---------------------------------------------------------------------------
+// #345: Fail-closed webhook authentication
+// ---------------------------------------------------------------------------
+
+// assertNoReconcileTriggered waits for any handler goroutines and asserts the
+// daemon never ran a reconcile cycle (the spy: lastReconcile stays zero).
+func assertNoReconcileTriggered(t *testing.T, d *Daemon, s *Server) {
+	t.Helper()
+	s.wg.Wait()
+	d.stateMu.RLock()
+	defer d.stateMu.RUnlock()
+	assert.True(t, d.lastReconcile.IsZero(), "reconcile must not run for a rejected trigger")
+}
+
+func TestFailClosedWebhookAuth(t *testing.T) {
+	t.Run("no secret, no opt-out: generic webhook rejected 403, no reconcile", func(t *testing.T) {
+		d, s := newTestDaemon(t)
+
+		req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(`{}`))
+		w := httptest.NewRecorder()
+		s.handleWebhook(w, req)
+
+		assert.Equal(t, http.StatusForbidden, w.Code)
+		assertNoReconcileTriggered(t, d, s)
+	})
+
+	t.Run("no secret, no opt-out: github push rejected 403, no reconcile", func(t *testing.T) {
+		d, s := newTestDaemon(t)
+
+		payload := GitHubPushPayload{Ref: "refs/heads/main", After: "abc123"}
+		payload.Pusher.Name = "tester"
+		body, err := json.Marshal(payload)
+		require.NoError(t, err)
+
+		req := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(string(body)))
+		req.Header.Set("X-GitHub-Event", "push")
+		w := httptest.NewRecorder()
+		s.handleGitHubWebhook(w, req)
+
+		assert.Equal(t, http.StatusForbidden, w.Code)
+		assertNoReconcileTriggered(t, d, s)
+	})
+
+	t.Run("no secret, no opt-out: github ping rejected 403", func(t *testing.T) {
+		_, s := newTestDaemon(t)
+
+		req := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(`{}`))
+		req.Header.Set("X-GitHub-Event", "ping")
+		w := httptest.NewRecorder()
+		s.handleGitHubWebhook(w, req)
+
+		assert.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("no secret, no opt-out: manual trigger rejected 403, no reconcile", func(t *testing.T) {
+		d, s := newTestDaemon(t)
+
+		req := httptest.NewRequest(http.MethodPost, "/webhook/manual", strings.NewReader(`{"force":true}`))
+		w := httptest.NewRecorder()
+		s.handleManualTrigger(w, req)
+
+		assert.Equal(t, http.StatusForbidden, w.Code)
+		assertNoReconcileTriggered(t, d, s)
+	})
+
+	t.Run("rejection writes exactly one response", func(t *testing.T) {
+		_, s := newTestDaemon(t)
+
+		req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(`{}`))
+		w := httptest.NewRecorder()
+		s.handleWebhook(w, req)
+
+		// The helper writes the 403; the handler must not append its own
+		// "accepted" JSON after the early return.
+		assert.Equal(t, http.StatusForbidden, w.Code)
+		assert.Equal(t, "Webhook authentication not configured\n", w.Body.String())
+	})
+
+	t.Run("opt-out set: unauthenticated trigger accepted", func(t *testing.T) {
+		_, s := newUnauthenticatedTestDaemon(t)
+
+		req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(`{}`))
+		w := httptest.NewRecorder()
+		s.handleWebhook(w, req)
+
+		assert.Equal(t, http.StatusAccepted, w.Code)
+	})
+
+	t.Run("opt-out does not bypass a configured secret", func(t *testing.T) {
+		d, s := newUnauthenticatedTestDaemon(t)
+		d.config.WebhookSecret = "still-required"
+
+		req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(`{}`))
+		w := httptest.NewRecorder()
+		s.handleWebhook(w, req)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+	})
+}
+
+func TestListenAddr(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		port int
+		want string
+	}{
+		{name: "default binds all interfaces", host: "", port: 8080, want: ":8080"},
+		{name: "explicit BOSUN_LISTEN_ADDR narrows the bind", host: "127.0.0.1", port: 8080, want: "127.0.0.1:8080"},
+		{name: "IPv6 host is bracketed", host: "::1", port: 9090, want: "[::1]:9090"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, listenAddr(tt.host, tt.port))
+		})
+	}
 }
 
 func TestHandleWidget(t *testing.T) {

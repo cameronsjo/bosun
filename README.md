@@ -247,7 +247,15 @@ The daemon provides:
 | `BOSUN_REPO_BRANCH` | Branch to track | `main` |
 | `BOSUN_POLL_INTERVAL` | Poll interval in seconds | `3600` |
 | `BOSUN_SOCKET_PATH` | Unix socket path | `/var/run/bosun.sock` |
-| `WEBHOOK_SECRET` | Webhook signature validation | Optional |
+| `WEBHOOK_SECRET` | Webhook signature validation | Required for webhook triggers (fail-closed) |
+| `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | Accept unauthenticated webhook triggers (`true` only; logs a security warning per request) | `false` |
+| `BOSUN_LISTEN_ADDR` | Host/IP the HTTP server binds to | All interfaces |
+
+> **Webhook auth fails closed.** With no `WEBHOOK_SECRET` set, the daemon's
+> HTTP trigger endpoints (`/webhook`, `/webhook/github`, `/webhook/manual`)
+> reject every request with `403`. To restore the old accept-anything behavior
+> on a trusted network, set `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true`
+> explicitly. The Unix socket trigger (`bosun trigger`) is unaffected.
 
 ## Configuration
 

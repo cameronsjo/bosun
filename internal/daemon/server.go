@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -77,9 +79,18 @@ func NewServer(d *Daemon) *Server {
 	return s
 }
 
-// Start starts the HTTP server on the given port.
+// listenAddr composes the HTTP server bind address. An empty host binds all
+// interfaces — the default MUST stay all-interfaces because container-side
+// callers (Traefik, Prometheus, Homepage) reach bosun over the docker bridge,
+// not loopback. Operators narrow the bind with BOSUN_LISTEN_ADDR.
+func listenAddr(host string, port int) string {
+	return net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+// Start starts the HTTP server on the given port, bound to the configured
+// listen address (all interfaces when unset).
 func (s *Server) Start(port int) error {
-	s.server.Addr = fmt.Sprintf(":%d", port)
+	s.server.Addr = listenAddr(s.daemon.config.ListenAddr, port)
 	ui.Info("HTTP server listening on %s", s.server.Addr)
 	return s.server.ListenAndServe()
 }
@@ -219,32 +230,18 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	logger.Debug().Msg("Preparing to process generic webhook request")
 
-	// Validate webhook secret if configured
-	if s.daemon.config.WebhookSecret != "" {
-		sig := r.Header.Get("X-Signature")
-		if sig == "" {
-			sig = r.Header.Get("X-Hub-Signature-256")
-		}
+	// Limit body size to prevent DoS
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
+	if err != nil {
+		logger.Warn().
+			Err(err).
+			Msg("Failed to read webhook body")
+		http.Error(w, "Failed to read body", http.StatusBadRequest)
+		return
+	}
 
-		// Limit body size to prevent DoS
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
-		if err != nil {
-			logger.Warn().
-				Err(err).
-				Msg("Failed to read webhook body")
-			http.Error(w, "Failed to read body", http.StatusBadRequest)
-			return
-		}
-
-		logger.Debug().Msg("Validating webhook signature")
-		if !s.validateSignature(body, sig) {
-			logger.Warn().
-				Str("remote_addr", r.RemoteAddr).
-				Msg("Webhook signature validation failed")
-			http.Error(w, "Invalid signature", http.StatusUnauthorized)
-			return
-		}
-		logger.Debug().Msg("Webhook signature validation passed")
+	if !s.authorizeTrigger(w, r, body, schemeGeneric) {
+		return
 	}
 
 	logger.Info().
@@ -312,22 +309,11 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate GitHub signature
+	// Authorize before any event dispatch — even ping/ignored events reveal
+	// endpoint liveness, so fail-closed covers them too.
 	eventType := r.Header.Get("X-GitHub-Event")
-	if s.daemon.config.WebhookSecret != "" {
-		sig := r.Header.Get("X-Hub-Signature-256")
-		logger.Debug().
-			Str("event_type", eventType).
-			Msg("Validating GitHub signature")
-		if !s.validateGitHubSignature(body, sig) {
-			logger.Warn().
-				Str("remote_addr", r.RemoteAddr).
-				Str("event_type", eventType).
-				Msg("GitHub webhook signature validation failed")
-			http.Error(w, "Invalid signature", http.StatusUnauthorized)
-			return
-		}
-		logger.Debug().Msg("GitHub signature validation passed")
+	if !s.authorizeTrigger(w, r, body, schemeGitHub) {
+		return
 	}
 
 	// Check event type
@@ -431,52 +417,29 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 
 	var req TriggerRequest
 
-	// Validate signature if configured
-	if s.daemon.config.WebhookSecret != "" {
-		// Limit body size to prevent DoS; bytes needed for both HMAC and JSON decode.
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
+	// Limit body size to prevent DoS; bytes needed for both HMAC and JSON decode.
+	var body []byte
+	if r.Body != nil {
+		var err error
+		body, err = io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
 		if err != nil {
 			http.Error(w, "Failed to read body", http.StatusBadRequest)
 			return
 		}
+	}
 
-		sig := r.Header.Get("X-Signature")
-		if !s.validateSignature(body, sig) {
-			// Log security event for failed signature validation
-			secLogger := log.ComponentCtx(r.Context(), log.ComponentHTTP)
-			secLogger.Warn().
-				Str("remote_addr", r.RemoteAddr).
-				Str("endpoint", r.URL.Path).
-				Msg("Manual trigger signature validation failed")
-			http.Error(w, "Invalid signature", http.StatusUnauthorized)
-			return
-		}
+	if !s.authorizeTrigger(w, r, body, schemeManual) {
+		return
+	}
 
-		// Decode optional JSON body from the already-read bytes.
-		if len(body) > 0 {
-			if err := json.Unmarshal(body, &req); err != nil {
-				parseLogger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
-				parseLogger.Debug().
-					Err(err).
-					Str(log.FieldSource, log.SourceManual).
-					Msg("Failed to parse trigger request body, proceeding without force flag")
-			}
-		}
-	} else if r.Body != nil {
-		// No secret configured — read and decode body directly.
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
-		if err != nil {
-			http.Error(w, "Failed to read body", http.StatusBadRequest)
-			return
-		}
-		if len(body) > 0 {
-			if err := json.Unmarshal(body, &req); err != nil {
-				parseLogger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
-				parseLogger.Debug().
-					Err(err).
-					Str(log.FieldSource, log.SourceManual).
-					Msg("Failed to parse trigger request body, proceeding without force flag")
-			}
+	// Decode optional JSON body from the already-read bytes.
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			parseLogger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
+			parseLogger.Debug().
+				Err(err).
+				Str(log.FieldSource, log.SourceManual).
+				Msg("Failed to parse trigger request body, proceeding without force flag")
 		}
 	}
 
@@ -557,7 +520,77 @@ func (s *Server) metricsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// validateSignature validates a generic HMAC-SHA256 signature.
+// triggerScheme identifies which signature header a trigger endpoint expects.
+type triggerScheme int
+
+const (
+	// schemeGeneric accepts X-Signature or X-Hub-Signature-256 (the generic
+	// /webhook endpoint serves forwarders that use either convention).
+	schemeGeneric triggerScheme = iota
+	// schemeGitHub accepts only X-Hub-Signature-256 (GitHub's convention).
+	schemeGitHub
+	// schemeManual accepts only X-Signature (bosun's own trigger convention).
+	schemeManual
+)
+
+// authorizeTrigger enforces webhook authentication for a trigger request.
+// On failure it writes the 401/403 response itself and returns false — the
+// caller MUST NOT write a second response (`if !s.authorizeTrigger(...) { return }`).
+// On success it writes nothing and returns true.
+//
+// With no webhook secret configured the endpoints fail closed (#345): every
+// trigger request is rejected with 403 unless the operator explicitly opted
+// out via BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true, in which case each
+// accepted unauthenticated request logs a security warning.
+func (s *Server) authorizeTrigger(w http.ResponseWriter, r *http.Request, body []byte, scheme triggerScheme) bool {
+	logger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
+
+	if s.daemon.config.WebhookSecret == "" {
+		if s.daemon.config.AllowUnauthenticatedWebhook {
+			logger.Warn().
+				Str("remote_addr", r.RemoteAddr).
+				Str("endpoint", r.URL.Path).
+				Msg("SECURITY: accepting unauthenticated trigger request. Reason: no webhook secret configured and BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true")
+			return true
+		}
+		logger.Warn().
+			Str("remote_addr", r.RemoteAddr).
+			Str("endpoint", r.URL.Path).
+			Msg("Rejecting trigger request, expected a configured webhook secret but none is set. Set WEBHOOK_SECRET, or set BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true to accept unauthenticated triggers")
+		http.Error(w, "Webhook authentication not configured", http.StatusForbidden)
+		return false
+	}
+
+	var sig string
+	switch scheme {
+	case schemeGitHub:
+		sig = r.Header.Get("X-Hub-Signature-256")
+	case schemeManual:
+		sig = r.Header.Get("X-Signature")
+	default:
+		sig = r.Header.Get("X-Signature")
+		if sig == "" {
+			sig = r.Header.Get("X-Hub-Signature-256")
+		}
+	}
+
+	if !s.validateSignature(body, sig) {
+		logger.Warn().
+			Str("remote_addr", r.RemoteAddr).
+			Str("endpoint", r.URL.Path).
+			Msg("Rejecting trigger request. Reason: HMAC signature validation failed")
+		http.Error(w, "Invalid signature", http.StatusUnauthorized)
+		return false
+	}
+
+	logger.Debug().
+		Str("endpoint", r.URL.Path).
+		Msg("Trigger request signature validated")
+	return true
+}
+
+// validateSignature validates an HMAC-SHA256 signature (with or without the
+// "sha256=" prefix — GitHub and generic forwarders both use this format).
 func (s *Server) validateSignature(body []byte, signature string) bool {
 	if signature == "" {
 		return false
@@ -571,22 +604,6 @@ func (s *Server) validateSignature(body []byte, signature string) bool {
 	expectedSig := hex.EncodeToString(expected.Sum(nil))
 
 	return hmac.Equal([]byte(signature), []byte(expectedSig))
-}
-
-// validateGitHubSignature validates a GitHub webhook signature.
-func (s *Server) validateGitHubSignature(body []byte, signature string) bool {
-	if signature == "" {
-		return false
-	}
-
-	// GitHub uses "sha256=<hex>" format
-	signature = strings.TrimPrefix(signature, "sha256=")
-
-	mac := hmac.New(sha256.New, []byte(s.daemon.config.WebhookSecret))
-	mac.Write(body)
-	expectedMAC := hex.EncodeToString(mac.Sum(nil))
-
-	return hmac.Equal([]byte(signature), []byte(expectedMAC))
 }
 
 // GitHubPushPayload represents a GitHub push webhook payload.
