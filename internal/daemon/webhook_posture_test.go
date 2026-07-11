@@ -15,36 +15,64 @@ import (
 )
 
 func TestWarnWebhookAuthPosture(t *testing.T) {
-	posture := func(t *testing.T, mutate func(*Config)) string {
-		t.Helper()
-		d, _ := newTestDaemon(t)
-		d.config.EnableHTTP = true
-		mutate(d.config)
-		var buf bytes.Buffer
-		d.warnWebhookAuthPosture(zerolog.New(&buf))
-		return buf.String()
+	tests := []struct {
+		name         string
+		mutate       func(*Config)
+		wantContains []string // empty = the posture must be silent
+	}{
+		{
+			name:         "fail-closed posture warns loudly",
+			mutate:       func(*Config) {},
+			wantContains: []string{"REJECT all trigger requests", "BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK"},
+		},
+		{
+			name:         "opt-out posture names the exposure",
+			mutate:       func(c *Config) { c.AllowUnauthenticatedWebhook = true },
+			wantContains: []string{"UNAUTHENTICATED trigger requests"},
+		},
+		{
+			name:   "configured secret is silent",
+			mutate: func(c *Config) { c.WebhookSecret = "s3cret" },
+		},
+		{
+			name:   "disabled HTTP is silent",
+			mutate: func(c *Config) { c.EnableHTTP = false },
+		},
 	}
 
-	t.Run("fail-closed posture warns loudly", func(t *testing.T) {
-		out := posture(t, func(*Config) {})
-		assert.Contains(t, out, "REJECT all trigger requests")
-		assert.Contains(t, out, "BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK")
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, _ := newTestDaemon(t)
+			d.config.EnableHTTP = true
+			tt.mutate(d.config)
 
-	t.Run("opt-out posture names the exposure", func(t *testing.T) {
-		out := posture(t, func(c *Config) { c.AllowUnauthenticatedWebhook = true })
-		assert.Contains(t, out, "UNAUTHENTICATED trigger requests")
-	})
+			var buf bytes.Buffer
+			d.warnWebhookAuthPosture(zerolog.New(&buf))
 
-	t.Run("configured secret is silent", func(t *testing.T) {
-		out := posture(t, func(c *Config) { c.WebhookSecret = "s3cret" })
-		assert.Empty(t, out)
-	})
+			if len(tt.wantContains) == 0 {
+				assert.Empty(t, buf.String())
+				return
+			}
+			for _, want := range tt.wantContains {
+				assert.Contains(t, buf.String(), want)
+			}
+		})
+	}
+}
 
-	t.Run("disabled HTTP is silent", func(t *testing.T) {
-		out := posture(t, func(c *Config) { c.EnableHTTP = false })
-		assert.Empty(t, out)
-	})
+// An unknown triggerScheme must fail closed (500), never inherit the generic
+// scheme's broader two-header policy — the switch is exhaustive by contract.
+func TestAuthorizeTriggerUnknownSchemeFailsClosed(t *testing.T) {
+	d, s := newTestDaemon(t)
+	d.config.WebhookSecret = "s3cret"
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", nil)
+	w := httptest.NewRecorder()
+
+	ok := s.authorizeTrigger(w, req, nil, triggerScheme(99))
+
+	assert.False(t, ok)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
 // errReader forces the handlers' body-read error branches.

@@ -289,12 +289,26 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 		return err
 	}
 
-	// Create temp directory on remote for atomic deployment
-	// Use unique name based on target to avoid collisions
-	tmpDirName := fmt.Sprintf(".deploy-tmp-%d", time.Now().UnixNano())
-	tmpDir := filepath.Join(targetParent, tmpDirName)
-
 	deployErr := retryWithBackoff(ctx, DefaultMaxRetries, func() error {
+		// A FRESH staging dir per attempt (#342): reusing one temp dir across
+		// retries would extract the new archive over a partial leftover when
+		// the prior attempt's cleanup failed — files deleted from the source
+		// could survive and be promoted to the live target.
+		tmpDir := filepath.Join(targetParent, fmt.Sprintf(".deploy-tmp-%d", time.Now().UnixNano()))
+		cleanupTmp := func(reason string) {
+			if err := exec.CommandContext(ctx, "ssh", targetHost, "rm", "-rf", tmpDir).Run(); err != nil {
+				// Best-effort by design: the failure that got us here often
+				// means the host is unreachable, so cleanup fails too. The
+				// next attempt uses a fresh dir; the leftover is orphaned,
+				// not overlaid (#342) — but say so instead of swallowing it.
+				logger.Warn().
+					Err(err).
+					Str(log.FieldTarget, targetHost).
+					Str(log.FieldPath, tmpDir).
+					Str("reason", reason).
+					Msg("Failed to clean up staging temp dir on remote, leaving orphan behind")
+			}
+		}
 		// Heal any interrupted swap from a prior run before staging this one:
 		// promote the newest retained tree when the target is missing, then
 		// clean orphaned .bosun-old.<ts> siblings (#343 crash recovery).
@@ -360,12 +374,11 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 		sshErr := sshCmd.Wait()
 
 		if tarErr != nil {
-			// Cleanup temp dir on failure
-			_ = exec.CommandContext(ctx, "ssh", targetHost, "rm", "-rf", tmpDir).Run()
+			cleanupTmp("tar_failed")
 			return fmt.Errorf("tar failed: %w: %s", tarErr, tarStderr.String())
 		}
 		if sshErr != nil {
-			_ = exec.CommandContext(ctx, "ssh", targetHost, "rm", "-rf", tmpDir).Run()
+			cleanupTmp("ssh_extract_failed")
 			if ctx.Err() == context.DeadlineExceeded {
 				return fmt.Errorf("ssh timed out after %v", RemoteDeployTimeout)
 			}
@@ -388,9 +401,9 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 		swapCmd.Stderr = &swapStderr
 
 		if err := swapCmd.Run(); err != nil {
-			// Try to cleanup temp dir; the swap's rollback branch already
-			// restored the old target (or the next attempt's recovery will).
-			_ = exec.CommandContext(ctx, "ssh", targetHost, "rm", "-rf", tmpDir).Run()
+			// The swap's rollback branch already restored the old target (or
+			// the next attempt's recovery will); the staging dir is disposable.
+			cleanupTmp("swap_failed")
 			return fmt.Errorf("swap staged tree into %s failed, old tree retained or restored: %w: %s", targetDir, err, swapStderr.String())
 		}
 		logger.Info().

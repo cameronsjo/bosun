@@ -422,133 +422,129 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 
 // #390: the cloned repo's project_name must reach the default-target
 // reconciler (config AND the live deploy ops) before the first deploy —
-// a project-less `docker compose up` collides containers.
+// a project-less `docker compose up` collides containers. Each case declares
+// the reconciler's starting config, the reloaded repo config, and the
+// expected project_name on the config and (when non-empty) the deploy ops.
 func TestReloadProjectConfig_ProjectName(t *testing.T) {
-	t.Run("root-level project_name adopted for the default target", func(t *testing.T) {
-		cfg := &Config{TargetName: DefaultTargetName}
-		name := "homelab"
-		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
-			return &ReloadedConfig{ProjectName: &name}, nil
-		}
-		r := NewReconciler(cfg)
+	strPtr := func(s string) *string { return &s }
 
-		r.reloadProjectConfig()
-
-		assert.Equal(t, "homelab", r.config.ProjectName)
-		assert.Equal(t, "homelab", r.deploy.ProjectName, "reloaded project_name must reach the live deploy ops, like RemoveOrphans")
-	})
-
-	t.Run("empty TargetName counts as the default target", func(t *testing.T) {
-		cfg := &Config{}
-		name := "homelab"
-		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
-			return &ReloadedConfig{ProjectName: &name}, nil
-		}
-		r := NewReconciler(cfg)
-
-		r.reloadProjectConfig()
-
-		assert.Equal(t, "homelab", r.config.ProjectName)
-	})
-
-	t.Run("lone default target's project_name wins over root-level", func(t *testing.T) {
-		cfg := &Config{TargetName: DefaultTargetName}
-		root := "root-project"
-		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
-			return &ReloadedConfig{
-				ProjectName: &root,
+	tests := []struct {
+		name       string
+		cfg        *Config
+		reloaded   *ReloadedConfig
+		want       string
+		wantDeploy string // "" = not asserted
+		reason     string
+	}{
+		{
+			name:       "root-level project_name adopted for the default target",
+			cfg:        &Config{TargetName: DefaultTargetName},
+			reloaded:   &ReloadedConfig{ProjectName: strPtr("homelab")},
+			want:       "homelab",
+			wantDeploy: "homelab",
+			reason:     "reloaded project_name must reach the live deploy ops, like RemoveOrphans",
+		},
+		{
+			name:     "empty TargetName counts as the default target",
+			cfg:      &Config{},
+			reloaded: &ReloadedConfig{ProjectName: strPtr("homelab")},
+			want:     "homelab",
+		},
+		{
+			name: "lone default target's project_name wins over root-level",
+			cfg:  &Config{TargetName: DefaultTargetName},
+			reloaded: &ReloadedConfig{
+				ProjectName: strPtr("root-project"),
 				Targets:     []Target{{Name: "default", ProjectName: "target-project"}},
-			}, nil
-		}
-		r := NewReconciler(cfg)
-
-		r.reloadProjectConfig()
-
-		assert.Equal(t, "target-project", r.config.ProjectName)
-		assert.Equal(t, "target-project", r.deploy.ProjectName)
-	})
-
-	t.Run("named target adopts its own reloaded project_name, not root-level", func(t *testing.T) {
-		cfg := &Config{TargetName: "unraid", ProjectName: "startup-value"}
-		root := "root-project"
-		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
-			return &ReloadedConfig{
-				ProjectName: &root,
+			},
+			want:       "target-project",
+			wantDeploy: "target-project",
+		},
+		{
+			name: "named target adopts its own reloaded project_name, not root-level",
+			cfg:  &Config{TargetName: "unraid", ProjectName: "startup-value"},
+			reloaded: &ReloadedConfig{
+				ProjectName: strPtr("root-project"),
 				Targets:     []Target{{Name: "unraid", ProjectName: "unraid-project"}},
-			}, nil
-		}
-		r := NewReconciler(cfg)
-
-		r.reloadProjectConfig()
-
-		assert.Equal(t, "unraid-project", r.config.ProjectName, "named target adopts its own override")
-	})
-
-	t.Run("env-provided targets are never overwritten by the repo", func(t *testing.T) {
-		cfg := &Config{
-			TargetName:     DefaultTargetName,
-			ProjectName:    "env-project",
-			TargetsFromEnv: true,
-		}
-		root := "repo-project"
-		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
-			return &ReloadedConfig{
-				ProjectName: &root,
+			},
+			want:   "unraid-project",
+			reason: "named target adopts its own override",
+		},
+		{
+			name: "env-provided targets are never overwritten by the repo",
+			cfg: &Config{
+				TargetName:     DefaultTargetName,
+				ProjectName:    "env-project",
+				TargetsFromEnv: true,
+			},
+			reloaded: &ReloadedConfig{
+				ProjectName: strPtr("repo-project"),
 				Targets:     []Target{{Name: "default", ProjectName: "repo-target-project"}},
-			}, nil
-		}
-		r := NewReconciler(cfg)
-
-		r.reloadProjectConfig()
-
-		assert.Equal(t, "env-project", r.config.ProjectName, "BOSUN_TARGETS-provided config must win over the repo")
-	})
-
-	t.Run("empty reloaded project_name leaves the current value", func(t *testing.T) {
-		cfg := &Config{TargetName: DefaultTargetName, ProjectName: "keep-me"}
-		empty := ""
-		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
-			return &ReloadedConfig{ProjectName: &empty}, nil
-		}
-		r := NewReconciler(cfg)
-
-		r.reloadProjectConfig()
-
-		assert.Equal(t, "keep-me", r.config.ProjectName)
-	})
-
-	t.Run("reloaded multi-target list with a default is ignored with a warning, not adopted", func(t *testing.T) {
-		cfg := &Config{TargetName: DefaultTargetName, ProjectName: "keep-me"}
-		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
-			return &ReloadedConfig{
+			},
+			want:   "env-project",
+			reason: "BOSUN_TARGETS-provided config must win over the repo",
+		},
+		{
+			name:     "empty reloaded project_name leaves the current value",
+			cfg:      &Config{TargetName: DefaultTargetName, ProjectName: "keep-me"},
+			reloaded: &ReloadedConfig{ProjectName: strPtr("")},
+			want:     "keep-me",
+		},
+		{
+			name: "default target ignores a reloaded multi-target list carrying a default",
+			cfg:  &Config{TargetName: DefaultTargetName, ProjectName: "keep-me"},
+			reloaded: &ReloadedConfig{
 				Targets: []Target{
 					{Name: "default", ProjectName: "poisoned"},
 					{Name: "unraid", ProjectName: "other"},
 				},
-			}, nil
-		}
-		r := NewReconciler(cfg)
+			},
+			want:   "keep-me",
+			reason: "the misconfiguration ResolveTargets fails loud on at startup must not silently apply during reload (#391)",
+		},
+		{
+			name: "named target also ignores a reloaded list poisoned by a default",
+			cfg:  &Config{TargetName: "unraid", ProjectName: "keep-me"},
+			reloaded: &ReloadedConfig{
+				Targets: []Target{
+					{Name: "unraid", ProjectName: "poisoned"},
+					{Name: "default", ProjectName: "other"},
+				},
+			},
+			want:   "keep-me",
+			reason: "startup would reject the whole config, so reload must not half-apply it to named targets either",
+		},
+		{
+			name:     "unchanged project_name is a no-op",
+			cfg:      &Config{TargetName: DefaultTargetName, ProjectName: "same"},
+			reloaded: &ReloadedConfig{ProjectName: strPtr("same")},
+			want:     "same",
+		},
+	}
 
-		r.reloadProjectConfig()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+				return tt.reloaded, nil
+			}
+			r := NewReconciler(tt.cfg)
 
-		// The misconfiguration ResolveTargets fails loud on at startup must not
-		// silently apply overrides during reload either (#391).
-		assert.Equal(t, "keep-me", r.config.ProjectName)
-	})
+			r.reloadProjectConfig()
 
-	t.Run("unchanged project_name is a no-op", func(t *testing.T) {
-		cfg := &Config{TargetName: DefaultTargetName, ProjectName: "same"}
-		name := "same"
-		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
-			return &ReloadedConfig{ProjectName: &name}, nil
-		}
-		r := NewReconciler(cfg)
+			assert.Equal(t, tt.want, r.config.ProjectName, tt.reason)
+			if tt.wantDeploy != "" {
+				assert.Equal(t, tt.wantDeploy, r.deploy.ProjectName, "reloaded value must be pushed onto the live deploy ops")
+			}
+		})
+	}
+}
 
-		r.reloadProjectConfig()
-
-		assert.Equal(t, "same", r.config.ProjectName)
-		assert.False(t, r.setProjectName("same"), "setting the identical value must report no change")
-	})
+// setProjectName reports no change when the value is already current, so a
+// reload cycle carrying the same name never flags a spurious config change.
+func TestSetProjectNameIdenticalValueIsNoOp(t *testing.T) {
+	r := NewReconciler(&Config{ProjectName: "same"})
+	assert.False(t, r.setProjectName("same"))
+	assert.True(t, r.setProjectName("different"))
 }
 
 func TestExecutePostSyncHooks_DiffFilesError_FiresAllHooks(t *testing.T) {
@@ -4524,23 +4520,8 @@ func TestResolveTargets_RejectsDuplicateNames(t *testing.T) {
 	assert.Equal(t, "beta", targets[1].Name)
 }
 
-// TestResolveTargets_FailsLoudOnMultiTargetDefault verifies that a
-// multi-target config carrying a target named the reserved "default" (any case
-// variant — #228 casefold) is a hard error rather than the former
-// skip-with-warn (#391). Silently dropping the target left its project_name
-// unhonored and collided deploys; the error names the offending target.
-func TestResolveTargets_FailsLoudOnMultiTargetDefault(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.Targets = []Target{
-		{Name: "Default", TargetHost: "user@a"},
-		{Name: "unraid", TargetHost: "user@unraid"},
-	}
-
-	targets, err := cfg.ResolveTargets()
-	require.Error(t, err, "multi-target config with a reserved default name must fail loud")
-	assert.Contains(t, err.Error(), "Default", "error must name the offending target")
-	assert.Nil(t, targets)
-}
+// Multi-target-with-default fail-loud coverage lives in
+// TestResolveTargets_MultiTargetDefaultFailsLoud (target_test.go).
 
 // TestIsDefault_CaseInsensitive verifies IsDefault treats any case-variant of the
 // reserved name as the default, so ConfigForTarget keeps the base state/staging/

@@ -108,9 +108,17 @@ func (r *Reconciler) reloadProjectConfig() {
 
 	// Apply per-target operational overrides (hooks, critical containers, sync
 	// paths, project_name). Named targets match by name; the default target
-	// adopts a lone `default` target's overrides (#390/#391).
+	// adopts a lone `default` target's overrides (#390/#391). An invalid list —
+	// multi-target carrying a reserved `default` name, the misconfiguration
+	// #391 fails loud on at startup — skips ALL overrides (named targets
+	// included: startup would reject the whole config, so reload must not
+	// half-apply it) and warns, since the reload path can't restart the daemon.
 	if reloaded.Targets != nil {
-		if !isDefaultTarget {
+		if offender := multiTargetDefaultName(reloaded.Targets); offender != "" {
+			logger.Warn().
+				Str("target", offender).
+				Msg("Reloaded config declares a reserved default-named target in a multi-target list, expected every target to carry a distinct name — all target overrides are ignored (#391); rename it or make it the only target")
+		} else if !isDefaultTarget {
 			for _, t := range reloaded.Targets {
 				if t.Name == r.config.TargetName {
 					changed = applyTargetOverrides(r, t) || changed
@@ -119,18 +127,6 @@ func (r *Reconciler) reloadProjectConfig() {
 			}
 		} else if len(reloaded.Targets) == 1 && reloaded.Targets[0].IsDefault() {
 			changed = applyTargetOverrides(r, reloaded.Targets[0]) || changed
-		} else {
-			// A pushed multi-target config carrying a `default` target is the
-			// misconfiguration #391 fails loud on at startup — the reload path
-			// can't restart the daemon, so it must at least not be silent.
-			for _, t := range reloaded.Targets {
-				if t.IsDefault() {
-					logger.Warn().
-						Str("target", t.Name).
-						Msg("Reloaded config declares a reserved default-named target in a multi-target list, expected every target to carry a distinct name — its overrides are ignored (#391); rename it or make it the only target")
-					break
-				}
-			}
 		}
 	}
 
@@ -179,6 +175,21 @@ func applyTargetOverrides(r *Reconciler, t Target) bool {
 	}
 
 	return changed
+}
+
+// multiTargetDefaultName returns the name of a reserved default-named target
+// inside a multi-target list, or "" when the list is valid. Mirrors the
+// startup rejection in ResolveTargets (#391) for the hot-reload path.
+func multiTargetDefaultName(targets []Target) string {
+	if len(targets) <= 1 {
+		return ""
+	}
+	for _, t := range targets {
+		if t.IsDefault() {
+			return t.Name
+		}
+	}
+	return ""
 }
 
 // setProjectName updates the compose project name on the config and pushes it

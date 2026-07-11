@@ -40,10 +40,10 @@ issues for the tightest title/label siblings of A/B/C.
 | #390 (targets never read) | **PARTIALLY ADDRESSED** | `ConfigFromEnv` now adopts `projectCfg.Targets()` behind a three-conjunct guard (`!targetsFromEnv && len(rcfg.Targets)==0 && len(projectCfg.Targets())>0`, daemon.go:1763-64), so "env-only" is **stale**. BUT the collision root persists: `applyTargetOverrides` (config_reload.go:114) overlays only 4 operational fields and only for **named** targets — **never `ProjectName`, never the default**. |
 
 **In scope**: sub-clusters A, B, C (anchors + ≤8 honorable mentions below). **Deferred (out of
-scope, ~82 issues)**: the rollback-FAMILY siblings C deliberately leaves for later (#331, #332,
-#335, #336 — see sub-cluster C), drift/breaker (#347-#350, #357-#358), backup (#243-#244,
-#352-#353), sops/template (#245-#247, #278, #292-#294), fileutil (#281-#282, #338, #351). Do
-not fix them here.
+scope, ~82 issues)**: the rollback-FAMILY siblings C deliberately leaves for later
+(#331, #332, #335, #336 — see sub-cluster C), drift/breaker (#347-#350, #357-#358), backup
+(#243-#244, #352-#353), sops/template (#245-#247, #278, #292-#294), fileutil
+(#281-#282, #338, #351). Do not fix them here.
 
 ---
 
@@ -295,6 +295,6 @@ Panel: 2× adversarial plan-reviewer lenses (conflict/drift, underspecification)
 red-team seat + owner-lens review — ~40 findings (majority live-state confirmations), all actionable folded, 0
 declined. Verdicts: SOUND-WITH-FIXES ×3 / APPROVE-WITH-CHANGES. Load-bearing rulings folded:
 bind default NOT flipped (knob-only — the flip was the sole brick vector; fail-closed auth
-closes the hole); daemon.go frozen to Group B (preserves parallel worktrees); #343
-rollback-nesting defect + crash recovery + #402 FUSE idiom; #391 ratified honor-lone-default;
-#334 reframed as swap-window hardening.
+closes the hole); daemon.go frozen to Group B (preserves parallel worktrees); the #343
+rollback-nesting defect + crash recovery + #402 FUSE idiom; #391 ratified
+honor-lone-default; and #334 reframed as swap-window hardening.

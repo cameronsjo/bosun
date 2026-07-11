@@ -567,11 +567,20 @@ func (s *Server) authorizeTrigger(w http.ResponseWriter, r *http.Request, body [
 		sig = r.Header.Get("X-Hub-Signature-256")
 	case schemeManual:
 		sig = r.Header.Get("X-Signature")
-	default:
+	case schemeGeneric:
 		sig = r.Header.Get("X-Signature")
 		if sig == "" {
 			sig = r.Header.Get("X-Hub-Signature-256")
 		}
+	default:
+		// Fail closed on an unknown scheme: a future variant must pick its
+		// header policy explicitly, never inherit generic's broader one.
+		logger.Error().
+			Int("scheme", int(scheme)).
+			Str("endpoint", r.URL.Path).
+			Msg("Rejecting trigger request, expected a known trigger scheme but got an unhandled variant")
+		http.Error(w, "Unsupported trigger authentication scheme", http.StatusInternalServerError)
+		return false
 	}
 
 	if !s.validateSignature(body, sig) {

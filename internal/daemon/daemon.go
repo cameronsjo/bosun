@@ -71,11 +71,11 @@ type Config struct {
 	APITimeout       time.Duration // Timeout for API handler requests (default: 30s)
 
 	// Drift check settings
-	DriftInterval          time.Duration // Interval for periodic drift checks (0 disables, default: 5m)
-	DriftAlertCooldown     time.Duration // Cooldown between repeated drift alerts per item (default: 1h)
+	DriftInterval         time.Duration                        // Interval for periodic drift checks (0 disables, default: 5m)
+	DriftAlertCooldown    time.Duration                        // Cooldown between repeated drift alerts per item (default: 1h)
 	DriftAlertDebounce    reconcile.ConfigField[time.Duration] // Debounce window before first drift alert fires (0 = disabled, default: 0)
-	DriftResolveAlerts    bool                                // Send "drift resolved" alerts (default: true)
-	DriftSelfHeal         reconcile.ConfigField[bool]         // Trigger reconciliation when drift detected (default: false)
+	DriftResolveAlerts    bool                                 // Send "drift resolved" alerts (default: true)
+	DriftSelfHeal         reconcile.ConfigField[bool]          // Trigger reconciliation when drift detected (default: false)
 	DriftSelfHealCooldown reconcile.ConfigField[time.Duration] // Minimum interval between self-heal reconciliations (default: 15m)
 
 	// Content-hash sync settings
@@ -94,25 +94,25 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
-		SocketPath:       DefaultSocketPath,
-		EnableTCP:        false,                  // Disabled by default for security
-		TCPAddr:          "127.0.0.1:9090",       // Localhost only by default
-		Port:             8080,
-		EnableHTTP:       true, // Backwards compat: enable HTTP by default for now
-		WebhookPath:      "/webhook",
-		HealthPath:       "/health",
-		ReadyPath:        "/ready",
-		PollInterval:     time.Hour,
-		InitialDelay:     10 * time.Second,
-		ReconcileTimeout: 10 * time.Minute,
-		ShutdownTimeout:  30 * time.Second,
-		APITimeout:       30 * time.Second,
-		DriftInterval:          5 * time.Minute,
-		DriftAlertCooldown:     time.Hour,
-		DriftResolveAlerts:     true,
-		DriftSelfHealCooldown:  reconcile.NewConfigField(15 * time.Minute),
-		ContentHashSync:    true,
-		RemoveOrphans:      true,
+		SocketPath:            DefaultSocketPath,
+		EnableTCP:             false,            // Disabled by default for security
+		TCPAddr:               "127.0.0.1:9090", // Localhost only by default
+		Port:                  8080,
+		EnableHTTP:            true, // Backwards compat: enable HTTP by default for now
+		WebhookPath:           "/webhook",
+		HealthPath:            "/health",
+		ReadyPath:             "/ready",
+		PollInterval:          time.Hour,
+		InitialDelay:          10 * time.Second,
+		ReconcileTimeout:      10 * time.Minute,
+		ShutdownTimeout:       30 * time.Second,
+		APITimeout:            30 * time.Second,
+		DriftInterval:         5 * time.Minute,
+		DriftAlertCooldown:    time.Hour,
+		DriftResolveAlerts:    true,
+		DriftSelfHealCooldown: reconcile.NewConfigField(15 * time.Minute),
+		ContentHashSync:       true,
+		RemoveOrphans:         true,
 	}
 }
 
@@ -121,21 +121,21 @@ const DefaultSocketPath = "/var/run/bosun.sock"
 
 // Daemon is the main GitOps daemon that handles webhooks and polling.
 type Daemon struct {
-	config        *Config
-	socketServer  *SocketServer // Unix socket API (primary)
-	tcpServer     *TCPServer    // TCP API with bearer auth (optional)
-	httpServer    *Server       // HTTP server for webhooks (optional)
-	reconciler    *reconcile.Reconciler      // Single-target fallback (used when only one target)
-	reconcileOpts []reconcile.ReconcilerOption // Options applied to each per-target reconciler
-	alerter       *alert.Manager
-	metrics       *Metrics       // Prometheus metrics (nil when HTTP is disabled)
-	dockerOnce    sync.Once      // Lazily initialize Docker client
-	dockerClient  *docker.Client // Shared Docker client for API handlers
-	dockerErr     error          // Error from Docker client initialization
+	config               *Config
+	socketServer         *SocketServer                // Unix socket API (primary)
+	tcpServer            *TCPServer                   // TCP API with bearer auth (optional)
+	httpServer           *Server                      // HTTP server for webhooks (optional)
+	reconciler           *reconcile.Reconciler        // Single-target fallback (used when only one target)
+	reconcileOpts        []reconcile.ReconcilerOption // Options applied to each per-target reconciler
+	alerter              *alert.Manager
+	metrics              *Metrics       // Prometheus metrics (nil when HTTP is disabled)
+	dockerOnce           sync.Once      // Lazily initialize Docker client
+	dockerClient         *docker.Client // Shared Docker client for API handlers
+	dockerErr            error          // Error from Docker client initialization
 	dockerClientOverride *docker.Client // Test injection point: bypasses sync.Once
-	ready         bool
-	readyMu       sync.RWMutex
-	stopLoops      chan struct{}
+	ready                bool
+	readyMu              sync.RWMutex
+	stopLoops            chan struct{}
 
 	// Track background goroutines for graceful shutdown
 	wg sync.WaitGroup
@@ -177,8 +177,8 @@ func New(cfg *Config) (*Daemon, error) {
 	}
 
 	d := &Daemon{
-		config:   cfg,
-		alerter:  cfg.AlertManager,
+		config:    cfg,
+		alerter:   cfg.AlertManager,
 		stopLoops: make(chan struct{}),
 	}
 
@@ -1440,12 +1440,12 @@ type SubsystemStatus struct {
 
 // HealthStatus represents the daemon health with subsystem breakdown.
 type HealthStatus struct {
-	Status        string                       `json:"status"`
-	Ready         bool                         `json:"ready"`
-	LastReconcile time.Time                    `json:"last_reconcile,omitempty"`
-	LastError     string                       `json:"last_error,omitempty"`
-	Uptime        time.Duration                `json:"uptime"`
-	Subsystems    map[string]SubsystemStatus   `json:"subsystems"`
+	Status        string                     `json:"status"`
+	Ready         bool                       `json:"ready"`
+	LastReconcile time.Time                  `json:"last_reconcile,omitempty"`
+	LastError     string                     `json:"last_error,omitempty"`
+	Uptime        time.Duration              `json:"uptime"`
+	Subsystems    map[string]SubsystemStatus `json:"subsystems"`
 }
 
 // computeTopLevelStatus derives the top-level health status from subsystems.
