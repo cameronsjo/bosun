@@ -332,3 +332,52 @@ func TestDaemonRun_CancelledContext(t *testing.T) {
 		t.Fatal("Run() did not return after context cancellation")
 	}
 }
+
+// TestDaemonRun_InitialReconcileFailure_StaysNotReady is the regression test
+// for #346: the initial-reconcile goroutine used to call setReady(true)
+// unconditionally, so /ready reported healthy even after the very first
+// reconcile failed outright. There is no reachable git repo here, so the
+// initial reconcile is guaranteed to fail; IsReady() must stay false.
+func TestDaemonRun_InitialReconcileFailure_StaysNotReady(t *testing.T) {
+	tmpDir := shortSocketDir(t)
+
+	cfg := DefaultConfig()
+	cfg.SocketPath = filepath.Join(tmpDir, "d.sock")
+	cfg.EnableHTTP = false
+	cfg.EnableTCP = false
+	cfg.PollInterval = 0
+	cfg.DriftInterval = 0
+	cfg.InitialDelay = 10 * time.Millisecond
+	cfg.ShutdownTimeout = 2 * time.Second
+	cfg.ReconcileConfig = reconcile.DefaultConfig()
+	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
+	cfg.ReconcileConfig.DryRun = true
+	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
+	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "test.lock")
+	cfg.ReconcileConfig.StateFile = filepath.Join(tmpDir, "state.json")
+
+	d, err := New(cfg)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- d.Run(ctx)
+	}()
+
+	require.Eventually(t, func() bool {
+		_, lastErr := d.LastReconcile()
+		return lastErr != nil
+	}, 10*time.Second, 20*time.Millisecond, "initial reconcile did not complete with an error")
+
+	assert.False(t, d.IsReady(), "daemon must not report ready after a failed initial reconcile")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+}

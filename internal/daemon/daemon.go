@@ -364,6 +364,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		if err := d.TriggerReconcile(ctx, "startup", false); err != nil {
 			logger.Error().Err(err).Msg("Initial reconciliation failed")
 			ui.Error("Initial reconciliation failed: %v", err)
+			return
 		}
 		logger.Info().Msg("Daemon ready to serve requests")
 		d.setReady(true)
