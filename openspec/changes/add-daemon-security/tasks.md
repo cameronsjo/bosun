@@ -1,11 +1,12 @@
-## 1. Webhook authentication fail-closed
+## 1. Webhook authentication fail-closed (shipped, #345)
 
-- [ ] 1.1 Add `AllowUnsignedWebhooks` to `Config`, parsed from `BOSUN_ALLOW_UNSIGNED_WEBHOOKS` in `ConfigFromEnv`
-- [ ] 1.2 In `ValidateConfig` (daemon.go), fail when `EnableHTTP && WebhookSecret == "" && !AllowUnsignedWebhooks`
-- [ ] 1.3 Log a startup security warning when unsigned webhooks are opted-in
-- [ ] 1.4 Log a per-receipt security warning in `handleWebhook`/`handleGitHubWebhook`/`handleManualTrigger` when serving unauthenticated
-- [ ] 1.5 Confirm `handleManualTrigger`'s secret-less branch is unreachable once the startup gate is in place (or remove it)
-- [ ] 1.6 Tests: startup refusal, opt-in path, 401 on bad signature, 202 on good signature
+- [x] 1.1 Add `AllowUnauthenticatedWebhook` to `Config`, parsed from `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` in `ConfigFromEnv` (strict `== "true"`)
+- [x] 1.2 Route all three handlers through a shared `authorizeTrigger` helper that rejects secret-less requests with 403 (per-request fail-closed; the daemon still starts)
+- [x] 1.3 Log a startup security warning for both postures (fail-closed active, and opt-out enabled)
+- [x] 1.4 Log a per-receipt security warning when serving unauthenticated under the opt-out
+- [x] 1.5 Remove `handleManualTrigger`'s secret-less accept branch (folded into `authorizeTrigger`)
+- [x] 1.6 Tests: 403 + no reconcile on all three endpoints, opt-out path, 401 on bad signature, 202 on good signature, single-response write
+- [x] 1.7 Add `BOSUN_LISTEN_ADDR` bind knob (default unchanged: all interfaces)
 
 ## 2. Unix socket peer-credential enforcement
 

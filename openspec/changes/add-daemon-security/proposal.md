@@ -23,11 +23,17 @@ proposal establishes a `daemon-security` capability that makes the daemon
 
 ## What Changes
 
-- **Webhook fail-closed startup gate** — when HTTP is enabled and no webhook
-  secret is set, the daemon SHALL refuse to start unless the operator explicitly
-  opts in via `BOSUN_ALLOW_UNSIGNED_WEBHOOKS=true`, which logs a loud security
-  warning on startup and on every webhook receipt. **BREAKING**: existing
-  secret-less HTTP deployments must set a secret or opt in.
+- **Webhook fail-closed request gate** *(shipped, #345)* — when HTTP is enabled
+  and no webhook secret is set, every trigger endpoint SHALL reject requests
+  with 403 unless the operator explicitly opts out via
+  `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true`, which logs a loud security
+  warning on startup and on every webhook receipt. The daemon still starts (a
+  homelab daemon that refuses to boot on upgrade bricks polling and the socket
+  API too — per-request rejection closes the hole without that blast radius).
+  A `BOSUN_LISTEN_ADDR` knob narrows the HTTP bind; the default stays
+  all-interfaces because container-side callers reach the daemon over the
+  docker bridge. **BREAKING**: existing secret-less HTTP deployments must set
+  a secret or opt out.
 - **Unix socket peer-credential enforcement** — the socket SHALL reject trigger
   requests whose peer UID is not the daemon owner or in a configured allowlist,
   and SHALL fail-closed when peer credentials are unavailable (including
@@ -70,7 +76,8 @@ proposal establishes a `daemon-security` capability that makes the daemon
   - TCP API server (`tcp.go`) — `POST /trigger`, bearer-token gated
   - HTTP API (`api.go`) — `handleAPITrigger`
 - New config / env vars:
-  - `BOSUN_ALLOW_UNSIGNED_WEBHOOKS` (bool, default false)
+  - `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` (bool, default false; strict `== "true"`)
+  - `BOSUN_LISTEN_ADDR` (string, default empty = all interfaces)
   - `BOSUN_SOCKET_ALLOWED_UIDS` / allowlist config (existing `SocketMode` becomes
     load-bearing)
   - `BOSUN_METRICS_EXPOSE` (or equivalent) to opt metrics/widget into remote

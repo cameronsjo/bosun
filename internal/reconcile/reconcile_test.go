@@ -420,6 +420,133 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 	})
 }
 
+// #390: the cloned repo's project_name must reach the default-target
+// reconciler (config AND the live deploy ops) before the first deploy —
+// a project-less `docker compose up` collides containers. Each case declares
+// the reconciler's starting config, the reloaded repo config, and the
+// expected project_name on the config and (when non-empty) the deploy ops.
+func TestReloadProjectConfig_ProjectName(t *testing.T) {
+	strPtr := func(s string) *string { return &s }
+
+	tests := []struct {
+		name       string
+		cfg        *Config
+		reloaded   *ReloadedConfig
+		want       string
+		wantDeploy string // "" = not asserted
+		reason     string
+	}{
+		{
+			name:       "root-level project_name adopted for the default target",
+			cfg:        &Config{TargetName: DefaultTargetName},
+			reloaded:   &ReloadedConfig{ProjectName: strPtr("homelab")},
+			want:       "homelab",
+			wantDeploy: "homelab",
+			reason:     "reloaded project_name must reach the live deploy ops, like RemoveOrphans",
+		},
+		{
+			name:     "empty TargetName counts as the default target",
+			cfg:      &Config{},
+			reloaded: &ReloadedConfig{ProjectName: strPtr("homelab")},
+			want:     "homelab",
+		},
+		{
+			name: "lone default target's project_name wins over root-level",
+			cfg:  &Config{TargetName: DefaultTargetName},
+			reloaded: &ReloadedConfig{
+				ProjectName: strPtr("root-project"),
+				Targets:     []Target{{Name: "default", ProjectName: "target-project"}},
+			},
+			want:       "target-project",
+			wantDeploy: "target-project",
+		},
+		{
+			name: "named target adopts its own reloaded project_name, not root-level",
+			cfg:  &Config{TargetName: "unraid", ProjectName: "startup-value"},
+			reloaded: &ReloadedConfig{
+				ProjectName: strPtr("root-project"),
+				Targets:     []Target{{Name: "unraid", ProjectName: "unraid-project"}},
+			},
+			want:   "unraid-project",
+			reason: "named target adopts its own override",
+		},
+		{
+			name: "env-provided targets are never overwritten by the repo",
+			cfg: &Config{
+				TargetName:     DefaultTargetName,
+				ProjectName:    "env-project",
+				TargetsFromEnv: true,
+			},
+			reloaded: &ReloadedConfig{
+				ProjectName: strPtr("repo-project"),
+				Targets:     []Target{{Name: "default", ProjectName: "repo-target-project"}},
+			},
+			want:   "env-project",
+			reason: "BOSUN_TARGETS-provided config must win over the repo",
+		},
+		{
+			name:     "empty reloaded project_name leaves the current value",
+			cfg:      &Config{TargetName: DefaultTargetName, ProjectName: "keep-me"},
+			reloaded: &ReloadedConfig{ProjectName: strPtr("")},
+			want:     "keep-me",
+		},
+		{
+			name: "default target ignores a reloaded multi-target list carrying a default",
+			cfg:  &Config{TargetName: DefaultTargetName, ProjectName: "keep-me"},
+			reloaded: &ReloadedConfig{
+				Targets: []Target{
+					{Name: "default", ProjectName: "poisoned"},
+					{Name: "unraid", ProjectName: "other"},
+				},
+			},
+			want:   "keep-me",
+			reason: "the misconfiguration ResolveTargets fails loud on at startup must not silently apply during reload (#391)",
+		},
+		{
+			name: "named target also ignores a reloaded list poisoned by a default",
+			cfg:  &Config{TargetName: "unraid", ProjectName: "keep-me"},
+			reloaded: &ReloadedConfig{
+				Targets: []Target{
+					{Name: "unraid", ProjectName: "poisoned"},
+					{Name: "default", ProjectName: "other"},
+				},
+			},
+			want:   "keep-me",
+			reason: "startup would reject the whole config, so reload must not half-apply it to named targets either",
+		},
+		{
+			name:     "unchanged project_name is a no-op",
+			cfg:      &Config{TargetName: DefaultTargetName, ProjectName: "same"},
+			reloaded: &ReloadedConfig{ProjectName: strPtr("same")},
+			want:     "same",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
+				return tt.reloaded, nil
+			}
+			r := NewReconciler(tt.cfg)
+
+			r.reloadProjectConfig()
+
+			assert.Equal(t, tt.want, r.config.ProjectName, tt.reason)
+			if tt.wantDeploy != "" {
+				assert.Equal(t, tt.wantDeploy, r.deploy.ProjectName, "reloaded value must be pushed onto the live deploy ops")
+			}
+		})
+	}
+}
+
+// setProjectName reports no change when the value is already current, so a
+// reload cycle carrying the same name never flags a spurious config change.
+func TestSetProjectNameIdenticalValueIsNoOp(t *testing.T) {
+	r := NewReconciler(&Config{ProjectName: "same"})
+	assert.False(t, r.setProjectName("same"))
+	assert.True(t, r.setProjectName("different"))
+}
+
 func TestExecutePostSyncHooks_DiffFilesError_FiresAllHooks(t *testing.T) {
 	// Simulates the shallow clone scenario: DiffFiles fails because the previous
 	// commit is not in the shallow history. This is the root cause of GitHub #55.
@@ -4151,7 +4278,8 @@ func TestResolveTargets_ImplicitDefault(t *testing.T) {
 		DeploySyncExclude:  NewConfigField([]string{"*.bak"}),
 	}
 
-	targets := cfg.ResolveTargets()
+	targets, err := cfg.ResolveTargets()
+	require.NoError(t, err)
 	require.Len(t, targets, 1)
 
 	def := targets[0]
@@ -4178,7 +4306,8 @@ func TestResolveTargets_ExplicitTargets(t *testing.T) {
 		},
 	}
 
-	targets := cfg.ResolveTargets()
+	targets, err := cfg.ResolveTargets()
+	require.NoError(t, err)
 	require.Len(t, targets, 2)
 	assert.Equal(t, "unraid", targets[0].Name)
 	assert.Equal(t, "user@unraid", targets[0].TargetHost)
@@ -4384,33 +4513,15 @@ func TestResolveTargets_RejectsDuplicateNames(t *testing.T) {
 		{Name: "beta", TargetHost: "user@beta"},
 	}
 
-	targets := cfg.ResolveTargets()
+	targets, err := cfg.ResolveTargets()
+	require.NoError(t, err)
 	assert.Len(t, targets, 2, "case-insensitive duplicate should be rejected")
 	assert.Equal(t, "alpha", targets[0].Name)
 	assert.Equal(t, "beta", targets[1].Name)
 }
 
-// TestResolveTargets_SkipsReservedDefaultCaseInsensitive verifies that a
-// configured target whose name is a case-variant of the reserved "default"
-// ("Default", "DEFAULT", "DeFaUlT") is skipped as reserved rather than admitted
-// as a distinct named target. Before the #228 casefold, such a name passed the
-// case-sensitive reserved gate and became its own target, fragmenting state from
-// the implicit default (deploy-state-Default.json, staging/Default/,
-// reconcile-Default.lock — invisible to the drift/health/breaker that read the
-// base paths).
-func TestResolveTargets_SkipsReservedDefaultCaseInsensitive(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.Targets = []Target{
-		{Name: "Default", TargetHost: "user@a"},
-		{Name: "unraid", TargetHost: "user@unraid"},
-		{Name: "DEFAULT", TargetHost: "user@b"},
-		{Name: "DeFaUlT", TargetHost: "user@c"},
-	}
-
-	targets := cfg.ResolveTargets()
-	require.Len(t, targets, 1, "every case-variant of the reserved default must be skipped")
-	assert.Equal(t, "unraid", targets[0].Name, "only the real named target survives")
-}
+// Multi-target-with-default fail-loud coverage lives in
+// TestResolveTargets_MultiTargetDefaultFailsLoud (target_test.go).
 
 // TestIsDefault_CaseInsensitive verifies IsDefault treats any case-variant of the
 // reserved name as the default, so ConfigForTarget keeps the base state/staging/
@@ -4503,7 +4614,8 @@ func TestResolveTargets_SkipsInvalidNames(t *testing.T) {
 		{Name: "also-good", TargetHost: "user@also"},
 	}
 
-	targets := cfg.ResolveTargets()
+	targets, err := cfg.ResolveTargets()
+	require.NoError(t, err)
 	assert.Len(t, targets, 2, "should skip the invalid target")
 	assert.Equal(t, "good-target", targets[0].Name)
 	assert.Equal(t, "also-good", targets[1].Name)

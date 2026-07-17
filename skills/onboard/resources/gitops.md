@@ -31,7 +31,11 @@ Every reconciliation follows this 16-stage sequence:
         |
  7. Create configuration backup
         |
- 8. Deploy files (local copy or tar-over-SSH)
+ 8. Deploy files (local copy or tar-over-SSH). Remote deploys use a
+    retain-old rename-swap (move live target aside, move new tree in,
+    remove the retained copy on success; restore it on failure) so an
+    interrupted deploy never leaves an empty target; the next deploy
+    self-heals a missing target from the newest retained copy
         |
  9. Verify deploy-sync invariants — every WrittenFiles entry must exist
     with fresh mtime; empty WrittenFiles against a non-empty source fails
@@ -266,6 +270,15 @@ The daemon serves GitHub and a generic HMAC endpoint:
 |----------|------|------------------|
 | GitHub | `/webhook/github` | `X-Hub-Signature-256` |
 | Generic | `/webhook` | `X-Signature`, or `X-Hub-Signature-256` |
+| Manual | `/webhook/manual` | `X-Signature` |
+
+**Webhook auth fails closed.** With no `WEBHOOK_SECRET` configured, all three
+endpoints reject every request with `403` and no reconcile runs — a missing
+secret is not an open door. On trusted networks, opt out explicitly with
+`BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true` (logs a security warning at startup
+and per accepted request). The Unix socket trigger (`bosun trigger`) is not
+affected. `BOSUN_LISTEN_ADDR` narrows the HTTP bind; the default stays
+all-interfaces so container-side callers reach the daemon over the docker bridge.
 
 GitLab, Gitea, and Bitbucket are **not** handled by the daemon directly. Point them
 at the standalone `bosun webhook` receiver (below), which understands each provider
@@ -282,7 +295,7 @@ All signatures are validated using HMAC-SHA256 (or SHA1 for legacy) with constan
 
 ### Webhook Setup
 
-1. **Configure a webhook secret** in your bosun environment
+1. **Configure a webhook secret** in your bosun environment (`WEBHOOK_SECRET` — required unless you explicitly opt out; see above)
 2. **Set up the webhook** in your Git provider. For GitHub, point it at `https://your-server/webhook/github`. For GitLab/Gitea/Bitbucket, run the standalone `bosun webhook` receiver and point the provider at its provider-specific path
 3. **Expose the endpoint** via Tailscale Funnel or Cloudflare Tunnel (see Radio commands)
 
@@ -439,6 +452,8 @@ bosun reconcile -r user@host
 ```
 
 Requires SSH key authentication. Test connectivity first: `ssh user@host exit`.
+
+The staged tree is promoted with a retain-old rename-swap: the live target is moved aside (never deleted first), the new tree is moved in, and the retained copy is removed only on success — so an interrupted deploy leaves the old or the new tree, never an empty target. A missing target left by a prior interrupted deploy is self-healed on the next run from the newest retained copy.
 
 #### SSH Host Key Verification
 

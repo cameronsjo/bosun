@@ -30,6 +30,11 @@ type ReloadedConfig struct {
 	OnFailure          *bool
 	OnSuccess          *bool
 	RemoveOrphans      *bool
+	// ProjectName is the repo bosun.yaml's root-level project_name. When
+	// non-nil and non-empty, the default-target reconciler adopts it before
+	// the first deploy (#390); a lone `default` target's project_name wins
+	// over it.
+	ProjectName *string
 	// Targets is the reloaded target list from the repo's bosun.yaml.
 	// When non-nil, the daemon uses these targets for the next reconciliation cycle.
 	Targets []Target
@@ -70,6 +75,11 @@ type Config struct {
 	// target is synthesized from the flat config fields above (TargetHost,
 	// LocalAppdataPath, RemoteAppdataPath, ProjectName).
 	Targets []Target
+
+	// TargetsFromEnv records that Targets came from the BOSUN_TARGETS env var.
+	// Hot-reload must not override env-provided per-target config (env wins
+	// over the repo's bosun.yaml) — see applyTargetOverrides.
+	TargetsFromEnv bool
 
 	// DeployMode overrides automatic deploy mode detection.
 	// Valid values: "" (auto-detect), "local", "remote".

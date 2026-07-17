@@ -272,6 +272,7 @@ func runReconcile(cmd *cobra.Command, args []string) {
 					Msgf("BOSUN_TARGETS: invalid %s — ignoring and inheriting global value", field)
 			})
 			cfg.Targets = targets
+			cfg.TargetsFromEnv = true
 		}
 	}
 
@@ -284,7 +285,12 @@ func runReconcile(cmd *cobra.Command, args []string) {
 	}
 
 	// Resolve targets and optionally filter by --target flag.
-	targets := cfg.ResolveTargets()
+	targets, targetsErr := cfg.ResolveTargets()
+	if targetsErr != nil {
+		// Fail loud (#391): a multi-target config carrying a reserved `default`
+		// name aborts instead of silently dropping the target.
+		ui.Fatal("Target resolution failed: %v", targetsErr)
+	}
 	if reconcileTarget != "" {
 		var found bool
 		for _, t := range targets {

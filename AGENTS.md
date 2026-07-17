@@ -146,7 +146,7 @@ Split into focused modules:
 Key multi-target types:
 - **`Target`** — named deployment target with per-target config overrides (JSON tags for `BOSUN_TARGETS` env var)
 - **`ConfigForTarget(t)`** — deep-copies base config with target-specific paths, hooks, containers
-- **`ResolveTargets()`** — validates names (path traversal, duplicates, reserved "default"), falls back to implicit default
+- **`ResolveTargets()`** — validates names (path traversal, duplicates), honors a lone `default` target as the implicit default's config, errors on a multi-target config that includes `default`, falls back to implicit default; returns `([]Target, error)`
 
 ### internal/alert
 
@@ -332,6 +332,8 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 | `BOSUN_TCP_ADDR` | daemon | TCP listen address (default: `127.0.0.1:9090`) |
 | `BOSUN_BEARER_TOKEN` | daemon, trigger | Bearer token for TCP auth |
 | `BOSUN_DISABLE_HTTP` | daemon | Disable HTTP webhook server |
+| `BOSUN_LISTEN_ADDR` | daemon | Host/IP the HTTP server binds to (default: empty = all interfaces — container-side callers reach bosun over the docker bridge; do not default to loopback) |
+| `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | daemon | Opt out of fail-closed webhook auth (default: `false`; strict `== "true"`). With no `WEBHOOK_SECRET`, trigger endpoints reject requests with `403` unless this is set. Logged loudly at startup and per accepted request |
 | `BOSUN_SECRETS_FILE` | daemon, render | SOPS secrets file path |
 | `BOSUN_INFRA_DIR` | daemon | Infrastructure directory |
 | `BOSUN_STATE_DIR` | daemon, reconcile | Deploy state directory |
@@ -386,7 +388,7 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 - **Target struct has JSON tags** — `BOSUN_TARGETS` env var uses snake_case (`target_host`, `project_name`) matching YAML config, not Go field names
 - **`ui.SetExitFn()`** — exported test helper to intercept `ui.Fatal`; not goroutine-safe, test-only
 - **ConfigForTarget deep-copies slices** — all slice fields are cloned to prevent mutation aliasing between base and per-target configs
-- **"default" is a reserved target name** — `ResolveTargets()` rejects user-provided targets named "default" (used internally for implicit single-target mode)
+- **"default" is a reserved target name** — a *lone* `name: default` target (any case) is honored as the implicit default's configuration: its `project_name`, paths, `state_file`, and `staging_dir` win over the flat fields (#391). A *multi-target* config that also declares a `default` target is a hard error (`ResolveTargets()` returns an error naming the offender) rather than silently dropping it. `ResolveTargets()` returns `([]Target, error)` — callers must check the error
 - **Cobra `resetRootCmd` strips flags** — `ResetFlags()` in test helpers wipes registered flags; don't test flag existence after calling `executeCmd` on a different command
 - **handleTrigger spawns fire-and-forget goroutines** — tests using socket/TCP daemons should set a short `ReconcileTimeout` to prevent temp dir cleanup races; tune the value to the test environment rather than hardcoding
 - **CLAUDE.md is a symlink** to `AGENTS.md`. When staging for git, `git add AGENTS.md` (not `CLAUDE.md`)

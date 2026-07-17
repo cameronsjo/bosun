@@ -4,31 +4,43 @@
 
 The daemon SHALL NOT accept unsigned webhook requests as valid GitOps triggers
 in its default configuration. When the HTTP server is enabled (`EnableHTTP`) and
-no webhook secret is configured, the daemon SHALL refuse to start. An operator
-MAY opt out by setting `BOSUN_ALLOW_UNSIGNED_WEBHOOKS=true`, in which case the
-daemon SHALL log a security warning naming the risk on startup and on every
-webhook receipt. When a webhook secret is configured, every webhook entry point
-(`/webhook`, `/webhook/github`, `/webhook/manual`) SHALL reject requests with a
-missing or invalid signature with HTTP 401 and SHALL NOT trigger a reconcile.
+no webhook secret is configured, every webhook entry point (`/webhook`,
+`/webhook/github`, `/webhook/manual`) SHALL reject requests with HTTP 403 and
+SHALL NOT trigger a reconcile, and the daemon SHALL log a security warning at
+startup naming the fail-closed posture. An operator MAY opt out by setting
+`BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true` (strict lowercase match), in which
+case the daemon SHALL log a security warning naming the risk on startup and on
+every webhook receipt. When a webhook secret is configured, every webhook entry
+point SHALL reject requests with a missing or invalid signature with HTTP 401
+and SHALL NOT trigger a reconcile, regardless of the opt-out. All three entry
+points SHALL route authorization through a single shared helper that writes the
+failure response exactly once.
 
-#### Scenario: HTTP enabled with no secret refuses to start
-- **WHEN** the daemon starts with `EnableHTTP=true`, an empty `WebhookSecret`, and `BOSUN_ALLOW_UNSIGNED_WEBHOOKS` unset
-- **THEN** startup fails with an error explaining that a webhook secret is required
-- **AND** the HTTP listener never binds
+#### Scenario: HTTP enabled with no secret rejects triggers
+- **WHEN** the daemon runs with `EnableHTTP=true`, an empty `WebhookSecret`, and `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` unset
+- **THEN** a POST to `/webhook`, `/webhook/github`, or `/webhook/manual` is rejected with 403
+- **AND** no reconcile is triggered
+- **AND** the daemon logged a startup warning naming the fail-closed posture
 
-#### Scenario: Explicit opt-in permits unsigned webhooks with a warning
-- **WHEN** the daemon starts with `EnableHTTP=true`, an empty `WebhookSecret`, and `BOSUN_ALLOW_UNSIGNED_WEBHOOKS=true`
-- **THEN** the daemon starts and logs a security warning at startup
-- **AND** each subsequent webhook receipt logs a security warning identifying the request as unauthenticated
+#### Scenario: Explicit opt-out permits unauthenticated webhooks with a warning
+- **WHEN** the daemon runs with `EnableHTTP=true`, an empty `WebhookSecret`, and `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true`
+- **THEN** trigger requests are accepted and the daemon logs a security warning at startup
+- **AND** each accepted unauthenticated receipt logs a security warning identifying the request as unauthenticated
 
 #### Scenario: Configured secret rejects unsigned request
 - **WHEN** a webhook secret is configured and a POST arrives at `/webhook`, `/webhook/github`, or `/webhook/manual` with no signature or an invalid signature
 - **THEN** the daemon responds 401
 - **AND** no reconcile is triggered
+- **AND** the opt-out flag does not bypass signature validation
 
 #### Scenario: Configured secret accepts valid signature
 - **WHEN** a webhook secret is configured and a POST arrives with a valid HMAC-SHA256 signature over the request body
 - **THEN** the daemon responds 202 and triggers a reconcile
+
+#### Scenario: Bind address defaults to all interfaces
+- **WHEN** the daemon starts without `BOSUN_LISTEN_ADDR` set
+- **THEN** the HTTP server binds all interfaces (container-side callers reach the daemon over the docker bridge)
+- **AND** setting `BOSUN_LISTEN_ADDR` narrows the bind to the configured host
 
 ### Requirement: Unix socket peer-credential enforcement
 

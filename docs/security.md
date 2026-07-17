@@ -476,6 +476,37 @@ The auth stack — Traefik, Authelia, and Tailscale gateway — forms a dependen
 
 **Planned**: A dedicated health gate that verifies the full auth chain is healthy before declaring a deploy successful. See [bosun-r9n](https://github.com/cameronsjo/bosun/issues?q=bosun-r9n).
 
+## Daemon Webhook Authentication
+
+The daemon's HTTP trigger endpoints (`/webhook`, `/webhook/github`,
+`/webhook/manual`) authenticate requests with an HMAC-SHA256 signature over the
+request body, validated with constant-time comparison against `WEBHOOK_SECRET`
+(GitHub convention: `X-Hub-Signature-256`; generic/manual: `X-Signature`).
+
+**Webhook auth fails closed.** When no webhook secret is configured, every
+trigger request is rejected with `403` and no reconcile runs. This is the
+default posture; a missing secret MUST NOT silently grant anonymous callers
+deploy control. The daemon logs a loud warning at startup naming the active
+posture.
+
+Operators on isolated, trusted networks MAY opt out with
+`BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true` (strict lowercase match, like the
+other escape hatches). With the opt-out active:
+
+- The daemon warns at startup that unauthenticated triggers are enabled
+- Every accepted unauthenticated request logs a `SECURITY:` warning with the
+  caller's remote address
+
+The opt-out never bypasses a configured secret — when `WEBHOOK_SECRET` is set,
+signature validation always runs.
+
+The bind address defaults to all interfaces because container-side callers
+(reverse proxy, metrics scrapers, dashboards) reach the daemon over the docker
+bridge, not loopback. `BOSUN_LISTEN_ADDR` narrows the bind where the network
+topology allows it; the bind address is **not** an authentication control — it
+does not protect the Unix socket trigger or the `/metrics` and `/api/widget`
+endpoints, which are tracked separately.
+
 ## Operator Escape Hatches as Risk Surface
 
 Bosun ships several "escape hatch" environment variables that disable safety checks for legitimate operational scenarios (genuinely empty repos, diagnostic deploys, transient infrastructure conditions). These flags reduce the system's defense-in-depth and SHOULD be treated as a risk surface in their own right.
@@ -487,6 +518,7 @@ Bosun ships several "escape hatch" environment variables that disable safety che
 | `BOSUN_ALLOW_EMPTY_DECLARED_STATE` | `ErrNoDeclaredServices` gate at pipeline stage 6 (no parseable services in staging compose dir) | `false` (strict) | Genuinely empty repos, scaffolding |
 | `BOSUN_SKIP_DEPLOY_INVARIANT` | Post-deploy mtime + WrittenFiles gate at pipeline stage 9 | `false` (strict) | Diagnostic deploys, repro of intermittent issues |
 | `BOSUN_SSH_INSECURE_HOST_KEY` | SSH host-key verification | `false` (strict) | Initial bootstrap before `known_hosts` is populated |
+| `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | Fail-closed webhook authentication (secret-less trigger requests rejected with `403`) | `false` (strict) | Trusted, isolated networks where a webhook secret is impractical |
 
 `ErrComposeDirMissing` (stage 6) has no escape hatch by design — a missing staging compose directory always indicates a misconfigured deploy path, never an intentional state.
 

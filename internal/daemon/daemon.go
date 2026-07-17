@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/cameronsjo/bosun/internal/alert"
@@ -46,6 +47,17 @@ type Config struct {
 	ReadyPath     string // Path for readiness endpoint (default: /ready)
 	WebhookSecret string // Secret for validating webhook signatures
 
+	// ListenAddr is the host/IP the HTTP server binds to (BOSUN_LISTEN_ADDR).
+	// Empty binds all interfaces — the default MUST stay all-interfaces
+	// because container-side callers (Traefik, Prometheus, Homepage) reach
+	// bosun over the docker bridge, not loopback.
+	ListenAddr string
+
+	// AllowUnauthenticatedWebhook opts out of fail-closed webhook auth (#345).
+	// When WebhookSecret is empty, trigger endpoints reject every request
+	// unless this is true (BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true, strict match).
+	AllowUnauthenticatedWebhook bool
+
 	// Polling settings
 	PollInterval time.Duration // Interval between polls (0 disables polling)
 	InitialDelay time.Duration // Delay before first poll (default: 10s)
@@ -59,11 +71,11 @@ type Config struct {
 	APITimeout       time.Duration // Timeout for API handler requests (default: 30s)
 
 	// Drift check settings
-	DriftInterval          time.Duration // Interval for periodic drift checks (0 disables, default: 5m)
-	DriftAlertCooldown     time.Duration // Cooldown between repeated drift alerts per item (default: 1h)
+	DriftInterval         time.Duration                        // Interval for periodic drift checks (0 disables, default: 5m)
+	DriftAlertCooldown    time.Duration                        // Cooldown between repeated drift alerts per item (default: 1h)
 	DriftAlertDebounce    reconcile.ConfigField[time.Duration] // Debounce window before first drift alert fires (0 = disabled, default: 0)
-	DriftResolveAlerts    bool                                // Send "drift resolved" alerts (default: true)
-	DriftSelfHeal         reconcile.ConfigField[bool]         // Trigger reconciliation when drift detected (default: false)
+	DriftResolveAlerts    bool                                 // Send "drift resolved" alerts (default: true)
+	DriftSelfHeal         reconcile.ConfigField[bool]          // Trigger reconciliation when drift detected (default: false)
 	DriftSelfHealCooldown reconcile.ConfigField[time.Duration] // Minimum interval between self-heal reconciliations (default: 15m)
 
 	// Content-hash sync settings
@@ -82,25 +94,25 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
-		SocketPath:       DefaultSocketPath,
-		EnableTCP:        false,                  // Disabled by default for security
-		TCPAddr:          "127.0.0.1:9090",       // Localhost only by default
-		Port:             8080,
-		EnableHTTP:       true, // Backwards compat: enable HTTP by default for now
-		WebhookPath:      "/webhook",
-		HealthPath:       "/health",
-		ReadyPath:        "/ready",
-		PollInterval:     time.Hour,
-		InitialDelay:     10 * time.Second,
-		ReconcileTimeout: 10 * time.Minute,
-		ShutdownTimeout:  30 * time.Second,
-		APITimeout:       30 * time.Second,
-		DriftInterval:          5 * time.Minute,
-		DriftAlertCooldown:     time.Hour,
-		DriftResolveAlerts:     true,
-		DriftSelfHealCooldown:  reconcile.NewConfigField(15 * time.Minute),
-		ContentHashSync:    true,
-		RemoveOrphans:      true,
+		SocketPath:            DefaultSocketPath,
+		EnableTCP:             false,            // Disabled by default for security
+		TCPAddr:               "127.0.0.1:9090", // Localhost only by default
+		Port:                  8080,
+		EnableHTTP:            true, // Backwards compat: enable HTTP by default for now
+		WebhookPath:           "/webhook",
+		HealthPath:            "/health",
+		ReadyPath:             "/ready",
+		PollInterval:          time.Hour,
+		InitialDelay:          10 * time.Second,
+		ReconcileTimeout:      10 * time.Minute,
+		ShutdownTimeout:       30 * time.Second,
+		APITimeout:            30 * time.Second,
+		DriftInterval:         5 * time.Minute,
+		DriftAlertCooldown:    time.Hour,
+		DriftResolveAlerts:    true,
+		DriftSelfHealCooldown: reconcile.NewConfigField(15 * time.Minute),
+		ContentHashSync:       true,
+		RemoveOrphans:         true,
 	}
 }
 
@@ -109,21 +121,21 @@ const DefaultSocketPath = "/var/run/bosun.sock"
 
 // Daemon is the main GitOps daemon that handles webhooks and polling.
 type Daemon struct {
-	config        *Config
-	socketServer  *SocketServer // Unix socket API (primary)
-	tcpServer     *TCPServer    // TCP API with bearer auth (optional)
-	httpServer    *Server       // HTTP server for webhooks (optional)
-	reconciler    *reconcile.Reconciler      // Single-target fallback (used when only one target)
-	reconcileOpts []reconcile.ReconcilerOption // Options applied to each per-target reconciler
-	alerter       *alert.Manager
-	metrics       *Metrics       // Prometheus metrics (nil when HTTP is disabled)
-	dockerOnce    sync.Once      // Lazily initialize Docker client
-	dockerClient  *docker.Client // Shared Docker client for API handlers
-	dockerErr     error          // Error from Docker client initialization
+	config               *Config
+	socketServer         *SocketServer                // Unix socket API (primary)
+	tcpServer            *TCPServer                   // TCP API with bearer auth (optional)
+	httpServer           *Server                      // HTTP server for webhooks (optional)
+	reconciler           *reconcile.Reconciler        // Single-target fallback (used when only one target)
+	reconcileOpts        []reconcile.ReconcilerOption // Options applied to each per-target reconciler
+	alerter              *alert.Manager
+	metrics              *Metrics       // Prometheus metrics (nil when HTTP is disabled)
+	dockerOnce           sync.Once      // Lazily initialize Docker client
+	dockerClient         *docker.Client // Shared Docker client for API handlers
+	dockerErr            error          // Error from Docker client initialization
 	dockerClientOverride *docker.Client // Test injection point: bypasses sync.Once
-	ready         bool
-	readyMu       sync.RWMutex
-	stopLoops      chan struct{}
+	ready                bool
+	readyMu              sync.RWMutex
+	stopLoops            chan struct{}
 
 	// Track background goroutines for graceful shutdown
 	wg sync.WaitGroup
@@ -165,8 +177,8 @@ func New(cfg *Config) (*Daemon, error) {
 	}
 
 	d := &Daemon{
-		config:   cfg,
-		alerter:  cfg.AlertManager,
+		config:    cfg,
+		alerter:   cfg.AlertManager,
 		stopLoops: make(chan struct{}),
 	}
 
@@ -215,6 +227,25 @@ func New(cfg *Config) (*Daemon, error) {
 	return d, nil
 }
 
+// warnWebhookAuthPosture announces the webhook auth posture at startup (#345):
+// fail-closed is the default, so a secret-less upgrade must never be a silent
+// 403, and an opted-out daemon must never hide its exposure. No-op when HTTP
+// is disabled or a secret is configured.
+func (d *Daemon) warnWebhookAuthPosture(logger zerolog.Logger) {
+	if !d.config.EnableHTTP || d.config.WebhookSecret != "" {
+		return
+	}
+	if d.config.AllowUnauthenticatedWebhook {
+		logger.Warn().
+			Msg("SECURITY: webhook endpoints accept UNAUTHENTICATED trigger requests. Reason: no webhook secret configured and BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true. Anyone who can reach the HTTP port can trigger a deploy")
+		ui.Warning("SECURITY: unauthenticated webhook triggers enabled (no secret, opt-out set)")
+		return
+	}
+	logger.Warn().
+		Msg("Webhook endpoints will REJECT all trigger requests, expected a webhook secret but none is configured — webhook auth fails closed. Set WEBHOOK_SECRET, or set BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true to accept unauthenticated triggers")
+	ui.Warning("Webhooks fail closed: no WEBHOOK_SECRET set, trigger requests will be rejected (403)")
+}
+
 // Run starts the daemon and blocks until shutdown.
 // It handles SIGTERM and SIGINT for graceful shutdown.
 func (d *Daemon) Run(ctx context.Context) error {
@@ -246,6 +277,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 		ui.Info("HTTP Port: %d", d.config.Port)
 	}
 	ui.Info("Poll interval: %s", d.config.PollInterval)
+
+	d.warnWebhookAuthPosture(logger)
 
 	// Ensure state directory exists for deploy state tracking.
 	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.StateFile != "" {
@@ -629,17 +662,23 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 	// operational overrides (hooks, critical containers, deploy sync paths) hot-reload
 	// via ConfigReloader inside each reconciler.Run(). Structural target changes
 	// (adding/removing targets, changing host/paths) require a daemon restart.
-	targets := d.config.ReconcileConfig.ResolveTargets()
+	targets, targetsErr := d.config.ReconcileConfig.ResolveTargets()
+	if targetsErr != nil {
+		// Fail loud (#391): a multi-target config carrying a reserved `default`
+		// name fails the cycle instead of silently dropping the target.
+		logger.Error().Err(targetsErr).Msg("Target resolution failed, aborting reconciliation cycle")
+		ui.Error("Target resolution failed: %v", targetsErr)
+	} else {
+		logger.Info().
+			Str(log.FieldSource, source).
+			Bool("force", force).
+			Int("target_count", len(targets)).
+			Msg("Starting reconciliation cycle")
 
-	logger.Info().
-		Str(log.FieldSource, source).
-		Bool("force", force).
-		Int("target_count", len(targets)).
-		Msg("Starting reconciliation cycle")
+		ui.Info("Starting reconciliation (source: %s, force: %t, targets: %d)", source, force, len(targets))
+	}
 
-	ui.Info("Starting reconciliation (source: %s, force: %t, targets: %d)", source, force, len(targets))
-
-	var firstErr error
+	firstErr := targetsErr
 	successCount := 0
 
 	// NOTE: Daemon-level drift checks (runDriftCheck), health status (HealthStatus),
@@ -1401,12 +1440,12 @@ type SubsystemStatus struct {
 
 // HealthStatus represents the daemon health with subsystem breakdown.
 type HealthStatus struct {
-	Status        string                       `json:"status"`
-	Ready         bool                         `json:"ready"`
-	LastReconcile time.Time                    `json:"last_reconcile,omitempty"`
-	LastError     string                       `json:"last_error,omitempty"`
-	Uptime        time.Duration                `json:"uptime"`
-	Subsystems    map[string]SubsystemStatus   `json:"subsystems"`
+	Status        string                     `json:"status"`
+	Ready         bool                       `json:"ready"`
+	LastReconcile time.Time                  `json:"last_reconcile,omitempty"`
+	LastError     string                     `json:"last_error,omitempty"`
+	Uptime        time.Duration              `json:"uptime"`
+	Subsystems    map[string]SubsystemStatus `json:"subsystems"`
 }
 
 // computeTopLevelStatus derives the top-level health status from subsystems.
@@ -1520,6 +1559,9 @@ func ConfigFromEnv() *Config {
 		cfg.WebhookSecret = secret
 	}
 
+	// HTTP bind address (empty = all interfaces; see Config.ListenAddr).
+	cfg.ListenAddr = os.Getenv("BOSUN_LISTEN_ADDR")
+
 	if d := config.BosunEnvDuration("POLL_INTERVAL", 0); d > 0 {
 		cfg.PollInterval = d
 	}
@@ -1580,6 +1622,7 @@ func ConfigFromEnv() *Config {
 			targetsFromEnv = true
 		}
 	}
+	rcfg.TargetsFromEnv = targetsFromEnv
 
 	cfg.ReconcileConfig = rcfg
 
@@ -1750,6 +1793,7 @@ func ConfigFromEnv() *Config {
 	// "yes", "1", "TRUE" etc. are rejected by design.
 	rcfg.AllowEmptyDeclaredState = os.Getenv("BOSUN_ALLOW_EMPTY_DECLARED_STATE") == "true"
 	rcfg.SkipDeployInvariant = os.Getenv("BOSUN_SKIP_DEPLOY_INVARIANT") == "true"
+	cfg.AllowUnauthenticatedWebhook = os.Getenv("BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK") == "true"
 
 	// Post-sync hooks, settle delay, deploy paths, alert flags, drift debounce, remove_orphans, and targets: load from project config, env var overrides.
 	if projectCfg, err := config.Load(); err == nil {
@@ -1797,6 +1841,7 @@ func ConfigFromEnv() *Config {
 		alertCfg := cfg.GetAlertConfig()
 		removeOrphans := cfg.RemoveOrphans()
 		hookSettleDelay := cfg.HookSettleDelay()
+		projectName := cfg.ProjectName()
 		return &reconcile.ReloadedConfig{
 			PostSyncHooks:      cfg.PostSyncHooks(),
 			HookSettleDelay:    &hookSettleDelay,
@@ -1808,6 +1853,7 @@ func ConfigFromEnv() *Config {
 			OnFailure:          &alertCfg.OnFailure,
 			OnSuccess:          &alertCfg.OnSuccess,
 			RemoveOrphans:      &removeOrphans,
+			ProjectName:        &projectName,
 			Targets:            cfg.Targets(),
 		}, nil
 	}
