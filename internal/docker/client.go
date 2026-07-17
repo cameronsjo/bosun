@@ -9,10 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/system"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/system"
+	"github.com/moby/moby/client"
 
 	"github.com/cameronsjo/bosun/internal/log"
 )
@@ -61,7 +59,7 @@ func NewClient() (*Client, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if _, err := cli.Ping(ctx); err != nil {
+	if _, err := cli.Ping(ctx, client.PingOptions{}); err != nil {
 		_ = cli.Close()
 		logger.Error().Err(err).Msg("Docker daemon not reachable")
 		return nil, fmt.Errorf("docker daemon not reachable: %w", err)
@@ -86,7 +84,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	_, err := c.api.Ping(ctx)
+	_, err := c.api.Ping(ctx, client.PingOptions{})
 	if err != nil {
 		logger.Error().
 			Err(err).
@@ -103,7 +101,8 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // Info returns system-wide information about the Docker daemon.
 func (c *Client) Info(ctx context.Context) (system.Info, error) {
-	return c.api.Info(ctx)
+	res, err := c.api.Info(ctx, client.InfoOptions{})
+	return res.Info, err
 }
 
 // Close closes the Docker client connection.
@@ -148,7 +147,7 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	logger.Debug().Bool("running_only", runningOnly).Msg("Listing containers")
 
-	containers, err := c.api.ContainerList(ctx, container.ListOptions{
+	listResult, err := c.api.ContainerList(ctx, client.ContainerListOptions{
 		All: !runningOnly,
 	})
 	if err != nil {
@@ -156,6 +155,7 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 		return nil, fmt.Errorf("list containers: %w", err)
 	}
 
+	containers := listResult.Items
 	result := make([]ContainerInfo, 0, len(containers))
 	for _, ctr := range containers {
 		name := ""
@@ -175,7 +175,7 @@ func (c *Client) ListContainers(ctx context.Context, runningOnly bool) ([]Contai
 			Name:    name,
 			Image:   ctr.Image,
 			Status:  ctr.Status,
-			State:   ctr.State,
+			State:   string(ctr.State),
 			Health:  health,
 			Created: time.Unix(ctr.Created, 0),
 			Ports:   ports,
@@ -266,7 +266,7 @@ func (c *Client) RemoveContainer(ctx context.Context, name string) error {
 	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	logger.Info().Str(log.FieldContainer, name).Msg("Removing container")
 
-	err := c.api.ContainerRemove(ctx, name, container.RemoveOptions{
+	_, err := c.api.ContainerRemove(ctx, name, client.ContainerRemoveOptions{
 		Force: true,
 	})
 	if err != nil {
@@ -283,7 +283,7 @@ func (c *Client) StopContainer(ctx context.Context, name string, timeout int) er
 	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	logger.Info().Str(log.FieldContainer, name).Int("timeout", timeout).Msg("Stopping container")
 
-	err := c.api.ContainerStop(ctx, name, container.StopOptions{Timeout: &timeout})
+	_, err := c.api.ContainerStop(ctx, name, client.ContainerStopOptions{Timeout: &timeout})
 	if err != nil {
 		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to stop container")
 		return fmt.Errorf("stop container %s: %w", name, err)
@@ -305,7 +305,7 @@ func (c *Client) RestartContainer(ctx context.Context, name string, timeout ...i
 
 	logger.Info().Str(log.FieldContainer, name).Int("timeout", t).Msg("Restarting container")
 
-	err := c.api.ContainerRestart(ctx, name, container.StopOptions{Timeout: &t})
+	_, err := c.api.ContainerRestart(ctx, name, client.ContainerRestartOptions{Timeout: &t})
 	if err != nil {
 		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to restart container")
 		return err
@@ -321,7 +321,7 @@ func (c *Client) ExecContainer(ctx context.Context, name string, cmd []string) e
 	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	logger.Info().Str(log.FieldContainer, name).Strs("command", cmd).Msg("Executing command in container")
 
-	createResp, err := c.api.ContainerExecCreate(ctx, name, container.ExecOptions{
+	createResp, err := c.api.ExecCreate(ctx, name, client.ExecCreateOptions{
 		Cmd:          cmd,
 		AttachStdout: true,
 		AttachStderr: true,
@@ -331,7 +331,7 @@ func (c *Client) ExecContainer(ctx context.Context, name string, cmd []string) e
 		return fmt.Errorf("create exec in %s: %w", name, err)
 	}
 
-	attachResp, err := c.api.ContainerExecAttach(ctx, createResp.ID, container.ExecAttachOptions{})
+	attachResp, err := c.api.ExecAttach(ctx, createResp.ID, client.ExecAttachOptions{})
 	if err != nil {
 		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to attach to exec instance")
 		return fmt.Errorf("attach exec in %s: %w", name, err)
@@ -344,7 +344,7 @@ func (c *Client) ExecContainer(ctx context.Context, name string, cmd []string) e
 	}
 
 	// Check exit code
-	inspectResp, err := c.api.ContainerExecInspect(ctx, createResp.ID)
+	inspectResp, err := c.api.ExecInspect(ctx, createResp.ID, client.ExecInspectOptions{})
 	if err != nil {
 		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to inspect exec instance")
 		return fmt.Errorf("inspect exec in %s: %w", name, err)
@@ -368,7 +368,7 @@ func (c *Client) GetContainerLogs(ctx context.Context, name string, tail int) (s
 	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	logger.Debug().Str(log.FieldContainer, name).Int("tail", tail).Msg("Fetching container logs")
 
-	options := container.LogsOptions{
+	options := client.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Tail:       fmt.Sprintf("%d", tail),
@@ -400,7 +400,10 @@ func (c *Client) GetContainerStats(ctx context.Context, name string) (*Container
 	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	logger.Debug().Str(log.FieldContainer, name).Msg("Fetching container stats")
 
-	stats, err := c.api.ContainerStats(ctx, name, false)
+	stats, err := c.api.ContainerStats(ctx, name, client.ContainerStatsOptions{
+		Stream:                false,
+		IncludePreviousSample: true,
+	})
 	if err != nil {
 		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to get container stats")
 		return nil, fmt.Errorf("get container stats: %w", err)
@@ -460,8 +463,11 @@ func (c *Client) GetAllContainerStats(ctx context.Context) ([]ContainerStats, er
 }
 
 // DiskUsage returns Docker system disk usage information.
-func (c *Client) DiskUsage(ctx context.Context) (types.DiskUsage, error) {
-	return c.api.DiskUsage(ctx, types.DiskUsageOptions{})
+//
+// The moby client computes usage per-category on demand; Volumes is requested
+// explicitly so callers (e.g. the status dashboard) can read volume totals.
+func (c *Client) DiskUsage(ctx context.Context) (client.DiskUsageResult, error) {
+	return c.api.DiskUsage(ctx, client.DiskUsageOptions{Volumes: true})
 }
 
 // parseHealthFromStatus extracts health status from the Docker Status string.

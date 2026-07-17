@@ -168,11 +168,7 @@ func runStatus(cmd *cobra.Command, args []string) {
 		// Disk usage
 		diskUsage, err := client.DiskUsage(ctx)
 		if err == nil {
-			var volumeSize int64
-			for _, v := range diskUsage.Volumes {
-				volumeSize += v.UsageData.Size
-			}
-			fmt.Printf("  Volumes: %s\n", formatBytes(volumeSize))
+			fmt.Printf("  Volumes: %s\n", formatBytes(diskUsage.Volumes.TotalSize))
 		}
 
 		// Recent Activity
