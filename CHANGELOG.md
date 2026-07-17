@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.38.0](https://github.com/cameronsjo/bosun/compare/v0.37.10...v0.38.0) (2026-07-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* with no WEBHOOK_SECRET set, webhook trigger requests are rejected with 403. Set WEBHOOK_SECRET or opt out explicitly with BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true.
+
+### Bug Fixes
+
+* resilience slate — fail-closed webhooks ([#345](https://github.com/cameronsjo/bosun/issues/345)), default-target config ([#390](https://github.com/cameronsjo/bosun/issues/390)/[#391](https://github.com/cameronsjo/bosun/issues/391)), retain-old deploy swap ([#343](https://github.com/cameronsjo/bosun/issues/343)) ([2c75ca0](https://github.com/cameronsjo/bosun/commit/2c75ca023b8ff3c16a7d18d0b0012b6581452283))
+
 ## [0.37.10](https://github.com/cameronsjo/bosun/compare/v0.37.9...v0.37.10) (2026-07-02)
 
 
