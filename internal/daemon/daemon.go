@@ -1132,7 +1132,10 @@ func (d *Daemon) maybeSelfHeal(ctx context.Context, report *reconcile.DriftRepor
 	go func() {
 		defer d.wg.Done()
 		defer sentrypkg.Recover()
-		if err := d.TriggerReconcile(ctx, "drift-self-heal", false); err != nil {
+		// force=true: an unchanged commit must not short-circuit self-heal via
+		// shouldSkipDeploy (#350) -- image_mismatch/unhealthy drift on a running
+		// container needs a redeploy even when the declared commit hasn't moved.
+		if err := d.TriggerReconcile(ctx, "drift-self-heal", true); err != nil {
 			logger.Error().
 				Err(err).
 				Msg("Failed to trigger drift self-heal reconciliation")

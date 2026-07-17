@@ -2364,6 +2364,62 @@ func TestReconcilerRun(t *testing.T) {
 		require.NoError(t, err)
 	})
 
+	// Regression test for #350: drift self-heal used to trigger with
+	// force=false, so an unchanged commit hit shouldSkipDeploy and the
+	// pipeline no-op'd forever on image_mismatch/unhealthy drift (which
+	// doesn't change the commit hash). Force must bypass the commit-based
+	// skip so self-heal actually re-applies declared state.
+	t.Run("force redeploys unchanged commit (drift self-heal)", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		stateFile := filepath.Join(tmpDir, "state.json")
+		repoDir := filepath.Join(tmpDir, "repo")
+		stagingDir := filepath.Join(tmpDir, "staging")
+		appdataDir := filepath.Join(tmpDir, "appdata")
+
+		require.NoError(t, os.MkdirAll(appdataDir, 0755))
+
+		gitOps := &mockGitOps{
+			syncChanged: false,
+			syncBefore:  "abc123",
+			syncAfter:   "abc123",
+		}
+
+		// Commit already deployed, no circuit breaker involvement, no missing
+		// declared services -- without force this hits shouldSkipDeploy and
+		// returns nil before ever running the pipeline again.
+		state := &DeployState{
+			SchemaVersion:      2,
+			LastDeployedCommit: "abc123",
+			DeployCount:        1,
+		}
+		require.NoError(t, SaveState(stateFile, state))
+
+		infraDir := filepath.Join(repoDir, "unraid")
+		require.NoError(t, os.MkdirAll(infraDir, 0755))
+
+		cfg := &Config{
+			Force:                   true,
+			DryRun:                  true, // Dry run to skip actual deployment
+			AllowEmptyDeclaredState: true,
+			LockFile:                lockFile,
+			StateFile:               stateFile,
+			RepoDir:                 repoDir,
+			StagingDir:              stagingDir,
+			LocalAppdataPath:        appdataDir,
+			InfraSubDir:             ".",
+		}
+		seedStubComposeService(t, cfg)
+		r := NewReconciler(cfg, WithGitOperations(gitOps))
+
+		err := r.Run(context.Background())
+		require.NoError(t, err)
+
+		reloaded := LoadState(stateFile)
+		assert.Equal(t, 2, reloaded.DeployCount,
+			"force must re-run the full pipeline (incrementing DeployCount) even though the commit is unchanged")
+	})
+
 	t.Run("git sync failure", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		lockFile := filepath.Join(tmpDir, "reconcile.lock")
