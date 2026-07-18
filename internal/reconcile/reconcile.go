@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -357,6 +358,44 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 		rootSpan.End()
 	}()
 
+	// A panic anywhere before the pipeline's own attempt-tracking write
+	// (Step: "Track this attempt before executing the pipeline", below) must
+	// still count as a consecutive-failure attempt against the circuit
+	// breaker -- otherwise a commit that panics syncRepo every time (e.g. a
+	// defect triggered by that commit's own content) retries forever while
+	// an ordinary error in the same window is tracked identically via
+	// recordSyncFailureAttempt (#364 review follow-up). Registered here (as
+	// opposed to daemon.go's reconcileLoop-level recover) so it runs BEFORE
+	// the rootSpan defer above and can set runErr for that defer to see.
+	defer func() {
+		rec := recover()
+		if rec == nil {
+			return
+		}
+
+		logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+		logger.Error().
+			Interface("panic", rec).
+			Str("stack", string(debug.Stack())).
+			Msg("Recovered from panic during reconcile pipeline")
+		ui.Error("Recovered from panic during reconcile pipeline: %v", rec)
+
+		panicMsg := fmt.Sprintf("reconcile pipeline panicked: %v", rec)
+		state := LoadState(r.config.StateFile)
+		// r.lastCommit is the best resolvable commit key: if the panic hit
+		// before syncRepo ever determined "after" (the exact scenario this
+		// guards -- a panicking Sync()), it still holds whatever commit the
+		// last successful sync resolved (or "" on a fresh daemon that has
+		// never synced), giving the breaker a stable, consistent key across
+		// repeated panicking attempts.
+		if breakerErr := r.recordSyncFailureAttempt(ctx, state, r.lastCommit, panicMsg); breakerErr != nil {
+			runErr = breakerErr
+			return
+		}
+		r.sendThrottledFailureAlert(ctx, state, panicMsg)
+		runErr = errors.New(panicMsg)
+	}()
+
 	// Bridge correlation IDs into the span.
 	if reconcileID := log.ReconcileIDFromContext(ctx); reconcileID != "" {
 		rootSpan.SetAttributes(telemetry.StringAttr("reconcile_id", reconcileID))
@@ -416,11 +455,11 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 
 		// Load state before alerting so throttle state is available.
 		state := LoadState(r.config.StateFile)
-		state.LastAttemptedCommit, state.AttemptCount = nextAttemptState(state.LastAttemptedCommit, after, state.AttemptCount)
-		if saveErr := SaveState(r.config.StateFile, state); saveErr != nil {
-			logger.Error().Err(saveErr).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save attempt tracking state for git sync failure")
+		syncErrMsg := fmt.Sprintf("failed to sync repository: %v", err)
+		if breakerErr := r.recordSyncFailureAttempt(ctx, state, after, syncErrMsg); breakerErr != nil {
+			return breakerErr
 		}
-		r.sendThrottledFailureAlert(ctx, state, fmt.Sprintf("failed to sync repository: %v", err))
+		r.sendThrottledFailureAlert(ctx, state, syncErrMsg)
 		return fmt.Errorf("failed to sync repository: %w", err)
 	}
 
@@ -679,7 +718,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	// exemption here (contrast with the general verifyPostDeploy check
 	// below, which does exempt pre-existing casualties, #392).
 	_, otelHealthGateSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.health_gate")
-	healthGateErr := r.runHealthGate(ctx, state, localDeploy)
+	rolledBack, healthGateErr := r.runHealthGate(ctx, state, localDeploy)
 	if healthGateErr != nil {
 		telemetry.SpanError(otelHealthGateSpan, healthGateErr)
 	} else {
@@ -693,7 +732,18 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 		// post-sync hooks complete *this* deploy's file changes and must
 		// still run. A chronically unhealthy critical container must not
 		// permanently disable them for every future reconcile (#392).
-		if r.dockerClientFn != nil && !r.config.DryRun && len(r.config.PostSyncHooks.Value) > 0 {
+		//
+		// Exception: when runHealthGate actually rolled back, the working
+		// tree is now a hybrid -- old compose files restored, but the rest of
+		// this deploy's WrittenFiles (appdata configs, etc.) are still the
+		// NEW commit's. Firing a hook keyed on those WrittenFiles against
+		// that hybrid tree would restart a container on a mismatched
+		// compose/config combination, so hooks are skipped in that case
+		// (review follow-up to #392; see the scope note in runHealthGate).
+		if rolledBack {
+			logger.Warn().Msg("Skipping post-sync hooks: health-gate rollback restored compose files, leaving a partial tree that hooks must not act on")
+			ui.Warning("Skipping post-sync hooks: rollback restored compose files only, tree state is inconsistent")
+		} else if r.dockerClientFn != nil && !r.config.DryRun && len(r.config.PostSyncHooks.Value) > 0 {
 			r.runPostSyncHooksWithSpan(ctx, state.LastDeployedCommit, after, deployResult, localDeploy)
 		}
 		return fmt.Errorf("health gate failed: %w", healthGateErr)
@@ -764,6 +814,42 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	// Send success alert.
 	r.sendSuccessAlert(ctx)
 
+	return nil
+}
+
+// recordSyncFailureAttempt tracks a consecutive-failure attempt for a
+// commit that never made it to the pipeline's own attempt-tracking write
+// ("Track this attempt before executing the pipeline", below) -- a git-sync
+// error, or a panic recovered before that point. Both must be treated
+// identically: an ordinary sync error and a panicking sync on the same
+// effective commit key both count against the circuit breaker, and both
+// trip it after MaxAttempts (#364 review follow-up -- a panicking sync must
+// not retry forever while an ordinary error on the same commit would
+// eventually trip).
+//
+// Returns a non-nil error (already alerted) if the breaker trips; callers
+// must return that error immediately without alerting again. Returns nil
+// after recording the attempt and persisting state, in which case the
+// caller alerts and returns its own failure error as usual.
+func (r *Reconciler) recordSyncFailureAttempt(ctx context.Context, state *DeployState, commit, reason string) error {
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+
+	if shouldTriggerCircuitBreaker(state.LastAttemptedCommit, commit, state.AttemptCount, MaxAttempts, r.config.Force) {
+		logger.Error().
+			Str("commit", commit).
+			Int("attempts", state.AttemptCount).
+			Msg("Circuit breaker: too many consecutive failures before commit resolution, skipping (use --force to override)")
+		ui.Error("Circuit breaker: %d consecutive failures (use --force to retry): %s",
+			state.AttemptCount, reason)
+		breakerErr := fmt.Errorf("circuit breaker: %d consecutive failures: %s", state.AttemptCount, reason)
+		r.sendThrottledFailureAlert(ctx, state, breakerErr.Error())
+		return breakerErr
+	}
+
+	state.LastAttemptedCommit, state.AttemptCount = nextAttemptState(state.LastAttemptedCommit, commit, state.AttemptCount)
+	if saveErr := SaveState(r.config.StateFile, state); saveErr != nil {
+		logger.Error().Err(saveErr).Str(log.FieldPath, r.config.StateFile).Msg("Failed to save attempt tracking state")
+	}
 	return nil
 }
 
@@ -1021,35 +1107,40 @@ func (r *Reconciler) cleanupStaging() error {
 // Skipped when: DryRun, remote deploy (!isLocalMode), no Docker client,
 // or empty CriticalContainers list.
 // On failure: triggers rollback and sends a throttled failure alert.
-func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState, local bool) error {
+// runHealthGate returns (rolledBack, err). rolledBack is true only when a
+// rollback was actually attempted (regardless of whether the rollback
+// itself succeeded) -- the caller uses it to decide whether post-sync hooks
+// are safe to run against the working tree (#392 review follow-up, see the
+// call site in Run).
+func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState, local bool) (rolledBack bool, err error) {
 	containers := r.config.CriticalContainers.Value
 	if len(containers) == 0 {
-		return nil
+		return false, nil
 	}
 
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
 	if r.config.DryRun {
 		logger.Debug().Msg("Health gate skipped. Reason: dry run")
-		return nil
+		return false, nil
 	}
 
 	if !local {
 		logger.Warn().
 			Strs("containers", containers).
 			Msg("Health gate skipped for remote deploy. Docker API is local-only")
-		return nil
+		return false, nil
 	}
 
 	if r.dockerClientFn == nil {
 		logger.Warn().Msg("Health gate skipped. Reason: no Docker client")
-		return nil
+		return false, nil
 	}
 
 	client := r.dockerClientFn()
 	if client == nil {
 		logger.Warn().Msg("Health gate skipped. Reason: Docker client unavailable")
-		return nil
+		return false, nil
 	}
 
 	timeout := r.config.HealthGateTimeout
@@ -1057,28 +1148,40 @@ func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState, loca
 		timeout = 60 * time.Second
 	}
 
-	err := CheckCriticalContainerHealth(ctx, client, containers, timeout)
-	if err != nil {
+	gateErr := CheckCriticalContainerHealth(ctx, client, containers, timeout)
+	if gateErr != nil {
 		logger.Error().
-			Err(err).
+			Err(gateErr).
 			Strs("containers", containers).
 			Msg("Critical container health gate failed. Triggering rollback")
 
 		// Trigger rollback. The health gate runs after `docker compose up -d`
 		// already exited 0 (against now-unhealthy containers), so re-running
 		// compose up here would be a silent no-op — restore the backup directly.
+		//
+		// Scope note: RollbackFromBackup restores only the compose files
+		// (r.lastComposeFiles), not the full WrittenFiles breadth a normal
+		// deploy writes (appdata configs, etc.) -- so a rollback leaves a
+		// hybrid tree: old compose files paired with whatever non-compose
+		// config the failed deploy already wrote. That's exactly why hooks
+		// are skipped below when a rollback runs: firing a hook keyed on the
+		// NEW commit's WrittenFiles against that hybrid tree would restart a
+		// container against a mismatched compose/config combination. Widening
+		// rollback to cover the full WrittenFiles breadth is a separate,
+		// larger question and is being filed as its own issue -- not fixed here.
 		if r.lastBackupPath != "" && len(r.lastComposeFiles) > 0 {
+			rolledBack = true
 			rollbackErr := r.deploy.RollbackFromBackup(ctx, r.lastComposeFiles, r.lastBackupPath)
 			if rollbackErr != nil {
 				logger.Error().Err(rollbackErr).Msg("Rollback after health gate failure also failed")
 			}
 		}
 
-		r.sendThrottledFailureAlert(ctx, state, err.Error())
-		return err
+		r.sendThrottledFailureAlert(ctx, state, gateErr.Error())
+		return rolledBack, gateErr
 	}
 
-	return nil
+	return false, nil
 }
 
 // syncRepo syncs the git repository.

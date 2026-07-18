@@ -249,8 +249,22 @@ func (d *Daemon) warnWebhookAuthPosture(logger zerolog.Logger) {
 
 // Run starts the daemon and blocks until shutdown.
 // It handles SIGTERM and SIGINT for graceful shutdown.
-func (d *Daemon) Run(ctx context.Context) error {
-	defer sentrypkg.Recover()
+func (d *Daemon) Run(ctx context.Context) (err error) {
+	// A bare "defer sentrypkg.Recover()" here would swallow a panic in Run's
+	// own synchronous body (before any goroutine is even spawned) and return
+	// nil -- the caller's ui.Fatal never fires, the process exits 0, and a
+	// supervisor keyed on a nonzero exit code never restarts a daemon that
+	// never actually came up. Run needs its own recover that sets the named
+	// return so a startup panic still surfaces as a real error (#364 review
+	// follow-up). The six goroutines spawned below keep their own
+	// "defer sentrypkg.Recover()" -- a panic there must NOT propagate to
+	// this frame; recovering it locally in each goroutine is correct.
+	defer func() {
+		if r := recover(); r != nil {
+			sentrypkg.Report(r)
+			err = fmt.Errorf("daemon run panicked: %v", r)
+		}
+	}()
 
 	// Initialize structured logging for daemon mode (JSON output).
 	_ = os.Setenv("BOSUN_DAEMON_MODE", "true")
@@ -1794,14 +1808,22 @@ func ConfigFromEnv() *Config {
 	}
 	if v := os.Getenv("BOSUN_SHUTDOWN_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
-			cfg.ShutdownTimeout = d
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_SHUTDOWN_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must be positive, falling back to default")
+			} else {
+				cfg.ShutdownTimeout = d
+			}
 		} else {
 			log.Warn().Str("env", "BOSUN_SHUTDOWN_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 	if v := os.Getenv("BOSUN_API_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
-			cfg.APITimeout = d
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_API_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must be positive, falling back to default")
+			} else {
+				cfg.APITimeout = d
+			}
 		} else {
 			log.Warn().Str("env", "BOSUN_API_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}

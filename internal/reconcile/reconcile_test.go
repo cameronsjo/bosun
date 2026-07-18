@@ -1290,6 +1290,22 @@ func (m *mockGitOps) DiffFiles(_ context.Context, _, _ string) ([]string, error)
 	return m.diffFiles, m.diffErr
 }
 
+// panicSyncGitOps is a GitOperations stub whose Sync panics on every call,
+// simulating a defect anywhere in the git-sync step so tests can prove a
+// panic is tracked as a circuit-breaker attempt exactly like an ordinary
+// sync error (#364 review follow-up).
+type panicSyncGitOps struct{}
+
+func (panicSyncGitOps) Sync(context.Context) (bool, string, string, error) {
+	panic("simulated sync panic")
+}
+
+func (panicSyncGitOps) IsRepo(context.Context) bool { return false }
+
+func (panicSyncGitOps) DiffFiles(context.Context, string, string) ([]string, error) {
+	return nil, nil
+}
+
 // mockSecretsDecryptor implements SecretsDecryptor for testing.
 type mockSecretsDecryptor struct {
 	decryptResult map[string]any
@@ -2456,6 +2472,60 @@ func TestReconcilerRun(t *testing.T) {
 
 		err := r.Run(context.Background())
 		require.NoError(t, err)
+	})
+
+	// #364 review follow-up: a panic during syncRepo (or anywhere else in
+	// Run's early window, before the pipeline's own attempt-tracking write)
+	// must count as a consecutive-failure attempt exactly like an ordinary
+	// sync error -- otherwise a commit that panics syncRepo every time
+	// retries forever, since the breaker's attempt counter never advances.
+	t.Run("panicking sync accumulates attempts like an ordinary failure", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		stateFile := filepath.Join(tmpDir, "state.json")
+
+		cfg := &Config{
+			LockFile:  lockFile,
+			StateFile: stateFile,
+		}
+		r := NewReconciler(cfg, WithGitOperations(panicSyncGitOps{}))
+
+		err := r.Run(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "panicked")
+		assert.NotContains(t, err.Error(), "circuit breaker", "must not trip the breaker on the first attempt")
+
+		saved := LoadState(stateFile)
+		assert.Equal(t, 1, saved.AttemptCount, "a recovered panic must still record an attempt")
+	})
+
+	t.Run("panicking sync trips the breaker after max attempts", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		stateFile := filepath.Join(tmpDir, "state.json")
+
+		// Pre-save state as if 3 prior panicking attempts already ran --
+		// mirrors "circuit breaker blocks after max attempts" above, but
+		// keyed on "" since a panic in syncRepo never resolves a real commit
+		// (r.lastCommit, the fallback key, stays empty across repeated
+		// panicking attempts).
+		state := &DeployState{
+			SchemaVersion:       2,
+			LastAttemptedCommit: "",
+			AttemptCount:        3,
+		}
+		require.NoError(t, SaveState(stateFile, state))
+
+		cfg := &Config{
+			LockFile:  lockFile,
+			StateFile: stateFile,
+		}
+		r := NewReconciler(cfg, WithGitOperations(panicSyncGitOps{}))
+
+		err := r.Run(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "circuit breaker",
+			"the breaker error must appear exactly as it would for repeated ordinary failures")
 	})
 
 	// Regression test for #350: drift self-heal used to trigger with
@@ -4190,7 +4260,7 @@ func TestRunHealthGate_SkipsWhenNoCriticalContainers(t *testing.T) {
 	r := NewReconciler(cfg)
 	state := &DeployState{}
 
-	err := r.runHealthGate(context.Background(), state, true)
+	_, err := r.runHealthGate(context.Background(), state, true)
 	require.NoError(t, err)
 }
 
@@ -4204,7 +4274,7 @@ func TestRunHealthGate_SkipsWhenDryRun(t *testing.T) {
 	r := NewReconciler(cfg)
 	state := &DeployState{}
 
-	err := r.runHealthGate(context.Background(), state, true)
+	_, err := r.runHealthGate(context.Background(), state, true)
 	require.NoError(t, err)
 }
 
@@ -4216,7 +4286,7 @@ func TestRunHealthGate_SkipsForRemoteDeploy(t *testing.T) {
 	r := NewReconciler(cfg)
 	state := &DeployState{}
 
-	err := r.runHealthGate(context.Background(), state, false)
+	_, err := r.runHealthGate(context.Background(), state, false)
 	require.NoError(t, err)
 }
 
@@ -4228,7 +4298,7 @@ func TestRunHealthGate_SkipsWhenNoDockerClient(t *testing.T) {
 	r := NewReconciler(cfg)
 	state := &DeployState{}
 
-	err := r.runHealthGate(context.Background(), state, true)
+	_, err := r.runHealthGate(context.Background(), state, true)
 	require.NoError(t, err)
 }
 
@@ -4247,7 +4317,7 @@ func TestRunHealthGate_PassesWhenAllHealthy(t *testing.T) {
 	r := NewReconciler(cfg, WithDockerClient(client))
 	state := &DeployState{}
 
-	err := r.runHealthGate(context.Background(), state, true)
+	_, err := r.runHealthGate(context.Background(), state, true)
 	require.NoError(t, err)
 }
 
@@ -4269,18 +4339,21 @@ func TestRunHealthGate_FailsWhenUnhealthy(t *testing.T) {
 	r := NewReconciler(cfg, WithDockerClient(client))
 	state := &DeployState{}
 
-	err := r.runHealthGate(context.Background(), state, true)
+	_, err := r.runHealthGate(context.Background(), state, true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "authelia")
 }
 
-// TestRun_HealthGateFailureStillRunsPostSyncHooks is a #392 regression: a
-// critical-container health-gate failure must not permanently disable
-// post-sync hooks. Hooks complete *this* deploy's file changes and must run
-// even when the gate itself still fails the reconcile — explicit critical
-// containers get no pre-existing-unhealthy exemption (contrast with the
-// general verifyPostDeploy check, which does exempt pre-existing casualties).
-func TestRun_HealthGateFailureStillRunsPostSyncHooks(t *testing.T) {
+// TestRun_HealthGateFailureWithRollback_SkipsPostSyncHooks is a #392/#364
+// review follow-up: when runHealthGate actually rolls back (a backup and
+// compose files were available, matching this test's setup via
+// seedStubComposeService), the working tree is a hybrid -- old compose
+// files restored, but the rest of this deploy's WrittenFiles are still the
+// NEW commit's. Firing a hook keyed on those WrittenFiles against that
+// hybrid tree would restart a container on a mismatched compose/config
+// combination, so hooks must be skipped in that case (contrast with
+// TestRun_HealthGateFailureWithoutRollback_RunsPostSyncHooks below).
+func TestRun_HealthGateFailureWithRollback_SkipsPostSyncHooks(t *testing.T) {
 	tmpDir := t.TempDir()
 	lockFile := filepath.Join(tmpDir, "reconcile.lock")
 	stateFile := filepath.Join(tmpDir, "state.json")
@@ -4292,7 +4365,7 @@ func TestRun_HealthGateFailureStillRunsPostSyncHooks(t *testing.T) {
 	require.NoError(t, os.MkdirAll(appdataDir, 0755))
 
 	// Seed a prior deploy: hooks skip entirely on an empty previous commit,
-	// and a real "previous commit" is needed to prove hooks actually ran
+	// and a real "previous commit" is needed to prove whether hooks ran
 	// against it.
 	require.NoError(t, SaveState(stateFile, &DeployState{
 		SchemaVersion:      2,
@@ -4342,13 +4415,108 @@ func TestRun_HealthGateFailureStillRunsPostSyncHooks(t *testing.T) {
 			{Container: "downstream", Paths: []string{"**"}, Action: "restart"},
 		}),
 	}
+	// seedStubComposeService writes a real compose file, so the deploy step
+	// populates r.lastComposeFiles, and the backup step (never skipped
+	// outside DryRun) populates r.lastBackupPath -- guaranteeing runHealthGate
+	// actually attempts a rollback below.
 	seedStubComposeService(t, cfg)
 	r := NewReconciler(cfg, WithGitOperations(gitOps), WithDeployOps(deploy), WithDockerClient(dockerClient))
 
 	err := r.Run(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "health gate failed")
-	assert.True(t, restartCalled, "post-sync hooks must still run despite a health-gate failure (#392)")
+	assert.False(t, restartCalled, "post-sync hooks must be skipped when a rollback actually ran, to avoid acting on a hybrid tree")
+
+	saved := LoadState(stateFile)
+	assert.True(t, saved.NeedsRedeploy, "deploy must stay marked incomplete so the next reconcile retries")
+	assert.Equal(t, "prevcommit", saved.LastDeployedCommit, "commit must not advance past a failed health gate")
+}
+
+// TestRun_HealthGateFailureWithoutRollback_RunsPostSyncHooks is the
+// complementary #392/#364 review follow-up case: when runHealthGate fails
+// but no rollback is attempted (no compose files were deployed, so
+// r.lastComposeFiles stays empty), the working tree is fully the new
+// commit's -- hooks are safe to run and must not be permanently disabled by
+// a chronically unhealthy critical container (the original #392 intent).
+func TestRun_HealthGateFailureWithoutRollback_RunsPostSyncHooks(t *testing.T) {
+	tmpDir := t.TempDir()
+	lockFile := filepath.Join(tmpDir, "reconcile.lock")
+	stateFile := filepath.Join(tmpDir, "state.json")
+	repoDir := filepath.Join(tmpDir, "repo")
+	stagingDir := filepath.Join(tmpDir, "staging")
+	appdataDir := filepath.Join(tmpDir, "appdata")
+
+	require.NoError(t, os.MkdirAll(repoDir, 0755))
+	require.NoError(t, os.MkdirAll(appdataDir, 0755))
+
+	require.NoError(t, SaveState(stateFile, &DeployState{
+		SchemaVersion:      2,
+		LastDeployedCommit: "prevcommit",
+	}))
+
+	gitOps := &mockGitOps{
+		syncChanged: true,
+		syncBefore:  "prevcommit",
+		syncAfter:   "newcommit",
+	}
+
+	restartCalled := false
+	mockAPI := newReconcileMockDockerAPI()
+	mockAPI.containerInspectFunc = func(_ context.Context, name string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+		return makeInspectResponse(name, "running", &container.Health{Status: "unhealthy"}), nil
+	}
+	mockAPI.containerRestartFunc = func(_ context.Context, _ string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
+		restartCalled = true
+		return client.ContainerRestartResult{}, nil
+	}
+	dockerClient := docker.NewClientWithAPI(mockAPI)
+
+	deploy := &DeployOps{
+		DryRun:          false,
+		ProjectName:     "test",
+		ContentHashSync: true,
+		composeUpFn: func(_ context.Context, _ []string) error {
+			return nil
+		},
+	}
+
+	cfg := &Config{
+		DryRun:                  false,
+		AllowEmptyDeclaredState: true,
+		LockFile:                lockFile,
+		StateFile:               stateFile,
+		RepoDir:                 repoDir,
+		StagingDir:              stagingDir,
+		LocalAppdataPath:        appdataDir,
+		InfraSubDir:             ".",
+		SecretsFiles:            []string{},
+		CriticalContainers:      NewConfigField([]string{"chronic-critical"}),
+		HealthGateTimeout:       50 * time.Millisecond,
+		PostSyncHooks: NewConfigField([]PostSyncHook{
+			{Container: "downstream", Paths: []string{"**"}, Action: "restart"},
+		}),
+	}
+	// Deliberately do NOT seed a compose file -- only the compose dir itself,
+	// empty. ExtractDeclaredState requires the dir to exist (ErrComposeDirMissing
+	// is always fatal) but AllowEmptyDeclaredState tolerates zero declared
+	// services, and deployLocal's compose glob finds nothing, so
+	// r.lastComposeFiles never gets populated and no rollback is attempted.
+	composeDir := filepath.Join(repoDir, "compose")
+	require.NoError(t, os.MkdirAll(composeDir, 0755))
+
+	// A non-compose file so content-hash sync has something to write --
+	// otherwise executePostSyncHooks' own "no changed files" early-return
+	// would skip hooks for an unrelated reason, masking what this test
+	// actually checks (the rollback-based skip introduced by this change).
+	appdataSrcDir := filepath.Join(repoDir, "appdata", "downstream")
+	require.NoError(t, os.MkdirAll(appdataSrcDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(appdataSrcDir, "config.yml"), []byte("key: value\n"), 0644))
+	r := NewReconciler(cfg, WithGitOperations(gitOps), WithDeployOps(deploy), WithDockerClient(dockerClient))
+
+	err := r.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "health gate failed")
+	assert.True(t, restartCalled, "post-sync hooks must still run when no rollback was attempted (#392)")
 
 	saved := LoadState(stateFile)
 	assert.True(t, saved.NeedsRedeploy, "deploy must stay marked incomplete so the next reconcile retries")
@@ -4452,10 +4620,11 @@ func TestRunHealthGate_RollbackRestoresBackupInsteadOfRedeploying(t *testing.T) 
 	r.lastComposeFiles = []string{composeFile}
 	r.lastBackupPath = backupDir
 
-	err := r.runHealthGate(context.Background(), &DeployState{}, true)
+	rolledBack, err := r.runHealthGate(context.Background(), &DeployState{}, true)
 	require.Error(t, err) // The health gate itself always reports the failure.
 	assert.False(t, deployCalled,
 		"health-gate rollback must not re-run compose up against the files that produced the unhealthy state")
+	assert.True(t, rolledBack, "a backup path and compose files are set, so a rollback must have been attempted")
 }
 
 func TestDeployRemoteErrorPropagation(t *testing.T) {

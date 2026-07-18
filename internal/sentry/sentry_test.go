@@ -191,7 +191,7 @@ func TestReconcileTransaction_WhenDisabled(t *testing.T) {
 
 	// Should return same context and no-op finish.
 	assert.Equal(t, ctx, newCtx)
-	finish(nil)          // Should not panic.
+	finish(nil)               // Should not panic.
 	finish(errors.New("err")) // Should not panic.
 }
 

@@ -154,12 +154,24 @@ func Enabled() bool {
 // net in the daemon was decorative dead code unless BOSUN_SENTRY_DSN was
 // set — a panic in, say, the reconcile goroutine propagated unhandled and
 // crashed the process instead of being recovered (#364).
+//
+// Callers that need to convert the panic into a named return error (recover()
+// only succeeds once per panic, so a caller can't both call it directly and
+// also defer this function) should call recover() themselves and pass the
+// result to Report instead — see Daemon.Run's top-level defer.
 func Recover() {
 	r := recover()
 	if r == nil {
 		return
 	}
+	Report(r)
+}
 
+// Report logs an already-recovered panic value and forwards it to Sentry
+// when enabled. Use after calling Go's recover() directly (e.g. to also set
+// a named return error from the same panic) instead of Recover(), which
+// calls recover() itself and would find nothing left to recover.
+func Report(r any) {
 	logger := log.Component(log.ComponentDaemon)
 	logger.Error().
 		Interface("panic", r).

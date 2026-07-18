@@ -1535,6 +1535,76 @@ func TestConfigFromEnv_ReconcileTimeout(t *testing.T) {
 	})
 }
 
+// TestConfigFromEnv_ShutdownTimeout closes #443: BOSUN_SHUTDOWN_TIMEOUT had
+// the same unguarded-zero gap as BOSUN_RECONCILE_TIMEOUT (#419) -- a
+// non-positive value reached cfg.ShutdownTimeout directly instead of falling
+// back to the 30s default.
+func TestConfigFromEnv_ShutdownTimeout(t *testing.T) {
+	t.Run("default is 30s when unset", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 30*time.Second, cfg.ShutdownTimeout)
+	})
+
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_SHUTDOWN_TIMEOUT", "1m")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, time.Minute, cfg.ShutdownTimeout)
+	})
+
+	t.Run("invalid value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_SHUTDOWN_TIMEOUT", "not-a-duration")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 30*time.Second, cfg.ShutdownTimeout)
+	})
+
+	t.Run("negative value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_SHUTDOWN_TIMEOUT", "-5s")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 30*time.Second, cfg.ShutdownTimeout)
+	})
+
+	t.Run("zero value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_SHUTDOWN_TIMEOUT", "0")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 30*time.Second, cfg.ShutdownTimeout)
+	})
+}
+
+// TestConfigFromEnv_APITimeout closes #443: BOSUN_API_TIMEOUT had the same
+// unguarded-zero gap as BOSUN_RECONCILE_TIMEOUT (#419) -- a non-positive
+// value reached cfg.APITimeout directly instead of falling back to the 30s
+// default.
+func TestConfigFromEnv_APITimeout(t *testing.T) {
+	t.Run("default is 30s when unset", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 30*time.Second, cfg.APITimeout)
+	})
+
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_API_TIMEOUT", "1m")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, time.Minute, cfg.APITimeout)
+	})
+
+	t.Run("invalid value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_API_TIMEOUT", "not-a-duration")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 30*time.Second, cfg.APITimeout)
+	})
+
+	t.Run("negative value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_API_TIMEOUT", "-5s")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 30*time.Second, cfg.APITimeout)
+	})
+
+	t.Run("zero value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_API_TIMEOUT", "0")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 30*time.Second, cfg.APITimeout)
+	})
+}
+
 func TestConfigFromEnv_HealthCheckTimeout(t *testing.T) {
 	t.Run("default uses reconcile package default", func(t *testing.T) {
 		cfg := ConfigFromEnv()
@@ -2692,10 +2762,10 @@ func TestConfigFromEnv_RestartBreaker(t *testing.T) {
 
 func TestParseDurationOrSeconds(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   string
-		want    time.Duration
-		wantOK  bool
+		name   string
+		input  string
+		want   time.Duration
+		wantOK bool
 	}{
 		{name: "Go duration 30s", input: "30s", want: 30 * time.Second, wantOK: true},
 		{name: "Go duration 5m", input: "5m", want: 5 * time.Minute, wantOK: true},

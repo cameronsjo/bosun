@@ -81,6 +81,66 @@ func TestClassifyHealth(t *testing.T) {
 	})
 }
 
+// TestBlockingUnhealthy is a #392/#364-review table-driven test enumerating
+// the three possible outcomes of the pre-existing-unhealthy exemption:
+// every unhealthy container was already broken before this deploy (fully
+// exempted), some were and some weren't (partial), and none were -- both
+// because everything is genuinely new AND because there's no baseline to
+// exempt against at all (preDeployUnhealthy nil/empty, e.g. the snapshot
+// itself failed or this is the first-ever deploy).
+func TestBlockingUnhealthy(t *testing.T) {
+	tests := []struct {
+		name        string
+		unhealthy   []string
+		preExisting map[string]bool
+		want        []string
+	}{
+		{
+			name:        "fully exempted: every unhealthy container is pre-existing",
+			unhealthy:   []string{"immich-server", "obsidian"},
+			preExisting: map[string]bool{"immich-server": true, "obsidian": true},
+			want:        []string{},
+		},
+		{
+			name:        "partial: one pre-existing, one newly unhealthy",
+			unhealthy:   []string{"chronic-svc", "new-svc"},
+			preExisting: map[string]bool{"chronic-svc": true},
+			want:        []string{"new-svc"},
+		},
+		{
+			name:        "none exempted: no baseline at all (nil preExisting)",
+			unhealthy:   []string{"new-svc"},
+			preExisting: nil,
+			want:        []string{"new-svc"},
+		},
+		{
+			name:        "none exempted: empty baseline map (snapshot found nothing pre-existing)",
+			unhealthy:   []string{"new-svc"},
+			preExisting: map[string]bool{},
+			want:        []string{"new-svc"},
+		},
+		{
+			name:        "none exempted: unhealthy containers are all absent from a non-empty baseline",
+			unhealthy:   []string{"new-svc"},
+			preExisting: map[string]bool{"unrelated-svc": true},
+			want:        []string{"new-svc"},
+		},
+		{
+			name:        "no unhealthy containers at all",
+			unhealthy:   nil,
+			preExisting: map[string]bool{"chronic-svc": true},
+			want:        []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := blockingUnhealthy(tt.unhealthy, tt.preExisting)
+			assert.ElementsMatch(t, tt.want, got)
+		})
+	}
+}
+
 func TestPollContainerHealth(t *testing.T) {
 	t.Run("all healthy on first poll", func(t *testing.T) {
 		mockAPI := &dockertest.MockDockerAPI{
