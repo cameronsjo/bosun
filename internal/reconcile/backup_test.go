@@ -773,3 +773,48 @@ func TestBackup_UnreadableFileIsFatal(t *testing.T) {
 	require.NoError(t, readErr)
 	assert.Empty(t, entries, "failed backup must not leave a partial backup directory behind (#352)")
 }
+
+// TestZeroReader verifies the padding source yields zeros indefinitely — the
+// churn-tolerance paths (vanished/replaced/shrunk files) depend on it to keep
+// a partially-written entry structurally valid.
+func TestZeroReader(t *testing.T) {
+	buf := make([]byte, 64)
+	for i := range buf {
+		buf[i] = 0xFF
+	}
+	n, err := zeroReader{}.Read(buf)
+	require.NoError(t, err)
+	assert.Equal(t, 64, n)
+	for i, b := range buf {
+		require.Zerof(t, b, "byte %d not zeroed", i)
+	}
+	got, err := io.ReadAll(io.LimitReader(zeroReader{}, 1024))
+	require.NoError(t, err)
+	assert.Len(t, got, 1024)
+}
+
+// TestBackup_UnreadableDirIsFatal covers the walk-error branch: a directory
+// that cannot be descended into (as opposed to a file that cannot be opened)
+// must fail the backup loudly with path context, and leave no partial backup.
+func TestBackup_UnreadableDirIsFatal(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; chmod 000 does not deny access")
+	}
+	tmpDir := evalSymlinks(t, t.TempDir())
+	appdata := filepath.Join(tmpDir, "appdata")
+	locked := filepath.Join(appdata, "locked")
+	require.NoError(t, os.MkdirAll(locked, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(locked, "hidden.yaml"), []byte("key: value\n"), 0644))
+	require.NoError(t, os.Chmod(locked, 0000))
+	defer func() { _ = os.Chmod(locked, 0755) }()
+
+	backupDir := filepath.Join(tmpDir, "backups")
+	d := NewDeployOps(false, "")
+	_, err := d.Backup(context.Background(), backupDir, []string{appdata})
+	require.Error(t, err, "an unreadable directory must fail the backup loudly")
+	assert.Contains(t, err.Error(), "locked")
+
+	entries, readErr := os.ReadDir(backupDir)
+	require.NoError(t, readErr)
+	assert.Empty(t, entries, "failed backup must not leave a partial backup directory behind")
+}
