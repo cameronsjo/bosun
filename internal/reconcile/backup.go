@@ -240,9 +240,30 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 		Int("path_count", len(paths)).
 		Msg("Creating backup")
 
+	// Exclude the backup destination so the archive cannot recursively include
+	// its own growing output when backupDir is nested inside a backed-up path
+	// (#319). Resolving it is load-bearing for that safeguard, so failure is
+	// fatal — and it resolves BEFORE MkdirAll so no partial directory is left
+	// behind on this path.
+	absBackupDir, absErr := filepath.Abs(backupDir)
+	if absErr != nil {
+		logger.Error().Err(absErr).Str(log.FieldPath, backupDir).
+			Msg("Failed to create backup. Reason: cannot resolve backup destination for self-exclusion")
+		return "", fmt.Errorf("failed to resolve backup destination: %w", absErr)
+	}
+
 	if err := os.MkdirAll(backupPath, 0755); err != nil {
 		logger.Error().Err(err).Str(log.FieldPath, backupPath).Msg("Failed to create backup directory")
 		return "", fmt.Errorf("failed to create backup directory: %w", err)
+	}
+
+	// A failed backup must not leave partial artifacts for a later rollback to
+	// trust (#352); a cleanup failure is loud (logged), not silently discarded.
+	removeFailedBackup := func() {
+		if rmErr := os.RemoveAll(backupPath); rmErr != nil {
+			logger.Error().Err(rmErr).Str(log.FieldPath, backupPath).
+				Msg("Failed to remove partial backup after error; stale artifacts remain")
+		}
 	}
 
 	tarFile := filepath.Join(backupPath, "configs.tar.gz")
@@ -260,17 +281,6 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 		return backupName, nil
 	}
 
-	// Exclude the backup destination so the archive cannot recursively include
-	// its own growing output when backupDir is nested inside a backed-up path
-	// (#319). Resolving it is load-bearing for that safeguard, so failure is
-	// fatal rather than a skipped exclude.
-	absBackupDir, absErr := filepath.Abs(backupDir)
-	if absErr != nil {
-		logger.Error().Err(absErr).Str(log.FieldPath, backupDir).
-			Msg("Failed to create backup. Reason: cannot resolve backup destination for self-exclusion")
-		return "", fmt.Errorf("failed to resolve backup destination: %w", absErr)
-	}
-
 	// Write the archive with Go's archive/tar directly. The previous external
 	// `tar --null -T -` invocation silently produced nothing on busybox tar
 	// (no --null support) and its exit code was discarded — every backup was an
@@ -278,14 +288,14 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 	// Native archiving removes the GNU/bsd/busybox capability guessing, and a
 	// creation failure is now fatal with the partial output removed (#352).
 	if err := writeBackupArchive(ctx, tarFile, existingPaths, absBackupDir); err != nil {
-		_ = os.RemoveAll(backupPath)
+		removeFailedBackup()
 		logger.Error().Err(err).Str(log.FieldPath, tarFile).Msg("Failed to create backup. Reason: cannot write archive")
 		return "", fmt.Errorf("failed to write backup archive: %w", err)
 	}
 
 	// Verify the backup was created successfully
 	if err := d.VerifyBackup(ctx, backupPath); err != nil {
-		_ = os.RemoveAll(backupPath)
+		removeFailedBackup()
 		logger.Error().Err(err).Str(log.FieldPath, backupPath).Msg("Backup verification failed")
 		return "", fmt.Errorf("backup verification failed: %w", err)
 	}
@@ -345,10 +355,19 @@ func writeBackupArchive(ctx context.Context, tarFile string, paths []string, exc
 					logger.Debug().Str(log.FieldPath, path).Msg("Skipping path that vanished during backup walk")
 					return nil
 				}
-				return werr
+				return fmt.Errorf("cannot walk %s: %w", path, werr)
 			}
-			if info.IsDir() && filepath.Clean(path) == excludeDir {
-				return filepath.SkipDir
+			if info.IsDir() {
+				// Compare in absolute coordinates: a relative walk root would
+				// otherwise never match the absolute excludeDir, and the
+				// archive would recursively include its own growing output.
+				absPath, aerr := filepath.Abs(path)
+				if aerr != nil {
+					return fmt.Errorf("cannot resolve walked directory %s: %w", path, aerr)
+				}
+				if absPath == excludeDir {
+					return filepath.SkipDir
+				}
 			}
 
 			var linkTarget string
@@ -397,6 +416,30 @@ func writeBackupArchive(ctx context.Context, tarFile string, paths []string, exc
 					return nil
 				}
 				return fmt.Errorf("cannot open %s: %w", path, oerr)
+			}
+			// TOCTOU guard: os.Open follows a symlink swapped in after the
+			// walk's Lstat, which would archive bytes from an arbitrary
+			// readable host path under this entry's header. Stat the opened
+			// fd and require the same inode the walk saw; anything else is
+			// treated as churn — the entry is zero-padded, never read.
+			srcInfo, serr := src.Stat()
+			if serr != nil {
+				_ = src.Close()
+				return fmt.Errorf("cannot stat opened file %s: %w", path, serr)
+			}
+			if !os.SameFile(info, srcInfo) {
+				_ = src.Close()
+				if _, perr := copyCtx(ctx, tw, io.LimitReader(zeroReader{}, hdr.Size)); perr != nil {
+					return fmt.Errorf("cannot pad replaced file %s: %w", path, perr)
+				}
+				logger.Warn().Str(log.FieldPath, path).
+					Msg("File replaced during backup; archive entry zero-padded")
+				return nil
+			}
+			if srcInfo.Size() > hdr.Size {
+				logger.Warn().Str(log.FieldPath, path).
+					Int64("expected_bytes", hdr.Size).Int64("current_bytes", srcInfo.Size()).
+					Msg("File grew during backup; archive entry truncated at header size")
 			}
 			// Copy exactly the header-recorded size: growth past it is
 			// truncated, shrinkage below it is zero-padded — a structurally
