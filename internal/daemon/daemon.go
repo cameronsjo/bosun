@@ -705,6 +705,16 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 		targetCfg.Source = source
 		targetCfg.Force = force
 
+		// Drift self-heal must bypass the commit-unchanged skip (#350) --
+		// image_mismatch/unhealthy drift doesn't move the declared commit --
+		// but must NOT silently override the circuit breaker or the
+		// deploy_paths allowlist gate the way operator Force does. Route it
+		// through ForceRedeployUnchanged instead of Force so those stay keyed
+		// on a real human decision.
+		if source == log.SourceDriftSelfHeal {
+			targetCfg.ForceRedeployUnchanged = true
+		}
+
 		r := reconcile.NewReconciler(targetCfg, d.reconcileOpts...)
 
 		targetLogger.Info().Msg("Reconciling target")
@@ -1142,10 +1152,13 @@ func (d *Daemon) maybeSelfHeal(ctx context.Context, report *reconcile.DriftRepor
 	go func() {
 		defer d.wg.Done()
 		defer sentrypkg.Recover()
-		// force=true: an unchanged commit must not short-circuit self-heal via
-		// shouldSkipDeploy (#350) -- image_mismatch/unhealthy drift on a running
-		// container needs a redeploy even when the declared commit hasn't moved.
-		if err := d.TriggerReconcile(ctx, "drift-self-heal", true); err != nil {
+		// force stays false here -- Force is the human-supplied override that
+		// also bypasses the circuit breaker and deploy_paths gate, and an
+		// unattended self-heal loop must never touch either. executeReconcile
+		// grants ForceRedeployUnchanged based on the "drift-self-heal" source
+		// instead (#350 / review follow-up), bypassing only the
+		// commit-unchanged skip.
+		if err := d.TriggerReconcile(ctx, log.SourceDriftSelfHeal, false); err != nil {
 			logger.Error().
 				Err(err).
 				Msg("Failed to trigger drift self-heal reconciliation")

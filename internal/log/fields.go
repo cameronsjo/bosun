@@ -71,13 +71,14 @@ const (
 
 // Source values for FieldSource.
 const (
-	SourceWebhook = "webhook"
-	SourcePoll    = "poll"
-	SourceManual  = "manual"
-	SourceStartup = "startup"
-	SourceGitHub  = "github"
-	SourceGitLab  = "gitlab"
-	SourceGitea   = "gitea"
+	SourceWebhook       = "webhook"
+	SourcePoll          = "poll"
+	SourceManual        = "manual"
+	SourceStartup       = "startup"
+	SourceGitHub        = "github"
+	SourceGitLab        = "gitlab"
+	SourceGitea         = "gitea"
+	SourceDriftSelfHeal = "drift-self-heal"
 )
 
 // Component returns a logger with the component field set.
