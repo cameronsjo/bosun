@@ -2528,6 +2528,61 @@ func TestReconcilerRun(t *testing.T) {
 			"the breaker error must appear exactly as it would for repeated ordinary failures")
 	})
 
+	// #364 review follow-up: the breaker's contract is CONSECUTIVE
+	// failures, but recordSyncFailureAttempt's counter (keyed on "" for a
+	// sync failure/panic) previously survived indefinitely -- only a
+	// successful deploy of a CHANGED commit ever reset it. On a quiet repo,
+	// unrelated outages months apart would accumulate on the same key until
+	// one silently tipped a primed counter into a trip. A successful cycle
+	// that hits the "already deployed, skip" path must break that streak
+	// even though the pipeline itself is skipped as redundant.
+	t.Run("confirmed skip resets breaker state instead of preserving stale attempts", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		stateFile := filepath.Join(tmpDir, "state.json")
+
+		// Simulate 2 prior sync-failure attempts (e.g. a transient outage
+		// months ago) that were never cleared.
+		require.NoError(t, SaveState(stateFile, &DeployState{
+			SchemaVersion:       2,
+			LastDeployedCommit:  "samecommit",
+			LastAttemptedCommit: "",
+			AttemptCount:        2,
+		}))
+
+		cfg := &Config{
+			LockFile:  lockFile,
+			StateFile: stateFile,
+		}
+
+		// A successful sync of the SAME commit already deployed hits
+		// shouldSkipDeploy's "confirmed, skip" path.
+		gitOps := &mockGitOps{
+			syncChanged: false,
+			syncBefore:  "samecommit",
+			syncAfter:   "samecommit",
+		}
+		r := NewReconciler(cfg, WithGitOperations(gitOps))
+
+		err := r.Run(context.Background())
+		require.NoError(t, err)
+
+		saved := LoadState(stateFile)
+		assert.Equal(t, 0, saved.AttemptCount, "a confirmed skip cycle must reset the breaker's attempt count")
+		assert.Empty(t, saved.LastAttemptedCommit, "a confirmed skip cycle must clear the breaker's attempted-commit key")
+
+		// A subsequent single sync failure must count as attempt 1, not 3 --
+		// proving the reset actually broke the streak instead of the counter
+		// resuming where it left off.
+		panicR := NewReconciler(cfg, WithGitOperations(panicSyncGitOps{}))
+		err = panicR.Run(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "panicked")
+
+		savedAfterFailure := LoadState(stateFile)
+		assert.Equal(t, 1, savedAfterFailure.AttemptCount, "a single failure after the reset must yield attempt 1, not resume a stale streak")
+	})
+
 	// Regression test for #350: drift self-heal used to trigger with
 	// force=false, so an unchanged commit hit shouldSkipDeploy and the
 	// pipeline no-op'd forever on image_mismatch/unhealthy drift (which

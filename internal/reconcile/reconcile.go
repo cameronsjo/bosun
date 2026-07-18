@@ -501,6 +501,23 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 		}
 		if skipConfirmed {
 			ui.Info("=== Already deployed commit %s, skipping ===", after[:MinLen(after, 8)])
+
+			// The breaker's contract is CONSECUTIVE failures. Reaching here
+			// means sync succeeded and the deploy state is confirmed current
+			// -- a real successful cycle, even though the pipeline itself was
+			// skipped as redundant. Otherwise recordSyncFailureAttempt's
+			// attempt count (keyed on "", since a sync failure/panic never
+			// resolves a commit) survives indefinitely: on a quiet repo,
+			// unrelated outages months apart accumulate on that same key
+			// until one silently tips a primed counter into a trip (review
+			// follow-up to #364's breaker fix).
+			if state.AttemptCount != 0 || state.LastAttemptedCommit != "" {
+				state.AttemptCount = 0
+				state.LastAttemptedCommit = ""
+				if err := SaveState(r.config.StateFile, state); err != nil {
+					logger.Error().Err(err).Str(log.FieldPath, r.config.StateFile).Msg("Failed to reset breaker state after confirmed skip")
+				}
+			}
 			return nil
 		}
 	}
