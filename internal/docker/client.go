@@ -47,7 +47,7 @@ func NewClient() (*Client, error) {
 	logger := log.Component(log.ComponentDocker)
 	logger.Debug().Msg("Creating Docker client")
 
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		logger.Error().Err(err).Msg("Failed to create Docker client")
 		return nil, fmt.Errorf("create docker client: %w", err)
