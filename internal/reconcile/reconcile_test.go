@@ -1430,6 +1430,99 @@ func TestVerifyPostDeploy(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "cancelled")
 	})
+
+	// #392: a container already unhealthy before this deploy touched
+	// anything must not false-fail the reconcile (and, at the Run() level,
+	// must not block post-sync hooks).
+	t.Run("pre-existing unhealthy container is exempted, not failed", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		stateFile := filepath.Join(tmpDir, "state.json")
+
+		cfg := &Config{
+			StateFile:           stateFile,
+			ProjectName:         "test",
+			HealthCheckTimeout:  300 * time.Millisecond,
+			HealthCheckInterval: 50 * time.Millisecond,
+		}
+		r := NewReconciler(cfg)
+		r.declaredServices = []DeclaredService{
+			{Name: "web", Image: "nginx:latest"},
+			{Name: "chronic-svc", Image: "alpine:latest"},
+		}
+		// Baseline snapshot (as Run() would populate it pre-deploy): chronic-svc
+		// was already unhealthy before this reconcile started.
+		r.preDeployUnhealthy = map[string]bool{"chronic-svc": true}
+
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerListFunc = func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+			return client.ContainerListResult{Items: []container.Summary{
+				{
+					ID:    "abcdef123456abcdef",
+					Names: []string{"/test-web-1"},
+					Image: "nginx:latest",
+					State: "running",
+					Labels: map[string]string{
+						"com.docker.compose.project": "test",
+						"com.docker.compose.service": "web",
+					},
+				},
+				// chronic-svc absent = unhealthy, but it's pre-existing per the baseline above.
+			}}, nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+		state := &DeployState{}
+
+		err := r.verifyPostDeploy(context.Background(), state, client)
+		assert.NoError(t, err)
+		assert.True(t, state.HealthVerificationPassed)
+		assert.False(t, state.HealthVerifiedAt.IsZero())
+	})
+
+	t.Run("newly unhealthy container still fails even with an unrelated pre-existing casualty", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		stateFile := filepath.Join(tmpDir, "state.json")
+
+		cfg := &Config{
+			StateFile:           stateFile,
+			ProjectName:         "test",
+			HealthCheckTimeout:  300 * time.Millisecond,
+			HealthCheckInterval: 50 * time.Millisecond,
+		}
+		r := NewReconciler(cfg)
+		r.declaredServices = []DeclaredService{
+			{Name: "web", Image: "nginx:latest"},
+			{Name: "chronic-svc", Image: "alpine:latest"},
+			{Name: "new-svc", Image: "redis:latest"},
+		}
+		// chronic-svc was already unhealthy pre-deploy; new-svc was not.
+		r.preDeployUnhealthy = map[string]bool{"chronic-svc": true}
+
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerListFunc = func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+			return client.ContainerListResult{Items: []container.Summary{
+				{
+					ID:    "abcdef123456abcdef",
+					Names: []string{"/test-web-1"},
+					Image: "nginx:latest",
+					State: "running",
+					Labels: map[string]string{
+						"com.docker.compose.project": "test",
+						"com.docker.compose.service": "web",
+					},
+				},
+				// chronic-svc and new-svc both absent = both unhealthy;
+				// only new-svc should block since it's not in the baseline.
+			}}, nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+		state := &DeployState{}
+
+		err := r.verifyPostDeploy(context.Background(), state, client)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "new-svc")
+		assert.NotContains(t, err.Error(), "chronic-svc")
+		assert.False(t, state.HealthVerificationPassed)
+	})
 }
 
 // --- Reconciler.executePostSyncHooks tests ---
@@ -4179,6 +4272,140 @@ func TestRunHealthGate_FailsWhenUnhealthy(t *testing.T) {
 	err := r.runHealthGate(context.Background(), state, true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "authelia")
+}
+
+// TestRun_HealthGateFailureStillRunsPostSyncHooks is a #392 regression: a
+// critical-container health-gate failure must not permanently disable
+// post-sync hooks. Hooks complete *this* deploy's file changes and must run
+// even when the gate itself still fails the reconcile — explicit critical
+// containers get no pre-existing-unhealthy exemption (contrast with the
+// general verifyPostDeploy check, which does exempt pre-existing casualties).
+func TestRun_HealthGateFailureStillRunsPostSyncHooks(t *testing.T) {
+	tmpDir := t.TempDir()
+	lockFile := filepath.Join(tmpDir, "reconcile.lock")
+	stateFile := filepath.Join(tmpDir, "state.json")
+	repoDir := filepath.Join(tmpDir, "repo")
+	stagingDir := filepath.Join(tmpDir, "staging")
+	appdataDir := filepath.Join(tmpDir, "appdata")
+
+	require.NoError(t, os.MkdirAll(repoDir, 0755))
+	require.NoError(t, os.MkdirAll(appdataDir, 0755))
+
+	// Seed a prior deploy: hooks skip entirely on an empty previous commit,
+	// and a real "previous commit" is needed to prove hooks actually ran
+	// against it.
+	require.NoError(t, SaveState(stateFile, &DeployState{
+		SchemaVersion:      2,
+		LastDeployedCommit: "prevcommit",
+	}))
+
+	gitOps := &mockGitOps{
+		syncChanged: true,
+		syncBefore:  "prevcommit",
+		syncAfter:   "newcommit",
+	}
+
+	restartCalled := false
+	mockAPI := newReconcileMockDockerAPI()
+	mockAPI.containerInspectFunc = func(_ context.Context, name string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+		// Every critical container inspect reports unhealthy — the gate must
+		// keep failing (no baseline exemption for explicit critical containers).
+		return makeInspectResponse(name, "running", &container.Health{Status: "unhealthy"}), nil
+	}
+	mockAPI.containerRestartFunc = func(_ context.Context, _ string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
+		restartCalled = true
+		return client.ContainerRestartResult{}, nil
+	}
+	dockerClient := docker.NewClientWithAPI(mockAPI)
+
+	deploy := &DeployOps{
+		DryRun:          false,
+		ProjectName:     "test",
+		ContentHashSync: true,
+		composeUpFn: func(_ context.Context, _ []string) error {
+			return nil // avoid shelling out to a real docker binary
+		},
+	}
+
+	cfg := &Config{
+		DryRun:             false,
+		LockFile:           lockFile,
+		StateFile:          stateFile,
+		RepoDir:            repoDir,
+		StagingDir:         stagingDir,
+		LocalAppdataPath:   appdataDir,
+		InfraSubDir:        ".",
+		SecretsFiles:       []string{},
+		CriticalContainers: NewConfigField([]string{"chronic-critical"}),
+		HealthGateTimeout:  50 * time.Millisecond,
+		PostSyncHooks: NewConfigField([]PostSyncHook{
+			{Container: "downstream", Paths: []string{"**"}, Action: "restart"},
+		}),
+	}
+	seedStubComposeService(t, cfg)
+	r := NewReconciler(cfg, WithGitOperations(gitOps), WithDeployOps(deploy), WithDockerClient(dockerClient))
+
+	err := r.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "health gate failed")
+	assert.True(t, restartCalled, "post-sync hooks must still run despite a health-gate failure (#392)")
+
+	saved := LoadState(stateFile)
+	assert.True(t, saved.NeedsRedeploy, "deploy must stay marked incomplete so the next reconcile retries")
+	assert.Equal(t, "prevcommit", saved.LastDeployedCommit, "commit must not advance past a failed health gate")
+}
+
+// TestRun_PreDeployHealthSnapshotFailureIsNonFatal covers the best-effort
+// error branch of the #392 pre-deploy health snapshot: if Docker can't be
+// reached to build the baseline, the reconcile must still proceed (the
+// snapshot only narrows a later exemption — it's never load-bearing for the
+// deploy itself).
+func TestRun_PreDeployHealthSnapshotFailureIsNonFatal(t *testing.T) {
+	tmpDir := t.TempDir()
+	lockFile := filepath.Join(tmpDir, "reconcile.lock")
+	stateFile := filepath.Join(tmpDir, "state.json")
+	repoDir := filepath.Join(tmpDir, "repo")
+	stagingDir := filepath.Join(tmpDir, "staging")
+	appdataDir := filepath.Join(tmpDir, "appdata")
+
+	require.NoError(t, os.MkdirAll(repoDir, 0755))
+	require.NoError(t, os.MkdirAll(appdataDir, 0755))
+
+	gitOps := &mockGitOps{syncChanged: true, syncBefore: "aaa", syncAfter: "bbb"}
+
+	mockAPI := newReconcileMockDockerAPI()
+	mockAPI.containerListFunc = func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+		return client.ContainerListResult{}, fmt.Errorf("docker daemon unreachable")
+	}
+	dockerClient := docker.NewClientWithAPI(mockAPI)
+
+	deploy := &DeployOps{
+		DryRun:          false,
+		ProjectName:     "test",
+		ContentHashSync: true,
+		composeUpFn: func(_ context.Context, _ []string) error {
+			return nil // avoid shelling out to a real docker binary
+		},
+	}
+
+	cfg := &Config{
+		DryRun:           false,
+		LockFile:         lockFile,
+		StateFile:        stateFile,
+		RepoDir:          repoDir,
+		StagingDir:       stagingDir,
+		LocalAppdataPath: appdataDir,
+		InfraSubDir:      ".",
+		SecretsFiles:     []string{},
+		// No CriticalContainers/HealthCheckTimeout configured, so neither
+		// health gate runs — this isolates the snapshot's own error path.
+	}
+	seedStubComposeService(t, cfg)
+	r := NewReconciler(cfg, WithGitOperations(gitOps), WithDeployOps(deploy), WithDockerClient(dockerClient))
+
+	err := r.Run(context.Background())
+	require.NoError(t, err, "a failed pre-deploy health snapshot must not fail the reconcile")
+	assert.Nil(t, r.preDeployUnhealthy, "snapshot failure must leave the baseline unset, not a partial/incorrect map")
 }
 
 func TestRunHealthGate_RollbackRestoresBackupInsteadOfRedeploying(t *testing.T) {

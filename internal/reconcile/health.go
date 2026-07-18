@@ -144,3 +144,24 @@ func classifyHealth(declared []DeclaredService, actual []ActualService) []string
 
 	return unhealthy
 }
+
+// blockingUnhealthy filters an unhealthy-container list down to the subset
+// that should actually fail the post-deploy health gate: names absent from
+// preExisting. A container already unhealthy before this reconcile's deploy
+// touched anything is a pre-existing casualty from some unrelated cause —
+// failing the whole reconcile (and skipping post-sync hooks) over it makes
+// every future deploy fail identically until someone fixes the unrelated
+// container (#392). A container that transitions from healthy/missing into
+// unhealthy during this reconcile always counts, regardless of preExisting.
+func blockingUnhealthy(unhealthy []string, preExisting map[string]bool) []string {
+	if len(preExisting) == 0 {
+		return unhealthy
+	}
+	blocking := make([]string, 0, len(unhealthy))
+	for _, name := range unhealthy {
+		if !preExisting[name] {
+			blocking = append(blocking, name)
+		}
+	}
+	return blocking
+}
