@@ -88,8 +88,19 @@ type Config struct {
 
 	// DryRun if true, only shows what would be done.
 	DryRun bool
-	// Force if true, runs deployment even if no changes detected.
+	// Force if true, runs deployment even if no changes detected. This is the
+	// human-supplied override (CLI --force, socket/TCP/HTTP trigger `force`):
+	// it bypasses the commit-unchanged skip AND the circuit breaker AND the
+	// deploy_paths allowlist gate. An unattended trigger must never set this.
 	Force bool
+	// ForceRedeployUnchanged bypasses only the commit-unchanged skip in
+	// shouldSkipDeploy, for triggers that need a redeploy despite the commit
+	// hash not moving (drift self-heal: image_mismatch/unhealthy drift on a
+	// running container doesn't change the declared commit). Unlike Force,
+	// it does NOT bypass the circuit breaker or the deploy_paths allowlist
+	// gate — an unattended self-heal loop must never override a human
+	// decision (a tripped breaker) or silently ignore path scoping.
+	ForceRedeployUnchanged bool
 	// Source identifies what triggered this reconciliation (e.g., "webhook:github", "poll", "cli").
 	Source string
 
@@ -416,7 +427,10 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 
 	// State-based skip logic: compare last *deployed* commit, not last *fetched* commit.
 	// Also re-run if NeedsRedeploy is set from a previous partial failure.
-	if shouldSkipDeploy(state.LastDeployedCommit, after, r.config.Force, state.NeedsRedeploy) {
+	// ForceRedeployUnchanged (drift self-heal) bypasses only this skip -- it
+	// must not also bypass the circuit breaker or deploy_paths gate below,
+	// which stay keyed on the real operator Force.
+	if shouldSkipDeploy(state.LastDeployedCommit, after, r.config.Force || r.config.ForceRedeployUnchanged, state.NeedsRedeploy) {
 		// Commit hash matches, but verify that all declared services are actually
 		// running. A service added to the compose file in this commit may have never
 		// started (e.g., the first deploy of the commit was interrupted, or the

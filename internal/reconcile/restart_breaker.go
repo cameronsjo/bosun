@@ -50,20 +50,29 @@ func evaluateRestartBreaker(
 
 		// Already tripped: keep tripped state, check for resolution.
 		if prev.Tripped {
-			// Container is stopped (we stopped it). Keep the entry until
-			// the container is restarted by an operator or new deploy.
-			// If the container is running again with a lower/same restart count,
-			// it was manually restarted — mark resolved.
+			// Resolve against the count observed on the *previous* check, not
+			// the frozen count from the moment it tripped (#348). RestartCount
+			// is monotonic for the life of the container, so once any restart
+			// occurs after tripping, the count permanently exceeds the
+			// trip-time baseline and a fixed comparison could never resolve
+			// again even after the container stabilizes. Advancing the
+			// baseline every cycle means "no restarts since last check"
+			// still resolves it correctly.
 			if count <= prev.RestartCount {
 				result.Resolved = append(result.Resolved, service)
-				// Reset tracking with current count.
 				result.Updated[service] = RestartTrackingEntry{
 					RestartCount: count,
 					CheckedAt:    now,
 				}
 			} else {
-				// Still accumulating restarts after trip — keep tripped.
-				result.Updated[service] = prev
+				// Still accumulating restarts after trip — keep tripped, but
+				// advance the rolling baseline so a later stable cycle can resolve.
+				result.Updated[service] = RestartTrackingEntry{
+					RestartCount: count,
+					CheckedAt:    now,
+					Tripped:      true,
+					TrippedAt:    prev.TrippedAt,
+				}
 			}
 			continue
 		}
@@ -108,8 +117,21 @@ func evaluateRestartBreaker(
 		}
 	}
 
-	// Clean up tracking for containers no longer present.
-	// (Handled implicitly — only current containers are in Updated.)
+	// Clean up tracking for containers no longer present -- except a tripped
+	// entry for a container the breaker itself stopped (#348). Stopping the
+	// container removes it from collectRestartCounts (running/restarting
+	// only), so without this a stopped-and-tripped container would drop out
+	// of `current` and be silently pruned here: the trip record is lost,
+	// no resolved alert ever fires, and a later restart starts from a fresh
+	// baseline that can immediately re-trip.
+	for service, prev := range tracked {
+		if _, present := current[service]; present {
+			continue
+		}
+		if prev.Tripped {
+			result.Updated[service] = prev
+		}
+	}
 
 	return result
 }

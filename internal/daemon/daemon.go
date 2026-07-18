@@ -364,9 +364,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		if err := d.TriggerReconcile(ctx, "startup", false); err != nil {
 			logger.Error().Err(err).Msg("Initial reconciliation failed")
 			ui.Error("Initial reconciliation failed: %v", err)
+			return
 		}
 		logger.Info().Msg("Daemon ready to serve requests")
-		d.setReady(true)
 	}()
 
 	// Start polling loop if enabled
@@ -563,7 +563,18 @@ func (d *Daemon) TriggerReconcile(ctx context.Context, source string, force bool
 		Msg("Dispatching reconciliation")
 
 	// Run the reconcile loop (may run multiple times if pending triggers arrive).
-	return d.reconcileLoop(ctx, source, force)
+	err := d.reconcileLoop(ctx, source, force)
+
+	// Readiness reflects "has ever successfully reconciled" (#346), not just
+	// "the initial boot reconcile succeeded" -- flip it here, the single
+	// choke point every trigger path (startup, poll, webhook, socket, tcp,
+	// api, drift-self-heal) runs through, so a later successful reconcile
+	// can recover the daemon from a failed initial boot reconcile too.
+	if err == nil {
+		d.setReady(true)
+	}
+
+	return err
 }
 
 // reconcileLoop runs reconciliation, checking for pending triggers after each run.
@@ -693,6 +704,16 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 		targetCfg := d.config.ReconcileConfig.ConfigForTarget(target)
 		targetCfg.Source = source
 		targetCfg.Force = force
+
+		// Drift self-heal must bypass the commit-unchanged skip (#350) --
+		// image_mismatch/unhealthy drift doesn't move the declared commit --
+		// but must NOT silently override the circuit breaker or the
+		// deploy_paths allowlist gate the way operator Force does. Route it
+		// through ForceRedeployUnchanged instead of Force so those stay keyed
+		// on a real human decision.
+		if source == log.SourceDriftSelfHeal {
+			targetCfg.ForceRedeployUnchanged = true
+		}
 
 		r := reconcile.NewReconciler(targetCfg, d.reconcileOpts...)
 
@@ -1131,7 +1152,13 @@ func (d *Daemon) maybeSelfHeal(ctx context.Context, report *reconcile.DriftRepor
 	go func() {
 		defer d.wg.Done()
 		defer sentrypkg.Recover()
-		if err := d.TriggerReconcile(ctx, "drift-self-heal", false); err != nil {
+		// force stays false here -- Force is the human-supplied override that
+		// also bypasses the circuit breaker and deploy_paths gate, and an
+		// unattended self-heal loop must never touch either. executeReconcile
+		// grants ForceRedeployUnchanged based on the "drift-self-heal" source
+		// instead (#350 / review follow-up), bypassing only the
+		// commit-unchanged skip.
+		if err := d.TriggerReconcile(ctx, log.SourceDriftSelfHeal, false); err != nil {
 			logger.Error().
 				Err(err).
 				Msg("Failed to trigger drift self-heal reconciliation")

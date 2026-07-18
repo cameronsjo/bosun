@@ -2364,6 +2364,101 @@ func TestReconcilerRun(t *testing.T) {
 		require.NoError(t, err)
 	})
 
+	// Regression test for #350: drift self-heal used to trigger with
+	// force=false, so an unchanged commit hit shouldSkipDeploy and the
+	// pipeline no-op'd forever on image_mismatch/unhealthy drift (which
+	// doesn't change the commit hash). ForceRedeployUnchanged -- what the
+	// daemon actually sets for a drift-self-heal trigger, see
+	// internal/daemon/daemon.go's executeReconcile -- must bypass the
+	// commit-based skip so self-heal actually re-applies declared state.
+	t.Run("force redeploys unchanged commit (drift self-heal)", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		stateFile := filepath.Join(tmpDir, "state.json")
+		repoDir := filepath.Join(tmpDir, "repo")
+		stagingDir := filepath.Join(tmpDir, "staging")
+		appdataDir := filepath.Join(tmpDir, "appdata")
+
+		require.NoError(t, os.MkdirAll(appdataDir, 0755))
+
+		gitOps := &mockGitOps{
+			syncChanged: false,
+			syncBefore:  "abc123",
+			syncAfter:   "abc123",
+		}
+
+		// Commit already deployed, no circuit breaker involvement, no missing
+		// declared services -- without force this hits shouldSkipDeploy and
+		// returns nil before ever running the pipeline again.
+		state := &DeployState{
+			SchemaVersion:      2,
+			LastDeployedCommit: "abc123",
+			DeployCount:        1,
+		}
+		require.NoError(t, SaveState(stateFile, state))
+
+		infraDir := filepath.Join(repoDir, "unraid")
+		require.NoError(t, os.MkdirAll(infraDir, 0755))
+
+		cfg := &Config{
+			ForceRedeployUnchanged:  true,
+			DryRun:                  true, // Dry run to skip actual deployment
+			AllowEmptyDeclaredState: true,
+			LockFile:                lockFile,
+			StateFile:               stateFile,
+			RepoDir:                 repoDir,
+			StagingDir:              stagingDir,
+			LocalAppdataPath:        appdataDir,
+			InfraSubDir:             ".",
+		}
+		seedStubComposeService(t, cfg)
+		r := NewReconciler(cfg, WithGitOperations(gitOps))
+
+		err := r.Run(context.Background())
+		require.NoError(t, err)
+
+		reloaded := LoadState(stateFile)
+		assert.Equal(t, 2, reloaded.DeployCount,
+			"ForceRedeployUnchanged must re-run the full pipeline (incrementing DeployCount) even though the commit is unchanged")
+	})
+
+	// Review follow-up to #350: ForceRedeployUnchanged must bypass ONLY the
+	// commit-unchanged skip, never the circuit breaker. An unattended
+	// self-heal trigger silently overriding a tripped breaker (a human
+	// decision that this commit is broken) would retry a permanently-failing
+	// deploy forever with no operator involved.
+	t.Run("self-heal does not bypass a tripped circuit breaker", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		stateFile := filepath.Join(tmpDir, "state.json")
+
+		gitOps := &mockGitOps{
+			syncChanged: false,
+			syncBefore:  "abc123",
+			syncAfter:   "abc123",
+		}
+
+		// Circuit breaker tripped: 3 failed attempts on the commit being synced.
+		state := &DeployState{
+			SchemaVersion:       2,
+			LastDeployedCommit:  "oldcommit",
+			LastAttemptedCommit: "abc123",
+			AttemptCount:        3,
+		}
+		require.NoError(t, SaveState(stateFile, state))
+
+		cfg := &Config{
+			ForceRedeployUnchanged: true, // what a drift-self-heal trigger sets
+			LockFile:               lockFile,
+			StateFile:              stateFile,
+		}
+		r := NewReconciler(cfg, WithGitOperations(gitOps))
+
+		err := r.Run(context.Background())
+		require.Error(t, err, "self-heal must not silently override a tripped circuit breaker")
+		assert.Contains(t, err.Error(), "circuit breaker")
+	})
+
 	t.Run("git sync failure", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		lockFile := filepath.Join(tmpDir, "reconcile.lock")
