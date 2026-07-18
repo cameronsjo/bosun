@@ -11,7 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -47,11 +48,11 @@ func newDockerDaemon(t *testing.T, mockAPI *dockertest.MockDockerAPI) *Daemon {
 
 func TestAPIContainers_Success(t *testing.T) {
 	mock := dockertest.NewMockDockerAPI()
-	mock.ContainerListFunc = func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
-		return []container.Summary{
+	mock.ContainerListFunc = func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+		return client.ContainerListResult{Items: []container.Summary{
 			dockertest.MakeTestContainer("abc123", "web", "nginx:latest", "running", "myapp", "web"),
 			dockertest.MakeTestContainer("def456", "api", "myapp:v1", "running", "myapp", "api"),
-		}, nil
+		}}, nil
 	}
 
 	d := newDockerDaemon(t, mock)
@@ -92,8 +93,8 @@ func TestAPIContainers_Empty(t *testing.T) {
 
 func TestAPIContainers_DockerError(t *testing.T) {
 	mock := dockertest.NewMockDockerAPI()
-	mock.ContainerListFunc = func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
-		return nil, errors.New("docker daemon unreachable")
+	mock.ContainerListFunc = func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+		return client.ContainerListResult{}, errors.New("docker daemon unreachable")
 	}
 
 	d := newDockerDaemon(t, mock)
@@ -122,7 +123,7 @@ func TestAPIContainers_MethodNotAllowed(t *testing.T) {
 
 func TestAPIContainerLogs_Success(t *testing.T) {
 	mock := dockertest.NewMockDockerAPI()
-	mock.ContainerLogsFunc = func(_ context.Context, _ string, _ container.LogsOptions) (io.ReadCloser, error) {
+	mock.ContainerLogsFunc = func(_ context.Context, _ string, _ client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
 		return io.NopCloser(bytes.NewBufferString("line1\nline2\nline3\n")), nil
 	}
 
@@ -145,7 +146,7 @@ func TestAPIContainerLogs_Success(t *testing.T) {
 
 func TestAPIContainerLogs_LinesCapped(t *testing.T) {
 	mock := dockertest.NewMockDockerAPI()
-	mock.ContainerLogsFunc = func(_ context.Context, _ string, opts container.LogsOptions) (io.ReadCloser, error) {
+	mock.ContainerLogsFunc = func(_ context.Context, _ string, opts client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
 		// Verify the lines were capped in the Docker API call.
 		assert.Equal(t, "10000", opts.Tail)
 		return io.NopCloser(bytes.NewBufferString("logs")), nil
@@ -168,7 +169,7 @@ func TestAPIContainerLogs_LinesCapped(t *testing.T) {
 
 func TestAPIContainerLogs_DockerError(t *testing.T) {
 	mock := dockertest.NewMockDockerAPI()
-	mock.ContainerLogsFunc = func(_ context.Context, _ string, _ container.LogsOptions) (io.ReadCloser, error) {
+	mock.ContainerLogsFunc = func(_ context.Context, _ string, _ client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
 		return nil, errors.New("container not found")
 	}
 
@@ -185,8 +186,8 @@ func TestAPIContainerLogs_DockerError(t *testing.T) {
 
 func TestAPIContainerRestart_Success(t *testing.T) {
 	mock := dockertest.NewMockDockerAPI()
-	mock.ContainerRestartFunc = func(_ context.Context, _ string, _ container.StopOptions) error {
-		return nil
+	mock.ContainerRestartFunc = func(_ context.Context, _ string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
+		return client.ContainerRestartResult{}, nil
 	}
 
 	d := newDockerDaemon(t, mock)
@@ -208,8 +209,8 @@ func TestAPIContainerRestart_Success(t *testing.T) {
 
 func TestAPIContainerRestart_DockerError(t *testing.T) {
 	mock := dockertest.NewMockDockerAPI()
-	mock.ContainerRestartFunc = func(_ context.Context, _ string, _ container.StopOptions) error {
-		return errors.New("restart timeout")
+	mock.ContainerRestartFunc = func(_ context.Context, _ string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
+		return client.ContainerRestartResult{}, errors.New("restart timeout")
 	}
 
 	d := newDockerDaemon(t, mock)
