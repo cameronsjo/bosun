@@ -404,25 +404,9 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 - **CLAUDE.md symlink and the Edit tool**: `Read` must target `AGENTS.md` before `Edit` will work. The Edit tool tracks file modification times — if the symlink target was modified externally, Edit refuses with "file modified since read"
 - **`FindRoot` `$HOME`-anchor refusal**: `FindRoot` refuses to anchor on `manifest/` or `manifests/` alone when the candidate dir equals `$HOME` (after `filepath.EvalSymlinks` normalization on both sides). These generic directory names collide with npm, OCI tooling, and packaging pipelines. Strong markers (`bosun.yaml`, `bosun.yml`, `bosun/docker-compose.yml`) are accepted unconditionally everywhere, including inside `$HOME`.
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
-## Beads Issue Tracker
+## Issue Tracking
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
-
-### Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
-```
-
-### Rules
-
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+This project uses **GitHub issues** (`gh issue list -R cameronsjo/bosun`). The beads (bd) tracker was retired 2026-07-18 — its live issues migrated to GitHub (#431–#438), and the full tracker history remains in git at the last commit carrying `.beads/issues.jsonl`.
 
 ## Session Completion
 
@@ -430,14 +414,13 @@ bd close <id>         # Complete work
 
 **MANDATORY WORKFLOW:**
 
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
+1. **File issues for remaining work** - Create GitHub issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
 3. **Update issue status** - Close finished work, update in-progress items
 4. **PUSH TO REMOTE** - This is MANDATORY:
 
    ```bash
    git pull --rebase
-   bd dolt push
    git push
    git status  # MUST show "up to date with origin"
    ```
@@ -451,4 +434,3 @@ bd close <id>         # Complete work
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
-<!-- END BEADS INTEGRATION -->
