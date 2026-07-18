@@ -11,7 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 
 	"github.com/cameronsjo/bosun/internal/alert"
 	"github.com/cameronsjo/bosun/internal/docker"
@@ -2235,15 +2236,15 @@ func TestRunDriftCheck_ResolvedAlertDeliveryFailure_StateNotCleared(t *testing.T
 	d := newAlertDaemon(t, provider)
 
 	mockAPI := &dockertest.MockDockerAPI{
-		ContainerListFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
-			return []container.Summary{
+		ContainerListFunc: func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+			return client.ContainerListResult{Items: []container.Summary{
 				{
 					ID:    "abc123456789",
 					Names: []string{"/api"},
 					State: "running",
 					Image: "api:latest",
 				},
-			}, nil
+			}}, nil
 		},
 	}
 	d.dockerClientOverride = docker.NewClientWithAPI(mockAPI)
@@ -2298,15 +2299,15 @@ func TestRunDriftCheck_InDriftResolvedAlertDeliveryFailure_StateNotCleared(t *te
 	d := newAlertDaemon(t, provider)
 
 	mockAPI := &dockertest.MockDockerAPI{
-		ContainerListFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
-			return []container.Summary{
+		ContainerListFunc: func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+			return client.ContainerListResult{Items: []container.Summary{
 				{
 					ID:    "web123456789",
 					Names: []string{"/web"},
 					State: "running",
 					Image: "web:latest",
 				},
-			}, nil
+			}}, nil
 		},
 	}
 	d.dockerClientOverride = docker.NewClientWithAPI(mockAPI)

@@ -9,7 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -1341,8 +1342,8 @@ func TestVerifyPostDeploy(t *testing.T) {
 		r.declaredServices = []DeclaredService{{Name: "web", Image: "nginx:latest"}}
 
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-			return []container.Summary{
+		mockAPI.containerListFunc = func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+			return client.ContainerListResult{Items: []container.Summary{
 				{
 					ID:    "abcdef123456abcdef",
 					Names: []string{"/test-web-1"},
@@ -1353,7 +1354,7 @@ func TestVerifyPostDeploy(t *testing.T) {
 						"com.docker.compose.service": "web",
 					},
 				},
-			}, nil
+			}}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 		state := &DeployState{}
@@ -1381,8 +1382,8 @@ func TestVerifyPostDeploy(t *testing.T) {
 		}
 
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-			return []container.Summary{
+		mockAPI.containerListFunc = func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+			return client.ContainerListResult{Items: []container.Summary{
 				{
 					ID:    "abcdef123456abcdef",
 					Names: []string{"/test-web-1"},
@@ -1394,7 +1395,7 @@ func TestVerifyPostDeploy(t *testing.T) {
 					},
 				},
 				// missing-svc not present = unhealthy
-			}, nil
+			}}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 		state := &DeployState{}
@@ -1453,8 +1454,8 @@ func TestRunPostSyncHooksWithSpan(t *testing.T) {
 	t.Run("error path sets span error", func(t *testing.T) {
 		gitOps := &mockGitOps{diffFiles: []string{"traefik/dynamic.yml"}}
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts container.StopOptions) error {
-			return fmt.Errorf("connection refused")
+		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
+			return client.ContainerRestartResult{}, fmt.Errorf("connection refused")
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 		cfg := &Config{
@@ -1502,9 +1503,9 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 	t.Run("uses deploy result written files instead of git diff", func(t *testing.T) {
 		restartCalled := false
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts container.StopOptions) error {
+		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
 			restartCalled = true
-			return nil
+			return client.ContainerRestartResult{}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -1530,9 +1531,9 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 		// nothing. DeletedFiles must be consulted too.
 		restartCalled := false
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts container.StopOptions) error {
+		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
 			restartCalled = true
-			return nil
+			return client.ContainerRestartResult{}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -1572,8 +1573,8 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 
 	t.Run("restart failure returns matched count and error", func(t *testing.T) {
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts container.StopOptions) error {
-			return fmt.Errorf("connection refused")
+		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
+			return client.ContainerRestartResult{}, fmt.Errorf("connection refused")
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -1595,9 +1596,9 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 	t.Run("diff failure fires all hooks unconditionally", func(t *testing.T) {
 		restartCalled := false
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts container.StopOptions) error {
+		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
 			restartCalled = true
-			return nil
+			return client.ContainerRestartResult{}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -1619,9 +1620,9 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 	t.Run("remote deploy fires all hooks unconditionally", func(t *testing.T) {
 		restartedContainers := map[string]bool{}
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts container.StopOptions) error {
+		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
 			restartedContainers[cID] = true
-			return nil
+			return client.ContainerRestartResult{}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -1646,9 +1647,9 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 	t.Run("local deploy with WrittenFiles fires only matching hooks", func(t *testing.T) {
 		restartedContainers := map[string]bool{}
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts container.StopOptions) error {
+		mockAPI.containerRestartFunc = func(ctx context.Context, cID string, opts client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
 			restartedContainers[cID] = true
-			return nil
+			return client.ContainerRestartResult{}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -4140,7 +4141,7 @@ func TestRunHealthGate_SkipsWhenNoDockerClient(t *testing.T) {
 
 func TestRunHealthGate_PassesWhenAllHealthy(t *testing.T) {
 	mockAPI := newReconcileMockDockerAPI()
-	mockAPI.containerInspectFunc = func(_ context.Context, name string) (container.InspectResponse, error) {
+	mockAPI.containerInspectFunc = func(_ context.Context, name string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
 		return makeInspectResponse(name, "running", &container.Health{Status: "healthy"}), nil
 	}
 	client := docker.NewClientWithAPI(mockAPI)
@@ -4159,7 +4160,7 @@ func TestRunHealthGate_PassesWhenAllHealthy(t *testing.T) {
 
 func TestRunHealthGate_FailsWhenUnhealthy(t *testing.T) {
 	mockAPI := newReconcileMockDockerAPI()
-	mockAPI.containerInspectFunc = func(_ context.Context, name string) (container.InspectResponse, error) {
+	mockAPI.containerInspectFunc = func(_ context.Context, name string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
 		if name == "authelia" {
 			return makeInspectResponse(name, "running", &container.Health{Status: "unhealthy"}), nil
 		}
@@ -4188,7 +4189,7 @@ func TestRunHealthGate_RollbackRestoresBackupInsteadOfRedeploying(t *testing.T) 
 	// rollback must go straight to RollbackFromBackup and never touch the
 	// deploy path again.
 	mockAPI := newReconcileMockDockerAPI()
-	mockAPI.containerInspectFunc = func(_ context.Context, name string) (container.InspectResponse, error) {
+	mockAPI.containerInspectFunc = func(_ context.Context, name string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
 		return makeInspectResponse(name, "running", &container.Health{Status: "unhealthy"}), nil
 	}
 	client := docker.NewClientWithAPI(mockAPI)

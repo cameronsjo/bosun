@@ -9,8 +9,9 @@ import (
 	"testing"
 
 	"github.com/cameronsjo/bosun/internal/docker"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -745,8 +746,8 @@ func TestServiceNameFromContainer(t *testing.T) {
 	}
 }
 
-// makeTestInspectResponse creates a container.InspectResponse for testing.
-func makeTestInspectResponse(name, image string, health *container.Health) container.InspectResponse {
+// makeTestInspectResponse creates a client.ContainerInspectResult for testing.
+func makeTestInspectResponse(name, image string, health *container.Health) client.ContainerInspectResult {
 	state := &container.State{
 		Status:    "running",
 		Running:   true,
@@ -756,23 +757,23 @@ func makeTestInspectResponse(name, image string, health *container.Health) conta
 		state.Health = health
 	}
 
-	return container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{
+	return client.ContainerInspectResult{
+		Container: container.InspectResponse{
 			ID:      "abc1234567890000",
 			Name:    "/" + name,
 			Created: "2024-01-01T00:00:00.000000000Z",
 			State:   state,
 			Driver:  "overlay2",
+			Config: &container.Config{
+				Image:  image,
+				Labels: map[string]string{},
+				Env:    []string{},
+			},
+			NetworkSettings: &container.NetworkSettings{
+				Networks: map[string]*network.EndpointSettings{},
+			},
+			Mounts: []container.MountPoint{},
 		},
-		Config: &container.Config{
-			Image:  image,
-			Labels: map[string]string{},
-			Env:    []string{},
-		},
-		NetworkSettings: &container.NetworkSettings{
-			Networks: map[string]*network.EndpointSettings{},
-		},
-		Mounts: []container.MountPoint{},
 	}
 }
 
@@ -781,8 +782,8 @@ func TestCollectActualState(t *testing.T) {
 
 	t.Run("returns matching containers sorted by name", func(t *testing.T) {
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-			return []container.Summary{
+		mockAPI.containerListFunc = func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+			return client.ContainerListResult{Items: []container.Summary{
 				{
 					ID:    "aaa0000000000000",
 					Names: []string{"/core-web-1"},
@@ -816,7 +817,7 @@ func TestCollectActualState(t *testing.T) {
 					},
 					Status: "Up 10 minutes",
 				},
-			}, nil
+			}}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -830,8 +831,8 @@ func TestCollectActualState(t *testing.T) {
 
 	t.Run("empty project name returns all containers", func(t *testing.T) {
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-			return []container.Summary{
+		mockAPI.containerListFunc = func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+			return client.ContainerListResult{Items: []container.Summary{
 				{
 					ID:    "aaa0000000000000",
 					Names: []string{"/web"},
@@ -843,7 +844,7 @@ func TestCollectActualState(t *testing.T) {
 					},
 					Status: "Up 10 minutes",
 				},
-			}, nil
+			}}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -854,8 +855,8 @@ func TestCollectActualState(t *testing.T) {
 
 	t.Run("docker list error propagates", func(t *testing.T) {
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-			return nil, fmt.Errorf("docker daemon not running")
+		mockAPI.containerListFunc = func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+			return client.ContainerListResult{}, fmt.Errorf("docker daemon not running")
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -866,8 +867,8 @@ func TestCollectActualState(t *testing.T) {
 
 	t.Run("deduplicates replica containers", func(t *testing.T) {
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-			return []container.Summary{
+		mockAPI.containerListFunc = func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+			return client.ContainerListResult{Items: []container.Summary{
 				{
 					ID:    "aaa0000000000000",
 					Names: []string{"/core-web-1"},
@@ -890,7 +891,7 @@ func TestCollectActualState(t *testing.T) {
 					},
 					Status: "Up 10 minutes",
 				},
-			}, nil
+			}}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -932,8 +933,8 @@ func TestRunDriftCheck(t *testing.T) {
 		require.NoError(t, SaveState(stateFile, state))
 
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-			return []container.Summary{
+		mockAPI.containerListFunc = func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+			return client.ContainerListResult{Items: []container.Summary{
 				{
 					ID:    "aaa0000000000000",
 					Names: []string{"/core-web-1"},
@@ -946,7 +947,7 @@ func TestRunDriftCheck(t *testing.T) {
 					Status: "Up 10 minutes",
 				},
 				// api is missing
-			}, nil
+			}}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -970,8 +971,8 @@ func TestRunDriftCheck(t *testing.T) {
 		require.NoError(t, SaveState(stateFile, state))
 
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-			return []container.Summary{
+		mockAPI.containerListFunc = func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+			return client.ContainerListResult{Items: []container.Summary{
 				{
 					ID:    "aaa0000000000000",
 					Names: []string{"/core-web-1"},
@@ -983,7 +984,7 @@ func TestRunDriftCheck(t *testing.T) {
 					},
 					Status: "Up 10 minutes",
 				},
-			}, nil
+			}}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -1006,9 +1007,9 @@ func TestEnrichUnhealthyItems(t *testing.T) {
 	t.Run("non-unhealthy items are not inspected", func(t *testing.T) {
 		inspected := false
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
+		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
 			inspected = true
-			return container.InspectResponse{}, nil
+			return client.ContainerInspectResult{}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -1030,9 +1031,9 @@ func TestEnrichUnhealthyItems(t *testing.T) {
 	t.Run("unhealthy item with container not in actual list is skipped", func(t *testing.T) {
 		inspected := false
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
+		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
 			inspected = true
-			return container.InspectResponse{}, nil
+			return client.ContainerInspectResult{}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -1053,8 +1054,8 @@ func TestEnrichUnhealthyItems(t *testing.T) {
 
 	t.Run("inspect error leaves item.Actual empty", func(t *testing.T) {
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
-			return container.InspectResponse{}, fmt.Errorf("connection refused")
+		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+			return client.ContainerInspectResult{}, fmt.Errorf("connection refused")
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -1073,7 +1074,7 @@ func TestEnrichUnhealthyItems(t *testing.T) {
 
 	t.Run("inspect succeeds with health data", func(t *testing.T) {
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
+		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
 			return makeTestInspectResponse("core-web-1", "nginx:latest", &container.Health{
 				Status:        "unhealthy",
 				FailingStreak: 5,
@@ -1101,7 +1102,7 @@ func TestEnrichUnhealthyItems(t *testing.T) {
 
 	t.Run("inspect succeeds with no health log", func(t *testing.T) {
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
+		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
 			// Return inspect response with nil Health (no health checks configured).
 			return makeTestInspectResponse("core-web-1", "nginx:latest", nil), nil
 		}
@@ -1123,7 +1124,7 @@ func TestEnrichUnhealthyItems(t *testing.T) {
 	t.Run("only unhealthy items get inspected in mixed report", func(t *testing.T) {
 		inspectedContainers := []string{}
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
+		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
 			inspectedContainers = append(inspectedContainers, containerID)
 			return makeTestInspectResponse(containerID, "img", &container.Health{
 				Status:        "unhealthy",

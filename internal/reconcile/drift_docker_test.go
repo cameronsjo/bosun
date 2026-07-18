@@ -7,7 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -17,12 +18,12 @@ import (
 
 func TestCollectActualState_MatchesByLabel(t *testing.T) {
 	mock := dockertest.NewMockDockerAPI()
-	mock.ContainerListFunc = func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
-		return []container.Summary{
+	mock.ContainerListFunc = func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+		return client.ContainerListResult{Items: []container.Summary{
 			dockertest.MakeTestContainer("abc123", "myapp-web-1", "nginx:latest", "running", "myapp", "web"),
 			dockertest.MakeTestContainer("def456", "myapp-api-1", "myapp:v1", "running", "myapp", "api"),
 			dockertest.MakeTestContainer("ghi789", "other-db-1", "postgres:16", "running", "other", "db"),
-		}, nil
+		}}, nil
 	}
 
 	client := docker.NewClientWithAPI(mock)
@@ -41,10 +42,10 @@ func TestCollectActualState_MatchesByLabel(t *testing.T) {
 
 func TestCollectActualState_NoMatch(t *testing.T) {
 	mock := dockertest.NewMockDockerAPI()
-	mock.ContainerListFunc = func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
-		return []container.Summary{
+	mock.ContainerListFunc = func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+		return client.ContainerListResult{Items: []container.Summary{
 			dockertest.MakeTestContainer("abc123", "other-web-1", "nginx:latest", "running", "other", "web"),
-		}, nil
+		}}, nil
 	}
 
 	client := docker.NewClientWithAPI(mock)
@@ -55,8 +56,8 @@ func TestCollectActualState_NoMatch(t *testing.T) {
 
 func TestCollectActualState_DockerError(t *testing.T) {
 	mock := dockertest.NewMockDockerAPI()
-	mock.ContainerListFunc = func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
-		return nil, errors.New("docker daemon unreachable")
+	mock.ContainerListFunc = func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+		return client.ContainerListResult{}, errors.New("docker daemon unreachable")
 	}
 
 	client := docker.NewClientWithAPI(mock)
@@ -67,10 +68,10 @@ func TestCollectActualState_DockerError(t *testing.T) {
 
 func TestRunDriftCheck_DetectsMissing(t *testing.T) {
 	mock := dockertest.NewMockDockerAPI()
-	mock.ContainerListFunc = func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
-		return []container.Summary{
+	mock.ContainerListFunc = func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+		return client.ContainerListResult{Items: []container.Summary{
 			dockertest.MakeTestContainer("abc123", "myapp-web-1", "nginx:latest", "running", "myapp", "web"),
-		}, nil
+		}}, nil
 	}
 
 	tmpDir := t.TempDir()
@@ -104,10 +105,10 @@ func TestRunDriftCheck_DetectsMissing(t *testing.T) {
 
 func TestRunDriftCheck_DetectsImageMismatch(t *testing.T) {
 	mock := dockertest.NewMockDockerAPI()
-	mock.ContainerListFunc = func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
-		return []container.Summary{
+	mock.ContainerListFunc = func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+		return client.ContainerListResult{Items: []container.Summary{
 			dockertest.MakeTestContainer("abc123", "myapp-api-1", "myapp:v2", "running", "myapp", "api"),
-		}, nil
+		}}, nil
 	}
 
 	tmpDir := t.TempDir()
@@ -140,11 +141,11 @@ func TestRunDriftCheck_DetectsImageMismatch(t *testing.T) {
 
 func TestRunDriftCheck_CleanState(t *testing.T) {
 	mock := dockertest.NewMockDockerAPI()
-	mock.ContainerListFunc = func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
-		return []container.Summary{
+	mock.ContainerListFunc = func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+		return client.ContainerListResult{Items: []container.Summary{
 			dockertest.MakeTestContainer("abc123", "myapp-web-1", "nginx:latest", "running", "myapp", "web"),
 			dockertest.MakeTestContainer("def456", "myapp-api-1", "myapp:v1", "running", "myapp", "api"),
-		}, nil
+		}}, nil
 	}
 
 	tmpDir := t.TempDir()
@@ -201,11 +202,11 @@ func TestRunDriftCheck_NoStateFile(t *testing.T) {
 
 func TestCollectActualState_EmptyProjectName(t *testing.T) {
 	mock := dockertest.NewMockDockerAPI()
-	mock.ContainerListFunc = func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
-		return []container.Summary{
+	mock.ContainerListFunc = func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+		return client.ContainerListResult{Items: []container.Summary{
 			dockertest.MakeTestContainer("abc123", "myapp-web-1", "nginx:latest", "running", "myapp", "web"),
 			dockertest.MakeTestContainer("def456", "other-db-1", "postgres:16", "running", "other", "db"),
-		}, nil
+		}}, nil
 	}
 
 	client := docker.NewClientWithAPI(mock)
@@ -217,10 +218,10 @@ func TestCollectActualState_EmptyProjectName(t *testing.T) {
 
 func TestRunDriftCheck_PersistsStateFile(t *testing.T) {
 	mock := dockertest.NewMockDockerAPI()
-	mock.ContainerListFunc = func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
-		return []container.Summary{
+	mock.ContainerListFunc = func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+		return client.ContainerListResult{Items: []container.Summary{
 			dockertest.MakeTestContainer("abc123", "myapp-web-1", "nginx:latest", "running", "myapp", "web"),
-		}, nil
+		}}, nil
 	}
 
 	tmpDir := t.TempDir()
@@ -249,12 +250,12 @@ func TestRunDriftCheck_PersistsStateFile(t *testing.T) {
 func TestHasMissingDeclaredServices_Integration(t *testing.T) {
 	t.Run("new service not yet running overrides skip", func(t *testing.T) {
 		mock := dockertest.NewMockDockerAPI()
-		mock.ContainerListFunc = func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		mock.ContainerListFunc = func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
 			// web and api are running, but newservice is not present.
-			return []container.Summary{
+			return client.ContainerListResult{Items: []container.Summary{
 				dockertest.MakeTestContainer("a1", "myapp-web-1", "nginx:latest", "running", "myapp", "web"),
 				dockertest.MakeTestContainer("a2", "myapp-api-1", "myapp:v1", "running", "myapp", "api"),
-			}, nil
+			}}, nil
 		}
 
 		client := docker.NewClientWithAPI(mock)
@@ -273,11 +274,11 @@ func TestHasMissingDeclaredServices_Integration(t *testing.T) {
 
 	t.Run("all services running does not override skip", func(t *testing.T) {
 		mock := dockertest.NewMockDockerAPI()
-		mock.ContainerListFunc = func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
-			return []container.Summary{
+		mock.ContainerListFunc = func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+			return client.ContainerListResult{Items: []container.Summary{
 				dockertest.MakeTestContainer("a1", "myapp-web-1", "nginx:latest", "running", "myapp", "web"),
 				dockertest.MakeTestContainer("a2", "myapp-api-1", "myapp:v1", "running", "myapp", "api"),
-			}, nil
+			}}, nil
 		}
 
 		client := docker.NewClientWithAPI(mock)
@@ -295,10 +296,10 @@ func TestHasMissingDeclaredServices_Integration(t *testing.T) {
 
 	t.Run("empty declared state does not override skip", func(t *testing.T) {
 		mock := dockertest.NewMockDockerAPI()
-		mock.ContainerListFunc = func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
-			return []container.Summary{
+		mock.ContainerListFunc = func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+			return client.ContainerListResult{Items: []container.Summary{
 				dockertest.MakeTestContainer("a1", "myapp-web-1", "nginx:latest", "running", "myapp", "web"),
-			}, nil
+			}}, nil
 		}
 
 		client := docker.NewClientWithAPI(mock)

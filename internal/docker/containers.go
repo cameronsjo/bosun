@@ -7,7 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 
 	"github.com/cameronsjo/bosun/internal/log"
 )
@@ -67,7 +68,7 @@ func (c *Client) Logs(ctx context.Context, name string, tail int, follow bool) (
 		tailStr = fmt.Sprintf("%d", tail)
 	}
 
-	options := container.LogsOptions{
+	options := client.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Follow:     follow,
@@ -94,7 +95,7 @@ func (c *Client) Inspect(ctx context.Context, name string) (*ContainerDetails, e
 	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	logger.Debug().Str(log.FieldContainer, name).Msg("Inspecting container")
 
-	info, err := c.api.ContainerInspect(ctx, name)
+	inspectResult, err := c.api.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
 	if err != nil {
 		logger.Error().
 			Str(log.FieldContainer, name).
@@ -104,11 +105,12 @@ func (c *Client) Inspect(ctx context.Context, name string) (*ContainerDetails, e
 		return nil, fmt.Errorf("inspect container %s: %w", name, err)
 	}
 
+	info := inspectResult.Container
 	details := &ContainerDetails{
 		ID:           info.ID[:12],
 		Name:         strings.TrimPrefix(info.Name, "/"),
 		Image:        info.Config.Image,
-		State:        info.State.Status,
+		State:        string(info.State.Status),
 		Status:       formatContainerStatus(info.State),
 		RestartCount: info.RestartCount,
 		Labels:       info.Config.Labels,
@@ -130,7 +132,7 @@ func (c *Client) Inspect(ctx context.Context, name string) (*ContainerDetails, e
 
 	// Health status
 	if info.State.Health != nil {
-		details.Health = info.State.Health.Status
+		details.Health = string(info.State.Health.Status)
 		details.HealthFailingStreak = info.State.Health.FailingStreak
 		if len(info.State.Health.Log) > 0 {
 			last := info.State.Health.Log[len(info.State.Health.Log)-1]
@@ -147,7 +149,7 @@ func (c *Client) Inspect(ctx context.Context, name string) (*ContainerDetails, e
 			details.Ports = append(details.Ports, PortBinding{
 				ContainerPort: port.Port(),
 				HostPort:      binding.HostPort,
-				Protocol:      port.Proto(),
+				Protocol:      string(port.Proto()),
 			})
 		}
 	}
@@ -179,12 +181,12 @@ func (c *Client) Inspect(ctx context.Context, name string) (*ContainerDetails, e
 
 // Remove removes a container.
 func (c *Client) Remove(ctx context.Context, name string, force bool) error {
-	options := container.RemoveOptions{
+	options := client.ContainerRemoveOptions{
 		Force:         force,
 		RemoveVolumes: false,
 	}
 
-	if err := c.api.ContainerRemove(ctx, name, options); err != nil {
+	if _, err := c.api.ContainerRemove(ctx, name, options); err != nil {
 		return fmt.Errorf("remove container %s: %w", name, err)
 	}
 
@@ -196,7 +198,7 @@ func (c *Client) Start(ctx context.Context, name string) error {
 	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	logger.Info().Str(log.FieldContainer, name).Msg("Starting container")
 
-	if err := c.api.ContainerStart(ctx, name, container.StartOptions{}); err != nil {
+	if _, err := c.api.ContainerStart(ctx, name, client.ContainerStartOptions{}); err != nil {
 		logger.Error().
 			Str(log.FieldContainer, name).
 			Err(err).
@@ -213,11 +215,13 @@ func (c *Client) Exists(ctx context.Context, name string) (bool, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	logger.Debug().Str(log.FieldContainer, name).Msg("Checking if container exists")
 
-	containers, err := c.api.ContainerList(ctx, container.ListOptions{All: true})
+	listResult, err := c.api.ContainerList(ctx, client.ContainerListOptions{All: true})
 	if err != nil {
 		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to list containers for existence check")
 		return false, fmt.Errorf("list containers: %w", err)
 	}
+
+	containers := listResult.Items
 
 	// Normalize input name (remove leading slash if present)
 	normalizedName := strings.TrimPrefix(name, "/")
@@ -243,7 +247,7 @@ func formatContainerStatus(state *container.State) string {
 	if state.ExitCode != 0 {
 		return fmt.Sprintf("Exited (%d)", state.ExitCode)
 	}
-	return state.Status
+	return string(state.Status)
 }
 
 // parseTimeOrZero parses a time string or returns zero time on failure.

@@ -7,8 +7,9 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/docker/dockertest"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -191,9 +192,9 @@ func TestRunRestartBreaker(t *testing.T) {
 	t.Run("stops container when tripped", func(t *testing.T) {
 		var stoppedContainer string
 		mockAPI := &dockertest.MockDockerAPI{
-			ContainerInspectFunc: func(_ context.Context, id string) (container.InspectResponse, error) {
-				return container.InspectResponse{
-					ContainerJSONBase: &container.ContainerJSONBase{
+			ContainerInspectFunc: func(_ context.Context, id string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+				return client.ContainerInspectResult{
+					Container: container.InspectResponse{
 						ID:           fullID,
 						Name:         "/test-web-1",
 						RestartCount: 12,
@@ -201,20 +202,20 @@ func TestRunRestartBreaker(t *testing.T) {
 							Status:    "running",
 							StartedAt: "2026-03-13T10:00:00Z",
 						},
-					},
-					Config: &container.Config{
-						Image:  "nginx",
-						Labels: map[string]string{},
-						Env:    []string{},
-					},
-					NetworkSettings: &container.NetworkSettings{
-						Networks: map[string]*network.EndpointSettings{},
+						Config: &container.Config{
+							Image:  "nginx",
+							Labels: map[string]string{},
+							Env:    []string{},
+						},
+						NetworkSettings: &container.NetworkSettings{
+							Networks: map[string]*network.EndpointSettings{},
+						},
 					},
 				}, nil
 			},
-			ContainerStopFunc: func(_ context.Context, id string, _ container.StopOptions) error {
+			ContainerStopFunc: func(_ context.Context, id string, _ client.ContainerStopOptions) (client.ContainerStopResult, error) {
 				stoppedContainer = id
-				return nil
+				return client.ContainerStopResult{}, nil
 			},
 		}
 		client := docker.NewClientWithAPI(mockAPI)
@@ -238,9 +239,9 @@ func TestRunRestartBreaker(t *testing.T) {
 
 	t.Run("no action when below threshold", func(t *testing.T) {
 		mockAPI := &dockertest.MockDockerAPI{
-			ContainerInspectFunc: func(_ context.Context, id string) (container.InspectResponse, error) {
-				return container.InspectResponse{
-					ContainerJSONBase: &container.ContainerJSONBase{
+			ContainerInspectFunc: func(_ context.Context, id string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+				return client.ContainerInspectResult{
+					Container: container.InspectResponse{
 						ID:           fullID,
 						Name:         "/test-web-1",
 						RestartCount: 3,
@@ -248,14 +249,14 @@ func TestRunRestartBreaker(t *testing.T) {
 							Status:    "running",
 							StartedAt: "2026-03-13T10:00:00Z",
 						},
-					},
-					Config: &container.Config{
-						Image:  "nginx",
-						Labels: map[string]string{},
-						Env:    []string{},
-					},
-					NetworkSettings: &container.NetworkSettings{
-						Networks: map[string]*network.EndpointSettings{},
+						Config: &container.Config{
+							Image:  "nginx",
+							Labels: map[string]string{},
+							Env:    []string{},
+						},
+						NetworkSettings: &container.NetworkSettings{
+							Networks: map[string]*network.EndpointSettings{},
+						},
 					},
 				}, nil
 			},
