@@ -522,7 +522,7 @@ func (d *DeployOps) ComposeUpRemote(ctx context.Context, host, composeDir string
 	sshCmd := d.remoteComposeUpCmd(composeDir)
 
 	err := retryWithBackoff(ctx, DefaultMaxRetries, func() error {
-		cmd := exec.CommandContext(ctx, "ssh", host, sshCmd)
+		cmd := sshExecCommand(ctx, host, sshCmd)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 
@@ -571,7 +571,7 @@ func (d *DeployOps) classifyComposeFailureRemote(ctx context.Context, host, comp
 	args = append(args, "ps", "--all", "--format", "json")
 	sshCmd := fmt.Sprintf("cd %s && %s", shellquote.Join(composeDir), shellquote.Join(args...))
 
-	cmd := exec.CommandContext(ctx, "ssh", host, sshCmd)
+	cmd := sshExecCommand(ctx, host, sshCmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -691,7 +691,7 @@ func (d *DeployOps) SignalContainerRemote(ctx context.Context, host, containerNa
 	sshCmd := shellquote.Join(killArgs...)
 
 	return retryWithBackoff(ctx, DefaultMaxRetries, func() error {
-		cmd := exec.CommandContext(ctx, "ssh", host, sshCmd)
+		cmd := sshExecCommand(ctx, host, sshCmd)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 

@@ -33,17 +33,23 @@ const (
 // hostKeyOptions returns the ssh/scp `-o` flags that enforce the configured
 // host-key policy on the exec'd deploy path, so it honors the same
 // BOSUN_SSH_KNOWN_HOSTS / BOSUN_SSH_INSECURE_HOST_KEY config as the go-git
-// clone/pull path (git.go's getHostKeyCallback). Precedence mirrors that
-// callback: BOSUN_SSH_INSECURE_HOST_KEY=true is checked first and wins over
-// BOSUN_SSH_KNOWN_HOSTS.
+// clone/pull path (git.go's getHostKeyCallback), including the on-disk
+// resolution: it consults the same buildKnownHostsPaths candidates (the env
+// var, then /config/known_hosts) and pins strict verification against the
+// first that exists. This closes the parity gap where the documented homelab
+// convention — known_hosts at /config/known_hosts with the env var unset —
+// got strict verification on git ops but only accept-new on deploys.
 //
-// The neutral default deliberately DIVERGES from git.go's no-known_hosts
-// fallback: git.go returns InsecureIgnoreHostKey (no verification), but the
-// deploy channel carries a secret-bearing tar stream to a root account, so
-// with nothing configured it uses openssh's TOFU (accept-new) — the first
-// connection pins the key and later mismatches fail. Verification is never
-// silently disabled here; only an explicit BOSUN_SSH_INSECURE_HOST_KEY=true
-// opts out.
+// Precedence mirrors the callback: BOSUN_SSH_INSECURE_HOST_KEY=true is checked
+// first and wins over any known_hosts file.
+//
+// The one remaining INTENTIONAL divergence is the terminal case: when no
+// known_hosts file exists and insecure is not set, git.go falls back to
+// InsecureIgnoreHostKey (no verification), but the deploy channel carries a
+// secret-bearing tar stream to a root account, so it uses openssh's TOFU
+// (accept-new) instead — the first connection pins the key and later
+// mismatches fail. Verification is never silently disabled here; only an
+// explicit BOSUN_SSH_INSECURE_HOST_KEY=true opts out.
 func hostKeyOptions() []string {
 	if strings.EqualFold(os.Getenv("BOSUN_SSH_INSECURE_HOST_KEY"), "true") {
 		return []string{
@@ -51,29 +57,37 @@ func hostKeyOptions() []string {
 			"-o", "UserKnownHostsFile=/dev/null",
 		}
 	}
-	if knownHosts := os.Getenv("BOSUN_SSH_KNOWN_HOSTS"); knownHosts != "" {
+	for _, path := range buildKnownHostsPaths(os.Getenv("BOSUN_SSH_KNOWN_HOSTS")) {
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
 		return []string{
 			"-o", "StrictHostKeyChecking=yes",
-			"-o", "UserKnownHostsFile=" + knownHosts,
+			"-o", "UserKnownHostsFile=" + path,
 		}
 	}
 	return []string{"-o", "StrictHostKeyChecking=accept-new"}
 }
 
-// sshExecCommand builds an `ssh` command with the host-key policy flags
-// (hostKeyOptions) prepended before the caller's args (host + remote command).
-// Every exec'd ssh call routes through here so the policy never drifts per-site.
-func sshExecCommand(ctx context.Context, args ...string) *exec.Cmd {
+// execWithHostKeyOptions builds an exec.Cmd for name (ssh or scp) with the
+// host-key policy flags (hostKeyOptions) prepended before the caller's args, so
+// every exec'd ssh/scp call gets the same policy and it never drifts per-site.
+func execWithHostKeyOptions(ctx context.Context, name string, args ...string) *exec.Cmd {
 	full := append(hostKeyOptions(), args...)
-	return exec.CommandContext(ctx, "ssh", full...)
+	return exec.CommandContext(ctx, name, full...)
+}
+
+// sshExecCommand builds an `ssh` command with the host-key policy flags
+// prepended before the caller's args (host + remote command).
+func sshExecCommand(ctx context.Context, args ...string) *exec.Cmd {
+	return execWithHostKeyOptions(ctx, "ssh", args...)
 }
 
 // scpExecCommand builds an `scp` command with the host-key policy flags
-// (hostKeyOptions) prepended before the caller's args. Counterpart to
-// sshExecCommand for the single-file copy path.
+// prepended before the caller's args. Counterpart to sshExecCommand for the
+// single-file copy path.
 func scpExecCommand(ctx context.Context, args ...string) *exec.Cmd {
-	full := append(hostKeyOptions(), args...)
-	return exec.CommandContext(ctx, "scp", full...)
+	return execWithHostKeyOptions(ctx, "scp", args...)
 }
 
 // isTransientSSHError checks if an error is transient and worth retrying.
