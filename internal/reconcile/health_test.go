@@ -9,7 +9,8 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/docker/dockertest"
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -83,8 +84,8 @@ func TestClassifyHealth(t *testing.T) {
 func TestPollContainerHealth(t *testing.T) {
 	t.Run("all healthy on first poll", func(t *testing.T) {
 		mockAPI := &dockertest.MockDockerAPI{
-			ContainerListFunc: func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-				return []container.Summary{
+			ContainerListFunc: func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+				return client.ContainerListResult{Items: []container.Summary{
 					{
 						ID:     "abc123def456abc123def456abc123def456abc123def456abc123def456abcd",
 						Names:  []string{"/test-web-1"},
@@ -92,7 +93,7 @@ func TestPollContainerHealth(t *testing.T) {
 						State:  "running",
 						Labels: map[string]string{"com.docker.compose.project": "test", "com.docker.compose.service": "web"},
 					},
-				}, nil
+				}}, nil
 			},
 		}
 		client := docker.NewClientWithAPI(mockAPI)
@@ -111,7 +112,7 @@ func TestPollContainerHealth(t *testing.T) {
 	t.Run("becomes healthy on 3rd poll", func(t *testing.T) {
 		var callCount atomic.Int32
 		mockAPI := &dockertest.MockDockerAPI{
-			ContainerListFunc: func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+			ContainerListFunc: func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
 				n := callCount.Add(1)
 				var status string
 				if n >= 3 {
@@ -119,7 +120,7 @@ func TestPollContainerHealth(t *testing.T) {
 				} else {
 					status = "Up 10 minutes (health: starting)"
 				}
-				return []container.Summary{
+				return client.ContainerListResult{Items: []container.Summary{
 					{
 						ID:     "abc123def456abc123def456abc123def456abc123def456abc123def456abcd",
 						Names:  []string{"/test-web-1"},
@@ -128,7 +129,7 @@ func TestPollContainerHealth(t *testing.T) {
 						Status: status,
 						Labels: map[string]string{"com.docker.compose.project": "test", "com.docker.compose.service": "web"},
 					},
-				}, nil
+				}}, nil
 			},
 		}
 		client := docker.NewClientWithAPI(mockAPI)
@@ -145,8 +146,8 @@ func TestPollContainerHealth(t *testing.T) {
 
 	t.Run("timeout with unhealthy containers", func(t *testing.T) {
 		mockAPI := &dockertest.MockDockerAPI{
-			ContainerListFunc: func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-				return []container.Summary{
+			ContainerListFunc: func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+				return client.ContainerListResult{Items: []container.Summary{
 					{
 						ID:     "abc123def456abc123def456abc123def456abc123def456abc123def456abcd",
 						Names:  []string{"/test-web-1"},
@@ -155,7 +156,7 @@ func TestPollContainerHealth(t *testing.T) {
 						Status: "Up 10 minutes (unhealthy)",
 						Labels: map[string]string{"com.docker.compose.project": "test", "com.docker.compose.service": "web"},
 					},
-				}, nil
+				}}, nil
 			},
 		}
 		client := docker.NewClientWithAPI(mockAPI)
@@ -173,8 +174,8 @@ func TestPollContainerHealth(t *testing.T) {
 
 	t.Run("containers without healthcheck treated as healthy", func(t *testing.T) {
 		mockAPI := &dockertest.MockDockerAPI{
-			ContainerListFunc: func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-				return []container.Summary{
+			ContainerListFunc: func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+				return client.ContainerListResult{Items: []container.Summary{
 					{
 						ID:     "abc123def456abc123def456abc123def456abc123def456abc123def456abcd",
 						Names:  []string{"/test-redis-1"},
@@ -182,7 +183,7 @@ func TestPollContainerHealth(t *testing.T) {
 						State:  "running",
 						Labels: map[string]string{"com.docker.compose.project": "test", "com.docker.compose.service": "redis"},
 					},
-				}, nil
+				}}, nil
 			},
 		}
 		client := docker.NewClientWithAPI(mockAPI)
@@ -205,8 +206,8 @@ func TestPollContainerHealth(t *testing.T) {
 		// returns a timeout error within (roughly) the configured timeout
 		// instead of hanging.
 		mockAPI := &dockertest.MockDockerAPI{
-			ContainerListFunc: func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-				return nil, errors.New("docker daemon unreachable")
+			ContainerListFunc: func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+				return client.ContainerListResult{}, errors.New("docker daemon unreachable")
 			},
 		}
 		client := docker.NewClientWithAPI(mockAPI)
@@ -230,8 +231,8 @@ func TestPollContainerHealth(t *testing.T) {
 
 	t.Run("context cancellation exits immediately", func(t *testing.T) {
 		mockAPI := &dockertest.MockDockerAPI{
-			ContainerListFunc: func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-				return []container.Summary{
+			ContainerListFunc: func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+				return client.ContainerListResult{Items: []container.Summary{
 					{
 						ID:     "abc123def456abc123def456abc123def456abc123def456abc123def456abcd",
 						Names:  []string{"/test-web-1"},
@@ -240,7 +241,7 @@ func TestPollContainerHealth(t *testing.T) {
 						Status: "Up 10 minutes (health: starting)",
 						Labels: map[string]string{"com.docker.compose.project": "test", "com.docker.compose.service": "web"},
 					},
-				}, nil
+				}}, nil
 			},
 		}
 		client := docker.NewClientWithAPI(mockAPI)

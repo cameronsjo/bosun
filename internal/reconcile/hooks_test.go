@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/docker"
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -223,11 +223,11 @@ func TestExecutePostSyncHooks(t *testing.T) {
 		restarted := []string{}
 
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ container.StopOptions) error {
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			restarted = append(restarted, containerID)
-			return nil
+			return client.ContainerRestartResult{}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -246,9 +246,9 @@ func TestExecutePostSyncHooks(t *testing.T) {
 	t.Run("unsupported action is skipped with no error", func(t *testing.T) {
 		mockAPI := newReconcileMockDockerAPI()
 		restartCalled := false
-		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ container.StopOptions) error {
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
 			restartCalled = true
-			return nil
+			return client.ContainerRestartResult{}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -263,8 +263,8 @@ func TestExecutePostSyncHooks(t *testing.T) {
 
 	t.Run("RestartContainer failure returns aggregated error", func(t *testing.T) {
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ container.StopOptions) error {
-			return fmt.Errorf("container %s not found", containerID)
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
+			return client.ContainerRestartResult{}, fmt.Errorf("container %s not found", containerID)
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -280,11 +280,11 @@ func TestExecutePostSyncHooks(t *testing.T) {
 
 	t.Run("multiple hooks with mixed success and failure", func(t *testing.T) {
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ container.StopOptions) error {
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
 			if containerID == "gatus" {
-				return errors.New("restart failed")
+				return client.ContainerRestartResult{}, errors.New("restart failed")
 			}
-			return nil
+			return client.ContainerRestartResult{}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -330,9 +330,9 @@ func TestExecutePostSyncHooks(t *testing.T) {
 	t.Run("per-hook delay applied before restart", func(t *testing.T) {
 		mockAPI := newReconcileMockDockerAPI()
 		var restartTime time.Time
-		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ container.StopOptions) error {
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
 			restartTime = time.Now()
-			return nil
+			return client.ContainerRestartResult{}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -352,9 +352,9 @@ func TestExecutePostSyncHooks(t *testing.T) {
 	t.Run("settle delay applied before hooks run", func(t *testing.T) {
 		mockAPI := newReconcileMockDockerAPI()
 		var restartTime time.Time
-		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ container.StopOptions) error {
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
 			restartTime = time.Now()
-			return nil
+			return client.ContainerRestartResult{}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -375,11 +375,11 @@ func TestExecutePostSyncHooks(t *testing.T) {
 		restarted := []string{}
 
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ container.StopOptions) error {
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			restarted = append(restarted, containerID)
-			return nil
+			return client.ContainerRestartResult{}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -402,11 +402,11 @@ func TestExecutePostSyncHooks(t *testing.T) {
 		restarted := []string{}
 
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ container.StopOptions) error {
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			restarted = append(restarted, containerID)
-			return nil
+			return client.ContainerRestartResult{}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -432,14 +432,14 @@ func TestExecutePostSyncHooks(t *testing.T) {
 		}
 
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerExecCreateFunc = func(ctx context.Context, ctr string, config container.ExecOptions) (container.ExecCreateResponse, error) {
+		mockAPI.containerExecCreateFunc = func(ctx context.Context, ctr string, config client.ExecCreateOptions) (client.ExecCreateResult, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			execCalls = append(execCalls, struct {
 				container string
 				cmd       []string
 			}{ctr, config.Cmd})
-			return container.ExecCreateResponse{ID: "exec-123"}, nil
+			return client.ExecCreateResult{ID: "exec-123"}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -460,9 +460,9 @@ func TestExecutePostSyncHooks(t *testing.T) {
 	t.Run("exec hook with empty command is skipped", func(t *testing.T) {
 		mockAPI := newReconcileMockDockerAPI()
 		execCalled := false
-		mockAPI.containerExecCreateFunc = func(ctx context.Context, ctr string, config container.ExecOptions) (container.ExecCreateResponse, error) {
+		mockAPI.containerExecCreateFunc = func(ctx context.Context, ctr string, config client.ExecCreateOptions) (client.ExecCreateResult, error) {
 			execCalled = true
-			return container.ExecCreateResponse{ID: "exec-123"}, nil
+			return client.ExecCreateResult{ID: "exec-123"}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -477,8 +477,8 @@ func TestExecutePostSyncHooks(t *testing.T) {
 
 	t.Run("exec hook failure returns aggregated error", func(t *testing.T) {
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerExecCreateFunc = func(ctx context.Context, ctr string, config container.ExecOptions) (container.ExecCreateResponse, error) {
-			return container.ExecCreateResponse{}, fmt.Errorf("container %s not found", ctr)
+		mockAPI.containerExecCreateFunc = func(ctx context.Context, ctr string, config client.ExecCreateOptions) (client.ExecCreateResult, error) {
+			return client.ExecCreateResult{}, fmt.Errorf("container %s not found", ctr)
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -494,8 +494,8 @@ func TestExecutePostSyncHooks(t *testing.T) {
 
 	t.Run("exec hook with non-zero exit code returns error", func(t *testing.T) {
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerExecInspectFunc = func(ctx context.Context, execID string) (container.ExecInspect, error) {
-			return container.ExecInspect{ExitCode: 1}, nil
+		mockAPI.containerExecInspectFunc = func(ctx context.Context, execID string, _ client.ExecInspectOptions) (client.ExecInspectResult, error) {
+			return client.ExecInspectResult{ExitCode: 1}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
@@ -515,17 +515,17 @@ func TestExecutePostSyncHooks(t *testing.T) {
 		executed := []string{}
 
 		mockAPI := newReconcileMockDockerAPI()
-		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ container.StopOptions) error {
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			restarted = append(restarted, containerID)
-			return nil
+			return client.ContainerRestartResult{}, nil
 		}
-		mockAPI.containerExecCreateFunc = func(ctx context.Context, ctr string, config container.ExecOptions) (container.ExecCreateResponse, error) {
+		mockAPI.containerExecCreateFunc = func(ctx context.Context, ctr string, config client.ExecCreateOptions) (client.ExecCreateResult, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			executed = append(executed, ctr)
-			return container.ExecCreateResponse{ID: "exec-123"}, nil
+			return client.ExecCreateResult{ID: "exec-123"}, nil
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
