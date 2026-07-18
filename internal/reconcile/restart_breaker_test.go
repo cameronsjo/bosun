@@ -124,6 +124,49 @@ func TestEvaluateRestartBreaker(t *testing.T) {
 		assert.NotContains(t, result.Updated, "web")
 	})
 
+	// Regression test for #348 (defect 1): tripping the breaker stops the
+	// container, so it drops out of collectRestartCounts (running/restarting
+	// only) and out of `current` on the very next check. Without preserving
+	// it here, the tripped record is silently pruned -- no resolved alert
+	// ever fires, and a later restart is treated as a brand-new baseline.
+	t.Run("tripped entry survives when the stopped container disappears from current", func(t *testing.T) {
+		current := map[string]int{} // breaker stopped "web"; it's no longer running
+		tracked := map[string]RestartTrackingEntry{
+			"web": {RestartCount: 15, CheckedAt: now.Add(-5 * time.Minute), Tripped: true, TrippedAt: now.Add(-5 * time.Minute)},
+		}
+
+		result := evaluateRestartBreaker(current, tracked, threshold, window, now)
+
+		assert.Empty(t, result.Tripped)
+		assert.Empty(t, result.Resolved, "no new observation, so no resolution should fire yet")
+		require.Contains(t, result.Updated, "web", "tripped entry must not be dropped just because the container isn't currently running")
+		assert.True(t, result.Updated["web"].Tripped, "trip state must survive until the container is observed again")
+		assert.Equal(t, 15, result.Updated["web"].RestartCount)
+	})
+
+	// Regression test for #348 (defect 2): resolution used to compare the
+	// current count against the frozen trip-time baseline. RestartCount is
+	// monotonic for the life of a container, so once any restart happens
+	// after tripping, the count permanently exceeds that frozen baseline and
+	// the breaker could never resolve again -- even after the container
+	// fully stabilizes.
+	t.Run("resolves after restarts stop, even though count climbed past the trip-time baseline", func(t *testing.T) {
+		tracked := map[string]RestartTrackingEntry{
+			"web": {RestartCount: 15, CheckedAt: now.Add(-10 * time.Minute), Tripped: true, TrippedAt: now.Add(-10 * time.Minute)},
+		}
+
+		// Cycle 1: still crash-looping after the trip; count climbs past 15.
+		result1 := evaluateRestartBreaker(map[string]int{"web": 20}, tracked, threshold, window, now.Add(-5*time.Minute))
+		assert.Empty(t, result1.Resolved, "still accumulating restarts, must not resolve yet")
+		require.True(t, result1.Updated["web"].Tripped)
+		assert.Equal(t, 20, result1.Updated["web"].RestartCount, "rolling baseline must advance to the latest observed count")
+
+		// Cycle 2: no further restarts since cycle 1 -- container has stabilized.
+		result2 := evaluateRestartBreaker(map[string]int{"web": 20}, result1.Updated, threshold, window, now)
+		assert.Equal(t, []string{"web"}, result2.Resolved, "must resolve once restarts stop, regardless of the pre-trip baseline")
+		assert.False(t, result2.Updated["web"].Tripped)
+	})
+
 	t.Run("multiple containers mixed state", func(t *testing.T) {
 		current := map[string]int{"web": 20, "db": 2, "cache": 8}
 		tracked := map[string]RestartTrackingEntry{
