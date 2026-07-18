@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/cameronsjo/bosun/internal/log"
+	sentrypkg "github.com/cameronsjo/bosun/internal/sentry"
 	"github.com/cameronsjo/bosun/internal/telemetry"
 	"github.com/cameronsjo/bosun/internal/ui"
 	"github.com/prometheus/client_golang/prometheus"
@@ -257,6 +258,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		defer sentrypkg.Recover()
 		ctx, cancel := context.WithTimeout(bgCtx, s.daemon.config.ReconcileTimeout)
 		defer cancel()
 		ctx, webhookSpan := telemetry.Tracer("daemon").Start(ctx, "daemon.webhook",
@@ -384,6 +386,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		defer sentrypkg.Recover()
 		ctx, cancel := context.WithTimeout(bgCtx, s.daemon.config.ReconcileTimeout)
 		defer cancel()
 		source := fmt.Sprintf("github:%s", payload.Pusher.Name)
@@ -466,6 +469,7 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		defer sentrypkg.Recover()
 		ctx, cancel := context.WithTimeout(bgCtx, s.daemon.config.ReconcileTimeout)
 		defer cancel()
 		if err := s.daemon.TriggerReconcile(ctx, "manual", req.Force); err != nil {

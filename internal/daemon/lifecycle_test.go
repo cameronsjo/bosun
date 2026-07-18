@@ -289,6 +289,24 @@ func TestTCPLifecycle_AuthRequired(t *testing.T) {
 	})
 }
 
+// TestDaemonRun_RecoversPanicInSynchronousBody is a #364 review follow-up:
+// Run's original top-level "defer sentrypkg.Recover()" swallowed a panic
+// raised in Run's own synchronous body -- before any goroutine is even
+// spawned -- and returned nil. The caller's ui.Fatal never fired, the
+// process exited 0, and a supervisor keyed on a nonzero exit code would
+// never restart a daemon that never actually came up. A zero-value Daemon
+// (nil config) panics immediately at the first synchronous call
+// (warnWebhookAuthPosture dereferences d.config), standing in for any
+// startup-time panic before the goroutines further down are ever spawned.
+func TestDaemonRun_RecoversPanicInSynchronousBody(t *testing.T) {
+	d := &Daemon{}
+
+	err := d.Run(context.Background())
+
+	require.Error(t, err, "a panic in Run's synchronous body must surface as a non-nil error, not exit silently as nil")
+	assert.Contains(t, err.Error(), "panicked")
+}
+
 func TestDaemonRun_CancelledContext(t *testing.T) {
 	tmpDir := shortSocketDir(t)
 

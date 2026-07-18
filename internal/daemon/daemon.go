@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -248,8 +249,22 @@ func (d *Daemon) warnWebhookAuthPosture(logger zerolog.Logger) {
 
 // Run starts the daemon and blocks until shutdown.
 // It handles SIGTERM and SIGINT for graceful shutdown.
-func (d *Daemon) Run(ctx context.Context) error {
-	defer sentrypkg.Recover()
+func (d *Daemon) Run(ctx context.Context) (err error) {
+	// A bare "defer sentrypkg.Recover()" here would swallow a panic in Run's
+	// own synchronous body (before any goroutine is even spawned) and return
+	// nil -- the caller's ui.Fatal never fires, the process exits 0, and a
+	// supervisor keyed on a nonzero exit code never restarts a daemon that
+	// never actually came up. Run needs its own recover that sets the named
+	// return so a startup panic still surfaces as a real error (#364 review
+	// follow-up). The six goroutines spawned below keep their own
+	// "defer sentrypkg.Recover()" -- a panic there must NOT propagate to
+	// this frame; recovering it locally in each goroutine is correct.
+	defer func() {
+		if r := recover(); r != nil {
+			sentrypkg.Report(r)
+			err = fmt.Errorf("daemon run panicked: %v", r)
+		}
+	}()
 
 	// Initialize structured logging for daemon mode (JSON output).
 	_ = os.Setenv("BOSUN_DAEMON_MODE", "true")
@@ -578,8 +593,59 @@ func (d *Daemon) TriggerReconcile(ctx context.Context, source string, force bool
 }
 
 // reconcileLoop runs reconciliation, checking for pending triggers after each run.
-func (d *Daemon) reconcileLoop(ctx context.Context, source string, force bool) error {
+func (d *Daemon) reconcileLoop(ctx context.Context, source string, force bool) (result error) {
 	logger := log.ComponentCtx(ctx, log.ComponentDaemon)
+
+	// A panic anywhere in executeReconcile -- including deep inside a
+	// target's Reconciler.Run() -- must not leave d.reconciling stuck at
+	// true forever. Without this, the calling goroutine's own
+	// "defer sentrypkg.Recover()" stops the panic from crashing the process,
+	// but reconcileLoop's normal reconciling-flag reset below (only reached
+	// on a non-panicking return) never runs, so every future trigger just
+	// queues as pending and none ever actually execute: the daemon "stays
+	// up" but is permanently wedged, unable to reconcile again (#364).
+	// Recovering here converts the panic into an ordinary logged error and
+	// alert, resets the same state the successful-completion path resets,
+	// and lets the circuit breaker keep governing retries on the next
+	// trigger exactly as it would after any other reconcile failure.
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+
+		logger.Error().
+			Interface("panic", r).
+			Str("stack", string(debug.Stack())).
+			Str(log.FieldSource, source).
+			Msg("Recovered from panic during reconciliation; daemon remains up")
+		ui.Error("Recovered from panic during reconciliation (source: %s): %v", source, r)
+
+		d.reconcileMu.Lock()
+		d.reconciling = false
+		d.pendingTrigger = false
+		d.triggerSource = ""
+		d.triggerForce = false
+		d.reconcileMu.Unlock()
+
+		panicErr := fmt.Errorf("recovered from panic during reconciliation: %v", r)
+
+		d.stateMu.Lock()
+		d.lastReconcile = time.Now()
+		d.lastError = panicErr
+		d.stateMu.Unlock()
+
+		if d.alerter != nil {
+			alertCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if alertErr := d.alerter.SendDeployFailure(alertCtx, "", source, panicErr.Error(), nil, 0); alertErr != nil {
+				logger.Warn().Err(alertErr).Msg("Failed to send panic-recovery alert")
+			}
+			cancel()
+		}
+
+		result = panicErr
+	}()
+
 	var lastErr error
 
 	for {
@@ -1731,21 +1797,33 @@ func ConfigFromEnv() *Config {
 	// Timeout overrides
 	if v := os.Getenv("BOSUN_RECONCILE_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
-			cfg.ReconcileTimeout = d
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_RECONCILE_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must be positive, falling back to default")
+			} else {
+				cfg.ReconcileTimeout = d
+			}
 		} else {
 			log.Warn().Str("env", "BOSUN_RECONCILE_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 	if v := os.Getenv("BOSUN_SHUTDOWN_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
-			cfg.ShutdownTimeout = d
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_SHUTDOWN_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must be positive, falling back to default")
+			} else {
+				cfg.ShutdownTimeout = d
+			}
 		} else {
 			log.Warn().Str("env", "BOSUN_SHUTDOWN_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
 	if v := os.Getenv("BOSUN_API_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
-			cfg.APITimeout = d
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_API_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must be positive, falling back to default")
+			} else {
+				cfg.APITimeout = d
+			}
 		} else {
 			log.Warn().Str("env", "BOSUN_API_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}

@@ -1494,6 +1494,117 @@ func TestConfigFromEnv_BackupTimeout(t *testing.T) {
 	})
 }
 
+func TestConfigFromEnv_ReconcileTimeout(t *testing.T) {
+	// Unset/invalid/non-positive values must all fall back to the 10m default
+	// (DefaultConfig) rather than reach context.WithTimeout as zero — a zero
+	// timeout yields an already-expired context and fails every reconcile
+	// instantly (#419).
+	t.Run("default is 10m when unset", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileTimeout)
+	})
+
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_RECONCILE_TIMEOUT", "20m")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 20*time.Minute, cfg.ReconcileTimeout)
+	})
+
+	t.Run("parses plain seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_RECONCILE_TIMEOUT", "1200")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 20*time.Minute, cfg.ReconcileTimeout)
+	})
+
+	t.Run("invalid value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_RECONCILE_TIMEOUT", "not-a-duration")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileTimeout)
+	})
+
+	t.Run("negative value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_RECONCILE_TIMEOUT", "-5m")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileTimeout)
+	})
+
+	t.Run("zero value falls back to default instead of yielding an expired context", func(t *testing.T) {
+		t.Setenv("BOSUN_RECONCILE_TIMEOUT", "0")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileTimeout)
+	})
+}
+
+// TestConfigFromEnv_ShutdownTimeout closes #443: BOSUN_SHUTDOWN_TIMEOUT had
+// the same unguarded-zero gap as BOSUN_RECONCILE_TIMEOUT (#419) -- a
+// non-positive value reached cfg.ShutdownTimeout directly instead of falling
+// back to the 30s default.
+func TestConfigFromEnv_ShutdownTimeout(t *testing.T) {
+	t.Run("default is 30s when unset", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 30*time.Second, cfg.ShutdownTimeout)
+	})
+
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_SHUTDOWN_TIMEOUT", "1m")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, time.Minute, cfg.ShutdownTimeout)
+	})
+
+	t.Run("invalid value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_SHUTDOWN_TIMEOUT", "not-a-duration")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 30*time.Second, cfg.ShutdownTimeout)
+	})
+
+	t.Run("negative value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_SHUTDOWN_TIMEOUT", "-5s")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 30*time.Second, cfg.ShutdownTimeout)
+	})
+
+	t.Run("zero value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_SHUTDOWN_TIMEOUT", "0")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 30*time.Second, cfg.ShutdownTimeout)
+	})
+}
+
+// TestConfigFromEnv_APITimeout closes #443: BOSUN_API_TIMEOUT had the same
+// unguarded-zero gap as BOSUN_RECONCILE_TIMEOUT (#419) -- a non-positive
+// value reached cfg.APITimeout directly instead of falling back to the 30s
+// default.
+func TestConfigFromEnv_APITimeout(t *testing.T) {
+	t.Run("default is 30s when unset", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 30*time.Second, cfg.APITimeout)
+	})
+
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_API_TIMEOUT", "1m")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, time.Minute, cfg.APITimeout)
+	})
+
+	t.Run("invalid value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_API_TIMEOUT", "not-a-duration")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 30*time.Second, cfg.APITimeout)
+	})
+
+	t.Run("negative value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_API_TIMEOUT", "-5s")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 30*time.Second, cfg.APITimeout)
+	})
+
+	t.Run("zero value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_API_TIMEOUT", "0")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 30*time.Second, cfg.APITimeout)
+	})
+}
+
 func TestConfigFromEnv_HealthCheckTimeout(t *testing.T) {
 	t.Run("default uses reconcile package default", func(t *testing.T) {
 		cfg := ConfigFromEnv()
@@ -1735,6 +1846,61 @@ func TestTriggerReconcile_BoundedByReconcileTimeout(t *testing.T) {
 
 	d.reconcileMu.Lock()
 	assert.False(t, d.reconciling, "reconciling should clear after the timeout unwedges the run")
+	d.reconcileMu.Unlock()
+}
+
+// panicGitOps is a reconcile.GitOperations stub whose Sync panics,
+// simulating a defect anywhere in the reconcile pipeline so tests can prove
+// the daemon recovers gracefully instead of crashing (#364).
+type panicGitOps struct{}
+
+func (panicGitOps) Sync(context.Context) (bool, string, string, error) {
+	panic("simulated reconcile panic")
+}
+
+func (panicGitOps) IsRepo(context.Context) bool { return true }
+
+func (panicGitOps) DiffFiles(context.Context, string, string) ([]string, error) {
+	return nil, nil
+}
+
+// TestTriggerReconcile_RecoversFromPanic is the #364 regression: a panic
+// anywhere in the reconcile pipeline (originally observed as an unhandled
+// panic during Reconciler.Run(), taking the whole daemon process down with
+// exit code 2) must be recovered, logged as an ordinary error, and must not
+// leave the daemon wedged -- a later trigger must still be able to run and
+// succeed, so the circuit breaker keeps governing retries exactly as it
+// would after any other reconcile failure.
+func TestTriggerReconcile_RecoversFromPanic(t *testing.T) {
+	d := newConcurrencyDaemon(t)
+	d.reconcileOpts = append(d.reconcileOpts, reconcile.WithGitOperations(panicGitOps{}))
+
+	ctx := context.Background()
+	err := d.TriggerReconcile(ctx, "test", false)
+
+	require.Error(t, err, "a recovered panic must surface as an ordinary error, not crash the test process")
+	assert.Contains(t, err.Error(), "panic")
+
+	d.reconcileMu.Lock()
+	assert.False(t, d.reconciling, "reconciling must clear after a recovered panic, not stay wedged forever")
+	assert.False(t, d.pendingTrigger, "pendingTrigger must clear after a recovered panic")
+	d.reconcileMu.Unlock()
+
+	_, lastErr := d.LastReconcile()
+	require.Error(t, lastErr, "LastReconcile must reflect the panic as the daemon's last error")
+
+	// The daemon must not be permanently wedged: swap in a GitOps stub that
+	// succeeds and confirm a subsequent trigger can still run to completion
+	// (DryRun with no repo on disk fails at a later pipeline step, but the
+	// point is it actually RUNS rather than queuing forever behind a stuck
+	// d.reconciling=true).
+	d.reconcileOpts = d.reconcileOpts[:len(d.reconcileOpts)-1]
+	d.reconcileOpts = append(d.reconcileOpts, reconcile.WithGitOperations(daemonSuccessGitOps{}))
+	err = d.TriggerReconcile(ctx, "followup", false)
+	_ = err // may still fail for unrelated reasons (no staging dir, etc.) -- reaching here at all is the point
+
+	d.reconcileMu.Lock()
+	assert.False(t, d.reconciling, "reconciling should clear after the follow-up trigger completes")
 	d.reconcileMu.Unlock()
 }
 
@@ -2596,10 +2762,10 @@ func TestConfigFromEnv_RestartBreaker(t *testing.T) {
 
 func TestParseDurationOrSeconds(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   string
-		want    time.Duration
-		wantOK  bool
+		name   string
+		input  string
+		want   time.Duration
+		wantOK bool
 	}{
 		{name: "Go duration 30s", input: "30s", want: 30 * time.Second, wantOK: true},
 		{name: "Go duration 5m", input: "5m", want: 5 * time.Minute, wantOK: true},
