@@ -105,7 +105,7 @@ Long-running GitOps daemon with webhook reception, polling, and health checks.
 
 ### internal/docker
 
-Docker SDK wrapper. Uses `github.com/docker/docker/client`.
+Docker client wrapper. Uses the moby split modules `github.com/moby/moby/client` + `github.com/moby/moby/api` (ported from the end-of-line `github.com/docker/docker` SDK in 2026-07; field report at `~/Documents/The Compendium/Field Reports/bosun/docker-sdk-end-of-line-and-moby-split.md`).
 
 ```go
 client, err := docker.NewClient()
@@ -115,7 +115,8 @@ containers, err := client.ListContainers(ctx, onlyRunning)
 err := client.RestartContainer(ctx, name)
 ```
 
-- **Docker SDK is end-of-line at `v28.5.2+incompatible`.** Successor split modules are `github.com/moby/moby/api` (stable, v1.54.2+) and `github.com/moby/moby/client` (stable, v0.4.1+); or `github.com/moby/moby/v2` (beta). Migration is a real API port — `*Options` types moved from `api/types/container` to the `client` package, methods gained options parameters (`Ping(ctx)` → `Ping(ctx, PingOptions{})`), returns became `*Result` wrappers. Tracked in `bd show bosun-8wu`; field report at `~/Documents/The Compendium/Field Reports/bosun/docker-sdk-end-of-line-and-moby-split.md`. All remaining `docker/docker` CVEs flagged on the SDK are daemon-side (race conditions in `docker cp`, AuthZ plugin bypass, etc.) and **not reachable** from bosun's client-only usage — the Engine daemon version on Unraid is the actual security boundary.
+- **`DockerAPI` mirrors the moby client verbatim** — every method takes an options struct and returns a `*Result` wrapper (`Ping(ctx, client.PingOptions{})` → `client.PingResult`), and `var _ DockerAPI = (*client.Client)(nil)` pins the interface to the real client at compile time, so upstream signature drift breaks the build instead of silently diverging. Two independent mocks implement it (`dockertest/mock.go`, compiled by `go build`, and `reconcile/mock_docker_test.go`, test-only) — signature changes must land atomically across all three.
+- The old SDK's daemon-side CVEs (docker cp races, AuthZ plugin bypass) never reached bosun's client-only usage; dropping the module closed the flagged alerts outright. The Engine daemon version on the deploy host remains the actual security boundary.
 
 ### internal/manifest
 
@@ -273,7 +274,7 @@ func init() {
 Core (direct):
 
 - `github.com/spf13/cobra` - CLI framework
-- `github.com/docker/docker` - Docker SDK
+- `github.com/moby/moby/client` + `github.com/moby/moby/api` - Docker client (moby split modules)
 - `github.com/go-git/go-git/v5` - Git operations (in-process clone/pull)
 - `github.com/getsops/sops/v3` - Secret decryption (SOPS + Age)
 - `github.com/rs/zerolog` - Structured logging
