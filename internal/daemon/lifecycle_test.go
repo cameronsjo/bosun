@@ -381,3 +381,89 @@ func TestDaemonRun_InitialReconcileFailure_StaysNotReady(t *testing.T) {
 		t.Fatal("Run() did not return after context cancellation")
 	}
 }
+
+// daemonSuccessGitOps is a reconcile.GitOperations stub that always reports a
+// clean, up-to-date sync, letting a test drive a full successful reconcile
+// pipeline without needing a reachable remote repository.
+type daemonSuccessGitOps struct{}
+
+func (daemonSuccessGitOps) Sync(context.Context) (bool, string, string, error) {
+	return false, "abc123", "abc123", nil
+}
+
+func (daemonSuccessGitOps) IsRepo(context.Context) bool { return true }
+
+func (daemonSuccessGitOps) DiffFiles(context.Context, string, string) ([]string, error) {
+	return nil, nil
+}
+
+// TestDaemonRun_LaterReconcileSucceeds_BecomesReady is the follow-up
+// regression test for #346: readiness must reflect "has ever successfully
+// reconciled", not just "the initial boot reconcile succeeded". After a
+// failed initial reconcile leaves the daemon not-ready, a later reconcile
+// (poll/webhook/manual trigger) that succeeds must flip IsReady() to true --
+// setReady(true) has to live at a single choke point every trigger path runs
+// through (TriggerReconcile), not only in the initial-reconcile goroutine.
+func TestDaemonRun_LaterReconcileSucceeds_BecomesReady(t *testing.T) {
+	tmpDir := shortSocketDir(t)
+
+	cfg := DefaultConfig()
+	cfg.SocketPath = filepath.Join(tmpDir, "d.sock")
+	cfg.EnableHTTP = false
+	cfg.EnableTCP = false
+	cfg.PollInterval = 0
+	cfg.DriftInterval = 0
+	cfg.InitialDelay = 10 * time.Millisecond
+	cfg.ShutdownTimeout = 2 * time.Second
+	cfg.ReconcileConfig = reconcile.DefaultConfig()
+	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
+	cfg.ReconcileConfig.DryRun = true
+	cfg.ReconcileConfig.AllowEmptyDeclaredState = true
+	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
+	cfg.ReconcileConfig.StagingDir = filepath.Join(tmpDir, "staging")
+	cfg.ReconcileConfig.LocalAppdataPath = filepath.Join(tmpDir, "appdata")
+	cfg.ReconcileConfig.InfraSubDir = "unraid"
+	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "test.lock")
+	cfg.ReconcileConfig.StateFile = filepath.Join(tmpDir, "state.json")
+	require.NoError(t, os.MkdirAll(cfg.ReconcileConfig.LocalAppdataPath, 0755))
+
+	d, err := New(cfg)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- d.Run(ctx)
+	}()
+
+	// Phase 1: the initial reconcile fails against the unreachable repo, same
+	// as TestDaemonRun_InitialReconcileFailure_StaysNotReady.
+	require.Eventually(t, func() bool {
+		_, lastErr := d.LastReconcile()
+		return lastErr != nil
+	}, 10*time.Second, 20*time.Millisecond, "initial reconcile did not complete with an error")
+	assert.False(t, d.IsReady(), "must not be ready after the failed initial reconcile")
+
+	// Phase 2: seed the compose fixture the pipeline needs past the git-sync
+	// step, inject a GitOps stub that always succeeds, and drive a later
+	// reconcile directly -- simulating an operator fixing connectivity and a
+	// subsequent poll/webhook landing.
+	composeDir := filepath.Join(cfg.ReconcileConfig.RepoDir, cfg.ReconcileConfig.InfraSubDir, "compose")
+	require.NoError(t, os.MkdirAll(composeDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(composeDir, "stub.yml"),
+		[]byte("services:\n  stub:\n    image: alpine:latest\n"), 0644))
+
+	d.reconcileOpts = append(d.reconcileOpts, reconcile.WithGitOperations(daemonSuccessGitOps{}))
+	require.NoError(t, d.TriggerReconcile(ctx, "manual-followup", false))
+
+	assert.True(t, d.IsReady(), "must become ready once a later reconcile succeeds, even after a failed initial reconcile")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+}

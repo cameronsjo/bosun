@@ -367,7 +367,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return
 		}
 		logger.Info().Msg("Daemon ready to serve requests")
-		d.setReady(true)
 	}()
 
 	// Start polling loop if enabled
@@ -564,7 +563,18 @@ func (d *Daemon) TriggerReconcile(ctx context.Context, source string, force bool
 		Msg("Dispatching reconciliation")
 
 	// Run the reconcile loop (may run multiple times if pending triggers arrive).
-	return d.reconcileLoop(ctx, source, force)
+	err := d.reconcileLoop(ctx, source, force)
+
+	// Readiness reflects "has ever successfully reconciled" (#346), not just
+	// "the initial boot reconcile succeeded" -- flip it here, the single
+	// choke point every trigger path (startup, poll, webhook, socket, tcp,
+	// api, drift-self-heal) runs through, so a later successful reconcile
+	// can recover the daemon from a failed initial boot reconcile too.
+	if err == nil {
+		d.setReady(true)
+	}
+
+	return err
 }
 
 // reconcileLoop runs reconciliation, checking for pending triggers after each run.
