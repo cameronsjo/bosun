@@ -1731,7 +1731,11 @@ func ConfigFromEnv() *Config {
 	// Timeout overrides
 	if v := os.Getenv("BOSUN_RECONCILE_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
-			cfg.ReconcileTimeout = d
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_RECONCILE_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must be positive, falling back to default")
+			} else {
+				cfg.ReconcileTimeout = d
+			}
 		} else {
 			log.Warn().Str("env", "BOSUN_RECONCILE_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}

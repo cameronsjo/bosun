@@ -1494,6 +1494,47 @@ func TestConfigFromEnv_BackupTimeout(t *testing.T) {
 	})
 }
 
+func TestConfigFromEnv_ReconcileTimeout(t *testing.T) {
+	// Unset/invalid/non-positive values must all fall back to the 10m default
+	// (DefaultConfig) rather than reach context.WithTimeout as zero — a zero
+	// timeout yields an already-expired context and fails every reconcile
+	// instantly (#419).
+	t.Run("default is 10m when unset", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileTimeout)
+	})
+
+	t.Run("parses Go duration string", func(t *testing.T) {
+		t.Setenv("BOSUN_RECONCILE_TIMEOUT", "20m")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 20*time.Minute, cfg.ReconcileTimeout)
+	})
+
+	t.Run("parses plain seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_RECONCILE_TIMEOUT", "1200")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 20*time.Minute, cfg.ReconcileTimeout)
+	})
+
+	t.Run("invalid value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_RECONCILE_TIMEOUT", "not-a-duration")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileTimeout)
+	})
+
+	t.Run("negative value falls back to default", func(t *testing.T) {
+		t.Setenv("BOSUN_RECONCILE_TIMEOUT", "-5m")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileTimeout)
+	})
+
+	t.Run("zero value falls back to default instead of yielding an expired context", func(t *testing.T) {
+		t.Setenv("BOSUN_RECONCILE_TIMEOUT", "0")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileTimeout)
+	})
+}
+
 func TestConfigFromEnv_HealthCheckTimeout(t *testing.T) {
 	t.Run("default uses reconcile package default", func(t *testing.T) {
 		cfg := ConfigFromEnv()
