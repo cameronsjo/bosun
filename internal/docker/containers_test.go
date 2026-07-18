@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,7 +30,7 @@ func TestClient_Logs(t *testing.T) {
 			tail:      100,
 			follow:    false,
 			setup: func(m *MockDockerAPI) {
-				m.ContainerLogsFunc = func(ctx context.Context, containerName string, options container.LogsOptions) (io.ReadCloser, error) {
+				m.ContainerLogsFunc = func(ctx context.Context, containerName string, options client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
 					assert.Equal(t, "100", options.Tail)
 					assert.False(t, options.Follow)
 					return io.NopCloser(bytes.NewReader([]byte("line1\nline2\n"))), nil
@@ -45,7 +45,7 @@ func TestClient_Logs(t *testing.T) {
 			tail:      0,
 			follow:    false,
 			setup: func(m *MockDockerAPI) {
-				m.ContainerLogsFunc = func(ctx context.Context, containerName string, options container.LogsOptions) (io.ReadCloser, error) {
+				m.ContainerLogsFunc = func(ctx context.Context, containerName string, options client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
 					assert.Equal(t, "all", options.Tail)
 					return io.NopCloser(bytes.NewReader([]byte("all logs\n"))), nil
 				}
@@ -59,7 +59,7 @@ func TestClient_Logs(t *testing.T) {
 			tail:      50,
 			follow:    true,
 			setup: func(m *MockDockerAPI) {
-				m.ContainerLogsFunc = func(ctx context.Context, containerName string, options container.LogsOptions) (io.ReadCloser, error) {
+				m.ContainerLogsFunc = func(ctx context.Context, containerName string, options client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
 					assert.True(t, options.Follow)
 					return io.NopCloser(bytes.NewReader([]byte("streaming\n"))), nil
 				}
@@ -73,7 +73,7 @@ func TestClient_Logs(t *testing.T) {
 			tail:      100,
 			follow:    false,
 			setup: func(m *MockDockerAPI) {
-				m.ContainerLogsFunc = func(ctx context.Context, containerName string, options container.LogsOptions) (io.ReadCloser, error) {
+				m.ContainerLogsFunc = func(ctx context.Context, containerName string, options client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
 					return nil, errMockLogs
 				}
 			},
@@ -115,9 +115,9 @@ func TestClient_Inspect(t *testing.T) {
 			name:      "inspect running container",
 			container: "web",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
-					return container.InspectResponse{
-						ContainerJSONBase: &container.ContainerJSONBase{
+				m.ContainerInspectFunc = func(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+					return client.ContainerInspectResult{
+						Container: container.InspectResponse{
 							ID:      "abc1234567890000",
 							Name:    "/web",
 							Created: "2024-01-01T00:00:00.000000000Z",
@@ -128,27 +128,25 @@ func TestClient_Inspect(t *testing.T) {
 							},
 							RestartCount: 2,
 							Driver:       "overlay2",
-						},
-						Config: &container.Config{
-							Image:  "nginx:latest",
-							Labels: map[string]string{"env": "prod"},
-							Env:    []string{"FOO=bar", "BAZ=qux"},
-						},
-						NetworkSettings: &container.NetworkSettings{
-							NetworkSettingsBase: container.NetworkSettingsBase{ //nolint:staticcheck // deprecated but still required
-								Ports: nat.PortMap{
-									"80/tcp": []nat.PortBinding{
+							Config: &container.Config{
+								Image:  "nginx:latest",
+								Labels: map[string]string{"env": "prod"},
+								Env:    []string{"FOO=bar", "BAZ=qux"},
+							},
+							NetworkSettings: &container.NetworkSettings{
+								Ports: network.PortMap{
+									network.MustParsePort("80/tcp"): []network.PortBinding{
 										{HostPort: "8080"},
 									},
 								},
+								Networks: map[string]*network.EndpointSettings{
+									"bridge": {},
+									"custom": {},
+								},
 							},
-							Networks: map[string]*network.EndpointSettings{
-								"bridge": {},
-								"custom": {},
+							Mounts: []container.MountPoint{
+								{Source: "/host/path", Destination: "/container/path"},
 							},
-						},
-						Mounts: []container.MountPoint{
-							{Source: "/host/path", Destination: "/container/path"},
 						},
 					}, nil
 				}
@@ -169,9 +167,9 @@ func TestClient_Inspect(t *testing.T) {
 			name:      "inspect with health check",
 			container: "api",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
-					return container.InspectResponse{
-						ContainerJSONBase: &container.ContainerJSONBase{
+				m.ContainerInspectFunc = func(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+					return client.ContainerInspectResult{
+						Container: container.InspectResponse{
 							ID:      "def1234567890000",
 							Name:    "/api",
 							Created: "2024-01-01T00:00:00.000000000Z",
@@ -184,19 +182,17 @@ func TestClient_Inspect(t *testing.T) {
 								},
 							},
 							Driver: "overlay2",
-						},
-						Config: &container.Config{
-							Image:  "api:latest",
-							Labels: map[string]string{},
-							Env:    []string{},
-						},
-						NetworkSettings: &container.NetworkSettings{
-							NetworkSettingsBase: container.NetworkSettingsBase{ //nolint:staticcheck // deprecated but still required
-								Ports: nat.PortMap{},
+							Config: &container.Config{
+								Image:  "api:latest",
+								Labels: map[string]string{},
+								Env:    []string{},
 							},
-							Networks: map[string]*network.EndpointSettings{},
+							NetworkSettings: &container.NetworkSettings{
+								Ports:    network.PortMap{},
+								Networks: map[string]*network.EndpointSettings{},
+							},
+							Mounts: []container.MountPoint{},
 						},
-						Mounts: []container.MountPoint{},
 					}, nil
 				}
 			},
@@ -213,8 +209,8 @@ func TestClient_Inspect(t *testing.T) {
 			name:      "inspect error",
 			container: "missing",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
-					return container.InspectResponse{}, errMockInspect
+				m.ContainerInspectFunc = func(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+					return client.ContainerInspectResult{}, errMockInspect
 				}
 			},
 			wantErr: true,
@@ -256,10 +252,10 @@ func TestClient_Remove(t *testing.T) {
 			container: "web",
 			force:     true,
 			setup: func(m *MockDockerAPI) {
-				m.ContainerRemoveFunc = func(ctx context.Context, containerID string, options container.RemoveOptions) error {
+				m.ContainerRemoveFunc = func(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
 					assert.True(t, options.Force)
 					assert.False(t, options.RemoveVolumes)
-					return nil
+					return client.ContainerRemoveResult{}, nil
 				}
 			},
 			wantErr: false,
@@ -269,9 +265,9 @@ func TestClient_Remove(t *testing.T) {
 			container: "web",
 			force:     false,
 			setup: func(m *MockDockerAPI) {
-				m.ContainerRemoveFunc = func(ctx context.Context, containerID string, options container.RemoveOptions) error {
+				m.ContainerRemoveFunc = func(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
 					assert.False(t, options.Force)
-					return nil
+					return client.ContainerRemoveResult{}, nil
 				}
 			},
 			wantErr: false,
@@ -281,8 +277,8 @@ func TestClient_Remove(t *testing.T) {
 			container: "web",
 			force:     true,
 			setup: func(m *MockDockerAPI) {
-				m.ContainerRemoveFunc = func(ctx context.Context, containerID string, options container.RemoveOptions) error {
-					return errMockRemove
+				m.ContainerRemoveFunc = func(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
+					return client.ContainerRemoveResult{}, errMockRemove
 				}
 			},
 			wantErr: true,
@@ -318,8 +314,8 @@ func TestClient_Start(t *testing.T) {
 			name:      "start success",
 			container: "web",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerStartFunc = func(ctx context.Context, containerID string, options container.StartOptions) error {
-					return nil
+				m.ContainerStartFunc = func(ctx context.Context, containerID string, options client.ContainerStartOptions) (client.ContainerStartResult, error) {
+					return client.ContainerStartResult{}, nil
 				}
 			},
 			wantErr: false,
@@ -328,8 +324,8 @@ func TestClient_Start(t *testing.T) {
 			name:      "start error",
 			container: "web",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerStartFunc = func(ctx context.Context, containerID string, options container.StartOptions) error {
-					return errMockStart
+				m.ContainerStartFunc = func(ctx context.Context, containerID string, options client.ContainerStartOptions) (client.ContainerStartResult, error) {
+					return client.ContainerStartResult{}, errMockStart
 				}
 			},
 			wantErr: true,
@@ -366,12 +362,12 @@ func TestClient_Exists(t *testing.T) {
 			name:      "container exists",
 			container: "web",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+				m.ContainerListFunc = func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
 					assert.True(t, options.All)
-					return []container.Summary{
+					return client.ContainerListResult{Items: []container.Summary{
 						{Names: []string{"/web"}},
 						{Names: []string{"/api"}},
-					}, nil
+					}}, nil
 				}
 			},
 			want:    true,
@@ -381,10 +377,10 @@ func TestClient_Exists(t *testing.T) {
 			name:      "container does not exist",
 			container: "missing",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-					return []container.Summary{
+				m.ContainerListFunc = func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+					return client.ContainerListResult{Items: []container.Summary{
 						{Names: []string{"/web"}},
-					}, nil
+					}}, nil
 				}
 			},
 			want:    false,
@@ -394,8 +390,8 @@ func TestClient_Exists(t *testing.T) {
 			name:      "list error",
 			container: "web",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-					return nil, errMockList
+				m.ContainerListFunc = func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+					return client.ContainerListResult{}, errMockList
 				}
 			},
 			wantErr: true,
@@ -404,8 +400,8 @@ func TestClient_Exists(t *testing.T) {
 			name:      "empty list",
 			container: "web",
 			setup: func(m *MockDockerAPI) {
-				m.ContainerListFunc = func(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-					return []container.Summary{}, nil
+				m.ContainerListFunc = func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+					return client.ContainerListResult{Items: []container.Summary{}}, nil
 				}
 			},
 			want:    false,
@@ -432,9 +428,9 @@ func TestClient_Exists(t *testing.T) {
 
 func TestClient_Inspect_WithPlatformAndHealthLog(t *testing.T) {
 	mock := NewMockDockerAPI()
-	mock.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
-		return container.InspectResponse{
-			ContainerJSONBase: &container.ContainerJSONBase{
+	mock.ContainerInspectFunc = func(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+		return client.ContainerInspectResult{
+			Container: container.InspectResponse{
 				ID:      "abc1234567890000",
 				Name:    "/api",
 				Created: "2024-06-15T10:30:00.000000000Z",
@@ -453,23 +449,21 @@ func TestClient_Inspect_WithPlatformAndHealthLog(t *testing.T) {
 				},
 				Driver:   "overlay2",
 				Platform: "linux/amd64",
-			},
-			Config: &container.Config{
-				Image:  "api:v2",
-				Labels: map[string]string{},
-				Env:    []string{},
-			},
-			NetworkSettings: &container.NetworkSettings{
-				NetworkSettingsBase: container.NetworkSettingsBase{ //nolint:staticcheck // deprecated but still required
-					Ports: nat.PortMap{
-						"8080/tcp": []nat.PortBinding{
+				Config: &container.Config{
+					Image:  "api:v2",
+					Labels: map[string]string{},
+					Env:    []string{},
+				},
+				NetworkSettings: &container.NetworkSettings{
+					Ports: network.PortMap{
+						network.MustParsePort("8080/tcp"): []network.PortBinding{
 							{HostPort: "8080"},
 						},
 					},
+					Networks: map[string]*network.EndpointSettings{},
 				},
-				Networks: map[string]*network.EndpointSettings{},
+				Mounts: []container.MountPoint{},
 			},
-			Mounts: []container.MountPoint{},
 		}, nil
 	}
 	client := NewClientWithAPI(mock)
@@ -490,9 +484,9 @@ func TestClient_Inspect_WithPlatformAndHealthLog(t *testing.T) {
 
 func TestClient_Inspect_WithVolumes(t *testing.T) {
 	mock := NewMockDockerAPI()
-	mock.ContainerInspectFunc = func(ctx context.Context, containerID string) (container.InspectResponse, error) {
-		return container.InspectResponse{
-			ContainerJSONBase: &container.ContainerJSONBase{
+	mock.ContainerInspectFunc = func(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+		return client.ContainerInspectResult{
+			Container: container.InspectResponse{
 				ID:      "vol1234567890000",
 				Name:    "/storage",
 				Created: "2024-01-01T00:00:00.000000000Z",
@@ -502,21 +496,19 @@ func TestClient_Inspect_WithVolumes(t *testing.T) {
 					StartedAt: "2024-01-01T00:00:00.000000000Z",
 				},
 				Driver: "overlay2",
-			},
-			Config: &container.Config{
-				Image:  "minio:latest",
-				Labels: map[string]string{},
-				Env:    []string{},
-			},
-			NetworkSettings: &container.NetworkSettings{
-				NetworkSettingsBase: container.NetworkSettingsBase{ //nolint:staticcheck // deprecated but still required
-					Ports: nat.PortMap{},
+				Config: &container.Config{
+					Image:  "minio:latest",
+					Labels: map[string]string{},
+					Env:    []string{},
 				},
-				Networks: map[string]*network.EndpointSettings{},
-			},
-			Mounts: []container.MountPoint{
-				{Source: "/host/data", Destination: "/data"},
-				{Source: "/host/config", Destination: "/config"},
+				NetworkSettings: &container.NetworkSettings{
+					Ports:    network.PortMap{},
+					Networks: map[string]*network.EndpointSettings{},
+				},
+				Mounts: []container.MountPoint{
+					{Source: "/host/data", Destination: "/data"},
+					{Source: "/host/config", Destination: "/config"},
+				},
 			},
 		}, nil
 	}
