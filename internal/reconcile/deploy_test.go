@@ -1385,11 +1385,11 @@ func TestDeployOps_DeployLocalFile_StandardMode_SymlinkSwallowed(t *testing.T) {
 	assert.True(t, os.IsNotExist(statErr), "skipped symlink must not produce a destination file")
 }
 
-// writeBackupArchive creates backupDir/configs.tar.gz containing the given
+// writeTestBackupArchive creates backupDir/configs.tar.gz containing the given
 // absolute file paths, mirroring how Backup() stores them (tar strips the
 // leading '/', so member "/x/y" is stored as "x/y"). Used to exercise the
 // rollback paths, which extract this archive rather than reading loose files.
-func writeBackupArchive(t *testing.T, backupDir string, files ...string) {
+func writeTestBackupArchive(t *testing.T, backupDir string, files ...string) {
 	t.Helper()
 	if _, err := exec.LookPath("tar"); err != nil {
 		t.Skip("tar not installed")
@@ -1431,7 +1431,7 @@ func TestDeployOps_ComposeUpMultipleWithRollback_NoBackupFiles(t *testing.T) {
 	other := filepath.Join(tmpDir, "unrelated.yml")
 	require.NoError(t, os.WriteFile(other, []byte("version: '3'"), 0644))
 	backupDir := filepath.Join(tmpDir, "backup")
-	writeBackupArchive(t, backupDir, other)
+	writeTestBackupArchive(t, backupDir, other)
 
 	err := d.ComposeUpMultipleWithRollback(context.Background(), []string{"/nonexistent/compose.yml"}, backupDir)
 	assert.Error(t, err)
@@ -1555,7 +1555,7 @@ func TestDeployOps_ComposeUpMultipleWithRollbackPaths(t *testing.T) {
 		// Backup archive contains the same (invalid) file at its absolute path, so
 		// rollback resolves it from the extracted tree but also fails on it.
 		backupDir := filepath.Join(tmpDir, "backup")
-		writeBackupArchive(t, backupDir, composeFile)
+		writeTestBackupArchive(t, backupDir, composeFile)
 
 		d := &DeployOps{DryRun: false, ProjectName: "rollbacktest"}
 		err := d.ComposeUpMultipleWithRollback(ctx, []string{composeFile}, backupDir)
@@ -1587,7 +1587,7 @@ func TestDeployOps_ComposeUpMultipleWithRollbackPaths(t *testing.T) {
 		other := filepath.Join(tmpDir, "unrelated.yml")
 		require.NoError(t, os.WriteFile(other, []byte("version: '3'"), 0644))
 		backupDir := filepath.Join(tmpDir, "backup")
-		writeBackupArchive(t, backupDir, other)
+		writeTestBackupArchive(t, backupDir, other)
 
 		d := &DeployOps{DryRun: false, ProjectName: "rollbacktest"}
 		err := d.ComposeUpMultipleWithRollback(ctx, []string{composeFile}, backupDir)
@@ -1692,7 +1692,7 @@ func TestDeployOps_DeployLocalStandardMode(t *testing.T) {
 				// Archive the file at its absolute path so rollback resolves it
 				// from the extracted tree (#332/#335).
 				backupDir := filepath.Join(tmpDir, "backup")
-				writeBackupArchive(t, backupDir, composeFile)
+				writeTestBackupArchive(t, backupDir, composeFile)
 
 				d := &DeployOps{
 					DryRun:      false,

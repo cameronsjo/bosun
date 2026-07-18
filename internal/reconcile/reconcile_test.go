@@ -2640,7 +2640,7 @@ func TestComposeUpMultipleWithRollback(t *testing.T) {
 		other := filepath.Join(tmpDir, "unrelated.yml")
 		require.NoError(t, os.WriteFile(other, []byte("services: {}"), 0644))
 		backupDir := filepath.Join(tmpDir, "backup")
-		writeBackupArchive(t, backupDir, other)
+		writeTestBackupArchive(t, backupDir, other)
 
 		deploy := NewDeployOps(false, "test")
 		err := deploy.ComposeUpMultipleWithRollback(context.Background(), []string{"/nonexistent.yml"}, backupDir)
@@ -4200,7 +4200,7 @@ func TestRunHealthGate_RollbackRestoresBackupInsteadOfRedeploying(t *testing.T) 
 	// Archive the last-known-good config as the backup.
 	require.NoError(t, os.WriteFile(composeFile, []byte("services:\n  web:\n    image: nginx\nbad: [[[\n"), 0644))
 	backupDir := filepath.Join(tmpDir, "backup")
-	writeBackupArchive(t, backupDir, composeFile)
+	writeTestBackupArchive(t, backupDir, composeFile)
 
 	// The file on disk now holds the broken config that triggered the health
 	// gate in the first place.
