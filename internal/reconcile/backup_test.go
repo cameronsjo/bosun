@@ -6,6 +6,7 @@ import (
 	cryptorand "crypto/rand"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -680,4 +681,140 @@ func TestResolveBackupFile(t *testing.T) {
 		assert.False(t, ok)
 		assert.Empty(t, resolved)
 	})
+}
+
+// TestBackup_PreservesSymlinks verifies the native archive writer records a
+// symlink as a symlink (with its target), not as a copy of the pointed-to file
+// and not as a walk failure — appdata configs routinely symlink into siblings.
+func TestBackup_PreservesSymlinks(t *testing.T) {
+	tmpDir := evalSymlinks(t, t.TempDir())
+	appdata := filepath.Join(tmpDir, "appdata")
+	require.NoError(t, os.MkdirAll(appdata, 0755))
+	target := filepath.Join(appdata, "real.yaml")
+	require.NoError(t, os.WriteFile(target, []byte("key: value\n"), 0644))
+	link := filepath.Join(appdata, "alias.yaml")
+	require.NoError(t, os.Symlink("real.yaml", link))
+
+	backupDir := filepath.Join(tmpDir, "backups")
+	d := NewDeployOps(false, "")
+	backupName, err := d.Backup(context.Background(), backupDir, []string{appdata})
+	require.NoError(t, err)
+
+	root, cleanup, err := extractBackupArchive(context.Background(), filepath.Join(backupDir, backupName))
+	require.NoError(t, err)
+	defer cleanup()
+
+	extracted, ok := resolveBackupFile(root, link)
+	require.True(t, ok, "symlink member missing from archive")
+	fi, err := os.Lstat(extracted)
+	require.NoError(t, err)
+	assert.NotZero(t, fi.Mode()&os.ModeSymlink, "symlink must extract as a symlink, not a regular file")
+	got, err := os.Readlink(extracted)
+	require.NoError(t, err)
+	assert.Equal(t, "real.yaml", got)
+}
+
+// TestBackup_SkipsIrregularFiles verifies a live unix socket inside a backed-up
+// path is skipped rather than failing the backup. Appdata is live container
+// state — postgres/docker sockets are routinely present — and since #240 a
+// failed backup aborts the whole deploy, so an archiving error here would turn
+// every socket into a deploy outage.
+func TestBackup_SkipsIrregularFiles(t *testing.T) {
+	tmpDir := evalSymlinks(t, t.TempDir())
+	appdata := filepath.Join(tmpDir, "appdata")
+	require.NoError(t, os.MkdirAll(appdata, 0755))
+	cfg := filepath.Join(appdata, "config.yaml")
+	require.NoError(t, os.WriteFile(cfg, []byte("key: value\n"), 0644))
+
+	// Bind via a short relative path from inside appdata: sockaddr_un caps
+	// socket paths (~104 bytes on macOS) and t.TempDir() paths exceed it.
+	origWd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(appdata))
+	ln, err := net.Listen("unix", "live.sock")
+	require.NoError(t, os.Chdir(origWd))
+	require.NoError(t, err, "creating unix socket fixture")
+	defer func() { _ = ln.Close() }()
+
+	backupDir := filepath.Join(tmpDir, "backups")
+	d := NewDeployOps(false, "")
+	backupName, err := d.Backup(context.Background(), backupDir, []string{appdata})
+	require.NoError(t, err, "a unix socket in appdata must not fail the backup")
+
+	members := listArchiveMembers(t, filepath.Join(backupDir, backupName, "configs.tar.gz"))
+	joined := strings.Join(members, "\n")
+	assert.Contains(t, joined, "config.yaml")
+	assert.NotContains(t, joined, "live.sock", "sockets must be skipped, not archived")
+}
+
+// TestBackup_UnreadableFileIsFatal locks in the #395 semantics change: an
+// archive that cannot be fully produced fails loudly at creation (with the
+// partial backup directory removed, #352) instead of being discovered as
+// missing/short at verification — or worse, silently succeeding.
+func TestBackup_UnreadableFileIsFatal(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; chmod 000 does not deny access")
+	}
+	tmpDir := evalSymlinks(t, t.TempDir())
+	appdata := filepath.Join(tmpDir, "appdata")
+	require.NoError(t, os.MkdirAll(appdata, 0755))
+	secret := filepath.Join(appdata, "unreadable.yaml")
+	require.NoError(t, os.WriteFile(secret, []byte("key: value\n"), 0644))
+	require.NoError(t, os.Chmod(secret, 0000))
+	defer func() { _ = os.Chmod(secret, 0644) }()
+
+	backupDir := filepath.Join(tmpDir, "backups")
+	d := NewDeployOps(false, "")
+	_, err := d.Backup(context.Background(), backupDir, []string{appdata})
+	require.Error(t, err, "an unreadable file must fail the backup loudly")
+	assert.Contains(t, err.Error(), "unreadable.yaml")
+
+	entries, readErr := os.ReadDir(backupDir)
+	require.NoError(t, readErr)
+	assert.Empty(t, entries, "failed backup must not leave a partial backup directory behind (#352)")
+}
+
+// TestZeroReader verifies the padding source yields zeros indefinitely — the
+// churn-tolerance paths (vanished/replaced/shrunk files) depend on it to keep
+// a partially-written entry structurally valid.
+func TestZeroReader(t *testing.T) {
+	buf := make([]byte, 64)
+	for i := range buf {
+		buf[i] = 0xFF
+	}
+	n, err := zeroReader{}.Read(buf)
+	require.NoError(t, err)
+	assert.Equal(t, 64, n)
+	for i, b := range buf {
+		require.Zerof(t, b, "byte %d not zeroed", i)
+	}
+	got, err := io.ReadAll(io.LimitReader(zeroReader{}, 1024))
+	require.NoError(t, err)
+	assert.Len(t, got, 1024)
+}
+
+// TestBackup_UnreadableDirIsFatal covers the walk-error branch: a directory
+// that cannot be descended into (as opposed to a file that cannot be opened)
+// must fail the backup loudly with path context, and leave no partial backup.
+func TestBackup_UnreadableDirIsFatal(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; chmod 000 does not deny access")
+	}
+	tmpDir := evalSymlinks(t, t.TempDir())
+	appdata := filepath.Join(tmpDir, "appdata")
+	locked := filepath.Join(appdata, "locked")
+	require.NoError(t, os.MkdirAll(locked, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(locked, "hidden.yaml"), []byte("key: value\n"), 0644))
+	require.NoError(t, os.Chmod(locked, 0000))
+	defer func() { _ = os.Chmod(locked, 0755) }()
+
+	backupDir := filepath.Join(tmpDir, "backups")
+	d := NewDeployOps(false, "")
+	_, err := d.Backup(context.Background(), backupDir, []string{appdata})
+	require.Error(t, err, "an unreadable directory must fail the backup loudly")
+	assert.Contains(t, err.Error(), "locked")
+
+	entries, readErr := os.ReadDir(backupDir)
+	require.NoError(t, readErr)
+	assert.Empty(t, entries, "failed backup must not leave a partial backup directory behind")
 }

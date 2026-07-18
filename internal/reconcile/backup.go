@@ -240,9 +240,30 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 		Int("path_count", len(paths)).
 		Msg("Creating backup")
 
+	// Exclude the backup destination so the archive cannot recursively include
+	// its own growing output when backupDir is nested inside a backed-up path
+	// (#319). Resolving it is load-bearing for that safeguard, so failure is
+	// fatal — and it resolves BEFORE MkdirAll so no partial directory is left
+	// behind on this path.
+	absBackupDir, absErr := filepath.Abs(backupDir)
+	if absErr != nil {
+		logger.Error().Err(absErr).Str(log.FieldPath, backupDir).
+			Msg("Failed to create backup. Reason: cannot resolve backup destination for self-exclusion")
+		return "", fmt.Errorf("failed to resolve backup destination: %w", absErr)
+	}
+
 	if err := os.MkdirAll(backupPath, 0755); err != nil {
 		logger.Error().Err(err).Str(log.FieldPath, backupPath).Msg("Failed to create backup directory")
 		return "", fmt.Errorf("failed to create backup directory: %w", err)
+	}
+
+	// A failed backup must not leave partial artifacts for a later rollback to
+	// trust (#352); a cleanup failure is loud (logged), not silently discarded.
+	removeFailedBackup := func() {
+		if rmErr := os.RemoveAll(backupPath); rmErr != nil {
+			logger.Error().Err(rmErr).Str(log.FieldPath, backupPath).
+				Msg("Failed to remove partial backup after error; stale artifacts remain")
+		}
 	}
 
 	tarFile := filepath.Join(backupPath, "configs.tar.gz")
@@ -260,35 +281,21 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 		return backupName, nil
 	}
 
-	// Exclude the backup destination so tar cannot recursively archive its own
-	// growing output when backupDir is nested inside a backed-up path (#319).
-	// --exclude is matched against the path as tar walks it (the absolute
-	// argument), so the absolute form works on both GNU tar and bsdtar.
-	args := []string{"-czf", tarFile}
-	if absBackupDir, absErr := filepath.Abs(backupDir); absErr == nil {
-		args = append(args, "--exclude", absBackupDir)
-	} else {
-		// Without the exclude, tar can recursively archive its own output —
-		// surface the failed safeguard rather than swallowing it.
-		logger.Warn().Err(absErr).Str(log.FieldPath, backupDir).
-			Msg("Failed to resolve absolute backup path; self-exclusion skipped")
+	// Write the archive with Go's archive/tar directly. The previous external
+	// `tar --null -T -` invocation silently produced nothing on busybox tar
+	// (no --null support) and its exit code was discarded — every backup was an
+	// empty directory and the failure surfaced only at verification (#395).
+	// Native archiving removes the GNU/bsd/busybox capability guessing, and a
+	// creation failure is now fatal with the partial output removed (#352).
+	if err := writeBackupArchive(ctx, tarFile, existingPaths, absBackupDir); err != nil {
+		removeFailedBackup()
+		logger.Error().Err(err).Str(log.FieldPath, tarFile).Msg("Failed to create backup. Reason: cannot write archive")
+		return "", fmt.Errorf("failed to write backup archive: %w", err)
 	}
-	// Feed the path list to tar via stdin rather than argv: the deployed footprint
-	// can be many files, which as an argument list would risk ARG_MAX. Use NUL
-	// delimiters (--null) so a filename containing a newline cannot corrupt the
-	// list — matching the shell-quoting safety the remote path already applies.
-	// Both GNU tar and bsdtar read NUL-separated names from "-" under --null.
-	args = append(args, "--null", "-T", "-")
-	cmd := exec.CommandContext(ctx, "tar", args...)
-	cmd.Stdin = strings.NewReader(strings.Join(existingPaths, "\x00") + "\x00")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	// tar returns non-zero if some files don't exist, which is OK.
-	_ = cmd.Run()
 
 	// Verify the backup was created successfully
 	if err := d.VerifyBackup(ctx, backupPath); err != nil {
+		removeFailedBackup()
 		logger.Error().Err(err).Str(log.FieldPath, backupPath).Msg("Backup verification failed")
 		return "", fmt.Errorf("backup verification failed: %w", err)
 	}
@@ -301,6 +308,183 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 		Msg("Backup created successfully")
 
 	return backupName, nil
+}
+
+// writeBackupArchive creates a gzip-compressed tar archive at tarFile containing
+// every path in paths (directories recursed), excluding the excludeDir subtree.
+// Member names have the leading '/' stripped, matching what external tar produced,
+// so extractBackupArchive/resolveBackupFile keep working unchanged (#332/#335).
+//
+// The backed-up footprint is LIVE container appdata, so the walk tolerates churn
+// the way GNU tar does, instead of failing the deploy on it (#240 made a failed
+// backup abort the deploy, so spurious failures are outages):
+//   - a file that vanishes between listing and read is skipped (logged debug)
+//   - irregular files (sockets, devices, FIFOs) are skipped — archiving a live
+//     unix socket is meaningless and tar.FileInfoHeader rejects it
+//   - a file that shrinks mid-read is zero-padded to its header size so the
+//     archive stays structurally valid (logged warn); growth past the header
+//     size is truncated at the recorded length
+//
+// Everything else — permission errors, I/O errors, a failed write — is fatal:
+// a backup that cannot be produced must fail loudly at creation, not be
+// discovered missing at verification (#395).
+func writeBackupArchive(ctx context.Context, tarFile string, paths []string, excludeDir string) (err error) {
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
+
+	f, err := os.Create(tarFile)
+	if err != nil {
+		return fmt.Errorf("cannot create archive file: %w", err)
+	}
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("cannot close archive file: %w", closeErr)
+		}
+	}()
+
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+
+	for _, root := range paths {
+		walkErr := filepath.Walk(root, func(path string, info os.FileInfo, werr error) error {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			if werr != nil {
+				// Vanished mid-walk: live appdata churn, not a broken backup.
+				if os.IsNotExist(werr) {
+					logger.Debug().Str(log.FieldPath, path).Msg("Skipping path that vanished during backup walk")
+					return nil
+				}
+				return fmt.Errorf("cannot walk %s: %w", path, werr)
+			}
+			if info.IsDir() {
+				// Compare in absolute coordinates: a relative walk root would
+				// otherwise never match the absolute excludeDir, and the
+				// archive would recursively include its own growing output.
+				absPath, aerr := filepath.Abs(path)
+				if aerr != nil {
+					return fmt.Errorf("cannot resolve walked directory %s: %w", path, aerr)
+				}
+				if absPath == excludeDir {
+					return filepath.SkipDir
+				}
+			}
+
+			var linkTarget string
+			if info.Mode()&os.ModeSymlink != 0 {
+				linkTarget, werr = os.Readlink(path)
+				if werr != nil {
+					if os.IsNotExist(werr) {
+						logger.Debug().Str(log.FieldPath, path).Msg("Skipping symlink that vanished during backup walk")
+						return nil
+					}
+					return fmt.Errorf("cannot read symlink %s: %w", path, werr)
+				}
+			} else if !info.Mode().IsRegular() && !info.IsDir() {
+				// Sockets, devices, FIFOs: meaningless in a config backup.
+				logger.Debug().Str(log.FieldPath, path).Msg("Skipping irregular file during backup")
+				return nil
+			}
+
+			hdr, herr := tar.FileInfoHeader(info, linkTarget)
+			if herr != nil {
+				return fmt.Errorf("cannot build header for %s: %w", path, herr)
+			}
+			// Full path with the leading '/' stripped — external tar's layout,
+			// which resolveBackupFile depends on. fi.Name() alone would flatten
+			// the tree into colliding basenames.
+			hdr.Name = strings.TrimPrefix(filepath.ToSlash(path), "/")
+			if info.IsDir() {
+				hdr.Name += "/"
+			}
+			if werr := tw.WriteHeader(hdr); werr != nil {
+				return fmt.Errorf("cannot write header for %s: %w", path, werr)
+			}
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+
+			src, oerr := os.Open(path)
+			if oerr != nil {
+				if os.IsNotExist(oerr) {
+					// Header already written; pad the promised bytes so the
+					// archive stays valid.
+					if _, perr := copyCtx(ctx, tw, io.LimitReader(zeroReader{}, hdr.Size)); perr != nil {
+						return fmt.Errorf("cannot pad vanished file %s: %w", path, perr)
+					}
+					logger.Debug().Str(log.FieldPath, path).Msg("Padded file that vanished during backup")
+					return nil
+				}
+				return fmt.Errorf("cannot open %s: %w", path, oerr)
+			}
+			// TOCTOU guard: os.Open follows a symlink swapped in after the
+			// walk's Lstat, which would archive bytes from an arbitrary
+			// readable host path under this entry's header. Stat the opened
+			// fd and require the same inode the walk saw; anything else is
+			// treated as churn — the entry is zero-padded, never read.
+			srcInfo, serr := src.Stat()
+			if serr != nil {
+				_ = src.Close()
+				return fmt.Errorf("cannot stat opened file %s: %w", path, serr)
+			}
+			if !os.SameFile(info, srcInfo) {
+				_ = src.Close()
+				if _, perr := copyCtx(ctx, tw, io.LimitReader(zeroReader{}, hdr.Size)); perr != nil {
+					return fmt.Errorf("cannot pad replaced file %s: %w", path, perr)
+				}
+				logger.Warn().Str(log.FieldPath, path).
+					Msg("File replaced during backup; archive entry zero-padded")
+				return nil
+			}
+			if srcInfo.Size() > hdr.Size {
+				logger.Warn().Str(log.FieldPath, path).
+					Int64("expected_bytes", hdr.Size).Int64("current_bytes", srcInfo.Size()).
+					Msg("File grew during backup; archive entry truncated at header size")
+			}
+			// Copy exactly the header-recorded size: growth past it is
+			// truncated, shrinkage below it is zero-padded — a structurally
+			// valid archive either way, as GNU tar behaves on live files.
+			n, cerr := copyCtx(ctx, tw, io.LimitReader(src, hdr.Size))
+			closeErr := src.Close()
+			if cerr != nil {
+				return fmt.Errorf("cannot archive %s: %w", path, cerr)
+			}
+			if closeErr != nil {
+				return fmt.Errorf("cannot close %s: %w", path, closeErr)
+			}
+			if n < hdr.Size {
+				if _, perr := copyCtx(ctx, tw, io.LimitReader(zeroReader{}, hdr.Size-n)); perr != nil {
+					return fmt.Errorf("cannot pad truncated file %s: %w", path, perr)
+				}
+				logger.Warn().Str(log.FieldPath, path).
+					Int64("expected_bytes", hdr.Size).Int64("read_bytes", n).
+					Msg("File shrank during backup; archive entry zero-padded")
+			}
+			return nil
+		})
+		if walkErr != nil {
+			return walkErr
+		}
+	}
+
+	if err := tw.Close(); err != nil {
+		return fmt.Errorf("cannot finalize tar stream: %w", err)
+	}
+	if err := gz.Close(); err != nil {
+		return fmt.Errorf("cannot finalize gzip stream: %w", err)
+	}
+	return nil
+}
+
+// zeroReader yields an endless stream of zero bytes; used to pad archive
+// entries whose source file shrank or vanished after its header was written.
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
 }
 
 // BackupRemote creates a backup from a remote host via SSH.
