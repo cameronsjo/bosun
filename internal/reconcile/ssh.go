@@ -3,7 +3,10 @@ package reconcile
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -28,6 +31,82 @@ const (
 	SSHTimeout          = 30 * time.Second
 	RemoteDeployTimeout = 5 * time.Minute
 )
+
+// hostKeyOptions returns the ssh/scp `-o` flags that enforce the configured
+// host-key policy on the exec'd deploy path, so it honors the same
+// BOSUN_SSH_KNOWN_HOSTS / BOSUN_SSH_INSECURE_HOST_KEY config as the go-git
+// clone/pull path (git.go's getHostKeyCallback), including the on-disk
+// resolution: it consults the same buildKnownHostsPaths candidates (the env
+// var, then /config/known_hosts) and pins strict verification against the
+// first that exists. This closes the parity gap where the documented homelab
+// convention — known_hosts at /config/known_hosts with the env var unset —
+// got strict verification on git ops but only accept-new on deploys.
+//
+// Precedence mirrors the callback: BOSUN_SSH_INSECURE_HOST_KEY=true is checked
+// first and wins over any known_hosts file.
+//
+// A candidate is only skipped when it is genuinely absent (fs.ErrNotExist).
+// Any other stat error (permission denied, ENOTDIR, I/O) FAILS CLOSED: the
+// helper pins strict against that candidate rather than downgrading to
+// accept-new, so a configured known_hosts we cannot prove absent never
+// silently becomes TOFU — ssh then surfaces the real read error.
+//
+// The one remaining INTENTIONAL divergence is the terminal case: when no
+// known_hosts file exists and insecure is not set, git.go falls back to
+// InsecureIgnoreHostKey (no verification), but the deploy channel carries a
+// secret-bearing tar stream to a root account, so it uses openssh's TOFU
+// (accept-new) instead — the first connection pins the key and later
+// mismatches fail. Verification is never silently disabled here; only an
+// explicit BOSUN_SSH_INSECURE_HOST_KEY=true opts out.
+func hostKeyOptions() []string {
+	if strings.EqualFold(os.Getenv("BOSUN_SSH_INSECURE_HOST_KEY"), "true") {
+		return []string{
+			"-o", "StrictHostKeyChecking=no",
+			"-o", "UserKnownHostsFile=/dev/null",
+		}
+	}
+	for _, path := range knownHostsCandidates(os.Getenv("BOSUN_SSH_KNOWN_HOSTS")) {
+		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+			// Genuinely absent — try the next candidate.
+			continue
+		}
+		// The file exists, OR stat failed for a reason other than "not found".
+		// Fail closed in both cases: pin strict against this candidate rather
+		// than downgrading an explicitly configured policy to TOFU.
+		return []string{
+			"-o", "StrictHostKeyChecking=yes",
+			"-o", "UserKnownHostsFile=" + path,
+		}
+	}
+	return []string{"-o", "StrictHostKeyChecking=accept-new"}
+}
+
+// knownHostsCandidates resolves the ordered known_hosts candidate paths for the
+// deploy-path host-key policy, defaulting to git.go's buildKnownHostsPaths so
+// deploy and git ops share one resolution (the env var, then /config/known_hosts).
+// It is a package var so tests can inject a controlled candidate list.
+var knownHostsCandidates = buildKnownHostsPaths
+
+// execWithHostKeyOptions builds an exec.Cmd for name (ssh or scp) with the
+// host-key policy flags (hostKeyOptions) prepended before the caller's args, so
+// every exec'd ssh/scp call gets the same policy and it never drifts per-site.
+func execWithHostKeyOptions(ctx context.Context, name string, args ...string) *exec.Cmd {
+	full := append(hostKeyOptions(), args...)
+	return exec.CommandContext(ctx, name, full...)
+}
+
+// sshExecCommand builds an `ssh` command with the host-key policy flags
+// prepended before the caller's args (host + remote command).
+func sshExecCommand(ctx context.Context, args ...string) *exec.Cmd {
+	return execWithHostKeyOptions(ctx, "ssh", args...)
+}
+
+// scpExecCommand builds an `scp` command with the host-key policy flags
+// prepended before the caller's args. Counterpart to sshExecCommand for the
+// single-file copy path.
+func scpExecCommand(ctx context.Context, args ...string) *exec.Cmd {
+	return execWithHostKeyOptions(ctx, "scp", args...)
+}
 
 // isTransientSSHError checks if an error is transient and worth retrying.
 // Transient errors include connection refused, timeout, and network unreachable.
@@ -130,7 +209,7 @@ func (d *DeployOps) CheckSSHConnectivity(ctx context.Context, host string) error
 		defer cancel()
 	}
 
-	cmd := exec.CommandContext(ctx, "ssh",
+	cmd := sshExecCommand(ctx,
 		"-o", "ConnectTimeout=5",
 		"-o", "BatchMode=yes",
 		host, "exit", "0",
@@ -296,7 +375,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 		// could survive and be promoted to the live target.
 		tmpDir := filepath.Join(targetParent, fmt.Sprintf(".deploy-tmp-%d", time.Now().UnixNano()))
 		cleanupTmp := func(reason string) {
-			if err := exec.CommandContext(ctx, "ssh", targetHost, "rm", "-rf", tmpDir).Run(); err != nil {
+			if err := sshExecCommand(ctx, targetHost, "rm", "-rf", tmpDir).Run(); err != nil {
 				// Best-effort by design: the failure that got us here often
 				// means the host is unreachable, so cleanup fails too. The
 				// next attempt uses a fresh dir; the leftover is orphaned,
@@ -318,7 +397,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			Str(log.FieldTarget, targetHost).
 			Str(log.FieldPath, targetDir).
 			Msg("Preparing to recover any interrupted swap from prior deploy")
-		recoverCmd := exec.CommandContext(ctx, "ssh", targetHost, buildRemoteRecoverCommand(targetDir))
+		recoverCmd := sshExecCommand(ctx, targetHost, buildRemoteRecoverCommand(targetDir))
 		var recoverStderr bytes.Buffer
 		recoverCmd.Stderr = &recoverStderr
 		if err := recoverCmd.Run(); err != nil {
@@ -331,7 +410,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			Str(log.FieldTarget, targetHost).
 			Str(log.FieldPath, tmpDir).
 			Msg("Preparing to create staging directory on remote")
-		mkdirCmd := exec.CommandContext(ctx, "ssh", targetHost, "mkdir", "-p", tmpDir)
+		mkdirCmd := sshExecCommand(ctx, targetHost, "mkdir", "-p", tmpDir)
 		var mkdirStderr bytes.Buffer
 		mkdirCmd.Stderr = &mkdirStderr
 		if err := mkdirCmd.Run(); err != nil {
@@ -347,7 +426,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			Str("dest", tmpDir).
 			Msg("Preparing to tar and extract staging directory to remote")
 		tarCmd := exec.CommandContext(ctx, "tar", "-C", sourceDir, "-cf", "-", ".")
-		sshCmd := exec.CommandContext(ctx, "ssh", targetHost, fmt.Sprintf("tar -C %s -xf -", shellquote.Join(tmpDir)))
+		sshCmd := sshExecCommand(ctx, targetHost, fmt.Sprintf("tar -C %s -xf -", shellquote.Join(tmpDir)))
 
 		// Connect tar stdout to ssh stdin
 		pipe, err := tarCmd.StdoutPipe()
@@ -396,7 +475,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			Str(log.FieldPath, targetDir).
 			Bool("under_fuse", underFUSE).
 			Msg("Preparing to swap staged directory into live target (retain-old-until-new pattern)")
-		swapCmd := exec.CommandContext(ctx, "ssh", targetHost, buildRemoteSwapCommand(targetDir, tmpDir, oldDir, underFUSE))
+		swapCmd := sshExecCommand(ctx, targetHost, buildRemoteSwapCommand(targetDir, tmpDir, oldDir, underFUSE))
 		var swapStderr bytes.Buffer
 		swapCmd.Stderr = &swapStderr
 
@@ -487,13 +566,13 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 	err := retryWithBackoff(ctx, DefaultMaxRetries, func() error {
 		// SCP to temp file
 		target := fmt.Sprintf("%s:%s", targetHost, tmpFile)
-		scpCmd := exec.CommandContext(ctx, "scp", "-q", sourceFile, target)
+		scpCmd := scpExecCommand(ctx, "-q", sourceFile, target)
 		var scpStderr bytes.Buffer
 		scpCmd.Stderr = &scpStderr
 
 		if err := scpCmd.Run(); err != nil {
 			// Cleanup temp file on failure
-			_ = exec.CommandContext(ctx, "ssh", targetHost, "rm", "-f", tmpFile).Run()
+			_ = sshExecCommand(ctx, targetHost, "rm", "-f", tmpFile).Run()
 			if ctx.Err() == context.DeadlineExceeded {
 				return fmt.Errorf("scp timed out after %v", RemoteDeployTimeout)
 			}
@@ -501,12 +580,12 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 		}
 
 		// Atomic move temp file to target
-		moveCmd := exec.CommandContext(ctx, "ssh", targetHost, "mv", tmpFile, targetFile)
+		moveCmd := sshExecCommand(ctx, targetHost, "mv", tmpFile, targetFile)
 		var moveStderr bytes.Buffer
 		moveCmd.Stderr = &moveStderr
 
 		if err := moveCmd.Run(); err != nil {
-			_ = exec.CommandContext(ctx, "ssh", targetHost, "rm", "-f", tmpFile).Run()
+			_ = sshExecCommand(ctx, targetHost, "rm", "-f", tmpFile).Run()
 			return fmt.Errorf("atomic move failed: %w: %s", err, moveStderr.String())
 		}
 
@@ -547,7 +626,7 @@ func (d *DeployOps) EnsureRemoteDir(ctx context.Context, host, dir string) error
 	}
 
 	return retryWithBackoff(ctx, DefaultMaxRetries, func() error {
-		cmd := exec.CommandContext(ctx, "ssh", host, "mkdir", "-p", dir)
+		cmd := sshExecCommand(ctx, host, "mkdir", "-p", dir)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 

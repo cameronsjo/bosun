@@ -360,7 +360,7 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 		}
 
 		var stderr bytes.Buffer
-		cmd := exec.CommandContext(ctx, "ssh", host, sshCmd)
+		cmd := sshExecCommand(ctx, host, sshCmd)
 		cmd.Stdout = outFile
 		cmd.Stderr = &stderr
 		runErr := cmd.Run()
