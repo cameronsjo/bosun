@@ -20,15 +20,37 @@ func writeTempKnownHosts(t *testing.T) string {
 	return path
 }
 
+// setKnownHostsCandidates injects a controlled candidate resolver for the
+// duration of a test and restores the production one after, so a test owns the
+// full candidate list instead of depending on whether /config/known_hosts
+// happens to exist on the host (which it does in some container images).
+func setKnownHostsCandidates(t *testing.T, fn func(env string) []string) {
+	t.Helper()
+	orig := knownHostsCandidates
+	knownHostsCandidates = fn
+	t.Cleanup(func() { knownHostsCandidates = orig })
+}
+
 // TestHostKeyOptions locks in the deploy-path host-key policy and its
 // precedence, which must mirror git.go's getHostKeyCallback: insecure wins over
 // known_hosts, an existing known_hosts file pins strict verification, the
 // insecure opt-out matches ONLY a case-insensitive "true", and the terminal
 // case is TOFU (accept-new) — never git.go's insecure fallback.
 //
-// The accept-new expectations assume /config/known_hosts (the buildKnownHostsPaths
-// fallback) does not exist on the test host, which holds on dev machines and CI.
+// The candidate resolver is injected so the table owns the full candidate list
+// (env path only, no /config/known_hosts fallback) and the accept-new cases
+// stay deterministic regardless of the host's filesystem.
 func TestHostKeyOptions(t *testing.T) {
+	// Hermetic resolver: only the env-provided path is a candidate, so a case
+	// with no known_hosts set has zero candidates and deterministically falls
+	// to accept-new even on a host where /config/known_hosts exists.
+	setKnownHostsCandidates(t, func(env string) []string {
+		if env == "" {
+			return nil
+		}
+		return []string{env}
+	})
+
 	realKnownHosts := writeTempKnownHosts(t)
 	missingKnownHosts := filepath.Join(t.TempDir(), "absent")
 
@@ -100,6 +122,43 @@ func TestHostKeyOptions(t *testing.T) {
 			assert.Equal(t, tt.want, hostKeyOptions())
 		})
 	}
+}
+
+// TestHostKeyOptions_FailsClosedOnStatError proves a configured known_hosts
+// candidate that stat fails on for a reason OTHER than "not found" does NOT
+// downgrade to accept-new. A regular file used as a parent dir forces ENOTDIR
+// (distinct from fs.ErrNotExist and root-independent, unlike a chmod-000 dir),
+// so the branch is exercised even when tests run as root.
+func TestHostKeyOptions_FailsClosedOnStatError(t *testing.T) {
+	fileAsParent := filepath.Join(t.TempDir(), "not-a-dir")
+	require.NoError(t, os.WriteFile(fileAsParent, []byte("x"), 0o644))
+	candidate := filepath.Join(fileAsParent, "known_hosts") // parent is a file -> ENOTDIR
+
+	setKnownHostsCandidates(t, func(string) []string { return []string{candidate} })
+	t.Setenv("BOSUN_SSH_INSECURE_HOST_KEY", "")
+	t.Setenv("BOSUN_SSH_KNOWN_HOSTS", candidate)
+
+	assert.Equal(t, []string{
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "UserKnownHostsFile=" + candidate,
+	}, hostKeyOptions(), "a stat error other than not-found must fail closed, never downgrade to accept-new")
+}
+
+// TestHostKeyOptions_ResolvesLaterCandidateWhenEarlierAbsent proves the on-disk
+// fallback resolution (mirroring git.go's env-then-/config order): an absent
+// earlier candidate is skipped and a later existing one pins strict.
+func TestHostKeyOptions_ResolvesLaterCandidateWhenEarlierAbsent(t *testing.T) {
+	real := writeTempKnownHosts(t)
+	absent := filepath.Join(t.TempDir(), "absent")
+
+	setKnownHostsCandidates(t, func(string) []string { return []string{absent, real} })
+	t.Setenv("BOSUN_SSH_INSECURE_HOST_KEY", "")
+	t.Setenv("BOSUN_SSH_KNOWN_HOSTS", "")
+
+	assert.Equal(t, []string{
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "UserKnownHostsFile=" + real,
+	}, hostKeyOptions())
 }
 
 // TestSSHExecCommand_AppliesHostKeyOptions proves the policy flags actually land

@@ -3,7 +3,9 @@ package reconcile
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,6 +45,12 @@ const (
 // Precedence mirrors the callback: BOSUN_SSH_INSECURE_HOST_KEY=true is checked
 // first and wins over any known_hosts file.
 //
+// A candidate is only skipped when it is genuinely absent (fs.ErrNotExist).
+// Any other stat error (permission denied, ENOTDIR, I/O) FAILS CLOSED: the
+// helper pins strict against that candidate rather than downgrading to
+// accept-new, so a configured known_hosts we cannot prove absent never
+// silently becomes TOFU — ssh then surfaces the real read error.
+//
 // The one remaining INTENTIONAL divergence is the terminal case: when no
 // known_hosts file exists and insecure is not set, git.go falls back to
 // InsecureIgnoreHostKey (no verification), but the deploy channel carries a
@@ -57,10 +65,14 @@ func hostKeyOptions() []string {
 			"-o", "UserKnownHostsFile=/dev/null",
 		}
 	}
-	for _, path := range buildKnownHostsPaths(os.Getenv("BOSUN_SSH_KNOWN_HOSTS")) {
-		if _, err := os.Stat(path); err != nil {
+	for _, path := range knownHostsCandidates(os.Getenv("BOSUN_SSH_KNOWN_HOSTS")) {
+		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+			// Genuinely absent — try the next candidate.
 			continue
 		}
+		// The file exists, OR stat failed for a reason other than "not found".
+		// Fail closed in both cases: pin strict against this candidate rather
+		// than downgrading an explicitly configured policy to TOFU.
 		return []string{
 			"-o", "StrictHostKeyChecking=yes",
 			"-o", "UserKnownHostsFile=" + path,
@@ -68,6 +80,12 @@ func hostKeyOptions() []string {
 	}
 	return []string{"-o", "StrictHostKeyChecking=accept-new"}
 }
+
+// knownHostsCandidates resolves the ordered known_hosts candidate paths for the
+// deploy-path host-key policy, defaulting to git.go's buildKnownHostsPaths so
+// deploy and git ops share one resolution (the env var, then /config/known_hosts).
+// It is a package var so tests can inject a controlled candidate list.
+var knownHostsCandidates = buildKnownHostsPaths
 
 // execWithHostKeyOptions builds an exec.Cmd for name (ssh or scp) with the
 // host-key policy flags (hostKeyOptions) prepended before the caller's args, so
