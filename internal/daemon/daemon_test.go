@@ -1779,6 +1779,61 @@ func TestTriggerReconcile_BoundedByReconcileTimeout(t *testing.T) {
 	d.reconcileMu.Unlock()
 }
 
+// panicGitOps is a reconcile.GitOperations stub whose Sync panics,
+// simulating a defect anywhere in the reconcile pipeline so tests can prove
+// the daemon recovers gracefully instead of crashing (#364).
+type panicGitOps struct{}
+
+func (panicGitOps) Sync(context.Context) (bool, string, string, error) {
+	panic("simulated reconcile panic")
+}
+
+func (panicGitOps) IsRepo(context.Context) bool { return true }
+
+func (panicGitOps) DiffFiles(context.Context, string, string) ([]string, error) {
+	return nil, nil
+}
+
+// TestTriggerReconcile_RecoversFromPanic is the #364 regression: a panic
+// anywhere in the reconcile pipeline (originally observed as an unhandled
+// panic during Reconciler.Run(), taking the whole daemon process down with
+// exit code 2) must be recovered, logged as an ordinary error, and must not
+// leave the daemon wedged -- a later trigger must still be able to run and
+// succeed, so the circuit breaker keeps governing retries exactly as it
+// would after any other reconcile failure.
+func TestTriggerReconcile_RecoversFromPanic(t *testing.T) {
+	d := newConcurrencyDaemon(t)
+	d.reconcileOpts = append(d.reconcileOpts, reconcile.WithGitOperations(panicGitOps{}))
+
+	ctx := context.Background()
+	err := d.TriggerReconcile(ctx, "test", false)
+
+	require.Error(t, err, "a recovered panic must surface as an ordinary error, not crash the test process")
+	assert.Contains(t, err.Error(), "panic")
+
+	d.reconcileMu.Lock()
+	assert.False(t, d.reconciling, "reconciling must clear after a recovered panic, not stay wedged forever")
+	assert.False(t, d.pendingTrigger, "pendingTrigger must clear after a recovered panic")
+	d.reconcileMu.Unlock()
+
+	_, lastErr := d.LastReconcile()
+	require.Error(t, lastErr, "LastReconcile must reflect the panic as the daemon's last error")
+
+	// The daemon must not be permanently wedged: swap in a GitOps stub that
+	// succeeds and confirm a subsequent trigger can still run to completion
+	// (DryRun with no repo on disk fails at a later pipeline step, but the
+	// point is it actually RUNS rather than queuing forever behind a stuck
+	// d.reconciling=true).
+	d.reconcileOpts = d.reconcileOpts[:len(d.reconcileOpts)-1]
+	d.reconcileOpts = append(d.reconcileOpts, reconcile.WithGitOperations(daemonSuccessGitOps{}))
+	err = d.TriggerReconcile(ctx, "followup", false)
+	_ = err // may still fail for unrelated reasons (no staging dir, etc.) -- reaching here at all is the point
+
+	d.reconcileMu.Lock()
+	assert.False(t, d.reconciling, "reconciling should clear after the follow-up trigger completes")
+	d.reconcileMu.Unlock()
+}
+
 // ---------------------------------------------------------------------------
 // Phase 1D: State Accessors
 // ---------------------------------------------------------------------------

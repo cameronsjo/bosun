@@ -124,6 +124,32 @@ func TestRecover_WhenDisabled(t *testing.T) {
 	Recover()
 }
 
+// TestRecover_StopsPanicWhenDisabled is a #364 regression: a bare
+// "defer sentry.Recover()" is bosun's only safety net around every
+// reconcile-triggering goroutine in the daemon. That safety net must not
+// depend on Sentry being configured — the default, opt-in-only posture with
+// no BOSUN_SENTRY_DSN set must still recover, or a panic anywhere in the
+// reconcile path takes the whole daemon process down (exit code 2) instead
+// of logging an error and staying up.
+//
+// ranAfterPanic is only reached if the panic below was actually absorbed by
+// Go's recover() inside Recover() -- if Recover() returns without calling
+// recover() (the pre-fix behavior when Sentry is disabled), the panic keeps
+// propagating past the anonymous function call and this test fails loudly
+// (a panic, not a quiet assertion failure) rather than silently passing.
+func TestRecover_StopsPanicWhenDisabled(t *testing.T) {
+	state.enabled.Store(false)
+
+	ranAfterPanic := false
+	func() {
+		defer Recover()
+		panic("simulated reconcile panic")
+	}()
+	ranAfterPanic = true
+
+	assert.True(t, ranAfterPanic, "Recover() must stop the panic from propagating even when Sentry is disabled")
+}
+
 func TestBeforeSend_PassesNormalEvents(t *testing.T) {
 	event := &sentry.Event{
 		Message: "something broke",

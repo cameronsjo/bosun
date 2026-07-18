@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -578,8 +579,59 @@ func (d *Daemon) TriggerReconcile(ctx context.Context, source string, force bool
 }
 
 // reconcileLoop runs reconciliation, checking for pending triggers after each run.
-func (d *Daemon) reconcileLoop(ctx context.Context, source string, force bool) error {
+func (d *Daemon) reconcileLoop(ctx context.Context, source string, force bool) (result error) {
 	logger := log.ComponentCtx(ctx, log.ComponentDaemon)
+
+	// A panic anywhere in executeReconcile -- including deep inside a
+	// target's Reconciler.Run() -- must not leave d.reconciling stuck at
+	// true forever. Without this, the calling goroutine's own
+	// "defer sentrypkg.Recover()" stops the panic from crashing the process,
+	// but reconcileLoop's normal reconciling-flag reset below (only reached
+	// on a non-panicking return) never runs, so every future trigger just
+	// queues as pending and none ever actually execute: the daemon "stays
+	// up" but is permanently wedged, unable to reconcile again (#364).
+	// Recovering here converts the panic into an ordinary logged error and
+	// alert, resets the same state the successful-completion path resets,
+	// and lets the circuit breaker keep governing retries on the next
+	// trigger exactly as it would after any other reconcile failure.
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+
+		logger.Error().
+			Interface("panic", r).
+			Str("stack", string(debug.Stack())).
+			Str(log.FieldSource, source).
+			Msg("Recovered from panic during reconciliation; daemon remains up")
+		ui.Error("Recovered from panic during reconciliation (source: %s): %v", source, r)
+
+		d.reconcileMu.Lock()
+		d.reconciling = false
+		d.pendingTrigger = false
+		d.triggerSource = ""
+		d.triggerForce = false
+		d.reconcileMu.Unlock()
+
+		panicErr := fmt.Errorf("recovered from panic during reconciliation: %v", r)
+
+		d.stateMu.Lock()
+		d.lastReconcile = time.Now()
+		d.lastError = panicErr
+		d.stateMu.Unlock()
+
+		if d.alerter != nil {
+			alertCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if alertErr := d.alerter.SendDeployFailure(alertCtx, "", source, panicErr.Error(), nil, 0); alertErr != nil {
+				logger.Warn().Err(alertErr).Msg("Failed to send panic-recovery alert")
+			}
+			cancel()
+		}
+
+		result = panicErr
+	}()
+
 	var lastErr error
 
 	for {

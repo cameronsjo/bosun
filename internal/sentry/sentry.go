@@ -12,6 +12,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -20,6 +21,8 @@ import (
 	"github.com/getsentry/sentry-go"
 	sentryzerolog "github.com/getsentry/sentry-go/zerolog"
 	"github.com/rs/zerolog"
+
+	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // Options configures Sentry integration.
@@ -141,13 +144,32 @@ func Enabled() bool {
 	return state.enabled.Load()
 }
 
-// Recover captures a panic and sends it to Sentry.
-// Use as: defer sentry.Recover()
+// Recover recovers a panic in the current goroutine, always logging it so
+// the process stays up, and additionally reports it to Sentry when enabled.
+// Must be deferred directly: `defer sentry.Recover()`.
+//
+// Recovery must not depend on Sentry being configured: previously this
+// returned before ever calling Go's recover() when Sentry was disabled (the
+// default, opt-in-only posture), so every "defer sentrypkg.Recover()" safety
+// net in the daemon was decorative dead code unless BOSUN_SENTRY_DSN was
+// set — a panic in, say, the reconcile goroutine propagated unhandled and
+// crashed the process instead of being recovered (#364).
 func Recover() {
-	if !state.enabled.Load() {
+	r := recover()
+	if r == nil {
 		return
 	}
-	sentry.Recover()
+
+	logger := log.Component(log.ComponentDaemon)
+	logger.Error().
+		Interface("panic", r).
+		Str("stack", string(debug.Stack())).
+		Msg("Recovered from panic")
+
+	if state.enabled.Load() {
+		sentry.CurrentHub().Recover(r)
+		sentry.Flush(2 * time.Second)
+	}
 }
 
 // ConfigFromEnv loads Sentry configuration from environment variables.

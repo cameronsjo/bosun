@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
+	sentrypkg "github.com/cameronsjo/bosun/internal/sentry"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -174,6 +175,7 @@ func (s *SocketServer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 
 	// Trigger reconcile
 	go func() {
+		defer sentrypkg.Recover()
 		ctx, cancel := context.WithTimeout(context.Background(), s.daemon.config.ReconcileTimeout)
 		defer cancel()
 		if err := s.daemon.TriggerReconcile(ctx, source, req.Force); err != nil {
