@@ -766,13 +766,49 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 		return fmt.Errorf("health gate failed: %w", healthGateErr)
 	}
 
-	// Send recovery alert if this success follows previous failures.
+	// Capture previous commit before updating state (needed for post-sync hooks).
+	previousCommit := state.LastDeployedCommit
+
+	// Execute post-sync hooks if any files changed and hooks are configured.
+	// Hooks run BEFORE health verification (so it observes the post-hook
+	// container state) and before success is recorded (so a local verify failure
+	// retries them on the next reconcile).
+	if r.dockerClientFn != nil && !r.config.DryRun && len(r.config.PostSyncHooks.Value) > 0 {
+		r.runPostSyncHooksWithSpan(ctx, previousCommit, after, deployResult, localDeploy)
+	}
+
+	// Post-deploy health verification (LOCAL deploys only). Gating success on
+	// declared-container health makes a verify failure a plain deploy failure:
+	// success is NOT recorded below, so NeedsRedeploy stays set (from the
+	// pre-deploy marker in Step 5), this attempt counts toward the circuit
+	// breaker, and the next reconcile retries — instead of a green save masking
+	// an unhealthy rollout (#336). Remote deploys skip verification: it polls the
+	// LOCAL docker daemon, which cannot see the remote host's containers, so
+	// running it there was meaningless — and they keep today's save semantics.
+	if localDeploy && r.dockerClientFn != nil && !r.config.DryRun && len(r.declaredServices) > 0 {
+		if client := r.dockerClientFn(); client != nil {
+			_, otelDriftSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.drift_check")
+			if healthErr := r.verifyPostDeploy(ctx, state, client); healthErr != nil {
+				telemetry.SpanError(otelDriftSpan, healthErr)
+				otelDriftSpan.End()
+				// Health verification failed — treat as a deploy failure. Success
+				// is not saved, so NeedsRedeploy stays set and the breaker counts
+				// this attempt.
+				r.sendThrottledFailureAlert(ctx, state, healthErr.Error())
+				return fmt.Errorf("post-deploy health verification failed: %w", healthErr)
+			}
+			telemetry.SpanOK(otelDriftSpan)
+			otelDriftSpan.End()
+		}
+	}
+
+	// Deploy is verified (local) or verification-skipped (remote): record
+	// success. The recovery alert and attempt-counter reset live here — after
+	// verification — so a local verify failure never emits a premature
+	// "recovered" alert or resets the breaker mid-failure-streak.
 	if state.AttemptCount > 1 {
 		r.sendRecoveryAlert(ctx, state.AttemptCount-1)
 	}
-
-	// Capture previous commit before updating state (needed for post-sync hooks).
-	previousCommit := state.LastDeployedCommit
 
 	// Record successful deployment in state file.
 	state.LastDeployedCommit = after
@@ -797,27 +833,6 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 			Err(err).
 			Str(log.FieldPath, r.config.StateFile).
 			Msg("Failed to save deploy state after successful deployment")
-	}
-
-	// Execute post-sync hooks if any files changed and hooks are configured.
-	if r.dockerClientFn != nil && !r.config.DryRun && len(r.config.PostSyncHooks.Value) > 0 {
-		r.runPostSyncHooksWithSpan(ctx, previousCommit, after, deployResult, localDeploy)
-	}
-
-	// Post-deploy health verification: poll container health.
-	if r.dockerClientFn != nil && !r.config.DryRun && len(r.declaredServices) > 0 {
-		if client := r.dockerClientFn(); client != nil {
-			_, otelDriftSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.drift_check")
-			if healthErr := r.verifyPostDeploy(ctx, state, client); healthErr != nil {
-				telemetry.SpanError(otelDriftSpan, healthErr)
-				otelDriftSpan.End()
-				// Health verification failed — treat as a deploy failure.
-				r.sendThrottledFailureAlert(ctx, state, healthErr.Error())
-				return fmt.Errorf("post-deploy health verification failed: %w", healthErr)
-			}
-			telemetry.SpanOK(otelDriftSpan)
-			otelDriftSpan.End()
-		}
 	}
 
 	duration := time.Since(startTime)
