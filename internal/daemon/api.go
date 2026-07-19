@@ -4,8 +4,6 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -285,15 +283,12 @@ func (d *Daemon) handleAPITrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse request. Do not gate on ContentLength — it may be -1 (unknown)
-	// when the client does not set it explicitly.
-	var req TriggerRequest
-	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-			logger.Warn().Err(err).Msg("Invalid JSON in trigger request")
-			http.Error(w, "Invalid JSON", http.StatusBadRequest)
-			return
-		}
+	// Parse request under a size cap. Do not gate on ContentLength — it may be
+	// -1 (unknown) when the client does not set it explicitly.
+	req, ok := decodeTriggerRequest(w, r)
+	if !ok {
+		logger.Warn().Msg("Rejected trigger request: oversized or invalid JSON body")
+		return
 	}
 
 	source := req.Source

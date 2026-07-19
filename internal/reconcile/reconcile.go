@@ -116,6 +116,14 @@ type Config struct {
 	// Use a path like "infrastructure" for repos where infra is nested (e.g., dotfiles).
 	InfraSubDir string
 
+	// TemplateIncludeDir overrides the subtree that template include/fromJsonFile
+	// reads are confined to. Empty resolves to <infraDir>/templates (the default
+	// allowlist root). A relative value is joined to the infra directory; an
+	// absolute value is used as-is. Confining reads here keeps sibling SOPS files
+	// and bosun.yaml unreachable from templates. Configurable via
+	// BOSUN_TEMPLATE_INCLUDE_DIR or the template_include_dir config field.
+	TemplateIncludeDir string
+
 	// BackupsToKeep is the number of backups to retain.
 	BackupsToKeep int
 
@@ -1612,6 +1620,12 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 
 	// Create template ops with secrets data.
 	r.template = NewTemplateOps(secrets)
+
+	// Confine include/fromJsonFile reads. An explicit override is resolved here;
+	// otherwise RenderDirectory defaults to <infraDir>/templates.
+	if dir := resolveTemplateIncludeDir(infraDir, r.config.TemplateIncludeDir); dir != "" {
+		r.template.IncludeDir = dir
+	}
 
 	if err := r.template.RenderDirectory(ctx, infraDir, r.config.StagingDir, r.config.InfraSubDir); err != nil {
 		logger.Error().

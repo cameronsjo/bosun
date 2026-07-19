@@ -331,12 +331,15 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 | `BOSUN_SOCKET_PATH` | daemon | Unix socket path (default: `/var/run/bosun.sock`) |
 | `BOSUN_ENABLE_TCP` | daemon | Enable TCP API (`true`/`false`; default: `false`) |
 | `BOSUN_TCP_ADDR` | daemon | TCP listen address (default: `127.0.0.1:9090`) |
-| `BOSUN_BEARER_TOKEN` | daemon, trigger | Bearer token for TCP auth |
+| `BOSUN_BEARER_TOKEN` | daemon, trigger | Bearer token for TCP auth. Also accepted on `/metrics` and `/api/widget` (strictly more privileged than the read-scope token) |
+| `BOSUN_METRICS_TOKEN` | daemon | Read-scope token for `/metrics` and `/api/widget`, SEPARATE from `BOSUN_BEARER_TOKEN` (which also authorizes control operations like `/trigger`). Give scrapers this, not the control bearer. Required unless the metrics opt-out is set |
+| `BOSUN_ALLOW_UNAUTHENTICATED_METRICS` | daemon | Opt out of fail-closed metrics auth (default: `false`; strict `== "true"`). With no `BOSUN_METRICS_TOKEN`/`BOSUN_BEARER_TOKEN`, `/metrics` and `/api/widget` reject requests with `403` unless this is set. Logged loudly at startup and per accepted request |
 | `BOSUN_DISABLE_HTTP` | daemon | Disable HTTP webhook server |
 | `BOSUN_LISTEN_ADDR` | daemon | Host/IP the HTTP server binds to (default: empty = all interfaces — container-side callers reach bosun over the docker bridge; do not default to loopback) |
 | `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | daemon | Opt out of fail-closed webhook auth (default: `false`; strict `== "true"`). With no `WEBHOOK_SECRET`, trigger endpoints reject requests with `403` unless this is set. Logged loudly at startup and per accepted request |
 | `BOSUN_SECRETS_FILE` | daemon, render | SOPS secrets file path |
 | `BOSUN_INFRA_DIR` | daemon | Infrastructure directory |
+| `BOSUN_TEMPLATE_INCLUDE_DIR` | daemon, reconcile | Subtree that template `include`/`fromJsonFile` reads are confined to (allowlist). Default `<infraDir>/templates`. Relative values resolve against the infra dir; absolute values are used as-is. Confining reads here keeps sibling SOPS files and `bosun.yaml` unreachable from templates |
 | `BOSUN_STATE_DIR` | daemon, reconcile | Deploy state directory |
 | `BOSUN_POST_SYNC_HOOKS` | daemon, reconcile | JSON array overriding config file hooks |
 | `BOSUN_HOOK_SETTLE_DELAY` | daemon, reconcile | Global pause before post-sync hooks run (e.g., `2s`) |

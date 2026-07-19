@@ -443,20 +443,42 @@ Inputs starting with `-` are rejected to prevent:
 
 ### `include` Function Scope
 
-The `include` template function reads arbitrary files from the local filesystem:
+The `include` and `fromJsonFile` template functions read files from the local
+filesystem. Reads are confined to a **subtree allowlist** — by default
+`<infraDir>/templates` — so a template can only read files located inside that
+subtree, never siblings above it:
 
 ```go
 "include": func(path string) (string, error) {
+    if err := validateIncludePath(path, includeDir); err != nil {
+        return "", err
+    }
     data, err := os.ReadFile(path)
     // ...
 }
 ```
 
-**Current threat model**: Templates come from your own Git repository, which you control. The `include` function is used to read secrets files via `{{ include (env "BOSUN_SECRETS_FILE") }}`.
+**Threat model**: Templates come from your own Git repository, which you
+control. The allowlist is a defense-in-depth control so that even a mistaken or
+malicious template cannot read the SOPS secrets file, age keys, or `bosun.yaml`
+that live in the infra root alongside (but above) `templates/`.
 
-**Risk**: If Bosun ever processes templates from untrusted sources, this is an arbitrary file read vulnerability. A malicious template could `{{ include "/etc/shadow" }}` or read any file the Bosun process has access to.
+**Enforcement** (`internal/reconcile/template.go`): the requested path is
+resolved (`filepath.Abs`), checked for lexical containment via `filepath.Rel`
+(a `..`-escape, an absolute-outside path, or a `Rel` error all fail closed), and
+then re-checked after `filepath.EvalSymlinks` so a symlink whose target escapes
+the subtree is rejected. A `{{ include "/etc/shadow" }}` or a read of a sibling
+`*.sops.yaml` is now rejected with an error that names the allowed root. The
+allowlist confines by **location**: a hardlink whose path is inside `templates/`
+remains readable — the guarantee is that no path *outside* the subtree is
+reachable.
 
-**Mitigation**: Path validation for the `include` function is planned. See [bosun-4su](https://github.com/cameronsjo/bosun/issues?q=bosun-4su). Until then, only render templates from trusted repositories.
+**Configuration**: the allowlist root is `<infraDir>/templates` by default and
+is overridable with the `template_include_dir` config field or
+`BOSUN_TEMPLATE_INCLUDE_DIR` (relative values resolve against the infra dir,
+absolute values are used as-is). This is a breaking change for configs that
+included files from outside `templates/`; move those files under the subtree or
+point the override at their location.
 
 ### Template Rendering Scope
 
@@ -500,12 +522,35 @@ other escape hatches). With the opt-out active:
 The opt-out never bypasses a configured secret — when `WEBHOOK_SECRET` is set,
 signature validation always runs.
 
+## Daemon Metrics and Widget Authentication
+
+The `/metrics` (Prometheus) and `/api/widget` (Homepage) endpoints disclose the
+deployed commit and daemon health — information disclosure on an all-interfaces
+bind. They authenticate with a **read-scope** bearer token, kept deliberately
+separate from the control bearer.
+
+- **`BOSUN_METRICS_TOKEN`** is the read-scope credential a scraper presents as
+  `Authorization: Bearer <token>`. It authorizes *only* these read endpoints.
+- **`BOSUN_BEARER_TOKEN`** (the TCP control bearer) also authorizes `/trigger`
+  and `/api/restart`. Because it is strictly more privileged, it is *also*
+  accepted on the read endpoints — but a scraper MUST NOT be given it, since
+  that would hand a control credential to a monitoring system. Provision
+  scrapers with `BOSUN_METRICS_TOKEN` alone.
+
+**Metrics auth fails closed.** With neither token configured, `/metrics` and
+`/api/widget` reject every request with `403` and the daemon logs a loud warning
+at startup. Operators on isolated, trusted networks MAY opt out with
+`BOSUN_ALLOW_UNAUTHENTICATED_METRICS=true` (strict lowercase match); with the
+opt-out active the daemon warns at startup and logs a `SECURITY:` warning per
+accepted unauthenticated request. A configured token always takes precedence
+over the opt-out.
+
 The bind address defaults to all interfaces because container-side callers
 (reverse proxy, metrics scrapers, dashboards) reach the daemon over the docker
 bridge, not loopback. `BOSUN_LISTEN_ADDR` narrows the bind where the network
-topology allows it; the bind address is **not** an authentication control — it
-does not protect the Unix socket trigger or the `/metrics` and `/api/widget`
-endpoints, which are tracked separately.
+topology allows it; the bind address is **not** an authentication control — the
+Unix socket trigger, the webhook endpoints, and the `/metrics` and `/api/widget`
+endpoints each enforce their own auth as described above.
 
 ## Operator Escape Hatches as Risk Surface
 
@@ -519,6 +564,7 @@ Bosun ships several "escape hatch" environment variables that disable safety che
 | `BOSUN_SKIP_DEPLOY_INVARIANT` | Post-deploy mtime + WrittenFiles gate at pipeline stage 9 | `false` (strict) | Diagnostic deploys, repro of intermittent issues |
 | `BOSUN_SSH_INSECURE_HOST_KEY` | SSH host-key verification | `false` (strict) | Initial bootstrap before `known_hosts` is populated |
 | `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | Fail-closed webhook authentication (secret-less trigger requests rejected with `403`) | `false` (strict) | Trusted, isolated networks where a webhook secret is impractical |
+| `BOSUN_ALLOW_UNAUTHENTICATED_METRICS` | Fail-closed metrics/widget authentication (token-less `/metrics` and `/api/widget` requests rejected with `403`) | `false` (strict) | Trusted, isolated networks where a metrics token is impractical |
 
 `ErrComposeDirMissing` (stage 6) has no escape hatch by design — a missing staging compose directory always indicates a misconfigured deploy path, never an intentional state.
 

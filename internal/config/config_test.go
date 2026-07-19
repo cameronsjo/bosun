@@ -826,6 +826,28 @@ hook_settle_delay: "3s"
 		assert.Equal(t, "", cfg.HealthGateScope())
 	})
 
+	t.Run("parses template_include_dir", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"),
+			[]byte("template_include_dir: shared\n"), 0644))
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Equal(t, "shared", cfg.TemplateIncludeDir())
+	})
+
+	t.Run("template_include_dir defaults to empty (reconcile resolves to templates/)", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"),
+			[]byte("project_name: demo\n"), 0644))
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Equal(t, "", cfg.TemplateIncludeDir())
+	})
+
 	t.Run("returns error on malformed YAML", func(t *testing.T) {
 		tmpDir := t.TempDir()
 

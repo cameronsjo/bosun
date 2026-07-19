@@ -59,6 +59,19 @@ type Config struct {
 	// unless this is true (BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true, strict match).
 	AllowUnauthenticatedWebhook bool
 
+	// MetricsToken is a read-scope credential for /metrics and /api/widget
+	// (BOSUN_METRICS_TOKEN). It is SEPARATE from BearerToken: the TCP bearer
+	// also authorizes /trigger and /api/restart (control operations), so a
+	// metrics scraper must never need it. The control bearer, being strictly
+	// more privileged, is also accepted on these read endpoints.
+	MetricsToken string
+
+	// AllowUnauthenticatedMetrics opts out of fail-closed metrics auth (#296).
+	// When both MetricsToken and BearerToken are empty, /metrics and /api/widget
+	// reject every request unless this is true (BOSUN_ALLOW_UNAUTHENTICATED_METRICS=true,
+	// strict match). A loud opt-out: logged at startup and per accepted request.
+	AllowUnauthenticatedMetrics bool
+
 	// Polling settings
 	PollInterval time.Duration // Interval between polls (0 disables polling)
 	InitialDelay time.Duration // Delay before first poll (default: 10s)
@@ -247,6 +260,33 @@ func (d *Daemon) warnWebhookAuthPosture(logger zerolog.Logger) {
 	ui.Warning("Webhooks fail closed: no WEBHOOK_SECRET set, trigger requests will be rejected (403)")
 }
 
+// metricsAuthConfigured reports whether a credential is configured that admits a
+// caller to /metrics and /api/widget. Either the read-scope MetricsToken or the
+// strictly-more-privileged control BearerToken qualifies.
+func (d *Daemon) metricsAuthConfigured() bool {
+	return d.config.MetricsToken != "" || d.config.BearerToken != ""
+}
+
+// warnMetricsAuthPosture announces the read-endpoint auth posture at startup
+// (#296): /metrics and /api/widget fail closed by default, so a token-less
+// upgrade must never silently keep serving the deployed commit, and an opted-out
+// daemon must never hide its exposure. No-op when HTTP is disabled or a
+// credential is configured.
+func (d *Daemon) warnMetricsAuthPosture(logger zerolog.Logger) {
+	if !d.config.EnableHTTP || d.metricsAuthConfigured() {
+		return
+	}
+	if d.config.AllowUnauthenticatedMetrics {
+		logger.Warn().
+			Msg("SECURITY: /metrics and /api/widget accept UNAUTHENTICATED requests. Reason: no BOSUN_METRICS_TOKEN configured and BOSUN_ALLOW_UNAUTHENTICATED_METRICS=true. Anyone who can reach the HTTP port can read the deployed commit and daemon stats")
+		ui.Warning("SECURITY: unauthenticated /metrics and /api/widget enabled (no token, opt-out set)")
+		return
+	}
+	logger.Warn().
+		Msg("/metrics and /api/widget will REJECT all requests, expected a read token but none is configured — metrics auth fails closed. Set BOSUN_METRICS_TOKEN, or set BOSUN_ALLOW_UNAUTHENTICATED_METRICS=true to serve them unauthenticated")
+	ui.Warning("Metrics fail closed: no BOSUN_METRICS_TOKEN set, /metrics and /api/widget will be rejected (403)")
+}
+
 // Run starts the daemon and blocks until shutdown.
 // It handles SIGTERM and SIGINT for graceful shutdown.
 func (d *Daemon) Run(ctx context.Context) (err error) {
@@ -294,6 +334,7 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	ui.Info("Poll interval: %s", d.config.PollInterval)
 
 	d.warnWebhookAuthPosture(logger)
+	d.warnMetricsAuthPosture(logger)
 
 	// Ensure state directory exists for deploy state tracking.
 	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.StateFile != "" {
@@ -1652,6 +1693,12 @@ func ConfigFromEnv() *Config {
 		cfg.WebhookSecret = secret
 	}
 
+	// Read-scope credential for /metrics and /api/widget (#296), separate from
+	// the control bearer. AllowUnauthenticatedMetrics uses the same strict
+	// lowercase "true" match as the webhook opt-out.
+	cfg.MetricsToken = os.Getenv("BOSUN_METRICS_TOKEN")
+	cfg.AllowUnauthenticatedMetrics = os.Getenv("BOSUN_ALLOW_UNAUTHENTICATED_METRICS") == "true"
+
 	// HTTP bind address (empty = all interfaces; see Config.ListenAddr).
 	cfg.ListenAddr = os.Getenv("BOSUN_LISTEN_ADDR")
 
@@ -1907,6 +1954,7 @@ func ConfigFromEnv() *Config {
 		rcfg.DeployPaths.SetFromFile(projectCfg.DeployPaths())
 		rcfg.CriticalContainers.SetFromFile(projectCfg.CriticalContainers())
 		rcfg.HealthGateScope = projectCfg.HealthGateScope()
+		rcfg.TemplateIncludeDir = projectCfg.TemplateIncludeDir()
 
 		// Load targets from project config; BOSUN_TARGETS env var (parsed above) takes precedence.
 		// Skip if env explicitly set targets (even to empty — that's an intentional override).
@@ -2031,6 +2079,9 @@ func ConfigFromEnv() *Config {
 		} else {
 			log.Warn().Err(err).Str("value", v).Msg("Invalid BOSUN_HEALTH_GATE_SCOPE, ignoring")
 		}
+	}
+	if v := os.Getenv("BOSUN_TEMPLATE_INCLUDE_DIR"); v != "" {
+		rcfg.TemplateIncludeDir = v
 	}
 
 	return cfg
