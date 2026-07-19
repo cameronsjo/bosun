@@ -45,7 +45,7 @@ func TestRollbackFromBackupSet_RestoresBytes(t *testing.T) {
 
 	d := &DeployOps{ProjectName: "test"}
 	// No ComposeFiles: exercise the file-restore path without invoking docker.
-	err := d.RollbackFromBackupSet(context.Background(), RollbackSet{Files: []string{a, b}}, backupDir)
+	err := d.RollbackFromBackupSet(context.Background(), RollbackSet{Files: []string{a, b}, Root: live}, backupDir)
 	require.NoError(t, err)
 
 	assert.Equal(t, "OLD-authelia", read(t, a), "config restored byte-for-byte from backup")
@@ -63,7 +63,7 @@ func TestRollbackFromBackupSet_MissingParentRecreated(t *testing.T) {
 	require.NoError(t, os.RemoveAll(filepath.Join(live, "svc")))
 
 	d := &DeployOps{ProjectName: "test"}
-	err := d.RollbackFromBackupSet(context.Background(), RollbackSet{Files: []string{f}}, backupDir)
+	err := d.RollbackFromBackupSet(context.Background(), RollbackSet{Files: []string{f}, Root: live}, backupDir)
 	require.NoError(t, err)
 	assert.Equal(t, "OLD", read(t, f), "restore recreates the missing parent directory")
 }
@@ -89,39 +89,39 @@ func TestRollbackFromBackupSet_JoinedErrorContinues(t *testing.T) {
 	defer func() { _ = os.Chmod(lockedDir, 0o755) }() // restore for t.TempDir cleanup
 
 	d := &DeployOps{ProjectName: "test"}
-	err := d.RollbackFromBackupSet(context.Background(), RollbackSet{Files: []string{good, bad}}, backupDir)
+	err := d.RollbackFromBackupSet(context.Background(), RollbackSet{Files: []string{good, bad}, Root: live}, backupDir)
 	require.Error(t, err, "a per-file failure surfaces")
 	assert.Contains(t, err.Error(), bad, "the joined error names the failed file")
 	assert.Equal(t, "OLD-good", read(t, good), "restore CONTINUES past the failed file")
 }
 
 func TestRollbackFromBackupSet_DeleteMissing(t *testing.T) {
-	setup := func(t *testing.T) (string, string, string) {
+	setup := func(t *testing.T) (backupDir, live, added, kept string) {
 		base := t.TempDir()
-		live := filepath.Join(base, "appdata")
-		kept := writeLive(t, live, "svc/config.yml", "OLD")
+		live = filepath.Join(base, "appdata")
+		kept = writeLive(t, live, "svc/config.yml", "OLD")
 		// A file the failed deploy ADDED — present live, absent from the backup.
-		added := writeLive(t, live, "svc/added-by-deploy.yml", "junk")
-		backupDir := filepath.Join(base, "backup")
+		added = writeLive(t, live, "svc/added-by-deploy.yml", "junk")
+		backupDir = filepath.Join(base, "backup")
 		writeTestBackupArchive(t, backupDir, kept) // only `kept` is in the backup
-		return backupDir, added, kept
+		return backupDir, live, added, kept
 	}
 
 	t.Run("DeleteMissing removes backup-absent files", func(t *testing.T) {
-		backupDir, added, kept := setup(t)
+		backupDir, live, added, kept := setup(t)
 		d := &DeployOps{ProjectName: "test"}
 		err := d.RollbackFromBackupSet(context.Background(),
-			RollbackSet{Files: []string{kept, added}, DeleteMissing: true}, backupDir)
+			RollbackSet{Files: []string{kept, added}, Root: live, DeleteMissing: true}, backupDir)
 		require.NoError(t, err)
 		assert.NoFileExists(t, added, "a file the deploy added is removed on a fresh anchor")
 		assert.FileExists(t, kept)
 	})
 
 	t.Run("stale anchor retention: DeleteMissing false keeps them", func(t *testing.T) {
-		backupDir, added, kept := setup(t)
+		backupDir, live, added, kept := setup(t)
 		d := &DeployOps{ProjectName: "test"}
 		err := d.RollbackFromBackupSet(context.Background(),
-			RollbackSet{Files: []string{kept, added}, DeleteMissing: false}, backupDir)
+			RollbackSet{Files: []string{kept, added}, Root: live, DeleteMissing: false}, backupDir)
 		require.NoError(t, err)
 		assert.FileExists(t, added, "against a stale anchor, backup-absent files are RETAINED, not deleted")
 	})
@@ -141,43 +141,111 @@ func TestRollbackFromBackupSet_NoBackup(t *testing.T) {
 	})
 }
 
-func TestBackupIsFresh(t *testing.T) {
+func TestRollbackFromBackupSet_DryRun(t *testing.T) {
 	base := t.TempDir()
+	live := filepath.Join(base, "appdata")
+	f := writeLive(t, live, "svc/config.yml", "OLD")
 	backupDir := filepath.Join(base, "backup")
-	require.NoError(t, os.MkdirAll(backupDir, 0o755))
-	archive := filepath.Join(backupDir, "configs.tar.gz")
-	require.NoError(t, os.WriteFile(archive, []byte("x"), 0o644))
+	writeTestBackupArchive(t, backupDir, f)
+	require.NoError(t, os.WriteFile(f, []byte("NEW"), 0o644))
 
-	now := time.Now()
+	d := &DeployOps{ProjectName: "test", DryRun: true}
+	err := d.RollbackFromBackupSet(context.Background(), RollbackSet{Files: []string{f}, Root: live}, backupDir)
+	require.NoError(t, err)
+	assert.Equal(t, "NEW", read(t, f), "dry run restores nothing")
+}
 
-	t.Run("archive newer than run start is fresh", func(t *testing.T) {
-		// mtime is ~now; a run that started a minute ago sees it as fresh.
-		assert.True(t, backupIsFresh(backupDir, now.Add(-time.Minute)))
-	})
+// TestRollbackFromBackupSet_DeleteError injects an os.Remove failure that is NOT
+// IsNotExist: a backup-absent target that is a NON-EMPTY directory (ENOTEMPTY).
+// The failure joins into the error rather than counting as a deletion.
+func TestRollbackFromBackupSet_DeleteError(t *testing.T) {
+	base := t.TempDir()
+	live := filepath.Join(base, "appdata")
+	kept := writeLive(t, live, "svc/config.yml", "OLD")
+	// A non-empty directory absent from the backup — os.Remove can't remove it.
+	addedDir := filepath.Join(live, "added-dir")
+	writeLive(t, live, "added-dir/inner.yml", "junk")
 
-	t.Run("archive older than run start is stale", func(t *testing.T) {
-		old := now.Add(-2 * time.Hour)
-		require.NoError(t, os.Chtimes(archive, old, old))
-		assert.False(t, backupIsFresh(backupDir, now.Add(-time.Minute)),
-			"a fallback anchor from before this run is stale")
-	})
+	backupDir := filepath.Join(base, "backup")
+	writeTestBackupArchive(t, backupDir, kept)
 
-	t.Run("missing archive is not fresh", func(t *testing.T) {
-		assert.False(t, backupIsFresh(filepath.Join(base, "nope"), now))
-	})
+	d := &DeployOps{ProjectName: "test"}
+	err := d.RollbackFromBackupSet(context.Background(),
+		RollbackSet{Files: []string{kept, addedDir}, Root: live, DeleteMissing: true}, backupDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "delete added file", "a non-IsNotExist Remove failure joins the error")
+	assert.DirExists(t, addedDir, "the undeletable directory is left in place")
+}
+
+// TestRollbackFromBackupSet_MkdirParentError injects an os.MkdirAll failure: the
+// restored file's parent path component is now a regular FILE (ENOTDIR), so the
+// parent cannot be recreated. The failure joins rather than restoring.
+func TestRollbackFromBackupSet_MkdirParentError(t *testing.T) {
+	base := t.TempDir()
+	live := filepath.Join(base, "appdata")
+	f := writeLive(t, live, "sub/config.yml", "OLD")
+	backupDir := filepath.Join(base, "backup")
+	writeTestBackupArchive(t, backupDir, f) // archive holds sub/config.yml
+
+	// Failed deploy left `sub` as a regular file, so MkdirAll(sub) hits ENOTDIR.
+	require.NoError(t, os.RemoveAll(filepath.Join(live, "sub")))
+	require.NoError(t, os.WriteFile(filepath.Join(live, "sub"), []byte("now-a-file"), 0o644))
+
+	d := &DeployOps{ProjectName: "test"}
+	err := d.RollbackFromBackupSet(context.Background(), RollbackSet{Files: []string{f}, Root: live}, backupDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create parent", "MkdirAll ENOTDIR joins the error")
+}
+
+// TestWithinAppdata pins the containment guard directly: a target inside the
+// root passes; the filepath.Join prefix-drop escape (an absolute ManagedFiles
+// entry collapsing to a path outside appdata) and any climbing path are rejected.
+func TestWithinAppdata(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "appdata")
+
+	assert.True(t, withinAppdata(root, filepath.Join(root, "svc", "config.yml")),
+		"a file under the appdata root is allowed")
+	assert.False(t, withinAppdata(root, "/etc/passwd"),
+		"the prefix-drop escape (filepath.Join collapsing an absolute entry) is rejected")
+	assert.False(t, withinAppdata(root, filepath.Join(root, "..", "outside.yml")),
+		"a climbing path that escapes the root is rejected")
+	assert.False(t, withinAppdata("relative/root", "/absolute/target"),
+		"an unrelatable pair (relative root vs absolute target) fails closed via the Rel error")
+}
+
+// TestRollbackFromBackupSet_ContainmentGuard proves the guard fires on the DELETE
+// path: an escaping target absent from the backup is NOT os.Remove'd even with
+// DeleteMissing set — the guard rejects it first and surfaces a joined error,
+// while an in-root file still restores.
+func TestRollbackFromBackupSet_ContainmentGuard(t *testing.T) {
+	base := t.TempDir()
+	live := filepath.Join(base, "appdata")
+	kept := writeLive(t, live, "svc/config.yml", "OLD")
+	// An out-of-root file the guard must refuse to delete (simulates a poisoned
+	// ManagedFiles entry that escaped appdata via the prefix-drop footgun).
+	outside := writeLive(t, base, "outside/secret.yml", "DO-NOT-DELETE")
+
+	backupDir := filepath.Join(base, "backup")
+	writeTestBackupArchive(t, backupDir, kept) // only `kept` in the backup; `outside` is "missing"
+
+	d := &DeployOps{ProjectName: "test"}
+	err := d.RollbackFromBackupSet(context.Background(),
+		RollbackSet{Files: []string{kept, outside}, Root: live, DeleteMissing: true}, backupDir)
+	require.Error(t, err, "the containment refusal surfaces as an error")
+	assert.Contains(t, err.Error(), "outside appdata root")
+	assert.FileExists(t, outside, "the escaping file is NOT deleted despite DeleteMissing")
+	assert.Equal(t, "OLD", read(t, kept), "an in-root file still restores past the refusal")
 }
 
 func TestBuildRollbackSet(t *testing.T) {
 	tmp := t.TempDir()
 	appdata := filepath.Join(tmp, "appdata")
 	backupDir := filepath.Join(tmp, "backup")
-	require.NoError(t, os.MkdirAll(backupDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(backupDir, "configs.tar.gz"), []byte("x"), 0o644))
 
 	r := NewReconciler(&Config{LocalAppdataPath: appdata})
 	r.lastBackupPath = backupDir
+	r.lastBackupIsFresh = true // this run's own pre-deploy backup
 	r.lastComposeFiles = []string{filepath.Join(appdata, "compose", "core.yml")}
-	r.runStartTime = time.Now().Add(-time.Minute) // archive (just written) is fresh
 
 	dr := &DeployResult{ManagedFiles: []string{"authelia/configuration.yml", "compose/core.yml"}}
 	set := r.buildRollbackSet(dr)
@@ -187,12 +255,21 @@ func TestBuildRollbackSet(t *testing.T) {
 		filepath.Join(appdata, "compose", "core.yml"),
 	}, set.Files, "ManagedFiles map to live absolute paths under appdata")
 	assert.Equal(t, r.lastComposeFiles, set.ComposeFiles)
+	assert.Equal(t, appdata, set.Root, "Root is the appdata containment boundary")
 	assert.True(t, set.DeleteMissing, "delete-missing enabled against a fresh anchor")
 
-	t.Run("stale anchor disables delete-missing", func(t *testing.T) {
-		old := time.Now().Add(-time.Hour)
-		require.NoError(t, os.Chtimes(filepath.Join(backupDir, "configs.tar.gz"), old, old))
-		r.runStartTime = time.Now()
+	t.Run("stale fallback anchor disables delete-missing", func(t *testing.T) {
+		// The bool — not an archive mtime — drives the gate: a substituted stale
+		// anchor (lastBackupIsFresh=false) must suppress deletion, un-spoofable by
+		// touching the archive forward.
+		r.lastBackupIsFresh = false
+		assert.False(t, r.buildRollbackSet(dr).DeleteMissing,
+			"a stale fallback anchor suppresses delete-missing")
+	})
+
+	t.Run("no backup path disables delete-missing", func(t *testing.T) {
+		r.lastBackupIsFresh = true
+		r.lastBackupPath = ""
 		assert.False(t, r.buildRollbackSet(dr).DeleteMissing)
 	})
 

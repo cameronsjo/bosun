@@ -8,7 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"time"
+	"strings"
 
 	"github.com/cameronsjo/bosun/internal/fileutil"
 	"github.com/cameronsjo/bosun/internal/log"
@@ -35,11 +35,19 @@ type RollbackSet struct {
 	// reverted config.
 	ComposeFiles []string
 
+	// Root is the appdata directory every entry in Files must resolve within. It
+	// backstops the DELETE and restore paths: even though Files are derived from
+	// ManagedFiles (always inside appdata today), an explicit containment check
+	// means a future absolute-path-target regression can't silently reopen the
+	// filepath.Join prefix-drop footgun on a path we os.Remove.
+	Root string
+
 	// DeleteMissing removes live managed files absent from the backup (files the
 	// failed deploy added). Default false, and safe to enable ONLY against a
-	// fresh anchor (backupIsFresh): a stale fallback anchor predates files a
-	// later legitimate deploy added, so deleting "missing" files against it would
-	// destroy real data.
+	// fresh anchor — this deploy's own pre-deploy backup, tracked by the
+	// Reconciler's lastBackupIsFresh bool. A stale fallback anchor predates files
+	// a later legitimate deploy added, so deleting "missing" files against it
+	// would destroy real data (the #331 incident class).
 	DeleteMissing bool
 }
 
@@ -87,6 +95,14 @@ func (d *DeployOps) RollbackFromBackupSet(ctx context.Context, set RollbackSet, 
 	// Steps 1 + 2: restore each managed file from its backed-up copy, or (opt-in)
 	// delete a file the failed deploy added that the backup does not contain.
 	for _, live := range set.Files {
+		// Defense-in-depth on the DELETE and restore paths: refuse any target
+		// that escapes the appdata root before we os.Remove or CopyFile it. One
+		// guard at the loop head gates both branches — every Remove and every
+		// CopyFile below is preceded by it.
+		if !withinAppdata(set.Root, live) {
+			errs = append(errs, fmt.Errorf("refuse to touch %q: outside appdata root %q", live, set.Root))
+			continue
+		}
 		backupFile, ok := resolveBackupFile(root, live)
 		if !ok {
 			if set.DeleteMissing {
@@ -141,16 +157,16 @@ func (d *DeployOps) RollbackFromBackupSet(ctx context.Context, set RollbackSet, 
 	return nil
 }
 
-// backupIsFresh reports whether the backup anchor was created during THIS
-// reconcile — its archive mtime is at or after `since` (the run start). Only a
-// fresh anchor (this deploy's own pre-deploy backup) makes delete-missing safe:
-// a stale fallback anchor from an earlier reconcile predates files a later
-// legitimate deploy added, so deleting "missing" files against it would destroy
-// real data. mtimes are truncated to seconds for FUSE/FAT resolution.
-func backupIsFresh(backupPath string, since time.Time) bool {
-	info, err := os.Stat(filepath.Join(backupPath, "configs.tar.gz"))
+// withinAppdata reports whether target resolves inside root — the containment
+// guard the DELETE and restore paths run before touching any file. Files are
+// derived from ManagedFiles (always inside appdata today), so this never trips
+// legitimately; it exists so a future absolute-path-target regression can't
+// silently reopen the filepath.Join prefix-drop footgun on a path we os.Remove
+// (filepath.Join("appdata", "/abs") == "/abs" — a target that escapes root).
+func withinAppdata(root, target string) bool {
+	rel, err := filepath.Rel(root, target)
 	if err != nil {
 		return false
 	}
-	return !info.ModTime().Truncate(time.Second).Before(since.Truncate(time.Second))
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
