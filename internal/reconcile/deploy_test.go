@@ -1002,7 +1002,7 @@ func TestDeployOps_SignalContainerRemote_InvalidSignal(t *testing.T) {
 
 func TestDeployOps_DeployRemote_InvalidHost(t *testing.T) {
 	d := NewDeployOps(false, "")
-	err := d.DeployRemote(context.Background(), "/src", "", "/dst")
+	err := d.DeployRemote(context.Background(), "/src", "", "/dst", false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid SSH host")
 }
@@ -1047,7 +1047,7 @@ func TestDeployOps_DryRun_Remote(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("deploy remote dry run", func(t *testing.T) {
-		err := d.DeployRemote(ctx, "/src", "host", "/dst")
+		err := d.DeployRemote(ctx, "/src", "host", "/dst", false)
 		assert.NoError(t, err)
 	})
 

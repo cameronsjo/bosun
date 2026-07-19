@@ -784,10 +784,11 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	state.NeedsRedeploy = false
 	state.DeclaredServices = r.declaredServices
 	// Persist this deploy's manifest so the next reconcile prunes only files
-	// bosun itself wrote. Remote mode returns a nil result (no local manifest).
-	// A dry-run still populates ManagedFiles (the source walk runs regardless of
-	// whether files were written), so guard against seeding the manifest from a
-	// dry-run — otherwise the next real reconcile could prune untouched paths.
+	// bosun itself wrote. Both modes now return a manifest (remote seeds it from
+	// the local staging walk, #334). A dry-run still populates ManagedFiles (the
+	// source walk runs regardless of whether files were written), so guard
+	// against seeding the manifest from a dry-run — otherwise the next real
+	// reconcile could prune untouched paths.
 	if deployResult != nil && !r.config.DryRun {
 		state.DeployedFiles = deployResult.ManagedFiles
 	}
@@ -1033,9 +1034,10 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	diffFailed := false
 	remoteMode := !local
 	if remoteMode {
-		// Remote deploys return nil DeployResult (no file-level tracking).
-		// Fire all hooks unconditionally — a false-positive restart is better
-		// than stale configs on a FUSE mount. See GitHub #197.
+		// Remote deploys return a DeployResult with a ManagedFiles manifest but
+		// no WrittenFiles (no per-file change tracking over SSH). Fire all hooks
+		// unconditionally — a false-positive restart is better than stale configs
+		// on a FUSE mount. See GitHub #197.
 		logger.Info().Msg("Remote deploy: firing all post-sync hooks (no file-level tracking available)")
 	} else if deployResult != nil && (len(deployResult.WrittenFiles) > 0 || len(deployResult.DeletedFiles) > 0) {
 		// Combine writes and deletions: a commit that both writes an unrelated
@@ -1525,12 +1527,15 @@ func (r *Reconciler) applyBackupFailurePolicy(ctx context.Context, backupErr err
 var ErrAppdataInaccessible = errors.New("local appdata path is configured but inaccessible")
 
 // doDeploy performs the actual deployment.
-// Returns a DeployResult with written files (local mode) or nil (remote mode).
+// Returns a DeployResult with the deployed-files manifest for both modes. In
+// remote mode WrittenFiles stays empty (no file-level change tracking over SSH,
+// so hooks fire unconditionally), but ManagedFiles is populated from the local
+// staging walk so state.DeployedFiles is seeded either way (#334).
 func (r *Reconciler) doDeploy(ctx context.Context, secrets map[string]any, local bool, prevManaged []string) (*DeployResult, error) {
 	if local {
 		return r.deployLocal(ctx, prevManaged)
 	}
-	return nil, r.deployRemote(ctx, secrets)
+	return r.deployRemote(ctx, secrets)
 }
 
 // resolveDeployMode determines whether to use local or remote deployment.
@@ -1779,8 +1784,16 @@ func hasTarget(targets []DeployTarget, relPath string) bool {
 	return false
 }
 
-// deployRemote performs remote deployment via SSH.
-func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) error {
+// deployRemote performs remote deployment via SSH. It returns a DeployResult
+// whose ManagedFiles manifest is built from the local staging walk (mirroring
+// deployLocal), so state.DeployedFiles is seeded on remote deploys too —
+// harmless while hooks fire unconditionally in remote mode, and correct if the
+// target later flips to local. Transfer integrity (#334) and compose rollback
+// (#340) are handled here; the mtime-based verifyDeployTarget invariant does not
+// apply remotely (it cannot stat a remote FS), and the SHA-256 transfer check
+// replaces it.
+func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (*DeployResult, error) {
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 	ui.Info("Using remote deployment mode (SSH)")
 	if r.config.DryRun {
 		ui.Warning("DRY RUN MODE - no changes will be made")
@@ -1788,7 +1801,16 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) e
 
 	host := r.getTargetHost(secrets)
 	if host == "" {
-		return fmt.Errorf("no target host specified and could not find unraid_ip in secrets")
+		return nil, fmt.Errorf("no target host specified and could not find unraid_ip in secrets")
+	}
+	// Validate the host BEFORE the first ssh contact (the sha256sum probe below).
+	// TargetHost is re-read from the watched repo after every pull, so a
+	// repo-push attacker controls it; an unvalidated value like
+	// `-oProxyCommand=<cmd>` would reach ssh as an option and execute on the
+	// daemon. Every other ssh/scp boundary validates first; this restores that
+	// invariant for the whole deployRemote scope (probe + all subsequent calls).
+	if err := validateHost(host); err != nil {
+		return nil, fmt.Errorf("invalid SSH host: %w", err)
 	}
 
 	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
@@ -1796,8 +1818,25 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) e
 
 	targets, err := discoverDeployTargets(stagingSubDir, r.config.DeploySyncPaths.Value, r.config.DeploySyncExclude.Value)
 	if err != nil {
-		return fmt.Errorf("discover deploy targets: %w", err)
+		return nil, fmt.Errorf("discover deploy targets: %w", err)
 	}
+
+	// Probe once per deploy whether the remote can verify transfers; a host
+	// lacking sha256sum degrades to the pre-#334 behavior (no integrity gate)
+	// rather than hard-failing (#334). Skip the probe on dry-run and when there
+	// is no target to sync.
+	verifyChecksums := false
+	if !r.config.DryRun {
+		verifyChecksums = r.deploy.remoteHasSha256sum(ctx, host)
+		if !verifyChecksums {
+			logger.Warn().
+				Str(log.FieldTarget, host).
+				Msg("Remote host lacks sha256sum; deploying WITHOUT transfer integrity verification (a truncated tar-over-SSH transfer will not be caught)")
+			ui.Warning("Remote host lacks sha256sum — transfer integrity verification disabled for this deploy")
+		}
+	}
+
+	result := &DeployResult{}
 
 	// Sync discovered targets (excluding compose, which has special handling).
 	for _, t := range targets {
@@ -1808,23 +1847,31 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) e
 		dst := filepath.Join(appdata, t.TargetPath)
 		ui.Info("  Syncing %s...", t.RelPath)
 		if t.IsDir {
-			if err := r.deploy.DeployRemote(ctx, src, host, dst); err != nil {
-				return err
+			if err := r.deploy.DeployRemote(ctx, src, host, dst, verifyChecksums); err != nil {
+				return nil, err
+			}
+			if err := recordManaged(result, src, t.TargetPath); err != nil {
+				return nil, err
 			}
 		} else {
 			_ = r.deploy.EnsureRemoteDir(ctx, host, filepath.Dir(dst))
 			if err := r.deploy.DeployRemoteFile(ctx, src, host, dst); err != nil {
-				return err
+				return nil, err
 			}
+			result.AddManaged(filepath.ToSlash(t.TargetPath))
 		}
 	}
 
 	// Sync compose files (special handling for remote compose up).
 	if hasTarget(targets, "compose") {
 		ui.Info("  Syncing compose files...")
+		composeStaging := filepath.Join(stagingSubDir, "compose")
 		_ = r.deploy.EnsureRemoteDir(ctx, host, filepath.Join(appdata, "compose"))
-		if err := r.deploy.DeployRemote(ctx, filepath.Join(stagingSubDir, "compose"), host, filepath.Join(appdata, "compose")); err != nil {
-			return err
+		if err := r.deploy.DeployRemote(ctx, composeStaging, host, filepath.Join(appdata, "compose"), verifyChecksums); err != nil {
+			return nil, err
+		}
+		if err := recordManaged(result, composeStaging, "compose"); err != nil {
+			return nil, err
 		}
 	}
 
@@ -1840,11 +1887,28 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) e
 	}
 
 	// Reload services from the actual compose directory (not Compose Manager).
+	// composeDir is the remote compose dir just deployed — captured here where
+	// it is in scope so RollbackRemoteCompose can restore exactly it, rather
+	// than reaching for r.lastComposeFiles (only deployLocal sets that).
 	composeDir := filepath.Join(appdata, "compose")
 	if !r.config.DryRun {
 		ui.Info("  Reloading services...")
 		if err := r.deploy.ComposeUpRemote(ctx, host, composeDir); err != nil {
-			return fmt.Errorf("remote compose up failed: %w", err)
+			// Unhealthy-only is recoverable — downgrade to a warning, matching
+			// the local branch's ErrComposeUnhealthy handling (#340). The deploy
+			// stays a success; the health gate below re-checks critical
+			// containers.
+			if errors.Is(err, ErrComposeUnhealthy) {
+				ui.Warning("Some containers are unhealthy after remote compose up: %v", err)
+				logger.Warn().Err(err).Str(log.FieldTarget, host).Msg("Remote compose up reported unhealthy containers, continuing")
+			} else {
+				// A real compose failure — attempt remote rollback to the backup
+				// anchor (#340). RollbackRemoteCompose always returns a non-nil
+				// error: ErrRollbackSucceeded (restored) or ErrRollbackFailed
+				// (both failed).
+				rbErr := r.deploy.RollbackRemoteCompose(ctx, host, composeDir, r.lastBackupPath, err)
+				return nil, fmt.Errorf("remote compose up failed: %w", rbErr)
+			}
 		}
 		if err := r.deploy.SignalContainerRemote(ctx, host, "agentgateway", "SIGHUP"); err != nil {
 			ui.Warning("Could not reload agentgateway: %v", err)
@@ -1852,5 +1916,5 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) e
 	}
 
 	ui.Success("Deployment complete!")
-	return nil
+	return result, nil
 }
