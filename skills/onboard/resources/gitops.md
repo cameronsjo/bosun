@@ -291,6 +291,17 @@ and per accepted request). The Unix socket trigger (`bosun trigger`) is not
 affected. `BOSUN_LISTEN_ADDR` narrows the HTTP bind; the default stays
 all-interfaces so container-side callers reach the daemon over the docker bridge.
 
+**Read-endpoint auth fails closed too.** `/metrics` (Prometheus) and
+`/api/widget` (Homepage) disclose the deployed commit and daemon stats, so they
+reject every request with `403` unless a token is configured. Give scrapers a
+**read-scope** `BOSUN_METRICS_TOKEN` (sent as `Authorization: Bearer <token>`) —
+deliberately separate from `BOSUN_BEARER_TOKEN`, which also authorizes control
+operations like `/trigger` and must not be handed to a scraper. The control
+bearer, being strictly more privileged, is also accepted on these read
+endpoints. Opt out on trusted networks with
+`BOSUN_ALLOW_UNAUTHENTICATED_METRICS=true` (logs a security warning at startup
+and per accepted request).
+
 GitLab, Gitea, and Bitbucket are **not** handled by the daemon directly. Point them
 at the standalone `bosun webhook` receiver (below), which understands each provider
 and forwards normalized triggers to the daemon:
