@@ -137,6 +137,12 @@ func logBackupAnchorAge(ctx context.Context, backupPath string) {
 // VerifyBackup already ran, because this is a second, independent read. Returns
 // the root, an always-safe cleanup func, and any error.
 func safeExtractBackup(ctx context.Context, tarFile string) (root string, cleanup func(), err error) {
+	return safeExtractBackupBounded(ctx, tarFile, MaxVerifyDecompressedBytes)
+}
+
+// safeExtractBackupBounded is safeExtractBackup with an explicit total
+// decompressed-byte budget, so the bomb-bound branch is exercisable in tests.
+func safeExtractBackupBounded(ctx context.Context, tarFile string, maxBytes int64) (root string, cleanup func(), err error) {
 	noop := func() {}
 
 	f, err := os.Open(tarFile)
@@ -158,7 +164,7 @@ func safeExtractBackup(ctx context.Context, tarFile string) (root string, cleanu
 	cleanupTmp := func() { _ = os.RemoveAll(tmp) }
 
 	tr := tar.NewReader(gz)
-	remaining := MaxVerifyDecompressedBytes
+	remaining := maxBytes
 	for {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			cleanupTmp()

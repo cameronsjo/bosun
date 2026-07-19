@@ -183,6 +183,45 @@ func TestVerifyRemoteTransfer(t *testing.T) {
 	})
 }
 
+func TestDeployRemote_TarSpawnFailureCleansTmp(t *testing.T) {
+	// An ssh shim with a hardcoded internal PATH keeps remote commands working
+	// with coreutils, while the test process PATH omits `tar` — so the LOCAL
+	// tarCmd.Start() fails to spawn AFTER the remote tmpDir was created. That
+	// drives the tar-start failure branch and its cleanupTmp.
+	dir := t.TempDir()
+	shim := "#!/bin/sh\n" +
+		"export PATH=/usr/bin:/bin\n" +
+		"while [ $# -gt 0 ]; do\n" +
+		"  case \"$1\" in\n" +
+		"    -o) shift 2 ;;\n" +
+		"    -*) shift ;;\n" +
+		"    *) break ;;\n" +
+		"  esac\n" +
+		"done\n" +
+		"shift\n" +
+		"exec /bin/sh -c \"$*\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte(shim), 0o755))
+	t.Setenv("PATH", dir) // only the ssh shim — no `tar` resolvable locally
+
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	parent := filepath.Join(base, "deploy")
+	target := filepath.Join(parent, "compose")
+	writeMarker(t, source, "core.yml", "v1")
+	writeMarker(t, target, "core.yml", "live")
+
+	d := &DeployOps{}
+	err := d.DeployRemote(context.Background(), source, "user@testhost", target, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "start tar")
+	assert.Equal(t, "live", readMarker(t, target, "core.yml"), "the live target must be untouched")
+
+	entries, rerr := os.ReadDir(parent)
+	require.NoError(t, rerr)
+	require.Len(t, entries, 1, "the remote staging tmpDir must be cleaned up after the spawn failure")
+	assert.Equal(t, "compose", entries[0].Name())
+}
+
 func TestDeployRemote_IntegrityVerification(t *testing.T) {
 	t.Run("verified transfer promotes the staged tree", func(t *testing.T) {
 		setupSSHShim(t)
