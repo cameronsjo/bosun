@@ -134,13 +134,13 @@ func TestRunHealthGate_DeclaredScope_RollsBackAndThrottlesAlerts(t *testing.T) {
 		_ = r.Run(context.Background())
 	}
 
-	// Failure and rollback alerts fire TOGETHER on the 1/3/10/30 ShouldAlert
-	// window — attempt 1 and attempt 3 — not once per cycle (#339). The rollback
-	// outcome (restore vs failed restore) varies with the docker binary, so the
-	// invariant is the paired count on the alert windows.
+	// declared mode reuses the existing throttled failure alert — exactly one per
+	// alert window (attempts 1 and 3 on the 1/3/10/30 schedule), NOT once per
+	// cycle. No rollback-specific alert is emitted (#339: the fix triggers
+	// rollback; alerting-on-rollback is a separate, out-of-scope feature).
 	assert.Equal(t, 2, alerter.deployFailureCalls, "gate failure alert throttled to attempts 1 and 3")
-	assert.Equal(t, 2, alerter.rollbackSuccessCalls+alerter.rollbackFailureCalls,
-		"a rollback alert fires on the SAME window as each failure alert")
+	assert.Equal(t, 0, alerter.rollbackSuccessCalls+alerter.rollbackFailureCalls,
+		"no rollback-specific alert is wired")
 	assert.Equal(t, 0, alerter.deploySuccessCalls)
 }
 
@@ -221,61 +221,6 @@ func TestRunHealthGate_SkipGuards(t *testing.T) {
 		rb, err := r.runHealthGate(ctx, &DeployState{}, true)
 		assert.False(t, rb)
 		assert.NoError(t, err)
-	})
-}
-
-func TestSendGateFailureAlerts(t *testing.T) {
-	ctx := context.Background()
-	gateErr := fmt.Errorf("gate boom")
-
-	t.Run("no alerter is a no-op", func(t *testing.T) {
-		r := NewReconciler(&Config{OnFailure: true})
-		r.sendGateFailureAlerts(ctx, &DeployState{AttemptCount: 1}, gateErr, true, nil)
-	})
-
-	t.Run("OnFailure=false suppresses", func(t *testing.T) {
-		a := &mockAlertSender{}
-		r := NewReconciler(&Config{OnFailure: false}, WithAlerter(a))
-		r.sendGateFailureAlerts(ctx, &DeployState{AttemptCount: 1}, gateErr, true, nil)
-		assert.Equal(t, 0, a.deployFailureCalls)
-	})
-
-	t.Run("off-window (throttled) sends nothing", func(t *testing.T) {
-		a := &mockAlertSender{}
-		r := NewReconciler(&Config{OnFailure: true, StateFile: filepath.Join(t.TempDir(), "s.json")}, WithAlerter(a))
-		// AttemptCount 2 is below the next threshold (3) and already past LastAlertedAttempt 1.
-		r.sendGateFailureAlerts(ctx, &DeployState{AttemptCount: 2, LastAlertedAttempt: 1}, gateErr, true, nil)
-		assert.Equal(t, 0, a.deployFailureCalls)
-		assert.Equal(t, 0, a.rollbackSuccessCalls+a.rollbackFailureCalls)
-	})
-
-	t.Run("on-window with successful rollback emits failure + rollback-success", func(t *testing.T) {
-		a := &mockAlertSender{}
-		r := NewReconciler(&Config{OnFailure: true, StateFile: filepath.Join(t.TempDir(), "s.json")}, WithAlerter(a))
-		r.lastBackupPath = "/backups/backup-20260101-000000"
-		st := &DeployState{AttemptCount: 1}
-		r.sendGateFailureAlerts(ctx, st, gateErr, true, nil)
-		assert.Equal(t, 1, a.deployFailureCalls)
-		assert.Equal(t, 1, a.rollbackSuccessCalls)
-		assert.Equal(t, 0, a.rollbackFailureCalls)
-		assert.Equal(t, 1, st.LastAlertedAttempt, "throttle window is consumed")
-	})
-
-	t.Run("on-window with failed rollback emits failure + rollback-failure", func(t *testing.T) {
-		a := &mockAlertSender{}
-		r := NewReconciler(&Config{OnFailure: true, StateFile: filepath.Join(t.TempDir(), "s.json")}, WithAlerter(a))
-		st := &DeployState{AttemptCount: 1}
-		r.sendGateFailureAlerts(ctx, st, gateErr, true, fmt.Errorf("restore boom"))
-		assert.Equal(t, 1, a.deployFailureCalls)
-		assert.Equal(t, 1, a.rollbackFailureCalls)
-	})
-
-	t.Run("no rollback emits only the failure alert", func(t *testing.T) {
-		a := &mockAlertSender{}
-		r := NewReconciler(&Config{OnFailure: true, StateFile: filepath.Join(t.TempDir(), "s.json")}, WithAlerter(a))
-		r.sendGateFailureAlerts(ctx, &DeployState{AttemptCount: 1}, gateErr, false, nil)
-		assert.Equal(t, 1, a.deployFailureCalls)
-		assert.Equal(t, 0, a.rollbackSuccessCalls+a.rollbackFailureCalls)
 	})
 }
 
