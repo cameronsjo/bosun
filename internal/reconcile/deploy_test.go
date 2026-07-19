@@ -226,6 +226,12 @@ func TestDeployOps_Backup(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.Empty(t, backupName, "an empty paths list creates no anchor (#360)")
+		entries, err := os.ReadDir(backupDir)
+		if err == nil {
+			for _, e := range entries {
+				assert.NotContains(t, e.Name(), "backup-", "no empty backup dir is left behind")
+			}
+		}
 	})
 }
 

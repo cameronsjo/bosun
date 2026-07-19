@@ -2760,6 +2760,33 @@ func TestCreateBackup(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotEmpty(t, r.lastBackupPath)
 	})
+
+	t.Run("empty footprint records no anchor", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		backupDir := filepath.Join(tmpDir, "backups")
+		stagingDir := filepath.Join(tmpDir, "staging")
+		appdataDir := filepath.Join(tmpDir, "appdata")
+		// Empty staging + empty appdata: nothing to back up. createBackup must leave
+		// the rollback-anchor fields empty and still return nil (#360) — the caller
+		// wiring for the empty-name signal. Without the guard, lastBackupPath would
+		// be set to backupDir (filepath.Join(dir, "")) and lastBackupIsFresh true.
+		require.NoError(t, os.MkdirAll(stagingDir, 0o755))
+		require.NoError(t, os.MkdirAll(appdataDir, 0o755))
+
+		cfg := &Config{
+			StagingDir:       stagingDir,
+			InfraSubDir:      ".",
+			BackupDir:        backupDir,
+			LocalAppdataPath: appdataDir,
+			BackupsToKeep:    3,
+		}
+		r := NewReconciler(cfg)
+
+		err := r.createBackup(context.Background(), nil, true)
+		require.NoError(t, err, "an empty footprint is legitimate; the deploy proceeds")
+		assert.Empty(t, r.lastBackupPath, "no anchor recorded for an empty footprint")
+		assert.False(t, r.lastBackupIsFresh, "the fresh-anchor flag stays false without a real backup")
+	})
 }
 
 // --- Duration YAML edge cases ---
