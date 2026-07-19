@@ -124,7 +124,7 @@ jobs:
         run: cosign sign --yes "ghcr.io/cameronsjo/bosun@${DIGEST}"
 
       - name: Generate SLSA provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ghcr.io/cameronsjo/bosun
           subject-digest: ${{ steps.docker-push.outputs.digest }}
