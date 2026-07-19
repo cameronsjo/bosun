@@ -182,6 +182,20 @@ type Config struct {
 	// Default 60s. Configurable via BOSUN_HEALTH_GATE_TIMEOUT.
 	HealthGateTimeout time.Duration
 
+	// HealthGateScope selects which containers the post-compose-up health gate
+	// polls and rolls back on: "critical" (default), "declared", or "off".
+	// Empty resolves to "critical". Configurable via BOSUN_HEALTH_GATE_SCOPE.
+	//
+	//   - "critical": today's behavior — gate only on CriticalContainers members;
+	//     an empty list skips the gate. A declared-but-non-critical service coming
+	//     up unhealthy does NOT trigger rollback.
+	//   - "declared": gate on ALL declared services (pollContainerHealth), with the
+	//     #392 pre-existing-casualty exemption; any service THIS deploy made
+	//     unhealthy triggers the same rollback branch. Opt-in because it adds
+	//     flapping-healthcheck churn risk on top of PR #336's fail+retry+alert.
+	//   - "off": no health gate at all.
+	HealthGateScope string
+
 	// OnFailure gates failure alert dispatch. When false, no failure alerts are sent.
 	// Defaults to true via DefaultConfig(). A bare Config{} leaves this false.
 	OnFailure bool
@@ -1137,22 +1151,75 @@ func (r *Reconciler) cleanupStaging() error {
 	return nil
 }
 
-// runHealthGate checks critical container health after compose up.
-// Skipped when: DryRun, remote deploy (!isLocalMode), no Docker client,
-// or empty CriticalContainers list.
-// On failure: triggers rollback and sends a throttled failure alert.
+// Health gate scope values (Config.HealthGateScope). Selects what the
+// post-compose-up gate polls and rolls back on.
+const (
+	HealthGateScopeCritical = "critical"
+	HealthGateScopeDeclared = "declared"
+	HealthGateScopeOff      = "off"
+)
+
+// ResolveHealthGateScope normalizes and validates a configured scope. Empty
+// resolves to "critical". An unknown value returns an error naming the valid set
+// so callers (the daemon env/config parse, and runHealthGate) can surface it
+// rather than silently guessing.
+func ResolveHealthGateScope(scope string) (string, error) {
+	switch scope {
+	case "", HealthGateScopeCritical:
+		return HealthGateScopeCritical, nil
+	case HealthGateScopeDeclared:
+		return HealthGateScopeDeclared, nil
+	case HealthGateScopeOff:
+		return HealthGateScopeOff, nil
+	default:
+		return "", fmt.Errorf("invalid health_gate_scope %q: must be one of %q, %q, %q",
+			scope, HealthGateScopeCritical, HealthGateScopeDeclared, HealthGateScopeOff)
+	}
+}
+
+// runHealthGate polls container health after compose up and, on a failure this
+// deploy caused, restores the backup before post-sync hooks run.
+//
+// The health_gate_scope config selects the target set:
+//   - "critical" (default): gate only on CriticalContainers members; an empty
+//     list is a no-op. Unchanged from prior behavior.
+//   - "declared": gate on all declared services (with the #392 pre-existing
+//     casualty exemption); an empty declared set is a no-op.
+//   - "off": no gate.
+//
+// Skipped regardless of scope when: DryRun, remote deploy (Docker API is
+// local-only), or no Docker client. On failure it triggers rollback and sends
+// throttled failure + rollback alerts.
+//
 // runHealthGate returns (rolledBack, err). rolledBack is true only when a
-// rollback was actually attempted (regardless of whether the rollback
-// itself succeeded) -- the caller uses it to decide whether post-sync hooks
-// are safe to run against the working tree (#392 review follow-up, see the
-// call site in Run).
+// rollback was actually attempted (regardless of whether the rollback itself
+// succeeded) — the caller uses it to decide whether post-sync hooks are safe to
+// run against the working tree (#392 review follow-up, see the call site in Run).
 func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState, local bool) (rolledBack bool, err error) {
-	containers := r.config.CriticalContainers.Value
-	if len(containers) == 0 {
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+
+	scope, scopeErr := ResolveHealthGateScope(r.config.HealthGateScope)
+	if scopeErr != nil {
+		// A config typo must not brick deploys: fall back to the strictest gate
+		// (critical) and name the valid values loudly.
+		logger.Error().Err(scopeErr).Msg("Invalid health_gate_scope; falling back to critical")
+		scope = HealthGateScopeCritical
+	}
+
+	if scope == HealthGateScopeOff {
+		logger.Debug().Msg("Health gate skipped. Reason: health_gate_scope=off")
 		return false, nil
 	}
 
-	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+	// Empty-target short-circuits preserve the no-op contract per scope: critical
+	// with no critical containers, or declared with no declared services.
+	containers := r.config.CriticalContainers.Value
+	if scope == HealthGateScopeCritical && len(containers) == 0 {
+		return false, nil
+	}
+	if scope == HealthGateScopeDeclared && len(r.declaredServices) == 0 {
+		return false, nil
+	}
 
 	if r.config.DryRun {
 		logger.Debug().Msg("Health gate skipped. Reason: dry run")
@@ -1161,7 +1228,7 @@ func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState, loca
 
 	if !local {
 		logger.Warn().
-			Strs("containers", containers).
+			Str("scope", scope).
 			Msg("Health gate skipped for remote deploy. Docker API is local-only")
 		return false, nil
 	}
@@ -1182,40 +1249,114 @@ func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState, loca
 		timeout = 60 * time.Second
 	}
 
-	gateErr := CheckCriticalContainerHealth(ctx, client, containers, timeout)
-	if gateErr != nil {
-		logger.Error().
-			Err(gateErr).
-			Strs("containers", containers).
-			Msg("Critical container health gate failed. Triggering rollback")
-
-		// Trigger rollback. The health gate runs after `docker compose up -d`
-		// already exited 0 (against now-unhealthy containers), so re-running
-		// compose up here would be a silent no-op — restore the backup directly.
-		//
-		// Scope note: RollbackFromBackup restores only the compose files
-		// (r.lastComposeFiles), not the full WrittenFiles breadth a normal
-		// deploy writes (appdata configs, etc.) -- so a rollback leaves a
-		// hybrid tree: old compose files paired with whatever non-compose
-		// config the failed deploy already wrote. That's exactly why hooks
-		// are skipped below when a rollback runs: firing a hook keyed on the
-		// NEW commit's WrittenFiles against that hybrid tree would restart a
-		// container against a mismatched compose/config combination. Widening
-		// rollback to cover the full WrittenFiles breadth is a separate,
-		// larger question and is being filed as its own issue -- not fixed here.
-		if r.lastBackupPath != "" && len(r.lastComposeFiles) > 0 {
-			rolledBack = true
-			rollbackErr := r.deploy.RollbackFromBackup(ctx, r.lastComposeFiles, r.lastBackupPath)
-			if rollbackErr != nil {
-				logger.Error().Err(rollbackErr).Msg("Rollback after health gate failure also failed")
-			}
-		}
-
-		r.sendThrottledFailureAlert(ctx, state, gateErr.Error())
-		return rolledBack, gateErr
+	var gateErr error
+	switch scope {
+	case HealthGateScopeDeclared:
+		gateErr = r.checkDeclaredHealth(ctx, client, timeout)
+	default: // HealthGateScopeCritical
+		gateErr = CheckCriticalContainerHealth(ctx, client, containers, timeout)
+	}
+	if gateErr == nil {
+		return false, nil
 	}
 
-	return false, nil
+	logger.Error().
+		Err(gateErr).
+		Str("scope", scope).
+		Msg("Health gate failed. Triggering rollback")
+
+	// Trigger rollback. The health gate runs after `docker compose up -d`
+	// already exited 0 (against now-unhealthy containers), so re-running compose
+	// up here would be a silent no-op — restore the backup directly.
+	//
+	// Scope note: RollbackFromBackup restores only the compose files
+	// (r.lastComposeFiles), not the full WrittenFiles breadth a normal deploy
+	// writes (appdata configs, etc.) -- so a rollback leaves a hybrid tree: old
+	// compose files paired with whatever non-compose config the failed deploy
+	// already wrote. That's exactly why hooks are skipped by the caller when a
+	// rollback runs: firing a hook keyed on the NEW commit's WrittenFiles against
+	// that hybrid tree would restart a container against a mismatched
+	// compose/config combination. Widening rollback to cover the full
+	// WrittenFiles breadth is tracked separately -- not fixed here.
+	var rollbackErr error
+	if r.lastBackupPath != "" && len(r.lastComposeFiles) > 0 {
+		rolledBack = true
+		rollbackErr = r.deploy.RollbackFromBackup(ctx, r.lastComposeFiles, r.lastBackupPath)
+		if rollbackErr != nil {
+			logger.Error().Err(rollbackErr).Msg("Rollback after health gate failure also failed")
+		}
+	}
+
+	r.sendGateFailureAlerts(ctx, state, gateErr, rolledBack, rollbackErr)
+	return rolledBack, gateErr
+}
+
+// checkDeclaredHealth polls all declared services and returns a gate error only
+// when a service THIS deploy made unhealthy (the #392 exemption spares a service
+// already unhealthy before the deploy — a pre-existing casualty). Returns nil
+// when every unhealthy service was pre-existing, or when all are healthy.
+func (r *Reconciler) checkDeclaredHealth(ctx context.Context, client *docker.Client, timeout time.Duration) error {
+	interval := r.config.HealthCheckInterval
+	if interval <= 0 {
+		interval = HealthGatePollInterval
+	}
+
+	result, err := pollContainerHealth(ctx, client, r.declaredServices, r.config.ProjectName, timeout, interval)
+	if err == nil {
+		return nil
+	}
+	if result == nil {
+		return err
+	}
+
+	blocking := blockingUnhealthy(result.Unhealthy, r.preDeployUnhealthy)
+	if len(result.Unhealthy) > 0 && len(blocking) == 0 {
+		// Every unhealthy service was already unhealthy before this deploy (#392);
+		// not this deploy's fault, so no rollback.
+		return nil
+	}
+	if len(blocking) > 0 {
+		return fmt.Errorf("declared health gate failed: unhealthy containers: %s", strings.Join(blocking, ", "))
+	}
+	return err
+}
+
+// sendGateFailureAlerts emits the health-gate failure alert and, when a rollback
+// ran, the rollback alert — BOTH on the SAME ShouldAlert throttle window, so a
+// flapping healthcheck under declared scope alerts on the 1/3/10/30 attempt
+// cadence rather than every cycle (#339). rollbackErr distinguishes a restored
+// backup (SendRollbackSuccess) from a failed restore (SendRollbackFailure).
+func (r *Reconciler) sendGateFailureAlerts(ctx context.Context, state *DeployState, gateErr error, rolledBack bool, rollbackErr error) {
+	if r.alerter == nil || !r.config.OnFailure {
+		return
+	}
+	if !ShouldAlert(state.AttemptCount, state.LastAlertedAttempt) {
+		return
+	}
+
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+	target := r.alertTarget()
+
+	if err := r.alerter.SendDeployFailure(ctx, r.lastCommit, target, gateErr.Error(), r.serviceNames(), time.Since(r.runStartTime)); err != nil {
+		logger.Warn().Err(err).Str(log.FieldOperation, "alert_failure").Msg("Failed to send health-gate failure alert")
+	}
+
+	if rolledBack {
+		if rollbackErr == nil {
+			if err := r.alerter.SendRollbackSuccess(ctx, target, filepath.Base(r.lastBackupPath)); err != nil {
+				logger.Warn().Err(err).Str(log.FieldOperation, "alert_rollback").Msg("Failed to send rollback success alert")
+			}
+		} else {
+			if err := r.alerter.SendRollbackFailure(ctx, target, rollbackErr.Error()); err != nil {
+				logger.Warn().Err(err).Str(log.FieldOperation, "alert_rollback").Msg("Failed to send rollback failure alert")
+			}
+		}
+	}
+
+	state.LastAlertedAttempt = state.AttemptCount
+	if err := SaveState(r.config.StateFile, state); err != nil {
+		logger.Warn().Err(err).Msg("Failed to persist alert throttle state")
+	}
 }
 
 // syncRepo syncs the git repository.
@@ -1701,7 +1842,7 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 		}
 	}
 
-	// Sync compose files (special handling: glob .yml files for ComposeUpMultipleWithRollback).
+	// Sync compose files (special handling: glob .yml files for ComposeUpIsolated).
 	composeStaging := filepath.Join(stagingSubDir, "compose")
 	composeTarget := filepath.Join(appdata, "compose")
 	if hasTarget(targets, "compose") {

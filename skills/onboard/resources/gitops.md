@@ -130,11 +130,17 @@ Both flags are re-read from `bosun.yaml` after each git pull, so changes take ef
 
 During `docker compose up`, bosun passes `--remove-orphans` by default. This removes containers belonging to services that have been deleted from the compose file. In shared environments where Bosun does not own all containers on the Docker host, set `remove_orphans: false` in `bosun.yaml` or `BOSUN_REMOVE_ORPHANS=false` to disable this behavior. The environment variable takes precedence over the config file. Emergency restore (`bosun mayday`) always uses `--remove-orphans` regardless of this setting.
 
-### Critical Container Health Gate
+### Health Gate
 
-When `critical_containers` is configured, bosun polls each listed container via Docker API after compose up. Containers must be running and healthy (or have no healthcheck defined) within the `HealthGateTimeout` (default 60s, configurable via `BOSUN_HEALTH_GATE_TIMEOUT`). If any container fails the gate, rollback is triggered using the backup compose files.
+After compose up, bosun polls container health via the Docker API and, on a failure this deploy caused, restores the backup compose files before post-sync hooks run. `health_gate_scope` (config, or `BOSUN_HEALTH_GATE_SCOPE`) selects the target set:
 
-The health gate is skipped when: dry run is active, the deploy is remote (`TargetHost` set — Docker API is local-only), no Docker client is available, or the critical containers list is empty.
+- **`critical`** (default): polls only `critical_containers` members. An empty list skips the gate. A declared-but-non-critical service coming up unhealthy does NOT trigger rollback.
+- **`declared`**: polls all declared services, exempting any service that was already unhealthy *before* this deploy (a pre-existing casualty, per #392) — only a service this deploy made unhealthy triggers rollback. Opt-in, because it adds flapping-healthcheck rollback churn on top of the fail-retry-alert path a failed post-deploy verification already provides.
+- **`off`**: no health gate.
+
+Containers must be running and healthy (or have no healthcheck defined) within the `HealthGateTimeout` (default 60s, `BOSUN_HEALTH_GATE_TIMEOUT`). On failure, rollback restores the backup compose files, post-sync hooks are skipped (the tree is a hybrid of old compose + new config), and the failure + rollback alerts fire together on the `1/3/10/30` attempt-count throttle schedule — not once per cycle.
+
+The health gate is skipped regardless of scope when: dry run is active, the deploy is remote (`TargetHost` set — Docker API is local-only), or no Docker client is available.
 
 Configure in `bosun.yaml` or via `BOSUN_CRITICAL_CONTAINERS` (JSON array, completely replaces config file value):
 

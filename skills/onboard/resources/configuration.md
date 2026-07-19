@@ -112,6 +112,14 @@ critical_containers:
   - traefik
   - authelia
 
+# Health gate scope: what the post-compose-up gate polls and rolls back on.
+#   critical (default) - only critical_containers members (above)
+#   declared           - all declared services, exempting ones already unhealthy
+#                        before this deploy (opt-in: adds flapping-healthcheck
+#                        rollback churn on top of the fail+retry+alert path)
+#   off                - no health gate
+health_gate_scope: critical
+
 # Post-sync hooks: restart containers when specific config files change.
 # Solves services (like Traefik) not picking up config changes on FUSE mounts.
 post_sync_hooks:
@@ -143,6 +151,7 @@ post_sync_hooks:
 | `deploy_sync_paths` | `[]` (sync all) | Glob allowlist — only sync staging entries matching these patterns |
 | `deploy_sync_exclude` | `[]` (exclude none) | Glob blocklist — exclude matching staging entries from sync (wins over include) |
 | `critical_containers` | `[]` (disabled) | Container names that must be healthy after deploy — triggers rollback on failure |
+| `health_gate_scope` | `critical` | Health gate target set: `critical` (only `critical_containers`), `declared` (all declared services, exempting pre-existing casualties), or `off`. Overridden by `BOSUN_HEALTH_GATE_SCOPE` |
 | `drift_ignore` | `[]` (disabled) | Suppress known drift noise by service glob + type (`missing`, `image_mismatch`, `unhealthy`, or `*`). Validated at load: unknown types and invalid globs fail startup. Overridden by `BOSUN_DRIFT_IGNORE` env var (JSON array), validated identically |
 | `drift_alert_debounce` | `0` (disabled) | Debounce window before first drift alert fires (e.g., `"5m"`) |
 | `targets` | `[]` (implicit default) | Named deployment targets with per-target overrides. Overridden by `BOSUN_TARGETS` env var (JSON array) |

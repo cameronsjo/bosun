@@ -310,9 +310,9 @@ func TestConfig_OutputDir(t *testing.T) {
 func TestConfig_AllPathMethods(t *testing.T) {
 	cfg := &Config{
 		Root:            "/project",
-		ManifestDir:    "/project/manifest",
-		ComposeFile:    "/project/bosun/docker-compose.yml",
-		SnapshotsDir:   "/project/manifest/.bosun/snapshots",
+		ManifestDir:     "/project/manifest",
+		ComposeFile:     "/project/bosun/docker-compose.yml",
+		SnapshotsDir:    "/project/manifest/.bosun/snapshots",
 		infraContainers: []string{"traefik", "authelia", "gatus"},
 	}
 
@@ -802,6 +802,28 @@ hook_settle_delay: "3s"
 		require.NotNil(t, cfg)
 		assert.Empty(t, cfg.PostSyncHooks())
 		assert.Equal(t, time.Duration(0), cfg.HookSettleDelay())
+	})
+
+	t.Run("parses health_gate_scope", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"),
+			[]byte("health_gate_scope: declared\n"), 0644))
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Equal(t, "declared", cfg.HealthGateScope())
+	})
+
+	t.Run("health_gate_scope defaults to empty (reconcile resolves to critical)", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"),
+			[]byte("project_name: demo\n"), 0644))
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Equal(t, "", cfg.HealthGateScope())
 	})
 
 	t.Run("returns error on malformed YAML", func(t *testing.T) {

@@ -75,6 +75,10 @@ type Config struct {
 	// criticalContainers is a list of container names that must be healthy after compose up.
 	criticalContainers []string
 
+	// healthGateScope selects the post-compose-up health gate target set:
+	// "critical" (default), "declared", or "off". Empty means "critical".
+	healthGateScope string
+
 	// driftIgnore is a list of rules for suppressing known drift noise.
 	driftIgnore []reconcile.DriftIgnoreRule
 
@@ -145,12 +149,12 @@ type AlertConfig struct {
 // alertConfigRaw is the YAML DTO for alert settings.
 // Pointer booleans distinguish "unset" (nil → apply default) from explicit false.
 type alertConfigRaw struct {
-	DiscordWebhookURL string   `yaml:"discord_webhook_url"`
-	SlackWebhookURL   string   `yaml:"slack_webhook_url"`
-	SendGridAPIKey    string   `yaml:"sendgrid_api_key"`
-	SendGridFromEmail string   `yaml:"sendgrid_from_email"`
-	SendGridFromName  string   `yaml:"sendgrid_from_name"`
-	SendGridToEmails  []string `yaml:"sendgrid_to_emails"`
+	DiscordWebhookURL string            `yaml:"discord_webhook_url"`
+	SlackWebhookURL   string            `yaml:"slack_webhook_url"`
+	SendGridAPIKey    string            `yaml:"sendgrid_api_key"`
+	SendGridFromEmail string            `yaml:"sendgrid_from_email"`
+	SendGridFromName  string            `yaml:"sendgrid_from_name"`
+	SendGridToEmails  []string          `yaml:"sendgrid_to_emails"`
 	TwilioAccountSID  string            `yaml:"twilio_account_sid"`
 	TwilioAuthToken   string            `yaml:"twilio_auth_token"`
 	TwilioFromNumber  string            `yaml:"twilio_from_number"`
@@ -164,16 +168,16 @@ type alertConfigRaw struct {
 
 // targetRaw is the YAML DTO for a deployment target.
 type targetRaw struct {
-	Name              string                   `yaml:"name"`
-	TargetHost        string                   `yaml:"target_host"`
-	LocalAppdataPath  string                   `yaml:"local_appdata_path"`
-	RemoteAppdataPath string                   `yaml:"remote_appdata_path"`
-	ProjectName       string                   `yaml:"project_name"`
-	SecretsScope      string                   `yaml:"secrets_scope"`
-	CriticalContainers []string                `yaml:"critical_containers"`
-	PostSyncHooks     []reconcile.PostSyncHook `yaml:"post_sync_hooks"`
-	DeploySyncPaths   []string                 `yaml:"deploy_sync_paths"`
-	DeploySyncExclude []string                 `yaml:"deploy_sync_exclude"`
+	Name               string                   `yaml:"name"`
+	TargetHost         string                   `yaml:"target_host"`
+	LocalAppdataPath   string                   `yaml:"local_appdata_path"`
+	RemoteAppdataPath  string                   `yaml:"remote_appdata_path"`
+	ProjectName        string                   `yaml:"project_name"`
+	SecretsScope       string                   `yaml:"secrets_scope"`
+	CriticalContainers []string                 `yaml:"critical_containers"`
+	PostSyncHooks      []reconcile.PostSyncHook `yaml:"post_sync_hooks"`
+	DeploySyncPaths    []string                 `yaml:"deploy_sync_paths"`
+	DeploySyncExclude  []string                 `yaml:"deploy_sync_exclude"`
 }
 
 // configFile represents the structure of .bosun/config.yml or bosun.yml.
@@ -231,6 +235,10 @@ type configFile struct {
 	// CriticalContainers is a list of container names that must be healthy after compose up.
 	// When configured, the health gate runs after startup grace period and before state save.
 	CriticalContainers []string `yaml:"critical_containers"`
+
+	// HealthGateScope selects the post-compose-up health gate target set:
+	// "critical" (default), "declared", or "off". Empty means "critical".
+	HealthGateScope string `yaml:"health_gate_scope"`
 
 	// DriftIgnore is a list of rules for suppressing known drift noise.
 	// Each rule matches a service name (glob) and drift type.
@@ -357,6 +365,7 @@ func LoadFrom(dir string) (*Config, error) {
 	deploySyncPaths := extractDeploySyncPaths(fileCfg)
 	deploySyncExclude := extractDeploySyncExclude(fileCfg)
 	criticalContainers := extractCriticalContainers(fileCfg)
+	healthGateScope := extractHealthGateScope(fileCfg)
 	driftIgnore := extractDriftIgnore(fileCfg)
 	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
 	driftSelfHeal := extractDriftSelfHeal(fileCfg)
@@ -374,6 +383,7 @@ func LoadFrom(dir string) (*Config, error) {
 		deploySyncPaths:       deploySyncPaths,
 		deploySyncExclude:     deploySyncExclude,
 		criticalContainers:    criticalContainers,
+		healthGateScope:       healthGateScope,
 		driftIgnore:           driftIgnore,
 		driftAlertDebounce:    driftAlertDebounce,
 		driftSelfHeal:         driftSelfHeal,
@@ -430,6 +440,7 @@ func Load() (*Config, error) {
 	deploySyncPaths := extractDeploySyncPaths(fileCfg)
 	deploySyncExclude := extractDeploySyncExclude(fileCfg)
 	criticalContainers := extractCriticalContainers(fileCfg)
+	healthGateScope := extractHealthGateScope(fileCfg)
 	driftIgnore := extractDriftIgnore(fileCfg)
 	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
 	driftSelfHeal := extractDriftSelfHeal(fileCfg)
@@ -467,22 +478,23 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		Root:            root,
-		ManifestDir:     manifestDir,
-		provisionsDir:   provisionsDir,
-		ComposeFile:     filepath.Join(root, "bosun", "docker-compose.yml"),
-		SnapshotsDir:    filepath.Join(manifestDir, ".bosun", "snapshots"),
-		projectName:     projectName,
-		infraContainers: infraContainers,
-		tunnelProvider:  tunnelProvider,
-		tunnelConfig:    tunnelConfig,
-		alertConfig:     alertConfig,
+		Root:                  root,
+		ManifestDir:           manifestDir,
+		provisionsDir:         provisionsDir,
+		ComposeFile:           filepath.Join(root, "bosun", "docker-compose.yml"),
+		SnapshotsDir:          filepath.Join(manifestDir, ".bosun", "snapshots"),
+		projectName:           projectName,
+		infraContainers:       infraContainers,
+		tunnelProvider:        tunnelProvider,
+		tunnelConfig:          tunnelConfig,
+		alertConfig:           alertConfig,
 		postSyncHooks:         postSyncHooks,
 		hookSettleDelay:       hookSettleDelay,
 		deployPaths:           deployPaths,
 		deploySyncPaths:       deploySyncPaths,
 		deploySyncExclude:     deploySyncExclude,
 		criticalContainers:    criticalContainers,
+		healthGateScope:       healthGateScope,
 		driftIgnore:           driftIgnore,
 		driftAlertDebounce:    driftAlertDebounce,
 		driftSelfHeal:         driftSelfHeal,
@@ -719,6 +731,18 @@ func (c *Config) CriticalContainers() []string {
 // extractCriticalContainers extracts critical container names from a parsed config.
 func extractCriticalContainers(cfg configFile) []string {
 	return cfg.CriticalContainers
+}
+
+// HealthGateScope returns the configured health gate scope ("critical",
+// "declared", "off", or "" for the default). Validation of unknown values
+// happens at the reconcile layer (resolveHealthGateScope).
+func (c *Config) HealthGateScope() string {
+	return c.healthGateScope
+}
+
+// extractHealthGateScope extracts the health gate scope from a parsed config.
+func extractHealthGateScope(cfg configFile) string {
+	return cfg.HealthGateScope
 }
 
 // HookSettleDelay returns the configured global settle delay for post-sync hooks.

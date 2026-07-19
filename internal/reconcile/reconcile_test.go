@@ -2830,54 +2830,6 @@ func TestVerifyContainerHealthDryRun(t *testing.T) {
 	require.NoError(t, err, "dry run should short-circuit and return nil")
 }
 
-// --- ComposeUpWithRollback tests ---
-
-func TestComposeUpWithRollback(t *testing.T) {
-	t.Run("delegates to ComposeUpMultipleWithRollback", func(t *testing.T) {
-		// This primarily tests the delegation path; ComposeUpMultiple
-		// will fail because docker compose is not running test containers.
-		deploy := NewDeployOps(false, "test")
-		err := deploy.ComposeUpWithRollback(context.Background(), "/nonexistent/compose.yml", "")
-		require.Error(t, err)
-	})
-}
-
-func TestComposeUpMultipleWithRollback(t *testing.T) {
-	t.Run("no backup available returns wrapped error", func(t *testing.T) {
-		deploy := NewDeployOps(false, "test")
-		err := deploy.ComposeUpMultipleWithRollback(context.Background(), []string{"/nonexistent.yml"}, "")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "no backup available for rollback")
-	})
-
-	t.Run("backup archive with no matching files", func(t *testing.T) {
-		tmpDir := t.TempDir()
-
-		// Valid archive that does not contain the compose file under rollback,
-		// so after extraction no backup file resolves.
-		other := filepath.Join(tmpDir, "unrelated.yml")
-		require.NoError(t, os.WriteFile(other, []byte("services: {}"), 0644))
-		backupDir := filepath.Join(tmpDir, "backup")
-		writeTestBackupArchive(t, backupDir, other)
-
-		deploy := NewDeployOps(false, "test")
-		err := deploy.ComposeUpMultipleWithRollback(context.Background(), []string{"/nonexistent.yml"}, backupDir)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "no backup files found for rollback")
-	})
-
-	t.Run("backup dir with no archive returns no backup available", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		backupDir := filepath.Join(tmpDir, "backup")
-		require.NoError(t, os.MkdirAll(backupDir, 0755))
-
-		deploy := NewDeployOps(false, "test")
-		err := deploy.ComposeUpMultipleWithRollback(context.Background(), []string{"/nonexistent.yml"}, backupDir)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "no backup available for rollback")
-	})
-}
-
 // --- DeployResult tests ---
 
 func TestDeployResult(t *testing.T) {
@@ -4634,10 +4586,9 @@ func TestRun_PreDeployHealthSnapshotFailureIsNonFatal(t *testing.T) {
 func TestRunHealthGate_RollbackRestoresBackupInsteadOfRedeploying(t *testing.T) {
 	// #229 regression: on health-gate failure, `docker compose up -d` has
 	// already exited 0 against the now-unhealthy containers (see
-	// ComposeUpMultiple's --wait comment) — redeploying r.lastComposeFiles via
-	// ComposeUpMultipleWithRollback would just re-run that same no-op. The
-	// rollback must go straight to RollbackFromBackup and never touch the
-	// deploy path again.
+	// ComposeUpMultiple's --wait comment) — redeploying r.lastComposeFiles would
+	// just re-run that same no-op. The rollback must go straight to
+	// RollbackFromBackup and never touch the deploy path again.
 	mockAPI := newReconcileMockDockerAPI()
 	mockAPI.containerInspectFunc = func(_ context.Context, name string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
 		return makeInspectResponse(name, "running", &container.Health{Status: "unhealthy"}), nil
