@@ -127,7 +127,21 @@ func TestRun_LocalVerifyFailure_BreakerAndAlert(t *testing.T) {
 
 	assert.True(t, sawVerifyFailure, "early cycles must fail with a health-verification error")
 	assert.True(t, sawBreaker, "the circuit breaker must trip after MaxAttempts consecutive verify failures")
-	assert.GreaterOrEqual(t, alerter.deployFailureCalls, 1, "a persistent verify failure must fire failure alerts")
+	// Exact alert count pins the #336 fix: alert timing, not just breaker state.
+	// The failure-alert schedule is thresholds {1,3,10,30}, plus a MaxAttempts
+	// activation rule. Across the four cycles:
+	//   cycle 1 (attempt 1) → alerts (threshold 1). This is the fix — the old
+	//     ordering reset AttemptCount to 0 before the alert, so ShouldAlert(0,…)
+	//     suppressed it and this cycle-1 alert never fired.
+	//   cycle 2 (attempt 2) → suppressed (below the next threshold, 3).
+	//   cycle 3 (attempt 3) → alerts (attempt == MaxAttempts activation).
+	//   cycle 4 → breaker trips; sendThrottledFailureAlert sees ShouldAlert(3,3)
+	//     == false (attempt 3 already alerted), so it re-alerts nothing.
+	// Exactly two failure alerts. A regression to the old save-before-verify
+	// ordering fires zero (AttemptCount reset masks every alert AND the deploy is
+	// skipped as already-deployed next cycle); an alert mis-timed to only the
+	// breaker trip fires one. Equality catches both.
+	assert.Equal(t, 2, alerter.deployFailureCalls, "failure alerts must fire on attempt 1 and attempt 3 (== MaxAttempts)")
 	assert.Equal(t, 0, alerter.deploySuccessCalls, "no success alert may fire while verification keeps failing")
 
 	// Final on-disk state is a clean failure state, not a masked success.
