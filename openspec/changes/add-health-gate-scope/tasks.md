@@ -17,7 +17,7 @@
 - [x] 3.1 Resolve scope at the top of `runHealthGate`; fall back to `critical` on an invalid value
 - [x] 3.2 `off` skips the gate; `critical` preserves the existing critical-container path unchanged
 - [x] 3.3 `declared` polls all declared services via `pollContainerHealth` and applies the #392 `blockingUnhealthy` pre-existing-casualty exemption (`checkDeclaredHealth`)
-- [x] 3.4 Route a declared-scope failure through the SAME rollback branch (rollback-before-hooks; `rolledBack` → hooks-skip preserved); reuse the existing throttled failure alert (no new rollback alert)
+- [x] 3.4 Route a declared-scope failure through the SAME rollback branch (rollback-before-hooks; `rolledBack` → hooks-skip preserved). Alert by scope at separate call sites: critical → bare `sendThrottledFailureAlert` (byte-for-byte, no rollback alert); declared → `sendGateFailureAlerts` (failure + throttled rollback alert on the same window)
 
 ## 4. Dead Code Cleanup
 

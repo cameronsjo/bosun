@@ -1278,17 +1278,28 @@ func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState, loca
 	// that hybrid tree would restart a container against a mismatched
 	// compose/config combination. Widening rollback to cover the full
 	// WrittenFiles breadth is tracked separately -- not fixed here.
+	var rollbackErr error
 	if r.lastBackupPath != "" && len(r.lastComposeFiles) > 0 {
 		rolledBack = true
-		if rollbackErr := r.deploy.RollbackFromBackup(ctx, r.lastComposeFiles, r.lastBackupPath); rollbackErr != nil {
+		rollbackErr = r.deploy.RollbackFromBackup(ctx, r.lastComposeFiles, r.lastBackupPath)
+		if rollbackErr != nil {
 			logger.Error().Err(rollbackErr).Msg("Rollback after health gate failure also failed")
 		}
 	}
 
-	// One throttled failure alert, exactly like critical mode — no rollback-
-	// specific alert. Under `declared`, a flapping healthcheck therefore alerts
-	// on the existing 1/3/10/30 ShouldAlert cadence, not once per cycle (#339).
-	r.sendThrottledFailureAlert(ctx, state, gateErr.Error())
+	// Alert by scope, via SEPARATE call sites so critical's no-op is self-evident:
+	//   - critical calls the unchanged sendThrottledFailureAlert — literally the
+	//     same call as before this PR, so its alert surface is byte-for-byte (no
+	//     rollback alert; critical never emitted one).
+	//   - declared additionally emits a throttled rollback alert on the SAME
+	//     ShouldAlert window, so a flapping healthcheck alerts on the 1/3/10/30
+	//     cadence rather than once per cycle (#339 owner finding).
+	// The rollback TRIGGER above is scope-agnostic; only the alert differs.
+	if scope == HealthGateScopeDeclared {
+		r.sendGateFailureAlerts(ctx, state, gateErr, rolledBack, rollbackErr)
+	} else {
+		r.sendThrottledFailureAlert(ctx, state, gateErr.Error())
+	}
 	return rolledBack, gateErr
 }
 
@@ -1320,6 +1331,46 @@ func (r *Reconciler) checkDeclaredHealth(ctx context.Context, client *docker.Cli
 		return fmt.Errorf("declared health gate failed: unhealthy containers: %s", strings.Join(blocking, ", "))
 	}
 	return err
+}
+
+// sendGateFailureAlerts is the DECLARED-scope health-gate alerter: it emits the
+// failure alert and, when a rollback ran, the rollback alert — BOTH on the same
+// ShouldAlert throttle window, so a flapping healthcheck under declared scope
+// alerts on the 1/3/10/30 attempt cadence rather than once per cycle (#339 owner
+// finding). rollbackErr distinguishes a restored backup (SendRollbackSuccess)
+// from a failed restore (SendRollbackFailure). Critical scope does NOT use this
+// path — it keeps the bare sendThrottledFailureAlert (no rollback alert).
+func (r *Reconciler) sendGateFailureAlerts(ctx context.Context, state *DeployState, gateErr error, rolledBack bool, rollbackErr error) {
+	if r.alerter == nil || !r.config.OnFailure {
+		return
+	}
+	if !ShouldAlert(state.AttemptCount, state.LastAlertedAttempt) {
+		return
+	}
+
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+	target := r.alertTarget()
+
+	if err := r.alerter.SendDeployFailure(ctx, r.lastCommit, target, gateErr.Error(), r.serviceNames(), time.Since(r.runStartTime)); err != nil {
+		logger.Warn().Err(err).Str(log.FieldOperation, "alert_failure").Msg("Failed to send health-gate failure alert")
+	}
+
+	if rolledBack {
+		if rollbackErr == nil {
+			if err := r.alerter.SendRollbackSuccess(ctx, target, filepath.Base(r.lastBackupPath)); err != nil {
+				logger.Warn().Err(err).Str(log.FieldOperation, "alert_rollback").Msg("Failed to send rollback success alert")
+			}
+		} else {
+			if err := r.alerter.SendRollbackFailure(ctx, target, rollbackErr.Error()); err != nil {
+				logger.Warn().Err(err).Str(log.FieldOperation, "alert_rollback").Msg("Failed to send rollback failure alert")
+			}
+		}
+	}
+
+	state.LastAlertedAttempt = state.AttemptCount
+	if err := SaveState(r.config.StateFile, state); err != nil {
+		logger.Warn().Err(err).Msg("Failed to persist alert throttle state")
+	}
 }
 
 // syncRepo syncs the git repository.

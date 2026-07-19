@@ -12,7 +12,12 @@ An unknown `health_gate_scope` value SHALL be rejected by validation, and the va
 
 Regardless of scope, the gate SHALL be skipped when the deploy is a dry run, the deploy is remote (the Docker API is local-only and cannot observe the remote host's containers), or no Docker client is available.
 
-On a gate failure under any scope, the reconciler SHALL trigger rollback to the backup compose files before post-sync hooks run, SHALL skip post-sync hooks when a rollback ran (the working tree is a hybrid of old compose and new config), SHALL NOT record the deployment as successful, and SHALL send a single throttled failure alert on the existing attempt-count alert schedule. No rollback-specific alert SHALL be introduced by this scope selection.
+On a gate failure under any scope, the reconciler SHALL trigger rollback to the backup compose files before post-sync hooks run, SHALL skip post-sync hooks when a rollback ran (the working tree is a hybrid of old compose and new config), and SHALL NOT record the deployment as successful.
+
+Alerting on a gate failure differs by scope, so a flapping healthcheck under `declared` does not spam:
+
+- **critical**: SHALL send only the existing throttled failure alert on the attempt-count schedule — byte-for-byte the prior behavior, with NO rollback-specific alert.
+- **declared**: SHALL send the throttled failure alert AND, when a rollback ran, a rollback alert (success or failure) — both on the SAME attempt-count throttle window, so they fire on the established cadence rather than once per cycle.
 
 `BOSUN_HEALTH_GATE_SCOPE` SHALL take precedence over the config file value. An invalid env value SHALL be ignored with a warning, leaving the config-file (or default) scope in effect.
 
@@ -24,7 +29,7 @@ On a gate failure under any scope, the reconciler SHALL trigger rollback to the 
 - **AND** the reconciler triggers rollback to the backup compose files
 - **AND** post-sync hooks are skipped
 - **AND** the deployment is NOT recorded as successful
-- **AND** a throttled failure alert is sent on the attempt-count schedule
+- **AND** a throttled failure alert AND a throttled rollback alert are sent on the same attempt-count window
 
 #### Scenario: Declared scope exempts a pre-existing unhealthy service
 

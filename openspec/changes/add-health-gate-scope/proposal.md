@@ -20,4 +20,4 @@ A health-gate failure only triggers rollback when `critical_containers` is confi
   - `internal/config/config.go` — `health_gate_scope` DTO field, `extractHealthGateScope`, `HealthGateScope()` getter, build wiring
   - `internal/daemon/daemon.go` — `BOSUN_HEALTH_GATE_SCOPE` env parse (validated via `ResolveHealthGateScope`), config-file wiring
 - Dead code removed: `ComposeUpWithRollback` / `ComposeUpMultipleWithRollback` (zero non-test callers; the rollback sentinels they referenced are now produced by the remote rollback path)
-- No new alerts: a declared-scope gate failure reuses the existing throttled failure alert, so a flapping healthcheck alerts on the established 1/3/10/30 attempt cadence rather than once per cycle.
+- Alerting by scope: critical sends only the existing throttled failure alert (byte-for-byte, no rollback alert); declared additionally sends a throttled rollback alert on the same attempt window, so a flapping healthcheck alerts on the established 1/3/10/30 cadence rather than once per cycle.
