@@ -79,6 +79,10 @@ type Config struct {
 	// "critical" (default), "declared", or "off". Empty means "critical".
 	healthGateScope string
 
+	// templateIncludeDir overrides the subtree that template include/fromJsonFile
+	// reads are confined to. Empty means <infraDir>/templates.
+	templateIncludeDir string
+
 	// driftIgnore is a list of rules for suppressing known drift noise.
 	driftIgnore []reconcile.DriftIgnoreRule
 
@@ -240,6 +244,11 @@ type configFile struct {
 	// "critical" (default), "declared", or "off". Empty means "critical".
 	HealthGateScope string `yaml:"health_gate_scope"`
 
+	// TemplateIncludeDir overrides the subtree that template include/fromJsonFile
+	// reads are confined to. Empty means <infraDir>/templates. Relative values
+	// are resolved against the infra directory; absolute values are used as-is.
+	TemplateIncludeDir string `yaml:"template_include_dir"`
+
 	// DriftIgnore is a list of rules for suppressing known drift noise.
 	// Each rule matches a service name (glob) and drift type.
 	DriftIgnore []reconcile.DriftIgnoreRule `yaml:"drift_ignore"`
@@ -366,6 +375,7 @@ func LoadFrom(dir string) (*Config, error) {
 	deploySyncExclude := extractDeploySyncExclude(fileCfg)
 	criticalContainers := extractCriticalContainers(fileCfg)
 	healthGateScope := extractHealthGateScope(fileCfg)
+	templateIncludeDir := extractTemplateIncludeDir(fileCfg)
 	driftIgnore := extractDriftIgnore(fileCfg)
 	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
 	driftSelfHeal := extractDriftSelfHeal(fileCfg)
@@ -384,6 +394,7 @@ func LoadFrom(dir string) (*Config, error) {
 		deploySyncExclude:     deploySyncExclude,
 		criticalContainers:    criticalContainers,
 		healthGateScope:       healthGateScope,
+		templateIncludeDir:    templateIncludeDir,
 		driftIgnore:           driftIgnore,
 		driftAlertDebounce:    driftAlertDebounce,
 		driftSelfHeal:         driftSelfHeal,
@@ -441,6 +452,7 @@ func Load() (*Config, error) {
 	deploySyncExclude := extractDeploySyncExclude(fileCfg)
 	criticalContainers := extractCriticalContainers(fileCfg)
 	healthGateScope := extractHealthGateScope(fileCfg)
+	templateIncludeDir := extractTemplateIncludeDir(fileCfg)
 	driftIgnore := extractDriftIgnore(fileCfg)
 	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
 	driftSelfHeal := extractDriftSelfHeal(fileCfg)
@@ -495,6 +507,7 @@ func Load() (*Config, error) {
 		deploySyncExclude:     deploySyncExclude,
 		criticalContainers:    criticalContainers,
 		healthGateScope:       healthGateScope,
+		templateIncludeDir:    templateIncludeDir,
 		driftIgnore:           driftIgnore,
 		driftAlertDebounce:    driftAlertDebounce,
 		driftSelfHeal:         driftSelfHeal,
@@ -743,6 +756,17 @@ func (c *Config) HealthGateScope() string {
 // extractHealthGateScope extracts the health gate scope from a parsed config.
 func extractHealthGateScope(cfg configFile) string {
 	return cfg.HealthGateScope
+}
+
+// TemplateIncludeDir returns the configured include subtree override for
+// template include/fromJsonFile reads. Empty means the default (<infraDir>/templates).
+func (c *Config) TemplateIncludeDir() string {
+	return c.templateIncludeDir
+}
+
+// extractTemplateIncludeDir extracts the template include dir override from a parsed config.
+func extractTemplateIncludeDir(cfg configFile) string {
+	return cfg.TemplateIncludeDir
 }
 
 // HookSettleDelay returns the configured global settle delay for post-sync hooks.

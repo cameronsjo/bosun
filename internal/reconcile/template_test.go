@@ -556,7 +556,7 @@ func TestValidateIncludePath(t *testing.T) {
 
 		err := validateIncludePath(outsidePath, tmpDir)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "escapes source directory")
+		assert.Contains(t, err.Error(), "escapes the allowed include directory")
 	})
 
 	t.Run("blocks absolute path outside source", func(t *testing.T) {
@@ -564,7 +564,7 @@ func TestValidateIncludePath(t *testing.T) {
 
 		err := validateIncludePath("/etc/passwd", tmpDir)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "escapes source directory")
+		assert.Contains(t, err.Error(), "escapes the allowed include directory")
 	})
 
 	t.Run("blocks symlink escape", func(t *testing.T) {
@@ -581,7 +581,7 @@ func TestValidateIncludePath(t *testing.T) {
 
 		err := validateIncludePath(symlinkPath, tmpDir)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "escapes source directory")
+		assert.Contains(t, err.Error(), "escapes the allowed include directory")
 	})
 
 	t.Run("skips validation when source dir is empty", func(t *testing.T) {
@@ -602,11 +602,11 @@ func TestTemplateOps_IncludePathValidation(t *testing.T) {
 
 		outputFile := filepath.Join(tmpDir, "output", "test.txt")
 
-		tmpl := &TemplateOps{Data: map[string]any{}, SourceDir: tmpDir}
+		tmpl := &TemplateOps{Data: map[string]any{}, IncludeDir: tmpDir}
 		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
 
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "escapes source directory")
+		assert.Contains(t, err.Error(), "escapes the allowed include directory")
 	})
 
 	t.Run("include allowed within source dir", func(t *testing.T) {
@@ -623,7 +623,7 @@ func TestTemplateOps_IncludePathValidation(t *testing.T) {
 
 		outputFile := filepath.Join(tmpDir, "output", "test.txt")
 
-		tmpl := &TemplateOps{Data: map[string]any{}, SourceDir: tmpDir}
+		tmpl := &TemplateOps{Data: map[string]any{}, IncludeDir: tmpDir}
 		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
 
 		require.NoError(t, err)
@@ -643,11 +643,11 @@ func TestTemplateOps_IncludePathValidation(t *testing.T) {
 
 		outputFile := filepath.Join(tmpDir, "output", "test.txt")
 
-		tmpl := &TemplateOps{Data: map[string]any{}, SourceDir: tmpDir}
+		tmpl := &TemplateOps{Data: map[string]any{}, IncludeDir: tmpDir}
 		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
 
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "escapes source directory")
+		assert.Contains(t, err.Error(), "escapes the allowed include directory")
 	})
 }
 

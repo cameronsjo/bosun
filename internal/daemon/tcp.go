@@ -179,13 +179,10 @@ func (s *TCPServer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse request
-	var req TriggerRequest
-	if r.Body != nil && r.ContentLength > 0 {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Invalid JSON", http.StatusBadRequest)
-			return
-		}
+	// Parse request under a size cap.
+	req, ok := decodeTriggerRequest(w, r)
+	if !ok {
+		return
 	}
 
 	// Default source with TCP identifier

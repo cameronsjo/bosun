@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -64,11 +65,11 @@ func NewServer(d *Daemon) *Server {
 	mux.HandleFunc(d.config.WebhookPath+"/github", s.handleGitHubWebhook)
 	mux.HandleFunc(d.config.WebhookPath+"/manual", s.handleManualTrigger)
 
-	// Widget endpoint for Homepage dashboard
-	mux.HandleFunc("/api/widget", s.handleWidget)
+	// Widget endpoint for Homepage dashboard (read-scope auth, fail-closed #296).
+	mux.Handle("/api/widget", s.requireMetricsAuth(http.HandlerFunc(s.handleWidget)))
 
-	// Prometheus metrics endpoint
-	mux.Handle("/metrics", s.metricsMiddleware(s.promHandler()))
+	// Prometheus metrics endpoint (read-scope auth, fail-closed #296).
+	mux.Handle("/metrics", s.requireMetricsAuth(s.metricsMiddleware(s.promHandler())))
 
 	s.server = &http.Server{
 		Handler:      s.loggingMiddleware(mux),
@@ -522,6 +523,77 @@ func (s *Server) metricsMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// requireMetricsAuth wraps a handler so /metrics and /api/widget enforce
+// read-scope authentication before serving. On rejection authorizeMetrics has
+// already written the response.
+func (s *Server) requireMetricsAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.authorizeMetrics(w, r) {
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// authorizeMetrics enforces read-scope auth for /metrics and /api/widget (#296).
+// On failure it writes the 401/403 response itself and returns false — the
+// caller MUST NOT write a second response. On success it returns true.
+//
+// Fail-closed: with no credential configured every request is rejected 403
+// unless the operator explicitly opted out via
+// BOSUN_ALLOW_UNAUTHENTICATED_METRICS=true, in which case each accepted request
+// logs a security warning. When a credential IS configured, a Bearer token
+// matching the read-scope MetricsToken or the strictly-more-privileged control
+// BearerToken is required; anything else is 401.
+func (s *Server) authorizeMetrics(w http.ResponseWriter, r *http.Request) bool {
+	logger := log.ComponentCtx(r.Context(), log.ComponentHTTP)
+
+	if !s.daemon.metricsAuthConfigured() {
+		if s.daemon.config.AllowUnauthenticatedMetrics {
+			logger.Warn().
+				Str("remote_addr", r.RemoteAddr).
+				Str("endpoint", r.URL.Path).
+				Msg("SECURITY: accepting unauthenticated metrics request. Reason: no BOSUN_METRICS_TOKEN configured and BOSUN_ALLOW_UNAUTHENTICATED_METRICS=true")
+			return true
+		}
+		logger.Warn().
+			Str("remote_addr", r.RemoteAddr).
+			Str("endpoint", r.URL.Path).
+			Msg("Rejecting metrics request, expected a configured read token but none is set. Set BOSUN_METRICS_TOKEN, or set BOSUN_ALLOW_UNAUTHENTICATED_METRICS=true to serve unauthenticated")
+		http.Error(w, "Metrics authentication not configured", http.StatusForbidden)
+		return false
+	}
+
+	const bearerPrefix = "Bearer "
+	authHeader := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, bearerPrefix) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	if !s.metricsTokenValid(authHeader[len(bearerPrefix):]) {
+		logger.Warn().
+			Str("remote_addr", r.RemoteAddr).
+			Str("endpoint", r.URL.Path).
+			Msg("Rejecting metrics request. Reason: invalid read token")
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+
+// metricsTokenValid reports whether token matches the read-scope MetricsToken or
+// the control BearerToken, using constant-time comparison. An empty configured
+// value never matches, so a blank token cannot admit.
+func (s *Server) metricsTokenValid(token string) bool {
+	if t := s.daemon.config.MetricsToken; t != "" && subtle.ConstantTimeCompare([]byte(token), []byte(t)) == 1 {
+		return true
+	}
+	if t := s.daemon.config.BearerToken; t != "" && subtle.ConstantTimeCompare([]byte(token), []byte(t)) == 1 {
+		return true
+	}
+	return false
 }
 
 // triggerScheme identifies which signature header a trigger endpoint expects.

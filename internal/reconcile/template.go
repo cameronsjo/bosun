@@ -15,14 +15,24 @@ import (
 	"github.com/cameronsjo/bosun/internal/log"
 )
 
+// DefaultIncludeSubdir is the subdirectory (relative to the render source
+// directory) that include/fromJsonFile reads are confined to by default.
+// Secrets (SOPS files, age keys) and bosun.yaml live in the infra root, NOT
+// under templates/, so confining reads here keeps them unreachable.
+const DefaultIncludeSubdir = "templates"
+
 // TemplateOps provides template rendering operations using Go's text/template with sprig functions.
 type TemplateOps struct {
 	// Data is the template data available during rendering.
 	Data map[string]any
 
-	// SourceDir restricts include/fromJsonFile to paths within this directory.
-	// When empty, path validation is skipped (backwards-compatible).
-	SourceDir string
+	// IncludeDir is the allowlisted root for include/fromJsonFile reads: only
+	// files located within this subtree may be read, enumerating what MAY be
+	// read rather than blocklisting what may not. When empty, RenderDirectory
+	// defaults it to <sourceDir>/DefaultIncludeSubdir. When still empty at
+	// render time (e.g. a bare ExecuteTemplate call with no tree), validation
+	// is skipped (backwards-compatible for callers that supply no root).
+	IncludeDir string
 }
 
 // NewTemplateOps creates a new TemplateOps instance with the given data.
@@ -41,7 +51,7 @@ func (t *TemplateOps) ExecuteTemplate(_ context.Context, templateFile, outputFil
 	}
 
 	// Create template with sprig functions and custom bosun functions.
-	tmpl := template.New(filepath.Base(templateFile)).Funcs(sprig.TxtFuncMap()).Funcs(bosunTemplateFuncs(t.SourceDir))
+	tmpl := template.New(filepath.Base(templateFile)).Funcs(sprig.TxtFuncMap()).Funcs(bosunTemplateFuncs(t.IncludeDir))
 
 	// Parse the template.
 	tmpl, err = tmpl.Parse(string(content))
@@ -87,58 +97,66 @@ func (t *TemplateOps) ExecuteTemplate(_ context.Context, templateFile, outputFil
 	return nil
 }
 
-// validateIncludePath checks that the resolved path is within the allowed source directory.
-// Returns an error if the path escapes the source tree via traversal or symlinks.
-func validateIncludePath(path, sourceDir string) error {
-	if sourceDir == "" {
+// validateIncludePath enforces a subtree ALLOWLIST: the resolved path must live
+// within includeDir. It uses filepath.Rel-based containment so a ".."-escape,
+// an absolute path outside the root, or a Rel error all fail closed, and it
+// resolves symlinks so a symlink whose target escapes the root is rejected too.
+// When includeDir is empty, no allowlist is configured and validation is skipped.
+func validateIncludePath(path, includeDir string) error {
+	if includeDir == "" {
 		return nil
 	}
 
-	absSource, err := filepath.Abs(sourceDir)
+	absRoot, err := filepath.Abs(includeDir)
 	if err != nil {
-		return fmt.Errorf("failed to resolve source directory: %w", err)
+		return fmt.Errorf("failed to resolve include directory: %w", err)
 	}
-
-	// Clean the path first to resolve ".." segments lexically.
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return fmt.Errorf("failed to resolve include path: %w", err)
 	}
-	cleanPath := filepath.Clean(absPath)
-	cleanSource := filepath.Clean(absSource)
 
-	// First check: lexical containment catches traversal even for non-existent paths.
-	if !strings.HasPrefix(cleanPath, cleanSource+string(filepath.Separator)) && cleanPath != cleanSource {
-		return fmt.Errorf("include path %s escapes source directory %s", path, sourceDir)
+	// First check: lexical containment catches traversal and absolute-outside
+	// paths even when the target file does not exist yet.
+	if err := ensureWithin(filepath.Clean(absRoot), filepath.Clean(absPath), path, includeDir); err != nil {
+		return err
 	}
 
-	// Second check: resolve symlinks to catch symlink-based escapes (only if the file exists).
-	realPath, err := filepath.EvalSymlinks(cleanPath)
+	// Second check: resolve symlinks to catch symlink-based escapes. If the
+	// path does not resolve (missing file), the lexical check above stands.
+	realPath, err := filepath.EvalSymlinks(filepath.Clean(absPath))
 	if err != nil {
-		// File doesn't exist — the lexical check above is sufficient.
 		return nil
 	}
-
-	realSource, err := filepath.EvalSymlinks(cleanSource)
+	realRoot, err := filepath.EvalSymlinks(filepath.Clean(absRoot))
 	if err != nil {
-		return fmt.Errorf("failed to resolve symlinks for source directory: %w", err)
+		return fmt.Errorf("failed to resolve symlinks for include directory: %w", err)
 	}
+	return ensureWithin(realRoot, realPath, path, includeDir)
+}
 
-	if !strings.HasPrefix(realPath, realSource+string(filepath.Separator)) && realPath != realSource {
-		return fmt.Errorf("include path %s escapes source directory %s", path, sourceDir)
+// ensureWithin reports whether target is contained in root, naming the allowed
+// root in the error. A Rel error, a ".."-prefixed result, or an absolute result
+// all mean "outside" and fail closed.
+func ensureWithin(root, target, origPath, allowedRoot string) error {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return fmt.Errorf("include path %s escapes the allowed include directory %s", origPath, allowedRoot)
 	}
-
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("include path %s escapes the allowed include directory %s", origPath, allowedRoot)
+	}
 	return nil
 }
 
 // bosunTemplateFuncs returns custom template functions for bosun templates.
-// sourceDir restricts file reads to within the source tree when non-empty.
-func bosunTemplateFuncs(sourceDir string) template.FuncMap {
+// includeDir confines include/fromJsonFile reads to that subtree when non-empty.
+func bosunTemplateFuncs(includeDir string) template.FuncMap {
 	return template.FuncMap{
 		// include reads and returns the contents of a file.
 		// Usage: {{ include "/path/to/file" }}
 		"include": func(path string) (string, error) {
-			if err := validateIncludePath(path, sourceDir); err != nil {
+			if err := validateIncludePath(path, includeDir); err != nil {
 				return "", err
 			}
 			data, err := os.ReadFile(path)
@@ -152,7 +170,7 @@ func bosunTemplateFuncs(sourceDir string) template.FuncMap {
 		// This is a convenience function that combines include + fromJson.
 		// Usage: {{ $data := fromJsonFile "/path/to/file.json" }}
 		"fromJsonFile": func(path string) (any, error) {
-			if err := validateIncludePath(path, sourceDir); err != nil {
+			if err := validateIncludePath(path, includeDir); err != nil {
 				return nil, err
 			}
 			data, err := os.ReadFile(path)
@@ -174,8 +192,13 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 	logger := log.ComponentCtx(ctx, log.ComponentTemplate)
 	outDir := filepath.Join(stagingDir, subDir)
 
-	// Restrict include/fromJsonFile to the source directory tree.
-	t.SourceDir = sourceDir
+	// Confine include/fromJsonFile reads to the include subtree. Default to
+	// <sourceDir>/templates when the caller has not set an explicit allowlist
+	// root — secrets and bosun.yaml live in the source root, above this subtree,
+	// so they stay unreachable.
+	if t.IncludeDir == "" {
+		t.IncludeDir = filepath.Join(sourceDir, DefaultIncludeSubdir)
+	}
 
 	// Copy non-template files from sourceDir (caller already joined InfraSubDir).
 	if err := copyNonTemplateFiles(sourceDir, outDir); err != nil {

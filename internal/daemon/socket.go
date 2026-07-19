@@ -120,6 +120,35 @@ type TriggerRequest struct {
 	Force  bool   `json:"force,omitempty"`  // Force full pipeline execution regardless of state
 }
 
+// maxTriggerBodyBytes caps trigger request bodies. The payload ({source, force,
+// target}) is well under 1 KB; 64 KB is generous headroom that still defends
+// against a JSON-bomb DoS via an unbounded decoder.
+const maxTriggerBodyBytes = 64 << 10 // 64 KiB
+
+// decodeTriggerRequest decodes a /trigger body under a hard size cap. It wraps
+// the body in http.MaxBytesReader (not io.LimitReader, which would silently
+// truncate) so an oversized body surfaces as *http.MaxBytesError, mapped to
+// 413. Malformed JSON maps to 400. An absent or empty body is valid (all
+// fields optional). On any error the response is written here and ok is false;
+// callers proceed only when ok is true.
+func decodeTriggerRequest(w http.ResponseWriter, r *http.Request) (TriggerRequest, bool) {
+	var req TriggerRequest
+	if r.Body == nil {
+		return req, true
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxTriggerBodyBytes)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return req, false
+		}
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return req, false
+	}
+	return req, true
+}
+
 // TriggerResponse is the response body for /trigger.
 type TriggerResponse struct {
 	Status  string `json:"status"`
@@ -152,14 +181,11 @@ func (s *SocketServer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse request (optional body). Do not gate on ContentLength — it may be
-	// -1 (unknown) when the client does not set it explicitly.
-	var req TriggerRequest
-	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-			http.Error(w, "Invalid JSON", http.StatusBadRequest)
-			return
-		}
+	// Parse request (optional body) under a size cap. Do not gate on
+	// ContentLength — it may be -1 (unknown) when the client omits it.
+	req, ok := decodeTriggerRequest(w, r)
+	if !ok {
+		return
 	}
 
 	// Default source
