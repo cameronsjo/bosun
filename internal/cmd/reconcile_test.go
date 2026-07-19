@@ -72,6 +72,15 @@ func TestRunReconcile_ConfigFieldSetup(t *testing.T) {
 		runReconcile(nil, nil)
 	})
 
+	t.Run("BOSUN_TEMPLATE_INCLUDE_DIR env override exercised", func(t *testing.T) {
+		// Drives the template-include-dir env branch through runReconcile so the
+		// inline cfg.TemplateIncludeDir assignment is covered end-to-end.
+		t.Setenv("REPO_URL", "https://example.com/repo.git")
+		t.Setenv("BOSUN_TEMPLATE_INCLUDE_DIR", "shared/includes")
+
+		runReconcile(nil, nil)
+	})
+
 	t.Run("ConfigReloader closure is callable", func(t *testing.T) {
 		t.Setenv("REPO_URL", "https://example.com/repo.git")
 
@@ -126,4 +135,44 @@ func TestRunReconcile_BOSUNTargetsValidation(t *testing.T) {
 
 		runReconcile(nil, nil)
 	})
+}
+
+// TestTemplateIncludeDirForCLI covers the one-shot CLI's include-allowlist
+// precedence, which must match the daemon: the project-config value reaches
+// reconcile.Config.TemplateIncludeDir unless BOSUN_TEMPLATE_INCLUDE_DIR
+// overrides it. Before this wiring, `bosun reconcile` silently ignored both and
+// used the default templates/ root regardless of configuration.
+func TestTemplateIncludeDirForCLI(t *testing.T) {
+	tests := []struct {
+		name          string
+		projectConfig string
+		envValue      string
+		want          string
+	}{
+		{"project config value reaches the field", "shared/includes", "", "shared/includes"},
+		{"env override wins over project config", "shared/includes", "/etc/bosun/includes", "/etc/bosun/includes"},
+		{"env override reaches the field with no project config", "", "custom", "custom"},
+		{"both unset resolves empty (reconciler applies templates/ default)", "", "", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, templateIncludeDirForCLI(tc.projectConfig, tc.envValue))
+		})
+	}
+}
+
+// TestRunFullDryRun_TemplateIncludeDirEnv exercises the `bosun validate` full
+// dry-run harness with BOSUN_TEMPLATE_INCLUDE_DIR set, covering the include-dir
+// env threading that keeps the dry-run a faithful preview of the deploy's
+// allowlist. The fake repo URL means the reconcile fails at clone; the config
+// path (including the env override) runs first and must not panic.
+func TestRunFullDryRun_TemplateIncludeDirEnv(t *testing.T) {
+	t.Setenv("REPO_URL", "https://example.com/repo.git")
+	t.Setenv("BOSUN_TEMPLATE_INCLUDE_DIR", "shared/includes")
+
+	err := runFullDryRun()
+	// A non-existent repo makes Run return an error; we only assert the config
+	// path executed and surfaced a failure rather than panicking.
+	assert.Error(t, err)
 }

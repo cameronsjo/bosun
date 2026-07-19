@@ -294,6 +294,14 @@ func runFullDryRun() error {
 		cfg.TargetHost = target
 	}
 
+	// Mirror the deploy path's template include allowlist so the dry-run render
+	// faithfully previews what the real deploy would read. This harness is
+	// env-only by design (it threads no project config), so honor only the env
+	// override here; an unset value falls to the <infraDir>/templates default.
+	if v := os.Getenv("BOSUN_TEMPLATE_INCLUDE_DIR"); v != "" {
+		cfg.TemplateIncludeDir = v
+	}
+
 	// Force dry-run
 	cfg.DryRun = true
 

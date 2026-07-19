@@ -71,6 +71,17 @@ func init() {
 	rootCmd.AddCommand(reconcileCmd)
 }
 
+// templateIncludeDirForCLI resolves the template include allowlist root for the
+// one-shot CLI, matching the daemon's precedence: the project-config value
+// unless BOSUN_TEMPLATE_INCLUDE_DIR overrides it. An empty result lets the
+// reconciler fall back to the <infraDir>/templates default.
+func templateIncludeDirForCLI(projectConfigValue, envValue string) string {
+	if envValue != "" {
+		return envValue
+	}
+	return projectConfigValue
+}
+
 func runReconcile(cmd *cobra.Command, args []string) {
 	// Build configuration from environment and flags.
 	cfg := reconcile.DefaultConfig()
@@ -151,6 +162,7 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		cfg.PostSyncHooks.SetFromFile(projectCfg.PostSyncHooks())
 		cfg.HookSettleDelay.SetFromFile(projectCfg.HookSettleDelay())
 		cfg.DeployPaths.SetFromFile(projectCfg.DeployPaths())
+		cfg.TemplateIncludeDir = projectCfg.TemplateIncludeDir()
 	}
 
 	// Wire config reloader so the reconciler can re-read bosun.yaml from the repo.
@@ -198,6 +210,11 @@ func runReconcile(cmd *cobra.Command, args []string) {
 			cfg.DeployPaths.SetFromEnv(paths)
 		}
 	}
+
+	// Template include allowlist root. Precedence matches the daemon: the
+	// project-config value (assigned above) unless BOSUN_TEMPLATE_INCLUDE_DIR
+	// overrides it.
+	cfg.TemplateIncludeDir = templateIncludeDirForCLI(cfg.TemplateIncludeDir, os.Getenv("BOSUN_TEMPLATE_INCLUDE_DIR"))
 
 	// Set source for state tracking.
 	cfg.Source = "cli"
