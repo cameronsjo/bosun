@@ -4267,7 +4267,7 @@ func TestRunHealthGate_SkipsWhenNoCriticalContainers(t *testing.T) {
 	r := NewReconciler(cfg)
 	state := &DeployState{}
 
-	_, err := r.runHealthGate(context.Background(), state, true)
+	_, err := r.runHealthGate(context.Background(), state, true, nil)
 	require.NoError(t, err)
 }
 
@@ -4281,7 +4281,7 @@ func TestRunHealthGate_SkipsWhenDryRun(t *testing.T) {
 	r := NewReconciler(cfg)
 	state := &DeployState{}
 
-	_, err := r.runHealthGate(context.Background(), state, true)
+	_, err := r.runHealthGate(context.Background(), state, true, nil)
 	require.NoError(t, err)
 }
 
@@ -4293,7 +4293,7 @@ func TestRunHealthGate_SkipsForRemoteDeploy(t *testing.T) {
 	r := NewReconciler(cfg)
 	state := &DeployState{}
 
-	_, err := r.runHealthGate(context.Background(), state, false)
+	_, err := r.runHealthGate(context.Background(), state, false, nil)
 	require.NoError(t, err)
 }
 
@@ -4305,7 +4305,7 @@ func TestRunHealthGate_SkipsWhenNoDockerClient(t *testing.T) {
 	r := NewReconciler(cfg)
 	state := &DeployState{}
 
-	_, err := r.runHealthGate(context.Background(), state, true)
+	_, err := r.runHealthGate(context.Background(), state, true, nil)
 	require.NoError(t, err)
 }
 
@@ -4324,7 +4324,7 @@ func TestRunHealthGate_PassesWhenAllHealthy(t *testing.T) {
 	r := NewReconciler(cfg, WithDockerClient(client))
 	state := &DeployState{}
 
-	_, err := r.runHealthGate(context.Background(), state, true)
+	_, err := r.runHealthGate(context.Background(), state, true, nil)
 	require.NoError(t, err)
 }
 
@@ -4346,7 +4346,7 @@ func TestRunHealthGate_FailsWhenUnhealthy(t *testing.T) {
 	r := NewReconciler(cfg, WithDockerClient(client))
 	state := &DeployState{}
 
-	_, err := r.runHealthGate(context.Background(), state, true)
+	_, err := r.runHealthGate(context.Background(), state, true, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "authelia")
 }
@@ -4626,7 +4626,7 @@ func TestRunHealthGate_RollbackRestoresBackupInsteadOfRedeploying(t *testing.T) 
 	r.lastComposeFiles = []string{composeFile}
 	r.lastBackupPath = backupDir
 
-	rolledBack, err := r.runHealthGate(context.Background(), &DeployState{}, true)
+	rolledBack, err := r.runHealthGate(context.Background(), &DeployState{}, true, nil)
 	require.Error(t, err) // The health gate itself always reports the failure.
 	assert.False(t, deployCalled,
 		"health-gate rollback must not re-run compose up against the files that produced the unhealthy state")

@@ -191,35 +191,35 @@ func TestRunHealthGate_SkipGuards(t *testing.T) {
 
 	t.Run("off scope skips before touching docker", func(t *testing.T) {
 		r := NewReconciler(&Config{HealthGateScope: HealthGateScopeOff, CriticalContainers: NewConfigField([]string{"x"})})
-		rb, err := r.runHealthGate(ctx, &DeployState{}, true)
+		rb, err := r.runHealthGate(ctx, &DeployState{}, true, nil)
 		assert.False(t, rb)
 		assert.NoError(t, err)
 	})
 
 	t.Run("remote deploy skips (docker API is local-only)", func(t *testing.T) {
 		r := NewReconciler(&Config{HealthGateScope: HealthGateScopeCritical, CriticalContainers: NewConfigField([]string{"x"})})
-		rb, err := r.runHealthGate(ctx, &DeployState{}, false)
+		rb, err := r.runHealthGate(ctx, &DeployState{}, false, nil)
 		assert.False(t, rb)
 		assert.NoError(t, err)
 	})
 
 	t.Run("no docker client skips", func(t *testing.T) {
 		r := NewReconciler(&Config{HealthGateScope: HealthGateScopeCritical, CriticalContainers: NewConfigField([]string{"x"})})
-		rb, err := r.runHealthGate(ctx, &DeployState{}, true)
+		rb, err := r.runHealthGate(ctx, &DeployState{}, true, nil)
 		assert.False(t, rb)
 		assert.NoError(t, err)
 	})
 
 	t.Run("invalid scope falls back to critical (no-op with no critical containers)", func(t *testing.T) {
 		r := NewReconciler(&Config{HealthGateScope: "bogus"})
-		rb, err := r.runHealthGate(ctx, &DeployState{}, true)
+		rb, err := r.runHealthGate(ctx, &DeployState{}, true, nil)
 		assert.False(t, rb)
 		assert.NoError(t, err)
 	})
 
 	t.Run("declared scope with no declared services is a no-op", func(t *testing.T) {
 		r := NewReconciler(&Config{HealthGateScope: HealthGateScopeDeclared})
-		rb, err := r.runHealthGate(ctx, &DeployState{}, true)
+		rb, err := r.runHealthGate(ctx, &DeployState{}, true, nil)
 		assert.False(t, rb)
 		assert.NoError(t, err)
 	})
