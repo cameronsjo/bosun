@@ -111,6 +111,24 @@ func TestDeployRemoteDispatch_UnhealthyIsNonFatal(t *testing.T) {
 	assert.Equal(t, "compose-new", readMarker(t, filepath.Join(remoteAppdata, "compose"), "core.yml"))
 }
 
+func TestDeployRemoteDispatch_RejectsOptionInjectionHost(t *testing.T) {
+	// A repo-controlled TargetHost that looks like an ssh option must be rejected
+	// before deployRemote's first ssh contact (the sha256sum probe), not passed
+	// to exec as `ssh -oProxyCommand=...`.
+	cfg := &Config{
+		TargetHost:        "-oProxyCommand=touch /tmp/pwned",
+		StagingDir:        t.TempDir(),
+		RemoteAppdataPath: "/mnt/user/appdata",
+		DryRun:            false,
+	}
+	r := NewReconciler(cfg, WithDeployOps(&DeployOps{DryRun: false}))
+
+	result, err := r.deployRemote(context.Background(), nil)
+	require.Error(t, err)
+	assert.Nil(t, result)
+	assert.Contains(t, err.Error(), "invalid SSH host")
+}
+
 func TestDeployRemoteDispatch_RealFailureTriggersRollback(t *testing.T) {
 	setupGuardedSSHShim(t)
 	setupGuardedSCPShim(t)

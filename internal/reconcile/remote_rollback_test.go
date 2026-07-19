@@ -42,34 +42,10 @@ func itoa(n int) string {
 	return string(b)
 }
 
-func TestArchiveNameWithinRoot(t *testing.T) {
-	safe := []string{
-		"appdata/compose/core.yml",
-		"/mnt/user/appdata/x",
-		"a/b/c",
-		"file.yml",
-		"./a",
-		"a/../b", // resolves to b — still within root
-		"",       // empty name (a bare directory entry)
-		"/",      // strips to empty — root itself
-	}
-	for _, n := range safe {
-		assert.True(t, archiveNameWithinRoot(n), "expected %q to be within-root", n)
-	}
-	unsafe := []string{
-		"../etc/passwd",
-		"../../x",
-		"a/../../b",
-		"/../escape",
-	}
-	for _, n := range unsafe {
-		assert.False(t, archiveNameWithinRoot(n), "expected %q to be rejected", n)
-	}
-}
-
-// writeGzTarArchive writes a gzip-compressed tar with the given member names
-// (each a small regular file), used to exercise the path-traversal guard.
-func writeGzTarArchive(t *testing.T, path string, names ...string) {
+// writeGzTarArchiveHeaders writes a gzip-compressed tar from explicit headers.
+// A header with a non-empty Linkname and TypeSymlink/TypeLink writes a link;
+// otherwise a small regular-file body is written for TypeReg entries.
+func writeGzTarArchiveHeaders(t *testing.T, path string, hdrs ...*tar.Header) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 	f, err := os.Create(path)
@@ -77,33 +53,102 @@ func writeGzTarArchive(t *testing.T, path string, names ...string) {
 	defer func() { _ = f.Close() }()
 	gz := gzip.NewWriter(f)
 	tw := tar.NewWriter(gz)
-	for _, name := range names {
+	for _, hdr := range hdrs {
 		body := []byte("data")
-		require.NoError(t, tw.WriteHeader(&tar.Header{
-			Name: name,
-			Mode: 0o644,
-			Size: int64(len(body)),
-		}))
-		_, werr := tw.Write(body)
-		require.NoError(t, werr)
+		if hdr.Typeflag == tar.TypeReg && hdr.Size == 0 {
+			hdr.Size = int64(len(body))
+		}
+		require.NoError(t, tw.WriteHeader(hdr))
+		if hdr.Typeflag == tar.TypeReg {
+			_, werr := tw.Write(body[:hdr.Size])
+			require.NoError(t, werr)
+		}
 	}
 	require.NoError(t, tw.Close())
 	require.NoError(t, gz.Close())
 }
 
-func TestAssertArchiveEntriesWithinRoot(t *testing.T) {
-	t.Run("accepts a benign archive", func(t *testing.T) {
+func regHdr(name string) *tar.Header {
+	return &tar.Header{Name: name, Mode: 0o644, Typeflag: tar.TypeReg}
+}
+
+func TestSafeExtractBackup(t *testing.T) {
+	t.Run("extracts a benign archive under the root", func(t *testing.T) {
 		tarFile := filepath.Join(t.TempDir(), "ok.tar.gz")
-		writeGzTarArchive(t, tarFile, "mnt/user/appdata/compose/core.yml", "mnt/user/appdata/x")
-		require.NoError(t, assertArchiveEntriesWithinRoot(context.Background(), tarFile))
+		writeGzTarArchiveHeaders(t, tarFile,
+			regHdr("mnt/user/appdata/compose/core.yml"),
+			regHdr("mnt/user/appdata/x"),
+		)
+		root, cleanup, err := safeExtractBackup(context.Background(), tarFile)
+		require.NoError(t, err)
+		defer cleanup()
+		assert.FileExists(t, filepath.Join(root, "mnt/user/appdata/compose/core.yml"))
+		assert.FileExists(t, filepath.Join(root, "mnt/user/appdata/x"))
 	})
 
-	t.Run("rejects an archive with a traversal entry", func(t *testing.T) {
+	t.Run("rejects a name that traverses out of the root", func(t *testing.T) {
 		tarFile := filepath.Join(t.TempDir(), "evil.tar.gz")
-		writeGzTarArchive(t, tarFile, "good/file.yml", "../../etc/passwd")
-		err := assertArchiveEntriesWithinRoot(context.Background(), tarFile)
+		writeGzTarArchiveHeaders(t, tarFile, regHdr("good/file.yml"), regHdr("../../etc/passwd"))
+		_, _, err := safeExtractBackup(context.Background(), tarFile)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "escapes extraction root")
+	})
+
+	t.Run("rejects an absolute symlink target (write-through escape)", func(t *testing.T) {
+		tarFile := filepath.Join(t.TempDir(), "symlink-abs.tar.gz")
+		writeGzTarArchiveHeaders(t, tarFile,
+			&tar.Header{Name: "compose/evil", Typeflag: tar.TypeSymlink, Linkname: "/etc/cron.d", Mode: 0o777},
+		)
+		_, _, err := safeExtractBackup(context.Background(), tarFile)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "symlink target escapes extraction root")
+	})
+
+	t.Run("rejects a climbing symlink target", func(t *testing.T) {
+		tarFile := filepath.Join(t.TempDir(), "symlink-climb.tar.gz")
+		writeGzTarArchiveHeaders(t, tarFile,
+			&tar.Header{Name: "compose/evil", Typeflag: tar.TypeSymlink, Linkname: "../../../../etc", Mode: 0o777},
+		)
+		_, _, err := safeExtractBackup(context.Background(), tarFile)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "symlink target escapes extraction root")
+	})
+
+	t.Run("rejects a hardlink target that escapes the root", func(t *testing.T) {
+		tarFile := filepath.Join(t.TempDir(), "hardlink.tar.gz")
+		writeGzTarArchiveHeaders(t, tarFile,
+			&tar.Header{Name: "compose/evil", Typeflag: tar.TypeLink, Linkname: "../../../../etc/passwd"},
+		)
+		_, _, err := safeExtractBackup(context.Background(), tarFile)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "hardlink target escapes extraction root")
+	})
+
+	t.Run("allows a within-root symlink", func(t *testing.T) {
+		tarFile := filepath.Join(t.TempDir(), "symlink-ok.tar.gz")
+		writeGzTarArchiveHeaders(t, tarFile,
+			regHdr("compose/real.yml"),
+			&tar.Header{Name: "compose/link.yml", Typeflag: tar.TypeSymlink, Linkname: "real.yml", Mode: 0o777},
+		)
+		root, cleanup, err := safeExtractBackup(context.Background(), tarFile)
+		require.NoError(t, err)
+		defer cleanup()
+		target, lerr := os.Readlink(filepath.Join(root, "compose/link.yml"))
+		require.NoError(t, lerr)
+		assert.Equal(t, "real.yml", target)
+	})
+
+	t.Run("blocks the symlink-then-write-through escape end to end", func(t *testing.T) {
+		// An escaping symlink followed by a file written through it: the symlink
+		// is rejected before creation, so the through-write can never land outside.
+		tarFile := filepath.Join(t.TempDir(), "escape.tar.gz")
+		writeGzTarArchiveHeaders(t, tarFile,
+			&tar.Header{Name: "compose/escape", Typeflag: tar.TypeSymlink, Linkname: "/tmp", Mode: 0o777},
+			regHdr("compose/escape/payload"),
+		)
+		_, _, err := safeExtractBackup(context.Background(), tarFile)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "symlink target escapes extraction root")
 	})
 }
 
@@ -167,6 +212,45 @@ func TestRollbackRemoteCompose(t *testing.T) {
 		err := d.RollbackRemoteCompose(context.Background(), "user@testhost", filepath.Join(base, "other", "compose"), backupPath, deployErr)
 		require.ErrorIs(t, err, ErrRollbackFailed)
 		assert.ErrorContains(t, err, "not found in anchor")
+	})
+
+	t.Run("re-push failing integrity returns ErrRollbackFailed", func(t *testing.T) {
+		// The anchor verifies and extracts fine, but the restored tree's re-push
+		// itself fails the SHA-256 transfer check — rollback must surface that as
+		// ErrRollbackFailed rather than silently trusting a corrupt restore.
+		setupSha256sumShim(t)
+		base := t.TempDir()
+		composeDir := filepath.Join(base, "appdata", "compose")
+		writeMarker(t, composeDir, "core.yml", "good-v1")
+		backupPath := backupComposeDir(t, &DeployOps{}, filepath.Join(base, "backups"), composeDir)
+
+		// SSH shim that corrupts the staged tree after each tar extraction, so the
+		// re-push's integrity verification always fails.
+		dir := t.TempDir()
+		shim := "#!/bin/sh\n" +
+			"while [ $# -gt 0 ]; do\n" +
+			"  case \"$1\" in\n" +
+			"    -o) shift 2 ;;\n" +
+			"    -*) shift ;;\n" +
+			"    *) break ;;\n" +
+			"  esac\n" +
+			"done\n" +
+			"shift\n" +
+			"case \"$*\" in\n" +
+			"  *'-xf -'*)\n" +
+			"    /bin/sh -c \"$*\"\n" +
+			"    tmp=$(echo \"$*\" | sed 's/.*-C \\([^ ]*\\) -xf.*/\\1/')\n" +
+			"    find \"$tmp\" -type f -exec sh -c 'echo tampered >> \"$1\"' _ {} \\;\n" +
+			"    ;;\n" +
+			"  *) exec /bin/sh -c \"$*\" ;;\n" +
+			"esac\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte(shim), 0o755))
+		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+		d := &DeployOps{}
+		err := d.RollbackRemoteCompose(context.Background(), "user@testhost", composeDir, backupPath, deployErr)
+		require.ErrorIs(t, err, ErrRollbackFailed)
+		assert.ErrorContains(t, err, "re-deploy restored compose dir")
 	})
 
 	t.Run("compose up after restore fails returns ErrRollbackFailed", func(t *testing.T) {

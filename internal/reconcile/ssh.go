@@ -99,7 +99,17 @@ func buildTransferChecksums(root string) (string, error) {
 // that lacks it (a minimal busybox without the applet) degrades to the pre-#334
 // behavior: the transfer is not verified. Never hard-fail a host that deployed
 // fine yesterday for lacking coreutils.
+//
+// The host is validated before any ssh exec: this probe is the earliest ssh
+// contact on the deploy path, and TargetHost is re-read from the watched repo
+// after every pull, so an unvalidated host string like `-oProxyCommand=<cmd>`
+// would reach `ssh` as an option and execute on the daemon. An invalid host
+// returns false (no verification) — the caller's subsequent validated ssh call
+// then fails loudly rather than this probe silently launching a poisoned exec.
 func (d *DeployOps) remoteHasSha256sum(ctx context.Context, host string) bool {
+	if err := validateHost(host); err != nil {
+		return false
+	}
 	return sshExecCommand(ctx, host, "command -v sha256sum").Run() == nil
 }
 
@@ -116,9 +126,21 @@ func (d *DeployOps) verifyRemoteTransfer(ctx context.Context, host, stagedDir, m
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%w: %v: %s", ErrTransferIntegrity, err, strings.TrimSpace(stdout.String()+" "+stderr.String()))
+		return fmt.Errorf("%w: %v: %s", ErrTransferIntegrity, err, joinNonEmpty(stdout.String(), stderr.String()))
 	}
 	return nil
+}
+
+// joinNonEmpty trims each part and joins the non-empty ones with a single space,
+// so a blank stdout or stderr leaves no stray separator in the message.
+func joinNonEmpty(parts ...string) string {
+	kept := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, " ")
 }
 
 // hostKeyOptions returns the ssh/scp `-o` flags that enforce the configured
@@ -542,9 +564,12 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 		tarCmd := exec.CommandContext(ctx, "tar", "-C", sourceDir, "-cf", "-", ".")
 		sshCmd := sshExecCommand(ctx, targetHost, fmt.Sprintf("tar -C %s -xf -", shellquote.Join(tmpDir)))
 
-		// Connect tar stdout to ssh stdin
+		// Connect tar stdout to ssh stdin. The remote tmpDir already exists
+		// (mkdir above), so every failure from here on must clean it up or it
+		// orphans an empty staging dir on the remote.
 		pipe, err := tarCmd.StdoutPipe()
 		if err != nil {
+			cleanupTmp("pipe_failed")
 			return fmt.Errorf("create pipe: %w", err)
 		}
 		sshCmd.Stdin = pipe
@@ -555,10 +580,12 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 
 		// Start both commands
 		if err := tarCmd.Start(); err != nil {
+			cleanupTmp("tar_start_failed")
 			return fmt.Errorf("start tar: %w", err)
 		}
 		if err := sshCmd.Start(); err != nil {
 			_ = tarCmd.Process.Kill()
+			cleanupTmp("ssh_start_failed")
 			return fmt.Errorf("start ssh: %w: %s", err, sshStderr.String())
 		}
 

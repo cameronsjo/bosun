@@ -107,6 +107,13 @@ func TestRemoteHasSha256sum(t *testing.T) {
 		assert.True(t, d.remoteHasSha256sum(context.Background(), "user@testhost"))
 	})
 
+	t.Run("false for an option-injection host before any ssh exec", func(t *testing.T) {
+		// No ssh shim: if the probe validated late it would exec ssh with the
+		// poisoned option. validateHost must short-circuit to false first.
+		d := &DeployOps{}
+		assert.False(t, d.remoteHasSha256sum(context.Background(), "-oProxyCommand=touch /tmp/pwned"))
+	})
+
 	t.Run("false when command -v sha256sum fails on the remote", func(t *testing.T) {
 		// SSH shim that reports sha256sum absent, passing every other command through.
 		dir := t.TempDir()

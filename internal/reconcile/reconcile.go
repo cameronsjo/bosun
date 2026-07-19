@@ -1034,9 +1034,10 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	diffFailed := false
 	remoteMode := !local
 	if remoteMode {
-		// Remote deploys return nil DeployResult (no file-level tracking).
-		// Fire all hooks unconditionally — a false-positive restart is better
-		// than stale configs on a FUSE mount. See GitHub #197.
+		// Remote deploys return a DeployResult with a ManagedFiles manifest but
+		// no WrittenFiles (no per-file change tracking over SSH). Fire all hooks
+		// unconditionally — a false-positive restart is better than stale configs
+		// on a FUSE mount. See GitHub #197.
 		logger.Info().Msg("Remote deploy: firing all post-sync hooks (no file-level tracking available)")
 	} else if deployResult != nil && (len(deployResult.WrittenFiles) > 0 || len(deployResult.DeletedFiles) > 0) {
 		// Combine writes and deletions: a commit that both writes an unrelated
@@ -1801,6 +1802,15 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (
 	host := r.getTargetHost(secrets)
 	if host == "" {
 		return nil, fmt.Errorf("no target host specified and could not find unraid_ip in secrets")
+	}
+	// Validate the host BEFORE the first ssh contact (the sha256sum probe below).
+	// TargetHost is re-read from the watched repo after every pull, so a
+	// repo-push attacker controls it; an unvalidated value like
+	// `-oProxyCommand=<cmd>` would reach ssh as an option and execute on the
+	// daemon. Every other ssh/scp boundary validates first; this restores that
+	// invariant for the whole deployRemote scope (probe + all subsequent calls).
+	if err := validateHost(host); err != nil {
+		return nil, fmt.Errorf("invalid SSH host: %w", err)
 	}
 
 	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
