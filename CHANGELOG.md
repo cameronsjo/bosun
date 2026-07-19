@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.38.5](https://github.com/cameronsjo/bosun/compare/v0.38.4...v0.38.5) (2026-07-19)
+
+
+### Bug Fixes
+
+* verify remote transfers before promotion, wire remote rollback, quote ssh argv ([#334](https://github.com/cameronsjo/bosun/issues/334), [#340](https://github.com/cameronsjo/bosun/issues/340), [#437](https://github.com/cameronsjo/bosun/issues/437)) ([8bdc263](https://github.com/cameronsjo/bosun/commit/8bdc2632d8b2a68bd06b0ffc2b1bc6b214811951))
+
 ## [0.38.4](https://github.com/cameronsjo/bosun/compare/v0.38.3...v0.38.4) (2026-07-18)
 
 
