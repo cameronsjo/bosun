@@ -1400,70 +1400,15 @@ func writeTestBackupArchive(t *testing.T, backupDir string, files ...string) {
 	require.NoError(t, err, "tar failed: %s", out)
 }
 
-func TestDeployOps_ComposeUpMultipleWithRollback_NoBackup(t *testing.T) {
-	// When backupPath is empty and compose up fails, should return error mentioning no backup.
-	d := NewDeployOps(false, "")
-
-	// Use a nonexistent compose file to force failure.
-	err := d.ComposeUpMultipleWithRollback(context.Background(), []string{"/nonexistent/compose.yml"}, "")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no backup available")
-}
-
-func TestDeployOps_ComposeUpMultipleWithRollback_NoArchive(t *testing.T) {
-	// Backup dir exists but holds no configs.tar.gz — extraction fails, so this
-	// is "no backup available" (there is no archive to extract).
-	d := NewDeployOps(false, "")
-	backupDir := t.TempDir()
-
-	err := d.ComposeUpMultipleWithRollback(context.Background(), []string{"/nonexistent/compose.yml"}, backupDir)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no backup available")
-}
-
-func TestDeployOps_ComposeUpMultipleWithRollback_NoBackupFiles(t *testing.T) {
-	// A valid archive exists but does not contain the compose file being rolled
-	// back — so after extraction no backup file resolves: "no backup files found".
-	d := NewDeployOps(false, "")
-	tmpDir := t.TempDir()
-
-	// Archive contains some unrelated file, not the compose file under test.
-	other := filepath.Join(tmpDir, "unrelated.yml")
-	require.NoError(t, os.WriteFile(other, []byte("version: '3'"), 0644))
-	backupDir := filepath.Join(tmpDir, "backup")
-	writeTestBackupArchive(t, backupDir, other)
-
-	err := d.ComposeUpMultipleWithRollback(context.Background(), []string{"/nonexistent/compose.yml"}, backupDir)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no backup files found")
-}
-
 func TestDeployOps_VerifyContainerHealth_DryRun(t *testing.T) {
 	d := NewDeployOps(true, "")
 	err := d.VerifyContainerHealth(context.Background(), "/any/compose.yml")
 	assert.NoError(t, err)
 }
 
-func TestDeployOps_ComposeUpWithRollback_DelegatesCorrectly(t *testing.T) {
-	// ComposeUpWithRollback is a thin wrapper, ensure it delegates to ComposeUpMultiple.
-	d := NewDeployOps(false, "")
-
-	// With no backup path and a bad compose file, it should fail with "no backup available".
-	err := d.ComposeUpWithRollback(context.Background(), "/nonexistent/compose.yml", "")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no backup available")
-}
-
 func TestDeployOps_ComposeUpMultiple_DryRun(t *testing.T) {
 	d := NewDeployOps(true, "test-project")
 	err := d.ComposeUpMultiple(context.Background(), []string{"/some/compose.yml"})
-	assert.NoError(t, err)
-}
-
-func TestDeployOps_ComposeUpMultipleWithRollback_SuccessReturnsNil(t *testing.T) {
-	// When compose up succeeds (dry-run mode), should return nil.
-	d := NewDeployOps(true, "test-project")
-	err := d.ComposeUpMultipleWithRollback(context.Background(), []string{"/some/compose.yml"}, "/backup")
 	assert.NoError(t, err)
 }
 
@@ -1542,60 +1487,6 @@ func TestDeployOps_BackupMkdirError(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to create backup directory")
 }
 
-func TestDeployOps_ComposeUpMultipleWithRollbackPaths(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("rollback fails when both deploy and rollback fail", func(t *testing.T) {
-		tmpDir := t.TempDir()
-
-		// Use an invalid compose file that docker compose will reject.
-		composeFile := filepath.Join(tmpDir, "docker-compose.yml")
-		require.NoError(t, os.WriteFile(composeFile, []byte("not valid yaml: [[["), 0644))
-
-		// Backup archive contains the same (invalid) file at its absolute path, so
-		// rollback resolves it from the extracted tree but also fails on it.
-		backupDir := filepath.Join(tmpDir, "backup")
-		writeTestBackupArchive(t, backupDir, composeFile)
-
-		d := &DeployOps{DryRun: false, ProjectName: "rollbacktest"}
-		err := d.ComposeUpMultipleWithRollback(ctx, []string{composeFile}, backupDir)
-		require.Error(t, err)
-		// Both deploy and rollback fail -> ErrRollbackFailed.
-		assert.ErrorIs(t, err, ErrRollbackFailed)
-	})
-
-	t.Run("no backup available returns deployment error", func(t *testing.T) {
-		tmpDir := t.TempDir()
-
-		composeFile := filepath.Join(tmpDir, "docker-compose.yml")
-		require.NoError(t, os.WriteFile(composeFile, []byte("not valid yaml: [[["), 0644))
-
-		d := &DeployOps{DryRun: false, ProjectName: "rollbacktest"}
-		err := d.ComposeUpMultipleWithRollback(ctx, []string{composeFile}, "")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "no backup available for rollback")
-	})
-
-	t.Run("no backup files found returns deployment error", func(t *testing.T) {
-		tmpDir := t.TempDir()
-
-		composeFile := filepath.Join(tmpDir, "docker-compose.yml")
-		require.NoError(t, os.WriteFile(composeFile, []byte("not valid yaml: [[["), 0644))
-
-		// Archive exists and is valid, but holds an unrelated file — the compose
-		// file under rollback does not resolve inside it.
-		other := filepath.Join(tmpDir, "unrelated.yml")
-		require.NoError(t, os.WriteFile(other, []byte("version: '3'"), 0644))
-		backupDir := filepath.Join(tmpDir, "backup")
-		writeTestBackupArchive(t, backupDir, other)
-
-		d := &DeployOps{DryRun: false, ProjectName: "rollbacktest"}
-		err := d.ComposeUpMultipleWithRollback(ctx, []string{composeFile}, backupDir)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "no backup files found for rollback")
-	})
-}
-
 func TestErrComposeUnhealthy_SentinelBehavior(t *testing.T) {
 	t.Run("error wrapping preserves sentinel", func(t *testing.T) {
 		err := fmt.Errorf("%w: obsidian, mealie", ErrComposeUnhealthy)
@@ -1657,62 +1548,6 @@ func TestDeployOps_DeployLocalStandardMode(t *testing.T) {
 		err := d.DeployLocal(cancelledCtx, sourceDir, targetDir, nil, nil)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, context.Canceled)
-	})
-
-	t.Run("rollback decision with injected compose errors", func(t *testing.T) {
-		tests := []struct {
-			name           string
-			composeErr     error
-			wantErr        error
-			wantNoRollback bool // true if rollback should be skipped
-		}{
-			{
-				name:           "ErrComposeUnhealthy skips rollback",
-				composeErr:     fmt.Errorf("%w: obsidian", ErrComposeUnhealthy),
-				wantErr:        ErrComposeUnhealthy,
-				wantNoRollback: true,
-			},
-			{
-				name:           "generic error triggers rollback",
-				composeErr:     fmt.Errorf("compose up failed: exit code 1"),
-				wantErr:        ErrRollbackFailed,
-				wantNoRollback: false,
-			},
-		}
-
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				tmpDir := t.TempDir()
-				// Invalid compose content so the docker rollback (run directly,
-				// not via composeUpFn) fails -> ErrRollbackFailed. The deploy
-				// failure itself comes from the injected composeUpFn.
-				composeFile := filepath.Join(tmpDir, "docker-compose.yml")
-				require.NoError(t, os.WriteFile(composeFile, []byte("not valid yaml: [[["), 0644))
-
-				// Archive the file at its absolute path so rollback resolves it
-				// from the extracted tree (#332/#335).
-				backupDir := filepath.Join(tmpDir, "backup")
-				writeTestBackupArchive(t, backupDir, composeFile)
-
-				d := &DeployOps{
-					DryRun:      false,
-					ProjectName: "rollbacktest",
-					composeUpFn: func(_ context.Context, _ []string) error {
-						return tt.composeErr
-					},
-				}
-
-				err := d.ComposeUpMultipleWithRollback(ctx, []string{composeFile}, backupDir)
-				require.Error(t, err)
-				assert.ErrorIs(t, err, tt.wantErr)
-
-				if tt.wantNoRollback {
-					// Should NOT contain rollback-related error text.
-					assert.NotErrorIs(t, err, ErrRollbackFailed)
-					assert.NotErrorIs(t, err, ErrRollbackSucceeded)
-				}
-			})
-		}
 	})
 
 	t.Run("content hash mode MkdirAll error", func(t *testing.T) {

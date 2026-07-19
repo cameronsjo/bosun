@@ -1906,6 +1906,7 @@ func ConfigFromEnv() *Config {
 		rcfg.HookSettleDelay.SetFromFile(projectCfg.HookSettleDelay())
 		rcfg.DeployPaths.SetFromFile(projectCfg.DeployPaths())
 		rcfg.CriticalContainers.SetFromFile(projectCfg.CriticalContainers())
+		rcfg.HealthGateScope = projectCfg.HealthGateScope()
 
 		// Load targets from project config; BOSUN_TARGETS env var (parsed above) takes precedence.
 		// Skip if env explicitly set targets (even to empty — that's an intentional override).
@@ -2022,6 +2023,13 @@ func ConfigFromEnv() *Config {
 			rcfg.HealthGateTimeout = d
 		} else {
 			log.Warn().Str("value", v).Msg("Failed to parse BOSUN_HEALTH_GATE_TIMEOUT, ignoring")
+		}
+	}
+	if v := os.Getenv("BOSUN_HEALTH_GATE_SCOPE"); v != "" {
+		if scope, err := reconcile.ResolveHealthGateScope(v); err == nil {
+			rcfg.HealthGateScope = scope
+		} else {
+			log.Warn().Err(err).Str("value", v).Msg("Invalid BOSUN_HEALTH_GATE_SCOPE, ignoring")
 		}
 	}
 

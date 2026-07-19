@@ -29,9 +29,9 @@ type DeployOps struct {
 	// Zero means use DefaultComposeUpTimeout.
 	ComposeUpTimeout time.Duration
 
-	// composeUpFn overrides the compose-up call in ComposeUpMultipleWithRollback.
-	// Defaults to ComposeUpMultiple when nil. Exposed for testing the rollback
-	// decision logic without requiring Docker.
+	// composeUpFn overrides the per-file compose-up call in ComposeUpIsolated.
+	// Defaults to ComposeUpMultiple when nil. Exposed for testing the isolated
+	// deploy/rollback decision logic without requiring Docker.
 	composeUpFn func(ctx context.Context, files []string) error
 }
 

@@ -150,67 +150,6 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 	return nil
 }
 
-// ComposeUpWithRollback runs docker compose up and rolls back on failure.
-// backupPath should contain the previous config files for rollback.
-// Returns:
-//   - nil on success
-//   - ErrRollbackSucceeded wrapped with deployment error if rollback succeeded
-//   - ErrRollbackFailed wrapped with both errors if rollback also failed
-//   - Original error if no backup available
-func (d *DeployOps) ComposeUpWithRollback(ctx context.Context, composeFile, backupPath string) error {
-	return d.ComposeUpMultipleWithRollback(ctx, []string{composeFile}, backupPath)
-}
-
-// ComposeUpMultipleWithRollback runs docker compose up for multiple files and rolls back on failure.
-// backupPath should contain the previous config files for rollback.
-// Returns:
-//   - nil on success
-//   - ErrRollbackSucceeded wrapped with deployment error if rollback succeeded
-//   - ErrRollbackFailed wrapped with both errors if rollback also failed
-//   - Original error if no backup available
-func (d *DeployOps) ComposeUpMultipleWithRollback(ctx context.Context, composeFiles []string, backupPath string) error {
-	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
-
-	upFn := d.composeUpFn
-	if upFn == nil {
-		upFn = d.ComposeUpMultiple
-	}
-
-	deployErr := upFn(ctx, composeFiles)
-	if deployErr == nil {
-		return nil
-	}
-
-	// Unhealthy containers are recoverable — skip rollback, return as warning.
-	if errors.Is(deployErr, ErrComposeUnhealthy) {
-		logger.Warn().
-			Err(deployErr).
-			Msg("Compose up completed with unhealthy containers, skipping rollback")
-		return deployErr
-	}
-
-	// Compose failed - attempt rollback if backup exists.
-	logger.Warn().
-		Err(deployErr).
-		Str(log.FieldPath, backupPath).
-		Msg("Deployment failed, attempting rollback")
-
-	rollbackErr := d.RollbackFromBackup(ctx, composeFiles, backupPath)
-	if rollbackErr == nil {
-		// Rollback succeeded - return distinguishable error
-		return fmt.Errorf("%w: %v", ErrRollbackSucceeded, deployErr)
-	}
-
-	if errors.Is(rollbackErr, errRollbackNotAttempted) {
-		// No backup available or no matching backup files — rollback was never
-		// attempted, so this is not the "both failed" critical case.
-		return fmt.Errorf("deployment failed (%v): %w", rollbackErr, deployErr)
-	}
-
-	// Both deployment and rollback failed - critical state.
-	return fmt.Errorf("%w: deployment error: %v, rollback error: %v", ErrRollbackFailed, deployErr, rollbackErr)
-}
-
 // errRollbackNotAttempted marks a RollbackFromBackup failure that occurred
 // before any rollback command ran (no backup path, no archive, or no matching
 // backup files) — distinct from the rollback command itself failing.

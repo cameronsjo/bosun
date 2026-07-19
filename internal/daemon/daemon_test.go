@@ -1320,6 +1320,48 @@ func TestConfigFromEnv_HealthGateTimeout(t *testing.T) {
 	})
 }
 
+func TestConfigFromEnv_HealthGateScope(t *testing.T) {
+	t.Run("valid value overrides", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_GATE_SCOPE", "declared")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.HealthGateScope != "declared" {
+			t.Errorf("HealthGateScope = %q, want declared", cfg.ReconcileConfig.HealthGateScope)
+		}
+	})
+
+	t.Run("off value overrides", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_GATE_SCOPE", "off")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.HealthGateScope != "off" {
+			t.Errorf("HealthGateScope = %q, want off", cfg.ReconcileConfig.HealthGateScope)
+		}
+	})
+
+	t.Run("invalid value warns and is ignored", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_GATE_SCOPE", "bogus")
+
+		cfg := ConfigFromEnv()
+
+		// Invalid env value is dropped, leaving the (empty) default which resolves
+		// to critical at gate time.
+		if cfg.ReconcileConfig.HealthGateScope != "" {
+			t.Errorf("HealthGateScope = %q, want empty (invalid ignored)", cfg.ReconcileConfig.HealthGateScope)
+		}
+	})
+
+	t.Run("unset leaves empty", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.HealthGateScope != "" {
+			t.Errorf("HealthGateScope = %q, want empty (resolves to critical)", cfg.ReconcileConfig.HealthGateScope)
+		}
+	})
+}
+
 func TestConfigFromEnv_ContentHashSync(t *testing.T) {
 	t.Run("default true", func(t *testing.T) {
 		cfg := ConfigFromEnv()
