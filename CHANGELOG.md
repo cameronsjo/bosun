@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.0](https://github.com/cameronsjo/bosun/compare/v0.38.5...v0.39.0) (2026-07-19)
+
+
+### Features
+
+* three-way health_gate_scope (critical|declared|off) with declared-service rollback ([#339](https://github.com/cameronsjo/bosun/issues/339)) ([fa0272f](https://github.com/cameronsjo/bosun/commit/fa0272fdfc4dba434c25e63ecd4c1a83cfec23d3))
+
+
+### Bug Fixes
+
+* record deploy success only after health verification, local-gated ([#336](https://github.com/cameronsjo/bosun/issues/336)) ([c54f051](https://github.com/cameronsjo/bosun/commit/c54f051d04623318b99778d6ff27543b9d01fd01))
+
 ## [0.38.5](https://github.com/cameronsjo/bosun/compare/v0.38.4...v0.38.5) (2026-07-19)
 
 
