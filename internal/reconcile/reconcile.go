@@ -749,7 +749,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	// exemption here (contrast with the general verifyPostDeploy check
 	// below, which does exempt pre-existing casualties, #392).
 	_, otelHealthGateSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.health_gate")
-	rolledBack, healthGateErr := r.runHealthGate(ctx, state, localDeploy)
+	rolledBack, healthGateErr := r.runHealthGate(ctx, state, localDeploy, deployResult)
 	if healthGateErr != nil {
 		telemetry.SpanError(otelHealthGateSpan, healthGateErr)
 	} else {
@@ -1188,14 +1188,15 @@ func ResolveHealthGateScope(scope string) (string, error) {
 //   - "off": no gate.
 //
 // Skipped regardless of scope when: DryRun, remote deploy (Docker API is
-// local-only), or no Docker client. On failure it triggers rollback and sends
+// local-only), or no Docker client. On failure it triggers a full managed-tree
+// rollback (#445 — deployResult.ManagedFiles drives the restore set) and sends
 // throttled failure + rollback alerts.
 //
 // runHealthGate returns (rolledBack, err). rolledBack is true only when a
 // rollback was actually attempted (regardless of whether the rollback itself
 // succeeded) — the caller uses it to decide whether post-sync hooks are safe to
 // run against the working tree (#392 review follow-up, see the call site in Run).
-func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState, local bool) (rolledBack bool, err error) {
+func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState, local bool, deployResult *DeployResult) (rolledBack bool, err error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
 	scope, scopeErr := ResolveHealthGateScope(r.config.HealthGateScope)
@@ -1265,23 +1266,29 @@ func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState, loca
 		Str("scope", scope).
 		Msg("Health gate failed. Triggering rollback")
 
-	// Trigger rollback. The health gate runs after `docker compose up -d`
-	// already exited 0 (against now-unhealthy containers), so re-running compose
-	// up here would be a silent no-op — restore the backup directly.
+	// Trigger a FULL managed-tree rollback (#445). The health gate runs after
+	// `docker compose up -d` already exited 0 (against now-unhealthy containers),
+	// so re-running compose up here would be a silent no-op — restore the backup
+	// directly. Unlike the old compose-only rollback, this reverts the deploy's
+	// appdata config writes too (from deployResult.ManagedFiles), so hooks keyed
+	// on the new commit's files no longer run against a hybrid tree — but hooks
+	// stay skipped when a rollback ran (the caller's rolledBack gate) as a
+	// belt-and-suspenders against any residual mismatch.
 	//
-	// Scope note: RollbackFromBackup restores only the compose files
-	// (r.lastComposeFiles), not the full WrittenFiles breadth a normal deploy
-	// writes (appdata configs, etc.) -- so a rollback leaves a hybrid tree: old
-	// compose files paired with whatever non-compose config the failed deploy
-	// already wrote. That's exactly why hooks are skipped by the caller when a
-	// rollback runs: firing a hook keyed on the NEW commit's WrittenFiles against
-	// that hybrid tree would restart a container against a mismatched
-	// compose/config combination. Widening rollback to cover the full
-	// WrittenFiles breadth is tracked separately -- not fixed here.
+	// DeleteMissing (remove files the failed deploy ADDED) is enabled only
+	// against a fresh anchor — this deploy's own pre-deploy backup — never a
+	// stale fallback anchor, which predates files a later legitimate deploy added.
+	set := r.buildRollbackSet(deployResult)
 	var rollbackErr error
-	if r.lastBackupPath != "" && len(r.lastComposeFiles) > 0 {
+	// The rollback TRIGGER stays compose-driven (r.lastComposeFiles present),
+	// unchanged from the compose-only era: an appdata-only deploy with no compose
+	// files does not roll back, so a chronically-unhealthy container can't
+	// permanently strand its post-sync hooks (#392/#364). #445 widens only the
+	// restore SET — when a rollback DOES fire, it reverts the full managed tree
+	// (appdata configs too), not just the compose files.
+	if r.lastBackupPath != "" && len(set.ComposeFiles) > 0 {
 		rolledBack = true
-		rollbackErr = r.deploy.RollbackFromBackup(ctx, r.lastComposeFiles, r.lastBackupPath)
+		rollbackErr = r.deploy.RollbackFromBackupSet(ctx, set, r.lastBackupPath)
 		if rollbackErr != nil {
 			logger.Error().Err(rollbackErr).Msg("Rollback after health gate failure also failed")
 		}
@@ -1301,6 +1308,27 @@ func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState, loca
 		r.sendThrottledFailureAlert(ctx, state, gateErr.Error())
 	}
 	return rolledBack, gateErr
+}
+
+// buildRollbackSet assembles the full managed-tree restore set for a health-gate
+// rollback: every managed file this deploy wrote (mapped from its appdata-
+// relative ManagedFiles entry to the live absolute path), the live compose files
+// to re-apply last, and whether deleting backup-absent files is safe. Deletion
+// is gated on a fresh anchor — this deploy's own pre-deploy backup — so a stale
+// fallback anchor never triggers destructive pruning.
+func (r *Reconciler) buildRollbackSet(deployResult *DeployResult) RollbackSet {
+	var files []string
+	if deployResult != nil {
+		appdata := r.config.LocalAppdataPath
+		for _, m := range deployResult.ManagedFiles {
+			files = append(files, filepath.Join(appdata, filepath.FromSlash(m)))
+		}
+	}
+	return RollbackSet{
+		Files:         files,
+		ComposeFiles:  r.lastComposeFiles,
+		DeleteMissing: r.lastBackupPath != "" && backupIsFresh(r.lastBackupPath, r.runStartTime),
+	}
 }
 
 // checkDeclaredHealth polls all declared services and returns a gate error only
