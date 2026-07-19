@@ -50,12 +50,22 @@ func gateScopeReconciler(
 	containerListFn func(ctx context.Context, opts client.ContainerListOptions) (client.ContainerListResult, error),
 ) (*Reconciler, *mockAlertSender, string, *bool) {
 	t.Helper()
+	// RollbackFromBackupSet shells out to `docker` for the final compose-up; stub
+	// it so a rollback that fires does not touch a real docker binary.
+	setupDockerShim(t, 0)
 	tmp := t.TempDir()
 	stateFile := filepath.Join(tmp, "state.json")
 	repoDir := filepath.Join(tmp, "repo")
 	appdata := filepath.Join(tmp, "appdata")
 	require.NoError(t, os.MkdirAll(repoDir, 0o755))
 	require.NoError(t, os.MkdirAll(appdata, 0o755))
+	// Seed the live appdata destination that mirrors the staged stub compose so
+	// the pre-deploy backup captures real content and records a genuine rollback
+	// anchor. An empty appdata now yields no anchor (#360), which would disable
+	// the rollback trigger this harness exercises.
+	require.NoError(t, os.MkdirAll(filepath.Join(appdata, "compose"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(appdata, "compose", "stub.yml"),
+		[]byte("services:\n  stub:\n    image: alpine:old\n"), 0o644))
 	require.NoError(t, SaveState(stateFile, &DeployState{SchemaVersion: 2, LastDeployedCommit: "prevcommit"}))
 
 	restartCalled := false

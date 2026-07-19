@@ -193,7 +193,7 @@ func TestDeployOps_Backup(t *testing.T) {
 		assert.FileExists(t, tarFile)
 	})
 
-	t.Run("backup non-existent paths returns name", func(t *testing.T) {
+	t.Run("backup non-existent paths returns no anchor", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		ctx := context.Background()
 
@@ -202,11 +202,20 @@ func TestDeployOps_Backup(t *testing.T) {
 		deploy := NewDeployOps(false, "")
 		backupName, err := deploy.Backup(ctx, backupDir, []string{"/non/existent/path"})
 
+		// No live path existed, so there is no valid rollback anchor. Backup must
+		// NOT report a content-free success (#360): empty name, no error, and no
+		// empty backup dir left behind to masquerade as an anchor.
 		require.NoError(t, err)
-		assert.NotEmpty(t, backupName)
+		assert.Empty(t, backupName, "no archive was written, so no anchor name is returned")
+		entries, err := os.ReadDir(backupDir)
+		if err == nil {
+			for _, e := range entries {
+				assert.NotContains(t, e.Name(), "backup-", "the empty backup dir is removed, not left as litter")
+			}
+		}
 	})
 
-	t.Run("backup empty paths list", func(t *testing.T) {
+	t.Run("backup empty paths list returns no anchor", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		ctx := context.Background()
 
@@ -216,23 +225,45 @@ func TestDeployOps_Backup(t *testing.T) {
 		backupName, err := deploy.Backup(ctx, backupDir, []string{})
 
 		require.NoError(t, err)
-		assert.NotEmpty(t, backupName)
+		assert.Empty(t, backupName, "an empty paths list creates no anchor (#360)")
+		entries, err := os.ReadDir(backupDir)
+		if err == nil {
+			for _, e := range entries {
+				assert.NotContains(t, e.Name(), "backup-", "no empty backup dir is left behind")
+			}
+		}
 	})
+}
+
+// makeBackupDir creates a backup-<name> dir under parent. With withArchive it
+// writes a REAL configs.tar.gz (via writeTestBackupArchive, which skips the test
+// when tar is unavailable) so CleanupBackups' VerifyBackup accepts it as valid;
+// without, the dir is corrupt/partial (no archive) and must not count toward
+// retention.
+func makeBackupDir(t *testing.T, parent, name string, withArchive bool) string {
+	t.Helper()
+	dir := filepath.Join(parent, name)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	if withArchive {
+		src := filepath.Join(t.TempDir(), "seed.yml")
+		require.NoError(t, os.WriteFile(src, []byte("seed"), 0o644))
+		writeTestBackupArchive(t, dir, src)
+	}
+	return dir
 }
 
 func TestDeployOps_CleanupBackups(t *testing.T) {
 	t.Run("cleanup old backups", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		// Create backup directories
+		// Create valid backup directories (each with a real archive).
 		for i := 1; i <= 10; i++ {
 			timestamp := time.Now().Add(time.Duration(-i) * time.Hour).Format("20060102-150405")
-			backupDir := filepath.Join(tmpDir, "backup-"+timestamp)
-			require.NoError(t, os.MkdirAll(backupDir, 0755))
+			makeBackupDir(t, tmpDir, "backup-"+timestamp, true)
 		}
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.CleanupBackups(tmpDir, 5)
+		err := deploy.CleanupBackups(context.Background(), tmpDir, 5)
 
 		require.NoError(t, err)
 
@@ -252,15 +283,14 @@ func TestDeployOps_CleanupBackups(t *testing.T) {
 	t.Run("cleanup with fewer backups than keep", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		// Create only 3 backup directories
+		// Create only 3 valid backup directories
 		for i := 1; i <= 3; i++ {
 			timestamp := time.Now().Add(time.Duration(-i) * time.Hour).Format("20060102-150405")
-			backupDir := filepath.Join(tmpDir, "backup-"+timestamp)
-			require.NoError(t, os.MkdirAll(backupDir, 0755))
+			makeBackupDir(t, tmpDir, "backup-"+timestamp, true)
 		}
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.CleanupBackups(tmpDir, 5)
+		err := deploy.CleanupBackups(context.Background(), tmpDir, 5)
 
 		require.NoError(t, err)
 
@@ -272,7 +302,7 @@ func TestDeployOps_CleanupBackups(t *testing.T) {
 
 	t.Run("cleanup non-existent directory", func(t *testing.T) {
 		deploy := NewDeployOps(false, "")
-		err := deploy.CleanupBackups("/non/existent/dir", 5)
+		err := deploy.CleanupBackups(context.Background(), "/non/existent/dir", 5)
 
 		// Should not error
 		require.NoError(t, err)
@@ -281,23 +311,47 @@ func TestDeployOps_CleanupBackups(t *testing.T) {
 	t.Run("cleanup ignores non-backup directories", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		// Create backup directories
+		// Create valid backup directories
 		for i := 1; i <= 3; i++ {
 			timestamp := time.Now().Add(time.Duration(-i) * time.Hour).Format("20060102-150405")
-			backupDir := filepath.Join(tmpDir, "backup-"+timestamp)
-			require.NoError(t, os.MkdirAll(backupDir, 0755))
+			makeBackupDir(t, tmpDir, "backup-"+timestamp, true)
 		}
 
 		// Create non-backup directory
 		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "other-dir"), 0755))
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.CleanupBackups(tmpDir, 2)
+		err := deploy.CleanupBackups(context.Background(), tmpDir, 2)
 
 		require.NoError(t, err)
 
 		// Non-backup directory should still exist
 		assert.DirExists(t, filepath.Join(tmpDir, "other-dir"))
+	})
+
+	t.Run("corrupt dir does not evict a good backup", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Three VALID backups (oldest → newest) plus a NEWER corrupt dir whose
+		// archive is NON-EMPTY but not a real tar.gz — exactly the case a mere
+		// existence check would wrongly count as good; VerifyBackup rejects it.
+		good1 := makeBackupDir(t, tmpDir, "backup-20240101-000001", true)
+		good2 := makeBackupDir(t, tmpDir, "backup-20240101-000002", true)
+		good3 := makeBackupDir(t, tmpDir, "backup-20240101-000003", true)
+		corrupt := filepath.Join(tmpDir, "backup-20240101-000004")
+		require.NoError(t, os.MkdirAll(corrupt, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(corrupt, "configs.tar.gz"), []byte("not-a-real-tar"), 0o644))
+
+		deploy := NewDeployOps(false, "")
+		// keep=3: the old counting treated all 4 dirs as backups and evicted the
+		// OLDEST (good1) to keep 3, retaining the corrupt one. VerifyBackup-gated
+		// retention counts only the three good ones — all survive, corrupt goes.
+		require.NoError(t, deploy.CleanupBackups(context.Background(), tmpDir, 3))
+
+		assert.DirExists(t, good1, "the oldest GOOD backup is not evicted by a corrupt dir (#353)")
+		assert.DirExists(t, good2)
+		assert.DirExists(t, good3)
+		assert.NoDirExists(t, corrupt, "the corrupt (non-empty but invalid) dir is removed, not retained")
 	})
 }
 
@@ -1447,27 +1501,62 @@ func TestDeployOps_DeployLocal_ContentHashSync_Stale(t *testing.T) {
 
 func TestDeployOps_CleanupBackups_NonExistentDir(t *testing.T) {
 	d := NewDeployOps(false, "")
-	err := d.CleanupBackups("/nonexistent/backup/dir", 5)
+	err := d.CleanupBackups(context.Background(), "/nonexistent/backup/dir", 5)
 	assert.NoError(t, err) // Non-existent dir returns nil.
 }
 
 func TestDeployOps_CleanupBackups_RemovesOldest(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create 5 backup directories.
+	// Create 5 valid backup directories.
 	for i := 0; i < 5; i++ {
 		name := fmt.Sprintf("backup-2024-01-0%d", i+1)
-		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, name), 0755))
+		makeBackupDir(t, tmpDir, name, true)
 	}
 
 	d := NewDeployOps(false, "")
-	err := d.CleanupBackups(tmpDir, 3)
+	err := d.CleanupBackups(context.Background(), tmpDir, 3)
 	require.NoError(t, err)
 
 	// Should have removed 2 oldest, kept 3 newest.
 	entries, err := os.ReadDir(tmpDir)
 	require.NoError(t, err)
 	assert.Len(t, entries, 3)
+}
+
+// TestDeployOps_CleanupBackups_InvalidRemovalError covers the fault path where a
+// corrupt dir cannot be removed: a read-only parent makes os.RemoveAll fail, and
+// the error surfaces rather than being swallowed.
+func TestDeployOps_CleanupBackups_InvalidRemovalError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses directory permission checks")
+	}
+	tmpDir := t.TempDir()
+	makeBackupDir(t, tmpDir, "backup-20240101-000001", false) // invalid: no archive
+
+	// Read-only parent: RemoveAll cannot unlink the corrupt dir.
+	require.NoError(t, os.Chmod(tmpDir, 0o555))
+	defer func() { _ = os.Chmod(tmpDir, 0o755) }() // restore for t.TempDir cleanup
+
+	d := NewDeployOps(false, "")
+	err := d.CleanupBackups(context.Background(), tmpDir, 3)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "corrupt backup", "the removal failure surfaces")
+}
+
+// TestDeployOps_CleanupBackups_ContextCancelled covers the cancellation guard: a
+// cancelled context aborts the per-candidate verification loop rather than
+// running VerifyBackup on every dir.
+func TestDeployOps_CleanupBackups_ContextCancelled(t *testing.T) {
+	tmpDir := t.TempDir()
+	makeBackupDir(t, tmpDir, "backup-20240101-000001", true) // a candidate to iterate
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before the loop reaches the ctx.Err() check
+
+	d := NewDeployOps(false, "")
+	err := d.CleanupBackups(ctx, tmpDir, 3)
+	require.ErrorIs(t, err, context.Canceled)
 }
 
 func TestDeployOps_BackupMkdirError(t *testing.T) {

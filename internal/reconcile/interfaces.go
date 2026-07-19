@@ -65,8 +65,8 @@ type Deployer interface {
 	// For remote, host should be "user@host".
 	SignalContainer(ctx context.Context, host, containerName, signal string) error
 
-	// CleanupBackups removes old backups, keeping only the most recent N.
-	CleanupBackups(backupDir string, keep int) error
+	// CleanupBackups removes old backups, keeping only the most recent N valid ones.
+	CleanupBackups(ctx context.Context, backupDir string, keep int) error
 }
 
 // Compile-time interface verification.
