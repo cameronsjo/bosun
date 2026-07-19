@@ -1623,12 +1623,8 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 
 	// Confine include/fromJsonFile reads. An explicit override is resolved here;
 	// otherwise RenderDirectory defaults to <infraDir>/templates.
-	if r.config.TemplateIncludeDir != "" {
-		includeDir := r.config.TemplateIncludeDir
-		if !filepath.IsAbs(includeDir) {
-			includeDir = filepath.Join(infraDir, includeDir)
-		}
-		r.template.IncludeDir = includeDir
+	if dir := resolveTemplateIncludeDir(infraDir, r.config.TemplateIncludeDir); dir != "" {
+		r.template.IncludeDir = dir
 	}
 
 	if err := r.template.RenderDirectory(ctx, infraDir, r.config.StagingDir, r.config.InfraSubDir); err != nil {

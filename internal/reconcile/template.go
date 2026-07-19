@@ -135,6 +135,20 @@ func validateIncludePath(path, includeDir string) error {
 	return ensureWithin(realRoot, realPath, path, includeDir)
 }
 
+// resolveTemplateIncludeDir resolves a configured include-dir override against
+// the infra directory: an absolute value is used as-is, a relative value is
+// joined to infraDir. An empty configured value yields "" — the caller then
+// lets RenderDirectory apply the <infraDir>/templates default.
+func resolveTemplateIncludeDir(infraDir, configured string) string {
+	if configured == "" {
+		return ""
+	}
+	if filepath.IsAbs(configured) {
+		return configured
+	}
+	return filepath.Join(infraDir, configured)
+}
+
 // ensureWithin reports whether target is contained in root, naming the allowed
 // root in the error. A Rel error, a ".."-prefixed result, or an absolute result
 // all mean "outside" and fail closed.

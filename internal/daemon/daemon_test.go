@@ -1362,6 +1362,63 @@ func TestConfigFromEnv_HealthGateScope(t *testing.T) {
 	})
 }
 
+func TestConfigFromEnv_MetricsAuth(t *testing.T) {
+	t.Run("metrics token and opt-out read from env", func(t *testing.T) {
+		t.Setenv("BOSUN_METRICS_TOKEN", "read-scope")
+		t.Setenv("BOSUN_ALLOW_UNAUTHENTICATED_METRICS", "true")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.MetricsToken != "read-scope" {
+			t.Errorf("MetricsToken = %q, want read-scope", cfg.MetricsToken)
+		}
+		if !cfg.AllowUnauthenticatedMetrics {
+			t.Error("AllowUnauthenticatedMetrics = false, want true")
+		}
+	})
+
+	t.Run("opt-out uses strict lowercase true", func(t *testing.T) {
+		t.Setenv("BOSUN_ALLOW_UNAUTHENTICATED_METRICS", "TRUE")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.AllowUnauthenticatedMetrics {
+			t.Error("AllowUnauthenticatedMetrics = true for \"TRUE\", want false (strict match)")
+		}
+	})
+
+	t.Run("unset leaves fail-closed defaults", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if cfg.MetricsToken != "" {
+			t.Errorf("MetricsToken = %q, want empty", cfg.MetricsToken)
+		}
+		if cfg.AllowUnauthenticatedMetrics {
+			t.Error("AllowUnauthenticatedMetrics = true, want false")
+		}
+	})
+}
+
+func TestConfigFromEnv_TemplateIncludeDir(t *testing.T) {
+	t.Run("env overrides", func(t *testing.T) {
+		t.Setenv("BOSUN_TEMPLATE_INCLUDE_DIR", "shared/includes")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.TemplateIncludeDir != "shared/includes" {
+			t.Errorf("TemplateIncludeDir = %q, want shared/includes", cfg.ReconcileConfig.TemplateIncludeDir)
+		}
+	})
+
+	t.Run("unset leaves empty (defaults to templates/ at render time)", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+
+		if cfg.ReconcileConfig.TemplateIncludeDir != "" {
+			t.Errorf("TemplateIncludeDir = %q, want empty", cfg.ReconcileConfig.TemplateIncludeDir)
+		}
+	})
+}
+
 func TestConfigFromEnv_ContentHashSync(t *testing.T) {
 	t.Run("default true", func(t *testing.T) {
 		cfg := ConfigFromEnv()
