@@ -2736,8 +2736,15 @@ func TestCreateBackup(t *testing.T) {
 		stagingDir := filepath.Join(tmpDir, "staging")
 		appdataDir := filepath.Join(tmpDir, "appdata")
 		require.NoError(t, os.MkdirAll(appdataDir, 0755))
-		// Create staging structure so discoverDeployTargets can scan it.
+		// Create staging structure so discoverDeployTargets can scan it, with a
+		// rendered file whose live appdata destination exists — expandAppdata maps
+		// staging appdata/traefik -> the appdata/traefik target, so the backup
+		// captures appdataDir/traefik/traefik.yml and records a real anchor. Empty
+		// appdata would now yield no anchor (#360).
 		require.NoError(t, os.MkdirAll(filepath.Join(stagingDir, "appdata", "traefik"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(stagingDir, "appdata", "traefik", "traefik.yml"), []byte("staged"), 0644))
+		require.NoError(t, os.MkdirAll(filepath.Join(appdataDir, "traefik"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(appdataDir, "traefik", "traefik.yml"), []byte("live"), 0644))
 
 		cfg := &Config{
 			StagingDir:       stagingDir,
@@ -2748,7 +2755,7 @@ func TestCreateBackup(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		// Backup will succeed (no files to back up returns name, no error)
+		// Backup captures the live traefik config, recording a real rollback anchor.
 		err := r.createBackup(context.Background(), nil, true)
 		require.NoError(t, err)
 		assert.NotEmpty(t, r.lastBackupPath)
@@ -4361,6 +4368,8 @@ func TestRunHealthGate_FailsWhenUnhealthy(t *testing.T) {
 // combination, so hooks must be skipped in that case (contrast with
 // TestRun_HealthGateFailureWithoutRollback_RunsPostSyncHooks below).
 func TestRun_HealthGateFailureWithRollback_SkipsPostSyncHooks(t *testing.T) {
+	// RollbackFromBackupSet shells out to `docker` for the final compose-up.
+	setupDockerShim(t, 0)
 	tmpDir := t.TempDir()
 	lockFile := filepath.Join(tmpDir, "reconcile.lock")
 	stateFile := filepath.Join(tmpDir, "state.json")
@@ -4370,6 +4379,13 @@ func TestRun_HealthGateFailureWithRollback_SkipsPostSyncHooks(t *testing.T) {
 
 	require.NoError(t, os.MkdirAll(repoDir, 0755))
 	require.NoError(t, os.MkdirAll(appdataDir, 0755))
+	// Seed the live appdata destination mirroring the staged stub compose so the
+	// pre-deploy backup captures real content and records a genuine rollback
+	// anchor — an empty appdata yields no anchor now (#360), disabling the
+	// rollback trigger this test relies on.
+	require.NoError(t, os.MkdirAll(filepath.Join(appdataDir, "compose"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(appdataDir, "compose", "stub.yml"),
+		[]byte("services:\n  stub:\n    image: alpine:old\n"), 0644))
 
 	// Seed a prior deploy: hooks skip entirely on an empty previous commit,
 	// and a real "previous commit" is needed to prove whether hooks ran

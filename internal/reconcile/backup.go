@@ -277,8 +277,16 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 	}
 
 	if len(existingPaths) == 0 {
-		logger.Debug().Str(log.FieldPath, backupPath).Msg("No existing paths to backup")
-		return backupName, nil
+		// No live paths existed to back up (e.g. a fresh host's first deploy). The
+		// MkdirAll'd dir holds no archive, so it is NOT a valid rollback anchor —
+		// returning it as one reported "Backup saved" and let a later rollback
+		// trust an empty dir, skipping verification entirely (#360). Remove the
+		// empty dir so it cannot masquerade as a backup, and signal "nothing
+		// backed up" with an empty name so the caller records no anchor.
+		removeFailedBackup()
+		logger.Warn().Str(log.FieldPath, backupPath).
+			Msg("No existing paths to back up; no rollback anchor created")
+		return "", nil
 	}
 
 	// Write the archive with Go's archive/tar directly. The previous external
@@ -628,7 +636,24 @@ func (d *DeployOps) LatestVerifiedBackup(ctx context.Context, backupDir string) 
 	return "", fmt.Errorf("no verified backup found in %s", backupDir)
 }
 
-// CleanupBackups removes old backups, keeping only the most recent N.
+// backupDirHasArchive reports whether a backup directory holds a non-empty
+// configs.tar.gz — the cheap validity gate CleanupBackups uses to decide
+// retention. A dir without a real archive is corrupt or partial and must not
+// count toward the keep-N limit (#353). It is deliberately lighter than
+// VerifyBackup (no gzip/tar read): a truncated-but-nonempty archive is still
+// rejected at anchor-selection time by LatestVerifiedBackup's full VerifyBackup,
+// so cleanup only needs to avoid letting an obviously-empty dir evict a good one.
+// This check never misclassifies a VALID backup as invalid (a real backup always
+// has a non-empty archive), so it can never delete a good backup.
+func backupDirHasArchive(backupPath string) bool {
+	info, err := os.Stat(filepath.Join(backupPath, "configs.tar.gz"))
+	return err == nil && info.Size() > 0
+}
+
+// CleanupBackups removes old backups, keeping only the most recent N valid ones.
+// Corrupt or partial backup dirs (no non-empty archive) do NOT count toward the
+// retention limit and are removed outright — otherwise one could occupy a keep
+// slot and evict an older known-good backup (#353).
 func (d *DeployOps) CleanupBackups(backupDir string, keep int) error {
 	logger := log.Component(log.ComponentDeploy)
 	logger.Debug().
@@ -646,22 +671,41 @@ func (d *DeployOps) CleanupBackups(backupDir string, keep int) error {
 		return fmt.Errorf("failed to read backup directory: %w", err)
 	}
 
-	// Filter to backup directories.
-	var backups []string
+	// Partition backup dirs into valid (a non-empty configs.tar.gz) and invalid
+	// (corrupt or partial). Only VALID backups count toward retention: an invalid
+	// dir must never occupy a keep slot and evict an older known-good backup
+	// (#353). Invalid dirs are never usable rollback anchors, so they are removed
+	// outright rather than left to litter the directory and re-trip the eviction.
+	var valid, invalid []string
 	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), "backup-") {
-			backups = append(backups, e.Name())
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "backup-") {
+			continue
+		}
+		if backupDirHasArchive(filepath.Join(backupDir, e.Name())) {
+			valid = append(valid, e.Name())
+		} else {
+			invalid = append(invalid, e.Name())
 		}
 	}
 
-	// Sort by name (which includes timestamp, so chronological).
-	sort.Strings(backups)
+	// Remove corrupt/partial dirs unconditionally — they are litter, never anchors.
+	for _, name := range invalid {
+		path := filepath.Join(backupDir, name)
+		if err := os.RemoveAll(path); err != nil {
+			logger.Error().Err(err).Str(log.FieldPath, path).Msg("Failed to remove corrupt/partial backup")
+			return fmt.Errorf("failed to remove corrupt backup %s: %w", name, err)
+		}
+		logger.Warn().Str(log.FieldPath, path).Msg("Removed corrupt or partial backup (no valid archive)")
+	}
 
-	// Remove old backups.
-	if len(backups) > keep {
-		toRemove := backups[:len(backups)-keep]
+	// Sort valid backups by name (timestamp-embedded, so chronological).
+	sort.Strings(valid)
+
+	// Remove old VALID backups beyond the retention count.
+	if len(valid) > keep {
+		toRemove := valid[:len(valid)-keep]
 		logger.Debug().
-			Int("total_backups", len(backups)).
+			Int("valid_backups", len(valid)).
 			Int("removing", len(toRemove)).
 			Int("keeping", keep).
 			Msg("Removing old backups")
@@ -679,7 +723,7 @@ func (d *DeployOps) CleanupBackups(backupDir string, keep int) error {
 			Int("kept", keep).
 			Msg("Successfully cleaned up old backups")
 	} else {
-		logger.Debug().Int("total_backups", len(backups)).Msg("Backup cleanup: no old backups to remove")
+		logger.Debug().Int("valid_backups", len(valid)).Msg("Backup cleanup: no old backups to remove")
 	}
 
 	return nil
