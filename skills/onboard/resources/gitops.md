@@ -79,8 +79,9 @@ a timestamped `backup-YYYYMMDD-HHMMSS/configs.tar.gz` under `BackupDir`, verifie
 it by listing the archive, and prunes to the most recent `BackupsToKeep` **valid**
 backups (default 5). When no managed file exists yet (a fresh host's first deploy),
 no archive is written and no rollback anchor is recorded — a content-free backup is
-never reported as a real one (#360). Retention counts only valid backups: a corrupt
-or partial dir (no archive) is removed rather than occupying a keep slot and
+never reported as a real one (#360). Retention counts only backups that pass the
+same verification used to pick a rollback anchor: a corrupt or partial dir (missing,
+unlistable, or truncated archive) is removed rather than occupying a keep slot and
 evicting an older good backup (#353). Three guards keep the backup from wedging the
 reconcile (GH#319, bosun-5qx):
 

@@ -697,11 +697,12 @@ After creation, backups are verified:
 
 ### Retention
 
-By default, keeps the 5 most recent **valid** backups. Older backups are automatically
-deleted. Corrupt or partial backup directories (missing a `configs.tar.gz`) do not count
-toward the retention limit and are removed outright, so a broken backup can never occupy a
-keep slot and evict an older good one. When a deploy has no managed files to back up (a
-fresh host's first deploy), no backup is created and no rollback anchor is recorded.
+By default, keeps the 5 most recent **valid** backups — those that pass the same
+verification used to select a rollback anchor. Older backups are automatically deleted.
+Corrupt or partial backup directories (a missing, unlistable, or truncated `configs.tar.gz`)
+do not count toward the retention limit and are removed outright, so a broken backup can
+never occupy a keep slot and evict an older good one. When a deploy has no managed files to
+back up (a fresh host's first deploy), no backup is created and no rollback anchor is recorded.
 
 ```go
 cfg.BackupsToKeep = 5  // Default

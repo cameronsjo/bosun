@@ -230,16 +230,18 @@ func TestDeployOps_Backup(t *testing.T) {
 }
 
 // makeBackupDir creates a backup-<name> dir under parent. With withArchive it
-// writes a non-empty configs.tar.gz so CleanupBackups counts it as a valid
-// backup; without, the dir is corrupt/partial (no archive) and must not count
-// toward retention. The dummy archive is byte-content only — backupDirHasArchive
-// checks existence + non-empty, not tar validity — so this needs no `tar`.
+// writes a REAL configs.tar.gz (via writeTestBackupArchive, which skips the test
+// when tar is unavailable) so CleanupBackups' VerifyBackup accepts it as valid;
+// without, the dir is corrupt/partial (no archive) and must not count toward
+// retention.
 func makeBackupDir(t *testing.T, parent, name string, withArchive bool) string {
 	t.Helper()
 	dir := filepath.Join(parent, name)
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	if withArchive {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "configs.tar.gz"), []byte("x"), 0o644))
+		src := filepath.Join(t.TempDir(), "seed.yml")
+		require.NoError(t, os.WriteFile(src, []byte("seed"), 0o644))
+		writeTestBackupArchive(t, dir, src)
 	}
 	return dir
 }
@@ -255,7 +257,7 @@ func TestDeployOps_CleanupBackups(t *testing.T) {
 		}
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.CleanupBackups(tmpDir, 5)
+		err := deploy.CleanupBackups(context.Background(), tmpDir, 5)
 
 		require.NoError(t, err)
 
@@ -282,7 +284,7 @@ func TestDeployOps_CleanupBackups(t *testing.T) {
 		}
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.CleanupBackups(tmpDir, 5)
+		err := deploy.CleanupBackups(context.Background(), tmpDir, 5)
 
 		require.NoError(t, err)
 
@@ -294,7 +296,7 @@ func TestDeployOps_CleanupBackups(t *testing.T) {
 
 	t.Run("cleanup non-existent directory", func(t *testing.T) {
 		deploy := NewDeployOps(false, "")
-		err := deploy.CleanupBackups("/non/existent/dir", 5)
+		err := deploy.CleanupBackups(context.Background(), "/non/existent/dir", 5)
 
 		// Should not error
 		require.NoError(t, err)
@@ -313,7 +315,7 @@ func TestDeployOps_CleanupBackups(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "other-dir"), 0755))
 
 		deploy := NewDeployOps(false, "")
-		err := deploy.CleanupBackups(tmpDir, 2)
+		err := deploy.CleanupBackups(context.Background(), tmpDir, 2)
 
 		require.NoError(t, err)
 
@@ -324,22 +326,26 @@ func TestDeployOps_CleanupBackups(t *testing.T) {
 	t.Run("corrupt dir does not evict a good backup", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		// Three VALID backups (oldest → newest) plus a NEWER corrupt/partial dir.
+		// Three VALID backups (oldest → newest) plus a NEWER corrupt dir whose
+		// archive is NON-EMPTY but not a real tar.gz — exactly the case a mere
+		// existence check would wrongly count as good; VerifyBackup rejects it.
 		good1 := makeBackupDir(t, tmpDir, "backup-20240101-000001", true)
 		good2 := makeBackupDir(t, tmpDir, "backup-20240101-000002", true)
 		good3 := makeBackupDir(t, tmpDir, "backup-20240101-000003", true)
-		corrupt := makeBackupDir(t, tmpDir, "backup-20240101-000004", false) // no archive
+		corrupt := filepath.Join(tmpDir, "backup-20240101-000004")
+		require.NoError(t, os.MkdirAll(corrupt, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(corrupt, "configs.tar.gz"), []byte("not-a-real-tar"), 0o644))
 
 		deploy := NewDeployOps(false, "")
-		// keep=3: the old counting would treat the 4 dirs as backups and evict the
-		// OLDEST (good1) to keep 3, retaining the corrupt one. The fix counts only
-		// valid backups, so all three good ones survive and the corrupt dir goes.
-		require.NoError(t, deploy.CleanupBackups(tmpDir, 3))
+		// keep=3: the old counting treated all 4 dirs as backups and evicted the
+		// OLDEST (good1) to keep 3, retaining the corrupt one. VerifyBackup-gated
+		// retention counts only the three good ones — all survive, corrupt goes.
+		require.NoError(t, deploy.CleanupBackups(context.Background(), tmpDir, 3))
 
 		assert.DirExists(t, good1, "the oldest GOOD backup is not evicted by a corrupt dir (#353)")
 		assert.DirExists(t, good2)
 		assert.DirExists(t, good3)
-		assert.NoDirExists(t, corrupt, "the corrupt/partial dir is removed, not retained")
+		assert.NoDirExists(t, corrupt, "the corrupt (non-empty but invalid) dir is removed, not retained")
 	})
 }
 
@@ -1489,7 +1495,7 @@ func TestDeployOps_DeployLocal_ContentHashSync_Stale(t *testing.T) {
 
 func TestDeployOps_CleanupBackups_NonExistentDir(t *testing.T) {
 	d := NewDeployOps(false, "")
-	err := d.CleanupBackups("/nonexistent/backup/dir", 5)
+	err := d.CleanupBackups(context.Background(), "/nonexistent/backup/dir", 5)
 	assert.NoError(t, err) // Non-existent dir returns nil.
 }
 
@@ -1503,7 +1509,7 @@ func TestDeployOps_CleanupBackups_RemovesOldest(t *testing.T) {
 	}
 
 	d := NewDeployOps(false, "")
-	err := d.CleanupBackups(tmpDir, 3)
+	err := d.CleanupBackups(context.Background(), tmpDir, 3)
 	require.NoError(t, err)
 
 	// Should have removed 2 oldest, kept 3 newest.
@@ -1527,9 +1533,24 @@ func TestDeployOps_CleanupBackups_InvalidRemovalError(t *testing.T) {
 	defer func() { _ = os.Chmod(tmpDir, 0o755) }() // restore for t.TempDir cleanup
 
 	d := NewDeployOps(false, "")
-	err := d.CleanupBackups(tmpDir, 3)
+	err := d.CleanupBackups(context.Background(), tmpDir, 3)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "corrupt backup", "the removal failure surfaces")
+}
+
+// TestDeployOps_CleanupBackups_ContextCancelled covers the cancellation guard: a
+// cancelled context aborts the per-candidate verification loop rather than
+// running VerifyBackup on every dir.
+func TestDeployOps_CleanupBackups_ContextCancelled(t *testing.T) {
+	tmpDir := t.TempDir()
+	makeBackupDir(t, tmpDir, "backup-20240101-000001", true) // a candidate to iterate
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before the loop reaches the ctx.Err() check
+
+	d := NewDeployOps(false, "")
+	err := d.CleanupBackups(ctx, tmpDir, 3)
+	require.ErrorIs(t, err, context.Canceled)
 }
 
 func TestDeployOps_BackupMkdirError(t *testing.T) {

@@ -636,26 +636,17 @@ func (d *DeployOps) LatestVerifiedBackup(ctx context.Context, backupDir string) 
 	return "", fmt.Errorf("no verified backup found in %s", backupDir)
 }
 
-// backupDirHasArchive reports whether a backup directory holds a non-empty
-// configs.tar.gz — the cheap validity gate CleanupBackups uses to decide
-// retention. A dir without a real archive is corrupt or partial and must not
-// count toward the keep-N limit (#353). It is deliberately lighter than
-// VerifyBackup (no gzip/tar read): a truncated-but-nonempty archive is still
-// rejected at anchor-selection time by LatestVerifiedBackup's full VerifyBackup,
-// so cleanup only needs to avoid letting an obviously-empty dir evict a good one.
-// This check never misclassifies a VALID backup as invalid (a real backup always
-// has a non-empty archive), so it can never delete a good backup.
-func backupDirHasArchive(backupPath string) bool {
-	info, err := os.Stat(filepath.Join(backupPath, "configs.tar.gz"))
-	return err == nil && info.Size() > 0
-}
-
-// CleanupBackups removes old backups, keeping only the most recent N valid ones.
-// Corrupt or partial backup dirs (no non-empty archive) do NOT count toward the
-// retention limit and are removed outright — otherwise one could occupy a keep
-// slot and evict an older known-good backup (#353).
-func (d *DeployOps) CleanupBackups(backupDir string, keep int) error {
-	logger := log.Component(log.ComponentDeploy)
+// CleanupBackups removes old backups, keeping only the most recent N VALID ones.
+// A candidate counts toward retention only if it passes the SAME VerifyBackup used
+// to select a rollback anchor — reusing that helper rather than a private, weaker
+// notion of "good" so the two can never drift (a truncated-but-nonempty archive is
+// "good" to a mere existence check yet junk to VerifyBackup). A corrupt or partial
+// dir (missing, unlistable, or truncated archive) does NOT occupy a keep slot and
+// is removed outright; otherwise it could evict an older known-good backup (#353).
+// Verification shares ctx with backup creation, so a stuck tar/gzip read cannot
+// wedge cleanup.
+func (d *DeployOps) CleanupBackups(ctx context.Context, backupDir string, keep int) error {
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 	logger.Debug().
 		Str(log.FieldPath, backupDir).
 		Int("keep_count", keep).
@@ -671,17 +662,20 @@ func (d *DeployOps) CleanupBackups(backupDir string, keep int) error {
 		return fmt.Errorf("failed to read backup directory: %w", err)
 	}
 
-	// Partition backup dirs into valid (a non-empty configs.tar.gz) and invalid
-	// (corrupt or partial). Only VALID backups count toward retention: an invalid
-	// dir must never occupy a keep slot and evict an older known-good backup
-	// (#353). Invalid dirs are never usable rollback anchors, so they are removed
-	// outright rather than left to litter the directory and re-trip the eviction.
+	// Partition backup dirs into valid (passes VerifyBackup) and invalid (corrupt
+	// or partial). Only VALID backups count toward retention: an invalid dir must
+	// never occupy a keep slot and evict an older known-good backup (#353). Invalid
+	// dirs are never usable rollback anchors, so they are removed outright rather
+	// than left to litter the directory and re-trip the eviction.
 	var valid, invalid []string
 	for _, e := range entries {
 		if !e.IsDir() || !strings.HasPrefix(e.Name(), "backup-") {
 			continue
 		}
-		if backupDirHasArchive(filepath.Join(backupDir, e.Name())) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if d.VerifyBackup(ctx, filepath.Join(backupDir, e.Name())) == nil {
 			valid = append(valid, e.Name())
 		} else {
 			invalid = append(invalid, e.Name())

@@ -1724,7 +1724,7 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 	logger.Info().Str(log.FieldPath, r.lastBackupPath).Msg("Successfully created backup")
 
 	// Cleanup old backups.
-	if err := r.deploy.CleanupBackups(r.config.BackupDir, r.config.BackupsToKeep); err != nil {
+	if err := r.deploy.CleanupBackups(ctx, r.config.BackupDir, r.config.BackupsToKeep); err != nil {
 		logger.Warn().Err(err).Int("backups_to_keep", r.config.BackupsToKeep).Msg("Failed to cleanup old backups")
 		ui.Warning("Failed to cleanup old backups: %v", err)
 	}
