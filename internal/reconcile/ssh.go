@@ -3,17 +3,20 @@ package reconcile
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/cameronsjo/bosun/internal/fileutil"
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/telemetry"
 	"github.com/kballard/go-shellquote"
@@ -31,6 +34,92 @@ const (
 	SSHTimeout          = 30 * time.Second
 	RemoteDeployTimeout = 5 * time.Minute
 )
+
+// ErrTransferIntegrity marks a remote tar-over-SSH transfer whose staged tree
+// failed SHA-256 verification against the locally-built manifest — a truncated,
+// partial, or misdirected transfer that must never be promoted to the live
+// target (#334). It is RETRYABLE: retryWithBackoff stages into a fresh remote
+// tmpDir on the next attempt, so a re-transfer is never overlaid on the dirty
+// leftover of a failed one.
+var ErrTransferIntegrity = errors.New("remote transfer integrity check failed")
+
+// ErrUnsafeChecksumPath marks a staged filename that cannot be represented in a
+// `sha256sum -c` manifest: busybox sha256sum lacks GNU's backslash escaping, so
+// a newline or backslash in a name would corrupt the newline-delimited,
+// space-separated manifest parse. Rejected at the local staging walk rather than
+// trusted to format escaping (#334). The input is repo-controlled, so this
+// guards against a pathological rendered filename, not a hostile actor.
+var ErrUnsafeChecksumPath = errors.New("unsafe filename for checksum manifest")
+
+// buildTransferChecksums walks root (the LOCAL staging tmpDir) and returns a
+// SHA-256 manifest in `sha256sum -c` format — one "<hex>  <relpath>" line per
+// regular file, sorted for determinism, "/"-separated paths relative to root so
+// they resolve against the remote staged dir where the tar extraction lands
+// them. Symlinks and irregular entries are skipped (the tar path does not
+// meaningfully verify them). Returns "" when root holds no regular files, which
+// the caller reads as "nothing to verify". A newline or backslash in any
+// relative path fails with ErrUnsafeChecksumPath.
+func buildTransferChecksums(root string) (string, error) {
+	var entries []string
+	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if strings.ContainsAny(rel, "\n\\") {
+			return fmt.Errorf("%w: %q", ErrUnsafeChecksumPath, rel)
+		}
+		sum, err := fileutil.FileHash(path)
+		if err != nil {
+			return err
+		}
+		// GNU coreutils `sha256sum -c` format: "<hex>  <path>" (two spaces =
+		// text mode). macOS `shasum -a 256 -c` reads the identical layout.
+		entries = append(entries, hex.EncodeToString(sum[:])+"  "+rel)
+		return nil
+	})
+	if walkErr != nil {
+		return "", walkErr
+	}
+	if len(entries) == 0 {
+		return "", nil
+	}
+	sort.Strings(entries)
+	return strings.Join(entries, "\n") + "\n", nil
+}
+
+// remoteHasSha256sum probes whether `sha256sum` is on the remote PATH. A host
+// that lacks it (a minimal busybox without the applet) degrades to the pre-#334
+// behavior: the transfer is not verified. Never hard-fail a host that deployed
+// fine yesterday for lacking coreutils.
+func (d *DeployOps) remoteHasSha256sum(ctx context.Context, host string) bool {
+	return sshExecCommand(ctx, host, "command -v sha256sum").Run() == nil
+}
+
+// verifyRemoteTransfer pipes manifest to the remote and runs `sha256sum -c -`
+// with cwd at stagedDir, so the manifest's relative paths resolve against the
+// just-extracted staging tree. A non-zero exit — a missing file or a content
+// mismatch — is an integrity failure (ErrTransferIntegrity). manifest must be
+// non-empty; the caller skips verification for an empty manifest.
+func (d *DeployOps) verifyRemoteTransfer(ctx context.Context, host, stagedDir, manifest string) error {
+	remoteCmd := fmt.Sprintf("cd %s && sha256sum -c -", shellquote.Join(stagedDir))
+	cmd := sshExecCommand(ctx, host, remoteCmd)
+	cmd.Stdin = strings.NewReader(manifest)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%w: %v: %s", ErrTransferIntegrity, err, strings.TrimSpace(stdout.String()+" "+stderr.String()))
+	}
+	return nil
+}
 
 // hostKeyOptions returns the ssh/scp `-o` flags that enforce the configured
 // host-key policy on the exec'd deploy path, so it honors the same
@@ -163,8 +252,11 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 			return ctx.Err()
 		}
 
-		// Only retry on transient errors
-		if !isTransientSSHError(lastErr) {
+		// Only retry on transient errors, plus a transfer-integrity failure
+		// whose recovery is a fresh staging dir on the next attempt (#334):
+		// DeployRemote stages into a new remote tmpDir each pass, so re-verifying
+		// never reads a dirty leftover.
+		if !isTransientSSHError(lastErr) && !errors.Is(lastErr, ErrTransferIntegrity) {
 			return lastErr
 		}
 
@@ -320,7 +412,14 @@ func buildRemoteRecoverCommand(targetDir string) string {
 // Deployment is safe-by-ordering: tar to a temp dir, then a retain-old
 // rename-swap that never deletes the live target before the replacement
 // is in place (#343), with crash recovery for interrupted swaps.
-func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, targetDir string) error {
+//
+// When verifyChecksums is true, the staged tree is SHA-256 verified against a
+// locally-built manifest AFTER the tar lands and BEFORE the swap to live: a
+// truncated or misdirected transfer fails with ErrTransferIntegrity and retries
+// into a fresh remote tmpDir (#334). Callers set it from a once-per-deploy
+// `sha256sum` availability probe (remoteHasSha256sum); false degrades to the
+// pre-#334 behavior of promoting whatever landed.
+func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, targetDir string, verifyChecksums bool) error {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
@@ -368,6 +467,21 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 		return err
 	}
 
+	// Build the SHA-256 transfer manifest ONCE from the local source: it is
+	// deterministic across attempts and a filename-guard failure (newline or
+	// backslash) must abort the whole deploy, not burn retries. An empty
+	// manifest (source has no regular files) skips verification entirely.
+	manifest := ""
+	if verifyChecksums {
+		m, mErr := buildTransferChecksums(sourceDir)
+		if mErr != nil {
+			mErr = fmt.Errorf("build transfer checksums: %w", mErr)
+			telemetry.SpanError(deploySpan, mErr)
+			return mErr
+		}
+		manifest = m
+	}
+
 	deployErr := retryWithBackoff(ctx, DefaultMaxRetries, func() error {
 		// A FRESH staging dir per attempt (#342): reusing one temp dir across
 		// retries would extract the new archive over a partial leftover when
@@ -375,7 +489,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 		// could survive and be promoted to the live target.
 		tmpDir := filepath.Join(targetParent, fmt.Sprintf(".deploy-tmp-%d", time.Now().UnixNano()))
 		cleanupTmp := func(reason string) {
-			if err := sshExecCommand(ctx, targetHost, "rm", "-rf", tmpDir).Run(); err != nil {
+			if err := sshExecCommand(ctx, targetHost, shellquote.Join("rm", "-rf", tmpDir)).Run(); err != nil {
 				// Best-effort by design: the failure that got us here often
 				// means the host is unreachable, so cleanup fails too. The
 				// next attempt uses a fresh dir; the leftover is orphaned,
@@ -410,7 +524,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			Str(log.FieldTarget, targetHost).
 			Str(log.FieldPath, tmpDir).
 			Msg("Preparing to create staging directory on remote")
-		mkdirCmd := sshExecCommand(ctx, targetHost, "mkdir", "-p", tmpDir)
+		mkdirCmd := sshExecCommand(ctx, targetHost, shellquote.Join("mkdir", "-p", tmpDir))
 		var mkdirStderr bytes.Buffer
 		mkdirCmd.Stderr = &mkdirStderr
 		if err := mkdirCmd.Run(); err != nil {
@@ -462,6 +576,28 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 				return fmt.Errorf("ssh timed out after %v", RemoteDeployTimeout)
 			}
 			return fmt.Errorf("ssh extract failed: %w: %s", sshErr, sshStderr.String())
+		}
+
+		// Integrity gate (#334): verify the staged tree matches the local source
+		// byte-for-byte BEFORE promoting it. A truncated or misdirected transfer
+		// fails here with ErrTransferIntegrity — retryable, and the next attempt
+		// stages into a fresh tmpDir, so a re-verify never trusts a dirty
+		// leftover. Skipped when the manifest is empty (no regular files) or the
+		// remote lacks sha256sum (verifyChecksums=false).
+		if manifest != "" {
+			if verifyErr := d.verifyRemoteTransfer(ctx, targetHost, tmpDir, manifest); verifyErr != nil {
+				logger.Warn().
+					Err(verifyErr).
+					Str(log.FieldTarget, targetHost).
+					Str(log.FieldPath, tmpDir).
+					Msg("Staged tree failed integrity verification, discarding before swap")
+				cleanupTmp("integrity_failed")
+				return verifyErr
+			}
+			logger.Debug().
+				Str(log.FieldTarget, targetHost).
+				Str(log.FieldPath, tmpDir).
+				Msg("Staged tree passed SHA-256 integrity verification")
 		}
 
 		// Retain-old rename-swap (#343): the live target is moved aside, not
@@ -572,7 +708,7 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 
 		if err := scpCmd.Run(); err != nil {
 			// Cleanup temp file on failure
-			_ = sshExecCommand(ctx, targetHost, "rm", "-f", tmpFile).Run()
+			_ = sshExecCommand(ctx, targetHost, shellquote.Join("rm", "-f", tmpFile)).Run()
 			if ctx.Err() == context.DeadlineExceeded {
 				return fmt.Errorf("scp timed out after %v", RemoteDeployTimeout)
 			}
@@ -580,12 +716,12 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 		}
 
 		// Atomic move temp file to target
-		moveCmd := sshExecCommand(ctx, targetHost, "mv", tmpFile, targetFile)
+		moveCmd := sshExecCommand(ctx, targetHost, shellquote.Join("mv", tmpFile, targetFile))
 		var moveStderr bytes.Buffer
 		moveCmd.Stderr = &moveStderr
 
 		if err := moveCmd.Run(); err != nil {
-			_ = sshExecCommand(ctx, targetHost, "rm", "-f", tmpFile).Run()
+			_ = sshExecCommand(ctx, targetHost, shellquote.Join("rm", "-f", tmpFile)).Run()
 			return fmt.Errorf("atomic move failed: %w: %s", err, moveStderr.String())
 		}
 
@@ -626,7 +762,7 @@ func (d *DeployOps) EnsureRemoteDir(ctx context.Context, host, dir string) error
 	}
 
 	return retryWithBackoff(ctx, DefaultMaxRetries, func() error {
-		cmd := sshExecCommand(ctx, host, "mkdir", "-p", dir)
+		cmd := sshExecCommand(ctx, host, shellquote.Join("mkdir", "-p", dir))
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 

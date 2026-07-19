@@ -44,7 +44,7 @@ func TestDeployRemote_EndToEnd(t *testing.T) {
 		writeMarker(t, source, "marker", "v1")
 
 		d := &DeployOps{}
-		require.NoError(t, d.DeployRemote(context.Background(), source, "user@testhost", target))
+		require.NoError(t, d.DeployRemote(context.Background(), source, "user@testhost", target, false))
 
 		assert.Equal(t, "v1", readMarker(t, target, "marker"))
 	})
@@ -59,7 +59,7 @@ func TestDeployRemote_EndToEnd(t *testing.T) {
 		writeMarker(t, target, "marker", "v1")
 
 		d := &DeployOps{}
-		require.NoError(t, d.DeployRemote(context.Background(), source, "user@testhost", target))
+		require.NoError(t, d.DeployRemote(context.Background(), source, "user@testhost", target, false))
 
 		assert.Equal(t, "v2", readMarker(t, target, "marker"))
 		entries, err := os.ReadDir(parent)
@@ -79,7 +79,7 @@ func TestDeployRemote_EndToEnd(t *testing.T) {
 		writeMarker(t, target+bosunOldSuffix+"1111111111111111111", "marker", "stranded")
 
 		d := &DeployOps{}
-		require.NoError(t, d.DeployRemote(context.Background(), source, "user@testhost", target))
+		require.NoError(t, d.DeployRemote(context.Background(), source, "user@testhost", target, false))
 
 		assert.Equal(t, "new", readMarker(t, target, "marker"))
 		entries, err := os.ReadDir(parent)
@@ -96,7 +96,7 @@ func TestDeployRemote_EndToEnd(t *testing.T) {
 		missingSource := filepath.Join(base, "does-not-exist")
 
 		d := &DeployOps{}
-		err := d.DeployRemote(context.Background(), missingSource, "user@testhost", target)
+		err := d.DeployRemote(context.Background(), missingSource, "user@testhost", target, false)
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "tar")
@@ -112,13 +112,13 @@ func TestDeployRemote_EndToEnd(t *testing.T) {
 		target := filepath.Join(base, "deploy", "compose")
 
 		d := &DeployOps{DryRun: true}
-		require.NoError(t, d.DeployRemote(context.Background(), filepath.Join(base, "source"), "user@testhost", target))
+		require.NoError(t, d.DeployRemote(context.Background(), filepath.Join(base, "source"), "user@testhost", target, false))
 		assert.NoDirExists(t, target)
 	})
 
 	t.Run("invalid host is rejected before any work", func(t *testing.T) {
 		d := &DeployOps{}
-		err := d.DeployRemote(context.Background(), t.TempDir(), "-oProxyCommand=evil", "/tmp/x")
+		err := d.DeployRemote(context.Background(), t.TempDir(), "-oProxyCommand=evil", "/tmp/x", false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid SSH host")
 	})

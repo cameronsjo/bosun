@@ -4690,7 +4690,7 @@ func TestDeployRemoteErrorPropagation(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		err := r.deployRemote(context.Background(), map[string]any{})
+		_, err := r.deployRemote(context.Background(), map[string]any{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no target host")
 	})
@@ -4707,7 +4707,7 @@ func TestDeployRemoteErrorPropagation(t *testing.T) {
 		deploy := &DeployOps{DryRun: false}
 		r := NewReconciler(cfg, WithDeployOps(deploy))
 
-		err := r.deployRemote(context.Background(), nil)
+		_, err := r.deployRemote(context.Background(), nil)
 		require.Error(t, err)
 		// Should NOT contain "Deployment complete" in any wrapped error.
 	})
@@ -4752,7 +4752,7 @@ func TestDeployRemoteErrorPropagation(t *testing.T) {
 		deploy := &DeployOps{DryRun: true}
 		r := NewReconciler(cfg, WithDeployOps(deploy))
 
-		err := r.deployRemote(context.Background(), nil)
+		_, err := r.deployRemote(context.Background(), nil)
 		// All SSH ops are dry-run no-ops, compose up and signal both "succeed".
 		require.NoError(t, err)
 	})
