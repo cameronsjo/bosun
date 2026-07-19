@@ -278,6 +278,20 @@ func TestSendGateFailureAlerts(t *testing.T) {
 		assert.Equal(t, 1, a.deployFailureCalls)
 		assert.Equal(t, 0, a.rollbackSuccessCalls+a.rollbackFailureCalls)
 	})
+
+	t.Run("failure-alert send error keeps the throttle window open", func(t *testing.T) {
+		// Mirror sendThrottledFailureAlert: a failed SEND must NOT consume the
+		// window, so the next attempt retries the alert. No rollback alert either.
+		a := &mockAlertSender{lastErr: fmt.Errorf("alert provider down")}
+		r := NewReconciler(&Config{OnFailure: true, StateFile: filepath.Join(t.TempDir(), "s.json")}, WithAlerter(a))
+		r.lastBackupPath = "/backups/backup-20260101-000000"
+		st := &DeployState{AttemptCount: 1}
+		r.sendGateFailureAlerts(ctx, st, gateErr, true, nil)
+		assert.Equal(t, 1, a.deployFailureCalls, "the send was attempted")
+		assert.Equal(t, 0, st.LastAlertedAttempt, "throttle window stays OPEN when the failure alert did not send")
+		assert.Equal(t, 0, a.rollbackSuccessCalls+a.rollbackFailureCalls,
+			"no rollback alert follows a failure alert that never sent")
+	})
 }
 
 // TestRunHealthGate_CriticalScope_RollbackEmitsNoRollbackAlert locks the critical

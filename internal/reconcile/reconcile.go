@@ -1330,7 +1330,9 @@ func (r *Reconciler) checkDeclaredHealth(ctx context.Context, client *docker.Cli
 	if len(blocking) > 0 {
 		return fmt.Errorf("declared health gate failed: unhealthy containers: %s", strings.Join(blocking, ", "))
 	}
-	return err
+	// No container was ever classified (a persistent Docker error timed the poll
+	// out); still a gate failure, framed consistently.
+	return fmt.Errorf("declared health gate failed: %w", err)
 }
 
 // sendGateFailureAlerts is the DECLARED-scope health-gate alerter: it emits the
@@ -1352,9 +1354,17 @@ func (r *Reconciler) sendGateFailureAlerts(ctx context.Context, state *DeploySta
 	target := r.alertTarget()
 
 	if err := r.alerter.SendDeployFailure(ctx, r.lastCommit, target, gateErr.Error(), r.serviceNames(), time.Since(r.runStartTime)); err != nil {
+		// Do NOT consume the throttle window when the failure alert never sent —
+		// mirror sendThrottledFailureAlert exactly, so a transient alert-provider
+		// outage lets the next attempt retry the alert instead of silently eating
+		// the window. The rollback alert is skipped too: it only makes sense as a
+		// companion to a delivered failure alert.
 		logger.Warn().Err(err).Str(log.FieldOperation, "alert_failure").Msg("Failed to send health-gate failure alert")
+		return
 	}
 
+	// The failure alert landed; the window is now consumed regardless of whether
+	// the companion rollback alert sends (its failure is logged, not retried).
 	if rolledBack {
 		if rollbackErr == nil {
 			if err := r.alerter.SendRollbackSuccess(ctx, target, filepath.Base(r.lastBackupPath)); err != nil {

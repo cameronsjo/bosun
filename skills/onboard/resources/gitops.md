@@ -138,7 +138,7 @@ After compose up, bosun polls container health via the Docker API and, on a fail
 - **`declared`**: polls all declared services, exempting any service that was already unhealthy *before* this deploy (a pre-existing casualty, per #392) — only a service this deploy made unhealthy triggers rollback. Opt-in, because it adds flapping-healthcheck rollback churn on top of the fail-retry-alert path a failed post-deploy verification already provides.
 - **`off`**: no health gate.
 
-Containers must be running and healthy (or have no healthcheck defined) within the `HealthGateTimeout` (default 60s, `BOSUN_HEALTH_GATE_TIMEOUT`). On failure, rollback restores the backup compose files, post-sync hooks are skipped (the tree is a hybrid of old compose + new config), and the failure + rollback alerts fire together on the `1/3/10/30` attempt-count throttle schedule — not once per cycle.
+Containers must be running and healthy (or have no healthcheck defined) within the `HealthGateTimeout` (default 60s, `BOSUN_HEALTH_GATE_TIMEOUT`). On failure, rollback restores the backup compose files and post-sync hooks are skipped (the tree is a hybrid of old compose + new config). A throttled failure alert fires on the `1/3/10/30` attempt-count schedule under every scope; **under `declared` scope only**, a rollback alert fires alongside it on the same window (critical mode sends no rollback alert — its alert surface is unchanged).
 
 The health gate is skipped regardless of scope when: dry run is active, the deploy is remote (`TargetHost` set — Docker API is local-only), or no Docker client is available.
 
