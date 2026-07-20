@@ -60,3 +60,4 @@ bosun/bosun
 
 # Local MCP server config
 /.mcp.json
+.claude/skill-red/
