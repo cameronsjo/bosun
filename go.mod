@@ -10,7 +10,7 @@ require (
 	github.com/getsentry/sentry-go v0.47.0
 	github.com/getsentry/sentry-go/zerolog v0.47.0
 	github.com/getsops/sops/v3 v3.13.2
-	github.com/go-git/go-git/v5 v5.19.1
+	github.com/go-git/go-git/v5 v5.19.2
 	github.com/google/uuid v1.6.0
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
 	github.com/moby/moby/api v1.55.0
@@ -189,7 +189,7 @@ require (
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/text v0.38.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/api v0.286.0 // indirect
 	google.golang.org/genproto v0.0.0-20260622175928-b703f567277d // indirect
