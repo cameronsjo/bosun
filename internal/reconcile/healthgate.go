@@ -10,7 +10,7 @@ import (
 	"github.com/cameronsjo/bosun/internal/log"
 )
 
-// HealthGatePollInterval is how often the health gate polls container status.
+// HealthGatePollInterval is the default interval for polling container status.
 const HealthGatePollInterval = 5 * time.Second
 
 // ContainerHealthResult describes the health gate outcome for a single container.
@@ -35,19 +35,24 @@ func CheckCriticalContainerHealth(
 	client *docker.Client,
 	containers []string,
 	timeout time.Duration,
+	interval time.Duration,
 ) error {
 	if len(containers) == 0 {
 		return nil
+	}
+	if interval <= 0 {
+		interval = HealthGatePollInterval
 	}
 
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 	logger.Info().
 		Strs("containers", containers).
 		Dur("timeout", timeout).
+		Dur("interval", interval).
 		Msg("Starting critical container health gate")
 
 	deadline := time.After(timeout)
-	ticker := time.NewTicker(HealthGatePollInterval)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {

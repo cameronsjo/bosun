@@ -1266,7 +1266,7 @@ func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState, loca
 	case HealthGateScopeDeclared:
 		gateErr = r.checkDeclaredHealth(ctx, client, timeout)
 	default: // HealthGateScopeCritical
-		gateErr = CheckCriticalContainerHealth(ctx, client, containers, timeout)
+		gateErr = CheckCriticalContainerHealth(ctx, client, containers, timeout, r.healthCheckInterval())
 	}
 	if gateErr == nil {
 		return false, nil
@@ -1359,12 +1359,7 @@ func (r *Reconciler) buildRollbackSet(deployResult *DeployResult) RollbackSet {
 // already unhealthy before the deploy — a pre-existing casualty). Returns nil
 // when every unhealthy service was pre-existing, or when all are healthy.
 func (r *Reconciler) checkDeclaredHealth(ctx context.Context, client *docker.Client, timeout time.Duration) error {
-	interval := r.config.HealthCheckInterval
-	if interval <= 0 {
-		interval = HealthGatePollInterval
-	}
-
-	result, err := pollContainerHealth(ctx, client, r.declaredServices, r.config.ProjectName, timeout, interval)
+	result, err := pollContainerHealth(ctx, client, r.declaredServices, r.config.ProjectName, timeout, r.healthCheckInterval())
 	if err == nil {
 		return nil
 	}
@@ -1384,6 +1379,13 @@ func (r *Reconciler) checkDeclaredHealth(ctx context.Context, client *docker.Cli
 	// No container was ever classified (a persistent Docker error timed the poll
 	// out); still a gate failure, framed consistently.
 	return fmt.Errorf("declared health gate failed: %w", err)
+}
+
+func (r *Reconciler) healthCheckInterval() time.Duration {
+	if r.config.HealthCheckInterval > 0 {
+		return r.config.HealthCheckInterval
+	}
+	return HealthGatePollInterval
 }
 
 // sendGateFailureAlerts is the DECLARED-scope health-gate alerter: it emits the

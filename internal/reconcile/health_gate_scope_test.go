@@ -196,6 +196,33 @@ func TestRunHealthGate_CriticalScope_IgnoresDeclaredUnhealthy(t *testing.T) {
 	assert.Equal(t, 0, alerter.rollbackSuccessCalls+alerter.rollbackFailureCalls, "critical scope did not roll back")
 }
 
+func TestRunHealthGate_CriticalScope_UsesConfiguredPollInterval(t *testing.T) {
+	callCount := 0
+	mockAPI := newReconcileMockDockerAPI()
+	mockAPI.containerInspectFunc = func(_ context.Context, name string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+		callCount++
+		status := "starting"
+		if callCount >= 2 {
+			status = "healthy"
+		}
+		return makeInspectResponse(name, "running", &container.Health{Status: container.HealthStatus(status)}), nil
+	}
+
+	r := NewReconciler(&Config{
+		HealthGateScope:     HealthGateScopeCritical,
+		CriticalContainers:  NewConfigField([]string{"authelia"}),
+		HealthGateTimeout:   30 * time.Second,
+		HealthCheckInterval: 10 * time.Millisecond,
+	}, WithDockerClient(docker.NewClientWithAPI(mockAPI)))
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	rolledBack, err := r.runHealthGate(ctx, &DeployState{}, true, nil)
+	require.NoError(t, err)
+	assert.False(t, rolledBack)
+	assert.GreaterOrEqual(t, callCount, 2)
+}
+
 func TestRunHealthGate_SkipGuards(t *testing.T) {
 	ctx := context.Background()
 
