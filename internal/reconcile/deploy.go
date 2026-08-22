@@ -334,6 +334,7 @@ const (
 	managedTransitionOldSuffix   = ".bosun-transition-old"
 	managedTransitionNewSuffix   = ".bosun-transition-new"
 	managedTransitionStageSuffix = ".bosun-transition-stage"
+	managedTransitionCleanSuffix = ".bosun-transition-cleanup"
 )
 
 func validateTransitionSourceNamespace(sourceRoot string) error {
@@ -344,7 +345,8 @@ func validateTransitionSourceNamespace(sourceRoot string) error {
 		name := strings.ToLower(entry.Name())
 		if strings.HasSuffix(name, managedTransitionOldSuffix) ||
 			strings.HasSuffix(name, managedTransitionNewSuffix) ||
-			strings.HasSuffix(name, managedTransitionStageSuffix) {
+			strings.HasSuffix(name, managedTransitionStageSuffix) ||
+			strings.HasSuffix(name, managedTransitionCleanSuffix) {
 			return fmt.Errorf("source path uses reserved transition suffix: %s", path)
 		}
 		return nil
@@ -401,6 +403,7 @@ func validateTransitionArtifactsAbsent(targetPath string) error {
 		targetPath + managedTransitionOldSuffix,
 		targetPath + managedTransitionNewSuffix,
 		targetPath + managedTransitionStageSuffix,
+		targetPath + managedTransitionCleanSuffix,
 	} {
 		if _, err := os.Lstat(artifact); err == nil {
 			return fmt.Errorf("transition artifact already exists at %s", artifact)
@@ -748,7 +751,7 @@ func (t *managedTypeTransition) copyPrivateFile(replacement string) error {
 	if !sourceBefore.Mode().IsRegular() {
 		return fmt.Errorf("source is not a regular file")
 	}
-	t.newHandle, err = os.OpenFile(replacement, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	t.newHandle, err = createPinnedFileExclusive(replacement, 0600)
 	if err != nil {
 		return err
 	}
@@ -764,15 +767,6 @@ func (t *managedTypeTransition) copyPrivateFile(replacement string) error {
 	sourceAfter, err := source.Stat()
 	if err != nil || !sameFileMetadata(sourceBefore, sourceAfter) {
 		return fmt.Errorf("source changed while staging")
-	}
-	closeErr := t.newHandle.Close()
-	t.newHandle = nil
-	if closeErr != nil {
-		return closeErr
-	}
-	t.newHandle, err = openPinnedPath(replacement)
-	if err != nil {
-		return err
 	}
 	t.newInfo, err = t.newHandle.Stat()
 	return err
@@ -929,27 +923,38 @@ func (ts *managedTypeTransitions) Commit(logger zerolog.Logger) {
 }
 
 func (t *managedTypeTransition) removePinnedOld() error {
-	if err := removePinnedTree(t.oldPath, t.targetHandle, t.targetInfo, t.targetFingerprint, "managed original", nil); err != nil {
+	if err := removePinnedTree(t.oldPath, t.targetPath+managedTransitionCleanSuffix, t.targetHandle, t.targetInfo, t.targetFingerprint, "managed original", removalHooks{}); err != nil {
 		return fmt.Errorf("remove quarantined original %s: %w", t.oldPath, err)
 	}
 	return nil
 }
 
 func (t *managedTypeTransition) removePinnedNew() error {
-	if err := removePinnedTree(t.newPath, t.newHandle, t.newInfo, t.newFingerprint, "staged replacement", nil); err != nil {
+	if err := removePinnedTree(t.newPath, t.targetPath+managedTransitionCleanSuffix, t.newHandle, t.newInfo, t.newFingerprint, "staged replacement", removalHooks{}); err != nil {
 		return fmt.Errorf("remove staged replacement %s: %w", t.newPath, err)
 	}
 	return nil
 }
 
 type pinnedRemovalEntry struct {
-	path   string
-	handle *os.File
-	info   os.FileInfo
-	owned  bool
+	path        string
+	handle      *os.File
+	info        os.FileInfo
+	mode        os.FileMode
+	fingerprint [sha256.Size]byte
+	regular     bool
+	owned       bool
 }
 
-func removePinnedTree(path string, rootHandle *os.File, rootInfo os.FileInfo, expected [sha256.Size]byte, changedLabel string, beforeRemove func()) error {
+type removalHooks struct {
+	afterBaseline         func()
+	afterNamespaceCreate  func(string)
+	afterNamespacePinned  func(string)
+	beforeQuarantine      func(string)
+	beforeNamespaceRemove func(string)
+}
+
+func removePinnedTree(path, cleanupPath string, rootHandle *os.File, rootInfo os.FileInfo, expected [sha256.Size]byte, changedLabel string, hooks removalHooks) error {
 	entries, err := pinRemovalTree(path, rootHandle, rootInfo)
 	if err != nil {
 		return err
@@ -965,23 +970,100 @@ func removePinnedTree(path string, rootHandle *os.File, rootInfo os.FileInfo, ex
 	if err != nil || current != expected {
 		return fmt.Errorf("%s changed at %s", changedLabel, path)
 	}
-	if beforeRemove != nil {
-		beforeRemove()
+	for i := range entries {
+		currentInfo, statErr := entries[i].handle.Stat()
+		if statErr != nil || !os.SameFile(currentInfo, entries[i].info) {
+			return fmt.Errorf("path changed while capturing removal fingerprint: %s", entries[i].path)
+		}
+		entries[i].mode = currentInfo.Mode()
+		entries[i].regular = currentInfo.Mode().IsRegular()
+		if entries[i].regular {
+			entries[i].fingerprint, err = fingerprintPinnedPath(entries[i].path, entries[i].handle, entries[i].info)
+			if err != nil {
+				return fmt.Errorf("fingerprint removal candidate %s: %w", entries[i].path, err)
+			}
+		}
+	}
+	if hooks.afterBaseline != nil {
+		hooks.afterBaseline()
+	}
+	if err := os.Mkdir(cleanupPath, 0700); err != nil {
+		return fmt.Errorf("create protected cleanup namespace retained at %s: %w", cleanupPath, err)
+	}
+	if hooks.afterNamespaceCreate != nil {
+		hooks.afterNamespaceCreate(cleanupPath)
+	}
+	cleanupHandle, err := openPinnedPath(cleanupPath)
+	if err != nil {
+		return fmt.Errorf("open protected cleanup namespace retained at %s: %w", cleanupPath, err)
+	}
+	defer func() { _ = cleanupHandle.Close() }()
+	cleanupInfo, err := cleanupHandle.Stat()
+	if err != nil {
+		return fmt.Errorf("stat protected cleanup namespace retained at %s: %w", cleanupPath, err)
+	}
+	if err := revalidatePinned(cleanupPath, cleanupHandle, cleanupInfo); err != nil {
+		return fmt.Errorf("protected cleanup namespace retained at %s: %w", cleanupPath, err)
+	}
+	if hooks.afterNamespacePinned != nil {
+		hooks.afterNamespacePinned(cleanupPath)
 	}
 	for i := len(entries) - 1; i >= 0; i-- {
 		entry := entries[i]
+		if err := revalidatePinned(cleanupPath, cleanupHandle, cleanupInfo); err != nil {
+			return fmt.Errorf("protected cleanup namespace changed at %s: %w", cleanupPath, err)
+		}
 		if err := revalidatePinned(entry.path, entry.handle, entry.info); err != nil {
 			return err
 		}
-		if err := os.Remove(entry.path); err != nil {
-			return fmt.Errorf("remove fingerprinted path %s: %w", entry.path, err)
+		if hooks.beforeQuarantine != nil {
+			hooks.beforeQuarantine(entry.path)
 		}
-		if entry.owned {
-			_ = entry.handle.Close()
-			entries[i].owned = false
+		quarantined := filepath.Join(cleanupPath, fmt.Sprintf("%06d", i))
+		if err := renameNoReplace(entry.path, quarantined); err != nil {
+			return fmt.Errorf("quarantine fingerprinted path %s at %s: %w", entry.path, quarantined, err)
 		}
+		if err := revalidatePinned(quarantined, entry.handle, entry.info); err != nil {
+			retained := restoreCleanupCandidate(quarantined, entry.path)
+			return fmt.Errorf("cleanup candidate changed; retained at %s: %w", retained, err)
+		}
+		if entry.regular {
+			fingerprint, fingerprintErr := fingerprintPinnedPath(quarantined, entry.handle, entry.info)
+			if fingerprintErr != nil || fingerprint != entry.fingerprint {
+				retained := restoreCleanupCandidate(quarantined, entry.path)
+				return fmt.Errorf("cleanup candidate content or mode changed; retained at %s", retained)
+			}
+		} else {
+			currentInfo, statErr := entry.handle.Stat()
+			if statErr != nil || currentInfo.Mode() != entry.mode {
+				retained := restoreCleanupCandidate(quarantined, entry.path)
+				return fmt.Errorf("cleanup candidate mode changed; retained at %s", retained)
+			}
+		}
+		if err := os.Remove(quarantined); err != nil {
+			retained := restoreCleanupCandidate(quarantined, entry.path)
+			return fmt.Errorf("remove quarantined fingerprinted path retained at %s: %w", retained, err)
+		}
+		_ = entry.handle.Close()
+		entries[i].owned = false
+	}
+	if hooks.beforeNamespaceRemove != nil {
+		hooks.beforeNamespaceRemove(cleanupPath)
+	}
+	if err := revalidatePinned(cleanupPath, cleanupHandle, cleanupInfo); err != nil {
+		return fmt.Errorf("protected cleanup namespace retained at %s: %w", cleanupPath, err)
+	}
+	if err := os.Remove(cleanupPath); err != nil {
+		return fmt.Errorf("remove protected cleanup namespace retained at %s: %w", cleanupPath, err)
 	}
 	return nil
+}
+
+func restoreCleanupCandidate(quarantined, original string) string {
+	if err := renameNoReplace(quarantined, original); err == nil {
+		return original
+	}
+	return quarantined
 }
 
 func pinRemovalTree(path string, rootHandle *os.File, rootInfo os.FileInfo) ([]pinnedRemovalEntry, error) {

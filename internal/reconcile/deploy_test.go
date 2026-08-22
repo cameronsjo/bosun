@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -975,6 +976,15 @@ func TestManagedTransitionSafetyFailures(t *testing.T) {
 			err := validateManagedTransitionArtifacts(t.TempDir(), []string{"../escape"})
 			require.ErrorContains(t, err, "invalid managed path")
 		}},
+		{name: "cleanup suffix is reserved in source namespace", run: func(t *testing.T) {
+			source := t.TempDir()
+			reserved := filepath.Join(source, "config"+strings.ToUpper(managedTransitionCleanSuffix))
+			require.NoError(t, os.WriteFile(reserved, []byte("source"), 0600))
+
+			err := validateTransitionSourceNamespace(source)
+
+			require.ErrorContains(t, err, reserved)
+		}},
 		{name: "artifact inspection does not mask ENOTDIR", run: func(t *testing.T) {
 			root := filepath.Join(t.TempDir(), "file")
 			require.NoError(t, os.WriteFile(root, []byte("block"), 0600))
@@ -1271,13 +1281,154 @@ func TestManagedTransitionSafetyFailures(t *testing.T) {
 			item := transitions.items[0]
 			late := filepath.Join(item.oldPath, "runtime.db")
 
-			err := removePinnedTree(item.oldPath, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", func() {
-				require.NoError(t, os.WriteFile(late, []byte("keep"), 0600))
+			err := removePinnedTree(item.oldPath, item.targetPath+managedTransitionCleanSuffix, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", removalHooks{
+				afterBaseline: func() { require.NoError(t, os.WriteFile(late, []byte("keep"), 0600)) },
 			})
 
-			require.ErrorContains(t, err, "remove fingerprinted path")
+			require.ErrorContains(t, err, "remove quarantined fingerprinted path")
 			assert.FileExists(t, late)
 			assert.DirExists(t, item.oldPath)
+		}},
+		{name: "fingerprinted cleanup retains same inode mutations", run: func(t *testing.T) {
+			for _, mutation := range []string{"content", "mode"} {
+				t.Run(mutation, func(t *testing.T) {
+					transitions, _ := newDirToFileTransition(t)
+					require.NoError(t, transitions.Promote())
+					item := transitions.items[0]
+					managed := filepath.Join(item.oldPath, "managed", "app.yml")
+					before, err := os.Stat(managed)
+					require.NoError(t, err)
+
+					err = removePinnedTree(item.oldPath, item.targetPath+managedTransitionCleanSuffix, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", removalHooks{
+						afterBaseline: func() {
+							if mutation == "content" {
+								require.NoError(t, os.WriteFile(managed, []byte("NEW"), before.Mode()))
+								require.NoError(t, os.Chtimes(managed, before.ModTime(), before.ModTime()))
+							} else {
+								require.NoError(t, os.Chmod(managed, before.Mode()^0022))
+							}
+						},
+					})
+
+					require.ErrorContains(t, err, "content or mode changed")
+					assert.FileExists(t, managed)
+				})
+			}
+		}},
+		{name: "cleanup namespace fails closed on collisions and late data", run: func(t *testing.T) {
+			t.Run("existing namespace", func(t *testing.T) {
+				transitions, _ := newFileToDirTransition(t)
+				require.NoError(t, transitions.Promote())
+				item := transitions.items[0]
+				cleanup := item.targetPath + managedTransitionCleanSuffix
+				require.NoError(t, os.Mkdir(cleanup, 0700))
+
+				err := item.removePinnedOld()
+
+				require.ErrorContains(t, err, cleanup)
+				assert.FileExists(t, item.oldPath)
+			})
+			t.Run("candidate collision", func(t *testing.T) {
+				transitions, _ := newFileToDirTransition(t)
+				require.NoError(t, transitions.Promote())
+				item := transitions.items[0]
+				cleanup := item.targetPath + managedTransitionCleanSuffix
+
+				err := removePinnedTree(item.oldPath, cleanup, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", removalHooks{
+					beforeQuarantine: func(string) {
+						require.NoError(t, os.WriteFile(filepath.Join(cleanup, "000000"), []byte("collision"), 0600))
+					},
+				})
+
+				require.ErrorContains(t, err, "quarantine fingerprinted path")
+				assert.FileExists(t, item.oldPath)
+			})
+			t.Run("late namespace child", func(t *testing.T) {
+				transitions, _ := newFileToDirTransition(t)
+				require.NoError(t, transitions.Promote())
+				item := transitions.items[0]
+				cleanup := item.targetPath + managedTransitionCleanSuffix
+				late := filepath.Join(cleanup, "late")
+
+				err := removePinnedTree(item.oldPath, cleanup, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", removalHooks{
+					beforeNamespaceRemove: func(string) { require.NoError(t, os.WriteFile(late, []byte("keep"), 0600)) },
+				})
+
+				require.ErrorContains(t, err, "remove protected cleanup namespace")
+				assert.FileExists(t, late)
+			})
+			t.Run("namespace open failure", func(t *testing.T) {
+				if runtime.GOOS == "windows" {
+					t.Skip("chmod access failures are not portable to Windows")
+				}
+				transitions, _ := newFileToDirTransition(t)
+				require.NoError(t, transitions.Promote())
+				item := transitions.items[0]
+				cleanup := item.targetPath + managedTransitionCleanSuffix
+
+				err := removePinnedTree(item.oldPath, cleanup, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", removalHooks{
+					afterNamespaceCreate: func(string) { require.NoError(t, os.Chmod(cleanup, 0)) },
+				})
+
+				require.ErrorContains(t, err, "open protected cleanup namespace")
+				assert.FileExists(t, item.oldPath)
+			})
+			t.Run("pinned namespace swap", func(t *testing.T) {
+				transitions, _ := newFileToDirTransition(t)
+				require.NoError(t, transitions.Promote())
+				item := transitions.items[0]
+				cleanup := item.targetPath + managedTransitionCleanSuffix
+				original := cleanup + "-original"
+
+				err := removePinnedTree(item.oldPath, cleanup, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", removalHooks{
+					afterNamespacePinned: func(string) {
+						require.NoError(t, os.Rename(cleanup, original))
+						require.NoError(t, os.Mkdir(cleanup, 0700))
+					},
+				})
+
+				require.ErrorContains(t, err, "protected cleanup namespace changed")
+				assert.FileExists(t, item.oldPath)
+				assert.DirExists(t, cleanup)
+				assert.DirExists(t, original)
+			})
+			t.Run("final namespace swap", func(t *testing.T) {
+				transitions, _ := newFileToDirTransition(t)
+				require.NoError(t, transitions.Promote())
+				item := transitions.items[0]
+				cleanup := item.targetPath + managedTransitionCleanSuffix
+				original := cleanup + "-original"
+
+				err := removePinnedTree(item.oldPath, cleanup, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", removalHooks{
+					beforeNamespaceRemove: func(string) {
+						require.NoError(t, os.Rename(cleanup, original))
+						require.NoError(t, os.Mkdir(cleanup, 0700))
+					},
+				})
+
+				require.ErrorContains(t, err, "protected cleanup namespace retained")
+				assert.DirExists(t, cleanup)
+				assert.DirExists(t, original)
+			})
+		}},
+		{name: "cleanup retains directory mode mutation", run: func(t *testing.T) {
+			parent := t.TempDir()
+			path := filepath.Join(parent, "candidate")
+			cleanup := filepath.Join(parent, "cleanup")
+			require.NoError(t, os.Mkdir(path, 0700))
+			handle, err := openPinnedPath(path)
+			require.NoError(t, err)
+			info, err := handle.Stat()
+			require.NoError(t, err)
+			fingerprint, err := fingerprintPinnedPath(path, handle, info)
+			require.NoError(t, err)
+
+			err = removePinnedTree(path, cleanup, handle, info, fingerprint, "candidate", removalHooks{
+				afterBaseline: func() { require.NoError(t, os.Chmod(path, 0750)) },
+			})
+
+			require.ErrorContains(t, err, "mode changed")
+			assert.DirExists(t, path)
 		}},
 		{name: "fingerprinted cleanup rejects irregular and replaced entries", run: func(t *testing.T) {
 			t.Run("irregular", func(t *testing.T) {
@@ -1298,16 +1449,22 @@ func TestManagedTransitionSafetyFailures(t *testing.T) {
 				require.NoError(t, transitions.Promote())
 				item := transitions.items[0]
 				managed := filepath.Join(item.oldPath, "managed", "app.yml")
+				original := managed + "-original"
 
-				err := removePinnedTree(item.oldPath, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", func() {
-					require.NoError(t, os.Remove(managed))
-					require.NoError(t, os.WriteFile(managed, []byte("replacement"), 0600))
+				err := removePinnedTree(item.oldPath, item.targetPath+managedTransitionCleanSuffix, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", removalHooks{
+					beforeQuarantine: func(path string) {
+						if path == managed {
+							require.NoError(t, os.Rename(managed, original))
+							require.NoError(t, os.WriteFile(managed, []byte("replacement"), 0600))
+						}
+					},
 				})
 
 				require.ErrorContains(t, err, "path identity changed")
 				content, readErr := os.ReadFile(managed)
 				require.NoError(t, readErr)
 				assert.Equal(t, "replacement", string(content))
+				assert.FileExists(t, original)
 			})
 		}},
 		{name: "stage reports missing target parent", run: func(t *testing.T) {
@@ -1506,7 +1663,7 @@ func TestManagedTypeTransitions_RejectsIntermediateParentSwap(t *testing.T) {
 }
 
 func TestPrepareManagedTypeTransitions_RefusesExistingArtifacts(t *testing.T) {
-	for _, suffix := range []string{managedTransitionOldSuffix, managedTransitionNewSuffix, managedTransitionStageSuffix} {
+	for _, suffix := range []string{managedTransitionOldSuffix, managedTransitionNewSuffix, managedTransitionStageSuffix, managedTransitionCleanSuffix} {
 		t.Run(suffix, func(t *testing.T) {
 			tmpDir := t.TempDir()
 			source := filepath.Join(tmpDir, "source")

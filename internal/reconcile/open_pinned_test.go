@@ -45,3 +45,26 @@ func TestOpenPinnedPath_AllowsNoReplaceRename(t *testing.T) {
 		})
 	}
 }
+
+func TestCreatePinnedFileExclusive_RetainsOriginalIdentityAcrossPathSwap(t *testing.T) {
+	parent := t.TempDir()
+	path := filepath.Join(parent, "replacement")
+	moved := filepath.Join(parent, "original")
+	handle, err := createPinnedFileExclusive(path, 0600)
+	require.NoError(t, err)
+	defer func() { _ = handle.Close() }()
+	_, err = handle.Write([]byte("original"))
+	require.NoError(t, err)
+	require.NoError(t, handle.Sync())
+	info, err := handle.Stat()
+	require.NoError(t, err)
+
+	require.NoError(t, renameNoReplace(path, moved))
+	require.NoError(t, os.WriteFile(path, []byte("replacement"), 0600))
+
+	require.ErrorContains(t, revalidatePinned(path, handle, info), "path identity changed")
+	require.NoError(t, revalidatePinned(moved, handle, info))
+	content, err := os.ReadFile(moved)
+	require.NoError(t, err)
+	assert.Equal(t, "original", string(content))
+}
