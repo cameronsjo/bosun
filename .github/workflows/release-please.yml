@@ -102,7 +102,7 @@ jobs:
           tar -xzf "/tmp/bosun_${VERSION}_linux_amd64.tar.gz" -C bosun/
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         id: docker-push
         with:
           context: bosun
