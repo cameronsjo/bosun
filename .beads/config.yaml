@@ -65,5 +65,3 @@
 # - linear.api-key
 # - github.org
 # - github.repo
-
-sync.remote: "git+https://github.com/cameronsjo/bosun.git"
