@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,6 +26,35 @@ func TestKillAndReapProcess(t *testing.T) {
 
 	require.NotNil(t, cmd.ProcessState, "Wait must collect the killed child")
 	assert.False(t, cmd.ProcessState.Success())
+}
+
+func TestRemoteCleanupContext_DetachesCancellationAndRemainsBounded(t *testing.T) {
+	type contextKey struct{}
+	parent, cancelParent := context.WithCancel(context.WithValue(context.Background(), contextKey{}, "trace-value"))
+	cancelParent()
+
+	cleanupCtx, cancelCleanup := remoteCleanupContext(parent)
+	defer cancelCleanup()
+
+	require.NoError(t, cleanupCtx.Err())
+	assert.Equal(t, "trace-value", cleanupCtx.Value(contextKey{}))
+	deadline, ok := cleanupCtx.Deadline()
+	require.True(t, ok)
+	remaining := time.Until(deadline)
+	assert.LessOrEqual(t, remaining, RemoteCleanupTimeout)
+	assert.Greater(t, remaining, RemoteCleanupTimeout-time.Second)
+}
+
+func TestCleanupRemotePath_FailureRemainsBestEffort(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte("#!/bin/sh\nexit 1\n"), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	assert.NotPanics(t, func() {
+		cleanupRemotePath(ctx, "user@testhost", "/tmp/bosun-staging", "test_failure", true)
+	})
 }
 
 // setupSSHShim installs a fake `ssh` ahead of PATH that executes the remote
@@ -162,6 +192,60 @@ func TestDeployRemote_SSHStartFailureReapsTar(t *testing.T) {
 	entries, readErr := os.ReadDir(targetParent)
 	require.NoError(t, readErr)
 	assert.Empty(t, entries, "SSH spawn failure must clean the staging directory")
+}
+
+func TestDeployRemote_CancelledContextCleansStagingTempDir(t *testing.T) {
+	dir := t.TempDir()
+	extractStarted := filepath.Join(dir, "extract-started")
+	t.Setenv("SSH_EXTRACT_STARTED", extractStarted)
+	shim := "#!/bin/sh\n" +
+		"while [ $# -gt 0 ]; do\n" +
+		"  case \"$1\" in\n" +
+		"    -o) shift 2 ;;\n" +
+		"    -*) shift ;;\n" +
+		"    *) break ;;\n" +
+		"  esac\n" +
+		"done\n" +
+		"shift\n" +
+		"case \"$*\" in\n" +
+		"  tar\\ -C*\\ -xf\\ -) : > \"$SSH_EXTRACT_STARTED\"; exec /bin/sleep 30 ;;\n" +
+		"esac\n" +
+		"exec /bin/sh -c \"$*\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte(shim), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	parent := filepath.Join(base, "deploy")
+	target := filepath.Join(parent, "compose")
+	writeMarker(t, source, "marker", "new")
+	writeMarker(t, target, "marker", "live")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- (&DeployOps{}).DeployRemote(ctx, source, "user@testhost", target, false)
+	}()
+
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(extractStarted)
+		return err == nil
+	}, 5*time.Second, 10*time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(5 * time.Second):
+		t.Fatal("DeployRemote did not return after cancellation")
+	}
+
+	assert.Equal(t, "live", readMarker(t, target, "marker"))
+	entries, err := os.ReadDir(parent)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "cancelled deploy must clean its remote staging directory")
+	assert.Equal(t, "compose", entries[0].Name())
 }
 
 func TestEnsureRemoteDir_EndToEnd(t *testing.T) {
@@ -303,5 +387,53 @@ func TestDeployRemoteFile_MoveFailureCleansTemp(t *testing.T) {
 	err := d.DeployRemoteFile(context.Background(), source, "user@testhost", target)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "atomic move failed")
+	assertNoTempRemnant(t, targetDir)
+}
+
+func TestDeployRemoteFile_CancelledContextCleansTemp(t *testing.T) {
+	setupSSHShim(t)
+	dir := t.TempDir()
+	scpStarted := filepath.Join(dir, "scp-started")
+	t.Setenv("SCP_STARTED", scpStarted)
+	shim := "#!/bin/sh\n" +
+		"while [ $# -gt 0 ]; do\n" +
+		"  case \"$1\" in\n" +
+		"    -o) shift 2 ;;\n" +
+		"    -*) shift ;;\n" +
+		"    *) break ;;\n" +
+		"  esac\n" +
+		"done\n" +
+		"dst=\"${2#*:}\"\n" +
+		"echo partial > \"$dst\"\n" +
+		": > \"$SCP_STARTED\"\n" +
+		"exec /bin/sleep 30\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "scp"), []byte(shim), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	base := t.TempDir()
+	source := filepath.Join(base, "config.yml")
+	require.NoError(t, os.WriteFile(source, []byte("v1"), 0o644))
+	targetDir := filepath.Join(base, "remote")
+	target := filepath.Join(targetDir, "config.yml")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- (&DeployOps{}).DeployRemoteFile(ctx, source, "user@testhost", target)
+	}()
+
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(scpStarted)
+		return err == nil
+	}, 5*time.Second, 10*time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(5 * time.Second):
+		t.Fatal("DeployRemoteFile did not return after cancellation")
+	}
 	assertNoTempRemnant(t, targetDir)
 }

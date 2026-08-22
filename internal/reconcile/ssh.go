@@ -30,9 +30,10 @@ const (
 
 // Deploy operation timeouts
 const (
-	SSHConnectTimeout   = 5 * time.Second
-	SSHTimeout          = 30 * time.Second
-	RemoteDeployTimeout = 5 * time.Minute
+	SSHConnectTimeout    = 5 * time.Second
+	SSHTimeout           = 30 * time.Second
+	RemoteDeployTimeout  = 5 * time.Minute
+	RemoteCleanupTimeout = 10 * time.Second
 )
 
 // ErrTransferIntegrity marks a remote tar-over-SSH transfer whose staged tree
@@ -221,6 +222,33 @@ var newSSHTransferCommand = sshExecCommand
 // single-file copy path.
 func scpExecCommand(ctx context.Context, args ...string) *exec.Cmd {
 	return execWithHostKeyOptions(ctx, "scp", args...)
+}
+
+// remoteCleanupContext preserves correlation values without inheriting the
+// failed deploy's cancellation or deadline, then adds a short cleanup bound.
+func remoteCleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), RemoteCleanupTimeout)
+}
+
+// cleanupRemotePath removes a disposable remote staging path. Cleanup is
+// best-effort so it cannot replace the primary deploy error.
+func cleanupRemotePath(ctx context.Context, targetHost, path, reason string, recursive bool) {
+	cleanupCtx, cancel := remoteCleanupContext(ctx)
+	defer cancel()
+
+	flag := "-f"
+	if recursive {
+		flag = "-rf"
+	}
+	if err := sshExecCommand(cleanupCtx, targetHost, shellquote.Join("rm", flag, path)).Run(); err != nil {
+		logger := log.ComponentCtx(ctx, log.ComponentDeploy)
+		logger.Warn().
+			Err(err).
+			Str(log.FieldTarget, targetHost).
+			Str(log.FieldPath, path).
+			Str("reason", reason).
+			Msg("Failed to clean up remote staging path, leaving orphan behind")
+	}
 }
 
 // killAndReapProcess terminates a started child and collects its process state.
@@ -523,18 +551,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 		// could survive and be promoted to the live target.
 		tmpDir := filepath.Join(targetParent, fmt.Sprintf(".deploy-tmp-%d", time.Now().UnixNano()))
 		cleanupTmp := func(reason string) {
-			if err := sshExecCommand(ctx, targetHost, shellquote.Join("rm", "-rf", tmpDir)).Run(); err != nil {
-				// Best-effort by design: the failure that got us here often
-				// means the host is unreachable, so cleanup fails too. The
-				// next attempt uses a fresh dir; the leftover is orphaned,
-				// not overlaid (#342) — but say so instead of swallowing it.
-				logger.Warn().
-					Err(err).
-					Str(log.FieldTarget, targetHost).
-					Str(log.FieldPath, tmpDir).
-					Str("reason", reason).
-					Msg("Failed to clean up staging temp dir on remote, leaving orphan behind")
-			}
+			cleanupRemotePath(ctx, targetHost, tmpDir, reason, true)
 		}
 		// Heal any interrupted swap from a prior run before staging this one:
 		// promote the newest retained tree when the target is missing, then
@@ -737,6 +754,9 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 
 	// Create temp file path for atomic copy
 	tmpFile := fmt.Sprintf("%s.tmp.%d", targetFile, time.Now().UnixNano())
+	cleanupTmp := func(reason string) {
+		cleanupRemotePath(ctx, targetHost, tmpFile, reason, false)
+	}
 
 	err := retryWithBackoff(ctx, DefaultMaxRetries, func() error {
 		// SCP to temp file
@@ -746,8 +766,7 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 		scpCmd.Stderr = &scpStderr
 
 		if err := scpCmd.Run(); err != nil {
-			// Cleanup temp file on failure
-			_ = sshExecCommand(ctx, targetHost, shellquote.Join("rm", "-f", tmpFile)).Run()
+			cleanupTmp("scp_failed")
 			if ctx.Err() == context.DeadlineExceeded {
 				return fmt.Errorf("scp timed out after %v", RemoteDeployTimeout)
 			}
@@ -760,7 +779,7 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 		moveCmd.Stderr = &moveStderr
 
 		if err := moveCmd.Run(); err != nil {
-			_ = sshExecCommand(ctx, targetHost, shellquote.Join("rm", "-f", tmpFile)).Run()
+			cleanupTmp("move_failed")
 			return fmt.Errorf("atomic move failed: %w: %s", err, moveStderr.String())
 		}
 
