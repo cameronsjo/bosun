@@ -3,12 +3,29 @@ package reconcile
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestKillAndReapProcess(t *testing.T) {
+	cmd := exec.Command("/bin/sleep", "30")
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+
+	killAndReapProcess(cmd)
+
+	require.NotNil(t, cmd.ProcessState, "Wait must collect the killed child")
+	assert.False(t, cmd.ProcessState.Success())
+}
 
 // setupSSHShim installs a fake `ssh` ahead of PATH that executes the remote
 // command locally (`ssh [-o opt]... <host> <cmd...>` → `/bin/sh -c "<cmd...>"`),
@@ -122,6 +139,29 @@ func TestDeployRemote_EndToEnd(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid SSH host")
 	})
+}
+
+func TestDeployRemote_SSHStartFailureReapsTar(t *testing.T) {
+	setupSSHShim(t)
+	original := newSSHTransferCommand
+	t.Cleanup(func() { newSSHTransferCommand = original })
+	missingSSH := filepath.Join(t.TempDir(), "missing-ssh")
+	newSSHTransferCommand = func(ctx context.Context, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, missingSSH)
+	}
+
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	targetParent := filepath.Join(base, "deploy")
+	writeMarker(t, source, "marker", "v1")
+
+	err := (&DeployOps{}).DeployRemote(context.Background(), source, "user@testhost", filepath.Join(targetParent, "compose"), false)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "start ssh")
+	entries, readErr := os.ReadDir(targetParent)
+	require.NoError(t, readErr)
+	assert.Empty(t, entries, "SSH spawn failure must clean the staging directory")
 }
 
 func TestEnsureRemoteDir_EndToEnd(t *testing.T) {
