@@ -728,34 +728,6 @@ func TestClient_GetContainerLogs(t *testing.T) {
 	}
 }
 
-func TestClient_GetContainerLogs_CancellationClosesBlockedStream(t *testing.T) {
-	server, stream := net.Pipe()
-	defer func() { _ = server.Close() }()
-
-	streamReturned := make(chan struct{})
-	mock := NewMockDockerAPI()
-	mock.ContainerLogsFunc = func(ctx context.Context, containerName string, options client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
-		close(streamReturned)
-		return stream, nil
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	result := make(chan error, 1)
-	go func() {
-		_, err := NewClientWithAPI(mock).GetContainerLogs(ctx, "web", 100)
-		result <- err
-	}()
-
-	<-streamReturned
-	cancel()
-	select {
-	case err := <-result:
-		require.ErrorIs(t, err, context.Canceled)
-	case <-time.After(time.Second):
-		t.Fatal("GetContainerLogs did not stop after cancellation")
-	}
-}
-
 func TestClient_GetContainerStats(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -820,67 +792,95 @@ func TestClient_GetContainerStats(t *testing.T) {
 	}
 }
 
-func TestClient_GetContainerStats_CancellationInterruptsDrain(t *testing.T) {
-	server, stream := net.Pipe()
-	defer func() { _ = server.Close() }()
-
-	mock := NewMockDockerAPI()
-	mock.ContainerStatsFunc = func(ctx context.Context, containerID string, options client.ContainerStatsOptions) (client.ContainerStatsResult, error) {
-		return client.ContainerStatsResult{Body: stream}, nil
+func TestClient_StreamCancellationClosesBlockedRead(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*MockDockerAPI, net.Conn, net.Conn) <-chan struct{}
+		call  func(context.Context, *Client) error
+		check func(*testing.T, *MockDockerAPI)
+	}{
+		{
+			name: "logs",
+			setup: func(mock *MockDockerAPI, _ net.Conn, stream net.Conn) <-chan struct{} {
+				ready := make(chan struct{})
+				mock.ContainerLogsFunc = func(context.Context, string, client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
+					close(ready)
+					return stream, nil
+				}
+				return ready
+			},
+			call: func(ctx context.Context, dockerClient *Client) error {
+				_, err := dockerClient.GetContainerLogs(ctx, "web", 100)
+				return err
+			},
+		},
+		{
+			name: "stats",
+			setup: func(mock *MockDockerAPI, server, stream net.Conn) <-chan struct{} {
+				mock.ContainerStatsFunc = func(context.Context, string, client.ContainerStatsOptions) (client.ContainerStatsResult, error) {
+					return client.ContainerStatsResult{Body: stream}, nil
+				}
+				ready := make(chan struct{})
+				go func() {
+					_, _ = server.Write(makeStatsJSON(200, 2000, 100, 1000, 512, 1024, 2))
+					close(ready)
+				}()
+				return ready
+			},
+			call: func(ctx context.Context, dockerClient *Client) error {
+				_, err := dockerClient.GetContainerStats(ctx, "web")
+				return err
+			},
+		},
+		{
+			name: "exec",
+			setup: func(mock *MockDockerAPI, _ net.Conn, stream net.Conn) <-chan struct{} {
+				ready := make(chan struct{})
+				mock.ExecAttachFunc = func(context.Context, string, client.ExecAttachOptions) (client.ExecAttachResult, error) {
+					close(ready)
+					return client.ExecAttachResult{HijackedResponse: client.HijackedResponse{
+						Conn:   stream,
+						Reader: bufio.NewReader(stream),
+					}}, nil
+				}
+				return ready
+			},
+			call: func(ctx context.Context, dockerClient *Client) error {
+				return dockerClient.ExecContainer(ctx, "web", []string{"true"})
+			},
+			check: func(t *testing.T, mock *MockDockerAPI) {
+				assert.Zero(t, mock.ExecInspectCalls)
+			},
+		},
 	}
 
-	writeDone := make(chan struct{})
-	go func() {
-		_, _ = server.Write(makeStatsJSON(200, 2000, 100, 1000, 512, 1024, 2))
-		close(writeDone)
-	}()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, stream := net.Pipe()
+			defer func() { _ = server.Close() }()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	result := make(chan error, 1)
-	go func() {
-		_, err := NewClientWithAPI(mock).GetContainerStats(ctx, "web")
-		result <- err
-	}()
+			mock := NewMockDockerAPI()
+			ready := tt.setup(mock, server, stream)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			result := make(chan error, 1)
+			go func() {
+				result <- tt.call(ctx, NewClientWithAPI(mock))
+			}()
 
-	<-writeDone
-	cancel()
-	select {
-	case err := <-result:
-		require.ErrorIs(t, err, context.Canceled)
-	case <-time.After(time.Second):
-		t.Fatal("GetContainerStats did not stop draining after cancellation")
+			<-ready
+			cancel()
+			select {
+			case err := <-result:
+				require.ErrorIs(t, err, context.Canceled)
+			case <-time.After(time.Second):
+				t.Fatal("stream read did not stop after cancellation")
+			}
+			if tt.check != nil {
+				tt.check(t, mock)
+			}
+		})
 	}
-}
-
-func TestClient_ExecContainer_CancellationClosesBlockedStream(t *testing.T) {
-	server, stream := net.Pipe()
-	defer func() { _ = server.Close() }()
-
-	streamReturned := make(chan struct{})
-	mock := NewMockDockerAPI()
-	mock.ExecAttachFunc = func(ctx context.Context, execID string, options client.ExecAttachOptions) (client.ExecAttachResult, error) {
-		close(streamReturned)
-		return client.ExecAttachResult{HijackedResponse: client.HijackedResponse{
-			Conn:   stream,
-			Reader: bufio.NewReader(stream),
-		}}, nil
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	result := make(chan error, 1)
-	go func() {
-		result <- NewClientWithAPI(mock).ExecContainer(ctx, "web", []string{"true"})
-	}()
-
-	<-streamReturned
-	cancel()
-	select {
-	case err := <-result:
-		require.ErrorIs(t, err, context.Canceled)
-	case <-time.After(time.Second):
-		t.Fatal("ExecContainer did not stop after cancellation")
-	}
-	assert.Zero(t, mock.ExecInspectCalls)
 }
 
 func TestClient_ExecContainer_DrainsThenInspects(t *testing.T) {
@@ -1073,16 +1073,42 @@ func TestReadWithContext_AlreadyCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	closed := false
+	closeCalls := 0
 	read := false
-	err := readWithContext(ctx, func() { closed = true }, func() error {
+	err := readWithContext(ctx, func() { closeCalls++ }, func() error {
 		read = true
 		return nil
 	})
 
 	require.ErrorIs(t, err, context.Canceled)
-	assert.True(t, closed)
+	assert.Equal(t, 1, closeCalls)
 	assert.False(t, read)
+}
+
+func TestReadWithContext_CancelledDuringRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	closeCalls := 0
+
+	err := readWithContext(ctx, func() { closeCalls++ }, func() error {
+		cancel()
+		return nil
+	})
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, closeCalls)
+}
+
+func TestReadWithContext_PropagatesReadError(t *testing.T) {
+	sentinel := errors.New("sentinel read failure")
+	closeCalls := 0
+
+	err := readWithContext(context.Background(), func() { closeCalls++ }, func() error {
+		return sentinel
+	})
+
+	require.ErrorIs(t, err, sentinel)
+	assert.Equal(t, 1, closeCalls)
 }
 
 // errorReader is a reader that always returns an error.

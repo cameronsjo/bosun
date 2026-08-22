@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/moby/moby/api/types/system"
@@ -339,8 +340,6 @@ func (c *Client) ExecContainer(ctx context.Context, name string, cmd []string) e
 		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to attach to exec instance")
 		return fmt.Errorf("attach exec in %s: %w", name, err)
 	}
-	defer attachResp.Close()
-
 	// Drain output to allow the exec to complete.
 	err = readWithContext(ctx, attachResp.Close, func() error {
 		_, copyErr := io.Copy(io.Discard, attachResp.Reader)
@@ -389,8 +388,6 @@ func (c *Client) GetContainerLogs(ctx context.Context, name string, tail int) (s
 		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to get container logs")
 		return "", fmt.Errorf("get container logs: %w", err)
 	}
-	defer func() { _ = reader.Close() }()
-
 	// Read logs with size limit to prevent memory exhaustion
 	var logs []byte
 	err = readWithContext(ctx, func() { _ = reader.Close() }, func() error {
@@ -423,25 +420,21 @@ func (c *Client) GetContainerStats(ctx context.Context, name string) (*Container
 		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to get container stats")
 		return nil, fmt.Errorf("get container stats: %w", err)
 	}
-	defer func() { _ = stats.Body.Close() }()
-
 	// Parse the stats JSON, then drain any remaining data for connection reuse.
 	// Closing the body on cancellation interrupts either blocking operation.
 	var v statsJSON
-	var parseErr error
 	err = readWithContext(ctx, func() { _ = stats.Body.Close() }, func() error {
-		parseErr = readJSONStats(stats.Body, &v)
-		if parseErr != nil {
+		if parseErr := readJSONStats(stats.Body, &v); parseErr != nil {
 			return parseErr
 		}
 		_, _ = io.Copy(io.Discard, stats.Body)
 		return nil
 	})
 	if err != nil {
-		if parseErr != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			return nil, fmt.Errorf("parse stats: %w", err)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("read stats: %w", err)
 		}
-		return nil, fmt.Errorf("read stats: %w", err)
+		return nil, fmt.Errorf("parse stats: %w", err)
 	}
 
 	// Calculate CPU percentage
@@ -549,17 +542,20 @@ func readJSONStats(r io.Reader, v *statsJSON) error {
 }
 
 // readWithContext runs a potentially blocking stream read and closes the
-// underlying response when the caller cancels. Closing is required because an
-// in-progress Read cannot observe ctx.Done() on its own.
+// underlying response exactly once, either when the caller cancels or after the
+// read finishes. Closing on cancellation is required because an in-progress
+// Read cannot observe ctx.Done() on its own.
 func readWithContext(ctx context.Context, closeReader func(), read func() error) error {
+	closeReader = sync.OnceFunc(closeReader)
 	if err := ctx.Err(); err != nil {
 		closeReader()
 		return err
 	}
 
 	finished := make(chan struct{})
-	defer close(finished)
+	watcherDone := make(chan struct{})
 	go func() {
+		defer close(watcherDone)
 		select {
 		case <-ctx.Done():
 			closeReader()
@@ -568,6 +564,9 @@ func readWithContext(ctx context.Context, closeReader func(), read func() error)
 	}()
 
 	err := read()
+	close(finished)
+	<-watcherDone
+	closeReader()
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
