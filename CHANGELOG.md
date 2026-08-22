@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.6](https://github.com/cameronsjo/bosun/compare/v0.39.5...v0.39.6) (2026-08-22)
+
+
+### Bug Fixes
+
+* **reconcile:** detach remote cleanup from cancellation ([#500](https://github.com/cameronsjo/bosun/issues/500)) ([905f2bf](https://github.com/cameronsjo/bosun/commit/905f2bf2507cfa3fe296b0e66a8e2c59dff4d3bd))
+* **reconcile:** skip symlinks during template copy ([#498](https://github.com/cameronsjo/bosun/issues/498)) ([965b5ca](https://github.com/cameronsjo/bosun/commit/965b5caa36f98bfc00957af7611a93da47453b8a))
+
 ## [0.39.5](https://github.com/cameronsjo/bosun/compare/v0.39.4...v0.39.5) (2026-08-22)
 
 
