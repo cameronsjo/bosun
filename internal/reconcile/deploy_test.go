@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -681,7 +682,7 @@ func TestDeployOps_DeployLocal_ContentHash(t *testing.T) {
 		err := deploy.DeployLocal(context.Background(), sourceDir, targetDir, &DeployResult{}, nil)
 
 		require.Error(t, err)
-		assert.ErrorContains(t, err, "config blocks directory deployment and is not in the managed-file manifest")
+		assert.ErrorContains(t, err, "config blocks directory deployment and is not a managed regular file")
 		content, readErr := os.ReadFile(filepath.Join(targetDir, "config"))
 		require.NoError(t, readErr)
 		assert.Equal(t, "unmanaged", string(content))
@@ -705,6 +706,169 @@ func TestDeployOps_DeployLocal_ContentHash(t *testing.T) {
 		assert.FileExists(t, filepath.Join(targetDir, "config", "app.yml"))
 		assert.FileExists(t, filepath.Join(targetDir, "config", "runtime.db"))
 	})
+
+	t.Run("refuses directory to file transition for empty unmanaged directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+		require.NoError(t, os.MkdirAll(sourceDir, 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(targetDir, "config"), 0750))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "config"), []byte("new"), 0644))
+
+		err := (&DeployOps{ContentHashSync: true}).DeployLocal(context.Background(), sourceDir, targetDir, &DeployResult{}, nil)
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "has no managed descendants")
+		assert.DirExists(t, filepath.Join(targetDir, "config"))
+	})
+
+	t.Run("refuses directory to file transition with empty unmanaged subtree", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+		require.NoError(t, os.MkdirAll(sourceDir, 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(targetDir, "config", "managed"), 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(targetDir, "config", "runtime-empty"), 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "config"), []byte("new"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "config", "managed", "app.yml"), []byte("old"), 0644))
+
+		err := (&DeployOps{ContentHashSync: true}).DeployLocal(context.Background(), sourceDir, targetDir, &DeployResult{}, map[string]bool{"config/managed/app.yml": true})
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "runtime-empty has no managed descendants")
+		assert.DirExists(t, filepath.Join(targetDir, "config", "runtime-empty"))
+		assert.FileExists(t, filepath.Join(targetDir, "config", "managed", "app.yml"))
+	})
+
+	t.Run("rolls back promoted transition when later copy fails", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+		require.NoError(t, os.MkdirAll(filepath.Join(sourceDir, "config"), 0755))
+		require.NoError(t, os.MkdirAll(targetDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "config", "app.yml"), []byte("new"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "config"), []byte("old"), 0644))
+		copyErr := errors.New("copy failed after promotion")
+		deploy := &DeployOps{
+			ContentHashSync: true,
+			copyDirIfChangedFn: func(string, string) ([]string, error) {
+				return nil, copyErr
+			},
+		}
+
+		err := deploy.DeployLocal(context.Background(), sourceDir, targetDir, &DeployResult{}, map[string]bool{"config": true})
+
+		require.ErrorIs(t, err, copyErr)
+		content, readErr := os.ReadFile(filepath.Join(targetDir, "config"))
+		require.NoError(t, readErr)
+		assert.Equal(t, "old", string(content))
+	})
+}
+
+func TestManagedTypeTransitions_PromotionFailureRestoresOriginal(t *testing.T) {
+	tmpDir := t.TempDir()
+	source := filepath.Join(tmpDir, "source")
+	target := filepath.Join(tmpDir, "target")
+	require.NoError(t, os.MkdirAll(filepath.Join(source, "config"), 0755))
+	require.NoError(t, os.MkdirAll(target, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "config", "app.yml"), []byte("new"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "config"), []byte("old"), 0644))
+
+	transitions, err := prepareManagedTypeTransitions(source, target, map[string]bool{"config": true})
+	require.NoError(t, err)
+	require.Len(t, transitions.items, 1)
+	require.NoError(t, os.RemoveAll(transitions.items[0].replacement))
+
+	err = transitions.Promote()
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "promote replacement config")
+	content, readErr := os.ReadFile(filepath.Join(target, "config"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "old", string(content))
+}
+
+func TestManagedTypeTransitions_RollbackRetainsOriginalWhenRestoreFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	source := filepath.Join(tmpDir, "source")
+	targetParent := filepath.Join(tmpDir, "target")
+	target := filepath.Join(targetParent, "config")
+	require.NoError(t, os.MkdirAll(filepath.Join(source, "config"), 0755))
+	require.NoError(t, os.MkdirAll(targetParent, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "config", "app.yml"), []byte("new"), 0644))
+	require.NoError(t, os.WriteFile(target, []byte("old"), 0644))
+
+	transitions, err := prepareManagedTypeTransitions(source, targetParent, map[string]bool{"config": true})
+	require.NoError(t, err)
+	require.Len(t, transitions.items, 1)
+	item := transitions.items[0]
+	require.NoError(t, os.Rename(item.targetPath, item.old))
+	item.quarantined = true
+	require.NoError(t, os.Mkdir(item.targetPath, 0755))
+	t.Cleanup(func() { _ = os.RemoveAll(item.stageRoot) })
+
+	err = transitions.Rollback(errors.New("promotion failed"))
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "restore original destination config")
+	assert.ErrorContains(t, err, item.stageRoot)
+	content, readErr := os.ReadFile(item.old)
+	require.NoError(t, readErr)
+	assert.Equal(t, "old", string(content))
+}
+
+func TestManagedTypeTransitions_RejectsIntermediateParentSwap(t *testing.T) {
+	tmpDir := t.TempDir()
+	source := filepath.Join(tmpDir, "source")
+	targetParent := filepath.Join(tmpDir, "target")
+	target := filepath.Join(targetParent, "config")
+	outside := filepath.Join(tmpDir, "outside")
+	require.NoError(t, os.MkdirAll(source, 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(target, "nested"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(outside, "config", "nested"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "config"), []byte("new"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "nested", "app.yml"), []byte("old"), 0644))
+	victim := filepath.Join(outside, "config", "nested", "app.yml")
+	require.NoError(t, os.WriteFile(victim, []byte("outside"), 0644))
+
+	transitions, err := prepareManagedTypeTransitions(source, targetParent, map[string]bool{"config/nested/app.yml": true})
+	require.NoError(t, err)
+	require.NoError(t, os.Rename(targetParent, targetParent+"-original"))
+	require.NoError(t, os.Symlink(outside, targetParent))
+	t.Cleanup(transitions.discardStages)
+
+	err = transitions.Promote()
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "destination parent changed")
+	content, readErr := os.ReadFile(victim)
+	require.NoError(t, readErr)
+	assert.Equal(t, "outside", string(content))
+}
+
+func TestManagedTypeTransitions_CommitPreservesLateUnmanagedData(t *testing.T) {
+	tmpDir := t.TempDir()
+	source := filepath.Join(tmpDir, "source")
+	targetParent := filepath.Join(tmpDir, "target")
+	target := filepath.Join(targetParent, "config")
+	require.NoError(t, os.MkdirAll(source, 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(target, "managed"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "config"), []byte("new"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "managed", "app.yml"), []byte("old"), 0644))
+
+	transitions, err := prepareManagedTypeTransitions(source, targetParent, map[string]bool{"config/managed/app.yml": true})
+	require.NoError(t, err)
+	require.Len(t, transitions.items, 1)
+	require.NoError(t, transitions.Promote())
+	item := transitions.items[0]
+	t.Cleanup(func() { _ = os.RemoveAll(item.stageRoot) })
+
+	lateData := filepath.Join(item.old, "runtime.db")
+	require.NoError(t, os.WriteFile(lateData, []byte("keep"), 0600))
+	transitions.Commit(zerolog.Nop())
+
+	assert.FileExists(t, lateData)
+	content, readErr := os.ReadFile(target)
+	require.NoError(t, readErr)
+	assert.Equal(t, "new", string(content))
 }
 
 func TestDeployOps_DeployLocalFile_ContentHash(t *testing.T) {
@@ -1717,24 +1881,21 @@ func TestDeployOps_DeployLocalStandardMode(t *testing.T) {
 		assert.ErrorIs(t, err, context.Canceled)
 	})
 
-	t.Run("content hash mode MkdirAll error", func(t *testing.T) {
-		if os.Getuid() == 0 {
-			t.Skip("skipping permission test when running as root")
-		}
-
+	t.Run("content hash mode refuses unmanaged root file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		sourceDir := filepath.Join(tmpDir, "source")
 		require.NoError(t, os.MkdirAll(sourceDir, 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "f.txt"), []byte("x"), 0644))
 
-		// Put a file where the target directory should be, so MkdirAll fails.
+		// Put an unmanaged file where the target directory should be. Transition
+		// preparation must now fail closed before MkdirAll or any mutation.
 		targetPath := filepath.Join(tmpDir, "target")
 		require.NoError(t, os.WriteFile(targetPath, []byte("block"), 0644))
 
 		d := &DeployOps{DryRun: false, ContentHashSync: true}
 		err := d.DeployLocal(ctx, sourceDir, targetPath, nil, nil)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "create target directory")
+		assert.Contains(t, err.Error(), "destination . blocks directory deployment and is not a managed regular file")
 	})
 }
 

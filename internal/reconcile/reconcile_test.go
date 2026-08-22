@@ -3225,6 +3225,60 @@ func TestDeployLocal_ManagedSetPrune(t *testing.T) {
 	assert.NotContains(t, result2.ManagedFiles, "authelia/extra.yml")
 }
 
+func TestDeployLocal_TopLevelTypeTransitions(t *testing.T) {
+	newReconciler := func(t *testing.T, stagingDir, appdataDir string) *Reconciler {
+		t.Helper()
+		cfg := &Config{
+			DryRun:                  true,
+			AllowEmptyDeclaredState: true,
+			StagingDir:              stagingDir,
+			InfraSubDir:             "unraid",
+			LocalAppdataPath:        appdataDir,
+		}
+		seedStubComposeService(t, cfg)
+		return NewReconciler(cfg, WithDeployOps(&DeployOps{ContentHashSync: true}))
+	}
+
+	t.Run("file to directory uses exact prior target ownership", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		stagingDir := filepath.Join(tmpDir, "staging")
+		appdataDir := filepath.Join(tmpDir, "appdata")
+		source := filepath.Join(stagingDir, "unraid", "appdata", "config")
+		require.NoError(t, os.MkdirAll(source, 0755))
+		require.NoError(t, os.MkdirAll(appdataDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(source, "app.yml"), []byte("new"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(appdataDir, "config"), []byte("old"), 0644))
+
+		result, err := newReconciler(t, stagingDir, appdataDir).deployLocal(context.Background(), []string{"config"})
+
+		require.NoError(t, err)
+		assert.FileExists(t, filepath.Join(appdataDir, "config", "app.yml"))
+		assert.Contains(t, result.ManagedFiles, "config/app.yml")
+		assert.Contains(t, result.DeletedFiles, filepath.Join("appdata", "config"))
+	})
+
+	t.Run("directory to file receives prior descendant manifest", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		stagingDir := filepath.Join(tmpDir, "staging")
+		appdataDir := filepath.Join(tmpDir, "appdata")
+		sourceParent := filepath.Join(stagingDir, "unraid", "appdata")
+		target := filepath.Join(appdataDir, "config")
+		require.NoError(t, os.MkdirAll(sourceParent, 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(target, "nested"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceParent, "config"), []byte("new"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(target, "nested", "app.yml"), []byte("old"), 0644))
+
+		result, err := newReconciler(t, stagingDir, appdataDir).deployLocal(context.Background(), []string{"config/nested/app.yml"})
+
+		require.NoError(t, err)
+		content, readErr := os.ReadFile(target)
+		require.NoError(t, readErr)
+		assert.Equal(t, "new", string(content))
+		assert.Contains(t, result.ManagedFiles, "config")
+		assert.Contains(t, result.DeletedFiles, filepath.Join("appdata", "config", "nested", "app.yml"))
+	})
+}
+
 // TestRun_DryRunDoesNotSeedDeployedFiles guards against a dry-run persisting the
 // managed-set manifest. deployLocal populates DeployResult.ManagedFiles from the
 // source walk regardless of dry-run, so without the guard the next real reconcile

@@ -1915,8 +1915,8 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 		ui.Info("  Syncing %s...", t.RelPath)
 		snapshot := len(result.WrittenFiles)
 		deletedSnapshot := len(result.DeletedFiles)
+		prevForTarget := filterManagedForTarget(prevManaged, t.TargetPath)
 		if t.IsDir {
-			prevForTarget := filterManagedForTarget(prevManaged, t.TargetPath)
 			if err := r.deploy.DeployLocal(ctx, src, dst, result, prevForTarget); err != nil {
 				return nil, err
 			}
@@ -1930,7 +1930,7 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 			}
 		} else {
 			_ = os.MkdirAll(filepath.Dir(dst), 0755)
-			if err := r.deploy.DeployLocalFile(ctx, src, dst, result); err != nil {
+			if err := r.deploy.deployLocalFileManaged(ctx, src, dst, result, prevForTarget); err != nil {
 				return nil, err
 			}
 			// DeployLocalFile records filepath.Base, so verify against dst's
@@ -1939,6 +1939,7 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 				return nil, err
 			}
 			result.PrefixLatest(snapshot, filepath.Dir(t.RelPath))
+			result.PrefixLatestDeleted(deletedSnapshot, t.RelPath)
 			// Single-file targets are not walked by removeStaleFiles, but record
 			// them in the manifest so the set reflects everything bosun deployed.
 			result.AddManaged(filepath.ToSlash(t.TargetPath))

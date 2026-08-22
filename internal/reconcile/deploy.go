@@ -11,6 +11,7 @@ import (
 	"github.com/cameronsjo/bosun/internal/fileutil"
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/kballard/go-shellquote"
+	"github.com/rs/zerolog"
 )
 
 // DeployOps provides deployment operations including backup, file sync, and service management.
@@ -33,6 +34,9 @@ type DeployOps struct {
 	// Defaults to ComposeUpMultiple when nil. Exposed for testing the isolated
 	// deploy/rollback decision logic without requiring Docker.
 	composeUpFn func(ctx context.Context, files []string) error
+	// copyDirIfChangedFn fault-injects post-transition copy failures in tests.
+	// Nil uses fileutil.CopyDirIfChanged.
+	copyDirIfChangedFn func(src, dst string) ([]string, error)
 }
 
 // composeUpTimeout returns the configured timeout or the default.
@@ -186,44 +190,51 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 	// Content-hash mode: compare per-file against existing target, skip unchanged.
 	if d.ContentHashSync {
 		logger.Debug().Msg("Using content-hash sync mode for deployment")
-		if err := os.MkdirAll(targetDir, 0755); err != nil {
-			logger.Error().Err(err).Str("target", targetDir).Msg("Failed to deploy locally. Reason: cannot create target directory")
-			return fmt.Errorf("create target directory: %w", err)
-		}
-
-		resolved, err := removeManagedTypeConflicts(sourceDir, targetDir, result, prevManaged)
+		transitions, err := prepareManagedTypeTransitions(sourceDir, targetDir, prevManaged)
 		if err != nil {
 			logger.Error().Err(err).Msg("Failed to deploy locally. Reason: file type transition failed")
-			return fmt.Errorf("resolve file type transitions: %w", err)
+			return fmt.Errorf("prepare file type transitions: %w", err)
 		}
-		if resolved > 0 {
-			logger.Info().Int("resolved", resolved).Msg("Resolved managed file type transitions")
+		if err := transitions.Promote(); err != nil {
+			return fmt.Errorf("promote file type transitions: %w", err)
+		}
+		rollback := func(cause error) error { return transitions.Rollback(cause) }
+
+		if err := os.MkdirAll(targetDir, 0755); err != nil {
+			return rollback(fmt.Errorf("create target directory: %w", err))
 		}
 
-		written, err := fileutil.CopyDirIfChanged(sourceDir, targetDir)
+		copyFn := d.copyDirIfChangedFn
+		if copyFn == nil {
+			copyFn = fileutil.CopyDirIfChanged
+		}
+		written, err := copyFn(sourceDir, targetDir)
 		if err != nil {
 			logger.Error().Err(err).Msg("Failed to deploy locally. Reason: content-hash sync failed")
-			return fmt.Errorf("copy with content hash: %w", err)
+			return rollback(fmt.Errorf("copy with content hash: %w", err))
 		}
 
 		// Prune files bosun previously deployed that are gone from source.
 		if err := removeStaleFiles(ctx, sourceDir, targetDir, result, prevManaged); err != nil {
 			logger.Error().Err(err).Msg("Failed to deploy locally. Reason: stale file removal failed")
-			return fmt.Errorf("remove stale files: %w", err)
+			return rollback(fmt.Errorf("remove stale files: %w", err))
 		}
 
 		if ctx.Err() != nil {
 			logger.Error().Err(ctx.Err()).Msg("Local deployment cancelled by context")
-			return ctx.Err()
+			return rollback(ctx.Err())
 		}
 
+		transitions.Commit(logger)
 		if result != nil {
+			result.AddWritten(transitions.WrittenFiles()...)
+			result.AddDeleted(transitions.DeletedFiles()...)
 			result.AddWritten(written...)
 		}
 
 		logger.Info().
 			Str("target", targetDir).
-			Int("files_written", len(written)).
+			Int("files_written", len(written)+len(transitions.WrittenFiles())).
 			Int64(log.FieldDurationMS, log.DurationMS(start)).
 			Msg("Successfully deployed files locally (content-hash sync)")
 		return nil
@@ -312,121 +323,300 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 	return nil
 }
 
-type managedTypeConflict struct {
-	removeFiles []managedConflictFile
-	removeDirs  []string
+const managedTargetRoot = "."
+
+type managedTypeTransition struct {
+	sourcePath, targetPath, relPath string
+	sourceIsDir                     bool
+	targetInfo, parentInfo          os.FileInfo
+	stageRoot, replacement, old     string
+	written, deleted                []string
+	prevManaged                     map[string]bool
+	quarantined, promoted           bool
 }
 
-type managedConflictFile struct {
-	targetPath string
-	relPath    string
-}
+type managedTypeTransitions struct{ items []*managedTypeTransition }
 
-// removeManagedTypeConflicts removes destination entries whose type conflicts
-// with the current source, but only when every removed file belongs to bosun's
-// previous managed-file manifest. Discovery completes before mutation so an
-// unmanaged runtime file blocks the transition without partial cleanup.
-func removeManagedTypeConflicts(sourceDir, targetDir string, result *DeployResult, prevManaged map[string]bool) (int, error) {
-	var conflicts []managedTypeConflict
-	walkErr := filepath.WalkDir(sourceDir, func(sourcePath string, sourceEntry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if sourcePath == sourceDir || sourceEntry.Type()&os.ModeSymlink != 0 {
-			return nil
-		}
-
-		relPath, err := filepath.Rel(sourceDir, sourcePath)
-		if err != nil {
-			return fmt.Errorf("calculate source path: %w", err)
-		}
-		relSlash := filepath.ToSlash(relPath)
-		targetPath := filepath.Join(targetDir, relPath)
-		targetInfo, err := os.Lstat(targetPath)
-		if err != nil {
-			if os.IsNotExist(err) {
+func prepareManagedTypeTransitions(sourceRoot, targetRoot string, prevManaged map[string]bool) (*managedTypeTransitions, error) {
+	tx := &managedTypeTransitions{}
+	sourceInfo, err := os.Lstat(sourceRoot)
+	if err != nil {
+		return tx, err
+	}
+	rootConflict, err := discoverManagedTypeConflict(sourceRoot, targetRoot, managedTargetRoot, sourceInfo, prevManaged)
+	if err != nil {
+		return tx, err
+	}
+	if rootConflict != nil {
+		tx.items = append(tx.items, rootConflict)
+	} else if sourceInfo.IsDir() {
+		walkErr := filepath.WalkDir(sourceRoot, func(sourcePath string, sourceEntry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if sourcePath == sourceRoot || sourceEntry.Type()&os.ModeSymlink != 0 {
 				return nil
 			}
-			return fmt.Errorf("inspect destination %s: %w", relSlash, err)
-		}
-
-		if sourceEntry.IsDir() {
-			if targetInfo.IsDir() {
-				return nil
+			relPath, err := filepath.Rel(sourceRoot, sourcePath)
+			if err != nil {
+				return fmt.Errorf("calculate source path: %w", err)
 			}
-			if !prevManaged[relSlash] {
-				return fmt.Errorf("destination %s blocks directory deployment and is not in the managed-file manifest", relSlash)
+			info, err := sourceEntry.Info()
+			if err != nil {
+				return err
 			}
-			conflicts = append(conflicts, managedTypeConflict{
-				removeFiles: []managedConflictFile{{targetPath: targetPath, relPath: relSlash}},
-			})
-			// The destination cannot contain corresponding descendants while it
-			// is a file. Replacing this managed file resolves the whole subtree.
-			return filepath.SkipDir
-		}
-
-		if !sourceEntry.Type().IsRegular() || !targetInfo.IsDir() {
+			conflict, err := discoverManagedTypeConflict(sourcePath, filepath.Join(targetRoot, relPath), filepath.ToSlash(relPath), info, prevManaged)
+			if err != nil {
+				return err
+			}
+			if conflict != nil {
+				tx.items = append(tx.items, conflict)
+				if sourceEntry.IsDir() {
+					return filepath.SkipDir
+				}
+			}
 			return nil
-		}
-
-		managedFiles, managedDirs, err := managedEntriesUnder(targetDir, targetPath, prevManaged)
-		if err != nil {
-			return fmt.Errorf("inspect directory blocking file deployment at %s: %w", relSlash, err)
-		}
-		conflicts = append(conflicts, managedTypeConflict{
-			removeFiles: managedFiles,
-			removeDirs:  managedDirs,
 		})
-		return nil
-	})
-	if walkErr != nil {
-		return 0, walkErr
-	}
-
-	for _, conflict := range conflicts {
-		for _, file := range conflict.removeFiles {
-			if err := os.Remove(file.targetPath); err != nil {
-				return 0, fmt.Errorf("remove conflicting destination %s: %w", file.relPath, err)
-			}
-			if result != nil {
-				result.AddDeleted(file.relPath)
-			}
-		}
-		// WalkDir visits parents before children. Reverse removal makes each
-		// directory prove it is still empty; a newly-created unmanaged file
-		// therefore aborts the transition instead of being deleted.
-		for i := len(conflict.removeDirs) - 1; i >= 0; i-- {
-			if err := os.Remove(conflict.removeDirs[i]); err != nil {
-				return 0, fmt.Errorf("remove conflicting destination directory %s: %w", conflict.removeDirs[i], err)
-			}
+		if walkErr != nil {
+			return tx, walkErr
 		}
 	}
-	return len(conflicts), nil
+	for _, item := range tx.items {
+		if err := item.stage(); err != nil {
+			tx.discardStages()
+			return tx, err
+		}
+	}
+	return tx, nil
 }
 
-func managedEntriesUnder(targetDir, conflictDir string, prevManaged map[string]bool) ([]managedConflictFile, []string, error) {
-	var managedFiles []managedConflictFile
-	var managedDirs []string
+func discoverManagedTypeConflict(sourcePath, targetPath, relPath string, sourceInfo os.FileInfo, prevManaged map[string]bool) (*managedTypeTransition, error) {
+	targetInfo, err := os.Lstat(targetPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("inspect destination %s: %w", relPath, err)
+	}
+	if sourceInfo.IsDir() == targetInfo.IsDir() {
+		if sourceInfo.Mode().IsRegular() && !targetInfo.Mode().IsRegular() {
+			return nil, fmt.Errorf("destination %s is not a regular file", relPath)
+		}
+		return nil, nil
+	}
+	if !sourceInfo.IsDir() && !sourceInfo.Mode().IsRegular() {
+		return nil, nil
+	}
+	parentInfo, err := os.Lstat(filepath.Dir(targetPath))
+	if err != nil {
+		return nil, fmt.Errorf("inspect destination parent %s: %w", relPath, err)
+	}
+	item := &managedTypeTransition{sourcePath: sourcePath, targetPath: targetPath, relPath: relPath, sourceIsDir: sourceInfo.IsDir(), targetInfo: targetInfo, parentInfo: parentInfo, prevManaged: prevManaged}
+	if sourceInfo.IsDir() {
+		if !targetInfo.Mode().IsRegular() || !prevManaged[relPath] {
+			return nil, fmt.Errorf("destination %s blocks directory deployment and is not a managed regular file", relPath)
+		}
+		item.deleted = []string{relPath}
+	} else {
+		deleted, err := validateManagedDirectory(targetPath, relPath, prevManaged)
+		if err != nil {
+			return nil, fmt.Errorf("inspect directory blocking file deployment at %s: %w", relPath, err)
+		}
+		item.deleted = deleted
+	}
+	return item, nil
+}
+
+func validateManagedDirectory(conflictDir, conflictRel string, prevManaged map[string]bool) ([]string, error) {
+	var files, physicalFiles, dirs []string
 	err := filepath.WalkDir(conflictDir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if entry.IsDir() {
-			managedDirs = append(managedDirs, path)
+			dirs = append(dirs, path)
 			return nil
 		}
-		relPath, err := filepath.Rel(targetDir, path)
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("destination entry %s is not a regular managed file", path)
+		}
+		under, err := filepath.Rel(conflictDir, path)
 		if err != nil {
 			return err
 		}
-		relSlash := filepath.ToSlash(relPath)
+		relSlash := filepath.ToSlash(filepath.Join(conflictRel, under))
 		if !prevManaged[relSlash] {
 			return fmt.Errorf("destination entry %s is not in the managed-file manifest", relSlash)
 		}
-		managedFiles = append(managedFiles, managedConflictFile{targetPath: path, relPath: relSlash})
+		files = append(files, relSlash)
+		physicalFiles = append(physicalFiles, path)
 		return nil
 	})
-	return managedFiles, managedDirs, err
+	if err != nil {
+		return nil, err
+	}
+	for _, dir := range dirs {
+		hasManaged := false
+		for _, file := range physicalFiles {
+			under, relErr := filepath.Rel(dir, file)
+			if relErr == nil && under != "." && under != ".." && !filepath.IsAbs(under) && (len(under) < 3 || under[:3] != ".."+string(filepath.Separator)) {
+				hasManaged = true
+				break
+			}
+		}
+		if !hasManaged {
+			return nil, fmt.Errorf("destination directory %s has no managed descendants", dir)
+		}
+	}
+	return files, nil
+}
+
+func (t *managedTypeTransition) stage() error {
+	stageRoot, err := os.MkdirTemp(filepath.Dir(t.targetPath), ".bosun-transition-*")
+	if err != nil {
+		return fmt.Errorf("stage transition %s: %w", t.relPath, err)
+	}
+	t.stageRoot = stageRoot
+	t.replacement = filepath.Join(stageRoot, "replacement")
+	t.old = filepath.Join(stageRoot, "original")
+	if t.sourceIsDir {
+		info, err := os.Stat(t.sourcePath)
+		if err != nil {
+			return err
+		}
+		if err := os.Mkdir(t.replacement, info.Mode().Perm()); err != nil {
+			return fmt.Errorf("stage replacement directory %s: %w", t.relPath, err)
+		}
+		if err := fileutil.CopyDir(t.sourcePath, t.replacement); err != nil {
+			return fmt.Errorf("stage replacement directory %s: %w", t.relPath, err)
+		}
+		managed, err := listManagedFiles(t.sourcePath)
+		if err != nil {
+			return err
+		}
+		for _, path := range managed {
+			if t.relPath == managedTargetRoot {
+				t.written = append(t.written, path)
+			} else {
+				t.written = append(t.written, filepath.Join(t.relPath, path))
+			}
+		}
+		return nil
+	}
+	if err := fileutil.CopyFile(t.sourcePath, t.replacement); err != nil {
+		return fmt.Errorf("stage replacement file %s: %w", t.relPath, err)
+	}
+	t.written = []string{t.relPath}
+	return nil
+}
+
+func (ts *managedTypeTransitions) discardStages() {
+	for _, item := range ts.items {
+		if item.stageRoot != "" {
+			_ = os.RemoveAll(item.stageRoot)
+		}
+	}
+}
+
+func (ts *managedTypeTransitions) Promote() error {
+	for _, item := range ts.items {
+		parent, err := os.Lstat(filepath.Dir(item.targetPath))
+		if err != nil || !os.SameFile(parent, item.parentInfo) {
+			return ts.Rollback(fmt.Errorf("destination parent changed before promoting %s", item.relPath))
+		}
+		current, err := os.Lstat(item.targetPath)
+		if err != nil || !os.SameFile(current, item.targetInfo) {
+			return ts.Rollback(fmt.Errorf("destination changed before promoting %s", item.relPath))
+		}
+		if err := os.Rename(item.targetPath, item.old); err != nil {
+			return ts.Rollback(fmt.Errorf("quarantine destination %s: %w", item.relPath, err))
+		}
+		item.quarantined = true
+		if !item.sourceIsDir {
+			deleted, err := validateManagedDirectory(item.old, item.relPath, item.prevManaged)
+			if err != nil {
+				return ts.Rollback(fmt.Errorf("destination changed while quarantining %s: %w", item.relPath, err))
+			}
+			item.deleted = deleted
+		}
+		if _, err := os.Lstat(item.targetPath); !os.IsNotExist(err) {
+			return ts.Rollback(fmt.Errorf("destination %s was recreated during transition", item.relPath))
+		}
+		if err := os.Rename(item.replacement, item.targetPath); err != nil {
+			return ts.Rollback(fmt.Errorf("promote replacement %s: %w", item.relPath, err))
+		}
+		item.promoted = true
+	}
+	return nil
+}
+
+func (ts *managedTypeTransitions) Rollback(cause error) error {
+	errs := []error{cause}
+	recoveryRequired := false
+	for i := len(ts.items) - 1; i >= 0; i-- {
+		item := ts.items[i]
+		if item.promoted {
+			failed := filepath.Join(item.stageRoot, "failed-replacement")
+			if err := os.Rename(item.targetPath, failed); err != nil {
+				errs = append(errs, fmt.Errorf("quarantine failed replacement %s: %w", item.relPath, err))
+				recoveryRequired = true
+				continue
+			}
+			recoveryRequired = true
+			item.promoted = false
+		}
+		if item.quarantined {
+			if err := os.Rename(item.old, item.targetPath); err != nil {
+				errs = append(errs, fmt.Errorf("restore original destination %s: %w", item.relPath, err))
+				recoveryRequired = true
+				continue
+			}
+			item.quarantined = false
+		}
+	}
+	if recoveryRequired {
+		for _, item := range ts.items {
+			if item.stageRoot != "" {
+				errs = append(errs, fmt.Errorf("transition artifacts retained for recovery at %s", item.stageRoot))
+			}
+		}
+	} else {
+		ts.discardStages()
+	}
+	return errors.Join(errs...)
+}
+
+func (ts *managedTypeTransitions) Commit(logger zerolog.Logger) {
+	for _, item := range ts.items {
+		// A process with an already-open directory descriptor can still write into
+		// the quarantined tree after its atomic rename. Revalidate immediately
+		// before cleanup and retain the quarantine if new unmanaged data appeared.
+		if !item.sourceIsDir {
+			if _, err := validateManagedDirectory(item.old, item.relPath, item.prevManaged); err != nil {
+				logger.Warn().Err(err).Str(log.FieldPath, item.stageRoot).Msg("Transition succeeded but quarantine gained unmanaged data; preserving it")
+				continue
+			}
+		}
+		if err := os.RemoveAll(item.stageRoot); err != nil {
+			logger.Warn().Err(err).Str(log.FieldPath, item.stageRoot).Msg("Transition succeeded but quarantine cleanup failed")
+		}
+	}
+}
+
+func (ts *managedTypeTransitions) WrittenFiles() []string {
+	var files []string
+	for _, item := range ts.items {
+		files = append(files, item.written...)
+	}
+	return files
+}
+
+func (ts *managedTypeTransitions) DeletedFiles() []string {
+	var files []string
+	for _, item := range ts.items {
+		files = append(files, item.deleted...)
+	}
+	return files
 }
 
 // removeStaleFiles prunes files under targetDir that bosun deployed on a prior
@@ -565,12 +755,34 @@ func listManagedFiles(sourceDir string) ([]string, error) {
 // Uses atomic copy via temp file. When ContentHashSync is enabled, skips writing
 // if the file content has not changed.
 func (d *DeployOps) DeployLocalFile(ctx context.Context, sourceFile, targetFile string, result *DeployResult) error {
+	return d.deployLocalFileManaged(ctx, sourceFile, targetFile, result, nil)
+}
+
+func (d *DeployOps) deployLocalFileManaged(ctx context.Context, sourceFile, targetFile string, result *DeployResult, prevManaged map[string]bool) error {
 	if d.DryRun {
 		return nil
 	}
 
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+	transitions, err := prepareManagedTypeTransitions(sourceFile, targetFile, prevManaged)
+	if err != nil {
+		return fmt.Errorf("prepare file type transition: %w", err)
+	}
+	if err := transitions.Promote(); err != nil {
+		return fmt.Errorf("promote file type transition: %w", err)
+	}
+	if len(transitions.items) > 0 {
+		if ctx.Err() != nil {
+			return transitions.Rollback(ctx.Err())
+		}
+		transitions.Commit(log.ComponentCtx(ctx, log.ComponentDeploy))
+		if result != nil {
+			result.AddWritten(filepath.Base(targetFile))
+			result.AddDeleted(transitions.DeletedFiles()...)
+		}
+		return nil
 	}
 
 	if d.ContentHashSync {

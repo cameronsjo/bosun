@@ -1156,10 +1156,10 @@ func TestFilterManagedForTarget(t *testing.T) {
 			want:       map[string]bool{},
 		},
 		{
-			name:       "bare prefix without child is dropped",
+			name:       "exact target records root file ownership",
 			manifest:   []string{"authelia", "authelia/users.yml"},
 			targetPath: "authelia",
-			want:       map[string]bool{"users.yml": true},
+			want:       map[string]bool{managedTargetRoot: true, "users.yml": true},
 		},
 		{
 			name:       "prefix is not a substring false-positive",
