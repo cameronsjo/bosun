@@ -293,9 +293,10 @@ func partialDeployError(summary *ComposeUpSummary, totalFiles int) error {
 
 // filterManagedForTarget returns the subset of an appdata-relative deploy
 // manifest belonging to targetPath, with the "<targetPath>/" prefix stripped so
-// the keys are targetDir-relative — the form removeStaleFiles walks. Entries for
-// other targets are dropped. Returns an empty (non-nil) map when nothing matches,
-// which removeStaleFiles treats as "no prior manifest, prune nothing".
+// descendant keys are targetDir-relative. Exact target ownership is retained as
+// managedTargetRoot so a prior top-level file can safely transition to a directory.
+// Entries for other targets are dropped. Returns an empty non-nil map when nothing
+// matches, which removeStaleFiles treats as "no prior manifest, prune nothing".
 func filterManagedForTarget(manifest []string, targetPath string) map[string]bool {
 	// Manifest entries are slash-normalized (see recordManaged), so normalize the
 	// caller's targetPath the same way and trim any trailing slash before building
@@ -305,6 +306,10 @@ func filterManagedForTarget(manifest []string, targetPath string) map[string]boo
 	prefix := normalized + "/"
 	out := make(map[string]bool)
 	for _, m := range manifest {
+		if m == normalized {
+			out[managedTargetRoot] = true
+			continue
+		}
 		if rel, ok := strings.CutPrefix(m, prefix); ok && rel != "" {
 			out[rel] = true
 		}

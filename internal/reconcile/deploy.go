@@ -2,15 +2,21 @@ package reconcile
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/fileutil"
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/kballard/go-shellquote"
+	"github.com/rs/zerolog"
 )
 
 // DeployOps provides deployment operations including backup, file sync, and service management.
@@ -33,6 +39,9 @@ type DeployOps struct {
 	// Defaults to ComposeUpMultiple when nil. Exposed for testing the isolated
 	// deploy/rollback decision logic without requiring Docker.
 	composeUpFn func(ctx context.Context, files []string) error
+	// copyDirIfChangedFn fault-injects post-transition copy failures in tests.
+	// Nil uses fileutil.CopyDirIfChanged.
+	copyDirIfChangedFn func(src, dst string) ([]string, error)
 }
 
 // composeUpTimeout returns the configured timeout or the default.
@@ -186,35 +195,52 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 	// Content-hash mode: compare per-file against existing target, skip unchanged.
 	if d.ContentHashSync {
 		logger.Debug().Msg("Using content-hash sync mode for deployment")
+		transitions, err := prepareManagedTypeTransitions(sourceDir, targetDir, prevManaged)
+		if err != nil {
+			logger.Error().Err(err).Msg("Failed to deploy locally. Reason: file type transition failed")
+			return fmt.Errorf("prepare file type transitions: %w", err)
+		}
+		defer transitions.Close()
+		if err := transitions.Promote(); err != nil {
+			return fmt.Errorf("promote file type transitions: %w", err)
+		}
+		rollback := func(cause error) error { return transitions.Rollback(cause) }
+
 		if err := os.MkdirAll(targetDir, 0755); err != nil {
-			logger.Error().Err(err).Str("target", targetDir).Msg("Failed to deploy locally. Reason: cannot create target directory")
-			return fmt.Errorf("create target directory: %w", err)
+			return rollback(fmt.Errorf("create target directory: %w", err))
 		}
 
-		written, err := fileutil.CopyDirIfChanged(sourceDir, targetDir)
+		copyFn := d.copyDirIfChangedFn
+		if copyFn == nil {
+			copyFn = fileutil.CopyDirIfChanged
+		}
+		written, err := copyFn(sourceDir, targetDir)
 		if err != nil {
 			logger.Error().Err(err).Msg("Failed to deploy locally. Reason: content-hash sync failed")
-			return fmt.Errorf("copy with content hash: %w", err)
+			return rollback(fmt.Errorf("copy with content hash: %w", err))
 		}
 
 		// Prune files bosun previously deployed that are gone from source.
 		if err := removeStaleFiles(ctx, sourceDir, targetDir, result, prevManaged); err != nil {
 			logger.Error().Err(err).Msg("Failed to deploy locally. Reason: stale file removal failed")
-			return fmt.Errorf("remove stale files: %w", err)
+			return rollback(fmt.Errorf("remove stale files: %w", err))
 		}
 
 		if ctx.Err() != nil {
 			logger.Error().Err(ctx.Err()).Msg("Local deployment cancelled by context")
-			return ctx.Err()
+			return rollback(ctx.Err())
 		}
 
+		transitions.Commit(logger)
 		if result != nil {
+			result.AddWritten(transitions.WrittenFiles()...)
+			result.AddDeleted(transitions.DeletedFiles()...)
 			result.AddWritten(written...)
 		}
 
 		logger.Info().
 			Str("target", targetDir).
-			Int("files_written", len(written)).
+			Int("files_written", len(written)+len(transitions.WrittenFiles())).
 			Int64(log.FieldDurationMS, log.DurationMS(start)).
 			Msg("Successfully deployed files locally (content-hash sync)")
 		return nil
@@ -301,6 +327,897 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 		Int64(log.FieldDurationMS, log.DurationMS(start)).
 		Msg("Successfully deployed files locally (atomic swap)")
 	return nil
+}
+
+const (
+	managedTargetRoot            = "."
+	managedTransitionOldSuffix   = ".bosun-transition-old"
+	managedTransitionNewSuffix   = ".bosun-transition-new"
+	managedTransitionStageSuffix = ".bosun-transition-stage"
+	managedTransitionCleanSuffix = ".bosun-transition-cleanup"
+)
+
+func validateTransitionSourceNamespace(sourceRoot string) error {
+	return filepath.WalkDir(sourceRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		name := strings.ToLower(entry.Name())
+		if strings.HasSuffix(name, managedTransitionOldSuffix) ||
+			strings.HasSuffix(name, managedTransitionNewSuffix) ||
+			strings.HasSuffix(name, managedTransitionStageSuffix) ||
+			strings.HasSuffix(name, managedTransitionCleanSuffix) {
+			return fmt.Errorf("source path uses reserved transition suffix: %s", path)
+		}
+		return nil
+	})
+}
+
+func validatePriorManagedTransitionArtifacts(targetRoot string, managed []string) error {
+	return validateManagedTransitionArtifacts(targetRoot, managed)
+}
+
+func validateManagedMapTransitionArtifacts(targetRoot string, managed map[string]bool) error {
+	paths := make([]string, 0, len(managed))
+	for path, owned := range managed {
+		if owned {
+			paths = append(paths, path)
+		}
+	}
+	sort.Strings(paths)
+	return validateManagedTransitionArtifacts(targetRoot, paths)
+}
+
+func validateManagedTransitionArtifacts(targetRoot string, managed []string) error {
+	candidates := make(map[string]struct{})
+	for _, manifestPath := range managed {
+		rel := filepath.Clean(filepath.FromSlash(manifestPath))
+		if rel == managedTargetRoot {
+			candidates[filepath.Clean(targetRoot)] = struct{}{}
+			continue
+		}
+		if rel == "" || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("invalid managed path %q while checking transition artifacts", manifestPath)
+		}
+		for rel != managedTargetRoot {
+			candidate := filepath.Join(targetRoot, rel)
+			candidates[candidate] = struct{}{}
+			rel = filepath.Dir(rel)
+		}
+	}
+	ordered := make([]string, 0, len(candidates))
+	for candidate := range candidates {
+		ordered = append(ordered, candidate)
+	}
+	sort.Strings(ordered)
+	for _, candidate := range ordered {
+		if err := validateTransitionArtifactsAbsent(candidate); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateTransitionArtifactsAbsent(targetPath string) error {
+	for _, artifact := range []string{
+		targetPath + managedTransitionOldSuffix,
+		targetPath + managedTransitionNewSuffix,
+		targetPath + managedTransitionStageSuffix,
+		targetPath + managedTransitionCleanSuffix,
+	} {
+		if _, err := os.Lstat(artifact); err == nil {
+			return fmt.Errorf("transition artifact already exists at %s", artifact)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect transition artifact %s: %w", artifact, err)
+		}
+	}
+	return nil
+}
+
+type managedTypeTransition struct {
+	sourcePath, targetPath, relPath string
+	sourceIsDir                     bool
+	targetInfo, parentInfo          os.FileInfo
+	newInfo                         os.FileInfo
+	targetFingerprint               [sha256.Size]byte
+	newFingerprint                  [sha256.Size]byte
+	targetHandle, parentHandle      *os.File
+	newHandle                       *os.File
+	privatePath                     string
+	privateInfo                     os.FileInfo
+	privateHandle                   *os.File
+	oldPath, newPath                string
+	written, deleted                []string
+	prevManaged                     map[string]bool
+	quarantined, promoted           bool
+}
+
+type managedTypeTransitions struct {
+	items []*managedTypeTransition
+}
+
+func prepareManagedTypeTransitions(sourceRoot, targetRoot string, prevManaged map[string]bool) (*managedTypeTransitions, error) {
+	tx := &managedTypeTransitions{}
+	if err := validateManagedMapTransitionArtifacts(targetRoot, prevManaged); err != nil {
+		return tx, err
+	}
+	sourceInfo, err := os.Lstat(sourceRoot)
+	if err != nil {
+		return tx, err
+	}
+	rootConflict, err := discoverManagedTypeConflict(sourceRoot, targetRoot, managedTargetRoot, sourceInfo, prevManaged)
+	if err != nil {
+		return tx, err
+	}
+	if rootConflict != nil {
+		tx.items = append(tx.items, rootConflict)
+	} else if sourceInfo.IsDir() {
+		err = filepath.WalkDir(sourceRoot, func(sourcePath string, sourceEntry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if sourcePath == sourceRoot || sourceEntry.Type()&os.ModeSymlink != 0 {
+				return nil
+			}
+			relPath, err := filepath.Rel(sourceRoot, sourcePath)
+			if err != nil {
+				return fmt.Errorf("calculate source path: %w", err)
+			}
+			info, err := sourceEntry.Info()
+			if err != nil {
+				return err
+			}
+			conflict, err := discoverManagedTypeConflict(sourcePath, filepath.Join(targetRoot, relPath), filepath.ToSlash(relPath), info, prevManaged)
+			if err != nil {
+				return err
+			}
+			if conflict != nil {
+				tx.items = append(tx.items, conflict)
+				if sourceEntry.IsDir() {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			tx.Close()
+			return tx, err
+		}
+	}
+	for _, item := range tx.items {
+		if err := item.stage(); err != nil {
+			tx.Close()
+			return tx, err
+		}
+	}
+	return tx, nil
+}
+
+func discoverManagedTypeConflict(sourcePath, targetPath, relPath string, sourceInfo os.FileInfo, prevManaged map[string]bool) (*managedTypeTransition, error) {
+	if err := validateTransitionArtifactsAbsent(targetPath); err != nil {
+		return nil, err
+	}
+	targetPathInfo, err := os.Lstat(targetPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("inspect destination %s: %w", relPath, err)
+	}
+	parentPath := filepath.Dir(targetPath)
+	parentPathInfo, err := os.Lstat(parentPath)
+	if err != nil {
+		return nil, fmt.Errorf("inspect destination parent %s: %w", relPath, err)
+	}
+	parentHandle, err := openPinnedPath(parentPath)
+	if err != nil {
+		return nil, fmt.Errorf("open destination parent for %s: %w", relPath, err)
+	}
+	targetHandle, err := openPinnedPath(targetPath)
+	if err != nil {
+		_ = parentHandle.Close()
+		return nil, fmt.Errorf("open destination %s: %w", relPath, err)
+	}
+	keepHandles := false
+	defer func() {
+		if !keepHandles {
+			_ = targetHandle.Close()
+			_ = parentHandle.Close()
+		}
+	}()
+	parentInfo, parentStatErr := parentHandle.Stat()
+	targetInfo, targetStatErr := targetHandle.Stat()
+	if parentStatErr != nil || !os.SameFile(parentPathInfo, parentInfo) {
+		return nil, fmt.Errorf("destination parent changed while discovering %s", relPath)
+	}
+	if targetStatErr != nil || !os.SameFile(targetPathInfo, targetInfo) {
+		return nil, fmt.Errorf("destination changed while discovering %s", relPath)
+	}
+	item := &managedTypeTransition{
+		sourcePath: sourcePath, targetPath: targetPath, relPath: relPath,
+		sourceIsDir: sourceInfo.IsDir(), targetInfo: targetInfo,
+		parentInfo: parentInfo, targetHandle: targetHandle, parentHandle: parentHandle,
+		prevManaged: prevManaged,
+		oldPath:     targetPath + managedTransitionOldSuffix,
+		newPath:     targetPath + managedTransitionNewSuffix,
+	}
+	if err := item.revalidateParent(); err != nil {
+		return nil, fmt.Errorf("destination parent changed while discovering %s: %w", relPath, err)
+	}
+	if err := revalidatePinned(targetPath, targetHandle, targetInfo); err != nil {
+		return nil, fmt.Errorf("destination changed while discovering %s: %w", relPath, err)
+	}
+	if sourceInfo.IsDir() == targetInfo.IsDir() {
+		if sourceInfo.Mode().IsRegular() && !targetInfo.Mode().IsRegular() {
+			return nil, fmt.Errorf("destination %s is not a regular file", relPath)
+		}
+		return nil, nil
+	}
+	if !sourceInfo.IsDir() && !sourceInfo.Mode().IsRegular() {
+		return nil, nil
+	}
+	if sourceInfo.IsDir() {
+		if !targetInfo.Mode().IsRegular() || !prevManaged[relPath] {
+			return nil, fmt.Errorf("destination %s blocks directory deployment and is not a managed regular file", relPath)
+		}
+		item.deleted = []string{relPath}
+	} else {
+		deleted, err := validateManagedDirectory(targetPath, relPath, prevManaged)
+		if err != nil {
+			return nil, fmt.Errorf("inspect directory blocking file deployment at %s: %w", relPath, err)
+		}
+		item.deleted = deleted
+	}
+	if err := validateTransitionArtifactsAbsent(targetPath); err != nil {
+		return nil, err
+	}
+	if err := item.revalidateParent(); err != nil {
+		return nil, fmt.Errorf("destination parent changed while validating %s: %w", relPath, err)
+	}
+	if err := revalidatePinned(targetPath, targetHandle, targetInfo); err != nil {
+		return nil, fmt.Errorf("destination changed while validating %s: %w", relPath, err)
+	}
+	item.targetFingerprint, err = fingerprintPinnedPath(targetPath, targetHandle, targetInfo)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint destination %s: %w", relPath, err)
+	}
+	keepHandles = true
+	return item, nil
+}
+
+func validateManagedDirectory(conflictDir, conflictRel string, prevManaged map[string]bool) ([]string, error) {
+	var files, physicalFiles, dirs []string
+	err := filepath.WalkDir(conflictDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			dirs = append(dirs, path)
+			return nil
+		}
+		regular, err := dirEntryIsRegular(entry)
+		if err != nil {
+			return fmt.Errorf("inspect destination entry %s: %w", path, err)
+		}
+		if !regular {
+			return fmt.Errorf("destination entry %s is not a regular managed file", path)
+		}
+		under, err := filepath.Rel(conflictDir, path)
+		if err != nil {
+			return err
+		}
+		relSlash := filepath.ToSlash(filepath.Join(conflictRel, under))
+		if !prevManaged[relSlash] {
+			return fmt.Errorf("destination entry %s is not in the managed-file manifest", relSlash)
+		}
+		files = append(files, relSlash)
+		physicalFiles = append(physicalFiles, path)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, dir := range dirs {
+		hasManaged := false
+		for _, file := range physicalFiles {
+			under, relErr := filepath.Rel(dir, file)
+			if relErr == nil && under != "." && under != ".." && !filepath.IsAbs(under) && (len(under) < 3 || under[:3] != ".."+string(filepath.Separator)) {
+				hasManaged = true
+				break
+			}
+		}
+		if !hasManaged {
+			return nil, fmt.Errorf("destination directory %s has no managed descendants", dir)
+		}
+	}
+	return files, nil
+}
+
+func dirEntryIsRegular(entry os.DirEntry) (bool, error) {
+	info, err := entry.Info()
+	if err != nil {
+		return false, err
+	}
+	return info.Mode().IsRegular(), nil
+}
+
+func (t *managedTypeTransition) stage() (stageErr error) {
+	if err := t.createPrivateStage(); err != nil {
+		return err
+	}
+	published := false
+	defer func() {
+		if stageErr == nil {
+			return
+		}
+		if !published {
+			if t.privatePath != "" {
+				stageErr = fmt.Errorf("%w; private transition stage retained at %s", stageErr, t.privatePath)
+			}
+			return
+		}
+		if err := t.cleanupPrivateStage(); err != nil {
+			stageErr = errors.Join(stageErr, err)
+		}
+	}()
+
+	replacement := filepath.Join(t.privatePath, "replacement")
+	if t.sourceIsDir {
+		sourceInfo, err := os.Stat(t.sourcePath)
+		if err != nil {
+			return err
+		}
+		if err := os.Mkdir(replacement, sourceInfo.Mode().Perm()); err != nil {
+			return fmt.Errorf("create private replacement directory for %s: %w", t.relPath, err)
+		}
+		t.newHandle, err = openPinnedPath(replacement)
+		if err != nil {
+			return fmt.Errorf("pin private replacement directory for %s: %w", t.relPath, err)
+		}
+		t.newInfo, err = t.newHandle.Stat()
+		if err != nil {
+			return fmt.Errorf("stat private replacement directory for %s: %w", t.relPath, err)
+		}
+		if err := fileutil.CopyDir(t.sourcePath, replacement); err != nil {
+			return fmt.Errorf("copy private replacement directory for %s: %w", t.relPath, err)
+		}
+		managed, err := listManagedFiles(t.sourcePath)
+		if err != nil {
+			return err
+		}
+		for _, path := range managed {
+			if t.relPath == managedTargetRoot {
+				t.written = append(t.written, path)
+			} else {
+				t.written = append(t.written, filepath.Join(t.relPath, path))
+			}
+		}
+	} else {
+		if err := t.copyPrivateFile(replacement); err != nil {
+			return fmt.Errorf("copy private replacement file for %s: %w", t.relPath, err)
+		}
+		t.written = []string{t.relPath}
+	}
+
+	var err error
+	t.newFingerprint, err = fingerprintPinnedPath(replacement, t.newHandle, t.newInfo)
+	if err != nil {
+		return fmt.Errorf("fingerprint private replacement for %s: %w", t.relPath, err)
+	}
+	if err := renameNoReplace(replacement, t.newPath); err != nil {
+		return fmt.Errorf("publish staged replacement for %s at %s: %w", t.relPath, t.newPath, err)
+	}
+	published = true
+	if err := revalidatePinned(t.newPath, t.newHandle, t.newInfo); err != nil {
+		return fmt.Errorf("published replacement changed for %s at %s: %w", t.relPath, t.newPath, err)
+	}
+	if err := t.cleanupPrivateStage(); err != nil {
+		return fmt.Errorf("published replacement retained at %s; %w", t.newPath, err)
+	}
+	return nil
+}
+
+func (t *managedTypeTransition) createPrivateStage() error {
+	path := t.targetPath + managedTransitionStageSuffix
+	if err := os.Mkdir(path, 0700); err != nil {
+		return fmt.Errorf("create private transition stage for %s at %s: %w", t.relPath, path, err)
+	}
+	t.privatePath = path
+	var err error
+	t.privateHandle, err = openPinnedPath(path)
+	if err != nil {
+		return fmt.Errorf("open private transition stage retained at %s: %w", path, err)
+	}
+	t.privateInfo, err = t.privateHandle.Stat()
+	if err != nil {
+		return fmt.Errorf("stat private transition stage retained at %s: %w", path, err)
+	}
+	if err := revalidatePinned(path, t.privateHandle, t.privateInfo); err != nil {
+		return fmt.Errorf("pin private transition stage retained at %s: %w", path, err)
+	}
+	return nil
+}
+
+func (t *managedTypeTransition) copyPrivateFile(replacement string) error {
+	source, err := os.Open(t.sourcePath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = source.Close() }()
+	sourceBefore, err := source.Stat()
+	if err != nil {
+		return err
+	}
+	if !sourceBefore.Mode().IsRegular() {
+		return fmt.Errorf("source is not a regular file")
+	}
+	t.newHandle, err = createPinnedFileExclusive(replacement, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(t.newHandle, source); err != nil {
+		return err
+	}
+	if err := t.newHandle.Chmod(sourceBefore.Mode()); err != nil {
+		return err
+	}
+	if err := t.newHandle.Sync(); err != nil {
+		return err
+	}
+	sourceAfter, err := source.Stat()
+	if err != nil || !sameFileMetadata(sourceBefore, sourceAfter) {
+		return fmt.Errorf("source changed while staging")
+	}
+	t.newInfo, err = t.newHandle.Stat()
+	return err
+}
+
+func (t *managedTypeTransition) cleanupPrivateStage() error {
+	if t.privatePath == "" {
+		return nil
+	}
+	if err := revalidatePinned(t.privatePath, t.privateHandle, t.privateInfo); err != nil {
+		return fmt.Errorf("private transition stage retained at %s: %w", t.privatePath, err)
+	}
+	if err := os.Remove(t.privatePath); err != nil {
+		return fmt.Errorf("remove private transition stage %s: %w", t.privatePath, err)
+	}
+	_ = t.privateHandle.Close()
+	t.privateHandle = nil
+	t.privatePath = ""
+	t.privateInfo = nil
+	return nil
+}
+
+func (ts *managedTypeTransitions) Close() {
+	for _, item := range ts.items {
+		if item.newHandle != nil {
+			_ = item.newHandle.Close()
+		}
+		if item.targetHandle != nil {
+			_ = item.targetHandle.Close()
+		}
+		if item.parentHandle != nil {
+			_ = item.parentHandle.Close()
+		}
+		if item.privateHandle != nil {
+			_ = item.privateHandle.Close()
+		}
+	}
+}
+
+func revalidatePinned(path string, handle *os.File, pinned os.FileInfo) error {
+	if handle == nil || pinned == nil {
+		return fmt.Errorf("path %s has no pinned identity", path)
+	}
+	handleInfo, err := handle.Stat()
+	if err != nil || !os.SameFile(handleInfo, pinned) {
+		return fmt.Errorf("pinned identity changed for %s", path)
+	}
+	pathInfo, err := os.Lstat(path)
+	if err != nil || !os.SameFile(pathInfo, handleInfo) {
+		return fmt.Errorf("path identity changed for %s", path)
+	}
+	return nil
+}
+
+func (t *managedTypeTransition) revalidateParent() error {
+	return revalidatePinned(filepath.Dir(t.targetPath), t.parentHandle, t.parentInfo)
+}
+
+func (ts *managedTypeTransitions) Promote() error {
+	for _, item := range ts.items {
+		if err := item.revalidateParent(); err != nil {
+			return ts.Rollback(fmt.Errorf("destination parent changed before promoting %s: %w", item.relPath, err))
+		}
+		if err := revalidatePinned(item.targetPath, item.targetHandle, item.targetInfo); err != nil {
+			return ts.Rollback(fmt.Errorf("destination changed before promoting %s: %w", item.relPath, err))
+		}
+		newFingerprint, err := fingerprintPinnedPath(item.newPath, item.newHandle, item.newInfo)
+		if err != nil {
+			return ts.Rollback(fmt.Errorf("staged replacement changed before promoting %s at %s: %w", item.relPath, item.newPath, err))
+		}
+		if newFingerprint != item.newFingerprint {
+			return ts.Rollback(fmt.Errorf("staged replacement changed before promoting %s at %s", item.relPath, item.newPath))
+		}
+		if err := renameNoReplace(item.targetPath, item.oldPath); err != nil {
+			return ts.Rollback(fmt.Errorf("quarantine destination %s at %s: %w", item.relPath, item.oldPath, err))
+		}
+		item.quarantined = true
+		if !item.sourceIsDir {
+			deleted, err := validateManagedDirectory(item.oldPath, item.relPath, item.prevManaged)
+			if err != nil {
+				return ts.Rollback(fmt.Errorf("destination changed while quarantining %s: %w", item.relPath, err))
+			}
+			item.deleted = deleted
+		}
+		if err := renameNoReplace(item.newPath, item.targetPath); err != nil {
+			return ts.Rollback(fmt.Errorf("promote replacement %s from %s: %w", item.relPath, item.newPath, err))
+		}
+		item.promoted = true
+	}
+	return nil
+}
+
+func (ts *managedTypeTransitions) Rollback(cause error) error {
+	defer ts.Close()
+	var rollbackErrs []error
+	for i := len(ts.items) - 1; i >= 0; i-- {
+		item := ts.items[i]
+		if item.promoted {
+			if err := item.revalidateParent(); err != nil {
+				rollbackErrs = append(rollbackErrs, err)
+				continue
+			}
+			if err := revalidatePinned(item.targetPath, item.newHandle, item.newInfo); err != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("target %s changed during rollback; preserving it and %s: %w", item.relPath, item.oldPath, err))
+				continue
+			}
+			if err := renameNoReplace(item.targetPath, item.newPath); err != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("quarantine failed replacement %s at %s: %w", item.relPath, item.newPath, err))
+				continue
+			}
+			item.promoted = false
+		}
+		if item.quarantined {
+			if _, err := os.Lstat(item.targetPath); err == nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("target %s was concurrently recreated; original retained at %s", item.relPath, item.oldPath))
+				continue
+			} else if !os.IsNotExist(err) {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("inspect target %s before rollback: %w", item.relPath, err))
+				continue
+			}
+			if err := revalidatePinned(item.oldPath, item.targetHandle, item.targetInfo); err != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("quarantined original changed at %s: %w", item.oldPath, err))
+				continue
+			}
+			if err := renameNoReplace(item.oldPath, item.targetPath); err != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("restore original destination %s from %s: %w", item.relPath, item.oldPath, err))
+				continue
+			}
+			item.quarantined = false
+		}
+	}
+	for _, item := range ts.items {
+		if _, err := os.Lstat(item.newPath); err == nil {
+			if err := item.removePinnedNew(); err != nil {
+				rollbackErrs = append(rollbackErrs, err)
+			}
+		} else if !os.IsNotExist(err) {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("inspect staged replacement %s: %w", item.newPath, err))
+		}
+	}
+	if len(rollbackErrs) == 0 {
+		return cause
+	}
+	return errors.Join(append([]error{cause}, rollbackErrs...)...)
+}
+
+func (ts *managedTypeTransitions) Commit(logger zerolog.Logger) {
+	defer ts.Close()
+	for _, item := range ts.items {
+		if err := item.removePinnedOld(); err != nil {
+			logger.Warn().Err(err).Str(log.FieldPath, item.oldPath).Msg("Transition succeeded but quarantined original was preserved")
+		}
+	}
+}
+
+func (t *managedTypeTransition) removePinnedOld() error {
+	if err := removePinnedTree(t.oldPath, t.targetPath+managedTransitionCleanSuffix, t.targetHandle, t.targetInfo, t.targetFingerprint, "managed original", removalHooks{}); err != nil {
+		return fmt.Errorf("remove quarantined original %s: %w", t.oldPath, err)
+	}
+	return nil
+}
+
+func (t *managedTypeTransition) removePinnedNew() error {
+	if err := removePinnedTree(t.newPath, t.targetPath+managedTransitionCleanSuffix, t.newHandle, t.newInfo, t.newFingerprint, "staged replacement", removalHooks{}); err != nil {
+		return fmt.Errorf("remove staged replacement %s: %w", t.newPath, err)
+	}
+	return nil
+}
+
+type pinnedRemovalEntry struct {
+	path        string
+	handle      *os.File
+	info        os.FileInfo
+	mode        os.FileMode
+	fingerprint [sha256.Size]byte
+	regular     bool
+	owned       bool
+}
+
+type removalHooks struct {
+	afterBaseline         func()
+	afterNamespaceCreate  func(string)
+	afterNamespacePinned  func(string)
+	beforeQuarantine      func(string)
+	beforeNamespaceRemove func(string)
+}
+
+func removePinnedTree(path, cleanupPath string, rootHandle *os.File, rootInfo os.FileInfo, expected [sha256.Size]byte, changedLabel string, hooks removalHooks) error {
+	entries, err := pinRemovalTree(path, rootHandle, rootInfo)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		for _, entry := range entries {
+			if entry.owned {
+				_ = entry.handle.Close()
+			}
+		}
+	}()
+	current, err := fingerprintPinnedPath(path, rootHandle, rootInfo)
+	if err != nil || current != expected {
+		return fmt.Errorf("%s changed at %s", changedLabel, path)
+	}
+	for i := range entries {
+		currentInfo, statErr := entries[i].handle.Stat()
+		if statErr != nil || !os.SameFile(currentInfo, entries[i].info) {
+			return fmt.Errorf("path changed while capturing removal fingerprint: %s", entries[i].path)
+		}
+		entries[i].mode = currentInfo.Mode()
+		entries[i].regular = currentInfo.Mode().IsRegular()
+		if entries[i].regular {
+			entries[i].fingerprint, err = fingerprintPinnedPath(entries[i].path, entries[i].handle, entries[i].info)
+			if err != nil {
+				return fmt.Errorf("fingerprint removal candidate %s: %w", entries[i].path, err)
+			}
+		}
+	}
+	if hooks.afterBaseline != nil {
+		hooks.afterBaseline()
+	}
+	if err := os.Mkdir(cleanupPath, 0700); err != nil {
+		return fmt.Errorf("create protected cleanup namespace retained at %s: %w", cleanupPath, err)
+	}
+	if hooks.afterNamespaceCreate != nil {
+		hooks.afterNamespaceCreate(cleanupPath)
+	}
+	cleanupHandle, err := openPinnedPath(cleanupPath)
+	if err != nil {
+		return fmt.Errorf("open protected cleanup namespace retained at %s: %w", cleanupPath, err)
+	}
+	defer func() { _ = cleanupHandle.Close() }()
+	cleanupInfo, err := cleanupHandle.Stat()
+	if err != nil {
+		return fmt.Errorf("stat protected cleanup namespace retained at %s: %w", cleanupPath, err)
+	}
+	if err := revalidatePinned(cleanupPath, cleanupHandle, cleanupInfo); err != nil {
+		return fmt.Errorf("protected cleanup namespace retained at %s: %w", cleanupPath, err)
+	}
+	if hooks.afterNamespacePinned != nil {
+		hooks.afterNamespacePinned(cleanupPath)
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if err := revalidatePinned(cleanupPath, cleanupHandle, cleanupInfo); err != nil {
+			return fmt.Errorf("protected cleanup namespace changed at %s: %w", cleanupPath, err)
+		}
+		if err := revalidatePinned(entry.path, entry.handle, entry.info); err != nil {
+			return err
+		}
+		if hooks.beforeQuarantine != nil {
+			hooks.beforeQuarantine(entry.path)
+		}
+		quarantined := filepath.Join(cleanupPath, fmt.Sprintf("%06d", i))
+		if err := renameNoReplace(entry.path, quarantined); err != nil {
+			return fmt.Errorf("quarantine fingerprinted path %s at %s: %w", entry.path, quarantined, err)
+		}
+		if err := revalidatePinned(quarantined, entry.handle, entry.info); err != nil {
+			retained := restoreCleanupCandidate(quarantined, entry.path)
+			return fmt.Errorf("cleanup candidate changed; retained at %s: %w", retained, err)
+		}
+		if entry.regular {
+			fingerprint, fingerprintErr := fingerprintPinnedPath(quarantined, entry.handle, entry.info)
+			if fingerprintErr != nil || fingerprint != entry.fingerprint {
+				retained := restoreCleanupCandidate(quarantined, entry.path)
+				return fmt.Errorf("cleanup candidate content or mode changed; retained at %s", retained)
+			}
+		} else {
+			currentInfo, statErr := entry.handle.Stat()
+			if statErr != nil || currentInfo.Mode() != entry.mode {
+				retained := restoreCleanupCandidate(quarantined, entry.path)
+				return fmt.Errorf("cleanup candidate mode changed; retained at %s", retained)
+			}
+		}
+		if err := os.Remove(quarantined); err != nil {
+			retained := restoreCleanupCandidate(quarantined, entry.path)
+			return fmt.Errorf("remove quarantined fingerprinted path retained at %s: %w", retained, err)
+		}
+		_ = entry.handle.Close()
+		entries[i].owned = false
+	}
+	if hooks.beforeNamespaceRemove != nil {
+		hooks.beforeNamespaceRemove(cleanupPath)
+	}
+	if err := revalidatePinned(cleanupPath, cleanupHandle, cleanupInfo); err != nil {
+		return fmt.Errorf("protected cleanup namespace retained at %s: %w", cleanupPath, err)
+	}
+	if err := os.Remove(cleanupPath); err != nil {
+		return fmt.Errorf("remove protected cleanup namespace retained at %s: %w", cleanupPath, err)
+	}
+	return nil
+}
+
+func restoreCleanupCandidate(quarantined, original string) string {
+	if err := renameNoReplace(quarantined, original); err == nil {
+		return original
+	}
+	return quarantined
+}
+
+func pinRemovalTree(path string, rootHandle *os.File, rootInfo os.FileInfo) ([]pinnedRemovalEntry, error) {
+	entries := []pinnedRemovalEntry{{path: path, handle: rootHandle, info: rootInfo}}
+	if !rootInfo.IsDir() {
+		return entries, nil
+	}
+	err := filepath.WalkDir(path, func(entryPath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entryPath == path {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return fmt.Errorf("refuse to remove irregular path %s", entryPath)
+		}
+		handle, err := openPinnedPath(entryPath)
+		if err != nil {
+			return err
+		}
+		opened, err := handle.Stat()
+		if err != nil || !os.SameFile(info, opened) {
+			_ = handle.Close()
+			return fmt.Errorf("path changed while pinning removal: %s", entryPath)
+		}
+		entries = append(entries, pinnedRemovalEntry{path: entryPath, handle: handle, info: opened, owned: true})
+		return nil
+	})
+	if err != nil {
+		for _, entry := range entries {
+			if entry.owned {
+				_ = entry.handle.Close()
+			}
+		}
+		return nil, err
+	}
+	return entries, nil
+}
+
+func sameFileMetadata(before, after os.FileInfo) bool {
+	return before != nil && after != nil && os.SameFile(before, after) && before.Mode() == after.Mode() &&
+		before.Size() == after.Size() && before.ModTime().Equal(after.ModTime())
+}
+
+func fingerprintPinnedPath(path string, handle *os.File, pinned os.FileInfo) ([sha256.Size]byte, error) {
+	var empty [sha256.Size]byte
+	if err := revalidatePinned(path, handle, pinned); err != nil {
+		return empty, err
+	}
+	rootBefore, err := handle.Stat()
+	if err != nil {
+		return empty, err
+	}
+	digest := sha256.New()
+	if rootBefore.Mode().IsRegular() {
+		if err := fingerprintFile(digest, managedTargetRoot, handle, rootBefore); err != nil {
+			return empty, err
+		}
+	} else if rootBefore.IsDir() {
+		writeFingerprintMetadata(digest, managedTargetRoot, rootBefore)
+		if err := filepath.WalkDir(path, func(entryPath string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entryPath == path {
+				return nil
+			}
+			rel, err := filepath.Rel(path, entryPath)
+			if err != nil {
+				return err
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				writeFingerprintMetadata(digest, filepath.ToSlash(rel), info)
+				return nil
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("fingerprint entry %s is not regular", entryPath)
+			}
+			file, err := os.Open(entryPath)
+			if err != nil {
+				return err
+			}
+			opened, err := file.Stat()
+			if err != nil || !os.SameFile(opened, info) {
+				_ = file.Close()
+				return fmt.Errorf("fingerprint entry changed before reading: %s", entryPath)
+			}
+			fingerprintErr := fingerprintFile(digest, filepath.ToSlash(rel), file, opened)
+			closeErr := file.Close()
+			return errors.Join(fingerprintErr, closeErr)
+		}); err != nil {
+			return empty, err
+		}
+	} else {
+		return empty, fmt.Errorf("fingerprint root is neither a regular file nor directory: %s", path)
+	}
+	rootAfter, err := handle.Stat()
+	if err != nil || !sameFileMetadata(rootBefore, rootAfter) {
+		return empty, fmt.Errorf("fingerprint root changed while reading: %s", path)
+	}
+	if err := revalidatePinned(path, handle, pinned); err != nil {
+		return empty, err
+	}
+	var fingerprint [sha256.Size]byte
+	copy(fingerprint[:], digest.Sum(nil))
+	return fingerprint, nil
+}
+
+func fingerprintFile(digest hash.Hash, rel string, file *os.File, before os.FileInfo) error {
+	writeFingerprintMetadata(digest, rel, before)
+	read := io.NewSectionReader(file, 0, before.Size())
+	if copied, err := io.Copy(digest, read); err != nil {
+		return err
+	} else if copied != before.Size() {
+		return fmt.Errorf("fingerprint file size changed while reading: %s", rel)
+	}
+	after, err := file.Stat()
+	if err != nil || !sameFileMetadata(before, after) {
+		return fmt.Errorf("fingerprint file changed while reading: %s", rel)
+	}
+	return nil
+}
+
+func writeFingerprintMetadata(digest hash.Hash, rel string, info os.FileInfo) {
+	size := info.Size()
+	if info.IsDir() {
+		size = -1
+	}
+	_, _ = fmt.Fprintf(digest, "%d:%s:%d:%d\n", len(rel), rel, uint32(info.Mode()), size)
+}
+
+func (ts *managedTypeTransitions) WrittenFiles() []string {
+	var files []string
+	for _, item := range ts.items {
+		files = append(files, item.written...)
+	}
+	return files
+}
+
+func (ts *managedTypeTransitions) DeletedFiles() []string {
+	var files []string
+	for _, item := range ts.items {
+		files = append(files, item.deleted...)
+	}
+	return files
 }
 
 // removeStaleFiles prunes files under targetDir that bosun deployed on a prior
@@ -439,12 +1356,35 @@ func listManagedFiles(sourceDir string) ([]string, error) {
 // Uses atomic copy via temp file. When ContentHashSync is enabled, skips writing
 // if the file content has not changed.
 func (d *DeployOps) DeployLocalFile(ctx context.Context, sourceFile, targetFile string, result *DeployResult) error {
+	return d.deployLocalFileManaged(ctx, sourceFile, targetFile, result, nil)
+}
+
+func (d *DeployOps) deployLocalFileManaged(ctx context.Context, sourceFile, targetFile string, result *DeployResult, prevManaged map[string]bool) error {
 	if d.DryRun {
 		return nil
 	}
 
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+	transitions, err := prepareManagedTypeTransitions(sourceFile, targetFile, prevManaged)
+	if err != nil {
+		return fmt.Errorf("prepare file type transition: %w", err)
+	}
+	defer transitions.Close()
+	if err := transitions.Promote(); err != nil {
+		return fmt.Errorf("promote file type transition: %w", err)
+	}
+	if len(transitions.items) > 0 {
+		if ctx.Err() != nil {
+			return transitions.Rollback(ctx.Err())
+		}
+		transitions.Commit(log.ComponentCtx(ctx, log.ComponentDeploy))
+		if result != nil {
+			result.AddWritten(filepath.Base(targetFile))
+			result.AddDeleted(transitions.DeletedFiles()...)
+		}
+		return nil
 	}
 
 	if d.ContentHashSync {

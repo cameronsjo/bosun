@@ -8,9 +8,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -627,6 +629,1123 @@ func TestDeployOps_DeployLocal_ContentHash(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, result.WrittenFiles)
 	})
+
+	t.Run("replaces previously managed file with directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+		require.NoError(t, os.MkdirAll(filepath.Join(sourceDir, "config"), 0755))
+		require.NoError(t, os.MkdirAll(targetDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "config", "app.yml"), []byte("new"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "config"), []byte("old"), 0644))
+
+		result := &DeployResult{}
+		deploy := &DeployOps{ContentHashSync: true}
+		err := deploy.DeployLocal(context.Background(), sourceDir, targetDir, result, map[string]bool{"config": true})
+
+		require.NoError(t, err)
+		assert.FileExists(t, filepath.Join(targetDir, "config", "app.yml"))
+		assert.Equal(t, []string{filepath.Join("config", "app.yml")}, result.WrittenFiles)
+		assert.Equal(t, []string{"config"}, result.DeletedFiles)
+	})
+
+	t.Run("replaces managed directory contents with file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+		require.NoError(t, os.MkdirAll(sourceDir, 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(targetDir, "config", "nested"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "config"), []byte("new"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "config", "nested", "app.yml"), []byte("old"), 0644))
+
+		result := &DeployResult{}
+		deploy := &DeployOps{ContentHashSync: true}
+		err := deploy.DeployLocal(context.Background(), sourceDir, targetDir, result, map[string]bool{"config/nested/app.yml": true})
+
+		require.NoError(t, err)
+		content, readErr := os.ReadFile(filepath.Join(targetDir, "config"))
+		require.NoError(t, readErr)
+		assert.Equal(t, "new", string(content))
+		assert.Equal(t, []string{"config"}, result.WrittenFiles)
+		assert.Equal(t, []string{"config/nested/app.yml"}, result.DeletedFiles)
+	})
+
+	t.Run("refuses file to directory transition for unmanaged file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+		require.NoError(t, os.MkdirAll(filepath.Join(sourceDir, "config"), 0755))
+		require.NoError(t, os.MkdirAll(targetDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "config", "app.yml"), []byte("new"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "config"), []byte("unmanaged"), 0644))
+
+		deploy := &DeployOps{ContentHashSync: true}
+		err := deploy.DeployLocal(context.Background(), sourceDir, targetDir, &DeployResult{}, nil)
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "config blocks directory deployment and is not a managed regular file")
+		content, readErr := os.ReadFile(filepath.Join(targetDir, "config"))
+		require.NoError(t, readErr)
+		assert.Equal(t, "unmanaged", string(content))
+	})
+
+	t.Run("refuses directory to file transition with unmanaged data", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+		require.NoError(t, os.MkdirAll(sourceDir, 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(targetDir, "config"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "config"), []byte("new"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "config", "app.yml"), []byte("old"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "config", "runtime.db"), []byte("keep"), 0644))
+
+		deploy := &DeployOps{ContentHashSync: true}
+		err := deploy.DeployLocal(context.Background(), sourceDir, targetDir, &DeployResult{}, map[string]bool{"config/app.yml": true})
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "runtime.db is not in the managed-file manifest")
+		assert.FileExists(t, filepath.Join(targetDir, "config", "app.yml"))
+		assert.FileExists(t, filepath.Join(targetDir, "config", "runtime.db"))
+	})
+
+	t.Run("refuses directory to file transition for empty unmanaged directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+		require.NoError(t, os.MkdirAll(sourceDir, 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(targetDir, "config"), 0750))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "config"), []byte("new"), 0644))
+
+		err := (&DeployOps{ContentHashSync: true}).DeployLocal(context.Background(), sourceDir, targetDir, &DeployResult{}, nil)
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "has no managed descendants")
+		assert.DirExists(t, filepath.Join(targetDir, "config"))
+	})
+
+	t.Run("refuses directory to file transition with empty unmanaged subtree", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+		require.NoError(t, os.MkdirAll(sourceDir, 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(targetDir, "config", "managed"), 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(targetDir, "config", "runtime-empty"), 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "config"), []byte("new"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "config", "managed", "app.yml"), []byte("old"), 0644))
+
+		err := (&DeployOps{ContentHashSync: true}).DeployLocal(context.Background(), sourceDir, targetDir, &DeployResult{}, map[string]bool{"config/managed/app.yml": true})
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "runtime-empty has no managed descendants")
+		assert.DirExists(t, filepath.Join(targetDir, "config", "runtime-empty"))
+		assert.FileExists(t, filepath.Join(targetDir, "config", "managed", "app.yml"))
+	})
+
+	t.Run("rolls back promoted transition when later copy fails", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+		require.NoError(t, os.MkdirAll(filepath.Join(sourceDir, "config"), 0755))
+		require.NoError(t, os.MkdirAll(targetDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "config", "app.yml"), []byte("new"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "config"), []byte("old"), 0644))
+		copyErr := errors.New("copy failed after promotion")
+		deploy := &DeployOps{
+			ContentHashSync: true,
+			copyDirIfChangedFn: func(string, string) ([]string, error) {
+				return nil, copyErr
+			},
+		}
+
+		err := deploy.DeployLocal(context.Background(), sourceDir, targetDir, &DeployResult{}, map[string]bool{"config": true})
+
+		require.ErrorIs(t, err, copyErr)
+		content, readErr := os.ReadFile(filepath.Join(targetDir, "config"))
+		require.NoError(t, readErr)
+		assert.Equal(t, "old", string(content))
+	})
+}
+
+func newFileToDirTransition(t *testing.T) (*managedTypeTransitions, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	source := filepath.Join(tmpDir, "source")
+	targetParent := filepath.Join(tmpDir, "target")
+	target := filepath.Join(targetParent, "config")
+	require.NoError(t, os.MkdirAll(filepath.Join(source, "config"), 0755))
+	require.NoError(t, os.MkdirAll(targetParent, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "config", "app.yml"), []byte("new"), 0644))
+	require.NoError(t, os.WriteFile(target, []byte("old"), 0644))
+	transitions, err := prepareManagedTypeTransitions(source, targetParent, map[string]bool{"config": true})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		transitions.Close()
+		for _, item := range transitions.items {
+			_ = os.RemoveAll(item.oldPath)
+			_ = os.RemoveAll(item.newPath)
+		}
+	})
+	return transitions, target
+}
+
+func newDirToFileTransition(t *testing.T) (*managedTypeTransitions, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	source := filepath.Join(tmpDir, "source")
+	targetParent := filepath.Join(tmpDir, "target")
+	target := filepath.Join(targetParent, "config")
+	require.NoError(t, os.MkdirAll(source, 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(target, "managed"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "config"), []byte("new"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "managed", "app.yml"), []byte("old"), 0644))
+	transitions, err := prepareManagedTypeTransitions(source, targetParent, map[string]bool{"config/managed/app.yml": true})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		transitions.Close()
+		for _, item := range transitions.items {
+			_ = os.RemoveAll(item.oldPath)
+			_ = os.RemoveAll(item.newPath)
+		}
+	})
+	return transitions, target
+}
+
+func TestManagedTypeTransitions_PromotionFailureRestoresOriginal(t *testing.T) {
+	transitions, target := newFileToDirTransition(t)
+	require.Len(t, transitions.items, 1)
+	require.NoError(t, os.RemoveAll(transitions.items[0].newPath))
+
+	err := transitions.Promote()
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "staged replacement changed before promoting config")
+	content, readErr := os.ReadFile(target)
+	require.NoError(t, readErr)
+	assert.Equal(t, "old", string(content))
+	assert.NoFileExists(t, transitions.items[0].oldPath)
+}
+
+func TestManagedTypeTransitions_SuccessfulRollbackRemovesRedundantStage(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		setup func(*testing.T) (*managedTypeTransitions, string)
+	}{
+		{name: "file to directory", setup: newFileToDirTransition},
+		{name: "directory to file", setup: newDirToFileTransition},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			transitions, target := test.setup(t)
+			require.NoError(t, transitions.Promote())
+			item := transitions.items[0]
+			cause := errors.New("later deploy failed")
+
+			err := transitions.Rollback(cause)
+
+			assert.True(t, err == cause, "a complete rollback should return only the original cause")
+			assert.NoFileExists(t, item.oldPath)
+			assert.NoFileExists(t, item.newPath)
+			if item.sourceIsDir {
+				content, readErr := os.ReadFile(target)
+				require.NoError(t, readErr)
+				assert.Equal(t, "old", string(content))
+			} else {
+				assert.FileExists(t, filepath.Join(target, "managed", "app.yml"))
+			}
+		})
+	}
+}
+
+func TestManagedTypeTransitions_RollbackRetainsChangedReplacement(t *testing.T) {
+	transitions, target := newFileToDirTransition(t)
+	require.NoError(t, transitions.Promote())
+	require.NoError(t, os.WriteFile(filepath.Join(target, "runtime.db"), []byte("keep"), 0600))
+
+	err := transitions.Rollback(errors.New("later deploy failed"))
+
+	require.Error(t, err)
+	item := transitions.items[0]
+	assert.ErrorContains(t, err, "staged replacement changed")
+	assert.ErrorContains(t, err, item.newPath)
+	assert.FileExists(t, filepath.Join(item.newPath, "runtime.db"))
+	content, readErr := os.ReadFile(target)
+	require.NoError(t, readErr)
+	assert.Equal(t, "old", string(content))
+}
+
+func TestManagedTypeTransitions_FingerprintRetainsSubtleReplacementChanges(t *testing.T) {
+	t.Run("same-root content change before promotion", func(t *testing.T) {
+		transitions, target := newFileToDirTransition(t)
+		item := transitions.items[0]
+		changed := filepath.Join(item.newPath, "app.yml")
+		before, err := os.Stat(changed)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(changed, []byte("bad"), before.Mode()))
+		require.NoError(t, os.Chtimes(changed, before.ModTime(), before.ModTime()))
+
+		err = transitions.Promote()
+
+		require.ErrorContains(t, err, "staged replacement changed before promoting")
+		content, readErr := os.ReadFile(target)
+		require.NoError(t, readErr)
+		assert.Equal(t, "old", string(content))
+		assert.FileExists(t, changed)
+	})
+
+	t.Run("same-size same-mtime content change in directory", func(t *testing.T) {
+		transitions, target := newFileToDirTransition(t)
+		require.NoError(t, transitions.Promote())
+		changed := filepath.Join(target, "app.yml")
+		before, err := os.Stat(changed)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(changed, []byte("bad"), before.Mode()))
+		require.NoError(t, os.Chtimes(changed, before.ModTime(), before.ModTime()))
+
+		err = transitions.Rollback(errors.New("later deploy failed"))
+
+		require.ErrorContains(t, err, "staged replacement changed")
+		retained := filepath.Join(transitions.items[0].newPath, "app.yml")
+		content, readErr := os.ReadFile(retained)
+		require.NoError(t, readErr)
+		assert.Equal(t, "bad", string(content))
+	})
+
+	t.Run("mode-only change in file", func(t *testing.T) {
+		transitions, target := newDirToFileTransition(t)
+		require.NoError(t, transitions.Promote())
+		require.NoError(t, os.Chmod(target, 0400))
+
+		err := transitions.Rollback(errors.New("later deploy failed"))
+
+		require.ErrorContains(t, err, "staged replacement changed")
+		info, statErr := os.Stat(transitions.items[0].newPath)
+		require.NoError(t, statErr)
+		assert.Equal(t, os.FileMode(0400), info.Mode().Perm())
+	})
+}
+
+func TestManagedTypeTransition_StageNeverOverwritesPublishedArtifact(t *testing.T) {
+	tmpDir := t.TempDir()
+	source := filepath.Join(tmpDir, "source", "config")
+	targetParent := filepath.Join(tmpDir, "target")
+	target := filepath.Join(targetParent, "config")
+	require.NoError(t, os.MkdirAll(source, 0755))
+	require.NoError(t, os.MkdirAll(targetParent, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "app.yml"), []byte("new"), 0644))
+	require.NoError(t, os.WriteFile(target, []byte("old"), 0644))
+	sourceInfo, err := os.Lstat(source)
+	require.NoError(t, err)
+	item, err := discoverManagedTypeConflict(source, target, "config", sourceInfo, map[string]bool{"config": true})
+	require.NoError(t, err)
+	t.Cleanup(func() { (&managedTypeTransitions{items: []*managedTypeTransition{item}}).Close() })
+	require.NoError(t, os.WriteFile(item.newPath, []byte("concurrent"), 0600))
+
+	err = item.stage()
+
+	require.ErrorContains(t, err, "publish staged replacement")
+	content, readErr := os.ReadFile(item.newPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, "concurrent", string(content))
+	original, readErr := os.ReadFile(target)
+	require.NoError(t, readErr)
+	assert.Equal(t, "old", string(original))
+	assert.DirExists(t, target+managedTransitionStageSuffix)
+	assert.FileExists(t, filepath.Join(target+managedTransitionStageSuffix, "replacement", "app.yml"))
+}
+
+func TestManagedTransitionSafetyFailures(t *testing.T) {
+	newPinned := func(t *testing.T) (*managedTypeTransition, string) {
+		t.Helper()
+		root := t.TempDir()
+		source := filepath.Join(root, "source")
+		targetParent := filepath.Join(root, "target")
+		target := filepath.Join(targetParent, "config")
+		require.NoError(t, os.MkdirAll(source, 0755))
+		require.NoError(t, os.MkdirAll(targetParent, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(source, "app.yml"), []byte("new"), 0600))
+		require.NoError(t, os.WriteFile(target, []byte("old"), 0600))
+		sourceInfo, err := os.Lstat(source)
+		require.NoError(t, err)
+		item, err := discoverManagedTypeConflict(source, target, "config", sourceInfo, map[string]bool{"config": true})
+		require.NoError(t, err)
+		return item, target
+	}
+	tests := []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{name: "invalid prior path", run: func(t *testing.T) {
+			err := validateManagedTransitionArtifacts(t.TempDir(), []string{"../escape"})
+			require.ErrorContains(t, err, "invalid managed path")
+		}},
+		{name: "cleanup suffix is reserved in source namespace", run: func(t *testing.T) {
+			source := t.TempDir()
+			reserved := filepath.Join(source, "config"+strings.ToUpper(managedTransitionCleanSuffix))
+			require.NoError(t, os.WriteFile(reserved, []byte("source"), 0600))
+
+			err := validateTransitionSourceNamespace(source)
+
+			require.ErrorContains(t, err, reserved)
+		}},
+		{name: "artifact inspection does not mask ENOTDIR", run: func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "file")
+			require.NoError(t, os.WriteFile(root, []byte("block"), 0600))
+			err := validateManagedTransitionArtifacts(root, []string{"nested/app.yml"})
+			require.ErrorContains(t, err, "inspect transition artifact")
+		}},
+		{name: "missing source and current artifact fail preparation", run: func(t *testing.T) {
+			root := t.TempDir()
+			_, err := prepareManagedTypeTransitions(filepath.Join(root, "missing"), filepath.Join(root, "target"), nil)
+			require.Error(t, err)
+			item, target := newPinned(t)
+			require.NoError(t, os.WriteFile(item.oldPath, []byte("stale"), 0600))
+			sourceInfo, statErr := os.Lstat(item.sourcePath)
+			require.NoError(t, statErr)
+			_, err = discoverManagedTypeConflict(item.sourcePath, target, "config", sourceInfo, map[string]bool{"config": true})
+			require.ErrorContains(t, err, item.oldPath)
+		}},
+		{name: "pinned discovery rejects late artifact and identity swaps", run: func(t *testing.T) {
+			for _, mutation := range []string{"artifact", "parent", "missing target", "replaced target"} {
+				t.Run(mutation, func(t *testing.T) {
+					item, target := newPinned(t)
+					require.NoError(t, item.stage())
+					transitions := &managedTypeTransitions{items: []*managedTypeTransition{item}}
+					t.Cleanup(transitions.Close)
+					switch mutation {
+					case "artifact":
+						require.NoError(t, os.WriteFile(item.oldPath, []byte("late"), 0600))
+					case "parent":
+						parent := filepath.Dir(target)
+						require.NoError(t, os.Rename(parent, parent+"-original"))
+						require.NoError(t, os.Mkdir(parent, 0700))
+					case "missing target":
+						require.NoError(t, os.Remove(target))
+					case "replaced target":
+						require.NoError(t, os.Remove(target))
+						require.NoError(t, os.WriteFile(target, []byte("replacement"), 0600))
+					}
+					require.Error(t, transitions.Promote())
+				})
+			}
+		}},
+		{name: "preparation propagates staged source access failures", run: func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("chmod access failures are not portable to Windows")
+			}
+			for _, sourceIsDir := range []bool{false, true} {
+				name := "file"
+				if sourceIsDir {
+					name = "directory"
+				}
+				t.Run(name, func(t *testing.T) {
+					root := t.TempDir()
+					source := filepath.Join(root, "source")
+					target := filepath.Join(root, "target")
+					managed := map[string]bool{managedTargetRoot: true}
+					lockPath := source
+					if sourceIsDir {
+						require.NoError(t, os.Mkdir(source, 0700))
+						lockPath = filepath.Join(source, "blocked")
+						require.NoError(t, os.Mkdir(lockPath, 0700))
+						require.NoError(t, os.WriteFile(filepath.Join(lockPath, "app.yml"), []byte("new"), 0600))
+						require.NoError(t, os.WriteFile(target, []byte("old"), 0600))
+					} else {
+						require.NoError(t, os.WriteFile(source, []byte("new"), 0600))
+						require.NoError(t, os.MkdirAll(filepath.Join(target, "managed"), 0700))
+						require.NoError(t, os.WriteFile(filepath.Join(target, "managed", "app.yml"), []byte("old"), 0600))
+						managed = map[string]bool{"managed/app.yml": true}
+					}
+					require.NoError(t, os.Chmod(lockPath, 0))
+					t.Cleanup(func() { _ = os.Chmod(lockPath, 0700) })
+
+					_, err := prepareManagedTypeTransitions(source, target, managed)
+
+					require.ErrorContains(t, err, "private transition stage retained")
+				})
+			}
+		}},
+		{name: "discovery propagates pinned path access failures", run: func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("chmod access failures are not portable to Windows")
+			}
+			for _, locked := range []string{"parent", "target"} {
+				t.Run(locked, func(t *testing.T) {
+					root := t.TempDir()
+					source := filepath.Join(root, "source")
+					parent := filepath.Join(root, "target")
+					target := filepath.Join(parent, "config")
+					require.NoError(t, os.Mkdir(source, 0700))
+					require.NoError(t, os.Mkdir(parent, 0700))
+					require.NoError(t, os.WriteFile(target, []byte("old"), 0600))
+					lockPath, mode := target, os.FileMode(0)
+					if locked == "parent" {
+						lockPath, mode = parent, 0111
+					}
+					require.NoError(t, os.Chmod(lockPath, mode))
+					t.Cleanup(func() { _ = os.Chmod(lockPath, 0700) })
+					sourceInfo, err := os.Lstat(source)
+					require.NoError(t, err)
+
+					_, err = discoverManagedTypeConflict(source, target, "config", sourceInfo, map[string]bool{"config": true})
+
+					require.ErrorContains(t, err, "open destination")
+				})
+			}
+		}},
+		{name: "managed directory rejects symlink", run: func(t *testing.T) {
+			root := t.TempDir()
+			source := filepath.Join(root, "source")
+			target := filepath.Join(root, "target")
+			require.NoError(t, os.WriteFile(source, []byte("new"), 0600))
+			require.NoError(t, os.Mkdir(target, 0700))
+			require.NoError(t, os.WriteFile(filepath.Join(target, "managed"), []byte("old"), 0600))
+			require.NoError(t, os.Symlink("managed", filepath.Join(target, "link")))
+			sourceInfo, err := os.Lstat(source)
+			require.NoError(t, err)
+			_, err = discoverManagedTypeConflict(source, target, "config", sourceInfo, map[string]bool{"config/managed": true, "config/link": true})
+			require.ErrorContains(t, err, "not a regular managed file")
+		}},
+		{name: "irregular source is not treated as a transition", run: func(t *testing.T) {
+			root := t.TempDir()
+			sourceFile := filepath.Join(root, "source-file")
+			source := filepath.Join(root, "source-link")
+			target := filepath.Join(root, "target")
+			require.NoError(t, os.WriteFile(sourceFile, []byte("new"), 0600))
+			require.NoError(t, os.Symlink(sourceFile, source))
+			require.NoError(t, os.Mkdir(target, 0700))
+			sourceInfo, err := os.Lstat(source)
+			require.NoError(t, err)
+
+			item, err := discoverManagedTypeConflict(source, target, "config", sourceInfo, nil)
+
+			require.NoError(t, err)
+			assert.Nil(t, item)
+		}},
+		{name: "managed directory propagates traversal failure", run: func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("chmod access failures are not portable to Windows")
+			}
+			root := t.TempDir()
+			dir := filepath.Join(root, "config")
+			require.NoError(t, os.Mkdir(dir, 0700))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "app.yml"), []byte("old"), 0600))
+			require.NoError(t, os.Chmod(dir, 0111))
+			t.Cleanup(func() { _ = os.Chmod(dir, 0700) })
+
+			_, err := validateManagedDirectory(dir, "config", map[string]bool{"config/app.yml": true})
+
+			require.Error(t, err)
+		}},
+		{name: "pinned tree walks propagate access failures", run: func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("chmod access failures are not portable to Windows")
+			}
+			root := t.TempDir()
+			locked := filepath.Join(root, "locked")
+			require.NoError(t, os.Mkdir(locked, 0700))
+			require.NoError(t, os.WriteFile(filepath.Join(locked, "payload"), []byte("data"), 0600))
+			handle, err := openPinnedPath(root)
+			require.NoError(t, err)
+			defer func() { _ = handle.Close() }()
+			info, err := handle.Stat()
+			require.NoError(t, err)
+			require.NoError(t, os.Chmod(locked, 0))
+			t.Cleanup(func() { _ = os.Chmod(locked, 0700) })
+
+			_, err = pinRemovalTree(root, handle, info)
+			require.Error(t, err)
+			_, err = fingerprintPinnedPath(root, handle, info)
+			require.Error(t, err)
+		}},
+		{name: "source walk propagates access failure before staging", run: func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("chmod access failures are not portable to Windows")
+			}
+			root := t.TempDir()
+			source := filepath.Join(root, "source")
+			target := filepath.Join(root, "target")
+			locked := filepath.Join(source, "locked")
+			require.NoError(t, os.MkdirAll(locked, 0700))
+			require.NoError(t, os.Mkdir(target, 0700))
+			require.NoError(t, os.Chmod(locked, 0))
+			t.Cleanup(func() { _ = os.Chmod(locked, 0700) })
+
+			_, err := prepareManagedTypeTransitions(source, target, nil)
+
+			require.Error(t, err)
+		}},
+		{name: "private stage identity swap is retained", run: func(t *testing.T) {
+			parent := t.TempDir()
+			item := &managedTypeTransition{targetPath: filepath.Join(parent, "config"), relPath: "config"}
+			require.NoError(t, item.createPrivateStage())
+			originalPath := item.privatePath + "-original"
+			require.NoError(t, os.Rename(item.privatePath, originalPath))
+			require.NoError(t, os.Mkdir(item.privatePath, 0700))
+			t.Cleanup(func() { (&managedTypeTransitions{items: []*managedTypeTransition{item}}).Close() })
+
+			err := item.cleanupPrivateStage()
+
+			require.ErrorContains(t, err, "private transition stage retained")
+			assert.DirExists(t, item.privatePath)
+			assert.DirExists(t, originalPath)
+		}},
+		{name: "private file requires regular source", run: func(t *testing.T) {
+			parent := t.TempDir()
+			item := &managedTypeTransition{sourcePath: parent, targetPath: filepath.Join(parent, "config"), relPath: "config"}
+			require.NoError(t, item.createPrivateStage())
+			t.Cleanup(func() { (&managedTypeTransitions{items: []*managedTypeTransition{item}}).Close() })
+
+			err := item.copyPrivateFile(filepath.Join(item.privatePath, "replacement"))
+
+			require.ErrorContains(t, err, "not a regular file")
+		}},
+		{name: "private file creation is exclusive", run: func(t *testing.T) {
+			parent := t.TempDir()
+			source := filepath.Join(parent, "source")
+			require.NoError(t, os.WriteFile(source, []byte("source"), 0600))
+			item := &managedTypeTransition{sourcePath: source, targetPath: filepath.Join(parent, "config"), relPath: "config"}
+			require.NoError(t, item.createPrivateStage())
+			replacement := filepath.Join(item.privatePath, "replacement")
+			require.NoError(t, os.WriteFile(replacement, []byte("collision"), 0600))
+			t.Cleanup(func() { (&managedTypeTransitions{items: []*managedTypeTransition{item}}).Close() })
+
+			require.Error(t, item.copyPrivateFile(replacement))
+			content, err := os.ReadFile(replacement)
+			require.NoError(t, err)
+			assert.Equal(t, "collision", string(content))
+		}},
+		{name: "fingerprint rejects swapped root", run: func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "payload")
+			require.NoError(t, os.WriteFile(path, []byte("original"), 0600))
+			handle, err := os.Open(path)
+			require.NoError(t, err)
+			defer func() { _ = handle.Close() }()
+			info, err := handle.Stat()
+			require.NoError(t, err)
+			require.NoError(t, os.Rename(path, path+"-original"))
+			require.NoError(t, os.WriteFile(path, []byte("replacement"), 0600))
+
+			_, err = fingerprintPinnedPath(path, handle, info)
+			require.ErrorContains(t, err, "path identity changed")
+		}},
+		{name: "pinned identity validation fails closed", run: func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "payload")
+			require.NoError(t, os.WriteFile(path, []byte("data"), 0600))
+			handle, err := openPinnedPath(path)
+			require.NoError(t, err)
+			info, err := handle.Stat()
+			require.NoError(t, err)
+			require.ErrorContains(t, revalidatePinned(path, nil, info), "no pinned identity")
+			require.NoError(t, handle.Close())
+
+			require.ErrorContains(t, revalidatePinned(path, handle, info), "pinned identity changed")
+		}},
+		{name: "fingerprint rejects irregular entry", run: func(t *testing.T) {
+			root := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(root, "file"), []byte("data"), 0600))
+			require.NoError(t, os.Symlink("file", filepath.Join(root, "link")))
+			handle, err := os.Open(root)
+			require.NoError(t, err)
+			defer func() { _ = handle.Close() }()
+			info, err := handle.Stat()
+			require.NoError(t, err)
+
+			_, err = fingerprintPinnedPath(root, handle, info)
+			require.ErrorContains(t, err, "is not regular")
+		}},
+		{name: "stage retains private root when source disappears", run: func(t *testing.T) {
+			parent := t.TempDir()
+			item := &managedTypeTransition{
+				sourcePath: filepath.Join(parent, "missing"), targetPath: filepath.Join(parent, "config"),
+				relPath: "config", sourceIsDir: true, newPath: filepath.Join(parent, "config") + managedTransitionNewSuffix,
+			}
+
+			err := item.stage()
+			require.ErrorContains(t, err, item.targetPath+managedTransitionStageSuffix)
+			assert.DirExists(t, item.targetPath+managedTransitionStageSuffix)
+		}},
+		{name: "private stage cleanup preserves late child", run: func(t *testing.T) {
+			parent := t.TempDir()
+			item := &managedTypeTransition{targetPath: filepath.Join(parent, "config"), relPath: "config"}
+			require.NoError(t, item.createPrivateStage())
+			late := filepath.Join(item.privatePath, "late-runtime-data")
+			require.NoError(t, os.WriteFile(late, []byte("keep"), 0600))
+			t.Cleanup(func() { (&managedTypeTransitions{items: []*managedTypeTransition{item}}).Close() })
+
+			err := item.cleanupPrivateStage()
+
+			require.ErrorContains(t, err, item.privatePath)
+			assert.FileExists(t, late)
+		}},
+		{name: "fingerprinted cleanup preserves child added before delete", run: func(t *testing.T) {
+			transitions, _ := newDirToFileTransition(t)
+			require.NoError(t, transitions.Promote())
+			item := transitions.items[0]
+			late := filepath.Join(item.oldPath, "runtime.db")
+
+			err := removePinnedTree(item.oldPath, item.targetPath+managedTransitionCleanSuffix, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", removalHooks{
+				afterBaseline: func() { require.NoError(t, os.WriteFile(late, []byte("keep"), 0600)) },
+			})
+
+			require.ErrorContains(t, err, "remove quarantined fingerprinted path")
+			assert.FileExists(t, late)
+			assert.DirExists(t, item.oldPath)
+		}},
+		{name: "fingerprinted cleanup retains same inode mutations", run: func(t *testing.T) {
+			for _, mutation := range []string{"content", "mode"} {
+				t.Run(mutation, func(t *testing.T) {
+					transitions, _ := newDirToFileTransition(t)
+					require.NoError(t, transitions.Promote())
+					item := transitions.items[0]
+					managed := filepath.Join(item.oldPath, "managed", "app.yml")
+					before, err := os.Stat(managed)
+					require.NoError(t, err)
+
+					err = removePinnedTree(item.oldPath, item.targetPath+managedTransitionCleanSuffix, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", removalHooks{
+						afterBaseline: func() {
+							if mutation == "content" {
+								require.NoError(t, os.WriteFile(managed, []byte("NEW"), before.Mode()))
+								require.NoError(t, os.Chtimes(managed, before.ModTime(), before.ModTime()))
+							} else {
+								require.NoError(t, os.Chmod(managed, before.Mode()^0022))
+							}
+						},
+					})
+
+					require.ErrorContains(t, err, "content or mode changed")
+					assert.FileExists(t, managed)
+				})
+			}
+		}},
+		{name: "cleanup namespace fails closed on collisions and late data", run: func(t *testing.T) {
+			t.Run("existing namespace", func(t *testing.T) {
+				transitions, _ := newFileToDirTransition(t)
+				require.NoError(t, transitions.Promote())
+				item := transitions.items[0]
+				cleanup := item.targetPath + managedTransitionCleanSuffix
+				require.NoError(t, os.Mkdir(cleanup, 0700))
+
+				err := item.removePinnedOld()
+
+				require.ErrorContains(t, err, cleanup)
+				assert.FileExists(t, item.oldPath)
+			})
+			t.Run("candidate collision", func(t *testing.T) {
+				transitions, _ := newFileToDirTransition(t)
+				require.NoError(t, transitions.Promote())
+				item := transitions.items[0]
+				cleanup := item.targetPath + managedTransitionCleanSuffix
+
+				err := removePinnedTree(item.oldPath, cleanup, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", removalHooks{
+					beforeQuarantine: func(string) {
+						require.NoError(t, os.WriteFile(filepath.Join(cleanup, "000000"), []byte("collision"), 0600))
+					},
+				})
+
+				require.ErrorContains(t, err, "quarantine fingerprinted path")
+				assert.FileExists(t, item.oldPath)
+			})
+			t.Run("late namespace child", func(t *testing.T) {
+				transitions, _ := newFileToDirTransition(t)
+				require.NoError(t, transitions.Promote())
+				item := transitions.items[0]
+				cleanup := item.targetPath + managedTransitionCleanSuffix
+				late := filepath.Join(cleanup, "late")
+
+				err := removePinnedTree(item.oldPath, cleanup, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", removalHooks{
+					beforeNamespaceRemove: func(string) { require.NoError(t, os.WriteFile(late, []byte("keep"), 0600)) },
+				})
+
+				require.ErrorContains(t, err, "remove protected cleanup namespace")
+				assert.FileExists(t, late)
+			})
+			t.Run("namespace open failure", func(t *testing.T) {
+				if runtime.GOOS == "windows" {
+					t.Skip("chmod access failures are not portable to Windows")
+				}
+				transitions, _ := newFileToDirTransition(t)
+				require.NoError(t, transitions.Promote())
+				item := transitions.items[0]
+				cleanup := item.targetPath + managedTransitionCleanSuffix
+
+				err := removePinnedTree(item.oldPath, cleanup, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", removalHooks{
+					afterNamespaceCreate: func(string) { require.NoError(t, os.Chmod(cleanup, 0)) },
+				})
+
+				require.ErrorContains(t, err, "open protected cleanup namespace")
+				assert.FileExists(t, item.oldPath)
+			})
+			t.Run("pinned namespace swap", func(t *testing.T) {
+				transitions, _ := newFileToDirTransition(t)
+				require.NoError(t, transitions.Promote())
+				item := transitions.items[0]
+				cleanup := item.targetPath + managedTransitionCleanSuffix
+				original := cleanup + "-original"
+
+				err := removePinnedTree(item.oldPath, cleanup, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", removalHooks{
+					afterNamespacePinned: func(string) {
+						require.NoError(t, os.Rename(cleanup, original))
+						require.NoError(t, os.Mkdir(cleanup, 0700))
+					},
+				})
+
+				require.ErrorContains(t, err, "protected cleanup namespace changed")
+				assert.FileExists(t, item.oldPath)
+				assert.DirExists(t, cleanup)
+				assert.DirExists(t, original)
+			})
+			t.Run("final namespace swap", func(t *testing.T) {
+				transitions, _ := newFileToDirTransition(t)
+				require.NoError(t, transitions.Promote())
+				item := transitions.items[0]
+				cleanup := item.targetPath + managedTransitionCleanSuffix
+				original := cleanup + "-original"
+
+				err := removePinnedTree(item.oldPath, cleanup, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", removalHooks{
+					beforeNamespaceRemove: func(string) {
+						require.NoError(t, os.Rename(cleanup, original))
+						require.NoError(t, os.Mkdir(cleanup, 0700))
+					},
+				})
+
+				require.ErrorContains(t, err, "protected cleanup namespace retained")
+				assert.DirExists(t, cleanup)
+				assert.DirExists(t, original)
+			})
+		}},
+		{name: "cleanup retains directory mode mutation", run: func(t *testing.T) {
+			parent := t.TempDir()
+			path := filepath.Join(parent, "candidate")
+			cleanup := filepath.Join(parent, "cleanup")
+			require.NoError(t, os.Mkdir(path, 0700))
+			handle, err := openPinnedPath(path)
+			require.NoError(t, err)
+			info, err := handle.Stat()
+			require.NoError(t, err)
+			fingerprint, err := fingerprintPinnedPath(path, handle, info)
+			require.NoError(t, err)
+
+			err = removePinnedTree(path, cleanup, handle, info, fingerprint, "candidate", removalHooks{
+				afterBaseline: func() { require.NoError(t, os.Chmod(path, 0750)) },
+			})
+
+			require.ErrorContains(t, err, "mode changed")
+			assert.DirExists(t, path)
+		}},
+		{name: "fingerprinted cleanup rejects irregular and replaced entries", run: func(t *testing.T) {
+			t.Run("irregular", func(t *testing.T) {
+				transitions, _ := newDirToFileTransition(t)
+				require.NoError(t, transitions.Promote())
+				item := transitions.items[0]
+				link := filepath.Join(item.oldPath, "late-link")
+				require.NoError(t, os.Symlink("managed/app.yml", link))
+
+				err := item.removePinnedOld()
+
+				require.ErrorContains(t, err, "refuse to remove irregular path")
+				assert.FileExists(t, filepath.Join(item.oldPath, "managed", "app.yml"))
+				assert.NoError(t, os.Remove(link))
+			})
+			t.Run("replaced identity", func(t *testing.T) {
+				transitions, _ := newDirToFileTransition(t)
+				require.NoError(t, transitions.Promote())
+				item := transitions.items[0]
+				managed := filepath.Join(item.oldPath, "managed", "app.yml")
+				original := managed + "-original"
+
+				err := removePinnedTree(item.oldPath, item.targetPath+managedTransitionCleanSuffix, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", removalHooks{
+					beforeQuarantine: func(path string) {
+						if path == managed {
+							require.NoError(t, os.Rename(managed, original))
+							require.NoError(t, os.WriteFile(managed, []byte("replacement"), 0600))
+						}
+					},
+				})
+
+				require.ErrorContains(t, err, "path identity changed")
+				content, readErr := os.ReadFile(managed)
+				require.NoError(t, readErr)
+				assert.Equal(t, "replacement", string(content))
+				assert.FileExists(t, original)
+			})
+		}},
+		{name: "stage reports missing target parent", run: func(t *testing.T) {
+			root := t.TempDir()
+			item := &managedTypeTransition{sourcePath: filepath.Join(root, "source"), targetPath: filepath.Join(root, "missing", "config"), relPath: "config"}
+			require.ErrorContains(t, item.stage(), "create private transition stage")
+			require.NoError(t, item.cleanupPrivateStage())
+		}},
+		{name: "quarantine never overwrites late old artifact", run: func(t *testing.T) {
+			transitions, target := newFileToDirTransition(t)
+			item := transitions.items[0]
+			require.NoError(t, os.WriteFile(item.oldPath, []byte("collision"), 0600))
+
+			err := transitions.Promote()
+
+			require.ErrorContains(t, err, "quarantine destination")
+			content, readErr := os.ReadFile(item.oldPath)
+			require.NoError(t, readErr)
+			assert.Equal(t, "collision", string(content))
+			assert.FileExists(t, target)
+		}},
+		{name: "quarantine revalidates managed directory contents", run: func(t *testing.T) {
+			transitions, target := newDirToFileTransition(t)
+			late := filepath.Join(target, "runtime.db")
+			require.NoError(t, os.WriteFile(late, []byte("keep"), 0600))
+
+			err := transitions.Promote()
+
+			require.ErrorContains(t, err, "destination changed while quarantining")
+			assert.FileExists(t, late)
+			assert.DirExists(t, target)
+		}},
+		{name: "rollback retains replaced quarantine identity", run: func(t *testing.T) {
+			transitions, target := newFileToDirTransition(t)
+			item := transitions.items[0]
+			require.NoError(t, renameNoReplace(target, item.oldPath))
+			item.quarantined = true
+			require.NoError(t, os.Remove(item.oldPath))
+			require.NoError(t, os.WriteFile(item.oldPath, []byte("replacement"), 0600))
+
+			err := transitions.Rollback(errors.New("promotion failed"))
+
+			require.ErrorContains(t, err, "quarantined original changed")
+			content, readErr := os.ReadFile(item.oldPath)
+			require.NoError(t, readErr)
+			assert.Equal(t, "replacement", string(content))
+		}},
+		{name: "rollback retains artifacts on parent and new-path collisions", run: func(t *testing.T) {
+			t.Run("parent swap", func(t *testing.T) {
+				transitions, target := newFileToDirTransition(t)
+				require.NoError(t, transitions.Promote())
+				parent := filepath.Dir(target)
+				require.NoError(t, os.Rename(parent, parent+"-original"))
+				require.NoError(t, os.Mkdir(parent, 0700))
+				require.Error(t, transitions.Rollback(errors.New("later failure")))
+			})
+			t.Run("new path occupied", func(t *testing.T) {
+				transitions, _ := newFileToDirTransition(t)
+				require.NoError(t, transitions.Promote())
+				item := transitions.items[0]
+				require.NoError(t, os.WriteFile(item.newPath, []byte("collision"), 0600))
+				err := transitions.Rollback(errors.New("later failure"))
+				require.ErrorContains(t, err, "quarantine failed replacement")
+				assert.FileExists(t, item.oldPath)
+			})
+			t.Run("target recreated before promotion", func(t *testing.T) {
+				transitions, target := newFileToDirTransition(t)
+				item := transitions.items[0]
+				require.NoError(t, renameNoReplace(target, item.oldPath))
+				item.quarantined = true
+				require.NoError(t, os.WriteFile(target, []byte("concurrent"), 0600))
+				err := transitions.Rollback(errors.New("promotion failure"))
+				require.ErrorContains(t, err, "concurrently recreated")
+			})
+		}},
+		{name: "cleanup rejects replaced old and new identities", run: func(t *testing.T) {
+			t.Run("old", func(t *testing.T) {
+				transitions, _ := newFileToDirTransition(t)
+				require.NoError(t, transitions.Promote())
+				item := transitions.items[0]
+				require.NoError(t, os.Remove(item.oldPath))
+				require.NoError(t, os.WriteFile(item.oldPath, []byte("replacement"), 0600))
+				require.Error(t, item.removePinnedOld())
+			})
+			t.Run("new", func(t *testing.T) {
+				transitions, _ := newFileToDirTransition(t)
+				item := transitions.items[0]
+				require.NoError(t, os.RemoveAll(item.newPath))
+				require.NoError(t, os.Mkdir(item.newPath, 0700))
+				require.Error(t, item.removePinnedNew())
+			})
+		}},
+		{name: "fingerprint rejects irregular root", run: func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("no portable irregular root fixture")
+			}
+			handle, err := os.Open("/dev/null")
+			require.NoError(t, err)
+			defer func() { _ = handle.Close() }()
+			info, err := handle.Stat()
+			require.NoError(t, err)
+			_, err = fingerprintPinnedPath("/dev/null", handle, info)
+			require.ErrorContains(t, err, "neither a regular file nor directory")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, test.run)
+	}
+}
+
+func TestManagedTypeTransitions_RollbackNeverOverwritesRecreatedTarget(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		setup    func(*testing.T) (*managedTypeTransitions, string)
+		recreate func(*testing.T, string)
+		verify   func(*testing.T, string)
+	}{
+		{
+			name:  "directory",
+			setup: newFileToDirTransition,
+			recreate: func(t *testing.T, target string) {
+				require.NoError(t, os.Mkdir(target, 0755))
+				require.NoError(t, os.WriteFile(filepath.Join(target, "runtime.db"), []byte("concurrent"), 0600))
+			},
+			verify: func(t *testing.T, target string) { assert.FileExists(t, filepath.Join(target, "runtime.db")) },
+		},
+		{
+			name:  "file",
+			setup: newDirToFileTransition,
+			recreate: func(t *testing.T, target string) {
+				require.NoError(t, os.WriteFile(target, []byte("concurrent"), 0600))
+			},
+			verify: func(t *testing.T, target string) {
+				content, err := os.ReadFile(target)
+				require.NoError(t, err)
+				assert.Equal(t, "concurrent", string(content))
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			transitions, target := test.setup(t)
+			require.NoError(t, transitions.Promote())
+			require.NoError(t, os.RemoveAll(target))
+			test.recreate(t, target)
+
+			err := transitions.Rollback(errors.New("later deploy failed"))
+
+			require.ErrorContains(t, err, "preserving it")
+			test.verify(t, target)
+			_, statErr := os.Lstat(transitions.items[0].oldPath)
+			require.NoError(t, statErr)
+		})
+	}
+}
+
+func TestManagedTypeTransitions_PromoteRejectsChangedTarget(t *testing.T) {
+	transitions, target := newFileToDirTransition(t)
+	require.NoError(t, os.Remove(target))
+	require.NoError(t, os.WriteFile(target, []byte("concurrent"), 0600))
+
+	err := transitions.Promote()
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "destination changed before promoting")
+	content, readErr := os.ReadFile(target)
+	require.NoError(t, readErr)
+	assert.Equal(t, "concurrent", string(content))
+}
+
+func TestManagedTypeTransitions_RejectsIntermediateParentSwap(t *testing.T) {
+	tmpDir := t.TempDir()
+	source := filepath.Join(tmpDir, "source")
+	targetParent := filepath.Join(tmpDir, "target")
+	target := filepath.Join(targetParent, "config")
+	outside := filepath.Join(tmpDir, "outside")
+	require.NoError(t, os.MkdirAll(source, 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(target, "nested"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(outside, "config", "nested"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "config"), []byte("new"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "nested", "app.yml"), []byte("old"), 0644))
+	victim := filepath.Join(outside, "config", "nested", "app.yml")
+	require.NoError(t, os.WriteFile(victim, []byte("outside"), 0644))
+
+	transitions, err := prepareManagedTypeTransitions(source, targetParent, map[string]bool{"config/nested/app.yml": true})
+	require.NoError(t, err)
+	require.NoError(t, os.Rename(targetParent, targetParent+"-original"))
+	require.NoError(t, os.Symlink(outside, targetParent))
+	t.Cleanup(func() { transitions.Close() })
+
+	err = transitions.Promote()
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "destination parent changed")
+	content, readErr := os.ReadFile(victim)
+	require.NoError(t, readErr)
+	assert.Equal(t, "outside", string(content))
+}
+
+func TestPrepareManagedTypeTransitions_RefusesExistingArtifacts(t *testing.T) {
+	for _, suffix := range []string{managedTransitionOldSuffix, managedTransitionNewSuffix, managedTransitionStageSuffix, managedTransitionCleanSuffix} {
+		t.Run(suffix, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			source := filepath.Join(tmpDir, "source")
+			targetParent := filepath.Join(tmpDir, "target")
+			target := filepath.Join(targetParent, "config")
+			require.NoError(t, os.MkdirAll(filepath.Join(source, "config"), 0755))
+			require.NoError(t, os.MkdirAll(targetParent, 0755))
+			require.NoError(t, os.WriteFile(filepath.Join(source, "config", "app.yml"), []byte("new"), 0644))
+			require.NoError(t, os.WriteFile(target, []byte("old"), 0644))
+			artifact := target + suffix
+			require.NoError(t, os.WriteFile(artifact, []byte("preserve"), 0600))
+
+			_, err := prepareManagedTypeTransitions(source, targetParent, map[string]bool{"config": true})
+
+			require.ErrorContains(t, err, artifact)
+			assert.FileExists(t, target)
+			content, readErr := os.ReadFile(artifact)
+			require.NoError(t, readErr)
+			assert.Equal(t, "preserve", string(content))
+		})
+	}
+}
+
+func TestPrepareManagedTypeTransitions_RefusesCrashArtifacts(t *testing.T) {
+	transitions, target := newFileToDirTransition(t)
+	item := transitions.items[0]
+	require.NoError(t, renameNoReplace(target, item.oldPath))
+
+	_, err := prepareManagedTypeTransitions(item.sourcePath, item.targetPath, map[string]bool{managedTargetRoot: true})
+
+	require.ErrorContains(t, err, item.oldPath)
+	assert.NoFileExists(t, target)
+	assert.FileExists(t, item.oldPath)
+	assert.DirExists(t, item.newPath)
+}
+
+type zeroTypeDirEntry struct {
+	info os.FileInfo
+	err  error
+}
+
+func (e zeroTypeDirEntry) Name() string               { return e.info.Name() }
+func (e zeroTypeDirEntry) IsDir() bool                { return false }
+func (e zeroTypeDirEntry) Type() os.FileMode          { return 0 }
+func (e zeroTypeDirEntry) Info() (os.FileInfo, error) { return e.info, e.err }
+
+type modeOnlyFileInfo struct{ mode os.FileMode }
+
+func (i modeOnlyFileInfo) Name() string       { return "unknown-type" }
+func (i modeOnlyFileInfo) Size() int64        { return 0 }
+func (i modeOnlyFileInfo) Mode() os.FileMode  { return i.mode }
+func (i modeOnlyFileInfo) ModTime() time.Time { return time.Time{} }
+func (i modeOnlyFileInfo) IsDir() bool        { return i.mode.IsDir() }
+func (i modeOnlyFileInfo) Sys() any           { return nil }
+
+func TestDirEntryIsRegular_UsesInfoModeWhenTypeIsUnknown(t *testing.T) {
+	regular, err := dirEntryIsRegular(zeroTypeDirEntry{info: modeOnlyFileInfo{mode: 0600}})
+	require.NoError(t, err)
+	assert.True(t, regular)
+
+	regular, err = dirEntryIsRegular(zeroTypeDirEntry{info: modeOnlyFileInfo{mode: os.ModeNamedPipe}})
+
+	require.NoError(t, err)
+	assert.False(t, regular)
+
+	_, err = dirEntryIsRegular(zeroTypeDirEntry{err: errors.New("info failed")})
+	require.ErrorContains(t, err, "info failed")
+}
+
+func TestManagedTypeTransitions_CommitPreservesLateUnmanagedData(t *testing.T) {
+	transitions, target := newDirToFileTransition(t)
+	require.NoError(t, transitions.Promote())
+	item := transitions.items[0]
+
+	lateData := filepath.Join(item.oldPath, "runtime.db")
+	require.NoError(t, os.WriteFile(lateData, []byte("keep"), 0600))
+	transitions.Commit(zerolog.Nop())
+
+	assert.FileExists(t, lateData)
+	content, readErr := os.ReadFile(target)
+	require.NoError(t, readErr)
+	assert.Equal(t, "new", string(content))
 }
 
 func TestDeployOps_DeployLocalFile_ContentHash(t *testing.T) {
@@ -1639,24 +2758,21 @@ func TestDeployOps_DeployLocalStandardMode(t *testing.T) {
 		assert.ErrorIs(t, err, context.Canceled)
 	})
 
-	t.Run("content hash mode MkdirAll error", func(t *testing.T) {
-		if os.Getuid() == 0 {
-			t.Skip("skipping permission test when running as root")
-		}
-
+	t.Run("content hash mode refuses unmanaged root file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		sourceDir := filepath.Join(tmpDir, "source")
 		require.NoError(t, os.MkdirAll(sourceDir, 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "f.txt"), []byte("x"), 0644))
 
-		// Put a file where the target directory should be, so MkdirAll fails.
+		// Put an unmanaged file where the target directory should be. Transition
+		// preparation must now fail closed before MkdirAll or any mutation.
 		targetPath := filepath.Join(tmpDir, "target")
 		require.NoError(t, os.WriteFile(targetPath, []byte("block"), 0644))
 
 		d := &DeployOps{DryRun: false, ContentHashSync: true}
 		err := d.DeployLocal(ctx, sourceDir, targetPath, nil, nil)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "create target directory")
+		assert.Contains(t, err.Error(), "destination . blocks directory deployment and is not a managed regular file")
 	})
 }
 
