@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -374,6 +375,42 @@ func TestTemplateOps_RenderDirectory(t *testing.T) {
 		assert.NoFileExists(t, filepath.Join(stagingDir, "compose", "stack.yml"),
 			"rendered template must not be at staging root (missing subDir prefix)")
 	})
+
+	t.Run("symlinked appdata service is omitted before deploy discovery", func(t *testing.T) {
+		// Regression for #247 and #337: the lexically first service is a
+		// symlink, while a later real service must still render and be discovered.
+		tmpDir := evalSymlinks(t, t.TempDir())
+		sourceDir := filepath.Join(tmpDir, "repo", "unraid")
+		appdataDir := filepath.Join(sourceDir, "appdata")
+		stagingDir := filepath.Join(tmpDir, "staging")
+		outsideService := filepath.Join(tmpDir, "outside-service")
+
+		require.NoError(t, os.MkdirAll(appdataDir, 0755))
+		require.NoError(t, os.MkdirAll(outsideService, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(outsideService, "outside.yml"), []byte("outside"), 0644))
+		if err := os.Symlink(outsideService, filepath.Join(appdataDir, "aaa-linked-service")); err != nil {
+			t.Skipf("symlink creation unavailable: %v", err)
+		}
+
+		regularService := filepath.Join(appdataDir, "zzz-regular-service")
+		require.NoError(t, os.MkdirAll(regularService, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(regularService, "config.yml"), []byte("regular"), 0644))
+
+		tmpl := NewTemplateOps(map[string]any{})
+		require.NoError(t, tmpl.RenderDirectory(context.Background(), sourceDir, stagingDir, "unraid"))
+
+		stagingSubDir := filepath.Join(stagingDir, "unraid")
+		assert.NoFileExists(t, filepath.Join(stagingSubDir, "appdata", "aaa-linked-service"))
+		assert.FileExists(t, filepath.Join(stagingSubDir, "appdata", "zzz-regular-service", "config.yml"))
+
+		targets, err := discoverDeployTargets(stagingSubDir, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, []DeployTarget{{
+			RelPath:    filepath.Join("appdata", "zzz-regular-service"),
+			TargetPath: "zzz-regular-service",
+			IsDir:      true,
+		}}, targets)
+	})
 }
 
 func TestTemplateOps_ExecuteTemplateErrors(t *testing.T) {
@@ -483,7 +520,7 @@ func TestCopyNonTemplateFiles(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "template.tmpl"), []byte("template"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "config.json"), []byte("{}"), 0644))
 
-		err := copyNonTemplateFiles(srcDir, dstDir)
+		err := copyNonTemplateFiles(context.Background(), srcDir, dstDir)
 		require.NoError(t, err)
 
 		// Regular files should be copied
@@ -504,7 +541,7 @@ func TestCopyNonTemplateFiles(t *testing.T) {
 
 		require.NoError(t, os.WriteFile(filepath.Join(subDir, "file.txt"), []byte("content"), 0644))
 
-		err := copyNonTemplateFiles(srcDir, dstDir)
+		err := copyNonTemplateFiles(context.Background(), srcDir, dstDir)
 		require.NoError(t, err)
 
 		assert.FileExists(t, filepath.Join(dstDir, "sub", "file.txt"))
@@ -523,17 +560,57 @@ func TestCopyNonTemplateFiles(t *testing.T) {
 		}
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "zzz-regular.txt"), []byte("copied"), 0644))
 
-		err := copyNonTemplateFiles(srcDir, dstDir)
+		err := copyNonTemplateFiles(context.Background(), srcDir, dstDir)
 		require.NoError(t, err)
 		assert.FileExists(t, filepath.Join(dstDir, "zzz-regular.txt"))
 		assert.NoFileExists(t, filepath.Join(dstDir, "aaa-link.txt"))
+	})
+
+	t.Run("symlink race is skipped and later files are copied", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		srcDir := filepath.Join(tmpDir, "src")
+		dstDir := filepath.Join(tmpDir, "dst")
+
+		require.NoError(t, os.MkdirAll(srcDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "aaa-raced.txt"), []byte("raced"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "zzz-regular.txt"), []byte("copied"), 0644))
+
+		err := copyNonTemplateFilesWith(context.Background(), srcDir, dstDir, func(src, dst string) error {
+			if filepath.Base(src) == "aaa-raced.txt" {
+				return fmt.Errorf("source changed: %w", fileutil.ErrSymlinkSkipped)
+			}
+			return fileutil.CopyFile(src, dst)
+		})
+		require.NoError(t, err)
+		assert.NoFileExists(t, filepath.Join(dstDir, "aaa-raced.txt"))
+		assert.FileExists(t, filepath.Join(dstDir, "zzz-regular.txt"))
+	})
+
+	t.Run("non-symlink copy error aborts the walk", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		srcDir := filepath.Join(tmpDir, "src")
+		dstDir := filepath.Join(tmpDir, "dst")
+		copyErr := errors.New("copy failed")
+
+		require.NoError(t, os.MkdirAll(srcDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "aaa-error.txt"), []byte("error"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "zzz-regular.txt"), []byte("not copied"), 0644))
+
+		err := copyNonTemplateFilesWith(context.Background(), srcDir, dstDir, func(src, dst string) error {
+			if filepath.Base(src) == "aaa-error.txt" {
+				return copyErr
+			}
+			return fileutil.CopyFile(src, dst)
+		})
+		require.ErrorIs(t, err, copyErr)
+		assert.NoFileExists(t, filepath.Join(dstDir, "zzz-regular.txt"))
 	})
 
 	t.Run("non-existent source directory errors", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		dstDir := filepath.Join(tmpDir, "dst")
 
-		err := copyNonTemplateFiles("/non/existent", dstDir)
+		err := copyNonTemplateFiles(context.Background(), "/non/existent", dstDir)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "source directory does not exist")
 	})
@@ -552,7 +629,7 @@ func TestCopyNonTemplateFiles(t *testing.T) {
 		require.NoError(t, os.WriteFile(vanishFile, []byte("gone"), 0644))
 		require.NoError(t, os.Remove(vanishFile))
 
-		err := copyNonTemplateFiles(srcDir, dstDir)
+		err := copyNonTemplateFiles(context.Background(), srcDir, dstDir)
 		require.NoError(t, err)
 		assert.FileExists(t, filepath.Join(dstDir, "keep.txt"))
 	})

@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -215,7 +216,7 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 	}
 
 	// Copy non-template files from sourceDir (caller already joined InfraSubDir).
-	if err := copyNonTemplateFiles(sourceDir, outDir); err != nil {
+	if err := copyNonTemplateFiles(ctx, sourceDir, outDir); err != nil {
 		return fmt.Errorf("failed to copy non-template files: %w", err)
 	}
 
@@ -265,8 +266,14 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 }
 
 // copyNonTemplateFiles copies all non-.tmpl files from src to dst.
-func copyNonTemplateFiles(src, dst string) error {
-	logger := log.Component(log.ComponentTemplate)
+func copyNonTemplateFiles(ctx context.Context, src, dst string) error {
+	return copyNonTemplateFilesWith(ctx, src, dst, fileutil.CopyFile)
+}
+
+// copyNonTemplateFilesWith makes the copy operation explicit so the
+// discovery-to-copy race can be tested without a package-global fault seam.
+func copyNonTemplateFilesWith(ctx context.Context, src, dst string, copyFile func(string, string) error) error {
+	logger := log.ComponentCtx(ctx, log.ComponentTemplate)
 
 	// Validate the source directory exists before walking. A missing root
 	// indicates an InfraSubDir misconfiguration and must surface as an error.
@@ -319,6 +326,18 @@ func copyNonTemplateFiles(src, dst string) error {
 			return nil
 		}
 
-		return fileutil.CopyFile(path, dstPath)
+		if err := copyFile(path, dstPath); err != nil {
+			// The entry can become a symlink after WalkDir captured its DirEntry.
+			// Treat only CopyFile's typed skip as benign; I/O and destination
+			// errors must still abort staging rather than produce a partial tree.
+			if errors.Is(err, fileutil.ErrSymlinkSkipped) {
+				logger.Warn().
+					Str(log.FieldPath, path).
+					Msg("Skipping symlink during template file copy")
+				return nil
+			}
+			return err
+		}
+		return nil
 	})
 }
