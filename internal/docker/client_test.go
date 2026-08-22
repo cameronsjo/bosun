@@ -1,11 +1,14 @@
 package docker
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"io"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/system"
@@ -66,6 +69,23 @@ func TestClient_Ping(t *testing.T) {
 			assert.Equal(t, 1, mock.PingCalls)
 		})
 	}
+}
+
+func TestClient_PingPreservesTighterCallerDeadline(t *testing.T) {
+	parentDeadline := time.Now().Add(100 * time.Millisecond)
+	ctx, cancel := context.WithDeadline(context.Background(), parentDeadline)
+	defer cancel()
+
+	mock := NewMockDockerAPI()
+	mock.PingFunc = func(ctx context.Context, options client.PingOptions) (client.PingResult, error) {
+		deadline, ok := ctx.Deadline()
+		require.True(t, ok)
+		assert.Equal(t, parentDeadline, deadline)
+		return client.PingResult{}, nil
+	}
+
+	err := NewClientWithAPI(mock).Ping(ctx)
+	require.NoError(t, err)
 }
 
 func TestClient_Info(t *testing.T) {
@@ -708,6 +728,34 @@ func TestClient_GetContainerLogs(t *testing.T) {
 	}
 }
 
+func TestClient_GetContainerLogs_CancellationClosesBlockedStream(t *testing.T) {
+	server, stream := net.Pipe()
+	defer func() { _ = server.Close() }()
+
+	streamReturned := make(chan struct{})
+	mock := NewMockDockerAPI()
+	mock.ContainerLogsFunc = func(ctx context.Context, containerName string, options client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
+		close(streamReturned)
+		return stream, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := NewClientWithAPI(mock).GetContainerLogs(ctx, "web", 100)
+		result <- err
+	}()
+
+	<-streamReturned
+	cancel()
+	select {
+	case err := <-result:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("GetContainerLogs did not stop after cancellation")
+	}
+}
+
 func TestClient_GetContainerStats(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -770,6 +818,80 @@ func TestClient_GetContainerStats(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClient_GetContainerStats_CancellationInterruptsDrain(t *testing.T) {
+	server, stream := net.Pipe()
+	defer func() { _ = server.Close() }()
+
+	mock := NewMockDockerAPI()
+	mock.ContainerStatsFunc = func(ctx context.Context, containerID string, options client.ContainerStatsOptions) (client.ContainerStatsResult, error) {
+		return client.ContainerStatsResult{Body: stream}, nil
+	}
+
+	writeDone := make(chan struct{})
+	go func() {
+		_, _ = server.Write(makeStatsJSON(200, 2000, 100, 1000, 512, 1024, 2))
+		close(writeDone)
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := NewClientWithAPI(mock).GetContainerStats(ctx, "web")
+		result <- err
+	}()
+
+	<-writeDone
+	cancel()
+	select {
+	case err := <-result:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("GetContainerStats did not stop draining after cancellation")
+	}
+}
+
+func TestClient_ExecContainer_CancellationClosesBlockedStream(t *testing.T) {
+	server, stream := net.Pipe()
+	defer func() { _ = server.Close() }()
+
+	streamReturned := make(chan struct{})
+	mock := NewMockDockerAPI()
+	mock.ExecAttachFunc = func(ctx context.Context, execID string, options client.ExecAttachOptions) (client.ExecAttachResult, error) {
+		close(streamReturned)
+		return client.ExecAttachResult{HijackedResponse: client.HijackedResponse{
+			Conn:   stream,
+			Reader: bufio.NewReader(stream),
+		}}, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- NewClientWithAPI(mock).ExecContainer(ctx, "web", []string{"true"})
+	}()
+
+	<-streamReturned
+	cancel()
+	select {
+	case err := <-result:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("ExecContainer did not stop after cancellation")
+	}
+	assert.Zero(t, mock.ExecInspectCalls)
+}
+
+func TestClient_ExecContainer_DrainsThenInspects(t *testing.T) {
+	mock := NewMockDockerAPI()
+
+	err := NewClientWithAPI(mock).ExecContainer(context.Background(), "web", []string{"true"})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, mock.ExecCreateCalls)
+	assert.Equal(t, 1, mock.ExecAttachCalls)
+	assert.Equal(t, 1, mock.ExecInspectCalls)
 }
 
 func TestClient_GetAllContainerStats(t *testing.T) {
@@ -945,6 +1067,22 @@ func TestReadJSONStats_ReaderError(t *testing.T) {
 	var v statsJSON
 	err := readJSONStats(&errorReader{}, &v)
 	require.Error(t, err)
+}
+
+func TestReadWithContext_AlreadyCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	closed := false
+	read := false
+	err := readWithContext(ctx, func() { closed = true }, func() error {
+		read = true
+		return nil
+	})
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.True(t, closed)
+	assert.False(t, read)
 }
 
 // errorReader is a reader that always returns an error.

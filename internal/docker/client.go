@@ -4,6 +4,7 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -81,6 +82,8 @@ func (c *Client) Ping(ctx context.Context) error {
 	logger := log.ComponentCtx(ctx, log.ComponentDocker)
 	logger.Debug().Msg("Testing Docker daemon connection")
 
+	// WithTimeout intersects with the parent deadline, so a tighter caller
+	// budget remains authoritative.
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -339,7 +342,14 @@ func (c *Client) ExecContainer(ctx context.Context, name string, cmd []string) e
 	defer attachResp.Close()
 
 	// Drain output to allow the exec to complete.
-	if _, err := io.Copy(io.Discard, attachResp.Reader); err != nil {
+	err = readWithContext(ctx, attachResp.Close, func() error {
+		_, copyErr := io.Copy(io.Discard, attachResp.Reader)
+		return copyErr
+	})
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("read exec output from %s: %w", name, err)
+	}
+	if err != nil {
 		logger.Warn().Str(log.FieldContainer, name).Err(err).Msg("Error reading exec stream")
 	}
 
@@ -382,8 +392,13 @@ func (c *Client) GetContainerLogs(ctx context.Context, name string, tail int) (s
 	defer func() { _ = reader.Close() }()
 
 	// Read logs with size limit to prevent memory exhaustion
-	limitedReader := io.LimitReader(reader, MaxLogSize)
-	logs, err := io.ReadAll(limitedReader)
+	var logs []byte
+	err = readWithContext(ctx, func() { _ = reader.Close() }, func() error {
+		var readErr error
+		limitedReader := io.LimitReader(reader, MaxLogSize)
+		logs, readErr = io.ReadAll(limitedReader)
+		return readErr
+	})
 	if err != nil {
 		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to read container logs")
 		return "", fmt.Errorf("read logs: %w", err)
@@ -408,16 +423,25 @@ func (c *Client) GetContainerStats(ctx context.Context, name string) (*Container
 		logger.Error().Str(log.FieldContainer, name).Err(err).Msg("Failed to get container stats")
 		return nil, fmt.Errorf("get container stats: %w", err)
 	}
-	defer func() {
-		// Drain any remaining data before closing to ensure proper connection reuse
-		_, _ = io.Copy(io.Discard, stats.Body)
-		_ = stats.Body.Close()
-	}()
+	defer func() { _ = stats.Body.Close() }()
 
-	// Parse the stats JSON
+	// Parse the stats JSON, then drain any remaining data for connection reuse.
+	// Closing the body on cancellation interrupts either blocking operation.
 	var v statsJSON
-	if err := readJSONStats(stats.Body, &v); err != nil {
-		return nil, fmt.Errorf("parse stats: %w", err)
+	var parseErr error
+	err = readWithContext(ctx, func() { _ = stats.Body.Close() }, func() error {
+		parseErr = readJSONStats(stats.Body, &v)
+		if parseErr != nil {
+			return parseErr
+		}
+		_, _ = io.Copy(io.Discard, stats.Body)
+		return nil
+	})
+	if err != nil {
+		if parseErr != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("parse stats: %w", err)
+		}
+		return nil, fmt.Errorf("read stats: %w", err)
 	}
 
 	// Calculate CPU percentage
@@ -522,4 +546,30 @@ func formatPortString(publicPort, privatePort uint16, protocol string) string {
 // readJSONStats reads a single JSON stats object from the reader.
 func readJSONStats(r io.Reader, v *statsJSON) error {
 	return json.NewDecoder(r).Decode(v)
+}
+
+// readWithContext runs a potentially blocking stream read and closes the
+// underlying response when the caller cancels. Closing is required because an
+// in-progress Read cannot observe ctx.Done() on its own.
+func readWithContext(ctx context.Context, closeReader func(), read func() error) error {
+	if err := ctx.Err(); err != nil {
+		closeReader()
+		return err
+	}
+
+	finished := make(chan struct{})
+	defer close(finished)
+	go func() {
+		select {
+		case <-ctx.Done():
+			closeReader()
+		case <-finished:
+		}
+	}()
+
+	err := read()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return err
 }
