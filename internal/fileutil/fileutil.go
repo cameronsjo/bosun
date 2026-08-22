@@ -38,6 +38,12 @@ func warnSymlinkSkipped(path string) {
 // Uses atomic write via temp file to prevent partial writes on failure.
 // Symlinks are skipped with a warning rather than causing an error.
 func CopyFile(src, dst string) error {
+	return copyFileWithChmod(src, dst, (*os.File).Chmod)
+}
+
+// copyFileWithChmod exposes the permission operation as an explicit dependency
+// so its failure ordering can be tested without a package-global seam.
+func copyFileWithChmod(src, dst string, chmod func(*os.File, fs.FileMode) error) error {
 	// Check if source is a symlink - Lstat doesn't follow symlinks
 	srcLstat, err := os.Lstat(src)
 	if err != nil {
@@ -66,7 +72,16 @@ func CopyFile(src, dst string) error {
 		return fmt.Errorf("create parent directories: %w", err)
 	}
 
-	// Create temp file in the same directory for atomic rename
+	// Validate chmod support on a disposable empty file before copying payload
+	// bytes. The probe is never used for content: applying a broad or privileged
+	// source mode to the real named temp file would let another local user open
+	// it before the copy completes and retain that access after a later chmod.
+	if err := validateCopyPermissions(dstDir, srcInfo.Mode(), os.CreateTemp, chmod, os.Remove); err != nil {
+		return err
+	}
+
+	// Create the private payload temp file in the same directory for atomic
+	// rename. It stays at CreateTemp's 0600 mode until the copy is complete.
 	tmpFile, err := os.CreateTemp(dstDir, ".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
@@ -87,6 +102,12 @@ func CopyFile(src, dst string) error {
 		return fmt.Errorf("copy content: %w", err)
 	}
 
+	// Apply the final source mode only after the payload is complete. This also
+	// restores setuid/setgid bits that Unix may clear during payload writes.
+	if err := chmod(tmpFile, srcInfo.Mode()); err != nil {
+		return fmt.Errorf("set final permissions: %w", err)
+	}
+
 	// Sync to ensure data is written to disk
 	if err := tmpFile.Sync(); err != nil {
 		return fmt.Errorf("sync temp file: %w", err)
@@ -95,11 +116,6 @@ func CopyFile(src, dst string) error {
 	// Close temp file before rename
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
-	}
-
-	// Set permissions to match source
-	if err := os.Chmod(tmpPath, srcInfo.Mode()); err != nil {
-		return fmt.Errorf("set permissions: %w", err)
 	}
 
 	// Atomic rename to destination
@@ -120,6 +136,34 @@ func CopyFile(src, dst string) error {
 	}
 
 	success = true
+	return nil
+}
+
+func validateCopyPermissions(
+	dstDir string,
+	mode fs.FileMode,
+	createTemp func(string, string) (*os.File, error),
+	chmod func(*os.File, fs.FileMode) error,
+	remove func(string) error,
+) error {
+	probeFile, err := createTemp(dstDir, ".tmp-perm-*")
+	if err != nil {
+		return fmt.Errorf("create permission probe: %w", err)
+	}
+	probePath := probeFile.Name()
+	defer func() {
+		_ = probeFile.Close()
+		_ = remove(probePath)
+	}()
+	if err := chmod(probeFile, mode); err != nil {
+		return fmt.Errorf("set permissions: %w", err)
+	}
+	if err := probeFile.Close(); err != nil {
+		return fmt.Errorf("close permission probe: %w", err)
+	}
+	if err := remove(probePath); err != nil {
+		return fmt.Errorf("remove permission probe: %w", err)
+	}
 	return nil
 }
 
