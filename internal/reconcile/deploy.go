@@ -2,10 +2,12 @@ package reconcile
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/fileutil"
@@ -323,22 +325,44 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 	return nil
 }
 
-const managedTargetRoot = "."
+const (
+	managedTargetRoot       = "."
+	managedTransitionSuffix = ".bosun-transition"
+	managedTransitionFile   = "journal.json"
+	managedTransitionFormat = 1
+)
+
+type managedTransitionJournal struct {
+	Version int                            `json:"version"`
+	Items   []managedTransitionJournalItem `json:"items"`
+}
+
+type managedTransitionJournalItem struct {
+	RelPath string `json:"rel_path"`
+}
 
 type managedTypeTransition struct {
 	sourcePath, targetPath, relPath string
 	sourceIsDir                     bool
 	targetInfo, parentInfo          os.FileInfo
-	stageRoot, replacement, old     string
+	promotedInfo                    os.FileInfo
+	stageRoot, itemRoot             string
+	replacement, old                string
 	written, deleted                []string
 	prevManaged                     map[string]bool
 	quarantined, promoted           bool
 }
 
-type managedTypeTransitions struct{ items []*managedTypeTransition }
+type managedTypeTransitions struct {
+	stageRoot string
+	items     []*managedTypeTransition
+}
 
 func prepareManagedTypeTransitions(sourceRoot, targetRoot string, prevManaged map[string]bool) (*managedTypeTransitions, error) {
-	tx := &managedTypeTransitions{}
+	tx := &managedTypeTransitions{stageRoot: targetRoot + managedTransitionSuffix}
+	if err := recoverStaleManagedTypeTransitions(targetRoot); err != nil {
+		return tx, err
+	}
 	sourceInfo, err := os.Lstat(sourceRoot)
 	if err != nil {
 		return tx, err
@@ -381,13 +405,130 @@ func prepareManagedTypeTransitions(sourceRoot, targetRoot string, prevManaged ma
 			return tx, walkErr
 		}
 	}
+	if len(tx.items) == 0 {
+		return tx, nil
+	}
+	if err := tx.initializeStage(); err != nil {
+		return tx, err
+	}
 	for _, item := range tx.items {
 		if err := item.stage(); err != nil {
-			tx.discardStages()
+			_ = tx.discardStages()
 			return tx, err
 		}
 	}
 	return tx, nil
+}
+
+func recoverStaleManagedTypeTransitions(targetRoot string) error {
+	stageRoot := targetRoot + managedTransitionSuffix
+	stageInfo, err := os.Lstat(stageRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("inspect transition recovery path %s: %w", stageRoot, err)
+	}
+	if !stageInfo.IsDir() || stageInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("transition recovery path %s is not a private directory", stageRoot)
+	}
+	journalPath := filepath.Join(stageRoot, managedTransitionFile)
+	journalInfo, err := os.Lstat(journalPath)
+	if err != nil || !journalInfo.Mode().IsRegular() {
+		return fmt.Errorf("stale transition recovery at %s has no valid journal", stageRoot)
+	}
+	payload, err := os.ReadFile(journalPath)
+	if err != nil {
+		return fmt.Errorf("read transition recovery journal at %s: %w", stageRoot, err)
+	}
+	var journal managedTransitionJournal
+	if err := json.Unmarshal(payload, &journal); err != nil || journal.Version != managedTransitionFormat || len(journal.Items) == 0 {
+		return fmt.Errorf("stale transition recovery at %s has an invalid journal", stageRoot)
+	}
+
+	type pendingRestore struct{ old, target string }
+	var pending []pendingRestore
+	for i, journalItem := range journal.Items {
+		targetPath, err := transitionTargetPath(targetRoot, journalItem.RelPath)
+		if err != nil {
+			return fmt.Errorf("invalid transition recovery journal at %s: %w", stageRoot, err)
+		}
+		itemRoot := filepath.Join(stageRoot, strconv.Itoa(i))
+		old := filepath.Join(itemRoot, "original")
+		failed := filepath.Join(itemRoot, "failed-replacement")
+		if _, err := os.Lstat(failed); err == nil {
+			return fmt.Errorf("transition recovery artifacts require manual inspection at %s", stageRoot)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect transition recovery artifacts at %s: %w", stageRoot, err)
+		}
+		if _, err := os.Lstat(old); err == nil {
+			if _, targetErr := os.Lstat(targetPath); targetErr == nil {
+				return fmt.Errorf("live target and quarantined original both exist; manual recovery required at %s", stageRoot)
+			} else if !os.IsNotExist(targetErr) {
+				return fmt.Errorf("inspect live target during recovery at %s: %w", stageRoot, targetErr)
+			}
+			// A nested target's ancestors could have been replaced while bosun was
+			// stopped. Without the in-memory identity snapshot, restoring through
+			// those components could traverse a different tree. Keep the journaled
+			// original and require explicit recovery instead.
+			if journalItem.RelPath != managedTargetRoot {
+				return fmt.Errorf("nested quarantined original requires manual recovery at %s", stageRoot)
+			}
+			pending = append(pending, pendingRestore{old: old, target: targetPath})
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect quarantined original at %s: %w", stageRoot, err)
+		} else if _, targetErr := os.Lstat(targetPath); targetErr != nil {
+			return fmt.Errorf("target and quarantined original are both missing; manual recovery required at %s", stageRoot)
+		}
+	}
+	for _, restore := range pending {
+		if _, err := os.Lstat(restore.target); err == nil {
+			return fmt.Errorf("target was recreated during recovery; original retained at %s", stageRoot)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("recheck live target during recovery at %s: %w", stageRoot, err)
+		}
+		if err := os.Rename(restore.old, restore.target); err != nil {
+			return fmt.Errorf("restore quarantined original from %s: %w", stageRoot, err)
+		}
+	}
+	if err := os.RemoveAll(stageRoot); err != nil {
+		return fmt.Errorf("clean recovered transition at %s: %w", stageRoot, err)
+	}
+	return nil
+}
+
+func transitionTargetPath(targetRoot, relPath string) (string, error) {
+	if relPath == managedTargetRoot {
+		return targetRoot, nil
+	}
+	if relPath == "" || filepath.IsAbs(relPath) || filepath.Clean(relPath) != relPath || relPath == ".." || len(relPath) >= 3 && relPath[:3] == ".."+string(filepath.Separator) {
+		return "", fmt.Errorf("unsafe transition path %q", relPath)
+	}
+	return filepath.Join(targetRoot, relPath), nil
+}
+
+func (ts *managedTypeTransitions) initializeStage() error {
+	if err := os.Mkdir(ts.stageRoot, 0700); err != nil {
+		return fmt.Errorf("create transition stage %s: %w", ts.stageRoot, err)
+	}
+	journal := managedTransitionJournal{Version: managedTransitionFormat, Items: make([]managedTransitionJournalItem, len(ts.items))}
+	for i, item := range ts.items {
+		item.stageRoot = ts.stageRoot
+		item.itemRoot = filepath.Join(ts.stageRoot, strconv.Itoa(i))
+		item.replacement = filepath.Join(item.itemRoot, "replacement")
+		item.old = filepath.Join(item.itemRoot, "original")
+		journal.Items[i] = managedTransitionJournalItem{RelPath: item.relPath}
+		if err := os.Mkdir(item.itemRoot, 0700); err != nil {
+			_ = ts.discardStages()
+			return fmt.Errorf("create transition item stage %s: %w", item.relPath, err)
+		}
+	}
+	payload, _ := json.Marshal(journal) // The journal contains only integers and strings.
+	if err := os.WriteFile(filepath.Join(ts.stageRoot, managedTransitionFile), payload, 0600); err != nil {
+		_ = ts.discardStages()
+		return fmt.Errorf("write transition journal at %s: %w", ts.stageRoot, err)
+	}
+	return nil
 }
 
 func discoverManagedTypeConflict(sourcePath, targetPath, relPath string, sourceInfo os.FileInfo, prevManaged map[string]bool) (*managedTypeTransition, error) {
@@ -437,7 +578,11 @@ func validateManagedDirectory(conflictDir, conflictRel string, prevManaged map[s
 			dirs = append(dirs, path)
 			return nil
 		}
-		if !entry.Type().IsRegular() {
+		regular, err := dirEntryIsRegular(entry)
+		if err != nil {
+			return fmt.Errorf("inspect destination entry %s: %w", path, err)
+		}
+		if !regular {
 			return fmt.Errorf("destination entry %s is not a regular managed file", path)
 		}
 		under, err := filepath.Rel(conflictDir, path)
@@ -471,14 +616,15 @@ func validateManagedDirectory(conflictDir, conflictRel string, prevManaged map[s
 	return files, nil
 }
 
-func (t *managedTypeTransition) stage() error {
-	stageRoot, err := os.MkdirTemp(filepath.Dir(t.targetPath), ".bosun-transition-*")
+func dirEntryIsRegular(entry os.DirEntry) (bool, error) {
+	info, err := entry.Info()
 	if err != nil {
-		return fmt.Errorf("stage transition %s: %w", t.relPath, err)
+		return false, err
 	}
-	t.stageRoot = stageRoot
-	t.replacement = filepath.Join(stageRoot, "replacement")
-	t.old = filepath.Join(stageRoot, "original")
+	return info.Mode().IsRegular(), nil
+}
+
+func (t *managedTypeTransition) stage() error {
 	if t.sourceIsDir {
 		info, err := os.Stat(t.sourcePath)
 		if err != nil {
@@ -510,12 +656,11 @@ func (t *managedTypeTransition) stage() error {
 	return nil
 }
 
-func (ts *managedTypeTransitions) discardStages() {
-	for _, item := range ts.items {
-		if item.stageRoot != "" {
-			_ = os.RemoveAll(item.stageRoot)
-		}
+func (ts *managedTypeTransitions) discardStages() error {
+	if ts.stageRoot == "" {
+		return nil
 	}
+	return os.RemoveAll(ts.stageRoot)
 }
 
 func (ts *managedTypeTransitions) Promote() error {
@@ -546,44 +691,91 @@ func (ts *managedTypeTransitions) Promote() error {
 			return ts.Rollback(fmt.Errorf("promote replacement %s: %w", item.relPath, err))
 		}
 		item.promoted = true
+		item.promotedInfo, err = os.Lstat(item.targetPath)
+		if err != nil {
+			return ts.Rollback(fmt.Errorf("inspect promoted replacement %s: %w", item.relPath, err))
+		}
 	}
 	return nil
 }
 
 func (ts *managedTypeTransitions) Rollback(cause error) error {
-	errs := []error{cause}
-	recoveryRequired := false
+	var rollbackErrs []error
 	for i := len(ts.items) - 1; i >= 0; i-- {
 		item := ts.items[i]
 		if item.promoted {
-			failed := filepath.Join(item.stageRoot, "failed-replacement")
-			if err := os.Rename(item.targetPath, failed); err != nil {
-				errs = append(errs, fmt.Errorf("quarantine failed replacement %s: %w", item.relPath, err))
-				recoveryRequired = true
+			current, err := os.Lstat(item.targetPath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					item.promoted = false
+				} else {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("inspect promoted target %s during rollback: %w", item.relPath, err))
+					continue
+				}
+			} else if item.promotedInfo == nil || !os.SameFile(current, item.promotedInfo) {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("target %s was concurrently recreated; refusing to overwrite it", item.relPath))
 				continue
+			} else {
+				failed := filepath.Join(item.itemRoot, "failed-replacement")
+				if _, err := os.Lstat(failed); err == nil {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("failed-replacement path already exists for %s", item.relPath))
+					continue
+				} else if !os.IsNotExist(err) {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("inspect failed-replacement path for %s: %w", item.relPath, err))
+					continue
+				}
+				if err := os.Rename(item.targetPath, failed); err != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("quarantine failed replacement %s: %w", item.relPath, err))
+					continue
+				}
+				item.promoted = false
 			}
-			recoveryRequired = true
-			item.promoted = false
 		}
 		if item.quarantined {
+			if _, err := os.Lstat(item.targetPath); err == nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("target %s exists during rollback; original retained at %s", item.relPath, item.old))
+				continue
+			} else if !os.IsNotExist(err) {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("recheck target %s before restore: %w", item.relPath, err))
+				continue
+			}
 			if err := os.Rename(item.old, item.targetPath); err != nil {
-				errs = append(errs, fmt.Errorf("restore original destination %s: %w", item.relPath, err))
-				recoveryRequired = true
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("restore original destination %s: %w", item.relPath, err))
 				continue
 			}
 			item.quarantined = false
 		}
 	}
-	if recoveryRequired {
-		for _, item := range ts.items {
-			if item.stageRoot != "" {
-				errs = append(errs, fmt.Errorf("transition artifacts retained for recovery at %s", item.stageRoot))
+
+	for _, item := range ts.items {
+		failed := filepath.Join(item.itemRoot, "failed-replacement")
+		if _, err := os.Lstat(failed); err == nil {
+			redundant, compareErr := managedTransitionArtifactMatchesSource(item.sourcePath, failed)
+			if compareErr != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("verify failed replacement %s: %w", item.relPath, compareErr))
+			} else if !redundant {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("changed failed replacement %s retained for recovery", item.relPath))
+			} else if removeErr := os.RemoveAll(failed); removeErr != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("remove redundant failed replacement %s: %w", item.relPath, removeErr))
 			}
+		} else if !os.IsNotExist(err) {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("inspect failed replacement %s: %w", item.relPath, err))
 		}
-	} else {
-		ts.discardStages()
 	}
-	return errors.Join(errs...)
+
+	recoveryRequired, inspectErr := ts.hasRecoveryArtifacts()
+	if inspectErr != nil {
+		rollbackErrs = append(rollbackErrs, inspectErr)
+		recoveryRequired = true
+	}
+	if !recoveryRequired && len(rollbackErrs) == 0 {
+		if err := ts.discardStages(); err != nil {
+			return errors.Join(cause, fmt.Errorf("clean transition stage %s: %w", ts.stageRoot, err))
+		}
+		return cause
+	}
+	rollbackErrs = append(rollbackErrs, fmt.Errorf("transition artifacts retained for recovery at %s", ts.stageRoot))
+	return errors.Join(append([]error{cause}, rollbackErrs...)...)
 }
 
 func (ts *managedTypeTransitions) Commit(logger zerolog.Logger) {
@@ -593,14 +785,110 @@ func (ts *managedTypeTransitions) Commit(logger zerolog.Logger) {
 		// before cleanup and retain the quarantine if new unmanaged data appeared.
 		if !item.sourceIsDir {
 			if _, err := validateManagedDirectory(item.old, item.relPath, item.prevManaged); err != nil {
-				logger.Warn().Err(err).Str(log.FieldPath, item.stageRoot).Msg("Transition succeeded but quarantine gained unmanaged data; preserving it")
-				continue
+				logger.Warn().Err(err).Str(log.FieldPath, ts.stageRoot).Msg("Transition succeeded but quarantine gained unmanaged data; preserving it")
+				return
 			}
 		}
-		if err := os.RemoveAll(item.stageRoot); err != nil {
-			logger.Warn().Err(err).Str(log.FieldPath, item.stageRoot).Msg("Transition succeeded but quarantine cleanup failed")
+	}
+	if err := ts.discardStages(); err != nil {
+		logger.Warn().Err(err).Str(log.FieldPath, ts.stageRoot).Msg("Transition succeeded but quarantine cleanup failed")
+	}
+}
+
+func (ts *managedTypeTransitions) hasRecoveryArtifacts() (bool, error) {
+	for _, item := range ts.items {
+		for _, path := range []string{item.old, filepath.Join(item.itemRoot, "failed-replacement")} {
+			if _, err := os.Lstat(path); err == nil {
+				return true, nil
+			} else if !os.IsNotExist(err) {
+				return true, fmt.Errorf("inspect transition recovery artifact %s: %w", path, err)
+			}
 		}
 	}
+	return false, nil
+}
+
+type managedTransitionTreeEntry struct {
+	kind byte
+	hash string
+}
+
+func managedTransitionArtifactMatchesSource(source, artifact string) (bool, error) {
+	sourceInfo, err := os.Lstat(source)
+	if err != nil {
+		return false, err
+	}
+	artifactInfo, err := os.Lstat(artifact)
+	if err != nil {
+		return false, err
+	}
+	if sourceInfo.IsDir() != artifactInfo.IsDir() || sourceInfo.Mode().IsRegular() != artifactInfo.Mode().IsRegular() {
+		return false, nil
+	}
+	if sourceInfo.Mode().IsRegular() {
+		sourceHash, err := fileutil.FileHash(source)
+		if err != nil {
+			return false, err
+		}
+		artifactHash, err := fileutil.FileHash(artifact)
+		return sourceHash == artifactHash, err
+	}
+	if !sourceInfo.IsDir() {
+		return false, nil
+	}
+	sourceTree, err := managedTransitionTree(source, true)
+	if err != nil {
+		return false, err
+	}
+	artifactTree, err := managedTransitionTree(artifact, false)
+	if err != nil || len(sourceTree) != len(artifactTree) {
+		return false, err
+	}
+	for path, sourceEntry := range sourceTree {
+		if artifactEntry, ok := artifactTree[path]; !ok || artifactEntry != sourceEntry {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func managedTransitionTree(root string, skipSymlinks bool) (map[string]managedTransitionTreeEntry, error) {
+	tree := make(map[string]managedTransitionTreeEntry)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			if skipSymlinks {
+				return nil
+			}
+			tree[rel] = managedTransitionTreeEntry{kind: 'x'}
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			tree[rel] = managedTransitionTreeEntry{kind: 'd'}
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			tree[rel] = managedTransitionTreeEntry{kind: 'x'}
+			return nil
+		}
+		hash, err := fileutil.FileHash(path)
+		if err != nil {
+			return err
+		}
+		tree[rel] = managedTransitionTreeEntry{kind: 'f', hash: string(hash[:])}
+		return nil
+	})
+	return tree, err
 }
 
 func (ts *managedTypeTransitions) WrittenFiles() []string {
