@@ -72,7 +72,31 @@ func copyFileWithChmod(src, dst string, chmod func(*os.File, fs.FileMode) error)
 		return fmt.Errorf("create parent directories: %w", err)
 	}
 
-	// Create temp file in the same directory for atomic rename
+	// Validate chmod support on a disposable empty file before copying payload
+	// bytes. The probe is never used for content: applying a broad or privileged
+	// source mode to the real named temp file would let another local user open
+	// it before the copy completes and retain that access after a later chmod.
+	probeFile, err := os.CreateTemp(dstDir, ".tmp-perm-*")
+	if err != nil {
+		return fmt.Errorf("create permission probe: %w", err)
+	}
+	probePath := probeFile.Name()
+	defer func() {
+		_ = probeFile.Close()
+		_ = os.Remove(probePath)
+	}()
+	if err := chmod(probeFile, srcInfo.Mode()); err != nil {
+		return fmt.Errorf("set permissions: %w", err)
+	}
+	if err := probeFile.Close(); err != nil {
+		return fmt.Errorf("close permission probe: %w", err)
+	}
+	if err := os.Remove(probePath); err != nil {
+		return fmt.Errorf("remove permission probe: %w", err)
+	}
+
+	// Create the private payload temp file in the same directory for atomic
+	// rename. It stays at CreateTemp's 0600 mode until the copy is complete.
 	tmpFile, err := os.CreateTemp(dstDir, ".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
@@ -88,25 +112,15 @@ func copyFileWithChmod(src, dst string, chmod func(*os.File, fs.FileMode) error)
 		}
 	}()
 
-	// Apply the source mode before copying any payload. If the destination
-	// filesystem cannot represent the mode, fail before doing copy and sync
-	// work while preserving the existing destination atomically.
-	if err := chmod(tmpFile, srcInfo.Mode()); err != nil {
-		return fmt.Errorf("set permissions: %w", err)
-	}
-
 	// Copy content to temp file
 	if _, err := io.Copy(tmpFile, srcFile); err != nil {
 		return fmt.Errorf("copy content: %w", err)
 	}
 
-	// Writing may clear setuid/setgid bits on Unix. Reapply only when the
-	// source carried one of those bits so the early capability check does not
-	// weaken CopyFile's existing permission-preservation contract.
-	if srcInfo.Mode()&(fs.ModeSetuid|fs.ModeSetgid) != 0 {
-		if err := chmod(tmpFile, srcInfo.Mode()); err != nil {
-			return fmt.Errorf("restore special permissions: %w", err)
-		}
+	// Apply the final source mode only after the payload is complete. This also
+	// restores setuid/setgid bits that Unix may clear during payload writes.
+	if err := chmod(tmpFile, srcInfo.Mode()); err != nil {
+		return fmt.Errorf("set final permissions: %w", err)
 	}
 
 	// Sync to ensure data is written to disk

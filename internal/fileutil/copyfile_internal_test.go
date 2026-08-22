@@ -44,7 +44,7 @@ func TestCopyFileWithChmod_PermissionFailurePrecedesPayloadCopy(t *testing.T) {
 	assert.Empty(t, tempMatches, "failed atomic copy must remove its temporary file")
 }
 
-func TestCopyFileWithChmod_ReappliesWriteClearedSpecialPermissions(t *testing.T) {
+func TestCopyFileWithChmod_KeepsPayloadPrivateAndRestoresSpecialPermissions(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
@@ -52,14 +52,24 @@ func TestCopyFileWithChmod_ReappliesWriteClearedSpecialPermissions(t *testing.T)
 	dstPath := filepath.Join(tmpDir, "dest")
 
 	var sizesAtChmod []int64
+	var modesAtChmod []fs.FileMode
+	var requestedModes []fs.FileMode
+	var tempNames []string
 	err := copyFileWithChmod(srcPath, dstPath, func(tmpFile *os.File, mode fs.FileMode) error {
 		info, statErr := tmpFile.Stat()
 		require.NoError(t, statErr)
 		sizesAtChmod = append(sizesAtChmod, info.Size())
+		modesAtChmod = append(modesAtChmod, info.Mode())
+		requestedModes = append(requestedModes, mode)
+		tempNames = append(tempNames, tmpFile.Name())
 		return tmpFile.Chmod(mode)
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []int64{0, int64(len("executable"))}, sizesAtChmod)
+	assert.Equal(t, []fs.FileMode{srcMode, srcMode}, requestedModes)
+	assert.Equal(t, fs.FileMode(0600), modesAtChmod[0].Perm())
+	assert.Equal(t, fs.FileMode(0600), modesAtChmod[1].Perm(), "payload must be copied under a private temp mode")
+	assert.NotEqual(t, tempNames[0], tempNames[1], "permission probe must not become the payload temp file")
 
 	dstInfo, err := os.Stat(dstPath)
 	require.NoError(t, err)
@@ -85,7 +95,7 @@ func TestCopyFileWithChmod_SpecialPermissionRestoreFailurePreservesDestination(t
 	})
 
 	require.ErrorIs(t, err, restoreErr)
-	assert.ErrorContains(t, err, "restore special permissions")
+	assert.ErrorContains(t, err, "set final permissions")
 	assert.Equal(t, 2, chmodCalls)
 
 	dstContent, readErr := os.ReadFile(dstPath)
