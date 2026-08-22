@@ -330,9 +330,10 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 }
 
 const (
-	managedTargetRoot          = "."
-	managedTransitionOldSuffix = ".bosun-transition-old"
-	managedTransitionNewSuffix = ".bosun-transition-new"
+	managedTargetRoot            = "."
+	managedTransitionOldSuffix   = ".bosun-transition-old"
+	managedTransitionNewSuffix   = ".bosun-transition-new"
+	managedTransitionStageSuffix = ".bosun-transition-stage"
 )
 
 func validateTransitionSourceNamespace(sourceRoot string) error {
@@ -341,7 +342,9 @@ func validateTransitionSourceNamespace(sourceRoot string) error {
 			return walkErr
 		}
 		name := strings.ToLower(entry.Name())
-		if strings.HasSuffix(name, managedTransitionOldSuffix) || strings.HasSuffix(name, managedTransitionNewSuffix) {
+		if strings.HasSuffix(name, managedTransitionOldSuffix) ||
+			strings.HasSuffix(name, managedTransitionNewSuffix) ||
+			strings.HasSuffix(name, managedTransitionStageSuffix) {
 			return fmt.Errorf("source path uses reserved transition suffix: %s", path)
 		}
 		return nil
@@ -394,7 +397,11 @@ func validateManagedTransitionArtifacts(targetRoot string, managed []string) err
 }
 
 func validateTransitionArtifactsAbsent(targetPath string) error {
-	for _, artifact := range []string{targetPath + managedTransitionOldSuffix, targetPath + managedTransitionNewSuffix} {
+	for _, artifact := range []string{
+		targetPath + managedTransitionOldSuffix,
+		targetPath + managedTransitionNewSuffix,
+		targetPath + managedTransitionStageSuffix,
+	} {
 		if _, err := os.Lstat(artifact); err == nil {
 			return fmt.Errorf("transition artifact already exists at %s", artifact)
 		} else if !os.IsNotExist(err) {
@@ -470,11 +477,6 @@ func prepareManagedTypeTransitions(sourceRoot, targetRoot string, prevManaged ma
 			return nil
 		})
 		if err != nil {
-			return tx, err
-		}
-	}
-	for _, item := range tx.items {
-		if err := item.pin(); err != nil {
 			tx.Close()
 			return tx, err
 		}
@@ -492,12 +494,55 @@ func discoverManagedTypeConflict(sourcePath, targetPath, relPath string, sourceI
 	if err := validateTransitionArtifactsAbsent(targetPath); err != nil {
 		return nil, err
 	}
-	targetInfo, err := os.Lstat(targetPath)
+	targetPathInfo, err := os.Lstat(targetPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("inspect destination %s: %w", relPath, err)
+	}
+	parentPath := filepath.Dir(targetPath)
+	parentPathInfo, err := os.Lstat(parentPath)
+	if err != nil {
+		return nil, fmt.Errorf("inspect destination parent %s: %w", relPath, err)
+	}
+	parentHandle, err := os.Open(parentPath)
+	if err != nil {
+		return nil, fmt.Errorf("open destination parent for %s: %w", relPath, err)
+	}
+	targetHandle, err := os.Open(targetPath)
+	if err != nil {
+		_ = parentHandle.Close()
+		return nil, fmt.Errorf("open destination %s: %w", relPath, err)
+	}
+	keepHandles := false
+	defer func() {
+		if !keepHandles {
+			_ = targetHandle.Close()
+			_ = parentHandle.Close()
+		}
+	}()
+	parentInfo, parentStatErr := parentHandle.Stat()
+	targetInfo, targetStatErr := targetHandle.Stat()
+	if parentStatErr != nil || !os.SameFile(parentPathInfo, parentInfo) {
+		return nil, fmt.Errorf("destination parent changed while discovering %s", relPath)
+	}
+	if targetStatErr != nil || !os.SameFile(targetPathInfo, targetInfo) {
+		return nil, fmt.Errorf("destination changed while discovering %s", relPath)
+	}
+	item := &managedTypeTransition{
+		sourcePath: sourcePath, targetPath: targetPath, relPath: relPath,
+		sourceIsDir: sourceInfo.IsDir(), targetInfo: targetInfo,
+		parentInfo: parentInfo, targetHandle: targetHandle, parentHandle: parentHandle,
+		prevManaged: prevManaged,
+		oldPath:     targetPath + managedTransitionOldSuffix,
+		newPath:     targetPath + managedTransitionNewSuffix,
+	}
+	if err := item.revalidateParent(); err != nil {
+		return nil, fmt.Errorf("destination parent changed while discovering %s: %w", relPath, err)
+	}
+	if err := revalidatePinned(targetPath, targetHandle, targetInfo); err != nil {
+		return nil, fmt.Errorf("destination changed while discovering %s: %w", relPath, err)
 	}
 	if sourceInfo.IsDir() == targetInfo.IsDir() {
 		if sourceInfo.Mode().IsRegular() && !targetInfo.Mode().IsRegular() {
@@ -507,17 +552,6 @@ func discoverManagedTypeConflict(sourcePath, targetPath, relPath string, sourceI
 	}
 	if !sourceInfo.IsDir() && !sourceInfo.Mode().IsRegular() {
 		return nil, nil
-	}
-	parentInfo, err := os.Lstat(filepath.Dir(targetPath))
-	if err != nil {
-		return nil, fmt.Errorf("inspect destination parent %s: %w", relPath, err)
-	}
-	item := &managedTypeTransition{
-		sourcePath: sourcePath, targetPath: targetPath, relPath: relPath,
-		sourceIsDir: sourceInfo.IsDir(), targetInfo: targetInfo,
-		parentInfo: parentInfo, prevManaged: prevManaged,
-		oldPath: targetPath + managedTransitionOldSuffix,
-		newPath: targetPath + managedTransitionNewSuffix,
 	}
 	if sourceInfo.IsDir() {
 		if !targetInfo.Mode().IsRegular() || !prevManaged[relPath] {
@@ -531,6 +565,20 @@ func discoverManagedTypeConflict(sourcePath, targetPath, relPath string, sourceI
 		}
 		item.deleted = deleted
 	}
+	if err := validateTransitionArtifactsAbsent(targetPath); err != nil {
+		return nil, err
+	}
+	if err := item.revalidateParent(); err != nil {
+		return nil, fmt.Errorf("destination parent changed while validating %s: %w", relPath, err)
+	}
+	if err := revalidatePinned(targetPath, targetHandle, targetInfo); err != nil {
+		return nil, fmt.Errorf("destination changed while validating %s: %w", relPath, err)
+	}
+	item.targetFingerprint, err = fingerprintPinnedPath(targetPath, targetHandle, targetInfo)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint destination %s: %w", relPath, err)
+	}
+	keepHandles = true
 	return item, nil
 }
 
@@ -590,36 +638,6 @@ func dirEntryIsRegular(entry os.DirEntry) (bool, error) {
 	return info.Mode().IsRegular(), nil
 }
 
-func (t *managedTypeTransition) pin() error {
-	if err := validateTransitionArtifactsAbsent(t.targetPath); err != nil {
-		return err
-	}
-	var err error
-	t.parentHandle, err = os.Open(filepath.Dir(t.targetPath))
-	if err != nil {
-		return fmt.Errorf("open destination parent for %s: %w", t.relPath, err)
-	}
-	parentPinned, err := t.parentHandle.Stat()
-	if err != nil || !os.SameFile(parentPinned, t.parentInfo) {
-		return fmt.Errorf("destination parent changed while pinning %s", t.relPath)
-	}
-	t.targetHandle, err = os.Open(t.targetPath)
-	if err != nil {
-		return fmt.Errorf("open destination %s: %w", t.relPath, err)
-	}
-	targetPinned, err := t.targetHandle.Stat()
-	if err != nil || !os.SameFile(targetPinned, t.targetInfo) {
-		return fmt.Errorf("destination changed while pinning %s", t.relPath)
-	}
-	t.targetInfo = targetPinned
-	t.parentInfo = parentPinned
-	t.targetFingerprint, err = fingerprintPinnedPath(t.targetPath, t.targetHandle, t.targetInfo)
-	if err != nil {
-		return fmt.Errorf("fingerprint destination %s: %w", t.relPath, err)
-	}
-	return nil
-}
-
 func (t *managedTypeTransition) stage() (stageErr error) {
 	if err := t.createPrivateStage(); err != nil {
 		return err
@@ -629,9 +647,11 @@ func (t *managedTypeTransition) stage() (stageErr error) {
 		if stageErr == nil {
 			return
 		}
-		if !published && t.newHandle != nil {
-			_ = t.newHandle.Close()
-			t.newHandle = nil
+		if !published {
+			if t.privatePath != "" {
+				stageErr = fmt.Errorf("%w; private transition stage retained at %s", stageErr, t.privatePath)
+			}
+			return
 		}
 		if err := t.cleanupPrivateStage(); err != nil {
 			stageErr = errors.Join(stageErr, err)
@@ -695,22 +715,22 @@ func (t *managedTypeTransition) stage() (stageErr error) {
 }
 
 func (t *managedTypeTransition) createPrivateStage() error {
-	pattern := "." + filepath.Base(t.targetPath) + ".bosun-transition-stage-*"
-	path, err := os.MkdirTemp(filepath.Dir(t.targetPath), pattern)
-	if err != nil {
-		return fmt.Errorf("create private transition stage for %s: %w", t.relPath, err)
+	path := t.targetPath + managedTransitionStageSuffix
+	if err := os.Mkdir(path, 0700); err != nil {
+		return fmt.Errorf("create private transition stage for %s at %s: %w", t.relPath, path, err)
 	}
 	t.privatePath = path
+	var err error
 	t.privateHandle, err = os.Open(path)
 	if err != nil {
-		return fmt.Errorf("open private transition stage %s: %w", path, err)
+		return fmt.Errorf("open private transition stage retained at %s: %w", path, err)
 	}
 	t.privateInfo, err = t.privateHandle.Stat()
 	if err != nil {
-		return fmt.Errorf("stat private transition stage %s: %w", path, err)
+		return fmt.Errorf("stat private transition stage retained at %s: %w", path, err)
 	}
 	if err := revalidatePinned(path, t.privateHandle, t.privateInfo); err != nil {
-		return fmt.Errorf("pin private transition stage %s: %w", path, err)
+		return fmt.Errorf("pin private transition stage retained at %s: %w", path, err)
 	}
 	return nil
 }
@@ -756,7 +776,7 @@ func (t *managedTypeTransition) cleanupPrivateStage() error {
 	if err := revalidatePinned(t.privatePath, t.privateHandle, t.privateInfo); err != nil {
 		return fmt.Errorf("private transition stage retained at %s: %w", t.privatePath, err)
 	}
-	if err := os.RemoveAll(t.privatePath); err != nil {
+	if err := os.Remove(t.privatePath); err != nil {
 		return fmt.Errorf("remove private transition stage %s: %w", t.privatePath, err)
 	}
 	_ = t.privateHandle.Close()
@@ -810,6 +830,13 @@ func (ts *managedTypeTransitions) Promote() error {
 		if err := revalidatePinned(item.targetPath, item.targetHandle, item.targetInfo); err != nil {
 			return ts.Rollback(fmt.Errorf("destination changed before promoting %s: %w", item.relPath, err))
 		}
+		newFingerprint, err := fingerprintPinnedPath(item.newPath, item.newHandle, item.newInfo)
+		if err != nil {
+			return ts.Rollback(fmt.Errorf("staged replacement changed before promoting %s at %s: %w", item.relPath, item.newPath, err))
+		}
+		if newFingerprint != item.newFingerprint {
+			return ts.Rollback(fmt.Errorf("staged replacement changed before promoting %s at %s", item.relPath, item.newPath))
+		}
 		if err := renameNoReplace(item.targetPath, item.oldPath); err != nil {
 			return ts.Rollback(fmt.Errorf("quarantine destination %s at %s: %w", item.relPath, item.oldPath, err))
 		}
@@ -820,9 +847,6 @@ func (ts *managedTypeTransitions) Promote() error {
 				return ts.Rollback(fmt.Errorf("destination changed while quarantining %s: %w", item.relPath, err))
 			}
 			item.deleted = deleted
-		}
-		if err := revalidatePinned(item.newPath, item.newHandle, item.newInfo); err != nil {
-			return ts.Rollback(fmt.Errorf("staged replacement changed before promoting %s: %w", item.relPath, err))
 		}
 		if err := renameNoReplace(item.newPath, item.targetPath); err != nil {
 			return ts.Rollback(fmt.Errorf("promote replacement %s from %s: %w", item.relPath, item.newPath, err))

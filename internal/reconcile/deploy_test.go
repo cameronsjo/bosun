@@ -871,6 +871,24 @@ func TestManagedTypeTransitions_RollbackRetainsChangedReplacement(t *testing.T) 
 }
 
 func TestManagedTypeTransitions_FingerprintRetainsSubtleReplacementChanges(t *testing.T) {
+	t.Run("same-root content change before promotion", func(t *testing.T) {
+		transitions, target := newFileToDirTransition(t)
+		item := transitions.items[0]
+		changed := filepath.Join(item.newPath, "app.yml")
+		before, err := os.Stat(changed)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(changed, []byte("bad"), before.Mode()))
+		require.NoError(t, os.Chtimes(changed, before.ModTime(), before.ModTime()))
+
+		err = transitions.Promote()
+
+		require.ErrorContains(t, err, "staged replacement changed before promoting")
+		content, readErr := os.ReadFile(target)
+		require.NoError(t, readErr)
+		assert.Equal(t, "old", string(content))
+		assert.FileExists(t, changed)
+	})
+
 	t.Run("same-size same-mtime content change in directory", func(t *testing.T) {
 		transitions, target := newFileToDirTransition(t)
 		require.NoError(t, transitions.Promote())
@@ -916,7 +934,6 @@ func TestManagedTypeTransition_StageNeverOverwritesPublishedArtifact(t *testing.
 	require.NoError(t, err)
 	item, err := discoverManagedTypeConflict(source, target, "config", sourceInfo, map[string]bool{"config": true})
 	require.NoError(t, err)
-	require.NoError(t, item.pin())
 	t.Cleanup(func() { (&managedTypeTransitions{items: []*managedTypeTransition{item}}).Close() })
 	require.NoError(t, os.WriteFile(item.newPath, []byte("concurrent"), 0600))
 
@@ -929,15 +946,12 @@ func TestManagedTypeTransition_StageNeverOverwritesPublishedArtifact(t *testing.
 	original, readErr := os.ReadFile(target)
 	require.NoError(t, readErr)
 	assert.Equal(t, "old", string(original))
-	entries, readDirErr := os.ReadDir(targetParent)
-	require.NoError(t, readDirErr)
-	for _, entry := range entries {
-		assert.NotContains(t, entry.Name(), ".bosun-transition-stage-")
-	}
+	assert.DirExists(t, target+managedTransitionStageSuffix)
+	assert.FileExists(t, filepath.Join(target+managedTransitionStageSuffix, "replacement", "app.yml"))
 }
 
 func TestManagedTransitionSafetyFailures(t *testing.T) {
-	newUnpinned := func(t *testing.T) (*managedTypeTransition, string) {
+	newPinned := func(t *testing.T) (*managedTypeTransition, string) {
 		t.Helper()
 		root := t.TempDir()
 		source := filepath.Join(root, "source")
@@ -971,20 +985,23 @@ func TestManagedTransitionSafetyFailures(t *testing.T) {
 			root := t.TempDir()
 			_, err := prepareManagedTypeTransitions(filepath.Join(root, "missing"), filepath.Join(root, "target"), nil)
 			require.Error(t, err)
-			item, target := newUnpinned(t)
+			item, target := newPinned(t)
 			require.NoError(t, os.WriteFile(item.oldPath, []byte("stale"), 0600))
 			sourceInfo, statErr := os.Lstat(item.sourcePath)
 			require.NoError(t, statErr)
 			_, err = discoverManagedTypeConflict(item.sourcePath, target, "config", sourceInfo, map[string]bool{"config": true})
 			require.ErrorContains(t, err, item.oldPath)
 		}},
-		{name: "pin rejects late artifact and identity swaps", run: func(t *testing.T) {
+		{name: "pinned discovery rejects late artifact and identity swaps", run: func(t *testing.T) {
 			for _, mutation := range []string{"artifact", "parent", "missing target", "replaced target"} {
 				t.Run(mutation, func(t *testing.T) {
-					item, target := newUnpinned(t)
+					item, target := newPinned(t)
+					require.NoError(t, item.stage())
+					transitions := &managedTypeTransitions{items: []*managedTypeTransition{item}}
+					t.Cleanup(transitions.Close)
 					switch mutation {
 					case "artifact":
-						require.NoError(t, os.WriteFile(item.newPath, []byte("late"), 0600))
+						require.NoError(t, os.WriteFile(item.oldPath, []byte("late"), 0600))
 					case "parent":
 						parent := filepath.Dir(target)
 						require.NoError(t, os.Rename(parent, parent+"-original"))
@@ -995,8 +1012,7 @@ func TestManagedTransitionSafetyFailures(t *testing.T) {
 						require.NoError(t, os.Remove(target))
 						require.NoError(t, os.WriteFile(target, []byte("replacement"), 0600))
 					}
-					require.Error(t, item.pin())
-					(&managedTypeTransitions{items: []*managedTypeTransition{item}}).Close()
+					require.Error(t, transitions.Promote())
 				})
 			}
 		}},
@@ -1080,17 +1096,29 @@ func TestManagedTransitionSafetyFailures(t *testing.T) {
 			_, err = fingerprintPinnedPath(root, handle, info)
 			require.ErrorContains(t, err, "is not regular")
 		}},
-		{name: "stage cleans private root when source disappears", run: func(t *testing.T) {
+		{name: "stage retains private root when source disappears", run: func(t *testing.T) {
 			parent := t.TempDir()
 			item := &managedTypeTransition{
 				sourcePath: filepath.Join(parent, "missing"), targetPath: filepath.Join(parent, "config"),
 				relPath: "config", sourceIsDir: true, newPath: filepath.Join(parent, "config") + managedTransitionNewSuffix,
 			}
 
-			require.Error(t, item.stage())
-			entries, err := os.ReadDir(parent)
-			require.NoError(t, err)
-			assert.Empty(t, entries)
+			err := item.stage()
+			require.ErrorContains(t, err, item.targetPath+managedTransitionStageSuffix)
+			assert.DirExists(t, item.targetPath+managedTransitionStageSuffix)
+		}},
+		{name: "private stage cleanup preserves late child", run: func(t *testing.T) {
+			parent := t.TempDir()
+			item := &managedTypeTransition{targetPath: filepath.Join(parent, "config"), relPath: "config"}
+			require.NoError(t, item.createPrivateStage())
+			late := filepath.Join(item.privatePath, "late-runtime-data")
+			require.NoError(t, os.WriteFile(late, []byte("keep"), 0600))
+			t.Cleanup(func() { (&managedTypeTransitions{items: []*managedTypeTransition{item}}).Close() })
+
+			err := item.cleanupPrivateStage()
+
+			require.ErrorContains(t, err, item.privatePath)
+			assert.FileExists(t, late)
 		}},
 		{name: "stage reports missing target parent", run: func(t *testing.T) {
 			root := t.TempDir()
@@ -1277,7 +1305,7 @@ func TestManagedTypeTransitions_RejectsIntermediateParentSwap(t *testing.T) {
 }
 
 func TestPrepareManagedTypeTransitions_RefusesExistingArtifacts(t *testing.T) {
-	for _, suffix := range []string{managedTransitionOldSuffix, managedTransitionNewSuffix} {
+	for _, suffix := range []string{managedTransitionOldSuffix, managedTransitionNewSuffix, managedTransitionStageSuffix} {
 		t.Run(suffix, func(t *testing.T) {
 			tmpDir := t.TempDir()
 			source := filepath.Join(tmpDir, "source")

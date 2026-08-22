@@ -3279,22 +3279,26 @@ func TestDeployLocal_TopLevelTypeTransitions(t *testing.T) {
 	})
 
 	t.Run("reserved source suffix refuses before target mutation", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		stagingDir := filepath.Join(tmpDir, "staging")
-		appdataDir := filepath.Join(tmpDir, "appdata")
-		reserved := filepath.Join(stagingDir, "unraid", "appdata", "config"+managedTransitionOldSuffix)
-		require.NoError(t, os.MkdirAll(reserved, 0755))
-		require.NoError(t, os.MkdirAll(appdataDir, 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(reserved, "app.yml"), []byte("new"), 0644))
-		marker := filepath.Join(appdataDir, "runtime.db")
-		require.NoError(t, os.WriteFile(marker, []byte("keep"), 0600))
+		for _, suffix := range []string{managedTransitionOldSuffix, managedTransitionStageSuffix} {
+			t.Run(suffix, func(t *testing.T) {
+				tmpDir := t.TempDir()
+				stagingDir := filepath.Join(tmpDir, "staging")
+				appdataDir := filepath.Join(tmpDir, "appdata")
+				reserved := filepath.Join(stagingDir, "unraid", "appdata", "CONFIG"+strings.ToUpper(suffix))
+				require.NoError(t, os.MkdirAll(reserved, 0755))
+				require.NoError(t, os.MkdirAll(appdataDir, 0755))
+				require.NoError(t, os.WriteFile(filepath.Join(reserved, "app.yml"), []byte("new"), 0644))
+				marker := filepath.Join(appdataDir, "runtime.db")
+				require.NoError(t, os.WriteFile(marker, []byte("keep"), 0600))
 
-		_, err := newReconciler(t, stagingDir, appdataDir).deployLocal(context.Background(), nil)
+				_, err := newReconciler(t, stagingDir, appdataDir).deployLocal(context.Background(), nil)
 
-		require.ErrorContains(t, err, reserved)
-		content, readErr := os.ReadFile(marker)
-		require.NoError(t, readErr)
-		assert.Equal(t, "keep", string(content))
+				require.ErrorContains(t, err, reserved)
+				content, readErr := os.ReadFile(marker)
+				require.NoError(t, readErr)
+				assert.Equal(t, "keep", string(content))
+			})
+		}
 	})
 
 	t.Run("removed source still detects nested prior artifact", func(t *testing.T) {
@@ -3305,13 +3309,13 @@ func TestDeployLocal_TopLevelTypeTransitions(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(appdataDir, "config"), 0755))
 		marker := filepath.Join(appdataDir, "config", "runtime.db")
 		require.NoError(t, os.WriteFile(marker, []byte("keep"), 0600))
-		artifact := filepath.Join(appdataDir, "config", "nested") + managedTransitionNewSuffix
-		require.NoError(t, os.WriteFile(artifact, []byte("recover"), 0600))
+		artifact := filepath.Join(appdataDir, "config", "nested") + managedTransitionStageSuffix
+		require.NoError(t, os.Mkdir(artifact, 0700))
 
 		_, err := newReconciler(t, stagingDir, appdataDir).deployLocal(context.Background(), []string{"config/nested/app.yml"})
 
 		require.ErrorContains(t, err, artifact)
-		assert.FileExists(t, artifact)
+		assert.DirExists(t, artifact)
 		content, readErr := os.ReadFile(marker)
 		require.NoError(t, readErr)
 		assert.Equal(t, "keep", string(content))
