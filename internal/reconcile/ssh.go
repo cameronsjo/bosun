@@ -212,6 +212,10 @@ func sshExecCommand(ctx context.Context, args ...string) *exec.Cmd {
 	return execWithHostKeyOptions(ctx, "ssh", args...)
 }
 
+// newSSHTransferCommand is the tar-over-SSH command seam. Tests replace it to
+// exercise an SSH spawn failure after the local tar process has started.
+var newSSHTransferCommand = sshExecCommand
+
 // scpExecCommand builds an `scp` command with the host-key policy flags
 // prepended before the caller's args. Counterpart to sshExecCommand for the
 // single-file copy path.
@@ -570,7 +574,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			Str("dest", tmpDir).
 			Msg("Preparing to tar and extract staging directory to remote")
 		tarCmd := exec.CommandContext(ctx, "tar", "-C", sourceDir, "-cf", "-", ".")
-		sshCmd := sshExecCommand(ctx, targetHost, fmt.Sprintf("tar -C %s -xf -", shellquote.Join(tmpDir)))
+		sshCmd := newSSHTransferCommand(ctx, targetHost, fmt.Sprintf("tar -C %s -xf -", shellquote.Join(tmpDir)))
 
 		// Connect tar stdout to ssh stdin. The remote tmpDir already exists
 		// (mkdir above), so every failure from here on must clean it up or it

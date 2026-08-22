@@ -141,6 +141,29 @@ func TestDeployRemote_EndToEnd(t *testing.T) {
 	})
 }
 
+func TestDeployRemote_SSHStartFailureReapsTar(t *testing.T) {
+	setupSSHShim(t)
+	original := newSSHTransferCommand
+	t.Cleanup(func() { newSSHTransferCommand = original })
+	missingSSH := filepath.Join(t.TempDir(), "missing-ssh")
+	newSSHTransferCommand = func(ctx context.Context, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, missingSSH)
+	}
+
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	targetParent := filepath.Join(base, "deploy")
+	writeMarker(t, source, "marker", "v1")
+
+	err := (&DeployOps{}).DeployRemote(context.Background(), source, "user@testhost", filepath.Join(targetParent, "compose"), false)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "start ssh")
+	entries, readErr := os.ReadDir(targetParent)
+	require.NoError(t, readErr)
+	assert.Empty(t, entries, "SSH spawn failure must clean the staging directory")
+}
+
 func TestEnsureRemoteDir_EndToEnd(t *testing.T) {
 	setupSSHShim(t)
 	dir := filepath.Join(t.TempDir(), "nested", "path")
