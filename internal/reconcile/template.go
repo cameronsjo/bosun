@@ -266,6 +266,8 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 
 // copyNonTemplateFiles copies all non-.tmpl files from src to dst.
 func copyNonTemplateFiles(src, dst string) error {
+	logger := log.Component(log.ComponentTemplate)
+
 	// Validate the source directory exists before walking. A missing root
 	// indicates an InfraSubDir misconfiguration and must surface as an error.
 	info, err := os.Stat(src)
@@ -290,6 +292,15 @@ func copyNonTemplateFiles(src, dst string) error {
 				return nil
 			}
 			return err
+		}
+
+		// WalkDir uses Lstat semantics, so skip symlinks before CopyFile can
+		// return ErrSymlinkSkipped and abort the rest of the directory walk.
+		if d.Type()&os.ModeSymlink != 0 {
+			logger.Warn().
+				Str(log.FieldPath, path).
+				Msg("Skipping symlink during template file copy")
+			return nil
 		}
 
 		relPath, err := filepath.Rel(src, path)

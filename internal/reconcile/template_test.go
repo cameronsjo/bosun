@@ -510,6 +510,25 @@ func TestCopyNonTemplateFiles(t *testing.T) {
 		assert.FileExists(t, filepath.Join(dstDir, "sub", "file.txt"))
 	})
 
+	t.Run("symlink is skipped and later files are copied", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		srcDir := filepath.Join(tmpDir, "src")
+		dstDir := filepath.Join(tmpDir, "dst")
+		outsideFile := filepath.Join(tmpDir, "outside.txt")
+
+		require.NoError(t, os.MkdirAll(srcDir, 0755))
+		require.NoError(t, os.WriteFile(outsideFile, []byte("outside"), 0644))
+		if err := os.Symlink(outsideFile, filepath.Join(srcDir, "aaa-link.txt")); err != nil {
+			t.Skipf("symlink creation unavailable: %v", err)
+		}
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "zzz-regular.txt"), []byte("copied"), 0644))
+
+		err := copyNonTemplateFiles(srcDir, dstDir)
+		require.NoError(t, err)
+		assert.FileExists(t, filepath.Join(dstDir, "zzz-regular.txt"))
+		assert.NoFileExists(t, filepath.Join(dstDir, "aaa-link.txt"))
+	})
+
 	t.Run("non-existent source directory errors", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		dstDir := filepath.Join(tmpDir, "dst")
