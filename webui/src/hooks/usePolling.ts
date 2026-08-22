@@ -27,7 +27,10 @@ export function usePolling<T>({
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const fetcherRef = useRef(fetcher);
-  fetcherRef.current = fetcher;
+
+  useEffect(() => {
+    fetcherRef.current = fetcher;
+  }, [fetcher]);
 
   const fetchData = useCallback(async () => {
     try {
