@@ -219,6 +219,14 @@ func scpExecCommand(ctx context.Context, args ...string) *exec.Cmd {
 	return execWithHostKeyOptions(ctx, "scp", args...)
 }
 
+// killAndReapProcess terminates a started child and collects its process state.
+// Kill alone leaves a zombie and retains the command's pipe descriptors until
+// Wait is called.
+func killAndReapProcess(cmd *exec.Cmd) {
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+}
+
 // isTransientSSHError checks if an error is transient and worth retrying.
 // Transient errors include connection refused, timeout, and network unreachable.
 func isTransientSSHError(err error) bool {
@@ -584,7 +592,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			return fmt.Errorf("start tar: %w", err)
 		}
 		if err := sshCmd.Start(); err != nil {
-			_ = tarCmd.Process.Kill()
+			killAndReapProcess(tarCmd)
 			cleanupTmp("ssh_start_failed")
 			return fmt.Errorf("start ssh: %w: %s", err, sshStderr.String())
 		}

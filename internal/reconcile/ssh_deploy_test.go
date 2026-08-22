@@ -3,12 +3,29 @@ package reconcile
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestKillAndReapProcess(t *testing.T) {
+	cmd := exec.Command("/bin/sleep", "30")
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+
+	killAndReapProcess(cmd)
+
+	require.NotNil(t, cmd.ProcessState, "Wait must collect the killed child")
+	assert.False(t, cmd.ProcessState.Success())
+}
 
 // setupSSHShim installs a fake `ssh` ahead of PATH that executes the remote
 // command locally (`ssh [-o opt]... <host> <cmd...>` → `/bin/sh -c "<cmd...>"`),
