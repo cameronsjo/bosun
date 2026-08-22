@@ -17,6 +17,138 @@ func TestNewSOPSOps(t *testing.T) {
 	assert.NotNil(t, sops)
 }
 
+func TestValidateSOPSFile(t *testing.T) {
+	validMetadata := `secret: ENC[AES256_GCM,data:c2VjcmV0,iv:a,tag:b,type:str]
+sops:
+  age:
+    - recipient: age1example
+      enc: encrypted-data-key
+  lastmodified: "2026-08-22T16:00:00Z"
+  mac: ENC[AES256_GCM,data:bWFj,iv:a,tag:b,type:str]
+  version: 3.11.0
+`
+
+	tests := []struct {
+		name        string
+		content     string
+		wantErr     bool
+		wantContain string
+	}{
+		{name: "valid age metadata", content: validMetadata},
+		{name: "valid unquoted timestamp", content: strings.Replace(validMetadata, `"2026-08-22T16:00:00Z"`, "2026-08-22T16:00:00Z", 1)},
+		{
+			name: "valid key groups metadata",
+			content: `secret: ENC[AES256_GCM,data:c2VjcmV0,iv:a,tag:b,type:str]
+sops:
+  key_groups:
+    - pgp:
+        - fp: ABC123
+          enc: encrypted-data-key
+  lastmodified: "2026-08-22T16:00:00Z"
+  mac: ENC[AES256_GCM,data:bWFj,iv:a,tag:b,type:str]
+`,
+		},
+		{
+			name:        "missing metadata",
+			content:     "secret: plaintext\n",
+			wantErr:     true,
+			wantContain: "does not contain 'sops' metadata key",
+		},
+		{
+			name:        "metadata is not a mapping",
+			content:     "sops: see docs/sops-howto.md\n",
+			wantErr:     true,
+			wantContain: "expected a mapping",
+		},
+		{
+			name:        "missing mac",
+			content:     strings.Replace(validMetadata, "  mac: ENC[AES256_GCM,data:bWFj,iv:a,tag:b,type:str]\n", "", 1),
+			wantErr:     true,
+			wantContain: "missing non-empty 'mac'",
+		},
+		{
+			name:        "missing lastmodified",
+			content:     strings.Replace(validMetadata, "  lastmodified: \"2026-08-22T16:00:00Z\"\n", "", 1),
+			wantErr:     true,
+			wantContain: "missing non-empty 'lastmodified'",
+		},
+		{
+			name:        "invalid lastmodified",
+			content:     strings.Replace(validMetadata, "2026-08-22T16:00:00Z", "yesterday", 1),
+			wantErr:     true,
+			wantContain: "expected an RFC3339 timestamp",
+		},
+		{
+			name:        "missing recipients",
+			content:     strings.Replace(validMetadata, "  age:\n    - recipient: age1example\n      enc: encrypted-data-key\n", "", 1),
+			wantErr:     true,
+			wantContain: "no key recipient",
+		},
+		{
+			name:        "empty recipient entry",
+			content:     strings.Replace(validMetadata, "    - recipient: age1example\n      enc: encrypted-data-key", "    - {}", 1),
+			wantErr:     true,
+			wantContain: "no key recipient",
+		},
+		{
+			name:        "recipient missing encrypted data key",
+			content:     strings.Replace(validMetadata, "      enc: encrypted-data-key\n", "", 1),
+			wantErr:     true,
+			wantContain: "no key recipient",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "secrets.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(tt.content), 0o600))
+
+			err := ValidateSOPSFile(path)
+			if !tt.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotSOPSFile)
+			assert.Contains(t, err.Error(), tt.wantContain)
+		})
+	}
+
+	t.Run("missing file", func(t *testing.T) {
+		err := ValidateSOPSFile(filepath.Join(t.TempDir(), "missing.yaml"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "SOPS file not found")
+	})
+
+	t.Run("invalid yaml", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "secrets.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("sops: [unterminated"), 0o600))
+		err := ValidateSOPSFile(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid YAML syntax")
+	})
+}
+
+func TestHasSOPSRecipients(t *testing.T) {
+	for _, key := range []string{"age", "pgp", "kms", "gcp_kms", "azure_kv", "hc_vault"} {
+		t.Run(key, func(t *testing.T) {
+			metadata := map[string]any{
+				key: []any{map[string]any{"enc": "encrypted-data-key"}},
+			}
+			assert.True(t, hasSOPSRecipients(metadata))
+		})
+	}
+
+	assert.True(t, hasSOPSRecipients(map[string]any{
+		"key_groups": []any{
+			map[string]any{"age": []any{map[string]any{"enc": "encrypted-data-key"}}},
+		},
+	}))
+	assert.False(t, hasSOPSRecipients(map[string]any{"age": []any{map[string]any{}}}))
+	assert.False(t, hasSOPSRecipients(map[string]any{"age": []any{map[string]any{"recipient": "age1example"}}}))
+	assert.False(t, hasSOPSRecipients(map[string]any{"key_groups": "not-a-list"}))
+}
+
 func TestSOPSOps_Decrypt(t *testing.T) {
 	// Note: sops binary is no longer required - we use go-sops library for in-process decryption
 

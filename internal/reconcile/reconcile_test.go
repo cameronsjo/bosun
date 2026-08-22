@@ -2822,7 +2822,14 @@ func TestValidateSOPSFileAdditional(t *testing.T) {
 	t.Run("valid SOPS file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		sopsFile := filepath.Join(tmpDir, "secrets.yaml")
-		content := "key: ENC[AES256_GCM,...]\nsops:\n  age:\n  - recipient: age1...\n"
+		content := `key: ENC[AES256_GCM,data:c2VjcmV0,iv:a,tag:b,type:str]
+sops:
+  age:
+    - recipient: age1example
+      enc: encrypted-data-key
+  lastmodified: "2026-08-22T16:00:00Z"
+  mac: ENC[AES256_GCM,data:bWFj,iv:a,tag:b,type:str]
+`
 		require.NoError(t, os.WriteFile(sopsFile, []byte(content), 0644))
 
 		err := ValidateSOPSFile(sopsFile)

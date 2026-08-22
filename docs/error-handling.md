@@ -32,7 +32,7 @@ Bosun defines sentinel errors for conditions that callers may want to handle spe
 
 ### `ErrAgeKeyNotFound`
 
-**Location**: `internal/internal/reconcile/sops.go`
+**Location**: `internal/reconcile/sops.go`
 
 ```go
 var ErrAgeKeyNotFound = errors.New("age key not found")
@@ -63,9 +63,9 @@ To fix:
 var ErrNotSOPSFile = errors.New("file is not SOPS-encrypted")
 ```
 
-**Purpose**: Returned when a file lacks the required SOPS metadata.
+**Purpose**: Returned when a file lacks complete, structurally valid SOPS metadata.
 
-**When Returned**: `ValidateSOPSFile()` returns this when a YAML file does not contain the `sops` metadata key.
+**When Returned**: `ValidateSOPSFile()` returns this when a YAML file has no `sops` metadata mapping, no MAC, no valid `lastmodified` timestamp, or no key recipient with an encrypted data key.
 
 **Example Error with Remediation**:
 ```
