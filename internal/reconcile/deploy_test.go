@@ -627,6 +627,84 @@ func TestDeployOps_DeployLocal_ContentHash(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, result.WrittenFiles)
 	})
+
+	t.Run("replaces previously managed file with directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+		require.NoError(t, os.MkdirAll(filepath.Join(sourceDir, "config"), 0755))
+		require.NoError(t, os.MkdirAll(targetDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "config", "app.yml"), []byte("new"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "config"), []byte("old"), 0644))
+
+		result := &DeployResult{}
+		deploy := &DeployOps{ContentHashSync: true}
+		err := deploy.DeployLocal(context.Background(), sourceDir, targetDir, result, map[string]bool{"config": true})
+
+		require.NoError(t, err)
+		assert.FileExists(t, filepath.Join(targetDir, "config", "app.yml"))
+		assert.Equal(t, []string{filepath.Join("config", "app.yml")}, result.WrittenFiles)
+		assert.Equal(t, []string{"config"}, result.DeletedFiles)
+	})
+
+	t.Run("replaces managed directory contents with file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+		require.NoError(t, os.MkdirAll(sourceDir, 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(targetDir, "config", "nested"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "config"), []byte("new"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "config", "nested", "app.yml"), []byte("old"), 0644))
+
+		result := &DeployResult{}
+		deploy := &DeployOps{ContentHashSync: true}
+		err := deploy.DeployLocal(context.Background(), sourceDir, targetDir, result, map[string]bool{"config/nested/app.yml": true})
+
+		require.NoError(t, err)
+		content, readErr := os.ReadFile(filepath.Join(targetDir, "config"))
+		require.NoError(t, readErr)
+		assert.Equal(t, "new", string(content))
+		assert.Equal(t, []string{"config"}, result.WrittenFiles)
+		assert.Equal(t, []string{"config/nested/app.yml"}, result.DeletedFiles)
+	})
+
+	t.Run("refuses file to directory transition for unmanaged file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+		require.NoError(t, os.MkdirAll(filepath.Join(sourceDir, "config"), 0755))
+		require.NoError(t, os.MkdirAll(targetDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "config", "app.yml"), []byte("new"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "config"), []byte("unmanaged"), 0644))
+
+		deploy := &DeployOps{ContentHashSync: true}
+		err := deploy.DeployLocal(context.Background(), sourceDir, targetDir, &DeployResult{}, nil)
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "config blocks directory deployment and is not in the managed-file manifest")
+		content, readErr := os.ReadFile(filepath.Join(targetDir, "config"))
+		require.NoError(t, readErr)
+		assert.Equal(t, "unmanaged", string(content))
+	})
+
+	t.Run("refuses directory to file transition with unmanaged data", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+		require.NoError(t, os.MkdirAll(sourceDir, 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(targetDir, "config"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "config"), []byte("new"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "config", "app.yml"), []byte("old"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "config", "runtime.db"), []byte("keep"), 0644))
+
+		deploy := &DeployOps{ContentHashSync: true}
+		err := deploy.DeployLocal(context.Background(), sourceDir, targetDir, &DeployResult{}, map[string]bool{"config/app.yml": true})
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "runtime.db is not in the managed-file manifest")
+		assert.FileExists(t, filepath.Join(targetDir, "config", "app.yml"))
+		assert.FileExists(t, filepath.Join(targetDir, "config", "runtime.db"))
+	})
 }
 
 func TestDeployOps_DeployLocalFile_ContentHash(t *testing.T) {

@@ -191,6 +191,15 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 			return fmt.Errorf("create target directory: %w", err)
 		}
 
+		resolved, err := removeManagedTypeConflicts(sourceDir, targetDir, result, prevManaged)
+		if err != nil {
+			logger.Error().Err(err).Msg("Failed to deploy locally. Reason: file type transition failed")
+			return fmt.Errorf("resolve file type transitions: %w", err)
+		}
+		if resolved > 0 {
+			logger.Info().Int("resolved", resolved).Msg("Resolved managed file type transitions")
+		}
+
 		written, err := fileutil.CopyDirIfChanged(sourceDir, targetDir)
 		if err != nil {
 			logger.Error().Err(err).Msg("Failed to deploy locally. Reason: content-hash sync failed")
@@ -301,6 +310,123 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 		Int64(log.FieldDurationMS, log.DurationMS(start)).
 		Msg("Successfully deployed files locally (atomic swap)")
 	return nil
+}
+
+type managedTypeConflict struct {
+	removeFiles []managedConflictFile
+	removeDirs  []string
+}
+
+type managedConflictFile struct {
+	targetPath string
+	relPath    string
+}
+
+// removeManagedTypeConflicts removes destination entries whose type conflicts
+// with the current source, but only when every removed file belongs to bosun's
+// previous managed-file manifest. Discovery completes before mutation so an
+// unmanaged runtime file blocks the transition without partial cleanup.
+func removeManagedTypeConflicts(sourceDir, targetDir string, result *DeployResult, prevManaged map[string]bool) (int, error) {
+	var conflicts []managedTypeConflict
+	walkErr := filepath.WalkDir(sourceDir, func(sourcePath string, sourceEntry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if sourcePath == sourceDir || sourceEntry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(sourceDir, sourcePath)
+		if err != nil {
+			return fmt.Errorf("calculate source path: %w", err)
+		}
+		relSlash := filepath.ToSlash(relPath)
+		targetPath := filepath.Join(targetDir, relPath)
+		targetInfo, err := os.Lstat(targetPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("inspect destination %s: %w", relSlash, err)
+		}
+
+		if sourceEntry.IsDir() {
+			if targetInfo.IsDir() {
+				return nil
+			}
+			if !prevManaged[relSlash] {
+				return fmt.Errorf("destination %s blocks directory deployment and is not in the managed-file manifest", relSlash)
+			}
+			conflicts = append(conflicts, managedTypeConflict{
+				removeFiles: []managedConflictFile{{targetPath: targetPath, relPath: relSlash}},
+			})
+			// The destination cannot contain corresponding descendants while it
+			// is a file. Replacing this managed file resolves the whole subtree.
+			return filepath.SkipDir
+		}
+
+		if !sourceEntry.Type().IsRegular() || !targetInfo.IsDir() {
+			return nil
+		}
+
+		managedFiles, managedDirs, err := managedEntriesUnder(targetDir, targetPath, prevManaged)
+		if err != nil {
+			return fmt.Errorf("inspect directory blocking file deployment at %s: %w", relSlash, err)
+		}
+		conflicts = append(conflicts, managedTypeConflict{
+			removeFiles: managedFiles,
+			removeDirs:  managedDirs,
+		})
+		return nil
+	})
+	if walkErr != nil {
+		return 0, walkErr
+	}
+
+	for _, conflict := range conflicts {
+		for _, file := range conflict.removeFiles {
+			if err := os.Remove(file.targetPath); err != nil {
+				return 0, fmt.Errorf("remove conflicting destination %s: %w", file.relPath, err)
+			}
+			if result != nil {
+				result.AddDeleted(file.relPath)
+			}
+		}
+		// WalkDir visits parents before children. Reverse removal makes each
+		// directory prove it is still empty; a newly-created unmanaged file
+		// therefore aborts the transition instead of being deleted.
+		for i := len(conflict.removeDirs) - 1; i >= 0; i-- {
+			if err := os.Remove(conflict.removeDirs[i]); err != nil {
+				return 0, fmt.Errorf("remove conflicting destination directory %s: %w", conflict.removeDirs[i], err)
+			}
+		}
+	}
+	return len(conflicts), nil
+}
+
+func managedEntriesUnder(targetDir, conflictDir string, prevManaged map[string]bool) ([]managedConflictFile, []string, error) {
+	var managedFiles []managedConflictFile
+	var managedDirs []string
+	err := filepath.WalkDir(conflictDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			managedDirs = append(managedDirs, path)
+			return nil
+		}
+		relPath, err := filepath.Rel(targetDir, path)
+		if err != nil {
+			return err
+		}
+		relSlash := filepath.ToSlash(relPath)
+		if !prevManaged[relSlash] {
+			return fmt.Errorf("destination entry %s is not in the managed-file manifest", relSlash)
+		}
+		managedFiles = append(managedFiles, managedConflictFile{targetPath: path, relPath: relSlash})
+		return nil
+	})
+	return managedFiles, managedDirs, err
 }
 
 // removeStaleFiles prunes files under targetDir that bosun deployed on a prior
