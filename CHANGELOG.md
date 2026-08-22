@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.5](https://github.com/cameronsjo/bosun/compare/v0.39.4...v0.39.5) (2026-08-22)
+
+
+### Bug Fixes
+
+* **ci:** require app token for release auto-merge ([#496](https://github.com/cameronsjo/bosun/issues/496)) ([02957c5](https://github.com/cameronsjo/bosun/commit/02957c5b408dd3bfa8252e9b3b1b8278d7f65800))
+* **deps:** update Go dependencies ([05d7f49](https://github.com/cameronsjo/bosun/commit/05d7f490bb75a428aeddfc100ad296d72a4fda29))
+
 ## [0.39.4](https://github.com/cameronsjo/bosun/compare/v0.39.3...v0.39.4) (2026-08-22)
 
 
