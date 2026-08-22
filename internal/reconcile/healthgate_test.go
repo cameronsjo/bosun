@@ -52,6 +52,7 @@ func TestCheckCriticalContainerHealth_AllHealthy(t *testing.T) {
 		context.Background(), client,
 		[]string{"traefik", "authelia"},
 		5*time.Second,
+		0, // falls back to HealthGatePollInterval
 	)
 	require.NoError(t, err)
 }
@@ -74,6 +75,7 @@ func TestCheckCriticalContainerHealth_OneUnhealthy(t *testing.T) {
 		context.Background(), client,
 		[]string{"traefik", "authelia"},
 		1*time.Second,
+		HealthGatePollInterval,
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "authelia")
@@ -95,6 +97,7 @@ func TestCheckCriticalContainerHealth_MissingContainer(t *testing.T) {
 		context.Background(), client,
 		[]string{"traefik", "authelia"},
 		1*time.Second,
+		HealthGatePollInterval,
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "authelia")
@@ -113,11 +116,12 @@ func TestCheckCriticalContainerHealth_NoHealthcheckPasses(t *testing.T) {
 		context.Background(), client,
 		[]string{"traefik"},
 		5*time.Second,
+		HealthGatePollInterval,
 	)
 	require.NoError(t, err)
 }
 
-func TestCheckCriticalContainerHealth_TimeoutWithEventualSuccess(t *testing.T) {
+func TestCheckCriticalContainerHealth_UsesConfiguredPollInterval(t *testing.T) {
 	callCount := 0
 	mockAPI := newReconcileMockDockerAPI()
 	mockAPI.containerInspectFunc = func(_ context.Context, name string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
@@ -129,11 +133,14 @@ func TestCheckCriticalContainerHealth_TimeoutWithEventualSuccess(t *testing.T) {
 		return makeInspectResponse(name, "running", &container.Health{Status: container.HealthStatus(status)}), nil
 	}
 	client := docker.NewClientWithAPI(mockAPI)
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
 
 	err := CheckCriticalContainerHealth(
-		context.Background(), client,
+		ctx, client,
 		[]string{"authelia"},
 		30*time.Second,
+		10*time.Millisecond,
 	)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, callCount, 2)
@@ -144,6 +151,7 @@ func TestCheckCriticalContainerHealth_EmptyListSkips(t *testing.T) {
 		context.Background(), nil,
 		[]string{},
 		5*time.Second,
+		HealthGatePollInterval,
 	)
 	require.NoError(t, err)
 }
@@ -159,6 +167,7 @@ func TestCheckCriticalContainerHealth_NotRunning(t *testing.T) {
 		context.Background(), client,
 		[]string{"authelia"},
 		1*time.Second,
+		HealthGatePollInterval,
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not_running")
@@ -178,6 +187,7 @@ func TestCheckCriticalContainerHealth_ContextCancelled(t *testing.T) {
 		ctx, client,
 		[]string{"authelia"},
 		30*time.Second,
+		HealthGatePollInterval,
 	)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
