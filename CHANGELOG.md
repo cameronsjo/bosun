@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.4](https://github.com/cameronsjo/bosun/compare/v0.39.3...v0.39.4) (2026-08-22)
+
+
+### Bug Fixes
+
+* **cmd:** prepare reconcile state directory ([#492](https://github.com/cameronsjo/bosun/issues/492)) ([05ff6bf](https://github.com/cameronsjo/bosun/commit/05ff6bf919784e5db5b9ce4cb28ab664fb690aa6))
+* **docker:** honor context cancellation while reading streams ([#487](https://github.com/cameronsjo/bosun/issues/487)) ([fd4c76d](https://github.com/cameronsjo/bosun/commit/fd4c76d001894089f14491bce1f58cf7c01f9160))
+* **fileutil:** validate permissions before copy ([424c598](https://github.com/cameronsjo/bosun/commit/424c5989a48af5f0686cea4a026db332e36311ca))
+* **reconcile:** handle file-directory transitions ([b7e405b](https://github.com/cameronsjo/bosun/commit/b7e405b028f3047bb09496361e8bd976bc0176b9))
+* **reconcile:** honor configured health gate interval ([#489](https://github.com/cameronsjo/bosun/issues/489)) ([3ebc11b](https://github.com/cameronsjo/bosun/commit/3ebc11bac1c9b8f6e326922ba7671fec69ed57d2))
+* **reconcile:** reap tar when ssh startup fails ([#488](https://github.com/cameronsjo/bosun/issues/488)) ([6b52585](https://github.com/cameronsjo/bosun/commit/6b52585a700d46579e2186423275f332411f0fef))
+* **reconcile:** validate required SOPS metadata ([#490](https://github.com/cameronsjo/bosun/issues/490)) ([be472a5](https://github.com/cameronsjo/bosun/commit/be472a52a72a7b66df48f90157d669501917e095))
+
 ## [0.39.3](https://github.com/cameronsjo/bosun/compare/v0.39.2...v0.39.3) (2026-07-19)
 
 
