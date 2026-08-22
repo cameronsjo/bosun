@@ -452,7 +452,9 @@ Before decryption, the system validates:
 
 1. File exists
 2. Valid YAML syntax
-3. Contains `sops` metadata key
+3. Contains a `sops` metadata mapping
+4. Contains a non-empty MAC and a valid RFC3339 `lastmodified` timestamp
+5. Contains at least one key recipient with a non-empty encrypted data key
 
 ### Decryption Flow
 

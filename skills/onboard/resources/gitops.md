@@ -60,6 +60,12 @@ Every reconciliation follows this 16-stage sequence:
 17. Release lock
 ```
 
+Before stage 4 looks up the Age key, Bosun rejects malformed SOPS files. The
+file must be valid YAML with a `sops` metadata mapping, a non-empty MAC, a valid
+RFC3339 `lastmodified` timestamp, and at least one key recipient containing a
+non-empty encrypted data key. This keeps incomplete SOPS files from being
+misreported as Age key configuration failures.
+
 ### Deploy-Sync Invariants (stage 6 + stage 9)
 
 Bosun enforces two invariant gates that turn the GH#214 silent-success failure mode into a loud error:

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/getsops/sops/v3/decrypt"
@@ -91,12 +92,84 @@ func ValidateSOPSFile(path string) error {
 		return fmt.Errorf("invalid YAML syntax in %s: %w", path, err)
 	}
 
-	// Check for SOPS metadata marker
-	if _, hasSOPS := content["sops"]; !hasSOPS {
+	// Check for SOPS metadata marker and the fields SOPS needs before attempting
+	// key discovery. This keeps malformed files from being reported as key errors.
+	metadataValue, hasSOPS := content["sops"]
+	if !hasSOPS {
 		return fmt.Errorf("%w: %s does not contain 'sops' metadata key. Encrypt it with: sops --encrypt --in-place %s", ErrNotSOPSFile, path, path)
+	}
+	metadata, ok := metadataValue.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%w: %s has invalid 'sops' metadata: expected a mapping", ErrNotSOPSFile, path)
+	}
+
+	mac, ok := metadata["mac"].(string)
+	if !ok || strings.TrimSpace(mac) == "" {
+		return fmt.Errorf("%w: %s has incomplete 'sops' metadata: missing non-empty 'mac'", ErrNotSOPSFile, path)
+	}
+
+	lastModifiedValue, hasLastModified := metadata["lastmodified"]
+	if !hasLastModified {
+		return fmt.Errorf("%w: %s has incomplete 'sops' metadata: missing non-empty 'lastmodified'", ErrNotSOPSFile, path)
+	}
+	validLastModified := false
+	switch lastModified := lastModifiedValue.(type) {
+	case string:
+		if strings.TrimSpace(lastModified) == "" {
+			return fmt.Errorf("%w: %s has incomplete 'sops' metadata: missing non-empty 'lastmodified'", ErrNotSOPSFile, path)
+		}
+		_, err := time.Parse(time.RFC3339, lastModified)
+		validLastModified = err == nil
+	case time.Time:
+		validLastModified = !lastModified.IsZero()
+	}
+	if !validLastModified {
+		return fmt.Errorf("%w: %s has invalid 'sops.lastmodified': expected an RFC3339 timestamp", ErrNotSOPSFile, path)
+	}
+
+	if !hasSOPSRecipients(metadata) {
+		return fmt.Errorf("%w: %s has incomplete 'sops' metadata: no key recipient with a non-empty encrypted data key in age, pgp, kms, gcp_kms, azure_kv, hc_vault, or key_groups", ErrNotSOPSFile, path)
 	}
 
 	return nil
+}
+
+func hasSOPSRecipients(metadata map[string]any) bool {
+	if hasDirectSOPSRecipients(metadata) {
+		return true
+	}
+
+	groups, ok := metadata["key_groups"].([]any)
+	if !ok {
+		return false
+	}
+	for _, groupValue := range groups {
+		group, ok := groupValue.(map[string]any)
+		if ok && hasDirectSOPSRecipients(group) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDirectSOPSRecipients(metadata map[string]any) bool {
+	for _, key := range []string{"age", "pgp", "kms", "gcp_kms", "azure_kv", "hc_vault"} {
+		recipients, ok := metadata[key].([]any)
+		if !ok {
+			continue
+		}
+		for _, recipientValue := range recipients {
+			recipient, ok := recipientValue.(map[string]any)
+			if !ok {
+				continue
+			}
+			encryptedKey, hasEncryptedKey := recipient["enc"].(string)
+			if hasEncryptedKey && strings.TrimSpace(encryptedKey) != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Decrypt decrypts a SOPS-encrypted file and returns the plaintext bytes as JSON.
