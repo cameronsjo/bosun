@@ -269,6 +269,39 @@ func TestPrepareStateFileForCLIRun(t *testing.T) {
 		assert.NoDirExists(t, filepath.Dir(configured))
 	})
 
+	t.Run("dry run reports temporary directory creation failure", func(t *testing.T) {
+		notDir := filepath.Join(t.TempDir(), "not-a-directory")
+		require.NoError(t, os.WriteFile(notDir, []byte("occupied"), 0o600))
+		t.Setenv("TMPDIR", notDir)
+
+		scratch, cleanup, err := prepareStateFileForCLIRun("", true)
+		cleanup()
+
+		require.Error(t, err)
+		assert.Empty(t, scratch)
+		assert.Contains(t, err.Error(), "create temporary dry-run state directory")
+	})
+
+	t.Run("dry run reports state copy failure and cleans scratch", func(t *testing.T) {
+		configured := filepath.Join(t.TempDir(), reconcile.DefaultStateFile)
+		require.NoError(t, reconcile.SaveState(configured, &reconcile.DeployState{LastDeployedCommit: "live-commit"}))
+		original := saveStateForCLIDryRun
+		var attemptedStateFile string
+		saveStateForCLIDryRun = func(stateFile string, _ *reconcile.DeployState) error {
+			attemptedStateFile = stateFile
+			return assert.AnError
+		}
+		t.Cleanup(func() { saveStateForCLIDryRun = original })
+
+		scratch, cleanup, err := prepareStateFileForCLIRun(configured, true)
+		cleanup()
+
+		require.ErrorIs(t, err, assert.AnError)
+		assert.Empty(t, scratch)
+		assert.Contains(t, err.Error(), "copy deploy state for dry run")
+		assert.NoDirExists(t, filepath.Dir(attemptedStateFile))
+	})
+
 	t.Run("dry run fails open from state it cannot inspect", func(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("chmod semantics differ on Windows")
