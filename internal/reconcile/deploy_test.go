@@ -1016,6 +1016,70 @@ func TestManagedTransitionSafetyFailures(t *testing.T) {
 				})
 			}
 		}},
+		{name: "preparation propagates staged source access failures", run: func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("chmod access failures are not portable to Windows")
+			}
+			for _, sourceIsDir := range []bool{false, true} {
+				name := "file"
+				if sourceIsDir {
+					name = "directory"
+				}
+				t.Run(name, func(t *testing.T) {
+					root := t.TempDir()
+					source := filepath.Join(root, "source")
+					target := filepath.Join(root, "target")
+					managed := map[string]bool{managedTargetRoot: true}
+					lockPath := source
+					if sourceIsDir {
+						require.NoError(t, os.Mkdir(source, 0700))
+						lockPath = filepath.Join(source, "blocked")
+						require.NoError(t, os.Mkdir(lockPath, 0700))
+						require.NoError(t, os.WriteFile(filepath.Join(lockPath, "app.yml"), []byte("new"), 0600))
+						require.NoError(t, os.WriteFile(target, []byte("old"), 0600))
+					} else {
+						require.NoError(t, os.WriteFile(source, []byte("new"), 0600))
+						require.NoError(t, os.MkdirAll(filepath.Join(target, "managed"), 0700))
+						require.NoError(t, os.WriteFile(filepath.Join(target, "managed", "app.yml"), []byte("old"), 0600))
+						managed = map[string]bool{"managed/app.yml": true}
+					}
+					require.NoError(t, os.Chmod(lockPath, 0))
+					t.Cleanup(func() { _ = os.Chmod(lockPath, 0700) })
+
+					_, err := prepareManagedTypeTransitions(source, target, managed)
+
+					require.ErrorContains(t, err, "private transition stage retained")
+				})
+			}
+		}},
+		{name: "discovery propagates pinned path access failures", run: func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("chmod access failures are not portable to Windows")
+			}
+			for _, locked := range []string{"parent", "target"} {
+				t.Run(locked, func(t *testing.T) {
+					root := t.TempDir()
+					source := filepath.Join(root, "source")
+					parent := filepath.Join(root, "target")
+					target := filepath.Join(parent, "config")
+					require.NoError(t, os.Mkdir(source, 0700))
+					require.NoError(t, os.Mkdir(parent, 0700))
+					require.NoError(t, os.WriteFile(target, []byte("old"), 0600))
+					lockPath, mode := target, os.FileMode(0)
+					if locked == "parent" {
+						lockPath, mode = parent, 0111
+					}
+					require.NoError(t, os.Chmod(lockPath, mode))
+					t.Cleanup(func() { _ = os.Chmod(lockPath, 0700) })
+					sourceInfo, err := os.Lstat(source)
+					require.NoError(t, err)
+
+					_, err = discoverManagedTypeConflict(source, target, "config", sourceInfo, map[string]bool{"config": true})
+
+					require.ErrorContains(t, err, "open destination")
+				})
+			}
+		}},
 		{name: "managed directory rejects symlink", run: func(t *testing.T) {
 			root := t.TempDir()
 			source := filepath.Join(root, "source")
@@ -1028,6 +1092,75 @@ func TestManagedTransitionSafetyFailures(t *testing.T) {
 			require.NoError(t, err)
 			_, err = discoverManagedTypeConflict(source, target, "config", sourceInfo, map[string]bool{"config/managed": true, "config/link": true})
 			require.ErrorContains(t, err, "not a regular managed file")
+		}},
+		{name: "irregular source is not treated as a transition", run: func(t *testing.T) {
+			root := t.TempDir()
+			sourceFile := filepath.Join(root, "source-file")
+			source := filepath.Join(root, "source-link")
+			target := filepath.Join(root, "target")
+			require.NoError(t, os.WriteFile(sourceFile, []byte("new"), 0600))
+			require.NoError(t, os.Symlink(sourceFile, source))
+			require.NoError(t, os.Mkdir(target, 0700))
+			sourceInfo, err := os.Lstat(source)
+			require.NoError(t, err)
+
+			item, err := discoverManagedTypeConflict(source, target, "config", sourceInfo, nil)
+
+			require.NoError(t, err)
+			assert.Nil(t, item)
+		}},
+		{name: "managed directory propagates traversal failure", run: func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("chmod access failures are not portable to Windows")
+			}
+			root := t.TempDir()
+			dir := filepath.Join(root, "config")
+			require.NoError(t, os.Mkdir(dir, 0700))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "app.yml"), []byte("old"), 0600))
+			require.NoError(t, os.Chmod(dir, 0111))
+			t.Cleanup(func() { _ = os.Chmod(dir, 0700) })
+
+			_, err := validateManagedDirectory(dir, "config", map[string]bool{"config/app.yml": true})
+
+			require.Error(t, err)
+		}},
+		{name: "pinned tree walks propagate access failures", run: func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("chmod access failures are not portable to Windows")
+			}
+			root := t.TempDir()
+			locked := filepath.Join(root, "locked")
+			require.NoError(t, os.Mkdir(locked, 0700))
+			require.NoError(t, os.WriteFile(filepath.Join(locked, "payload"), []byte("data"), 0600))
+			handle, err := openPinnedPath(root)
+			require.NoError(t, err)
+			defer func() { _ = handle.Close() }()
+			info, err := handle.Stat()
+			require.NoError(t, err)
+			require.NoError(t, os.Chmod(locked, 0))
+			t.Cleanup(func() { _ = os.Chmod(locked, 0700) })
+
+			_, err = pinRemovalTree(root, handle, info)
+			require.Error(t, err)
+			_, err = fingerprintPinnedPath(root, handle, info)
+			require.Error(t, err)
+		}},
+		{name: "source walk propagates access failure before staging", run: func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("chmod access failures are not portable to Windows")
+			}
+			root := t.TempDir()
+			source := filepath.Join(root, "source")
+			target := filepath.Join(root, "target")
+			locked := filepath.Join(source, "locked")
+			require.NoError(t, os.MkdirAll(locked, 0700))
+			require.NoError(t, os.Mkdir(target, 0700))
+			require.NoError(t, os.Chmod(locked, 0))
+			t.Cleanup(func() { _ = os.Chmod(locked, 0700) })
+
+			_, err := prepareManagedTypeTransitions(source, target, nil)
+
+			require.Error(t, err)
 		}},
 		{name: "private stage identity swap is retained", run: func(t *testing.T) {
 			parent := t.TempDir()
@@ -1083,6 +1216,18 @@ func TestManagedTransitionSafetyFailures(t *testing.T) {
 			_, err = fingerprintPinnedPath(path, handle, info)
 			require.ErrorContains(t, err, "path identity changed")
 		}},
+		{name: "pinned identity validation fails closed", run: func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "payload")
+			require.NoError(t, os.WriteFile(path, []byte("data"), 0600))
+			handle, err := openPinnedPath(path)
+			require.NoError(t, err)
+			info, err := handle.Stat()
+			require.NoError(t, err)
+			require.ErrorContains(t, revalidatePinned(path, nil, info), "no pinned identity")
+			require.NoError(t, handle.Close())
+
+			require.ErrorContains(t, revalidatePinned(path, handle, info), "pinned identity changed")
+		}},
 		{name: "fingerprint rejects irregular entry", run: func(t *testing.T) {
 			root := t.TempDir()
 			require.NoError(t, os.WriteFile(filepath.Join(root, "file"), []byte("data"), 0600))
@@ -1120,6 +1265,51 @@ func TestManagedTransitionSafetyFailures(t *testing.T) {
 			require.ErrorContains(t, err, item.privatePath)
 			assert.FileExists(t, late)
 		}},
+		{name: "fingerprinted cleanup preserves child added before delete", run: func(t *testing.T) {
+			transitions, _ := newDirToFileTransition(t)
+			require.NoError(t, transitions.Promote())
+			item := transitions.items[0]
+			late := filepath.Join(item.oldPath, "runtime.db")
+
+			err := removePinnedTree(item.oldPath, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", func() {
+				require.NoError(t, os.WriteFile(late, []byte("keep"), 0600))
+			})
+
+			require.ErrorContains(t, err, "remove fingerprinted path")
+			assert.FileExists(t, late)
+			assert.DirExists(t, item.oldPath)
+		}},
+		{name: "fingerprinted cleanup rejects irregular and replaced entries", run: func(t *testing.T) {
+			t.Run("irregular", func(t *testing.T) {
+				transitions, _ := newDirToFileTransition(t)
+				require.NoError(t, transitions.Promote())
+				item := transitions.items[0]
+				link := filepath.Join(item.oldPath, "late-link")
+				require.NoError(t, os.Symlink("managed/app.yml", link))
+
+				err := item.removePinnedOld()
+
+				require.ErrorContains(t, err, "refuse to remove irregular path")
+				assert.FileExists(t, filepath.Join(item.oldPath, "managed", "app.yml"))
+				assert.NoError(t, os.Remove(link))
+			})
+			t.Run("replaced identity", func(t *testing.T) {
+				transitions, _ := newDirToFileTransition(t)
+				require.NoError(t, transitions.Promote())
+				item := transitions.items[0]
+				managed := filepath.Join(item.oldPath, "managed", "app.yml")
+
+				err := removePinnedTree(item.oldPath, item.targetHandle, item.targetInfo, item.targetFingerprint, "managed original", func() {
+					require.NoError(t, os.Remove(managed))
+					require.NoError(t, os.WriteFile(managed, []byte("replacement"), 0600))
+				})
+
+				require.ErrorContains(t, err, "path identity changed")
+				content, readErr := os.ReadFile(managed)
+				require.NoError(t, readErr)
+				assert.Equal(t, "replacement", string(content))
+			})
+		}},
 		{name: "stage reports missing target parent", run: func(t *testing.T) {
 			root := t.TempDir()
 			item := &managedTypeTransition{sourcePath: filepath.Join(root, "source"), targetPath: filepath.Join(root, "missing", "config"), relPath: "config"}
@@ -1138,6 +1328,17 @@ func TestManagedTransitionSafetyFailures(t *testing.T) {
 			require.NoError(t, readErr)
 			assert.Equal(t, "collision", string(content))
 			assert.FileExists(t, target)
+		}},
+		{name: "quarantine revalidates managed directory contents", run: func(t *testing.T) {
+			transitions, target := newDirToFileTransition(t)
+			late := filepath.Join(target, "runtime.db")
+			require.NoError(t, os.WriteFile(late, []byte("keep"), 0600))
+
+			err := transitions.Promote()
+
+			require.ErrorContains(t, err, "destination changed while quarantining")
+			assert.FileExists(t, late)
+			assert.DirExists(t, target)
 		}},
 		{name: "rollback retains replaced quarantine identity", run: func(t *testing.T) {
 			transitions, target := newFileToDirTransition(t)

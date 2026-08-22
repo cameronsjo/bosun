@@ -506,11 +506,11 @@ func discoverManagedTypeConflict(sourcePath, targetPath, relPath string, sourceI
 	if err != nil {
 		return nil, fmt.Errorf("inspect destination parent %s: %w", relPath, err)
 	}
-	parentHandle, err := os.Open(parentPath)
+	parentHandle, err := openPinnedPath(parentPath)
 	if err != nil {
 		return nil, fmt.Errorf("open destination parent for %s: %w", relPath, err)
 	}
-	targetHandle, err := os.Open(targetPath)
+	targetHandle, err := openPinnedPath(targetPath)
 	if err != nil {
 		_ = parentHandle.Close()
 		return nil, fmt.Errorf("open destination %s: %w", relPath, err)
@@ -667,7 +667,7 @@ func (t *managedTypeTransition) stage() (stageErr error) {
 		if err := os.Mkdir(replacement, sourceInfo.Mode().Perm()); err != nil {
 			return fmt.Errorf("create private replacement directory for %s: %w", t.relPath, err)
 		}
-		t.newHandle, err = os.Open(replacement)
+		t.newHandle, err = openPinnedPath(replacement)
 		if err != nil {
 			return fmt.Errorf("pin private replacement directory for %s: %w", t.relPath, err)
 		}
@@ -721,7 +721,7 @@ func (t *managedTypeTransition) createPrivateStage() error {
 	}
 	t.privatePath = path
 	var err error
-	t.privateHandle, err = os.Open(path)
+	t.privateHandle, err = openPinnedPath(path)
 	if err != nil {
 		return fmt.Errorf("open private transition stage retained at %s: %w", path, err)
 	}
@@ -764,6 +764,15 @@ func (t *managedTypeTransition) copyPrivateFile(replacement string) error {
 	sourceAfter, err := source.Stat()
 	if err != nil || !sameFileMetadata(sourceBefore, sourceAfter) {
 		return fmt.Errorf("source changed while staging")
+	}
+	closeErr := t.newHandle.Close()
+	t.newHandle = nil
+	if closeErr != nil {
+		return closeErr
+	}
+	t.newHandle, err = openPinnedPath(replacement)
+	if err != nil {
+		return err
 	}
 	t.newInfo, err = t.newHandle.Stat()
 	return err
@@ -920,31 +929,101 @@ func (ts *managedTypeTransitions) Commit(logger zerolog.Logger) {
 }
 
 func (t *managedTypeTransition) removePinnedOld() error {
-	if err := revalidatePinned(t.oldPath, t.targetHandle, t.targetInfo); err != nil {
-		return err
-	}
-	currentFingerprint, err := fingerprintPinnedPath(t.oldPath, t.targetHandle, t.targetInfo)
-	if err != nil || currentFingerprint != t.targetFingerprint {
-		return fmt.Errorf("managed original changed at %s", t.oldPath)
-	}
-	if err := os.RemoveAll(t.oldPath); err != nil {
+	if err := removePinnedTree(t.oldPath, t.targetHandle, t.targetInfo, t.targetFingerprint, "managed original", nil); err != nil {
 		return fmt.Errorf("remove quarantined original %s: %w", t.oldPath, err)
 	}
 	return nil
 }
 
 func (t *managedTypeTransition) removePinnedNew() error {
-	if err := revalidatePinned(t.newPath, t.newHandle, t.newInfo); err != nil {
-		return err
-	}
-	currentFingerprint, err := fingerprintPinnedPath(t.newPath, t.newHandle, t.newInfo)
-	if err != nil || currentFingerprint != t.newFingerprint {
-		return fmt.Errorf("staged replacement changed at %s", t.newPath)
-	}
-	if err := os.RemoveAll(t.newPath); err != nil {
+	if err := removePinnedTree(t.newPath, t.newHandle, t.newInfo, t.newFingerprint, "staged replacement", nil); err != nil {
 		return fmt.Errorf("remove staged replacement %s: %w", t.newPath, err)
 	}
 	return nil
+}
+
+type pinnedRemovalEntry struct {
+	path   string
+	handle *os.File
+	info   os.FileInfo
+	owned  bool
+}
+
+func removePinnedTree(path string, rootHandle *os.File, rootInfo os.FileInfo, expected [sha256.Size]byte, changedLabel string, beforeRemove func()) error {
+	entries, err := pinRemovalTree(path, rootHandle, rootInfo)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		for _, entry := range entries {
+			if entry.owned {
+				_ = entry.handle.Close()
+			}
+		}
+	}()
+	current, err := fingerprintPinnedPath(path, rootHandle, rootInfo)
+	if err != nil || current != expected {
+		return fmt.Errorf("%s changed at %s", changedLabel, path)
+	}
+	if beforeRemove != nil {
+		beforeRemove()
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if err := revalidatePinned(entry.path, entry.handle, entry.info); err != nil {
+			return err
+		}
+		if err := os.Remove(entry.path); err != nil {
+			return fmt.Errorf("remove fingerprinted path %s: %w", entry.path, err)
+		}
+		if entry.owned {
+			_ = entry.handle.Close()
+			entries[i].owned = false
+		}
+	}
+	return nil
+}
+
+func pinRemovalTree(path string, rootHandle *os.File, rootInfo os.FileInfo) ([]pinnedRemovalEntry, error) {
+	entries := []pinnedRemovalEntry{{path: path, handle: rootHandle, info: rootInfo}}
+	if !rootInfo.IsDir() {
+		return entries, nil
+	}
+	err := filepath.WalkDir(path, func(entryPath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entryPath == path {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return fmt.Errorf("refuse to remove irregular path %s", entryPath)
+		}
+		handle, err := openPinnedPath(entryPath)
+		if err != nil {
+			return err
+		}
+		opened, err := handle.Stat()
+		if err != nil || !os.SameFile(info, opened) {
+			_ = handle.Close()
+			return fmt.Errorf("path changed while pinning removal: %s", entryPath)
+		}
+		entries = append(entries, pinnedRemovalEntry{path: entryPath, handle: handle, info: opened, owned: true})
+		return nil
+	})
+	if err != nil {
+		for _, entry := range entries {
+			if entry.owned {
+				_ = entry.handle.Close()
+			}
+		}
+		return nil, err
+	}
+	return entries, nil
 }
 
 func sameFileMetadata(before, after os.FileInfo) bool {
