@@ -76,23 +76,8 @@ func copyFileWithChmod(src, dst string, chmod func(*os.File, fs.FileMode) error)
 	// bytes. The probe is never used for content: applying a broad or privileged
 	// source mode to the real named temp file would let another local user open
 	// it before the copy completes and retain that access after a later chmod.
-	probeFile, err := os.CreateTemp(dstDir, ".tmp-perm-*")
-	if err != nil {
-		return fmt.Errorf("create permission probe: %w", err)
-	}
-	probePath := probeFile.Name()
-	defer func() {
-		_ = probeFile.Close()
-		_ = os.Remove(probePath)
-	}()
-	if err := chmod(probeFile, srcInfo.Mode()); err != nil {
-		return fmt.Errorf("set permissions: %w", err)
-	}
-	if err := probeFile.Close(); err != nil {
-		return fmt.Errorf("close permission probe: %w", err)
-	}
-	if err := os.Remove(probePath); err != nil {
-		return fmt.Errorf("remove permission probe: %w", err)
+	if err := validateCopyPermissions(dstDir, srcInfo.Mode(), os.CreateTemp, chmod, os.Remove); err != nil {
+		return err
 	}
 
 	// Create the private payload temp file in the same directory for atomic
@@ -151,6 +136,34 @@ func copyFileWithChmod(src, dst string, chmod func(*os.File, fs.FileMode) error)
 	}
 
 	success = true
+	return nil
+}
+
+func validateCopyPermissions(
+	dstDir string,
+	mode fs.FileMode,
+	createTemp func(string, string) (*os.File, error),
+	chmod func(*os.File, fs.FileMode) error,
+	remove func(string) error,
+) error {
+	probeFile, err := createTemp(dstDir, ".tmp-perm-*")
+	if err != nil {
+		return fmt.Errorf("create permission probe: %w", err)
+	}
+	probePath := probeFile.Name()
+	defer func() {
+		_ = probeFile.Close()
+		_ = remove(probePath)
+	}()
+	if err := chmod(probeFile, mode); err != nil {
+		return fmt.Errorf("set permissions: %w", err)
+	}
+	if err := probeFile.Close(); err != nil {
+		return fmt.Errorf("close permission probe: %w", err)
+	}
+	if err := remove(probePath); err != nil {
+		return fmt.Errorf("remove permission probe: %w", err)
+	}
 	return nil
 }
 

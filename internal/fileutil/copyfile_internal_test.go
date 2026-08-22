@@ -44,6 +44,76 @@ func TestCopyFileWithChmod_PermissionFailurePrecedesPayloadCopy(t *testing.T) {
 	assert.Empty(t, tempMatches, "failed atomic copy must remove its temporary file")
 }
 
+func TestValidateCopyPermissions_ReportsLifecycleFailures(t *testing.T) {
+	t.Parallel()
+
+	t.Run("create", func(t *testing.T) {
+		t.Parallel()
+
+		createErr := errors.New("create failed")
+		err := validateCopyPermissions(t.TempDir(), 0640,
+			func(string, string) (*os.File, error) { return nil, createErr },
+			(*os.File).Chmod,
+			os.Remove,
+		)
+
+		require.ErrorIs(t, err, createErr)
+		assert.ErrorContains(t, err, "create permission probe")
+	})
+
+	t.Run("close", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		var probePath string
+		err := validateCopyPermissions(tmpDir, 0640,
+			func(dir, pattern string) (*os.File, error) {
+				probe, createErr := os.CreateTemp(dir, pattern)
+				if createErr == nil {
+					probePath = probe.Name()
+				}
+				return probe, createErr
+			},
+			func(probe *os.File, _ fs.FileMode) error { return probe.Close() },
+			os.Remove,
+		)
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "close permission probe")
+		assert.NoFileExists(t, probePath, "deferred cleanup must remove a probe whose close already failed")
+	})
+
+	t.Run("remove", func(t *testing.T) {
+		t.Parallel()
+
+		removeErr := errors.New("remove failed")
+		removeCalls := 0
+		var probePath string
+		err := validateCopyPermissions(t.TempDir(), 0640,
+			func(dir, pattern string) (*os.File, error) {
+				probe, createErr := os.CreateTemp(dir, pattern)
+				if createErr == nil {
+					probePath = probe.Name()
+				}
+				return probe, createErr
+			},
+			(*os.File).Chmod,
+			func(path string) error {
+				removeCalls++
+				if removeCalls == 1 {
+					return removeErr
+				}
+				return os.Remove(path)
+			},
+		)
+
+		require.ErrorIs(t, err, removeErr)
+		assert.ErrorContains(t, err, "remove permission probe")
+		assert.Equal(t, 2, removeCalls, "deferred cleanup must retry a failed probe removal")
+		assert.NoFileExists(t, probePath)
+	})
+}
+
 func TestCopyFileWithChmod_KeepsPayloadPrivateAndRestoresSpecialPermissions(t *testing.T) {
 	t.Parallel()
 
