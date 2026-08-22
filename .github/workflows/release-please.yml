@@ -24,9 +24,8 @@ jobs:
 
       # Use a GitHub App token for auto-merge so the resulting push event
       # triggers workflows (GITHUB_TOKEN merges are invisible to CI).
-      # Without this, the release tag/goreleaser step never fires.
-      # Falls back to GITHUB_TOKEN if App is not configured (auto-merge
-      # still works but won't trigger follow-up workflows).
+      # If the App is not configured, leave the release PR open for manual
+      # merge. Invalid configured credentials fail visibly before any merge.
       # See: https://github.com/googleapis/release-please/blob/main/docs/cli.md#github-credentials
       - name: Generate App Token
         if: ${{ steps.release.outputs.pr && vars.RELEASE_APP_ID }}
@@ -36,10 +35,14 @@ jobs:
           app-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
+      - name: Release App not configured
+        if: ${{ steps.release.outputs.pr && vars.RELEASE_APP_ID == '' }}
+        run: echo "::warning::RELEASE_APP_ID is not configured; leaving the release PR open for manual merge"
+
       - name: Auto-merge release PR
-        if: ${{ steps.release.outputs.pr }}
+        if: ${{ steps.release.outputs.pr && steps.app-token.outcome == 'success' }}
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_PR: ${{ steps.release.outputs.pr }}
         run: |
