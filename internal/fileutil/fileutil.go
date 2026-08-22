@@ -38,6 +38,12 @@ func warnSymlinkSkipped(path string) {
 // Uses atomic write via temp file to prevent partial writes on failure.
 // Symlinks are skipped with a warning rather than causing an error.
 func CopyFile(src, dst string) error {
+	return copyFileWithChmod(src, dst, (*os.File).Chmod)
+}
+
+// copyFileWithChmod exposes the permission operation as an explicit dependency
+// so its failure ordering can be tested without a package-global seam.
+func copyFileWithChmod(src, dst string, chmod func(*os.File, fs.FileMode) error) error {
 	// Check if source is a symlink - Lstat doesn't follow symlinks
 	srcLstat, err := os.Lstat(src)
 	if err != nil {
@@ -82,9 +88,25 @@ func CopyFile(src, dst string) error {
 		}
 	}()
 
+	// Apply the source mode before copying any payload. If the destination
+	// filesystem cannot represent the mode, fail before doing copy and sync
+	// work while preserving the existing destination atomically.
+	if err := chmod(tmpFile, srcInfo.Mode()); err != nil {
+		return fmt.Errorf("set permissions: %w", err)
+	}
+
 	// Copy content to temp file
 	if _, err := io.Copy(tmpFile, srcFile); err != nil {
 		return fmt.Errorf("copy content: %w", err)
+	}
+
+	// Writing may clear setuid/setgid bits on Unix. Reapply only when the
+	// source carried one of those bits so the early capability check does not
+	// weaken CopyFile's existing permission-preservation contract.
+	if srcInfo.Mode()&(fs.ModeSetuid|fs.ModeSetgid) != 0 {
+		if err := chmod(tmpFile, srcInfo.Mode()); err != nil {
+			return fmt.Errorf("restore special permissions: %w", err)
+		}
 	}
 
 	// Sync to ensure data is written to disk
@@ -95,11 +117,6 @@ func CopyFile(src, dst string) error {
 	// Close temp file before rename
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
-	}
-
-	// Set permissions to match source
-	if err := os.Chmod(tmpPath, srcInfo.Mode()); err != nil {
-		return fmt.Errorf("set permissions: %w", err)
 	}
 
 	// Atomic rename to destination
