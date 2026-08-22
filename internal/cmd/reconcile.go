@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -80,6 +81,21 @@ func templateIncludeDirForCLI(projectConfigValue, envValue string) string {
 		return envValue
 	}
 	return projectConfigValue
+}
+
+// ensureStateDirForCLI prepares the parent directory SaveState requires. The
+// daemon does this during startup; the one-shot CLI must do the same for every
+// resolved target because targets may override StateFile independently.
+func ensureStateDirForCLI(stateFile string) error {
+	if stateFile == "" {
+		return nil
+	}
+
+	stateDir := filepath.Dir(stateFile)
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return fmt.Errorf("create state directory %q: %w", stateDir, err)
+	}
+	return nil
 }
 
 func runReconcile(cmd *cobra.Command, args []string) {
@@ -326,6 +342,11 @@ func runReconcile(cmd *cobra.Command, args []string) {
 	var hadError bool
 	for _, target := range targets {
 		targetCfg := cfg.ConfigForTarget(target)
+		if err := ensureStateDirForCLI(targetCfg.StateFile); err != nil {
+			ui.Error("Target %s failed: %v", target.Name, err)
+			hadError = true
+			continue
+		}
 		r := reconcile.NewReconciler(targetCfg, opts...)
 
 		if !target.IsDefault() {

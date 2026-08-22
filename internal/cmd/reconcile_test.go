@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/cameronsjo/bosun/internal/reconcile"
@@ -160,6 +162,49 @@ func TestTemplateIncludeDirForCLI(t *testing.T) {
 			assert.Equal(t, tc.want, templateIncludeDirForCLI(tc.projectConfig, tc.envValue))
 		})
 	}
+}
+
+func TestEnsureStateDirForCLI(t *testing.T) {
+	t.Run("creates missing nested parent", func(t *testing.T) {
+		stateDir := filepath.Join(t.TempDir(), "nested", "state")
+		stateFile := filepath.Join(stateDir, reconcile.DefaultStateFile)
+
+		require.NoError(t, ensureStateDirForCLI(stateFile))
+
+		info, err := os.Stat(stateDir)
+		require.NoError(t, err)
+		assert.True(t, info.IsDir())
+	})
+
+	t.Run("empty state file is a no-op", func(t *testing.T) {
+		require.NoError(t, ensureStateDirForCLI(""))
+	})
+
+	t.Run("reports an unusable parent", func(t *testing.T) {
+		parentFile := filepath.Join(t.TempDir(), "not-a-directory")
+		require.NoError(t, os.WriteFile(parentFile, []byte("occupied"), 0o600))
+
+		err := ensureStateDirForCLI(filepath.Join(parentFile, "state.json"))
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "create state directory")
+		assert.Contains(t, err.Error(), parentFile)
+	})
+}
+
+func TestRunReconcile_CreatesConfiguredStateDir(t *testing.T) {
+	old := ui.SetExitFn(func(int) {})
+	defer ui.SetExitFn(old)
+
+	stateDir := filepath.Join(t.TempDir(), "fresh", "state")
+	t.Setenv("REPO_URL", filepath.Join(t.TempDir(), "missing-repo"))
+	t.Setenv("BOSUN_STATE_DIR", stateDir)
+
+	runReconcile(nil, nil)
+
+	info, err := os.Stat(stateDir)
+	require.NoError(t, err)
+	assert.True(t, info.IsDir())
 }
 
 // TestRunFullDryRun_TemplateIncludeDirEnv exercises the `bosun validate` full

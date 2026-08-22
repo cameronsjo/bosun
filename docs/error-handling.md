@@ -141,6 +141,7 @@ Errors related to file system and Docker permissions.
 | Error Pattern | Location | Context |
 |---------------|----------|---------|
 | Lock file access | `lock/lock.go` | `open lock file: permission denied` |
+| Deploy state directory | `cmd/reconcile.go` | `create state directory "/path": permission denied` |
 | Staging directory | `reconcile/reconcile.go` | `failed to create staging directory` |
 | Backup directory | `reconcile/deploy.go` | `failed to create backup directory` |
 | Secrets file permissions | `reconcile/template.go` | Sets 0600 on temp secrets file |

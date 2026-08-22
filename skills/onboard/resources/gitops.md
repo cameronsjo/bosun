@@ -438,7 +438,7 @@ bosun drift --target=nas       # Show drift for a specific target
 
 ## Deploy State and Circuit Breaker
 
-The daemon tracks deploy state in a JSON file (default: `/var/lib/bosun/deploy-state.json`).
+The daemon and one-shot CLI track deploy state in a JSON file (default: `/var/lib/bosun/deploy-state.json`). Before reconciliation, each mode creates the state file's parent directory. Multi-target one-shot runs prepare each target's state directory independently and fail a target before deployment if its directory cannot be created.
 
 **State tracking includes:**
 - Last successful deploy timestamp and commit
