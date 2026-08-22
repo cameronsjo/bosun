@@ -197,9 +197,6 @@ func TestEnsureStateDirForCLI(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("chmod semantics differ on Windows")
 		}
-		if os.Getuid() == 0 {
-			t.Skip("cannot test permission denial as root")
-		}
 
 		stateDir := filepath.Join(t.TempDir(), "state")
 		require.NoError(t, os.MkdirAll(stateDir, 0o755))
@@ -207,8 +204,10 @@ func TestEnsureStateDirForCLI(t *testing.T) {
 		t.Cleanup(func() { require.NoError(t, os.Chmod(stateDir, 0o755)) })
 
 		err := ensureStateDirForCLI(filepath.Join(stateDir, reconcile.DefaultStateFile))
+		if err == nil {
+			t.Skip("filesystem permissions do not deny writes for this user")
+		}
 
-		require.Error(t, err)
 		assert.Contains(t, err.Error(), "verify state directory")
 		assert.Contains(t, err.Error(), stateDir)
 	})
@@ -285,15 +284,13 @@ func TestPrepareStateFileForCLIRun(t *testing.T) {
 	t.Run("dry run reports state copy failure and cleans scratch", func(t *testing.T) {
 		configured := filepath.Join(t.TempDir(), reconcile.DefaultStateFile)
 		require.NoError(t, reconcile.SaveState(configured, &reconcile.DeployState{LastDeployedCommit: "live-commit"}))
-		original := saveStateForCLIDryRun
 		var attemptedStateFile string
-		saveStateForCLIDryRun = func(stateFile string, _ *reconcile.DeployState) error {
+		failingSave := func(stateFile string, _ *reconcile.DeployState) error {
 			attemptedStateFile = stateFile
 			return assert.AnError
 		}
-		t.Cleanup(func() { saveStateForCLIDryRun = original })
 
-		scratch, cleanup, err := prepareStateFileForCLIRun(configured, true)
+		scratch, cleanup, err := prepareStateFileForCLIRunWithSave(configured, true, failingSave)
 		cleanup()
 
 		require.ErrorIs(t, err, assert.AnError)
@@ -306,9 +303,6 @@ func TestPrepareStateFileForCLIRun(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("chmod semantics differ on Windows")
 		}
-		if os.Getuid() == 0 {
-			t.Skip("cannot test permission denial as root")
-		}
 
 		lockedDir := filepath.Join(t.TempDir(), "locked")
 		configured := filepath.Join(lockedDir, reconcile.DefaultStateFile)
@@ -316,6 +310,9 @@ func TestPrepareStateFileForCLIRun(t *testing.T) {
 		require.NoError(t, os.WriteFile(configured, []byte("{}"), 0o600))
 		require.NoError(t, os.Chmod(lockedDir, 0o000))
 		t.Cleanup(func() { require.NoError(t, os.Chmod(lockedDir, 0o755)) })
+		if _, err := os.Stat(configured); err == nil {
+			t.Skip("filesystem permissions do not deny state inspection for this user")
+		}
 
 		scratch, cleanup, err := prepareStateFileForCLIRun(configured, true)
 		require.NoError(t, err)

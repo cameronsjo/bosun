@@ -116,15 +116,17 @@ func ensureStateDirForCLI(stateFile string) error {
 	return nil
 }
 
-// saveStateForCLIDryRun is the state-copy seam used to fault-inject scratch
-// persistence failures before reconciliation starts.
-var saveStateForCLIDryRun = reconcile.SaveState
-
 // prepareStateFileForCLIRun returns the state file a one-shot reconcile should
 // use. Real runs use the configured file after verifying its parent. Dry runs
 // use a temporary copy so skip and breaker decisions still see current state,
 // while simulated attempt/success writes cannot mutate production state.
 func prepareStateFileForCLIRun(stateFile string, dryRun bool) (string, func(), error) {
+	return prepareStateFileForCLIRunWithSave(stateFile, dryRun, reconcile.SaveState)
+}
+
+// prepareStateFileForCLIRunWithSave exposes the scratch-state write as an
+// explicit dependency for fault-injection tests without mutable package state.
+func prepareStateFileForCLIRunWithSave(stateFile string, dryRun bool, saveState func(string, *reconcile.DeployState) error) (string, func(), error) {
 	if !dryRun {
 		if err := ensureStateDirForCLI(stateFile); err != nil {
 			return "", func() {}, err
@@ -145,7 +147,7 @@ func prepareStateFileForCLIRun(stateFile string, dryRun bool) (string, func(), e
 
 	if stateFile != "" {
 		if _, statErr := os.Stat(stateFile); statErr == nil {
-			if err := saveStateForCLIDryRun(scratchFile, reconcile.LoadState(stateFile)); err != nil {
+			if err := saveState(scratchFile, reconcile.LoadState(stateFile)); err != nil {
 				cleanup()
 				return "", func() {}, fmt.Errorf("copy deploy state for dry run: %w", err)
 			}
