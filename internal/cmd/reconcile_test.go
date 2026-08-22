@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/cameronsjo/bosun/internal/reconcile"
@@ -190,6 +192,105 @@ func TestEnsureStateDirForCLI(t *testing.T) {
 		assert.Contains(t, err.Error(), "create state directory")
 		assert.Contains(t, err.Error(), parentFile)
 	})
+
+	t.Run("rejects an existing unwritable parent", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("chmod semantics differ on Windows")
+		}
+		if os.Getuid() == 0 {
+			t.Skip("cannot test permission denial as root")
+		}
+
+		stateDir := filepath.Join(t.TempDir(), "state")
+		require.NoError(t, os.MkdirAll(stateDir, 0o755))
+		require.NoError(t, os.Chmod(stateDir, 0o555))
+		t.Cleanup(func() { require.NoError(t, os.Chmod(stateDir, 0o755)) })
+
+		err := ensureStateDirForCLI(filepath.Join(stateDir, reconcile.DefaultStateFile))
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "verify state directory")
+		assert.Contains(t, err.Error(), stateDir)
+	})
+}
+
+func TestPrepareStateFileForCLIRun(t *testing.T) {
+	t.Run("real run prepares and returns configured state file", func(t *testing.T) {
+		stateFile := filepath.Join(t.TempDir(), "nested", reconcile.DefaultStateFile)
+
+		got, cleanup, err := prepareStateFileForCLIRun(stateFile, false)
+		require.NoError(t, err)
+		cleanup()
+
+		assert.Equal(t, stateFile, got)
+		assert.DirExists(t, filepath.Dir(stateFile))
+	})
+
+	t.Run("real run propagates state directory preparation failure", func(t *testing.T) {
+		parentFile := filepath.Join(t.TempDir(), "not-a-directory")
+		require.NoError(t, os.WriteFile(parentFile, []byte("occupied"), 0o600))
+
+		got, cleanup, err := prepareStateFileForCLIRun(filepath.Join(parentFile, "state.json"), false)
+		cleanup()
+
+		require.Error(t, err)
+		assert.Empty(t, got)
+		assert.Contains(t, err.Error(), "create state directory")
+	})
+
+	t.Run("dry run copies state without touching configured directory", func(t *testing.T) {
+		base := t.TempDir()
+		configured := filepath.Join(base, "production", reconcile.DefaultStateFile)
+		require.NoError(t, os.MkdirAll(filepath.Dir(configured), 0o755))
+		require.NoError(t, reconcile.SaveState(configured, &reconcile.DeployState{LastDeployedCommit: "live-commit"}))
+
+		scratch, cleanup, err := prepareStateFileForCLIRun(configured, true)
+		require.NoError(t, err)
+		scratchDir := filepath.Dir(scratch)
+		t.Cleanup(cleanup)
+
+		assert.NotEqual(t, configured, scratch)
+		assert.Equal(t, "live-commit", reconcile.LoadState(scratch).LastDeployedCommit)
+		require.NoError(t, reconcile.SaveState(scratch, &reconcile.DeployState{LastDeployedCommit: "preview-commit"}))
+		assert.Equal(t, "live-commit", reconcile.LoadState(configured).LastDeployedCommit)
+
+		cleanup()
+		assert.NoDirExists(t, scratchDir)
+	})
+
+	t.Run("dry run leaves a missing configured directory absent", func(t *testing.T) {
+		configured := filepath.Join(t.TempDir(), "production", "nested", reconcile.DefaultStateFile)
+
+		scratch, cleanup, err := prepareStateFileForCLIRun(configured, true)
+		require.NoError(t, err)
+		t.Cleanup(cleanup)
+
+		assert.NotEqual(t, configured, scratch)
+		assert.NoDirExists(t, filepath.Dir(configured))
+	})
+
+	t.Run("dry run fails open from state it cannot inspect", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("chmod semantics differ on Windows")
+		}
+		if os.Getuid() == 0 {
+			t.Skip("cannot test permission denial as root")
+		}
+
+		lockedDir := filepath.Join(t.TempDir(), "locked")
+		configured := filepath.Join(lockedDir, reconcile.DefaultStateFile)
+		require.NoError(t, os.MkdirAll(lockedDir, 0o755))
+		require.NoError(t, os.WriteFile(configured, []byte("{}"), 0o600))
+		require.NoError(t, os.Chmod(lockedDir, 0o000))
+		t.Cleanup(func() { require.NoError(t, os.Chmod(lockedDir, 0o755)) })
+
+		scratch, cleanup, err := prepareStateFileForCLIRun(configured, true)
+		require.NoError(t, err)
+		t.Cleanup(cleanup)
+
+		assert.NotEqual(t, configured, scratch)
+		assert.NoFileExists(t, scratch, "unreadable production state must degrade to empty scratch state")
+	})
 }
 
 func TestRunReconcile_CreatesConfiguredStateDir(t *testing.T) {
@@ -205,6 +306,63 @@ func TestRunReconcile_CreatesConfiguredStateDir(t *testing.T) {
 	info, err := os.Stat(stateDir)
 	require.NoError(t, err)
 	assert.True(t, info.IsDir())
+}
+
+func TestRunReconcile_PreparesEachTargetStateDir(t *testing.T) {
+	old := ui.SetExitFn(func(int) {})
+	defer ui.SetExitFn(old)
+
+	base := t.TempDir()
+	targets := []reconcile.Target{
+		{Name: "unraid", StateFile: filepath.Join(base, "unraid", "state.json")},
+		{Name: "pi", StateFile: filepath.Join(base, "pi", "nested", "state.json")},
+	}
+	targetsJSON, err := json.Marshal(targets)
+	require.NoError(t, err)
+	t.Setenv("REPO_URL", filepath.Join(t.TempDir(), "missing-repo"))
+	t.Setenv("BOSUN_TARGETS", string(targetsJSON))
+
+	runReconcile(nil, nil)
+
+	for _, target := range targets {
+		assert.DirExists(t, filepath.Dir(target.StateFile), "target %s state directory", target.Name)
+	}
+}
+
+func TestRunReconcile_DryRunDoesNotMutateConfiguredState(t *testing.T) {
+	old := ui.SetExitFn(func(int) {})
+	defer ui.SetExitFn(old)
+
+	t.Run("missing state directory stays absent", func(t *testing.T) {
+		stateDir := filepath.Join(t.TempDir(), "production", "state")
+		t.Setenv("REPO_URL", filepath.Join(t.TempDir(), "missing-repo"))
+		t.Setenv("BOSUN_STATE_DIR", stateDir)
+		t.Setenv("DRY_RUN", "true")
+
+		runReconcile(nil, nil)
+
+		assert.NoDirExists(t, stateDir)
+	})
+
+	t.Run("existing state remains unchanged", func(t *testing.T) {
+		stateDir := filepath.Join(t.TempDir(), "production", "state")
+		stateFile := filepath.Join(stateDir, reconcile.DefaultStateFile)
+		require.NoError(t, os.MkdirAll(stateDir, 0o755))
+		require.NoError(t, reconcile.SaveState(stateFile, &reconcile.DeployState{
+			LastDeployedCommit: "live-commit",
+			DeployCount:        7,
+		}))
+		t.Setenv("REPO_URL", filepath.Join(t.TempDir(), "missing-repo"))
+		t.Setenv("BOSUN_STATE_DIR", stateDir)
+		t.Setenv("DRY_RUN", "true")
+
+		runReconcile(nil, nil)
+
+		state := reconcile.LoadState(stateFile)
+		assert.Equal(t, "live-commit", state.LastDeployedCommit)
+		assert.Equal(t, 7, state.DeployCount)
+		assert.Zero(t, state.AttemptCount)
+	})
 }
 
 // TestRunFullDryRun_TemplateIncludeDirEnv exercises the `bosun validate` full

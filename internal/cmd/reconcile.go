@@ -95,7 +95,64 @@ func ensureStateDirForCLI(stateFile string) error {
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		return fmt.Errorf("create state directory %q: %w", stateDir, err)
 	}
+
+	// MkdirAll succeeds when the directory already exists, even if the CLI
+	// cannot write there. Probe the same operation SaveState starts with so an
+	// unusable existing directory fails before any deployment side effects.
+	probe, err := os.CreateTemp(stateDir, ".bosun-state-probe-*")
+	if err != nil {
+		return fmt.Errorf("verify state directory %q is writable: %w", stateDir, err)
+	}
+	probePath := probe.Name()
+	if err := probe.Close(); err != nil {
+		// Preserve the close failure as the actionable error; removing an open
+		// probe is best-effort cleanup and cannot make this directory usable.
+		_ = os.Remove(probePath)
+		return fmt.Errorf("close state directory probe in %q: %w", stateDir, err)
+	}
+	if err := os.Remove(probePath); err != nil {
+		return fmt.Errorf("remove state directory probe %q: %w", probePath, err)
+	}
 	return nil
+}
+
+// prepareStateFileForCLIRun returns the state file a one-shot reconcile should
+// use. Real runs use the configured file after verifying its parent. Dry runs
+// use a temporary copy so skip and breaker decisions still see current state,
+// while simulated attempt/success writes cannot mutate production state.
+func prepareStateFileForCLIRun(stateFile string, dryRun bool) (string, func(), error) {
+	if !dryRun {
+		if err := ensureStateDirForCLI(stateFile); err != nil {
+			return "", func() {}, err
+		}
+		return stateFile, func() {}, nil
+	}
+
+	scratchDir, err := os.MkdirTemp("", "bosun-reconcile-dry-run-state-*")
+	if err != nil {
+		return "", func() {}, fmt.Errorf("create temporary dry-run state directory: %w", err)
+	}
+	cleanup := func() {
+		if err := os.RemoveAll(scratchDir); err != nil {
+			log.Warn().Err(err).Str(log.FieldPath, scratchDir).Msg("Failed to remove temporary dry-run state directory")
+		}
+	}
+	scratchFile := filepath.Join(scratchDir, reconcile.DefaultStateFile)
+
+	if stateFile != "" {
+		if _, statErr := os.Stat(stateFile); statErr == nil {
+			if err := reconcile.SaveState(scratchFile, reconcile.LoadState(stateFile)); err != nil {
+				cleanup()
+				return "", func() {}, fmt.Errorf("copy deploy state for dry run: %w", err)
+			}
+		} else if !os.IsNotExist(statErr) {
+			// Match LoadState's fail-open behavior for an unreadable or malformed
+			// source: the dry run proceeds from empty scratch state.
+			log.Warn().Err(statErr).Str(log.FieldPath, stateFile).Msg("Could not inspect deploy state for dry run, using empty temporary state")
+		}
+	}
+
+	return scratchFile, cleanup, nil
 }
 
 func runReconcile(cmd *cobra.Command, args []string) {
@@ -342,18 +399,22 @@ func runReconcile(cmd *cobra.Command, args []string) {
 	var hadError bool
 	for _, target := range targets {
 		targetCfg := cfg.ConfigForTarget(target)
-		if err := ensureStateDirForCLI(targetCfg.StateFile); err != nil {
+		stateFile, cleanupState, err := prepareStateFileForCLIRun(targetCfg.StateFile, targetCfg.DryRun)
+		if err != nil {
 			ui.Error("Target %s failed: %v", target.Name, err)
 			hadError = true
 			continue
 		}
+		targetCfg.StateFile = stateFile
 		r := reconcile.NewReconciler(targetCfg, opts...)
 
 		if !target.IsDefault() {
 			ui.Info("Reconciling target: %s", target.Name)
 		}
 
-		if err := r.Run(ctx); err != nil {
+		err = r.Run(ctx)
+		cleanupState()
+		if err != nil {
 			ui.Error("Target %s failed: %v", target.Name, err)
 			hadError = true
 			continue

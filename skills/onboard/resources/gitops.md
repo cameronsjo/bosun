@@ -438,7 +438,7 @@ bosun drift --target=nas       # Show drift for a specific target
 
 ## Deploy State and Circuit Breaker
 
-The daemon and one-shot CLI track deploy state in a JSON file (default: `/var/lib/bosun/deploy-state.json`). Before reconciliation, each mode creates the state file's parent directory. Multi-target one-shot runs prepare each target's state directory independently and fail a target before deployment if its directory cannot be created.
+The daemon and one-shot CLI track deploy state in a JSON file (default: `/var/lib/bosun/deploy-state.json`). Before a real reconciliation, each mode creates the state file's parent directory. Multi-target one-shot runs prepare and write-probe each target's state directory independently and fail a target before deployment if its directory cannot be written. A one-shot dry run uses a temporary copy of existing state, so it evaluates skip and circuit-breaker decisions without creating or updating the configured state path.
 
 **State tracking includes:**
 - Last successful deploy timestamp and commit
