@@ -1888,6 +1888,12 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 	result := &DeployResult{}
 	stagingSubDir := filepath.Join(r.config.StagingDir, r.config.InfraSubDir)
 	appdata := r.config.LocalAppdataPath
+	if err := validateTransitionSourceNamespace(stagingSubDir); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("validate deploy source namespace: %w", err)
+	}
+	if err := validatePriorManagedTransitionArtifacts(appdata, prevManaged); err != nil {
+		return nil, fmt.Errorf("validate prior managed transition artifacts: %w", err)
+	}
 
 	targets, err := discoverDeployTargets(stagingSubDir, r.config.DeploySyncPaths.Value, r.config.DeploySyncExclude.Value)
 	if err != nil {

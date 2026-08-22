@@ -2,10 +2,15 @@ package reconcile
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/fileutil"
@@ -330,13 +335,87 @@ const (
 	managedTransitionNewSuffix = ".bosun-transition-new"
 )
 
+func validateTransitionSourceNamespace(sourceRoot string) error {
+	return filepath.WalkDir(sourceRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		name := strings.ToLower(entry.Name())
+		if strings.HasSuffix(name, managedTransitionOldSuffix) || strings.HasSuffix(name, managedTransitionNewSuffix) {
+			return fmt.Errorf("source path uses reserved transition suffix: %s", path)
+		}
+		return nil
+	})
+}
+
+func validatePriorManagedTransitionArtifacts(targetRoot string, managed []string) error {
+	return validateManagedTransitionArtifacts(targetRoot, managed)
+}
+
+func validateManagedMapTransitionArtifacts(targetRoot string, managed map[string]bool) error {
+	paths := make([]string, 0, len(managed))
+	for path, owned := range managed {
+		if owned {
+			paths = append(paths, path)
+		}
+	}
+	sort.Strings(paths)
+	return validateManagedTransitionArtifacts(targetRoot, paths)
+}
+
+func validateManagedTransitionArtifacts(targetRoot string, managed []string) error {
+	candidates := make(map[string]struct{})
+	for _, manifestPath := range managed {
+		rel := filepath.Clean(filepath.FromSlash(manifestPath))
+		if rel == managedTargetRoot {
+			candidates[filepath.Clean(targetRoot)] = struct{}{}
+			continue
+		}
+		if rel == "" || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("invalid managed path %q while checking transition artifacts", manifestPath)
+		}
+		for rel != managedTargetRoot {
+			candidate := filepath.Join(targetRoot, rel)
+			candidates[candidate] = struct{}{}
+			rel = filepath.Dir(rel)
+		}
+	}
+	ordered := make([]string, 0, len(candidates))
+	for candidate := range candidates {
+		ordered = append(ordered, candidate)
+	}
+	sort.Strings(ordered)
+	for _, candidate := range ordered {
+		if err := validateTransitionArtifactsAbsent(candidate); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateTransitionArtifactsAbsent(targetPath string) error {
+	for _, artifact := range []string{targetPath + managedTransitionOldSuffix, targetPath + managedTransitionNewSuffix} {
+		if _, err := os.Lstat(artifact); err == nil {
+			return fmt.Errorf("transition artifact already exists at %s", artifact)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect transition artifact %s: %w", artifact, err)
+		}
+	}
+	return nil
+}
+
 type managedTypeTransition struct {
 	sourcePath, targetPath, relPath string
 	sourceIsDir                     bool
 	targetInfo, parentInfo          os.FileInfo
 	newInfo                         os.FileInfo
+	targetFingerprint               [sha256.Size]byte
+	newFingerprint                  [sha256.Size]byte
 	targetHandle, parentHandle      *os.File
 	newHandle                       *os.File
+	privatePath                     string
+	privateInfo                     os.FileInfo
+	privateHandle                   *os.File
 	oldPath, newPath                string
 	written, deleted                []string
 	prevManaged                     map[string]bool
@@ -349,6 +428,9 @@ type managedTypeTransitions struct {
 
 func prepareManagedTypeTransitions(sourceRoot, targetRoot string, prevManaged map[string]bool) (*managedTypeTransitions, error) {
 	tx := &managedTypeTransitions{}
+	if err := validateManagedMapTransitionArtifacts(targetRoot, prevManaged); err != nil {
+		return tx, err
+	}
 	sourceInfo, err := os.Lstat(sourceRoot)
 	if err != nil {
 		return tx, err
@@ -400,19 +482,15 @@ func prepareManagedTypeTransitions(sourceRoot, targetRoot string, prevManaged ma
 	for _, item := range tx.items {
 		if err := item.stage(); err != nil {
 			tx.Close()
-			return tx, fmt.Errorf("%w; partial replacement retained at %s", err, item.newPath)
+			return tx, err
 		}
 	}
 	return tx, nil
 }
 
 func discoverManagedTypeConflict(sourcePath, targetPath, relPath string, sourceInfo os.FileInfo, prevManaged map[string]bool) (*managedTypeTransition, error) {
-	for _, artifact := range []string{targetPath + managedTransitionOldSuffix, targetPath + managedTransitionNewSuffix} {
-		if _, err := os.Lstat(artifact); err == nil {
-			return nil, fmt.Errorf("transition artifact already exists at %s", artifact)
-		} else if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("inspect transition artifact %s: %w", artifact, err)
-		}
+	if err := validateTransitionArtifactsAbsent(targetPath); err != nil {
+		return nil, err
 	}
 	targetInfo, err := os.Lstat(targetPath)
 	if err != nil {
@@ -513,12 +591,8 @@ func dirEntryIsRegular(entry os.DirEntry) (bool, error) {
 }
 
 func (t *managedTypeTransition) pin() error {
-	for _, artifact := range []string{t.oldPath, t.newPath} {
-		if _, err := os.Lstat(artifact); err == nil {
-			return fmt.Errorf("transition artifact already exists at %s", artifact)
-		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("inspect transition artifact %s: %w", artifact, err)
-		}
+	if err := validateTransitionArtifactsAbsent(t.targetPath); err != nil {
+		return err
 	}
 	var err error
 	t.parentHandle, err = os.Open(filepath.Dir(t.targetPath))
@@ -539,20 +613,50 @@ func (t *managedTypeTransition) pin() error {
 	}
 	t.targetInfo = targetPinned
 	t.parentInfo = parentPinned
+	t.targetFingerprint, err = fingerprintPinnedPath(t.targetPath, t.targetHandle, t.targetInfo)
+	if err != nil {
+		return fmt.Errorf("fingerprint destination %s: %w", t.relPath, err)
+	}
 	return nil
 }
 
-func (t *managedTypeTransition) stage() error {
+func (t *managedTypeTransition) stage() (stageErr error) {
+	if err := t.createPrivateStage(); err != nil {
+		return err
+	}
+	published := false
+	defer func() {
+		if stageErr == nil {
+			return
+		}
+		if !published && t.newHandle != nil {
+			_ = t.newHandle.Close()
+			t.newHandle = nil
+		}
+		if err := t.cleanupPrivateStage(); err != nil {
+			stageErr = errors.Join(stageErr, err)
+		}
+	}()
+
+	replacement := filepath.Join(t.privatePath, "replacement")
 	if t.sourceIsDir {
-		info, err := os.Stat(t.sourcePath)
+		sourceInfo, err := os.Stat(t.sourcePath)
 		if err != nil {
 			return err
 		}
-		if err := os.Mkdir(t.newPath, info.Mode().Perm()); err != nil {
-			return fmt.Errorf("stage replacement directory %s: %w", t.relPath, err)
+		if err := os.Mkdir(replacement, sourceInfo.Mode().Perm()); err != nil {
+			return fmt.Errorf("create private replacement directory for %s: %w", t.relPath, err)
 		}
-		if err := fileutil.CopyDir(t.sourcePath, t.newPath); err != nil {
-			return fmt.Errorf("stage replacement directory %s: %w", t.relPath, err)
+		t.newHandle, err = os.Open(replacement)
+		if err != nil {
+			return fmt.Errorf("pin private replacement directory for %s: %w", t.relPath, err)
+		}
+		t.newInfo, err = t.newHandle.Stat()
+		if err != nil {
+			return fmt.Errorf("stat private replacement directory for %s: %w", t.relPath, err)
+		}
+		if err := fileutil.CopyDir(t.sourcePath, replacement); err != nil {
+			return fmt.Errorf("copy private replacement directory for %s: %w", t.relPath, err)
 		}
 		managed, err := listManagedFiles(t.sourcePath)
 		if err != nil {
@@ -566,20 +670,99 @@ func (t *managedTypeTransition) stage() error {
 			}
 		}
 	} else {
-		if err := fileutil.CopyFile(t.sourcePath, t.newPath); err != nil {
-			return fmt.Errorf("stage replacement file %s: %w", t.relPath, err)
+		if err := t.copyPrivateFile(replacement); err != nil {
+			return fmt.Errorf("copy private replacement file for %s: %w", t.relPath, err)
 		}
 		t.written = []string{t.relPath}
 	}
+
 	var err error
-	t.newHandle, err = os.Open(t.newPath)
+	t.newFingerprint, err = fingerprintPinnedPath(replacement, t.newHandle, t.newInfo)
 	if err != nil {
-		return fmt.Errorf("pin staged replacement %s: %w", t.relPath, err)
+		return fmt.Errorf("fingerprint private replacement for %s: %w", t.relPath, err)
+	}
+	if err := renameNoReplace(replacement, t.newPath); err != nil {
+		return fmt.Errorf("publish staged replacement for %s at %s: %w", t.relPath, t.newPath, err)
+	}
+	published = true
+	if err := revalidatePinned(t.newPath, t.newHandle, t.newInfo); err != nil {
+		return fmt.Errorf("published replacement changed for %s at %s: %w", t.relPath, t.newPath, err)
+	}
+	if err := t.cleanupPrivateStage(); err != nil {
+		return fmt.Errorf("published replacement retained at %s; %w", t.newPath, err)
+	}
+	return nil
+}
+
+func (t *managedTypeTransition) createPrivateStage() error {
+	pattern := "." + filepath.Base(t.targetPath) + ".bosun-transition-stage-*"
+	path, err := os.MkdirTemp(filepath.Dir(t.targetPath), pattern)
+	if err != nil {
+		return fmt.Errorf("create private transition stage for %s: %w", t.relPath, err)
+	}
+	t.privatePath = path
+	t.privateHandle, err = os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open private transition stage %s: %w", path, err)
+	}
+	t.privateInfo, err = t.privateHandle.Stat()
+	if err != nil {
+		return fmt.Errorf("stat private transition stage %s: %w", path, err)
+	}
+	if err := revalidatePinned(path, t.privateHandle, t.privateInfo); err != nil {
+		return fmt.Errorf("pin private transition stage %s: %w", path, err)
+	}
+	return nil
+}
+
+func (t *managedTypeTransition) copyPrivateFile(replacement string) error {
+	source, err := os.Open(t.sourcePath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = source.Close() }()
+	sourceBefore, err := source.Stat()
+	if err != nil {
+		return err
+	}
+	if !sourceBefore.Mode().IsRegular() {
+		return fmt.Errorf("source is not a regular file")
+	}
+	t.newHandle, err = os.OpenFile(replacement, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(t.newHandle, source); err != nil {
+		return err
+	}
+	if err := t.newHandle.Chmod(sourceBefore.Mode()); err != nil {
+		return err
+	}
+	if err := t.newHandle.Sync(); err != nil {
+		return err
+	}
+	sourceAfter, err := source.Stat()
+	if err != nil || !sameFileMetadata(sourceBefore, sourceAfter) {
+		return fmt.Errorf("source changed while staging")
 	}
 	t.newInfo, err = t.newHandle.Stat()
-	if err != nil {
-		return fmt.Errorf("stat staged replacement %s: %w", t.relPath, err)
+	return err
+}
+
+func (t *managedTypeTransition) cleanupPrivateStage() error {
+	if t.privatePath == "" {
+		return nil
 	}
+	if err := revalidatePinned(t.privatePath, t.privateHandle, t.privateInfo); err != nil {
+		return fmt.Errorf("private transition stage retained at %s: %w", t.privatePath, err)
+	}
+	if err := os.RemoveAll(t.privatePath); err != nil {
+		return fmt.Errorf("remove private transition stage %s: %w", t.privatePath, err)
+	}
+	_ = t.privateHandle.Close()
+	t.privateHandle = nil
+	t.privatePath = ""
+	t.privateInfo = nil
 	return nil
 }
 
@@ -593,6 +776,9 @@ func (ts *managedTypeTransitions) Close() {
 		}
 		if item.parentHandle != nil {
 			_ = item.parentHandle.Close()
+		}
+		if item.privateHandle != nil {
+			_ = item.privateHandle.Close()
 		}
 	}
 }
@@ -713,13 +899,9 @@ func (t *managedTypeTransition) removePinnedOld() error {
 	if err := revalidatePinned(t.oldPath, t.targetHandle, t.targetInfo); err != nil {
 		return err
 	}
-	if t.sourceIsDir {
-		current, err := t.targetHandle.Stat()
-		if err != nil || !fileInfoStable(t.targetInfo, current) {
-			return fmt.Errorf("managed original file changed at %s", t.oldPath)
-		}
-	} else if _, err := validateManagedDirectory(t.oldPath, t.relPath, t.prevManaged); err != nil {
-		return fmt.Errorf("managed original directory changed at %s: %w", t.oldPath, err)
+	currentFingerprint, err := fingerprintPinnedPath(t.oldPath, t.targetHandle, t.targetInfo)
+	if err != nil || currentFingerprint != t.targetFingerprint {
+		return fmt.Errorf("managed original changed at %s", t.oldPath)
 	}
 	if err := os.RemoveAll(t.oldPath); err != nil {
 		return fmt.Errorf("remove quarantined original %s: %w", t.oldPath, err)
@@ -731,15 +913,9 @@ func (t *managedTypeTransition) removePinnedNew() error {
 	if err := revalidatePinned(t.newPath, t.newHandle, t.newInfo); err != nil {
 		return err
 	}
-	if t.sourceIsDir {
-		if err := validateStagedDirectory(t.sourcePath, t.newPath); err != nil {
-			return fmt.Errorf("staged replacement changed at %s: %w", t.newPath, err)
-		}
-	} else {
-		current, err := t.newHandle.Stat()
-		if err != nil || !fileInfoStable(t.newInfo, current) {
-			return fmt.Errorf("staged replacement file changed at %s", t.newPath)
-		}
+	currentFingerprint, err := fingerprintPinnedPath(t.newPath, t.newHandle, t.newInfo)
+	if err != nil || currentFingerprint != t.newFingerprint {
+		return fmt.Errorf("staged replacement changed at %s", t.newPath)
 	}
 	if err := os.RemoveAll(t.newPath); err != nil {
 		return fmt.Errorf("remove staged replacement %s: %w", t.newPath, err)
@@ -747,58 +923,100 @@ func (t *managedTypeTransition) removePinnedNew() error {
 	return nil
 }
 
-func fileInfoStable(pinned, current os.FileInfo) bool {
-	return pinned.Mode() == current.Mode() && pinned.Size() == current.Size() && pinned.ModTime() == current.ModTime()
+func sameFileMetadata(before, after os.FileInfo) bool {
+	return before != nil && after != nil && os.SameFile(before, after) && before.Mode() == after.Mode() &&
+		before.Size() == after.Size() && before.ModTime().Equal(after.ModTime())
 }
 
-func validateStagedDirectory(sourceDir, stagedDir string) error {
-	expected := make(map[string]bool)
-	if err := filepath.WalkDir(sourceDir, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return nil
-		}
-		rel, err := filepath.Rel(sourceDir, path)
-		if err != nil {
-			return err
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		expected[rel] = info.IsDir()
-		return nil
-	}); err != nil {
-		return err
+func fingerprintPinnedPath(path string, handle *os.File, pinned os.FileInfo) ([sha256.Size]byte, error) {
+	var empty [sha256.Size]byte
+	if err := revalidatePinned(path, handle, pinned); err != nil {
+		return empty, err
 	}
-	seen := 0
-	if err := filepath.WalkDir(stagedDir, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		rel, err := filepath.Rel(stagedDir, path)
-		if err != nil {
-			return err
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		wantDir, ok := expected[rel]
-		if !ok || wantDir != info.IsDir() || !info.IsDir() && !info.Mode().IsRegular() {
-			return fmt.Errorf("unexpected staged entry %s", rel)
-		}
-		seen++
-		return nil
-	}); err != nil {
-		return err
+	rootBefore, err := handle.Stat()
+	if err != nil {
+		return empty, err
 	}
-	if seen != len(expected) {
-		return fmt.Errorf("staged replacement entry count changed")
+	digest := sha256.New()
+	if rootBefore.Mode().IsRegular() {
+		if err := fingerprintFile(digest, managedTargetRoot, handle, rootBefore); err != nil {
+			return empty, err
+		}
+	} else if rootBefore.IsDir() {
+		writeFingerprintMetadata(digest, managedTargetRoot, rootBefore)
+		if err := filepath.WalkDir(path, func(entryPath string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entryPath == path {
+				return nil
+			}
+			rel, err := filepath.Rel(path, entryPath)
+			if err != nil {
+				return err
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				writeFingerprintMetadata(digest, filepath.ToSlash(rel), info)
+				return nil
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("fingerprint entry %s is not regular", entryPath)
+			}
+			file, err := os.Open(entryPath)
+			if err != nil {
+				return err
+			}
+			opened, err := file.Stat()
+			if err != nil || !os.SameFile(opened, info) {
+				_ = file.Close()
+				return fmt.Errorf("fingerprint entry changed before reading: %s", entryPath)
+			}
+			fingerprintErr := fingerprintFile(digest, filepath.ToSlash(rel), file, opened)
+			closeErr := file.Close()
+			return errors.Join(fingerprintErr, closeErr)
+		}); err != nil {
+			return empty, err
+		}
+	} else {
+		return empty, fmt.Errorf("fingerprint root is neither a regular file nor directory: %s", path)
+	}
+	rootAfter, err := handle.Stat()
+	if err != nil || !sameFileMetadata(rootBefore, rootAfter) {
+		return empty, fmt.Errorf("fingerprint root changed while reading: %s", path)
+	}
+	if err := revalidatePinned(path, handle, pinned); err != nil {
+		return empty, err
+	}
+	var fingerprint [sha256.Size]byte
+	copy(fingerprint[:], digest.Sum(nil))
+	return fingerprint, nil
+}
+
+func fingerprintFile(digest hash.Hash, rel string, file *os.File, before os.FileInfo) error {
+	writeFingerprintMetadata(digest, rel, before)
+	read := io.NewSectionReader(file, 0, before.Size())
+	if copied, err := io.Copy(digest, read); err != nil {
+		return err
+	} else if copied != before.Size() {
+		return fmt.Errorf("fingerprint file size changed while reading: %s", rel)
+	}
+	after, err := file.Stat()
+	if err != nil || !sameFileMetadata(before, after) {
+		return fmt.Errorf("fingerprint file changed while reading: %s", rel)
 	}
 	return nil
+}
+
+func writeFingerprintMetadata(digest hash.Hash, rel string, info os.FileInfo) {
+	size := info.Size()
+	if info.IsDir() {
+		size = -1
+	}
+	_, _ = fmt.Fprintf(digest, "%d:%s:%d:%d\n", len(rel), rel, uint32(info.Mode()), size)
 }
 
 func (ts *managedTypeTransitions) WrittenFiles() []string {
