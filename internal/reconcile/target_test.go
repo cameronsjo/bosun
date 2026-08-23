@@ -339,6 +339,22 @@ func TestResolveTargets_RejectsResourceCollisions(t *testing.T) {
 			},
 			wantErrContains: []string{"prod-a", "prod-b", "deploy path"},
 		},
+		{
+			name: "derived docker namespace on the same host",
+			targets: []Target{
+				{Name: "prod-a", TargetHost: "root@nas", RemoteAppdataPath: "/mnt/user/prod-a"},
+				{Name: "prod-b", TargetHost: "root@nas", RemoteAppdataPath: "/mnt/user/prod-b"},
+			},
+			wantErrContains: []string{"prod-a", "prod-b", "Docker namespace", "compose (derived)"},
+		},
+		{
+			name: "derived docker namespace collides with explicit compose project",
+			targets: []Target{
+				{Name: "prod-a", TargetHost: "root@nas", RemoteAppdataPath: "/mnt/user/prod-a"},
+				{Name: "prod-b", TargetHost: "root@nas", ProjectName: "compose", RemoteAppdataPath: "/mnt/user/prod-b"},
+			},
+			wantErrContains: []string{"prod-a", "prod-b", "Docker namespace", "compose"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -391,6 +407,13 @@ func TestResolveTargets_AllowsDistinctResources(t *testing.T) {
 			targets: []Target{
 				{Name: "prod-a", ProjectName: "stack", LocalAppdataPath: "/mnt/user/appdata"},
 				{Name: "prod-b", TargetHost: "root@nas", ProjectName: "stack", RemoteAppdataPath: "/mnt/user/appdata"},
+			},
+		},
+		{
+			name: "derived namespace on distinct hosts",
+			targets: []Target{
+				{Name: "prod-a", TargetHost: "root@nas-a", RemoteAppdataPath: "/mnt/user/appdata"},
+				{Name: "prod-b", TargetHost: "root@nas-b", RemoteAppdataPath: "/mnt/user/appdata"},
 			},
 		},
 	}

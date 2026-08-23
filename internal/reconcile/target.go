@@ -281,19 +281,15 @@ func (c *Config) validateTargetResourceCollisions(targets []Target) error {
 		effective := c.ConfigForTarget(target)
 		host := strings.ToLower(effective.TargetHost)
 
-		// An empty project name lets Compose derive the namespace from its
-		// target-specific working directory, so there is no stable explicit
-		// namespace to compare here.
-		if effective.ProjectName != "" {
-			key := targetResourceKey{host: host, resource: strings.ToLower(effective.ProjectName)}
-			if first, ok := namespaces[key]; ok {
-				return fmt.Errorf(
-					"targets %q and %q resolve to the same Docker namespace (host %q, project_name %q)",
-					first, target.Name, targetHostLabel(effective.TargetHost), effective.ProjectName,
-				)
-			}
-			namespaces[key] = target.Name
+		projectName, projectLabel := normalizeTargetProjectName(effective.ProjectName)
+		namespaceKey := targetResourceKey{host: host, resource: projectName}
+		if first, ok := namespaces[namespaceKey]; ok {
+			return fmt.Errorf(
+				"targets %q and %q resolve to the same Docker namespace (host %q, project_name %q)",
+				first, target.Name, targetHostLabel(effective.TargetHost), projectLabel,
+			)
 		}
+		namespaces[namespaceKey] = target.Name
 
 		deployPath := effective.RemoteAppdataPath
 		if effective.TargetHost == "" {
@@ -313,6 +309,16 @@ func (c *Config) validateTargetResourceCollisions(targets []Target) error {
 	}
 
 	return nil
+}
+
+func normalizeTargetProjectName(projectName string) (normalized, label string) {
+	if projectName == "" {
+		// Bosun runs both local and remote Compose commands from the fixed
+		// appdata/compose directory. Without -p (or a compose-file name
+		// override unavailable at config resolution), Compose derives "compose".
+		return "compose", "compose (derived)"
+	}
+	return strings.ToLower(projectName), projectName
 }
 
 func normalizeTargetDeployPath(host, deployPath string) string {
