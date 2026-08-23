@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/fileutil"
+	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -80,17 +82,25 @@ func TestRun_OnlyPostWriteVerificationFailureFiresFailedDeployHook(t *testing.T)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r, _, stateFile, restartCalled := gateScopeReconciler(
+			r, _, stateFile, _ := gateScopeReconciler(
 				t,
 				HealthGateScopeOff,
 				nil,
 				dockerListHealthyStub,
 			)
-			r.config.PostSyncHooks = NewConfigField([]PostSyncHook{{
-				Container: "downstream",
-				Paths:     []string{"compose/**"},
-				Action:    "restart",
-			}})
+			r.config.PostSyncHooks = NewConfigField([]PostSyncHook{
+				{Container: "downstream", Paths: []string{"compose/**"}, Action: "restart"},
+				{Container: "unrelated", Paths: []string{"appdata/**"}, Action: "restart"},
+			})
+			var restarted []string
+			mockAPI := newReconcileMockDockerAPI()
+			mockAPI.containerListFunc = dockerListHealthyStub
+			mockAPI.containerRestartFunc = func(_ context.Context, container string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
+				restarted = append(restarted, container)
+				return client.ContainerRestartResult{}, nil
+			}
+			dockerClient := docker.NewClientWithAPI(mockAPI)
+			r.dockerClientFn = func() *docker.Client { return dockerClient }
 			r.deploy.copyDirIfChangedFn = func(src, dst string) ([]string, error) {
 				require.NoError(t, fileutil.CopyDir(src, dst))
 				return []string{"stub.yml"}, tt.copyErr
@@ -99,11 +109,19 @@ func TestRun_OnlyPostWriteVerificationFailureFiresFailedDeployHook(t *testing.T)
 			err := r.Run(context.Background())
 
 			require.Error(t, err)
-			assert.Equal(t, tt.wantRestart, *restartCalled,
-				"only the typed post-rename failure may run hooks for a failed deploy")
+			if tt.wantRestart {
+				assert.ErrorIs(t, err, fileutil.ErrPostWriteVerification)
+				assert.Equal(t, []string{"downstream"}, restarted,
+					"the typed post-rename failure must run only hooks matching the recorded write")
+			} else {
+				assert.NotErrorIs(t, err, fileutil.ErrPostWriteVerification)
+				assert.Empty(t, restarted, "ordinary deployment failures must not run hooks")
+			}
 			saved := LoadState(stateFile)
 			assert.True(t, saved.NeedsRedeploy, "copy failure must not be recorded as a successful deploy")
 			assert.Equal(t, "prevcommit", saved.LastDeployedCommit)
+			assert.Equal(t, 1, saved.AttemptCount)
+			assert.Zero(t, saved.DeployCount)
 		})
 	}
 }
@@ -148,4 +166,43 @@ func TestDeployLocal_PostWriteVerificationResultUsesHookPath(t *testing.T) {
 
 	// The typed failure is the only one eligible for the failed-deploy hook path.
 	assert.True(t, errors.Is(err, fileutil.ErrPostWriteVerification))
+}
+
+func TestDeployLocalFile_PostWriteVerificationResultUsesHookPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	stagingDir := filepath.Join(tmpDir, "staging")
+	appdataDir := filepath.Join(tmpDir, "appdata")
+	sourceFile := filepath.Join(stagingDir, "unraid", "appdata", "service.env")
+	require.NoError(t, os.MkdirAll(filepath.Dir(sourceFile), 0o755))
+	require.NoError(t, os.MkdirAll(appdataDir, 0o755))
+	require.NoError(t, os.WriteFile(sourceFile, []byte("new"), 0o644))
+
+	deploy := &DeployOps{
+		ContentHashSync: true,
+		copyFileIfChangedFn: func(_, dst string) (bool, error) {
+			require.NoError(t, os.MkdirAll(filepath.Dir(dst), 0o755))
+			require.NoError(t, os.WriteFile(dst, []byte("new"), 0o644))
+			return true, postWriteVerificationError()
+		},
+	}
+	r := NewReconciler(&Config{
+		DryRun:                  true,
+		AllowEmptyDeclaredState: true,
+		StagingDir:              stagingDir,
+		InfraSubDir:             "unraid",
+		LocalAppdataPath:        appdataDir,
+	}, WithDeployOps(deploy))
+
+	result, err := r.deployLocal(context.Background(), nil)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, fileutil.ErrPostWriteVerification)
+	require.NotNil(t, result)
+	assert.Equal(t, []string{filepath.Join("appdata", "service.env")}, result.WrittenFiles)
+	matched := EvaluatePostSyncHooks(result.WrittenFiles, []PostSyncHook{
+		{Paths: []string{"appdata/*.env"}, Action: "restart", Container: "service"},
+		{Paths: []string{"compose/**"}, Action: "restart", Container: "unrelated"},
+	})
+	require.Len(t, matched, 1)
+	assert.Equal(t, "service", matched[0].Container)
 }
