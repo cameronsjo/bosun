@@ -1052,10 +1052,10 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 		// even if only non-critical drift remains.
 		if d.alerter != nil {
 			// Filter to critical items only.
-			var criticalItems []reconcile.DriftItem
+			var activeCriticalItems []reconcile.DriftItem
 			for _, item := range report.Items {
 				if item.Type == reconcile.DriftMissing || item.Type == reconcile.DriftUnhealthy {
-					criticalItems = append(criticalItems, item)
+					activeCriticalItems = append(activeCriticalItems, item)
 				}
 			}
 
@@ -1064,7 +1064,7 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 			// has alerted, keep it flowing through ShouldAlertDrift directly.
 			var pendingItems []reconcile.DriftItem
 			var alreadyAlerted []reconcile.DriftItem
-			for _, item := range criticalItems {
+			for _, item := range activeCriticalItems {
 				if _, alerted := state.DriftAlertedItems[reconcile.DriftAlertKey(item)]; alerted {
 					alreadyAlerted = append(alreadyAlerted, item)
 				} else {
@@ -1075,7 +1075,7 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 			// FilterDebounced mutates state.DriftDebounceItems in place (adds new, removes graduated/resolved).
 			preDebounceCount := len(pendingItems)
 			pendingItems = reconcile.FilterDebounced(pendingItems, state.DriftDebounceItems, dcfg.driftAlertDebounce)
-			criticalItems = append(alreadyAlerted, pendingItems...)
+			alertCandidates := append(alreadyAlerted, pendingItems...)
 
 			filteredCount := preDebounceCount - len(pendingItems)
 			if filteredCount > 0 {
@@ -1099,7 +1099,7 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 			}
 
 			alertItems, resolvedKeys := reconcile.ShouldAlertDrift(
-				criticalItems, state.DriftAlertedItems, d.config.DriftAlertCooldown,
+				activeCriticalItems, alertCandidates, state.DriftAlertedItems, d.config.DriftAlertCooldown,
 			)
 
 			if len(alertItems) > 0 {
@@ -1114,11 +1114,7 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 						Int("items", len(alertItems)).
 						Msg("Drift alert delivery failed, will retry on next check")
 				} else {
-					now := time.Now()
-					for _, item := range alertItems {
-						state.DriftAlertedItems[reconcile.DriftAlertKey(item)] = now
-					}
-					state.DriftAlertedAt = now
+					state.RecordDriftAlerts(alertItems, time.Now())
 				}
 			}
 

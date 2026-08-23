@@ -2508,6 +2508,80 @@ func TestRunDriftCheck_AlertDeliveryFailure_StateNotAdvanced(t *testing.T) {
 	assert.Contains(t, loaded.DriftAlertedItems, "api:missing", "DriftAlertedItems should advance once delivery succeeds")
 }
 
+func TestRunDriftCheck_DriftTypeTransitionDoesNotResolveService(t *testing.T) {
+	provider := &testAlertProvider{}
+	d := newAlertDaemon(t, provider)
+	d.dockerClientOverride = docker.NewClientWithAPI(&dockertest.MockDockerAPI{})
+	d.config.ReconcileConfig.RestartBreakerEnabled = false
+
+	stateFile := d.config.ReconcileConfig.StateFile
+	state := &reconcile.DeployState{
+		LastDeployedCommit: "abc123",
+		DeclaredServices: []reconcile.DeclaredService{
+			{Name: "api", Image: "api:latest"},
+		},
+		DriftItems: []reconcile.DriftItem{
+			{Service: "api", Type: reconcile.DriftUnhealthy},
+		},
+		DriftAlertedItems: map[string]time.Time{
+			"api:unhealthy": time.Now().Add(-30 * time.Minute),
+		},
+	}
+	require.NoError(t, reconcile.SaveState(stateFile, state))
+
+	d.runDriftCheck(context.Background())
+
+	require.Len(t, provider.alerts, 1)
+	assert.Equal(t, "Drift Detected", provider.alerts[0].Title)
+	assert.Contains(t, provider.alerts[0].Message, "api (missing)")
+
+	loaded := reconcile.LoadState(stateFile)
+	assert.NotContains(t, loaded.DriftAlertedItems, "api:unhealthy")
+	assert.Contains(t, loaded.DriftAlertedItems, "api:missing")
+}
+
+func TestRunDriftCheck_DriftTypeTransitionRespectsDebounce(t *testing.T) {
+	provider := &testAlertProvider{}
+	d := newAlertDaemon(t, provider)
+	d.dockerClientOverride = docker.NewClientWithAPI(&dockertest.MockDockerAPI{})
+	d.config.ReconcileConfig.RestartBreakerEnabled = false
+	d.config.DriftAlertDebounce = reconcile.NewConfigField(5 * time.Minute)
+
+	stateFile := d.config.ReconcileConfig.StateFile
+	state := &reconcile.DeployState{
+		LastDeployedCommit: "abc123",
+		DeclaredServices: []reconcile.DeclaredService{
+			{Name: "api", Image: "api:latest"},
+		},
+		DriftItems: []reconcile.DriftItem{
+			{Service: "api", Type: reconcile.DriftUnhealthy},
+		},
+		DriftAlertedItems: map[string]time.Time{
+			"api:unhealthy": time.Now().Add(-30 * time.Minute),
+		},
+	}
+	require.NoError(t, reconcile.SaveState(stateFile, state))
+
+	d.runDriftCheck(context.Background())
+
+	assert.Empty(t, provider.alerts, "a pending replacement type must not resolve the still-drifting service")
+	loaded := reconcile.LoadState(stateFile)
+	assert.Contains(t, loaded.DriftAlertedItems, "api:unhealthy")
+	assert.Contains(t, loaded.DriftDebounceItems, "api:missing")
+
+	loaded.DriftDebounceItems["api:missing"] = time.Now().Add(-6 * time.Minute)
+	require.NoError(t, reconcile.SaveState(stateFile, loaded))
+	d.runDriftCheck(context.Background())
+
+	require.Len(t, provider.alerts, 1)
+	assert.Equal(t, "Drift Detected", provider.alerts[0].Title)
+	assert.Contains(t, provider.alerts[0].Message, "api (missing)")
+	loaded = reconcile.LoadState(stateFile)
+	assert.NotContains(t, loaded.DriftAlertedItems, "api:unhealthy")
+	assert.Contains(t, loaded.DriftAlertedItems, "api:missing")
+	assert.NotContains(t, loaded.DriftDebounceItems, "api:missing")
+}
+
 func TestRunDriftCheck_ResolvedAlertDeliveryFailure_StateNotCleared(t *testing.T) {
 	// Simulates drift that was previously alerted and has now resolved (the
 	// declared service is running again). If the resolution-alert delivery
@@ -2692,7 +2766,7 @@ func TestDriftDebounce_E2E_PersistBeyondWindow(t *testing.T) {
 
 	// Now the graduated item enters dedup layer.
 	alertedItems := map[string]time.Time{}
-	alertItems, resolvedKeys := reconcile.ShouldAlertDrift(result, alertedItems, time.Hour)
+	alertItems, resolvedKeys := reconcile.ShouldAlertDrift(result, result, alertedItems, time.Hour)
 	assert.Len(t, alertItems, 1, "should trigger alert after graduation")
 	assert.Empty(t, resolvedKeys)
 
@@ -2701,7 +2775,7 @@ func TestDriftDebounce_E2E_PersistBeyondWindow(t *testing.T) {
 
 	// Cycle 3: drift resolves.
 	emptyItems := []reconcile.DriftItem{}
-	_, resolvedKeys = reconcile.ShouldAlertDrift(emptyItems, alertedItems, time.Hour)
+	_, resolvedKeys = reconcile.ShouldAlertDrift(emptyItems, emptyItems, alertedItems, time.Hour)
 	assert.Len(t, resolvedKeys, 1, "should detect resolution")
 	assert.Equal(t, "traefik:unhealthy", resolvedKeys[0])
 }
@@ -2748,7 +2822,7 @@ func TestDriftDebounce_E2E_PersistWithDedupCooldown(t *testing.T) {
 
 	// First alert fires.
 	alertedItems := map[string]time.Time{}
-	alertItems, _ := reconcile.ShouldAlertDrift(graduated, alertedItems, cooldown)
+	alertItems, _ := reconcile.ShouldAlertDrift(graduated, graduated, alertedItems, cooldown)
 	assert.Len(t, alertItems, 1)
 	alertedItems["traefik:unhealthy"] = time.Now()
 
@@ -2763,12 +2837,12 @@ func TestDriftDebounce_E2E_PersistWithDedupCooldown(t *testing.T) {
 
 	// In a real daemon flow, the graduated items would go through dedup.
 	// Let's simulate the dedup directly.
-	alertItems2, _ := reconcile.ShouldAlertDrift(items, alertedItems, cooldown)
+	alertItems2, _ := reconcile.ShouldAlertDrift(items, items, alertedItems, cooldown)
 	assert.Empty(t, alertItems2, "dedup should suppress within cooldown")
 
 	// After cooldown expires.
 	alertedItems["traefik:unhealthy"] = time.Now().Add(-2 * time.Hour)
-	alertItems3, _ := reconcile.ShouldAlertDrift(items, alertedItems, cooldown)
+	alertItems3, _ := reconcile.ShouldAlertDrift(items, items, alertedItems, cooldown)
 	assert.Len(t, alertItems3, 1, "should re-alert after cooldown expires")
 
 	_ = graduated2
