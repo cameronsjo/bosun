@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -61,6 +62,25 @@ func captureStdout(t *testing.T, fn func()) string {
 	out, err := io.ReadAll(r)
 	require.NoError(t, err)
 	return string(out)
+}
+
+// executeDriftCLI runs an isolated drift command so other command tests that
+// reset Cobra's global flags cannot affect these exit-status assertions.
+func executeDriftCLI(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	cmd := &cobra.Command{Use: "drift", RunE: runDrift, SilenceUsage: true, SilenceErrors: true}
+	cmd.Flags().BoolVar(&driftLive, "live", false, "")
+	cmd.Flags().BoolVar(&driftJSON, "json", false, "")
+	cmd.Flags().StringVar(&driftStateFile, "state-file", driftStateFile, "")
+	cmd.Flags().StringVar(&driftProjectName, "project", "", "")
+	cmd.Flags().StringVarP(&driftTarget, "target", "t", "", "")
+	cmd.SetArgs(args)
+
+	var runErr error
+	output := captureStdout(t, func() {
+		runErr = cmd.Execute()
+	})
+	return output, runErr
 }
 
 func TestPrintDriftJSON_Clean(t *testing.T) {
@@ -326,7 +346,7 @@ func TestRunMultiTargetDriftJSON(t *testing.T) {
 		}
 
 		output := captureStdout(t, func() {
-			runMultiTargetDriftJSON(targets)
+			require.NoError(t, runMultiTargetDriftJSON(targets))
 		})
 
 		var result multiTargetDriftJSON
@@ -355,15 +375,18 @@ func TestRunMultiTargetDriftJSON(t *testing.T) {
 		})
 		// beta has no state file — LoadState returns empty commit
 
+		var runErr error
 		output := captureStdout(t, func() {
-			runMultiTargetDriftJSON(targets)
+			runErr = runMultiTargetDriftJSON(targets)
 		})
+		require.ErrorIs(t, runErr, errDriftStateUnavailable)
 
 		var result multiTargetDriftJSON
 		require.NoError(t, json.Unmarshal([]byte(output), &result))
 		require.Len(t, result.Targets, 2)
 		assert.Equal(t, "drifted", result.Targets[0].Status)
 		assert.Equal(t, "unknown", result.Targets[1].Status)
+		assert.Contains(t, result.Targets[1].Error, "target beta")
 	})
 
 	t.Run("items_array_never_null", func(t *testing.T) {
@@ -379,11 +402,33 @@ func TestRunMultiTargetDriftJSON(t *testing.T) {
 		})
 
 		output := captureStdout(t, func() {
-			runMultiTargetDriftJSON(targets)
+			require.NoError(t, runMultiTargetDriftJSON(targets))
 		})
 
 		// Verify items is [] not null in raw JSON
 		assert.Contains(t, output, `"items": []`)
+	})
+
+	t.Run("live_target_without_declared_state_is_unknown_error", func(t *testing.T) {
+		saveDriftFlags(t)
+		tmpDir := evalSymlinks(t, t.TempDir())
+		driftStateFile = filepath.Join(tmpDir, reconcile.DefaultStateFile)
+		driftLive = true
+
+		targets := []reconcile.Target{{Name: "empty"}}
+		makeState(t, tmpDir, targets[0], &reconcile.DeployState{LastDeployedCommit: "abc123"})
+
+		var runErr error
+		output := captureStdout(t, func() {
+			runErr = runMultiTargetDriftJSON(targets)
+		})
+		require.ErrorIs(t, runErr, errDriftStateUnavailable)
+
+		var result multiTargetDriftJSON
+		require.NoError(t, json.Unmarshal([]byte(output), &result))
+		require.Len(t, result.Targets, 1)
+		assert.Equal(t, "unknown", result.Targets[0].Status)
+		assert.Contains(t, result.Targets[0].Error, "no declared services")
 	})
 }
 
@@ -407,7 +452,7 @@ func TestRunMultiTargetDrift_Human(t *testing.T) {
 		}
 
 		output := captureStdout(t, func() {
-			runMultiTargetDrift(targets)
+			require.NoError(t, runMultiTargetDrift(targets))
 		})
 
 		assert.Contains(t, output, "Deployed commit: abc123")
@@ -430,13 +475,30 @@ func TestRunMultiTargetDrift_Human(t *testing.T) {
 		})
 		// fresh has no state file
 
+		var runErr error
 		output := captureStdout(t, func() {
-			runMultiTargetDrift(targets)
+			runErr = runMultiTargetDrift(targets)
 		})
+		require.ErrorIs(t, runErr, errDriftStateUnavailable)
 
 		assert.Contains(t, output, "Deployed commit: abc123")
 		// The "No deployments recorded" warning goes through ui.Warning (colored output),
 		// not fmt.Printf, so it won't appear in stdout capture.
+	})
+
+	t.Run("live_target_without_declared_state_returns_error", func(t *testing.T) {
+		saveDriftFlags(t)
+		tmpDir := evalSymlinks(t, t.TempDir())
+		driftStateFile = filepath.Join(tmpDir, reconcile.DefaultStateFile)
+		driftLive = true
+		driftJSON = false
+
+		targets := []reconcile.Target{{Name: "empty"}}
+		makeState(t, tmpDir, targets[0], &reconcile.DeployState{LastDeployedCommit: "abc123"})
+
+		err := runMultiTargetDrift(targets)
+		require.ErrorIs(t, err, errDriftStateUnavailable)
+		assert.Contains(t, err.Error(), "empty")
 	})
 }
 
@@ -460,7 +522,7 @@ func TestRunDrift_MultiTargetAutoDetection(t *testing.T) {
 		})
 
 		output := captureStdout(t, func() {
-			runDrift(nil, nil)
+			require.NoError(t, runDrift(nil, nil))
 		})
 
 		var result multiTargetDriftJSON
@@ -470,7 +532,7 @@ func TestRunDrift_MultiTargetAutoDetection(t *testing.T) {
 		assert.Equal(t, "b", result.Targets[1].Target)
 	})
 
-	t.Run("single_target_falls_through_to_normal", func(t *testing.T) {
+	t.Run("single_named_target_uses_target_state", func(t *testing.T) {
 		saveDriftFlags(t)
 		tmpDir := evalSymlinks(t, t.TempDir())
 		driftStateFile = filepath.Join(tmpDir, reconcile.DefaultStateFile)
@@ -479,20 +541,41 @@ func TestRunDrift_MultiTargetAutoDetection(t *testing.T) {
 		driftLive = false
 
 		t.Setenv("BOSUN_TARGETS", `[{"name":"solo"}]`)
-		// Write state at the DEFAULT path since single target falls through
-		require.NoError(t, reconcile.SaveState(driftStateFile, &reconcile.DeployState{
+		makeState(t, tmpDir, reconcile.Target{Name: "solo"}, &reconcile.DeployState{
 			LastDeployedCommit: "commit-solo",
 			DeclaredServices:   []reconcile.DeclaredService{{Name: "web", Image: "nginx"}},
-		}))
+		})
 
 		output := captureStdout(t, func() {
-			runDrift(nil, nil)
+			require.NoError(t, runDrift(nil, nil))
 		})
 
 		// Single-target path produces driftJSONOutput, not multiTargetDriftJSON
 		var result driftJSONOutput
 		require.NoError(t, json.Unmarshal([]byte(output), &result))
 		assert.Equal(t, "clean", result.Status)
+		assert.Equal(t, "commit-solo", result.DeployedCommit)
+	})
+
+	t.Run("explicit_state_file_wins_over_configured_targets", func(t *testing.T) {
+		saveDriftFlags(t)
+		tmpDir := evalSymlinks(t, t.TempDir())
+		explicitState := filepath.Join(tmpDir, "chosen.json")
+		require.NoError(t, reconcile.SaveState(explicitState, &reconcile.DeployState{
+			LastDeployedCommit: "explicit-commit",
+			DeclaredServices:   []reconcile.DeclaredService{{Name: "web", Image: "nginx"}},
+		}))
+		driftJSON = true
+		driftLive = false
+		t.Setenv("BOSUN_TARGETS", `[{"name":"a"},{"name":"b"}]`)
+
+		output, runErr := executeDriftCLI(t, "--json", "--target", "a", "--state-file", explicitState)
+		require.NoError(t, runErr)
+
+		var result driftJSONOutput
+		require.NoError(t, json.Unmarshal([]byte(output), &result))
+		assert.Equal(t, "clean", result.Status)
+		assert.Equal(t, "explicit-commit", result.DeployedCommit)
 	})
 }
 
@@ -513,7 +596,7 @@ func TestRunDrift_TargetFlag(t *testing.T) {
 		})
 
 		output := captureStdout(t, func() {
-			runDrift(nil, nil)
+			require.NoError(t, runDrift(nil, nil))
 		})
 
 		var result driftJSONOutput
@@ -538,7 +621,7 @@ func TestRunDrift_TargetFlag(t *testing.T) {
 		})
 
 		output := captureStdout(t, func() {
-			runDrift(nil, nil)
+			require.NoError(t, runDrift(nil, nil))
 		})
 
 		var result driftJSONOutput
@@ -547,25 +630,73 @@ func TestRunDrift_TargetFlag(t *testing.T) {
 		assert.Equal(t, "xyz789", result.DeployedCommit)
 	})
 
-	t.Run("no_deployment_returns_unknown_json", func(t *testing.T) {
+	t.Run("no_deployment_returns_JSON_error", func(t *testing.T) {
 		saveDriftFlags(t)
 		tmpDir := evalSymlinks(t, t.TempDir())
 		driftStateFile = filepath.Join(tmpDir, reconcile.DefaultStateFile)
-		driftTarget = "empty"
-		driftJSON = true
-		driftLive = false
 
 		t.Setenv("BOSUN_TARGETS", "")
 		// No state file exists
 
-		output := captureStdout(t, func() {
-			runDrift(nil, nil)
-		})
+		output, runErr := executeDriftCLI(t, "--json", "--target", "empty")
+		require.ErrorIs(t, runErr, errDriftStateUnavailable)
 
 		var result driftJSONOutput
 		require.NoError(t, json.Unmarshal([]byte(output), &result))
 		assert.Equal(t, "unknown", result.Status)
+		assert.Contains(t, result.Error, "target empty")
+		assert.Contains(t, result.Error, "deploy-state-empty.json")
 	})
+
+	t.Run("no_deployment_returns_human_error", func(t *testing.T) {
+		saveDriftFlags(t)
+		tmpDir := evalSymlinks(t, t.TempDir())
+		driftStateFile = filepath.Join(tmpDir, reconcile.DefaultStateFile)
+		t.Setenv("BOSUN_TARGETS", "")
+
+		output, err := executeDriftCLI(t, "--target", "empty")
+		require.ErrorIs(t, err, errDriftStateUnavailable)
+		assert.Empty(t, output)
+		assert.Contains(t, err.Error(), "target empty")
+		assert.Contains(t, err.Error(), "deploy-state-empty.json")
+	})
+
+	t.Run("live_JSON_without_declared_state_returns_error", func(t *testing.T) {
+		saveDriftFlags(t)
+		tmpDir := evalSymlinks(t, t.TempDir())
+		stateFile := filepath.Join(tmpDir, "empty-declared.json")
+		require.NoError(t, reconcile.SaveState(stateFile, &reconcile.DeployState{
+			LastDeployedCommit: "abc123",
+		}))
+		driftStateFile = filepath.Join(tmpDir, reconcile.DefaultStateFile)
+		t.Setenv("BOSUN_TARGETS", "")
+
+		output, runErr := executeDriftCLI(t, "--live", "--json", "--state-file", stateFile)
+		require.ErrorIs(t, runErr, errDriftStateUnavailable)
+
+		var result driftJSONOutput
+		require.NoError(t, json.Unmarshal([]byte(output), &result))
+		assert.Equal(t, "unknown", result.Status)
+		assert.Contains(t, result.Error, "no declared services")
+		assert.Contains(t, result.Error, stateFile)
+	})
+}
+
+func TestReportUnknownDriftState_JSONEncodeError(t *testing.T) {
+	saveDriftFlags(t)
+	driftJSON = true
+
+	oldStdout := os.Stdout
+	reader, closedWriter, err := os.Pipe()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reader.Close() })
+	require.NoError(t, closedWriter.Close())
+	os.Stdout = closedWriter
+	t.Cleanup(func() { os.Stdout = oldStdout })
+
+	err = reportUnknownDriftState("state is unavailable")
+	require.ErrorIs(t, err, errDriftStateUnavailable)
+	assert.Contains(t, err.Error(), "encode JSON output")
 }
 
 func TestBuildDriftJSON(t *testing.T) {
