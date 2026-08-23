@@ -194,6 +194,8 @@ targets:
 
 Each named target gets isolated defaults: `deploy-state-<name>.json`, `<staging>/<name>/`, and `reconcile-<name>.lock`. Set `state_file` or `staging_dir` when a target needs an exact path instead. A lone `name: default` target may also override these paths while retaining the legacy default lock; a `default` entry in a multi-target list is rejected. Targets are reconciled sequentially; failure on one does not block others.
 
+The daemon resolves target identity, host, and paths from its startup configuration. Restart the daemon after adding or removing targets or changing `target_host`, appdata paths, `state_file`, or `staging_dir`; only per-target operational overrides such as hooks, sync paths, critical containers, and `project_name` hot-reload from the pulled repository.
+
 Per-target secrets scoping: when `secrets_scope` is set, keys under `targets.<scope>.*` in the decrypted secrets override top-level keys for that target.
 
 Override via environment: `BOSUN_TARGETS` (JSON array) completely replaces the config file targets. It accepts the same snake_case fields as YAML, including `state_file` and `staging_dir`: `[{"name":"nas","target_host":"user@host","project_name":"homelab","state_file":"/var/lib/bosun/nas-state.json","staging_dir":"/app/nas-staging"}]`. Setting `BOSUN_TARGETS=[]` explicitly clears all targets (falls back to implicit default).

@@ -2120,21 +2120,32 @@ func TestExtractDriftSelfHeal(t *testing.T) {
 // --- Multi-target config tests ---
 
 func TestTargetRawFieldParityWithEnvironmentSchema(t *testing.T) {
-	yamlFields := make(map[string]struct{})
-	rawType := reflect.TypeOf(targetRaw{})
-	for i := range rawType.NumField() {
-		yamlFields[rawType.Field(i).Tag.Get("yaml")] = struct{}{}
+	// Keep exceptions explicit: a field omitted here is part of both public
+	// configuration channels. If a future field is intentionally source-only,
+	// add its serialized name to this set and explain why.
+	intentionalSourceOnlyFields := map[string]struct{}{}
+	serializedFieldTypes := func(structType reflect.Type, tagKey string) map[string]reflect.Type {
+		fields := make(map[string]reflect.Type, structType.NumField())
+		for i := range structType.NumField() {
+			field := structType.Field(i)
+			tag, ok := field.Tag.Lookup(tagKey)
+			require.Truef(t, ok, "%s.%s must declare a %s tag", structType.Name(), field.Name, tagKey)
+			name, _, _ := strings.Cut(tag, ",")
+			require.NotEmptyf(t, name, "%s.%s must not have an empty %s tag", structType.Name(), field.Name, tagKey)
+			require.NotEqualf(t, "-", name, "%s.%s must not be silently excluded from %s", structType.Name(), field.Name, tagKey)
+			require.NotContainsf(t, fields, name, "%s has duplicate %s tag %q", structType.Name(), tagKey, name)
+			if _, excluded := intentionalSourceOnlyFields[name]; !excluded {
+				fields[name] = field.Type
+			}
+		}
+		return fields
 	}
 
-	jsonFields := make(map[string]struct{})
-	targetType := reflect.TypeOf(reconcile.Target{})
-	for i := range targetType.NumField() {
-		name, _, _ := strings.Cut(targetType.Field(i).Tag.Get("json"), ",")
-		jsonFields[name] = struct{}{}
-	}
+	yamlFields := serializedFieldTypes(reflect.TypeOf(targetRaw{}), "yaml")
+	jsonFields := serializedFieldTypes(reflect.TypeOf(reconcile.Target{}), "json")
 
 	assert.Equal(t, jsonFields, yamlFields,
-		"targets: YAML and BOSUN_TARGETS must expose the same per-target fields")
+		"targets: YAML and BOSUN_TARGETS must expose the same per-target fields and types")
 }
 
 func TestTargetsFromConfig(t *testing.T) {
