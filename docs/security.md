@@ -128,16 +128,18 @@ security boundary; do not treat rendered output as non-sensitive by default.
 
 ### Cleanup Procedures
 
-Temporary secret files are cleaned up using Go's `defer` pattern:
+Decrypted secret data is held in Go values; Bosun does not create a plaintext
+secret interchange file to remove or promise explicit memory zeroing. Each
+rendered output is first written to a same-directory temporary file. That
+temporary output is removed if rendering fails and atomically renamed to the
+final output path on success.
 
-```go
-defer func() {
-    secretsFile.Close()
-    os.Remove(secretsPath)
-}()
-```
-
-This ensures cleanup occurs even if template rendering fails.
+Reconciliation clears the staging directory before rendering and removes it
+after a successful non-dry-run deployment. A failed render or deployment, and a
+dry run, can leave rendered staging files for diagnosis. Those files may contain
+secrets and must be protected and removed according to the operator's retention
+policy. Files written by `bosun render --output` are requested output, not
+temporary state, and remain until the operator removes them.
 
 ## SSH Security
 
