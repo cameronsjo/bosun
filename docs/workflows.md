@@ -220,7 +220,10 @@ flowchart TD
 | `git fetch timed out after 2m` | Network issues | Retry on next trigger |
 | `age key not found` | No SOPS decryption key | Run `age-keygen -o ~/.config/sops/age/keys.txt` |
 | `file is not SOPS-encrypted` | Missing `sops` metadata | Encrypt file: `sops --encrypt --in-place file.yaml` |
-| `sops decrypt failed` | Wrong key or corrupted file | Verify age key matches encryption key |
+| `sops integrity verification failed` | Encrypted file or MAC was modified | Restore the file from a trusted source or re-encrypt it; do not rotate an unrelated key |
+| `sops decryption key unavailable` | No configured identity can recover the data key | Verify `SOPS_AGE_KEY` or `SOPS_AGE_KEY_FILE` matches a file recipient |
+| `malformed SOPS encrypted data` | Encrypted value or metadata is invalid | Validate or re-encrypt the file with SOPS |
+| `sops decryption failed` | Failure could not be safely classified | Validate the file with SOPS and verify the configured Age key |
 | `template render failed` | Template syntax error | Fix template, check error output |
 | `SSH authentication failed` | Invalid SSH key | Add key to remote authorized_keys |
 | `SSH connection refused` | SSH service not running | Start SSH service on remote |
