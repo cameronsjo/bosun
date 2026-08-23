@@ -141,6 +141,35 @@ func TestRunReconcile_BOSUNTargetsValidation(t *testing.T) {
 	})
 }
 
+func TestApplyTargetsOverrideForCLI(t *testing.T) {
+	configured := []reconcile.Target{{Name: "from-config", TargetHost: "user@config-host"}}
+	tests := []struct {
+		name        string
+		value       string
+		wantTargets []reconcile.Target
+		wantFromEnv bool
+	}{
+		{name: "null preserves project config", value: `null`, wantTargets: configured},
+		{name: "malformed preserves project config", value: `not-json`, wantTargets: configured},
+		{name: "empty array is authoritative", value: `[]`, wantTargets: []reconcile.Target{}, wantFromEnv: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := reconcile.DefaultConfig()
+			cfg.Targets = append([]reconcile.Target(nil), configured...)
+
+			applyTargetsOverrideForCLI(cfg, tt.value)
+
+			assert.Equal(t, tt.wantTargets, cfg.Targets)
+			assert.Equal(t, tt.wantFromEnv, cfg.TargetsFromEnv)
+			if tt.wantFromEnv {
+				assert.NotNil(t, cfg.Targets)
+			}
+		})
+	}
+}
+
 // TestTemplateIncludeDirForCLI covers the one-shot CLI's include-allowlist
 // precedence, which must match the daemon: the project-config value reaches
 // reconcile.Config.TemplateIncludeDir unless BOSUN_TEMPLATE_INCLUDE_DIR

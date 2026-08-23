@@ -3209,7 +3209,43 @@ targets:
 		// Empty array from env should NOT be repopulated from config file
 		assert.Empty(t, cfg.ReconcileConfig.Targets,
 			"BOSUN_TARGETS=[] should override config file targets")
+		targets, err := cfg.ReconcileConfig.ResolveTargets()
+		require.NoError(t, err)
+		require.Len(t, targets, 1)
+		assert.Equal(t, reconcile.DefaultTargetName, targets[0].Name,
+			"the empty override should resolve to the implicit default target")
 	})
+
+	for _, tt := range []struct {
+		name  string
+		value string
+	}{
+		{name: "null_falls_back_to_config_file", value: "null"},
+		{name: "malformed_JSON_falls_back_to_config_file", value: "not-json"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := evalSymlinks(t, t.TempDir())
+			require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(`manifest_dir: manifest
+targets:
+  - name: from-config
+    target_host: user@config-host
+`), 0o644))
+			require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0o755))
+
+			origDir, err := os.Getwd()
+			require.NoError(t, err)
+			defer func() { require.NoError(t, os.Chdir(origDir)) }()
+			require.NoError(t, os.Chdir(tmpDir))
+			t.Setenv("BOSUN_TARGETS", tt.value)
+
+			cfg := ConfigFromEnv()
+
+			require.Len(t, cfg.ReconcileConfig.Targets, 1)
+			assert.Equal(t, "from-config", cfg.ReconcileConfig.Targets[0].Name)
+			assert.Equal(t, "user@config-host", cfg.ReconcileConfig.Targets[0].TargetHost)
+			assert.False(t, cfg.ReconcileConfig.TargetsFromEnv)
+		})
+	}
 
 	t.Run("env_overrides_config_file", func(t *testing.T) {
 		tmpDir := t.TempDir()

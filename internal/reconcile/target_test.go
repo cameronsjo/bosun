@@ -7,6 +7,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestParseTargetsOverride(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		want      []Target
+		wantApply bool
+		wantErr   bool
+	}{
+		{name: "configured targets apply", value: `[{"name":"nas"}]`, want: []Target{{Name: "nas"}}, wantApply: true},
+		{name: "empty array applies", value: `[]`, want: []Target{}, wantApply: true},
+		{name: "null falls back", value: `null`, wantApply: false},
+		{name: "malformed falls back with error", value: `not-json`, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, apply, err := ParseTargetsOverride(tt.value)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.False(t, apply)
+				assert.Nil(t, got)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantApply, apply)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 // #391 regression: a lone `name: default` target is the implicit default's
 // configuration — its project_name (and paths) must reach the deploy instead
 // of being discarded with a warning, which deployed project-less and collided
@@ -143,6 +173,23 @@ func TestResolveTargets_LoneDefaultFlowsThroughConfigForTarget(t *testing.T) {
 	targetCfg := cfg.ConfigForTarget(targets[0])
 	assert.Equal(t, "homelab", targetCfg.ProjectName, "project_name must reach the per-target config the deploy uses")
 	assert.Equal(t, cfg.StagingDir, targetCfg.StagingDir, "default target keeps the base staging dir")
+}
+
+func TestResolveTargets_ExplicitEmptyMatchesAbsent(t *testing.T) {
+	absent := DefaultConfig()
+	absent.ProjectName = "homelab"
+	explicitEmpty := DefaultConfig()
+	explicitEmpty.ProjectName = "homelab"
+	explicitEmpty.Targets = []Target{}
+
+	want, err := absent.ResolveTargets()
+	require.NoError(t, err)
+	got, err := explicitEmpty.ResolveTargets()
+	require.NoError(t, err)
+
+	assert.Equal(t, want, got)
+	require.Len(t, got, 1)
+	assert.Equal(t, DefaultTargetName, got[0].Name)
 }
 
 // #391: a multi-target config carrying a reserved default-named target (any

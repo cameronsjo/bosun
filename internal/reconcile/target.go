@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -9,6 +10,17 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/log"
 )
+
+// ParseTargetsOverride decodes BOSUN_TARGETS and reports whether the decoded
+// value is an authoritative override. A JSON empty array is authoritative,
+// while JSON null leaves project-config targets in effect.
+func ParseTargetsOverride(value string) ([]Target, bool, error) {
+	var targets []Target
+	if err := json.Unmarshal([]byte(value), &targets); err != nil {
+		return nil, false, err
+	}
+	return targets, targets != nil, nil
+}
 
 // DefaultTargetName is the name used for the implicit single-target backwards-compat target.
 const DefaultTargetName = "default"

@@ -187,8 +187,11 @@ func writeDriftJSON(value any) error {
 // loadConfiguredTargets returns targets from config or env, or nil.
 func loadConfiguredTargets() []reconcile.Target {
 	if v := os.Getenv("BOSUN_TARGETS"); v != "" {
-		var targets []reconcile.Target
-		if err := json.Unmarshal([]byte(v), &targets); err == nil && len(targets) > 0 {
+		if targets, apply, err := reconcile.ParseTargetsOverride(v); err == nil && apply {
+			// A valid empty array intentionally replaces bosun.yaml targets and
+			// lets callers use the implicit default target, matching reconcile
+			// and daemon configuration semantics. JSON null is not authoritative,
+			// so it falls back to project configuration like malformed input.
 			return targets
 		}
 	}
