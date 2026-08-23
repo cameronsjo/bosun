@@ -168,9 +168,10 @@ func collectRestartCounts(
 	ctx context.Context,
 	client *docker.Client,
 	actual []ActualService,
-) map[string]int {
+) (map[string]int, map[string]struct{}) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 	counts := make(map[string]int, len(actual))
+	unobserved := make(map[string]struct{})
 
 	for _, svc := range actual {
 		if svc.State != "running" && svc.State != "restarting" {
@@ -183,13 +184,14 @@ func collectRestartCounts(
 				Str(log.FieldContainer, svc.ContainerName).
 				Err(err).
 				Msg("Restart breaker: failed to inspect container")
+			unobserved[svc.Name] = struct{}{}
 			continue
 		}
 
 		counts[svc.Name] = details.RestartCount
 	}
 
-	return counts
+	return counts, unobserved
 }
 
 // RunRestartBreaker performs restart circuit breaker evaluation and takes action
@@ -204,7 +206,7 @@ func RunRestartBreaker(
 ) (*RestartBreakerResult, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
-	counts := collectRestartCounts(ctx, client, actual)
+	counts, unobserved := collectRestartCounts(ctx, client, actual)
 	if len(counts) == 0 {
 		return &RestartBreakerResult{Updated: state.RestartTracking}, nil
 	}
@@ -214,6 +216,15 @@ func RunRestartBreaker(
 	}
 
 	result := evaluateRestartBreaker(counts, state.RestartTracking, threshold, window, time.Now())
+
+	// A partial Docker sample is not evidence that an unobserved service was
+	// removed. Retain its last known entry so a transient inspect failure cannot
+	// erase an accumulating restart baseline while other services are evaluated.
+	for service := range unobserved {
+		if prev, exists := state.RestartTracking[service]; exists {
+			result.Updated[service] = prev
+		}
+	}
 
 	// Stop tripped containers (best-effort: attempt all, collect errors).
 	var stopErrs []error

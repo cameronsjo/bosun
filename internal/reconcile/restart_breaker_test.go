@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -347,5 +348,51 @@ func TestRunRestartBreaker(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, result.Tripped)
 		assert.Equal(t, 0, mockAPI.ContainerInspectCalls)
+	})
+
+	t.Run("partial inspect failure preserves the unobserved baseline", func(t *testing.T) {
+		inspectErr := errors.New("temporary inspect failure")
+		mockAPI := &dockertest.MockDockerAPI{
+			ContainerInspectFunc: func(_ context.Context, id string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+				if id == "test-web-1" {
+					return client.ContainerInspectResult{}, inspectErr
+				}
+				return client.ContainerInspectResult{
+					Container: container.InspectResponse{
+						ID:           fullID,
+						Name:         "/test-db-1",
+						RestartCount: 2,
+						State:        &container.State{Status: "running"},
+						Config:       &container.Config{Image: "postgres", Labels: map[string]string{}},
+						NetworkSettings: &container.NetworkSettings{
+							Networks: map[string]*network.EndpointSettings{},
+						},
+					},
+				}, nil
+			},
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+		actual := []ActualService{
+			{Name: "web", ContainerName: "test-web-1", State: "running"},
+			{Name: "db", ContainerName: "test-db-1", State: "running"},
+		}
+		webEntry := RestartTrackingEntry{
+			RestartCount:         3,
+			CheckedAt:            time.Now().Add(-15 * time.Minute),
+			BaselineRestartCount: 1,
+			BaselineAt:           time.Now().Add(-30 * time.Minute),
+		}
+		state := &DeployState{
+			RestartTracking: map[string]RestartTrackingEntry{
+				"web": webEntry,
+				"db":  {RestartCount: 2, CheckedAt: time.Now().Add(-5 * time.Minute)},
+			},
+		}
+
+		result, err := RunRestartBreaker(context.Background(), client, actual, state, 5, 10*time.Minute)
+
+		require.NoError(t, err)
+		assert.Equal(t, webEntry, result.Updated["web"])
+		assert.Contains(t, result.Updated, "db")
 	})
 }

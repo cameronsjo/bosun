@@ -472,6 +472,15 @@ func TestSaveState_RestartBreakerBaselineRoundTrip(t *testing.T) {
 
 	require.Contains(t, loaded.RestartTracking, "web")
 	assert.Equal(t, original.RestartTracking["web"], loaded.RestartTracking["web"])
+
+	// A daemon restart between sparse samples must not discard the accumulated
+	// run. Reaching the threshold after reload still trips even though the next
+	// observation is outside the nominal window.
+	now := checkedAt.Add(15 * time.Minute)
+	result := evaluateRestartBreaker(map[string]int{"web": 6}, loaded.RestartTracking, 5, 10*time.Minute, now)
+	assert.Equal(t, []string{"web"}, result.Tripped)
+	assert.Equal(t, baselineAt, result.Updated["web"].BaselineAt)
+	assert.Equal(t, 1, result.Updated["web"].BaselineRestartCount)
 }
 
 func TestLoadState_LegacyRestartBreakerEntryHasImplicitBaseline(t *testing.T) {
