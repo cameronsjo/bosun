@@ -16,7 +16,7 @@ as segments; one segment holds 160 GSM-7 septets or 70 UTF-16 code units.
 
 - Discord content is bounded while constructing the provider payload. Title,
   description, footer, field names, and field values respect their component
-  limits, and the aggregate text never exceeds 6000 characters.
+  limits, and the aggregate text never exceeds 6000 provider units.
 - Discord's documentation defines limits in characters but does not define an
   encoding unit. Bosun conservatively measures Discord budgets in UTF-16 code
   units, so a supplementary Unicode code point consumes two units and cannot be

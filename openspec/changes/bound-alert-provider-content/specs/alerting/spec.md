@@ -36,11 +36,11 @@ The provider SHALL accept HTTP 200 or 204 as success. The HTTP client SHALL use 
 
 - **WHEN** an alert contains a title, message, source, or metadata that exceeds an individual Discord embed limit
 - **THEN** each component is truncated to its provider limit with an ellipsis
-- **AND** the POSTed embed text totals no more than 6000 characters
+- **AND** the POSTed embed text totals no more than 6000 units
 
 #### Scenario: Discord aggregate budget is deterministic
 
-- **WHEN** metadata would push an otherwise valid embed beyond 6000 characters or 25 fields
+- **WHEN** metadata would push an otherwise valid embed beyond 6000 units or 25 fields
 - **THEN** fields are considered in sorted-key order and bounded or omitted to keep the embed valid
 - **AND** repeated sends of the same alert produce the same bounded embed content
 
