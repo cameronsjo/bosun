@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.8](https://github.com/cameronsjo/bosun/compare/v0.39.7...v0.39.8) (2026-08-23)
+
+
+### Bug Fixes
+
+* **daemon:** avoid false drift resolutions ([#509](https://github.com/cameronsjo/bosun/issues/509)) ([3552508](https://github.com/cameronsjo/bosun/commit/3552508ab98ea2adaa73406dd995018de5f40a71))
+* **reconcile:** allow zero health gate timeout ([#507](https://github.com/cameronsjo/bosun/issues/507)) ([97e81c5](https://github.com/cameronsjo/bosun/commit/97e81c52bc53b9dfd05fe7c10ba393310a602dd0))
+* **reconcile:** isolate hot-reload config slices ([#506](https://github.com/cameronsjo/bosun/issues/506)) ([d077ccc](https://github.com/cameronsjo/bosun/commit/d077ccc123b0a31ed4cb9b1b8df5c9723b998810))
+
 ## [0.39.7](https://github.com/cameronsjo/bosun/compare/v0.39.6...v0.39.7) (2026-08-23)
 
 
