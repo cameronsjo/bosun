@@ -226,6 +226,26 @@ func TestRunHealthGate_CriticalScope_UsesConfiguredPollInterval(t *testing.T) {
 func TestRunHealthGate_SkipGuards(t *testing.T) {
 	ctx := context.Background()
 
+	for _, timeout := range []time.Duration{0, -time.Second} {
+		t.Run(fmt.Sprintf("timeout %s disables before touching docker", timeout), func(t *testing.T) {
+			dockerClientCalls := 0
+			r := NewReconciler(&Config{
+				HealthGateScope:    HealthGateScopeCritical,
+				CriticalContainers: NewConfigField([]string{"x"}),
+				HealthGateTimeout:  timeout,
+			}, WithDockerClientFunc(func() *docker.Client {
+				dockerClientCalls++
+				return nil
+			}))
+
+			rb, err := r.runHealthGate(ctx, &DeployState{}, true, nil)
+
+			assert.False(t, rb)
+			assert.NoError(t, err)
+			assert.Zero(t, dockerClientCalls)
+		})
+	}
+
 	t.Run("off scope skips before touching docker", func(t *testing.T) {
 		r := NewReconciler(&Config{HealthGateScope: HealthGateScopeOff, CriticalContainers: NewConfigField([]string{"x"})})
 		rb, err := r.runHealthGate(ctx, &DeployState{}, true, nil)

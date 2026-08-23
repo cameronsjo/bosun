@@ -308,6 +308,11 @@ After each successful deployment, the reconciler performs an immediate drift che
 4. Updates drift results in the state file
 5. Logs warnings for any drift items (does not fail the reconciliation)
 
+The earlier health gate is a separate, rollback-capable check controlled by
+`health_gate_scope` and `BOSUN_HEALTH_GATE_TIMEOUT`. Its timeout defaults to
+`60s`; set `BOSUN_HEALTH_GATE_TIMEOUT=0` to disable the gate without changing
+the configured scope or container list.
+
 ### CLI Access
 
 ```bash
@@ -356,6 +361,7 @@ Status values: `clean` (no drift), `drifted` (items detected), `unknown` (no dep
 | `BOSUN_DRIFT_ALERT_COOLDOWN` | No | `1h` | Cooldown between repeated drift alerts per item |
 | `BOSUN_DRIFT_ALERT_DEBOUNCE` | No | `0` | Debounce window before first drift alert (0 = disabled) |
 | `BOSUN_DRIFT_RESOLVE_ALERTS` | No | `true` | Send "drift resolved" notifications |
+| `BOSUN_HEALTH_GATE_TIMEOUT` | No | `60s` | Health gate polling timeout (`0` disables the gate) |
 
 ### Command-Line Flags
 

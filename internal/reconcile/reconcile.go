@@ -187,7 +187,8 @@ type Config struct {
 	DriftIgnore ConfigField[[]DriftIgnoreRule]
 
 	// HealthGateTimeout is the maximum time to poll critical container health.
-	// Default 60s. Configurable via BOSUN_HEALTH_GATE_TIMEOUT.
+	// Default 60s; non-positive disables the gate. Configurable via
+	// BOSUN_HEALTH_GATE_TIMEOUT.
 	HealthGateTimeout time.Duration
 
 	// HealthGateScope selects which containers the post-compose-up health gate
@@ -1232,6 +1233,10 @@ func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState, loca
 	if scope == HealthGateScopeDeclared && len(r.declaredServices) == 0 {
 		return false, nil
 	}
+	if r.config.HealthGateTimeout <= 0 {
+		logger.Debug().Msg("Health gate skipped. Reason: timeout disabled")
+		return false, nil
+	}
 
 	if r.config.DryRun {
 		logger.Debug().Msg("Health gate skipped. Reason: dry run")
@@ -1256,17 +1261,12 @@ func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState, loca
 		return false, nil
 	}
 
-	timeout := r.config.HealthGateTimeout
-	if timeout == 0 {
-		timeout = 60 * time.Second
-	}
-
 	var gateErr error
 	switch scope {
 	case HealthGateScopeDeclared:
-		gateErr = r.checkDeclaredHealth(ctx, client, timeout)
+		gateErr = r.checkDeclaredHealth(ctx, client, r.config.HealthGateTimeout)
 	default: // HealthGateScopeCritical
-		gateErr = CheckCriticalContainerHealth(ctx, client, containers, timeout, r.healthCheckInterval())
+		gateErr = CheckCriticalContainerHealth(ctx, client, containers, r.config.HealthGateTimeout, r.healthCheckInterval())
 	}
 	if gateErr == nil {
 		return false, nil
