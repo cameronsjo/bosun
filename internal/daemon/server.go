@@ -30,6 +30,11 @@ const (
 	// maxWebhookBodySize is the maximum allowed size for webhook request bodies (1MB).
 	// This prevents denial-of-service attacks via oversized payloads.
 	maxWebhookBodySize = 1 * 1024 * 1024
+
+	// Bound request headers before authentication or handler execution. These
+	// limits apply consistently to the webhook, Unix socket, and TCP servers.
+	daemonReadHeaderTimeout = 5 * time.Second
+	daemonMaxHeaderBytes    = 32 << 10 // 32 KiB
 )
 
 // Server handles HTTP requests for webhooks and health checks.
@@ -72,10 +77,12 @@ func NewServer(d *Daemon) *Server {
 	mux.Handle("/metrics", s.requireMetricsAuth(s.metricsMiddleware(s.promHandler())))
 
 	s.server = &http.Server{
-		Handler:      s.loggingMiddleware(mux),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Handler:           s.loggingMiddleware(mux),
+		ReadHeaderTimeout: daemonReadHeaderTimeout,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    daemonMaxHeaderBytes,
 	}
 
 	return s
