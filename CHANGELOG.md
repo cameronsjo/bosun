@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.12](https://github.com/cameronsjo/bosun/compare/v0.39.11...v0.39.12) (2026-08-23)
+
+
+### Bug Fixes
+
+* **alert:** bound provider payload content ([#525](https://github.com/cameronsjo/bosun/issues/525)) ([04d5610](https://github.com/cameronsjo/bosun/commit/04d5610815976b4ebbf67243b5b424b55576acca))
+* **config:** support target path overrides in YAML ([#526](https://github.com/cameronsjo/bosun/issues/526)) ([e52b206](https://github.com/cameronsjo/bosun/commit/e52b2066a53c4855d1d80f2489d6bb52084cb178))
+* **reconcile:** isolate SSH retries from app stderr ([#523](https://github.com/cameronsjo/bosun/issues/523)) ([c1c07af](https://github.com/cameronsjo/bosun/commit/c1c07af4c9133c7c917936ec046ed7d70127249c))
+
 ## [0.39.11](https://github.com/cameronsjo/bosun/compare/v0.39.10...v0.39.11) (2026-08-23)
 
 
