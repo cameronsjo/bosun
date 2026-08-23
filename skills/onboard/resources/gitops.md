@@ -70,6 +70,15 @@ RFC3339 `lastmodified` timestamp, and at least one key recipient containing a
 non-empty encrypted data key. This keeps incomplete SOPS files from being
 misreported as Age key configuration failures.
 
+Decryption errors use sanitized operator categories: integrity verification
+failed, key unavailable, malformed encrypted data, or an unclassified
+decryption failure. An integrity error means restore the encrypted file from a
+trusted source or re-encrypt it; rotating the Age key does not repair corrupted
+ciphertext. `BOSUN_LOG_LEVEL=debug` adds sanitized category and file context,
+but Bosun never logs raw SOPS library errors or the decrypted MACs, encrypted
+values, key identifiers, and additional local paths they may contain. The
+requested secrets-file path remains in the surrounding error context.
+
 ### Deploy-Sync Invariants (stage 6 + stage 9)
 
 Bosun enforces two invariant gates that turn the GH#214 silent-success failure mode into a loud error:

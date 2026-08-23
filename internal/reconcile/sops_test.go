@@ -1,16 +1,32 @@
 package reconcile
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	sopslib "github.com/getsops/sops/v3"
+	sopsaes "github.com/getsops/sops/v3/aes"
+	sopsage "github.com/getsops/sops/v3/age"
+	sopsconfig "github.com/getsops/sops/v3/config"
+	sopsyaml "github.com/getsops/sops/v3/stores/yaml"
+	"github.com/getsops/sops/v3/version"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/cameronsjo/bosun/internal/log"
+)
+
+const (
+	testAgeRecipient = "age1lzd99uklcjnc0e7d860axevet2cz99ce9pq6tzuzd05l5nr28ams36nvun"
+	testAgeIdentity  = "AGE-SECRET-KEY-1G0Q5K9TV4REQ3ZSQRMTMG8NSWQGYT0T7TZ33RAZEE0GZYVZN0APSU24RK7"
 )
 
 func TestNewSOPSOps(t *testing.T) {
@@ -139,6 +155,7 @@ version=3.13.3
 		_, err := sops.Decrypt(context.Background(), path)
 		require.Error(t, err)
 		assert.NotContains(t, err.Error(), "sensitive implementation detail")
+		assert.ErrorIs(t, err, ErrSOPSDecryption)
 	})
 
 	t.Run("invalid decrypted data names its format", func(t *testing.T) {
@@ -163,6 +180,139 @@ version=3.13.3
 		assert.Contains(t, err.Error(), "failed to parse decrypted dotenv")
 		assert.NotContains(t, err.Error(), "TOP_SECRET_VALUE_WITHOUT_EQUALS")
 	})
+}
+
+func TestSOPSOps_DecryptTamperedFileReportsIntegrityWithoutLeaks(t *testing.T) {
+	path, encrypted := writeTamperedSOPSFixture(t)
+	t.Setenv("SOPS_AGE_KEY", testAgeIdentity)
+	t.Setenv("SOPS_AGE_KEY_FILE", "")
+
+	// Prove the fixture reaches the real go-sops MAC verification path rather
+	// than relying on a synthetic error string.
+	_, upstreamErr := NewSOPSOps().decryptFile(path, string(sopsFormatYAML))
+	require.Error(t, upstreamErr)
+	assert.Contains(t, strings.ToLower(upstreamErr.Error()), "integrity")
+	assert.Contains(t, strings.ToLower(upstreamErr.Error()), "expected mac")
+
+	_, err := NewSOPSOps().Decrypt(context.Background(), path)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrSOPSIntegrity)
+	assert.Contains(t, err.Error(), "restore it from a trusted source or re-encrypt it")
+
+	for _, sensitive := range []string{
+		"TOP_SECRET_PLAINTEXT",
+		"expected mac",
+		"got ",
+		testAgeIdentity,
+		testAgeRecipient,
+		firstEncryptedValue(t, encrypted),
+	} {
+		assert.NotContains(t, err.Error(), sensitive)
+	}
+}
+
+func TestSOPSOps_DecryptDebugLogUsesSanitizedCategory(t *testing.T) {
+	path, _ := writeTamperedSOPSFixture(t)
+	t.Setenv("SOPS_AGE_KEY", testAgeIdentity)
+	t.Setenv("SOPS_AGE_KEY_FILE", "")
+	rawErr := errors.New(`Failed to verify data integrity. expected mac "DECRYPTED_MAC_SECRET", got "COMPUTED_MAC_SECRET" at /private/key/path`)
+	sops := &SOPSOps{decryptFile: func(string, string) ([]byte, error) {
+		return nil, rawErr
+	}}
+
+	var decryptErr error
+	logs := captureSOPSDebugLogs(t, func() {
+		_, decryptErr = sops.Decrypt(context.Background(), path)
+	})
+
+	require.Error(t, decryptErr)
+	assert.ErrorIs(t, decryptErr, ErrSOPSIntegrity)
+	assert.Contains(t, logs, "SOPS decryption failed")
+	assert.Contains(t, logs, ErrSOPSIntegrity.Error())
+	assert.Contains(t, logs, path)
+	for _, sensitive := range []string{"DECRYPTED_MAC_SECRET", "COMPUTED_MAC_SECRET", "expected mac", "/private/key/path"} {
+		assert.NotContains(t, logs, sensitive)
+	}
+}
+
+func captureSOPSDebugLogs(t *testing.T, fn func()) string {
+	t.Helper()
+
+	reader, writer, err := os.Pipe()
+	require.NoError(t, err)
+	originalStdout := os.Stdout
+	restored := false
+	t.Cleanup(func() {
+		if restored {
+			return
+		}
+		_ = writer.Close()
+		os.Stdout = originalStdout
+		log.Init(nil)
+		_ = reader.Close()
+	})
+	os.Stdout = writer
+	log.Init(&log.Options{Format: log.FormatJSON, Level: log.DebugLevel, LevelSet: true})
+
+	fn()
+
+	closeErr := writer.Close()
+	os.Stdout = originalStdout
+	log.Init(nil)
+	restored = true
+	require.NoError(t, closeErr)
+	output, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	return string(output)
+}
+
+func writeTamperedSOPSFixture(t *testing.T) (string, []byte) {
+	t.Helper()
+
+	masterKey, err := sopsage.MasterKeyFromRecipient(testAgeRecipient)
+	require.NoError(t, err)
+	lastModified := time.Date(2026, time.August, 23, 0, 0, 0, 0, time.UTC)
+	tree := sopslib.Tree{
+		Branches: sopslib.TreeBranches{{
+			{Key: "password", Value: "TOP_SECRET_PLAINTEXT"},
+			{Key: "marker_unencrypted", Value: "original"},
+		}},
+		Metadata: sopslib.Metadata{
+			KeyGroups:         []sopslib.KeyGroup{{masterKey}},
+			LastModified:      lastModified,
+			UnencryptedSuffix: "_unencrypted",
+			Version:           version.Version,
+		},
+	}
+
+	dataKey := bytes.Repeat([]byte{0x42}, 32)
+	require.NoError(t, masterKey.Encrypt(dataKey))
+	cipher := sopsaes.NewCipher()
+	mac, err := tree.Encrypt(dataKey, cipher)
+	require.NoError(t, err)
+	tree.Metadata.MessageAuthenticationCode, err = cipher.Encrypt(mac, dataKey, lastModified.Format(time.RFC3339))
+	require.NoError(t, err)
+
+	storesConfig := sopsconfig.NewStoresConfig()
+	encrypted, err := sopsyaml.NewStore(&storesConfig.YAML).EmitEncryptedFile(tree)
+	require.NoError(t, err)
+	require.NotContains(t, string(encrypted), "TOP_SECRET_PLAINTEXT")
+
+	tampered := bytes.Replace(encrypted, []byte("marker_unencrypted: original"), []byte("marker_unencrypted: tampered"), 1)
+	require.NotEqual(t, encrypted, tampered, "fixture mutation must change authenticated data")
+	path := filepath.Join(t.TempDir(), "secrets.sops.yaml")
+	require.NoError(t, os.WriteFile(path, tampered, 0o600))
+	return path, encrypted
+}
+
+func firstEncryptedValue(t *testing.T, encrypted []byte) string {
+	t.Helper()
+	start := bytes.Index(encrypted, []byte("ENC[AES256_GCM"))
+	require.NotEqual(t, -1, start)
+	end := bytes.IndexByte(encrypted[start:], '\n')
+	require.NotEqual(t, -1, end)
+	return string(encrypted[start : start+end])
 }
 
 func TestDecodeSOPSPlaintext_Errors(t *testing.T) {
@@ -629,10 +779,12 @@ func TestSOPSOps_CheckAgeKey(t *testing.T) {
 
 func TestSanitizeDecryptError(t *testing.T) {
 	tests := []struct {
-		name     string
-		err      error
-		contains string
-		isNil    bool
+		name        string
+		err         error
+		want        error
+		contains    string
+		notContains []string
+		isNil       bool
 	}{
 		{
 			name:  "nil error returns nil",
@@ -640,49 +792,46 @@ func TestSanitizeDecryptError(t *testing.T) {
 			isNil: true,
 		},
 		{
-			name:     "could not find pattern passes through",
-			err:      errors.New("could not find decryption key"),
-			contains: "could not find decryption key",
+			name:        "MAC mismatch is an integrity error",
+			err:         errors.New(`Failed to verify data integrity. expected mac "DECRYPTED_MAC_SECRET", got "COMPUTED_MAC_SECRET"`),
+			want:        ErrSOPSIntegrity,
+			contains:    "corrupted or modified",
+			notContains: []string{"DECRYPTED_MAC_SECRET", "COMPUTED_MAC_SECRET", "expected mac"},
 		},
 		{
-			name:     "no key found pattern passes through",
-			err:      errors.New("no key found in key ring"),
-			contains: "no key found",
+			name:        "encrypted MAC authentication failure is an integrity error",
+			err:         errors.New("Failed to decrypt original mac: Could not decrypt with AES_GCM: cipher: message authentication failed"),
+			want:        ErrSOPSIntegrity,
+			contains:    "restore it from a trusted source",
+			notContains: []string{"AES_GCM", "message authentication failed"},
 		},
 		{
-			name:     "failed to get pattern passes through",
-			err:      errors.New("failed to get data key"),
-			contains: "failed to get",
+			name:        "data key recovery failure is a key error",
+			err:         errors.New("Failed to get the data key required to decrypt the SOPS file: no identity matched AGE-SECRET-KEY-PRIVATE at /private/keys.txt"),
+			want:        ErrSOPSKeyUnavailable,
+			contains:    "configured Age identity matches",
+			notContains: []string{"AGE-SECRET-KEY-PRIVATE", "/private/keys.txt", "no identity matched"},
 		},
 		{
-			name:     "cannot find pattern passes through",
-			err:      errors.New("Cannot find the sops config"),
-			contains: "Cannot find",
+			name:        "key file access failure is a key error",
+			err:         errors.New("failed to load age identities: permission denied: /Users/operator/.config/sops/age/keys.txt"),
+			want:        ErrSOPSKeyUnavailable,
+			contains:    "key file is readable",
+			notContains: []string{"permission denied", "/Users/operator"},
 		},
 		{
-			name:     "key not found pattern passes through",
-			err:      errors.New("key not found in keyring"),
-			contains: "key not found",
+			name:        "malformed encrypted value is a format error",
+			err:         errors.New("Error walking tree: Input string ENC[AES256_GCM,data:CIPHERTEXT_SECRET] does not match sops' data format"),
+			want:        ErrMalformedSOPSData,
+			contains:    "encrypted values or metadata are invalid",
+			notContains: []string{"CIPHERTEXT_SECRET", "Input string"},
 		},
 		{
-			name:     "permission denied pattern passes through",
-			err:      errors.New("Permission denied: unable to read key"),
-			contains: "Permission denied",
-		},
-		{
-			name:     "no such file pattern passes through",
-			err:      errors.New("no such file or directory"),
-			contains: "no such file",
-		},
-		{
-			name:     "unknown error returns generic message",
-			err:      errors.New("AGE-SECRET-KEY-1QQQQQQQQQQQQ was used to encrypt"),
-			contains: "decryption failed - check age key configuration",
-		},
-		{
-			name:     "long safe error is truncated",
-			err:      errors.New("could not find " + strings.Repeat("x", 250)),
-			contains: "... (truncated)",
+			name:        "unknown error is generic",
+			err:         errors.New("AGE-SECRET-KEY-PRIVATE decrypted TOP_SECRET_VALUE from ENC[CIPHERTEXT_SECRET] at /private/repo/secrets.yaml"),
+			want:        ErrSOPSDecryption,
+			contains:    "validate the encrypted file with SOPS",
+			notContains: []string{"AGE-SECRET-KEY-PRIVATE", "TOP_SECRET_VALUE", "CIPHERTEXT_SECRET", "/private/repo"},
 		},
 	}
 
@@ -694,7 +843,11 @@ func TestSanitizeDecryptError(t *testing.T) {
 				return
 			}
 			require.Error(t, result)
+			assert.ErrorIs(t, result, tt.want)
 			assert.Contains(t, result.Error(), tt.contains)
+			for _, value := range tt.notContains {
+				assert.NotContains(t, result.Error(), value)
+			}
 		})
 	}
 }

@@ -465,6 +465,14 @@ Before decryption, the system validates:
 4. Contains a non-empty MAC and a valid RFC3339 `lastmodified` timestamp
 5. Contains at least one key recipient with a non-empty encrypted data key
 
+After structural validation, decryption failures are reported as one of four
+sanitized categories: integrity verification, key unavailable, malformed
+encrypted data, or an unclassified decryption failure. Integrity failures tell
+operators to restore or re-encrypt the file rather than rotate an unrelated
+key. Raw SOPS errors are not returned or logged because they can contain
+decrypted MACs, encrypted values, key identifiers, or additional local paths;
+the requested secrets-file path remains in the surrounding error context.
+
 ### Decryption Flow
 
 ```
@@ -745,7 +753,9 @@ cfg.BackupsToKeep = 5  // Default
 
 - Missing key files provide setup instructions
 - Invalid SOPS files suggest encryption command
-- Decryption errors include file path and sops stderr
+- Decryption errors include the secrets-file path and a sanitized category;
+  integrity failures are distinct from key and malformed-data failures
+- Raw SOPS errors are never returned or logged, including at debug level
 
 ### Template Failures
 

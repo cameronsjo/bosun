@@ -367,26 +367,26 @@ if err := syscall.Flock(int(fd.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != n
 
 ## 8. Security
 
-### 8.1 CRITICAL: Secrets Could Appear in Logs
+### 8.1 RESOLVED: SOPS Errors Could Expose Secrets in Logs
 
-**File:** `internal/internal/reconcile/sops.go:27`
+**File:** `internal/reconcile/sops.go`
 
-**Finding (CRITICAL):** SOPS stderr is included in error messages:
+**Previous Finding (CRITICAL):** Raw SOPS errors were included in returned error
+messages and could reach logs. Those errors can contain decrypted MACs,
+encrypted values, key identifiers, and additional local paths.
 
-```go
-return nil, fmt.Errorf("sops decrypt failed for %s: %w: %s", file, err, stderr.String())
-```
-
-**Impact:** If SOPS outputs partial decrypted content in stderr (unlikely but possible), secrets could end up in logs.
+**Resolution:** SOPS decryption now runs in-process and replaces every upstream
+decryption error with a static category: integrity verification, key
+unavailable, malformed encrypted data, or an unclassified decryption failure.
+The raw error is neither returned nor logged at any level; only the sanitized
+category and the requested secrets-file path remain available to operators.
 
 **Additional Locations:**
 - Template rendering errors could include secret values
 - Rsync verbose output could show file contents
 
-**Recommendation:**
-1. Sanitize all stderr before logging
-2. Never log decrypted secret values
-3. Consider structured logging with explicit field allowlist
+**Status:** Resolved. Regression coverage exercises a real MAC-tamper path and
+asserts that returned errors and debug logs exclude the upstream diagnostics.
 
 ### 8.2 Staging File Retention
 
