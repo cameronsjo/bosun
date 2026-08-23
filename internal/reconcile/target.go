@@ -124,7 +124,7 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 		cp.CriticalContainers.Value = cloneSlice(cp.CriticalContainers.Value)
 	}
 	if t.PostSyncHooks != nil && !cp.PostSyncHooks.FromEnv() {
-		if c.TargetsFromEnv {
+		if c.targetHooksFromEnv(t) {
 			// A target-specific hook list supplied by BOSUN_TARGETS is an
 			// authoritative environment replacement, including explicit [].
 			// Preserve that ownership on the per-target config so repo reloads
@@ -152,6 +152,21 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 	}
 
 	return &cp
+}
+
+// targetHooksFromEnv reports whether t carries an explicit hook override from
+// BOSUN_TARGETS. ResolveTargets materializes inherited root hooks onto the
+// implicit default Target, so TargetsFromEnv alone is insufficient: an empty
+// BOSUN_TARGETS array and a lone default target with no hook key must continue
+// to inherit file-owned root hooks and accept later repo reloads.
+func (c *Config) targetHooksFromEnv(t Target) bool {
+	if !c.TargetsFromEnv || t.PostSyncHooks == nil {
+		return false
+	}
+	if !t.IsDefault() {
+		return true
+	}
+	return len(c.Targets) == 1 && c.Targets[0].IsDefault() && c.Targets[0].PostSyncHooks != nil
 }
 
 func cloneSlice[T any](values []T) []T {

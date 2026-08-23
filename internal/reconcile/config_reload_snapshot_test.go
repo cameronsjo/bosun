@@ -209,6 +209,63 @@ func TestConfigForTargetEnvironmentHookOwnership(t *testing.T) {
 	assert.True(t, r.config.PostSyncHooks.FromEnv())
 }
 
+func TestConfigForTargetEnvironmentTopologyDoesNotClaimInheritedRootHooks(t *testing.T) {
+	tests := []struct {
+		name    string
+		targets []Target
+	}{
+		{name: "explicit empty target array", targets: []Target{}},
+		{name: "lone default without hook override", targets: []Target{{Name: DefaultTargetName}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := DefaultConfig()
+			base.Targets = tt.targets
+			base.TargetsFromEnv = true
+			base.PostSyncHooks = FileConfigField([]PostSyncHook{restartHook("root-old")})
+
+			resolved, err := base.ResolveTargets()
+			require.NoError(t, err)
+			require.Len(t, resolved, 1)
+			targetConfig := base.ConfigForTarget(resolved[0])
+			assert.False(t, targetConfig.PostSyncHooks.FromEnv(),
+				"environment-owned topology without a hook key must not claim inherited root hooks")
+			targetConfig.ConfigReloader = func(string) (*ReloadedConfig, error) {
+				return &ReloadedConfig{PostSyncHooks: []PostSyncHook{restartHook("root-new")}}, nil
+			}
+
+			r := NewReconciler(targetConfig)
+			require.NoError(t, r.reloadProjectConfig())
+			require.Len(t, r.config.PostSyncHooks.Value, 1)
+			assert.Equal(t, "root-new", r.config.PostSyncHooks.Value[0].Container)
+			assert.Equal(t, SourceFile, r.config.PostSyncHooks.Source)
+		})
+	}
+}
+
+func TestConfigForTargetExplicitEnvironmentDefaultHooksRemainAuthoritative(t *testing.T) {
+	base := DefaultConfig()
+	base.Targets = []Target{{Name: DefaultTargetName, PostSyncHooks: []PostSyncHook{}}}
+	base.TargetsFromEnv = true
+	base.PostSyncHooks = FileConfigField([]PostSyncHook{restartHook("root-old")})
+
+	resolved, err := base.ResolveTargets()
+	require.NoError(t, err)
+	require.Len(t, resolved, 1)
+	targetConfig := base.ConfigForTarget(resolved[0])
+	require.True(t, targetConfig.PostSyncHooks.FromEnv())
+	targetConfig.ConfigReloader = func(string) (*ReloadedConfig, error) {
+		return &ReloadedConfig{PostSyncHooks: []PostSyncHook{restartHook("root-new")}}, nil
+	}
+
+	r := NewReconciler(targetConfig)
+	require.NoError(t, r.reloadProjectConfig())
+	assert.Empty(t, r.config.PostSyncHooks.Value)
+	assert.NotNil(t, r.config.PostSyncHooks.Value)
+	assert.Equal(t, SourceEnv, r.config.PostSyncHooks.Source)
+}
+
 func TestReloadProjectConfigOwnsNestedHookSlices(t *testing.T) {
 	reloaded := &ReloadedConfig{
 		PostSyncHooks: []PostSyncHook{{
@@ -271,6 +328,33 @@ func TestReloadProjectConfigLoggingIsSourceAwareAndRedacted(t *testing.T) {
 	assert.Contains(t, output, `"hooks_source":"file"`)
 	assert.Contains(t, output, `"hooks":1`)
 	assert.Contains(t, output, `"target":"nas"`)
+	assert.NotContains(t, output, secretArgument)
+}
+
+func TestReloadProjectConfigLoadErrorLoggingRedactsParserDetail(t *testing.T) {
+	var logs bytes.Buffer
+	logpkg.Init(&logpkg.Options{
+		Format:            logpkg.FormatJSON,
+		Level:             logpkg.DebugLevel,
+		LevelSet:          true,
+		AdditionalWriters: []io.Writer{&logs},
+	})
+	t.Cleanup(func() { logpkg.Init(nil) })
+
+	const secretArgument = "super-secret-malformed-command"
+	cfg := &Config{
+		PostSyncHooks: FileConfigField([]PostSyncHook{restartHook("old")}),
+		ConfigReloader: func(string) (*ReloadedConfig, error) {
+			return nil, fmt.Errorf("cannot unmarshal command %q into []string", secretArgument)
+		},
+	}
+	r := NewReconciler(cfg)
+	require.NoError(t, r.reloadProjectConfig())
+
+	output := logs.String()
+	assert.Contains(t, output, `"hooks_outcome":"retained"`)
+	assert.Contains(t, output, `"hooks_source":"file"`)
+	assert.Contains(t, output, "error detail redacted")
 	assert.NotContains(t, output, secretArgument)
 }
 

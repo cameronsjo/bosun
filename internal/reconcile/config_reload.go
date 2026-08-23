@@ -34,10 +34,9 @@ func (r *Reconciler) reloadProjectConfig() error {
 			return err
 		}
 		logger.Warn().
-			Err(err).
 			Str("hooks_outcome", "retained").
 			Str("hooks_source", configSourceName(r.config.PostSyncHooks.Source)).
-			Msg("Failed to reload project config from repo, keeping existing config")
+			Msg("Failed to reload project config from repo, keeping existing config; error detail redacted")
 		return nil
 	}
 	if reloaded == nil {
