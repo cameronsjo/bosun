@@ -135,6 +135,7 @@ func TestRunHealthGate_DeclaredScope_RollsBackAndThrottlesAlerts(t *testing.T) {
 	err := r.Run(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "health gate failed")
+	assertPrivateStagingTree(t, r.config.StagingDir)
 	assert.False(t, *restartCalled, "post-sync hooks must be skipped when a rollback ran")
 	saved := LoadState(stateFile)
 	assert.True(t, saved.NeedsRedeploy, "failed gate leaves the deploy incomplete for retry")

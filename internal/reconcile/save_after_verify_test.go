@@ -105,7 +105,7 @@ func dockerListHealthyStub(_ context.Context, _ client.ContainerListOptions) (cl
 }
 
 func TestRun_LocalVerifyFailure_BreakerAndAlert(t *testing.T) {
-	r, _, alerter, stateFile := buildVerifyGateReconciler(t, dockerListError, "local")
+	r, cfg, alerter, stateFile := buildVerifyGateReconciler(t, dockerListError, "local")
 
 	var sawVerifyFailure, sawBreaker bool
 	for cycle := 1; cycle <= 4; cycle++ {
@@ -123,6 +123,9 @@ func TestRun_LocalVerifyFailure_BreakerAndAlert(t *testing.T) {
 			"a failed verification must never record the commit as deployed (cycle %d)", cycle)
 		assert.Equal(t, 0, state.DeployCount, "no successful deploy may be counted (cycle %d)", cycle)
 		assert.True(t, state.NeedsRedeploy, "NeedsRedeploy must stay set so the next cycle retries (cycle %d)", cycle)
+		if cycle == 1 {
+			assertPrivateStagingTree(t, cfg.StagingDir)
+		}
 	}
 
 	assert.True(t, sawVerifyFailure, "early cycles must fail with a health-verification error")

@@ -385,6 +385,9 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		// name aborts instead of silently dropping the target.
 		ui.Fatal("Target resolution failed: %v", targetsErr)
 	}
+	if err := reconcile.PreflightStagingEvidence(ctx, cfg, targets); err != nil {
+		ui.Fatal("Staging evidence preflight failed: %v", err)
+	}
 	if reconcileTarget != "" {
 		var found bool
 		for _, t := range targets {

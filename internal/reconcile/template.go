@@ -88,14 +88,14 @@ func (t *TemplateOps) ExecuteTemplate(_ context.Context, templateFile, outputFil
 		return fmt.Errorf("failed to close temp file for %s: %w", outputFile, err)
 	}
 
-	// Set permissions before rename
-	if err := os.Chmod(tmpPath, 0644); err != nil {
-		return fmt.Errorf("failed to set permissions on %s: %w", outputFile, err)
-	}
-
-	// Atomic rename - either succeeds completely or fails, no partial writes
+	// Keep the secret-bearing payload at CreateTemp's private 0600 mode until
+	// the atomic rename. The published file can then adopt the established
+	// render/deploy mode without exposing the temporary payload beforehand.
 	if err := os.Rename(tmpPath, outputFile); err != nil {
 		return fmt.Errorf("failed to rename temp file to %s: %w", outputFile, err)
+	}
+	if err := os.Chmod(outputFile, 0644); err != nil {
+		return fmt.Errorf("failed to set permissions on %s: %w", outputFile, err)
 	}
 
 	return nil

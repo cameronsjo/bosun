@@ -340,6 +340,7 @@ func TestRun_HealthGateRollback_RevertsFullTree(t *testing.T) {
 	err := r.Run(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "health gate failed")
+	assertPrivateStagingTree(t, cfg.StagingDir)
 
 	// Full-tree revert: BOTH the appdata config and the compose file are back to
 	// their backed-up (OLD) content — the config revert is the #445 widening.

@@ -192,7 +192,12 @@ targets:
     secrets_scope: media
 ```
 
-Each named target gets isolated defaults: `deploy-state-<name>.json`, `<staging>/<name>/`, and `reconcile-<name>.lock`. Set `state_file` or `staging_dir` when a target needs an exact path instead. A lone `name: default` target may also override these paths while retaining the legacy default lock; a `default` entry in a multi-target list is rejected. Targets are reconciled sequentially; failure on one does not block others.
+Each named target gets isolated defaults: `deploy-state-<name>.json`, `<staging>/<name>/`, and `reconcile-<name>.lock`. Set `state_file` or `staging_dir` when a target needs an exact path instead. A lone `name: default` target may also override these paths while retaining the legacy default lock; a `default` entry in a multi-target list is rejected. Effective staging paths must remain canonically disjoint: equal paths and ancestor/descendant overlaps are rejected for the entire target set, including overlaps reached through an existing symlinked ancestor. Targets are reconciled sequentially; failure on one does not block others.
+
+Treat every effective `staging_dir` as secret-bearing storage. A failed render or
+later pipeline failure can retain plaintext diagnostic evidence in that one slot;
+Bosun restricts retained directories to `0700` and regular files to `0600` and
+replaces the slot on the next render. Dry runs retain the secured render too.
 
 The daemon resolves target identity, host, and paths from its startup configuration. Restart the daemon after adding or removing targets or changing `target_host`, appdata paths, `state_file`, or `staging_dir`; only per-target operational overrides such as hooks, sync paths, critical containers, and `project_name` hot-reload from the pulled repository.
 
@@ -317,7 +322,7 @@ Used by `bosun daemon` and `bosun reconcile`:
 | `BOSUN_GIT_USERNAME` | | Private HTTPS Git Basic-auth username; set with `BOSUN_GIT_TOKEN` |
 | `BOSUN_GIT_TOKEN` | | Private HTTPS Git Basic-auth password/token; set with `BOSUN_GIT_USERNAME` |
 | `REPO_DIR` | `/app/repo` | Local clone directory |
-| `STAGING_DIR` | `/app/staging` | Staging directory |
+| `STAGING_DIR` | `/app/staging` | Secret-bearing rendered staging and single-slot failure evidence directory; target-effective paths must be disjoint |
 | `BACKUP_DIR` | `/app/backups` | Backup directory |
 | `LOG_DIR` | `/app/logs` | Log directory |
 | `LOCAL_APPDATA` | `/mnt/appdata` | Local appdata path |

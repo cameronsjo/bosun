@@ -230,7 +230,11 @@ func (c *Config) ResolveTargets() ([]Target, error) {
 
 	if len(c.Targets) > 0 {
 		if len(c.Targets) == 1 && c.Targets[0].IsDefault() {
-			return []Target{c.implicitDefaultTarget(c.Targets[0])}, nil
+			defaults := []Target{c.implicitDefaultTarget(c.Targets[0])}
+			if err := ValidateStagingEvidenceTargets(c, defaults); err != nil {
+				return nil, err
+			}
+			return defaults, nil
 		}
 
 		// Validate target names and reject duplicates to prevent path collisions.
@@ -256,12 +260,19 @@ func (c *Config) ResolveTargets() ([]Target, error) {
 			if err := c.validateTargetResourceCollisions(valid); err != nil {
 				return nil, err
 			}
+			if err := ValidateStagingEvidenceTargets(c, valid); err != nil {
+				return nil, err
+			}
 			return valid, nil
 		}
 		// All configured targets had invalid names — fall through to implicit default.
 		log.Warn().Int("configured", len(c.Targets)).Msg("All configured targets have invalid names, falling back to default target")
 	}
-	return []Target{c.implicitDefaultTarget(Target{})}, nil
+	defaults := []Target{c.implicitDefaultTarget(Target{})}
+	if err := ValidateStagingEvidenceTargets(c, defaults); err != nil {
+		return nil, err
+	}
+	return defaults, nil
 }
 
 type targetResourceKey struct {
