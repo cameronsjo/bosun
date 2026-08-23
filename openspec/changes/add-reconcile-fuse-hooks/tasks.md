@@ -31,8 +31,8 @@
 
 ## 6. Post-write verification propagation (#282)
 
-- [ ] 6.1 In `CopyFileIfChanged` (`fileutil.go:217-221`) / `deploy.go:314-321`, ensure a successful rename whose post-write verification fails still records the path in the change set (or surfaces a hard error) — never silently omits it
-- [ ] 6.2 Tests: simulated verification failure still results in the path being hook-eligible (not skipped on retry)
+- [x] 6.1 In `CopyFileIfChanged` (`fileutil.go:217-221`) / `deploy.go:314-321`, ensure a successful rename whose post-write verification fails still records the path in the change set (or surfaces a hard error) — never silently omits it
+- [x] 6.2 Tests: simulated verification failure still results in the path being hook-eligible (not skipped on retry)
 
 ## 7. Hot-reload removal semantics (#267 / #268)
 
