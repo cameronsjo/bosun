@@ -20,6 +20,11 @@ import (
 // a failure.
 var ErrSymlinkSkipped = errors.New("symlink skipped")
 
+// ErrPostWriteVerification marks a copy that was renamed into place but could
+// not be verified afterward. Callers must treat the destination as written for
+// change tracking while still surfacing the error.
+var ErrPostWriteVerification = errors.New("post-write verification failed")
+
 // warnSymlinkSkipped emits a structured warning when a symlink is encountered
 // during a file copy operation and will be skipped.
 func warnSymlinkSkipped(path string) {
@@ -212,10 +217,19 @@ func ContentEqual(path string, srcHash [sha256.Size]byte) (bool, error) {
 
 // CopyFileIfChanged copies src to dst only if the content differs.
 // Returns true if the file was written, false if skipped (content identical).
+// A post-write verification failure returns true together with
+// ErrPostWriteVerification because the atomic rename already happened.
 // Uses SHA-256 content comparison to avoid unnecessary writes on FUSE filesystems.
 // Includes a size-based confidence check to catch FUSE stale-read scenarios where
 // the cached hash appears to match but the actual file content has diverged.
 func CopyFileIfChanged(src, dst string) (bool, error) {
+	return copyFileIfChanged(src, dst, FileHash)
+}
+
+// copyFileIfChanged accepts the post-write hash operation explicitly so tests
+// can reproduce a verification failure after the atomic rename without a
+// package-global fault-injection seam.
+func copyFileIfChanged(src, dst string, verifyHash func(string) ([sha256.Size]byte, error)) (bool, error) {
 	srcHash, err := FileHash(src)
 	if err != nil {
 		return false, fmt.Errorf("hash source: %w", err)
@@ -290,11 +304,11 @@ func CopyFileIfChanged(src, dst string) (bool, error) {
 	// On FUSE mounts, the atomic rename may not immediately invalidate cached handles.
 	verifyLogger := log.Component(log.ComponentReconcile)
 	verifyLogger.Debug().Str(log.FieldPath, dst).Msg("Post-write verification: re-reading destination hash")
-	dstHash, verifyErr := FileHash(dst)
+	dstHash, verifyErr := verifyHash(dst)
 	if verifyErr != nil {
-		return false, fmt.Errorf("post-write verification failed: cannot re-read destination %s: %w", dst, verifyErr)
+		return true, fmt.Errorf("%w: cannot re-read destination %s: %w", ErrPostWriteVerification, dst, verifyErr)
 	} else if dstHash != srcHash {
-		return false, fmt.Errorf("post-write verification failed: destination hash mismatch after write (possible FUSE cache staleness): %s", dst)
+		return true, fmt.Errorf("%w: destination hash mismatch after write (possible FUSE cache staleness): %s", ErrPostWriteVerification, dst)
 	}
 
 	verifyLogger.Debug().
@@ -322,9 +336,14 @@ func sizesDiffer(a, b string) bool {
 
 // CopyDirIfChanged recursively copies a directory from src to dst,
 // skipping files whose content has not changed. Returns relative paths
-// of files that were actually written.
+// of files that were actually written, including a final file whose atomic
+// rename succeeded before post-write verification failed.
 // Symlinks are skipped with a warning rather than causing an error.
 func CopyDirIfChanged(src, dst string) ([]string, error) {
+	return copyDirIfChanged(src, dst, CopyFileIfChanged)
+}
+
+func copyDirIfChanged(src, dst string, copyFile func(src, dst string) (bool, error)) ([]string, error) {
 	var written []string
 	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -346,12 +365,12 @@ func CopyDirIfChanged(src, dst string) ([]string, error) {
 			return os.MkdirAll(dstPath, 0755)
 		}
 
-		changed, err := CopyFileIfChanged(path, dstPath)
-		if err != nil {
-			return err
-		}
+		changed, err := copyFile(path, dstPath)
 		if changed {
 			written = append(written, relPath)
+		}
+		if err != nil {
+			return err
 		}
 		return nil
 	})

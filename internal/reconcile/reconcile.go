@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/cameronsjo/bosun/internal/docker"
+	"github.com/cameronsjo/bosun/internal/fileutil"
 	"github.com/cameronsjo/bosun/internal/log"
 	sentrypkg "github.com/cameronsjo/bosun/internal/sentry"
 	"github.com/cameronsjo/bosun/internal/telemetry"
@@ -746,6 +747,15 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 		finishSpan(err)
 		telemetry.SpanError(otelDeploySpan, err)
 		otelDeploySpan.End()
+		// The destination rename completed before post-write verification
+		// failed. Run hooks for those recorded paths, but keep the deployment
+		// failed so NeedsRedeploy and the circuit breaker retain their normal
+		// semantics.
+		if errors.Is(err, fileutil.ErrPostWriteVerification) &&
+			deployResult != nil && r.dockerClientFn != nil && !r.config.DryRun &&
+			len(r.config.PostSyncHooks.Value) > 0 {
+			r.runPostSyncHooksWithSpan(ctx, state.LastDeployedCommit, after, deployResult, localDeploy)
+		}
 		r.sendThrottledFailureAlert(ctx, state, err.Error())
 		return fmt.Errorf("deployment failed: %w", err)
 	}
@@ -1930,7 +1940,9 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 		prevForTarget := filterManagedForTarget(prevManaged, t.TargetPath)
 		if t.IsDir {
 			if err := r.deploy.DeployLocal(ctx, src, dst, result, prevForTarget); err != nil {
-				return nil, err
+				result.PrefixLatest(snapshot, t.RelPath)
+				result.PrefixLatestDeleted(deletedSnapshot, t.RelPath)
+				return result, err
 			}
 			if err := verifyTarget(src, dst, result.WrittenFiles[snapshot:]); err != nil {
 				return nil, err
@@ -1948,7 +1960,9 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 				}
 			}
 			if err := r.deploy.deployLocalFileManaged(ctx, src, dst, result, prevForTarget); err != nil {
-				return nil, err
+				result.PrefixLatest(snapshot, filepath.Dir(t.RelPath))
+				result.PrefixLatestDeleted(deletedSnapshot, t.RelPath)
+				return result, err
 			}
 			// DeployLocalFile records filepath.Base, so verify against dst's
 			// parent dir and prefix t.RelPath with its dir for hook matching.
@@ -1977,7 +1991,9 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 		deletedSnapshot := len(result.DeletedFiles)
 		prevForCompose := filterManagedForTarget(prevManaged, "compose")
 		if err := r.deploy.DeployLocal(ctx, composeStaging, composeTarget, result, prevForCompose); err != nil {
-			return nil, err
+			result.PrefixLatest(snapshot, "compose")
+			result.PrefixLatestDeleted(deletedSnapshot, "compose")
+			return result, err
 		}
 		if err := verifyTarget(composeStaging, composeTarget, result.WrittenFiles[snapshot:]); err != nil {
 			return nil, err

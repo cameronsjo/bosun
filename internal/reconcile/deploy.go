@@ -42,6 +42,9 @@ type DeployOps struct {
 	// copyDirIfChangedFn fault-injects post-transition copy failures in tests.
 	// Nil uses fileutil.CopyDirIfChanged.
 	copyDirIfChangedFn func(src, dst string) ([]string, error)
+	// copyFileIfChangedFn fault-injects single-file copy failures in tests.
+	// Nil uses fileutil.CopyFileIfChanged.
+	copyFileIfChangedFn func(src, dst string) (bool, error)
 }
 
 // composeUpTimeout returns the configured timeout or the default.
@@ -217,6 +220,9 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 			copyFn = fileutil.CopyDirIfChanged
 		}
 		written, err := copyFn(sourceDir, targetDir)
+		if result != nil {
+			result.AddWritten(written...)
+		}
 		if err != nil {
 			logger.Error().Err(err).Msg("Failed to deploy locally. Reason: content-hash sync failed")
 			return rollback(fmt.Errorf("copy with content hash: %w", err))
@@ -237,7 +243,6 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 		if result != nil {
 			result.AddWritten(transitions.WrittenFiles()...)
 			result.AddDeleted(transitions.DeletedFiles()...)
-			result.AddWritten(written...)
 		}
 
 		logger.Info().
@@ -1390,16 +1395,17 @@ func (d *DeployOps) deployLocalFileManaged(ctx context.Context, sourceFile, targ
 	}
 
 	if d.ContentHashSync {
-		changed, err := fileutil.CopyFileIfChanged(sourceFile, targetFile)
-		if err != nil {
-			return err
+		copyFn := d.copyFileIfChangedFn
+		if copyFn == nil {
+			copyFn = fileutil.CopyFileIfChanged
 		}
+		changed, err := copyFn(sourceFile, targetFile)
 		if changed && result != nil {
 			// Use Base() so the path is relative (matches CopyDirIfChanged).
 			// The caller prefixes with the target's RelPath via PrefixLatest.
 			result.AddWritten(filepath.Base(targetFile))
 		}
-		return nil
+		return err
 	}
 
 	// Standard mode. A symlink source is intentionally not deployed — CopyDir
