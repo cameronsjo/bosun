@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.14](https://github.com/cameronsjo/bosun/compare/v0.39.13...v0.39.14) (2026-08-23)
+
+
+### Bug Fixes
+
+* **daemon:** preserve coalesced trigger metadata ([#532](https://github.com/cameronsjo/bosun/issues/532)) ([2ab2925](https://github.com/cameronsjo/bosun/commit/2ab2925a6a9b2b1334a6c697e9309537ba9d83fb))
+* **reconcile:** handle shallow diff history ([#531](https://github.com/cameronsjo/bosun/issues/531)) ([ffb1081](https://github.com/cameronsjo/bosun/commit/ffb10819b4b082a38b31d84ab01f1b3de08d8dea))
+* **reconcile:** preserve slow restart baselines ([#533](https://github.com/cameronsjo/bosun/issues/533)) ([5deaad2](https://github.com/cameronsjo/bosun/commit/5deaad2266fdac22d1215f66211322a6848b2bc8))
+
 ## [0.39.13](https://github.com/cameronsjo/bosun/compare/v0.39.12...v0.39.13) (2026-08-23)
 
 
