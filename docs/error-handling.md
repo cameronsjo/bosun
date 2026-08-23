@@ -144,7 +144,7 @@ Errors related to file system and Docker permissions.
 | Deploy state directory | `cmd/reconcile.go` | `create state directory "/path": permission denied` |
 | Staging directory | `reconcile/reconcile.go` | `failed to create staging directory` |
 | Backup directory | `reconcile/deploy.go` | `failed to create backup directory` |
-| Secrets file permissions | `reconcile/template.go` | Sets 0600 on temp secrets file |
+| Rendered template permissions | `reconcile/template.go` | Reports output create/chmod/rename failures; successful files use `0644` and may contain secrets |
 
 ### Validation Errors
 

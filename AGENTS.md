@@ -338,8 +338,8 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 | `BOSUN_LISTEN_ADDR` | daemon | Host/IP the HTTP server binds to (default: empty = all interfaces — container-side callers reach bosun over the docker bridge; do not default to loopback) |
 | `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | daemon | Opt out of fail-closed webhook auth (default: `false`; strict `== "true"`). With no `WEBHOOK_SECRET`, trigger endpoints reject requests with `403` unless this is set. Logged loudly at startup and per accepted request |
 | `BOSUN_SECRETS_FILE` | daemon, render | SOPS secrets file path |
-| `BOSUN_INFRA_DIR` | daemon | Infrastructure directory |
-| `BOSUN_TEMPLATE_INCLUDE_DIR` | daemon, reconcile | Subtree that template `include`/`fromJsonFile` reads are confined to (allowlist). Default `<infraDir>/templates`. Relative values resolve against the infra dir; absolute values are used as-is. Confining reads here keeps sibling SOPS files and `bosun.yaml` unreachable from templates |
+| `BOSUN_INFRA_DIR` | daemon, render | Infrastructure directory |
+| `BOSUN_TEMPLATE_INCLUDE_DIR` | daemon, reconcile, render | Subtree that template `include`/`fromJsonFile` reads are confined to (allowlist). Default `<infraDir>/templates`. Relative values resolve against the infra dir; absolute values are used as-is. Confining reads here keeps sibling SOPS files and `bosun.yaml` unreachable from templates |
 | `BOSUN_STATE_DIR` | daemon, reconcile | Deploy state directory |
 | `BOSUN_POST_SYNC_HOOKS` | daemon, reconcile | JSON array overriding config file hooks |
 | `BOSUN_HOOK_SETTLE_DELAY` | daemon, reconcile | Global pause before post-sync hooks run (e.g., `2s`) |

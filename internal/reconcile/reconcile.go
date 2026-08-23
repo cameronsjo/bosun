@@ -1623,11 +1623,9 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 	// Create template ops with secrets data.
 	r.template = NewTemplateOps(secrets)
 
-	// Confine include/fromJsonFile reads. An explicit override is resolved here;
-	// otherwise RenderDirectory defaults to <infraDir>/templates.
-	if dir := resolveTemplateIncludeDir(infraDir, r.config.TemplateIncludeDir); dir != "" {
-		r.template.IncludeDir = dir
-	}
+	// Confine include/fromJsonFile reads to the configured subtree or the
+	// <infraDir>/templates default.
+	r.template.IncludeDir = ResolveTemplateIncludeDir(infraDir, r.config.TemplateIncludeDir)
 
 	if err := r.template.RenderDirectory(ctx, infraDir, r.config.StagingDir, r.config.InfraSubDir); err != nil {
 		logger.Error().

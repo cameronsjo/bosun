@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"github.com/Masterminds/sprig/v3"
 	"github.com/spf13/cobra"
 
+	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
@@ -35,6 +35,9 @@ Templates have access to:
   - Secrets data via {{ . }} (the root context)
   - All sprig template functions
   - Custom functions: include, fromJsonFile
+
+include and fromJsonFile may only read from the configured template include
+directory (default: <infraDir>/templates).
 
 If no files are specified, renders all .tmpl files in current directory.
 
@@ -146,10 +149,12 @@ func runRender(cmd *cobra.Command, args []string) {
 
 	ui.Info("Rendering %d template(s)...\n", len(templates))
 
+	includeDir := mustRenderTemplateIncludeDir()
+
 	// Render each template
 	errors := 0
 	for _, tmplPath := range templates {
-		if err := renderTemplate(ctx, tmplPath, secrets, renderOutput); err != nil {
+		if err := renderTemplate(ctx, tmplPath, secrets, renderOutput, includeDir); err != nil {
 			ui.Error("%s: %v", tmplPath, err)
 			errors++
 		}
@@ -162,7 +167,7 @@ func runRender(cmd *cobra.Command, args []string) {
 	_, _ = ui.Green.Printf("\n✓ All templates rendered successfully\n")
 }
 
-func renderTemplate(ctx context.Context, tmplPath string, secrets map[string]any, outputDir string) error {
+func renderTemplate(ctx context.Context, tmplPath string, secrets map[string]any, outputDir, includeDir string) error {
 	content, err := os.ReadFile(tmplPath)
 	if err != nil {
 		return fmt.Errorf("failed to read: %w", err)
@@ -172,7 +177,7 @@ func renderTemplate(ctx context.Context, tmplPath string, secrets map[string]any
 	tmpl := template.New(filepath.Base(tmplPath)).
 		Option("missingkey=error").
 		Funcs(sprig.TxtFuncMap()).
-		Funcs(bosunRenderFuncs())
+		Funcs(reconcile.TemplateFuncs(includeDir))
 
 	tmpl, err = tmpl.Parse(string(content))
 	if err != nil {
@@ -210,27 +215,39 @@ func renderTemplate(ctx context.Context, tmplPath string, secrets map[string]any
 	return nil
 }
 
-// bosunRenderFuncs returns custom template functions for bosun templates.
-// These match the functions available during reconciliation.
-func bosunRenderFuncs() template.FuncMap {
-	return template.FuncMap{
-		"include": func(path string) (string, error) {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return "", fmt.Errorf("include %s: %w", path, err)
-			}
-			return string(data), nil
-		},
-		"fromJsonFile": func(path string) (any, error) {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return nil, fmt.Errorf("fromJsonFile %s: %w", path, err)
-			}
-			var result any
-			if jsonErr := json.Unmarshal(data, &result); jsonErr != nil {
-				return nil, fmt.Errorf("fromJsonFile %s: invalid JSON: %w", path, jsonErr)
-			}
-			return result, nil
-		},
+// renderTemplateIncludeDir resolves the render command's include allowlist
+// with the same defaults and precedence as reconciliation. In a Bosun project,
+// relative paths are rooted at the project infra directory; standalone renders
+// use the current directory as their infra root.
+func renderTemplateIncludeDir() (string, error) {
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get working directory: %w", err)
 	}
+
+	infraRoot := workingDir
+	configured := ""
+	if projectRoot, findErr := config.FindRoot(); findErr == nil {
+		projectCfg, loadErr := config.LoadFrom(projectRoot)
+		if loadErr != nil {
+			return "", fmt.Errorf("load project config: %w", loadErr)
+		}
+		infraRoot = projectRoot
+		configured = projectCfg.TemplateIncludeDir()
+	}
+
+	if infraSubDir := os.Getenv("BOSUN_INFRA_DIR"); infraSubDir != "" {
+		infraRoot = filepath.Join(infraRoot, infraSubDir)
+	}
+	configured = templateIncludeDirForCLI(configured, os.Getenv("BOSUN_TEMPLATE_INCLUDE_DIR"))
+
+	return reconcile.ResolveTemplateIncludeDir(infraRoot, configured), nil
+}
+
+func mustRenderTemplateIncludeDir() string {
+	includeDir, err := renderTemplateIncludeDir()
+	if err != nil {
+		ui.Fatal("Failed to resolve template include directory: %v", err)
+	}
+	return includeDir
 }

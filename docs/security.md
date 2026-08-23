@@ -103,63 +103,49 @@ To rotate age keys:
 
 ## Secret Handling in Templates
 
-### Temporary File Approach
+### In-Process Template Data
 
-**Implementation**: `internal/internal/reconcile/template.go`
+**Implementation**: `internal/reconcile/sops.go` and
+`internal/reconcile/template.go`
 
-Secrets are passed to templates via temporary files rather than environment variables. This prevents:
+Bosun decrypts SOPS input into an in-memory map and passes that map directly as
+the Go template root. Templates access a value such as `network.unraid_ip` with
+`{{ .network.unraid_ip }}`; no plaintext secrets file path is injected into the
+template environment. This avoids exposing plaintext secret values in process
+arguments, shell history, or a temporary interchange file.
 
-- Secret leakage in process listings (`ps aux`)
-- Secret exposure in shell history
-- Secret inheritance by child processes
-
-```go
-// Write secrets to a temporary file with restricted permissions (0600)
-// instead of passing the actual secret values via environment variables
-secretsFile, err := os.CreateTemp("", "bosun-secrets-*.json")
-if err != nil {
-    return fmt.Errorf("failed to create temp secrets file: %w", err)
-}
-secretsPath := secretsFile.Name()
-defer func() {
-    secretsFile.Close()
-    os.Remove(secretsPath) // Cleanup after use
-}()
-
-// Set restrictive permissions before writing
-if err := os.Chmod(secretsPath, 0600); err != nil {
-    return fmt.Errorf("failed to set secrets file permissions: %w", err)
-}
-```
-
-**Template Access Pattern**:
-```go
-// Templates access secrets via file path (not content):
-// {{ $secrets := fromJson (include (env "BOSUN_SECRETS_FILE")) }}
-cmd.Env = append(filterSafeEnv(os.Environ()), "BOSUN_SECRETS_FILE="+secretsPath)
-```
+Templates can intentionally materialize secrets in rendered configuration.
+Access to the staging and deployment filesystems is therefore part of the
+security boundary; do not treat rendered output as non-sensitive by default.
 
 ### File Permission Standards
 
 | File Type | Permission | Rationale |
 |-----------|------------|-----------|
-| Secrets temp file | `0600` | Owner read/write only |
-| Rendered output files | `0644` | World-readable (contains no secrets) |
+| Rendered output files | `0644` | Current renderer mode; output may contain secrets, so restrict host access accordingly |
 | Output directories | `0755` | Standard directory permissions |
 | Staging directories | `0755` | Standard directory permissions |
 
 ### Cleanup Procedures
 
-Temporary secret files are cleaned up using Go's `defer` pattern:
+Decrypted secret data is held in Go values; Bosun does not create a plaintext
+secret interchange file to remove or promise explicit memory zeroing. Each
+rendered template output produced in the reconciler's staging directory is
+first written to a same-directory temporary file. The reconciler removes that
+temporary file if rendering fails and atomically renames it to the final staging
+path on success.
 
-```go
-defer func() {
-    secretsFile.Close()
-    os.Remove(secretsPath)
-}()
-```
+`bosun render --output` has different semantics: it directly creates or
+truncates the requested output file and executes the template into it. A render
+failure can therefore leave a partial output file. The CLI does not currently
+provide the reconciler's atomic staging-write guarantee.
 
-This ensures cleanup occurs even if template rendering fails.
+Reconciliation clears the staging directory before rendering and removes it
+after a successful non-dry-run deployment. A failed render or deployment, and a
+dry run, can leave rendered staging files for diagnosis. Those files may contain
+secrets and must be protected and removed according to the operator's retention
+policy. Successfully written files from `bosun render --output` are requested
+output, not temporary state, and remain until the operator removes them.
 
 ## SSH Security
 
@@ -445,8 +431,8 @@ Inputs starting with `-` are rejected to prevent:
 
 The `include` and `fromJsonFile` template functions read files from the local
 filesystem. Reads are confined to a **subtree allowlist** — by default
-`<infraDir>/templates` — so a template can only read files located inside that
-subtree, never siblings above it:
+`<infraDir>/templates` — so requested paths are limited to that subtree during
+normal rendering rather than permitting arbitrary filesystem reads:
 
 ```go
 "include": func(path string) (string, error) {
@@ -463,22 +449,27 @@ control. The allowlist is a defense-in-depth control so that even a mistaken or
 malicious template cannot read the SOPS secrets file, age keys, or `bosun.yaml`
 that live in the infra root alongside (but above) `templates/`.
 
-**Enforcement** (`internal/reconcile/template.go`): the requested path is
-resolved (`filepath.Abs`), checked for lexical containment via `filepath.Rel`
+**Enforcement** (`internal/reconcile/template.go`, shared by reconciliation and
+`bosun render`): the requested path is resolved (`filepath.Abs`), checked for
+lexical containment via `filepath.Rel`
 (a `..`-escape, an absolute-outside path, or a `Rel` error all fail closed), and
 then re-checked after `filepath.EvalSymlinks` so a symlink whose target escapes
 the subtree is rejected. A `{{ include "/etc/shadow" }}` or a read of a sibling
 `*.sops.yaml` is now rejected with an error that names the allowed root. The
 allowlist confines by **location**: a hardlink whose path is inside `templates/`
-remains readable — the guarantee is that no path *outside* the subtree is
-reachable.
+remains readable. Validation and `os.ReadFile` are separate operations, so this
+is not a race-free or file-descriptor-anchored guarantee against a local actor
+concurrently replacing paths during rendering. The trust model assumes the
+repository and include tree are not adversarially mutated while a render runs.
 
 **Configuration**: the allowlist root is `<infraDir>/templates` by default and
 is overridable with the `template_include_dir` config field or
 `BOSUN_TEMPLATE_INCLUDE_DIR` (relative values resolve against the infra dir,
 absolute values are used as-is). This is a breaking change for configs that
 included files from outside `templates/`; move those files under the subtree or
-point the override at their location.
+point the override at their location. For `bosun render`, the infra directory is
+the discovered project root plus `BOSUN_INFRA_DIR`; outside a Bosun project it
+is the current directory.
 
 ### Template Rendering Scope
 

@@ -505,11 +505,24 @@ The template subsystem (`internal/reconcile/template.go`) uses Go's native `text
 
 ### Accessing Secrets in Templates
 
-Secrets are passed via a temporary JSON file. Access them using:
+Bosun decrypts secrets and passes the resulting map directly as the template's
+root data. Access values without reading the secrets file:
 
 ```go-template
-{{ $secrets := fromJson (include (env "BOSUN_SECRETS_FILE")) }}
-{{ $secrets.network.unraid_ip }}
+{{ .network.unraid_ip }}
+```
+
+For non-secret supporting data, `include` and `fromJsonFile` may read files
+inside the configured include subtree. This example uses an absolute allowlist
+root so the file path is independent of the process working directory:
+
+```bash
+export BOSUN_TEMPLATE_INCLUDE_DIR=/srv/bosun/includes
+```
+
+```go-template
+{{ $defaults := fromJsonFile "/srv/bosun/includes/defaults.json" }}
+{{ $defaults.timezone }}
 ```
 
 ### Available Template Functions
@@ -519,7 +532,8 @@ The template engine provides Go's standard template functions plus all [Sprig fu
 | Function | Description |
 |----------|-------------|
 | `env "VAR"` | Get environment variable |
-| `include "path"` | Read file contents |
+| `include "path"` | Read an allowlisted file as text |
+| `fromJsonFile "path"` | Read and parse an allowlisted JSON file |
 | `fromJson "..."` | Parse JSON string |
 | `toJson .` | Convert to JSON |
 | `quote .` | Quote a string |
@@ -851,9 +865,18 @@ Backups capture configuration files only (traefik routes, authelia config, gatus
 
 This is inherent to the Docker Compose deployment model. Volume backup/restore is the responsibility of a dedicated backup tool (e.g., Duplicati, Restic, Borg).
 
-### Template `include` Function
+### Template File-Read Functions
 
-The `include` template function reads files from the local filesystem with no path restriction. A template could theoretically reference any file the bosun process can read. This is acceptable when all templates come from your own Git repository (the current trust model), but templates from untrusted sources MUST NOT be used without path validation. See [bosun-4su](https://github.com/cameronsjo/bosun/issues?q=bosun-4su).
+The `include` and `fromJsonFile` functions apply a subtree allowlist before
+reading. The default root is `<infraDir>/templates`; `template_include_dir` or
+`BOSUN_TEMPLATE_INCLUDE_DIR` can select another root. Lexical traversal and
+paths whose resolved symlink target leaves that root are rejected with an error
+that names the allowed directory.
+
+Validation and reading are separate filesystem operations, not an atomic or
+file-descriptor-anchored transaction. The control assumes an adversarial local
+process is not concurrently replacing paths inside the trusted include tree
+during rendering; templates from untrusted sources remain unsupported.
 
 ### Template Rendering Scope
 

@@ -55,7 +55,7 @@ func (t *TemplateOps) ExecuteTemplate(_ context.Context, templateFile, outputFil
 	tmpl := template.New(filepath.Base(templateFile)).
 		Option("missingkey=error").
 		Funcs(sprig.TxtFuncMap()).
-		Funcs(bosunTemplateFuncs(t.IncludeDir))
+		Funcs(TemplateFuncs(t.IncludeDir))
 
 	// Parse the template.
 	tmpl, err = tmpl.Parse(string(content))
@@ -139,13 +139,12 @@ func validateIncludePath(path, includeDir string) error {
 	return ensureWithin(realRoot, realPath, path, includeDir)
 }
 
-// resolveTemplateIncludeDir resolves a configured include-dir override against
-// the infra directory: an absolute value is used as-is, a relative value is
-// joined to infraDir. An empty configured value yields "" — the caller then
-// lets RenderDirectory apply the <infraDir>/templates default.
-func resolveTemplateIncludeDir(infraDir, configured string) string {
+// ResolveTemplateIncludeDir resolves the include allowlist root against the
+// infra directory. An absolute override is used as-is, a relative override is
+// joined to infraDir, and an empty override selects <infraDir>/templates.
+func ResolveTemplateIncludeDir(infraDir, configured string) string {
 	if configured == "" {
-		return ""
+		return filepath.Join(infraDir, DefaultIncludeSubdir)
 	}
 	if filepath.IsAbs(configured) {
 		return configured
@@ -167,9 +166,9 @@ func ensureWithin(root, target, origPath, allowedRoot string) error {
 	return nil
 }
 
-// bosunTemplateFuncs returns custom template functions for bosun templates.
+// TemplateFuncs returns custom template functions for bosun templates.
 // includeDir confines include/fromJsonFile reads to that subtree when non-empty.
-func bosunTemplateFuncs(includeDir string) template.FuncMap {
+func TemplateFuncs(includeDir string) template.FuncMap {
 	return template.FuncMap{
 		// include reads and returns the contents of a file.
 		// Usage: {{ include "/path/to/file" }}

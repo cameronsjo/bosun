@@ -535,7 +535,7 @@ Items identified during a detailed architecture review of the reconciler, deploy
 | Image update policy (auto vs pinned) | P2 | Open | [bosun-djh](https://github.com/cameronsjo/bosun/issues?q=bosun-djh) |
 | Remote deploy partial failure | P2 | Open | [bosun-4t4](https://github.com/cameronsjo/bosun/issues?q=bosun-4t4) |
 | Compose up blast radius | P3 | Open | [bosun-22q](https://github.com/cameronsjo/bosun/issues?q=bosun-22q) |
-| Template include path validation | P3 | Open | [bosun-4su](https://github.com/cameronsjo/bosun/issues?q=bosun-4su) |
+| Template include path validation | P3 | Resolved — subtree allowlist with traversal and resolved-symlink checks | [Template security](../security.md#include-function-scope) |
 
 See [GitOps docs: Known Limitations](../gitops.md#known-limitations) for details on each item.
 
