@@ -90,12 +90,13 @@ func (r *DeployResult) AddManaged(files ...string) {
 // PrefixLatest prepends prefix to all WrittenFiles entries added after
 // the snapshot index. Call with len(r.WrittenFiles) before a DeployLocal
 // call, then PrefixLatest after, to give the new entries context needed
-// for hook glob matching.
+// for hook glob matching. It panics when snapshot is outside the valid
+// slice boundary [0, len(r.WrittenFiles)] because that is a caller bug.
 func (r *DeployResult) PrefixLatest(snapshot int, prefix string) {
-	if snapshot < 0 {
-		snapshot = 0
+	if snapshot < 0 || snapshot > len(r.WrittenFiles) {
+		panic(fmt.Sprintf("DeployResult.PrefixLatest snapshot %d out of range [0,%d]", snapshot, len(r.WrittenFiles)))
 	}
-	if snapshot >= len(r.WrittenFiles) {
+	if snapshot == len(r.WrittenFiles) {
 		return
 	}
 	for i := snapshot; i < len(r.WrittenFiles); i++ {
@@ -105,12 +106,13 @@ func (r *DeployResult) PrefixLatest(snapshot int, prefix string) {
 
 // PrefixLatestDeleted prepends prefix to all DeletedFiles entries added after
 // the snapshot index. Mirrors PrefixLatest so deleted paths get the same
-// staging-relative prefix needed for hook glob matching.
+// staging-relative prefix needed for hook glob matching. It panics when
+// snapshot is outside the valid slice boundary [0, len(r.DeletedFiles)].
 func (r *DeployResult) PrefixLatestDeleted(snapshot int, prefix string) {
-	if snapshot < 0 {
-		snapshot = 0
+	if snapshot < 0 || snapshot > len(r.DeletedFiles) {
+		panic(fmt.Sprintf("DeployResult.PrefixLatestDeleted snapshot %d out of range [0,%d]", snapshot, len(r.DeletedFiles)))
 	}
-	if snapshot >= len(r.DeletedFiles) {
+	if snapshot == len(r.DeletedFiles) {
 		return
 	}
 	for i := snapshot; i < len(r.DeletedFiles); i++ {

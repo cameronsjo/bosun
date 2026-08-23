@@ -2019,6 +2019,120 @@ func TestDeployResult_AddWritten(t *testing.T) {
 	assert.Len(t, result.WrittenFiles, 3)
 }
 
+func TestDeployResult_PrefixLatest(t *testing.T) {
+	t.Run("prefixes only entries appended after snapshot", func(t *testing.T) {
+		result := &DeployResult{WrittenFiles: []string{"appdata/authelia/existing.yml"}}
+		snapshot := len(result.WrittenFiles)
+		result.AddWritten("configuration.yml", filepath.Join("nested", "users.yml"))
+
+		result.PrefixLatest(snapshot, filepath.Join("appdata", "traefik"))
+
+		assert.Equal(t, []string{
+			filepath.Join("appdata", "authelia", "existing.yml"),
+			filepath.Join("appdata", "traefik", "configuration.yml"),
+			filepath.Join("appdata", "traefik", "nested", "users.yml"),
+		}, result.WrittenFiles)
+	})
+
+	t.Run("zero snapshot prefixes every entry", func(t *testing.T) {
+		result := &DeployResult{WrittenFiles: []string{"one.yml", "two.yml"}}
+
+		result.PrefixLatest(0, "compose")
+
+		assert.Equal(t, []string{
+			filepath.Join("compose", "one.yml"),
+			filepath.Join("compose", "two.yml"),
+		}, result.WrittenFiles)
+	})
+
+	t.Run("current length is an idempotent boundary", func(t *testing.T) {
+		result := &DeployResult{WrittenFiles: []string{filepath.Join("appdata", "authelia", "configuration.yml")}}
+		snapshot := len(result.WrittenFiles)
+
+		result.PrefixLatest(snapshot, filepath.Join("appdata", "authelia"))
+		result.PrefixLatest(snapshot, filepath.Join("appdata", "authelia"))
+
+		assert.Equal(t, []string{filepath.Join("appdata", "authelia", "configuration.yml")}, result.WrittenFiles,
+			"a no-op deploy must not double-prefix paths used for hook matching")
+	})
+
+	t.Run("empty result accepts zero snapshot", func(t *testing.T) {
+		result := &DeployResult{}
+
+		assert.NotPanics(t, func() { result.PrefixLatest(0, "compose") })
+		assert.Nil(t, result.WrittenFiles)
+	})
+
+	for _, snapshot := range []int{-1, 2} {
+		t.Run(fmt.Sprintf("snapshot_%d_panics_without_corrupting_paths", snapshot), func(t *testing.T) {
+			original := []string{filepath.Join("appdata", "authelia", "configuration.yml")}
+			result := &DeployResult{WrittenFiles: append([]string(nil), original...)}
+
+			assert.Panics(t, func() { result.PrefixLatest(snapshot, filepath.Join("appdata", "authelia")) })
+			assert.Equal(t, original, result.WrittenFiles,
+				"an invalid snapshot must not double-prefix existing hook paths")
+		})
+	}
+}
+
+func TestDeployResult_PrefixLatestDeleted(t *testing.T) {
+	t.Run("prefixes only entries appended after snapshot", func(t *testing.T) {
+		result := &DeployResult{DeletedFiles: []string{filepath.Join("appdata", "old", "stale.yml")}}
+		snapshot := len(result.DeletedFiles)
+		result.AddDeleted("removed.yml")
+
+		result.PrefixLatestDeleted(snapshot, filepath.Join("appdata", "authelia"))
+
+		assert.Equal(t, []string{
+			filepath.Join("appdata", "old", "stale.yml"),
+			filepath.Join("appdata", "authelia", "removed.yml"),
+		}, result.DeletedFiles)
+	})
+
+	t.Run("current length is an idempotent boundary", func(t *testing.T) {
+		result := &DeployResult{DeletedFiles: []string{filepath.Join("compose", "retired.yml")}}
+		snapshot := len(result.DeletedFiles)
+
+		result.PrefixLatestDeleted(snapshot, "compose")
+		result.PrefixLatestDeleted(snapshot, "compose")
+
+		assert.Equal(t, []string{filepath.Join("compose", "retired.yml")}, result.DeletedFiles)
+	})
+
+	for _, snapshot := range []int{-1, 2} {
+		t.Run(fmt.Sprintf("snapshot_%d_panics_without_corrupting_paths", snapshot), func(t *testing.T) {
+			original := []string{filepath.Join("compose", "retired.yml")}
+			result := &DeployResult{DeletedFiles: append([]string(nil), original...)}
+
+			assert.Panics(t, func() { result.PrefixLatestDeleted(snapshot, "compose") })
+			assert.Equal(t, original, result.DeletedFiles)
+		})
+	}
+}
+
+func TestDeployResult_PrefixLatest_PreservesHookMatchesAcrossTargets(t *testing.T) {
+	result := &DeployResult{}
+	autheliaSnapshot := len(result.WrittenFiles)
+	result.AddWritten("configuration.yml")
+	result.PrefixLatest(autheliaSnapshot, filepath.Join("appdata", "authelia"))
+
+	traefikSnapshot := len(result.WrittenFiles)
+	result.AddWritten(filepath.Join("dynamic", "router.yml"))
+	result.PrefixLatest(traefikSnapshot, filepath.Join("appdata", "traefik"))
+
+	hooks := []PostSyncHook{
+		{Container: "authelia", Paths: []string{"appdata/authelia/**"}},
+		{Container: "traefik", Paths: []string{"appdata/traefik/**"}},
+	}
+	matched := EvaluatePostSyncHooks(result.WrittenFiles, hooks)
+
+	assert.Equal(t, hooks, matched)
+	assert.Equal(t, []string{
+		filepath.Join("appdata", "authelia", "configuration.yml"),
+		filepath.Join("appdata", "traefik", "dynamic", "router.yml"),
+	}, result.WrittenFiles)
+}
+
 func TestDeployOps_ComposeArgs(t *testing.T) {
 	t.Run("without project name", func(t *testing.T) {
 		d := &DeployOps{}
