@@ -12,8 +12,10 @@ segments.
 ## What Changes
 
 - Bound Discord title, description, footer, field, field-count, and aggregate
-  embed content before sending while retaining the alert's leading context.
-- Make Discord truncation Unicode-safe and deterministic for metadata fields.
+  embed content before sending with a fixed priority that retains the alert's
+  leading operational context.
+- Make Discord truncation Unicode-safe and deterministic for all components and
+  metadata fields.
 - Bound Twilio alerts to one SMS segment, accounting for GSM-7 extension
   characters and UTF-16 code units for non-GSM content.
 - Document the provider-specific delivery and cost bounds.
@@ -23,6 +25,8 @@ segments.
 - Affected specs: `alerting`
 - Affected code: `internal/alert/discord.go`, `internal/alert/twilio.go`, and
   provider tests
+- Affected docs: `docs/alerting.md`, `skills/onboard/resources/configuration.md`,
+  and `llms.txt` when its generated provider summary changes
 - All consumers: every `alert.Alert` sent through `DiscordProvider.Send` or
   `Twilio.Send`, including reconcile lifecycle, drift, doctor, daemon, and
   `bosun alert test` alerts
