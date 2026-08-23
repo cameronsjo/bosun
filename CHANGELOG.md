@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.13](https://github.com/cameronsjo/bosun/compare/v0.39.12...v0.39.13) (2026-08-23)
+
+
+### Bug Fixes
+
+* **reconcile:** preserve post-write hook tracking ([#529](https://github.com/cameronsjo/bosun/issues/529)) ([09b84cd](https://github.com/cameronsjo/bosun/commit/09b84cd2d0cf696f7172c07ba45b645dabe00cf5))
+* **reconcile:** reject colliding target resources ([#528](https://github.com/cameronsjo/bosun/issues/528)) ([ccc7d6d](https://github.com/cameronsjo/bosun/commit/ccc7d6d7858721fb9686d22d3a90aa9270b22470))
+* **reconcile:** skip failed files in orphan pass ([#527](https://github.com/cameronsjo/bosun/issues/527)) ([2da5e66](https://github.com/cameronsjo/bosun/commit/2da5e669d81a676d55b6996a7bd7e5422b221271))
+
 ## [0.39.12](https://github.com/cameronsjo/bosun/compare/v0.39.11...v0.39.12) (2026-08-23)
 
 
