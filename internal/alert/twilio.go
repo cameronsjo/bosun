@@ -38,9 +38,15 @@ type Twilio struct {
 // twilioAPIURL is the base URL for the Twilio REST API.
 const twilioAPIURL = "https://api.twilio.com/2010-04-01"
 
-// maxSMSLength is the maximum length for SMS messages.
-// Twilio supports up to 1600 characters for concatenated SMS.
-const maxSMSLength = 1600
+const (
+	maxGSM7SMSSeptets  = 160
+	maxUnicodeSMSUnits = 70
+
+	// ESC is excluded because it is an encoding prefix rather than a printable
+	// default-alphabet character. Extension characters include their ESC cost.
+	gsm7DefaultAlphabet   = "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà"
+	gsm7ExtensionAlphabet = "\f^{}\\[~]|€"
+)
 
 // NewTwilio creates a new Twilio alerter with the given configuration.
 func NewTwilio(config TwilioConfig) *Twilio {
@@ -184,12 +190,12 @@ func (t *Twilio) sendSMS(ctx context.Context, toNumber, message string) error {
 }
 
 // formatMessage creates an SMS-friendly message from an alert.
-// Format: [SEVERITY] Title: Message (truncated to maxSMSLength)
+// Format: [SEVERITY] Title: Message, bounded to one provider segment.
 func (t *Twilio) formatMessage(alert *Alert) string {
 	severityPrefix := strings.ToUpper(string(alert.Severity))
 	msg := fmt.Sprintf("[%s] %s: %s", severityPrefix, alert.Title, alert.Message)
 
-	return truncateMessage(msg, maxSMSLength)
+	return truncateSMSMessage(msg)
 }
 
 // buildAuthHeader creates the Basic auth header for Twilio API.
@@ -199,15 +205,36 @@ func (t *Twilio) buildAuthHeader() string {
 	return fmt.Sprintf("Basic %s", encoded)
 }
 
-// truncateMessage truncates a message to the specified length.
-// If truncated, adds "..." to indicate continuation.
-func truncateMessage(msg string, maxLen int) string {
-	if len(msg) <= maxLen {
-		return msg
+// truncateSMSMessage selects the segment budget from the complete formatted
+// message, then retains as much leading context as one segment allows.
+func truncateSMSMessage(msg string) string {
+	if _, ok := gsm7SeptetCount(msg); ok {
+		return truncateByUnits(msg, maxGSM7SMSSeptets, gsm7RuneUnits)
 	}
+	return truncateByUnits(msg, maxUnicodeSMSUnits, utf16RuneUnits)
+}
 
-	// Leave room for "..."
-	return msg[:maxLen-3] + "..."
+func gsm7SeptetCount(text string) (int, bool) {
+	units := 0
+	for _, r := range text {
+		cost := gsm7RuneUnits(r)
+		if cost == 0 {
+			return 0, false
+		}
+		units += cost
+	}
+	return units, true
+}
+
+func gsm7RuneUnits(r rune) int {
+	switch {
+	case strings.ContainsRune(gsm7DefaultAlphabet, r):
+		return 1
+	case strings.ContainsRune(gsm7ExtensionAlphabet, r):
+		return 2
+	default:
+		return 0
+	}
 }
 
 // formatPhoneNumber ensures a phone number is in E.164 format.

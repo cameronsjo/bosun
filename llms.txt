@@ -65,6 +65,7 @@ The daemon provides:
 - Configurable polling intervals
 - Health endpoints (`/health`, `/ready`)
 - Periodic drift detection (declared vs actual state); ignore rules suppress matching alerts without falsely reporting still-active drift as resolved
+- Native Discord, SendGrid, and Twilio alerting; Discord embeds are bounded to provider component and aggregate limits, while error/critical Twilio messages are capped at one GSM-7 or Unicode SMS segment
 - Deploy state tracking with circuit breaker (stops retrying after 3 failures)
 - Post-sync `exec` hooks require a non-empty command; invalid root or per-target hook configuration fails before deployment
 

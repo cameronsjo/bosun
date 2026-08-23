@@ -6,7 +6,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -95,42 +97,84 @@ func TestTwilio_IsConfigured(t *testing.T) {
 	}
 }
 
-func TestTruncateMessage(t *testing.T) {
+func TestGSM7SeptetCount(t *testing.T) {
+	defaultCount, ok := gsm7SeptetCount(gsm7DefaultAlphabet)
+	require.True(t, ok)
+	assert.Equal(t, utf8.RuneCountInString(gsm7DefaultAlphabet), defaultCount)
+
+	for _, r := range gsm7ExtensionAlphabet {
+		count, extensionOK := gsm7SeptetCount(string(r))
+		assert.True(t, extensionOK, "extension character %q should be GSM-7", r)
+		assert.Equal(t, 2, count, "extension character %q should consume two septets", r)
+	}
+
+	_, ok = gsm7SeptetCount("ASCII then Ж")
+	assert.False(t, ok)
+}
+
+func TestTruncateSMSMessage(t *testing.T) {
 	tests := []struct {
-		name   string
-		msg    string
-		maxLen int
-		want   string
+		name string
+		msg  string
+		want string
 	}{
 		{
-			name:   "short message",
-			msg:    "Hello",
-			maxLen: 10,
-			want:   "Hello",
+			name: "ASCII exact boundary",
+			msg:  strings.Repeat("a", maxGSM7SMSSeptets),
+			want: strings.Repeat("a", maxGSM7SMSSeptets),
 		},
 		{
-			name:   "exact length",
-			msg:    "Hello",
-			maxLen: 5,
-			want:   "Hello",
+			name: "ASCII overflow",
+			msg:  strings.Repeat("a", maxGSM7SMSSeptets+1),
+			want: strings.Repeat("a", maxGSM7SMSSeptets-len(truncationSuffix)) + truncationSuffix,
 		},
 		{
-			name:   "needs truncation",
-			msg:    "Hello World",
-			maxLen: 8,
-			want:   "Hello...",
+			name: "non-ASCII GSM default boundary",
+			msg:  strings.Repeat("é", maxGSM7SMSSeptets),
+			want: strings.Repeat("é", maxGSM7SMSSeptets),
 		},
 		{
-			name:   "long message",
-			msg:    "This is a very long message that needs to be truncated",
-			maxLen: 20,
-			want:   "This is a very lo...",
+			name: "GSM extension exact boundary",
+			msg:  strings.Repeat("^", maxGSM7SMSSeptets/2),
+			want: strings.Repeat("^", maxGSM7SMSSeptets/2),
+		},
+		{
+			name: "GSM extension overflow",
+			msg:  strings.Repeat("^", maxGSM7SMSSeptets/2+1),
+			want: strings.Repeat("^", 78) + truncationSuffix,
+		},
+		{
+			name: "BMP Unicode exact boundary",
+			msg:  strings.Repeat("Ж", maxUnicodeSMSUnits),
+			want: strings.Repeat("Ж", maxUnicodeSMSUnits),
+		},
+		{
+			name: "BMP Unicode overflow",
+			msg:  strings.Repeat("Ж", maxUnicodeSMSUnits+1),
+			want: strings.Repeat("Ж", maxUnicodeSMSUnits-len(truncationSuffix)) + truncationSuffix,
+		},
+		{
+			name: "supplementary Unicode exact boundary",
+			msg:  strings.Repeat("🚀", maxUnicodeSMSUnits/2),
+			want: strings.Repeat("🚀", maxUnicodeSMSUnits/2),
+		},
+		{
+			name: "supplementary Unicode overflow",
+			msg:  strings.Repeat("🚀", maxUnicodeSMSUnits/2+1),
+			want: strings.Repeat("🚀", 33) + truncationSuffix,
+		},
+		{
+			name: "non-GSM beyond retained prefix still selects Unicode",
+			msg:  strings.Repeat("a", maxGSM7SMSSeptets) + "Ж",
+			want: strings.Repeat("a", maxUnicodeSMSUnits-len(truncationSuffix)) + truncationSuffix,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, truncateMessage(tt.msg, tt.maxLen))
+			got := truncateSMSMessage(tt.msg)
+			assert.Equal(t, tt.want, got)
+			assert.True(t, utf8.ValidString(got))
 		})
 	}
 }
@@ -381,6 +425,72 @@ func TestTwilio_Send_HTTPSuccess(t *testing.T) {
 	assert.Contains(t, receivedBody, "Body=")
 	assert.Contains(t, receivedBody, "To=")
 	assert.Contains(t, receivedBody, "From=")
+}
+
+func TestTwilio_Send_PostsSingleSegmentBody(t *testing.T) {
+	tests := []struct {
+		name       string
+		message    string
+		assertBody func(*testing.T, string)
+	}{
+		{
+			name:    "GSM-7",
+			message: strings.Repeat("a", 300),
+			assertBody: func(t *testing.T, body string) {
+				units, ok := gsm7SeptetCount(body)
+				require.True(t, ok)
+				assert.LessOrEqual(t, units, maxGSM7SMSSeptets)
+			},
+		},
+		{
+			name:    "Unicode",
+			message: strings.Repeat("🚀", 100),
+			assertBody: func(t *testing.T, body string) {
+				assert.LessOrEqual(t, utf16Units(body), maxUnicodeSMSUnits)
+				assert.True(t, utf8.ValidString(body))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var (
+				receivedBody string
+				handlerErr   error
+			)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := r.ParseForm(); err != nil {
+					handlerErr = err
+				} else {
+					receivedBody = r.Form.Get("Body")
+				}
+				w.WriteHeader(http.StatusCreated)
+			}))
+			defer server.Close()
+
+			tw := &Twilio{
+				config: TwilioConfig{
+					AccountSID: "AC123",
+					AuthToken:  "token",
+					FromNumber: "+15551234567",
+					ToNumbers:  []string{"+15559876543"},
+				},
+				client: server.Client(),
+				apiURL: server.URL,
+			}
+
+			err := tw.Send(context.Background(), &Alert{
+				Title:    "Deploy Failed",
+				Message:  tt.message,
+				Severity: SeverityError,
+			})
+			require.NoError(t, err)
+			require.NoError(t, handlerErr)
+			require.NotEmpty(t, receivedBody)
+			assert.True(t, strings.HasSuffix(receivedBody, truncationSuffix))
+			tt.assertBody(t, receivedBody)
+		})
+	}
 }
 
 func TestTwilio_Send_APIError(t *testing.T) {

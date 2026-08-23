@@ -34,6 +34,11 @@ Alerts appear as rich embeds with:
 - Deployment metadata (commit, target host)
 - Timestamp and source
 
+Bosun bounds embed titles, descriptions, footers, and metadata fields before
+sending. It also enforces Discord's 6000-unit aggregate embed limit, preserving
+the alert title and failure summary before optional metadata so a verbose
+deploy error cannot make Discord reject the entire alert.
+
 ### SendGrid (Email)
 
 Send alert emails via SendGrid API.
@@ -89,7 +94,10 @@ TWILIO_AUTH_TOKEN=xxx...
 TWILIO_FROM_NUMBER=+15551234567
 ```
 
-**Note:** SMS alerts are only sent for **error** and **critical** severity to minimize costs.
+**Note:** SMS alerts are only sent for **error** and **critical** severity to
+minimize costs. Each message is capped at one billed SMS segment: 160 GSM-7
+septets or 70 UTF-16 units when the formatted alert contains Unicode outside
+GSM-7. Oversized messages retain their leading context and end in `...`.
 
 ## Alert Settings
 
@@ -105,7 +113,7 @@ alerts:
 | Severity | When Used | Providers |
 |----------|-----------|-----------|
 | `info` | Successful deployment | Discord, SendGrid |
-| `warning` | Rollback completed | All |
+| `warning` | Rollback completed | Discord, SendGrid |
 | `error` | Deployment failed | All |
 | `critical` | Rollback failed | All (SMS included) |
 
