@@ -361,9 +361,9 @@ bosun drift --target=nas       # Show drift for a specific target
 
 **Container matching:** Uses Docker Compose v2 labels (`com.docker.compose.project`, `com.docker.compose.service`) for authoritative matching. Falls back to name-based parsing (`<project>-<service>-<replica>`) for containers without labels.
 
-**Target state resolution:** With one configured named target and no `--target`, drift reads that target's daemon-written state file (for example, `deploy-state-nas.json`). With multiple targets, it reports every target. An explicit `--state-file` always reads exactly that path.
+**Target state resolution:** With one configured named target and no `--target`, drift reads that target's daemon-written state file (for example, `deploy-state-nas.json`). With multiple targets, it reports every target. When targets are configured, an unknown `--target` is an error instead of probing an arbitrary state filename. An explicit `--state-file` always reads exactly that path, but does not make an unknown configured target valid.
 
-If the requested state is missing or cannot establish a deployment, drift exits nonzero. JSON output keeps `"status": "unknown"` and includes an `"error"` field so automation cannot mistake unknown state for a clean deployment.
+If the target is unknown, the requested state is missing, or the state cannot establish a deployment, drift exits nonzero without printing command usage. JSON output keeps `"status": "unknown"` and includes an `"error"` field so automation cannot mistake unknown state for a clean deployment.
 
 ### doctor
 

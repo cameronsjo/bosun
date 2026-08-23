@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -63,8 +64,15 @@ type driftJSONOutput struct {
 }
 
 var errDriftStateUnavailable = errors.New("drift state unavailable")
+var errUnknownDriftTarget = errors.New("unknown drift target")
 
-func runDrift(cmd *cobra.Command, args []string) error {
+func runDrift(cmd *cobra.Command, args []string) (err error) {
+	defer func() {
+		if err != nil && cmd != nil {
+			cmd.SilenceUsage = true
+		}
+	}()
+
 	targets := loadConfiguredTargets()
 	stateFileExplicit := cmd != nil && cmd.Flags().Changed("state-file")
 	resolvedTarget := driftTarget
@@ -84,6 +92,9 @@ func runDrift(cmd *cobra.Command, args []string) error {
 				resolved = true
 				break
 			}
+		}
+		if !resolved && len(targets) > 0 {
+			return reportUnknownDriftTarget(driftTarget, targets)
 		}
 		if !resolved && !stateFileExplicit {
 			// Target not in config — still derive the state file by name.
@@ -125,13 +136,27 @@ func runDrift(cmd *cobra.Command, args []string) error {
 			detail := fmt.Sprintf("no declared services found in %s; run a reconciliation first", driftStateFile)
 			return reportUnknownDriftState(detail)
 		}
-		runLiveDriftCheck(state)
-		return nil
+		return runLiveDriftCheck(state)
 	}
 
 	// Show cached drift status from state file.
-	printDriftStatus(state)
-	return nil
+	return printDriftStatus(state)
+}
+
+func reportUnknownDriftTarget(target string, targets []reconcile.Target) error {
+	names := make([]string, 0, len(targets))
+	for _, t := range targets {
+		names = append(names, t.Name)
+	}
+	detail := fmt.Sprintf("unknown target %q; configured targets: %s", target, strings.Join(names, ", "))
+	err := fmt.Errorf("%w: %s", errUnknownDriftTarget, detail)
+	if driftJSON {
+		out := driftJSONOutput{Status: "unknown", Items: []reconcile.DriftItem{}, Error: detail}
+		if encodeErr := writeDriftJSON(out); encodeErr != nil {
+			return fmt.Errorf("%w: %s; encode JSON output: %v", errUnknownDriftTarget, detail, encodeErr)
+		}
+	}
+	return err
 }
 
 func reportUnavailableDriftState(stateFile, target string) error {
@@ -263,21 +288,9 @@ func runMultiTargetDriftJSON(targets []reconcile.Target) error {
 	return nil
 }
 
-func runLiveDriftCheck(state *reconcile.DeployState) {
-	if len(state.DeclaredServices) == 0 {
-		if driftJSON {
-			out := driftJSONOutput{Status: "unknown", Items: []reconcile.DriftItem{}}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			_ = enc.Encode(out)
-			return
-		}
-		ui.Warning("No declared services in state file. Deploy first to populate declared state.")
-		return
-	}
-
+func runLiveDriftCheck(state *reconcile.DeployState) error {
 	state = runLiveDriftCollect(state, driftStateFile, driftProjectName)
-	printDriftStatus(state)
+	return printDriftStatus(state)
 }
 
 // runLiveDriftCheckForTarget performs a live check and prints human output for a specific target.
@@ -328,19 +341,20 @@ func runLiveDriftCollect(state *reconcile.DeployState, stateFile, projectName st
 	return state
 }
 
-func printDriftStatus(state *reconcile.DeployState) {
+func printDriftStatus(state *reconcile.DeployState) error {
 	if driftJSON {
-		printDriftJSON(state)
-		return
+		return printDriftJSON(state)
 	}
 	printDriftHuman(state)
+	return nil
 }
 
-func printDriftJSON(state *reconcile.DeployState) {
+func printDriftJSON(state *reconcile.DeployState) error {
 	out := buildDriftJSON(state)
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(out)
+	if err := writeDriftJSON(out); err != nil {
+		return fmt.Errorf("encode drift JSON output: %w", err)
+	}
+	return nil
 }
 
 // buildDriftJSON constructs the JSON output struct from deploy state.
