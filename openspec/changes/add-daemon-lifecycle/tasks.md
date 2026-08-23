@@ -25,11 +25,11 @@
 
 ## 4. Cancellation aborts external work
 
-- [ ] 4.1 Set `cmd.Cancel` (SIGTERM, grace, then SIGKILL) or compose-down on the `exec.CommandContext` sites (compose.go:77,235,326,360)
-- [ ] 4.2 Verify the docker operation stops, not just the CLI client
-- [ ] 4.3 Tests: forced compose-up timeout no longer leaves background container startup
+- [x] 4.1 Set `cmd.Cancel` (SIGTERM, grace, then SIGKILL) or compose-down on the `exec.CommandContext` sites (compose.go:77,235,326,360)
+- [x] 4.2 Verify the docker operation stops, not just the CLI client
+- [x] 4.3 Tests: forced compose-up timeout no longer leaves background container startup
 
 ## 5. Documentation
 
-- [ ] 5.1 Update `skills/onboard/resources/gitops.md` (daemon reconcile lifecycle guarantees)
-- [ ] 5.2 Update `docs/troubleshooting.md` (wedged-reconcile recovery now automatic at timeout)
+- [x] 5.1 Update `skills/onboard/resources/gitops.md` (daemon reconcile lifecycle guarantees)
+- [x] 5.2 Update `docs/troubleshooting.md` (wedged-reconcile recovery now automatic at timeout)

@@ -73,17 +73,20 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 	// verification (verifyPostDeploy) handles health inspection separately.
 	args := d.composeUpArgs(composeFiles)
 
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := dockerComposeCommandContext(ctx, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if !errors.Is(ctxErr, context.DeadlineExceeded) {
+				return fmt.Errorf("docker compose up canceled: %w", ctxErr)
+			}
 			logger.Error().
 				Str(log.FieldOperation, "compose_up").
 				Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 				Msg("Docker compose up timed out")
-			return fmt.Errorf("docker compose up timed out after %v", timeout)
+			return fmt.Errorf("docker compose up timed out after %v: %w", timeout, ctxErr)
 		}
 
 		stderrStr := stderr.String()
@@ -266,7 +269,7 @@ func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string
 					d.composeUpTimeout(),
 				)
 				rollbackArgs := d.buildUpArgs([]string{backupFile}, false)
-				rollbackCmd := exec.CommandContext(rollbackCtx, "docker", rollbackArgs...)
+				rollbackCmd := dockerComposeCommandContext(rollbackCtx, rollbackArgs...)
 				var rollbackStderr bytes.Buffer
 				rollbackCmd.Stderr = &rollbackStderr
 
@@ -304,7 +307,7 @@ func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string
 		orphanArgs := d.buildUpArgs(orphanFiles, true)
 		orphanCtx, orphanCancel := context.WithTimeout(ctx, d.composeUpTimeout())
 		defer orphanCancel()
-		orphanCmd := exec.CommandContext(orphanCtx, "docker", orphanArgs...)
+		orphanCmd := dockerComposeCommandContext(orphanCtx, orphanArgs...)
 		var orphanStderr bytes.Buffer
 		orphanCmd.Stderr = &orphanStderr
 
@@ -335,7 +338,7 @@ func (d *DeployOps) VerifyContainerHealth(ctx context.Context, composeFile strin
 	// Use docker compose ps to check container status
 	args := d.composeArgs(composeFile)
 	args = append(args, "ps", "--all", "--format", "json")
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := dockerComposeCommandContext(ctx, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -476,7 +479,7 @@ func (d *DeployOps) classifyComposeFailure(ctx context.Context, composeFiles []s
 	args := d.composeArgs(composeFiles...)
 	args = append(args, "ps", "--all", "--format", "json")
 
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := dockerComposeCommandContext(ctx, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
