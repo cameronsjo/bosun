@@ -852,14 +852,66 @@ hook_settle_delay: "3s"
 		assert.Equal(t, 3*time.Second, cfg.HookSettleDelay())
 	})
 
-	t.Run("returns empty config when no config file", func(t *testing.T) {
+	t.Run("marks snapshot absent when no config file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		cfg, err := LoadFrom(tmpDir)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
+		assert.False(t, cfg.ConfigFileFound())
 		assert.Empty(t, cfg.PostSyncHooks())
 		assert.Equal(t, time.Duration(0), cfg.HookSettleDelay())
+	})
+
+	t.Run("preserves empty-file and settle-delay key presence", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "bosun.yaml")
+		require.NoError(t, os.WriteFile(configPath, nil, 0644))
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.True(t, cfg.ConfigFileFound(), "a valid empty file is an authoritative snapshot")
+		assert.False(t, cfg.HookSettleDelayPresent())
+
+		require.NoError(t, os.WriteFile(configPath, []byte("hook_settle_delay: 0s\n"), 0644))
+		cfg, err = LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.True(t, cfg.ConfigFileFound())
+		assert.True(t, cfg.HookSettleDelayPresent(), "explicit zero must remain distinguishable from omission")
+		assert.Zero(t, cfg.HookSettleDelay())
+	})
+
+	t.Run("hook accessors return owned nested slices", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(`post_sync_hooks:
+  - paths: ["appdata/service/**"]
+    action: exec
+    container: service
+    command: ["reload", "--safe"]
+targets:
+  - name: nas
+    post_sync_hooks:
+      - paths: ["appdata/nas/**"]
+        action: restart
+        container: nas
+`), 0644))
+
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		rootA := cfg.PostSyncHooks()
+		rootB := cfg.PostSyncHooks()
+		targetA := cfg.Targets()
+		targetB := cfg.Targets()
+
+		rootA[0].Paths[0] = "mutated/**"
+		rootA[0].Command[0] = "mutated"
+		targetA[0].PostSyncHooks[0].Paths[0] = "mutated-target/**"
+
+		assert.Equal(t, "appdata/service/**", rootB[0].Paths[0])
+		assert.Equal(t, "reload", rootB[0].Command[0])
+		assert.Equal(t, "appdata/nas/**", targetB[0].PostSyncHooks[0].Paths[0])
 	})
 
 	t.Run("parses health_gate_scope", func(t *testing.T) {
@@ -918,6 +970,120 @@ hook_settle_delay: "3s"
 		require.Error(t, err)
 		assert.Nil(t, cfg)
 		assert.Contains(t, err.Error(), "failed to parse config file")
+	})
+}
+
+func TestLoadReloadedConfigPresenceSemantics(t *testing.T) {
+	t.Run("missing file has no snapshot", func(t *testing.T) {
+		reloaded, err := LoadReloadedConfig(t.TempDir())
+		require.NoError(t, err)
+		assert.Nil(t, reloaded)
+	})
+
+	t.Run("empty file clears hooks but omits delay", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), nil, 0644))
+
+		reloaded, err := LoadReloadedConfig(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, reloaded)
+		assert.NotNil(t, reloaded.PostSyncHooks)
+		assert.Empty(t, reloaded.PostSyncHooks)
+		assert.Nil(t, reloaded.HookSettleDelay)
+	})
+
+	t.Run("explicit zero delay survives snapshot", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte("hook_settle_delay: 0s\n"), 0644))
+
+		reloaded, err := LoadReloadedConfig(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, reloaded)
+		require.NotNil(t, reloaded.HookSettleDelay)
+		assert.Zero(t, *reloaded.HookSettleDelay)
+	})
+
+	t.Run("target hook omission and explicit empty remain distinct", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(`targets:
+  - name: inherit
+  - name: disabled
+    post_sync_hooks: []
+`), 0644))
+
+		reloaded, err := LoadReloadedConfig(tmpDir)
+		require.NoError(t, err)
+		require.Len(t, reloaded.Targets, 2)
+		assert.Nil(t, reloaded.Targets[0].PostSyncHooks)
+		assert.NotNil(t, reloaded.Targets[1].PostSyncHooks)
+		assert.Empty(t, reloaded.Targets[1].PostSyncHooks)
+	})
+
+	t.Run("malformed and invalid hooks reject the snapshot", func(t *testing.T) {
+		for name, content := range map[string]string{
+			"malformed":    "broken: yaml: value\n",
+			"invalid hook": "post_sync_hooks:\n  - action: exec\n    container: service\n",
+		} {
+			t.Run(name, func(t *testing.T) {
+				tmpDir := t.TempDir()
+				require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+				reloaded, err := LoadReloadedConfig(tmpDir)
+				require.Error(t, err)
+				assert.Nil(t, reloaded)
+			})
+		}
+	})
+}
+
+func TestApplyInitialHookConfigPresenceSemantics(t *testing.T) {
+	load := func(t *testing.T, content *string) *Config {
+		t.Helper()
+		tmpDir := t.TempDir()
+		if content != nil {
+			require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(*content), 0644))
+		}
+		cfg, err := LoadFrom(tmpDir)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		return cfg
+	}
+
+	t.Run("missing file retains defaults", func(t *testing.T) {
+		target := reconcile.DefaultConfig()
+		target.HookSettleDelay = reconcile.NewConfigField(2 * time.Second)
+		target.PostSyncHooks = reconcile.NewConfigField([]reconcile.PostSyncHook{{Container: "default"}})
+
+		ApplyInitialHookConfig(load(t, nil), target)
+
+		assert.Equal(t, 2*time.Second, target.HookSettleDelay.Value)
+		assert.Equal(t, reconcile.SourceDefault, target.HookSettleDelay.Source)
+		assert.Equal(t, "default", target.PostSyncHooks.Value[0].Container)
+	})
+
+	t.Run("valid empty file clears hooks and retains delay default", func(t *testing.T) {
+		empty := ""
+		target := reconcile.DefaultConfig()
+		target.HookSettleDelay = reconcile.NewConfigField(2 * time.Second)
+		target.PostSyncHooks = reconcile.NewConfigField([]reconcile.PostSyncHook{{Container: "default"}})
+
+		ApplyInitialHookConfig(load(t, &empty), target)
+
+		assert.NotNil(t, target.PostSyncHooks.Value)
+		assert.Empty(t, target.PostSyncHooks.Value)
+		assert.Equal(t, reconcile.SourceFile, target.PostSyncHooks.Source)
+		assert.Equal(t, 2*time.Second, target.HookSettleDelay.Value)
+		assert.Equal(t, reconcile.SourceDefault, target.HookSettleDelay.Source)
+	})
+
+	t.Run("explicit zero delay is file sourced", func(t *testing.T) {
+		zero := "hook_settle_delay: 0s\n"
+		target := reconcile.DefaultConfig()
+		target.HookSettleDelay = reconcile.NewConfigField(2 * time.Second)
+
+		ApplyInitialHookConfig(load(t, &zero), target)
+
+		assert.Zero(t, target.HookSettleDelay.Value)
+		assert.Equal(t, reconcile.SourceFile, target.HookSettleDelay.Source)
 	})
 }
 

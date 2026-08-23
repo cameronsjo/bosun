@@ -2057,8 +2057,7 @@ func ConfigFromEnv() *Config {
 
 	// Post-sync hooks, settle delay, deploy paths, alert flags, drift debounce, remove_orphans, and targets: load from project config, env var overrides.
 	if projectCfg, err := config.Load(); err == nil {
-		rcfg.PostSyncHooks.SetFromFile(projectCfg.PostSyncHooks())
-		rcfg.HookSettleDelay.SetFromFile(projectCfg.HookSettleDelay())
+		config.ApplyInitialHookConfig(projectCfg, rcfg)
 		rcfg.DeployPaths.SetFromFile(projectCfg.DeployPaths())
 		rcfg.CriticalContainers.SetFromFile(projectCfg.CriticalContainers())
 		rcfg.HealthGateScope = projectCfg.HealthGateScope()
@@ -2099,30 +2098,7 @@ func ConfigFromEnv() *Config {
 	}
 
 	// Wire config reloader so the reconciler can re-read bosun.yaml from the repo.
-	rcfg.ConfigReloader = func(dir string) (*reconcile.ReloadedConfig, error) {
-		cfg, err := config.LoadFrom(dir)
-		if err != nil {
-			return nil, err
-		}
-		alertCfg := cfg.GetAlertConfig()
-		removeOrphans := cfg.RemoveOrphans()
-		hookSettleDelay := cfg.HookSettleDelay()
-		projectName := cfg.ProjectName()
-		return &reconcile.ReloadedConfig{
-			PostSyncHooks:      cfg.PostSyncHooks(),
-			HookSettleDelay:    &hookSettleDelay,
-			DeployPaths:        cfg.DeployPaths(),
-			DeploySyncPaths:    cfg.DeploySyncPaths(),
-			DeploySyncExclude:  cfg.DeploySyncExclude(),
-			CriticalContainers: cfg.CriticalContainers(),
-			DriftIgnore:        cfg.DriftIgnore(),
-			OnFailure:          &alertCfg.OnFailure,
-			OnSuccess:          &alertCfg.OnSuccess,
-			RemoveOrphans:      &removeOrphans,
-			ProjectName:        &projectName,
-			Targets:            cfg.Targets(),
-		}, nil
-	}
+	rcfg.ConfigReloader = config.LoadReloadedConfig
 	if v := os.Getenv("BOSUN_POST_SYNC_HOOKS"); v != "" {
 		var hooks []reconcile.PostSyncHook
 		if err := json.Unmarshal([]byte(v), &hooks); err != nil {

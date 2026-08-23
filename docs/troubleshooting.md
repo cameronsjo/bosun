@@ -86,6 +86,12 @@ BOSUN_SKIP_DEPLOY_INVARIANT=true bosun reconcile
 
 The reconciler will log a `Warn` with `override=true` so the override is visible in monitoring. File a bug if you needed this — it indicates the invariant is misfiring or the underlying sync bug is reproducing.
 
+### Removed post-sync hooks still run
+
+On current versions, removing the root `post_sync_hooks` key, setting it to `[]`, or committing a valid empty `bosun.yaml` clears file-sourced hooks on the next successful reload. A missing or malformed config intentionally retains the last effective hooks because it is not a valid snapshot. Check the reload log for `hooks_outcome`, `hooks_source`, and `target`; command arguments are intentionally redacted.
+
+For target hooks, an omitted key inherits root and explicit `post_sync_hooks: []` disables inheritance. Removing a target descriptor drops its operational hook override immediately, but restart the daemon to remove the target from the running topology. `BOSUN_POST_SYNC_HOOKS` and target hooks supplied by `BOSUN_TARGETS` are environment-owned; remove or change those environment values and restart Bosun rather than editing `bosun.yaml`.
+
 ## Debug Mode
 
 Set verbose output:

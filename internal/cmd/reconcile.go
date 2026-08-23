@@ -251,26 +251,13 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		return
 	}
 	if projectCfgErr == nil {
-		cfg.PostSyncHooks.SetFromFile(projectCfg.PostSyncHooks())
-		cfg.HookSettleDelay.SetFromFile(projectCfg.HookSettleDelay())
+		config.ApplyInitialHookConfig(projectCfg, cfg)
 		cfg.DeployPaths.SetFromFile(projectCfg.DeployPaths())
 		cfg.TemplateIncludeDir = projectCfg.TemplateIncludeDir()
 	}
 
 	// Wire config reloader so the reconciler can re-read bosun.yaml from the repo.
-	cfg.ConfigReloader = func(dir string) (*reconcile.ReloadedConfig, error) {
-		projectCfg, err := config.LoadFrom(dir)
-		if err != nil {
-			return nil, err
-		}
-		hookSettleDelay := projectCfg.HookSettleDelay()
-		return &reconcile.ReloadedConfig{
-			PostSyncHooks:   projectCfg.PostSyncHooks(),
-			HookSettleDelay: &hookSettleDelay,
-			DeployPaths:     projectCfg.DeployPaths(),
-			DriftIgnore:     projectCfg.DriftIgnore(),
-		}, nil
-	}
+	cfg.ConfigReloader = config.LoadReloadedConfig
 
 	// Environment variable override for post-sync hooks (JSON, same as daemon).
 	if v := os.Getenv("BOSUN_POST_SYNC_HOOKS"); v != "" {

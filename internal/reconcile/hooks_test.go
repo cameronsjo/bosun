@@ -77,17 +77,19 @@ func TestMatchAnyPath(t *testing.T) {
 func TestResolveHookSettleDelay(t *testing.T) {
 	tests := []struct {
 		name       string
-		configured time.Duration
+		configured ConfigField[time.Duration]
 		deployPath string
 		want       time.Duration
 	}{
-		{"explicit delay wins on FUSE path", 5 * time.Second, "/mnt/user/appdata", 5 * time.Second},
-		{"explicit delay wins on non-FUSE path", 5 * time.Second, "/mnt/appdata", 5 * time.Second},
-		{"unset delay defaults on FUSE path", 0, "/mnt/user/appdata", defaultFUSESettleDelay},
-		{"unset delay defaults on nested FUSE path", 0, "/mnt/user/appdata/myapp", defaultFUSESettleDelay},
-		{"unset delay stays zero on non-FUSE path", 0, "/mnt/appdata", 0},
-		{"unset delay stays zero on empty path", 0, "", 0},
-		{"unset delay stays zero on lookalike prefix", 0, "/mnt/userdata", 0},
+		{"explicit file delay wins on FUSE path", FileConfigField(5 * time.Second), "/mnt/user/appdata", 5 * time.Second},
+		{"explicit environment delay wins on non-FUSE path", EnvConfigField(5 * time.Second), "/mnt/appdata", 5 * time.Second},
+		{"explicit file zero disables FUSE fallback", FileConfigField(time.Duration(0)), "/mnt/user/appdata", 0},
+		{"explicit environment zero disables FUSE fallback", EnvConfigField(time.Duration(0)), "/mnt/user/appdata", 0},
+		{"unset delay defaults on FUSE path", NewConfigField(time.Duration(0)), "/mnt/user/appdata", defaultFUSESettleDelay},
+		{"unset delay defaults on nested FUSE path", NewConfigField(time.Duration(0)), "/mnt/user/appdata/myapp", defaultFUSESettleDelay},
+		{"unset delay stays zero on non-FUSE path", NewConfigField(time.Duration(0)), "/mnt/appdata", 0},
+		{"unset delay stays zero on empty path", NewConfigField(time.Duration(0)), "", 0},
+		{"unset delay stays zero on lookalike prefix", NewConfigField(time.Duration(0)), "/mnt/userdata", 0},
 	}
 
 	for _, tc := range tests {

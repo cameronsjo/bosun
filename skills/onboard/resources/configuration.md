@@ -123,7 +123,7 @@ health_gate_scope: critical
 # Post-sync hooks: act on containers when specific config files change.
 # Solves services (like Traefik) not picking up config changes on FUSE mounts.
 post_sync_hooks:
-  - paths: ["traefik/conf.d/**"]
+  - paths: ["appdata/traefik/conf.d/**"]
     action: restart
     container: traefik
     delay: "5s"                  # Per-hook pause before this container restarts
@@ -150,7 +150,7 @@ post_sync_hooks:
 | `alerts.on_failure` | `true` | Send alerts on failed deploys |
 | `remove_orphans` | `true` | Pass `--remove-orphans` to docker compose up |
 | `post_sync_hooks` | `[]` | Container restart or exec hooks triggered by file changes |
-| `hook_settle_delay` | `0` (disabled) | Global pause after deploy before hooks run (e.g., `"2s"`) |
+| `hook_settle_delay` | `2s` on unconfigured Unraid `/mnt/user` targets; `0` elsewhere | Global pause after deploy before hooks run. Explicit `0s` disables the FUSE fallback |
 | `deploy_paths` | `[]` (deploy all) | Glob allowlist — skip pipeline when no changed files match |
 | `deploy_sync_paths` | `[]` (sync all) | Glob allowlist — only sync staging entries matching these patterns |
 | `deploy_sync_exclude` | `[]` (exclude none) | Glob blocklist — exclude matching staging entries from sync (wins over include) |
@@ -178,7 +178,7 @@ targets:
     secrets_scope: nas                   # Decrypt targets.nas.* from secrets
     critical_containers: [traefik, authelia]
     post_sync_hooks:
-      - paths: ["traefik/conf.d/**"]
+      - paths: ["appdata/traefik/conf.d/**"]
         action: restart
         container: traefik
     deploy_sync_paths: ["compose/**", "appdata/**"]
@@ -199,11 +199,11 @@ later pipeline failure can retain plaintext diagnostic evidence in that one slot
 Bosun restricts retained directories to `0700` and regular files to `0600` and
 replaces the slot on the next render. Dry runs retain the secured render too.
 
-The daemon resolves target identity, host, and paths from its startup configuration. Restart the daemon after adding or removing targets or changing `target_host`, appdata paths, `state_file`, or `staging_dir`; only per-target operational overrides such as hooks, sync paths, critical containers, and `project_name` hot-reload from the pulled repository.
+The daemon resolves target identity, host, and paths from its startup configuration. Restart the daemon after adding or removing targets or changing `target_host`, appdata paths, `state_file`, or `staging_dir`; only per-target operational overrides such as hooks, sync paths, critical containers, and `project_name` hot-reload from the pulled repository. During that restart window, removing a target descriptor immediately drops its stale hook override and the existing reconciler inherits current root hooks. Within a retained target, omitting `post_sync_hooks` inherits root hooks while an explicit `post_sync_hooks: []` disables hooks for that target.
 
 Per-target secrets scoping: when `secrets_scope` is set, keys under `targets.<scope>.*` in the decrypted secrets override top-level keys for that target.
 
-Override via environment: `BOSUN_TARGETS` (JSON array) completely replaces the config file targets. It accepts the same snake_case fields as YAML, including `state_file` and `staging_dir`: `[{"name":"nas","target_host":"user@host","project_name":"homelab","state_file":"/var/lib/bosun/nas-state.json","staging_dir":"/app/nas-staging"}]`. Setting `BOSUN_TARGETS=[]` explicitly clears all targets (falls back to implicit default).
+Override via environment: `BOSUN_TARGETS` (JSON array) completely replaces the config file targets. It accepts the same snake_case fields as YAML, including `state_file` and `staging_dir`: `[{"name":"nas","target_host":"user@host","project_name":"homelab","state_file":"/var/lib/bosun/nas-state.json","staging_dir":"/app/nas-staging"}]`. Setting `BOSUN_TARGETS=[]` explicitly clears all targets (falls back to implicit default). A target-specific `post_sync_hooks` list supplied through `BOSUN_TARGETS` remains environment-owned during repo reload, including an explicit empty list.
 
 **Constraints:** Target names must be alphanumeric with hyphens/underscores (no dots, spaces, or path separators). The name `"default"` is reserved for a lone explicit default target; it cannot appear in a multi-target list. Duplicate names (case-insensitive) are rejected. Two targets may intentionally use the same host only when their effective `project_name` and deploy path are both distinct. Bosun rejects targets that resolve to the same host plus Compose project or the same host plus local/remote appdata path; an omitted project name uses Compose's derived `compose` namespace, and equivalent paths with `.` segments or trailing slashes count as the same destination.
 
@@ -448,7 +448,7 @@ Restart containers automatically when specific files change during deployment. U
 ```yaml
 # bosun.yaml
 post_sync_hooks:
-  - paths: ["traefik/conf.d/**"]
+  - paths: ["appdata/traefik/conf.d/**"]
     action: restart
     container: traefik
 ```
@@ -465,7 +465,7 @@ post_sync_hooks:
 
 ### Behavior
 
-- After a successful deploy, bosun diffs the previous and current commits to find changed files
+- After a successful deploy, bosun prefers files actually written or deleted. Its git-diff fallback uses the last successfully deployed commit and normalizes repo-relative paths into the same staging-relative namespace
 - Each changed file is matched against hook glob patterns
 - Each container is restarted at most once per deploy, even if multiple patterns match
 - Hooks only run when dry run is disabled and a previous commit exists (skipped on first deploy)
@@ -479,6 +479,10 @@ The `BOSUN_POST_SYNC_HOOKS` environment variable (JSON array) overrides hooks fr
 export BOSUN_POST_SYNC_HOOKS='[{"paths":["traefik/**"],"action":"restart","container":"traefik","delay":"5s"}]'
 export BOSUN_HOOK_SETTLE_DELAY=2s
 ```
+
+### Reload and Removal Semantics
+
+Daemon and one-shot CLI startup/reload use the same snapshot rules. After a supported config file loads successfully, omitting `post_sync_hooks` or setting it to `[]` clears file-sourced root hooks. Omitting `hook_settle_delay` retains its prior effective value; setting `hook_settle_delay: 0s` explicitly disables the delay, including the Unraid FUSE fallback. A valid empty config file is a successful snapshot, while a missing, unreadable, malformed, or hook-invalid file retains the current hook state. Environment replacements remain authoritative and never merge with repo hooks.
 
 ## Docker Compose Project Name
 
