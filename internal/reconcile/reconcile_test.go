@@ -616,15 +616,15 @@ func TestSetProjectNameIdenticalValueIsNoOp(t *testing.T) {
 }
 
 func TestExecutePostSyncHooks_DiffFilesError_FiresAllHooks(t *testing.T) {
-	// Simulates the shallow clone scenario: DiffFiles fails because the previous
-	// commit is not in the shallow history. This is the root cause of GitHub #55.
+	// Any unclassified diff failure must retain the same fail-safe behavior as
+	// the explicit shallow-history sentinel.
 	cfg := &Config{
 		PostSyncHooks: NewConfigField([]PostSyncHook{
 			{Paths: []string{"**"}, Action: "restart", Container: "traefik"},
 		}),
 	}
 
-	diffErr := fmt.Errorf("resolve from-commit abc12345: object not found")
+	diffErr := fmt.Errorf("object database unavailable")
 	mockGitOps := &mockGitWithDiff{
 		diffFiles: nil,
 		diffErr:   diffErr,
@@ -840,6 +840,16 @@ func TestRun_DeployPathsMatch(t *testing.T) {
 }
 
 func TestRun_DeployPathsDiffFails(t *testing.T) {
+	t.Run("unavailable commit", func(t *testing.T) {
+		testRunDeployPathsDiffFails(t, fmt.Errorf("%w: object not found", ErrCommitUnavailable))
+	})
+	t.Run("generic diff error", func(t *testing.T) {
+		testRunDeployPathsDiffFails(t, fmt.Errorf("object database unavailable"))
+	})
+}
+
+func testRunDeployPathsDiffFails(t *testing.T, diffErr error) {
+	t.Helper()
 	tmpDir := t.TempDir()
 	stateFile := filepath.Join(tmpDir, "state.json")
 
@@ -860,7 +870,7 @@ func TestRun_DeployPathsDiffFails(t *testing.T) {
 		syncChanged: true,
 		syncBefore:  "aaa111",
 		syncAfter:   "bbb222",
-		diffErr:     fmt.Errorf("object not found"),
+		diffErr:     diffErr,
 	}
 
 	seedStubComposeService(t, cfg)
@@ -1799,7 +1809,7 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
-		gitOps := &mockGitOps{diffErr: fmt.Errorf("shallow clone")}
+		gitOps := &mockGitOps{diffErr: fmt.Errorf("%w: shallow clone", ErrCommitUnavailable)}
 		cfg := &Config{
 			PostSyncHooks: NewConfigField([]PostSyncHook{
 				{Container: "traefik", Paths: []string{"traefik/**"}, Action: "restart"},

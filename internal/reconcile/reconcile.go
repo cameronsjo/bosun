@@ -566,7 +566,11 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	if len(r.config.DeployPaths.Value) > 0 && changed && !r.config.Force && state.LastDeployedCommit != "" {
 		changedFiles, err := r.git.DiffFiles(ctx, state.LastDeployedCommit, after)
 		if err != nil {
-			logger.Warn().Err(err).Msg("Cannot diff for deploy_paths check, proceeding with full deploy")
+			if errors.Is(err, ErrCommitUnavailable) {
+				logger.Warn().Err(err).Msg("Deploy diff base is unavailable in shallow git history, proceeding with full deploy")
+			} else {
+				logger.Warn().Err(err).Msg("Cannot diff for deploy_paths check, proceeding with full deploy")
+			}
 		} else if !matchAnyPath(changedFiles, r.config.DeployPaths.Value) {
 			logger.Info().
 				Strs("changed_files", changedFiles).
@@ -1113,7 +1117,11 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 			// reachable. Rather than silently skipping hooks, fall back to evaluating
 			// all hooks unconditionally — a false positive restart is better than a
 			// stale config on a FUSE mount. See GitHub #55.
-			logger.Warn().Err(err).Msg("Failed to diff commits for post-sync hooks, will evaluate all hooks")
+			if errors.Is(err, ErrCommitUnavailable) {
+				logger.Warn().Err(err).Msg("Git history is insufficient for post-sync hook diff, will evaluate all hooks")
+			} else {
+				logger.Warn().Err(err).Msg("Failed to diff commits for post-sync hooks, will evaluate all hooks")
+			}
 			diffFailed = true
 		}
 	}

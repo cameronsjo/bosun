@@ -330,6 +330,7 @@ Used by `bosun daemon` and `bosun reconcile`:
 | Variable | Description |
 |----------|-------------|
 | `BOSUN_REMOVE_ORPHANS` | Pass `--remove-orphans` to docker compose up (default: `true`; overrides config file). Set to `false` in shared environments where Bosun doesn't own all containers |
+| `BOSUN_GIT_FETCH_DEPTH` | Positive shallow clone/fetch history depth (default: `1`). Increase when deploy-path or hook diffs regularly span multiple commits; unavailable history still fails safe to a full deploy/all hooks |
 | `BOSUN_CRITICAL_CONTAINERS` | JSON array of container names that must be healthy after deploy (overrides config file) |
 | `BOSUN_HEALTH_GATE_TIMEOUT` | Health gate polling timeout (default: `60s`; `0` disables the gate). Accepts Go duration strings or bare seconds |
 | `BOSUN_BACKUP_TIMEOUT` | Pre-deploy backup creation + verification timeout (default: `5m`). Accepts Go duration strings or bare seconds. On timeout the backup is treated as a failure but the deploy continues |

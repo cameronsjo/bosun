@@ -245,6 +245,7 @@ The daemon provides:
 |----------|-------------|---------|
 | `BOSUN_REPO_URL` | Git repository URL | Required |
 | `BOSUN_REPO_BRANCH` | Branch to track | `main` |
+| `BOSUN_GIT_FETCH_DEPTH` | Shallow clone/fetch history depth; increase when deploy diffs span multiple commits | `1` |
 | `BOSUN_POLL_INTERVAL` | Poll interval in seconds | `3600` |
 | `BOSUN_SOCKET_PATH` | Unix socket path | `/var/run/bosun.sock` |
 | `WEBHOOK_SECRET` | Webhook signature validation | Required for webhook triggers (fail-closed) |

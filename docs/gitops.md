@@ -403,16 +403,17 @@ The git subsystem (`internal/reconcile/git.go`) handles repository synchronizati
 
 ### Clone Behavior
 
-- **Shallow clone**: Uses depth 1 by default to minimize bandwidth
+- **Shallow clone**: Uses depth 1 by default to minimize bandwidth; `BOSUN_GIT_FETCH_DEPTH` configures a deeper positive depth
 - **Single branch**: Only fetches the configured branch
 - **Cleanup on failure**: Removes partial clones if the operation fails
 - **In-process**: No external `git` binary required
 
 ### Pull Behavior
 
-- **Shallow fetch**: Uses depth 1 for minimal data transfer
+- **Shallow fetch**: Uses the same configured depth as clone and deepens an existing shallow checkout when needed
 - **Hard reset**: Resets to `origin/<branch>` to ensure clean state
 - **Change detection**: Compares commit hashes before/after to detect changes
+- **Missing diff history fails safe**: An unavailable prior commit is reported explicitly; deploy-path checks run a full deploy and post-sync hooks all fire
 
 ### Timeouts
 
