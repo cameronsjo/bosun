@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestReloadProjectConfig_RootSlicesDoNotAliasReloadedConfig(t *testing.T) {
@@ -24,7 +25,7 @@ func TestReloadProjectConfig_RootSlicesDoNotAliasReloadedConfig(t *testing.T) {
 		return reloaded, nil
 	}}
 	r := NewReconciler(cfg)
-	r.reloadProjectConfig()
+	require.NoError(t, r.reloadProjectConfig())
 
 	r.config.PostSyncHooks.Value[0].Container = "mutated-container"
 	r.config.PostSyncHooks.Value[0].Paths[0] = "mutated-path/**"
@@ -74,7 +75,7 @@ func TestReloadProjectConfig_ClonedEmptySlicesStillClear(t *testing.T) {
 		},
 	}
 	r := NewReconciler(cfg)
-	r.reloadProjectConfig()
+	require.NoError(t, r.reloadProjectConfig())
 
 	assert.NotNil(t, r.config.PostSyncHooks.Value)
 	assert.NotNil(t, r.config.DeployPaths.Value)
@@ -124,7 +125,7 @@ func TestReloadProjectConfig_TargetOverrideSlicesAreIndependent(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		return r
 	}
 
@@ -168,7 +169,7 @@ func TestReloadProjectConfig_TargetOverrideSlicesDoNotRace(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		return r
 	}
 

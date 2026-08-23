@@ -328,7 +328,7 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		require.Len(t, r.config.PostSyncHooks.Value, 1)
 		assert.Equal(t, "new", r.config.PostSyncHooks.Value[0].Container)
@@ -349,7 +349,7 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		require.Len(t, r.config.PostSyncHooks.Value, 1)
 		assert.Equal(t, "env-hook", r.config.PostSyncHooks.Value[0].Container)
@@ -365,7 +365,7 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		assert.Equal(t, 5*time.Second, r.config.HookSettleDelay.Value)
 	})
@@ -382,7 +382,7 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		assert.Equal(t, 2*time.Second, r.config.HookSettleDelay.Value)
 	})
@@ -399,7 +399,7 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		assert.Equal(t, time.Duration(0), r.config.HookSettleDelay.Value)
 	})
@@ -464,7 +464,7 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		require.Len(t, r.config.PostSyncHooks.Value, 1)
 		assert.Equal(t, "unchanged", r.config.PostSyncHooks.Value[0].Container)
@@ -481,7 +481,7 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		require.Len(t, r.config.PostSyncHooks.Value, 1)
 		assert.Equal(t, "existing", r.config.PostSyncHooks.Value[0].Container)
@@ -597,7 +597,7 @@ func TestReloadProjectConfig_ProjectName(t *testing.T) {
 			}
 			r := NewReconciler(tt.cfg)
 
-			r.reloadProjectConfig()
+			require.NoError(t, r.reloadProjectConfig())
 
 			assert.Equal(t, tt.want, r.config.ProjectName, tt.reason)
 			if tt.wantDeploy != "" {
@@ -727,7 +727,7 @@ func TestReloadProjectConfig_DeployPaths(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		assert.Equal(t, []string{"unraid/**", "infra/**"}, r.config.DeployPaths.Value)
 	})
@@ -743,7 +743,7 @@ func TestReloadProjectConfig_DeployPaths(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		assert.Equal(t, []string{"env/**"}, r.config.DeployPaths.Value)
 	})
@@ -1898,7 +1898,7 @@ func TestReloadProjectConfig(t *testing.T) {
 	t.Run("nil reloader is no-op", func(t *testing.T) {
 		cfg := &Config{}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig() // Should not panic
+		require.NoError(t, r.reloadProjectConfig()) // Should not panic
 	})
 
 	t.Run("reloader error keeps existing config", func(t *testing.T) {
@@ -1909,7 +1909,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		assert.Equal(t, "orig", r.config.PostSyncHooks.Value[0].Container)
 	})
 
@@ -1920,7 +1920,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 	})
 
 	t.Run("reloader updates hooks from repo", func(t *testing.T) {
@@ -1932,7 +1932,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.PostSyncHooks.Value, 1)
 		assert.Equal(t, "new-container", r.config.PostSyncHooks.Value[0].Container)
 	})
@@ -1947,7 +1947,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		assert.Equal(t, "env-container", r.config.PostSyncHooks.Value[0].Container)
 	})
 
@@ -1960,7 +1960,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.DeployPaths.Value, 1)
 		assert.Equal(t, "infra/**", r.config.DeployPaths.Value[0])
 	})
@@ -1975,7 +1975,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		assert.Equal(t, 5*time.Second, r.config.HookSettleDelay.Value)
 	})
 
@@ -1987,7 +1987,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		assert.Equal(t, "orig", r.config.PostSyncHooks.Value[0].Container)
 	})
 
@@ -2000,7 +2000,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.CriticalContainers.Value, 2)
 		assert.Equal(t, "traefik", r.config.CriticalContainers.Value[0])
 		assert.Equal(t, "authelia", r.config.CriticalContainers.Value[1])
@@ -2016,7 +2016,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.CriticalContainers.Value, 1)
 		assert.Equal(t, "env-container", r.config.CriticalContainers.Value[0])
 	})
@@ -2035,7 +2035,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.DriftIgnore.Value, 1, "invalid reload must not replace the previous rules")
 		assert.Equal(t, "traefik", r.config.DriftIgnore.Value[0].Service)
 		assert.Equal(t, "unhealthy", r.config.DriftIgnore.Value[0].Type)
@@ -2055,7 +2055,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.DriftIgnore.Value, 1)
 		assert.Equal(t, "api", r.config.DriftIgnore.Value[0].Service)
 		assert.Equal(t, "missing", r.config.DriftIgnore.Value[0].Type)
@@ -2072,7 +2072,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.DriftIgnore.Value, 1, "a total-suppression rule is syntactically valid and should still apply")
 		assert.Equal(t, "*", r.config.DriftIgnore.Value[0].Service)
 		assert.Equal(t, "*", r.config.DriftIgnore.Value[0].Type)
@@ -2092,7 +2092,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.DriftIgnore.Value, 1)
 		assert.Equal(t, "env-service", r.config.DriftIgnore.Value[0].Service)
 	})
@@ -2114,7 +2114,7 @@ func TestReloadProjectConfig_TargetOverrides(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.PostSyncHooks.Value, 1)
 		assert.Equal(t, "target-hook", r.config.PostSyncHooks.Value[0].Container)
 	})
@@ -2132,7 +2132,7 @@ func TestReloadProjectConfig_TargetOverrides(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		assert.Equal(t, "env-hook", r.config.PostSyncHooks.Value[0].Container)
 	})
 
@@ -2149,7 +2149,7 @@ func TestReloadProjectConfig_TargetOverrides(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		assert.Equal(t, "root-hook", r.config.PostSyncHooks.Value[0].Container)
 	})
 
@@ -2166,7 +2166,7 @@ func TestReloadProjectConfig_TargetOverrides(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		assert.Equal(t, "root-hook", r.config.PostSyncHooks.Value[0].Container)
 	})
 
@@ -2182,7 +2182,7 @@ func TestReloadProjectConfig_TargetOverrides(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.CriticalContainers.Value, 1)
 		assert.Equal(t, "traefik", r.config.CriticalContainers.Value[0])
 	})
@@ -2205,7 +2205,7 @@ func TestReloadProjectConfig_TargetOverrides(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.PostSyncHooks.Value, 1)
 		assert.Equal(t, "hook", r.config.PostSyncHooks.Value[0].Container)
 		require.Len(t, r.config.CriticalContainers.Value, 1)
@@ -4278,7 +4278,7 @@ func TestReloadProjectConfig_AlertGates(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		assert.False(t, r.config.OnFailure, "OnFailure should be updated to false from repo config")
 		assert.True(t, r.config.OnSuccess, "OnSuccess should be updated to true from repo config")
@@ -4294,7 +4294,7 @@ func TestReloadProjectConfig_AlertGates(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		assert.True(t, r.config.OnFailure, "OnFailure should remain true when not reloaded")
 		assert.False(t, r.config.OnSuccess, "OnSuccess should remain false when not reloaded")
