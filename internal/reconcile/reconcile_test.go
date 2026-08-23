@@ -1,7 +1,9 @@
 package reconcile
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,11 +13,13 @@ import (
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
 	"github.com/cameronsjo/bosun/internal/docker"
+	logpkg "github.com/cameronsjo/bosun/internal/log"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -694,6 +698,95 @@ func TestExecutePostSyncHooks_EmptyPreviousCommit_Skips(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 0, matched, "no hooks should match on first deploy")
 	assert.False(t, dockerCalled, "hooks should be skipped on first deploy (empty previousCommit)")
+}
+
+func TestExecutePostSyncHooks_NoMatchingPatternsWarnsWithBoundedDiagnostics(t *testing.T) {
+	const secretCommandArgument = "super-secret-command-argument"
+	cfg := &Config{
+		PostSyncHooks: NewConfigField([]PostSyncHook{
+			{
+				Paths:     []string{"traefik/**", "traefik/**"},
+				Action:    "exec",
+				Container: "traefik",
+				Command:   []string{"reload", secretCommandArgument},
+			},
+			{Paths: []string{"authelia/**"}, Action: "restart", Container: "authelia"},
+		}),
+	}
+	r := NewReconciler(cfg, WithGitOperations(&mockGitWithDiff{}))
+	dockerCalled := false
+	r.dockerClientFn = func() *docker.Client {
+		dockerCalled = true
+		return nil
+	}
+
+	changedFiles := []string{
+		"appdata/traefik/one.yml",
+		"appdata/traefik/two.yml",
+		"appdata/traefik/three.yml",
+		"appdata/traefik/four.yml",
+		"appdata/traefik/five.yml",
+		"appdata/traefik/six.yml",
+		"appdata/traefik/seven.yml",
+	}
+	var logs bytes.Buffer
+	logger := zerolog.New(&logs).Level(zerolog.InfoLevel)
+	ctx := logpkg.WithContext(context.Background(), &logger)
+
+	matched, err := r.executePostSyncHooks(ctx, "commit-A", "commit-B", &DeployResult{WrittenFiles: changedFiles}, true)
+
+	require.NoError(t, err)
+	assert.Zero(t, matched)
+	assert.False(t, dockerCalled)
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
+	assert.Equal(t, "warn", entry["level"])
+	assert.Equal(t, "Files changed but no post-sync hook patterns matched", entry["message"])
+	assert.Equal(t, float64(2), entry["hooks_configured"])
+	assert.Equal(t, float64(2), entry["patterns_configured"])
+	assert.Equal(t, []any{"traefik/**", "authelia/**"}, entry["patterns"])
+	assert.Equal(t, float64(len(changedFiles)), entry["changed_files"])
+	assert.Equal(t, float64(postSyncHookFileSampleLimit), entry["sampled_files"])
+	assert.Equal(t, []any{
+		"appdata/traefik/one.yml",
+		"appdata/traefik/two.yml",
+		"appdata/traefik/three.yml",
+		"appdata/traefik/four.yml",
+		"appdata/traefik/five.yml",
+	}, entry["sample_files"])
+	assert.NotContains(t, logs.String(), "appdata/traefik/six.yml")
+	assert.NotContains(t, logs.String(), "appdata/traefik/seven.yml")
+	assert.NotContains(t, logs.String(), secretCommandArgument)
+}
+
+func TestExecutePostSyncHooks_NoChangedFilesLogsDistinctInfo(t *testing.T) {
+	cfg := &Config{
+		PostSyncHooks: NewConfigField([]PostSyncHook{
+			{Paths: []string{"traefik/**"}, Action: "restart", Container: "traefik"},
+		}),
+	}
+	r := NewReconciler(cfg, WithGitOperations(&mockGitWithDiff{}))
+	dockerCalled := false
+	r.dockerClientFn = func() *docker.Client {
+		dockerCalled = true
+		return nil
+	}
+
+	var logs bytes.Buffer
+	logger := zerolog.New(&logs).Level(zerolog.InfoLevel)
+	ctx := logpkg.WithContext(context.Background(), &logger)
+	matched, err := r.executePostSyncHooks(ctx, "commit-A", "commit-B", nil, true)
+
+	require.NoError(t, err)
+	assert.Zero(t, matched)
+	assert.False(t, dockerCalled)
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
+	assert.Equal(t, "info", entry["level"])
+	assert.Equal(t, "No files changed; post-sync hooks have nothing to evaluate", entry["message"])
+	assert.Equal(t, float64(1), entry["hooks_configured"])
+	assert.NotContains(t, logs.String(), "no post-sync hook patterns matched")
+	assert.NotContains(t, entry, "sample_files")
 }
 
 // mockGitWithDiff extends the basic mock with controllable DiffFiles behavior.

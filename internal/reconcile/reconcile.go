@@ -1175,6 +1175,9 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	}
 
 	if len(changedFiles) == 0 && !diffFailed && !remoteMode {
+		logger.Info().
+			Int("hooks_configured", len(r.config.PostSyncHooks.Value)).
+			Msg("No files changed; post-sync hooks have nothing to evaluate")
 		return 0, nil
 	}
 
@@ -1190,6 +1193,16 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 		matched = EvaluatePostSyncHooks(changedFiles, r.config.PostSyncHooks.Value)
 	}
 	if len(matched) == 0 {
+		patterns := postSyncHookPatterns(r.config.PostSyncHooks.Value)
+		sampleFiles := sampleDistinctPaths(changedFiles, postSyncHookFileSampleLimit)
+		logger.Warn().
+			Int("hooks_configured", len(r.config.PostSyncHooks.Value)).
+			Int("patterns_configured", len(patterns)).
+			Strs("patterns", patterns).
+			Int("changed_files", len(changedFiles)).
+			Int("sampled_files", len(sampleFiles)).
+			Strs("sample_files", sampleFiles).
+			Msg("Files changed but no post-sync hook patterns matched")
 		return 0, nil
 	}
 
@@ -1217,6 +1230,46 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	}
 
 	return len(matched), nil
+}
+
+// Keep no-match diagnostics useful without allowing a large deploy to flood
+// logs. Paths are already staging-relative at this point; only path metadata is
+// sampled, never file contents or hook command arguments.
+const postSyncHookFileSampleLimit = 5
+
+func postSyncHookPatterns(hooks []PostSyncHook) []string {
+	seen := make(map[string]struct{})
+	patterns := make([]string, 0)
+	for _, hook := range hooks {
+		for _, pattern := range hook.Paths {
+			if _, exists := seen[pattern]; exists {
+				continue
+			}
+			seen[pattern] = struct{}{}
+			patterns = append(patterns, pattern)
+		}
+	}
+	return patterns
+}
+
+func sampleDistinctPaths(paths []string, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, limit)
+	sample := make([]string, 0, min(limit, len(paths)))
+	for _, file := range paths {
+		if _, exists := seen[file]; exists {
+			continue
+		}
+		seen[file] = struct{}{}
+		sample = append(sample, file)
+		if len(sample) == limit {
+			break
+		}
+	}
+	return sample
 }
 
 // normalizeHookDiffPaths converts repo-relative git diff paths into the same

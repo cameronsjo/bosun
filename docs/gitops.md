@@ -457,6 +457,12 @@ Root and per-target hooks validate before either hooks or delay change. An omitt
 
 Hook globs use staging-relative paths such as `appdata/traefik/**`. When actual written/deleted paths are unavailable, bosun diffs from `DeployState.LastDeployedCommit` and strips the infra-directory prefix from repo-relative paths before matching. A failed pipeline therefore cannot advance the hook diff base or silently lose its changes on retry.
 
+When files changed but no hook pattern matches, bosun emits a warning with the
+configured patterns, the evaluated-file count, and at most five sample paths.
+The distinct no-change case is an info log, not a mismatch warning. These
+diagnostics include path metadata only, never file contents or hook command
+arguments.
+
 ### Timeouts
 
 | Operation | Timeout |

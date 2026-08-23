@@ -205,6 +205,12 @@ After `docker compose up`, bosun determines which files changed and matches them
 
 Written/deleted paths and fallback git-diff paths use one canonical staging-relative namespace (for example, `appdata/traefik/**`). The fallback strips `BOSUN_INFRA_DIR` from repo-relative paths and diffs from `DeployState.LastDeployedCommit`, so a failed attempt never advances the hook diff base or loses changes from the next successful retry.
 
+If files changed but none match any configured hook pattern, bosun warns with
+the patterns, the evaluated-file count, and at most five sample paths. A deploy
+with no changed files is logged separately at info level and is not treated as
+a likely pattern mistake. Hook diagnostics never include file contents or hook
+command arguments.
+
 Two timing controls are available:
 - **`hook_settle_delay`** — global pause after deploy, before any hooks run (filesystem propagation)
 - **`delay`** — per-hook pause before restarting a specific container
