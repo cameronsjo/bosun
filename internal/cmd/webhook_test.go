@@ -1,11 +1,24 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/fatih/color"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/cameronsjo/bosun/internal/daemon"
+	"github.com/cameronsjo/bosun/internal/log"
 )
 
 func TestComputeHMAC(t *testing.T) {
@@ -346,6 +359,69 @@ func TestValidateBitbucketSignature(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStandaloneGitHubWebhookSanitizesPusherAttribution(t *testing.T) {
+	const malicious = "trusted\nFORGED\r\t\x1b[31m\u0085\u2028\u2029\u202e"
+	const sanitized = "trustedFORGED[31m"
+
+	client := &recordingWebhookClient{}
+	handler := &webhookHandler{
+		client: client,
+		secret: "webhook-secret",
+	}
+	payload, err := json.Marshal(map[string]any{
+		"ref":    "refs/heads/main",
+		"pusher": map[string]string{"name": malicious},
+	})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/github", bytes.NewReader(payload))
+	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-Hub-Signature-256", "sha256="+computeHMAC(payload, handler.secret))
+	w := httptest.NewRecorder()
+
+	output := captureWebhookColorOutput(t, func() {
+		handler.handleGitHubWebhook(w, req)
+	})
+
+	assert.Equal(t, http.StatusAccepted, w.Code)
+	assert.Equal(t, "github:"+sanitized, client.source)
+	assert.Equal(t, "GitHub push from "+sanitized+" on refs/heads/main\n", output)
+	assert.Equal(t, 1, strings.Count(output, "\n"), "attacker input must not create extra log lines")
+}
+
+type recordingWebhookClient struct {
+	source string
+}
+
+func (c *recordingWebhookClient) Trigger(_ context.Context, source string, _ bool) (*daemon.TriggerResponse, error) {
+	c.source = source
+	return &daemon.TriggerResponse{Status: "accepted"}, nil
+}
+
+func (c *recordingWebhookClient) Health(context.Context) (*daemon.HealthStatus, error) {
+	return &daemon.HealthStatus{Status: "healthy"}, nil
+}
+
+func captureWebhookColorOutput(t *testing.T, fn func()) string {
+	t.Helper()
+
+	oldFormat := log.GetFormat()
+	oldOutput := color.Output
+	oldNoColor := color.NoColor
+	var output bytes.Buffer
+
+	log.Init(&log.Options{Format: log.FormatConsole})
+	color.Output = &output
+	color.NoColor = true
+	defer func() {
+		color.Output = oldOutput
+		color.NoColor = oldNoColor
+		log.Init(&log.Options{Format: oldFormat})
+	}()
+
+	fn()
+	return output.String()
 }
 
 // computeExpectedHMAC is a helper for test verification.

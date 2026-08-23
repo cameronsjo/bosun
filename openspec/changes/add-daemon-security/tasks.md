@@ -40,7 +40,7 @@
 ## 6. Webhook payload sanitization
 
 - [x] 6.1 Add a sanitize helper (length cap + control-char strip) for pusher name
-- [x] 6.2 Apply it before logging, span attributes, and the `github:%s` source string in `handleGitHubWebhook`
+- [x] 6.2 Apply it before logging and the downstream `github:%s` reconcile source in both direct and standalone `handleGitHubWebhook` paths
 - [x] 6.3 Tests: oversized name truncated; control characters stripped
 
 ## 7. Documentation

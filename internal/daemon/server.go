@@ -100,10 +100,12 @@ func listenAddr(host string, port int) string {
 	return net.JoinHostPort(host, strconv.Itoa(port))
 }
 
-// sanitizeWebhookPusherName strips characters that can create or visually
+// SanitizeWebhookPusherName strips characters that can create or visually
 // rewrite log lines, then caps the remaining attribution in Unicode code
-// points. Spaces and printable Unicode names remain unchanged.
-func sanitizeWebhookPusherName(name string) string {
+// points. Spaces and printable Unicode names remain unchanged. It is exported
+// so the standalone webhook receiver applies the same boundary before
+// forwarding attribution to the daemon.
+func SanitizeWebhookPusherName(name string) string {
 	var sanitized strings.Builder
 	kept := 0
 	for _, r := range name {
@@ -401,7 +403,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pusherName := sanitizeWebhookPusherName(payload.Pusher.Name)
+	pusherName := SanitizeWebhookPusherName(payload.Pusher.Name)
 	source := log.SourceGitHub + ":" + pusherName
 
 	logger.Info().
