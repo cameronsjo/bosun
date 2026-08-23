@@ -772,6 +772,62 @@ func TestPostSyncHooksFromConfig(t *testing.T) {
 	})
 }
 
+func TestPostSyncHooksFromConfig_RejectsExecWithoutCommand(t *testing.T) {
+	tests := []struct {
+		name        string
+		content     string
+		wantContext string
+	}{
+		{
+			name: "absent root command",
+			content: `post_sync_hooks:
+  - paths: ["nginx/**"]
+    action: exec
+    container: nginx
+`,
+			wantContext: "post_sync_hooks[0]",
+		},
+		{
+			name: "explicit empty root command",
+			content: `post_sync_hooks:
+  - paths: ["nginx/**"]
+    action: exec
+    container: nginx
+    command: []
+`,
+			wantContext: "post_sync_hooks[0]",
+		},
+		{
+			name: "absent target command",
+			content: `targets:
+  - name: nas
+    post_sync_hooks:
+      - paths: ["nginx/**"]
+        action: exec
+        container: nginx
+`,
+			wantContext: `targets[0] "nas": post_sync_hooks[0]`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			configPath := filepath.Join(tmpDir, "bosun.yaml")
+			require.NoError(t, os.WriteFile(configPath, []byte(tt.content), 0644))
+
+			cfg, err := LoadFrom(tmpDir)
+
+			require.Error(t, err)
+			assert.Nil(t, cfg)
+			assert.ErrorIs(t, err, ErrInvalidPostSyncHooks)
+			assert.Contains(t, err.Error(), configPath)
+			assert.Contains(t, err.Error(), tt.wantContext)
+			assert.Contains(t, err.Error(), "requires a non-empty command")
+		})
+	}
+}
+
 func TestLoadFrom(t *testing.T) {
 	t.Run("loads hooks from directory", func(t *testing.T) {
 		tmpDir := t.TempDir()

@@ -457,9 +457,14 @@ func TestExecutePostSyncHooks(t *testing.T) {
 		assert.Equal(t, []string{"traefik", "reload"}, execCalls[0].cmd)
 	})
 
-	t.Run("exec hook with empty command is skipped", func(t *testing.T) {
+	t.Run("exec hook with empty command fails before any hook executes", func(t *testing.T) {
 		mockAPI := newReconcileMockDockerAPI()
+		restartCalled := false
 		execCalled := false
+		mockAPI.containerRestartFunc = func(ctx context.Context, containerID string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
+			restartCalled = true
+			return client.ContainerRestartResult{}, nil
+		}
 		mockAPI.containerExecCreateFunc = func(ctx context.Context, ctr string, config client.ExecCreateOptions) (client.ExecCreateResult, error) {
 			execCalled = true
 			return client.ExecCreateResult{ID: "exec-123"}, nil
@@ -467,11 +472,15 @@ func TestExecutePostSyncHooks(t *testing.T) {
 		client := docker.NewClientWithAPI(mockAPI)
 
 		hooks := []PostSyncHook{
+			{Paths: []string{"app/**"}, Action: "restart", Container: "sidecar"},
 			{Paths: []string{"app/**"}, Action: "exec", Container: "myapp"},
 		}
 
 		err := ExecutePostSyncHooks(context.Background(), client, hooks, 0)
-		assert.NoError(t, err)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "post_sync_hooks[1]")
+		assert.Contains(t, err.Error(), "non-empty command")
+		assert.False(t, restartCalled)
 		assert.False(t, execCalled)
 	})
 

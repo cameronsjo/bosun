@@ -120,13 +120,17 @@ critical_containers:
 #   off                - no health gate
 health_gate_scope: critical
 
-# Post-sync hooks: restart containers when specific config files change.
+# Post-sync hooks: act on containers when specific config files change.
 # Solves services (like Traefik) not picking up config changes on FUSE mounts.
 post_sync_hooks:
   - paths: ["traefik/conf.d/**"]
     action: restart
     container: traefik
     delay: "5s"                  # Per-hook pause before this container restarts
+  - paths: ["authelia/configuration.yml"]
+    action: exec
+    container: authelia
+    command: ["authelia", "config", "validate"]
   - paths: ["authelia/config.yml", "authelia/users.yml"]
     action: restart
     container: authelia
@@ -145,7 +149,7 @@ post_sync_hooks:
 | `alerts.on_success` | `false` | Send alerts on successful deploys |
 | `alerts.on_failure` | `true` | Send alerts on failed deploys |
 | `remove_orphans` | `true` | Pass `--remove-orphans` to docker compose up |
-| `post_sync_hooks` | `[]` | Container restart hooks triggered by file changes |
+| `post_sync_hooks` | `[]` | Container restart or exec hooks triggered by file changes |
 | `hook_settle_delay` | `0` (disabled) | Global pause after deploy before hooks run (e.g., `"2s"`) |
 | `deploy_paths` | `[]` (deploy all) | Glob allowlist — skip pipeline when no changed files match |
 | `deploy_sync_paths` | `[]` (sync all) | Glob allowlist — only sync staging entries matching these patterns |
@@ -424,10 +428,11 @@ post_sync_hooks:
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `paths` | Yes | Glob patterns matched against changed files (relative to repo root). Supports `**` for recursive matching |
-| `action` | Yes | Action to perform. Currently only `restart` is supported |
+| `paths` | Yes | Glob patterns matched against changed files (relative to the staging root). Supports `**` for recursive matching |
+| `action` | Yes | Action to perform: `restart` or `exec` |
 | `container` | Yes | Container name to act on |
-| `delay` | No | Pause before restarting this container (e.g., `"5s"`). Default: `0` (no delay) |
+| `command` | For `exec` | Command and arguments to run inside the container. An `exec` hook without a non-empty command is rejected during configuration validation |
+| `delay` | No | Pause before executing this hook (e.g., `"5s"`). Default: `0` (no delay) |
 
 ### Behavior
 
@@ -435,6 +440,7 @@ post_sync_hooks:
 - Each changed file is matched against hook glob patterns
 - Each container is restarted at most once per deploy, even if multiple patterns match
 - Hooks only run when dry run is disabled and a previous commit exists (skipped on first deploy)
+- Invalid `exec` hooks fail configuration validation before any target deploys; this applies to root and per-target hooks from `bosun.yaml`, `BOSUN_POST_SYNC_HOOKS`, and `BOSUN_TARGETS`
 
 ### Environment Variable Override
 

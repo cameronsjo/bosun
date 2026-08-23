@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -237,7 +238,12 @@ func runReconcile(cmd *cobra.Command, args []string) {
 	}
 
 	// Load post-sync hooks, settle delay, and deploy paths from project config file.
-	if projectCfg, err := config.Load(); err == nil {
+	projectCfg, projectCfgErr := config.Load()
+	if errors.Is(projectCfgErr, config.ErrInvalidPostSyncHooks) {
+		ui.Fatal("Invalid configuration: %v", projectCfgErr)
+		return
+	}
+	if projectCfgErr == nil {
 		cfg.PostSyncHooks.SetFromFile(projectCfg.PostSyncHooks())
 		cfg.HookSettleDelay.SetFromFile(projectCfg.HookSettleDelay())
 		cfg.DeployPaths.SetFromFile(projectCfg.DeployPaths())
@@ -333,7 +339,7 @@ func runReconcile(cmd *cobra.Command, args []string) {
 	}()
 
 	// Load targets and operational defaults from project config if available.
-	if projectCfg, err := config.Load(); err == nil {
+	if projectCfgErr == nil {
 		if len(cfg.Targets) == 0 {
 			if targets := projectCfg.Targets(); len(targets) > 0 {
 				cfg.Targets = targets

@@ -29,6 +29,17 @@ type PostSyncHook struct {
 	Delay Duration `json:"delay,omitempty" yaml:"delay,omitempty"`
 }
 
+// ValidatePostSyncHooks rejects hook configurations that would otherwise
+// silently skip required work at execution time.
+func ValidatePostSyncHooks(hooks []PostSyncHook) error {
+	for i, hook := range hooks {
+		if hook.Action == "exec" && len(hook.Command) == 0 {
+			return fmt.Errorf("post_sync_hooks[%d]: action %q requires a non-empty command", i, hook.Action)
+		}
+	}
+	return nil
+}
+
 // hookKey returns a deduplication key for a hook.
 // Different actions on the same container are distinct hooks (e.g., restart + exec).
 // For exec hooks, the command is included so two different commands on the same
@@ -174,6 +185,9 @@ func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []Po
 	if len(hooks) == 0 {
 		return nil
 	}
+	if err := ValidatePostSyncHooks(hooks); err != nil {
+		return err
+	}
 
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
@@ -220,13 +234,6 @@ func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []Po
 			}
 
 		case "exec":
-			if len(hook.Command) == 0 {
-				logger.Warn().
-					Str("container", hook.Container).
-					Msg("Exec hook has no command, skipping")
-				continue
-			}
-
 			logger.Info().
 				Str("container", hook.Container).
 				Int("command_args", len(hook.Command)).

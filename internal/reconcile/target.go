@@ -212,6 +212,15 @@ func DefaultConfig() *Config {
 // multi-target config that includes a `default` target is a hard error:
 // silently dropping it would deploy that target project-less and collide.
 func (c *Config) ResolveTargets() ([]Target, error) {
+	if err := ValidatePostSyncHooks(c.PostSyncHooks.Value); err != nil {
+		return nil, err
+	}
+	for _, target := range c.Targets {
+		if err := ValidatePostSyncHooks(target.PostSyncHooks); err != nil {
+			return nil, fmt.Errorf("target %q: %w", target.Name, err)
+		}
+	}
+
 	if len(c.Targets) > 0 {
 		if len(c.Targets) == 1 && c.Targets[0].IsDefault() {
 			return []Target{c.implicitDefaultTarget(c.Targets[0])}, nil

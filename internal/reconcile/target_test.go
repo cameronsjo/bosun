@@ -192,6 +192,43 @@ func TestResolveTargets_ExplicitEmptyMatchesAbsent(t *testing.T) {
 	assert.Equal(t, DefaultTargetName, got[0].Name)
 }
 
+func TestResolveTargets_RejectsExecWithoutCommand(t *testing.T) {
+	tests := []struct {
+		name        string
+		configure   func(*Config)
+		wantContext string
+	}{
+		{
+			name: "base hooks",
+			configure: func(cfg *Config) {
+				cfg.PostSyncHooks = NewConfigField([]PostSyncHook{{Action: "exec"}})
+			},
+			wantContext: "post_sync_hooks[0]",
+		},
+		{
+			name: "target hooks",
+			configure: func(cfg *Config) {
+				cfg.Targets = []Target{{Name: "nas", PostSyncHooks: []PostSyncHook{{Action: "exec"}}}}
+			},
+			wantContext: `target "nas"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			tt.configure(cfg)
+
+			targets, err := cfg.ResolveTargets()
+
+			require.Error(t, err)
+			assert.Nil(t, targets)
+			assert.Contains(t, err.Error(), tt.wantContext)
+			assert.Contains(t, err.Error(), "non-empty command")
+		})
+	}
+}
+
 // #391: a multi-target config carrying a reserved default-named target (any
 // case variant) is a hard error naming the offender and the remedy — silently
 // dropping the target was the container-collision vector.

@@ -101,6 +101,29 @@ func TestRunReconcile_ConfigFieldSetup(t *testing.T) {
 	})
 }
 
+func TestRunReconcile_InvalidExecHookFailsBeforeDeploy(t *testing.T) {
+	tmpDir := evalSymlinks(t, t.TempDir())
+	require.NoError(t, os.Mkdir(filepath.Join(tmpDir, "manifest"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(`post_sync_hooks:
+  - paths: ["scripts/**"]
+    action: exec
+`), 0o644))
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() { _ = os.Chdir(origDir) }()
+	require.NoError(t, os.Chdir(tmpDir))
+	t.Setenv("REPO_URL", filepath.Join(tmpDir, "missing-repo"))
+
+	var exitCalls int
+	old := ui.SetExitFn(func(int) { exitCalls++ })
+	t.Cleanup(func() { ui.SetExitFn(old) })
+
+	runReconcile(nil, nil)
+
+	assert.Equal(t, 1, exitCalls, "invalid hook config must abort before attempting reconciliation")
+}
+
 func TestRunReconcile_BOSUNTargetsValidation(t *testing.T) {
 	// Intercept ui.Fatal so the function doesn't exit the process.
 	old := ui.SetExitFn(func(int) {})
