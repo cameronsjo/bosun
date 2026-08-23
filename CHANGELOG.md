@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.9](https://github.com/cameronsjo/bosun/compare/v0.39.8...v0.39.9) (2026-08-23)
+
+
+### Bug Fixes
+
+* **cmd:** honor empty target override ([#510](https://github.com/cameronsjo/bosun/issues/510)) ([07843f7](https://github.com/cameronsjo/bosun/commit/07843f78420cbe212c256b4206b56982eb3581b6))
+* **render:** confine template file reads ([#512](https://github.com/cameronsjo/bosun/issues/512)) ([1916ab3](https://github.com/cameronsjo/bosun/commit/1916ab30a713b474b9396e45be210fe9c8a7fcee))
+* **sops:** infer secrets file format ([#511](https://github.com/cameronsjo/bosun/issues/511)) ([fdf4092](https://github.com/cameronsjo/bosun/commit/fdf40922357eb4865e778b71c69cdd6f868e614f))
+
 ## [0.39.8](https://github.com/cameronsjo/bosun/compare/v0.39.7...v0.39.8) (2026-08-23)
 
 
