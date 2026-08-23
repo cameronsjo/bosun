@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.10](https://github.com/cameronsjo/bosun/compare/v0.39.9...v0.39.10) (2026-08-23)
+
+
+### Bug Fixes
+
+* **daemon:** bound HTTP request headers ([#514](https://github.com/cameronsjo/bosun/issues/514)) ([67fe867](https://github.com/cameronsjo/bosun/commit/67fe86767a2d0dc56d0c9191f954353391ba6990))
+* **reconcile:** reject invalid deploy snapshots ([#515](https://github.com/cameronsjo/bosun/issues/515)) ([cdcd4f2](https://github.com/cameronsjo/bosun/commit/cdcd4f2d6edcda62a8f40d697c38560e73397a30))
+* **sops:** classify sanitized decryption errors ([#516](https://github.com/cameronsjo/bosun/issues/516)) ([0d11ba1](https://github.com/cameronsjo/bosun/commit/0d11ba100ad8ff7f3b67f08833d2819dba44143c))
+
 ## [0.39.9](https://github.com/cameronsjo/bosun/compare/v0.39.8...v0.39.9) (2026-08-23)
 
 
