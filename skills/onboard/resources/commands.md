@@ -311,7 +311,7 @@ bosun drift --target=nas       # Show drift for a specific target
 |------|---------|-------------|
 | `--live` | `false` | Perform a live drift check against Docker |
 | `--json` | `false` | Output as JSON |
-| `--state-file` | `/var/lib/bosun/deploy-state.json` | Path to deploy state file |
+| `--state-file` | `/var/lib/bosun/deploy-state.json` | Exact deploy state file to read (disables target-based path inference when set explicitly) |
 | `--project` | | Docker Compose project name for filtering |
 | `--target` | | Show drift for a specific named target (from `targets:` config) |
 
@@ -323,9 +323,11 @@ bosun drift --target=nas       # Show drift for a specific target
 | `unhealthy` | Critical | Service is running but health check is failing |
 | `image_mismatch` | Warning | Running image differs from declared image |
 
-By default reads from the daemon's cached drift state. Use `--live` for a fresh Docker check.
+By default reads from the daemon's cached drift state. With one configured named target, drift automatically uses that target's daemon-written state file (for example, `deploy-state-nas.json`). When targets are configured, an unknown `--target` is an error instead of probing an arbitrary state filename. An explicit `--state-file` always reads exactly that path, but does not make an unknown configured target valid. Use `--live` for a fresh Docker check.
 
 **Multi-target behavior:** When no `--target` is specified and the config has multiple targets, drift automatically shows status for all targets. With `--json`, this produces a `{"targets": [...]}` array instead of a single object.
+
+An unknown target and missing or otherwise unknown deployment state exit nonzero without command usage. JSON output reports `"status": "unknown"` with an `"error"` field so scripts cannot interpret unknown state as clean.
 
 ---
 
