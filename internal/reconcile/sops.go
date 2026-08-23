@@ -29,6 +29,23 @@ var ErrNotSOPSFile = errors.New("file is not SOPS-encrypted")
 // into the key/value map Bosun uses for template data.
 var ErrUnsupportedSOPSFormat = errors.New("unsupported SOPS secrets format")
 
+// ErrSOPSIntegrity is returned when SOPS cannot authenticate the encrypted
+// document or its MAC. The underlying library error is deliberately not
+// wrapped because it can contain decrypted MACs or encrypted values.
+var ErrSOPSIntegrity = errors.New("sops integrity verification failed")
+
+// ErrSOPSKeyUnavailable is returned when no configured key can recover the
+// SOPS data key. The underlying library error is deliberately not wrapped
+// because it can contain key identifiers, key material, or local paths.
+var ErrSOPSKeyUnavailable = errors.New("sops decryption key unavailable")
+
+// ErrMalformedSOPSData is returned when encrypted values or SOPS metadata
+// cannot be decoded after the file passes Bosun's structural validation.
+var ErrMalformedSOPSData = errors.New("malformed SOPS encrypted data")
+
+// ErrSOPSDecryption is returned for failures that cannot be safely classified.
+var ErrSOPSDecryption = errors.New("sops decryption failed")
+
 type sopsFileFormat string
 
 const (
@@ -426,40 +443,69 @@ func (s *SOPSOps) DecryptToJSON(ctx context.Context, files []string) ([]byte, er
 	return json.Marshal(merged)
 }
 
-// sanitizeDecryptError wraps and sanitizes errors from the decrypt library.
-// This ensures no sensitive information (like partial keys or decrypted content)
-// is exposed in error messages.
+// sanitizeDecryptError classifies errors from the decrypt library without
+// returning or wrapping the upstream error. SOPS errors can contain decrypted
+// MACs, encrypted values, key identifiers, key material, and local paths, so
+// even strings that appear actionable must be replaced with static guidance.
 func sanitizeDecryptError(err error) error {
 	if err == nil {
 		return nil
 	}
 
-	errStr := err.Error()
-	errLower := strings.ToLower(errStr)
+	errLower := strings.ToLower(err.Error())
 
-	// Check for common, safe error patterns and return them directly
-	safePatterns := []string{
+	if errors.Is(err, sopslib.MacMismatch) || containsAny(errLower,
+		"failed to verify data integrity",
+		"mac mismatch",
+		"failed to decrypt original mac",
+		"cannot decrypt mac",
+		"message authentication failed",
+		"could not decrypt with aes_gcm",
+	) {
+		return fmt.Errorf("%w: the encrypted file may be corrupted or modified; restore it from a trusted source or re-encrypt it", ErrSOPSIntegrity)
+	}
+
+	if containsAny(errLower,
+		"error getting data key",
+		"failed to get the data key",
+		"no identity matched",
+		"no master key",
+		"could not decrypt group",
+		"error decrypting key",
+		"failed to decrypt data key",
+		"failed to create reader for decrypting sops data key",
+		"failed to load age identities",
+		"incorrect passphrase",
 		"could not find",
 		"no key found",
-		"failed to get",
 		"cannot find",
 		"key not found",
 		"permission denied",
 		"no such file",
+	) {
+		return fmt.Errorf("%w: verify that the configured Age identity matches the file recipients and that its key file is readable", ErrSOPSKeyUnavailable)
 	}
 
-	for _, pattern := range safePatterns {
-		if strings.Contains(errLower, pattern) {
-			// Limit length for safety
-			if len(errStr) > 200 {
-				return errors.New(errStr[:200] + "... (truncated)")
-			}
-			return err
+	if errors.Is(err, sopslib.MetadataNotFound) || containsAny(errLower,
+		"error unmarshaling input",
+		"sops metadata not found",
+		"does not match sops' data format",
+		"error base64-decoding",
+		"unknown datatype",
+	) {
+		return fmt.Errorf("%w: encrypted values or metadata are invalid; validate or re-encrypt the file with SOPS", ErrMalformedSOPSData)
+	}
+
+	return fmt.Errorf("%w: verify the Age key and validate the encrypted file with SOPS", ErrSOPSDecryption)
+}
+
+func containsAny(value string, patterns ...string) bool {
+	for _, pattern := range patterns {
+		if strings.Contains(value, pattern) {
+			return true
 		}
 	}
-
-	// For unknown errors, provide a generic message
-	return errors.New("decryption failed - check age key configuration")
+	return false
 }
 
 // mergeMap recursively merges src into dst.
