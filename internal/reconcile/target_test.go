@@ -7,6 +7,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestParseTargetsOverride(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		want      []Target
+		wantApply bool
+		wantErr   bool
+	}{
+		{name: "configured targets apply", value: `[{"name":"nas"}]`, want: []Target{{Name: "nas"}}, wantApply: true},
+		{name: "empty array applies", value: `[]`, want: []Target{}, wantApply: true},
+		{name: "null falls back", value: `null`, wantApply: false},
+		{name: "malformed falls back with error", value: `not-json`, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, apply, err := ParseTargetsOverride(tt.value)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.False(t, apply)
+				assert.Nil(t, got)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantApply, apply)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 // #391 regression: a lone `name: default` target is the implicit default's
 // configuration — its project_name (and paths) must reach the deploy instead
 // of being discarded with a warning, which deployed project-less and collided

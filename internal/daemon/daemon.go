@@ -1741,10 +1741,10 @@ func ConfigFromEnv() *Config {
 	// implicit default target.
 	targetsFromEnv := false
 	if v := os.Getenv("BOSUN_TARGETS"); v != "" {
-		var targets []reconcile.Target
-		if err := json.Unmarshal([]byte(v), &targets); err != nil {
+		targets, apply, err := reconcile.ParseTargetsOverride(v)
+		if err != nil {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_TARGETS, ignoring")
-		} else {
+		} else if apply {
 			// Validate security-sensitive fields on each target parsed from env.
 			// Warn and clear (rather than skip) to mirror the YAML-load semantics
 			// in extractTargets — a single bad field must not block the whole target.

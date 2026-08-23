@@ -354,22 +354,7 @@ func runReconcile(cmd *cobra.Command, args []string) {
 
 	// BOSUN_TARGETS env var overrides config file targets.
 	if v := os.Getenv("BOSUN_TARGETS"); v != "" {
-		var targets []reconcile.Target
-		if err := json.Unmarshal([]byte(v), &targets); err != nil {
-			log.Warn().Err(err).Msg("Failed to parse BOSUN_TARGETS, ignoring")
-		} else {
-			// Validate security-sensitive fields on each target parsed from env.
-			// Warn and clear (rather than skip) to mirror the YAML-load semantics
-			// in extractTargets — a single bad field must not block the whole target.
-			targets = reconcile.ValidateAndSanitizeTargets(targets, func(target, field string, err error) {
-				log.Warn().Err(err).
-					Str("target", target).
-					Str(field, "").
-					Msgf("BOSUN_TARGETS: invalid %s — ignoring and inheriting global value", field)
-			})
-			cfg.Targets = targets
-			cfg.TargetsFromEnv = true
-		}
+		applyTargetsOverrideForCLI(cfg, v)
 	}
 
 	// Set up alert manager.
@@ -430,6 +415,29 @@ func runReconcile(cmd *cobra.Command, args []string) {
 	if hadError {
 		ui.Fatal("Reconciliation completed with errors")
 	}
+}
+
+func applyTargetsOverrideForCLI(cfg *reconcile.Config, value string) {
+	targets, apply, err := reconcile.ParseTargetsOverride(value)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to parse BOSUN_TARGETS, ignoring")
+		return
+	}
+	if !apply {
+		return
+	}
+
+	// Validate security-sensitive fields on each target parsed from env.
+	// Warn and clear (rather than skip) to mirror the YAML-load semantics in
+	// extractTargets — a single bad field must not block the whole target.
+	targets = reconcile.ValidateAndSanitizeTargets(targets, func(target, field string, err error) {
+		log.Warn().Err(err).
+			Str("target", target).
+			Str(field, "").
+			Msgf("BOSUN_TARGETS: invalid %s — ignoring and inheriting global value", field)
+	})
+	cfg.Targets = targets
+	cfg.TargetsFromEnv = true
 }
 
 // createAlertManager creates an alert manager with configured providers.
