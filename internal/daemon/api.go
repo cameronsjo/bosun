@@ -11,7 +11,6 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/reconcile"
-	sentrypkg "github.com/cameronsjo/bosun/internal/sentry"
 )
 
 // APIStatusResponse is the extended status response for the WebUI API.
@@ -296,19 +295,19 @@ func (d *Daemon) handleAPITrigger(w http.ResponseWriter, r *http.Request) {
 		source = "webui"
 	}
 
+	// Trigger reconcile under the daemon lifecycle while retaining request log
+	// fields. The request context itself ends with this response.
+	if !d.startReconcileGoroutine(r.Context(), func(ctx context.Context) {
+		_ = d.runTriggerReconcile(ctx, source, req.Force)
+	}) {
+		http.Error(w, "Daemon is shutting down", http.StatusServiceUnavailable)
+		return
+	}
+
 	logger.Info().
 		Str(log.FieldSource, source).
 		Bool("force", req.Force).
 		Msg("Reconciliation trigger accepted via API")
-
-	// Propagate enriched logger into background context (request ctx is cancelled after response).
-	bgCtx := log.WithContext(context.Background(), log.Ctx(r.Context()))
-
-	// Trigger reconcile
-	go func() {
-		defer sentrypkg.Recover()
-		_ = d.TriggerReconcile(bgCtx, source, req.Force)
-	}()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)

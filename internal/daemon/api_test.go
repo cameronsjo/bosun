@@ -101,6 +101,7 @@ func TestAPITriggerEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create daemon: %v", err)
 	}
+	t.Cleanup(func() { waitForDaemonTasks(t, d, time.Second) })
 
 	mux := http.NewServeMux()
 	d.RegisterAPIRoutes(mux)

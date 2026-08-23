@@ -19,7 +19,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/cameronsjo/bosun/internal/log"
-	sentrypkg "github.com/cameronsjo/bosun/internal/sentry"
 	"github.com/cameronsjo/bosun/internal/telemetry"
 	"github.com/cameronsjo/bosun/internal/ui"
 	"github.com/prometheus/client_golang/prometheus"
@@ -282,22 +281,18 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		Str(log.FieldSource, log.SourceWebhook).
 		Msg("Generic webhook received")
 
-	// Propagate enriched logger into background context (request ctx is cancelled after response).
-	bgCtx := log.WithContext(context.Background(), log.Ctx(r.Context()))
-
 	s.metrics.RecordWebhookTrigger("generic")
 
-	// Trigger reconciliation with goroutine tracking.
+	// Retain the server-local WaitGroup contract while also registering the
+	// reconcile with the daemon-wide lifecycle used by every trigger source.
 	s.wg.Add(1)
-	go func() {
+	if !s.daemon.startReconcileGoroutine(r.Context(), func(ctx context.Context) {
 		defer s.wg.Done()
-		defer sentrypkg.Recover()
-		ctx := bgCtx
 		ctx, webhookSpan := telemetry.Tracer("daemon").Start(ctx, "daemon.webhook",
 			trace.WithAttributes(telemetry.StringAttr("webhook_type", "generic")),
 		)
 		bgLogger := log.ComponentCtx(ctx, log.ComponentWebhook)
-		err := s.daemon.TriggerReconcile(ctx, log.SourceWebhook, false)
+		err := s.daemon.runTriggerReconcile(ctx, log.SourceWebhook, false)
 		if err != nil {
 			telemetry.SpanError(webhookSpan, err)
 			bgLogger.Error().
@@ -311,7 +306,11 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 				Msg("Webhook reconciliation triggered successfully")
 		}
 		webhookSpan.End()
-	}()
+	}) {
+		s.wg.Done()
+		http.Error(w, "Daemon is shutting down", http.StatusServiceUnavailable)
+		return
+	}
 
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]string{
@@ -414,16 +413,13 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 
 	s.metrics.RecordWebhookTrigger("github")
 
-	// Propagate enriched logger into background context (request ctx is cancelled after response).
-	bgCtx := log.WithContext(context.Background(), log.Ctx(r.Context()))
-
-	// Trigger reconciliation with goroutine tracking
+	// Trigger reconciliation with both the server-local and daemon-wide
+	// lifecycle tracking contracts.
 	s.wg.Add(1)
-	go func(source string) {
+	if !s.daemon.startReconcileGoroutine(r.Context(), func(ctx context.Context) {
 		defer s.wg.Done()
-		defer sentrypkg.Recover()
-		bgLogger := log.ComponentCtx(bgCtx, log.ComponentWebhook)
-		if err := s.daemon.TriggerReconcile(bgCtx, source, false); err != nil {
+		bgLogger := log.ComponentCtx(ctx, log.ComponentWebhook)
+		if err := s.daemon.runTriggerReconcile(ctx, source, false); err != nil {
 			bgLogger.Error().
 				Err(err).
 				Str(log.FieldSource, log.SourceGitHub).
@@ -433,7 +429,11 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 				Str(log.FieldSource, log.SourceGitHub).
 				Msg("GitHub webhook reconciliation triggered successfully")
 		}
-	}(source)
+	}) {
+		s.wg.Done()
+		http.Error(w, "Daemon is shutting down", http.StatusServiceUnavailable)
+		return
+	}
 
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]string{
@@ -491,24 +491,25 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 			Msg("Manual trigger request received via HTTP")
 	}
 
-	// Propagate enriched logger into background context (request ctx is cancelled after response).
-	bgCtx := log.WithContext(context.Background(), log.Ctx(r.Context()))
-
 	s.metrics.RecordWebhookTrigger("manual")
 
-	// Trigger reconciliation with goroutine tracking
+	// Trigger reconciliation with both the server-local and daemon-wide
+	// lifecycle tracking contracts.
 	manualLogger := log.Component(log.ComponentWebhook)
 	s.wg.Add(1)
-	go func() {
+	if !s.daemon.startReconcileGoroutine(r.Context(), func(ctx context.Context) {
 		defer s.wg.Done()
-		defer sentrypkg.Recover()
-		if err := s.daemon.TriggerReconcile(bgCtx, "manual", req.Force); err != nil {
+		if err := s.daemon.runTriggerReconcile(ctx, "manual", req.Force); err != nil {
 			manualLogger.Error().
 				Err(err).
 				Str(log.FieldSource, log.SourceManual).
 				Msg("Manual trigger reconciliation failed")
 		}
-	}()
+	}) {
+		s.wg.Done()
+		http.Error(w, "Daemon is shutting down", http.StatusServiceUnavailable)
+		return
+	}
 
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]string{

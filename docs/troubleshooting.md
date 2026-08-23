@@ -53,6 +53,16 @@ not continue in the background after Bosun reports the failure.
 If startup continues, capture `docker compose version`, the Bosun error, and
 daemon events from `docker events --since <timestamp>` when reporting the bug.
 
+### Daemon shutdown waits on a reconciliation
+
+On SIGTERM, SIGINT, or parent-context cancellation, Bosun cancels reconciles
+accepted through webhooks, the Unix socket, TCP, and `/api/trigger`, then waits
+up to `BOSUN_SHUTDOWN_TIMEOUT` (default `30s`) for their tracked goroutines to
+unwind. New trigger requests receive `503` after shutdown starts. If cleanup
+exceeds the timeout, Bosun logs `Shutdown timeout waiting for background
+goroutines` and finishes shutdown rather than hanging indefinitely; inspect the
+preceding reconcile logs to find the operation that ignored cancellation.
+
 ### SSH connection failures
 
 - Test manually: `ssh user@host exit`
