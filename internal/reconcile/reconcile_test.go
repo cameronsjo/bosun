@@ -139,6 +139,38 @@ func TestReconciler_ReleaseLock(t *testing.T) {
 	})
 }
 
+func TestReconcilerRun_InvalidPostSyncHooksFailBeforeSync(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.PostSyncHooks = NewConfigField([]PostSyncHook{{Action: "exec"}})
+	r := NewReconciler(cfg, WithGitOperations(&mockGitOps{syncErr: fmt.Errorf("sync must not run")}))
+
+	err := r.Run(context.Background())
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidPostSyncHooks)
+	assert.NotContains(t, err.Error(), "sync must not run")
+}
+
+func TestReconcilerRun_InvalidReloadedPostSyncHooksFailBeforeDeploy(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.LockFile = filepath.Join(tmpDir, "reconcile.lock")
+	cfg.ConfigReloader = func(string) (*ReloadedConfig, error) {
+		return &ReloadedConfig{PostSyncHooks: []PostSyncHook{{Action: "exec"}}}, nil
+	}
+	r := NewReconciler(cfg, WithGitOperations(&mockGitOps{
+		syncChanged: true,
+		syncBefore:  "aaa111",
+		syncAfter:   "bbb222",
+	}))
+
+	err := r.Run(context.Background())
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidPostSyncHooks)
+	assert.Contains(t, err.Error(), "invalid reloaded project configuration")
+}
+
 // TestReconcilerRun_CreatesMissingLockDir proves Run() creates the lock file's
 // parent directory when it doesn't exist yet (e.g. a fresh install where
 // /var/run/bosun hasn't been created), instead of acquireLock's OpenFile
@@ -383,10 +415,45 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		require.Len(t, r.config.PostSyncHooks.Value, 1)
 		assert.Equal(t, "keep", r.config.PostSyncHooks.Value[0].Container)
+	})
+
+	t.Run("invalid hook error aborts instead of graceful degradation", func(t *testing.T) {
+		cfg := &Config{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
+				{Paths: []string{"keep/**"}, Action: "restart", Container: "keep"},
+			}),
+			ConfigReloader: func(string) (*ReloadedConfig, error) {
+				return nil, fmt.Errorf("repo bosun.yaml: %w", ErrInvalidPostSyncHooks)
+			},
+		}
+		r := NewReconciler(cfg)
+
+		err := r.reloadProjectConfig()
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidPostSyncHooks)
+		require.Len(t, r.config.PostSyncHooks.Value, 1)
+		assert.Equal(t, "keep", r.config.PostSyncHooks.Value[0].Container)
+	})
+
+	t.Run("invalid programmatic target reload is rejected before apply", func(t *testing.T) {
+		cfg := &Config{ConfigReloader: func(string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{Targets: []Target{{
+				Name:          "nas",
+				PostSyncHooks: []PostSyncHook{{Action: "exec"}},
+			}}}, nil
+		}}
+		r := NewReconciler(cfg)
+
+		err := r.reloadProjectConfig()
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidPostSyncHooks)
+		assert.Contains(t, err.Error(), `target "nas"`)
 	})
 
 	t.Run("no-op when reloader is nil", func(t *testing.T) {
@@ -1581,6 +1648,27 @@ func TestRunPostSyncHooksWithSpan(t *testing.T) {
 }
 
 func TestReconcilerExecutePostSyncHooks(t *testing.T) {
+	t.Run("invalid exec hook fails before Docker client acquisition", func(t *testing.T) {
+		dockerClientCalled := false
+		cfg := &Config{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
+				{Paths: []string{"app/**"}, Action: "exec", Container: "app"},
+			}),
+		}
+		r := NewReconciler(cfg, WithGitOperations(&mockGitOps{diffFiles: []string{"app/config.yml"}}))
+		r.dockerClientFn = func() *docker.Client {
+			dockerClientCalled = true
+			return nil
+		}
+
+		matched, err := r.executePostSyncHooks(context.Background(), "aaa", "bbb", nil, true)
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidPostSyncHooks)
+		assert.Zero(t, matched)
+		assert.False(t, dockerClientCalled)
+	})
+
 	t.Run("first deploy skips hooks (empty previous commit)", func(t *testing.T) {
 		cfg := &Config{
 			PostSyncHooks: NewConfigField([]PostSyncHook{

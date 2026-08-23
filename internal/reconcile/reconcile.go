@@ -365,6 +365,9 @@ func (r *Reconciler) SetRunOptions(source string, force bool) {
 // Run executes the full reconciliation workflow.
 func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	startTime := time.Now()
+	if err := ValidatePostSyncHooks(r.config.PostSyncHooks.Value); err != nil {
+		return fmt.Errorf("invalid reconcile configuration: %w", err)
+	}
 
 	// Root OTel span for the entire reconciliation pipeline.
 	ctx, rootSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile",
@@ -492,7 +495,9 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	r.lastCommit = after
 
 	// Step 2: Reload project config from repo (picks up hook changes).
-	r.reloadProjectConfig()
+	if err := r.reloadProjectConfig(); err != nil {
+		return fmt.Errorf("invalid reloaded project configuration: %w", err)
+	}
 
 	// Load persistent deploy state to determine if pipeline should run.
 	state := LoadState(r.config.StateFile)
@@ -1064,6 +1069,9 @@ func (r *Reconciler) runPostSyncHooksWithSpan(ctx context.Context, previousCommi
 // This ensures hooks only fire for files actually written to disk (content-hash sync).
 func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, currentCommit string, deployResult *DeployResult, local bool) (int, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+	if err := ValidatePostSyncHooks(r.config.PostSyncHooks.Value); err != nil {
+		return 0, err
+	}
 
 	if previousCommit == "" {
 		logger.Debug().Msg("No previous commit for post-sync hooks (first deploy), skipping")

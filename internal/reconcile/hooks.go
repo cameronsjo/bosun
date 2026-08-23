@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -12,6 +13,11 @@ import (
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
+
+// ErrInvalidPostSyncHooks identifies hook configuration that cannot execute as
+// declared. Callers use this sentinel to fail closed without changing graceful
+// degradation for unrelated project-config read or parse errors.
+var ErrInvalidPostSyncHooks = errors.New("invalid post-sync hooks")
 
 // PostSyncHook defines a container action triggered when specific file paths change.
 type PostSyncHook struct {
@@ -34,7 +40,7 @@ type PostSyncHook struct {
 func ValidatePostSyncHooks(hooks []PostSyncHook) error {
 	for i, hook := range hooks {
 		if hook.Action == "exec" && len(hook.Command) == 0 {
-			return fmt.Errorf("post_sync_hooks[%d]: action %q requires a non-empty command", i, hook.Action)
+			return fmt.Errorf("post_sync_hooks[%d]: action %q requires a non-empty command: %w", i, hook.Action, ErrInvalidPostSyncHooks)
 		}
 	}
 	return nil

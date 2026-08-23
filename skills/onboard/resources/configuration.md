@@ -440,7 +440,7 @@ post_sync_hooks:
 - Each changed file is matched against hook glob patterns
 - Each container is restarted at most once per deploy, even if multiple patterns match
 - Hooks only run when dry run is disabled and a previous commit exists (skipped on first deploy)
-- Invalid `exec` hooks fail configuration validation before any target deploys; this applies to root and per-target hooks from `bosun.yaml`, `BOSUN_POST_SYNC_HOOKS`, and `BOSUN_TARGETS`
+- Invalid `exec` hooks fail configuration validation before any target deploys; this applies to root and per-target hooks from `bosun.yaml`, `BOSUN_POST_SYNC_HOOKS`, and `BOSUN_TARGETS`. A newly pulled invalid hook also aborts the current reconciliation instead of falling back to stale hook configuration.
 
 ### Environment Variable Override
 

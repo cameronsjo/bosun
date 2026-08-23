@@ -25,7 +25,7 @@ const defaultTunnelProvider = "tailscale"
 
 // ErrInvalidPostSyncHooks identifies project configuration rejected because a
 // post-sync hook cannot execute as declared.
-var ErrInvalidPostSyncHooks = errors.New("invalid post-sync hooks")
+var ErrInvalidPostSyncHooks = reconcile.ErrInvalidPostSyncHooks
 
 // Config holds the bosun project configuration.
 type Config struct {
@@ -567,11 +567,11 @@ func loadConfigFile(root string) (configFile, error) {
 
 func validatePostSyncHooks(path string, cfg configFile) error {
 	if err := reconcile.ValidatePostSyncHooks(cfg.PostSyncHooks); err != nil {
-		return fmt.Errorf("%w in config file %q: %v", ErrInvalidPostSyncHooks, path, err)
+		return fmt.Errorf("config file %q: %w", path, err)
 	}
 	for i, target := range cfg.Targets {
 		if err := reconcile.ValidatePostSyncHooks(target.PostSyncHooks); err != nil {
-			return fmt.Errorf("%w in config file %q: targets[%d] %q: %v", ErrInvalidPostSyncHooks, path, i, target.Name, err)
+			return fmt.Errorf("config file %q: targets[%d] %q: %w", path, i, target.Name, err)
 		}
 	}
 	return nil
