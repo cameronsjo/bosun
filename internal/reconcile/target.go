@@ -90,15 +90,19 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 		cp.LockFile = TargetLockFile(lockDir, t)
 	}
 
-	// Deep-copy all slices so the returned config has independent backing arrays.
-	// Both inherited slices (from base) and overrides (from target) are cloned
-	// to prevent mutation of either source.
+	// Deep-copy all mutable slices so the returned config has independent backing
+	// arrays. Both inherited slices (from base) and overrides (from target) are
+	// cloned to prevent mutation of either source.
 	// Use nil checks (not len > 0) so targets can explicitly clear inherited
 	// slices with an empty list (e.g., critical_containers: []).
+	cp.Targets = cloneTargets(cp.Targets)
+	cp.SecretsFiles = cloneSlice(cp.SecretsFiles)
+	cp.DeployPaths.Value = cloneSlice(cp.DeployPaths.Value)
+	cp.DriftIgnore.Value = cloneSlice(cp.DriftIgnore.Value)
 	if t.CriticalContainers != nil {
-		cp.CriticalContainers.Value = append([]string(nil), t.CriticalContainers...)
+		cp.CriticalContainers.Value = cloneSlice(t.CriticalContainers)
 	} else if cp.CriticalContainers.Value != nil {
-		cp.CriticalContainers.Value = append([]string(nil), cp.CriticalContainers.Value...)
+		cp.CriticalContainers.Value = cloneSlice(cp.CriticalContainers.Value)
 	}
 	if t.PostSyncHooks != nil && !cp.PostSyncHooks.FromEnv() {
 		cp.PostSyncHooks.Value = clonePostSyncHooks(t.PostSyncHooks)
@@ -106,14 +110,14 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 		cp.PostSyncHooks.Value = clonePostSyncHooks(cp.PostSyncHooks.Value)
 	}
 	if t.DeploySyncPaths != nil {
-		cp.DeploySyncPaths.Value = append([]string(nil), t.DeploySyncPaths...)
+		cp.DeploySyncPaths.Value = cloneSlice(t.DeploySyncPaths)
 	} else if cp.DeploySyncPaths.Value != nil {
-		cp.DeploySyncPaths.Value = append([]string(nil), cp.DeploySyncPaths.Value...)
+		cp.DeploySyncPaths.Value = cloneSlice(cp.DeploySyncPaths.Value)
 	}
 	if t.DeploySyncExclude != nil {
-		cp.DeploySyncExclude.Value = append([]string(nil), t.DeploySyncExclude...)
+		cp.DeploySyncExclude.Value = cloneSlice(t.DeploySyncExclude)
 	} else if cp.DeploySyncExclude.Value != nil {
-		cp.DeploySyncExclude.Value = append([]string(nil), cp.DeploySyncExclude.Value...)
+		cp.DeploySyncExclude.Value = cloneSlice(cp.DeploySyncExclude.Value)
 	}
 
 	if t.SecretsScope != "" {
@@ -123,18 +127,41 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 	return &cp
 }
 
+func cloneSlice[T any](values []T) []T {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]T, len(values))
+	copy(cloned, values)
+	return cloned
+}
+
+func cloneTargets(targets []Target) []Target {
+	if targets == nil {
+		return nil
+	}
+	cloned := make([]Target, len(targets))
+	for i, target := range targets {
+		cloned[i] = target
+		cloned[i].CriticalContainers = cloneSlice(target.CriticalContainers)
+		cloned[i].PostSyncHooks = clonePostSyncHooks(target.PostSyncHooks)
+		cloned[i].DeploySyncPaths = cloneSlice(target.DeploySyncPaths)
+		cloned[i].DeploySyncExclude = cloneSlice(target.DeploySyncExclude)
+	}
+	return cloned
+}
+
 // clonePostSyncHooks returns a deep copy of a PostSyncHook slice,
-// including each hook's Paths slice.
+// including each hook's Paths and Command slices.
 func clonePostSyncHooks(hooks []PostSyncHook) []PostSyncHook {
+	if hooks == nil {
+		return nil
+	}
 	cloned := make([]PostSyncHook, len(hooks))
 	for i, h := range hooks {
 		cloned[i] = h
-		if h.Paths != nil {
-			cloned[i].Paths = append([]string(nil), h.Paths...)
-		}
-		if h.Command != nil {
-			cloned[i].Command = append([]string(nil), h.Command...)
-		}
+		cloned[i].Paths = cloneSlice(h.Paths)
+		cloned[i].Command = cloneSlice(h.Command)
 	}
 	return cloned
 }
