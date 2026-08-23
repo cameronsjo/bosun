@@ -5191,6 +5191,17 @@ func TestConfigForTarget_SlicesAreIndependent(t *testing.T) {
 	base.DeployPaths = NewConfigField([]string{"infra/**"})
 	base.CriticalContainers = NewConfigField([]string{"traefik", "authelia"})
 	base.DriftIgnore = NewConfigField([]DriftIgnoreRule{{Service: "traefik", Type: "unhealthy"}})
+	base.Targets = []Target{{
+		Name:               "source",
+		CriticalContainers: []string{"source-critical"},
+		PostSyncHooks: []PostSyncHook{{
+			Container: "source-hook",
+			Paths:     []string{"source/**"},
+			Command:   []string{"reload", "source"},
+		}},
+		DeploySyncPaths:   []string{"source-sync/**"},
+		DeploySyncExclude: []string{"source-exclude/**"},
+	}}
 
 	first := base.ConfigForTarget(Target{Name: "nas", TargetHost: "user@nas"})
 	second := base.ConfigForTarget(Target{Name: "pi", TargetHost: "user@pi"})
@@ -5199,16 +5210,34 @@ func TestConfigForTarget_SlicesAreIndependent(t *testing.T) {
 	first.DeployPaths.Value[0] = "mutated/**"
 	first.CriticalContainers.Value[0] = "mutated-container"
 	first.DriftIgnore.Value[0].Service = "mutated-service"
+	first.Targets[0].CriticalContainers[0] = "mutated-target-critical"
+	first.Targets[0].PostSyncHooks[0].Container = "mutated-target-hook"
+	first.Targets[0].PostSyncHooks[0].Paths[0] = "mutated-target-path/**"
+	first.Targets[0].PostSyncHooks[0].Command[0] = "mutated-target-command"
+	first.Targets[0].DeploySyncPaths[0] = "mutated-target-sync/**"
+	first.Targets[0].DeploySyncExclude[0] = "mutated-target-exclude/**"
 
 	assert.Equal(t, []string{"secrets.yaml"}, base.SecretsFiles)
 	assert.Equal(t, []string{"infra/**"}, base.DeployPaths.Value)
 	assert.Equal(t, []string{"traefik", "authelia"}, base.CriticalContainers.Value)
 	assert.Equal(t, []DriftIgnoreRule{{Service: "traefik", Type: "unhealthy"}}, base.DriftIgnore.Value)
+	assert.Equal(t, []string{"source-critical"}, base.Targets[0].CriticalContainers)
+	assert.Equal(t, "source-hook", base.Targets[0].PostSyncHooks[0].Container)
+	assert.Equal(t, []string{"source/**"}, base.Targets[0].PostSyncHooks[0].Paths)
+	assert.Equal(t, []string{"reload", "source"}, base.Targets[0].PostSyncHooks[0].Command)
+	assert.Equal(t, []string{"source-sync/**"}, base.Targets[0].DeploySyncPaths)
+	assert.Equal(t, []string{"source-exclude/**"}, base.Targets[0].DeploySyncExclude)
 
 	assert.Equal(t, []string{"secrets.yaml"}, second.SecretsFiles)
 	assert.Equal(t, []string{"infra/**"}, second.DeployPaths.Value)
 	assert.Equal(t, []string{"traefik", "authelia"}, second.CriticalContainers.Value)
 	assert.Equal(t, []DriftIgnoreRule{{Service: "traefik", Type: "unhealthy"}}, second.DriftIgnore.Value)
+	assert.Equal(t, []string{"source-critical"}, second.Targets[0].CriticalContainers)
+	assert.Equal(t, "source-hook", second.Targets[0].PostSyncHooks[0].Container)
+	assert.Equal(t, []string{"source/**"}, second.Targets[0].PostSyncHooks[0].Paths)
+	assert.Equal(t, []string{"reload", "source"}, second.Targets[0].PostSyncHooks[0].Command)
+	assert.Equal(t, []string{"source-sync/**"}, second.Targets[0].DeploySyncPaths)
+	assert.Equal(t, []string{"source-exclude/**"}, second.Targets[0].DeploySyncExclude)
 }
 
 func TestConfigForTarget_NilSliceInherits(t *testing.T) {
