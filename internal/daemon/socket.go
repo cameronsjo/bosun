@@ -59,9 +59,11 @@ func NewSocketServer(d *Daemon, cfg *SocketConfig) (*SocketServer, error) {
 	mux.HandleFunc("/config", s.handleConfig)
 
 	s.httpServer = &http.Server{
-		Handler:      s.auditMiddleware(mux),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		Handler:           s.auditMiddleware(mux),
+		ReadHeaderTimeout: daemonReadHeaderTimeout,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		MaxHeaderBytes:    daemonMaxHeaderBytes,
 	}
 
 	return s, nil

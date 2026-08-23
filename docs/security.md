@@ -513,6 +513,13 @@ other escape hatches). With the opt-out active:
 The opt-out never bypasses a configured secret — when `WEBHOOK_SECRET` is set,
 signature validation always runs.
 
+All daemon HTTP transports — the webhook listener, Unix socket API, and
+optional bearer-authenticated TCP API — allow at most 5 seconds to receive
+request headers and set a 32 KiB request-header parsing limit. These
+pre-handler limits reduce exposure to slow-header and oversized-header
+denial-of-service attacks without changing the existing per-operation
+`BOSUN_API_TIMEOUT` behavior.
+
 ## Daemon Metrics and Widget Authentication
 
 The `/metrics` (Prometheus) and `/api/widget` (Homepage) endpoints disclose the

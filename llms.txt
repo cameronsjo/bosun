@@ -60,6 +60,7 @@ docker compose up -> post-deploy drift verification
 
 The daemon provides:
 - Unix socket API at `/var/run/bosun.sock`
+- All daemon HTTP transports (webhook, Unix socket, and optional TCP API) allow 5 seconds for request headers and set a 32 KiB request-header parsing limit; these fixed transport limits do not change the existing per-operation `BOSUN_API_TIMEOUT` behavior
 - GitHub webhooks (`/webhook/github`) plus a generic HMAC endpoint (`/webhook`, validates `X-Signature` or `X-Hub-Signature-256`). Webhook auth fails closed: with no `WEBHOOK_SECRET` configured, all HTTP trigger endpoints reject requests with `403` unless `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true` explicitly opts out. GitLab, Gitea, and Bitbucket are handled by the separate `bosun webhook` receiver, which normalizes each provider and forwards to the daemon's trigger endpoint — do not point them directly at the daemon
 - Configurable polling intervals
 - Health endpoints (`/health`, `/ready`)

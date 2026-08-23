@@ -23,9 +23,9 @@
 
 ## 4. HTTP request hardening
 
-- [ ] 4.1 Add `ReadHeaderTimeout` and `MaxHeaderBytes` to the webhook `http.Server` (server.go)
-- [ ] 4.2 Add `ReadHeaderTimeout` and `MaxHeaderBytes` to the socket `http.Server` (socket.go)
-- [ ] 4.3 Add `ReadHeaderTimeout` and `MaxHeaderBytes` to the TCP `http.Server` (tcp.go)
+- [x] 4.1 Add `ReadHeaderTimeout` and `MaxHeaderBytes` to the webhook `http.Server` (server.go)
+- [x] 4.2 Add `ReadHeaderTimeout` and `MaxHeaderBytes` to the socket `http.Server` (socket.go)
+- [x] 4.3 Add `ReadHeaderTimeout` and `MaxHeaderBytes` to the TCP `http.Server` (tcp.go)
 - [ ] 4.4 Wrap `SocketServer.handleTrigger` body in `http.MaxBytesReader`
 - [ ] 4.5 Wrap `TCPServer.handleTrigger` body in `http.MaxBytesReader`
 - [ ] 4.6 Wrap `handleAPITrigger` body in `http.MaxBytesReader`

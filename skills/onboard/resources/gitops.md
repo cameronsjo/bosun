@@ -237,6 +237,11 @@ bosun daemon -n                       # Dry run mode
 - **Deploy state tracking** with circuit breaker (stops retrying after 3 consecutive failures)
 - **Graceful shutdown** on SIGTERM/SIGINT
 
+The webhook, Unix socket, and optional TCP HTTP servers all allow at most 5
+seconds to receive request headers and set a 32 KiB request-header parsing
+limit. These transport limits are fixed security defaults and do not change
+the existing per-operation `BOSUN_API_TIMEOUT` behavior.
+
 ### Unix Socket API
 
 The daemon's primary interface. All `bosun trigger`, `bosun daemon-status`, and `bosun validate` commands communicate through this socket.
