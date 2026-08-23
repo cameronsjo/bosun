@@ -45,11 +45,11 @@ State SHALL be persisted to the deploy state file only after this gated update, 
 
 A drift resolution alert SHALL NOT fire when the apparent resolution is caused by ignore-rule suppression of a still-drifting item; resolution MUST reflect actual state convergence.
 
-A previously-alerted drift item SHALL be considered resolved only when it is absent from the *unfiltered* drift report (the raw declared-vs-actual comparison before ignore rules are applied). An item that is still present in the unfiltered report but removed by a newly-matching ignore rule SHALL NOT be treated as resolved.
+A previously-alerted critical drift key SHALL be considered resolved only when its service has no critical drift in the *unfiltered* report (the raw declared-vs-actual comparison before ignore rules are applied). A critical type transition on the same service SHALL remain active drift, and critical drift removed only from the filtered report by a newly-matching ignore rule SHALL NOT be treated as resolved.
 
-When a previously-alerted item disappears from the alerted set solely because an ignore rule now matches it, the item SHALL be removed from `drift_alerted_items` without emitting a resolution alert, so the dedup map stays consistent without misreporting state.
+When all of a previously-alerted service's current critical drift disappears from the filtered report solely because ignore rules now match it, the service's prior key SHALL be removed from `drift_alerted_items` without emitting a resolution alert, so the dedup map stays consistent without misreporting state.
 
-Genuinely-cleared items (absent from the unfiltered report) SHALL still trigger resolution alerts and be removed from `drift_alerted_items`, subject to the existing `BOSUN_DRIFT_RESOLVE_ALERTS` setting.
+Genuinely-converged services (no critical drift in the unfiltered report) SHALL still trigger resolution alerts for their prior keys and remove those keys from `drift_alerted_items`, subject to the existing `BOSUN_DRIFT_RESOLVE_ALERTS` setting.
 
 #### Scenario: Ignore rule suppresses an actively-drifting item
 
@@ -75,3 +75,11 @@ Genuinely-cleared items (absent from the unfiltered report) SHALL still trigger 
 - **WHEN** the next drift check runs
 - **THEN** a resolution alert is sent for `gatus:missing` only
 - **AND** both keys are removed from `drift_alerted_items`
+
+#### Scenario: Ignored critical type transition remains unresolved
+
+- **GIVEN** `traefik:unhealthy` is present in `drift_alerted_items`
+- **AND** traefik transitions from unhealthy to missing in the unfiltered drift report
+- **WHEN** an ignore rule suppresses `traefik:missing` and the next drift check runs
+- **THEN** no "Drift Resolved" alert is sent for `traefik:unhealthy`
+- **AND** the prior key is removed from `drift_alerted_items` without notification

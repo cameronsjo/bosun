@@ -8,10 +8,10 @@
 
 ## 2. Resolution vs ignore-rule suppression (#258)
 
-- [x] 2.1 Distinguish items absent from the current check because they actually cleared vs because an ignore rule now suppresses them (compare against the unfiltered drift report, or tag suppressed keys)
+- [x] 2.1 Distinguish services with no remaining critical drift from services whose critical drift is hidden only by ignore rules (compare against the unfiltered drift report, or tag suppressed keys)
 - [x] 2.2 Suppress the "Drift Resolved" alert for keys that disappeared only due to ignore-rule suppression
 - [x] 2.3 Still remove genuinely-cleared keys from `DriftAlertedItems`; remove suppressed keys without emitting a resolution alert
-- [x] 2.4 Tests: add ignore rule for an actively-drifting alerted item → no resolution alert, item still unhealthy; item that truly clears → resolution alert fires
+- [x] 2.4 Tests: add ignore rule for an actively-drifting alerted item → no resolution alert; ignored type transition → no resolution alert; service that truly converges → resolution alert fires
 
 ## 3. Ignore-rule validation at config load (#236)
 
