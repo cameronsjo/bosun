@@ -158,6 +158,31 @@ func TestValidateConfig(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "empty exec command fails startup",
+			cfg: &Config{
+				Port: 8080,
+				ReconcileConfig: &reconcile.Config{
+					RepoURL:       "https://github.com/example/repo",
+					PostSyncHooks: reconcile.NewConfigField([]reconcile.PostSyncHook{{Action: "exec"}}),
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty target exec command fails startup",
+			cfg: &Config{
+				Port: 8080,
+				ReconcileConfig: &reconcile.Config{
+					RepoURL: "https://github.com/example/repo",
+					Targets: []reconcile.Target{{
+						Name:          "nas",
+						PostSyncHooks: []reconcile.PostSyncHook{{Action: "exec"}},
+					}},
+				},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -858,6 +883,31 @@ post_sync_hooks:
 		if hooks[0].Container != "nginx" {
 			t.Errorf("PostSyncHooks[0].Container = %q, want nginx", hooks[0].Container)
 		}
+	})
+
+	t.Run("invalid exec hook fails daemon validation", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+		yamlContent := `manifest_dir: manifest
+post_sync_hooks:
+  - paths: ["scripts/**"]
+    action: exec
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(yamlContent), 0o644))
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0o755))
+
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(origDir) }()
+		require.NoError(t, os.Chdir(tmpDir))
+		t.Setenv("BOSUN_REPO_URL", "https://github.com/example/repo")
+
+		cfg := ConfigFromEnv()
+		err = ValidateConfig(cfg)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), filepath.Join(tmpDir, "bosun.yaml"))
+		assert.Contains(t, err.Error(), "post_sync_hooks[0]")
+		assert.Contains(t, err.Error(), "non-empty command")
 	})
 }
 

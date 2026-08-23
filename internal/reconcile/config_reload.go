@@ -1,6 +1,8 @@
 package reconcile
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/cameronsjo/bosun/internal/log"
@@ -10,9 +12,9 @@ import (
 // and updates operational config fields (hooks, deploy paths, alert gates,
 // critical containers, drift ignore rules, remove-orphans) if the file changed.
 // Fields overridden by environment variables are not updated.
-func (r *Reconciler) reloadProjectConfig() {
+func (r *Reconciler) reloadProjectConfig() error {
 	if r.config.ConfigReloader == nil {
-		return
+		return nil
 	}
 
 	logger := log.Component(log.ComponentReconcile) // No ctx available in this method.
@@ -23,18 +25,34 @@ func (r *Reconciler) reloadProjectConfig() {
 
 	reloaded, err := r.config.ConfigReloader(r.config.RepoDir)
 	if err != nil {
+		if errors.Is(err, ErrInvalidPostSyncHooks) {
+			logger.Error().Err(err).Msg("Reloaded post-sync hooks are invalid, aborting reconciliation")
+			return err
+		}
 		logger.Warn().Err(err).Msg("Failed to reload project config from repo, keeping existing config")
-		return
+		return nil
 	}
 	if reloaded == nil {
-		return
+		return nil
+	}
+
+	if err := ValidatePostSyncHooks(reloaded.PostSyncHooks); err != nil {
+		logger.Error().Err(err).Msg("Reloaded root post-sync hooks are invalid, aborting reconciliation")
+		return err
+	}
+	for _, target := range reloaded.Targets {
+		if err := ValidatePostSyncHooks(target.PostSyncHooks); err != nil {
+			targetErr := fmt.Errorf("target %q: %w", target.Name, err)
+			logger.Error().Err(targetErr).Msg("Reloaded target post-sync hooks are invalid, aborting reconciliation")
+			return targetErr
+		}
 	}
 
 	// If no field has any value from the repo, there's nothing to reload.
 	// Use nil checks (not len==0) for slices so explicitly empty lists (e.g. `deploy_sync_paths: []`)
 	// can clear in-memory filters during hot-reload.
 	if reloaded.PostSyncHooks == nil && reloaded.HookSettleDelay == nil && reloaded.DeployPaths == nil && reloaded.DeploySyncPaths == nil && reloaded.DeploySyncExclude == nil && reloaded.CriticalContainers == nil && reloaded.DriftIgnore == nil && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil && reloaded.ProjectName == nil && reloaded.Targets == nil {
-		return
+		return nil
 	}
 
 	changed := false
@@ -140,6 +158,7 @@ func (r *Reconciler) reloadProjectConfig() {
 			Bool("remove_orphans", r.config.RemoveOrphans.Value).
 			Msg("Reloaded project config from repo")
 	}
+	return nil
 }
 
 // applyTargetOverrides overlays per-target field overrides onto the reconciler's config.

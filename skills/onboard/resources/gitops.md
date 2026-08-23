@@ -183,6 +183,7 @@ Two timing controls are available:
 - **`delay`** — per-hook pause before restarting a specific container
 
 Hooks are configured in `bosun.yaml` under `post_sync_hooks`. See the [Configuration guide](configuration.md#post-sync-hooks) for schema and examples.
+`exec` hooks must provide a non-empty `command`; bosun rejects invalid root or per-target hook configuration before deployment instead of silently skipping it.
 
 ### Path-Aware Deploy Skipping
 

@@ -25,9 +25,9 @@
 
 ## 5. Empty hook command rejection (#283)
 
-- [ ] 5.1 Validate at config load that an `exec` hook has a non-empty command; reject with a clear error
-- [ ] 5.2 Remove (or make unreachable) the silent warn-and-continue skip in `hooks.go:188-194`
-- [ ] 5.3 Tests: config with `action: exec` and empty/absent command fails to load
+- [x] 5.1 Validate at config load that an `exec` hook has a non-empty command; reject with a clear error
+- [x] 5.2 Remove (or make unreachable) the silent warn-and-continue skip in `hooks.go:188-194`
+- [x] 5.3 Tests: config with `action: exec` and empty/absent command fails to load
 
 ## 6. Post-write verification propagation (#282)
 

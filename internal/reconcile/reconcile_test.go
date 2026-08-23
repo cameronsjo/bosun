@@ -139,6 +139,38 @@ func TestReconciler_ReleaseLock(t *testing.T) {
 	})
 }
 
+func TestReconcilerRun_InvalidPostSyncHooksFailBeforeSync(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.PostSyncHooks = NewConfigField([]PostSyncHook{{Action: "exec"}})
+	r := NewReconciler(cfg, WithGitOperations(&mockGitOps{syncErr: fmt.Errorf("sync must not run")}))
+
+	err := r.Run(context.Background())
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidPostSyncHooks)
+	assert.NotContains(t, err.Error(), "sync must not run")
+}
+
+func TestReconcilerRun_InvalidReloadedPostSyncHooksFailBeforeDeploy(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.LockFile = filepath.Join(tmpDir, "reconcile.lock")
+	cfg.ConfigReloader = func(string) (*ReloadedConfig, error) {
+		return &ReloadedConfig{PostSyncHooks: []PostSyncHook{{Action: "exec"}}}, nil
+	}
+	r := NewReconciler(cfg, WithGitOperations(&mockGitOps{
+		syncChanged: true,
+		syncBefore:  "aaa111",
+		syncAfter:   "bbb222",
+	}))
+
+	err := r.Run(context.Background())
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidPostSyncHooks)
+	assert.Contains(t, err.Error(), "invalid reloaded project configuration")
+}
+
 // TestReconcilerRun_CreatesMissingLockDir proves Run() creates the lock file's
 // parent directory when it doesn't exist yet (e.g. a fresh install where
 // /var/run/bosun hasn't been created), instead of acquireLock's OpenFile
@@ -296,7 +328,7 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		require.Len(t, r.config.PostSyncHooks.Value, 1)
 		assert.Equal(t, "new", r.config.PostSyncHooks.Value[0].Container)
@@ -317,7 +349,7 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		require.Len(t, r.config.PostSyncHooks.Value, 1)
 		assert.Equal(t, "env-hook", r.config.PostSyncHooks.Value[0].Container)
@@ -333,7 +365,7 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		assert.Equal(t, 5*time.Second, r.config.HookSettleDelay.Value)
 	})
@@ -350,7 +382,7 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		assert.Equal(t, 2*time.Second, r.config.HookSettleDelay.Value)
 	})
@@ -367,7 +399,7 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		assert.Equal(t, time.Duration(0), r.config.HookSettleDelay.Value)
 	})
@@ -383,10 +415,45 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		require.Len(t, r.config.PostSyncHooks.Value, 1)
 		assert.Equal(t, "keep", r.config.PostSyncHooks.Value[0].Container)
+	})
+
+	t.Run("invalid hook error aborts instead of graceful degradation", func(t *testing.T) {
+		cfg := &Config{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
+				{Paths: []string{"keep/**"}, Action: "restart", Container: "keep"},
+			}),
+			ConfigReloader: func(string) (*ReloadedConfig, error) {
+				return nil, fmt.Errorf("repo bosun.yaml: %w", ErrInvalidPostSyncHooks)
+			},
+		}
+		r := NewReconciler(cfg)
+
+		err := r.reloadProjectConfig()
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidPostSyncHooks)
+		require.Len(t, r.config.PostSyncHooks.Value, 1)
+		assert.Equal(t, "keep", r.config.PostSyncHooks.Value[0].Container)
+	})
+
+	t.Run("invalid programmatic target reload is rejected before apply", func(t *testing.T) {
+		cfg := &Config{ConfigReloader: func(string) (*ReloadedConfig, error) {
+			return &ReloadedConfig{Targets: []Target{{
+				Name:          "nas",
+				PostSyncHooks: []PostSyncHook{{Action: "exec"}},
+			}}}, nil
+		}}
+		r := NewReconciler(cfg)
+
+		err := r.reloadProjectConfig()
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidPostSyncHooks)
+		assert.Contains(t, err.Error(), `target "nas"`)
 	})
 
 	t.Run("no-op when reloader is nil", func(t *testing.T) {
@@ -397,7 +464,7 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		require.Len(t, r.config.PostSyncHooks.Value, 1)
 		assert.Equal(t, "unchanged", r.config.PostSyncHooks.Value[0].Container)
@@ -414,7 +481,7 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		require.Len(t, r.config.PostSyncHooks.Value, 1)
 		assert.Equal(t, "existing", r.config.PostSyncHooks.Value[0].Container)
@@ -530,7 +597,7 @@ func TestReloadProjectConfig_ProjectName(t *testing.T) {
 			}
 			r := NewReconciler(tt.cfg)
 
-			r.reloadProjectConfig()
+			require.NoError(t, r.reloadProjectConfig())
 
 			assert.Equal(t, tt.want, r.config.ProjectName, tt.reason)
 			if tt.wantDeploy != "" {
@@ -660,7 +727,7 @@ func TestReloadProjectConfig_DeployPaths(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		assert.Equal(t, []string{"unraid/**", "infra/**"}, r.config.DeployPaths.Value)
 	})
@@ -676,7 +743,7 @@ func TestReloadProjectConfig_DeployPaths(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		assert.Equal(t, []string{"env/**"}, r.config.DeployPaths.Value)
 	})
@@ -1581,6 +1648,27 @@ func TestRunPostSyncHooksWithSpan(t *testing.T) {
 }
 
 func TestReconcilerExecutePostSyncHooks(t *testing.T) {
+	t.Run("invalid exec hook fails before Docker client acquisition", func(t *testing.T) {
+		dockerClientCalled := false
+		cfg := &Config{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
+				{Paths: []string{"app/**"}, Action: "exec", Container: "app"},
+			}),
+		}
+		r := NewReconciler(cfg, WithGitOperations(&mockGitOps{diffFiles: []string{"app/config.yml"}}))
+		r.dockerClientFn = func() *docker.Client {
+			dockerClientCalled = true
+			return nil
+		}
+
+		matched, err := r.executePostSyncHooks(context.Background(), "aaa", "bbb", nil, true)
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidPostSyncHooks)
+		assert.Zero(t, matched)
+		assert.False(t, dockerClientCalled)
+	})
+
 	t.Run("first deploy skips hooks (empty previous commit)", func(t *testing.T) {
 		cfg := &Config{
 			PostSyncHooks: NewConfigField([]PostSyncHook{
@@ -1810,7 +1898,7 @@ func TestReloadProjectConfig(t *testing.T) {
 	t.Run("nil reloader is no-op", func(t *testing.T) {
 		cfg := &Config{}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig() // Should not panic
+		require.NoError(t, r.reloadProjectConfig()) // Should not panic
 	})
 
 	t.Run("reloader error keeps existing config", func(t *testing.T) {
@@ -1821,7 +1909,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		assert.Equal(t, "orig", r.config.PostSyncHooks.Value[0].Container)
 	})
 
@@ -1832,7 +1920,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 	})
 
 	t.Run("reloader updates hooks from repo", func(t *testing.T) {
@@ -1844,7 +1932,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.PostSyncHooks.Value, 1)
 		assert.Equal(t, "new-container", r.config.PostSyncHooks.Value[0].Container)
 	})
@@ -1859,7 +1947,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		assert.Equal(t, "env-container", r.config.PostSyncHooks.Value[0].Container)
 	})
 
@@ -1872,7 +1960,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.DeployPaths.Value, 1)
 		assert.Equal(t, "infra/**", r.config.DeployPaths.Value[0])
 	})
@@ -1887,7 +1975,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		assert.Equal(t, 5*time.Second, r.config.HookSettleDelay.Value)
 	})
 
@@ -1899,7 +1987,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		assert.Equal(t, "orig", r.config.PostSyncHooks.Value[0].Container)
 	})
 
@@ -1912,7 +2000,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.CriticalContainers.Value, 2)
 		assert.Equal(t, "traefik", r.config.CriticalContainers.Value[0])
 		assert.Equal(t, "authelia", r.config.CriticalContainers.Value[1])
@@ -1928,7 +2016,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.CriticalContainers.Value, 1)
 		assert.Equal(t, "env-container", r.config.CriticalContainers.Value[0])
 	})
@@ -1947,7 +2035,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.DriftIgnore.Value, 1, "invalid reload must not replace the previous rules")
 		assert.Equal(t, "traefik", r.config.DriftIgnore.Value[0].Service)
 		assert.Equal(t, "unhealthy", r.config.DriftIgnore.Value[0].Type)
@@ -1967,7 +2055,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.DriftIgnore.Value, 1)
 		assert.Equal(t, "api", r.config.DriftIgnore.Value[0].Service)
 		assert.Equal(t, "missing", r.config.DriftIgnore.Value[0].Type)
@@ -1984,7 +2072,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.DriftIgnore.Value, 1, "a total-suppression rule is syntactically valid and should still apply")
 		assert.Equal(t, "*", r.config.DriftIgnore.Value[0].Service)
 		assert.Equal(t, "*", r.config.DriftIgnore.Value[0].Type)
@@ -2004,7 +2092,7 @@ func TestReloadProjectConfig(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.DriftIgnore.Value, 1)
 		assert.Equal(t, "env-service", r.config.DriftIgnore.Value[0].Service)
 	})
@@ -2026,7 +2114,7 @@ func TestReloadProjectConfig_TargetOverrides(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.PostSyncHooks.Value, 1)
 		assert.Equal(t, "target-hook", r.config.PostSyncHooks.Value[0].Container)
 	})
@@ -2044,7 +2132,7 @@ func TestReloadProjectConfig_TargetOverrides(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		assert.Equal(t, "env-hook", r.config.PostSyncHooks.Value[0].Container)
 	})
 
@@ -2061,7 +2149,7 @@ func TestReloadProjectConfig_TargetOverrides(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		assert.Equal(t, "root-hook", r.config.PostSyncHooks.Value[0].Container)
 	})
 
@@ -2078,7 +2166,7 @@ func TestReloadProjectConfig_TargetOverrides(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		assert.Equal(t, "root-hook", r.config.PostSyncHooks.Value[0].Container)
 	})
 
@@ -2094,7 +2182,7 @@ func TestReloadProjectConfig_TargetOverrides(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.CriticalContainers.Value, 1)
 		assert.Equal(t, "traefik", r.config.CriticalContainers.Value[0])
 	})
@@ -2117,7 +2205,7 @@ func TestReloadProjectConfig_TargetOverrides(t *testing.T) {
 			},
 		}
 		r := NewReconciler(cfg)
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.PostSyncHooks.Value, 1)
 		assert.Equal(t, "hook", r.config.PostSyncHooks.Value[0].Container)
 		require.Len(t, r.config.CriticalContainers.Value, 1)
@@ -4190,7 +4278,7 @@ func TestReloadProjectConfig_AlertGates(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		assert.False(t, r.config.OnFailure, "OnFailure should be updated to false from repo config")
 		assert.True(t, r.config.OnSuccess, "OnSuccess should be updated to true from repo config")
@@ -4206,7 +4294,7 @@ func TestReloadProjectConfig_AlertGates(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 
-		r.reloadProjectConfig()
+		require.NoError(t, r.reloadProjectConfig())
 
 		assert.True(t, r.config.OnFailure, "OnFailure should remain true when not reloaded")
 		assert.False(t, r.config.OnSuccess, "OnSuccess should remain false when not reloaded")

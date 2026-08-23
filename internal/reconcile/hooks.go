@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -12,6 +13,11 @@ import (
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
+
+// ErrInvalidPostSyncHooks identifies hook configuration that cannot execute as
+// declared. Callers use this sentinel to fail closed without changing graceful
+// degradation for unrelated project-config read or parse errors.
+var ErrInvalidPostSyncHooks = errors.New("invalid post-sync hooks")
 
 // PostSyncHook defines a container action triggered when specific file paths change.
 type PostSyncHook struct {
@@ -27,6 +33,17 @@ type PostSyncHook struct {
 	// Delay is an optional pause before executing this hook's action.
 	// Useful when a container needs extra time for config propagation.
 	Delay Duration `json:"delay,omitempty" yaml:"delay,omitempty"`
+}
+
+// ValidatePostSyncHooks rejects hook configurations that would otherwise
+// silently skip required work at execution time.
+func ValidatePostSyncHooks(hooks []PostSyncHook) error {
+	for i, hook := range hooks {
+		if hook.Action == "exec" && len(hook.Command) == 0 {
+			return fmt.Errorf("post_sync_hooks[%d]: action %q requires a non-empty command: %w", i, hook.Action, ErrInvalidPostSyncHooks)
+		}
+	}
+	return nil
 }
 
 // hookKey returns a deduplication key for a hook.
@@ -174,6 +191,9 @@ func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []Po
 	if len(hooks) == 0 {
 		return nil
 	}
+	if err := ValidatePostSyncHooks(hooks); err != nil {
+		return err
+	}
 
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
@@ -220,13 +240,6 @@ func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []Po
 			}
 
 		case "exec":
-			if len(hook.Command) == 0 {
-				logger.Warn().
-					Str("container", hook.Container).
-					Msg("Exec hook has no command, skipping")
-				continue
-			}
-
 			logger.Info().
 				Str("container", hook.Container).
 				Int("command_args", len(hook.Command)).

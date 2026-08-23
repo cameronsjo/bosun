@@ -78,6 +78,9 @@ type Config struct {
 
 	// Reconcile settings
 	ReconcileConfig *reconcile.Config
+	// projectConfigError retains the narrow class of project configuration
+	// errors that must fail startup instead of using graceful degradation.
+	projectConfigError error
 
 	// Timeout settings
 	ReconcileTimeout time.Duration // Max time for a reconcile operation (default: 10m)
@@ -2004,6 +2007,10 @@ func ConfigFromEnv() *Config {
 			cfg.RemoveOrphans = projectCfg.RemoveOrphans()
 			rcfg.RemoveOrphans.SetFromFile(cfg.RemoveOrphans)
 		}
+	} else if errors.Is(err, config.ErrInvalidPostSyncHooks) {
+		// Preserve graceful degradation for missing or otherwise unreadable
+		// config, but an invalid exec hook must fail daemon startup.
+		cfg.projectConfigError = err
 	}
 
 	// Wire config reloader so the reconciler can re-read bosun.yaml from the repo.
@@ -2147,6 +2154,9 @@ func splitAndTrim(s string) []string {
 // ValidateConfig validates the daemon configuration.
 func ValidateConfig(cfg *Config) error {
 	var errs []string
+	if cfg.projectConfigError != nil {
+		errs = append(errs, cfg.projectConfigError.Error())
+	}
 
 	if cfg.Port < 1 || cfg.Port > 65535 {
 		errs = append(errs, fmt.Sprintf("invalid port: %d", cfg.Port))
@@ -2167,6 +2177,15 @@ func ValidateConfig(cfg *Config) error {
 		} else {
 			for _, w := range warnings {
 				log.Warn().Str("component", "drift_ignore").Msg(w)
+			}
+		}
+
+		if err := reconcile.ValidatePostSyncHooks(cfg.ReconcileConfig.PostSyncHooks.Value); err != nil {
+			errs = append(errs, err.Error())
+		}
+		for _, target := range cfg.ReconcileConfig.Targets {
+			if err := reconcile.ValidatePostSyncHooks(target.PostSyncHooks); err != nil {
+				errs = append(errs, fmt.Sprintf("target %q: %v", target.Name, err))
 			}
 		}
 	}

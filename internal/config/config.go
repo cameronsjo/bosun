@@ -23,6 +23,10 @@ var defaultInfraContainers = []string{"traefik", "authelia", "gatus"}
 // defaultTunnelProvider is the default tunnel provider.
 const defaultTunnelProvider = "tailscale"
 
+// ErrInvalidPostSyncHooks identifies project configuration rejected because a
+// post-sync hook cannot execute as declared.
+var ErrInvalidPostSyncHooks = reconcile.ErrInvalidPostSyncHooks
+
 // Config holds the bosun project configuration.
 type Config struct {
 	// Root is the project root directory (contains bosun/ or manifest/).
@@ -548,6 +552,9 @@ func loadConfigFile(root string) (configFile, error) {
 		if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 			return configFile{}, fmt.Errorf("failed to parse config file %s: %w", path, err)
 		}
+		if err := validatePostSyncHooks(path, cfg); err != nil {
+			return configFile{}, err
+		}
 
 		log.Debug().
 			Str(log.FieldPath, path).
@@ -556,6 +563,18 @@ func loadConfigFile(root string) (configFile, error) {
 	}
 
 	return cfg, nil
+}
+
+func validatePostSyncHooks(path string, cfg configFile) error {
+	if err := reconcile.ValidatePostSyncHooks(cfg.PostSyncHooks); err != nil {
+		return fmt.Errorf("config file %q: %w", path, err)
+	}
+	for i, target := range cfg.Targets {
+		if err := reconcile.ValidatePostSyncHooks(target.PostSyncHooks); err != nil {
+			return fmt.Errorf("config file %q: targets[%d] %q: %w", path, i, target.Name, err)
+		}
+	}
+	return nil
 }
 
 // extractInfraContainers extracts infrastructure container names from a parsed config.

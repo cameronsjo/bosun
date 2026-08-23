@@ -66,6 +66,7 @@ The daemon provides:
 - Health endpoints (`/health`, `/ready`)
 - Periodic drift detection (declared vs actual state); ignore rules suppress matching alerts without falsely reporting still-active drift as resolved
 - Deploy state tracking with circuit breaker (stops retrying after 3 failures)
+- Post-sync `exec` hooks require a non-empty command; invalid root or per-target hook configuration fails before deployment
 
 ## Project Structure
 
