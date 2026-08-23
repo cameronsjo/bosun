@@ -463,8 +463,9 @@ control. The allowlist is a defense-in-depth control so that even a mistaken or
 malicious template cannot read the SOPS secrets file, age keys, or `bosun.yaml`
 that live in the infra root alongside (but above) `templates/`.
 
-**Enforcement** (`internal/reconcile/template.go`): the requested path is
-resolved (`filepath.Abs`), checked for lexical containment via `filepath.Rel`
+**Enforcement** (`internal/reconcile/template.go`, shared by reconciliation and
+`bosun render`): the requested path is resolved (`filepath.Abs`), checked for
+lexical containment via `filepath.Rel`
 (a `..`-escape, an absolute-outside path, or a `Rel` error all fail closed), and
 then re-checked after `filepath.EvalSymlinks` so a symlink whose target escapes
 the subtree is rejected. A `{{ include "/etc/shadow" }}` or a read of a sibling
@@ -478,7 +479,9 @@ is overridable with the `template_include_dir` config field or
 `BOSUN_TEMPLATE_INCLUDE_DIR` (relative values resolve against the infra dir,
 absolute values are used as-is). This is a breaking change for configs that
 included files from outside `templates/`; move those files under the subtree or
-point the override at their location.
+point the override at their location. For `bosun render`, the infra directory is
+the discovered project root plus `BOSUN_INFRA_DIR`; outside a Bosun project it
+is the current directory.
 
 ### Template Rendering Scope
 

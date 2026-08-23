@@ -152,7 +152,7 @@ post_sync_hooks:
 | `deploy_sync_exclude` | `[]` (exclude none) | Glob blocklist — exclude matching staging entries from sync (wins over include) |
 | `critical_containers` | `[]` (disabled) | Container names that must be healthy after deploy — triggers rollback on failure |
 | `health_gate_scope` | `critical` | Health gate target set: `critical` (only `critical_containers`), `declared` (all declared services, exempting pre-existing casualties), or `off`. Overridden by `BOSUN_HEALTH_GATE_SCOPE` |
-| `template_include_dir` | `templates` | Subtree that template `include`/`fromJsonFile` reads are confined to (allowlist), relative to the infra dir (absolute values used as-is). Default `<infraDir>/templates` keeps sibling SOPS files and `bosun.yaml` unreachable from templates. Overridden by `BOSUN_TEMPLATE_INCLUDE_DIR` |
+| `template_include_dir` | `templates` | Subtree that reconcile and `bosun render` template `include`/`fromJsonFile` reads are confined to (allowlist), relative to the infra dir (absolute values used as-is). Default `<infraDir>/templates` keeps sibling SOPS files and `bosun.yaml` unreachable from templates. Overridden by `BOSUN_TEMPLATE_INCLUDE_DIR` |
 | `drift_ignore` | `[]` (disabled) | Suppress known drift noise by service glob + type (`missing`, `image_mismatch`, `unhealthy`, or `*`). Validated at load: unknown types and invalid globs fail startup. Overridden by `BOSUN_DRIFT_IGNORE` env var (JSON array), validated identically |
 | `drift_alert_debounce` | `0` (disabled) | Debounce window before first drift alert fires (e.g., `"5m"`) |
 | `targets` | `[]` (implicit default) | Named deployment targets with per-target overrides. Overridden by `BOSUN_TARGETS` env var (JSON array) |

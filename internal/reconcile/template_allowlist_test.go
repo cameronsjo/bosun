@@ -122,10 +122,10 @@ func TestRenderDirectoryDefaultsIncludeDir(t *testing.T) {
 func TestResolveTemplateIncludeDir(t *testing.T) {
 	infra := "/srv/infra"
 
-	assert.Equal(t, "", resolveTemplateIncludeDir(infra, ""),
-		"empty override yields empty (RenderDirectory applies the default)")
-	assert.Equal(t, filepath.Join(infra, "shared"), resolveTemplateIncludeDir(infra, "shared"),
+	assert.Equal(t, filepath.Join(infra, DefaultIncludeSubdir), ResolveTemplateIncludeDir(infra, ""),
+		"empty override selects the default include subtree")
+	assert.Equal(t, filepath.Join(infra, "shared"), ResolveTemplateIncludeDir(infra, "shared"),
 		"relative override is joined to the infra dir")
-	assert.Equal(t, "/etc/bosun/includes", resolveTemplateIncludeDir(infra, "/etc/bosun/includes"),
+	assert.Equal(t, "/etc/bosun/includes", ResolveTemplateIncludeDir(infra, "/etc/bosun/includes"),
 		"absolute override is used as-is")
 }

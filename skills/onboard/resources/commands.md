@@ -196,6 +196,12 @@ Templates have access to:
 - All Sprig template functions
 - Custom functions: `include`, `fromJsonFile`
 
+`include` and `fromJsonFile` are confined to `<infraDir>/templates` by default.
+Set `template_include_dir` or `BOSUN_TEMPLATE_INCLUDE_DIR` to choose another
+allowlisted subtree. Relative overrides resolve against the project infra
+directory (the project root plus `BOSUN_INFRA_DIR`); standalone renders use the
+current directory as the infra root. Traversal and symlink escapes are rejected.
+
 ### Helm-Aligned Charts
 
 ```bash
