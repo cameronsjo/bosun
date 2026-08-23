@@ -25,6 +25,9 @@ them.
     deletion-only commit, verification failure.
   - Hot-reload distinguishes "key absent" from "key explicitly set", so an
     operator's FUSE workaround is never silently dropped.
+  - Root and target hook state changes as one validated, owned snapshot; failed
+    loads and concurrent per-target reconciliation cannot observe partial or
+    aliased hook configuration.
 - Non-Goals:
   - A general file-watch / inotify replacement for restart hooks.
   - Cross-platform FUSE detection beyond a best-effort heuristic for the doctor
@@ -69,15 +72,44 @@ them.
   the alternative is to propagate the failure as a hard error. Silent omission —
   the current behavior — is the one outcome the spec forbids.
 
-- **Decision: Pointer-typed reload DTO fields.** `post_sync_hooks` and
-  `hook_settle_delay` reload DTO fields become `*[]PostSyncHook` / `*time.Duration`
-  so YAML decoding yields `nil` for an absent key and a non-nil value (including
-  an explicit empty slice or `0s`) for a present one. The reloader overwrites only
-  on non-nil. Absent key ⇒ retain prior value; `post_sync_hooks: []` ⇒ clear;
-  `hook_settle_delay: 0s` ⇒ explicitly zero.
-  - Alternatives considered: document "use `[]` to clear" without code change
-    (rejected for the delay — there's no in-band way to express "absent" today, so
-    it always zeroes).
+- **Decision: Field-specific presence semantics.** `hook_settle_delay` carries
+  raw YAML presence through config loading and the reload DTO so an absent key
+  retains the effective value and an explicit `0s` clears it. `post_sync_hooks`
+  is different: after a config file loads successfully, its complete hook slice
+  is authoritative, so both an absent key and `post_sync_hooks: []` clear stale
+  file-sourced hooks. A missing config file or parse/load error is not a
+  successful snapshot and retains both prior values. Environment overrides stay
+  authoritative replacements and are never changed by file reload.
+  - Alternatives considered: require `post_sync_hooks: []` to clear (rejected
+    because deleting the section is the natural declarative removal and otherwise
+    leaves stale executable behavior); treat an absent delay as zero (rejected
+    because it silently removes the FUSE workaround in #267).
+
+- **Decision: Config-file presence defines snapshot success.** A supported
+  config file that exists and parses successfully is an authoritative snapshot
+  even when it is empty: it clears root file-sourced hooks but retains the prior
+  effective delay because that key is absent. A missing file, read failure,
+  malformed YAML, unknown field, or failed hook validation produces no snapshot
+  and retains every prior hook-related value. The loader/reload DTO must carry
+  enough metadata to distinguish a present empty file from no file; a zero-value
+  `Config` alone is not sufficient.
+  - Alternatives considered: treat missing and empty identically (rejected — it
+    either makes deleting the config execute stale hooks or makes temporary file
+    loss destructively clear live behavior).
+
+- **Decision: Validate, clone, then commit hook state.** The reloader validates
+  root hooks and every target hook override before mutating the effective root,
+  delay, or target state. After validation, it deep-clones nested hook slices and
+  applies root state before the current target override. A target whose hook key
+  disappears, or whose descriptor is removed while the daemon still uses its
+  startup target topology, immediately loses stale operational hooks and falls
+  back to current root hooks; structural target removal still requires the
+  existing daemon restart. Logs describe applied, cleared, retained, or rejected
+  state by source and target using counts only — never command arguments.
+  - Alternatives considered: mutate fields as they are decoded (rejected — a
+    later invalid target can leave a partially applied executable snapshot);
+    reuse decoded slices (rejected — concurrent target reconcilers can alias and
+    race on nested `Paths` / `Command` slices).
 
 ## Risks / Trade-offs
 
@@ -90,6 +122,12 @@ them.
   implementation.
 - **Deletion tracking could over-fire hooks** on large prune commits → mitigated
   by per-container dedup (already "restart at most once per deploy").
+- **A removed target remains in the daemon's startup topology until restart** →
+  mitigated by dropping its stale operational hook override immediately, logging
+  the fallback to root, and retaining the existing restart requirement for
+  structural target changes.
+- **Snapshot logging could expose executable arguments** → mitigated by logging
+  source, presence, target, and counts only; hook commands remain redacted.
 
 ## Migration Plan
 
@@ -97,10 +135,13 @@ them.
    `deploy_paths` patterns against the new no-match warning after first deploy.
 2. Operators on non-FUSE local disk who want the old instant behavior: set
    `BOSUN_HOOK_SETTLE_DELAY=0s` (or `hook_settle_delay: 0s`) explicitly.
-3. Operators clearing hooks via hot-reload: replace section removal with
-   `post_sync_hooks: []`.
-4. Rollback: revert the matcher and default; pointer DTO fields are
-   backwards-compatible to read.
+3. Operators removing file-sourced hooks may delete the section, empty the
+   config file, or set `post_sync_hooks: []`; each successful snapshot clears
+   them. Deleting the config file itself retains the last effective state.
+4. Operators removing a target hook override fall back to root hooks immediately;
+   removing the target structurally still requires a daemon restart.
+5. Rollback: revert the matcher and default; the additive presence/snapshot
+   representation is backwards-compatible to read.
 
 ## Open Questions
 

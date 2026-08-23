@@ -19,8 +19,9 @@ container, so Traefik re-reads stale config and the "Restarted traefik" log lies
 record them in `WrittenFiles`, so the hook matcher sees zero changes and never
 fires — stale prod routes persist (#234, P0). A typo'd glob that matches nothing
 returns silently and no-ops forever (#269, P1). Hot-reload of `bosun.yaml`
-silently zeroes `HookSettleDelay` and drops `post_sync_hooks` when the keys are
-absent, regressing an operator's FUSE workaround weeks later (#267 / #268, P1).
+mishandles absent hook keys: a missing delay silently resets an operator's FUSE
+workaround, while a missing hooks key leaves removed file-sourced hooks active
+(#267 / #268, P1).
 An `exec` hook with an empty command is silently skipped (#283, P2), and a
 post-write content-verification failure makes a file silently miss future hooks
 (#282, P2).
@@ -56,11 +57,14 @@ rejection.
   post-write content verification fails SHALL still be recorded as written (so
   the hook fires) or SHALL surface as an error; it SHALL NOT silently vanish from
   the change set.
-- **Hot-reload removal semantics (#267 / #268)** — absent `post_sync_hooks` /
-  `hook_settle_delay` keys on hot-reload SHALL retain the prior in-memory value
-  (DTO pointer fields distinguish "absent" from "explicitly set"); operators
-  clear hooks with `post_sync_hooks: []` and reset the delay with an explicit
-  `hook_settle_delay: 0s`.
+- **Hot-reload presence semantics (#267 / #268)** — the two fields intentionally
+  differ: an absent `hook_settle_delay` SHALL retain the effective delay, while
+  an absent `post_sync_hooks` in a successfully loaded config SHALL clear stale
+  file-sourced hooks. Explicit `hook_settle_delay: 0s` clears the delay, and
+  `BOSUN_*` overrides remain authoritative replacements. A present-but-empty
+  config file is a successful snapshot; a missing, unreadable, malformed, or
+  hook-invalid config is not. Hook-related state is validated and applied as one
+  owned snapshot so a failed reload cannot partially mutate root or target state.
 
 ## Impact
 
@@ -76,12 +80,20 @@ rejection.
     `WrittenFiles` accumulation, post-write verification handling (`:314-321`)
   - `internal/fileutil/fileutil.go` — `CopyFile` (no dir fsync after rename,
     `:60-110`), `CopyFileIfChanged` post-write verification (`:217-221`)
-  - `internal/reconcile/config_reload.go` — reload predicates (`:36`, `:38-41`)
-  - `internal/reconcile/configfield.go` — `PostSyncHook` reload field (`:59-66`)
-  - `internal/daemon/daemon.go` — `ReloadedConfig{HookSettleDelay}` build
-    (`:1621-1624`)
-  - `internal/config` — `PostSyncHook` DTO + validation, `HookSettleDelay`
-    parsing
+  - `internal/reconcile/config_reload.go` — `reloadProjectConfig` snapshot
+    validation and root/target application
+  - `internal/reconcile/configfield.go` — source-aware `ConfigField` reload
+    ownership
+  - `internal/reconcile/reconcile.go` — `ReloadedConfig` snapshot contract,
+    successful-deploy diff base, and reload-before-pipeline ordering
+  - `internal/reconcile/target.go` — root/target hook inheritance, explicit
+    empty overrides, `BOSUN_TARGETS` provenance, and deep-copy isolation
+  - `internal/daemon/daemon.go` — initial project-config loading and the
+    `ConfigReloader` snapshot builder
+  - `internal/cmd/reconcile.go` — one-shot initial load and `ConfigReloader`
+    closure (must match daemon semantics)
+  - `internal/config` — config-file-found metadata, raw hook/delay presence,
+    target hook presence, validation, and owned accessors
   - `internal/preflight` — `doctor` FUSE/zero-delay check
 - All consumers of the glob matcher and hook change set (each needs its own
   scenario + task):
@@ -90,13 +102,18 @@ rejection.
     (`deploy.go` path-aware skip)
   - hook change-set producers: `CopyDirIfChanged` (added/changed),
     `removeStaleFiles` (deleted), git-diff fallback
-  - hot-reload consumers: daemon reloader (`daemon.go`), `config_reload.go`
-    appliers for `PostSyncHooks` and `HookSettleDelay`
+  - initial-load and hot-reload consumers: daemon and one-shot CLI loaders,
+    both `ConfigReloader` closures, `reloadProjectConfig` appliers for
+    `PostSyncHooks` / `HookSettleDelay`, and `ConfigForTarget`
+  - source precedence: `BOSUN_POST_SYNC_HOOKS`, `BOSUN_HOOK_SETTLE_DELAY`, and
+    existing `BOSUN_TARGETS` ownership must not be overwritten by repo reload
 - New / changed config + env vars:
   - `BOSUN_HOOK_SETTLE_DELAY` default becomes a non-zero safe value (documented
     breaking default change)
-  - `post_sync_hooks` / `hook_settle_delay` DTO fields become pointer-typed for
-    absent-vs-set distinction (internal; affects reload semantics)
-- Docs: `skills/onboard/resources/gitops.md` (hook timing, FUSE), `docs/gitops.md`
-  / `docs/troubleshooting.md`, `CLAUDE.md` env-var table (settle-delay default,
-  reload semantics).
+  - `hook_settle_delay` and target hook overrides carry raw key presence through
+    config loading; root `post_sync_hooks` remains an authoritative slice
+    snapshot whose nil/empty value clears file-sourced hooks after a successful
+    load
+- Docs: `skills/onboard/resources/configuration.md` and `gitops.md` (presence,
+  precedence, hook timing, FUSE), `docs/gitops.md` / `docs/troubleshooting.md`,
+  and the `AGENTS.md` env-var table (settle-delay default, reload semantics).
