@@ -3,7 +3,9 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -2117,6 +2119,24 @@ func TestExtractDriftSelfHeal(t *testing.T) {
 
 // --- Multi-target config tests ---
 
+func TestTargetRawFieldParityWithEnvironmentSchema(t *testing.T) {
+	yamlFields := make(map[string]struct{})
+	rawType := reflect.TypeOf(targetRaw{})
+	for i := range rawType.NumField() {
+		yamlFields[rawType.Field(i).Tag.Get("yaml")] = struct{}{}
+	}
+
+	jsonFields := make(map[string]struct{})
+	targetType := reflect.TypeOf(reconcile.Target{})
+	for i := range targetType.NumField() {
+		name, _, _ := strings.Cut(targetType.Field(i).Tag.Get("json"), ",")
+		jsonFields[name] = struct{}{}
+	}
+
+	assert.Equal(t, jsonFields, yamlFields,
+		"targets: YAML and BOSUN_TARGETS must expose the same per-target fields")
+}
+
 func TestTargetsFromConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	tmpDir = evalSymlinks(t, tmpDir)
@@ -2128,6 +2148,8 @@ targets:
     local_appdata_path: /mnt/appdata
     remote_appdata_path: /mnt/user/appdata
     project_name: homelab-unraid
+    state_file: /var/lib/bosun/unraid-state.json
+    staging_dir: /app/staging-unraid
     secrets_scope: unraid
     critical_containers:
       - traefik
@@ -2160,6 +2182,8 @@ targets:
 	assert.Equal(t, "/mnt/appdata", unraid.LocalAppdataPath)
 	assert.Equal(t, "/mnt/user/appdata", unraid.RemoteAppdataPath)
 	assert.Equal(t, "homelab-unraid", unraid.ProjectName)
+	assert.Equal(t, "/var/lib/bosun/unraid-state.json", unraid.StateFile)
+	assert.Equal(t, "/app/staging-unraid", unraid.StagingDir)
 	assert.Equal(t, "unraid", unraid.SecretsScope)
 	assert.Equal(t, []string{"traefik", "authelia"}, unraid.CriticalContainers)
 	require.Len(t, unraid.PostSyncHooks, 1)
@@ -2172,6 +2196,70 @@ targets:
 	assert.Equal(t, "user@pi", pi.TargetHost)
 	assert.Equal(t, "homelab-pi", pi.ProjectName)
 	assert.Equal(t, "pi", pi.SecretsScope)
+}
+
+func TestTargetPathOverridesMatchEnvironmentAndReachReconcileConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		yaml        string
+		envJSON     string
+		wantName    string
+		wantState   string
+		wantStaging string
+	}{
+		{
+			name: "lone default target",
+			yaml: `targets:
+  - name: default
+    state_file: /var/lib/bosun/root-state.json
+    staging_dir: /app/root-staging
+`,
+			envJSON:     `[{"name":"default","state_file":"/var/lib/bosun/root-state.json","staging_dir":"/app/root-staging"}]`,
+			wantName:    reconcile.DefaultTargetName,
+			wantState:   "/var/lib/bosun/root-state.json",
+			wantStaging: "/app/root-staging",
+		},
+		{
+			name: "named target",
+			yaml: `targets:
+  - name: nas
+    state_file: /var/lib/bosun/nas-state.json
+    staging_dir: /app/nas-staging
+`,
+			envJSON:     `[{"name":"nas","state_file":"/var/lib/bosun/nas-state.json","staging_dir":"/app/nas-staging"}]`,
+			wantName:    "nas",
+			wantState:   "/var/lib/bosun/nas-state.json",
+			wantStaging: "/app/nas-staging",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := evalSymlinks(t, t.TempDir())
+			require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(tt.yaml), 0o644))
+
+			projectCfg, err := LoadFrom(tmpDir)
+			require.NoError(t, err)
+			yamlTargets := projectCfg.Targets()
+			require.Len(t, yamlTargets, 1)
+
+			envTargets, apply, err := reconcile.ParseTargetsOverride(tt.envJSON)
+			require.NoError(t, err)
+			assert.True(t, apply)
+			assert.Equal(t, envTargets, yamlTargets, "YAML and BOSUN_TARGETS must decode identical target paths")
+
+			base := reconcile.DefaultConfig()
+			base.Targets = yamlTargets
+			resolved, err := base.ResolveTargets()
+			require.NoError(t, err)
+			require.Len(t, resolved, 1)
+			assert.Equal(t, tt.wantName, resolved[0].Name)
+
+			targetCfg := base.ConfigForTarget(resolved[0])
+			assert.Equal(t, tt.wantState, targetCfg.StateFile)
+			assert.Equal(t, tt.wantStaging, targetCfg.StagingDir)
+		})
+	}
 }
 
 func TestTargetsFromConfig_NoTargetsSection(t *testing.T) {
