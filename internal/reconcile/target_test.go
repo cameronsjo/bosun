@@ -164,7 +164,12 @@ func TestResolveTargets_HonorsLoneDefaultTarget(t *testing.T) {
 // per-target config the deploy actually uses.
 func TestResolveTargets_LoneDefaultFlowsThroughConfigForTarget(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Targets = []Target{{Name: "default", ProjectName: "homelab"}}
+	cfg.Targets = []Target{{
+		Name:        "default",
+		ProjectName: "homelab",
+		StateFile:   "/custom/default-state.json",
+		StagingDir:  "/custom/default-staging",
+	}}
 
 	targets, err := cfg.ResolveTargets()
 	require.NoError(t, err)
@@ -172,7 +177,8 @@ func TestResolveTargets_LoneDefaultFlowsThroughConfigForTarget(t *testing.T) {
 
 	targetCfg := cfg.ConfigForTarget(targets[0])
 	assert.Equal(t, "homelab", targetCfg.ProjectName, "project_name must reach the per-target config the deploy uses")
-	assert.Equal(t, cfg.StagingDir, targetCfg.StagingDir, "default target keeps the base staging dir")
+	assert.Equal(t, "/custom/default-state.json", targetCfg.StateFile, "explicit default state_file must reach the deploy config")
+	assert.Equal(t, "/custom/default-staging", targetCfg.StagingDir, "explicit default staging_dir must reach the deploy config")
 }
 
 func TestResolveTargets_ExplicitEmptyMatchesAbsent(t *testing.T) {

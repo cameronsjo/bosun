@@ -181,6 +181,8 @@ type targetRaw struct {
 	LocalAppdataPath   string                   `yaml:"local_appdata_path"`
 	RemoteAppdataPath  string                   `yaml:"remote_appdata_path"`
 	ProjectName        string                   `yaml:"project_name"`
+	StateFile          string                   `yaml:"state_file"`
+	StagingDir         string                   `yaml:"staging_dir"`
 	SecretsScope       string                   `yaml:"secrets_scope"`
 	CriticalContainers []string                 `yaml:"critical_containers"`
 	PostSyncHooks      []reconcile.PostSyncHook `yaml:"post_sync_hooks"`
@@ -948,6 +950,8 @@ func extractTargets(cfg configFile) []reconcile.Target {
 			LocalAppdataPath:   raw.LocalAppdataPath,
 			RemoteAppdataPath:  remoteAppdataPath,
 			ProjectName:        projectName,
+			StateFile:          raw.StateFile,
+			StagingDir:         raw.StagingDir,
 			SecretsScope:       raw.SecretsScope,
 			CriticalContainers: raw.CriticalContainers,
 			PostSyncHooks:      raw.PostSyncHooks,

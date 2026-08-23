@@ -68,7 +68,7 @@
 - [ ] 9.2 Reserved-name `default` check is case-insensitive, matching dedup (#228)
 - [ ] 9.3 Reject colliding state_file / lock_file / staging_dir across targets (#260)
 - [ ] 9.4 Reject/fail-fast on colliding Docker namespace (host+project_name) or deploy path across targets (#287)
-- [ ] 9.5 YAML and `BOSUN_TARGETS` expose identical per-target field sets; `BOSUN_TARGETS=[]` == absent targets (#272, #273)
+- [x] 9.5 YAML and `BOSUN_TARGETS` expose identical per-target field sets; `BOSUN_TARGETS=[]` == absent targets (#272, #273)
 - [ ] 9.6 `ConfigForTarget` deep-copies ALL slice/map fields incl. SecretsFiles, DeployPaths, DriftIgnore (#270)
 - [ ] 9.7 `applyTargetOverrides` deep-copies caller-owned slices on hot-reload (#271)
 - [ ] 9.8 Explicit, documented empty-field inheritance; empty override never silently inherits a foreign host/path (GHSA-jxw8)

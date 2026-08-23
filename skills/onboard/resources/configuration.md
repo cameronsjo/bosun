@@ -173,6 +173,8 @@ targets:
     local_appdata_path: /mnt/appdata
     remote_appdata_path: /mnt/user/appdata
     project_name: homelab
+    state_file: /var/lib/bosun/nas-state.json # Optional exact state-file override
+    staging_dir: /app/nas-staging            # Optional exact staging-dir override
     secrets_scope: nas                   # Decrypt targets.nas.* from secrets
     critical_containers: [traefik, authelia]
     post_sync_hooks:
@@ -190,13 +192,15 @@ targets:
     secrets_scope: media
 ```
 
-Each target gets isolated state: `deploy-state-<name>.json`, `<staging>/<name>/`, and `reconcile-<name>.lock`. Targets are reconciled sequentially; failure on one does not block others.
+Each named target gets isolated defaults: `deploy-state-<name>.json`, `<staging>/<name>/`, and `reconcile-<name>.lock`. Set `state_file` or `staging_dir` when a target needs an exact path instead. A lone `name: default` target may also override these paths while retaining the legacy default lock; a `default` entry in a multi-target list is rejected. Targets are reconciled sequentially; failure on one does not block others.
+
+The daemon resolves target identity, host, and paths from its startup configuration. Restart the daemon after adding or removing targets or changing `target_host`, appdata paths, `state_file`, or `staging_dir`; only per-target operational overrides such as hooks, sync paths, critical containers, and `project_name` hot-reload from the pulled repository.
 
 Per-target secrets scoping: when `secrets_scope` is set, keys under `targets.<scope>.*` in the decrypted secrets override top-level keys for that target.
 
-Override via environment: `BOSUN_TARGETS` (JSON array) completely replaces the config file targets. Uses snake_case field names matching the YAML: `[{"name":"nas","target_host":"user@host","project_name":"homelab"}]`. Setting `BOSUN_TARGETS=[]` explicitly clears all targets (falls back to implicit default).
+Override via environment: `BOSUN_TARGETS` (JSON array) completely replaces the config file targets. It accepts the same snake_case fields as YAML, including `state_file` and `staging_dir`: `[{"name":"nas","target_host":"user@host","project_name":"homelab","state_file":"/var/lib/bosun/nas-state.json","staging_dir":"/app/nas-staging"}]`. Setting `BOSUN_TARGETS=[]` explicitly clears all targets (falls back to implicit default).
 
-**Constraints:** Target names must be alphanumeric with hyphens/underscores (no dots, spaces, or path separators). The name `"default"` is reserved. Duplicate names (case-insensitive) are rejected.
+**Constraints:** Target names must be alphanumeric with hyphens/underscores (no dots, spaces, or path separators). The name `"default"` is reserved for a lone explicit default target; it cannot appear in a multi-target list. Duplicate names (case-insensitive) are rejected.
 
 ## Directory Structure
 

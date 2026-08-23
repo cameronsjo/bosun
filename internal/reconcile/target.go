@@ -90,11 +90,17 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 		cp.ProjectName = t.ProjectName
 	}
 
-	// Derive per-target paths from the base config's directories,
-	// preserving any custom paths the caller configured.
-	// For the default (implicit) target, keep the original paths unchanged
-	// so the daemon/CLI share the same lock and state files as pre-multi-target.
-	if !t.IsDefault() {
+	// The implicit default preserves the base paths exactly, while a lone
+	// explicit default target may override them just like BOSUN_TARGETS
+	// (#273/#391). Named targets derive isolated paths when no override is set.
+	if t.IsDefault() {
+		if t.StateFile != "" {
+			cp.StateFile = t.StateFile
+		}
+		if t.StagingDir != "" {
+			cp.StagingDir = t.StagingDir
+		}
+	} else {
 		stateDir := filepath.Dir(c.StateFile)
 		cp.StateFile = TargetStateFile(stateDir, t)
 		cp.StagingDir = TargetStagingDir(c.StagingDir, t)
