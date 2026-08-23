@@ -11,6 +11,7 @@ import (
 	"github.com/cameronsjo/bosun/internal/fileutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestNewTemplateOps(t *testing.T) {
@@ -301,6 +302,29 @@ func TestBosunTemplateFuncs_FromJsonFileInvalidJSON(t *testing.T) {
 }
 
 func TestTemplateOps_RenderDirectory(t *testing.T) {
+	t.Run("shipped homelab example renders with strict keys", func(t *testing.T) {
+		exampleDir := filepath.Join("..", "..", "examples", "homelab")
+		secretsData, err := os.ReadFile(filepath.Join(exampleDir, "secrets.example.yaml"))
+		require.NoError(t, err)
+
+		var secrets map[string]any
+		require.NoError(t, yaml.Unmarshal(secretsData, &secrets))
+
+		stagingDir := t.TempDir()
+		tmpl := NewTemplateOps(secrets)
+		require.NoError(t, tmpl.RenderDirectory(
+			context.Background(),
+			filepath.Join(exampleDir, "unraid"),
+			stagingDir,
+			"unraid",
+		))
+
+		assert.FileExists(t, filepath.Join(stagingDir, "unraid", "compose", "core.yml"))
+		assert.FileExists(t, filepath.Join(stagingDir, "unraid", "appdata", "authelia", "configuration.yml"))
+		assert.FileExists(t, filepath.Join(stagingDir, "unraid", "appdata", "gatus", "config.yaml"))
+		assert.FileExists(t, filepath.Join(stagingDir, "unraid", "appdata", "tailscale-gateway", "serve.json"))
+	})
+
 	t.Run("render directory with templates and static files", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		// sourceDir simulates RepoDir/InfraSubDir — the caller already joins them.
