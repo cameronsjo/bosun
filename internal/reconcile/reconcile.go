@@ -1935,7 +1935,12 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 				return nil, err
 			}
 		} else {
-			_ = os.MkdirAll(filepath.Dir(dst), 0755)
+			targetDir := filepath.Dir(dst)
+			if !r.config.DryRun {
+				if err := os.MkdirAll(targetDir, 0755); err != nil {
+					return nil, fmt.Errorf("create local deploy directory %q: %w", targetDir, err)
+				}
+			}
 			if err := r.deploy.deployLocalFileManaged(ctx, src, dst, result, prevForTarget); err != nil {
 				return nil, err
 			}
@@ -1957,7 +1962,11 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 	composeTarget := filepath.Join(appdata, "compose")
 	if hasTarget(targets, "compose") {
 		ui.Info("  Syncing compose files...")
-		_ = os.MkdirAll(composeTarget, 0755)
+		if !r.config.DryRun {
+			if err := os.MkdirAll(composeTarget, 0755); err != nil {
+				return nil, fmt.Errorf("create local compose directory %q: %w", composeTarget, err)
+			}
+		}
 		snapshot := len(result.WrittenFiles)
 		deletedSnapshot := len(result.DeletedFiles)
 		prevForCompose := filterManagedForTarget(prevManaged, "compose")
@@ -2120,7 +2129,10 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (
 				return nil, err
 			}
 		} else {
-			_ = r.deploy.EnsureRemoteDir(ctx, host, filepath.Dir(dst))
+			targetDir := filepath.Dir(dst)
+			if err := r.deploy.EnsureRemoteDir(ctx, host, targetDir); err != nil {
+				return nil, fmt.Errorf("ensure remote deploy directory %q: %w", targetDir, err)
+			}
 			if err := r.deploy.DeployRemoteFile(ctx, src, host, dst); err != nil {
 				return nil, err
 			}
@@ -2132,8 +2144,11 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (
 	if hasTarget(targets, "compose") {
 		ui.Info("  Syncing compose files...")
 		composeStaging := filepath.Join(stagingSubDir, "compose")
-		_ = r.deploy.EnsureRemoteDir(ctx, host, filepath.Join(appdata, "compose"))
-		if err := r.deploy.DeployRemote(ctx, composeStaging, host, filepath.Join(appdata, "compose"), verifyChecksums); err != nil {
+		composeTarget := filepath.Join(appdata, "compose")
+		if err := r.deploy.EnsureRemoteDir(ctx, host, composeTarget); err != nil {
+			return nil, fmt.Errorf("ensure remote compose directory %q: %w", composeTarget, err)
+		}
+		if err := r.deploy.DeployRemote(ctx, composeStaging, host, composeTarget, verifyChecksums); err != nil {
 			return nil, err
 		}
 		if err := recordManaged(result, composeStaging, "compose"); err != nil {
@@ -2146,8 +2161,9 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (
 	composeManagerDir := "/boot/config/plugins/compose.manager/projects/core"
 	if hasTarget(targets, "compose") {
 		ui.Info("  Syncing core compose to Compose Manager...")
-		_ = r.deploy.EnsureRemoteDir(ctx, host, composeManagerDir)
-		if err := r.deploy.DeployRemoteFile(ctx, filepath.Join(stagingSubDir, "compose", "core.yml"), host, filepath.Join(composeManagerDir, "docker-compose.yml")); err != nil {
+		if err := r.deploy.EnsureRemoteDir(ctx, host, composeManagerDir); err != nil {
+			ui.Warning("Compose Manager sync skipped: could not create %s: %v", composeManagerDir, err)
+		} else if err := r.deploy.DeployRemoteFile(ctx, filepath.Join(stagingSubDir, "compose", "core.yml"), host, filepath.Join(composeManagerDir, "docker-compose.yml")); err != nil {
 			ui.Warning("Compose Manager sync failed: %v", err)
 		}
 	}

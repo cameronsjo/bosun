@@ -805,6 +805,13 @@ func (d *DeployOps) EnsureRemoteDir(ctx context.Context, host, dir string) error
 	if err := validateHost(host); err != nil {
 		return fmt.Errorf("invalid SSH host: %w", err)
 	}
+	if d.DryRun {
+		logger.Debug().
+			Str(log.FieldTarget, host).
+			Str(log.FieldPath, dir).
+			Msg("Dry run: would ensure remote directory exists")
+		return nil
+	}
 
 	logger.Debug().
 		Str(log.FieldOperation, "ensure_remote_dir").
