@@ -5149,6 +5149,9 @@ func TestConfigForTarget_ExplicitEmptySliceOverrides(t *testing.T) {
 	assert.Empty(t, cfg.CriticalContainers.Value, "explicit empty should override base, not inherit")
 	assert.Empty(t, cfg.PostSyncHooks.Value, "explicit empty should override base, not inherit")
 	assert.Empty(t, cfg.DeploySyncPaths.Value, "explicit empty should override base, not inherit")
+	assert.NotNil(t, cfg.CriticalContainers.Value, "explicit empty should remain distinguishable from unset")
+	assert.NotNil(t, cfg.PostSyncHooks.Value, "explicit empty should remain distinguishable from unset")
+	assert.NotNil(t, cfg.DeploySyncPaths.Value, "explicit empty should remain distinguishable from unset")
 }
 
 func TestResolveTargets_RejectsDuplicateNames(t *testing.T) {
@@ -5184,14 +5187,28 @@ func TestIsDefault_CaseInsensitive(t *testing.T) {
 
 func TestConfigForTarget_SlicesAreIndependent(t *testing.T) {
 	base := DefaultConfig()
+	base.SecretsFiles = []string{"secrets.yaml"}
+	base.DeployPaths = NewConfigField([]string{"infra/**"})
 	base.CriticalContainers = NewConfigField([]string{"traefik", "authelia"})
+	base.DriftIgnore = NewConfigField([]DriftIgnoreRule{{Service: "traefik", Type: "unhealthy"}})
 
-	target := Target{Name: "nas", TargetHost: "user@nas"}
-	cfg := base.ConfigForTarget(target)
+	first := base.ConfigForTarget(Target{Name: "nas", TargetHost: "user@nas"})
+	second := base.ConfigForTarget(Target{Name: "pi", TargetHost: "user@pi"})
 
-	// Mutate the copy — should not affect base
-	cfg.CriticalContainers.Value = append(cfg.CriticalContainers.Value, "injected")
-	assert.Len(t, base.CriticalContainers.Value, 2, "base should not be mutated by per-target copy")
+	first.SecretsFiles[0] = "mutated-secrets.yaml"
+	first.DeployPaths.Value[0] = "mutated/**"
+	first.CriticalContainers.Value[0] = "mutated-container"
+	first.DriftIgnore.Value[0].Service = "mutated-service"
+
+	assert.Equal(t, []string{"secrets.yaml"}, base.SecretsFiles)
+	assert.Equal(t, []string{"infra/**"}, base.DeployPaths.Value)
+	assert.Equal(t, []string{"traefik", "authelia"}, base.CriticalContainers.Value)
+	assert.Equal(t, []DriftIgnoreRule{{Service: "traefik", Type: "unhealthy"}}, base.DriftIgnore.Value)
+
+	assert.Equal(t, []string{"secrets.yaml"}, second.SecretsFiles)
+	assert.Equal(t, []string{"infra/**"}, second.DeployPaths.Value)
+	assert.Equal(t, []string{"traefik", "authelia"}, second.CriticalContainers.Value)
+	assert.Equal(t, []DriftIgnoreRule{{Service: "traefik", Type: "unhealthy"}}, second.DriftIgnore.Value)
 }
 
 func TestConfigForTarget_NilSliceInherits(t *testing.T) {

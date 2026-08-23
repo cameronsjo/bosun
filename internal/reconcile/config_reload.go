@@ -39,7 +39,7 @@ func (r *Reconciler) reloadProjectConfig() {
 
 	changed := false
 
-	changed = reloadField(&r.config.PostSyncHooks, reloaded.PostSyncHooks, func(v []PostSyncHook) bool { return v != nil }) || changed
+	changed = reloadField(&r.config.PostSyncHooks, clonePostSyncHooks(reloaded.PostSyncHooks), func(v []PostSyncHook) bool { return v != nil }) || changed
 
 	if !r.config.HookSettleDelay.FromEnv() && reloaded.HookSettleDelay != nil {
 		r.config.HookSettleDelay.SetFromFile(*reloaded.HookSettleDelay)
@@ -47,10 +47,10 @@ func (r *Reconciler) reloadProjectConfig() {
 	}
 
 	sliceSet := func(v []string) bool { return v != nil }
-	changed = reloadField(&r.config.DeployPaths, reloaded.DeployPaths, sliceSet) || changed
-	changed = reloadField(&r.config.DeploySyncPaths, reloaded.DeploySyncPaths, sliceSet) || changed
-	changed = reloadField(&r.config.DeploySyncExclude, reloaded.DeploySyncExclude, sliceSet) || changed
-	changed = reloadField(&r.config.CriticalContainers, reloaded.CriticalContainers, sliceSet) || changed
+	changed = reloadField(&r.config.DeployPaths, cloneSlice(reloaded.DeployPaths), sliceSet) || changed
+	changed = reloadField(&r.config.DeploySyncPaths, cloneSlice(reloaded.DeploySyncPaths), sliceSet) || changed
+	changed = reloadField(&r.config.DeploySyncExclude, cloneSlice(reloaded.DeploySyncExclude), sliceSet) || changed
+	changed = reloadField(&r.config.CriticalContainers, cloneSlice(reloaded.CriticalContainers), sliceSet) || changed
 
 	// Validate reloaded drift_ignore rules before applying them -- GitOps reload
 	// is the normal path for changing drift_ignore in production, so an invalid
@@ -70,7 +70,7 @@ func (r *Reconciler) reloadProjectConfig() {
 			}
 		}
 	}
-	changed = reloadField(&r.config.DriftIgnore, reloaded.DriftIgnore, func(v []DriftIgnoreRule) bool { return v != nil }) || changed
+	changed = reloadField(&r.config.DriftIgnore, cloneSlice(reloaded.DriftIgnore), func(v []DriftIgnoreRule) bool { return v != nil }) || changed
 
 	if reloaded.OnFailure != nil {
 		r.config.OnFailure = *reloaded.OnFailure
@@ -152,16 +152,16 @@ func applyTargetOverrides(r *Reconciler, t Target) bool {
 	sliceSet := func(v []string) bool { return v != nil }
 
 	if t.PostSyncHooks != nil {
-		changed = reloadField(&r.config.PostSyncHooks, t.PostSyncHooks, func(v []PostSyncHook) bool { return v != nil }) || changed
+		changed = reloadField(&r.config.PostSyncHooks, clonePostSyncHooks(t.PostSyncHooks), func(v []PostSyncHook) bool { return v != nil }) || changed
 	}
 	if t.CriticalContainers != nil {
-		changed = reloadField(&r.config.CriticalContainers, t.CriticalContainers, sliceSet) || changed
+		changed = reloadField(&r.config.CriticalContainers, cloneSlice(t.CriticalContainers), sliceSet) || changed
 	}
 	if t.DeploySyncPaths != nil {
-		changed = reloadField(&r.config.DeploySyncPaths, t.DeploySyncPaths, sliceSet) || changed
+		changed = reloadField(&r.config.DeploySyncPaths, cloneSlice(t.DeploySyncPaths), sliceSet) || changed
 	}
 	if t.DeploySyncExclude != nil {
-		changed = reloadField(&r.config.DeploySyncExclude, t.DeploySyncExclude, sliceSet) || changed
+		changed = reloadField(&r.config.DeploySyncExclude, cloneSlice(t.DeploySyncExclude), sliceSet) || changed
 	}
 	if t.ProjectName != "" && !r.config.TargetsFromEnv {
 		if r.setProjectName(t.ProjectName) {
