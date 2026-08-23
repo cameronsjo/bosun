@@ -104,7 +104,7 @@ func TestPrintDriftJSON_Clean(t *testing.T) {
 	defer func() { driftJSON = oldFlag }()
 
 	output := captureStdout(t, func() {
-		printDriftJSON(state)
+		require.NoError(t, printDriftJSON(state))
 	})
 
 	var result driftJSONOutput
@@ -137,7 +137,7 @@ func TestPrintDriftJSON_Drifted(t *testing.T) {
 	defer func() { driftJSON = oldFlag }()
 
 	output := captureStdout(t, func() {
-		printDriftJSON(state)
+		require.NoError(t, printDriftJSON(state))
 	})
 
 	var result driftJSONOutput
@@ -163,7 +163,7 @@ func TestPrintDriftJSON_NoDeployTime(t *testing.T) {
 	defer func() { driftJSON = oldFlag }()
 
 	output := captureStdout(t, func() {
-		printDriftJSON(state)
+		require.NoError(t, printDriftJSON(state))
 	})
 
 	var result driftJSONOutput
@@ -251,7 +251,7 @@ func TestPrintDriftStatus_RoutesToJSON(t *testing.T) {
 	defer func() { driftJSON = oldFlag }()
 
 	output := captureStdout(t, func() {
-		printDriftStatus(state)
+		require.NoError(t, printDriftStatus(state))
 	})
 
 	// Should produce valid JSON since driftJSON=true
@@ -273,7 +273,7 @@ func TestPrintDriftStatus_RoutesToHuman(t *testing.T) {
 	defer func() { driftJSON = oldFlag }()
 
 	output := captureStdout(t, func() {
-		printDriftStatus(state)
+		require.NoError(t, printDriftStatus(state))
 	})
 
 	// Should produce human-readable output
