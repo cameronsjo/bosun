@@ -69,14 +69,14 @@ type DriftItem struct {
 
 // DeployState tracks the last successful deployment and attempt history.
 type DeployState struct {
-	SchemaVersion      int       `json:"schema_version"`
-	LastDeployedCommit string    `json:"last_deployed_commit,omitempty"`
-	DeployedAt         time.Time `json:"deployed_at,omitempty"`
-	DeployCount        int       `json:"deploy_count,omitempty"`
-	Source             string    `json:"source,omitempty"`
-	LastAttemptedCommit string   `json:"last_attempted_commit,omitempty"`
-	AttemptCount        int      `json:"attempt_count,omitempty"`
-	LastAlertedAttempt  int      `json:"last_alerted_attempt,omitempty"`
+	SchemaVersion       int       `json:"schema_version"`
+	LastDeployedCommit  string    `json:"last_deployed_commit,omitempty"`
+	DeployedAt          time.Time `json:"deployed_at,omitempty"`
+	DeployCount         int       `json:"deploy_count,omitempty"`
+	Source              string    `json:"source,omitempty"`
+	LastAttemptedCommit string    `json:"last_attempted_commit,omitempty"`
+	AttemptCount        int       `json:"attempt_count,omitempty"`
+	LastAlertedAttempt  int       `json:"last_alerted_attempt,omitempty"`
 
 	// Declared state snapshot from last successful deployment.
 	DeclaredServices []DeclaredService `json:"declared_services,omitempty"`
@@ -93,6 +93,11 @@ type DeployState struct {
 	// within their debounce window. Items graduate to the dedup layer
 	// when the debounce duration elapses, or are removed if drift resolves.
 	DriftDebounceItems map[string]time.Time `json:"drift_debounce_items,omitempty"`
+
+	// DriftSelfHeal tracks the active drift signature's bounded remediation
+	// budget. The signature is an opaque digest: state remains stable across
+	// restarts without persisting service names a second time.
+	DriftSelfHeal *DriftSelfHealTracking `json:"drift_self_heal,omitempty"`
 
 	// NeedsRedeploy indicates that a previous deploy partially succeeded
 	// (configs were synced to disk) but compose up failed. When true, the
@@ -114,6 +119,17 @@ type DeployState struct {
 	// data). Empty on a fresh state file, which makes the first deploy prune
 	// nothing and simply seed the manifest.
 	DeployedFiles []string `json:"deployed_files,omitempty"`
+}
+
+// DriftSelfHealTracking is the persisted state machine for automatic drift
+// remediation. LastAttemptAt is global across signature changes so a new drift
+// set cannot bypass the configured cooldown.
+type DriftSelfHealTracking struct {
+	Signature        string    `json:"signature,omitempty"`
+	Attempts         int       `json:"attempts,omitempty"`
+	LastAttemptAt    time.Time `json:"last_attempt_at,omitempty"`
+	Exhausted        bool      `json:"exhausted,omitempty"`
+	ExhaustedAlerted bool      `json:"exhausted_alerted,omitempty"`
 }
 
 // RestartTrackingEntry tracks the restart count for a container across drift checks.

@@ -137,6 +137,30 @@ func TestDriftSummaries(t *testing.T) {
 	}
 }
 
+func TestDriftSignatureStableAndOpaque(t *testing.T) {
+	items := []DriftItem{
+		{Service: "private-api", Type: DriftMissing, Declared: "registry.example/secret:v2"},
+		{Service: "web", Type: DriftUnhealthy, Actual: "healthcheck output"},
+		{Service: "private-api", Type: DriftMissing, Actual: "duplicate"},
+	}
+	reordered := []DriftItem{
+		{Service: "web", Type: DriftUnhealthy, Declared: "different value is irrelevant"},
+		{Service: "private-api", Type: DriftMissing},
+	}
+
+	signature := DriftSignature(items)
+	assert.Len(t, signature, 64)
+	assert.Equal(t, signature, DriftSignature(reordered), "ordering, duplicates, and value details must not change identity")
+	assert.NotContains(t, signature, "private-api")
+	assert.NotContains(t, signature, "secret")
+	assert.Empty(t, DriftSignature(nil))
+
+	assert.NotEqual(t, signature, DriftSignature([]DriftItem{
+		{Service: "private-api", Type: DriftUnhealthy},
+		{Service: "web", Type: DriftUnhealthy},
+	}), "a changed service/type set must produce a new identity")
+}
+
 func TestFormatHealthDetail(t *testing.T) {
 	tests := []struct {
 		name     string

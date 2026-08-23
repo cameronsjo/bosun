@@ -1,11 +1,11 @@
 ## 1. Drift self-heal attempt bounding (#259)
 
-- [ ] 1.1 Add `MaxSelfHealAttempts` to the daemon config, parsed from `BOSUN_DRIFT_SELF_HEAL_MAX_ATTEMPTS` in `ConfigFromEnv` (default a small positive value)
-- [ ] 1.2 Define a stable drift-signature key (e.g. sorted `service:type` set) and a per-signature attempt counter in the deploy state file
-- [ ] 1.3 In `maybeSelfHeal`, increment the counter for the current drift signature before triggering; reset the counter when the signature changes or drift clears
-- [ ] 1.4 Stop self-heal once the counter reaches the bound; mark the signature exhausted in state and emit a `self-heal-exhausted` alert (once per signature)
-- [ ] 1.5 Resume self-heal when a new/changed drift signature appears or the exhausted signature later clears
-- [ ] 1.6 Tests: out-of-band drift triggers self-heal N times then stops; new signature resets the counter; resolved drift clears exhausted state
+- [x] 1.1 Add `MaxSelfHealAttempts` to the daemon config, parsed from `BOSUN_DRIFT_SELF_HEAL_MAX_ATTEMPTS` in `ConfigFromEnv` (default a small positive value)
+- [x] 1.2 Define a stable drift-signature key (e.g. sorted `service:type` set) and a per-signature attempt counter in the deploy state file
+- [x] 1.3 In `maybeSelfHeal`, increment the counter for the current drift signature before triggering; reset the counter when the signature changes or drift clears
+- [x] 1.4 Stop self-heal once the counter reaches the bound; mark the signature exhausted in state and emit a `self-heal-exhausted` alert (once per signature)
+- [x] 1.5 Resume self-heal when a new/changed drift signature appears or the exhausted signature later clears
+- [x] 1.6 Tests: out-of-band drift triggers self-heal N times then stops; new signature resets the counter; resolved drift clears exhausted state
 
 ## 2. Restart breaker baseline integrity (#265)
 
@@ -24,10 +24,10 @@
 
 ## 4. State persistence & migration
 
-- [ ] 4.1 Persist self-heal attempt counters and restart container-identity fields via the existing atomic write pattern
-- [ ] 4.2 Ensure missing/legacy fields decode safely (zero values behave as "no prior attempts" / "identity unknown")
+- [x] 4.1 Persist self-heal attempt counters and restart container-identity fields via the existing atomic write pattern
+- [x] 4.2 Ensure missing/legacy fields decode safely (zero values behave as "no prior attempts" / "identity unknown")
 
 ## 5. Documentation
 
-- [ ] 5.1 Update `skills/onboard/resources/gitops.md` (self-heal bounding + restart-breaker semantics)
-- [ ] 5.2 Add new env vars to the `CLAUDE.md` env-var table
+- [x] 5.1 Update `skills/onboard/resources/gitops.md` (self-heal bounding + restart-breaker semantics)
+- [x] 5.2 Add new env vars to the `CLAUDE.md` env-var table

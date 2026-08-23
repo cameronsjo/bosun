@@ -370,6 +370,7 @@ do not gain legacy aliases.
 | `BOSUN_DRIFT_RESOLVE_ALERTS` | daemon | Send "drift resolved" notifications (default: `true`) |
 | `BOSUN_DRIFT_SELF_HEAL` | daemon | Trigger reconciliation when drift detected (default: `false`) |
 | `BOSUN_DRIFT_SELF_HEAL_COOLDOWN` | daemon | Minimum interval between self-heal reconciliations (default: `15m`) |
+| `BOSUN_DRIFT_SELF_HEAL_MAX_ATTEMPTS` | daemon | Positive attempt bound for one stable drift signature (default: `3`; persisted across daemon restarts) |
 | `BOSUN_CONTENT_HASH_SYNC` | daemon, reconcile | Compare file hashes before writing to skip unchanged files (default: `true`) |
 | `BOSUN_REMOVE_ORPHANS` | daemon, reconcile | Pass `--remove-orphans` to docker compose up (default: `true`; overrides config file) |
 | `BOSUN_CRITICAL_CONTAINERS` | daemon, reconcile | JSON array of container names that must be healthy after deploy (overrides config file) |

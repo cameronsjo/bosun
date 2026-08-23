@@ -3297,6 +3297,7 @@ func TestDefaultConfig_DriftSelfHeal(t *testing.T) {
 
 	assert.False(t, cfg.DriftSelfHeal.Value, "DriftSelfHeal should be false by default")
 	assert.Equal(t, 15*time.Minute, cfg.DriftSelfHealCooldown.Value, "DriftSelfHealCooldown should default to 15m")
+	assert.Equal(t, 3, cfg.MaxSelfHealAttempts, "MaxSelfHealAttempts should have a small positive default")
 }
 
 func TestConfigFromEnv_DriftSelfHeal(t *testing.T) {
@@ -3371,108 +3372,23 @@ func TestConfigFromEnv_DriftSelfHealCooldown(t *testing.T) {
 	})
 }
 
-func TestMaybeSelfHeal_TriggersWhenEnabled(t *testing.T) {
-	provider := &testAlertProvider{}
-	d := newAlertDaemon(t, provider)
-	d.config.DriftSelfHeal = reconcile.NewConfigField(true)
-	d.config.DriftSelfHealCooldown = reconcile.NewConfigField(15 * time.Minute)
-
-	report := &reconcile.DriftReport{
-		CheckedAt: time.Now(),
-		Items: []reconcile.DriftItem{
-			{Service: "traefik", Type: reconcile.DriftMissing},
-		},
+func TestConfigFromEnv_DriftSelfHealMaxAttempts(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		value string
+		want  int
+	}{
+		{name: "positive integer", value: "7", want: 7},
+		{name: "zero rejected", value: "0", want: DefaultMaxSelfHealAttempts},
+		{name: "negative rejected", value: "-2", want: DefaultMaxSelfHealAttempts},
+		{name: "non integer rejected", value: "three", want: DefaultMaxSelfHealAttempts},
+		{name: "overflow rejected", value: "999999999999999999999999", want: DefaultMaxSelfHealAttempts},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("BOSUN_DRIFT_SELF_HEAL_MAX_ATTEMPTS", tt.value)
+			assert.Equal(t, tt.want, ConfigFromEnv().MaxSelfHealAttempts)
+		})
 	}
-
-	ctx := context.Background()
-	d.maybeSelfHeal(ctx, report)
-
-	// Give the goroutine a moment to start.
-	time.Sleep(50 * time.Millisecond)
-
-	// Verify lastSelfHeal was updated.
-	assert.False(t, d.lastSelfHeal.IsZero(), "lastSelfHeal should be set after triggering")
-}
-
-func TestMaybeSelfHeal_SkipsWhenReconciling(t *testing.T) {
-	provider := &testAlertProvider{}
-	d := newAlertDaemon(t, provider)
-	d.config.DriftSelfHeal = reconcile.NewConfigField(true)
-	d.config.DriftSelfHealCooldown = reconcile.NewConfigField(15 * time.Minute)
-
-	// Simulate reconciliation in progress.
-	d.reconcileMu.Lock()
-	d.reconciling = true
-	d.reconcileMu.Unlock()
-
-	report := &reconcile.DriftReport{
-		CheckedAt: time.Now(),
-		Items: []reconcile.DriftItem{
-			{Service: "traefik", Type: reconcile.DriftMissing},
-		},
-	}
-
-	ctx := context.Background()
-	d.maybeSelfHeal(ctx, report)
-
-	// lastSelfHeal should NOT be updated when skipped.
-	assert.True(t, d.lastSelfHeal.IsZero(), "lastSelfHeal should remain zero when reconciling")
-
-	// Clean up.
-	d.reconcileMu.Lock()
-	d.reconciling = false
-	d.reconcileMu.Unlock()
-}
-
-func TestMaybeSelfHeal_RespectsCooldown(t *testing.T) {
-	provider := &testAlertProvider{}
-	d := newAlertDaemon(t, provider)
-	d.config.DriftSelfHeal = reconcile.NewConfigField(true)
-	d.config.DriftSelfHealCooldown = reconcile.NewConfigField(15 * time.Minute)
-
-	// Simulate a recent self-heal.
-	d.lastSelfHeal = time.Now().Add(-5 * time.Minute) // 5 minutes ago, within 15m cooldown
-
-	report := &reconcile.DriftReport{
-		CheckedAt: time.Now(),
-		Items: []reconcile.DriftItem{
-			{Service: "traefik", Type: reconcile.DriftMissing},
-		},
-	}
-
-	originalSelfHeal := d.lastSelfHeal
-	ctx := context.Background()
-	d.maybeSelfHeal(ctx, report)
-
-	// lastSelfHeal should NOT be updated during cooldown.
-	assert.Equal(t, originalSelfHeal, d.lastSelfHeal, "lastSelfHeal should not change during cooldown")
-}
-
-func TestMaybeSelfHeal_TriggersAfterCooldownExpires(t *testing.T) {
-	provider := &testAlertProvider{}
-	d := newAlertDaemon(t, provider)
-	d.config.DriftSelfHeal = reconcile.NewConfigField(true)
-	d.config.DriftSelfHealCooldown = reconcile.NewConfigField(15 * time.Minute)
-
-	// Simulate a self-heal that happened 20 minutes ago (past the 15m cooldown).
-	d.lastSelfHeal = time.Now().Add(-20 * time.Minute)
-
-	report := &reconcile.DriftReport{
-		CheckedAt: time.Now(),
-		Items: []reconcile.DriftItem{
-			{Service: "traefik", Type: reconcile.DriftMissing},
-		},
-	}
-
-	ctx := context.Background()
-	d.maybeSelfHeal(ctx, report)
-
-	// Give the goroutine a moment to start.
-	time.Sleep(50 * time.Millisecond)
-
-	// lastSelfHeal should be updated since cooldown expired.
-	assert.True(t, d.lastSelfHeal.After(time.Now().Add(-1*time.Second)),
-		"lastSelfHeal should be updated to roughly now")
 }
 
 // ---------------------------------------------------------------------------

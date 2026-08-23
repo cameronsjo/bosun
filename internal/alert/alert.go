@@ -291,6 +291,27 @@ func (m *Manager) SendDriftResolved(ctx context.Context, target string, resolved
 	})
 }
 
+// SendDriftSelfHealExhausted reports that unattended remediation reached its
+// configured bound. The opaque, bounded signature identifier deliberately
+// avoids duplicating service names or image values into notification payloads.
+func (m *Manager) SendDriftSelfHealExhausted(ctx context.Context, target, signatureID string, itemCount, attempts int) error {
+	return m.Send(ctx, &Alert{
+		Title: targetTitle("Drift Self-Heal Exhausted", target),
+		Message: fmt.Sprintf(
+			"Drift self-heal on %s exhausted its %d-attempt budget for signature %s (%d items); operator intervention is required",
+			target, attempts, signatureID, itemCount,
+		),
+		Severity: SeverityError,
+		Source:   "self-heal-exhausted",
+		Metadata: map[string]string{
+			"target":       target,
+			"signature_id": signatureID,
+			"drift_count":  fmt.Sprintf("%d", itemCount),
+			"attempts":     fmt.Sprintf("%d", attempts),
+		},
+	})
+}
+
 // SendRestartBreakerTripped sends a critical alert when a container's restart circuit breaker trips.
 func (m *Manager) SendRestartBreakerTripped(ctx context.Context, target string, services []string) error {
 	summary := strings.Join(services, ", ")

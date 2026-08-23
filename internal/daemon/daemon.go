@@ -103,6 +103,7 @@ type Config struct {
 	DriftResolveAlerts    bool                                 // Send "drift resolved" alerts (default: true)
 	DriftSelfHeal         reconcile.ConfigField[bool]          // Trigger reconciliation when drift detected (default: false)
 	DriftSelfHealCooldown reconcile.ConfigField[time.Duration] // Minimum interval between self-heal reconciliations (default: 15m)
+	MaxSelfHealAttempts   int                                  // Maximum attempts for one stable drift signature (default: 3)
 
 	// Content-hash sync settings
 	ContentHashSync bool // Compare file hashes before writing (default: true)
@@ -141,6 +142,7 @@ func DefaultConfig() *Config {
 		DriftAlertCooldown:    time.Hour,
 		DriftResolveAlerts:    true,
 		DriftSelfHealCooldown: reconcile.NewConfigField(15 * time.Minute),
+		MaxSelfHealAttempts:   DefaultMaxSelfHealAttempts,
 		ContentHashSync:       true,
 		RemoveOrphans:         true,
 	}
@@ -148,6 +150,9 @@ func DefaultConfig() *Config {
 
 // DefaultSocketPath is the default path for the bosun daemon Unix socket.
 const DefaultSocketPath = "/var/run/bosun.sock"
+
+// DefaultMaxSelfHealAttempts bounds unattended remediation of one stable drift signature.
+const DefaultMaxSelfHealAttempts = 3
 
 // Daemon is the main GitOps daemon that handles webhooks and polling.
 type Daemon struct {
@@ -195,8 +200,10 @@ type Daemon struct {
 	pendingTriggerForce           bool                // Sticky force flag for the next run
 	pendingForceRedeployUnchanged bool                // Preserve drift-self-heal semantics through source aggregation
 
-	// Drift self-heal cooldown tracking
-	lastSelfHeal time.Time // Last time drift self-heal triggered a reconciliation
+	// driftCheckMu serializes the drift state file's load-mutate-save cycle.
+	// The periodic loop is single-threaded, but tests and future callers may invoke
+	// runDriftCheck concurrently.
+	driftCheckMu sync.Mutex
 
 	// configMu guards daemon-level config fields that are hot-reloaded from bosun.yaml.
 	// Only covers DriftAlertDebounce, DriftSelfHeal, DriftSelfHealCooldown.
@@ -1150,6 +1157,8 @@ func (d *Daemon) driftCheckLoop(ctx context.Context) {
 // Skips if a reconciliation is in progress to avoid state file race conditions.
 func (d *Daemon) runDriftCheck(ctx context.Context) {
 	logger := log.Component(log.ComponentDaemon)
+	d.driftCheckMu.Lock()
+	defer d.driftCheckMu.Unlock()
 
 	// Skip drift check if reconcile is in progress to avoid lost-update
 	// race on the shared state file (both load → modify → save).
@@ -1401,15 +1410,21 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 		state.RestartTracking = nil
 	}
 
-	// Persist state with drift results and alert timestamps.
+	// Plan self-heal before the shared atomic state write. Side effects only run
+	// after that write succeeds, so a daemon restart cannot forget a consumed
+	// attempt or repeat an exhaustion alert.
+	d.reconcileMu.Lock()
+	selfHealBusy := d.reconciling
+	d.reconcileMu.Unlock()
+	selfHeal := planSelfHeal(state, report, dcfg, selfHealBusy, time.Now())
+
+	// Persist state with drift results, alert timestamps, and self-heal budget.
 	if err := reconcile.SaveState(stateFile, state); err != nil {
 		logger.Warn().Err(err).Msg("Drift check: failed to save state")
+		return
 	}
 
-	// Self-heal: trigger reconciliation when drift is detected and self-healing is enabled.
-	if report.HasDrift() && dcfg.driftSelfHeal {
-		d.maybeSelfHeal(ctx, report)
-	}
+	d.maybeSelfHeal(ctx, selfHeal)
 }
 
 func criticalDriftItems(items []reconcile.DriftItem) []reconcile.DriftItem {
@@ -1422,48 +1437,56 @@ func criticalDriftItems(items []reconcile.DriftItem) []reconcile.DriftItem {
 	return criticalItems
 }
 
-// maybeSelfHeal triggers a reconciliation in response to drift, subject to guards:
-// - skips if already reconciling (prevents infinite loops)
-// - skips if cooldown period hasn't elapsed since last self-heal
-func (d *Daemon) maybeSelfHeal(ctx context.Context, report *reconcile.DriftReport) {
+// maybeSelfHeal executes a durable decision produced by planSelfHeal. The
+// attempt and once-per-signature alert marker have already been persisted.
+func (d *Daemon) maybeSelfHeal(ctx context.Context, decision selfHealDecision) {
 	logger := log.Component(log.ComponentDaemon)
 
-	logger.Debug().
-		Int("drift_items", len(report.Items)).
-		Msg("Preparing to evaluate drift self-heal conditions")
-
-	// Guard: skip if already reconciling to prevent infinite loops.
-	d.reconcileMu.Lock()
-	busy := d.reconciling
-	d.reconcileMu.Unlock()
-	if busy {
-		logger.Debug().
-			Str("reason", "reconciliation_in_progress").
-			Msg("Skipping drift self-heal")
+	if !decision.trigger && !decision.alertExhausted {
+		event := logger.Debug().
+			Str("reason", decision.reason).
+			Str("drift_signature", decision.signatureID)
+		if decision.remainingCooldown > 0 {
+			event = event.Dur("remaining_cooldown", decision.remainingCooldown)
+		}
+		event.Msg("Skipping drift self-heal")
 		return
 	}
 
-	// Guard: respect cooldown to prevent rapid-fire reconciliations.
-	cooldown := d.driftConfig().driftSelfHealCooldown
-	now := time.Now()
-	if !d.lastSelfHeal.IsZero() && now.Sub(d.lastSelfHeal) < cooldown {
-		remaining := cooldown - now.Sub(d.lastSelfHeal)
-		logger.Debug().
-			Dur("remaining_cooldown", remaining).
-			Str("reason", "cooldown_active").
-			Msg("Skipping drift self-heal")
-		return
+	if decision.alertExhausted {
+		logger.Error().
+			Str("source", "self-heal-exhausted").
+			Str("drift_signature", decision.signatureID).
+			Int("drift_items", decision.itemCount).
+			Int("attempts", decision.attempts).
+			Int("max_attempts", decision.maxAttempts).
+			Msg("Drift self-heal attempt budget exhausted")
+		if d.alerter != nil {
+			target := "local"
+			if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.ProjectName != "" {
+				target = d.config.ReconcileConfig.ProjectName
+			}
+			if err := d.alerter.SendDriftSelfHealExhausted(
+				ctx, target, decision.signatureID,
+				decision.itemCount, decision.attempts,
+			); err != nil {
+				logger.Warn().Err(err).Msg("Failed to dispatch drift self-heal exhaustion alert")
+			}
+		}
 	}
 
-	d.lastSelfHeal = now
+	if !decision.trigger {
+		return
+	}
 
 	logger.Info().
-		Int("drift_items", len(report.Items)).
-		Strs("drift_containers", report.DriftSummaries()).
-		Dur("cooldown", cooldown).
+		Str("drift_signature", decision.signatureID).
+		Int("drift_items", decision.itemCount).
+		Int("attempt", decision.attempts).
+		Int("max_attempts", decision.maxAttempts).
 		Msg("Triggering reconciliation to resolve detected drift via self-heal")
 
-	ui.Info("Drift self-heal: triggering reconciliation (%d drift items)", len(report.Items))
+	ui.Info("Drift self-heal: triggering reconciliation (attempt %d/%d, %d drift items)", decision.attempts, decision.maxAttempts, decision.itemCount)
 
 	d.startReconcileGoroutine(ctx, func(reconcileCtx context.Context) {
 		// force stays false here -- Force is the human-supplied override that
@@ -1622,6 +1645,7 @@ type driftRuntimeConfig struct {
 	driftAlertDebounce    time.Duration
 	driftSelfHeal         bool
 	driftSelfHealCooldown time.Duration
+	maxSelfHealAttempts   int
 }
 
 // driftConfig returns a consistent snapshot of drift-related config fields.
@@ -1632,6 +1656,7 @@ func (d *Daemon) driftConfig() driftRuntimeConfig {
 		driftAlertDebounce:    d.config.DriftAlertDebounce.Value,
 		driftSelfHeal:         d.config.DriftSelfHeal.Value,
 		driftSelfHealCooldown: d.config.DriftSelfHealCooldown.Value,
+		maxSelfHealAttempts:   d.config.MaxSelfHealAttempts,
 	}
 }
 
@@ -2152,6 +2177,14 @@ func ConfigFromEnv() *Config {
 			}
 		} else {
 			log.Warn().Str("env", "BOSUN_DRIFT_SELF_HEAL_COOLDOWN").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
+	if v := os.Getenv("BOSUN_DRIFT_SELF_HEAL_MAX_ATTEMPTS"); v != "" {
+		attempts, err := strconv.Atoi(v)
+		if err != nil || attempts <= 0 {
+			log.Warn().Str("env", "BOSUN_DRIFT_SELF_HEAL_MAX_ATTEMPTS").Str("value", v).Msg("Skipping env var. Reason: value must be a positive integer")
+		} else {
+			cfg.MaxSelfHealAttempts = attempts
 		}
 	}
 
