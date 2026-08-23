@@ -248,6 +248,28 @@ func TestShouldAlertDrift(t *testing.T) {
 			expectedResolved: 0,
 		},
 		{
+			name: "unhealthy to missing is a drift transition not a resolution",
+			currentItems: []DriftItem{
+				{Service: "traefik", Type: DriftMissing},
+			},
+			alertedItems: map[string]time.Time{
+				"traefik:unhealthy": now.Add(-30 * time.Minute),
+			},
+			expectedAlerts:   1,
+			expectedResolved: 0,
+		},
+		{
+			name: "missing to unhealthy is a drift transition not a resolution",
+			currentItems: []DriftItem{
+				{Service: "traefik", Type: DriftUnhealthy},
+			},
+			alertedItems: map[string]time.Time{
+				"traefik:missing": now.Add(-30 * time.Minute),
+			},
+			expectedAlerts:   1,
+			expectedResolved: 0,
+		},
+		{
 			name:         "removed item is resolved",
 			currentItems: []DriftItem{},
 			alertedItems: map[string]time.Time{
@@ -301,11 +323,32 @@ func TestShouldAlertDrift(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			alertItems, resolvedKeys := ShouldAlertDrift(tc.currentItems, tc.alertedItems, cooldown)
+			alertItems, resolvedKeys := ShouldAlertDrift(tc.currentItems, tc.currentItems, tc.alertedItems, cooldown)
 			assert.Len(t, alertItems, tc.expectedAlerts)
 			assert.Len(t, resolvedKeys, tc.expectedResolved)
 		})
 	}
+}
+
+func TestDeployStateRecordDriftAlerts_RetiresPreviousType(t *testing.T) {
+	alertedAt := time.Now()
+	emptyState := &DeployState{}
+	emptyState.RecordDriftAlerts([]DriftItem{{Service: "api", Type: DriftMissing}}, alertedAt)
+	assert.Equal(t, alertedAt, emptyState.DriftAlertedItems["api:missing"])
+
+	state := &DeployState{
+		DriftAlertedItems: map[string]time.Time{
+			"api:unhealthy": alertedAt.Add(-time.Hour),
+			"web:missing":   alertedAt.Add(-time.Hour),
+		},
+	}
+
+	state.RecordDriftAlerts([]DriftItem{{Service: "api", Type: DriftMissing}}, alertedAt)
+
+	assert.NotContains(t, state.DriftAlertedItems, "api:unhealthy")
+	assert.Equal(t, alertedAt, state.DriftAlertedItems["api:missing"])
+	assert.Contains(t, state.DriftAlertedItems, "web:missing")
+	assert.Equal(t, alertedAt, state.DriftAlertedAt)
 }
 
 func TestSaveState_RoundTrip(t *testing.T) {

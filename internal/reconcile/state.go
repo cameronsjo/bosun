@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
@@ -266,30 +267,58 @@ func DriftAlertKey(item DriftItem) string {
 	return item.Service + ":" + string(item.Type)
 }
 
-// ShouldAlertDrift compares current drift items against previously alerted items
-// and returns which items should trigger new alerts and which have resolved.
+// RecordDriftAlerts advances alert state after successful delivery. A service
+// can have only one active critical drift type, so a delivered replacement
+// retires the previous type without reporting a false resolution.
+func (s *DeployState) RecordDriftAlerts(items []DriftItem, alertedAt time.Time) {
+	if s.DriftAlertedItems == nil {
+		s.DriftAlertedItems = make(map[string]time.Time)
+	}
+
+	for _, item := range items {
+		currentKey := DriftAlertKey(item)
+		for key := range s.DriftAlertedItems {
+			service, _, _ := strings.Cut(key, ":")
+			if service == item.Service && key != currentKey {
+				delete(s.DriftAlertedItems, key)
+			}
+		}
+		s.DriftAlertedItems[currentKey] = alertedAt
+	}
+	s.DriftAlertedAt = alertedAt
+}
+
+// ShouldAlertDrift compares active drift and alert candidates against previously
+// alerted items, returning which candidates should trigger alerts and which
+// services have resolved.
 //
-// An item triggers an alert if it is new (not in alertedItems) or if its cooldown
-// has expired. A key is considered resolved if it exists in alertedItems but is
-// absent from currentItems.
-func ShouldAlertDrift(currentItems []DriftItem, alertedItems map[string]time.Time, cooldown time.Duration) (alertItems []DriftItem, resolvedKeys []string) {
+// An alert candidate triggers if it is new (not in alertedItems) or if its
+// cooldown has expired. A key is considered resolved only when its service is
+// absent from activeItems; a missing/unhealthy type transition is still active
+// drift for that service. alertCandidates may be a debounce-filtered subset of
+// activeItems.
+func ShouldAlertDrift(activeItems, alertCandidates []DriftItem, alertedItems map[string]time.Time, cooldown time.Duration) (alertItems []DriftItem, resolvedKeys []string) {
 	now := time.Now()
 
-	// Build set of current keys for resolution detection.
-	currentKeys := make(map[string]bool, len(currentItems))
-	for _, item := range currentItems {
+	for _, item := range alertCandidates {
 		key := DriftAlertKey(item)
-		currentKeys[key] = true
-
 		lastAlerted, exists := alertedItems[key]
 		if !exists || now.Sub(lastAlerted) >= cooldown {
 			alertItems = append(alertItems, item)
 		}
 	}
 
-	// Find resolved: in alertedItems but not in currentItems.
+	activeServices := make(map[string]bool, len(activeItems))
+	for _, item := range activeItems {
+		activeServices[item.Service] = true
+	}
+
+	// A type transition is not a resolution while the service still has
+	// critical drift. The old per-type key is retired only after the replacement
+	// alert is delivered successfully.
 	for key := range alertedItems {
-		if !currentKeys[key] {
+		service, _, _ := strings.Cut(key, ":")
+		if !activeServices[service] {
 			resolvedKeys = append(resolvedKeys, key)
 		}
 	}

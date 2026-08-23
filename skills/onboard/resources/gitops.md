@@ -384,6 +384,7 @@ Alert pipeline: **detect -> debounce filter -> dedup (per-item cooldown) -> send
 - Drift that resolves before the window expires is silently suppressed.
 - Drift that persists past the window enters the normal dedup/cooldown pipeline.
 - Resolution alerts bypass debounce (fire immediately for previously alerted items).
+- A critical type transition (`unhealthy` to `missing`, or the reverse) remains active drift for that service. The replacement type follows normal debounce/dedup handling, and Bosun does not send a resolution until the service has no critical drift.
 - Debounce state persists across daemon restarts.
 
 ### Drift Self-Healing
