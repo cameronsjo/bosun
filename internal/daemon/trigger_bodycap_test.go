@@ -90,7 +90,7 @@ func TestTriggerBodyCapPerSite(t *testing.T) {
 		ss, _ := newTestSocketServer(t)
 		req := httptest.NewRequest(http.MethodPost, "/trigger", strings.NewReader(oversizeBody()))
 		w := httptest.NewRecorder()
-		ss.handleTrigger(w, req)
+		ss.handleTrigger(w, withTestSocketPeer(req))
 
 		assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
 	})

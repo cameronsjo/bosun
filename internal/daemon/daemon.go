@@ -34,8 +34,15 @@ import (
 // Config holds daemon configuration.
 type Config struct {
 	// Socket API settings (primary)
-	SocketPath string      // Path to Unix socket (default: /var/run/bosun.sock)
-	SocketMode os.FileMode // Socket file permissions (default: 0660)
+	SocketPath        string      // Path to Unix socket (default: /var/run/bosun.sock)
+	SocketMode        os.FileMode // Socket file permissions (default: 0660)
+	SocketAllowedUIDs []uint32    // Additional UIDs allowed to mutate through the socket
+
+	// AllowUnauthenticatedSocket opts out of fail-closed peer-credential auth.
+	// This is intentionally separate from SocketMode: the mode grants access to
+	// connect, while peer credentials authorize mutating requests.
+	AllowUnauthenticatedSocket bool
+	socketAllowedUIDsError     error
 
 	// TCP API settings (optional, for remote access)
 	EnableTCP   bool   // Enable TCP listener (default: false)
@@ -221,8 +228,10 @@ func New(cfg *Config) (*Daemon, error) {
 
 	// Create Unix socket server (primary API)
 	socketCfg := &SocketConfig{
-		SocketPath: cfg.SocketPath,
-		SocketMode: cfg.SocketMode,
+		SocketPath:                   cfg.SocketPath,
+		SocketMode:                   cfg.SocketMode,
+		AllowedUIDs:                  cfg.SocketAllowedUIDs,
+		AllowUnauthenticatedMutation: cfg.AllowUnauthenticatedSocket,
 	}
 	socketServer, err := NewSocketServer(d, socketCfg)
 	if err != nil {
@@ -297,6 +306,23 @@ func (d *Daemon) warnMetricsAuthPosture(logger zerolog.Logger) {
 	ui.Warning("Metrics fail closed: no BOSUN_METRICS_TOKEN set, /metrics and /api/widget will be rejected (403)")
 }
 
+// warnSocketAuthPosture makes the explicit socket-auth opt-out loud. On
+// platforms without peer credential support, it also explains why mutating
+// requests fail closed instead of leaving operators with unexplained 403s.
+func (d *Daemon) warnSocketAuthPosture(logger zerolog.Logger) {
+	if d.config.AllowUnauthenticatedSocket {
+		logger.Warn().
+			Msg("SECURITY: Unix socket accepts UNAUTHENTICATED mutating requests because BOSUN_ALLOW_UNAUTHENTICATED_SOCKET=true. Any process that can connect to the socket can trigger a deploy")
+		ui.Warning("SECURITY: unauthenticated Unix socket mutations enabled (opt-out set)")
+		return
+	}
+	if !peerCredentialSupportAvailable() {
+		logger.Warn().
+			Msg("Unix socket mutating requests will be REJECTED because peer credentials are unavailable on this platform; socket auth fails closed. Set BOSUN_ALLOW_UNAUTHENTICATED_SOCKET=true only when socket file permissions are a sufficient trust boundary")
+		ui.Warning("Unix socket mutations fail closed: peer credentials unavailable on this platform")
+	}
+}
+
 // Run starts the daemon and blocks until shutdown.
 // It handles SIGTERM and SIGINT for graceful shutdown.
 func (d *Daemon) Run(ctx context.Context) (err error) {
@@ -348,6 +374,7 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 
 	d.warnWebhookAuthPosture(logger)
 	d.warnMetricsAuthPosture(logger)
+	d.warnSocketAuthPosture(logger)
 
 	// Ensure state directory exists for deploy state tracking.
 	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.StateFile != "" {
@@ -1774,6 +1801,17 @@ func ConfigFromEnv() *Config {
 	if socketPath := os.Getenv("BOSUN_SOCKET_PATH"); socketPath != "" {
 		cfg.SocketPath = socketPath
 	}
+	if value := os.Getenv("BOSUN_SOCKET_ALLOWED_UIDS"); value != "" {
+		allowedUIDs, err := parseSocketAllowedUIDs(value)
+		if err != nil {
+			cfg.socketAllowedUIDsError = err
+		} else {
+			cfg.SocketAllowedUIDs = allowedUIDs
+		}
+	}
+	// Security opt-outs use an exact lowercase match so values such as "TRUE"
+	// cannot accidentally weaken the default posture.
+	cfg.AllowUnauthenticatedSocket = os.Getenv("BOSUN_ALLOW_UNAUTHENTICATED_SOCKET") == "true"
 
 	// HTTP configuration
 	if port := os.Getenv("PORT"); port != "" {
@@ -2214,6 +2252,29 @@ func splitAndTrim(s string) []string {
 	return result
 }
 
+func parseSocketAllowedUIDs(value string) ([]uint32, error) {
+	parts := strings.Split(value, ",")
+	allowed := make([]uint32, 0, len(parts))
+	seen := make(map[uint32]struct{}, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil, fmt.Errorf("BOSUN_SOCKET_ALLOWED_UIDS contains an empty UID")
+		}
+		uid, err := strconv.ParseUint(part, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("BOSUN_SOCKET_ALLOWED_UIDS entry %q must be a numeric UID: %w", part, err)
+		}
+		numericUID := uint32(uid)
+		if _, duplicate := seen[numericUID]; duplicate {
+			continue
+		}
+		seen[numericUID] = struct{}{}
+		allowed = append(allowed, numericUID)
+	}
+	return allowed, nil
+}
+
 // ValidateConfig validates the daemon configuration.
 func ValidateConfig(cfg *Config) error {
 	var errs []string
@@ -2226,6 +2287,9 @@ func ValidateConfig(cfg *Config) error {
 	}
 	if cfg.SocketMode&^os.ModePerm != 0 {
 		errs = append(errs, fmt.Sprintf("invalid socket mode: %s (only permission bits are allowed)", cfg.SocketMode))
+	}
+	if cfg.socketAllowedUIDsError != nil {
+		errs = append(errs, cfg.socketAllowedUIDsError.Error())
 	}
 
 	if cfg.ReconcileConfig != nil {

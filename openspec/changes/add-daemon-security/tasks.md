@@ -10,10 +10,10 @@
 
 ## 2. Unix socket peer-credential enforcement
 
-- [ ] 2.1 Add `AllowedUIDs` (and enforcement-disable flag) to `SocketConfig`, parsed from `BOSUN_SOCKET_ALLOWED_UIDS`
-- [ ] 2.2 Enforce peer UID in `SocketServer.handleTrigger` (and other mutating handlers) using `InjectPeerCred` context
-- [ ] 2.3 Fail-closed when peer credentials are unavailable (incl. `peercred_other.go` no-op path) unless enforcement is explicitly disabled
-- [ ] 2.4 Tests: denied non-allowlisted UID (403), allowed owner UID (202), unavailable-creds fail-closed
+- [x] 2.1 Add `AllowedUIDs` (and enforcement-disable flag) to `SocketConfig`, parsed from `BOSUN_SOCKET_ALLOWED_UIDS`
+- [x] 2.2 Enforce peer UID in `SocketServer.handleTrigger` (and other mutating handlers) using `InjectPeerCred` context
+- [x] 2.3 Fail-closed when peer credentials are unavailable (incl. `peercred_other.go` no-op path) unless enforcement is explicitly disabled
+- [x] 2.4 Tests: denied non-allowlisted UID (403), allowed owner UID (202), unavailable-creds fail-closed
 
 ## 3. Socket permission integrity
 
@@ -45,6 +45,6 @@
 
 ## 7. Documentation
 
-- [ ] 7.1 Update `docs/security.md` with the daemon security posture
-- [ ] 7.2 Update `skills/onboard/resources/gitops.md`
-- [ ] 7.3 Add new env vars to the `CLAUDE.md` env-var table
+- [x] 7.1 Update `docs/security.md` with the daemon security posture
+- [x] 7.2 Update `skills/onboard/resources/gitops.md`
+- [x] 7.3 Add new env vars to the `CLAUDE.md` env-var table

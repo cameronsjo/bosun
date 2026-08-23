@@ -13,3 +13,5 @@ func WrapServerForPeerCred(srv *http.Server, listener net.Listener) net.Listener
 	// No peer credential support on this platform
 	return listener
 }
+
+func peerCredentialSupportAvailable() bool { return false }

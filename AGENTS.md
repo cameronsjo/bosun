@@ -335,6 +335,8 @@ do not gain legacy aliases.
 | `BOSUN_GIT_FETCH_DEPTH` | reconcile | Positive shallow clone/fetch history depth (default: `1`); unavailable diff bases fail safe to full deploy/all hooks |
 | `BOSUN_POLL_INTERVAL` | daemon | Polling interval in seconds (default: `3600`) |
 | `BOSUN_SOCKET_PATH` | daemon | Unix socket path (default: `/var/run/bosun.sock`) |
+| `BOSUN_SOCKET_ALLOWED_UIDS` | daemon | Comma-separated numeric UIDs allowed to mutate through the Unix socket in addition to the daemon's own UID |
+| `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET` | daemon | Opt out of fail-closed Unix socket peer-credential authorization (default: `false`; strict `== "true"`). Required for mutations on platforms without peer credentials; logged loudly at startup and per request |
 | `BOSUN_ENABLE_TCP` | daemon | Enable TCP API (`true`/`false`; default: `false`) |
 | `BOSUN_TCP_ADDR` | daemon | TCP listen address (default: `127.0.0.1:9090`) |
 | `BOSUN_BEARER_TOKEN` | daemon, trigger | Bearer token for TCP auth. Also accepted on `/metrics` and `/api/widget` (strictly more privileged than the read-scope token) |

@@ -64,6 +64,62 @@ func TestConfigFromEnv_AllowUnauthenticatedWebhook(t *testing.T) {
 	}
 }
 
+func TestConfigFromEnv_SocketAllowedUIDs(t *testing.T) {
+	t.Run("numeric comma-separated UIDs are trimmed and deduplicated", func(t *testing.T) {
+		t.Setenv("BOSUN_SOCKET_ALLOWED_UIDS", "1000, 2000,1000,4294967295")
+
+		cfg := ConfigFromEnv()
+
+		assert.Equal(t, []uint32{1000, 2000, 4294967295}, cfg.SocketAllowedUIDs)
+		assert.NoError(t, cfg.socketAllowedUIDsError)
+	})
+
+	invalid := []string{
+		"alice",
+		"-1",
+		"4294967296",
+		"1000,,2000",
+		"1000,",
+	}
+	for _, value := range invalid {
+		t.Run("invalid "+value, func(t *testing.T) {
+			t.Setenv("BOSUN_SOCKET_ALLOWED_UIDS", value)
+
+			cfg := ConfigFromEnv()
+
+			assert.Empty(t, cfg.SocketAllowedUIDs, "a partially valid allowlist must not be applied")
+			assert.Error(t, cfg.socketAllowedUIDsError)
+			assert.ErrorContains(t, ValidateConfig(cfg), "BOSUN_SOCKET_ALLOWED_UIDS")
+		})
+	}
+}
+
+func TestConfigFromEnv_AllowUnauthenticatedSocket(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want bool
+	}{
+		{name: "unset defaults to fail-closed", env: "", want: false},
+		{name: "strict lowercase true opts out", env: "true", want: true},
+		{name: "TRUE rejected by strict match", env: "TRUE", want: false},
+		{name: "1 rejected by strict match", env: "1", want: false},
+		{name: "yes rejected by strict match", env: "yes", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.env != "" {
+				t.Setenv("BOSUN_ALLOW_UNAUTHENTICATED_SOCKET", tt.env)
+			}
+
+			cfg := ConfigFromEnv()
+
+			assert.Equal(t, tt.want, cfg.AllowUnauthenticatedSocket)
+		})
+	}
+}
+
 // #390: TargetsFromEnv records that BOSUN_TARGETS supplied the target list, so
 // config_reload.go's applyTargetOverrides/setProjectName never let a hot-reload
 // of the repo's bosun.yaml override an env-provided value.

@@ -31,20 +31,26 @@ type socketOwnership struct {
 
 // SocketServer handles Unix socket connections for the trigger API.
 type SocketServer struct {
-	daemon     *Daemon
-	socketPath string
-	socketMode os.FileMode
-	mu         sync.Mutex
-	starting   bool
-	listener   net.Listener
-	socketFile *socketOwnership
-	httpServer *http.Server
+	daemon                       *Daemon
+	socketPath                   string
+	socketMode                   os.FileMode
+	allowedUIDs                  map[uint32]struct{}
+	ownerUID                     uint32
+	ownerUIDAvailable            bool
+	allowUnauthenticatedMutation bool
+	mu                           sync.Mutex
+	starting                     bool
+	listener                     net.Listener
+	socketFile                   *socketOwnership
+	httpServer                   *http.Server
 }
 
 // SocketConfig holds socket server configuration.
 type SocketConfig struct {
-	SocketPath string      // Path to Unix socket (e.g., /var/run/bosun.sock)
-	SocketMode os.FileMode // Socket file permissions (default: 0660)
+	SocketPath                   string      // Path to Unix socket (e.g., /var/run/bosun.sock)
+	SocketMode                   os.FileMode // Socket file permissions (default: 0660)
+	AllowedUIDs                  []uint32    // Additional UIDs allowed to mutate through the socket
+	AllowUnauthenticatedMutation bool        // Explicitly disable peer-credential auth
 }
 
 // DefaultSocketConfig returns default socket configuration.
@@ -67,10 +73,20 @@ func NewSocketServer(d *Daemon, cfg *SocketConfig) (*SocketServer, error) {
 		return nil, fmt.Errorf("invalid socket mode %s: only permission bits are allowed", cfg.SocketMode)
 	}
 
+	allowedUIDs := make(map[uint32]struct{}, len(cfg.AllowedUIDs))
+	for _, uid := range cfg.AllowedUIDs {
+		allowedUIDs[uid] = struct{}{}
+	}
+	ownerUID, ownerUIDAvailable := effectiveProcessUID()
+
 	s := &SocketServer{
-		daemon:     d,
-		socketPath: cfg.SocketPath,
-		socketMode: cfg.SocketMode,
+		daemon:                       d,
+		socketPath:                   cfg.SocketPath,
+		socketMode:                   cfg.SocketMode,
+		allowedUIDs:                  allowedUIDs,
+		ownerUID:                     ownerUID,
+		ownerUIDAvailable:            ownerUIDAvailable,
+		allowUnauthenticatedMutation: cfg.AllowUnauthenticatedMutation,
 	}
 
 	// Create HTTP handler for socket
@@ -248,6 +264,9 @@ func (s *SocketServer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.authorizeMutation(w, r) {
+		return
+	}
 
 	// Parse request (optional body) under a size cap. Do not gate on
 	// ContentLength — it may be -1 (unknown) when the client omits it.
@@ -281,6 +300,50 @@ func (s *SocketServer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		Status:  "accepted",
 		Message: "Reconciliation triggered",
 	})
+}
+
+// authorizeMutation enforces the socket's peer-credential trust boundary.
+// File mode controls who may connect; this check independently controls who
+// may cause state changes after connecting.
+func (s *SocketServer) authorizeMutation(w http.ResponseWriter, r *http.Request) bool {
+	logger := log.Component(log.ComponentDaemon)
+	if s.allowUnauthenticatedMutation {
+		logger.Warn().
+			Str(log.FieldOperation, "socket_authorization").
+			Str(log.FieldMethod, r.Method).
+			Str(log.FieldURL, r.URL.Path).
+			Msg("SECURITY: accepting unauthenticated Unix socket mutation because BOSUN_ALLOW_UNAUTHENTICATED_SOCKET=true")
+		return true
+	}
+
+	credentials, ok := getPeerCredentialsFromRequest(r)
+	if !ok {
+		logger.Warn().
+			Str(log.FieldOperation, "socket_authorization").
+			Str(log.FieldMethod, r.Method).
+			Str(log.FieldURL, r.URL.Path).
+			Msg("Rejecting Unix socket mutation because peer credentials are unavailable")
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return false
+	}
+
+	if s.ownerUIDAvailable && credentials.UID == s.ownerUID {
+		return true
+	}
+	if _, allowed := s.allowedUIDs[credentials.UID]; allowed {
+		return true
+	}
+
+	logger.Warn().
+		Str(log.FieldOperation, "socket_authorization").
+		Uint32("peer_uid", credentials.UID).
+		Uint32("peer_gid", credentials.GID).
+		Int32("peer_pid", credentials.PID).
+		Str(log.FieldMethod, r.Method).
+		Str(log.FieldURL, r.URL.Path).
+		Msg("Rejecting Unix socket mutation from unauthorized peer UID")
+	http.Error(w, "Forbidden", http.StatusForbidden)
+	return false
 }
 
 // handleStatus handles GET /status requests.
@@ -377,10 +440,33 @@ func (s *SocketServer) auditMiddleware(next http.Handler) http.Handler {
 // getPeerInfo extracts peer information from the request context.
 // This is set by platform-specific code using SO_PEERCRED.
 func getPeerInfo(r *http.Request) string {
-	if info := r.Context().Value(peerCredKey); info != nil {
-		return info.(string)
+	if credentials, ok := getPeerCredentialsFromRequest(r); ok {
+		return credentials.String()
 	}
 	return ""
+}
+
+func getPeerCredentialsFromRequest(r *http.Request) (peerCredentials, bool) {
+	credentials, ok := r.Context().Value(peerCredKey).(peerCredentials)
+	return credentials, ok
+}
+
+type peerCredentials struct {
+	UID uint32
+	GID uint32
+	PID int32
+}
+
+func (c peerCredentials) String() string {
+	return fmt.Sprintf("uid=%d,gid=%d,pid=%d", c.UID, c.GID, c.PID)
+}
+
+func effectiveProcessUID() (uint32, bool) {
+	uid := os.Geteuid()
+	if uid < 0 {
+		return 0, false
+	}
+	return uint32(uid), true
 }
 
 // contextKey is a custom type for context keys.

@@ -250,6 +250,8 @@ The daemon provides:
 | `BOSUN_GIT_FETCH_DEPTH` | Shallow clone/fetch history depth; increase when deploy diffs span multiple commits | `1` |
 | `BOSUN_POLL_INTERVAL` | Poll interval in seconds | `3600` |
 | `BOSUN_SOCKET_PATH` | Unix socket path | `/var/run/bosun.sock` |
+| `BOSUN_SOCKET_ALLOWED_UIDS` | Additional numeric UIDs allowed to trigger through the Unix socket (comma-separated) | Daemon UID only |
+| `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET` | Disable Unix socket peer-credential authorization (`true` only; logs security warnings) | `false` |
 | `WEBHOOK_SECRET` | Webhook signature validation | Required for webhook triggers (fail-closed) |
 | `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | Accept unauthenticated webhook triggers (`true` only; logs a security warning per request) | `false` |
 | `BOSUN_LISTEN_ADDR` | Host/IP the HTTP server binds to | All interfaces |
@@ -259,6 +261,12 @@ The daemon provides:
 > reject every request with `403`. To restore the old accept-anything behavior
 > on a trusted network, set `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true`
 > explicitly. The Unix socket trigger (`bosun trigger`) is unaffected.
+
+> **Unix socket mutation auth also fails closed.** On Linux, the daemon UID and
+> numeric UIDs in `BOSUN_SOCKET_ALLOWED_UIDS` can trigger reconciliation. A
+> missing peer credential (including on non-Linux platforms) returns `403`.
+> Set `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET=true` only when socket permissions
+> are intentionally the entire trust boundary.
 
 For a private HTTPS repository, set `BOSUN_GIT_USERNAME` and
 `BOSUN_GIT_TOKEN` together. Bosun sends them only to the configured HTTPS
