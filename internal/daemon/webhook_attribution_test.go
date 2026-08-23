@@ -162,10 +162,12 @@ func exerciseGitHubPusherAttribution(t *testing.T, pusherName, secret string, al
 	s.wg.Wait()
 
 	d.reconcileMu.Lock()
-	source := d.triggerSource
+	trigger, _, queued := d.takePendingTriggers()
+	d.reconciling = false
 	d.reconcileMu.Unlock()
+	require.True(t, queued)
 
-	return w.Code, findWebhookLogField(t, logs.String(), "GitHub push received on tracked branch", "pusher"), source
+	return w.Code, findWebhookLogField(t, logs.String(), "GitHub push received on tracked branch", "pusher"), trigger.source
 }
 
 func findWebhookLogField(t *testing.T, logs, message, field string) string {

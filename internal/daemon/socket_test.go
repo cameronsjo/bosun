@@ -51,7 +51,7 @@ func newTestSocketServer(t *testing.T) (*SocketServer, *Daemon) {
 
 func TestSocketHandleTrigger(t *testing.T) {
 	// Pre-set reconciling=true so the background goroutines spawned by
-	// handleTrigger coalesce (set pendingTrigger) instead of running a full
+	// handleTrigger coalesces into the pending batch instead of running a full
 	// reconcile that races with temp dir cleanup. We're testing the HTTP envelope.
 	ss, d := newTestSocketServer(t)
 
@@ -61,7 +61,7 @@ func TestSocketHandleTrigger(t *testing.T) {
 	t.Cleanup(func() {
 		d.reconcileMu.Lock()
 		d.reconciling = false
-		d.pendingTrigger = false
+		d.clearPendingTriggers()
 		d.reconcileMu.Unlock()
 	})
 
@@ -78,6 +78,11 @@ func TestSocketHandleTrigger(t *testing.T) {
 		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
 		assert.Equal(t, "accepted", resp.Status)
 		assert.Equal(t, "Reconciliation triggered", resp.Message)
+		require.Eventually(t, func() bool {
+			d.reconcileMu.Lock()
+			defer d.reconcileMu.Unlock()
+			return d.pendingTriggerCount >= 1
+		}, 200*time.Millisecond, 5*time.Millisecond)
 	})
 
 	t.Run("POST with JSON body returns 202 with custom source", func(t *testing.T) {
@@ -92,6 +97,11 @@ func TestSocketHandleTrigger(t *testing.T) {
 		var resp TriggerResponse
 		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
 		assert.Equal(t, "accepted", resp.Status)
+		require.Eventually(t, func() bool {
+			d.reconcileMu.Lock()
+			defer d.reconcileMu.Unlock()
+			return d.pendingTriggerCount >= 2
+		}, 200*time.Millisecond, 5*time.Millisecond)
 	})
 
 	t.Run("GET returns 405", func(t *testing.T) {
@@ -137,7 +147,7 @@ func TestSocketHandleTrigger_ForcePropagation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ss, d := newTestSocketServer(t)
 
-			// Pre-set reconciling so the goroutine coalesces into pendingTrigger
+			// Pre-set reconciling so the goroutine joins the pending batch
 			// instead of running a full reconcile pipeline.
 			d.reconcileMu.Lock()
 			d.reconciling = true
@@ -145,8 +155,7 @@ func TestSocketHandleTrigger_ForcePropagation(t *testing.T) {
 			t.Cleanup(func() {
 				d.reconcileMu.Lock()
 				d.reconciling = false
-				d.pendingTrigger = false
-				d.triggerForce = false
+				d.clearPendingTriggers()
 				d.reconcileMu.Unlock()
 			})
 
@@ -166,15 +175,15 @@ func TestSocketHandleTrigger_ForcePropagation(t *testing.T) {
 			require.Equal(t, http.StatusAccepted, w.Code)
 
 			// The goroutine in handleTrigger calls TriggerReconcile which, seeing
-			// d.reconciling=true, sets d.triggerForce. Give it a moment to run.
+			// d.reconciling=true, queues the trigger. Give it a moment to run.
 			require.Eventually(t, func() bool {
 				d.reconcileMu.Lock()
 				defer d.reconcileMu.Unlock()
-				return d.pendingTrigger
+				return d.pendingTriggerCount > 0
 			}, 200*time.Millisecond, 5*time.Millisecond)
 
 			d.reconcileMu.Lock()
-			gotForce := d.triggerForce
+			gotForce := d.pendingTriggerForce
 			d.reconcileMu.Unlock()
 			assert.Equal(t, tc.wantForce, gotForce, "force flag mismatch")
 		})

@@ -618,9 +618,10 @@ func TestHandleManualTrigger(t *testing.T) {
 		s.wg.Wait()
 
 		d.reconcileMu.Lock()
-		assert.True(t, d.triggerForce, "force flag should be queued via sticky trigger")
-		assert.True(t, d.pendingTrigger, "pending trigger should be set")
+		assert.True(t, d.pendingTriggerForce, "force flag should be sticky in the queued batch")
+		assert.Equal(t, uint64(1), d.pendingTriggerCount, "pending trigger should be counted")
 		d.reconciling = false
+		d.clearPendingTriggers()
 		d.reconcileMu.Unlock()
 	})
 

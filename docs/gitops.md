@@ -105,14 +105,15 @@ Set to `0` to disable polling (webhook-only mode).
 
 ### Concurrency
 
-The daemon uses single-flight reconciliation with dirty flag coalescing:
+The daemon uses single-flight reconciliation with counted trigger coalescing:
 
-1. If a trigger arrives during reconciliation, set `pending = true`
+1. If a trigger arrives during reconciliation, increment the pending count and retain its source
 2. Return immediately (HTTP 202 Accepted)
-3. After reconciliation completes, check `pending`
-4. If `pending`, run one more reconciliation
+3. After reconciliation completes, atomically drain the pending batch
+4. Run one follow-up reconciliation with sorted distinct-source attribution and sticky `force`
+5. Triggers arriving during that follow-up form another batch
 
-This prevents concurrent docker compose operations while ensuring no triggers are lost.
+This prevents concurrent docker compose operations while ensuring no trigger batch or source attribution is lost.
 
 ### Security
 

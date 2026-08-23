@@ -18,10 +18,10 @@
 
 ## 3. Lossless trigger coalescing
 
-- [ ] 3.1 Replace the dirty-bit with a counter or small queue capturing source per trigger (daemon.go:451-523)
-- [ ] 3.2 After each reconcile, atomically re-check the counter before clearing `reconciling`
-- [ ] 3.3 Preserve/aggregate source attribution across coalesced triggers
-- [ ] 3.4 Stress test: many concurrent triggers during a long reconcile; assert no trigger lost and sources recorded
+- [x] 3.1 Replace the dirty-bit with a counter or small queue capturing source per trigger (daemon.go:451-523)
+- [x] 3.2 After each reconcile, atomically re-check the counter before clearing `reconciling`
+- [x] 3.3 Preserve/aggregate source attribution across coalesced triggers
+- [x] 3.4 Stress test: many concurrent triggers during a long reconcile; assert no trigger lost and sources recorded
 
 ## 4. Cancellation aborts external work
 

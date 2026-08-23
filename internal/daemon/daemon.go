@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -162,12 +163,13 @@ type Daemon struct {
 	lastReconcile time.Time
 	lastError     error
 
-	// Concurrency control: single-flight reconcile with coalescing
-	reconcileMu    sync.Mutex // Guards reconcile execution
-	reconciling    bool       // True while reconcile is in progress
-	pendingTrigger bool       // Dirty flag: another trigger arrived during reconcile
-	triggerSource  string     // Source of pending trigger (for logging)
-	triggerForce   bool       // Force flag for pending trigger (sticky: once set, stays set)
+	// Concurrency control: single-flight reconcile with lossless coalescing.
+	reconcileMu                   sync.Mutex          // Guards reconcile execution and pending trigger state
+	reconciling                   bool                // True while reconcile is in progress
+	pendingTriggerCount           uint64              // Number of triggers queued for the next coalesced run
+	pendingTriggerSources         map[string]struct{} // Distinct sources contributing to the next run
+	pendingTriggerForce           bool                // Sticky force flag for the next run
+	pendingForceRedeployUnchanged bool                // Preserve drift-self-heal semantics through source aggregation
 
 	// Drift self-heal cooldown tracking
 	lastSelfHeal time.Time // Last time drift self-heal triggered a reconciliation
@@ -573,11 +575,76 @@ func (d *Daemon) DockerClient() (*docker.Client, error) {
 	return d.dockerClient, d.dockerErr
 }
 
+type reconcileTrigger struct {
+	source                 string
+	force                  bool
+	forceRedeployUnchanged bool
+}
+
+func newReconcileTrigger(source string, force bool) reconcileTrigger {
+	return reconcileTrigger{
+		source:                 source,
+		force:                  force,
+		forceRedeployUnchanged: source == log.SourceDriftSelfHeal,
+	}
+}
+
+// queuePendingTrigger records a trigger for the next coalesced run.
+// d.reconcileMu must be held by the caller.
+func (d *Daemon) queuePendingTrigger(trigger reconcileTrigger) {
+	d.pendingTriggerCount++
+	if d.pendingTriggerSources == nil {
+		d.pendingTriggerSources = make(map[string]struct{})
+	}
+	d.pendingTriggerSources[trigger.source] = struct{}{}
+	d.pendingTriggerForce = d.pendingTriggerForce || trigger.force
+	d.pendingForceRedeployUnchanged = d.pendingForceRedeployUnchanged || trigger.forceRedeployUnchanged
+}
+
+// takePendingTriggers atomically drains the next coalesced trigger batch.
+// d.reconcileMu must be held by the caller.
+func (d *Daemon) takePendingTriggers() (reconcileTrigger, uint64, bool) {
+	if d.pendingTriggerCount == 0 {
+		return reconcileTrigger{}, 0, false
+	}
+
+	sources := make([]string, 0, len(d.pendingTriggerSources))
+	for source := range d.pendingTriggerSources {
+		sources = append(sources, source)
+	}
+	sort.Strings(sources)
+
+	trigger := reconcileTrigger{
+		source:                 strings.Join(sources, ","),
+		force:                  d.pendingTriggerForce,
+		forceRedeployUnchanged: d.pendingForceRedeployUnchanged,
+	}
+	count := d.pendingTriggerCount
+
+	d.pendingTriggerCount = 0
+	d.pendingTriggerSources = nil
+	d.pendingTriggerForce = false
+	d.pendingForceRedeployUnchanged = false
+
+	return trigger, count, true
+}
+
+// clearPendingTriggers resets all queued trigger metadata.
+// d.reconcileMu must be held by the caller.
+func (d *Daemon) clearPendingTriggers() {
+	d.pendingTriggerCount = 0
+	d.pendingTriggerSources = nil
+	d.pendingTriggerForce = false
+	d.pendingForceRedeployUnchanged = false
+}
+
 // TriggerReconcile triggers a reconciliation run.
-// If a reconcile is already in progress, it sets the pending flag and returns immediately.
-// The running reconcile will check the pending flag and re-run if set.
-// The force flag is sticky: if any trigger requests force, the coalesced run will be forced.
+// If a reconcile is already in progress, it queues source/force metadata and
+// returns immediately. All triggers in the batch contribute to the next run;
+// force remains sticky if any queued trigger requests it.
 func (d *Daemon) TriggerReconcile(ctx context.Context, source string, force bool) error {
+	trigger := newReconcileTrigger(source, force)
+
 	// Add reconcile ID to context and stash enriched logger for downstream propagation.
 	// FromContext builds from the global logger + raw context values (request_id, reconcile_id),
 	// avoiding zerolog's append-only field duplication if called repeatedly.
@@ -596,11 +663,9 @@ func (d *Daemon) TriggerReconcile(ctx context.Context, source string, force bool
 	d.reconcileMu.Lock()
 
 	if d.reconciling {
-		// Another reconcile is in progress - set dirty flag and return.
-		d.pendingTrigger = true
-		d.triggerSource = source
-		// Force is sticky: once any trigger requests force, keep it.
-		d.triggerForce = d.triggerForce || force
+		// Another reconcile is in progress. Count every arrival and retain all
+		// distinct source metadata for the next coalesced run.
+		d.queuePendingTrigger(trigger)
 		d.reconcileMu.Unlock()
 
 		logger.Info().
@@ -622,7 +687,7 @@ func (d *Daemon) TriggerReconcile(ctx context.Context, source string, force bool
 		Msg("Dispatching reconciliation")
 
 	// Run the reconcile loop (may run multiple times if pending triggers arrive).
-	err := d.reconcileLoop(ctx, source, force)
+	err := d.reconcileLoop(ctx, trigger, d.executeReconcileTrigger)
 
 	// Readiness reflects "has ever successfully reconciled" (#346), not just
 	// "the initial boot reconcile succeeded" -- flip it here, the single
@@ -636,84 +701,38 @@ func (d *Daemon) TriggerReconcile(ctx context.Context, source string, force bool
 	return err
 }
 
-// reconcileLoop runs reconciliation, checking for pending triggers after each run.
-func (d *Daemon) reconcileLoop(ctx context.Context, source string, force bool) (result error) {
+// reconcileCycle executes one reconcile using the trigger metadata selected for
+// that cycle. The function type keeps the coalescing loop independently testable.
+type reconcileCycle func(context.Context, reconcileTrigger) error
+
+// reconcileLoop runs reconciliation, atomically draining triggers that arrived
+// during each cycle into the following coalesced cycle.
+func (d *Daemon) reconcileLoop(ctx context.Context, trigger reconcileTrigger, execute reconcileCycle) error {
 	logger := log.ComponentCtx(ctx, log.ComponentDaemon)
-
-	// A panic anywhere in executeReconcile -- including deep inside a
-	// target's Reconciler.Run() -- must not leave d.reconciling stuck at
-	// true forever. Without this, the calling goroutine's own
-	// "defer sentrypkg.Recover()" stops the panic from crashing the process,
-	// but reconcileLoop's normal reconciling-flag reset below (only reached
-	// on a non-panicking return) never runs, so every future trigger just
-	// queues as pending and none ever actually execute: the daemon "stays
-	// up" but is permanently wedged, unable to reconcile again (#364).
-	// Recovering here converts the panic into an ordinary logged error and
-	// alert, resets the same state the successful-completion path resets,
-	// and lets the circuit breaker keep governing retries on the next
-	// trigger exactly as it would after any other reconcile failure.
-	defer func() {
-		r := recover()
-		if r == nil {
-			return
-		}
-
-		logger.Error().
-			Interface("panic", r).
-			Str("stack", string(debug.Stack())).
-			Str(log.FieldSource, source).
-			Msg("Recovered from panic during reconciliation; daemon remains up")
-		ui.Error("Recovered from panic during reconciliation (source: %s): %v", source, r)
-
-		d.reconcileMu.Lock()
-		d.reconciling = false
-		d.pendingTrigger = false
-		d.triggerSource = ""
-		d.triggerForce = false
-		d.reconcileMu.Unlock()
-
-		panicErr := fmt.Errorf("recovered from panic during reconciliation: %v", r)
-
-		d.stateMu.Lock()
-		d.lastReconcile = time.Now()
-		d.lastError = panicErr
-		d.stateMu.Unlock()
-
-		if d.alerter != nil {
-			alertCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			if alertErr := d.alerter.SendDeployFailure(alertCtx, "", source, panicErr.Error(), nil, 0); alertErr != nil {
-				logger.Warn().Err(alertErr).Msg("Failed to send panic-recovery alert")
-			}
-			cancel()
-		}
-
-		result = panicErr
-	}()
 
 	var lastErr error
 
 	for {
-		// Execute reconcile
-		err := d.executeReconcile(ctx, source, force)
+		// Recover per cycle so a pending batch survives a panic and is still
+		// drained by the same loop instead of being silently discarded.
+		err := d.runReconcileCycleSafely(ctx, trigger, execute)
 		if err != nil {
 			lastErr = err
 		}
 
-		// Check for pending trigger
+		// Check and drain pending triggers while holding the same mutex that
+		// producers use. Arrivals after this drain form the following batch,
+		// so a trigger cannot be erased by a cycle-boundary reset.
 		d.reconcileMu.Lock()
-		if d.pendingTrigger {
-			// Another trigger arrived - reset flag and run again
-			source = d.triggerSource
-			force = d.triggerForce
-			d.pendingTrigger = false
-			d.triggerSource = ""
-			d.triggerForce = false
+		if nextTrigger, triggerCount, ok := d.takePendingTriggers(); ok {
+			trigger = nextTrigger
 			d.reconcileMu.Unlock()
 			logger.Info().
-				Str(log.FieldSource, source).
-				Bool("force", force).
+				Str(log.FieldSource, trigger.source).
+				Bool("force", trigger.force).
+				Uint64("trigger_count", triggerCount).
 				Msg("Processing queued trigger from coalescing")
-			ui.Info("Processing queued trigger from %s (force=%t)", source, force)
+			ui.Info("Processing %d queued trigger(s) from %s (force=%t)", triggerCount, trigger.source, trigger.force)
 			// Generate a fresh reconcile_id for the coalesced run so logs are distinct.
 			// Rebuild from global logger + raw context values to avoid zerolog key duplication.
 			ctx, newID := log.NewReconcileContext(ctx)
@@ -741,10 +760,57 @@ func (d *Daemon) reconcileLoop(ctx context.Context, source string, force bool) (
 	}
 }
 
+// runReconcileCycleSafely converts a panic from the reconcile pipeline into an
+// ordinary error without unwinding the coalescing loop (#364). Keeping recovery
+// inside the cycle preserves triggers that arrived before the panic.
+func (d *Daemon) runReconcileCycleSafely(ctx context.Context, trigger reconcileTrigger, execute reconcileCycle) (result error) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+
+		logger := log.ComponentCtx(ctx, log.ComponentDaemon)
+		logger.Error().
+			Interface("panic", r).
+			Str("stack", string(debug.Stack())).
+			Str(log.FieldSource, trigger.source).
+			Msg("Recovered from panic during reconciliation; daemon remains up")
+		ui.Error("Recovered from panic during reconciliation (source: %s): %v", trigger.source, r)
+
+		panicErr := fmt.Errorf("recovered from panic during reconciliation: %v", r)
+
+		d.stateMu.Lock()
+		d.lastReconcile = time.Now()
+		d.lastError = panicErr
+		d.stateMu.Unlock()
+
+		if d.alerter != nil {
+			alertCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if alertErr := d.alerter.SendDeployFailure(alertCtx, "", trigger.source, panicErr.Error(), nil, 0); alertErr != nil {
+				logger.Warn().Err(alertErr).Msg("Failed to send panic-recovery alert")
+			}
+			cancel()
+		}
+
+		result = panicErr
+	}()
+
+	return execute(ctx, trigger)
+}
+
+func (d *Daemon) executeReconcileTrigger(ctx context.Context, trigger reconcileTrigger) error {
+	return d.executeReconcileWithMode(ctx, trigger.source, trigger.force, trigger.forceRedeployUnchanged)
+}
+
 // executeReconcile runs a reconciliation cycle across all configured targets.
 // Each target is reconciled sequentially; a failure on one target does not
 // prevent the next target from running.
 func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool) error {
+	return d.executeReconcileWithMode(ctx, source, force, source == log.SourceDriftSelfHeal)
+}
+
+func (d *Daemon) executeReconcileWithMode(ctx context.Context, source string, force, forceRedeployUnchanged bool) error {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
@@ -821,7 +887,7 @@ func (d *Daemon) executeReconcile(ctx context.Context, source string, force bool
 		// deploy_paths allowlist gate the way operator Force does. Route it
 		// through ForceRedeployUnchanged instead of Force so those stay keyed
 		// on a real human decision.
-		if source == log.SourceDriftSelfHeal {
+		if forceRedeployUnchanged {
 			targetCfg.ForceRedeployUnchanged = true
 		}
 
