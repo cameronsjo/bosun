@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.11](https://github.com/cameronsjo/bosun/compare/v0.39.10...v0.39.11) (2026-08-23)
+
+
+### Bug Fixes
+
+* **daemon:** distinguish ignored drift from resolution ([#518](https://github.com/cameronsjo/bosun/issues/518)) ([3b38815](https://github.com/cameronsjo/bosun/commit/3b38815789a360832f2c5980317b772d16cd5248))
+* **daemon:** sanitize webhook pusher attribution ([#519](https://github.com/cameronsjo/bosun/issues/519)) ([28ec22d](https://github.com/cameronsjo/bosun/commit/28ec22dc8b5dca30c9736d775185408ace916246))
+* **reconcile:** reject empty exec hook commands ([#520](https://github.com/cameronsjo/bosun/issues/520)) ([c56905e](https://github.com/cameronsjo/bosun/commit/c56905ebb355eacfba758a1e02a6534147eb3bcb))
+
 ## [0.39.10](https://github.com/cameronsjo/bosun/compare/v0.39.9...v0.39.10) (2026-08-23)
 
 
