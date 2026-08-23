@@ -120,9 +120,15 @@ func TestSocketLifecycle_StartAcceptShutdown(t *testing.T) {
 func TestSocketLifecycle_StaleSocketCleanup(t *testing.T) {
 	d, socketPath := startDaemonSocket(t)
 
-	// Create a stale socket file.
+	// Create a real stale socket entry. Regular files and symlinks at the
+	// configured path are intentionally preserved and rejected.
 	require.NoError(t, os.MkdirAll(filepath.Dir(socketPath), 0755))
-	require.NoError(t, os.WriteFile(socketPath, []byte("stale"), 0600))
+	stale, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
+	if unixListener, ok := stale.(*net.UnixListener); ok {
+		unixListener.SetUnlinkOnClose(false)
+	}
+	require.NoError(t, stale.Close())
 
 	// Start should succeed, removing the stale file.
 	errCh := make(chan error, 1)
@@ -144,6 +150,7 @@ func TestSocketLifecycle_StaleSocketCleanup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	require.NoError(t, d.socketServer.Shutdown(ctx))
+	assert.ErrorIs(t, <-errCh, http.ErrServerClosed)
 }
 
 func TestTCPLifecycle_StartAcceptShutdown(t *testing.T) {

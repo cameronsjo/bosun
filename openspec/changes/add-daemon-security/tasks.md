@@ -17,9 +17,9 @@
 
 ## 3. Socket permission integrity
 
-- [ ] 3.1 Honor `s.cfg.SocketMode` instead of hard-coded `0660` in `socket.go` Start
-- [ ] 3.2 Set umask (or create-then-chmod with no widening) so the socket is never world/group-connectable before its mode is applied
-- [ ] 3.3 Tests: socket initial mode equals configured mode; no permissive window
+- [x] 3.1 Honor `SocketConfig.SocketMode` instead of hard-coded `0660` in `socket.go` Start
+- [x] 3.2 Avoid process-global umask by binding inside a private `0700` staging directory, applying the configured mode, and atomically renaming the socket into place
+- [x] 3.3 Tests: socket initial mode equals configured mode; no permissive window; concurrent modes, unsafe stale entries, replacement-safe cleanup, and publish-error cleanup
 
 ## 4. HTTP request hardening
 

@@ -527,6 +527,25 @@ pre-handler limits reduce exposure to slow-header and oversized-header
 denial-of-service attacks without changing the existing per-operation
 `BOSUN_API_TIMEOUT` behavior.
 
+### Unix socket publication and permissions
+
+The daemon publishes its Unix control socket at mode `0660` by default and
+honors an explicitly configured `daemon.Config.SocketMode`. On Unix, Bosun
+binds the listener inside a private `0700` staging directory, applies the
+configured permission bits there, and atomically publishes the socket at its
+final path without replacing a racing entry. The public path therefore never
+exists at the operating system's more-permissive default mode, and Bosun does
+not change the process-global umask while other goroutines may be creating
+files.
+
+On Unix, startup refuses to delete a stale-path entry unless it is actually a
+Unix socket; symlinks, regular files, and directories are left untouched.
+Shutdown removes the socket only when the path still identifies the inode Bosun
+published, so a replacement entry is never deleted as though Bosun owned it.
+Windows builds retain AF_UNIX compatibility, but Unix permission bits are not
+an access-control boundary there; platform ACLs and request authorization
+remain authoritative.
+
 ## Daemon Metrics and Widget Authentication
 
 The `/metrics` (Prometheus) and `/api/widget` (Homepage) endpoints disclose the
