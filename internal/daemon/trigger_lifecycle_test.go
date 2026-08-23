@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -29,10 +30,23 @@ func lifecycleTriggerHandlers(t *testing.T, d *Daemon) map[string]lifecycleTrigg
 	t.Helper()
 	tcp, err := NewTCPServer(d, "127.0.0.1:0", "test-token")
 	require.NoError(t, err)
+	d.config.AllowUnauthenticatedWebhook = true
+	webhook := NewServer(d)
 	return map[string]lifecycleTriggerHandler{
-		"socket": lifecycleSocketHandler(d),
-		"tcp":    tcp.handleTrigger,
-		"api":    d.handleAPITrigger,
+		"socket":  lifecycleSocketHandler(d),
+		"tcp":     tcp.handleTrigger,
+		"api":     d.handleAPITrigger,
+		"webhook": webhook.handleWebhook,
+		"manual":  webhook.handleManualTrigger,
+		"github": func(w http.ResponseWriter, r *http.Request) {
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/webhook/github",
+				strings.NewReader(`{"ref":"refs/heads/main","pusher":{"name":"lifecycle-test"}}`),
+			).WithContext(r.Context())
+			req.Header.Set("X-GitHub-Event", "push")
+			webhook.handleGitHubWebhook(w, req)
+		},
 	}
 }
 
@@ -72,6 +86,27 @@ func TestTriggerHandlersUseDaemonLifecycleAndWaitGroup(t *testing.T) {
 			return tcp.handleTrigger
 		},
 		"api": func(_ *testing.T, d *Daemon) lifecycleTriggerHandler { return d.handleAPITrigger },
+		"webhook": func(_ *testing.T, d *Daemon) lifecycleTriggerHandler {
+			d.config.AllowUnauthenticatedWebhook = true
+			return NewServer(d).handleWebhook
+		},
+		"manual": func(_ *testing.T, d *Daemon) lifecycleTriggerHandler {
+			d.config.AllowUnauthenticatedWebhook = true
+			return NewServer(d).handleManualTrigger
+		},
+		"github": func(_ *testing.T, d *Daemon) lifecycleTriggerHandler {
+			d.config.AllowUnauthenticatedWebhook = true
+			webhook := NewServer(d)
+			return func(w http.ResponseWriter, r *http.Request) {
+				req := httptest.NewRequest(
+					http.MethodPost,
+					"/webhook/github",
+					strings.NewReader(`{"ref":"refs/heads/main","pusher":{"name":"lifecycle-test"}}`),
+				).WithContext(r.Context())
+				req.Header.Set("X-GitHub-Event", "push")
+				webhook.handleGitHubWebhook(w, req)
+			}
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			d := newConcurrencyDaemon(t)
@@ -85,13 +120,15 @@ func TestTriggerHandlersUseDaemonLifecycleAndWaitGroup(t *testing.T) {
 				return ctx.Err()
 			}
 
-			requestCtx, cancelRequest := context.WithCancel(context.Background())
+			requestCtx := log.WithRequestID(context.Background(), "lifecycle-request-id")
+			requestCtx, cancelRequest := context.WithCancel(requestCtx)
 			req := httptest.NewRequest(http.MethodPost, "/trigger", strings.NewReader(`{"source":"lifecycle-test"}`)).WithContext(requestCtx)
 			recorder := httptest.NewRecorder()
 			makeHandler(t, d)(recorder, req)
 			require.Equal(t, http.StatusAccepted, recorder.Code)
 
 			taskCtx := waitForTaskContext(t, started)
+			assert.Equal(t, "lifecycle-request-id", log.RequestIDFromContext(taskCtx))
 			cancelRequest()
 			select {
 			case <-taskCtx.Done():
@@ -193,4 +230,15 @@ func TestTriggerRejectedAfterShutdownBegins(t *testing.T) {
 		})
 	}
 	assert.False(t, called.Load())
+}
+
+func TestDaemonShutdownIsIdempotentAndKeepsLifecycleClosed(t *testing.T) {
+	d := newConcurrencyDaemon(t)
+	d.config.ShutdownTimeout = time.Second
+
+	require.NoError(t, d.shutdown())
+	require.NoError(t, d.shutdown())
+	assert.False(t, d.startReconcileGoroutine(context.Background(), func(context.Context) {
+		t.Error("reconcile task started after shutdown")
+	}))
 }

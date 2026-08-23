@@ -569,6 +569,13 @@ func (d *Daemon) startReconcileGoroutine(requestCtx context.Context, task func(c
 	d.lifecycleMu.Unlock()
 
 	if requestCtx != nil {
+		// TriggerReconcile deliberately rebuilds its logger from raw correlation
+		// values before adding a reconcile ID. Preserve the request ID on the
+		// detached lifecycle context as well as the already-enriched logger, or
+		// the rebuild silently drops request correlation.
+		if requestID := log.RequestIDFromContext(requestCtx); requestID != "" {
+			ctx = log.WithRequestID(ctx, requestID)
+		}
 		ctx = log.WithContext(ctx, log.Ctx(requestCtx))
 	}
 	go func() {
