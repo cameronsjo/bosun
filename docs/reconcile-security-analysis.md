@@ -388,24 +388,23 @@ return nil, fmt.Errorf("sops decrypt failed for %s: %w: %s", file, err, stderr.S
 2. Never log decrypted secret values
 3. Consider structured logging with explicit field allowlist
 
-### 8.2 Temporary File Cleanup
+### 8.2 Staging File Retention
 
-**File:** `internal/internal/reconcile/reconcile.go:211-216`
+**File:** `internal/reconcile/reconcile.go` (`renderTemplates` and
+`cleanupStaging`)
 
-**Finding (MEDIUM):** Staging directory contains rendered secrets and is cleared only at start of next run:
+**Current behavior:** The reconciler clears the staging directory before each
+render and removes it after a successful non-dry-run deployment. Cleanup failure
+is reported as a warning. Render failures, deployment failures, and dry runs can
+retain staging files for diagnosis.
 
-```go
-if err := os.RemoveAll(r.config.StagingDir); err != nil {
-    return fmt.Errorf("failed to clear staging directory: %w", err)
-}
-```
+**Impact:** Retained staging files may contain rendered secrets. This is an
+intentional diagnostic tradeoff, not a claim that staging is ephemeral on every
+exit path.
 
-**Impact:** Rendered secrets persist on disk between runs.
-
-**Recommendation:**
-1. Clear staging directory after successful deployment
-2. Set restrictive permissions on staging directory (0700)
-3. Consider using in-memory filesystem for staging
+**Operational guidance:** Restrict access to the staging directory and remove
+retained files after diagnosis. More restrictive staging permissions remain a
+possible hardening improvement.
 
 ### 8.3 SSH Key Handling
 
@@ -482,7 +481,7 @@ The `bosun doctor` command validates remaining required binaries.
 4. Disk space validation
 5. Backup verification
 6. **RESOLVED: Required binary validation** - Most binaries removed
-7. Staging directory cleanup after deployment
+7. **PARTIALLY RESOLVED: Staging cleanup** - Successful non-dry-run deploys clean staging; failure and dry-run retention still require protected host access
 8. SOPS file validation before decryption
 
 ### LOW (Nice to Have)
