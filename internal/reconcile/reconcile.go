@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
+	"unicode"
 
 	"go.opentelemetry.io/otel/trace"
 
@@ -1127,6 +1128,10 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	if err := ValidatePostSyncHooks(r.config.PostSyncHooks.Value); err != nil {
 		return 0, err
 	}
+	if len(r.config.PostSyncHooks.Value) == 0 {
+		logger.Debug().Msg("No post-sync hooks configured, skipping")
+		return 0, nil
+	}
 
 	if previousCommit == "" {
 		logger.Debug().Msg("No previous commit for post-sync hooks (first deploy), skipping")
@@ -1137,15 +1142,22 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	var changedFiles []string
 	diffFailed := false
 	remoteMode := !local
+	changeSource := "git_diff"
 	if remoteMode {
 		// Remote deploys return a DeployResult with a ManagedFiles manifest but
 		// no WrittenFiles (no per-file change tracking over SSH). Fire all hooks
 		// unconditionally — a false-positive restart is better than stale configs
 		// on a FUSE mount. See GitHub #197.
+		changeSource = "remote_untracked"
 		logger.Info().Msg("Remote deploy: firing all post-sync hooks (no file-level tracking available)")
-	} else if deployResult != nil && (len(deployResult.WrittenFiles) > 0 || len(deployResult.DeletedFiles) > 0) {
+	} else if deployResult != nil && (r.config.ContentHashSync || len(deployResult.WrittenFiles) > 0 || len(deployResult.DeletedFiles) > 0) {
 		// Combine writes and deletions: a commit that both writes an unrelated
 		// file and deletes a hook-matched one must still fire that hook (#234).
+		// With content-hash sync enabled, an empty result is authoritative: the
+		// deploy compared every managed file and wrote or deleted nothing. Standard
+		// copy mode does not populate per-file writes, so its empty result still
+		// falls back to git diff.
+		changeSource = "deploy_result"
 		changedFiles = make([]string, 0, len(deployResult.WrittenFiles)+len(deployResult.DeletedFiles))
 		changedFiles = append(changedFiles, deployResult.WrittenFiles...)
 		changedFiles = append(changedFiles, deployResult.DeletedFiles...)
@@ -1164,6 +1176,7 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 				logger.Warn().Err(err).Msg("Failed to diff commits for post-sync hooks, will evaluate all hooks")
 			}
 			diffFailed = true
+			changeSource = "git_diff_unavailable"
 		} else {
 			repoFileCount := len(changedFiles)
 			changedFiles = normalizeHookDiffPaths(changedFiles, r.config.InfraSubDir)
@@ -1177,6 +1190,7 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	if len(changedFiles) == 0 && !diffFailed && !remoteMode {
 		logger.Info().
 			Int("hooks_configured", len(r.config.PostSyncHooks.Value)).
+			Str("change_source", changeSource).
 			Msg("No files changed; post-sync hooks have nothing to evaluate")
 		return 0, nil
 	}
@@ -1193,15 +1207,20 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 		matched = EvaluatePostSyncHooks(changedFiles, r.config.PostSyncHooks.Value)
 	}
 	if len(matched) == 0 {
-		patterns := postSyncHookPatterns(r.config.PostSyncHooks.Value)
+		patterns := summarizePostSyncHookPatterns(r.config.PostSyncHooks.Value, postSyncHookPatternSampleLimit)
 		sampleFiles := sampleDistinctPaths(changedFiles, postSyncHookFileSampleLimit)
 		logger.Warn().
 			Int("hooks_configured", len(r.config.PostSyncHooks.Value)).
-			Int("patterns_configured", len(patterns)).
-			Strs("patterns", patterns).
-			Int("changed_files", len(changedFiles)).
+			Int("patterns_configured", patterns.distinct).
+			Int("patterns_sampled", len(patterns.sample)).
+			Int("duplicate_patterns", patterns.duplicates).
+			Int("empty_patterns", patterns.empty).
+			Int("hooks_without_paths", patterns.hooksWithoutPaths).
+			Strs("patterns", patterns.sample).
+			Int("changed_files", countDistinctStrings(changedFiles)).
 			Int("sampled_files", len(sampleFiles)).
 			Strs("sample_files", sampleFiles).
+			Str("change_source", changeSource).
 			Msg("Files changed but no post-sync hook patterns matched")
 		return 0, nil
 	}
@@ -1235,21 +1254,51 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 // Keep no-match diagnostics useful without allowing a large deploy to flood
 // logs. Paths are already staging-relative at this point; only path metadata is
 // sampled, never file contents or hook command arguments.
-const postSyncHookFileSampleLimit = 5
+const (
+	postSyncHookFileSampleLimit    = 5
+	postSyncHookPatternSampleLimit = 5
+	hookDiagnosticValueLimit       = 256
+)
 
-func postSyncHookPatterns(hooks []PostSyncHook) []string {
+type postSyncHookPatternSummary struct {
+	distinct          int
+	duplicates        int
+	empty             int
+	hooksWithoutPaths int
+	sample            []string
+}
+
+func summarizePostSyncHookPatterns(hooks []PostSyncHook, limit int) postSyncHookPatternSummary {
 	seen := make(map[string]struct{})
-	patterns := make([]string, 0)
+	sampleSeen := make(map[string]struct{})
+	summary := postSyncHookPatternSummary{sample: make([]string, 0, min(max(limit, 0), len(hooks)))}
 	for _, hook := range hooks {
+		if len(hook.Paths) == 0 {
+			summary.hooksWithoutPaths++
+		}
 		for _, pattern := range hook.Paths {
+			if pattern == "" {
+				summary.empty++
+				continue
+			}
 			if _, exists := seen[pattern]; exists {
+				summary.duplicates++
 				continue
 			}
 			seen[pattern] = struct{}{}
-			patterns = append(patterns, pattern)
+			summary.distinct++
+			if len(summary.sample) >= limit {
+				continue
+			}
+			safePattern := sanitizeHookDiagnosticPattern(pattern)
+			if _, exists := sampleSeen[safePattern]; exists {
+				continue
+			}
+			sampleSeen[safePattern] = struct{}{}
+			summary.sample = append(summary.sample, safePattern)
 		}
 	}
-	return patterns
+	return summary
 }
 
 func sampleDistinctPaths(paths []string, limit int) []string {
@@ -1260,16 +1309,70 @@ func sampleDistinctPaths(paths []string, limit int) []string {
 	seen := make(map[string]struct{}, limit)
 	sample := make([]string, 0, min(limit, len(paths)))
 	for _, file := range paths {
-		if _, exists := seen[file]; exists {
+		safeFile := sanitizeHookDiagnosticPath(file)
+		if _, exists := seen[safeFile]; exists {
 			continue
 		}
-		seen[file] = struct{}{}
-		sample = append(sample, file)
+		seen[safeFile] = struct{}{}
+		sample = append(sample, safeFile)
 		if len(sample) == limit {
 			break
 		}
 	}
 	return sample
+}
+
+func sanitizeHookDiagnosticPath(file string) string {
+	clean := path.Clean(diagnosticSlashPath(file))
+	if isNonRelativeDiagnosticPath(file, clean) {
+		return "[non-relative-path]"
+	}
+	return sanitizeHookDiagnosticValue(clean)
+}
+
+func sanitizeHookDiagnosticPattern(pattern string) string {
+	clean := path.Clean(diagnosticSlashPath(pattern))
+	if isNonRelativeDiagnosticPath(pattern, clean) {
+		return "[non-relative-pattern]"
+	}
+	return sanitizeHookDiagnosticValue(pattern)
+}
+
+func diagnosticSlashPath(value string) string {
+	// filepath.ToSlash follows the host OS. Replacing backslashes too keeps
+	// diagnostics defensive when a malformed cross-platform path reaches a log.
+	return strings.ReplaceAll(filepath.ToSlash(value), `\`, "/")
+}
+
+func isNonRelativeDiagnosticPath(original, clean string) bool {
+	if filepath.IsAbs(original) || path.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return true
+	}
+	// filepath.VolumeName only recognizes the running OS's syntax. Detect a
+	// Windows drive-root path explicitly so Unix logs do not disclose one.
+	return len(clean) >= 3 && unicode.IsLetter(rune(clean[0])) && clean[1] == ':' && clean[2] == '/'
+}
+
+func sanitizeHookDiagnosticValue(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '?'
+		}
+		return r
+	}, value)
+	runes := []rune(value)
+	if len(runes) <= hookDiagnosticValueLimit {
+		return value
+	}
+	return string(runes[:hookDiagnosticValueLimit-1]) + "…"
+}
+
+func countDistinctStrings(values []string) int {
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		seen[value] = struct{}{}
+	}
+	return len(seen)
 }
 
 // normalizeHookDiffPaths converts repo-relative git diff paths into the same

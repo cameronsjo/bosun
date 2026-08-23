@@ -19,7 +19,7 @@
 
 ## 4. Hook match observability (#269)
 
-- [x] 4.1 In `executePostSyncHooks`, emit a warn-level log when hooks are configured and changed files were evaluated but nothing matched, naming patterns and sample files
+- [x] 4.1 In `executePostSyncHooks`, emit a warn-level log when hooks are configured and changed files were evaluated but nothing matched, with bounded pattern and staging-relative file samples plus complete counts
 - [x] 4.2 Distinguish "no files changed" from "files changed, none matched" in the log message
 - [x] 4.3 Tests: typo'd pattern over a non-empty change set produces a discoverable warning
 

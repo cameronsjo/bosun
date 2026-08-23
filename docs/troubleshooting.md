@@ -95,10 +95,11 @@ For target hooks, an omitted key inherits root and explicit `post_sync_hooks: []
 ### Post-sync hook never runs after files change
 
 Look for `Files changed but no post-sync hook patterns matched`. The warning
-lists configured patterns, the total changed-file count, and at most five
-sample staging-relative paths, which usually exposes a typo or a missing prefix
-such as `appdata/`. `No files changed; post-sync hooks have nothing to evaluate`
-is a separate informational outcome and does not indicate a pattern problem.
+reports distinct, duplicate, empty, and missing pattern counts plus at most five
+pattern and staging-relative path samples, which usually exposes a typo or a
+missing prefix such as `appdata/`. Absolute or traversal paths are redacted.
+`No files changed; post-sync hooks have nothing to evaluate` is a separate
+informational outcome and does not indicate a pattern problem.
 
 ## Debug Mode
 
