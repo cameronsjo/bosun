@@ -234,6 +234,8 @@ my-homelab/
 └── secrets.sops.yaml        # Encrypted secrets (SOPS + Age)
 ```
 
+Bosun infers the encrypted secrets format from the filename. Supported formats are YAML (`.yaml`, `.yml`), JSON (`.json`), dotenv (`.env`), and INI (`.ini`); a trailing `.sops` after the format extension is also accepted for compatibility. Binary SOPS files are rejected because template secrets must decode to a key/value map.
+
 ### Key Directories
 
 | Directory | Purpose | Managed By |

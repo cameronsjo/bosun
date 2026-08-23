@@ -432,6 +432,8 @@ The `Sync()` method returns:
 
 The SOPS subsystem (`internal/reconcile/sops.go`) handles encrypted secrets using the [go-sops](https://github.com/getsops/sops) library with [age](https://github.com/FiloSottile/age) encryption. All decryption happens in-process without requiring an external `sops` binary.
 
+Secrets-file format is inferred from the filename. Bosun supports YAML (`.yaml`, `.yml`), JSON (`.json`), dotenv (`.env`), and INI (`.ini`), including legacy names such as `secrets.yaml.sops`. Other extensions fail with a clear error; SOPS binary files are not supported because Bosun must merge decrypted secrets into a key/value template map.
+
 ### Age Key Resolution
 
 The system checks for age keys in this order:

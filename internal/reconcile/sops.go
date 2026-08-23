@@ -11,7 +11,11 @@ import (
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
+	sopslib "github.com/getsops/sops/v3"
+	"github.com/getsops/sops/v3/config"
 	"github.com/getsops/sops/v3/decrypt"
+	sopsdotenv "github.com/getsops/sops/v3/stores/dotenv"
+	sopsini "github.com/getsops/sops/v3/stores/ini"
 	"gopkg.in/yaml.v3"
 )
 
@@ -21,12 +25,52 @@ var ErrAgeKeyNotFound = errors.New("age key not found")
 // ErrNotSOPSFile is returned when a file is not a valid SOPS-encrypted file.
 var ErrNotSOPSFile = errors.New("file is not SOPS-encrypted")
 
+// ErrUnsupportedSOPSFormat is returned when a secrets file cannot be decoded
+// into the key/value map Bosun uses for template data.
+var ErrUnsupportedSOPSFormat = errors.New("unsupported SOPS secrets format")
+
+type sopsFileFormat string
+
+const (
+	sopsFormatYAML   sopsFileFormat = "yaml"
+	sopsFormatJSON   sopsFileFormat = "json"
+	sopsFormatDotenv sopsFileFormat = "dotenv"
+	sopsFormatINI    sopsFileFormat = "ini"
+)
+
 // SOPSOps provides SOPS decryption operations.
-type SOPSOps struct{}
+type SOPSOps struct {
+	decryptFile func(path, format string) ([]byte, error)
+}
 
 // NewSOPSOps creates a new SOPSOps instance.
 func NewSOPSOps() *SOPSOps {
-	return &SOPSOps{}
+	return &SOPSOps{decryptFile: decrypt.File}
+}
+
+func inferSOPSFormat(path string) (sopsFileFormat, error) {
+	originalPath := path
+	extension := filepath.Ext(path)
+	if strings.EqualFold(extension, ".sops") {
+		path = strings.TrimSuffix(path, extension)
+		extension = filepath.Ext(path)
+	}
+
+	switch strings.ToLower(extension) {
+	case ".yaml", ".yml":
+		return sopsFormatYAML, nil
+	case ".json":
+		return sopsFormatJSON, nil
+	case ".env":
+		return sopsFormatDotenv, nil
+	case ".ini":
+		return sopsFormatINI, nil
+	default:
+		if extension == "" {
+			extension = "<none>"
+		}
+		return "", fmt.Errorf("%w: %q has extension %q; supported extensions are .yaml, .yml, .json, .env, and .ini (optionally followed by .sops); binary SOPS files cannot be merged into Bosun template secrets", ErrUnsupportedSOPSFormat, originalPath, extension)
+	}
 }
 
 // CheckAgeKey verifies that an age key is available for SOPS decryption.
@@ -77,6 +121,14 @@ To fix:
 // ValidateSOPSFile checks if a file is a valid SOPS-encrypted file.
 // Returns nil if valid, or an actionable error describing the problem.
 func ValidateSOPSFile(path string) error {
+	format, err := inferSOPSFormat(path)
+	if err != nil {
+		return err
+	}
+	return validateSOPSFile(path, format)
+}
+
+func validateSOPSFile(path string, format sopsFileFormat) error {
 	// Check file exists
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -86,12 +138,22 @@ func ValidateSOPSFile(path string) error {
 		return fmt.Errorf("failed to read SOPS file: %w", err)
 	}
 
-	// Parse as YAML
-	var content map[string]any
-	if err := yaml.Unmarshal(data, &content); err != nil {
-		return fmt.Errorf("invalid YAML syntax in %s: %w", path, err)
+	if format == sopsFormatDotenv || format == sopsFormatINI {
+		return validateFlatSOPSFile(path, format, data)
 	}
 
+	var content map[string]any
+	if format == sopsFormatJSON {
+		if err := json.Unmarshal(data, &content); err != nil {
+			return fmt.Errorf("invalid JSON syntax in %s: %w", path, err)
+		}
+	} else if err := yaml.Unmarshal(data, &content); err != nil {
+		return fmt.Errorf("invalid YAML syntax in %s: %w", path, err)
+	}
+	return validateSOPSMetadataMap(path, content)
+}
+
+func validateSOPSMetadataMap(path string, content map[string]any) error {
 	// Check for SOPS metadata marker and the fields SOPS needs before attempting
 	// key discovery. This keeps malformed files from being reported as key errors.
 	metadataValue, hasSOPS := content["sops"]
@@ -132,6 +194,51 @@ func ValidateSOPSFile(path string) error {
 	}
 
 	return nil
+}
+
+func flatSOPSStore(format sopsFileFormat) sopslib.Store {
+	storesConfig := config.NewStoresConfig()
+	if format == sopsFormatDotenv {
+		return sopsdotenv.NewStore(&storesConfig.Dotenv)
+	}
+	return sopsini.NewStore(&storesConfig.INI)
+}
+
+func validateFlatSOPSFile(path string, format sopsFileFormat, data []byte) error {
+	store := flatSOPSStore(format)
+	branches, err := store.LoadPlainFile(data)
+	if err != nil {
+		return fmt.Errorf("invalid %s syntax in %s", format, path)
+	}
+	if len(branches) == 0 || !store.HasSopsTopLevelKey(branches[0]) {
+		return fmt.Errorf("%w: %s does not contain 'sops' metadata. Encrypt it with: sops --encrypt --in-place %s", ErrNotSOPSFile, path, path)
+	}
+
+	tree, err := store.LoadEncryptedFile(data)
+	if err != nil {
+		return fmt.Errorf("%w: %s has invalid %s SOPS metadata: %v", ErrNotSOPSFile, path, format, err)
+	}
+	if strings.TrimSpace(tree.Metadata.MessageAuthenticationCode) == "" {
+		return fmt.Errorf("%w: %s has incomplete 'sops' metadata: missing non-empty 'mac'", ErrNotSOPSFile, path)
+	}
+	if tree.Metadata.LastModified.IsZero() {
+		return fmt.Errorf("%w: %s has incomplete 'sops' metadata: missing valid 'lastmodified'", ErrNotSOPSFile, path)
+	}
+	if !hasEncryptedMasterKey(tree.Metadata) {
+		return fmt.Errorf("%w: %s has incomplete 'sops' metadata: no key recipient with a non-empty encrypted data key", ErrNotSOPSFile, path)
+	}
+	return nil
+}
+
+func hasEncryptedMasterKey(metadata sopslib.Metadata) bool {
+	for _, group := range metadata.KeyGroups {
+		for _, key := range group {
+			if len(key.EncryptedDataKey()) > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func hasSOPSRecipients(metadata map[string]any) bool {
@@ -177,9 +284,13 @@ func hasDirectSOPSRecipients(metadata map[string]any) bool {
 // Uses go-sops library for in-process decryption - no external binary required.
 func (s *SOPSOps) Decrypt(ctx context.Context, file string) ([]byte, error) {
 	logger := log.Component(log.ComponentSOPS)
+	format, err := inferSOPSFormat(file)
+	if err != nil {
+		return nil, err
+	}
 
 	// Validate SOPS file before attempting decryption
-	if err := ValidateSOPSFile(file); err != nil {
+	if err := validateSOPSFile(file, format); err != nil {
 		return nil, err
 	}
 
@@ -195,7 +306,11 @@ func (s *SOPSOps) Decrypt(ctx context.Context, file string) ([]byte, error) {
 	// Use go-sops library for in-process decryption
 	// The decrypt.File function reads the age key from SOPS_AGE_KEY or SOPS_AGE_KEY_FILE
 	// or the default location ~/.config/sops/age/keys.txt
-	plaintext, err := decrypt.File(file, "yaml")
+	decryptFile := s.decryptFile
+	if decryptFile == nil {
+		decryptFile = decrypt.File
+	}
+	plaintext, err := decryptFile(file, string(format))
 	if err != nil {
 		safeErr := sanitizeDecryptError(err)
 		logger.Debug().
@@ -210,10 +325,11 @@ func (s *SOPSOps) Decrypt(ctx context.Context, file string) ([]byte, error) {
 		Str(log.FieldPath, file).
 		Msg("Successfully decrypted SOPS file")
 
-	// Parse the YAML and convert to JSON for consistent output
-	var data map[string]any
-	if err := yaml.Unmarshal(plaintext, &data); err != nil {
-		return nil, fmt.Errorf("failed to parse decrypted YAML from %s: %w", file, err)
+	data, err := decodeSOPSPlaintext(plaintext, format)
+	if err != nil {
+		// Parser errors for flat formats can include the complete plaintext line.
+		// Keep decrypted values out of errors returned to CLI and daemon callers.
+		return nil, fmt.Errorf("failed to parse decrypted %s from %s", format, file)
 	}
 
 	jsonBytes, err := json.Marshal(data)
@@ -224,13 +340,54 @@ func (s *SOPSOps) Decrypt(ctx context.Context, file string) ([]byte, error) {
 	return jsonBytes, nil
 }
 
-// DecryptToMap decrypts a SOPS-encrypted file and returns the data as a map.
-// It first checks that an age key is available.
-func (s *SOPSOps) DecryptToMap(ctx context.Context, file string) (map[string]any, error) {
-	if err := s.CheckAgeKey(); err != nil {
-		return nil, err
+func decodeSOPSPlaintext(plaintext []byte, format sopsFileFormat) (map[string]any, error) {
+	var data map[string]any
+	switch format {
+	case sopsFormatYAML:
+		if err := yaml.Unmarshal(plaintext, &data); err != nil {
+			return nil, err
+		}
+	case sopsFormatJSON:
+		if err := json.Unmarshal(plaintext, &data); err != nil {
+			return nil, err
+		}
+	case sopsFormatDotenv, sopsFormatINI:
+		branches, err := flatSOPSStore(format).LoadPlainFile(plaintext)
+		if err != nil {
+			return nil, err
+		}
+		if len(branches) != 1 {
+			return nil, fmt.Errorf("expected one document, got %d", len(branches))
+		}
+		return sopsBranchToMap(branches[0]), nil
+	default:
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedSOPSFormat, format)
 	}
+	return data, nil
+}
 
+func sopsBranchToMap(branch sopslib.TreeBranch) map[string]any {
+	result := make(map[string]any)
+	for _, item := range branch {
+		key, ok := item.Key.(string)
+		if !ok {
+			continue
+		}
+		if nested, ok := item.Value.(sopslib.TreeBranch); ok {
+			value := sopsBranchToMap(nested)
+			if key == "DEFAULT" && len(value) == 0 {
+				continue
+			}
+			result[key] = value
+			continue
+		}
+		result[key] = item.Value
+	}
+	return result
+}
+
+// DecryptToMap decrypts a SOPS-encrypted file and returns the data as a map.
+func (s *SOPSOps) DecryptToMap(ctx context.Context, file string) (map[string]any, error) {
 	data, err := s.Decrypt(ctx, file)
 	if err != nil {
 		return nil, err

@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -15,6 +16,174 @@ import (
 func TestNewSOPSOps(t *testing.T) {
 	sops := NewSOPSOps()
 	assert.NotNil(t, sops)
+	assert.NotNil(t, sops.decryptFile)
+}
+
+func TestInferSOPSFormat(t *testing.T) {
+	tests := []struct {
+		path       string
+		want       sopsFileFormat
+		wantErr    bool
+		wantBinary bool
+	}{
+		{path: "secrets.sops.yaml", want: sopsFormatYAML},
+		{path: "secrets.yml", want: sopsFormatYAML},
+		{path: "secrets.JSON", want: sopsFormatJSON},
+		{path: "secrets.sops.env", want: sopsFormatDotenv},
+		{path: "secrets.ini.sops", want: sopsFormatINI},
+		{path: "secrets.yaml.sops", want: sopsFormatYAML},
+		{path: "secrets.bin", wantErr: true, wantBinary: true},
+		{path: "secrets.binary", wantErr: true, wantBinary: true},
+		{path: "secrets", wantErr: true},
+		{path: "secrets.txt", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got, err := inferSOPSFormat(tt.path)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, ErrUnsupportedSOPSFormat)
+				assert.Contains(t, err.Error(), "supported extensions")
+				if tt.wantBinary {
+					assert.Contains(t, err.Error(), "binary SOPS files")
+				}
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestSOPSOps_DecryptSupportedFormats(t *testing.T) {
+	t.Setenv("SOPS_AGE_KEY", "test-key-present")
+
+	yamlMetadata := `secret: ENC[AES256_GCM,data:c2VjcmV0,iv:a,tag:b,type:str]
+sops:
+  age:
+    - recipient: age1example
+      enc: encrypted-data-key
+  lastmodified: "2026-08-22T16:00:00Z"
+  mac: ENC[AES256_GCM,data:bWFj,iv:a,tag:b,type:str]
+  version: 3.13.3
+`
+	jsonMetadata := `{"secret":"ENC[AES256_GCM,data:c2VjcmV0,iv:a,tag:b,type:str]","sops":{"age":[{"recipient":"age1example","enc":"encrypted-data-key"}],"lastmodified":"2026-08-22T16:00:00Z","mac":"ENC[AES256_GCM,data:bWFj,iv:a,tag:b,type:str]","version":"3.13.3"}}`
+	dotenvMetadata := `SECRET=ENC[AES256_GCM,data:c2VjcmV0,iv:a,tag:b,type:str]
+sops_age__list_0__map_recipient=age1example
+sops_age__list_0__map_enc=encrypted-data-key
+sops_lastmodified=2026-08-22T16:00:00Z
+sops_mac=ENC[AES256_GCM,data:bWFj,iv:a,tag:b,type:str]
+sops_version=3.13.3
+`
+	iniMetadata := `[secrets]
+TOKEN=ENC[AES256_GCM,data:c2VjcmV0,iv:a,tag:b,type:str]
+
+[sops]
+age__list_0__map_recipient=age1example
+age__list_0__map_enc=encrypted-data-key
+lastmodified=2026-08-22T16:00:00Z
+mac=ENC[AES256_GCM,data:bWFj,iv:a,tag:b,type:str]
+version=3.13.3
+`
+
+	tests := []struct {
+		name      string
+		suffix    string
+		encrypted string
+		plaintext string
+		want      map[string]any
+		format    sopsFileFormat
+	}{
+		{name: "yaml", suffix: ".sops.yaml", encrypted: yamlMetadata, plaintext: "secret: value\n", want: map[string]any{"secret": "value"}, format: sopsFormatYAML},
+		{name: "yml", suffix: ".yml", encrypted: yamlMetadata, plaintext: "secret: value\n", want: map[string]any{"secret": "value"}, format: sopsFormatYAML},
+		{name: "json", suffix: ".sops.json", encrypted: jsonMetadata, plaintext: `{"secret":"value"}`, want: map[string]any{"secret": "value"}, format: sopsFormatJSON},
+		{name: "dotenv", suffix: ".sops.env", encrypted: dotenvMetadata, plaintext: "TOKEN=value\nPORT=1234\n", want: map[string]any{"TOKEN": "value", "PORT": "1234"}, format: sopsFormatDotenv},
+		{name: "ini", suffix: ".sops.ini", encrypted: iniMetadata, plaintext: "[database]\nuser=admin\nport=5432\n", want: map[string]any{"database": map[string]any{"user": "admin", "port": "5432"}}, format: sopsFormatINI},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "secrets"+tt.suffix)
+			require.NoError(t, os.WriteFile(path, []byte(tt.encrypted), 0o600))
+
+			var gotFormat string
+			sops := &SOPSOps{decryptFile: func(_ string, format string) ([]byte, error) {
+				gotFormat = format
+				return []byte(tt.plaintext), nil
+			}}
+			decrypted, err := sops.Decrypt(context.Background(), path)
+			require.NoError(t, err)
+			assert.Equal(t, string(tt.format), gotFormat)
+
+			var got map[string]any
+			require.NoError(t, json.Unmarshal(decrypted, &got))
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	t.Run("zero value uses the production decryptor", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "secrets.yaml")
+		require.NoError(t, os.WriteFile(path, []byte(yamlMetadata), 0o600))
+		_, err := (&SOPSOps{}).Decrypt(context.Background(), path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "sops decrypt failed")
+	})
+
+	t.Run("decrypt errors remain sanitized", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "secrets.yaml")
+		require.NoError(t, os.WriteFile(path, []byte(yamlMetadata), 0o600))
+		sops := &SOPSOps{decryptFile: func(string, string) ([]byte, error) {
+			return nil, errors.New("sensitive implementation detail")
+		}}
+		_, err := sops.Decrypt(context.Background(), path)
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), "sensitive implementation detail")
+	})
+
+	t.Run("invalid decrypted data names its format", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "secrets.json")
+		require.NoError(t, os.WriteFile(path, []byte(jsonMetadata), 0o600))
+		sops := &SOPSOps{decryptFile: func(string, string) ([]byte, error) {
+			return []byte("{"), nil
+		}}
+		_, err := sops.Decrypt(context.Background(), path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to parse decrypted json")
+	})
+
+	t.Run("invalid decrypted flat data does not leak plaintext", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "secrets.env")
+		require.NoError(t, os.WriteFile(path, []byte(dotenvMetadata), 0o600))
+		sops := &SOPSOps{decryptFile: func(string, string) ([]byte, error) {
+			return []byte("TOP_SECRET_VALUE_WITHOUT_EQUALS"), nil
+		}}
+		_, err := sops.Decrypt(context.Background(), path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to parse decrypted dotenv")
+		assert.NotContains(t, err.Error(), "TOP_SECRET_VALUE_WITHOUT_EQUALS")
+	})
+}
+
+func TestDecodeSOPSPlaintext_Errors(t *testing.T) {
+	tests := []struct {
+		name   string
+		format sopsFileFormat
+		input  string
+	}{
+		{name: "yaml", format: sopsFormatYAML, input: "[unterminated"},
+		{name: "json", format: sopsFormatJSON, input: "{"},
+		{name: "dotenv", format: sopsFormatDotenv, input: "not-an-assignment"},
+		{name: "ini", format: sopsFormatINI, input: "[unterminated"},
+		{name: "unsupported", format: sopsFileFormat("binary"), input: "data"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := decodeSOPSPlaintext([]byte(tt.input), tt.format)
+			require.Error(t, err)
+		})
+	}
 }
 
 func TestValidateSOPSFile(t *testing.T) {
@@ -127,6 +296,76 @@ sops:
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid YAML syntax")
 	})
+
+	t.Run("unsupported extension", func(t *testing.T) {
+		err := ValidateSOPSFile(filepath.Join(t.TempDir(), "secrets.bin"))
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrUnsupportedSOPSFormat)
+	})
+}
+
+func TestValidateSOPSFile_FlatFormats(t *testing.T) {
+	tests := []struct {
+		name        string
+		filename    string
+		content     string
+		wantContain string
+		wantNotSOPS bool
+	}{
+		{name: "invalid dotenv syntax", filename: "secrets.env", content: "not-an-assignment", wantContain: "invalid dotenv syntax"},
+		{name: "dotenv without metadata", filename: "secrets.env", content: "TOKEN=value\n", wantContain: "does not contain 'sops' metadata", wantNotSOPS: true},
+		{name: "invalid ini syntax", filename: "secrets.ini", content: "[unterminated", wantContain: "invalid ini syntax"},
+		{name: "ini without metadata", filename: "secrets.ini", content: "[secrets]\nTOKEN=value\n", wantContain: "does not contain 'sops' metadata", wantNotSOPS: true},
+		{
+			name:     "dotenv without mac",
+			filename: "secrets.env",
+			content: "sops_age__list_0__map_recipient=age1example\n" +
+				"sops_age__list_0__map_enc=encrypted-data-key\n" +
+				"sops_lastmodified=2026-08-22T16:00:00Z\n",
+			wantContain: "missing non-empty 'mac'",
+			wantNotSOPS: true,
+		},
+		{
+			name:     "dotenv without recipient",
+			filename: "secrets.env",
+			content: "sops_lastmodified=2026-08-22T16:00:00Z\n" +
+				"sops_mac=ENC[AES256_GCM,data:bWFj,iv:a,tag:b,type:str]\n",
+			wantContain: "invalid dotenv SOPS metadata",
+			wantNotSOPS: true,
+		},
+		{
+			name:     "dotenv recipient without encrypted data key",
+			filename: "secrets.env",
+			content: "sops_age__list_0__map_recipient=age1example\n" +
+				"sops_lastmodified=2026-08-22T16:00:00Z\n" +
+				"sops_mac=ENC[AES256_GCM,data:bWFj,iv:a,tag:b,type:str]\n",
+			wantContain: "no key recipient",
+			wantNotSOPS: true,
+		},
+		{
+			name:     "dotenv with invalid lastmodified",
+			filename: "secrets.env",
+			content: "sops_age__list_0__map_recipient=age1example\n" +
+				"sops_age__list_0__map_enc=encrypted-data-key\n" +
+				"sops_lastmodified=yesterday\n" +
+				"sops_mac=ENC[AES256_GCM,data:bWFj,iv:a,tag:b,type:str]\n",
+			wantContain: "invalid dotenv SOPS metadata",
+			wantNotSOPS: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tt.filename)
+			require.NoError(t, os.WriteFile(path, []byte(tt.content), 0o600))
+			err := ValidateSOPSFile(path)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantContain)
+			if tt.wantNotSOPS {
+				assert.ErrorIs(t, err, ErrNotSOPSFile)
+			}
+		})
+	}
 }
 
 func TestHasSOPSRecipients(t *testing.T) {
@@ -189,6 +428,15 @@ func TestSOPSOps_DecryptToMap(t *testing.T) {
 
 		_, err := sops.DecryptToMap(ctx, "/non/existent/file.yaml")
 		assert.Error(t, err)
+	})
+
+	t.Run("unsupported format is reported before key discovery", func(t *testing.T) {
+		t.Setenv("SOPS_AGE_KEY", "")
+		t.Setenv("SOPS_AGE_KEY_FILE", "")
+
+		_, err := (&SOPSOps{}).DecryptToMap(context.Background(), "secrets.bin")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrUnsupportedSOPSFormat)
 	})
 }
 
