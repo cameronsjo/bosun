@@ -36,15 +36,18 @@
 
 ## 7. Hot-reload presence semantics (#267 / #268)
 
-- [ ] 7.1 Preserve raw `hook_settle_delay` key presence through `internal/config`, daemon and CLI `ConfigReloader` closures, and `ReloadedConfig`; absent key retains the effective delay while explicit `0s` sets zero
-- [ ] 7.2 Treat a successfully loaded root hook slice as authoritative in `reloadProjectConfig`: absent `post_sync_hooks` and explicit `[]` both clear file-sourced hooks, while `BOSUN_POST_SYNC_HOOKS` remains a replacement override
-- [ ] 7.3 Preserve graceful degradation: a missing config file or read/parse error retains existing hooks and delay; keep invalid executable hooks on the existing fail-closed path
-- [ ] 7.4 Apply root hook state before target overrides: absent target hooks inherit root, explicit target `[]` clears inheritance, and removal of target-specific hooks discards stale target state; preserve slice cloning and target isolation
-- [ ] 7.5 Add table-driven config/reload tests covering initial load, absent vs explicit zero/empty, env replacement precedence, config deletion/error, and root/target combinations for both daemon and CLI reload closures
-- [ ] 7.6 Run focused tests repeatedly and under `-race`, plus relevant full tests, vet, changed-code lint, build, and strict OpenSpec validation
+- [ ] 7.1 Preserve config-file-found metadata and raw `hook_settle_delay` key presence through `internal/config`, daemon and CLI `ConfigReloader` closures, and `ReloadedConfig`; distinguish a present empty file from no file, retain the effective delay when the key is absent, and honor explicit `0s`
+- [ ] 7.2 Treat a successfully loaded root hook slice as authoritative in `reloadProjectConfig`: absent `post_sync_hooks`, explicit `[]`, and a present empty config all clear file-sourced hooks, while missing/read/parse/unknown-field errors produce no snapshot and retain prior state
+- [ ] 7.3 Validate all root and target hooks before applying any hook-related field; invalid executable hooks abort the current reconciliation before deployment and retain prior hooks/delay, with source-aware redacted logs for apply/clear/retain/reject outcomes
+- [ ] 7.4 Apply root hook state before target overrides: absent target hooks inherit root, explicit target `[]` clears inheritance, removing a target hook key or target descriptor discards stale operational hooks and falls back to root, and structural target removal remains restart-gated
+- [ ] 7.5 Preserve replacement precedence for `BOSUN_POST_SYNC_HOOKS`, `BOSUN_HOOK_SETTLE_DELAY`, and authoritative `BOSUN_TARGETS` hook overrides; deep-clone hooks plus nested `Paths`/`Command` slices at loader, root, and target boundaries
+- [ ] 7.6 Add table-driven tests for initial load and both daemon/CLI reload closures covering absent vs explicit zero/empty, present-empty vs missing/malformed config, environment precedence, atomic invalid-hook rejection, root/target inheritance, explicit-empty, key/descriptor removal, slice mutation, redacted logs, and concurrent target reload under `-race`
+- [ ] 7.7 Add a failed-pipeline regression proving a template failure at commit B does not advance `DeployState.LastDeployedCommit` from A and the next hook fallback diff uses A; verify repo-relative fallback paths are normalized to the same staging-relative namespace as written/deleted paths
+- [ ] 7.8 Run focused tests repeatedly and under `-race`, plus relevant full tests, vet, changed-code lint, build, and strict OpenSpec validation
 
 ## 8. Documentation
 
-- [ ] 8.1 Update `skills/onboard/resources/gitops.md` (hook timing, FUSE, deletion-aware hooks, glob semantics)
-- [ ] 8.2 Update `docs/gitops.md` and `docs/troubleshooting.md`
-- [ ] 8.3 Update the `CLAUDE.md` env-var table (settle-delay default change, reload removal semantics)
+- [ ] 8.1 Update `skills/onboard/resources/configuration.md` (root/target presence, successful-snapshot, and environment precedence semantics)
+- [ ] 8.2 Update `skills/onboard/resources/gitops.md` (hook timing, FUSE, deletion-aware hooks, glob and reload semantics)
+- [ ] 8.3 Update `docs/gitops.md` and `docs/troubleshooting.md`
+- [ ] 8.4 Update the `AGENTS.md` env-var table (settle-delay default change and authoritative environment replacement semantics)
