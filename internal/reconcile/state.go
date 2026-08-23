@@ -125,8 +125,13 @@ type RestartTrackingEntry struct {
 	CheckedAt            time.Time `json:"checked_at"`
 	BaselineRestartCount int       `json:"baseline_restart_count,omitempty"`
 	BaselineAt           time.Time `json:"baseline_at,omitempty"`
+	ContainerID          string    `json:"container_id,omitempty"`
 	Tripped              bool      `json:"tripped"`
 	TrippedAt            time.Time `json:"tripped_at,omitempty"`
+	// StabilityPending records that the latest observation started a candidate
+	// stability interval. The next unchanged observation of the same container
+	// identity confirms that the interval was clean and permits resolution (#266).
+	StabilityPending bool `json:"stability_pending,omitempty"`
 }
 
 // alertThresholds defines the attempt counts at which failure alerts are sent.
