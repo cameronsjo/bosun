@@ -9,19 +9,30 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestNewGitOps(t *testing.T) {
-	t.Setenv("BOSUN_GIT_FETCH_DEPTH", "")
-	gitOps := NewGitOps("https://github.com/test/repo.git", "main", "/tmp/test")
+	t.Run("uses default fetch depth when unset", func(t *testing.T) {
+		t.Setenv("BOSUN_GIT_FETCH_DEPTH", "")
+		gitOps := NewGitOps("https://github.com/test/repo.git", "main", "/tmp/test")
 
-	assert.Equal(t, "https://github.com/test/repo.git", gitOps.RepoURL)
-	assert.Equal(t, "main", gitOps.Branch)
-	assert.Equal(t, "/tmp/test", gitOps.Dir)
-	assert.Equal(t, DefaultGitFetchDepth, gitOps.FetchDepth)
+		assert.Equal(t, "https://github.com/test/repo.git", gitOps.RepoURL)
+		assert.Equal(t, "main", gitOps.Branch)
+		assert.Equal(t, "/tmp/test", gitOps.Dir)
+		assert.Equal(t, DefaultGitFetchDepth, gitOps.FetchDepth)
+	})
+
+	t.Run("falls back to default fetch depth for invalid environment", func(t *testing.T) {
+		t.Setenv("BOSUN_GIT_FETCH_DEPTH", "invalid")
+
+		gitOps := NewGitOps("https://github.com/test/repo.git", "main", "/tmp/test")
+
+		assert.Equal(t, DefaultGitFetchDepth, gitOps.FetchDepth)
+	})
 }
 
 func TestParseGitFetchDepth(t *testing.T) {
@@ -50,6 +61,11 @@ func TestParseGitFetchDepth(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestGitOpsEffectiveFetchDepth(t *testing.T) {
+	assert.Equal(t, DefaultGitFetchDepth, (&GitOps{}).effectiveFetchDepth())
+	assert.Equal(t, 7, (&GitOps{FetchDepth: 7}).effectiveFetchDepth())
 }
 
 func TestGitOps_IsRepo(t *testing.T) {
@@ -696,6 +712,49 @@ func TestGitOps_DiffFiles(t *testing.T) {
 		assert.ErrorIs(t, err, ErrCommitUnavailable)
 		assert.Contains(t, err.Error(), commits[0][:8])
 	})
+
+	t.Run("corrupt previous commit error is not classified as unavailable", func(t *testing.T) {
+		dir, commits := testRepoHistory(t, 1)
+		corruptHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		corruptPath := looseObjectPath(dir, plumbing.NewHash(corruptHash))
+		require.NoError(t, os.MkdirAll(filepath.Dir(corruptPath), 0755))
+		require.NoError(t, os.WriteFile(corruptPath, []byte("not a git object"), 0644))
+
+		gitOps := NewGitOps("", "", dir)
+		_, err := gitOps.DiffFiles(ctx, corruptHash, commits[0])
+
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, ErrCommitUnavailable)
+		assert.Contains(t, err.Error(), "resolve from-commit aaaaaaaa")
+	})
+
+	t.Run("missing previous tree reports unavailable commit with sentinel", func(t *testing.T) {
+		dir, commits := testRepoHistory(t, 2)
+		treeHash := commitTreeHash(t, dir, commits[0])
+		require.NoError(t, os.Remove(looseObjectPath(dir, treeHash)))
+
+		gitOps := NewGitOps("", "", dir)
+		_, err := gitOps.DiffFiles(ctx, commits[0], commits[1])
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrCommitUnavailable)
+		assert.Contains(t, err.Error(), "get tree for "+commits[0][:8])
+	})
+
+	t.Run("corrupt previous tree error is not classified as unavailable", func(t *testing.T) {
+		dir, commits := testRepoHistory(t, 2)
+		treeHash := commitTreeHash(t, dir, commits[0])
+		treePath := looseObjectPath(dir, treeHash)
+		require.NoError(t, os.Chmod(treePath, 0644))
+		require.NoError(t, os.WriteFile(treePath, []byte("not a git object"), 0644))
+
+		gitOps := NewGitOps("", "", dir)
+		_, err := gitOps.DiffFiles(ctx, commits[0], commits[1])
+
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, ErrCommitUnavailable)
+		assert.Contains(t, err.Error(), "get tree for "+commits[0][:8])
+	})
 }
 
 func TestGitOps_ConfiguredFetchDepth(t *testing.T) {
@@ -803,6 +862,20 @@ func commitTestVersion(t *testing.T, dir string, worktree *git.Worktree, version
 	})
 	require.NoError(t, err)
 	return hash.String()
+}
+
+func commitTreeHash(t *testing.T, dir, commitHash string) plumbing.Hash {
+	t.Helper()
+	repo, err := git.PlainOpen(dir)
+	require.NoError(t, err)
+	commit, err := repo.CommitObject(plumbing.NewHash(commitHash))
+	require.NoError(t, err)
+	return commit.TreeHash
+}
+
+func looseObjectPath(dir string, hash plumbing.Hash) string {
+	encoded := hash.String()
+	return filepath.Join(dir, ".git", "objects", encoded[:2], encoded[2:])
 }
 
 func TestGitOps_RemoteBranchExists(t *testing.T) {
