@@ -172,7 +172,7 @@ func waitForReconcileIdle(t *testing.T, d *Daemon) {
 
 func TestTCPHandleTrigger(t *testing.T) {
 	// Share one daemon and pre-set reconciling=true so the background goroutines
-	// spawned by handleTrigger coalesce (set pendingTrigger) instead of running
+	// spawned by handleTrigger coalesce into the pending batch instead of running
 	// a full reconcile that touches temp dirs. We're testing the HTTP envelope.
 	ts, d := newTestTCPServer(t)
 
@@ -182,7 +182,7 @@ func TestTCPHandleTrigger(t *testing.T) {
 	t.Cleanup(func() {
 		d.reconcileMu.Lock()
 		d.reconciling = false
-		d.pendingTrigger = false
+		d.clearPendingTriggers()
 		d.reconcileMu.Unlock()
 	})
 
@@ -199,6 +199,11 @@ func TestTCPHandleTrigger(t *testing.T) {
 		var resp TriggerResponse
 		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
 		assert.Equal(t, "accepted", resp.Status)
+		require.Eventually(t, func() bool {
+			d.reconcileMu.Lock()
+			defer d.reconcileMu.Unlock()
+			return d.pendingTriggerCount >= 1
+		}, 200*time.Millisecond, 5*time.Millisecond)
 	})
 
 	t.Run("POST with JSON body returns 202", func(t *testing.T) {
@@ -214,6 +219,11 @@ func TestTCPHandleTrigger(t *testing.T) {
 		var resp TriggerResponse
 		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
 		assert.Equal(t, "accepted", resp.Status)
+		require.Eventually(t, func() bool {
+			d.reconcileMu.Lock()
+			defer d.reconcileMu.Unlock()
+			return d.pendingTriggerCount >= 2
+		}, 200*time.Millisecond, 5*time.Millisecond)
 	})
 
 	t.Run("GET returns 405", func(t *testing.T) {

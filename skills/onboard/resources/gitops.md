@@ -205,7 +205,7 @@ Environment variable overrides (`BOSUN_POST_SYNC_HOOKS`, `BOSUN_HOOK_SETTLE_DELA
 
 ### Lock Behavior
 
-Only one reconciliation runs at a time. If a trigger arrives during reconciliation, it sets a "pending" flag. After the current run completes, it checks the flag and runs again if set. This coalesces rapid-fire triggers into a single run.
+Only one reconciliation runs at a time. Triggers that arrive during a run increment a pending counter, retain every distinct source, and make `force` sticky for that batch. After the current run completes, bosun atomically drains the batch into one follow-up reconciliation. Triggers arriving during that follow-up form another batch, so the cycle-boundary reset cannot erase them.
 
 ### Multi-Target Reconciliation
 
@@ -288,12 +288,13 @@ bosun validate                 # Validate config and connectivity
 
 ### Concurrency Model
 
-Single-flight with dirty flag coalescing:
+Single-flight with counted trigger coalescing:
 
 1. Trigger arrives -> if idle, start reconciliation
-2. Trigger arrives during reconciliation -> set `pending = true`, return HTTP 202
-3. Reconciliation completes -> check `pending` flag -> if set, run again
-4. This prevents duplicate work while ensuring no trigger is lost
+2. Trigger arrives during reconciliation -> increment the pending count, retain its source, and return HTTP 202
+3. Reconciliation completes -> atomically drain the pending batch into one run with sorted distinct-source attribution and sticky `force`
+4. Triggers received during that coalesced run form the next batch
+5. This prevents duplicate work while ensuring no trigger batch or source attribution is lost
 
 ## Webhooks
 

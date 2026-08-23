@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,7 +10,9 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/docker/dockertest"
@@ -17,6 +20,45 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type delayedTriggerGitOps struct {
+	mu      sync.Mutex
+	calls   int
+	started chan struct{}
+	delay   time.Duration
+}
+
+func (g *delayedTriggerGitOps) Sync(ctx context.Context) (bool, string, string, error) {
+	g.mu.Lock()
+	g.calls++
+	call := g.calls
+	g.mu.Unlock()
+
+	if call == 1 {
+		close(g.started)
+	}
+
+	timer := time.NewTimer(g.delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return false, "abc123", "abc123", nil
+	case <-ctx.Done():
+		return false, "", "", ctx.Err()
+	}
+}
+
+func (*delayedTriggerGitOps) IsRepo(context.Context) bool { return true }
+
+func (*delayedTriggerGitOps) DiffFiles(context.Context, string, string) ([]string, error) {
+	return nil, nil
+}
+
+func (g *delayedTriggerGitOps) callCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.calls
+}
 
 // newTestDaemon creates a Daemon+Server pair for handler testing.
 // HTTP is disabled so New() skips creating its own http.Server;
@@ -618,9 +660,10 @@ func TestHandleManualTrigger(t *testing.T) {
 		s.wg.Wait()
 
 		d.reconcileMu.Lock()
-		assert.True(t, d.triggerForce, "force flag should be queued via sticky trigger")
-		assert.True(t, d.pendingTrigger, "pending trigger should be set")
+		assert.True(t, d.pendingTriggerForce, "force flag should be sticky in the queued batch")
+		assert.Equal(t, uint64(1), d.pendingTriggerCount, "pending trigger should be counted")
 		d.reconciling = false
+		d.clearPendingTriggers()
 		d.reconcileMu.Unlock()
 	})
 
@@ -683,6 +726,43 @@ func TestHandleManualTrigger(t *testing.T) {
 		// Signature is valid, body is unreadable — trigger proceeds without force.
 		assert.Equal(t, http.StatusAccepted, w.Code)
 	})
+}
+
+func TestHandleManualTrigger_CoalescedCycleGetsFreshTimeout(t *testing.T) {
+	d, s := newUnauthenticatedTestDaemon(t)
+	d.config.ReconcileTimeout = 300 * time.Millisecond
+
+	gitOps := &delayedTriggerGitOps{
+		started: make(chan struct{}),
+		delay:   200 * time.Millisecond,
+	}
+	d.reconcileOpts = append(d.reconcileOpts, reconcile.WithGitOperations(gitOps))
+	require.NoError(t, reconcile.SaveState(d.config.ReconcileConfig.StateFile, &reconcile.DeployState{
+		LastDeployedCommit: "abc123",
+	}))
+
+	firstReq := httptest.NewRequest(http.MethodPost, "/webhook/manual", nil)
+	firstW := httptest.NewRecorder()
+	s.handleManualTrigger(firstW, firstReq)
+	require.Equal(t, http.StatusAccepted, firstW.Code)
+	<-gitOps.started
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/webhook/manual", nil)
+	secondW := httptest.NewRecorder()
+	s.handleManualTrigger(secondW, secondReq)
+	require.Equal(t, http.StatusAccepted, secondW.Code)
+	require.Eventually(t, func() bool {
+		d.reconcileMu.Lock()
+		defer d.reconcileMu.Unlock()
+		return d.pendingTriggerCount == 1
+	}, time.Second, 5*time.Millisecond)
+
+	s.wg.Wait()
+
+	assert.Equal(t, 2, gitOps.callCount(), "the queued trigger must execute a follow-up cycle")
+	_, lastErr := d.LastReconcile()
+	require.NoError(t, lastErr,
+		"the follow-up must receive its own ReconcileTimeout budget instead of inheriting the first trigger's deadline")
 }
 
 // ---------------------------------------------------------------------------

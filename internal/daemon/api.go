@@ -307,9 +307,7 @@ func (d *Daemon) handleAPITrigger(w http.ResponseWriter, r *http.Request) {
 	// Trigger reconcile
 	go func() {
 		defer sentrypkg.Recover()
-		ctx, cancel := context.WithTimeout(bgCtx, d.config.ReconcileTimeout)
-		defer cancel()
-		_ = d.TriggerReconcile(ctx, source, req.Force)
+		_ = d.TriggerReconcile(bgCtx, source, req.Force)
 	}()
 
 	w.Header().Set("Content-Type", "application/json")

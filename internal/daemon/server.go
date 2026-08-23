@@ -292,8 +292,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer s.wg.Done()
 		defer sentrypkg.Recover()
-		ctx, cancel := context.WithTimeout(bgCtx, s.daemon.config.ReconcileTimeout)
-		defer cancel()
+		ctx := bgCtx
 		ctx, webhookSpan := telemetry.Tracer("daemon").Start(ctx, "daemon.webhook",
 			trace.WithAttributes(telemetry.StringAttr("webhook_type", "generic")),
 		)
@@ -423,10 +422,8 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	go func(source string) {
 		defer s.wg.Done()
 		defer sentrypkg.Recover()
-		ctx, cancel := context.WithTimeout(bgCtx, s.daemon.config.ReconcileTimeout)
-		defer cancel()
-		bgLogger := log.ComponentCtx(ctx, log.ComponentWebhook)
-		if err := s.daemon.TriggerReconcile(ctx, source, false); err != nil {
+		bgLogger := log.ComponentCtx(bgCtx, log.ComponentWebhook)
+		if err := s.daemon.TriggerReconcile(bgCtx, source, false); err != nil {
 			bgLogger.Error().
 				Err(err).
 				Str(log.FieldSource, log.SourceGitHub).
@@ -505,9 +502,7 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer s.wg.Done()
 		defer sentrypkg.Recover()
-		ctx, cancel := context.WithTimeout(bgCtx, s.daemon.config.ReconcileTimeout)
-		defer cancel()
-		if err := s.daemon.TriggerReconcile(ctx, "manual", req.Force); err != nil {
+		if err := s.daemon.TriggerReconcile(bgCtx, "manual", req.Force); err != nil {
 			manualLogger.Error().
 				Err(err).
 				Str(log.FieldSource, log.SourceManual).

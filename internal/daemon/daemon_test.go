@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1926,7 +1927,7 @@ func TestTriggerReconcile_ConcurrentTriggers(t *testing.T) {
 	// Verify clean state after both complete.
 	d.reconcileMu.Lock()
 	assert.False(t, d.reconciling, "reconciling should be false after all triggers complete")
-	assert.False(t, d.pendingTrigger, "pendingTrigger should be false after processing")
+	assert.Zero(t, d.pendingTriggerCount, "pending trigger count should be empty after processing")
 	d.reconcileMu.Unlock()
 }
 
@@ -1949,14 +1950,138 @@ func TestTriggerReconcile_ForceStickiness(t *testing.T) {
 
 	// Verify force is sticky: once set, stays set.
 	d.reconcileMu.Lock()
-	assert.True(t, d.pendingTrigger, "pendingTrigger should be true")
-	assert.True(t, d.triggerForce, "triggerForce should be sticky (true)")
-	assert.Equal(t, "trigger-force", d.triggerSource, "source should be from latest trigger")
+	assert.Equal(t, uint64(2), d.pendingTriggerCount)
+	assert.True(t, d.pendingTriggerForce, "force should be sticky across the queued batch")
+	assert.Equal(t, map[string]struct{}{
+		"trigger-force":   {},
+		"trigger-noforce": {},
+	}, d.pendingTriggerSources, "all distinct sources should be retained")
 
 	// Clean up: reset state so daemon doesn't hang.
 	d.reconciling = false
-	d.pendingTrigger = false
-	d.triggerForce = false
+	d.clearPendingTriggers()
+	d.reconcileMu.Unlock()
+}
+
+func TestReconcileLoop_CoalescesConcurrentTriggersWithoutLosingWaves(t *testing.T) {
+	d := newConcurrencyDaemon(t)
+
+	type observedCycle struct {
+		source                 string
+		force                  bool
+		forceRedeployUnchanged bool
+	}
+	started := make(chan observedCycle)
+	release := make(chan struct{})
+	execute := func(_ context.Context, trigger reconcileTrigger) error {
+		started <- observedCycle(trigger)
+		<-release
+		return nil
+	}
+
+	d.reconcileMu.Lock()
+	d.reconciling = true
+	d.reconcileMu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- d.reconcileLoop(context.Background(), newReconcileTrigger("initial", false), execute)
+	}()
+
+	first := <-started
+	assert.Equal(t, "initial", first.source)
+
+	const firstWaveSize = 100
+	firstWaveSources := make([]string, firstWaveSize)
+	var firstWave sync.WaitGroup
+	triggerErrors := make(chan error, firstWaveSize)
+	firstWave.Add(firstWaveSize)
+	for i := 0; i < firstWaveSize; i++ {
+		source := fmt.Sprintf("source-%03d", i)
+		firstWaveSources[i] = source
+		go func() {
+			defer firstWave.Done()
+			triggerErrors <- d.TriggerReconcile(context.Background(), source, source == "source-042")
+		}()
+	}
+	firstWave.Wait()
+	close(triggerErrors)
+	for err := range triggerErrors {
+		require.NoError(t, err)
+	}
+
+	d.reconcileMu.Lock()
+	assert.Equal(t, uint64(firstWaveSize), d.pendingTriggerCount)
+	assert.Len(t, d.pendingTriggerSources, firstWaveSize)
+	d.reconcileMu.Unlock()
+
+	release <- struct{}{}
+	second := <-started
+	assert.Equal(t, strings.Join(firstWaveSources, ","), second.source)
+	assert.True(t, second.force, "force must be sticky across the entire drained batch")
+	assert.False(t, second.forceRedeployUnchanged)
+
+	// A trigger arriving while the first coalesced run is executing must form a
+	// new batch instead of being erased by the prior batch's reset.
+	require.NoError(t, d.TriggerReconcile(context.Background(), "late", false))
+	require.NoError(t, d.TriggerReconcile(context.Background(), "drift-self-heal", false))
+
+	release <- struct{}{}
+	third := <-started
+	assert.Equal(t, "drift-self-heal,late", third.source)
+	assert.False(t, third.force)
+	assert.True(t, third.forceRedeployUnchanged,
+		"source aggregation must preserve drift self-heal's operational semantics")
+
+	release <- struct{}{}
+	require.NoError(t, <-done)
+
+	d.reconcileMu.Lock()
+	assert.False(t, d.reconciling)
+	assert.Zero(t, d.pendingTriggerCount)
+	assert.Empty(t, d.pendingTriggerSources)
+	d.reconcileMu.Unlock()
+}
+
+func TestReconcileLoop_PanicPreservesQueuedTrigger(t *testing.T) {
+	d := newConcurrencyDaemon(t)
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	cycles := make(chan reconcileTrigger, 2)
+	callCount := 0
+	execute := func(_ context.Context, trigger reconcileTrigger) error {
+		callCount++
+		cycles <- trigger
+		if callCount == 1 {
+			close(firstStarted)
+			<-releaseFirst
+			panic("injected cycle panic")
+		}
+		return nil
+	}
+
+	d.reconcileMu.Lock()
+	d.reconciling = true
+	d.reconcileMu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- d.reconcileLoop(context.Background(), newReconcileTrigger("initial", false), execute)
+	}()
+
+	<-firstStarted
+	require.NoError(t, d.TriggerReconcile(context.Background(), "queued-after-panic", true))
+	close(releaseFirst)
+
+	assert.Equal(t, "initial", (<-cycles).source)
+	followup := <-cycles
+	assert.Equal(t, "queued-after-panic", followup.source)
+	assert.True(t, followup.force)
+	require.ErrorContains(t, <-done, "recovered from panic")
+
+	d.reconcileMu.Lock()
+	assert.False(t, d.reconciling)
+	assert.Zero(t, d.pendingTriggerCount)
 	d.reconcileMu.Unlock()
 }
 
@@ -1988,14 +2113,14 @@ func (blockingGitOps) Sync(ctx context.Context) (bool, string, string, error) {
 
 func (blockingGitOps) IsRepo(context.Context) bool { return true }
 
+
 func (blockingGitOps) DiffFiles(context.Context, string, string) ([]string, error) {
 	return nil, nil
 }
 
-// TestTriggerReconcile_BoundedByReconcileTimeout proves that startup, poll, and
-// drift-self-heal triggers -- which call TriggerReconcile with the bare daemon
-// context instead of pre-wrapping it like the webhook/socket/tcp/api sites do --
-// still get unwedged by ReconcileTimeout rather than blocking d.reconciling forever.
+// TestTriggerReconcile_BoundedByReconcileTimeout proves every trigger can pass
+// an unbounded parent context and still get unwedged by the per-cycle timeout
+// inside executeReconcile.
 func TestTriggerReconcile_BoundedByReconcileTimeout(t *testing.T) {
 	d := newConcurrencyDaemon(t)
 	d.config.ReconcileTimeout = 100 * time.Millisecond
@@ -2048,7 +2173,7 @@ func TestTriggerReconcile_RecoversFromPanic(t *testing.T) {
 
 	d.reconcileMu.Lock()
 	assert.False(t, d.reconciling, "reconciling must clear after a recovered panic, not stay wedged forever")
-	assert.False(t, d.pendingTrigger, "pendingTrigger must clear after a recovered panic")
+	assert.Zero(t, d.pendingTriggerCount, "pending triggers must clear after a recovered panic")
 	d.reconcileMu.Unlock()
 
 	_, lastErr := d.LastReconcile()

@@ -197,9 +197,7 @@ func (s *TCPServer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	// Trigger reconcile
 	go func() {
 		defer sentrypkg.Recover()
-		ctx, cancel := context.WithTimeout(context.Background(), s.daemon.config.ReconcileTimeout)
-		defer cancel()
-		if err := s.daemon.TriggerReconcile(ctx, source, req.Force); err != nil {
+		if err := s.daemon.TriggerReconcile(context.Background(), source, req.Force); err != nil {
 			ui.Error("TCP-triggered reconciliation failed: %v", err)
 		}
 	}()
