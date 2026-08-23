@@ -63,6 +63,14 @@ Every reconciliation follows this 16-stage sequence:
 16. Release lock
 ```
 
+If a local Docker Compose operation exceeds its context deadline or the
+reconcile is cancelled, Bosun actively asks the Docker CLI to stop instead of
+immediately killing only that thin client. It delivers SIGTERM on Unix or a
+targeted Ctrl-Break on Windows, allows up to five seconds for Docker and the
+Compose plugin to cancel the daemon request, then force-kills an unresponsive
+CLI. This prevents a timed-out `compose up`, rollback, orphan pass, or health
+inspection from remaining in flight after Bosun returns.
+
 Template rendering is strict: a missing map key stops stage 5 with the template
 and key named in the error. Optional values must use an explicit lookup such as
 `get . "key" | default "value"`.

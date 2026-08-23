@@ -73,7 +73,7 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 	// verification (verifyPostDeploy) handles health inspection separately.
 	args := d.composeUpArgs(composeFiles)
 
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := dockerComposeCommandContext(ctx, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
@@ -266,7 +266,7 @@ func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string
 					d.composeUpTimeout(),
 				)
 				rollbackArgs := d.buildUpArgs([]string{backupFile}, false)
-				rollbackCmd := exec.CommandContext(rollbackCtx, "docker", rollbackArgs...)
+				rollbackCmd := dockerComposeCommandContext(rollbackCtx, rollbackArgs...)
 				var rollbackStderr bytes.Buffer
 				rollbackCmd.Stderr = &rollbackStderr
 
@@ -304,7 +304,7 @@ func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string
 		orphanArgs := d.buildUpArgs(orphanFiles, true)
 		orphanCtx, orphanCancel := context.WithTimeout(ctx, d.composeUpTimeout())
 		defer orphanCancel()
-		orphanCmd := exec.CommandContext(orphanCtx, "docker", orphanArgs...)
+		orphanCmd := dockerComposeCommandContext(orphanCtx, orphanArgs...)
 		var orphanStderr bytes.Buffer
 		orphanCmd.Stderr = &orphanStderr
 
@@ -335,7 +335,7 @@ func (d *DeployOps) VerifyContainerHealth(ctx context.Context, composeFile strin
 	// Use docker compose ps to check container status
 	args := d.composeArgs(composeFile)
 	args = append(args, "ps", "--all", "--format", "json")
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := dockerComposeCommandContext(ctx, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -476,7 +476,7 @@ func (d *DeployOps) classifyComposeFailure(ctx context.Context, composeFiles []s
 	args := d.composeArgs(composeFiles...)
 	args = append(args, "ps", "--all", "--format", "json")
 
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := dockerComposeCommandContext(ctx, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

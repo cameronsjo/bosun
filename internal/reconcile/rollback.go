@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -129,7 +128,7 @@ func (d *DeployOps) RollbackFromBackupSet(ctx context.Context, set RollbackSet, 
 	// backed-up config, so compose up brings services back to the prior state.
 	if len(set.ComposeFiles) > 0 {
 		args := d.composeUpArgs(set.ComposeFiles)
-		cmd := exec.CommandContext(rollbackCtx, "docker", args...)
+		cmd := dockerComposeCommandContext(rollbackCtx, args...)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
