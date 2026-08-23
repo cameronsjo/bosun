@@ -191,6 +191,76 @@ func TestProtectOrDeleteStagingFailsClosedOnReplacementRace(t *testing.T) {
 	assert.Equal(t, fs.FileMode(0o644), info.Mode().Perm(), "external symlink target must not be chmodded")
 }
 
+func TestProtectOrDeleteStagingFailsClosedOnLateEntryAddition(t *testing.T) {
+	root := filepath.Join(evalSymlinks(t, t.TempDir()), "staging")
+	trigger := filepath.Join(root, "trigger")
+	late := filepath.Join(root, "late-secret")
+	require.NoError(t, os.MkdirAll(root, 0o755))
+	require.NoError(t, os.WriteFile(trigger, []byte("trigger"), 0o644))
+
+	ops := defaultStagingEvidenceOps()
+	realChmod := ops.chmod
+	added := false
+	ops.chmod = func(pinned *os.File, mode fs.FileMode) error {
+		if filepath.Base(pinned.Name()) == "trigger" && !added {
+			added = true
+			require.NoError(t, os.WriteFile(late, []byte("late plaintext"), 0o644))
+		}
+		return realChmod(pinned, mode)
+	}
+
+	outcome, err := protectOrDeleteStaging(context.Background(), "unraid", root, ops, "test")
+	require.NoError(t, err)
+	assert.True(t, added)
+	assert.Equal(t, "discarded", outcome)
+	assert.NoDirExists(t, root, "a late unprotected entry must invalidate and discard the slot")
+}
+
+func TestProtectOrDeleteStagingFailsClosedOnLateModeBroadening(t *testing.T) {
+	root := filepath.Join(evalSymlinks(t, t.TempDir()), "staging")
+	trigger := filepath.Join(root, "trigger")
+	require.NoError(t, os.MkdirAll(root, 0o755))
+	require.NoError(t, os.WriteFile(trigger, []byte("trigger"), 0o644))
+
+	ops := defaultStagingEvidenceOps()
+	realChmod := ops.chmod
+	broadened := false
+	ops.chmod = func(pinned *os.File, mode fs.FileMode) error {
+		if filepath.Base(pinned.Name()) == "trigger" && !broadened {
+			broadened = true
+			require.NoError(t, os.Chmod(root, 0o755))
+		}
+		return realChmod(pinned, mode)
+	}
+
+	outcome, err := protectOrDeleteStaging(context.Background(), "unraid", root, ops, "test")
+	require.NoError(t, err)
+	assert.True(t, broadened)
+	assert.Equal(t, "discarded", outcome)
+	assert.NoDirExists(t, root, "a root broadened after hardening must invalidate and discard the slot")
+}
+
+func TestProtectOrDeleteStagingPropagatesNestedPermissionFailure(t *testing.T) {
+	root := filepath.Join(evalSymlinks(t, t.TempDir()), "staging")
+	secret := filepath.Join(root, "nested", "secret")
+	require.NoError(t, os.MkdirAll(filepath.Dir(secret), 0o755))
+	require.NoError(t, os.WriteFile(secret, []byte("secret"), 0o644))
+
+	ops := defaultStagingEvidenceOps()
+	realChmod := ops.chmod
+	ops.chmod = func(pinned *os.File, mode fs.FileMode) error {
+		if filepath.Base(pinned.Name()) == "secret" {
+			return errors.New("nested chmod injected")
+		}
+		return realChmod(pinned, mode)
+	}
+
+	outcome, err := protectOrDeleteStaging(context.Background(), "unraid", root, ops, "test")
+	require.NoError(t, err)
+	assert.Equal(t, "discarded", outcome)
+	assert.NoDirExists(t, root)
+}
+
 func TestProtectOrDeleteStagingSurfacesHardenAndDeleteFailure(t *testing.T) {
 	root := filepath.Join(evalSymlinks(t, t.TempDir()), "staging")
 	require.NoError(t, os.MkdirAll(root, 0o755))
@@ -543,6 +613,56 @@ func TestRunCleanupFallbackControlsSuccessfulState(t *testing.T) {
 	}
 }
 
+func TestRunDryRunProtectionFailurePrecedesSuccessStateAndAlert(t *testing.T) {
+	baseDir := evalSymlinks(t, t.TempDir())
+	repoDir := filepath.Join(baseDir, "repo")
+	stagingDir := filepath.Join(baseDir, "staging")
+	appdataDir := filepath.Join(baseDir, "appdata")
+	require.NoError(t, os.MkdirAll(appdataDir, 0o755))
+
+	cfg := &Config{
+		DryRun:           true,
+		OnSuccess:        true,
+		DeployMode:       "local",
+		LockFile:         filepath.Join(baseDir, "reconcile.lock"),
+		StateFile:        filepath.Join(baseDir, "state.json"),
+		RepoDir:          repoDir,
+		StagingDir:       stagingDir,
+		LocalAppdataPath: appdataDir,
+		BackupDir:        filepath.Join(baseDir, "backups"),
+		InfraSubDir:      ".",
+	}
+	seedStubComposeService(t, cfg)
+	alerter := &mockAlertSender{}
+	r := NewReconciler(cfg,
+		WithGitOperations(&mockGitOps{syncChanged: true, syncBefore: "aaa", syncAfter: "bbb"}),
+		WithAlerter(alerter),
+	)
+	r.stagingOps = defaultStagingEvidenceOps()
+	realRemoveAll := r.stagingOps.removeAll
+	removeCalls := 0
+	r.stagingOps.removeAll = func(path string) error {
+		removeCalls++
+		if removeCalls == 1 {
+			return realRemoveAll(path)
+		}
+		return errors.New("dry-run delete injected")
+	}
+	r.stagingOps.chmod = func(*os.File, fs.FileMode) error {
+		return errors.New("dry-run harden injected")
+	}
+
+	err := r.Run(context.Background())
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "finalize dry-run staging evidence")
+	assert.ErrorContains(t, err, "dry-run harden injected")
+	assert.ErrorContains(t, err, "dry-run delete injected")
+	state := LoadState(cfg.StateFile)
+	assert.Empty(t, state.LastDeployedCommit, "security finalization must precede the success state boundary")
+	assert.Zero(t, state.DeployCount)
+	assert.Zero(t, alerter.deploySuccessCalls, "security finalization must precede the success alert boundary")
+}
+
 func assertPrivateStagingTree(t *testing.T, root string) {
 	t.Helper()
 	require.NoError(t, filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -566,4 +686,171 @@ func TestSafeStagingRootRejectsBroadPaths(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestCanonicalStagingPathRejectsUnsafeAndUnresolvableAncestors(t *testing.T) {
+	baseDir := evalSymlinks(t, t.TempDir())
+
+	t.Run("unsafe root", func(t *testing.T) {
+		_, err := canonicalStagingPath(string(filepath.Separator))
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "filesystem root")
+	})
+
+	t.Run("non-directory ancestor", func(t *testing.T) {
+		ancestor := filepath.Join(baseDir, "regular-file")
+		require.NoError(t, os.WriteFile(ancestor, []byte("not a directory"), 0o600))
+		_, err := canonicalStagingPath(filepath.Join(ancestor, "slot"))
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "inspect staging ancestor")
+	})
+
+	t.Run("symlink loop", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink creation needs elevated privileges on Windows")
+		}
+		loop := filepath.Join(baseDir, "loop")
+		require.NoError(t, os.Symlink(loop, loop))
+		_, err := canonicalStagingPath(loop)
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "resolve existing staging ancestor")
+	})
+}
+
+func TestPreflightStagingEvidencePropagatesProtectionFailure(t *testing.T) {
+	root := filepath.Join(evalSymlinks(t, t.TempDir()), "staging")
+	require.NoError(t, os.MkdirAll(root, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "secret"), []byte("secret"), 0o600))
+	ops := defaultStagingEvidenceOps()
+	ops.chmod = func(*os.File, fs.FileMode) error { return errors.New("preflight harden injected") }
+	ops.removeAll = func(string) error { return errors.New("preflight delete injected") }
+
+	err := preflightStagingEvidence(context.Background(), &Config{StagingDir: root}, []Target{{Name: DefaultTargetName}}, ops)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "staging evidence preflight")
+	assert.ErrorContains(t, err, "preflight harden injected")
+	assert.ErrorContains(t, err, "preflight delete injected")
+	assert.DirExists(t, root)
+}
+
+func TestWalkStagingRejectsRootInspectionRaces(t *testing.T) {
+	baseDir := evalSymlinks(t, t.TempDir())
+
+	t.Run("invalid path", func(t *testing.T) {
+		require.Error(t, verifyActiveStaging(".", defaultStagingEvidenceOps()))
+	})
+
+	t.Run("lstat error", func(t *testing.T) {
+		root := filepath.Join(baseDir, "lstat-error")
+		ops := defaultStagingEvidenceOps()
+		ops.lstat = func(string) (fs.FileInfo, error) { return nil, errors.New("lstat injected") }
+		err := verifyActiveStaging(root, ops)
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "inspect staging root")
+	})
+
+	t.Run("root is regular file", func(t *testing.T) {
+		root := filepath.Join(baseDir, "regular-root")
+		require.NoError(t, os.WriteFile(root, []byte("not a directory"), 0o600))
+		err := verifyActiveStaging(root, defaultStagingEvidenceOps())
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "not a real directory")
+	})
+
+	t.Run("root removed after inspection", func(t *testing.T) {
+		root := filepath.Join(baseDir, "removed-root")
+		require.NoError(t, os.Mkdir(root, 0o700))
+		ops := defaultStagingEvidenceOps()
+		ops.lstat = func(path string) (fs.FileInfo, error) {
+			info, err := os.Lstat(path)
+			if err == nil {
+				require.NoError(t, os.Remove(path))
+			}
+			return info, err
+		}
+		err := verifyActiveStaging(root, ops)
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "pin staging root")
+	})
+
+	t.Run("root identity changes before final check", func(t *testing.T) {
+		root := filepath.Join(baseDir, "changed-root")
+		other := filepath.Join(baseDir, "other-root")
+		require.NoError(t, os.Mkdir(root, 0o700))
+		require.NoError(t, os.Mkdir(other, 0o700))
+		otherInfo, err := os.Lstat(other)
+		require.NoError(t, err)
+		ops := defaultStagingEvidenceOps()
+		calls := 0
+		ops.lstat = func(path string) (fs.FileInfo, error) {
+			calls++
+			if calls == 2 {
+				return otherInfo, nil
+			}
+			return os.Lstat(path)
+		}
+		err = verifyActiveStaging(root, ops)
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "changed while being protected")
+	})
+}
+
+func TestApplyStagingModeRejectsIneffectiveHardeningAndBroadActiveRoot(t *testing.T) {
+	root := filepath.Join(evalSymlinks(t, t.TempDir()), "staging")
+	require.NoError(t, os.Mkdir(root, 0o755))
+	file, err := os.Open(root)
+	require.NoError(t, err)
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	require.NoError(t, err)
+
+	ops := defaultStagingEvidenceOps()
+	ops.chmod = func(*os.File, fs.FileMode) error { return nil }
+	err = applyStagingMode(file, info, root, true, true, ops)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "was not restricted")
+
+	err = applyStagingMode(file, info, root, false, true, defaultStagingEvidenceOps())
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "expected 0700")
+}
+
+func TestProtectAndRemoveStagingFaultBoundaries(t *testing.T) {
+	baseDir := evalSymlinks(t, t.TempDir())
+
+	t.Run("protect rejects unsafe path", func(t *testing.T) {
+		_, err := protectOrDeleteStaging(context.Background(), "default", ".", defaultStagingEvidenceOps(), "test")
+		require.Error(t, err)
+	})
+
+	t.Run("protect reports absent slot", func(t *testing.T) {
+		outcome, err := protectOrDeleteStaging(context.Background(), "default", filepath.Join(baseDir, "absent"), defaultStagingEvidenceOps(), "test")
+		require.NoError(t, err)
+		assert.Equal(t, "absent", outcome)
+	})
+
+	t.Run("remove rejects unsafe path", func(t *testing.T) {
+		require.Error(t, removeStagingTree(".", defaultStagingEvidenceOps()))
+	})
+
+	t.Run("remove detects retained root", func(t *testing.T) {
+		root := filepath.Join(baseDir, "retained")
+		require.NoError(t, os.Mkdir(root, 0o700))
+		ops := defaultStagingEvidenceOps()
+		ops.removeAll = func(string) error { return nil }
+		err := removeStagingTree(root, ops)
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "still exists after removal")
+	})
+
+	t.Run("remove propagates verification error", func(t *testing.T) {
+		root := filepath.Join(baseDir, "verify-error")
+		require.NoError(t, os.Mkdir(root, 0o700))
+		ops := defaultStagingEvidenceOps()
+		ops.lstat = func(string) (fs.FileInfo, error) { return nil, errors.New("verify removal injected") }
+		err := removeStagingTree(root, ops)
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "verify staging removal")
+		assert.ErrorContains(t, err, "verify removal injected")
+	})
 }

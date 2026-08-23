@@ -872,8 +872,15 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 
 	// Staging is diagnostic evidence until every health check and post-sync hook
 	// has completed. A verified non-dry-run removes it before success is recorded;
-	// dry-run intentionally retains a secured one-slot render for inspection.
-	if !r.config.DryRun {
+	// dry-run secures its one-slot render before the same success boundary. Do not
+	// leave dry-run protection solely to the deferred finalizer: a protect-plus-
+	// delete failure must abort before state and alerts report success.
+	if r.config.DryRun {
+		if _, err := protectOrDeleteStaging(ctx, r.config.TargetName, r.config.StagingDir, r.stagingOps, "dry_run"); err != nil {
+			return fmt.Errorf("finalize dry-run staging evidence: %w", err)
+		}
+		stagingLifecycleComplete = true
+	} else {
 		if err := r.cleanupStaging(); err != nil {
 			return err
 		}

@@ -81,12 +81,16 @@ func ValidateStagingEvidenceTargets(base *Config, targets []Target) error {
 // target performs Git sync or decrypts secrets. Deletion is an acceptable
 // fail-closed fallback; only protect-plus-delete failure blocks the whole cycle.
 func PreflightStagingEvidence(ctx context.Context, base *Config, targets []Target) error {
+	return preflightStagingEvidence(ctx, base, targets, defaultStagingEvidenceOps())
+}
+
+func preflightStagingEvidence(ctx context.Context, base *Config, targets []Target, ops stagingEvidenceOps) error {
 	if err := ValidateStagingEvidenceTargets(base, targets); err != nil {
 		return err
 	}
 	for _, target := range targets {
 		effective := base.ConfigForTarget(target)
-		if _, err := protectOrDeleteStaging(ctx, target.Name, effective.StagingDir, defaultStagingEvidenceOps(), "preflight"); err != nil {
+		if _, err := protectOrDeleteStaging(ctx, target.Name, effective.StagingDir, ops, "preflight"); err != nil {
 			return fmt.Errorf("target %q staging evidence preflight: %w", target.Name, err)
 		}
 	}
@@ -220,6 +224,7 @@ func walkPinnedStagingDir(namespace *os.Root, pinned *os.File, opened fs.FileInf
 	if err != nil {
 		return fmt.Errorf("read staging directory %q: %w", displayPath, err)
 	}
+	inspected := make(map[string]fs.FileInfo, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
 		entryPath := filepath.Join(displayPath, name)
@@ -236,6 +241,7 @@ func walkPinnedStagingDir(namespace *os.Root, pinned *os.File, opened fs.FileInf
 		if !before.IsDir() && !before.Mode().IsRegular() {
 			return fmt.Errorf("staging entry has unsupported type %s: %q", before.Mode().Type(), entryPath)
 		}
+		inspected[name] = before
 
 		if before.IsDir() {
 			childRoot, err := namespace.OpenRoot(name)
@@ -279,6 +285,51 @@ func walkPinnedStagingDir(namespace *os.Root, pinned *os.File, opened fs.FileInf
 		named, err := namespace.Lstat(name)
 		if err != nil || named.Mode()&os.ModeSymlink != 0 || !os.SameFile(before, named) {
 			return fmt.Errorf("staging entry changed while being protected: %q", entryPath)
+		}
+	}
+	return verifyStagingDirectoryStable(namespace, opened, inspected, displayPath, harden, isRoot)
+}
+
+// verifyStagingDirectoryStable closes the initial-enumeration gap: an entry
+// added after ReadDir, or an already-checked name replaced near the end of the
+// walk, must not escape the hardening decision.
+func verifyStagingDirectoryStable(namespace *os.Root, opened fs.FileInfo, inspected map[string]fs.FileInfo, displayPath string, harden, isRoot bool) error {
+	current, err := namespace.Open(".")
+	if err != nil {
+		return fmt.Errorf("reopen staging directory %q: %w", displayPath, err)
+	}
+	defer func() { _ = current.Close() }()
+	currentInfo, err := current.Stat()
+	if err != nil || !os.SameFile(opened, currentInfo) || !currentInfo.IsDir() {
+		return fmt.Errorf("staging directory changed while being verified: %q", displayPath)
+	}
+	if (harden || isRoot) && currentInfo.Mode().Perm() != stagingDirMode {
+		return fmt.Errorf("staging directory mode changed while being verified: %q", displayPath)
+	}
+	entries, err := current.ReadDir(-1)
+	if err != nil {
+		return fmt.Errorf("reread staging directory %q: %w", displayPath, err)
+	}
+	if len(entries) != len(inspected) {
+		return fmt.Errorf("staging directory entries changed while being protected: %q", displayPath)
+	}
+	for _, entry := range entries {
+		expected, ok := inspected[entry.Name()]
+		if !ok {
+			return fmt.Errorf("staging directory entries changed while being protected: %q", displayPath)
+		}
+		named, statErr := namespace.Lstat(entry.Name())
+		if statErr != nil || named.Mode()&os.ModeSymlink != 0 || !os.SameFile(expected, named) {
+			return fmt.Errorf("staging entry changed during final verification: %q", filepath.Join(displayPath, entry.Name()))
+		}
+		if harden {
+			mode := stagingFileMode
+			if named.IsDir() {
+				mode = stagingDirMode
+			}
+			if named.Mode().Perm() != mode {
+				return fmt.Errorf("staging entry mode changed during final verification: %q", filepath.Join(displayPath, entry.Name()))
+			}
 		}
 	}
 	return nil
