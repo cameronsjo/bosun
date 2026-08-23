@@ -41,12 +41,13 @@ type DriftIgnoreRule struct {
 
 // DriftReport is the result of comparing declared vs actual state.
 type DriftReport struct {
-	CheckedAt    time.Time
-	Items        []DriftItem
-	IgnoredCount int // Number of items filtered out by ignore rules
+	CheckedAt       time.Time
+	Items           []DriftItem
+	UnfilteredItems []DriftItem // All detected items before ignore rules are applied.
+	IgnoredCount    int         // Number of items filtered out by ignore rules
 }
 
-// HasDrift returns true if any drift items were detected.
+// HasDrift returns true if any reportable drift remains after ignore rules.
 func (r *DriftReport) HasDrift() bool {
 	return len(r.Items) > 0
 }
@@ -500,6 +501,7 @@ func RunDriftCheck(ctx context.Context, client *docker.Client, stateFile, projec
 
 	// Enrich unhealthy items with last health check output (inspects only drifting containers).
 	EnrichUnhealthyItems(ctx, client, report, actual)
+	report.UnfilteredItems = append([]DriftItem(nil), report.Items...)
 
 	// Filter out items matching ignore rules.
 	if len(ignoreRules) > 0 {

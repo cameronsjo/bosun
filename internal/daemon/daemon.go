@@ -1037,6 +1037,24 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 		state.DriftDebounceItems = make(map[string]time.Time)
 	}
 
+	// Keep filtered and raw critical drift separate: filtered items drive alerts,
+	// while raw items decide whether a service actually resolved. An ignore rule
+	// silently retires prior alert state instead of lying that active drift cleared.
+	activeCriticalItems := criticalDriftItems(report.Items)
+	unfilteredCriticalItems := criticalDriftItems(report.UnfilteredItems)
+	suppressedKeys := reconcile.SuppressedDriftAlertKeys(
+		unfilteredCriticalItems, activeCriticalItems, state.DriftAlertedItems,
+	)
+	for _, key := range suppressedKeys {
+		delete(state.DriftAlertedItems, key)
+		delete(state.DriftDebounceItems, key)
+	}
+	if len(suppressedKeys) > 0 {
+		logger.Debug().
+			Strs("items", suppressedKeys).
+			Msg("Removed drift alert state for items suppressed by ignore rules")
+	}
+
 	if d.metrics != nil {
 		d.metrics.RecordDriftCheck(report.HasDrift())
 	}
@@ -1051,14 +1069,6 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 		// Always run cleanup when alerting is enabled so resolved items are cleared
 		// even if only non-critical drift remains.
 		if d.alerter != nil {
-			// Filter to critical items only.
-			var activeCriticalItems []reconcile.DriftItem
-			for _, item := range report.Items {
-				if item.Type == reconcile.DriftMissing || item.Type == reconcile.DriftUnhealthy {
-					activeCriticalItems = append(activeCriticalItems, item)
-				}
-			}
-
 			// Debounce layer: filter items that haven't persisted past the debounce window.
 			// Only debounce items not yet in the dedup/cooldown layer. Once an item
 			// has alerted, keep it flowing through ShouldAlertDrift directly.
@@ -1099,7 +1109,7 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 			}
 
 			alertItems, resolvedKeys := reconcile.ShouldAlertDrift(
-				activeCriticalItems, alertCandidates, state.DriftAlertedItems, d.config.DriftAlertCooldown,
+				unfilteredCriticalItems, alertCandidates, state.DriftAlertedItems, d.config.DriftAlertCooldown,
 			)
 
 			if len(alertItems) > 0 {
@@ -1158,7 +1168,11 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 			state.DriftDebounceItems = nil
 		}
 
-		if previouslyDrifted {
+		if len(report.UnfilteredItems) > 0 {
+			logger.Debug().
+				Int("ignored_items", report.IgnoredCount).
+				Msg("Drift check: all detected drift suppressed by ignore rules")
+		} else if previouslyDrifted {
 			logger.Info().Msg("Drift resolved: all declared services now match actual state")
 		} else {
 			logger.Debug().Msg("Drift check: no drift detected")
@@ -1206,6 +1220,16 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	if report.HasDrift() && dcfg.driftSelfHeal {
 		d.maybeSelfHeal(ctx, report)
 	}
+}
+
+func criticalDriftItems(items []reconcile.DriftItem) []reconcile.DriftItem {
+	var criticalItems []reconcile.DriftItem
+	for _, item := range items {
+		if item.Type == reconcile.DriftMissing || item.Type == reconcile.DriftUnhealthy {
+			criticalItems = append(criticalItems, item)
+		}
+	}
+	return criticalItems
 }
 
 // maybeSelfHeal triggers a reconciliation in response to drift, subject to guards:

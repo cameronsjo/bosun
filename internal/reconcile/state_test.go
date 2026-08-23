@@ -330,6 +330,49 @@ func TestShouldAlertDrift(t *testing.T) {
 	}
 }
 
+func TestSuppressedDriftAlertKeys(t *testing.T) {
+	alertedItems := map[string]time.Time{
+		"api:unhealthy": time.Now(),
+		"web:missing":   time.Now(),
+	}
+
+	tests := []struct {
+		name            string
+		unfilteredItems []DriftItem
+		filteredItems   []DriftItem
+		expected        []string
+	}{
+		{
+			name:            "actively drifting item removed by filter",
+			unfilteredItems: []DriftItem{{Service: "api", Type: DriftUnhealthy}},
+			expected:        []string{"api:unhealthy"},
+		},
+		{
+			name:            "ignored type transition retires old key silently",
+			unfilteredItems: []DriftItem{{Service: "api", Type: DriftMissing}},
+			expected:        []string{"api:unhealthy"},
+		},
+		{
+			name:            "visible type transition remains active",
+			unfilteredItems: []DriftItem{{Service: "api", Type: DriftMissing}},
+			filteredItems:   []DriftItem{{Service: "api", Type: DriftMissing}},
+		},
+		{
+			name: "genuinely resolved service is not suppression",
+		},
+		{
+			name:            "non-critical ignored drift does not suppress critical key",
+			unfilteredItems: []DriftItem{{Service: "api", Type: DriftImageMismatch}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, SuppressedDriftAlertKeys(tc.unfilteredItems, tc.filteredItems, alertedItems))
+		})
+	}
+}
+
 func TestDeployStateRecordDriftAlerts_RetiresPreviousType(t *testing.T) {
 	alertedAt := time.Now()
 	emptyState := &DeployState{}

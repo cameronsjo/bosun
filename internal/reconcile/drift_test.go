@@ -957,6 +957,31 @@ func TestRunDriftCheck(t *testing.T) {
 		require.Len(t, report.Items, 1)
 		assert.Equal(t, "api", report.Items[0].Service)
 		assert.Equal(t, DriftMissing, report.Items[0].Type)
+		assert.Equal(t, report.Items, report.UnfilteredItems)
+	})
+
+	t.Run("retains ignored items in unfiltered report", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		stateFile := filepath.Join(tmpDir, "state.json")
+
+		state := &DeployState{
+			DeclaredServices: []DeclaredService{
+				{Name: "api", Image: "myapp:v2"},
+			},
+		}
+		require.NoError(t, SaveState(stateFile, state))
+
+		client := docker.NewClientWithAPI(newReconcileMockDockerAPI())
+		report, err := RunDriftCheck(ctx, client, stateFile, "core", []DriftIgnoreRule{
+			{Service: "api", Type: "missing"},
+		})
+		require.NoError(t, err)
+		assert.False(t, report.HasDrift())
+		assert.Empty(t, report.Items)
+		assert.Equal(t, 1, report.IgnoredCount)
+		require.Len(t, report.UnfilteredItems, 1)
+		assert.Equal(t, "api", report.UnfilteredItems[0].Service)
+		assert.Equal(t, DriftMissing, report.UnfilteredItems[0].Type)
 	})
 
 	t.Run("no drift when all services match", func(t *testing.T) {

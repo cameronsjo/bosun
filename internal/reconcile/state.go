@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -324,6 +325,35 @@ func ShouldAlertDrift(activeItems, alertCandidates []DriftItem, alertedItems map
 	}
 
 	return alertItems, resolvedKeys
+}
+
+// SuppressedDriftAlertKeys returns previously-alerted keys whose service still
+// has critical drift in the unfiltered report but has no critical drift left
+// after ignore rules are applied. A type transition remains service-level
+// active drift, matching ShouldAlertDrift's resolution semantics.
+func SuppressedDriftAlertKeys(unfilteredItems, filteredItems []DriftItem, alertedItems map[string]time.Time) []string {
+	unfilteredServices := criticalDriftServices(unfilteredItems)
+	filteredServices := criticalDriftServices(filteredItems)
+
+	var suppressedKeys []string
+	for key := range alertedItems {
+		service, _, _ := strings.Cut(key, ":")
+		if unfilteredServices[service] && !filteredServices[service] {
+			suppressedKeys = append(suppressedKeys, key)
+		}
+	}
+	sort.Strings(suppressedKeys)
+	return suppressedKeys
+}
+
+func criticalDriftServices(items []DriftItem) map[string]bool {
+	services := make(map[string]bool)
+	for _, item := range items {
+		if item.Type == DriftMissing || item.Type == DriftUnhealthy {
+			services[item.Service] = true
+		}
+	}
+	return services
 }
 
 // FilterDebounced filters drift items through the debounce layer. Items that have
