@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.7](https://github.com/cameronsjo/bosun/compare/v0.39.6...v0.39.7) (2026-08-23)
+
+
+### Bug Fixes
+
+* **drift:** resolve named target state files ([#503](https://github.com/cameronsjo/bosun/issues/503)) ([8af0ee4](https://github.com/cameronsjo/bosun/commit/8af0ee47d2397b8c5781a25e78d0f16c2e854aa2))
+* **reconcile:** propagate deploy directory errors ([#504](https://github.com/cameronsjo/bosun/issues/504)) ([f78df14](https://github.com/cameronsjo/bosun/commit/f78df14fd19c0a42a673e0cd1ca846f426b555c0))
+* **template:** fail on missing keys ([#502](https://github.com/cameronsjo/bosun/issues/502)) ([042cafb](https://github.com/cameronsjo/bosun/commit/042cafbc663adf2ee10b79af693e033af35afc9e))
+
 ## [0.39.6](https://github.com/cameronsjo/bosun/compare/v0.39.5...v0.39.6) (2026-08-22)
 
 
