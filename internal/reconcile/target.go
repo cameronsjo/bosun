@@ -124,7 +124,15 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 		cp.CriticalContainers.Value = cloneSlice(cp.CriticalContainers.Value)
 	}
 	if t.PostSyncHooks != nil && !cp.PostSyncHooks.FromEnv() {
-		cp.PostSyncHooks.Value = clonePostSyncHooks(t.PostSyncHooks)
+		if c.TargetsFromEnv {
+			// A target-specific hook list supplied by BOSUN_TARGETS is an
+			// authoritative environment replacement, including explicit [].
+			// Preserve that ownership on the per-target config so repo reloads
+			// cannot replace it through either root or target hooks.
+			cp.PostSyncHooks = EnvConfigField(clonePostSyncHooks(t.PostSyncHooks))
+		} else {
+			cp.PostSyncHooks.SetFromFile(clonePostSyncHooks(t.PostSyncHooks))
+		}
 	} else if cp.PostSyncHooks.Value != nil {
 		cp.PostSyncHooks.Value = clonePostSyncHooks(cp.PostSyncHooks.Value)
 	}

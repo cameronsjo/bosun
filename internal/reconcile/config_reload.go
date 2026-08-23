@@ -26,43 +26,126 @@ func (r *Reconciler) reloadProjectConfig() error {
 	reloaded, err := r.config.ConfigReloader(r.config.RepoDir)
 	if err != nil {
 		if errors.Is(err, ErrInvalidPostSyncHooks) {
-			logger.Error().Err(err).Msg("Reloaded post-sync hooks are invalid, aborting reconciliation")
+			logger.Error().
+				Err(err).
+				Str("hooks_outcome", "rejected").
+				Str("hooks_source", "file").
+				Msg("Reloaded post-sync hooks are invalid, aborting reconciliation")
 			return err
 		}
-		logger.Warn().Err(err).Msg("Failed to reload project config from repo, keeping existing config")
+		logger.Warn().
+			Err(err).
+			Str("hooks_outcome", "retained").
+			Str("hooks_source", configSourceName(r.config.PostSyncHooks.Source)).
+			Msg("Failed to reload project config from repo, keeping existing config")
 		return nil
 	}
 	if reloaded == nil {
+		logger.Debug().
+			Str("hooks_outcome", "retained").
+			Str("hooks_source", configSourceName(r.config.PostSyncHooks.Source)).
+			Msg("No project config snapshot available; keeping existing hook config")
 		return nil
 	}
 
 	if err := ValidatePostSyncHooks(reloaded.PostSyncHooks); err != nil {
-		logger.Error().Err(err).Msg("Reloaded root post-sync hooks are invalid, aborting reconciliation")
+		logger.Error().
+			Err(err).
+			Str("hooks_outcome", "rejected").
+			Str("hooks_source", "file").
+			Msg("Reloaded root post-sync hooks are invalid, aborting reconciliation")
 		return err
 	}
 	for _, target := range reloaded.Targets {
 		if err := ValidatePostSyncHooks(target.PostSyncHooks); err != nil {
 			targetErr := fmt.Errorf("target %q: %w", target.Name, err)
-			logger.Error().Err(targetErr).Msg("Reloaded target post-sync hooks are invalid, aborting reconciliation")
+			logger.Error().
+				Err(targetErr).
+				Str("hooks_outcome", "rejected").
+				Str("hooks_source", "file").
+				Str("target", target.Name).
+				Msg("Reloaded target post-sync hooks are invalid, aborting reconciliation")
 			return targetErr
 		}
 	}
-
-	// If no field has any value from the repo, there's nothing to reload.
-	// Use nil checks (not len==0) for slices so explicitly empty lists (e.g. `deploy_sync_paths: []`)
-	// can clear in-memory filters during hot-reload.
-	if reloaded.PostSyncHooks == nil && reloaded.HookSettleDelay == nil && reloaded.DeployPaths == nil && reloaded.DeploySyncPaths == nil && reloaded.DeploySyncExclude == nil && reloaded.CriticalContainers == nil && reloaded.DriftIgnore == nil && reloaded.OnFailure == nil && reloaded.OnSuccess == nil && reloaded.RemoveOrphans == nil && reloaded.ProjectName == nil && reloaded.Targets == nil {
+	if offender := multiTargetDefaultName(reloaded.Targets); offender != "" {
+		logger.Warn().
+			Str("target", offender).
+			Msg("Reloaded config declares a reserved default-named target in a multi-target list; rejecting snapshot and keeping existing config (#391)")
 		return nil
 	}
 
 	changed := false
 
-	changed = reloadField(&r.config.PostSyncHooks, clonePostSyncHooks(reloaded.PostSyncHooks), func(v []PostSyncHook) bool { return v != nil }) || changed
+	// Prepare the complete hook snapshot before committing either hooks or
+	// settle delay. A non-nil ReloadedConfig means a project config file was
+	// present and decoded successfully, so an absent root post_sync_hooks key is
+	// authoritative and clears file-sourced hooks. HookSettleDelay uses pointer
+	// presence: nil retains, including after a valid empty-file reload.
+	hooksOutcome := "retained"
+	hooksSource := configSourceName(r.config.PostSyncHooks.Source)
+	preparedHooks := clonePostSyncHooks(r.config.PostSyncHooks.Value)
+	preparedHookSource := r.config.PostSyncHooks.Source
+	if !r.config.PostSyncHooks.FromEnv() {
+		preparedHooks = clonePostSyncHooks(reloaded.PostSyncHooks)
+		if preparedHooks == nil {
+			preparedHooks = []PostSyncHook{}
+		}
+		preparedHookSource = SourceFile
+		hooksSource = configSourceName(SourceFile)
+		if len(preparedHooks) == 0 {
+			hooksOutcome = "cleared"
+		} else {
+			hooksOutcome = "applied"
+		}
 
-	if !r.config.HookSettleDelay.FromEnv() && reloaded.HookSettleDelay != nil {
-		r.config.HookSettleDelay.SetFromFile(*reloaded.HookSettleDelay)
+		// Apply the current target's operational hook override to the prepared
+		// root snapshot. Missing target/key means inheritance; explicit [] means
+		// clear. BOSUN_TARGETS topology is authoritative and is not consulted
+		// from the repo during reload.
+		if !r.config.TargetsFromEnv {
+			if target, found := matchingReloadTarget(r.config.TargetName, reloaded.Targets); found {
+				if target.PostSyncHooks != nil {
+					preparedHooks = clonePostSyncHooks(target.PostSyncHooks)
+					if len(preparedHooks) == 0 {
+						hooksOutcome = "cleared"
+					} else {
+						hooksOutcome = "applied"
+					}
+				}
+			} else if r.config.TargetName != "" && !strings.EqualFold(r.config.TargetName, DefaultTargetName) {
+				logger.Warn().
+					Str("target", r.config.TargetName).
+					Msg("Reloaded config removed this target descriptor; discarded stale target hook override and inherited root hooks (restart daemon to apply structural target removal)")
+			}
+		}
+	}
+
+	// Commit hooks and delay together only after root and every target hook have
+	// passed validation above. Assign owned slices so concurrent target
+	// reconcilers cannot alias the loader or one another.
+	if !r.config.PostSyncHooks.FromEnv() {
+		r.config.PostSyncHooks = ConfigField[[]PostSyncHook]{
+			Value:  preparedHooks,
+			Source: preparedHookSource,
+		}
 		changed = true
 	}
+	delayOutcome := "retained"
+	if !r.config.HookSettleDelay.FromEnv() && reloaded.HookSettleDelay != nil {
+		r.config.HookSettleDelay.SetFromFile(*reloaded.HookSettleDelay)
+		delayOutcome = "applied"
+		changed = true
+	}
+	logger.Debug().
+		Str("hooks_outcome", hooksOutcome).
+		Str("hooks_source", hooksSource).
+		Int("hooks", len(r.config.PostSyncHooks.Value)).
+		Str("settle_delay_outcome", delayOutcome).
+		Str("settle_delay_source", configSourceName(r.config.HookSettleDelay.Source)).
+		Dur("settle_delay", r.config.HookSettleDelay.Value).
+		Str("target", r.config.TargetName).
+		Msg("Processed project hook config snapshot")
 
 	sliceSet := func(v []string) bool { return v != nil }
 	changed = reloadField(&r.config.DeployPaths, cloneSlice(reloaded.DeployPaths), sliceSet) || changed
@@ -132,11 +215,7 @@ func (r *Reconciler) reloadProjectConfig() error {
 	// included: startup would reject the whole config, so reload must not
 	// half-apply it) and warns, since the reload path can't restart the daemon.
 	if reloaded.Targets != nil {
-		if offender := multiTargetDefaultName(reloaded.Targets); offender != "" {
-			logger.Warn().
-				Str("target", offender).
-				Msg("Reloaded config declares a reserved default-named target in a multi-target list, expected every target to carry a distinct name — all target overrides are ignored (#391); rename it or make it the only target")
-		} else if !isDefaultTarget {
+		if !isDefaultTarget {
 			for _, t := range reloaded.Targets {
 				if t.Name == r.config.TargetName {
 					changed = applyTargetOverrides(r, t) || changed
@@ -170,9 +249,6 @@ func applyTargetOverrides(r *Reconciler, t Target) bool {
 	changed := false
 	sliceSet := func(v []string) bool { return v != nil }
 
-	if t.PostSyncHooks != nil {
-		changed = reloadField(&r.config.PostSyncHooks, clonePostSyncHooks(t.PostSyncHooks), func(v []PostSyncHook) bool { return v != nil }) || changed
-	}
 	if t.CriticalContainers != nil {
 		changed = reloadField(&r.config.CriticalContainers, cloneSlice(t.CriticalContainers), sliceSet) || changed
 	}
@@ -194,6 +270,33 @@ func applyTargetOverrides(r *Reconciler, t Target) bool {
 	}
 
 	return changed
+}
+
+func matchingReloadTarget(targetName string, targets []Target) (Target, bool) {
+	isDefaultTarget := targetName == "" || strings.EqualFold(targetName, DefaultTargetName)
+	if isDefaultTarget {
+		if len(targets) == 1 && targets[0].IsDefault() {
+			return targets[0], true
+		}
+		return Target{}, false
+	}
+	for _, target := range targets {
+		if target.Name == targetName {
+			return target, true
+		}
+	}
+	return Target{}, false
+}
+
+func configSourceName(source ConfigSource) string {
+	switch source {
+	case SourceFile:
+		return "file"
+	case SourceEnv:
+		return "environment"
+	default:
+		return "default"
+	}
 }
 
 // multiTargetDefaultName returns the name of a reserved default-named target

@@ -203,6 +203,8 @@ critical_containers:
 
 After `docker compose up`, bosun determines which files changed and matches them against configured hook patterns. When content-hash sync is enabled (default), hooks use the list of files actually written to disk — skipping files whose content didn't change. When disabled or in remote mode, hooks fall back to git diff. This solves services like Traefik that don't detect config file changes on certain filesystems (e.g., Unraid's FUSE mount).
 
+Written/deleted paths and fallback git-diff paths use one canonical staging-relative namespace (for example, `appdata/traefik/**`). The fallback strips `BOSUN_INFRA_DIR` from repo-relative paths and diffs from `DeployState.LastDeployedCommit`, so a failed attempt never advances the hook diff base or loses changes from the next successful retry.
+
 Two timing controls are available:
 - **`hook_settle_delay`** — global pause after deploy, before any hooks run (filesystem propagation)
 - **`delay`** — per-hook pause before restarting a specific container
@@ -226,7 +228,9 @@ When `deploy_paths` is configured in `bosun.yaml`, bosun diffs the last *success
 
 After pulling the repository (step 2), bosun re-reads `bosun.yaml` from the repo and updates `PostSyncHooks`, `HookSettleDelay`, `DeployPaths`, `on_failure`, and `on_success` if the file has changed. This means config changes pushed to the repo take effect without a daemon restart.
 
-Environment variable overrides (`BOSUN_POST_SYNC_HOOKS`, `BOSUN_HOOK_SETTLE_DELAY`, `BOSUN_DEPLOY_PATHS`) still take precedence -- if set, the corresponding fields from `bosun.yaml` are ignored during reload. If the repo has no `bosun.yaml` or the file fails to parse, the existing config values are retained.
+Hook fields use presence-aware snapshots. A successfully loaded file with an omitted or empty `post_sync_hooks` clears file hooks, while an omitted `hook_settle_delay` retains its previous effective value and explicit `0s` clears it. A valid empty file is successful; a missing, unreadable, malformed, unknown-field, or invalid-hook file retains the prior hook/delay state, and hook validation finishes before either value changes. Target hooks inherit root when omitted, clear inheritance with explicit `[]`, and fall back to root when their target descriptor disappears pending the required daemon restart for topology changes.
+
+Environment variable overrides (`BOSUN_POST_SYNC_HOOKS`, `BOSUN_HOOK_SETTLE_DELAY`, `BOSUN_DEPLOY_PATHS`) still take precedence -- if set, the corresponding fields from `bosun.yaml` are ignored during reload. Target hook lists supplied through `BOSUN_TARGETS` likewise remain environment-owned. Reload logs report source, target, outcome, and hook count without printing executable command arguments.
 
 ### Lock Behavior
 
@@ -567,7 +571,7 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `DRY_RUN` | `false` | Enable dry run |
 | `FORCE` | `false` | Force deployment |
 | `BOSUN_POST_SYNC_HOOKS` | | JSON array of post-sync hooks (overrides config file) |
-| `BOSUN_HOOK_SETTLE_DELAY` | `0` | Global pause before post-sync hooks run (e.g., `2s`) |
+| `BOSUN_HOOK_SETTLE_DELAY` | safe FUSE fallback when unset | Global pause before post-sync hooks run (e.g., `2s`); explicit `0s` disables it |
 | `BOSUN_DEPLOY_PATHS` | | JSON array of glob patterns for deploy-relevant paths (overrides config file) |
 | `BOSUN_DEPLOY_SYNC_PATHS` | | JSON array of glob patterns for deploy sync target allowlist (overrides config file) |
 | `BOSUN_DEPLOY_SYNC_EXCLUDE` | | JSON array of glob patterns for deploy sync target blocklist (overrides config file; exclude wins over include) |

@@ -477,7 +477,7 @@ func TestReconciler_ReloadProjectConfig(t *testing.T) {
 			}),
 		}
 		cfg.ConfigReloader = func(dir string) (*ReloadedConfig, error) {
-			return &ReloadedConfig{}, nil
+			return nil, nil
 		}
 		r := NewReconciler(cfg)
 
@@ -1989,7 +1989,7 @@ func TestReloadProjectConfig(t *testing.T) {
 		assert.Equal(t, 5*time.Second, r.config.HookSettleDelay.Value)
 	})
 
-	t.Run("empty reloaded config is no-op", func(t *testing.T) {
+	t.Run("valid empty reloaded config clears file hooks", func(t *testing.T) {
 		cfg := &Config{
 			PostSyncHooks: NewConfigField([]PostSyncHook{{Container: "orig"}}),
 			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
@@ -1998,7 +1998,9 @@ func TestReloadProjectConfig(t *testing.T) {
 		}
 		r := NewReconciler(cfg)
 		require.NoError(t, r.reloadProjectConfig())
-		assert.Equal(t, "orig", r.config.PostSyncHooks.Value[0].Container)
+		assert.Empty(t, r.config.PostSyncHooks.Value)
+		assert.NotNil(t, r.config.PostSyncHooks.Value)
+		assert.Equal(t, SourceFile, r.config.PostSyncHooks.Source)
 	})
 
 	t.Run("critical containers reloaded from repo", func(t *testing.T) {
@@ -2152,6 +2154,7 @@ func TestReloadProjectConfig_TargetOverrides(t *testing.T) {
 			PostSyncHooks: NewConfigField([]PostSyncHook{{Container: "root-hook"}}),
 			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
 				return &ReloadedConfig{
+					PostSyncHooks: []PostSyncHook{{Container: "root-hook"}},
 					Targets: []Target{
 						{Name: "unraid", PostSyncHooks: []PostSyncHook{{Container: "target-hook"}}},
 					},
@@ -2169,6 +2172,7 @@ func TestReloadProjectConfig_TargetOverrides(t *testing.T) {
 			PostSyncHooks: NewConfigField([]PostSyncHook{{Container: "root-hook"}}),
 			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
 				return &ReloadedConfig{
+					PostSyncHooks: []PostSyncHook{{Container: "root-hook"}},
 					Targets: []Target{
 						{Name: "unraid", PostSyncHooks: []PostSyncHook{{Container: "target-hook"}}},
 					},

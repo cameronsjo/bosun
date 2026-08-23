@@ -449,6 +449,14 @@ The git subsystem (`internal/reconcile/git.go`) handles repository synchronizati
 - **Change detection**: Compares commit hashes before/after to detect changes
 - **Missing diff history fails safe**: An unavailable prior commit is reported explicitly; deploy-path checks run a full deploy and post-sync hooks all fire
 
+### Post-Sync Hook Snapshots
+
+After each pull, bosun treats a successfully decoded project config as an authoritative hook snapshot. Omitting `post_sync_hooks` or setting it to `[]` clears file-sourced hooks; omitting `hook_settle_delay` retains the effective delay, while explicit `0s` disables it. Missing, unreadable, malformed, unknown-field, and invalid-hook configs retain the previous hook/delay state. `BOSUN_POST_SYNC_HOOKS`, `BOSUN_HOOK_SETTLE_DELAY`, and target hooks supplied by `BOSUN_TARGETS` remain authoritative environment replacements.
+
+Root and per-target hooks validate before either hooks or delay change. An omitted target hook key inherits root, explicit `[]` clears inheritance, and removing a target descriptor drops its stale operational hook override while structural removal waits for daemon restart. Logs expose source, target, outcome, and counts, never hook command arguments.
+
+Hook globs use staging-relative paths such as `appdata/traefik/**`. When actual written/deleted paths are unavailable, bosun diffs from `DeployState.LastDeployedCommit` and strips the infra-directory prefix from repo-relative paths before matching. A failed pipeline therefore cannot advance the hook diff base or silently lose its changes on retry.
+
 ### Timeouts
 
 | Operation | Timeout |

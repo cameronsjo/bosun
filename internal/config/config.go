@@ -32,6 +32,15 @@ type Config struct {
 	// Root is the project root directory (contains bosun/ or manifest/).
 	Root string
 
+	// configFileFound records whether a supported project config file was
+	// present and decoded successfully. A valid empty file is distinct from no
+	// file: it is an authoritative reload snapshot for fields such as hooks.
+	configFileFound bool
+
+	// hookSettleDelayPresent records raw YAML key presence so an omitted delay
+	// can retain the prior effective value while an explicit zero clears it.
+	hookSettleDelayPresent bool
+
 	// ManifestDir is the path to the manifest directory.
 	ManifestDir string
 
@@ -363,17 +372,15 @@ func FindRoot() (string, error) {
 }
 
 // LoadFrom loads project config from a specific directory path (skips FindRoot).
-// Returns nil with no error if no config file is found in the directory.
-// Returns nil with error only if a config file exists but fails to parse.
+// Returns an empty Config with ConfigFileFound false when no supported file is
+// present, and an error when a present file cannot be read, parsed, or validated.
 func LoadFrom(dir string) (*Config, error) {
-	fileCfg, err := loadConfigFile(dir)
+	loaded, err := loadConfigFileSnapshot(dir)
 	if err != nil {
 		return nil, err
 	}
+	fileCfg := loaded.config
 
-	// Check if any config was actually loaded by testing whether
-	// loadConfigFile found and parsed a file. Since configFile is a value
-	// type, we check for non-zero state in any field.
 	postSyncHooks := extractPostSyncHooks(fileCfg)
 	hookSettleDelay := extractHookSettleDelay(fileCfg)
 	deployPaths := extractDeployPaths(fileCfg)
@@ -392,25 +399,90 @@ func LoadFrom(dir string) (*Config, error) {
 	targets := extractTargets(fileCfg)
 
 	return &Config{
-		Root:                  dir,
-		postSyncHooks:         postSyncHooks,
-		hookSettleDelay:       hookSettleDelay,
-		deployPaths:           deployPaths,
-		deploySyncPaths:       deploySyncPaths,
-		deploySyncExclude:     deploySyncExclude,
-		criticalContainers:    criticalContainers,
-		healthGateScope:       healthGateScope,
-		templateIncludeDir:    templateIncludeDir,
-		driftIgnore:           driftIgnore,
-		driftAlertDebounce:    driftAlertDebounce,
-		driftSelfHeal:         driftSelfHeal,
-		driftSelfHealCooldown: driftSelfHealCooldown,
-		domain:                domain,
-		removeOrphans:         removeOrphans,
-		shutdownTimeout:       shutdownTimeout,
-		targets:               targets,
+		Root:                   dir,
+		configFileFound:        loaded.found,
+		hookSettleDelayPresent: loaded.hookSettleDelayPresent,
+		postSyncHooks:          postSyncHooks,
+		hookSettleDelay:        hookSettleDelay,
+		deployPaths:            deployPaths,
+		deploySyncPaths:        deploySyncPaths,
+		deploySyncExclude:      deploySyncExclude,
+		criticalContainers:     criticalContainers,
+		healthGateScope:        healthGateScope,
+		templateIncludeDir:     templateIncludeDir,
+		driftIgnore:            driftIgnore,
+		driftAlertDebounce:     driftAlertDebounce,
+		driftSelfHeal:          driftSelfHeal,
+		driftSelfHealCooldown:  driftSelfHealCooldown,
+		domain:                 domain,
+		removeOrphans:          removeOrphans,
+		shutdownTimeout:        shutdownTimeout,
+		targets:                targets,
 	}, nil
 }
+
+// LoadReloadedConfig returns an authoritative, owned hot-reload snapshot for a
+// supported project config file. A missing file returns (nil, nil); malformed
+// or invalid content returns an error; a valid empty file returns a non-nil
+// snapshot whose non-nil empty PostSyncHooks clears file-sourced hooks.
+func LoadReloadedConfig(dir string) (*reconcile.ReloadedConfig, error) {
+	cfg, err := LoadFrom(dir)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil || !cfg.ConfigFileFound() {
+		return nil, nil
+	}
+
+	postSyncHooks := cfg.PostSyncHooks()
+	if postSyncHooks == nil {
+		postSyncHooks = []reconcile.PostSyncHook{}
+	}
+	var hookSettleDelay *time.Duration
+	if cfg.HookSettleDelayPresent() {
+		delay := cfg.HookSettleDelay()
+		hookSettleDelay = &delay
+	}
+	alertCfg := cfg.GetAlertConfig()
+	removeOrphans := cfg.RemoveOrphans()
+	projectName := cfg.ProjectName()
+
+	return &reconcile.ReloadedConfig{
+		PostSyncHooks:      postSyncHooks,
+		HookSettleDelay:    hookSettleDelay,
+		DeployPaths:        cloneSlice(cfg.DeployPaths()),
+		DeploySyncPaths:    cloneSlice(cfg.DeploySyncPaths()),
+		DeploySyncExclude:  cloneSlice(cfg.DeploySyncExclude()),
+		CriticalContainers: cloneSlice(cfg.CriticalContainers()),
+		DriftIgnore:        cloneSlice(cfg.DriftIgnore()),
+		OnFailure:          boolPointer(alertCfg.OnFailure),
+		OnSuccess:          boolPointer(alertCfg.OnSuccess),
+		RemoveOrphans:      boolPointer(removeOrphans),
+		ProjectName:        stringPointer(projectName),
+		Targets:            cfg.Targets(),
+	}, nil
+}
+
+// ApplyInitialHookConfig applies the same presence contract used by hot reload
+// to daemon and one-shot CLI startup. A missing project file changes nothing;
+// a valid file owns the root hook list (including absence => empty); an omitted
+// settle delay retains the target config's default, while explicit zero applies.
+func ApplyInitialHookConfig(projectCfg *Config, targetCfg *reconcile.Config) {
+	if projectCfg == nil || targetCfg == nil || !projectCfg.ConfigFileFound() {
+		return
+	}
+	hooks := projectCfg.PostSyncHooks()
+	if hooks == nil {
+		hooks = []reconcile.PostSyncHook{}
+	}
+	targetCfg.PostSyncHooks.SetFromFile(hooks)
+	if projectCfg.HookSettleDelayPresent() {
+		targetCfg.HookSettleDelay.SetFromFile(projectCfg.HookSettleDelay())
+	}
+}
+
+func boolPointer(value bool) *bool       { return &value }
+func stringPointer(value string) *string { return &value }
 
 // Load finds the project root and returns a Config.
 func Load() (*Config, error) {
@@ -421,10 +493,11 @@ func Load() (*Config, error) {
 	}
 
 	// Load config file if present
-	fileCfg, err := loadConfigFile(root)
+	loaded, err := loadConfigFileSnapshot(root)
 	if err != nil {
 		return nil, err
 	}
+	fileCfg := loaded.config
 
 	// Determine manifest directory
 	manifestDir := filepath.Join(root, "manifest")
@@ -496,32 +569,34 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		Root:                  root,
-		ManifestDir:           manifestDir,
-		provisionsDir:         provisionsDir,
-		ComposeFile:           filepath.Join(root, "bosun", "docker-compose.yml"),
-		SnapshotsDir:          filepath.Join(manifestDir, ".bosun", "snapshots"),
-		projectName:           projectName,
-		infraContainers:       infraContainers,
-		tunnelProvider:        tunnelProvider,
-		tunnelConfig:          tunnelConfig,
-		alertConfig:           alertConfig,
-		postSyncHooks:         postSyncHooks,
-		hookSettleDelay:       hookSettleDelay,
-		deployPaths:           deployPaths,
-		deploySyncPaths:       deploySyncPaths,
-		deploySyncExclude:     deploySyncExclude,
-		criticalContainers:    criticalContainers,
-		healthGateScope:       healthGateScope,
-		templateIncludeDir:    templateIncludeDir,
-		driftIgnore:           driftIgnore,
-		driftAlertDebounce:    driftAlertDebounce,
-		driftSelfHeal:         driftSelfHeal,
-		driftSelfHealCooldown: driftSelfHealCooldown,
-		domain:                domain,
-		removeOrphans:         removeOrphans,
-		shutdownTimeout:       shutdownTimeout,
-		targets:               targets,
+		Root:                   root,
+		configFileFound:        loaded.found,
+		hookSettleDelayPresent: loaded.hookSettleDelayPresent,
+		ManifestDir:            manifestDir,
+		provisionsDir:          provisionsDir,
+		ComposeFile:            filepath.Join(root, "bosun", "docker-compose.yml"),
+		SnapshotsDir:           filepath.Join(manifestDir, ".bosun", "snapshots"),
+		projectName:            projectName,
+		infraContainers:        infraContainers,
+		tunnelProvider:         tunnelProvider,
+		tunnelConfig:           tunnelConfig,
+		alertConfig:            alertConfig,
+		postSyncHooks:          postSyncHooks,
+		hookSettleDelay:        hookSettleDelay,
+		deployPaths:            deployPaths,
+		deploySyncPaths:        deploySyncPaths,
+		deploySyncExclude:      deploySyncExclude,
+		criticalContainers:     criticalContainers,
+		healthGateScope:        healthGateScope,
+		templateIncludeDir:     templateIncludeDir,
+		driftIgnore:            driftIgnore,
+		driftAlertDebounce:     driftAlertDebounce,
+		driftSelfHeal:          driftSelfHeal,
+		driftSelfHealCooldown:  driftSelfHealCooldown,
+		domain:                 domain,
+		removeOrphans:          removeOrphans,
+		shutdownTimeout:        shutdownTimeout,
+		targets:                targets,
 	}
 
 	logger := log.Component("config")
@@ -533,10 +608,24 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// loadConfigFile loads the bosun config file if present.
-// Returns a zero-value configFile with no error if no config file exists.
-// Returns an error if a config file exists but contains malformed YAML or unknown fields.
+type configFileSnapshot struct {
+	config                 configFile
+	found                  bool
+	hookSettleDelayPresent bool
+}
+
+// loadConfigFile loads the bosun config file if present. It is retained as the
+// unit-test helper for callers that only need decoded values; production load
+// paths use loadConfigFileSnapshot so file/key presence is not discarded.
 func loadConfigFile(root string) (configFile, error) {
+	loaded, err := loadConfigFileSnapshot(root)
+	return loaded.config, err
+}
+
+// loadConfigFileSnapshot loads a supported project config and preserves the
+// presence metadata needed by hot reload. A valid empty file has found=true;
+// no supported file has found=false.
+func loadConfigFileSnapshot(root string) (configFileSnapshot, error) {
 	var cfg configFile
 
 	for _, name := range []string{"bosun.yaml", "bosun.yml", ".bosun/config.yml"} {
@@ -546,25 +635,35 @@ func loadConfigFile(root string) (configFile, error) {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return configFile{}, fmt.Errorf("failed to read config file %s: %w", path, err)
+			return configFileSnapshot{}, fmt.Errorf("failed to read config file %s: %w", path, err)
 		}
 
 		dec := yaml.NewDecoder(bytes.NewReader(data))
 		dec.KnownFields(true)
 		if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
-			return configFile{}, fmt.Errorf("failed to parse config file %s: %w", path, err)
+			return configFileSnapshot{}, fmt.Errorf("failed to parse config file %s: %w", path, err)
 		}
 		if err := validatePostSyncHooks(path, cfg); err != nil {
-			return configFile{}, err
+			return configFileSnapshot{}, err
 		}
+
+		var raw map[string]yaml.Node
+		if err := yaml.Unmarshal(data, &raw); err != nil {
+			return configFileSnapshot{}, fmt.Errorf("failed to inspect config file %s: %w", path, err)
+		}
+		_, hookSettleDelayPresent := raw["hook_settle_delay"]
 
 		log.Debug().
 			Str(log.FieldPath, path).
 			Msg("Loaded config file")
-		return cfg, nil
+		return configFileSnapshot{
+			config:                 cfg,
+			found:                  true,
+			hookSettleDelayPresent: hookSettleDelayPresent,
+		}, nil
 	}
 
-	return cfg, nil
+	return configFileSnapshot{config: cfg}, nil
 }
 
 func validatePostSyncHooks(path string, cfg configFile) error {
@@ -719,12 +818,24 @@ func (c *Config) GetAlertConfig() AlertConfig {
 
 // PostSyncHooks returns the configured post-sync container restart hooks.
 func (c *Config) PostSyncHooks() []reconcile.PostSyncHook {
-	return c.postSyncHooks
+	return clonePostSyncHooks(c.postSyncHooks)
 }
 
 // extractPostSyncHooks extracts post-sync hooks from a parsed config.
 func extractPostSyncHooks(cfg configFile) []reconcile.PostSyncHook {
-	return cfg.PostSyncHooks
+	return clonePostSyncHooks(cfg.PostSyncHooks)
+}
+
+// ConfigFileFound reports whether a supported project config file was present
+// and decoded successfully. It is true for a valid empty file.
+func (c *Config) ConfigFileFound() bool {
+	return c != nil && c.configFileFound
+}
+
+// HookSettleDelayPresent reports whether hook_settle_delay was explicitly
+// present in the decoded project config, including an explicit zero value.
+func (c *Config) HookSettleDelayPresent() bool {
+	return c != nil && c.hookSettleDelayPresent
 }
 
 // DeployPaths returns the configured deploy-relevant path patterns.
@@ -900,7 +1011,7 @@ func extractShutdownTimeout(cfg configFile) time.Duration {
 // Returns nil when no targets are configured (use reconcile.Config.ResolveTargets()
 // to get the effective target list with the implicit default).
 func (c *Config) Targets() []reconcile.Target {
-	return c.targets
+	return cloneTargets(c.targets)
 }
 
 // extractTargets converts raw YAML target entries into reconcile.Target descriptors.
@@ -953,14 +1064,51 @@ func extractTargets(cfg configFile) []reconcile.Target {
 			StateFile:          raw.StateFile,
 			StagingDir:         raw.StagingDir,
 			SecretsScope:       raw.SecretsScope,
-			CriticalContainers: raw.CriticalContainers,
-			PostSyncHooks:      raw.PostSyncHooks,
-			DeploySyncPaths:    raw.DeploySyncPaths,
-			DeploySyncExclude:  raw.DeploySyncExclude,
+			CriticalContainers: cloneSlice(raw.CriticalContainers),
+			PostSyncHooks:      clonePostSyncHooks(raw.PostSyncHooks),
+			DeploySyncPaths:    cloneSlice(raw.DeploySyncPaths),
+			DeploySyncExclude:  cloneSlice(raw.DeploySyncExclude),
 		})
 	}
 
 	return targets
+}
+
+func cloneSlice[T any](values []T) []T {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]T, len(values))
+	copy(cloned, values)
+	return cloned
+}
+
+func clonePostSyncHooks(hooks []reconcile.PostSyncHook) []reconcile.PostSyncHook {
+	if hooks == nil {
+		return nil
+	}
+	cloned := make([]reconcile.PostSyncHook, len(hooks))
+	for i, hook := range hooks {
+		cloned[i] = hook
+		cloned[i].Paths = cloneSlice(hook.Paths)
+		cloned[i].Command = cloneSlice(hook.Command)
+	}
+	return cloned
+}
+
+func cloneTargets(targets []reconcile.Target) []reconcile.Target {
+	if targets == nil {
+		return nil
+	}
+	cloned := make([]reconcile.Target, len(targets))
+	for i, target := range targets {
+		cloned[i] = target
+		cloned[i].CriticalContainers = cloneSlice(target.CriticalContainers)
+		cloned[i].PostSyncHooks = clonePostSyncHooks(target.PostSyncHooks)
+		cloned[i].DeploySyncPaths = cloneSlice(target.DeploySyncPaths)
+		cloned[i].DeploySyncExclude = cloneSlice(target.DeploySyncExclude)
+	}
+	return cloned
 }
 
 // getEnvOrDefault returns the value of the environment variable if set and non-empty,

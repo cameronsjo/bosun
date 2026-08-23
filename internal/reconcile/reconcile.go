@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
@@ -1163,6 +1164,13 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 				logger.Warn().Err(err).Msg("Failed to diff commits for post-sync hooks, will evaluate all hooks")
 			}
 			diffFailed = true
+		} else {
+			repoFileCount := len(changedFiles)
+			changedFiles = normalizeHookDiffPaths(changedFiles, r.config.InfraSubDir)
+			logger.Debug().
+				Int("repo_files", repoFileCount).
+				Int("deploy_files", len(changedFiles)).
+				Msg("Normalized git diff paths for post-sync hooks")
 		}
 	}
 
@@ -1199,7 +1207,7 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	if local {
 		deployPath = r.config.LocalAppdataPath
 	}
-	settleDelay := resolveHookSettleDelay(r.config.HookSettleDelay.Value, deployPath)
+	settleDelay := resolveHookSettleDelay(r.config.HookSettleDelay, deployPath)
 
 	ui.Info("Executing %d post-sync hook(s)...", len(matched))
 	if err := ExecutePostSyncHooks(ctx, client, matched, settleDelay); err != nil {
@@ -1209,6 +1217,40 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	}
 
 	return len(matched), nil
+}
+
+// normalizeHookDiffPaths converts repo-relative git diff paths into the same
+// staging-relative namespace used by DeployResult.WrittenFiles/DeletedFiles.
+// When infrastructure lives below the repo root, files outside that subtree
+// have no deploy-path equivalent and are omitted from hook matching.
+func normalizeHookDiffPaths(files []string, infraSubDir string) []string {
+	infra := strings.Trim(path.Clean(filepath.ToSlash(infraSubDir)), "/")
+	rootInfra := infra == "" || infra == "."
+	prefix := infra + "/"
+
+	seen := make(map[string]struct{}, len(files))
+	normalized := make([]string, 0, len(files))
+	for _, file := range files {
+		clean := strings.TrimPrefix(path.Clean(filepath.ToSlash(file)), "./")
+		if clean == "" || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+			continue
+		}
+		if !rootInfra {
+			if !strings.HasPrefix(clean, prefix) {
+				continue
+			}
+			clean = strings.TrimPrefix(clean, prefix)
+			if clean == "" || clean == "." {
+				continue
+			}
+		}
+		if _, exists := seen[clean]; exists {
+			continue
+		}
+		seen[clean] = struct{}{}
+		normalized = append(normalized, clean)
+	}
+	return normalized
 }
 
 // cleanupStaging removes the staging directory after successful deployment.
