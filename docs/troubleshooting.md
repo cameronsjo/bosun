@@ -17,9 +17,22 @@ Bosun searches upward for `bosun/` or `manifest/` directory.
 
 ### "sops decrypt failed"
 
-- Verify SOPS is installed: `sops --version`
-- Check age key exists: `ls ~/.config/sops/age/keys.txt`
-- Set key path: `export SOPS_AGE_KEY_FILE=/path/to/key`
+Bosun classifies failures without printing raw SOPS errors, key identifiers,
+encrypted values, or decrypted MACs:
+
+- **SOPS integrity verification failed** — the file or its MAC may have been
+  modified. Restore the encrypted file from a trusted source or re-encrypt it;
+  rotating the Age key will not repair corrupted ciphertext.
+- **SOPS decryption key unavailable** — verify that `SOPS_AGE_KEY` or
+  `SOPS_AGE_KEY_FILE` contains an identity matching the file recipients and
+  that the key file is readable.
+- **Malformed SOPS encrypted data** — validate or re-encrypt the file with
+  SOPS; an encrypted value or metadata field is not decodable.
+- **SOPS decryption failed** — validate the file with SOPS and verify the Age
+  key when the failure cannot be safely classified further.
+
+Set `BOSUN_LOG_LEVEL=debug` for the sanitized failure category and file context.
+Bosun never logs the raw upstream decryption error, even at debug level.
 
 ### "docker compose: command not found"
 
