@@ -394,6 +394,11 @@ alerts:
 
 Alerts include: deploy status, commit hash, changed files, error details (on failure), and duration.
 
+Discord embeds are bounded to the provider's component limits and 6000-unit
+aggregate so verbose deploy errors remain deliverable. Twilio sends only error
+and critical alerts, truncating each formatted message to one SMS segment (160
+GSM-7 septets or 70 UTF-16 units for non-GSM content) to bound delivery cost.
+
 ## Infrastructure Containers
 
 Bosun treats certain containers as "infrastructure" -- they're shown separately in `bosun status` and get priority during `bosun yacht up` (e.g., Traefik is started first).

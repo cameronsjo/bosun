@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
@@ -19,6 +20,16 @@ const (
 	ColorError    = 0xe74c3c // Red
 	ColorSuccess  = 0x2ecc71 // Green
 	ColorCritical = 0x9b59b6 // Purple (for critical alerts)
+)
+
+const (
+	discordTitleLimit       = 256
+	discordDescriptionLimit = 4096
+	discordFooterLimit      = 2048
+	discordFieldNameLimit   = 256
+	discordFieldValueLimit  = 1024
+	discordFieldCountLimit  = 25
+	discordEmbedTotalLimit  = 6000
 )
 
 // discordEmbed represents a Discord embed object.
@@ -92,29 +103,7 @@ func (d *DiscordProvider) Send(ctx context.Context, alert *Alert) error {
 		Str("source", alert.Source).
 		Msg("Preparing to send Discord alert")
 
-	embed := discordEmbed{
-		Title:       alert.Title,
-		Description: alert.Message,
-		Color:       severityToColor(alert.Severity),
-		Footer:      &discordFooter{Text: fmt.Sprintf("bosun/%s", alert.Source)},
-		Timestamp:   time.Now().UTC().Format(time.RFC3339),
-	}
-
-	// Add metadata as fields.
-	if len(alert.Metadata) > 0 {
-		embed.Fields = make([]discordEmbedField, 0, len(alert.Metadata))
-		for key, value := range alert.Metadata {
-			// Skip empty values.
-			if value == "" {
-				continue
-			}
-			embed.Fields = append(embed.Fields, discordEmbedField{
-				Name:   key,
-				Value:  truncateString(value, 1024), // Discord field limit.
-				Inline: true,
-			})
-		}
-	}
+	embed := buildDiscordEmbed(alert)
 
 	payload := discordPayload{
 		Embeds: []discordEmbed{embed},
@@ -162,6 +151,55 @@ func (d *DiscordProvider) Send(ctx context.Context, alert *Alert) error {
 	return nil
 }
 
+func buildDiscordEmbed(alert *Alert) discordEmbed {
+	remaining := discordEmbedTotalLimit
+	consume := func(text string, componentLimit int) string {
+		limit := min(componentLimit, remaining)
+		bounded := truncateUTF16(text, limit)
+		remaining -= utf16Units(bounded)
+		return bounded
+	}
+
+	embed := discordEmbed{
+		Title:       consume(alert.Title, discordTitleLimit),
+		Description: consume(alert.Message, discordDescriptionLimit),
+		Color:       severityToColor(alert.Severity),
+		Footer:      &discordFooter{Text: consume(fmt.Sprintf("bosun/%s", alert.Source), discordFooterLimit)},
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+	}
+
+	keys := make([]string, 0, len(alert.Metadata))
+	for key, value := range alert.Metadata {
+		if key != "" && value != "" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		if len(embed.Fields) == discordFieldCountLimit {
+			break
+		}
+
+		name := truncateUTF16(key, discordFieldNameLimit)
+		value := truncateUTF16(alert.Metadata[key], discordFieldValueLimit)
+		name = truncateUTF16(name, remaining)
+		value = truncateUTF16(value, remaining-utf16Units(name))
+		if name == "" || value == "" {
+			continue
+		}
+
+		remaining -= utf16Units(name) + utf16Units(value)
+		embed.Fields = append(embed.Fields, discordEmbedField{
+			Name:   name,
+			Value:  value,
+			Inline: true,
+		})
+	}
+
+	return embed
+}
+
 // severityToColor maps alert severity to Discord embed color.
 func severityToColor(severity Severity) int {
 	switch severity {
@@ -178,10 +216,11 @@ func severityToColor(severity Severity) int {
 	}
 }
 
-// truncateString truncates a string to the specified length.
+// truncateString retains the existing Slack field behavior. Discord uses the
+// provider-specific UTF-16 helpers above.
 func truncateString(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen-3] + "..."
+	return s[:maxLen-3] + truncationSuffix
 }
