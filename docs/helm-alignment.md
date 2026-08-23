@@ -128,7 +128,7 @@ compose:
       container_name: {{ .Chart.Name }}
       restart: unless-stopped
       environment:
-        TZ: {{ .Values.timezone | default "America/Chicago" }}
+        TZ: {{ get .Values "timezone" | default "America/Chicago" }}
 ```
 
 ### Template Context

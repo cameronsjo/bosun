@@ -39,7 +39,10 @@ func NewTemplateEngine(templatesDir string) (*TemplateEngine, error) {
 			return nil, fmt.Errorf("read helpers: %w", err)
 		}
 
-		helpers, err := template.New("helpers").Funcs(engine.funcMap()).Parse(string(content))
+		helpers, err := template.New("helpers").
+			Option("missingkey=error").
+			Funcs(engine.funcMap()).
+			Parse(string(content))
 		if err != nil {
 			return nil, fmt.Errorf("parse helpers: %w", err)
 		}
@@ -142,7 +145,10 @@ func (e *TemplateEngine) loadTemplate(name string) (*template.Template, error) {
 		}
 		tmpl, err = tmpl.New(name).Parse(string(content))
 	} else {
-		tmpl, err = template.New(name).Funcs(e.funcMap()).Parse(string(content))
+		tmpl, err = template.New(name).
+			Option("missingkey=error").
+			Funcs(e.funcMap()).
+			Parse(string(content))
 	}
 
 	if err != nil {
@@ -199,7 +205,10 @@ func (e *TemplateEngine) RenderTemplateString(templateStr string, ctx *TemplateC
 		}
 		tmpl, err = tmpl.New("inline").Parse(templateStr)
 	} else {
-		tmpl, err = template.New("inline").Funcs(e.funcMap()).Parse(templateStr)
+		tmpl, err = template.New("inline").
+			Option("missingkey=error").
+			Funcs(e.funcMap()).
+			Parse(templateStr)
 	}
 
 	if err != nil {

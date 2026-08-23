@@ -728,6 +728,8 @@ cfg.BackupsToKeep = 5  // Default
 
 - stderr is sanitized to avoid leaking secrets (truncated to 500 chars)
 - Template errors include file path
+- Missing map keys stop rendering and identify the missing key; for optional
+  keys, use `get . "key" | default "value"` so the lookup is explicit
 - Missing directories are created automatically
 
 ### Deployment Failures

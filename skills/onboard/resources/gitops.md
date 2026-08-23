@@ -60,6 +60,10 @@ Every reconciliation follows this 16-stage sequence:
 17. Release lock
 ```
 
+Template rendering is strict: a missing map key stops stage 5 with the template
+and key named in the error. Optional values must use an explicit lookup such as
+`get . "key" | default "value"`.
+
 Before stage 4 looks up the Age key, Bosun rejects malformed SOPS files. The
 file must be valid YAML with a `sops` metadata mapping, a non-empty MAC, a valid
 RFC3339 `lastmodified` timestamp, and at least one key recipient containing a

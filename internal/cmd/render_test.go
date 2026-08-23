@@ -1,12 +1,31 @@
 package cmd
 
 import (
+	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRenderTemplate_MissingKeyIncludesTemplateAndKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	templatePath := filepath.Join(tmpDir, "database.yml.tmpl")
+	require.NoError(t, os.WriteFile(templatePath, []byte(`password: {{ .db_passwrd }}`), 0644))
+
+	err := renderTemplate(
+		context.Background(),
+		templatePath,
+		map[string]any{"db_password": "secret"},
+		filepath.Join(tmpDir, "rendered"),
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), filepath.Base(templatePath))
+	assert.Contains(t, err.Error(), `map has no entry for key "db_passwrd"`)
+}
 
 func TestRenderCmd_Registration(t *testing.T) {
 	cmd, _, err := rootCmd.Find([]string{"render"})

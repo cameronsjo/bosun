@@ -170,6 +170,7 @@ func renderTemplate(ctx context.Context, tmplPath string, secrets map[string]any
 
 	// Create template with sprig and bosun functions
 	tmpl := template.New(filepath.Base(tmplPath)).
+		Option("missingkey=error").
 		Funcs(sprig.TxtFuncMap()).
 		Funcs(bosunRenderFuncs())
 

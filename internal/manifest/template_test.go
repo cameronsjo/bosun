@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -132,6 +133,20 @@ func TestTemplateEngine_RenderTemplateString(t *testing.T) {
 		assert.Equal(t, "HELLO", result)
 	})
 
+	t.Run("missing value fails with template and key context", func(t *testing.T) {
+		ctx := &TemplateContext{
+			Chart:  ChartMeta{Name: "test"},
+			Values: map[string]any{"password": "secret"},
+			Deps:   make(map[string]DependencyInfo),
+		}
+
+		_, err := engine.RenderTemplateString("password: {{ .Values.passwrd }}", ctx)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "inline")
+		assert.Contains(t, err.Error(), `map has no entry for key "passwrd"`)
+	})
+
 	t.Run("returns error for invalid template", func(t *testing.T) {
 		ctx := &TemplateContext{
 			Chart:  ChartMeta{Name: "test"},
@@ -142,6 +157,60 @@ func TestTemplateEngine_RenderTemplateString(t *testing.T) {
 		_, err := engine.RenderTemplateString("{{ .Invalid }", ctx)
 		assert.Error(t, err)
 	})
+}
+
+func TestTemplateEngine_MissingKeyWithoutHelpers(t *testing.T) {
+	templatesDir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(templatesDir, "database.yaml"),
+		[]byte("compose:\n  password: {{ .Values.passwrd }}\n"),
+		0644,
+	))
+	engine, err := NewTemplateEngine(templatesDir)
+	require.NoError(t, err)
+	ctx := &TemplateContext{
+		Chart:  ChartMeta{Name: "test"},
+		Values: map[string]any{"password": "secret"},
+		Deps:   make(map[string]DependencyInfo),
+	}
+
+	t.Run("named template", func(t *testing.T) {
+		_, err := engine.RenderTemplate("database", ctx)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "database")
+		assert.Contains(t, err.Error(), `map has no entry for key "passwrd"`)
+	})
+
+	t.Run("inline template", func(t *testing.T) {
+		_, err := engine.RenderTemplateString("password: {{ .Values.passwrd }}", ctx)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "inline")
+		assert.Contains(t, err.Error(), `map has no entry for key "passwrd"`)
+	})
+}
+
+func TestTemplateEngine_MissingKeyInClonedHelper(t *testing.T) {
+	templatesDir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(templatesDir, "_helpers.tpl"),
+		[]byte(`{{ define "database.password" }}{{ .Values.passwrd }}{{ end }}`),
+		0644,
+	))
+	engine, err := NewTemplateEngine(templatesDir)
+	require.NoError(t, err)
+	ctx := &TemplateContext{
+		Chart:  ChartMeta{Name: "test"},
+		Values: map[string]any{"password": "secret"},
+		Deps:   make(map[string]DependencyInfo),
+	}
+
+	_, err = engine.RenderTemplateString(`{{ include "database.password" . }}`, ctx)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "database.password")
+	assert.Contains(t, err.Error(), `map has no entry for key "passwrd"`)
 }
 
 func TestTemplateEngine_ListTemplates(t *testing.T) {

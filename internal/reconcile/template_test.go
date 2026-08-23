@@ -11,6 +11,7 @@ import (
 	"github.com/cameronsjo/bosun/internal/fileutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestNewTemplateOps(t *testing.T) {
@@ -71,13 +72,28 @@ func TestTemplateOps_ExecuteTemplate(t *testing.T) {
 		assert.Equal(t, "Hello, Test!", string(content))
 	})
 
+	t.Run("missing key fails with template and key context", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		templateFile := filepath.Join(tmpDir, "database.yml.tmpl")
+		outputFile := filepath.Join(tmpDir, "output", "database.yml")
+		require.NoError(t, os.WriteFile(templateFile, []byte(`POSTGRES_PASSWORD: {{ .db_passwrd }}`), 0644))
+
+		tmpl := NewTemplateOps(map[string]any{"db_password": "secret"})
+		err := tmpl.ExecuteTemplate(context.Background(), templateFile, outputFile)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), templateFile)
+		assert.Contains(t, err.Error(), `map has no entry for key "db_passwrd"`)
+		assert.NoFileExists(t, outputFile)
+	})
+
 	t.Run("template with sprig functions", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		ctx := context.Background()
 
-		// Create template using sprig functions (upper, lower, default)
+		// Strict templates use get for optional map values before applying a default.
 		templateFile := filepath.Join(tmpDir, "test.tmpl")
-		templateContent := `{{ .name | upper }} - {{ .missing | default "fallback" }}`
+		templateContent := `{{ .name | upper }} - {{ get . "missing" | default "fallback" }}`
 		require.NoError(t, os.WriteFile(templateFile, []byte(templateContent), 0644))
 
 		outputFile := filepath.Join(tmpDir, "output", "test.txt")
@@ -286,6 +302,29 @@ func TestBosunTemplateFuncs_FromJsonFileInvalidJSON(t *testing.T) {
 }
 
 func TestTemplateOps_RenderDirectory(t *testing.T) {
+	t.Run("shipped homelab example renders with strict keys", func(t *testing.T) {
+		exampleDir := filepath.Join("..", "..", "examples", "homelab")
+		secretsData, err := os.ReadFile(filepath.Join(exampleDir, "secrets.example.yaml"))
+		require.NoError(t, err)
+
+		var secrets map[string]any
+		require.NoError(t, yaml.Unmarshal(secretsData, &secrets))
+
+		stagingDir := t.TempDir()
+		tmpl := NewTemplateOps(secrets)
+		require.NoError(t, tmpl.RenderDirectory(
+			context.Background(),
+			filepath.Join(exampleDir, "unraid"),
+			stagingDir,
+			"unraid",
+		))
+
+		assert.FileExists(t, filepath.Join(stagingDir, "unraid", "compose", "core.yml"))
+		assert.FileExists(t, filepath.Join(stagingDir, "unraid", "appdata", "authelia", "configuration.yml"))
+		assert.FileExists(t, filepath.Join(stagingDir, "unraid", "appdata", "gatus", "config.yaml"))
+		assert.FileExists(t, filepath.Join(stagingDir, "unraid", "appdata", "tailscale-gateway", "serve.json"))
+	})
+
 	t.Run("render directory with templates and static files", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		// sourceDir simulates RepoDir/InfraSubDir — the caller already joins them.
