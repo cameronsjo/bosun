@@ -29,6 +29,8 @@ func TestEvaluateRestartBreaker(t *testing.T) {
 		assert.Empty(t, result.Resolved)
 		assert.Equal(t, 3, result.Updated["web"].RestartCount)
 		assert.Equal(t, now, result.Updated["web"].CheckedAt)
+		assert.Equal(t, 3, result.Updated["web"].BaselineRestartCount)
+		assert.Equal(t, now, result.Updated["web"].BaselineAt)
 	})
 
 	t.Run("stable container below threshold", func(t *testing.T) {
@@ -41,8 +43,10 @@ func TestEvaluateRestartBreaker(t *testing.T) {
 
 		assert.Empty(t, result.Tripped)
 		assert.Empty(t, result.Resolved)
-		// Delta is 2 (below 5), keeps original baseline
-		assert.Equal(t, 3, result.Updated["web"].RestartCount)
+		// The latest observation advances while the accumulating baseline stays put.
+		assert.Equal(t, 5, result.Updated["web"].RestartCount)
+		assert.Equal(t, 3, result.Updated["web"].BaselineRestartCount)
+		assert.Equal(t, now.Add(-5*time.Minute), result.Updated["web"].BaselineAt)
 	})
 
 	t.Run("trips when delta exceeds threshold within window", func(t *testing.T) {
@@ -59,18 +63,26 @@ func TestEvaluateRestartBreaker(t *testing.T) {
 		assert.Equal(t, now, result.Updated["web"].TrippedAt)
 	})
 
-	t.Run("does not trip when outside window", func(t *testing.T) {
-		current := map[string]int{"web": 20}
+	t.Run("slow loop trips across samples farther apart than window", func(t *testing.T) {
 		tracked := map[string]RestartTrackingEntry{
-			"web": {RestartCount: 4, CheckedAt: now.Add(-15 * time.Minute)},
+			"web": {RestartCount: 0, CheckedAt: now},
 		}
 
-		result := evaluateRestartBreaker(current, tracked, threshold, window, now)
+		first := evaluateRestartBreaker(map[string]int{"web": 2}, tracked, threshold, window, now.Add(15*time.Minute))
+		assert.Empty(t, first.Tripped)
+		assert.Equal(t, 2, first.Updated["web"].RestartCount)
+		assert.Equal(t, 0, first.Updated["web"].BaselineRestartCount)
+		assert.Equal(t, now, first.Updated["web"].BaselineAt)
 
-		assert.Empty(t, result.Tripped)
-		// Baseline resets when outside window
-		assert.Equal(t, 20, result.Updated["web"].RestartCount)
-		assert.Equal(t, now, result.Updated["web"].CheckedAt)
+		second := evaluateRestartBreaker(map[string]int{"web": 4}, first.Updated, threshold, window, now.Add(30*time.Minute))
+		assert.Empty(t, second.Tripped)
+		assert.Equal(t, 4, second.Updated["web"].RestartCount)
+		assert.Equal(t, 0, second.Updated["web"].BaselineRestartCount)
+		assert.Equal(t, now, second.Updated["web"].BaselineAt)
+
+		third := evaluateRestartBreaker(map[string]int{"web": 5}, second.Updated, threshold, window, now.Add(45*time.Minute))
+		assert.Equal(t, []string{"web"}, third.Tripped)
+		assert.True(t, third.Updated["web"].Tripped)
 	})
 
 	t.Run("no restarts resets baseline", func(t *testing.T) {
@@ -84,6 +96,25 @@ func TestEvaluateRestartBreaker(t *testing.T) {
 		assert.Empty(t, result.Tripped)
 		assert.Equal(t, 10, result.Updated["web"].RestartCount)
 		assert.Equal(t, now, result.Updated["web"].CheckedAt)
+		assert.Equal(t, 10, result.Updated["web"].BaselineRestartCount)
+		assert.Equal(t, now, result.Updated["web"].BaselineAt)
+	})
+
+	t.Run("clean sample resets a preserved slow-loop baseline", func(t *testing.T) {
+		tracked := map[string]RestartTrackingEntry{
+			"web": {
+				RestartCount:         2,
+				CheckedAt:            now.Add(-15 * time.Minute),
+				BaselineRestartCount: 0,
+				BaselineAt:           now.Add(-30 * time.Minute),
+			},
+		}
+
+		result := evaluateRestartBreaker(map[string]int{"web": 2}, tracked, threshold, window, now)
+
+		assert.Empty(t, result.Tripped)
+		assert.Equal(t, 2, result.Updated["web"].BaselineRestartCount)
+		assert.Equal(t, now, result.Updated["web"].BaselineAt)
 	})
 
 	t.Run("resolved when restart count stabilizes after trip", func(t *testing.T) {
@@ -184,6 +215,27 @@ func TestEvaluateRestartBreaker(t *testing.T) {
 		assert.False(t, result.Updated["db"].Tripped)   // delta=1 < 5
 		assert.False(t, result.Updated["cache"].Tripped) // delta=0
 	})
+}
+
+func TestRestartBreakerSamplingMismatch(t *testing.T) {
+	tests := []struct {
+		name          string
+		driftInterval time.Duration
+		restartWindow time.Duration
+		want          bool
+	}{
+		{name: "sparse sampling", driftInterval: 15 * time.Minute, restartWindow: 10 * time.Minute, want: true},
+		{name: "equal cadence", driftInterval: 10 * time.Minute, restartWindow: 10 * time.Minute, want: false},
+		{name: "faster sampling", driftInterval: 5 * time.Minute, restartWindow: 10 * time.Minute, want: false},
+		{name: "disabled drift checks", driftInterval: 0, restartWindow: 10 * time.Minute, want: false},
+		{name: "invalid restart window", driftInterval: 5 * time.Minute, restartWindow: 0, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, RestartBreakerSamplingMismatch(tt.driftInterval, tt.restartWindow))
+		})
+	}
 }
 
 func TestRunRestartBreaker(t *testing.T) {

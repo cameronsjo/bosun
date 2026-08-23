@@ -11,11 +11,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
 	"github.com/cameronsjo/bosun/internal/config"
+	"github.com/cameronsjo/bosun/internal/daemon"
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/preflight"
 	"github.com/cameronsjo/bosun/internal/reconcile"
@@ -251,6 +253,47 @@ func checkHookSettleDelayFUSE(cfg *config.Config) CheckResult {
 	_, _ = ui.Blue.Println("      - Set hook_settle_delay: 2s (or higher) in bosun.yaml")
 	_, _ = ui.Blue.Println("      - Unraid's shfs FUSE layer can lag writes; post-sync hooks may otherwise fire before the write settles")
 	return CheckResult{Warned: 1}
+}
+
+func doctorDurationOrSeconds(value string) (time.Duration, bool) {
+	if d, err := time.ParseDuration(value); err == nil {
+		return d, true
+	}
+	if d, err := time.ParseDuration(value + "s"); err == nil {
+		return d, true
+	}
+	return 0, false
+}
+
+// checkRestartBreakerSampling mirrors the daemon's effective env parsing for
+// the two sampling durations and surfaces a cadence that is coarser than the
+// restart window. Runtime preserves an accumulating baseline in this case, but
+// the mismatch is surprising enough to deserve an operator-visible warning.
+func checkRestartBreakerSampling() CheckResult {
+	driftInterval := daemon.DefaultDriftInterval
+	if value := os.Getenv("BOSUN_DRIFT_INTERVAL"); value != "" {
+		if parsed, ok := doctorDurationOrSeconds(value); ok {
+			driftInterval = parsed
+		}
+	}
+
+	restartWindow := reconcile.DefaultConfig().RestartWindow
+	if value := os.Getenv("BOSUN_RESTART_WINDOW"); value != "" {
+		if parsed, ok := doctorDurationOrSeconds(value); ok && parsed > 0 {
+			restartWindow = parsed
+		}
+	}
+
+	if reconcile.RestartBreakerSamplingMismatch(driftInterval, restartWindow) {
+		_, _ = ui.Yellow.Printf("  ! Restart breaker sampling interval (%s) exceeds its window (%s)\n", driftInterval, restartWindow)
+		_, _ = ui.Blue.Println("      To fix this:")
+		_, _ = ui.Blue.Println("      - Set BOSUN_DRIFT_INTERVAL less than or equal to BOSUN_RESTART_WINDOW")
+		_, _ = ui.Blue.Println("      - Slow loops still accumulate, but sampling more frequently makes the configured window meaningful")
+		return CheckResult{Warned: 1}
+	}
+
+	_, _ = ui.Green.Printf("  * Restart breaker sampling interval (%s) fits its window (%s)\n", driftInterval, restartWindow)
+	return CheckResult{Passed: 1}
 }
 
 // checkStateDir verifies the deploy-state directory is writable.
@@ -586,6 +629,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	result.Add(checkSOPS())
 	result.Add(checkManifestDirectory(cfg))
 	result.Add(checkHookSettleDelayFUSE(cfg))
+	result.Add(checkRestartBreakerSampling())
 	result.Add(checkStateDir())
 	result.Add(checkSocketDir())
 	result.Add(checkWebhook())

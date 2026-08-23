@@ -9,10 +9,10 @@
 
 ## 2. Restart breaker baseline integrity (#265)
 
-- [ ] 2.1 In `evaluateRestartBreaker`, when `delta > 0` and `elapsed > window`, do not silently reset the baseline to the current count; carry forward enough history that a sustained slow loop still trips
-- [ ] 2.2 Preserve the earliest unresolved-restart baseline (timestamp + count) so accumulated restarts across long intervals are not discarded
-- [ ] 2.3 At config-load, warn when `BOSUN_DRIFT_INTERVAL > BOSUN_RESTART_WINDOW` (breaker can never observe a window-bounded delta otherwise)
-- [ ] 2.4 Tests: with `drift_interval > restart_window` and a looping container, breaker trips; doctor/config-load emits the misconfiguration warning
+- [x] 2.1 In `evaluateRestartBreaker`, when `delta > 0` and `elapsed > window`, do not silently reset the baseline to the current count; carry forward enough history that a sustained slow loop still trips
+- [x] 2.2 Preserve the earliest unresolved-restart baseline (timestamp + count) so accumulated restarts across long intervals are not discarded
+- [x] 2.3 At config-load, warn when `BOSUN_DRIFT_INTERVAL > BOSUN_RESTART_WINDOW` (breaker can never observe a window-bounded delta otherwise)
+- [x] 2.4 Tests: with `drift_interval > restart_window` and a looping container, breaker trips; doctor/config-load emits the misconfiguration warning
 
 ## 3. Restart breaker resolution attribution (#266)
 

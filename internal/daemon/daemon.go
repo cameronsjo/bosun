@@ -108,6 +108,9 @@ type Config struct {
 	Version string
 }
 
+// DefaultDriftInterval is the daemon's restart-count sampling cadence.
+const DefaultDriftInterval = 5 * time.Minute
+
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -124,7 +127,7 @@ func DefaultConfig() *Config {
 		ReconcileTimeout:      10 * time.Minute,
 		ShutdownTimeout:       30 * time.Second,
 		APITimeout:            30 * time.Second,
-		DriftInterval:         5 * time.Minute,
+		DriftInterval:         DefaultDriftInterval,
 		DriftAlertCooldown:    time.Hour,
 		DriftResolveAlerts:    true,
 		DriftSelfHealCooldown: reconcile.NewConfigField(15 * time.Minute),
@@ -1680,6 +1683,16 @@ func parseDurationOrSeconds(s string) (time.Duration, bool) {
 	return 0, false
 }
 
+func warnRestartBreakerSampling(logger zerolog.Logger, driftInterval, restartWindow time.Duration) {
+	if !reconcile.RestartBreakerSamplingMismatch(driftInterval, restartWindow) {
+		return
+	}
+	logger.Warn().
+		Dur("drift_interval", driftInterval).
+		Dur("restart_window", restartWindow).
+		Msg("BOSUN_DRIFT_INTERVAL exceeds BOSUN_RESTART_WINDOW; restart counts are sampled less frequently than the configured window")
+}
+
 // ConfigFromEnv loads daemon configuration from environment variables.
 func ConfigFromEnv() *Config {
 	cfg := DefaultConfig()
@@ -1907,6 +1920,7 @@ func ConfigFromEnv() *Config {
 			log.Warn().Str("env", "BOSUN_DRIFT_INTERVAL").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
 	}
+	warnRestartBreakerSampling(*log.Logger(), cfg.DriftInterval, rcfg.RestartWindow)
 
 	// Drift alert debounce (0 = disabled)
 	if v := os.Getenv("BOSUN_DRIFT_ALERT_DEBOUNCE"); v != "" {

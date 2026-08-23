@@ -285,6 +285,10 @@ When running as a daemon, drift checks run on a configurable interval (default: 
 
 Set `BOSUN_DRIFT_INTERVAL=0` to disable periodic drift checks.
 
+#### Restart Circuit Breaker
+
+The restart circuit breaker samples container restart counts during each drift check. Once restart counts begin increasing, Bosun preserves the earliest unresolved baseline until a clean sample observes no new restarts, so sustained slow loops still accumulate toward `BOSUN_RESTART_THRESHOLD` even when checks are farther apart than `BOSUN_RESTART_WINDOW`. Keep `BOSUN_DRIFT_INTERVAL` at or below `BOSUN_RESTART_WINDOW` for timely detection; daemon configuration and `bosun doctor` warn when the sampling interval is longer.
+
 #### Drift Alert Debounce
 
 Transient drift from I/O pressure, image updates, or daemon restarts generates alert noise that self-resolves within minutes. The debounce layer suppresses alerts until drift persists beyond a configurable window.
@@ -360,6 +364,9 @@ Status values: `clean` (no drift), `drifted` (items detected), `unknown` (no dep
 | `FORCE` | No | `false` | Deploy even without changes |
 | `BOSUN_STATE_DIR` | No | `/var/lib/bosun` | Directory for deploy state file |
 | `BOSUN_DRIFT_INTERVAL` | No | `5m` | Drift check interval (0 to disable) |
+| `BOSUN_RESTART_BREAKER` | No | `true` | Enable restart-loop protection |
+| `BOSUN_RESTART_THRESHOLD` | No | `5` | Accumulated restart count that trips the breaker (must be positive) |
+| `BOSUN_RESTART_WINDOW` | No | `10m` | Restart observation window; keep at least as long as the drift interval |
 | `BOSUN_DRIFT_ALERT_COOLDOWN` | No | `1h` | Cooldown between repeated drift alerts per item |
 | `BOSUN_DRIFT_ALERT_DEBOUNCE` | No | `0` | Debounce window before first drift alert (0 = disabled) |
 | `BOSUN_DRIFT_RESOLVE_ALERTS` | No | `true` | Send "drift resolved" notifications |

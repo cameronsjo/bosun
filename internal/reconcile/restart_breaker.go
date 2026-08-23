@@ -22,14 +22,16 @@ type RestartBreakerResult struct {
 
 // evaluateRestartBreaker is the pure function that computes restart circuit breaker
 // state transitions. It compares current restart counts against tracked state to
-// detect restart velocity exceeding the threshold within the window.
+// detect a sustained restart run reaching the configured threshold. The window
+// remains part of the caller contract and configuration warning, but it is not a
+// destructive reset boundary while restarts continue (#265).
 //
 // Returns which containers should be tripped and which have resolved.
 func evaluateRestartBreaker(
 	current map[string]int, // service name → current restart count
 	tracked map[string]RestartTrackingEntry,
 	threshold int,
-	window time.Duration,
+	_ time.Duration,
 	now time.Time,
 ) *RestartBreakerResult {
 	result := &RestartBreakerResult{
@@ -42,8 +44,10 @@ func evaluateRestartBreaker(
 		if !exists {
 			// First observation: record baseline, no action.
 			result.Updated[service] = RestartTrackingEntry{
-				RestartCount: count,
-				CheckedAt:    now,
+				RestartCount:         count,
+				CheckedAt:            now,
+				BaselineRestartCount: count,
+				BaselineAt:           now,
 			}
 			continue
 		}
@@ -61,59 +65,73 @@ func evaluateRestartBreaker(
 			if count <= prev.RestartCount {
 				result.Resolved = append(result.Resolved, service)
 				result.Updated[service] = RestartTrackingEntry{
-					RestartCount: count,
-					CheckedAt:    now,
+					RestartCount:         count,
+					CheckedAt:            now,
+					BaselineRestartCount: count,
+					BaselineAt:           now,
 				}
 			} else {
 				// Still accumulating restarts after trip — keep tripped, but
 				// advance the rolling baseline so a later stable cycle can resolve.
 				result.Updated[service] = RestartTrackingEntry{
-					RestartCount: count,
-					CheckedAt:    now,
-					Tripped:      true,
-					TrippedAt:    prev.TrippedAt,
+					RestartCount:         count,
+					CheckedAt:            now,
+					BaselineRestartCount: prev.BaselineRestartCount,
+					BaselineAt:           prev.BaselineAt,
+					Tripped:              true,
+					TrippedAt:            prev.TrippedAt,
 				}
 			}
 			continue
 		}
 
-		delta := count - prev.RestartCount
-		elapsed := now.Sub(prev.CheckedAt)
+		// Legacy state has no explicit baseline. Its latest observation is the
+		// conservative starting point, preserving backward-compatible decode.
+		baselineCount := prev.BaselineRestartCount
+		baselineAt := prev.BaselineAt
+		if baselineAt.IsZero() {
+			baselineCount = prev.RestartCount
+			baselineAt = prev.CheckedAt
+		}
+
+		deltaSinceLastCheck := count - prev.RestartCount
 
 		// No restarts since last check: update baseline.
-		if delta <= 0 {
+		if deltaSinceLastCheck <= 0 {
 			result.Updated[service] = RestartTrackingEntry{
-				RestartCount: count,
-				CheckedAt:    now,
+				RestartCount:         count,
+				CheckedAt:            now,
+				BaselineRestartCount: count,
+				BaselineAt:           now,
 			}
 			continue
 		}
 
-		// Within window and exceeds threshold: trip.
-		if elapsed <= window && delta >= threshold {
+		// Restart observations are discrete samples. If restarts continue on each
+		// sample, preserve their earliest baseline even when the sampling interval
+		// exceeds window; otherwise a sparse cadence makes the breaker impossible
+		// to trip (#265). A clean sample above resets the run.
+		accumulatedDelta := count - baselineCount
+		if accumulatedDelta >= threshold {
 			result.Tripped = append(result.Tripped, service)
 			result.Updated[service] = RestartTrackingEntry{
-				RestartCount: count,
-				CheckedAt:    now,
-				Tripped:      true,
-				TrippedAt:    now,
+				RestartCount:         count,
+				CheckedAt:            now,
+				BaselineRestartCount: baselineCount,
+				BaselineAt:           baselineAt,
+				Tripped:              true,
+				TrippedAt:            now,
 			}
 			continue
 		}
 
-		// Restarts detected but below threshold or outside window.
-		// If outside window, reset baseline to current count.
-		if elapsed > window {
-			result.Updated[service] = RestartTrackingEntry{
-				RestartCount: count,
-				CheckedAt:    now,
-			}
-		} else {
-			// Within window, delta below threshold: keep original baseline.
-			result.Updated[service] = RestartTrackingEntry{
-				RestartCount: prev.RestartCount,
-				CheckedAt:    prev.CheckedAt,
-			}
+		// Below threshold but still accumulating: advance the latest observation
+		// while retaining the earliest unresolved baseline.
+		result.Updated[service] = RestartTrackingEntry{
+			RestartCount:         count,
+			CheckedAt:            now,
+			BaselineRestartCount: baselineCount,
+			BaselineAt:           baselineAt,
 		}
 	}
 
@@ -134,6 +152,14 @@ func evaluateRestartBreaker(
 	}
 
 	return result
+}
+
+// RestartBreakerSamplingMismatch reports whether restart counts are sampled
+// less frequently than the configured evaluation window. Runtime accumulation
+// remains safe in this configuration, but the mismatch is operationally
+// surprising and should be surfaced by config-load and doctor (#265).
+func RestartBreakerSamplingMismatch(driftInterval, restartWindow time.Duration) bool {
+	return driftInterval > 0 && restartWindow > 0 && driftInterval > restartWindow
 }
 
 // collectRestartCounts inspects running containers to get their restart counts.
