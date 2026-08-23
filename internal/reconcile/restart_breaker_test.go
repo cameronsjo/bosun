@@ -75,7 +75,8 @@ func TestEvaluateRestartBreaker(t *testing.T) {
 		assert.Equal(t, []string{"web"}, result.Tripped)
 		assert.Empty(t, result.Resolved)
 		assert.True(t, result.Updated["web"].Tripped)
-		assert.True(t, result.Updated["web"].StabilityPending)
+		assert.False(t, result.Updated["web"].StabilityPending,
+			"the pre-stop trip sample is not a post-recovery stability candidate")
 		assert.Equal(t, now, result.Updated["web"].TrippedAt)
 	})
 
@@ -267,7 +268,14 @@ func TestEvaluateRestartBreaker(t *testing.T) {
 	t.Run("tripped entry survives when the stopped container disappears from current", func(t *testing.T) {
 		current := map[string]int{} // breaker stopped "web"; it's no longer running
 		tracked := map[string]RestartTrackingEntry{
-			"web": {RestartCount: 15, CheckedAt: now.Add(-5 * time.Minute), Tripped: true, TrippedAt: now.Add(-5 * time.Minute)},
+			"web": {
+				ContainerID:      "container-1",
+				RestartCount:     15,
+				CheckedAt:        now.Add(-5 * time.Minute),
+				Tripped:          true,
+				TrippedAt:        now.Add(-5 * time.Minute),
+				StabilityPending: true,
+			},
 		}
 
 		result := evaluateRestartBreakerCounts(current, tracked, threshold, window, now)
@@ -277,6 +285,20 @@ func TestEvaluateRestartBreaker(t *testing.T) {
 		require.Contains(t, result.Updated, "web", "tripped entry must not be dropped just because the container isn't currently running")
 		assert.True(t, result.Updated["web"].Tripped, "trip state must survive until the container is observed again")
 		assert.Equal(t, 15, result.Updated["web"].RestartCount)
+		assert.False(t, result.Updated["web"].StabilityPending,
+			"an absent container must invalidate any pre-stop stability candidate")
+
+		firstReturn := evaluateRestartBreaker(map[string]restartObservation{
+			"web": {ContainerID: "container-1", RestartCount: 15},
+		}, result.Updated, threshold, window, now.Add(time.Minute))
+		assert.Empty(t, firstReturn.Resolved,
+			"the first post-recovery observation only starts the grace interval")
+		assert.True(t, firstReturn.Updated["web"].StabilityPending)
+
+		confirmed := evaluateRestartBreaker(map[string]restartObservation{
+			"web": {ContainerID: "container-1", RestartCount: 15},
+		}, firstReturn.Updated, threshold, window, now.Add(2*time.Minute))
+		assert.Equal(t, []string{"web"}, confirmed.Resolved)
 	})
 
 	// Regression test for #348 (defect 2): resolution used to compare the
@@ -454,6 +476,29 @@ func TestRunRestartBreaker(t *testing.T) {
 		)
 		require.NoError(t, err)
 		assert.Empty(t, result.Tripped)
+		assert.Equal(t, 0, mockAPI.ContainerInspectCalls)
+	})
+
+	t.Run("stopped tripped container invalidates a pending stability candidate", func(t *testing.T) {
+		mockAPI := &dockertest.MockDockerAPI{}
+		client := docker.NewClientWithAPI(mockAPI)
+		actual := []ActualService{{Name: "web", ContainerName: "test-web-1", State: "exited"}}
+		state := &DeployState{RestartTracking: map[string]RestartTrackingEntry{
+			"web": {
+				ContainerID:      "abc123def456",
+				RestartCount:     12,
+				Tripped:          true,
+				StabilityPending: true,
+			},
+		}}
+
+		result, err := RunRestartBreaker(context.Background(), client, actual, state, 5, 10*time.Minute)
+
+		require.NoError(t, err)
+		require.Contains(t, result.Updated, "web")
+		assert.True(t, result.Updated["web"].Tripped)
+		assert.False(t, result.Updated["web"].StabilityPending)
+		assert.Empty(t, result.Resolved)
 		assert.Equal(t, 0, mockAPI.ContainerInspectCalls)
 	})
 

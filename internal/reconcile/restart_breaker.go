@@ -156,7 +156,6 @@ func evaluateRestartBreaker(
 				ContainerID:          containerID,
 				Tripped:              true,
 				TrippedAt:            now,
-				StabilityPending:     true,
 			}
 			continue
 		}
@@ -184,6 +183,11 @@ func evaluateRestartBreaker(
 			continue
 		}
 		if prev.Tripped {
+			// A missing container is not a stability observation. In particular,
+			// the breaker normally stops a service immediately after tripping it;
+			// its first later observation must start a new grace interval rather
+			// than resolving from a candidate recorded before the stop.
+			prev.StabilityPending = false
 			result.Updated[service] = prev
 		}
 	}
@@ -246,15 +250,11 @@ func RunRestartBreaker(
 ) (*RestartBreakerResult, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
-	observations, unobserved := collectRestartCounts(ctx, client, actual)
-	if len(observations) == 0 {
-		return &RestartBreakerResult{Updated: state.RestartTracking}, nil
-	}
-
 	if state.RestartTracking == nil {
 		state.RestartTracking = make(map[string]RestartTrackingEntry)
 	}
 
+	observations, unobserved := collectRestartCounts(ctx, client, actual)
 	result := evaluateRestartBreaker(observations, state.RestartTracking, threshold, window, time.Now())
 
 	// A partial Docker sample is not evidence that an unobserved service was
