@@ -1218,6 +1218,7 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 			Int("hooks_without_paths", patterns.hooksWithoutPaths).
 			Strs("patterns", patterns.sample).
 			Int("changed_files", countDistinctStrings(changedFiles)).
+			Int("matched_files", 0).
 			Int("sampled_files", len(sampleFiles)).
 			Strs("sample_files", sampleFiles).
 			Str("change_source", changeSource).

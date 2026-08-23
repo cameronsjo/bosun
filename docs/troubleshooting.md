@@ -96,10 +96,11 @@ For target hooks, an omitted key inherits root and explicit `post_sync_hooks: []
 
 Look for `Files changed but no post-sync hook patterns matched`. The warning
 reports distinct, duplicate, empty, and missing pattern counts plus at most five
-pattern and staging-relative path samples, which usually exposes a typo or a
-missing prefix such as `appdata/`. Absolute or traversal paths are redacted.
-`No files changed; post-sync hooks have nothing to evaluate` is a separate
-informational outcome and does not indicate a pattern problem.
+pattern and staging-relative path samples; evaluated and matched-file counts
+make the zero-match outcome explicit. This usually exposes a typo or a missing
+prefix such as `appdata/`. Absolute or traversal paths are redacted. `No files
+changed; post-sync hooks have nothing to evaluate` is a separate informational
+outcome and does not indicate a pattern problem.
 
 ## Debug Mode
 

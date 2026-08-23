@@ -757,6 +757,7 @@ func TestExecutePostSyncHooks_NoMatchingPatternsWarnsWithBoundedDiagnostics(t *t
 	assert.Equal(t, float64(1), entry["hooks_without_paths"])
 	assert.Equal(t, []any{"traefik/**", "authelia/**", "gatus/**", "grafana/**", "prometheus/**"}, entry["patterns"])
 	assert.Equal(t, float64(len(changedFiles)-1), entry["changed_files"], "duplicate changed paths count once")
+	assert.Equal(t, float64(0), entry["matched_files"])
 	assert.Equal(t, float64(postSyncHookFileSampleLimit), entry["sampled_files"])
 	assert.Equal(t, "deploy_result", entry["change_source"])
 	assert.Equal(t, []any{
