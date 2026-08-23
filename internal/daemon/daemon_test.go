@@ -2113,14 +2113,14 @@ func (blockingGitOps) Sync(ctx context.Context) (bool, string, string, error) {
 
 func (blockingGitOps) IsRepo(context.Context) bool { return true }
 
+
 func (blockingGitOps) DiffFiles(context.Context, string, string) ([]string, error) {
 	return nil, nil
 }
 
-// TestTriggerReconcile_BoundedByReconcileTimeout proves that startup, poll, and
-// drift-self-heal triggers -- which call TriggerReconcile with the bare daemon
-// context instead of pre-wrapping it like the webhook/socket/tcp/api sites do --
-// still get unwedged by ReconcileTimeout rather than blocking d.reconciling forever.
+// TestTriggerReconcile_BoundedByReconcileTimeout proves every trigger can pass
+// an unbounded parent context and still get unwedged by the per-cycle timeout
+// inside executeReconcile.
 func TestTriggerReconcile_BoundedByReconcileTimeout(t *testing.T) {
 	d := newConcurrencyDaemon(t)
 	d.config.ReconcileTimeout = 100 * time.Millisecond
