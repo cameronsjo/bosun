@@ -28,12 +28,14 @@ func TestDockerComposeCommandContext_CancellationSendsSIGTERM(t *testing.T) {
 	}()
 
 	waitForComposeCancellationEvent(t, events, "started")
+	waitForComposeCancellationEvent(t, events, "daemon-started")
 	started := time.Now()
 	cancel()
 
 	select {
 	case err := <-done:
 		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
 		assert.Less(t, time.Since(started), dockerComposeCancelGrace,
 			"a cooperative Docker CLI should exit during the grace period")
 	case <-time.After(dockerComposeCancelGrace + time.Second):
@@ -41,12 +43,42 @@ func TestDockerComposeCommandContext_CancellationSendsSIGTERM(t *testing.T) {
 	}
 
 	waitForComposeCancellationEvent(t, events, "term")
+	waitForComposeCancellationEvent(t, events, "daemon-term")
 	time.Sleep(600 * time.Millisecond)
 	contents, err := os.ReadFile(events)
 	require.NoError(t, err)
 	assert.NotContains(t, string(contents), "daemon-completed",
 		"graceful CLI cancellation must stop the independent daemon-side operation")
 	assert.FileExists(t, shim)
+}
+
+func TestDockerComposeCommandContext_DeadlinePreservesContextError(t *testing.T) {
+	_, events := installComposeCancellationHelper(t, "exit-on-term")
+	ctx := &controlledDeadlineContext{
+		Context:  context.Background(),
+		done:     make(chan struct{}),
+		deadline: time.Now().Add(time.Minute),
+	}
+	d := &DeployOps{ComposeUpTimeout: time.Minute}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- d.ComposeUpMultiple(ctx, []string{"compose.yml"})
+	}()
+
+	waitForComposeCancellationEvent(t, events, "started")
+	waitForComposeCancellationEvent(t, events, "daemon-started")
+	close(ctx.done)
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(dockerComposeCancelGrace + time.Second):
+		t.Fatal("compose command did not stop after its deadline")
+	}
+	waitForComposeCancellationEvent(t, events, "term")
+	waitForComposeCancellationEvent(t, events, "daemon-term")
 }
 
 func TestConfigureComposeCancellation_EscalatesAfterGrace(t *testing.T) {
@@ -58,6 +90,7 @@ func TestConfigureComposeCancellation_EscalatesAfterGrace(t *testing.T) {
 
 	require.NoError(t, cmd.Start())
 	waitForComposeCancellationEvent(t, events, "started")
+	waitForComposeCancellationEvent(t, events, "daemon-started")
 	started := time.Now()
 	cancel()
 	err := cmd.Wait()
@@ -69,6 +102,8 @@ func TestConfigureComposeCancellation_EscalatesAfterGrace(t *testing.T) {
 	assert.Less(t, elapsed, time.Second,
 		"an uncooperative Docker CLI must be force-killed after the grace period")
 	waitForComposeCancellationEvent(t, events, "term")
+	waitForComposeCancellationEvent(t, events, "daemon-term")
+	time.Sleep(500 * time.Millisecond)
 	contents, readErr := os.ReadFile(events)
 	require.NoError(t, readErr)
 	assert.NotContains(t, string(contents), "completed")
@@ -98,20 +133,33 @@ func TestDockerComposeCancellationHelper(t *testing.T) {
 	}
 
 	events := os.Getenv("BOSUN_TEST_COMPOSE_CANCEL_EVENTS")
-	if mode == "daemon-work" {
-		time.Sleep(400 * time.Millisecond)
-		appendComposeCancellationEvent(events, "daemon-completed")
-		return
-	}
-
 	signals := make(chan os.Signal, 1)
 	signalNotify(signals)
 	defer signalStop(signals)
 
+	if mode == "daemon-work" || mode == "ignore-term-daemon" {
+		appendComposeCancellationEvent(events, "daemon-started")
+		select {
+		case <-signals:
+			appendComposeCancellationEvent(events, "daemon-term")
+			if mode == "ignore-term-daemon" {
+				time.Sleep(400 * time.Millisecond)
+				appendComposeCancellationEvent(events, "daemon-completed")
+			}
+		case <-time.After(30 * time.Second):
+			appendComposeCancellationEvent(events, "daemon-completed")
+		}
+		return
+	}
+
 	var daemonWork *exec.Cmd
-	if mode == "exit-on-term" {
+	if mode == "exit-on-term" || mode == "ignore-term" {
 		daemonWork = exec.Command(os.Args[0], "-test.run=^TestDockerComposeCancellationHelper$")
-		daemonWork.Env = composeCancellationHelperEnv("daemon-work")
+		daemonMode := "daemon-work"
+		if mode == "ignore-term" {
+			daemonMode = "ignore-term-daemon"
+		}
+		daemonWork.Env = composeCancellationHelperEnv(daemonMode)
 		if err := daemonWork.Start(); err != nil {
 			os.Exit(2)
 		}
@@ -122,10 +170,6 @@ func TestDockerComposeCancellationHelper(t *testing.T) {
 	case <-signals:
 		appendComposeCancellationEvent(events, "term")
 		if mode == "exit-on-term" {
-			if daemonWork != nil && daemonWork.Process != nil {
-				_ = daemonWork.Process.Kill()
-				_ = daemonWork.Wait()
-			}
 			return
 		}
 		select {}
@@ -164,8 +208,12 @@ func waitForComposeCancellationEvent(t *testing.T, path, want string) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		contents, err := os.ReadFile(path)
-		if err == nil && strings.Contains(string(contents), want) {
-			return
+		if err == nil {
+			for _, event := range strings.Split(string(contents), "\n") {
+				if event == want {
+					return
+				}
+			}
 		}
 		if err != nil && !os.IsNotExist(err) {
 			require.NoError(t, err)
@@ -195,4 +243,27 @@ func signalNotify(ch chan<- os.Signal) {
 
 func signalStop(ch chan<- os.Signal) {
 	signal.Stop(ch)
+}
+
+type controlledDeadlineContext struct {
+	context.Context
+	done     chan struct{}
+	deadline time.Time
+}
+
+func (c *controlledDeadlineContext) Deadline() (time.Time, bool) {
+	return c.deadline, true
+}
+
+func (c *controlledDeadlineContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *controlledDeadlineContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
 }

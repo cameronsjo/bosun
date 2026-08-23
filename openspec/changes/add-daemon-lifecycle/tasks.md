@@ -31,5 +31,5 @@
 
 ## 5. Documentation
 
-- [ ] 5.1 Update `skills/onboard/resources/gitops.md` (daemon reconcile lifecycle guarantees)
-- [ ] 5.2 Update `docs/troubleshooting.md` (wedged-reconcile recovery now automatic at timeout)
+- [x] 5.1 Update `skills/onboard/resources/gitops.md` (daemon reconcile lifecycle guarantees)
+- [x] 5.2 Update `docs/troubleshooting.md` (wedged-reconcile recovery now automatic at timeout)

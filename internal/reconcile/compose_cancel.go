@@ -8,10 +8,11 @@ import (
 	"time"
 )
 
-// dockerComposeCancelGrace bounds how long the Docker CLI may unwind after a
-// graceful termination signal before Go force-kills it. Docker and the Compose
-// plugin convert the signal into context cancellation, which closes the daemon
-// request instead of abandoning it when only the local CLI is killed.
+// dockerComposeCancelGrace bounds how long the Docker CLI and Compose plugin
+// may unwind after a graceful termination signal before cancellation escalates.
+// They convert the signal into context cancellation, which closes the daemon
+// request instead of abandoning it when only the local wrapper process is
+// killed.
 const dockerComposeCancelGrace = 5 * time.Second
 
 func dockerComposeCommandContext(ctx context.Context, args ...string) *exec.Cmd {
@@ -26,7 +27,7 @@ func configureComposeCancellation(cmd *exec.Cmd, grace time.Duration) {
 		if cmd.Process == nil {
 			return os.ErrProcessDone
 		}
-		err := signalComposeProcess(cmd.Process)
+		err := cancelComposeProcess(cmd.Process, grace)
 		if errors.Is(err, os.ErrProcessDone) {
 			return os.ErrProcessDone
 		}

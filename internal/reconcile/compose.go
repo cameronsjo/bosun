@@ -78,12 +78,15 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if !errors.Is(ctxErr, context.DeadlineExceeded) {
+				return fmt.Errorf("docker compose up canceled: %w", ctxErr)
+			}
 			logger.Error().
 				Str(log.FieldOperation, "compose_up").
 				Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 				Msg("Docker compose up timed out")
-			return fmt.Errorf("docker compose up timed out after %v", timeout)
+			return fmt.Errorf("docker compose up timed out after %v: %w", timeout, ctxErr)
 		}
 
 		stderrStr := stderr.String()

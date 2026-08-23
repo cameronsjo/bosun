@@ -44,11 +44,11 @@ Bosun requires Docker Compose v2:
 ### "docker compose up timed out"
 
 `BOSUN_COMPOSE_UP_TIMEOUT` bounds each compose-up operation (default `10m`).
-When that deadline expires, Bosun signals the Docker CLI so Docker Compose
-cancels its daemon request, waits up to five seconds for a graceful exit, and
-then force-kills an unresponsive CLI. The command can therefore return a few
-seconds after the configured timeout, but container startup should not continue
-in the background after Bosun reports the failure.
+When that deadline expires, Bosun signals the Docker CLI and Compose plugin so
+they cancel the daemon request, waits up to five seconds for a graceful exit,
+and then force-kills unresponsive local processes. The command can therefore
+return a few seconds after the configured timeout, but container startup should
+not continue in the background after Bosun reports the failure.
 
 If startup continues, capture `docker compose version`, the Bosun error, and
 daemon events from `docker events --since <timestamp>` when reporting the bug.
