@@ -2582,6 +2582,134 @@ func TestRunDriftCheck_DriftTypeTransitionRespectsDebounce(t *testing.T) {
 	assert.NotContains(t, loaded.DriftDebounceItems, "api:missing")
 }
 
+func TestRunDriftCheck_IgnoreRuleSuppressesResolutionAlert(t *testing.T) {
+	provider := &testAlertProvider{}
+	d := newAlertDaemon(t, provider)
+	d.dockerClientOverride = docker.NewClientWithAPI(&dockertest.MockDockerAPI{})
+	d.config.ReconcileConfig.RestartBreakerEnabled = false
+	d.config.ReconcileConfig.DriftIgnore = reconcile.NewConfigField([]reconcile.DriftIgnoreRule{
+		{Service: "api", Type: "missing"},
+	})
+
+	stateFile := d.config.ReconcileConfig.StateFile
+	state := &reconcile.DeployState{
+		LastDeployedCommit: "abc123",
+		DeclaredServices: []reconcile.DeclaredService{
+			{Name: "api", Image: "api:latest"},
+		},
+		DriftItems: []reconcile.DriftItem{
+			{Service: "api", Type: reconcile.DriftMissing},
+		},
+		DriftAlertedItems: map[string]time.Time{
+			"api:missing": time.Now().Add(-30 * time.Minute),
+		},
+	}
+	require.NoError(t, reconcile.SaveState(stateFile, state))
+
+	d.runDriftCheck(context.Background())
+
+	assert.Empty(t, provider.alerts, "still-active ignored drift must not be reported as resolved")
+	loaded := reconcile.LoadState(stateFile)
+	assert.NotContains(t, loaded.DriftAlertedItems, "api:missing", "suppressed keys must leave alert state silently")
+}
+
+func TestRunDriftCheck_IgnoreRuleSuppressesTypeTransitionResolution(t *testing.T) {
+	provider := &testAlertProvider{}
+	d := newAlertDaemon(t, provider)
+	d.dockerClientOverride = docker.NewClientWithAPI(&dockertest.MockDockerAPI{})
+	d.config.ReconcileConfig.RestartBreakerEnabled = false
+	d.config.ReconcileConfig.DriftIgnore = reconcile.NewConfigField([]reconcile.DriftIgnoreRule{
+		{Service: "api", Type: "missing"},
+	})
+
+	stateFile := d.config.ReconcileConfig.StateFile
+	state := &reconcile.DeployState{
+		LastDeployedCommit: "abc123",
+		DeclaredServices: []reconcile.DeclaredService{
+			{Name: "api", Image: "api:latest"},
+		},
+		DriftItems: []reconcile.DriftItem{
+			{Service: "api", Type: reconcile.DriftUnhealthy},
+		},
+		DriftAlertedItems: map[string]time.Time{
+			"api:unhealthy": time.Now().Add(-30 * time.Minute),
+		},
+	}
+	require.NoError(t, reconcile.SaveState(stateFile, state))
+
+	d.runDriftCheck(context.Background())
+
+	assert.Empty(t, provider.alerts, "an ignored replacement drift type must not resolve the service")
+	loaded := reconcile.LoadState(stateFile)
+	assert.NotContains(t, loaded.DriftAlertedItems, "api:unhealthy", "ignored replacement drift retires the old type silently")
+}
+
+func TestRunDriftCheck_MixedIgnoredAndResolvedAlertsOnlyResolution(t *testing.T) {
+	provider := &testAlertProvider{}
+	d := newAlertDaemon(t, provider)
+	d.dockerClientOverride = docker.NewClientWithAPI(&dockertest.MockDockerAPI{})
+	d.config.ReconcileConfig.RestartBreakerEnabled = false
+	d.config.ReconcileConfig.DriftIgnore = reconcile.NewConfigField([]reconcile.DriftIgnoreRule{
+		{Service: "api", Type: "missing"},
+	})
+
+	stateFile := d.config.ReconcileConfig.StateFile
+	state := &reconcile.DeployState{
+		LastDeployedCommit: "abc123",
+		DeclaredServices: []reconcile.DeclaredService{
+			{Name: "api", Image: "api:latest"},
+		},
+		DriftItems: []reconcile.DriftItem{
+			{Service: "api", Type: reconcile.DriftMissing},
+			{Service: "web", Type: reconcile.DriftMissing},
+		},
+		DriftAlertedItems: map[string]time.Time{
+			"api:missing": time.Now().Add(-30 * time.Minute),
+			"web:missing": time.Now().Add(-30 * time.Minute),
+		},
+	}
+	require.NoError(t, reconcile.SaveState(stateFile, state))
+
+	d.runDriftCheck(context.Background())
+
+	require.Len(t, provider.alerts, 1)
+	assert.Equal(t, "Drift Resolved", provider.alerts[0].Title)
+	assert.Contains(t, provider.alerts[0].Message, "web:missing")
+	assert.NotContains(t, provider.alerts[0].Message, "api:missing")
+	loaded := reconcile.LoadState(stateFile)
+	assert.Empty(t, loaded.DriftAlertedItems)
+}
+
+func TestRunDriftCheck_MixedIgnoredAndResolvedDeliveryFailureKeepsOnlyResolution(t *testing.T) {
+	provider := &testAlertProvider{err: errors.New("provider unreachable")}
+	d := newAlertDaemon(t, provider)
+	d.dockerClientOverride = docker.NewClientWithAPI(&dockertest.MockDockerAPI{})
+	d.config.ReconcileConfig.RestartBreakerEnabled = false
+	d.config.ReconcileConfig.DriftIgnore = reconcile.NewConfigField([]reconcile.DriftIgnoreRule{
+		{Service: "api", Type: "missing"},
+	})
+
+	stateFile := d.config.ReconcileConfig.StateFile
+	state := &reconcile.DeployState{
+		LastDeployedCommit: "abc123",
+		DeclaredServices: []reconcile.DeclaredService{
+			{Name: "api", Image: "api:latest"},
+		},
+		DriftAlertedItems: map[string]time.Time{
+			"api:missing": time.Now().Add(-30 * time.Minute),
+			"web:missing": time.Now().Add(-30 * time.Minute),
+		},
+	}
+	require.NoError(t, reconcile.SaveState(stateFile, state))
+
+	d.runDriftCheck(context.Background())
+
+	assert.Equal(t, 1, provider.attempts, "only the genuine resolution should be delivered")
+	loaded := reconcile.LoadState(stateFile)
+	assert.NotContains(t, loaded.DriftAlertedItems, "api:missing", "suppressed state is removed without delivery")
+	assert.Contains(t, loaded.DriftAlertedItems, "web:missing", "failed resolution delivery must remain retryable")
+}
+
 func TestRunDriftCheck_ResolvedAlertDeliveryFailure_StateNotCleared(t *testing.T) {
 	// Simulates drift that was previously alerted and has now resolved (the
 	// declared service is running again). If the resolution-alert delivery

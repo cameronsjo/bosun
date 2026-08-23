@@ -38,8 +38,9 @@ implementation gaps with no authoritative requirement to regress against.
   no-op success (nothing to deliver).
 - **Resolution vs suppression** — a "drift resolved" alert SHALL NOT fire when the
   apparent resolution is caused by ignore-rule suppression. Resolution must
-  reflect actual state convergence (the item left the *unfiltered* drift report),
-  not the appearance of an item dropping out of the filtered list.
+  reflect actual service-level convergence (the service has no critical drift in
+  the *unfiltered* report), not an item changing type or dropping out of the
+  filtered list.
 - **Ignore-rule validation** — drift ignore rules SHALL reject undocumented `type`
   values and invalid glob patterns at config load (fail-fast), and SHALL surface
   a total-suppression rule (`service: "*"`, `type: "*"`) as an error or loud

@@ -15,8 +15,8 @@ spec, hence this short design note.
 - Goals:
   - Make dedup/throttle state advance only on confirmed delivery, reusing the
     existing `alert.Manager` aggregated-error contract.
-  - Make "resolved" mean "left the unfiltered drift report," never "got
-    suppressed by a new ignore rule."
+  - Make "resolved" mean "the service has no critical drift in the unfiltered
+    report," never "changed type" or "got suppressed by a new ignore rule."
   - Fail fast on malformed ignore rules at load instead of silently
     over-suppressing.
 - Non-Goals:
@@ -40,11 +40,12 @@ spec, hence this short design note.
 
 - **Decision: Compute resolution against the unfiltered drift report.**
   Ignore-rule filtering happens after detection. Resolution must compare the
-  previously-alerted keys against the set of items that are *truly* gone from the
-  raw report, not merely filtered out. Keys that vanished only because a new
-  ignore rule matched them are removed from `DriftAlertedItems` silently (no
-  resolution alert), preserving the dedup map's integrity without lying about
-  state.
+  services represented by previously-alerted keys against the services that
+  still have critical drift in the raw report. A critical type transition remains
+  active drift for that service. Keys hidden because a new ignore rule matched
+  all of the service's current critical drift are removed from
+  `DriftAlertedItems` silently (no resolution alert), preserving the dedup map's
+  integrity without lying about state.
   - Alternatives considered: alert "drift now ignored" instead of "resolved"
     (extra noise; the operator just authored the rule).
 
