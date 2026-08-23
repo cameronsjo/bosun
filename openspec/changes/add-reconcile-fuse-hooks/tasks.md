@@ -34,11 +34,14 @@
 - [x] 6.1 In `CopyFileIfChanged` (`fileutil.go:217-221`) / `deploy.go:314-321`, ensure a successful rename whose post-write verification fails still records the path in the change set (or surfaces a hard error) — never silently omits it
 - [x] 6.2 Tests: simulated verification failure still results in the path being hook-eligible (not skipped on retry)
 
-## 7. Hot-reload removal semantics (#267 / #268)
+## 7. Hot-reload presence semantics (#267 / #268)
 
-- [ ] 7.1 Make the reload DTO field for `hook_settle_delay` a `*time.Duration` (`config_reload.go:38-41`, `daemon.go:1621-1624`); reloader overwrites only when non-nil
-- [ ] 7.2 Make the reload DTO field for `post_sync_hooks` a `*[]PostSyncHook` (`config_reload.go:36`, `configfield.go:59-66`); absent key ⇒ nil ⇒ retained
-- [ ] 7.3 Tests: absent `hook_settle_delay` retains prior value; explicit `0s` zeroes it; absent `post_sync_hooks` retains hooks; `post_sync_hooks: []` clears them
+- [ ] 7.1 Preserve raw `hook_settle_delay` key presence through `internal/config`, daemon and CLI `ConfigReloader` closures, and `ReloadedConfig`; absent key retains the effective delay while explicit `0s` sets zero
+- [ ] 7.2 Treat a successfully loaded root hook slice as authoritative in `reloadProjectConfig`: absent `post_sync_hooks` and explicit `[]` both clear file-sourced hooks, while `BOSUN_POST_SYNC_HOOKS` remains a replacement override
+- [ ] 7.3 Preserve graceful degradation: a missing config file or read/parse error retains existing hooks and delay; keep invalid executable hooks on the existing fail-closed path
+- [ ] 7.4 Apply root hook state before target overrides: absent target hooks inherit root, explicit target `[]` clears inheritance, and removal of target-specific hooks discards stale target state; preserve slice cloning and target isolation
+- [ ] 7.5 Add table-driven config/reload tests covering initial load, absent vs explicit zero/empty, env replacement precedence, config deletion/error, and root/target combinations for both daemon and CLI reload closures
+- [ ] 7.6 Run focused tests repeatedly and under `-race`, plus relevant full tests, vet, changed-code lint, build, and strict OpenSpec validation
 
 ## 8. Documentation
 

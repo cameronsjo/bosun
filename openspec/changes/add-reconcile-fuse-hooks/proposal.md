@@ -19,8 +19,9 @@ container, so Traefik re-reads stale config and the "Restarted traefik" log lies
 record them in `WrittenFiles`, so the hook matcher sees zero changes and never
 fires — stale prod routes persist (#234, P0). A typo'd glob that matches nothing
 returns silently and no-ops forever (#269, P1). Hot-reload of `bosun.yaml`
-silently zeroes `HookSettleDelay` and drops `post_sync_hooks` when the keys are
-absent, regressing an operator's FUSE workaround weeks later (#267 / #268, P1).
+mishandles absent hook keys: a missing delay silently resets an operator's FUSE
+workaround, while a missing hooks key leaves removed file-sourced hooks active
+(#267 / #268, P1).
 An `exec` hook with an empty command is silently skipped (#283, P2), and a
 post-write content-verification failure makes a file silently miss future hooks
 (#282, P2).
@@ -56,11 +57,11 @@ rejection.
   post-write content verification fails SHALL still be recorded as written (so
   the hook fires) or SHALL surface as an error; it SHALL NOT silently vanish from
   the change set.
-- **Hot-reload removal semantics (#267 / #268)** — absent `post_sync_hooks` /
-  `hook_settle_delay` keys on hot-reload SHALL retain the prior in-memory value
-  (DTO pointer fields distinguish "absent" from "explicitly set"); operators
-  clear hooks with `post_sync_hooks: []` and reset the delay with an explicit
-  `hook_settle_delay: 0s`.
+- **Hot-reload presence semantics (#267 / #268)** — the two fields intentionally
+  differ: an absent `hook_settle_delay` SHALL retain the effective delay, while
+  an absent `post_sync_hooks` in a successfully loaded config SHALL clear stale
+  file-sourced hooks. Explicit `hook_settle_delay: 0s` clears the delay, and
+  `BOSUN_*` overrides remain authoritative replacements.
 
 ## Impact
 
@@ -95,8 +96,9 @@ rejection.
 - New / changed config + env vars:
   - `BOSUN_HOOK_SETTLE_DELAY` default becomes a non-zero safe value (documented
     breaking default change)
-  - `post_sync_hooks` / `hook_settle_delay` DTO fields become pointer-typed for
-    absent-vs-set distinction (internal; affects reload semantics)
+  - `hook_settle_delay` carries raw key presence through config loading and the
+    reload DTO; `post_sync_hooks` remains an authoritative slice snapshot whose
+    nil/empty value clears file-sourced hooks after a successful load
 - Docs: `skills/onboard/resources/gitops.md` (hook timing, FUSE), `docs/gitops.md`
   / `docs/troubleshooting.md`, `CLAUDE.md` env-var table (settle-delay default,
   reload semantics).

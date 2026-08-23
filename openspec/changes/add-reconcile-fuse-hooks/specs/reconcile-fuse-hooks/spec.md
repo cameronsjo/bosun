@@ -90,11 +90,13 @@ A successful file write whose post-write content verification fails SHALL NOT be
 - **AND** a subsequent deploy finds the on-disk content already matches the source hash
 - **THEN** the reconciler does not skip the file in a way that permanently prevents the hook from firing
 
-### Requirement: Hook Config Hot-Reload Removal Semantics
+### Requirement: Hook Config Presence Semantics
 
-On `bosun.yaml` hot-reload, the reconciler SHALL distinguish a `post_sync_hooks` or `hook_settle_delay` key that is absent from one that is explicitly set. An absent key SHALL retain the previously loaded in-memory value; it SHALL NOT silently reset the value to its zero. The reload DTO fields SHALL be pointer-typed so that an absent YAML key decodes to nil and is skipped by the reloader.
+On a successful `bosun.yaml` hot-reload, the reconciler SHALL apply field-specific absence semantics. An absent `hook_settle_delay` key SHALL retain the previously effective in-memory value, while an explicit `hook_settle_delay: 0s` SHALL set it to zero. An absent `post_sync_hooks` key SHALL clear stale file-sourced hooks, as SHALL an explicit `post_sync_hooks: []`.
 
-To clear hooks, an operator SHALL set `post_sync_hooks: []`. To reset the settle delay to zero, an operator SHALL set `hook_settle_delay: 0s` explicitly.
+The daemon and one-shot CLI reload paths SHALL implement the same semantics. `BOSUN_POST_SYNC_HOOKS` and `BOSUN_HOOK_SETTLE_DELAY` SHALL remain authoritative replacement overrides: a successful file reload SHALL NOT change either environment-sourced value. A missing config file or a config read, parse, or non-hook validation error SHALL retain the existing effective values under the established graceful-degradation behavior; only a successfully loaded config snapshot can clear file-sourced hooks. Invalid executable hooks SHALL retain their existing fail-closed behavior.
+
+Root hook state SHALL be applied before per-target overrides. A target with no `post_sync_hooks` key SHALL inherit the successfully reloaded root hook state, an explicit target `post_sync_hooks: []` SHALL clear inherited hooks for that target, and removing a prior target-specific hook key SHALL discard the stale target hooks and fall back to the current root state. Reloaded slices SHALL remain target-isolated and safe from caller mutation.
 
 #### Scenario: Absent settle-delay key retains prior value
 
@@ -107,13 +109,62 @@ To clear hooks, an operator SHALL set `post_sync_hooks: []`. To reset the settle
 - **WHEN** a later commit sets `hook_settle_delay: 0s` explicitly
 - **THEN** a hot-reload sets the in-memory delay to zero
 
-#### Scenario: Absent hooks key retains prior hooks
+#### Scenario: Absent hooks key clears file-sourced hooks
 
 - **WHEN** the daemon loaded one or more `post_sync_hooks`
 - **AND** a later commit removes the `post_sync_hooks:` section entirely
-- **THEN** a hot-reload retains the previously loaded hooks (no silent clear)
+- **THEN** a successful hot-reload clears the previously file-sourced hooks
 
 #### Scenario: Empty hooks list clears hooks
 
 - **WHEN** a later commit sets `post_sync_hooks: []`
 - **THEN** a hot-reload clears the in-memory hooks
+
+#### Scenario: Environment hook override survives file removal
+
+- **WHEN** `BOSUN_POST_SYNC_HOOKS` supplies the effective hooks
+- **AND** a successfully reloaded `bosun.yaml` omits `post_sync_hooks`
+- **THEN** the environment-sourced hooks remain unchanged
+
+#### Scenario: Environment delay override survives file reload
+
+- **WHEN** `BOSUN_HOOK_SETTLE_DELAY` supplies the effective delay
+- **AND** a successfully reloaded `bosun.yaml` omits or changes `hook_settle_delay`
+- **THEN** the environment-sourced delay remains unchanged
+
+#### Scenario: Missing config file retains effective values
+
+- **WHEN** the repo no longer contains a supported project config file
+- **THEN** hot-reload retains the existing hooks and settle delay
+- **AND** reconciliation continues under graceful degradation
+
+#### Scenario: Unreadable or malformed config retains effective values
+
+- **WHEN** the repo's project config cannot be read or parsed
+- **THEN** hot-reload retains the existing hooks and settle delay
+- **AND** reconciliation continues under graceful degradation
+
+#### Scenario: Invalid executable hooks fail closed
+
+- **WHEN** a successfully decoded project config contains an invalid executable hook
+- **THEN** hot-reload follows the existing fail-closed behavior
+- **AND** it SHALL NOT silently accept or apply that invalid hook
+
+#### Scenario: Target hook removal falls back to root
+
+- **WHEN** a target previously supplied target-specific hooks
+- **AND** a successfully reloaded config keeps the target but removes its `post_sync_hooks` key
+- **THEN** stale target-specific hooks are discarded
+- **AND** that target inherits the current root hook state
+
+#### Scenario: Explicit empty target hooks clear inheritance
+
+- **WHEN** root hooks are configured
+- **AND** a target explicitly sets `post_sync_hooks: []`
+- **THEN** that target has no hooks after reload
+
+#### Scenario: Initial load uses the same presence distinction
+
+- **WHEN** a valid project config initially omits both hook keys
+- **THEN** file-sourced hooks are empty
+- **AND** `hook_settle_delay` remains unconfigured rather than being marked as an explicit zero

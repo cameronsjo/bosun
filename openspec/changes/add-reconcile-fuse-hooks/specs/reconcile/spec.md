@@ -58,3 +58,11 @@ literal suffix that follows the `**` segment.
 
 - **WHEN** there is no previous commit (first deployment)
 - **THEN** post-sync hooks are not evaluated
+
+#### Scenario: Failed pipeline does not advance hook diff base
+
+- **WHEN** a reconciliation pulls commit B but fails at template rendering
+- **AND** the previous successful deploy was at commit A (recorded in `state.CommitHash`)
+- **THEN** on the next successful reconciliation (commit B or later commit C)
+- **AND** the hook diff is computed from commit A, not from commit B
+- **AND** files changed between A and the new commit are evaluated for hook patterns

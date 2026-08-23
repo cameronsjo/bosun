@@ -69,15 +69,18 @@ them.
   the alternative is to propagate the failure as a hard error. Silent omission —
   the current behavior — is the one outcome the spec forbids.
 
-- **Decision: Pointer-typed reload DTO fields.** `post_sync_hooks` and
-  `hook_settle_delay` reload DTO fields become `*[]PostSyncHook` / `*time.Duration`
-  so YAML decoding yields `nil` for an absent key and a non-nil value (including
-  an explicit empty slice or `0s`) for a present one. The reloader overwrites only
-  on non-nil. Absent key ⇒ retain prior value; `post_sync_hooks: []` ⇒ clear;
-  `hook_settle_delay: 0s` ⇒ explicitly zero.
-  - Alternatives considered: document "use `[]` to clear" without code change
-    (rejected for the delay — there's no in-band way to express "absent" today, so
-    it always zeroes).
+- **Decision: Field-specific presence semantics.** `hook_settle_delay` carries
+  raw YAML presence through config loading and the reload DTO so an absent key
+  retains the effective value and an explicit `0s` clears it. `post_sync_hooks`
+  is different: after a config file loads successfully, its complete hook slice
+  is authoritative, so both an absent key and `post_sync_hooks: []` clear stale
+  file-sourced hooks. A missing config file or parse/load error is not a
+  successful snapshot and retains both prior values. Environment overrides stay
+  authoritative replacements and are never changed by file reload.
+  - Alternatives considered: require `post_sync_hooks: []` to clear (rejected
+    because deleting the section is the natural declarative removal and otherwise
+    leaves stale executable behavior); treat an absent delay as zero (rejected
+    because it silently removes the FUSE workaround in #267).
 
 ## Risks / Trade-offs
 
@@ -97,10 +100,10 @@ them.
    `deploy_paths` patterns against the new no-match warning after first deploy.
 2. Operators on non-FUSE local disk who want the old instant behavior: set
    `BOSUN_HOOK_SETTLE_DELAY=0s` (or `hook_settle_delay: 0s`) explicitly.
-3. Operators clearing hooks via hot-reload: replace section removal with
-   `post_sync_hooks: []`.
-4. Rollback: revert the matcher and default; pointer DTO fields are
-   backwards-compatible to read.
+3. Operators removing file-sourced hooks may delete the section or set
+   `post_sync_hooks: []`; either form clears them after a successful reload.
+4. Rollback: revert the matcher and default; the additive delay-presence
+   representation is backwards-compatible to read.
 
 ## Open Questions
 
