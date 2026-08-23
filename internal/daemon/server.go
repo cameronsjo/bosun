@@ -7,7 +7,6 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"go.opentelemetry.io/otel/trace"
 
@@ -30,6 +30,10 @@ const (
 	// maxWebhookBodySize is the maximum allowed size for webhook request bodies (1MB).
 	// This prevents denial-of-service attacks via oversized payloads.
 	maxWebhookBodySize = 1 * 1024 * 1024
+
+	// Bound attacker-controlled GitHub attribution before it reaches logs,
+	// reconcile state, traces, or Sentry transactions.
+	maxWebhookPusherNameLength = 256
 
 	// Bound request headers before authentication or handler execution. These
 	// limits apply consistently to the webhook, Unix socket, and TCP servers.
@@ -94,6 +98,27 @@ func NewServer(d *Daemon) *Server {
 // not loopback. Operators narrow the bind with BOSUN_LISTEN_ADDR.
 func listenAddr(host string, port int) string {
 	return net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+// SanitizeWebhookPusherName strips characters that can create or visually
+// rewrite log lines, then caps the remaining attribution in Unicode code
+// points. Spaces and printable Unicode names remain unchanged. It is exported
+// so the standalone webhook receiver applies the same boundary before
+// forwarding attribution to the daemon.
+func SanitizeWebhookPusherName(name string) string {
+	var sanitized strings.Builder
+	kept := 0
+	for _, r := range name {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
+			continue
+		}
+		if kept == maxWebhookPusherNameLength {
+			break
+		}
+		sanitized.WriteRune(r)
+		kept++
+	}
+	return sanitized.String()
 }
 
 // Start starts the HTTP server on the given port, bound to the configured
@@ -378,10 +403,13 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	pusherName := SanitizeWebhookPusherName(payload.Pusher.Name)
+	source := log.SourceGitHub + ":" + pusherName
+
 	logger.Info().
 		Str(log.FieldSource, log.SourceGitHub).
 		Str(log.FieldBranch, payload.Ref).
-		Str("pusher", payload.Pusher.Name).
+		Str("pusher", pusherName).
 		Str(log.FieldCommit, payload.After).
 		Msg("GitHub push received on tracked branch")
 
@@ -392,12 +420,11 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 
 	// Trigger reconciliation with goroutine tracking
 	s.wg.Add(1)
-	go func() {
+	go func(source string) {
 		defer s.wg.Done()
 		defer sentrypkg.Recover()
 		ctx, cancel := context.WithTimeout(bgCtx, s.daemon.config.ReconcileTimeout)
 		defer cancel()
-		source := fmt.Sprintf("github:%s", payload.Pusher.Name)
 		bgLogger := log.ComponentCtx(ctx, log.ComponentWebhook)
 		if err := s.daemon.TriggerReconcile(ctx, source, false); err != nil {
 			bgLogger.Error().
@@ -409,7 +436,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 				Str(log.FieldSource, log.SourceGitHub).
 				Msg("GitHub webhook reconciliation triggered successfully")
 		}
-	}()
+	}(source)
 
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]string{

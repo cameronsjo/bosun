@@ -168,8 +168,13 @@ const maxWebhookBodySize = 1 << 20 // 1MB
 const maxWebhookHeaderBytes = 64 * 1024 // 64KB
 
 type webhookHandler struct {
-	client *daemon.Client
+	client webhookTriggerClient
 	secret string
+}
+
+type webhookTriggerClient interface {
+	Trigger(context.Context, string, bool) (*daemon.TriggerResponse, error)
+	Health(context.Context) (*daemon.HealthStatus, error)
 }
 
 func (h *webhookHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
@@ -261,8 +266,10 @@ func (h *webhookHandler) handleGitHubWebhook(w http.ResponseWriter, r *http.Requ
 		} `json:"pusher"`
 		Ref string `json:"ref"`
 	}
+	pusherName := ""
 	if err := json.Unmarshal(body, &payload); err == nil {
-		ui.Info("GitHub push from %s on %s", payload.Pusher.Name, payload.Ref)
+		pusherName = daemon.SanitizeWebhookPusherName(payload.Pusher.Name)
+		ui.Info("GitHub push from %s on %s", pusherName, payload.Ref)
 	}
 
 	// Forward to daemon
@@ -270,8 +277,8 @@ func (h *webhookHandler) handleGitHubWebhook(w http.ResponseWriter, r *http.Requ
 	defer cancel()
 
 	source := "github"
-	if payload.Pusher.Name != "" {
-		source = fmt.Sprintf("github:%s", payload.Pusher.Name)
+	if pusherName != "" {
+		source = fmt.Sprintf("github:%s", pusherName)
 	}
 
 	resp, err := h.client.Trigger(ctx, source, false)

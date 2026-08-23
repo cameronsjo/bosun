@@ -513,6 +513,13 @@ other escape hatches). With the opt-out active:
 The opt-out never bypasses a configured secret — when `WEBHOOK_SECRET` is set,
 signature validation always runs.
 
+GitHub pusher attribution is treated as untrusted even after signature
+validation. Both the daemon endpoint and the standalone webhook receiver strip
+control, formatting, and line-separator characters and cap the remaining name
+at 256 Unicode code points before writing it to logs or using it in the
+reconcile source propagated to tracing and Sentry. The same sanitization applies
+when the explicit unauthenticated-webhook opt-out is active.
+
 All daemon HTTP transports — the webhook listener, Unix socket API, and
 optional bearer-authenticated TCP API — allow at most 5 seconds to receive
 request headers and set a 32 KiB request-header parsing limit. These

@@ -315,6 +315,12 @@ and per accepted request). The Unix socket trigger (`bosun trigger`) is not
 affected. `BOSUN_LISTEN_ADDR` narrows the HTTP bind; the default stays
 all-interfaces so container-side callers reach the daemon over the docker bridge.
 
+GitHub pusher attribution is sanitized by both the daemon endpoint and the
+standalone receiver, whether a request has a valid signature or uses the direct
+daemon endpoint's explicit unauthenticated opt-out. Control, formatting, and
+line separator characters are removed and the printable name is capped at 256
+Unicode code points before it reaches logs, reconcile state, tracing, or Sentry.
+
 **Read-endpoint auth fails closed too.** `/metrics` (Prometheus) and
 `/api/widget` (Homepage) disclose the deployed commit and daemon stats, so they
 reject every request with `403` unless a token is configured. Give scrapers a
