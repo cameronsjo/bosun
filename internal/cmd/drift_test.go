@@ -342,6 +342,24 @@ func TestLoadConfiguredTargets(t *testing.T) {
 		assert.Empty(t, targets, "explicit empty env override must not fall through to bosun.yaml targets")
 	})
 
+	t.Run("from_env_null_preserves_config_targets", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(`targets:
+  - name: configured
+    target_host: user@configured
+`), 0o644))
+
+		originalDir, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { require.NoError(t, os.Chdir(originalDir)) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		t.Setenv("BOSUN_TARGETS", "null")
+		targets := loadConfiguredTargets()
+		require.Len(t, targets, 1)
+		assert.Equal(t, "configured", targets[0].Name)
+	})
+
 	t.Run("no_env_no_config_returns_nil", func(t *testing.T) {
 		t.Setenv("BOSUN_TARGETS", "")
 		targets := loadConfiguredTargets()
