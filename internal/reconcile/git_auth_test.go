@@ -68,6 +68,7 @@ func TestResolveGitAuth(t *testing.T) {
 		{name: "SCP SSH", repoURL: "git@example.com:owner/repo.git", username: "user", token: "secret", wantError: "absolute https://"},
 		{name: "local path", repoURL: "/tmp/repo.git", username: "user", token: "secret", wantError: "absolute https://"},
 		{name: "hostless HTTPS", repoURL: "https:///repo.git", username: "user", token: "secret", wantError: "absolute https://"},
+		{name: "invalid HTTPS port", repoURL: "https://example.com:notaport/repo.git", username: "user", token: "secret", wantError: "malformed"},
 		{name: "malformed URL", repoURL: "https://user%ZZ@example.com/repo.git", username: "user", token: "secret", wantError: "malformed"},
 		{name: "username userinfo", repoURL: "https://embedded@example.com/repo.git", wantError: "userinfo"},
 		{name: "password userinfo", repoURL: "https://embedded:password@example.com/repo.git", wantError: "userinfo"},
@@ -173,7 +174,7 @@ func TestGitOpsAuthenticatedHTTPSCloneAndFetch(t *testing.T) {
 	restoreHTTPSProtocol(t, server.Client())
 
 	targetDir := filepath.Join(t.TempDir(), "checkout")
-	gitOps := NewGitOps(server.URL+"/repo.git", "master", targetDir)
+	gitOps := NewGitOps(strings.Replace(server.URL, "https://", "HTTPS://", 1)+"/repo.git", "master", targetDir)
 	require.NoError(t, gitOps.Clone(context.Background(), 1))
 
 	writeAndCommit(t, sourceTree, sourceDir, "second.txt", "second", "second commit")
@@ -436,6 +437,67 @@ func TestGitOpsAuthenticatedHTTPSRedirects(t *testing.T) {
 	}
 }
 
+func TestGitOpsAuthenticatedHTTPSFetchRejectsUnsafeRedirects(t *testing.T) {
+	const username = "fetch-redirect-user"
+	const token = "fetch-redirect-token"
+	t.Setenv("BOSUN_GIT_USERNAME", username)
+	t.Setenv("BOSUN_GIT_TOKEN", token)
+
+	tests := []struct {
+		name           string
+		newDestination func(http.Handler) *httptest.Server
+	}{
+		{name: "downgrade", newDestination: httptest.NewServer},
+		{name: "cross origin", newDestination: httptest.NewTLSServer},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			serverRoot := t.TempDir()
+			sourceDir := t.TempDir()
+			remoteDir := filepath.Join(serverRoot, "repo.git")
+			sourceRepo, sourceTree := initializeGitSource(t, sourceDir)
+			_, err := sourceRepo.CreateRemote(&config.RemoteConfig{Name: "origin", URLs: []string{remoteDir}})
+			require.NoError(t, err)
+			_, err = git.PlainInit(remoteDir, true)
+			require.NoError(t, err)
+			require.NoError(t, sourceRepo.Push(&git.PushOptions{RemoteName: "origin", RefSpecs: []config.RefSpec{"refs/heads/master:refs/heads/master"}}))
+
+			var destinationRequests atomic.Int32
+			destination := tt.newDestination(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				destinationRequests.Add(1)
+			}))
+			defer destination.Close()
+
+			backend := gitHTTPBackend(t, serverRoot)
+			var redirectFetch atomic.Bool
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotUser, gotToken, ok := r.BasicAuth()
+				if !ok || gotUser != username || gotToken != token {
+					http.Error(w, "authentication required", http.StatusUnauthorized)
+					return
+				}
+				if redirectFetch.Load() {
+					http.Redirect(w, r, destination.URL+r.URL.RequestURI(), http.StatusFound)
+					return
+				}
+				backend.ServeHTTP(w, r)
+			}))
+			defer server.Close()
+			restoreHTTPSProtocol(t, server.Client())
+
+			gitOps := NewGitOps(server.URL+"/repo.git", "master", filepath.Join(t.TempDir(), "clone"))
+			require.NoError(t, gitOps.Clone(context.Background(), 1))
+			writeAndCommit(t, sourceTree, sourceDir, "second.txt", "second", "second commit")
+			require.NoError(t, sourceRepo.Push(&git.PushOptions{RemoteName: "origin", RefSpecs: []config.RefSpec{"refs/heads/master:refs/heads/master"}}))
+
+			redirectFetch.Store(true)
+			_, _, _, err = gitOps.Pull(context.Background())
+			require.ErrorContains(t, err, "redirect rejected")
+			assert.Zero(t, destinationRequests.Load())
+		})
+	}
+}
+
 func TestGitPresentationSanitization(t *testing.T) {
 	const username = "user+visible@example.com"
 	const token = "token:/?secret"
@@ -464,6 +526,16 @@ func TestGitPresentationSanitization(t *testing.T) {
 	assert.Contains(t, safe, "https://example.com/repo.git")
 	assert.Equal(t, "safe error", SanitizeGitError(fmt.Errorf("safe error")).Error())
 	assert.NoError(t, SanitizeGitError(nil))
+}
+
+func TestGitPresentationSanitizationOverlappingCredentials(t *testing.T) {
+	t.Setenv("BOSUN_GIT_USERNAME", "a")
+	t.Setenv("BOSUN_GIT_TOKEN", "abc")
+
+	safe := SanitizeGitText("username=a token=abc")
+	assert.NotContains(t, safe, "abc")
+	assert.NotContains(t, safe, "bc")
+	assert.NotContains(t, safe, "[red[redacted]cted]")
 }
 
 func initializeGitSource(t *testing.T, dir string) (*git.Repository, *git.Worktree) {

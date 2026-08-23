@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
@@ -148,30 +149,52 @@ func SanitizeGitText(value string) string {
 	token := os.Getenv("BOSUN_GIT_TOKEN")
 
 	redacted := repositoryUserinfoPattern.ReplaceAllString(value, `${1}`)
+	variantSet := make(map[string]struct{})
+	addVariant := func(variant string) {
+		if variant != "" {
+			variantSet[variant] = struct{}{}
+		}
+	}
 	for _, secret := range []string{username, token} {
 		if secret == "" {
 			continue
 		}
-		variants := []string{
-			secret,
-			url.QueryEscape(secret),
-			url.PathEscape(secret),
+		for _, variant := range []string{
+			secret, url.QueryEscape(secret), url.PathEscape(secret),
 			strings.ToLower(url.QueryEscape(secret)),
 			strings.ToLower(url.PathEscape(secret)),
-		}
-		for _, variant := range variants {
-			if variant != "" {
-				redacted = strings.ReplaceAll(redacted, variant, "[redacted]")
-			}
+		} {
+			addVariant(variant)
 		}
 	}
 	if username != "" && token != "" {
 		userinfo := url.UserPassword(username, token).String()
-		redacted = strings.ReplaceAll(redacted, userinfo, "[redacted]")
-		redacted = strings.ReplaceAll(redacted, strings.ToLower(userinfo), "[redacted]")
+		addVariant(userinfo)
+		addVariant(strings.ToLower(userinfo))
 		encoded := base64.StdEncoding.EncodeToString([]byte(username + ":" + token))
-		redacted = strings.ReplaceAll(redacted, encoded, "[redacted]")
-		redacted = strings.ReplaceAll(redacted, "Basic "+encoded, "Basic [redacted]")
+		addVariant(encoded)
+		addVariant("Basic " + encoded)
+	}
+
+	// Replace all variants in one longest-first pass. Sequential ReplaceAll
+	// calls can partially expose an overlapping secret (for example username
+	// "a" and token "abc") and then rescan the replacement marker itself.
+	variants := make([]string, 0, len(variantSet))
+	for variant := range variantSet {
+		variants = append(variants, variant)
+	}
+	sort.Slice(variants, func(i, j int) bool {
+		if len(variants[i]) == len(variants[j]) {
+			return variants[i] < variants[j]
+		}
+		return len(variants[i]) > len(variants[j])
+	})
+	if len(variants) > 0 {
+		pairs := make([]string, 0, len(variants)*2)
+		for _, variant := range variants {
+			pairs = append(pairs, variant, "[redacted]")
+		}
+		redacted = strings.NewReplacer(pairs...).Replace(redacted)
 	}
 	return redacted
 }
