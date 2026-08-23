@@ -327,6 +327,7 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 |----------|---------|-------------|
 | `BOSUN_REPO_URL` | daemon, reconcile | Git repository URL |
 | `BOSUN_REPO_BRANCH` | daemon, reconcile | Branch to track (default: `main`) |
+| `BOSUN_GIT_FETCH_DEPTH` | reconcile | Positive shallow clone/fetch history depth (default: `1`); unavailable diff bases fail safe to full deploy/all hooks |
 | `BOSUN_POLL_INTERVAL` | daemon | Polling interval in seconds (default: `3600`) |
 | `BOSUN_SOCKET_PATH` | daemon | Unix socket path (default: `/var/run/bosun.sock`) |
 | `BOSUN_ENABLE_TCP` | daemon | Enable TCP API (`true`/`false`; default: `false`) |

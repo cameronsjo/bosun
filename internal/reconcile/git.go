@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,10 +52,15 @@ func init() {
 
 // Git operation timeouts
 const (
-	GitCloneTimeout = 5 * time.Minute
-	GitFetchTimeout = 2 * time.Minute
-	GitLocalTimeout = 30 * time.Second
+	GitCloneTimeout      = 5 * time.Minute
+	GitFetchTimeout      = 2 * time.Minute
+	GitLocalTimeout      = 30 * time.Second
+	DefaultGitFetchDepth = 1
 )
+
+// ErrCommitUnavailable indicates that a requested diff endpoint is not present
+// in the local object database, usually because the checkout is shallow.
+var ErrCommitUnavailable = errors.New("commit unavailable in local git history")
 
 // GitOps represents git operations for the reconciliation workflow.
 type GitOps struct {
@@ -64,15 +70,46 @@ type GitOps struct {
 	Branch string
 	// Dir is the local directory for the repository.
 	Dir string
+	// FetchDepth controls clone and fetch history depth. Values below 1 use
+	// DefaultGitFetchDepth.
+	FetchDepth int
 }
 
 // NewGitOps creates a new GitOps instance.
 func NewGitOps(url, branch, dir string) *GitOps {
-	return &GitOps{
-		RepoURL: url,
-		Branch:  branch,
-		Dir:     dir,
+	fetchDepth, err := parseGitFetchDepth(os.Getenv("BOSUN_GIT_FETCH_DEPTH"))
+	if err != nil {
+		logger := log.Component(log.ComponentGit)
+		logger.Warn().
+			Err(err).
+			Str("env", "BOSUN_GIT_FETCH_DEPTH").
+			Int("fallback_depth", DefaultGitFetchDepth).
+			Msg("Invalid git fetch depth, using default")
 	}
+	return &GitOps{
+		RepoURL:    url,
+		Branch:     branch,
+		Dir:        dir,
+		FetchDepth: fetchDepth,
+	}
+}
+
+func parseGitFetchDepth(value string) (int, error) {
+	if value == "" {
+		return DefaultGitFetchDepth, nil
+	}
+	depth, err := strconv.Atoi(value)
+	if err != nil || depth < 1 {
+		return DefaultGitFetchDepth, fmt.Errorf("must be a positive integer, got %q", value)
+	}
+	return depth, nil
+}
+
+func (g *GitOps) effectiveFetchDepth() int {
+	if g.FetchDepth < 1 {
+		return DefaultGitFetchDepth
+	}
+	return g.FetchDepth
 }
 
 // getSSHAuth attempts to get SSH authentication from:
@@ -306,7 +343,7 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 	fetchOpts := &git.FetchOptions{
 		RemoteName: "origin",
 		RefSpecs:   []config.RefSpec{config.RefSpec(fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", g.Branch, g.Branch))},
-		Depth:      1,
+		Depth:      g.effectiveFetchDepth(),
 		Auth:       auth,
 	}
 
@@ -519,7 +556,7 @@ func (g *GitOps) Sync(ctx context.Context) (bool, string, string, error) {
 
 	if !g.IsRepo(ctx) {
 		logger.Info().Str(log.FieldPath, g.Dir).Msg("Repository not found, cloning")
-		if err := g.Clone(ctx, 1); err != nil {
+		if err := g.Clone(ctx, g.effectiveFetchDepth()); err != nil {
 			return false, "", "", err
 		}
 		commit, err := g.GetLatestCommit(ctx)
@@ -564,10 +601,18 @@ func (g *GitOps) DiffFiles(ctx context.Context, fromCommit, toCommit string) ([]
 		fromHash := plumbing.NewHash(fromCommit)
 		fromObj, err := repo.CommitObject(fromHash)
 		if err != nil {
+			if errors.Is(err, plumbing.ErrObjectNotFound) {
+				return nil, fmt.Errorf("%w: resolve from-commit %s: %v",
+					ErrCommitUnavailable, fromCommit[:MinLen(fromCommit, 8)], err)
+			}
 			return nil, fmt.Errorf("resolve from-commit %s: %w", fromCommit[:MinLen(fromCommit, 8)], err)
 		}
 		fromTree, err = fromObj.Tree()
 		if err != nil {
+			if errors.Is(err, plumbing.ErrObjectNotFound) {
+				return nil, fmt.Errorf("%w: get tree for %s: %v",
+					ErrCommitUnavailable, fromCommit[:MinLen(fromCommit, 8)], err)
+			}
 			return nil, fmt.Errorf("get tree for %s: %w", fromCommit[:MinLen(fromCommit, 8)], err)
 		}
 	}

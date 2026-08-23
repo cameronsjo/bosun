@@ -624,7 +624,7 @@ func TestExecutePostSyncHooks_DiffFilesError_FiresAllHooks(t *testing.T) {
 		}),
 	}
 
-	diffErr := fmt.Errorf("resolve from-commit abc12345: object not found")
+	diffErr := fmt.Errorf("%w: resolve from-commit abc12345: object not found", ErrCommitUnavailable)
 	mockGitOps := &mockGitWithDiff{
 		diffFiles: nil,
 		diffErr:   diffErr,
@@ -860,7 +860,7 @@ func TestRun_DeployPathsDiffFails(t *testing.T) {
 		syncChanged: true,
 		syncBefore:  "aaa111",
 		syncAfter:   "bbb222",
-		diffErr:     fmt.Errorf("object not found"),
+		diffErr:     fmt.Errorf("%w: object not found", ErrCommitUnavailable),
 	}
 
 	seedStubComposeService(t, cfg)
@@ -1799,7 +1799,7 @@ func TestReconcilerExecutePostSyncHooks(t *testing.T) {
 		}
 		client := docker.NewClientWithAPI(mockAPI)
 
-		gitOps := &mockGitOps{diffErr: fmt.Errorf("shallow clone")}
+		gitOps := &mockGitOps{diffErr: fmt.Errorf("%w: shallow clone", ErrCommitUnavailable)}
 		cfg := &Config{
 			PostSyncHooks: NewConfigField([]PostSyncHook{
 				{Container: "traefik", Paths: []string{"traefik/**"}, Action: "restart"},

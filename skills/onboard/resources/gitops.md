@@ -193,7 +193,8 @@ When `deploy_paths` is configured in `bosun.yaml`, bosun diffs the last *success
 - **First deploy runs full pipeline** — when there is no prior deploy state, the path-aware check is skipped entirely (everything is deploy-relevant)
 - **Allowlist model** — only listed paths trigger a deploy; new directories require explicit opt-in
 - **`--force` bypasses** — `bosun reconcile -f` always runs the full pipeline regardless of path matching
-- **DiffFiles failure = full deploy** — if the git diff fails (e.g., shallow clone), the safe default is to run everything
+- **Configurable shallow history** — clone and fetch use depth 1 by default; set `BOSUN_GIT_FETCH_DEPTH` to a larger positive integer when deploy diffs routinely span multiple commits
+- **Unavailable DiffFiles base = full deploy** — if the last deployed commit is absent from shallow history, bosun reports that condition explicitly and safely runs everything; post-sync hooks likewise all fire
 - **State updated on skip** — the commit is recorded as deployed so it isn't re-evaluated on the next poll
 
 ### Project Config Reload

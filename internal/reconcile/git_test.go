@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,11 +15,41 @@ import (
 )
 
 func TestNewGitOps(t *testing.T) {
+	t.Setenv("BOSUN_GIT_FETCH_DEPTH", "")
 	gitOps := NewGitOps("https://github.com/test/repo.git", "main", "/tmp/test")
 
 	assert.Equal(t, "https://github.com/test/repo.git", gitOps.RepoURL)
 	assert.Equal(t, "main", gitOps.Branch)
 	assert.Equal(t, "/tmp/test", gitOps.Dir)
+	assert.Equal(t, DefaultGitFetchDepth, gitOps.FetchDepth)
+}
+
+func TestParseGitFetchDepth(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    int
+		wantErr bool
+	}{
+		{name: "unset uses default", value: "", want: DefaultGitFetchDepth},
+		{name: "explicit default", value: "1", want: 1},
+		{name: "deeper history", value: "50", want: 50},
+		{name: "zero rejected", value: "0", want: DefaultGitFetchDepth, wantErr: true},
+		{name: "negative rejected", value: "-2", want: DefaultGitFetchDepth, wantErr: true},
+		{name: "non numeric rejected", value: "deep", want: DefaultGitFetchDepth, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseGitFetchDepth(tt.value)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func TestGitOps_IsRepo(t *testing.T) {
@@ -647,6 +678,131 @@ func TestGitOps_DiffFiles(t *testing.T) {
 		_, err := gitOps.DiffFiles(ctx, "", "0000000000000000000000000000000000000000")
 		assert.Error(t, err)
 	})
+
+	t.Run("shallow clone reports unavailable previous commit with sentinel", func(t *testing.T) {
+		sourceDir, commits := testRepoHistory(t, 3)
+		targetDir := filepath.Join(t.TempDir(), "target")
+		_, err := git.PlainClone(targetDir, false, &git.CloneOptions{
+			URL:          sourceDir,
+			Depth:        1,
+			SingleBranch: true,
+		})
+		require.NoError(t, err)
+
+		gitOps := NewGitOps(sourceDir, "master", targetDir)
+		_, err = gitOps.DiffFiles(ctx, commits[0], commits[2])
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrCommitUnavailable)
+		assert.Contains(t, err.Error(), commits[0][:8])
+	})
+}
+
+func TestGitOps_ConfiguredFetchDepth(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("configured depth is used for initial sync clone", func(t *testing.T) {
+		t.Setenv("BOSUN_GIT_FETCH_DEPTH", "3")
+		sourceDir, commits := testRepoHistory(t, 3)
+		targetDir := filepath.Join(t.TempDir(), "target")
+		gitOps := NewGitOps(sourceDir, "master", targetDir)
+
+		changed, before, after, err := gitOps.Sync(ctx)
+		require.NoError(t, err)
+		assert.True(t, changed)
+		assert.Empty(t, before)
+		assert.Equal(t, commits[2], after)
+		assert.Equal(t, 3, gitOps.FetchDepth)
+
+		files, err := gitOps.DiffFiles(ctx, commits[0], commits[2])
+		require.NoError(t, err)
+		assert.Equal(t, []string{"version.txt"}, files)
+	})
+
+	t.Run("configured fetch deepens an existing shallow clone", func(t *testing.T) {
+		t.Setenv("BOSUN_GIT_FETCH_DEPTH", "3")
+		sourceDir, commits := testRepoHistory(t, 3)
+		targetDir := filepath.Join(t.TempDir(), "target")
+		_, err := git.PlainClone(targetDir, false, &git.CloneOptions{
+			URL:          sourceDir,
+			Depth:        1,
+			SingleBranch: true,
+		})
+		require.NoError(t, err)
+
+		sourceRepo, err := git.PlainOpen(sourceDir)
+		require.NoError(t, err)
+		sourceWorktree, err := sourceRepo.Worktree()
+		require.NoError(t, err)
+		commit4 := commitTestVersion(t, sourceDir, sourceWorktree, 4)
+
+		gitOps := NewGitOps(sourceDir, "master", targetDir)
+		changed, before, after, err := gitOps.Pull(ctx)
+		require.NoError(t, err)
+		assert.True(t, changed)
+		assert.Equal(t, commits[2], before)
+		assert.Equal(t, commit4, after)
+
+		files, err := gitOps.DiffFiles(ctx, commits[1], commit4)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"version.txt"}, files)
+	})
+
+	t.Run("configured fetch deepens when the remote tip is unchanged", func(t *testing.T) {
+		t.Setenv("BOSUN_GIT_FETCH_DEPTH", "3")
+		sourceDir, commits := testRepoHistory(t, 3)
+		targetDir := filepath.Join(t.TempDir(), "target")
+		_, err := git.PlainClone(targetDir, false, &git.CloneOptions{
+			URL:          sourceDir,
+			Depth:        1,
+			SingleBranch: true,
+		})
+		require.NoError(t, err)
+
+		gitOps := NewGitOps(sourceDir, "master", targetDir)
+		changed, before, after, err := gitOps.Pull(ctx)
+		require.NoError(t, err)
+		assert.False(t, changed)
+		assert.Equal(t, commits[2], before)
+		assert.Equal(t, commits[2], after)
+
+		files, err := gitOps.DiffFiles(ctx, commits[0], commits[2])
+		require.NoError(t, err)
+		assert.Equal(t, []string{"version.txt"}, files)
+	})
+}
+
+func testRepoHistory(t *testing.T, count int) (string, []string) {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	repo, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	commits := make([]string, 0, count)
+	for version := 1; version <= count; version++ {
+		commits = append(commits, commitTestVersion(t, dir, worktree, version))
+	}
+	return dir, commits
+}
+
+func commitTestVersion(t *testing.T, dir string, worktree *git.Worktree, version int) string {
+	t.Helper()
+	name := "version.txt"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(fmt.Sprintf("version %d\n", version)), 0644))
+	_, err := worktree.Add(name)
+	require.NoError(t, err)
+	hash, err := worktree.Commit(fmt.Sprintf("version %d", version), &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test",
+			Email: "test@test.com",
+			When:  time.Unix(int64(version), 0),
+		},
+	})
+	require.NoError(t, err)
+	return hash.String()
 }
 
 func TestGitOps_RemoteBranchExists(t *testing.T) {
