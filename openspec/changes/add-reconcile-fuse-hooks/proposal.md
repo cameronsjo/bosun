@@ -49,7 +49,7 @@ rejection.
   requirement.
 - **Hook match observability (#269)** — when configured hooks evaluate changed
   files and nothing matches, the reconciler SHALL emit a discoverable warning
-  naming the patterns and sample files.
+  with bounded pattern and staging-relative file samples plus complete counts.
 - **Empty hook command rejection (#283)** — a hook whose action requires a
   command (`exec`) with an empty command SHALL be a config-load error, not a
   silent skip. **MODIFIED** reconcile requirement.

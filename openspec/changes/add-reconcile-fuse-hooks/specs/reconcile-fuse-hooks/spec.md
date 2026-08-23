@@ -58,14 +58,15 @@ The settle delay SHALL be configurable via `hook_settle_delay` in `bosun.yaml` a
 
 ### Requirement: Hook Match Observability
 
-When post-sync hooks are configured and the reconciler evaluates a non-empty set of changed files but no file matches any hook pattern, the reconciler SHALL emit a warning that surfaces the misconfiguration. The warning SHALL name the configured patterns and a sample of the evaluated changed files, and SHALL distinguish "no files changed" from "files changed but no pattern matched", so a typo'd glob produces a discoverable signal rather than a silent no-op.
+When post-sync hooks are configured and the reconciler evaluates a non-empty set of changed files but no file matches any hook pattern, the reconciler SHALL emit a warning that surfaces the misconfiguration. The warning SHALL include complete distinct, duplicate, empty, and missing pattern counts plus evaluated and matched-file counts; SHALL include at most five bounded pattern samples and five bounded staging-relative changed-file samples; SHALL redact absolute or traversal paths; and SHALL distinguish "no files changed" from "files changed but no pattern matched", so a typo'd glob produces a discoverable signal rather than a silent no-op. It SHALL NOT include file contents or hook command arguments.
 
 #### Scenario: Typo'd pattern surfaces a warning
 
 - **WHEN** a hook is configured with paths `["traefik/**"]`
 - **AND** the deploy change set contains `appdata/traefik/dynamic.yml` (prefixed differently)
-- **THEN** the reconciler logs a warning naming the configured patterns and sample changed files
+- **THEN** the reconciler logs a warning with bounded configured-pattern and staging-relative changed-file samples plus complete counts
 - **AND** the warning indicates files changed but none matched
+- **AND** the warning does not include file contents or hook command arguments
 
 #### Scenario: No-change deploy is not flagged as a mismatch
 

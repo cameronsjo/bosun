@@ -1,7 +1,9 @@
 package reconcile
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,11 +13,13 @@ import (
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
 	"github.com/cameronsjo/bosun/internal/docker"
+	logpkg "github.com/cameronsjo/bosun/internal/log"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -694,6 +698,243 @@ func TestExecutePostSyncHooks_EmptyPreviousCommit_Skips(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 0, matched, "no hooks should match on first deploy")
 	assert.False(t, dockerCalled, "hooks should be skipped on first deploy (empty previousCommit)")
+}
+
+func TestExecutePostSyncHooks_NoMatchingPatternsWarnsWithBoundedDiagnostics(t *testing.T) {
+	const secretCommandArgument = "super-secret-command-argument"
+	longPattern := strings.Repeat("private-pattern", 30) + "\ncontrol"
+	cfg := &Config{
+		PostSyncHooks: NewConfigField([]PostSyncHook{
+			{
+				Paths:     []string{"traefik/**", "traefik/**", ""},
+				Action:    "exec",
+				Container: "traefik",
+				Command:   []string{"reload", secretCommandArgument},
+			},
+			{Paths: []string{"authelia/**"}, Action: "restart", Container: "authelia"},
+			{Action: "restart", Container: "missing-paths"},
+			{Paths: []string{"gatus/**"}, Action: "restart", Container: "gatus"},
+			{Paths: []string{"grafana/**"}, Action: "restart", Container: "grafana"},
+			{Paths: []string{"prometheus/**"}, Action: "restart", Container: "prometheus"},
+			{Paths: []string{longPattern}, Action: "restart", Container: "loki"},
+		}),
+	}
+	r := NewReconciler(cfg, WithGitOperations(&mockGitWithDiff{}))
+	dockerCalled := false
+	r.dockerClientFn = func() *docker.Client {
+		dockerCalled = true
+		return nil
+	}
+
+	changedFiles := []string{
+		"appdata/traefik/one.yml",
+		"appdata/traefik/one.yml",
+		"appdata/traefik/two.yml",
+		"appdata/traefik/three.yml",
+		"appdata/traefik/four.yml",
+		"appdata/traefik/five.yml",
+		"appdata/traefik/six.yml",
+		"appdata/traefik/seven.yml",
+	}
+	var logs bytes.Buffer
+	logger := zerolog.New(&logs).Level(zerolog.InfoLevel)
+	ctx := logpkg.WithContext(context.Background(), &logger)
+
+	matched, err := r.executePostSyncHooks(ctx, "commit-A", "commit-B", &DeployResult{WrittenFiles: changedFiles}, true)
+
+	require.NoError(t, err)
+	assert.Zero(t, matched)
+	assert.False(t, dockerCalled)
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
+	assert.Equal(t, "warn", entry["level"])
+	assert.Equal(t, "Files changed but no post-sync hook patterns matched", entry["message"])
+	assert.Equal(t, float64(7), entry["hooks_configured"])
+	assert.Equal(t, float64(6), entry["patterns_configured"])
+	assert.Equal(t, float64(postSyncHookPatternSampleLimit), entry["patterns_sampled"])
+	assert.Equal(t, float64(1), entry["duplicate_patterns"])
+	assert.Equal(t, float64(1), entry["empty_patterns"])
+	assert.Equal(t, float64(1), entry["hooks_without_paths"])
+	assert.Equal(t, []any{"traefik/**", "authelia/**", "gatus/**", "grafana/**", "prometheus/**"}, entry["patterns"])
+	assert.Equal(t, float64(len(changedFiles)-1), entry["changed_files"], "duplicate changed paths count once")
+	assert.Equal(t, float64(0), entry["matched_files"])
+	assert.Equal(t, float64(postSyncHookFileSampleLimit), entry["sampled_files"])
+	assert.Equal(t, "deploy_result", entry["change_source"])
+	assert.Equal(t, []any{
+		"appdata/traefik/one.yml",
+		"appdata/traefik/two.yml",
+		"appdata/traefik/three.yml",
+		"appdata/traefik/four.yml",
+		"appdata/traefik/five.yml",
+	}, entry["sample_files"])
+	assert.NotContains(t, logs.String(), "appdata/traefik/six.yml")
+	assert.NotContains(t, logs.String(), "appdata/traefik/seven.yml")
+	assert.NotContains(t, logs.String(), secretCommandArgument)
+	assert.NotContains(t, logs.String(), longPattern)
+}
+
+func TestExecutePostSyncHooks_NoChangedFilesLogsDistinctInfo(t *testing.T) {
+	cfg := &Config{
+		PostSyncHooks: NewConfigField([]PostSyncHook{
+			{Paths: []string{"traefik/**"}, Action: "restart", Container: "traefik"},
+		}),
+	}
+	r := NewReconciler(cfg, WithGitOperations(&mockGitWithDiff{}))
+	dockerCalled := false
+	r.dockerClientFn = func() *docker.Client {
+		dockerCalled = true
+		return nil
+	}
+
+	var logs bytes.Buffer
+	logger := zerolog.New(&logs).Level(zerolog.InfoLevel)
+	ctx := logpkg.WithContext(context.Background(), &logger)
+	matched, err := r.executePostSyncHooks(ctx, "commit-A", "commit-B", nil, true)
+
+	require.NoError(t, err)
+	assert.Zero(t, matched)
+	assert.False(t, dockerCalled)
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
+	assert.Equal(t, "info", entry["level"])
+	assert.Equal(t, "No files changed; post-sync hooks have nothing to evaluate", entry["message"])
+	assert.Equal(t, float64(1), entry["hooks_configured"])
+	assert.Equal(t, "git_diff", entry["change_source"])
+	assert.Len(t, r.git.(*mockGitWithDiff).diffCalledWith, 1)
+	assert.NotContains(t, logs.String(), "no post-sync hook patterns matched")
+	assert.NotContains(t, entry, "sample_files")
+}
+
+func TestExecutePostSyncHooks_ContentHashEmptyResultDoesNotFallBackToGitDiff(t *testing.T) {
+	git := &mockGitWithDiff{diffFiles: []string{"appdata/traefik/dynamic.yml"}}
+	cfg := &Config{
+		ContentHashSync: true,
+		PostSyncHooks: NewConfigField([]PostSyncHook{
+			{Paths: []string{"appdata/traefik/**"}, Action: "restart", Container: "traefik"},
+		}),
+	}
+	r := NewReconciler(cfg, WithGitOperations(git))
+	dockerCalled := false
+	r.dockerClientFn = func() *docker.Client {
+		dockerCalled = true
+		return nil
+	}
+
+	var logs bytes.Buffer
+	logger := zerolog.New(&logs).Level(zerolog.InfoLevel)
+	ctx := logpkg.WithContext(context.Background(), &logger)
+	matched, err := r.executePostSyncHooks(ctx, "commit-A", "commit-B", &DeployResult{}, true)
+
+	require.NoError(t, err)
+	assert.Zero(t, matched)
+	assert.False(t, dockerCalled)
+	assert.Empty(t, git.diffCalledWith, "an empty content-hash result is authoritative")
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
+	assert.Equal(t, "info", entry["level"])
+	assert.Equal(t, "deploy_result", entry["change_source"])
+	assert.Equal(t, "No files changed; post-sync hooks have nothing to evaluate", entry["message"])
+}
+
+func TestExecutePostSyncHooks_StandardCopyEmptyResultUsesGitDiff(t *testing.T) {
+	git := &mockGitWithDiff{diffFiles: []string{"unraid/appdata/traefik/dynamic.yml"}}
+	cfg := &Config{
+		ContentHashSync: false,
+		InfraSubDir:     "unraid",
+		PostSyncHooks: NewConfigField([]PostSyncHook{
+			{Paths: []string{"appdata/traefik/**"}, Action: "restart", Container: "traefik"},
+		}),
+	}
+	r := NewReconciler(cfg, WithGitOperations(git))
+	dockerCalled := false
+	r.dockerClientFn = func() *docker.Client {
+		dockerCalled = true
+		return nil
+	}
+
+	matched, err := r.executePostSyncHooks(context.Background(), "commit-A", "commit-B", &DeployResult{}, true)
+
+	require.Error(t, err, "the matching fallback should attempt to acquire Docker")
+	assert.Equal(t, 1, matched)
+	assert.True(t, dockerCalled)
+	assert.Len(t, git.diffCalledWith, 1, "standard copy mode has no per-file result and must use the Git diff")
+}
+
+func TestExecutePostSyncHooks_NoConfiguredHooksSkipsDiff(t *testing.T) {
+	git := &mockGitWithDiff{diffFiles: []string{"appdata/traefik/dynamic.yml"}}
+	r := NewReconciler(&Config{}, WithGitOperations(git))
+	dockerCalled := false
+	r.dockerClientFn = func() *docker.Client {
+		dockerCalled = true
+		return nil
+	}
+
+	matched, err := r.executePostSyncHooks(context.Background(), "commit-A", "commit-B", nil, true)
+
+	require.NoError(t, err)
+	assert.Zero(t, matched)
+	assert.False(t, dockerCalled)
+	assert.Empty(t, git.diffCalledWith, "there is nothing to evaluate without configured hooks")
+}
+
+func TestExecutePostSyncHooks_FallbackNoMatchLogsNormalizedPaths(t *testing.T) {
+	git := &mockGitWithDiff{diffFiles: []string{
+		"unraid/appdata/traefik/dynamic.yml",
+		"docs/private-not-deployed.txt",
+	}}
+	cfg := &Config{
+		InfraSubDir: "unraid",
+		PostSyncHooks: NewConfigField([]PostSyncHook{
+			{Paths: []string{"traefik/**"}, Action: "restart", Container: "traefik"},
+		}),
+	}
+	r := NewReconciler(cfg, WithGitOperations(git))
+	r.dockerClientFn = func() *docker.Client { return nil }
+
+	var logs bytes.Buffer
+	logger := zerolog.New(&logs).Level(zerolog.InfoLevel)
+	ctx := logpkg.WithContext(context.Background(), &logger)
+	matched, err := r.executePostSyncHooks(ctx, "commit-A", "commit-B", nil, true)
+
+	require.NoError(t, err)
+	assert.Zero(t, matched)
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
+	assert.Equal(t, "git_diff", entry["change_source"])
+	assert.Equal(t, float64(1), entry["changed_files"])
+	assert.Equal(t, []any{"appdata/traefik/dynamic.yml"}, entry["sample_files"])
+	assert.NotContains(t, logs.String(), "docs/private-not-deployed.txt")
+}
+
+func TestHookDiagnosticSamplesAreBoundedAndNonRelativePathsAreRedacted(t *testing.T) {
+	longValue := strings.Repeat("x", hookDiagnosticValueLimit+20)
+	summary := summarizePostSyncHookPatterns([]PostSyncHook{{Paths: []string{
+		longValue + "\n",
+		"short\tpattern",
+		"/private/absolute/**",
+		`C:\private\absolute\**`,
+		"../../outside/**",
+	}}}, postSyncHookPatternSampleLimit)
+
+	assert.Equal(t, 5, summary.distinct)
+	assert.Equal(t, []string{
+		strings.Repeat("x", hookDiagnosticValueLimit-1) + "…",
+		"short?pattern",
+		"[non-relative-pattern]",
+	}, summary.sample, "unsafe patterns collapse to one redacted sample")
+	for _, pattern := range summary.sample {
+		assert.LessOrEqual(t, len([]rune(pattern)), hookDiagnosticValueLimit)
+		assert.NotContains(t, pattern, "\n")
+		assert.NotContains(t, pattern, "\t")
+	}
+
+	sample := sampleDistinctPaths([]string{
+		"appdata/traefik/dynamic.yml",
+		"/private/var/secret.txt",
+		"../outside/secret.txt",
+		"/another/private/path.txt",
+	}, postSyncHookFileSampleLimit)
+	assert.Equal(t, []string{"appdata/traefik/dynamic.yml", "[non-relative-path]"}, sample)
 }
 
 // mockGitWithDiff extends the basic mock with controllable DiffFiles behavior.
@@ -1945,6 +2186,37 @@ func TestReloadProjectConfig(t *testing.T) {
 		require.NoError(t, r.reloadProjectConfig())
 		require.Len(t, r.config.PostSyncHooks.Value, 1)
 		assert.Equal(t, "new-container", r.config.PostSyncHooks.Value[0].Container)
+	})
+
+	t.Run("no-match diagnostics use the reloaded hook snapshot", func(t *testing.T) {
+		cfg := &Config{
+			PostSyncHooks: NewConfigField([]PostSyncHook{
+				{Paths: []string{"old/**"}, Action: "restart", Container: "old-container"},
+			}),
+			ConfigReloader: func(dir string) (*ReloadedConfig, error) {
+				return &ReloadedConfig{
+					PostSyncHooks: []PostSyncHook{
+						{Paths: []string{"current/**"}, Action: "restart", Container: "current-container"},
+					},
+				}, nil
+			},
+		}
+		r := NewReconciler(cfg, WithGitOperations(&mockGitWithDiff{}))
+		require.NoError(t, r.reloadProjectConfig())
+
+		var logs bytes.Buffer
+		logger := zerolog.New(&logs).Level(zerolog.InfoLevel)
+		ctx := logpkg.WithContext(context.Background(), &logger)
+		matched, err := r.executePostSyncHooks(ctx, "commit-A", "commit-B", &DeployResult{
+			WrittenFiles: []string{"unmatched/file.yml"},
+		}, true)
+
+		require.NoError(t, err)
+		assert.Zero(t, matched)
+		var entry map[string]any
+		require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
+		assert.Equal(t, []any{"current/**"}, entry["patterns"])
+		assert.NotContains(t, logs.String(), "old/**")
 	})
 
 	t.Run("env override prevents hook reload", func(t *testing.T) {

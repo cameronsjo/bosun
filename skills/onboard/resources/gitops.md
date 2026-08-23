@@ -210,9 +210,17 @@ critical_containers:
 
 ### Post-Sync Hooks
 
-After `docker compose up`, bosun determines which files changed and matches them against configured hook patterns. When content-hash sync is enabled (default), hooks use the list of files actually written to disk — skipping files whose content didn't change. When disabled or in remote mode, hooks fall back to git diff. This solves services like Traefik that don't detect config file changes on certain filesystems (e.g., Unraid's FUSE mount).
+After `docker compose up`, bosun determines which files changed and matches them against configured hook patterns. When content-hash sync is enabled (default), hooks use the list of files actually written to disk — an empty result is authoritative no-change. When content-hash sync is disabled, local hooks fall back to git diff because standard-copy mode does not populate per-file writes. Remote deploys have no file-level tracking and fire every configured hook. This solves services like Traefik that don't detect config file changes on certain filesystems (e.g., Unraid's FUSE mount).
 
 Written/deleted paths and fallback git-diff paths use one canonical staging-relative namespace (for example, `appdata/traefik/**`). The fallback strips `BOSUN_INFRA_DIR` from repo-relative paths and diffs from `DeployState.LastDeployedCommit`, so a failed attempt never advances the hook diff base or loses changes from the next successful retry.
+
+If files changed but none match any configured hook pattern, bosun warns with
+distinct/duplicate/empty pattern counts, at most five pattern samples, the
+evaluated-file count, an explicit zero matched-file count, and at most five
+staging-relative path samples. Absolute or traversal paths are redacted. A
+deploy with no changed files is logged separately at info level and is not
+treated as a likely pattern mistake. Hook diagnostics never include file
+contents or hook command arguments.
 
 Two timing controls are available:
 - **`hook_settle_delay`** — global pause after deploy, before any hooks run (filesystem propagation)
