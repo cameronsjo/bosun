@@ -515,10 +515,10 @@ signature validation always runs.
 
 All daemon HTTP transports — the webhook listener, Unix socket API, and
 optional bearer-authenticated TCP API — allow at most 5 seconds to receive
-request headers and bound header storage to 32 KiB. These pre-handler limits
-reduce exposure to slow-header and oversized-header denial-of-service attacks;
-they are independent of `BOSUN_API_TIMEOUT`, which bounds handler work after a
-request has been accepted.
+request headers and set a 32 KiB request-header parsing limit. These
+pre-handler limits reduce exposure to slow-header and oversized-header
+denial-of-service attacks without changing the existing per-operation
+`BOSUN_API_TIMEOUT` behavior.
 
 ## Daemon Metrics and Widget Authentication
 
