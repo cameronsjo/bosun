@@ -1429,7 +1429,7 @@ func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, s
 			}
 		}
 	} else if len(result.Tripped) == 0 {
-		logger.Debug().Msg("Restart breaker check complete: no containers in restart loops")
+		logger.Debug().Msg("Restart breaker check complete: no new trip or resolution transitions")
 	}
 }
 

@@ -288,7 +288,7 @@ Set `BOSUN_DRIFT_INTERVAL=0` to disable periodic drift checks.
 
 #### Restart Circuit Breaker
 
-The restart circuit breaker samples container restart counts during each drift check. Once restart counts begin increasing, Bosun preserves the earliest unresolved baseline until a clean sample observes no new restarts, so sustained slow loops still accumulate toward `BOSUN_RESTART_THRESHOLD` even when checks are farther apart than `BOSUN_RESTART_WINDOW`. Keep `BOSUN_DRIFT_INTERVAL` at or below `BOSUN_RESTART_WINDOW` for timely detection; daemon configuration and `bosun doctor` warn when the sampling interval is longer.
+The restart circuit breaker samples container identity and restart counts during each drift check. Once restart counts begin increasing, Bosun preserves the earliest unresolved baseline until a clean sample observes no new restarts, so sustained slow loops still accumulate toward `BOSUN_RESTART_THRESHOLD` even when checks are farther apart than `BOSUN_RESTART_WINDOW`. A deploy can recreate a container and reset Docker's restart count; Bosun treats the changed identity as recreation, keeps an existing trip active, and resolves it only after the same container identity has no additional restarts across the next drift-check interval. Missing containers retain the trip but restart the stability grace when they return; transient inspect failures preserve the last persisted observation and cannot count as recovery. Keep `BOSUN_DRIFT_INTERVAL` at or below `BOSUN_RESTART_WINDOW` for timely detection; daemon configuration and `bosun doctor` warn when the sampling interval is longer.
 
 #### Drift Alert Debounce
 

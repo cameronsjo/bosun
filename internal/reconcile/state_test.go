@@ -463,6 +463,15 @@ func TestSaveState_RestartBreakerBaselineRoundTrip(t *testing.T) {
 				CheckedAt:            checkedAt,
 				BaselineRestartCount: 1,
 				BaselineAt:           baselineAt,
+				ContainerID:          "container-1",
+			},
+			"db": {
+				RestartCount:     8,
+				CheckedAt:        checkedAt,
+				ContainerID:      "container-2",
+				Tripped:          true,
+				TrippedAt:        checkedAt,
+				StabilityPending: true,
 			},
 		},
 	}
@@ -472,12 +481,13 @@ func TestSaveState_RestartBreakerBaselineRoundTrip(t *testing.T) {
 
 	require.Contains(t, loaded.RestartTracking, "web")
 	assert.Equal(t, original.RestartTracking["web"], loaded.RestartTracking["web"])
+	assert.Equal(t, original.RestartTracking["db"], loaded.RestartTracking["db"])
 
 	// A daemon restart between sparse samples must not discard the accumulated
 	// run. Reaching the threshold after reload still trips even though the next
 	// observation is outside the nominal window.
 	now := checkedAt.Add(15 * time.Minute)
-	result := evaluateRestartBreaker(map[string]int{"web": 6}, loaded.RestartTracking, 5, 10*time.Minute, now)
+	result := evaluateRestartBreakerCounts(map[string]int{"web": 6}, loaded.RestartTracking, 5, 10*time.Minute, now)
 	assert.Equal(t, []string{"web"}, result.Tripped)
 	assert.Equal(t, baselineAt, result.Updated["web"].BaselineAt)
 	assert.Equal(t, 1, result.Updated["web"].BaselineRestartCount)
@@ -494,9 +504,13 @@ func TestLoadState_LegacyRestartBreakerEntryHasImplicitBaseline(t *testing.T) {
 	assert.Equal(t, 3, entry.RestartCount)
 	assert.Zero(t, entry.BaselineRestartCount)
 	assert.True(t, entry.BaselineAt.IsZero(), "missing additive fields must decode safely")
+	assert.Empty(t, entry.ContainerID)
+	assert.False(t, entry.StabilityPending)
 
 	now := time.Date(2026, 8, 23, 18, 15, 0, 0, time.UTC)
-	result := evaluateRestartBreaker(map[string]int{"web": 5}, loaded.RestartTracking, 5, 10*time.Minute, now)
+	result := evaluateRestartBreaker(map[string]restartObservation{
+		"web": {ContainerID: "container-1", RestartCount: 5},
+	}, loaded.RestartTracking, 5, 10*time.Minute, now)
 	assert.Empty(t, result.Tripped)
 	assert.Equal(t, 3, result.Updated["web"].BaselineRestartCount,
 		"legacy restart_count must seed the accumulating baseline")

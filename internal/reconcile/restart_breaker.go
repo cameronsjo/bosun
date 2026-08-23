@@ -20,6 +20,13 @@ type RestartBreakerResult struct {
 	Updated map[string]RestartTrackingEntry
 }
 
+// restartObservation is the Docker state needed to distinguish a stable
+// container from a replacement whose RestartCount was reset by recreation.
+type restartObservation struct {
+	ContainerID  string
+	RestartCount int
+}
+
 // evaluateRestartBreaker is the pure function that computes restart circuit breaker
 // state transitions. It compares current restart counts against tracked state to
 // detect a sustained restart run reaching the configured threshold. The window
@@ -28,7 +35,7 @@ type RestartBreakerResult struct {
 //
 // Returns which containers should be tripped and which have resolved.
 func evaluateRestartBreaker(
-	current map[string]int, // service name → current restart count
+	current map[string]restartObservation,
 	tracked map[string]RestartTrackingEntry,
 	threshold int,
 	_ time.Duration,
@@ -38,8 +45,15 @@ func evaluateRestartBreaker(
 		Updated: make(map[string]RestartTrackingEntry, len(current)),
 	}
 
-	for service, count := range current {
+	for service, observation := range current {
+		count := observation.RestartCount
 		prev, exists := tracked[service]
+		containerID := observation.ContainerID
+		if containerID == "" {
+			// Legacy callers and state written before identity tracking have no ID.
+			// Preserve any known identity rather than erasing migration progress.
+			containerID = prev.ContainerID
+		}
 
 		if !exists {
 			// First observation: record baseline, no action.
@@ -48,39 +62,58 @@ func evaluateRestartBreaker(
 				CheckedAt:            now,
 				BaselineRestartCount: count,
 				BaselineAt:           now,
+				ContainerID:          containerID,
 			}
 			continue
 		}
 
 		// Already tripped: keep tripped state, check for resolution.
 		if prev.Tripped {
-			// Resolve against the count observed on the *previous* check, not
-			// the frozen count from the moment it tripped (#348). RestartCount
-			// is monotonic for the life of the container, so once any restart
-			// occurs after tripping, the count permanently exceeds the
-			// trip-time baseline and a fixed comparison could never resolve
-			// again even after the container stabilizes. Advancing the
-			// baseline every cycle means "no restarts since last check"
-			// still resolves it correctly.
-			if count <= prev.RestartCount {
+			// Docker resets RestartCount when it recreates a container. Only an
+			// unchanged observation across two checks of the same known identity
+			// proves stability; the first post-recreate sample merely starts the
+			// grace cycle (#266). This also keeps legacy unknown-identity state
+			// tripped until the current identity has been observed twice.
+			sameIdentity := prev.ContainerID != "" && containerID != "" && prev.ContainerID == containerID
+			if sameIdentity && count == prev.RestartCount && prev.StabilityPending {
 				result.Resolved = append(result.Resolved, service)
 				result.Updated[service] = RestartTrackingEntry{
 					RestartCount:         count,
 					CheckedAt:            now,
 					BaselineRestartCount: count,
 					BaselineAt:           now,
+					ContainerID:          containerID,
 				}
 			} else {
-				// Still accumulating restarts after trip — keep tripped, but
-				// advance the rolling baseline so a later stable cycle can resolve.
+				// Every observed sample starts a new candidate stability interval.
+				// A restart-count increase or another recreation before the next
+				// check prevents resolution and re-arms the interval from here.
 				result.Updated[service] = RestartTrackingEntry{
 					RestartCount:         count,
 					CheckedAt:            now,
 					BaselineRestartCount: prev.BaselineRestartCount,
 					BaselineAt:           prev.BaselineAt,
+					ContainerID:          containerID,
 					Tripped:              true,
 					TrippedAt:            prev.TrippedAt,
+					StabilityPending:     true,
 				}
+			}
+			continue
+		}
+
+		// Counts from different Docker container identities are not comparable:
+		// recreation resets RestartCount. Start a fresh baseline instead of
+		// inheriting restart signal from the replaced container. An empty prior
+		// identity is legacy state, so it retains #265's baseline migration until
+		// a concrete identity has been persisted.
+		if prev.ContainerID != "" && containerID != "" && prev.ContainerID != containerID {
+			result.Updated[service] = RestartTrackingEntry{
+				RestartCount:         count,
+				CheckedAt:            now,
+				BaselineRestartCount: count,
+				BaselineAt:           now,
+				ContainerID:          containerID,
 			}
 			continue
 		}
@@ -103,6 +136,7 @@ func evaluateRestartBreaker(
 				CheckedAt:            now,
 				BaselineRestartCount: count,
 				BaselineAt:           now,
+				ContainerID:          containerID,
 			}
 			continue
 		}
@@ -119,6 +153,7 @@ func evaluateRestartBreaker(
 				CheckedAt:            now,
 				BaselineRestartCount: baselineCount,
 				BaselineAt:           baselineAt,
+				ContainerID:          containerID,
 				Tripped:              true,
 				TrippedAt:            now,
 			}
@@ -132,6 +167,7 @@ func evaluateRestartBreaker(
 			CheckedAt:            now,
 			BaselineRestartCount: baselineCount,
 			BaselineAt:           baselineAt,
+			ContainerID:          containerID,
 		}
 	}
 
@@ -147,6 +183,11 @@ func evaluateRestartBreaker(
 			continue
 		}
 		if prev.Tripped {
+			// A missing container is not a stability observation. In particular,
+			// the breaker normally stops a service immediately after tripping it;
+			// its first later observation must start a new grace interval rather
+			// than resolving from a candidate recorded before the stop.
+			prev.StabilityPending = false
 			result.Updated[service] = prev
 		}
 	}
@@ -168,9 +209,9 @@ func collectRestartCounts(
 	ctx context.Context,
 	client *docker.Client,
 	actual []ActualService,
-) (map[string]int, map[string]struct{}) {
+) (map[string]restartObservation, map[string]struct{}) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
-	counts := make(map[string]int, len(actual))
+	observations := make(map[string]restartObservation, len(actual))
 	unobserved := make(map[string]struct{})
 
 	for _, svc := range actual {
@@ -188,10 +229,13 @@ func collectRestartCounts(
 			continue
 		}
 
-		counts[svc.Name] = details.RestartCount
+		observations[svc.Name] = restartObservation{
+			ContainerID:  details.ID,
+			RestartCount: details.RestartCount,
+		}
 	}
 
-	return counts, unobserved
+	return observations, unobserved
 }
 
 // RunRestartBreaker performs restart circuit breaker evaluation and takes action
@@ -206,16 +250,12 @@ func RunRestartBreaker(
 ) (*RestartBreakerResult, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
-	counts, unobserved := collectRestartCounts(ctx, client, actual)
-	if len(counts) == 0 {
-		return &RestartBreakerResult{Updated: state.RestartTracking}, nil
-	}
-
 	if state.RestartTracking == nil {
 		state.RestartTracking = make(map[string]RestartTrackingEntry)
 	}
 
-	result := evaluateRestartBreaker(counts, state.RestartTracking, threshold, window, time.Now())
+	observations, unobserved := collectRestartCounts(ctx, client, actual)
+	result := evaluateRestartBreaker(observations, state.RestartTracking, threshold, window, time.Now())
 
 	// A partial Docker sample is not evidence that an unobserved service was
 	// removed. Retain its last known entry so a transient inspect failure cannot

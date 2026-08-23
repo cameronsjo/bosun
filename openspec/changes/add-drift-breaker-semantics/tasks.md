@@ -16,11 +16,11 @@
 
 ## 3. Restart breaker resolution attribution (#266)
 
-- [ ] 3.1 Add a container-identity field (e.g. container ID) to `RestartTrackingEntry`
-- [ ] 3.2 Capture the container identity when a service is first tracked / tripped
-- [ ] 3.3 In the resolution branch, treat a changed container identity as recreation (not operator recovery); do not mark `Resolved` on a `RestartCount` reset that is explained by recreation
-- [ ] 3.4 Require a post-recreate stability grace period (no further restarts across at least one check cycle) before declaring `Resolved`
-- [ ] 3.5 Tests: reconcile-driven recreate does not emit `Resolved` while the container resumes looping; genuine operator recovery (stable, same or new container) does emit `Resolved`
+- [x] 3.1 Add a container-identity field (e.g. container ID) to `RestartTrackingEntry`
+- [x] 3.2 Capture the container identity when a service is first tracked / tripped
+- [x] 3.3 In the resolution branch, treat a changed container identity as recreation (not operator recovery); do not mark `Resolved` on a `RestartCount` reset that is explained by recreation
+- [x] 3.4 Require a post-recreate stability grace period (no further restarts across at least one check cycle) before declaring `Resolved`
+- [x] 3.5 Tests: reconcile-driven recreate does not emit `Resolved` while the container resumes looping; genuine operator recovery (stable, same or new container) does emit `Resolved`
 
 ## 4. State persistence & migration
 
