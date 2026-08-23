@@ -103,48 +103,26 @@ To rotate age keys:
 
 ## Secret Handling in Templates
 
-### Temporary File Approach
+### In-Process Template Data
 
-**Implementation**: `internal/internal/reconcile/template.go`
+**Implementation**: `internal/reconcile/sops.go` and
+`internal/reconcile/template.go`
 
-Secrets are passed to templates via temporary files rather than environment variables. This prevents:
+Bosun decrypts SOPS input into an in-memory map and passes that map directly as
+the Go template root. Templates access a value such as `network.unraid_ip` with
+`{{ .network.unraid_ip }}`; no plaintext secrets file path is injected into the
+template environment. This avoids exposing plaintext secret values in process
+arguments, shell history, or a temporary interchange file.
 
-- Secret leakage in process listings (`ps aux`)
-- Secret exposure in shell history
-- Secret inheritance by child processes
-
-```go
-// Write secrets to a temporary file with restricted permissions (0600)
-// instead of passing the actual secret values via environment variables
-secretsFile, err := os.CreateTemp("", "bosun-secrets-*.json")
-if err != nil {
-    return fmt.Errorf("failed to create temp secrets file: %w", err)
-}
-secretsPath := secretsFile.Name()
-defer func() {
-    secretsFile.Close()
-    os.Remove(secretsPath) // Cleanup after use
-}()
-
-// Set restrictive permissions before writing
-if err := os.Chmod(secretsPath, 0600); err != nil {
-    return fmt.Errorf("failed to set secrets file permissions: %w", err)
-}
-```
-
-**Template Access Pattern**:
-```go
-// Templates access secrets via file path (not content):
-// {{ $secrets := fromJson (include (env "BOSUN_SECRETS_FILE")) }}
-cmd.Env = append(filterSafeEnv(os.Environ()), "BOSUN_SECRETS_FILE="+secretsPath)
-```
+Templates can intentionally materialize secrets in rendered configuration.
+Access to the staging and deployment filesystems is therefore part of the
+security boundary; do not treat rendered output as non-sensitive by default.
 
 ### File Permission Standards
 
 | File Type | Permission | Rationale |
 |-----------|------------|-----------|
-| Secrets temp file | `0600` | Owner read/write only |
-| Rendered output files | `0644` | World-readable (contains no secrets) |
+| Rendered output files | `0644` | Current renderer mode; output may contain secrets, so restrict host access accordingly |
 | Output directories | `0755` | Standard directory permissions |
 | Staging directories | `0755` | Standard directory permissions |
 
@@ -445,8 +423,8 @@ Inputs starting with `-` are rejected to prevent:
 
 The `include` and `fromJsonFile` template functions read files from the local
 filesystem. Reads are confined to a **subtree allowlist** — by default
-`<infraDir>/templates` — so a template can only read files located inside that
-subtree, never siblings above it:
+`<infraDir>/templates` — so requested paths are limited to that subtree during
+normal rendering rather than permitting arbitrary filesystem reads:
 
 ```go
 "include": func(path string) (string, error) {
@@ -471,8 +449,10 @@ then re-checked after `filepath.EvalSymlinks` so a symlink whose target escapes
 the subtree is rejected. A `{{ include "/etc/shadow" }}` or a read of a sibling
 `*.sops.yaml` is now rejected with an error that names the allowed root. The
 allowlist confines by **location**: a hardlink whose path is inside `templates/`
-remains readable — the guarantee is that no path *outside* the subtree is
-reachable.
+remains readable. Validation and `os.ReadFile` are separate operations, so this
+is not a race-free or file-descriptor-anchored guarantee against a local actor
+concurrently replacing paths during rendering. The trust model assumes the
+repository and include tree are not adversarially mutated while a render runs.
 
 **Configuration**: the allowlist root is `<infraDir>/templates` by default and
 is overridable with the `template_include_dir` config field or

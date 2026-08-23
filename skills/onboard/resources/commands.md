@@ -200,7 +200,9 @@ Templates have access to:
 Set `template_include_dir` or `BOSUN_TEMPLATE_INCLUDE_DIR` to choose another
 allowlisted subtree. Relative overrides resolve against the project infra
 directory (the project root plus `BOSUN_INFRA_DIR`); standalone renders use the
-current directory as the infra root. Traversal and symlink escapes are rejected.
+current directory as the infra root. Traversal and resolved symlink escapes are
+rejected. This path validation is not an atomic guarantee against concurrent
+local filesystem mutation during a render.
 
 ### Helm-Aligned Charts
 
