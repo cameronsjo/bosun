@@ -22,7 +22,23 @@ func prepareComposeCommand(cmd *exec.Cmd) {
 }
 
 func cancelComposeProcess(process *os.Process, grace time.Duration) error {
-	pgid, err := syscall.Getpgid(process.Pid)
+	return cancelComposeProcessWithOps(
+		process,
+		grace,
+		composeCancelPollInterval,
+		syscall.Getpgid,
+		syscall.Kill,
+	)
+}
+
+func cancelComposeProcessWithOps(
+	process *os.Process,
+	grace time.Duration,
+	pollInterval time.Duration,
+	getpgid func(int) (int, error),
+	kill func(int, syscall.Signal) error,
+) error {
+	pgid, err := getpgid(process.Pid)
 	if isComposeProcessDone(err) {
 		return os.ErrProcessDone
 	}
@@ -30,7 +46,7 @@ func cancelComposeProcess(process *os.Process, grace time.Duration) error {
 		return err
 	}
 
-	if err := syscall.Kill(-pgid, syscall.SIGTERM); err != nil {
+	if err := kill(-pgid, syscall.SIGTERM); err != nil {
 		if isComposeProcessDone(err) {
 			return os.ErrProcessDone
 		}
@@ -39,7 +55,7 @@ func cancelComposeProcess(process *os.Process, grace time.Duration) error {
 
 	graceTimer := time.NewTimer(grace)
 	defer graceTimer.Stop()
-	poll := time.NewTicker(composeCancelPollInterval)
+	poll := time.NewTicker(pollInterval)
 	defer poll.Stop()
 
 	for {
@@ -47,12 +63,12 @@ func cancelComposeProcess(process *os.Process, grace time.Duration) error {
 		case <-graceTimer.C:
 			// Cmd.WaitDelay can only kill the direct process. Escalate against the
 			// group here so an unresponsive Compose plugin cannot survive its wrapper.
-			if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil && !isComposeProcessDone(err) {
+			if err := kill(-pgid, syscall.SIGKILL); err != nil && !isComposeProcessDone(err) {
 				return err
 			}
 			return nil
 		case <-poll.C:
-			if err := syscall.Kill(-pgid, 0); isComposeProcessDone(err) {
+			if err := kill(-pgid, 0); isComposeProcessDone(err) {
 				return nil
 			} else if err != nil && !errors.Is(err, syscall.EPERM) {
 				return err

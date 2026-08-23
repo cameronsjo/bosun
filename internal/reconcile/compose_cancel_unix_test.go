@@ -126,6 +126,146 @@ func TestConfigureComposeCancellation_ProcessAlreadyExited(t *testing.T) {
 	assert.ErrorIs(t, cmd.Cancel(), os.ErrProcessDone)
 }
 
+func TestCancelComposeProcess_SyscallFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		getpgidErr error
+		termErr    error
+		wantErr    error
+		wantKills  []syscall.Signal
+	}{
+		{
+			name:       "process disappeared before group lookup",
+			getpgidErr: syscall.ESRCH,
+			wantErr:    os.ErrProcessDone,
+		},
+		{
+			name:       "group lookup permission failure",
+			getpgidErr: syscall.EPERM,
+			wantErr:    syscall.EPERM,
+		},
+		{
+			name:      "process disappeared before graceful signal",
+			termErr:   syscall.ESRCH,
+			wantErr:   os.ErrProcessDone,
+			wantKills: []syscall.Signal{syscall.SIGTERM},
+		},
+		{
+			name:      "graceful signal permission failure",
+			termErr:   syscall.EPERM,
+			wantErr:   syscall.EPERM,
+			wantKills: []syscall.Signal{syscall.SIGTERM},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotKills []syscall.Signal
+			err := cancelComposeProcessWithOps(
+				&os.Process{Pid: 1234},
+				time.Second,
+				composeCancelPollInterval,
+				func(pid int) (int, error) {
+					assert.Equal(t, 1234, pid)
+					return 1234, tt.getpgidErr
+				},
+				func(pid int, signal syscall.Signal) error {
+					assert.Equal(t, -1234, pid)
+					gotKills = append(gotKills, signal)
+					return tt.termErr
+				},
+			)
+
+			assert.ErrorIs(t, err, tt.wantErr)
+			assert.Equal(t, tt.wantKills, gotKills)
+		})
+	}
+}
+
+func TestCancelComposeProcess_PollingHandlesPermissionRace(t *testing.T) {
+	pollCalls := 0
+	err := cancelComposeProcessWithOps(
+		&os.Process{Pid: 4321},
+		time.Hour,
+		time.Millisecond,
+		func(int) (int, error) { return 4321, nil },
+		func(pid int, signal syscall.Signal) error {
+			assert.Equal(t, -4321, pid)
+			switch signal {
+			case syscall.SIGTERM:
+				return nil
+			case 0:
+				pollCalls++
+				if pollCalls == 1 {
+					return syscall.EPERM
+				}
+				return syscall.ESRCH
+			default:
+				t.Fatalf("unexpected signal %v", signal)
+				return nil
+			}
+		},
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, pollCalls)
+}
+
+func TestCancelComposeProcess_PollingFailure(t *testing.T) {
+	err := cancelComposeProcessWithOps(
+		&os.Process{Pid: 4321},
+		time.Hour,
+		time.Millisecond,
+		func(int) (int, error) { return 4321, nil },
+		func(_ int, signal syscall.Signal) error {
+			if signal == syscall.SIGTERM {
+				return nil
+			}
+			return syscall.EINVAL
+		},
+	)
+
+	assert.ErrorIs(t, err, syscall.EINVAL)
+}
+
+func TestCancelComposeProcess_EscalationResults(t *testing.T) {
+	tests := []struct {
+		name    string
+		killErr error
+		wantErr error
+	}{
+		{name: "group already exited", killErr: syscall.ESRCH},
+		{name: "force kill denied", killErr: syscall.EPERM, wantErr: syscall.EPERM},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotSignals []syscall.Signal
+			err := cancelComposeProcessWithOps(
+				&os.Process{Pid: 9876},
+				0,
+				time.Hour,
+				func(int) (int, error) { return 9876, nil },
+				func(pid int, signal syscall.Signal) error {
+					assert.Equal(t, -9876, pid)
+					gotSignals = append(gotSignals, signal)
+					if signal == syscall.SIGKILL {
+						return tt.killErr
+					}
+					return nil
+				},
+			)
+
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+			} else {
+				assert.ErrorIs(t, err, tt.wantErr)
+			}
+			assert.Equal(t, []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL}, gotSignals)
+		})
+	}
+}
+
 func TestDockerComposeCancellationHelper(t *testing.T) {
 	mode := os.Getenv("BOSUN_TEST_COMPOSE_CANCEL_MODE")
 	if mode == "" {
