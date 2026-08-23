@@ -11,6 +11,11 @@ Bosun automates deployment through a GitOps workflow: push configuration changes
 
 Both follow the same reconciliation pipeline. The daemon just runs it automatically on triggers.
 
+Before any target starts, Bosun canonicalizes every effective staging path,
+rejects equal or nested slots, and hardens or deletes pre-existing evidence. If
+one slot can be neither protected nor deleted, no target reaches Git sync or
+secret decryption.
+
 ## Reconciliation Pipeline
 
 Every reconciliation follows this 16-stage sequence:
@@ -45,24 +50,44 @@ Every reconciliation follows this 16-stage sequence:
         |
 10. Run docker compose up (per-file isolated, with rollback)
         |
-11. Clean up staging directory
+11. Critical container health gate (if configured; rollback on failure)
         |
-12. Critical container health gate (if configured)
+12. Execute post-sync hooks
         |
-13. Execute post-sync hooks
+13. Post-deploy health verification (local targets)
         |
-14. Post-deploy health verification (poll containers until healthy or timeout)
+14. Clean up verified staging directory
         |
-15. Post-deploy drift check
+15. Record successful deployment in state file
         |
-16. Record successful deployment in state file
-        |
-17. Release lock
+16. Release lock
 ```
 
 Template rendering is strict: a missing map key stops stage 5 with the template
 and key named in the error. Optional values must use an explicit lookup such as
 `get . "key" | default "value"`.
+
+### Failed Staging Evidence
+
+Rendered staging can contain plaintext secrets. Bosun creates the effective
+staging root as `0700` before rendering and keeps payload temp files private
+until atomic rename. Active descendant modes remain compatible with deployment;
+if the pipeline fails after rendering begins, the one retained evidence slot is
+hardened recursively to `0700` directories and `0600` regular files.
+
+The evidence remains at that target's effective `StagingDir`, including after a
+failed health gate, successful or failed rollback, invariant failure, compose
+failure, or post-deploy verification failure. Dry runs also retain it. A later
+attempt preserves the slot through sync, config reload, decryption, and deploy
+mode resolution, then replaces it only when the next render begins; timestamped
+evidence archives are not accumulated.
+
+Symlinks, FIFOs, sockets, devices, path overlap, or entry-replacement races fail
+closed. Bosun never follows or logs a link target or rendered content: it deletes
+an unsafe slot, and aborts the cycle if it can neither harden nor delete it.
+Verified real deployments remove staging only after the health gate, hooks, and
+post-deploy verification. A cleanup failure is warning-only when the remaining
+tree is proven owner-only; otherwise it prevents deployment success.
 
 Before stage 4 looks up the Age key, Bosun rejects malformed SOPS files. The
 file must be valid YAML with a `sops` metadata mapping, a non-empty MAC, a valid
@@ -133,10 +158,10 @@ Specific pipeline stages send throttled failure alerts to all configured alert p
 - **Decrypt failure (stage 4)**: sends a throttled failure alert
 - **Template failure (stage 5)**: sends a throttled failure alert
 - **Deploy failure (stages 8-9)**: sends a throttled failure alert
-- **Health gate failure (stage 11)**: sends a throttled failure alert; triggers rollback to backup compose files
+- **Health gate failure (stage 11)**: sends a throttled failure alert; triggers rollback to the managed tree
 - **Health verification failure (stage 13)**: sends a throttled failure alert; counts toward circuit breaker
 - **Lock acquisition (stage 1)**: logged as a warning only, no alert (transient condition)
-- **Backup, cleanup, post-sync hooks, state save, drift check**: logged as warnings only, no failure alert
+- **Backup, cleanup, post-sync hooks, and state save**: logged without a dedicated failure alert; backup or cleanup still aborts when rollback safety or staging confidentiality cannot be established
 
 Success and recovery alerts are controlled by the `on_success` flag (default: `false`). When enabled, a success alert is sent after a successful deployment, and a recovery alert is sent when a deploy succeeds after prior failures.
 
@@ -532,7 +557,7 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `BOSUN_GIT_USERNAME` | | Private HTTPS Git Basic-auth username; set with `BOSUN_GIT_TOKEN` |
 | `BOSUN_GIT_TOKEN` | | Private HTTPS Git Basic-auth password/token; set with `BOSUN_GIT_USERNAME` |
 | `REPO_DIR` | `/app/repo` | Local clone directory |
-| `STAGING_DIR` | `/app/staging` | Staging directory for rendered files |
+| `STAGING_DIR` | `/app/staging` | Secret-bearing rendered staging and single-slot failure evidence directory |
 | `BACKUP_DIR` | `/app/backups` | Backup directory |
 | `LOG_DIR` | `/app/logs` | Log directory |
 | `LOCAL_APPDATA` | `/mnt/appdata` | Local appdata path |

@@ -855,11 +855,14 @@ func (d *Daemon) executeReconcileWithMode(ctx context.Context, source string, fo
 	// via ConfigReloader inside each reconciler.Run(). Structural target changes
 	// (adding/removing targets, changing host/paths) require a daemon restart.
 	targets, targetsErr := d.config.ReconcileConfig.ResolveTargets()
+	if targetsErr == nil {
+		targetsErr = reconcile.PreflightStagingEvidence(ctx, d.config.ReconcileConfig, targets)
+	}
 	if targetsErr != nil {
 		// Fail loud (#391): a multi-target config carrying a reserved `default`
 		// name fails the cycle instead of silently dropping the target.
-		logger.Error().Err(targetsErr).Msg("Target resolution failed, aborting reconciliation cycle")
-		ui.Error("Target resolution failed: %v", targetsErr)
+		logger.Error().Err(targetsErr).Msg("Target or staging preflight failed, aborting reconciliation cycle")
+		ui.Error("Target or staging preflight failed: %v", targetsErr)
 	} else {
 		logger.Info().
 			Str(log.FieldSource, source).

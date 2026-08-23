@@ -283,6 +283,7 @@ type Reconciler struct {
 	// never touched — chronically broken for an unrelated reason — doesn't
 	// false-fail the reconcile (#392).
 	preDeployUnhealthy map[string]bool
+	stagingOps         stagingEvidenceOps
 }
 
 // NewReconciler creates a new Reconciler with the given configuration.
@@ -468,6 +469,29 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	}
 	defer r.releaseLock()
 
+	// Register the staging finalizer after the lock-release defer so LIFO defer
+	// order secures or deletes secret-bearing evidence before another process can
+	// acquire this target's lock. It remains dormant until render preparation.
+	stagingLifecycleActive := false
+	stagingLifecycleComplete := false
+	defer func() {
+		if !stagingLifecycleActive || stagingLifecycleComplete {
+			return
+		}
+
+		rec := recover()
+		_, securityErr := protectOrDeleteStaging(ctx, r.config.TargetName, r.config.StagingDir, r.stagingOps, "pipeline_exit")
+		if rec != nil {
+			if securityErr != nil {
+				panic(errors.Join(fmt.Errorf("reconcile pipeline panic: %v", rec), securityErr))
+			}
+			panic(rec)
+		}
+		if securityErr != nil {
+			runErr = errors.Join(runErr, securityErr)
+		}
+	}()
+
 	ui.Header("=== Starting reconciliation ===")
 
 	// Step 1: Sync repository.
@@ -647,6 +671,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	}
 
 	// Step 3: Render templates.
+	stagingLifecycleActive = true
 	spanCtx, finishSpan = sentrypkg.StartSpan(ctx, "reconcile.template", "Template rendering")
 	spanCtx, otelTemplateSpan := telemetry.Tracer("reconcile").Start(spanCtx, "reconcile.template")
 	if err := r.renderTemplates(spanCtx, secrets); err != nil {
@@ -770,12 +795,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	telemetry.SpanOK(otelDeploySpan)
 	otelDeploySpan.End()
 
-	// Step 6: Cleanup staging directory after successful deployment.
-	if err := r.cleanupStaging(); err != nil {
-		ui.Warning("Failed to cleanup staging directory: %v", err)
-	}
-
-	// Step 7: Critical container health gate (if configured). Explicitly
+	// Step 6: Critical container health gate (if configured). Explicitly
 	// declared critical containers (BOSUN_CRITICAL_CONTAINERS) still fail the
 	// gate even when pre-existing unhealthy — the operator asked for these
 	// specific containers to always be healthy, so there's no baseline
@@ -848,6 +868,23 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 			telemetry.SpanOK(otelDriftSpan)
 			otelDriftSpan.End()
 		}
+	}
+
+	// Staging is diagnostic evidence until every health check and post-sync hook
+	// has completed. A verified non-dry-run removes it before success is recorded;
+	// dry-run secures its one-slot render before the same success boundary. Do not
+	// leave dry-run protection solely to the deferred finalizer: a protect-plus-
+	// delete failure must abort before state and alerts report success.
+	if r.config.DryRun {
+		if _, err := protectOrDeleteStaging(ctx, r.config.TargetName, r.config.StagingDir, r.stagingOps, "dry_run"); err != nil {
+			return fmt.Errorf("finalize dry-run staging evidence: %w", err)
+		}
+		stagingLifecycleComplete = true
+	} else {
+		if err := r.cleanupStaging(); err != nil {
+			return err
+		}
+		stagingLifecycleComplete = true
 	}
 
 	// Deploy is verified (local) or verification-skipped (remote): record
@@ -1184,10 +1221,26 @@ func (r *Reconciler) cleanupStaging() error {
 		return nil
 	}
 
-	if err := os.RemoveAll(r.config.StagingDir); err != nil {
-		return fmt.Errorf("failed to remove staging directory: %w", err)
+	root, err := safeStagingRoot(r.config.StagingDir)
+	if err != nil {
+		return fmt.Errorf("refusing unsafe staging cleanup: %w", err)
+	}
+	ops := r.stagingOps.withDefaults()
+	if err := removeStagingTree(root, ops); err != nil {
+		cleanupErr := fmt.Errorf("failed to remove staging directory: %w", err)
+		ui.Warning("Failed to cleanup staging directory; securing retained tree: %v", err)
+		if _, securityErr := protectOrDeleteStaging(context.Background(), r.config.TargetName, root, ops, "cleanup_failure"); securityErr != nil {
+			return errors.Join(cleanupErr, securityErr)
+		}
+		return nil
 	}
 
+	logger := log.Component(log.ComponentReconcile)
+	logger.Info().
+		Str("target", stagingTargetLabel(r.config.TargetName)).
+		Str(log.FieldPath, root).
+		Str("staging_evidence_outcome", "removed").
+		Msg("Removed staging after successful verification")
 	ui.Info("Cleaned up staging directory")
 	return nil
 }
@@ -1624,30 +1677,43 @@ func suggestInfraDir(infraSubDir string, candidates []string) string {
 func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any) error {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentTemplate)
+	stagingRoot, err := safeStagingRoot(r.config.StagingDir)
+	if err != nil {
+		return fmt.Errorf("unsafe staging path: %w", err)
+	}
+	ops := r.stagingOps.withDefaults()
 
 	infraDir := filepath.Join(r.config.RepoDir, r.config.InfraSubDir)
 	logger.Debug().
 		Str(log.FieldPath, infraDir).
-		Str("staging_dir", r.config.StagingDir).
+		Str("staging_dir", stagingRoot).
 		Msg("Preparing to render templates")
 
 	ui.Info("Rendering templates...")
 
 	// Clear staging directory.
-	if err := os.RemoveAll(r.config.StagingDir); err != nil {
+	if err := removeStagingTree(stagingRoot, ops); err != nil {
 		logger.Error().
 			Err(err).
-			Str(log.FieldPath, r.config.StagingDir).
+			Str(log.FieldPath, stagingRoot).
 			Msg("Failed to render templates. Reason: cannot clear staging directory")
 		return fmt.Errorf("failed to clear staging directory: %w", err)
 	}
-	if err := os.MkdirAll(r.config.StagingDir, 0755); err != nil {
+	if err := os.MkdirAll(stagingRoot, stagingDirMode); err != nil {
 		logger.Error().
 			Err(err).
-			Str(log.FieldPath, r.config.StagingDir).
+			Str(log.FieldPath, stagingRoot).
 			Msg("Failed to render templates. Reason: cannot create staging directory")
 		return fmt.Errorf("failed to create staging directory: %w", err)
 	}
+	if err := os.Chmod(stagingRoot, stagingDirMode); err != nil {
+		return fmt.Errorf("failed to restrict staging directory: %w", err)
+	}
+	logger.Info().
+		Str("target", stagingTargetLabel(r.config.TargetName)).
+		Str(log.FieldPath, stagingRoot).
+		Str("staging_evidence_outcome", "replaced").
+		Msg("Prepared private staging evidence slot")
 
 	// Create template ops with secrets data.
 	r.template = NewTemplateOps(secrets)
@@ -1656,7 +1722,7 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 	// <infraDir>/templates default.
 	r.template.IncludeDir = ResolveTemplateIncludeDir(infraDir, r.config.TemplateIncludeDir)
 
-	if err := r.template.RenderDirectory(ctx, infraDir, r.config.StagingDir, r.config.InfraSubDir); err != nil {
+	if err := r.template.RenderDirectory(ctx, infraDir, stagingRoot, r.config.InfraSubDir); err != nil {
 		logger.Error().
 			Err(err).
 			Str(log.FieldPath, infraDir).
@@ -1664,13 +1730,16 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 			Msg("Failed to render templates")
 		return err
 	}
+	if err := verifyActiveStaging(stagingRoot, r.stagingOps); err != nil {
+		return fmt.Errorf("verify private staging tree: %w", err)
+	}
 
 	logger.Info().
-		Str(log.FieldPath, r.config.StagingDir).
+		Str(log.FieldPath, stagingRoot).
 		Int64(log.FieldDurationMS, log.DurationMS(start)).
 		Msg("Successfully rendered templates")
 
-	ui.Success("Templates rendered to %s", r.config.StagingDir)
+	ui.Success("Templates rendered to %s", stagingRoot)
 	return nil
 }
 

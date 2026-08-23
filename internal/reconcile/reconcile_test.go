@@ -3450,6 +3450,7 @@ func TestRun_DryRunDoesNotSeedDeployedFiles(t *testing.T) {
 	r := NewReconciler(cfg, WithGitOperations(gitOps))
 
 	require.NoError(t, r.Run(context.Background()))
+	assertPrivateStagingTree(t, stagingDir)
 
 	// The stub compose service means deployLocal produced a non-empty manifest,
 	// but the dry-run guard must keep it out of persisted state.
@@ -4678,6 +4679,7 @@ func TestRun_HealthGateFailureWithRollback_SkipsPostSyncHooks(t *testing.T) {
 	err := r.Run(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "health gate failed")
+	assertPrivateStagingTree(t, stagingDir)
 	assert.False(t, restartCalled, "post-sync hooks must be skipped when a rollback actually ran, to avoid acting on a hybrid tree")
 
 	saved := LoadState(stateFile)
@@ -4769,6 +4771,7 @@ func TestRun_HealthGateFailureWithoutRollback_RunsPostSyncHooks(t *testing.T) {
 	err := r.Run(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "health gate failed")
+	assertPrivateStagingTree(t, stagingDir)
 	assert.True(t, restartCalled, "post-sync hooks must still run when no rollback was attempted (#392)")
 
 	saved := LoadState(stateFile)

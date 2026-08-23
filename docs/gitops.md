@@ -145,6 +145,11 @@ See [docs/architecture/daemon-split.md](architecture/daemon-split.md) for the fu
 
 ### Data Flow
 
+Before any target starts, Bosun canonicalizes every effective staging path,
+rejects equal or nested slots, and secures or deletes pre-existing evidence. A
+slot that can be neither protected nor deleted aborts the whole cycle before
+Git sync or secret decryption.
+
 ```
  1. Lock Acquisition
         |
@@ -182,13 +187,22 @@ See [docs/architecture/daemon-split.md](architecture/daemon-split.md) for the fu
 10. Service Reload (docker compose up, SIGHUP)
         |
         v
-11. Record Deploy State (commit, declared services, timestamp)
+11. Critical Container Health Gate (with rollback)
         |
         v
-12. Post-Deploy Verification (drift check against Docker)
+12. Post-Sync Hooks
         |
         v
-13. Cleanup & Lock Release
+13. Post-Deploy Verification (drift check against Docker)
+        |
+        v
+14. Remove Verified Staging
+        |
+        v
+15. Record Deploy State (commit, declared services, timestamp)
+        |
+        v
+16. Release Lock
 ```
 
 > **Invariant gates at stages 6 and 9** prevent the silent-success failure mode where a deploy reports success but no files actually landed on disk. See [Deploy-Sync Invariants in the skill resource](../skills/onboard/resources/gitops.md) and the [troubleshooting guide](troubleshooting.md) for operator-facing detail on `BOSUN_ALLOW_EMPTY_DECLARED_STATE` and `BOSUN_SKIP_DEPLOY_INVARIANT`.
@@ -356,7 +370,7 @@ Status values: `clean` (no drift), `drifted` (items detected), `unknown` (no dep
 | `BOSUN_GIT_USERNAME` | No | - | Private HTTPS Git Basic-auth username; requires `BOSUN_GIT_TOKEN` |
 | `BOSUN_GIT_TOKEN` | No | - | Private HTTPS Git Basic-auth password/token; requires `BOSUN_GIT_USERNAME` |
 | `REPO_DIR` | No | `/app/repo` | Local clone directory |
-| `STAGING_DIR` | No | `/app/staging` | Rendered templates directory |
+| `STAGING_DIR` | No | `/app/staging` | Secret-bearing rendered staging and single-slot failure evidence directory |
 | `BACKUP_DIR` | No | `/app/backups` | Configuration backups |
 | `LOG_DIR` | No | `/app/logs` | Log files directory |
 | `LOCAL_APPDATA` | No | `/mnt/appdata` | Local appdata path |
@@ -807,10 +821,10 @@ cfg.BackupsToKeep = 5  // Default
 
 Some operations log warnings but continue:
 
-- Backup creation failure (warns, continues with deployment)
+- Backup creation failure when an older verified rollback anchor exists
 - tailscale-gateway sync failure (warns, continues)
 - agentgateway reload failure (warns, continues)
-- Staging cleanup failure (warns)
+- Staging cleanup failure when owner-only retention succeeds (warns)
 
 ## Security Considerations
 
@@ -842,8 +856,24 @@ All user inputs are validated before use:
 
 ### Temp File Security
 
-- Staging directory is cleared before each run
-- Staging directory is cleaned up after successful deployment
+- The effective staging root is `0700` before decrypted output is written;
+  payload temp files stay `0600` until atomic rename. Active descendants keep
+  their established deploy modes so local copy and remote tar do not change
+  destination permissions.
+- A failed render or any later failed pipeline stage leaves one diagnostic slot
+  at the target's effective `StagingDir`. Retained directories are `0700` and
+  regular files are `0600`; symlinks and irregular files make Bosun delete the
+  slot without following them.
+- A subsequent render replaces that same slot rather than accumulating archives.
+  Git sync, config reload, decryption, and deploy-mode failures before rendering
+  leave the prior secured evidence unchanged.
+- Dry runs retain the secured render. Verified real deployments remove staging
+  only after health checks, hooks, and post-deploy verification. If removal
+  fails, Bosun warns and retains a proven owner-only tree; inability to harden or
+  delete it is a security error and prevents success from being recorded.
+- Multi-target staging paths must be canonically disjoint. Bosun validates and
+  preflights every target before executing any target, including when a one-shot
+  run selects only one target.
 - Backup archives use timestamped directories to prevent conflicts
 
 ### Container Security
