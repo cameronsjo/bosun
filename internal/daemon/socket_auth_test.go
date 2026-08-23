@@ -120,6 +120,30 @@ func TestSocketPeerCredentialAuthorization(t *testing.T) {
 	})
 }
 
+func TestSocketPeerCredentialAuthorizationKeepsReadOnlyEndpointsAvailable(t *testing.T) {
+	server, _ := newTestSocketServer(t)
+
+	for _, path := range []string{"/status", "/health"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			w := httptest.NewRecorder()
+
+			server.httpServer.Handler.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+		})
+	}
+
+	t.Run("non-mutating trigger method remains method-not-allowed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/trigger", nil)
+		w := httptest.NewRecorder()
+
+		server.httpServer.Handler.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+	})
+}
+
 func TestSocketPeerInfoUsesStructuredCredentials(t *testing.T) {
 	req := withSocketPeer(
 		httptest.NewRequest(http.MethodGet, "/status", nil),
