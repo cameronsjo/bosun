@@ -88,11 +88,19 @@ For deployment notifications:
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `BOSUN_REPO_URL` | Yes | GitHub repo URL (HTTPS) |
+| `BOSUN_GIT_USERNAME` | No | Private HTTPS Git username; set together with `BOSUN_GIT_TOKEN` |
+| `BOSUN_GIT_TOKEN` | No | Private HTTPS Git token (masked); set together with `BOSUN_GIT_USERNAME` |
 | `SOPS_AGE_KEY_FILE` | Yes | Path to Age private key |
 | `GITHUB_WEBHOOK_SECRET` | Yes | Webhook validation secret |
 | `DISCORD_WEBHOOK_URL` | No | Discord notification webhook |
 | `BOSUN_POLL_INTERVAL` | No | Seconds between polls (default: 3600) |
 | `TZ` | No | Timezone (default: America/Chicago) |
+
+Private HTTPS authentication uses HTTP Basic auth only for the configured HTTPS
+origin. Bosun rejects partial pairs, URL-embedded credentials, HTTP URLs, and
+cross-origin or downgrade redirects before forwarding credentials. Leave both
+variables empty for anonymous HTTPS. After rotating either value, restart the
+container; project config reload does not rotate Git credentials.
 
 ## Network Configuration
 

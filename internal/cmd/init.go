@@ -715,6 +715,12 @@ const systemdEnvFile = `# Bosun Daemon Environment Configuration
 # Required: Git repository URL
 BOSUN_REPO_URL=https://github.com/your-org/your-infra-repo.git
 
+# Optional: private HTTPS Git authentication. Set both values together.
+# Credentials require an HTTPS URL without embedded userinfo. Restart Bosun
+# after rotating either value; project configuration reload does not read them.
+# BOSUN_GIT_USERNAME=your-username
+# BOSUN_GIT_TOKEN=your-personal-access-token
+
 # Optional: Git branch (default: main)
 # BOSUN_REPO_BRANCH=main
 

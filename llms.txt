@@ -69,6 +69,7 @@ The daemon provides:
 - Native Discord, SendGrid, and Twilio alerting; Discord embeds are bounded to provider component and aggregate limits, while error/critical Twilio messages are capped at one GSM-7 or Unicode SMS segment
 - Deploy state tracking with circuit breaker (stops retrying after 3 failures)
 - Post-sync `exec` hooks require a non-empty command; invalid root or per-target hook configuration fails before deployment
+- Private HTTPS Git clone and fetch use the paired `BOSUN_GIT_USERNAME`/`BOSUN_GIT_TOKEN` Basic credentials. Both unset preserves anonymous HTTPS; partial pairs, URL userinfo, non-HTTPS URLs, downgrade redirects, and cross-origin redirects fail closed. The pair has no legacy aliases or YAML keys, follows `BOSUN_REPO_URL` precedence, and rotates only after process restart
 
 ## Project Structure
 

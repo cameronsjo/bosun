@@ -11,6 +11,9 @@ services:
       # Repository configuration
       BOSUN_REPO_URL: git@github.com:cameronsjo/dotfiles.git
       BOSUN_REPO_BRANCH: main
+      # Optional private HTTPS auth; set both in .env and use an https:// URL above.
+      BOSUN_GIT_USERNAME: ${BOSUN_GIT_USERNAME:-}
+      BOSUN_GIT_TOKEN: ${BOSUN_GIT_TOKEN:-}
       # Polling interval in seconds (1 hour)
       BOSUN_POLL_INTERVAL: "3600"
       # HTTP port for webhooks and health

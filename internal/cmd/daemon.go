@@ -33,6 +33,7 @@ The daemon provides:
 Configuration via environment variables:
   REPO_URL / BOSUN_REPO_URL       Git repository URL (required)
   REPO_BRANCH / BOSUN_REPO_BRANCH Git branch to track (default: main)
+  BOSUN_GIT_USERNAME / BOSUN_GIT_TOKEN  Paired private HTTPS Git credentials
   WEBHOOK_SECRET / GITHUB_WEBHOOK_SECRET  Webhook signature validation
   POLL_INTERVAL / BOSUN_POLL_INTERVAL     Poll interval in seconds (default: 3600)
   PORT / WEBHOOK_PORT              HTTP server port (default: 8080)

@@ -353,6 +353,8 @@ Status values: `clean` (no drift), `drifted` (items detected), `unknown` (no dep
 |----------|----------|---------|-------------|
 | `REPO_URL` | Yes | - | Git repository URL |
 | `REPO_BRANCH` | No | `main` | Branch to track |
+| `BOSUN_GIT_USERNAME` | No | - | Private HTTPS Git Basic-auth username; requires `BOSUN_GIT_TOKEN` |
+| `BOSUN_GIT_TOKEN` | No | - | Private HTTPS Git Basic-auth password/token; requires `BOSUN_GIT_USERNAME` |
 | `REPO_DIR` | No | `/app/repo` | Local clone directory |
 | `STAGING_DIR` | No | `/app/staging` | Rendered templates directory |
 | `BACKUP_DIR` | No | `/app/backups` | Configuration backups |
@@ -372,6 +374,16 @@ Status values: `clean` (no drift), `drifted` (items detected), `unknown` (no dep
 | `BOSUN_DRIFT_ALERT_DEBOUNCE` | No | `0` | Debounce window before first drift alert (0 = disabled) |
 | `BOSUN_DRIFT_RESOLVE_ALERTS` | No | `true` | Send "drift resolved" notifications |
 | `BOSUN_HEALTH_GATE_TIMEOUT` | No | `60s` | Health gate polling timeout (`0` disables the gate) |
+
+Private HTTPS repositories use `BOSUN_GIT_USERNAME` and `BOSUN_GIT_TOKEN` as
+one required pair for both clone and fetch. With both unset, HTTPS remains
+anonymous. Bosun rejects partial pairs, non-HTTPS credential use, credentials
+embedded in the repository URL, HTTPS-to-HTTP redirects, and redirects to a
+different host or effective port. The pair has no legacy aliases and applies
+to the effective repository URL after `BOSUN_REPO_URL` overrides `REPO_URL`.
+Credentials remain process-environment state: remove any URL userinfo, rotate
+the environment values, and restart Bosun; `bosun.yaml` reload cannot rotate
+them.
 
 ### Command-Line Flags
 

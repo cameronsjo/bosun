@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"bytes"
 	"testing"
 
+	"github.com/fatih/color"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -301,6 +303,71 @@ func TestValidateReconcileConfig(t *testing.T) {
 		errors := validateReconcileConfig()
 		assert.Equal(t, 1, errors, "an invalid drift_ignore rule should fail validation even with a valid repo URL")
 	})
+}
+
+func TestValidateGitAuthenticationConsumers(t *testing.T) {
+	t.Run("environment validation rejects a partial pair", func(t *testing.T) {
+		t.Setenv("BOSUN_REPO_URL", "https://example.com/repo.git")
+		t.Setenv("REPO_URL", "")
+		t.Setenv("BOSUN_GIT_USERNAME", "configured-user")
+		t.Setenv("BOSUN_GIT_TOKEN", "")
+		assert.Equal(t, 1, validateEnvironment())
+	})
+
+	t.Run("reconcile config uses BOSUN URL precedence", func(t *testing.T) {
+		t.Setenv("BOSUN_REPO_URL", "https://primary.example/repo.git")
+		t.Setenv("REPO_URL", "http://shadowed.example/repo.git")
+		t.Setenv("BOSUN_GIT_USERNAME", "configured-user")
+		t.Setenv("BOSUN_GIT_TOKEN", "configured-token")
+		assert.Equal(t, 0, validateReconcileConfig())
+	})
+
+	t.Run("reconcile config rejects URL userinfo", func(t *testing.T) {
+		t.Setenv("BOSUN_REPO_URL", "https://embedded:password@example.com/repo.git")
+		t.Setenv("BOSUN_GIT_USERNAME", "")
+		t.Setenv("BOSUN_GIT_TOKEN", "")
+		assert.Equal(t, 1, validateReconcileConfig())
+	})
+
+	t.Run("full dry run validates before reconcile", func(t *testing.T) {
+		t.Setenv("BOSUN_REPO_URL", "http://example.com/repo.git")
+		t.Setenv("BOSUN_GIT_USERNAME", "configured-user")
+		t.Setenv("BOSUN_GIT_TOKEN", "configured-token")
+		err := runFullDryRun()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "absolute https://")
+		assert.NotContains(t, err.Error(), "configured-token")
+	})
+
+	t.Run("legacy credential aliases are ignored", func(t *testing.T) {
+		t.Setenv("BOSUN_REPO_URL", "https://example.com/repo.git")
+		t.Setenv("BOSUN_GIT_USERNAME", "")
+		t.Setenv("BOSUN_GIT_TOKEN", "")
+		t.Setenv("GIT_USERNAME", "legacy-user")
+		t.Setenv("GIT_TOKEN", "legacy-token")
+		assert.Equal(t, 0, validateReconcileConfig())
+	})
+}
+
+func TestValidateGitAuthenticationOutputIsRedacted(t *testing.T) {
+	var output bytes.Buffer
+	previousOutput := color.Output
+	color.Output = &output
+	t.Cleanup(func() {
+		color.Output = previousOutput
+	})
+
+	t.Setenv("BOSUN_REPO_URL", "https://embedded%40user:embedded%3Atoken@example.com/repo.git")
+	t.Setenv("REPO_URL", "")
+	t.Setenv("BOSUN_GIT_USERNAME", "configured-user")
+	t.Setenv("BOSUN_GIT_TOKEN", "")
+	assert.Equal(t, 1, validateEnvironment())
+
+	text := output.String()
+	assert.Contains(t, text, "https://example.com/repo.git")
+	for _, forbidden := range []string{"embedded%40user", "embedded%3Atoken", "configured-user"} {
+		assert.NotContains(t, text, forbidden)
+	}
 }
 
 func TestValidateDriftIgnoreConfig(t *testing.T) {

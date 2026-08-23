@@ -245,6 +245,8 @@ The daemon provides:
 |----------|-------------|---------|
 | `BOSUN_REPO_URL` | Git repository URL | Required |
 | `BOSUN_REPO_BRANCH` | Branch to track | `main` |
+| `BOSUN_GIT_USERNAME` | Private HTTPS Git Basic-auth username; requires `BOSUN_GIT_TOKEN` | Unset |
+| `BOSUN_GIT_TOKEN` | Private HTTPS Git Basic-auth password/token; requires `BOSUN_GIT_USERNAME` | Unset |
 | `BOSUN_GIT_FETCH_DEPTH` | Shallow clone/fetch history depth; increase when deploy diffs span multiple commits | `1` |
 | `BOSUN_POLL_INTERVAL` | Poll interval in seconds | `3600` |
 | `BOSUN_SOCKET_PATH` | Unix socket path | `/var/run/bosun.sock` |
@@ -257,6 +259,15 @@ The daemon provides:
 > reject every request with `403`. To restore the old accept-anything behavior
 > on a trusted network, set `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true`
 > explicitly. The Unix socket trigger (`bosun trigger`) is unaffected.
+
+For a private HTTPS repository, set `BOSUN_GIT_USERNAME` and
+`BOSUN_GIT_TOKEN` together. Bosun sends them only to the configured HTTPS
+origin and rejects plaintext, cross-origin, downgrade, partial-pair, and
+URL-userinfo configurations before network access. Leave both unset for
+anonymous HTTPS. These new variables have no unprefixed aliases and apply to
+the effective URL after `BOSUN_REPO_URL` takes precedence over `REPO_URL`.
+Remove credentials from the URL itself, and restart Bosun after rotation;
+project configuration reload does not read or rotate the pair.
 
 ## Configuration
 
@@ -281,6 +292,8 @@ compose_file: docker-compose.yml
 |----------|-------------|---------|
 | `REPO_URL` | Git repository URL | Required for reconcile |
 | `REPO_BRANCH` | Git branch to track | `main` |
+| `BOSUN_GIT_USERNAME` | Private HTTPS Git username; pair with `BOSUN_GIT_TOKEN` | Unset |
+| `BOSUN_GIT_TOKEN` | Private HTTPS Git token; pair with `BOSUN_GIT_USERNAME` | Unset |
 | `SOPS_AGE_KEY_FILE` | Path to age key file | `~/.config/sops/age/keys.txt` |
 | `DEPLOY_TARGET` | Remote host for deployment | Local if unset |
 
