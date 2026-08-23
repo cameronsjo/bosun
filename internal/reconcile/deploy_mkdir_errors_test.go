@@ -67,7 +67,7 @@ func TestDeployLocal_PropagatesSingleFileParentMkdirError(t *testing.T) {
 	require.NoError(t, os.WriteFile(blocker, []byte("block"), 0o644))
 	appdataDir := filepath.Join(blocker, "appdata")
 	r := NewReconciler(&Config{
-		DryRun:           true,
+		DryRun:           false,
 		StagingDir:       stagingDir,
 		InfraSubDir:      "unraid",
 		LocalAppdataPath: appdataDir,
@@ -91,7 +91,7 @@ func TestDeployLocal_PropagatesComposeMkdirError(t *testing.T) {
 	composeTarget := filepath.Join(appdataDir, "compose")
 	require.NoError(t, os.WriteFile(composeTarget, []byte("block"), 0o644))
 	r := NewReconciler(&Config{
-		DryRun:           true,
+		DryRun:           false,
 		StagingDir:       stagingDir,
 		InfraSubDir:      "unraid",
 		LocalAppdataPath: appdataDir,
@@ -101,6 +101,51 @@ func TestDeployLocal_PropagatesComposeMkdirError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, result)
 	assert.Contains(t, err.Error(), "create local compose directory \""+composeTarget+"\"")
+}
+
+func TestDeployLocal_DryRunDoesNotCreateTargetDirectories(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, stagingRoot string)
+	}{
+		{
+			name: "single file target",
+			setup: func(t *testing.T, stagingRoot string) {
+				appdata := filepath.Join(stagingRoot, "appdata")
+				require.NoError(t, os.MkdirAll(appdata, 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(appdata, "service.yml"), []byte("enabled: true"), 0o644))
+			},
+		},
+		{
+			name: "compose directory target",
+			setup: func(t *testing.T, stagingRoot string) {
+				compose := filepath.Join(stagingRoot, "compose")
+				require.NoError(t, os.MkdirAll(compose, 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(compose, "core.yml"), []byte("services: {}"), 0o644))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := t.TempDir()
+			stagingDir := filepath.Join(base, "staging")
+			tt.setup(t, filepath.Join(stagingDir, "unraid"))
+			appdataDir := filepath.Join(base, "appdata")
+			r := NewReconciler(&Config{
+				DryRun:           true,
+				StagingDir:       stagingDir,
+				InfraSubDir:      "unraid",
+				LocalAppdataPath: appdataDir,
+			})
+
+			result, err := r.deployLocal(context.Background(), nil)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			_, statErr := os.Stat(appdataDir)
+			assert.ErrorIs(t, statErr, os.ErrNotExist, "dry run must leave destination directories absent")
+		})
+	}
 }
 
 func TestDeployRemote_PropagatesSingleFileParentMkdirError(t *testing.T) {
@@ -114,7 +159,7 @@ func TestDeployRemote_PropagatesSingleFileParentMkdirError(t *testing.T) {
 	failureLog := setupSelectiveMkdirFailureSSHShim(t, remoteAppdata)
 	r := NewReconciler(&Config{
 		TargetHost:        "user@testhost",
-		DryRun:            true,
+		DryRun:            false,
 		StagingDir:        stagingDir,
 		InfraSubDir:       "unraid",
 		RemoteAppdataPath: remoteAppdata,
@@ -141,7 +186,7 @@ func TestDeployRemote_PropagatesComposeMkdirError(t *testing.T) {
 	setupSelectiveMkdirFailureSSHShim(t, composeTarget)
 	r := NewReconciler(&Config{
 		TargetHost:        "user@testhost",
-		DryRun:            true,
+		DryRun:            false,
 		StagingDir:        stagingDir,
 		InfraSubDir:       "unraid",
 		RemoteAppdataPath: remoteAppdata,

@@ -1936,8 +1936,10 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 			}
 		} else {
 			targetDir := filepath.Dir(dst)
-			if err := os.MkdirAll(targetDir, 0755); err != nil {
-				return nil, fmt.Errorf("create local deploy directory %q: %w", targetDir, err)
+			if !r.config.DryRun {
+				if err := os.MkdirAll(targetDir, 0755); err != nil {
+					return nil, fmt.Errorf("create local deploy directory %q: %w", targetDir, err)
+				}
 			}
 			if err := r.deploy.deployLocalFileManaged(ctx, src, dst, result, prevForTarget); err != nil {
 				return nil, err
@@ -1960,8 +1962,10 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 	composeTarget := filepath.Join(appdata, "compose")
 	if hasTarget(targets, "compose") {
 		ui.Info("  Syncing compose files...")
-		if err := os.MkdirAll(composeTarget, 0755); err != nil {
-			return nil, fmt.Errorf("create local compose directory %q: %w", composeTarget, err)
+		if !r.config.DryRun {
+			if err := os.MkdirAll(composeTarget, 0755); err != nil {
+				return nil, fmt.Errorf("create local compose directory %q: %w", composeTarget, err)
+			}
 		}
 		snapshot := len(result.WrittenFiles)
 		deletedSnapshot := len(result.DeletedFiles)
