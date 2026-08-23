@@ -22,6 +22,13 @@ import (
 
 var errSocketPathReplaced = errors.New("socket path was replaced; refusing to remove or trust replacement entry")
 
+// socketOwnership records the published entry and, on Unix, a private hard
+// link that pins its inode until ownership-checked cleanup completes.
+type socketOwnership struct {
+	file       os.FileInfo
+	anchorPath string
+}
+
 // SocketServer handles Unix socket connections for the trigger API.
 type SocketServer struct {
 	daemon     *Daemon
@@ -30,7 +37,7 @@ type SocketServer struct {
 	mu         sync.Mutex
 	starting   bool
 	listener   net.Listener
-	socketFile os.FileInfo
+	socketFile *socketOwnership
 	httpServer *http.Server
 }
 
@@ -158,14 +165,15 @@ func (s *SocketServer) Shutdown(ctx context.Context) error {
 // releaseSocket removes only the filesystem entry published by this server.
 // If the path has been replaced, it is left untouched and the caller receives
 // an error instead of deleting an attacker-controlled or unrelated entry.
-func (s *SocketServer) releaseSocket(listener net.Listener, socketFile os.FileInfo) error {
+func (s *SocketServer) releaseSocket(listener net.Listener, socketFile *socketOwnership) error {
 	if socketFile == nil {
 		return nil
 	}
 	cleanupErr := removeSocketIfSame(s.socketPath, socketFile)
 
 	s.mu.Lock()
-	if s.listener == listener && s.socketFile != nil && os.SameFile(s.socketFile, socketFile) {
+	if s.listener == listener && s.socketFile == socketFile &&
+		(cleanupErr == nil || errors.Is(cleanupErr, errSocketPathReplaced)) {
 		s.listener = nil
 		s.socketFile = nil
 	}

@@ -13,13 +13,18 @@ import (
 // listenUnixSocket binds the socket behind a private directory, applies the
 // requested mode, and only then atomically publishes it at socketPath. This
 // avoids both a permissive final-path window and process-global umask changes.
-func listenUnixSocket(socketPath string, socketMode os.FileMode) (net.Listener, os.FileInfo, error) {
+func listenUnixSocket(socketPath string, socketMode os.FileMode) (net.Listener, *socketOwnership, error) {
 	socketDir := filepath.Dir(socketPath)
 	stagingDir, err := os.MkdirTemp(socketDir, ".")
 	if err != nil {
 		return nil, nil, fmt.Errorf("create private socket staging directory: %w", err)
 	}
-	defer func() { _ = os.RemoveAll(stagingDir) }()
+	keepStaging := false
+	defer func() {
+		if !keepStaging {
+			_ = os.RemoveAll(stagingDir)
+		}
+	}()
 	// MkdirTemp applies the process umask. Explicitly restore owner access while
 	// retaining a private directory, without mutating the process-global umask.
 	if err := os.Chmod(stagingDir, 0o700); err != nil {
@@ -57,21 +62,36 @@ func listenUnixSocket(socketPath string, socketMode os.FileMode) (net.Listener, 
 		return nil, nil, fmt.Errorf("staged Unix socket mode is %04o, expected %04o", stagedInfo.Mode().Perm(), socketMode.Perm())
 	}
 
+	// Retain a private hard link for the listener lifetime. os.SameFile compares
+	// device and inode, but an unlinked inode can be reused immediately (observed
+	// on Linux). The anchor pins this inode, making later identity checks reliable.
+	anchorPath := filepath.Join(stagingDir, "owner")
+	if err := os.Link(stagingPath, anchorPath); err != nil {
+		return nil, nil, fmt.Errorf("anchor staged Unix socket ownership: %w", err)
+	}
+	anchorInfo, err := os.Lstat(anchorPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("inspect Unix socket ownership anchor: %w", err)
+	}
+	owned := &socketOwnership{file: anchorInfo, anchorPath: anchorPath}
+
 	if err := publishSocket(stagingPath, socketPath); err != nil {
 		return nil, nil, fmt.Errorf("publish Unix socket atomically: %w", err)
 	}
 	publishedInfo, err := os.Lstat(socketPath)
 	if err != nil {
-		cleanupErr := removeSocketIfSame(socketPath, stagedInfo)
+		cleanupErr := removeSocketIfSame(socketPath, owned)
 		return nil, nil, errors.Join(fmt.Errorf("inspect published Unix socket: %w", err), cleanupErr)
 	}
-	if !os.SameFile(stagedInfo, publishedInfo) {
-		_ = removeSocketIfSame(socketPath, stagedInfo)
+	if !sameOwnedEntry(owned.file, publishedInfo) {
+		_ = removeSocketIfSame(socketPath, owned)
 		return nil, nil, errSocketPathReplaced
 	}
 
 	keepListener = true
-	return listener, publishedInfo, nil
+	keepStaging = true
+	owned.file = publishedInfo
+	return listener, owned, nil
 }
 
 func removeStaleSocket(socketPath string) error {
@@ -85,10 +105,10 @@ func removeStaleSocket(socketPath string) error {
 	if info.Mode()&os.ModeSocket == 0 {
 		return fmt.Errorf("refusing to remove non-socket entry at %s", socketPath)
 	}
-	return os.Remove(socketPath)
+	return removeSocketIfSame(socketPath, &socketOwnership{file: info})
 }
 
-func removeSocketIfSame(socketPath string, owned os.FileInfo) error {
+func removeSocketIfSame(socketPath string, owned *socketOwnership) error {
 	return removeSocketIfSameWithHooks(socketPath, owned, nil, nil)
 }
 
@@ -96,18 +116,29 @@ func removeSocketIfSame(socketPath string, owned os.FileInfo) error {
 // deterministic fault tests. Production always passes nil hooks.
 func removeSocketIfSameWithHooks(
 	socketPath string,
-	owned os.FileInfo,
+	owned *socketOwnership,
 	beforeQuarantine func(string),
 	afterQuarantine func(string),
 ) error {
+	if owned == nil || owned.file == nil {
+		return nil
+	}
+	releaseAnchor := false
+	defer func() {
+		if releaseAnchor && owned.anchorPath != "" {
+			_ = os.RemoveAll(filepath.Dir(owned.anchorPath))
+		}
+	}()
 	current, err := os.Lstat(socketPath)
 	if os.IsNotExist(err) {
+		releaseAnchor = true
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("inspect socket during cleanup: %w", err)
 	}
-	if !os.SameFile(current, owned) {
+	if !sameOwnedEntry(owned.file, current) {
+		releaseAnchor = true
 		return errSocketPathReplaced
 	}
 
@@ -135,10 +166,12 @@ func removeSocketIfSameWithHooks(
 	quarantinedPath := filepath.Join(quarantineDir, "entry")
 	if err := os.Rename(socketPath, quarantinedPath); err != nil {
 		if os.IsNotExist(err) {
+			releaseAnchor = true
 			return nil
 		}
 		return fmt.Errorf("quarantine socket during cleanup: %w", err)
 	}
+	releaseAnchor = true
 	if afterQuarantine != nil {
 		afterQuarantine(quarantinedPath)
 	}
@@ -147,7 +180,7 @@ func removeSocketIfSameWithHooks(
 		removeQuarantine = false
 		return fmt.Errorf("inspect quarantined socket entry preserved at %s: %w", quarantinedPath, err)
 	}
-	if !os.SameFile(quarantined, owned) {
+	if !sameOwnedEntry(owned.file, quarantined) {
 		if restoreErr := publishSocket(quarantinedPath, socketPath); restoreErr != nil {
 			removeQuarantine = false
 			return errors.Join(
@@ -162,4 +195,9 @@ func removeSocketIfSameWithHooks(
 		return fmt.Errorf("remove quarantined owned socket preserved at %s: %w", quarantinedPath, err)
 	}
 	return nil
+}
+
+func sameOwnedEntry(expected, actual os.FileInfo) bool {
+	return expected != nil && actual != nil &&
+		os.SameFile(expected, actual) && expected.Mode().Type() == actual.Mode().Type()
 }

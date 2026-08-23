@@ -70,7 +70,7 @@ func TestListenUnixSocketPublishesConfiguredMode(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 	assert.NotZero(t, info.Mode()&os.ModeSocket)
-	assert.True(t, os.SameFile(owned, info))
+	assert.True(t, os.SameFile(owned.file, info))
 
 	conn, err := net.DialTimeout("unix", socketPath, time.Second)
 	require.NoError(t, err, "the atomically renamed socket remains connectable")
@@ -78,8 +78,27 @@ func TestListenUnixSocketPublishesConfiguredMode(t *testing.T) {
 
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
-	require.Len(t, entries, 1, "private staging directory must be removed")
-	assert.Equal(t, "bosun.sock", entries[0].Name())
+	require.Len(t, entries, 2, "the published socket and private ownership anchor must remain")
+	var anchorDir string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			anchorDir = filepath.Join(dir, entry.Name())
+		}
+	}
+	require.NotEmpty(t, anchorDir)
+	anchorDirInfo, err := os.Stat(anchorDir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), anchorDirInfo.Mode().Perm())
+	anchorEntries, err := os.ReadDir(anchorDir)
+	require.NoError(t, err)
+	require.Len(t, anchorEntries, 1)
+	assert.Equal(t, "owner", anchorEntries[0].Name())
+
+	require.NoError(t, listener.Close())
+	require.NoError(t, removeSocketIfSame(socketPath, owned))
+	entries, err = os.ReadDir(dir)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "socket and ownership anchor must be removed together")
 }
 
 func TestSocketServerFirstObservableModeIsConfigured(t *testing.T) {
@@ -142,7 +161,7 @@ func TestSocketListenerPathErrorsDoNotDeleteUnrelatedFile(t *testing.T) {
 	require.Error(t, removeStaleSocket(socketPath))
 	parentInfo, statErr := os.Lstat(parentFile)
 	require.NoError(t, statErr)
-	require.Error(t, removeSocketIfSame(socketPath, parentInfo))
+	require.Error(t, removeSocketIfSame(socketPath, &socketOwnership{file: parentInfo}))
 
 	contents, readErr := os.ReadFile(parentFile)
 	require.NoError(t, readErr)
@@ -227,7 +246,20 @@ func TestRemoveSocketIfSamePreservesEntryWhenCleanupCannotBePrepared(t *testing.
 
 	info, statErr := os.Lstat(socketPath)
 	require.NoError(t, statErr)
-	assert.True(t, os.SameFile(owned, info), "cleanup setup failure must leave the owned socket in place")
+	assert.True(t, os.SameFile(owned.file, info), "cleanup setup failure must leave the owned socket in place")
+	_, statErr = os.Stat(filepath.Dir(owned.anchorPath))
+	require.NoError(t, statErr, "cleanup failure must retain the ownership anchor for a safe retry")
+
+	require.NoError(t, os.Chmod(dir, 0o700))
+	require.NoError(t, removeSocketIfSame(socketPath, owned))
+	_, statErr = os.Stat(filepath.Dir(owned.anchorPath))
+	assert.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestRemoveSocketIfSameAcceptsMissingOwnership(t *testing.T) {
+	path := filepath.Join(shortSocketTestDir(t), "missing.sock")
+	require.NoError(t, removeSocketIfSame(path, nil))
+	require.NoError(t, removeSocketIfSame(path, &socketOwnership{}))
 }
 
 func TestRemoveSocketIfSameHandlesFilesystemRaces(t *testing.T) {
@@ -275,6 +307,30 @@ func TestRemoveSocketIfSameHandlesFilesystemRaces(t *testing.T) {
 		contents, readErr := os.ReadFile(socketPath)
 		require.NoError(t, readErr)
 		assert.Equal(t, "replacement", string(contents))
+	})
+
+	t.Run("same-type replacement is restored", func(t *testing.T) {
+		dir := shortSocketTestDir(t)
+		socketPath := filepath.Join(dir, "bosun.sock")
+		listener, owned, err := listenUnixSocket(socketPath, 0o600)
+		require.NoError(t, err)
+		require.NoError(t, listener.Close())
+		var replacement net.Listener
+
+		err = removeSocketIfSameWithHooks(socketPath, owned, func(string) {
+			require.NoError(t, os.Remove(socketPath))
+			replacement, err = net.Listen("unix", socketPath)
+			require.NoError(t, err)
+			if unixListener, ok := replacement.(*net.UnixListener); ok {
+				unixListener.SetUnlinkOnClose(false)
+			}
+		}, nil)
+		require.ErrorIs(t, err, errSocketPathReplaced)
+		require.NoError(t, replacement.Close())
+		info, statErr := os.Lstat(socketPath)
+		require.NoError(t, statErr)
+		assert.NotZero(t, info.Mode()&os.ModeSocket)
+		require.NoError(t, os.Remove(socketPath))
 	})
 
 	t.Run("replacement remains quarantined when final path races", func(t *testing.T) {
