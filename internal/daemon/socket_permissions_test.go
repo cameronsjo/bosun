@@ -185,15 +185,158 @@ func TestSocketServerRefusesUnsafeStaleAndReplacementEntries(t *testing.T) {
 		socketPath := filepath.Join(dir, "bosun.sock")
 		listener, owned, err := listenUnixSocket(socketPath, 0o600)
 		require.NoError(t, err)
-		defer func() { _ = listener.Close() }()
 		require.NoError(t, os.Remove(socketPath))
 		require.NoError(t, os.WriteFile(socketPath, []byte("replacement"), 0o600))
 
 		err = removeSocketIfSame(socketPath, owned)
 		require.ErrorIs(t, err, errSocketPathReplaced)
+		require.NoError(t, listener.Close(), "listener close must not unlink a replacement")
 		contents, readErr := os.ReadFile(socketPath)
 		require.NoError(t, readErr)
 		assert.Equal(t, "replacement", string(contents))
+	})
+}
+
+func TestRemoveSocketIfSameQuarantinesBeforeDeleting(t *testing.T) {
+	dir := shortSocketTestDir(t)
+	socketPath := filepath.Join(dir, "bosun.sock")
+	listener, owned, err := listenUnixSocket(socketPath, 0o600)
+	require.NoError(t, err)
+	require.NoError(t, listener.Close())
+
+	require.NoError(t, removeSocketIfSame(socketPath, owned))
+	_, err = os.Lstat(socketPath)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "private cleanup quarantine must be removed after owned-socket deletion")
+}
+
+func TestRemoveSocketIfSamePreservesEntryWhenCleanupCannotBePrepared(t *testing.T) {
+	dir := shortSocketTestDir(t)
+	socketPath := filepath.Join(dir, "bosun.sock")
+	listener, owned, err := listenUnixSocket(socketPath, 0o600)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+
+	require.NoError(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	err = removeSocketIfSame(socketPath, owned)
+	require.ErrorContains(t, err, "create private socket cleanup directory")
+
+	info, statErr := os.Lstat(socketPath)
+	require.NoError(t, statErr)
+	assert.True(t, os.SameFile(owned, info), "cleanup setup failure must leave the owned socket in place")
+}
+
+func TestRemoveSocketIfSameHandlesFilesystemRaces(t *testing.T) {
+	t.Run("path disappears before quarantine", func(t *testing.T) {
+		dir := shortSocketTestDir(t)
+		socketPath := filepath.Join(dir, "bosun.sock")
+		listener, owned, err := listenUnixSocket(socketPath, 0o600)
+		require.NoError(t, err)
+		require.NoError(t, listener.Close())
+
+		err = removeSocketIfSameWithHooks(socketPath, owned, func(string) {
+			require.NoError(t, os.Remove(socketPath))
+		}, nil)
+		require.NoError(t, err)
+	})
+
+	t.Run("rename failure leaves socket", func(t *testing.T) {
+		dir := shortSocketTestDir(t)
+		socketPath := filepath.Join(dir, "bosun.sock")
+		listener, owned, err := listenUnixSocket(socketPath, 0o600)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = listener.Close() })
+
+		err = removeSocketIfSameWithHooks(socketPath, owned, func(string) {
+			require.NoError(t, os.Chmod(dir, 0o500))
+		}, nil)
+		require.ErrorContains(t, err, "quarantine socket during cleanup")
+		require.NoError(t, os.Chmod(dir, 0o700))
+		_, statErr := os.Lstat(socketPath)
+		require.NoError(t, statErr)
+	})
+
+	t.Run("replacement is restored", func(t *testing.T) {
+		dir := shortSocketTestDir(t)
+		socketPath := filepath.Join(dir, "bosun.sock")
+		listener, owned, err := listenUnixSocket(socketPath, 0o600)
+		require.NoError(t, err)
+		require.NoError(t, listener.Close())
+
+		err = removeSocketIfSameWithHooks(socketPath, owned, func(string) {
+			require.NoError(t, os.Remove(socketPath))
+			require.NoError(t, os.WriteFile(socketPath, []byte("replacement"), 0o600))
+		}, nil)
+		require.ErrorIs(t, err, errSocketPathReplaced)
+		contents, readErr := os.ReadFile(socketPath)
+		require.NoError(t, readErr)
+		assert.Equal(t, "replacement", string(contents))
+	})
+
+	t.Run("replacement remains quarantined when final path races", func(t *testing.T) {
+		dir := shortSocketTestDir(t)
+		socketPath := filepath.Join(dir, "bosun.sock")
+		listener, owned, err := listenUnixSocket(socketPath, 0o600)
+		require.NoError(t, err)
+		require.NoError(t, listener.Close())
+		var quarantinedPath string
+
+		err = removeSocketIfSameWithHooks(socketPath, owned, func(string) {
+			require.NoError(t, os.Remove(socketPath))
+			require.NoError(t, os.WriteFile(socketPath, []byte("first replacement"), 0o600))
+		}, func(path string) {
+			quarantinedPath = path
+			require.NoError(t, os.WriteFile(socketPath, []byte("racing replacement"), 0o600))
+		})
+		require.ErrorIs(t, err, errSocketPathReplaced)
+		contents, readErr := os.ReadFile(socketPath)
+		require.NoError(t, readErr)
+		assert.Equal(t, "racing replacement", string(contents))
+		contents, readErr = os.ReadFile(quarantinedPath)
+		require.NoError(t, readErr)
+		assert.Equal(t, "first replacement", string(contents))
+		require.NoError(t, os.RemoveAll(filepath.Dir(quarantinedPath)))
+	})
+
+	t.Run("uninspectable quarantine is retained", func(t *testing.T) {
+		dir := shortSocketTestDir(t)
+		socketPath := filepath.Join(dir, "bosun.sock")
+		listener, owned, err := listenUnixSocket(socketPath, 0o600)
+		require.NoError(t, err)
+		require.NoError(t, listener.Close())
+		var quarantinedPath string
+
+		err = removeSocketIfSameWithHooks(socketPath, owned, nil, func(path string) {
+			quarantinedPath = path
+			require.NoError(t, os.Remove(path))
+		})
+		require.ErrorContains(t, err, "inspect quarantined socket entry")
+		_, statErr := os.Stat(filepath.Dir(quarantinedPath))
+		require.NoError(t, statErr, "uncertain quarantine must be retained for inspection")
+		require.NoError(t, os.RemoveAll(filepath.Dir(quarantinedPath)))
+	})
+
+	t.Run("delete failure retains owned quarantine", func(t *testing.T) {
+		dir := shortSocketTestDir(t)
+		socketPath := filepath.Join(dir, "bosun.sock")
+		listener, owned, err := listenUnixSocket(socketPath, 0o600)
+		require.NoError(t, err)
+		require.NoError(t, listener.Close())
+		var quarantinedPath string
+
+		err = removeSocketIfSameWithHooks(socketPath, owned, nil, func(path string) {
+			quarantinedPath = path
+			require.NoError(t, os.Chmod(filepath.Dir(path), 0o500))
+		})
+		require.ErrorContains(t, err, "remove quarantined owned socket")
+		require.NoError(t, os.Chmod(filepath.Dir(quarantinedPath), 0o700))
+		_, statErr := os.Lstat(quarantinedPath)
+		require.NoError(t, statErr)
+		require.NoError(t, os.RemoveAll(filepath.Dir(quarantinedPath)))
 	})
 }
 
@@ -207,6 +350,22 @@ func TestListenUnixSocketCleansStagingAfterPublishError(t *testing.T) {
 	entries, readErr := os.ReadDir(dir)
 	require.NoError(t, readErr)
 	assert.Empty(t, entries, "listener and private staging directory must be cleaned after failure")
+}
+
+func TestListenUnixSocketCleansStagingAfterBindError(t *testing.T) {
+	dir := shortSocketTestDir(t)
+	// Darwin and Linux cap AF_UNIX paths near 104/108 bytes. The filesystem
+	// directory itself is valid, but the private staged socket path is not.
+	longDir := filepath.Join(dir, strings.Repeat("x", 90))
+	require.NoError(t, os.Mkdir(longDir, 0o700))
+
+	listener, _, err := listenUnixSocket(filepath.Join(longDir, "bosun.sock"), 0o600)
+	require.ErrorContains(t, err, "bind staged Unix socket")
+	assert.Nil(t, listener)
+
+	entries, readErr := os.ReadDir(longDir)
+	require.NoError(t, readErr)
+	assert.Empty(t, entries, "private staging directory must be cleaned after bind failure")
 }
 
 func TestPublishSocketDoesNotReplaceRacingEntry(t *testing.T) {

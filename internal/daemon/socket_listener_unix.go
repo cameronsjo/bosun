@@ -89,6 +89,17 @@ func removeStaleSocket(socketPath string) error {
 }
 
 func removeSocketIfSame(socketPath string, owned os.FileInfo) error {
+	return removeSocketIfSameWithHooks(socketPath, owned, nil, nil)
+}
+
+// removeSocketIfSameWithHooks exposes the two filesystem race boundaries to
+// deterministic fault tests. Production always passes nil hooks.
+func removeSocketIfSameWithHooks(
+	socketPath string,
+	owned os.FileInfo,
+	beforeQuarantine func(string),
+	afterQuarantine func(string),
+) error {
 	current, err := os.Lstat(socketPath)
 	if os.IsNotExist(err) {
 		return nil
@@ -99,8 +110,56 @@ func removeSocketIfSame(socketPath string, owned os.FileInfo) error {
 	if !os.SameFile(current, owned) {
 		return errSocketPathReplaced
 	}
-	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove owned socket: %w", err)
+
+	// A second Lstat followed by Remove would still have a check/use race: an
+	// attacker could replace the name after SameFile and have that replacement
+	// unlinked. Atomically move the current name into a private quarantine,
+	// verify the inode that actually moved, and only then delete it.
+	quarantineDir, err := os.MkdirTemp(filepath.Dir(socketPath), ".bosun-socket-cleanup-")
+	if err != nil {
+		return fmt.Errorf("create private socket cleanup directory: %w", err)
+	}
+	removeQuarantine := true
+	defer func() {
+		if removeQuarantine {
+			_ = os.RemoveAll(quarantineDir)
+		}
+	}()
+	if err := os.Chmod(quarantineDir, 0o700); err != nil {
+		return fmt.Errorf("secure socket cleanup directory: %w", err)
+	}
+	if beforeQuarantine != nil {
+		beforeQuarantine(quarantineDir)
+	}
+
+	quarantinedPath := filepath.Join(quarantineDir, "entry")
+	if err := os.Rename(socketPath, quarantinedPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("quarantine socket during cleanup: %w", err)
+	}
+	if afterQuarantine != nil {
+		afterQuarantine(quarantinedPath)
+	}
+	quarantined, err := os.Lstat(quarantinedPath)
+	if err != nil {
+		removeQuarantine = false
+		return fmt.Errorf("inspect quarantined socket entry preserved at %s: %w", quarantinedPath, err)
+	}
+	if !os.SameFile(quarantined, owned) {
+		if restoreErr := publishSocket(quarantinedPath, socketPath); restoreErr != nil {
+			removeQuarantine = false
+			return errors.Join(
+				errSocketPathReplaced,
+				fmt.Errorf("restore replacement entry (preserved at %s): %w", quarantinedPath, restoreErr),
+			)
+		}
+		return errSocketPathReplaced
+	}
+	if err := os.Remove(quarantinedPath); err != nil && !os.IsNotExist(err) {
+		removeQuarantine = false
+		return fmt.Errorf("remove quarantined owned socket preserved at %s: %w", quarantinedPath, err)
 	}
 	return nil
 }

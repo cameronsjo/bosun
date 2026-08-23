@@ -16,6 +16,11 @@ func listenUnixSocket(socketPath string, socketMode os.FileMode) (net.Listener, 
 	if err != nil {
 		return nil, nil, err
 	}
+	if unixListener, ok := listener.(*net.UnixListener); ok {
+		// Keep shutdown cleanup ownership-checked. The default close behavior can
+		// unlink a replacement created after publication.
+		unixListener.SetUnlinkOnClose(false)
+	}
 	if err := os.Chmod(socketPath, socketMode); err != nil {
 		_ = listener.Close()
 		return nil, nil, fmt.Errorf("set Unix socket mode: %w", err)
