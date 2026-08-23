@@ -3,6 +3,7 @@ package reconcile
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -252,12 +253,88 @@ func (c *Config) ResolveTargets() ([]Target, error) {
 			valid = append(valid, t)
 		}
 		if len(valid) > 0 {
+			if err := c.validateTargetResourceCollisions(valid); err != nil {
+				return nil, err
+			}
 			return valid, nil
 		}
 		// All configured targets had invalid names — fall through to implicit default.
 		log.Warn().Int("configured", len(c.Targets)).Msg("All configured targets have invalid names, falling back to default target")
 	}
 	return []Target{c.implicitDefaultTarget(Target{})}, nil
+}
+
+type targetResourceKey struct {
+	host     string
+	resource string
+}
+
+// validateTargetResourceCollisions rejects targets that would operate on the
+// same Docker Compose namespace or deploy destination. The host is part of
+// each key: using the same project name or filesystem path on separate hosts is
+// intentional and safe, while a shared host requires both resources to differ.
+func (c *Config) validateTargetResourceCollisions(targets []Target) error {
+	namespaces := make(map[targetResourceKey]string, len(targets))
+	deployPaths := make(map[targetResourceKey]string, len(targets))
+
+	for _, target := range targets {
+		effective := c.ConfigForTarget(target)
+		host := strings.ToLower(effective.TargetHost)
+
+		projectName, projectLabel := normalizeTargetProjectName(effective.ProjectName)
+		namespaceKey := targetResourceKey{host: host, resource: projectName}
+		if first, ok := namespaces[namespaceKey]; ok {
+			return fmt.Errorf(
+				"targets %q and %q resolve to the same Docker namespace (host %q, project_name %q)",
+				first, target.Name, targetHostLabel(effective.TargetHost), projectLabel,
+			)
+		}
+		namespaces[namespaceKey] = target.Name
+
+		deployPath := effective.RemoteAppdataPath
+		if effective.TargetHost == "" {
+			deployPath = effective.LocalAppdataPath
+		}
+		if deployPath == "" {
+			continue
+		}
+		key := targetResourceKey{host: host, resource: normalizeTargetDeployPath(effective.TargetHost, deployPath)}
+		if first, ok := deployPaths[key]; ok {
+			return fmt.Errorf(
+				"targets %q and %q resolve to the same deploy path on host %q: %q",
+				first, target.Name, targetHostLabel(effective.TargetHost), deployPath,
+			)
+		}
+		deployPaths[key] = target.Name
+	}
+
+	return nil
+}
+
+func normalizeTargetProjectName(projectName string) (normalized, label string) {
+	if projectName == "" {
+		// Bosun runs both local and remote Compose commands from the fixed
+		// appdata/compose directory. Without -p (or a compose-file name
+		// override unavailable at config resolution), Compose derives "compose".
+		return "compose", "compose (derived)"
+	}
+	return strings.ToLower(projectName), projectName
+}
+
+func normalizeTargetDeployPath(host, deployPath string) string {
+	if host == "" {
+		return filepath.Clean(deployPath)
+	}
+	// Remote deploy paths always use the target host's slash semantics, even
+	// when Bosun itself is running on Windows.
+	return path.Clean(deployPath)
+}
+
+func targetHostLabel(host string) string {
+	if host == "" {
+		return "local"
+	}
+	return host
 }
 
 // implicitDefaultTarget synthesizes the implicit default target from the flat

@@ -277,3 +277,156 @@ func TestResolveTargets_MultiTargetDefaultFailsLoud(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveTargets_RejectsResourceCollisions(t *testing.T) {
+	tests := []struct {
+		name            string
+		configure       func(*Config)
+		targets         []Target
+		wantErrContains []string
+	}{
+		{
+			name: "docker namespace on the same remote host",
+			targets: []Target{
+				{Name: "prod-a", TargetHost: "root@nas", ProjectName: "stack", RemoteAppdataPath: "/mnt/user/prod-a"},
+				{Name: "prod-b", TargetHost: "root@nas", ProjectName: "stack", RemoteAppdataPath: "/mnt/user/prod-b"},
+			},
+			wantErrContains: []string{"prod-a", "prod-b", "Docker namespace"},
+		},
+		{
+			name: "docker namespace normalizes host and project casing",
+			targets: []Target{
+				{Name: "prod-a", TargetHost: "root@NAS", ProjectName: "Stack", RemoteAppdataPath: "/mnt/user/prod-a"},
+				{Name: "prod-b", TargetHost: "root@nas", ProjectName: "stack", RemoteAppdataPath: "/mnt/user/prod-b"},
+			},
+			wantErrContains: []string{"prod-a", "prod-b", "Docker namespace"},
+		},
+		{
+			name: "remote deploy path normalizes dot segments and trailing slash",
+			targets: []Target{
+				{Name: "prod-a", TargetHost: "root@nas", ProjectName: "stack-a", RemoteAppdataPath: "/mnt/user/appdata/"},
+				{Name: "prod-b", TargetHost: "root@nas", ProjectName: "stack-b", RemoteAppdataPath: "/mnt/user/./appdata"},
+			},
+			wantErrContains: []string{"prod-a", "prod-b", "deploy path"},
+		},
+		{
+			name: "local deploy path normalizes dot segments and trailing slash",
+			targets: []Target{
+				{Name: "prod-a", ProjectName: "stack-a", LocalAppdataPath: "/srv/appdata/"},
+				{Name: "prod-b", ProjectName: "stack-b", LocalAppdataPath: "/srv/./appdata"},
+			},
+			wantErrContains: []string{"prod-a", "prod-b", "deploy path"},
+		},
+		{
+			name: "effective inherited project collides",
+			configure: func(cfg *Config) {
+				cfg.ProjectName = "shared-stack"
+			},
+			targets: []Target{
+				{Name: "prod-a", TargetHost: "root@nas", RemoteAppdataPath: "/mnt/user/prod-a"},
+				{Name: "prod-b", TargetHost: "root@nas", RemoteAppdataPath: "/mnt/user/prod-b"},
+			},
+			wantErrContains: []string{"prod-a", "prod-b", "Docker namespace"},
+		},
+		{
+			name: "effective inherited remote deploy path collides",
+			configure: func(cfg *Config) {
+				cfg.RemoteAppdataPath = "/mnt/user/shared"
+			},
+			targets: []Target{
+				{Name: "prod-a", TargetHost: "root@nas", ProjectName: "stack-a"},
+				{Name: "prod-b", TargetHost: "root@nas", ProjectName: "stack-b"},
+			},
+			wantErrContains: []string{"prod-a", "prod-b", "deploy path"},
+		},
+		{
+			name: "derived docker namespace on the same host",
+			targets: []Target{
+				{Name: "prod-a", TargetHost: "root@nas", RemoteAppdataPath: "/mnt/user/prod-a"},
+				{Name: "prod-b", TargetHost: "root@nas", RemoteAppdataPath: "/mnt/user/prod-b"},
+			},
+			wantErrContains: []string{"prod-a", "prod-b", "Docker namespace", "compose (derived)"},
+		},
+		{
+			name: "derived docker namespace collides with explicit compose project",
+			targets: []Target{
+				{Name: "prod-a", TargetHost: "root@nas", RemoteAppdataPath: "/mnt/user/prod-a"},
+				{Name: "prod-b", TargetHost: "root@nas", ProjectName: "compose", RemoteAppdataPath: "/mnt/user/prod-b"},
+			},
+			wantErrContains: []string{"prod-a", "prod-b", "Docker namespace", "compose"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			if tt.configure != nil {
+				tt.configure(cfg)
+			}
+			cfg.Targets = tt.targets
+
+			targets, err := cfg.ResolveTargets()
+
+			require.Error(t, err)
+			assert.Nil(t, targets)
+			for _, want := range tt.wantErrContains {
+				assert.Contains(t, err.Error(), want)
+			}
+		})
+	}
+}
+
+func TestResolveTargets_AllowsDistinctResources(t *testing.T) {
+	tests := []struct {
+		name    string
+		targets []Target
+	}{
+		{
+			name: "same host with distinct project and deploy path",
+			targets: []Target{
+				{Name: "prod-a", TargetHost: "root@nas", ProjectName: "stack-a", RemoteAppdataPath: "/mnt/user/prod-a"},
+				{Name: "prod-b", TargetHost: "root@nas", ProjectName: "stack-b", RemoteAppdataPath: "/mnt/user/prod-b"},
+			},
+		},
+		{
+			name: "same project and path on distinct hosts",
+			targets: []Target{
+				{Name: "prod-a", TargetHost: "root@nas-a", ProjectName: "stack", RemoteAppdataPath: "/mnt/user/appdata"},
+				{Name: "prod-b", TargetHost: "root@nas-b", ProjectName: "stack", RemoteAppdataPath: "/mnt/user/appdata"},
+			},
+		},
+		{
+			name: "path casing remains distinct",
+			targets: []Target{
+				{Name: "prod-a", TargetHost: "root@nas", ProjectName: "stack-a", RemoteAppdataPath: "/mnt/user/AppData"},
+				{Name: "prod-b", TargetHost: "root@nas", ProjectName: "stack-b", RemoteAppdataPath: "/mnt/user/appdata"},
+			},
+		},
+		{
+			name: "local and remote resources are distinct",
+			targets: []Target{
+				{Name: "prod-a", ProjectName: "stack", LocalAppdataPath: "/mnt/user/appdata"},
+				{Name: "prod-b", TargetHost: "root@nas", ProjectName: "stack", RemoteAppdataPath: "/mnt/user/appdata"},
+			},
+		},
+		{
+			name: "derived namespace on distinct hosts",
+			targets: []Target{
+				{Name: "prod-a", TargetHost: "root@nas-a", RemoteAppdataPath: "/mnt/user/appdata"},
+				{Name: "prod-b", TargetHost: "root@nas-b", RemoteAppdataPath: "/mnt/user/appdata"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Targets = tt.targets
+
+			targets, err := cfg.ResolveTargets()
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.targets, targets)
+		})
+	}
+}

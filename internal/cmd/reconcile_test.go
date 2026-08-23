@@ -396,8 +396,18 @@ func TestRunReconcile_PreparesEachTargetStateDir(t *testing.T) {
 
 	base := t.TempDir()
 	targets := []reconcile.Target{
-		{Name: "unraid", StateFile: filepath.Join(base, "unraid", "state.json")},
-		{Name: "pi", StateFile: filepath.Join(base, "pi", "nested", "state.json")},
+		{
+			Name:             "unraid",
+			ProjectName:      "unraid",
+			LocalAppdataPath: filepath.Join(base, "unraid", "appdata"),
+			StateFile:        filepath.Join(base, "unraid", "state.json"),
+		},
+		{
+			Name:             "pi",
+			ProjectName:      "pi",
+			LocalAppdataPath: filepath.Join(base, "pi", "appdata"),
+			StateFile:        filepath.Join(base, "pi", "nested", "state.json"),
+		},
 	}
 	targetsJSON, err := json.Marshal(targets)
 	require.NoError(t, err)
