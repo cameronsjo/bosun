@@ -290,11 +290,13 @@ func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string
 
 	summary := classifyComposeResults(results)
 
-	// Phase 2: orphan reconciliation pass with all files. Rolled-back files use
-	// their extracted backup copy (backupRoot is set iff a rollback occurred) so
-	// the pass reconciles Docker to the previous service set (#332/#335).
-	if d.RemoveOrphans && summary.Succeeded > 0 {
-		orphanFiles := buildOrphanPassFiles(results, backupRoot)
+	// Phase 2: orphan reconciliation pass with every phase-1 success and verified
+	// rollback. Rolled-back files use their extracted backup copy so the pass
+	// reconciles Docker to the previous service set (#332/#335). Eligibility,
+	// rather than a new-file success, is the gate: an all-rolled-back attempt still
+	// needs orphan cleanup against its restored service set.
+	orphanFiles := buildOrphanPassFiles(results, backupRoot)
+	if d.RemoveOrphans && len(orphanFiles) > 0 {
 		logger.Info().
 			Int("file_count", len(orphanFiles)).
 			Msg("Running orphan reconciliation pass")

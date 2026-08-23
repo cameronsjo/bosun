@@ -1102,6 +1102,14 @@ func TestBuildOrphanPassFiles(t *testing.T) {
 			want:       nil,
 		},
 		{
+			name: "inconsistent success and rollback state is excluded",
+			results: []ComposeFileResult{
+				{File: "/compose/a.yml", Success: true, RolledBack: true},
+			},
+			backupRoot: backupRoot,
+			want:       nil,
+		},
+		{
 			name: "mixed outcomes preserve eligible input order",
 			results: []ComposeFileResult{
 				{File: "/compose/z-success.yml", Success: true},

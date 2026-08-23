@@ -19,6 +19,7 @@ func TestComposeUpIsolated_OrphanPassSkipsFailedWithoutRollback(t *testing.T) {
 	var phaseCalls []string
 	d := &DeployOps{
 		RemoveOrphans: true,
+		ProjectName:   "bosun",
 		composeUpFn: func(_ context.Context, files []string) error {
 			require.Len(t, files, 1)
 			phaseCalls = append(phaseCalls, files[0])
@@ -45,14 +46,61 @@ func TestComposeUpIsolated_OrphanPassSkipsFailedWithoutRollback(t *testing.T) {
 
 	orphanArgs, err := os.ReadFile(capture)
 	require.NoError(t, err)
-	args := string(orphanArgs)
-	assert.Contains(t, args, "/compose/first.yml")
-	assert.NotContains(t, args, "/compose/failed.yml",
-		"a phase-one failure without rollback must not be attempted by the orphan pass")
-	assert.Contains(t, args, "/compose/last.yml")
-	assert.Less(t, strings.Index(args, "/compose/first.yml"), strings.Index(args, "/compose/last.yml"),
-		"successful files must retain input order")
-	assert.Contains(t, args, "--remove-orphans")
+	assert.Equal(t, []string{
+		"compose", "-p", "bosun",
+		"-f", "/compose/first.yml",
+		"-f", "/compose/last.yml",
+		"up", "-d", "--remove-orphans",
+	}, strings.Fields(string(orphanArgs)),
+		"the orphan pass must contain only eligible files in phase-one order")
+}
+
+func TestComposeUpIsolated_OrphanPassIncludesVerifiedRollback(t *testing.T) {
+	tmp := evalSymlinks(t, t.TempDir())
+	composeFile := filepath.Join(tmp, "compose", "failed.yml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(composeFile), 0o755))
+	require.NoError(t, os.WriteFile(composeFile, []byte("services: {}\n"), 0o644))
+
+	backupDir := filepath.Join(tmp, "backups")
+	backupName, err := NewDeployOps(false, "").Backup(context.Background(), backupDir, []string{composeFile})
+	require.NoError(t, err)
+	backupPath := filepath.Join(backupDir, backupName)
+
+	capture := installOrphanPassDockerShim(t, 0)
+	phaseErr := errors.New("invalid compose file")
+	phaseAttempts := 0
+	d := &DeployOps{
+		RemoveOrphans: true,
+		ProjectName:   "bosun",
+		composeUpFn: func(_ context.Context, files []string) error {
+			phaseAttempts++
+			require.Equal(t, []string{composeFile}, files)
+			return phaseErr
+		},
+	}
+
+	summary, err := d.ComposeUpIsolated(context.Background(), []string{composeFile}, backupPath)
+
+	require.Error(t, err, "an all-failed phase one remains fatal even after verified rollback")
+	assert.Equal(t, 1, phaseAttempts, "phase one must not retry the failed input")
+	require.Len(t, summary.Results, 1)
+	assert.Equal(t, 0, summary.Succeeded)
+	assert.Equal(t, 1, summary.Failed)
+	assert.Equal(t, 1, summary.RolledBack)
+	assert.ErrorIs(t, summary.Results[0].Err, phaseErr)
+
+	captured, readErr := os.ReadFile(capture)
+	require.NoError(t, readErr)
+	lines := strings.Split(strings.TrimSpace(string(captured)), "\n")
+	require.Len(t, lines, 2, "verified rollback must be followed by an orphan pass")
+	rollbackArgs := strings.Fields(lines[0])
+	orphanArgs := strings.Fields(lines[1])
+	require.Len(t, rollbackArgs, 7)
+	assert.Equal(t, []string{"compose", "-p", "bosun", "-f"}, rollbackArgs[:4])
+	assert.NotEqual(t, composeFile, rollbackArgs[4], "rollback must use the extracted backup copy")
+	assert.Equal(t, []string{"up", "-d"}, rollbackArgs[5:])
+	assert.Equal(t, append(append([]string(nil), rollbackArgs...), "--remove-orphans"), orphanArgs,
+		"orphan pass must use the same verified backup path as rollback")
 }
 
 func TestComposeUpIsolated_OrphanPassErrorPreservesPhaseOneResults(t *testing.T) {

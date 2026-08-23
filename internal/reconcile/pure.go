@@ -327,11 +327,11 @@ func filterManagedForTarget(manifest []string, targetPath string) map[string]boo
 func buildOrphanPassFiles(results []ComposeFileResult, backupRoot string) []string {
 	var files []string
 	for _, r := range results {
-		if r.Success {
+		if r.Success && !r.RolledBack {
 			files = append(files, r.File)
 			continue
 		}
-		if r.RolledBack && backupRoot != "" {
+		if !r.Success && r.RolledBack && backupRoot != "" {
 			backupFile := filepath.Join(backupRoot, strings.TrimPrefix(filepath.ToSlash(r.File), "/"))
 			files = append(files, backupFile)
 		}
