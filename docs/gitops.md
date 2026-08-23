@@ -118,7 +118,10 @@ This prevents concurrent docker compose operations while ensuring no trigger bat
 ### Security
 
 - **Socket permissions**: 0660 (owner and group only)
-- **SO_PEERCRED**: Logs kernel-reported UID/PID of every caller
+- **SO_PEERCRED authorization**: On Linux, mutating requests require the
+  kernel-reported peer UID to match the daemon's effective UID or
+  `BOSUN_SOCKET_ALLOWED_UIDS`; missing credentials fail closed with `403`
+  unless `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET=true` explicitly opts out
 - **Bearer auth**: Optional TCP API requires `Authorization: Bearer <token>`
 - **Secret injection**: Webhook secret fetched from daemon, never on disk
 

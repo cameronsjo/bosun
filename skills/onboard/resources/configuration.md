@@ -344,6 +344,8 @@ credentials.
 
 | Variable | Description |
 |----------|-------------|
+| `BOSUN_SOCKET_ALLOWED_UIDS` | Comma-separated numeric UIDs allowed to mutate through the Unix socket in addition to the daemon UID. Invalid entries fail startup validation; no usernames or group grants |
+| `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET` | Opt out of fail-closed Unix socket peer-credential auth (default: `false`; strict `== "true"`). Required for mutations when peer credentials are unavailable, including non-Linux platforms; logged at startup and per accepted request |
 | `BOSUN_REMOVE_ORPHANS` | Pass `--remove-orphans` to docker compose up (default: `true`; overrides config file). Set to `false` in shared environments where Bosun doesn't own all containers |
 | `BOSUN_GIT_FETCH_DEPTH` | Positive shallow clone/fetch history depth (default: `1`). Increase when deploy-path or hook diffs regularly span multiple commits; unavailable history still fails safe to a full deploy/all hooks |
 | `BOSUN_CRITICAL_CONTAINERS` | JSON array of container names that must be healthy after deploy (overrides config file) |

@@ -42,6 +42,11 @@ func startDaemonSocket(t *testing.T) (*Daemon, string) {
 	cfg.SocketPath = socketPath
 	cfg.EnableHTTP = false
 	cfg.EnableTCP = false
+	// These lifecycle/round-trip tests exercise the socket transport on every
+	// supported platform. Where the kernel cannot supply peer credentials, use
+	// the explicit security opt-out; Linux keeps authorization enabled so its
+	// round-trip trigger also exercises real SO_PEERCRED enforcement.
+	cfg.AllowUnauthenticatedSocket = !peerCredentialSupportAvailable()
 	cfg.PollInterval = 0 // Disable polling
 	cfg.DriftInterval = 0
 	cfg.InitialDelay = 24 * time.Hour // Effectively disable initial reconcile

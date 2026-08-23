@@ -4,7 +4,6 @@ package daemon
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"net/http"
 
@@ -28,8 +27,8 @@ func (l *peerCredListener) Accept() (net.Conn, error) {
 
 	// Get peer credentials using SO_PEERCRED
 	if unixConn, ok := conn.(*net.UnixConn); ok {
-		if cred := getPeerCredentials(unixConn); cred != "" {
-			return &peerCredConn{Conn: conn, peerCred: cred}, nil
+		if credentials, ok := getPeerCredentials(unixConn); ok {
+			return &peerCredConn{Conn: conn, credentials: credentials}, nil
 		}
 	}
 
@@ -38,14 +37,14 @@ func (l *peerCredListener) Accept() (net.Conn, error) {
 
 type peerCredConn struct {
 	net.Conn
-	peerCred string
+	credentials peerCredentials
 }
 
 // getPeerCredentials extracts UID/GID/PID from a Unix socket connection.
-func getPeerCredentials(conn *net.UnixConn) string {
+func getPeerCredentials(conn *net.UnixConn) (peerCredentials, bool) {
 	raw, err := conn.SyscallConn()
 	if err != nil {
-		return ""
+		return peerCredentials{}, false
 	}
 
 	var cred *unix.Ucred
@@ -56,19 +55,21 @@ func getPeerCredentials(conn *net.UnixConn) string {
 	})
 
 	if err != nil || credErr != nil || cred == nil {
-		return ""
+		return peerCredentials{}, false
 	}
 
-	return fmt.Sprintf("uid=%d,gid=%d,pid=%d", cred.Uid, cred.Gid, cred.Pid)
+	return peerCredentials{UID: cred.Uid, GID: cred.Gid, PID: cred.Pid}, true
 }
 
 // InjectPeerCred is a ConnContext function for http.Server that injects peer credentials.
 func InjectPeerCred(ctx context.Context, c net.Conn) context.Context {
 	if pc, ok := c.(*peerCredConn); ok {
-		return context.WithValue(ctx, peerCredKey, pc.peerCred)
+		return context.WithValue(ctx, peerCredKey, pc.credentials)
 	}
 	return ctx
 }
+
+func peerCredentialSupportAvailable() bool { return true }
 
 // WrapServerForPeerCred configures the HTTP server to use peer credentials.
 func WrapServerForPeerCred(srv *http.Server, listener net.Listener) net.Listener {

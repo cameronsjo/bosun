@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+const testSocketUID uint32 = 4242
 
 // newTestSocketServer creates a SocketServer+Daemon for handler testing.
 // Uses newConcurrencyDaemon which sets DryRun=true — reconcile fails fast,
@@ -34,6 +37,7 @@ func newTestSocketServer(t *testing.T) (*SocketServer, *Daemon) {
 	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "test.lock")
 	cfg.ReconcileConfig.StateFile = filepath.Join(tmpDir, "state.json")
 	cfg.SocketPath = filepath.Join(tmpDir, "test.sock")
+	cfg.SocketAllowedUIDs = []uint32{testSocketUID}
 	cfg.WebhookSecret = "test-secret"
 	cfg.ReconcileConfig.RepoBranch = "main"
 
@@ -47,6 +51,14 @@ func newTestSocketServer(t *testing.T) (*SocketServer, *Daemon) {
 	t.Cleanup(func() { waitForReconcileIdle(t, d) })
 
 	return d.socketServer, d
+}
+
+func withTestSocketPeer(req *http.Request) *http.Request {
+	return withSocketPeer(req, peerCredentials{UID: testSocketUID, GID: 100, PID: 1234})
+}
+
+func withSocketPeer(req *http.Request, credentials peerCredentials) *http.Request {
+	return req.WithContext(context.WithValue(req.Context(), peerCredKey, credentials))
 }
 
 func TestSocketHandleTrigger(t *testing.T) {
@@ -69,7 +81,7 @@ func TestSocketHandleTrigger(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/trigger", nil)
 		req.ContentLength = 0
 		w := httptest.NewRecorder()
-		ss.handleTrigger(w, req)
+		ss.handleTrigger(w, withTestSocketPeer(req))
 
 		assert.Equal(t, http.StatusAccepted, w.Code)
 		assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
@@ -90,7 +102,7 @@ func TestSocketHandleTrigger(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/trigger", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		ss.handleTrigger(w, req)
+		ss.handleTrigger(w, withTestSocketPeer(req))
 
 		assert.Equal(t, http.StatusAccepted, w.Code)
 
@@ -170,7 +182,7 @@ func TestSocketHandleTrigger_ForcePropagation(t *testing.T) {
 			}
 
 			w := httptest.NewRecorder()
-			ss.handleTrigger(w, req)
+			ss.handleTrigger(w, withTestSocketPeer(req))
 
 			require.Equal(t, http.StatusAccepted, w.Code)
 

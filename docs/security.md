@@ -546,6 +546,24 @@ Windows builds retain AF_UNIX compatibility, but Unix permission bits are not
 an access-control boundary there; platform ACLs and request authorization
 remain authoritative.
 
+### Unix socket peer authorization
+
+Socket file mode controls which processes can connect, but does not by itself
+authorize a deployment. On Linux, Bosun reads `SO_PEERCRED` for each accepted
+connection and authorizes mutating socket requests only when the peer UID is
+the daemon's effective UID or appears in `BOSUN_SOCKET_ALLOWED_UIDS`. The
+allowlist is a comma-separated list of numeric UIDs; malformed, negative, or
+out-of-range entries fail configuration validation instead of partially
+applying the list.
+
+Missing peer credentials and non-Linux platforms fail closed: `POST /trigger`
+returns `403` and does not reconcile. Operators who deliberately use socket
+permissions as their entire trust boundary can set
+`BOSUN_ALLOW_UNAUTHENTICATED_SOCKET=true` (strict lowercase match). This
+security opt-out is logged at startup and for every accepted unauthenticated
+mutation. Read-only socket endpoints remain governed by the socket's filesystem
+permissions.
+
 ## Daemon Metrics and Widget Authentication
 
 The `/metrics` (Prometheus) and `/api/widget` (Homepage) endpoints disclose the
@@ -589,6 +607,7 @@ Bosun ships several "escape hatch" environment variables that disable safety che
 | `BOSUN_SSH_INSECURE_HOST_KEY` | SSH host-key verification | `false` (strict) | Initial bootstrap before `known_hosts` is populated |
 | `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | Fail-closed webhook authentication (secret-less trigger requests rejected with `403`) | `false` (strict) | Trusted, isolated networks where a webhook secret is impractical |
 | `BOSUN_ALLOW_UNAUTHENTICATED_METRICS` | Fail-closed metrics/widget authentication (token-less `/metrics` and `/api/widget` requests rejected with `403`) | `false` (strict) | Trusted, isolated networks where a metrics token is impractical |
+| `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET` | Fail-closed peer-credential authorization for mutating Unix socket requests | `false` (strict) | Platforms without peer credentials, when socket permissions are an intentionally sufficient trust boundary |
 
 `ErrComposeDirMissing` (stage 6) has no escape hatch by design — a missing staging compose directory always indicates a misconfigured deploy path, never an intentional state.
 

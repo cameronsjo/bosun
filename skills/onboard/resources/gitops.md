@@ -298,6 +298,15 @@ the already-restricted socket at its final path. This avoids a permissive
 also refuses to replace a stale-path symlink or non-socket entry and removes the
 socket at shutdown only if the path still refers to the inode it created.
 
+On Linux, mutating socket requests are independently authorized with
+`SO_PEERCRED`: the daemon's effective UID is always allowed, and
+`BOSUN_SOCKET_ALLOWED_UIDS` adds comma-separated numeric UIDs. An unauthorized
+UID or a connection without available peer credentials receives `403` and
+cannot trigger reconciliation. This also means non-Linux platforms reject
+socket mutations by default. `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET=true` is the
+strict, loudly logged opt-out for deployments that intentionally rely only on
+socket filesystem permissions.
+
 ### Unix Socket API
 
 The daemon's primary interface. All `bosun trigger`, `bosun daemon-status`, and `bosun validate` commands communicate through this socket.
