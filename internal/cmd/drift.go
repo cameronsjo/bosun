@@ -188,7 +188,10 @@ func writeDriftJSON(value any) error {
 func loadConfiguredTargets() []reconcile.Target {
 	if v := os.Getenv("BOSUN_TARGETS"); v != "" {
 		var targets []reconcile.Target
-		if err := json.Unmarshal([]byte(v), &targets); err == nil && len(targets) > 0 {
+		if err := json.Unmarshal([]byte(v), &targets); err == nil {
+			// A valid empty array intentionally replaces bosun.yaml targets and
+			// lets callers use the implicit default target, matching reconcile
+			// and daemon configuration semantics.
 			return targets
 		}
 	}

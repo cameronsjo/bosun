@@ -318,10 +318,28 @@ func TestLoadConfiguredTargets(t *testing.T) {
 		assert.Nil(t, targets)
 	})
 
-	t.Run("from_env_empty_array_returns_nil", func(t *testing.T) {
+	t.Run("from_env_empty_array_returns_explicit_empty", func(t *testing.T) {
 		t.Setenv("BOSUN_TARGETS", "[]")
 		targets := loadConfiguredTargets()
-		assert.Nil(t, targets)
+		assert.NotNil(t, targets)
+		assert.Empty(t, targets)
+	})
+
+	t.Run("from_env_empty_array_overrides_config_targets", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(`targets:
+  - name: configured
+    target_host: user@configured
+`), 0o644))
+
+		originalDir, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { require.NoError(t, os.Chdir(originalDir)) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		t.Setenv("BOSUN_TARGETS", "[]")
+		targets := loadConfiguredTargets()
+		assert.Empty(t, targets, "explicit empty env override must not fall through to bosun.yaml targets")
 	})
 
 	t.Run("no_env_no_config_returns_nil", func(t *testing.T) {
@@ -329,6 +347,44 @@ func TestLoadConfiguredTargets(t *testing.T) {
 		targets := loadConfiguredTargets()
 		assert.Nil(t, targets)
 	})
+}
+
+func TestRunDrift_EmptyTargetsEnvUsesImplicitDefaultState(t *testing.T) {
+	saveDriftFlags(t)
+	tmpDir := evalSymlinks(t, t.TempDir())
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(`targets:
+  - name: configured
+    target_host: user@configured
+`), 0o644))
+
+	originalDir, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, os.Chdir(originalDir)) }()
+	require.NoError(t, os.Chdir(tmpDir))
+
+	makeState(t, tmpDir, reconcile.Target{Name: reconcile.DefaultTargetName}, &reconcile.DeployState{
+		LastDeployedCommit: "default-commit",
+	})
+	makeState(t, tmpDir, reconcile.Target{Name: "configured"}, &reconcile.DeployState{
+		LastDeployedCommit: "configured-commit",
+	})
+
+	t.Setenv("BOSUN_TARGETS", "[]")
+	driftStateFile = filepath.Join(tmpDir, reconcile.DefaultStateFile)
+	driftJSON = true
+	driftLive = false
+	driftTarget = ""
+
+	var runErr error
+	output := captureStdout(t, func() {
+		runErr = runDrift(nil, nil)
+	})
+	require.NoError(t, runErr)
+
+	var result driftJSONOutput
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	assert.Equal(t, "default-commit", result.DeployedCommit)
+	assert.Equal(t, "clean", result.Status)
 }
 
 func TestRunMultiTargetDriftJSON(t *testing.T) {

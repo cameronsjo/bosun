@@ -3209,6 +3209,11 @@ targets:
 		// Empty array from env should NOT be repopulated from config file
 		assert.Empty(t, cfg.ReconcileConfig.Targets,
 			"BOSUN_TARGETS=[] should override config file targets")
+		targets, err := cfg.ReconcileConfig.ResolveTargets()
+		require.NoError(t, err)
+		require.Len(t, targets, 1)
+		assert.Equal(t, reconcile.DefaultTargetName, targets[0].Name,
+			"the empty override should resolve to the implicit default target")
 	})
 
 	t.Run("env_overrides_config_file", func(t *testing.T) {

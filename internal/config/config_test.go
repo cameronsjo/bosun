@@ -2134,6 +2134,15 @@ domain: example.com
 	assert.Nil(t, cfg.Targets(), "Targets should be nil when not configured")
 }
 
+func TestTargetsFromConfig_ExplicitEmptyTargetsSection(t *testing.T) {
+	tmpDir := evalSymlinks(t, t.TempDir())
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte("targets: []\n"), 0o644))
+
+	cfg, err := LoadFrom(tmpDir)
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Targets(), "an explicit empty YAML list should use the same implicit default as an absent targets section")
+}
+
 func TestTargetsFromConfig_EmptyNameSkipped(t *testing.T) {
 	tmpDir := t.TempDir()
 	tmpDir = evalSymlinks(t, tmpDir)

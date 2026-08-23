@@ -145,6 +145,23 @@ func TestResolveTargets_LoneDefaultFlowsThroughConfigForTarget(t *testing.T) {
 	assert.Equal(t, cfg.StagingDir, targetCfg.StagingDir, "default target keeps the base staging dir")
 }
 
+func TestResolveTargets_ExplicitEmptyMatchesAbsent(t *testing.T) {
+	absent := DefaultConfig()
+	absent.ProjectName = "homelab"
+	explicitEmpty := DefaultConfig()
+	explicitEmpty.ProjectName = "homelab"
+	explicitEmpty.Targets = []Target{}
+
+	want, err := absent.ResolveTargets()
+	require.NoError(t, err)
+	got, err := explicitEmpty.ResolveTargets()
+	require.NoError(t, err)
+
+	assert.Equal(t, want, got)
+	require.Len(t, got, 1)
+	assert.Equal(t, DefaultTargetName, got[0].Name)
+}
+
 // #391: a multi-target config carrying a reserved default-named target (any
 // case variant) is a hard error naming the offender and the remedy — silently
 // dropping the target was the container-collision vector.
