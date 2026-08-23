@@ -3618,6 +3618,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 			[]byte("host: {{ .host }}"),
 			0644,
 		))
+		require.NoError(t, os.WriteFile(filepath.Join(repoDir, "secrets.yaml"), []byte("dummy"), 0644))
 
 		gitOps := &mockGitOps{
 			syncChanged: true,
@@ -3638,7 +3639,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 			StagingDir:              stagingDir,
 			LocalAppdataPath:        appdataDir,
 			InfraSubDir:             ".",
-			SecretsFiles:            []string{},
+			SecretsFiles:            []string{"secrets.yaml"},
 		}
 		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg,

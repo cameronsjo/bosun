@@ -52,7 +52,10 @@ func (t *TemplateOps) ExecuteTemplate(_ context.Context, templateFile, outputFil
 	}
 
 	// Create template with sprig functions and custom bosun functions.
-	tmpl := template.New(filepath.Base(templateFile)).Funcs(sprig.TxtFuncMap()).Funcs(bosunTemplateFuncs(t.IncludeDir))
+	tmpl := template.New(filepath.Base(templateFile)).
+		Option("missingkey=error").
+		Funcs(sprig.TxtFuncMap()).
+		Funcs(bosunTemplateFuncs(t.IncludeDir))
 
 	// Parse the template.
 	tmpl, err = tmpl.Parse(string(content))

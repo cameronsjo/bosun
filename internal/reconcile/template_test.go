@@ -71,13 +71,28 @@ func TestTemplateOps_ExecuteTemplate(t *testing.T) {
 		assert.Equal(t, "Hello, Test!", string(content))
 	})
 
+	t.Run("missing key fails with template and key context", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		templateFile := filepath.Join(tmpDir, "database.yml.tmpl")
+		outputFile := filepath.Join(tmpDir, "output", "database.yml")
+		require.NoError(t, os.WriteFile(templateFile, []byte(`POSTGRES_PASSWORD: {{ .db_passwrd }}`), 0644))
+
+		tmpl := NewTemplateOps(map[string]any{"db_password": "secret"})
+		err := tmpl.ExecuteTemplate(context.Background(), templateFile, outputFile)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), templateFile)
+		assert.Contains(t, err.Error(), `map has no entry for key "db_passwrd"`)
+		assert.NoFileExists(t, outputFile)
+	})
+
 	t.Run("template with sprig functions", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		ctx := context.Background()
 
-		// Create template using sprig functions (upper, lower, default)
+		// Strict templates use get for optional map values before applying a default.
 		templateFile := filepath.Join(tmpDir, "test.tmpl")
-		templateContent := `{{ .name | upper }} - {{ .missing | default "fallback" }}`
+		templateContent := `{{ .name | upper }} - {{ get . "missing" | default "fallback" }}`
 		require.NoError(t, os.WriteFile(templateFile, []byte(templateContent), 0644))
 
 		outputFile := filepath.Join(tmpDir, "output", "test.txt")
