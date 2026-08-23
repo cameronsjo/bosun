@@ -321,8 +321,9 @@ func filterManagedForTarget(manifest []string, targetPath string) map[string]boo
 // Succeeded files use their original (new) path. Rolled-back files use their copy
 // inside backupRoot — the EXTRACTED backup tree, where tar's leading-'/' stripping
 // puts an absolute "/mnt/.../x.yml" at "<backupRoot>/mnt/.../x.yml" — so Docker
-// sees the previous service set. Failed files with no backup use the original path
-// (best-effort). backupRoot is empty when no rollback occurred.
+// sees the previous service set. Failed files without a verified rollback path
+// are excluded: phase 2 reconciles orphans and must not re-attempt a known-bad
+// phase-1 input. backupRoot is empty when no rollback occurred.
 func buildOrphanPassFiles(results []ComposeFileResult, backupRoot string) []string {
 	var files []string
 	for _, r := range results {
@@ -333,10 +334,7 @@ func buildOrphanPassFiles(results []ComposeFileResult, backupRoot string) []stri
 		if r.RolledBack && backupRoot != "" {
 			backupFile := filepath.Join(backupRoot, strings.TrimPrefix(filepath.ToSlash(r.File), "/"))
 			files = append(files, backupFile)
-			continue
 		}
-		// Failed without rollback — include original so orphan pass at least knows about it.
-		files = append(files, r.File)
 	}
 	return files
 }

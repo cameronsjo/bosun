@@ -1086,20 +1086,35 @@ func TestBuildOrphanPassFiles(t *testing.T) {
 			},
 		},
 		{
-			name: "rolled back but no backup root uses original",
+			name: "rolled back but no backup root is excluded",
 			results: []ComposeFileResult{
 				{File: "/compose/b.yml", Success: false, RolledBack: true},
 			},
 			backupRoot: "",
-			want:       []string{"/compose/b.yml"},
+			want:       nil,
 		},
 		{
-			name: "failed without rollback uses original",
+			name: "failed without rollback is excluded",
 			results: []ComposeFileResult{
 				{File: "/compose/a.yml", Success: false, RolledBack: false},
 			},
 			backupRoot: backupRoot,
-			want:       []string{"/compose/a.yml"},
+			want:       nil,
+		},
+		{
+			name: "mixed outcomes preserve eligible input order",
+			results: []ComposeFileResult{
+				{File: "/compose/z-success.yml", Success: true},
+				{File: "/compose/y-failed.yml", Success: false},
+				{File: "/compose/x-rollback.yml", Success: false, RolledBack: true},
+				{File: "/compose/a-success.yml", Success: true},
+			},
+			backupRoot: backupRoot,
+			want: []string{
+				"/compose/z-success.yml",
+				filepath.Join(backupRoot, "compose", "x-rollback.yml"),
+				"/compose/a-success.yml",
+			},
 		},
 		{
 			name:       "empty results",
