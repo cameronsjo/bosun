@@ -352,8 +352,8 @@ All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`RE
 | `BOSUN_HEALTH_CHECK_TIMEOUT` | daemon, reconcile | Post-deploy health verification timeout (default: `60s`; set to `0` to disable) |
 | `BOSUN_HEALTH_CHECK_INTERVAL` | daemon, reconcile | Poll interval for health verification (default: `5s`) |
 | `BOSUN_RESTART_BREAKER` | daemon, reconcile | Enable restart circuit breaker (default: `true`) |
-| `BOSUN_RESTART_THRESHOLD` | daemon, reconcile | Restart count delta to trip breaker (default: `5`; must be positive) |
-| `BOSUN_RESTART_WINDOW` | daemon, reconcile | Time window for restart delta evaluation (default: `10m`) |
+| `BOSUN_RESTART_THRESHOLD` | daemon, reconcile | Accumulated restart-count increase in a sustained run that trips the breaker (default: `5`; must be positive) |
+| `BOSUN_RESTART_WINDOW` | daemon, reconcile | Nominal restart observation window (default: `10m`); sustained increases retain their earliest baseline beyond it, and config load plus `bosun doctor` warn when `BOSUN_DRIFT_INTERVAL` is longer |
 | `BOSUN_RECONCILE_TIMEOUT` | daemon | Reconciliation timeout |
 | `BOSUN_SHUTDOWN_TIMEOUT` | daemon | Graceful shutdown timeout |
 | `BOSUN_API_TIMEOUT` | daemon | API request timeout |

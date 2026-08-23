@@ -248,6 +248,55 @@ targets:
 	})
 }
 
+func TestCheckRestartBreakerSampling(t *testing.T) {
+	t.Run("warns when drift sampling exceeds restart window", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_INTERVAL", "15m")
+		t.Setenv("BOSUN_RESTART_WINDOW", "10m")
+
+		var result CheckResult
+		output := captureWebhookColorOutput(t, func() {
+			result = checkRestartBreakerSampling()
+		})
+
+		assert.Equal(t, 0, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 1, result.Warned)
+		assert.Contains(t, output, "Restart breaker sampling interval (15m0s) exceeds its window (10m0s)")
+		assert.Contains(t, output, "BOSUN_DRIFT_INTERVAL")
+		assert.Contains(t, output, "BOSUN_RESTART_WINDOW")
+	})
+
+	t.Run("passes when drift sampling fits restart window", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_INTERVAL", "5m")
+		t.Setenv("BOSUN_RESTART_WINDOW", "10m")
+
+		result := checkRestartBreakerSampling()
+
+		assert.Equal(t, 1, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 0, result.Warned)
+	})
+
+	t.Run("bare seconds use daemon parsing semantics", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_INTERVAL", "900")
+		t.Setenv("BOSUN_RESTART_WINDOW", "600")
+
+		result := checkRestartBreakerSampling()
+
+		assert.Equal(t, 1, result.Warned)
+	})
+
+	t.Run("disabled drift loop does not warn", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_INTERVAL", "0")
+		t.Setenv("BOSUN_RESTART_WINDOW", "10m")
+
+		result := checkRestartBreakerSampling()
+
+		assert.Equal(t, 1, result.Passed)
+		assert.Equal(t, 0, result.Warned)
+	})
+}
+
 func TestCheckWebhook(t *testing.T) {
 	// Note: This test checks behavior when webhook is not running
 	// In a typical test environment, the webhook will not be running
@@ -565,4 +614,3 @@ func TestCheckWebhook_NonOKStatus(t *testing.T) {
 	assert.Equal(t, 1, result.Warned)
 	assert.Equal(t, 0, result.Failed)
 }
-

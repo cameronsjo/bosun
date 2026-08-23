@@ -118,10 +118,15 @@ type DeployState struct {
 
 // RestartTrackingEntry tracks the restart count for a container across drift checks.
 type RestartTrackingEntry struct {
-	RestartCount int       `json:"restart_count"`
-	CheckedAt    time.Time `json:"checked_at"`
-	Tripped      bool      `json:"tripped"`
-	TrippedAt    time.Time `json:"tripped_at,omitempty"`
+	// RestartCount and CheckedAt are the most recent observation. The separate
+	// baseline fields retain the beginning of a still-accumulating restart run,
+	// so a sparse drift-check cadence cannot erase slow loops (#265).
+	RestartCount         int       `json:"restart_count"`
+	CheckedAt            time.Time `json:"checked_at"`
+	BaselineRestartCount int       `json:"baseline_restart_count,omitempty"`
+	BaselineAt           time.Time `json:"baseline_at,omitempty"`
+	Tripped              bool      `json:"tripped"`
+	TrippedAt            time.Time `json:"tripped_at,omitempty"`
 }
 
 // alertThresholds defines the attempt counts at which failure alerts are sent.

@@ -3250,6 +3250,17 @@ func TestConfigFromEnv_RestartBreaker(t *testing.T) {
 		require.NotNil(t, cfg.ReconcileConfig)
 		assert.Equal(t, 10*time.Minute, cfg.ReconcileConfig.RestartWindow)
 	})
+
+	t.Run("sparse drift sampling preserves effective mismatch for warning", func(t *testing.T) {
+		t.Setenv("BOSUN_DRIFT_INTERVAL", "15m")
+		t.Setenv("BOSUN_RESTART_WINDOW", "10m")
+
+		cfg := ConfigFromEnv()
+
+		assert.Equal(t, 15*time.Minute, cfg.DriftInterval)
+		assert.Equal(t, 10*time.Minute, cfg.ReconcileConfig.RestartWindow)
+		assert.True(t, reconcile.RestartBreakerSamplingMismatch(cfg.DriftInterval, cfg.ReconcileConfig.RestartWindow))
+	})
 }
 
 func TestParseDurationOrSeconds(t *testing.T) {

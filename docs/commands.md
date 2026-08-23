@@ -383,6 +383,7 @@ Checks:
 - SOPS installed
 - Manifest directory exists
 - Webhook responding
+- Restart breaker sampling cadence (`BOSUN_DRIFT_INTERVAL` should not exceed `BOSUN_RESTART_WINDOW`)
 - Traefik configuration (if Traefik service detected):
   - HTTPS redirect configured
   - `exposedByDefault` set to false

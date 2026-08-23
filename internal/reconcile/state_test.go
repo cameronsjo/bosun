@@ -451,6 +451,57 @@ func TestSaveState_DeployedFilesRoundTrip(t *testing.T) {
 	assert.Equal(t, original.DeployedFiles, loaded.DeployedFiles)
 }
 
+func TestSaveState_RestartBreakerBaselineRoundTrip(t *testing.T) {
+	dir := evalSymlinks(t, t.TempDir())
+	path := filepath.Join(dir, "deploy-state.json")
+	checkedAt := time.Date(2026, 8, 23, 18, 0, 0, 0, time.UTC)
+	baselineAt := checkedAt.Add(-30 * time.Minute)
+	original := &DeployState{
+		RestartTracking: map[string]RestartTrackingEntry{
+			"web": {
+				RestartCount:         4,
+				CheckedAt:            checkedAt,
+				BaselineRestartCount: 1,
+				BaselineAt:           baselineAt,
+			},
+		},
+	}
+
+	require.NoError(t, SaveState(path, original))
+	loaded := LoadState(path)
+
+	require.Contains(t, loaded.RestartTracking, "web")
+	assert.Equal(t, original.RestartTracking["web"], loaded.RestartTracking["web"])
+
+	// A daemon restart between sparse samples must not discard the accumulated
+	// run. Reaching the threshold after reload still trips even though the next
+	// observation is outside the nominal window.
+	now := checkedAt.Add(15 * time.Minute)
+	result := evaluateRestartBreaker(map[string]int{"web": 6}, loaded.RestartTracking, 5, 10*time.Minute, now)
+	assert.Equal(t, []string{"web"}, result.Tripped)
+	assert.Equal(t, baselineAt, result.Updated["web"].BaselineAt)
+	assert.Equal(t, 1, result.Updated["web"].BaselineRestartCount)
+}
+
+func TestLoadState_LegacyRestartBreakerEntryHasImplicitBaseline(t *testing.T) {
+	dir := evalSymlinks(t, t.TempDir())
+	path := filepath.Join(dir, "deploy-state.json")
+	legacy := `{"schema_version":2,"restart_tracking":{"web":{"restart_count":3,"checked_at":"2026-08-23T18:00:00Z","tripped":false}}}`
+	require.NoError(t, os.WriteFile(path, []byte(legacy), 0o644))
+
+	loaded := LoadState(path)
+	entry := loaded.RestartTracking["web"]
+	assert.Equal(t, 3, entry.RestartCount)
+	assert.Zero(t, entry.BaselineRestartCount)
+	assert.True(t, entry.BaselineAt.IsZero(), "missing additive fields must decode safely")
+
+	now := time.Date(2026, 8, 23, 18, 15, 0, 0, time.UTC)
+	result := evaluateRestartBreaker(map[string]int{"web": 5}, loaded.RestartTracking, 5, 10*time.Minute, now)
+	assert.Empty(t, result.Tripped)
+	assert.Equal(t, 3, result.Updated["web"].BaselineRestartCount,
+		"legacy restart_count must seed the accumulating baseline")
+}
+
 func TestLoadState_OldStateHasNoDeployedFiles(t *testing.T) {
 	// A state file written before the managed-set manifest existed has no
 	// "deployed_files" key. It must load with DeployedFiles nil/empty so the

@@ -146,9 +146,12 @@ type Config struct {
 	// RestartBreakerEnabled controls whether the restart circuit breaker runs
 	// during drift checks. Default true.
 	RestartBreakerEnabled bool
-	// RestartThreshold is the restart count delta that trips the breaker. Default 5.
+	// RestartThreshold is the accumulated restart-count increase in a sustained
+	// restart run that trips the breaker. Default 5.
 	RestartThreshold int
-	// RestartWindow is the time window for measuring restart velocity. Default 10m.
+	// RestartWindow is the nominal restart observation window. A sustained run
+	// retains its earliest baseline beyond this window; the daemon warns when its
+	// sampling cadence is coarser than the window. Default 10m.
 	RestartWindow time.Duration
 
 	// PostSyncHooks defines container restart actions triggered by file changes.
