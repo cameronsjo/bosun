@@ -321,12 +321,17 @@ The skill is the primary consumer-facing documentation. If the code changes but 
 
 ## Environment Variables
 
-All bosun-specific env vars use the `BOSUN_` prefix. Legacy unprefixed vars (`REPO_URL`, `POLL_INTERVAL`, etc.) are supported but `BOSUN_` variants take precedence.
+All bosun-specific env vars use the `BOSUN_` prefix. Existing legacy
+unprefixed vars (`REPO_URL`, `POLL_INTERVAL`, etc.) remain supported with
+`BOSUN_` precedence, but new variables such as the HTTPS Git credential pair
+do not gain legacy aliases.
 
 | Variable | Package | Description |
 |----------|---------|-------------|
 | `BOSUN_REPO_URL` | daemon, reconcile | Git repository URL |
 | `BOSUN_REPO_BRANCH` | daemon, reconcile | Branch to track (default: `main`) |
+| `BOSUN_GIT_USERNAME` | daemon, reconcile, validate | Username for private HTTPS Git Basic auth; must be set with `BOSUN_GIT_TOKEN` (no legacy alias) |
+| `BOSUN_GIT_TOKEN` | daemon, reconcile, validate | Token used as the private HTTPS Git Basic-auth password; must be set with `BOSUN_GIT_USERNAME` (no legacy alias) |
 | `BOSUN_GIT_FETCH_DEPTH` | reconcile | Positive shallow clone/fetch history depth (default: `1`); unavailable diff bases fail safe to full deploy/all hooks |
 | `BOSUN_POLL_INTERVAL` | daemon | Polling interval in seconds (default: `3600`) |
 | `BOSUN_SOCKET_PATH` | daemon | Unix socket path (default: `/var/run/bosun.sock`) |

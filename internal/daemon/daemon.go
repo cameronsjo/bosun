@@ -313,6 +313,9 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 			err = fmt.Errorf("daemon run panicked: %v", r)
 		}
 	}()
+	if err := ValidateConfig(d.config); err != nil {
+		return fmt.Errorf("invalid daemon configuration: %w", err)
+	}
 
 	// Initialize structured logging for daemon mode (JSON output).
 	_ = os.Setenv("BOSUN_DAEMON_MODE", "true")
@@ -1610,7 +1613,7 @@ func (d *Daemon) HealthStatus() HealthStatus {
 	}
 	if lastError != nil {
 		reconcilerSub.Status = StatusDegraded
-		reconcilerSub.Message = lastError.Error()
+		reconcilerSub.Message = reconcile.SanitizeGitText(lastError.Error())
 	}
 	subsystems["reconciler"] = reconcilerSub
 
@@ -1640,7 +1643,7 @@ func (d *Daemon) HealthStatus() HealthStatus {
 	}
 
 	if lastError != nil {
-		status.LastError = lastError.Error()
+		status.LastError = reconcile.SanitizeGitText(lastError.Error())
 	}
 
 	return status
@@ -2244,6 +2247,8 @@ func ValidateConfig(cfg *Config) error {
 	if cfg.ReconcileConfig != nil {
 		if cfg.ReconcileConfig.RepoURL == "" {
 			errs = append(errs, "REPO_URL or BOSUN_REPO_URL is required")
+		} else if err := reconcile.ValidateGitAuthentication(cfg.ReconcileConfig.RepoURL); err != nil {
+			errs = append(errs, reconcile.SanitizeGitError(err).Error())
 		}
 
 		// Unknown drift_ignore types and invalid globs fail startup the same

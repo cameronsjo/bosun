@@ -44,7 +44,7 @@ func buildAPIStatusResponse(lastReconcile time.Time, lastErr error, reconciling 
 	}
 
 	if lastErr != nil {
-		resp.LastError = lastErr.Error()
+		resp.LastError = reconcile.SanitizeGitText(lastErr.Error())
 	}
 
 	if pollInterval > 0 {
@@ -109,7 +109,7 @@ func buildConfigResponse(cfg *Config) ConfigResponse {
 	}
 
 	if cfg.ReconcileConfig != nil {
-		resp.RepoURL = cfg.ReconcileConfig.RepoURL
+		resp.RepoURL = reconcile.SanitizeGitURL(cfg.ReconcileConfig.RepoURL)
 		resp.RepoBranch = cfg.ReconcileConfig.RepoBranch
 	}
 

@@ -314,6 +314,8 @@ Used by `bosun daemon` and `bosun reconcile`:
 |----------|---------|-------------|
 | `REPO_URL` | *required* | Git repository URL |
 | `REPO_BRANCH` | `main` | Branch to track |
+| `BOSUN_GIT_USERNAME` | | Private HTTPS Git Basic-auth username; set with `BOSUN_GIT_TOKEN` |
+| `BOSUN_GIT_TOKEN` | | Private HTTPS Git Basic-auth password/token; set with `BOSUN_GIT_USERNAME` |
 | `REPO_DIR` | `/app/repo` | Local clone directory |
 | `STAGING_DIR` | `/app/staging` | Staging directory |
 | `BACKUP_DIR` | `/app/backups` | Backup directory |
@@ -324,6 +326,14 @@ Used by `bosun daemon` and `bosun reconcile`:
 | `SECRETS_FILES` | | Comma-separated SOPS files to decrypt |
 | `DRY_RUN` | `false` | Dry run mode |
 | `FORCE` | `false` | Force deployment |
+
+The HTTPS Git pair is read only from its `BOSUN_` names; generic
+`GIT_USERNAME`/`GIT_TOKEN` aliases and project YAML keys are not supported.
+Both unset preserves anonymous HTTPS. When configured, the effective repository
+URL must be absolute HTTPS without userinfo, and authenticated redirects must
+remain on the same HTTPS host and effective port. Rotate the process
+environment and restart Bosun; configuration hot reload cannot rotate these
+credentials.
 
 ### Other Environment Variables
 

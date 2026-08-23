@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/daemon"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/cameronsjo/bosun/internal/ui"
@@ -111,13 +112,14 @@ func validateEnvironment() int {
 
 	// Check for required environment variables.
 	// BOSUN_REPO_URL takes precedence over legacy REPO_URL.
-	repoURL := os.Getenv("BOSUN_REPO_URL")
-	if repoURL == "" {
-		repoURL = os.Getenv("REPO_URL")
-	}
+	repoURL := config.BosunEnv("REPO_URL")
 
 	if repoURL != "" {
-		_, _ = ui.Green.Printf("  * REPO_URL: %s\n", repoURL)
+		_, _ = ui.Green.Printf("  * REPO_URL: %s\n", reconcile.SanitizeGitURL(repoURL))
+		if err := reconcile.ValidateGitAuthentication(repoURL); err != nil {
+			_, _ = ui.Red.Printf("  x Git authentication: %v\n", reconcile.SanitizeGitError(err))
+			errors++
+		}
 	} else {
 		_, _ = ui.Red.Println("  x BOSUN_REPO_URL (or legacy REPO_URL) not set")
 		errors++
@@ -212,10 +214,7 @@ func validateReconcileConfig() int {
 	cfg := reconcile.DefaultConfig()
 
 	// Load from environment. BOSUN_REPO_URL takes precedence over legacy REPO_URL.
-	cfg.RepoURL = os.Getenv("BOSUN_REPO_URL")
-	if cfg.RepoURL == "" {
-		cfg.RepoURL = os.Getenv("REPO_URL")
-	}
+	cfg.RepoURL = config.BosunEnv("REPO_URL")
 
 	// Drift ignore rules are independent of repo config, so validate them
 	// even if the repo URL check below fails or short-circuits.
@@ -226,10 +225,15 @@ func validateReconcileConfig() int {
 		errors++
 		return errors
 	}
+	if err := reconcile.ValidateGitAuthentication(cfg.RepoURL); err != nil {
+		_, _ = ui.Red.Printf("  x Git authentication: %v\n", reconcile.SanitizeGitError(err))
+		errors++
+		return errors
+	}
 
 	// Validate URL format
 	if !isValidGitURL(cfg.RepoURL) {
-		_, _ = ui.Red.Printf("  x Invalid repository URL: %s\n", cfg.RepoURL)
+		_, _ = ui.Red.Printf("  x Invalid repository URL: %s\n", reconcile.SanitizeGitURL(cfg.RepoURL))
 		errors++
 	} else {
 		_, _ = ui.Green.Printf("  * Repository URL format: valid\n")
@@ -278,9 +282,9 @@ func runFullDryRun() error {
 	cfg := reconcile.DefaultConfig()
 
 	// Load from environment. BOSUN_REPO_URL takes precedence over legacy REPO_URL.
-	cfg.RepoURL = os.Getenv("BOSUN_REPO_URL")
-	if cfg.RepoURL == "" {
-		cfg.RepoURL = os.Getenv("REPO_URL")
+	cfg.RepoURL = config.BosunEnv("REPO_URL")
+	if err := reconcile.ValidateGitAuthentication(cfg.RepoURL); err != nil {
+		return fmt.Errorf("invalid Git authentication configuration: %w", reconcile.SanitizeGitError(err))
 	}
 
 	// BOSUN_REPO_BRANCH takes precedence over legacy REPO_BRANCH.

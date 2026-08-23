@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
+	"github.com/cameronsjo/bosun/internal/reconcile"
 	sentrypkg "github.com/cameronsjo/bosun/internal/sentry"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
@@ -241,7 +242,7 @@ func (s *SocketServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if lastErr != nil {
-		resp.LastError = lastErr.Error()
+		resp.LastError = reconcile.SanitizeGitText(lastErr.Error())
 	}
 
 	w.Header().Set("Content-Type", "application/json")

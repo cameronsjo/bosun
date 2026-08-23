@@ -82,6 +82,28 @@
     Mask="false"/>
 
   <Config
+    Name="HTTPS Git Username"
+    Target="BOSUN_GIT_USERNAME"
+    Default=""
+    Mode=""
+    Description="Username for a private HTTPS Git repository. Set together with HTTPS Git Token; do not embed credentials in the repository URL."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false"/>
+
+  <Config
+    Name="HTTPS Git Token"
+    Target="BOSUN_GIT_TOKEN"
+    Default=""
+    Mode=""
+    Description="Token used as the Basic-auth password for a private HTTPS Git repository. Set together with HTTPS Git Username and restart Bosun after rotation."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="true"/>
+
+  <Config
     Name="Webhook Port"
     Target="8080"
     Default="8080"

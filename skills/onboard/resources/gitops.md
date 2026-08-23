@@ -529,6 +529,8 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 |----------|---------|-------------|
 | `REPO_URL` | *required* | Git repository URL |
 | `REPO_BRANCH` | `main` | Branch to track |
+| `BOSUN_GIT_USERNAME` | | Private HTTPS Git Basic-auth username; set with `BOSUN_GIT_TOKEN` |
+| `BOSUN_GIT_TOKEN` | | Private HTTPS Git Basic-auth password/token; set with `BOSUN_GIT_USERNAME` |
 | `REPO_DIR` | `/app/repo` | Local clone directory |
 | `STAGING_DIR` | `/app/staging` | Staging directory for rendered files |
 | `BACKUP_DIR` | `/app/backups` | Backup directory |
@@ -549,6 +551,13 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `BOSUN_TARGETS` | | JSON array of target definitions (overrides `targets:` in config file) |
 | `BOSUN_HEALTH_GATE_TIMEOUT` | `60s` | Health gate polling timeout (`0` disables; accepts Go duration strings or bare seconds) |
 | `BOSUN_OTEL_ENDPOINT` | *(disabled)* | OpenTelemetry OTLP HTTP endpoint (e.g., `http://localhost:4318`). When set, spans are exported for each reconciliation pipeline phase. When empty, a noop provider is used (zero overhead) |
+
+Private HTTPS clone and fetch share one credential pair. Set both variables or
+leave both unset for anonymous HTTPS. Bosun fails before network access for a
+partial pair, a non-HTTPS or hostless URL, or any URL userinfo. Authenticated
+redirects must stay HTTPS on the configured host and effective port. The pair
+has no legacy aliases or YAML fields, applies after `BOSUN_REPO_URL` takes
+precedence over `REPO_URL`, and rotates only after restarting the process.
 
 ## OpenTelemetry Tracing
 

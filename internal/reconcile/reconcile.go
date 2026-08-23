@@ -1472,7 +1472,7 @@ func (r *Reconciler) syncRepo(ctx context.Context) (bool, string, string, error)
 
 	logger.Debug().
 		Str(log.FieldOperation, "sync").
-		Str(log.FieldURL, r.config.RepoURL).
+		Str(log.FieldURL, SanitizeGitURL(r.config.RepoURL)).
 		Str(log.FieldBranch, r.config.RepoBranch).
 		Msg("Preparing to sync repository")
 
@@ -1482,7 +1482,7 @@ func (r *Reconciler) syncRepo(ctx context.Context) (bool, string, string, error)
 	if err != nil {
 		logger.Error().
 			Err(err).
-			Str(log.FieldURL, r.config.RepoURL).
+			Str(log.FieldURL, SanitizeGitURL(r.config.RepoURL)).
 			Str(log.FieldBranch, r.config.RepoBranch).
 			Int64(log.FieldDurationMS, log.DurationMS(start)).
 			Msg("Failed to sync repository")

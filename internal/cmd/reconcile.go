@@ -50,6 +50,8 @@ var reconcileCmd = &cobra.Command{
 Configuration is loaded from environment variables:
   REPO_URL        - Git repository URL (required)
   REPO_BRANCH     - Git branch to track (default: main)
+  BOSUN_GIT_USERNAME - Private HTTPS Git username (set with BOSUN_GIT_TOKEN)
+  BOSUN_GIT_TOKEN    - Private HTTPS Git token (set with BOSUN_GIT_USERNAME)
   DEPLOY_TARGET   - Target host for remote deployment (e.g., root@192.168.1.8)
   SECRETS_FILES   - Comma-separated list of SOPS secret files relative to repo
 
@@ -170,6 +172,11 @@ func runReconcile(cmd *cobra.Command, args []string) {
 	cfg.RepoURL = config.BosunEnv("REPO_URL")
 	if cfg.RepoURL == "" {
 		ui.Fatal("BOSUN_REPO_URL (or legacy REPO_URL) environment variable is required")
+		return
+	}
+	if err := reconcile.ValidateGitAuthentication(cfg.RepoURL); err != nil {
+		ui.Fatal("Invalid Git authentication configuration: %v", reconcile.SanitizeGitError(err))
+		return
 	}
 
 	// Optional settings from environment.

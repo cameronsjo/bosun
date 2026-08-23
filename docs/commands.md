@@ -729,6 +729,8 @@ bosun reconcile --target=nas
 |----------|-------------|---------|
 | `REPO_URL` | Git repository URL | Required |
 | `REPO_BRANCH` | Git branch to track | `main` |
+| `BOSUN_GIT_USERNAME` | Private HTTPS Git Basic-auth username; requires `BOSUN_GIT_TOKEN` | Unset |
+| `BOSUN_GIT_TOKEN` | Private HTTPS Git Basic-auth password/token; requires `BOSUN_GIT_USERNAME` | Unset |
 | `REPO_DIR` | Local repo directory | `/app/repo` |
 | `STAGING_DIR` | Staging directory | `/app/staging` |
 | `BACKUP_DIR` | Backup directory | `/app/backups` |
@@ -739,6 +741,13 @@ bosun reconcile --target=nas
 | `SECRETS_FILES` | Comma-separated SOPS files | None |
 | `DRY_RUN` | Enable dry run | `false` |
 | `FORCE` | Force deployment | `false` |
+
+`BOSUN_GIT_USERNAME` and `BOSUN_GIT_TOKEN` authenticate both clone and fetch
+for an absolute HTTPS repository URL. Set both or neither; anonymous HTTPS is
+unchanged. Bosun rejects URL-embedded credentials and will not forward the
+pair through an HTTP downgrade or cross-origin redirect. The variables have no
+unprefixed aliases, follow the effective `BOSUN_REPO_URL`-over-`REPO_URL`
+selection, and require a process restart to rotate.
 
 ## Pirate Mode (Easter Egg)
 

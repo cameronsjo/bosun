@@ -243,10 +243,11 @@ func (g *GitOps) Clone(ctx context.Context, depth int) error {
 		defer cancel()
 	}
 
-	auth, err := getSSHAuth(g.RepoURL)
+	auth, err := ResolveGitAuth(g.RepoURL)
 	if err != nil {
-		logger.Error().Err(err).Msg("Failed to get SSH auth")
-		return fmt.Errorf("failed to get SSH auth: %w", err)
+		safeErr := SanitizeGitError(err)
+		logger.Error().Err(safeErr).Msg("Failed to resolve Git authentication")
+		return fmt.Errorf("failed to resolve Git authentication: %w", safeErr)
 	}
 
 	cloneOpts := &git.CloneOptions{
@@ -275,12 +276,13 @@ func (g *GitOps) Clone(ctx context.Context, depth int) error {
 				Msg("Git clone timed out")
 			return fmt.Errorf("git clone timed out after %v", GitCloneTimeout)
 		}
+		safeErr := SanitizeGitError(err)
 		logger.Error().
-			Err(err).
+			Err(safeErr).
 			Str(log.FieldOperation, "clone").
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 			Msg("Git clone failed")
-		return fmt.Errorf("git clone failed: %w", err)
+		return fmt.Errorf("git clone failed: %w", safeErr)
 	}
 
 	logger.Info().
@@ -303,10 +305,14 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 		logger.Error().Err(err).Str(log.FieldBranch, g.Branch).Msg("Failed to pull repository. Reason: invalid branch")
 		return false, "", "", fmt.Errorf("invalid branch: %w", err)
 	}
+	auth, authErr := ResolveGitAuth(g.RepoURL)
+	if authErr != nil {
+		return false, "", "", fmt.Errorf("failed to resolve Git authentication: %w", SanitizeGitError(authErr))
+	}
 
 	logger.Debug().
 		Str(log.FieldBranch, g.Branch).
-		Str(log.FieldURL, g.RepoURL).
+		Str(log.FieldURL, SanitizeGitURL(g.RepoURL)).
 		Msg("Preparing to pull repository")
 
 	// Check for uncommitted changes. Warn but continue — the hard reset below
@@ -331,11 +337,6 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 		return false, "", "", fmt.Errorf("failed to open repository: %w", err)
 	}
 
-	auth, authErr := getSSHAuth(g.RepoURL)
-	if authErr != nil {
-		return false, "", "", fmt.Errorf("failed to get SSH auth: %w", authErr)
-	}
-
 	// Fetch with timeout
 	fetchCtx, fetchCancel := context.WithTimeout(ctx, GitFetchTimeout)
 	defer fetchCancel()
@@ -351,7 +352,7 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 		if fetchCtx.Err() == context.DeadlineExceeded {
 			return false, "", "", fmt.Errorf("git fetch timed out after %v", GitFetchTimeout)
 		}
-		return false, "", "", fmt.Errorf("git fetch failed: %w", err)
+		return false, "", "", fmt.Errorf("git fetch failed: %w", SanitizeGitError(err))
 	}
 
 	// Verify that origin/branch exists after fetch

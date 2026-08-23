@@ -52,6 +52,40 @@ func TestReconcileCmd_NoAliases(t *testing.T) {
 	assert.Empty(t, cmd.Aliases, "reconcile command should have no aliases")
 }
 
+func TestRunReconcileRejectsUnsafeGitAuthenticationBeforePipeline(t *testing.T) {
+	tests := []struct {
+		name     string
+		repoURL  string
+		username string
+		token    string
+	}{
+		{name: "partial credentials", repoURL: "https://example.com/repo.git", username: "configured-user"},
+		{name: "credentials over HTTP", repoURL: "http://example.com/repo.git", username: "configured-user", token: "configured-token"},
+		{name: "URL userinfo", repoURL: "https://embedded:password@example.com/repo.git"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoDir := filepath.Join(t.TempDir(), "must-not-be-created")
+			t.Setenv("BOSUN_REPO_URL", tt.repoURL)
+			t.Setenv("REPO_URL", "https://shadowed.example/repo.git")
+			t.Setenv("BOSUN_GIT_USERNAME", tt.username)
+			t.Setenv("BOSUN_GIT_TOKEN", tt.token)
+			t.Setenv("REPO_DIR", repoDir)
+
+			var exitCalls int
+			old := ui.SetExitFn(func(int) { exitCalls++ })
+			t.Cleanup(func() { ui.SetExitFn(old) })
+
+			runReconcile(nil, nil)
+
+			assert.Equal(t, 1, exitCalls)
+			_, err := os.Stat(repoDir)
+			assert.ErrorIs(t, err, os.ErrNotExist)
+		})
+	}
+}
+
 func TestRunReconcile_ConfigFieldSetup(t *testing.T) {
 	// Intercept ui.Fatal so the function doesn't exit the process.
 	old := ui.SetExitFn(func(int) {})
