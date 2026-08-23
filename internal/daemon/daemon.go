@@ -34,7 +34,8 @@ import (
 // Config holds daemon configuration.
 type Config struct {
 	// Socket API settings (primary)
-	SocketPath string // Path to Unix socket (default: /var/run/bosun.sock)
+	SocketPath string      // Path to Unix socket (default: /var/run/bosun.sock)
+	SocketMode os.FileMode // Socket file permissions (default: 0660)
 
 	// TCP API settings (optional, for remote access)
 	EnableTCP   bool   // Enable TCP listener (default: false)
@@ -116,6 +117,7 @@ const DefaultDriftInterval = 5 * time.Minute
 func DefaultConfig() *Config {
 	return &Config{
 		SocketPath:            DefaultSocketPath,
+		SocketMode:            0o660,
 		EnableTCP:             false,            // Disabled by default for security
 		TCPAddr:               "127.0.0.1:9090", // Localhost only by default
 		Port:                  8080,
@@ -220,7 +222,7 @@ func New(cfg *Config) (*Daemon, error) {
 	// Create Unix socket server (primary API)
 	socketCfg := &SocketConfig{
 		SocketPath: cfg.SocketPath,
-		SocketMode: 0660,
+		SocketMode: cfg.SocketMode,
 	}
 	socketServer, err := NewSocketServer(d, socketCfg)
 	if err != nil {
@@ -2221,6 +2223,9 @@ func ValidateConfig(cfg *Config) error {
 
 	if cfg.Port < 1 || cfg.Port > 65535 {
 		errs = append(errs, fmt.Sprintf("invalid port: %d", cfg.Port))
+	}
+	if cfg.SocketMode&^os.ModePerm != 0 {
+		errs = append(errs, fmt.Sprintf("invalid socket mode: %s (only permission bits are allowed)", cfg.SocketMode))
 	}
 
 	if cfg.ReconcileConfig != nil {

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
@@ -19,17 +20,30 @@ import (
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
+var errSocketPathReplaced = errors.New("socket path was replaced; refusing to remove or trust replacement entry")
+
+// socketOwnership records the published entry and, on Unix, a private hard
+// link that pins its inode until ownership-checked cleanup completes.
+type socketOwnership struct {
+	file       os.FileInfo
+	anchorPath string
+}
+
 // SocketServer handles Unix socket connections for the trigger API.
 type SocketServer struct {
 	daemon     *Daemon
 	socketPath string
+	socketMode os.FileMode
+	mu         sync.Mutex
+	starting   bool
 	listener   net.Listener
+	socketFile *socketOwnership
 	httpServer *http.Server
 }
 
 // SocketConfig holds socket server configuration.
 type SocketConfig struct {
-	SocketPath string // Path to Unix socket (e.g., /var/run/bosun.sock)
+	SocketPath string      // Path to Unix socket (e.g., /var/run/bosun.sock)
 	SocketMode os.FileMode // Socket file permissions (default: 0660)
 }
 
@@ -37,7 +51,7 @@ type SocketConfig struct {
 func DefaultSocketConfig() *SocketConfig {
 	return &SocketConfig{
 		SocketPath: DefaultSocketPath,
-		SocketMode: 0660,
+		SocketMode: 0o660,
 	}
 }
 
@@ -46,10 +60,17 @@ func NewSocketServer(d *Daemon, cfg *SocketConfig) (*SocketServer, error) {
 	if cfg == nil {
 		cfg = DefaultSocketConfig()
 	}
+	if cfg.SocketPath == "" {
+		return nil, errors.New("socket path is required")
+	}
+	if cfg.SocketMode&^os.ModePerm != 0 {
+		return nil, fmt.Errorf("invalid socket mode %s: only permission bits are allowed", cfg.SocketMode)
+	}
 
 	s := &SocketServer{
 		daemon:     d,
 		socketPath: cfg.SocketPath,
+		socketMode: cfg.SocketMode,
 	}
 
 	// Create HTTP handler for socket
@@ -71,30 +92,49 @@ func NewSocketServer(d *Daemon, cfg *SocketConfig) (*SocketServer, error) {
 }
 
 // Start starts the Unix socket server.
-func (s *SocketServer) Start() error {
+func (s *SocketServer) Start() (err error) {
+	s.mu.Lock()
+	if s.starting {
+		s.mu.Unlock()
+		return errors.New("socket server is already starting or running")
+	}
+	s.starting = true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.starting = false
+		s.mu.Unlock()
+	}()
+
 	// Ensure socket directory exists
 	socketDir := filepath.Dir(s.socketPath)
-	if err := os.MkdirAll(socketDir, 0755); err != nil {
+	if err := os.MkdirAll(socketDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
 
-	// Remove stale socket if it exists
-	if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {
+	// Remove only a stale socket. Refuse symlinks, regular files, directories,
+	// and other entries so a misconfigured path cannot delete unrelated data.
+	if err := removeStaleSocket(s.socketPath); err != nil {
 		return fmt.Errorf("failed to remove stale socket: %w", err)
 	}
 
-	// Create Unix socket listener
-	listener, err := net.Listen("unix", s.socketPath)
+	// Publish the socket only after its configured mode is applied. Unix uses a
+	// private staging directory plus atomic rename, avoiding process-global
+	// umask changes and the net.Listen-then-Chmod permissive window.
+	listener, socketFile, err := listenUnixSocket(s.socketPath, s.socketMode)
 	if err != nil {
 		return fmt.Errorf("failed to create socket: %w", err)
 	}
+	s.mu.Lock()
 	s.listener = listener
-
-	// Set socket permissions
-	if err := os.Chmod(s.socketPath, 0660); err != nil {
+	s.socketFile = socketFile
+	s.mu.Unlock()
+	defer func() {
 		_ = listener.Close()
-		return fmt.Errorf("failed to set socket permissions: %w", err)
-	}
+		if cleanupErr := s.releaseSocket(listener, socketFile); cleanupErr != nil {
+			err = errors.Join(err, cleanupErr)
+		}
+	}()
 
 	ui.Info("Socket server listening on %s", s.socketPath)
 
@@ -107,14 +147,39 @@ func (s *SocketServer) Start() error {
 
 // Shutdown gracefully shuts down the socket server.
 func (s *SocketServer) Shutdown(ctx context.Context) error {
+	var shutdownErr error
 	if s.httpServer != nil {
 		if err := s.httpServer.Shutdown(ctx); err != nil {
-			return err
+			shutdownErr = err
 		}
 	}
-	// Clean up socket file
-	_ = os.Remove(s.socketPath)
-	return nil
+
+	s.mu.Lock()
+	listener := s.listener
+	socketFile := s.socketFile
+	s.mu.Unlock()
+	cleanupErr := s.releaseSocket(listener, socketFile)
+	return errors.Join(shutdownErr, cleanupErr)
+}
+
+// releaseSocket removes only the filesystem entry published by this server.
+// If the path has been replaced, it is left untouched and the caller receives
+// an error instead of deleting an attacker-controlled or unrelated entry.
+func (s *SocketServer) releaseSocket(listener net.Listener, socketFile *socketOwnership) error {
+	if socketFile == nil {
+		return nil
+	}
+	cleanupErr := removeSocketIfSame(s.socketPath, socketFile)
+
+	s.mu.Lock()
+	if s.listener == listener && s.socketFile == socketFile &&
+		(cleanupErr == nil || errors.Is(cleanupErr, errSocketPathReplaced)) {
+		s.listener = nil
+		s.socketFile = nil
+	}
+	s.mu.Unlock()
+
+	return cleanupErr
 }
 
 // TriggerRequest is the request body for /trigger.
@@ -170,7 +235,7 @@ type ConfigResponse struct {
 
 // StatusResponse is the response body for /status.
 type StatusResponse struct {
-	State         string     `json:"state"`          // idle, reconciling
+	State         string     `json:"state"` // idle, reconciling
 	LastReconcile *time.Time `json:"last_reconcile,omitempty"`
 	LastCommit    string     `json:"last_commit,omitempty"`
 	LastError     string     `json:"last_error,omitempty"`
