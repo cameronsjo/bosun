@@ -9,12 +9,12 @@
 
 ## 2. Graceful shutdown of in-flight reconciles
 
-- [ ] 2.1 Add a daemon-wide cancellation context that Shutdown cancels
-- [ ] 2.2 Socket trigger goroutine joins `d.wg` and derives ctx from daemon ctx (socket.go:175)
-- [ ] 2.3 TCP trigger goroutine joins `d.wg` and derives ctx from daemon ctx (tcp.go:169)
-- [ ] 2.4 API trigger goroutine joins `d.wg` and derives ctx from daemon ctx (api.go:309)
-- [ ] 2.5 Shutdown waits on `d.wg` within `ShutdownTimeout`
-- [ ] 2.6 Tests: SIGTERM cancels in-flight socket/TCP/API reconciles
+- [x] 2.1 Add a daemon-wide cancellation context that Shutdown cancels
+- [x] 2.2 Socket trigger goroutine joins `d.wg` and derives ctx from daemon ctx (socket.go:175)
+- [x] 2.3 TCP trigger goroutine joins `d.wg` and derives ctx from daemon ctx (tcp.go:169)
+- [x] 2.4 API trigger goroutine joins `d.wg` and derives ctx from daemon ctx (api.go:309)
+- [x] 2.5 Shutdown waits on `d.wg` within `ShutdownTimeout`
+- [x] 2.6 Tests: SIGTERM cancels in-flight socket/TCP/API reconciles
 
 ## 3. Lossless trigger coalescing
 

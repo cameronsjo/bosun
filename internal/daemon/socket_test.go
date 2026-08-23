@@ -47,8 +47,10 @@ func newTestSocketServer(t *testing.T) (*SocketServer, *Daemon) {
 	// Inject mock Docker client so health checks report docker as healthy.
 	d.dockerClientOverride = docker.NewClientWithAPI(&dockertest.MockDockerAPI{})
 
-	// Wait for background trigger goroutines to finish before temp dir cleanup.
-	t.Cleanup(func() { waitForReconcileIdle(t, d) })
+	// WaitGroup tracking is the precise ownership boundary: polling the
+	// reconciling flag can observe false before a new goroutine starts and let
+	// TempDir cleanup race it (#256).
+	t.Cleanup(func() { waitForDaemonTasks(t, d, time.Second) })
 
 	return d.socketServer, d
 }

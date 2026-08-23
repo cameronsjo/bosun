@@ -16,7 +16,6 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/reconcile"
-	sentrypkg "github.com/cameronsjo/bosun/internal/sentry"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -286,13 +285,16 @@ func (s *SocketServer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		source = fmt.Sprintf("%s (pid:%s)", source, peerInfo)
 	}
 
-	// Trigger reconcile
-	go func() {
-		defer sentrypkg.Recover()
-		if err := s.daemon.TriggerReconcile(context.Background(), source, req.Force); err != nil {
+	// Trigger reconcile under the daemon lifecycle rather than the request
+	// context, which ends as soon as this 202 response is written.
+	if !s.daemon.startReconcileGoroutine(r.Context(), func(ctx context.Context) {
+		if err := s.daemon.runTriggerReconcile(ctx, source, req.Force); err != nil {
 			ui.Error("Socket-triggered reconciliation failed: %v", err)
 		}
-	}()
+	}) {
+		http.Error(w, "Daemon is shutting down", http.StatusServiceUnavailable)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)

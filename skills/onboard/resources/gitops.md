@@ -284,7 +284,11 @@ bosun daemon -n                       # Dry run mode
 - **Polling** -- periodic reconciliation on a configurable interval (default: 1 hour)
 - **Drift detection** -- periodic checks comparing declared state vs running containers
 - **Deploy state tracking** with circuit breaker (stops retrying after 3 consecutive failures)
-- **Graceful shutdown** on SIGTERM/SIGINT
+- **Graceful shutdown** on SIGTERM/SIGINT: the daemon cancels reconciles
+  accepted through webhooks, the Unix socket, TCP, and `/api/trigger`, then
+  waits up to `BOSUN_SHUTDOWN_TIMEOUT` for every tracked trigger goroutine to
+  unwind. Request completion does not cancel accepted work; daemon shutdown
+  does. New triggers are rejected with `503` once shutdown begins.
 
 The webhook, Unix socket, and optional TCP HTTP servers all allow at most 5
 seconds to receive request headers and set a 32 KiB request-header parsing

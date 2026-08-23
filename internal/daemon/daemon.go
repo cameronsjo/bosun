@@ -166,9 +166,21 @@ type Daemon struct {
 	ready                bool
 	readyMu              sync.RWMutex
 	stopLoops            chan struct{}
+	stopLoopsOnce        sync.Once
 
-	// Track background goroutines for graceful shutdown
-	wg sync.WaitGroup
+	// lifecycleCtx is the daemon-wide cancellation root for every asynchronous
+	// reconcile. lifecycleMu serializes shutdown with WaitGroup registration so
+	// no handler can call Add after shutdown has begun waiting (#256/#356).
+	lifecycleMu     sync.Mutex
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
+	shuttingDown    bool
+	wg              sync.WaitGroup
+
+	// triggerReconcileFn is the asynchronous trigger entry point. Production
+	// uses TriggerReconcile; tests replace it to exercise cancellation and panic
+	// behavior without running the full deploy pipeline.
+	triggerReconcileFn func(context.Context, string, bool) error
 
 	// Reconcile state (read frequently for health checks)
 	stateMu       sync.RWMutex
@@ -207,11 +219,15 @@ func New(cfg *Config) (*Daemon, error) {
 		opts = append(opts, reconcile.WithAlerter(cfg.AlertManager))
 	}
 
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	d := &Daemon{
-		config:    cfg,
-		alerter:   cfg.AlertManager,
-		stopLoops: make(chan struct{}),
+		config:          cfg,
+		alerter:         cfg.AlertManager,
+		stopLoops:       make(chan struct{}),
+		lifecycleCtx:    lifecycleCtx,
+		lifecycleCancel: lifecycleCancel,
 	}
+	d.triggerReconcileFn = d.TriggerReconcile
 
 	// Lazily inject Docker client into reconciler for post-deploy verification.
 	// The client is initialized on first use via DockerClient().
@@ -388,9 +404,11 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 		}
 	}
 
-	// Setup signal handling
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	// Bind every asynchronous reconcile to this Run invocation. New() installs
+	// a background lifecycle for direct handler tests and embedded use; Run
+	// replaces it before any server can accept requests.
+	ctx = d.resetLifecycleContext(ctx)
+	defer d.cancelLifecycle()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -488,6 +506,7 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	ui.Success("Daemon ready")
 
 	// Wait for shutdown signal or error
+	var runErr error
 	select {
 	case sig := <-sigCh:
 		logger.Info().Str("signal", sig.String()).Msg("Received shutdown signal")
@@ -495,7 +514,7 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	case err := <-errCh:
 		logger.Error().Err(err).Msg("Fatal error, shutting down")
 		ui.Error("Fatal error: %v", err)
-		return err
+		runErr = err
 	case <-ctx.Done():
 		logger.Info().Msg("Context cancelled, shutting down")
 		ui.Warning("Context cancelled, shutting down...")
@@ -505,9 +524,66 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	shutdownErr := d.shutdown()
 	if shutdownErr != nil {
 		logger.Error().Err(shutdownErr).Msg("Shutdown encountered error")
-		return shutdownErr
 	}
-	return nil
+	return errors.Join(runErr, shutdownErr)
+}
+
+// resetLifecycleContext installs the cancellation root used by asynchronous
+// reconcile handlers for this daemon run.
+func (d *Daemon) resetLifecycleContext(parent context.Context) context.Context {
+	d.lifecycleMu.Lock()
+	defer d.lifecycleMu.Unlock()
+
+	if d.lifecycleCancel != nil {
+		d.lifecycleCancel()
+	}
+	d.lifecycleCtx, d.lifecycleCancel = context.WithCancel(parent)
+	d.shuttingDown = false
+	return d.lifecycleCtx
+}
+
+func (d *Daemon) cancelLifecycle() {
+	d.lifecycleMu.Lock()
+	d.shuttingDown = true
+	if d.lifecycleCancel != nil {
+		d.lifecycleCancel()
+	}
+	d.lifecycleMu.Unlock()
+}
+
+// startReconcileGoroutine registers a reconcile before launching it and refuses
+// new work once shutdown begins. The task inherits request logging values but
+// cancellation comes from the daemon lifecycle rather than the short-lived HTTP
+// request context.
+func (d *Daemon) startReconcileGoroutine(requestCtx context.Context, task func(context.Context)) bool {
+	d.lifecycleMu.Lock()
+	if d.shuttingDown {
+		d.lifecycleMu.Unlock()
+		return false
+	}
+	ctx := d.lifecycleCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	d.wg.Add(1)
+	d.lifecycleMu.Unlock()
+
+	if requestCtx != nil {
+		ctx = log.WithContext(ctx, log.Ctx(requestCtx))
+	}
+	go func() {
+		defer d.wg.Done()
+		defer sentrypkg.Recover()
+		task(ctx)
+	}()
+	return true
+}
+
+func (d *Daemon) runTriggerReconcile(ctx context.Context, source string, force bool) error {
+	if d.triggerReconcileFn != nil {
+		return d.triggerReconcileFn(ctx, source, force)
+	}
+	return d.TriggerReconcile(ctx, source, force)
 }
 
 // shutdown performs graceful shutdown of all components.
@@ -515,6 +591,7 @@ func (d *Daemon) shutdown() error {
 	logger := log.Component(log.ComponentDaemon)
 	logger.Info().Msg("Initiating graceful shutdown")
 	ui.Info("Shutting down...")
+	d.cancelLifecycle()
 
 	// Flush Sentry events before shutting down network servers.
 	logger.Debug().Dur("timeout", 5*time.Second).Msg("Preparing to flush Sentry events")
@@ -522,7 +599,7 @@ func (d *Daemon) shutdown() error {
 
 	// Stop polling
 	logger.Debug().Msg("Stopping background loops")
-	close(d.stopLoops)
+	d.stopLoopsOnce.Do(func() { close(d.stopLoops) })
 
 	// Shutdown timeout
 	ctx, cancel := context.WithTimeout(context.Background(), d.config.ShutdownTimeout)
@@ -1381,17 +1458,14 @@ func (d *Daemon) maybeSelfHeal(ctx context.Context, report *reconcile.DriftRepor
 
 	ui.Info("Drift self-heal: triggering reconciliation (%d drift items)", len(report.Items))
 
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-		defer sentrypkg.Recover()
+	d.startReconcileGoroutine(ctx, func(reconcileCtx context.Context) {
 		// force stays false here -- Force is the human-supplied override that
 		// also bypasses the circuit breaker and deploy_paths gate, and an
 		// unattended self-heal loop must never touch either. executeReconcile
 		// grants ForceRedeployUnchanged based on the "drift-self-heal" source
 		// instead (#350 / review follow-up), bypassing only the
 		// commit-unchanged skip.
-		if err := d.TriggerReconcile(ctx, log.SourceDriftSelfHeal, false); err != nil {
+		if err := d.runTriggerReconcile(reconcileCtx, log.SourceDriftSelfHeal, false); err != nil {
 			logger.Error().
 				Err(err).
 				Msg("Failed to trigger drift self-heal reconciliation")
@@ -1399,7 +1473,7 @@ func (d *Daemon) maybeSelfHeal(ctx context.Context, report *reconcile.DriftRepor
 			logger.Debug().
 				Msg("Drift self-heal reconciliation triggered successfully")
 		}
-	}()
+	})
 }
 
 // runRestartBreaker checks running containers for restart loops and stops offenders.

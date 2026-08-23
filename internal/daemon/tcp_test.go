@@ -147,27 +147,10 @@ func newTestTCPServer(t *testing.T) (*TCPServer, *Daemon) {
 	// Inject mock Docker client so health checks report docker as healthy.
 	d.dockerClientOverride = docker.NewClientWithAPI(&dockertest.MockDockerAPI{})
 
-	// Wait for background trigger goroutines to finish before temp dir cleanup.
-	t.Cleanup(func() { waitForReconcileIdle(t, d) })
+	// Wait for tracked trigger goroutines before TempDir cleanup (#256).
+	t.Cleanup(func() { waitForDaemonTasks(t, d, time.Second) })
 
 	return d.tcpServer, d
-}
-
-// waitForReconcileIdle spins until the daemon's reconciling flag clears.
-// Trigger handlers spawn background goroutines that use temp dir paths;
-// we must wait for them to finish before the test's TempDir cleanup runs.
-func waitForReconcileIdle(t *testing.T, d *Daemon) {
-	t.Helper()
-	for i := 0; i < 200; i++ {
-		d.reconcileMu.Lock()
-		busy := d.reconciling
-		d.reconcileMu.Unlock()
-		if !busy {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("daemon stayed reconciling during cleanup")
 }
 
 func TestTCPHandleTrigger(t *testing.T) {
