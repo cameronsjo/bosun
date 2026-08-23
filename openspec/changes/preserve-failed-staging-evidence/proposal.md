@@ -21,12 +21,17 @@ fail-closed security lifecycle, not only a reordered cleanup call.
   successful or failed rollback.
 - Treat the staging path as a single evidence slot: the next render replaces it,
   so repeated failures do not create unbounded timestamped copies.
-- Restrict retained evidence to owner-only access without following symlinks. If
-  permissions cannot be hardened, delete the evidence rather than knowingly leave
-  secret-bearing plaintext broadly readable; report either outcome without logging
-  file contents.
+- Protect every staging slot with a `0700` root before rendered output is written
+  and throughout verification, while preserving the descendant modes that
+  deployment copies to its destination. Harden every retained directory to `0700`
+  and regular file to `0600`. Reject symlinks, irregular entries, traversal outside
+  the effective slot, and entry-replacement races rather than following them.
+- If Bosun cannot prove that a staging tree is private, delete it rather than
+  knowingly leave secret-bearing plaintext broadly readable; report either
+  outcome without logging file contents.
 - Keep every target's evidence and cleanup isolated to that target's effective
-  staging directory.
+  staging directory, and reject equal or nested effective staging paths before any
+  target executes.
 
 ## Impact
 
@@ -35,15 +40,17 @@ fail-closed security lifecycle, not only a reordered cleanup call.
 - Affected code:
   - `internal/reconcile/reconcile.go` — `Reconciler.Run`, `renderTemplates`, and
     `cleanupStaging`; health-gate, rollback, verification, and success paths
-  - `internal/reconcile/target.go` — per-target staging derivation consumed by the
-    lifecycle (no configuration shape change expected)
+  - `internal/reconcile/target.go` — canonical disjoint-path validation for the
+    effective per-target staging directories (no configuration shape change)
 - All consumers:
   - Single-target `bosun reconcile` — preserves or cleans its configured staging
     slot according to the target outcome
-  - Multi-target CLI reconciliation — continues other targets while keeping each
-    target's evidence isolated
-  - Daemon reconciliation — same per-target behavior across automated retries
-  - Template rendering — replaces the prior evidence slot only when the target
-    reaches the next render phase
+  - Multi-target CLI reconciliation — rejects overlapping staging slots up front,
+    then continues valid sibling targets after a per-target failure while keeping
+    their evidence isolated
+  - Daemon reconciliation — applies the same preflight and per-target behavior
+    across automated retries
+  - Template rendering — securely prepares and replaces the prior evidence slot
+    only when the target reaches the next render phase
 - Docs: `docs/gitops.md`, `skills/onboard/resources/gitops.md`, and staging-path
   descriptions in `skills/onboard/resources/configuration.md`.

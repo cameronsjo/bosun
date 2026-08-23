@@ -2,7 +2,13 @@
 
 ### Requirement: Pipeline Orchestration
 
-The reconciler SHALL execute stages in this fixed order:
+Before any target pipeline starts, Bosun SHALL canonicalize and validate every
+effective target staging path, then harden-or-delete every pre-existing staging
+slot. Equal or ancestor/descendant staging paths SHALL reject the complete target
+set. If any pre-existing slot can be neither protected nor deleted, Bosun SHALL
+fail the cycle before Git sync, secret decryption, or target execution.
+
+For every valid target, the reconciler SHALL execute stages in this fixed order:
 
 1. Acquire lock
 2. Git repository sync
@@ -21,17 +27,23 @@ The reconciler SHALL execute stages in this fixed order:
 15. Record successful deployment in state file
 16. Release lock
 
-A failure at any stage SHALL abort the remaining deployment stages and release the
-lock. The health gate (stage 11) failing SHALL trigger rollback before aborting.
-The invariant check (stage 9) failing SHALL abort before compose up runs; no
-rollback is needed because no compose changes have been applied at that point.
+A fatal failure at any stage SHALL abort the current target's remaining deployment
+stages and release its lock, but SHALL NOT prevent a valid sibling target from
+running. The health gate (stage 11) failing SHALL trigger rollback before aborting
+that target. The invariant check (stage 9) failing SHALL abort that target before
+compose up runs; no rollback is needed because no compose changes have been applied
+at that point. After all eligible targets complete, the overall cycle SHALL report
+failure if any target failed, without undoing successful siblings. Failure and
+success alerts SHALL identify the applicable target, and the process-wide cycle
+lock SHALL be released only after the target loop completes.
 
-After rendering begins, a failure before successful staging cleanup SHALL retain
-the current target's rendered staging tree according to the Failed Staging Evidence
-Lifecycle requirement. A staging cleanup failure after verification is non-fatal
-only when the retained tree is successfully restricted to owner-only access; if
-Bosun can neither harden nor delete that tree, the security failure SHALL abort
-successful completion.
+Before writing decrypted render output, Bosun SHALL prepare the current target's
+private staging slot according to the Failed Staging Evidence Lifecycle
+requirement. After preparation begins, every normal or panic exit before successful
+staging cleanup SHALL run that lifecycle's harden-or-delete finalizer. A staging
+cleanup failure after verification is non-fatal only when the retained tree is
+successfully proven owner-only; if Bosun can neither harden nor delete that tree,
+the security failure SHALL abort successful completion.
 
 The lock SHALL always be released via defer, even on panic.
 
@@ -65,7 +77,19 @@ The lock SHALL always be released via defer, even on panic.
 - **WHEN** `DryRun` is true
 - **THEN** backup, deploy, invariant check, compose up, health gate, post-sync hooks, and post-deploy verification are skipped
 - **AND** template rendering still executes to validate templates
+- **AND** normal staging cleanup is skipped
+- **AND** Bosun hardens every rendered directory to `0700` and regular file to `0600` before returning
 - **AND** the rendered staging tree is retained securely as the current evidence slot
+- **AND** the replacement and retention outcome is reported without rendered content
+
+#### Scenario: One target failure does not suppress siblings
+
+- **GIVEN** a valid target set contains targets `unraid` and `pi`
+- **WHEN** `unraid` fails after rendering and `pi` succeeds
+- **THEN** `unraid` aborts its remaining stages and retains secured evidence
+- **AND** `pi` completes and removes only its own staging slot
+- **AND** the overall cycle reports failure after both targets finish
+- **AND** alerts identify their respective target outcomes
 
 #### Scenario: Health gate failure triggers rollback
 
@@ -83,25 +107,55 @@ The lock SHALL always be released via defer, even on panic.
 The reconciler SHALL retain the current rendered staging tree in the effective
 per-target `StagingDir` when a reconciliation fails after rendering begins. This
 includes template-render failure with partial output, declared-state or invariant
-failure, deployment failure, health-gate failure, rollback success, rollback
-failure, and local post-deploy verification failure.
+failure, backup or rollback-anchor failure, pre-deploy state-persistence failure,
+file-deployment or compose-up failure, health-gate failure, rollback success,
+rollback failure, and local post-deploy verification failure.
 
-The retained tree SHALL be treated as secret-bearing plaintext because rendered
-templates can interpolate arbitrary values from decrypted SOPS data. Bosun SHALL
-restrict retained directories to owner-only access and regular files to owner
-read/write, SHALL use `Lstat`-style traversal that does not follow symlinks, and
-SHALL NOT log file contents. If permission hardening fails, Bosun SHALL delete the
-staging tree instead of knowingly retaining it with broader access. If both
-hardening and deletion fail, Bosun SHALL surface a security error and SHALL NOT
+The staging tree SHALL be treated as secret-bearing plaintext for its entire
+lifetime because rendered templates can interpolate arbitrary values from decrypted
+SOPS data. Before any decrypted output is written, Bosun SHALL create the effective
+staging root with permission bits `0700`, and every payload temp file SHALL remain
+private until atomic rename. Active descendants SHALL retain the modes required by
+the existing template-rendering and deploy contracts; local copy and remote tar MUST
+NOT turn staging confidentiality into a destination-mode regression. Bosun SHALL
+verify the private root boundary and safe entry types before backup, deploy, or any
+later stage may consume the tree. When evidence is retained, every directory SHALL
+have permission bits `0700` and every regular file SHALL have permission bits
+`0600`.
+
+Lifecycle inspection and mutation SHALL start at the effective `StagingDir`, remain
+confined to that root, and use no-follow operations. The root and every descendant
+SHALL be a real directory or regular file as appropriate. A symlink, socket, device,
+FIFO, path traversal outside the effective root, or entry replaced between
+inspection and protection SHALL fail verification; Bosun SHALL NOT follow it or log
+its contents or link target. On any preparation, verification, or hardening failure,
+Bosun SHALL delete only that target's staging tree without following links. If both
+protection and deletion fail, Bosun SHALL surface a security error and SHALL NOT
 report the reconciliation as successful.
 
 Retention SHALL use the existing effective staging path rather than copying the
 tree into `BackupDir` or creating timestamped archives. Each target SHALL therefore
 have at most one evidence slot. A subsequent attempt SHALL preserve the prior slot
-through sync, config reload, secret decryption, and deploy-mode resolution; when
-the subsequent render phase begins, its normal clear-before-render operation SHALL
-replace only that target's prior slot. No target SHALL clean, harden, replace, or
-otherwise mutate another target's effective staging directory.
+through sync, config reload, secret decryption, and deploy-mode resolution. Only
+entry into the next render phase clears that target's slot. Bosun SHALL not write
+decrypted output unless that prior slot was completely removed and a private
+replacement root was created. If replacement fails, Bosun SHALL harden-or-delete
+any remainder and abort. Otherwise the new render (complete or partial) becomes the
+current evidence. No target SHALL clean, harden, replace, or otherwise mutate
+another target's effective staging directory.
+
+Before any target executes, Bosun SHALL canonicalize all effective staging paths
+and prove they are pairwise disjoint. Equality and ancestor/descendant overlap
+SHALL be rejected across implicit-default roots, name-derived children, and
+explicit overrides. Canonicalization SHALL resolve symlinks in existing path
+components and apply the host platform's path-comparison semantics. Invalid target
+sets SHALL fail as a whole before any staging slot is mutated.
+
+Once replacement begins, a per-target lifecycle finalizer SHALL cover every later
+return and panic until successful cleanup. The finalizer SHALL prove the remaining
+tree private or delete it using the rules above. A panic SHALL be re-raised after
+the outcome is recorded. Owner-only creation modes SHALL protect partial output
+even if the process terminates before the finalizer can run.
 
 After the health gate and applicable post-deploy verification succeed and post-sync
 hook execution completes, Bosun SHALL remove the current target's staging tree
@@ -109,6 +163,25 @@ before reporting successful completion. Post-sync hook errors retain their exist
 non-fatal warning semantics. If removal fails, Bosun SHALL apply the same owner-only
 hardening fallback before continuing; failure to either harden or delete SHALL be a
 security error.
+
+Bosun SHALL emit structured operator diagnostics for slot replacement, secured
+retention, fail-closed deletion, cleanup fallback, and harden-plus-delete failure.
+Diagnostics SHALL identify the target and effective staging path and SHALL NOT
+include rendered contents, secret values, or symlink targets.
+
+#### Scenario: Staging is private before and during rendering
+
+- **WHEN** a target enters the render phase and produces directories, rendered files, or copied files
+- **THEN** the effective staging root has permission bits `0700` before any output is written and stays `0700` through verification
+- **AND** payload temp files remain private until atomic rename
+- **AND** descendants retain the existing modes that local and remote deployment propagate to their destinations
+- **AND** no backup, deploy, compose, health, hook, or verification stage starts until the completed tree passes no-follow verification
+
+#### Scenario: Partial render and panic fail closed
+
+- **WHEN** rendering returns an error after partial output or a later pipeline stage panics
+- **THEN** the lifecycle finalizer secures the current target's remaining tree or deletes it without following links
+- **AND** a panic is re-raised after the retention outcome is reported
 
 #### Scenario: Health failure preserves the rejected render
 
@@ -142,6 +215,13 @@ security error.
 - **THEN** the prior staging tree is cleared before the new render starts
 - **AND** no timestamped or sibling evidence directory is accumulated
 
+#### Scenario: Failed replacement writes no decrypted output
+
+- **GIVEN** a target has a prior staging slot
+- **WHEN** Bosun cannot completely remove it or privately create the replacement root
+- **THEN** Bosun writes no decrypted output for the new render
+- **AND** hardens or deletes any remaining tree before returning an error
+
 #### Scenario: Early failure preserves prior evidence
 
 - **GIVEN** a target has retained staging evidence from a failed attempt
@@ -155,11 +235,52 @@ security error.
 - **AND** reports that evidence was discarded without logging its contents
 - **AND** if deletion also fails, the reconciliation returns a security error
 
+#### Scenario: Symlink, irregular entry, traversal, or replacement race fails closed
+
+- **WHEN** staging verification encounters a symlink or irregular entry, an entry is replaced during protection, or a candidate path escapes the effective staging root
+- **THEN** Bosun does not follow or mutate the external target
+- **AND** treats protection as failed and deletes only the effective staging tree
+- **AND** no rendered content or symlink target is logged
+
+#### Scenario: Equal or nested target slots are rejected before execution
+
+- **WHEN** two targets' canonical effective staging paths are equal or one is an ancestor of the other
+- **THEN** Bosun rejects the complete target set before either target executes
+- **AND** no target staging tree is cleaned, hardened, replaced, or rendered
+
+#### Scenario: Pre-existing slots are secured before the cycle
+
+- **GIVEN** one or more effective staging slots exist before reconciliation starts
+- **WHEN** Bosun begins the first post-upgrade or a later reconciliation cycle
+- **THEN** it validates all target paths and hardens or deletes each existing slot before Git sync or secret decryption
+- **AND** if any slot can be neither protected nor deleted, no target executes
+
 #### Scenario: Verified success removes staging
 
 - **WHEN** the health gate and applicable post-deploy verification succeed and post-sync hook execution completes
 - **THEN** Bosun removes the current target's staging tree
 - **AND** only then reports successful completion and records the deployment
+
+#### Scenario: Cleanup failure retains private staging with a warning
+
+- **WHEN** health and applicable post-deploy verification succeed and hooks complete but normal staging removal fails
+- **AND** Bosun successfully proves the remaining tree has the required owner-only modes
+- **THEN** Bosun records the deployment as successful
+- **AND** reports that the secured staging slot remains because cleanup failed
+- **AND** the next render replaces that same bounded slot
+
+#### Scenario: Cleanup and protection both fail
+
+- **WHEN** successful verification is followed by cleanup failure
+- **AND** Bosun can neither prove the remaining tree private nor delete it
+- **THEN** Bosun returns a security error
+- **AND** does not record or report deployment success
+
+#### Scenario: Non-fatal hook errors do not preserve successful staging
+
+- **WHEN** the health gate passes, a post-sync hook returns an error under the existing non-fatal hook policy, and applicable post-deploy verification succeeds
+- **THEN** Bosun warns about the hook error
+- **AND** removes staging before recording deployment success
 
 #### Scenario: Multi-target evidence remains isolated
 
