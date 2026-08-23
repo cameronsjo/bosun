@@ -1288,6 +1288,14 @@ func TestConfigFromEnv_HealthGateTimeout(t *testing.T) {
 		assert.Equal(t, time.Duration(0), cfg.ReconcileConfig.HealthGateTimeout)
 	})
 
+	t.Run("negative value keeps default", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_GATE_TIMEOUT", "-1s")
+
+		cfg := ConfigFromEnv()
+
+		assert.Equal(t, 60*time.Second, cfg.ReconcileConfig.HealthGateTimeout)
+	})
+
 	t.Run("parses Go duration string", func(t *testing.T) {
 		t.Setenv("BOSUN_HEALTH_GATE_TIMEOUT", "90s")
 

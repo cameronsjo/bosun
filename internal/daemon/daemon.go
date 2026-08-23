@@ -2068,7 +2068,11 @@ func ConfigFromEnv() *Config {
 	}
 	if v := os.Getenv("BOSUN_HEALTH_GATE_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
-			rcfg.HealthGateTimeout = d
+			if d < 0 {
+				log.Warn().Str("env", "BOSUN_HEALTH_GATE_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must not be negative")
+			} else {
+				rcfg.HealthGateTimeout = d
+			}
 		} else {
 			log.Warn().Str("value", v).Msg("Failed to parse BOSUN_HEALTH_GATE_TIMEOUT, ignoring")
 		}
