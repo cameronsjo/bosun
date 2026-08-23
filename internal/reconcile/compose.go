@@ -390,7 +390,11 @@ func (d *DeployOps) ComposeUpRemote(ctx context.Context, host, composeDir string
 		cmd.Stderr = &stderr
 
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("remote docker compose up failed: %w: %s", err, stderr.String())
+			return &sshCommandError{
+				operation: "remote docker compose up failed",
+				cause:     err,
+				stderr:    stderr.String(),
+			}
 		}
 		return nil
 	})

@@ -259,13 +259,47 @@ func killAndReapProcess(cmd *exec.Cmd) {
 	_ = cmd.Wait()
 }
 
+// sshCommandError keeps a remote command's stderr available for diagnostics
+// without letting application output decide whether the SSH transport failed.
+// OpenSSH reserves exit status 255 for client/transport failures; all other
+// exit statuses came from the remote command and must fail without retry.
+type sshCommandError struct {
+	operation string
+	cause     error
+	stderr    string
+}
+
+func (e *sshCommandError) Error() string {
+	return fmt.Sprintf("%s: %v: %s", e.operation, e.cause, e.stderr)
+}
+
+func (e *sshCommandError) Unwrap() error {
+	return e.cause
+}
+
+func (e *sshCommandError) isTransient() bool {
+	var exitErr *exec.ExitError
+	if errors.As(e.cause, &exitErr) {
+		return exitErr.ExitCode() == 255 && containsTransientSSHPattern(e.stderr)
+	}
+	return containsTransientSSHPattern(e.cause.Error())
+}
+
 // isTransientSSHError checks if an error is transient and worth retrying.
 // Transient errors include connection refused, timeout, and network unreachable.
 func isTransientSSHError(err error) bool {
 	if err == nil {
 		return false
 	}
-	errStr := strings.ToLower(err.Error())
+	var commandErr *sshCommandError
+	if errors.As(err, &commandErr) {
+		return commandErr.isTransient()
+	}
+	return containsTransientSSHPattern(err.Error())
+}
+
+func containsTransientSSHPattern(message string) bool {
+	errStr := strings.ToLower(message)
 	transientPatterns := []string{
 		"connection refused",
 		"connection reset",
