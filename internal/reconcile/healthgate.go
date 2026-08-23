@@ -37,7 +37,7 @@ func CheckCriticalContainerHealth(
 	timeout time.Duration,
 	interval time.Duration,
 ) error {
-	if len(containers) == 0 {
+	if len(containers) == 0 || timeout <= 0 {
 		return nil
 	}
 	if interval <= 0 {

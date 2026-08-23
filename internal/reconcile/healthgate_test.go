@@ -156,6 +156,20 @@ func TestCheckCriticalContainerHealth_EmptyListSkips(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestCheckCriticalContainerHealth_NonPositiveTimeoutSkips(t *testing.T) {
+	for _, timeout := range []time.Duration{0, -time.Second} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			err := CheckCriticalContainerHealth(
+				context.Background(), nil,
+				[]string{"traefik"},
+				timeout,
+				HealthGatePollInterval,
+			)
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestCheckCriticalContainerHealth_NotRunning(t *testing.T) {
 	mockAPI := newReconcileMockDockerAPI()
 	mockAPI.containerInspectFunc = func(_ context.Context, name string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {

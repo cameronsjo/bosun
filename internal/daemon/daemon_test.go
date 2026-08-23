@@ -1280,6 +1280,14 @@ func TestConfigFromEnv_DeploySyncExclude(t *testing.T) {
 }
 
 func TestConfigFromEnv_HealthGateTimeout(t *testing.T) {
+	t.Run("zero disables health gate", func(t *testing.T) {
+		t.Setenv("BOSUN_HEALTH_GATE_TIMEOUT", "0")
+
+		cfg := ConfigFromEnv()
+
+		assert.Equal(t, time.Duration(0), cfg.ReconcileConfig.HealthGateTimeout)
+	})
+
 	t.Run("parses Go duration string", func(t *testing.T) {
 		t.Setenv("BOSUN_HEALTH_GATE_TIMEOUT", "90s")
 
