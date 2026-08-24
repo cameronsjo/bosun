@@ -88,9 +88,9 @@ The render step produced no parseable services in `<staging>/compose/`. Either t
 
   This is the GH#214 root cause: `BOSUN_INFRA_DIR="."` while `compose/` and `appdata/` live under `unraid/`. Set `BOSUN_INFRA_DIR` to the named directory so render, discovery, and deploy all resolve the same infra root.
 
-**Invariant 2 — `deploy invariant: source has files but no writes recorded` / `destination file has stale mtime`**
+**Invariant 2 — deploy destination paths are present, fresh, and type-correct**
 
-The deploy sync step claimed success but the destination doesn't reflect it. Two shapes trip this: (1) a written file's mtime is older than the reconcile start, or (2) zero files were written against a non-empty source **and a source file is missing from — or holds stale bytes at — the destination**. Both are the GH#214 silent-sync signature — the write path silently failed. The zero-write check is content-equality (SHA-256), not existence: a destination that already byte-matches the source is a legitimate no-op and does **not** fail (fixed in GH#330), but a file that exists at the right path with outdated content **does** fail (a stale write the sync silently failed to replace). The `mismatch=…` field in the error names the first absent-or-differing destination path. Symlinks in the source are skipped — they are never deployed, so they impose no requirement.
+The deploy sync step claimed success but the destination doesn't reflect it. Three shapes trip this: (1) a created directory or written file is missing or has an mtime older than the reconcile start, (2) a recorded path no longer has its expected type — directory or regular file — including when a symlink occupies it, or (3) no regular file was written against a source containing regular files **and a source file is missing from — or holds stale bytes at — the destination**. The third check still runs when the change set contains only newly created directories, so an empty-directory write cannot mask a silent file-sync failure. It uses SHA-256 content equality rather than existence: a destination that already byte-matches the source is a legitimate no-op and does **not** fail (fixed in GH#330), but a file that exists at the right path with outdated content **does** fail. The `mismatch=…` field names the first absent-or-differing destination path. Symlinks in the source are skipped — they are never deployed, so they impose no requirement.
 
 To debug:
 
@@ -114,14 +114,14 @@ On current versions, removing the root `post_sync_hooks` key, setting it to `[]`
 
 For target hooks, an omitted key inherits root and explicit `post_sync_hooks: []` disables inheritance. Removing a target descriptor drops its operational hook override immediately, but restart the daemon to remove the target from the running topology. `BOSUN_POST_SYNC_HOOKS` and target hooks supplied by `BOSUN_TARGETS` are environment-owned; remove or change those environment values and restart Bosun rather than editing `bosun.yaml`.
 
-### Post-sync hook never runs after files change
+### Post-sync hook never runs after deploy paths change
 
-Look for `Files changed but no post-sync hook patterns matched`. The warning
+Look for `Deploy paths changed but no post-sync hook patterns matched`. The warning
 reports distinct, duplicate, empty, and missing pattern counts plus at most five
-pattern and staging-relative path samples; evaluated and matched-file counts
+pattern and staging-relative path samples; evaluated and matched-path counts
 make the zero-match outcome explicit. This usually exposes a typo or a missing
-prefix such as `appdata/`. Absolute or traversal paths are redacted. `No files
-changed; post-sync hooks have nothing to evaluate` is a separate informational
+prefix such as `appdata/`. Absolute or traversal paths are redacted. `No deploy
+paths changed; post-sync hooks have nothing to evaluate` is a separate informational
 outcome and does not indicate a pattern problem.
 
 ## Debug Mode

@@ -336,8 +336,9 @@ func sizesDiffer(a, b string) bool {
 
 // CopyDirIfChanged recursively copies a directory from src to dst,
 // skipping files whose content has not changed. Returns relative paths
-// of files that were actually written, including a final file whose atomic
-// rename succeeded before post-write verification failed.
+// of files that were actually written and descendant directories that were
+// created. The destination root itself is never returned. A final file whose
+// atomic rename succeeded before post-write verification failed is returned.
 // Symlinks are skipped with a warning rather than causing an error.
 func CopyDirIfChanged(src, dst string) ([]string, error) {
 	return copyDirIfChanged(src, dst, CopyFileIfChanged)
@@ -362,7 +363,18 @@ func copyDirIfChanged(src, dst string, copyFile func(src, dst string) (bool, err
 		dstPath := filepath.Join(dst, relPath)
 
 		if d.IsDir() {
-			return os.MkdirAll(dstPath, 0755)
+			// The root may have missing ancestors when CopyDirIfChanged is used
+			// directly. It is deployment plumbing rather than a source-tree
+			// change, so create it without adding "." to the returned paths.
+			if relPath == "." {
+				return os.MkdirAll(dstPath, 0755)
+			}
+
+			created, err := mkdirIfMissing(dstPath, 0755)
+			if created {
+				written = append(written, relPath)
+			}
+			return err
 		}
 
 		changed, err := copyFile(path, dstPath)
@@ -375,6 +387,38 @@ func copyDirIfChanged(src, dst string, copyFile func(src, dst string) (bool, err
 		return nil
 	})
 	return written, err
+}
+
+// mkdirIfMissing creates path and reports whether this call created it. WalkDir
+// visits parents before children, so every descendant's parent already exists.
+// A concurrent creator is treated as an existing directory, while a file or
+// another non-directory entry still surfaces os.Mkdir's collision error.
+func mkdirIfMissing(path string, mode fs.FileMode) (bool, error) {
+	return mkdirIfMissingWithOps(path, mode, os.Mkdir, os.Lstat)
+}
+
+func mkdirIfMissingWithOps(
+	path string,
+	mode fs.FileMode,
+	mkdir func(string, fs.FileMode) error,
+	inspect func(string) (fs.FileInfo, error),
+) (bool, error) {
+	err := mkdir(path, mode)
+	if err == nil {
+		return true, nil
+	}
+	if !errors.Is(err, fs.ErrExist) {
+		return false, err
+	}
+
+	info, inspectErr := inspect(path)
+	if inspectErr != nil {
+		return false, inspectErr
+	}
+	if !info.IsDir() {
+		return false, err
+	}
+	return false, nil
 }
 
 // CopyDir recursively copies a directory from src to dst.

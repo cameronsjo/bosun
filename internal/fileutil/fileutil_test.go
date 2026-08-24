@@ -450,7 +450,92 @@ func TestCopyDirIfChanged(t *testing.T) {
 		require.NoError(t, err)
 
 		sort.Strings(written)
-		assert.Equal(t, []string{"changed.txt", filepath.Join("sub", "new.txt")}, written)
+		assert.Equal(t, []string{"changed.txt", "sub", filepath.Join("sub", "new.txt")}, written)
+	})
+
+	t.Run("returns newly created empty directories", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		srcDir := filepath.Join(tmpDir, "src")
+		dstDir := filepath.Join(tmpDir, "dst")
+
+		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "empty", "nested"), 0755))
+		require.NoError(t, os.MkdirAll(dstDir, 0755))
+
+		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{"empty", filepath.Join("empty", "nested")}, written)
+		assert.DirExists(t, filepath.Join(dstDir, "empty", "nested"))
+	})
+
+	t.Run("does not return a newly created destination root", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		srcDir := filepath.Join(tmpDir, "src")
+		dstDir := filepath.Join(tmpDir, "missing-parent", "dst")
+
+		require.NoError(t, os.MkdirAll(srcDir, 0755))
+
+		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		require.NoError(t, err)
+		assert.Empty(t, written, "the destination root is deploy plumbing, not a source-tree change")
+		assert.DirExists(t, dstDir)
+	})
+
+	t.Run("does not return pre-existing empty directories", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		srcDir := filepath.Join(tmpDir, "src")
+		dstDir := filepath.Join(tmpDir, "dst")
+
+		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "empty", "nested"), 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(dstDir, "empty", "nested"), 0755))
+
+		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		require.NoError(t, err)
+		assert.Empty(t, written)
+	})
+
+	t.Run("returns an error when a file blocks a source directory", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		srcDir := filepath.Join(tmpDir, "src")
+		dstDir := filepath.Join(tmpDir, "dst")
+
+		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "blocked", "nested"), 0755))
+		require.NoError(t, os.MkdirAll(dstDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "blocked"), []byte("keep"), 0644))
+
+		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		require.Error(t, err)
+		assert.Empty(t, written)
+		assert.FileExists(t, filepath.Join(dstDir, "blocked"))
+	})
+
+	t.Run("returns an error when a symlink blocks a source directory", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		srcDir := filepath.Join(tmpDir, "src")
+		dstDir := filepath.Join(tmpDir, "dst")
+		outside := filepath.Join(tmpDir, "outside")
+
+		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "blocked", "nested"), 0755))
+		require.NoError(t, os.MkdirAll(dstDir, 0755))
+		require.NoError(t, os.MkdirAll(outside, 0755))
+		if err := os.Symlink(outside, filepath.Join(dstDir, "blocked")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+
+		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		require.Error(t, err)
+		assert.Empty(t, written)
+		assert.NoDirExists(t, filepath.Join(outside, "nested"), "directory copy must not traverse a destination symlink")
 	})
 
 	t.Run("returns empty when all files identical", func(t *testing.T) {

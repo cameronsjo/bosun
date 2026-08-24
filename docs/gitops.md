@@ -182,9 +182,11 @@ Git sync or secret decryption.
         |
         v
  9. Deploy-Sync Invariant Check
-    (per-target: WrittenFiles must exist at destination with
-    mtime >= reconcile start; empty WrittenFiles against
-    non-empty source fails; bypass via BOSUN_SKIP_DEPLOY_INVARIANT)
+    (per-target: created directories and written files in WrittenFiles
+    must exist at destination with their expected type and
+    mtime >= reconcile start; when no regular file was written, every
+    regular source file must already byte-match the destination;
+    bypass via BOSUN_SKIP_DEPLOY_INVARIANT)
         |
         v
 10. Service Reload (docker compose up, SIGHUP)
@@ -208,7 +210,7 @@ Git sync or secret decryption.
 16. Release Lock
 ```
 
-> **Invariant gates at stages 6 and 9** prevent the silent-success failure mode where a deploy reports success but no files actually landed on disk. See [Deploy-Sync Invariants in the skill resource](../skills/onboard/resources/gitops.md) and the [troubleshooting guide](troubleshooting.md) for operator-facing detail on `BOSUN_ALLOW_EMPTY_DECLARED_STATE` and `BOSUN_SKIP_DEPLOY_INVARIANT`.
+> **Invariant gates at stages 6 and 9** prevent the silent-success failure mode where a deploy reports success but expected content did not land on disk. See [Deploy-Sync Invariants in the skill resource](../skills/onboard/resources/gitops.md) and the [troubleshooting guide](troubleshooting.md) for operator-facing detail on `BOSUN_ALLOW_EMPTY_DECLARED_STATE` and `BOSUN_SKIP_DEPLOY_INVARIANT`.
 
 ## Deploy State Tracking
 
@@ -462,11 +464,13 @@ After each pull, bosun treats a successfully decoded project config as an author
 
 Root and per-target hooks validate before either hooks or delay change. An omitted target hook key inherits root, explicit `[]` clears inheritance, and removing a target descriptor drops its stale operational hook override while structural removal waits for daemon restart. Logs expose source, target, outcome, and counts, never hook command arguments.
 
-Hook globs use staging-relative paths such as `appdata/traefik/**`. An empty content-hash deploy result is authoritative no-change; standard-copy mode, which does not populate per-file writes, instead diffs from `DeployState.LastDeployedCommit` and strips the infra-directory prefix from repo-relative paths before matching. Remote deploys have no file-level tracking and therefore fire every configured hook. A failed pipeline cannot advance the hook diff base or silently lose its changes on retry.
+Hook globs use staging-relative paths such as `appdata/traefik/**`. An empty content-hash deploy result is authoritative no-change; standard-copy mode uses non-empty written or deleted path evidence directly and falls back to a diff from `DeployState.LastDeployedCommit` only when both lists are empty. Fallback paths have the infra-directory prefix stripped before matching. Remote deploys ignore both path lists and fire every configured hook. A failed pipeline cannot advance the hook diff base or silently lose its changes on retry.
 
-When files changed but no hook pattern matches, bosun emits a warning with
+`DeployState.DeployedFiles` remains a regular-file-only ownership manifest. Empty-directory ownership is not persisted, so the inverse transition from a previously managed empty directory to a file requires a separate ownership and rollback contract.
+
+When deploy paths changed but no hook pattern matches, bosun emits a warning with
 distinct/duplicate/empty pattern counts, at most five pattern samples, the
-evaluated-file count, an explicit zero matched-file count, and at most five
+evaluated-path count, an explicit zero matched-path count, and at most five
 staging-relative path samples. Absolute or traversal paths are redacted. The
 distinct no-change case is an info log, not a mismatch warning. These
 diagnostics include bounded path metadata only, never file contents or hook

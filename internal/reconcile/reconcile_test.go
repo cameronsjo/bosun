@@ -726,7 +726,7 @@ func TestExecutePostSyncHooks_NoMatchingPatternsWarnsWithBoundedDiagnostics(t *t
 		return nil
 	}
 
-	changedFiles := []string{
+	changedPaths := []string{
 		"appdata/traefik/one.yml",
 		"appdata/traefik/one.yml",
 		"appdata/traefik/two.yml",
@@ -740,7 +740,7 @@ func TestExecutePostSyncHooks_NoMatchingPatternsWarnsWithBoundedDiagnostics(t *t
 	logger := zerolog.New(&logs).Level(zerolog.InfoLevel)
 	ctx := logpkg.WithContext(context.Background(), &logger)
 
-	matched, err := r.executePostSyncHooks(ctx, "commit-A", "commit-B", &DeployResult{WrittenFiles: changedFiles}, true)
+	matched, err := r.executePostSyncHooks(ctx, "commit-A", "commit-B", &DeployResult{WrittenFiles: changedPaths}, true)
 
 	require.NoError(t, err)
 	assert.Zero(t, matched)
@@ -748,7 +748,7 @@ func TestExecutePostSyncHooks_NoMatchingPatternsWarnsWithBoundedDiagnostics(t *t
 	var entry map[string]any
 	require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
 	assert.Equal(t, "warn", entry["level"])
-	assert.Equal(t, "Files changed but no post-sync hook patterns matched", entry["message"])
+	assert.Equal(t, "Deploy paths changed but no post-sync hook patterns matched", entry["message"])
 	assert.Equal(t, float64(7), entry["hooks_configured"])
 	assert.Equal(t, float64(6), entry["patterns_configured"])
 	assert.Equal(t, float64(postSyncHookPatternSampleLimit), entry["patterns_sampled"])
@@ -756,9 +756,9 @@ func TestExecutePostSyncHooks_NoMatchingPatternsWarnsWithBoundedDiagnostics(t *t
 	assert.Equal(t, float64(1), entry["empty_patterns"])
 	assert.Equal(t, float64(1), entry["hooks_without_paths"])
 	assert.Equal(t, []any{"traefik/**", "authelia/**", "gatus/**", "grafana/**", "prometheus/**"}, entry["patterns"])
-	assert.Equal(t, float64(len(changedFiles)-1), entry["changed_files"], "duplicate changed paths count once")
-	assert.Equal(t, float64(0), entry["matched_files"])
-	assert.Equal(t, float64(postSyncHookFileSampleLimit), entry["sampled_files"])
+	assert.Equal(t, float64(len(changedPaths)-1), entry["changed_paths"], "duplicate changed paths count once")
+	assert.Equal(t, float64(0), entry["matched_paths"])
+	assert.Equal(t, float64(postSyncHookPathSampleLimit), entry["sampled_paths"])
 	assert.Equal(t, "deploy_result", entry["change_source"])
 	assert.Equal(t, []any{
 		"appdata/traefik/one.yml",
@@ -766,14 +766,14 @@ func TestExecutePostSyncHooks_NoMatchingPatternsWarnsWithBoundedDiagnostics(t *t
 		"appdata/traefik/three.yml",
 		"appdata/traefik/four.yml",
 		"appdata/traefik/five.yml",
-	}, entry["sample_files"])
+	}, entry["sample_paths"])
 	assert.NotContains(t, logs.String(), "appdata/traefik/six.yml")
 	assert.NotContains(t, logs.String(), "appdata/traefik/seven.yml")
 	assert.NotContains(t, logs.String(), secretCommandArgument)
 	assert.NotContains(t, logs.String(), longPattern)
 }
 
-func TestExecutePostSyncHooks_NoChangedFilesLogsDistinctInfo(t *testing.T) {
+func TestExecutePostSyncHooks_NoChangedPathsLogsDistinctInfo(t *testing.T) {
 	cfg := &Config{
 		PostSyncHooks: NewConfigField([]PostSyncHook{
 			{Paths: []string{"traefik/**"}, Action: "restart", Container: "traefik"},
@@ -797,12 +797,12 @@ func TestExecutePostSyncHooks_NoChangedFilesLogsDistinctInfo(t *testing.T) {
 	var entry map[string]any
 	require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
 	assert.Equal(t, "info", entry["level"])
-	assert.Equal(t, "No files changed; post-sync hooks have nothing to evaluate", entry["message"])
+	assert.Equal(t, "No deploy paths changed; post-sync hooks have nothing to evaluate", entry["message"])
 	assert.Equal(t, float64(1), entry["hooks_configured"])
 	assert.Equal(t, "git_diff", entry["change_source"])
 	assert.Len(t, r.git.(*mockGitWithDiff).diffCalledWith, 1)
 	assert.NotContains(t, logs.String(), "no post-sync hook patterns matched")
-	assert.NotContains(t, entry, "sample_files")
+	assert.NotContains(t, entry, "sample_paths")
 }
 
 func TestExecutePostSyncHooks_ContentHashEmptyResultDoesNotFallBackToGitDiff(t *testing.T) {
@@ -833,7 +833,7 @@ func TestExecutePostSyncHooks_ContentHashEmptyResultDoesNotFallBackToGitDiff(t *
 	require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
 	assert.Equal(t, "info", entry["level"])
 	assert.Equal(t, "deploy_result", entry["change_source"])
-	assert.Equal(t, "No files changed; post-sync hooks have nothing to evaluate", entry["message"])
+	assert.Equal(t, "No deploy paths changed; post-sync hooks have nothing to evaluate", entry["message"])
 }
 
 func TestExecutePostSyncHooks_StandardCopyEmptyResultUsesGitDiff(t *testing.T) {
@@ -858,6 +858,91 @@ func TestExecutePostSyncHooks_StandardCopyEmptyResultUsesGitDiff(t *testing.T) {
 	assert.Equal(t, 1, matched)
 	assert.True(t, dockerCalled)
 	assert.Len(t, git.diffCalledWith, 1, "standard copy mode has no per-file result and must use the Git diff")
+}
+
+func TestExecutePostSyncHooks_DirectDeployEvidenceDoesNotUseGitDiff(t *testing.T) {
+	tests := []struct {
+		name            string
+		contentHashSync bool
+		result          *DeployResult
+	}{
+		{
+			name:            "content hash deletion only",
+			contentHashSync: true,
+			result:          &DeployResult{DeletedFiles: []string{"appdata/service/retired.yml"}},
+		},
+		{
+			name:   "standard copy written path",
+			result: &DeployResult{WrittenFiles: []string{"appdata/service/config.yml"}},
+		},
+		{
+			name:   "standard copy deleted path",
+			result: &DeployResult{DeletedFiles: []string{"appdata/service/retired.yml"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			git := &mockGitWithDiff{diffFiles: []string{"unraid/appdata/unrelated/config.yml"}}
+			cfg := &Config{
+				ContentHashSync: tt.contentHashSync,
+				InfraSubDir:     "unraid",
+				PostSyncHooks: NewConfigField([]PostSyncHook{{
+					Paths:     []string{"appdata/service/**"},
+					Action:    "restart",
+					Container: "service",
+				}}),
+			}
+			mockAPI := newReconcileMockDockerAPI()
+			client := docker.NewClientWithAPI(mockAPI)
+			r := NewReconciler(cfg, WithGitOperations(git))
+			r.dockerClientFn = func() *docker.Client { return client }
+
+			matched, err := r.executePostSyncHooks(context.Background(), "commit-A", "commit-B", tt.result, true)
+
+			require.NoError(t, err)
+			assert.Equal(t, 1, matched)
+			assert.Empty(t, git.diffCalledWith, "non-empty deploy evidence must be evaluated directly")
+		})
+	}
+}
+
+func TestExecutePostSyncHooks_RemoteRunsAllHooksRegardlessOfResultSlices(t *testing.T) {
+	tests := []struct {
+		name   string
+		result *DeployResult
+	}{
+		{name: "nil result"},
+		{name: "empty result", result: &DeployResult{}},
+		{name: "written paths", result: &DeployResult{WrittenFiles: []string{"appdata/first/config.yml"}}},
+		{name: "deleted paths", result: &DeployResult{DeletedFiles: []string{"appdata/first/retired.yml"}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			git := &mockGitWithDiff{diffFiles: []string{"unraid/appdata/first/config.yml"}}
+			cfg := &Config{PostSyncHooks: NewConfigField([]PostSyncHook{
+				{Paths: []string{"appdata/first/**"}, Action: "restart", Container: "first"},
+				{Paths: []string{"appdata/second/**"}, Action: "restart", Container: "second"},
+			})}
+			restarted := make(map[string]bool)
+			mockAPI := newReconcileMockDockerAPI()
+			mockAPI.containerRestartFunc = func(_ context.Context, container string, _ client.ContainerRestartOptions) (client.ContainerRestartResult, error) {
+				restarted[container] = true
+				return client.ContainerRestartResult{}, nil
+			}
+			dockerClient := docker.NewClientWithAPI(mockAPI)
+			r := NewReconciler(cfg, WithGitOperations(git))
+			r.dockerClientFn = func() *docker.Client { return dockerClient }
+
+			matched, err := r.executePostSyncHooks(context.Background(), "commit-A", "commit-B", tt.result, false)
+
+			require.NoError(t, err)
+			assert.Equal(t, 2, matched)
+			assert.Equal(t, map[string]bool{"first": true, "second": true}, restarted)
+			assert.Empty(t, git.diffCalledWith, "remote deploys must never select paths through git diff")
+		})
+	}
 }
 
 func TestExecutePostSyncHooks_NoConfiguredHooksSkipsDiff(t *testing.T) {
@@ -901,8 +986,8 @@ func TestExecutePostSyncHooks_FallbackNoMatchLogsNormalizedPaths(t *testing.T) {
 	var entry map[string]any
 	require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
 	assert.Equal(t, "git_diff", entry["change_source"])
-	assert.Equal(t, float64(1), entry["changed_files"])
-	assert.Equal(t, []any{"appdata/traefik/dynamic.yml"}, entry["sample_files"])
+	assert.Equal(t, float64(1), entry["changed_paths"])
+	assert.Equal(t, []any{"appdata/traefik/dynamic.yml"}, entry["sample_paths"])
 	assert.NotContains(t, logs.String(), "docs/private-not-deployed.txt")
 }
 
@@ -933,7 +1018,7 @@ func TestHookDiagnosticSamplesAreBoundedAndNonRelativePathsAreRedacted(t *testin
 		"/private/var/secret.txt",
 		"../outside/secret.txt",
 		"/another/private/path.txt",
-	}, postSyncHookFileSampleLimit)
+	}, postSyncHookPathSampleLimit)
 	assert.Equal(t, []string{"appdata/traefik/dynamic.yml", "[non-relative-path]"}, sample)
 }
 
@@ -3525,6 +3610,62 @@ func TestDeployLocalFullPath(t *testing.T) {
 	})
 }
 
+func TestDeployLocal_DirectoryPathsKeepDiscoveredAndComposePrefixes(t *testing.T) {
+	tmpDir := t.TempDir()
+	stagingDir := filepath.Join(tmpDir, "staging")
+	appdataDir := filepath.Join(tmpDir, "appdata")
+	stagingInfra := filepath.Join(stagingDir, "unraid")
+	require.NoError(t, os.MkdirAll(filepath.Join(stagingInfra, "appdata", "service", "cache", "nested"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(stagingInfra, "compose", "fragments"), 0o755))
+	require.NoError(t, os.MkdirAll(appdataDir, 0o755))
+
+	cfg := &Config{
+		DryRun:                  true,
+		AllowEmptyDeclaredState: true,
+		StagingDir:              stagingDir,
+		InfraSubDir:             "unraid",
+		LocalAppdataPath:        appdataDir,
+	}
+	seedStubComposeService(t, cfg)
+	newReconciler := func() *Reconciler {
+		return NewReconciler(cfg, WithDeployOps(&DeployOps{ContentHashSync: true}))
+	}
+
+	result, err := newReconciler().deployLocal(context.Background(), nil)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Contains(t, result.WrittenFiles, filepath.Join("appdata", "service", "cache"))
+	assert.Contains(t, result.WrittenFiles, filepath.Join("appdata", "service", "cache", "nested"))
+	assert.Contains(t, result.WrittenFiles, filepath.Join("compose", "fragments"))
+	assert.NotContains(t, result.WrittenFiles, filepath.Join("appdata", "service"), "ordinary target roots are deploy plumbing")
+	assert.NotContains(t, result.WrittenFiles, "compose", "the ordinary compose root is deploy plumbing")
+	assert.NotContains(t, result.ManagedFiles, "service/cache", "persisted ownership remains regular-file-only")
+	assert.NotContains(t, result.ManagedFiles, "service/cache/nested", "empty-directory ownership is intentionally not persisted")
+	assert.NotContains(t, result.ManagedFiles, "compose/fragments", "compose directories are not persisted as managed files")
+	stateFile := filepath.Join(tmpDir, "deploy-state.json")
+	require.NoError(t, SaveState(stateFile, &DeployState{DeployedFiles: result.ManagedFiles}))
+	persisted := LoadState(stateFile)
+	assert.Equal(t, result.ManagedFiles, persisted.DeployedFiles)
+	assert.NotContains(t, persisted.DeployedFiles, "service/cache")
+	assert.NotContains(t, persisted.DeployedFiles, "service/cache/nested")
+	assert.NotContains(t, persisted.DeployedFiles, "compose/fragments")
+	matched := EvaluatePostSyncHooks(result.WrittenFiles, []PostSyncHook{
+		{Paths: []string{"appdata/service/cache/**"}, Action: "restart", Container: "service"},
+		{Paths: []string{"compose/fragments"}, Action: "restart", Container: "compose"},
+		{Paths: []string{"appdata/unrelated/**"}, Action: "restart", Container: "unrelated"},
+	})
+	assert.Equal(t, []PostSyncHook{
+		{Paths: []string{"appdata/service/cache/**"}, Action: "restart", Container: "service"},
+		{Paths: []string{"compose/fragments"}, Action: "restart", Container: "compose"},
+	}, matched)
+
+	second, secondErr := newReconciler().deployLocal(context.Background(), result.ManagedFiles)
+	require.NoError(t, secondErr)
+	assert.Empty(t, second.WrittenFiles, "pre-existing directories and unchanged files are a no-op")
+	assert.Empty(t, second.DeletedFiles)
+}
+
 // TestDeployLocal_ManagedSetPrune is the #331 regression: a config-only source
 // deployed over a target dir holding container runtime data must NEVER delete
 // the runtime data, while a config file that was previously deployed and is now
@@ -3629,6 +3770,32 @@ func TestDeployLocal_TopLevelTypeTransitions(t *testing.T) {
 		assert.FileExists(t, filepath.Join(appdataDir, "config", "app.yml"))
 		assert.Contains(t, result.ManagedFiles, "config/app.yml")
 		assert.Contains(t, result.DeletedFiles, filepath.Join("appdata", "config"))
+	})
+
+	t.Run("file to directory exposes target and empty descendants to hooks", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		stagingDir := filepath.Join(tmpDir, "staging")
+		appdataDir := filepath.Join(tmpDir, "appdata")
+		source := filepath.Join(stagingDir, "unraid", "appdata", "config")
+		require.NoError(t, os.MkdirAll(filepath.Join(source, "empty", "nested"), 0755))
+		require.NoError(t, os.MkdirAll(appdataDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(appdataDir, "config"), []byte("old"), 0644))
+
+		result, err := newReconciler(t, stagingDir, appdataDir).deployLocal(context.Background(), []string{"config"})
+
+		require.NoError(t, err)
+		assert.DirExists(t, filepath.Join(appdataDir, "config"))
+		assert.Contains(t, result.WrittenFiles, filepath.Join("appdata", "config"))
+		assert.Contains(t, result.WrittenFiles, filepath.Join("appdata", "config", "empty"))
+		assert.Contains(t, result.WrittenFiles, filepath.Join("appdata", "config", "empty", "nested"))
+		assert.Contains(t, result.DeletedFiles, filepath.Join("appdata", "config"))
+		hooks := []PostSyncHook{{Container: "service", Paths: []string{"appdata/config/**"}}}
+		assert.Equal(t, hooks, EvaluatePostSyncHooks(result.WrittenFiles, hooks))
+
+		second, secondErr := newReconciler(t, stagingDir, appdataDir).deployLocal(context.Background(), result.ManagedFiles)
+		require.NoError(t, secondErr)
+		assert.NotContains(t, second.WrittenFiles, filepath.Join("appdata", "config"))
+		assert.Empty(t, EvaluatePostSyncHooks(second.WrittenFiles, hooks), "the pre-existing directory must not retrigger its hook")
 	})
 
 	t.Run("directory to file receives prior descendant manifest", func(t *testing.T) {

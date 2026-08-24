@@ -48,11 +48,12 @@ Every reconciliation follows this 16-stage sequence:
     interrupted deploy never leaves an empty target; the next deploy
     self-heals a missing target from the newest retained copy
         |
- 9. Verify deploy-sync invariants — every WrittenFiles entry must exist
-    with fresh mtime; empty WrittenFiles against a non-empty source fails
-    when any source file is missing OR byte-differs at the destination (a
-    no-op sync whose destination already content-matches passes; symlinks
-    are skipped). Skipped if BOSUN_SKIP_DEPLOY_INVARIANT=true.
+ 9. Verify deploy-sync invariants — every created directory or written file
+    in WrittenFiles must exist with its expected type and a fresh mtime. When
+    no regular file was written, the invariant fails if any regular source
+    file is missing OR byte-differs at the destination (a no-op sync whose
+    destination already content-matches passes; symlinks are skipped). Skipped if
+    BOSUN_SKIP_DEPLOY_INVARIANT=true.
         |
 10. Run docker compose up (per-file isolated, with rollback)
         |
@@ -124,7 +125,7 @@ requested secrets-file path remains in the surrounding error context.
 Bosun enforces two invariant gates that turn the GH#214 silent-success failure mode into a loud error:
 
 - **Declared-state invariant (stage 6)** — if `ExtractDeclaredState` returns `ErrComposeDirMissing` the reconcile fails unconditionally (no override). When the infra dir has no `compose/` but a sibling directory does, the error names the candidate and suggests the `BOSUN_INFRA_DIR` value to set (e.g. `did you mean BOSUN_INFRA_DIR=unraid?`) — the GH#214 misconfiguration. If it returns `ErrNoDeclaredServices` the reconcile fails unless `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true` is set; the override logs at `Warn` level with `override=true`.
-- **Post-deploy invariant (stage 9)** — for every file in `DeployResult.WrittenFiles`, the destination must exist at `mtime >= reconcileStartTime`. When a deploy target records zero writes against a non-empty source, the gate inspects the destination directly: every regular source file must be present **and byte-identical** at the destination (SHA-256, the same comparison `CopyFileIfChanged` uses to decide a write is skippable; symlinks are skipped to match the copy path). If every file is content-equal it is a legitimate no-op sync and passes; if any file is missing **or holds stale bytes** it is the GH#214 silent-sync failure and fails the reconcile before `docker compose up` runs, naming the first mismatching destination path. (The earlier behavior — treating *any* zero-write target as a failure — caused the GH#330 outage, where one byte-identical config aborted the entire deploy. A subsequent existence-only check fixed that but let a stale file occupying the right path pass; content-equality closes that gap.)
+- **Post-deploy invariant (stage 9)** — for every path in `DeployResult.WrittenFiles`, the destination must exist with the same directory-or-regular-file type as the source and an `mtime >= reconcileStartTime`; a symlink does not satisfy either type. Content-hash sync records changed regular files and newly created descendant directories, including empty directories; it omits pre-existing directories so no-op reconciles do not trigger hooks. When a deploy target records no regular-file writes against a source containing regular files, the gate inspects the destination directly even if directories were created: every regular source file must be present **and byte-identical** at the destination (SHA-256, the same comparison `CopyFileIfChanged` uses to decide a write is skippable; symlinks are skipped to match the copy path). If every file is content-equal it is a legitimate no-op sync and passes; if any file is missing **or holds stale bytes** it is the GH#214 silent-sync failure and fails the reconcile before `docker compose up` runs, naming the first mismatching destination path. (The earlier behavior — treating *any* zero-write target as a failure — caused the GH#330 outage, where one byte-identical config aborted the entire deploy. A subsequent existence-only check fixed that but let a stale file occupying the right path pass; content-equality closes that gap.)
 
 Operators can bypass the post-deploy invariant for diagnostic deploys via `BOSUN_SKIP_DEPLOY_INVARIANT=true`. The skip is logged at `Warn` level with `override=true` so it shows up in monitoring; the declared-state invariant is not affected by this flag.
 
@@ -230,15 +231,17 @@ critical_containers:
 
 ### Post-Sync Hooks
 
-After `docker compose up`, bosun determines which files changed and matches them against configured hook patterns. When content-hash sync is enabled (default), hooks use the list of files actually written to disk — an empty result is authoritative no-change. When content-hash sync is disabled, local hooks fall back to git diff because standard-copy mode does not populate per-file writes. Remote deploys have no file-level tracking and fire every configured hook. This solves services like Traefik that don't detect config file changes on certain filesystems (e.g., Unraid's FUSE mount).
+After `docker compose up`, bosun determines which deploy paths changed and matches them against configured hook patterns. When content-hash sync is enabled (default), hooks use the list of descendant directories actually created plus files actually written or deleted — an empty result is authoritative no-change. Ordinary deploy-target creation and pre-existing directories are excluded; a target path that changes from a managed file to a directory is included because the type transition is an observable change. Standard-copy local deploys use non-empty written or deleted path evidence directly and fall back to normalized git diff only when both lists are empty. Remote deploys ignore both path lists and fire every configured hook. This solves services like Traefik that don't detect config changes on certain filesystems (e.g., Unraid's FUSE mount).
 
 Written/deleted paths and fallback git-diff paths use one canonical staging-relative namespace (for example, `appdata/traefik/**`). The fallback strips `BOSUN_INFRA_DIR` from repo-relative paths and diffs from `DeployState.LastDeployedCommit`, so a failed attempt never advances the hook diff base or loses changes from the next successful retry.
 
-If files changed but none match any configured hook pattern, bosun warns with
+`DeployState.DeployedFiles` remains a regular-file-only ownership manifest. Bosun does not persist ownership of empty directories, so converting a previously managed empty directory into a file requires a separate ownership and rollback contract and remains outside this change.
+
+If deploy paths changed but none match any configured hook pattern, bosun warns with
 distinct/duplicate/empty pattern counts, at most five pattern samples, the
-evaluated-file count, an explicit zero matched-file count, and at most five
+evaluated-path count, an explicit zero matched-path count, and at most five
 staging-relative path samples. Absolute or traversal paths are redacted. A
-deploy with no changed files is logged separately at info level and is not
+deploy with no changed paths is logged separately at info level and is not
 treated as a likely pattern mistake. Hook diagnostics never include file
 contents or hook command arguments.
 

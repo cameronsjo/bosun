@@ -32,7 +32,7 @@ The first two gates land in PR #227:
 | Stage | Gate | Sentinel(s) | Override env var |
 |-------|------|-------------|------------------|
 | 6 (post-render) | Declared-state must be non-zero | `ErrComposeDirMissing` (fatal) / `ErrNoDeclaredServices` (overridable) | `BOSUN_ALLOW_EMPTY_DECLARED_STATE` |
-| 9 (post-sync) | Per-target written files exist with fresh mtime | `ErrDeployInvariantEmptyWrite` / `ErrDeployInvariantStaleMtime` / `ErrDeployInvariantMissingFile` | `BOSUN_SKIP_DEPLOY_INVARIANT` |
+| 9 (post-sync) | Per-target created/written paths exist with the expected type and fresh mtime; no-file-write targets content-match their source | `ErrDeployInvariantEmptyWrite` / `ErrDeployInvariantStaleMtime` / `ErrDeployInvariantMissingFile` / `ErrDeployInvariantWrongType` | `BOSUN_SKIP_DEPLOY_INVARIANT` |
 
 Future gates SHOULD follow this template:
 
@@ -45,9 +45,24 @@ Future gates SHOULD follow this template:
 
 The `ErrDeployInvariantEmptyWrite` gate originally treated **any** zero-write deploy target with a non-empty source as a failure, on the assumption that "source has files but nothing was written" is the silent-sync signature. This was too aggressive: with content-hash sync, a target legitimately records zero writes when the destination already byte-matches the source. [GH#330](https://github.com/cameronsjo/bosun/issues/330) is the resulting outage — a single byte-identical config (`dnscrypt-proxy.toml`) tripped the gate and aborted the entire reconcile before `docker compose up`, taking down 62 containers.
 
-The gate now **inspects the destination** instead of inferring from the write count: on zero writes against a non-empty source it verifies each source file exists at the destination. All present → legitimate no-op, pass. Any missing → genuine silent-sync failure, fire `ErrDeployInvariantEmptyWrite` (the error now carries a `missing=…` field naming the first absent file). This preserves the gate's protective value — it still catches "files should be on disk but aren't" — while removing the false positive. The reframing also strengthens the gate: it asserts the post-condition (files present at destination) directly rather than via the `WrittenFiles` proxy.
+The gate now **inspects the destination** instead of inferring from the write count: on zero writes against a non-empty source it verifies each regular source file exists and is byte-identical at the destination. All equal → legitimate no-op, pass. Any missing or different → genuine silent-sync failure, fire `ErrDeployInvariantEmptyWrite` with the first mismatching path. This preserves the gate's protective value — it still catches "files should be on disk but aren't current" — while removing the false positive. The reframing also strengthens the gate: it asserts the post-condition directly rather than via the `WrittenFiles` proxy.
 
 This is consistent with the original "fail loud, but only on genuine absence of work" intent; the bug was conflating "no write this run" with "no file on disk."
+
+### Amendment — GH#358 (directory-aware change tracking)
+
+`WrittenFiles` now also records descendant directories that content-hash sync
+actually creates, including empty directories. The deploy target root and
+pre-existing directories remain excluded so plumbing and no-op reconciles do
+not trigger hooks. Managed file-to-directory transitions record the transitioned
+path and all created descendants as well.
+
+The invariant classifies those entries instead of treating any non-empty slice
+as proof that a regular file was written. Every recorded directory must exist as
+a real directory with a fresh mtime. When the slice is empty or contains only
+directories, the GH#330 content comparison still runs for every regular source
+file. This prevents creation of an empty directory from masking a missing or
+stale config file.
 
 ## Consequences
 
@@ -61,9 +76,9 @@ This is consistent with the original "fail loud, but only on genuine absence of 
 
 ### Cons
 
-- **Each gate adds latency** to the hot path. Mitigated by keeping gates O(written files) rather than O(staging tree); `dirHasRegularFiles` uses `fs.SkipAll` for early exit.
+- **Each gate adds latency** to the hot path. Created/written path checks are O(changed paths); a deploy with no regular-file writes compares the regular source tree to distinguish a legitimate content-hash no-op from silent sync failure.
 - **Override env vars are a risk surface** (see [security.md → Operator Escape Hatches](../security.md)). Mitigated by `override=true` logging on every invocation so monitoring catches accidental persistence.
-- **The pattern doesn't catch "wrong work" failures** — only "absence of work." A gate that asserts "files were written" won't catch "files were written, but the content is wrong." Different failure modes need different gates or different layers (e.g., post-deploy health checks).
+- **The pattern does not prove all written file content** — the no-regular-file-write branch checks source/destination equality, while a run that recorded file writes checks their existence and mtime. Post-write hash verification and post-deploy health checks cover different failure modes.
 - **Adding a gate is a breaking change to the pipeline contract** — existing test fixtures that don't satisfy the new pre-conditions will fail. Mitigated by giving each gate an override env var.
 
 ## Alternatives Considered
@@ -79,6 +94,7 @@ This is consistent with the original "fail loud, but only on genuine absence of 
 ## References
 
 - [GH#214 — local deploy sync silent no-op](https://github.com/cameronsjo/bosun/issues/214)
+- [GH#358 — empty directory creation omitted from deploy change tracking](https://github.com/cameronsjo/bosun/issues/358)
 - [PR #227 — spec: add deploy-sync invariants and per-file write observability](https://github.com/cameronsjo/bosun/pull/227)
 - `openspec/changes/add-deploy-sync-invariants/specs/reconcile/spec.md` — formal spec deltas
 - `docs/troubleshooting.md` → "Deploy reports success but files unchanged" — operator-facing diagnosis

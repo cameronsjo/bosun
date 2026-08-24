@@ -19,9 +19,9 @@ import (
 // degradation for unrelated project-config read or parse errors.
 var ErrInvalidPostSyncHooks = errors.New("invalid post-sync hooks")
 
-// PostSyncHook defines a container action triggered when specific file paths change.
+// PostSyncHook defines a container action triggered when specific deploy paths change.
 type PostSyncHook struct {
-	// Paths are glob patterns matched against changed files (relative to repo root).
+	// Paths are glob patterns matched against changed deploy paths.
 	Paths []string `json:"paths" yaml:"paths"`
 	// Action is the operation to perform: "restart" (default) or "exec".
 	Action string `json:"action" yaml:"action"`
@@ -62,12 +62,12 @@ func hookKey(h PostSyncHook) string {
 	return key
 }
 
-// EvaluatePostSyncHooks matches changed file paths against hook glob patterns
+// EvaluatePostSyncHooks matches changed deploy paths against hook glob patterns
 // and returns the hooks that should be executed.
 // Deduplication keys on container+action, so a container can have both a restart
 // and an exec hook fire from the same change set.
-func EvaluatePostSyncHooks(changedFiles []string, hooks []PostSyncHook) []PostSyncHook {
-	if len(hooks) == 0 || len(changedFiles) == 0 {
+func EvaluatePostSyncHooks(changedPaths []string, hooks []PostSyncHook) []PostSyncHook {
+	if len(hooks) == 0 || len(changedPaths) == 0 {
 		return nil
 	}
 
@@ -79,7 +79,7 @@ func EvaluatePostSyncHooks(changedFiles []string, hooks []PostSyncHook) []PostSy
 		if seen[key] {
 			continue
 		}
-		if hookMatchesAny(hook, changedFiles) {
+		if hookMatchesAny(hook, changedPaths) {
 			matched = append(matched, hook)
 			seen[key] = true
 		}
@@ -105,11 +105,11 @@ func dedupeHooksByContainer(hooks []PostSyncHook) []PostSyncHook {
 	return result
 }
 
-// hookMatchesAny returns true if any changed file matches any of the hook's path patterns.
-func hookMatchesAny(hook PostSyncHook, changedFiles []string) bool {
+// hookMatchesAny returns true if any changed path matches a hook path pattern.
+func hookMatchesAny(hook PostSyncHook, changedPaths []string) bool {
 	for _, pattern := range hook.Paths {
-		for _, file := range changedFiles {
-			if matchGlob(pattern, file) {
+		for _, path := range changedPaths {
+			if matchGlob(pattern, path) {
 				return true
 			}
 		}
@@ -117,13 +117,13 @@ func hookMatchesAny(hook PostSyncHook, changedFiles []string) bool {
 	return false
 }
 
-// matchGlob checks if a file path matches a glob pattern.
+// matchGlob checks if a deploy path matches a glob pattern.
 // Delegates to doublestar, which gives "**" its full recursive-directory
 // meaning anywhere in the pattern (prefix, middle, or trailing), rather than
 // only recognizing it as a trailing wildcard and discarding any suffix that
 // follows (e.g. "**/foo.yml" or "appdata/**/dynamic.yml").
-func matchGlob(pattern, file string) bool {
-	matched, err := doublestar.Match(pattern, file)
+func matchGlob(pattern, path string) bool {
+	matched, err := doublestar.Match(pattern, path)
 	if err != nil {
 		return false
 	}
@@ -217,7 +217,7 @@ func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []Po
 				Str("container", hook.Container).
 				Strs("patterns", hook.Paths).
 				Msg("Executing post-sync hook: restarting container")
-			ui.Info("  Restarting %s (config files changed)...", hook.Container)
+			ui.Info("  Restarting %s (deploy paths changed)...", hook.Container)
 
 			if err := client.RestartContainer(ctx, hook.Container); err != nil {
 				logger.Error().
@@ -235,7 +235,7 @@ func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []Po
 				Int("command_args", len(hook.Command)).
 				Strs("patterns", hook.Paths).
 				Msg("Executing post-sync hook: exec in container")
-			ui.Info("  Executing command in %s (config files changed)...", hook.Container)
+			ui.Info("  Executing command in %s (deploy paths changed)...", hook.Container)
 
 			if err := client.ExecContainer(ctx, hook.Container, hook.Command); err != nil {
 				logger.Error().

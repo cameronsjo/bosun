@@ -55,16 +55,19 @@ func (d *DeployOps) composeUpTimeout() time.Duration {
 	return DefaultComposeUpTimeout
 }
 
-// DeployResult tracks which files were actually written or deleted during
-// deployment. Used to inform post-sync hooks about actual on-disk changes.
+// DeployResult tracks which filesystem paths were actually created, written,
+// or deleted during deployment. Used to inform post-sync hooks about actual
+// on-disk changes.
 type DeployResult struct {
-	// WrittenFiles contains relative paths of files that were written to disk.
+	// WrittenFiles contains relative paths of regular files written to disk and
+	// descendant directories created by content-hash sync. Pre-existing
+	// directories are omitted so no-op reconciles do not trigger hooks.
 	WrittenFiles []string
 
 	// DeletedFiles contains relative paths of files removed from disk by
 	// removeStaleFiles's --delete-style pruning. Tracked separately from
-	// WrittenFiles because a deletion is not a write; callers that need "every
-	// file touched this deploy" (e.g. post-sync hook matching) combine both
+	// WrittenFiles because a deletion is not a write; callers that need every
+	// changed deploy path (e.g. post-sync hook matching) combine both
 	// lists explicitly.
 	DeletedFiles []string
 
@@ -75,9 +78,9 @@ type DeployResult struct {
 	ManagedFiles []string
 }
 
-// AddWritten appends file paths to the result's written files list.
-func (r *DeployResult) AddWritten(files ...string) {
-	r.WrittenFiles = append(r.WrittenFiles, files...)
+// AddWritten appends created or written paths to the result's write list.
+func (r *DeployResult) AddWritten(paths ...string) {
+	r.WrittenFiles = append(r.WrittenFiles, paths...)
 }
 
 // AddDeleted appends file paths to the result's deleted files list.
@@ -90,11 +93,11 @@ func (r *DeployResult) AddManaged(files ...string) {
 	r.ManagedFiles = append(r.ManagedFiles, files...)
 }
 
-// PrefixLatest prepends prefix to all WrittenFiles entries added after
-// the snapshot index. Call with len(r.WrittenFiles) before a DeployLocal
-// call, then PrefixLatest after, to give the new entries context needed
-// for hook glob matching. It panics when snapshot is outside the valid
-// slice boundary [0, len(r.WrittenFiles)] because that is a caller bug.
+// PrefixLatest prepends prefix to all WrittenFiles entries added after the
+// snapshot index. Call with len(r.WrittenFiles) before a DeployLocal call, then
+// PrefixLatest after, to give new file and directory entries the context needed
+// for hook glob matching. It panics when snapshot is outside the valid slice
+// boundary [0, len(r.WrittenFiles)] because that is a caller bug.
 func (r *DeployResult) PrefixLatest(snapshot int, prefix string) {
 	if snapshot < 0 || snapshot > len(r.WrittenFiles) {
 		panic(fmt.Sprintf("DeployResult.PrefixLatest snapshot %d out of range [0,%d]", snapshot, len(r.WrittenFiles)))
@@ -247,7 +250,7 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 
 		logger.Info().
 			Str("target", targetDir).
-			Int("files_written", len(written)+len(transitions.WrittenFiles())).
+			Int("paths_written", len(written)+len(transitions.WrittenFiles())).
 			Int64(log.FieldDurationMS, log.DurationMS(start)).
 			Msg("Successfully deployed files locally (content-hash sync)")
 		return nil
@@ -685,14 +688,17 @@ func (t *managedTypeTransition) stage() (stageErr error) {
 		if err != nil {
 			return fmt.Errorf("stat private replacement directory for %s: %w", t.relPath, err)
 		}
-		if err := fileutil.CopyDir(t.sourcePath, replacement); err != nil {
+		written, err := fileutil.CopyDirIfChanged(t.sourcePath, replacement)
+		if err != nil {
 			return fmt.Errorf("copy private replacement directory for %s: %w", t.relPath, err)
 		}
-		managed, err := listManagedFiles(t.sourcePath)
-		if err != nil {
-			return err
-		}
-		for _, path := range managed {
+		// The replacement root is a meaningful change because it replaces a
+		// managed file. For a top-level transition, managedTargetRoot is later
+		// translated by PrefixLatest into the staging-relative target path. This
+		// is distinct from ordinary deploy-root creation, which remains plumbing
+		// and is excluded by CopyDirIfChanged.
+		t.written = append(t.written, t.relPath)
+		for _, path := range written {
 			if t.relPath == managedTargetRoot {
 				t.written = append(t.written, path)
 			} else {

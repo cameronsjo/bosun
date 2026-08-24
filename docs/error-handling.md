@@ -79,9 +79,10 @@ file is not SOPS-encrypted: secrets.yml does not contain 'sops' metadata key. En
 ```go
 var ErrComposeDirMissing            = errors.New("staging compose directory does not exist")
 var ErrNoDeclaredServices           = errors.New("no declared services in staging compose directory")
-var ErrDeployInvariantEmptyWrite    = errors.New("deploy invariant: source has files but no writes recorded")
-var ErrDeployInvariantStaleMtime    = errors.New("deploy invariant: destination file has stale mtime")
-var ErrDeployInvariantMissingFile   = errors.New("deploy invariant: destination file missing")
+var ErrDeployInvariantEmptyWrite    = errors.New("deploy invariant: destination regular file missing or content-different without a recorded regular-file write")
+var ErrDeployInvariantStaleMtime    = errors.New("deploy invariant: destination path has stale mtime")
+var ErrDeployInvariantMissingFile   = errors.New("deploy invariant: destination path missing")
+var ErrDeployInvariantWrongType     = errors.New("deploy invariant: destination path has wrong type")
 ```
 
 **Purpose**: Surface the silent-success failure mode where reconcile reports success but no files actually land on disk. `ErrComposeDirMissing` is always fatal (misconfigured staging path); `ErrNoDeclaredServices` is overridable via `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true` for genuinely empty repos. The `ErrDeployInvariant*` set is overridable via `BOSUN_SKIP_DEPLOY_INVARIANT=true` for diagnostic deploys (logged at `Warn` with `override=true`).
@@ -90,7 +91,7 @@ When `ErrComposeDirMissing` fires, the reconciler scans the infra dir's sibling 
 
 **When Returned**:
 - `ErrComposeDirMissing` / `ErrNoDeclaredServices` — from `ExtractDeclaredState` between stages 5 and 7 of the pipeline.
-- `ErrDeployInvariant*` — from the post-deploy invariant gate at stage 9, before `docker compose up` runs.
+- `ErrDeployInvariant*` — from the post-deploy invariant gate at stage 9, before `docker compose up` runs. Created directories and written files must exist with fresh mtimes; a recorded directory must remain a real directory rather than a symlink or another file type. When no regular file was written, every regular source file must already be present and byte-identical at the destination even if the change set contains newly created directories.
 
 See `docs/troubleshooting.md` for operator-facing remediation steps and `docs/gitops.md` for the full pipeline diagram showing where these gates fire.
 

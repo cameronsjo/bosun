@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -240,10 +241,10 @@ type Config struct {
 	// fatal regardless of this setting.
 	AllowEmptyDeclaredState bool
 
-	// SkipDeployInvariant disables the post-deploy mtime + WrittenFiles
-	// invariant check that runs between deploy sync and compose-up. Use for
+	// SkipDeployInvariant disables the post-deploy created/written path
+	// existence, type, fresh-mtime, and no-file-write content checks. Use for
 	// diagnostic or development scenarios only — silent-success deploys are
-	// the failure mode this guards against. Set via
+	// the failure mode these checks guard against. Set via
 	// BOSUN_SKIP_DEPLOY_INVARIANT=true. Default false.
 	SkipDeployInvariant bool
 }
@@ -848,7 +849,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	// Capture previous commit before updating state (needed for post-sync hooks).
 	previousCommit := state.LastDeployedCommit
 
-	// Execute post-sync hooks if any files changed and hooks are configured.
+	// Execute post-sync hooks if any deploy paths changed and hooks are configured.
 	// Hooks run BEFORE health verification (so it observes the post-hook
 	// container state) and before success is recorded (so a local verify failure
 	// retries them on the next reconcile).
@@ -1129,9 +1130,11 @@ func (r *Reconciler) runPostSyncHooksWithSpan(ctx context.Context, previousCommi
 	}
 }
 
-// executePostSyncHooks detects changed files and restarts matching containers via configured hooks.
-// When deployResult is non-nil and has written files, those are used for matching instead of git diff.
-// This ensures hooks only fire for files actually written to disk (content-hash sync).
+// executePostSyncHooks detects changed deploy paths and restarts matching
+// containers via configured hooks. Content-hash local results are authoritative
+// even when empty; standard-copy local results are direct evidence when either
+// path slice is non-empty and otherwise fall back to normalized git diff. Remote
+// deploys make every hook eligible regardless of either result slice.
 func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, currentCommit string, deployResult *DeployResult, local bool) (int, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 	if err := ValidatePostSyncHooks(r.config.PostSyncHooks.Value); err != nil {
@@ -1147,33 +1150,34 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 		return 0, nil
 	}
 
-	// Prefer written-files from content-hash sync over git diff.
-	var changedFiles []string
+	// Prefer created, written, and deleted deploy paths from content-hash sync
+	// over git diff.
+	var changedPaths []string
 	diffFailed := false
 	remoteMode := !local
 	changeSource := "git_diff"
 	if remoteMode {
 		// Remote deploys return a DeployResult with a ManagedFiles manifest but
-		// no WrittenFiles (no per-file change tracking over SSH). Fire all hooks
+		// no WrittenFiles (no per-path change tracking over SSH). Fire all hooks
 		// unconditionally — a false-positive restart is better than stale configs
 		// on a FUSE mount. See GitHub #197.
 		changeSource = "remote_untracked"
-		logger.Info().Msg("Remote deploy: firing all post-sync hooks (no file-level tracking available)")
+		logger.Info().Msg("Remote deploy: firing all post-sync hooks (no path-level tracking available)")
 	} else if deployResult != nil && (r.config.ContentHashSync || len(deployResult.WrittenFiles) > 0 || len(deployResult.DeletedFiles) > 0) {
 		// Combine writes and deletions: a commit that both writes an unrelated
 		// file and deletes a hook-matched one must still fire that hook (#234).
 		// With content-hash sync enabled, an empty result is authoritative: the
 		// deploy compared every managed file and wrote or deleted nothing. Standard
-		// copy mode does not populate per-file writes, so its empty result still
+		// copy mode does not populate per-path changes, so its empty result still
 		// falls back to git diff.
 		changeSource = "deploy_result"
-		changedFiles = make([]string, 0, len(deployResult.WrittenFiles)+len(deployResult.DeletedFiles))
-		changedFiles = append(changedFiles, deployResult.WrittenFiles...)
-		changedFiles = append(changedFiles, deployResult.DeletedFiles...)
-		logger.Debug().Int("files", len(changedFiles)).Msg("Using written+deleted files list for post-sync hooks")
+		changedPaths = make([]string, 0, len(deployResult.WrittenFiles)+len(deployResult.DeletedFiles))
+		changedPaths = append(changedPaths, deployResult.WrittenFiles...)
+		changedPaths = append(changedPaths, deployResult.DeletedFiles...)
+		logger.Debug().Int("paths", len(changedPaths)).Msg("Using created+written+deleted deploy path list for post-sync hooks")
 	} else {
 		var err error
-		changedFiles, err = r.git.DiffFiles(ctx, previousCommit, currentCommit)
+		changedPaths, err = r.git.DiffFiles(ctx, previousCommit, currentCommit)
 		if err != nil {
 			// DiffFiles fails on shallow clones where the previous commit is no longer
 			// reachable. Rather than silently skipping hooks, fall back to evaluating
@@ -1187,20 +1191,20 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 			diffFailed = true
 			changeSource = "git_diff_unavailable"
 		} else {
-			repoFileCount := len(changedFiles)
-			changedFiles = normalizeHookDiffPaths(changedFiles, r.config.InfraSubDir)
+			repoFileCount := len(changedPaths)
+			changedPaths = normalizeHookDiffPaths(changedPaths, r.config.InfraSubDir)
 			logger.Debug().
 				Int("repo_files", repoFileCount).
-				Int("deploy_files", len(changedFiles)).
+				Int("deploy_paths", len(changedPaths)).
 				Msg("Normalized git diff paths for post-sync hooks")
 		}
 	}
 
-	if len(changedFiles) == 0 && !diffFailed && !remoteMode {
+	if len(changedPaths) == 0 && !diffFailed && !remoteMode {
 		logger.Info().
 			Int("hooks_configured", len(r.config.PostSyncHooks.Value)).
 			Str("change_source", changeSource).
-			Msg("No files changed; post-sync hooks have nothing to evaluate")
+			Msg("No deploy paths changed; post-sync hooks have nothing to evaluate")
 		return 0, nil
 	}
 
@@ -1213,11 +1217,11 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 			logger.Info().Int("hooks", len(matched)).Msg("Diff unavailable, firing all configured hooks")
 		}
 	} else {
-		matched = EvaluatePostSyncHooks(changedFiles, r.config.PostSyncHooks.Value)
+		matched = EvaluatePostSyncHooks(changedPaths, r.config.PostSyncHooks.Value)
 	}
 	if len(matched) == 0 {
 		patterns := summarizePostSyncHookPatterns(r.config.PostSyncHooks.Value, postSyncHookPatternSampleLimit)
-		sampleFiles := sampleDistinctPaths(changedFiles, postSyncHookFileSampleLimit)
+		samplePaths := sampleDistinctPaths(changedPaths, postSyncHookPathSampleLimit)
 		logger.Warn().
 			Int("hooks_configured", len(r.config.PostSyncHooks.Value)).
 			Int("patterns_configured", patterns.distinct).
@@ -1226,12 +1230,12 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 			Int("empty_patterns", patterns.empty).
 			Int("hooks_without_paths", patterns.hooksWithoutPaths).
 			Strs("patterns", patterns.sample).
-			Int("changed_files", countDistinctStrings(changedFiles)).
-			Int("matched_files", 0).
-			Int("sampled_files", len(sampleFiles)).
-			Strs("sample_files", sampleFiles).
+			Int("changed_paths", countDistinctStrings(changedPaths)).
+			Int("matched_paths", 0).
+			Int("sampled_paths", len(samplePaths)).
+			Strs("sample_paths", samplePaths).
 			Str("change_source", changeSource).
-			Msg("Files changed but no post-sync hook patterns matched")
+			Msg("Deploy paths changed but no post-sync hook patterns matched")
 		return 0, nil
 	}
 
@@ -1265,7 +1269,7 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 // logs. Paths are already staging-relative at this point; only path metadata is
 // sampled, never file contents or hook command arguments.
 const (
-	postSyncHookFileSampleLimit    = 5
+	postSyncHookPathSampleLimit    = 5
 	postSyncHookPatternSampleLimit = 5
 	hookDiagnosticValueLimit       = 256
 )
@@ -2107,7 +2111,7 @@ var ErrAppdataInaccessible = errors.New("local appdata path is configured but in
 
 // doDeploy performs the actual deployment.
 // Returns a DeployResult with the deployed-files manifest for both modes. In
-// remote mode WrittenFiles stays empty (no file-level change tracking over SSH,
+// remote mode WrittenFiles stays empty (no path-level change tracking over SSH,
 // so hooks fire unconditionally), but ManagedFiles is populated from the local
 // staging walk so state.DeployedFiles is seeded either way (#334).
 func (r *Reconciler) doDeploy(ctx context.Context, secrets map[string]any, local bool, prevManaged []string) (*DeployResult, error) {
@@ -2187,9 +2191,9 @@ func (r *Reconciler) getTargetHost(secrets map[string]any) string {
 }
 
 // deployLocal performs local deployment via mounted paths.
-// Returns a DeployResult with files actually written to disk and the full
-// managed-file manifest for this deploy. prevManaged is the prior deploy's
-// manifest (appdata-relative), which scopes stale-file pruning.
+// Returns a DeployResult with paths actually created, written, or deleted on
+// disk and the full managed-file manifest for this deploy. prevManaged is the
+// prior deploy's manifest (appdata-relative), which scopes stale-file pruning.
 func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*DeployResult, error) {
 	ui.Info("Using local deployment mode")
 	if r.config.DryRun {
@@ -2221,15 +2225,25 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 	}
 
 	// Invariants run against writtenRel BEFORE PrefixLatest renames the paths.
-	verifyTarget := func(src, dst string, writtenRel []string) error {
+	captureSourceType := func(src string) (fs.FileMode, error) {
+		if !invariantsActive {
+			return 0, nil
+		}
+		info, err := os.Lstat(src)
+		if err != nil {
+			return 0, fmt.Errorf("stat deploy source before sync %q: %w", src, err)
+		}
+		return info.Mode().Type(), nil
+	}
+	verifyTarget := func(src, dst string, writtenRel []string, expectedSourceType fs.FileMode) error {
 		if !invariantsActive {
 			return nil
 		}
-		return verifyDeployTarget(src, dst, writtenRel, deployStart)
+		return verifyDeployTarget(src, dst, writtenRel, deployStart, expectedSourceType)
 	}
 
 	// Sync discovered targets (excluding compose, which has special handling).
-	// After each DeployLocal call, prefix the newly written file paths with
+	// After each DeployLocal call, prefix the newly created or written paths with
 	// the target's RelPath so hook globs (which use staging-relative paths
 	// like "appdata/authelia/**") can match correctly.
 	for _, t := range targets {
@@ -2238,6 +2252,10 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 		}
 		src := filepath.Join(stagingSubDir, t.RelPath)
 		dst := filepath.Join(appdata, t.TargetPath)
+		expectedSourceType, err := captureSourceType(src)
+		if err != nil {
+			return nil, err
+		}
 		ui.Info("  Syncing %s...", t.RelPath)
 		snapshot := len(result.WrittenFiles)
 		deletedSnapshot := len(result.DeletedFiles)
@@ -2248,7 +2266,7 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 				result.PrefixLatestDeleted(deletedSnapshot, t.RelPath)
 				return result, err
 			}
-			if err := verifyTarget(src, dst, result.WrittenFiles[snapshot:]); err != nil {
+			if err := verifyTarget(src, dst, result.WrittenFiles[snapshot:], expectedSourceType); err != nil {
 				return nil, err
 			}
 			result.PrefixLatest(snapshot, t.RelPath)
@@ -2270,7 +2288,7 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 			}
 			// DeployLocalFile records filepath.Base, so verify against dst's
 			// parent dir and prefix t.RelPath with its dir for hook matching.
-			if err := verifyTarget(src, filepath.Dir(dst), result.WrittenFiles[snapshot:]); err != nil {
+			if err := verifyTarget(src, filepath.Dir(dst), result.WrittenFiles[snapshot:], expectedSourceType); err != nil {
 				return nil, err
 			}
 			result.PrefixLatest(snapshot, filepath.Dir(t.RelPath))
@@ -2285,6 +2303,10 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 	composeStaging := filepath.Join(stagingSubDir, "compose")
 	composeTarget := filepath.Join(appdata, "compose")
 	if hasTarget(targets, "compose") {
+		expectedSourceType, err := captureSourceType(composeStaging)
+		if err != nil {
+			return nil, err
+		}
 		ui.Info("  Syncing compose files...")
 		if !r.config.DryRun {
 			if err := os.MkdirAll(composeTarget, 0755); err != nil {
@@ -2299,7 +2321,7 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 			result.PrefixLatestDeleted(deletedSnapshot, "compose")
 			return result, err
 		}
-		if err := verifyTarget(composeStaging, composeTarget, result.WrittenFiles[snapshot:]); err != nil {
+		if err := verifyTarget(composeStaging, composeTarget, result.WrittenFiles[snapshot:], expectedSourceType); err != nil {
 			return nil, err
 		}
 		result.PrefixLatest(snapshot, "compose")
