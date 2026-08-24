@@ -394,7 +394,16 @@ func copyDirIfChanged(src, dst string, copyFile func(src, dst string) (bool, err
 // A concurrent creator is treated as an existing directory, while a file or
 // another non-directory entry still surfaces os.Mkdir's collision error.
 func mkdirIfMissing(path string, mode fs.FileMode) (bool, error) {
-	err := os.Mkdir(path, mode)
+	return mkdirIfMissingWithOps(path, mode, os.Mkdir, os.Stat)
+}
+
+func mkdirIfMissingWithOps(
+	path string,
+	mode fs.FileMode,
+	mkdir func(string, fs.FileMode) error,
+	stat func(string) (fs.FileInfo, error),
+) (bool, error) {
+	err := mkdir(path, mode)
 	if err == nil {
 		return true, nil
 	}
@@ -402,7 +411,7 @@ func mkdirIfMissing(path string, mode fs.FileMode) (bool, error) {
 		return false, err
 	}
 
-	info, statErr := os.Stat(path)
+	info, statErr := stat(path)
 	if statErr != nil {
 		return false, statErr
 	}
