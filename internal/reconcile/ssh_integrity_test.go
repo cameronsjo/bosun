@@ -2,11 +2,13 @@ package reconcile
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"errors"
+	"net"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -14,326 +16,446 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// setupSha256sumShim makes `sha256sum` resolvable for the SSH shim's local
-// execution. On Linux CI the real binary exists and this is a no-op; on macOS
-// (no sha256sum) it installs a shim delegating to `shasum -a 256`, which shares
-// the "<hex>  <path>" manifest format and the `-c -` stdin-checklist behavior.
 func setupSha256sumShim(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("sha256sum"); err == nil {
 		return
 	}
 	shasum, err := exec.LookPath("shasum")
-	require.NoError(t, err, "need sha256sum or shasum on PATH to verify transfer integrity")
+	require.NoError(t, err)
 	dir := t.TempDir()
 	shim := "#!/bin/sh\nexec " + shasum + " -a 256 \"$@\"\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "sha256sum"), []byte(shim), 0o755))
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-func TestBuildTransferChecksums(t *testing.T) {
-	t.Run("deterministic sorted manifest in sha256sum format", func(t *testing.T) {
-		root := t.TempDir()
-		writeMarker(t, root, "b.txt", "beta")
-		writeMarker(t, filepath.Join(root, "sub"), "a.txt", "alpha")
+func TestBuildTransferManifest(t *testing.T) {
+	root := t.TempDir()
+	writeMarker(t, root, "regular", "content")
+	require.NoError(t, os.Mkdir(filepath.Join(root, "empty-dir"), 0o755))
+	require.NoError(t, os.Symlink("regular\n", filepath.Join(root, "link\n")))
+	require.NoError(t, os.Link(filepath.Join(root, "regular"), filepath.Join(root, "hardlink")))
 
-		first, err := buildTransferChecksums(root)
-		require.NoError(t, err)
-		second, err := buildTransferChecksums(root)
-		require.NoError(t, err)
-		assert.Equal(t, first, second, "manifest must be deterministic")
-
-		lines := strings.Split(strings.TrimRight(first, "\n"), "\n")
-		require.Len(t, lines, 2)
-		assert.True(t, sortedAscending(lines), "manifest lines must be sorted for determinism")
-
-		// Each line is "<64 hex>  <relpath>" and the hash matches the content.
-		betaSum := sha256.Sum256([]byte("beta"))
-		assert.Contains(t, first, hex.EncodeToString(betaSum[:])+"  b.txt")
-		alphaSum := sha256.Sum256([]byte("alpha"))
-		assert.Contains(t, first, hex.EncodeToString(alphaSum[:])+"  sub/a.txt")
-		for _, ln := range lines {
-			parts := strings.SplitN(ln, "  ", 2)
-			require.Len(t, parts, 2, "line must be '<hex>  <path>': %q", ln)
-			assert.Len(t, parts[0], 64, "sha-256 hex is 64 chars")
-		}
-	})
-
-	t.Run("empty directory yields an empty manifest", func(t *testing.T) {
-		manifest, err := buildTransferChecksums(t.TempDir())
-		require.NoError(t, err)
-		assert.Equal(t, "", manifest)
-	})
-
-	t.Run("rejects a filename containing a newline", func(t *testing.T) {
-		root := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(root, "a\nb"), []byte("x"), 0o644))
-		_, err := buildTransferChecksums(root)
-		require.ErrorIs(t, err, ErrUnsafeChecksumPath)
-	})
-
-	t.Run("rejects a filename containing a backslash", func(t *testing.T) {
-		root := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(root, "a\\b"), []byte("x"), 0o644))
-		_, err := buildTransferChecksums(root)
-		require.ErrorIs(t, err, ErrUnsafeChecksumPath)
-	})
-
-	t.Run("skips symlinks and irregular entries", func(t *testing.T) {
-		root := t.TempDir()
-		writeMarker(t, root, "real.txt", "real")
-		require.NoError(t, os.Symlink(filepath.Join(root, "real.txt"), filepath.Join(root, "link.txt")))
-		manifest, err := buildTransferChecksums(root)
-		require.NoError(t, err)
-		assert.Contains(t, manifest, "real.txt")
-		assert.NotContains(t, manifest, "link.txt", "symlinks are not part of the deployed tar tree")
-	})
-}
-
-func sortedAscending(s []string) bool {
-	for i := 1; i < len(s); i++ {
-		if s[i-1] > s[i] {
-			return false
-		}
+	manifest, err := buildTransferManifest(context.Background(), root)
+	require.NoError(t, err)
+	require.Len(t, manifest, 4)
+	byPath := make(map[string]transferEntry, len(manifest))
+	for _, entry := range manifest {
+		byPath[entry.Path] = entry
 	}
-	return true
+	assert.Equal(t, byte('d'), byPath["empty-dir"].Kind)
+	assert.Equal(t, byte('l'), byPath["link\n"].Kind)
+	assert.Equal(t, "regular\n", byPath["link\n"].LinkTarget)
+	assert.Equal(t, byte('f'), byPath["regular"].Kind)
+	assert.NotEmpty(t, byPath["regular"].SHA256)
+	assert.True(t, byPath["hardlink"].HardlinkTo == "regular" || byPath["regular"].HardlinkTo == "hardlink")
 }
 
-func TestRemoteHasSha256sum(t *testing.T) {
-	t.Run("true when the remote has sha256sum", func(t *testing.T) {
-		setupSSHShim(t)
-		setupSha256sumShim(t)
-		d := &DeployOps{}
-		assert.True(t, d.remoteHasSha256sum(context.Background(), "user@testhost"))
+func TestBuildTransferManifest_FailsClosed(t *testing.T) {
+	t.Run("cancelled context stops the snapshot", func(t *testing.T) {
+		root := t.TempDir()
+		writeMarker(t, root, "regular", strings.Repeat("x", 1024))
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err := buildTransferManifest(ctx, root)
+
+		require.ErrorIs(t, err, context.Canceled)
 	})
 
-	t.Run("false for an option-injection host before any ssh exec", func(t *testing.T) {
-		// No ssh shim: if the probe validated late it would exec ssh with the
-		// poisoned option. validateHost must short-circuit to false first.
-		d := &DeployOps{}
-		assert.False(t, d.remoteHasSha256sum(context.Background(), "-oProxyCommand=touch /tmp/pwned"))
+	t.Run("fifo is unsupported", func(t *testing.T) {
+		mkfifo, err := exec.LookPath("mkfifo")
+		if err != nil {
+			t.Skip("mkfifo is unavailable")
+		}
+		root := t.TempDir()
+		require.NoError(t, exec.Command(mkfifo, filepath.Join(root, "named-pipe")).Run())
+
+		_, err = buildTransferManifest(context.Background(), root)
+
+		require.ErrorIs(t, err, ErrUnsupportedTransferEntry)
 	})
 
-	t.Run("false when command -v sha256sum fails on the remote", func(t *testing.T) {
-		// SSH shim that reports sha256sum absent, passing every other command through.
-		dir := t.TempDir()
-		shim := "#!/bin/sh\n" +
-			"while [ $# -gt 0 ]; do\n" +
-			"  case \"$1\" in\n" +
-			"    -o) shift 2 ;;\n" +
-			"    -*) shift ;;\n" +
-			"    *) break ;;\n" +
-			"  esac\n" +
-			"done\n" +
-			"shift\n" +
-			"case \"$*\" in\n" +
-			"  *sha256sum*) exit 1 ;;\n" +
-			"esac\n" +
-			"exec /bin/sh -c \"$*\"\n"
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte(shim), 0o755))
-		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Run("unix socket is unsupported", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Unix sockets are unavailable")
+		}
+		root, err := os.MkdirTemp("/tmp", "bs-sock-")
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, os.RemoveAll(root)) })
+		listener, err := net.Listen("unix", filepath.Join(root, "socket"))
+		if err != nil {
+			t.Skipf("Unix socket creation is unavailable: %v", err)
+		}
+		defer func() { require.NoError(t, listener.Close()) }()
 
-		d := &DeployOps{}
-		assert.False(t, d.remoteHasSha256sum(context.Background(), "user@testhost"))
+		_, err = buildTransferManifest(context.Background(), root)
+
+		require.ErrorIs(t, err, ErrUnsupportedTransferEntry)
 	})
 }
 
 func TestVerifyRemoteTransfer(t *testing.T) {
 	setupSSHShim(t)
-	setupSha256sumShim(t)
 	d := &DeployOps{}
 
-	t.Run("passes when the staged tree matches the manifest", func(t *testing.T) {
-		staged := t.TempDir()
-		writeMarker(t, staged, "a.txt", "content-a")
-		writeMarker(t, filepath.Join(staged, "sub"), "b.txt", "content-b")
-		manifest, err := buildTransferChecksums(staged)
-		require.NoError(t, err)
+	t.Run("accepts an empty valid tree", func(t *testing.T) {
+		require.NoError(t, d.verifyRemoteTransfer(context.Background(), "user@testhost", t.TempDir(), nil))
+	})
 
+	t.Run("handles control characters symlinks and hardlinks", func(t *testing.T) {
+		staged := t.TempDir()
+		writeMarker(t, staged, "line\nname\\file", "content")
+		require.NoError(t, os.Symlink("line\nname\\file", filepath.Join(staged, "sym\nlink")))
+		require.NoError(t, os.Link(filepath.Join(staged, "line\nname\\file"), filepath.Join(staged, "hard link")))
+		manifest, err := buildTransferManifest(context.Background(), staged)
+		require.NoError(t, err)
 		require.NoError(t, d.verifyRemoteTransfer(context.Background(), "user@testhost", staged, manifest))
 	})
 
-	t.Run("fails with ErrTransferIntegrity on a content mismatch", func(t *testing.T) {
+	t.Run("rejects a missing entry", func(t *testing.T) {
 		source := t.TempDir()
-		writeMarker(t, source, "a.txt", "the-real-content")
-		manifest, err := buildTransferChecksums(source)
+		writeMarker(t, source, "a", "a")
+		writeMarker(t, source, "b", "b")
+		manifest, err := buildTransferManifest(context.Background(), source)
 		require.NoError(t, err)
-
-		// Staged copy has the same path but DIFFERENT bytes (a misdirected transfer).
-		staged := t.TempDir()
-		writeMarker(t, staged, "a.txt", "corrupted")
-
-		err = d.verifyRemoteTransfer(context.Background(), "user@testhost", staged, manifest)
+		require.NoError(t, os.Remove(filepath.Join(source, "b")))
+		err = d.verifyRemoteTransfer(context.Background(), "user@testhost", source, manifest)
 		require.ErrorIs(t, err, ErrTransferIntegrity)
 	})
 
-	t.Run("fails with ErrTransferIntegrity when a file is missing", func(t *testing.T) {
-		source := t.TempDir()
-		writeMarker(t, source, "a.txt", "present")
-		writeMarker(t, source, "b.txt", "also-present")
-		manifest, err := buildTransferChecksums(source)
-		require.NoError(t, err)
-
-		// Staged copy is truncated: b.txt never landed.
+	t.Run("rejects an unexpected entry", func(t *testing.T) {
 		staged := t.TempDir()
-		writeMarker(t, staged, "a.txt", "present")
+		writeMarker(t, staged, "expected", "content")
+		manifest, err := buildTransferManifest(context.Background(), staged)
+		require.NoError(t, err)
+		writeMarker(t, staged, "unexpected", "content")
 
 		err = d.verifyRemoteTransfer(context.Background(), "user@testhost", staged, manifest)
+
+		require.ErrorIs(t, err, ErrTransferIntegrity)
+	})
+
+	t.Run("rejects a failed entry walk even when its partial count matches", func(t *testing.T) {
+		staged := t.TempDir()
+		require.NoError(t, os.Mkdir(filepath.Join(staged, "expected-empty-dir"), 0o755))
+		manifest, err := buildTransferManifest(context.Background(), staged)
+		require.NoError(t, err)
+
+		realFind, err := exec.LookPath("find")
+		require.NoError(t, err)
+		dir := t.TempDir()
+		shim := "#!/bin/sh\n" + realFind + " \"$@\"\nexit 7\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "find"), []byte(shim), 0o755))
+		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+		err = d.verifyRemoteTransfer(context.Background(), "user@testhost", staged, manifest)
+
+		require.ErrorIs(t, err, ErrTransferIntegrity)
+	})
+
+	t.Run("rejects content and type changes", func(t *testing.T) {
+		for _, mutate := range []struct {
+			name string
+			fn   func(t *testing.T, staged string)
+		}{
+			{name: "content", fn: func(t *testing.T, staged string) {
+				require.NoError(t, os.WriteFile(filepath.Join(staged, "entry"), []byte("changed"), 0o644))
+			}},
+			{name: "type", fn: func(t *testing.T, staged string) {
+				require.NoError(t, os.Remove(filepath.Join(staged, "entry")))
+				require.NoError(t, os.Mkdir(filepath.Join(staged, "entry"), 0o755))
+			}},
+		} {
+			t.Run(mutate.name, func(t *testing.T) {
+				staged := t.TempDir()
+				writeMarker(t, staged, "entry", "original")
+				manifest, err := buildTransferManifest(context.Background(), staged)
+				require.NoError(t, err)
+				mutate.fn(t, staged)
+
+				err = d.verifyRemoteTransfer(context.Background(), "user@testhost", staged, manifest)
+
+				require.ErrorIs(t, err, ErrTransferIntegrity)
+			})
+		}
+	})
+
+	t.Run("rejects a changed symlink target", func(t *testing.T) {
+		staged := t.TempDir()
+		require.NoError(t, os.Symlink("first", filepath.Join(staged, "link")))
+		manifest, err := buildTransferManifest(context.Background(), staged)
+		require.NoError(t, err)
+		require.NoError(t, os.Remove(filepath.Join(staged, "link")))
+		require.NoError(t, os.Symlink("second", filepath.Join(staged, "link")))
+
+		err = d.verifyRemoteTransfer(context.Background(), "user@testhost", staged, manifest)
+
+		require.ErrorIs(t, err, ErrTransferIntegrity)
+	})
+
+	t.Run("rejects broken and unexpected hardlinks", func(t *testing.T) {
+		t.Run("broken relationship", func(t *testing.T) {
+			staged := t.TempDir()
+			writeMarker(t, staged, "a", "same")
+			require.NoError(t, os.Link(filepath.Join(staged, "a"), filepath.Join(staged, "b")))
+			manifest, err := buildTransferManifest(context.Background(), staged)
+			require.NoError(t, err)
+			require.NoError(t, os.Remove(filepath.Join(staged, "b")))
+			require.NoError(t, os.WriteFile(filepath.Join(staged, "b"), []byte("same"), 0o644))
+
+			err = d.verifyRemoteTransfer(context.Background(), "user@testhost", staged, manifest)
+
+			require.ErrorIs(t, err, ErrTransferIntegrity)
+		})
+
+		t.Run("unexpected relationship", func(t *testing.T) {
+			staged := t.TempDir()
+			writeMarker(t, staged, "a", "same")
+			writeMarker(t, staged, "b", "same")
+			manifest, err := buildTransferManifest(context.Background(), staged)
+			require.NoError(t, err)
+			require.NoError(t, os.Remove(filepath.Join(staged, "b")))
+			require.NoError(t, os.Link(filepath.Join(staged, "a"), filepath.Join(staged, "b")))
+
+			err = d.verifyRemoteTransfer(context.Background(), "user@testhost", staged, manifest)
+
+			require.ErrorIs(t, err, ErrTransferIntegrity)
+		})
+	})
+}
+
+func TestCreateVerifiedTransferArchive_FailsClosed(t *testing.T) {
+	original := newLocalArchiveCommand
+	t.Cleanup(func() { newLocalArchiveCommand = original })
+	source := t.TempDir()
+	writeMarker(t, source, "expected", "content")
+
+	t.Run("exit-zero invalid archive fails extraction", func(t *testing.T) {
+		newLocalArchiveCommand = func(ctx context.Context, sourceDir, archivePath string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", `printf not-a-tar > "$1"`, "sh", archivePath)
+		}
+
+		_, _, _, cleanup, err := createVerifiedTransferArchive(context.Background(), source)
+		cleanup()
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "verify transfer archive extraction")
+	})
+
+	t.Run("command diagnostics are bounded and control-safe", func(t *testing.T) {
+		newLocalArchiveCommand = func(ctx context.Context, sourceDir, archivePath string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", `printf '%s\nline-two' "$1" >&2; exit 1`, "sh", strings.Repeat("x", commandDiagnosticMax+100))
+		}
+
+		_, _, _, cleanup, err := createVerifiedTransferArchive(context.Background(), source)
+		cleanup()
+
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), "\n")
+		assert.Contains(t, err.Error(), "…")
+	})
+
+	t.Run("source mutation during archive creation fails the snapshot comparison", func(t *testing.T) {
+		newLocalArchiveCommand = func(ctx context.Context, sourceDir, archivePath string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", `printf changed > "$1/expected"; exec tar -C "$1" -cf "$2" .`, "sh", sourceDir, archivePath)
+		}
+
+		_, _, _, cleanup, err := createVerifiedTransferArchive(context.Background(), source)
+		cleanup()
+
 		require.ErrorIs(t, err, ErrTransferIntegrity)
 	})
 }
 
-func TestDeployRemote_TarSpawnFailureCleansTmp(t *testing.T) {
-	// An ssh shim with a hardcoded internal PATH keeps remote commands working
-	// with coreutils, while the test process PATH omits `tar` — so the LOCAL
-	// tarCmd.Start() fails to spawn AFTER the remote tmpDir was created. That
-	// drives the tar-start failure branch and its cleanupTmp.
-	dir := t.TempDir()
-	shim := "#!/bin/sh\n" +
-		"export PATH=/usr/bin:/bin\n" +
-		"while [ $# -gt 0 ]; do\n" +
-		"  case \"$1\" in\n" +
-		"    -o) shift 2 ;;\n" +
-		"    -*) shift ;;\n" +
-		"    *) break ;;\n" +
-		"  esac\n" +
-		"done\n" +
-		"shift\n" +
-		"exec /bin/sh -c \"$*\"\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte(shim), 0o755))
-	t.Setenv("PATH", dir) // only the ssh shim — no `tar` resolvable locally
+func TestCreateVerifiedTransferArchive_UsesPrivateDiscoverableWorkspace(t *testing.T) {
+	source := t.TempDir()
+	writeMarker(t, source, "expected", "content")
+
+	archivePath, _, _, cleanup, err := createVerifiedTransferArchive(context.Background(), source)
+	require.NoError(t, err)
+	workspace := filepath.Dir(archivePath)
+	t.Cleanup(cleanup)
+
+	assert.True(t, strings.HasPrefix(filepath.Base(workspace), "bosun-deploy-"))
+	if runtime.GOOS != "windows" {
+		workspaceInfo, statErr := os.Stat(workspace)
+		require.NoError(t, statErr)
+		assert.Equal(t, os.FileMode(0o700), workspaceInfo.Mode().Perm())
+		archiveInfo, statErr := os.Stat(archivePath)
+		require.NoError(t, statErr)
+		assert.Equal(t, os.FileMode(0o600), archiveInfo.Mode().Perm())
+	}
+
+	cleanup()
+	assert.NoDirExists(t, workspace)
+}
+
+func TestBoundedCommandBuffer(t *testing.T) {
+	var buffer boundedCommandBuffer
+	payload := strings.Repeat("x", commandOutputByteMax+100)
+	n, err := buffer.Write([]byte(payload))
+	require.NoError(t, err)
+	assert.Equal(t, len(payload), n)
+	assert.Less(t, len(buffer.String()), len(payload))
+	assert.True(t, strings.HasSuffix(buffer.String(), "…"))
+}
+
+func TestDeployRemote_ExistingStageCollisionIsNeverReusedOrDeleted(t *testing.T) {
+	setupSSHShim(t)
+	original := newRemoteStageID
+	t.Cleanup(func() { newRemoteStageID = original })
+	newRemoteStageID = func() (string, error) { return "collision", nil }
 
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
 	parent := filepath.Join(base, "deploy")
 	target := filepath.Join(parent, "compose")
-	writeMarker(t, source, "core.yml", "v1")
-	writeMarker(t, target, "core.yml", "live")
+	stageRoot := path.Join(parent, ".deploy-tmp-collision")
+	writeMarker(t, source, "new", "new")
+	writeMarker(t, target, "live", "old")
+	writeMarker(t, stageRoot, "attacker-owned", "preserve")
 
-	d := &DeployOps{}
-	err := d.DeployRemote(context.Background(), source, "user@testhost", target, false)
+	err := (&DeployOps{}).DeployRemote(context.Background(), source, "user@testhost", target)
+
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "start tar")
-	assert.Equal(t, "live", readMarker(t, target, "core.yml"), "the live target must be untouched")
+	assert.ErrorContains(t, err, "create remote temp dir")
+	assert.Equal(t, "old", readMarker(t, target, "live"))
+	assert.Equal(t, "preserve", readMarker(t, stageRoot, "attacker-owned"), "a colliding namespace was not created by this deploy and must not be reused or cleaned")
+}
 
-	entries, rerr := os.ReadDir(parent)
-	require.NoError(t, rerr)
-	require.Len(t, entries, 1, "the remote staging tmpDir must be cleaned up after the spawn failure")
+func TestDeployRemote_StageIdentifierFailurePreservesTarget(t *testing.T) {
+	setupSSHShim(t)
+	original := newRemoteStageID
+	t.Cleanup(func() { newRemoteStageID = original })
+	stageErr := errors.New("entropy unavailable")
+	newRemoteStageID = func() (string, error) { return "", stageErr }
+
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	target := filepath.Join(base, "deploy", "compose")
+	writeMarker(t, source, "new", "new")
+	writeMarker(t, target, "live", "old")
+
+	err := (&DeployOps{}).DeployRemote(context.Background(), source, "user@testhost", target)
+
+	require.ErrorIs(t, err, stageErr)
+	assert.Equal(t, "old", readMarker(t, target, "live"))
+}
+
+func TestDeployRemote_ExitZeroIncompleteLocalArchiveCannotReplaceTarget(t *testing.T) {
+	setupSSHShim(t)
+	original := newLocalArchiveCommand
+	t.Cleanup(func() { newLocalArchiveCommand = original })
+	newLocalArchiveCommand = func(ctx context.Context, sourceDir, archivePath string) *exec.Cmd {
+		return exec.CommandContext(ctx, "tar", "-C", sourceDir, "-cf", archivePath, "kept")
+	}
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	target := filepath.Join(base, "deploy", "compose")
+	writeMarker(t, source, "kept", "one")
+	writeMarker(t, source, "omitted", "two")
+	writeMarker(t, target, "live", "old")
+
+	err := (&DeployOps{}).DeployRemote(context.Background(), source, "user@testhost", target)
+	require.ErrorIs(t, err, ErrTransferIntegrity)
+	assert.Equal(t, "old", readMarker(t, target, "live"))
+	assert.NoFileExists(t, filepath.Join(target, "kept"))
+}
+
+func TestDeployRemote_PartialExtractionCannotReplaceTarget(t *testing.T) {
+	setupSha256sumShim(t)
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	parent := filepath.Join(base, "deploy")
+	target := filepath.Join(parent, "compose")
+	writeMarker(t, source, "kept", "new-one")
+	writeMarker(t, source, "omitted", "new-two")
+	writeMarker(t, target, "live", "old")
+
+	dir := t.TempDir()
+	shim := "#!/bin/sh\n" +
+		"while [ $# -gt 0 ]; do case \"$1\" in -o) shift 2 ;; -*) shift ;; *) break ;; esac; done\n" +
+		"shift\n" +
+		"case \"$*\" in\n" +
+		"  *'cat > '*'.deploy-tmp-'*'/archive.tar'*) /bin/sh -c \"$*\"; tmp=$(echo \"$*\" | sed 's/.*tar -C \\([^ ]*\\) -xf.*/\\1/'); rm -f \"$tmp/omitted\"; exit 0 ;;\n" +
+		"  *) exec /bin/sh -c \"$*\" ;;\n" +
+		"esac\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte(shim), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := (&DeployOps{}).DeployRemote(context.Background(), source, "user@testhost", target)
+	require.ErrorIs(t, err, ErrTransferIntegrity)
+	assert.Equal(t, "old", readMarker(t, target, "live"))
+	assert.NoFileExists(t, filepath.Join(target, "kept"))
+	entries, readErr := os.ReadDir(parent)
+	require.NoError(t, readErr)
+	require.Len(t, entries, 1)
 	assert.Equal(t, "compose", entries[0].Name())
 }
 
-func TestDeployRemote_IntegrityVerification(t *testing.T) {
-	t.Run("verified transfer promotes the staged tree", func(t *testing.T) {
+func TestDeployRemote_ValidEmptyAndSpecialTreesPromote(t *testing.T) {
+	t.Run("empty source is a valid complete tree", func(t *testing.T) {
 		setupSSHShim(t)
-		setupSha256sumShim(t)
 		base := t.TempDir()
 		source := filepath.Join(base, "source")
 		target := filepath.Join(base, "deploy", "compose")
-		writeMarker(t, source, "core.yml", "services: {}")
-		writeMarker(t, filepath.Join(source, "nested"), "extra.yml", "more")
-
-		d := &DeployOps{}
-		require.NoError(t, d.DeployRemote(context.Background(), source, "user@testhost", target, true))
-		assert.Equal(t, "services: {}", readMarker(t, target, "core.yml"))
-		assert.Equal(t, "more", readMarker(t, filepath.Join(target, "nested"), "extra.yml"))
-	})
-
-	t.Run("empty source skips verification and still deploys", func(t *testing.T) {
-		setupSSHShim(t)
-		setupSha256sumShim(t)
-		base := t.TempDir()
-		source := filepath.Join(base, "source")
-		require.NoError(t, os.MkdirAll(source, 0o755)) // no regular files -> empty manifest
-		target := filepath.Join(base, "deploy", "compose")
-
-		d := &DeployOps{}
-		require.NoError(t, d.DeployRemote(context.Background(), source, "user@testhost", target, true))
-		assert.DirExists(t, target)
-	})
-
-	t.Run("corrupted transfer fails integrity, retries with a fresh tmpDir, and preserves the live target", func(t *testing.T) {
-		setupSha256sumShim(t)
-		base := t.TempDir()
-		source := filepath.Join(base, "source")
-		parent := filepath.Join(base, "deploy")
-		target := filepath.Join(parent, "compose")
-		writeMarker(t, source, "core.yml", "the-good-config")
-		writeMarker(t, target, "core.yml", "live-config") // must survive
-
-		// A counter proves the corruption ran once per attempt (fresh tmpDir each).
-		counter := filepath.Join(base, "extract-count")
-
-		// SSH shim that corrupts the staged tree right after each tar extraction,
-		// so `sha256sum -c` always fails. Every other remote command passes through.
-		dir := t.TempDir()
-		shim := "#!/bin/sh\n" +
-			"while [ $# -gt 0 ]; do\n" +
-			"  case \"$1\" in\n" +
-			"    -o) shift 2 ;;\n" +
-			"    -*) shift ;;\n" +
-			"    *) break ;;\n" +
-			"  esac\n" +
-			"done\n" +
-			"shift\n" +
-			"case \"$*\" in\n" +
-			"  *'-xf -'*)\n" +
-			"    /bin/sh -c \"$*\"\n" +
-			"    tmp=$(echo \"$*\" | sed 's/.*-C \\([^ ]*\\) -xf.*/\\1/')\n" +
-			"    find \"$tmp\" -type f -exec sh -c 'echo tampered >> \"$1\"' _ {} \\;\n" +
-			"    echo x >> " + counter + "\n" +
-			"    ;;\n" +
-			"  *) exec /bin/sh -c \"$*\" ;;\n" +
-			"esac\n"
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte(shim), 0o755))
-		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-		d := &DeployOps{}
-		err := d.DeployRemote(context.Background(), source, "user@testhost", target, true)
-		require.ErrorIs(t, err, ErrTransferIntegrity)
-
-		// Live target untouched — a failed integrity check never swaps.
-		assert.Equal(t, "live-config", readMarker(t, target, "core.yml"))
-
-		// One extract+corrupt per attempt: proves retry ran with a fresh tmpDir
-		// each pass (DefaultMaxRetries attempts).
-		countBytes, readErr := os.ReadFile(counter)
-		require.NoError(t, readErr)
-		assert.Equal(t, DefaultMaxRetries, strings.Count(string(countBytes), "x"))
-
-		// No staging temp dir leaked: each failed attempt cleaned up after itself.
-		entries, readErr := os.ReadDir(parent)
-		require.NoError(t, readErr)
-		require.Len(t, entries, 1)
-		assert.Equal(t, "compose", entries[0].Name())
-	})
-
-	t.Run("an unsafe source filename hard-fails before any transfer", func(t *testing.T) {
-		setupSSHShim(t)
-		setupSha256sumShim(t)
-		base := t.TempDir()
-		source := filepath.Join(base, "source")
 		require.NoError(t, os.MkdirAll(source, 0o755))
-		require.NoError(t, os.WriteFile(filepath.Join(source, "a\nb.yml"), []byte("x"), 0o644))
-		target := filepath.Join(base, "deploy", "compose")
-
-		d := &DeployOps{}
-		err := d.DeployRemote(context.Background(), source, "user@testhost", target, true)
-		require.ErrorIs(t, err, ErrUnsafeChecksumPath)
-		assert.Contains(t, err.Error(), "build transfer checksums")
-		assert.NoDirExists(t, target, "the deploy must abort before swapping anything into the live target")
+		writeMarker(t, target, "stale", "remove-me")
+		require.NoError(t, (&DeployOps{}).DeployRemote(context.Background(), source, "user@testhost", target))
+		entries, err := os.ReadDir(target)
+		require.NoError(t, err)
+		assert.Empty(t, entries)
 	})
 
-	t.Run("verifyChecksums=false skips verification entirely (degrade path)", func(t *testing.T) {
-		setupSSHShim(t) // NO sha256sum shim installed
+	t.Run("directories symlinks hardlinks and control names survive", func(t *testing.T) {
+		setupSSHShim(t)
 		base := t.TempDir()
 		source := filepath.Join(base, "source")
 		target := filepath.Join(base, "deploy", "compose")
-		writeMarker(t, source, "core.yml", "v1")
-
-		d := &DeployOps{}
-		// With verification off, sha256sum is never invoked, so the deploy
-		// succeeds even on a host without it.
-		require.NoError(t, d.DeployRemote(context.Background(), source, "user@testhost", target, false))
-		assert.Equal(t, "v1", readMarker(t, target, "core.yml"))
+		writeMarker(t, source, "line\nname\\file", "content")
+		writeMarker(t, source, "-leading 'quote' [glob]*", "special")
+		writeMarker(t, source, ".bosun-transfer.tar", "legitimate config")
+		require.NoError(t, os.Mkdir(filepath.Join(source, "empty-dir"), 0o755))
+		require.NoError(t, os.Symlink("line\nname\\file", filepath.Join(source, "sym\nlink")))
+		require.NoError(t, os.Symlink("cycle-b", filepath.Join(source, "cycle-a")))
+		require.NoError(t, os.Symlink("cycle-a", filepath.Join(source, "cycle-b")))
+		require.NoError(t, os.Symlink("../../outside", filepath.Join(source, "escape-link")))
+		require.NoError(t, os.Link(filepath.Join(source, "line\nname\\file"), filepath.Join(source, "hard link")))
+		require.NoError(t, (&DeployOps{}).DeployRemote(context.Background(), source, "user@testhost", target))
+		assert.DirExists(t, filepath.Join(target, "empty-dir"))
+		link, err := os.Readlink(filepath.Join(target, "sym\nlink"))
+		require.NoError(t, err)
+		assert.Equal(t, "line\nname\\file", link)
+		left, err := os.Stat(filepath.Join(target, "line\nname\\file"))
+		require.NoError(t, err)
+		right, err := os.Stat(filepath.Join(target, "hard link"))
+		require.NoError(t, err)
+		assert.True(t, os.SameFile(left, right))
+		assert.Equal(t, "special", readMarker(t, target, "-leading 'quote' [glob]*"))
+		escapeTarget, err := os.Readlink(filepath.Join(target, "escape-link"))
+		require.NoError(t, err)
+		assert.Equal(t, "../../outside", escapeTarget)
+		assert.Equal(t, "legitimate config", readMarker(t, target, ".bosun-transfer.tar"))
 	})
+}
+
+func TestDeployRemote_IntegrityCapabilityMissingFailsClosed(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "attempts")
+	dir := t.TempDir()
+	shim := "#!/bin/sh\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) shift 2 ;; -*) shift ;; *) break ;; esac; done\nshift\ncase \"$*\" in *'command -v sha256sum'*) echo x >> " + counter + "; exit 78 ;; esac\nexec /bin/sh -c \"$*\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte(shim), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	target := filepath.Join(base, "deploy", "compose")
+	writeMarker(t, source, "new", "new")
+	writeMarker(t, target, "live", "old")
+	err := (&DeployOps{}).DeployRemote(context.Background(), source, "user@testhost", target)
+	require.ErrorIs(t, err, ErrRemoteIntegrityUnavailable)
+	assert.NotErrorIs(t, err, ErrTransferIntegrity)
+	attempts, readErr := os.ReadFile(counter)
+	require.NoError(t, readErr)
+	assert.Equal(t, 1, strings.Count(string(attempts), "x"), "a missing remote capability is not retryable")
+	assert.Equal(t, "old", readMarker(t, target, "live"))
 }

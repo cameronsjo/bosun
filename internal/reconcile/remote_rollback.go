@@ -85,10 +85,8 @@ func (d *DeployOps) RollbackRemoteCompose(ctx context.Context, host, remoteCompo
 		Msg("Restoring remote compose dir from backup anchor")
 
 	// Re-push through the SAME hardened remote deploy path so the transfer
-	// integrity check (#334) applies to the restored tree. The rollback path is
-	// independent of the main deploy's probe, so re-probe sha256sum here.
-	verifyChecksums := d.remoteHasSha256sum(ctx, host)
-	if err := d.DeployRemote(ctx, restoredComposeDir, host, remoteComposeDir, verifyChecksums); err != nil {
+	// integrity checks (#252, #334) apply to the restored tree too.
+	if err := d.DeployRemote(ctx, restoredComposeDir, host, remoteComposeDir); err != nil {
 		return failed(fmt.Errorf("re-deploy restored compose dir: %w", err))
 	}
 

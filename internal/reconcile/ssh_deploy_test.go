@@ -61,12 +61,13 @@ func TestCleanupRemotePath_FailureRemainsBestEffort(t *testing.T) {
 // command locally (`ssh [-o opt]... <host> <cmd...>` → `/bin/sh -c "<cmd...>"`),
 // so DeployRemote's full pipeline — crash recovery, staging mkdir, tar-over-ssh
 // extraction, and the retain-old swap — runs end-to-end against real local
-// directories with no network. stdin flows through, so the tar pipe works.
+// directories with no network. stdin flows through, so archive streaming works.
 // The shim skips the leading `-o KEY=VAL` host-key policy flags (and any other
 // dash-prefixed option) before dropping the host, mirroring real ssh argv
 // parsing; every path involved comes from t.TempDir().
 func setupSSHShim(t *testing.T) {
 	t.Helper()
+	setupSha256sumShim(t)
 	dir := t.TempDir()
 	shim := "#!/bin/sh\n" +
 		"while [ $# -gt 0 ]; do\n" +
@@ -91,7 +92,7 @@ func TestDeployRemote_EndToEnd(t *testing.T) {
 		writeMarker(t, source, "marker", "v1")
 
 		d := &DeployOps{}
-		require.NoError(t, d.DeployRemote(context.Background(), source, "user@testhost", target, false))
+		require.NoError(t, d.DeployRemote(context.Background(), source, "user@testhost", target))
 
 		assert.Equal(t, "v1", readMarker(t, target, "marker"))
 	})
@@ -106,7 +107,7 @@ func TestDeployRemote_EndToEnd(t *testing.T) {
 		writeMarker(t, target, "marker", "v1")
 
 		d := &DeployOps{}
-		require.NoError(t, d.DeployRemote(context.Background(), source, "user@testhost", target, false))
+		require.NoError(t, d.DeployRemote(context.Background(), source, "user@testhost", target))
 
 		assert.Equal(t, "v2", readMarker(t, target, "marker"))
 		entries, err := os.ReadDir(parent)
@@ -126,7 +127,7 @@ func TestDeployRemote_EndToEnd(t *testing.T) {
 		writeMarker(t, target+bosunOldSuffix+"1111111111111111111", "marker", "stranded")
 
 		d := &DeployOps{}
-		require.NoError(t, d.DeployRemote(context.Background(), source, "user@testhost", target, false))
+		require.NoError(t, d.DeployRemote(context.Background(), source, "user@testhost", target))
 
 		assert.Equal(t, "new", readMarker(t, target, "marker"))
 		entries, err := os.ReadDir(parent)
@@ -134,7 +135,7 @@ func TestDeployRemote_EndToEnd(t *testing.T) {
 		require.Len(t, entries, 1, "the stranded retained copy must be promoted then replaced, not leaked")
 	})
 
-	t.Run("tar failure cleans the staging temp dir and preserves the target", func(t *testing.T) {
+	t.Run("missing source fails before staging and preserves the target", func(t *testing.T) {
 		setupSSHShim(t)
 		base := t.TempDir()
 		parent := filepath.Join(base, "deploy")
@@ -143,10 +144,10 @@ func TestDeployRemote_EndToEnd(t *testing.T) {
 		missingSource := filepath.Join(base, "does-not-exist")
 
 		d := &DeployOps{}
-		err := d.DeployRemote(context.Background(), missingSource, "user@testhost", target, false)
+		err := d.DeployRemote(context.Background(), missingSource, "user@testhost", target)
 
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "tar")
+		assert.Contains(t, err.Error(), "snapshot transfer source")
 		assert.Equal(t, "live", readMarker(t, target, "marker"), "a failed staging transfer must not touch the live target")
 		entries, readErr := os.ReadDir(parent)
 		require.NoError(t, readErr)
@@ -159,19 +160,19 @@ func TestDeployRemote_EndToEnd(t *testing.T) {
 		target := filepath.Join(base, "deploy", "compose")
 
 		d := &DeployOps{DryRun: true}
-		require.NoError(t, d.DeployRemote(context.Background(), filepath.Join(base, "source"), "user@testhost", target, false))
+		require.NoError(t, d.DeployRemote(context.Background(), filepath.Join(base, "source"), "user@testhost", target))
 		assert.NoDirExists(t, target)
 	})
 
 	t.Run("invalid host is rejected before any work", func(t *testing.T) {
 		d := &DeployOps{}
-		err := d.DeployRemote(context.Background(), t.TempDir(), "-oProxyCommand=evil", "/tmp/x", false)
+		err := d.DeployRemote(context.Background(), t.TempDir(), "-oProxyCommand=evil", "/tmp/x")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid SSH host")
 	})
 }
 
-func TestDeployRemote_SSHStartFailureReapsTar(t *testing.T) {
+func TestDeployRemote_SSHStartFailureCleansStaging(t *testing.T) {
 	setupSSHShim(t)
 	original := newSSHTransferCommand
 	t.Cleanup(func() { newSSHTransferCommand = original })
@@ -185,7 +186,7 @@ func TestDeployRemote_SSHStartFailureReapsTar(t *testing.T) {
 	targetParent := filepath.Join(base, "deploy")
 	writeMarker(t, source, "marker", "v1")
 
-	err := (&DeployOps{}).DeployRemote(context.Background(), source, "user@testhost", filepath.Join(targetParent, "compose"), false)
+	err := (&DeployOps{}).DeployRemote(context.Background(), source, "user@testhost", filepath.Join(targetParent, "compose"))
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "start ssh")
@@ -208,10 +209,11 @@ func TestDeployRemote_CancelledContextCleansStagingTempDir(t *testing.T) {
 		"done\n" +
 		"shift\n" +
 		"case \"$*\" in\n" +
-		"  tar\\ -C*\\ -xf\\ -) : > \"$SSH_EXTRACT_STARTED\"; exec /bin/sleep 30 ;;\n" +
+		"  *'cat > '*'.deploy-tmp-'*'/archive.tar'*) : > \"$SSH_EXTRACT_STARTED\"; exec /bin/sleep 30 ;;\n" +
 		"esac\n" +
 		"exec /bin/sh -c \"$*\"\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte(shim), 0o755))
+	setupSha256sumShim(t)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	base := t.TempDir()
@@ -225,7 +227,7 @@ func TestDeployRemote_CancelledContextCleansStagingTempDir(t *testing.T) {
 	t.Cleanup(cancel)
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- (&DeployOps{}).DeployRemote(ctx, source, "user@testhost", target, false)
+		errCh <- (&DeployOps{}).DeployRemote(ctx, source, "user@testhost", target)
 	}()
 
 	require.Eventually(t, func() bool {

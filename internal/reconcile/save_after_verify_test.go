@@ -168,7 +168,7 @@ func TestRun_LocalVerifySuccess_RecordsSuccess(t *testing.T) {
 }
 
 func TestRun_RemoteSkipsVerify_RecordsSuccess(t *testing.T) {
-	// A hermetic ssh shim so the once-per-deploy sha256sum probe runs locally.
+	// A hermetic ssh shim so remote deploy commands run locally.
 	setupSSHShim(t)
 
 	// The docker mock ERRORS: if verification ran, the deploy would fail. A

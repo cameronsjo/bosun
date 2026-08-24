@@ -2379,12 +2379,12 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (
 	if host == "" {
 		return nil, fmt.Errorf("no target host specified and could not find unraid_ip in secrets")
 	}
-	// Validate the host BEFORE the first ssh contact (the sha256sum probe below).
+	// Validate the host before any SSH contact.
 	// TargetHost is re-read from the watched repo after every pull, so a
 	// repo-push attacker controls it; an unvalidated value like
 	// `-oProxyCommand=<cmd>` would reach ssh as an option and execute on the
 	// daemon. Every other ssh/scp boundary validates first; this restores that
-	// invariant for the whole deployRemote scope (probe + all subsequent calls).
+	// invariant for the whole deployRemote scope.
 	if err := validateHost(host); err != nil {
 		return nil, fmt.Errorf("invalid SSH host: %w", err)
 	}
@@ -2397,21 +2397,6 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (
 		return nil, fmt.Errorf("discover deploy targets: %w", err)
 	}
 
-	// Probe once per deploy whether the remote can verify transfers; a host
-	// lacking sha256sum degrades to the pre-#334 behavior (no integrity gate)
-	// rather than hard-failing (#334). Skip the probe on dry-run and when there
-	// is no target to sync.
-	verifyChecksums := false
-	if !r.config.DryRun {
-		verifyChecksums = r.deploy.remoteHasSha256sum(ctx, host)
-		if !verifyChecksums {
-			logger.Warn().
-				Str(log.FieldTarget, host).
-				Msg("Remote host lacks sha256sum; deploying WITHOUT transfer integrity verification (a truncated tar-over-SSH transfer will not be caught)")
-			ui.Warning("Remote host lacks sha256sum — transfer integrity verification disabled for this deploy")
-		}
-	}
-
 	result := &DeployResult{}
 
 	// Sync discovered targets (excluding compose, which has special handling).
@@ -2420,17 +2405,17 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (
 			continue
 		}
 		src := filepath.Join(stagingSubDir, t.RelPath)
-		dst := filepath.Join(appdata, t.TargetPath)
+		dst := path.Join(appdata, filepath.ToSlash(t.TargetPath))
 		ui.Info("  Syncing %s...", t.RelPath)
 		if t.IsDir {
-			if err := r.deploy.DeployRemote(ctx, src, host, dst, verifyChecksums); err != nil {
+			if err := r.deploy.DeployRemote(ctx, src, host, dst); err != nil {
 				return nil, err
 			}
 			if err := recordManaged(result, src, t.TargetPath); err != nil {
 				return nil, err
 			}
 		} else {
-			targetDir := filepath.Dir(dst)
+			targetDir := path.Dir(dst)
 			if err := r.deploy.EnsureRemoteDir(ctx, host, targetDir); err != nil {
 				return nil, fmt.Errorf("ensure remote deploy directory %q: %w", targetDir, err)
 			}
@@ -2445,11 +2430,11 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (
 	if hasTarget(targets, "compose") {
 		ui.Info("  Syncing compose files...")
 		composeStaging := filepath.Join(stagingSubDir, "compose")
-		composeTarget := filepath.Join(appdata, "compose")
+		composeTarget := path.Join(appdata, "compose")
 		if err := r.deploy.EnsureRemoteDir(ctx, host, composeTarget); err != nil {
 			return nil, fmt.Errorf("ensure remote compose directory %q: %w", composeTarget, err)
 		}
-		if err := r.deploy.DeployRemote(ctx, composeStaging, host, composeTarget, verifyChecksums); err != nil {
+		if err := r.deploy.DeployRemote(ctx, composeStaging, host, composeTarget); err != nil {
 			return nil, err
 		}
 		if err := recordManaged(result, composeStaging, "compose"); err != nil {
@@ -2464,7 +2449,7 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (
 		ui.Info("  Syncing core compose to Compose Manager...")
 		if err := r.deploy.EnsureRemoteDir(ctx, host, composeManagerDir); err != nil {
 			ui.Warning("Compose Manager sync skipped: could not create %s: %v", composeManagerDir, err)
-		} else if err := r.deploy.DeployRemoteFile(ctx, filepath.Join(stagingSubDir, "compose", "core.yml"), host, filepath.Join(composeManagerDir, "docker-compose.yml")); err != nil {
+		} else if err := r.deploy.DeployRemoteFile(ctx, filepath.Join(stagingSubDir, "compose", "core.yml"), host, path.Join(composeManagerDir, "docker-compose.yml")); err != nil {
 			ui.Warning("Compose Manager sync failed: %v", err)
 		}
 	}
@@ -2473,7 +2458,7 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (
 	// composeDir is the remote compose dir just deployed — captured here where
 	// it is in scope so RollbackRemoteCompose can restore exactly it, rather
 	// than reaching for r.lastComposeFiles (only deployLocal sets that).
-	composeDir := filepath.Join(appdata, "compose")
+	composeDir := path.Join(appdata, "compose")
 	if !r.config.DryRun {
 		ui.Info("  Reloading services...")
 		if err := r.deploy.ComposeUpRemote(ctx, host, composeDir); err != nil {

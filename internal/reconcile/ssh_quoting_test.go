@@ -45,10 +45,10 @@ func TestDeployRemote_QuotesSpacedTarget(t *testing.T) {
 	setupSSHShim(t)
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
-	target := filepath.Join(base, "deploy dir", "compose")
+	target := filepath.Join(base, "deploy dir", "[prod]* compose")
 	writeMarker(t, source, "core.yml", "v1")
 
 	d := &DeployOps{}
-	require.NoError(t, d.DeployRemote(context.Background(), source, "user@testhost", target, false))
+	require.NoError(t, d.DeployRemote(context.Background(), source, "user@testhost", target))
 	assert.Equal(t, "v1", readMarker(t, target, "core.yml"), "staging mkdir and swap must handle spaced paths")
 }
