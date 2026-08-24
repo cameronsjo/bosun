@@ -114,14 +114,14 @@ On current versions, removing the root `post_sync_hooks` key, setting it to `[]`
 
 For target hooks, an omitted key inherits root and explicit `post_sync_hooks: []` disables inheritance. Removing a target descriptor drops its operational hook override immediately, but restart the daemon to remove the target from the running topology. `BOSUN_POST_SYNC_HOOKS` and target hooks supplied by `BOSUN_TARGETS` are environment-owned; remove or change those environment values and restart Bosun rather than editing `bosun.yaml`.
 
-### Post-sync hook never runs after files change
+### Post-sync hook never runs after deploy paths change
 
-Look for `Files changed but no post-sync hook patterns matched`. The warning
+Look for `Deploy paths changed but no post-sync hook patterns matched`. The warning
 reports distinct, duplicate, empty, and missing pattern counts plus at most five
-pattern and staging-relative path samples; evaluated and matched-file counts
+pattern and staging-relative path samples; evaluated and matched-path counts
 make the zero-match outcome explicit. This usually exposes a typo or a missing
-prefix such as `appdata/`. Absolute or traversal paths are redacted. `No files
-changed; post-sync hooks have nothing to evaluate` is a separate informational
+prefix such as `appdata/`. Absolute or traversal paths are redacted. `No deploy
+paths changed; post-sync hooks have nothing to evaluate` is a separate informational
 outcome and does not indicate a pattern problem.
 
 ## Debug Mode

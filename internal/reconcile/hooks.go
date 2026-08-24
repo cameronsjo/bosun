@@ -117,13 +117,13 @@ func hookMatchesAny(hook PostSyncHook, changedPaths []string) bool {
 	return false
 }
 
-// matchGlob checks if a file path matches a glob pattern.
+// matchGlob checks if a deploy path matches a glob pattern.
 // Delegates to doublestar, which gives "**" its full recursive-directory
 // meaning anywhere in the pattern (prefix, middle, or trailing), rather than
 // only recognizing it as a trailing wildcard and discarding any suffix that
 // follows (e.g. "**/foo.yml" or "appdata/**/dynamic.yml").
-func matchGlob(pattern, file string) bool {
-	matched, err := doublestar.Match(pattern, file)
+func matchGlob(pattern, path string) bool {
+	matched, err := doublestar.Match(pattern, path)
 	if err != nil {
 		return false
 	}
@@ -217,7 +217,7 @@ func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []Po
 				Str("container", hook.Container).
 				Strs("patterns", hook.Paths).
 				Msg("Executing post-sync hook: restarting container")
-			ui.Info("  Restarting %s (config files changed)...", hook.Container)
+			ui.Info("  Restarting %s (deploy paths changed)...", hook.Container)
 
 			if err := client.RestartContainer(ctx, hook.Container); err != nil {
 				logger.Error().
@@ -235,7 +235,7 @@ func ExecutePostSyncHooks(ctx context.Context, client *docker.Client, hooks []Po
 				Int("command_args", len(hook.Command)).
 				Strs("patterns", hook.Paths).
 				Msg("Executing post-sync hook: exec in container")
-			ui.Info("  Executing command in %s (config files changed)...", hook.Container)
+			ui.Info("  Executing command in %s (deploy paths changed)...", hook.Container)
 
 			if err := client.ExecContainer(ctx, hook.Container, hook.Command); err != nil {
 				logger.Error().

@@ -848,7 +848,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	// Capture previous commit before updating state (needed for post-sync hooks).
 	previousCommit := state.LastDeployedCommit
 
-	// Execute post-sync hooks if any files changed and hooks are configured.
+	// Execute post-sync hooks if any deploy paths changed and hooks are configured.
 	// Hooks run BEFORE health verification (so it observes the post-hook
 	// container state) and before success is recorded (so a local verify failure
 	// retries them on the next reconcile).
@@ -1156,17 +1156,17 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 	changeSource := "git_diff"
 	if remoteMode {
 		// Remote deploys return a DeployResult with a ManagedFiles manifest but
-		// no WrittenFiles (no per-file change tracking over SSH). Fire all hooks
+		// no WrittenFiles (no per-path change tracking over SSH). Fire all hooks
 		// unconditionally — a false-positive restart is better than stale configs
 		// on a FUSE mount. See GitHub #197.
 		changeSource = "remote_untracked"
-		logger.Info().Msg("Remote deploy: firing all post-sync hooks (no file-level tracking available)")
+		logger.Info().Msg("Remote deploy: firing all post-sync hooks (no path-level tracking available)")
 	} else if deployResult != nil && (r.config.ContentHashSync || len(deployResult.WrittenFiles) > 0 || len(deployResult.DeletedFiles) > 0) {
 		// Combine writes and deletions: a commit that both writes an unrelated
 		// file and deletes a hook-matched one must still fire that hook (#234).
 		// With content-hash sync enabled, an empty result is authoritative: the
 		// deploy compared every managed file and wrote or deleted nothing. Standard
-		// copy mode does not populate per-file writes, so its empty result still
+		// copy mode does not populate per-path changes, so its empty result still
 		// falls back to git diff.
 		changeSource = "deploy_result"
 		changedPaths = make([]string, 0, len(deployResult.WrittenFiles)+len(deployResult.DeletedFiles))
