@@ -74,6 +74,11 @@ Everything in one container.
 
 Daemon on host, webhook in container.
 
+> **Historical proposal:** The `localhost:9999` endpoint below was a phantom
+> design value and never shipped. Bosun's implemented interfaces are the Unix
+> socket at `/var/run/bosun.sock`, HTTP on port 8080, and the optional
+> bearer-authenticated TCP API on `127.0.0.1:9090`.
+
 ```
 ┌─────────────────────────────────────────┐
 │                  HOST                    │
@@ -333,6 +338,10 @@ resp, err := client.Post("http://localhost/trigger", "application/json", nil)
 
 **Authentication: None required.**
 
+> **Historical proposal:** The `localhost:9999` threat model below describes
+> the phantom TCP design, not the implemented optional TCP API, which requires
+> `BOSUN_BEARER_TOKEN` and defaults to `127.0.0.1:9090`.
+
 Threat model: If an attacker can reach the Unix socket or localhost:9999, they're already on the host with sufficient privileges. At that point they have access to the Docker socket, SSH keys, and SOPS keys anyway. The socket file permission (ownership, mode 0660) IS the authentication.
 
 ```
@@ -446,7 +455,9 @@ paths:
 
 daemon:
   trigger_socket: /var/run/bosun.sock
-  # OR
+  # Historical phantom proposal only; never shipped. The implemented optional
+  # TCP API uses BOSUN_ENABLE_TCP, BOSUN_TCP_ADDR (default 127.0.0.1:9090),
+  # and BOSUN_BEARER_TOKEN.
   trigger_port: 9999
   trigger_bind: 127.0.0.1
 

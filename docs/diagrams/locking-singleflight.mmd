@@ -1,0 +1,10 @@
+flowchart TD
+    Trigger[Trigger] --> Reconciling{"Reconciliation running?"}
+    Reconciling -->|yes| Queue["Add to pendingTrigger batch<br/>preserve source and force"]
+    Queue --> Accepted[Return 202 Accepted]
+    Reconciling -->|no| Flock["Acquire /var/run/bosun/reconcile.lock<br/>flock LOCK_EX | LOCK_NB"]
+    Flock --> Run[Run Reconciliation]
+    Run --> Pending{"pendingTrigger batch queued?"}
+    Pending -->|yes| Coalesced[Run One Coalesced Reconciliation]
+    Coalesced --> Pending
+    Pending -->|no| Finish[Finish]
