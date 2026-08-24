@@ -49,10 +49,10 @@ Every reconciliation follows this 16-stage sequence:
     self-heals a missing target from the newest retained copy
         |
  9. Verify deploy-sync invariants — every created directory or written file
-    in WrittenFiles must exist with fresh mtime. When no regular file was
-    written, the invariant fails if any regular source file is missing OR
-    byte-differs at the destination (a no-op sync whose destination already
-    content-matches passes; symlinks are skipped). Skipped if
+    in WrittenFiles must exist with its expected type and a fresh mtime. When
+    no regular file was written, the invariant fails if any regular source
+    file is missing OR byte-differs at the destination (a no-op sync whose
+    destination already content-matches passes; symlinks are skipped). Skipped if
     BOSUN_SKIP_DEPLOY_INVARIANT=true.
         |
 10. Run docker compose up (per-file isolated, with rollback)
@@ -125,7 +125,7 @@ requested secrets-file path remains in the surrounding error context.
 Bosun enforces two invariant gates that turn the GH#214 silent-success failure mode into a loud error:
 
 - **Declared-state invariant (stage 6)** — if `ExtractDeclaredState` returns `ErrComposeDirMissing` the reconcile fails unconditionally (no override). When the infra dir has no `compose/` but a sibling directory does, the error names the candidate and suggests the `BOSUN_INFRA_DIR` value to set (e.g. `did you mean BOSUN_INFRA_DIR=unraid?`) — the GH#214 misconfiguration. If it returns `ErrNoDeclaredServices` the reconcile fails unless `BOSUN_ALLOW_EMPTY_DECLARED_STATE=true` is set; the override logs at `Warn` level with `override=true`.
-- **Post-deploy invariant (stage 9)** — for every path in `DeployResult.WrittenFiles`, the destination must exist at `mtime >= reconcileStartTime`. Content-hash sync records changed regular files and newly created descendant directories, including empty directories; it omits pre-existing directories so no-op reconciles do not trigger hooks. When a deploy target records no regular-file writes against a source containing regular files, the gate inspects the destination directly even if directories were created: every regular source file must be present **and byte-identical** at the destination (SHA-256, the same comparison `CopyFileIfChanged` uses to decide a write is skippable; symlinks are skipped to match the copy path). If every file is content-equal it is a legitimate no-op sync and passes; if any file is missing **or holds stale bytes** it is the GH#214 silent-sync failure and fails the reconcile before `docker compose up` runs, naming the first mismatching destination path. (The earlier behavior — treating *any* zero-write target as a failure — caused the GH#330 outage, where one byte-identical config aborted the entire deploy. A subsequent existence-only check fixed that but let a stale file occupying the right path pass; content-equality closes that gap.)
+- **Post-deploy invariant (stage 9)** — for every path in `DeployResult.WrittenFiles`, the destination must exist with the same directory-or-regular-file type as the source and an `mtime >= reconcileStartTime`; a symlink does not satisfy either type. Content-hash sync records changed regular files and newly created descendant directories, including empty directories; it omits pre-existing directories so no-op reconciles do not trigger hooks. When a deploy target records no regular-file writes against a source containing regular files, the gate inspects the destination directly even if directories were created: every regular source file must be present **and byte-identical** at the destination (SHA-256, the same comparison `CopyFileIfChanged` uses to decide a write is skippable; symlinks are skipped to match the copy path). If every file is content-equal it is a legitimate no-op sync and passes; if any file is missing **or holds stale bytes** it is the GH#214 silent-sync failure and fails the reconcile before `docker compose up` runs, naming the first mismatching destination path. (The earlier behavior — treating *any* zero-write target as a failure — caused the GH#330 outage, where one byte-identical config aborted the entire deploy. A subsequent existence-only check fixed that but let a stale file occupying the right path pass; content-equality closes that gap.)
 
 Operators can bypass the post-deploy invariant for diagnostic deploys via `BOSUN_SKIP_DEPLOY_INVARIANT=true`. The skip is logged at `Warn` level with `override=true` so it shows up in monitoring; the declared-state invariant is not affected by this flag.
 

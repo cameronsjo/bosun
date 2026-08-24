@@ -183,7 +183,7 @@ Git sync or secret decryption.
         v
  9. Deploy-Sync Invariant Check
     (per-target: created directories and written files in WrittenFiles
-    must exist at destination with
+    must exist at destination with their expected type and
     mtime >= reconcile start; when no regular file was written, every
     regular source file must already byte-match the destination;
     bypass via BOSUN_SKIP_DEPLOY_INVARIANT)
