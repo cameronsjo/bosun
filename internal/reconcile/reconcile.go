@@ -2109,7 +2109,7 @@ var ErrAppdataInaccessible = errors.New("local appdata path is configured but in
 
 // doDeploy performs the actual deployment.
 // Returns a DeployResult with the deployed-files manifest for both modes. In
-// remote mode WrittenFiles stays empty (no file-level change tracking over SSH,
+// remote mode WrittenFiles stays empty (no path-level change tracking over SSH,
 // so hooks fire unconditionally), but ManagedFiles is populated from the local
 // staging walk so state.DeployedFiles is seeded either way (#334).
 func (r *Reconciler) doDeploy(ctx context.Context, secrets map[string]any, local bool, prevManaged []string) (*DeployResult, error) {

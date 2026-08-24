@@ -3631,6 +3631,30 @@ func TestDeployLocal_TopLevelTypeTransitions(t *testing.T) {
 		assert.Contains(t, result.DeletedFiles, filepath.Join("appdata", "config"))
 	})
 
+	t.Run("file to empty directory exposes the transitioned target to hooks", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		stagingDir := filepath.Join(tmpDir, "staging")
+		appdataDir := filepath.Join(tmpDir, "appdata")
+		source := filepath.Join(stagingDir, "unraid", "appdata", "config")
+		require.NoError(t, os.MkdirAll(source, 0755))
+		require.NoError(t, os.MkdirAll(appdataDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(appdataDir, "config"), []byte("old"), 0644))
+
+		result, err := newReconciler(t, stagingDir, appdataDir).deployLocal(context.Background(), []string{"config"})
+
+		require.NoError(t, err)
+		assert.DirExists(t, filepath.Join(appdataDir, "config"))
+		assert.Contains(t, result.WrittenFiles, filepath.Join("appdata", "config"))
+		assert.Contains(t, result.DeletedFiles, filepath.Join("appdata", "config"))
+		hooks := []PostSyncHook{{Container: "service", Paths: []string{"appdata/config"}}}
+		assert.Equal(t, hooks, EvaluatePostSyncHooks(result.WrittenFiles, hooks))
+
+		second, secondErr := newReconciler(t, stagingDir, appdataDir).deployLocal(context.Background(), result.ManagedFiles)
+		require.NoError(t, secondErr)
+		assert.NotContains(t, second.WrittenFiles, filepath.Join("appdata", "config"))
+		assert.Empty(t, EvaluatePostSyncHooks(second.WrittenFiles, hooks), "the pre-existing directory must not retrigger its hook")
+	})
+
 	t.Run("directory to file receives prior descendant manifest", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		stagingDir := filepath.Join(tmpDir, "staging")

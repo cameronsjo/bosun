@@ -149,7 +149,7 @@ post_sync_hooks:
 | `alerts.on_success` | `false` | Send alerts on successful deploys |
 | `alerts.on_failure` | `true` | Send alerts on failed deploys |
 | `remove_orphans` | `true` | Pass `--remove-orphans` to docker compose up |
-| `post_sync_hooks` | `[]` | Container restart or exec hooks triggered by file changes |
+| `post_sync_hooks` | `[]` | Container restart or exec hooks triggered by deploy path changes |
 | `hook_settle_delay` | `2s` on unconfigured Unraid `/mnt/user` targets; `0` elsewhere | Global pause after deploy before hooks run. Explicit `0s` disables the FUSE fallback |
 | `deploy_paths` | `[]` (deploy all) | Glob allowlist — skip pipeline when no changed files match |
 | `deploy_sync_paths` | `[]` (sync all) | Glob allowlist — only sync staging entries matching these patterns |

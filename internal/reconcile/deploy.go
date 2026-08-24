@@ -79,8 +79,8 @@ type DeployResult struct {
 }
 
 // AddWritten appends created or written paths to the result's write list.
-func (r *DeployResult) AddWritten(files ...string) {
-	r.WrittenFiles = append(r.WrittenFiles, files...)
+func (r *DeployResult) AddWritten(paths ...string) {
+	r.WrittenFiles = append(r.WrittenFiles, paths...)
 }
 
 // AddDeleted appends file paths to the result's deleted files list.
@@ -692,12 +692,12 @@ func (t *managedTypeTransition) stage() (stageErr error) {
 		if err != nil {
 			return fmt.Errorf("copy private replacement directory for %s: %w", t.relPath, err)
 		}
-		// The replacement root is a meaningful change when it replaces a
-		// managed file below the deploy target. The deploy target root itself
-		// remains plumbing and is intentionally excluded from WrittenFiles.
-		if t.relPath != managedTargetRoot {
-			t.written = append(t.written, t.relPath)
-		}
+		// The replacement root is a meaningful change because it replaces a
+		// managed file. For a top-level transition, managedTargetRoot is later
+		// translated by PrefixLatest into the staging-relative target path. This
+		// is distinct from ordinary deploy-root creation, which remains plumbing
+		// and is excluded by CopyDirIfChanged.
+		t.written = append(t.written, t.relPath)
 		for _, path := range written {
 			if t.relPath == managedTargetRoot {
 				t.written = append(t.written, path)

@@ -700,6 +700,25 @@ func TestDeployOps_DeployLocal_ContentHash(t *testing.T) {
 		assert.Equal(t, hooks, EvaluatePostSyncHooks(result.WrittenFiles, hooks))
 	})
 
+	t.Run("tracks an empty root directory replacing a managed file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+		require.NoError(t, os.MkdirAll(sourceDir, 0755))
+		require.NoError(t, os.WriteFile(targetDir, []byte("old"), 0644))
+
+		result := &DeployResult{}
+		deploy := &DeployOps{ContentHashSync: true}
+		startTime := time.Now().Add(-time.Second)
+		err := deploy.DeployLocal(context.Background(), sourceDir, targetDir, result, map[string]bool{managedTargetRoot: true})
+
+		require.NoError(t, err)
+		assert.DirExists(t, targetDir)
+		assert.Equal(t, []string{managedTargetRoot}, result.WrittenFiles)
+		assert.Equal(t, []string{managedTargetRoot}, result.DeletedFiles)
+		require.NoError(t, verifyDeployTarget(sourceDir, targetDir, result.WrittenFiles, startTime))
+	})
+
 	t.Run("replaces managed directory contents with file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		sourceDir := filepath.Join(tmpDir, "source")
@@ -2094,6 +2113,14 @@ func TestDeployResult_PrefixLatest(t *testing.T) {
 			filepath.Join("compose", "one.yml"),
 			filepath.Join("compose", "two.yml"),
 		}, result.WrittenFiles)
+	})
+
+	t.Run("translates a root transition into the target path", func(t *testing.T) {
+		result := &DeployResult{WrittenFiles: []string{managedTargetRoot}}
+
+		result.PrefixLatest(0, filepath.Join("appdata", "service"))
+
+		assert.Equal(t, []string{filepath.Join("appdata", "service")}, result.WrittenFiles)
 	})
 
 	t.Run("current length is an idempotent boundary", func(t *testing.T) {
