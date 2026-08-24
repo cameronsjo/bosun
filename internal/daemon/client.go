@@ -21,6 +21,14 @@ type Client struct {
 	baseURL     string
 }
 
+const (
+	// Keep daemon client error responses within the same 1 MiB budget used for
+	// webhook request bodies. One additional byte is read only to detect
+	// truncation deterministically.
+	maxDaemonClientErrorBodySize = maxWebhookBodySize
+	daemonErrorBodyTruncated     = "... [truncated]"
+)
+
 // NewClient creates a new daemon client using Unix socket.
 func NewClient(socketPath string) *Client {
 	if socketPath == "" {
@@ -77,8 +85,7 @@ func (c *Client) Trigger(ctx context.Context, source string, force bool) (*Trigg
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("daemon returned status %d: %s", resp.StatusCode, string(body))
+		return nil, daemonStatusError(resp.StatusCode, resp.Body)
 	}
 
 	var result TriggerResponse
@@ -119,8 +126,7 @@ func (c *Client) Status(ctx context.Context) (*StatusResponse, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("daemon returned status %d: %s", resp.StatusCode, string(body))
+		return nil, daemonStatusError(resp.StatusCode, resp.Body)
 	}
 
 	var result StatusResponse
@@ -181,8 +187,7 @@ func (c *Client) Config(ctx context.Context) (*ConfigResponse, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("daemon returned status %d: %s", resp.StatusCode, string(body))
+		return nil, daemonStatusError(resp.StatusCode, resp.Body)
 	}
 
 	var result ConfigResponse
@@ -193,3 +198,23 @@ func (c *Client) Config(ctx context.Context) (*ConfigResponse, error) {
 	return &result, nil
 }
 
+func daemonStatusError(statusCode int, body io.Reader) error {
+	contents, readErr := io.ReadAll(io.LimitReader(body, maxDaemonClientErrorBodySize+1))
+	truncated := len(contents) > maxDaemonClientErrorBodySize
+	if truncated {
+		contents = contents[:maxDaemonClientErrorBodySize]
+	}
+
+	detail := string(contents)
+	if truncated {
+		detail += daemonErrorBodyTruncated
+	}
+	if readErr != nil {
+		if detail != "" {
+			detail += " "
+		}
+		detail += fmt.Sprintf("[response body read error: %v]", readErr)
+	}
+
+	return fmt.Errorf("daemon returned status %d: %s", statusCode, detail)
+}

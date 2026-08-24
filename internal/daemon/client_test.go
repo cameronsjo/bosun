@@ -3,11 +3,18 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewClient(t *testing.T) {
@@ -314,3 +321,180 @@ func TestClient_Config(t *testing.T) {
 	})
 }
 
+func TestClient_ErrorResponseBodyBounded(t *testing.T) {
+	methods := []struct {
+		name   string
+		invoke func(context.Context, *Client) error
+	}{
+		{
+			name: "trigger",
+			invoke: func(ctx context.Context, client *Client) error {
+				_, err := client.Trigger(ctx, "test", false)
+				return err
+			},
+		},
+		{
+			name: "status",
+			invoke: func(ctx context.Context, client *Client) error {
+				_, err := client.Status(ctx)
+				return err
+			},
+		},
+		{
+			name: "config",
+			invoke: func(ctx context.Context, client *Client) error {
+				_, err := client.Config(ctx)
+				return err
+			},
+		},
+	}
+
+	bodies := []struct {
+		name     string
+		body     string
+		expected string
+	}{
+		{
+			name:     "under limit is preserved",
+			body:     "small daemon error",
+			expected: "small daemon error",
+		},
+		{
+			name:     "exact limit is preserved",
+			body:     strings.Repeat("e", maxDaemonClientErrorBodySize),
+			expected: strings.Repeat("e", maxDaemonClientErrorBodySize),
+		},
+		{
+			name:     "oversized body is truncated",
+			body:     strings.Repeat("o", maxDaemonClientErrorBodySize+1),
+			expected: strings.Repeat("o", maxDaemonClientErrorBodySize) + daemonErrorBodyTruncated,
+		},
+	}
+
+	for _, method := range methods {
+		t.Run(method.name, func(t *testing.T) {
+			for _, body := range bodies {
+				t.Run(body.name, func(t *testing.T) {
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusTeapot)
+						_, _ = io.WriteString(w, body.body)
+					}))
+					defer server.Close()
+
+					client := &Client{
+						socketPath: "/tmp/test.sock",
+						baseURL:    server.URL,
+						httpClient: server.Client(),
+					}
+
+					err := method.invoke(context.Background(), client)
+					require.Error(t, err)
+					assert.Equal(t, fmt.Sprintf("daemon returned status %d: %s", http.StatusTeapot, body.expected), err.Error())
+				})
+			}
+		})
+	}
+}
+
+func TestClient_SuccessResponsesUnchanged(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		statusCode int
+		response   string
+		invoke     func(context.Context, *Client) (string, error)
+		expected   string
+	}{
+		{
+			name:       "trigger",
+			path:       "/trigger",
+			statusCode: http.StatusAccepted,
+			response:   `{"status":"accepted","message":"queued"}`,
+			invoke: func(ctx context.Context, client *Client) (string, error) {
+				response, err := client.Trigger(ctx, "test", false)
+				if err != nil {
+					return "", err
+				}
+				return response.Status, nil
+			},
+			expected: "accepted",
+		},
+		{
+			name:       "status",
+			path:       "/status",
+			statusCode: http.StatusOK,
+			response:   `{"state":"idle"}`,
+			invoke: func(ctx context.Context, client *Client) (string, error) {
+				response, err := client.Status(ctx)
+				if err != nil {
+					return "", err
+				}
+				return response.State, nil
+			},
+			expected: "idle",
+		},
+		{
+			name:       "config",
+			path:       "/config",
+			statusCode: http.StatusOK,
+			response:   `{"webhook_secret":"secret123"}`,
+			invoke: func(ctx context.Context, client *Client) (string, error) {
+				response, err := client.Config(ctx)
+				if err != nil {
+					return "", err
+				}
+				return response.WebhookSecret, nil
+			},
+			expected: "secret123",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, tt.path, r.URL.Path)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.statusCode)
+				_, _ = io.WriteString(w, tt.response)
+			}))
+			defer server.Close()
+
+			client := &Client{
+				socketPath: "/tmp/test.sock",
+				baseURL:    server.URL,
+				httpClient: server.Client(),
+			}
+
+			got, err := tt.invoke(context.Background(), client)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, got)
+		})
+	}
+}
+
+func TestDaemonStatusError_ReadFailure(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     io.Reader
+		expected string
+	}{
+		{
+			name:     "partial body",
+			body:     io.MultiReader(strings.NewReader("partial body"), iotest.ErrReader(errors.New("boom"))),
+			expected: "daemon returned status 502: partial body [response body read error: boom]",
+		},
+		{
+			name:     "empty body",
+			body:     iotest.ErrReader(errors.New("boom")),
+			expected: "daemon returned status 502: [response body read error: boom]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := daemonStatusError(http.StatusBadGateway, tt.body)
+
+			assert.Equal(t, tt.expected, err.Error())
+		})
+	}
+}
