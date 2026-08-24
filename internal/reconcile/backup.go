@@ -311,7 +311,9 @@ func (d *DeployOps) backupFileSystem() backupArchiveFS {
 // The backed-up footprint is LIVE container appdata, so the walk tolerates churn
 // the way GNU tar does, instead of failing the deploy on it (#240 made a failed
 // backup abort the deploy, so spurious failures are outages):
-//   - a file that vanishes between listing and read is skipped (logged debug)
+//   - a path that vanishes before its tar header is written is skipped (logged
+//     debug); a regular file that vanishes after its header is written is
+//     zero-padded to the promised size so the archive remains valid
 //   - irregular files (sockets, devices, FIFOs) are skipped — archiving a live
 //     unix socket is meaningless and tar.FileInfoHeader rejects it
 //   - a file that shrinks mid-read is zero-padded to its header size so the
