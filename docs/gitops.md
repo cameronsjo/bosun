@@ -769,14 +769,17 @@ backups/
 
 ### Backed Up Paths
 
-Bosun discovers the rendered deploy targets and backs up their current regular
-files at the corresponding appdata destinations. Symlinks and irregular files
-are skipped. If deploy-target discovery itself fails, Bosun attempts a bounded
-full-appdata backup rather than treating the footprint as empty.
+During normal rendered-target enumeration, Bosun backs up regular staging files
+at the corresponding appdata destinations; symlinks and irregular entries are
+excluded from that managed-file list. If deploy-target discovery itself fails,
+Bosun attempts a bounded full-appdata backup rather than treating the footprint
+as empty. That fallback preserves symlink entries without following them.
 
 ### Remote Backup
 
-For remote deployments, runs `tar -czf -` over SSH and streams to local backup directory.
+For a non-empty remote footprint, Bosun runs `tar -czf -` over SSH and streams
+the archive to the local backup directory. An empty footprint performs no SSH
+work.
 
 ### Backup Verification
 
