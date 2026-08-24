@@ -26,11 +26,31 @@ The last backup path SHALL be stored for potential rollback during compose up. A
 - **THEN** a timestamped tar.gz is created containing the config paths
 - **AND** the archive is verified by deep inspection (lists and round-trips), not merely non-empty
 
+#### Scenario: Remote backup via SSH
+
+- **WHEN** a remote deployment runs
+- **THEN** a tar command runs over SSH to create the archive
+- **AND** transient SSH errors are retried with exponential backoff
+- **AND** the completed archive is verified by deep inspection
+
 #### Scenario: Remote backup propagates transport failure
 
 - **WHEN** a remote backup's SSH session fails (auth rejection, host-key mismatch, or mid-stream network drop)
 - **THEN** the remote command's stderr is surfaced, not discarded
 - **AND** the backup fails with the transport error rather than reporting success on a truncated archive
+
+#### Scenario: Backup destination excluded from the archive
+
+- **WHEN** the configured backup destination is nested within a backed-up path
+- **THEN** the created archive does not contain the backup destination directory or any prior backup
+- **AND** the archive size does not grow with the number of prior backups present
+
+#### Scenario: Backup exceeds its timeout
+
+- **WHEN** required backup creation or verification runs longer than `BackupTimeout`
+- **THEN** the backup is aborted and treated as a failure
+- **AND** the reconcile aborts before mutating target state
+- **AND** an error names the timeout as the cause
 
 #### Scenario: Truncated archive fails verification
 
@@ -50,11 +70,23 @@ The last backup path SHALL be stored for potential rollback during compose up. A
 - **THEN** the reconciler records that no backup is available with an empty last backup path
 - **AND** a later rollback skips cleanly with a "no backup available" message instead of failing against an empty directory
 
+#### Scenario: Old backups pruned
+
+- **WHEN** more than `BackupsToKeep` backups exist after the current deploy passes verification
+- **THEN** the oldest backups are removed, keeping only the most recent N
+- **AND** the prior-cycle backup remains available throughout the deploy window
+
 #### Scenario: Retention preserves last-known-good through deploy
 
 - **WHEN** `BackupsToKeep` is 1 and a new backup is created at the start of a deploy cycle
 - **THEN** the prior-cycle backup is retained until the current deploy passes verification
 - **AND** pruning to the configured count occurs only after successful verification
+
+#### Scenario: Backup failure does not block deploy
+
+- **WHEN** no existing configuration paths are present, so no required backup is attempted
+- **THEN** the empty-source result is not treated as a backup failure
+- **AND** the deployment continues with an empty last backup path
 
 ### Requirement: File Deployment
 
