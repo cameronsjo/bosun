@@ -11,6 +11,7 @@ const DIAGRAMS = [
   { id: "pipeline-overview", src: "docs/diagrams/pipeline-overview.mmd" },
   { id: "architecture", src: "docs/diagrams/architecture.mmd" },
   { id: "reconcile-pipeline", src: "docs/diagrams/reconcile-pipeline.mmd" },
+  { id: "locking-singleflight", src: "docs/diagrams/locking-singleflight.mmd" },
 ];
 
 /**
@@ -56,7 +57,11 @@ function main() {
       const srcPath = resolve(ROOT, src);
       const raw = readFileSync(srcPath, "utf-8");
       const processed = preprocess(raw);
-      const ascii = renderMermaidAscii(processed);
+      const ascii = renderMermaidAscii(processed)
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .join("\n")
+        .trimEnd();
       readme = patchReadme(readme, id, ascii);
       console.log(`  rendered: ${id}`);
     } catch (err) {

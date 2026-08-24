@@ -148,6 +148,11 @@ services:
 
 ### TCP Fallback (Opt-in)
 
+> **Historical proposal:** Port 9999 below was a phantom design value and never
+> shipped. The implemented optional TCP API defaults to `127.0.0.1:9090` and
+> requires `BOSUN_BEARER_TOKEN`. The current `BOSUN_LISTEN_ADDR` instead narrows
+> the HTTP server's port-8080 bind and is unrelated to the optional TCP API.
+
 **Bind**: `127.0.0.1:9999` (localhost only, never 0.0.0.0)
 
 **Use case**: Environments where socket mounting is awkward (some container runtimes, testing).
@@ -390,7 +395,10 @@ BOSUN_SECRETS_FILE=secrets.yaml.sops
 
 # Socket/API
 BOSUN_SOCKET_PATH=/var/run/bosun.sock
-# OR for TCP fallback:
+# Historical phantom proposal only; never shipped. The implemented optional
+# TCP API uses BOSUN_ENABLE_TCP, BOSUN_TCP_ADDR (default 127.0.0.1:9090),
+# and BOSUN_BEARER_TOKEN. BOSUN_LISTEN_ADDR now controls the HTTP server's
+# port-8080 bind, not the optional TCP API.
 BOSUN_LISTEN_ADDR=127.0.0.1:9999
 
 # Secrets
