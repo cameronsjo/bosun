@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.40.2](https://github.com/cameronsjo/bosun/compare/v0.40.1...v0.40.2) (2026-08-24)
+
+
+### Bug Fixes
+
+* **cli:** honor cancellation in setup and diagnostics ([7460c47](https://github.com/cameronsjo/bosun/commit/7460c47a72adcaf5cc99a65c2c81a7a67e8449e9))
+* **daemon:** bound client error responses ([e56a650](https://github.com/cameronsjo/bosun/commit/e56a650c084d8b291c7aaf225ffc641f2ddeb9d1))
+* **fileutil:** track created deploy directories ([f6ed4a3](https://github.com/cameronsjo/bosun/commit/f6ed4a34d76b067d9dae7748d6a78fbdbdbc378f))
+* **reconcile:** clear stale state on path skip ([40547ab](https://github.com/cameronsjo/bosun/commit/40547ab091ed143bd5fda4184620d7c16194edf6)), closes [#361](https://github.com/cameronsjo/bosun/issues/361)
+* **reconcile:** deliver alerts after cancellation ([70d9df4](https://github.com/cameronsjo/bosun/commit/70d9df436ef4253d764e2afaab06b6acd17195fc)), refs [#242](https://github.com/cameronsjo/bosun/issues/242)
+* **reconcile:** harden local rollback extraction ([537a5e3](https://github.com/cameronsjo/bosun/commit/537a5e30dbc959f05aa8fb0ca9c1488100917093)), closes [#449](https://github.com/cameronsjo/bosun/issues/449)
+* **reconcile:** reject colliding target state files ([66ef6a7](https://github.com/cameronsjo/bosun/commit/66ef6a70dd1e8cce4bafe68fdc6a4c4e7b588531)), closes [#260](https://github.com/cameronsjo/bosun/issues/260)
+* **reconcile:** skip empty remote backups ([74c7268](https://github.com/cameronsjo/bosun/commit/74c7268241bf8bc6ed2074712039ebf492ebe53f)), closes [#459](https://github.com/cameronsjo/bosun/issues/459)
+
+
+### Performance Improvements
+
+* **fileutil:** batch destination directory syncs ([41a06ee](https://github.com/cameronsjo/bosun/commit/41a06eed3da9697ad1cb91daf65974d4bb6f1890)), closes [#414](https://github.com/cameronsjo/bosun/issues/414)
+
 ## [0.40.1](https://github.com/cameronsjo/bosun/compare/v0.40.0...v0.40.1) (2026-08-24)
 
 
