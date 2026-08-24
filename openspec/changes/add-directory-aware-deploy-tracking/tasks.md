@@ -11,9 +11,10 @@
 - [ ] 2.3 Propagate created descendant directories through the separately deployed compose target, prefix them with `compose`, and add an explicit compose-directory hook regression test.
 - [ ] 2.4 Report a top-level managed file-to-directory transition as the target path, report its created descendants, and keep ordinary deploy-root creation excluded as plumbing.
 - [ ] 2.5 Add discovered-appdata deploy and hook tests for an empty-directory-only change, nested directory creation, target prefixing, top-level and nested file-to-directory transitions, repeat no-ops, and matching/non-matching post-sync hook patterns.
-- [ ] 2.6 Bind and test authoritative path evidence to successful local content-hash mode, including empty no-op and deletion-only results; consumers must use those complete path sets without fallback.
-- [ ] 2.7 Preserve and test standard-copy local behavior: because the selected mode is non-authoritative, hooks use git diff normalized to canonical staging-relative paths even if a partial path slice is non-empty.
-- [ ] 2.8 Preserve and test remote behavior: because the selected mode is non-authoritative, every configured hook remains eligible to run unconditionally regardless of either path slice's length.
+- [ ] 2.6 Preserve and test authoritative path evidence for successful local content-hash results, including empty no-op and deletion-only results; consumers must use those complete path sets without fallback.
+- [ ] 2.7 Preserve and test standard-copy local direct evidence: non-empty `WrittenFiles` or `DeletedFiles` are evaluated without git-diff fallback.
+- [ ] 2.8 Preserve and test standard-copy local fallback: only when both `WrittenFiles` and `DeletedFiles` are empty, hooks use git diff normalized to canonical staging-relative paths.
+- [ ] 2.9 Preserve and test remote behavior: every configured hook remains eligible to run unconditionally regardless of either path slice's length.
 
 ## 3. Deploy invariant integration
 
@@ -30,5 +31,5 @@
 
 ## 5. Verification
 
-- [ ] 5.1 Run focused tests repeatedly and under `-race`, including fileutil, discovered-target and compose aggregation, hooks, managed transitions, deploy invariants, authoritative no-op and deletion-only results, normalized standard-copy fallback, and remote all-hooks fallback.
+- [ ] 5.1 Run focused tests repeatedly and under `-race`, including fileutil, discovered-target and compose aggregation, hooks, managed transitions, deploy invariants, authoritative no-op and deletion-only results, standard-copy direct and normalized-diff branches, and remote all-hooks behavior.
 - [ ] 5.2 Run repository tests, coverage, vet, lint, supported cross-platform builds, and strict OpenSpec validation; cover new error paths so the patch coverage gate remains green.

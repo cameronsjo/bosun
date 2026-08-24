@@ -20,11 +20,11 @@ that missing contract before PR #551 is eligible to merge.
 - Local deployment SHALL preserve those paths as canonical staging-relative
   `DeployResult.WrittenFiles` entries so post-sync hooks can observe directory
   creation without retriggering on a no-op reconcile.
-- Hook fallback selection SHALL derive path-evidence authority from deployment
-  mode, never from path-slice length. Successful content-hash local deploy
-  results SHALL be authoritative even when empty; standard-copy local and
-  remote results SHALL remain non-authoritative and retain their existing hook
-  fallbacks even when a partial path slice is non-empty.
+- Hook change-source selection SHALL preserve its existing priority: remote
+  deploys fire all hooks; local content-hash results are authoritative even when
+  empty; standard-copy local results use non-empty `WrittenFiles` or
+  `DeletedFiles` as direct evidence; and only an empty standard-copy result uses
+  normalized git diff. This proposal SHALL NOT add a parallel authority marker.
 - Stage 9 SHALL verify every reported path exists with the source entry's type and
   a fresh mtime. A directory-only change set SHALL still run the regular-file
   content-equality check that detects silent sync failures.
@@ -79,16 +79,17 @@ that missing contract before PR #551 is eligible to merge.
   - Hook consumers: `executePostSyncHooks` and `EvaluatePostSyncHooks` treat the
     merged `WrittenFiles` / `DeletedFiles` values as the complete deploy path set
     in local content-hash mode, including authoritative empty and deletion-only
-    results.
-  - Non-authoritative consumers: standard-copy local deploys retain normalized
-    git-diff fallback and remote deploys retain their existing unconditional
-    all-hooks fallback regardless of whether a partial path slice is non-empty.
+    results; standard-copy local results use non-empty slices as direct evidence.
+  - Fallback consumers: standard-copy local deploys use normalized git diff only
+    when both path slices are empty; remote deploys retain their existing
+    unconditional all-hooks behavior regardless of either slice's length.
   - Persistence consumer: `DeployState.DeployedFiles` remains a regular-file
     manifest and does not gain empty-directory ownership in this change.
 - Tests: focused fileutil directory-creation and collision cases; local deploy
   aggregation, prefixing, type-transition, hook-matching, invariant existence,
-  wrong-type, stale-mtime, directory-only content, mode-authority no-op and
-  deletion-only behavior, and repeat no-op regressions.
+  wrong-type, stale-mtime, directory-only content, content-hash no-op and
+  deletion-only authority, standard-copy direct and fallback selection, remote
+  selection, and repeat no-op regressions.
 - Docs: `docs/adr/0013-deploy-sync-invariant-gates.md`, `docs/gitops.md`,
   `docs/error-handling.md`, `docs/troubleshooting.md`, and
   `skills/onboard/resources/gitops.md`; configuration docs only where they
