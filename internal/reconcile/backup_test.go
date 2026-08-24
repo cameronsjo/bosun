@@ -263,6 +263,40 @@ func TestCreateBackup_RemoteEmptyFootprintCreatesNoAnchor(t *testing.T) {
 	assert.NoDirExists(t, backupDir, "an empty remote footprint must not leave a backup artifact")
 }
 
+// TestCreateBackup_RemoteEnumerationFailureIsNotEmptyFootprint distinguishes a
+// successful empty staging tree from a walk that failed before discovering any
+// paths. The latter is an unknown backup footprint and must fail before the
+// remote empty-footprint shortcut can clear the rollback requirement.
+func TestCreateBackup_RemoteEnumerationFailureIsNotEmptyFootprint(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod 0000 does not deny root; skipping permission-based fault injection")
+	}
+
+	tmpDir := evalSymlinks(t, t.TempDir())
+	stagingDir := filepath.Join(tmpDir, "staging")
+	locked := filepath.Join(stagingDir, "appdata", "service")
+	backupDir := filepath.Join(tmpDir, "backups")
+	require.NoError(t, os.MkdirAll(locked, 0755))
+	require.NoError(t, os.Chmod(locked, 0000))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0755) })
+
+	r := NewReconciler(&Config{
+		StagingDir:        stagingDir,
+		InfraSubDir:       ".",
+		BackupDir:         backupDir,
+		RemoteAppdataPath: "/mnt/appdata",
+		BackupsToKeep:     3,
+		TargetHost:        "localhost",
+	})
+
+	err := r.createBackup(context.Background(), nil, false)
+
+	require.ErrorContains(t, err, "failed to enumerate backup footprint")
+	assert.Empty(t, r.lastBackupPath)
+	assert.False(t, r.lastBackupIsFresh)
+	assert.NoDirExists(t, backupDir, "enumeration failure must abort before SSH or artifact creation")
+}
+
 // TestCreateBackup_DiscoveryFailureFallsBackToFullAppdata verifies that when
 // deploy-target discovery fails (here, a missing staging subtree), the backup
 // falls back to the full appdata path rather than producing a no-op archive —
