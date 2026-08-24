@@ -214,7 +214,7 @@ Git sync or secret decryption.
 
 ## Deploy State Tracking
 
-The reconciler maintains persistent state in a JSON file at `/var/lib/bosun/deploy-state.json` (configurable via `BOSUN_STATE_DIR`). This state drives skip logic, circuit breaking, and drift detection. Both daemon and one-shot modes create the state file's parent directory before a real reconciliation; one-shot multi-target runs prepare and verify each target's state directory independently and fail that target before deployment if the directory cannot be written. A one-shot dry run works against a temporary copy of existing state, preserving skip and circuit-breaker decisions without creating or updating the configured state path.
+The reconciler maintains persistent state in a JSON file at `/var/lib/bosun/deploy-state.json` (configurable via `BOSUN_STATE_DIR`). This state drives skip logic, circuit breaking, and drift detection. Both daemon and one-shot modes create the state file's parent directory before a real reconciliation; one-shot multi-target runs prepare and verify each target's state directory independently and fail that target before deployment if the directory cannot be written. Multi-target configuration is rejected when two effective state-file paths collide after path cleaning; case-only variants also collide on Windows and macOS. Daemon startup performs this validation before binding API listeners or announcing readiness. A one-shot dry run works against a temporary copy of existing state, preserving skip and circuit-breaker decisions without creating or updating the configured state path.
 
 ### State File Schema (v2)
 

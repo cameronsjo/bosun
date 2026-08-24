@@ -6,6 +6,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -250,7 +251,24 @@ func (c *Config) ResolveTargets() ([]Target, error) {
 			return nil, fmt.Errorf("target %q: %w", target.Name, err)
 		}
 	}
+	return c.resolveTargetLayout()
+}
 
+// ValidateMultiTargetLayout validates structural multi-target configuration
+// without re-validating operational hooks. Daemon startup uses this narrower
+// entry point so it can preserve its existing aggregation of every hook error
+// while rejecting target resource collisions before binding API listeners.
+func (c *Config) ValidateMultiTargetLayout() error {
+	// A zero- or one-target config cannot collide. Leave its legacy validation
+	// behavior unchanged, including support for partial embedded configs.
+	if len(c.Targets) < 2 {
+		return nil
+	}
+	_, err := c.resolveTargetLayout()
+	return err
+}
+
+func (c *Config) resolveTargetLayout() ([]Target, error) {
 	if len(c.Targets) > 0 {
 		if len(c.Targets) == 1 && c.Targets[0].IsDefault() {
 			defaults := []Target{c.implicitDefaultTarget(c.Targets[0])}
@@ -303,16 +321,27 @@ type targetResourceKey struct {
 	resource string
 }
 
-// validateTargetResourceCollisions rejects targets that would operate on the
-// same Docker Compose namespace or deploy destination. The host is part of
-// each key: using the same project name or filesystem path on separate hosts is
-// intentional and safe, while a shared host requires both resources to differ.
+// validateTargetResourceCollisions rejects targets that would share local
+// deploy state or operate on the same Docker Compose namespace or destination.
+// State files are process-local regardless of target host, while namespace and
+// deploy-path keys include the host so identical remote resources remain safe
+// when they live on separate machines.
 func (c *Config) validateTargetResourceCollisions(targets []Target) error {
+	stateFiles := make(map[string]string, len(targets))
 	namespaces := make(map[targetResourceKey]string, len(targets))
 	deployPaths := make(map[targetResourceKey]string, len(targets))
 
 	for _, target := range targets {
 		effective := c.ConfigForTarget(target)
+		stateFile := normalizeTargetStateFile(effective.StateFile)
+		if first, ok := stateFiles[stateFile]; ok {
+			return fmt.Errorf(
+				"targets %q and %q resolve to the same state file: %q",
+				first, target.Name, effective.StateFile,
+			)
+		}
+		stateFiles[stateFile] = target.Name
+
 		host := strings.ToLower(effective.TargetHost)
 
 		projectName, projectLabel := normalizeTargetProjectName(effective.ProjectName)
@@ -343,6 +372,17 @@ func (c *Config) validateTargetResourceCollisions(targets []Target) error {
 	}
 
 	return nil
+}
+
+func normalizeTargetStateFile(stateFile string) string {
+	normalized := filepath.Clean(stateFile)
+	// Windows paths are case-insensitive. Most macOS deployments use the
+	// case-insensitive APFS default, so reject case-only aliases there too rather
+	// than permit two targets to overwrite one state file on the common setup.
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		normalized = strings.ToLower(normalized)
+	}
+	return normalized
 }
 
 func normalizeTargetProjectName(projectName string) (normalized, label string) {
