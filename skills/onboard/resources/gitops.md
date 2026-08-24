@@ -600,14 +600,14 @@ ACLs, or extended attributes across hosts.
 Devices, sockets, FIFOs, and other special source entries fail closed before
 transfer because Bosun cannot portably verify them after extraction. Local
 verification uses a process-owned `bosun-deploy-*` workspace in the platform
-temp directory (on Unix, `${TMPDIR:-/tmp}`; on Windows, `%TEMP%`), containing
-the archive and a full extracted round trip. Unix creates the workspace at mode
-0700 and its archive at mode 0600; Windows uses the temp directory's platform
-ACL semantics. Plan for temporary free space of roughly twice the source-tree
-size in addition to the existing staging tree. Normal success and error paths
-remove the workspace; after an unclean Bosun or host crash, operators may
-remove stale `bosun-deploy-*` workspaces owned by the Bosun service account once
-no reconcile process is running.
+temp directory (on Unix, `${TMPDIR:-/tmp}`; on Windows, the Windows temporary
+directory), containing the archive and a full extracted round trip. Unix
+creates the workspace at mode 0700 and its archive at mode 0600; Windows uses
+the temp directory's platform ACL semantics. Plan for temporary free space of
+roughly twice the source-tree size in addition to the existing staging tree.
+Normal success and error paths remove the workspace; after an unclean Bosun or
+host crash, operators may remove stale `bosun-deploy-*` workspaces owned by the
+Bosun service account once no reconcile process is running.
 
 The staged tree is promoted with a retain-old rename-swap: the live target is moved aside (never deleted first), the new tree is moved in, and the retained copy is removed only on success — so an interrupted deploy leaves the old or the new tree, never an empty target. A missing target left by a prior interrupted deploy is self-healed on the next run from the newest retained copy.
 

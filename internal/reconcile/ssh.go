@@ -72,17 +72,43 @@ type transferEntry struct {
 	HardlinkTo string
 }
 
+type transferFileIdentity struct {
+	volume uint64
+	file   uint64
+}
+
+type transferManifestOps struct {
+	identity func(string, fs.FileInfo) (transferFileIdentity, bool)
+	sameFile func(fs.FileInfo, fs.FileInfo) bool
+	hashFile func(context.Context, string) ([sha256.Size]byte, error)
+}
+
+func defaultTransferManifestOps() transferManifestOps {
+	return transferManifestOps{
+		identity: platformTransferFileIdentity,
+		sameFile: os.SameFile,
+		hashFile: hashFileWithContext,
+	}
+}
+
 // buildTransferManifest snapshots every deployable entry below root. Paths are
 // kept as strings rather than serialized into a line-oriented checksum format,
 // so newlines, backslashes, and other control characters remain unambiguous.
 // Hard-link relationships are recorded in addition to each file's content hash.
 func buildTransferManifest(ctx context.Context, root string) ([]transferEntry, error) {
+	return buildTransferManifestWithOps(ctx, root, defaultTransferManifestOps())
+}
+
+func buildTransferManifestWithOps(ctx context.Context, root string, ops transferManifestOps) ([]transferEntry, error) {
 	var entries []transferEntry
 	type regularEntry struct {
-		path string
-		info fs.FileInfo
+		path          string
+		info          fs.FileInfo
+		sha256        string
+		identityKnown bool
 	}
 	var regulars []regularEntry
+	identities := make(map[transferFileIdentity]int)
 	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
@@ -110,18 +136,65 @@ func buildTransferManifest(ctx context.Context, root string) ([]transferEntry, e
 			info, infoErr := d.Info()
 			err = infoErr
 			if err == nil {
-				for _, regular := range regulars {
-					if os.SameFile(regular.info, info) {
-						entry.HardlinkTo = regular.path
-						break
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
+				}
+				identity, identityKnown := ops.identity(path, info)
+				canonical := -1
+				if identityKnown {
+					if existing, ok := identities[identity]; ok {
+						canonical = existing
+					} else {
+						// A prior lookup may have fallen back even though this one
+						// succeeded. Only those unindexed identities need a scan.
+						for i := range regulars {
+							if regulars[i].identityKnown {
+								continue
+							}
+							if ctxErr := ctx.Err(); ctxErr != nil {
+								return ctxErr
+							}
+							if ops.sameFile(regulars[i].info, info) {
+								canonical = i
+								identities[identity] = i
+								break
+							}
+						}
+					}
+				} else {
+					// Correctness wins when a platform identity is unavailable:
+					// compare against unique prior files, checking cancellation
+					// inside the only potentially quadratic fallback.
+					for i := range regulars {
+						if ctxErr := ctx.Err(); ctxErr != nil {
+							return ctxErr
+						}
+						if ops.sameFile(regulars[i].info, info) {
+							canonical = i
+							break
+						}
 					}
 				}
-				regulars = append(regulars, regularEntry{path: rel, info: info})
-			}
-			if err == nil {
-				var sum [32]byte
-				sum, err = hashFileWithContext(ctx, path)
-				entry.SHA256 = hex.EncodeToString(sum[:])
+
+				if canonical >= 0 {
+					entry.HardlinkTo = regulars[canonical].path
+					entry.SHA256 = regulars[canonical].sha256
+				} else {
+					var sum [sha256.Size]byte
+					sum, err = ops.hashFile(ctx, path)
+					if err == nil {
+						entry.SHA256 = hex.EncodeToString(sum[:])
+						regulars = append(regulars, regularEntry{
+							path:          rel,
+							info:          info,
+							sha256:        entry.SHA256,
+							identityKnown: identityKnown,
+						})
+						if identityKnown {
+							identities[identity] = len(regulars) - 1
+						}
+					}
+				}
 			}
 		default:
 			return fmt.Errorf("%w: %q (%s)", ErrUnsupportedTransferEntry, rel, d.Type())
