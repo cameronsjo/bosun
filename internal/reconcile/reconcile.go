@@ -2021,6 +2021,8 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 	// rollback fires against a non-anchor, and the misleading "Backup saved" is
 	// skipped. Both local and remote backup paths signal this with an empty name.
 	if backupName == "" {
+		r.lastBackupPath = ""
+		r.lastBackupIsFresh = false
 		logger.Info().Msg("No rollback anchor created: no existing paths to back up")
 		return nil
 	}

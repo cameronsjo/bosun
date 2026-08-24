@@ -235,8 +235,8 @@ func TestCreateBackup_RemotePathPropagatesFailure(t *testing.T) {
 
 // TestCreateBackup_RemoteEmptyFootprintCreatesNoAnchor covers the caller-level
 // fresh-host path from #459. A successfully discovered but empty staging tree
-// produces no remote paths, so createBackup must proceed without consulting the
-// unresolved host or recording an archive directory as a rollback anchor.
+// produces no remote paths, so createBackup must validate the configured host
+// but perform no SSH work or record an archive directory as a rollback anchor.
 func TestCreateBackup_RemoteEmptyFootprintCreatesNoAnchor(t *testing.T) {
 	tmpDir := evalSymlinks(t, t.TempDir())
 	stagingDir := filepath.Join(tmpDir, "staging")
@@ -249,11 +249,13 @@ func TestCreateBackup_RemoteEmptyFootprintCreatesNoAnchor(t *testing.T) {
 		BackupDir:         backupDir,
 		RemoteAppdataPath: "/mnt/appdata",
 		BackupsToKeep:     3,
-		// Deliberately leave TargetHost empty. With no remote paths there is no
-		// SSH operation to authenticate, so host validation must not block the
-		// fresh-host deploy.
+		TargetHost:        "localhost",
 	}
 	r := NewReconciler(cfg)
+	// A no-archive result records this run's state explicitly; it must not rely
+	// on Run having cleared a prior cycle's rollback anchor first.
+	r.lastBackupPath = filepath.Join(backupDir, "stale-anchor")
+	r.lastBackupIsFresh = true
 
 	require.NoError(t, r.createBackup(context.Background(), nil, false))
 	assert.Empty(t, r.lastBackupPath, "an empty remote footprint must not create a rollback anchor")
@@ -416,17 +418,17 @@ func assertNoBackupDirs(t *testing.T, backupDir string) {
 
 // TestBackupRemote_EmptyFootprintSkipsAllWork verifies the leaf operation's
 // ordering, not just its final return values. Nothing-to-back-up is a clean
-// no-op even when values that would fail later stages are adversarial: no host
-// validation, destination creation, context-bound SSH, or archive verification
-// may run when the remote footprint is empty.
+// no-op after host validation even when later-stage values are adversarial: no
+// destination creation, context-bound SSH, or archive verification may run when
+// the remote footprint is empty.
 func TestBackupRemote_EmptyFootprintSkipsAllWork(t *testing.T) {
-	t.Run("invalid host is irrelevant without an SSH operation", func(t *testing.T) {
+	t.Run("invalid host still fails at the common remote boundary", func(t *testing.T) {
 		backupDir := filepath.Join(t.TempDir(), "backups")
 		d := NewDeployOps(false, "")
 
 		backupName, err := d.BackupRemote(context.Background(), "-oProxyCommand=sh", backupDir, nil)
 
-		require.NoError(t, err)
+		require.ErrorContains(t, err, "invalid SSH host")
 		assert.Empty(t, backupName)
 		assert.NoDirExists(t, backupDir)
 	})
