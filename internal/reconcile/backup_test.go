@@ -982,21 +982,23 @@ func TestBackup_SkipsIrregularFiles(t *testing.T) {
 // partial backup directory removed, #352) instead of being discovered as
 // missing/short at verification — or worse, silently succeeding.
 func TestBackup_UnreadableFileIsFatal(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root; chmod 000 does not deny access")
-	}
 	tmpDir := evalSymlinks(t, t.TempDir())
 	appdata := filepath.Join(tmpDir, "appdata")
 	require.NoError(t, os.MkdirAll(appdata, 0755))
 	secret := filepath.Join(appdata, "unreadable.yaml")
 	require.NoError(t, os.WriteFile(secret, []byte("key: value\n"), 0644))
-	require.NoError(t, os.Chmod(secret, 0000))
-	defer func() { _ = os.Chmod(secret, 0644) }()
 
 	backupDir := filepath.Join(tmpDir, "backups")
 	d := NewDeployOps(false, "")
+	d.backupFS = &backupArchiveFS{open: func(name string) (*os.File, error) {
+		if name == secret {
+			return nil, &os.PathError{Op: "open", Path: name, Err: fs.ErrPermission}
+		}
+		return os.Open(name)
+	}}
 	_, err := d.Backup(context.Background(), backupDir, []string{appdata})
 	require.Error(t, err, "an unreadable file must fail the backup loudly")
+	assert.ErrorIs(t, err, fs.ErrPermission)
 	assert.Contains(t, err.Error(), "unreadable.yaml")
 
 	entries, readErr := os.ReadDir(backupDir)
@@ -1027,21 +1029,27 @@ func TestZeroReader(t *testing.T) {
 // that cannot be descended into (as opposed to a file that cannot be opened)
 // must fail the backup loudly with path context, and leave no partial backup.
 func TestBackup_UnreadableDirIsFatal(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root; chmod 000 does not deny access")
-	}
 	tmpDir := evalSymlinks(t, t.TempDir())
 	appdata := filepath.Join(tmpDir, "appdata")
 	locked := filepath.Join(appdata, "locked")
 	require.NoError(t, os.MkdirAll(locked, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(locked, "hidden.yaml"), []byte("key: value\n"), 0644))
-	require.NoError(t, os.Chmod(locked, 0000))
-	defer func() { _ = os.Chmod(locked, 0755) }()
 
 	backupDir := filepath.Join(tmpDir, "backups")
 	d := NewDeployOps(false, "")
+	d.backupFS = &backupArchiveFS{walk: func(root string, walkFn filepath.WalkFunc) error {
+		info, err := os.Lstat(root)
+		if err != nil {
+			return err
+		}
+		if err := walkFn(root, info, nil); err != nil {
+			return err
+		}
+		return walkFn(locked, nil, &os.PathError{Op: "readdir", Path: locked, Err: fs.ErrPermission})
+	}}
 	_, err := d.Backup(context.Background(), backupDir, []string{appdata})
 	require.Error(t, err, "an unreadable directory must fail the backup loudly")
+	assert.ErrorIs(t, err, fs.ErrPermission)
 	assert.Contains(t, err.Error(), "locked")
 
 	entries, readErr := os.ReadDir(backupDir)
