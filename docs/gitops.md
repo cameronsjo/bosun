@@ -216,6 +216,21 @@ Git sync or secret decryption.
 
 The reconciler maintains persistent state in a JSON file at `/var/lib/bosun/deploy-state.json` (configurable via `BOSUN_STATE_DIR`). This state drives skip logic, circuit breaking, and drift detection. Both daemon and one-shot modes create the state file's parent directory before a real reconciliation; one-shot multi-target runs prepare and verify each target's state directory independently and fail that target before deployment if the directory cannot be written. Multi-target configuration is rejected when two effective state-file paths collide after path cleaning; case-only variants also collide on Windows and macOS. Daemon startup performs this validation before binding API listeners or announcing readiness. A one-shot dry run works against a temporary copy of existing state, preserving skip and circuit-breaker decisions without creating or updating the configured state path.
 
+Container deployments must persist `/var/lib/bosun`. The shipped Compose and
+Unraid definitions bind that directory to `/mnt/user/appdata/bosun/state`; keep
+an equivalent writable mount when defining a custom deployment. Before starting
+the container, create the host directory for Bosun's fixed UID/GID 1000:
+
+```bash
+install -d -o 1000 -g 1000 -m 0700 /mnt/user/appdata/bosun/state
+```
+
+The shipped Compose definition refuses to auto-create a missing source directory,
+which avoids Docker creating it as `root:root`. Bosun also write-probes the state
+directory and fails startup before binding API listeners when it is not writable.
+Without the mount, container replacement discards drift history, skip state, and
+circuit-breaker state, forcing the next run to reconcile the full declared estate.
+
 ### State File Schema (v2)
 
 ```json

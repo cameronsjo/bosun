@@ -346,6 +346,33 @@ func (d *Daemon) warnSocketAuthPosture(logger zerolog.Logger) {
 	}
 }
 
+// prepareStateDir creates and write-probes the deploy-state directory before
+// any listener starts. MkdirAll alone is insufficient for bind mounts: an
+// existing root-owned directory passes it even though the non-root daemon
+// cannot create the state file.
+func prepareStateDir(stateFile string) error {
+	if stateFile == "" {
+		return nil
+	}
+
+	stateDir := filepath.Dir(stateFile)
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return fmt.Errorf("create state directory %q: %w", stateDir, err)
+	}
+
+	probe, err := os.CreateTemp(stateDir, ".bosun-state-probe-*")
+	if err != nil {
+		return fmt.Errorf("state directory %q is not writable: %w", stateDir, err)
+	}
+	probePath := probe.Name()
+	closeErr := probe.Close()
+	removeErr := os.Remove(probePath)
+	if cleanupErr := errors.Join(closeErr, removeErr); cleanupErr != nil {
+		return fmt.Errorf("clean up state directory probe %q: %w", probePath, cleanupErr)
+	}
+	return nil
+}
+
 // Run starts the daemon and blocks until shutdown.
 // It handles SIGTERM and SIGINT for graceful shutdown.
 func (d *Daemon) Run(ctx context.Context) (err error) {
@@ -399,15 +426,18 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	d.warnMetricsAuthPosture(logger)
 	d.warnSocketAuthPosture(logger)
 
-	// Ensure state directory exists for deploy state tracking.
+	// Ensure state storage is usable before any API listener or reconcile loop
+	// starts. A persistent mount that exists but is not writable is fatal: if we
+	// continued, drift, skip, and circuit-breaker state would silently disappear.
 	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.StateFile != "" {
 		stateDir := filepath.Dir(d.config.ReconcileConfig.StateFile)
-		logger.Debug().Str(log.FieldPath, stateDir).Msg("Preparing to create state directory")
-		if err := os.MkdirAll(stateDir, 0755); err != nil {
+		logger.Debug().Str(log.FieldPath, stateDir).Msg("Preparing deploy state directory")
+		if err := prepareStateDir(d.config.ReconcileConfig.StateFile); err != nil {
 			logger.Error().
 				Err(err).
 				Str(log.FieldPath, stateDir).
-				Msg("Failed to create state directory")
+				Msg("Deploy state directory is not writable")
+			return fmt.Errorf("prepare deploy state: %w", err)
 		}
 	}
 

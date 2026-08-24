@@ -152,19 +152,33 @@ git push -u origin main
 
 ### Install Bosun
 
-1. Search for "bosun"
-2. Click **bosun**
-3. Configure:
+1. Open an Unraid terminal and create the persistent state directory for the
+   container's fixed UID/GID 1000:
+
+   ```bash
+   install -d -o 1000 -g 1000 -m 0700 /mnt/user/appdata/bosun/state
+   ```
+
+2. Search for "bosun"
+3. Click **bosun**
+4. Configure:
 
 | Setting | Value |
 |---------|-------|
 | Config Path | `/mnt/user/appdata/bosun` |
+| State Path | `/mnt/user/appdata/bosun/state` |
 | Git Repository URL | `https://github.com/YOUR_USER/infrastructure.git` |
 | Age Key File | `/config/age-key.txt` |
 | GitHub Webhook Secret | (generate random string) |
 | Discord Webhook URL | (optional) |
 
-4. Click **Apply**
+5. Click **Apply**
+
+State Path is required. It mounts the daemon's `/var/lib/bosun` directory on
+persistent appdata so drift detection, path-aware skip decisions, and circuit
+breakers retain their history when the container is replaced. Bosun refuses to
+start before binding its API listeners if UID/GID 1000 cannot write the mounted
+directory.
 
 ### Copy Age Key to Unraid
 

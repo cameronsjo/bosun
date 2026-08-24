@@ -35,7 +35,16 @@ Docker templates for installing bosun on Unraid via Community Applications.
 
 Before installing bosun, you need:
 
-### 1. Age Key for SOPS
+### 1. Persistent State Directory
+
+Create the State Path before applying the template. Bosun runs as UID/GID 1000;
+an appdata directory auto-created as `root:root` is not writable by the daemon.
+
+```bash
+install -d -o 1000 -g 1000 -m 0700 /mnt/user/appdata/bosun/state
+```
+
+### 2. Age Key for SOPS
 
 Generate an Age keypair for secret encryption:
 
@@ -49,7 +58,7 @@ scp age-key.txt root@unraid:/mnt/user/appdata/bosun/age-key.txt
 
 Keep the public key (starts with `age1...`) for your `.sops.yaml` config.
 
-### 2. GitHub Repository
+### 3. GitHub Repository
 
 Create a repo with your Docker Compose configs:
 
@@ -62,7 +71,7 @@ infrastructure/
     └── app2.yml.tmpl
 ```
 
-### 3. GitHub Webhook (Optional)
+### 4. GitHub Webhook (Optional)
 
 For instant deploys (vs hourly polling):
 
@@ -75,7 +84,7 @@ For instant deploys (vs hourly polling):
 
 For external access, expose via Tailscale Funnel or Cloudflare Tunnel.
 
-### 4. Discord Webhook (Optional)
+### 5. Discord Webhook (Optional)
 
 For deployment notifications:
 
@@ -85,8 +94,9 @@ For deployment notifications:
 
 ## Configuration
 
-| Variable | Required | Description |
+| Setting | Required | Description |
 |----------|----------|-------------|
+| `State Path` | Yes | Host directory mounted at `/var/lib/bosun`; preserves deploy state across container replacement |
 | `BOSUN_REPO_URL` | Yes | GitHub repo URL (HTTPS) |
 | `BOSUN_GIT_USERNAME` | No | Private HTTPS Git username; set together with `BOSUN_GIT_TOKEN` |
 | `BOSUN_GIT_TOKEN` | No | Private HTTPS Git token (masked); set together with `BOSUN_GIT_USERNAME` |
@@ -101,6 +111,12 @@ origin. Bosun rejects partial pairs, URL-embedded credentials, HTTP URLs, and
 cross-origin or downgrade redirects before forwarding credentials. Leave both
 variables empty for anonymous HTTPS. After rotating either value, restart the
 container; project config reload does not rotate Git credentials.
+
+Keep the State Path mounted at `/var/lib/bosun`. The deploy state stored there
+drives drift detection, path-aware skip decisions, and circuit breakers. If the
+mount is removed, replacing the container also removes that history and the next
+run must reconcile the full declared estate. If the mounted directory exists but
+UID/GID 1000 cannot write it, Bosun fails startup before binding its API listeners.
 
 ## Network Configuration
 
