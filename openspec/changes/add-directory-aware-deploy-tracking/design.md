@@ -14,6 +14,8 @@ empty results authoritative.
   content-hash change-set pipeline.
 - Preserve canonical staging-relative paths for hooks and source-relative paths
   for per-target invariant verification.
+- Define whether a deploy result is a complete, authoritative path-level change
+  set from the selected deployment mode, independently of path-slice length.
 - Distinguish ordinary target-root plumbing from a target root that is itself a
   managed file-to-directory transition.
 - Keep persisted ownership file-only; ownership of empty directories and later
@@ -26,6 +28,12 @@ empty results authoritative.
   consume changed deploy paths regardless of type, and stage 9 can classify each
   source entry before checking the destination. A second field would duplicate
   aggregation, prefixing, diagnostics, and hook merging.
+- **Bind authority to the selected deployment mode.** A successful local
+  content-hash deploy returns complete path-level evidence even when both path
+  slices are empty. Standard-copy local and remote deploys do not provide
+  complete evidence, including when they report a partial path such as a
+  managed deletion. The hook consumer already knows the local/remote and
+  content-hash/standard mode, so no duplicate result marker is needed.
 - **Record only descendant directories created by the current operation.** A
   pre-existing directory is a no-op. An ordinarily created target root and its
   missing ancestors are plumbing, not source-tree changes, and remain excluded.
@@ -41,17 +49,22 @@ empty results authoritative.
 - **Do not expand `DeployState.DeployedFiles`.** It remains the regular-file
   ownership manifest. A later change may define persisted directory ownership
   and the safety rules for directory-to-file replacement.
-- **Keep non-authoritative modes on their existing fallbacks.** A result lacks
-  per-path evidence only when both `WrittenFiles` and `DeletedFiles` are empty.
-  Standard-copy local deploys then continue to use normalized git diff; remote
+- **Keep non-authoritative modes on their existing fallbacks.** Consumers select
+  authority from the selected deployment mode, never from path-slice length.
+  Standard-copy local deploys continue to use normalized git diff; remote
   deploys continue to fire all hooks unconditionally because SSH/tar provides
-  no authoritative path-level result.
+  no authoritative path-level result. An authoritative content-hash result uses
+  its created, written, and deleted paths even when that set is empty or
+  deletion-only.
 
 ## Risks / Trade-offs
 
 - Existing callers may read `WrittenFiles` as file-only. The implementation and
   documentation audit every producer, aggregator, invariant consumer, hook
   consumer, and persistence boundary before changing the contract.
+- Producer and consumer tests cover authoritative content-hash no-op and
+  deletion-only results plus non-authoritative standard-copy partial results,
+  so slice shape cannot silently change fallback selection.
 - Directory mtimes can have coarse filesystem resolution. The invariant retains
   the existing reconcile-start comparison semantics and associated platform
   tests rather than introducing a second freshness definition.

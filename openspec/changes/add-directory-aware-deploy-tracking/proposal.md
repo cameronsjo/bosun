@@ -20,6 +20,11 @@ that missing contract before PR #551 is eligible to merge.
 - Local deployment SHALL preserve those paths as canonical staging-relative
   `DeployResult.WrittenFiles` entries so post-sync hooks can observe directory
   creation without retriggering on a no-op reconcile.
+- Hook fallback selection SHALL derive path-evidence authority from deployment
+  mode, never from path-slice length. Successful content-hash local deploy
+  results SHALL be authoritative even when empty; standard-copy local and
+  remote results SHALL remain non-authoritative and retain their existing hook
+  fallbacks even when a partial path slice is non-empty.
 - Stage 9 SHALL verify every reported path exists with the source entry's type and
   a fresh mtime. A directory-only change set SHALL still run the regular-file
   content-equality check that detects silent sync failures.
@@ -72,15 +77,18 @@ that missing contract before PR #551 is eligible to merge.
     separately preserves source-file content equality when no regular file was
     written.
   - Hook consumers: `executePostSyncHooks` and `EvaluatePostSyncHooks` treat the
-    merged `WrittenFiles` / `DeletedFiles` values as deploy paths.
-  - Non-authoritative consumers: when both `WrittenFiles` and `DeletedFiles` are
-    empty, standard-copy local deploys retain normalized git-diff fallback and
-    remote deploys retain their existing unconditional all-hooks fallback.
+    merged `WrittenFiles` / `DeletedFiles` values as the complete deploy path set
+    in local content-hash mode, including authoritative empty and deletion-only
+    results.
+  - Non-authoritative consumers: standard-copy local deploys retain normalized
+    git-diff fallback and remote deploys retain their existing unconditional
+    all-hooks fallback regardless of whether a partial path slice is non-empty.
   - Persistence consumer: `DeployState.DeployedFiles` remains a regular-file
     manifest and does not gain empty-directory ownership in this change.
 - Tests: focused fileutil directory-creation and collision cases; local deploy
   aggregation, prefixing, type-transition, hook-matching, invariant existence,
-  wrong-type, stale-mtime, directory-only content, and repeat no-op regressions.
+  wrong-type, stale-mtime, directory-only content, mode-authority no-op and
+  deletion-only behavior, and repeat no-op regressions.
 - Docs: `docs/adr/0013-deploy-sync-invariant-gates.md`, `docs/gitops.md`,
   `docs/error-handling.md`, `docs/troubleshooting.md`, and
   `skills/onboard/resources/gitops.md`; configuration docs only where they
@@ -88,4 +96,6 @@ that missing contract before PR #551 is eligible to merge.
 - Ordering: archive `add-reconcile-fuse-hooks` first so the base
   `reconcile-fuse-hooks` capability exists, then archive this dependent delta;
   implementation PR #551 remains gated on this proposal carrying
-  `ready-to-build`.
+  `ready-to-build`. The label stabilizes the specification; implementation PR
+  #551 MUST NOT merge until the required onboard GitOps resource update in task
+  4.2 lands with the behavior it documents.

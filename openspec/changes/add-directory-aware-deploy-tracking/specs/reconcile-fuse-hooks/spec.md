@@ -15,10 +15,12 @@ and fresh-mtime invariant. A change set containing directories but no regular
 file writes SHALL NOT suppress the existing content invariant: every regular
 source file must already be present and byte-identical at the destination.
 
-A deploy result SHALL lack authoritative per-path evidence only when both
-`WrittenFiles` and `DeletedFiles` are empty. In that case, standard-copy local
-deploys SHALL retain the normalized git-diff fallback, while remote deploys
-SHALL retain their unconditional all-hooks fallback.
+Path-evidence authority SHALL derive from deployment mode, not from the length
+of `WrittenFiles` or `DeletedFiles`. A successful content-hash local deploy
+SHALL provide a complete path-level change set even when both slices are empty
+or the change set contains only deletions. Standard-copy local deploys SHALL
+retain the normalized git-diff fallback and remote deploys SHALL retain their
+unconditional all-hooks fallback, regardless of either slice's length.
 
 #### Scenario: Newly created empty directory triggers a matching hook
 
@@ -31,6 +33,18 @@ SHALL retain their unconditional all-hooks fallback.
 - **WHEN** a source directory already exists at the destination
 - **THEN** that directory is not included in the deploy change set
 - **AND** an otherwise unchanged reconcile does not trigger a hook
+
+#### Scenario: Content-hash no-op remains authoritative
+
+- **WHEN** a successful content-hash local deploy reports empty `WrittenFiles` and `DeletedFiles`
+- **THEN** the selected content-hash mode makes the result authoritative
+- **AND** hooks treat the result as an authoritative no-change result without invoking git-diff fallback
+
+#### Scenario: Content-hash deletion-only result remains authoritative
+
+- **WHEN** a successful content-hash local deploy reports only `DeletedFiles`
+- **THEN** the selected content-hash mode makes the result authoritative
+- **AND** hooks evaluate the reported deletions without invoking git-diff fallback
 
 #### Scenario: Deploy target root is plumbing
 
@@ -74,12 +88,12 @@ SHALL retain their unconditional all-hooks fallback.
 
 #### Scenario: Standard-copy local deploy retains normalized git-diff fallback
 
-- **WHEN** a standard-copy local deploy produces empty `WrittenFiles` and `DeletedFiles`
-- **THEN** the result is not interpreted as an authoritative no-change result
+- **WHEN** a standard-copy local deploy completes
+- **THEN** the selected standard-copy mode makes the result non-authoritative, even if a partial path slice is non-empty
 - **AND** hooks evaluate the existing git-diff fallback after normalization to canonical staging-relative paths
 
 #### Scenario: Remote deploy retains unconditional all-hooks fallback
 
-- **WHEN** a remote deploy produces empty `WrittenFiles` and `DeletedFiles`
-- **THEN** the result is not interpreted as an authoritative no-change result
+- **WHEN** a remote deploy completes
+- **THEN** the selected remote mode makes the result non-authoritative, regardless of either path slice's length
 - **AND** every configured post-sync hook remains eligible to run without path filtering
