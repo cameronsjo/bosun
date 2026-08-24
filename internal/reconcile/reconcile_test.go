@@ -726,7 +726,7 @@ func TestExecutePostSyncHooks_NoMatchingPatternsWarnsWithBoundedDiagnostics(t *t
 		return nil
 	}
 
-	changedFiles := []string{
+	changedPaths := []string{
 		"appdata/traefik/one.yml",
 		"appdata/traefik/one.yml",
 		"appdata/traefik/two.yml",
@@ -740,7 +740,7 @@ func TestExecutePostSyncHooks_NoMatchingPatternsWarnsWithBoundedDiagnostics(t *t
 	logger := zerolog.New(&logs).Level(zerolog.InfoLevel)
 	ctx := logpkg.WithContext(context.Background(), &logger)
 
-	matched, err := r.executePostSyncHooks(ctx, "commit-A", "commit-B", &DeployResult{WrittenFiles: changedFiles}, true)
+	matched, err := r.executePostSyncHooks(ctx, "commit-A", "commit-B", &DeployResult{WrittenFiles: changedPaths}, true)
 
 	require.NoError(t, err)
 	assert.Zero(t, matched)
@@ -748,7 +748,7 @@ func TestExecutePostSyncHooks_NoMatchingPatternsWarnsWithBoundedDiagnostics(t *t
 	var entry map[string]any
 	require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
 	assert.Equal(t, "warn", entry["level"])
-	assert.Equal(t, "Files changed but no post-sync hook patterns matched", entry["message"])
+	assert.Equal(t, "Deploy paths changed but no post-sync hook patterns matched", entry["message"])
 	assert.Equal(t, float64(7), entry["hooks_configured"])
 	assert.Equal(t, float64(6), entry["patterns_configured"])
 	assert.Equal(t, float64(postSyncHookPatternSampleLimit), entry["patterns_sampled"])
@@ -756,9 +756,9 @@ func TestExecutePostSyncHooks_NoMatchingPatternsWarnsWithBoundedDiagnostics(t *t
 	assert.Equal(t, float64(1), entry["empty_patterns"])
 	assert.Equal(t, float64(1), entry["hooks_without_paths"])
 	assert.Equal(t, []any{"traefik/**", "authelia/**", "gatus/**", "grafana/**", "prometheus/**"}, entry["patterns"])
-	assert.Equal(t, float64(len(changedFiles)-1), entry["changed_files"], "duplicate changed paths count once")
-	assert.Equal(t, float64(0), entry["matched_files"])
-	assert.Equal(t, float64(postSyncHookFileSampleLimit), entry["sampled_files"])
+	assert.Equal(t, float64(len(changedPaths)-1), entry["changed_paths"], "duplicate changed paths count once")
+	assert.Equal(t, float64(0), entry["matched_paths"])
+	assert.Equal(t, float64(postSyncHookPathSampleLimit), entry["sampled_paths"])
 	assert.Equal(t, "deploy_result", entry["change_source"])
 	assert.Equal(t, []any{
 		"appdata/traefik/one.yml",
@@ -766,14 +766,14 @@ func TestExecutePostSyncHooks_NoMatchingPatternsWarnsWithBoundedDiagnostics(t *t
 		"appdata/traefik/three.yml",
 		"appdata/traefik/four.yml",
 		"appdata/traefik/five.yml",
-	}, entry["sample_files"])
+	}, entry["sample_paths"])
 	assert.NotContains(t, logs.String(), "appdata/traefik/six.yml")
 	assert.NotContains(t, logs.String(), "appdata/traefik/seven.yml")
 	assert.NotContains(t, logs.String(), secretCommandArgument)
 	assert.NotContains(t, logs.String(), longPattern)
 }
 
-func TestExecutePostSyncHooks_NoChangedFilesLogsDistinctInfo(t *testing.T) {
+func TestExecutePostSyncHooks_NoChangedPathsLogsDistinctInfo(t *testing.T) {
 	cfg := &Config{
 		PostSyncHooks: NewConfigField([]PostSyncHook{
 			{Paths: []string{"traefik/**"}, Action: "restart", Container: "traefik"},
@@ -797,12 +797,12 @@ func TestExecutePostSyncHooks_NoChangedFilesLogsDistinctInfo(t *testing.T) {
 	var entry map[string]any
 	require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
 	assert.Equal(t, "info", entry["level"])
-	assert.Equal(t, "No files changed; post-sync hooks have nothing to evaluate", entry["message"])
+	assert.Equal(t, "No deploy paths changed; post-sync hooks have nothing to evaluate", entry["message"])
 	assert.Equal(t, float64(1), entry["hooks_configured"])
 	assert.Equal(t, "git_diff", entry["change_source"])
 	assert.Len(t, r.git.(*mockGitWithDiff).diffCalledWith, 1)
 	assert.NotContains(t, logs.String(), "no post-sync hook patterns matched")
-	assert.NotContains(t, entry, "sample_files")
+	assert.NotContains(t, entry, "sample_paths")
 }
 
 func TestExecutePostSyncHooks_ContentHashEmptyResultDoesNotFallBackToGitDiff(t *testing.T) {
@@ -833,7 +833,7 @@ func TestExecutePostSyncHooks_ContentHashEmptyResultDoesNotFallBackToGitDiff(t *
 	require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
 	assert.Equal(t, "info", entry["level"])
 	assert.Equal(t, "deploy_result", entry["change_source"])
-	assert.Equal(t, "No files changed; post-sync hooks have nothing to evaluate", entry["message"])
+	assert.Equal(t, "No deploy paths changed; post-sync hooks have nothing to evaluate", entry["message"])
 }
 
 func TestExecutePostSyncHooks_StandardCopyEmptyResultUsesGitDiff(t *testing.T) {
@@ -901,8 +901,8 @@ func TestExecutePostSyncHooks_FallbackNoMatchLogsNormalizedPaths(t *testing.T) {
 	var entry map[string]any
 	require.NoError(t, json.Unmarshal(logs.Bytes(), &entry))
 	assert.Equal(t, "git_diff", entry["change_source"])
-	assert.Equal(t, float64(1), entry["changed_files"])
-	assert.Equal(t, []any{"appdata/traefik/dynamic.yml"}, entry["sample_files"])
+	assert.Equal(t, float64(1), entry["changed_paths"])
+	assert.Equal(t, []any{"appdata/traefik/dynamic.yml"}, entry["sample_paths"])
 	assert.NotContains(t, logs.String(), "docs/private-not-deployed.txt")
 }
 
@@ -933,7 +933,7 @@ func TestHookDiagnosticSamplesAreBoundedAndNonRelativePathsAreRedacted(t *testin
 		"/private/var/secret.txt",
 		"../outside/secret.txt",
 		"/another/private/path.txt",
-	}, postSyncHookFileSampleLimit)
+	}, postSyncHookPathSampleLimit)
 	assert.Equal(t, []string{"appdata/traefik/dynamic.yml", "[non-relative-path]"}, sample)
 }
 

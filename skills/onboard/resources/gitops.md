@@ -237,7 +237,7 @@ Written/deleted paths and fallback git-diff paths use one canonical staging-rela
 
 If deploy paths changed but none match any configured hook pattern, bosun warns with
 distinct/duplicate/empty pattern counts, at most five pattern samples, the
-evaluated-file count, an explicit zero matched-file count, and at most five
+evaluated-path count, an explicit zero matched-path count, and at most five
 staging-relative path samples. Absolute or traversal paths are redacted. A
 deploy with no changed paths is logged separately at info level and is not
 treated as a likely pattern mistake. Hook diagnostics never include file

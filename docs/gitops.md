@@ -468,7 +468,7 @@ Hook globs use staging-relative paths such as `appdata/traefik/**`. An empty con
 
 When deploy paths changed but no hook pattern matches, bosun emits a warning with
 distinct/duplicate/empty pattern counts, at most five pattern samples, the
-evaluated-file count, an explicit zero matched-file count, and at most five
+evaluated-path count, an explicit zero matched-path count, and at most five
 staging-relative path samples. Absolute or traversal paths are redacted. The
 distinct no-change case is an info log, not a mismatch warning. These
 diagnostics include bounded path metadata only, never file contents or hook

@@ -66,8 +66,8 @@ func hookKey(h PostSyncHook) string {
 // and returns the hooks that should be executed.
 // Deduplication keys on container+action, so a container can have both a restart
 // and an exec hook fire from the same change set.
-func EvaluatePostSyncHooks(changedFiles []string, hooks []PostSyncHook) []PostSyncHook {
-	if len(hooks) == 0 || len(changedFiles) == 0 {
+func EvaluatePostSyncHooks(changedPaths []string, hooks []PostSyncHook) []PostSyncHook {
+	if len(hooks) == 0 || len(changedPaths) == 0 {
 		return nil
 	}
 
@@ -79,7 +79,7 @@ func EvaluatePostSyncHooks(changedFiles []string, hooks []PostSyncHook) []PostSy
 		if seen[key] {
 			continue
 		}
-		if hookMatchesAny(hook, changedFiles) {
+		if hookMatchesAny(hook, changedPaths) {
 			matched = append(matched, hook)
 			seen[key] = true
 		}
@@ -106,10 +106,10 @@ func dedupeHooksByContainer(hooks []PostSyncHook) []PostSyncHook {
 }
 
 // hookMatchesAny returns true if any changed path matches a hook path pattern.
-func hookMatchesAny(hook PostSyncHook, changedFiles []string) bool {
+func hookMatchesAny(hook PostSyncHook, changedPaths []string) bool {
 	for _, pattern := range hook.Paths {
-		for _, file := range changedFiles {
-			if matchGlob(pattern, file) {
+		for _, path := range changedPaths {
+			if matchGlob(pattern, path) {
 				return true
 			}
 		}

@@ -66,8 +66,8 @@ type DeployResult struct {
 
 	// DeletedFiles contains relative paths of files removed from disk by
 	// removeStaleFiles's --delete-style pruning. Tracked separately from
-	// WrittenFiles because a deletion is not a write; callers that need "every
-	// file touched this deploy" (e.g. post-sync hook matching) combine both
+	// WrittenFiles because a deletion is not a write; callers that need every
+	// changed deploy path (e.g. post-sync hook matching) combine both
 	// lists explicitly.
 	DeletedFiles []string
 

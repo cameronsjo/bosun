@@ -1148,8 +1148,9 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 		return 0, nil
 	}
 
-	// Prefer written-files from content-hash sync over git diff.
-	var changedFiles []string
+	// Prefer created, written, and deleted deploy paths from content-hash sync
+	// over git diff.
+	var changedPaths []string
 	diffFailed := false
 	remoteMode := !local
 	changeSource := "git_diff"
@@ -1168,13 +1169,13 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 		// copy mode does not populate per-file writes, so its empty result still
 		// falls back to git diff.
 		changeSource = "deploy_result"
-		changedFiles = make([]string, 0, len(deployResult.WrittenFiles)+len(deployResult.DeletedFiles))
-		changedFiles = append(changedFiles, deployResult.WrittenFiles...)
-		changedFiles = append(changedFiles, deployResult.DeletedFiles...)
-		logger.Debug().Int("files", len(changedFiles)).Msg("Using written+deleted files list for post-sync hooks")
+		changedPaths = make([]string, 0, len(deployResult.WrittenFiles)+len(deployResult.DeletedFiles))
+		changedPaths = append(changedPaths, deployResult.WrittenFiles...)
+		changedPaths = append(changedPaths, deployResult.DeletedFiles...)
+		logger.Debug().Int("paths", len(changedPaths)).Msg("Using created+written+deleted deploy path list for post-sync hooks")
 	} else {
 		var err error
-		changedFiles, err = r.git.DiffFiles(ctx, previousCommit, currentCommit)
+		changedPaths, err = r.git.DiffFiles(ctx, previousCommit, currentCommit)
 		if err != nil {
 			// DiffFiles fails on shallow clones where the previous commit is no longer
 			// reachable. Rather than silently skipping hooks, fall back to evaluating
@@ -1188,20 +1189,20 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 			diffFailed = true
 			changeSource = "git_diff_unavailable"
 		} else {
-			repoFileCount := len(changedFiles)
-			changedFiles = normalizeHookDiffPaths(changedFiles, r.config.InfraSubDir)
+			repoFileCount := len(changedPaths)
+			changedPaths = normalizeHookDiffPaths(changedPaths, r.config.InfraSubDir)
 			logger.Debug().
 				Int("repo_files", repoFileCount).
-				Int("deploy_files", len(changedFiles)).
+				Int("deploy_paths", len(changedPaths)).
 				Msg("Normalized git diff paths for post-sync hooks")
 		}
 	}
 
-	if len(changedFiles) == 0 && !diffFailed && !remoteMode {
+	if len(changedPaths) == 0 && !diffFailed && !remoteMode {
 		logger.Info().
 			Int("hooks_configured", len(r.config.PostSyncHooks.Value)).
 			Str("change_source", changeSource).
-			Msg("No files changed; post-sync hooks have nothing to evaluate")
+			Msg("No deploy paths changed; post-sync hooks have nothing to evaluate")
 		return 0, nil
 	}
 
@@ -1214,11 +1215,11 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 			logger.Info().Int("hooks", len(matched)).Msg("Diff unavailable, firing all configured hooks")
 		}
 	} else {
-		matched = EvaluatePostSyncHooks(changedFiles, r.config.PostSyncHooks.Value)
+		matched = EvaluatePostSyncHooks(changedPaths, r.config.PostSyncHooks.Value)
 	}
 	if len(matched) == 0 {
 		patterns := summarizePostSyncHookPatterns(r.config.PostSyncHooks.Value, postSyncHookPatternSampleLimit)
-		sampleFiles := sampleDistinctPaths(changedFiles, postSyncHookFileSampleLimit)
+		samplePaths := sampleDistinctPaths(changedPaths, postSyncHookPathSampleLimit)
 		logger.Warn().
 			Int("hooks_configured", len(r.config.PostSyncHooks.Value)).
 			Int("patterns_configured", patterns.distinct).
@@ -1227,12 +1228,12 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 			Int("empty_patterns", patterns.empty).
 			Int("hooks_without_paths", patterns.hooksWithoutPaths).
 			Strs("patterns", patterns.sample).
-			Int("changed_files", countDistinctStrings(changedFiles)).
-			Int("matched_files", 0).
-			Int("sampled_files", len(sampleFiles)).
-			Strs("sample_files", sampleFiles).
+			Int("changed_paths", countDistinctStrings(changedPaths)).
+			Int("matched_paths", 0).
+			Int("sampled_paths", len(samplePaths)).
+			Strs("sample_paths", samplePaths).
 			Str("change_source", changeSource).
-			Msg("Files changed but no post-sync hook patterns matched")
+			Msg("Deploy paths changed but no post-sync hook patterns matched")
 		return 0, nil
 	}
 
@@ -1266,7 +1267,7 @@ func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, c
 // logs. Paths are already staging-relative at this point; only path metadata is
 // sampled, never file contents or hook command arguments.
 const (
-	postSyncHookFileSampleLimit    = 5
+	postSyncHookPathSampleLimit    = 5
 	postSyncHookPatternSampleLimit = 5
 	hookDiagnosticValueLimit       = 256
 )
