@@ -54,7 +54,7 @@ Per-file write decisions SHALL be observable: `CopyDirIfChanged` and `CopyFileIf
 - **AND** the error message names the expected directory path
 - **AND** the operator is directed to verify the staging path configuration
 
-#### Scenario: Stale destination path blocks compose-up
+#### Scenario: Stale destination mtime blocks compose-up
 
 - **WHEN** deploy sync completes
 - **AND** a destination file or directory recorded in `WrittenFiles` has `mtime < reconcileStartTime`
@@ -78,7 +78,7 @@ Per-file write decisions SHALL be observable: `CopyDirIfChanged` and `CopyFileIf
 - **THEN** the invariant check passes at stage 9 (legitimate no-op — destination already byte-matches)
 - **AND** compose up proceeds normally
 
-#### Scenario: No regular-file writes with a missing destination file blocks compose-up
+#### Scenario: Empty WrittenFiles with a missing destination file blocks compose-up
 
 - **WHEN** a deploy target's source staging directory contains regular files
 - **AND** the target's `WrittenFiles` is empty or contains only newly created directories
@@ -87,7 +87,7 @@ Per-file write decisions SHALL be observable: `CopyDirIfChanged` and `CopyFileIf
 - **AND** compose up does not run
 - **AND** the error message names the first mismatching destination path
 
-#### Scenario: No regular-file writes with stale destination content blocks compose-up
+#### Scenario: Empty WrittenFiles with a stale-content destination file blocks compose-up
 
 - **WHEN** a deploy target's source staging directory contains regular files
 - **AND** the target's `WrittenFiles` is empty or contains only newly created directories
@@ -96,14 +96,14 @@ Per-file write decisions SHALL be observable: `CopyDirIfChanged` and `CopyFileIf
 - **AND** compose up does not run
 - **AND** the error message names the first mismatching destination path
 
-#### Scenario: Symlinks in the source impose no destination content requirement
+#### Scenario: Symlinks in the source impose no destination requirement
 
 - **WHEN** a deploy target's source staging directory contains only symlinks (no regular files or directories recorded in `WrittenFiles`)
 - **AND** the target's `WrittenFiles` is empty
 - **THEN** the invariant check passes at stage 9 (symlinks are never deployed, so nothing is required at the destination)
 - **AND** compose up proceeds normally
 
-#### Scenario: Healthy file-and-directory deploy passes invariant check
+#### Scenario: Healthy deploy passes invariant check
 
 - **WHEN** deploy sync records regular-file writes or newly created directories
 - **AND** every recorded destination exists with the source entry's type and has `mtime >= reconcileStartTime`
