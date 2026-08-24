@@ -28,7 +28,7 @@ dagger call ci --source .
 | `test` | Run Go tests with race detector and coverage | `dagger call test --source .` |
 | `lint` | Run golangci-lint | `dagger call lint --source .` |
 | `build` | Multi-platform binary builds | `dagger call build --source .` |
-| `web-ui` | WebUI pipeline (install + typecheck + build) | `dagger call web-ui --source .` |
+| `web-ui` | WebUI pipeline (install + typecheck + lint + bundle) | `dagger call web-ui --source .` |
 | `web-ui-build` | Get WebUI dist directory | `dagger call web-ui-build --source .` |
 | `release` | Run GoReleaser for releases | `dagger call release --source . --github-token env:GITHUB_TOKEN` |
 | `release-dry-run` | Test GoReleaser without publishing | `dagger call release-dry-run --source .` |
@@ -51,27 +51,16 @@ make dagger-release-dry-run # Test goreleaser
 ## Pipeline Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     CI-All Pipeline                         │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌─────────────────────────┐    ┌─────────────────────┐    │
-│  │       Go Pipeline       │    │   WebUI Pipeline    │    │
-│  │  ┌──────┐  ┌──────┐    │    │  ┌──────────────┐   │    │
-│  │  │ Test │  │ Lint │    │    │  │   npm ci     │   │    │
-│  │  └──┬───┘  └──┬───┘    │    │  └──────┬───────┘   │    │
-│  │     └────┬────┘        │    │         ▼           │    │
-│  │          ▼             │    │  ┌──────────────┐   │    │
-│  │     ┌────────┐         │    │  │  tsc --noEmit│   │    │
-│  │     │ Build  │         │    │  └──────┬───────┘   │    │
-│  │     └────┬───┘         │    │         ▼           │    │
-│  │          ▼             │    │  ┌──────────────┐   │    │
-│  │     ┌────────┐         │    │  │  vite build  │   │    │
-│  │     │4 bins  │         │    │  └──────────────┘   │    │
-│  │     └────────┘         │    │                     │    │
-│  └─────────────────────────┘    └─────────────────────┘    │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+CI-All Pipeline
+├── Go Pipeline
+│   ├── Test
+│   ├── Lint
+│   └── Build → four platform binaries
+└── WebUI Pipeline
+    └── npm ci
+        └── npm run typecheck
+            └── npm run lint
+                └── npm run build:bundle → dist/
 ```
 
 ## Caching

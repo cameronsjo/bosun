@@ -68,10 +68,13 @@ jobs:
         run: npm ci
 
       - name: Run type check
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
-      - name: Build
-        run: npm run build
+      - name: Run lint
+        run: npm run lint
+
+      - name: Bundle
+        run: npm run build:bundle
 
   build:
     name: Build
