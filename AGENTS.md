@@ -306,7 +306,7 @@ Releases are fully automated via **release-please** + **goreleaser**.
 
 - `release-please-config.json` — release-please behavior
 - `.release-please-manifest.json` — current version (do not edit manually)
-- `.goreleaser.yml` — build matrix and artifact config
+- `.goreleaser.yaml` — build matrix and artifact config
 
 ## Skill Maintenance
 
