@@ -61,7 +61,7 @@ func TestCleanupRemotePath_FailureRemainsBestEffort(t *testing.T) {
 // command locally (`ssh [-o opt]... <host> <cmd...>` → `/bin/sh -c "<cmd...>"`),
 // so DeployRemote's full pipeline — crash recovery, staging mkdir, tar-over-ssh
 // extraction, and the retain-old swap — runs end-to-end against real local
-// directories with no network. stdin flows through, so the tar pipe works.
+// directories with no network. stdin flows through, so archive streaming works.
 // The shim skips the leading `-o KEY=VAL` host-key policy flags (and any other
 // dash-prefixed option) before dropping the host, mirroring real ssh argv
 // parsing; every path involved comes from t.TempDir().
@@ -135,7 +135,7 @@ func TestDeployRemote_EndToEnd(t *testing.T) {
 		require.Len(t, entries, 1, "the stranded retained copy must be promoted then replaced, not leaked")
 	})
 
-	t.Run("tar failure cleans the staging temp dir and preserves the target", func(t *testing.T) {
+	t.Run("missing source fails before staging and preserves the target", func(t *testing.T) {
 		setupSSHShim(t)
 		base := t.TempDir()
 		parent := filepath.Join(base, "deploy")
@@ -147,7 +147,7 @@ func TestDeployRemote_EndToEnd(t *testing.T) {
 		err := d.DeployRemote(context.Background(), missingSource, "user@testhost", target)
 
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "tar")
+		assert.Contains(t, err.Error(), "snapshot transfer source")
 		assert.Equal(t, "live", readMarker(t, target, "marker"), "a failed staging transfer must not touch the live target")
 		entries, readErr := os.ReadDir(parent)
 		require.NoError(t, readErr)
@@ -172,7 +172,7 @@ func TestDeployRemote_EndToEnd(t *testing.T) {
 	})
 }
 
-func TestDeployRemote_SSHStartFailureReapsTar(t *testing.T) {
+func TestDeployRemote_SSHStartFailureCleansStaging(t *testing.T) {
 	setupSSHShim(t)
 	original := newSSHTransferCommand
 	t.Cleanup(func() { newSSHTransferCommand = original })

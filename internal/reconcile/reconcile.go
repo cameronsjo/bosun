@@ -2458,7 +2458,7 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (
 	// composeDir is the remote compose dir just deployed — captured here where
 	// it is in scope so RollbackRemoteCompose can restore exactly it, rather
 	// than reaching for r.lastComposeFiles (only deployLocal sets that).
-	composeDir := filepath.Join(appdata, "compose")
+	composeDir := path.Join(appdata, "compose")
 	if !r.config.DryRun {
 		ui.Info("  Reloading services...")
 		if err := r.deploy.ComposeUpRemote(ctx, host, composeDir); err != nil {

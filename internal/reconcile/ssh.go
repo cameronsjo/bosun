@@ -35,13 +35,14 @@ const (
 
 // Deploy operation timeouts
 const (
-	SSHConnectTimeout    = 5 * time.Second
-	SSHTimeout           = 30 * time.Second
-	RemoteDeployTimeout  = 5 * time.Minute
-	RemoteCleanupTimeout = 10 * time.Second
-	commandDiagnosticMax = 4096
-	commandOutputByteMax = commandDiagnosticMax * 4
-	remoteStageIDBytes   = 16
+	SSHConnectTimeout              = 5 * time.Second
+	SSHTimeout                     = 30 * time.Second
+	RemoteDeployTimeout            = 5 * time.Minute
+	RemoteCleanupTimeout           = 10 * time.Second
+	commandDiagnosticMax           = 4096
+	commandOutputByteMax           = commandDiagnosticMax * 4
+	remoteStageIDBytes             = 16
+	remoteIntegrityUnavailableExit = 78
 )
 
 // ErrTransferIntegrity marks a remote tar-over-SSH transfer whose staged tree
@@ -51,6 +52,11 @@ const (
 // tmpDir on the next attempt, so a re-transfer is never overlaid on the dirty
 // leftover of a failed one.
 var ErrTransferIntegrity = errors.New("remote transfer integrity check failed")
+
+// ErrRemoteIntegrityUnavailable marks a remote host that cannot provide the
+// sha256sum capability required by the fail-closed transfer verifier. Unlike a
+// damaged transfer, retrying without an operator change cannot repair this.
+var ErrRemoteIntegrityUnavailable = errors.New("remote transfer integrity capability unavailable")
 
 // ErrUnsupportedTransferEntry marks an entry that tar can archive but Bosun
 // cannot safely verify after extraction. Deploy staging trees are expected to
@@ -142,6 +148,7 @@ func hashFileWithContext(ctx context.Context, filePath string) ([sha256.Size]byt
 	if err != nil {
 		return sum, err
 	}
+	// Closing a read-only descriptor cannot invalidate an already-produced hash.
 	defer func() { _ = f.Close() }()
 
 	h := sha256.New()
@@ -152,6 +159,7 @@ func hashFileWithContext(ctx context.Context, filePath string) ([sha256.Size]byt
 		}
 		n, readErr := f.Read(buf)
 		if n > 0 {
+			// hash.Hash implementations never return a Write error.
 			_, _ = h.Write(buf[:n])
 		}
 		if errors.Is(readErr, io.EOF) {
@@ -192,11 +200,11 @@ func buildRemoteVerifyScript(stagedDir string, manifest []transferEntry) string 
 	script.WriteString("set -eu\n")
 	root := shellquote.Join(stagedDir)
 	fmt.Fprintf(&script, "root=%s\n", root)
-	script.WriteString("command -v sha256sum >/dev/null 2>&1 || { echo 'sha256sum is required for transfer verification' >&2; exit 1; }\n")
+	fmt.Fprintf(&script, "command -v sha256sum >/dev/null 2>&1 || { echo 'sha256sum is required for transfer verification' >&2; exit %d; }\n", remoteIntegrityUnavailableExit)
 	// Count the root itself as well as its descendants. Avoiding `find -path`
 	// keeps glob metacharacters in a configured staging path from being treated
 	// as a pattern and falsely rejecting an otherwise complete tree.
-	fmt.Fprintf(&script, "count=$(find \"$root\" -exec printf x \\; | wc -c | tr -d '[:space:]')\n[ \"$count\" = %s ]\n", strconv.Itoa(len(manifest)+1))
+	fmt.Fprintf(&script, "entries=$(find \"$root\" -exec printf x \\;)\n[ \"${#entries}\" = %s ]\n", strconv.Itoa(len(manifest)+1))
 	hardlinkCounts := make(map[string]int)
 	for _, entry := range manifest {
 		if entry.Kind != 'f' {
@@ -241,6 +249,10 @@ func (d *DeployOps) verifyRemoteTransfer(ctx context.Context, host, stagedDir st
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == remoteIntegrityUnavailableExit {
+			return fmt.Errorf("%w: sha256sum is required on %s: %s", ErrRemoteIntegrityUnavailable, host, joinNonEmpty(stdout.String(), stderr.String()))
+		}
 		return fmt.Errorf("%w: %v: %s", ErrTransferIntegrity, err, joinNonEmpty(stdout.String(), stderr.String()))
 	}
 	return nil
@@ -257,14 +269,22 @@ func createVerifiedTransferArchive(ctx context.Context, sourceDir string) (archi
 	if err != nil {
 		return "", "", nil, func() {}, fmt.Errorf("snapshot transfer source: %w", err)
 	}
-	f, err := os.CreateTemp("", "bosun-deploy-*.tar")
+	// Keep the archive and verification tree under one process-owned 0700
+	// namespace. Besides preventing other local users from inspecting staged
+	// configuration, the stable prefix makes crash residue discoverable.
+	workspace, err := os.MkdirTemp("", "bosun-deploy-*")
 	if err != nil {
-		return "", "", nil, func() {}, fmt.Errorf("create transfer archive: %w", err)
+		return "", "", nil, func() {}, fmt.Errorf("create private transfer workspace: %w", err)
 	}
-	archivePath = f.Name()
 	cleanup = func() {
 		// Best-effort temp cleanup must not replace the deploy result.
-		_ = os.Remove(archivePath)
+		_ = os.RemoveAll(workspace)
+	}
+	archivePath = filepath.Join(workspace, "archive.tar")
+	f, err := os.OpenFile(archivePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		cleanup()
+		return "", "", nil, func() {}, fmt.Errorf("create transfer archive: %w", err)
 	}
 	if err = f.Close(); err != nil {
 		cleanup()
@@ -278,8 +298,8 @@ func createVerifiedTransferArchive(ctx context.Context, sourceDir string) (archi
 		return "", "", nil, func() {}, fmt.Errorf("create transfer archive: %w: %s", err, joinNonEmpty(stderr.String()))
 	}
 
-	scratch, err := os.MkdirTemp("", "bosun-deploy-verify-*")
-	if err != nil {
+	scratch := filepath.Join(workspace, "verify")
+	if err = os.Mkdir(scratch, 0o700); err != nil {
 		cleanup()
 		return "", "", nil, func() {}, fmt.Errorf("create archive verification directory: %w", err)
 	}
@@ -453,7 +473,7 @@ func sshExecCommand(ctx context.Context, args ...string) *exec.Cmd {
 }
 
 // newSSHTransferCommand is the tar-over-SSH command seam. Tests replace it to
-// exercise an SSH spawn failure after the local tar process has started.
+// exercise an SSH spawn failure after local archive verification succeeds.
 var newSSHTransferCommand = sshExecCommand
 
 // scpExecCommand builds an `scp` command with the host-key policy flags
@@ -865,7 +885,8 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			Str("dest", tmpDir).
 			Msg("Preparing to tar and extract staging directory to remote")
 		remoteCmd := fmt.Sprintf(
-			"set -eu; umask 077; command -v sha256sum >/dev/null 2>&1 || { echo 'sha256sum is required for transfer verification' >&2; exit 1; }; cat > %s; actual=$(sha256sum < %s); actual=${actual%%%% *}; [ \"$actual\" = %s ]; tar -C %s -xf %s; rm -f %s",
+			"set -eu; umask 077; command -v sha256sum >/dev/null 2>&1 || { echo 'sha256sum is required for transfer verification' >&2; exit %d; }; cat > %s; actual=$(sha256sum < %s); actual=${actual%%%% *}; [ \"$actual\" = %s ]; tar -C %s -xf %s; rm -f %s",
+			remoteIntegrityUnavailableExit,
 			shellquote.Join(remoteArchive), shellquote.Join(remoteArchive), shellquote.Join(archiveSHA),
 			shellquote.Join(tmpDir), shellquote.Join(remoteArchive), shellquote.Join(remoteArchive),
 		)
@@ -895,6 +916,10 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			cleanupTmp("ssh_extract_failed")
 			if ctx.Err() == context.DeadlineExceeded {
 				return fmt.Errorf("ssh timed out after %v", RemoteDeployTimeout)
+			}
+			var exitErr *exec.ExitError
+			if errors.As(sshErr, &exitErr) && exitErr.ExitCode() == remoteIntegrityUnavailableExit {
+				return fmt.Errorf("%w: sha256sum is required on %s: %s", ErrRemoteIntegrityUnavailable, targetHost, joinNonEmpty(sshStderr.String()))
 			}
 			return fmt.Errorf("%w: ssh extract failed: %v: %s", ErrTransferIntegrity, sshErr, joinNonEmpty(sshStderr.String()))
 		}
@@ -1012,7 +1037,7 @@ func (d *DeployOps) DeployRemoteFile(ctx context.Context, sourceFile, targetHost
 	}
 
 	// Ensure target directory exists on remote
-	targetDir := filepath.Dir(targetFile)
+	targetDir := path.Dir(targetFile)
 	if err := d.EnsureRemoteDir(ctx, targetHost, targetDir); err != nil {
 		return fmt.Errorf("ensure remote dir: %w", err)
 	}

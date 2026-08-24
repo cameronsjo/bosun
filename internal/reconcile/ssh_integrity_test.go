@@ -82,7 +82,7 @@ func TestBuildTransferManifest_FailsClosed(t *testing.T) {
 		}
 		root, err := os.MkdirTemp("/tmp", "bs-sock-")
 		require.NoError(t, err)
-		t.Cleanup(func() { _ = os.RemoveAll(root) })
+		t.Cleanup(func() { require.NoError(t, os.RemoveAll(root)) })
 		listener, err := net.Listen("unix", filepath.Join(root, "socket"))
 		if err != nil {
 			t.Skipf("Unix socket creation is unavailable: %v", err)
@@ -130,6 +130,24 @@ func TestVerifyRemoteTransfer(t *testing.T) {
 		manifest, err := buildTransferManifest(context.Background(), staged)
 		require.NoError(t, err)
 		writeMarker(t, staged, "unexpected", "content")
+
+		err = d.verifyRemoteTransfer(context.Background(), "user@testhost", staged, manifest)
+
+		require.ErrorIs(t, err, ErrTransferIntegrity)
+	})
+
+	t.Run("rejects a failed entry walk even when its partial count matches", func(t *testing.T) {
+		staged := t.TempDir()
+		require.NoError(t, os.Mkdir(filepath.Join(staged, "expected-empty-dir"), 0o755))
+		manifest, err := buildTransferManifest(context.Background(), staged)
+		require.NoError(t, err)
+
+		realFind, err := exec.LookPath("find")
+		require.NoError(t, err)
+		dir := t.TempDir()
+		shim := "#!/bin/sh\n" + realFind + " \"$@\"\nexit 7\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "find"), []byte(shim), 0o755))
+		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 		err = d.verifyRemoteTransfer(context.Background(), "user@testhost", staged, manifest)
 
@@ -248,6 +266,29 @@ func TestCreateVerifiedTransferArchive_FailsClosed(t *testing.T) {
 
 		require.ErrorIs(t, err, ErrTransferIntegrity)
 	})
+}
+
+func TestCreateVerifiedTransferArchive_UsesPrivateDiscoverableWorkspace(t *testing.T) {
+	source := t.TempDir()
+	writeMarker(t, source, "expected", "content")
+
+	archivePath, _, _, cleanup, err := createVerifiedTransferArchive(context.Background(), source)
+	require.NoError(t, err)
+	workspace := filepath.Dir(archivePath)
+	t.Cleanup(cleanup)
+
+	assert.True(t, strings.HasPrefix(filepath.Base(workspace), "bosun-deploy-"))
+	if runtime.GOOS != "windows" {
+		workspaceInfo, statErr := os.Stat(workspace)
+		require.NoError(t, statErr)
+		assert.Equal(t, os.FileMode(0o700), workspaceInfo.Mode().Perm())
+		archiveInfo, statErr := os.Stat(archivePath)
+		require.NoError(t, statErr)
+		assert.Equal(t, os.FileMode(0o600), archiveInfo.Mode().Perm())
+	}
+
+	cleanup()
+	assert.NoDirExists(t, workspace)
 }
 
 func TestBoundedCommandBuffer(t *testing.T) {
@@ -400,8 +441,9 @@ func TestDeployRemote_ValidEmptyAndSpecialTreesPromote(t *testing.T) {
 }
 
 func TestDeployRemote_IntegrityCapabilityMissingFailsClosed(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "attempts")
 	dir := t.TempDir()
-	shim := "#!/bin/sh\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) shift 2 ;; -*) shift ;; *) break ;; esac; done\nshift\ncase \"$*\" in *'command -v sha256sum'*) exit 1 ;; esac\nexec /bin/sh -c \"$*\"\n"
+	shim := "#!/bin/sh\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) shift 2 ;; -*) shift ;; *) break ;; esac; done\nshift\ncase \"$*\" in *'command -v sha256sum'*) echo x >> " + counter + "; exit 78 ;; esac\nexec /bin/sh -c \"$*\"\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte(shim), 0o755))
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	base := t.TempDir()
@@ -410,7 +452,10 @@ func TestDeployRemote_IntegrityCapabilityMissingFailsClosed(t *testing.T) {
 	writeMarker(t, source, "new", "new")
 	writeMarker(t, target, "live", "old")
 	err := (&DeployOps{}).DeployRemote(context.Background(), source, "user@testhost", target)
-	require.ErrorIs(t, err, ErrTransferIntegrity)
-	assert.ErrorContains(t, err, "ssh extract failed")
+	require.ErrorIs(t, err, ErrRemoteIntegrityUnavailable)
+	assert.NotErrorIs(t, err, ErrTransferIntegrity)
+	attempts, readErr := os.ReadFile(counter)
+	require.NoError(t, readErr)
+	assert.Equal(t, 1, strings.Count(string(attempts), "x"), "a missing remote capability is not retryable")
 	assert.Equal(t, "old", readMarker(t, target, "live"))
 }
