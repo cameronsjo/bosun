@@ -237,6 +237,43 @@ func TestVerifyDeployTarget_WrittenDirectoryRequiresDirectoryDestination(t *test
 	assert.Contains(t, err.Error(), "want=directory")
 }
 
+func TestVerifyDeployTarget_WrittenRegularFileRequiresRegularDestination(t *testing.T) {
+	t.Run("directory", func(t *testing.T) {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "src")
+		dst := filepath.Join(dir, "dst")
+		startTime := time.Now().Add(-time.Minute)
+
+		touchFile(t, filepath.Join(src, "config.yml"), "expected", time.Now())
+		require.NoError(t, os.MkdirAll(filepath.Join(dst, "config.yml"), 0755))
+
+		err := verifyDeployTarget(src, dst, []string{"config.yml"}, startTime)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrDeployInvariantWrongType)
+		assert.Contains(t, err.Error(), "want=regular-file")
+	})
+
+	t.Run("symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "src")
+		dst := filepath.Join(dir, "dst")
+		outside := filepath.Join(dir, "outside.yml")
+		startTime := time.Now().Add(-time.Minute)
+
+		touchFile(t, filepath.Join(src, "config.yml"), "expected", time.Now())
+		touchFile(t, outside, "expected", time.Now())
+		require.NoError(t, os.MkdirAll(dst, 0755))
+		if err := os.Symlink(outside, filepath.Join(dst, "config.yml")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+
+		err := verifyDeployTarget(src, dst, []string{"config.yml"}, startTime)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrDeployInvariantWrongType)
+		assert.Contains(t, err.Error(), "want=regular-file")
+	})
+}
+
 func TestVerifyDeployTarget_StaleDestination_Errors(t *testing.T) {
 	// Layer 1.3, #214: the freshrss-shape failure — CopyDirIfChanged claimed
 	// to write the file (or we recorded it as written), but the destination's

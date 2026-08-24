@@ -50,6 +50,7 @@ func verifyDeployTarget(src, dst string, writtenRel []string, startTime time.Tim
 
 	for _, rel := range writtenRel {
 		sourceEntryIsDir := false
+		sourceEntryIsRegular := false
 		if sourceIsDir {
 			sourcePath := filepath.Join(src, rel)
 			sourceInfo, err := os.Lstat(sourcePath)
@@ -57,15 +58,20 @@ func verifyDeployTarget(src, dst string, writtenRel []string, startTime time.Tim
 				return fmt.Errorf("stat written source path %q: %w", sourcePath, err)
 			}
 			sourceEntryIsDir = sourceInfo.IsDir()
-			wroteRegularFile = wroteRegularFile || !sourceEntryIsDir
+			sourceEntryIsRegular = sourceInfo.Mode().IsRegular()
+			if !sourceEntryIsDir && !sourceEntryIsRegular {
+				return fmt.Errorf("written source path %q has unsupported type %s", sourcePath, sourceInfo.Mode().Type())
+			}
+			wroteRegularFile = wroteRegularFile || sourceEntryIsRegular
 		} else {
 			// Single-file targets record filepath.Base(src). Missing sources retain
 			// the historical written-path verification behavior.
 			wroteRegularFile = true
+			sourceEntryIsRegular = sourceErr == nil && sourceRoot.Mode().IsRegular()
 		}
 
 		path := filepath.Join(dst, rel)
-		info, err := os.Stat(path)
+		info, err := os.Lstat(path)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				logger.Error().
@@ -76,15 +82,13 @@ func verifyDeployTarget(src, dst string, writtenRel []string, startTime time.Tim
 			logger.Error().Err(err).Str(log.FieldPath, path).Msg("Failed to verify deploy target. Reason: cannot stat destination")
 			return fmt.Errorf("stat destination %q: %w", path, err)
 		}
-		if sourceEntryIsDir {
-			destinationEntry, err := os.Lstat(path)
-			if err != nil {
-				return fmt.Errorf("inspect destination directory %q: %w", path, err)
-			}
-			if !destinationEntry.IsDir() {
-				logger.Error().Str(log.FieldPath, path).Msg("Failed to verify deploy target. Reason: written directory has wrong destination type")
-				return fmt.Errorf("%w: path=%q want=directory got=%s", ErrDeployInvariantWrongType, path, destinationEntry.Mode().Type())
-			}
+		if sourceEntryIsDir && !info.IsDir() {
+			logger.Error().Str(log.FieldPath, path).Msg("Failed to verify deploy target. Reason: written directory has wrong destination type")
+			return fmt.Errorf("%w: path=%q want=directory got=%s", ErrDeployInvariantWrongType, path, info.Mode().Type())
+		}
+		if sourceEntryIsRegular && !info.Mode().IsRegular() {
+			logger.Error().Str(log.FieldPath, path).Msg("Failed to verify deploy target. Reason: written file has wrong destination type")
+			return fmt.Errorf("%w: path=%q want=regular-file got=%s", ErrDeployInvariantWrongType, path, info.Mode().Type())
 		}
 		// Truncate to seconds — some filesystems (notably FAT, and Unraid's
 		// FUSE layer historically) have second-level mtime resolution, so a
