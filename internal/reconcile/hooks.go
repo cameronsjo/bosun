@@ -19,9 +19,9 @@ import (
 // degradation for unrelated project-config read or parse errors.
 var ErrInvalidPostSyncHooks = errors.New("invalid post-sync hooks")
 
-// PostSyncHook defines a container action triggered when specific file paths change.
+// PostSyncHook defines a container action triggered when specific deploy paths change.
 type PostSyncHook struct {
-	// Paths are glob patterns matched against changed files (relative to repo root).
+	// Paths are glob patterns matched against changed deploy paths.
 	Paths []string `json:"paths" yaml:"paths"`
 	// Action is the operation to perform: "restart" (default) or "exec".
 	Action string `json:"action" yaml:"action"`
@@ -62,7 +62,7 @@ func hookKey(h PostSyncHook) string {
 	return key
 }
 
-// EvaluatePostSyncHooks matches changed file paths against hook glob patterns
+// EvaluatePostSyncHooks matches changed deploy paths against hook glob patterns
 // and returns the hooks that should be executed.
 // Deduplication keys on container+action, so a container can have both a restart
 // and an exec hook fire from the same change set.
@@ -105,7 +105,7 @@ func dedupeHooksByContainer(hooks []PostSyncHook) []PostSyncHook {
 	return result
 }
 
-// hookMatchesAny returns true if any changed file matches any of the hook's path patterns.
+// hookMatchesAny returns true if any changed path matches a hook path pattern.
 func hookMatchesAny(hook PostSyncHook, changedFiles []string) bool {
 	for _, pattern := range hook.Paths {
 		for _, file := range changedFiles {

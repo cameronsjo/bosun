@@ -1129,9 +1129,10 @@ func (r *Reconciler) runPostSyncHooksWithSpan(ctx context.Context, previousCommi
 	}
 }
 
-// executePostSyncHooks detects changed files and restarts matching containers via configured hooks.
-// When deployResult is non-nil and has written files, those are used for matching instead of git diff.
-// This ensures hooks only fire for files actually written to disk (content-hash sync).
+// executePostSyncHooks detects changed deploy paths and restarts matching
+// containers via configured hooks. When deployResult is non-nil, its created,
+// written, and deleted paths are authoritative instead of git diff. This keeps
+// content-hash hooks tied to actual on-disk changes.
 func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, currentCommit string, deployResult *DeployResult, local bool) (int, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 	if err := ValidatePostSyncHooks(r.config.PostSyncHooks.Value); err != nil {
@@ -2187,9 +2188,9 @@ func (r *Reconciler) getTargetHost(secrets map[string]any) string {
 }
 
 // deployLocal performs local deployment via mounted paths.
-// Returns a DeployResult with files actually written to disk and the full
-// managed-file manifest for this deploy. prevManaged is the prior deploy's
-// manifest (appdata-relative), which scopes stale-file pruning.
+// Returns a DeployResult with paths actually created, written, or deleted on
+// disk and the full managed-file manifest for this deploy. prevManaged is the
+// prior deploy's manifest (appdata-relative), which scopes stale-file pruning.
 func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*DeployResult, error) {
 	ui.Info("Using local deployment mode")
 	if r.config.DryRun {
@@ -2229,7 +2230,7 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 	}
 
 	// Sync discovered targets (excluding compose, which has special handling).
-	// After each DeployLocal call, prefix the newly written file paths with
+	// After each DeployLocal call, prefix the newly created or written paths with
 	// the target's RelPath so hook globs (which use staging-relative paths
 	// like "appdata/authelia/**") can match correctly.
 	for _, t := range targets {

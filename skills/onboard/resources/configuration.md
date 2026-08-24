@@ -460,7 +460,7 @@ post_sync_hooks:
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `paths` | Yes | Glob patterns matched against changed files (relative to the staging root). Supports `**` for recursive matching |
+| `paths` | Yes | Glob patterns matched against changed deploy paths (relative to the staging root). Supports `**` for recursive matching |
 | `action` | Yes | Action to perform: `restart` or `exec` |
 | `container` | Yes | Container name to act on |
 | `command` | For `exec` | Command and arguments to run inside the container. An `exec` hook without a non-empty command is rejected during configuration validation |
@@ -468,8 +468,8 @@ post_sync_hooks:
 
 ### Behavior
 
-- After a successful deploy, bosun prefers files actually written or deleted. Its git-diff fallback uses the last successfully deployed commit and normalizes repo-relative paths into the same staging-relative namespace
-- Each changed file is matched against hook glob patterns
+- After a successful deploy, bosun prefers directories created and files written or deleted. Its git-diff fallback uses the last successfully deployed commit and normalizes repo-relative paths into the same staging-relative namespace
+- Each changed deploy path is matched against hook glob patterns
 - Each container is restarted at most once per deploy, even if multiple patterns match
 - Hooks only run when dry run is disabled and a previous commit exists (skipped on first deploy)
 - Invalid `exec` hooks fail configuration validation before any target deploys; this applies to root and per-target hooks from `bosun.yaml`, `BOSUN_POST_SYNC_HOOKS`, and `BOSUN_TARGETS`. A newly pulled invalid hook also aborts the current reconciliation instead of falling back to stale hook configuration.

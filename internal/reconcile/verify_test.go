@@ -204,6 +204,39 @@ func TestVerifyDeployTarget_EmptyWrittenFiles_Against_EmptySource_Passes(t *test
 	assert.NoError(t, err)
 }
 
+func TestVerifyDeployTarget_DirectoryOnlyWriteStillChecksRegularSourceFiles(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	startTime := time.Now().Add(-time.Minute)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "empty"), 0755))
+	touchFile(t, filepath.Join(src, "config.yml"), "expected", time.Now())
+	require.NoError(t, os.MkdirAll(filepath.Join(dst, "empty"), 0755))
+	// config.yml is intentionally absent. A directory-only WrittenFiles entry
+	// must not suppress the zero-regular-file-write content invariant.
+
+	err := verifyDeployTarget(src, dst, []string{"empty"}, startTime)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrDeployInvariantEmptyWrite)
+	assert.Contains(t, err.Error(), "config.yml")
+}
+
+func TestVerifyDeployTarget_WrittenDirectoryRequiresDirectoryDestination(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	startTime := time.Now().Add(-time.Minute)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "empty"), 0755))
+	touchFile(t, filepath.Join(dst, "empty"), "not a directory", time.Now())
+
+	err := verifyDeployTarget(src, dst, []string{"empty"}, startTime)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrDeployInvariantWrongType)
+	assert.Contains(t, err.Error(), "want=directory")
+}
+
 func TestVerifyDeployTarget_StaleDestination_Errors(t *testing.T) {
 	// Layer 1.3, #214: the freshrss-shape failure — CopyDirIfChanged claimed
 	// to write the file (or we recorded it as written), but the destination's

@@ -14,9 +14,10 @@ import (
 
 // Sentinel errors returned by verifyDeployTarget. Callers branch via errors.Is.
 var (
-	ErrDeployInvariantEmptyWrite  = errors.New("deploy invariant: source has files but no writes recorded")
-	ErrDeployInvariantStaleMtime  = errors.New("deploy invariant: destination file has stale mtime")
-	ErrDeployInvariantMissingFile = errors.New("deploy invariant: destination file missing")
+	ErrDeployInvariantEmptyWrite  = errors.New("deploy invariant: source file missing or stale without a recorded file write")
+	ErrDeployInvariantStaleMtime  = errors.New("deploy invariant: destination path has stale mtime")
+	ErrDeployInvariantMissingFile = errors.New("deploy invariant: destination path missing")
+	ErrDeployInvariantWrongType   = errors.New("deploy invariant: destination path has wrong type")
 )
 
 // verifyDeployTarget asserts every entry in writtenRel exists at dst with
@@ -24,51 +25,45 @@ var (
 // targets dst is the destination directory; for file targets dst is its parent
 // dir.
 //
-// When writtenRel is empty the deploy recorded zero writes, which is NOT
-// inherently a failure: content-hash sync writes nothing when the destination
-// already byte-matches the source (a no-op), and the standard rename-aside path
-// leaves dst content-identical to src without populating writtenRel. So rather
-// than inferring corruption from the write counter, verify on-disk truth — every
-// regular file in src must be present and content-equal at dst.
-// ErrDeployInvariantEmptyWrite fires only for a genuine silent-sync failure (a
-// non-empty source whose files are missing or differ at dst), the failure GH#214
-// added this guard for; a satisfied no-op passes (GH#330).
+// When writtenRel contains no regular-file writes (it may be empty or contain
+// only newly created directories), that is NOT inherently a failure:
+// content-hash sync writes no file when the destination already byte-matches
+// the source. Rather than inferring success or corruption from the path count,
+// verify on-disk truth — every regular file in src must be present and
+// content-equal at dst. ErrDeployInvariantEmptyWrite fires only for a genuine
+// silent-sync failure (a source file is missing or differs at dst), the failure
+// GH#214 added this guard for; a satisfied no-op passes (GH#330).
 func verifyDeployTarget(src, dst string, writtenRel []string, startTime time.Time) error {
 	logger := log.Component(log.ComponentReconcile)
 	logger.Debug().
 		Str(log.FieldPath, src).
 		Str("destination", dst).
-		Int("written_count", len(writtenRel)).
+		Int("written_path_count", len(writtenRel)).
 		Msg("Preparing to verify deploy target invariant")
 
-	if len(writtenRel) == 0 {
-		sawFiles, mismatch, err := destinationSatisfiesSource(src, dst)
-		if err != nil {
-			logger.Error().Err(err).
-				Str(log.FieldPath, src).
-				Str("destination", dst).
-				Msg("Failed to verify deploy target. Reason: cannot compare source against destination")
-			return fmt.Errorf("compare source %q against destination %q: %w", src, dst, err)
-		}
-		if !sawFiles {
-			logger.Debug().Msg("Deploy target verification passed: source has no regular files to deploy")
-			return nil
-		}
-		if mismatch != "" {
-			logger.Error().
-				Str(log.FieldPath, src).
-				Str("destination", dst).
-				Str("mismatch", mismatch).
-				Msg("Failed to verify deploy target. Reason: zero writes recorded and destination does not content-match source (silent-sync failure)")
-			return fmt.Errorf("%w: src=%q dst=%q mismatch=%q", ErrDeployInvariantEmptyWrite, src, dst, mismatch)
-		}
-		logger.Debug().
-			Str("destination", dst).
-			Msg("Deploy target verification passed: no-op sync, destination already content-matches source")
-		return nil
+	sourceRoot, sourceErr := os.Lstat(src)
+	if sourceErr != nil && !errors.Is(sourceErr, fs.ErrNotExist) {
+		return fmt.Errorf("stat deploy source %q: %w", src, sourceErr)
 	}
+	sourceIsDir := sourceErr == nil && sourceRoot.IsDir()
+	wroteRegularFile := false
 
 	for _, rel := range writtenRel {
+		sourceEntryIsDir := false
+		if sourceIsDir {
+			sourcePath := filepath.Join(src, rel)
+			sourceInfo, err := os.Lstat(sourcePath)
+			if err != nil {
+				return fmt.Errorf("stat written source path %q: %w", sourcePath, err)
+			}
+			sourceEntryIsDir = sourceInfo.IsDir()
+			wroteRegularFile = wroteRegularFile || !sourceEntryIsDir
+		} else {
+			// Single-file targets record filepath.Base(src). Missing sources retain
+			// the historical written-path verification behavior.
+			wroteRegularFile = true
+		}
+
 		path := filepath.Join(dst, rel)
 		info, err := os.Stat(path)
 		if err != nil {
@@ -81,6 +76,16 @@ func verifyDeployTarget(src, dst string, writtenRel []string, startTime time.Tim
 			logger.Error().Err(err).Str(log.FieldPath, path).Msg("Failed to verify deploy target. Reason: cannot stat destination")
 			return fmt.Errorf("stat destination %q: %w", path, err)
 		}
+		if sourceEntryIsDir {
+			destinationEntry, err := os.Lstat(path)
+			if err != nil {
+				return fmt.Errorf("inspect destination directory %q: %w", path, err)
+			}
+			if !destinationEntry.IsDir() {
+				logger.Error().Str(log.FieldPath, path).Msg("Failed to verify deploy target. Reason: written directory has wrong destination type")
+				return fmt.Errorf("%w: path=%q want=directory got=%s", ErrDeployInvariantWrongType, path, destinationEntry.Mode().Type())
+			}
+		}
 		// Truncate to seconds — some filesystems (notably FAT, and Unraid's
 		// FUSE layer historically) have second-level mtime resolution, so a
 		// write within the same second as startTime can otherwise read as
@@ -90,22 +95,49 @@ func verifyDeployTarget(src, dst string, writtenRel []string, startTime time.Tim
 		if mt.Before(st) {
 			logger.Error().
 				Str(log.FieldPath, path).
-				Time("file_mtime", info.ModTime()).
+				Time("path_mtime", info.ModTime()).
 				Time("start_time", startTime).
-				Msg("Failed to verify deploy target. Reason: file has stale mtime")
+				Msg("Failed to verify deploy target. Reason: path has stale mtime")
 			return fmt.Errorf("%w: path=%q mtime=%s start=%s", ErrDeployInvariantStaleMtime, path, info.ModTime(), startTime)
 		}
 	}
 
-	logger.Info().Int("written_count", len(writtenRel)).Msg("Successfully verified deploy target invariant")
+	if !wroteRegularFile {
+		sawFiles, mismatch, err := destinationSatisfiesSource(src, dst)
+		if err != nil {
+			logger.Error().Err(err).
+				Str(log.FieldPath, src).
+				Str("destination", dst).
+				Msg("Failed to verify deploy target. Reason: cannot compare source against destination")
+			return fmt.Errorf("compare source %q against destination %q: %w", src, dst, err)
+		}
+		if !sawFiles {
+			logger.Debug().Msg("Deploy target verification passed: source has no regular files and all written directories were verified")
+			return nil
+		}
+		if mismatch != "" {
+			logger.Error().
+				Str(log.FieldPath, src).
+				Str("destination", dst).
+				Str("mismatch", mismatch).
+				Msg("Failed to verify deploy target. Reason: no regular-file writes recorded and destination does not content-match source (silent-sync failure)")
+			return fmt.Errorf("%w: src=%q dst=%q mismatch=%q", ErrDeployInvariantEmptyWrite, src, dst, mismatch)
+		}
+		logger.Debug().
+			Str("destination", dst).
+			Msg("Deploy target verification passed: no regular-file writes, destination already content-matches source")
+		return nil
+	}
+
+	logger.Info().Int("written_path_count", len(writtenRel)).Msg("Successfully verified deploy target invariant")
 	return nil
 }
 
-// destinationSatisfiesSource reports whether a zero-write deploy left the
-// destination already mirroring the source — the on-disk truth check behind the
-// empty-write invariant. Instead of treating "source has files but no writes
-// recorded" as corruption, it confirms each regular file in src is present and
-// content-equal at dst.
+// destinationSatisfiesSource reports whether a deploy with no regular-file
+// writes left the destination already mirroring the source — the on-disk truth
+// check behind the empty-write invariant. Instead of treating "source has files
+// but no file writes recorded" as corruption, it confirms each regular file in
+// src is present and content-equal at dst.
 //
 // Symlinks are skipped (Lstat semantics) to match CopyDir/CopyDirIfChanged,
 // which never deploy them, so a symlink-only source imposes no requirement.

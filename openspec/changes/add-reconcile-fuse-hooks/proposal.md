@@ -47,6 +47,10 @@ rejection.
 - **Deletion-aware hooks (#234)** — deletion-only commits SHALL record removed
   paths in the deploy change set so matching hooks fire. **MODIFIED** reconcile
   requirement.
+- **Directory-aware hooks (#358)** — content-hash sync SHALL record newly
+  created descendant directories, including empty directories, while excluding
+  the deploy root and pre-existing directories; directory-only change sets
+  SHALL remain subject to the deploy content invariant.
 - **Hook match observability (#269)** — when configured hooks evaluate changed
   files and nothing matches, the reconciler SHALL emit a discoverable warning
   with bounded pattern and staging-relative file samples plus complete counts.
@@ -77,9 +81,11 @@ rejection.
   - `internal/reconcile/reconcile.go` — `executePostSyncHooks` empty-match early
     return (`:769-786`)
   - `internal/reconcile/deploy.go` — `removeStaleFiles` (`:155-158`, `:251-299`),
-    `WrittenFiles` accumulation, post-write verification handling (`:314-321`)
+    `WrittenFiles` accumulation, managed type transitions, post-write
+    verification handling (`:314-321`)
   - `internal/fileutil/fileutil.go` — `CopyFile` (no dir fsync after rename,
-    `:60-110`), `CopyFileIfChanged` post-write verification (`:217-221`)
+    `:60-110`), `CopyFileIfChanged` post-write verification (`:217-221`), and
+    `CopyDirIfChanged` descendant-directory tracking
   - `internal/reconcile/config_reload.go` — `reloadProjectConfig` snapshot
     validation and root/target application
   - `internal/reconcile/configfield.go` — source-aware `ConfigField` reload
@@ -100,8 +106,9 @@ rejection.
   - `matchGlob` callers: post-sync hook path matching (`hooks.go`), `matchAnyPath`
     for `deploy_paths` / `deploy_sync_paths` / `deploy_sync_exclude`
     (`deploy.go` path-aware skip)
-  - hook change-set producers: `CopyDirIfChanged` (added/changed),
-    `removeStaleFiles` (deleted), git-diff fallback
+  - hook change-set producers: `CopyDirIfChanged` (created directories and
+    added/changed files), managed type transitions, `removeStaleFiles`
+    (deleted), git-diff fallback
   - initial-load and hot-reload consumers: daemon and one-shot CLI loaders,
     both `ConfigReloader` closures, `reloadProjectConfig` appliers for
     `PostSyncHooks` / `HookSettleDelay`, and `ConfigForTarget`

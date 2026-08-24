@@ -184,8 +184,9 @@ Git sync or secret decryption.
  9. Deploy-Sync Invariant Check
     (per-target: created directories and written files in WrittenFiles
     must exist at destination with
-    mtime >= reconcile start; empty WrittenFiles against
-    non-empty source fails; bypass via BOSUN_SKIP_DEPLOY_INVARIANT)
+    mtime >= reconcile start; when no regular file was written, every
+    regular source file must already byte-match the destination;
+    bypass via BOSUN_SKIP_DEPLOY_INVARIANT)
         |
         v
 10. Service Reload (docker compose up, SIGHUP)
@@ -209,7 +210,7 @@ Git sync or secret decryption.
 16. Release Lock
 ```
 
-> **Invariant gates at stages 6 and 9** prevent the silent-success failure mode where a deploy reports success but no files actually landed on disk. See [Deploy-Sync Invariants in the skill resource](../skills/onboard/resources/gitops.md) and the [troubleshooting guide](troubleshooting.md) for operator-facing detail on `BOSUN_ALLOW_EMPTY_DECLARED_STATE` and `BOSUN_SKIP_DEPLOY_INVARIANT`.
+> **Invariant gates at stages 6 and 9** prevent the silent-success failure mode where a deploy reports success but expected content did not land on disk. See [Deploy-Sync Invariants in the skill resource](../skills/onboard/resources/gitops.md) and the [troubleshooting guide](troubleshooting.md) for operator-facing detail on `BOSUN_ALLOW_EMPTY_DECLARED_STATE` and `BOSUN_SKIP_DEPLOY_INVARIANT`.
 
 ## Deploy State Tracking
 

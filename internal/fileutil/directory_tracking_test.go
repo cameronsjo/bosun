@@ -14,23 +14,23 @@ func TestMkdirIfMissingWithOps_PropagatesErrors(t *testing.T) {
 	t.Run("mkdir failure", func(t *testing.T) {
 		t.Parallel()
 
-		statCalled := false
+		inspectCalled := false
 		created, err := mkdirIfMissingWithOps(
 			"destination",
 			0755,
 			func(string, fs.FileMode) error { return fs.ErrPermission },
 			func(string) (fs.FileInfo, error) {
-				statCalled = true
+				inspectCalled = true
 				return nil, nil
 			},
 		)
 
 		require.ErrorIs(t, err, fs.ErrPermission)
 		assert.False(t, created)
-		assert.False(t, statCalled, "a non-collision mkdir error must return without a stat")
+		assert.False(t, inspectCalled, "a non-collision mkdir error must return without inspecting the path")
 	})
 
-	t.Run("stat failure after collision", func(t *testing.T) {
+	t.Run("inspection failure after collision", func(t *testing.T) {
 		t.Parallel()
 
 		created, err := mkdirIfMissingWithOps(

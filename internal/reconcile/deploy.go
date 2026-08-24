@@ -93,11 +93,11 @@ func (r *DeployResult) AddManaged(files ...string) {
 	r.ManagedFiles = append(r.ManagedFiles, files...)
 }
 
-// PrefixLatest prepends prefix to all WrittenFiles entries added after
-// the snapshot index. Call with len(r.WrittenFiles) before a DeployLocal
-// call, then PrefixLatest after, to give the new entries context needed
-// for hook glob matching. It panics when snapshot is outside the valid
-// slice boundary [0, len(r.WrittenFiles)] because that is a caller bug.
+// PrefixLatest prepends prefix to all WrittenFiles entries added after the
+// snapshot index. Call with len(r.WrittenFiles) before a DeployLocal call, then
+// PrefixLatest after, to give new file and directory entries the context needed
+// for hook glob matching. It panics when snapshot is outside the valid slice
+// boundary [0, len(r.WrittenFiles)] because that is a caller bug.
 func (r *DeployResult) PrefixLatest(snapshot int, prefix string) {
 	if snapshot < 0 || snapshot > len(r.WrittenFiles) {
 		panic(fmt.Sprintf("DeployResult.PrefixLatest snapshot %d out of range [0,%d]", snapshot, len(r.WrittenFiles)))
@@ -250,7 +250,7 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 
 		logger.Info().
 			Str("target", targetDir).
-			Int("files_written", len(written)+len(transitions.WrittenFiles())).
+			Int("paths_written", len(written)+len(transitions.WrittenFiles())).
 			Int64(log.FieldDurationMS, log.DurationMS(start)).
 			Msg("Successfully deployed files locally (content-hash sync)")
 		return nil
@@ -688,14 +688,17 @@ func (t *managedTypeTransition) stage() (stageErr error) {
 		if err != nil {
 			return fmt.Errorf("stat private replacement directory for %s: %w", t.relPath, err)
 		}
-		if err := fileutil.CopyDir(t.sourcePath, replacement); err != nil {
+		written, err := fileutil.CopyDirIfChanged(t.sourcePath, replacement)
+		if err != nil {
 			return fmt.Errorf("copy private replacement directory for %s: %w", t.relPath, err)
 		}
-		managed, err := listManagedFiles(t.sourcePath)
-		if err != nil {
-			return err
+		// The replacement root is a meaningful change when it replaces a
+		// managed file below the deploy target. The deploy target root itself
+		// remains plumbing and is intentionally excluded from WrittenFiles.
+		if t.relPath != managedTargetRoot {
+			t.written = append(t.written, t.relPath)
 		}
-		for _, path := range managed {
+		for _, path := range written {
 			if t.relPath == managedTargetRoot {
 				t.written = append(t.written, path)
 			} else {
