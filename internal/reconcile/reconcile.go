@@ -617,6 +617,10 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 			state.LastDeployedCommit = after
 			state.DeployedAt = time.Now()
 			state.Source = r.config.Source
+			state.NeedsRedeploy = false
+			state.AttemptCount = 0
+			state.LastAttemptedCommit = ""
+			state.LastAlertedAttempt = 0
 			if err := SaveState(r.config.StateFile, state); err != nil {
 				logger.Error().Err(err).Msg("Failed to save state after path-aware skip")
 			}

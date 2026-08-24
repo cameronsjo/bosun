@@ -1076,46 +1076,92 @@ func TestReloadProjectConfig_DeployPaths(t *testing.T) {
 }
 
 func TestRun_DeployPathsSkip(t *testing.T) {
-	tmpDir := t.TempDir()
-	stateFile := filepath.Join(tmpDir, "state.json")
-
-	// Seed a prior successful deploy so the path-aware check activates.
-	// Without prior state, state.LastDeployedCommit is empty and the check
-	// is skipped entirely (first deploy runs the full pipeline).
-	seedState := &DeployState{LastDeployedCommit: "aaa111", DeployCount: 1}
-	require.NoError(t, SaveState(stateFile, seedState))
-
-	cfg := &Config{
-		RepoDir:     tmpDir,
-		LockFile:    filepath.Join(tmpDir, "test.lock"),
-		StateFile:   stateFile,
-		DeployPaths: NewConfigField([]string{"unraid/**"}),
+	tests := []struct {
+		name      string
+		seedState *DeployState
+	}{
+		{
+			name: "clean prior state",
+			seedState: &DeployState{
+				LastDeployedCommit: "aaa111",
+				DeployCount:        1,
+			},
+		},
+		{
+			name: "stale redeploy and failure state",
+			seedState: &DeployState{
+				LastDeployedCommit:  "aaa111",
+				DeployCount:         7,
+				NeedsRedeploy:       true,
+				LastAttemptedCommit: "bbb222",
+				AttemptCount:        MaxAttempts,
+				LastAlertedAttempt:  MaxAttempts,
+			},
+		},
 	}
 
-	mockGit := &mockGitWithDiff{
-		syncChanged: true,
-		syncBefore:  "aaa111",
-		syncAfter:   "bbb222",
-		diffFiles:   []string{"docs/README.md", ".beads/issues/task-1.jsonl"},
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			stateFile := filepath.Join(tmpDir, "state.json")
+
+			// Seed a prior successful deploy so the path-aware check activates.
+			// Without prior state, state.LastDeployedCommit is empty and the check
+			// is skipped entirely (first deploy runs the full pipeline).
+			require.NoError(t, SaveState(stateFile, tt.seedState))
+
+			cfg := &Config{
+				RepoDir:     tmpDir,
+				LockFile:    filepath.Join(tmpDir, "test.lock"),
+				StateFile:   stateFile,
+				DeployPaths: NewConfigField([]string{"unraid/**"}),
+				Source:      "poll",
+			}
+
+			mockGit := &mockGitWithDiff{
+				syncChanged: true,
+				syncBefore:  "aaa111",
+				syncAfter:   "ccc333",
+				diffFiles:   []string{"docs/README.md", ".beads/issues/task-1.jsonl"},
+			}
+
+			r := NewReconciler(cfg,
+				WithGitOperations(mockGit),
+				WithSecretsDecryptor(&mockSOPS{}),
+			)
+
+			startedAt := time.Now()
+			require.NoError(t, r.Run(context.Background()))
+
+			state := LoadState(stateFile)
+			assert.Equal(t, "ccc333", state.LastDeployedCommit)
+			assert.WithinRange(t, state.DeployedAt, startedAt, time.Now())
+			assert.Equal(t, "poll", state.Source)
+			assert.Equal(t, tt.seedState.DeployCount, state.DeployCount,
+				"deploy count should not be incremented for skipped commits")
+			assert.False(t, state.NeedsRedeploy)
+			assert.Zero(t, state.AttemptCount)
+			assert.Empty(t, state.LastAttemptedCommit)
+			assert.Zero(t, state.LastAlertedAttempt)
+
+			// The zero values are omitted from persisted JSON, proving stale
+			// redeploy, breaker, and alert-throttle state was removed on disk.
+			data, err := os.ReadFile(stateFile)
+			require.NoError(t, err)
+			assert.NotContains(t, string(data), `"needs_redeploy"`)
+			assert.NotContains(t, string(data), `"attempt_count"`)
+			assert.NotContains(t, string(data), `"last_attempted_commit"`)
+			assert.NotContains(t, string(data), `"last_alerted_attempt"`)
+
+			// Verify diff was computed from the last deployed commit, not the
+			// pull's commit_before.
+			require.Len(t, mockGit.diffCalledWith, 1)
+			assert.Equal(t, "aaa111", mockGit.diffCalledWith[0][0],
+				"diff base should be state.LastDeployedCommit")
+			assert.Equal(t, "ccc333", mockGit.diffCalledWith[0][1],
+				"diff head should be the new commit")
+		})
 	}
-
-	r := NewReconciler(cfg,
-		WithGitOperations(mockGit),
-		WithSecretsDecryptor(&mockSOPS{}),
-	)
-
-	err := r.Run(context.Background())
-	require.NoError(t, err)
-
-	// Verify state was updated with skipped commit.
-	state := LoadState(stateFile)
-	assert.Equal(t, "bbb222", state.LastDeployedCommit)
-	assert.Equal(t, 1, state.DeployCount, "deploy count should not be incremented for skipped commits")
-
-	// Verify diff was computed from the last deployed commit, not the pull's commit_before.
-	require.Len(t, mockGit.diffCalledWith, 1)
-	assert.Equal(t, "aaa111", mockGit.diffCalledWith[0][0], "diff base should be state.LastDeployedCommit")
-	assert.Equal(t, "bbb222", mockGit.diffCalledWith[0][1], "diff head should be the new commit")
 }
 
 func TestRun_DeployPathsMatch(t *testing.T) {
