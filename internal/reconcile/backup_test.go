@@ -233,6 +233,34 @@ func TestCreateBackup_RemotePathPropagatesFailure(t *testing.T) {
 		"failure must be the host/ssh error, not a timeout, got: %v", err)
 }
 
+// TestCreateBackup_RemoteEmptyFootprintCreatesNoAnchor covers the caller-level
+// fresh-host path from #459. A successfully discovered but empty staging tree
+// produces no remote paths, so createBackup must proceed without consulting the
+// unresolved host or recording an archive directory as a rollback anchor.
+func TestCreateBackup_RemoteEmptyFootprintCreatesNoAnchor(t *testing.T) {
+	tmpDir := evalSymlinks(t, t.TempDir())
+	stagingDir := filepath.Join(tmpDir, "staging")
+	backupDir := filepath.Join(tmpDir, "backups")
+	require.NoError(t, os.MkdirAll(stagingDir, 0755))
+
+	cfg := &Config{
+		StagingDir:        stagingDir,
+		InfraSubDir:       ".",
+		BackupDir:         backupDir,
+		RemoteAppdataPath: "/mnt/appdata",
+		BackupsToKeep:     3,
+		// Deliberately leave TargetHost empty. With no remote paths there is no
+		// SSH operation to authenticate, so host validation must not block the
+		// fresh-host deploy.
+	}
+	r := NewReconciler(cfg)
+
+	require.NoError(t, r.createBackup(context.Background(), nil, false))
+	assert.Empty(t, r.lastBackupPath, "an empty remote footprint must not create a rollback anchor")
+	assert.False(t, r.lastBackupIsFresh, "no archive was created, so no fresh anchor exists")
+	assert.NoDirExists(t, backupDir, "an empty remote footprint must not leave a backup artifact")
+}
+
 // TestCreateBackup_DiscoveryFailureFallsBackToFullAppdata verifies that when
 // deploy-target discovery fails (here, a missing staging subtree), the backup
 // falls back to the full appdata path rather than producing a no-op archive —
@@ -384,6 +412,54 @@ func assertNoBackupDirs(t *testing.T, backupDir string) {
 		assert.False(t, strings.HasPrefix(e.Name(), "backup-"),
 			"a failed backup must leave no archive behind (found: %s)", e.Name())
 	}
+}
+
+// TestBackupRemote_EmptyFootprintSkipsAllWork verifies the leaf operation's
+// ordering, not just its final return values. Nothing-to-back-up is a clean
+// no-op even when values that would fail later stages are adversarial: no host
+// validation, destination creation, context-bound SSH, or archive verification
+// may run when the remote footprint is empty.
+func TestBackupRemote_EmptyFootprintSkipsAllWork(t *testing.T) {
+	t.Run("invalid host is irrelevant without an SSH operation", func(t *testing.T) {
+		backupDir := filepath.Join(t.TempDir(), "backups")
+		d := NewDeployOps(false, "")
+
+		backupName, err := d.BackupRemote(context.Background(), "-oProxyCommand=sh", backupDir, nil)
+
+		require.NoError(t, err)
+		assert.Empty(t, backupName)
+		assert.NoDirExists(t, backupDir)
+	})
+
+	t.Run("uncreatable destination is irrelevant without an archive", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		parentFile := filepath.Join(tmpDir, "not-a-directory")
+		require.NoError(t, os.WriteFile(parentFile, []byte("sentinel"), 0644))
+		d := NewDeployOps(false, "")
+
+		backupName, err := d.BackupRemote(
+			context.Background(),
+			"localhost",
+			filepath.Join(parentFile, "backups"),
+			[]string{},
+		)
+
+		require.NoError(t, err)
+		assert.Empty(t, backupName)
+	})
+
+	t.Run("cancelled context is irrelevant without subprocess work", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		backupDir := filepath.Join(t.TempDir(), "backups")
+		d := NewDeployOps(false, "")
+
+		backupName, err := d.BackupRemote(ctx, "localhost", backupDir, nil)
+
+		require.NoError(t, err)
+		assert.Empty(t, backupName)
+		assert.NoDirExists(t, backupDir)
+	})
 }
 
 // TestBackupRemote_SSHErrorIsFatal verifies the #240 data-integrity fix: when the

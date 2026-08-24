@@ -2019,8 +2019,7 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 	// back up — a fresh host's first deploy (#360). There is no rollback anchor to
 	// record, so leave lastBackupPath empty and lastBackupIsFresh false: no later
 	// rollback fires against a non-anchor, and the misleading "Backup saved" is
-	// skipped. Local Backup signals this with an empty name; BackupRemote fails
-	// closed at verification instead, so this only fires on the local path.
+	// skipped. Both local and remote backup paths signal this with an empty name.
 	if backupName == "" {
 		logger.Info().Msg("No rollback anchor created: no existing paths to back up")
 		return nil

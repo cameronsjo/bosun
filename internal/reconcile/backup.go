@@ -506,6 +506,15 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 		Int("path_count", len(remotePaths)).
 		Msg("Preparing to create remote backup")
 
+	// An empty footprint is legitimate on a fresh host. It requires no remote
+	// operation and produces no archive, so return the same empty-name signal as
+	// Backup before validating the host or creating a local artifact (#459).
+	if len(remotePaths) == 0 {
+		logger.Warn().Str(log.FieldTarget, host).
+			Msg("No remote paths to back up; no rollback anchor created")
+		return "", nil
+	}
+
 	if err := validateHost(host); err != nil {
 		logger.Error().Err(err).Str(log.FieldTarget, host).Msg("Failed to create remote backup. Reason: invalid SSH host")
 		return "", fmt.Errorf("invalid SSH host: %w", err)
