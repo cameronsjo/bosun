@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.40.1](https://github.com/cameronsjo/bosun/compare/v0.40.0...v0.40.1) (2026-08-24)
+
+
+### Bug Fixes
+
+* **daemon:** authorize Unix socket peer UIDs ([c8f6ea0](https://github.com/cameronsjo/bosun/commit/c8f6ea0bdaf730d123576ab0fe4df3553bda656d))
+* **daemon:** bound drift self-heal attempts ([eb7e630](https://github.com/cameronsjo/bosun/commit/eb7e63045515f2237a7dae3ba02d15afe81ec977))
+* **daemon:** close socket cleanup race ([f6eddda](https://github.com/cameronsjo/bosun/commit/f6eddda06346c473ca404328ff04c96aa331fb14))
+* **daemon:** pin socket ownership identity ([66f35cd](https://github.com/cameronsjo/bosun/commit/66f35cda2ef13c57eb6514adfcbae4dc4ffd2d90))
+* **daemon:** preserve trigger lifecycle correlation ([9916b22](https://github.com/cameronsjo/bosun/commit/9916b227a84b29e75efa5a454144e424a9a72f91))
+* **daemon:** publish Unix socket at configured mode ([e112aaa](https://github.com/cameronsjo/bosun/commit/e112aaa258c0c9d21b222a15bb4a00cb2edc6112))
+* **daemon:** serialize drift self-heal admission ([dd3511d](https://github.com/cameronsjo/bosun/commit/dd3511d1e86b52b5d196e60e9b788af65e7610e4))
+* **daemon:** track trigger reconciles through shutdown ([321d0ba](https://github.com/cameronsjo/bosun/commit/321d0ba284594b3469a450ba25908be1a32a6868))
+* **reconcile:** bound hook mismatch diagnostics ([fe187fb](https://github.com/cameronsjo/bosun/commit/fe187fb8288cbb09a15c4ff7d319e34b81a164c3))
+* **reconcile:** cancel compose process groups ([8d1661f](https://github.com/cameronsjo/bosun/commit/8d1661fb0a47cdae3f8f4eae00c620a8482a5154))
+* **reconcile:** cancel compose work gracefully ([06d7360](https://github.com/cameronsjo/bosun/commit/06d7360c9b245a620ffe5e4daf49d234673d23f5))
+* **reconcile:** close staging evidence race gaps ([3d4190d](https://github.com/cameronsjo/bosun/commit/3d4190dc29a7abfe84f2cf69e6717df11e1794d2))
+* **reconcile:** preserve failed staging evidence ([1ad8e29](https://github.com/cameronsjo/bosun/commit/1ad8e294efebfc4024801aacf9749984d5035c04))
+* **reconcile:** preserve hook reload ownership ([eb90dd6](https://github.com/cameronsjo/bosun/commit/eb90dd6c7ca85a12dca3d5a13aec0757ab08e760))
+* **reconcile:** preserve hook reload snapshots ([24d511b](https://github.com/cameronsjo/bosun/commit/24d511be0c46118d333baad23aa7ca0202d76918))
+* **reconcile:** report zero matched hook files ([de4142a](https://github.com/cameronsjo/bosun/commit/de4142a59b40c2a6b885f98ecc620f2636c9e473))
+* **reconcile:** surface unmatched hook patterns ([323f0aa](https://github.com/cameronsjo/bosun/commit/323f0aa033fdd53ba13afecf402aec6a1ebe4c4a))
+* **reconcile:** verify remote archives before promotion ([131699b](https://github.com/cameronsjo/bosun/commit/131699b9525cd09a1bd5f2e04647ae4aeea3084c)), closes [#252](https://github.com/cameronsjo/bosun/issues/252)
+
 ## [0.40.0](https://github.com/cameronsjo/bosun/compare/v0.39.14...v0.40.0) (2026-08-23)
 
 
