@@ -66,18 +66,24 @@ func checkDocker(ctx context.Context) CheckResult {
 }
 
 // checkDockerCompose verifies Docker Compose v2 is installed.
-func checkDockerCompose() CheckResult {
-	composeCmd := exec.Command("docker", "compose", "version", "--short")
+func checkDockerCompose(ctx context.Context) (CheckResult, error) {
+	if err := ctx.Err(); err != nil {
+		return CheckResult{}, err
+	}
+
+	composeCmd := exec.CommandContext(ctx, "docker", "compose", "version", "--short")
 	if output, err := composeCmd.Output(); err == nil {
 		version := strings.TrimSpace(string(output))
 		_, _ = ui.Green.Printf("  * Docker Compose v2 (%s)\n", version)
-		return CheckResult{Passed: 1}
+		return CheckResult{Passed: 1}, nil
+	} else if ctxErr := ctx.Err(); ctxErr != nil {
+		return CheckResult{}, ctxErr
 	}
 	_, _ = ui.Red.Println("  x Docker Compose v2 not found")
 	_, _ = ui.Blue.Println("      To fix this:")
 	_, _ = ui.Blue.Println("      - Install Docker Desktop (includes Compose v2)")
 	_, _ = ui.Blue.Println("      - Or: https://docs.docker.com/compose/install/")
-	return CheckResult{Failed: 1}
+	return CheckResult{Failed: 1}, nil
 }
 
 // checkGit verifies Git is installed.
@@ -165,16 +171,22 @@ func checkAgeKey() CheckResult {
 }
 
 // checkSOPS verifies SOPS is installed.
-func checkSOPS() CheckResult {
+func checkSOPS(ctx context.Context) (CheckResult, error) {
+	if err := ctx.Err(); err != nil {
+		return CheckResult{}, err
+	}
+
 	if sopsPath, err := exec.LookPath("sops"); err == nil {
-		versionCmd := exec.Command(sopsPath, "--version")
+		versionCmd := exec.CommandContext(ctx, sopsPath, "--version")
 		if output, err := versionCmd.Output(); err == nil {
 			version := strings.TrimSpace(string(output))
 			_, _ = ui.Green.Printf("  * SOPS is installed (%s)\n", version)
+		} else if ctxErr := ctx.Err(); ctxErr != nil {
+			return CheckResult{}, ctxErr
 		} else {
 			_, _ = ui.Green.Println("  * SOPS is installed")
 		}
-		return CheckResult{Passed: 1}
+		return CheckResult{Passed: 1}, nil
 	}
 	_, _ = ui.Yellow.Println("  ! SOPS not found (needed for secrets)")
 	_, _ = ui.Blue.Println("      To fix this:")
@@ -182,7 +194,7 @@ func checkSOPS() CheckResult {
 	_, _ = ui.Blue.Println("      - Ubuntu/Debian: apt-get install sops")
 	_, _ = ui.Blue.Println("      - Fedora/RHEL: dnf install sops")
 	_, _ = ui.Blue.Println("      - Or: https://github.com/getsops/sops/releases")
-	return CheckResult{Warned: 1}
+	return CheckResult{Warned: 1}, nil
 }
 
 // checkManifestDirectory verifies the manifest directory exists.
@@ -607,6 +619,10 @@ func checkDeployKeyPermissions() CheckResult {
 }
 
 func runDoctor(cmd *cobra.Command, args []string) error {
+	if err := cmd.Context().Err(); err != nil {
+		return err
+	}
+
 	_, _ = ui.Blue.Println("Running pre-flight checks...")
 	fmt.Println()
 
@@ -617,16 +633,27 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	cfg, cfgErr := config.Load()
 
 	// Run all checks with timeout context for Docker
-	ctx, cancel := context.WithTimeout(context.Background(), dockerPingTimeout)
-	defer cancel()
-	result.Add(checkDocker(ctx))
+	dockerCtx, cancel := context.WithTimeout(cmd.Context(), dockerPingTimeout)
+	result.Add(checkDocker(dockerCtx))
+	cancel()
+	if ctxErr := cmd.Context().Err(); ctxErr != nil {
+		return ctxErr
+	}
 
-	result.Add(checkDockerCompose())
+	composeResult, err := checkDockerCompose(cmd.Context())
+	if err != nil {
+		return err
+	}
+	result.Add(composeResult)
 	result.Add(checkGit())
 	result.Add(checkDeployKeyPermissions())
 	result.Add(checkProjectRoot(cfg, cfgErr))
 	result.Add(checkAgeKey())
-	result.Add(checkSOPS())
+	sopsResult, err := checkSOPS(cmd.Context())
+	if err != nil {
+		return err
+	}
+	result.Add(sopsResult)
 	result.Add(checkManifestDirectory(cfg))
 	result.Add(checkHookSettleDelayFUSE(cfg))
 	result.Add(checkRestartBreakerSampling())

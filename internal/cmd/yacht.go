@@ -44,7 +44,7 @@ var yachtUpCmd = &cobra.Command{
 	Short: "Start the yacht (docker compose up -d)",
 	Long:  `Starts all services defined in the compose file. Checks for Traefik first.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), ComposeCommandTimeout)
+		ctx, cancel := context.WithTimeout(cmd.Context(), ComposeCommandTimeout)
 		defer cancel()
 
 		cfg, err := config.Load()
@@ -53,7 +53,10 @@ var yachtUpCmd = &cobra.Command{
 		}
 
 		// Validate compose file before operations
-		if err := validateComposeFile(cfg.ComposeFile); err != nil {
+		if err := validateComposeFile(ctx, cfg.ComposeFile); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			return fmt.Errorf("%w. Run 'docker compose config' to debug", err)
 		}
 
@@ -93,7 +96,7 @@ var yachtDownCmd = &cobra.Command{
 	Short: "Dock the yacht (docker compose down)",
 	Long:  `Stops and removes all services defined in the compose file.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), ComposeCommandTimeout)
+		ctx, cancel := context.WithTimeout(cmd.Context(), ComposeCommandTimeout)
 		defer cancel()
 
 		cfg, err := config.Load()
@@ -102,7 +105,10 @@ var yachtDownCmd = &cobra.Command{
 		}
 
 		// Validate compose file before operations
-		if err := validateComposeFile(cfg.ComposeFile); err != nil {
+		if err := validateComposeFile(ctx, cfg.ComposeFile); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			return fmt.Errorf("%w. Run 'docker compose config' to debug", err)
 		}
 
@@ -138,7 +144,7 @@ var yachtRestartCmd = &cobra.Command{
 	Short: "Quick turnaround (docker compose restart)",
 	Long:  `Restarts all or specified services.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), ComposeCommandTimeout)
+		ctx, cancel := context.WithTimeout(cmd.Context(), ComposeCommandTimeout)
 		defer cancel()
 
 		cfg, err := config.Load()
@@ -147,7 +153,10 @@ var yachtRestartCmd = &cobra.Command{
 		}
 
 		// Validate compose file before operations
-		if err := validateComposeFile(cfg.ComposeFile); err != nil {
+		if err := validateComposeFile(ctx, cfg.ComposeFile); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			return fmt.Errorf("%w. Run 'docker compose config' to debug", err)
 		}
 
@@ -219,16 +228,23 @@ var yachtStatusCmd = &cobra.Command{
 }
 
 // validateComposeFile validates that a compose file exists and has valid syntax.
-func validateComposeFile(composePath string) error {
+func validateComposeFile(ctx context.Context, composePath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// Check file exists
 	if _, err := os.Stat(composePath); os.IsNotExist(err) {
 		return fmt.Errorf("compose file not found: %s", composePath)
 	}
 
 	// Run docker compose config --quiet to validate syntax
-	cmd := exec.Command("docker", "compose", "-f", composePath, "config", "--quiet")
+	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", composePath, "config", "--quiet")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		// Parse error output for actionable message
 		errMsg := strings.TrimSpace(string(output))
 		if errMsg == "" {

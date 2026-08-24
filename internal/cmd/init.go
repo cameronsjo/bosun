@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -46,6 +47,10 @@ var (
 )
 
 func runInit(cmd *cobra.Command, args []string) error {
+	if err := cmd.Context().Err(); err != nil {
+		return err
+	}
+
 	targetDir := "."
 	if len(args) > 0 {
 		targetDir = args[0]
@@ -98,8 +103,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	// Step 2: Check/setup age key
 	ui.Info("Setting up encryption...")
-	agePubKey, err := setupAgeKey()
+	agePubKey, err := setupAgeKey(cmd.Context())
 	if err != nil {
+		if ctxErr := cmd.Context().Err(); ctxErr != nil {
+			return ctxErr
+		}
 		ui.Warning("Age setup: %v", err)
 		agePubKey = "AGE-PUBLIC-KEY-REPLACE-ME"
 	}
@@ -121,13 +129,19 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	// Step 4: Initialize git if needed
 	ui.Info("Setting up version control...")
+	if ctxErr := cmd.Context().Err(); ctxErr != nil {
+		return ctxErr
+	}
 	gitDir := filepath.Join(targetDir, ".git")
 	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
 		if _, err := exec.LookPath("git"); err == nil {
-			gitInit := exec.Command("git", "init", targetDir)
+			gitInit := exec.CommandContext(cmd.Context(), "git", "init", targetDir)
 			gitInit.Stdout = os.Stdout
 			gitInit.Stderr = os.Stderr
 			if err := gitInit.Run(); err != nil {
+				if ctxErr := cmd.Context().Err(); ctxErr != nil {
+					return ctxErr
+				}
 				ui.Warning("Git init failed: %v", err)
 			} else {
 				ui.Success("Initialized git repository")
@@ -224,7 +238,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 }
 
 // setupAgeKey checks for an existing age key or generates a new one.
-func setupAgeKey() (string, error) {
+func setupAgeKey(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
 	// Get age key file path
 	ageKeyFile := os.Getenv("SOPS_AGE_KEY_FILE")
 	if ageKeyFile == "" {
@@ -238,7 +256,7 @@ func setupAgeKey() (string, error) {
 	// Check if key exists
 	if _, err := os.Stat(ageKeyFile); err == nil {
 		ui.Success("Age key found: %s", ageKeyFile)
-		return extractAgePublicKey(ageKeyFile)
+		return extractAgePublicKey(ctx, ageKeyFile)
 	}
 
 	// Check if age-keygen is available
@@ -257,9 +275,12 @@ func setupAgeKey() (string, error) {
 	}
 
 	// Run age-keygen
-	keygen := exec.Command("age-keygen", "-o", ageKeyFile)
+	keygen := exec.CommandContext(ctx, "age-keygen", "-o", ageKeyFile)
 	output, err := keygen.CombinedOutput()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
+		}
 		return "", fmt.Errorf("generate age key: %w", err)
 	}
 
@@ -279,11 +300,15 @@ func setupAgeKey() (string, error) {
 	}
 
 	// Fall back to extracting from file
-	return extractAgePublicKey(ageKeyFile)
+	return extractAgePublicKey(ctx, ageKeyFile)
 }
 
 // extractAgePublicKey reads the public key from an age key file.
-func extractAgePublicKey(keyFile string) (string, error) {
+func extractAgePublicKey(ctx context.Context, keyFile string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
 	file, err := os.Open(keyFile)
 	if err != nil {
 		return "", fmt.Errorf("open key file: %w", err)
@@ -304,8 +329,11 @@ func extractAgePublicKey(keyFile string) (string, error) {
 
 	// Try using age-keygen -y to derive public key
 	if _, err := exec.LookPath("age-keygen"); err == nil {
-		deriveCmd := exec.Command("age-keygen", "-y", keyFile)
+		deriveCmd := exec.CommandContext(ctx, "age-keygen", "-y", keyFile)
 		output, err := deriveCmd.Output()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
+		}
 		if err == nil {
 			return strings.TrimSpace(string(output)), nil
 		}

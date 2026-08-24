@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -97,13 +98,13 @@ AGE-SECRET-KEY-1QYQSZQGPQYQSZQGPQYQSZQGPQYQSZQGPQYQSZQGPQYQSZQGPQYQS
 `
 		require.NoError(t, os.WriteFile(keyFile, []byte(content), 0600))
 
-		pubKey, err := extractAgePublicKey(keyFile)
+		pubKey, err := extractAgePublicKey(context.Background(), keyFile)
 		require.NoError(t, err)
 		assert.Contains(t, pubKey, "age1")
 	})
 
 	t.Run("non-existent file", func(t *testing.T) {
-		_, err := extractAgePublicKey("/non/existent/keys.txt")
+		_, err := extractAgePublicKey(context.Background(), "/non/existent/keys.txt")
 		assert.Error(t, err)
 	})
 
@@ -116,7 +117,7 @@ AGE-SECRET-KEY-1QYQSZQGPQYQSZQGPQYQSZQGPQYQSZQGPQYQSZQGPQYQSZQGPQYQS
 		require.NoError(t, os.WriteFile(keyFile, []byte(content), 0600))
 
 		// Will try age-keygen -y or return error
-		_, err := extractAgePublicKey(keyFile)
+		_, err := extractAgePublicKey(context.Background(), keyFile)
 		// May succeed or fail depending on age-keygen availability
 		_ = err
 	})

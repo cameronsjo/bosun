@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -109,7 +110,7 @@ func TestYachtUpCmd_MissingComposeFile(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateComposeFile(tc.composeFile)
+			err := validateComposeFile(context.Background(), tc.composeFile)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.expectErr)
 		})
@@ -131,7 +132,7 @@ func TestYachtUpCmd_InvalidYAML(t *testing.T) {
 	require.NoError(t, os.WriteFile(composeFile, []byte(content), 0644))
 
 	// validateComposeFile should fail (if docker compose is available)
-	err := validateComposeFile(composeFile)
+	err := validateComposeFile(context.Background(), composeFile)
 	// Either docker compose validates and fails, or file exists
 	// This tests the error path - specific error depends on docker availability
 	_ = err
@@ -212,7 +213,7 @@ func TestCheckTraefik_AllScenarios(t *testing.T) {
 func TestYachtDown_NoRunningContainers(t *testing.T) {
 	t.Run("compose file validation still required", func(t *testing.T) {
 		// Even with no running containers, we still need a valid compose file
-		err := validateComposeFile("/non/existent/file.yml")
+		err := validateComposeFile(context.Background(), "/non/existent/file.yml")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "compose file not found")
 	})
@@ -259,7 +260,7 @@ networks:
 			composeFile := filepath.Join(tmpDir, "docker-compose.yml")
 			require.NoError(t, os.WriteFile(composeFile, []byte(tc.content), 0644))
 
-			err := validateComposeFile(composeFile)
+			err := validateComposeFile(context.Background(), composeFile)
 			// Result depends on docker compose availability
 			if err != nil && tc.expectError {
 				if tc.errContains != "" {
@@ -272,7 +273,7 @@ networks:
 
 func TestValidateComposeFile(t *testing.T) {
 	t.Run("non-existent file", func(t *testing.T) {
-		err := validateComposeFile("/non/existent/file.yml")
+		err := validateComposeFile(context.Background(), "/non/existent/file.yml")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "compose file not found")
 	})
@@ -291,7 +292,7 @@ func TestValidateComposeFile(t *testing.T) {
 
 		// Note: This test will fail if docker compose is not installed
 		// In that case, we just check file existence succeeds
-		err := validateComposeFile(composeFile)
+		err := validateComposeFile(context.Background(), composeFile)
 		// Error could be nil (docker available) or contain "invalid compose file" (docker unavailable)
 		if err != nil {
 			// If docker compose is not available, the error should be about invalid compose file

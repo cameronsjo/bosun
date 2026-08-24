@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -312,7 +313,8 @@ func TestCheckWebhook(t *testing.T) {
 func TestCheckDockerCompose(t *testing.T) {
 	// Docker Compose v2 is typically installed in test environments with Docker
 	t.Run("docker compose check", func(t *testing.T) {
-		result := checkDockerCompose()
+		result, err := checkDockerCompose(context.Background())
+		require.NoError(t, err)
 		// Should return exactly one passed or failed (not warned)
 		assert.True(t, result.Passed == 1 || result.Failed == 1,
 			"checkDockerCompose should return exactly one passed or failed")
@@ -322,7 +324,8 @@ func TestCheckDockerCompose(t *testing.T) {
 
 func TestCheckSOPS(t *testing.T) {
 	t.Run("sops check", func(t *testing.T) {
-		result := checkSOPS()
+		result, err := checkSOPS(context.Background())
+		require.NoError(t, err)
 		// Should return exactly one passed or warned
 		assert.True(t, result.Passed == 1 || result.Warned == 1,
 			"checkSOPS should return exactly one passed or warned")
