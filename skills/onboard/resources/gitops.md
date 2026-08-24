@@ -483,9 +483,13 @@ When drift is detected, bosun normally only sends alerts. With self-healing enab
 
 - **`BOSUN_DRIFT_SELF_HEAL`** or **`drift_self_heal`** in `bosun.yaml`: Enable self-healing on drift detection. Default `false`.
 - **`BOSUN_DRIFT_SELF_HEAL_COOLDOWN`** or **`drift_self_heal_cooldown`** in `bosun.yaml`: Minimum interval between self-heal reconciliations. Default `15m`.
+- **`BOSUN_DRIFT_SELF_HEAL_MAX_ATTEMPTS`**: Positive maximum attempts for one stable set of drifted `service:type` items. Default `3`.
 - Self-heal skips when a reconciliation is already in progress (prevents infinite loops).
 - Self-heal fires asynchronously so it does not block the drift check loop.
-- The cooldown timer resets each time a self-heal triggers, preventing rapid-fire reconciliations.
+- Attempts and cooldown state persist in the deploy state file, so restarting the daemon does not restore a consumed budget.
+- A changed drift signature starts a fresh attempt budget but still honors the last global cooldown; cleared drift re-arms a later recurrence.
+- After the final attempt, continued drift marks that signature exhausted and emits one bounded `self-heal-exhausted` alert. Alerts and new breaker logs expose only a short opaque signature identifier and item count, not service names or image values.
+- Periodic daemon drift currently evaluates the base/default state file only. Named target state files keep independent deploy/restart state and are not charged against the base self-heal budget until daemon drift fan-out is implemented.
 
 ```yaml
 drift_self_heal: true
@@ -614,6 +618,7 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `BOSUN_DEPLOY_SYNC_EXCLUDE` | | JSON array of glob patterns for deploy sync target blocklist (overrides config file; exclude wins over include) |
 | `BOSUN_CRITICAL_CONTAINERS` | | JSON array of container names that must be healthy after deploy (overrides config file) |
 | `BOSUN_DRIFT_IGNORE` | | JSON array of `{"service","type"}` rules to suppress known drift noise (overrides config file) |
+| `BOSUN_DRIFT_SELF_HEAL_MAX_ATTEMPTS` | `3` | Positive attempt bound for one stable drift signature; persisted across daemon restarts |
 | `BOSUN_TARGETS` | | JSON array of target definitions (overrides `targets:` in config file) |
 | `BOSUN_HEALTH_GATE_TIMEOUT` | `60s` | Health gate polling timeout (`0` disables; accepts Go duration strings or bare seconds) |
 | `BOSUN_OTEL_ENDPOINT` | *(disabled)* | OpenTelemetry OTLP HTTP endpoint (e.g., `http://localhost:4318`). When set, spans are exported for each reconciliation pipeline phase. When empty, a noop provider is used (zero overhead) |

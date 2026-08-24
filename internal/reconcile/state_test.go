@@ -108,6 +108,56 @@ func TestSaveState_Overwrites(t *testing.T) {
 	assert.Equal(t, "commit-2", loaded.LastDeployedCommit)
 }
 
+func TestSaveState_DriftSelfHealRoundTripPreservesRestartBreaker(t *testing.T) {
+	now := time.Date(2026, time.August, 23, 18, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "deploy-state.json")
+	state := &DeployState{
+		DriftSelfHeal: &DriftSelfHealTracking{
+			Signature:        "opaque-signature",
+			Attempts:         3,
+			LastAttemptAt:    now,
+			Exhausted:        true,
+			ExhaustedAlerted: true,
+		},
+		RestartTracking: map[string]RestartTrackingEntry{
+			"api": {
+				RestartCount:         7,
+				CheckedAt:            now,
+				BaselineRestartCount: 2,
+				BaselineAt:           now.Add(-time.Hour),
+				ContainerID:          "container-identity",
+				Tripped:              true,
+				StabilityPending:     true,
+			},
+		},
+	}
+
+	require.NoError(t, SaveState(path, state))
+	loaded := LoadState(path)
+
+	require.NotNil(t, loaded.DriftSelfHeal)
+	assert.Equal(t, state.DriftSelfHeal, loaded.DriftSelfHeal)
+	assert.Equal(t, state.RestartTracking, loaded.RestartTracking,
+		"self-heal persistence must not overwrite restart-breaker state")
+}
+
+func TestLoadState_LegacyStateHasNoSelfHealBudget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "deploy-state.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+  "schema_version": 2,
+  "last_deployed_commit": "legacy",
+  "restart_tracking": {
+    "api": {"restart_count": 4, "tripped": true}
+  }
+}`), 0o600))
+
+	loaded := LoadState(path)
+
+	assert.Nil(t, loaded.DriftSelfHeal)
+	require.Contains(t, loaded.RestartTracking, "api")
+	assert.True(t, loaded.RestartTracking["api"].Tripped)
+}
+
 func TestSaveState_NoTempFileLeftOnSuccess(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "deploy-state.json")

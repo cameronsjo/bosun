@@ -353,6 +353,27 @@ func TestManager_SendDriftResolved(t *testing.T) {
 	assert.Equal(t, "2", a.Metadata["resolved_count"])
 }
 
+func TestManager_SendDriftSelfHealExhaustedIsBoundedAndOpaque(t *testing.T) {
+	m := NewManager()
+	p := newMockProvider("test", true)
+	m.AddProvider(p)
+
+	err := m.SendDriftSelfHealExhausted(context.Background(), "unraid", "0123456789ab", 7, 3)
+	require.NoError(t, err)
+
+	alerts := p.getAlerts()
+	require.Len(t, alerts, 1)
+	a := alerts[0]
+	assert.Equal(t, "Drift Self-Heal Exhausted [unraid]", a.Title)
+	assert.Equal(t, SeverityError, a.Severity)
+	assert.Equal(t, "self-heal-exhausted", a.Source)
+	assert.Equal(t, "0123456789ab", a.Metadata["signature_id"])
+	assert.Equal(t, "7", a.Metadata["drift_count"])
+	assert.Equal(t, "3", a.Metadata["attempts"])
+	assert.NotContains(t, a.Message, "service")
+	assert.NotContains(t, a.Metadata, "services")
+}
+
 func TestManager_SendUnhealthyContainers(t *testing.T) {
 	m := NewManager()
 	p := newMockProvider("test", true)

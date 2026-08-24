@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -64,6 +65,44 @@ func (r *DriftReport) DriftSummaries() []string {
 		summaries[i] = item.Service + ":" + string(item.Type)
 	}
 	return summaries
+}
+
+// DriftSignature returns an opaque, stable digest of the distinct
+// service/type pairs in items. Declared and actual image strings deliberately
+// do not contribute: remediation attempts follow the problem identity rather
+// than duplicating potentially sensitive values into breaker state.
+func DriftSignature(items []DriftItem) string {
+	if len(items) == 0 {
+		return ""
+	}
+
+	type signatureItem struct {
+		service string
+		typeID  DriftType
+	}
+	unique := make(map[signatureItem]struct{}, len(items))
+	for _, item := range items {
+		unique[signatureItem{service: item.Service, typeID: item.Type}] = struct{}{}
+	}
+
+	canonical := make([]signatureItem, 0, len(unique))
+	for item := range unique {
+		canonical = append(canonical, item)
+	}
+	sort.Slice(canonical, func(i, j int) bool {
+		if canonical[i].service == canonical[j].service {
+			return canonical[i].typeID < canonical[j].typeID
+		}
+		return canonical[i].service < canonical[j].service
+	})
+
+	hash := sha256.New()
+	for _, item := range canonical {
+		// Length prefixes make the canonical stream unambiguous even if an
+		// unexpected service name contains a separator character.
+		_, _ = fmt.Fprintf(hash, "%d:%s%d:%s", len(item.service), item.service, len(item.typeID), item.typeID)
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 // HasCriticalDrift returns true if drift includes missing or unhealthy services.

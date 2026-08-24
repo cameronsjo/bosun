@@ -307,6 +307,10 @@ Set `BOSUN_DRIFT_INTERVAL=0` to disable periodic drift checks.
 
 The restart circuit breaker samples container identity and restart counts during each drift check. Once restart counts begin increasing, Bosun preserves the earliest unresolved baseline until a clean sample observes no new restarts, so sustained slow loops still accumulate toward `BOSUN_RESTART_THRESHOLD` even when checks are farther apart than `BOSUN_RESTART_WINDOW`. A deploy can recreate a container and reset Docker's restart count; Bosun treats the changed identity as recreation, keeps an existing trip active, and resolves it only after the same container identity has no additional restarts across the next drift-check interval. Missing containers retain the trip but restart the stability grace when they return; transient inspect failures preserve the last persisted observation and cannot count as recovery. Keep `BOSUN_DRIFT_INTERVAL` at or below `BOSUN_RESTART_WINDOW` for timely detection; daemon configuration and `bosun doctor` warn when the sampling interval is longer.
 
+#### Drift Self-Heal Breaker
+
+With `BOSUN_DRIFT_SELF_HEAL=true`, periodic drift may trigger reconciliation, but one stable set of drifted `service:type` items receives at most `BOSUN_DRIFT_SELF_HEAL_MAX_ATTEMPTS` attempts (default `3`). The attempt count and global cooldown timestamp are stored in the deploy state file, so daemon restarts and signature churn cannot bypass the bound or cooldown. Continued drift after the final attempt marks the signature exhausted and sends one `self-heal-exhausted` alert; a changed signature gets a fresh budget, and resolved drift re-arms a later recurrence. Breaker logs and alerts use a short opaque signature identifier plus counts rather than service names or image values. Periodic daemon drift currently checks only the base/default state file, so this change does not introduce multi-target drift fan-out.
+
 #### Drift Alert Debounce
 
 Transient drift from I/O pressure, image updates, or daemon restarts generates alert noise that self-resolves within minutes. The debounce layer suppresses alerts until drift persists beyond a configurable window.
