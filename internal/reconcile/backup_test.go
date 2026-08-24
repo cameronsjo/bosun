@@ -6,6 +6,7 @@ import (
 	cryptorand "crypto/rand"
 	"errors"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -291,7 +292,9 @@ func TestCreateBackup_RemoteEnumerationFailureIsNotEmptyFootprint(t *testing.T) 
 
 	err := r.createBackup(context.Background(), nil, false)
 
-	require.ErrorContains(t, err, "failed to enumerate backup footprint")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrBackupFootprintIncomplete)
+	assert.ErrorIs(t, err, fs.ErrPermission)
 	assert.Empty(t, r.lastBackupPath)
 	assert.False(t, r.lastBackupIsFresh)
 	assert.NoDirExists(t, backupDir, "enumeration failure must abort before SSH or artifact creation")
@@ -327,10 +330,90 @@ func TestCreateBackup_RemotePartialEnumerationFailureFailsClosed(t *testing.T) {
 
 	err := r.createBackup(context.Background(), nil, false)
 
-	require.ErrorContains(t, err, "failed to enumerate backup footprint")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrBackupFootprintIncomplete)
+	assert.ErrorIs(t, err, fs.ErrPermission)
 	assert.Empty(t, r.lastBackupPath)
 	assert.False(t, r.lastBackupIsFresh)
 	assert.NoDirExists(t, backupDir, "partial enumeration must abort before SSH or artifact creation")
+}
+
+// TestReconcilerRun_IncompleteBackupFootprintAbortsBeforeDeploy covers the
+// pipeline caller, not only createBackup. Even with a prior verified backup
+// available, an unknown current footprint cannot safely use that stale anchor:
+// it may omit paths this deploy is about to mutate. Both zero-result and
+// partially enumerated failures must return before deploy changes appdata.
+func TestReconcilerRun_IncompleteBackupFootprintAbortsBeforeDeploy(t *testing.T) {
+	if _, err := exec.LookPath("tar"); err != nil {
+		t.Skip("tar not installed")
+	}
+
+	tests := []struct {
+		name  string
+		paths []string
+	}{
+		{name: "zero paths before failure"},
+		{name: "partial paths before failure", paths: []string{"/mnt/appdata/service/config.yml"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := evalSymlinks(t, t.TempDir())
+			repoDir := filepath.Join(tmpDir, "repo")
+			stagingDir := filepath.Join(tmpDir, "staging")
+			appdataDir := filepath.Join(tmpDir, "appdata")
+			backupDir := filepath.Join(tmpDir, "backups")
+			stateFile := filepath.Join(tmpDir, "state.json")
+
+			cfg := &Config{
+				LockFile:         filepath.Join(tmpDir, "reconcile.lock"),
+				StateFile:        stateFile,
+				RepoDir:          repoDir,
+				StagingDir:       stagingDir,
+				LocalAppdataPath: appdataDir,
+				BackupDir:        backupDir,
+				BackupsToKeep:    3,
+				InfraSubDir:      "unraid",
+				ContentHashSync:  true,
+				OnFailure:        true,
+			}
+			seedStubComposeService(t, cfg)
+			sourceConfig := filepath.Join(repoDir, "unraid", "appdata", "service", "config.yml")
+			destinationConfig := filepath.Join(appdataDir, "service", "config.yml")
+			require.NoError(t, os.MkdirAll(filepath.Dir(sourceConfig), 0755))
+			require.NoError(t, os.MkdirAll(filepath.Dir(destinationConfig), 0755))
+			require.NoError(t, os.WriteFile(sourceConfig, []byte("new config"), 0644))
+			require.NoError(t, os.WriteFile(destinationConfig, []byte("old config"), 0644))
+
+			// Make the stale-anchor fallback available so this test fails if Run
+			// accidentally routes the sentinel through applyBackupFailurePolicy.
+			_ = mkBackupDir(t, backupDir, "backup-20200101-000001", true)
+
+			alerter := &mockAlertSender{}
+			r := NewReconciler(cfg,
+				WithGitOperations(&mockGitOps{
+					syncChanged: true,
+					syncBefore:  "aaa111",
+					syncAfter:   "bbb222",
+				}),
+				WithAlerter(alerter),
+			)
+			r.backupFilesFromTargetsFn = func(string, []DeployTarget, string) ([]string, error) {
+				return append([]string(nil), tt.paths...), fs.ErrPermission
+			}
+
+			err := r.Run(context.Background())
+
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrBackupFootprintIncomplete)
+			assert.ErrorIs(t, err, fs.ErrPermission)
+			content, readErr := os.ReadFile(destinationConfig)
+			require.NoError(t, readErr)
+			assert.Equal(t, "old config", string(content), "deploy must not mutate appdata after incomplete enumeration")
+			assert.Empty(t, LoadState(stateFile).LastDeployedCommit, "failed admission must not record the commit as deployed")
+			assert.Equal(t, 1, alerter.deployFailureCalls)
+		})
+	}
 }
 
 // TestCreateBackup_DiscoveryFailureFallsBackToFullAppdata verifies that when

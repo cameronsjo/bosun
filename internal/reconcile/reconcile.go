@@ -286,6 +286,11 @@ type Reconciler struct {
 	// false-fail the reconcile (#392).
 	preDeployUnhealthy map[string]bool
 	stagingOps         stagingEvidenceOps
+
+	// backupFilesFromTargetsFn is an instance-scoped fault seam for exercising
+	// backup-footprint admission in pipeline tests. Nil uses the production
+	// enumerator.
+	backupFilesFromTargetsFn func(string, []DeployTarget, string) ([]string, error)
 }
 
 // NewReconciler creates a new Reconciler with the given configuration.
@@ -728,13 +733,17 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 			telemetry.SpanError(otelBackupSpan, err)
 			otelBackupSpan.End()
 
-			// A failed backup leaves no fresh rollback anchor for this cycle.
-			// Policy: never deploy without a rollback anchor — otherwise a flaky
-			// or hostile remote could force a no-rollback deploy by failing the
-			// backup (any non-zero tar exit is now fatal, #240). Recover the most
-			// recent previously-verified backup as the anchor; if none exists,
-			// abort the deploy (fail-safe: no mutation without an anchor).
 			ui.Warning("Backup failed: %v", err)
+			// An incomplete current footprint cannot be protected by an older
+			// backup because that anchor may omit paths this deploy will mutate.
+			if errors.Is(err, ErrBackupFootprintIncomplete) {
+				r.sendThrottledFailureAlert(ctx, state, err.Error())
+				return err
+			}
+
+			// Other backup failures leave no fresh rollback anchor for this cycle.
+			// Recover the most recent previously verified backup; if none exists,
+			// abort before mutation (#240).
 			if policyErr := r.applyBackupFailurePolicy(spanCtx, err); policyErr != nil {
 				r.sendThrottledFailureAlert(ctx, state, policyErr.Error())
 				return policyErr
@@ -1942,6 +1951,12 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 	return nil
 }
 
+// ErrBackupFootprintIncomplete marks a staging enumeration that could not prove
+// the complete managed backup footprint. It is fail-closed even when an older
+// verified backup exists: that anchor may not contain every path this deploy is
+// about to mutate.
+var ErrBackupFootprintIncomplete = errors.New("backup footprint incomplete")
+
 // createBackup creates a backup of current configs.
 func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, local bool) error {
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
@@ -1949,8 +1964,8 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 	ui.Info("Creating backup...")
 
 	// Bound backup creation + verification so a stuck tar/ssh (#319) cannot
-	// wedge the reconcile. On timeout the error propagates to the caller, which
-	// already treats backup failures as non-fatal (warn + continue).
+	// wedge the reconcile. On timeout the error propagates to the caller's
+	// rollback-anchor policy; incomplete footprint discovery returns earlier.
 	timeout := r.config.BackupTimeout
 	if timeout <= 0 {
 		timeout = DefaultBackupTimeout
@@ -1989,13 +2004,17 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 		paths = []string{appdataBase}
 	} else {
 		var ferr error
-		paths, ferr = backupFilesFromTargets(stagingSubDir, targets, appdataBase)
+		enumerate := backupFilesFromTargets
+		if r.backupFilesFromTargetsFn != nil {
+			enumerate = r.backupFilesFromTargetsFn
+		}
+		paths, ferr = enumerate(stagingSubDir, targets, appdataBase)
 		if ferr != nil {
 			// An empty list is safe only when enumeration completed successfully.
 			// A partial list is not safer: backing it up would record an incomplete
 			// archive as this run's fresh rollback anchor. Fail before any backup or
 			// deploy work whenever the managed footprint is unknown.
-			return fmt.Errorf("failed to enumerate backup footprint: %w", ferr)
+			return fmt.Errorf("%w: %w", ErrBackupFootprintIncomplete, ferr)
 		}
 	}
 
@@ -2011,7 +2030,8 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 	if err != nil {
 		// Distinguish a timeout from a genuine backup failure so operators see
 		// "backup timed out" rather than a downstream symptom (e.g. "archive not
-		// found"). The call site treats either as non-fatal (warn + continue).
+		// found"). The caller may recover a prior verified anchor for these
+		// creation/verification failures.
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return fmt.Errorf("backup timed out after %s: %w", timeout, ctxErr)
 		}
