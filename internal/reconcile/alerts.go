@@ -7,6 +7,18 @@ import (
 	"github.com/cameronsjo/bosun/internal/log"
 )
 
+const failureAlertDeliveryTimeout = 30 * time.Second
+
+// failureAlertDeliveryContext preserves live context behavior. If the caller
+// is already canceled, it retains context values while giving alert providers
+// a fresh, bounded delivery window.
+func failureAlertDeliveryContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx.Err() == nil {
+		return ctx, nil
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), failureAlertDeliveryTimeout)
+}
+
 // alertTarget returns the target identifier for alert messages.
 // DeployMode takes precedence when explicitly set; then TargetName (multi-target mode);
 // falls back to TargetHost or "local".
@@ -77,13 +89,18 @@ func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *Deplo
 		return
 	}
 
+	alertCtx, cancel := failureAlertDeliveryContext(ctx)
+	if cancel != nil {
+		defer cancel()
+	}
+
 	target := r.alertTarget()
-	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+	logger := log.ComponentCtx(alertCtx, log.ComponentReconcile)
 
 	services := r.serviceNames()
 	duration := time.Since(r.runStartTime)
 
-	if err := r.alerter.SendDeployFailure(ctx, r.lastCommit, target, reason, services, duration); err != nil {
+	if err := r.alerter.SendDeployFailure(alertCtx, r.lastCommit, target, reason, services, duration); err != nil {
 		logger.Warn().
 			Err(err).
 			Str(log.FieldOperation, "alert_failure").
