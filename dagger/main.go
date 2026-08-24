@@ -206,7 +206,7 @@ func (m *Bosun) Coverage(ctx context.Context, source *Directory) *File {
 // nodeVersion for WebUI builds.
 const nodeVersion = "22"
 
-// WebUI runs the WebUI CI pipeline: install, type check, and build.
+// WebUI runs the WebUI CI pipeline: install, type check, lint, and build.
 func (m *Bosun) WebUI(ctx context.Context, source *Directory) *Container {
 	npmCache := dag.CacheVolume("npm-cache")
 
@@ -216,7 +216,8 @@ func (m *Bosun) WebUI(ctx context.Context, source *Directory) *Container {
 		WithMountedDirectory("/src", source).
 		WithWorkdir("/src/webui").
 		WithExec([]string{"npm", "ci"}).
-		WithExec([]string{"npx", "tsc", "--noEmit"}).
+		WithExec([]string{"npm", "run", "typecheck"}).
+		WithExec([]string{"npm", "run", "lint"}).
 		WithExec([]string{"npm", "run", "build"})
 }
 

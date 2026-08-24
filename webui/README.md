@@ -16,7 +16,7 @@ Web dashboard for the Bosun GitOps daemon.
 
 ```bash
 # Install dependencies
-npm install
+npm ci
 
 # Start dev server (proxies to localhost:9090)
 npm run dev
@@ -25,7 +25,10 @@ npm run dev
 npm run build
 
 # Type check
-npx tsc --noEmit
+npm run typecheck
+
+# Lint
+npm run lint
 ```
 
 ## Docker
@@ -53,7 +56,8 @@ See [docs/webui.md](../docs/webui.md) for full documentation.
 ## Tech Stack
 
 - React 19
-- TypeScript 5
-- Vite 7
+- TypeScript 6
+- Vite 8
+- ESLint 10
 - Tailwind CSS 4
 - nginx (production)
