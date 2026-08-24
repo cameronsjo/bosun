@@ -261,7 +261,7 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 	// empty directory and the failure surfaced only at verification (#395).
 	// Native archiving removes the GNU/bsd/busybox capability guessing, and a
 	// creation failure is now fatal with the partial output removed (#352).
-	if err := writeBackupArchive(ctx, tarFile, existingPaths, absBackupDir); err != nil {
+	if err := d.writeBackupArchive(ctx, tarFile, existingPaths, absBackupDir); err != nil {
 		removeFailedBackup()
 		logger.Error().Err(err).Str(log.FieldPath, tarFile).Msg("Failed to create backup. Reason: cannot write archive")
 		return "", fmt.Errorf("failed to write backup archive: %w", err)
@@ -284,6 +284,25 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 	return backupName, nil
 }
 
+type backupArchiveFS struct {
+	walk func(root string, walkFn filepath.WalkFunc) error
+	open func(name string) (*os.File, error)
+}
+
+func (d *DeployOps) backupFileSystem() backupArchiveFS {
+	fs := backupArchiveFS{walk: filepath.Walk, open: os.Open}
+	if d.backupFS == nil {
+		return fs
+	}
+	if d.backupFS.walk != nil {
+		fs.walk = d.backupFS.walk
+	}
+	if d.backupFS.open != nil {
+		fs.open = d.backupFS.open
+	}
+	return fs
+}
+
 // writeBackupArchive creates a gzip-compressed tar archive at tarFile containing
 // every path in paths (directories recursed), excluding the excludeDir subtree.
 // Member names have the leading '/' stripped, matching what external tar produced,
@@ -292,7 +311,9 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 // The backed-up footprint is LIVE container appdata, so the walk tolerates churn
 // the way GNU tar does, instead of failing the deploy on it (#240 made a failed
 // backup abort the deploy, so spurious failures are outages):
-//   - a file that vanishes between listing and read is skipped (logged debug)
+//   - a path that vanishes before its tar header is written is skipped (logged
+//     debug); a regular file that vanishes after its header is written is
+//     zero-padded to the promised size so the archive remains valid
 //   - irregular files (sockets, devices, FIFOs) are skipped — archiving a live
 //     unix socket is meaningless and tar.FileInfoHeader rejects it
 //   - a file that shrinks mid-read is zero-padded to its header size so the
@@ -302,8 +323,9 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 // Everything else — permission errors, I/O errors, a failed write — is fatal:
 // a backup that cannot be produced must fail loudly at creation, not be
 // discovered missing at verification (#395).
-func writeBackupArchive(ctx context.Context, tarFile string, paths []string, excludeDir string) (err error) {
+func (d *DeployOps) writeBackupArchive(ctx context.Context, tarFile string, paths []string, excludeDir string) (err error) {
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
+	fs := d.backupFileSystem()
 
 	f, err := os.Create(tarFile)
 	if err != nil {
@@ -319,7 +341,7 @@ func writeBackupArchive(ctx context.Context, tarFile string, paths []string, exc
 	tw := tar.NewWriter(gz)
 
 	for _, root := range paths {
-		walkErr := filepath.Walk(root, func(path string, info os.FileInfo, werr error) error {
+		walkErr := fs.walk(root, func(path string, info os.FileInfo, werr error) error {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return ctxErr
 			}
@@ -378,7 +400,7 @@ func writeBackupArchive(ctx context.Context, tarFile string, paths []string, exc
 				return nil
 			}
 
-			src, oerr := os.Open(path)
+			src, oerr := fs.open(path)
 			if oerr != nil {
 				if os.IsNotExist(oerr) {
 					// Header already written; pad the promised bytes so the

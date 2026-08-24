@@ -48,6 +48,9 @@ type DeployOps struct {
 	// copyFileIfChangedFn fault-injects single-file copy failures in tests.
 	// Nil uses fileutil.CopyFileIfChanged.
 	copyFileIfChangedFn func(src, dst string) (bool, error)
+	// backupFS fault-injects filesystem churn while writing local backup
+	// archives. Nil operations use filepath.Walk and os.Open.
+	backupFS *backupArchiveFS
 }
 
 func (d *DeployOps) extractBackup(ctx context.Context, tarFile string) (root string, cleanup func(), err error) {
