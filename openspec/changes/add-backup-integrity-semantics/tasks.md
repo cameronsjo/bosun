@@ -19,8 +19,8 @@
 
 ## 4. Deploy archive integrity (#252)
 
-- [ ] 4.1 In the tar-over-SSH path (`ssh.go:224-262`), verify the extracted archive (e.g. file-count parity) before the atomic move; run cleanup on integrity failure, not only on `tarErr != nil`
-- [ ] 4.2 Tests: a simulated partial/empty archive aborts the move and preserves the existing target
+- [x] 4.1 In the tar-over-SSH path (`ssh.go:224-262`), verify the extracted archive (e.g. file-count parity) before the atomic move; run cleanup on integrity failure, not only on `tarErr != nil`
+- [x] 4.2 Tests: a simulated partial/empty archive aborts the move and preserves the existing target
 
 ## 5. Backup-backed rollback (#229)
 

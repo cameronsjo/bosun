@@ -113,7 +113,7 @@ func TestDeployRemoteDispatch_UnhealthyIsNonFatal(t *testing.T) {
 
 func TestDeployRemoteDispatch_RejectsOptionInjectionHost(t *testing.T) {
 	// A repo-controlled TargetHost that looks like an ssh option must be rejected
-	// before deployRemote's first ssh contact (the sha256sum probe), not passed
+	// before deployRemote's first SSH contact, not passed
 	// to exec as `ssh -oProxyCommand=...`.
 	cfg := &Config{
 		TargetHost:        "-oProxyCommand=touch /tmp/pwned",

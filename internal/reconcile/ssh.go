@@ -3,6 +3,7 @@ package reconcile
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,29 +46,36 @@ const (
 // leftover of a failed one.
 var ErrTransferIntegrity = errors.New("remote transfer integrity check failed")
 
-// ErrUnsafeChecksumPath marks a staged filename that cannot be represented in a
-// `sha256sum -c` manifest: busybox sha256sum lacks GNU's backslash escaping, so
-// a newline or backslash in a name would corrupt the newline-delimited,
-// space-separated manifest parse. Rejected at the local staging walk rather than
-// trusted to format escaping (#334). The input is repo-controlled, so this
-// guards against a pathological rendered filename, not a hostile actor.
-var ErrUnsafeChecksumPath = errors.New("unsafe filename for checksum manifest")
+// ErrUnsupportedTransferEntry marks an entry that tar can archive but Bosun
+// cannot safely verify after extraction. Deploy staging trees are expected to
+// contain regular files, directories, and symlinks (including hard-linked
+// regular files); devices, sockets, and FIFOs fail closed.
+var ErrUnsupportedTransferEntry = errors.New("unsupported entry in remote transfer")
 
-// buildTransferChecksums walks root (the LOCAL staging tmpDir) and returns a
-// SHA-256 manifest in `sha256sum -c` format — one "<hex>  <relpath>" line per
-// regular file, sorted for determinism, "/"-separated paths relative to root so
-// they resolve against the remote staged dir where the tar extraction lands
-// them. Symlinks and irregular entries are skipped (the tar path does not
-// meaningfully verify them). Returns "" when root holds no regular files, which
-// the caller reads as "nothing to verify". A newline or backslash in any
-// relative path fails with ErrUnsafeChecksumPath.
-func buildTransferChecksums(root string) (string, error) {
-	var entries []string
+type transferEntry struct {
+	Path       string
+	Kind       byte
+	SHA256     string
+	LinkTarget string
+	HardlinkTo string
+}
+
+// buildTransferManifest snapshots every deployable entry below root. Paths are
+// kept as strings rather than serialized into a line-oriented checksum format,
+// so newlines, backslashes, and other control characters remain unambiguous.
+// Hard-link relationships are recorded in addition to each file's content hash.
+func buildTransferManifest(root string) ([]transferEntry, error) {
+	var entries []transferEntry
+	type regularEntry struct {
+		path string
+		info fs.FileInfo
+	}
+	var regulars []regularEntry
 	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !d.Type().IsRegular() {
+		if path == root {
 			return nil
 		}
 		rel, err := filepath.Rel(root, path)
@@ -74,55 +83,98 @@ func buildTransferChecksums(root string) (string, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if strings.ContainsAny(rel, "\n\\") {
-			return fmt.Errorf("%w: %q", ErrUnsafeChecksumPath, rel)
+		entry := transferEntry{Path: rel}
+		switch {
+		case d.Type()&os.ModeSymlink != 0:
+			entry.Kind = 'l'
+			entry.LinkTarget, err = os.Readlink(path)
+		case d.IsDir():
+			entry.Kind = 'd'
+		case d.Type().IsRegular():
+			entry.Kind = 'f'
+			info, infoErr := d.Info()
+			err = infoErr
+			if err == nil {
+				for _, regular := range regulars {
+					if os.SameFile(regular.info, info) {
+						entry.HardlinkTo = regular.path
+						break
+					}
+				}
+				regulars = append(regulars, regularEntry{path: rel, info: info})
+			}
+			if err == nil {
+				var sum [32]byte
+				sum, err = fileutil.FileHash(path)
+				entry.SHA256 = hex.EncodeToString(sum[:])
+			}
+		default:
+			return fmt.Errorf("%w: %q (%s)", ErrUnsupportedTransferEntry, rel, d.Type())
 		}
-		sum, err := fileutil.FileHash(path)
 		if err != nil {
 			return err
 		}
-		// GNU coreutils `sha256sum -c` format: "<hex>  <path>" (two spaces =
-		// text mode). macOS `shasum -a 256 -c` reads the identical layout.
-		entries = append(entries, hex.EncodeToString(sum[:])+"  "+rel)
+		entries = append(entries, entry)
 		return nil
 	})
 	if walkErr != nil {
-		return "", walkErr
+		return nil, walkErr
 	}
-	if len(entries) == 0 {
-		return "", nil
-	}
-	sort.Strings(entries)
-	return strings.Join(entries, "\n") + "\n", nil
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+	return entries, nil
 }
 
-// remoteHasSha256sum probes whether `sha256sum` is on the remote PATH. A host
-// that lacks it (a minimal busybox without the applet) degrades to the pre-#334
-// behavior: the transfer is not verified. Never hard-fail a host that deployed
-// fine yesterday for lacking coreutils.
-//
-// The host is validated before any ssh exec: this probe is the earliest ssh
-// contact on the deploy path, and TargetHost is re-read from the watched repo
-// after every pull, so an unvalidated host string like `-oProxyCommand=<cmd>`
-// would reach `ssh` as an option and execute on the daemon. An invalid host
-// returns false (no verification) — the caller's subsequent validated ssh call
-// then fails loudly rather than this probe silently launching a poisoned exec.
-func (d *DeployOps) remoteHasSha256sum(ctx context.Context, host string) bool {
-	if err := validateHost(host); err != nil {
+func manifestsEqual(want, got []transferEntry) bool {
+	if len(want) != len(got) {
 		return false
 	}
-	return sshExecCommand(ctx, host, "command -v sha256sum").Run() == nil
+	for i := range want {
+		if want[i].Path != got[i].Path || want[i].Kind != got[i].Kind ||
+			want[i].SHA256 != got[i].SHA256 || want[i].LinkTarget != got[i].LinkTarget ||
+			want[i].HardlinkTo != got[i].HardlinkTo {
+			return false
+		}
+	}
+	return true
 }
 
-// verifyRemoteTransfer pipes manifest to the remote and runs `sha256sum -c -`
-// with cwd at stagedDir, so the manifest's relative paths resolve against the
-// just-extracted staging tree. A non-zero exit — a missing file or a content
-// mismatch — is an integrity failure (ErrTransferIntegrity). manifest must be
-// non-empty; the caller skips verification for an empty manifest.
-func (d *DeployOps) verifyRemoteTransfer(ctx context.Context, host, stagedDir, manifest string) error {
-	remoteCmd := fmt.Sprintf("cd %s && sha256sum -c -", shellquote.Join(stagedDir))
-	cmd := sshExecCommand(ctx, host, remoteCmd)
-	cmd.Stdin = strings.NewReader(manifest)
+// buildRemoteVerifyScript produces a shell program on stdin rather than a
+// line-oriented data manifest. shellquote.Join makes each path one shell word,
+// including names with newlines, backslashes, quotes, or other controls. The
+// total-entry check rejects unexpected files; per-entry checks cover type,
+// contents, symlink destinations, and hard-link topology.
+func buildRemoteVerifyScript(stagedDir string, manifest []transferEntry) string {
+	var script strings.Builder
+	script.WriteString("set -eu\n")
+	root := shellquote.Join(stagedDir)
+	fmt.Fprintf(&script, "root=%s\n", root)
+	script.WriteString("command -v sha256sum >/dev/null 2>&1 || { echo 'sha256sum is required for transfer verification' >&2; exit 1; }\n")
+	// Count the root itself as well as its descendants. Avoiding `find -path`
+	// keeps glob metacharacters in a configured staging path from being treated
+	// as a pattern and falsely rejecting an otherwise complete tree.
+	fmt.Fprintf(&script, "count=$(find \"$root\" -exec printf x \\; | wc -c | tr -d '[:space:]')\n[ \"$count\" = %s ]\n", strconv.Itoa(len(manifest)+1))
+	for _, entry := range manifest {
+		path := shellquote.Join(filepath.Join(stagedDir, filepath.FromSlash(entry.Path)))
+		switch entry.Kind {
+		case 'd':
+			fmt.Fprintf(&script, "[ -d %s ] && [ ! -L %s ]\n", path, path)
+		case 'l':
+			linkSum := sha256.Sum256([]byte(entry.LinkTarget + "\n"))
+			fmt.Fprintf(&script, "[ -L %s ]\nactual=$(readlink %s | sha256sum); actual=${actual%%%% *}; [ \"$actual\" = %s ]\n", path, path, shellquote.Join(hex.EncodeToString(linkSum[:])))
+		case 'f':
+			fmt.Fprintf(&script, "[ -f %s ] && [ ! -L %s ]\nactual=$(sha256sum < %s); actual=${actual%%%% *}; [ \"$actual\" = %s ]\n", path, path, path, shellquote.Join(entry.SHA256))
+			if entry.HardlinkTo != "" {
+				other := shellquote.Join(filepath.Join(stagedDir, filepath.FromSlash(entry.HardlinkTo)))
+				fmt.Fprintf(&script, "[ %s -ef %s ]\n", path, other)
+			}
+		}
+	}
+	return script.String()
+}
+
+func (d *DeployOps) verifyRemoteTransfer(ctx context.Context, host, stagedDir string, manifest []transferEntry) error {
+	cmd := sshExecCommand(ctx, host, shellquote.Join("sh", "-s"))
+	cmd.Stdin = strings.NewReader(buildRemoteVerifyScript(stagedDir, manifest))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -130,6 +182,70 @@ func (d *DeployOps) verifyRemoteTransfer(ctx context.Context, host, stagedDir, m
 		return fmt.Errorf("%w: %v: %s", ErrTransferIntegrity, err, joinNonEmpty(stdout.String(), stderr.String()))
 	}
 	return nil
+}
+
+// newLocalArchiveCommand is the local tar creation seam. Tests replace it with
+// an exit-zero producer of an incomplete but valid archive.
+var newLocalArchiveCommand = func(ctx context.Context, sourceDir, archivePath string) *exec.Cmd {
+	return exec.CommandContext(ctx, "tar", "-C", sourceDir, "-cf", archivePath, ".")
+}
+
+func createVerifiedTransferArchive(ctx context.Context, sourceDir string) (archivePath, archiveSHA string, manifest []transferEntry, cleanup func(), err error) {
+	want, err := buildTransferManifest(sourceDir)
+	if err != nil {
+		return "", "", nil, func() {}, fmt.Errorf("snapshot transfer source: %w", err)
+	}
+	f, err := os.CreateTemp("", "bosun-deploy-*.tar")
+	if err != nil {
+		return "", "", nil, func() {}, fmt.Errorf("create transfer archive: %w", err)
+	}
+	archivePath = f.Name()
+	cleanup = func() {
+		// Best-effort temp cleanup must not replace the deploy result.
+		_ = os.Remove(archivePath)
+	}
+	if err = f.Close(); err != nil {
+		cleanup()
+		return "", "", nil, func() {}, fmt.Errorf("close transfer archive: %w", err)
+	}
+	cmd := newLocalArchiveCommand(ctx, sourceDir, archivePath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err = cmd.Run(); err != nil {
+		cleanup()
+		return "", "", nil, func() {}, fmt.Errorf("create transfer archive: %w: %s", err, stderr.String())
+	}
+
+	scratch, err := os.MkdirTemp("", "bosun-deploy-verify-*")
+	if err != nil {
+		cleanup()
+		return "", "", nil, func() {}, fmt.Errorf("create archive verification directory: %w", err)
+	}
+	defer func() {
+		// Best-effort scratch cleanup must not replace a verification failure.
+		_ = os.RemoveAll(scratch)
+	}()
+	extract := exec.CommandContext(ctx, "tar", "-C", scratch, "-xf", archivePath)
+	var extractStderr bytes.Buffer
+	extract.Stderr = &extractStderr
+	if err = extract.Run(); err != nil {
+		cleanup()
+		return "", "", nil, func() {}, fmt.Errorf("verify transfer archive extraction: %w: %s", err, extractStderr.String())
+	}
+	got, err := buildTransferManifest(scratch)
+	if err != nil || !manifestsEqual(want, got) {
+		cleanup()
+		if err != nil {
+			return "", "", nil, func() {}, fmt.Errorf("verify transfer archive contents: %w", err)
+		}
+		return "", "", nil, func() {}, fmt.Errorf("%w: local archive does not match source snapshot", ErrTransferIntegrity)
+	}
+	sum, err := fileutil.FileHash(archivePath)
+	if err != nil {
+		cleanup()
+		return "", "", nil, func() {}, fmt.Errorf("hash transfer archive: %w", err)
+	}
+	return archivePath, hex.EncodeToString(sum[:]), want, cleanup, nil
 }
 
 // joinNonEmpty trims each part and joins the non-empty ones with a single space,
@@ -509,13 +625,10 @@ func buildRemoteRecoverCommand(targetDir string) string {
 // rename-swap that never deletes the live target before the replacement
 // is in place (#343), with crash recovery for interrupted swaps.
 //
-// When verifyChecksums is true, the staged tree is SHA-256 verified against a
-// locally-built manifest AFTER the tar lands and BEFORE the swap to live: a
-// truncated or misdirected transfer fails with ErrTransferIntegrity and retries
-// into a fresh remote tmpDir (#334). Callers set it from a once-per-deploy
-// `sha256sum` availability probe (remoteHasSha256sum); false degrades to the
-// pre-#334 behavior of promoting whatever landed.
-func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, targetDir string, verifyChecksums bool) error {
+// The immutable local archive is verified against a pre-archive source
+// snapshot, SHA-256 checked after transport, and its extracted tree is verified
+// again BEFORE the swap to live. Any incomplete stage fails closed (#252).
+func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, targetDir string) error {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
@@ -563,20 +676,15 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 		return err
 	}
 
-	// Build the SHA-256 transfer manifest ONCE from the local source: it is
-	// deterministic across attempts and a filename-guard failure (newline or
-	// backslash) must abort the whole deploy, not burn retries. An empty
-	// manifest (source has no regular files) skips verification entirely.
-	manifest := ""
-	if verifyChecksums {
-		m, mErr := buildTransferChecksums(sourceDir)
-		if mErr != nil {
-			mErr = fmt.Errorf("build transfer checksums: %w", mErr)
-			telemetry.SpanError(deploySpan, mErr)
-			return mErr
-		}
-		manifest = m
+	// Materialize the archive once. This closes the count/checksum TOCTOU seam:
+	// the source snapshot is compared to a local round-trip before the immutable
+	// archive is retried or sent to the remote.
+	archivePath, archiveSHA, manifest, cleanupArchive, archiveErr := createVerifiedTransferArchive(ctx, sourceDir)
+	if archiveErr != nil {
+		telemetry.SpanError(deploySpan, archiveErr)
+		return archiveErr
 	}
+	defer cleanupArchive()
 
 	deployErr := retryWithBackoff(ctx, DefaultMaxRetries, func() error {
 		// A FRESH staging dir per attempt (#342): reusing one temp dir across
@@ -584,7 +692,12 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 		// the prior attempt's cleanup failed — files deleted from the source
 		// could survive and be promoted to the live target.
 		tmpDir := filepath.Join(targetParent, fmt.Sprintf(".deploy-tmp-%d", time.Now().UnixNano()))
+		// Keep the received archive beside, rather than inside, the extracted
+		// tree so a legitimate source entry named .bosun-transfer.tar cannot
+		// collide with or be removed as transport metadata.
+		remoteArchive := tmpDir + ".tar"
 		cleanupTmp := func(reason string) {
+			cleanupRemotePath(ctx, targetHost, remoteArchive, reason+"_archive", false)
 			cleanupRemotePath(ctx, targetHost, tmpDir, reason, true)
 		}
 		// Heal any interrupted swap from a prior run before staging this one:
@@ -616,79 +729,69 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			return fmt.Errorf("create remote temp dir: %w: %s", err, mkdirStderr.String())
 		}
 
-		// Tar source directory and pipe to SSH for extraction on remote
-		// tar -C sourceDir -cf - . | ssh host "tar -C tmpDir -xf -"
+		// Stream the already-verified archive. The remote stores it inside the
+		// disposable staging dir, verifies its transport hash, extracts, and
+		// removes it. A missing sha256sum is an integrity failure, never an
+		// implicit opt-out.
 		logger.Debug().
 			Str(log.FieldOperation, "tar_extract").
 			Str(log.FieldTarget, targetHost).
 			Str("source", sourceDir).
 			Str("dest", tmpDir).
 			Msg("Preparing to tar and extract staging directory to remote")
-		tarCmd := exec.CommandContext(ctx, "tar", "-C", sourceDir, "-cf", "-", ".")
-		sshCmd := newSSHTransferCommand(ctx, targetHost, fmt.Sprintf("tar -C %s -xf -", shellquote.Join(tmpDir)))
-
-		// Connect tar stdout to ssh stdin. The remote tmpDir already exists
-		// (mkdir above), so every failure from here on must clean it up or it
-		// orphans an empty staging dir on the remote.
-		pipe, err := tarCmd.StdoutPipe()
+		remoteCmd := fmt.Sprintf(
+			"set -eu; command -v sha256sum >/dev/null 2>&1 || { echo 'sha256sum is required for transfer verification' >&2; exit 1; }; cat > %s; actual=$(sha256sum < %s); actual=${actual%%%% *}; [ \"$actual\" = %s ]; tar -C %s -xf %s; rm -f %s",
+			shellquote.Join(remoteArchive), shellquote.Join(remoteArchive), shellquote.Join(archiveSHA),
+			shellquote.Join(tmpDir), shellquote.Join(remoteArchive), shellquote.Join(remoteArchive),
+		)
+		sshCmd := newSSHTransferCommand(ctx, targetHost, remoteCmd)
+		archive, err := os.Open(archivePath)
 		if err != nil {
-			cleanupTmp("pipe_failed")
-			return fmt.Errorf("create pipe: %w", err)
+			cleanupTmp("archive_open_failed")
+			return fmt.Errorf("open transfer archive: %w", err)
 		}
-		sshCmd.Stdin = pipe
+		sshCmd.Stdin = archive
 
-		var tarStderr, sshStderr bytes.Buffer
-		tarCmd.Stderr = &tarStderr
+		var sshStderr bytes.Buffer
 		sshCmd.Stderr = &sshStderr
 
-		// Start both commands
-		if err := tarCmd.Start(); err != nil {
-			cleanupTmp("tar_start_failed")
-			return fmt.Errorf("start tar: %w", err)
-		}
 		if err := sshCmd.Start(); err != nil {
-			killAndReapProcess(tarCmd)
+			// Closing an unread local temp file is best-effort; the SSH start
+			// failure remains the actionable deploy error.
+			_ = archive.Close()
 			cleanupTmp("ssh_start_failed")
 			return fmt.Errorf("start ssh: %w: %s", err, sshStderr.String())
 		}
 
-		// Wait for both to complete
-		tarErr := tarCmd.Wait()
 		sshErr := sshCmd.Wait()
+		closeErr := archive.Close()
 
-		if tarErr != nil {
-			cleanupTmp("tar_failed")
-			return fmt.Errorf("tar failed: %w: %s", tarErr, tarStderr.String())
-		}
 		if sshErr != nil {
 			cleanupTmp("ssh_extract_failed")
 			if ctx.Err() == context.DeadlineExceeded {
 				return fmt.Errorf("ssh timed out after %v", RemoteDeployTimeout)
 			}
-			return fmt.Errorf("ssh extract failed: %w: %s", sshErr, sshStderr.String())
+			return fmt.Errorf("%w: ssh extract failed: %v: %s", ErrTransferIntegrity, sshErr, sshStderr.String())
+		}
+		if closeErr != nil {
+			cleanupTmp("archive_close_failed")
+			return fmt.Errorf("close transfer archive: %w", closeErr)
 		}
 
-		// Integrity gate (#334): verify the staged tree matches the local source
-		// byte-for-byte BEFORE promoting it. A truncated or misdirected transfer
-		// fails here with ErrTransferIntegrity — retryable, and the next attempt
-		// stages into a fresh tmpDir, so a re-verify never trusts a dirty
-		// leftover. Skipped when the manifest is empty (no regular files) or the
-		// remote lacks sha256sum (verifyChecksums=false).
-		if manifest != "" {
-			if verifyErr := d.verifyRemoteTransfer(ctx, targetHost, tmpDir, manifest); verifyErr != nil {
-				logger.Warn().
-					Err(verifyErr).
-					Str(log.FieldTarget, targetHost).
-					Str(log.FieldPath, tmpDir).
-					Msg("Staged tree failed integrity verification, discarding before swap")
-				cleanupTmp("integrity_failed")
-				return verifyErr
-			}
-			logger.Debug().
+		// Post-extraction gate verifies empty trees and non-file entries too.
+		if verifyErr := d.verifyRemoteTransfer(ctx, targetHost, tmpDir, manifest); verifyErr != nil {
+			logger.Warn().
+				Err(verifyErr).
 				Str(log.FieldTarget, targetHost).
 				Str(log.FieldPath, tmpDir).
-				Msg("Staged tree passed SHA-256 integrity verification")
+				Msg("Staged tree failed integrity verification, discarding before swap")
+			cleanupTmp("integrity_failed")
+			return verifyErr
 		}
+		logger.Debug().
+			Str(log.FieldTarget, targetHost).
+			Str(log.FieldPath, tmpDir).
+			Msg("Staged tree passed SHA-256 and structural integrity verification")
 
 		// Retain-old rename-swap (#343): the live target is moved aside, not
 		// deleted, until the replacement is in place; a failed move-in rolls
