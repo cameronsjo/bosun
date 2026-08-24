@@ -55,10 +55,13 @@ func (d *DeployOps) composeUpTimeout() time.Duration {
 	return DefaultComposeUpTimeout
 }
 
-// DeployResult tracks which files were actually written or deleted during
-// deployment. Used to inform post-sync hooks about actual on-disk changes.
+// DeployResult tracks which filesystem paths were actually created, written,
+// or deleted during deployment. Used to inform post-sync hooks about actual
+// on-disk changes.
 type DeployResult struct {
-	// WrittenFiles contains relative paths of files that were written to disk.
+	// WrittenFiles contains relative paths of regular files written to disk and
+	// descendant directories created by content-hash sync. Pre-existing
+	// directories are omitted so no-op reconciles do not trigger hooks.
 	WrittenFiles []string
 
 	// DeletedFiles contains relative paths of files removed from disk by
@@ -75,7 +78,7 @@ type DeployResult struct {
 	ManagedFiles []string
 }
 
-// AddWritten appends file paths to the result's written files list.
+// AddWritten appends created or written paths to the result's write list.
 func (r *DeployResult) AddWritten(files ...string) {
 	r.WrittenFiles = append(r.WrittenFiles, files...)
 }

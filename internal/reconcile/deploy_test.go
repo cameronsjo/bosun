@@ -560,6 +560,32 @@ func TestDeployOps_DeployLocalFile(t *testing.T) {
 }
 
 func TestDeployOps_DeployLocal_ContentHash(t *testing.T) {
+	t.Run("tracks new empty directories for invariants and hooks", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		targetDir := filepath.Join(tmpDir, "target")
+		relDir := filepath.Join("empty", "nested")
+
+		require.NoError(t, os.MkdirAll(filepath.Join(sourceDir, relDir), 0755))
+		require.NoError(t, os.MkdirAll(targetDir, 0755))
+
+		deploy := &DeployOps{ContentHashSync: true}
+		result := &DeployResult{}
+		startTime := time.Now().Add(-time.Second)
+		require.NoError(t, deploy.DeployLocal(context.Background(), sourceDir, targetDir, result, nil))
+
+		assert.Equal(t, []string{"empty", relDir}, result.WrittenFiles)
+		require.NoError(t, verifyDeployTarget(sourceDir, targetDir, result.WrittenFiles, startTime))
+		result.PrefixLatest(0, filepath.Join("appdata", "service"))
+		hooks := []PostSyncHook{{Container: "service", Paths: []string{"appdata/service/**"}}}
+		assert.Equal(t, hooks, EvaluatePostSyncHooks(result.WrittenFiles, hooks))
+
+		secondResult := &DeployResult{}
+		require.NoError(t, deploy.DeployLocal(context.Background(), sourceDir, targetDir, secondResult, nil))
+		assert.Empty(t, secondResult.WrittenFiles, "pre-existing directories must not retrigger hooks")
+		assert.Empty(t, EvaluatePostSyncHooks(secondResult.WrittenFiles, hooks))
+	})
+
 	t.Run("skips unchanged files and reports written", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		ctx := context.Background()

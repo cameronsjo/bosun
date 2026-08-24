@@ -450,7 +450,56 @@ func TestCopyDirIfChanged(t *testing.T) {
 		require.NoError(t, err)
 
 		sort.Strings(written)
-		assert.Equal(t, []string{"changed.txt", filepath.Join("sub", "new.txt")}, written)
+		assert.Equal(t, []string{"changed.txt", "sub", filepath.Join("sub", "new.txt")}, written)
+	})
+
+	t.Run("returns newly created empty directories", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		srcDir := filepath.Join(tmpDir, "src")
+		dstDir := filepath.Join(tmpDir, "dst")
+
+		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "empty", "nested"), 0755))
+		require.NoError(t, os.MkdirAll(dstDir, 0755))
+
+		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{"empty", filepath.Join("empty", "nested")}, written)
+		assert.DirExists(t, filepath.Join(dstDir, "empty", "nested"))
+	})
+
+	t.Run("does not return pre-existing empty directories", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		srcDir := filepath.Join(tmpDir, "src")
+		dstDir := filepath.Join(tmpDir, "dst")
+
+		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "empty", "nested"), 0755))
+		require.NoError(t, os.MkdirAll(filepath.Join(dstDir, "empty", "nested"), 0755))
+
+		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		require.NoError(t, err)
+		assert.Empty(t, written)
+	})
+
+	t.Run("returns an error when a file blocks a source directory", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		srcDir := filepath.Join(tmpDir, "src")
+		dstDir := filepath.Join(tmpDir, "dst")
+
+		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "blocked", "nested"), 0755))
+		require.NoError(t, os.MkdirAll(dstDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "blocked"), []byte("keep"), 0644))
+
+		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		require.Error(t, err)
+		assert.Empty(t, written)
+		assert.FileExists(t, filepath.Join(dstDir, "blocked"))
 	})
 
 	t.Run("returns empty when all files identical", func(t *testing.T) {

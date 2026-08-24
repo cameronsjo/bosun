@@ -75,7 +75,7 @@ func verifyDeployTarget(src, dst string, writtenRel []string, startTime time.Tim
 			if errors.Is(err, fs.ErrNotExist) {
 				logger.Error().
 					Str(log.FieldPath, path).
-					Msg("Failed to verify deploy target. Reason: written file missing from destination")
+					Msg("Failed to verify deploy target. Reason: written path missing from destination")
 				return fmt.Errorf("%w: path=%q", ErrDeployInvariantMissingFile, path)
 			}
 			logger.Error().Err(err).Str(log.FieldPath, path).Msg("Failed to verify deploy target. Reason: cannot stat destination")
