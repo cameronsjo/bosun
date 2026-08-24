@@ -86,6 +86,6 @@
   repository lint/format/freshness checks.
 - [x] 6.2 Run literal Cadence polish on the implementation diff, fix every
   actionable finding and nit, and record honestly skipped unavailable arms.
-- [ ] 6.3 Re-run exact-head hosted CI and Codecov after the final push; obtain an
+- [x] 6.3 Re-run exact-head hosted CI and Codecov after the final push; obtain an
   independent exact-head review with zero Critical and Important findings before
   merge.
