@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 
 	"github.com/cameronsjo/bosun/internal/log"
 )
@@ -389,6 +390,116 @@ func sizesDiffer(a, b string) bool {
 	return aInfo.Size() != bInfo.Size()
 }
 
+var errCopyDestinationWithinSource = errors.New("copy destination must not be the source or its descendant")
+
+// canonicalPathForContainment resolves symlinks through the nearest existing
+// ancestor, then rejoins any missing suffix. Copy destinations commonly do not
+// exist yet, but a symlinked parent must still participate in containment checks.
+func canonicalPathForContainment(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve absolute path: %w", err)
+	}
+
+	current := filepath.Clean(absPath)
+	var missing []string
+	for {
+		_, err := os.Lstat(current)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", fmt.Errorf("inspect path %s: %w", current, err)
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("find existing ancestor for %s", absPath)
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+
+	resolved, err := filepath.EvalSymlinks(current)
+	if err != nil {
+		return "", fmt.Errorf("resolve path %s: %w", current, err)
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		resolved = filepath.Join(resolved, missing[i])
+	}
+	return filepath.Clean(resolved), nil
+}
+
+// destinationHasSourceAncestor detects equal or nested paths by file identity.
+// This supplements filepath.Rel on case-insensitive filesystems, where distinct
+// path spellings can refer to the same source directory.
+func destinationHasSourceAncestor(src, dst string) (bool, error) {
+	return destinationHasSourceAncestorWithStat(src, dst, os.Stat)
+}
+
+func destinationHasSourceAncestorWithStat(
+	src, dst string,
+	stat func(string) (fs.FileInfo, error),
+) (bool, error) {
+	srcInfo, err := stat(src)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect source %s: %w", src, err)
+	}
+
+	current := dst
+	for {
+		info, err := stat(current)
+		if err == nil {
+			if os.SameFile(srcInfo, info) {
+				return true, nil
+			}
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return false, fmt.Errorf("inspect destination ancestor %s: %w", current, err)
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return false, nil
+		}
+		current = parent
+	}
+}
+
+// validateCopyRoots rejects the recursive-copy shape before any destination
+// mutation. File identity covers case-insensitive aliases, while filepath.Rel
+// keeps the lexical check component-aware so siblings such as source
+// "/config/app" and destination "/config/application" remain valid.
+func validateCopyRoots(src, dst string) error {
+	canonicalSrc, err := canonicalPathForContainment(src)
+	if err != nil {
+		return fmt.Errorf("resolve copy source: %w", err)
+	}
+	canonicalDst, err := canonicalPathForContainment(dst)
+	if err != nil {
+		return fmt.Errorf("resolve copy destination: %w", err)
+	}
+	if !strings.EqualFold(filepath.VolumeName(canonicalSrc), filepath.VolumeName(canonicalDst)) {
+		return nil
+	}
+
+	overlapsByIdentity, err := destinationHasSourceAncestor(canonicalSrc, canonicalDst)
+	if err != nil {
+		return fmt.Errorf("compare copy source and destination identities: %w", err)
+	}
+
+	rel, err := filepath.Rel(canonicalSrc, canonicalDst)
+	if err != nil {
+		return fmt.Errorf("compare copy source and destination: %w", err)
+	}
+	if overlapsByIdentity || rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+		return fmt.Errorf("%w: source %s, destination %s", errCopyDestinationWithinSource, src, dst)
+	}
+	return nil
+}
+
 // CopyDirIfChanged recursively copies a directory from src to dst,
 // skipping files whose content has not changed. Returns relative paths
 // of files that were actually written and descendant directories that were
@@ -397,7 +508,8 @@ func sizesDiffer(a, b string) bool {
 // Changed destination parents are synchronized once each after the walk,
 // before post-write verification. Both steps still run for completed renames
 // when a later walk or copy operation fails.
-// Symlinks are skipped with a warning rather than causing an error.
+// Symlinks are skipped with a warning rather than causing an error. A destination
+// at or below the source is rejected before the destination is changed.
 func CopyDirIfChanged(src, dst string) ([]string, error) {
 	return copyDirIfChangedWithOps(src, dst, copyFileIfChangedDeferredWithoutDirSync, syncDestinationDir)
 }
@@ -407,6 +519,10 @@ func copyDirIfChangedWithOps(
 	copyFile func(src, dst string) (bool, postWriteVerification, error),
 	syncParent func(string) error,
 ) ([]string, error) {
+	if err := validateCopyRoots(src, dst); err != nil {
+		return nil, err
+	}
+
 	var written []string
 	var verifications []postWriteVerification
 	changedParents := make(map[string]struct{})
@@ -543,7 +659,8 @@ func mkdirIfMissingWithOps(
 // CopyDir recursively copies a directory from src to dst.
 // Destination parents are synchronized once each after the walk, including
 // when a later walk or copy operation fails.
-// Symlinks are skipped with a warning rather than causing an error.
+// Symlinks are skipped with a warning rather than causing an error. A destination
+// at or below the source is rejected before the destination is changed.
 func CopyDir(src, dst string) error {
 	return copyDirWithOps(src, dst, copyFileWithoutDirSync, syncDestinationDir)
 }
@@ -553,6 +670,10 @@ func copyDirWithOps(
 	copyFile func(src, dst string) error,
 	syncParent func(string) error,
 ) error {
+	if err := validateCopyRoots(src, dst); err != nil {
+		return err
+	}
+
 	changedParents := make(map[string]struct{})
 	walkErr := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
