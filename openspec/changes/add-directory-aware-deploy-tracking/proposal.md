@@ -24,18 +24,18 @@ that missing contract before PR #551 is eligible to merge.
   a fresh mtime. A directory-only change set SHALL still run the regular-file
   content-equality check that detects silent sync failures.
 - A managed file-to-directory transition SHALL report the transitioned path and
-  every descendant directory created in the private replacement tree, including
+  every descendant directory created from the source subtree, including
   a top-level target transition.
 - Consumer-facing GitOps, invariant, troubleshooting, and onboard-skill
   documentation SHALL describe the expanded path-based contract.
 
 ## Non-Goals
 
-- Persisting empty-directory ownership in `DeployState.DeployedFiles` is a
-  separate change. Consequently, recognizing a directory created on one
-  successful reconcile as managed for a later directory-to-file transition is
-  outside this proposal; this proposal only covers ownership available during
-  the current reconcile and existing file-backed managed-state semantics.
+- Persisting empty-directory ownership in `DeployState.DeployedFiles`, and using
+  that ownership to authorize a later directory-to-file transition, is a
+  separate change. Reverse transitions remain governed only by the existing
+  regular-file-backed managed-state semantics; this proposal does not broaden
+  persisted ownership.
 - Remote tar-over-SSH and standard-copy deployments remain without authoritative
   per-path change tracking; their existing hook fallback behavior is unchanged.
 - This proposal does not rename the compatibility field `WrittenFiles`, despite
@@ -44,8 +44,9 @@ that missing contract before PR #551 is eligible to merge.
 
 ## Impact
 
-- Affected specs: `reconcile-fuse-hooks` (ADDED requirement; depends on the
-  active `add-reconcile-fuse-hooks` capability proposal).
+- Affected specs: `reconcile-fuse-hooks` (ADDED directory-aware change-set
+  requirement; depends on the active `add-reconcile-fuse-hooks` capability
+  proposal) and `reconcile` (MODIFIED `Deploy Sync Invariants` requirement).
 - Affected code:
   - `internal/fileutil/fileutil.go` — `CopyDirIfChanged`, its directory-creation
     helper, and the returned relative-path contract.
@@ -71,6 +72,9 @@ that missing contract before PR #551 is eligible to merge.
     written.
   - Hook consumers: `executePostSyncHooks` and `EvaluatePostSyncHooks` treat the
     merged `WrittenFiles` / `DeletedFiles` values as deploy paths.
+  - Non-authoritative consumers: standard-copy local deploys retain git-diff
+    fallback and remote deploys retain their existing all-hooks fallback; an
+    empty per-path result from either mode does not become authoritative.
   - Persistence consumer: `DeployState.DeployedFiles` remains a regular-file
     manifest and does not gain empty-directory ownership in this change.
 - Tests: focused fileutil directory-creation and collision cases; local deploy
@@ -80,3 +84,7 @@ that missing contract before PR #551 is eligible to merge.
   `docs/error-handling.md`, `docs/troubleshooting.md`, and
   `skills/onboard/resources/gitops.md`; configuration docs only where they
   describe the unchanged `BOSUN_SKIP_DEPLOY_INVARIANT` behavior.
+- Ordering: archive `add-reconcile-fuse-hooks` first so the base
+  `reconcile-fuse-hooks` capability exists, then archive this dependent delta;
+  implementation PR #551 remains gated on this proposal carrying
+  `ready-to-build`.

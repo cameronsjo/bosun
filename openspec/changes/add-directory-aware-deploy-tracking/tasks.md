@@ -10,12 +10,13 @@
 - [ ] 2.2 Propagate created descendant directories through every local content-hash target, including compose targets, discovered directory targets, and managed file-to-directory replacement trees.
 - [ ] 2.3 Report a top-level managed file-to-directory transition as the target path, report its created descendants, and keep ordinary deploy-root creation excluded as plumbing.
 - [ ] 2.4 Add local deploy and hook tests for an empty-directory-only change, nested directory creation, target prefixing, top-level and nested file-to-directory transitions, repeat no-ops, and matching/non-matching post-sync hook patterns.
+- [ ] 2.5 Preserve and test non-authoritative consumer behavior: standard-copy local deploys retain git-diff fallback and remote deploys retain all-hooks fallback when no per-path evidence exists.
 
 ## 3. Deploy invariant integration
 
 - [ ] 3.1 Make stage 9 verify each reported path exists, has the same directory-or-regular-file type as its source entry, and has an mtime no older than the reconcile start time.
 - [ ] 3.2 When no regular file was written, run the existing source-to-destination content check even if newly created directories are present in `WrittenFiles`.
-- [ ] 3.3 Add invariant tests for missing directories, wrong destination types (including symlinks), stale directory mtimes, directory-only sources, and directory-only change sets with missing or byte-different regular files.
+- [ ] 3.3 Add invariant tests for missing directories, wrong regular-file and directory destination types (including symlinks), stale directory mtimes, directory-only sources, and directory-only change sets with missing or byte-different regular files.
 - [ ] 3.4 Add a regression that keeps `DeployState.DeployedFiles` file-only and documents that persisted empty-directory ownership for a later directory-to-file transition remains separate work.
 
 ## 4. Documentation
@@ -26,5 +27,5 @@
 
 ## 5. Verification
 
-- [ ] 5.1 Run focused tests repeatedly and under `-race`, including fileutil, deploy aggregation, hooks, managed transitions, and deploy invariants.
+- [ ] 5.1 Run focused tests repeatedly and under `-race`, including fileutil, deploy aggregation, hooks, managed transitions, deploy invariants, and standard-copy/remote fallback preservation.
 - [ ] 5.2 Run repository tests, coverage, vet, lint, supported cross-platform builds, and strict OpenSpec validation; cover new error paths so the patch coverage gate remains green.
