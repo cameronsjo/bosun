@@ -36,7 +36,7 @@ func installPATHCommand(t *testing.T, name, body string) string {
 
 func waitForCommandStart(t *testing.T, marker string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(marker); err == nil {
 			return
@@ -69,11 +69,7 @@ func canceledInit(t *testing.T, tool, keyContents string) (string, error) {
 	}
 	t.Setenv("SOPS_AGE_KEY_FILE", keyFile)
 
-	previousYes, previousSystemd, previousDomain := initYes, initSystemd, initDomain
-	initYes, initSystemd, initDomain = true, false, ""
-	t.Cleanup(func() {
-		initYes, initSystemd, initDomain = previousYes, previousSystemd, previousDomain
-	})
+	configureNonInteractiveInit(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := &cobra.Command{}
@@ -111,6 +107,40 @@ func canceledCheck(t *testing.T, tool string, check func(context.Context) (Check
 		t.Fatal("subprocess did not stop promptly after cancellation")
 		return CheckResult{}, nil
 	}
+}
+
+func useTestProject(t *testing.T) {
+	t.Helper()
+	projectDir := evalSymlinks(t, t.TempDir())
+	composeDir := filepath.Join(projectDir, "bosun")
+	require.NoError(t, os.MkdirAll(composeDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(composeDir, "docker-compose.yml"), []byte("services: {}\n"), 0644))
+
+	originalDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(projectDir))
+	t.Cleanup(func() { require.NoError(t, os.Chdir(originalDir)) })
+}
+
+func configureNonInteractiveInit(t *testing.T) {
+	t.Helper()
+	previousYes, previousSystemd, previousDomain := initYes, initSystemd, initDomain
+	initYes, initSystemd, initDomain = true, false, ""
+	t.Cleanup(func() {
+		initYes, initSystemd, initDomain = previousYes, previousSystemd, previousDomain
+	})
+}
+
+func runCobraWithCancellation(t *testing.T, marker string, run func(*cobra.Command, []string) error) error {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := &cobra.Command{}
+	cmd.SetContext(ctx)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- run(cmd, nil)
+	}()
+	return cancelAfterCommandStarts(t, marker, cancel, errCh)
 }
 
 func TestValidateComposeFile_CancelsDockerCompose(t *testing.T) {
@@ -183,6 +213,90 @@ func TestSubprocessHelpers_RejectCanceledContextBeforeWork(t *testing.T) {
 	assert.Equal(t, CheckResult{}, sopsResult)
 }
 
+func TestRunInit_RejectsCanceledContextBeforeCreatingProject(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cmd := &cobra.Command{}
+	cmd.SetContext(ctx)
+	targetDir := filepath.Join(t.TempDir(), "project")
+
+	err := runInit(cmd, []string{targetDir})
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.NoDirExists(t, targetDir)
+}
+
+func TestYachtCommands_PropagateComposeValidationCancellation(t *testing.T) {
+	commands := []struct {
+		name string
+		run  func(*cobra.Command, []string) error
+	}{
+		{name: "up", run: yachtUpCmd.RunE},
+		{name: "down", run: yachtDownCmd.RunE},
+		{name: "restart", run: yachtRestartCmd.RunE},
+	}
+
+	for _, command := range commands {
+		t.Run(command.name, func(t *testing.T) {
+			useTestProject(t)
+			marker := installPATHCommand(t, "docker", blockingCommandBody)
+
+			err := runCobraWithCancellation(t, marker, command.run)
+			assert.Equal(t, context.Canceled, err)
+		})
+	}
+}
+
+func TestYachtCommands_PreserveComposeValidationErrors(t *testing.T) {
+	commands := []struct {
+		name string
+		run  func(*cobra.Command, []string) error
+	}{
+		{name: "up", run: yachtUpCmd.RunE},
+		{name: "down", run: yachtDownCmd.RunE},
+		{name: "restart", run: yachtRestartCmd.RunE},
+	}
+
+	for _, command := range commands {
+		t.Run(command.name, func(t *testing.T) {
+			useTestProject(t)
+			installPATHCommand(t, "docker", "printf 'bad compose' >&2\nexit 1\n")
+			cmd := &cobra.Command{}
+			cmd.SetContext(context.Background())
+
+			err := command.run(cmd, nil)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid compose file: bad compose")
+			assert.Contains(t, err.Error(), "Run 'docker compose config' to debug")
+			assert.False(t, errors.Is(err, context.Canceled))
+		})
+	}
+}
+
+func TestRunDoctor_PropagatesComposeCancellation(t *testing.T) {
+	marker := installPATHCommand(t, "docker", blockingCommandBody)
+	t.Setenv("SOPS_AGE_KEY_FILE", filepath.Join(t.TempDir(), "missing-age-key"))
+	err := runCobraWithCancellation(t, marker, runDoctor)
+	assert.Equal(t, context.Canceled, err)
+}
+
+func TestRunDoctor_PropagatesSOPSCancellation(t *testing.T) {
+	installPATHCommand(t, "docker", "printf 'v2.27.0\\n'\n")
+	marker := installPATHCommand(t, "sops", blockingCommandBody)
+	t.Setenv("SOPS_AGE_KEY_FILE", filepath.Join(t.TempDir(), "missing-age-key"))
+	err := runCobraWithCancellation(t, marker, runDoctor)
+	assert.Equal(t, context.Canceled, err)
+}
+
+func TestRunDoctor_RejectsCanceledContextBeforeChecks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cmd := &cobra.Command{}
+	cmd.SetContext(ctx)
+
+	err := runDoctor(cmd, nil)
+	assert.Equal(t, context.Canceled, err)
+}
+
 func TestValidateComposeFile_CommandResults(t *testing.T) {
 	composeFile := filepath.Join(t.TempDir(), "docker-compose.yml")
 	require.NoError(t, os.WriteFile(composeFile, []byte("services: {}\n"), 0644))
@@ -229,6 +343,13 @@ func TestDoctorSubprocessChecks_CommandResults(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, CheckResult{Passed: 1}, result)
 	})
+
+	t.Run("missing SOPS remains a warning", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		result, err := checkSOPS(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, CheckResult{Warned: 1}, result)
+	})
 }
 
 func TestAgeKeyCommands_CommandResults(t *testing.T) {
@@ -258,6 +379,17 @@ printf 'Public key: age1generated\n'
 		assert.False(t, errors.Is(err, context.Canceled))
 	})
 
+	t.Run("generation output fallback extracts file comment", func(t *testing.T) {
+		installPATHCommand(t, "age-keygen", `printf '# public key: age1fallback\n' > "$2"
+`)
+		keyFile := filepath.Join(t.TempDir(), "keys.txt")
+		t.Setenv("SOPS_AGE_KEY_FILE", keyFile)
+
+		publicKey, err := setupAgeKey(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, "age1fallback", publicKey)
+	})
+
 	t.Run("public key derivation success", func(t *testing.T) {
 		installPATHCommand(t, "age-keygen", "printf 'age1derived\\n'\n")
 		keyFile := filepath.Join(t.TempDir(), "keys.txt")
@@ -278,4 +410,36 @@ printf 'Public key: age1generated\n'
 		assert.Contains(t, err.Error(), "could not extract public key")
 		assert.False(t, errors.Is(err, context.Canceled))
 	})
+}
+
+func TestRunInit_PreservesAgeSetupFallback(t *testing.T) {
+	configureNonInteractiveInit(t)
+	installPATHCommand(t, "age-keygen", "exit 1\n")
+	targetDir := t.TempDir()
+	t.Setenv("SOPS_AGE_KEY_FILE", filepath.Join(t.TempDir(), "keys.txt"))
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+
+	err := runInit(cmd, []string{targetDir})
+	require.NoError(t, err)
+	sopsConfig, err := os.ReadFile(filepath.Join(targetDir, ".sops.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(sopsConfig), "AGE-PUBLIC-KEY-REPLACE-ME")
+	assert.FileExists(t, filepath.Join(targetDir, "bosun", "docker-compose.yml"))
+}
+
+func TestRunInit_PreservesGitInitFailureFallback(t *testing.T) {
+	configureNonInteractiveInit(t)
+	installPATHCommand(t, "git", "exit 1\n")
+	keyFile := filepath.Join(t.TempDir(), "keys.txt")
+	require.NoError(t, os.WriteFile(keyFile, []byte("# public key: age1existing\n"), 0600))
+	t.Setenv("SOPS_AGE_KEY_FILE", keyFile)
+	targetDir := t.TempDir()
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+
+	err := runInit(cmd, []string{targetDir})
+	require.NoError(t, err)
+	assert.FileExists(t, filepath.Join(targetDir, "bosun", "docker-compose.yml"))
+	assert.NoDirExists(t, filepath.Join(targetDir, ".git"))
 }
