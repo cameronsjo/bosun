@@ -116,15 +116,17 @@ The reconciler SHALL execute stages in this fixed order:
 6. Extract declared state from rendered compose
 7. Create configuration backup
 8. Deploy files (local or remote)
-9. Run `docker compose up`
-10. Clean up staging directory
-11. Critical container health gate (if configured)
-12. Execute post-sync hooks
-13. Post-deploy verification (drift check)
-14. Record successful deployment in state file
-15. Release lock
+9. Deploy sync invariant check (see Deploy Sync Invariants)
+10. Run `docker compose up`
+11. Clean up staging directory
+12. Critical container health gate (if configured)
+13. Execute post-sync hooks
+14. Post-deploy verification (drift check)
+15. Record successful deployment in state file
+16. Release lock
 
-A failure at any stage SHALL abort the remaining stages and release the lock. Configuration backup (stage 7) is the sole conditional case: when there is genuinely nothing to back up (no existing configuration paths), the empty result is recorded and the pipeline proceeds; but when a required backup cannot be created or verified — including on timeout — the reconciler SHALL abort before mutating target state (stage 8 onward), consistent with the fail-closed Configuration Backup requirement. The health gate (stage 11) failing SHALL trigger rollback before aborting.
+A failure at any stage SHALL abort the remaining stages and release the lock. Configuration backup (stage 7) is the sole conditional case: when there is genuinely nothing to back up (no existing configuration paths), the empty result is recorded and the pipeline proceeds; but when a required backup cannot be created or verified — including on timeout — the reconciler SHALL abort before mutating target state (stage 8 onward), consistent with the fail-closed Configuration Backup requirement. The health gate (stage 12) failing SHALL trigger rollback before aborting. The invariant check (stage 9) failing SHALL abort before compose up runs; no rollback is needed because no compose changes have been applied at that point.
+
 The lock SHALL always be released via defer, even on panic.
 
 #### Scenario: Full pipeline succeeds
@@ -137,21 +139,29 @@ The lock SHALL always be released via defer, even on panic.
 #### Scenario: Pipeline aborts on stage failure
 
 - **WHEN** secret decryption fails
-- **THEN** template rendering, backup, deploy, and compose stages are skipped
+- **THEN** template rendering, backup, deploy, invariant check, and compose stages are skipped
 - **AND** a throttled failure alert is sent
 - **AND** the lock is released
 
 #### Scenario: Required backup failure aborts before deploy
 
 - **WHEN** a required backup (existing config paths present) cannot be created or verified, including on timeout
-- **THEN** stages 8 onward (deploy, compose up) are skipped
+- **THEN** stages 8 onward (deploy, invariant check, compose up, and later stages) are skipped
 - **AND** no target file is written and the existing state is left intact
 - **AND** the lock is released
+
+#### Scenario: Invariant check aborts before compose
+
+- **WHEN** stage 9 invariants fail
+- **THEN** compose up, cleanup, health gate, hooks, and verification are skipped
+- **AND** the lock is released
+- **AND** a failure alert is sent
+- **AND** the state file is NOT updated
 
 #### Scenario: Dry run mode
 
 - **WHEN** `DryRun` is true
-- **THEN** backup, deploy, compose up, health gate, post-sync hooks, and post-deploy verification are skipped
+- **THEN** backup, deploy, invariant check, compose up, health gate, post-sync hooks, and post-deploy verification are skipped
 - **AND** template rendering still executes to validate templates
 
 #### Scenario: Health gate failure triggers rollback
