@@ -694,9 +694,9 @@ func TestLatestVerifiedBackup_SkipsCorruptReturnsNewestValid(t *testing.T) {
 	tmp := evalSymlinks(t, t.TempDir())
 	backupDir := filepath.Join(tmp, "backups")
 
-	_ = mkBackupDir(t, backupDir, "backup-20200101-000001", true)          // older, valid
+	_ = mkBackupDir(t, backupDir, "backup-20200101-000001", true)           // older, valid
 	validNewer := mkBackupDir(t, backupDir, "backup-20200101-000002", true) // newer, valid
-	_ = mkBackupDir(t, backupDir, "backup-20200101-000003", false)         // newest, corrupt
+	_ = mkBackupDir(t, backupDir, "backup-20200101-000003", false)          // newest, corrupt
 
 	d := NewDeployOps(false, "")
 	got, err := d.LatestVerifiedBackup(context.Background(), backupDir)
