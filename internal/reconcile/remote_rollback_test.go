@@ -72,6 +72,66 @@ func regHdr(name string) *tar.Header {
 	return &tar.Header{Name: name, Mode: 0o644, Typeflag: tar.TypeReg}
 }
 
+func TestSafeExtractBackup_ValidEntries(t *testing.T) {
+	tests := []struct {
+		name   string
+		hdrs   func() []*tar.Header
+		verify func(*testing.T, string)
+	}{
+		{
+			name: "regular file",
+			hdrs: func() []*tar.Header {
+				return []*tar.Header{regHdr("mnt/user/appdata/compose/core.yml")}
+			},
+			verify: func(t *testing.T, root string) {
+				assert.FileExists(t, filepath.Join(root, "mnt/user/appdata/compose/core.yml"))
+			},
+		},
+		{
+			name: "confined relative symlink",
+			hdrs: func() []*tar.Header {
+				return []*tar.Header{
+					regHdr("compose/real.yml"),
+					{Name: "compose/link.yml", Typeflag: tar.TypeSymlink, Linkname: "real.yml", Mode: 0o777},
+				}
+			},
+			verify: func(t *testing.T, root string) {
+				target, err := os.Readlink(filepath.Join(root, "compose/link.yml"))
+				require.NoError(t, err)
+				assert.Equal(t, "real.yml", target)
+			},
+		},
+		{
+			name: "confined archive-root-relative hardlink",
+			hdrs: func() []*tar.Header {
+				return []*tar.Header{
+					regHdr("compose/real.yml"),
+					{Name: "compose/hard.yml", Typeflag: tar.TypeLink, Linkname: "compose/real.yml", Mode: 0o644},
+				}
+			},
+			verify: func(t *testing.T, root string) {
+				realInfo, err := os.Stat(filepath.Join(root, "compose/real.yml"))
+				require.NoError(t, err)
+				hardInfo, err := os.Stat(filepath.Join(root, "compose/hard.yml"))
+				require.NoError(t, err)
+				assert.True(t, os.SameFile(realInfo, hardInfo), "hardlink must reference the extracted in-root file")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tarFile := filepath.Join(t.TempDir(), "valid.tar.gz")
+			writeGzTarArchiveHeaders(t, tarFile, tt.hdrs()...)
+
+			root, cleanup, err := safeExtractBackup(context.Background(), tarFile)
+			require.NoError(t, err)
+			defer cleanup()
+			tt.verify(t, root)
+		})
+	}
+}
+
 func TestSafeExtractBackup(t *testing.T) {
 	t.Run("extracts a benign archive under the root", func(t *testing.T) {
 		tarFile := filepath.Join(t.TempDir(), "ok.tar.gz")

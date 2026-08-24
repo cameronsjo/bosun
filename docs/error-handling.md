@@ -353,6 +353,30 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 
 **Compose Rollback**: `ComposeUpWithRollback()` attempts to restore previous config if compose up fails.
 
+### Rollback Archive Failures
+
+Rollback archives are extracted in-process into a fresh temporary root and are
+usable only after the complete archive passes confinement, link-target,
+corruption, whole-decompressed-stream size, I/O, and independent-context checks.
+The size bound includes tar headers, padding, skipped bodies, and trailing data;
+reading to true gzip EOF also validates the trailer checksum. Any failure removes
+the partial root before Bosun copies or deletes live files or invokes compose
+with a backup path.
+
+For full-tree health-gate rollback, archive failure returns the existing
+rollback-not-attempted outcome and wraps the archive error, so callers can use
+`errors.Is` or `errors.As` to inspect causes such as context expiry or
+`*os.PathError`. For per-file isolated compose rollback, Bosun logs the archive
+cause but preserves the original compose failure in both the file result and the
+aggregate error; the file remains not rolled back and cannot enter the orphan
+pass.
+
+Both local consumers derive an independently timed extraction context from the
+background while preserving reconcile log metadata. Cancellation of the outer
+failed-deployment context does not suppress rollback, but cancellation or expiry
+of the independent extraction context stops extraction and cleans its temporary
+tree.
+
 ## Logging vs Returning
 
 ### When to Log

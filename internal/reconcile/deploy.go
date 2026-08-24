@@ -39,12 +39,22 @@ type DeployOps struct {
 	// Defaults to ComposeUpMultiple when nil. Exposed for testing the isolated
 	// deploy/rollback decision logic without requiring Docker.
 	composeUpFn func(ctx context.Context, files []string) error
+	// extractBackupFn fault-injects local rollback archive extraction in tests.
+	// Nil uses the shared in-process safeExtractBackup implementation.
+	extractBackupFn func(ctx context.Context, tarFile string) (root string, cleanup func(), err error)
 	// copyDirIfChangedFn fault-injects post-transition copy failures in tests.
 	// Nil uses fileutil.CopyDirIfChanged.
 	copyDirIfChangedFn func(src, dst string) ([]string, error)
 	// copyFileIfChangedFn fault-injects single-file copy failures in tests.
 	// Nil uses fileutil.CopyFileIfChanged.
 	copyFileIfChangedFn func(src, dst string) (bool, error)
+}
+
+func (d *DeployOps) extractBackup(ctx context.Context, tarFile string) (root string, cleanup func(), err error) {
+	if d.extractBackupFn != nil {
+		return d.extractBackupFn(ctx, tarFile)
+	}
+	return safeExtractBackup(ctx, tarFile)
 }
 
 // composeUpTimeout returns the configured timeout or the default.

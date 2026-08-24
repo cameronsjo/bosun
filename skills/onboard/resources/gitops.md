@@ -177,6 +177,27 @@ Backup failure handling depends on what Bosun can prove before mutation:
   recent previously verified backup when one exists; without one, the reconcile
   aborts before deployment.
 
+Local and remote rollback consume `configs.tar.gz` with the same in-process
+`archive/tar` extractor. It writes into a fresh temporary root and admits that
+root only after the entire archive passes: member-name traversal, absolute or
+escaping symlink targets, and escaping hardlink targets are rejected, while
+confined relative symlinks and archive-root-relative hardlinks remain valid.
+Corruption, I/O failure, the 10 GiB whole-decompressed-stream bound, or
+cancellation removes the partial tree before any live copy, deletion,
+backup-based compose command, or orphan-pass use. The bound covers tar headers,
+padding, skipped entry bodies, and trailing data, and the reader reaches true
+gzip EOF so trailer checksum failures are rejected.
+
+Rollback extraction uses a background-derived context with the outer
+reconcile's log metadata and its own compose timeout. An already-cancelled
+failed-deployment context therefore does not suppress recovery, but expiry of
+the independent extraction context stops and cleans extraction. A full-tree
+extraction failure is returned as rollback-not-attempted with the archive cause
+available through `errors.Is`/`errors.As`. Per-file compose rollback instead
+keeps the original compose failure in its result and aggregate error, logs the
+archive cause, reports no rollback success, and excludes that file from orphan
+reconciliation.
+
 ### Failure Alerting
 
 Specific pipeline stages send throttled failure alerts to all configured alert providers (Discord, SendGrid, Twilio) when they fail. This behavior is controlled by the `on_failure` config flag (default: `true`).
@@ -585,7 +606,7 @@ Use `deploy_sync_paths` (allowlist) and `deploy_sync_exclude` (blocklist) in `bo
 
 ### Local Deployment
 
-Default mode. Copies rendered files directly to the local filesystem and runs `docker compose up` per-file with isolated rollback. Each compose file is deployed independently — if one file fails (e.g., bad image tag), only that file is rolled back from backup while other files continue. A final orphan-reconciliation pass runs `--remove-orphans` across each successful new file and each verified rollback's backup copy, preserving input order; failed files without a successful rollback are excluded so the cleanup pass never retries known-bad input.
+Default mode. Copies rendered files directly to the local filesystem and runs `docker compose up` per-file with isolated rollback. Each compose file is deployed independently — if one file fails (e.g., bad image tag), only that file is rolled back from a fully validated, in-process extraction of `configs.tar.gz` while other files continue. The archive is extracted lazily at most once per isolated operation. A final orphan-reconciliation pass runs `--remove-orphans` across each successful new file and each verified rollback's backup copy, preserving input order; failed files without a successful rollback are excluded so the cleanup pass never retries known-bad input or consumes a partial extraction.
 
 **Stale-file pruning is managed-set scoped.** When content-hash sync is on (default), bosun removes a target file only if it was in the *previous* deploy's manifest (`state.deployed_files`) **and** is absent from the current rendered source. Files bosun never wrote — container runtime data like `db.sqlite3`, `grafana.db`, or a service's `data/` dir living alongside config in the same appdata dir — are never in the manifest, so they are never deleted. A render that produces zero files also skips pruning entirely, so a templating failure can't wipe a populated target. The first deploy after upgrading (empty manifest) prunes nothing and simply seeds the manifest.
 

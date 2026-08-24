@@ -76,10 +76,11 @@ func (d *DeployOps) RollbackFromBackupSet(ctx context.Context, set RollbackSet, 
 	)
 	defer cancel()
 
-	root, cleanup, extractErr := extractBackupArchive(rollbackCtx, backupPath)
+	tarFile := filepath.Join(backupPath, "configs.tar.gz")
+	root, cleanup, extractErr := d.extractBackup(rollbackCtx, tarFile)
 	if extractErr != nil {
 		logger.Warn().Err(extractErr).Str(log.FieldPath, backupPath).Msg("No backup archive available for rollback")
-		return fmt.Errorf("%w: no backup available for rollback: %v", errRollbackNotAttempted, extractErr)
+		return fmt.Errorf("%w: no backup available for rollback: %w", errRollbackNotAttempted, extractErr)
 	}
 	defer cleanup()
 

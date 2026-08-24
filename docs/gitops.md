@@ -796,6 +796,28 @@ After creation, backups are verified:
 5. Every member can be decompressed and read to EOF under the caller deadline
    and the total 10 GiB verification bound
 
+### Rollback Archive Admission
+
+Every local and remote rollback path reads `configs.tar.gz` with Bosun's
+in-process `archive/tar` extractor into a fresh temporary root. The complete
+archive must pass before the root becomes usable. Bosun rejects member-name
+traversal, absolute or escaping symlink targets, and escaping hardlink targets;
+confined relative symlinks and archive-root-relative hardlinks remain supported.
+Validation, corruption, I/O, size-bound, and extraction-context failures remove
+the partial root before any live managed file is copied or removed and before a
+backup path can reach compose or the orphan-reconciliation pass. The 10 GiB
+whole-decompressed-stream bound includes tar headers, padding, skipped entry
+bodies, and trailing data; extraction drains to true gzip EOF so trailer
+checksum failures are rejected.
+
+Local rollback extraction retains reconcile logging metadata but runs under a
+background-derived independent compose timeout. Cancellation of the failed
+deployment's outer context does not suppress the recovery attempt; cancellation
+or expiry of the independent extraction context stops it. Full-tree rollback
+returns rollback-not-attempted while retaining the archive cause. Per-file
+rollback retains the original compose failure, logs the archive cause, reports
+the file as not rolled back, and excludes it from orphan reconciliation.
+
 An incomplete managed-footprint enumeration aborts before backup or deploy work,
 even when an older verified backup exists: that older archive may omit a path
 the current deploy would mutate. Other creation, transport, verification, and
@@ -853,7 +875,8 @@ cfg.BackupsToKeep = 5  // Default
 
 ### Compose Failures
 
-- `ComposeUpWithRollback()` can restore previous config on failure
+- Isolated compose deployment can restore a failed file from a fully admitted
+  backup archive; archive rejection leaves the original compose error visible
 - Failed compose operations log warnings but don't abort the entire reconciliation
 - Container health is verified after compose up
 

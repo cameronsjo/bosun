@@ -362,9 +362,29 @@ Locks are automatically released when:
 
 ### Tar Extraction Validation
 
-**Implementation**: `internal/internal/cmd/emergency.go`
+**Implementations**: `internal/reconcile/remote_rollback.go` for reconcile
+rollback archives and `internal/cmd/emergency.go` for emergency restore
+archives.
 
-Tar archives are validated to prevent directory traversal attacks (zip slip):
+All reconcile rollback consumers use the same in-process `archive/tar` reader.
+It maps each member into a fresh temporary root and validates the realized
+destination before writing. It rejects member-name traversal, absolute or
+escaping symlink targets, and escaping archive-root-relative hardlink targets
+before they can create or redirect content outside the root. Confined relative
+symlinks and hardlinks remain supported.
+
+The complete archive must pass before the extracted root is returned. A
+validation, corruption, I/O, whole-decompressed-stream size, or
+independent-context failure deletes the partial temporary tree, so local
+rollback cannot copy or remove live content or pass a partial backup path to
+compose or orphan cleanup. The stream bound covers tar headers, padding, skipped
+bodies, and trailing data, and a drain to true gzip EOF validates the trailer
+checksum.
+Local rollback's extraction timeout is derived from a fresh background context,
+so cancellation of the failed deployment does not suppress recovery; the
+extractor still honors cancellation or expiry of that independent context.
+
+Emergency restore separately validates archive paths before writing:
 
 ```go
 // Sanitize path to prevent directory traversal
@@ -374,7 +394,7 @@ if !strings.HasPrefix(target, filepath.Clean(destDir)+string(os.PathSeparator)) 
 }
 ```
 
-This prevents malicious archives containing paths like:
+These controls prevent malicious archives containing paths like:
 - `../../../etc/passwd`
 - `/etc/shadow`
 - `foo/../../bar`

@@ -454,14 +454,10 @@ func TestCreateBackup_DiscoveryFailureFallsBackToFullAppdata(t *testing.T) {
 	assert.True(t, found, "discovery-failure fallback must back up the full appdata path, not a no-op")
 }
 
-// TestExtractBackupArchive round-trips through the real Backup(): create an
+// TestSafeExtractBackup_RoundTrip round-trips through the real Backup(): create an
 // archive, extract it, and confirm the backed-up file resolves under the
 // extracted root accounting for tar's leading-'/' stripping (#332/#335).
-func TestExtractBackupArchive(t *testing.T) {
-	if _, err := exec.LookPath("tar"); err != nil {
-		t.Skip("tar not installed")
-	}
-
+func TestSafeExtractBackup_RoundTrip(t *testing.T) {
 	tmpDir := evalSymlinks(t, t.TempDir())
 	appdata := filepath.Join(tmpDir, "appdata", "compose")
 	require.NoError(t, os.MkdirAll(appdata, 0755))
@@ -474,7 +470,7 @@ func TestExtractBackupArchive(t *testing.T) {
 	require.NoError(t, err)
 	backupPath := filepath.Join(backupDir, backupName)
 
-	root, cleanup, err := extractBackupArchive(context.Background(), backupPath)
+	root, cleanup, err := safeExtractBackup(context.Background(), filepath.Join(backupPath, "configs.tar.gz"))
 	require.NoError(t, err)
 	defer cleanup()
 	require.NotEmpty(t, root)
@@ -493,11 +489,11 @@ func TestExtractBackupArchive(t *testing.T) {
 	assert.True(t, os.IsNotExist(statErr), "cleanup should remove the extracted temp dir")
 }
 
-func TestExtractBackupArchive_MissingArchive(t *testing.T) {
+func TestSafeExtractBackup_MissingArchive(t *testing.T) {
 	backupPath := t.TempDir() // No configs.tar.gz inside.
-	root, cleanup, err := extractBackupArchive(context.Background(), backupPath)
+	root, cleanup, err := safeExtractBackup(context.Background(), filepath.Join(backupPath, "configs.tar.gz"))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "backup archive not found")
+	assert.Contains(t, err.Error(), "cannot open archive")
 	assert.Empty(t, root)
 	assert.NotNil(t, cleanup, "cleanup must be safe to call even on error")
 	cleanup() // must not panic
@@ -931,7 +927,10 @@ func TestBackup_PreservesSymlinks(t *testing.T) {
 	backupName, err := d.Backup(context.Background(), backupDir, []string{appdata})
 	require.NoError(t, err)
 
-	root, cleanup, err := extractBackupArchive(context.Background(), filepath.Join(backupDir, backupName))
+	root, cleanup, err := safeExtractBackup(
+		context.Background(),
+		filepath.Join(backupDir, backupName, "configs.tar.gz"),
+	)
 	require.NoError(t, err)
 	defer cleanup()
 
