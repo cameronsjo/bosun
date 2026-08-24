@@ -196,6 +196,68 @@ func TestValidateConfig(t *testing.T) {
 	}
 }
 
+func collidingStateFileDaemonConfig(t *testing.T) *Config {
+	t.Helper()
+
+	tmpDir := evalSymlinks(t, t.TempDir())
+	cfg := DefaultConfig()
+	cfg.ReconcileConfig = reconcile.DefaultConfig()
+	cfg.ReconcileConfig.RepoURL = "https://github.com/example/repo"
+	cfg.ReconcileConfig.StateFile = filepath.Join(tmpDir, "deploy-state.json")
+	cfg.ReconcileConfig.StagingDir = filepath.Join(tmpDir, "staging")
+	cfg.ReconcileConfig.Targets = []reconcile.Target{
+		{
+			Name:              "prod-a",
+			StateFile:         filepath.Join(tmpDir, "shared-state.json"),
+			TargetHost:        "root@nas",
+			ProjectName:       "stack-a",
+			RemoteAppdataPath: "/mnt/user/prod-a",
+		},
+		{
+			Name:              "prod-b",
+			StateFile:         filepath.Join(tmpDir, "shared-state.json"),
+			TargetHost:        "root@pi",
+			ProjectName:       "stack-b",
+			RemoteAppdataPath: "/mnt/user/prod-b",
+		},
+	}
+	return cfg
+}
+
+func TestValidateConfig_TargetLayout(t *testing.T) {
+	t.Run("rejects colliding state files with actionable target names", func(t *testing.T) {
+		cfg := collidingStateFileDaemonConfig(t)
+
+		err := ValidateConfig(cfg)
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "prod-a")
+		assert.ErrorContains(t, err, "prod-b")
+		assert.ErrorContains(t, err, "same state file")
+	})
+
+	t.Run("preserves valid distinct target layout", func(t *testing.T) {
+		cfg := collidingStateFileDaemonConfig(t)
+		cfg.ReconcileConfig.Targets[1].StateFile = filepath.Join(filepath.Dir(cfg.ReconcileConfig.StateFile), "prod-b-state.json")
+
+		require.NoError(t, ValidateConfig(cfg))
+	})
+
+	t.Run("aggregates layout error with existing daemon and hook errors", func(t *testing.T) {
+		cfg := collidingStateFileDaemonConfig(t)
+		cfg.Port = 0
+		cfg.ReconcileConfig.PostSyncHooks = reconcile.NewConfigField([]reconcile.PostSyncHook{{Action: "exec"}})
+		cfg.ReconcileConfig.Targets[0].PostSyncHooks = []reconcile.PostSyncHook{{Action: "exec"}}
+
+		err := ValidateConfig(cfg)
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "invalid port: 0")
+		assert.Equal(t, 2, strings.Count(err.Error(), "requires a non-empty command"), "root and target hook errors must each remain aggregated exactly once")
+		assert.ErrorContains(t, err, "same state file")
+	})
+}
+
 func TestHealthStatus_JSON(t *testing.T) {
 	status := HealthStatus{
 		Status:        "healthy",

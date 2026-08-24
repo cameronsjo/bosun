@@ -5590,6 +5590,12 @@ func TestTargetLockFile(t *testing.T) {
 			Target{Name: "unraid"},
 			"/var/run/bosun/reconcile-unraid.lock",
 		},
+		{
+			"distinct named target uses distinct suffix",
+			"/var/run/bosun",
+			Target{Name: "pi"},
+			"/var/run/bosun/reconcile-pi.lock",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

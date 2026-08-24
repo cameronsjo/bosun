@@ -319,6 +319,50 @@ func TestDaemonRun_RecoversPanicInSynchronousBody(t *testing.T) {
 	assert.Contains(t, err.Error(), "panicked")
 }
 
+func TestDaemonRun_InvalidTargetLayoutFailsBeforeStartup(t *testing.T) {
+	tmpDir := shortSocketDir(t)
+	socketPath := filepath.Join(tmpDir, "d.sock")
+	cfg := collidingStateFileDaemonConfig(t)
+	cfg.SocketPath = socketPath
+	cfg.EnableHTTP = false
+	cfg.EnableTCP = false
+	cfg.PollInterval = 0
+	cfg.DriftInterval = 0
+	cfg.InitialDelay = 24 * time.Hour
+
+	d, err := New(cfg)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- d.Run(ctx)
+	}()
+
+	select {
+	case err = <-done:
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "invalid daemon configuration")
+		assert.ErrorContains(t, err, "prod-a")
+		assert.ErrorContains(t, err, "prod-b")
+		assert.ErrorContains(t, err, "same state file")
+	case <-time.After(time.Second):
+		_, statErr := os.Lstat(socketPath)
+		cancel()
+		<-done
+		t.Fatalf("Run did not reject invalid targets before startup (socket_exists=%t)", statErr == nil)
+	}
+
+	assert.False(t, d.IsReady(), "invalid target layout must never become ready")
+	d.socketServer.mu.Lock()
+	listener := d.socketServer.listener
+	d.socketServer.mu.Unlock()
+	assert.Nil(t, listener, "invalid target layout must fail before binding the socket listener")
+	_, err = os.Lstat(socketPath)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
 func TestDaemonRun_CancelledContext(t *testing.T) {
 	tmpDir := shortSocketDir(t)
 

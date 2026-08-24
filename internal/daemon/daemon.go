@@ -2483,6 +2483,13 @@ func ValidateConfig(cfg *Config) error {
 				errs = append(errs, fmt.Sprintf("target %q: %v", target.Name, err))
 			}
 		}
+
+		// Structural target errors must fail before Run binds any API listener.
+		// Keep this separate from hook validation so ValidateConfig continues to
+		// aggregate every invalid hook instead of stopping at the first one.
+		if err := cfg.ReconcileConfig.ValidateMultiTargetLayout(); err != nil {
+			errs = append(errs, err.Error())
+		}
 	}
 
 	if len(errs) > 0 {

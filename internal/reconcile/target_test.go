@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -286,6 +287,30 @@ func TestResolveTargets_RejectsResourceCollisions(t *testing.T) {
 		wantErrContains []string
 	}{
 		{
+			name: "identical explicit state file across hosts",
+			targets: []Target{
+				{Name: "prod-a", StateFile: "/var/lib/bosun/shared.json", TargetHost: "root@nas", ProjectName: "stack-a", RemoteAppdataPath: "/mnt/user/prod-a"},
+				{Name: "prod-b", StateFile: "/var/lib/bosun/shared.json", TargetHost: "root@pi", ProjectName: "stack-b", RemoteAppdataPath: "/mnt/user/prod-b"},
+			},
+			wantErrContains: []string{"prod-a", "prod-b", "same state file"},
+		},
+		{
+			name: "state file normalizes dot segments",
+			targets: []Target{
+				{Name: "prod-a", StateFile: "/var/lib/bosun/shared.json", TargetHost: "root@nas", ProjectName: "stack-a", RemoteAppdataPath: "/mnt/user/prod-a"},
+				{Name: "prod-b", StateFile: "/var/lib/bosun/./shared.json", TargetHost: "root@nas", ProjectName: "stack-b", RemoteAppdataPath: "/mnt/user/prod-b"},
+			},
+			wantErrContains: []string{"prod-a", "prod-b", "same state file"},
+		},
+		{
+			name: "explicit state file collides with derived path",
+			targets: []Target{
+				{Name: "prod-a", TargetHost: "root@nas", ProjectName: "stack-a", RemoteAppdataPath: "/mnt/user/prod-a"},
+				{Name: "prod-b", StateFile: "/var/lib/bosun/deploy-state-prod-a.json", TargetHost: "root@nas", ProjectName: "stack-b", RemoteAppdataPath: "/mnt/user/prod-b"},
+			},
+			wantErrContains: []string{"prod-a", "prod-b", "same state file"},
+		},
+		{
 			name: "docker namespace on the same remote host",
 			targets: []Target{
 				{Name: "prod-a", TargetHost: "root@nas", ProjectName: "stack", RemoteAppdataPath: "/mnt/user/prod-a"},
@@ -376,11 +401,65 @@ func TestResolveTargets_RejectsResourceCollisions(t *testing.T) {
 	}
 }
 
+func TestResolveTargets_StateFileCaseSemantics(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Targets = []Target{
+		{Name: "prod-a", StateFile: "/var/lib/bosun/STATE.json", TargetHost: "root@nas", ProjectName: "stack-a", RemoteAppdataPath: "/mnt/user/prod-a"},
+		{Name: "prod-b", StateFile: "/var/lib/bosun/state.json", TargetHost: "root@nas", ProjectName: "stack-b", RemoteAppdataPath: "/mnt/user/prod-b"},
+	}
+
+	targets, err := cfg.ResolveTargets()
+
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		require.Error(t, err)
+		assert.Nil(t, targets)
+		assert.Contains(t, err.Error(), "prod-a")
+		assert.Contains(t, err.Error(), "prod-b")
+		assert.Contains(t, err.Error(), "same state file")
+		return
+	}
+
+	require.NoError(t, err)
+	assert.Equal(t, cfg.Targets, targets)
+}
+
+func TestValidateMultiTargetLayout(t *testing.T) {
+	t.Run("preserves partial single-target config", func(t *testing.T) {
+		cfg := &Config{RepoURL: "https://github.com/example/repo"}
+		require.NoError(t, cfg.ValidateMultiTargetLayout())
+
+		cfg.Targets = []Target{{Name: "prod-a"}}
+		require.NoError(t, cfg.ValidateMultiTargetLayout())
+	})
+
+	t.Run("rejects colliding multi-target resources", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Targets = []Target{
+			{Name: "prod-a", StateFile: "/var/lib/bosun/shared.json", TargetHost: "root@nas", ProjectName: "stack-a", RemoteAppdataPath: "/mnt/user/prod-a"},
+			{Name: "prod-b", StateFile: "/var/lib/bosun/shared.json", TargetHost: "root@pi", ProjectName: "stack-b", RemoteAppdataPath: "/mnt/user/prod-b"},
+		}
+
+		err := cfg.ValidateMultiTargetLayout()
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "prod-a")
+		assert.ErrorContains(t, err, "prod-b")
+		assert.ErrorContains(t, err, "same state file")
+	})
+}
+
 func TestResolveTargets_AllowsDistinctResources(t *testing.T) {
 	tests := []struct {
 		name    string
 		targets []Target
 	}{
+		{
+			name: "distinct explicit state files",
+			targets: []Target{
+				{Name: "prod-a", StateFile: "/var/lib/bosun/prod-a.json", TargetHost: "root@nas", ProjectName: "stack-a", RemoteAppdataPath: "/mnt/user/prod-a"},
+				{Name: "prod-b", StateFile: "/var/lib/bosun/prod-b.json", TargetHost: "root@nas", ProjectName: "stack-b", RemoteAppdataPath: "/mnt/user/prod-b"},
+			},
+		},
 		{
 			name: "same host with distinct project and deploy path",
 			targets: []Target{
