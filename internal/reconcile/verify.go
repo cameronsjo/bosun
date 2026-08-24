@@ -14,16 +14,18 @@ import (
 
 // Sentinel errors returned by verifyDeployTarget. Callers branch via errors.Is.
 var (
-	ErrDeployInvariantEmptyWrite  = errors.New("deploy invariant: source file missing or stale without a recorded file write")
+	ErrDeployInvariantEmptyWrite  = errors.New("deploy invariant: destination regular file missing or content-different without a recorded regular-file write")
 	ErrDeployInvariantStaleMtime  = errors.New("deploy invariant: destination path has stale mtime")
 	ErrDeployInvariantMissingFile = errors.New("deploy invariant: destination path missing")
 	ErrDeployInvariantWrongType   = errors.New("deploy invariant: destination path has wrong type")
 )
 
 // verifyDeployTarget asserts every entry in writtenRel exists at dst with
-// mtime >= startTime. writtenRel paths are joined under dst — for directory
-// targets dst is the destination directory; for file targets dst is its parent
-// dir.
+// mtime >= startTime. expectedSourceType is the source's file type captured
+// immediately before sync; retaining it makes a zero-write verification fail
+// closed if the source disappears or changes type during sync. writtenRel paths
+// are joined under dst — for directory targets dst is the destination
+// directory; for file targets dst is its parent dir.
 //
 // When writtenRel contains no regular-file writes (it may be empty or contain
 // only newly created directories), that is NOT inherently a failure:
@@ -31,9 +33,10 @@ var (
 // the source. Rather than inferring success or corruption from the path count,
 // verify on-disk truth — every regular file in src must be present and
 // content-equal at dst. ErrDeployInvariantEmptyWrite fires only for a genuine
-// silent-sync failure (a source file is missing or differs at dst), the failure
-// GH#214 added this guard for; a satisfied no-op passes (GH#330).
-func verifyDeployTarget(src, dst string, writtenRel []string, startTime time.Time) error {
+// silent-sync failure (a destination regular file is missing or differs from
+// its source), the failure GH#214 added this guard for; a satisfied no-op
+// passes (GH#330).
+func verifyDeployTarget(src, dst string, writtenRel []string, startTime time.Time, expectedSourceType fs.FileMode) error {
 	logger := log.Component(log.ComponentReconcile)
 	logger.Debug().
 		Str(log.FieldPath, src).
@@ -114,6 +117,22 @@ func verifyDeployTarget(src, dst string, writtenRel []string, startTime time.Tim
 	}
 
 	if !wroteRegularFile {
+		if sourceErr != nil {
+			logger.Error().
+				Str(log.FieldPath, src).
+				Str("expected_type", deploySourceTypeName(expectedSourceType)).
+				Msg("Failed to verify deploy target. Reason: source disappeared during sync")
+			return fmt.Errorf("deploy invariant: source path missing after sync: path=%q want=%s", src, deploySourceTypeName(expectedSourceType))
+		}
+		actualSourceType := sourceRoot.Mode().Type()
+		if actualSourceType != expectedSourceType {
+			logger.Error().
+				Str(log.FieldPath, src).
+				Str("expected_type", deploySourceTypeName(expectedSourceType)).
+				Str("actual_type", deploySourceTypeName(actualSourceType)).
+				Msg("Failed to verify deploy target. Reason: source changed type during sync")
+			return fmt.Errorf("deploy invariant: source path changed type after sync: path=%q want=%s got=%s", src, deploySourceTypeName(expectedSourceType), deploySourceTypeName(actualSourceType))
+		}
 		sawFiles, mismatch, err := destinationSatisfiesSource(src, dst)
 		if err != nil {
 			logger.Error().Err(err).
@@ -142,6 +161,19 @@ func verifyDeployTarget(src, dst string, writtenRel []string, startTime time.Tim
 
 	logger.Info().Int("written_path_count", len(writtenRel)).Msg("Successfully verified deploy target invariant")
 	return nil
+}
+
+func deploySourceTypeName(mode fs.FileMode) string {
+	switch {
+	case mode.IsRegular():
+		return "regular-file"
+	case mode.IsDir():
+		return "directory"
+	case mode&fs.ModeSymlink != 0:
+		return "symlink"
+	default:
+		return mode.Type().String()
+	}
 }
 
 // destinationSatisfiesSource reports whether a deploy with no regular-file

@@ -575,7 +575,7 @@ func TestDeployOps_DeployLocal_ContentHash(t *testing.T) {
 		require.NoError(t, deploy.DeployLocal(context.Background(), sourceDir, targetDir, result, nil))
 
 		assert.Equal(t, []string{"empty", relDir}, result.WrittenFiles)
-		require.NoError(t, verifyDeployTarget(sourceDir, targetDir, result.WrittenFiles, startTime))
+		require.NoError(t, verifyDeployTarget(sourceDir, targetDir, result.WrittenFiles, startTime, os.ModeDir))
 		result.PrefixLatest(0, filepath.Join("appdata", "service"))
 		hooks := []PostSyncHook{{Container: "service", Paths: []string{"appdata/service/**"}}}
 		assert.Equal(t, hooks, EvaluatePostSyncHooks(result.WrittenFiles, hooks))
@@ -695,7 +695,7 @@ func TestDeployOps_DeployLocal_ContentHash(t *testing.T) {
 			filepath.Join("config", "empty", "nested"),
 		}, result.WrittenFiles)
 		assert.Equal(t, []string{"config"}, result.DeletedFiles)
-		require.NoError(t, verifyDeployTarget(sourceDir, targetDir, result.WrittenFiles, startTime))
+		require.NoError(t, verifyDeployTarget(sourceDir, targetDir, result.WrittenFiles, startTime, os.ModeDir))
 		hooks := []PostSyncHook{{Container: "service", Paths: []string{"config/**"}}}
 		assert.Equal(t, hooks, EvaluatePostSyncHooks(result.WrittenFiles, hooks))
 	})
@@ -716,7 +716,7 @@ func TestDeployOps_DeployLocal_ContentHash(t *testing.T) {
 		assert.DirExists(t, targetDir)
 		assert.Equal(t, []string{managedTargetRoot}, result.WrittenFiles)
 		assert.Equal(t, []string{managedTargetRoot}, result.DeletedFiles)
-		require.NoError(t, verifyDeployTarget(sourceDir, targetDir, result.WrittenFiles, startTime))
+		require.NoError(t, verifyDeployTarget(sourceDir, targetDir, result.WrittenFiles, startTime, os.ModeDir))
 	})
 
 	t.Run("replaces managed directory contents with file", func(t *testing.T) {

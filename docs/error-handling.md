@@ -79,7 +79,7 @@ file is not SOPS-encrypted: secrets.yml does not contain 'sops' metadata key. En
 ```go
 var ErrComposeDirMissing            = errors.New("staging compose directory does not exist")
 var ErrNoDeclaredServices           = errors.New("no declared services in staging compose directory")
-var ErrDeployInvariantEmptyWrite    = errors.New("deploy invariant: source file missing or stale without a recorded file write")
+var ErrDeployInvariantEmptyWrite    = errors.New("deploy invariant: destination regular file missing or content-different without a recorded regular-file write")
 var ErrDeployInvariantStaleMtime    = errors.New("deploy invariant: destination path has stale mtime")
 var ErrDeployInvariantMissingFile   = errors.New("deploy invariant: destination path missing")
 var ErrDeployInvariantWrongType     = errors.New("deploy invariant: destination path has wrong type")

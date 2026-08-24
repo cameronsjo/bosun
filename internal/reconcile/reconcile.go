@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -2224,11 +2225,21 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 	}
 
 	// Invariants run against writtenRel BEFORE PrefixLatest renames the paths.
-	verifyTarget := func(src, dst string, writtenRel []string) error {
+	captureSourceType := func(src string) (fs.FileMode, error) {
+		if !invariantsActive {
+			return 0, nil
+		}
+		info, err := os.Lstat(src)
+		if err != nil {
+			return 0, fmt.Errorf("stat deploy source before sync %q: %w", src, err)
+		}
+		return info.Mode().Type(), nil
+	}
+	verifyTarget := func(src, dst string, writtenRel []string, expectedSourceType fs.FileMode) error {
 		if !invariantsActive {
 			return nil
 		}
-		return verifyDeployTarget(src, dst, writtenRel, deployStart)
+		return verifyDeployTarget(src, dst, writtenRel, deployStart, expectedSourceType)
 	}
 
 	// Sync discovered targets (excluding compose, which has special handling).
@@ -2241,6 +2252,10 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 		}
 		src := filepath.Join(stagingSubDir, t.RelPath)
 		dst := filepath.Join(appdata, t.TargetPath)
+		expectedSourceType, err := captureSourceType(src)
+		if err != nil {
+			return nil, err
+		}
 		ui.Info("  Syncing %s...", t.RelPath)
 		snapshot := len(result.WrittenFiles)
 		deletedSnapshot := len(result.DeletedFiles)
@@ -2251,7 +2266,7 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 				result.PrefixLatestDeleted(deletedSnapshot, t.RelPath)
 				return result, err
 			}
-			if err := verifyTarget(src, dst, result.WrittenFiles[snapshot:]); err != nil {
+			if err := verifyTarget(src, dst, result.WrittenFiles[snapshot:], expectedSourceType); err != nil {
 				return nil, err
 			}
 			result.PrefixLatest(snapshot, t.RelPath)
@@ -2273,7 +2288,7 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 			}
 			// DeployLocalFile records filepath.Base, so verify against dst's
 			// parent dir and prefix t.RelPath with its dir for hook matching.
-			if err := verifyTarget(src, filepath.Dir(dst), result.WrittenFiles[snapshot:]); err != nil {
+			if err := verifyTarget(src, filepath.Dir(dst), result.WrittenFiles[snapshot:], expectedSourceType); err != nil {
 				return nil, err
 			}
 			result.PrefixLatest(snapshot, filepath.Dir(t.RelPath))
@@ -2288,6 +2303,10 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 	composeStaging := filepath.Join(stagingSubDir, "compose")
 	composeTarget := filepath.Join(appdata, "compose")
 	if hasTarget(targets, "compose") {
+		expectedSourceType, err := captureSourceType(composeStaging)
+		if err != nil {
+			return nil, err
+		}
 		ui.Info("  Syncing compose files...")
 		if !r.config.DryRun {
 			if err := os.MkdirAll(composeTarget, 0755); err != nil {
@@ -2302,7 +2321,7 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 			result.PrefixLatestDeleted(deletedSnapshot, "compose")
 			return result, err
 		}
-		if err := verifyTarget(composeStaging, composeTarget, result.WrittenFiles[snapshot:]); err != nil {
+		if err := verifyTarget(composeStaging, composeTarget, result.WrittenFiles[snapshot:], expectedSourceType); err != nil {
 			return nil, err
 		}
 		result.PrefixLatest(snapshot, "compose")

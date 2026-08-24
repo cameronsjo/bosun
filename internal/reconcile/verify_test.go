@@ -35,7 +35,7 @@ func TestVerifyDeployTarget_HealthyDeploy_Passes(t *testing.T) {
 	touchFile(t, filepath.Join(dst, "a.yml"), "a", time.Now())
 	touchFile(t, filepath.Join(dst, "nested/b.yml"), "b", time.Now())
 
-	err := verifyDeployTarget(src, dst, []string{"a.yml", "nested/b.yml"}, startTime)
+	err := verifyDeployTarget(src, dst, []string{"a.yml", "nested/b.yml"}, startTime, fs.ModeDir)
 	assert.NoError(t, err)
 }
 
@@ -178,7 +178,9 @@ func TestVerifyDeployTarget_ZeroWriteScenarios(t *testing.T) {
 			src, dst := tt.setup(t, t.TempDir())
 			startTime := time.Now().Add(-1 * time.Minute)
 
-			err := verifyDeployTarget(src, dst, nil, startTime)
+			sourceInfo, err := os.Lstat(src)
+			require.NoError(t, err)
+			err = verifyDeployTarget(src, dst, nil, startTime, sourceInfo.Mode().Type())
 			if !tt.wantErr {
 				assert.NoError(t, err, "zero-write sync against a content-matched destination must pass")
 				return
@@ -202,7 +204,7 @@ func TestVerifyDeployTarget_EmptyWrittenFiles_Against_EmptySource_Passes(t *test
 	require.NoError(t, os.MkdirAll(src, 0755))
 	require.NoError(t, os.MkdirAll(dst, 0755))
 
-	err := verifyDeployTarget(src, dst, nil, startTime)
+	err := verifyDeployTarget(src, dst, nil, startTime, fs.ModeDir)
 	assert.NoError(t, err)
 }
 
@@ -218,7 +220,7 @@ func TestVerifyDeployTarget_DirectoryOnlyWriteStillChecksRegularSourceFiles(t *t
 	// config.yml is intentionally absent. A directory-only WrittenFiles entry
 	// must not suppress the zero-regular-file-write content invariant.
 
-	err := verifyDeployTarget(src, dst, []string{"empty"}, startTime)
+	err := verifyDeployTarget(src, dst, []string{"empty"}, startTime, fs.ModeDir)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrDeployInvariantEmptyWrite)
 	assert.Contains(t, err.Error(), "config.yml")
@@ -235,7 +237,7 @@ func TestVerifyDeployTarget_DirectoryOnlyWriteStillRejectsDifferentRegularFile(t
 	require.NoError(t, os.MkdirAll(filepath.Join(dst, "empty"), 0o755))
 	touchFile(t, filepath.Join(dst, "config.yml"), "stale", time.Now())
 
-	err := verifyDeployTarget(src, dst, []string{"empty"}, startTime)
+	err := verifyDeployTarget(src, dst, []string{"empty"}, startTime, fs.ModeDir)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrDeployInvariantEmptyWrite)
 	assert.Contains(t, err.Error(), "config.yml")
@@ -250,7 +252,7 @@ func TestVerifyDeployTarget_WrittenDirectoryRequiresDirectoryDestination(t *test
 	require.NoError(t, os.MkdirAll(filepath.Join(src, "empty"), 0755))
 	touchFile(t, filepath.Join(dst, "empty"), "not a directory", time.Now())
 
-	err := verifyDeployTarget(src, dst, []string{"empty"}, startTime)
+	err := verifyDeployTarget(src, dst, []string{"empty"}, startTime, fs.ModeDir)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrDeployInvariantWrongType)
 	assert.Contains(t, err.Error(), "want=directory")
@@ -300,7 +302,7 @@ func TestVerifyDeployTarget_WrittenDirectoryFailureModes(t *testing.T) {
 			require.NoError(t, os.MkdirAll(dst, 0o755))
 			tt.setup(t, dir, dstPath)
 
-			err := verifyDeployTarget(src, dst, []string{"empty"}, time.Now().Add(-time.Minute))
+			err := verifyDeployTarget(src, dst, []string{"empty"}, time.Now().Add(-time.Minute), fs.ModeDir)
 
 			require.Error(t, err)
 			assert.ErrorIs(t, err, tt.wantErr)
@@ -319,7 +321,7 @@ func TestVerifyDeployTarget_WrittenRegularFileRequiresRegularDestination(t *test
 		touchFile(t, filepath.Join(src, "config.yml"), "expected", time.Now())
 		require.NoError(t, os.MkdirAll(filepath.Join(dst, "config.yml"), 0755))
 
-		err := verifyDeployTarget(src, dst, []string{"config.yml"}, startTime)
+		err := verifyDeployTarget(src, dst, []string{"config.yml"}, startTime, fs.ModeDir)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrDeployInvariantWrongType)
 		assert.Contains(t, err.Error(), "want=regular-file")
@@ -339,7 +341,7 @@ func TestVerifyDeployTarget_WrittenRegularFileRequiresRegularDestination(t *test
 			t.Skipf("symlinks unavailable: %v", err)
 		}
 
-		err := verifyDeployTarget(src, dst, []string{"config.yml"}, startTime)
+		err := verifyDeployTarget(src, dst, []string{"config.yml"}, startTime, fs.ModeDir)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrDeployInvariantWrongType)
 		assert.Contains(t, err.Error(), "want=regular-file")
@@ -353,7 +355,7 @@ func TestVerifyDeployTarget_WrittenSingleFileRequiresRegularSource(t *testing.T)
 		dst := filepath.Join(dir, "dst")
 		touchFile(t, filepath.Join(dst, "config.yml"), "destination", time.Now())
 
-		err := verifyDeployTarget(src, dst, []string{"config.yml"}, time.Now().Add(-time.Minute))
+		err := verifyDeployTarget(src, dst, []string{"config.yml"}, time.Now().Add(-time.Minute), 0)
 
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "stat written source target")
@@ -371,7 +373,7 @@ func TestVerifyDeployTarget_WrittenSingleFileRequiresRegularSource(t *testing.T)
 			t.Skipf("symlinks unavailable: %v", err)
 		}
 
-		err := verifyDeployTarget(src, dst, []string{"config.yml"}, time.Now().Add(-time.Minute))
+		err := verifyDeployTarget(src, dst, []string{"config.yml"}, time.Now().Add(-time.Minute), fs.ModeSymlink)
 
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "unsupported type")
@@ -395,7 +397,7 @@ func TestVerifyDeployTarget_StaleDestination_Errors(t *testing.T) {
 	// Reconcile started "now" (well after the stale destination was touched).
 	startTime := time.Now().Add(-1 * time.Minute)
 
-	err := verifyDeployTarget(src, dst, []string{"config.yml"}, startTime)
+	err := verifyDeployTarget(src, dst, []string{"config.yml"}, startTime, fs.ModeDir)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrDeployInvariantStaleMtime)
 	assert.Contains(t, err.Error(), "config.yml")
@@ -414,7 +416,7 @@ func TestVerifyDeployTarget_MissingDestination_Errors(t *testing.T) {
 	// dst/a.yml intentionally not created.
 
 	startTime := time.Now().Add(-1 * time.Minute)
-	err := verifyDeployTarget(src, dst, []string{"a.yml"}, startTime)
+	err := verifyDeployTarget(src, dst, []string{"a.yml"}, startTime, fs.ModeDir)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrDeployInvariantMissingFile)
 	assert.Contains(t, err.Error(), "a.yml")
@@ -432,7 +434,7 @@ func TestVerifyDeployTarget_MtimeExactlyEqualToStartTime_Passes(t *testing.T) {
 	touchFile(t, filepath.Join(src, "a.yml"), "a", exact)
 	touchFile(t, filepath.Join(dst, "a.yml"), "a", exact)
 
-	err := verifyDeployTarget(src, dst, []string{"a.yml"}, exact)
+	err := verifyDeployTarget(src, dst, []string{"a.yml"}, exact, fs.ModeDir)
 	assert.NoError(t, err, "mtime exactly equal to startTime must pass (Before is strict)")
 }
 
@@ -448,7 +450,7 @@ func TestVerifyDeployTarget_ZeroByteSourceFile_Healthy(t *testing.T) {
 	touchFile(t, filepath.Join(dst, "empty.yml"), "", now)
 
 	startTime := now.Add(-1 * time.Minute)
-	err := verifyDeployTarget(src, dst, []string{"empty.yml"}, startTime)
+	err := verifyDeployTarget(src, dst, []string{"empty.yml"}, startTime, fs.ModeDir)
 	assert.NoError(t, err)
 }
 
@@ -468,7 +470,7 @@ func TestVerifyDeployTarget_SubSecondMtime_Tolerated(t *testing.T) {
 	touchFile(t, filepath.Join(src, "a.yml"), "a", now)
 	touchFile(t, filepath.Join(dst, "a.yml"), "a", mtime)
 
-	err := verifyDeployTarget(src, dst, []string{"a.yml"}, startTime)
+	err := verifyDeployTarget(src, dst, []string{"a.yml"}, startTime, fs.ModeDir)
 	assert.NoError(t, err, "sub-second mtime drift should not trip the invariant")
 }
 
@@ -485,7 +487,7 @@ func TestVerifyDeployTarget_SrcIsRegularFile_HealthyPasses(t *testing.T) {
 	touchFile(t, dstFile, "v1", time.Now())
 
 	startTime := time.Now().Add(-1 * time.Minute)
-	err := verifyDeployTarget(srcFile, dstDir, []string{"single.yml"}, startTime)
+	err := verifyDeployTarget(srcFile, dstDir, []string{"single.yml"}, startTime, 0)
 	assert.NoError(t, err)
 }
 
@@ -676,7 +678,7 @@ func TestVerifyDeployTarget_CompareError_Surfaces(t *testing.T) {
 	require.NoError(t, os.Chmod(filepath.Join(src, "a.yml"), 0000))
 	t.Cleanup(func() { _ = os.Chmod(filepath.Join(src, "a.yml"), 0644) })
 
-	err := verifyDeployTarget(src, dst, nil, time.Now().Add(-time.Minute))
+	err := verifyDeployTarget(src, dst, nil, time.Now().Add(-time.Minute), fs.ModeDir)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrDeployInvariantEmptyWrite, "an I/O comparison failure is not a silent-sync verdict")
 	assert.Contains(t, err.Error(), "compare source")
@@ -756,9 +758,32 @@ func TestDirHasRegularFiles(t *testing.T) {
 
 // Smoke test that the sentinel errors are distinct so callers can branch on them.
 func TestDeployInvariantSentinels_AreDistinct(t *testing.T) {
+	assert.Equal(t,
+		"deploy invariant: destination regular file missing or content-different without a recorded regular-file write",
+		ErrDeployInvariantEmptyWrite.Error(),
+	)
 	assert.False(t, errors.Is(ErrDeployInvariantEmptyWrite, ErrDeployInvariantStaleMtime))
 	assert.False(t, errors.Is(ErrDeployInvariantEmptyWrite, ErrDeployInvariantMissingFile))
 	assert.False(t, errors.Is(ErrDeployInvariantStaleMtime, ErrDeployInvariantMissingFile))
+}
+
+func TestDeploySourceTypeName(t *testing.T) {
+	tests := []struct {
+		name string
+		mode fs.FileMode
+		want string
+	}{
+		{name: "regular file", mode: 0, want: "regular-file"},
+		{name: "directory", mode: fs.ModeDir, want: "directory"},
+		{name: "symlink", mode: fs.ModeSymlink, want: "symlink"},
+		{name: "named pipe", mode: fs.ModeNamedPipe, want: "p---------"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, deploySourceTypeName(tt.mode))
+		})
+	}
 }
 
 // --- Integration tests: invariant wiring through deployLocal ---
@@ -799,6 +824,154 @@ func newDeployLocalDeploy() *DeployOps {
 		ProjectName:     "test",
 		ContentHashSync: true,
 		composeUpFn:     noopComposeUp,
+	}
+}
+
+func TestDeployLocal_ZeroWriteSingleFileSourceTypeChangesFailClosed(t *testing.T) {
+	tests := []struct {
+		name        string
+		mutate      func(t *testing.T, sourceFile string)
+		wantErrText string
+	}{
+		{name: "unchanged regular file is a valid no-op"},
+		{
+			name: "deleted source",
+			mutate: func(t *testing.T, sourceFile string) {
+				require.NoError(t, os.Remove(sourceFile))
+			},
+			wantErrText: "source path missing after sync",
+		},
+		{
+			name: "source replaced by directory",
+			mutate: func(t *testing.T, sourceFile string) {
+				require.NoError(t, os.Remove(sourceFile))
+				require.NoError(t, os.Mkdir(sourceFile, 0o755))
+			},
+			wantErrText: "want=regular-file got=directory",
+		},
+		{
+			name: "source replaced by symlink",
+			mutate: func(t *testing.T, sourceFile string) {
+				require.NoError(t, os.Remove(sourceFile))
+				if err := os.Symlink("outside.yml", sourceFile); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			},
+			wantErrText: "want=regular-file got=symlink",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			stagingDir := filepath.Join(tmpDir, "staging")
+			appdataDir := filepath.Join(tmpDir, "appdata")
+			sourceFile := filepath.Join(stagingDir, "unraid", "appdata", "service.env")
+			targetFile := filepath.Join(appdataDir, "service.env")
+			touchFile(t, sourceFile, "same", time.Now())
+			touchFile(t, targetFile, "same", time.Now())
+
+			deploy := &DeployOps{ContentHashSync: true}
+			deploy.copyFileIfChangedFn = func(_, _ string) (bool, error) {
+				if tt.mutate != nil {
+					tt.mutate(t, sourceFile)
+				}
+				// Avoid a real Docker signal after the successful no-op case.
+				deploy.DryRun = true
+				return false, nil
+			}
+			r := NewReconciler(&Config{
+				StagingDir:       stagingDir,
+				InfraSubDir:      "unraid",
+				LocalAppdataPath: appdataDir,
+			}, WithDeployOps(deploy))
+
+			result, err := r.deployLocal(context.Background(), nil)
+			if tt.wantErrText == "" {
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				assert.Empty(t, result.WrittenFiles)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErrText)
+			assert.NotErrorIs(t, err, ErrDeployInvariantEmptyWrite,
+				"a changed source type is not a destination content mismatch")
+		})
+	}
+}
+
+func TestDeployLocal_ZeroWriteDirectorySourceTypeChangesFailClosed(t *testing.T) {
+	tests := []struct {
+		name        string
+		mutate      func(t *testing.T, sourceDir string)
+		wantErrText string
+	}{
+		{name: "unchanged empty directory is a valid no-op"},
+		{
+			name: "deleted source",
+			mutate: func(t *testing.T, sourceDir string) {
+				require.NoError(t, os.Remove(sourceDir))
+			},
+			wantErrText: "source path missing after sync",
+		},
+		{
+			name: "source replaced by regular file",
+			mutate: func(t *testing.T, sourceDir string) {
+				require.NoError(t, os.Remove(sourceDir))
+				require.NoError(t, os.WriteFile(sourceDir, []byte("replacement"), 0o644))
+			},
+			wantErrText: "want=directory got=regular-file",
+		},
+		{
+			name: "source replaced by symlink",
+			mutate: func(t *testing.T, sourceDir string) {
+				require.NoError(t, os.Remove(sourceDir))
+				if err := os.Symlink("outside", sourceDir); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			},
+			wantErrText: "want=directory got=symlink",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			stagingDir := filepath.Join(tmpDir, "staging")
+			appdataDir := filepath.Join(tmpDir, "appdata")
+			sourceDir := filepath.Join(stagingDir, "unraid", "appdata", "service")
+			targetDir := filepath.Join(appdataDir, "service")
+			require.NoError(t, os.MkdirAll(sourceDir, 0o755))
+			require.NoError(t, os.MkdirAll(targetDir, 0o755))
+
+			deploy := &DeployOps{ContentHashSync: true}
+			deploy.copyDirIfChangedFn = func(_, _ string) ([]string, error) {
+				if tt.mutate != nil {
+					tt.mutate(t, sourceDir)
+				}
+				// Avoid a real Docker signal after the successful no-op case.
+				deploy.DryRun = true
+				return nil, nil
+			}
+			r := NewReconciler(&Config{
+				StagingDir:       stagingDir,
+				InfraSubDir:      "unraid",
+				LocalAppdataPath: appdataDir,
+			}, WithDeployOps(deploy))
+
+			result, err := r.deployLocal(context.Background(), nil)
+			if tt.wantErrText == "" {
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				assert.Empty(t, result.WrittenFiles)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErrText)
+			assert.NotErrorIs(t, err, ErrDeployInvariantEmptyWrite,
+				"a changed source type is not a destination content mismatch")
+		})
 	}
 }
 
