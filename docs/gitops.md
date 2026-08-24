@@ -769,10 +769,10 @@ backups/
 
 ### Backed Up Paths
 
-- `appdata/traefik/`
-- `appdata/authelia/configuration.yml`
-- `appdata/agentgateway/config.yaml`
-- `appdata/gatus/config.yaml`
+Bosun discovers the rendered deploy targets and backs up their current regular
+files at the corresponding appdata destinations. Symlinks and irregular files
+are skipped. If deploy-target discovery itself fails, Bosun attempts a bounded
+full-appdata backup rather than treating the footprint as empty.
 
 ### Remote Backup
 
@@ -784,8 +784,18 @@ After creation, backups are verified:
 
 1. Archive file exists
 2. Archive is non-empty
-3. Archive is valid (can list contents with `tar -tzf`)
-4. Archive contains at least one file
+3. Archive is listable with `tar -tzf`
+4. Archive contains at least one entry
+5. Every member can be decompressed and read to EOF under the caller deadline
+   and the total 10 GiB verification bound
+
+An incomplete managed-footprint enumeration aborts before backup or deploy work,
+even when an older verified backup exists: that older archive may omit a path
+the current deploy would mutate. Other creation, transport, verification, and
+timeout failures may reuse the most recent previously verified backup as a
+rollback anchor; without one, the reconcile aborts before mutation. A
+successfully enumerated empty footprint is not a failure and proceeds without
+an anchor.
 
 ### Retention
 
@@ -844,7 +854,9 @@ cfg.BackupsToKeep = 5  // Default
 
 Some operations log warnings but continue:
 
-- Backup creation failure when an older verified rollback anchor exists
+- Backup creation, transport, verification, or timeout failure when an older
+  verified rollback anchor exists and the current managed footprint was
+  enumerated completely
 - tailscale-gateway sync failure (warns, continues)
 - agentgateway reload failure (warns, continues)
 - Staging cleanup failure when owner-only retention succeeds (warns)

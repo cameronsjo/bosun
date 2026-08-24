@@ -135,11 +135,13 @@ Per-file write decisions are observable at `Debug` level: `CopyDirIfChanged` and
 Before deploying new configs, bosun tars the **deployed config footprint** —
 the files it renders into staging, mapped onto their appdata destinations — into
 a timestamped `backup-YYYYMMDD-HHMMSS/configs.tar.gz` under `BackupDir`, verifies
-it by listing the archive, and prunes to the most recent `BackupsToKeep` **valid**
-backups (default 5). When no managed file exists yet (a fresh host's first deploy),
-no archive is written and no rollback anchor is recorded — a content-free backup is
-never reported as a real one (#360). Retention counts only backups that pass the
-same verification used to pick a rollback anchor: a corrupt or partial dir (missing,
+that the archive lists and that every member reads to EOF under the caller
+deadline and total 10 GiB decompression bound, and prunes to the most recent
+`BackupsToKeep` **valid** backups (default 5). When no managed file exists yet
+(a fresh host's first deploy), no archive is written and no rollback anchor is
+recorded — a content-free backup is never reported as a real one (#360).
+Retention counts only backups that pass the same verification used to pick a
+rollback anchor: a corrupt or partial dir (missing,
 unlistable, or truncated archive) is removed rather than occupying a keep slot and
 evicting an older good backup (#353). Three guards keep the backup from wedging the
 reconcile (GH#319, bosun-5qx):
@@ -161,8 +163,15 @@ reconcile (GH#319, bosun-5qx):
   deadline kills a stuck `tar -tzf` rather than blocking. On timeout the backup
   is treated as a failure.
 
-Backup failures, **including timeouts**, are logged as warnings and never abort
-the deploy (see Failure Alerting below).
+Backup failure handling depends on what Bosun can prove before mutation:
+
+- A successfully enumerated empty footprint is a clean no-op and proceeds
+  without a rollback anchor.
+- An incomplete footprint aborts even when an older verified backup exists,
+  because that archive may omit a path the current deploy would mutate.
+- Other creation, transport, verification, and timeout failures reuse the most
+  recent previously verified backup when one exists; without one, the reconcile
+  aborts before deployment.
 
 ### Failure Alerting
 
@@ -176,7 +185,9 @@ Specific pipeline stages send throttled failure alerts to all configured alert p
 - **Health gate failure (stage 11)**: sends a throttled failure alert; triggers rollback to the managed tree
 - **Health verification failure (stage 13)**: sends a throttled failure alert; counts toward circuit breaker
 - **Lock acquisition (stage 1)**: logged as a warning only, no alert (transient condition)
-- **Backup, cleanup, post-sync hooks, and state save**: logged without a dedicated failure alert; backup or cleanup still aborts when rollback safety or staging confidentiality cannot be established
+- **Backup admission failure**: sends a throttled failure alert when the managed footprint is incomplete or no verified rollback anchor remains
+- **Backup retention cleanup, post-sync hooks, and state save**: logged without a dedicated failure alert
+- **Staging cleanup**: logged without a dedicated failure alert; aborts only when owner-only retention or deletion cannot establish staging confidentiality
 
 Success and recovery alerts are controlled by the `on_success` flag (default: `false`). When enabled, a success alert is sent after a successful deployment, and a recovery alert is sent when a deploy succeeds after prior failures.
 

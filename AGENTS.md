@@ -355,7 +355,7 @@ do not gain legacy aliases.
 | `BOSUN_DEPLOY_SYNC_PATHS` | daemon, reconcile | JSON array of glob patterns for deploy sync target allowlist (overrides config file) |
 | `BOSUN_DEPLOY_SYNC_EXCLUDE` | daemon, reconcile | JSON array of glob patterns for deploy sync target blocklist (overrides config file) |
 | `BOSUN_COMPOSE_UP_TIMEOUT` | daemon, reconcile | Timeout for `docker compose up` (default: `10m`; accepts Go durations or plain seconds) |
-| `BOSUN_BACKUP_TIMEOUT` | daemon, reconcile | Timeout bounding pre-deploy backup creation + verification (default: `5m`; accepts Go durations or plain seconds). On timeout the backup is treated as a failure but the deploy continues |
+| `BOSUN_BACKUP_TIMEOUT` | daemon, reconcile | Timeout bounding pre-deploy backup creation + verification (default: `5m`; accepts Go durations or plain seconds). A timeout may fall back to an older verified rollback anchor; without one, the reconcile aborts before deployment |
 | `BOSUN_HEALTH_CHECK_TIMEOUT` | daemon, reconcile | Post-deploy health verification timeout (default: `60s`; set to `0` to disable) |
 | `BOSUN_HEALTH_CHECK_INTERVAL` | daemon, reconcile | Poll interval for health verification (default: `5s`) |
 | `BOSUN_RESTART_BREAKER` | daemon, reconcile | Enable restart circuit breaker (default: `true`) |
