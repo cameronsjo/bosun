@@ -178,7 +178,7 @@ The lock SHALL always be released via defer, even on panic.
 #### Scenario: Required backup failure aborts before deploy
 
 - **WHEN** a required backup (existing config paths present) cannot be created or verified, including on timeout
-- **THEN** stages 8 onward (deploy, invariant check, compose up, and later stages) are skipped
+- **THEN** stages 8–15 (deploy through state recording) are skipped
 - **AND** no target file is written and the existing state is left intact
 - **AND** the lock is released
 
