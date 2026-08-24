@@ -1992,13 +1992,10 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 		paths, ferr = backupFilesFromTargets(stagingSubDir, targets, appdataBase)
 		if ferr != nil {
 			// An empty list is safe only when enumeration completed successfully.
-			// If the walk failed before discovering any path, BackupRemote's empty
-			// fast path would otherwise misclassify an unknown footprint as a fresh
-			// host and let the deploy proceed without a rollback anchor.
-			if len(paths) == 0 {
-				return fmt.Errorf("failed to enumerate backup footprint: %w", ferr)
-			}
-			logger.Warn().Err(ferr).Msg("Failed to enumerate full backup footprint; backing up the files discovered so far")
+			// A partial list is not safer: backing it up would record an incomplete
+			// archive as this run's fresh rollback anchor. Fail before any backup or
+			// deploy work whenever the managed footprint is unknown.
+			return fmt.Errorf("failed to enumerate backup footprint: %w", ferr)
 		}
 	}
 

@@ -150,7 +150,8 @@ func filterExclude(targets []DeployTarget, patterns []string) []DeployTarget {
 // filter out; there is nothing to back up for them.
 //
 // Returns the destination file paths and the first walk error encountered.
-// Callers treat the error as non-fatal and back up whatever was enumerated.
+// Callers must fail closed on any error: a partial list cannot provide a
+// complete rollback anchor for the managed footprint.
 func backupFilesFromTargets(stagingSubDir string, targets []DeployTarget, appdataBase string) ([]string, error) {
 	var (
 		files    []string
