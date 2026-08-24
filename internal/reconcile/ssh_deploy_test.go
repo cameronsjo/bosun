@@ -209,7 +209,7 @@ func TestDeployRemote_CancelledContextCleansStagingTempDir(t *testing.T) {
 		"done\n" +
 		"shift\n" +
 		"case \"$*\" in\n" +
-		"  *'cat > '*'.deploy-tmp-'*'.tar'*) : > \"$SSH_EXTRACT_STARTED\"; exec /bin/sleep 30 ;;\n" +
+		"  *'cat > '*'.deploy-tmp-'*'/archive.tar'*) : > \"$SSH_EXTRACT_STARTED\"; exec /bin/sleep 30 ;;\n" +
 		"esac\n" +
 		"exec /bin/sh -c \"$*\"\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte(shim), 0o755))

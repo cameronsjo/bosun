@@ -2405,7 +2405,7 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (
 			continue
 		}
 		src := filepath.Join(stagingSubDir, t.RelPath)
-		dst := filepath.Join(appdata, t.TargetPath)
+		dst := path.Join(appdata, filepath.ToSlash(t.TargetPath))
 		ui.Info("  Syncing %s...", t.RelPath)
 		if t.IsDir {
 			if err := r.deploy.DeployRemote(ctx, src, host, dst); err != nil {
@@ -2415,7 +2415,7 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (
 				return nil, err
 			}
 		} else {
-			targetDir := filepath.Dir(dst)
+			targetDir := path.Dir(dst)
 			if err := r.deploy.EnsureRemoteDir(ctx, host, targetDir); err != nil {
 				return nil, fmt.Errorf("ensure remote deploy directory %q: %w", targetDir, err)
 			}
@@ -2430,7 +2430,7 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (
 	if hasTarget(targets, "compose") {
 		ui.Info("  Syncing compose files...")
 		composeStaging := filepath.Join(stagingSubDir, "compose")
-		composeTarget := filepath.Join(appdata, "compose")
+		composeTarget := path.Join(appdata, "compose")
 		if err := r.deploy.EnsureRemoteDir(ctx, host, composeTarget); err != nil {
 			return nil, fmt.Errorf("ensure remote compose directory %q: %w", composeTarget, err)
 		}
@@ -2449,7 +2449,7 @@ func (r *Reconciler) deployRemote(ctx context.Context, secrets map[string]any) (
 		ui.Info("  Syncing core compose to Compose Manager...")
 		if err := r.deploy.EnsureRemoteDir(ctx, host, composeManagerDir); err != nil {
 			ui.Warning("Compose Manager sync skipped: could not create %s: %v", composeManagerDir, err)
-		} else if err := r.deploy.DeployRemoteFile(ctx, filepath.Join(stagingSubDir, "compose", "core.yml"), host, filepath.Join(composeManagerDir, "docker-compose.yml")); err != nil {
+		} else if err := r.deploy.DeployRemoteFile(ctx, filepath.Join(stagingSubDir, "compose", "core.yml"), host, path.Join(composeManagerDir, "docker-compose.yml")); err != nil {
 			ui.Warning("Compose Manager sync failed: %v", err)
 		}
 	}

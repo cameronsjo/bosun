@@ -3,22 +3,25 @@ package reconcile
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/cameronsjo/bosun/internal/fileutil"
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/telemetry"
 	"github.com/kballard/go-shellquote"
@@ -36,6 +39,9 @@ const (
 	SSHTimeout           = 30 * time.Second
 	RemoteDeployTimeout  = 5 * time.Minute
 	RemoteCleanupTimeout = 10 * time.Second
+	commandDiagnosticMax = 4096
+	commandOutputByteMax = commandDiagnosticMax * 4
+	remoteStageIDBytes   = 16
 )
 
 // ErrTransferIntegrity marks a remote tar-over-SSH transfer whose staged tree
@@ -64,7 +70,7 @@ type transferEntry struct {
 // kept as strings rather than serialized into a line-oriented checksum format,
 // so newlines, backslashes, and other control characters remain unambiguous.
 // Hard-link relationships are recorded in addition to each file's content hash.
-func buildTransferManifest(root string) ([]transferEntry, error) {
+func buildTransferManifest(ctx context.Context, root string) ([]transferEntry, error) {
 	var entries []transferEntry
 	type regularEntry struct {
 		path string
@@ -72,6 +78,9 @@ func buildTransferManifest(root string) ([]transferEntry, error) {
 	}
 	var regulars []regularEntry
 	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			return err
 		}
@@ -105,7 +114,7 @@ func buildTransferManifest(root string) ([]transferEntry, error) {
 			}
 			if err == nil {
 				var sum [32]byte
-				sum, err = fileutil.FileHash(path)
+				sum, err = hashFileWithContext(ctx, path)
 				entry.SHA256 = hex.EncodeToString(sum[:])
 			}
 		default:
@@ -122,6 +131,41 @@ func buildTransferManifest(root string) ([]transferEntry, error) {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	return entries, nil
+}
+
+func hashFileWithContext(ctx context.Context, filePath string) ([sha256.Size]byte, error) {
+	var sum [sha256.Size]byte
+	if err := ctx.Err(); err != nil {
+		return sum, err
+	}
+	f, err := os.Open(filePath)
+	if err != nil {
+		return sum, err
+	}
+	defer func() { _ = f.Close() }()
+
+	h := sha256.New()
+	buf := make([]byte, 128*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return sum, err
+		}
+		n, readErr := f.Read(buf)
+		if n > 0 {
+			_, _ = h.Write(buf[:n])
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return sum, readErr
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return sum, err
+	}
+	copy(sum[:], h.Sum(nil))
+	return sum, nil
 }
 
 func manifestsEqual(want, got []transferEntry) bool {
@@ -153,19 +197,37 @@ func buildRemoteVerifyScript(stagedDir string, manifest []transferEntry) string 
 	// keeps glob metacharacters in a configured staging path from being treated
 	// as a pattern and falsely rejecting an otherwise complete tree.
 	fmt.Fprintf(&script, "count=$(find \"$root\" -exec printf x \\; | wc -c | tr -d '[:space:]')\n[ \"$count\" = %s ]\n", strconv.Itoa(len(manifest)+1))
+	hardlinkCounts := make(map[string]int)
 	for _, entry := range manifest {
-		path := shellquote.Join(filepath.Join(stagedDir, filepath.FromSlash(entry.Path)))
+		if entry.Kind != 'f' {
+			continue
+		}
+		canonical := entry.HardlinkTo
+		if canonical == "" {
+			canonical = entry.Path
+		}
+		hardlinkCounts[canonical]++
+	}
+	for _, entry := range manifest {
+		entryPath := path.Join(stagedDir, entry.Path)
+		quotedPath := shellquote.Join(entryPath)
 		switch entry.Kind {
 		case 'd':
-			fmt.Fprintf(&script, "[ -d %s ] && [ ! -L %s ]\n", path, path)
+			fmt.Fprintf(&script, "[ -d %s ] && [ ! -L %s ]\n", quotedPath, quotedPath)
 		case 'l':
 			linkSum := sha256.Sum256([]byte(entry.LinkTarget + "\n"))
-			fmt.Fprintf(&script, "[ -L %s ]\nactual=$(readlink %s | sha256sum); actual=${actual%%%% *}; [ \"$actual\" = %s ]\n", path, path, shellquote.Join(hex.EncodeToString(linkSum[:])))
+			fmt.Fprintf(&script, "[ -L %s ]\nactual=$(readlink %s | sha256sum); actual=${actual%%%% *}; [ \"$actual\" = %s ]\n", quotedPath, quotedPath, shellquote.Join(hex.EncodeToString(linkSum[:])))
 		case 'f':
-			fmt.Fprintf(&script, "[ -f %s ] && [ ! -L %s ]\nactual=$(sha256sum < %s); actual=${actual%%%% *}; [ \"$actual\" = %s ]\n", path, path, path, shellquote.Join(entry.SHA256))
+			fmt.Fprintf(&script, "[ -f %s ] && [ ! -L %s ]\nactual=$(sha256sum < %s); actual=${actual%%%% *}; [ \"$actual\" = %s ]\n", quotedPath, quotedPath, quotedPath, shellquote.Join(entry.SHA256))
 			if entry.HardlinkTo != "" {
-				other := shellquote.Join(filepath.Join(stagedDir, filepath.FromSlash(entry.HardlinkTo)))
-				fmt.Fprintf(&script, "[ %s -ef %s ]\n", path, other)
+				other := shellquote.Join(path.Join(stagedDir, entry.HardlinkTo))
+				fmt.Fprintf(&script, "[ %s -ef %s ]\n", quotedPath, other)
+			} else {
+				// Exact link counts cover the negative relationships without an
+				// O(files^2) verifier: independently stored equal-content files may
+				// not be silently coalesced, and expected groups may not be merged.
+				expectedLinks := hardlinkCounts[entry.Path]
+				fmt.Fprintf(&script, "links=$(find %s -prune -links %s -exec printf x \\;); [ \"$links\" = x ]\n", quotedPath, strconv.Itoa(expectedLinks))
 			}
 		}
 	}
@@ -175,7 +237,7 @@ func buildRemoteVerifyScript(stagedDir string, manifest []transferEntry) string 
 func (d *DeployOps) verifyRemoteTransfer(ctx context.Context, host, stagedDir string, manifest []transferEntry) error {
 	cmd := sshExecCommand(ctx, host, shellquote.Join("sh", "-s"))
 	cmd.Stdin = strings.NewReader(buildRemoteVerifyScript(stagedDir, manifest))
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr boundedCommandBuffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -191,7 +253,7 @@ var newLocalArchiveCommand = func(ctx context.Context, sourceDir, archivePath st
 }
 
 func createVerifiedTransferArchive(ctx context.Context, sourceDir string) (archivePath, archiveSHA string, manifest []transferEntry, cleanup func(), err error) {
-	want, err := buildTransferManifest(sourceDir)
+	want, err := buildTransferManifest(ctx, sourceDir)
 	if err != nil {
 		return "", "", nil, func() {}, fmt.Errorf("snapshot transfer source: %w", err)
 	}
@@ -209,11 +271,11 @@ func createVerifiedTransferArchive(ctx context.Context, sourceDir string) (archi
 		return "", "", nil, func() {}, fmt.Errorf("close transfer archive: %w", err)
 	}
 	cmd := newLocalArchiveCommand(ctx, sourceDir, archivePath)
-	var stderr bytes.Buffer
+	var stderr boundedCommandBuffer
 	cmd.Stderr = &stderr
 	if err = cmd.Run(); err != nil {
 		cleanup()
-		return "", "", nil, func() {}, fmt.Errorf("create transfer archive: %w: %s", err, stderr.String())
+		return "", "", nil, func() {}, fmt.Errorf("create transfer archive: %w: %s", err, joinNonEmpty(stderr.String()))
 	}
 
 	scratch, err := os.MkdirTemp("", "bosun-deploy-verify-*")
@@ -226,13 +288,13 @@ func createVerifiedTransferArchive(ctx context.Context, sourceDir string) (archi
 		_ = os.RemoveAll(scratch)
 	}()
 	extract := exec.CommandContext(ctx, "tar", "-C", scratch, "-xf", archivePath)
-	var extractStderr bytes.Buffer
+	var extractStderr boundedCommandBuffer
 	extract.Stderr = &extractStderr
 	if err = extract.Run(); err != nil {
 		cleanup()
-		return "", "", nil, func() {}, fmt.Errorf("verify transfer archive extraction: %w: %s", err, extractStderr.String())
+		return "", "", nil, func() {}, fmt.Errorf("verify transfer archive extraction: %w: %s", err, joinNonEmpty(extractStderr.String()))
 	}
-	got, err := buildTransferManifest(scratch)
+	got, err := buildTransferManifest(ctx, scratch)
 	if err != nil || !manifestsEqual(want, got) {
 		cleanup()
 		if err != nil {
@@ -240,7 +302,7 @@ func createVerifiedTransferArchive(ctx context.Context, sourceDir string) (archi
 		}
 		return "", "", nil, func() {}, fmt.Errorf("%w: local archive does not match source snapshot", ErrTransferIntegrity)
 	}
-	sum, err := fileutil.FileHash(archivePath)
+	sum, err := hashFileWithContext(ctx, archivePath)
 	if err != nil {
 		cleanup()
 		return "", "", nil, func() {}, fmt.Errorf("hash transfer archive: %w", err)
@@ -254,10 +316,71 @@ func joinNonEmpty(parts ...string) string {
 	kept := make([]string, 0, len(parts))
 	for _, p := range parts {
 		if p = strings.TrimSpace(p); p != "" {
+			p = strings.Map(func(r rune) rune {
+				if unicode.IsControl(r) {
+					return '?'
+				}
+				return r
+			}, p)
 			kept = append(kept, p)
 		}
 	}
-	return strings.Join(kept, " ")
+	joined := []rune(strings.Join(kept, " "))
+	if len(joined) <= commandDiagnosticMax {
+		return string(joined)
+	}
+	return string(joined[:commandDiagnosticMax-1]) + "…"
+}
+
+// boundedCommandBuffer keeps a remote or local tool from making Bosun retain
+// unbounded attacker-controlled diagnostics. Write reports the full input as
+// consumed so os/exec does not interpret truncation as a command I/O failure.
+type boundedCommandBuffer struct {
+	data      []byte
+	truncated bool
+}
+
+func (b *boundedCommandBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	remaining := commandOutputByteMax - len(b.data)
+	if remaining > 0 {
+		if remaining > len(p) {
+			remaining = len(p)
+		}
+		b.data = append(b.data, p[:remaining]...)
+	}
+	if remaining < len(p) {
+		b.truncated = true
+	}
+	return n, nil
+}
+
+func (b *boundedCommandBuffer) String() string {
+	if b.truncated {
+		return string(b.data) + "…"
+	}
+	return string(b.data)
+}
+
+// newRemoteStageID makes each remote staging namespace unpredictable. It is a
+// seam so a collision can be exercised without guessing production randomness.
+var newRemoteStageID = func() (string, error) {
+	var raw [remoteStageIDBytes]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+func buildRemoteStageCommand(tmpRoot, stagedDir string) string {
+	root := shellquote.Join(tmpRoot)
+	staged := shellquote.Join(stagedDir)
+	// The first mkdir is deliberately exclusive (no -p). A collision must not
+	// reuse or delete an existing tree: tar extraction is allowed only inside a
+	// private namespace this attempt proved it created.
+	return "set -eu; umask 077; " +
+		"mkdir " + root + " || exit $?; " +
+		"mkdir " + staged + " || { status=$?; rm -rf " + root + "; exit $status; }"
 }
 
 // hostKeyOptions returns the ssh/scp `-o` flags that enforce the configured
@@ -669,7 +792,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 	defer deploySpan.End()
 
 	// Ensure target directory parent exists on remote
-	targetParent := filepath.Dir(targetDir)
+	targetParent := path.Dir(targetDir)
 	if err := d.EnsureRemoteDir(ctx, targetHost, targetParent); err != nil {
 		err = fmt.Errorf("ensure remote parent dir: %w", err)
 		telemetry.SpanError(deploySpan, err)
@@ -687,18 +810,20 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 	defer cleanupArchive()
 
 	deployErr := retryWithBackoff(ctx, DefaultMaxRetries, func() error {
-		// A FRESH staging dir per attempt (#342): reusing one temp dir across
-		// retries would extract the new archive over a partial leftover when
-		// the prior attempt's cleanup failed — files deleted from the source
-		// could survive and be promoted to the live target.
-		tmpDir := filepath.Join(targetParent, fmt.Sprintf(".deploy-tmp-%d", time.Now().UnixNano()))
-		// Keep the received archive beside, rather than inside, the extracted
-		// tree so a legitimate source entry named .bosun-transfer.tar cannot
-		// collide with or be removed as transport metadata.
-		remoteArchive := tmpDir + ".tar"
+		// A FRESH, exclusively-created staging root per attempt (#342): reusing
+		// a pre-existing tree lets unverified modes, ownership, ACLs, or xattrs
+		// survive extraction even when the content manifest passes.
+		stageID, stageIDErr := newRemoteStageID()
+		if stageIDErr != nil {
+			return fmt.Errorf("generate remote staging identifier: %w", stageIDErr)
+		}
+		tmpRoot := path.Join(targetParent, ".deploy-tmp-"+stageID)
+		tmpDir := path.Join(tmpRoot, "tree")
+		// Transport metadata is isolated from the extracted tree, so every
+		// possible source filename remains legitimate and countable.
+		remoteArchive := path.Join(tmpRoot, "archive.tar")
 		cleanupTmp := func(reason string) {
-			cleanupRemotePath(ctx, targetHost, remoteArchive, reason+"_archive", false)
-			cleanupRemotePath(ctx, targetHost, tmpDir, reason, true)
+			cleanupRemotePath(ctx, targetHost, tmpRoot, reason, true)
 		}
 		// Heal any interrupted swap from a prior run before staging this one:
 		// promote the newest retained tree when the target is missing, then
@@ -710,10 +835,10 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			Str(log.FieldPath, targetDir).
 			Msg("Preparing to recover any interrupted swap from prior deploy")
 		recoverCmd := sshExecCommand(ctx, targetHost, buildRemoteRecoverCommand(targetDir))
-		var recoverStderr bytes.Buffer
+		var recoverStderr boundedCommandBuffer
 		recoverCmd.Stderr = &recoverStderr
 		if err := recoverCmd.Run(); err != nil {
-			return fmt.Errorf("recover interrupted swap, expected target %s present or a promotable retained copy: %w: %s", targetDir, err, recoverStderr.String())
+			return fmt.Errorf("recover interrupted swap, expected target %s present or a promotable retained copy: %w: %s", targetDir, err, joinNonEmpty(recoverStderr.String()))
 		}
 
 		// Create temp directory on remote
@@ -722,15 +847,15 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			Str(log.FieldTarget, targetHost).
 			Str(log.FieldPath, tmpDir).
 			Msg("Preparing to create staging directory on remote")
-		mkdirCmd := sshExecCommand(ctx, targetHost, shellquote.Join("mkdir", "-p", tmpDir))
-		var mkdirStderr bytes.Buffer
+		mkdirCmd := sshExecCommand(ctx, targetHost, buildRemoteStageCommand(tmpRoot, tmpDir))
+		var mkdirStderr boundedCommandBuffer
 		mkdirCmd.Stderr = &mkdirStderr
 		if err := mkdirCmd.Run(); err != nil {
-			return fmt.Errorf("create remote temp dir: %w: %s", err, mkdirStderr.String())
+			return fmt.Errorf("create remote temp dir: %w: %s", err, joinNonEmpty(mkdirStderr.String()))
 		}
 
 		// Stream the already-verified archive. The remote stores it inside the
-		// disposable staging dir, verifies its transport hash, extracts, and
+		// disposable private staging root, verifies its transport hash, extracts, and
 		// removes it. A missing sha256sum is an integrity failure, never an
 		// implicit opt-out.
 		logger.Debug().
@@ -740,7 +865,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			Str("dest", tmpDir).
 			Msg("Preparing to tar and extract staging directory to remote")
 		remoteCmd := fmt.Sprintf(
-			"set -eu; command -v sha256sum >/dev/null 2>&1 || { echo 'sha256sum is required for transfer verification' >&2; exit 1; }; cat > %s; actual=$(sha256sum < %s); actual=${actual%%%% *}; [ \"$actual\" = %s ]; tar -C %s -xf %s; rm -f %s",
+			"set -eu; umask 077; command -v sha256sum >/dev/null 2>&1 || { echo 'sha256sum is required for transfer verification' >&2; exit 1; }; cat > %s; actual=$(sha256sum < %s); actual=${actual%%%% *}; [ \"$actual\" = %s ]; tar -C %s -xf %s; rm -f %s",
 			shellquote.Join(remoteArchive), shellquote.Join(remoteArchive), shellquote.Join(archiveSHA),
 			shellquote.Join(tmpDir), shellquote.Join(remoteArchive), shellquote.Join(remoteArchive),
 		)
@@ -752,7 +877,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 		}
 		sshCmd.Stdin = archive
 
-		var sshStderr bytes.Buffer
+		var sshStderr boundedCommandBuffer
 		sshCmd.Stderr = &sshStderr
 
 		if err := sshCmd.Start(); err != nil {
@@ -760,7 +885,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			// failure remains the actionable deploy error.
 			_ = archive.Close()
 			cleanupTmp("ssh_start_failed")
-			return fmt.Errorf("start ssh: %w: %s", err, sshStderr.String())
+			return fmt.Errorf("start ssh: %w: %s", err, joinNonEmpty(sshStderr.String()))
 		}
 
 		sshErr := sshCmd.Wait()
@@ -771,7 +896,7 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			if ctx.Err() == context.DeadlineExceeded {
 				return fmt.Errorf("ssh timed out after %v", RemoteDeployTimeout)
 			}
-			return fmt.Errorf("%w: ssh extract failed: %v: %s", ErrTransferIntegrity, sshErr, sshStderr.String())
+			return fmt.Errorf("%w: ssh extract failed: %v: %s", ErrTransferIntegrity, sshErr, joinNonEmpty(sshStderr.String()))
 		}
 		if closeErr != nil {
 			cleanupTmp("archive_close_failed")
@@ -805,15 +930,18 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			Bool("under_fuse", underFUSE).
 			Msg("Preparing to swap staged directory into live target (retain-old-until-new pattern)")
 		swapCmd := sshExecCommand(ctx, targetHost, buildRemoteSwapCommand(targetDir, tmpDir, oldDir, underFUSE))
-		var swapStderr bytes.Buffer
+		var swapStderr boundedCommandBuffer
 		swapCmd.Stderr = &swapStderr
 
 		if err := swapCmd.Run(); err != nil {
 			// The swap's rollback branch already restored the old target (or
 			// the next attempt's recovery will); the staging dir is disposable.
 			cleanupTmp("swap_failed")
-			return fmt.Errorf("swap staged tree into %s failed, old tree retained or restored: %w: %s", targetDir, err, swapStderr.String())
+			return fmt.Errorf("swap staged tree into %s failed, old tree retained or restored: %w: %s", targetDir, err, joinNonEmpty(swapStderr.String()))
 		}
+		// The tree moved out of tmpRoot; remove the now-empty private transport
+		// namespace without allowing cleanup trouble to replace a successful swap.
+		cleanupRemotePath(ctx, targetHost, tmpRoot, "promoted", true)
 		logger.Info().
 			Str(log.FieldOperation, "swap_deploy").
 			Str(log.FieldTarget, targetHost).

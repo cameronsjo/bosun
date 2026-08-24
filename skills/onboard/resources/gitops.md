@@ -39,8 +39,9 @@ Every reconciliation follows this 16-stage sequence:
  8. Deploy files (local copy or tar-over-SSH). Remote deploys use a
     locally round-tripped archive, verify its SHA-256 after transport,
     and verify the extracted entry set, types, contents, symlink targets,
-    and hard links before promotion. Integrity failure preserves the live
-    target. `sha256sum` is required on the remote host.
+    and hard-link topology before promotion. Integrity failure preserves the
+    live target. The remote host needs POSIX `sh` plus `tar`, `find`, `wc`,
+    `tr`, `readlink`, and `sha256sum`.
     Successful remote deploys then use a
     retain-old rename-swap (move live target aside, move new tree in,
     remove the retained copy on success; restore it on failure) so an
@@ -579,7 +580,9 @@ Deploy to a remote host via SSH (tar-over-SSH for efficient transfer).
 bosun reconcile -r user@host
 ```
 
-Requires SSH key authentication and `sha256sum` on the remote host. Test connectivity first: `ssh user@host exit`.
+Requires SSH key authentication and POSIX `sh` plus `tar`, `find`, `wc`, `tr`,
+`readlink`, and `sha256sum` on the remote host. Test connectivity first:
+`ssh user@host exit`.
 
 Bosun creates the tar archive locally, round-trips it against a source snapshot,
 then checks the archive SHA-256 and the complete extracted tree on the remote
@@ -587,6 +590,10 @@ before promotion. Empty trees are valid, while a missing, extra, changed, or
 wrong-type entry aborts the deploy and leaves the existing target untouched.
 Filenames with spaces, quotes, backslashes, newlines, and other control
 characters are verified without using a line-oriented filename manifest.
+The portable integrity manifest covers paths, entry types, regular-file bytes,
+symlink targets, and hard-link topology. Tar remains responsible for preserving
+permission bits and ownership; Bosun does not separately compare ownership,
+ACLs, or extended attributes across hosts.
 
 The staged tree is promoted with a retain-old rename-swap: the live target is moved aside (never deleted first), the new tree is moved in, and the retained copy is removed only on success — so an interrupted deploy leaves the old or the new tree, never an empty target. A missing target left by a prior interrupted deploy is self-healed on the next run from the newest retained copy.
 

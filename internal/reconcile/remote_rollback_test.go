@@ -237,7 +237,7 @@ func TestRollbackRemoteCompose(t *testing.T) {
 			"done\n" +
 			"shift\n" +
 			"case \"$*\" in\n" +
-			"  *'cat > '*'.deploy-tmp-'*'.tar'*)\n" +
+			"  *'cat > '*'.deploy-tmp-'*'/archive.tar'*)\n" +
 			"    /bin/sh -c \"$*\"\n" +
 			"    tmp=$(echo \"$*\" | sed 's/.*-C \\([^ ]*\\) -xf.*/\\1/')\n" +
 			"    find \"$tmp\" -type f -exec sh -c 'echo tampered >> \"$1\"' _ {} \\;\n" +
