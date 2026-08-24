@@ -23,8 +23,10 @@ func TestBuildTransferManifest_LargeUniqueTreeUsesIdentityIndex(t *testing.T) {
 	}
 
 	hashCalls := 0
-	fallbackCalls := 0
+	fallbackScans := 0
+	comparisons := 0
 	ops := defaultTransferManifestOps()
+	ops.observeFallbackScan = func() { fallbackScans++ }
 	originalHash := ops.hashFile
 	ops.hashFile = func(ctx context.Context, path string) ([sha256.Size]byte, error) {
 		hashCalls++
@@ -32,7 +34,7 @@ func TestBuildTransferManifest_LargeUniqueTreeUsesIdentityIndex(t *testing.T) {
 	}
 	originalSameFile := ops.sameFile
 	ops.sameFile = func(a, b fs.FileInfo) bool {
-		fallbackCalls++
+		comparisons++
 		return originalSameFile(a, b)
 	}
 
@@ -41,7 +43,8 @@ func TestBuildTransferManifest_LargeUniqueTreeUsesIdentityIndex(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, manifest, fileCount)
 	assert.Equal(t, fileCount, hashCalls)
-	assert.Zero(t, fallbackCalls, "stable Unix identities keep unique-file discovery O(N)")
+	assert.Zero(t, fallbackScans, "an all-indexed unique tree never enters the fallback scan")
+	assert.Zero(t, comparisons)
 }
 
 func TestBuildTransferManifest_HardlinkHeavyTreeHashesInodeOnce(t *testing.T) {
@@ -54,8 +57,10 @@ func TestBuildTransferManifest_HardlinkHeavyTreeHashesInodeOnce(t *testing.T) {
 	}
 
 	hashCalls := 0
-	fallbackCalls := 0
+	fallbackScans := 0
+	comparisons := 0
 	ops := defaultTransferManifestOps()
+	ops.observeFallbackScan = func() { fallbackScans++ }
 	originalHash := ops.hashFile
 	ops.hashFile = func(ctx context.Context, path string) ([sha256.Size]byte, error) {
 		hashCalls++
@@ -63,7 +68,7 @@ func TestBuildTransferManifest_HardlinkHeavyTreeHashesInodeOnce(t *testing.T) {
 	}
 	originalSameFile := ops.sameFile
 	ops.sameFile = func(a, b fs.FileInfo) bool {
-		fallbackCalls++
+		comparisons++
 		return originalSameFile(a, b)
 	}
 
@@ -72,7 +77,8 @@ func TestBuildTransferManifest_HardlinkHeavyTreeHashesInodeOnce(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, manifest, linkCount)
 	assert.Equal(t, 1, hashCalls, "one inode is hashed once regardless of link count")
-	assert.Zero(t, fallbackCalls, "stable Unix identities keep hardlink discovery O(N)")
+	assert.Zero(t, fallbackScans, "indexed hardlinks never enter the fallback scan")
+	assert.Zero(t, comparisons)
 	for i, entry := range manifest {
 		assert.Equal(t, manifest[0].SHA256, entry.SHA256)
 		if i == 0 {
@@ -81,6 +87,49 @@ func TestBuildTransferManifest_HardlinkHeavyTreeHashesInodeOnce(t *testing.T) {
 			assert.Equal(t, manifest[0].Path, entry.HardlinkTo)
 		}
 	}
+}
+
+func TestBuildTransferManifest_MixedIdentityFallbackIndexesCanonicalAndStopsScanning(t *testing.T) {
+	root := t.TempDir()
+	canonical := filepath.Join(root, "file-0000")
+	linked := filepath.Join(root, "file-0001")
+	require.NoError(t, os.WriteFile(canonical, []byte("shared content"), 0o644))
+	require.NoError(t, os.Link(canonical, linked))
+	writeMarker(t, root, "file-0002", "unique content")
+
+	hashCalls := 0
+	fallbackScans := 0
+	comparisons := 0
+	ops := defaultTransferManifestOps()
+	ops.observeFallbackScan = func() { fallbackScans++ }
+	ops.identity = func(path string, info fs.FileInfo) (transferFileIdentity, bool) {
+		identity, known := platformTransferFileIdentity(path, info)
+		if filepath.Base(path) == "file-0000" {
+			return transferFileIdentity{}, false
+		}
+		return identity, known
+	}
+	originalHash := ops.hashFile
+	ops.hashFile = func(ctx context.Context, path string) ([sha256.Size]byte, error) {
+		hashCalls++
+		return originalHash(ctx, path)
+	}
+	originalSameFile := ops.sameFile
+	ops.sameFile = func(a, b fs.FileInfo) bool {
+		comparisons++
+		return originalSameFile(a, b)
+	}
+
+	manifest, err := buildTransferManifestWithOps(context.Background(), root, ops)
+
+	require.NoError(t, err)
+	require.Len(t, manifest, 3)
+	assert.Equal(t, 2, hashCalls, "the recovered hardlink identity reuses its canonical hash")
+	assert.Equal(t, 1, fallbackScans, "matching the sole unindexed canonical empties the fallback set")
+	assert.Equal(t, 1, comparisons)
+	assert.Equal(t, "file-0000", manifest[1].HardlinkTo)
+	assert.Equal(t, manifest[0].SHA256, manifest[1].SHA256)
+	assert.Empty(t, manifest[2].HardlinkTo)
 }
 
 func TestBuildTransferManifest_FallbackChecksCancellationInsideScan(t *testing.T) {

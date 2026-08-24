@@ -78,9 +78,10 @@ type transferFileIdentity struct {
 }
 
 type transferManifestOps struct {
-	identity func(string, fs.FileInfo) (transferFileIdentity, bool)
-	sameFile func(fs.FileInfo, fs.FileInfo) bool
-	hashFile func(context.Context, string) ([sha256.Size]byte, error)
+	identity            func(string, fs.FileInfo) (transferFileIdentity, bool)
+	sameFile            func(fs.FileInfo, fs.FileInfo) bool
+	hashFile            func(context.Context, string) ([sha256.Size]byte, error)
+	observeFallbackScan func()
 }
 
 func defaultTransferManifestOps() transferManifestOps {
@@ -109,6 +110,7 @@ func buildTransferManifestWithOps(ctx context.Context, root string, ops transfer
 	}
 	var regulars []regularEntry
 	identities := make(map[transferFileIdentity]int)
+	unindexedCanonicals := 0
 	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
@@ -144,9 +146,12 @@ func buildTransferManifestWithOps(ctx context.Context, root string, ops transfer
 				if identityKnown {
 					if existing, ok := identities[identity]; ok {
 						canonical = existing
-					} else {
+					} else if unindexedCanonicals > 0 {
 						// A prior lookup may have fallen back even though this one
 						// succeeded. Only those unindexed identities need a scan.
+						if ops.observeFallbackScan != nil {
+							ops.observeFallbackScan()
+						}
 						for i := range regulars {
 							if regulars[i].identityKnown {
 								continue
@@ -157,6 +162,8 @@ func buildTransferManifestWithOps(ctx context.Context, root string, ops transfer
 							if ops.sameFile(regulars[i].info, info) {
 								canonical = i
 								identities[identity] = i
+								regulars[i].identityKnown = true
+								unindexedCanonicals--
 								break
 							}
 						}
@@ -165,13 +172,18 @@ func buildTransferManifestWithOps(ctx context.Context, root string, ops transfer
 					// Correctness wins when a platform identity is unavailable:
 					// compare against unique prior files, checking cancellation
 					// inside the only potentially quadratic fallback.
-					for i := range regulars {
-						if ctxErr := ctx.Err(); ctxErr != nil {
-							return ctxErr
+					if len(regulars) > 0 {
+						if ops.observeFallbackScan != nil {
+							ops.observeFallbackScan()
 						}
-						if ops.sameFile(regulars[i].info, info) {
-							canonical = i
-							break
+						for i := range regulars {
+							if ctxErr := ctx.Err(); ctxErr != nil {
+								return ctxErr
+							}
+							if ops.sameFile(regulars[i].info, info) {
+								canonical = i
+								break
+							}
 						}
 					}
 				}
@@ -192,6 +204,8 @@ func buildTransferManifestWithOps(ctx context.Context, root string, ops transfer
 						})
 						if identityKnown {
 							identities[identity] = len(regulars) - 1
+						} else {
+							unindexedCanonicals++
 						}
 					}
 				}
