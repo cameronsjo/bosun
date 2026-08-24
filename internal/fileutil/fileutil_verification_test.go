@@ -62,12 +62,19 @@ func TestCopyDirIfChanged_PreservesWrittenPathOnVerificationFailure(t *testing.T
 	require.NoError(t, os.MkdirAll(srcDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "config.yml"), []byte("new content"), 0o644))
 
-	written, err := copyDirIfChanged(srcDir, dstDir, func(src, dst string) (bool, error) {
-		require.NoError(t, CopyFile(src, dst))
-		return true, fmt.Errorf("%w: injected", ErrPostWriteVerification)
-	})
+	verificationErr := fmt.Errorf("%w: injected", ErrPostWriteVerification)
+	written, err := copyDirIfChangedWithOps(
+		srcDir,
+		dstDir,
+		func(src, dst string) (bool, postWriteVerification, error) {
+			require.NoError(t, copyFileWithoutDirSync(src, dst))
+			return true, func() error { return verificationErr }, nil
+		},
+		syncDestinationDir,
+	)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrPostWriteVerification)
+	assert.Equal(t, verificationErr, err, "a lone deferred verification error must remain unchanged")
 	assert.Equal(t, []string{"config.yml"}, written)
 }
