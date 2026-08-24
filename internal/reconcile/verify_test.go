@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -342,6 +343,38 @@ func TestVerifyDeployTarget_WrittenRegularFileRequiresRegularDestination(t *test
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrDeployInvariantWrongType)
 		assert.Contains(t, err.Error(), "want=regular-file")
+	})
+}
+
+func TestVerifyDeployTarget_WrittenSingleFileRequiresRegularSource(t *testing.T) {
+	t.Run("missing", func(t *testing.T) {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "config.yml")
+		dst := filepath.Join(dir, "dst")
+		touchFile(t, filepath.Join(dst, "config.yml"), "destination", time.Now())
+
+		err := verifyDeployTarget(src, dst, []string{"config.yml"}, time.Now().Add(-time.Minute))
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "stat written source target")
+		assert.ErrorIs(t, err, fs.ErrNotExist)
+	})
+
+	t.Run("symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		outside := filepath.Join(dir, "outside.yml")
+		src := filepath.Join(dir, "config.yml")
+		dst := filepath.Join(dir, "dst")
+		touchFile(t, outside, "source", time.Now())
+		touchFile(t, filepath.Join(dst, "config.yml"), "destination", time.Now())
+		if err := os.Symlink(outside, src); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+
+		err := verifyDeployTarget(src, dst, []string{"config.yml"}, time.Now().Add(-time.Minute))
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "unsupported type")
 	})
 }
 

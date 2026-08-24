@@ -64,10 +64,17 @@ func verifyDeployTarget(src, dst string, writtenRel []string, startTime time.Tim
 			}
 			wroteRegularFile = wroteRegularFile || sourceEntryIsRegular
 		} else {
-			// Single-file targets record filepath.Base(src). Missing sources retain
-			// the historical written-path verification behavior.
+			// Single-file targets record filepath.Base(src). A reported write without
+			// a regular source entry cannot establish the required source/destination
+			// type match, so fail closed instead of accepting the destination alone.
+			if sourceErr != nil {
+				return fmt.Errorf("stat written source target %q: %w", src, sourceErr)
+			}
+			if !sourceRoot.Mode().IsRegular() {
+				return fmt.Errorf("written source target %q has unsupported type %s", src, sourceRoot.Mode().Type())
+			}
 			wroteRegularFile = true
-			sourceEntryIsRegular = sourceErr == nil && sourceRoot.Mode().IsRegular()
+			sourceEntryIsRegular = true
 		}
 
 		path := filepath.Join(dst, rel)
