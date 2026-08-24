@@ -231,9 +231,11 @@ critical_containers:
 
 ### Post-Sync Hooks
 
-After `docker compose up`, bosun determines which deploy paths changed and matches them against configured hook patterns. When content-hash sync is enabled (default), hooks use the list of descendant directories actually created plus files actually written or deleted — an empty result is authoritative no-change. Ordinary deploy-target creation and pre-existing directories are excluded; a target path that changes from a managed file to a directory is included because the type transition is an observable change. When content-hash sync is disabled, local hooks fall back to git diff because standard-copy mode does not populate per-path change results. Remote deploys have no path-level tracking and fire every configured hook. This solves services like Traefik that don't detect config changes on certain filesystems (e.g., Unraid's FUSE mount).
+After `docker compose up`, bosun determines which deploy paths changed and matches them against configured hook patterns. When content-hash sync is enabled (default), hooks use the list of descendant directories actually created plus files actually written or deleted — an empty result is authoritative no-change. Ordinary deploy-target creation and pre-existing directories are excluded; a target path that changes from a managed file to a directory is included because the type transition is an observable change. Standard-copy local deploys use non-empty written or deleted path evidence directly and fall back to normalized git diff only when both lists are empty. Remote deploys ignore both path lists and fire every configured hook. This solves services like Traefik that don't detect config changes on certain filesystems (e.g., Unraid's FUSE mount).
 
 Written/deleted paths and fallback git-diff paths use one canonical staging-relative namespace (for example, `appdata/traefik/**`). The fallback strips `BOSUN_INFRA_DIR` from repo-relative paths and diffs from `DeployState.LastDeployedCommit`, so a failed attempt never advances the hook diff base or loses changes from the next successful retry.
+
+`DeployState.DeployedFiles` remains a regular-file-only ownership manifest. Bosun does not persist ownership of empty directories, so converting a previously managed empty directory into a file requires a separate ownership and rollback contract and remains outside this change.
 
 If deploy paths changed but none match any configured hook pattern, bosun warns with
 distinct/duplicate/empty pattern counts, at most five pattern samples, the

@@ -358,7 +358,7 @@ credentials.
 | `BOSUN_RESTART_WINDOW` | Restart observation window (default: `10m`; must be positive). Keep this at least as long as `BOSUN_DRIFT_INTERVAL`; sustained restart increases retain their earliest baseline until a clean sample |
 | `BOSUN_SECRETS_FILE` | Default secrets file for `bosun render` |
 | `BOSUN_ALLOW_EMPTY_DECLARED_STATE` | Allow reconcile to continue when the staging compose dir contains no declared services (default: `false` — strict). Set to `true` for genuinely empty repos. The dir-missing case is always fatal. |
-| `BOSUN_SKIP_DEPLOY_INVARIANT` | Bypass the post-deploy mtime + WrittenFiles invariant check (default: `false`). Set to `true` for diagnostic deploys where silent-sync failures are acceptable. Logged at `Warn` with `override=true` when enabled. |
+| `BOSUN_SKIP_DEPLOY_INVARIANT` | Bypass the post-deploy created/written path existence, type, fresh-mtime, and no-file-write content checks (default: `false`). Set to `true` for diagnostic deploys where silent-sync failures are acceptable. Logged at `Warn` with `override=true` when enabled. |
 | `WEBHOOK_SECRET` | HMAC secret for daemon webhook endpoints. Required for webhook triggers — with no secret the endpoints fail closed (reject with `403`) |
 | `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | Opt out of fail-closed webhook auth (default: `false`; strict `== "true"` match). Accepts unauthenticated triggers on trusted networks; logs a security warning at startup and per accepted request |
 | `BOSUN_LISTEN_ADDR` | Host/IP the daemon HTTP server binds to (default: empty = all interfaces, so container-side callers like Traefik and Prometheus can reach it over the docker bridge) |
@@ -468,7 +468,7 @@ post_sync_hooks:
 
 ### Behavior
 
-- After a successful deploy, bosun prefers directories created and files written or deleted. Its git-diff fallback uses the last successfully deployed commit and normalizes repo-relative paths into the same staging-relative namespace
+- After a successful local deploy, content-hash results are authoritative even when both path lists are empty; standard-copy results use non-empty created/written or deleted paths directly and fall back to git diff only when both lists are empty. The fallback uses the last successfully deployed commit and normalizes repo-relative paths into the same staging-relative namespace. Remote deploys fire all hooks regardless of either path list
 - Each changed deploy path is matched against hook glob patterns
 - Each container is restarted at most once per deploy, even if multiple patterns match
 - Hooks only run when dry run is disabled and a previous commit exists (skipped on first deploy)

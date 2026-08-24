@@ -58,21 +58,21 @@ The settle delay SHALL be configurable via `hook_settle_delay` in `bosun.yaml` a
 
 ### Requirement: Hook Match Observability
 
-When post-sync hooks are configured and the reconciler evaluates a non-empty set of changed deploy paths but no path matches any hook pattern, the reconciler SHALL emit a warning that surfaces the misconfiguration. The warning SHALL include complete distinct, duplicate, empty, and missing pattern counts plus evaluated and matched-path counts; SHALL include at most five bounded pattern samples and five bounded staging-relative changed-path samples; SHALL redact absolute or traversal paths; and SHALL distinguish "no deploy paths changed" from "deploy paths changed but no pattern matched", so a typo'd glob produces a discoverable signal rather than a silent no-op. It SHALL NOT include file contents or hook command arguments.
+When post-sync hooks are configured and the reconciler evaluates a non-empty set of changed files but no file matches any hook pattern, the reconciler SHALL emit a warning that surfaces the misconfiguration. The warning SHALL include complete distinct, duplicate, empty, and missing pattern counts plus evaluated and matched-file counts; SHALL include at most five bounded pattern samples and five bounded staging-relative changed-file samples; SHALL redact absolute or traversal paths; and SHALL distinguish "no files changed" from "files changed but no pattern matched", so a typo'd glob produces a discoverable signal rather than a silent no-op. It SHALL NOT include file contents or hook command arguments.
 
 #### Scenario: Typo'd pattern surfaces a warning
 
 - **WHEN** a hook is configured with paths `["traefik/**"]`
 - **AND** the deploy change set contains `appdata/traefik/dynamic.yml` (prefixed differently)
-- **THEN** the reconciler logs a warning with bounded configured-pattern and staging-relative changed-path samples plus complete counts
-- **AND** the warning indicates deploy paths changed but none matched
+- **THEN** the reconciler logs a warning with bounded configured-pattern and staging-relative changed-file samples plus complete counts
+- **AND** the warning indicates files changed but none matched
 - **AND** the warning does not include file contents or hook command arguments
 
 #### Scenario: No-change deploy is not flagged as a mismatch
 
 - **WHEN** hooks are configured
 - **AND** the deploy change set is empty
-- **THEN** the reconciler does not emit a no-match warning (the "no deploy paths changed" case is logged distinctly, not as a misconfiguration)
+- **THEN** the reconciler does not emit a no-match warning (the "no files changed" case is logged distinctly, not as a misconfiguration)
 
 ### Requirement: Post-Write Verification Propagation
 
@@ -90,49 +90,6 @@ A successful file write whose post-write content verification fails SHALL NOT be
 - **WHEN** a prior deploy left a file whose verification failed and which was not recorded
 - **AND** a subsequent deploy finds the on-disk content already matches the source hash
 - **THEN** the reconciler does not skip the file in a way that permanently prevents the hook from firing
-
-### Requirement: Directory-Aware Deploy Change Tracking
-
-Content-hash sync SHALL include each descendant directory it actually creates
-in the canonical staging-relative deploy change set, including empty
-directories. It SHALL exclude the deploy target root and directories that
-already existed, so plumbing and no-op reconciles do not trigger post-sync
-hooks. A managed file-to-directory transition SHALL include the transitioned
-path and every descendant directory created in its private replacement tree.
-
-Each recorded directory SHALL be subject to the post-deploy existence, type,
-and fresh-mtime invariant. A change set containing directories but no regular
-file writes SHALL NOT suppress the existing content invariant: every regular
-source file must already be present and byte-identical at the destination.
-
-#### Scenario: Newly created empty directory triggers a matching hook
-
-- **WHEN** content-hash sync creates a previously absent descendant directory containing no files
-- **THEN** its staging-relative path is included in the deploy change set
-- **AND** a matching post-sync hook is eligible to run
-
-#### Scenario: Existing directory remains a no-op
-
-- **WHEN** a source directory already exists at the destination
-- **THEN** that directory is not included in the deploy change set
-- **AND** an otherwise unchanged reconcile does not trigger a hook
-
-#### Scenario: Deploy target root is plumbing
-
-- **WHEN** content-hash sync creates the deploy target root or a missing ancestor needed to reach it
-- **THEN** neither the root marker nor its ancestors are included in the deploy change set
-
-#### Scenario: Directory-only change set does not mask a missing file
-
-- **WHEN** the deploy change set contains newly created directories but no regular file writes
-- **AND** a regular source file is missing or byte-different at the destination
-- **THEN** the post-deploy invariant fails before compose-up
-
-#### Scenario: Managed file becomes an empty directory tree
-
-- **WHEN** a previously managed regular file is replaced by a source directory containing empty descendants
-- **THEN** the transitioned path and each created descendant directory are included in the deploy change set
-- **AND** matching hooks can observe the type transition
 
 ### Requirement: Hook Config Presence Semantics
 

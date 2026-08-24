@@ -240,10 +240,10 @@ type Config struct {
 	// fatal regardless of this setting.
 	AllowEmptyDeclaredState bool
 
-	// SkipDeployInvariant disables the post-deploy mtime + WrittenFiles
-	// invariant check that runs between deploy sync and compose-up. Use for
+	// SkipDeployInvariant disables the post-deploy created/written path
+	// existence, type, fresh-mtime, and no-file-write content checks. Use for
 	// diagnostic or development scenarios only — silent-success deploys are
-	// the failure mode this guards against. Set via
+	// the failure mode these checks guard against. Set via
 	// BOSUN_SKIP_DEPLOY_INVARIANT=true. Default false.
 	SkipDeployInvariant bool
 }
@@ -1130,9 +1130,10 @@ func (r *Reconciler) runPostSyncHooksWithSpan(ctx context.Context, previousCommi
 }
 
 // executePostSyncHooks detects changed deploy paths and restarts matching
-// containers via configured hooks. When deployResult is non-nil, its created,
-// written, and deleted paths are authoritative instead of git diff. This keeps
-// content-hash hooks tied to actual on-disk changes.
+// containers via configured hooks. Content-hash local results are authoritative
+// even when empty; standard-copy local results are direct evidence when either
+// path slice is non-empty and otherwise fall back to normalized git diff. Remote
+// deploys make every hook eligible regardless of either result slice.
 func (r *Reconciler) executePostSyncHooks(ctx context.Context, previousCommit, currentCommit string, deployResult *DeployResult, local bool) (int, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 	if err := ValidatePostSyncHooks(r.config.PostSyncHooks.Value); err != nil {

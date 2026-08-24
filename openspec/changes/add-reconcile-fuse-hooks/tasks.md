@@ -16,12 +16,11 @@
 - [ ] 3.1 Append `removeStaleFiles` deletions (`deploy.go:155-158`, `:251-299`) to the deploy change set (`WrittenFiles` or parallel `DeletedFiles`), tagged op=remove
 - [ ] 3.2 Ensure `executePostSyncHooks` (`reconcile.go:769-786`) evaluates the merged add+remove set (move empty-match return below the merge)
 - [ ] 3.3 Tests: deletion-only commit matching a hook pattern fires the hook
-- [x] 3.4 Record newly created descendant directories from content-hash sync and managed file-to-directory transitions, excluding deploy roots and pre-existing directories; preserve the no-regular-file-write content invariant and test directory-only hook matching, collisions, and repeat no-ops (#358)
 
 ## 4. Hook match observability (#269)
 
-- [x] 4.1 In `executePostSyncHooks`, emit a warn-level log when hooks are configured and changed deploy paths were evaluated but nothing matched, with bounded pattern and staging-relative path samples plus complete counts
-- [x] 4.2 Distinguish "no deploy paths changed" from "deploy paths changed, none matched" in the log message
+- [x] 4.1 In `executePostSyncHooks`, emit a warn-level log when hooks are configured and changed files were evaluated but nothing matched, with bounded pattern and staging-relative file samples plus complete counts
+- [x] 4.2 Distinguish "no files changed" from "files changed, none matched" in the log message
 - [x] 4.3 Tests: typo'd pattern over a non-empty change set produces a discoverable warning
 
 ## 5. Empty hook command rejection (#283)

@@ -603,7 +603,7 @@ Bosun ships several "escape hatch" environment variables that disable safety che
 | Env var | What it disables | Default | Intended use |
 |---------|------------------|---------|--------------|
 | `BOSUN_ALLOW_EMPTY_DECLARED_STATE` | `ErrNoDeclaredServices` gate at pipeline stage 6 (no parseable services in staging compose dir) | `false` (strict) | Genuinely empty repos, scaffolding |
-| `BOSUN_SKIP_DEPLOY_INVARIANT` | Post-deploy mtime + WrittenFiles gate at pipeline stage 9 | `false` (strict) | Diagnostic deploys, repro of intermittent issues |
+| `BOSUN_SKIP_DEPLOY_INVARIANT` | Post-deploy created/written path existence, type, fresh-mtime, and no-file-write content gates at pipeline stage 9 | `false` (strict) | Diagnostic deploys, repro of intermittent issues |
 | `BOSUN_SSH_INSECURE_HOST_KEY` | SSH host-key verification | `false` (strict) | Initial bootstrap before `known_hosts` is populated |
 | `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | Fail-closed webhook authentication (secret-less trigger requests rejected with `403`) | `false` (strict) | Trusted, isolated networks where a webhook secret is impractical |
 | `BOSUN_ALLOW_UNAUTHENTICATED_METRICS` | Fail-closed metrics/widget authentication (token-less `/metrics` and `/api/widget` requests rejected with `403`) | `false` (strict) | Trusted, isolated networks where a metrics token is impractical |

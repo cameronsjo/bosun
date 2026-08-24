@@ -21,7 +21,8 @@ func touchFile(t *testing.T, path, content string, mtime time.Time) {
 }
 
 func TestVerifyDeployTarget_HealthyDeploy_Passes(t *testing.T) {
-	// Layer 1.3, #214: every WrittenFiles entry exists at dst with fresh mtime.
+	// Layer 1.3, #214: every created/written path exists at dst with the expected
+	// type and a fresh mtime.
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src")
 	dst := filepath.Join(dir, "dst")
@@ -222,6 +223,23 @@ func TestVerifyDeployTarget_DirectoryOnlyWriteStillChecksRegularSourceFiles(t *t
 	assert.Contains(t, err.Error(), "config.yml")
 }
 
+func TestVerifyDeployTarget_DirectoryOnlyWriteStillRejectsDifferentRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	startTime := time.Now().Add(-time.Minute)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "empty"), 0o755))
+	touchFile(t, filepath.Join(src, "config.yml"), "expected", time.Now())
+	require.NoError(t, os.MkdirAll(filepath.Join(dst, "empty"), 0o755))
+	touchFile(t, filepath.Join(dst, "config.yml"), "stale", time.Now())
+
+	err := verifyDeployTarget(src, dst, []string{"empty"}, startTime)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrDeployInvariantEmptyWrite)
+	assert.Contains(t, err.Error(), "config.yml")
+}
+
 func TestVerifyDeployTarget_WrittenDirectoryRequiresDirectoryDestination(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src")
@@ -235,6 +253,59 @@ func TestVerifyDeployTarget_WrittenDirectoryRequiresDirectoryDestination(t *test
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrDeployInvariantWrongType)
 	assert.Contains(t, err.Error(), "want=directory")
+}
+
+func TestVerifyDeployTarget_WrittenDirectoryFailureModes(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T, dir, dstPath string)
+		wantErr error
+	}{
+		{
+			name:    "missing",
+			setup:   func(t *testing.T, dir, dstPath string) {},
+			wantErr: ErrDeployInvariantMissingFile,
+		},
+		{
+			name: "symlink",
+			setup: func(t *testing.T, dir, dstPath string) {
+				outside := filepath.Join(dir, "outside")
+				require.NoError(t, os.MkdirAll(outside, 0o755))
+				if err := os.Symlink(outside, dstPath); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			},
+			wantErr: ErrDeployInvariantWrongType,
+		},
+		{
+			name: "stale mtime",
+			setup: func(t *testing.T, dir, dstPath string) {
+				require.NoError(t, os.MkdirAll(dstPath, 0o755))
+				stale := time.Now().Add(-time.Hour)
+				require.NoError(t, os.Chtimes(dstPath, stale, stale))
+			},
+			wantErr: ErrDeployInvariantStaleMtime,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			src := filepath.Join(dir, "src")
+			dst := filepath.Join(dir, "dst")
+			srcPath := filepath.Join(src, "empty")
+			dstPath := filepath.Join(dst, "empty")
+			require.NoError(t, os.MkdirAll(srcPath, 0o755))
+			require.NoError(t, os.MkdirAll(dst, 0o755))
+			tt.setup(t, dir, dstPath)
+
+			err := verifyDeployTarget(src, dst, []string{"empty"}, time.Now().Add(-time.Minute))
+
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tt.wantErr)
+			assert.Contains(t, err.Error(), dstPath)
+		})
+	}
 }
 
 func TestVerifyDeployTarget_WrittenRegularFileRequiresRegularDestination(t *testing.T) {

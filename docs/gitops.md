@@ -464,7 +464,9 @@ After each pull, bosun treats a successfully decoded project config as an author
 
 Root and per-target hooks validate before either hooks or delay change. An omitted target hook key inherits root, explicit `[]` clears inheritance, and removing a target descriptor drops its stale operational hook override while structural removal waits for daemon restart. Logs expose source, target, outcome, and counts, never hook command arguments.
 
-Hook globs use staging-relative paths such as `appdata/traefik/**`. An empty content-hash deploy result is authoritative no-change; standard-copy mode, which does not populate per-path changes, instead diffs from `DeployState.LastDeployedCommit` and strips the infra-directory prefix from repo-relative paths before matching. Remote deploys have no path-level tracking and therefore fire every configured hook. A failed pipeline cannot advance the hook diff base or silently lose its changes on retry.
+Hook globs use staging-relative paths such as `appdata/traefik/**`. An empty content-hash deploy result is authoritative no-change; standard-copy mode uses non-empty written or deleted path evidence directly and falls back to a diff from `DeployState.LastDeployedCommit` only when both lists are empty. Fallback paths have the infra-directory prefix stripped before matching. Remote deploys ignore both path lists and fire every configured hook. A failed pipeline cannot advance the hook diff base or silently lose its changes on retry.
+
+`DeployState.DeployedFiles` remains a regular-file-only ownership manifest. Empty-directory ownership is not persisted, so the inverse transition from a previously managed empty directory to a file requires a separate ownership and rollback contract.
 
 When deploy paths changed but no hook pattern matches, bosun emits a warning with
 distinct/duplicate/empty pattern counts, at most five pattern samples, the
