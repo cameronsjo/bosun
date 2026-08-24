@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -194,7 +195,7 @@ func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string
 	var backupRoot string
 	var backupCleanup func()
 	var backupExtracted bool // memoize the attempt: one bad archive must not
-	var backupAvailable bool // re-invoke tar (and re-warn) for every failed file
+	var backupAvailable bool // re-run extraction (and re-warn) for every failed file
 	defer func() {
 		if backupCleanup != nil {
 			backupCleanup()
@@ -214,7 +215,8 @@ func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string
 			d.composeUpTimeout(),
 		)
 		defer exCancel()
-		root, cleanup, err := extractBackupArchive(exCtx, backupPath)
+		tarFile := filepath.Join(backupPath, "configs.tar.gz")
+		root, cleanup, err := d.extractBackup(exCtx, tarFile)
 		if err != nil {
 			logger.Warn().
 				Err(err).
@@ -323,6 +325,15 @@ func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string
 
 	// Determine overall error.
 	if len(composeFiles) > 0 && summary.Failed == len(composeFiles) {
+		phaseErrs := make([]error, 0, len(results))
+		for _, result := range results {
+			if result.Err != nil {
+				phaseErrs = append(phaseErrs, result.Err)
+			}
+		}
+		if phaseErr := errors.Join(phaseErrs...); phaseErr != nil {
+			return &summary, fmt.Errorf("all %d compose files failed to deploy: %w", summary.Failed, phaseErr)
+		}
 		return &summary, fmt.Errorf("all %d compose files failed to deploy", summary.Failed)
 	}
 

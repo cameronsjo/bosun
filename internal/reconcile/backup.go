@@ -34,8 +34,8 @@ const DefaultBackupTimeout = 5 * time.Minute
 // files) yet small enough to reject a bomb well before it exhausts memory or CPU.
 const MaxVerifyDecompressedBytes int64 = 10 << 30 // 10 GiB
 
-// ErrBackupTooLarge is returned when a backup archive decompresses past
-// MaxVerifyDecompressedBytes during verification — a likely decompression bomb.
+// ErrBackupTooLarge is returned when backup verification or extraction reads
+// past MaxVerifyDecompressedBytes — a likely decompression bomb.
 var ErrBackupTooLarge = errors.New("backup archive exceeds maximum verifiable decompressed size")
 
 // VerifyBackup checks that a backup archive is valid and non-empty.
@@ -180,40 +180,6 @@ func copyCtx(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
 	}
 }
 
-// extractBackupArchive extracts a backup's configs.tar.gz into a fresh temp
-// directory and returns its root, a cleanup func, and any error. tar strips the
-// leading '/' from absolute member names, so a backed-up "/mnt/appdata/x.yml"
-// lands at "<root>/mnt/appdata/x.yml". Resolve a specific backed-up file with
-// resolveBackupFile, never filepath.Join(backupPath, base) — the loose-file
-// layout that Backup() never produced (#332/#335).
-//
-// Returns an error if the archive is absent or cannot be extracted; the caller
-// treats that as "no backup available". The returned cleanup func is always
-// safe to call (a no-op on the error paths).
-func extractBackupArchive(ctx context.Context, backupPath string) (root string, cleanup func(), err error) {
-	noop := func() {}
-	tarFile := filepath.Join(backupPath, "configs.tar.gz")
-	if _, statErr := os.Stat(tarFile); statErr != nil {
-		return "", noop, fmt.Errorf("backup archive not found: %s: %w", tarFile, statErr)
-	}
-
-	tmp, err := os.MkdirTemp("", "bosun-rollback-*")
-	if err != nil {
-		return "", noop, fmt.Errorf("failed to create rollback temp dir: %w", err)
-	}
-	cleanupTmp := func() { _ = os.RemoveAll(tmp) }
-
-	cmd := exec.CommandContext(ctx, "tar", "-xzf", tarFile, "-C", tmp)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if runErr := cmd.Run(); runErr != nil {
-		cleanupTmp()
-		return "", noop, fmt.Errorf("failed to extract backup archive %s: %w: %s", tarFile, runErr, stderr.String())
-	}
-
-	return tmp, cleanupTmp, nil
-}
-
 // resolveBackupFile maps an original (deployed) file path to its backed-up copy
 // inside an extracted backup root, accounting for tar's leading-'/' stripping.
 // Returns the resolved path and whether it exists on disk.
@@ -321,7 +287,7 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 // writeBackupArchive creates a gzip-compressed tar archive at tarFile containing
 // every path in paths (directories recursed), excluding the excludeDir subtree.
 // Member names have the leading '/' stripped, matching what external tar produced,
-// so extractBackupArchive/resolveBackupFile keep working unchanged (#332/#335).
+// so safeExtractBackup/resolveBackupFile keep working unchanged (#332/#335).
 //
 // The backed-up footprint is LIVE container appdata, so the walk tolerates churn
 // the way GNU tar does, instead of failing the deploy on it (#240 made a failed

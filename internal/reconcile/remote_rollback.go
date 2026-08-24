@@ -123,9 +123,10 @@ func logBackupAnchorAge(ctx context.Context, backupPath string) {
 }
 
 // safeExtractBackup extracts a gzip-compressed tar into a fresh temp dir with
-// Go's archive/tar, validating each entry's realized path at write time so no
-// member can escape the extraction root — via its name, or via a symlink /
-// hardlink target. It is the single reader for both validation and extraction,
+// Go's archive/tar for local and remote rollback consumers. It validates each
+// entry's realized path at write time so no member can escape the extraction
+// root — via its name, or via a symlink / hardlink target. It is the single
+// reader for both validation and extraction,
 // which avoids the divergence a header pre-scan followed by external `tar -xzf`
 // would leave (two independent parsers, a PAX/GNU-longname or Linkname mismatch
 // landing where the scan blessed something else). The extracted layout matches
@@ -141,7 +142,19 @@ func safeExtractBackup(ctx context.Context, tarFile string) (root string, cleanu
 // safeExtractBackupBounded is safeExtractBackup with an explicit total
 // decompressed-byte budget, so the bomb-bound branch is exercisable in tests.
 func safeExtractBackupBounded(ctx context.Context, tarFile string, maxBytes int64) (root string, cleanup func(), err error) {
+	return safeExtractBackupBoundedWithWriter(ctx, tarFile, maxBytes, writeRegularEntry)
+}
+
+func safeExtractBackupBoundedWithWriter(
+	ctx context.Context,
+	tarFile string,
+	maxBytes int64,
+	writeEntry func(context.Context, string, io.Reader) (int64, error),
+) (root string, cleanup func(), err error) {
 	noop := func() {}
+	if maxBytes < 0 {
+		return "", noop, fmt.Errorf("%w: %s (limit %d bytes)", ErrBackupTooLarge, tarFile, maxBytes)
+	}
 
 	f, err := os.Open(tarFile)
 	if err != nil {
@@ -161,8 +174,12 @@ func safeExtractBackupBounded(ctx context.Context, tarFile string, maxBytes int6
 	}
 	cleanupTmp := func() { _ = os.RemoveAll(tmp) }
 
-	tr := tar.NewReader(gz)
-	remaining := maxBytes
+	// Bound and cancel the entire decompressed stream below tar.Reader. This is
+	// load-bearing: tar.Reader may consume entry bodies itself while advancing to
+	// the next header, including bodies for entry types this extractor skips.
+	// Counting here includes headers, padding, every body, and trailing bytes.
+	stream := &boundedContextReader{ctx: ctx, reader: gz, remaining: maxBytes}
+	tr := tar.NewReader(stream)
 	for {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			cleanupTmp()
@@ -174,6 +191,10 @@ func safeExtractBackupBounded(ctx context.Context, tarFile string, maxBytes int6
 		}
 		if nextErr != nil {
 			cleanupTmp()
+			if errors.Is(nextErr, ErrBackupTooLarge) {
+				return "", noop, fmt.Errorf("cannot read archive entry header: %w: %s (limit %d bytes)",
+					ErrBackupTooLarge, tarFile, maxBytes)
+			}
 			return "", noop, fmt.Errorf("cannot read archive entry header: %w", nextErr)
 		}
 
@@ -194,15 +215,14 @@ func safeExtractBackupBounded(ctx context.Context, tarFile string, maxBytes int6
 				cleanupTmp()
 				return "", noop, fmt.Errorf("cannot create parent for %q: %w", hdr.Name, mkErr)
 			}
-			written, wErr := writeRegularEntry(ctx, dest, tr, remaining)
+			_, wErr := writeEntry(ctx, dest, tr)
 			if wErr != nil {
 				cleanupTmp()
+				if errors.Is(wErr, ErrBackupTooLarge) {
+					return "", noop, fmt.Errorf("cannot extract %q: %w: %s (limit %d bytes)",
+						hdr.Name, ErrBackupTooLarge, tarFile, maxBytes)
+				}
 				return "", noop, fmt.Errorf("cannot extract %q: %w", hdr.Name, wErr)
-			}
-			remaining -= written
-			if remaining < 0 {
-				cleanupTmp()
-				return "", noop, fmt.Errorf("%w: %s", ErrBackupTooLarge, tarFile)
 			}
 		case tar.TypeSymlink, tar.TypeLink:
 			// Reject any link whose target escapes root BEFORE creating it, so a
@@ -226,7 +246,52 @@ func safeExtractBackupBounded(ctx context.Context, tarFile string, maxBytes int6
 		}
 	}
 
+	// tar.Reader's logical EOF only proves that it saw the tar end markers. Drain
+	// the same bounded reader to the gzip stream's true EOF so gzip validates its
+	// trailer checksum and size. The drain also bounds and observes cancellation
+	// for trailing decompressed data that tar itself does not consume.
+	if _, drainErr := copyCtx(ctx, io.Discard, stream); drainErr != nil {
+		cleanupTmp()
+		if errors.Is(drainErr, ErrBackupTooLarge) {
+			return "", noop, fmt.Errorf("cannot finish archive stream: %w: %s (limit %d bytes)",
+				ErrBackupTooLarge, tarFile, maxBytes)
+		}
+		return "", noop, fmt.Errorf("cannot finish archive stream: %w", drainErr)
+	}
+
 	return tmp, cleanupTmp, nil
+}
+
+// boundedContextReader enforces cancellation and a total byte budget at the
+// decompressed-stream boundary. It permits one byte beyond the limit so callers
+// can distinguish exact-boundary EOF from overflow without draining an
+// attacker-controlled stream.
+type boundedContextReader struct {
+	ctx       context.Context
+	reader    io.Reader
+	remaining int64
+}
+
+func (r *boundedContextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if r.remaining < 0 {
+		return 0, ErrBackupTooLarge
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining+1]
+	}
+
+	n, err := r.reader.Read(p)
+	r.remaining -= int64(n)
+	if r.remaining < 0 {
+		return n, ErrBackupTooLarge
+	}
+	return n, err
 }
 
 // resolveWithinRoot maps a tar member name to its extraction path under root,
@@ -288,15 +353,14 @@ func linkTargetWithinRoot(root, linkPath string, typeflag byte, linkname string)
 	}
 }
 
-// writeRegularEntry writes a regular file entry to dest, bounding the copy at
-// budget+1 so a decompression bomb halts one byte past the remaining budget.
-// Returns the number of bytes written.
-func writeRegularEntry(ctx context.Context, dest string, r io.Reader, budget int64) (int64, error) {
+// writeRegularEntry writes one regular file from the already bounded and
+// context-aware decompressed stream. Returns the number of bytes written.
+func writeRegularEntry(ctx context.Context, dest string, r io.Reader) (int64, error) {
 	out, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return 0, err
 	}
-	n, cErr := copyCtx(ctx, out, io.LimitReader(r, budget+1))
+	n, cErr := copyCtx(ctx, out, r)
 	closeErr := out.Close()
 	if cErr != nil {
 		return n, cErr
