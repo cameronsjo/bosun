@@ -35,7 +35,14 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       # Persistent data
       # Deploy state drives drift detection, skip logic, and circuit breakers.
-      - /mnt/user/appdata/bosun/state:/var/lib/bosun:rw
+      # Before start: install -d -o 1000 -g 1000 -m 0700 /mnt/user/appdata/bosun/state
+      # create_host_path=false prevents Compose from silently creating it as root.
+      - type: bind
+        source: /mnt/user/appdata/bosun/state
+        target: /var/lib/bosun
+        read_only: false
+        bind:
+          create_host_path: false
       - /mnt/user/appdata/bosun/logs:/app/logs
       - /mnt/user/appdata/bosun/backups:/app/backups
       - /mnt/user/appdata/bosun/repo:/app/repo

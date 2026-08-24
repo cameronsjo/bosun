@@ -218,9 +218,18 @@ The reconciler maintains persistent state in a JSON file at `/var/lib/bosun/depl
 
 Container deployments must persist `/var/lib/bosun`. The shipped Compose and
 Unraid definitions bind that directory to `/mnt/user/appdata/bosun/state`; keep
-an equivalent writable mount when defining a custom deployment. Without it,
-container replacement discards drift history, skip state, and circuit-breaker
-state, forcing the next run to reconcile the full declared estate.
+an equivalent writable mount when defining a custom deployment. Before starting
+the container, create the host directory for Bosun's fixed UID/GID 1000:
+
+```bash
+install -d -o 1000 -g 1000 -m 0700 /mnt/user/appdata/bosun/state
+```
+
+The shipped Compose definition refuses to auto-create a missing source directory,
+which avoids Docker creating it as `root:root`. Bosun also write-probes the state
+directory and fails startup before binding API listeners when it is not writable.
+Without the mount, container replacement discards drift history, skip state, and
+circuit-breaker state, forcing the next run to reconcile the full declared estate.
 
 ### State File Schema (v2)
 

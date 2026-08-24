@@ -586,8 +586,17 @@ The daemon and one-shot CLI track deploy state in a JSON file (default: `/var/li
 Container deployments MUST mount `/var/lib/bosun` on persistent writable
 storage. The shipped Compose and Unraid definitions use
 `/mnt/user/appdata/bosun/state`; custom deployments need an equivalent mount.
-Losing this directory discards drift history, skip state, and circuit-breaker
-state, so the next run reconciles the full declared estate.
+Bosun runs as fixed UID/GID 1000, so create the host directory before starting:
+
+```bash
+install -d -o 1000 -g 1000 -m 0700 /mnt/user/appdata/bosun/state
+```
+
+The shipped Compose definition MUST keep `bind.create_host_path: false` so Docker
+cannot silently create the directory as `root:root`. Daemon startup write-probes
+the directory and fails before binding API listeners when it is not writable.
+Losing the mount discards drift history, skip state, and circuit-breaker state,
+so the next run reconciles the full declared estate.
 
 **State tracking includes:**
 - Last successful deploy timestamp and commit

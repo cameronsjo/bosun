@@ -39,6 +39,7 @@
   <Requires>
     Requires a GitHub repository with your Docker Compose configs.&#xD;
     Requires an Age key for SOPS secret decryption.&#xD;
+    Before installation, run: install -d -o 1000 -g 1000 -m 0700 /mnt/user/appdata/bosun/state&#xD;
     Optional: Tailscale for webhook exposure, Discord/SendGrid/Twilio for notifications.
   </Requires>
   <DonateText>Support on Ko-fi</DonateText>
@@ -64,7 +65,7 @@
     Target="/var/lib/bosun"
     Default="/mnt/user/appdata/bosun/state"
     Mode="rw"
-    Description="Persistent deploy state for drift detection, skip logic, and circuit breakers. Do not remove this mount."
+    Description="Persistent deploy state. Pre-create with: install -d -o 1000 -g 1000 -m 0700 /mnt/user/appdata/bosun/state"
     Type="Path"
     Display="always"
     Required="true"
