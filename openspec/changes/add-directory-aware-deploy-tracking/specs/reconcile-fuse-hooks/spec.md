@@ -15,6 +15,11 @@ and fresh-mtime invariant. A change set containing directories but no regular
 file writes SHALL NOT suppress the existing content invariant: every regular
 source file must already be present and byte-identical at the destination.
 
+A deploy result SHALL lack authoritative per-path evidence only when both
+`WrittenFiles` and `DeletedFiles` are empty. In that case, standard-copy local
+deploys SHALL retain the normalized git-diff fallback, while remote deploys
+SHALL retain their unconditional all-hooks fallback.
+
 #### Scenario: Newly created empty directory triggers a matching hook
 
 - **WHEN** content-hash sync creates a previously absent descendant directory containing no files
@@ -37,6 +42,12 @@ source file must already be present and byte-identical at the destination.
 - **WHEN** content-hash sync creates descendant directory `cache` for deploy target `appdata/service`
 - **THEN** local deploy aggregation records `appdata/service/cache` in the canonical staging-relative change set
 - **AND** post-sync hook matching evaluates that prefixed path rather than the producer-local `cache` path
+
+#### Scenario: Compose directory keeps its canonical target prefix
+
+- **WHEN** content-hash sync creates descendant directory `fragments` in the separately deployed `compose` target
+- **THEN** compose aggregation records `compose/fragments` in the canonical staging-relative change set
+- **AND** post-sync hook matching evaluates that prefixed path rather than the producer-local `fragments` path
 
 #### Scenario: Directory-only change set does not mask a missing file
 
@@ -61,8 +72,14 @@ source file must already be present and byte-identical at the destination.
 - **THEN** the top-level target path is included in the deploy change set despite ordinary target-root creation being plumbing
 - **AND** each created descendant directory is included under that target path
 
-#### Scenario: Deploy modes without authoritative path tracking retain fallback behavior
+#### Scenario: Standard-copy local deploy retains normalized git-diff fallback
 
-- **WHEN** a standard-copy local deploy or remote deploy does not produce authoritative per-path change evidence
-- **THEN** an empty `WrittenFiles` result is not interpreted as an authoritative no-change result
-- **AND** the existing git-diff or remote all-hooks fallback remains in effect
+- **WHEN** a standard-copy local deploy produces empty `WrittenFiles` and `DeletedFiles`
+- **THEN** the result is not interpreted as an authoritative no-change result
+- **AND** hooks evaluate the existing git-diff fallback after normalization to canonical staging-relative paths
+
+#### Scenario: Remote deploy retains unconditional all-hooks fallback
+
+- **WHEN** a remote deploy produces empty `WrittenFiles` and `DeletedFiles`
+- **THEN** the result is not interpreted as an authoritative no-change result
+- **AND** every configured post-sync hook remains eligible to run without path filtering

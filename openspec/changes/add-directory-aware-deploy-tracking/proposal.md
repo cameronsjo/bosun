@@ -66,15 +66,16 @@ that missing contract before PR #551 is eligible to merge.
     writes and newly created descendant directories.
   - Aggregators: `DeployOps.DeployLocal`, managed type transitions,
     `DeployResult.AddWritten`, and `DeployResult.PrefixLatest` preserve and
-    namespace the returned paths.
+    namespace discovered appdata-target paths; the separate compose deployment
+    path applies the same prefix contract.
   - Invariant consumer: `verifyDeployTarget` validates every returned path and
     separately preserves source-file content equality when no regular file was
     written.
   - Hook consumers: `executePostSyncHooks` and `EvaluatePostSyncHooks` treat the
     merged `WrittenFiles` / `DeletedFiles` values as deploy paths.
-  - Non-authoritative consumers: standard-copy local deploys retain git-diff
-    fallback and remote deploys retain their existing all-hooks fallback; an
-    empty per-path result from either mode does not become authoritative.
+  - Non-authoritative consumers: when both `WrittenFiles` and `DeletedFiles` are
+    empty, standard-copy local deploys retain normalized git-diff fallback and
+    remote deploys retain their existing unconditional all-hooks fallback.
   - Persistence consumer: `DeployState.DeployedFiles` remains a regular-file
     manifest and does not gain empty-directory ownership in this change.
 - Tests: focused fileutil directory-creation and collision cases; local deploy

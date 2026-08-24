@@ -7,10 +7,12 @@
 ## 2. Local deploy aggregation and hooks
 
 - [ ] 2.1 Expand `DeployResult.WrittenFiles`, `AddWritten`, and `PrefixLatest` semantics from regular-file writes to created-or-written paths while retaining canonical staging-relative path safety.
-- [ ] 2.2 Propagate created descendant directories through every local content-hash target, including compose targets, discovered directory targets, and managed file-to-directory replacement trees.
-- [ ] 2.3 Report a top-level managed file-to-directory transition as the target path, report its created descendants, and keep ordinary deploy-root creation excluded as plumbing.
-- [ ] 2.4 Add local deploy and hook tests for an empty-directory-only change, nested directory creation, target prefixing, top-level and nested file-to-directory transitions, repeat no-ops, and matching/non-matching post-sync hook patterns.
-- [ ] 2.5 Preserve and test non-authoritative consumer behavior: standard-copy local deploys retain git-diff fallback and remote deploys retain all-hooks fallback when no per-path evidence exists.
+- [ ] 2.2 Propagate created descendant directories through every discovered local content-hash directory target and prefix them with the target's canonical staging-relative path.
+- [ ] 2.3 Propagate created descendant directories through the separately deployed compose target, prefix them with `compose`, and add an explicit compose-directory hook regression test.
+- [ ] 2.4 Report a top-level managed file-to-directory transition as the target path, report its created descendants, and keep ordinary deploy-root creation excluded as plumbing.
+- [ ] 2.5 Add discovered-appdata deploy and hook tests for an empty-directory-only change, nested directory creation, target prefixing, top-level and nested file-to-directory transitions, repeat no-ops, and matching/non-matching post-sync hook patterns.
+- [ ] 2.6 Preserve and test standard-copy local behavior: when both `WrittenFiles` and `DeletedFiles` are empty, hooks use git diff normalized to canonical staging-relative paths.
+- [ ] 2.7 Preserve and test remote behavior: when both `WrittenFiles` and `DeletedFiles` are empty, every configured hook remains eligible to run unconditionally.
 
 ## 3. Deploy invariant integration
 
@@ -27,5 +29,5 @@
 
 ## 5. Verification
 
-- [ ] 5.1 Run focused tests repeatedly and under `-race`, including fileutil, deploy aggregation, hooks, managed transitions, deploy invariants, and standard-copy/remote fallback preservation.
+- [ ] 5.1 Run focused tests repeatedly and under `-race`, including fileutil, discovered-target and compose aggregation, hooks, managed transitions, deploy invariants, normalized standard-copy fallback, and remote all-hooks fallback.
 - [ ] 5.2 Run repository tests, coverage, vet, lint, supported cross-platform builds, and strict OpenSpec validation; cover new error paths so the patch coverage gate remains green.

@@ -41,10 +41,11 @@ empty results authoritative.
 - **Do not expand `DeployState.DeployedFiles`.** It remains the regular-file
   ownership manifest. A later change may define persisted directory ownership
   and the safety rules for directory-to-file replacement.
-- **Keep non-authoritative modes on their existing fallbacks.** Standard-copy
-  local deploys continue to use git diff when no per-path evidence exists;
-  remote deploys continue to fire all hooks because SSH/tar provides no
-  authoritative path-level result.
+- **Keep non-authoritative modes on their existing fallbacks.** A result lacks
+  per-path evidence only when both `WrittenFiles` and `DeletedFiles` are empty.
+  Standard-copy local deploys then continue to use normalized git diff; remote
+  deploys continue to fire all hooks unconditionally because SSH/tar provides
+  no authoritative path-level result.
 
 ## Risks / Trade-offs
 
