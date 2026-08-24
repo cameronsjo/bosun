@@ -111,3 +111,11 @@ func boundedSignatureID(signature string) string {
 	}
 	return signature[:selfHealSignatureIDLength]
 }
+
+func cloneDriftSelfHealTracking(tracking *reconcile.DriftSelfHealTracking) *reconcile.DriftSelfHealTracking {
+	if tracking == nil {
+		return nil
+	}
+	clone := *tracking
+	return &clone
+}

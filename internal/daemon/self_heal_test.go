@@ -200,13 +200,13 @@ func TestMaybeSelfHealDispatchesOneOpaqueExhaustionAlert(t *testing.T) {
 		maxAttempts:    3,
 	}
 
-	d.maybeSelfHeal(context.Background(), decision)
+	d.maybeSelfHeal(context.Background(), decision, nil)
 	require.Len(t, provider.alerts, 1)
 	assert.Equal(t, "self-heal-exhausted", provider.alerts[0].Source)
 	assert.NotContains(t, provider.alerts[0].Message, "private")
 
 	decision.alertExhausted = false
 	decision.reason = "attempt_budget_exhausted"
-	d.maybeSelfHeal(context.Background(), decision)
+	d.maybeSelfHeal(context.Background(), decision, nil)
 	assert.Len(t, provider.alerts, 1)
 }

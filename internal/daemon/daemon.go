@@ -558,15 +558,27 @@ func (d *Daemon) cancelLifecycle() {
 	d.lifecycleMu.Unlock()
 }
 
-// startReconcileGoroutine registers a reconcile before launching it and refuses
-// new work once shutdown begins. The task inherits request logging values but
-// cancellation comes from the daemon lifecycle rather than the short-lived HTTP
-// request context.
-func (d *Daemon) startReconcileGoroutine(requestCtx context.Context, task func(context.Context)) bool {
+// reconcileGoroutineReservation registers asynchronous reconcile work with the
+// daemon lifecycle before the caller commits any durable side effects. The
+// caller must release every accepted reservation; false cancels it without
+// running the task.
+type reconcileGoroutineReservation struct {
+	once     sync.Once
+	decision chan bool
+}
+
+func (r *reconcileGoroutineReservation) release(run bool) {
+	if r == nil {
+		return
+	}
+	r.once.Do(func() { r.decision <- run })
+}
+
+func (d *Daemon) reserveReconcileGoroutine(requestCtx context.Context, task func(context.Context)) (*reconcileGoroutineReservation, bool) {
 	d.lifecycleMu.Lock()
 	if d.shuttingDown {
 		d.lifecycleMu.Unlock()
-		return false
+		return nil, false
 	}
 	ctx := d.lifecycleCtx
 	if ctx == nil {
@@ -585,11 +597,28 @@ func (d *Daemon) startReconcileGoroutine(requestCtx context.Context, task func(c
 		}
 		ctx = log.WithContext(ctx, log.Ctx(requestCtx))
 	}
+
+	reservation := &reconcileGoroutineReservation{decision: make(chan bool, 1)}
 	go func() {
 		defer d.wg.Done()
 		defer sentrypkg.Recover()
-		task(ctx)
+		if <-reservation.decision {
+			task(ctx)
+		}
 	}()
+	return reservation, true
+}
+
+// startReconcileGoroutine registers a reconcile before launching it and refuses
+// new work once shutdown begins. The task inherits request logging values but
+// cancellation comes from the daemon lifecycle rather than the short-lived HTTP
+// request context.
+func (d *Daemon) startReconcileGoroutine(requestCtx context.Context, task func(context.Context)) bool {
+	reservation, accepted := d.reserveReconcileGoroutine(requestCtx, task)
+	if !accepted {
+		return false
+	}
+	reservation.release(true)
 	return true
 }
 
@@ -1160,17 +1189,19 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	d.driftCheckMu.Lock()
 	defer d.driftCheckMu.Unlock()
 
-	// Skip drift check if reconcile is in progress to avoid lost-update
-	// race on the shared state file (both load → modify → save).
+	// Reconciliation and drift checking both load, mutate, and save the same
+	// state file. Hold their shared admission mutex for the complete drift cycle
+	// so a reconcile cannot begin after this one-time busy check and overwrite
+	// drift, breaker, or self-heal state with a stale snapshot.
 	d.reconcileMu.Lock()
-	busy := d.reconciling
-	d.reconcileMu.Unlock()
-	if busy {
+	if d.reconciling {
+		d.reconcileMu.Unlock()
 		logger.Debug().
 			Str("reason", "reconciliation_in_progress").
 			Msg("Skipping drift check")
 		return
 	}
+	defer d.reconcileMu.Unlock()
 
 	// Snapshot reloadable config fields once so we hold the lock only briefly.
 	dcfg := d.driftConfig()
@@ -1413,10 +1444,23 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	// Plan self-heal before the shared atomic state write. Side effects only run
 	// after that write succeeds, so a daemon restart cannot forget a consumed
 	// attempt or repeat an exhaustion alert.
-	d.reconcileMu.Lock()
-	selfHealBusy := d.reconciling
-	d.reconcileMu.Unlock()
-	selfHeal := planSelfHeal(state, report, dcfg, selfHealBusy, time.Now())
+	previousSelfHeal := cloneDriftSelfHealTracking(state.DriftSelfHeal)
+	selfHeal := planSelfHeal(state, report, dcfg, false, time.Now())
+	var selfHealReservation *reconcileGoroutineReservation
+	if selfHeal.trigger {
+		var accepted bool
+		selfHealReservation, accepted = d.reserveSelfHealReconcile(ctx)
+		if !accepted {
+			// Shutdown won lifecycle admission, so no trigger occurred and no
+			// attempt may be consumed. Preserve all other drift state updates.
+			state.DriftSelfHeal = previousSelfHeal
+			selfHeal.trigger = false
+			selfHeal.reason = "daemon_shutting_down"
+		}
+	}
+	if selfHealReservation != nil {
+		defer selfHealReservation.release(false)
+	}
 
 	// Persist state with drift results, alert timestamps, and self-heal budget.
 	if err := reconcile.SaveState(stateFile, state); err != nil {
@@ -1424,7 +1468,7 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 		return
 	}
 
-	d.maybeSelfHeal(ctx, selfHeal)
+	d.maybeSelfHeal(ctx, selfHeal, selfHealReservation)
 }
 
 func criticalDriftItems(items []reconcile.DriftItem) []reconcile.DriftItem {
@@ -1439,7 +1483,7 @@ func criticalDriftItems(items []reconcile.DriftItem) []reconcile.DriftItem {
 
 // maybeSelfHeal executes a durable decision produced by planSelfHeal. The
 // attempt and once-per-signature alert marker have already been persisted.
-func (d *Daemon) maybeSelfHeal(ctx context.Context, decision selfHealDecision) {
+func (d *Daemon) maybeSelfHeal(ctx context.Context, decision selfHealDecision, reservation *reconcileGoroutineReservation) {
 	logger := log.Component(log.ComponentDaemon)
 
 	if !decision.trigger && !decision.alertExhausted {
@@ -1488,7 +1532,12 @@ func (d *Daemon) maybeSelfHeal(ctx context.Context, decision selfHealDecision) {
 
 	ui.Info("Drift self-heal: triggering reconciliation (attempt %d/%d, %d drift items)", decision.attempts, decision.maxAttempts, decision.itemCount)
 
-	d.startReconcileGoroutine(ctx, func(reconcileCtx context.Context) {
+	reservation.release(true)
+}
+
+func (d *Daemon) reserveSelfHealReconcile(ctx context.Context) (*reconcileGoroutineReservation, bool) {
+	logger := log.Component(log.ComponentDaemon)
+	return d.reserveReconcileGoroutine(ctx, func(reconcileCtx context.Context) {
 		// force stays false here -- Force is the human-supplied override that
 		// also bypasses the circuit breaker and deploy_paths gate, and an
 		// unattended self-heal loop must never touch either. executeReconcile
