@@ -85,8 +85,9 @@ For deployment notifications:
 
 ## Configuration
 
-| Variable | Required | Description |
+| Setting | Required | Description |
 |----------|----------|-------------|
+| `State Path` | Yes | Host directory mounted at `/var/lib/bosun`; preserves deploy state across container replacement |
 | `BOSUN_REPO_URL` | Yes | GitHub repo URL (HTTPS) |
 | `BOSUN_GIT_USERNAME` | No | Private HTTPS Git username; set together with `BOSUN_GIT_TOKEN` |
 | `BOSUN_GIT_TOKEN` | No | Private HTTPS Git token (masked); set together with `BOSUN_GIT_USERNAME` |
@@ -101,6 +102,11 @@ origin. Bosun rejects partial pairs, URL-embedded credentials, HTTP URLs, and
 cross-origin or downgrade redirects before forwarding credentials. Leave both
 variables empty for anonymous HTTPS. After rotating either value, restart the
 container; project config reload does not rotate Git credentials.
+
+Keep the State Path mounted at `/var/lib/bosun`. The deploy state stored there
+drives drift detection, path-aware skip decisions, and circuit breakers. If the
+mount is removed, replacing the container also removes that history and the next
+run must reconcile the full declared estate.
 
 ## Network Configuration
 

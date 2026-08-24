@@ -53,7 +53,18 @@
     Target="/config"
     Default="/mnt/user/appdata/bosun"
     Mode="rw"
-    Description="Configuration and state directory. Contains age key, repo clone, rendered configs."
+    Description="Configuration directory. Contains the Age key and other operator-managed configuration."
+    Type="Path"
+    Display="always"
+    Required="true"
+    Mask="false"/>
+
+  <Config
+    Name="State Path"
+    Target="/var/lib/bosun"
+    Default="/mnt/user/appdata/bosun/state"
+    Mode="rw"
+    Description="Persistent deploy state for drift detection, skip logic, and circuit breakers. Do not remove this mount."
     Type="Path"
     Display="always"
     Required="true"

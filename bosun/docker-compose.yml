@@ -34,6 +34,8 @@ services:
       # Docker socket for container operations
       - /var/run/docker.sock:/var/run/docker.sock:ro
       # Persistent data
+      # Deploy state drives drift detection, skip logic, and circuit breakers.
+      - /mnt/user/appdata/bosun/state:/var/lib/bosun:rw
       - /mnt/user/appdata/bosun/logs:/app/logs
       - /mnt/user/appdata/bosun/backups:/app/backups
       - /mnt/user/appdata/bosun/repo:/app/repo

@@ -159,12 +159,17 @@ git push -u origin main
 | Setting | Value |
 |---------|-------|
 | Config Path | `/mnt/user/appdata/bosun` |
+| State Path | `/mnt/user/appdata/bosun/state` |
 | Git Repository URL | `https://github.com/YOUR_USER/infrastructure.git` |
 | Age Key File | `/config/age-key.txt` |
 | GitHub Webhook Secret | (generate random string) |
 | Discord Webhook URL | (optional) |
 
 4. Click **Apply**
+
+State Path is required. It mounts the daemon's `/var/lib/bosun` directory on
+persistent appdata so drift detection, path-aware skip decisions, and circuit
+breakers retain their history when the container is replaced.
 
 ### Copy Age Key to Unraid
 

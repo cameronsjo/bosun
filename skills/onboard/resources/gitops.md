@@ -583,6 +583,12 @@ bosun drift --target=nas       # Show drift for a specific target
 
 The daemon and one-shot CLI track deploy state in a JSON file (default: `/var/lib/bosun/deploy-state.json`). Before a real reconciliation, each mode creates the state file's parent directory. Multi-target one-shot runs prepare and write-probe each target's state directory independently and fail a target before deployment if its directory cannot be written. A one-shot dry run uses a temporary copy of existing state, so it evaluates skip and circuit-breaker decisions without creating or updating the configured state path.
 
+Container deployments MUST mount `/var/lib/bosun` on persistent writable
+storage. The shipped Compose and Unraid definitions use
+`/mnt/user/appdata/bosun/state`; custom deployments need an equivalent mount.
+Losing this directory discards drift history, skip state, and circuit-breaker
+state, so the next run reconciles the full declared estate.
+
 **State tracking includes:**
 - Last successful deploy timestamp and commit
 - Last failed deploy details
