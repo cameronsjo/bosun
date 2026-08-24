@@ -149,19 +149,22 @@ reconcile (GH#319, bosun-5qx):
 - **Footprint scoping.** The backup captures only the files bosun manages (its
   rendered staging footprint), not whole appdata target directories — those
   co-locate large runtime data (media, databases, caches) that made the archive
-  grow without bound and burn the full timeout every reconcile. Symlinks are
-  skipped, matching the deploy path. The path list is fed to `tar` via stdin
-  (`-T -`) so a large footprint cannot overflow the argument list.
+  grow without bound and burn the full timeout every reconcile. Normal target
+  enumeration selects regular files and skips staging symlinks. If discovery
+  falls back to a directory walk, symlink entries are archived but never
+  followed. Local backup writes the explicitly enumerated paths with Go's
+  `archive/tar`; remote backup shell-quotes those paths in the SSH `tar` command.
 - **Self-exclusion.** Bosun is itself a deploy target, and `BackupDir`
   (default `/app/backups` → host `/mnt/appdata/bosun/backups`) lives *inside* a
-  backed-up path. The creation tar passes `--exclude` for the backup
-  destination so it can never archive its own growing output or any prior
-  backup nested under it. Applies to both local and remote (`tar -czf -`) paths.
+  backed-up path. The local Go archive writer resolves that destination and
+  skips its subtree during the filesystem walk. Remote `tar -czf -` receives a
+  shell-quoted `--exclude` when `BackupDir` is absolute; a relative remote
+  destination logs that self-exclusion could not be applied.
 - **Bounded deadline.** Backup creation *and* verification run under
   `BackupTimeout` (default 5m, overridable via `BOSUN_BACKUP_TIMEOUT` — accepts a
-  Go duration or plain seconds). Verification shares the same context, so the
-  deadline kills a stuck `tar -tzf` rather than blocking. On timeout the backup
-  is treated as a failure.
+  Go duration or plain seconds). The deadline cancels native local archive I/O,
+  remote SSH `tar`, the fast `tar -tzf` verification pre-check, and the native
+  full-stream integrity read. On timeout the backup is treated as a failure.
 
 Backup failure handling depends on what Bosun can prove before mutation:
 
