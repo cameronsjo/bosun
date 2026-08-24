@@ -350,7 +350,7 @@ credentials.
 | `BOSUN_GIT_FETCH_DEPTH` | Positive shallow clone/fetch history depth (default: `1`). Increase when deploy-path or hook diffs regularly span multiple commits; unavailable history still fails safe to a full deploy/all hooks |
 | `BOSUN_CRITICAL_CONTAINERS` | JSON array of container names that must be healthy after deploy (overrides config file) |
 | `BOSUN_HEALTH_GATE_TIMEOUT` | Health gate polling timeout (default: `60s`; `0` disables the gate). Accepts Go duration strings or bare seconds |
-| `BOSUN_BACKUP_TIMEOUT` | Pre-deploy backup creation + verification timeout (default: `5m`). Accepts Go duration strings or bare seconds. On timeout the backup is treated as a failure but the deploy continues |
+| `BOSUN_BACKUP_TIMEOUT` | Pre-deploy backup creation + verification timeout (default: `5m`). Accepts Go duration strings or bare seconds. A timeout may fall back to an older verified rollback anchor; without one, the reconcile aborts before deployment |
 | `BOSUN_DRIFT_INTERVAL` | Drift sampling interval (default: `5m`; `0` disables periodic drift checks). Configuration load and `bosun doctor` warn when this exceeds `BOSUN_RESTART_WINDOW` |
 | `BOSUN_DRIFT_SELF_HEAL_MAX_ATTEMPTS` | Positive attempt bound for one stable drift signature (default: `3`). Attempts and exhaustion persist across daemon restarts; invalid, zero, and negative values retain the default |
 | `BOSUN_RESTART_BREAKER` | Enable restart-loop protection (default: `true`) |

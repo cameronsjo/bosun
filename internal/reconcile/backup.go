@@ -511,6 +511,15 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 		return "", fmt.Errorf("invalid SSH host: %w", err)
 	}
 
+	// An empty footprint is legitimate on a fresh host. It requires no SSH or
+	// local artifact, so return the same empty-name signal as Backup after the
+	// operation's host input has passed the common remote-boundary validation.
+	if len(remotePaths) == 0 {
+		logger.Warn().Str(log.FieldTarget, host).
+			Msg("No remote paths to back up; no rollback anchor created")
+		return "", nil
+	}
+
 	timestamp := time.Now().Format("20060102-150405")
 	backupName := fmt.Sprintf("backup-%s", timestamp)
 	backupPath := filepath.Join(backupDir, backupName)

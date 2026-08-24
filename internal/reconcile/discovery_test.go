@@ -241,9 +241,10 @@ func TestBackupFilesFromTargets_Empty(t *testing.T) {
 }
 
 // TestBackupFilesFromTargets_WalkError confirms an unreadable subtree surfaces as
-// a returned error (rather than being silently dropped), while files enumerated
-// before the error are still returned for a best-effort backup. The readable file
-// is named to sort before the locked dir so WalkDir visits it first.
+// a returned error (rather than being silently dropped). The helper still returns
+// files found before the error for diagnostics, but callers must reject the
+// incomplete list. The readable file is named to sort before the locked dir so
+// WalkDir visits it first.
 func TestBackupFilesFromTargets_WalkError(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("chmod 0000 does not deny root; skipping permission-based fault injection")

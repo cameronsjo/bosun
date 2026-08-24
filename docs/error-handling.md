@@ -345,7 +345,8 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 
 **Reconcile Backups**: The reconcile command creates timestamped backups before deployment:
 - Location: `/app/backups/backup-YYYYMMDD-HHMMSS/`
-- Contents: `configs.tar.gz` with Traefik, Authelia, Agentgateway, Gatus configs
+- Contents: `configs.tar.gz` with the current regular-file footprint of the
+  rendered deploy targets at their appdata destinations
 
 **Restore Command**: Use `bosun restore --list` to see backups, `bosun restore <name>` to restore.
 
@@ -356,7 +357,8 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 ### When to Log
 
 - Informational progress: `ui.Info("Syncing repository...")`
-- Warnings that don't stop execution: `ui.Warning("Backup partially failed: %v", err)`
+- Warnings that don't stop execution: a backup creation failure after Bosun
+  selects an older verified rollback anchor
 - Success confirmations: `ui.Success("Deployment complete!")`
 
 ### When to Return
@@ -368,9 +370,16 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 ### Pattern
 
 ```go
-// Log warnings but continue
-if err := r.createBackup(ctx, secrets); err != nil {
-    ui.Warning("Backup partially failed: %v", err)
+// A backup error continues only when the current footprint is complete and an
+// older verified rollback anchor is available.
+if err := r.createBackup(ctx, secrets, localDeploy); err != nil {
+    ui.Warning("Backup failed: %v", err)
+    if errors.Is(err, ErrBackupFootprintIncomplete) {
+        return err
+    }
+    if policyErr := r.applyBackupFailurePolicy(ctx, err); policyErr != nil {
+        return policyErr
+    }
 }
 
 // Return fatal errors

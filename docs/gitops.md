@@ -769,14 +769,17 @@ backups/
 
 ### Backed Up Paths
 
-- `appdata/traefik/`
-- `appdata/authelia/configuration.yml`
-- `appdata/agentgateway/config.yaml`
-- `appdata/gatus/config.yaml`
+During normal rendered-target enumeration, Bosun backs up regular staging files
+at the corresponding appdata destinations; symlinks and irregular entries are
+excluded from that managed-file list. If deploy-target discovery itself fails,
+Bosun attempts a bounded full-appdata backup rather than treating the footprint
+as empty. That fallback preserves symlink entries without following them.
 
 ### Remote Backup
 
-For remote deployments, runs `tar -czf -` over SSH and streams to local backup directory.
+For a non-empty remote footprint, Bosun runs `tar -czf -` over SSH and streams
+the archive to the local backup directory. An empty footprint performs no SSH
+work.
 
 ### Backup Verification
 
@@ -784,8 +787,18 @@ After creation, backups are verified:
 
 1. Archive file exists
 2. Archive is non-empty
-3. Archive is valid (can list contents with `tar -tzf`)
-4. Archive contains at least one file
+3. Archive is listable with `tar -tzf`
+4. Archive contains at least one entry
+5. Every member can be decompressed and read to EOF under the caller deadline
+   and the total 10 GiB verification bound
+
+An incomplete managed-footprint enumeration aborts before backup or deploy work,
+even when an older verified backup exists: that older archive may omit a path
+the current deploy would mutate. Other creation, transport, verification, and
+timeout failures may reuse the most recent previously verified backup as a
+rollback anchor; without one, the reconcile aborts before mutation. A
+successfully enumerated empty footprint is not a failure and proceeds without
+an anchor.
 
 ### Retention
 
@@ -844,7 +857,9 @@ cfg.BackupsToKeep = 5  // Default
 
 Some operations log warnings but continue:
 
-- Backup creation failure when an older verified rollback anchor exists
+- Backup creation, transport, verification, or timeout failure when an older
+  verified rollback anchor exists and the current managed footprint was
+  enumerated completely
 - tailscale-gateway sync failure (warns, continues)
 - agentgateway reload failure (warns, continues)
 - Staging cleanup failure when owner-only retention succeeds (warns)

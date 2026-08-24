@@ -6,6 +6,7 @@ import (
 	cryptorand "crypto/rand"
 	"errors"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -233,6 +234,188 @@ func TestCreateBackup_RemotePathPropagatesFailure(t *testing.T) {
 		"failure must be the host/ssh error, not a timeout, got: %v", err)
 }
 
+// TestCreateBackup_RemoteEmptyFootprintCreatesNoAnchor covers the caller-level
+// fresh-host path from #459. A successfully discovered but empty staging tree
+// produces no remote paths, so createBackup must validate the configured host
+// but perform no SSH work or record an archive directory as a rollback anchor.
+func TestCreateBackup_RemoteEmptyFootprintCreatesNoAnchor(t *testing.T) {
+	tmpDir := evalSymlinks(t, t.TempDir())
+	stagingDir := filepath.Join(tmpDir, "staging")
+	backupDir := filepath.Join(tmpDir, "backups")
+	require.NoError(t, os.MkdirAll(stagingDir, 0755))
+
+	cfg := &Config{
+		StagingDir:        stagingDir,
+		InfraSubDir:       ".",
+		BackupDir:         backupDir,
+		RemoteAppdataPath: "/mnt/appdata",
+		BackupsToKeep:     3,
+		TargetHost:        "localhost",
+	}
+	r := NewReconciler(cfg)
+	// A no-archive result records this run's state explicitly; it must not rely
+	// on Run having cleared a prior cycle's rollback anchor first.
+	r.lastBackupPath = filepath.Join(backupDir, "stale-anchor")
+	r.lastBackupIsFresh = true
+
+	require.NoError(t, r.createBackup(context.Background(), nil, false))
+	assert.Empty(t, r.lastBackupPath, "an empty remote footprint must not create a rollback anchor")
+	assert.False(t, r.lastBackupIsFresh, "no archive was created, so no fresh anchor exists")
+	assert.NoDirExists(t, backupDir, "an empty remote footprint must not leave a backup artifact")
+}
+
+// TestCreateBackup_RemoteEnumerationFailureIsNotEmptyFootprint distinguishes a
+// successful empty staging tree from a walk that failed before discovering any
+// paths. The latter is an unknown backup footprint and must fail before the
+// remote empty-footprint shortcut can clear the rollback requirement.
+func TestCreateBackup_RemoteEnumerationFailureIsNotEmptyFootprint(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod 0000 does not deny root; skipping permission-based fault injection")
+	}
+
+	tmpDir := evalSymlinks(t, t.TempDir())
+	stagingDir := filepath.Join(tmpDir, "staging")
+	locked := filepath.Join(stagingDir, "appdata", "service")
+	backupDir := filepath.Join(tmpDir, "backups")
+	require.NoError(t, os.MkdirAll(locked, 0755))
+	require.NoError(t, os.Chmod(locked, 0000))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0755) })
+
+	r := NewReconciler(&Config{
+		StagingDir:        stagingDir,
+		InfraSubDir:       ".",
+		BackupDir:         backupDir,
+		RemoteAppdataPath: "/mnt/appdata",
+		BackupsToKeep:     3,
+		TargetHost:        "localhost",
+	})
+
+	err := r.createBackup(context.Background(), nil, false)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrBackupFootprintIncomplete)
+	assert.ErrorIs(t, err, fs.ErrPermission)
+	assert.Empty(t, r.lastBackupPath)
+	assert.False(t, r.lastBackupIsFresh)
+	assert.NoDirExists(t, backupDir, "enumeration failure must abort before SSH or artifact creation")
+}
+
+// TestCreateBackup_RemotePartialEnumerationFailureFailsClosed proves that a
+// non-empty partial list is still an unknown footprint. Recording a backup of
+// the readable prefix as a fresh rollback anchor would let the deploy proceed
+// without a recoverable copy of the unreadable managed subtree.
+func TestCreateBackup_RemotePartialEnumerationFailureFailsClosed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod 0000 does not deny root; skipping permission-based fault injection")
+	}
+
+	tmpDir := evalSymlinks(t, t.TempDir())
+	stagingDir := filepath.Join(tmpDir, "staging")
+	serviceDir := filepath.Join(stagingDir, "appdata", "service")
+	locked := filepath.Join(serviceDir, "zzz-locked")
+	backupDir := filepath.Join(tmpDir, "backups")
+	require.NoError(t, os.MkdirAll(locked, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(serviceDir, "aaa-readable.yml"), []byte("managed"), 0644))
+	require.NoError(t, os.Chmod(locked, 0000))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0755) })
+
+	r := NewReconciler(&Config{
+		StagingDir:        stagingDir,
+		InfraSubDir:       ".",
+		BackupDir:         backupDir,
+		RemoteAppdataPath: "/mnt/appdata",
+		BackupsToKeep:     3,
+		TargetHost:        "localhost",
+	})
+
+	err := r.createBackup(context.Background(), nil, false)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrBackupFootprintIncomplete)
+	assert.ErrorIs(t, err, fs.ErrPermission)
+	assert.Empty(t, r.lastBackupPath)
+	assert.False(t, r.lastBackupIsFresh)
+	assert.NoDirExists(t, backupDir, "partial enumeration must abort before SSH or artifact creation")
+}
+
+// TestReconcilerRun_IncompleteBackupFootprintAbortsBeforeDeploy covers the
+// pipeline caller, not only createBackup. Even with a prior verified backup
+// available, an unknown current footprint cannot safely use that stale anchor:
+// it may omit paths this deploy is about to mutate. Both zero-result and
+// partially enumerated failures must return before deploy changes appdata.
+func TestReconcilerRun_IncompleteBackupFootprintAbortsBeforeDeploy(t *testing.T) {
+	if _, err := exec.LookPath("tar"); err != nil {
+		t.Skip("tar not installed")
+	}
+
+	tests := []struct {
+		name  string
+		paths []string
+	}{
+		{name: "zero paths before failure"},
+		{name: "partial paths before failure", paths: []string{"/mnt/appdata/service/config.yml"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := evalSymlinks(t, t.TempDir())
+			repoDir := filepath.Join(tmpDir, "repo")
+			stagingDir := filepath.Join(tmpDir, "staging")
+			appdataDir := filepath.Join(tmpDir, "appdata")
+			backupDir := filepath.Join(tmpDir, "backups")
+			stateFile := filepath.Join(tmpDir, "state.json")
+
+			cfg := &Config{
+				LockFile:         filepath.Join(tmpDir, "reconcile.lock"),
+				StateFile:        stateFile,
+				RepoDir:          repoDir,
+				StagingDir:       stagingDir,
+				LocalAppdataPath: appdataDir,
+				BackupDir:        backupDir,
+				BackupsToKeep:    3,
+				InfraSubDir:      "unraid",
+				ContentHashSync:  true,
+				OnFailure:        true,
+			}
+			seedStubComposeService(t, cfg)
+			sourceConfig := filepath.Join(repoDir, "unraid", "appdata", "service", "config.yml")
+			destinationConfig := filepath.Join(appdataDir, "service", "config.yml")
+			require.NoError(t, os.MkdirAll(filepath.Dir(sourceConfig), 0755))
+			require.NoError(t, os.MkdirAll(filepath.Dir(destinationConfig), 0755))
+			require.NoError(t, os.WriteFile(sourceConfig, []byte("new config"), 0644))
+			require.NoError(t, os.WriteFile(destinationConfig, []byte("old config"), 0644))
+
+			// Make the stale-anchor fallback available so this test fails if Run
+			// accidentally routes the sentinel through applyBackupFailurePolicy.
+			_ = mkBackupDir(t, backupDir, "backup-20200101-000001", true)
+
+			alerter := &mockAlertSender{}
+			r := NewReconciler(cfg,
+				WithGitOperations(&mockGitOps{
+					syncChanged: true,
+					syncBefore:  "aaa111",
+					syncAfter:   "bbb222",
+				}),
+				WithAlerter(alerter),
+			)
+			r.backupFilesFromTargetsFn = func(string, []DeployTarget, string) ([]string, error) {
+				return append([]string(nil), tt.paths...), fs.ErrPermission
+			}
+
+			err := r.Run(context.Background())
+
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrBackupFootprintIncomplete)
+			assert.ErrorIs(t, err, fs.ErrPermission)
+			content, readErr := os.ReadFile(destinationConfig)
+			require.NoError(t, readErr)
+			assert.Equal(t, "old config", string(content), "deploy must not mutate appdata after incomplete enumeration")
+			assert.Empty(t, LoadState(stateFile).LastDeployedCommit, "failed admission must not record the commit as deployed")
+			assert.Equal(t, 1, alerter.deployFailureCalls)
+		})
+	}
+}
+
 // TestCreateBackup_DiscoveryFailureFallsBackToFullAppdata verifies that when
 // deploy-target discovery fails (here, a missing staging subtree), the backup
 // falls back to the full appdata path rather than producing a no-op archive —
@@ -384,6 +567,54 @@ func assertNoBackupDirs(t *testing.T, backupDir string) {
 		assert.False(t, strings.HasPrefix(e.Name(), "backup-"),
 			"a failed backup must leave no archive behind (found: %s)", e.Name())
 	}
+}
+
+// TestBackupRemote_EmptyFootprintSkipsAllWork verifies the leaf operation's
+// ordering, not just its final return values. Nothing-to-back-up is a clean
+// no-op after host validation even when later-stage values are adversarial: no
+// destination creation, context-bound SSH, or archive verification may run when
+// the remote footprint is empty.
+func TestBackupRemote_EmptyFootprintSkipsAllWork(t *testing.T) {
+	t.Run("invalid host still fails at the common remote boundary", func(t *testing.T) {
+		backupDir := filepath.Join(t.TempDir(), "backups")
+		d := NewDeployOps(false, "")
+
+		backupName, err := d.BackupRemote(context.Background(), "-oProxyCommand=sh", backupDir, nil)
+
+		require.ErrorContains(t, err, "invalid SSH host")
+		assert.Empty(t, backupName)
+		assert.NoDirExists(t, backupDir)
+	})
+
+	t.Run("uncreatable destination is irrelevant without an archive", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		parentFile := filepath.Join(tmpDir, "not-a-directory")
+		require.NoError(t, os.WriteFile(parentFile, []byte("sentinel"), 0644))
+		d := NewDeployOps(false, "")
+
+		backupName, err := d.BackupRemote(
+			context.Background(),
+			"localhost",
+			filepath.Join(parentFile, "backups"),
+			[]string{},
+		)
+
+		require.NoError(t, err)
+		assert.Empty(t, backupName)
+	})
+
+	t.Run("cancelled context is irrelevant without subprocess work", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		backupDir := filepath.Join(t.TempDir(), "backups")
+		d := NewDeployOps(false, "")
+
+		backupName, err := d.BackupRemote(ctx, "localhost", backupDir, nil)
+
+		require.NoError(t, err)
+		assert.Empty(t, backupName)
+		assert.NoDirExists(t, backupDir)
+	})
 }
 
 // TestBackupRemote_SSHErrorIsFatal verifies the #240 data-integrity fix: when the
@@ -616,9 +847,9 @@ func TestLatestVerifiedBackup_SkipsCorruptReturnsNewestValid(t *testing.T) {
 	tmp := evalSymlinks(t, t.TempDir())
 	backupDir := filepath.Join(tmp, "backups")
 
-	_ = mkBackupDir(t, backupDir, "backup-20200101-000001", true)          // older, valid
+	_ = mkBackupDir(t, backupDir, "backup-20200101-000001", true)           // older, valid
 	validNewer := mkBackupDir(t, backupDir, "backup-20200101-000002", true) // newer, valid
-	_ = mkBackupDir(t, backupDir, "backup-20200101-000003", false)         // newest, corrupt
+	_ = mkBackupDir(t, backupDir, "backup-20200101-000003", false)          // newest, corrupt
 
 	d := NewDeployOps(false, "")
 	got, err := d.LatestVerifiedBackup(context.Background(), backupDir)
