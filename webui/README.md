@@ -21,8 +21,11 @@ npm ci
 # Start dev server (proxies to localhost:9090)
 npm run dev
 
-# Build for production
+# Type-check and build for production
 npm run build
+
+# Bundle only (CI runs this after its explicit typecheck and lint gates)
+npm run build:bundle
 
 # Type check
 npm run typecheck
