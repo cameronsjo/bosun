@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.40.3](https://github.com/cameronsjo/bosun/compare/v0.40.2...v0.40.3) (2026-08-24)
+
+
+### Bug Fixes
+
+* **container:** persist writable deploy state ([e446b56](https://github.com/cameronsjo/bosun/commit/e446b56124a67a77b7fa7c86db8c4748891f6078)), refs [#478](https://github.com/cameronsjo/bosun/issues/478)
+* **fileutil:** reject recursive copy destinations ([31b1599](https://github.com/cameronsjo/bosun/commit/31b15993fc993fb01f2c29a14a41ccf9fd8661af)), refs [#435](https://github.com/cameronsjo/bosun/issues/435)
+
 ## [0.40.2](https://github.com/cameronsjo/bosun/compare/v0.40.1...v0.40.2) (2026-08-24)
 
 
