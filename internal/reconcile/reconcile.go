@@ -1701,10 +1701,15 @@ func (r *Reconciler) sendGateFailureAlerts(ctx context.Context, state *DeploySta
 		return
 	}
 
-	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+	alertCtx, cancel := failureAlertDeliveryContext(ctx)
+	if cancel != nil {
+		defer cancel()
+	}
+
+	logger := log.ComponentCtx(alertCtx, log.ComponentReconcile)
 	target := r.alertTarget()
 
-	if err := r.alerter.SendDeployFailure(ctx, r.lastCommit, target, gateErr.Error(), r.serviceNames(), time.Since(r.runStartTime)); err != nil {
+	if err := r.alerter.SendDeployFailure(alertCtx, r.lastCommit, target, gateErr.Error(), r.serviceNames(), time.Since(r.runStartTime)); err != nil {
 		// Do NOT consume the throttle window when the failure alert never sent —
 		// mirror sendThrottledFailureAlert exactly, so a transient alert-provider
 		// outage lets the next attempt retry the alert instead of silently eating
@@ -1718,11 +1723,11 @@ func (r *Reconciler) sendGateFailureAlerts(ctx context.Context, state *DeploySta
 	// the companion rollback alert sends (its failure is logged, not retried).
 	if rolledBack {
 		if rollbackErr == nil {
-			if err := r.alerter.SendRollbackSuccess(ctx, target, filepath.Base(r.lastBackupPath)); err != nil {
+			if err := r.alerter.SendRollbackSuccess(alertCtx, target, filepath.Base(r.lastBackupPath)); err != nil {
 				logger.Warn().Err(err).Str(log.FieldOperation, "alert_rollback").Msg("Failed to send rollback success alert")
 			}
 		} else {
-			if err := r.alerter.SendRollbackFailure(ctx, target, rollbackErr.Error()); err != nil {
+			if err := r.alerter.SendRollbackFailure(alertCtx, target, rollbackErr.Error()); err != nil {
 				logger.Warn().Err(err).Str(log.FieldOperation, "alert_rollback").Msg("Failed to send rollback failure alert")
 			}
 		}
