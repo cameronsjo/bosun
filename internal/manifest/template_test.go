@@ -3,6 +3,7 @@ package manifest
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,6 +26,30 @@ func TestNewTemplateEngine(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, engine)
 		assert.Nil(t, engine.helpers)
+	})
+
+	t.Run("rejects unreadable helpers path", func(t *testing.T) {
+		templatesDir := t.TempDir()
+		require.NoError(t, os.Mkdir(filepath.Join(templatesDir, "_helpers.tpl"), 0700))
+
+		_, err := NewTemplateEngine(templatesDir)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "read helpers")
+	})
+
+	t.Run("rejects malformed helpers", func(t *testing.T) {
+		templatesDir := t.TempDir()
+		require.NoError(t, os.WriteFile(
+			filepath.Join(templatesDir, "_helpers.tpl"),
+			[]byte(`{{ define "unfinished" }}`),
+			0600,
+		))
+
+		_, err := NewTemplateEngine(templatesDir)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "parse helpers")
 	})
 }
 
@@ -98,6 +123,118 @@ func TestTemplateEngine_RenderTemplate(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "not found")
 	})
+}
+
+func TestTemplateEngine_ConcurrentFirstLoad(t *testing.T) {
+	templatesDir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(templatesDir, "service.yaml"),
+		[]byte("compose:\n  services:\n    app:\n      image: nginx:latest\n"),
+		0600,
+	))
+	engine, err := NewTemplateEngine(templatesDir)
+	require.NoError(t, err)
+
+	type loadResult struct {
+		template any
+		err      error
+	}
+
+	const workers = 64
+	start := make(chan struct{})
+	results := make(chan loadResult, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			<-start
+			tmpl, loadErr := engine.loadTemplate("service")
+			results <- loadResult{template: tmpl, err: loadErr}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(results)
+
+	var first any
+	for result := range results {
+		require.NoError(t, result.err)
+		require.NotNil(t, result.template)
+		if first == nil {
+			first = result.template
+			continue
+		}
+		assert.Same(t, first, result.template)
+	}
+	assert.Len(t, engine.loadedTemplates, 1)
+}
+
+func TestTemplateEngine_FailedLoadDoesNotPoisonCache(t *testing.T) {
+	templatesDir := t.TempDir()
+	templatePath := filepath.Join(templatesDir, "service.yaml")
+	require.NoError(t, os.WriteFile(templatePath, []byte("{{"), 0600))
+	engine, err := NewTemplateEngine(templatesDir)
+	require.NoError(t, err)
+
+	_, err = engine.loadTemplate("service")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse template service")
+	assert.Empty(t, engine.loadedTemplates)
+
+	require.NoError(t, os.WriteFile(templatePath, []byte("compose: {}\n"), 0600))
+	first, err := engine.loadTemplate("service")
+	require.NoError(t, err)
+	second, err := engine.loadTemplate("service")
+	require.NoError(t, err)
+
+	assert.Same(t, first, second)
+	assert.Len(t, engine.loadedTemplates, 1)
+}
+
+func TestTemplateEngine_IncludeFile(t *testing.T) {
+	templatesDir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(templatesDir, "fragment.yaml"),
+		[]byte("name: {{ .Name }}\n"),
+		0600,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(templatesDir, "required.yaml"),
+		[]byte("name: {{ .Missing }}\n"),
+		0600,
+	))
+	engine, err := NewTemplateEngine(templatesDir)
+	require.NoError(t, err)
+
+	output, err := engine.includeFunc("fragment", map[string]any{"Name": "app"})
+	require.NoError(t, err)
+	assert.Equal(t, "name: app\n", output)
+
+	_, err = engine.includeFunc("missing", map[string]any{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "include missing")
+
+	_, err = engine.includeFunc("required", map[string]any{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "execute template required")
+}
+
+func TestTemplateEngine_RenderTemplateRejectsInvalidYAML(t *testing.T) {
+	templatesDir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(templatesDir, "invalid.yaml"),
+		[]byte("compose: [unterminated\n"),
+		0600,
+	))
+	engine, err := NewTemplateEngine(templatesDir)
+	require.NoError(t, err)
+
+	_, err = engine.RenderTemplate("invalid", &TemplateContext{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse rendered template invalid")
 }
 
 func TestTemplateEngine_RenderTemplateString(t *testing.T) {
@@ -225,6 +362,30 @@ func TestTemplateEngine_ListTemplates(t *testing.T) {
 	assert.Contains(t, templates, "container")
 	assert.Contains(t, templates, "postgres")
 	assert.NotContains(t, templates, "_helpers")
+}
+
+func TestTemplateEngine_ListTemplatesErrors(t *testing.T) {
+	t.Run("missing directory", func(t *testing.T) {
+		engine, err := NewTemplateEngine(filepath.Join(t.TempDir(), "missing"))
+		require.NoError(t, err)
+
+		_, err = engine.ListTemplates()
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "templates directory not found")
+	})
+
+	t.Run("path is not a directory", func(t *testing.T) {
+		templatesPath := filepath.Join(t.TempDir(), "templates")
+		require.NoError(t, os.WriteFile(templatesPath, []byte("not a directory"), 0600))
+		engine, err := NewTemplateEngine(templatesPath)
+		require.NoError(t, err)
+
+		_, err = engine.ListTemplates()
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "read templates directory")
+	})
 }
 
 func TestToYamlFunc(t *testing.T) {
