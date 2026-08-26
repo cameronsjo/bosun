@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.41.0](https://github.com/cameronsjo/bosun/compare/v0.40.7...v0.41.0) (2026-08-26)
+
+
+### Features
+
+* **update:** verify self-update release checksums ([#607](https://github.com/cameronsjo/bosun/issues/607)) ([4f6e2d8](https://github.com/cameronsjo/bosun/commit/4f6e2d85331c466f5302278636cb2382bfdcb758))
+
+
+### Bug Fixes
+
+* **fileutil:** reject blocking special files ([#605](https://github.com/cameronsjo/bosun/issues/605)) ([c1340fc](https://github.com/cameronsjo/bosun/commit/c1340fcff569b76749ab8d20784da98e27a2cb04))
+* **manifest:** synchronize template cache ([#606](https://github.com/cameronsjo/bosun/issues/606)) ([ab11496](https://github.com/cameronsjo/bosun/commit/ab11496c42e4007c962f8c50a988356c9ece7a19))
+* **preflight:** reject unusable SSH key paths ([#601](https://github.com/cameronsjo/bosun/issues/601)) ([bc73ee2](https://github.com/cameronsjo/bosun/commit/bc73ee27041715afcc89c9bfec505018daef3adf))
+* **update:** propagate cancellation and command failures ([#602](https://github.com/cameronsjo/bosun/issues/602)) ([1f80dae](https://github.com/cameronsjo/bosun/commit/1f80dae94148ddae82793207ce6be169cb596acf))
+
 ## [0.40.7](https://github.com/cameronsjo/bosun/compare/v0.40.6...v0.40.7) (2026-08-26)
 
 
