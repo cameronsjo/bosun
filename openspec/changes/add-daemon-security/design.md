@@ -16,6 +16,8 @@ the safe path the default while leaving a clearly-labeled escape hatch.
 
 - Goals:
   - No unauthenticated mutating trigger reachable by default on any surface.
+  - No unauthenticated diagnostic response exposes repository/path-bearing
+    errors, reconcile timing, subsystem messages, or circuit-breaker state.
   - Reuse existing primitives (`authMiddleware`, `auditMiddleware`,
     `InjectPeerCred`) rather than introduce a new auth framework.
   - Backwards-compatibility via explicit, loud opt-in flags — never silent.
@@ -51,6 +53,25 @@ the safe path the default while leaving a clearly-labeled escape hatch.
   Homepage-dashboard users who relied on remote `/api/widget` set the opt-in;
   this is the documented breaking change with a one-line migration.
 
+- **Decision: `/health` is always a bounded liveness projection.**
+  Health probes stay unauthenticated on the webhook HTTP server, TCP API, and
+  Unix socket, and keep their existing 200-versus-503 semantics. Their JSON is
+  a transport-independent projection containing only `status`, `ready`, and
+  `uptime`; it never expands based on an Authorization header. Operators use
+  `/status` (bearer-protected over TCP or protected by Unix-socket access) and
+  daemon logs for last-error and reconcile diagnostics. This avoids a
+  credential-varying health response that caches or proxies could mix up.
+
+- **Decision: public-health consumers use the bounded wire type.**
+  `daemon.Client.Health` returns a dedicated public response type containing
+  only `status`, `ready`, and `uptime`, including when the daemon returns 503.
+  `daemon-status` continues to source last-error detail from `/status` and uses
+  `/health` only for health and readiness. `validate` obtains last-error detail
+  from `/status` when health is not healthy, so the CLI does not silently lose
+  its operator diagnostic while the public response is minimized. The
+  standalone webhook receiver forwards only the bounded health response and
+  rejects non-GET health and readiness requests.
+
 ## Risks / Trade-offs
 
 - **Breaking change for secret-less HTTP deployments** → mitigated by the opt-in
@@ -60,14 +81,20 @@ the safe path the default while leaving a clearly-labeled escape hatch.
   unconditionally.
 - **Metrics gating could break existing dashboards** → mitigated by documenting
   the opt-in and keeping localhost access unchanged.
+- **Consumers may have parsed detailed `/health` fields** → retain the existing
+  top-level status, readiness, uptime, and status codes; direct operator clients
+  to `/status` for diagnostics. Removing unauthenticated detail is the intended
+  security boundary.
 
 ## Migration Plan
 
 1. Operators running HTTP without a secret: set `WEBHOOK_SECRET`, or set
-   `BOSUN_ALLOW_UNSIGNED_WEBHOOKS=true` to retain current behavior.
+   `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true` to retain current behavior.
 2. Operators consuming `/api/widget` or `/metrics` remotely: set the
    metrics-exposure opt-in.
-3. Rollback: unset the new env vars; the startup gate is the only hard behavior
+3. Consumers using `/health` for diagnostics: use `/status` over the Unix socket
+   or authenticated TCP API; liveness probes require no change.
+4. Rollback: unset the new env vars; the startup gate is the only hard behavior
    change and is itself gated by the opt-in.
 
 ## Open Questions
