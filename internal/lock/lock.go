@@ -1,15 +1,21 @@
-//go:build !windows
-
 // Package lock provides file-based locking for bosun operations.
 package lock
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 )
+
+const lockFileSuffix = ".lock"
+
+type lockOps struct {
+	lock        func(*os.File) error
+	unlock      func(*os.File) error
+	isContended func(error) bool
+}
 
 // Lock represents a file-based lock.
 // The Lock struct is safe for concurrent use from multiple goroutines.
@@ -17,14 +23,22 @@ type Lock struct {
 	path string
 	file *os.File
 	mu   sync.Mutex // protects file field
+	ops  lockOps
 }
 
 // New creates a new lock for the given operation in the manifest directory.
 func New(manifestDir, operation string) *Lock {
 	lockDir := filepath.Join(manifestDir, ".bosun", "locks")
 	return &Lock{
-		path: filepath.Join(lockDir, operation+".lock"),
+		path: filepath.Join(lockDir, operation+lockFileSuffix),
+		ops:  platformLockOps(),
 	}
+}
+
+func (l *Lock) alreadyHeldError() error {
+	operation := filepath.Base(l.path)
+	operation = operation[:len(operation)-len(lockFileSuffix)]
+	return fmt.Errorf("another %s operation is already running", operation)
 }
 
 // Acquire attempts to acquire the lock.
@@ -33,6 +47,12 @@ func New(manifestDir, operation string) *Lock {
 func (l *Lock) Acquire() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	// A second acquire on the same Lock would otherwise depend on platform
+	// re-entrant-lock semantics and could overwrite the only tracked handle.
+	if l.file != nil {
+		return l.alreadyHeldError()
+	}
 
 	// Ensure lock directory exists
 	if err := os.MkdirAll(filepath.Dir(l.path), 0755); err != nil {
@@ -46,11 +66,10 @@ func (l *Lock) Acquire() error {
 	}
 
 	// Try to acquire exclusive lock (non-blocking)
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := l.ops.lock(f); err != nil {
 		_ = f.Close()
-		// Don't modify l.file here - leave it as-is (either nil from creation or previous state)
-		if err == syscall.EWOULDBLOCK {
-			return fmt.Errorf("another %s operation is already running", filepath.Base(l.path[:len(l.path)-5]))
+		if l.ops.isContended(err) {
+			return l.alreadyHeldError()
 		}
 		return fmt.Errorf("acquire lock: %w", err)
 	}
@@ -75,28 +94,32 @@ func (l *Lock) Release() error {
 	}
 
 	// Unlock the file
-	if err := syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN); err != nil {
-		_ = l.file.Close()
-		l.file = nil
-		return fmt.Errorf("release lock: %w", err)
+	f := l.file
+	l.file = nil
+	if err := l.ops.unlock(f); err != nil {
+		closeErr := f.Close()
+		return errors.Join(fmt.Errorf("release lock: %w", err), closeErr)
 	}
 
-	// Close and remove the lock file
-	_ = l.file.Close()
-	_ = os.Remove(l.path)
-	l.file = nil
-
-	return nil
+	// Keep the lock file as a stable inode. Removing it after unlocking creates
+	// a race where one process holds the old inode while another creates and
+	// locks a new file at the same path.
+	return f.Close()
 }
 
 // WithLock executes a function while holding the lock.
 // The lock is automatically released when the function returns.
 func WithLock(manifestDir, operation string, fn func() error) error {
-	lock := New(manifestDir, operation)
-	if err := lock.Acquire(); err != nil {
+	return withLock(New(manifestDir, operation), fn)
+}
+
+func withLock(lock *Lock, fn func() error) (err error) {
+	if err = lock.Acquire(); err != nil {
 		return err
 	}
-	defer func() { _ = lock.Release() }()
+	defer func() {
+		err = errors.Join(err, lock.Release())
+	}()
 
 	return fn()
 }

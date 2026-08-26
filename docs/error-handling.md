@@ -337,8 +337,13 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 
 **Recovery**:
 1. Wait for the other operation to complete
-2. If stale, remove lock file: `rm manifest/.bosun/locks/provision.lock`
-3. Check PID in lock file to verify process is still running
+2. Treat the PID in `manifest/.bosun/locks/provision.lock` as the last recorded holder, for diagnostics only
+3. Retry the command; the kernel releases the lock automatically when its process exits
+
+The lock file is intentionally persistent and its existence does not indicate
+that a lock is active. Do not remove it while a provision process might be
+running, because replacing the file can let two processes lock different
+inodes at the same path.
 
 #### Git Clone/Fetch Timeout
 
