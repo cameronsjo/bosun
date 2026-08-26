@@ -1935,7 +1935,7 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := mkdirAllContext(ctx, stagingRoot, stagingDirMode); err != nil {
+	if err := ops.mkdirAll(ctx, stagingRoot, stagingDirMode); err != nil {
 		logger.Error().
 			Err(err).
 			Str(log.FieldPath, stagingRoot).
@@ -1945,7 +1945,7 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := os.Chmod(stagingRoot, stagingDirMode); err != nil {
+	if err := ops.chmodPath(stagingRoot, stagingDirMode); err != nil {
 		return fmt.Errorf("failed to restrict staging directory: %w", err)
 	}
 	logger.Info().

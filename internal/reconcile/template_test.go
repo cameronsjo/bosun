@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -462,6 +463,31 @@ func TestTemplateOps_RenderDirectory(t *testing.T) {
 		assert.FileExists(t, copiedStatic)
 	})
 
+	t.Run("cancellation at template traversal stops before render mutation", func(t *testing.T) {
+		root := t.TempDir()
+		sourceDir := filepath.Join(root, "source")
+		stagingDir := filepath.Join(root, "staging")
+		require.NoError(t, os.MkdirAll(sourceDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "static.yml"), []byte("static"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "rendered.yml.tmpl"), []byte("rendered"), 0o644))
+		ctx, cancel := context.WithCancel(context.Background())
+		tmpl := NewTemplateOps(nil)
+		tmpl.walkDirFn = func(root string, walkFn fs.WalkDirFunc) error {
+			return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+				if path == root {
+					cancel()
+				}
+				return walkFn(path, entry, walkErr)
+			})
+		}
+
+		err := tmpl.RenderDirectory(ctx, sourceDir, stagingDir, "infra")
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.FileExists(t, filepath.Join(stagingDir, "infra", "static.yml"))
+		assert.NoFileExists(t, filepath.Join(stagingDir, "infra", "rendered.yml"))
+	})
+
 	t.Run("non-existent source directory", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		ctx := context.Background()
@@ -651,6 +677,46 @@ func TestTemplateOps_RenderDirectoryErrors(t *testing.T) {
 }
 
 func TestCopyNonTemplateFiles(t *testing.T) {
+	t.Run("already cancelled leaves destination absent", func(t *testing.T) {
+		root := t.TempDir()
+		srcDir := filepath.Join(root, "src")
+		dstDir := filepath.Join(root, "dst")
+		require.NoError(t, os.MkdirAll(srcDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "config.yml"), []byte("config"), 0o644))
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := copyNonTemplateFiles(ctx, srcDir, dstDir)
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.NoDirExists(t, dstDir)
+	})
+
+	t.Run("cancellation before nested directory creation stops later copies", func(t *testing.T) {
+		root := t.TempDir()
+		srcDir := filepath.Join(root, "src")
+		dstDir := filepath.Join(root, "dst")
+		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "aaa-nested"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "aaa-nested", "config.yml"), []byte("nested"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "zzz-later.yml"), []byte("later"), 0o644))
+		ctx, cancel := context.WithCancel(context.Background())
+		mkdirCalls := 0
+
+		err := copyNonTemplateFilesWithOps(ctx, srcDir, dstDir, fileutil.CopyFile, func(mkdirCtx context.Context, path string, mode os.FileMode) error {
+			mkdirCalls++
+			if filepath.Base(path) == "aaa-nested" {
+				cancel()
+			}
+			return mkdirAllContext(mkdirCtx, path, mode)
+		})
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, 2, mkdirCalls, "destination root and nested directory are the only attempted creates")
+		assert.DirExists(t, dstDir)
+		assert.NoDirExists(t, filepath.Join(dstDir, "aaa-nested"))
+		assert.NoFileExists(t, filepath.Join(dstDir, "zzz-later.yml"))
+	})
+
 	t.Run("copy mixed files", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		srcDir := filepath.Join(tmpDir, "src")

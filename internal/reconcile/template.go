@@ -39,6 +39,8 @@ type TemplateOps struct {
 	// beforeMutationFn is an instance-scoped test seam invoked immediately
 	// before each output filesystem mutation. Nil has no effect.
 	beforeMutationFn func(string)
+	// walkDirFn is an instance-scoped traversal seam. Nil uses filepath.WalkDir.
+	walkDirFn func(string, fs.WalkDirFunc) error
 }
 
 // NewTemplateOps creates a new TemplateOps instance with the given data.
@@ -277,7 +279,11 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 
 	// Find and render all .tmpl files in the entire sourceDir (not just subDir).
 	templatesRendered := 0
-	err := filepath.WalkDir(sourceDir, func(path string, d fs.DirEntry, err error) error {
+	walkDir := filepath.WalkDir
+	if t.walkDirFn != nil {
+		walkDir = t.walkDirFn
+	}
+	err := walkDir(sourceDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -331,6 +337,15 @@ func copyNonTemplateFiles(ctx context.Context, src, dst string) error {
 // copyNonTemplateFilesWith makes the copy operation explicit so the
 // discovery-to-copy race can be tested without a package-global fault seam.
 func copyNonTemplateFilesWith(ctx context.Context, src, dst string, copyFile func(context.Context, string, string) error) error {
+	return copyNonTemplateFilesWithOps(ctx, src, dst, copyFile, mkdirAllContext)
+}
+
+func copyNonTemplateFilesWithOps(
+	ctx context.Context,
+	src, dst string,
+	copyFile func(context.Context, string, string) error,
+	mkdirAll func(context.Context, string, os.FileMode) error,
+) error {
 	logger := log.ComponentCtx(ctx, log.ComponentTemplate)
 	if err := ctx.Err(); err != nil {
 		return err
@@ -385,7 +400,7 @@ func copyNonTemplateFilesWith(ctx context.Context, src, dst string, copyFile fun
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			return mkdirAllContext(ctx, dstPath, 0755)
+			return mkdirAll(ctx, dstPath, 0755)
 		}
 
 		// Skip template files.
