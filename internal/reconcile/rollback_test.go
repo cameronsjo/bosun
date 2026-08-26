@@ -322,6 +322,11 @@ func TestRun_HealthGateRollback_RevertsFullTree(t *testing.T) {
 
 	cfg := &Config{
 		DryRun:             false,
+		// This fixture targets the health-gate rollback branch. The deploy
+		// invariant has its own focused coverage and depends on wall-clock
+		// mtimes, which can preempt this branch when a kernel file timestamp
+		// straddles a one-second boundary by a fraction of a millisecond.
+		SkipDeployInvariant: true,
 		LockFile:           filepath.Join(tmp, "reconcile.lock"),
 		StateFile:          stateFile,
 		RepoDir:            repoDir,
