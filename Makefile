@@ -1,4 +1,4 @@
-.PHONY: build install clean test lint lint-new run release release-dry-run completion ci all dagger-test dagger-lint dagger-build dagger-webui dagger-release-dry-run diagrams
+.PHONY: build install clean test test-agent-gate lint lint-new run release release-dry-run completion ci all dagger-test dagger-lint dagger-build dagger-webui dagger-release-dry-run diagrams
 
 # Binary name
 BINARY := bosun
@@ -45,6 +45,10 @@ run:
 # Run tests
 test:
 	$(GOTEST) -v ./...
+
+# Test the agent-only shared-cache and disk-space gate without running Go.
+test-agent-gate:
+	sh scripts/agent-go-gate_test.sh
 
 # Run tests with coverage
 test-cover:
@@ -151,6 +155,7 @@ help:
 	@echo "  install         - Install to GOPATH/bin"
 	@echo "  run             - Run without building (use ARGS=... for arguments)"
 	@echo "  test            - Run tests"
+	@echo "  test-agent-gate - Test the agent resource gate"
 	@echo "  test-cover      - Run tests with coverage"
 	@echo "  lint            - Run golangci-lint locally"
 	@echo "  tidy            - Tidy go.mod"

@@ -17,6 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Test agent resource gate
+        run: sh scripts/agent-go-gate_test.sh
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:

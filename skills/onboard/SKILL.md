@@ -245,6 +245,18 @@ When working on Bosun itself:
 
 ## Development
 
+When an agent works on Bosun itself, it MUST wrap compiler-heavy local build,
+test, and lint commands with `scripts/agent-go-gate.sh`. This serializes those
+commands across worktrees and enforces the repository's shared-cache and disk
+limits. Human-invoked Make targets remain unchanged.
+
+```bash
+scripts/agent-go-gate.sh make build
+scripts/agent-go-gate.sh make test
+scripts/agent-go-gate.sh make lint
+make test-agent-gate    # Shell-only regression suite for the gate itself
+```
+
 ```bash
 make build              # Build binary -> build/bosun
 make test               # Run tests
