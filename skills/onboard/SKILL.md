@@ -205,11 +205,11 @@ For the full config file reference and environment variables, see `@resources/co
 | "project root not found" | Ensure you're inside a bosun project, or use `bosun --root /path` |
 | "connect to docker" | Check Docker is running (`docker ps`), check socket permissions |
 | "sops integrity verification failed" | Restore the encrypted file from a trusted source or re-encrypt it; rotating the Age key will not repair corrupted ciphertext |
-| "sops decryption key unavailable" | Check that `SOPS_AGE_KEY` or `SOPS_AGE_KEY_FILE` contains an identity matching the file recipients |
+| "sops decryption key unavailable" | Check that `SOPS_AGE_KEY` matches the recipients, or that `SOPS_AGE_KEY_FILE` is a regular, non-empty, parseable identity file; pre-create Docker file-bind sources |
 | "malformed SOPS encrypted data" | Validate or re-encrypt the file with SOPS |
 | "sops decryption failed" | Follow the sanitized category guidance in `@resources/gitops.md`; Bosun decrypts in-process and does not require the SOPS binary |
 | "docker compose: command not found" | Install Docker Compose v2: `docker compose version` |
-| SSH failures (remote deploy) | Test `ssh user@host exit`, check `ssh-add -l` |
+| SSH failures (Git or remote deploy) | Test `ssh user@host exit`, check `ssh-add -l`, and verify explicit or conventional key mounts are regular, non-empty, parseable files |
 
 Run `bosun doctor` to diagnose most setup issues.
 
@@ -244,6 +244,18 @@ When working on Bosun itself:
 | `Makefile` | Build, test, lint, CI targets (`make help` for full list) |
 
 ## Development
+
+When an agent works on Bosun itself, it MUST wrap compiler-heavy local build,
+test, and lint commands with `scripts/agent-go-gate.sh`. This serializes those
+commands across worktrees and enforces the repository's shared-cache and disk
+limits. Human-invoked Make targets remain unchanged.
+
+```bash
+scripts/agent-go-gate.sh make build
+scripts/agent-go-gate.sh make test
+scripts/agent-go-gate.sh make lint
+make test-agent-gate    # Shell-only regression suite for the gate itself
+```
 
 ```bash
 make build              # Build binary -> build/bosun

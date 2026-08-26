@@ -118,7 +118,7 @@ func (d *DeployOps) RollbackFromBackupSet(ctx context.Context, set RollbackSet, 
 			errs = append(errs, fmt.Errorf("create parent for %q: %w", live, err))
 			continue
 		}
-		if err := fileutil.CopyFile(backupFile, live); err != nil {
+		if err := fileutil.CopyFile(rollbackCtx, backupFile, live); err != nil {
 			errs = append(errs, fmt.Errorf("restore %q: %w", live, err))
 			continue
 		}

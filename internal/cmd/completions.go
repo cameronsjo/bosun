@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -115,6 +116,7 @@ func completeComposeServices(cmd *cobra.Command, args []string, toComplete strin
 			names = append(names, name)
 		}
 	}
+	sort.Strings(names)
 
 	return names, cobra.ShellCompDirectiveNoFileComp
 }

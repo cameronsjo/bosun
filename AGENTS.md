@@ -47,6 +47,46 @@ make test               # Run all tests
 make test-cover         # With coverage (creates coverage.out + coverage.html)
 ```
 
+### Agent Resource Gate
+
+Agents MUST wrap compiler-heavy local commands with
+`scripts/agent-go-gate.sh`, for example:
+
+```bash
+scripts/agent-go-gate.sh go test -race ./internal/reconcile
+scripts/agent-go-gate.sh golangci-lint run --new-from-rev=origin/main ./...
+```
+
+The gate serializes work across Git worktrees and uses the shared default Go,
+module, and golangci-lint caches. It derives the built-in Go defaults with
+`GOENV=off`, rejects explicit or GOENV-derived cache/temp deviations, and keeps
+unrelated GOENV settings available to the child. Its tiny persistent lock file
+lives in the canonical Git common directory shared by those worktrees. The gate
+refuses to start below 20 GiB free, reports before/after disk usage, and fails a
+successful command that unexpectedly consumes more than 8 GiB. A waiting agent
+times out after 60 seconds and SHOULD retry later; it MUST NOT bypass the gate.
+Agents MUST NOT create per-agent Go, race, coverage, or lint caches. Ordinary
+user-invoked Make targets remain ungated; the wrapper is mandatory for
+agent-run local gates.
+
+Exit statuses:
+
+- `0` — the wrapped command succeeded and the post-command disk checks passed.
+- `64` — a gate configuration or setup error. Fix the environment; an unchanged
+  retry MUST NOT be attempted.
+- `75` — a temporary resource failure, such as a lock timeout, disk-floor
+  violation, or excessive disk delta. Retry later.
+- `129`, `130`, or `143` — the wrapper received HUP, INT, or TERM respectively,
+  terminated its child, and preserved the corresponding signal status.
+- Any other status — the wrapped command's own exit status, which the gate
+  preserves.
+
+The defaults are controlled by `BOSUN_AGENT_MIN_FREE_GIB` (20),
+`BOSUN_AGENT_MAX_DISK_DELTA_GIB` (8), and
+`BOSUN_AGENT_GATE_WAIT_SECONDS` (60). Agents MUST NOT lower the free-space
+floor, raise the delta or wait limits, or otherwise change these overrides to
+bypass a gate rejection.
+
 **Patterns:**
 
 - `testify/assert` + `testify/require` (not stdlib assertions)
@@ -345,7 +385,7 @@ do not gain legacy aliases.
 | `BOSUN_DISABLE_HTTP` | daemon | Disable HTTP webhook server |
 | `BOSUN_LISTEN_ADDR` | daemon | Host/IP the HTTP server binds to (default: empty = all interfaces — container-side callers reach bosun over the docker bridge; do not default to loopback) |
 | `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | daemon | Opt out of fail-closed webhook auth (default: `false`; strict `== "true"`). With no `WEBHOOK_SECRET`, trigger endpoints reject requests with `403` unless this is set. Logged loudly at startup and per accepted request |
-| `BOSUN_SECRETS_FILE` | daemon, render | SOPS secrets file path |
+| `BOSUN_SECRETS_FILE` | daemon, reconcile, render | SOPS secrets file path. Daemon and one-shot reconcile validate the Age identity before Git when configured; daemon failure occurs before listeners bind |
 | `BOSUN_INFRA_DIR` | daemon, render | Infrastructure directory |
 | `BOSUN_TEMPLATE_INCLUDE_DIR` | daemon, reconcile, render | Subtree that template `include`/`fromJsonFile` reads are confined to (allowlist). Default `<infraDir>/templates`. Relative values resolve against the infra dir; absolute values are used as-is. Confining reads here keeps sibling SOPS files and `bosun.yaml` unreachable from templates |
 | `BOSUN_STATE_DIR` | daemon, reconcile | Deploy state directory |
@@ -355,7 +395,7 @@ do not gain legacy aliases.
 | `BOSUN_DEPLOY_SYNC_PATHS` | daemon, reconcile | JSON array of glob patterns for deploy sync target allowlist (overrides config file) |
 | `BOSUN_DEPLOY_SYNC_EXCLUDE` | daemon, reconcile | JSON array of glob patterns for deploy sync target blocklist (overrides config file) |
 | `BOSUN_COMPOSE_UP_TIMEOUT` | daemon, reconcile | Timeout for `docker compose up` (default: `10m`; accepts Go durations or plain seconds) |
-| `BOSUN_BACKUP_TIMEOUT` | daemon, reconcile | Timeout bounding pre-deploy backup creation + verification (default: `5m`; accepts Go durations or plain seconds). A timeout may fall back to an older verified rollback anchor; without one, the reconcile aborts before deployment |
+| `BOSUN_BACKUP_TIMEOUT` | daemon, reconcile | Timeout applied independently to pre-deploy backup creation + verification and post-success retention verification + cleanup (default: `5m`; accepts Go durations or plain seconds). A pre-deploy timeout may fall back to an older verified rollback anchor; a retention timeout warns, preserves remaining backups, and does not revoke deploy success |
 | `BOSUN_HEALTH_CHECK_TIMEOUT` | daemon, reconcile | Post-deploy health verification timeout (default: `60s`; set to `0` to disable) |
 | `BOSUN_HEALTH_CHECK_INTERVAL` | daemon, reconcile | Poll interval for health verification (default: `5s`) |
 | `BOSUN_RESTART_BREAKER` | daemon, reconcile | Enable restart circuit breaker (default: `true`) |
@@ -386,7 +426,7 @@ do not gain legacy aliases.
 | `BOSUN_TWILIO_ACCOUNT_SID` | config | Twilio account SID (overrides config file; legacy: `TWILIO_ACCOUNT_SID`) |
 | `BOSUN_TWILIO_AUTH_TOKEN` | config | Twilio auth token (overrides config file; legacy: `TWILIO_AUTH_TOKEN`) |
 | `BOSUN_TWILIO_FROM_NUMBER` | config | Twilio sender number (overrides config file; legacy: `TWILIO_FROM_NUMBER`) |
-| `BOSUN_SSH_KEY` | reconcile | SSH key path for git operations |
+| `BOSUN_SSH_KEY` | reconcile | Explicit SSH key fallback for git operations; an agent wins only when it returns a signer, and a recognized SSH repository with no usable agent/key fails before network access |
 | `BOSUN_SSH_KNOWN_HOSTS` | reconcile | Known hosts file path |
 | `BOSUN_SSH_INSECURE_HOST_KEY` | reconcile | Skip host key verification (`true`/`false`) |
 | `BOSUN_DAEMON_MODE` | log, sentry | Set automatically when daemon starts |

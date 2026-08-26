@@ -387,13 +387,14 @@ func (s *SocketServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := s.daemon.HealthStatus()
+	response := publicHealthResponse(status)
 
 	w.Header().Set("Content-Type", "application/json")
 	if status.Status != "healthy" {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 
-	_ = json.NewEncoder(w).Encode(status)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // handleConfig handles GET /config requests.

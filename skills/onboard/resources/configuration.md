@@ -321,6 +321,7 @@ Used by `bosun daemon` and `bosun reconcile`:
 | `REPO_BRANCH` | `main` | Branch to track |
 | `BOSUN_GIT_USERNAME` | | Private HTTPS Git Basic-auth username; set with `BOSUN_GIT_TOKEN` |
 | `BOSUN_GIT_TOKEN` | | Private HTTPS Git Basic-auth password/token; set with `BOSUN_GIT_USERNAME` |
+| `BOSUN_SSH_KEY` | conventional SSH paths | Private key fallback for SSH Git URLs; `SSH_AUTH_SOCK` takes precedence |
 | `REPO_DIR` | `/app/repo` | Local clone directory |
 | `STAGING_DIR` | `/app/staging` | Secret-bearing rendered staging and single-slot failure evidence directory; target-effective paths must be disjoint |
 | `BACKUP_DIR` | `/app/backups` | Backup directory |
@@ -340,6 +341,16 @@ remain on the same HTTPS host and effective port. Rotate the process
 environment and restart Bosun; configuration hot reload cannot rotate these
 credentials.
 
+SSH Git authentication tries `SSH_AUTH_SOCK` first, then an explicit
+`BOSUN_SSH_KEY`, then conventional key paths. When explicitly configured, the
+key path must be a regular, non-empty, parseable private key file; Bosun fails
+before Git network access for a missing, directory, empty, or malformed mount.
+An unusable existing conventional candidate is skipped if a later key works;
+otherwise Bosun reports its path instead of passing nil authentication to
+go-git. HTTPS and public local repository paths ignore unrelated SSH key
+settings. Pre-create container file-bind sources because Docker can create a
+directory when the host source is missing.
+
 ### Other Environment Variables
 
 | Variable | Description |
@@ -350,7 +361,7 @@ credentials.
 | `BOSUN_GIT_FETCH_DEPTH` | Positive shallow clone/fetch history depth (default: `1`). Increase when deploy-path or hook diffs regularly span multiple commits; unavailable history still fails safe to a full deploy/all hooks |
 | `BOSUN_CRITICAL_CONTAINERS` | JSON array of container names that must be healthy after deploy (overrides config file) |
 | `BOSUN_HEALTH_GATE_TIMEOUT` | Health gate polling timeout (default: `60s`; `0` disables the gate). Accepts Go duration strings or bare seconds |
-| `BOSUN_BACKUP_TIMEOUT` | Pre-deploy backup creation + verification timeout (default: `5m`). Accepts Go duration strings or bare seconds. A timeout may fall back to an older verified rollback anchor; without one, the reconcile aborts before deployment |
+| `BOSUN_BACKUP_TIMEOUT` | Timeout applied independently to pre-deploy backup creation + verification and post-success retention verification + cleanup (default: `5m`). Accepts Go duration strings or bare seconds. A pre-deploy timeout may fall back to an older verified rollback anchor; a retention timeout warns, preserves remaining backups, and does not revoke deploy success |
 | `BOSUN_DRIFT_INTERVAL` | Drift sampling interval (default: `5m`; `0` disables periodic drift checks). Configuration load and `bosun doctor` warn when this exceeds `BOSUN_RESTART_WINDOW` |
 | `BOSUN_DRIFT_SELF_HEAL_MAX_ATTEMPTS` | Positive attempt bound for one stable drift signature (default: `3`). Attempts and exhaustion persist across daemon restarts; invalid, zero, and negative values retain the default |
 | `BOSUN_RESTART_BREAKER` | Enable restart-loop protection (default: `true`) |
@@ -362,7 +373,7 @@ credentials.
 | `WEBHOOK_SECRET` | HMAC secret for daemon webhook endpoints. Required for webhook triggers — with no secret the endpoints fail closed (reject with `403`) |
 | `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | Opt out of fail-closed webhook auth (default: `false`; strict `== "true"` match). Accepts unauthenticated triggers on trusted networks; logs a security warning at startup and per accepted request |
 | `BOSUN_LISTEN_ADDR` | Host/IP the daemon HTTP server binds to (default: empty = all interfaces, so container-side callers like Traefik and Prometheus can reach it over the docker bridge) |
-| `SOPS_AGE_KEY_FILE` | Path to Age key file (default: `~/.config/sops/age/keys.txt`) |
+| `SOPS_AGE_KEY_FILE` | Path to a regular, non-empty, parseable Age identity file (default: `~/.config/sops/age/keys.txt`); `SOPS_AGE_KEY` takes precedence. When secrets files are configured, daemon and one-shot startup validate the identity before Git, and the daemon binds no listeners on failure |
 
 ## Tunnel Configuration
 

@@ -29,7 +29,8 @@ func init() {
 
 // ResolveGitAuth returns the authentication method for repoURL. HTTPS
 // credentials are read only from their BOSUN_ environment variables and are
-// kept operation-scoped; SSH resolution retains its existing behavior.
+// kept operation-scoped. SSH-agent auth also implements io.Closer; callers that
+// retain it must close it after the Git operation finishes.
 func ResolveGitAuth(repoURL string) (transport.AuthMethod, error) {
 	if err := rejectRepositoryUserinfo(repoURL); err != nil {
 		return nil, err
@@ -58,8 +59,14 @@ func ResolveGitAuth(repoURL string) (transport.AuthMethod, error) {
 // ValidateGitAuthentication applies the same pre-network contract used by
 // clone and fetch without retaining the returned authentication value.
 func ValidateGitAuthentication(repoURL string) error {
-	_, err := ResolveGitAuth(repoURL)
-	return err
+	auth, err := ResolveGitAuth(repoURL)
+	if err != nil {
+		return err
+	}
+	if err := closeGitAuth(auth); err != nil {
+		return fmt.Errorf("close Git authentication after validation: %w", err)
+	}
+	return nil
 }
 
 func rejectRepositoryUserinfo(repoURL string) error {
@@ -74,6 +81,10 @@ func rejectRepositoryUserinfo(repoURL string) error {
 		return nil
 	}
 	if parsed.User != nil {
+		_, hasPassword := parsed.User.Password()
+		if strings.EqualFold(parsed.Scheme, "ssh") && !hasPassword {
+			return nil
+		}
 		return errors.New("repository URL userinfo is not allowed; use BOSUN_GIT_USERNAME and BOSUN_GIT_TOKEN")
 	}
 	return nil

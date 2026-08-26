@@ -30,7 +30,7 @@ func TestDeployOps_DeployLocalTracksWriteOnPostWriteVerificationFailure(t *testi
 
 	deploy := &DeployOps{
 		ContentHashSync: true,
-		copyDirIfChangedFn: func(_, dst string) ([]string, error) {
+		copyDirIfChangedFn: func(_ context.Context, _, dst string) ([]string, error) {
 			require.NoError(t, os.MkdirAll(dst, 0o755))
 			require.NoError(t, os.WriteFile(filepath.Join(dst, "config.yml"), []byte("new"), 0o644))
 			return []string{"config.yml"}, postWriteVerificationError()
@@ -55,7 +55,7 @@ func TestDeployOps_DeployLocalFileTracksWriteOnPostWriteVerificationFailure(t *t
 
 	deploy := &DeployOps{
 		ContentHashSync: true,
-		copyFileIfChangedFn: func(_, dst string) (bool, error) {
+		copyFileIfChangedFn: func(_ context.Context, _, dst string) (bool, error) {
 			require.NoError(t, os.MkdirAll(filepath.Dir(dst), 0o755))
 			require.NoError(t, os.WriteFile(dst, []byte("new"), 0o644))
 			return true, postWriteVerificationError()
@@ -101,8 +101,8 @@ func TestRun_OnlyPostWriteVerificationFailureFiresFailedDeployHook(t *testing.T)
 			}
 			dockerClient := docker.NewClientWithAPI(mockAPI)
 			r.dockerClientFn = func() *docker.Client { return dockerClient }
-			r.deploy.copyDirIfChangedFn = func(src, dst string) ([]string, error) {
-				require.NoError(t, fileutil.CopyDir(src, dst))
+			r.deploy.copyDirIfChangedFn = func(ctx context.Context, src, dst string) ([]string, error) {
+				require.NoError(t, fileutil.CopyDir(ctx, src, dst))
 				return []string{"stub.yml"}, tt.copyErr
 			}
 
@@ -137,7 +137,7 @@ func TestDeployLocal_PostWriteVerificationResultUsesHookPath(t *testing.T) {
 
 	deploy := &DeployOps{
 		ContentHashSync: true,
-		copyDirIfChangedFn: func(_, dst string) ([]string, error) {
+		copyDirIfChangedFn: func(_ context.Context, _, dst string) ([]string, error) {
 			require.NoError(t, os.MkdirAll(dst, 0o755))
 			require.NoError(t, os.WriteFile(filepath.Join(dst, "configuration.yml"), []byte("new"), 0o644))
 			return []string{"configuration.yml"}, postWriteVerificationError()
@@ -179,7 +179,7 @@ func TestDeployLocalFile_PostWriteVerificationResultUsesHookPath(t *testing.T) {
 
 	deploy := &DeployOps{
 		ContentHashSync: true,
-		copyFileIfChangedFn: func(_, dst string) (bool, error) {
+		copyFileIfChangedFn: func(_ context.Context, _, dst string) (bool, error) {
 			require.NoError(t, os.MkdirAll(filepath.Dir(dst), 0o755))
 			require.NoError(t, os.WriteFile(dst, []byte("new"), 0o644))
 			return true, postWriteVerificationError()

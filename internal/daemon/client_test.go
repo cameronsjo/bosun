@@ -184,7 +184,7 @@ func TestClient_Health(t *testing.T) {
 			}
 
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(HealthStatus{
+			_ = json.NewEncoder(w).Encode(HealthResponse{
 				Status: "healthy",
 				Ready:  true,
 			})
@@ -212,10 +212,11 @@ func TestClient_Health(t *testing.T) {
 	t.Run("degraded", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(HealthStatus{
-				Status:    "degraded",
-				Ready:     true,
-				LastError: "previous reconcile failed",
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(HealthResponse{
+				Status: "degraded",
+				Ready:  true,
+				Uptime: 2 * time.Minute,
 			})
 		}))
 		defer server.Close()
@@ -233,6 +234,40 @@ func TestClient_Health(t *testing.T) {
 		if resp.Status != "degraded" {
 			t.Errorf("Status = %q, want degraded", resp.Status)
 		}
+		assert.Equal(t, 2*time.Minute, resp.Uptime)
+	})
+
+	t.Run("malformed response", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, "{")
+		}))
+		defer server.Close()
+
+		client := &Client{baseURL: server.URL, httpClient: server.Client()}
+		_, err := client.Health(context.Background())
+		require.ErrorContains(t, err, "failed to decode response")
+	})
+
+	t.Run("transport failure", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		client := &Client{baseURL: server.URL, httpClient: server.Client()}
+		server.Close()
+
+		_, err := client.Health(context.Background())
+		require.ErrorContains(t, err, "failed to connect to daemon")
+	})
+
+	t.Run("non-health status remains an error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"status":"unhealthy","ready":false,"uptime":0}`)
+		}))
+		defer server.Close()
+
+		client := &Client{baseURL: server.URL, httpClient: server.Client()}
+		_, err := client.Health(context.Background())
+		require.EqualError(t, err, `daemon returned status 401: {"status":"unhealthy","ready":false,"uptime":0}`)
 	})
 }
 
@@ -240,7 +275,7 @@ func TestClient_Ping(t *testing.T) {
 	t.Run("ping success", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(HealthStatus{Status: "healthy"})
+			_ = json.NewEncoder(w).Encode(HealthResponse{Status: "healthy"})
 		}))
 		defer server.Close()
 
@@ -321,13 +356,17 @@ func TestClient_Config(t *testing.T) {
 	})
 }
 
-func TestClient_ErrorResponseBodyBounded(t *testing.T) {
-	methods := []struct {
-		name   string
-		invoke func(context.Context, *Client) error
-	}{
+type daemonClientErrorMethod struct {
+	name   string
+	path   string
+	invoke func(context.Context, *Client) error
+}
+
+func daemonClientErrorMethods() []daemonClientErrorMethod {
+	return []daemonClientErrorMethod{
 		{
 			name: "trigger",
+			path: "/trigger",
 			invoke: func(ctx context.Context, client *Client) error {
 				_, err := client.Trigger(ctx, "test", false)
 				return err
@@ -335,19 +374,33 @@ func TestClient_ErrorResponseBodyBounded(t *testing.T) {
 		},
 		{
 			name: "status",
+			path: "/status",
 			invoke: func(ctx context.Context, client *Client) error {
 				_, err := client.Status(ctx)
 				return err
 			},
 		},
 		{
+			name: "health",
+			path: "/health",
+			invoke: func(ctx context.Context, client *Client) error {
+				_, err := client.Health(ctx)
+				return err
+			},
+		},
+		{
 			name: "config",
+			path: "/config",
 			invoke: func(ctx context.Context, client *Client) error {
 				_, err := client.Config(ctx)
 				return err
 			},
 		},
 	}
+}
+
+func TestClient_ErrorResponseBodyBounded(t *testing.T) {
+	methods := daemonClientErrorMethods()
 
 	bodies := []struct {
 		name     string
@@ -392,6 +445,36 @@ func TestClient_ErrorResponseBodyBounded(t *testing.T) {
 					assert.Equal(t, fmt.Sprintf("daemon returned status %d: %s", http.StatusTeapot, body.expected), err.Error())
 				})
 			}
+		})
+	}
+}
+
+func TestClient_ErrorResponseReadFailure(t *testing.T) {
+	for _, method := range daemonClientErrorMethods() {
+		t.Run(method.name, func(t *testing.T) {
+			readErr := errors.New("response stream failed")
+			body := &trackingReadCloser{
+				Reader: io.MultiReader(strings.NewReader("partial daemon error"), iotest.ErrReader(readErr)),
+			}
+			client := &Client{
+				socketPath: "/tmp/test.sock",
+				baseURL:    "http://daemon",
+				httpClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+					require.Equal(t, method.path, request.URL.Path)
+					return &http.Response{
+						StatusCode: http.StatusBadGateway,
+						Body:       body,
+						Header:     make(http.Header),
+						Request:    request,
+					}, nil
+				})},
+			}
+
+			err := method.invoke(context.Background(), client)
+
+			require.ErrorIs(t, err, readErr)
+			assert.Equal(t, "daemon returned status 502: partial daemon error [response body read error: response stream failed]", err.Error())
+			assert.Equal(t, 1, body.closeCalls)
 		})
 	}
 }
@@ -473,6 +556,7 @@ func TestClient_SuccessResponsesUnchanged(t *testing.T) {
 }
 
 func TestDaemonStatusError_ReadFailure(t *testing.T) {
+	readErr := errors.New("boom")
 	tests := []struct {
 		name     string
 		body     io.Reader
@@ -480,12 +564,12 @@ func TestDaemonStatusError_ReadFailure(t *testing.T) {
 	}{
 		{
 			name:     "partial body",
-			body:     io.MultiReader(strings.NewReader("partial body"), iotest.ErrReader(errors.New("boom"))),
+			body:     io.MultiReader(strings.NewReader("partial body"), iotest.ErrReader(readErr)),
 			expected: "daemon returned status 502: partial body [response body read error: boom]",
 		},
 		{
 			name:     "empty body",
-			body:     iotest.ErrReader(errors.New("boom")),
+			body:     iotest.ErrReader(readErr),
 			expected: "daemon returned status 502: [response body read error: boom]",
 		},
 	}
@@ -495,6 +579,23 @@ func TestDaemonStatusError_ReadFailure(t *testing.T) {
 			err := daemonStatusError(http.StatusBadGateway, tt.body)
 
 			assert.Equal(t, tt.expected, err.Error())
+			require.ErrorIs(t, err, readErr)
 		})
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+type trackingReadCloser struct {
+	io.Reader
+	closeCalls int
+}
+
+func (r *trackingReadCloser) Close() error {
+	r.closeCalls++
+	return nil
 }

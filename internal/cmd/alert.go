@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -38,25 +39,9 @@ var alertStatusCmd = &cobra.Command{
 }
 
 // alertTestCmd sends a test alert.
-var alertTestCmd = &cobra.Command{
-	Use:   "test",
-	Short: "Send test alert to configured providers",
-	Long:  "Send a test alert message to verify provider configuration.",
-	Run:   runAlertTest,
-}
-
-var (
-	alertTestProvider string
-	alertTestMessage  string
-	alertTestSeverity string
-)
+var alertTestCmd = newAlertTestCommand(defaultAlertTestDependencies())
 
 func init() {
-	// Add test command flags
-	alertTestCmd.Flags().StringVarP(&alertTestProvider, "provider", "p", "", "Test specific provider (discord, slack, sendgrid, twilio)")
-	alertTestCmd.Flags().StringVarP(&alertTestMessage, "message", "m", "", "Custom test message")
-	alertTestCmd.Flags().StringVarP(&alertTestSeverity, "severity", "s", "info", "Test severity level (info, warning, error)")
-
 	// Add subcommands to alert
 	alertCmd.AddCommand(alertStatusCmd)
 	alertCmd.AddCommand(alertTestCmd)
@@ -100,6 +85,15 @@ func displayAlertStatusFromEnv() {
 	displayAlertStatus(alertCfg)
 }
 
+func redactCredential(value string, prefixLen, suffixLen int) string {
+	valueRunes := []rune(value)
+	if len(valueRunes) <= prefixLen+suffixLen {
+		return "[configured]"
+	}
+
+	return string(valueRunes[:prefixLen]) + "..." + string(valueRunes[len(valueRunes)-suffixLen:])
+}
+
 func displayAlertStatus(alertCfg config.AlertConfig) {
 	_, _ = ui.Blue.Println("--- Alert Providers ---")
 	fmt.Println()
@@ -109,7 +103,7 @@ func displayAlertStatus(alertCfg config.AlertConfig) {
 	// Discord
 	if alertCfg.DiscordWebhookURL != "" {
 		ui.Success("Discord: configured")
-		fmt.Printf("  Webhook URL: %s...%s\n", alertCfg.DiscordWebhookURL[:30], alertCfg.DiscordWebhookURL[len(alertCfg.DiscordWebhookURL)-10:])
+		fmt.Printf("  Webhook URL: %s\n", redactCredential(alertCfg.DiscordWebhookURL, 30, 10))
 		hasProvider = true
 	} else {
 		ui.Warning("Discord: not configured")
@@ -120,11 +114,7 @@ func displayAlertStatus(alertCfg config.AlertConfig) {
 	// Slack
 	if alertCfg.SlackWebhookURL != "" {
 		ui.Success("Slack: configured")
-		if len(alertCfg.SlackWebhookURL) > 40 {
-			fmt.Printf("  Webhook URL: %s...%s\n", alertCfg.SlackWebhookURL[:30], alertCfg.SlackWebhookURL[len(alertCfg.SlackWebhookURL)-10:])
-		} else {
-			fmt.Println("  Webhook URL: [configured]")
-		}
+		fmt.Printf("  Webhook URL: %s\n", redactCredential(alertCfg.SlackWebhookURL, 30, 10))
 		hasProvider = true
 	} else {
 		ui.Warning("Slack: not configured")
@@ -135,7 +125,7 @@ func displayAlertStatus(alertCfg config.AlertConfig) {
 	// SendGrid
 	if alertCfg.SendGridAPIKey != "" {
 		ui.Success("SendGrid: configured")
-		fmt.Printf("  API Key: %s...%s\n", alertCfg.SendGridAPIKey[:8], alertCfg.SendGridAPIKey[len(alertCfg.SendGridAPIKey)-4:])
+		fmt.Printf("  API Key: %s\n", redactCredential(alertCfg.SendGridAPIKey, 8, 4))
 		if alertCfg.SendGridFromEmail != "" {
 			fmt.Printf("  From: %s", alertCfg.SendGridFromEmail)
 			if alertCfg.SendGridFromName != "" {
@@ -156,7 +146,7 @@ func displayAlertStatus(alertCfg config.AlertConfig) {
 	// Twilio
 	if alertCfg.TwilioAccountSID != "" && alertCfg.TwilioAuthToken != "" {
 		ui.Success("Twilio: configured")
-		fmt.Printf("  Account SID: %s...%s\n", alertCfg.TwilioAccountSID[:8], alertCfg.TwilioAccountSID[len(alertCfg.TwilioAccountSID)-4:])
+		fmt.Printf("  Account SID: %s\n", redactCredential(alertCfg.TwilioAccountSID, 8, 4))
 		if alertCfg.TwilioFromNumber != "" {
 			fmt.Printf("  From: %s\n", alertCfg.TwilioFromNumber)
 		}
@@ -190,142 +180,168 @@ func displayAlertStatus(alertCfg config.AlertConfig) {
 	}
 }
 
-func runAlertTest(cmd *cobra.Command, args []string) {
+type alertTestSendFunc func(context.Context, config.AlertConfig, string, string) error
+
+type alertTestSenders struct {
+	discord  alertTestSendFunc
+	slack    alertTestSendFunc
+	sendgrid alertTestSendFunc
+	twilio   alertTestSendFunc
+}
+
+type alertTestOptions struct {
+	provider string
+	message  string
+	severity string
+}
+
+type alertTestDependencies struct {
+	loadConfig func() (config.AlertConfig, error)
+	getenv     func(string) string
+	senders    alertTestSenders
+}
+
+func defaultAlertTestSenders() alertTestSenders {
+	return alertTestSenders{
+		discord: func(ctx context.Context, cfg config.AlertConfig, message, severity string) error {
+			return testDiscordAlert(ctx, cfg.DiscordWebhookURL, message, severity)
+		},
+		slack: func(ctx context.Context, cfg config.AlertConfig, message, severity string) error {
+			return testSlackAlert(ctx, cfg.SlackWebhookURL, message, severity)
+		},
+		sendgrid: testSendGridAlert,
+		twilio:   testTwilioAlert,
+	}
+}
+
+func defaultAlertTestDependencies() alertTestDependencies {
+	return alertTestDependencies{
+		loadConfig: func() (config.AlertConfig, error) {
+			cfg, err := config.Load()
+			if err != nil {
+				return config.AlertConfig{}, err
+			}
+			return cfg.GetAlertConfig(), nil
+		},
+		getenv:  os.Getenv,
+		senders: defaultAlertTestSenders(),
+	}
+}
+
+func newAlertTestCommand(deps alertTestDependencies) *cobra.Command {
+	opts := alertTestOptions{severity: "info"}
+	cmd := &cobra.Command{
+		Use:   "test",
+		Short: "Send test alert to configured providers",
+		Long:  "Send a test alert message to verify provider configuration.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAlertTest(cmd, args, deps, opts)
+		},
+	}
+	cmd.Flags().StringVarP(&opts.provider, "provider", "p", "", "Test specific provider (discord, slack, sendgrid, twilio)")
+	cmd.Flags().StringVarP(&opts.message, "message", "m", "", "Custom test message")
+	cmd.Flags().StringVarP(&opts.severity, "severity", "s", "info", "Test severity level (info, warning, error)")
+	return cmd
+}
+
+func alertConfigFromEnv(getenv func(string) string) config.AlertConfig {
+	return config.AlertConfig{
+		DiscordWebhookURL: getenv("DISCORD_WEBHOOK_URL"),
+		SlackWebhookURL:   getenv("SLACK_WEBHOOK_URL"),
+		SendGridAPIKey:    getenv("SENDGRID_API_KEY"),
+		TwilioAccountSID:  getenv("TWILIO_ACCOUNT_SID"),
+		TwilioAuthToken:   getenv("TWILIO_AUTH_TOKEN"),
+	}
+}
+
+func runAlertTest(cmd *cobra.Command, _ []string, deps alertTestDependencies, opts alertTestOptions) (err error) {
+	defer func() {
+		if err != nil {
+			cmd.SilenceUsage = true
+		}
+	}()
+
 	ui.Info("Testing alert providers...")
 	fmt.Println()
 
-	cfg, err := config.Load()
+	alertCfg, err := deps.loadConfig()
 	if err != nil {
 		ui.Warning("Could not load project config: %v", err)
 		ui.Info("Using environment variables only...")
 		fmt.Println()
+		alertCfg = alertConfigFromEnv(deps.getenv)
 	}
 
-	var alertCfg config.AlertConfig
-	if cfg != nil {
-		alertCfg = cfg.GetAlertConfig()
-	} else {
-		// Load from environment variables only
-		if v := os.Getenv("DISCORD_WEBHOOK_URL"); v != "" {
-			alertCfg.DiscordWebhookURL = v
-		}
-		if v := os.Getenv("SLACK_WEBHOOK_URL"); v != "" {
-			alertCfg.SlackWebhookURL = v
-		}
-		if v := os.Getenv("SENDGRID_API_KEY"); v != "" {
-			alertCfg.SendGridAPIKey = v
-		}
-		if v := os.Getenv("TWILIO_ACCOUNT_SID"); v != "" {
-			alertCfg.TwilioAccountSID = v
-		}
-		if v := os.Getenv("TWILIO_AUTH_TOKEN"); v != "" {
-			alertCfg.TwilioAuthToken = v
-		}
-	}
+	return executeAlertTests(cmd.Context(), alertCfg, opts, deps.senders)
+}
 
-	// Determine message
-	message := alertTestMessage
+func executeAlertTests(ctx context.Context, alertCfg config.AlertConfig, opts alertTestOptions, senders alertTestSenders) error {
+	message := opts.message
 	if message == "" {
 		message = "This is a test alert from bosun"
 	}
 
-	// Track results
-	tested := 0
-	succeeded := 0
-	failed := 0
-
-	// Test specific provider or all
-	if alertTestProvider == "" || alertTestProvider == "discord" {
-		if alertCfg.DiscordWebhookURL != "" {
-			tested++
-			ui.Info("Testing Discord...")
-			if err := testDiscordAlert(alertCfg.DiscordWebhookURL, message, alertTestSeverity); err != nil {
-				ui.Error("Discord test failed: %v", err)
-				failed++
-			} else {
-				ui.Success("Discord test passed")
-				succeeded++
-			}
-			fmt.Println()
-		} else if alertTestProvider == "discord" {
-			ui.Error("Discord not configured")
-			os.Exit(1)
-		}
+	providers := []struct {
+		name       string
+		label      string
+		configured bool
+		send       alertTestSendFunc
+	}{
+		{name: "discord", label: "Discord", configured: alertCfg.DiscordWebhookURL != "", send: senders.discord},
+		{name: "slack", label: "Slack", configured: alertCfg.SlackWebhookURL != "", send: senders.slack},
+		{name: "sendgrid", label: "SendGrid", configured: alertCfg.SendGridAPIKey != "", send: senders.sendgrid},
+		{name: "twilio", label: "Twilio", configured: alertCfg.TwilioAccountSID != "" && alertCfg.TwilioAuthToken != "", send: senders.twilio},
 	}
 
-	if alertTestProvider == "" || alertTestProvider == "slack" {
-		if alertCfg.SlackWebhookURL != "" {
-			tested++
-			ui.Info("Testing Slack...")
-			if err := testSlackAlert(alertCfg.SlackWebhookURL, message, alertTestSeverity); err != nil {
-				ui.Error("Slack test failed: %v", err)
-				failed++
-			} else {
-				ui.Success("Slack test passed")
-				succeeded++
-			}
-			fmt.Println()
-		} else if alertTestProvider == "slack" {
-			ui.Error("Slack not configured")
-			os.Exit(1)
+	tested, succeeded, failed := 0, 0, 0
+	for _, provider := range providers {
+		if opts.provider != "" && opts.provider != provider.name {
+			continue
 		}
-	}
+		if !provider.configured {
+			if opts.provider == provider.name {
+				return fmt.Errorf("%s not configured", provider.label)
+			}
+			continue
+		}
 
-	if alertTestProvider == "" || alertTestProvider == "sendgrid" {
-		if alertCfg.SendGridAPIKey != "" {
-			tested++
-			ui.Info("Testing SendGrid...")
-			if err := testSendGridAlert(alertCfg, message, alertTestSeverity); err != nil {
-				ui.Error("SendGrid test failed: %v", err)
-				failed++
-			} else {
-				ui.Success("SendGrid test passed")
-				succeeded++
-			}
-			fmt.Println()
-		} else if alertTestProvider == "sendgrid" {
-			ui.Error("SendGrid not configured")
-			os.Exit(1)
+		tested++
+		ui.Info("Testing %s...", provider.label)
+		if err := provider.send(ctx, alertCfg, message, opts.severity); err != nil {
+			ui.Error("%s test failed: %v", provider.label, err)
+			failed++
+		} else {
+			ui.Success("%s test passed", provider.label)
+			succeeded++
 		}
-	}
-
-	if alertTestProvider == "" || alertTestProvider == "twilio" {
-		if alertCfg.TwilioAccountSID != "" && alertCfg.TwilioAuthToken != "" {
-			tested++
-			ui.Info("Testing Twilio...")
-			if err := testTwilioAlert(alertCfg, message); err != nil {
-				ui.Error("Twilio test failed: %v", err)
-				failed++
-			} else {
-				ui.Success("Twilio test passed")
-				succeeded++
-			}
-			fmt.Println()
-		} else if alertTestProvider == "twilio" {
-			ui.Error("Twilio not configured")
-			os.Exit(1)
-		}
+		fmt.Println()
 	}
 
 	// Summary
 	if tested == 0 {
 		ui.Warning("No alert providers configured to test")
-		os.Exit(1)
+		return errors.New("no alert providers configured to test")
 	}
 
 	_, _ = ui.Blue.Println("--- Summary ---")
 	fmt.Printf("  Tested: %d, Passed: %d, Failed: %d\n", tested, succeeded, failed)
 
 	if failed > 0 {
-		os.Exit(1)
+		return fmt.Errorf("%d alert provider test(s) failed", failed)
 	}
+
+	return nil
 }
 
 // testSlackAlert sends a test message to Slack.
-func testSlackAlert(webhookURL, message, severity string) error {
+func testSlackAlert(ctx context.Context, webhookURL, message, severity string) error {
+	if webhookURL == "" {
+		return errors.New("slack webhook URL not configured")
+	}
+
 	provider := alert.NewSlackProvider(webhookURL)
 	if !provider.IsConfigured() {
-		return fmt.Errorf("slack webhook URL not configured")
+		return errors.New("slack webhook URL not configured")
 	}
 
 	testAlert := &alert.Alert{
@@ -339,17 +355,21 @@ func testSlackAlert(webhookURL, message, severity string) error {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	sendCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	return provider.Send(ctx, testAlert)
+	return provider.Send(sendCtx, testAlert)
 }
 
 // testDiscordAlert sends a test message to Discord.
-func testDiscordAlert(webhookURL, message, severity string) error {
+func testDiscordAlert(ctx context.Context, webhookURL, message, severity string) error {
+	if webhookURL == "" {
+		return errors.New("discord webhook URL not configured")
+	}
+
 	provider := alert.NewDiscordProvider(webhookURL)
 	if !provider.IsConfigured() {
-		return fmt.Errorf("discord webhook URL not configured")
+		return errors.New("discord webhook URL not configured")
 	}
 
 	testAlert := &alert.Alert{
@@ -363,14 +383,14 @@ func testDiscordAlert(webhookURL, message, severity string) error {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	sendCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	return provider.Send(ctx, testAlert)
+	return provider.Send(sendCtx, testAlert)
 }
 
 // testSendGridAlert sends a test email via SendGrid.
-func testSendGridAlert(cfg config.AlertConfig, message, severity string) error {
+func testSendGridAlert(ctx context.Context, cfg config.AlertConfig, message, severity string) error {
 	if cfg.SendGridFromEmail == "" {
 		return fmt.Errorf("sendgrid_from_email not configured")
 	}
@@ -400,14 +420,14 @@ func testSendGridAlert(cfg config.AlertConfig, message, severity string) error {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	sendCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	return provider.Send(ctx, testAlert)
+	return provider.Send(sendCtx, testAlert)
 }
 
 // testTwilioAlert sends a test SMS via Twilio.
-func testTwilioAlert(cfg config.AlertConfig, message string) error {
+func testTwilioAlert(ctx context.Context, cfg config.AlertConfig, message, _ string) error {
 	if cfg.TwilioFromNumber == "" {
 		return fmt.Errorf("twilio_from_number not configured")
 	}
@@ -438,10 +458,10 @@ func testTwilioAlert(cfg config.AlertConfig, message string) error {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	sendCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	return provider.Send(ctx, testAlert)
+	return provider.Send(sendCtx, testAlert)
 }
 
 // parseSeverity converts a string severity to alert.Severity.

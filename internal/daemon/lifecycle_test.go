@@ -100,7 +100,7 @@ func TestSocketLifecycle_StartAcceptShutdown(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-	var health HealthStatus
+	var health HealthResponse
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&health))
 	assert.Equal(t, "healthy", health.Status)
 
@@ -359,6 +359,79 @@ func TestDaemonRun_InvalidTargetLayoutFailsBeforeStartup(t *testing.T) {
 	listener := d.socketServer.listener
 	d.socketServer.mu.Unlock()
 	assert.Nil(t, listener, "invalid target layout must fail before binding the socket listener")
+	_, err = os.Lstat(socketPath)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestPrepareStateDir(t *testing.T) {
+	t.Run("empty state file is disabled", func(t *testing.T) {
+		require.NoError(t, prepareStateDir(""))
+	})
+
+	t.Run("creates and write-probes missing directory", func(t *testing.T) {
+		stateDir := filepath.Join(t.TempDir(), "state")
+		require.NoError(t, prepareStateDir(filepath.Join(stateDir, "deploy-state.json")))
+
+		info, err := os.Stat(stateDir)
+		require.NoError(t, err)
+		assert.True(t, info.IsDir())
+		assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+		entries, err := os.ReadDir(stateDir)
+		require.NoError(t, err)
+		assert.Empty(t, entries, "startup writability probe must be removed")
+	})
+
+	t.Run("rejects invalid parent", func(t *testing.T) {
+		parentFile := filepath.Join(t.TempDir(), "not-a-directory")
+		require.NoError(t, os.WriteFile(parentFile, []byte("x"), 0o600))
+
+		err := prepareStateDir(filepath.Join(parentFile, "deploy-state.json"))
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "create state directory")
+	})
+}
+
+func TestDaemonRun_UnwritableStateDirFailsBeforeStartup(t *testing.T) {
+	stateDir := t.TempDir()
+	stateDir = evalSymlinks(t, stateDir)
+	require.NoError(t, os.Chmod(stateDir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o700) })
+
+	// Permission bits are not enforced for some test users/filesystems (for
+	// example a root runner). Skip rather than risk starting a real daemon when
+	// that environment cannot model the non-root container failure.
+	probe, probeErr := os.CreateTemp(stateDir, ".permission-check-*")
+	if probeErr == nil {
+		_ = probe.Close()
+		_ = os.Remove(probe.Name())
+		t.Skip("filesystem does not enforce owner write permission in this test environment")
+	}
+
+	tmpDir := shortSocketDir(t)
+	socketPath := filepath.Join(tmpDir, "d.sock")
+	cfg := DefaultConfig()
+	cfg.SocketPath = socketPath
+	cfg.EnableHTTP = false
+	cfg.EnableTCP = false
+	cfg.PollInterval = 0
+	cfg.DriftInterval = 0
+	cfg.InitialDelay = 24 * time.Hour
+	cfg.ReconcileConfig = reconcile.DefaultConfig()
+	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
+	cfg.ReconcileConfig.DryRun = true
+	cfg.ReconcileConfig.StateFile = filepath.Join(stateDir, "deploy-state.json")
+
+	d, err := New(cfg)
+	require.NoError(t, err)
+	err = d.Run(context.Background())
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "prepare deploy state")
+	assert.ErrorContains(t, err, "not writable")
+	assert.False(t, d.IsReady())
+	d.socketServer.mu.Lock()
+	listener := d.socketServer.listener
+	d.socketServer.mu.Unlock()
+	assert.Nil(t, listener, "unwritable state storage must fail before binding the socket listener")
 	_, err = os.Lstat(socketPath)
 	assert.ErrorIs(t, err, os.ErrNotExist)
 }

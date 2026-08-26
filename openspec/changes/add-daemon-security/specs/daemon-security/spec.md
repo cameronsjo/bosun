@@ -113,6 +113,20 @@ endpoints SHALL be served only to localhost, gated behind authentication, or
 enabled by an explicit operator opt-in. The deployed git SHA and reconcile
 cadence SHALL NOT be disclosed to anonymous remote callers by default.
 
+The `/health` endpoint SHALL remain available without authentication for
+liveness probes on the webhook HTTP server, TCP API, and Unix socket. Its JSON
+response SHALL contain exactly the top-level `status`, `ready`, and `uptime`
+fields and SHALL preserve the existing HTTP status contract: 200 when healthy,
+503 when degraded or unhealthy, and 405 for non-GET methods. It SHALL NOT expose
+`last_error`, `last_reconcile`, repository URLs or paths, subsystem names,
+subsystem messages, or circuit-breaker state or failure counts. The bounded
+schema SHALL NOT vary when an Authorization header is present.
+
+Operator diagnostics SHALL remain available through `/status`: bearer-token
+authentication is required over TCP, while Unix-socket access remains the local
+operator trust boundary. `/status` MAY include last-reconcile and sanitized
+last-error detail; daemon logs remain the source for subsystem diagnostics.
+
 #### Scenario: Widget not remotely reachable by default
 - **WHEN** a remote, unauthenticated caller requests `/api/widget` under the default configuration
 - **THEN** the request is refused (not served the deploy SHA and cadence)
@@ -124,6 +138,50 @@ cadence SHALL NOT be disclosed to anonymous remote callers by default.
 #### Scenario: Explicit opt-in exposes endpoints
 - **WHEN** the operator sets the metrics-exposure opt-in
 - **THEN** `/metrics` and `/api/widget` are served to remote callers as configured
+
+#### Scenario: Public healthy liveness is bounded
+- **WHEN** an unauthenticated caller requests `GET /health` from the webhook HTTP server, TCP API, or Unix socket and the daemon is healthy
+- **THEN** the response status is 200
+- **AND** the JSON object contains exactly `status`, `ready`, and `uptime`
+
+#### Scenario: Public degraded liveness preserves status without detail
+- **WHEN** a reconcile failure containing a repository URL or filesystem path makes the daemon degraded
+- **AND** an unauthenticated caller requests `GET /health`
+- **THEN** the response status is 503 and `status` is `degraded`
+- **AND** the body does not contain the error string, `last_error`, `last_reconcile`, subsystem data, or circuit-breaker data
+
+#### Scenario: Authorization does not expand health output
+- **WHEN** a caller requests `GET /health` with a valid bearer token
+- **THEN** the response uses the same bounded schema as an unauthenticated health request
+- **AND** detailed diagnostics remain available from the authenticated `/status` endpoint
+
+#### Scenario: Public health rejects non-GET methods
+- **WHEN** a caller sends a non-GET request to `/health`
+- **THEN** the daemon responds 405 without a diagnostic JSON body
+
+#### Scenario: Daemon client decodes only the public health contract
+- **WHEN** `daemon.Client.Health` receives a 200 or 503 `/health` response
+- **THEN** it returns a dedicated public-health response containing only `status`, `ready`, and `uptime`
+- **AND** a valid 503 body remains a health result rather than a transport error
+- **AND** malformed JSON and transport failures remain errors
+
+#### Scenario: Daemon status keeps operator diagnostics separate
+- **WHEN** `bosun daemon-status` renders human-readable or JSON output
+- **THEN** it obtains last-reconcile and last-error diagnostics from `/status`
+- **AND** it uses the bounded `/health` response only for health and readiness
+
+#### Scenario: Validate preserves local operator error detail
+- **WHEN** `bosun validate` observes a non-healthy daemon over its Unix-socket client
+- **THEN** it obtains the bounded health and readiness state from `/health`
+- **AND** it requests `/status` and displays that response's sanitized last error when present
+- **AND** inability to obtain `/status` does not expose any detail from `/health` or hide the non-healthy warning
+
+#### Scenario: Standalone webhook liveness proxy stays bounded and GET-only
+- **WHEN** the standalone `bosun webhook` receiver successfully proxies `GET /health`
+- **THEN** it returns only `status`, `ready`, and `uptime`, preserving 200 for healthy and 503 otherwise
+- **AND** `GET /ready` continues to return only the existing plain readiness response
+- **WHEN** a caller sends a non-GET request to either proxy endpoint
+- **THEN** the receiver responds 405 without contacting the daemon
 
 ### Requirement: Webhook payload sanitization
 

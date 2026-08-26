@@ -174,11 +174,6 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		ui.Fatal("BOSUN_REPO_URL (or legacy REPO_URL) environment variable is required")
 		return
 	}
-	if err := reconcile.ValidateGitAuthentication(cfg.RepoURL); err != nil {
-		ui.Fatal("Invalid Git authentication configuration: %v", reconcile.SanitizeGitError(err))
-		return
-	}
-
 	// Optional settings from environment.
 	if branch := config.BosunEnv("REPO_BRANCH"); branch != "" {
 		cfg.RepoBranch = branch
@@ -208,6 +203,13 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		for i, f := range cfg.SecretsFiles {
 			cfg.SecretsFiles[i] = strings.TrimSpace(f)
 		}
+	}
+	if secretsFile := os.Getenv("BOSUN_SECRETS_FILE"); secretsFile != "" {
+		cfg.SecretsFiles = []string{strings.TrimSpace(secretsFile)}
+	}
+	if err := validateReconcileStartup(cfg); err != nil {
+		ui.Fatal("Invalid reconciliation configuration: %v", err)
+		return
 	}
 
 	// Target host from environment or flags.
@@ -418,6 +420,16 @@ func runReconcile(cmd *cobra.Command, args []string) {
 	if hadError {
 		ui.Fatal("Reconciliation completed with errors")
 	}
+}
+
+func validateReconcileStartup(cfg *reconcile.Config) error {
+	if err := reconcile.ValidateAgeIdentityForSecrets(cfg.SecretsFiles); err != nil {
+		return err
+	}
+	if err := reconcile.ValidateGitAuthentication(cfg.RepoURL); err != nil {
+		return reconcile.SanitizeGitError(err)
+	}
+	return nil
 }
 
 func applyTargetsOverrideForCLI(cfg *reconcile.Config, value string) {

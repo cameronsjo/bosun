@@ -1,10 +1,15 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
 	"testing"
 
+	"github.com/fatih/color"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/cameronsjo/bosun/internal/daemon"
 )
 
 func TestStatusCmd_Registration(t *testing.T) {
@@ -71,4 +76,43 @@ func TestDaemonStatusCmd_DsAlias(t *testing.T) {
 	cmd, _, err := rootCmd.Find([]string{"ds"})
 	require.NoError(t, err)
 	assert.Equal(t, "daemon-status", cmd.Name())
+}
+
+func TestDaemonStatusOutput_UsesStatusForDiagnostics(t *testing.T) {
+	status := &daemon.StatusResponse{
+		State:     "idle",
+		Uptime:    "2m",
+		LastError: "sanitized operator diagnostic",
+	}
+	health := &daemon.HealthResponse{Status: "degraded", Ready: true}
+
+	t.Run("human", func(t *testing.T) {
+		var colorOutput bytes.Buffer
+		oldOutput := color.Output
+		oldNoColor := color.NoColor
+		color.Output = &colorOutput
+		color.NoColor = true
+		t.Cleanup(func() {
+			color.Output = oldOutput
+			color.NoColor = oldNoColor
+		})
+
+		stdout := captureStdout(t, func() { printStatusHuman(status, health) })
+		output := stdout + colorOutput.String()
+		assert.Contains(t, output, "sanitized operator diagnostic")
+		assert.Contains(t, output, "Health: degraded")
+		assert.Contains(t, output, "Ready: true")
+	})
+
+	t.Run("JSON", func(t *testing.T) {
+		output := captureStdout(t, func() { printStatusJSON(status, health) })
+		var decoded statusJSONOutput
+		require.NoError(t, json.Unmarshal([]byte(output), &decoded))
+		require.NotNil(t, decoded.LastError)
+		assert.Equal(t, "sanitized operator diagnostic", *decoded.LastError)
+		require.NotNil(t, decoded.Health)
+		assert.Equal(t, "degraded", *decoded.Health)
+		require.NotNil(t, decoded.Ready)
+		assert.True(t, *decoded.Ready)
+	})
 }

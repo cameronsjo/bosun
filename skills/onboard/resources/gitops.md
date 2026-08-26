@@ -83,6 +83,11 @@ Template rendering is strict: a missing map key stops stage 5 with the template
 and key named in the error. Optional values must use an explicit lookup such as
 `get . "key" | default "value"`.
 
+Template staging checks reconcile cancellation before directory creation and
+before atomically publishing each rendered output. A cancelled temp-file write
+is removed and any prior output remains untouched; cancellation after staging
+cleanup also stops before recreating the staging root.
+
 ### Failed Staging Evidence
 
 Rendered staging can contain plaintext secrets. Bosun creates the effective
@@ -120,6 +125,23 @@ but Bosun never logs raw SOPS library errors or the decrypted MACs, encrypted
 values, key identifiers, and additional local paths they may contain. The
 requested secrets-file path remains in the surrounding error context.
 
+Age identity resolution checks `SOPS_AGE_KEY`, then `SOPS_AGE_KEY_FILE`, then
+`~/.config/sops/age/keys.txt`. Direct key content takes precedence. A resolved
+file must be regular, non-empty, and contain at least one parseable Age
+identity; Bosun rejects missing, directory, empty, and malformed mounts before
+decryption. Pre-create container file-bind sources because Docker can create a
+directory when the host source is missing. If secrets files are configured,
+the daemon and one-shot reconcile validate the identity before Git; the daemon
+does so before binding any listener. Without secrets files, no Age identity is
+required.
+
+SSH Git authentication parses the go-git endpoint, preserves its SSH username,
+and tries `SSH_AUTH_SOCK` before private-key files. The agent must return at
+least one signer; Bosun closes an unusable agent connection and falls back to
+`BOSUN_SSH_KEY` and conventional paths. A recognized SSH endpoint with no usable
+authentication fails before network access. HTTPS and local paths never inspect
+unrelated SSH key settings.
+
 ### Deploy-Sync Invariants (stage 6 + stage 9)
 
 Bosun enforces two invariant gates that turn the GH#214 silent-success failure mode into a loud error:
@@ -137,10 +159,14 @@ Before deploying new configs, bosun tars the **deployed config footprint** —
 the files it renders into staging, mapped onto their appdata destinations — into
 a timestamped `backup-YYYYMMDD-HHMMSS/configs.tar.gz` under `BackupDir`, verifies
 that the archive lists and that every member reads to EOF under the caller
-deadline and total 10 GiB decompression bound, and prunes to the most recent
-`BackupsToKeep` **valid** backups (default 5). When no managed file exists yet
-(a fresh host's first deploy), no archive is written and no rollback anchor is
-recorded — a content-free backup is never reported as a real one (#360).
+deadline and total 10 GiB decompression bound. After the deploy clears its
+health checks, post-sync hooks, and post-deploy verification gates, bosun prunes
+to the most recent `BackupsToKeep` **valid** backups (default 5). With
+`BackupsToKeep: 1`, the prior known-good remains alongside the fresh snapshot
+until that success boundary; failed deploys retain both, and only successful
+deploys prune to one. When no managed file exists yet (a fresh host's first
+deploy), no archive is written and no rollback anchor is recorded — a
+content-free backup is never reported as a real one (#360).
 Retention counts only backups that pass the same verification used to pick a
 rollback anchor: a corrupt or partial dir (missing,
 unlistable, or truncated archive) is removed rather than occupying a keep slot and
@@ -161,11 +187,14 @@ reconcile (GH#319, bosun-5qx):
   skips its subtree during the filesystem walk. Remote `tar -czf -` receives a
   shell-quoted `--exclude` when `BackupDir` is absolute; a relative remote
   destination logs that self-exclusion could not be applied.
-- **Bounded deadline.** Backup creation *and* verification run under
-  `BackupTimeout` (default 5m, overridable via `BOSUN_BACKUP_TIMEOUT` — accepts a
-  Go duration or plain seconds). The deadline cancels native local archive I/O,
-  remote SSH `tar`, the fast `tar -tzf` verification pre-check, and the native
-  full-stream integrity read. On timeout the backup is treated as a failure.
+- **Bounded deadlines.** `BackupTimeout` (default 5m, overridable via
+  `BOSUN_BACKUP_TIMEOUT` — accepts a Go duration or plain seconds) applies
+  independently to pre-deploy creation + verification and post-success
+  retention verification + cleanup. The pre-deploy deadline cancels native
+  local archive I/O, remote SSH `tar`, the fast `tar -tzf` verification
+  pre-check, and the native full-stream integrity read. A retention timeout
+  warns, marks its telemetry span as an error, preserves the remaining backups,
+  and does not revoke the verified deploy's success.
 
 Backup failure handling depends on what Bosun can prove before mutation:
 
@@ -370,8 +399,8 @@ The daemon's primary interface. All `bosun trigger`, `bosun daemon-status`, and 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/trigger` | POST | Trigger reconciliation |
-| `/status` | GET | Daemon status |
-| `/health` | GET | Health check (JSON) |
+| `/status` | GET | Operator status with sanitized reconcile diagnostics |
+| `/health` | GET | Public liveness JSON: `status`, `ready`, and `uptime` |
 | `/ready` | GET | Readiness check |
 | `/config` | GET | Current config |
 | `/ping` | GET | Simple ping |
@@ -379,6 +408,13 @@ The daemon's primary interface. All `bosun trigger`, `bosun daemon-status`, and 
 | `/api/containers` | GET | Container list with summary |
 | `/api/trigger` | POST | Trigger reconciliation (WebUI) |
 | `/api/status` | GET | Extended status (WebUI) |
+
+`/health` is intentionally unauthenticated and has the same bounded response on
+the webhook listener, TCP API, and Unix socket. It returns `200` when healthy,
+`503` otherwise, and `405` for non-GET methods; an Authorization header never
+expands it. Reconcile errors and timestamps, repository paths, subsystem detail,
+and circuit-breaker state stay off this response. Use bearer-protected TCP
+`/status` or local Unix-socket `/status` for operator diagnostics.
 
 **Direct access via curl:**
 
@@ -583,6 +619,21 @@ bosun drift --target=nas       # Show drift for a specific target
 
 The daemon and one-shot CLI track deploy state in a JSON file (default: `/var/lib/bosun/deploy-state.json`). Before a real reconciliation, each mode creates the state file's parent directory. Multi-target one-shot runs prepare and write-probe each target's state directory independently and fail a target before deployment if its directory cannot be written. A one-shot dry run uses a temporary copy of existing state, so it evaluates skip and circuit-breaker decisions without creating or updating the configured state path.
 
+Container deployments MUST mount `/var/lib/bosun` on persistent writable
+storage. The shipped Compose and Unraid definitions use
+`/mnt/user/appdata/bosun/state`; custom deployments need an equivalent mount.
+Bosun runs as fixed UID/GID 1000, so create the host directory before starting:
+
+```bash
+install -d -o 1000 -g 1000 -m 0700 /mnt/user/appdata/bosun/state
+```
+
+The shipped Compose definition MUST keep `bind.create_host_path: false` so Docker
+cannot silently create the directory as `root:root`. Daemon startup write-probes
+the directory and fails before binding API listeners when it is not writable.
+Losing the mount discards drift history, skip state, and circuit-breaker state,
+so the next run reconciles the full declared estate.
+
 **State tracking includes:**
 - Last successful deploy timestamp and commit
 - Last failed deploy details
@@ -607,6 +658,18 @@ Use `deploy_sync_paths` (allowlist) and `deploy_sync_exclude` (blocklist) in `bo
 ### Local Deployment
 
 Default mode. Copies rendered files directly to the local filesystem and runs `docker compose up` per-file with isolated rollback. Each compose file is deployed independently — if one file fails (e.g., bad image tag), only that file is rolled back from a fully validated, in-process extraction of `configs.tar.gz` while other files continue. The archive is extracted lazily at most once per isolated operation. A final orphan-reconciliation pass runs `--remove-orphans` across each successful new file and each verified rollback's backup copy, preserving input order; failed files without a successful rollback are excluded so the cleanup pass never retries known-bad input or consumes a partial extraction.
+
+Local directory and content-hash copies check the reconcile context before each
+directory creation, file replacement, and managed stale-file deletion, and
+cancellation interrupts copying into an atomic temp file. A cancelled reconcile
+therefore performs no later live-target writes or deletions. Any file already
+renamed into place is still flushed and verified before the cancellation error
+returns, so its completed write remains durable and accurately tracked. Bosun
+also removes an unpublished managed file/directory transition stage when the
+reconcile is cancelled, allowing the next reconcile to retry without colliding
+with a leftover `.bosun-transition-stage` path. Standard atomic-swap mode also
+restores an existing target that was already moved aside and removes the
+unpublished temp tree before returning cancellation.
 
 **Stale-file pruning is managed-set scoped.** When content-hash sync is on (default), bosun removes a target file only if it was in the *previous* deploy's manifest (`state.deployed_files`) **and** is absent from the current rendered source. Files bosun never wrote — container runtime data like `db.sqlite3`, `grafana.db`, or a service's `data/` dir living alongside config in the same appdata dir — are never in the manifest, so they are never deleted. A render that produces zero files also skips pruning entirely, so a templating failure can't wipe a populated target. The first deploy after upgrading (empty manifest) prunes nothing and simply seeds the manifest.
 
@@ -672,6 +735,7 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `REPO_BRANCH` | `main` | Branch to track |
 | `BOSUN_GIT_USERNAME` | | Private HTTPS Git Basic-auth username; set with `BOSUN_GIT_TOKEN` |
 | `BOSUN_GIT_TOKEN` | | Private HTTPS Git Basic-auth password/token; set with `BOSUN_GIT_USERNAME` |
+| `BOSUN_SSH_KEY` | conventional SSH paths | Private key fallback for SSH Git URLs; `SSH_AUTH_SOCK` takes precedence |
 | `REPO_DIR` | `/app/repo` | Local clone directory |
 | `STAGING_DIR` | `/app/staging` | Secret-bearing rendered staging and single-slot failure evidence directory |
 | `BACKUP_DIR` | `/app/backups` | Backup directory |
@@ -700,6 +764,15 @@ partial pair, a non-HTTPS or hostless URL, or any URL userinfo. Authenticated
 redirects must stay HTTPS on the configured host and effective port. The pair
 has no legacy aliases or YAML fields, applies after `BOSUN_REPO_URL` takes
 precedence over `REPO_URL`, and rotates only after restarting the process.
+
+SSH Git authentication tries `SSH_AUTH_SOCK` first, then an explicit
+`BOSUN_SSH_KEY`, then conventional key paths. An explicit key path must be a
+regular, non-empty, parseable private key file; invalid mounts fail before Git
+network access. An unusable existing conventional candidate is skipped if a
+later key works; otherwise Bosun reports its path instead of passing nil
+authentication to go-git. HTTPS and public local repository paths ignore
+unrelated SSH key settings. For containers, pre-create file-bind sources
+because Docker can create a directory for a missing host source.
 
 ## OpenTelemetry Tracing
 

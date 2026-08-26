@@ -47,6 +47,13 @@ Bosun uses [age](https://age-encryption.org/) as the encryption backend for SOPS
 2. `SOPS_AGE_KEY_FILE` environment variable (path to key file)
 3. Default: `~/.config/sops/age/keys.txt`
 
+Inline key content takes precedence. Resolved files must be regular,
+non-empty, and contain at least one parseable Age identity. Bosun rejects an
+invalid file before decryption and explains that Docker can create a directory
+when a file bind-mount source is missing. When secrets files are configured,
+daemon and one-shot startup perform this validation before Git; the daemon
+binds no API listeners on failure.
+
 ### Key Generation and Storage
 
 **Implementation**: `internal/internal/cmd/init.go`
@@ -583,6 +590,25 @@ permissions as their entire trust boundary can set
 security opt-out is logged at startup and for every accepted unauthenticated
 mutation. Read-only socket endpoints remain governed by the socket's filesystem
 permissions.
+
+## Public Health and Operator Diagnostics
+
+`GET /health` stays unauthenticated on the webhook HTTP listener, TCP API, and
+Unix socket so container and load-balancer liveness probes do not need a control
+credential. Its JSON response is deliberately bounded to exactly `status`,
+`ready`, and `uptime`. It returns `200` when healthy, `503` when degraded or
+unhealthy, and `405` for non-GET requests.
+
+The public response never contains reconcile errors or timestamps, repository
+URLs or filesystem paths, subsystem names or messages, or circuit-breaker state.
+Supplying an Authorization header does not expand the response, which prevents
+caches and proxies from mixing public and credential-bearing variants.
+
+Operators obtain sanitized last-error and last-reconcile diagnostics from
+`GET /status`: the TCP API requires its bearer token, while Unix-socket access is
+governed by the local socket trust boundary. Subsystem detail remains in daemon
+logs. The standalone `bosun webhook` receiver preserves the bounded `/health`
+schema and rejects non-GET `/health` and `/ready` requests.
 
 ## Daemon Metrics and Widget Authentication
 

@@ -2,12 +2,99 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/fatih/color"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/cameronsjo/bosun/internal/daemon"
 )
+
+func TestValidateDaemonConnection_UsesStatusForDiagnostics(t *testing.T) {
+	t.Run("prints sanitized status error for degraded health", func(t *testing.T) {
+		warnings, output := runValidateDaemonConnection(t, func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodGet, r.Method)
+			_ = json.NewEncoder(w).Encode(daemon.StatusResponse{
+				State:     "idle",
+				LastError: "sanitized operator diagnostic",
+			})
+		})
+
+		assert.Equal(t, 1, warnings)
+		assert.Contains(t, output, "Daemon health: degraded")
+		assert.Contains(t, output, "Last error: sanitized operator diagnostic")
+	})
+
+	t.Run("keeps degraded warning when status fails", func(t *testing.T) {
+		warnings, output := runValidateDaemonConnection(t, func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "status unavailable", http.StatusInternalServerError)
+		})
+
+		assert.Equal(t, 1, warnings)
+		assert.Contains(t, output, "Daemon health: degraded")
+		assert.Contains(t, output, "Cannot get daemon status")
+		assert.NotContains(t, output, "Last error:")
+	})
+}
+
+func runValidateDaemonConnection(
+	t *testing.T,
+	statusHandler http.HandlerFunc,
+) (int, string) {
+	t.Helper()
+
+	tmpDir, err := os.MkdirTemp("", "bsv-")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.RemoveAll(tmpDir)) })
+	socketPath := filepath.Join(tmpDir, "bosun.sock")
+	listener, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(daemon.HealthResponse{
+			Status: "degraded",
+			Ready:  true,
+			Uptime: 1,
+		})
+	})
+	mux.HandleFunc("/status", statusHandler)
+	server := &http.Server{Handler: mux}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		_ = server.Close()
+		_ = listener.Close()
+	})
+
+	oldSocket := validateSocket
+	oldTimeout := validateTimeout
+	validateSocket = socketPath
+	validateTimeout = 2
+	t.Cleanup(func() {
+		validateSocket = oldSocket
+		validateTimeout = oldTimeout
+	})
+
+	var output bytes.Buffer
+	oldColorOutput := color.Output
+	oldNoColor := color.NoColor
+	color.Output = &output
+	color.NoColor = true
+	t.Cleanup(func() {
+		color.Output = oldColorOutput
+		color.NoColor = oldNoColor
+	})
+
+	return validateDaemonConnection(), output.String()
+}
 
 func TestIsValidGitURL(t *testing.T) {
 	tests := []struct {
@@ -276,12 +363,17 @@ func TestValidateReconcileConfig(t *testing.T) {
 		assert.Equal(t, 1, errors)
 	})
 
-	t.Run("BOSUN_REPO_URL takes precedence when REPO_URL empty", func(t *testing.T) {
+	t.Run("BOSUN_REPO_URL SSH endpoint fails closed without auth", func(t *testing.T) {
 		t.Setenv("REPO_URL", "")
 		t.Setenv("BOSUN_REPO_URL", "git@github.com:user/repo.git")
+		t.Setenv("BOSUN_GIT_USERNAME", "")
+		t.Setenv("BOSUN_GIT_TOKEN", "")
+		t.Setenv("SSH_AUTH_SOCK", "")
+		t.Setenv("BOSUN_SSH_KEY", "")
+		t.Setenv("HOME", t.TempDir())
 
 		errors := validateReconcileConfig()
-		assert.Equal(t, 0, errors)
+		assert.Equal(t, 1, errors)
 	})
 
 	t.Run("BOSUN_REPO_URL wins over REPO_URL when both set", func(t *testing.T) {

@@ -137,8 +137,8 @@ func (c *Client) Status(ctx context.Context) (*StatusResponse, error) {
 	return &result, nil
 }
 
-// Health checks if the daemon is healthy.
-func (c *Client) Health(ctx context.Context) (*HealthStatus, error) {
+// Health checks the daemon's bounded public liveness response.
+func (c *Client) Health(ctx context.Context) (*HealthResponse, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -151,7 +151,15 @@ func (c *Client) Health(ctx context.Context) (*HealthStatus, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	var result HealthStatus
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusServiceUnavailable:
+		// Both statuses carry the bounded health response. A 503 represents
+		// degraded or unhealthy liveness rather than a transport failure.
+	default:
+		return nil, daemonStatusError(resp.StatusCode, resp.Body)
+	}
+
+	var result HealthResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
@@ -210,10 +218,11 @@ func daemonStatusError(statusCode int, body io.Reader) error {
 		detail += daemonErrorBodyTruncated
 	}
 	if readErr != nil {
+		separator := ""
 		if detail != "" {
-			detail += " "
+			separator = " "
 		}
-		detail += fmt.Sprintf("[response body read error: %v]", readErr)
+		return fmt.Errorf("daemon returned status %d: %s%s[response body read error: %w]", statusCode, detail, separator, readErr)
 	}
 
 	return fmt.Errorf("daemon returned status %d: %s", statusCode, detail)

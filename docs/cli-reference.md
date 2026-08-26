@@ -829,7 +829,7 @@ bosun radio test
 
 **Description:**
 
-Sends a GET request to `http://localhost:8080/health` to verify the webhook receiver is running and responding.
+Sends a GET request to `http://localhost:8080/health` to verify the webhook receiver is running and responding. The public response contains only `status`, `ready`, and `uptime`; use the daemon's protected/local `/status` endpoint for reconcile diagnostics.
 
 **Flags:**
 

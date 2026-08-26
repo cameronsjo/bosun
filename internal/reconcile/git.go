@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -25,19 +27,40 @@ import (
 	"github.com/cameronsjo/bosun/internal/log"
 )
 
+var resolveSSHAgentAuth = getSSHAgentAuth
+var resolveSSHKeyAuth = getSSHKeyFileAuth
+
+type sshAgentDialer func(network, address string) (net.Conn, error)
+
+type sshAgentAuth struct {
+	*ssh.PublicKeysCallback
+	conn      net.Conn
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (a *sshAgentAuth) Close() error {
+	a.closeOnce.Do(func() {
+		if a.conn != nil {
+			a.closeErr = a.conn.Close()
+		}
+	})
+	return a.closeErr
+}
+
 func init() {
 	// Override go-git's default SSH auth builder to gracefully handle missing SSH agents.
 	// By default, go-git calls NewSSHAgentAuth() which errors if SSH_AUTH_SOCK isn't set.
 	// We use our own auth chain: SSH agent -> key files (BOSUN_SSH_KEY, /config/*, ~/.ssh/*).
 	ssh.DefaultAuthBuilder = func(user string) (ssh.AuthMethod, error) {
 		// Try SSH agent first
-		if auth := getSSHAgentAuth(); auth != nil {
+		if auth := resolveSSHAgentAuth(user); auth != nil {
 			if sshAuth, ok := auth.(ssh.AuthMethod); ok {
 				return sshAuth, nil
 			}
 		}
 		// Fall back to key file auth
-		keyAuth, err := getSSHKeyFileAuth()
+		keyAuth, err := resolveSSHKeyAuth(user)
 		if err != nil {
 			return nil, err
 		}
@@ -46,7 +69,7 @@ func init() {
 				return sshAuth, nil
 			}
 		}
-		return nil, nil
+		return nil, sshAuthUnavailableError()
 	}
 }
 
@@ -55,6 +78,7 @@ const (
 	GitCloneTimeout      = 5 * time.Minute
 	GitFetchTimeout      = 2 * time.Minute
 	GitLocalTimeout      = 30 * time.Second
+	SSHAgentProbeTimeout = 5 * time.Second
 	DefaultGitFetchDepth = 1
 )
 
@@ -73,6 +97,9 @@ type GitOps struct {
 	// FetchDepth controls clone and fetch history depth. Values below 1 use
 	// DefaultGitFetchDepth.
 	FetchDepth int
+	// authResolver is an operation seam for deterministic ownership tests.
+	// Production leaves it nil and resolves from the process environment.
+	authResolver func(string) (transport.AuthMethod, error)
 }
 
 // NewGitOps creates a new GitOps instance.
@@ -112,23 +139,54 @@ func (g *GitOps) effectiveFetchDepth() int {
 	return g.FetchDepth
 }
 
+func (g *GitOps) resolveAuthentication() (transport.AuthMethod, error) {
+	if g.authResolver != nil {
+		return g.authResolver(g.RepoURL)
+	}
+	return ResolveGitAuth(g.RepoURL)
+}
+
+func closeGitAuth(auth transport.AuthMethod) error {
+	closer, ok := auth.(io.Closer)
+	if !ok {
+		return nil
+	}
+	return closer.Close()
+}
+
 // getSSHAuth attempts to get SSH authentication from:
 // 1. SSH agent (SSH_AUTH_SOCK)
 // 2. Deploy key file (BOSUN_SSH_KEY or default paths)
-// Returns nil if no SSH auth is available (falls back to default auth).
+// Non-SSH endpoints do not use SSH authentication. Recognized SSH endpoints
+// fail closed when neither a usable agent nor a private key is available.
 func getSSHAuth(url string) (transport.AuthMethod, error) {
-	// Only use SSH auth for SSH URLs
-	if !strings.HasPrefix(url, "git@") && !strings.Contains(url, "ssh://") {
+	endpoint, err := transport.NewEndpoint(url)
+	if err != nil {
+		return nil, errors.New("repository endpoint is malformed")
+	}
+	if !strings.EqualFold(endpoint.Protocol, "ssh") {
 		return nil, nil
 	}
+	user := normalizeSSHUser(endpoint.User)
 
 	// Try SSH agent first
-	if auth := getSSHAgentAuth(); auth != nil {
+	if auth := resolveSSHAgentAuth(user); auth != nil {
 		return auth, nil
 	}
 
 	// Fall back to key file
-	return getSSHKeyFileAuth()
+	auth, err := resolveSSHKeyAuth(user)
+	if err != nil {
+		return nil, err
+	}
+	if auth == nil {
+		return nil, sshAuthUnavailableError()
+	}
+	return auth, nil
+}
+
+func sshAuthUnavailableError() error {
+	return errors.New("SSH authentication is unavailable: load a key into SSH_AUTH_SOCK or set BOSUN_SSH_KEY to a regular, non-empty private key file")
 }
 
 // getHostKeyCallback returns an SSH host key callback for verifying server identity.
@@ -164,58 +222,124 @@ func getHostKeyCallback() xssh.HostKeyCallback {
 	return xssh.InsecureIgnoreHostKey()
 }
 
+func normalizeSSHUser(user string) string {
+	if user == "" {
+		return "git"
+	}
+	return user
+}
+
 // getSSHAgentAuth attempts to get auth from SSH agent.
-func getSSHAgentAuth() transport.AuthMethod {
+func getSSHAgentAuth(user string) transport.AuthMethod {
+	return resolveSSHAgentAuthWithDialer(user, os.Getenv("SSH_AUTH_SOCK"), net.Dial)
+}
+
+func resolveSSHAgentAuthWithDialer(user, socket string, dial sshAgentDialer) transport.AuthMethod {
 	logger := log.Component(log.ComponentGit)
-	socket := os.Getenv("SSH_AUTH_SOCK")
 	if socket == "" {
 		logger.Debug().Msg("Skipping SSH agent auth. Reason: SSH_AUTH_SOCK not set")
 		return nil
 	}
 
-	conn, err := net.Dial("unix", socket)
+	conn, err := dial("unix", socket)
 	if err != nil {
 		logger.Debug().Err(err).Str("socket", socket).Msg("Skipping SSH agent auth. Reason: cannot connect to agent socket")
 		return nil
 	}
+	if err := conn.SetDeadline(time.Now().Add(SSHAgentProbeTimeout)); err != nil {
+		_ = conn.Close()
+		logger.Debug().Err(err).Str("socket", socket).Msg("Skipping SSH agent auth. Reason: cannot bound agent signer probe")
+		return nil
+	}
 
-	logger.Debug().Str("socket", socket).Msg("Successfully connected to SSH agent")
 	agentClient := agent.NewClient(conn)
-	return &ssh.PublicKeysCallback{
-		User: "git",
-		Callback: func() ([]xssh.Signer, error) {
-			return agentClient.Signers()
+	signers, err := agentClient.Signers()
+	if err != nil || len(signers) == 0 {
+		_ = conn.Close()
+		logger.Debug().Err(err).Str("socket", socket).Msg("Skipping SSH agent auth. Reason: agent has no usable signers")
+		return nil
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		_ = conn.Close()
+		logger.Debug().Err(err).Str("socket", socket).Msg("Skipping SSH agent auth. Reason: cannot clear agent signer probe deadline")
+		return nil
+	}
+
+	logger.Debug().Int("signer_count", len(signers)).Str("socket", socket).Msg("Successfully connected to SSH agent")
+	return &sshAgentAuth{
+		PublicKeysCallback: &ssh.PublicKeysCallback{
+			User: normalizeSSHUser(user),
+			Callback: func() ([]xssh.Signer, error) {
+				return signers, nil
+			},
+			HostKeyCallbackHelper: ssh.HostKeyCallbackHelper{
+				HostKeyCallback: getHostKeyCallback(),
+			},
 		},
-		HostKeyCallbackHelper: ssh.HostKeyCallbackHelper{
-			HostKeyCallback: getHostKeyCallback(),
-		},
+		conn: conn,
 	}
 }
 
 // getSSHKeyFileAuth attempts to get auth from a key file.
 // Checks BOSUN_SSH_KEY env var, then common paths.
-func getSSHKeyFileAuth() (transport.AuthMethod, error) {
+func getSSHKeyFileAuth(user string) (transport.AuthMethod, error) {
+	return resolveSSHKeyFileAuthForUser(normalizeSSHUser(user), os.Getenv("BOSUN_SSH_KEY"), buildSSHKeyPaths("", os.Getenv("HOME")), readRegularNonEmptyFile)
+}
+
+func resolveSSHKeyFileAuth(explicitKeyPath string, keyPaths []string) (transport.AuthMethod, error) {
+	return resolveSSHKeyFileAuthForUser("git", explicitKeyPath, keyPaths, readRegularNonEmptyFile)
+}
+
+func resolveSSHKeyFileAuthForUser(user, explicitKeyPath string, keyPaths []string, readFile regularNonEmptyFileReader) (transport.AuthMethod, error) {
 	logger := log.Component(log.ComponentGit)
-	keyPaths := buildSSHKeyPaths(os.Getenv("BOSUN_SSH_KEY"), os.Getenv("HOME"))
-
-	for _, keyPath := range keyPaths {
-		if _, err := os.Stat(keyPath); err != nil {
-			logger.Debug().Str(log.FieldPath, keyPath).Msg("Skipping SSH key. Reason: file not found")
-			continue
-		}
-
-		auth, err := ssh.NewPublicKeysFromFile("git", keyPath, "")
+	if explicitKeyPath != "" {
+		auth, err := loadSSHKeyFile(user, explicitKeyPath, readFile)
 		if err != nil {
-			logger.Debug().Err(err).Str(log.FieldPath, keyPath).Msg("Skipping SSH key. Reason: failed to parse key file")
+			return nil, invalidSSHKeyMountError("BOSUN_SSH_KEY", explicitKeyPath, err)
+		}
+		auth.HostKeyCallback = getHostKeyCallback()
+		logger.Debug().Str(log.FieldPath, explicitKeyPath).Msg("Successfully loaded SSH key file")
+		return auth, nil
+	}
+
+	var invalidPath string
+	var invalidErr error
+	for _, keyPath := range keyPaths {
+		auth, err := loadSSHKeyFile(user, keyPath, readFile)
+		if err != nil {
+			logger.Debug().Err(err).Str(log.FieldPath, keyPath).Msg("Skipping unusable SSH key")
+			if !errors.Is(err, os.ErrNotExist) && invalidErr == nil {
+				invalidPath = keyPath
+				invalidErr = err
+			}
 			continue
 		}
 		auth.HostKeyCallback = getHostKeyCallback()
 		logger.Debug().Str(log.FieldPath, keyPath).Msg("Successfully loaded SSH key file")
 		return auth, nil
 	}
+	if invalidErr != nil {
+		return nil, invalidSSHKeyMountError("SSH key candidate", invalidPath, invalidErr)
+	}
 
 	logger.Debug().Msg("No SSH key file found in any candidate path")
 	return nil, nil
+}
+
+func loadSSHKeyFile(user, path string, readFile regularNonEmptyFileReader) (*ssh.PublicKeys, error) {
+	key, err := readFile(path)
+	if err != nil {
+		return nil, err
+	}
+	auth, err := ssh.NewPublicKeys(normalizeSSHUser(user), key, "")
+	if err != nil {
+		return nil, errors.New("does not contain a parseable private key")
+	}
+	return auth, nil
+}
+
+func invalidSSHKeyMountError(source, path string, cause error) error {
+	return fmt.Errorf("%s %q %v. Ensure the Docker bind-mount source exists as a regular, non-empty private key file before starting Bosun; Docker may create a directory when a missing host source is bind-mounted", source, path, cause)
 }
 
 // Clone clones the repository with the specified depth.
@@ -243,12 +367,17 @@ func (g *GitOps) Clone(ctx context.Context, depth int) error {
 		defer cancel()
 	}
 
-	auth, err := ResolveGitAuth(g.RepoURL)
+	auth, err := g.resolveAuthentication()
 	if err != nil {
 		safeErr := SanitizeGitError(err)
 		logger.Error().Err(safeErr).Msg("Failed to resolve Git authentication")
 		return fmt.Errorf("failed to resolve Git authentication: %w", safeErr)
 	}
+	defer func() {
+		if closeErr := closeGitAuth(auth); closeErr != nil {
+			logger.Warn().Err(closeErr).Msg("Failed to close Git authentication")
+		}
+	}()
 
 	cloneOpts := &git.CloneOptions{
 		URL:           g.RepoURL,
@@ -305,10 +434,15 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 		logger.Error().Err(err).Str(log.FieldBranch, g.Branch).Msg("Failed to pull repository. Reason: invalid branch")
 		return false, "", "", fmt.Errorf("invalid branch: %w", err)
 	}
-	auth, authErr := ResolveGitAuth(g.RepoURL)
+	auth, authErr := g.resolveAuthentication()
 	if authErr != nil {
 		return false, "", "", fmt.Errorf("failed to resolve Git authentication: %w", SanitizeGitError(authErr))
 	}
+	defer func() {
+		if closeErr := closeGitAuth(auth); closeErr != nil {
+			logger.Warn().Err(closeErr).Msg("Failed to close Git authentication")
+		}
+	}()
 
 	logger.Debug().
 		Str(log.FieldBranch, g.Branch).

@@ -40,8 +40,8 @@ The daemon exposes a Unix socket at `/var/run/bosun.sock` (configurable) for loc
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/trigger` | POST | Trigger reconciliation |
-| `/status` | GET | Get daemon status |
-| `/health` | GET | Health check |
+| `/status` | GET | Operator status with sanitized reconcile diagnostics |
+| `/health` | GET | Public liveness JSON: `status`, `ready`, and `uptime` |
 | `/ready` | GET | Readiness check |
 | `/config` | GET | Get current config |
 | `/ping` | GET | Simple ping |
@@ -49,6 +49,13 @@ The daemon exposes a Unix socket at `/var/run/bosun.sock` (configurable) for loc
 | `/api/containers` | GET | List all containers with summary |
 | `/api/trigger` | POST | Trigger reconciliation (WebUI) |
 | `/api/status` | GET | Extended status for WebUI |
+
+`/health` has the same bounded response on the webhook listener, TCP API, and
+Unix socket. It returns `200` when healthy and `503` otherwise, does not vary
+when an Authorization header is present, and rejects non-GET methods with `405`.
+It never exposes reconcile errors, repository paths, subsystem messages, or
+circuit-breaker state. Use the bearer-protected TCP `/status` endpoint or the
+local Unix-socket `/status` endpoint for operator diagnostics.
 
 **Example usage:**
 
@@ -216,6 +223,21 @@ Git sync or secret decryption.
 
 The reconciler maintains persistent state in a JSON file at `/var/lib/bosun/deploy-state.json` (configurable via `BOSUN_STATE_DIR`). This state drives skip logic, circuit breaking, and drift detection. Both daemon and one-shot modes create the state file's parent directory before a real reconciliation; one-shot multi-target runs prepare and verify each target's state directory independently and fail that target before deployment if the directory cannot be written. Multi-target configuration is rejected when two effective state-file paths collide after path cleaning; case-only variants also collide on Windows and macOS. Daemon startup performs this validation before binding API listeners or announcing readiness. A one-shot dry run works against a temporary copy of existing state, preserving skip and circuit-breaker decisions without creating or updating the configured state path.
 
+Container deployments must persist `/var/lib/bosun`. The shipped Compose and
+Unraid definitions bind that directory to `/mnt/user/appdata/bosun/state`; keep
+an equivalent writable mount when defining a custom deployment. Before starting
+the container, create the host directory for Bosun's fixed UID/GID 1000:
+
+```bash
+install -d -o 1000 -g 1000 -m 0700 /mnt/user/appdata/bosun/state
+```
+
+The shipped Compose definition refuses to auto-create a missing source directory,
+which avoids Docker creating it as `root:root`. Bosun also write-probes the state
+directory and fails startup before binding API listeners when it is not writable.
+Without the mount, container replacement discards drift history, skip state, and
+circuit-breaker state, forcing the next run to reconcile the full declared estate.
+
 ### State File Schema (v2)
 
 ```json
@@ -378,6 +400,7 @@ Status values: `clean` (no drift), `drifted` (items detected), `unknown` (no dep
 | `REPO_BRANCH` | No | `main` | Branch to track |
 | `BOSUN_GIT_USERNAME` | No | - | Private HTTPS Git Basic-auth username; requires `BOSUN_GIT_TOKEN` |
 | `BOSUN_GIT_TOKEN` | No | - | Private HTTPS Git Basic-auth password/token; requires `BOSUN_GIT_USERNAME` |
+| `BOSUN_SSH_KEY` | No | conventional SSH paths | Private key fallback for SSH Git URLs; the SSH agent takes precedence |
 | `REPO_DIR` | No | `/app/repo` | Local clone directory |
 | `STAGING_DIR` | No | `/app/staging` | Secret-bearing rendered staging and single-slot failure evidence directory |
 | `BACKUP_DIR` | No | `/app/backups` | Configuration backups |
@@ -407,6 +430,20 @@ to the effective repository URL after `BOSUN_REPO_URL` overrides `REPO_URL`.
 Credentials remain process-environment state: remove any URL userinfo, rotate
 the environment values, and restart Bosun; `bosun.yaml` reload cannot rotate
 them.
+
+SSH Git repositories use `SSH_AUTH_SOCK` first. Bosun accepts the agent only
+after it returns at least one signer; an empty or unreadable agent connection is
+closed before Bosun falls back to `BOSUN_SSH_KEY`, followed by its conventional
+key paths. The username parsed from either SCP-like syntax or an `ssh://` URL is
+preserved. An explicit `BOSUN_SSH_KEY` must be a regular, non-empty, parseable
+private key file; missing, directory, empty, and malformed mounts fail before
+Git network access. An unusable existing conventional candidate is skipped if
+a later key works, otherwise Bosun reports its path instead of passing nil
+authentication to go-git. A recognized SSH URL with no usable authentication
+fails startup rather than reaching the network. HTTPS and public local
+repository paths ignore unrelated SSH key settings. For containers, pre-create
+a key bind-mount source as a file because Docker can create a directory when the
+host source is missing.
 
 ### Command-Line Flags
 
@@ -504,6 +541,19 @@ The system checks for age keys in this order:
 1. `SOPS_AGE_KEY` environment variable (key content directly)
 2. `SOPS_AGE_KEY_FILE` environment variable (path to key file)
 3. Default location: `~/.config/sops/age/keys.txt`
+
+`SOPS_AGE_KEY` retains precedence over file settings. When Bosun resolves a
+file path, it requires a regular, non-empty file containing at least one
+parseable Age identity before decryption begins. Missing, directory, empty,
+and malformed paths fail with the configured path and setup guidance. For
+container mounts, pre-create the host key file; otherwise Docker can replace a
+missing file source with a directory at the container path.
+
+When at least one secrets file is configured, both the daemon and one-shot
+`bosun reconcile` validate the Age identity before Git authentication. The
+daemon performs this check before binding its Unix, TCP, or HTTP listeners. A
+reconcile with no secrets files does not require an Age identity and ignores an
+unrelated invalid Age mount.
 
 ### Key Setup
 
@@ -631,6 +681,12 @@ The template engine provides Go's standard template functions plus all [Sprig fu
 3. Copy non-template files as-is
 ```
 
+Template staging honors reconcile cancellation before directory creation and
+before publishing each atomic rendered output. Cancellation interrupts writes
+to the private template temp file, removes that partial file, and leaves an
+existing output untouched. If cancellation follows staging cleanup, Bosun does
+not recreate the staging root for a render that will no longer run.
+
 ### Environment Filtering
 
 For security, only safe environment variables are exposed to templates:
@@ -676,6 +732,15 @@ Uses native Go file operations to sync directories:
 Staging                    Target
 staging/unraid/appdata/ -> /mnt/appdata/
 ```
+
+Local copy walks honor the reconcile context before every directory creation,
+file replacement, and managed stale-file deletion. Cancellation also interrupts
+copying into an atomic temp file, so a cancelled reconcile stops before the next
+live-target mutation. Files whose atomic rename already completed are still
+flushed and verified before the cancellation error returns; later files and
+stale deletions are left untouched.
+In standard atomic-swap mode, cancellation after the existing target is moved
+aside restores that original target and removes the unpublished temp tree.
 
 ### Remote Deployment
 
@@ -829,11 +894,23 @@ an anchor.
 ### Retention
 
 By default, keeps the 5 most recent **valid** backups — those that pass the same
-verification used to select a rollback anchor. Older backups are automatically deleted.
+verification used to select a rollback anchor. Pruning is deferred until the
+current deploy clears its health checks, post-sync hooks, and post-deploy
+verification gates. With a retention count of 1, the prior known-good backup
+therefore remains available alongside the fresh pre-deploy snapshot throughout
+the deploy; a failed deploy keeps both, while a successful deploy prunes to the
+configured count.
 Corrupt or partial backup directories (a missing, unlistable, or truncated `configs.tar.gz`)
 do not count toward the retention limit and are removed outright, so a broken backup can
 never occupy a keep slot and evict an older good one. When a deploy has no managed files to
 back up (a fresh host's first deploy), no backup is created and no rollback anchor is recorded.
+
+`BackupTimeout` (`BOSUN_BACKUP_TIMEOUT`, default `5m`) applies as two independent
+deadlines: once to pre-deploy creation + verification and again to post-success
+retention verification + cleanup. If retention reaches that deadline, Bosun
+warns, marks the cleanup telemetry span as an error, preserves every backup it
+has not already classified and removed, and still records the verified deploy
+as successful.
 
 ```go
 cfg.BackupsToKeep = 5  // Default

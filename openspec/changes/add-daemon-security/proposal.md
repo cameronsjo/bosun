@@ -47,6 +47,13 @@ proposal establishes a `daemon-security` capability that makes the daemon
 - **Anonymous-endpoint exposure control** — `/metrics` and `/api/widget` SHALL
   NOT be reachable by unauthenticated remote callers in the default
   configuration (localhost-bound, auth-gated, or explicitly flag-enabled).
+- **Public health response minimization** — `/health` SHALL remain
+  unauthenticated for load-balancer and container liveness probes, but its JSON
+  body SHALL be limited to top-level health, readiness, and uptime. Reconcile
+  errors, last-reconcile timestamps, repository/path-bearing messages,
+  subsystem state, and circuit-breaker counts SHALL remain off this public
+  response. Operators retain diagnostics through the local or bearer-protected
+  `/status` surface and daemon logs.
 - **Webhook payload sanitization** — attacker-controlled fields (pusher name)
   SHALL be length-capped and control-character-sanitized before being logged,
   recorded in spans, or sent to telemetry sinks.
@@ -65,16 +72,25 @@ proposal establishes a `daemon-security` capability that makes the daemon
   - `internal/daemon/tcp.go` — `http.Server` config (`:45`), `handleTrigger`
     (`:154`), existing `authMiddleware`/`auditMiddleware`
   - `internal/daemon/api.go` — `handleAPITrigger` (`:289`)
+  - `internal/daemon/daemon.go` — `Config` (`SocketMode` `:189`, `EnableHTTP`
+    `:89`, `WebhookSecret` `:1350`), `ValidateConfig` (`:1733`),
+    `ConfigFromEnv`, detailed `HealthStatus`, and the bounded public health
+    response projection
+  - `internal/daemon/server.go`, `socket.go`, `tcp.go` — public `/health`
+    handlers on all three transports; authenticated/operator `/status` remains
+    the diagnostic surface
   - `internal/daemon/peercred_linux.go` / `peercred_other.go` —
     `getPeerCredentials`, `WrapServerForPeerCred`, `InjectPeerCred`
-  - `internal/daemon/daemon.go` — `Config` (`SocketMode` `:189`, `EnableHTTP`
-    `:89`, `WebhookSecret` `:1350`), `ValidateConfig` (`:1733`), `ConfigFromEnv`
 - All consumers of the trigger surface (each needs its own scenario + task):
   - HTTP webhook server (`server.go`) — `/webhook`, `/webhook/github`,
     `/webhook/manual`
   - Unix socket server (`socket.go`) — `POST /trigger`
   - TCP API server (`tcp.go`) — `POST /trigger`, bearer-token gated
   - HTTP API (`api.go`) — `handleAPITrigger`
+  - Public liveness clients — HTTP/TCP/Unix-socket `/health`, including
+    `daemon.Client.Health`, `bosun daemon-status`, `bosun validate`, and the
+    standalone webhook receiver's health/ready proxy. Each named consumer has
+    an explicit migration scenario and implementation task.
 - New config / env vars:
   - `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` (bool, default false; strict `== "true"`)
   - `BOSUN_LISTEN_ADDR` (string, default empty = all interfaces)
@@ -82,5 +98,6 @@ proposal establishes a `daemon-security` capability that makes the daemon
     load-bearing)
   - `BOSUN_METRICS_EXPOSE` (or equivalent) to opt metrics/widget into remote
     exposure
-- Docs: `docs/security.md`, `skills/onboard/resources/gitops.md` (daemon
-  security posture), `CLAUDE.md` env-var table.
+- Docs: `docs/security.md`, `docs/commands.md`, `docs/gitops.md`,
+  `docs/cli-reference.md`, `skills/onboard/resources/gitops.md` (daemon
+  security and health contracts), `CLAUDE.md` env-var table.

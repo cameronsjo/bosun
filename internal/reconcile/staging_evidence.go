@@ -21,6 +21,8 @@ const (
 type stagingEvidenceOps struct {
 	lstat     func(string) (fs.FileInfo, error)
 	chmod     func(*os.File, fs.FileMode) error
+	chmodPath func(string, fs.FileMode) error
+	mkdirAll  func(context.Context, string, fs.FileMode) error
 	removeAll func(string) error
 }
 
@@ -30,6 +32,8 @@ func defaultStagingEvidenceOps() stagingEvidenceOps {
 		chmod: func(f *os.File, mode fs.FileMode) error {
 			return f.Chmod(mode)
 		},
+		chmodPath: os.Chmod,
+		mkdirAll:  mkdirAllContext,
 		removeAll: os.RemoveAll,
 	}
 }
@@ -41,6 +45,12 @@ func (ops stagingEvidenceOps) withDefaults() stagingEvidenceOps {
 	}
 	if ops.chmod == nil {
 		ops.chmod = defaults.chmod
+	}
+	if ops.chmodPath == nil {
+		ops.chmodPath = defaults.chmodPath
+	}
+	if ops.mkdirAll == nil {
+		ops.mkdirAll = defaults.mkdirAll
 	}
 	if ops.removeAll == nil {
 		ops.removeAll = defaults.removeAll

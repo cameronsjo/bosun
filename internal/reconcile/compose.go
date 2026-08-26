@@ -527,6 +527,9 @@ func (d *DeployOps) SignalContainer(ctx context.Context, containerName, signal s
 	if d.DryRun {
 		return nil
 	}
+	if d.signalContainerFn != nil {
+		return d.signalContainerFn(ctx, containerName, signal)
+	}
 
 	logger.Debug().
 		Str(log.FieldOperation, "signal_container").

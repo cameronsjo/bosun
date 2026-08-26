@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1506,6 +1507,10 @@ type mockAlertSender struct {
 	lastSuccessDuration    time.Duration
 	lastFailureServices    []string
 	lastFailureDuration    time.Duration
+	lastFailureContext     context.Context
+	lastFailureContextErr  error
+	lastRollbackContext    context.Context
+	lastRollbackContextErr error
 }
 
 func (m *mockAlertSender) SendDeploySuccess(_ context.Context, _, _ string, services []string, duration time.Duration) error {
@@ -1514,10 +1519,12 @@ func (m *mockAlertSender) SendDeploySuccess(_ context.Context, _, _ string, serv
 	m.lastSuccessDuration = duration
 	return m.lastErr
 }
-func (m *mockAlertSender) SendDeployFailure(_ context.Context, _, _, _ string, services []string, duration time.Duration) error {
+func (m *mockAlertSender) SendDeployFailure(ctx context.Context, _, _, _ string, services []string, duration time.Duration) error {
 	m.deployFailureCalls++
 	m.lastFailureServices = services
 	m.lastFailureDuration = duration
+	m.lastFailureContext = ctx
+	m.lastFailureContextErr = ctx.Err()
 	return m.lastErr
 }
 func (m *mockAlertSender) SendDeployRecovery(_ context.Context, _, _ string, _ int) error {
@@ -1528,12 +1535,16 @@ func (m *mockAlertSender) SendUnhealthyContainers(_ context.Context, _ string, _
 	m.unhealthyContainerCall++
 	return m.lastErr
 }
-func (m *mockAlertSender) SendRollbackSuccess(_ context.Context, _, _ string) error {
+func (m *mockAlertSender) SendRollbackSuccess(ctx context.Context, _, _ string) error {
 	m.rollbackSuccessCalls++
+	m.lastRollbackContext = ctx
+	m.lastRollbackContextErr = ctx.Err()
 	return m.lastErr
 }
-func (m *mockAlertSender) SendRollbackFailure(_ context.Context, _, _ string) error {
+func (m *mockAlertSender) SendRollbackFailure(ctx context.Context, _, _ string) error {
 	m.rollbackFailureCalls++
+	m.lastRollbackContext = ctx
+	m.lastRollbackContextErr = ctx.Err()
 	return m.lastErr
 }
 
@@ -1651,6 +1662,84 @@ func TestSendThrottledFailureAlert(t *testing.T) {
 		assert.GreaterOrEqual(t, alerter.lastFailureDuration, 14*time.Second)
 		assert.Less(t, alerter.lastFailureDuration, 16*time.Second)
 	})
+}
+
+func TestSendThrottledFailureAlertContext(t *testing.T) {
+	type contextKey string
+	const valueKey contextKey = "alert-test-value"
+
+	tests := []struct {
+		name                 string
+		cancelCaller         bool
+		sendErr              error
+		wantAlertedAttempt   int
+		wantDetachedDeadline bool
+	}{
+		{
+			name:               "live caller context is passed through",
+			wantAlertedAttempt: 1,
+		},
+		{
+			name:                 "canceled caller gets bounded detached context",
+			cancelCaller:         true,
+			wantAlertedAttempt:   1,
+			wantDetachedDeadline: true,
+		},
+		{
+			name:                 "send failure on detached context preserves throttle window",
+			cancelCaller:         true,
+			sendErr:              errors.New("provider unavailable"),
+			wantAlertedAttempt:   0,
+			wantDetachedDeadline: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			alerter := &mockAlertSender{lastErr: tt.sendErr}
+			cfg := &Config{
+				StateFile: filepath.Join(t.TempDir(), "state.json"),
+				OnFailure: true,
+			}
+			r := NewReconciler(cfg, WithAlerter(alerter))
+
+			ctx := context.WithValue(context.Background(), valueKey, "preserved")
+			ctx = logpkg.WithReconcileID(ctx, "reconcile-242")
+			callerCtx, cancelCaller := context.WithCancel(ctx)
+			t.Cleanup(cancelCaller)
+			if tt.cancelCaller {
+				cancelCaller()
+			}
+
+			state := &DeployState{AttemptCount: 1}
+			startedAt := time.Now()
+			r.sendThrottledFailureAlert(callerCtx, state, "deploy interrupted")
+			finishedAt := time.Now()
+
+			require.Equal(t, 1, alerter.deployFailureCalls)
+			require.NotNil(t, alerter.lastFailureContext)
+			assert.Equal(t, "preserved", alerter.lastFailureContext.Value(valueKey))
+			assert.Equal(t, "reconcile-242", logpkg.ReconcileIDFromContext(alerter.lastFailureContext))
+			assert.Equal(t, tt.wantAlertedAttempt, state.LastAlertedAttempt)
+
+			if !tt.wantDetachedDeadline {
+				assert.Same(t, callerCtx, alerter.lastFailureContext,
+					"live alert delivery should retain the caller context")
+				_, hasDeadline := alerter.lastFailureContext.Deadline()
+				assert.False(t, hasDeadline)
+				return
+			}
+
+			assert.ErrorIs(t, callerCtx.Err(), context.Canceled)
+			assert.NoError(t, alerter.lastFailureContextErr,
+				"caller cancellation must not reach alert delivery")
+			deadline, hasDeadline := alerter.lastFailureContext.Deadline()
+			require.True(t, hasDeadline)
+			assert.WithinRange(t, deadline,
+				startedAt.Add(failureAlertDeliveryTimeout),
+				finishedAt.Add(failureAlertDeliveryTimeout))
+		})
+	}
 }
 
 func TestSendUnhealthyAlert(t *testing.T) {
@@ -2781,6 +2870,84 @@ func TestRenderTemplates(t *testing.T) {
 
 		// Old file should be gone
 		assert.NoFileExists(t, filepath.Join(stagingDir, "old-file.yml"))
+	})
+
+	t.Run("cancellation after clearing staging stops before recreation", func(t *testing.T) {
+		root := t.TempDir()
+		repoDir := filepath.Join(root, "repo")
+		stagingDir := filepath.Join(root, "staging")
+		require.NoError(t, os.MkdirAll(repoDir, 0o755))
+		require.NoError(t, os.MkdirAll(stagingDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(stagingDir, "old.yml"), []byte("old"), 0o600))
+		ctx, cancel := context.WithCancel(context.Background())
+		r := NewReconciler(&Config{RepoDir: repoDir, StagingDir: stagingDir, InfraSubDir: "."})
+		r.stagingOps = defaultStagingEvidenceOps()
+		realRemoveAll := r.stagingOps.removeAll
+		r.stagingOps.removeAll = func(path string) error {
+			err := realRemoveAll(path)
+			cancel()
+			return err
+		}
+
+		err := r.renderTemplates(ctx, nil)
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.NoDirExists(t, stagingDir)
+	})
+
+	t.Run("already cancelled preserves existing staging evidence", func(t *testing.T) {
+		root := t.TempDir()
+		repoDir := filepath.Join(root, "repo")
+		stagingDir := filepath.Join(root, "staging")
+		oldFile := filepath.Join(stagingDir, "old.yml")
+		require.NoError(t, os.MkdirAll(repoDir, 0o755))
+		require.NoError(t, os.MkdirAll(stagingDir, 0o755))
+		require.NoError(t, os.WriteFile(oldFile, []byte("old"), 0o600))
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		removeCalls := 0
+		r := NewReconciler(&Config{RepoDir: repoDir, StagingDir: stagingDir, InfraSubDir: "."})
+		r.stagingOps = defaultStagingEvidenceOps()
+		r.stagingOps.removeAll = func(string) error {
+			removeCalls++
+			return errors.New("unexpected staging removal")
+		}
+
+		err := r.renderTemplates(ctx, nil)
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, 0, removeCalls)
+		assert.FileExists(t, oldFile)
+	})
+
+	t.Run("cancellation after staging recreation stops before chmod", func(t *testing.T) {
+		root := t.TempDir()
+		repoDir := filepath.Join(root, "repo")
+		stagingDir := filepath.Join(root, "staging")
+		require.NoError(t, os.MkdirAll(repoDir, 0o755))
+		ctx, cancel := context.WithCancel(context.Background())
+		chmodCalls := 0
+		r := NewReconciler(&Config{RepoDir: repoDir, StagingDir: stagingDir, InfraSubDir: "."})
+		r.stagingOps = defaultStagingEvidenceOps()
+		realMkdirAll := r.stagingOps.mkdirAll
+		r.stagingOps.mkdirAll = func(mkdirCtx context.Context, path string, mode os.FileMode) error {
+			err := realMkdirAll(mkdirCtx, path, mode)
+			cancel()
+			return err
+		}
+		r.stagingOps.chmodPath = func(string, os.FileMode) error {
+			chmodCalls++
+			return errors.New("unexpected chmod")
+		}
+
+		err := r.renderTemplates(ctx, nil)
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, 0, chmodCalls)
+		assert.DirExists(t, stagingDir)
+		entries, readErr := os.ReadDir(stagingDir)
+		require.NoError(t, readErr)
+		assert.Empty(t, entries)
 	})
 }
 

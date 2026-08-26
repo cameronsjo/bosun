@@ -149,25 +149,27 @@ func checkProjectRoot(cfg *config.Config, loadErr error) CheckResult {
 
 // checkAgeKey verifies the Age key exists for SOPS decryption.
 func checkAgeKey() CheckResult {
+	if err := reconcile.NewSOPSOps().CheckAgeKey(); err != nil {
+		_, _ = ui.Yellow.Printf("  ! Age key unavailable: %v\n", err)
+		return CheckResult{Warned: 1}
+	}
+
+	if os.Getenv("SOPS_AGE_KEY") != "" {
+		_, _ = ui.Green.Println("  * Age key found via SOPS_AGE_KEY")
+		return CheckResult{Passed: 1}
+	}
+
 	ageKeyFile := os.Getenv("SOPS_AGE_KEY_FILE")
 	if ageKeyFile == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			_, _ = ui.Yellow.Println("  ! Cannot determine home directory for Age key check")
-			return CheckResult{Warned: 1}
+			// CheckAgeKey already resolved the home directory successfully.
+			return CheckResult{Passed: 1}
 		}
 		ageKeyFile = filepath.Join(home, ".config", "sops", "age", "keys.txt")
 	}
-	if _, err := os.Stat(ageKeyFile); err == nil {
-		_, _ = ui.Green.Printf("  * Age key found: %s\n", ageKeyFile)
-		return CheckResult{Passed: 1}
-	}
-	_, _ = ui.Yellow.Printf("  ! Age key not found at %s\n", ageKeyFile)
-	_, _ = ui.Blue.Println("      To fix this:")
-	_, _ = ui.Blue.Printf("      - Run: age-keygen -o %s\n", ageKeyFile)
-	_, _ = ui.Blue.Println("      - Or set SOPS_AGE_KEY_FILE env var to existing key")
-	_, _ = ui.Blue.Println("      - Install age: https://github.com/FiloSottile/age#installation")
-	return CheckResult{Warned: 1}
+	_, _ = ui.Green.Printf("  * Age key found: %s\n", ageKeyFile)
+	return CheckResult{Passed: 1}
 }
 
 // checkSOPS verifies SOPS is installed.

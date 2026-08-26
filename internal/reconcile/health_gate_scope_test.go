@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/cameronsjo/bosun/internal/docker"
+	logpkg "github.com/cameronsjo/bosun/internal/log"
 )
 
 func TestResolveHealthGateScope(t *testing.T) {
@@ -284,7 +285,8 @@ func TestRunHealthGate_SkipGuards(t *testing.T) {
 }
 
 func TestSendGateFailureAlerts(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	gateErr := fmt.Errorf("gate boom")
 
 	t.Run("no alerter is a no-op", func(t *testing.T) {
@@ -317,6 +319,10 @@ func TestSendGateFailureAlerts(t *testing.T) {
 		assert.Equal(t, 1, a.deployFailureCalls)
 		assert.Equal(t, 1, a.rollbackSuccessCalls)
 		assert.Equal(t, 0, a.rollbackFailureCalls)
+		assert.Same(t, ctx, a.lastFailureContext)
+		assert.Same(t, ctx, a.lastRollbackContext)
+		_, hasDeadline := a.lastFailureContext.Deadline()
+		assert.False(t, hasDeadline, "live alert delivery should not gain a deadline")
 		assert.Equal(t, 1, st.LastAlertedAttempt, "throttle window is consumed")
 	})
 
@@ -327,6 +333,81 @@ func TestSendGateFailureAlerts(t *testing.T) {
 		r.sendGateFailureAlerts(ctx, st, gateErr, true, fmt.Errorf("restore boom"))
 		assert.Equal(t, 1, a.deployFailureCalls)
 		assert.Equal(t, 1, a.rollbackFailureCalls)
+	})
+
+	t.Run("canceled context is detached for failure and rollback companion alerts", func(t *testing.T) {
+		type contextKey string
+		const valueKey contextKey = "health-gate-alert-value"
+
+		tests := []struct {
+			name                string
+			rollbackErr         error
+			wantRollbackSuccess int
+			wantRollbackFailure int
+		}{
+			{
+				name:                "rollback succeeded",
+				wantRollbackSuccess: 1,
+			},
+			{
+				name:                "rollback failed",
+				rollbackErr:         fmt.Errorf("restore boom"),
+				wantRollbackFailure: 1,
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				a := &mockAlertSender{}
+				r := NewReconciler(&Config{
+					OnFailure: true,
+					StateFile: filepath.Join(t.TempDir(), "s.json"),
+				}, WithAlerter(a))
+				r.lastBackupPath = "/backups/backup-20260101-000000"
+
+				ctxWithValues := context.WithValue(context.Background(), valueKey, "preserved")
+				ctxWithValues = logpkg.WithReconcileID(ctxWithValues, "health-gate-242")
+				callerCtx, cancelCaller := context.WithCancel(ctxWithValues)
+				cancelCaller()
+
+				state := &DeployState{AttemptCount: 1}
+				startedAt := time.Now()
+				r.sendGateFailureAlerts(callerCtx, state, gateErr, true, tt.rollbackErr)
+				finishedAt := time.Now()
+
+				assert.ErrorIs(t, callerCtx.Err(), context.Canceled)
+				assert.Equal(t, 1, a.deployFailureCalls)
+				assert.Equal(t, tt.wantRollbackSuccess, a.rollbackSuccessCalls)
+				assert.Equal(t, tt.wantRollbackFailure, a.rollbackFailureCalls)
+				assert.Equal(t, 1, state.LastAlertedAttempt)
+				require.NotNil(t, a.lastFailureContext)
+				require.NotNil(t, a.lastRollbackContext)
+				assert.Same(t, a.lastFailureContext, a.lastRollbackContext,
+					"failure and rollback alerts should share one bounded delivery context")
+
+				contexts := []struct {
+					name        string
+					ctx         context.Context
+					observedErr error
+				}{
+					{name: "failure", ctx: a.lastFailureContext, observedErr: a.lastFailureContextErr},
+					{name: "rollback", ctx: a.lastRollbackContext, observedErr: a.lastRollbackContextErr},
+				}
+				for _, alertCtx := range contexts {
+					t.Run(alertCtx.name, func(t *testing.T) {
+						assert.NoError(t, alertCtx.observedErr,
+							"caller cancellation must not reach alert delivery")
+						assert.Equal(t, "preserved", alertCtx.ctx.Value(valueKey))
+						assert.Equal(t, "health-gate-242", logpkg.ReconcileIDFromContext(alertCtx.ctx))
+						deadline, hasDeadline := alertCtx.ctx.Deadline()
+						require.True(t, hasDeadline)
+						assert.WithinRange(t, deadline,
+							startedAt.Add(failureAlertDeliveryTimeout),
+							finishedAt.Add(failureAlertDeliveryTimeout))
+					})
+				}
+			})
+		}
 	})
 
 	t.Run("no rollback emits only the failure alert", func(t *testing.T) {

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -275,16 +276,16 @@ func TestTCPHandleHealth(t *testing.T) {
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
 
-		var resp HealthStatus
-		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+		resp := requireBoundedHealthResponse(t, w.Body.Bytes())
 		assert.Equal(t, "healthy", resp.Status)
 	})
 
 	t.Run("GET degraded returns 503", func(t *testing.T) {
 		ts, d := newTestTCPServer(t)
+		const sensitive = "https://secret.example/repo /srv/private/bosun.yaml"
 
 		d.stateMu.Lock()
-		d.lastError = assert.AnError
+		d.lastError = errors.New(sensitive)
 		d.stateMu.Unlock()
 
 		req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -293,9 +294,33 @@ func TestTCPHandleHealth(t *testing.T) {
 
 		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 
-		var resp HealthStatus
-		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+		resp := requireBoundedHealthResponse(t, w.Body.Bytes())
 		assert.Equal(t, "degraded", resp.Status)
+		assert.NotContains(t, w.Body.String(), sensitive)
+	})
+
+	t.Run("authorization does not expand public response", func(t *testing.T) {
+		ts, d := newTestTCPServer(t)
+		d.stateMu.Lock()
+		d.lastError = errors.New("/srv/private/repo")
+		d.stateMu.Unlock()
+
+		request := func(withAuth bool) HealthResponse {
+			t.Helper()
+			req := httptest.NewRequest(http.MethodGet, "/health", nil)
+			if withAuth {
+				req.Header.Set("Authorization", "Bearer test-token")
+			}
+			w := httptest.NewRecorder()
+			ts.httpServer.Handler.ServeHTTP(w, req)
+			assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+			return requireBoundedHealthResponse(t, w.Body.Bytes())
+		}
+
+		unauthenticated := request(false)
+		authenticated := request(true)
+		assert.Equal(t, unauthenticated.Status, authenticated.Status)
+		assert.Equal(t, unauthenticated.Ready, authenticated.Ready)
 	})
 
 	t.Run("POST returns 405", func(t *testing.T) {
@@ -306,6 +331,8 @@ func TestTCPHandleHealth(t *testing.T) {
 		ts.handleHealth(w, req)
 
 		assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+		assert.NotContains(t, w.Header().Get("Content-Type"), "application/json")
+		assert.NotContains(t, w.Body.String(), "{")
 	})
 }
 

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -252,7 +253,7 @@ func TestValidateSignatureGitHubFormat(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleHealth(t *testing.T) {
-	t.Run("GET returns 200 with healthy JSON and subsystems", func(t *testing.T) {
+	t.Run("GET returns 200 with bounded healthy JSON", func(t *testing.T) {
 		_, s := newTestDaemon(t)
 
 		req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -262,14 +263,8 @@ func TestHandleHealth(t *testing.T) {
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
 
-		var status HealthStatus
-		require.NoError(t, json.NewDecoder(w.Body).Decode(&status))
+		status := requireBoundedHealthResponse(t, w.Body.Bytes())
 		assert.Equal(t, "healthy", status.Status)
-		require.NotNil(t, status.Subsystems)
-		assert.Equal(t, "healthy", status.Subsystems["docker"].Status)
-		assert.Equal(t, "healthy", status.Subsystems["git"].Status)
-		assert.Equal(t, "healthy", status.Subsystems["reconciler"].Status)
-		assert.Equal(t, "closed", status.Subsystems["circuit_breaker"].Status)
 	})
 
 	t.Run("POST returns 405", func(t *testing.T) {
@@ -280,13 +275,16 @@ func TestHandleHealth(t *testing.T) {
 		s.handleHealth(w, req)
 
 		assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+		assert.NotContains(t, w.Header().Get("Content-Type"), "application/json")
+		assert.NotContains(t, w.Body.String(), "{")
 	})
 
 	t.Run("returns 503 when degraded", func(t *testing.T) {
 		d, s := newTestDaemon(t)
+		const sensitive = "https://secret.example/repo /srv/private/bosun.yaml"
 
 		d.stateMu.Lock()
-		d.lastError = assert.AnError
+		d.lastError = errors.New(sensitive)
 		d.stateMu.Unlock()
 
 		req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -295,11 +293,35 @@ func TestHandleHealth(t *testing.T) {
 
 		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 
-		var status HealthStatus
-		require.NoError(t, json.NewDecoder(w.Body).Decode(&status))
+		status := requireBoundedHealthResponse(t, w.Body.Bytes())
 		assert.Equal(t, "degraded", status.Status)
-		assert.NotEmpty(t, status.LastError)
-		assert.Equal(t, "degraded", status.Subsystems["reconciler"].Status)
+		assert.NotContains(t, w.Body.String(), sensitive)
+		assert.NotContains(t, w.Body.String(), "last_error")
+		assert.NotContains(t, w.Body.String(), "subsystems")
+	})
+
+	t.Run("authorization header does not expand response", func(t *testing.T) {
+		d, s := newTestDaemon(t)
+		d.stateMu.Lock()
+		d.lastError = errors.New("/srv/private/repo")
+		d.stateMu.Unlock()
+
+		request := func(withAuth bool) HealthResponse {
+			t.Helper()
+			req := httptest.NewRequest(http.MethodGet, "/health", nil)
+			if withAuth {
+				req.Header.Set("Authorization", "Bearer operator-token")
+			}
+			w := httptest.NewRecorder()
+			s.handleHealth(w, req)
+			assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+			return requireBoundedHealthResponse(t, w.Body.Bytes())
+		}
+
+		unauthenticated := request(false)
+		authenticated := request(true)
+		assert.Equal(t, unauthenticated.Status, authenticated.Status)
+		assert.Equal(t, unauthenticated.Ready, authenticated.Ready)
 	})
 }
 
