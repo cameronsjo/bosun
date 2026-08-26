@@ -5,6 +5,7 @@ set -u
 readonly DEFAULT_MIN_FREE_GIB=20
 readonly DEFAULT_MAX_DELTA_GIB=8
 readonly DEFAULT_WAIT_SECONDS=60
+readonly SIGNAL_GRACE_SECONDS=1
 readonly KIB_PER_GIB=1048576
 
 fail() {
@@ -83,6 +84,7 @@ reclaim_stale_lock() {
 		moved_identity=$(LC_ALL=C command ls -di -- "$stale_dir" 2>/dev/null | awk 'NR == 1 { print $1 }')
 		if [ "$moved_identity" = "$expected_identity" ]; then
 			command rm -f -- "$stale_dir/pid"
+			command rm -f -- "$stale_dir"/.pid.pending.*
 			command rmdir -- "$stale_dir" 2>/dev/null || true
 		elif [ ! -e "$lock_dir" ]; then
 			# The lock changed between validation and rename. Restore it rather
@@ -118,14 +120,24 @@ acquire_lock() {
 			*)
 				if ! command kill -0 "$owner_pid" 2>/dev/null; then
 					reclaim_stale_lock "$current_identity" "$owner_pid"
-				elif [ "$waited" -ge "$wait_seconds" ]; then
-					temporary_fail "timed out waiting ${wait_seconds}s for gate held by PID $owner_pid"
 				elif [ "$reported_wait" = false ]; then
 					printf 'agent-go-gate: waiting for shared gate held by PID %s\n' "$owner_pid" >&2
 					reported_wait=true
 				fi
 				;;
 		esac
+
+		if [ "$waited" -ge "$wait_seconds" ] && [ -e "$lock_dir" ]; then
+			owner_pid=$(read_lock_pid)
+			case "$owner_pid" in
+				''|*[!0-9]*)
+					temporary_fail "timed out waiting ${wait_seconds}s for gate without a valid owner PID"
+					;;
+				*)
+					temporary_fail "timed out waiting ${wait_seconds}s for gate held by PID $owner_pid"
+					;;
+			esac
+		fi
 
 		command sleep 1
 		waited=$((waited + 1))
@@ -138,9 +150,25 @@ acquire_lock() {
 		command rmdir -- "$lock_dir" 2>/dev/null || true
 		fail 'cannot identify shared gate ownership'
 	fi
-	if ! (umask 077 && printf '%s\n' "$$" > "$lock_dir/pid"); then
+	pending_pid="$lock_dir/.pid.pending.$$"
+	if ! (umask 077 && printf '%s\n' "$$" > "$pending_pid"); then
 		release_lock
 		fail 'cannot publish shared gate ownership'
+	fi
+	if [ "$(lock_identity)" != "$owned_identity" ]; then
+		lock_owned=false
+		owned_identity=''
+		temporary_fail 'shared gate ownership changed during PID publication; retry later'
+	fi
+	if ! command mv -- "$pending_pid" "$lock_dir/pid" 2>/dev/null; then
+		lock_owned=false
+		owned_identity=''
+		temporary_fail 'shared gate ownership changed during PID publication; retry later'
+	fi
+	if [ "$(lock_identity)" != "$owned_identity" ] || [ "$(read_lock_pid)" != "$$" ]; then
+		lock_owned=false
+		owned_identity=''
+		temporary_fail 'shared gate ownership changed during PID publication; retry later'
 	fi
 }
 
@@ -151,10 +179,36 @@ forward_signal() {
 	case "${command_pid:-}" in
 		''|*[!0-9]*) exit "$signal_code" ;;
 		*)
-			signal_status=$signal_code
+			[ -n "$signal_status" ] || signal_status=$signal_code
 			command kill "-$signal_name" "$command_pid" 2>/dev/null || true
 			;;
 	esac
+}
+
+child_is_alive() {
+	case "${command_pid:-}" in
+		''|*[!0-9]*) return 1 ;;
+		*) command kill -0 "$command_pid" 2>/dev/null ;;
+	esac
+}
+
+wait_for_child_exit() {
+	waited_for_child=0
+	while child_is_alive && [ "$waited_for_child" -lt "$SIGNAL_GRACE_SECONDS" ]; do
+		command sleep 1
+		waited_for_child=$((waited_for_child + 1))
+	done
+	! child_is_alive
+}
+
+terminate_signaled_child() {
+	if ! wait_for_child_exit; then
+		command kill -TERM "$command_pid" 2>/dev/null || true
+		if ! wait_for_child_exit; then
+			command kill -KILL "$command_pid" 2>/dev/null || true
+		fi
+	fi
+	wait "$command_pid" 2>/dev/null || true
 }
 
 [ "$#" -gt 0 ] || usage
@@ -223,12 +277,17 @@ printf 'agent-go-gate: start free=%s GiB min=%s GiB lock=%s\n' \
 "$@" <&0 &
 command_pid=$!
 while :; do
+	if [ -n "$signal_status" ]; then
+		terminate_signaled_child
+		command_status=$signal_status
+		break
+	fi
 	wait "$command_pid"
 	command_status=$?
-	if [ -n "$signal_status" ] && command kill -0 "$command_pid" 2>/dev/null; then
-		continue
+	if [ -n "$signal_status" ]; then
+		terminate_signaled_child
+		command_status=$signal_status
 	fi
-	[ -z "$signal_status" ] || command_status=$signal_status
 	break
 done
 command_pid=''

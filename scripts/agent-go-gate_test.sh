@@ -8,13 +8,23 @@ test_root=$(mktemp -d "${TMPDIR:-/tmp}/bosun-agent-go-gate-test.XXXXXX")
 first_pid=''
 second_pid=''
 gate_pid=''
+watchdog_pid=''
 lock_dirs=''
 
 cleanup() {
-	for cleanup_pid in "$first_pid" "$second_pid" "$gate_pid"; do
+	if [ -n "${FAKE_MV_RELEASE_FILE:-}" ]; then
+		command touch "$FAKE_MV_RELEASE_FILE" 2>/dev/null || true
+	fi
+	for cleanup_pid in "$first_pid" "$second_pid" "$gate_pid" "$watchdog_pid"; do
 		case "$cleanup_pid" in
 			''|*[!0-9]*) ;;
 			*) command kill "$cleanup_pid" 2>/dev/null || true ;;
+		esac
+	done
+	for cleanup_pid in "$first_pid" "$second_pid" "$gate_pid" "$watchdog_pid"; do
+		case "$cleanup_pid" in
+			''|*[!0-9]*) ;;
+			*) wait "$cleanup_pid" 2>/dev/null || true ;;
 		esac
 	done
 	for cleanup_lock in $lock_dirs; do
@@ -93,6 +103,24 @@ printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
 printf '/dev/fake 999999999 1 %s 1%% /fake\n' "$free"
 EOF
 
+	command cat > "$fake_bin/mv" <<'EOF'
+#!/bin/sh
+if [ "${FAKE_MV_FAIL:-false}" = true ]; then
+	exit 1
+fi
+case "$*" in
+	*.pid.pending.*)
+		if [ -n "${FAKE_MV_PAUSED_FILE:-}" ]; then
+			touch "$FAKE_MV_PAUSED_FILE"
+			while [ ! -e "$FAKE_MV_RELEASE_FILE" ]; do
+				sleep 1
+			done
+		fi
+		;;
+esac
+exec "$FAKE_REAL_MV" "$@"
+EOF
+
 command cat > "$fake_bin/record-env" <<'EOF'
 #!/bin/sh
 printf '%s|%s|%s|%s\n' "$GOCACHE" "$GOMODCACHE" "${GOTMPDIR+x}" "${GOLANGCI_LINT_CACHE+x}" > "$1"
@@ -115,19 +143,30 @@ EOF
 #!/bin/sh
 printf '%s\n' "$$" > "$1"
 touch "$2"
-trap 'touch "$3"; exit 0' TERM
+trap 'touch "$3"; exit 0' "$4"
 while :; do
 	sleep 1
 done
 EOF
 
-	command chmod +x "$fake_bin/git" "$fake_bin/go" "$fake_bin/df" "$fake_bin/record-env" "$fake_bin/touch-path" "$fake_bin/hold-gate" "$fake_bin/signal-child"
+	command cat > "$fake_bin/stubborn-child" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$$" > "$1"
+touch "$2"
+trap 'touch "$3"' TERM
+while :; do
+	sleep 1
+done
+EOF
+
+	command chmod +x "$fake_bin/git" "$fake_bin/go" "$fake_bin/df" "$fake_bin/mv" "$fake_bin/record-env" "$fake_bin/touch-path" "$fake_bin/hold-gate" "$fake_bin/signal-child" "$fake_bin/stubborn-child"
 	export PATH="$fake_bin:$original_path"
 	export TMPDIR="$case_dir/tmp"
 	export FAKE_REPO_ROOT="$fake_repo"
 	export FAKE_COMMON_DIR="$fake_common"
 	export FAKE_DEFAULT_GOCACHE="$case_dir/shared-go-build"
 	export FAKE_DEFAULT_GOMODCACHE="$case_dir/shared-go-mod"
+	export FAKE_REAL_MV="$real_mv"
 	export FAKE_DF_STATE="$case_dir/df-state"
 	export FAKE_DF_FIRST_KIB=31457280
 	export FAKE_DF_SECOND_KIB=31457280
@@ -136,6 +175,7 @@ EOF
 	lock_dirs="$lock_dirs $case_lock_dir"
 	unset GOCACHE GOMODCACHE GOTMPDIR GOLANGCI_LINT_CACHE
 	unset BOSUN_AGENT_MIN_FREE_GIB BOSUN_AGENT_MAX_DISK_DELTA_GIB BOSUN_AGENT_GATE_WAIT_SECONDS
+	unset FAKE_MV_FAIL FAKE_MV_PAUSED_FILE FAKE_MV_RELEASE_FILE
 }
 
 run_gate() {
@@ -146,6 +186,7 @@ run_gate() {
 }
 
 original_path=$PATH
+real_mv=$(command -v mv)
 
 new_case success
 env_file="$case_dir/env"
@@ -249,6 +290,72 @@ run_gate touch-path "$marker"
 [ -e "$marker" ] || fail 'command did not run after stale lock reclamation'
 assert_not_exists "$case_lock_dir"
 
+new_case empty-lock
+marker="$case_dir/ran"
+command mkdir -- "$case_lock_dir"
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 0 ] || fail "empty lock case exited $gate_status: $gate_output"
+[ -e "$marker" ] || fail 'command did not run after empty lock reclamation'
+assert_not_exists "$case_lock_dir"
+
+new_case malformed-lock
+marker="$case_dir/ran"
+command mkdir -- "$case_lock_dir"
+printf '%s\n' 'not-a-pid' > "$case_lock_dir/pid"
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 0 ] || fail "malformed lock case exited $gate_status: $gate_output"
+[ -e "$marker" ] || fail 'command did not run after malformed lock reclamation'
+assert_not_exists "$case_lock_dir"
+
+new_case unreclaimable-lock-timeout
+marker="$case_dir/must-not-run"
+command mkdir -- "$case_lock_dir"
+FAKE_MV_FAIL=true
+BOSUN_AGENT_GATE_WAIT_SECONDS=3
+export FAKE_MV_FAIL BOSUN_AGENT_GATE_WAIT_SECONDS
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 75 ] || fail "unreclaimable lock case exited $gate_status"
+assert_contains "$gate_output" 'timed out waiting 3s for gate without a valid owner PID'
+assert_not_exists "$marker"
+unset FAKE_MV_FAIL BOSUN_AGENT_GATE_WAIT_SECONDS
+
+new_case publication-replacement
+marker="$case_dir/must-not-run"
+publish_paused="$case_dir/publish-paused"
+publish_release="$case_dir/publish-release"
+displaced_lock="$case_dir/displaced-lock"
+FAKE_MV_PAUSED_FILE="$publish_paused"
+FAKE_MV_RELEASE_FILE="$publish_release"
+export FAKE_MV_PAUSED_FILE FAKE_MV_RELEASE_FILE
+(
+	cd "$fake_repo"
+	sh "$gate" touch-path "$marker"
+) > "$case_dir/gate.log" 2>&1 &
+gate_pid=$!
+waited=0
+while [ ! -e "$publish_paused" ] && [ "$waited" -lt 10 ]; do
+	command sleep 1
+	waited=$((waited + 1))
+done
+[ -e "$publish_paused" ] || fail 'PID publication did not reach the replacement seam'
+"$real_mv" "$case_lock_dir" "$displaced_lock"
+command mkdir -- "$case_lock_dir"
+printf '%s\n' "$$" > "$case_lock_dir/pid"
+replacement_identity=$(LC_ALL=C command ls -di -- "$case_lock_dir" | awk 'NR == 1 { print $1 }')
+command touch "$publish_release"
+set +e
+wait "$gate_pid"
+gate_status=$?
+set -e
+gate_pid=''
+[ "$gate_status" -eq 75 ] || fail "replaced publication case exited $gate_status"
+assert_not_exists "$marker"
+[ "$(command cat "$case_lock_dir/pid")" = "$$" ] || fail 'replaced publisher overwrote the current owner PID'
+[ "$(LC_ALL=C command ls -di -- "$case_lock_dir" | awk 'NR == 1 { print $1 }')" = "$replacement_identity" ] || fail 'replaced publisher changed the current lock identity'
+command rm -f -- "$case_lock_dir/pid"
+command rmdir -- "$case_lock_dir"
+unset FAKE_MV_PAUSED_FILE FAKE_MV_RELEASE_FILE
+
 new_case serialization
 first_acquired="$case_dir/first-acquired"
 release_first="$case_dir/release-first"
@@ -306,35 +413,83 @@ wait "$first_pid" || fail 'timeout owner failed'
 first_pid=''
 unset BOSUN_AGENT_GATE_WAIT_SECONDS
 
-new_case signal-forwarding
+for wrapper_signal in HUP INT TERM; do
+	case "$wrapper_signal" in
+		HUP) want_status=129; child_signal=HUP ;;
+		INT) want_status=130; child_signal=TERM ;;
+		TERM) want_status=143; child_signal=TERM ;;
+	esac
+	new_case "signal-$wrapper_signal"
+	child_pid_file="$case_dir/child-pid"
+	child_started="$case_dir/child-started"
+	child_signaled="$case_dir/child-signaled"
+	timeout_fired="$case_dir/timeout-fired"
+	(
+		watch_waited=0
+		while [ ! -e "$child_started" ] && [ "$watch_waited" -lt 10 ]; do
+			command sleep 1
+			watch_waited=$((watch_waited + 1))
+		done
+		[ -e "$child_started" ] || exit 1
+		wrapper_pid=$(command cat "$case_lock_dir/pid")
+		command kill "-$wrapper_signal" "$wrapper_pid"
+		command sleep 6
+		if command kill -0 "$wrapper_pid" 2>/dev/null; then
+			command touch "$timeout_fired"
+			command kill -TERM "$wrapper_pid" 2>/dev/null || true
+		fi
+	) &
+	watchdog_pid=$!
+	run_gate signal-child "$child_pid_file" "$child_started" "$child_signaled" "$child_signal"
+	command kill "$watchdog_pid" 2>/dev/null || true
+	wait "$watchdog_pid" 2>/dev/null || true
+	watchdog_pid=''
+	assert_not_exists "$timeout_fired"
+	[ "$gate_status" -eq "$want_status" ] || fail "$wrapper_signal gate exited $gate_status"
+	[ -e "$child_signaled" ] || fail "gate did not deliver $child_signal while handling $wrapper_signal"
+	child_pid=$(command cat "$child_pid_file")
+	if command kill -0 "$child_pid" 2>/dev/null; then
+		fail "$wrapper_signal gate released while its compiler child was still alive"
+	fi
+	assert_not_exists "$case_lock_dir"
+	run_gate touch-path "$case_dir/after-signal"
+	[ "$gate_status" -eq 0 ] || fail "gate was not reusable after $wrapper_signal cleanup"
+done
+
+new_case signal-kill-escalation
 child_pid_file="$case_dir/child-pid"
 child_started="$case_dir/child-started"
-child_signaled="$case_dir/child-signaled"
+term_seen="$case_dir/term-seen"
+timeout_fired="$case_dir/timeout-fired"
 (
-	cd "$fake_repo"
-	exec sh "$gate" signal-child "$child_pid_file" "$child_started" "$child_signaled"
-) > "$case_dir/gate.log" 2>&1 &
-gate_pid=$!
-waited=0
-while [ ! -e "$child_started" ] && [ "$waited" -lt 10 ]; do
-	command sleep 1
-	waited=$((waited + 1))
-done
-[ -e "$child_started" ] || fail 'signal child never started'
-command kill -TERM "$gate_pid"
-set +e
-wait "$gate_pid"
-gate_status=$?
-set -e
-gate_pid=''
-[ "$gate_status" -eq 143 ] || fail "signaled gate exited $gate_status"
-[ -e "$child_signaled" ] || fail 'gate did not forward TERM to its child'
+	watch_waited=0
+	while [ ! -e "$child_started" ] && [ "$watch_waited" -lt 10 ]; do
+		command sleep 1
+		watch_waited=$((watch_waited + 1))
+	done
+	[ -e "$child_started" ] || exit 1
+	wrapper_pid=$(command cat "$case_lock_dir/pid")
+	command kill -INT "$wrapper_pid"
+	command sleep 6
+	if command kill -0 "$wrapper_pid" 2>/dev/null; then
+		command touch "$timeout_fired"
+		command kill -TERM "$wrapper_pid" 2>/dev/null || true
+	fi
+) &
+watchdog_pid=$!
+run_gate stubborn-child "$child_pid_file" "$child_started" "$term_seen"
+command kill "$watchdog_pid" 2>/dev/null || true
+wait "$watchdog_pid" 2>/dev/null || true
+watchdog_pid=''
+assert_not_exists "$timeout_fired"
+[ "$gate_status" -eq 130 ] || fail "kill-escalated gate exited $gate_status"
+[ -e "$term_seen" ] || fail 'gate did not escalate ignored INT to TERM'
 child_pid=$(command cat "$child_pid_file")
 if command kill -0 "$child_pid" 2>/dev/null; then
-	fail 'gate released while its compiler child was still alive'
+	fail 'gate released before KILL terminated its stubborn child'
 fi
 assert_not_exists "$case_lock_dir"
-run_gate touch-path "$case_dir/after-signal"
-[ "$gate_status" -eq 0 ] || fail 'gate was not reusable after signal cleanup'
+run_gate touch-path "$case_dir/after-kill-escalation"
+[ "$gate_status" -eq 0 ] || fail 'gate was not reusable after KILL escalation'
 
 printf 'agent-go-gate tests: PASS\n'
