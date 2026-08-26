@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/template"
 
 	"github.com/Masterminds/sprig/v3"
@@ -21,6 +22,7 @@ type TemplateEngine struct {
 	helpers *template.Template
 
 	// loadedTemplates caches parsed template files.
+	cacheMu         sync.RWMutex
 	loadedTemplates map[string]*template.Template
 }
 
@@ -115,8 +117,20 @@ func toYamlFunc(v any) (string, error) {
 // loadTemplate loads and parses a template file.
 func (e *TemplateEngine) loadTemplate(name string) (*template.Template, error) {
 	// Check cache
-	if tmpl, ok := e.loadedTemplates[name]; ok {
-		return tmpl, nil
+	e.cacheMu.RLock()
+	cached, ok := e.loadedTemplates[name]
+	e.cacheMu.RUnlock()
+	if ok {
+		return cached, nil
+	}
+
+	// Serialize cache misses so concurrent first loads parse and publish one
+	// template instance. Re-check after acquiring the write lock because another
+	// caller may have populated the cache while this caller was waiting.
+	e.cacheMu.Lock()
+	defer e.cacheMu.Unlock()
+	if cached, ok := e.loadedTemplates[name]; ok {
+		return cached, nil
 	}
 
 	// Try .yaml and .yml extensions
