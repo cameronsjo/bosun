@@ -329,7 +329,7 @@ func (c *Cloudflare) checkProcess(ctx context.Context) bool {
 	logger.Debug().Msg("Checking if cloudflared process is running")
 
 	// Try running cloudflared version to verify it's accessible
-	if _, err := c.commandRunner().Run(ctx, c.binaryPath, "version"); err != nil {
+	if err := c.commandRunner().Run(ctx, c.binaryPath, "version"); err != nil {
 		logger.Warn().
 			Err(err).
 			Msg("cloudflared version check failed")
@@ -340,7 +340,7 @@ func (c *Cloudflare) checkProcess(ctx context.Context) bool {
 
 	// Check if there's a running tunnel process
 	// On Linux/macOS, we can check for running cloudflared processes
-	if _, err := c.commandRunner().Run(ctx, "pgrep", "-x", "cloudflared"); err != nil {
+	if err := c.commandRunner().Run(ctx, "pgrep", "-x", "cloudflared"); err != nil {
 		logger.Warn().Msg("cloudflared process not found (pgrep check failed)")
 		return false
 	}

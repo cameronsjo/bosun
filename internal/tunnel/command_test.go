@@ -15,7 +15,7 @@ type stubCommandRunner struct {
 	mu sync.Mutex
 
 	outputFn func(context.Context, string, ...string) ([]byte, string, error)
-	runFn    func(context.Context, string, ...string) (string, error)
+	runFn    func(context.Context, string, ...string) error
 	calls    []commandCall
 }
 
@@ -27,10 +27,10 @@ func (s *stubCommandRunner) Output(ctx context.Context, name string, args ...str
 	return s.outputFn(ctx, name, args...)
 }
 
-func (s *stubCommandRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
+func (s *stubCommandRunner) Run(ctx context.Context, name string, args ...string) error {
 	s.record(name, args)
 	if s.runFn == nil {
-		return "", nil
+		return nil
 	}
 	return s.runFn(ctx, name, args...)
 }

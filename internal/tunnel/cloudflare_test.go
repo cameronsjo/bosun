@@ -388,12 +388,12 @@ func TestCloudflare_CheckProcess_DeterministicResponses(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			call := 0
-			runner := &stubCommandRunner{runFn: func(context.Context, string, ...string) (string, error) {
+			runner := &stubCommandRunner{runFn: func(context.Context, string, ...string) error {
 				call++
 				if call == tt.failAtCall {
-					return "failure", errors.New("command failed")
+					return errors.New("command failed")
 				}
-				return "diagnostic", nil
+				return nil
 			}}
 			cf := NewCloudflareWithPath("cloudflared-test", CloudflareConfig{})
 			cf.runner = runner
@@ -420,11 +420,11 @@ func TestCloudflare_Status_ProcessCheck(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cf := NewCloudflareWithPath("cloudflared-test", CloudflareConfig{})
-			cf.runner = &stubCommandRunner{runFn: func(_ context.Context, name string, _ ...string) (string, error) {
+			cf.runner = &stubCommandRunner{runFn: func(_ context.Context, name string, _ ...string) error {
 				if !tt.processOK && name == "pgrep" {
-					return "", errors.New("not running")
+					return errors.New("not running")
 				}
-				return "", nil
+				return nil
 			}}
 			status, err := cf.Status(context.Background())
 			require.NoError(t, err)

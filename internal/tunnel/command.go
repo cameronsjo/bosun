@@ -10,7 +10,7 @@ import (
 // behavior can be tested without depending on host-installed tunnel binaries.
 type commandRunner interface {
 	Output(ctx context.Context, name string, args ...string) ([]byte, string, error)
-	Run(ctx context.Context, name string, args ...string) (string, error)
+	Run(ctx context.Context, name string, args ...string) error
 }
 
 type execCommandRunner struct{}
@@ -23,10 +23,6 @@ func (execCommandRunner) Output(ctx context.Context, name string, args ...string
 	return output, stderr.String(), err
 }
 
-func (execCommandRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
-	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	return stderr.String(), err
+func (execCommandRunner) Run(ctx context.Context, name string, args ...string) error {
+	return exec.CommandContext(ctx, name, args...).Run()
 }
