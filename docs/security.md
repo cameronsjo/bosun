@@ -344,7 +344,7 @@ if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != ni
 | Lock | Path | Purpose |
 |------|------|---------|
 | Provision | `.bosun/locks/provision.lock` | Prevent concurrent renders |
-| Reconcile | `/tmp/reconcile.lock` | Prevent concurrent deploys |
+| Reconcile | `/var/run/bosun/reconcile.lock` | Prevent concurrent deploys |
 
 ### Lock File Contents
 

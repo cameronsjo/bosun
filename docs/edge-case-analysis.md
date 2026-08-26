@@ -138,7 +138,7 @@ Creates snapshots before provisions, allows rollback to previous states.
 | **Corrupted snapshot directory** | High | No validation of snapshot integrity | Add checksum or manifest file |
 | **Partial copy on error** | Medium | Line 64: `os.RemoveAll(snapshotPath)` cleanup on error, but race possible | Use atomic rename pattern |
 | **Restore is not atomic** | High | Line 155: `RemoveAll()` then `copyDir()` - failure between leaves broken state | Copy to temp, then atomic rename |
-| **Concurrent provision race** | High | No locking - two provisions can run simultaneously | Add file-based lock |
+| **Concurrent provision race** | Resolved | Provision commands acquire a cross-process file lock | Keep lock regression coverage |
 | **Pre-rollback backup not in snapshot list** | Low | `pre-rollback-*` backups listed with regular snapshots | Filter or separate |
 | **Large snapshot directory** | Medium | No size limit per snapshot | Add configurable max size |
 | **Symbolic links not handled** | Medium | `copyFile()` doesn't preserve symlinks | Use `os.Lstat()` and handle symlinks |
@@ -244,22 +244,21 @@ Tests webhook endpoint and checks Tailscale status.
 ### P0 - Critical (Data Loss / Security Risk)
 
 1. **Snapshot restore atomicity** - Partial restore can leave broken state
-2. **Concurrent provision race** - No locking mechanism
-3. **No disk space check** - Snapshots can fill disk
+2. **No disk space check** - Snapshots can fill disk
 
 ### P1 - High (Functionality Broken)
 
-4. **YAML validation is regex-based** - False positives/negatives in drift detection
-5. **No dependency cycle detection** - Can deploy circular dependencies
-6. **No timeouts on external calls** - Doctor/lint can hang indefinitely
-7. **Image comparison is string-based** - Drift false positives with digests
+3. **YAML validation is regex-based** - False positives/negatives in drift detection
+4. **No dependency cycle detection** - Can deploy circular dependencies
+5. **No timeouts on external calls** - Doctor/lint can hang indefinitely
+6. **Image comparison is string-based** - Drift false positives with digests
 
 ### P2 - Medium (Poor UX / Degraded Functionality)
 
-8. **Port conflict detection incomplete** - Misses common formats
-9. **Error handling silent** - Many errors logged but not surfaced
-10. **Network drift not detected** - Only images compared
-11. **Hardcoded infrastructure containers** - Not configurable
+7. **Port conflict detection incomplete** - Misses common formats
+8. **Error handling silent** - Many errors logged but not surfaced
+9. **Network drift not detected** - Only images compared
+10. **Hardcoded infrastructure containers** - Not configurable
 
 ### P3 - Low (Minor Issues)
 

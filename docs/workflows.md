@@ -195,7 +195,7 @@ flowchart TD
 
 | Step | Operation | Error Handling |
 |------|-----------|----------------|
-| 1 | Acquire exclusive file lock (`/tmp/reconcile.lock`) | Skips if lock held (non-blocking `LOCK_NB`) |
+| 1 | Acquire exclusive file lock (`/var/run/bosun/reconcile.lock`) | Skips if lock held (non-blocking `LOCK_NB`) |
 | 2 | Preflight Age identity when secrets files are configured, then sync git repository (clone or pull) | Identity paths must be regular, non-empty, and parseable before Git; clone timeout: 5min, fetch timeout: 2min |
 | 3 | Compare before/after commit hashes | Skip if no changes unless `--force` |
 | 4 | Validate SOPS files exist and have `sops` metadata key | Returns specific error with fix instructions |

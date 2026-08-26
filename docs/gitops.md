@@ -804,7 +804,7 @@ The reconciler uses file-based locking to prevent concurrent runs.
 
 ### Lock File
 
-**Path**: `/tmp/reconcile.lock`
+**Path**: `/var/run/bosun/reconcile.lock`
 
 ### Unix Implementation
 
