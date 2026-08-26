@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.40.7](https://github.com/cameronsjo/bosun/compare/v0.40.6...v0.40.7) (2026-08-26)
+
+
+### Bug Fixes
+
+* **alert:** bound Twilio error responses ([a1c796b](https://github.com/cameronsjo/bosun/commit/a1c796bd53be33bc67cb343e5a6590f66f60e131))
+* **ci:** recover releases after invalid app credentials ([7390404](https://github.com/cameronsjo/bosun/commit/7390404e357165c62868fb85056a7ffac4c5c7ad))
+* **dev:** harden agent disk guard limits ([c5c69e4](https://github.com/cameronsjo/bosun/commit/c5c69e4b399721fb3a3a9ef702b181438a4be378))
+* **fileutil:** bound equal-hash comparisons ([6de24f5](https://github.com/cameronsjo/bosun/commit/6de24f596aca30aa60c802f0564638a086dee6c2))
+* **lock:** preserve lock inode across releases ([a012e2c](https://github.com/cameronsjo/bosun/commit/a012e2caaa7699d22b62b22298b14f7671536e18))
+* **log:** preserve configured writers in daemon mode ([2536faa](https://github.com/cameronsjo/bosun/commit/2536faafbb92eeecdb8ee629b46ccacc1f88d6e1))
+* **sentry:** synchronize lifecycle state ([eef5a5f](https://github.com/cameronsjo/bosun/commit/eef5a5fa9b89126ef01b32645a29e61a24f6bf11))
+* **snapshot:** preserve rollback failure causes ([99211eb](https://github.com/cameronsjo/bosun/commit/99211ebbc025dfe54190759a3b576ad5315217f7))
+* **telemetry:** validate OTLP endpoint URLs ([cbb4388](https://github.com/cameronsjo/bosun/commit/cbb4388fe3f584915633fed881f1613e6cb1093d))
+* **tunnel:** make hostname cache race-safe ([fea5f05](https://github.com/cameronsjo/bosun/commit/fea5f0593bba4877921146c570bbfb70739c012d))
+
 ## [0.40.6](https://github.com/cameronsjo/bosun/compare/v0.40.5...v0.40.6) (2026-08-26)
 
 
