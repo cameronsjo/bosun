@@ -15,6 +15,9 @@ cleanup() {
 	if [ -n "${FAKE_MV_RELEASE_FILE:-}" ]; then
 		command touch "$FAKE_MV_RELEASE_FILE" 2>/dev/null || true
 	fi
+	if [ -n "${FAKE_RELEASE_MV_RELEASE_FILE:-}" ]; then
+		command touch "$FAKE_RELEASE_MV_RELEASE_FILE" 2>/dev/null || true
+	fi
 	for cleanup_pid in "$first_pid" "$second_pid" "$gate_pid" "$watchdog_pid"; do
 		case "$cleanup_pid" in
 			''|*[!0-9]*) ;;
@@ -117,6 +120,14 @@ case "$*" in
 			done
 		fi
 		;;
+	*.release.*)
+		if [ -n "${FAKE_RELEASE_MV_PAUSED_FILE:-}" ]; then
+			touch "$FAKE_RELEASE_MV_PAUSED_FILE"
+			while [ ! -e "$FAKE_RELEASE_MV_RELEASE_FILE" ]; do
+				sleep 1
+			done
+		fi
+		;;
 esac
 exec "$FAKE_REAL_MV" "$@"
 EOF
@@ -176,6 +187,7 @@ EOF
 	unset GOCACHE GOMODCACHE GOTMPDIR GOLANGCI_LINT_CACHE
 	unset BOSUN_AGENT_MIN_FREE_GIB BOSUN_AGENT_MAX_DISK_DELTA_GIB BOSUN_AGENT_GATE_WAIT_SECONDS
 	unset FAKE_MV_FAIL FAKE_MV_PAUSED_FILE FAKE_MV_RELEASE_FILE
+	unset FAKE_RELEASE_MV_PAUSED_FILE FAKE_RELEASE_MV_RELEASE_FILE
 }
 
 run_gate() {
@@ -355,6 +367,54 @@ assert_not_exists "$marker"
 command rm -f -- "$case_lock_dir/pid"
 command rmdir -- "$case_lock_dir"
 unset FAKE_MV_PAUSED_FILE FAKE_MV_RELEASE_FILE
+
+new_case release-replacement
+owner_marker="$case_dir/owner-ran"
+third_marker="$case_dir/third-must-not-run"
+release_paused="$case_dir/release-paused"
+release_resume="$case_dir/release-resume"
+displaced_lock="$case_dir/displaced-owner-lock"
+FAKE_RELEASE_MV_PAUSED_FILE="$release_paused"
+FAKE_RELEASE_MV_RELEASE_FILE="$release_resume"
+export FAKE_RELEASE_MV_PAUSED_FILE FAKE_RELEASE_MV_RELEASE_FILE
+(
+	cd "$fake_repo"
+	sh "$gate" touch-path "$owner_marker"
+) > "$case_dir/owner.log" 2>&1 &
+gate_pid=$!
+waited=0
+while [ ! -e "$release_paused" ] && [ "$waited" -lt 10 ]; do
+	command sleep 1
+	waited=$((waited + 1))
+done
+[ -e "$release_paused" ] || fail 'release did not reach the replacement seam'
+[ -e "$owner_marker" ] || fail 'owner command did not finish before release'
+"$real_mv" "$case_lock_dir" "$displaced_lock"
+command mkdir -- "$case_lock_dir"
+printf '%s\n' "$$" > "$case_lock_dir/pid"
+replacement_identity=$(LC_ALL=C command ls -di -- "$case_lock_dir" | awk 'NR == 1 { print $1 }')
+(
+	cd "$fake_repo"
+	BOSUN_AGENT_GATE_WAIT_SECONDS=1 sh "$gate" touch-path "$third_marker"
+) > "$case_dir/third.log" 2>&1 &
+second_pid=$!
+command sleep 1
+assert_not_exists "$third_marker"
+command touch "$release_resume"
+wait "$gate_pid" || fail 'original owner failed while preserving its replacement'
+gate_pid=''
+set +e
+wait "$second_pid"
+third_status=$?
+set -e
+second_pid=''
+[ "$third_status" -eq 75 ] || fail "third gate exited $third_status instead of waiting on the replacement"
+assert_not_exists "$third_marker"
+[ "$(command cat "$case_lock_dir/pid")" = "$$" ] || fail 'release cleanup deleted or overwrote the replacement PID'
+[ "$(LC_ALL=C command ls -di -- "$case_lock_dir" | awk 'NR == 1 { print $1 }')" = "$replacement_identity" ] || fail 'release cleanup replaced the current lock identity'
+command rm -f -- "$case_lock_dir/pid"
+command rmdir -- "$case_lock_dir"
+unset FAKE_RELEASE_MV_PAUSED_FILE FAKE_RELEASE_MV_RELEASE_FILE
 
 new_case serialization
 first_acquired="$case_dir/first-acquired"

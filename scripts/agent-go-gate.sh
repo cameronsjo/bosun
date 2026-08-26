@@ -48,12 +48,17 @@ lock_identity() {
 	LC_ALL=C command ls -di -- "$lock_dir" 2>/dev/null | awk 'NR == 1 { print $1 }'
 }
 
-read_lock_pid() {
+read_pid_from() {
+	pid_dir=$1
 	lock_pid=''
-	if [ -r "$lock_dir/pid" ]; then
-		IFS= read -r lock_pid < "$lock_dir/pid" || lock_pid=''
+	if [ -r "$pid_dir/pid" ]; then
+		IFS= read -r lock_pid < "$pid_dir/pid" || lock_pid=''
 	fi
 	printf '%s' "$lock_pid"
+}
+
+read_lock_pid() {
+	read_pid_from "$lock_dir"
 }
 
 # shellcheck disable=SC2329 # Invoked by the EXIT trap.
@@ -62,8 +67,20 @@ release_lock() {
 		owner_pid=$(read_lock_pid)
 		current_identity=$(lock_identity)
 		if [ "$owner_pid" = "$$" ] && [ "$current_identity" = "${owned_identity:-}" ]; then
-			command rm -f -- "$lock_dir/pid"
-			command rmdir -- "$lock_dir" 2>/dev/null || true
+			release_dir="${lock_dir}.release.$$.${owned_identity}"
+			if [ ! -e "$release_dir" ] && command mv -- "$lock_dir" "$release_dir" 2>/dev/null; then
+				moved_identity=$(LC_ALL=C command ls -di -- "$release_dir" 2>/dev/null | awk 'NR == 1 { print $1 }')
+				moved_pid=$(read_pid_from "$release_dir")
+				if [ "$moved_identity" = "$owned_identity" ] && [ "$moved_pid" = "$$" ]; then
+					command rm -f -- "$release_dir/pid"
+					command rm -f -- "$release_dir"/.pid.pending.*
+					command rmdir -- "$release_dir" 2>/dev/null || true
+				elif [ ! -e "$lock_dir" ]; then
+					# A replacement appeared between validation and rename. Restore
+					# that exact directory; never delete it as the former owner.
+					command mv -- "$release_dir" "$lock_dir" 2>/dev/null || true
+				fi
+			fi
 		fi
 		lock_owned=false
 		owned_identity=''
