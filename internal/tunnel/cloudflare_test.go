@@ -3,12 +3,14 @@ package tunnel
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewCloudflare(t *testing.T) {
@@ -284,6 +286,216 @@ func TestCloudflare_CheckProcess_InvalidBinary(t *testing.T) {
 	// Should return false when binary doesn't exist
 	connected := cf.checkProcess(ctx)
 	assert.False(t, connected)
+}
+
+func TestCloudflare_CheckTunnelInfo_DeterministicResponses(t *testing.T) {
+	tests := []struct {
+		name      string
+		output    string
+		stderr    string
+		err       error
+		connected bool
+		wantErr   bool
+	}{
+		{name: "active connection", output: `{"connections":[{"id":"connection-1"}]}`, stderr: "diagnostic\n", connected: true},
+		{name: "no connections", output: `{"connections":[]}`},
+		{name: "invalid JSON", output: `{not-json}`, wantErr: true},
+		{name: "command failure", stderr: "Authorization: secret", err: errors.New("command failed"), wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &stubCommandRunner{outputFn: func(context.Context, string, ...string) ([]byte, string, error) {
+				return []byte(tt.output), tt.stderr, tt.err
+			}}
+			cf := NewCloudflareWithPath("cloudflared-test", CloudflareConfig{TunnelName: "home"})
+			cf.runner = runner
+
+			connected, err := cf.checkTunnelInfo(context.Background())
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.False(t, connected)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.connected, connected)
+			}
+			assert.Equal(t, []commandCall{{
+				name: "cloudflared-test",
+				args: []string{"tunnel", "info", "--output", "json", "home"},
+			}}, runner.recordedCalls())
+		})
+	}
+}
+
+func TestCloudflare_Status_TunnelInfoAndFallbacks(t *testing.T) {
+	tests := []struct {
+		name         string
+		tunnelOutput string
+		tunnelErr    error
+		healthStatus int
+		wantState    string
+		wantOnline   bool
+	}{
+		{name: "connected tunnel info", tunnelOutput: `{"connections":[{}]}`, wantState: "Running", wantOnline: true},
+		{name: "disconnected tunnel info", tunnelOutput: `{"connections":[]}`, wantState: "Disconnected"},
+		{name: "failed info uses healthy endpoint", tunnelErr: errors.New("info failed"), healthStatus: http.StatusOK, wantState: "Running", wantOnline: true},
+		{name: "failed info uses unhealthy endpoint", tunnelErr: errors.New("info failed"), healthStatus: http.StatusBadGateway, wantState: "Unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.healthStatus)
+			}))
+			defer server.Close()
+
+			cf := NewCloudflareWithPath("cloudflared-test", CloudflareConfig{
+				TunnelName:     "home",
+				Hostname:       "home.example.com",
+				HealthEndpoint: server.URL,
+			})
+			cf.runner = &stubCommandRunner{outputFn: func(context.Context, string, ...string) ([]byte, string, error) {
+				return []byte(tt.tunnelOutput), "", tt.tunnelErr
+			}}
+
+			status, err := cf.Status(context.Background())
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantOnline, status.Connected)
+			assert.Equal(t, tt.wantState, status.BackendState)
+			assert.Equal(t, "cloudflare", status.Provider)
+			assert.Equal(t, "home.example.com", status.Hostname)
+		})
+	}
+}
+
+func TestCloudflare_CheckHealthEndpoint_InvalidURL(t *testing.T) {
+	cf := NewCloudflareWithPath("cloudflared-test", CloudflareConfig{HealthEndpoint: "://bad-url"})
+	assert.False(t, cf.checkHealthEndpoint(context.Background()))
+}
+
+func TestCloudflare_CheckProcess_DeterministicResponses(t *testing.T) {
+	tests := []struct {
+		name       string
+		failAtCall int
+		want       bool
+		wantCalls  int
+	}{
+		{name: "version check fails", failAtCall: 1, wantCalls: 1},
+		{name: "process lookup fails", failAtCall: 2, wantCalls: 2},
+		{name: "process is running", want: true, wantCalls: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			call := 0
+			runner := &stubCommandRunner{runFn: func(context.Context, string, ...string) error {
+				call++
+				if call == tt.failAtCall {
+					return errors.New("command failed")
+				}
+				return nil
+			}}
+			cf := NewCloudflareWithPath("cloudflared-test", CloudflareConfig{})
+			cf.runner = runner
+
+			assert.Equal(t, tt.want, cf.checkProcess(context.Background()))
+			assert.Len(t, runner.recordedCalls(), tt.wantCalls)
+			if tt.wantCalls == 2 {
+				assert.Equal(t, commandCall{name: "pgrep", args: []string{"-x", "cloudflared"}}, runner.recordedCalls()[1])
+			}
+		})
+	}
+}
+
+func TestCloudflare_Status_ProcessCheck(t *testing.T) {
+	tests := []struct {
+		name      string
+		processOK bool
+		wantState string
+	}{
+		{name: "running", processOK: true, wantState: "Running"},
+		{name: "stopped", wantState: "Stopped"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cf := NewCloudflareWithPath("cloudflared-test", CloudflareConfig{})
+			cf.runner = &stubCommandRunner{runFn: func(_ context.Context, name string, _ ...string) error {
+				if !tt.processOK && name == "pgrep" {
+					return errors.New("not running")
+				}
+				return nil
+			}}
+			status, err := cf.Status(context.Background())
+			require.NoError(t, err)
+			assert.Equal(t, tt.processOK, status.Connected)
+			assert.Equal(t, tt.wantState, status.BackendState)
+		})
+	}
+}
+
+func TestCloudflare_GetTunnelList_DeterministicResponses(t *testing.T) {
+	tests := []struct {
+		name    string
+		output  string
+		stderr  string
+		err     error
+		want    []string
+		wantErr bool
+	}{
+		{name: "names", output: `[{"name":"alpha"},{"name":"beta"}]`, stderr: "diagnostic", want: []string{"alpha", "beta"}},
+		{name: "empty", output: `[]`, want: []string{}},
+		{name: "invalid JSON", output: `{not-json}`, wantErr: true},
+		{name: "command failure", stderr: "Bearer secret", err: errors.New("command failed"), wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cf := NewCloudflareWithPath("cloudflared-test", CloudflareConfig{})
+			cf.runner = &stubCommandRunner{outputFn: func(context.Context, string, ...string) ([]byte, string, error) {
+				return []byte(tt.output), tt.stderr, tt.err
+			}}
+			names, err := cf.GetTunnelList(context.Background())
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Nil(t, names)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, names)
+		})
+	}
+}
+
+func TestCloudflare_GetVersion_DeterministicResponses(t *testing.T) {
+	tests := []struct {
+		name    string
+		output  string
+		stderr  string
+		err     error
+		want    string
+		wantErr bool
+	}{
+		{name: "trimmed version", output: "cloudflared version 2026.8.0\n", stderr: "diagnostic", want: "cloudflared version 2026.8.0"},
+		{name: "command failure", stderr: "Authorization: secret", err: errors.New("command failed"), wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cf := NewCloudflareWithPath("cloudflared-test", CloudflareConfig{})
+			cf.runner = &stubCommandRunner{outputFn: func(context.Context, string, ...string) ([]byte, string, error) {
+				return []byte(tt.output), tt.stderr, tt.err
+			}}
+			version, err := cf.GetVersion(context.Background())
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Empty(t, version)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, version)
+		})
+	}
 }
 
 // Integration tests - only run if cloudflared is installed

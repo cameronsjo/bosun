@@ -1,7 +1,6 @@
 package tunnel
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -52,13 +51,16 @@ type Cloudflare struct {
 
 	// config holds the Cloudflare-specific configuration.
 	config CloudflareConfig
+
+	// runner executes cloudflared and process-discovery commands.
+	runner commandRunner
 }
 
 // cloudflaredTunnelInfo represents the output of `cloudflared tunnel info`.
 type cloudflaredTunnelInfo struct {
-	ID          string                 `json:"id"`
-	Name        string                 `json:"name"`
-	CreatedAt   string                 `json:"createdAt"`
+	ID          string                  `json:"id"`
+	Name        string                  `json:"name"`
+	CreatedAt   string                  `json:"createdAt"`
 	Connections []cloudflaredConnection `json:"connections"`
 }
 
@@ -94,6 +96,7 @@ func NewCloudflare() (*Cloudflare, error) {
 
 	return &Cloudflare{
 		binaryPath: path,
+		runner:     execCommandRunner{},
 		config: CloudflareConfig{
 			HealthTimeout: DefaultHealthTimeout,
 		},
@@ -128,6 +131,7 @@ func NewCloudflareWithConfig(config CloudflareConfig) (*Cloudflare, error) {
 	return &Cloudflare{
 		binaryPath: path,
 		config:     config,
+		runner:     execCommandRunner{},
 	}, nil
 }
 
@@ -140,7 +144,15 @@ func NewCloudflareWithPath(binaryPath string, config CloudflareConfig) *Cloudfla
 	return &Cloudflare{
 		binaryPath: binaryPath,
 		config:     config,
+		runner:     execCommandRunner{},
 	}
+}
+
+func (c *Cloudflare) commandRunner() commandRunner {
+	if c.runner != nil {
+		return c.runner
+	}
+	return execCommandRunner{}
 }
 
 // Name returns the provider name.
@@ -222,26 +234,22 @@ func (c *Cloudflare) checkTunnelInfo(ctx context.Context) (bool, error) {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentTunnel)
 
-	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, c.binaryPath, "tunnel", "info", "--output", "json", c.config.TunnelName)
-	cmd.Stderr = &stderr
-
 	logger.Debug().Str(log.FieldOperation, "tunnel_info").Str("tunnel", c.config.TunnelName).Msg("Executing cloudflared tunnel info")
 
-	output, err := cmd.Output()
+	output, stderr, err := c.commandRunner().Output(ctx, c.binaryPath, "tunnel", "info", "--output", "json", c.config.TunnelName)
 	if err != nil {
 		logger.Error().
 			Err(err).
 			Str(log.FieldOperation, "tunnel_info").
-			Str("stderr", redactSensitiveOutput(stderr.String())).
+			Str("stderr", redactSensitiveOutput(stderr)).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 			Msg("cloudflared tunnel info failed")
 		return false, err
 	}
 
-	if stderrStr := stderr.String(); stderrStr != "" {
+	if stderr != "" {
 		logger.Debug().
-			Str("stderr", redactSensitiveOutput(stderrStr)).
+			Str("stderr", redactSensitiveOutput(stderr)).
 			Msg("cloudflared tunnel info command produced stderr")
 	}
 
@@ -321,8 +329,7 @@ func (c *Cloudflare) checkProcess(ctx context.Context) bool {
 	logger.Debug().Msg("Checking if cloudflared process is running")
 
 	// Try running cloudflared version to verify it's accessible
-	cmd := exec.CommandContext(ctx, c.binaryPath, "version")
-	if err := cmd.Run(); err != nil {
+	if err := c.commandRunner().Run(ctx, c.binaryPath, "version"); err != nil {
 		logger.Warn().
 			Err(err).
 			Msg("cloudflared version check failed")
@@ -333,8 +340,7 @@ func (c *Cloudflare) checkProcess(ctx context.Context) bool {
 
 	// Check if there's a running tunnel process
 	// On Linux/macOS, we can check for running cloudflared processes
-	cmd = exec.CommandContext(ctx, "pgrep", "-x", "cloudflared")
-	if err := cmd.Run(); err != nil {
+	if err := c.commandRunner().Run(ctx, "pgrep", "-x", "cloudflared"); err != nil {
 		logger.Warn().Msg("cloudflared process not found (pgrep check failed)")
 		return false
 	}
@@ -362,25 +368,21 @@ func (c *Cloudflare) GetTunnelList(ctx context.Context) ([]string, error) {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentTunnel)
 
-	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, c.binaryPath, "tunnel", "list", "--output", "json")
-	cmd.Stderr = &stderr
-
 	logger.Debug().Str(log.FieldOperation, "tunnel_list").Msg("Executing cloudflared tunnel list")
 
-	output, err := cmd.Output()
+	output, stderr, err := c.commandRunner().Output(ctx, c.binaryPath, "tunnel", "list", "--output", "json")
 	if err != nil {
 		logger.Error().
 			Err(err).
 			Str(log.FieldOperation, "tunnel_list").
-			Str("stderr", redactSensitiveOutput(stderr.String())).
+			Str("stderr", redactSensitiveOutput(stderr)).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 			Msg("cloudflared tunnel list failed")
 		return nil, err
 	}
 
-	if stderrStr := stderr.String(); stderrStr != "" {
-		logger.Debug().Str("stderr", redactSensitiveOutput(stderrStr)).Msg("cloudflared tunnel list stderr")
+	if stderr != "" {
+		logger.Debug().Str("stderr", redactSensitiveOutput(stderr)).Msg("cloudflared tunnel list stderr")
 	}
 
 	// Parse the JSON output
@@ -410,25 +412,21 @@ func (c *Cloudflare) GetVersion(ctx context.Context) (string, error) {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentTunnel)
 
-	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, c.binaryPath, "version")
-	cmd.Stderr = &stderr
-
 	logger.Debug().Str(log.FieldOperation, "version").Msg("Executing cloudflared version")
 
-	output, err := cmd.Output()
+	output, stderr, err := c.commandRunner().Output(ctx, c.binaryPath, "version")
 	if err != nil {
 		logger.Error().
 			Err(err).
 			Str(log.FieldOperation, "version").
-			Str("stderr", redactSensitiveOutput(stderr.String())).
+			Str("stderr", redactSensitiveOutput(stderr)).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 			Msg("cloudflared version check failed")
 		return "", err
 	}
 
-	if stderrStr := stderr.String(); stderrStr != "" {
-		logger.Debug().Str("stderr", redactSensitiveOutput(stderrStr)).Msg("cloudflared version stderr")
+	if stderr != "" {
+		logger.Debug().Str("stderr", redactSensitiveOutput(stderr)).Msg("cloudflared version stderr")
 	}
 
 	version := strings.TrimSpace(string(output))
