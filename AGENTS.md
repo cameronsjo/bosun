@@ -57,15 +57,35 @@ scripts/agent-go-gate.sh go test -race ./internal/reconcile
 scripts/agent-go-gate.sh golangci-lint run --new-from-rev=origin/main ./...
 ```
 
-The gate serializes work across Git worktrees, uses the shared default Go,
-module, and golangci-lint caches, requires `GOTMPDIR` to be unset, and refuses
-to start below 20 GiB free. Its tiny persistent lock file lives in the
-canonical Git common directory shared by those worktrees. It reports
-before/after disk usage and fails a
+The gate serializes work across Git worktrees and uses the shared default Go,
+module, and golangci-lint caches. It derives the built-in Go defaults with
+`GOENV=off`, rejects explicit or GOENV-derived cache/temp deviations, and keeps
+unrelated GOENV settings available to the child. Its tiny persistent lock file
+lives in the canonical Git common directory shared by those worktrees. The gate
+refuses to start below 20 GiB free, reports before/after disk usage, and fails a
 successful command that unexpectedly consumes more than 8 GiB. A waiting agent
-times out after 60 seconds and should retry later; it must not bypass the gate.
-Do not create per-agent Go, race, coverage, or lint caches. Ordinary user-invoked
-Make targets remain ungated; the wrapper is mandatory for agent-run local gates.
+times out after 60 seconds and SHOULD retry later; it MUST NOT bypass the gate.
+Agents MUST NOT create per-agent Go, race, coverage, or lint caches. Ordinary
+user-invoked Make targets remain ungated; the wrapper is mandatory for
+agent-run local gates.
+
+Exit statuses:
+
+- `0` — the wrapped command succeeded and the post-command disk checks passed.
+- `64` — a gate configuration or setup error. Fix the environment; an unchanged
+  retry MUST NOT be attempted.
+- `75` — a temporary resource failure, such as a lock timeout, disk-floor
+  violation, or excessive disk delta. Retry later.
+- `129`, `130`, or `143` — the wrapper received HUP, INT, or TERM respectively,
+  terminated its child, and preserved the corresponding signal status.
+- Any other status — the wrapped command's own exit status, which the gate
+  preserves.
+
+The defaults are controlled by `BOSUN_AGENT_MIN_FREE_GIB` (20),
+`BOSUN_AGENT_MAX_DISK_DELTA_GIB` (8), and
+`BOSUN_AGENT_GATE_WAIT_SECONDS` (60). Agents MUST NOT lower the free-space
+floor, raise the delta or wait limits, or otherwise change these overrides to
+bypass a gate rejection.
 
 **Patterns:**
 
