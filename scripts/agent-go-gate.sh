@@ -44,108 +44,146 @@ canonical_dir() {
 	)
 }
 
-lock_identity() {
-	LC_ALL=C command ls -di -- "$lock_dir" 2>/dev/null | awk 'NR == 1 { print $1 }'
+path_identity() {
+	LC_ALL=C command ls -di -- "$1" 2>/dev/null | awk 'NR == 1 { print $1 }'
 }
 
-read_pid_from() {
-	pid_dir=$1
-	lock_pid=''
-	if [ -r "$pid_dir/pid" ]; then
-		IFS= read -r lock_pid < "$pid_dir/pid" || lock_pid=''
+read_record_from() {
+	record_value=''
+	if [ -r "$1" ]; then
+		IFS= read -r record_value < "$1" || [ -n "$record_value" ] || record_value=''
 	fi
-	printf '%s' "$lock_pid"
+	printf '%s' "$record_value"
 }
 
-read_lock_pid() {
-	read_pid_from "$lock_dir"
+parse_record() {
+	parsed_pid=''
+	parsed_token=''
+	case "$1" in
+		*' '*)
+			parsed_pid=${1%% *}
+			parsed_token=${1#* }
+			;;
+		*) return 1 ;;
+	esac
+	case "$parsed_pid" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+	case "$parsed_token" in
+		"$lock_basename".owner.*) ;;
+		*) return 1 ;;
+	esac
+	case "$parsed_token" in
+		*/*|*' '*) return 1 ;;
+	esac
+}
+
+remove_verified_link() {
+	remove_path=$1
+	remove_identity=$2
+	[ -n "$remove_identity" ] || return 0
+	if [ "$(path_identity "$remove_path")" = "$remove_identity" ]; then
+		command rm -f -- "$remove_path"
+	fi
+}
+
+cleanup_links_for_identity() {
+	cleanup_identity=$1
+	for cleanup_path in "$lock_file".owner.* "$lock_file".capture.*; do
+		[ -e "$cleanup_path" ] || continue
+		remove_verified_link "$cleanup_path" "$cleanup_identity"
+	done
+}
+
+cleanup_orphan_links() {
+	for orphan_path in "$lock_file".owner.* "$lock_file".capture.*; do
+		[ -e "$orphan_path" ] || continue
+		orphan_identity=$(path_identity "$orphan_path")
+		orphan_record=$(read_record_from "$orphan_path")
+		if parse_record "$orphan_record" && ! command kill -0 "$parsed_pid" 2>/dev/null; then
+			remove_verified_link "$orphan_path" "$orphan_identity"
+		fi
+	done
+}
+
+create_owner_file() {
+	owner_file=$(umask 077 && command mktemp "${lock_file}.owner.$$.XXXXXX") || fail 'cannot create private gate owner file'
+	owner_token=${owner_file##*/}
+	owner_record="$$ $owner_token"
+	if ! (umask 077 && printf '%s\n' "$owner_record" > "$owner_file"); then
+		command rm -f -- "$owner_file"
+		fail 'cannot publish private gate owner record'
+	fi
+	owner_identity=$(path_identity "$owner_file")
+	[ -n "$owner_identity" ] || fail 'cannot identify private gate owner file'
 }
 
 # shellcheck disable=SC2329 # Invoked by the EXIT trap.
 release_lock() {
 	if [ "${lock_owned:-false}" = true ]; then
-		owner_pid=$(read_lock_pid)
-		current_identity=$(lock_identity)
-		if [ "$owner_pid" = "$$" ] && [ "$current_identity" = "${owned_identity:-}" ]; then
-			release_dir="${lock_dir}.release.$$.${owned_identity}"
-			if [ ! -e "$release_dir" ] && command mv -- "$lock_dir" "$release_dir" 2>/dev/null; then
-				moved_identity=$(LC_ALL=C command ls -di -- "$release_dir" 2>/dev/null | awk 'NR == 1 { print $1 }')
-				moved_pid=$(read_pid_from "$release_dir")
-				if [ "$moved_identity" = "$owned_identity" ] && [ "$moved_pid" = "$$" ]; then
-					command rm -f -- "$release_dir/pid"
-					command rm -f -- "$release_dir"/.pid.pending.*
-					command rmdir -- "$release_dir" 2>/dev/null || true
-				elif [ ! -e "$lock_dir" ]; then
-					# A replacement appeared between validation and rename. Restore
-					# that exact directory; never delete it as the former owner.
-					command mv -- "$release_dir" "$lock_dir" 2>/dev/null || true
-				fi
+		capture_file="${lock_file}.capture.release.${owner_token}"
+		if [ ! -e "$capture_file" ] && command ln -P "$lock_file" "$capture_file" 2>/dev/null; then
+			capture_identity=$(path_identity "$capture_file")
+			capture_record=$(read_record_from "$capture_file")
+			current_identity=$(path_identity "$lock_file")
+			if [ "$capture_identity" = "$owned_identity" ] &&
+				[ "$capture_record" = "$owner_record" ] &&
+				[ "$current_identity" = "$owned_identity" ]; then
+				command rm -f -- "$lock_file"
 			fi
+			remove_verified_link "$capture_file" "$capture_identity"
 		fi
 		lock_owned=false
 		owned_identity=''
+	fi
+	if [ -n "${owner_file:-}" ]; then
+		remove_verified_link "$owner_file" "${owner_identity:-}"
 	fi
 }
 
 reclaim_stale_lock() {
 	expected_identity=$1
-	expected_pid=$2
-	current_identity=$(lock_identity)
-	current_pid=$(read_lock_pid)
-	[ -n "$current_identity" ] || return 0
-	[ "$current_identity" = "$expected_identity" ] || return 0
-	[ "$current_pid" = "$expected_pid" ] || return 0
-
-	stale_dir="${lock_dir}.stale.$$"
-	if command mv -- "$lock_dir" "$stale_dir" 2>/dev/null; then
-		moved_identity=$(LC_ALL=C command ls -di -- "$stale_dir" 2>/dev/null | awk 'NR == 1 { print $1 }')
-		if [ "$moved_identity" = "$expected_identity" ]; then
-			command rm -f -- "$stale_dir/pid"
-			command rm -f -- "$stale_dir"/.pid.pending.*
-			command rmdir -- "$stale_dir" 2>/dev/null || true
-		elif [ ! -e "$lock_dir" ]; then
-			# The lock changed between validation and rename. Restore it rather
-			# than deleting another gate owner's lock.
-			command mv -- "$stale_dir" "$lock_dir" 2>/dev/null || true
+	expected_record=$2
+	capture_file="${lock_file}.capture.reclaim.${owner_token}.${expected_identity}"
+	[ ! -e "$capture_file" ] || return 0
+	if command ln -P "$lock_file" "$capture_file" 2>/dev/null; then
+		capture_identity=$(path_identity "$capture_file")
+		capture_record=$(read_record_from "$capture_file")
+		current_identity=$(path_identity "$lock_file")
+		current_record=$(read_record_from "$lock_file")
+		if [ "$capture_identity" = "$expected_identity" ] &&
+			[ "$capture_record" = "$expected_record" ] &&
+			[ "$current_identity" = "$expected_identity" ] &&
+			[ "$current_record" = "$expected_record" ]; then
+			command rm -f -- "$lock_file"
+			if [ "$(path_identity "$lock_file")" != "$expected_identity" ]; then
+				cleanup_links_for_identity "$expected_identity"
+			fi
 		fi
+		remove_verified_link "$capture_file" "$capture_identity"
 	fi
 }
 
 acquire_lock() {
 	waited=0
 	reported_wait=false
-	observed_identity=''
-	unowned_waited=0
-	while ! command mkdir -- "$lock_dir" 2>/dev/null; do
-		current_identity=$(lock_identity)
-		owner_pid=$(read_lock_pid)
-		if [ "$current_identity" != "$observed_identity" ]; then
-			observed_identity=$current_identity
-			unowned_waited=0
+	while ! command ln -P "$owner_file" "$lock_file" 2>/dev/null; do
+		current_identity=$(path_identity "$lock_file")
+		current_record=$(read_record_from "$lock_file")
+		if parse_record "$current_record"; then
+			owner_pid=$parsed_pid
+			if ! command kill -0 "$owner_pid" 2>/dev/null; then
+				reclaim_stale_lock "$current_identity" "$current_record"
+			elif [ "$reported_wait" = false ]; then
+				printf 'agent-go-gate: waiting for shared gate held by PID %s\n' "$owner_pid" >&2
+				reported_wait=true
+			fi
+		else
+			owner_pid=''
+			reclaim_stale_lock "$current_identity" "$current_record"
 		fi
 
-		case "$owner_pid" in
-			''|*[!0-9]*)
-				# mkdir and the PID write are separate operations. Give a new
-				# lock identity two seconds to publish its PID before treating
-				# that specific lock as stale.
-				if [ "$unowned_waited" -ge 2 ]; then
-					reclaim_stale_lock "$current_identity" "$owner_pid"
-				fi
-				unowned_waited=$((unowned_waited + 1))
-				;;
-			*)
-				if ! command kill -0 "$owner_pid" 2>/dev/null; then
-					reclaim_stale_lock "$current_identity" "$owner_pid"
-				elif [ "$reported_wait" = false ]; then
-					printf 'agent-go-gate: waiting for shared gate held by PID %s\n' "$owner_pid" >&2
-					reported_wait=true
-				fi
-				;;
-		esac
-
-		if [ "$waited" -ge "$wait_seconds" ] && [ -e "$lock_dir" ]; then
-			owner_pid=$(read_lock_pid)
+		if [ "$waited" -ge "$wait_seconds" ] && [ -e "$lock_file" ]; then
 			case "$owner_pid" in
 				''|*[!0-9]*)
 					temporary_fail "timed out waiting ${wait_seconds}s for gate without a valid owner PID"
@@ -160,33 +198,13 @@ acquire_lock() {
 		waited=$((waited + 1))
 	done
 
+	owned_identity=$(path_identity "$lock_file")
+	current_record=$(read_record_from "$lock_file")
+	if [ "$owned_identity" != "$owner_identity" ] || [ "$current_record" != "$owner_record" ]; then
+		owned_identity=''
+		temporary_fail 'shared gate ownership changed during atomic acquisition; retry later'
+	fi
 	lock_owned=true
-	owned_identity=$(lock_identity)
-	if [ -z "$owned_identity" ]; then
-		lock_owned=false
-		command rmdir -- "$lock_dir" 2>/dev/null || true
-		fail 'cannot identify shared gate ownership'
-	fi
-	pending_pid="$lock_dir/.pid.pending.$$"
-	if ! (umask 077 && printf '%s\n' "$$" > "$pending_pid"); then
-		release_lock
-		fail 'cannot publish shared gate ownership'
-	fi
-	if [ "$(lock_identity)" != "$owned_identity" ]; then
-		lock_owned=false
-		owned_identity=''
-		temporary_fail 'shared gate ownership changed during PID publication; retry later'
-	fi
-	if ! command mv -- "$pending_pid" "$lock_dir/pid" 2>/dev/null; then
-		lock_owned=false
-		owned_identity=''
-		temporary_fail 'shared gate ownership changed during PID publication; retry later'
-	fi
-	if [ "$(lock_identity)" != "$owned_identity" ] || [ "$(read_lock_pid)" != "$$" ]; then
-		lock_owned=false
-		owned_identity=''
-		temporary_fail 'shared gate ownership changed during PID publication; retry later'
-	fi
 }
 
 # shellcheck disable=SC2329 # Invoked by the signal traps.
@@ -270,15 +288,20 @@ unset GOLANGCI_LINT_CACHE
 
 lock_key=$(printf '%s' "$common_dir" | command cksum | awk '{ print $1 "-" $2 }')
 [ -n "$lock_key" ] || fail 'cannot derive shared gate key'
-lock_dir="/tmp/bosun-agent-go-gate-${lock_key}.lock"
+lock_file="/tmp/bosun-agent-go-gate-${lock_key}.lock"
+lock_basename=${lock_file##*/}
 lock_owned=false
 owned_identity=''
+owner_file=''
+owner_identity=''
 command_pid=''
 signal_status=''
 trap release_lock EXIT
 trap 'forward_signal HUP 129' HUP
 trap 'forward_signal INT 130' INT
 trap 'forward_signal TERM 143' TERM
+cleanup_orphan_links
+create_owner_file
 acquire_lock
 
 before_kib=$(free_kib "$repo_root")
@@ -289,7 +312,7 @@ if [ "$before_kib" -lt "$minimum_kib" ]; then
 fi
 
 printf 'agent-go-gate: start free=%s GiB min=%s GiB lock=%s\n' \
-	"$(format_gib "$before_kib")" "$min_free_gib" "$lock_dir" >&2
+	"$(format_gib "$before_kib")" "$min_free_gib" "$lock_file" >&2
 
 "$@" <&0 &
 command_pid=$!
