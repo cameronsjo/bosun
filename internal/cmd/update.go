@@ -70,6 +70,13 @@ func runUpdateCommand(
 	onlyCheck bool,
 	deps updateCommandDependencies,
 ) error {
+	if ctx == nil {
+		return update.ErrNilContext
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	platform := update.GetPlatformInfo()
 
 	_, _ = ui.Blue.Printf("Current version: %s (%s)\n", currentVersion, platform)
@@ -92,10 +99,16 @@ func checkForUpdate(
 	if err != nil {
 		return fmt.Errorf("check for updates: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("check for updates: %w", err)
+	}
 
 	if !available {
 		ui.Success("You're running the latest version!")
 		return nil
+	}
+	if release == nil {
+		return fmt.Errorf("check for updates: %w", update.ErrMissingRelease)
 	}
 
 	ui.Success("New version available: %s (released %s)", release.Version, release.PublishedAt)

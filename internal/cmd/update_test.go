@@ -13,10 +13,11 @@ import (
 	updatepkg "github.com/cameronsjo/bosun/internal/update"
 )
 
+type updateCommandContextKey struct{}
+
 func TestUpdateCommandReturnsCheckFailure(t *testing.T) {
 	checkErr := errors.New("release lookup failed")
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	ctx := context.WithValue(context.Background(), updateCommandContextKey{}, "check")
 
 	err := runUpdateCommand(ctx, "1.2.3", true, updateCommandDependencies{
 		check: func(gotCtx context.Context, currentVersion string) (*updatepkg.Release, bool, error) {
@@ -34,10 +35,85 @@ func TestUpdateCommandReturnsCheckFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "check for updates")
 }
 
+func TestUpdateCommandRejectsNilContext(t *testing.T) {
+	var ctx context.Context
+	err := runUpdateCommand(ctx, "1.2.3", true, updateCommandDependencies{
+		check: func(context.Context, string) (*updatepkg.Release, bool, error) {
+			t.Fatal("check must not run without a context")
+			return nil, false, nil
+		},
+	})
+
+	require.ErrorIs(t, err, updatepkg.ErrNilContext)
+}
+
+func TestUpdateCommandPreservesInactiveContextIdentity(t *testing.T) {
+	tests := []struct {
+		name    string
+		context func(t *testing.T) context.Context
+		wantErr error
+	}{
+		{
+			name: "canceled",
+			context: func(t *testing.T) context.Context {
+				t.Helper()
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+			wantErr: context.Canceled,
+		},
+		{
+			name: "deadline exceeded",
+			context: func(t *testing.T) context.Context {
+				t.Helper()
+				ctx, cancel := context.WithTimeout(context.Background(), 0)
+				t.Cleanup(cancel)
+				return ctx
+			},
+			wantErr: context.DeadlineExceeded,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runUpdateCommand(tt.context(t), "1.2.3", true, updateCommandDependencies{
+				check: func(context.Context, string) (*updatepkg.Release, bool, error) {
+					t.Fatal("check must not run with an inactive context")
+					return nil, false, nil
+				},
+			})
+
+			require.ErrorIs(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestUpdateCommandStopsWhenCheckCancelsContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	err := runUpdateCommand(ctx, "1.2.3", true, updateCommandDependencies{
+		check: func(context.Context, string) (*updatepkg.Release, bool, error) {
+			cancel()
+			return &updatepkg.Release{Version: "1.2.4"}, true, nil
+		},
+	})
+
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestUpdateCommandRejectsMissingReleaseMetadata(t *testing.T) {
+	err := runUpdateCommand(context.Background(), "1.2.3", true, updateCommandDependencies{
+		check: func(context.Context, string) (*updatepkg.Release, bool, error) {
+			return nil, true, nil
+		},
+	})
+
+	require.ErrorIs(t, err, updatepkg.ErrMissingRelease)
+}
+
 func TestUpdateCommandReturnsInstallFailure(t *testing.T) {
 	installErr := errors.New("replacement denied")
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	ctx := context.WithValue(context.Background(), updateCommandContextKey{}, "install")
 
 	err := runUpdateCommand(ctx, "1.2.3", false, updateCommandDependencies{
 		check: func(context.Context, string) (*updatepkg.Release, bool, error) {
@@ -61,6 +137,7 @@ func TestUpdateCommandUsesErrorReturningHandler(t *testing.T) {
 
 	checkErr := errors.New("release lookup failed")
 	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
 	err := runUpdateWithDependencies(cmd, "1.2.3", true, updateCommandDependencies{
 		check: func(context.Context, string) (*updatepkg.Release, bool, error) {
 			return nil, false, checkErr

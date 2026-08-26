@@ -3,6 +3,7 @@ package update
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 
@@ -14,6 +15,13 @@ const (
 	// Repository owner and name for GitHub releases.
 	repoOwner = "cameronsjo"
 	repoName  = "bosun"
+)
+
+var (
+	// ErrNilContext indicates that an update operation was called without a context.
+	ErrNilContext = errors.New("update context must not be nil")
+	// ErrMissingRelease indicates that a detector reported a match without metadata.
+	ErrMissingRelease = errors.New("release detector reported a match without release metadata")
 )
 
 // Release contains information about an available update.
@@ -87,8 +95,19 @@ func updateAvailable(currentVersion, latestVersion string) (bool, error) {
 	return latest.GreaterThan(current), nil
 }
 
+func updateContextError(ctx context.Context) error {
+	if ctx == nil {
+		return ErrNilContext
+	}
+	return ctx.Err()
+}
+
 // CheckForUpdate checks if a newer version is available.
 func CheckForUpdate(ctx context.Context, currentVersion string) (*Release, bool, error) {
+	if err := updateContextError(ctx); err != nil {
+		return nil, false, err
+	}
+
 	updater, err := newUpdateClient()
 	if err != nil {
 		return nil, false, err
@@ -98,8 +117,14 @@ func CheckForUpdate(ctx context.Context, currentVersion string) (*Release, bool,
 	if err != nil {
 		return nil, false, fmt.Errorf("detecting latest version: %w", err)
 	}
+	if err := updateContextError(ctx); err != nil {
+		return nil, false, err
+	}
 	if !found {
 		return nil, false, nil
+	}
+	if latest == nil {
+		return nil, false, ErrMissingRelease
 	}
 
 	available, err := updateAvailable(currentVersion, latest.Version)
@@ -115,6 +140,10 @@ func CheckForUpdate(ctx context.Context, currentVersion string) (*Release, bool,
 
 // Update downloads and installs the latest version.
 func Update(ctx context.Context, currentVersion string) (*Release, error) {
+	if err := updateContextError(ctx); err != nil {
+		return nil, err
+	}
+
 	updater, err := newUpdateClient()
 	if err != nil {
 		return nil, err
@@ -124,8 +153,14 @@ func Update(ctx context.Context, currentVersion string) (*Release, error) {
 	if err != nil {
 		return nil, fmt.Errorf("detecting latest version: %w", err)
 	}
+	if err := updateContextError(ctx); err != nil {
+		return nil, err
+	}
 	if !found {
 		return nil, fmt.Errorf("no releases found for %s/%s", repoOwner, repoName)
+	}
+	if latest == nil {
+		return nil, ErrMissingRelease
 	}
 
 	available, err := updateAvailable(currentVersion, latest.Version)
@@ -140,6 +175,9 @@ func Update(ctx context.Context, currentVersion string) (*Release, error) {
 	exe, err := executablePath()
 	if err != nil {
 		return nil, fmt.Errorf("getting executable path: %w", err)
+	}
+	if err := updateContextError(ctx); err != nil {
+		return nil, err
 	}
 
 	if err := updater.UpdateTo(ctx, latest, exe); err != nil {

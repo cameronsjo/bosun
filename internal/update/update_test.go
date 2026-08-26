@@ -20,6 +20,7 @@ type fakeUpdateClient struct {
 	updateErr      error
 	detectContext  context.Context
 	updateContext  context.Context
+	afterDetect    func()
 	detectCalls    int
 	updateCalls    int
 	updatedRelease *Release
@@ -29,6 +30,9 @@ type fakeUpdateClient struct {
 func (f *fakeUpdateClient) DetectLatest(ctx context.Context) (*Release, bool, error) {
 	f.detectCalls++
 	f.detectContext = ctx
+	if f.afterDetect != nil {
+		f.afterDetect()
+	}
 	return f.release, f.found, f.detectErr
 }
 
@@ -98,6 +102,61 @@ func TestUpdateAvailable(t *testing.T) {
 }
 
 func TestCheckForUpdate(t *testing.T) {
+	t.Run("rejects nil context", func(t *testing.T) {
+		client := &fakeUpdateClient{}
+		useUpdateDependencies(t, client, nil, "", nil)
+		var ctx context.Context
+
+		release, available, err := CheckForUpdate(ctx, "1.2.3")
+
+		require.ErrorIs(t, err, ErrNilContext)
+		assert.Nil(t, release)
+		assert.False(t, available)
+		assert.Zero(t, client.detectCalls)
+	})
+
+	t.Run("preserves canceled context identity", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		client := &fakeUpdateClient{}
+		useUpdateDependencies(t, client, nil, "", nil)
+
+		release, available, err := CheckForUpdate(ctx, "1.2.3")
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Nil(t, release)
+		assert.False(t, available)
+		assert.Zero(t, client.detectCalls)
+	})
+
+	t.Run("stops when context is canceled during detection", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Hour))
+		client := &fakeUpdateClient{
+			release:     testRelease("1.2.3"),
+			found:       true,
+			afterDetect: cancel,
+		}
+		useUpdateDependencies(t, client, nil, "", nil)
+
+		release, available, err := CheckForUpdate(ctx, "1.2.2")
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Nil(t, release)
+		assert.False(t, available)
+		assert.Equal(t, 1, client.detectCalls)
+	})
+
+	t.Run("rejects missing release metadata", func(t *testing.T) {
+		client := &fakeUpdateClient{found: true}
+		useUpdateDependencies(t, client, nil, "", nil)
+
+		release, available, err := CheckForUpdate(context.Background(), "1.2.3")
+
+		require.ErrorIs(t, err, ErrMissingRelease)
+		assert.Nil(t, release)
+		assert.False(t, available)
+	})
+
 	t.Run("propagates caller context", func(t *testing.T) {
 		ctx := context.WithValue(context.Background(), updateTestContextKey{}, "request")
 		client := &fakeUpdateClient{release: testRelease("1.2.3"), found: true}
@@ -186,6 +245,72 @@ func TestCheckForUpdate(t *testing.T) {
 }
 
 func TestUpdate(t *testing.T) {
+	t.Run("rejects nil context", func(t *testing.T) {
+		client := &fakeUpdateClient{}
+		useUpdateDependencies(t, client, nil, "", nil)
+		var ctx context.Context
+
+		release, err := Update(ctx, "1.2.3")
+
+		require.ErrorIs(t, err, ErrNilContext)
+		assert.Nil(t, release)
+		assert.Zero(t, client.detectCalls)
+	})
+
+	t.Run("preserves expired deadline identity", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 0)
+		t.Cleanup(cancel)
+		client := &fakeUpdateClient{}
+		useUpdateDependencies(t, client, nil, "", nil)
+
+		release, err := Update(ctx, "1.2.3")
+
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.Nil(t, release)
+		assert.Zero(t, client.detectCalls)
+	})
+
+	t.Run("stops when canceled during detection", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		latest := testRelease("1.2.3")
+		client := &fakeUpdateClient{release: latest, found: true, afterDetect: cancel}
+		useUpdateDependencies(t, client, nil, "/opt/bin/bosun", nil)
+
+		release, err := Update(ctx, "1.2.2")
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Nil(t, release)
+		assert.Zero(t, client.updateCalls)
+	})
+
+	t.Run("stops when canceled before replacement", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		latest := testRelease("1.2.3")
+		client := &fakeUpdateClient{release: latest, found: true}
+		useUpdateDependencies(t, client, nil, "/opt/bin/bosun", nil)
+		executablePath = func() (string, error) {
+			cancel()
+			return "/opt/bin/bosun", nil
+		}
+
+		release, err := Update(ctx, "1.2.2")
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Nil(t, release)
+		assert.Zero(t, client.updateCalls)
+	})
+
+	t.Run("rejects missing release metadata", func(t *testing.T) {
+		client := &fakeUpdateClient{found: true}
+		useUpdateDependencies(t, client, nil, "/opt/bin/bosun", nil)
+
+		release, err := Update(context.Background(), "1.2.3")
+
+		require.ErrorIs(t, err, ErrMissingRelease)
+		assert.Nil(t, release)
+		assert.Zero(t, client.updateCalls)
+	})
+
 	t.Run("propagates caller context", func(t *testing.T) {
 		ctx := context.WithValue(context.Background(), updateTestContextKey{}, "request")
 		latest := testRelease("1.2.3")
