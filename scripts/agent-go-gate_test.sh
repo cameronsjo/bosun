@@ -184,6 +184,16 @@ run_gate() {
 	set -e
 }
 
+run_gate_with_override() {
+	override_name=$1
+	override_value=$2
+	shift 2
+	set +e
+	gate_output=$(cd "$fake_repo" && env "$override_name=$override_value" sh "$gate" "$@" 2>&1)
+	gate_status=$?
+	set -e
+}
+
 wait_for_path() {
 	wait_path=$1
 	wait_description=$2
@@ -240,6 +250,35 @@ assert_contains "$gate_output" "BOSUN_AGENT_MAX_DISK_DELTA_GIB must be at most 4
 assert_not_exists "$marker"
 unset BOSUN_AGENT_MAX_DISK_DELTA_GIB
 
+for override_name in BOSUN_AGENT_MIN_FREE_GIB BOSUN_AGENT_MAX_DISK_DELTA_GIB BOSUN_AGENT_GATE_WAIT_SECONDS; do
+	new_case "leading-zero-$override_name"
+	marker="$case_dir/must-not-run"
+	run_gate_with_override "$override_name" 0100 touch-path "$marker"
+	[ "$gate_status" -eq 64 ] || fail "leading-zero $override_name case exited $gate_status"
+	assert_contains "$gate_output" "$override_name must use canonical decimal notation without leading zeroes, got '0100'"
+	assert_not_exists "$marker"
+done
+
+new_case overflowing-floor-override
+marker="$case_dir/must-not-run"
+BOSUN_AGENT_MIN_FREE_GIB=999999999999999999999999
+export BOSUN_AGENT_MIN_FREE_GIB
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 64 ] || fail "overflowing floor override case exited $gate_status"
+assert_contains "$gate_output" "BOSUN_AGENT_MIN_FREE_GIB must be at most 2047 GiB, got '999999999999999999999999'"
+assert_not_exists "$marker"
+unset BOSUN_AGENT_MIN_FREE_GIB
+
+new_case arithmetic-floor-limit
+marker="$case_dir/must-not-run"
+BOSUN_AGENT_MIN_FREE_GIB=2048
+export BOSUN_AGENT_MIN_FREE_GIB
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 64 ] || fail "arithmetic floor limit case exited $gate_status"
+assert_contains "$gate_output" "BOSUN_AGENT_MIN_FREE_GIB must be at most 2047 GiB, got '2048'"
+assert_not_exists "$marker"
+unset BOSUN_AGENT_MIN_FREE_GIB
+
 new_case invalid-floor-override
 marker="$case_dir/must-not-run"
 BOSUN_AGENT_MIN_FREE_GIB=invalid
@@ -249,6 +288,26 @@ run_gate touch-path "$marker"
 assert_contains "$gate_output" "BOSUN_AGENT_MIN_FREE_GIB must be a non-negative integer, got 'invalid'"
 assert_not_exists "$marker"
 unset BOSUN_AGENT_MIN_FREE_GIB
+
+new_case invalid-delta-override
+marker="$case_dir/must-not-run"
+BOSUN_AGENT_MAX_DISK_DELTA_GIB=invalid
+export BOSUN_AGENT_MAX_DISK_DELTA_GIB
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 64 ] || fail "invalid delta override case exited $gate_status"
+assert_contains "$gate_output" "BOSUN_AGENT_MAX_DISK_DELTA_GIB must be a non-negative integer, got 'invalid'"
+assert_not_exists "$marker"
+unset BOSUN_AGENT_MAX_DISK_DELTA_GIB
+
+new_case invalid-wait-override
+marker="$case_dir/must-not-run"
+BOSUN_AGENT_GATE_WAIT_SECONDS=invalid
+export BOSUN_AGENT_GATE_WAIT_SECONDS
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 64 ] || fail "invalid wait override case exited $gate_status"
+assert_contains "$gate_output" "BOSUN_AGENT_GATE_WAIT_SECONDS must be a non-negative integer, got 'invalid'"
+assert_not_exists "$marker"
+unset BOSUN_AGENT_GATE_WAIT_SECONDS
 
 new_case private-cache
 marker="$case_dir/ran"
@@ -327,6 +386,25 @@ run_gate touch-path "$marker"
 [ "$gate_status" -eq 75 ] || fail "low disk case exited $gate_status"
 assert_contains "$gate_output" 'only 99.0 GiB free; 100 GiB is required'
 assert_not_exists "$marker"
+
+new_case exact-floor
+marker="$case_dir/ran"
+FAKE_DF_FIRST_KIB=104857600
+FAKE_DF_SECOND_KIB=104857600
+export FAKE_DF_FIRST_KIB FAKE_DF_SECOND_KIB
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 0 ] || fail "exact floor case exited $gate_status: $gate_output"
+[ -e "$marker" ] || fail 'command did not run at the exact free-space floor'
+
+new_case exact-delta
+marker="$case_dir/ran"
+FAKE_DF_FIRST_KIB=125829120
+FAKE_DF_SECOND_KIB=121634816
+export FAKE_DF_FIRST_KIB FAKE_DF_SECOND_KIB
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 0 ] || fail "exact delta case exited $gate_status: $gate_output"
+[ -e "$marker" ] || fail 'command did not pass at the exact disk-delta cap'
+assert_contains "$gate_output" 'delta=4.0 GiB status=0'
 
 new_case excessive-delta
 marker="$case_dir/ran"

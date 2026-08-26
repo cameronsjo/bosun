@@ -5,6 +5,8 @@ set -u
 readonly DEFAULT_MIN_FREE_GIB=100
 readonly DEFAULT_MAX_DELTA_GIB=4
 readonly DEFAULT_WAIT_SECONDS=60
+# Keep GiB-to-KiB conversion within signed 32-bit shell arithmetic.
+readonly MAX_MIN_FREE_GIB=2047
 readonly SIGNAL_GRACE_SECONDS=1
 readonly KIB_PER_GIB=1048576
 
@@ -25,8 +27,23 @@ usage() {
 
 require_uint() {
 	case "$2" in
-		''|*[!0-9]*) fail "$1 must be a non-negative integer, got '$2'" ;;
+		''|*[!0123456789]*) fail "$1 must be a non-negative integer, got '$2'" ;;
 	esac
+	case "$2" in
+		0|[123456789]*) ;;
+		*) fail "$1 must use canonical decimal notation without leading zeroes, got '$2'" ;;
+	esac
+}
+
+require_uint_at_most() {
+	value_length=${#2}
+	limit_length=${#3}
+	if [ "$value_length" -gt "$limit_length" ]; then
+		fail "$1 must be at most $3 $4, got '$2'"
+	fi
+	if [ "$value_length" -eq "$limit_length" ] && [ "$2" -gt "$3" ]; then
+		fail "$1 must be at most $3 $4, got '$2'"
+	fi
 }
 
 free_kib() {
@@ -111,12 +128,11 @@ wait_seconds=${BOSUN_AGENT_GATE_WAIT_SECONDS:-$DEFAULT_WAIT_SECONDS}
 require_uint BOSUN_AGENT_MIN_FREE_GIB "$min_free_gib"
 require_uint BOSUN_AGENT_MAX_DISK_DELTA_GIB "$max_delta_gib"
 require_uint BOSUN_AGENT_GATE_WAIT_SECONDS "$wait_seconds"
+require_uint_at_most BOSUN_AGENT_MIN_FREE_GIB "$min_free_gib" "$MAX_MIN_FREE_GIB" GiB
+require_uint_at_most BOSUN_AGENT_MAX_DISK_DELTA_GIB "$max_delta_gib" "$DEFAULT_MAX_DELTA_GIB" GiB
 
 if [ "$min_free_gib" -lt "$DEFAULT_MIN_FREE_GIB" ]; then
 	fail "BOSUN_AGENT_MIN_FREE_GIB must be at least ${DEFAULT_MIN_FREE_GIB} GiB, got '$min_free_gib'"
-fi
-if [ "$max_delta_gib" -gt "$DEFAULT_MAX_DELTA_GIB" ]; then
-	fail "BOSUN_AGENT_MAX_DISK_DELTA_GIB must be at most ${DEFAULT_MAX_DELTA_GIB} GiB, got '$max_delta_gib'"
 fi
 repo_root=$(command git rev-parse --show-toplevel 2>/dev/null) || fail 'must run inside a Git worktree'
 repo_root=$(canonical_dir "$repo_root") || fail 'cannot resolve repository root'

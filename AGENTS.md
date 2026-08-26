@@ -87,10 +87,13 @@ Exit statuses:
 The defaults are controlled by `BOSUN_AGENT_MIN_FREE_GIB` (100),
 `BOSUN_AGENT_MAX_DISK_DELTA_GIB` (4), and
 `BOSUN_AGENT_GATE_WAIT_SECONDS` (60). Resource overrides may only tighten the
-disk limits: the guard rejects a lower free-space floor or a higher delta cap.
-The wait override only changes how long an agent queues for the shared lock and
-does not weaken disk or cache enforcement. Agents MUST NOT otherwise change
-overrides to bypass a gate rejection.
+disk limits: the guard accepts a free-space floor from 100 through 2047 GiB and
+a delta cap from 0 through 4 GiB. Override values use canonical decimal notation
+without leading zeroes; this keeps shell arithmetic consistent across supported
+platforms and prevents conversion overflow. The wait override is likewise a
+canonical non-negative decimal and only changes how long an agent queues for the
+shared lock; it does not weaken disk or cache enforcement. Agents MUST NOT
+otherwise change overrides to bypass a gate rejection.
 
 **Patterns:**
 
