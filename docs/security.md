@@ -317,7 +317,7 @@ func sanitizeStderr(stderr string) string {
 
 ### Lock File Implementation
 
-**Implementation**: `internal/internal/lock/lock.go`
+**Implementation**: `internal/lock/lock.go`
 
 Bosun uses file-based locking to prevent concurrent operations:
 
@@ -356,6 +356,11 @@ f.Truncate(0)
 f.Seek(0, 0)
 fmt.Fprintf(f, "%d\n", os.Getpid())
 ```
+
+The lock file itself is persistent so every process locks the same filesystem
+inode. Its existence does not mean the lock is held; kernel lock state does.
+Do not delete the file while a process might hold it, because a replacement
+file would have a different inode and could be locked concurrently.
 
 ### Lock Release
 
