@@ -19,9 +19,9 @@
   platform-named tar.gz archive and GoReleaser-format `checksums.txt`.
 - [ ] 2.2 Verify a matching digest replaces a temporary sentinel executable only
   after the compressed archive validates.
-- [ ] 2.3 Verify missing manifest, malformed manifest, missing selected-archive
-  entry, and mismatched digest errors preserve the sentinel executable
-  byte-for-byte and never report success.
+- [ ] 2.3 Verify missing manifest, malformed selected entry or malformed content
+  before it, missing selected-archive entry, and mismatched digest errors
+  preserve the sentinel executable byte-for-byte and never report success.
 - [ ] 2.4 Inject archive-download and checksum-download failures, cancellation,
   and asset disappearance after detection; verify wrapped causes, captured
   same-release asset identities, no fallback/retry, and no replacement.
@@ -34,7 +34,8 @@
   downloads no assets, and returns non-zero when the required manifest asset is
   absent.
 - [ ] 2.8 Add a deterministic release-contract check for `.goreleaser.yaml`'s
-  SHA-256 `checksums.txt` name and supported archive matrix.
+  SHA-256 `checksums.txt` name and supported archive matrix, asserting exactly
+  one well-formed entry for each generated supported archive.
 
 ## 3. Update consumer documentation
 

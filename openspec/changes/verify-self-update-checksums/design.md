@@ -46,9 +46,10 @@ replacement inside the existing library and validates the compressed release
 asset that GoReleaser hashes.
 
 The implementation will not maintain a second checksum parser. Missing
-`checksums.txt` is rejected during release detection. A missing archive entry,
-malformed manifest, or digest mismatch is rejected after download and before
-decompression or replacement. No failure falls back to an unchecked install.
+`checksums.txt` is rejected during release detection. A missing or malformed
+selected-archive entry, malformed content encountered before that entry, or a
+digest mismatch is rejected after download and before decompression or
+replacement. No failure falls back to an unchecked install.
 
 Detection captures the selected archive asset and the uniquely named checksum
 asset from one `SourceRelease`. Installation must pass that exact detected
@@ -57,10 +58,13 @@ a replacement asset between downloading the archive, downloading its manifest,
 and validating it. If either captured asset disappears or its download fails,
 the attempt fails closed instead of switching releases or assets.
 
-The built-in validator accepts the GoReleaser two-space SHA-256 format and
-matches the selected archive by exact filename. Runtime code will not add a
-second parser with different ambiguity rules. The release-contract check instead
-ensures GoReleaser emits exactly one entry for every supported archive.
+The built-in validator scans GoReleaser's two-space SHA-256 lines and returns the
+first entry whose filename exactly matches the selected archive. It does not
+continue parsing unrelated lines after that match. Runtime code will not add a
+second parser with different ambiguity rules because later unrelated entries do
+not affect the selected archive's digest. The release-contract check instead
+validates the whole generated manifest and ensures GoReleaser emits exactly one
+well-formed entry for every supported archive.
 
 ### Treat same-release checksums as integrity, not publisher authentication
 
@@ -126,12 +130,13 @@ release, a small platform-named tar.gz archive, and `checksums.txt`. The success
 case exercises release detection, archive download, checksum validation,
 decompression, and replacement of a temporary sentinel executable.
 
-Table-driven failure cases will omit the checksum asset, provide malformed
-content, omit the selected archive entry, and provide a wrong digest. Each case
-will assert the expected wrapped validation error, no success result, and
-byte-for-byte preservation of the sentinel executable. Platform-selection
-tests will cover all four published tuples. Check-only tests will assert that
-asset-presence metadata is checked without downloading either asset.
+Table-driven failure cases will omit the checksum asset, provide a malformed
+selected entry or malformed content before any selected entry, omit the selected
+archive entry, and provide a wrong digest. Each case will assert the expected
+wrapped validation error, no success result, and byte-for-byte preservation of
+the sentinel executable. Platform-selection tests will cover all four published
+tuples. Check-only tests will assert that asset-presence metadata is checked
+without downloading either asset.
 
 Additional deterministic cases will fail archive and checksum downloads after
 detection, mutate the source's latest release after detection, and exercise
@@ -156,9 +161,11 @@ changed by this proposal.
 - Self-update has no offline checksum cache. A transient asset download failure
   rejects that invocation; a later explicit rerun starts a fresh verified
   attempt.
-- The implementation relies on go-selfupdate's strict checksum-manifest parser.
-  Fixed fixtures and a release-contract check will catch drift from GoReleaser's
-  current two-space SHA-256 format.
+- The implementation relies on go-selfupdate's line-oriented checksum parser,
+  which stops after the exact selected filename. Focused fixtures cover that
+  selection behavior; a separate release-contract check validates the complete
+  generated manifest and catches drift from GoReleaser's current two-space
+  SHA-256 format.
 - Same-release checksums do not provide independent authenticity. Documentation
   will keep this boundary visible and avoid overstating the control.
 

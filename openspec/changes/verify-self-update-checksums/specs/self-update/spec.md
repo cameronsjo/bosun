@@ -16,14 +16,14 @@ The system SHALL verify the SHA-256 digest of the exact compressed archive selec
 - **THEN** Bosun validates only the captured archive against the captured manifest and does not redetect or combine assets from different releases
 
 ### Requirement: Fail closed on checksum-contract errors
-The system MUST reject an update when `checksums.txt` is missing, malformed, lacks the exact selected archive entry, or contains a digest that does not match the downloaded archive, without an unchecked fallback.
+The system MUST reject an update when `checksums.txt` is missing, cannot yield a valid entry for the exact selected archive, or contains a selected digest that does not match the downloaded archive, without an unchecked fallback.
 
 #### Scenario: Checksum asset is missing
 - **WHEN** the detected release has a platform archive but no asset named exactly `checksums.txt`
 - **THEN** release detection fails and Bosun does not download, decompress, stage, or replace the executable
 
-#### Scenario: Checksum manifest is malformed
-- **WHEN** `checksums.txt` cannot be parsed as the expected SHA-256 manifest
+#### Scenario: Selected checksum cannot be parsed
+- **WHEN** the selected archive's entry is malformed or malformed content is encountered before any exact matching entry
 - **THEN** validation fails before decompression or executable replacement and the existing executable remains byte-for-byte unchanged
 
 #### Scenario: Selected archive entry is missing

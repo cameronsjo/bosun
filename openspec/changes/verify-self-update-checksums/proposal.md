@@ -13,10 +13,10 @@ an integrity check.
 - Configure the self-updater to require the `checksums.txt` asset from the same
   detected GitHub release and verify the exact downloaded archive before it is
   decompressed or installed.
-- Fail closed when the checksum asset is missing, malformed, lacks the selected
-  archive, or does not match the downloaded bytes; the existing executable must
-  remain unchanged and the CLI must return a non-zero error without printing a
-  success result.
+- Fail closed when the checksum asset is missing, cannot yield a valid entry for
+  the exact selected archive, or does not match the downloaded bytes; the
+  existing executable must remain unchanged and the CLI must return a non-zero
+  error without printing a success result.
 - Preserve current stable-release selection, platform archive selection,
   no-downgrade/development-version behavior, check-only behavior, and
   go-selfupdate's replacement/rollback semantics.
