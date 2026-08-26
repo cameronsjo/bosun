@@ -107,11 +107,11 @@ func (a memorySourceAsset) GetSize() int                  { return a.size }
 func (a memorySourceAsset) GetBrowserDownloadURL() string { return a.url }
 
 type checksumFixture struct {
-	client       *selfUpdateClient
-	source       *memoryUpdateSource
-	release      memorySourceRelease
-	archiveName  string
-	checksum     []byte
+	client      *selfUpdateClient
+	source      *memoryUpdateSource
+	release     memorySourceRelease
+	archiveName string
+	checksum    []byte
 }
 
 func newChecksumFixture(t *testing.T, osName, archName, executable string) checksumFixture {
@@ -145,11 +145,11 @@ func newChecksumFixture(t *testing.T, osName, archName, executable string) check
 	require.NoError(t, err)
 
 	return checksumFixture{
-		client:       &selfUpdateClient{updater: updater},
-		source:       source,
-		release:      release,
-		archiveName:  archiveName,
-		checksum:     checksum,
+		client:      &selfUpdateClient{updater: updater},
+		source:      source,
+		release:     release,
+		archiveName: archiveName,
+		checksum:    checksum,
 	}
 }
 
@@ -256,8 +256,8 @@ func TestChecksumUpdateFailsClosed(t *testing.T) {
 		},
 		{
 			name: "selected archive entry missing",
-			manifest: func(checksumFixture) []byte {
-				return []byte(strings.Repeat("0", 64) + "  another_archive.tar.gz\n")
+			manifest: func(fixture checksumFixture) []byte {
+				return []byte(strings.Repeat("0", 64) + "  " + fixture.archiveName + ".backup\n")
 			},
 			wantError: selfupdate.ErrHashNotFound,
 		},
@@ -288,6 +288,22 @@ func TestChecksumUpdateFailsClosed(t *testing.T) {
 			}, fixture.source.downloads)
 		})
 	}
+}
+
+func TestChecksumUpdateStopsParsingAfterExactMatch(t *testing.T) {
+	fixture := newChecksumFixture(t, "darwin", "arm64", "verified executable")
+	fixture.source.assets[testChecksumID] = append(fixture.checksum, []byte("malformed trailing content\n")...)
+	release := detectFixtureRelease(t, fixture)
+	target := sentinelExecutable(t)
+
+	err := fixture.client.UpdateTo(context.Background(), release, target)
+
+	require.NoError(t, err)
+	assertExecutableContents(t, target, "verified executable")
+	assert.Equal(t, []memoryDownload{
+		{releaseID: testReleaseID, assetID: testArchiveID},
+		{releaseID: testReleaseID, assetID: testChecksumID},
+	}, fixture.source.downloads)
 }
 
 func TestChecksumUpdateRejectsMissingManifestDuringDetection(t *testing.T) {
@@ -349,20 +365,44 @@ func TestChecksumUpdatePropagatesAssetDownloadFailures(t *testing.T) {
 }
 
 func TestChecksumUpdateRejectsAssetDisappearanceAfterDetection(t *testing.T) {
-	fixture := newChecksumFixture(t, "darwin", "arm64", "new executable")
-	release := detectFixtureRelease(t, fixture)
-	delete(fixture.source.assets, testChecksumID)
-	target := sentinelExecutable(t)
+	tests := []struct {
+		name          string
+		assetID       int64
+		wantAssetName string
+		wantDownloads []memoryDownload
+	}{
+		{
+			name:          "archive",
+			assetID:       testArchiveID,
+			wantAssetName: "bosun_1.2.3_darwin_arm64.tar.gz",
+			wantDownloads: []memoryDownload{{releaseID: testReleaseID, assetID: testArchiveID}},
+		},
+		{
+			name:          "checksum",
+			assetID:       testChecksumID,
+			wantAssetName: checksumAssetName,
+			wantDownloads: []memoryDownload{
+				{releaseID: testReleaseID, assetID: testArchiveID},
+				{releaseID: testReleaseID, assetID: testChecksumID},
+			},
+		},
+	}
 
-	err := fixture.client.UpdateTo(context.Background(), release, target)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newChecksumFixture(t, "darwin", "arm64", "new executable")
+			release := detectFixtureRelease(t, fixture)
+			delete(fixture.source.assets, tt.assetID)
+			target := sentinelExecutable(t)
 
-	require.ErrorIs(t, err, selfupdate.ErrAssetNotFound)
-	assert.Contains(t, err.Error(), checksumAssetName)
-	assert.Equal(t, []memoryDownload{
-		{releaseID: testReleaseID, assetID: testArchiveID},
-		{releaseID: testReleaseID, assetID: testChecksumID},
-	}, fixture.source.downloads)
-	assertExecutableContents(t, target, "original executable")
+			err := fixture.client.UpdateTo(context.Background(), release, target)
+
+			require.ErrorIs(t, err, selfupdate.ErrAssetNotFound)
+			assert.Contains(t, err.Error(), tt.wantAssetName)
+			assert.Equal(t, tt.wantDownloads, fixture.source.downloads)
+			assertExecutableContents(t, target, "original executable")
+		})
+	}
 }
 
 func TestChecksumUpdatePreservesDetectedReleaseAssets(t *testing.T) {
