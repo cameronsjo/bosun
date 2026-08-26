@@ -530,9 +530,9 @@ func TestTwilio_sendSMS_ErrorResponseBodyBounded(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "under limit is preserved",
-			body:     "small Twilio error",
-			expected: "small Twilio error",
+			name:     "one byte under limit is preserved",
+			body:     strings.Repeat("u", maxTwilioErrorBodySize-1),
+			expected: strings.Repeat("u", maxTwilioErrorBodySize-1),
 		},
 		{
 			name:     "exact limit is preserved",
@@ -540,8 +540,8 @@ func TestTwilio_sendSMS_ErrorResponseBodyBounded(t *testing.T) {
 			expected: strings.Repeat("e", maxTwilioErrorBodySize),
 		},
 		{
-			name:     "oversized body is truncated",
-			body:     strings.Repeat("o", maxTwilioErrorBodySize+4096),
+			name:     "one byte over limit is truncated",
+			body:     strings.Repeat("o", maxTwilioErrorBodySize+1),
 			expected: strings.Repeat("o", maxTwilioErrorBodySize) + twilioErrorBodyTruncated,
 		},
 	}
