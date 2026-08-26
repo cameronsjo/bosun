@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/cameronsjo/bosun/internal/config"
+	"github.com/cameronsjo/bosun/internal/preflight"
 )
 
 func TestDoctorCmd_Help(t *testing.T) {
@@ -42,6 +43,60 @@ func TestCheckGit(t *testing.T) {
 			"checkGit should return exactly one passed or failed")
 		assert.Equal(t, 0, result.Warned)
 	})
+}
+
+func TestCheckDeployKeyPermissionsResult(t *testing.T) {
+	tests := []struct {
+		name       string
+		result     preflight.SSHKeyPermResult
+		want       CheckResult
+		wantOutput string
+	}{
+		{
+			name:       "missing key warns",
+			want:       CheckResult{Warned: 1},
+			wantOutput: "SSH deploy key not found",
+		},
+		{
+			name: "invalid key fails",
+			result: preflight.SSHKeyPermResult{
+				Path: "/tmp/deploy-key",
+				Err:  assert.AnError,
+			},
+			want:       CheckResult{Failed: 1},
+			wantOutput: assert.AnError.Error(),
+		},
+		{
+			name: "windows ACL check warns",
+			result: preflight.SSHKeyPermResult{
+				Path: "/tmp/deploy-key",
+			},
+			want:       CheckResult{Warned: 1},
+			wantOutput: "Windows ACLs not inspected",
+		},
+		{
+			name: "safe POSIX permissions pass",
+			result: preflight.SSHKeyPermResult{
+				Path:               "/tmp/deploy-key",
+				Mode:               0600,
+				PermissionsChecked: true,
+			},
+			want:       CheckResult{Passed: 1},
+			wantOutput: "permissions OK (0600)",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got CheckResult
+			output := captureWebhookColorOutput(t, func() {
+				got = checkDeployKeyPermissionsResult(tc.result)
+			})
+
+			assert.Equal(t, tc.want, got)
+			assert.Contains(t, output, tc.wantOutput)
+		})
+	}
 }
 
 func TestCheckProjectRoot(t *testing.T) {

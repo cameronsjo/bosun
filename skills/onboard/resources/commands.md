@@ -25,7 +25,7 @@ Creates: `bosun/`, `manifest/{provisions,services,stacks}/`, `.sops.yaml`, `.git
 
 ### `bosun doctor`
 
-Pre-flight checks. Validates Docker, Compose v2, Git, SOPS, Age key, project root, manifest directory, webhook status, restart-breaker sampling cadence, and Traefik configuration (HTTPS redirect, exposedByDefault, security headers, Docker socket proxy). It warns when `BOSUN_DRIFT_INTERVAL` exceeds `BOSUN_RESTART_WINDOW`, because the breaker observes restart growth less frequently than its configured window.
+Pre-flight checks. Validates Docker, Compose v2, Git, SOPS, Age key, project root, manifest directory, SSH deploy key file type and POSIX permissions, webhook status, restart-breaker sampling cadence, and Traefik configuration (HTTPS redirect, exposedByDefault, security headers, Docker socket proxy). Windows validates that the SSH key is a regular, non-empty file and warns that its ACLs require separate inspection. It warns when `BOSUN_DRIFT_INTERVAL` exceeds `BOSUN_RESTART_WINDOW`, because the breaker observes restart growth less frequently than its configured window.
 
 ```bash
 bosun doctor

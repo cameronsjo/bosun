@@ -382,6 +382,8 @@ Checks:
 - Age key present
 - SOPS installed
 - Manifest directory exists
+- SSH deploy key is a regular, non-empty file with owner-only permissions on
+  POSIX; Windows reports that ACLs require separate inspection
 - Webhook responding
 - Restart breaker sampling cadence (`BOSUN_DRIFT_INTERVAL` should not exceed `BOSUN_RESTART_WINDOW`)
 - Traefik configuration (if Traefik service detected):
