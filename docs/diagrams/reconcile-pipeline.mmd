@@ -1,7 +1,8 @@
 flowchart TD
     AcquireLock["1. Acquire Lock"] --> GitSync["2. Git Repository Sync"]
     GitSync --> LoadState["3. Reload Config + Check State<br/>Commit / Path Skips + Breaker"]
-    LoadState -->|deploy required| Decrypt["4. Track Attempt + Decrypt<br/>Resolve Deploy Mode"]
+    LoadState --> DeployGate{"Deploy required?<br/>No: release lock + return"}
+    DeployGate -->|yes| Decrypt["4. Track Attempt + Decrypt<br/>Resolve Deploy Mode"]
     Decrypt --> Render["5. Render Private Staging Tree"]
     Render --> DeclaredState["6. Extract Declared Services<br/>Fail Closed if Missing"]
     DeclaredState --> Backup["7. Create + Verify Rollback Backup"]
