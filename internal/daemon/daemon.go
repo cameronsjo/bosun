@@ -395,9 +395,9 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 		return fmt.Errorf("invalid daemon configuration: %w", err)
 	}
 
-	// Initialize structured logging for daemon mode (JSON output).
-	_ = os.Setenv("BOSUN_DAEMON_MODE", "true")
-	log.Init(nil)
+	// Rebuild structured logging for daemon mode without discarding explicit
+	// CLI options or additional writers configured during process startup.
+	log.EnableDaemonMode()
 
 	logger := log.Component(log.ComponentDaemon)
 
