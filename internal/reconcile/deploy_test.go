@@ -2721,6 +2721,60 @@ func TestDeployOps_DeployLocal_CancellationMutationBoundaries(t *testing.T) {
 	})
 }
 
+func TestDeployOps_DeployLocal_RenameFailureUsesSharedRestore(t *testing.T) {
+	tests := []struct {
+		name        string
+		restoreFail bool
+	}{
+		{name: "restores original"},
+		{name: "reports restore failure", restoreFail: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := evalSymlinks(t, t.TempDir())
+			source := filepath.Join(root, "source")
+			target := filepath.Join(root, "target")
+			backup := target + ".bak"
+			require.NoError(t, os.MkdirAll(source, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(source, "config.yml"), []byte("new"), 0o644))
+			require.NoError(t, os.MkdirAll(target, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(target, "config.yml"), []byte("old"), 0o644))
+			promoteErr := errors.New("injected final rename failure")
+			restoreErr := errors.New("injected restore failure")
+			renameCalls := 0
+			deploy := &DeployOps{localFS: &localDeployFS{
+				rename: func(oldPath, newPath string) error {
+					renameCalls++
+					if newPath == target && oldPath != backup {
+						return promoteErr
+					}
+					if tt.restoreFail && oldPath == backup && newPath == target {
+						return restoreErr
+					}
+					return os.Rename(oldPath, newPath)
+				},
+			}}
+
+			err := deploy.DeployLocal(context.Background(), source, target, nil, nil)
+
+			require.ErrorIs(t, err, promoteErr)
+			assert.Equal(t, 3, renameCalls, "quarantine, failed promotion, and shared restore are each attempted once")
+			if tt.restoreFail {
+				require.ErrorIs(t, err, restoreErr)
+				assert.NoDirExists(t, target)
+				content, readErr := os.ReadFile(filepath.Join(backup, "config.yml"))
+				require.NoError(t, readErr)
+				assert.Equal(t, "old", string(content))
+			} else {
+				content, readErr := os.ReadFile(filepath.Join(target, "config.yml"))
+				require.NoError(t, readErr)
+				assert.Equal(t, "old", string(content))
+				assert.NoDirExists(t, backup)
+			}
+		})
+	}
+}
+
 func TestDeployOps_DeployLocalFile_ContextCancelled(t *testing.T) {
 	tmpDir := t.TempDir()
 	src := filepath.Join(tmpDir, "src.txt")

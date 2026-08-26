@@ -372,14 +372,14 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 	// approach had.
 	backupDir := targetDir + ".bak"
 	hadExisting := false
-	restoreOriginal := func(cause error) error {
+	restoreOriginal := func(cause error) (error, bool) {
 		if !hadExisting {
-			return cause
+			return cause, false
 		}
 		if rbErr := fsOps.rename(backupDir, targetDir); rbErr != nil {
-			return errors.Join(cause, fmt.Errorf("restore original target from %s: %w", backupDir, rbErr))
+			return errors.Join(cause, fmt.Errorf("restore original target from %s: %w", backupDir, rbErr)), false
 		}
-		return cause
+		return cause, true
 	}
 
 	// Guard against stale backup from a previous crash.
@@ -404,19 +404,21 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 	}
 
 	if err := ctx.Err(); err != nil {
-		return restoreOriginal(err)
+		restoreErr, _ := restoreOriginal(err)
+		return restoreErr
 	}
 	if err := fsOps.rename(tmpDir, targetDir); err != nil {
 		logger.Error().Err(err).Str("target", targetDir).Msg("Failed to deploy locally. Reason: cannot rename temp to target")
-		// Restore the backup so the original target is not lost.
+		deployErr := fmt.Errorf("rename to target: %w", err)
+		restoreErr, restored := restoreOriginal(deployErr)
 		if hadExisting {
-			if rbErr := fsOps.rename(backupDir, targetDir); rbErr != nil {
-				logger.Error().Err(rbErr).Str(log.FieldPath, backupDir).Msg("Recovery failed: cannot restore backup after rename failure")
-				return fmt.Errorf("rename to target failed: %w; restore backup from %s failed: %v", err, backupDir, rbErr)
+			if !restored {
+				logger.Error().Err(restoreErr).Str(log.FieldPath, backupDir).Msg("Recovery failed: cannot restore backup after rename failure")
+			} else {
+				logger.Info().Str(log.FieldPath, backupDir).Msg("Restored backup after failed rename")
 			}
-			logger.Info().Str(log.FieldPath, backupDir).Msg("Restored backup after failed rename")
 		}
-		return fmt.Errorf("rename to target: %w", err)
+		return restoreErr
 	}
 
 	if hadExisting {
