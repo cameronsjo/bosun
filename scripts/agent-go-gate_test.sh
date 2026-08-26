@@ -54,8 +54,7 @@ assert_not_exists() {
 
 lock_file_for_common() {
 	resolved_common=$(CDPATH='' cd -- "$1" && pwd -P)
-	lock_key=$(printf '%s' "$resolved_common" | command cksum | awk '{ print $1 "-" $2 }')
-	printf '/tmp/bosun-agent-go-gate-%s.lock\n' "$lock_key"
+	printf '%s/bosun-agent-go-gate.lock\n' "$resolved_common"
 }
 
 new_case() {
@@ -77,9 +76,13 @@ EOF
 
 	command cat > "$fake_bin/go" <<'EOF'
 #!/bin/sh
+if [ "${FAKE_USE_REAL_GO:-false}" = true ]; then
+	exec "$FAKE_REAL_GO" "$@"
+fi
 case "$1 $2" in
 	'env GOCACHE') printf '%s\n' "$FAKE_DEFAULT_GOCACHE" ;;
 	'env GOMODCACHE') printf '%s\n' "$FAKE_DEFAULT_GOMODCACHE" ;;
+	'env GOTMPDIR') printf '\n' ;;
 	*) exit 2 ;;
 esac
 EOF
@@ -104,6 +107,11 @@ EOF
 	command cat > "$fake_bin/record-env" <<'EOF'
 #!/bin/sh
 printf '%s|%s|%s|%s\n' "$GOCACHE" "$GOMODCACHE" "${GOTMPDIR+x}" "${GOLANGCI_LINT_CACHE+x}" > "$1"
+EOF
+
+	command cat > "$fake_bin/record-goenv" <<'EOF'
+#!/bin/sh
+printf '%s|%s\n' "$GOENV" "$("$FAKE_REAL_GO" env GOPRIVATE)" > "$1"
 EOF
 
 	command cat > "$fake_bin/touch-path" <<'EOF'
@@ -150,13 +158,14 @@ while :; do
 done
 EOF
 
-	command chmod +x "$fake_bin/git" "$fake_bin/go" "$fake_bin/df" "$fake_bin/record-env" "$fake_bin/touch-path" "$fake_bin/hold-gate" "$fake_bin/inherited-lock-child" "$fake_bin/signal-child" "$fake_bin/stubborn-child"
+	command chmod +x "$fake_bin/git" "$fake_bin/go" "$fake_bin/df" "$fake_bin/record-env" "$fake_bin/record-goenv" "$fake_bin/touch-path" "$fake_bin/hold-gate" "$fake_bin/inherited-lock-child" "$fake_bin/signal-child" "$fake_bin/stubborn-child"
 	export PATH="$fake_bin:$original_path"
 	export TMPDIR="$case_dir/tmp"
 	export FAKE_REPO_ROOT="$fake_repo"
 	export FAKE_COMMON_DIR="$fake_common"
 	export FAKE_DEFAULT_GOCACHE="$case_dir/shared-go-build"
 	export FAKE_DEFAULT_GOMODCACHE="$case_dir/shared-go-mod"
+	export FAKE_REAL_GO="$real_go"
 	export FAKE_DF_STATE="$case_dir/df-state"
 	export FAKE_DF_FIRST_KIB=31457280
 	export FAKE_DF_SECOND_KIB=31457280
@@ -165,6 +174,7 @@ EOF
 	lock_files="$lock_files $case_lock_file"
 	unset GOCACHE GOMODCACHE GOTMPDIR GOLANGCI_LINT_CACHE
 	unset BOSUN_AGENT_MIN_FREE_GIB BOSUN_AGENT_MAX_DISK_DELTA_GIB BOSUN_AGENT_GATE_WAIT_SECONDS
+	unset FAKE_USE_REAL_GO
 }
 
 run_gate() {
@@ -186,6 +196,7 @@ wait_for_path() {
 }
 
 original_path=$PATH
+real_go=$(command -v go)
 
 new_case success
 env_file="$case_dir/env"
@@ -236,6 +247,34 @@ run_gate touch-path "$marker"
 assert_contains "$gate_output" 'GOLANGCI_LINT_CACHE must be unset'
 assert_not_exists "$marker"
 unset GOLANGCI_LINT_CACHE
+
+for goenv_key in GOCACHE GOMODCACHE GOTMPDIR; do
+	new_case "goenv-$goenv_key"
+	marker="$case_dir/must-not-run"
+	goenv_file="$case_dir/go.env"
+	private_value="$case_dir/private-${goenv_key}"
+	printf '%s=%s\n' "$goenv_key" "$private_value" > "$goenv_file"
+	GOENV="$goenv_file"
+	FAKE_USE_REAL_GO=true
+	export GOENV FAKE_USE_REAL_GO
+	run_gate touch-path "$marker"
+	[ "$gate_status" -eq 64 ] || fail "GOENV $goenv_key case exited $gate_status: $gate_output"
+	assert_contains "$gate_output" "GOENV config sets private $goenv_key to $private_value"
+	assert_not_exists "$marker"
+	unset GOENV FAKE_USE_REAL_GO
+done
+
+new_case goenv-unrelated-setting
+goenv_file="$case_dir/go.env"
+goenv_result="$case_dir/goenv-result"
+printf '%s\n' 'GOPRIVATE=example.test' > "$goenv_file"
+GOENV="$goenv_file"
+FAKE_USE_REAL_GO=true
+export GOENV FAKE_USE_REAL_GO
+run_gate record-goenv "$goenv_result"
+[ "$gate_status" -eq 0 ] || fail "unrelated GOENV setting case exited $gate_status: $gate_output"
+[ "$(command cat "$goenv_result")" = "$goenv_file|example.test" ] || fail 'gate did not preserve unrelated GOENV settings for the child'
+unset GOENV FAKE_USE_REAL_GO
 
 new_case low-disk
 marker="$case_dir/ran"

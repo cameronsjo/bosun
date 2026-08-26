@@ -122,8 +122,22 @@ case "$common_dir" in
 esac
 common_dir=$(canonical_dir "$common_dir") || fail 'cannot resolve Git common directory'
 
-default_gocache=$(env -u GOCACHE -u GOMODCACHE -u GOTMPDIR go env GOCACHE) || fail 'cannot resolve default GOCACHE'
-default_gomodcache=$(env -u GOCACHE -u GOMODCACHE -u GOTMPDIR go env GOMODCACHE) || fail 'cannot resolve default GOMODCACHE'
+default_gocache=$(env -u GOCACHE -u GOMODCACHE -u GOTMPDIR GOENV=off go env GOCACHE) || fail 'cannot resolve default GOCACHE'
+default_gomodcache=$(env -u GOCACHE -u GOMODCACHE -u GOTMPDIR GOENV=off go env GOMODCACHE) || fail 'cannot resolve default GOMODCACHE'
+default_gotmpdir=$(env -u GOCACHE -u GOMODCACHE -u GOTMPDIR GOENV=off go env GOTMPDIR) || fail 'cannot resolve default GOTMPDIR'
+effective_gocache=$(env -u GOCACHE -u GOMODCACHE -u GOTMPDIR go env GOCACHE) || fail 'cannot resolve GOENV-derived GOCACHE'
+effective_gomodcache=$(env -u GOCACHE -u GOMODCACHE -u GOTMPDIR go env GOMODCACHE) || fail 'cannot resolve GOENV-derived GOMODCACHE'
+effective_gotmpdir=$(env -u GOCACHE -u GOMODCACHE -u GOTMPDIR go env GOTMPDIR) || fail 'cannot resolve GOENV-derived GOTMPDIR'
+
+if [ "$effective_gocache" != "$default_gocache" ]; then
+	fail "GOENV config sets private GOCACHE to $effective_gocache; remove it to share $default_gocache"
+fi
+if [ "$effective_gomodcache" != "$default_gomodcache" ]; then
+	fail "GOENV config sets private GOMODCACHE to $effective_gomodcache; remove it to share $default_gomodcache"
+fi
+if [ "$effective_gotmpdir" != "$default_gotmpdir" ] || [ -n "$effective_gotmpdir" ]; then
+	fail "GOENV config sets private GOTMPDIR to $effective_gotmpdir; remove it so Go can clean standard temporary build directories"
+fi
 
 if [ -n "${GOCACHE:-}" ] && [ "$GOCACHE" != "$default_gocache" ]; then
 	fail "private GOCACHE is forbidden; unset it to share $default_gocache"
@@ -143,9 +157,7 @@ export GOMODCACHE="$default_gomodcache"
 unset GOTMPDIR
 unset GOLANGCI_LINT_CACHE
 
-lock_key=$(printf '%s' "$common_dir" | command cksum | awk '{ print $1 "-" $2 }')
-[ -n "$lock_key" ] || fail 'cannot derive shared gate key'
-lock_file="/tmp/bosun-agent-go-gate-${lock_key}.lock"
+lock_file="$common_dir/bosun-agent-go-gate.lock"
 command_pid=''
 signal_status=''
 trap 'forward_signal HUP 129' HUP
