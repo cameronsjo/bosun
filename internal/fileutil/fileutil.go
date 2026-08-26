@@ -344,8 +344,8 @@ func filesEqualContextWithOpen(
 func readersEqualContext(ctx context.Context, a, b io.Reader) (bool, error) {
 	aBuffer := make([]byte, contentCompareBufferSize)
 	bBuffer := make([]byte, contentCompareBufferSize)
-	aReader := contextReader{ctx: ctx, reader: a}
-	bReader := contextReader{ctx: ctx, reader: b}
+	aReader := &contextReader{ctx: ctx, reader: a}
+	bReader := &contextReader{ctx: ctx, reader: b}
 
 	for {
 		aRead, aErr := io.ReadFull(aReader, aBuffer)

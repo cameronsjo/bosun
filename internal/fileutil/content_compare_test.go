@@ -139,6 +139,28 @@ func TestReadersEqualContextBoundsMemoryPerRead(t *testing.T) {
 	assert.LessOrEqual(t, b.maxRequest, contentCompareBufferSize)
 }
 
+func TestReadersEqualContextAllocationCountDoesNotScaleWithInput(t *testing.T) {
+	allocationsForSize := func(size int64) float64 {
+		comparisonFailed := false
+		allocations := testing.AllocsPerRun(10, func() {
+			a := &boundedRepeatingReader{remaining: size, value: 'x'}
+			b := &boundedRepeatingReader{remaining: size, value: 'x'}
+			equal, err := readersEqualContext(context.Background(), a, b)
+			if err != nil || !equal {
+				comparisonFailed = true
+			}
+		})
+		require.False(t, comparisonFailed)
+		return allocations
+	}
+
+	singleBuffer := allocationsForSize(contentCompareBufferSize)
+	manyBuffers := allocationsForSize(1 << 20)
+
+	assert.LessOrEqual(t, manyBuffers, singleBuffer+2,
+		"streaming allocations must remain constant as input grows")
+}
+
 func TestReadersEqualContextPropagatesReadErrors(t *testing.T) {
 	t.Parallel()
 
