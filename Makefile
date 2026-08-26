@@ -52,7 +52,7 @@ test-agent-gate:
 
 # Validate security-sensitive GitHub Actions control flow.
 test-workflows:
-	sh scripts/test-release-please-workflow.sh
+	$(GOTEST) ./internal/workflowcontract
 
 # Run tests with coverage
 test-cover:

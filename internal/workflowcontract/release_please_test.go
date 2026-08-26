@@ -1,0 +1,67 @@
+package workflowcontract
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestReleasePleaseWorkflowContract(t *testing.T) {
+	workflowData := loadReleasePleaseWorkflow(t)
+	require.NoError(t, validateReleasePlease(workflowData))
+}
+
+func TestReleasePleaseWorkflowContractRejectsUnsafeMutations(t *testing.T) {
+	workflowData := string(loadReleasePleaseWorkflow(t))
+	tests := []struct {
+		name        string
+		old         string
+		replacement string
+		expected    string
+	}{
+		{
+			name:        "commented continue-on-error with active false value",
+			old:         "        continue-on-error: true",
+			replacement: "        # continue-on-error: true\n        continue-on-error: false",
+			expected:    "must continue on credential errors",
+		},
+		{
+			name:        "permissive auto-merge condition",
+			old:         "        if: ${{ steps.release.outputs.pr && steps.app-token.outcome == 'success' }}",
+			replacement: "        if: ${{ steps.release.outputs.pr && steps.app-token.outcome == 'success' || true }}",
+			expected:    "must require an exact successful App-token outcome",
+		},
+		{
+			name: "second default-token merge path",
+			old:  "      - name: Auto-merge release PR",
+			replacement: "      - name: Unsafe fallback merge\n" +
+				"        env:\n" +
+				"          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n" +
+				"        run: gh pr merge 1 --merge\n\n" +
+				"      - name: Auto-merge release PR",
+			expected: "exactly one active gh pr merge path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Contains(t, workflowData, tt.old, "mutation fixture no longer matches the workflow")
+			mutated := strings.Replace(workflowData, tt.old, tt.replacement, 1)
+			err := validateReleasePlease([]byte(mutated))
+			require.Error(t, err)
+			assert.ErrorContains(t, err, tt.expected)
+		})
+	}
+}
+
+func loadReleasePleaseWorkflow(t *testing.T) []byte {
+	t.Helper()
+	workflowPath := filepath.Join("..", "..", ".github", "workflows", "release-please.yml")
+	workflowData, err := os.ReadFile(workflowPath)
+	require.NoError(t, err)
+	return workflowData
+}
