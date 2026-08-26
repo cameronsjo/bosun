@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -29,6 +31,22 @@ var resolveSSHAgentAuth = getSSHAgentAuth
 var resolveSSHKeyAuth = getSSHKeyFileAuth
 
 type sshAgentDialer func(network, address string) (net.Conn, error)
+
+type sshAgentAuth struct {
+	*ssh.PublicKeysCallback
+	conn      net.Conn
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (a *sshAgentAuth) Close() error {
+	a.closeOnce.Do(func() {
+		if a.conn != nil {
+			a.closeErr = a.conn.Close()
+		}
+	})
+	return a.closeErr
+}
 
 func init() {
 	// Override go-git's default SSH auth builder to gracefully handle missing SSH agents.
@@ -79,6 +97,9 @@ type GitOps struct {
 	// FetchDepth controls clone and fetch history depth. Values below 1 use
 	// DefaultGitFetchDepth.
 	FetchDepth int
+	// authResolver is an operation seam for deterministic ownership tests.
+	// Production leaves it nil and resolves from the process environment.
+	authResolver func(string) (transport.AuthMethod, error)
 }
 
 // NewGitOps creates a new GitOps instance.
@@ -116,6 +137,21 @@ func (g *GitOps) effectiveFetchDepth() int {
 		return DefaultGitFetchDepth
 	}
 	return g.FetchDepth
+}
+
+func (g *GitOps) resolveAuthentication() (transport.AuthMethod, error) {
+	if g.authResolver != nil {
+		return g.authResolver(g.RepoURL)
+	}
+	return ResolveGitAuth(g.RepoURL)
+}
+
+func closeGitAuth(auth transport.AuthMethod) error {
+	closer, ok := auth.(io.Closer)
+	if !ok {
+		return nil
+	}
+	return closer.Close()
 }
 
 // getSSHAuth attempts to get SSH authentication from:
@@ -230,14 +266,17 @@ func resolveSSHAgentAuthWithDialer(user, socket string, dial sshAgentDialer) tra
 	}
 
 	logger.Debug().Int("signer_count", len(signers)).Str("socket", socket).Msg("Successfully connected to SSH agent")
-	return &ssh.PublicKeysCallback{
-		User: normalizeSSHUser(user),
-		Callback: func() ([]xssh.Signer, error) {
-			return signers, nil
+	return &sshAgentAuth{
+		PublicKeysCallback: &ssh.PublicKeysCallback{
+			User: normalizeSSHUser(user),
+			Callback: func() ([]xssh.Signer, error) {
+				return signers, nil
+			},
+			HostKeyCallbackHelper: ssh.HostKeyCallbackHelper{
+				HostKeyCallback: getHostKeyCallback(),
+			},
 		},
-		HostKeyCallbackHelper: ssh.HostKeyCallbackHelper{
-			HostKeyCallback: getHostKeyCallback(),
-		},
+		conn: conn,
 	}
 }
 
@@ -328,12 +367,17 @@ func (g *GitOps) Clone(ctx context.Context, depth int) error {
 		defer cancel()
 	}
 
-	auth, err := ResolveGitAuth(g.RepoURL)
+	auth, err := g.resolveAuthentication()
 	if err != nil {
 		safeErr := SanitizeGitError(err)
 		logger.Error().Err(safeErr).Msg("Failed to resolve Git authentication")
 		return fmt.Errorf("failed to resolve Git authentication: %w", safeErr)
 	}
+	defer func() {
+		if closeErr := closeGitAuth(auth); closeErr != nil {
+			logger.Warn().Err(closeErr).Msg("Failed to close Git authentication")
+		}
+	}()
 
 	cloneOpts := &git.CloneOptions{
 		URL:           g.RepoURL,
@@ -390,10 +434,15 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 		logger.Error().Err(err).Str(log.FieldBranch, g.Branch).Msg("Failed to pull repository. Reason: invalid branch")
 		return false, "", "", fmt.Errorf("invalid branch: %w", err)
 	}
-	auth, authErr := ResolveGitAuth(g.RepoURL)
+	auth, authErr := g.resolveAuthentication()
 	if authErr != nil {
 		return false, "", "", fmt.Errorf("failed to resolve Git authentication: %w", SanitizeGitError(authErr))
 	}
+	defer func() {
+		if closeErr := closeGitAuth(auth); closeErr != nil {
+			logger.Warn().Err(closeErr).Msg("Failed to close Git authentication")
+		}
+	}()
 
 	logger.Debug().
 		Str(log.FieldBranch, g.Branch).

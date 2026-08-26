@@ -403,17 +403,109 @@ func TestResolveSSHAgentAuthRequiresUsableSigners(t *testing.T) {
 		auth := resolveSSHAgentAuthWithDialer("deploy", "agent.sock", func(string, string) (net.Conn, error) {
 			return tracked, nil
 		})
-		callback, ok := auth.(*gitssh.PublicKeysCallback)
+		agentAuth, ok := auth.(*sshAgentAuth)
 		require.True(t, ok)
+		callback := agentAuth.PublicKeysCallback
 		assert.Equal(t, "deploy", callback.User)
 		signers, err := callback.Callback()
 		require.NoError(t, err)
-		assert.Len(t, signers, 1)
+		require.Len(t, signers, 1)
+		message := []byte("agent ownership probe")
+		signature, err := signers[0].Sign(rand.Reader, message)
+		require.NoError(t, err)
+		require.NoError(t, signers[0].PublicKey().Verify(message, signature))
 		deadlines := tracked.recordedDeadlines()
 		require.Len(t, deadlines, 2)
 		assert.False(t, deadlines[0].IsZero())
 		assert.True(t, deadlines[1].IsZero())
+		require.NoError(t, agentAuth.Close())
+		require.NoError(t, agentAuth.Close(), "agent auth close must be idempotent")
+		select {
+		case <-tracked.closed:
+		case <-time.After(time.Second):
+			t.Fatal("usable SSH agent connection was not closed")
+		}
 	})
+}
+
+func TestValidateGitAuthenticationClosesAgentProbe(t *testing.T) {
+	t.Setenv("BOSUN_GIT_USERNAME", "")
+	t.Setenv("BOSUN_GIT_TOKEN", "")
+	tracked := &closeTrackingAuth{
+		AuthMethod: &gitssh.PublicKeysCallback{User: "deploy"},
+		closed:     make(chan struct{}),
+	}
+	originalResolver := resolveSSHAgentAuth
+	t.Cleanup(func() { resolveSSHAgentAuth = originalResolver })
+	resolveSSHAgentAuth = func(string) transport.AuthMethod { return tracked }
+
+	require.NoError(t, ValidateGitAuthentication("deploy@example.com:owner/repo.git"))
+	assertAuthClosed(t, tracked.closed)
+}
+
+func TestGitOpsClosesOperationAuth(t *testing.T) {
+	sourceDir := t.TempDir()
+	initializeGitSource(t, sourceDir)
+
+	t.Run("clone success", func(t *testing.T) {
+		gitOps, auth := newGitOpsWithTrackedAuth(sourceDir, filepath.Join(t.TempDir(), "checkout"))
+		require.NoError(t, gitOps.Clone(context.Background(), 1))
+		assertAuthClosed(t, auth.closed)
+	})
+
+	t.Run("clone error", func(t *testing.T) {
+		missingSource := filepath.Join(t.TempDir(), "missing-source")
+		gitOps, auth := newGitOpsWithTrackedAuth(missingSource, filepath.Join(t.TempDir(), "checkout"))
+		require.Error(t, gitOps.Clone(context.Background(), 1))
+		assertAuthClosed(t, auth.closed)
+	})
+
+	t.Run("pull success", func(t *testing.T) {
+		checkout := filepath.Join(t.TempDir(), "checkout")
+		_, err := git.PlainClone(checkout, false, &git.CloneOptions{URL: sourceDir})
+		require.NoError(t, err)
+		gitOps, auth := newGitOpsWithTrackedAuth(sourceDir, checkout)
+		_, _, _, err = gitOps.Pull(context.Background())
+		require.NoError(t, err)
+		assertAuthClosed(t, auth.closed)
+	})
+
+	t.Run("pull error", func(t *testing.T) {
+		gitOps, auth := newGitOpsWithTrackedAuth(sourceDir, filepath.Join(t.TempDir(), "missing-checkout"))
+		_, _, _, err := gitOps.Pull(context.Background())
+		require.Error(t, err)
+		assertAuthClosed(t, auth.closed)
+	})
+}
+
+type closeTrackingAuth struct {
+	transport.AuthMethod
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (a *closeTrackingAuth) Close() error {
+	a.once.Do(func() { close(a.closed) })
+	return nil
+}
+
+func newGitOpsWithTrackedAuth(repoURL, dir string) (*GitOps, *closeTrackingAuth) {
+	auth := &closeTrackingAuth{
+		AuthMethod: &githttp.BasicAuth{Username: "test", Password: "test"},
+		closed:     make(chan struct{}),
+	}
+	gitOps := NewGitOps(repoURL, "master", dir)
+	gitOps.authResolver = func(string) (transport.AuthMethod, error) { return auth, nil }
+	return gitOps, auth
+}
+
+func assertAuthClosed(t *testing.T, closed <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Git authentication was not closed")
+	}
 }
 
 type closeTrackingConn struct {
