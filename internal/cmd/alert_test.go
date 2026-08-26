@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -133,7 +134,7 @@ func TestDisplayAlertStatus(t *testing.T) {
 	})
 
 	t.Run("short credentials are safely redacted", func(t *testing.T) {
-		secrets := []string{"discord-secret", "slack-secret", "sendgrid", "twilio"}
+		secrets := []string{"密🔐", "slack-secret", "sendgrid", "twilio"}
 		cfg := config.AlertConfig{
 			DiscordWebhookURL: secrets[0],
 			SlackWebhookURL:   secrets[1],
@@ -176,6 +177,23 @@ type recordedAlertTestCall struct {
 	provider string
 	message  string
 	severity string
+}
+
+func executeAlertTestCommand(t *testing.T, ctx context.Context, deps alertTestDependencies, args ...string) (string, string, error) {
+	t.Helper()
+
+	cmd := newAlertTestCommand(deps)
+	cmd.SetContext(ctx)
+	cmd.SetArgs(args)
+	commandOutput := new(bytes.Buffer)
+	cmd.SetOut(commandOutput)
+	cmd.SetErr(commandOutput)
+
+	var runErr error
+	stdout := captureStdout(t, func() {
+		runErr = cmd.Execute()
+	})
+	return stdout, commandOutput.String(), runErr
 }
 
 func recordingAlertTestSenders(calls *[]recordedAlertTestCall, failures map[string]error) alertTestSenders {
@@ -284,6 +302,137 @@ func TestExecuteAlertTests(t *testing.T) {
 
 			assert.EqualError(t, err, tt.wantErr)
 			assert.Empty(t, calls)
+		})
+	}
+}
+
+type alertTestContextKey struct{}
+
+func TestAlertTestCommandExecution(t *testing.T) {
+	t.Run("config flags and context reach the selected sender", func(t *testing.T) {
+		wantConfig := fullyConfiguredAlertTestConfig()
+		ctx := context.WithValue(context.Background(), alertTestContextKey{}, "request-context")
+		getenvCalls := 0
+		var gotConfig config.AlertConfig
+		var gotMessage, gotSeverity, gotContext string
+		deps := alertTestDependencies{
+			loadConfig: func() (config.AlertConfig, error) { return wantConfig, nil },
+			getenv: func(string) string {
+				getenvCalls++
+				return ""
+			},
+			senders: alertTestSenders{
+				discord: func(ctx context.Context, cfg config.AlertConfig, message, severity string) error {
+					gotConfig = cfg
+					gotMessage = message
+					gotSeverity = severity
+					gotContext, _ = ctx.Value(alertTestContextKey{}).(string)
+					return nil
+				},
+			},
+		}
+
+		stdout, commandOutput, err := executeAlertTestCommand(t, ctx, deps,
+			"--provider", "discord", "--message", "from flags", "--severity", "warning")
+
+		require.NoError(t, err)
+		assert.Equal(t, wantConfig, gotConfig)
+		assert.Equal(t, "from flags", gotMessage)
+		assert.Equal(t, "warning", gotSeverity)
+		assert.Equal(t, "request-context", gotContext)
+		assert.Zero(t, getenvCalls)
+		assert.Contains(t, stdout, "Tested: 1, Passed: 1, Failed: 0")
+		assert.NotContains(t, commandOutput, "Usage:")
+	})
+
+	t.Run("config failure falls back to environment and defaults", func(t *testing.T) {
+		env := map[string]string{
+			"SLACK_WEBHOOK_URL": "https://slack.invalid/test",
+		}
+		var gotConfig config.AlertConfig
+		var gotMessage, gotSeverity string
+		deps := alertTestDependencies{
+			loadConfig: func() (config.AlertConfig, error) {
+				return config.AlertConfig{}, errors.New("no project config")
+			},
+			getenv: envGetter(env),
+			senders: alertTestSenders{
+				slack: func(_ context.Context, cfg config.AlertConfig, message, severity string) error {
+					gotConfig = cfg
+					gotMessage = message
+					gotSeverity = severity
+					return nil
+				},
+			},
+		}
+
+		stdout, commandOutput, err := executeAlertTestCommand(t, context.Background(), deps, "--provider", "slack")
+
+		require.NoError(t, err)
+		assert.Equal(t, env["SLACK_WEBHOOK_URL"], gotConfig.SlackWebhookURL)
+		assert.Equal(t, "This is a test alert from bosun", gotMessage)
+		assert.Equal(t, "info", gotSeverity)
+		assert.Contains(t, stdout, "Tested: 1, Passed: 1, Failed: 0")
+		assert.NotContains(t, commandOutput, "Usage:")
+	})
+
+	t.Run("runtime failure returns nonzero without usage", func(t *testing.T) {
+		deps := alertTestDependencies{
+			loadConfig: func() (config.AlertConfig, error) {
+				return config.AlertConfig{DiscordWebhookURL: "https://discord.invalid/test"}, nil
+			},
+			getenv: envGetter(nil),
+			senders: alertTestSenders{
+				discord: func(context.Context, config.AlertConfig, string, string) error {
+					return errors.New("delivery rejected")
+				},
+			},
+		}
+
+		stdout, commandOutput, err := executeAlertTestCommand(t, context.Background(), deps, "--provider", "discord")
+
+		require.EqualError(t, err, "1 alert provider test(s) failed")
+		assert.Contains(t, stdout, "Tested: 1, Passed: 0, Failed: 1")
+		assert.NotContains(t, commandOutput, "Usage:")
+	})
+
+	t.Run("argument failure retains usage", func(t *testing.T) {
+		cmd := newAlertTestCommand(alertTestDependencies{})
+		cmd.SetArgs([]string{"--unknown-flag"})
+		commandOutput := new(bytes.Buffer)
+		cmd.SetOut(commandOutput)
+		cmd.SetErr(commandOutput)
+
+		err := cmd.Execute()
+
+		require.Error(t, err)
+		assert.False(t, cmd.SilenceUsage)
+		assert.Contains(t, commandOutput.String(), "Usage:")
+	})
+}
+
+func envGetter(values map[string]string) func(string) string {
+	return func(key string) string { return values[key] }
+}
+
+func TestDefaultAlertTestSenders(t *testing.T) {
+	senders := defaultAlertTestSenders()
+	tests := []struct {
+		name string
+		send alertTestSendFunc
+		cfg  config.AlertConfig
+		want string
+	}{
+		{name: "discord", send: senders.discord, want: "discord webhook URL not configured"},
+		{name: "slack", send: senders.slack, want: "slack webhook URL not configured"},
+		{name: "sendgrid", send: senders.sendgrid, cfg: config.AlertConfig{SendGridAPIKey: "configured"}, want: "sendgrid_from_email not configured"},
+		{name: "twilio", send: senders.twilio, cfg: config.AlertConfig{TwilioAccountSID: "configured", TwilioAuthToken: "configured"}, want: "twilio_from_number not configured"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.send(context.Background(), tt.cfg, "message", "info")
+			assert.EqualError(t, err, tt.want)
 		})
 	}
 }

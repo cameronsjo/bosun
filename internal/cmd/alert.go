@@ -39,25 +39,9 @@ var alertStatusCmd = &cobra.Command{
 }
 
 // alertTestCmd sends a test alert.
-var alertTestCmd = &cobra.Command{
-	Use:   "test",
-	Short: "Send test alert to configured providers",
-	Long:  "Send a test alert message to verify provider configuration.",
-	RunE:  runAlertTest,
-}
-
-var (
-	alertTestProvider string
-	alertTestMessage  string
-	alertTestSeverity string
-)
+var alertTestCmd = newAlertTestCommand(defaultAlertTestDependencies())
 
 func init() {
-	// Add test command flags
-	alertTestCmd.Flags().StringVarP(&alertTestProvider, "provider", "p", "", "Test specific provider (discord, slack, sendgrid, twilio)")
-	alertTestCmd.Flags().StringVarP(&alertTestMessage, "message", "m", "", "Custom test message")
-	alertTestCmd.Flags().StringVarP(&alertTestSeverity, "severity", "s", "info", "Test severity level (info, warning, error)")
-
 	// Add subcommands to alert
 	alertCmd.AddCommand(alertStatusCmd)
 	alertCmd.AddCommand(alertTestCmd)
@@ -211,6 +195,12 @@ type alertTestOptions struct {
 	severity string
 }
 
+type alertTestDependencies struct {
+	loadConfig func() (config.AlertConfig, error)
+	getenv     func(string) string
+	senders    alertTestSenders
+}
+
 func defaultAlertTestSenders() alertTestSenders {
 	return alertTestSenders{
 		discord: func(ctx context.Context, cfg config.AlertConfig, message, severity string) error {
@@ -224,44 +214,65 @@ func defaultAlertTestSenders() alertTestSenders {
 	}
 }
 
-func runAlertTest(cmd *cobra.Command, _ []string) error {
+func defaultAlertTestDependencies() alertTestDependencies {
+	return alertTestDependencies{
+		loadConfig: func() (config.AlertConfig, error) {
+			cfg, err := config.Load()
+			if err != nil {
+				return config.AlertConfig{}, err
+			}
+			return cfg.GetAlertConfig(), nil
+		},
+		getenv:  os.Getenv,
+		senders: defaultAlertTestSenders(),
+	}
+}
+
+func newAlertTestCommand(deps alertTestDependencies) *cobra.Command {
+	opts := alertTestOptions{severity: "info"}
+	cmd := &cobra.Command{
+		Use:   "test",
+		Short: "Send test alert to configured providers",
+		Long:  "Send a test alert message to verify provider configuration.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAlertTest(cmd, args, deps, opts)
+		},
+	}
+	cmd.Flags().StringVarP(&opts.provider, "provider", "p", "", "Test specific provider (discord, slack, sendgrid, twilio)")
+	cmd.Flags().StringVarP(&opts.message, "message", "m", "", "Custom test message")
+	cmd.Flags().StringVarP(&opts.severity, "severity", "s", "info", "Test severity level (info, warning, error)")
+	return cmd
+}
+
+func alertConfigFromEnv(getenv func(string) string) config.AlertConfig {
+	return config.AlertConfig{
+		DiscordWebhookURL: getenv("DISCORD_WEBHOOK_URL"),
+		SlackWebhookURL:   getenv("SLACK_WEBHOOK_URL"),
+		SendGridAPIKey:    getenv("SENDGRID_API_KEY"),
+		TwilioAccountSID:  getenv("TWILIO_ACCOUNT_SID"),
+		TwilioAuthToken:   getenv("TWILIO_AUTH_TOKEN"),
+	}
+}
+
+func runAlertTest(cmd *cobra.Command, _ []string, deps alertTestDependencies, opts alertTestOptions) (err error) {
+	defer func() {
+		if err != nil {
+			cmd.SilenceUsage = true
+		}
+	}()
+
 	ui.Info("Testing alert providers...")
 	fmt.Println()
 
-	cfg, err := config.Load()
+	alertCfg, err := deps.loadConfig()
 	if err != nil {
 		ui.Warning("Could not load project config: %v", err)
 		ui.Info("Using environment variables only...")
 		fmt.Println()
+		alertCfg = alertConfigFromEnv(deps.getenv)
 	}
 
-	var alertCfg config.AlertConfig
-	if cfg != nil {
-		alertCfg = cfg.GetAlertConfig()
-	} else {
-		// Load from environment variables only
-		if v := os.Getenv("DISCORD_WEBHOOK_URL"); v != "" {
-			alertCfg.DiscordWebhookURL = v
-		}
-		if v := os.Getenv("SLACK_WEBHOOK_URL"); v != "" {
-			alertCfg.SlackWebhookURL = v
-		}
-		if v := os.Getenv("SENDGRID_API_KEY"); v != "" {
-			alertCfg.SendGridAPIKey = v
-		}
-		if v := os.Getenv("TWILIO_ACCOUNT_SID"); v != "" {
-			alertCfg.TwilioAccountSID = v
-		}
-		if v := os.Getenv("TWILIO_AUTH_TOKEN"); v != "" {
-			alertCfg.TwilioAuthToken = v
-		}
-	}
-
-	return executeAlertTests(cmd.Context(), alertCfg, alertTestOptions{
-		provider: alertTestProvider,
-		message:  alertTestMessage,
-		severity: alertTestSeverity,
-	}, defaultAlertTestSenders())
+	return executeAlertTests(cmd.Context(), alertCfg, opts, deps.senders)
 }
 
 func executeAlertTests(ctx context.Context, alertCfg config.AlertConfig, opts alertTestOptions, senders alertTestSenders) error {
