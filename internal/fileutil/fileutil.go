@@ -23,6 +23,11 @@ import (
 // a failure.
 var ErrSymlinkSkipped = errors.New("symlink skipped")
 
+// ErrUnsupportedFileType is returned when an operation that copies or hashes
+// file content receives a directory, FIFO, device, socket, or other non-regular
+// filesystem entry. Opening some of these entries can block indefinitely.
+var ErrUnsupportedFileType = errors.New("unsupported file type")
+
 // ErrPostWriteVerification marks a copy that was renamed into place but could
 // not be verified afterward. Callers must treat the destination as written for
 // change tracking while still surfacing the error.
@@ -45,6 +50,7 @@ func warnSymlinkSkipped(path string) {
 // It creates parent directories if needed and preserves permissions.
 // Uses atomic write via temp file to prevent partial writes on failure.
 // Symlinks are skipped with a warning rather than causing an error.
+// Other non-regular source entries return ErrUnsupportedFileType.
 func CopyFile(ctx context.Context, src, dst string) error {
 	return copyFileWithOps(ctx, src, dst, (*os.File).Chmod, syncDestinationDir, io.Copy)
 }
@@ -87,6 +93,9 @@ func copyFileWithOps(
 	if srcLstat.Mode()&os.ModeSymlink != 0 {
 		warnSymlinkSkipped(src)
 		return ErrSymlinkSkipped
+	}
+	if err := validateRegularFile(src, srcLstat); err != nil {
+		return err
 	}
 
 	srcFile, err := os.Open(src)
@@ -194,6 +203,13 @@ type contextReader struct {
 	reader io.Reader
 }
 
+func validateRegularFile(path string, info fs.FileInfo) error {
+	if info.Mode().IsRegular() {
+		return nil
+	}
+	return fmt.Errorf("%w: %s has mode %s", ErrUnsupportedFileType, path, info.Mode())
+}
+
 func (r contextReader) Read(p []byte) (int, error) {
 	if err := r.ctx.Err(); err != nil {
 		return 0, err
@@ -251,12 +267,20 @@ func syncDestinationDir(dir string) error {
 
 // FileHash computes the SHA-256 hash of a file's contents.
 // Returns the hash as a byte slice, or an error if the file cannot be read.
+// Non-regular entries return ErrUnsupportedFileType before they are opened.
 func FileHash(path string) ([sha256.Size]byte, error) {
 	return fileHashContext(context.Background(), path)
 }
 
 func fileHashContext(ctx context.Context, path string) ([sha256.Size]byte, error) {
 	if err := ctx.Err(); err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	if err := validateRegularFile(path, info); err != nil {
 		return [sha256.Size]byte{}, err
 	}
 	f, err := os.Open(path)
@@ -654,6 +678,7 @@ func validateCopyRoots(src, dst string) error {
 // when a later walk or copy operation fails.
 // Symlinks are skipped with a warning rather than causing an error. A destination
 // at or below the source is rejected before the destination is changed.
+// Other non-regular source entries return ErrUnsupportedFileType.
 // Cancellation stops the walk before its next destination mutation; completed
 // atomic renames are still synchronized and verified before returning.
 func CopyDirIfChanged(ctx context.Context, src, dst string) ([]string, error) {
@@ -811,6 +836,7 @@ func mkdirIfMissingWithOps(
 // when a later walk or copy operation fails.
 // Symlinks are skipped with a warning rather than causing an error. A destination
 // at or below the source is rejected before the destination is changed.
+// Other non-regular source entries return ErrUnsupportedFileType.
 // Cancellation stops the walk before its next destination mutation; completed
 // atomic renames are still synchronized before returning.
 func CopyDir(ctx context.Context, src, dst string) error {

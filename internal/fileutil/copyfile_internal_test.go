@@ -44,6 +44,36 @@ func TestCopyFileWithChmod_PermissionFailurePrecedesPayloadCopy(t *testing.T) {
 	assert.Empty(t, tempMatches, "failed atomic copy must remove its temporary file")
 }
 
+func TestValidateRegularFile(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mode    fs.FileMode
+		wantErr bool
+	}{
+		{name: "regular file", mode: 0o640},
+		{name: "directory", mode: fs.ModeDir | 0o755, wantErr: true},
+		{name: "named pipe", mode: fs.ModeNamedPipe | 0o600, wantErr: true},
+		{name: "device", mode: fs.ModeDevice | 0o600, wantErr: true},
+		{name: "socket", mode: fs.ModeSocket | 0o600, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateRegularFile("source", fakeFileInfo{mode: tt.mode})
+			if tt.wantErr {
+				require.ErrorIs(t, err, ErrUnsupportedFileType)
+				assert.ErrorContains(t, err, "source has mode")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestValidateCopyPermissions_ReportsLifecycleFailures(t *testing.T) {
 	t.Parallel()
 
