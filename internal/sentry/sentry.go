@@ -10,12 +10,13 @@ package sentry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"runtime/debug"
 	"strconv"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/getsentry/sentry-go"
@@ -40,12 +41,15 @@ type Options struct {
 	TracesSampleRate float64
 }
 
-// state tracks whether Sentry has been initialized.
-// enabled uses atomic.Bool for safe concurrent reads during shutdown.
+var errFlushTimeout = errors.New("flush Sentry events: timeout")
+
+// state tracks the active Sentry writer and its cleanup operations.
 var state struct {
-	enabled atomic.Bool
+	mu      sync.RWMutex
+	enabled bool
 	writer  io.Writer
-	closer  func()
+	flusher func(time.Duration) bool
+	closer  func() error
 }
 
 // Init initializes Sentry if a DSN is configured.
@@ -92,9 +96,14 @@ func Init(opts Options) error {
 		return err
 	}
 
-	state.enabled.Store(true)
+	state.mu.Lock()
+	state.enabled = true
 	state.writer = writer
-	state.closer = func() { _ = writer.Close() }
+	// Bind cleanup to the client initialized above. A later SDK reconfiguration
+	// must not redirect this integration's shutdown flush to a different hub.
+	state.flusher = sentry.CurrentHub().Clone().Flush
+	state.closer = writer.Close
+	state.mu.Unlock()
 
 	return nil
 }
@@ -120,28 +129,56 @@ func beforeSend(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
 	return event
 }
 
-// Close flushes pending Sentry events and shuts down the writer.
+// Close flushes pending Sentry events and shuts down the writer. It clears the
+// active state before flushing so concurrent readers cannot acquire a writer
+// that is already shutting down. Repeated calls are safe no-ops. Flush and
+// writer-close failures are returned together.
 // Should be called during graceful shutdown.
-func Close(timeout time.Duration) {
-	if !state.enabled.Load() {
-		return
+func Close(timeout time.Duration) error {
+	state.mu.Lock()
+	if !state.enabled {
+		state.mu.Unlock()
+		return nil
 	}
-	sentry.Flush(timeout)
-	if state.closer != nil {
-		state.closer()
+	flusher := state.flusher
+	closer := state.closer
+	state.enabled = false
+	state.writer = nil
+	state.flusher = nil
+	state.closer = nil
+	state.mu.Unlock()
+
+	var flushErr error
+	if flusher != nil && !flusher(timeout) {
+		flushErr = errFlushTimeout
 	}
-	state.enabled.Store(false)
+
+	var closeErr error
+	if closer != nil {
+		if err := closer(); err != nil {
+			closeErr = fmt.Errorf("close Sentry writer: %w", err)
+		}
+	}
+
+	return errors.Join(flushErr, closeErr)
 }
 
 // Writer returns the Sentry zerolog writer for use with MultiLevelWriter.
 // Returns nil if Sentry is not enabled.
 func Writer() io.Writer {
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	if !state.enabled {
+		return nil
+	}
 	return state.writer
 }
 
 // Enabled returns whether Sentry is active.
 func Enabled() bool {
-	return state.enabled.Load()
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	return state.enabled
 }
 
 // Recover recovers a panic in the current goroutine, always logging it so
@@ -178,7 +215,7 @@ func Report(r any) {
 		Str("stack", string(debug.Stack())).
 		Msg("Recovered from panic")
 
-	if state.enabled.Load() {
+	if Enabled() {
 		sentry.CurrentHub().Recover(r)
 		sentry.Flush(2 * time.Second)
 	}
@@ -215,7 +252,7 @@ func ConfigFromEnv() Options {
 // The finish function should be called with the final error (or nil) when done.
 // If Sentry is disabled, returns the original context and a no-op finish function.
 func ReconcileTransaction(ctx context.Context, source string) (context.Context, func(error)) {
-	if !state.enabled.Load() {
+	if !Enabled() {
 		return ctx, func(error) {}
 	}
 
@@ -237,7 +274,7 @@ func ReconcileTransaction(ctx context.Context, source string) (context.Context, 
 // Returns the context with the span and a finish function.
 // If no transaction exists or Sentry is disabled, returns a no-op.
 func StartSpan(ctx context.Context, operation, description string) (context.Context, func(error)) {
-	if !state.enabled.Load() {
+	if !Enabled() {
 		return ctx, func(error) {}
 	}
 

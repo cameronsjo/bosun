@@ -668,7 +668,9 @@ func (d *Daemon) shutdown() error {
 
 	// Flush Sentry events before shutting down network servers.
 	logger.Debug().Dur("timeout", 5*time.Second).Msg("Preparing to flush Sentry events")
-	sentrypkg.Close(5 * time.Second)
+	if err := sentrypkg.Close(5 * time.Second); err != nil {
+		logger.Warn().Err(err).Msg("Sentry shutdown error")
+	}
 
 	// Stop polling
 	logger.Debug().Msg("Stopping background loops")
