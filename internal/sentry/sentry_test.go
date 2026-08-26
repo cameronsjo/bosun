@@ -17,7 +17,7 @@ import (
 
 func resetSentryState(t *testing.T) {
 	t.Helper()
-	_ = Close(time.Second)
+	require.NoError(t, Close(time.Second))
 	state.mu.Lock()
 	state.enabled = false
 	state.writer = nil
@@ -25,7 +25,7 @@ func resetSentryState(t *testing.T) {
 	state.closer = nil
 	state.mu.Unlock()
 	t.Cleanup(func() {
-		_ = Close(time.Second)
+		require.NoError(t, Close(time.Second))
 		state.mu.Lock()
 		state.enabled = false
 		state.writer = nil
