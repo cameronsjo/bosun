@@ -23,9 +23,9 @@ import (
 )
 
 var (
-	webhookPort       int
-	webhookSocket     string
-	webhookSecret     string
+	webhookPort        int
+	webhookSocket      string
+	webhookSecret      string
 	webhookFetchSecret bool
 )
 
@@ -119,8 +119,8 @@ func runWebhook(cmd *cobra.Command, args []string) {
 	mux.HandleFunc("/ready", handler.handleReady)
 
 	server := &http.Server{
-		Addr:         fmt.Sprintf(":%d", webhookPort),
-		Handler:      mux,
+		Addr:           fmt.Sprintf(":%d", webhookPort),
+		Handler:        mux,
 		ReadTimeout:    10 * time.Second,
 		WriteTimeout:   30 * time.Second,
 		IdleTimeout:    60 * time.Second,
@@ -174,7 +174,7 @@ type webhookHandler struct {
 
 type webhookTriggerClient interface {
 	Trigger(context.Context, string, bool) (*daemon.TriggerResponse, error)
-	Health(context.Context) (*daemon.HealthStatus, error)
+	Health(context.Context) (*daemon.HealthResponse, error)
 }
 
 func (h *webhookHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
@@ -501,6 +501,11 @@ func (h *webhookHandler) handleBitbucketWebhook(w http.ResponseWriter, r *http.R
 }
 
 func (h *webhookHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -509,10 +514,7 @@ func (h *webhookHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"status": "unhealthy",
-			"error":  "daemon unreachable",
-		})
+		_ = json.NewEncoder(w).Encode(daemon.HealthResponse{Status: "unhealthy"})
 		return
 	}
 
@@ -524,6 +526,11 @@ func (h *webhookHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *webhookHandler) handleReady(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 

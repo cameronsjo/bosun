@@ -73,7 +73,7 @@ func runDaemonStatus(cmd *cobra.Command, args []string) {
 	printStatusHuman(status, health)
 }
 
-func printStatusHuman(status *daemon.StatusResponse, health *daemon.HealthStatus) {
+func printStatusHuman(status *daemon.StatusResponse, health *daemon.HealthResponse) {
 	ui.Header("=== Bosun Daemon Status ===")
 	fmt.Println()
 
@@ -135,7 +135,7 @@ type statusJSONOutput struct {
 	Ready         *bool   `json:"ready"`
 }
 
-func printStatusJSON(status *daemon.StatusResponse, health *daemon.HealthStatus) {
+func printStatusJSON(status *daemon.StatusResponse, health *daemon.HealthResponse) {
 	out := statusJSONOutput{
 		State:  status.State,
 		Uptime: status.Uptime,

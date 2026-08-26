@@ -40,8 +40,8 @@ The daemon exposes a Unix socket at `/var/run/bosun.sock` (configurable) for loc
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/trigger` | POST | Trigger reconciliation |
-| `/status` | GET | Get daemon status |
-| `/health` | GET | Health check |
+| `/status` | GET | Operator status with sanitized reconcile diagnostics |
+| `/health` | GET | Public liveness JSON: `status`, `ready`, and `uptime` |
 | `/ready` | GET | Readiness check |
 | `/config` | GET | Get current config |
 | `/ping` | GET | Simple ping |
@@ -49,6 +49,13 @@ The daemon exposes a Unix socket at `/var/run/bosun.sock` (configurable) for loc
 | `/api/containers` | GET | List all containers with summary |
 | `/api/trigger` | POST | Trigger reconciliation (WebUI) |
 | `/api/status` | GET | Extended status for WebUI |
+
+`/health` has the same bounded response on the webhook listener, TCP API, and
+Unix socket. It returns `200` when healthy and `503` otherwise, does not vary
+when an Authorization header is present, and rejects non-GET methods with `405`.
+It never exposes reconcile errors, repository paths, subsystem messages, or
+circuit-breaker state. Use the bearer-protected TCP `/status` endpoint or the
+local Unix-socket `/status` endpoint for operator diagnostics.
 
 **Example usage:**
 

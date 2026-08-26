@@ -1893,6 +1893,22 @@ type HealthStatus struct {
 	Subsystems    map[string]SubsystemStatus `json:"subsystems"`
 }
 
+// HealthResponse is the bounded public liveness response returned by /health.
+// Detailed reconcile and subsystem diagnostics belong on /status and in logs.
+type HealthResponse struct {
+	Status string        `json:"status"`
+	Ready  bool          `json:"ready"`
+	Uptime time.Duration `json:"uptime"`
+}
+
+func publicHealthResponse(status HealthStatus) HealthResponse {
+	return HealthResponse{
+		Status: status.Status,
+		Ready:  status.Ready,
+		Uptime: status.Uptime,
+	}
+}
+
 // computeTopLevelStatus derives the top-level health status from subsystems.
 // Docker down = "unhealthy" (critical). Any other subsystem degraded/unhealthy/open = "degraded".
 func computeTopLevelStatus(subsystems map[string]SubsystemStatus) string {

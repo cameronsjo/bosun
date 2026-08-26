@@ -192,8 +192,11 @@ func validateDaemonConnection() int {
 		_, _ = ui.Green.Printf("  * Daemon health: %s\n", health.Status)
 	} else {
 		_, _ = ui.Yellow.Printf("  ! Daemon health: %s\n", health.Status)
-		if health.LastError != "" {
-			_, _ = ui.Yellow.Printf("    Last error: %s\n", health.LastError)
+		status, statusErr := client.Status(ctx)
+		if statusErr != nil {
+			_, _ = ui.Yellow.Printf("    Cannot get daemon status: %v\n", statusErr)
+		} else if status.LastError != "" {
+			_, _ = ui.Yellow.Printf("    Last error: %s\n", status.LastError)
 		}
 		warnings++
 	}

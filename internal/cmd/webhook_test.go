@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -390,8 +391,93 @@ func TestStandaloneGitHubWebhookSanitizesPusherAttribution(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(output, "\n"), "attacker input must not create extra log lines")
 }
 
+func TestStandaloneWebhookLivenessHandlers(t *testing.T) {
+	t.Run("health proxies bounded healthy response", func(t *testing.T) {
+		client := &recordingWebhookClient{health: &daemon.HealthResponse{
+			Status: "healthy",
+			Ready:  true,
+			Uptime: 42,
+		}}
+		handler := &webhookHandler{client: client}
+		w := httptest.NewRecorder()
+		handler.handleHealth(w, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, 1, client.healthCalls)
+		assert.ElementsMatch(t, []string{"status", "ready", "uptime"}, jsonObjectKeys(t, w.Body.Bytes()))
+	})
+
+	t.Run("health preserves degraded status", func(t *testing.T) {
+		client := &recordingWebhookClient{health: &daemon.HealthResponse{
+			Status: "degraded",
+			Ready:  true,
+		}}
+		handler := &webhookHandler{client: client}
+		w := httptest.NewRecorder()
+		handler.handleHealth(w, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+		assert.ElementsMatch(t, []string{"status", "ready", "uptime"}, jsonObjectKeys(t, w.Body.Bytes()))
+	})
+
+	t.Run("health bounds daemon failure response", func(t *testing.T) {
+		const sensitive = "daemon unreachable at /srv/private/repo"
+		client := &recordingWebhookClient{healthError: errors.New(sensitive)}
+		handler := &webhookHandler{client: client}
+		w := httptest.NewRecorder()
+		handler.handleHealth(w, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+		assert.Equal(t, 1, client.healthCalls)
+		assert.ElementsMatch(t, []string{"status", "ready", "uptime"}, jsonObjectKeys(t, w.Body.Bytes()))
+		assert.NotContains(t, w.Body.String(), sensitive)
+		assert.NotContains(t, w.Body.String(), `"error"`)
+	})
+
+	t.Run("ready keeps plain response", func(t *testing.T) {
+		client := &recordingWebhookClient{health: &daemon.HealthResponse{Status: "healthy", Ready: true}}
+		handler := &webhookHandler{client: client}
+		w := httptest.NewRecorder()
+		handler.handleReady(w, httptest.NewRequest(http.MethodGet, "/ready", nil))
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "ready", w.Body.String())
+	})
+
+	for _, path := range []string{"/health", "/ready"} {
+		t.Run("non-GET "+path+" does not call daemon", func(t *testing.T) {
+			client := &recordingWebhookClient{}
+			handler := &webhookHandler{client: client}
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, path, nil)
+			if path == "/health" {
+				handler.handleHealth(w, req)
+			} else {
+				handler.handleReady(w, req)
+			}
+
+			assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+			assert.Equal(t, 0, client.healthCalls)
+		})
+	}
+}
+
+func jsonObjectKeys(t *testing.T, body []byte) []string {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(body, &fields))
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
 type recordingWebhookClient struct {
-	source string
+	source      string
+	health      *daemon.HealthResponse
+	healthError error
+	healthCalls int
 }
 
 func (c *recordingWebhookClient) Trigger(_ context.Context, source string, _ bool) (*daemon.TriggerResponse, error) {
@@ -399,8 +485,15 @@ func (c *recordingWebhookClient) Trigger(_ context.Context, source string, _ boo
 	return &daemon.TriggerResponse{Status: "accepted"}, nil
 }
 
-func (c *recordingWebhookClient) Health(context.Context) (*daemon.HealthStatus, error) {
-	return &daemon.HealthStatus{Status: "healthy"}, nil
+func (c *recordingWebhookClient) Health(context.Context) (*daemon.HealthResponse, error) {
+	c.healthCalls++
+	if c.healthError != nil {
+		return nil, c.healthError
+	}
+	if c.health != nil {
+		return c.health, nil
+	}
+	return &daemon.HealthResponse{Status: "healthy"}, nil
 }
 
 func captureWebhookColorOutput(t *testing.T, fn func()) string {

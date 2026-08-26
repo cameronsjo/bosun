@@ -591,6 +591,25 @@ security opt-out is logged at startup and for every accepted unauthenticated
 mutation. Read-only socket endpoints remain governed by the socket's filesystem
 permissions.
 
+## Public Health and Operator Diagnostics
+
+`GET /health` stays unauthenticated on the webhook HTTP listener, TCP API, and
+Unix socket so container and load-balancer liveness probes do not need a control
+credential. Its JSON response is deliberately bounded to exactly `status`,
+`ready`, and `uptime`. It returns `200` when healthy, `503` when degraded or
+unhealthy, and `405` for non-GET requests.
+
+The public response never contains reconcile errors or timestamps, repository
+URLs or filesystem paths, subsystem names or messages, or circuit-breaker state.
+Supplying an Authorization header does not expand the response, which prevents
+caches and proxies from mixing public and credential-bearing variants.
+
+Operators obtain sanitized last-error and last-reconcile diagnostics from
+`GET /status`: the TCP API requires its bearer token, while Unix-socket access is
+governed by the local socket trust boundary. Subsystem detail remains in daemon
+logs. The standalone `bosun webhook` receiver preserves the bounded `/health`
+schema and rejects non-GET `/health` and `/ready` requests.
+
 ## Daemon Metrics and Widget Authentication
 
 The `/metrics` (Prometheus) and `/api/widget` (Homepage) endpoints disclose the
