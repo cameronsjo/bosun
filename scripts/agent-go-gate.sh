@@ -2,8 +2,8 @@
 
 set -u
 
-readonly DEFAULT_MIN_FREE_GIB=20
-readonly DEFAULT_MAX_DELTA_GIB=8
+readonly DEFAULT_MIN_FREE_GIB=100
+readonly DEFAULT_MAX_DELTA_GIB=4
 readonly DEFAULT_WAIT_SECONDS=60
 readonly SIGNAL_GRACE_SECONDS=1
 readonly KIB_PER_GIB=1048576
@@ -112,6 +112,12 @@ require_uint BOSUN_AGENT_MIN_FREE_GIB "$min_free_gib"
 require_uint BOSUN_AGENT_MAX_DISK_DELTA_GIB "$max_delta_gib"
 require_uint BOSUN_AGENT_GATE_WAIT_SECONDS "$wait_seconds"
 
+if [ "$min_free_gib" -lt "$DEFAULT_MIN_FREE_GIB" ]; then
+	fail "BOSUN_AGENT_MIN_FREE_GIB must be at least ${DEFAULT_MIN_FREE_GIB} GiB, got '$min_free_gib'"
+fi
+if [ "$max_delta_gib" -gt "$DEFAULT_MAX_DELTA_GIB" ]; then
+	fail "BOSUN_AGENT_MAX_DISK_DELTA_GIB must be at most ${DEFAULT_MAX_DELTA_GIB} GiB, got '$max_delta_gib'"
+fi
 repo_root=$(command git rev-parse --show-toplevel 2>/dev/null) || fail 'must run inside a Git worktree'
 repo_root=$(canonical_dir "$repo_root") || fail 'cannot resolve repository root'
 invocation_dir=$(canonical_dir .) || fail 'cannot resolve current directory'
@@ -174,8 +180,8 @@ if [ "$before_kib" -lt "$minimum_kib" ]; then
 	temporary_fail "only $(format_gib "$before_kib") GiB free; ${min_free_gib} GiB is required"
 fi
 
-printf 'agent-go-gate: start free=%s GiB min=%s GiB lock=%s\n' \
-	"$(format_gib "$before_kib")" "$min_free_gib" "$lock_file" >&2
+printf 'agent-go-gate: start free=%s GiB min=%s GiB max-delta=%s GiB wait=%ss lock=%s\n' \
+	"$(format_gib "$before_kib")" "$min_free_gib" "$max_delta_gib" "$wait_seconds" "$lock_file" >&2
 
 "$@" <&0 &
 command_pid=$!
