@@ -386,7 +386,7 @@ do not gain legacy aliases.
 | `BOSUN_TWILIO_ACCOUNT_SID` | config | Twilio account SID (overrides config file; legacy: `TWILIO_ACCOUNT_SID`) |
 | `BOSUN_TWILIO_AUTH_TOKEN` | config | Twilio auth token (overrides config file; legacy: `TWILIO_AUTH_TOKEN`) |
 | `BOSUN_TWILIO_FROM_NUMBER` | config | Twilio sender number (overrides config file; legacy: `TWILIO_FROM_NUMBER`) |
-| `BOSUN_SSH_KEY` | reconcile | SSH key path for git operations |
+| `BOSUN_SSH_KEY` | reconcile | Explicit SSH key fallback for git operations; the agent wins, and the path must be a regular, non-empty, parseable private key file |
 | `BOSUN_SSH_KNOWN_HOSTS` | reconcile | Known hosts file path |
 | `BOSUN_SSH_INSECURE_HOST_KEY` | reconcile | Skip host key verification (`true`/`false`) |
 | `BOSUN_DAEMON_MODE` | log, sentry | Set automatically when daemon starts |

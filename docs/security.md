@@ -47,6 +47,11 @@ Bosun uses [age](https://age-encryption.org/) as the encryption backend for SOPS
 2. `SOPS_AGE_KEY_FILE` environment variable (path to key file)
 3. Default: `~/.config/sops/age/keys.txt`
 
+Inline key content takes precedence. Resolved files must be regular,
+non-empty, and contain at least one parseable Age identity. Bosun rejects an
+invalid file before decryption and explains that Docker can create a directory
+when a file bind-mount source is missing.
+
 ### Key Generation and Storage
 
 **Implementation**: `internal/internal/cmd/init.go`

@@ -2,8 +2,11 @@ package reconcile
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/http/cgi"
@@ -22,10 +25,13 @@ import (
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	gitclient "github.com/go-git/go-git/v5/plumbing/transport/client"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	xssh "golang.org/x/crypto/ssh"
 )
 
 func TestResolveGitAuth(t *testing.T) {
@@ -87,16 +93,173 @@ func TestResolveGitAuth(t *testing.T) {
 		})
 	}
 
-	t.Run("SCP syntax retains SSH behavior without HTTPS credentials", func(t *testing.T) {
+	t.Run("SCP syntax loads a valid explicit SSH key", func(t *testing.T) {
 		t.Setenv("BOSUN_GIT_USERNAME", "")
 		t.Setenv("BOSUN_GIT_TOKEN", "")
 		t.Setenv("SSH_AUTH_SOCK", "")
-		t.Setenv("BOSUN_SSH_KEY", filepath.Join(t.TempDir(), "missing"))
+		keyPath := filepath.Join(t.TempDir(), "deploy-key")
+		writeTestSSHPrivateKey(t, keyPath)
+		t.Setenv("BOSUN_SSH_KEY", keyPath)
 		t.Setenv("HOME", t.TempDir())
 
-		_, err := ResolveGitAuth("git@example.com:owner/repo.git")
+		auth, err := ResolveGitAuth("git@example.com:owner/repo.git")
 		require.NoError(t, err)
+		assert.IsType(t, &gitssh.PublicKeys{}, auth)
 	})
+}
+
+func TestResolveGitAuthValidatesExplicitSSHKey(t *testing.T) {
+	t.Setenv("BOSUN_GIT_USERNAME", "")
+	t.Setenv("BOSUN_GIT_TOKEN", "")
+	t.Setenv("SSH_AUTH_SOCK", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("BOSUN_SSH_INSECURE_HOST_KEY", "true")
+
+	t.Run("valid key is accepted", func(t *testing.T) {
+		keyPath := filepath.Join(t.TempDir(), "deploy-key")
+		writeTestSSHPrivateKey(t, keyPath)
+		t.Setenv("BOSUN_SSH_KEY", keyPath)
+
+		auth, err := ResolveGitAuth("git@example.com:owner/repo.git")
+		require.NoError(t, err)
+		assert.IsType(t, &gitssh.PublicKeys{}, auth)
+	})
+
+	invalidCases := []struct {
+		name       string
+		prepare    func(t *testing.T, path string)
+		wantReason string
+	}{
+		{name: "missing", wantReason: "does not exist"},
+		{name: "directory", prepare: func(t *testing.T, path string) {
+			require.NoError(t, os.Mkdir(path, 0700))
+		}, wantReason: "not a regular file"},
+		{name: "empty", prepare: func(t *testing.T, path string) {
+			require.NoError(t, os.WriteFile(path, nil, 0600))
+		}, wantReason: "is empty"},
+		{name: "unparseable", prepare: func(t *testing.T, path string) {
+			require.NoError(t, os.WriteFile(path, []byte("not a private key"), 0600))
+		}, wantReason: "parseable private key"},
+	}
+
+	for _, tt := range invalidCases {
+		t.Run(tt.name, func(t *testing.T) {
+			keyPath := filepath.Join(t.TempDir(), "deploy-key")
+			if tt.prepare != nil {
+				tt.prepare(t, keyPath)
+			}
+			t.Setenv("BOSUN_SSH_KEY", keyPath)
+
+			auth, err := ResolveGitAuth("ssh://example.com/owner/repo.git")
+			require.Error(t, err)
+			assert.Nil(t, auth)
+			assert.Contains(t, err.Error(), "BOSUN_SSH_KEY")
+			assert.Contains(t, err.Error(), keyPath)
+			assert.Contains(t, err.Error(), tt.wantReason)
+			assert.Contains(t, err.Error(), "Docker")
+		})
+	}
+}
+
+func TestResolveSSHKeyFileAuthConventionalCandidates(t *testing.T) {
+	t.Setenv("BOSUN_SSH_INSECURE_HOST_KEY", "true")
+
+	t.Run("existing invalid candidate fails with its path when no fallback succeeds", func(t *testing.T) {
+		invalidPath := filepath.Join(t.TempDir(), "deploy-key")
+		require.NoError(t, os.Mkdir(invalidPath, 0700))
+		missingPath := filepath.Join(t.TempDir(), "missing-key")
+
+		auth, err := resolveSSHKeyFileAuth("", []string{invalidPath, missingPath})
+		require.Error(t, err)
+		assert.Nil(t, auth)
+		assert.Contains(t, err.Error(), "SSH key candidate")
+		assert.Contains(t, err.Error(), invalidPath)
+		assert.Contains(t, err.Error(), "not a regular file")
+		assert.Contains(t, err.Error(), "Docker")
+	})
+
+	t.Run("later valid candidate wins over an earlier invalid candidate", func(t *testing.T) {
+		invalidPath := filepath.Join(t.TempDir(), "deploy-key")
+		require.NoError(t, os.Mkdir(invalidPath, 0700))
+		validPath := filepath.Join(t.TempDir(), "id_ed25519")
+		writeTestSSHPrivateKey(t, validPath)
+
+		auth, err := resolveSSHKeyFileAuth("", []string{invalidPath, validPath})
+		require.NoError(t, err)
+		assert.IsType(t, &gitssh.PublicKeys{}, auth)
+	})
+
+	t.Run("absent conventional candidates remain optional", func(t *testing.T) {
+		missingPath := filepath.Join(t.TempDir(), "missing-key")
+
+		auth, err := resolveSSHKeyFileAuth("", []string{missingPath})
+		require.NoError(t, err)
+		assert.Nil(t, auth)
+	})
+}
+
+func TestResolveGitAuthSSHPrecedenceAndProtocolIsolation(t *testing.T) {
+	t.Setenv("BOSUN_GIT_USERNAME", "")
+	t.Setenv("BOSUN_GIT_TOKEN", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("BOSUN_SSH_INSECURE_HOST_KEY", "true")
+	invalidKey := filepath.Join(t.TempDir(), "missing-deploy-key")
+	t.Setenv("BOSUN_SSH_KEY", invalidKey)
+
+	t.Run("HTTPS ignores unrelated invalid SSH key", func(t *testing.T) {
+		t.Setenv("SSH_AUTH_SOCK", "")
+		auth, err := ResolveGitAuth("https://example.com/owner/repo.git")
+		require.NoError(t, err)
+		assert.Nil(t, auth)
+	})
+
+	t.Run("working agent wins over invalid explicit key", func(t *testing.T) {
+		originalResolver := resolveSSHAgentAuth
+		t.Cleanup(func() { resolveSSHAgentAuth = originalResolver })
+		resolveSSHAgentAuth = func() transport.AuthMethod {
+			return &gitssh.PublicKeysCallback{}
+		}
+
+		auth, err := ResolveGitAuth("git@example.com:owner/repo.git")
+		require.NoError(t, err)
+		assert.IsType(t, &gitssh.PublicKeysCallback{}, auth)
+	})
+}
+
+func TestDefaultSSHAuthBuilderNeverReturnsNilAuthWithoutError(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	t.Setenv("BOSUN_SSH_KEY", "")
+	t.Setenv("HOME", t.TempDir())
+
+	auth, err := gitssh.DefaultAuthBuilder("git")
+	require.Error(t, err)
+	assert.Nil(t, auth)
+	assert.Contains(t, err.Error(), "SSH authentication is unavailable")
+}
+
+func TestGitOpsInvalidSSHKeyFailsWithoutPanic(t *testing.T) {
+	t.Setenv("BOSUN_GIT_USERNAME", "")
+	t.Setenv("BOSUN_GIT_TOKEN", "")
+	t.Setenv("SSH_AUTH_SOCK", "")
+	keyPath := filepath.Join(t.TempDir(), "deploy-key")
+	require.NoError(t, os.Mkdir(keyPath, 0700))
+	t.Setenv("BOSUN_SSH_KEY", keyPath)
+	t.Setenv("HOME", t.TempDir())
+
+	g := NewGitOps("git@127.0.0.1:owner/repo.git", "main", filepath.Join(t.TempDir(), "clone"))
+	err := g.Clone(context.Background(), 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to resolve Git authentication")
+	assert.Contains(t, err.Error(), keyPath)
+}
+
+func writeTestSSHPrivateKey(t *testing.T, path string) {
+	t.Helper()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	block, err := xssh.MarshalPrivateKey(privateKey, "bosun test key")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, pem.EncodeToMemory(block), 0600))
 }
 
 func TestGitAuthenticationRejectsBeforeNetwork(t *testing.T) {

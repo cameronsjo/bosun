@@ -116,12 +116,31 @@ func TestCheckProjectRoot(t *testing.T) {
 }
 
 func TestCheckAgeKey(t *testing.T) {
-	t.Run("with SOPS_AGE_KEY_FILE set to existing file", func(t *testing.T) {
+	const testAgeIdentity = "AGE-SECRET-KEY-184JMZMVQH3E6U0PSL869004Y3U2NYV7R30EU99CSEDNPH02YUVFSZW44VU"
+
+	t.Run("with SOPS_AGE_KEY_FILE set to valid identity file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		keyFile := filepath.Join(tmpDir, "keys.txt")
-		require.NoError(t, os.WriteFile(keyFile, []byte("test key"), 0600))
+		require.NoError(t, os.WriteFile(keyFile, []byte(testAgeIdentity+"\n"), 0600))
 
+		t.Setenv("SOPS_AGE_KEY", "")
 		t.Setenv("SOPS_AGE_KEY_FILE", keyFile)
+		t.Setenv("HOME", t.TempDir())
+		result := checkAgeKey()
+		assert.Equal(t, 1, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 0, result.Warned)
+	})
+
+	t.Run("with valid identity in default location", func(t *testing.T) {
+		homeDir := t.TempDir()
+		keyFile := filepath.Join(homeDir, ".config", "sops", "age", "keys.txt")
+		require.NoError(t, os.MkdirAll(filepath.Dir(keyFile), 0700))
+		require.NoError(t, os.WriteFile(keyFile, []byte(testAgeIdentity+"\n"), 0600))
+
+		t.Setenv("SOPS_AGE_KEY", "")
+		t.Setenv("SOPS_AGE_KEY_FILE", "")
+		t.Setenv("HOME", homeDir)
 		result := checkAgeKey()
 		assert.Equal(t, 1, result.Passed)
 		assert.Equal(t, 0, result.Failed)
@@ -129,11 +148,52 @@ func TestCheckAgeKey(t *testing.T) {
 	})
 
 	t.Run("with SOPS_AGE_KEY_FILE set to non-existent file", func(t *testing.T) {
+		t.Setenv("SOPS_AGE_KEY", "")
 		t.Setenv("SOPS_AGE_KEY_FILE", "/non/existent/path/keys.txt")
+		t.Setenv("HOME", t.TempDir())
 		result := checkAgeKey()
 		assert.Equal(t, 0, result.Passed)
 		assert.Equal(t, 0, result.Failed)
 		assert.Equal(t, 1, result.Warned)
+	})
+
+	for _, tt := range []struct {
+		name    string
+		prepare func(t *testing.T, path string)
+	}{
+		{name: "directory", prepare: func(t *testing.T, path string) {
+			require.NoError(t, os.Mkdir(path, 0700))
+		}},
+		{name: "empty", prepare: func(t *testing.T, path string) {
+			require.NoError(t, os.WriteFile(path, nil, 0600))
+		}},
+		{name: "malformed", prepare: func(t *testing.T, path string) {
+			require.NoError(t, os.WriteFile(path, []byte("not an Age identity"), 0600))
+		}},
+	} {
+		t.Run("warns for "+tt.name+" identity path", func(t *testing.T) {
+			keyFile := filepath.Join(t.TempDir(), "keys.txt")
+			tt.prepare(t, keyFile)
+			t.Setenv("SOPS_AGE_KEY", "")
+			t.Setenv("SOPS_AGE_KEY_FILE", keyFile)
+			t.Setenv("HOME", t.TempDir())
+
+			result := checkAgeKey()
+			assert.Equal(t, 0, result.Passed)
+			assert.Equal(t, 0, result.Failed)
+			assert.Equal(t, 1, result.Warned)
+		})
+	}
+
+	t.Run("SOPS_AGE_KEY takes precedence over invalid file path", func(t *testing.T) {
+		t.Setenv("SOPS_AGE_KEY", testAgeIdentity)
+		t.Setenv("SOPS_AGE_KEY_FILE", t.TempDir())
+		t.Setenv("HOME", t.TempDir())
+
+		result := checkAgeKey()
+		assert.Equal(t, 1, result.Passed)
+		assert.Equal(t, 0, result.Failed)
+		assert.Equal(t, 0, result.Warned)
 	})
 }
 

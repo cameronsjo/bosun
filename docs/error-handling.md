@@ -40,10 +40,12 @@ var ErrAgeKeyNotFound = errors.New("age key not found")
 
 **Purpose**: Returned when no age key is available for SOPS decryption.
 
-**When Returned**: The `CheckAgeKey()` function returns this error (wrapped with actionable guidance) when:
-- `SOPS_AGE_KEY` environment variable is not set
-- `SOPS_AGE_KEY_FILE` points to a non-existent file
+**When Returned**: When no direct `SOPS_AGE_KEY` is set, the `CheckAgeKey()`
+function returns this error (wrapped with actionable guidance) when:
+- `SOPS_AGE_KEY_FILE` is missing, not a regular file, empty, unreadable, or
+  does not contain a parseable Age identity
 - Default key location (`~/.config/sops/age/keys.txt`) does not exist
+- The default key exists but fails the same file and identity validation
 
 **Example Error with Remediation**:
 ```
@@ -198,7 +200,9 @@ Every error should include:
 **Example from SOPS key checking**:
 
 ```go
-return fmt.Errorf("%w: SOPS_AGE_KEY_FILE is set to %q but file does not exist.\n\nTo fix:\n  1. Create the key file at the specified path\n  2. Or set SOPS_AGE_KEY_FILE to an existing key file\n  3. Or run: age-keygen -o ~/.config/sops/age/keys.txt", ErrAgeKeyNotFound, keyFile)
+if err := validateAgeIdentityFile(keyFile); err != nil {
+    return ageIdentityFileError("SOPS_AGE_KEY_FILE", keyFile, err)
+}
 ```
 
 ### CLI Error Display
@@ -300,8 +304,10 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 **Symptoms**: `age key not found` or `file is not SOPS-encrypted`
 
 **Recovery**:
-1. Ensure age key exists at `~/.config/sops/age/keys.txt`
-2. Or set `SOPS_AGE_KEY_FILE` to your key location
+1. Ensure the Age key at `~/.config/sops/age/keys.txt` is a regular, non-empty,
+   parseable identity file
+2. Or set `SOPS_AGE_KEY_FILE` to a valid key location; pre-create Docker file
+   bind-mount sources so a missing source is not materialized as a directory
 3. Verify the secrets file is encrypted: look for `sops:` key in YAML
 
 #### SSH Connection Fails
@@ -312,7 +318,9 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 1. Test SSH manually: `ssh user@host`
 2. Add host key: `ssh-keyscan hostname >> ~/.ssh/known_hosts`
 3. Check SSH key: `ssh-add -l`
-4. Verify network connectivity: `ping hostname`
+4. Verify `BOSUN_SSH_KEY` or an existing conventional key candidate is a
+   regular, non-empty, parseable private key file
+5. Verify network connectivity: `ping hostname`
 
 #### Docker Not Available
 

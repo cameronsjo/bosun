@@ -25,13 +25,15 @@ import (
 	"github.com/cameronsjo/bosun/internal/log"
 )
 
+var resolveSSHAgentAuth = getSSHAgentAuth
+
 func init() {
 	// Override go-git's default SSH auth builder to gracefully handle missing SSH agents.
 	// By default, go-git calls NewSSHAgentAuth() which errors if SSH_AUTH_SOCK isn't set.
 	// We use our own auth chain: SSH agent -> key files (BOSUN_SSH_KEY, /config/*, ~/.ssh/*).
 	ssh.DefaultAuthBuilder = func(user string) (ssh.AuthMethod, error) {
 		// Try SSH agent first
-		if auth := getSSHAgentAuth(); auth != nil {
+		if auth := resolveSSHAgentAuth(); auth != nil {
 			if sshAuth, ok := auth.(ssh.AuthMethod); ok {
 				return sshAuth, nil
 			}
@@ -46,7 +48,7 @@ func init() {
 				return sshAuth, nil
 			}
 		}
-		return nil, nil
+		return nil, sshAuthUnavailableError()
 	}
 }
 
@@ -123,12 +125,16 @@ func getSSHAuth(url string) (transport.AuthMethod, error) {
 	}
 
 	// Try SSH agent first
-	if auth := getSSHAgentAuth(); auth != nil {
+	if auth := resolveSSHAgentAuth(); auth != nil {
 		return auth, nil
 	}
 
 	// Fall back to key file
 	return getSSHKeyFileAuth()
+}
+
+func sshAuthUnavailableError() error {
+	return errors.New("SSH authentication is unavailable: load a key into SSH_AUTH_SOCK or set BOSUN_SSH_KEY to a regular, non-empty private key file")
 }
 
 // getHostKeyCallback returns an SSH host key callback for verifying server identity.
@@ -195,27 +201,76 @@ func getSSHAgentAuth() transport.AuthMethod {
 // getSSHKeyFileAuth attempts to get auth from a key file.
 // Checks BOSUN_SSH_KEY env var, then common paths.
 func getSSHKeyFileAuth() (transport.AuthMethod, error) {
+	return resolveSSHKeyFileAuth(os.Getenv("BOSUN_SSH_KEY"), buildSSHKeyPaths("", os.Getenv("HOME")))
+}
+
+func resolveSSHKeyFileAuth(explicitKeyPath string, keyPaths []string) (transport.AuthMethod, error) {
 	logger := log.Component(log.ComponentGit)
-	keyPaths := buildSSHKeyPaths(os.Getenv("BOSUN_SSH_KEY"), os.Getenv("HOME"))
-
-	for _, keyPath := range keyPaths {
-		if _, err := os.Stat(keyPath); err != nil {
-			logger.Debug().Str(log.FieldPath, keyPath).Msg("Skipping SSH key. Reason: file not found")
-			continue
-		}
-
-		auth, err := ssh.NewPublicKeysFromFile("git", keyPath, "")
+	if explicitKeyPath != "" {
+		auth, err := loadSSHKeyFile(explicitKeyPath)
 		if err != nil {
-			logger.Debug().Err(err).Str(log.FieldPath, keyPath).Msg("Skipping SSH key. Reason: failed to parse key file")
+			return nil, invalidSSHKeyMountError("BOSUN_SSH_KEY", explicitKeyPath, err)
+		}
+		auth.HostKeyCallback = getHostKeyCallback()
+		logger.Debug().Str(log.FieldPath, explicitKeyPath).Msg("Successfully loaded SSH key file")
+		return auth, nil
+	}
+
+	var invalidPath string
+	var invalidErr error
+	for _, keyPath := range keyPaths {
+		auth, err := loadSSHKeyFile(keyPath)
+		if err != nil {
+			logger.Debug().Err(err).Str(log.FieldPath, keyPath).Msg("Skipping unusable SSH key")
+			if !errors.Is(err, os.ErrNotExist) && invalidErr == nil {
+				invalidPath = keyPath
+				invalidErr = err
+			}
 			continue
 		}
 		auth.HostKeyCallback = getHostKeyCallback()
 		logger.Debug().Str(log.FieldPath, keyPath).Msg("Successfully loaded SSH key file")
 		return auth, nil
 	}
+	if invalidErr != nil {
+		return nil, invalidSSHKeyMountError("SSH key candidate", invalidPath, invalidErr)
+	}
 
 	logger.Debug().Msg("No SSH key file found in any candidate path")
 	return nil, nil
+}
+
+func loadSSHKeyFile(path string) (*ssh.PublicKeys, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("does not exist: %w", os.ErrNotExist)
+		}
+		return nil, fmt.Errorf("cannot be inspected: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("is not a regular file")
+	}
+	if info.Size() == 0 {
+		return nil, errors.New("is empty")
+	}
+
+	key, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("cannot be read: %w", err)
+	}
+	if len(key) == 0 {
+		return nil, errors.New("is empty")
+	}
+	auth, err := ssh.NewPublicKeys("git", key, "")
+	if err != nil {
+		return nil, errors.New("does not contain a parseable private key")
+	}
+	return auth, nil
+}
+
+func invalidSSHKeyMountError(source, path string, cause error) error {
+	return fmt.Errorf("%s %q %v. Ensure the Docker bind-mount source exists as a regular, non-empty private key file before starting Bosun; Docker may create a directory when a missing host source is bind-mounted", source, path, cause)
 }
 
 // Clone clones the repository with the specified depth.

@@ -205,11 +205,11 @@ For the full config file reference and environment variables, see `@resources/co
 | "project root not found" | Ensure you're inside a bosun project, or use `bosun --root /path` |
 | "connect to docker" | Check Docker is running (`docker ps`), check socket permissions |
 | "sops integrity verification failed" | Restore the encrypted file from a trusted source or re-encrypt it; rotating the Age key will not repair corrupted ciphertext |
-| "sops decryption key unavailable" | Check that `SOPS_AGE_KEY` or `SOPS_AGE_KEY_FILE` contains an identity matching the file recipients |
+| "sops decryption key unavailable" | Check that `SOPS_AGE_KEY` matches the recipients, or that `SOPS_AGE_KEY_FILE` is a regular, non-empty, parseable identity file; pre-create Docker file-bind sources |
 | "malformed SOPS encrypted data" | Validate or re-encrypt the file with SOPS |
 | "sops decryption failed" | Follow the sanitized category guidance in `@resources/gitops.md`; Bosun decrypts in-process and does not require the SOPS binary |
 | "docker compose: command not found" | Install Docker Compose v2: `docker compose version` |
-| SSH failures (remote deploy) | Test `ssh user@host exit`, check `ssh-add -l` |
+| SSH failures (Git or remote deploy) | Test `ssh user@host exit`, check `ssh-add -l`, and verify explicit or conventional key mounts are regular, non-empty, parseable files |
 
 Run `bosun doctor` to diagnose most setup issues.
 

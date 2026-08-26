@@ -52,6 +52,22 @@ func TestValidateConfigGitAuthentication(t *testing.T) {
 		assert.NotContains(t, err.Error(), "embedded")
 		assert.NotContains(t, err.Error(), "password")
 	})
+
+	t.Run("invalid SSH key mount fails startup validation without panic", func(t *testing.T) {
+		t.Setenv("BOSUN_GIT_USERNAME", "")
+		t.Setenv("BOSUN_GIT_TOKEN", "")
+		t.Setenv("SSH_AUTH_SOCK", "")
+		keyPath := filepath.Join(t.TempDir(), "deploy-key")
+		require.NoError(t, os.Mkdir(keyPath, 0700))
+		t.Setenv("BOSUN_SSH_KEY", keyPath)
+		t.Setenv("HOME", t.TempDir())
+
+		err := ValidateConfig(newConfig("git@example.com:owner/repo.git"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "BOSUN_SSH_KEY")
+		assert.Contains(t, err.Error(), "not a regular file")
+		assert.Contains(t, err.Error(), keyPath)
+	})
 }
 
 func TestDaemonRunRejectsGitAuthenticationBeforeStartup(t *testing.T) {
@@ -71,6 +87,33 @@ func TestDaemonRunRejectsGitAuthenticationBeforeStartup(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "BOSUN_GIT_TOKEN")
 	assert.NotContains(t, err.Error(), "configured-user")
+	_, statErr := os.Stat(cfg.SocketPath)
+	assert.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestDaemonRunRejectsInvalidSSHKeyBeforeStartup(t *testing.T) {
+	t.Setenv("BOSUN_GIT_USERNAME", "")
+	t.Setenv("BOSUN_GIT_TOKEN", "")
+	t.Setenv("SSH_AUTH_SOCK", "")
+	keyPath := filepath.Join(t.TempDir(), "deploy-key")
+	require.NoError(t, os.Mkdir(keyPath, 0700))
+	t.Setenv("BOSUN_SSH_KEY", keyPath)
+	t.Setenv("HOME", t.TempDir())
+
+	cfg := DefaultConfig()
+	cfg.EnableHTTP = false
+	cfg.EnableTCP = false
+	cfg.SocketPath = filepath.Join(t.TempDir(), "daemon.sock")
+	cfg.ReconcileConfig = reconcile.DefaultConfig()
+	cfg.ReconcileConfig.RepoURL = "git@example.com:owner/repo.git"
+	d, err := New(cfg)
+	require.NoError(t, err)
+
+	err = d.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "BOSUN_SSH_KEY")
+	assert.Contains(t, err.Error(), "not a regular file")
+	assert.Contains(t, err.Error(), keyPath)
 	_, statErr := os.Stat(cfg.SocketPath)
 	assert.ErrorIs(t, statErr, os.ErrNotExist)
 }

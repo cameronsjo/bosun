@@ -25,7 +25,10 @@ encrypted values, or decrypted MACs:
   rotating the Age key will not repair corrupted ciphertext.
 - **SOPS decryption key unavailable** — verify that `SOPS_AGE_KEY` or
   `SOPS_AGE_KEY_FILE` contains an identity matching the file recipients and
-  that the key file is readable.
+  that the key file is a regular, non-empty file containing a parseable Age
+  identity. Bosun rejects an invalid key path before calling SOPS. If a
+  container path is a directory, pre-create the host key file before mounting
+  it; Docker can create a directory when a bind-mount source is missing.
 - **Malformed SOPS encrypted data** — validate or re-encrypt the file with
   SOPS; an encrypted value or metadata field is not decodable.
 - **SOPS decryption failed** — validate the file with SOPS and verify the Age
@@ -67,6 +70,16 @@ preceding reconcile logs to find the operation that ignored cancellation.
 
 - Test manually: `ssh user@host exit`
 - Check SSH key is loaded: `ssh-add -l`
+- For an SSH Git repository, Bosun tries `SSH_AUTH_SOCK` first, then
+  `BOSUN_SSH_KEY` and the conventional key paths. An agent takes precedence
+  over an invalid fallback key.
+- When `BOSUN_SSH_KEY` is set, it must name a regular, non-empty, parseable
+  private key file. Bosun fails before Git network access if it is missing, a
+  directory, empty, or malformed. If an existing conventional key candidate
+  such as `/config/deploy-key` is unusable, Bosun tries later candidates and
+  reports the invalid path when none succeeds. Pre-create Docker bind-mount
+  source files; mounting a missing host source can create a directory at the
+  container path.
 - Verify host is reachable: `ping host`
 
 ### Deploy reports success but files unchanged

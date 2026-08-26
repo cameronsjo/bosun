@@ -12,6 +12,7 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/log"
 	sopslib "github.com/getsops/sops/v3"
+	sopsage "github.com/getsops/sops/v3/age"
 	"github.com/getsops/sops/v3/config"
 	"github.com/getsops/sops/v3/decrypt"
 	sopsdotenv "github.com/getsops/sops/v3/stores/dotenv"
@@ -108,11 +109,11 @@ func (s *SOPSOps) CheckAgeKey() error {
 
 	// Check SOPS_AGE_KEY_FILE environment variable
 	if keyFile := os.Getenv("SOPS_AGE_KEY_FILE"); keyFile != "" {
-		if _, err := os.Stat(keyFile); err == nil {
-			logger.Debug().Str("source", "SOPS_AGE_KEY_FILE").Str(log.FieldPath, keyFile).Msg("Age key found via key file")
-			return nil
+		if err := validateAgeIdentityFile(keyFile); err != nil {
+			return ageIdentityFileError("SOPS_AGE_KEY_FILE", keyFile, err)
 		}
-		return fmt.Errorf("%w: SOPS_AGE_KEY_FILE is set to %q but file does not exist.\n\nTo fix:\n  1. Create the key file at the specified path\n  2. Or set SOPS_AGE_KEY_FILE to an existing key file\n  3. Or run: age-keygen -o ~/.config/sops/age/keys.txt", ErrAgeKeyNotFound, keyFile)
+		logger.Debug().Str("source", "SOPS_AGE_KEY_FILE").Str(log.FieldPath, keyFile).Msg("Age key found via key file")
+		return nil
 	}
 
 	// Check default location
@@ -123,6 +124,9 @@ func (s *SOPSOps) CheckAgeKey() error {
 
 	defaultKeyPath := filepath.Join(homeDir, ".config", "sops", "age", "keys.txt")
 	if _, err := os.Stat(defaultKeyPath); err == nil {
+		if err := validateAgeIdentityFile(defaultKeyPath); err != nil {
+			return ageIdentityFileError("default Age identity file", defaultKeyPath, err)
+		}
 		logger.Debug().Str("source", "default").Str(log.FieldPath, defaultKeyPath).Msg("Age key found at default location")
 		return nil
 	}
@@ -133,6 +137,44 @@ To fix:
   1. Generate key: age-keygen -o ~/.config/sops/age/keys.txt
   2. Or set SOPS_AGE_KEY_FILE=/path/to/key
   3. Or set SOPS_AGE_KEY environment variable with the key content`, ErrAgeKeyNotFound)
+}
+
+func validateAgeIdentityFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return errors.New("does not exist")
+		}
+		return fmt.Errorf("cannot be inspected: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("is not a regular file")
+	}
+	if info.Size() == 0 {
+		return errors.New("is empty")
+	}
+
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("cannot be read: %w", err)
+	}
+	if len(contents) == 0 {
+		return errors.New("is empty")
+	}
+	var identities sopsage.ParsedIdentities
+	if err := identities.Import(string(contents)); err != nil || len(identities) == 0 {
+		return errors.New("does not contain a parseable Age identity")
+	}
+	return nil
+}
+
+func ageIdentityFileError(source, path string, cause error) error {
+	return fmt.Errorf(`%w: %s %q %v.
+
+To fix:
+  1. Pre-create the host path as a regular, non-empty Age identity file before starting Bosun
+  2. Generate a key with: age-keygen -o %q
+  3. If using Docker, verify the bind-mount source is a file; Docker may create a directory when a missing host source is mounted`, ErrAgeKeyNotFound, source, path, cause, path)
 }
 
 // ValidateSOPSFile checks if a file is a valid SOPS-encrypted file.
