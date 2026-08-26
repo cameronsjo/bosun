@@ -776,7 +776,7 @@ because Docker can create a directory for a missing host source.
 
 ## OpenTelemetry Tracing
 
-Bosun supports distributed tracing via OpenTelemetry. Set `BOSUN_OTEL_ENDPOINT` to the OTLP HTTP collector endpoint (e.g., `http://localhost:4318`) to enable span export.
+Bosun supports distributed tracing via OpenTelemetry. Set `BOSUN_OTEL_ENDPOINT` to the OTLP HTTP collector endpoint (e.g., `http://localhost:4318`) to enable span export. The value may be a bare `host:port` or an HTTP(S) base URL; URL schemes are case-insensitive, and Bosun uses the standard `/v1/traces` path even if the configured base URL includes a path. Unsupported schemes, hostless URLs, user information, queries, and fragments are rejected during initialization, leaving tracing disabled while the command reports a warning.
 
 ### Instrumented Spans
 
