@@ -196,10 +196,10 @@ flowchart TD
 | Step | Operation | Error Handling |
 |------|-----------|----------------|
 | 1 | Acquire exclusive file lock (`/tmp/reconcile.lock`) | Skips if lock held (non-blocking `LOCK_NB`) |
-| 2 | Sync git repository (clone or pull) | Clone timeout: 5min, Fetch timeout: 2min |
+| 2 | Preflight Age identity when secrets files are configured, then sync git repository (clone or pull) | Identity paths must be regular, non-empty, and parseable before Git; clone timeout: 5min, fetch timeout: 2min |
 | 3 | Compare before/after commit hashes | Skip if no changes unless `--force` |
 | 4 | Validate SOPS files exist and have `sops` metadata key | Returns specific error with fix instructions |
-| 5 | Check Age key exists (`SOPS_AGE_KEY`, `SOPS_AGE_KEY_FILE`, or default path) | Returns error with setup instructions |
+| 5 | Reuse the preflighted Age identity (`SOPS_AGE_KEY`, `SOPS_AGE_KEY_FILE`, or default path) | Returns setup and bind-mount guidance if runtime configuration changed |
 | 6 | Decrypt SOPS files to JSON map | Returns error with file path |
 | 7 | Clear staging directory | Removes previous staging state |
 | 8 | Copy non-template files to staging | Preserves directory structure |
@@ -218,7 +218,7 @@ flowchart TD
 | `git clone failed` | Auth failure, network, invalid repo | Check SSH keys, network, repo URL |
 | `git clone timed out after 5m` | Slow network or large repo | Retry, or check network |
 | `git fetch timed out after 2m` | Network issues | Retry on next trigger |
-| `age key not found` | No SOPS decryption key | Run `age-keygen -o ~/.config/sops/age/keys.txt` |
+| `age key not found` | No valid SOPS decryption identity, or an invalid file mount | Run `age-keygen -o ~/.config/sops/age/keys.txt`; pre-create Docker file-bind sources |
 | `file is not SOPS-encrypted` | Missing `sops` metadata | Encrypt file: `sops --encrypt --in-place file.yaml` |
 | `sops integrity verification failed` | Encrypted file or MAC was modified | Restore the file from a trusted source or re-encrypt it; do not rotate an unrelated key |
 | `sops decryption key unavailable` | No configured identity can recover the data key | Verify `SOPS_AGE_KEY` or `SOPS_AGE_KEY_FILE` matches a file recipient |

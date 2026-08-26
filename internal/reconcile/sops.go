@@ -12,6 +12,7 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/log"
 	sopslib "github.com/getsops/sops/v3"
+	sopsage "github.com/getsops/sops/v3/age"
 	"github.com/getsops/sops/v3/config"
 	"github.com/getsops/sops/v3/decrypt"
 	sopsdotenv "github.com/getsops/sops/v3/stores/dotenv"
@@ -57,12 +58,27 @@ const (
 
 // SOPSOps provides SOPS decryption operations.
 type SOPSOps struct {
-	decryptFile func(path, format string) ([]byte, error)
+	decryptFile        func(path, format string) ([]byte, error)
+	identityFileReader regularNonEmptyFileReader
 }
 
 // NewSOPSOps creates a new SOPSOps instance.
 func NewSOPSOps() *SOPSOps {
-	return &SOPSOps{decryptFile: decrypt.File}
+	return &SOPSOps{
+		decryptFile:        decrypt.File,
+		identityFileReader: readRegularNonEmptyFile,
+	}
+}
+
+// ValidateAgeIdentityForSecrets performs the startup-only Age preflight when
+// this reconciliation is configured to decrypt at least one secrets file.
+func ValidateAgeIdentityForSecrets(secretFiles []string) error {
+	for _, secretFile := range secretFiles {
+		if strings.TrimSpace(secretFile) != "" {
+			return NewSOPSOps().CheckAgeKey()
+		}
+	}
+	return nil
 }
 
 func inferSOPSFormat(path string) (sopsFileFormat, error) {
@@ -99,6 +115,10 @@ func inferSOPSFormat(path string) (sopsFileFormat, error) {
 // Returns nil if a key is found, or an error with setup instructions if not.
 func (s *SOPSOps) CheckAgeKey() error {
 	logger := log.Component(log.ComponentSOPS)
+	readIdentityFile := s.identityFileReader
+	if readIdentityFile == nil {
+		readIdentityFile = readRegularNonEmptyFile
+	}
 
 	// Check SOPS_AGE_KEY environment variable
 	if key := os.Getenv("SOPS_AGE_KEY"); key != "" {
@@ -108,11 +128,11 @@ func (s *SOPSOps) CheckAgeKey() error {
 
 	// Check SOPS_AGE_KEY_FILE environment variable
 	if keyFile := os.Getenv("SOPS_AGE_KEY_FILE"); keyFile != "" {
-		if _, err := os.Stat(keyFile); err == nil {
-			logger.Debug().Str("source", "SOPS_AGE_KEY_FILE").Str(log.FieldPath, keyFile).Msg("Age key found via key file")
-			return nil
+		if err := validateAgeIdentityFile(keyFile, readIdentityFile); err != nil {
+			return ageIdentityFileError("SOPS_AGE_KEY_FILE", keyFile, err)
 		}
-		return fmt.Errorf("%w: SOPS_AGE_KEY_FILE is set to %q but file does not exist.\n\nTo fix:\n  1. Create the key file at the specified path\n  2. Or set SOPS_AGE_KEY_FILE to an existing key file\n  3. Or run: age-keygen -o ~/.config/sops/age/keys.txt", ErrAgeKeyNotFound, keyFile)
+		logger.Debug().Str("source", "SOPS_AGE_KEY_FILE").Str(log.FieldPath, keyFile).Msg("Age key found via key file")
+		return nil
 	}
 
 	// Check default location
@@ -122,9 +142,11 @@ func (s *SOPSOps) CheckAgeKey() error {
 	}
 
 	defaultKeyPath := filepath.Join(homeDir, ".config", "sops", "age", "keys.txt")
-	if _, err := os.Stat(defaultKeyPath); err == nil {
+	if err := validateAgeIdentityFile(defaultKeyPath, readIdentityFile); err == nil {
 		logger.Debug().Str("source", "default").Str(log.FieldPath, defaultKeyPath).Msg("Age key found at default location")
 		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return ageIdentityFileError("default Age identity file", defaultKeyPath, err)
 	}
 
 	return fmt.Errorf(`%w
@@ -133,6 +155,27 @@ To fix:
   1. Generate key: age-keygen -o ~/.config/sops/age/keys.txt
   2. Or set SOPS_AGE_KEY_FILE=/path/to/key
   3. Or set SOPS_AGE_KEY environment variable with the key content`, ErrAgeKeyNotFound)
+}
+
+func validateAgeIdentityFile(path string, readFile regularNonEmptyFileReader) error {
+	contents, err := readFile(path)
+	if err != nil {
+		return err
+	}
+	var identities sopsage.ParsedIdentities
+	if err := identities.Import(string(contents)); err != nil || len(identities) == 0 {
+		return errors.New("does not contain a parseable Age identity")
+	}
+	return nil
+}
+
+func ageIdentityFileError(source, path string, cause error) error {
+	return fmt.Errorf(`%w: %s %q %v.
+
+To fix:
+  1. Pre-create the host path as a regular, non-empty Age identity file before starting Bosun
+  2. Generate a key with: age-keygen -o %q
+  3. If using Docker, verify the bind-mount source is a file; Docker may create a directory when a missing host source is mounted`, ErrAgeKeyNotFound, source, path, cause, path)
 }
 
 // ValidateSOPSFile checks if a file is a valid SOPS-encrypted file.

@@ -120,6 +120,23 @@ but Bosun never logs raw SOPS library errors or the decrypted MACs, encrypted
 values, key identifiers, and additional local paths they may contain. The
 requested secrets-file path remains in the surrounding error context.
 
+Age identity resolution checks `SOPS_AGE_KEY`, then `SOPS_AGE_KEY_FILE`, then
+`~/.config/sops/age/keys.txt`. Direct key content takes precedence. A resolved
+file must be regular, non-empty, and contain at least one parseable Age
+identity; Bosun rejects missing, directory, empty, and malformed mounts before
+decryption. Pre-create container file-bind sources because Docker can create a
+directory when the host source is missing. If secrets files are configured,
+the daemon and one-shot reconcile validate the identity before Git; the daemon
+does so before binding any listener. Without secrets files, no Age identity is
+required.
+
+SSH Git authentication parses the go-git endpoint, preserves its SSH username,
+and tries `SSH_AUTH_SOCK` before private-key files. The agent must return at
+least one signer; Bosun closes an unusable agent connection and falls back to
+`BOSUN_SSH_KEY` and conventional paths. A recognized SSH endpoint with no usable
+authentication fails before network access. HTTPS and local paths never inspect
+unrelated SSH key settings.
+
 ### Deploy-Sync Invariants (stage 6 + stage 9)
 
 Bosun enforces two invariant gates that turn the GH#214 silent-success failure mode into a loud error:
@@ -694,6 +711,7 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `REPO_BRANCH` | `main` | Branch to track |
 | `BOSUN_GIT_USERNAME` | | Private HTTPS Git Basic-auth username; set with `BOSUN_GIT_TOKEN` |
 | `BOSUN_GIT_TOKEN` | | Private HTTPS Git Basic-auth password/token; set with `BOSUN_GIT_USERNAME` |
+| `BOSUN_SSH_KEY` | conventional SSH paths | Private key fallback for SSH Git URLs; `SSH_AUTH_SOCK` takes precedence |
 | `REPO_DIR` | `/app/repo` | Local clone directory |
 | `STAGING_DIR` | `/app/staging` | Secret-bearing rendered staging and single-slot failure evidence directory |
 | `BACKUP_DIR` | `/app/backups` | Backup directory |
@@ -722,6 +740,15 @@ partial pair, a non-HTTPS or hostless URL, or any URL userinfo. Authenticated
 redirects must stay HTTPS on the configured host and effective port. The pair
 has no legacy aliases or YAML fields, applies after `BOSUN_REPO_URL` takes
 precedence over `REPO_URL`, and rotates only after restarting the process.
+
+SSH Git authentication tries `SSH_AUTH_SOCK` first, then an explicit
+`BOSUN_SSH_KEY`, then conventional key paths. An explicit key path must be a
+regular, non-empty, parseable private key file; invalid mounts fail before Git
+network access. An unusable existing conventional candidate is skipped if a
+later key works; otherwise Bosun reports its path instead of passing nil
+authentication to go-git. HTTPS and public local repository paths ignore
+unrelated SSH key settings. For containers, pre-create file-bind sources
+because Docker can create a directory for a missing host source.
 
 ## OpenTelemetry Tracing
 

@@ -704,77 +704,133 @@ func TestMergeMap(t *testing.T) {
 }
 
 func TestSOPSOps_CheckAgeKey(t *testing.T) {
-	t.Run("key found via SOPS_AGE_KEY env var", func(t *testing.T) {
+	const testAgeIdentity = "AGE-SECRET-KEY-184JMZMVQH3E6U0PSL869004Y3U2NYV7R30EU99CSEDNPH02YUVFSZW44VU"
+
+	t.Run("SOPS_AGE_KEY takes precedence over invalid key file", func(t *testing.T) {
 		t.Setenv("SOPS_AGE_KEY", "AGE-SECRET-KEY-TEST")
-		t.Setenv("SOPS_AGE_KEY_FILE", "")
+		t.Setenv("SOPS_AGE_KEY_FILE", t.TempDir())
+		t.Setenv("HOME", t.TempDir())
 
 		sops := NewSOPSOps()
 		err := sops.CheckAgeKey()
 		require.NoError(t, err)
 	})
 
-	t.Run("key found via SOPS_AGE_KEY_FILE env var", func(t *testing.T) {
-		// Create a temp key file
-		tmpDir := t.TempDir()
-		keyFile := filepath.Join(tmpDir, "key.txt")
-		require.NoError(t, os.WriteFile(keyFile, []byte("AGE-SECRET-KEY-TEST"), 0600))
+	t.Run("valid SOPS_AGE_KEY_FILE is accepted", func(t *testing.T) {
+		keyFile := filepath.Join(t.TempDir(), "key.txt")
+		require.NoError(t, os.WriteFile(keyFile, []byte(testAgeIdentity+"\n"), 0600))
 
 		t.Setenv("SOPS_AGE_KEY", "")
 		t.Setenv("SOPS_AGE_KEY_FILE", keyFile)
+		t.Setenv("HOME", t.TempDir())
 
 		sops := NewSOPSOps()
 		err := sops.CheckAgeKey()
 		require.NoError(t, err)
 	})
 
-	t.Run("SOPS_AGE_KEY_FILE set but file does not exist", func(t *testing.T) {
-		t.Setenv("SOPS_AGE_KEY", "")
-		t.Setenv("SOPS_AGE_KEY_FILE", "/nonexistent/path/key.txt")
+	invalidCases := []struct {
+		name       string
+		prepare    func(t *testing.T, path string)
+		wantReason string
+	}{
+		{name: "missing", wantReason: "does not exist"},
+		{name: "directory", prepare: func(t *testing.T, path string) {
+			require.NoError(t, os.Mkdir(path, 0700))
+		}, wantReason: "not a regular file"},
+		{name: "empty", prepare: func(t *testing.T, path string) {
+			require.NoError(t, os.WriteFile(path, nil, 0600))
+		}, wantReason: "is empty"},
+		{name: "unparseable", prepare: func(t *testing.T, path string) {
+			require.NoError(t, os.WriteFile(path, []byte("not an Age identity"), 0600))
+		}, wantReason: "parseable Age identity"},
+	}
 
-		sops := NewSOPSOps()
-		err := sops.CheckAgeKey()
-		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrAgeKeyNotFound)
-		assert.Contains(t, err.Error(), "file does not exist")
-	})
+	for _, tt := range invalidCases {
+		t.Run("invalid SOPS_AGE_KEY_FILE "+tt.name, func(t *testing.T) {
+			keyFile := filepath.Join(t.TempDir(), "key.txt")
+			if tt.prepare != nil {
+				tt.prepare(t, keyFile)
+			}
+			t.Setenv("SOPS_AGE_KEY", "")
+			t.Setenv("SOPS_AGE_KEY_FILE", keyFile)
+			t.Setenv("HOME", t.TempDir())
 
-	t.Run("key found in default location", func(t *testing.T) {
-		// This test only runs if the default key file exists
-		homeDir, err := os.UserHomeDir()
-		require.NoError(t, err)
+			err := NewSOPSOps().CheckAgeKey()
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrAgeKeyNotFound)
+			assert.Contains(t, err.Error(), "SOPS_AGE_KEY_FILE")
+			assert.Contains(t, err.Error(), keyFile)
+			assert.Contains(t, err.Error(), tt.wantReason)
+			assert.Contains(t, err.Error(), "Docker")
+		})
+	}
 
+	t.Run("valid default identity file is accepted", func(t *testing.T) {
+		homeDir := t.TempDir()
 		defaultKeyPath := filepath.Join(homeDir, ".config", "sops", "age", "keys.txt")
-		if _, err := os.Stat(defaultKeyPath); os.IsNotExist(err) {
-			t.Skip("default age key file does not exist")
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(defaultKeyPath), 0700))
+		require.NoError(t, os.WriteFile(defaultKeyPath, []byte(testAgeIdentity+"\n"), 0600))
 
 		t.Setenv("SOPS_AGE_KEY", "")
 		t.Setenv("SOPS_AGE_KEY_FILE", "")
+		t.Setenv("HOME", homeDir)
 
-		sops := NewSOPSOps()
-		err = sops.CheckAgeKey()
-		require.NoError(t, err)
+		require.NoError(t, NewSOPSOps().CheckAgeKey())
 	})
 
 	t.Run("error when no key found", func(t *testing.T) {
 		t.Setenv("SOPS_AGE_KEY", "")
 		t.Setenv("SOPS_AGE_KEY_FILE", "")
-
-		// Check if default key file exists - if so, skip this test
-		homeDir, err := os.UserHomeDir()
-		require.NoError(t, err)
-		defaultKeyPath := filepath.Join(homeDir, ".config", "sops", "age", "keys.txt")
-		if _, err := os.Stat(defaultKeyPath); err == nil {
-			t.Skip("default age key file exists, cannot test 'no key found' scenario")
-		}
+		t.Setenv("HOME", t.TempDir())
 
 		sops := NewSOPSOps()
-		err = sops.CheckAgeKey()
+		err := sops.CheckAgeKey()
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrAgeKeyNotFound)
 		assert.Contains(t, err.Error(), "To fix:")
 		assert.Contains(t, err.Error(), "age-keygen")
 	})
+}
+
+func TestSOPSOps_CheckAgeKeyInjectedReaderErrors(t *testing.T) {
+	t.Setenv("SOPS_AGE_KEY", "")
+	t.Setenv("SOPS_AGE_KEY_FILE", "/config/age-key.txt")
+
+	for _, tt := range []struct {
+		name       string
+		readErr    error
+		wantReason string
+	}{
+		{name: "inspect error", readErr: errors.New("cannot be inspected: permission denied"), wantReason: "cannot be inspected"},
+		{name: "read error", readErr: errors.New("cannot be read: permission denied"), wantReason: "cannot be read"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sops := NewSOPSOps()
+			sops.identityFileReader = func(path string) ([]byte, error) {
+				assert.Equal(t, "/config/age-key.txt", path)
+				return nil, tt.readErr
+			}
+			err := sops.CheckAgeKey()
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrAgeKeyNotFound)
+			assert.Contains(t, err.Error(), tt.wantReason)
+		})
+	}
+}
+
+func TestValidateAgeIdentityForSecretsIsConditional(t *testing.T) {
+	t.Setenv("SOPS_AGE_KEY", "")
+	t.Setenv("SOPS_AGE_KEY_FILE", filepath.Join(t.TempDir(), "missing-age-key"))
+	t.Setenv("HOME", t.TempDir())
+
+	require.NoError(t, ValidateAgeIdentityForSecrets(nil))
+	require.NoError(t, ValidateAgeIdentityForSecrets([]string{"", "  "}))
+
+	err := ValidateAgeIdentityForSecrets([]string{"secrets/prod.sops.yaml"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrAgeKeyNotFound)
+	assert.Contains(t, err.Error(), "SOPS_AGE_KEY_FILE")
 }
 
 func TestSanitizeDecryptError(t *testing.T) {

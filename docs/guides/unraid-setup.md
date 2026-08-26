@@ -152,10 +152,11 @@ git push -u origin main
 
 ### Install Bosun
 
-1. Open an Unraid terminal and create the persistent state directory for the
-   container's fixed UID/GID 1000:
+1. Open an Unraid terminal and create the configuration and persistent state
+   directories for the container's fixed UID/GID 1000:
 
    ```bash
+   install -d -o 1000 -g 1000 -m 0700 /mnt/user/appdata/bosun
    install -d -o 1000 -g 1000 -m 0700 /mnt/user/appdata/bosun/state
    ```
 
@@ -172,7 +173,15 @@ git push -u origin main
 | GitHub Webhook Secret | (generate random string) |
 | Discord Webhook URL | (optional) |
 
-5. Click **Apply**
+5. Before clicking **Apply**, copy the Age identity to the configured host
+   path:
+
+   ```bash
+   # From your local machine
+   scp age-key.txt root@unraid:/mnt/user/appdata/bosun/age-key.txt
+   ```
+
+6. Click **Apply**
 
 State Path is required. It mounts the daemon's `/var/lib/bosun` directory on
 persistent appdata so drift detection, path-aware skip decisions, and circuit
@@ -180,12 +189,16 @@ breakers retain their history when the container is replaced. Bosun refuses to
 start before binding its API listeners if UID/GID 1000 cannot write the mounted
 directory.
 
-### Copy Age Key to Unraid
-
-```bash
-# From your local machine
-scp age-key.txt root@unraid:/mnt/user/appdata/bosun/age-key.txt
-```
+Bosun requires an Age key path to be a regular, non-empty file containing a
+parseable identity. Pre-create and populate file bind-mount sources before the
+container starts. Docker can turn a missing file source into a directory,
+which Bosun rejects with the configured path and corrective guidance before
+Git access or API listener startup when secrets are configured. The same rule
+applies to an optional `BOSUN_SSH_KEY` file used with an SSH Git URL; an
+`SSH_AUTH_SOCK` takes precedence only when its agent returns a signer. Bosun also
+reports an unusable existing conventional key such as `/config/deploy-key`
+when no later fallback succeeds, and it refuses an SSH repository with no
+usable agent or key before network access.
 
 ### Verify Installation
 

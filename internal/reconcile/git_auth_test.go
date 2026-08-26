@@ -2,9 +2,14 @@ package reconcile
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/pem"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
@@ -22,10 +27,14 @@ import (
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	gitclient "github.com/go-git/go-git/v5/plumbing/transport/client"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	xssh "golang.org/x/crypto/ssh"
+	xagent "golang.org/x/crypto/ssh/agent"
 )
 
 func TestResolveGitAuth(t *testing.T) {
@@ -63,7 +72,8 @@ func TestResolveGitAuth(t *testing.T) {
 		{name: "missing username", repoURL: "https://example.com/repo.git", token: "secret", wantError: "BOSUN_GIT_USERNAME"},
 		{name: "missing token", repoURL: "https://example.com/repo.git", username: "user", wantError: "BOSUN_GIT_TOKEN"},
 		{name: "plain HTTP", repoURL: "http://example.com/repo.git", username: "user", token: "secret", wantError: "absolute https://"},
-		{name: "SSH URL userinfo", repoURL: "ssh://git@example.com/repo.git", username: "user", token: "secret", wantError: "userinfo"},
+		{name: "SSH URL user", repoURL: "ssh://git@example.com/repo.git", username: "user", token: "secret", wantError: "absolute https://"},
+		{name: "SSH URL password", repoURL: "ssh://git:password@example.com/repo.git", wantError: "userinfo"},
 		{name: "SSH without userinfo", repoURL: "ssh://example.com/repo.git", username: "user", token: "secret", wantError: "absolute https://"},
 		{name: "SCP SSH", repoURL: "git@example.com:owner/repo.git", username: "user", token: "secret", wantError: "absolute https://"},
 		{name: "local path", repoURL: "/tmp/repo.git", username: "user", token: "secret", wantError: "absolute https://"},
@@ -87,16 +97,485 @@ func TestResolveGitAuth(t *testing.T) {
 		})
 	}
 
-	t.Run("SCP syntax retains SSH behavior without HTTPS credentials", func(t *testing.T) {
+	t.Run("SCP syntax loads a valid explicit SSH key", func(t *testing.T) {
 		t.Setenv("BOSUN_GIT_USERNAME", "")
 		t.Setenv("BOSUN_GIT_TOKEN", "")
 		t.Setenv("SSH_AUTH_SOCK", "")
-		t.Setenv("BOSUN_SSH_KEY", filepath.Join(t.TempDir(), "missing"))
+		keyPath := filepath.Join(t.TempDir(), "deploy-key")
+		writeTestSSHPrivateKey(t, keyPath)
+		t.Setenv("BOSUN_SSH_KEY", keyPath)
 		t.Setenv("HOME", t.TempDir())
 
-		_, err := ResolveGitAuth("git@example.com:owner/repo.git")
+		auth, err := ResolveGitAuth("git@example.com:owner/repo.git")
 		require.NoError(t, err)
+		assert.IsType(t, &gitssh.PublicKeys{}, auth)
 	})
+}
+
+func TestResolveGitAuthValidatesExplicitSSHKey(t *testing.T) {
+	t.Setenv("BOSUN_GIT_USERNAME", "")
+	t.Setenv("BOSUN_GIT_TOKEN", "")
+	t.Setenv("SSH_AUTH_SOCK", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("BOSUN_SSH_INSECURE_HOST_KEY", "true")
+
+	t.Run("valid key is accepted", func(t *testing.T) {
+		keyPath := filepath.Join(t.TempDir(), "deploy-key")
+		writeTestSSHPrivateKey(t, keyPath)
+		t.Setenv("BOSUN_SSH_KEY", keyPath)
+
+		auth, err := ResolveGitAuth("git@example.com:owner/repo.git")
+		require.NoError(t, err)
+		assert.IsType(t, &gitssh.PublicKeys{}, auth)
+	})
+
+	invalidCases := []struct {
+		name       string
+		prepare    func(t *testing.T, path string)
+		wantReason string
+	}{
+		{name: "missing", wantReason: "does not exist"},
+		{name: "directory", prepare: func(t *testing.T, path string) {
+			require.NoError(t, os.Mkdir(path, 0700))
+		}, wantReason: "not a regular file"},
+		{name: "empty", prepare: func(t *testing.T, path string) {
+			require.NoError(t, os.WriteFile(path, nil, 0600))
+		}, wantReason: "is empty"},
+		{name: "unparseable", prepare: func(t *testing.T, path string) {
+			require.NoError(t, os.WriteFile(path, []byte("not a private key"), 0600))
+		}, wantReason: "parseable private key"},
+	}
+
+	for _, tt := range invalidCases {
+		t.Run(tt.name, func(t *testing.T) {
+			keyPath := filepath.Join(t.TempDir(), "deploy-key")
+			if tt.prepare != nil {
+				tt.prepare(t, keyPath)
+			}
+			t.Setenv("BOSUN_SSH_KEY", keyPath)
+
+			auth, err := ResolveGitAuth("ssh://example.com/owner/repo.git")
+			require.Error(t, err)
+			assert.Nil(t, auth)
+			assert.Contains(t, err.Error(), "BOSUN_SSH_KEY")
+			assert.Contains(t, err.Error(), keyPath)
+			assert.Contains(t, err.Error(), tt.wantReason)
+			assert.Contains(t, err.Error(), "Docker")
+		})
+	}
+}
+
+func TestResolveSSHKeyFileAuthConventionalCandidates(t *testing.T) {
+	t.Setenv("BOSUN_SSH_INSECURE_HOST_KEY", "true")
+
+	t.Run("existing invalid candidate fails with its path when no fallback succeeds", func(t *testing.T) {
+		invalidPath := filepath.Join(t.TempDir(), "deploy-key")
+		require.NoError(t, os.Mkdir(invalidPath, 0700))
+		missingPath := filepath.Join(t.TempDir(), "missing-key")
+
+		auth, err := resolveSSHKeyFileAuth("", []string{invalidPath, missingPath})
+		require.Error(t, err)
+		assert.Nil(t, auth)
+		assert.Contains(t, err.Error(), "SSH key candidate")
+		assert.Contains(t, err.Error(), invalidPath)
+		assert.Contains(t, err.Error(), "not a regular file")
+		assert.Contains(t, err.Error(), "Docker")
+	})
+
+	t.Run("later valid candidate wins over an earlier invalid candidate", func(t *testing.T) {
+		invalidPath := filepath.Join(t.TempDir(), "deploy-key")
+		require.NoError(t, os.Mkdir(invalidPath, 0700))
+		validPath := filepath.Join(t.TempDir(), "id_ed25519")
+		writeTestSSHPrivateKey(t, validPath)
+
+		auth, err := resolveSSHKeyFileAuth("", []string{invalidPath, validPath})
+		require.NoError(t, err)
+		assert.IsType(t, &gitssh.PublicKeys{}, auth)
+	})
+
+	t.Run("absent conventional candidates remain optional", func(t *testing.T) {
+		missingPath := filepath.Join(t.TempDir(), "missing-key")
+
+		auth, err := resolveSSHKeyFileAuth("", []string{missingPath})
+		require.NoError(t, err)
+		assert.Nil(t, auth)
+	})
+}
+
+func TestResolveSSHKeyFileAuthInjectedReaderCandidateMatrix(t *testing.T) {
+	t.Setenv("BOSUN_SSH_INSECURE_HOST_KEY", "true")
+	validKey := testSSHPrivateKeyPEM(t)
+
+	tests := []struct {
+		name         string
+		explicitPath string
+		candidates   []string
+		results      map[string]struct {
+			contents []byte
+			err      error
+		}
+		wantAuth   bool
+		wantReason string
+	}{
+		{
+			name:       "all missing candidates remain optional",
+			candidates: []string{"missing-a", "missing-b"},
+			results: map[string]struct {
+				contents []byte
+				err      error
+			}{
+				"missing-a": {err: fmt.Errorf("does not exist: %w", os.ErrNotExist)},
+				"missing-b": {err: fmt.Errorf("does not exist: %w", os.ErrNotExist)},
+			},
+		},
+		{
+			name:       "inspect failure surfaces when no candidate succeeds",
+			candidates: []string{"inspect", "missing"},
+			results: map[string]struct {
+				contents []byte
+				err      error
+			}{
+				"inspect": {err: errors.New("cannot be inspected: permission denied")},
+				"missing": {err: fmt.Errorf("does not exist: %w", os.ErrNotExist)},
+			},
+			wantReason: "cannot be inspected",
+		},
+		{
+			name:       "later valid candidate wins over read failure",
+			candidates: []string{"unreadable", "valid"},
+			results: map[string]struct {
+				contents []byte
+				err      error
+			}{
+				"unreadable": {err: errors.New("cannot be read: permission denied")},
+				"valid":      {contents: validKey},
+			},
+			wantAuth: true,
+		},
+		{
+			name:         "explicit read failure is authoritative",
+			explicitPath: "explicit",
+			candidates:   []string{"valid"},
+			results: map[string]struct {
+				contents []byte
+				err      error
+			}{
+				"explicit": {err: errors.New("cannot be read: permission denied")},
+				"valid":    {contents: validKey},
+			},
+			wantReason: "cannot be read",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reader := func(path string) ([]byte, error) {
+				result, ok := tt.results[path]
+				require.True(t, ok, "unexpected candidate %q", path)
+				return result.contents, result.err
+			}
+			auth, err := resolveSSHKeyFileAuthForUser("deploy", tt.explicitPath, tt.candidates, reader)
+			if tt.wantReason != "" {
+				require.Error(t, err)
+				assert.Nil(t, auth)
+				assert.Contains(t, err.Error(), tt.wantReason)
+				return
+			}
+			require.NoError(t, err)
+			if !tt.wantAuth {
+				assert.Nil(t, auth)
+				return
+			}
+			publicKeys, ok := auth.(*gitssh.PublicKeys)
+			require.True(t, ok)
+			assert.Equal(t, "deploy", publicKeys.User)
+		})
+	}
+}
+
+func TestResolveGitAuthSSHPrecedenceAndProtocolIsolation(t *testing.T) {
+	t.Setenv("BOSUN_GIT_USERNAME", "")
+	t.Setenv("BOSUN_GIT_TOKEN", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("BOSUN_SSH_INSECURE_HOST_KEY", "true")
+	invalidKey := filepath.Join(t.TempDir(), "missing-deploy-key")
+	t.Setenv("BOSUN_SSH_KEY", invalidKey)
+
+	t.Run("HTTPS ignores unrelated invalid SSH key", func(t *testing.T) {
+		t.Setenv("SSH_AUTH_SOCK", "")
+		auth, err := ResolveGitAuth("https://example.com/owner/repo.git")
+		require.NoError(t, err)
+		assert.Nil(t, auth)
+	})
+
+	t.Run("HTTPS path containing SSH marker remains isolated", func(t *testing.T) {
+		t.Setenv("SSH_AUTH_SOCK", "")
+		auth, err := ResolveGitAuth("https://example.com/repos/ssh://archived.git")
+		require.NoError(t, err)
+		assert.Nil(t, auth)
+	})
+
+	t.Run("working agent wins over invalid explicit key", func(t *testing.T) {
+		originalResolver := resolveSSHAgentAuth
+		t.Cleanup(func() { resolveSSHAgentAuth = originalResolver })
+		resolveSSHAgentAuth = func(user string) transport.AuthMethod {
+			return &gitssh.PublicKeysCallback{User: user}
+		}
+
+		auth, err := ResolveGitAuth("git@example.com:owner/repo.git")
+		require.NoError(t, err)
+		assert.IsType(t, &gitssh.PublicKeysCallback{}, auth)
+	})
+}
+
+func TestResolveGitAuthPreservesSSHUser(t *testing.T) {
+	t.Setenv("BOSUN_GIT_USERNAME", "")
+	t.Setenv("BOSUN_GIT_TOKEN", "")
+	t.Setenv("SSH_AUTH_SOCK", "")
+	t.Setenv("BOSUN_SSH_INSECURE_HOST_KEY", "true")
+	keyPath := filepath.Join(t.TempDir(), "deploy-key")
+	writeTestSSHPrivateKey(t, keyPath)
+	t.Setenv("BOSUN_SSH_KEY", keyPath)
+
+	for _, repoURL := range []string{
+		"deploy@example.com:owner/repo.git",
+		"ssh://deploy@example.com/owner/repo.git",
+	} {
+		auth, err := ResolveGitAuth(repoURL)
+		require.NoError(t, err)
+		publicKeys, ok := auth.(*gitssh.PublicKeys)
+		require.True(t, ok)
+		assert.Equal(t, "deploy", publicKeys.User)
+	}
+}
+
+func TestResolveGitAuthRecognizedSSHWithoutAuthFailsClosed(t *testing.T) {
+	t.Setenv("BOSUN_GIT_USERNAME", "")
+	t.Setenv("BOSUN_GIT_TOKEN", "")
+	t.Setenv("SSH_AUTH_SOCK", "")
+
+	originalKeyResolver := resolveSSHKeyAuth
+	t.Cleanup(func() { resolveSSHKeyAuth = originalKeyResolver })
+	resolveSSHKeyAuth = func(string) (transport.AuthMethod, error) { return nil, nil }
+
+	auth, err := ResolveGitAuth("operator@example.com:owner/repo.git")
+	require.Error(t, err)
+	assert.Nil(t, auth)
+	assert.Contains(t, err.Error(), "SSH authentication is unavailable")
+}
+
+func TestResolveSSHAgentAuthRequiresUsableSigners(t *testing.T) {
+	t.Run("empty agent is closed and rejected", func(t *testing.T) {
+		client, server := net.Pipe()
+		closed := make(chan struct{})
+		tracked := &closeTrackingConn{Conn: client, closed: closed}
+		go func() { _ = xagent.ServeAgent(xagent.NewKeyring(), server) }()
+		t.Cleanup(func() { _ = server.Close() })
+
+		auth := resolveSSHAgentAuthWithDialer("deploy", "agent.sock", func(network, address string) (net.Conn, error) {
+			assert.Equal(t, "unix", network)
+			assert.Equal(t, "agent.sock", address)
+			return tracked, nil
+		})
+		assert.Nil(t, auth)
+		require.Len(t, tracked.recordedDeadlines(), 1)
+		assert.False(t, tracked.recordedDeadlines()[0].IsZero())
+		select {
+		case <-closed:
+		case <-time.After(time.Second):
+			t.Fatal("unusable SSH agent connection was not closed")
+		}
+	})
+
+	t.Run("agent with signer is accepted and preserves user", func(t *testing.T) {
+		_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+		require.NoError(t, err)
+		keyring := xagent.NewKeyring()
+		require.NoError(t, keyring.Add(xagent.AddedKey{PrivateKey: privateKey}))
+		client, server := net.Pipe()
+		tracked := &closeTrackingConn{Conn: client, closed: make(chan struct{})}
+		go func() { _ = xagent.ServeAgent(keyring, server) }()
+		t.Cleanup(func() {
+			_ = tracked.Close()
+			_ = server.Close()
+		})
+
+		auth := resolveSSHAgentAuthWithDialer("deploy", "agent.sock", func(string, string) (net.Conn, error) {
+			return tracked, nil
+		})
+		agentAuth, ok := auth.(*sshAgentAuth)
+		require.True(t, ok)
+		callback := agentAuth.PublicKeysCallback
+		assert.Equal(t, "deploy", callback.User)
+		signers, err := callback.Callback()
+		require.NoError(t, err)
+		require.Len(t, signers, 1)
+		message := []byte("agent ownership probe")
+		signature, err := signers[0].Sign(rand.Reader, message)
+		require.NoError(t, err)
+		require.NoError(t, signers[0].PublicKey().Verify(message, signature))
+		deadlines := tracked.recordedDeadlines()
+		require.Len(t, deadlines, 2)
+		assert.False(t, deadlines[0].IsZero())
+		assert.True(t, deadlines[1].IsZero())
+		require.NoError(t, agentAuth.Close())
+		require.NoError(t, agentAuth.Close(), "agent auth close must be idempotent")
+		select {
+		case <-tracked.closed:
+		case <-time.After(time.Second):
+			t.Fatal("usable SSH agent connection was not closed")
+		}
+	})
+}
+
+func TestValidateGitAuthenticationClosesAgentProbe(t *testing.T) {
+	t.Setenv("BOSUN_GIT_USERNAME", "")
+	t.Setenv("BOSUN_GIT_TOKEN", "")
+	tracked := &closeTrackingAuth{
+		AuthMethod: &gitssh.PublicKeysCallback{User: "deploy"},
+		closed:     make(chan struct{}),
+	}
+	originalResolver := resolveSSHAgentAuth
+	t.Cleanup(func() { resolveSSHAgentAuth = originalResolver })
+	resolveSSHAgentAuth = func(string) transport.AuthMethod { return tracked }
+
+	require.NoError(t, ValidateGitAuthentication("deploy@example.com:owner/repo.git"))
+	assertAuthClosed(t, tracked.closed)
+}
+
+func TestGitOpsClosesOperationAuth(t *testing.T) {
+	sourceDir := t.TempDir()
+	initializeGitSource(t, sourceDir)
+
+	t.Run("clone success", func(t *testing.T) {
+		gitOps, auth := newGitOpsWithTrackedAuth(sourceDir, filepath.Join(t.TempDir(), "checkout"))
+		require.NoError(t, gitOps.Clone(context.Background(), 1))
+		assertAuthClosed(t, auth.closed)
+	})
+
+	t.Run("clone error", func(t *testing.T) {
+		missingSource := filepath.Join(t.TempDir(), "missing-source")
+		gitOps, auth := newGitOpsWithTrackedAuth(missingSource, filepath.Join(t.TempDir(), "checkout"))
+		require.Error(t, gitOps.Clone(context.Background(), 1))
+		assertAuthClosed(t, auth.closed)
+	})
+
+	t.Run("pull success", func(t *testing.T) {
+		checkout := filepath.Join(t.TempDir(), "checkout")
+		_, err := git.PlainClone(checkout, false, &git.CloneOptions{URL: sourceDir})
+		require.NoError(t, err)
+		gitOps, auth := newGitOpsWithTrackedAuth(sourceDir, checkout)
+		_, _, _, err = gitOps.Pull(context.Background())
+		require.NoError(t, err)
+		assertAuthClosed(t, auth.closed)
+	})
+
+	t.Run("pull error", func(t *testing.T) {
+		gitOps, auth := newGitOpsWithTrackedAuth(sourceDir, filepath.Join(t.TempDir(), "missing-checkout"))
+		_, _, _, err := gitOps.Pull(context.Background())
+		require.Error(t, err)
+		assertAuthClosed(t, auth.closed)
+	})
+}
+
+type closeTrackingAuth struct {
+	transport.AuthMethod
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (a *closeTrackingAuth) Close() error {
+	a.once.Do(func() { close(a.closed) })
+	return nil
+}
+
+func newGitOpsWithTrackedAuth(repoURL, dir string) (*GitOps, *closeTrackingAuth) {
+	auth := &closeTrackingAuth{
+		AuthMethod: &githttp.BasicAuth{Username: "test", Password: "test"},
+		closed:     make(chan struct{}),
+	}
+	gitOps := NewGitOps(repoURL, "master", dir)
+	gitOps.authResolver = func(string) (transport.AuthMethod, error) { return auth, nil }
+	return gitOps, auth
+}
+
+func assertAuthClosed(t *testing.T, closed <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Git authentication was not closed")
+	}
+}
+
+type closeTrackingConn struct {
+	net.Conn
+	closed chan struct{}
+	once   sync.Once
+	mu     sync.Mutex
+	times  []time.Time
+}
+
+func (c *closeTrackingConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
+
+func (c *closeTrackingConn) SetDeadline(deadline time.Time) error {
+	c.mu.Lock()
+	c.times = append(c.times, deadline)
+	c.mu.Unlock()
+	return c.Conn.SetDeadline(deadline)
+}
+
+func (c *closeTrackingConn) recordedDeadlines() []time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]time.Time(nil), c.times...)
+}
+
+func TestDefaultSSHAuthBuilderNeverReturnsNilAuthWithoutError(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	t.Setenv("BOSUN_SSH_KEY", "")
+
+	originalKeyResolver := resolveSSHKeyAuth
+	t.Cleanup(func() { resolveSSHKeyAuth = originalKeyResolver })
+	resolveSSHKeyAuth = func(string) (transport.AuthMethod, error) { return nil, nil }
+
+	auth, err := gitssh.DefaultAuthBuilder("git")
+	require.Error(t, err)
+	assert.Nil(t, auth)
+	assert.Contains(t, err.Error(), "SSH authentication is unavailable")
+}
+
+func TestGitOpsInvalidSSHKeyFailsWithoutPanic(t *testing.T) {
+	t.Setenv("BOSUN_GIT_USERNAME", "")
+	t.Setenv("BOSUN_GIT_TOKEN", "")
+	t.Setenv("SSH_AUTH_SOCK", "")
+	keyPath := filepath.Join(t.TempDir(), "deploy-key")
+	require.NoError(t, os.Mkdir(keyPath, 0700))
+	t.Setenv("BOSUN_SSH_KEY", keyPath)
+	t.Setenv("HOME", t.TempDir())
+
+	g := NewGitOps("git@127.0.0.1:owner/repo.git", "main", filepath.Join(t.TempDir(), "clone"))
+	err := g.Clone(context.Background(), 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to resolve Git authentication")
+	assert.Contains(t, err.Error(), keyPath)
+}
+
+func writeTestSSHPrivateKey(t *testing.T, path string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(path, testSSHPrivateKeyPEM(t), 0600))
+}
+
+func testSSHPrivateKeyPEM(t *testing.T) []byte {
+	t.Helper()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	block, err := xssh.MarshalPrivateKey(privateKey, "bosun test key")
+	require.NoError(t, err)
+	return pem.EncodeToMemory(block)
 }
 
 func TestGitAuthenticationRejectsBeforeNetwork(t *testing.T) {

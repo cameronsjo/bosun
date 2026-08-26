@@ -345,7 +345,7 @@ do not gain legacy aliases.
 | `BOSUN_DISABLE_HTTP` | daemon | Disable HTTP webhook server |
 | `BOSUN_LISTEN_ADDR` | daemon | Host/IP the HTTP server binds to (default: empty = all interfaces — container-side callers reach bosun over the docker bridge; do not default to loopback) |
 | `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | daemon | Opt out of fail-closed webhook auth (default: `false`; strict `== "true"`). With no `WEBHOOK_SECRET`, trigger endpoints reject requests with `403` unless this is set. Logged loudly at startup and per accepted request |
-| `BOSUN_SECRETS_FILE` | daemon, render | SOPS secrets file path |
+| `BOSUN_SECRETS_FILE` | daemon, reconcile, render | SOPS secrets file path. Daemon and one-shot reconcile validate the Age identity before Git when configured; daemon failure occurs before listeners bind |
 | `BOSUN_INFRA_DIR` | daemon, render | Infrastructure directory |
 | `BOSUN_TEMPLATE_INCLUDE_DIR` | daemon, reconcile, render | Subtree that template `include`/`fromJsonFile` reads are confined to (allowlist). Default `<infraDir>/templates`. Relative values resolve against the infra dir; absolute values are used as-is. Confining reads here keeps sibling SOPS files and `bosun.yaml` unreachable from templates |
 | `BOSUN_STATE_DIR` | daemon, reconcile | Deploy state directory |
@@ -386,7 +386,7 @@ do not gain legacy aliases.
 | `BOSUN_TWILIO_ACCOUNT_SID` | config | Twilio account SID (overrides config file; legacy: `TWILIO_ACCOUNT_SID`) |
 | `BOSUN_TWILIO_AUTH_TOKEN` | config | Twilio auth token (overrides config file; legacy: `TWILIO_AUTH_TOKEN`) |
 | `BOSUN_TWILIO_FROM_NUMBER` | config | Twilio sender number (overrides config file; legacy: `TWILIO_FROM_NUMBER`) |
-| `BOSUN_SSH_KEY` | reconcile | SSH key path for git operations |
+| `BOSUN_SSH_KEY` | reconcile | Explicit SSH key fallback for git operations; an agent wins only when it returns a signer, and a recognized SSH repository with no usable agent/key fails before network access |
 | `BOSUN_SSH_KNOWN_HOSTS` | reconcile | Known hosts file path |
 | `BOSUN_SSH_INSECURE_HOST_KEY` | reconcile | Skip host key verification (`true`/`false`) |
 | `BOSUN_DAEMON_MODE` | log, sentry | Set automatically when daemon starts |

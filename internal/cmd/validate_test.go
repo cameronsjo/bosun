@@ -276,12 +276,17 @@ func TestValidateReconcileConfig(t *testing.T) {
 		assert.Equal(t, 1, errors)
 	})
 
-	t.Run("BOSUN_REPO_URL takes precedence when REPO_URL empty", func(t *testing.T) {
+	t.Run("BOSUN_REPO_URL SSH endpoint fails closed without auth", func(t *testing.T) {
 		t.Setenv("REPO_URL", "")
 		t.Setenv("BOSUN_REPO_URL", "git@github.com:user/repo.git")
+		t.Setenv("BOSUN_GIT_USERNAME", "")
+		t.Setenv("BOSUN_GIT_TOKEN", "")
+		t.Setenv("SSH_AUTH_SOCK", "")
+		t.Setenv("BOSUN_SSH_KEY", "")
+		t.Setenv("HOME", t.TempDir())
 
 		errors := validateReconcileConfig()
-		assert.Equal(t, 0, errors)
+		assert.Equal(t, 1, errors)
 	})
 
 	t.Run("BOSUN_REPO_URL wins over REPO_URL when both set", func(t *testing.T) {

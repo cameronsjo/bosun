@@ -393,6 +393,7 @@ Status values: `clean` (no drift), `drifted` (items detected), `unknown` (no dep
 | `REPO_BRANCH` | No | `main` | Branch to track |
 | `BOSUN_GIT_USERNAME` | No | - | Private HTTPS Git Basic-auth username; requires `BOSUN_GIT_TOKEN` |
 | `BOSUN_GIT_TOKEN` | No | - | Private HTTPS Git Basic-auth password/token; requires `BOSUN_GIT_USERNAME` |
+| `BOSUN_SSH_KEY` | No | conventional SSH paths | Private key fallback for SSH Git URLs; the SSH agent takes precedence |
 | `REPO_DIR` | No | `/app/repo` | Local clone directory |
 | `STAGING_DIR` | No | `/app/staging` | Secret-bearing rendered staging and single-slot failure evidence directory |
 | `BACKUP_DIR` | No | `/app/backups` | Configuration backups |
@@ -422,6 +423,20 @@ to the effective repository URL after `BOSUN_REPO_URL` overrides `REPO_URL`.
 Credentials remain process-environment state: remove any URL userinfo, rotate
 the environment values, and restart Bosun; `bosun.yaml` reload cannot rotate
 them.
+
+SSH Git repositories use `SSH_AUTH_SOCK` first. Bosun accepts the agent only
+after it returns at least one signer; an empty or unreadable agent connection is
+closed before Bosun falls back to `BOSUN_SSH_KEY`, followed by its conventional
+key paths. The username parsed from either SCP-like syntax or an `ssh://` URL is
+preserved. An explicit `BOSUN_SSH_KEY` must be a regular, non-empty, parseable
+private key file; missing, directory, empty, and malformed mounts fail before
+Git network access. An unusable existing conventional candidate is skipped if
+a later key works, otherwise Bosun reports its path instead of passing nil
+authentication to go-git. A recognized SSH URL with no usable authentication
+fails startup rather than reaching the network. HTTPS and public local
+repository paths ignore unrelated SSH key settings. For containers, pre-create
+a key bind-mount source as a file because Docker can create a directory when the
+host source is missing.
 
 ### Command-Line Flags
 
@@ -519,6 +534,19 @@ The system checks for age keys in this order:
 1. `SOPS_AGE_KEY` environment variable (key content directly)
 2. `SOPS_AGE_KEY_FILE` environment variable (path to key file)
 3. Default location: `~/.config/sops/age/keys.txt`
+
+`SOPS_AGE_KEY` retains precedence over file settings. When Bosun resolves a
+file path, it requires a regular, non-empty file containing at least one
+parseable Age identity before decryption begins. Missing, directory, empty,
+and malformed paths fail with the configured path and setup guidance. For
+container mounts, pre-create the host key file; otherwise Docker can replace a
+missing file source with a directory at the container path.
+
+When at least one secrets file is configured, both the daemon and one-shot
+`bosun reconcile` validate the Age identity before Git authentication. The
+daemon performs this check before binding its Unix, TCP, or HTTP listeners. A
+reconcile with no secrets files does not require an Age identity and ignores an
+unrelated invalid Age mount.
 
 ### Key Setup
 
