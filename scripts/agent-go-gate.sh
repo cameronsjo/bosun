@@ -44,167 +44,24 @@ canonical_dir() {
 	)
 }
 
-path_identity() {
-	LC_ALL=C command ls -di -- "$1" 2>/dev/null | awk 'NR == 1 { print $1 }'
-}
-
-read_record_from() {
-	record_value=''
-	if [ -r "$1" ]; then
-		IFS= read -r record_value < "$1" || [ -n "$record_value" ] || record_value=''
-	fi
-	printf '%s' "$record_value"
-}
-
-parse_record() {
-	parsed_pid=''
-	parsed_token=''
-	case "$1" in
-		*' '*)
-			parsed_pid=${1%% *}
-			parsed_token=${1#* }
-			;;
-		*) return 1 ;;
-	esac
-	case "$parsed_pid" in
-		''|*[!0-9]*) return 1 ;;
-	esac
-	case "$parsed_token" in
-		"$lock_basename".owner.*) ;;
-		*) return 1 ;;
-	esac
-	case "$parsed_token" in
-		*/*|*' '*) return 1 ;;
-	esac
-}
-
-remove_verified_link() {
-	remove_path=$1
-	remove_identity=$2
-	[ -n "$remove_identity" ] || return 0
-	if [ "$(path_identity "$remove_path")" = "$remove_identity" ]; then
-		command rm -f -- "$remove_path"
-	fi
-}
-
-cleanup_links_for_identity() {
-	cleanup_identity=$1
-	for cleanup_path in "$lock_file".owner.* "$lock_file".capture.*; do
-		[ -e "$cleanup_path" ] || continue
-		remove_verified_link "$cleanup_path" "$cleanup_identity"
-	done
-}
-
-cleanup_orphan_links() {
-	for orphan_path in "$lock_file".owner.* "$lock_file".capture.*; do
-		[ -e "$orphan_path" ] || continue
-		orphan_identity=$(path_identity "$orphan_path")
-		orphan_record=$(read_record_from "$orphan_path")
-		if parse_record "$orphan_record" && ! command kill -0 "$parsed_pid" 2>/dev/null; then
-			remove_verified_link "$orphan_path" "$orphan_identity"
-		fi
-	done
-}
-
-create_owner_file() {
-	owner_file=$(umask 077 && command mktemp "${lock_file}.owner.$$.XXXXXX") || fail 'cannot create private gate owner file'
-	owner_token=${owner_file##*/}
-	owner_record="$$ $owner_token"
-	if ! (umask 077 && printf '%s\n' "$owner_record" > "$owner_file"); then
-		command rm -f -- "$owner_file"
-		fail 'cannot publish private gate owner record'
-	fi
-	owner_identity=$(path_identity "$owner_file")
-	[ -n "$owner_identity" ] || fail 'cannot identify private gate owner file'
-}
-
-# shellcheck disable=SC2329 # Invoked by the EXIT trap.
-release_lock() {
-	if [ "${lock_owned:-false}" = true ]; then
-		capture_file="${lock_file}.capture.release.${owner_token}"
-		if [ ! -e "$capture_file" ] && command ln -P "$lock_file" "$capture_file" 2>/dev/null; then
-			capture_identity=$(path_identity "$capture_file")
-			capture_record=$(read_record_from "$capture_file")
-			current_identity=$(path_identity "$lock_file")
-			if [ "$capture_identity" = "$owned_identity" ] &&
-				[ "$capture_record" = "$owner_record" ] &&
-				[ "$current_identity" = "$owned_identity" ]; then
-				command rm -f -- "$lock_file"
-			fi
-			remove_verified_link "$capture_file" "$capture_identity"
-		fi
-		lock_owned=false
-		owned_identity=''
-	fi
-	if [ -n "${owner_file:-}" ]; then
-		remove_verified_link "$owner_file" "${owner_identity:-}"
-	fi
-}
-
-reclaim_stale_lock() {
-	expected_identity=$1
-	expected_record=$2
-	capture_file="${lock_file}.capture.reclaim.${owner_token}.${expected_identity}"
-	[ ! -e "$capture_file" ] || return 0
-	if command ln -P "$lock_file" "$capture_file" 2>/dev/null; then
-		capture_identity=$(path_identity "$capture_file")
-		capture_record=$(read_record_from "$capture_file")
-		current_identity=$(path_identity "$lock_file")
-		current_record=$(read_record_from "$lock_file")
-		if [ "$capture_identity" = "$expected_identity" ] &&
-			[ "$capture_record" = "$expected_record" ] &&
-			[ "$current_identity" = "$expected_identity" ] &&
-			[ "$current_record" = "$expected_record" ]; then
-			command rm -f -- "$lock_file"
-			if [ "$(path_identity "$lock_file")" != "$expected_identity" ]; then
-				cleanup_links_for_identity "$expected_identity"
-			fi
-		fi
-		remove_verified_link "$capture_file" "$capture_identity"
-	fi
-}
-
 acquire_lock() {
-	waited=0
-	reported_wait=false
-	while ! command ln -P "$owner_file" "$lock_file" 2>/dev/null; do
-		current_identity=$(path_identity "$lock_file")
-		current_record=$(read_record_from "$lock_file")
-		if parse_record "$current_record"; then
-			owner_pid=$parsed_pid
-			if ! command kill -0 "$owner_pid" 2>/dev/null; then
-				reclaim_stale_lock "$current_identity" "$current_record"
-			elif [ "$reported_wait" = false ]; then
-				printf 'agent-go-gate: waiting for shared gate held by PID %s\n' "$owner_pid" >&2
-				reported_wait=true
-			fi
-		else
-			owner_pid=''
-			reclaim_stale_lock "$current_identity" "$current_record"
-		fi
-
-		if [ "$waited" -ge "$wait_seconds" ] && [ -e "$lock_file" ]; then
-			case "$owner_pid" in
-				''|*[!0-9]*)
-					temporary_fail "timed out waiting ${wait_seconds}s for gate without a valid owner PID"
-					;;
-				*)
-					temporary_fail "timed out waiting ${wait_seconds}s for gate held by PID $owner_pid"
-					;;
-			esac
-		fi
-
-		command sleep 1
-		waited=$((waited + 1))
-	done
-
-	owned_identity=$(path_identity "$lock_file")
-	current_record=$(read_record_from "$lock_file")
-	if [ "$owned_identity" != "$owner_identity" ] || [ "$current_record" != "$owner_record" ]; then
-		owned_identity=''
-		temporary_fail 'shared gate ownership changed during atomic acquisition; retry later'
-	fi
-	lock_owned=true
+	case $(command uname -s) in
+		Darwin)
+			command -v lockf >/dev/null 2>&1 || fail 'lockf is required on Darwin'
+			command lockf -s -t "$wait_seconds" 9
+			lock_status=$?
+			;;
+		*)
+			command -v flock >/dev/null 2>&1 || fail 'flock is required on this platform'
+			command flock -E 75 -w "$wait_seconds" 9
+			lock_status=$?
+			;;
+	esac
+	case "$lock_status" in
+		0) ;;
+		75) temporary_fail "timed out waiting ${wait_seconds}s for shared gate" ;;
+		*) fail "cannot acquire shared gate (lock backend exited $lock_status)" ;;
+	esac
 }
 
 # shellcheck disable=SC2329 # Invoked by the signal traps.
@@ -289,19 +146,13 @@ unset GOLANGCI_LINT_CACHE
 lock_key=$(printf '%s' "$common_dir" | command cksum | awk '{ print $1 "-" $2 }')
 [ -n "$lock_key" ] || fail 'cannot derive shared gate key'
 lock_file="/tmp/bosun-agent-go-gate-${lock_key}.lock"
-lock_basename=${lock_file##*/}
-lock_owned=false
-owned_identity=''
-owner_file=''
-owner_identity=''
 command_pid=''
 signal_status=''
-trap release_lock EXIT
 trap 'forward_signal HUP 129' HUP
 trap 'forward_signal INT 130' INT
 trap 'forward_signal TERM 143' TERM
-cleanup_orphan_links
-create_owner_file
+(umask 077 && : >> "$lock_file") || fail 'cannot create shared gate file'
+exec 9>> "$lock_file" || fail 'cannot open shared gate file'
 acquire_lock
 
 before_kib=$(free_kib "$repo_root")
