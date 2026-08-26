@@ -98,13 +98,13 @@ func parseEndpoint(endpoint string) (hostPort string, insecure bool, err error) 
 	if scheme != "http" && scheme != "https" {
 		return "", false, fmt.Errorf("unsupported OpenTelemetry endpoint scheme %q", parsed.Scheme)
 	}
-	if parsed.Host == "" {
+	if parsed.Hostname() == "" {
 		return "", false, errors.New("OpenTelemetry endpoint must include a host")
 	}
 	if parsed.User != nil {
 		return "", false, errors.New("OpenTelemetry endpoint must not include user information")
 	}
-	if parsed.RawQuery != "" || parsed.Fragment != "" {
+	if parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(value, "#") {
 		return "", false, errors.New("OpenTelemetry endpoint must not include a query or fragment")
 	}
 

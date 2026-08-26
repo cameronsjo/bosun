@@ -17,6 +17,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace/noop"
+	collectortracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 func preserveTelemetryState(t *testing.T) {
@@ -100,6 +102,17 @@ func TestInit_WithEndpoint_ExportsOnShutdown(t *testing.T) {
 		assert.Equal(t, "/v1/traces", request.path)
 		assert.Equal(t, "application/x-protobuf", request.contentType)
 		assert.NotEmpty(t, request.body)
+
+		var exportRequest collectortracepb.ExportTraceServiceRequest
+		require.NoError(t, proto.Unmarshal(request.body, &exportRequest))
+		resourceSpans := exportRequest.GetResourceSpans()
+		require.Len(t, resourceSpans, 1)
+		attrs := make(map[string]string)
+		for _, attr := range resourceSpans[0].GetResource().GetAttributes() {
+			attrs[attr.GetKey()] = attr.GetValue().GetStringValue()
+		}
+		assert.Equal(t, "bosun", attrs["service.name"])
+		assert.Equal(t, "test", attrs["service.version"])
 	case <-time.After(time.Second):
 		t.Fatal("collector did not receive flushed span")
 	}
@@ -126,21 +139,36 @@ func TestInit_CanceledContextPreservesProvider(t *testing.T) {
 }
 
 func TestInit_InvalidEndpointPreservesProvider(t *testing.T) {
-	preserveTelemetryState(t)
-	previous := noop.NewTracerProvider()
-	state.mu.Lock()
-	state.provider = previous
-	state.mu.Unlock()
-	otel.SetTracerProvider(previous)
+	tests := []struct {
+		name     string
+		endpoint string
+		wantErr  string
+	}{
+		{name: "unsupported scheme", endpoint: "grpc://collector:4317", wantErr: "unsupported OpenTelemetry endpoint scheme"},
+		{name: "port-only authority", endpoint: "http://:4318", wantErr: "must include a host"},
+		{name: "empty query", endpoint: "http://collector:4318?", wantErr: "query or fragment"},
+		{name: "empty fragment", endpoint: "http://collector:4318#", wantErr: "query or fragment"},
+	}
 
-	shutdown, err := Init(context.Background(), "bosun", "test", "grpc://collector:4317")
-	require.ErrorContains(t, err, "unsupported OpenTelemetry endpoint scheme")
-	assert.Nil(t, shutdown)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			preserveTelemetryState(t)
+			previous := noop.NewTracerProvider()
+			state.mu.Lock()
+			state.provider = previous
+			state.mu.Unlock()
+			otel.SetTracerProvider(previous)
 
-	state.mu.Lock()
-	assert.Equal(t, previous, state.provider)
-	state.mu.Unlock()
-	assert.Equal(t, previous, otel.GetTracerProvider())
+			shutdown, err := Init(context.Background(), "bosun", "test", tt.endpoint)
+			require.ErrorContains(t, err, tt.wantErr)
+			assert.Nil(t, shutdown)
+
+			state.mu.Lock()
+			assert.Equal(t, previous, state.provider)
+			state.mu.Unlock()
+			assert.Equal(t, previous, otel.GetTracerProvider())
+		})
+	}
 }
 
 func TestParseEndpoint(t *testing.T) {
@@ -152,15 +180,24 @@ func TestParseEndpoint(t *testing.T) {
 		wantErr      string
 	}{
 		{name: "bare host and port", endpoint: "collector:4318", wantHostPort: "collector:4318", wantInsecure: true},
+		{name: "bare IPv4 and port", endpoint: "127.0.0.1:4318", wantHostPort: "127.0.0.1:4318", wantInsecure: true},
+		{name: "bare bracketed IPv6 and port", endpoint: "[::1]:4318", wantHostPort: "[::1]:4318", wantInsecure: true},
+		{name: "uppercase HTTP URL", endpoint: "HTTP://collector:4318", wantHostPort: "collector:4318", wantInsecure: true},
 		{name: "HTTP base URL", endpoint: "http://collector:4318/v1/traces", wantHostPort: "collector:4318", wantInsecure: true},
+		{name: "base URL with trailing slash", endpoint: "http://collector:4318/otel/", wantHostPort: "collector:4318", wantInsecure: true},
+		{name: "percent-encoded path", endpoint: "http://collector:4318/tenant%2Fone", wantHostPort: "collector:4318", wantInsecure: true},
 		{name: "case-insensitive HTTPS URL", endpoint: "HTTPS://collector.example:4318/otel", wantHostPort: "collector.example:4318"},
 		{name: "IPv6 URL", endpoint: "https://[::1]:4318", wantHostPort: "[::1]:4318"},
 		{name: "whitespace", endpoint: " ", wantErr: "endpoint is empty"},
 		{name: "unsupported scheme", endpoint: "grpc://collector:4317", wantErr: "unsupported"},
 		{name: "hostless URL", endpoint: "http://", wantErr: "include a host"},
+		{name: "port-only bare endpoint", endpoint: ":4318", wantErr: "include a host"},
+		{name: "port-only URL", endpoint: "http://:4318", wantErr: "include a host"},
 		{name: "userinfo", endpoint: "http://user:secret@collector:4318", wantErr: "user information"},
 		{name: "query", endpoint: "http://collector:4318?token=secret", wantErr: "query or fragment"},
+		{name: "empty query", endpoint: "http://collector:4318?", wantErr: "query or fragment"},
 		{name: "fragment", endpoint: "http://collector:4318#fragment", wantErr: "query or fragment"},
+		{name: "empty fragment", endpoint: "http://collector:4318#", wantErr: "query or fragment"},
 		{name: "invalid escape", endpoint: "http://collector:4318/%zz", wantErr: "parse OpenTelemetry endpoint"},
 	}
 
