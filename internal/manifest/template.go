@@ -22,7 +22,7 @@ type TemplateEngine struct {
 	helpers *template.Template
 
 	// loadedTemplates caches parsed template files.
-	cacheMu         sync.RWMutex
+	cacheMu         sync.Mutex
 	loadedTemplates map[string]*template.Template
 }
 
@@ -116,17 +116,8 @@ func toYamlFunc(v any) (string, error) {
 
 // loadTemplate loads and parses a template file.
 func (e *TemplateEngine) loadTemplate(name string) (*template.Template, error) {
-	// Check cache
-	e.cacheMu.RLock()
-	cached, ok := e.loadedTemplates[name]
-	e.cacheMu.RUnlock()
-	if ok {
-		return cached, nil
-	}
-
-	// Serialize cache misses so concurrent first loads parse and publish one
-	// template instance. Re-check after acquiring the write lock because another
-	// caller may have populated the cache while this caller was waiting.
+	// Serialize cache access so concurrent first loads parse and publish one
+	// template instance without racing on the map.
 	e.cacheMu.Lock()
 	defer e.cacheMu.Unlock()
 	if cached, ok := e.loadedTemplates[name]; ok {
