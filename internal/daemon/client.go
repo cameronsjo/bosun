@@ -210,10 +210,11 @@ func daemonStatusError(statusCode int, body io.Reader) error {
 		detail += daemonErrorBodyTruncated
 	}
 	if readErr != nil {
+		separator := ""
 		if detail != "" {
-			detail += " "
+			separator = " "
 		}
-		detail += fmt.Sprintf("[response body read error: %v]", readErr)
+		return fmt.Errorf("daemon returned status %d: %s%s[response body read error: %w]", statusCode, detail, separator, readErr)
 	}
 
 	return fmt.Errorf("daemon returned status %d: %s", statusCode, detail)
