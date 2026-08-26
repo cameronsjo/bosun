@@ -89,7 +89,7 @@ the safe path the default while leaving a clearly-labeled escape hatch.
 ## Migration Plan
 
 1. Operators running HTTP without a secret: set `WEBHOOK_SECRET`, or set
-   `BOSUN_ALLOW_UNSIGNED_WEBHOOKS=true` to retain current behavior.
+   `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true` to retain current behavior.
 2. Operators consuming `/api/widget` or `/metrics` remotely: set the
    metrics-exposure opt-in.
 3. Consumers using `/health` for diagnostics: use `/status` over the Unix socket
