@@ -99,7 +99,7 @@ func Init(opts *Options) {
 	// intentional: a later Init(nil) must restore stdout rather than retaining a
 	// prior caller's output override.
 	config.output = opts.Output
-	config.additionalWriters = opts.AdditionalWriters
+	config.additionalWriters = append([]io.Writer(nil), opts.AdditionalWriters...)
 
 	initLogger()
 }

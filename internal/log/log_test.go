@@ -185,6 +185,32 @@ func TestEnableDaemonModePreservesExplicitConfiguration(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(additional.String(), "preserved daemon configuration"))
 }
 
+func TestEnableDaemonModeUsesAdditionalWriterSnapshot(t *testing.T) {
+	t.Setenv("BOSUN_DAEMON_MODE", "")
+	var primary bytes.Buffer
+	var configured bytes.Buffer
+	var replacement bytes.Buffer
+	additionalWriters := []io.Writer{&configured}
+	Init(&Options{
+		Format:            FormatJSON,
+		Level:             InfoLevel,
+		LevelSet:          true,
+		Output:            &primary,
+		AdditionalWriters: additionalWriters,
+	})
+	t.Cleanup(func() {
+		Init(&Options{Format: FormatJSON, Level: InfoLevel, LevelSet: true})
+	})
+
+	additionalWriters[0] = &replacement
+	EnableDaemonMode()
+	Info().Msg("snapshotted writer")
+
+	assert.Contains(t, primary.String(), "snapshotted writer")
+	assert.Equal(t, primary.String(), configured.String())
+	assert.Empty(t, replacement.String())
+}
+
 func TestEnableDaemonModePreservesRuntimeLogLevel(t *testing.T) {
 	t.Setenv("BOSUN_DAEMON_MODE", "")
 	var output bytes.Buffer
