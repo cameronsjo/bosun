@@ -45,6 +45,12 @@ func TestReleasePleaseWorkflowContractRejectsUnsafeMutations(t *testing.T) {
 				"      - name: Auto-merge release PR",
 			expected: "exactly one active gh pr merge path",
 		},
+		{
+			name:        "merge command overrides app token",
+			old:         `          gh pr merge "$PR_NUMBER" --auto --merge`,
+			replacement: `          GH_TOKEN="$GITHUB_TOKEN" gh pr merge "$PR_NUMBER" --auto --merge`,
+			expected:    "auto-merge must not reference GITHUB_TOKEN",
+		},
 	}
 
 	for _, tt := range tests {
@@ -56,6 +62,16 @@ func TestReleasePleaseWorkflowContractRejectsUnsafeMutations(t *testing.T) {
 			assert.ErrorContains(t, err, tt.expected)
 		})
 	}
+}
+
+func TestReleasePleaseWorkflowContractAllowsDefaultTokenForGeneration(t *testing.T) {
+	workflowData := string(loadReleasePleaseWorkflow(t))
+	old := "          manifest-file: .release-please-manifest.json"
+	replacement := old + "\n          token: ${{ github.token }}"
+	require.Contains(t, workflowData, old, "acceptance fixture no longer matches the workflow")
+
+	mutated := strings.Replace(workflowData, old, replacement, 1)
+	require.NoError(t, validateReleasePlease([]byte(mutated)))
 }
 
 func loadReleasePleaseWorkflow(t *testing.T) []byte {

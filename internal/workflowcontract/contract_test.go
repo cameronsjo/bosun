@@ -115,11 +115,8 @@ func validateReleasePlease(data []byte) error {
 		if mergeStep.Env["GH_TOKEN"] != appToken {
 			problems = append(problems, errors.New("auto-merge must use only the generated App token"))
 		}
-	}
-
-	for _, releaseStep := range releaseJob.Steps {
-		if stepReferencesDefaultToken(releaseStep) {
-			problems = append(problems, fmt.Errorf("release-please step %q must not reference GITHUB_TOKEN", releaseStep.Name))
+		if stepReferencesDefaultToken(mergeStep) {
+			problems = append(problems, errors.New("auto-merge must not reference GITHUB_TOKEN"))
 		}
 	}
 
@@ -165,7 +162,10 @@ func stepReferencesDefaultToken(candidate step) bool {
 		values = append(values, value)
 	}
 	for _, value := range values {
-		if strings.Contains(value, "secrets.GITHUB_TOKEN") || strings.Contains(value, "github.token") {
+		if strings.Contains(value, "secrets.GITHUB_TOKEN") ||
+			strings.Contains(value, "github.token") ||
+			strings.Contains(value, "$GITHUB_TOKEN") ||
+			strings.Contains(value, "${GITHUB_TOKEN}") {
 			return true
 		}
 	}
