@@ -36,6 +36,9 @@
 - [ ] 5.1 Add metrics/widget exposure opt-in to `Config`, parsed from env
 - [ ] 5.2 Gate `/metrics` and `/api/widget` to localhost / auth / opt-in in `NewServer`
 - [ ] 5.3 Tests: default refuses remote `/metrics` and `/api/widget`; opt-in serves them
+- [ ] 5.4 Add one bounded public-health projection (`status`, `ready`, `uptime`) and use it for HTTP, TCP, and Unix-socket `/health`
+- [ ] 5.5 Keep `/status` as the operator diagnostic contract (bearer-protected on TCP, Unix-socket access locally); do not vary `/health` by Authorization header
+- [ ] 5.6 Tests: exact public schema and 200/503/405 status semantics on all three transports, including sensitive reconcile errors and circuit-breaker/subsystem state
 
 ## 6. Webhook payload sanitization
 
@@ -48,3 +51,4 @@
 - [x] 7.1 Update `docs/security.md` with the daemon security posture
 - [x] 7.2 Update `skills/onboard/resources/gitops.md`
 - [x] 7.3 Add new env vars to the `CLAUDE.md` env-var table
+- [ ] 7.4 Document the bounded `/health` schema and `/status` diagnostic route in `docs/commands.md`, `docs/security.md`, and the onboard GitOps resource
