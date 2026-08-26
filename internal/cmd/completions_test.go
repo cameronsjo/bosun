@@ -8,7 +8,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 )
 
 func TestCompleteTemplateNames(t *testing.T) {
@@ -131,9 +130,8 @@ manifest_dir: manifest
 }
 
 func TestCompleteComposeServices_NoConfig(t *testing.T) {
-	// Test that completeComposeServices returns error when no config found
-	// (we can't easily test the happy path without mocking config.Load)
-	oldWd, _ := os.Getwd()
+	oldWd, err := os.Getwd()
+	require.NoError(t, err)
 	tmpDir := t.TempDir()
 	require.NoError(t, os.Chdir(tmpDir))
 	defer func() { _ = os.Chdir(oldWd) }()
@@ -143,31 +141,92 @@ func TestCompleteComposeServices_NoConfig(t *testing.T) {
 	assert.Equal(t, cobra.ShellCompDirectiveError, gotDir)
 }
 
-func TestParseComposeServices(t *testing.T) {
-	// Test the YAML parsing logic directly
-	composeContent := `services:
-  traefik:
-    image: traefik:latest
-  authelia:
-    image: authelia/authelia
+func TestCompleteComposeServices(t *testing.T) {
+	tests := []struct {
+		name        string
+		composeYAML string
+		toComplete  string
+		want        []string
+		wantDir     cobra.ShellCompDirective
+	}{
+		{
+			name: "returns services in stable alphabetical order",
+			composeYAML: `services:
   whoami:
     image: traefik/whoami
-`
-	tmpDir := t.TempDir()
-	composeFile := filepath.Join(tmpDir, "docker-compose.yml")
-	require.NoError(t, os.WriteFile(composeFile, []byte(composeContent), 0644))
+  authelia:
+    image: authelia/authelia
+  traefik:
+    image: traefik:latest
+`,
+			want:    []string{"authelia", "traefik", "whoami"},
+			wantDir: cobra.ShellCompDirectiveNoFileComp,
+		},
+		{
+			name: "filters by prefix",
+			composeYAML: `services:
+  worker:
+    image: example/worker
+  web:
+    image: example/web
+  api:
+    image: example/api
+`,
+			toComplete: "w",
+			want:       []string{"web", "worker"},
+			wantDir:    cobra.ShellCompDirectiveNoFileComp,
+		},
+		{
+			name: "returns no matches without file completion",
+			composeYAML: `services:
+  api:
+    image: example/api
+`,
+			toComplete: "worker",
+			wantDir:    cobra.ShellCompDirectiveNoFileComp,
+		},
+		{
+			name:        "rejects invalid compose YAML",
+			composeYAML: "services: [unterminated",
+			wantDir:     cobra.ShellCompDirectiveError,
+		},
+	}
 
-	// Parse the compose file directly (simulating what the completion does)
-	data, err := os.ReadFile(composeFile)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			projectDir := t.TempDir()
+			bosunDir := filepath.Join(projectDir, "bosun")
+			require.NoError(t, os.Mkdir(bosunDir, 0755))
+			require.NoError(t, os.WriteFile(
+				filepath.Join(bosunDir, "docker-compose.yml"),
+				[]byte(tt.composeYAML),
+				0644,
+			))
+
+			oldWd, err := os.Getwd()
+			require.NoError(t, err)
+			require.NoError(t, os.Chdir(projectDir))
+			defer func() { require.NoError(t, os.Chdir(oldWd)) }()
+
+			got, gotDir := completeComposeServices(nil, []string{"existing-service"}, tt.toComplete)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantDir, gotDir)
+		})
+	}
+}
+
+func TestCompleteComposeServices_MissingComposeFile(t *testing.T) {
+	projectDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "bosun.yaml"), []byte("root: .\n"), 0644))
+
+	oldWd, err := os.Getwd()
 	require.NoError(t, err)
+	require.NoError(t, os.Chdir(projectDir))
+	defer func() { require.NoError(t, os.Chdir(oldWd)) }()
 
-	var compose composeServices
-	require.NoError(t, yaml.Unmarshal(data, &compose))
-
-	assert.Len(t, compose.Services, 3)
-	assert.Contains(t, compose.Services, "traefik")
-	assert.Contains(t, compose.Services, "authelia")
-	assert.Contains(t, compose.Services, "whoami")
+	got, gotDir := completeComposeServices(nil, nil, "")
+	assert.Nil(t, got)
+	assert.Equal(t, cobra.ShellCompDirectiveError, gotDir)
 }
 
 func TestCompleteBackupNames(t *testing.T) {
