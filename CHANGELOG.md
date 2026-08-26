@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.40.6](https://github.com/cameronsjo/bosun/compare/v0.40.5...v0.40.6) (2026-08-26)
+
+
+### Bug Fixes
+
+* **cmd:** stabilize compose service completions ([db406fb](https://github.com/cameronsjo/bosun/commit/db406fba78a6021a3514e07ad69cabef949d9a16))
+* **daemon:** bound public health responses ([110b863](https://github.com/cameronsjo/bosun/commit/110b863d41f6883e120bacb90a39f272dcc151fb))
+* **daemon:** preserve client response read errors ([d1acaaf](https://github.com/cameronsjo/bosun/commit/d1acaaf4db148e539a237dfc7eb9492ed7dae462))
+* **update:** handle development version checks safely ([27efc3a](https://github.com/cameronsjo/bosun/commit/27efc3a8aab3e4f102d45b30bbb77c5f52b8d8a3))
+
 ## [0.40.5](https://github.com/cameronsjo/bosun/compare/v0.40.4...v0.40.5) (2026-08-26)
 
 
