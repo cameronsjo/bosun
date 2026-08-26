@@ -3,11 +3,14 @@ package alert
 import (
 	"context"
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
@@ -518,6 +521,117 @@ func TestTwilio_Send_APIError(t *testing.T) {
 	})
 	require.Error(t, err, "Send() should return error for API error response")
 	assert.Contains(t, err.Error(), "status 400")
+}
+
+func TestTwilio_sendSMS_ErrorResponseBodyBounded(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		expected string
+	}{
+		{
+			name:     "under limit is preserved",
+			body:     "small Twilio error",
+			expected: "small Twilio error",
+		},
+		{
+			name:     "exact limit is preserved",
+			body:     strings.Repeat("e", maxTwilioErrorBodySize),
+			expected: strings.Repeat("e", maxTwilioErrorBodySize),
+		},
+		{
+			name:     "oversized body is truncated",
+			body:     strings.Repeat("o", maxTwilioErrorBodySize+4096),
+			expected: strings.Repeat("o", maxTwilioErrorBodySize) + twilioErrorBodyTruncated,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := &twilioCountingReader{Reader: strings.NewReader(tt.body)}
+			body := &twilioTrackingReadCloser{Reader: source}
+			tw := twilioWithResponse(t, http.StatusBadRequest, body)
+
+			err := tw.sendSMS(context.Background(), "+15559876543", "test")
+
+			require.EqualError(t, err, fmt.Sprintf("twilio API error (status %d): %s", http.StatusBadRequest, tt.expected))
+			assert.Equal(t, min(len(tt.body), maxTwilioErrorBodySize+1), source.bytesRead)
+			assert.Equal(t, 1, body.closeCount)
+		})
+	}
+}
+
+func TestTwilio_sendSMS_ErrorResponseReadFailure(t *testing.T) {
+	readErr := errors.New("response stream failed")
+	tests := []struct {
+		name     string
+		body     io.Reader
+		expected string
+	}{
+		{
+			name:     "partial body",
+			body:     io.MultiReader(strings.NewReader("partial Twilio error"), iotest.ErrReader(readErr)),
+			expected: "twilio API error (status 502): partial Twilio error [response body read error: response stream failed]",
+		},
+		{
+			name:     "empty body",
+			body:     iotest.ErrReader(readErr),
+			expected: "twilio API error (status 502): [response body read error: response stream failed]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := &twilioTrackingReadCloser{Reader: tt.body}
+			tw := twilioWithResponse(t, http.StatusBadGateway, body)
+
+			err := tw.sendSMS(context.Background(), "+15559876543", "test")
+
+			require.EqualError(t, err, tt.expected)
+			assert.ErrorIs(t, err, readErr)
+			assert.Equal(t, 1, body.closeCount)
+		})
+	}
+}
+
+func twilioWithResponse(t *testing.T, statusCode int, body io.ReadCloser) *Twilio {
+	t.Helper()
+
+	return &Twilio{
+		config: TwilioConfig{AccountSID: "AC123", AuthToken: "token", FromNumber: "+15551234567"},
+		client: &http.Client{Transport: twilioRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			assert.Equal(t, "/Accounts/AC123/Messages.json", request.URL.Path)
+			return &http.Response{StatusCode: statusCode, Body: body}, nil
+		})},
+		apiURL: "http://twilio.test",
+	}
+}
+
+type twilioRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f twilioRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+type twilioTrackingReadCloser struct {
+	io.Reader
+	closeCount int
+}
+
+func (r *twilioTrackingReadCloser) Close() error {
+	r.closeCount++
+	return nil
+}
+
+type twilioCountingReader struct {
+	io.Reader
+	bytesRead int
+}
+
+func (r *twilioCountingReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.bytesRead += n
+	return n, err
 }
 
 func TestTwilio_Send_MultipleRecipients_PartialFailure(t *testing.T) {

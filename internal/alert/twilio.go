@@ -42,6 +42,12 @@ const (
 	maxGSM7SMSSeptets  = 160
 	maxUnicodeSMSUnits = 70
 
+	// Keep external error diagnostics within the same 1 MiB budget used by
+	// Bosun's other bounded HTTP response paths. One additional byte is read
+	// only to detect truncation deterministically.
+	maxTwilioErrorBodySize   = 1 << 20
+	twilioErrorBodyTruncated = "... [truncated]"
+
 	// ESC is excluded because it is an encoding prefix rather than a printable
 	// default-alphabet character. Extension characters include their ESC cost.
 	gsm7DefaultAlphabet   = "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà"
@@ -175,11 +181,10 @@ func (t *Twilio) sendSMS(ctx context.Context, toNumber, message string) error {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
 		logger.Error().
 			Int(log.FieldStatus, resp.StatusCode).
 			Msg("Failed to send SMS. Error: Twilio API returned error status")
-		return fmt.Errorf("twilio API error (status %d): %s", resp.StatusCode, string(body))
+		return twilioStatusError(resp.StatusCode, resp.Body)
 	}
 
 	logger.Debug().
@@ -187,6 +192,28 @@ func (t *Twilio) sendSMS(ctx context.Context, toNumber, message string) error {
 		Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 		Msg("Successfully sent SMS to recipient")
 	return nil
+}
+
+func twilioStatusError(statusCode int, body io.Reader) error {
+	contents, readErr := io.ReadAll(io.LimitReader(body, maxTwilioErrorBodySize+1))
+	truncated := len(contents) > maxTwilioErrorBodySize
+	if truncated {
+		contents = contents[:maxTwilioErrorBodySize]
+	}
+
+	detail := string(contents)
+	if truncated {
+		detail += twilioErrorBodyTruncated
+	}
+	if readErr != nil {
+		separator := ""
+		if detail != "" {
+			separator = " "
+		}
+		return fmt.Errorf("twilio API error (status %d): %s%s[response body read error: %w]", statusCode, detail, separator, readErr)
+	}
+
+	return fmt.Errorf("twilio API error (status %d): %s", statusCode, detail)
 }
 
 // formatMessage creates an SMS-friendly message from an alert.
