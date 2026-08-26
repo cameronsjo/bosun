@@ -424,17 +424,13 @@ func (c *Client) GetContainerStats(ctx context.Context, name string) (*Container
 	// Closing the body on cancellation interrupts either blocking operation.
 	var v statsJSON
 	err = readWithContext(ctx, func() { _ = stats.Body.Close() }, func() error {
-		if parseErr := readJSONStats(stats.Body, &v); parseErr != nil {
-			return parseErr
-		}
-		_, _ = io.Copy(io.Discard, stats.Body)
-		return nil
+		return readAndDrainStats(stats.Body, &v)
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, fmt.Errorf("read stats: %w", err)
 		}
-		return nil, fmt.Errorf("parse stats: %w", err)
+		return nil, err
 	}
 
 	// Calculate CPU percentage
@@ -536,15 +532,26 @@ func formatPortString(publicPort, privatePort uint16, protocol string) string {
 	return fmt.Sprintf("%d/%s", privatePort, protocol)
 }
 
-// readJSONStats reads a single JSON stats object from the reader.
-func readJSONStats(r io.Reader, v *statsJSON) error {
-	return json.NewDecoder(r).Decode(v)
+// readAndDrainStats reads a single JSON stats object and drains the response
+// for connection reuse. A decoder can buffer bytes past the JSON value, so its
+// buffer must be drained before the underlying reader.
+func readAndDrainStats(r io.Reader, v *statsJSON) error {
+	decoder := json.NewDecoder(r)
+	if err := decoder.Decode(v); err != nil {
+		return fmt.Errorf("parse stats: %w", err)
+	}
+	if _, err := io.Copy(io.Discard, io.MultiReader(decoder.Buffered(), r)); err != nil {
+		return fmt.Errorf("drain stats: %w", err)
+	}
+	return nil
 }
 
-// readWithContext runs a potentially blocking stream read and closes the
-// underlying response exactly once, either when the caller cancels or after the
-// read finishes. Closing on cancellation is required because an in-progress
-// Read cannot observe ctx.Done() on its own.
+// readWithContext runs a potentially blocking stream read in the caller's
+// goroutine and closes the underlying response exactly once, either when the
+// caller cancels or after the read finishes. Closing on cancellation is
+// required because an in-progress Read cannot observe ctx.Done() on its own.
+// Keeping the read synchronous ensures cancellation never abandons a blocked
+// reader goroutine.
 func readWithContext(ctx context.Context, closeReader func(), read func() error) error {
 	closeReader = sync.OnceFunc(closeReader)
 	if err := ctx.Err(); err != nil {
@@ -552,20 +559,11 @@ func readWithContext(ctx context.Context, closeReader func(), read func() error)
 		return err
 	}
 
-	finished := make(chan struct{})
-	watcherDone := make(chan struct{})
-	go func() {
-		defer close(watcherDone)
-		select {
-		case <-ctx.Done():
-			closeReader()
-		case <-finished:
-		}
-	}()
-
+	stopClose := context.AfterFunc(ctx, closeReader)
 	err := read()
-	close(finished)
-	<-watcherDone
+	stopClose()
+	// If cancellation already started closeReader, OnceFunc waits for that
+	// invocation to finish. Otherwise this owns normal response cleanup.
 	closeReader()
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr

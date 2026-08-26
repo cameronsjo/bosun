@@ -322,7 +322,8 @@ if err != nil {
 
 ### Ping Timeout
 
-`Ping()` uses a 5-second timeout to detect unresponsive daemons:
+`Ping()` uses a 5-second maximum timeout to detect unresponsive daemons. A
+shorter caller deadline remains authoritative:
 
 ```go
 err := client.Ping(ctx)
@@ -339,7 +340,7 @@ All operations wrap errors with descriptive prefixes:
 |-----------|--------------|
 | `ListContainers` | `list containers:` |
 | `ContainerLogs` | `get container logs:` |
-| `GetContainerStats` | `get container stats:` |
+| `GetContainerStats` | `get container stats:`, `parse stats:`, `drain stats:`, or `read stats:` |
 | `Inspect` | `inspect container <name>:` |
 | `Start` | `start container <name>:` |
 | `Remove` | `remove container <name>:` |
@@ -514,7 +515,10 @@ var (
 stats, err := c.api.ContainerStats(ctx, name, false) // stream=false
 ```
 
-The stats JSON is parsed once and the body is immediately closed.
+The stats JSON is parsed once, remaining response bytes are drained for
+connection reuse, and the body is closed exactly once. Caller cancellation or
+deadline expiry closes the body to interrupt a blocked parse or drain; parse and
+drain failures are returned to the caller.
 
 ### CPU Calculation
 

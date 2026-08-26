@@ -88,6 +88,26 @@ func TestClient_PingPreservesTighterCallerDeadline(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestClient_PingReturnsTighterCallerDeadline(t *testing.T) {
+	parentDeadline := time.Now().Add(25 * time.Millisecond)
+	ctx, cancel := context.WithDeadline(context.Background(), parentDeadline)
+	defer cancel()
+
+	mock := NewMockDockerAPI()
+	mock.PingFunc = func(ctx context.Context, options client.PingOptions) (client.PingResult, error) {
+		deadline, ok := ctx.Deadline()
+		require.True(t, ok)
+		assert.Equal(t, parentDeadline, deadline)
+		<-ctx.Done()
+		return client.PingResult{}, ctx.Err()
+	}
+
+	started := time.Now()
+	err := NewClientWithAPI(mock).Ping(ctx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(started), time.Second)
+}
+
 func TestClient_Info(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1027,7 +1047,7 @@ func TestClient_DiskUsage(t *testing.T) {
 	}
 }
 
-func TestReadJSONStats(t *testing.T) {
+func TestReadAndDrainStats(t *testing.T) {
 	tests := []struct {
 		name    string
 		input   []byte
@@ -1053,7 +1073,7 @@ func TestReadJSONStats(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var v statsJSON
-			err := readJSONStats(bytes.NewReader(tt.input), &v)
+			err := readAndDrainStats(bytes.NewReader(tt.input), &v)
 			if tt.wantErr {
 				require.Error(t, err)
 			} else {
@@ -1063,9 +1083,9 @@ func TestReadJSONStats(t *testing.T) {
 	}
 }
 
-func TestReadJSONStats_ReaderError(t *testing.T) {
+func TestReadAndDrainStats_ReaderError(t *testing.T) {
 	var v statsJSON
-	err := readJSONStats(&errorReader{}, &v)
+	err := readAndDrainStats(&errorReader{}, &v)
 	require.Error(t, err)
 }
 
@@ -1097,6 +1117,54 @@ func TestReadWithContext_CancelledDuringRead(t *testing.T) {
 
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, 1, closeCalls)
+}
+
+func TestReadWithContext_SuccessClosesOnce(t *testing.T) {
+	closeCalls := 0
+	readCalls := 0
+
+	err := readWithContext(context.Background(), func() { closeCalls++ }, func() error {
+		readCalls++
+		return nil
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, readCalls)
+	assert.Equal(t, 1, closeCalls)
+}
+
+func TestReadWithContext_CancellationWaitsForCleanup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	readStarted := make(chan struct{})
+	releaseRead := make(chan struct{})
+	closeFinished := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		result <- readWithContext(ctx, func() {
+			close(releaseRead)
+			close(closeFinished)
+		}, func() error {
+			close(readStarted)
+			<-releaseRead
+			return nil
+		})
+	}()
+
+	<-readStarted
+	cancel()
+	select {
+	case err := <-result:
+		require.ErrorIs(t, err, context.Canceled)
+		select {
+		case <-closeFinished:
+		default:
+			t.Fatal("readWithContext returned before response cleanup finished")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("readWithContext did not return after cancellation")
+	}
 }
 
 func TestReadWithContext_PropagatesReadError(t *testing.T) {
@@ -1142,6 +1210,41 @@ func TestClient_GetContainerStats_ParseError(t *testing.T) {
 	_, err := client.GetContainerStats(context.Background(), "web")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parse stats")
+}
+
+func TestClient_GetContainerStats_DrainError(t *testing.T) {
+	sentinel := errors.New("sentinel drain failure")
+	payload := append(makeStatsJSON(200, 2000, 100, 1000, 512, 1024, 2), bytes.Repeat([]byte(" "), 1024)...)
+	mock := NewMockDockerAPI()
+	mock.ContainerStatsFunc = func(ctx context.Context, containerID string, options client.ContainerStatsOptions) (client.ContainerStatsResult, error) {
+		return client.ContainerStatsResult{
+			Body: io.NopCloser(&dataThenErrorReader{
+				reader: bytes.NewReader(payload),
+				err:    sentinel,
+				max:    1,
+			}),
+		}, nil
+	}
+
+	_, err := NewClientWithAPI(mock).GetContainerStats(context.Background(), "web")
+	require.ErrorIs(t, err, sentinel)
+	assert.Contains(t, err.Error(), "drain stats")
+}
+
+type dataThenErrorReader struct {
+	reader *bytes.Reader
+	err    error
+	max    int
+}
+
+func (r *dataThenErrorReader) Read(p []byte) (int, error) {
+	if r.reader.Len() > 0 {
+		if r.max > 0 && len(p) > r.max {
+			p = p[:r.max]
+		}
+		return r.reader.Read(p)
+	}
+	return 0, r.err
 }
 
 func TestClient_Close_Error(t *testing.T) {
