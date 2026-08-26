@@ -19,9 +19,10 @@ import (
 	"github.com/kballard/go-shellquote"
 )
 
-// DefaultBackupTimeout bounds backup creation + verification when no
-// BackupTimeout is configured. Prevents the pre-deploy backup step from
-// wedging the reconcile indefinitely (#319).
+// DefaultBackupTimeout separately bounds pre-deploy backup creation +
+// verification and post-success retention verification + cleanup when no
+// BackupTimeout is configured. It prevents either backup phase from wedging
+// the reconcile indefinitely (#319, #243).
 const DefaultBackupTimeout = 5 * time.Minute
 
 // MaxVerifyDecompressedBytes caps the TOTAL decompressed size that
@@ -94,6 +95,13 @@ func (d *DeployOps) VerifyBackup(ctx context.Context, backupPath string) error {
 
 	logger.Debug().Str(log.FieldPath, tarFile).Int64("size_bytes", info.Size()).Msg("Backup archive verified")
 	return nil
+}
+
+func (d *DeployOps) verifyBackup(ctx context.Context, backupPath string) error {
+	if d.verifyBackupFn != nil {
+		return d.verifyBackupFn(ctx, backupPath)
+	}
+	return d.VerifyBackup(ctx, backupPath)
 }
 
 // verifyArchiveIntegrity fully reads a gzip-compressed tar archive, decompressing
@@ -640,8 +648,9 @@ func (d *DeployOps) LatestVerifiedBackup(ctx context.Context, backupDir string) 
 // "good" to a mere existence check yet junk to VerifyBackup). A corrupt or partial
 // dir (missing, unlistable, or truncated archive) does NOT occupy a keep slot and
 // is removed outright; otherwise it could evict an older known-good backup (#353).
-// Verification shares ctx with backup creation, so a stuck tar/gzip read cannot
-// wedge cleanup.
+// Verification and removal share the caller's post-success retention context,
+// which is independently bounded by BackupTimeout so a stuck tar/gzip read
+// cannot wedge cleanup.
 func (d *DeployOps) CleanupBackups(ctx context.Context, backupDir string, keep int) error {
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 	logger.Debug().
@@ -672,7 +681,11 @@ func (d *DeployOps) CleanupBackups(ctx context.Context, backupDir string, keep i
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if d.VerifyBackup(ctx, filepath.Join(backupDir, e.Name())) == nil {
+		verifyErr := d.verifyBackup(ctx, filepath.Join(backupDir, e.Name()))
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if verifyErr == nil {
 			valid = append(valid, e.Name())
 		} else {
 			invalid = append(invalid, e.Name())
@@ -681,6 +694,9 @@ func (d *DeployOps) CleanupBackups(ctx context.Context, backupDir string, keep i
 
 	// Remove corrupt/partial dirs unconditionally — they are litter, never anchors.
 	for _, name := range invalid {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		path := filepath.Join(backupDir, name)
 		if err := os.RemoveAll(path); err != nil {
 			logger.Error().Err(err).Str(log.FieldPath, path).Msg("Failed to remove corrupt/partial backup")
@@ -702,6 +718,9 @@ func (d *DeployOps) CleanupBackups(ctx context.Context, backupDir string, keep i
 			Msg("Removing old backups")
 
 		for _, name := range toRemove {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			path := filepath.Join(backupDir, name)
 			if err := os.RemoveAll(path); err != nil {
 				logger.Error().Err(err).Str(log.FieldPath, path).Msg("Failed to remove old backup")

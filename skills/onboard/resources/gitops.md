@@ -137,10 +137,14 @@ Before deploying new configs, bosun tars the **deployed config footprint** —
 the files it renders into staging, mapped onto their appdata destinations — into
 a timestamped `backup-YYYYMMDD-HHMMSS/configs.tar.gz` under `BackupDir`, verifies
 that the archive lists and that every member reads to EOF under the caller
-deadline and total 10 GiB decompression bound, and prunes to the most recent
-`BackupsToKeep` **valid** backups (default 5). When no managed file exists yet
-(a fresh host's first deploy), no archive is written and no rollback anchor is
-recorded — a content-free backup is never reported as a real one (#360).
+deadline and total 10 GiB decompression bound. After the deploy clears its
+health checks, post-sync hooks, and post-deploy verification gates, bosun prunes
+to the most recent `BackupsToKeep` **valid** backups (default 5). With
+`BackupsToKeep: 1`, the prior known-good remains alongside the fresh snapshot
+until that success boundary; failed deploys retain both, and only successful
+deploys prune to one. When no managed file exists yet (a fresh host's first
+deploy), no archive is written and no rollback anchor is recorded — a
+content-free backup is never reported as a real one (#360).
 Retention counts only backups that pass the same verification used to pick a
 rollback anchor: a corrupt or partial dir (missing,
 unlistable, or truncated archive) is removed rather than occupying a keep slot and
@@ -161,11 +165,14 @@ reconcile (GH#319, bosun-5qx):
   skips its subtree during the filesystem walk. Remote `tar -czf -` receives a
   shell-quoted `--exclude` when `BackupDir` is absolute; a relative remote
   destination logs that self-exclusion could not be applied.
-- **Bounded deadline.** Backup creation *and* verification run under
-  `BackupTimeout` (default 5m, overridable via `BOSUN_BACKUP_TIMEOUT` — accepts a
-  Go duration or plain seconds). The deadline cancels native local archive I/O,
-  remote SSH `tar`, the fast `tar -tzf` verification pre-check, and the native
-  full-stream integrity read. On timeout the backup is treated as a failure.
+- **Bounded deadlines.** `BackupTimeout` (default 5m, overridable via
+  `BOSUN_BACKUP_TIMEOUT` — accepts a Go duration or plain seconds) applies
+  independently to pre-deploy creation + verification and post-success
+  retention verification + cleanup. The pre-deploy deadline cancels native
+  local archive I/O, remote SSH `tar`, the fast `tar -tzf` verification
+  pre-check, and the native full-stream integrity read. A retention timeout
+  warns, marks its telemetry span as an error, preserves the remaining backups,
+  and does not revoke the verified deploy's success.
 
 Backup failure handling depends on what Bosun can prove before mutation:
 

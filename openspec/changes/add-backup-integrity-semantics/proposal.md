@@ -73,8 +73,10 @@ target state**.
   the failing files MUST NOT be treated as a successful rollback.
 - **Coordinated with #319 (already merged)** — #319 landed a bounded
   `BackupTimeout` (`BOSUN_BACKUP_TIMEOUT`), context-bound verification, and a
-  backup self-exclusion invariant on the `Configuration Backup` requirement. This
-  change preserves all three clauses verbatim (so archiving does not revert them)
+  backup self-exclusion invariant on the `Configuration Backup` requirement.
+  This change preserves those clauses and applies the same configured duration
+  as a second, independent deadline for post-success retention verification and
+  cleanup (so archiving does not revert or leave the new phase unbounded)
   and is what makes fail-closed safe: a stuck backup now fails fast and loud
   within the timeout rather than wedging the reconcile, so aborting on a required
   backup failure cannot hang the pipeline. The stage-7 carve-out in

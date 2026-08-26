@@ -9,8 +9,8 @@
 
 ## 2. Retention preserves last-known-good (#243)
 
-- [ ] 2.1 Defer `CleanupBackups` until after the current deploy passes verification (or keep N+1 internally through the deploy window)
-- [ ] 2.2 Tests: with `backups_to_keep == 1`, the cycle T-1 backup survives through cycle T's deploy
+- [x] 2.1 Defer `CleanupBackups` until after the current deploy passes verification (or keep N+1 internally through the deploy window)
+- [x] 2.2 Tests: with `backups_to_keep == 1`, the cycle T-1 backup survives through cycle T's deploy; a configured `BackupTimeout` also bounds post-success verification/cleanup without revoking deploy success
 
 ## 3. Propagated deploy-prep errors (#250)
 
