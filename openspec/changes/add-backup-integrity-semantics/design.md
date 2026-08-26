@@ -56,6 +56,9 @@ reports success while leaving prod broken or unrecoverable.
 - **Decision: Defer retention until after deploy verification.** Pruning the
   prior last-known-good before the new deploy is proven destroys the only
   recoverable baseline at `BackupsToKeep == 1`. Cleanup moves after verification.
+  Its verification and cleanup run under a second, independent `BackupTimeout`;
+  expiry warns and preserves the unprocessed backups without revoking the
+  already-verified deploy's success.
 
 - **Decision: Distinct rollback path.** The health-gate failure case is
   "deploy succeeded but is unhealthy", so re-running the new files is a no-op that

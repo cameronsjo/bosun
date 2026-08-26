@@ -9,11 +9,16 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	logpkg "github.com/cameronsjo/bosun/internal/log"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func backupDirectoryNames(t *testing.T, backupDir string) []string {
@@ -40,12 +45,14 @@ func TestReconciler_BackupRetentionN1RunsOnlyAfterSuccess(t *testing.T) {
 		composeErr         error
 		breakCleanup       bool
 		cancelCleanup      bool
+		timeoutCleanup     bool
 		wantRunErr         string
 		wantBackups        int
 		wantPriorPreserved bool
 		wantDeployedCommit string
 		wantSignals        int
 		wantCleanupWarning bool
+		wantCleanupSpanErr bool
 	}{
 		{
 			name:               "success prunes prior backup after deploy verification",
@@ -78,10 +85,24 @@ func TestReconciler_BackupRetentionN1RunsOnlyAfterSuccess(t *testing.T) {
 			wantSignals:        1,
 			wantCleanupWarning: true,
 		},
+		{
+			name:               "configured cleanup timeout preserves backups and records telemetry",
+			timeoutCleanup:     true,
+			wantBackups:        2,
+			wantPriorPreserved: true,
+			wantDeployedCommit: "new-commit",
+			wantSignals:        1,
+			wantCleanupWarning: true,
+			wantCleanupSpanErr: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			exporter := tracetest.NewInMemoryExporter()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+			t.Cleanup(func() { require.NoError(t, tp.Shutdown(context.Background())) })
+
 			var logs bytes.Buffer
 			logger := zerolog.New(&logs).Level(zerolog.WarnLevel)
 			runCtx := logpkg.WithContext(context.Background(), &logger)
@@ -103,8 +124,12 @@ func TestReconciler_BackupRetentionN1RunsOnlyAfterSuccess(t *testing.T) {
 				LocalAppdataPath: appdataDir,
 				BackupDir:        backupDir,
 				BackupsToKeep:    1,
+				BackupTimeout:    DefaultBackupTimeout,
 				InfraSubDir:      ".",
 				SecretsFiles:     []string{},
+			}
+			if tt.timeoutCleanup {
+				cfg.BackupTimeout = 2 * time.Second
 			}
 			seedStubComposeService(t, cfg)
 
@@ -149,11 +174,19 @@ func TestReconciler_BackupRetentionN1RunsOnlyAfterSuccess(t *testing.T) {
 					return nil
 				}
 			}
+			if tt.timeoutCleanup {
+				deploy.verifyBackupFn = func(verifyCtx context.Context, _ string) error {
+					verifyCalls++
+					<-verifyCtx.Done()
+					return verifyCtx.Err()
+				}
+			}
 
 			r := NewReconciler(cfg,
 				WithGitOperations(&mockGitOps{syncChanged: true, syncBefore: "old-commit", syncAfter: "new-commit"}),
 				WithDeployOps(deploy),
 			)
+			r.tracerFn = func(string) trace.Tracer { return tp.Tracer("retention-test") }
 
 			runErr := r.Run(runCtx)
 			if cleanupBlocked {
@@ -180,8 +213,19 @@ func TestReconciler_BackupRetentionN1RunsOnlyAfterSuccess(t *testing.T) {
 				assert.Equal(t, 2, verifyCalls, "cancellation must occur after the final candidate verification")
 			}
 			if tt.wantCleanupWarning {
-				assert.Contains(t, logs.String(), `"error":"context canceled"`)
+				if tt.timeoutCleanup {
+					assert.Contains(t, logs.String(), `"error":"context deadline exceeded"`)
+				} else {
+					assert.Contains(t, logs.String(), `"error":"context canceled"`)
+				}
 				assert.Contains(t, logs.String(), `"message":"Failed to cleanup old backups after successful deploy"`)
+			}
+			if tt.wantCleanupSpanErr {
+				spans := exporter.GetSpans()
+				require.Len(t, spans, 1)
+				assert.Equal(t, "reconcile.backup_cleanup", spans[0].Name)
+				assert.Equal(t, codes.Error, spans[0].Status.Code)
+				assert.NotEmpty(t, spans[0].Events, "SpanError must record the deadline event")
 			}
 		})
 	}

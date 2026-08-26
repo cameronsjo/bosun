@@ -10,7 +10,7 @@ When the backup spans an active transport (remote tar-over-SSH), the reconciler 
 
 The backup archive SHALL NOT include the backup destination directory or any prior backup it contains. When the configured backup destination is nested within a backed-up path (for example, the reconciler's own appdata directory), the reconciler SHALL exclude the destination so the archive cannot recursively include its own growing output.
 
-Backup creation and verification SHALL run under a configurable timeout (`BackupTimeout`, default 5 minutes, overridable via `BOSUN_BACKUP_TIMEOUT` accepting a Go duration or a plain number of seconds). When the timeout elapses, the backup SHALL be treated as a failure. For a required backup this aborts the reconcile under the fail-closed rule below; a cold-state reconcile with nothing to back up never starts a backup and is therefore unaffected.
+`BackupTimeout` (default 5 minutes, overridable via `BOSUN_BACKUP_TIMEOUT` accepting a Go duration or a plain number of seconds) SHALL apply as independent deadlines to pre-deploy backup creation and verification and to post-success retention verification and cleanup. When the pre-deploy deadline elapses, the backup SHALL be treated as a failure. For a required backup this aborts the reconcile under the fail-closed rule below; a cold-state reconcile with nothing to back up never starts a backup and is therefore unaffected. When the retention deadline elapses, the reconciler SHALL warn, preserve every backup not already classified and removed, record an error on the retention telemetry span, and continue recording the verified deploy as successful.
 
 When a required backup cannot be created or verified, the reconciler SHALL abort the reconcile before mutating target state, rather than proceeding with no rollback target.
 
@@ -51,6 +51,14 @@ The last backup path SHALL be stored for potential rollback during compose up. A
 - **THEN** the backup is aborted and treated as a failure
 - **AND** the reconcile aborts before mutating target state
 - **AND** an error names the timeout as the cause
+
+#### Scenario: Post-success retention exceeds its timeout
+
+- **WHEN** backup verification or cleanup during post-success retention runs longer than `BackupTimeout`
+- **THEN** the retention pass stops and emits a warning
+- **AND** backups not already classified and removed remain untouched
+- **AND** the retention telemetry span records the deadline error
+- **AND** the verified deploy is still recorded as successful
 
 #### Scenario: Truncated archive fails verification
 
@@ -154,8 +162,9 @@ The reconciler SHALL execute stages in this fixed order:
 12. Critical container health gate (if configured)
 13. Execute post-sync hooks
 14. Post-deploy verification (drift check)
-15. Record successful deployment in state file
-16. Release lock
+15. Prune verified backups to the configured retention count
+16. Record successful deployment in state file
+17. Release lock
 
 A failure at any stage SHALL abort the remaining stages and release the lock. Configuration backup (stage 7) is the sole conditional case: when there is genuinely nothing to back up (no existing configuration paths), the empty result is recorded and the pipeline proceeds; but when a required backup cannot be created or verified — including on timeout — the reconciler SHALL abort before mutating target state (stage 8 onward), consistent with the fail-closed Configuration Backup requirement. The health gate (stage 12) failing SHALL trigger rollback before aborting. The invariant check (stage 9) failing SHALL abort before compose up runs; no rollback is needed because no compose changes have been applied at that point.
 
@@ -178,7 +187,7 @@ The lock SHALL always be released via defer, even on panic.
 #### Scenario: Required backup failure aborts before deploy
 
 - **WHEN** a required backup (existing config paths present) cannot be created or verified, including on timeout
-- **THEN** stages 8–15 (deploy through state recording) are skipped
+- **THEN** stages 8–16 (deploy through state recording) are skipped
 - **AND** no target file is written and the existing state is left intact
 - **AND** the lock is released
 
@@ -193,7 +202,7 @@ The lock SHALL always be released via defer, even on panic.
 #### Scenario: Dry run mode
 
 - **WHEN** `DryRun` is true
-- **THEN** backup, deploy, invariant check, compose up, health gate, post-sync hooks, and post-deploy verification are skipped
+- **THEN** backup, deploy, invariant check, compose up, health gate, post-sync hooks, post-deploy verification, and backup retention are skipped
 - **AND** template rendering still executes to validate templates
 
 #### Scenario: Health gate failure triggers rollback

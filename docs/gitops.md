@@ -855,6 +855,13 @@ do not count toward the retention limit and are removed outright, so a broken ba
 never occupy a keep slot and evict an older good one. When a deploy has no managed files to
 back up (a fresh host's first deploy), no backup is created and no rollback anchor is recorded.
 
+`BackupTimeout` (`BOSUN_BACKUP_TIMEOUT`, default `5m`) applies as two independent
+deadlines: once to pre-deploy creation + verification and again to post-success
+retention verification + cleanup. If retention reaches that deadline, Bosun
+warns, marks the cleanup telemetry span as an error, preserves every backup it
+has not already classified and removed, and still records the verified deploy
+as successful.
+
 ```go
 cfg.BackupsToKeep = 5  // Default
 ```

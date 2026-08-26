@@ -19,9 +19,10 @@ import (
 	"github.com/kballard/go-shellquote"
 )
 
-// DefaultBackupTimeout bounds backup creation + verification when no
-// BackupTimeout is configured. Prevents the pre-deploy backup step from
-// wedging the reconcile indefinitely (#319).
+// DefaultBackupTimeout separately bounds pre-deploy backup creation +
+// verification and post-success retention verification + cleanup when no
+// BackupTimeout is configured. It prevents either backup phase from wedging
+// the reconcile indefinitely (#319, #243).
 const DefaultBackupTimeout = 5 * time.Minute
 
 // MaxVerifyDecompressedBytes caps the TOTAL decompressed size that
@@ -647,8 +648,9 @@ func (d *DeployOps) LatestVerifiedBackup(ctx context.Context, backupDir string) 
 // "good" to a mere existence check yet junk to VerifyBackup). A corrupt or partial
 // dir (missing, unlistable, or truncated archive) does NOT occupy a keep slot and
 // is removed outright; otherwise it could evict an older known-good backup (#353).
-// Verification shares ctx with backup creation, so a stuck tar/gzip read cannot
-// wedge cleanup.
+// Verification and removal share the caller's post-success retention context,
+// which is independently bounded by BackupTimeout so a stuck tar/gzip read
+// cannot wedge cleanup.
 func (d *DeployOps) CleanupBackups(ctx context.Context, backupDir string, keep int) error {
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 	logger.Debug().

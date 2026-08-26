@@ -224,7 +224,8 @@ type Config struct {
 	// Zero means use DefaultComposeUpTimeout (10 minutes).
 	ComposeUpTimeout time.Duration
 
-	// BackupTimeout bounds backup creation + verification.
+	// BackupTimeout separately bounds pre-deploy backup creation + verification
+	// and post-success retention verification + cleanup.
 	// Zero means use DefaultBackupTimeout (5 minutes).
 	BackupTimeout time.Duration
 
@@ -292,6 +293,8 @@ type Reconciler struct {
 	// backup-footprint admission in pipeline tests. Nil uses the production
 	// enumerator.
 	backupFilesFromTargetsFn func(string, []DeployTarget, string) ([]string, error)
+	// tracerFn is an instance-scoped telemetry seam. Nil uses telemetry.Tracer.
+	tracerFn func(string) trace.Tracer
 }
 
 // NewReconciler creates a new Reconciler with the given configuration.
@@ -2095,7 +2098,11 @@ func (r *Reconciler) cleanupBackupsAfterSuccess(ctx context.Context) {
 		return
 	}
 
-	cleanupCtx, cleanupSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.backup_cleanup",
+	tracer := telemetry.Tracer("reconcile")
+	if r.tracerFn != nil {
+		tracer = r.tracerFn("reconcile")
+	}
+	cleanupCtx, cleanupSpan := tracer.Start(ctx, "reconcile.backup_cleanup",
 		trace.WithAttributes(telemetry.IntAttr("backups_to_keep", r.config.BackupsToKeep)),
 	)
 	defer cleanupSpan.End()
