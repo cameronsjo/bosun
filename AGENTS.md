@@ -62,11 +62,14 @@ module, and golangci-lint caches. It derives the built-in Go defaults with
 `GOENV=off`, rejects explicit or GOENV-derived cache/temp deviations, and keeps
 unrelated GOENV settings available to the child. Its tiny persistent lock file
 lives in the canonical Git common directory shared by those worktrees. The gate
-refuses to start below 20 GiB free, reports before/after disk usage, and fails a
-successful command that unexpectedly consumes more than 8 GiB. A waiting agent
-times out after 60 seconds and SHOULD retry later; it MUST NOT bypass the gate.
-Agents MUST NOT create per-agent Go, race, coverage, or lint caches. Ordinary
-user-invoked Make targets remain ungated; the wrapper is mandatory for
+refuses to start below 100 GiB free, reports the active thresholds and
+before/after disk usage, and fails a successful command that unexpectedly
+consumes more than 4 GiB. A waiting agent times out after 60 seconds and SHOULD
+retry later; it MUST NOT bypass the gate. Agents MUST NOT create per-agent Go,
+race, coverage, or lint caches. `GOTMPDIR` remains unset so Go uses and removes
+its standard per-command build directories; agents may still set `TMPDIR` to an
+explicit lane directory and MUST remove that directory when the lane finishes.
+Ordinary user-invoked Make targets remain ungated; the wrapper is mandatory for
 agent-run local gates.
 
 Exit statuses:
@@ -81,11 +84,16 @@ Exit statuses:
 - Any other status — the wrapped command's own exit status, which the gate
   preserves.
 
-The defaults are controlled by `BOSUN_AGENT_MIN_FREE_GIB` (20),
-`BOSUN_AGENT_MAX_DISK_DELTA_GIB` (8), and
-`BOSUN_AGENT_GATE_WAIT_SECONDS` (60). Agents MUST NOT lower the free-space
-floor, raise the delta or wait limits, or otherwise change these overrides to
-bypass a gate rejection.
+The defaults are controlled by `BOSUN_AGENT_MIN_FREE_GIB` (100),
+`BOSUN_AGENT_MAX_DISK_DELTA_GIB` (4), and
+`BOSUN_AGENT_GATE_WAIT_SECONDS` (60). Resource overrides may only tighten the
+disk limits: the guard accepts a free-space floor from 100 through 2047 GiB and
+a delta cap from 0 through 4 GiB. Override values use canonical decimal notation
+without leading zeroes; this keeps shell arithmetic consistent across supported
+platforms and prevents conversion overflow. The wait override is likewise a
+canonical non-negative decimal and only changes how long an agent queues for the
+shared lock; it does not weaken disk or cache enforcement. Agents MUST NOT
+otherwise change overrides to bypass a gate rejection.
 
 **Patterns:**
 

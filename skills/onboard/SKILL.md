@@ -248,7 +248,12 @@ When working on Bosun itself:
 When an agent works on Bosun itself, it MUST wrap compiler-heavy local build,
 test, and lint commands with `scripts/agent-go-gate.sh`. This serializes those
 commands across worktrees and enforces the repository's shared-cache and disk
-limits. Human-invoked Make targets remain unchanged.
+limits: at least 100 GiB must remain free and one command may consume at most
+4 GiB. Overrides can only tighten these limits and must use canonical decimal
+notation without leading zeroes; the accepted free-space range is 100-2047 GiB
+and the delta range is 0-4 GiB. The guard keeps `GOTMPDIR` unset so Go removes
+its standard temporary build directories; a lane-specific `TMPDIR` must be
+removed when work finishes. Human-invoked Make targets remain unchanged.
 
 ```bash
 scripts/agent-go-gate.sh make build

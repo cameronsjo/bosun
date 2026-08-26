@@ -167,8 +167,8 @@ EOF
 	export FAKE_DEFAULT_GOMODCACHE="$case_dir/shared-go-mod"
 	export FAKE_REAL_GO="$real_go"
 	export FAKE_DF_STATE="$case_dir/df-state"
-	export FAKE_DF_FIRST_KIB=31457280
-	export FAKE_DF_SECOND_KIB=31457280
+	export FAKE_DF_FIRST_KIB=125829120
+	export FAKE_DF_SECOND_KIB=125829120
 	command mkdir -p -- "$TMPDIR"
 	case_lock_file=$(lock_file_for_common "$fake_common")
 	lock_files="$lock_files $case_lock_file"
@@ -180,6 +180,16 @@ EOF
 run_gate() {
 	set +e
 	gate_output=$(cd "$fake_repo" && sh "$gate" "$@" 2>&1)
+	gate_status=$?
+	set -e
+}
+
+run_gate_with_override() {
+	override_name=$1
+	override_value=$2
+	shift 2
+	set +e
+	gate_output=$(cd "$fake_repo" && env "$override_name=$override_value" sh "$gate" "$@" 2>&1)
 	gate_status=$?
 	set -e
 }
@@ -205,8 +215,99 @@ run_gate record-env "$env_file"
 expected_env="$FAKE_DEFAULT_GOCACHE|$FAKE_DEFAULT_GOMODCACHE|"
 expected_env="$expected_env|"
 [ "$(command cat "$env_file")" = "$expected_env" ] || fail 'gate did not enforce shared default Go caches'
-assert_contains "$gate_output" 'agent-go-gate: start free=30.0 GiB min=20 GiB'
-assert_contains "$gate_output" 'agent-go-gate: finish free=30.0 GiB delta=0.0 GiB status=0'
+assert_contains "$gate_output" 'agent-go-gate: start free=120.0 GiB min=100 GiB max-delta=4 GiB wait=60s'
+assert_contains "$gate_output" 'agent-go-gate: finish free=120.0 GiB delta=0.0 GiB status=0'
+
+new_case safe-resource-overrides
+marker="$case_dir/ran"
+BOSUN_AGENT_MIN_FREE_GIB=110
+BOSUN_AGENT_MAX_DISK_DELTA_GIB=2
+BOSUN_AGENT_GATE_WAIT_SECONDS=300
+export BOSUN_AGENT_MIN_FREE_GIB BOSUN_AGENT_MAX_DISK_DELTA_GIB BOSUN_AGENT_GATE_WAIT_SECONDS
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 0 ] || fail "safe resource overrides case exited $gate_status: $gate_output"
+[ -e "$marker" ] || fail 'safe resource overrides command did not run'
+assert_contains "$gate_output" 'min=110 GiB max-delta=2 GiB wait=300s'
+unset BOSUN_AGENT_MIN_FREE_GIB BOSUN_AGENT_MAX_DISK_DELTA_GIB BOSUN_AGENT_GATE_WAIT_SECONDS
+
+new_case low-floor-override
+marker="$case_dir/must-not-run"
+BOSUN_AGENT_MIN_FREE_GIB=99
+export BOSUN_AGENT_MIN_FREE_GIB
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 64 ] || fail "low floor override case exited $gate_status"
+assert_contains "$gate_output" "BOSUN_AGENT_MIN_FREE_GIB must be at least 100 GiB, got '99'"
+assert_not_exists "$marker"
+unset BOSUN_AGENT_MIN_FREE_GIB
+
+new_case high-delta-override
+marker="$case_dir/must-not-run"
+BOSUN_AGENT_MAX_DISK_DELTA_GIB=5
+export BOSUN_AGENT_MAX_DISK_DELTA_GIB
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 64 ] || fail "high delta override case exited $gate_status"
+assert_contains "$gate_output" "BOSUN_AGENT_MAX_DISK_DELTA_GIB must be at most 4 GiB, got '5'"
+assert_not_exists "$marker"
+unset BOSUN_AGENT_MAX_DISK_DELTA_GIB
+
+for override_name in BOSUN_AGENT_MIN_FREE_GIB BOSUN_AGENT_MAX_DISK_DELTA_GIB BOSUN_AGENT_GATE_WAIT_SECONDS; do
+	new_case "leading-zero-$override_name"
+	marker="$case_dir/must-not-run"
+	run_gate_with_override "$override_name" 0100 touch-path "$marker"
+	[ "$gate_status" -eq 64 ] || fail "leading-zero $override_name case exited $gate_status"
+	assert_contains "$gate_output" "$override_name must use canonical decimal notation without leading zeroes, got '0100'"
+	assert_not_exists "$marker"
+done
+
+new_case overflowing-floor-override
+marker="$case_dir/must-not-run"
+BOSUN_AGENT_MIN_FREE_GIB=999999999999999999999999
+export BOSUN_AGENT_MIN_FREE_GIB
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 64 ] || fail "overflowing floor override case exited $gate_status"
+assert_contains "$gate_output" "BOSUN_AGENT_MIN_FREE_GIB must be at most 2047 GiB, got '999999999999999999999999'"
+assert_not_exists "$marker"
+unset BOSUN_AGENT_MIN_FREE_GIB
+
+new_case arithmetic-floor-limit
+marker="$case_dir/must-not-run"
+BOSUN_AGENT_MIN_FREE_GIB=2048
+export BOSUN_AGENT_MIN_FREE_GIB
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 64 ] || fail "arithmetic floor limit case exited $gate_status"
+assert_contains "$gate_output" "BOSUN_AGENT_MIN_FREE_GIB must be at most 2047 GiB, got '2048'"
+assert_not_exists "$marker"
+unset BOSUN_AGENT_MIN_FREE_GIB
+
+new_case invalid-floor-override
+marker="$case_dir/must-not-run"
+BOSUN_AGENT_MIN_FREE_GIB=invalid
+export BOSUN_AGENT_MIN_FREE_GIB
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 64 ] || fail "invalid floor override case exited $gate_status"
+assert_contains "$gate_output" "BOSUN_AGENT_MIN_FREE_GIB must be a non-negative integer, got 'invalid'"
+assert_not_exists "$marker"
+unset BOSUN_AGENT_MIN_FREE_GIB
+
+new_case invalid-delta-override
+marker="$case_dir/must-not-run"
+BOSUN_AGENT_MAX_DISK_DELTA_GIB=invalid
+export BOSUN_AGENT_MAX_DISK_DELTA_GIB
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 64 ] || fail "invalid delta override case exited $gate_status"
+assert_contains "$gate_output" "BOSUN_AGENT_MAX_DISK_DELTA_GIB must be a non-negative integer, got 'invalid'"
+assert_not_exists "$marker"
+unset BOSUN_AGENT_MAX_DISK_DELTA_GIB
+
+new_case invalid-wait-override
+marker="$case_dir/must-not-run"
+BOSUN_AGENT_GATE_WAIT_SECONDS=invalid
+export BOSUN_AGENT_GATE_WAIT_SECONDS
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 64 ] || fail "invalid wait override case exited $gate_status"
+assert_contains "$gate_output" "BOSUN_AGENT_GATE_WAIT_SECONDS must be a non-negative integer, got 'invalid'"
+assert_not_exists "$marker"
+unset BOSUN_AGENT_GATE_WAIT_SECONDS
 
 new_case private-cache
 marker="$case_dir/ran"
@@ -278,42 +379,61 @@ unset GOENV FAKE_USE_REAL_GO
 
 new_case low-disk
 marker="$case_dir/ran"
-FAKE_DF_FIRST_KIB=10485760
-FAKE_DF_SECOND_KIB=10485760
+FAKE_DF_FIRST_KIB=103809024
+FAKE_DF_SECOND_KIB=103809024
 export FAKE_DF_FIRST_KIB FAKE_DF_SECOND_KIB
 run_gate touch-path "$marker"
 [ "$gate_status" -eq 75 ] || fail "low disk case exited $gate_status"
-assert_contains "$gate_output" 'only 10.0 GiB free; 20 GiB is required'
+assert_contains "$gate_output" 'only 99.0 GiB free; 100 GiB is required'
 assert_not_exists "$marker"
+
+new_case exact-floor
+marker="$case_dir/ran"
+FAKE_DF_FIRST_KIB=104857600
+FAKE_DF_SECOND_KIB=104857600
+export FAKE_DF_FIRST_KIB FAKE_DF_SECOND_KIB
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 0 ] || fail "exact floor case exited $gate_status: $gate_output"
+[ -e "$marker" ] || fail 'command did not run at the exact free-space floor'
+
+new_case exact-delta
+marker="$case_dir/ran"
+FAKE_DF_FIRST_KIB=125829120
+FAKE_DF_SECOND_KIB=121634816
+export FAKE_DF_FIRST_KIB FAKE_DF_SECOND_KIB
+run_gate touch-path "$marker"
+[ "$gate_status" -eq 0 ] || fail "exact delta case exited $gate_status: $gate_output"
+[ -e "$marker" ] || fail 'command did not pass at the exact disk-delta cap'
+assert_contains "$gate_output" 'delta=4.0 GiB status=0'
 
 new_case excessive-delta
 marker="$case_dir/ran"
-FAKE_DF_FIRST_KIB=31457280
-FAKE_DF_SECOND_KIB=22020096
+FAKE_DF_FIRST_KIB=125829120
+FAKE_DF_SECOND_KIB=120586240
 export FAKE_DF_FIRST_KIB FAKE_DF_SECOND_KIB
 run_gate touch-path "$marker"
 [ "$gate_status" -eq 75 ] || fail "excessive delta case exited $gate_status"
 [ -e "$marker" ] || fail 'excessive delta command did not run'
-assert_contains "$gate_output" 'command consumed 9.0 GiB; limit is 8 GiB'
+assert_contains "$gate_output" 'command consumed 5.0 GiB; limit is 4 GiB'
 
 new_case post-floor
 marker="$case_dir/ran"
-FAKE_DF_FIRST_KIB=31457280
-FAKE_DF_SECOND_KIB=19922944
+FAKE_DF_FIRST_KIB=125829120
+FAKE_DF_SECOND_KIB=103809024
 export FAKE_DF_FIRST_KIB FAKE_DF_SECOND_KIB
 run_gate touch-path "$marker"
 [ "$gate_status" -eq 75 ] || fail "post-floor case exited $gate_status"
 [ -e "$marker" ] || fail 'post-floor command did not run'
-assert_contains "$gate_output" 'free space fell below the 20 GiB floor'
+assert_contains "$gate_output" 'free space fell below the 100 GiB floor'
 
 new_case command-status
-FAKE_DF_FIRST_KIB=31457280
-FAKE_DF_SECOND_KIB=22020096
+FAKE_DF_FIRST_KIB=125829120
+FAKE_DF_SECOND_KIB=120586240
 export FAKE_DF_FIRST_KIB FAKE_DF_SECOND_KIB
 run_gate sh -c 'exit 7'
 [ "$gate_status" -eq 7 ] || fail "command status was not preserved: $gate_status"
 assert_contains "$gate_output" 'status=7'
-assert_contains "$gate_output" 'command consumed 9.0 GiB; limit is 8 GiB'
+assert_contains "$gate_output" 'command consumed 5.0 GiB; limit is 4 GiB'
 
 new_case serialization
 first_acquired="$case_dir/first-acquired"
