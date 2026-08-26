@@ -128,6 +128,19 @@ gh secret set RELEASE_APP_PRIVATE_KEY < /path/to/release-app.private-key.pem
 Delete the downloaded PEM after a subsequent Release Please run shows
 `Generate App Token` succeeded.
 
+If a release already exists but its publishing job did not finish, recover its
+assets through the same GoReleaser, container, signing, and provenance job by
+dispatching the workflow with that existing tag:
+
+```bash
+gh workflow run release-please.yml -f tag=v0.40.6
+```
+
+The dispatch rejects tags without a `v`-prefixed semantic version and tags that
+do not already have both a Git ref and GitHub Release. It does not run Release
+Please or recreate either object. Inspect the run before treating recovery as
+complete; do not delete and recreate the tag or release.
+
 ## Debugging
 
 ### Interactive Shell
