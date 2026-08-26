@@ -39,6 +39,12 @@ type DeployOps struct {
 	// Defaults to ComposeUpMultiple when nil. Exposed for testing the isolated
 	// deploy/rollback decision logic without requiring Docker.
 	composeUpFn func(ctx context.Context, files []string) error
+	// signalContainerFn overrides local container signaling in tests. Nil runs
+	// docker kill through SignalContainer's production path.
+	signalContainerFn func(ctx context.Context, containerName, signal string) error
+	// verifyBackupFn fault-injects retention verification outcomes in tests. Nil
+	// uses VerifyBackup.
+	verifyBackupFn func(ctx context.Context, backupPath string) error
 	// extractBackupFn fault-injects local rollback archive extraction in tests.
 	// Nil uses the shared in-process safeExtractBackup implementation.
 	extractBackupFn func(ctx context.Context, tarFile string) (root string, cleanup func(), err error)

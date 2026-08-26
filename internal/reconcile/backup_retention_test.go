@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	logpkg "github.com/cameronsjo/bosun/internal/log"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -36,16 +39,20 @@ func TestReconciler_BackupRetentionN1RunsOnlyAfterSuccess(t *testing.T) {
 		name               string
 		composeErr         error
 		breakCleanup       bool
+		cancelCleanup      bool
 		wantRunErr         string
 		wantBackups        int
 		wantPriorPreserved bool
 		wantDeployedCommit string
+		wantSignals        int
+		wantCleanupWarning bool
 	}{
 		{
 			name:               "success prunes prior backup after deploy verification",
 			wantBackups:        1,
 			wantPriorPreserved: false,
 			wantDeployedCommit: "new-commit",
+			wantSignals:        1,
 		},
 		{
 			name:               "deploy failure preserves prior backup",
@@ -60,11 +67,27 @@ func TestReconciler_BackupRetentionN1RunsOnlyAfterSuccess(t *testing.T) {
 			wantBackups:        2,
 			wantPriorPreserved: true,
 			wantDeployedCommit: "new-commit",
+			wantSignals:        1,
+		},
+		{
+			name:               "cleanup cancellation on final verification preserves both backups",
+			cancelCleanup:      true,
+			wantBackups:        2,
+			wantPriorPreserved: true,
+			wantDeployedCommit: "new-commit",
+			wantSignals:        1,
+			wantCleanupWarning: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logger := zerolog.New(&logs).Level(zerolog.WarnLevel)
+			runCtx := logpkg.WithContext(context.Background(), &logger)
+			runCtx, cancel := context.WithCancel(runCtx)
+			t.Cleanup(cancel)
+
 			root := evalSymlinks(t, t.TempDir())
 			repoDir := filepath.Join(root, "repo")
 			stagingDir := filepath.Join(root, "staging")
@@ -92,6 +115,8 @@ func TestReconciler_BackupRetentionN1RunsOnlyAfterSuccess(t *testing.T) {
 			priorBackup := makeBackupDir(t, backupDir, "backup-20000101-000000", true)
 			blockedBackupDir := backupDir + ".blocked"
 			cleanupBlocked := false
+			signalCalls := 0
+			verifyCalls := 0
 
 			deploy := &DeployOps{
 				DryRun:          false,
@@ -108,6 +133,21 @@ func TestReconciler_BackupRetentionN1RunsOnlyAfterSuccess(t *testing.T) {
 					}
 					return tt.composeErr
 				},
+				signalContainerFn: func(_ context.Context, containerName, signal string) error {
+					signalCalls++
+					assert.Equal(t, "agentgateway", containerName)
+					assert.Equal(t, "SIGHUP", signal)
+					return nil
+				},
+			}
+			if tt.cancelCleanup {
+				deploy.verifyBackupFn = func(_ context.Context, _ string) error {
+					verifyCalls++
+					if verifyCalls == 2 {
+						cancel()
+					}
+					return nil
+				}
 			}
 
 			r := NewReconciler(cfg,
@@ -115,7 +155,7 @@ func TestReconciler_BackupRetentionN1RunsOnlyAfterSuccess(t *testing.T) {
 				WithDeployOps(deploy),
 			)
 
-			runErr := r.Run(context.Background())
+			runErr := r.Run(runCtx)
 			if cleanupBlocked {
 				require.NoError(t, os.Remove(backupDir))
 				require.NoError(t, os.Rename(blockedBackupDir, backupDir))
@@ -135,6 +175,14 @@ func TestReconciler_BackupRetentionN1RunsOnlyAfterSuccess(t *testing.T) {
 				assert.NoDirExists(t, priorBackup)
 			}
 			assert.Equal(t, tt.wantDeployedCommit, LoadState(stateFile).LastDeployedCommit)
+			assert.Equal(t, tt.wantSignals, signalCalls)
+			if tt.cancelCleanup {
+				assert.Equal(t, 2, verifyCalls, "cancellation must occur after the final candidate verification")
+			}
+			if tt.wantCleanupWarning {
+				assert.Contains(t, logs.String(), `"error":"context canceled"`)
+				assert.Contains(t, logs.String(), `"message":"Failed to cleanup old backups after successful deploy"`)
+			}
 		})
 	}
 }

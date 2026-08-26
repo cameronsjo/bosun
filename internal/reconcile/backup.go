@@ -96,6 +96,13 @@ func (d *DeployOps) VerifyBackup(ctx context.Context, backupPath string) error {
 	return nil
 }
 
+func (d *DeployOps) verifyBackup(ctx context.Context, backupPath string) error {
+	if d.verifyBackupFn != nil {
+		return d.verifyBackupFn(ctx, backupPath)
+	}
+	return d.VerifyBackup(ctx, backupPath)
+}
+
 // verifyArchiveIntegrity fully reads a gzip-compressed tar archive, decompressing
 // and consuming every entry's data to EOF. Unlike `tar -tzf`, which only needs the
 // member headers, this forces decompression of every byte so a truncated data
@@ -672,7 +679,11 @@ func (d *DeployOps) CleanupBackups(ctx context.Context, backupDir string, keep i
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if d.VerifyBackup(ctx, filepath.Join(backupDir, e.Name())) == nil {
+		verifyErr := d.verifyBackup(ctx, filepath.Join(backupDir, e.Name()))
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if verifyErr == nil {
 			valid = append(valid, e.Name())
 		} else {
 			invalid = append(invalid, e.Name())
@@ -681,6 +692,9 @@ func (d *DeployOps) CleanupBackups(ctx context.Context, backupDir string, keep i
 
 	// Remove corrupt/partial dirs unconditionally — they are litter, never anchors.
 	for _, name := range invalid {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		path := filepath.Join(backupDir, name)
 		if err := os.RemoveAll(path); err != nil {
 			logger.Error().Err(err).Str(log.FieldPath, path).Msg("Failed to remove corrupt/partial backup")
@@ -702,6 +716,9 @@ func (d *DeployOps) CleanupBackups(ctx context.Context, backupDir string, keep i
 			Msg("Removing old backups")
 
 		for _, name := range toRemove {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			path := filepath.Join(backupDir, name)
 			if err := os.RemoveAll(path); err != nil {
 				logger.Error().Err(err).Str(log.FieldPath, path).Msg("Failed to remove old backup")
