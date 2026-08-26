@@ -1,10 +1,10 @@
 package tunnel
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/log"
@@ -15,7 +15,12 @@ type Tailscale struct {
 	// binaryPath is the path to the tailscale binary.
 	binaryPath string
 
-	// cachedHostname stores the hostname from the last status check.
+	// runner executes tailscale commands.
+	runner commandRunner
+
+	// cachedHostname stores the hostname from the last status check. It is
+	// guarded because status checks and UI reads may run concurrently.
+	hostnameMu     sync.RWMutex
 	cachedHostname string
 }
 
@@ -57,6 +62,7 @@ func NewTailscale() (*Tailscale, error) {
 
 	return &Tailscale{
 		binaryPath: path,
+		runner:     execCommandRunner{},
 	}, nil
 }
 
@@ -65,7 +71,27 @@ func NewTailscale() (*Tailscale, error) {
 func NewTailscaleWithPath(binaryPath string) *Tailscale {
 	return &Tailscale{
 		binaryPath: binaryPath,
+		runner:     execCommandRunner{},
 	}
+}
+
+func (t *Tailscale) commandRunner() commandRunner {
+	if t.runner != nil {
+		return t.runner
+	}
+	return execCommandRunner{}
+}
+
+func (t *Tailscale) getCachedHostname() string {
+	t.hostnameMu.RLock()
+	defer t.hostnameMu.RUnlock()
+	return t.cachedHostname
+}
+
+func (t *Tailscale) setCachedHostname(hostname string) {
+	t.hostnameMu.Lock()
+	t.cachedHostname = hostname
+	t.hostnameMu.Unlock()
 }
 
 // Name returns the provider name.
@@ -78,16 +104,12 @@ func (t *Tailscale) Status(ctx context.Context) (*Status, error) {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentTunnel)
 
-	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, t.binaryPath, "status", "--json")
-	cmd.Stderr = &stderr
-
 	logger.Debug().Str(log.FieldOperation, "status").Msg("Executing tailscale status")
 
-	output, err := cmd.Output()
+	output, stderr, err := t.commandRunner().Output(ctx, t.binaryPath, "status", "--json")
 	if err != nil {
 		// Check if Tailscale is not connected
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		if exitErr, ok := err.(interface{ ExitCode() int }); ok && exitErr.ExitCode() == 1 {
 			logger.Debug().
 				Str(log.FieldOperation, "status").
 				Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
@@ -101,15 +123,15 @@ func (t *Tailscale) Status(ctx context.Context) (*Status, error) {
 		logger.Error().
 			Err(err).
 			Str(log.FieldOperation, "status").
-			Str("stderr", stderr.String()).
+			Str("stderr", stderr).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 			Msg("Failed to execute tailscale status command")
 		return nil, err
 	}
 
-	if stderrStr := stderr.String(); stderrStr != "" {
+	if stderr != "" {
 		logger.Debug().
-			Str("stderr", stderrStr).
+			Str("stderr", stderr).
 			Msg("tailscale status command produced stderr output")
 	}
 
@@ -134,7 +156,7 @@ func (t *Tailscale) Status(ctx context.Context) (*Status, error) {
 		status.Hostname = tsStatus.Self.HostName
 	}
 	if tsStatus.Self.DNSName != "" {
-		t.cachedHostname = tsStatus.Self.DNSName
+		t.setCachedHostname(tsStatus.Self.DNSName)
 	}
 	if len(tsStatus.Self.TailscaleIPs) > 0 {
 		status.IP = tsStatus.Self.TailscaleIPs[0]
@@ -177,8 +199,8 @@ func (t *Tailscale) IsConnected(ctx context.Context) bool {
 
 // GetHostname returns the Tailscale DNS name.
 func (t *Tailscale) GetHostname() string {
-	if t.cachedHostname != "" {
-		return t.cachedHostname
+	if hostname := t.getCachedHostname(); hostname != "" {
+		return hostname
 	}
 
 	// Try to get the hostname from status
@@ -186,6 +208,9 @@ func (t *Tailscale) GetHostname() string {
 	status, err := t.Status(ctx)
 	if err != nil {
 		return ""
+	}
+	if hostname := t.getCachedHostname(); hostname != "" {
+		return hostname
 	}
 
 	return status.Hostname
@@ -197,26 +222,22 @@ func (t *Tailscale) GetPlainStatus(ctx context.Context) (string, error) {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentTunnel)
 
-	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, t.binaryPath, "status")
-	cmd.Stderr = &stderr
-
 	logger.Debug().Str(log.FieldOperation, "plain_status").Msg("Executing tailscale status for plain text output")
 
-	output, err := cmd.Output()
+	output, stderr, err := t.commandRunner().Output(ctx, t.binaryPath, "status")
 	if err != nil {
 		logger.Error().
 			Err(err).
 			Str(log.FieldOperation, "plain_status").
-			Str("stderr", stderr.String()).
+			Str("stderr", stderr).
 			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
 			Msg("Failed to execute tailscale plain status command")
 		return "", err
 	}
 
-	if stderrStr := stderr.String(); stderrStr != "" {
+	if stderr != "" {
 		logger.Debug().
-			Str("stderr", stderrStr).
+			Str("stderr", stderr).
 			Msg("tailscale plain status command produced stderr output")
 	}
 
