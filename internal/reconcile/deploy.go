@@ -60,6 +60,50 @@ type DeployOps struct {
 	// backupFS fault-injects filesystem churn while writing local backup
 	// archives. Nil operations use filepath.Walk and os.Open.
 	backupFS *backupArchiveFS
+	// localFS provides instance-scoped filesystem seams for atomic local deploy
+	// boundary and recovery tests. Nil operations use the os package.
+	localFS *localDeployFS
+}
+
+type localDeployFS struct {
+	mkdirAll  func(context.Context, string, os.FileMode) error
+	mkdirTemp func(context.Context, string, string) (string, error)
+	rename    func(string, string) error
+	removeAll func(string) error
+}
+
+func mkdirAllContext(ctx context.Context, path string, mode os.FileMode) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return os.MkdirAll(path, mode)
+}
+
+func mkdirTempContext(ctx context.Context, dir, pattern string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(dir, pattern)
+}
+
+func (d *DeployOps) localDeployFS() localDeployFS {
+	ops := localDeployFS{}
+	if d.localFS != nil {
+		ops = *d.localFS
+	}
+	if ops.mkdirAll == nil {
+		ops.mkdirAll = mkdirAllContext
+	}
+	if ops.mkdirTemp == nil {
+		ops.mkdirTemp = mkdirTempContext
+	}
+	if ops.rename == nil {
+		ops.rename = os.Rename
+	}
+	if ops.removeAll == nil {
+		ops.removeAll = os.RemoveAll
+	}
+	return ops
 }
 
 func (d *DeployOps) extractBackup(ctx context.Context, tarFile string) (root string, cleanup func(), err error) {
@@ -202,6 +246,10 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 			Msg("Skipping local deployment. Reason: dry-run mode")
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	fsOps := d.localDeployFS()
 
 	logger.Debug().
 		Str(log.FieldPath, sourceDir).
@@ -236,7 +284,10 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 		}
 		rollback := func(cause error) error { return transitions.Rollback(cause) }
 
-		if err := os.MkdirAll(targetDir, 0755); err != nil {
+		if err := ctx.Err(); err != nil {
+			return rollback(err)
+		}
+		if err := fsOps.mkdirAll(ctx, targetDir, 0755); err != nil {
 			return rollback(fmt.Errorf("create target directory: %w", err))
 		}
 
@@ -281,12 +332,18 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 	// Standard mode: nuke-and-replace for atomic directory swap.
 	logger.Debug().Msg("Using atomic swap mode for deployment")
 	targetParent := filepath.Dir(targetDir)
-	if err := os.MkdirAll(targetParent, 0755); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := fsOps.mkdirAll(ctx, targetParent, 0755); err != nil {
 		logger.Error().Err(err).Str("target_parent", targetParent).Msg("Failed to deploy locally. Reason: cannot create target parent directory")
 		return fmt.Errorf("create target parent: %w", err)
 	}
 
-	tmpDir, err := os.MkdirTemp(targetParent, ".deploy-tmp-*")
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	tmpDir, err := fsOps.mkdirTemp(ctx, targetParent, ".deploy-tmp-*")
 	if err != nil {
 		logger.Error().Err(err).Str("target_parent", targetParent).Msg("Failed to deploy locally. Reason: cannot create temp directory")
 		return fmt.Errorf("create temp directory: %w", err)
@@ -295,7 +352,7 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 	success := false
 	defer func() {
 		if !success {
-			_ = os.RemoveAll(tmpDir)
+			_ = fsOps.removeAll(tmpDir)
 		}
 	}()
 
@@ -315,6 +372,15 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 	// approach had.
 	backupDir := targetDir + ".bak"
 	hadExisting := false
+	restoreOriginal := func(cause error) error {
+		if !hadExisting {
+			return cause
+		}
+		if rbErr := fsOps.rename(backupDir, targetDir); rbErr != nil {
+			return errors.Join(cause, fmt.Errorf("restore original target from %s: %w", backupDir, rbErr))
+		}
+		return cause
+	}
 
 	// Guard against stale backup from a previous crash.
 	if _, err := os.Stat(backupDir); err == nil {
@@ -328,17 +394,23 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 	if _, err := os.Stat(targetDir); err == nil {
 		hadExisting = true
 		logger.Debug().Str("target", targetDir).Msg("Moving existing target aside for atomic swap")
-		if err := os.Rename(targetDir, backupDir); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fsOps.rename(targetDir, backupDir); err != nil {
 			logger.Error().Err(err).Msg("Failed to deploy locally. Reason: cannot move existing target aside")
 			return fmt.Errorf("rename existing target aside: %w", err)
 		}
 	}
 
-	if err := os.Rename(tmpDir, targetDir); err != nil {
+	if err := ctx.Err(); err != nil {
+		return restoreOriginal(err)
+	}
+	if err := fsOps.rename(tmpDir, targetDir); err != nil {
 		logger.Error().Err(err).Str("target", targetDir).Msg("Failed to deploy locally. Reason: cannot rename temp to target")
 		// Restore the backup so the original target is not lost.
 		if hadExisting {
-			if rbErr := os.Rename(backupDir, targetDir); rbErr != nil {
+			if rbErr := fsOps.rename(backupDir, targetDir); rbErr != nil {
 				logger.Error().Err(rbErr).Str(log.FieldPath, backupDir).Msg("Recovery failed: cannot restore backup after rename failure")
 				return fmt.Errorf("rename to target failed: %w; restore backup from %s failed: %v", err, backupDir, rbErr)
 			}
@@ -348,7 +420,7 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 	}
 
 	if hadExisting {
-		if err := os.RemoveAll(backupDir); err != nil {
+		if err := fsOps.removeAll(backupDir); err != nil {
 			logger.Warn().Err(err).Str(log.FieldPath, backupDir).Msg("Deployment succeeded but backup cleanup failed")
 		}
 	}

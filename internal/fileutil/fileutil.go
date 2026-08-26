@@ -46,33 +46,34 @@ func warnSymlinkSkipped(path string) {
 // Uses atomic write via temp file to prevent partial writes on failure.
 // Symlinks are skipped with a warning rather than causing an error.
 func CopyFile(ctx context.Context, src, dst string) error {
-	return copyFileWithOps(ctx, src, dst, (*os.File).Chmod, syncDestinationDir)
+	return copyFileWithOps(ctx, src, dst, (*os.File).Chmod, syncDestinationDir, io.Copy)
 }
 
 // copyFileWithChmod exposes the permission operation as an explicit dependency
 // so its failure ordering can be tested without a package-global seam.
 func copyFileWithChmod(src, dst string, chmod func(*os.File, fs.FileMode) error) error {
-	return copyFileWithOps(context.Background(), src, dst, chmod, syncDestinationDir)
+	return copyFileWithOps(context.Background(), src, dst, chmod, syncDestinationDir, io.Copy)
 }
 
 // copyFileWithoutDirSync performs the atomic file replacement while leaving
 // destination-directory synchronization to a surrounding batch operation.
 func copyFileWithoutDirSync(src, dst string) error {
-	return copyFileWithOps(context.Background(), src, dst, (*os.File).Chmod, nil)
+	return copyFileWithOps(context.Background(), src, dst, (*os.File).Chmod, nil, io.Copy)
 }
 
 func copyFileWithoutDirSyncContext(ctx context.Context, src, dst string) error {
-	return copyFileWithOps(ctx, src, dst, (*os.File).Chmod, nil)
+	return copyFileWithOps(ctx, src, dst, (*os.File).Chmod, nil, io.Copy)
 }
 
-// copyFileWithOps exposes the permission and destination-directory sync
-// operations as explicit dependencies. A nil syncParent batches the latter at
-// a higher level; the public CopyFile path always supplies one.
+// copyFileWithOps exposes content transfer, permission, and destination-directory
+// sync operations as explicit dependencies. A nil syncParent batches the latter
+// at a higher level; the public CopyFile path always supplies one.
 func copyFileWithOps(
 	ctx context.Context,
 	src, dst string,
 	chmod func(*os.File, fs.FileMode) error,
 	syncParent func(string) error,
+	copyContent func(io.Writer, io.Reader) (int64, error),
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -141,7 +142,7 @@ func copyFileWithOps(
 	}()
 
 	// Copy content to temp file
-	if _, err := io.Copy(tmpFile, contextReader{ctx: ctx, reader: srcFile}); err != nil {
+	if _, err := copyContent(tmpFile, contextReader{ctx: ctx, reader: srcFile}); err != nil {
 		return fmt.Errorf("copy content: %w", err)
 	}
 

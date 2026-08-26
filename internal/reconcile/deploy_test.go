@@ -2525,10 +2525,131 @@ func TestDeployOps_DeployLocal_ContextCancelled(t *testing.T) {
 
 	d := &DeployOps{ContentHashSync: true}
 	err := d.DeployLocal(ctx, sourceDir, targetDir, nil, nil)
-	// Context should propagate through the sync.
-	if err != nil {
-		assert.ErrorIs(t, err, context.Canceled)
-	}
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.NoDirExists(t, targetDir)
+}
+
+func TestDeployOps_DeployLocal_CancellationMutationBoundaries(t *testing.T) {
+	t.Run("standard mode stops before temp creation", func(t *testing.T) {
+		root := evalSymlinks(t, t.TempDir())
+		source := filepath.Join(root, "source")
+		targetParent := filepath.Join(root, "new-parent")
+		target := filepath.Join(targetParent, "target")
+		require.NoError(t, os.MkdirAll(source, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(source, "config.yml"), []byte("new"), 0o644))
+		ctx, cancel := context.WithCancel(context.Background())
+		mkdirTempCalls := 0
+		deploy := &DeployOps{localFS: &localDeployFS{
+			mkdirAll: func(ctx context.Context, path string, mode os.FileMode) error {
+				err := mkdirAllContext(ctx, path, mode)
+				cancel()
+				return err
+			},
+			mkdirTemp: func(context.Context, string, string) (string, error) {
+				mkdirTempCalls++
+				return "", errors.New("unexpected temp creation")
+			},
+		}}
+
+		err := deploy.DeployLocal(ctx, source, target, nil, nil)
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, 0, mkdirTempCalls)
+		assert.DirExists(t, targetParent)
+		assert.NoDirExists(t, target)
+		entries, readErr := os.ReadDir(targetParent)
+		require.NoError(t, readErr)
+		assert.Empty(t, entries)
+	})
+
+	t.Run("standard mode cancellation at temp creation leaves no temp", func(t *testing.T) {
+		root := evalSymlinks(t, t.TempDir())
+		source := filepath.Join(root, "source")
+		targetParent := filepath.Join(root, "target-parent")
+		target := filepath.Join(targetParent, "target")
+		require.NoError(t, os.MkdirAll(source, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(source, "config.yml"), []byte("new"), 0o644))
+		ctx, cancel := context.WithCancel(context.Background())
+		mkdirTempCalls := 0
+		deploy := &DeployOps{localFS: &localDeployFS{
+			mkdirTemp: func(mkdirCtx context.Context, dir, pattern string) (string, error) {
+				mkdirTempCalls++
+				cancel()
+				return mkdirTempContext(mkdirCtx, dir, pattern)
+			},
+		}}
+
+		err := deploy.DeployLocal(ctx, source, target, nil, nil)
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, 1, mkdirTempCalls)
+		assert.NoDirExists(t, target)
+		entries, readErr := os.ReadDir(targetParent)
+		require.NoError(t, readErr)
+		assert.Empty(t, entries)
+	})
+
+	t.Run("content hash cancellation after transition promotion restores original", func(t *testing.T) {
+		root := evalSymlinks(t, t.TempDir())
+		source := filepath.Join(root, "source")
+		target := filepath.Join(root, "target")
+		require.NoError(t, os.MkdirAll(source, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(source, "config.yml"), []byte("new"), 0o644))
+		require.NoError(t, os.WriteFile(target, []byte("old"), 0o644))
+		ctx, cancel := context.WithCancel(context.Background())
+		mkdirCalls := 0
+		deploy := &DeployOps{ContentHashSync: true, localFS: &localDeployFS{
+			mkdirAll: func(mkdirCtx context.Context, path string, mode os.FileMode) error {
+				mkdirCalls++
+				cancel()
+				return mkdirAllContext(mkdirCtx, path, mode)
+			},
+		}}
+
+		err := deploy.DeployLocal(ctx, source, target, nil, map[string]bool{managedTargetRoot: true})
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, 1, mkdirCalls)
+		content, readErr := os.ReadFile(target)
+		require.NoError(t, readErr)
+		assert.Equal(t, "old", string(content))
+		assert.NoFileExists(t, target+managedTransitionOldSuffix)
+		assert.NoFileExists(t, target+managedTransitionNewSuffix)
+	})
+
+	t.Run("standard swap cancellation after quarantine restores original", func(t *testing.T) {
+		root := evalSymlinks(t, t.TempDir())
+		source := filepath.Join(root, "source")
+		target := filepath.Join(root, "target")
+		require.NoError(t, os.MkdirAll(source, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(source, "config.yml"), []byte("new"), 0o644))
+		require.NoError(t, os.MkdirAll(target, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(target, "config.yml"), []byte("old"), 0o644))
+		ctx, cancel := context.WithCancel(context.Background())
+		deploy := &DeployOps{localFS: &localDeployFS{
+			rename: func(oldPath, newPath string) error {
+				err := os.Rename(oldPath, newPath)
+				if oldPath == target && newPath == target+".bak" {
+					cancel()
+				}
+				return err
+			},
+		}}
+
+		err := deploy.DeployLocal(ctx, source, target, nil, nil)
+
+		require.ErrorIs(t, err, context.Canceled)
+		content, readErr := os.ReadFile(filepath.Join(target, "config.yml"))
+		require.NoError(t, readErr)
+		assert.Equal(t, "old", string(content))
+		assert.NoDirExists(t, target+".bak")
+		entries, readDirErr := os.ReadDir(root)
+		require.NoError(t, readDirErr)
+		for _, entry := range entries {
+			assert.NotContains(t, entry.Name(), ".deploy-tmp-", "cancelled swap temp must be removed")
+		}
+	})
 }
 
 func TestDeployOps_DeployLocalFile_ContextCancelled(t *testing.T) {

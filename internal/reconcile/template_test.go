@@ -14,6 +14,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type cancellingStringer struct {
+	cancel func()
+}
+
+func (s cancellingStringer) String() string {
+	s.cancel()
+	return "cancelled-value"
+}
+
 func TestNewTemplateOps(t *testing.T) {
 	data := map[string]any{
 		"key": "value",
@@ -268,6 +277,101 @@ func TestTemplateOps_ExecuteTemplate_ExecutionError(t *testing.T) {
 	err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to execute template")
+}
+
+func TestTemplateOps_ExecuteTemplate_CancellationMutationBoundaries(t *testing.T) {
+	tests := []struct {
+		name              string
+		cancelOperation   string
+		seedOutput        bool
+		wantOutputDir     bool
+		wantOutputContent string
+	}{
+		{
+			name:            "before output directory creation",
+			cancelOperation: "create_output_directory",
+		},
+		{
+			name:            "after output directory before temp creation",
+			cancelOperation: "create_output_temp",
+			wantOutputDir:   true,
+		},
+		{
+			name:              "after temp write before publish preserves prior output",
+			cancelOperation:   "publish_output",
+			seedOutput:        true,
+			wantOutputDir:     true,
+			wantOutputContent: "preserve",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			templateFile := filepath.Join(root, "config.yml.tmpl")
+			outputDir := filepath.Join(root, "rendered")
+			outputFile := filepath.Join(outputDir, "config.yml")
+			require.NoError(t, os.WriteFile(templateFile, []byte("value: new\n"), 0o644))
+			if tt.seedOutput {
+				require.NoError(t, os.MkdirAll(outputDir, 0o755))
+				require.NoError(t, os.WriteFile(outputFile, []byte("preserve"), 0o644))
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			tmpl := NewTemplateOps(nil)
+			tmpl.beforeMutationFn = func(operation string) {
+				if operation == tt.cancelOperation {
+					cancel()
+				}
+			}
+
+			err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+
+			require.ErrorIs(t, err, context.Canceled)
+			if tt.wantOutputDir {
+				assert.DirExists(t, outputDir)
+			} else {
+				assert.NoDirExists(t, outputDir)
+			}
+			if tt.wantOutputContent == "" {
+				assert.NoFileExists(t, outputFile)
+			} else {
+				content, readErr := os.ReadFile(outputFile)
+				require.NoError(t, readErr)
+				assert.Equal(t, tt.wantOutputContent, string(content))
+			}
+			if tt.wantOutputDir {
+				entries, readErr := os.ReadDir(outputDir)
+				require.NoError(t, readErr)
+				for _, entry := range entries {
+					assert.NotContains(t, entry.Name(), ".bosun-template-", "cancelled template temp must be removed")
+				}
+			}
+		})
+	}
+}
+
+func TestTemplateOps_ExecuteTemplate_CancellationCleansPartialTemp(t *testing.T) {
+	root := t.TempDir()
+	templateFile := filepath.Join(root, "config.yml.tmpl")
+	outputDir := filepath.Join(root, "rendered")
+	outputFile := filepath.Join(outputDir, "config.yml")
+	require.NoError(t, os.WriteFile(templateFile, []byte(`prefix{{ .value }}suffix`), 0o644))
+	require.NoError(t, os.MkdirAll(outputDir, 0o755))
+	require.NoError(t, os.WriteFile(outputFile, []byte("preserve"), 0o644))
+	ctx, cancel := context.WithCancel(context.Background())
+	tmpl := NewTemplateOps(map[string]any{"value": cancellingStringer{cancel: cancel}})
+
+	err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+
+	require.ErrorIs(t, err, context.Canceled)
+	content, readErr := os.ReadFile(outputFile)
+	require.NoError(t, readErr)
+	assert.Equal(t, "preserve", string(content))
+	entries, readDirErr := os.ReadDir(outputDir)
+	require.NoError(t, readDirErr)
+	for _, entry := range entries {
+		assert.NotContains(t, entry.Name(), ".bosun-template-", "partial template temp must be removed")
+	}
 }
 
 func TestBosunTemplateFuncs_FromJsonFileNonExistent(t *testing.T) {

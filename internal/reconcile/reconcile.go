@@ -1922,6 +1922,9 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 	ui.Info("Rendering templates...")
 
 	// Clear staging directory.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := removeStagingTree(stagingRoot, ops); err != nil {
 		logger.Error().
 			Err(err).
@@ -1929,12 +1932,18 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 			Msg("Failed to render templates. Reason: cannot clear staging directory")
 		return fmt.Errorf("failed to clear staging directory: %w", err)
 	}
-	if err := os.MkdirAll(stagingRoot, stagingDirMode); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := mkdirAllContext(ctx, stagingRoot, stagingDirMode); err != nil {
 		logger.Error().
 			Err(err).
 			Str(log.FieldPath, stagingRoot).
 			Msg("Failed to render templates. Reason: cannot create staging directory")
 		return fmt.Errorf("failed to create staging directory: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := os.Chmod(stagingRoot, stagingDirMode); err != nil {
 		return fmt.Errorf("failed to restrict staging directory: %w", err)

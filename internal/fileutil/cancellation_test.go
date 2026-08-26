@@ -3,6 +3,7 @@ package fileutil
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -160,4 +161,36 @@ func TestCopyFileIfChangedCancelledAfterComparison(t *testing.T) {
 	content, readErr := os.ReadFile(dst)
 	require.NoError(t, readErr)
 	assert.Equal(t, "preserve", string(content))
+}
+
+func TestCopyFileCancellationCleansPartiallyWrittenTemp(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	src := filepath.Join(root, "source.txt")
+	dst := filepath.Join(root, "destination.txt")
+	require.NoError(t, os.WriteFile(src, []byte("new-payload"), 0o644))
+	require.NoError(t, os.WriteFile(dst, []byte("preserve"), 0o644))
+	ctx, cancel := context.WithCancel(context.Background())
+
+	err := copyFileWithOps(ctx, src, dst, (*os.File).Chmod, syncDestinationDir, func(writer io.Writer, reader io.Reader) (int64, error) {
+		partial := make([]byte, 3)
+		n, readErr := reader.Read(partial)
+		require.NoError(t, readErr)
+		written, writeErr := writer.Write(partial[:n])
+		require.NoError(t, writeErr)
+		cancel()
+		rest, copyErr := io.Copy(writer, reader)
+		return int64(written) + rest, copyErr
+	})
+
+	require.ErrorIs(t, err, context.Canceled)
+	content, readErr := os.ReadFile(dst)
+	require.NoError(t, readErr)
+	assert.Equal(t, "preserve", string(content))
+	entries, readDirErr := os.ReadDir(root)
+	require.NoError(t, readDirErr)
+	for _, entry := range entries {
+		assert.NotContains(t, entry.Name(), ".tmp-", "partial payload temp file must be removed")
+	}
 }

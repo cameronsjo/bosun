@@ -2871,6 +2871,29 @@ func TestRenderTemplates(t *testing.T) {
 		// Old file should be gone
 		assert.NoFileExists(t, filepath.Join(stagingDir, "old-file.yml"))
 	})
+
+	t.Run("cancellation after clearing staging stops before recreation", func(t *testing.T) {
+		root := t.TempDir()
+		repoDir := filepath.Join(root, "repo")
+		stagingDir := filepath.Join(root, "staging")
+		require.NoError(t, os.MkdirAll(repoDir, 0o755))
+		require.NoError(t, os.MkdirAll(stagingDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(stagingDir, "old.yml"), []byte("old"), 0o600))
+		ctx, cancel := context.WithCancel(context.Background())
+		r := NewReconciler(&Config{RepoDir: repoDir, StagingDir: stagingDir, InfraSubDir: "."})
+		r.stagingOps = defaultStagingEvidenceOps()
+		realRemoveAll := r.stagingOps.removeAll
+		r.stagingOps.removeAll = func(path string) error {
+			err := realRemoveAll(path)
+			cancel()
+			return err
+		}
+
+		err := r.renderTemplates(ctx, nil)
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.NoDirExists(t, stagingDir)
+	})
 }
 
 func TestRenderTemplatesFailure(t *testing.T) {

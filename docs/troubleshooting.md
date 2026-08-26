@@ -75,7 +75,15 @@ rerun the reconcile normally—the content-hash pass safely skips files that
 already reached their intended bytes and resumes the remaining work. If Bosun
 was staging a managed file-to-directory or directory-to-file replacement, it
 also removes that private transition stage on cancellation so the retry is not
-blocked by a leftover `.bosun-transition-stage` path.
+blocked by a leftover `.bosun-transition-stage` path. In standard atomic-swap
+mode, cancellation after the live directory is moved aside restores that
+original directory before returning and removes the unpublished temp tree.
+
+Cancellation during template rendering also stops before the next staging
+directory creation or rendered-output rename. Bosun removes an unpublished
+template temp file and preserves any prior rendered output; if cancellation
+arrives after the old staging tree was cleared, the empty staging slot is not
+recreated and the next reconcile renders it from scratch.
 
 ### SSH connection failures
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,7 +25,7 @@ func TestCopyFileWithOps_InvokesConfiguredSyncOnce(t *testing.T) {
 	err := copyFileWithOps(context.Background(), src, dst, (*os.File).Chmod, func(dir string) error {
 		synced = append(synced, dir)
 		return nil
-	})
+	}, io.Copy)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{filepath.Dir(dst)}, synced)
