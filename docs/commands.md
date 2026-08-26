@@ -21,6 +21,38 @@ bosun init
 
 Creates a `bosun.yaml` configuration file in the current directory.
 
+### update
+
+Check for or install the latest stable Bosun release.
+
+```bash
+bosun update
+bosun update --check
+bosun selfupdate
+```
+
+The install path requires `checksums.txt` from the same GitHub release and
+verifies the selected compressed archive before extraction or executable
+replacement. Missing or invalid selected checksum data, asset download failure,
+and digest mismatch return an error without changing the installed executable.
+There is no unchecked fallback or automatic retry; rerunning the command starts
+a fresh verified attempt.
+
+`--check` validates only that the selected platform archive and
+`checksums.txt` are advertised by the same release. It downloads neither asset.
+
+Same-release SHA-256 verification is an integrity control, not independent
+publisher authentication: replacing both release assets remains outside this
+control. Bosun releases do not currently publish checksum signature assets.
+
+**Alias:** `selfupdate`
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--check` | Check release metadata without downloading or installing assets |
+
 ## Yacht Commands
 
 Manage Docker Compose services (the whole fleet).

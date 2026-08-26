@@ -35,12 +35,28 @@ bosun doctor
 
 ### `bosun update`
 
-Update bosun to the latest release. Shows version info and changelog. **Aliases:** `upgrade`, `selfupdate`
+Update bosun to the latest stable release. Shows version info and changelog.
+**Alias:** `selfupdate`
 
 ```bash
 bosun update                   # Download and install latest version
 bosun update --check           # Check for updates without installing
 ```
+
+The install path requires the same release's `checksums.txt` and verifies the
+selected compressed archive before extraction or executable replacement.
+Missing or invalid selected checksum data, a download failure, or a digest
+mismatch fails closed and leaves the installed executable unchanged. Bosun does
+not retry automatically or fall back to unchecked bytes; an explicit rerun
+starts a fresh verified attempt.
+
+`--check` inspects same-release archive and checksum asset metadata without
+downloading or parsing either asset.
+
+This SHA-256 check provides same-release integrity, not independent publisher
+authentication. An attacker able to replace both the archive and manifest is
+outside the control, and current releases do not publish checksum signature
+assets.
 
 ---
 

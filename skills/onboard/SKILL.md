@@ -59,6 +59,11 @@ bosun update              # Update to latest release
 bosun update --check      # Check for updates without installing
 ```
 
+Self-update fails closed unless the selected compressed archive matches its
+entry in the same release's `checksums.txt`; `--check` remains metadata-only.
+This verifies integrity, not independent publisher authenticity if both assets
+are replaced.
+
 ## Initial Setup
 
 1. **Generate an Age encryption key** (if not already done):

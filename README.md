@@ -157,18 +157,19 @@ bosun update          # Download and install latest
 bosun update --check  # Check without installing
 ```
 
-### Verify Release
+`bosun update` requires `checksums.txt` from the same GitHub release and verifies
+the selected compressed archive before extraction or executable replacement. A
+missing checksum asset, invalid selected entry, download failure, or digest
+mismatch aborts the update and leaves the installed executable unchanged.
+`bosun update --check` checks release metadata only and downloads neither asset.
 
-Releases are signed with [Cosign](https://github.com/sigstore/cosign) and include [SLSA provenance](https://slsa.dev/).
+### Checksum Trust Boundary
 
-```bash
-# Verify checksum signature
-cosign verify-blob --certificate checksums.txt.pem \
-  --signature checksums.txt.sig checksums.txt
-
-# Verify build provenance
-gh attestation verify bosun_*.tar.gz --owner cameronsjo
-```
+The same-release SHA-256 manifest detects corruption and mismatched assets, but
+it is an integrity check rather than independent publisher authentication. An
+attacker who can replace both the archive and `checksums.txt` is outside this
+control. Releases do not currently publish `checksums.txt.pem` or
+`checksums.txt.sig`; Bosun does not claim checksum signature verification.
 
 ## Quick Start
 
