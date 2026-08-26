@@ -41,7 +41,7 @@ type restoreOps struct {
 	stat         func(string) (os.FileInfo, error)
 	dirSize      func(string) (int64, error)
 	diskSpace    func(string, int64) error
-	hasContent   func(string) bool
+	hasContent   func(string) (bool, error)
 	mkdirAll     func(string, os.FileMode) error
 	copyDir      func(context.Context, string, string) error
 	removeAll    func(string) error
@@ -69,7 +69,7 @@ func defaultRestoreOps() restoreOps {
 		stat:         os.Stat,
 		dirSize:      getDirSize,
 		diskSpace:    checkDiskSpace,
-		hasContent:   dirHasContent,
+		hasContent:   dirHasContentForRestore,
 		mkdirAll:     os.MkdirAll,
 		copyDir:      fileutil.CopyDir,
 		removeAll:    os.RemoveAll,
@@ -256,7 +256,11 @@ func restoreWithOps(manifestDir, snapshotName string, ops restoreOps) error {
 	}
 
 	// Create pre-rollback backup if output exists
-	if ops.hasContent(outDir) {
+	hasOutputContent, err := ops.hasContent(outDir)
+	if err != nil {
+		return fmt.Errorf("inspect current output for backup: %w", err)
+	}
+	if hasOutputContent {
 		backupName := "pre-rollback-" + ops.now().Format(DateFormatPrecise)
 		backupPath := filepath.Join(snapDir, backupName)
 
@@ -404,6 +408,20 @@ func dirHasContent(dir string) bool {
 		return false
 	}
 	return len(entries) > 0
+}
+
+// dirHasContentForRestore distinguishes an absent output directory from an
+// unreadable one. Restore must not silently skip its pre-rollback backup when
+// it cannot inspect the current output.
+func dirHasContentForRestore(dir string) (bool, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return len(entries) > 0, nil
 }
 
 // countFiles counts the number of files in a directory tree.

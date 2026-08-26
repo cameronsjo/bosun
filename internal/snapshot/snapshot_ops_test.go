@@ -28,7 +28,7 @@ func testRestoreOps(t *testing.T) restoreOps {
 		},
 		dirSize:      func(string) (int64, error) { return 0, nil },
 		diskSpace:    func(string, int64) error { return nil },
-		hasContent:   func(string) bool { return false },
+		hasContent:   func(string) (bool, error) { return false, nil },
 		mkdirAll:     func(string, os.FileMode) error { return nil },
 		copyDir:      func(context.Context, string, string) error { return nil },
 		removeAll:    func(string) error { return nil },
@@ -93,10 +93,17 @@ func TestRestoreWithOps_EarlyFailuresPreserveCause(t *testing.T) {
 			},
 		},
 		{
+			name:     "output backup inspection",
+			wantText: "inspect current output for backup",
+			configure: func(ops *restoreOps, wantErr error) {
+				ops.hasContent = func(string) (bool, error) { return false, wantErr }
+			},
+		},
+		{
 			name:     "backup directory",
 			wantText: "create backup directory",
 			configure: func(ops *restoreOps, wantErr error) {
-				ops.hasContent = func(string) bool { return true }
+				ops.hasContent = func(string) (bool, error) { return true, nil }
 				ops.mkdirAll = func(string, os.FileMode) error { return wantErr }
 			},
 		},
@@ -128,7 +135,7 @@ func TestRestoreWithOps_CopyFailuresCleanPartialDirectory(t *testing.T) {
 	t.Run("pre-rollback backup", func(t *testing.T) {
 		wantErr := errors.New("backup copy failed")
 		ops := testRestoreOps(t)
-		ops.hasContent = func(string) bool { return true }
+		ops.hasContent = func(string) (bool, error) { return true, nil }
 		ops.copyDir = func(context.Context, string, string) error { return wantErr }
 		var removed string
 		ops.removeAll = func(path string) error {
@@ -387,4 +394,14 @@ func TestGetRestoredFiles_IncludesBothYAMLExtensions(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"output/compose.yml", "output/service.yaml"}, files)
+}
+
+func TestDirHasContentForRestore_PreservesInspectionError(t *testing.T) {
+	notDir := filepath.Join(t.TempDir(), "output-file")
+	require.NoError(t, os.WriteFile(notDir, nil, 0644))
+
+	hasContent, err := dirHasContentForRestore(notDir)
+
+	require.Error(t, err)
+	assert.False(t, hasContent)
 }
