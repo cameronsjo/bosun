@@ -1,4 +1,4 @@
-.PHONY: build install clean test test-agent-gate lint lint-new run release release-dry-run completion ci all dagger-test dagger-lint dagger-build dagger-webui dagger-release-dry-run diagrams
+.PHONY: build install clean test test-agent-gate test-workflows lint lint-new run release release-dry-run completion ci all dagger-test dagger-lint dagger-build dagger-webui dagger-release-dry-run diagrams
 
 # Binary name
 BINARY := bosun
@@ -49,6 +49,10 @@ test:
 # Test the agent-only shared-cache and disk-space gate without running Go.
 test-agent-gate:
 	sh scripts/agent-go-gate_test.sh
+
+# Validate security-sensitive GitHub Actions control flow.
+test-workflows:
+	$(GOTEST) ./internal/workflowcontract
 
 # Run tests with coverage
 test-cover:
@@ -156,6 +160,7 @@ help:
 	@echo "  run             - Run without building (use ARGS=... for arguments)"
 	@echo "  test            - Run tests"
 	@echo "  test-agent-gate - Test the agent resource gate"
+	@echo "  test-workflows  - Validate GitHub Actions safety contracts"
 	@echo "  test-cover      - Run tests with coverage"
 	@echo "  lint            - Run golangci-lint locally"
 	@echo "  tidy            - Tidy go.mod"

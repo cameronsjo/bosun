@@ -63,6 +63,11 @@ The initial fix hard-required the App token, which killed the entire release-ple
 
 This means: use the App token if available, fall back to `GITHUB_TOKEN` if not (auto-merge still works, just won't trigger goreleaser).
 
+> **Current contract:** This fallback was later removed because a
+> `GITHUB_TOKEN` merge cannot trigger the release workflow. Missing or invalid
+> Release App credentials now warn and leave the release PR open for manual
+> merge; auto-merge requires a successfully generated App token.
+
 ## What Worked
 
 ### Worktree Agent Parallelism
@@ -92,7 +97,7 @@ Applied to all 6 stderr logging sites across 3 functions.
 | Decision | Rationale |
 |----------|-----------|
 | GitHub App `forge-bellows` for release pipeline | App tokens bypass GITHUB_TOKEN loop prevention. Named after the bellows in a forge — it fans the flames (triggers workflows) |
-| Graceful fallback to GITHUB_TOKEN | Don't break the pipeline if the App isn't configured. Auto-merge still works, just without follow-up workflow triggers |
+| ~~Graceful fallback to GITHUB_TOKEN~~ (superseded) | The current fail-closed contract keeps release-PR generation successful but leaves the PR open unless App-token generation succeeds; a default-token merge would suppress the required follow-up workflow |
 | Delete Claude Code Review workflow | Was failing on Dependabot PRs (missing API key in Dependabot secret scope). Not worth the maintenance overhead for a single-developer project |
 | Neutral audit log message | "Handled socket request" instead of "Successfully handled socket request" — the word "successfully" is misleading for 4xx/5xx responses |
 
@@ -113,5 +118,5 @@ Applied to all 6 stderr logging sites across 3 functions.
 - **CodeRabbit CLI is effective for consistency audits** — it found 14 real consistency gaps that manual review missed. Running `coderabbit review --plain --base <tag>` against a release baseline is a good practice before cutting a new release.
 - **GITHUB_TOKEN loop prevention is a known GitHub Actions footgun** — any workflow that auto-merges PRs and expects a follow-up workflow to fire MUST use an App token or PAT. This is documented but easy to miss.
 - **Worktree agents are ideal for mechanical, parallel fixes** — when changes don't overlap (different files or different hunks), worktree isolation eliminates merge risk entirely. Four agents finished in the time one would have taken.
-- **Graceful degradation > hard requirements in CI** — the `|| secrets.GITHUB_TOKEN` fallback pattern ensures the pipeline works even without optional configuration. Ship the happy path, degrade gracefully.
+- **Graceful degradation must preserve the release invariant** — Release App credential failures should leave the generated PR open and keep release generation successful, but must not fall back to a token whose merge suppresses the follow-up release workflow.
 - **Delete workflows that cause more noise than value** — the Claude Code Review workflow was failing on every Dependabot PR. Removing it was the right call for a single-developer project.
