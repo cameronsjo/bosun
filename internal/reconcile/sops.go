@@ -58,12 +58,27 @@ const (
 
 // SOPSOps provides SOPS decryption operations.
 type SOPSOps struct {
-	decryptFile func(path, format string) ([]byte, error)
+	decryptFile        func(path, format string) ([]byte, error)
+	identityFileReader regularNonEmptyFileReader
 }
 
 // NewSOPSOps creates a new SOPSOps instance.
 func NewSOPSOps() *SOPSOps {
-	return &SOPSOps{decryptFile: decrypt.File}
+	return &SOPSOps{
+		decryptFile:        decrypt.File,
+		identityFileReader: readRegularNonEmptyFile,
+	}
+}
+
+// ValidateAgeIdentityForSecrets performs the startup-only Age preflight when
+// this reconciliation is configured to decrypt at least one secrets file.
+func ValidateAgeIdentityForSecrets(secretFiles []string) error {
+	for _, secretFile := range secretFiles {
+		if strings.TrimSpace(secretFile) != "" {
+			return NewSOPSOps().CheckAgeKey()
+		}
+	}
+	return nil
 }
 
 func inferSOPSFormat(path string) (sopsFileFormat, error) {
@@ -100,6 +115,10 @@ func inferSOPSFormat(path string) (sopsFileFormat, error) {
 // Returns nil if a key is found, or an error with setup instructions if not.
 func (s *SOPSOps) CheckAgeKey() error {
 	logger := log.Component(log.ComponentSOPS)
+	readIdentityFile := s.identityFileReader
+	if readIdentityFile == nil {
+		readIdentityFile = readRegularNonEmptyFile
+	}
 
 	// Check SOPS_AGE_KEY environment variable
 	if key := os.Getenv("SOPS_AGE_KEY"); key != "" {
@@ -109,7 +128,7 @@ func (s *SOPSOps) CheckAgeKey() error {
 
 	// Check SOPS_AGE_KEY_FILE environment variable
 	if keyFile := os.Getenv("SOPS_AGE_KEY_FILE"); keyFile != "" {
-		if err := validateAgeIdentityFile(keyFile); err != nil {
+		if err := validateAgeIdentityFile(keyFile, readIdentityFile); err != nil {
 			return ageIdentityFileError("SOPS_AGE_KEY_FILE", keyFile, err)
 		}
 		logger.Debug().Str("source", "SOPS_AGE_KEY_FILE").Str(log.FieldPath, keyFile).Msg("Age key found via key file")
@@ -123,12 +142,11 @@ func (s *SOPSOps) CheckAgeKey() error {
 	}
 
 	defaultKeyPath := filepath.Join(homeDir, ".config", "sops", "age", "keys.txt")
-	if _, err := os.Stat(defaultKeyPath); err == nil {
-		if err := validateAgeIdentityFile(defaultKeyPath); err != nil {
-			return ageIdentityFileError("default Age identity file", defaultKeyPath, err)
-		}
+	if err := validateAgeIdentityFile(defaultKeyPath, readIdentityFile); err == nil {
 		logger.Debug().Str("source", "default").Str(log.FieldPath, defaultKeyPath).Msg("Age key found at default location")
 		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return ageIdentityFileError("default Age identity file", defaultKeyPath, err)
 	}
 
 	return fmt.Errorf(`%w
@@ -139,27 +157,10 @@ To fix:
   3. Or set SOPS_AGE_KEY environment variable with the key content`, ErrAgeKeyNotFound)
 }
 
-func validateAgeIdentityFile(path string) error {
-	info, err := os.Stat(path)
+func validateAgeIdentityFile(path string, readFile regularNonEmptyFileReader) error {
+	contents, err := readFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return errors.New("does not exist")
-		}
-		return fmt.Errorf("cannot be inspected: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return errors.New("is not a regular file")
-	}
-	if info.Size() == 0 {
-		return errors.New("is empty")
-	}
-
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("cannot be read: %w", err)
-	}
-	if len(contents) == 0 {
-		return errors.New("is empty")
+		return err
 	}
 	var identities sopsage.ParsedIdentities
 	if err := identities.Import(string(contents)); err != nil || len(identities) == 0 {

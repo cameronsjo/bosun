@@ -200,7 +200,7 @@ Every error should include:
 **Example from SOPS key checking**:
 
 ```go
-if err := validateAgeIdentityFile(keyFile); err != nil {
+if err := validateAgeIdentityFile(keyFile, readIdentityFile); err != nil {
     return ageIdentityFileError("SOPS_AGE_KEY_FILE", keyFile, err)
 }
 ```

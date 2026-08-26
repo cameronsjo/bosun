@@ -424,16 +424,19 @@ Credentials remain process-environment state: remove any URL userinfo, rotate
 the environment values, and restart Bosun; `bosun.yaml` reload cannot rotate
 them.
 
-SSH Git repositories use `SSH_AUTH_SOCK` first. Only when no usable agent is
-available does Bosun load `BOSUN_SSH_KEY`, followed by its conventional key
-paths. An explicit `BOSUN_SSH_KEY` must be a regular, non-empty, parseable
+SSH Git repositories use `SSH_AUTH_SOCK` first. Bosun accepts the agent only
+after it returns at least one signer; an empty or unreadable agent connection is
+closed before Bosun falls back to `BOSUN_SSH_KEY`, followed by its conventional
+key paths. The username parsed from either SCP-like syntax or an `ssh://` URL is
+preserved. An explicit `BOSUN_SSH_KEY` must be a regular, non-empty, parseable
 private key file; missing, directory, empty, and malformed mounts fail before
 Git network access. An unusable existing conventional candidate is skipped if
 a later key works, otherwise Bosun reports its path instead of passing nil
-authentication to go-git. HTTPS and public local repository paths ignore
-unrelated SSH key settings. For containers, pre-create a key bind-mount source
-as a file because Docker can create a directory when the host source is
-missing.
+authentication to go-git. A recognized SSH URL with no usable authentication
+fails startup rather than reaching the network. HTTPS and public local
+repository paths ignore unrelated SSH key settings. For containers, pre-create
+a key bind-mount source as a file because Docker can create a directory when the
+host source is missing.
 
 ### Command-Line Flags
 
@@ -538,6 +541,12 @@ parseable Age identity before decryption begins. Missing, directory, empty,
 and malformed paths fail with the configured path and setup guidance. For
 container mounts, pre-create the host key file; otherwise Docker can replace a
 missing file source with a directory at the container path.
+
+When at least one secrets file is configured, both the daemon and one-shot
+`bosun reconcile` validate the Age identity before Git authentication. The
+daemon performs this check before binding its Unix, TCP, or HTTP listeners. A
+reconcile with no secrets files does not require an Age identity and ignores an
+unrelated invalid Age mount.
 
 ### Key Setup
 

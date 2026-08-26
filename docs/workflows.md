@@ -196,10 +196,10 @@ flowchart TD
 | Step | Operation | Error Handling |
 |------|-----------|----------------|
 | 1 | Acquire exclusive file lock (`/tmp/reconcile.lock`) | Skips if lock held (non-blocking `LOCK_NB`) |
-| 2 | Sync git repository (clone or pull) | Clone timeout: 5min, Fetch timeout: 2min |
+| 2 | Preflight Age identity when secrets files are configured, then sync git repository (clone or pull) | Identity paths must be regular, non-empty, and parseable before Git; clone timeout: 5min, fetch timeout: 2min |
 | 3 | Compare before/after commit hashes | Skip if no changes unless `--force` |
 | 4 | Validate SOPS files exist and have `sops` metadata key | Returns specific error with fix instructions |
-| 5 | Validate Age identity (`SOPS_AGE_KEY`, `SOPS_AGE_KEY_FILE`, or default path) | File paths must be regular, non-empty, and parseable; returns setup and bind-mount guidance |
+| 5 | Reuse the preflighted Age identity (`SOPS_AGE_KEY`, `SOPS_AGE_KEY_FILE`, or default path) | Returns setup and bind-mount guidance if runtime configuration changed |
 | 6 | Decrypt SOPS files to JSON map | Returns error with file path |
 | 7 | Clear staging directory | Removes previous staging state |
 | 8 | Copy non-template files to staging | Preserves directory structure |

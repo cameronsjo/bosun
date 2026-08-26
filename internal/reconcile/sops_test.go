@@ -793,6 +793,46 @@ func TestSOPSOps_CheckAgeKey(t *testing.T) {
 	})
 }
 
+func TestSOPSOps_CheckAgeKeyInjectedReaderErrors(t *testing.T) {
+	t.Setenv("SOPS_AGE_KEY", "")
+	t.Setenv("SOPS_AGE_KEY_FILE", "/config/age-key.txt")
+
+	for _, tt := range []struct {
+		name       string
+		readErr    error
+		wantReason string
+	}{
+		{name: "inspect error", readErr: errors.New("cannot be inspected: permission denied"), wantReason: "cannot be inspected"},
+		{name: "read error", readErr: errors.New("cannot be read: permission denied"), wantReason: "cannot be read"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sops := NewSOPSOps()
+			sops.identityFileReader = func(path string) ([]byte, error) {
+				assert.Equal(t, "/config/age-key.txt", path)
+				return nil, tt.readErr
+			}
+			err := sops.CheckAgeKey()
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrAgeKeyNotFound)
+			assert.Contains(t, err.Error(), tt.wantReason)
+		})
+	}
+}
+
+func TestValidateAgeIdentityForSecretsIsConditional(t *testing.T) {
+	t.Setenv("SOPS_AGE_KEY", "")
+	t.Setenv("SOPS_AGE_KEY_FILE", filepath.Join(t.TempDir(), "missing-age-key"))
+	t.Setenv("HOME", t.TempDir())
+
+	require.NoError(t, ValidateAgeIdentityForSecrets(nil))
+	require.NoError(t, ValidateAgeIdentityForSecrets([]string{"", "  "}))
+
+	err := ValidateAgeIdentityForSecrets([]string{"secrets/prod.sops.yaml"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrAgeKeyNotFound)
+	assert.Contains(t, err.Error(), "SOPS_AGE_KEY_FILE")
+}
+
 func TestSanitizeDecryptError(t *testing.T) {
 	tests := []struct {
 		name        string

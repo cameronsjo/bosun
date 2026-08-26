@@ -50,7 +50,9 @@ Bosun uses [age](https://age-encryption.org/) as the encryption backend for SOPS
 Inline key content takes precedence. Resolved files must be regular,
 non-empty, and contain at least one parseable Age identity. Bosun rejects an
 invalid file before decryption and explains that Docker can create a directory
-when a file bind-mount source is missing.
+when a file bind-mount source is missing. When secrets files are configured,
+daemon and one-shot startup perform this validation before Git; the daemon
+binds no API listeners on failure.
 
 ### Key Generation and Storage
 

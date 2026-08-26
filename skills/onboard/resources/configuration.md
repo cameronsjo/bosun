@@ -373,7 +373,7 @@ directory when the host source is missing.
 | `WEBHOOK_SECRET` | HMAC secret for daemon webhook endpoints. Required for webhook triggers — with no secret the endpoints fail closed (reject with `403`) |
 | `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | Opt out of fail-closed webhook auth (default: `false`; strict `== "true"` match). Accepts unauthenticated triggers on trusted networks; logs a security warning at startup and per accepted request |
 | `BOSUN_LISTEN_ADDR` | Host/IP the daemon HTTP server binds to (default: empty = all interfaces, so container-side callers like Traefik and Prometheus can reach it over the docker bridge) |
-| `SOPS_AGE_KEY_FILE` | Path to a regular, non-empty, parseable Age identity file (default: `~/.config/sops/age/keys.txt`); `SOPS_AGE_KEY` takes precedence |
+| `SOPS_AGE_KEY_FILE` | Path to a regular, non-empty, parseable Age identity file (default: `~/.config/sops/age/keys.txt`); `SOPS_AGE_KEY` takes precedence. When secrets files are configured, daemon and one-shot startup validate the identity before Git, and the daemon binds no listeners on failure |
 
 ## Tunnel Configuration
 

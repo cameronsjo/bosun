@@ -26,6 +26,9 @@ import (
 )
 
 var resolveSSHAgentAuth = getSSHAgentAuth
+var resolveSSHKeyAuth = getSSHKeyFileAuth
+
+type sshAgentDialer func(network, address string) (net.Conn, error)
 
 func init() {
 	// Override go-git's default SSH auth builder to gracefully handle missing SSH agents.
@@ -33,13 +36,13 @@ func init() {
 	// We use our own auth chain: SSH agent -> key files (BOSUN_SSH_KEY, /config/*, ~/.ssh/*).
 	ssh.DefaultAuthBuilder = func(user string) (ssh.AuthMethod, error) {
 		// Try SSH agent first
-		if auth := resolveSSHAgentAuth(); auth != nil {
+		if auth := resolveSSHAgentAuth(user); auth != nil {
 			if sshAuth, ok := auth.(ssh.AuthMethod); ok {
 				return sshAuth, nil
 			}
 		}
 		// Fall back to key file auth
-		keyAuth, err := getSSHKeyFileAuth()
+		keyAuth, err := resolveSSHKeyAuth(user)
 		if err != nil {
 			return nil, err
 		}
@@ -57,6 +60,7 @@ const (
 	GitCloneTimeout      = 5 * time.Minute
 	GitFetchTimeout      = 2 * time.Minute
 	GitLocalTimeout      = 30 * time.Second
+	SSHAgentProbeTimeout = 5 * time.Second
 	DefaultGitFetchDepth = 1
 )
 
@@ -117,20 +121,32 @@ func (g *GitOps) effectiveFetchDepth() int {
 // getSSHAuth attempts to get SSH authentication from:
 // 1. SSH agent (SSH_AUTH_SOCK)
 // 2. Deploy key file (BOSUN_SSH_KEY or default paths)
-// Returns nil if no SSH auth is available (falls back to default auth).
+// Non-SSH endpoints do not use SSH authentication. Recognized SSH endpoints
+// fail closed when neither a usable agent nor a private key is available.
 func getSSHAuth(url string) (transport.AuthMethod, error) {
-	// Only use SSH auth for SSH URLs
-	if !strings.HasPrefix(url, "git@") && !strings.Contains(url, "ssh://") {
+	endpoint, err := transport.NewEndpoint(url)
+	if err != nil {
+		return nil, errors.New("repository endpoint is malformed")
+	}
+	if !strings.EqualFold(endpoint.Protocol, "ssh") {
 		return nil, nil
 	}
+	user := normalizeSSHUser(endpoint.User)
 
 	// Try SSH agent first
-	if auth := resolveSSHAgentAuth(); auth != nil {
+	if auth := resolveSSHAgentAuth(user); auth != nil {
 		return auth, nil
 	}
 
 	// Fall back to key file
-	return getSSHKeyFileAuth()
+	auth, err := resolveSSHKeyAuth(user)
+	if err != nil {
+		return nil, err
+	}
+	if auth == nil {
+		return nil, sshAuthUnavailableError()
+	}
+	return auth, nil
 }
 
 func sshAuthUnavailableError() error {
@@ -170,27 +186,54 @@ func getHostKeyCallback() xssh.HostKeyCallback {
 	return xssh.InsecureIgnoreHostKey()
 }
 
+func normalizeSSHUser(user string) string {
+	if user == "" {
+		return "git"
+	}
+	return user
+}
+
 // getSSHAgentAuth attempts to get auth from SSH agent.
-func getSSHAgentAuth() transport.AuthMethod {
+func getSSHAgentAuth(user string) transport.AuthMethod {
+	return resolveSSHAgentAuthWithDialer(user, os.Getenv("SSH_AUTH_SOCK"), net.Dial)
+}
+
+func resolveSSHAgentAuthWithDialer(user, socket string, dial sshAgentDialer) transport.AuthMethod {
 	logger := log.Component(log.ComponentGit)
-	socket := os.Getenv("SSH_AUTH_SOCK")
 	if socket == "" {
 		logger.Debug().Msg("Skipping SSH agent auth. Reason: SSH_AUTH_SOCK not set")
 		return nil
 	}
 
-	conn, err := net.Dial("unix", socket)
+	conn, err := dial("unix", socket)
 	if err != nil {
 		logger.Debug().Err(err).Str("socket", socket).Msg("Skipping SSH agent auth. Reason: cannot connect to agent socket")
 		return nil
 	}
+	if err := conn.SetDeadline(time.Now().Add(SSHAgentProbeTimeout)); err != nil {
+		_ = conn.Close()
+		logger.Debug().Err(err).Str("socket", socket).Msg("Skipping SSH agent auth. Reason: cannot bound agent signer probe")
+		return nil
+	}
 
-	logger.Debug().Str("socket", socket).Msg("Successfully connected to SSH agent")
 	agentClient := agent.NewClient(conn)
+	signers, err := agentClient.Signers()
+	if err != nil || len(signers) == 0 {
+		_ = conn.Close()
+		logger.Debug().Err(err).Str("socket", socket).Msg("Skipping SSH agent auth. Reason: agent has no usable signers")
+		return nil
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		_ = conn.Close()
+		logger.Debug().Err(err).Str("socket", socket).Msg("Skipping SSH agent auth. Reason: cannot clear agent signer probe deadline")
+		return nil
+	}
+
+	logger.Debug().Int("signer_count", len(signers)).Str("socket", socket).Msg("Successfully connected to SSH agent")
 	return &ssh.PublicKeysCallback{
-		User: "git",
+		User: normalizeSSHUser(user),
 		Callback: func() ([]xssh.Signer, error) {
-			return agentClient.Signers()
+			return signers, nil
 		},
 		HostKeyCallbackHelper: ssh.HostKeyCallbackHelper{
 			HostKeyCallback: getHostKeyCallback(),
@@ -200,14 +243,18 @@ func getSSHAgentAuth() transport.AuthMethod {
 
 // getSSHKeyFileAuth attempts to get auth from a key file.
 // Checks BOSUN_SSH_KEY env var, then common paths.
-func getSSHKeyFileAuth() (transport.AuthMethod, error) {
-	return resolveSSHKeyFileAuth(os.Getenv("BOSUN_SSH_KEY"), buildSSHKeyPaths("", os.Getenv("HOME")))
+func getSSHKeyFileAuth(user string) (transport.AuthMethod, error) {
+	return resolveSSHKeyFileAuthForUser(normalizeSSHUser(user), os.Getenv("BOSUN_SSH_KEY"), buildSSHKeyPaths("", os.Getenv("HOME")), readRegularNonEmptyFile)
 }
 
 func resolveSSHKeyFileAuth(explicitKeyPath string, keyPaths []string) (transport.AuthMethod, error) {
+	return resolveSSHKeyFileAuthForUser("git", explicitKeyPath, keyPaths, readRegularNonEmptyFile)
+}
+
+func resolveSSHKeyFileAuthForUser(user, explicitKeyPath string, keyPaths []string, readFile regularNonEmptyFileReader) (transport.AuthMethod, error) {
 	logger := log.Component(log.ComponentGit)
 	if explicitKeyPath != "" {
-		auth, err := loadSSHKeyFile(explicitKeyPath)
+		auth, err := loadSSHKeyFile(user, explicitKeyPath, readFile)
 		if err != nil {
 			return nil, invalidSSHKeyMountError("BOSUN_SSH_KEY", explicitKeyPath, err)
 		}
@@ -219,7 +266,7 @@ func resolveSSHKeyFileAuth(explicitKeyPath string, keyPaths []string) (transport
 	var invalidPath string
 	var invalidErr error
 	for _, keyPath := range keyPaths {
-		auth, err := loadSSHKeyFile(keyPath)
+		auth, err := loadSSHKeyFile(user, keyPath, readFile)
 		if err != nil {
 			logger.Debug().Err(err).Str(log.FieldPath, keyPath).Msg("Skipping unusable SSH key")
 			if !errors.Is(err, os.ErrNotExist) && invalidErr == nil {
@@ -240,29 +287,12 @@ func resolveSSHKeyFileAuth(explicitKeyPath string, keyPaths []string) (transport
 	return nil, nil
 }
 
-func loadSSHKeyFile(path string) (*ssh.PublicKeys, error) {
-	info, err := os.Stat(path)
+func loadSSHKeyFile(user, path string, readFile regularNonEmptyFileReader) (*ssh.PublicKeys, error) {
+	key, err := readFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("does not exist: %w", os.ErrNotExist)
-		}
-		return nil, fmt.Errorf("cannot be inspected: %w", err)
+		return nil, err
 	}
-	if !info.Mode().IsRegular() {
-		return nil, errors.New("is not a regular file")
-	}
-	if info.Size() == 0 {
-		return nil, errors.New("is empty")
-	}
-
-	key, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("cannot be read: %w", err)
-	}
-	if len(key) == 0 {
-		return nil, errors.New("is empty")
-	}
-	auth, err := ssh.NewPublicKeys("git", key, "")
+	auth, err := ssh.NewPublicKeys(normalizeSSHUser(user), key, "")
 	if err != nil {
 		return nil, errors.New("does not contain a parseable private key")
 	}

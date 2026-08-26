@@ -192,11 +192,13 @@ directory.
 Bosun requires an Age key path to be a regular, non-empty file containing a
 parseable identity. Pre-create and populate file bind-mount sources before the
 container starts. Docker can turn a missing file source into a directory,
-which Bosun rejects with the configured path and corrective guidance. The same
-rule applies to an optional `BOSUN_SSH_KEY` file used with an SSH Git URL; a
-working `SSH_AUTH_SOCK` takes precedence over that fallback key. Bosun also
+which Bosun rejects with the configured path and corrective guidance before
+Git access or API listener startup when secrets are configured. The same rule
+applies to an optional `BOSUN_SSH_KEY` file used with an SSH Git URL; an
+`SSH_AUTH_SOCK` takes precedence only when its agent returns a signer. Bosun also
 reports an unusable existing conventional key such as `/config/deploy-key`
-when no later fallback succeeds.
+when no later fallback succeeds, and it refuses an SSH repository with no
+usable agent or key before network access.
 
 ### Verify Installation
 

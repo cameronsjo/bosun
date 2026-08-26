@@ -125,7 +125,17 @@ Age identity resolution checks `SOPS_AGE_KEY`, then `SOPS_AGE_KEY_FILE`, then
 file must be regular, non-empty, and contain at least one parseable Age
 identity; Bosun rejects missing, directory, empty, and malformed mounts before
 decryption. Pre-create container file-bind sources because Docker can create a
-directory when the host source is missing.
+directory when the host source is missing. If secrets files are configured,
+the daemon and one-shot reconcile validate the identity before Git; the daemon
+does so before binding any listener. Without secrets files, no Age identity is
+required.
+
+SSH Git authentication parses the go-git endpoint, preserves its SSH username,
+and tries `SSH_AUTH_SOCK` before private-key files. The agent must return at
+least one signer; Bosun closes an unusable agent connection and falls back to
+`BOSUN_SSH_KEY` and conventional paths. A recognized SSH endpoint with no usable
+authentication fails before network access. HTTPS and local paths never inspect
+unrelated SSH key settings.
 
 ### Deploy-Sync Invariants (stage 6 + stage 9)
 

@@ -2486,7 +2486,11 @@ func ValidateConfig(cfg *Config) error {
 	}
 
 	if cfg.ReconcileConfig != nil {
-		if cfg.ReconcileConfig.RepoURL == "" {
+		// Secret identity validation runs before Git authentication so a bad Age
+		// bind mount fails before any SSH-agent connection or API listener starts.
+		if err := reconcile.ValidateAgeIdentityForSecrets(cfg.ReconcileConfig.SecretsFiles); err != nil {
+			errs = append(errs, err.Error())
+		} else if cfg.ReconcileConfig.RepoURL == "" {
 			errs = append(errs, "REPO_URL or BOSUN_REPO_URL is required")
 		} else if err := reconcile.ValidateGitAuthentication(cfg.ReconcileConfig.RepoURL); err != nil {
 			errs = append(errs, reconcile.SanitizeGitError(err).Error())

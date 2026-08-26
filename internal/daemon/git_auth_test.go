@@ -68,6 +68,34 @@ func TestValidateConfigGitAuthentication(t *testing.T) {
 		assert.Contains(t, err.Error(), "not a regular file")
 		assert.Contains(t, err.Error(), keyPath)
 	})
+
+	t.Run("Age identity failure precedes SSH authentication when secrets are configured", func(t *testing.T) {
+		t.Setenv("BOSUN_GIT_USERNAME", "")
+		t.Setenv("BOSUN_GIT_TOKEN", "")
+		t.Setenv("SSH_AUTH_SOCK", "")
+		t.Setenv("BOSUN_SSH_KEY", "")
+		agePath := filepath.Join(t.TempDir(), "age-key.txt")
+		require.NoError(t, os.Mkdir(agePath, 0o700))
+		t.Setenv("SOPS_AGE_KEY", "")
+		t.Setenv("SOPS_AGE_KEY_FILE", agePath)
+		t.Setenv("HOME", t.TempDir())
+
+		cfg := newConfig("operator@example.com:owner/repo.git")
+		cfg.ReconcileConfig.SecretsFiles = []string{"secrets/prod.sops.yaml"}
+		err := ValidateConfig(cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "SOPS_AGE_KEY_FILE")
+		assert.Contains(t, err.Error(), "not a regular file")
+		assert.NotContains(t, err.Error(), "SSH authentication is unavailable")
+	})
+
+	t.Run("Age identity is not required without secrets files", func(t *testing.T) {
+		t.Setenv("BOSUN_GIT_USERNAME", "")
+		t.Setenv("BOSUN_GIT_TOKEN", "")
+		t.Setenv("SOPS_AGE_KEY", "")
+		t.Setenv("SOPS_AGE_KEY_FILE", t.TempDir())
+		require.NoError(t, ValidateConfig(newConfig("https://example.com/repo.git")))
+	})
 }
 
 func TestDaemonRunRejectsGitAuthenticationBeforeStartup(t *testing.T) {
@@ -114,6 +142,32 @@ func TestDaemonRunRejectsInvalidSSHKeyBeforeStartup(t *testing.T) {
 	assert.Contains(t, err.Error(), "BOSUN_SSH_KEY")
 	assert.Contains(t, err.Error(), "not a regular file")
 	assert.Contains(t, err.Error(), keyPath)
+	_, statErr := os.Stat(cfg.SocketPath)
+	assert.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestDaemonRunRejectsInvalidAgeIdentityBeforeListeners(t *testing.T) {
+	t.Setenv("BOSUN_GIT_USERNAME", "")
+	t.Setenv("BOSUN_GIT_TOKEN", "")
+	t.Setenv("SOPS_AGE_KEY", "")
+	agePath := filepath.Join(t.TempDir(), "age-key.txt")
+	require.NoError(t, os.Mkdir(agePath, 0o700))
+	t.Setenv("SOPS_AGE_KEY_FILE", agePath)
+
+	cfg := DefaultConfig()
+	cfg.EnableHTTP = false
+	cfg.EnableTCP = false
+	cfg.SocketPath = filepath.Join(t.TempDir(), "daemon.sock")
+	cfg.ReconcileConfig = reconcile.DefaultConfig()
+	cfg.ReconcileConfig.RepoURL = "https://example.com/repo.git"
+	cfg.ReconcileConfig.SecretsFiles = []string{"secrets/prod.sops.yaml"}
+	d, err := New(cfg)
+	require.NoError(t, err)
+
+	err = d.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SOPS_AGE_KEY_FILE")
+	assert.Contains(t, err.Error(), "not a regular file")
 	_, statErr := os.Stat(cfg.SocketPath)
 	assert.ErrorIs(t, statErr, os.ErrNotExist)
 }

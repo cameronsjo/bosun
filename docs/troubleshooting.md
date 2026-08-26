@@ -72,7 +72,9 @@ preceding reconcile logs to find the operation that ignored cancellation.
 - Check SSH key is loaded: `ssh-add -l`
 - For an SSH Git repository, Bosun tries `SSH_AUTH_SOCK` first, then
   `BOSUN_SSH_KEY` and the conventional key paths. An agent takes precedence
-  over an invalid fallback key.
+  only when it returns at least one signer; Bosun closes an empty or unreadable
+  agent connection and continues to key files. The repository's SSH username is
+  preserved for both SCP-like and `ssh://` URLs.
 - When `BOSUN_SSH_KEY` is set, it must name a regular, non-empty, parseable
   private key file. Bosun fails before Git network access if it is missing, a
   directory, empty, or malformed. If an existing conventional key candidate
@@ -80,6 +82,8 @@ preceding reconcile logs to find the operation that ignored cancellation.
   reports the invalid path when none succeeds. Pre-create Docker bind-mount
   source files; mounting a missing host source can create a directory at the
   container path.
+- If no agent or key is usable, Bosun rejects the SSH repository configuration
+  before network access instead of allowing go-git to continue with nil auth.
 - Verify host is reachable: `ping host`
 
 ### Deploy reports success but files unchanged

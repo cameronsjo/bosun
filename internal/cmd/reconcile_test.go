@@ -46,6 +46,31 @@ func TestReconcileCmd_Help(t *testing.T) {
 	})
 }
 
+func TestValidateReconcileStartupChecksAgeBeforeGitWithoutNetwork(t *testing.T) {
+	t.Setenv("BOSUN_GIT_USERNAME", "")
+	t.Setenv("BOSUN_GIT_TOKEN", "")
+	t.Setenv("SSH_AUTH_SOCK", "")
+	t.Setenv("BOSUN_SSH_KEY", "")
+	t.Setenv("HOME", t.TempDir())
+	agePath := filepath.Join(t.TempDir(), "age-key.txt")
+	require.NoError(t, os.Mkdir(agePath, 0o700))
+	t.Setenv("SOPS_AGE_KEY", "")
+	t.Setenv("SOPS_AGE_KEY_FILE", agePath)
+
+	cfg := reconcile.DefaultConfig()
+	cfg.RepoURL = "operator@example.com:owner/repo.git"
+	cfg.SecretsFiles = []string{"secrets/prod.sops.yaml"}
+	err := validateReconcileStartup(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SOPS_AGE_KEY_FILE")
+	assert.Contains(t, err.Error(), "not a regular file")
+	assert.NotContains(t, err.Error(), "SSH authentication is unavailable")
+
+	cfg.RepoURL = "https://example.com/repo.git"
+	cfg.SecretsFiles = nil
+	require.NoError(t, validateReconcileStartup(cfg), "an unrelated invalid Age mount must not affect a reconcile without secrets")
+}
+
 func TestReconcileCmd_NoAliases(t *testing.T) {
 	cmd, _, err := rootCmd.Find([]string{"reconcile"})
 	require.NoError(t, err)

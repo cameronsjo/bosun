@@ -74,6 +74,10 @@ func rejectRepositoryUserinfo(repoURL string) error {
 		return nil
 	}
 	if parsed.User != nil {
+		_, hasPassword := parsed.User.Password()
+		if strings.EqualFold(parsed.Scheme, "ssh") && !hasPassword {
+			return nil
+		}
 		return errors.New("repository URL userinfo is not allowed; use BOSUN_GIT_USERNAME and BOSUN_GIT_TOKEN")
 	}
 	return nil
