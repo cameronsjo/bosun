@@ -65,9 +65,64 @@ func TestCheckSSHKeyPermissions_SafePermissions(t *testing.T) {
 
 			assert.Equal(t, keyPath, result.Path)
 			assert.Equal(t, tc.mode, result.Mode)
+			assert.True(t, result.PermissionsChecked)
 			assert.Nil(t, result.Err, "safe permissions should not produce an error")
 		})
 	}
+}
+
+func TestCheckSSHKeyPermissions_RejectsUnusablePaths(t *testing.T) {
+	tests := []struct {
+		name    string
+		prepare func(t *testing.T, path string)
+		wantErr string
+	}{
+		{
+			name: "directory",
+			prepare: func(t *testing.T, path string) {
+				t.Helper()
+				require.NoError(t, os.Mkdir(path, 0700))
+			},
+			wantErr: "not a regular file",
+		},
+		{
+			name: "empty file",
+			prepare: func(t *testing.T, path string) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(path, nil, 0600))
+			},
+			wantErr: "is empty",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			keyPath := filepath.Join(evalDir(t, t.TempDir()), "deploy-key")
+			tc.prepare(t, keyPath)
+			t.Setenv("BOSUN_SSH_KEY", keyPath)
+
+			result := CheckSSHKeyPermissions()
+
+			assert.Equal(t, keyPath, result.Path)
+			assert.False(t, result.PermissionsChecked)
+			require.Error(t, result.Err)
+			assert.Contains(t, result.Err.Error(), tc.wantErr)
+		})
+	}
+}
+
+func TestCheckSSHKeyPermissions_WindowsSkipsPOSIXModeCheck(t *testing.T) {
+	dir := evalDir(t, t.TempDir())
+	keyPath := filepath.Join(dir, "deploy-key")
+	require.NoError(t, os.WriteFile(keyPath, []byte("fake key"), 0600))
+	require.NoError(t, os.Chmod(keyPath, 0644))
+
+	result := checkSSHKeyPermissions([]string{keyPath}, "windows", os.Stat)
+
+	assert.Equal(t, keyPath, result.Path)
+	assert.Equal(t, os.FileMode(0644), result.Mode)
+	assert.False(t, result.PermissionsChecked)
+	assert.NoError(t, result.Err)
 }
 
 func TestCheckSSHKeyPermissions_UnsafePermissions(t *testing.T) {

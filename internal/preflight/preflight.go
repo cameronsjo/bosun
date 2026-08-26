@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -20,6 +21,7 @@ var ErrEmptyBinaryName = errors.New("empty binary name")
 
 type pathLookup func(string) (string, error)
 type contextPathLookup func(context.Context, string) (string, error)
+type fileStat func(string) (os.FileInfo, error)
 
 // BinaryCheck represents a required binary and its purpose.
 type BinaryCheck struct {
@@ -207,7 +209,10 @@ type SSHKeyPermResult struct {
 	Path string
 	// Mode is the actual permission bits of the key file.
 	Mode os.FileMode
-	// Err is non-nil when the key file exists but has unsafe permissions.
+	// PermissionsChecked reports whether POSIX permission bits were validated.
+	// Windows uses ACLs instead, which this check does not inspect.
+	PermissionsChecked bool
+	// Err is non-nil when the key path cannot be used safely as a key file.
 	Err error
 }
 
@@ -237,13 +242,17 @@ func sshKeyCandidates() []string {
 	return result
 }
 
-// CheckSSHKeyPermissions validates that the first SSH key file found has
-// safe permissions (0400 or 0600). Returns a result with an empty Path when
-// no key file is found — that is not treated as an error because SSH auth
-// may use an agent or an HTTPS URL.
+// CheckSSHKeyPermissions validates that the first SSH key path found is a
+// non-empty regular file and, on POSIX systems, has safe permissions (0400 or
+// 0600). Returns a result with an empty Path when no key file is found — that
+// is not treated as an error because SSH auth may use an agent or an HTTPS URL.
 func CheckSSHKeyPermissions() SSHKeyPermResult {
-	for _, path := range sshKeyCandidates() {
-		info, err := os.Stat(path)
+	return checkSSHKeyPermissions(sshKeyCandidates(), runtime.GOOS, os.Stat)
+}
+
+func checkSSHKeyPermissions(candidates []string, goos string, stat fileStat) SSHKeyPermResult {
+	for _, path := range candidates {
+		info, err := stat(path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				// File does not exist — try the next candidate.
@@ -255,12 +264,34 @@ func CheckSSHKeyPermissions() SSHKeyPermResult {
 		}
 
 		mode := info.Mode().Perm()
+		if !info.Mode().IsRegular() {
+			return SSHKeyPermResult{
+				Path: path,
+				Mode: mode,
+				Err:  fmt.Errorf("SSH deploy key is not a regular file: %s", path),
+			}
+		}
+		if info.Size() == 0 {
+			return SSHKeyPermResult{
+				Path: path,
+				Mode: mode,
+				Err:  fmt.Errorf("SSH deploy key is empty: %s", path),
+			}
+		}
+
+		// Windows protects private keys with ACLs rather than POSIX mode bits.
+		// The regular/non-empty checks above still catch paths runtime will reject.
+		if goos == "windows" {
+			return SSHKeyPermResult{Path: path, Mode: mode}
+		}
+
 		// Only 0400 (read-only owner) and 0600 (read-write owner) are safe.
 		// SSH will refuse a key with group or world read bits set.
 		if mode != 0400 && mode != 0600 {
 			return SSHKeyPermResult{
-				Path: path,
-				Mode: mode,
+				Path:               path,
+				Mode:               mode,
+				PermissionsChecked: true,
 				Err: fmt.Errorf(
 					"SSH deploy key has unsafe permissions %04o (want 0400 or 0600): chmod 600 %s",
 					mode, path,
@@ -268,7 +299,7 @@ func CheckSSHKeyPermissions() SSHKeyPermResult {
 			}
 		}
 
-		return SSHKeyPermResult{Path: path, Mode: mode}
+		return SSHKeyPermResult{Path: path, Mode: mode, PermissionsChecked: true}
 	}
 
 	// No key file found — not an error here; runtime will use agent or HTTPS.

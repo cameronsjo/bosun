@@ -603,17 +603,23 @@ func checkDockerSocket(svc *traefikComposeService) traefikCheck {
 // preflight package's resolution order (BOSUN_SSH_KEY → /config/deploy-key →
 // /config/ssh-key → ~/.ssh/id_ed25519 → ~/.ssh/id_rsa).
 func checkDeployKeyPermissions() CheckResult {
-	res := preflight.CheckSSHKeyPermissions()
+	return checkDeployKeyPermissionsResult(preflight.CheckSSHKeyPermissions())
+}
+
+func checkDeployKeyPermissionsResult(res preflight.SSHKeyPermResult) CheckResult {
 	switch {
 	case res.Path == "":
 		// No key file found — not an error; SSH agent or HTTPS may be used.
 		_, _ = ui.Yellow.Println("  ! SSH deploy key not found (using agent or HTTPS?)")
 		return CheckResult{Warned: 1}
 	case res.Err != nil:
-		// res.Err already contains the chmod remediation command; print it
-		// directly to avoid duplicating the hint.
+		// The preflight error includes any applicable remediation, so print it
+		// directly rather than guessing whether chmod is the right fix.
 		_, _ = ui.Red.Printf("  x %s\n", res.Err)
 		return CheckResult{Failed: 1}
+	case !res.PermissionsChecked:
+		_, _ = ui.Yellow.Printf("  ! SSH deploy key file found; Windows ACLs not inspected: %s\n", res.Path)
+		return CheckResult{Warned: 1}
 	default:
 		_, _ = ui.Green.Printf("  * SSH deploy key permissions OK (%04o): %s\n", res.Mode, res.Path)
 		return CheckResult{Passed: 1}
