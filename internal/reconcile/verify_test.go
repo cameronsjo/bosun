@@ -754,6 +754,20 @@ func TestDirHasRegularFiles(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+
+	t.Run("cancelled before inspection", func(t *testing.T) {
+		ctx := &cancelOnErrCheckContext{Context: context.Background(), cancelOn: 1}
+		found, err := dirHasRegularFilesContext(ctx, t.TempDir())
+		require.ErrorIs(t, err, context.Canceled)
+		assert.False(t, found)
+	})
+
+	t.Run("cancelled during walk", func(t *testing.T) {
+		ctx := &cancelOnErrCheckContext{Context: context.Background(), cancelOn: 2}
+		found, err := dirHasRegularFilesContext(ctx, t.TempDir())
+		require.ErrorIs(t, err, context.Canceled)
+		assert.False(t, found)
+	})
 }
 
 // Smoke test that the sentinel errors are distinct so callers can branch on them.

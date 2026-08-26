@@ -274,7 +274,7 @@ func copyNonTemplateFiles(ctx context.Context, src, dst string) error {
 
 // copyNonTemplateFilesWith makes the copy operation explicit so the
 // discovery-to-copy race can be tested without a package-global fault seam.
-func copyNonTemplateFilesWith(ctx context.Context, src, dst string, copyFile func(string, string) error) error {
+func copyNonTemplateFilesWith(ctx context.Context, src, dst string, copyFile func(context.Context, string, string) error) error {
 	logger := log.ComponentCtx(ctx, log.ComponentTemplate)
 
 	// Validate the source directory exists before walking. A missing root
@@ -328,7 +328,7 @@ func copyNonTemplateFilesWith(ctx context.Context, src, dst string, copyFile fun
 			return nil
 		}
 
-		if err := copyFile(path, dstPath); err != nil {
+		if err := copyFile(ctx, path, dstPath); err != nil {
 			// The entry can become a symlink after WalkDir captured its DirEntry.
 			// Treat only CopyFile's typed skip as benign; I/O and destination
 			// errors must still abort staging rather than produce a partial tree.

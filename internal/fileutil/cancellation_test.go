@@ -2,6 +2,7 @@ package fileutil
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,20 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type cancelOnErrCheckContext struct {
+	context.Context
+	cancelOn int
+	checks   int
+}
+
+func (c *cancelOnErrCheckContext) Err() error {
+	c.checks++
+	if c.checks >= c.cancelOn {
+		return context.Canceled
+	}
+	return nil
+}
 
 func TestCopyDirIfChangedStopsBeforeNextMutationAfterCancellation(t *testing.T) {
 	t.Parallel()
@@ -76,6 +91,68 @@ func TestCopyFileIfChangedCancelledBeforeMutation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+	changed, err := CopyFileIfChanged(ctx, src, dst)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.False(t, changed)
+	content, readErr := os.ReadFile(dst)
+	require.NoError(t, readErr)
+	assert.Equal(t, "preserve", string(content))
+}
+
+func TestCopyFileCancelledBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	src := filepath.Join(root, "source.txt")
+	dst := filepath.Join(root, "destination.txt")
+	require.NoError(t, os.WriteFile(src, []byte("new"), 0o644))
+	require.NoError(t, os.WriteFile(dst, []byte("preserve"), 0o644))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := CopyFile(ctx, src, dst)
+
+	require.ErrorIs(t, err, context.Canceled)
+	content, readErr := os.ReadFile(dst)
+	require.NoError(t, readErr)
+	assert.Equal(t, "preserve", string(content))
+}
+
+func TestCopyFileStopsAtEachMutationBoundary(t *testing.T) {
+	t.Parallel()
+
+	for _, cancelOn := range []int{2, 3, 4, 5, 6, 7} {
+		t.Run(fmt.Sprintf("err_check_%d", cancelOn), func(t *testing.T) {
+			t.Parallel()
+
+			root := t.TempDir()
+			src := filepath.Join(root, "source.txt")
+			dst := filepath.Join(root, "destination.txt")
+			require.NoError(t, os.WriteFile(src, nil, 0o644))
+			require.NoError(t, os.WriteFile(dst, []byte("preserve"), 0o644))
+
+			ctx := &cancelOnErrCheckContext{Context: context.Background(), cancelOn: cancelOn}
+			err := CopyFile(ctx, src, dst)
+
+			require.ErrorIs(t, err, context.Canceled)
+			content, readErr := os.ReadFile(dst)
+			require.NoError(t, readErr)
+			assert.Equal(t, "preserve", string(content))
+		})
+	}
+}
+
+func TestCopyFileIfChangedCancelledAfterComparison(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	src := filepath.Join(root, "source.txt")
+	dst := filepath.Join(root, "destination.txt")
+	require.NoError(t, os.WriteFile(src, []byte("new"), 0o644))
+	require.NoError(t, os.WriteFile(dst, []byte("preserve"), 0o644))
+	ctx := &cancelOnErrCheckContext{Context: context.Background(), cancelOn: 2}
+
 	changed, err := CopyFileIfChanged(ctx, src, dst)
 
 	require.ErrorIs(t, err, context.Canceled)

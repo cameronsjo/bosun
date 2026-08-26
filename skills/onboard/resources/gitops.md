@@ -652,7 +652,10 @@ directory creation, file replacement, and managed stale-file deletion, and
 cancellation interrupts copying into an atomic temp file. A cancelled reconcile
 therefore performs no later live-target writes or deletions. Any file already
 renamed into place is still flushed and verified before the cancellation error
-returns, so its completed write remains durable and accurately tracked.
+returns, so its completed write remains durable and accurately tracked. Bosun
+also removes an unpublished managed file/directory transition stage when the
+reconcile is cancelled, allowing the next reconcile to retry without colliding
+with a leftover `.bosun-transition-stage` path.
 
 **Stale-file pruning is managed-set scoped.** When content-hash sync is on (default), bosun removes a target file only if it was in the *previous* deploy's manifest (`state.deployed_files`) **and** is absent from the current rendered source. Files bosun never wrote — container runtime data like `db.sqlite3`, `grafana.db`, or a service's `data/` dir living alongside config in the same appdata dir — are never in the manifest, so they are never deleted. A render that produces zero files also skips pruning entirely, so a templating failure can't wipe a populated target. The first deploy after upgrading (empty manifest) prunes nothing and simply seeds the manifest.
 

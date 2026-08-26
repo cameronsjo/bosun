@@ -26,7 +26,7 @@ func TestCopyFile(t *testing.T) {
 		content := []byte("hello world")
 		require.NoError(t, os.WriteFile(srcPath, content, 0644))
 
-		err := fileutil.CopyFile(srcPath, dstPath)
+		err := fileutil.CopyFile(context.Background(), srcPath, dstPath)
 		require.NoError(t, err)
 
 		got, err := os.ReadFile(dstPath)
@@ -44,7 +44,7 @@ func TestCopyFile(t *testing.T) {
 		content := []byte("test content")
 		require.NoError(t, os.WriteFile(srcPath, content, 0644))
 
-		err := fileutil.CopyFile(srcPath, dstPath)
+		err := fileutil.CopyFile(context.Background(), srcPath, dstPath)
 		require.NoError(t, err)
 
 		got, err := os.ReadFile(dstPath)
@@ -61,7 +61,7 @@ func TestCopyFile(t *testing.T) {
 
 		require.NoError(t, os.WriteFile(srcPath, []byte("test"), 0755))
 
-		err := fileutil.CopyFile(srcPath, dstPath)
+		err := fileutil.CopyFile(context.Background(), srcPath, dstPath)
 		require.NoError(t, err)
 
 		srcInfo, err := os.Stat(srcPath)
@@ -79,7 +79,7 @@ func TestCopyFile(t *testing.T) {
 		srcPath := filepath.Join(tmpDir, "nonexistent.txt")
 		dstPath := filepath.Join(tmpDir, "dest.txt")
 
-		err := fileutil.CopyFile(srcPath, dstPath)
+		err := fileutil.CopyFile(context.Background(), srcPath, dstPath)
 		assert.Error(t, err)
 		assert.True(t, os.IsNotExist(err))
 	})
@@ -97,7 +97,7 @@ func TestCopyFile(t *testing.T) {
 		require.NoError(t, os.Symlink(realFile, symlinkPath))
 
 		dstPath := filepath.Join(tmpDir, "dest.txt")
-		err = fileutil.CopyFile(symlinkPath, dstPath)
+		err = fileutil.CopyFile(context.Background(), symlinkPath, dstPath)
 		assert.ErrorIs(t, err, fileutil.ErrSymlinkSkipped)
 
 		// Destination must not have been created.
@@ -121,7 +121,7 @@ func TestCopyFile(t *testing.T) {
 		content := []byte("fsync regression check")
 		require.NoError(t, os.WriteFile(srcPath, content, 0644))
 
-		err := fileutil.CopyFile(srcPath, dstPath)
+		err := fileutil.CopyFile(context.Background(), srcPath, dstPath)
 		require.NoError(t, err)
 
 		got, err := os.ReadFile(dstPath)

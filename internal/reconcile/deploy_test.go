@@ -12,10 +12,25 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/fileutil"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type cancelOnErrCheckContext struct {
+	context.Context
+	cancelOn int
+	checks   int
+}
+
+func (c *cancelOnErrCheckContext) Err() error {
+	c.checks++
+	if c.checks >= c.cancelOn {
+		return context.Canceled
+	}
+	return nil
+}
 
 func TestNewDeployOps(t *testing.T) {
 	t.Run("with dry run", func(t *testing.T) {
@@ -896,8 +911,7 @@ func TestManagedTypeTransitions_PromotionFailureRestoresOriginal(t *testing.T) {
 
 func TestManagedTypeTransitions_CancelledBeforePromotionPreservesOriginal(t *testing.T) {
 	transitions, target := newFileToDirTransition(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	ctx := &cancelOnErrCheckContext{Context: context.Background(), cancelOn: 2}
 
 	err := transitions.Promote(ctx)
 
@@ -906,6 +920,196 @@ func TestManagedTypeTransitions_CancelledBeforePromotionPreservesOriginal(t *tes
 	require.NoError(t, readErr)
 	assert.Equal(t, "old", string(content))
 	assert.FileExists(t, target)
+}
+
+func TestManagedTypeTransitions_AlreadyCancelledBeforePromotionPreservesOriginal(t *testing.T) {
+	transitions, target := newFileToDirTransition(t)
+	ctx := &cancelOnErrCheckContext{Context: context.Background(), cancelOn: 1}
+
+	err := transitions.Promote(ctx)
+
+	require.ErrorIs(t, err, context.Canceled)
+	content, readErr := os.ReadFile(target)
+	require.NoError(t, readErr)
+	assert.Equal(t, "old", string(content))
+}
+
+func TestManagedTypeTransitions_CancelledAfterQuarantineRestoresOriginal(t *testing.T) {
+	transitions, target := newFileToDirTransition(t)
+	ctx := &cancelOnErrCheckContext{Context: context.Background(), cancelOn: 3}
+
+	err := transitions.Promote(ctx)
+
+	require.ErrorIs(t, err, context.Canceled)
+	content, readErr := os.ReadFile(target)
+	require.NoError(t, readErr)
+	assert.Equal(t, "old", string(content))
+	assert.NoFileExists(t, transitions.items[0].oldPath)
+	assert.NoFileExists(t, transitions.items[0].newPath)
+}
+
+func TestManagedTypeTransitions_CancelledStagingCleansArtifactsForRetry(t *testing.T) {
+	root := evalSymlinks(t, t.TempDir())
+	source := filepath.Join(root, "source")
+	targetParent := filepath.Join(root, "target")
+	target := filepath.Join(targetParent, "config")
+	require.NoError(t, os.MkdirAll(filepath.Join(source, "config"), 0o755))
+	require.NoError(t, os.MkdirAll(targetParent, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "config", "app.yml"), []byte("new"), 0o644))
+	require.NoError(t, os.WriteFile(target, []byte("old"), 0o644))
+
+	sourceInfo, err := os.Lstat(filepath.Join(source, "config"))
+	require.NoError(t, err)
+	item, err := discoverManagedTypeConflict(
+		context.Background(),
+		filepath.Join(source, "config"),
+		target,
+		"config",
+		sourceInfo,
+		map[string]bool{"config": true},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, item)
+	t.Cleanup(func() { (&managedTypeTransitions{items: []*managedTypeTransition{item}}).Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	err = item.stageWithCopyDir(ctx, func(_ context.Context, _, dst string) ([]string, error) {
+		require.NoError(t, os.WriteFile(filepath.Join(dst, "partial.yml"), []byte("partial"), 0o600))
+		cancel()
+		return nil, nil
+	})
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.NoDirExists(t, target+managedTransitionStageSuffix)
+	assert.NoDirExists(t, target+managedTransitionCleanSuffix)
+	assert.NoDirExists(t, target+managedTransitionNewSuffix)
+	content, readErr := os.ReadFile(target)
+	require.NoError(t, readErr)
+	assert.Equal(t, "old", string(content))
+
+	retry, retryErr := prepareManagedTypeTransitions(context.Background(), source, targetParent, map[string]bool{"config": true})
+	require.NoError(t, retryErr)
+	t.Cleanup(retry.Close)
+	require.Len(t, retry.items, 1)
+}
+
+func TestManagedTypeTransitionCancellationTraversalGuards(t *testing.T) {
+	t.Run("prepare walk", func(t *testing.T) {
+		root := t.TempDir()
+		source := filepath.Join(root, "source")
+		target := filepath.Join(root, "target")
+		require.NoError(t, os.MkdirAll(source, 0o755))
+		require.NoError(t, os.MkdirAll(target, 0o755))
+		ctx := &cancelOnErrCheckContext{Context: context.Background(), cancelOn: 3}
+
+		_, err := prepareManagedTypeTransitions(ctx, source, target, nil)
+
+		require.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("stage entry", func(t *testing.T) {
+		ctx := &cancelOnErrCheckContext{Context: context.Background(), cancelOn: 1}
+		err := (&managedTypeTransition{}).stage(ctx)
+		require.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("conflict discovery", func(t *testing.T) {
+		root := t.TempDir()
+		source := filepath.Join(root, "source")
+		target := filepath.Join(root, "target")
+		require.NoError(t, os.WriteFile(source, []byte("source"), 0o600))
+		info, err := os.Lstat(source)
+		require.NoError(t, err)
+		ctx := &cancelOnErrCheckContext{Context: context.Background(), cancelOn: 1}
+
+		_, err = discoverManagedTypeConflict(ctx, source, target, "target", info, nil)
+
+		require.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("managed directory walk", func(t *testing.T) {
+		root := t.TempDir()
+		ctx := &cancelOnErrCheckContext{Context: context.Background(), cancelOn: 1}
+
+		_, err := validateManagedDirectory(ctx, root, "config", nil)
+
+		require.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("private file copy", func(t *testing.T) {
+		for _, cancelOn := range []int{1, 2, 3} {
+			t.Run(fmt.Sprintf("err_check_%d", cancelOn), func(t *testing.T) {
+				root := t.TempDir()
+				source := filepath.Join(root, "source")
+				require.NoError(t, os.WriteFile(source, []byte("source"), 0o600))
+				item := &managedTypeTransition{sourcePath: source}
+				t.Cleanup(func() { (&managedTypeTransitions{items: []*managedTypeTransition{item}}).Close() })
+				ctx := &cancelOnErrCheckContext{Context: context.Background(), cancelOn: cancelOn}
+
+				err := item.copyPrivateFile(ctx, filepath.Join(root, "replacement"))
+
+				require.ErrorIs(t, err, context.Canceled)
+			})
+		}
+	})
+
+	t.Run("private copy reader", func(t *testing.T) {
+		ctx := &cancelOnErrCheckContext{Context: context.Background(), cancelOn: 1}
+		_, err := (contextReader{ctx: ctx, reader: strings.NewReader("data")}).Read(make([]byte, 4))
+		require.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("empty private stage discard", func(t *testing.T) {
+		require.NoError(t, (&managedTypeTransition{}).discardPrivateStage())
+	})
+
+	t.Run("private stage discard preserves changed identity", func(t *testing.T) {
+		root := t.TempDir()
+		item := &managedTypeTransition{targetPath: filepath.Join(root, "target"), relPath: "target"}
+		require.NoError(t, item.createPrivateStage())
+		original := item.privatePath + "-original"
+		require.NoError(t, os.Rename(item.privatePath, original))
+		t.Cleanup(func() {
+			(&managedTypeTransitions{items: []*managedTypeTransition{item}}).Close()
+			_ = os.RemoveAll(original)
+		})
+
+		err := item.discardPrivateStage()
+
+		require.ErrorContains(t, err, "private transition stage retained")
+		assert.DirExists(t, original)
+	})
+
+	t.Run("cancelled stage preserves evidence when cleanup namespace collides", func(t *testing.T) {
+		root := t.TempDir()
+		source := filepath.Join(root, "source")
+		targetParent := filepath.Join(root, "target")
+		target := filepath.Join(targetParent, "config")
+		require.NoError(t, os.MkdirAll(filepath.Join(source, "config"), 0o755))
+		require.NoError(t, os.MkdirAll(targetParent, 0o755))
+		require.NoError(t, os.WriteFile(target, []byte("old"), 0o644))
+		sourceInfo, err := os.Lstat(filepath.Join(source, "config"))
+		require.NoError(t, err)
+		item, err := discoverManagedTypeConflict(context.Background(), filepath.Join(source, "config"), target, "config", sourceInfo, map[string]bool{"config": true})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			(&managedTypeTransitions{items: []*managedTypeTransition{item}}).Close()
+			_ = os.RemoveAll(target + managedTransitionStageSuffix)
+			_ = os.RemoveAll(target + managedTransitionCleanSuffix)
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+
+		err = item.stageWithCopyDir(ctx, func(_ context.Context, _, dst string) ([]string, error) {
+			require.NoError(t, os.WriteFile(filepath.Join(dst, "partial.yml"), []byte("partial"), 0o600))
+			require.NoError(t, os.Mkdir(target+managedTransitionCleanSuffix, 0o700))
+			cancel()
+			return nil, nil
+		})
+
+		require.ErrorIs(t, err, context.Canceled)
+		require.ErrorContains(t, err, "discard cancelled private transition stage")
+		assert.DirExists(t, target+managedTransitionStageSuffix)
+	})
 }
 
 func TestManagedTypeTransitions_SuccessfulRollbackRemovesRedundantStage(t *testing.T) {
@@ -2331,17 +2535,24 @@ func TestDeployOps_DeployLocalFile_ContextCancelled(t *testing.T) {
 	tmpDir := t.TempDir()
 	src := filepath.Join(tmpDir, "src.txt")
 	dst := filepath.Join(tmpDir, "dst.txt")
-	require.NoError(t, os.WriteFile(src, []byte("content"), 0644))
+	require.NoError(t, os.WriteFile(src, []byte("new"), 0644))
+	require.NoError(t, os.WriteFile(dst, []byte("preserve"), 0644))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
 	d := NewDeployOps(false, "")
-	err := d.DeployLocalFile(ctx, src, dst, nil)
-	// Context should cause early return.
-	if err != nil {
-		assert.ErrorIs(t, err, context.Canceled)
+	copyCalls := 0
+	d.copyFileFn = func(copyCtx context.Context, src, dst string) error {
+		copyCalls++
+		cancel()
+		return fileutil.CopyFile(copyCtx, src, dst)
 	}
+	err := d.DeployLocalFile(ctx, src, dst, nil)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, copyCalls)
+	content, readErr := os.ReadFile(dst)
+	require.NoError(t, readErr)
+	assert.Equal(t, "preserve", string(content))
 }
 
 func TestDeployOps_SignalContainer_InvalidName(t *testing.T) {
@@ -2448,6 +2659,30 @@ func TestDeployOps_DryRun_Remote(t *testing.T) {
 
 func TestRemoveStaleFiles(t *testing.T) {
 	ctx := context.Background()
+
+	t.Run("cancelled before source inspection", func(t *testing.T) {
+		srcDir := evalSymlinks(t, t.TempDir())
+		tgtDir := evalSymlinks(t, t.TempDir())
+		cancelCtx := &cancelOnErrCheckContext{Context: context.Background(), cancelOn: 1}
+
+		err := removeStaleFiles(cancelCtx, srcDir, tgtDir, nil, map[string]bool{"stale.txt": true})
+
+		require.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("cancelled during target walk", func(t *testing.T) {
+		srcDir := evalSymlinks(t, t.TempDir())
+		tgtDir := evalSymlinks(t, t.TempDir())
+		stale := filepath.Join(tgtDir, "stale.txt")
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "present.txt"), []byte("present"), 0o644))
+		require.NoError(t, os.WriteFile(stale, []byte("preserve"), 0o644))
+		cancelCtx := &cancelOnErrCheckContext{Context: context.Background(), cancelOn: 5}
+
+		err := removeStaleFiles(cancelCtx, srcDir, tgtDir, nil, map[string]bool{"stale.txt": true})
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.FileExists(t, stale)
+	})
 
 	t.Run("removes managed file gone from source", func(t *testing.T) {
 		srcDir := evalSymlinks(t, t.TempDir())

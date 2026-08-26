@@ -72,7 +72,10 @@ It may wait briefly to flush and verify a file whose atomic rename already
 completed; later files and deletions remain untouched. A temp-file copy that is
 still in progress is interrupted and cleaned up. After the daemon restarts,
 rerun the reconcile normally—the content-hash pass safely skips files that
-already reached their intended bytes and resumes the remaining work.
+already reached their intended bytes and resumes the remaining work. If Bosun
+was staging a managed file-to-directory or directory-to-file replacement, it
+also removes that private transition stage on cancellation so the retry is not
+blocked by a leftover `.bosun-transition-stage` path.
 
 ### SSH connection failures
 

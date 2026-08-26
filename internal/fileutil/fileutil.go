@@ -45,11 +45,7 @@ func warnSymlinkSkipped(path string) {
 // It creates parent directories if needed and preserves permissions.
 // Uses atomic write via temp file to prevent partial writes on failure.
 // Symlinks are skipped with a warning rather than causing an error.
-func CopyFile(src, dst string) error {
-	return copyFileWithOps(context.Background(), src, dst, (*os.File).Chmod, syncDestinationDir)
-}
-
-func copyFileContext(ctx context.Context, src, dst string) error {
+func CopyFile(ctx context.Context, src, dst string) error {
 	return copyFileWithOps(ctx, src, dst, (*os.File).Chmod, syncDestinationDir)
 }
 
@@ -299,7 +295,7 @@ func CopyFileIfChanged(ctx context.Context, src, dst string) (bool, error) {
 // can reproduce a verification failure after the atomic rename without a
 // package-global fault-injection seam.
 func copyFileIfChanged(ctx context.Context, src, dst string, verifyHash func(string) ([sha256.Size]byte, error)) (bool, error) {
-	return copyFileIfChangedWithCopy(ctx, src, dst, verifyHash, copyFileContext)
+	return copyFileIfChangedWithCopy(ctx, src, dst, verifyHash, CopyFile)
 }
 
 func copyFileIfChangedWithCopy(

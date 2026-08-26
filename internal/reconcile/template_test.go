@@ -614,11 +614,11 @@ func TestCopyNonTemplateFiles(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "aaa-raced.txt"), []byte("raced"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "zzz-regular.txt"), []byte("copied"), 0644))
 
-		err := copyNonTemplateFilesWith(context.Background(), srcDir, dstDir, func(src, dst string) error {
+		err := copyNonTemplateFilesWith(context.Background(), srcDir, dstDir, func(ctx context.Context, src, dst string) error {
 			if filepath.Base(src) == "aaa-raced.txt" {
 				return fmt.Errorf("source changed: %w", fileutil.ErrSymlinkSkipped)
 			}
-			return fileutil.CopyFile(src, dst)
+			return fileutil.CopyFile(ctx, src, dst)
 		})
 		require.NoError(t, err)
 		assert.NoFileExists(t, filepath.Join(dstDir, "aaa-raced.txt"))
@@ -635,11 +635,11 @@ func TestCopyNonTemplateFiles(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "aaa-error.txt"), []byte("error"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "zzz-regular.txt"), []byte("not copied"), 0644))
 
-		err := copyNonTemplateFilesWith(context.Background(), srcDir, dstDir, func(src, dst string) error {
+		err := copyNonTemplateFilesWith(context.Background(), srcDir, dstDir, func(ctx context.Context, src, dst string) error {
 			if filepath.Base(src) == "aaa-error.txt" {
 				return copyErr
 			}
-			return fileutil.CopyFile(src, dst)
+			return fileutil.CopyFile(ctx, src, dst)
 		})
 		require.ErrorIs(t, err, copyErr)
 		assert.NoFileExists(t, filepath.Join(dstDir, "zzz-regular.txt"))
@@ -795,7 +795,7 @@ func TestCopyFile(t *testing.T) {
 		content := "test content"
 		require.NoError(t, os.WriteFile(srcFile, []byte(content), 0644))
 
-		err := fileutil.CopyFile(srcFile, dstFile)
+		err := fileutil.CopyFile(context.Background(), srcFile, dstFile)
 		require.NoError(t, err)
 
 		copied, err := os.ReadFile(dstFile)
@@ -810,7 +810,7 @@ func TestCopyFile(t *testing.T) {
 
 		require.NoError(t, os.WriteFile(srcFile, []byte("content"), 0644))
 
-		err := fileutil.CopyFile(srcFile, dstFile)
+		err := fileutil.CopyFile(context.Background(), srcFile, dstFile)
 		require.NoError(t, err)
 
 		assert.FileExists(t, dstFile)
@@ -820,7 +820,7 @@ func TestCopyFile(t *testing.T) {
 		tmpDir := t.TempDir()
 		dstFile := filepath.Join(tmpDir, "dst.txt")
 
-		err := fileutil.CopyFile("/non/existent/file.txt", dstFile)
+		err := fileutil.CopyFile(context.Background(), "/non/existent/file.txt", dstFile)
 		assert.Error(t, err)
 	})
 }

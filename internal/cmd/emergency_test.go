@@ -3,6 +3,7 @@ package cmd
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +11,21 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestDeployRestoredConfigsHonorsContext(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	target := filepath.Join(root, "target")
+	require.NoError(t, os.MkdirAll(source, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "config.yml"), []byte("restored"), 0o644))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := deployRestoredConfigs(ctx, source, target)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.NoDirExists(t, target)
+}
 
 func TestMaydayCmd_Registration(t *testing.T) {
 	cmd, _, err := rootCmd.Find([]string{"mayday"})

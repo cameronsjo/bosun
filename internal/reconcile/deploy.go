@@ -54,6 +54,9 @@ type DeployOps struct {
 	// copyFileIfChangedFn fault-injects single-file copy failures in tests.
 	// Nil uses fileutil.CopyFileIfChanged.
 	copyFileIfChangedFn func(context.Context, string, string) (bool, error)
+	// copyFileFn fault-injects standard single-file copy failures in tests.
+	// Nil uses fileutil.CopyFile.
+	copyFileFn func(context.Context, string, string) error
 	// backupFS fault-injects filesystem churn while writing local backup
 	// archives. Nil operations use filepath.Walk and os.Open.
 	backupFS *backupArchiveFS
@@ -683,6 +686,13 @@ func dirEntryIsRegular(entry os.DirEntry) (bool, error) {
 }
 
 func (t *managedTypeTransition) stage(ctx context.Context) (stageErr error) {
+	return t.stageWithCopyDir(ctx, fileutil.CopyDirIfChanged)
+}
+
+func (t *managedTypeTransition) stageWithCopyDir(
+	ctx context.Context,
+	copyDir func(context.Context, string, string) ([]string, error),
+) (stageErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -695,6 +705,12 @@ func (t *managedTypeTransition) stage(ctx context.Context) (stageErr error) {
 			return
 		}
 		if !published {
+			if errors.Is(stageErr, context.Canceled) || errors.Is(stageErr, context.DeadlineExceeded) {
+				if err := t.discardPrivateStage(); err != nil {
+					stageErr = errors.Join(stageErr, err)
+				}
+				return
+			}
 			if t.privatePath != "" {
 				stageErr = fmt.Errorf("%w; private transition stage retained at %s", stageErr, t.privatePath)
 			}
@@ -722,7 +738,7 @@ func (t *managedTypeTransition) stage(ctx context.Context) (stageErr error) {
 		if err != nil {
 			return fmt.Errorf("stat private replacement directory for %s: %w", t.relPath, err)
 		}
-		written, err := fileutil.CopyDirIfChanged(ctx, t.sourcePath, replacement)
+		written, err := copyDir(ctx, t.sourcePath, replacement)
 		if err != nil {
 			return fmt.Errorf("copy private replacement directory for %s: %w", t.relPath, err)
 		}
@@ -852,6 +868,28 @@ func (t *managedTypeTransition) cleanupPrivateStage() error {
 	}
 	if err := os.Remove(t.privatePath); err != nil {
 		return fmt.Errorf("remove private transition stage %s: %w", t.privatePath, err)
+	}
+	_ = t.privateHandle.Close()
+	t.privateHandle = nil
+	t.privatePath = ""
+	t.privateInfo = nil
+	return nil
+}
+
+// discardPrivateStage removes only the fingerprinted private tree owned by this
+// transition. Cancellation must not strand the fixed .bosun-transition-stage
+// name and make the next reconcile fail before it can retry.
+func (t *managedTypeTransition) discardPrivateStage() error {
+	if t.privatePath == "" {
+		return nil
+	}
+	expected, err := fingerprintPinnedPath(t.privatePath, t.privateHandle, t.privateInfo)
+	if err != nil {
+		return fmt.Errorf("private transition stage retained at %s: %w", t.privatePath, err)
+	}
+	cleanupPath := t.targetPath + managedTransitionCleanSuffix
+	if err := removePinnedTree(t.privatePath, cleanupPath, t.privateHandle, t.privateInfo, expected, "private transition stage", removalHooks{}); err != nil {
+		return fmt.Errorf("discard cancelled private transition stage at %s: %w", t.privatePath, err)
 	}
 	_ = t.privateHandle.Close()
 	t.privateHandle = nil
@@ -1504,7 +1542,11 @@ func (d *DeployOps) deployLocalFileManaged(ctx context.Context, sourceFile, targ
 	// Standard mode. A symlink source is intentionally not deployed — CopyDir
 	// and CopyFileIfChanged both Lstat-skip symlinks, so the single-file path
 	// must too. Treat ErrSymlinkSkipped as a benign no-op, not a deploy failure.
-	if err := fileutil.CopyFile(sourceFile, targetFile); err != nil {
+	copyFn := d.copyFileFn
+	if copyFn == nil {
+		copyFn = fileutil.CopyFile
+	}
+	if err := copyFn(ctx, sourceFile, targetFile); err != nil {
 		if errors.Is(err, fileutil.ErrSymlinkSkipped) {
 			return nil
 		}
