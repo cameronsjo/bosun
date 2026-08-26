@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,6 +14,15 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
+
+type cancellingStringer struct {
+	cancel func()
+}
+
+func (s cancellingStringer) String() string {
+	s.cancel()
+	return "cancelled-value"
+}
 
 func TestNewTemplateOps(t *testing.T) {
 	data := map[string]any{
@@ -270,6 +280,101 @@ func TestTemplateOps_ExecuteTemplate_ExecutionError(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to execute template")
 }
 
+func TestTemplateOps_ExecuteTemplate_CancellationMutationBoundaries(t *testing.T) {
+	tests := []struct {
+		name              string
+		cancelOperation   string
+		seedOutput        bool
+		wantOutputDir     bool
+		wantOutputContent string
+	}{
+		{
+			name:            "before output directory creation",
+			cancelOperation: "create_output_directory",
+		},
+		{
+			name:            "after output directory before temp creation",
+			cancelOperation: "create_output_temp",
+			wantOutputDir:   true,
+		},
+		{
+			name:              "after temp write before publish preserves prior output",
+			cancelOperation:   "publish_output",
+			seedOutput:        true,
+			wantOutputDir:     true,
+			wantOutputContent: "preserve",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			templateFile := filepath.Join(root, "config.yml.tmpl")
+			outputDir := filepath.Join(root, "rendered")
+			outputFile := filepath.Join(outputDir, "config.yml")
+			require.NoError(t, os.WriteFile(templateFile, []byte("value: new\n"), 0o644))
+			if tt.seedOutput {
+				require.NoError(t, os.MkdirAll(outputDir, 0o755))
+				require.NoError(t, os.WriteFile(outputFile, []byte("preserve"), 0o644))
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			tmpl := NewTemplateOps(nil)
+			tmpl.beforeMutationFn = func(operation string) {
+				if operation == tt.cancelOperation {
+					cancel()
+				}
+			}
+
+			err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+
+			require.ErrorIs(t, err, context.Canceled)
+			if tt.wantOutputDir {
+				assert.DirExists(t, outputDir)
+			} else {
+				assert.NoDirExists(t, outputDir)
+			}
+			if tt.wantOutputContent == "" {
+				assert.NoFileExists(t, outputFile)
+			} else {
+				content, readErr := os.ReadFile(outputFile)
+				require.NoError(t, readErr)
+				assert.Equal(t, tt.wantOutputContent, string(content))
+			}
+			if tt.wantOutputDir {
+				entries, readErr := os.ReadDir(outputDir)
+				require.NoError(t, readErr)
+				for _, entry := range entries {
+					assert.NotContains(t, entry.Name(), ".bosun-template-", "cancelled template temp must be removed")
+				}
+			}
+		})
+	}
+}
+
+func TestTemplateOps_ExecuteTemplate_CancellationCleansPartialTemp(t *testing.T) {
+	root := t.TempDir()
+	templateFile := filepath.Join(root, "config.yml.tmpl")
+	outputDir := filepath.Join(root, "rendered")
+	outputFile := filepath.Join(outputDir, "config.yml")
+	require.NoError(t, os.WriteFile(templateFile, []byte(`prefix{{ .value }}suffix`), 0o644))
+	require.NoError(t, os.MkdirAll(outputDir, 0o755))
+	require.NoError(t, os.WriteFile(outputFile, []byte("preserve"), 0o644))
+	ctx, cancel := context.WithCancel(context.Background())
+	tmpl := NewTemplateOps(map[string]any{"value": cancellingStringer{cancel: cancel}})
+
+	err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+
+	require.ErrorIs(t, err, context.Canceled)
+	content, readErr := os.ReadFile(outputFile)
+	require.NoError(t, readErr)
+	assert.Equal(t, "preserve", string(content))
+	entries, readDirErr := os.ReadDir(outputDir)
+	require.NoError(t, readDirErr)
+	for _, entry := range entries {
+		assert.NotContains(t, entry.Name(), ".bosun-template-", "partial template temp must be removed")
+	}
+}
+
 func TestBosunTemplateFuncs_FromJsonFileNonExistent(t *testing.T) {
 	tmpDir := t.TempDir()
 	ctx := context.Background()
@@ -356,6 +461,31 @@ func TestTemplateOps_RenderDirectory(t *testing.T) {
 		// Verify static file was copied to stagingDir/subDir.
 		copiedStatic := filepath.Join(stagingDir, "infra", "static.yml")
 		assert.FileExists(t, copiedStatic)
+	})
+
+	t.Run("cancellation at template traversal stops before render mutation", func(t *testing.T) {
+		root := t.TempDir()
+		sourceDir := filepath.Join(root, "source")
+		stagingDir := filepath.Join(root, "staging")
+		require.NoError(t, os.MkdirAll(sourceDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "static.yml"), []byte("static"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "rendered.yml.tmpl"), []byte("rendered"), 0o644))
+		ctx, cancel := context.WithCancel(context.Background())
+		tmpl := NewTemplateOps(nil)
+		tmpl.walkDirFn = func(root string, walkFn fs.WalkDirFunc) error {
+			return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+				if path == root {
+					cancel()
+				}
+				return walkFn(path, entry, walkErr)
+			})
+		}
+
+		err := tmpl.RenderDirectory(ctx, sourceDir, stagingDir, "infra")
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.FileExists(t, filepath.Join(stagingDir, "infra", "static.yml"))
+		assert.NoFileExists(t, filepath.Join(stagingDir, "infra", "rendered.yml"))
 	})
 
 	t.Run("non-existent source directory", func(t *testing.T) {
@@ -547,6 +677,46 @@ func TestTemplateOps_RenderDirectoryErrors(t *testing.T) {
 }
 
 func TestCopyNonTemplateFiles(t *testing.T) {
+	t.Run("already cancelled leaves destination absent", func(t *testing.T) {
+		root := t.TempDir()
+		srcDir := filepath.Join(root, "src")
+		dstDir := filepath.Join(root, "dst")
+		require.NoError(t, os.MkdirAll(srcDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "config.yml"), []byte("config"), 0o644))
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := copyNonTemplateFiles(ctx, srcDir, dstDir)
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.NoDirExists(t, dstDir)
+	})
+
+	t.Run("cancellation before nested directory creation stops later copies", func(t *testing.T) {
+		root := t.TempDir()
+		srcDir := filepath.Join(root, "src")
+		dstDir := filepath.Join(root, "dst")
+		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "aaa-nested"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "aaa-nested", "config.yml"), []byte("nested"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "zzz-later.yml"), []byte("later"), 0o644))
+		ctx, cancel := context.WithCancel(context.Background())
+		mkdirCalls := 0
+
+		err := copyNonTemplateFilesWithOps(ctx, srcDir, dstDir, fileutil.CopyFile, func(mkdirCtx context.Context, path string, mode os.FileMode) error {
+			mkdirCalls++
+			if filepath.Base(path) == "aaa-nested" {
+				cancel()
+			}
+			return mkdirAllContext(mkdirCtx, path, mode)
+		})
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, 2, mkdirCalls, "destination root and nested directory are the only attempted creates")
+		assert.DirExists(t, dstDir)
+		assert.NoDirExists(t, filepath.Join(dstDir, "aaa-nested"))
+		assert.NoFileExists(t, filepath.Join(dstDir, "zzz-later.yml"))
+	})
+
 	t.Run("copy mixed files", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		srcDir := filepath.Join(tmpDir, "src")
@@ -614,11 +784,11 @@ func TestCopyNonTemplateFiles(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "aaa-raced.txt"), []byte("raced"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "zzz-regular.txt"), []byte("copied"), 0644))
 
-		err := copyNonTemplateFilesWith(context.Background(), srcDir, dstDir, func(src, dst string) error {
+		err := copyNonTemplateFilesWith(context.Background(), srcDir, dstDir, func(ctx context.Context, src, dst string) error {
 			if filepath.Base(src) == "aaa-raced.txt" {
 				return fmt.Errorf("source changed: %w", fileutil.ErrSymlinkSkipped)
 			}
-			return fileutil.CopyFile(src, dst)
+			return fileutil.CopyFile(ctx, src, dst)
 		})
 		require.NoError(t, err)
 		assert.NoFileExists(t, filepath.Join(dstDir, "aaa-raced.txt"))
@@ -635,11 +805,11 @@ func TestCopyNonTemplateFiles(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "aaa-error.txt"), []byte("error"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "zzz-regular.txt"), []byte("not copied"), 0644))
 
-		err := copyNonTemplateFilesWith(context.Background(), srcDir, dstDir, func(src, dst string) error {
+		err := copyNonTemplateFilesWith(context.Background(), srcDir, dstDir, func(ctx context.Context, src, dst string) error {
 			if filepath.Base(src) == "aaa-error.txt" {
 				return copyErr
 			}
-			return fileutil.CopyFile(src, dst)
+			return fileutil.CopyFile(ctx, src, dst)
 		})
 		require.ErrorIs(t, err, copyErr)
 		assert.NoFileExists(t, filepath.Join(dstDir, "zzz-regular.txt"))
@@ -795,7 +965,7 @@ func TestCopyFile(t *testing.T) {
 		content := "test content"
 		require.NoError(t, os.WriteFile(srcFile, []byte(content), 0644))
 
-		err := fileutil.CopyFile(srcFile, dstFile)
+		err := fileutil.CopyFile(context.Background(), srcFile, dstFile)
 		require.NoError(t, err)
 
 		copied, err := os.ReadFile(dstFile)
@@ -810,7 +980,7 @@ func TestCopyFile(t *testing.T) {
 
 		require.NoError(t, os.WriteFile(srcFile, []byte("content"), 0644))
 
-		err := fileutil.CopyFile(srcFile, dstFile)
+		err := fileutil.CopyFile(context.Background(), srcFile, dstFile)
 		require.NoError(t, err)
 
 		assert.FileExists(t, dstFile)
@@ -820,7 +990,7 @@ func TestCopyFile(t *testing.T) {
 		tmpDir := t.TempDir()
 		dstFile := filepath.Join(tmpDir, "dst.txt")
 
-		err := fileutil.CopyFile("/non/existent/file.txt", dstFile)
+		err := fileutil.CopyFile(context.Background(), "/non/existent/file.txt", dstFile)
 		assert.Error(t, err)
 	})
 }

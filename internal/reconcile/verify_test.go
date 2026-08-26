@@ -754,6 +754,20 @@ func TestDirHasRegularFiles(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+
+	t.Run("cancelled before inspection", func(t *testing.T) {
+		ctx := &cancelOnErrCheckContext{Context: context.Background(), cancelOn: 1}
+		found, err := dirHasRegularFilesContext(ctx, t.TempDir())
+		require.ErrorIs(t, err, context.Canceled)
+		assert.False(t, found)
+	})
+
+	t.Run("cancelled during walk", func(t *testing.T) {
+		ctx := &cancelOnErrCheckContext{Context: context.Background(), cancelOn: 2}
+		found, err := dirHasRegularFilesContext(ctx, t.TempDir())
+		require.ErrorIs(t, err, context.Canceled)
+		assert.False(t, found)
+	})
 }
 
 // Smoke test that the sentinel errors are distinct so callers can branch on them.
@@ -872,7 +886,7 @@ func TestDeployLocal_ZeroWriteSingleFileSourceTypeChangesFailClosed(t *testing.T
 			touchFile(t, targetFile, "same", time.Now())
 
 			deploy := &DeployOps{ContentHashSync: true}
-			deploy.copyFileIfChangedFn = func(_, _ string) (bool, error) {
+			deploy.copyFileIfChangedFn = func(context.Context, string, string) (bool, error) {
 				if tt.mutate != nil {
 					tt.mutate(t, sourceFile)
 				}
@@ -946,7 +960,7 @@ func TestDeployLocal_ZeroWriteDirectorySourceTypeChangesFailClosed(t *testing.T)
 			require.NoError(t, os.MkdirAll(targetDir, 0o755))
 
 			deploy := &DeployOps{ContentHashSync: true}
-			deploy.copyDirIfChangedFn = func(_, _ string) ([]string, error) {
+			deploy.copyDirIfChangedFn = func(context.Context, string, string) ([]string, error) {
 				if tt.mutate != nil {
 					tt.mutate(t, sourceDir)
 				}

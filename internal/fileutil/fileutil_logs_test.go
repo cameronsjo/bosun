@@ -2,6 +2,7 @@ package fileutil_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -73,7 +74,7 @@ func TestCopyFileIfChanged_EmitsWroteLogOnWrite(t *testing.T) {
 	require.NoError(t, os.WriteFile(src, []byte("hello world"), 0644))
 
 	lines := captureJSONLogs(t, func() {
-		changed, err := fileutil.CopyFileIfChanged(src, dst)
+		changed, err := fileutil.CopyFileIfChanged(context.Background(), src, dst)
 		require.NoError(t, err)
 		assert.True(t, changed, "expected file to be written")
 	})
@@ -94,7 +95,7 @@ func TestCopyFileIfChanged_EmitsSkippedLogOnHashMatch(t *testing.T) {
 	require.NoError(t, os.WriteFile(dst, content, 0644))
 
 	lines := captureJSONLogs(t, func() {
-		changed, err := fileutil.CopyFileIfChanged(src, dst)
+		changed, err := fileutil.CopyFileIfChanged(context.Background(), src, dst)
 		require.NoError(t, err)
 		assert.False(t, changed, "expected file to be skipped")
 	})
@@ -123,7 +124,7 @@ func TestCopyDirIfChanged_EmitsPerFileLogs(t *testing.T) {
 	var written []string
 	lines := captureJSONLogs(t, func() {
 		var err error
-		written, err = fileutil.CopyDirIfChanged(srcDir, dstDir)
+		written, err = fileutil.CopyDirIfChanged(context.Background(), srcDir, dstDir)
 		require.NoError(t, err)
 	})
 

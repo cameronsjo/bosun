@@ -674,6 +674,12 @@ The template engine provides Go's standard template functions plus all [Sprig fu
 3. Copy non-template files as-is
 ```
 
+Template staging honors reconcile cancellation before directory creation and
+before publishing each atomic rendered output. Cancellation interrupts writes
+to the private template temp file, removes that partial file, and leaves an
+existing output untouched. If cancellation follows staging cleanup, Bosun does
+not recreate the staging root for a render that will no longer run.
+
 ### Environment Filtering
 
 For security, only safe environment variables are exposed to templates:
@@ -719,6 +725,15 @@ Uses native Go file operations to sync directories:
 Staging                    Target
 staging/unraid/appdata/ -> /mnt/appdata/
 ```
+
+Local copy walks honor the reconcile context before every directory creation,
+file replacement, and managed stale-file deletion. Cancellation also interrupts
+copying into an atomic temp file, so a cancelled reconcile stops before the next
+live-target mutation. Files whose atomic rename already completed are still
+flushed and verified before the cancellation error returns; later files and
+stale deletions are left untouched.
+In standard atomic-swap mode, cancellation after the existing target is moved
+aside restores that original target and removes the unpublished temp tree.
 
 ### Remote Deployment
 

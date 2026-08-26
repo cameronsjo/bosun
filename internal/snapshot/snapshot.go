@@ -2,6 +2,7 @@
 package snapshot
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -91,7 +92,7 @@ func Create(manifestDir string) (string, error) {
 	}
 
 	// Copy output directory contents to snapshot
-	if err := fileutil.CopyDir(outDir, snapshotPath); err != nil {
+	if err := fileutil.CopyDir(context.Background(), outDir, snapshotPath); err != nil {
 		// Clean up partial snapshot on error
 		if cleanupErr := os.RemoveAll(snapshotPath); cleanupErr != nil {
 			return "", fmt.Errorf("copy output to snapshot: %w (cleanup also failed: %v)", err, cleanupErr)
@@ -209,7 +210,7 @@ func Restore(manifestDir, snapshotName string) error {
 			return fmt.Errorf("create backup directory: %w", err)
 		}
 
-		if err := fileutil.CopyDir(outDir, backupPath); err != nil {
+		if err := fileutil.CopyDir(context.Background(), outDir, backupPath); err != nil {
 			_ = os.RemoveAll(backupPath)
 			return fmt.Errorf("create pre-rollback backup: %w", err)
 		}
@@ -226,7 +227,7 @@ func Restore(manifestDir, snapshotName string) error {
 		return fmt.Errorf("create temp restore directory: %w", err)
 	}
 
-	if err := fileutil.CopyDir(snapshotPath, tempDir); err != nil {
+	if err := fileutil.CopyDir(context.Background(), snapshotPath, tempDir); err != nil {
 		_ = os.RemoveAll(tempDir)
 		return fmt.Errorf("copy snapshot to temp: %w", err)
 	}

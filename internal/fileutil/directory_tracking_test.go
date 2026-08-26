@@ -1,6 +1,7 @@
 package fileutil
 
 import (
+	"context"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -61,11 +62,11 @@ func TestCopyDirIfChanged_DirectoryTrackingCases(t *testing.T) {
 			dst := filepath.Join(tmpDir, "dst")
 			tt.setup(t, src, dst)
 			if tt.repeat {
-				_, err := CopyDirIfChanged(src, dst)
+				_, err := CopyDirIfChanged(context.Background(), src, dst)
 				require.NoError(t, err)
 			}
 
-			got, err := CopyDirIfChanged(src, dst)
+			got, err := CopyDirIfChanged(context.Background(), src, dst)
 
 			if tt.wantErr {
 				require.Error(t, err)

@@ -564,7 +564,7 @@ func doRestore(ctx context.Context, backupDir, backupName string) error {
 
 	// Deploy files from staging to target
 	ui.Info("  Deploying restored configs...")
-	if err := deployRestoredConfigs(stagingDir, targetDir); err != nil {
+	if err := deployRestoredConfigs(ctx, stagingDir, targetDir); err != nil {
 		return fmt.Errorf("failed to deploy restored configs: %w", err)
 	}
 
@@ -722,9 +722,9 @@ func extractFile(target string, tr *tar.Reader, size int64) error {
 	return nil
 }
 
-func deployRestoredConfigs(stagingDir, targetDir string) error {
+func deployRestoredConfigs(ctx context.Context, stagingDir, targetDir string) error {
 	// Use native Go file operations for deployment
-	return fileutil.CopyDir(stagingDir, targetDir)
+	return fileutil.CopyDir(ctx, stagingDir, targetDir)
 }
 
 // recoveryComposeUpTimeout bounds the disaster-recovery compose-up so the

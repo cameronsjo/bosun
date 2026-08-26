@@ -2871,6 +2871,84 @@ func TestRenderTemplates(t *testing.T) {
 		// Old file should be gone
 		assert.NoFileExists(t, filepath.Join(stagingDir, "old-file.yml"))
 	})
+
+	t.Run("cancellation after clearing staging stops before recreation", func(t *testing.T) {
+		root := t.TempDir()
+		repoDir := filepath.Join(root, "repo")
+		stagingDir := filepath.Join(root, "staging")
+		require.NoError(t, os.MkdirAll(repoDir, 0o755))
+		require.NoError(t, os.MkdirAll(stagingDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(stagingDir, "old.yml"), []byte("old"), 0o600))
+		ctx, cancel := context.WithCancel(context.Background())
+		r := NewReconciler(&Config{RepoDir: repoDir, StagingDir: stagingDir, InfraSubDir: "."})
+		r.stagingOps = defaultStagingEvidenceOps()
+		realRemoveAll := r.stagingOps.removeAll
+		r.stagingOps.removeAll = func(path string) error {
+			err := realRemoveAll(path)
+			cancel()
+			return err
+		}
+
+		err := r.renderTemplates(ctx, nil)
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.NoDirExists(t, stagingDir)
+	})
+
+	t.Run("already cancelled preserves existing staging evidence", func(t *testing.T) {
+		root := t.TempDir()
+		repoDir := filepath.Join(root, "repo")
+		stagingDir := filepath.Join(root, "staging")
+		oldFile := filepath.Join(stagingDir, "old.yml")
+		require.NoError(t, os.MkdirAll(repoDir, 0o755))
+		require.NoError(t, os.MkdirAll(stagingDir, 0o755))
+		require.NoError(t, os.WriteFile(oldFile, []byte("old"), 0o600))
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		removeCalls := 0
+		r := NewReconciler(&Config{RepoDir: repoDir, StagingDir: stagingDir, InfraSubDir: "."})
+		r.stagingOps = defaultStagingEvidenceOps()
+		r.stagingOps.removeAll = func(string) error {
+			removeCalls++
+			return errors.New("unexpected staging removal")
+		}
+
+		err := r.renderTemplates(ctx, nil)
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, 0, removeCalls)
+		assert.FileExists(t, oldFile)
+	})
+
+	t.Run("cancellation after staging recreation stops before chmod", func(t *testing.T) {
+		root := t.TempDir()
+		repoDir := filepath.Join(root, "repo")
+		stagingDir := filepath.Join(root, "staging")
+		require.NoError(t, os.MkdirAll(repoDir, 0o755))
+		ctx, cancel := context.WithCancel(context.Background())
+		chmodCalls := 0
+		r := NewReconciler(&Config{RepoDir: repoDir, StagingDir: stagingDir, InfraSubDir: "."})
+		r.stagingOps = defaultStagingEvidenceOps()
+		realMkdirAll := r.stagingOps.mkdirAll
+		r.stagingOps.mkdirAll = func(mkdirCtx context.Context, path string, mode os.FileMode) error {
+			err := realMkdirAll(mkdirCtx, path, mode)
+			cancel()
+			return err
+		}
+		r.stagingOps.chmodPath = func(string, os.FileMode) error {
+			chmodCalls++
+			return errors.New("unexpected chmod")
+		}
+
+		err := r.renderTemplates(ctx, nil)
+
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, 0, chmodCalls)
+		assert.DirExists(t, stagingDir)
+		entries, readErr := os.ReadDir(stagingDir)
+		require.NoError(t, readErr)
+		assert.Empty(t, entries)
+	})
 }
 
 func TestRenderTemplatesFailure(t *testing.T) {

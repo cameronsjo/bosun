@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -34,6 +35,12 @@ type TemplateOps struct {
 	// render time (e.g. a bare ExecuteTemplate call with no tree), validation
 	// is skipped (backwards-compatible for callers that supply no root).
 	IncludeDir string
+
+	// beforeMutationFn is an instance-scoped test seam invoked immediately
+	// before each output filesystem mutation. Nil has no effect.
+	beforeMutationFn func(string)
+	// walkDirFn is an instance-scoped traversal seam. Nil uses filepath.WalkDir.
+	walkDirFn func(string, fs.WalkDirFunc) error
 }
 
 // NewTemplateOps creates a new TemplateOps instance with the given data.
@@ -44,7 +51,10 @@ func NewTemplateOps(data map[string]any) *TemplateOps {
 // ExecuteTemplate renders a single template file using Go's text/template with sprig functions.
 // Template data is passed directly to the template context.
 // Templates can access data via {{ .key }} syntax and use sprig functions.
-func (t *TemplateOps) ExecuteTemplate(_ context.Context, templateFile, outputFile string) error {
+func (t *TemplateOps) ExecuteTemplate(ctx context.Context, templateFile, outputFile string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Read template content.
 	content, err := os.ReadFile(templateFile)
 	if err != nil {
@@ -65,13 +75,19 @@ func (t *TemplateOps) ExecuteTemplate(_ context.Context, templateFile, outputFil
 
 	// Ensure output directory exists.
 	outputDir := filepath.Dir(outputFile)
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	if err := t.checkBeforeMutation(ctx, "create_output_directory"); err != nil {
+		return err
+	}
+	if err := mkdirAllContext(ctx, outputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory for %s: %w", outputFile, err)
 	}
 
 	// Write rendered output atomically to avoid malformed files on failure.
 	// Write to a temp file first, then rename.
-	tmpFile, err := os.CreateTemp(outputDir, ".bosun-template-*.tmp")
+	if err := t.checkBeforeMutation(ctx, "create_output_temp"); err != nil {
+		return err
+	}
+	tmpFile, err := createTempContext(ctx, outputDir, ".bosun-template-*.tmp")
 	if err != nil {
 		return fmt.Errorf("failed to create temp file for %s: %w", outputFile, err)
 	}
@@ -79,7 +95,7 @@ func (t *TemplateOps) ExecuteTemplate(_ context.Context, templateFile, outputFil
 	defer func() { _ = os.Remove(tmpPath) }() // Cleanup on failure
 
 	// Execute template with data.
-	if err := tmpl.Execute(tmpFile, t.Data); err != nil {
+	if err := tmpl.Execute(contextWriter{ctx: ctx, writer: tmpFile}, t.Data); err != nil {
 		_ = tmpFile.Close()
 		return fmt.Errorf("failed to execute template %s: %w", templateFile, err)
 	}
@@ -91,7 +107,10 @@ func (t *TemplateOps) ExecuteTemplate(_ context.Context, templateFile, outputFil
 	// Keep the secret-bearing payload at CreateTemp's private 0600 mode until
 	// the atomic rename. The published file can then adopt the established
 	// render/deploy mode without exposing the temporary payload beforehand.
-	if err := os.Rename(tmpPath, outputFile); err != nil {
+	if err := t.checkBeforeMutation(ctx, "publish_output"); err != nil {
+		return err
+	}
+	if err := renameContext(ctx, tmpPath, outputFile); err != nil {
 		return fmt.Errorf("failed to rename temp file to %s: %w", outputFile, err)
 	}
 	if err := os.Chmod(outputFile, 0644); err != nil {
@@ -99,6 +118,39 @@ func (t *TemplateOps) ExecuteTemplate(_ context.Context, templateFile, outputFil
 	}
 
 	return nil
+}
+
+func (t *TemplateOps) checkBeforeMutation(ctx context.Context, operation string) error {
+	if t.beforeMutationFn != nil {
+		t.beforeMutationFn(operation)
+	}
+	return ctx.Err()
+}
+
+type contextWriter struct {
+	ctx    context.Context
+	writer io.Writer
+}
+
+func createTempContext(ctx context.Context, dir, pattern string) (*os.File, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return os.CreateTemp(dir, pattern)
+}
+
+func renameContext(ctx context.Context, oldPath, newPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return os.Rename(oldPath, newPath)
+}
+
+func (w contextWriter) Write(p []byte) (int, error) {
+	if err := w.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return w.writer.Write(p)
 }
 
 // validateIncludePath enforces a subtree ALLOWLIST: the resolved path must live
@@ -206,6 +258,9 @@ func TemplateFuncs(includeDir string) template.FuncMap {
 // RenderDirectory processes all .tmpl files in sourceDir and renders them to stagingDir.
 // Non-template files are copied as-is.
 func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir, subDir string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	logger := log.ComponentCtx(ctx, log.ComponentTemplate)
 	outDir := filepath.Join(stagingDir, subDir)
 
@@ -224,8 +279,15 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 
 	// Find and render all .tmpl files in the entire sourceDir (not just subDir).
 	templatesRendered := 0
-	err := filepath.WalkDir(sourceDir, func(path string, d fs.DirEntry, err error) error {
+	walkDir := filepath.WalkDir
+	if t.walkDirFn != nil {
+		walkDir = t.walkDirFn
+	}
+	err := walkDir(sourceDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if d.IsDir() {
@@ -274,8 +336,20 @@ func copyNonTemplateFiles(ctx context.Context, src, dst string) error {
 
 // copyNonTemplateFilesWith makes the copy operation explicit so the
 // discovery-to-copy race can be tested without a package-global fault seam.
-func copyNonTemplateFilesWith(ctx context.Context, src, dst string, copyFile func(string, string) error) error {
+func copyNonTemplateFilesWith(ctx context.Context, src, dst string, copyFile func(context.Context, string, string) error) error {
+	return copyNonTemplateFilesWithOps(ctx, src, dst, copyFile, mkdirAllContext)
+}
+
+func copyNonTemplateFilesWithOps(
+	ctx context.Context,
+	src, dst string,
+	copyFile func(context.Context, string, string) error,
+	mkdirAll func(context.Context, string, os.FileMode) error,
+) error {
 	logger := log.ComponentCtx(ctx, log.ComponentTemplate)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// Validate the source directory exists before walking. A missing root
 	// indicates an InfraSubDir misconfiguration and must surface as an error.
@@ -302,6 +376,9 @@ func copyNonTemplateFilesWith(ctx context.Context, src, dst string, copyFile fun
 			}
 			return err
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 
 		// WalkDir uses Lstat semantics, so skip symlinks before CopyFile can
 		// return ErrSymlinkSkipped and abort the rest of the directory walk.
@@ -320,7 +397,10 @@ func copyNonTemplateFilesWith(ctx context.Context, src, dst string, copyFile fun
 		dstPath := filepath.Join(dst, relPath)
 
 		if d.IsDir() {
-			return os.MkdirAll(dstPath, 0755)
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return mkdirAll(ctx, dstPath, 0755)
 		}
 
 		// Skip template files.
@@ -328,7 +408,7 @@ func copyNonTemplateFilesWith(ctx context.Context, src, dst string, copyFile fun
 			return nil
 		}
 
-		if err := copyFile(path, dstPath); err != nil {
+		if err := copyFile(ctx, path, dstPath); err != nil {
 			// The entry can become a symlink after WalkDir captured its DirEntry.
 			// Treat only CopyFile's typed skip as benign; I/O and destination
 			// errors must still abort staging rather than produce a partial tree.
