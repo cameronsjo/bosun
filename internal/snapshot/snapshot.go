@@ -3,6 +3,7 @@ package snapshot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,6 +35,48 @@ type SnapshotInfo struct {
 	Path      string
 	Created   time.Time
 	FileCount int
+}
+
+type restoreOps struct {
+	stat         func(string) (os.FileInfo, error)
+	dirSize      func(string) (int64, error)
+	diskSpace    func(string, int64) error
+	hasContent   func(string) (bool, error)
+	mkdirAll     func(string, os.FileMode) error
+	copyDir      func(context.Context, string, string) error
+	removeAll    func(string) error
+	rename       func(string, string) error
+	now          func() time.Time
+	newRestoreID func() string
+}
+
+type cleanupErrors []error
+
+func (errs cleanupErrors) Error() string {
+	messages := make([]string, len(errs))
+	for i, err := range errs {
+		messages[i] = err.Error()
+	}
+	return strings.Join(messages, "; ")
+}
+
+func (errs cleanupErrors) Unwrap() []error {
+	return errs
+}
+
+func defaultRestoreOps() restoreOps {
+	return restoreOps{
+		stat:         os.Stat,
+		dirSize:      getDirSize,
+		diskSpace:    checkDiskSpace,
+		hasContent:   dirHasContentForRestore,
+		mkdirAll:     os.MkdirAll,
+		copyDir:      fileutil.CopyDir,
+		removeAll:    os.RemoveAll,
+		rename:       os.Rename,
+		now:          time.Now,
+		newRestoreID: func() string { return uuid.New().String()[:8] },
+	}
 }
 
 // snapshotsDir returns the path to the snapshots directory.
@@ -175,6 +218,10 @@ func List(manifestDir string) ([]SnapshotInfo, error) {
 // Restore restores a snapshot atomically, creating a pre-rollback backup first.
 // Uses temp directory + atomic rename pattern to prevent broken state on failure.
 func Restore(manifestDir, snapshotName string) error {
+	return restoreWithOps(manifestDir, snapshotName, defaultRestoreOps())
+}
+
+func restoreWithOps(manifestDir, snapshotName string, ops restoreOps) error {
 	start := time.Now()
 	logger := log.Component("snapshot")
 	snapDir := snapshotsDir(manifestDir)
@@ -188,79 +235,94 @@ func Restore(manifestDir, snapshotName string) error {
 		Msg("Restoring snapshot")
 
 	// Verify snapshot exists
-	if _, err := os.Stat(snapshotPath); os.IsNotExist(err) {
-		return fmt.Errorf("snapshot not found: %s", snapshotName)
+	snapshotInfo, err := ops.stat(snapshotPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("snapshot not found: %s", snapshotName)
+		}
+		return fmt.Errorf("inspect snapshot: %w", err)
+	}
+	if !snapshotInfo.IsDir() {
+		return fmt.Errorf("snapshot is not a directory: %s", snapshotName)
 	}
 
 	// Check disk space for atomic restore (need space for temp copy)
-	snapshotSize, err := getDirSize(snapshotPath)
+	snapshotSize, err := ops.dirSize(snapshotPath)
 	if err != nil {
 		return fmt.Errorf("calculate snapshot size: %w", err)
 	}
-	if err := checkDiskSpace(filepath.Dir(outDir), snapshotSize+MinFreeDiskBytes); err != nil {
+	if err := ops.diskSpace(filepath.Dir(outDir), snapshotSize+MinFreeDiskBytes); err != nil {
 		return fmt.Errorf("insufficient disk space for restore: %w", err)
 	}
 
 	// Create pre-rollback backup if output exists
-	if dirHasContent(outDir) {
-		backupName := "pre-rollback-" + time.Now().Format(DateFormatPrecise)
+	hasOutputContent, err := ops.hasContent(outDir)
+	if err != nil {
+		return fmt.Errorf("inspect current output for backup: %w", err)
+	}
+	if hasOutputContent {
+		backupName := "pre-rollback-" + ops.now().Format(DateFormatPrecise)
 		backupPath := filepath.Join(snapDir, backupName)
 
-		if err := os.MkdirAll(backupPath, 0755); err != nil {
+		if err := ops.mkdirAll(backupPath, 0755); err != nil {
 			return fmt.Errorf("create backup directory: %w", err)
 		}
 
-		if err := fileutil.CopyDir(context.Background(), outDir, backupPath); err != nil {
-			_ = os.RemoveAll(backupPath)
+		if err := ops.copyDir(context.Background(), outDir, backupPath); err != nil {
+			_ = ops.removeAll(backupPath)
 			return fmt.Errorf("create pre-rollback backup: %w", err)
 		}
 	}
 
 	// Atomic restore: copy to temp directory first, then rename
 	// Use UUID to prevent race conditions with concurrent restores
-	restoreID := uuid.New().String()[:8]
+	restoreID := ops.newRestoreID()
 	tempDir := outDir + ".restore-temp-" + restoreID
 	oldDir := outDir + ".restore-old-" + restoreID
 
 	// Step 1: Copy snapshot to temp directory
-	if err := os.MkdirAll(tempDir, 0755); err != nil {
+	if err := ops.mkdirAll(tempDir, 0755); err != nil {
 		return fmt.Errorf("create temp restore directory: %w", err)
 	}
 
-	if err := fileutil.CopyDir(context.Background(), snapshotPath, tempDir); err != nil {
-		_ = os.RemoveAll(tempDir)
+	if err := ops.copyDir(context.Background(), snapshotPath, tempDir); err != nil {
+		_ = ops.removeAll(tempDir)
 		return fmt.Errorf("copy snapshot to temp: %w", err)
 	}
 
 	// Step 2: Check if output directory exists (even if empty)
-	_, statErr := os.Stat(outDir)
+	_, statErr := ops.stat(outDir)
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		_ = ops.removeAll(tempDir)
+		return fmt.Errorf("inspect current output: %w", statErr)
+	}
 	outputExists := statErr == nil
 
 	// Step 3: Atomic swap - rename current output to old (if exists)
 	if outputExists {
-		if err := os.Rename(outDir, oldDir); err != nil {
-			_ = os.RemoveAll(tempDir)
+		if err := ops.rename(outDir, oldDir); err != nil {
+			_ = ops.removeAll(tempDir)
 			return fmt.Errorf("rename current output: %w", err)
 		}
 	}
 
 	// Step 4: Rename temp to output
-	if err := os.Rename(tempDir, outDir); err != nil {
+	if err := ops.rename(tempDir, outDir); err != nil {
 		// Try to restore old directory on failure
 		if outputExists {
-			if recoverErr := os.Rename(oldDir, outDir); recoverErr != nil {
+			if recoverErr := ops.rename(oldDir, outDir); recoverErr != nil {
 				// Recovery failed - surface both errors
-				_ = os.RemoveAll(tempDir) // Best effort cleanup
-				return fmt.Errorf("rename temp to output: %w (recovery also failed: %v)", err, recoverErr)
+				_ = ops.removeAll(tempDir) // Best effort cleanup
+				return fmt.Errorf("rename temp to output: %w (recovery also failed: %w)", err, recoverErr)
 			}
 		}
-		_ = os.RemoveAll(tempDir) // Best effort cleanup
+		_ = ops.removeAll(tempDir) // Best effort cleanup
 		return fmt.Errorf("rename temp to output: %w", err)
 	}
 
 	// Step 5: Cleanup old directory
 	if outputExists {
-		_ = os.RemoveAll(oldDir)
+		_ = ops.removeAll(oldDir)
 	}
 
 	logger.Info().
@@ -275,8 +337,16 @@ func Restore(manifestDir, snapshotName string) error {
 // Cleanup removes snapshots beyond the retention limit.
 // Continues deleting even if individual removals fail, returning a summary of all errors.
 func Cleanup(manifestDir string) error {
+	return cleanupWithOps(manifestDir, List, removeWithRetry)
+}
+
+func cleanupWithOps(
+	manifestDir string,
+	list func(string) ([]SnapshotInfo, error),
+	remove func(string, int) error,
+) error {
 	logger := log.Component("snapshot")
-	snapshots, err := List(manifestDir)
+	snapshots, err := list(manifestDir)
 	if err != nil {
 		return err
 	}
@@ -288,10 +358,10 @@ func Cleanup(manifestDir string) error {
 	// Remove oldest snapshots (keeping MaxSnapshots)
 	// Continue on errors to clean up as many as possible
 	toRemove := snapshots[MaxSnapshots:]
-	var errs []string
+	var errs []error
 	for _, snap := range toRemove {
-		if err := removeWithRetry(snap.Path, 3); err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", snap.Name, err))
+		if err := remove(snap.Path, 3); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", snap.Name, err))
 		}
 	}
 
@@ -305,7 +375,7 @@ func Cleanup(manifestDir string) error {
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf("failed to remove %d snapshot(s): %s", len(errs), strings.Join(errs, "; "))
+		return fmt.Errorf("failed to remove %d snapshot(s): %w", len(errs), cleanupErrors(errs))
 	}
 
 	return nil
@@ -320,7 +390,8 @@ func GetRestoredFiles(manifestDir string) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		if !d.IsDir() && strings.HasSuffix(d.Name(), ".yml") {
+		ext := filepath.Ext(d.Name())
+		if !d.IsDir() && (ext == ".yml" || ext == ".yaml") {
 			relPath, _ := filepath.Rel(manifestDir, path)
 			files = append(files, relPath)
 		}
@@ -337,6 +408,20 @@ func dirHasContent(dir string) bool {
 		return false
 	}
 	return len(entries) > 0
+}
+
+// dirHasContentForRestore distinguishes an absent output directory from an
+// unreadable one. Restore must not silently skip its pre-rollback backup when
+// it cannot inspect the current output.
+func dirHasContentForRestore(dir string) (bool, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return len(entries) > 0, nil
 }
 
 // countFiles counts the number of files in a directory tree.
@@ -372,12 +457,21 @@ func getDirSize(dir string) (int64, error) {
 
 // removeWithRetry attempts to remove a directory with retries for transient failures.
 func removeWithRetry(path string, maxRetries int) error {
+	return removeWithRetryWithOps(path, maxRetries, os.RemoveAll, time.Sleep)
+}
+
+func removeWithRetryWithOps(
+	path string,
+	maxRetries int,
+	remove func(string) error,
+	sleep func(time.Duration),
+) error {
 	var lastErr error
 	for i := 0; i < maxRetries; i++ {
-		if err := os.RemoveAll(path); err != nil {
+		if err := remove(path); err != nil {
 			lastErr = err
 			// Short delay before retry (10ms, 20ms, 40ms)
-			time.Sleep(time.Duration(10*(1<<i)) * time.Millisecond)
+			sleep(time.Duration(10*(1<<i)) * time.Millisecond)
 			continue
 		}
 		return nil
