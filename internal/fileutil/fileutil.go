@@ -307,27 +307,65 @@ func contentEqualContext(
 	return srcHash == dstHash, nil
 }
 
-func readFileContext(ctx context.Context, path string) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = file.Close() }()
-	return readAllContext(ctx, file)
+const contentCompareBufferSize = 32 * 1024
+
+func filesEqualContext(ctx context.Context, aPath, bPath string) (bool, error) {
+	return filesEqualContextWithOpen(ctx, aPath, bPath, func(path string) (io.ReadCloser, error) {
+		return os.Open(path)
+	})
 }
 
-func readAllContext(ctx context.Context, reader io.Reader) ([]byte, error) {
-	contents, err := io.ReadAll(contextReader{ctx: ctx, reader: reader})
-	if err != nil {
-		return nil, err
-	}
+func filesEqualContextWithOpen(
+	ctx context.Context,
+	aPath, bPath string,
+	open func(string) (io.ReadCloser, error),
+) (bool, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return false, err
 	}
-	return contents, nil
+	a, err := open(aPath)
+	if err != nil {
+		return false, fmt.Errorf("open first file: %w", err)
+	}
+	defer func() { _ = a.Close() }()
+
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	b, err := open(bPath)
+	if err != nil {
+		return false, fmt.Errorf("open second file: %w", err)
+	}
+	defer func() { _ = b.Close() }()
+
+	return readersEqualContext(ctx, a, b)
+}
+
+func readersEqualContext(ctx context.Context, a, b io.Reader) (bool, error) {
+	aBuffer := make([]byte, contentCompareBufferSize)
+	bBuffer := make([]byte, contentCompareBufferSize)
+	aReader := contextReader{ctx: ctx, reader: a}
+	bReader := contextReader{ctx: ctx, reader: b}
+
+	for {
+		aRead, aErr := io.ReadFull(aReader, aBuffer)
+		if aErr != nil && !errors.Is(aErr, io.EOF) && !errors.Is(aErr, io.ErrUnexpectedEOF) {
+			return false, fmt.Errorf("read first file: %w", aErr)
+		}
+		bRead, bErr := io.ReadFull(bReader, bBuffer)
+		if bErr != nil && !errors.Is(bErr, io.EOF) && !errors.Is(bErr, io.ErrUnexpectedEOF) {
+			return false, fmt.Errorf("read second file: %w", bErr)
+		}
+
+		if aRead != bRead || !bytes.Equal(aBuffer[:aRead], bBuffer[:bRead]) {
+			return false, nil
+		}
+		aDone := errors.Is(aErr, io.EOF) || errors.Is(aErr, io.ErrUnexpectedEOF)
+		bDone := errors.Is(bErr, io.EOF) || errors.Is(bErr, io.ErrUnexpectedEOF)
+		if aDone || bDone {
+			return aDone && bDone, nil
+		}
+	}
 }
 
 // CopyFileIfChanged copies src to dst only if the content differs.
@@ -373,14 +411,14 @@ func copyFileIfChangedDeferredWithCopy(
 	hashFile func(context.Context, string) ([sha256.Size]byte, error),
 	copyFile func(context.Context, string, string) error,
 ) (bool, postWriteVerification, error) {
-	return copyFileIfChangedDeferredWithOps(ctx, src, dst, hashFile, readFileContext, copyFile)
+	return copyFileIfChangedDeferredWithOps(ctx, src, dst, hashFile, filesEqualContext, copyFile)
 }
 
 func copyFileIfChangedDeferredWithOps(
 	ctx context.Context,
 	src, dst string,
 	hashFile func(context.Context, string) ([sha256.Size]byte, error),
-	readFile func(context.Context, string) ([]byte, error),
+	filesEqual func(context.Context, string, string) (bool, error),
 	copyFile func(context.Context, string, string) error,
 ) (bool, postWriteVerification, error) {
 	if err := ctx.Err(); err != nil {
@@ -411,27 +449,22 @@ func copyFileIfChangedDeferredWithOps(
 				Str("dst", dst).
 				Msg("FUSE staleness detected: content hash matched but file sizes differ, forcing write")
 		} else {
-			// Read-back verification: compare raw bytes to catch hash computation
-			// bugs or FUSE cache inconsistencies that the size check didn't catch.
-			srcBytes, srcErr := readFile(ctx, src)
+			// Stream a raw-byte comparison to catch hash computation bugs or
+			// FUSE cache inconsistencies without allocating both whole files.
+			contentsEqual, compareErr := filesEqual(ctx, src, dst)
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return false, nil, ctxErr
 			}
-			dstBytes, dstErr := readFile(ctx, dst)
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return false, nil, ctxErr
-			}
-			if srcErr != nil || dstErr != nil {
+			if compareErr != nil {
 				// Read-back failed — log a warning and proceed with copy to be safe.
 				// Silently skipping on I/O error could mask disk failures.
 				logger.Warn().
-					AnErr("src_err", srcErr).
-					AnErr("dst_err", dstErr).
+					Err(compareErr).
 					Str("src", src).
 					Str("dst", dst).
 					Msg("Read-back verification failed, proceeding with copy as precaution")
 				// fall through to copy
-			} else if !bytes.Equal(srcBytes, dstBytes) {
+			} else if !contentsEqual {
 				logger.Warn().
 					Str("src", src).
 					Str("dst", dst).
