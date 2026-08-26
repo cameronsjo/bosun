@@ -39,6 +39,11 @@ type step struct {
 	Run             string            `yaml:"run"`
 }
 
+type mergePath struct {
+	jobName string
+	step    step
+}
+
 func validateReleasePlease(data []byte) error {
 	var parsed workflow
 	if err := yaml.Unmarshal(data, &parsed); err != nil {
@@ -101,11 +106,15 @@ func validateReleasePlease(data []byte) error {
 		}
 	}
 
-	mergeSteps := stepsRunningCommand(releaseJob.Steps, "gh pr merge")
-	if len(mergeSteps) != 1 {
-		problems = append(problems, fmt.Errorf("release-please must have exactly one active gh pr merge path, found %d", len(mergeSteps)))
+	mergePaths := workflowMergePaths(parsed.Jobs)
+	if len(mergePaths) != 1 {
+		problems = append(problems, fmt.Errorf("workflow must have exactly one active gh pr merge path, found %d", len(mergePaths)))
 	} else {
-		mergeStep := mergeSteps[0]
+		mergePath := mergePaths[0]
+		mergeStep := mergePath.step
+		if mergePath.jobName != releaseJobName {
+			problems = append(problems, errors.New("the sole merge path must belong to the release-please job"))
+		}
 		if mergeStep.Name != "Auto-merge release PR" {
 			problems = append(problems, errors.New("the sole merge path must be Auto-merge release PR"))
 		}
@@ -136,25 +145,45 @@ func exactlyOneNamedStep(steps []step, name string) (step, error) {
 	return matches[0], nil
 }
 
-func stepsRunningCommand(steps []step, command string) []step {
-	var matches []step
-	for _, candidate := range steps {
-		for _, line := range strings.Split(candidate.Run, "\n") {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "#") {
-				continue
-			}
-			if strings.Contains(trimmed, command) {
-				matches = append(matches, candidate)
-				break
+func workflowMergePaths(jobs map[string]job) []mergePath {
+	var paths []mergePath
+	for jobName, candidateJob := range jobs {
+		for _, candidateStep := range candidateJob.Steps {
+			for _, line := range activeShellLines(candidateStep.Run) {
+				if lineRunsGHPRMerge(line) {
+					paths = append(paths, mergePath{jobName: jobName, step: candidateStep})
+				}
 			}
 		}
 	}
-	return matches
+	return paths
+}
+
+func activeShellLines(run string) []string {
+	var active []string
+	for _, line := range strings.Split(run, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		active = append(active, trimmed)
+	}
+	return active
+}
+
+func lineRunsGHPRMerge(line string) bool {
+	fields := strings.Fields(line)
+	for len(fields) > 0 && strings.Contains(fields[0], "=") {
+		fields = fields[1:]
+	}
+	if len(fields) > 0 && fields[0] == "command" {
+		fields = fields[1:]
+	}
+	return len(fields) >= 3 && fields[0] == "gh" && fields[1] == "pr" && fields[2] == "merge"
 }
 
 func stepReferencesDefaultToken(candidate step) bool {
-	values := []string{candidate.If, candidate.Run}
+	values := []string{candidate.If, strings.Join(activeShellLines(candidate.Run), "\n")}
 	for _, value := range candidate.With {
 		values = append(values, value)
 	}
