@@ -105,9 +105,28 @@ jobs:
 Releases are triggered by Release Please and use GoReleaser via Dagger:
 
 1. Release Please creates a release PR
-2. On merge, GoReleaser runs via `dagger call release`
-3. Binaries, checksums, and container images are published
-4. SLSA provenance attestations are generated
+2. A GitHub App installation token queues that PR for auto-merge
+3. On merge, GoReleaser runs via `dagger call release`
+4. Binaries, checksums, and container images are published
+5. SLSA provenance attestations are generated
+
+Auto-merge is fail-closed: it runs only when `RELEASE_APP_ID` and
+`RELEASE_APP_PRIVATE_KEY` produce a valid installation token. Missing or
+invalid credentials emit a warning and leave the generated release PR open for
+manual merge; the workflow never falls back to `GITHUB_TOKEN`, whose merge
+would not trigger the follow-up release workflow.
+
+To rotate an invalid key without exposing it in shell history or logs, download
+a new private key from the Release App settings, validate the PEM locally, and
+pipe it to GitHub CLI:
+
+```bash
+openssl pkey -in /path/to/release-app.private-key.pem -check -noout
+gh secret set RELEASE_APP_PRIVATE_KEY < /path/to/release-app.private-key.pem
+```
+
+Delete the downloaded PEM after a subsequent Release Please run shows
+`Generate App Token` succeeded.
 
 ## Debugging
 
