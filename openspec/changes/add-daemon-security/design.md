@@ -62,6 +62,16 @@ the safe path the default while leaving a clearly-labeled escape hatch.
   daemon logs for last-error and reconcile diagnostics. This avoids a
   credential-varying health response that caches or proxies could mix up.
 
+- **Decision: public-health consumers use the bounded wire type.**
+  `daemon.Client.Health` returns a dedicated public response type containing
+  only `status`, `ready`, and `uptime`, including when the daemon returns 503.
+  `daemon-status` continues to source last-error detail from `/status` and uses
+  `/health` only for health and readiness. `validate` obtains last-error detail
+  from `/status` when health is not healthy, so the CLI does not silently lose
+  its operator diagnostic while the public response is minimized. The
+  standalone webhook receiver forwards only the bounded health response and
+  rejects non-GET health and readiness requests.
+
 ## Risks / Trade-offs
 
 - **Breaking change for secret-less HTTP deployments** → mitigated by the opt-in

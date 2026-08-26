@@ -89,7 +89,8 @@ proposal establishes a `daemon-security` capability that makes the daemon
   - HTTP API (`api.go`) — `handleAPITrigger`
   - Public liveness clients — HTTP/TCP/Unix-socket `/health`, including
     `daemon.Client.Health`, `bosun daemon-status`, `bosun validate`, and the
-    standalone webhook receiver's health/ready proxy
+    standalone webhook receiver's health/ready proxy. Each named consumer has
+    an explicit migration scenario and implementation task.
 - New config / env vars:
   - `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` (bool, default false; strict `== "true"`)
   - `BOSUN_LISTEN_ADDR` (string, default empty = all interfaces)
@@ -97,6 +98,6 @@ proposal establishes a `daemon-security` capability that makes the daemon
     load-bearing)
   - `BOSUN_METRICS_EXPOSE` (or equivalent) to opt metrics/widget into remote
     exposure
-- Docs: `docs/security.md`, `docs/commands.md`,
-  `skills/onboard/resources/gitops.md` (daemon security and health contracts),
-  `CLAUDE.md` env-var table.
+- Docs: `docs/security.md`, `docs/commands.md`, `docs/gitops.md`,
+  `docs/cli-reference.md`, `skills/onboard/resources/gitops.md` (daemon
+  security and health contracts), `CLAUDE.md` env-var table.

@@ -159,6 +159,30 @@ last-error detail; daemon logs remain the source for subsystem diagnostics.
 - **WHEN** a caller sends a non-GET request to `/health`
 - **THEN** the daemon responds 405 without a diagnostic JSON body
 
+#### Scenario: Daemon client decodes only the public health contract
+- **WHEN** `daemon.Client.Health` receives a 200 or 503 `/health` response
+- **THEN** it returns a dedicated public-health response containing only `status`, `ready`, and `uptime`
+- **AND** a valid 503 body remains a health result rather than a transport error
+- **AND** malformed JSON and transport failures remain errors
+
+#### Scenario: Daemon status keeps operator diagnostics separate
+- **WHEN** `bosun daemon-status` renders human-readable or JSON output
+- **THEN** it obtains last-reconcile and last-error diagnostics from `/status`
+- **AND** it uses the bounded `/health` response only for health and readiness
+
+#### Scenario: Validate preserves local operator error detail
+- **WHEN** `bosun validate` observes a non-healthy daemon over its Unix-socket client
+- **THEN** it obtains the bounded health and readiness state from `/health`
+- **AND** it requests `/status` and displays that response's sanitized last error when present
+- **AND** inability to obtain `/status` does not expose any detail from `/health` or hide the non-healthy warning
+
+#### Scenario: Standalone webhook liveness proxy stays bounded and GET-only
+- **WHEN** the standalone `bosun webhook` receiver successfully proxies `GET /health`
+- **THEN** it returns only `status`, `ready`, and `uptime`, preserving 200 for healthy and 503 otherwise
+- **AND** `GET /ready` continues to return only the existing plain readiness response
+- **WHEN** a caller sends a non-GET request to either proxy endpoint
+- **THEN** the receiver responds 405 without contacting the daemon
+
 ### Requirement: Webhook payload sanitization
 
 Attacker-controlled webhook fields SHALL be length-capped and stripped of
