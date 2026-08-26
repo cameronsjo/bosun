@@ -872,7 +872,7 @@ func TestDeployLocal_ZeroWriteSingleFileSourceTypeChangesFailClosed(t *testing.T
 			touchFile(t, targetFile, "same", time.Now())
 
 			deploy := &DeployOps{ContentHashSync: true}
-			deploy.copyFileIfChangedFn = func(_, _ string) (bool, error) {
+			deploy.copyFileIfChangedFn = func(context.Context, string, string) (bool, error) {
 				if tt.mutate != nil {
 					tt.mutate(t, sourceFile)
 				}
@@ -946,7 +946,7 @@ func TestDeployLocal_ZeroWriteDirectorySourceTypeChangesFailClosed(t *testing.T)
 			require.NoError(t, os.MkdirAll(targetDir, 0o755))
 
 			deploy := &DeployOps{ContentHashSync: true}
-			deploy.copyDirIfChangedFn = func(_, _ string) ([]string, error) {
+			deploy.copyDirIfChangedFn = func(context.Context, string, string) ([]string, error) {
 				if tt.mutate != nil {
 					tt.mutate(t, sourceDir)
 				}

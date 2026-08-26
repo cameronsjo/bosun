@@ -3,6 +3,7 @@ package fileutil
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -45,29 +46,42 @@ func warnSymlinkSkipped(path string) {
 // Uses atomic write via temp file to prevent partial writes on failure.
 // Symlinks are skipped with a warning rather than causing an error.
 func CopyFile(src, dst string) error {
-	return copyFileWithOps(src, dst, (*os.File).Chmod, syncDestinationDir)
+	return copyFileWithOps(context.Background(), src, dst, (*os.File).Chmod, syncDestinationDir)
+}
+
+func copyFileContext(ctx context.Context, src, dst string) error {
+	return copyFileWithOps(ctx, src, dst, (*os.File).Chmod, syncDestinationDir)
 }
 
 // copyFileWithChmod exposes the permission operation as an explicit dependency
 // so its failure ordering can be tested without a package-global seam.
 func copyFileWithChmod(src, dst string, chmod func(*os.File, fs.FileMode) error) error {
-	return copyFileWithOps(src, dst, chmod, syncDestinationDir)
+	return copyFileWithOps(context.Background(), src, dst, chmod, syncDestinationDir)
 }
 
 // copyFileWithoutDirSync performs the atomic file replacement while leaving
 // destination-directory synchronization to a surrounding batch operation.
 func copyFileWithoutDirSync(src, dst string) error {
-	return copyFileWithOps(src, dst, (*os.File).Chmod, nil)
+	return copyFileWithOps(context.Background(), src, dst, (*os.File).Chmod, nil)
+}
+
+func copyFileWithoutDirSyncContext(ctx context.Context, src, dst string) error {
+	return copyFileWithOps(ctx, src, dst, (*os.File).Chmod, nil)
 }
 
 // copyFileWithOps exposes the permission and destination-directory sync
 // operations as explicit dependencies. A nil syncParent batches the latter at
 // a higher level; the public CopyFile path always supplies one.
 func copyFileWithOps(
+	ctx context.Context,
 	src, dst string,
 	chmod func(*os.File, fs.FileMode) error,
 	syncParent func(string) error,
 ) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// Check if source is a symlink - Lstat doesn't follow symlinks
 	srcLstat, err := os.Lstat(src)
 	if err != nil {
@@ -92,6 +106,9 @@ func copyFileWithOps(
 
 	// Create parent directories if needed.
 	dstDir := filepath.Dir(dst)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dstDir, 0755); err != nil {
 		return fmt.Errorf("create parent directories: %w", err)
 	}
@@ -100,7 +117,13 @@ func copyFileWithOps(
 	// bytes. The probe is never used for content: applying a broad or privileged
 	// source mode to the real named temp file would let another local user open
 	// it before the copy completes and retain that access after a later chmod.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := validateCopyPermissions(dstDir, srcInfo.Mode(), os.CreateTemp, chmod, os.Remove); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 
@@ -122,7 +145,7 @@ func copyFileWithOps(
 	}()
 
 	// Copy content to temp file
-	if _, err := io.Copy(tmpFile, srcFile); err != nil {
+	if _, err := io.Copy(tmpFile, contextReader{ctx: ctx, reader: srcFile}); err != nil {
 		return fmt.Errorf("copy content: %w", err)
 	}
 
@@ -130,6 +153,9 @@ func copyFileWithOps(
 	// restores setuid/setgid bits that Unix may clear during payload writes.
 	if err := chmod(tmpFile, srcInfo.Mode()); err != nil {
 		return fmt.Errorf("set final permissions: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	// Sync to ensure data is written to disk
@@ -140,6 +166,9 @@ func copyFileWithOps(
 	// Close temp file before rename
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	// Atomic rename to destination
@@ -161,6 +190,18 @@ func copyFileWithOps(
 
 	success = true
 	return nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
 }
 
 func validateCopyPermissions(
@@ -250,23 +291,24 @@ func ContentEqual(path string, srcHash [sha256.Size]byte) (bool, error) {
 // Uses SHA-256 content comparison to avoid unnecessary writes on FUSE filesystems.
 // Includes a size-based confidence check to catch FUSE stale-read scenarios where
 // the cached hash appears to match but the actual file content has diverged.
-func CopyFileIfChanged(src, dst string) (bool, error) {
-	return copyFileIfChanged(src, dst, FileHash)
+func CopyFileIfChanged(ctx context.Context, src, dst string) (bool, error) {
+	return copyFileIfChanged(ctx, src, dst, FileHash)
 }
 
 // copyFileIfChanged accepts the post-write hash operation explicitly so tests
 // can reproduce a verification failure after the atomic rename without a
 // package-global fault-injection seam.
-func copyFileIfChanged(src, dst string, verifyHash func(string) ([sha256.Size]byte, error)) (bool, error) {
-	return copyFileIfChangedWithCopy(src, dst, verifyHash, CopyFile)
+func copyFileIfChanged(ctx context.Context, src, dst string, verifyHash func(string) ([sha256.Size]byte, error)) (bool, error) {
+	return copyFileIfChangedWithCopy(ctx, src, dst, verifyHash, copyFileContext)
 }
 
 func copyFileIfChangedWithCopy(
+	ctx context.Context,
 	src, dst string,
 	verifyHash func(string) ([sha256.Size]byte, error),
-	copyFile func(string, string) error,
+	copyFile func(context.Context, string, string) error,
 ) (bool, error) {
-	changed, verify, err := copyFileIfChangedDeferredWithCopy(src, dst, verifyHash, copyFile)
+	changed, verify, err := copyFileIfChangedDeferredWithCopy(ctx, src, dst, verifyHash, copyFile)
 	if err != nil || verify == nil {
 		return changed, err
 	}
@@ -275,15 +317,19 @@ func copyFileIfChangedWithCopy(
 
 type postWriteVerification func() error
 
-func copyFileIfChangedDeferredWithoutDirSync(src, dst string) (bool, postWriteVerification, error) {
-	return copyFileIfChangedDeferredWithCopy(src, dst, FileHash, copyFileWithoutDirSync)
+func copyFileIfChangedDeferredWithoutDirSync(ctx context.Context, src, dst string) (bool, postWriteVerification, error) {
+	return copyFileIfChangedDeferredWithCopy(ctx, src, dst, FileHash, copyFileWithoutDirSyncContext)
 }
 
 func copyFileIfChangedDeferredWithCopy(
+	ctx context.Context,
 	src, dst string,
 	verifyHash func(string) ([sha256.Size]byte, error),
-	copyFile func(string, string) error,
+	copyFile func(context.Context, string, string) error,
 ) (bool, postWriteVerification, error) {
+	if err := ctx.Err(); err != nil {
+		return false, nil, err
+	}
 	srcHash, err := FileHash(src)
 	if err != nil {
 		return false, nil, fmt.Errorf("hash source: %w", err)
@@ -347,7 +393,10 @@ func copyFileIfChangedDeferredWithCopy(
 		srcSize = info.Size()
 	}
 
-	if err := copyFile(src, dst); err != nil {
+	if err := ctx.Err(); err != nil {
+		return false, nil, err
+	}
+	if err := copyFile(ctx, src, dst); err != nil {
 		if errors.Is(err, ErrSymlinkSkipped) {
 			return false, nil, nil
 		}
@@ -510,13 +559,16 @@ func validateCopyRoots(src, dst string) error {
 // when a later walk or copy operation fails.
 // Symlinks are skipped with a warning rather than causing an error. A destination
 // at or below the source is rejected before the destination is changed.
-func CopyDirIfChanged(src, dst string) ([]string, error) {
-	return copyDirIfChangedWithOps(src, dst, copyFileIfChangedDeferredWithoutDirSync, syncDestinationDir)
+// Cancellation stops the walk before its next destination mutation; completed
+// atomic renames are still synchronized and verified before returning.
+func CopyDirIfChanged(ctx context.Context, src, dst string) ([]string, error) {
+	return copyDirIfChangedWithOps(ctx, src, dst, copyFileIfChangedDeferredWithoutDirSync, syncDestinationDir)
 }
 
 func copyDirIfChangedWithOps(
+	ctx context.Context,
 	src, dst string,
-	copyFile func(src, dst string) (bool, postWriteVerification, error),
+	copyFile func(context.Context, string, string) (bool, postWriteVerification, error),
 	syncParent func(string) error,
 ) ([]string, error) {
 	if err := validateCopyRoots(src, dst); err != nil {
@@ -527,6 +579,9 @@ func copyDirIfChangedWithOps(
 	var verifications []postWriteVerification
 	changedParents := make(map[string]struct{})
 	walkErr := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			return err
 		}
@@ -557,7 +612,7 @@ func copyDirIfChangedWithOps(
 			return err
 		}
 
-		changed, verify, err := copyFile(path, dstPath)
+		changed, verify, err := copyFile(ctx, path, dstPath)
 		if changed {
 			written = append(written, relPath)
 			changedParents[filepath.Dir(dstPath)] = struct{}{}
@@ -661,13 +716,16 @@ func mkdirIfMissingWithOps(
 // when a later walk or copy operation fails.
 // Symlinks are skipped with a warning rather than causing an error. A destination
 // at or below the source is rejected before the destination is changed.
-func CopyDir(src, dst string) error {
-	return copyDirWithOps(src, dst, copyFileWithoutDirSync, syncDestinationDir)
+// Cancellation stops the walk before its next destination mutation; completed
+// atomic renames are still synchronized before returning.
+func CopyDir(ctx context.Context, src, dst string) error {
+	return copyDirWithOps(ctx, src, dst, copyFileWithoutDirSyncContext, syncDestinationDir)
 }
 
 func copyDirWithOps(
+	ctx context.Context,
 	src, dst string,
-	copyFile func(src, dst string) error,
+	copyFile func(context.Context, string, string) error,
 	syncParent func(string) error,
 ) error {
 	if err := validateCopyRoots(src, dst); err != nil {
@@ -676,6 +734,9 @@ func copyDirWithOps(
 
 	changedParents := make(map[string]struct{})
 	walkErr := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			return err
 		}
@@ -698,7 +759,7 @@ func copyDirWithOps(
 			return os.MkdirAll(dstPath, 0755)
 		}
 
-		if err := copyFile(path, dstPath); err != nil {
+		if err := copyFile(ctx, path, dstPath); err != nil {
 			return err
 		}
 		changedParents[filepath.Dir(dstPath)] = struct{}{}

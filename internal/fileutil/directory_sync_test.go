@@ -1,6 +1,7 @@
 package fileutil
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"os"
@@ -20,7 +21,7 @@ func TestCopyFileWithOps_InvokesConfiguredSyncOnce(t *testing.T) {
 	require.NoError(t, os.WriteFile(src, []byte("payload"), 0o644))
 
 	var synced []string
-	err := copyFileWithOps(src, dst, (*os.File).Chmod, func(dir string) error {
+	err := copyFileWithOps(context.Background(), src, dst, (*os.File).Chmod, func(dir string) error {
 		synced = append(synced, dir)
 		return nil
 	})
@@ -60,7 +61,7 @@ func TestCopyDirWithOps_BatchesDestinationParentSyncs(t *testing.T) {
 			}
 
 			var synced []string
-			err := copyDirWithOps(srcDir, dstDir, copyFileWithoutDirSync, func(dir string) error {
+			err := copyDirWithOps(context.Background(), srcDir, dstDir, copyFileWithoutDirSyncContext, func(dir string) error {
 				rel, relErr := filepath.Rel(dstDir, dir)
 				require.NoError(t, relErr)
 				synced = append(synced, rel)
@@ -122,7 +123,7 @@ func TestCopyDirIfChangedWithOps_SyncsOnlyChangedParents(t *testing.T) {
 			}
 
 			var synced []string
-			written, err := copyDirIfChangedWithOps(
+			written, err := copyDirIfChangedWithOps(context.Background(),
 				srcDir,
 				dstDir,
 				copyFileIfChangedDeferredWithoutDirSync,
@@ -151,11 +152,11 @@ func TestCopyDirIfChangedWithOps_SyncsEveryParentBeforeVerification(t *testing.T
 	writeTestFile(t, filepath.Join(srcDir, "nested", "b.txt"), "b")
 
 	var events []string
-	written, err := copyDirIfChangedWithOps(
+	written, err := copyDirIfChangedWithOps(context.Background(),
 		srcDir,
 		dstDir,
-		func(src, dst string) (bool, postWriteVerification, error) {
-			return copyFileIfChangedDeferredWithCopy(
+		func(_ context.Context, src, dst string) (bool, postWriteVerification, error) {
+			return copyFileIfChangedDeferredWithCopy(context.Background(),
 				src,
 				dst,
 				func(path string) ([sha256.Size]byte, error) {
@@ -164,7 +165,7 @@ func TestCopyDirIfChangedWithOps_SyncsEveryParentBeforeVerification(t *testing.T
 					events = append(events, "verify "+rel)
 					return FileHash(path)
 				},
-				copyFileWithoutDirSync,
+				copyFileWithoutDirSyncContext,
 			)
 		},
 		func(dir string) error {
@@ -195,7 +196,7 @@ func TestCopyDirIfChangedWithOps_SyncFailurePreservesChangeSet(t *testing.T) {
 	writeTestFile(t, filepath.Join(srcDir, "b.txt"), "b")
 
 	syncErr := errors.New("injected directory sync failure")
-	written, err := copyDirIfChangedWithOps(
+	written, err := copyDirIfChangedWithOps(context.Background(),
 		srcDir,
 		dstDir,
 		copyFileIfChangedDeferredWithoutDirSync,
@@ -223,10 +224,10 @@ func TestCopyDirIfChangedWithOps_FlushesPriorParentsAfterCopyFailure(t *testing.
 	copyErr := errors.New("injected copy failure")
 	flushErr := errors.New("injected flush failure")
 	var synced []string
-	written, err := copyDirIfChangedWithOps(
+	written, err := copyDirIfChangedWithOps(context.Background(),
 		srcDir,
 		dstDir,
-		func(src, dst string) (bool, postWriteVerification, error) {
+		func(_ context.Context, src, dst string) (bool, postWriteVerification, error) {
 			if filepath.Base(src) == "b-bad.txt" {
 				return false, nil, copyErr
 			}
@@ -263,10 +264,10 @@ func TestCopyDirIfChangedWithOps_JoinsCopyFlushAndVerificationFailures(t *testin
 	flushErr := errors.New("injected flush failure")
 	verifyErr := errors.New("injected verification failure")
 	var events []string
-	written, err := copyDirIfChangedWithOps(
+	written, err := copyDirIfChangedWithOps(context.Background(),
 		srcDir,
 		dstDir,
-		func(src, dst string) (bool, postWriteVerification, error) {
+		func(_ context.Context, src, dst string) (bool, postWriteVerification, error) {
 			if filepath.Base(src) == "b-bad.txt" {
 				return false, nil, copyErr
 			}
@@ -299,17 +300,17 @@ func TestCopyDirIfChangedWithOps_ReportsDeferredVerificationFailure(t *testing.T
 	writeTestFile(t, filepath.Join(srcDir, "config.yml"), "new")
 
 	readbackErr := errors.New("injected readback failure")
-	written, err := copyDirIfChangedWithOps(
+	written, err := copyDirIfChangedWithOps(context.Background(),
 		srcDir,
 		dstDir,
-		func(src, dst string) (bool, postWriteVerification, error) {
-			return copyFileIfChangedDeferredWithCopy(
+		func(_ context.Context, src, dst string) (bool, postWriteVerification, error) {
+			return copyFileIfChangedDeferredWithCopy(context.Background(),
 				src,
 				dst,
 				func(string) ([sha256.Size]byte, error) {
 					return [sha256.Size]byte{}, readbackErr
 				},
-				copyFileWithoutDirSync,
+				copyFileWithoutDirSyncContext,
 			)
 		},
 		syncDestinationDir,
@@ -359,10 +360,10 @@ func TestCopyDirWithOps_FlushesPriorParentsAfterCopyFailure(t *testing.T) {
 
 	copyErr := errors.New("injected copy failure")
 	var synced []string
-	err := copyDirWithOps(
+	err := copyDirWithOps(context.Background(),
 		srcDir,
 		dstDir,
-		func(src, dst string) error {
+		func(_ context.Context, src, dst string) error {
 			if filepath.Base(src) == "b-bad.txt" {
 				return copyErr
 			}

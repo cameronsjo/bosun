@@ -1,6 +1,7 @@
 package fileutil_test
 
 import (
+	"context"
 	"crypto/sha256"
 	"os"
 	"path/filepath"
@@ -144,7 +145,7 @@ func TestCopyDir(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "file1.txt"), []byte("content1"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "subdir", "file2.txt"), []byte("content2"), 0644))
 
-		err := fileutil.CopyDir(srcDir, dstDir)
+		err := fileutil.CopyDir(context.Background(), srcDir, dstDir)
 		require.NoError(t, err)
 
 		// Verify files were copied
@@ -166,7 +167,7 @@ func TestCopyDir(t *testing.T) {
 
 		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "emptydir"), 0755))
 
-		err := fileutil.CopyDir(srcDir, dstDir)
+		err := fileutil.CopyDir(context.Background(), srcDir, dstDir)
 		require.NoError(t, err)
 
 		info, err := os.Stat(filepath.Join(dstDir, "emptydir"))
@@ -185,7 +186,7 @@ func TestCopyDir(t *testing.T) {
 		require.NoError(t, os.MkdirAll(deepPath, 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(deepPath, "deep.txt"), []byte("deep content"), 0644))
 
-		err := fileutil.CopyDir(srcDir, dstDir)
+		err := fileutil.CopyDir(context.Background(), srcDir, dstDir)
 		require.NoError(t, err)
 
 		content, err := os.ReadFile(filepath.Join(dstDir, "a", "b", "c", "d", "e", "deep.txt"))
@@ -200,7 +201,7 @@ func TestCopyDir(t *testing.T) {
 		srcDir := filepath.Join(tmpDir, "nonexistent")
 		dstDir := filepath.Join(tmpDir, "dest")
 
-		err := fileutil.CopyDir(srcDir, dstDir)
+		err := fileutil.CopyDir(context.Background(), srcDir, dstDir)
 		assert.Error(t, err)
 	})
 
@@ -220,7 +221,7 @@ func TestCopyDir(t *testing.T) {
 		require.NoError(t, os.WriteFile(outsideFile, []byte("outside"), 0644))
 		require.NoError(t, os.Symlink(outsideFile, filepath.Join(srcDir, "link.txt")))
 
-		err = fileutil.CopyDir(srcDir, dstDir)
+		err = fileutil.CopyDir(context.Background(), srcDir, dstDir)
 		require.NoError(t, err)
 
 		// Regular file was copied.
@@ -348,7 +349,7 @@ func TestCopyFileIfChanged(t *testing.T) {
 		dst := filepath.Join(tmpDir, "dst.txt")
 		require.NoError(t, os.WriteFile(src, []byte("new content"), 0644))
 
-		changed, err := fileutil.CopyFileIfChanged(src, dst)
+		changed, err := fileutil.CopyFileIfChanged(context.Background(), src, dst)
 		require.NoError(t, err)
 		assert.True(t, changed)
 
@@ -371,7 +372,7 @@ func TestCopyFileIfChanged(t *testing.T) {
 		infoBefore, err := os.Stat(dst)
 		require.NoError(t, err)
 
-		changed, err := fileutil.CopyFileIfChanged(src, dst)
+		changed, err := fileutil.CopyFileIfChanged(context.Background(), src, dst)
 		require.NoError(t, err)
 		assert.False(t, changed)
 
@@ -390,7 +391,7 @@ func TestCopyFileIfChanged(t *testing.T) {
 		require.NoError(t, os.WriteFile(src, []byte("new version"), 0644))
 		require.NoError(t, os.WriteFile(dst, []byte("old version"), 0644))
 
-		changed, err := fileutil.CopyFileIfChanged(src, dst)
+		changed, err := fileutil.CopyFileIfChanged(context.Background(), src, dst)
 		require.NoError(t, err)
 		assert.True(t, changed)
 
@@ -415,7 +416,7 @@ func TestCopyFileIfChanged(t *testing.T) {
 		require.NoError(t, os.Symlink(realFile, symlinkPath))
 
 		dst := filepath.Join(tmpDir, "dst.txt")
-		changed, err := fileutil.CopyFileIfChanged(symlinkPath, dst)
+		changed, err := fileutil.CopyFileIfChanged(context.Background(), symlinkPath, dst)
 		require.NoError(t, err)
 		assert.False(t, changed)
 
@@ -446,7 +447,7 @@ func TestCopyDirIfChanged(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "unchanged.txt"), []byte("same"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "changed.txt"), []byte("old"), 0644))
 
-		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		written, err := fileutil.CopyDirIfChanged(context.Background(), srcDir, dstDir)
 		require.NoError(t, err)
 
 		sort.Strings(written)
@@ -463,7 +464,7 @@ func TestCopyDirIfChanged(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "empty", "nested"), 0755))
 		require.NoError(t, os.MkdirAll(dstDir, 0755))
 
-		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		written, err := fileutil.CopyDirIfChanged(context.Background(), srcDir, dstDir)
 		require.NoError(t, err)
 
 		assert.Equal(t, []string{"empty", filepath.Join("empty", "nested")}, written)
@@ -479,7 +480,7 @@ func TestCopyDirIfChanged(t *testing.T) {
 
 		require.NoError(t, os.MkdirAll(srcDir, 0755))
 
-		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		written, err := fileutil.CopyDirIfChanged(context.Background(), srcDir, dstDir)
 		require.NoError(t, err)
 		assert.Empty(t, written, "the destination root is deploy plumbing, not a source-tree change")
 		assert.DirExists(t, dstDir)
@@ -495,7 +496,7 @@ func TestCopyDirIfChanged(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "empty", "nested"), 0755))
 		require.NoError(t, os.MkdirAll(filepath.Join(dstDir, "empty", "nested"), 0755))
 
-		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		written, err := fileutil.CopyDirIfChanged(context.Background(), srcDir, dstDir)
 		require.NoError(t, err)
 		assert.Empty(t, written)
 	})
@@ -511,7 +512,7 @@ func TestCopyDirIfChanged(t *testing.T) {
 		require.NoError(t, os.MkdirAll(dstDir, 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "blocked"), []byte("keep"), 0644))
 
-		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		written, err := fileutil.CopyDirIfChanged(context.Background(), srcDir, dstDir)
 		require.Error(t, err)
 		assert.Empty(t, written)
 		assert.FileExists(t, filepath.Join(dstDir, "blocked"))
@@ -532,7 +533,7 @@ func TestCopyDirIfChanged(t *testing.T) {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
 
-		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		written, err := fileutil.CopyDirIfChanged(context.Background(), srcDir, dstDir)
 		require.Error(t, err)
 		assert.Empty(t, written)
 		assert.NoDirExists(t, filepath.Join(outside, "nested"), "directory copy must not traverse a destination symlink")
@@ -550,7 +551,7 @@ func TestCopyDirIfChanged(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "a.txt"), []byte("content"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "a.txt"), []byte("content"), 0644))
 
-		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		written, err := fileutil.CopyDirIfChanged(context.Background(), srcDir, dstDir)
 		require.NoError(t, err)
 		assert.Empty(t, written)
 	})
@@ -566,7 +567,7 @@ func TestCopyDirIfChanged(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "a.txt"), []byte("aaa"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "b.txt"), []byte("bbb"), 0644))
 
-		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		written, err := fileutil.CopyDirIfChanged(context.Background(), srcDir, dstDir)
 		require.NoError(t, err)
 
 		sort.Strings(written)
@@ -589,7 +590,7 @@ func TestCopyDirIfChanged(t *testing.T) {
 		require.NoError(t, os.WriteFile(outsideFile, []byte("outside"), 0644))
 		require.NoError(t, os.Symlink(outsideFile, filepath.Join(srcDir, "link.txt")))
 
-		written, err := fileutil.CopyDirIfChanged(srcDir, dstDir)
+		written, err := fileutil.CopyDirIfChanged(context.Background(), srcDir, dstDir)
 		require.NoError(t, err)
 
 		// Only the regular file appears in the written list.

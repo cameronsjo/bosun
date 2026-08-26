@@ -1,6 +1,7 @@
 package fileutil
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -23,10 +24,12 @@ func directoryCopyCases() []directoryCopyCase {
 		{
 			name: "CopyDir",
 			copy: func(src, dst string) ([]string, error) {
-				return nil, CopyDir(src, dst)
+				return nil, CopyDir(context.Background(), src, dst)
 			},
 		},
-		{name: "CopyDirIfChanged", copy: CopyDirIfChanged},
+		{name: "CopyDirIfChanged", copy: func(src, dst string) ([]string, error) {
+			return CopyDirIfChanged(context.Background(), src, dst)
+		}},
 	}
 }
 

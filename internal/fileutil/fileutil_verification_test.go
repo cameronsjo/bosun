@@ -1,6 +1,7 @@
 package fileutil
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -41,7 +42,7 @@ func TestCopyFileIfChanged_PostWriteVerificationFailureReportsWrite(t *testing.T
 			dst := filepath.Join(tmpDir, "destination.yml")
 			require.NoError(t, os.WriteFile(src, []byte("new content"), 0o644))
 
-			changed, err := copyFileIfChanged(src, dst, tt.verifier)
+			changed, err := copyFileIfChanged(context.Background(), src, dst, tt.verifier)
 
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrPostWriteVerification)
@@ -63,11 +64,11 @@ func TestCopyDirIfChanged_PreservesWrittenPathOnVerificationFailure(t *testing.T
 	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "config.yml"), []byte("new content"), 0o644))
 
 	verificationErr := fmt.Errorf("%w: injected", ErrPostWriteVerification)
-	written, err := copyDirIfChangedWithOps(
+	written, err := copyDirIfChangedWithOps(context.Background(),
 		srcDir,
 		dstDir,
-		func(src, dst string) (bool, postWriteVerification, error) {
-			require.NoError(t, copyFileWithoutDirSync(src, dst))
+		func(_ context.Context, src, dst string) (bool, postWriteVerification, error) {
+			require.NoError(t, copyFileWithoutDirSyncContext(context.Background(), src, dst))
 			return true, func() error { return verificationErr }, nil
 		},
 		syncDestinationDir,

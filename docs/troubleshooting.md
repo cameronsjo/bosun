@@ -66,6 +66,14 @@ exceeds the timeout, Bosun logs `Shutdown timeout waiting for background
 goroutines` and finishes shutdown rather than hanging indefinitely; inspect the
 preceding reconcile logs to find the operation that ignored cancellation.
 
+If shutdown arrives during a local file sync, Bosun stops before the next
+directory creation, atomic file replacement, or managed stale-file deletion.
+It may wait briefly to flush and verify a file whose atomic rename already
+completed; later files and deletions remain untouched. A temp-file copy that is
+still in progress is interrupted and cleaned up. After the daemon restarts,
+rerun the reconcile normally—the content-hash pass safely skips files that
+already reached their intended bytes and resumes the remaining work.
+
 ### SSH connection failures
 
 - Test manually: `ssh user@host exit`

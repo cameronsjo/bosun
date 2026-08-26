@@ -647,6 +647,13 @@ Use `deploy_sync_paths` (allowlist) and `deploy_sync_exclude` (blocklist) in `bo
 
 Default mode. Copies rendered files directly to the local filesystem and runs `docker compose up` per-file with isolated rollback. Each compose file is deployed independently — if one file fails (e.g., bad image tag), only that file is rolled back from a fully validated, in-process extraction of `configs.tar.gz` while other files continue. The archive is extracted lazily at most once per isolated operation. A final orphan-reconciliation pass runs `--remove-orphans` across each successful new file and each verified rollback's backup copy, preserving input order; failed files without a successful rollback are excluded so the cleanup pass never retries known-bad input or consumes a partial extraction.
 
+Local directory and content-hash copies check the reconcile context before each
+directory creation, file replacement, and managed stale-file deletion, and
+cancellation interrupts copying into an atomic temp file. A cancelled reconcile
+therefore performs no later live-target writes or deletions. Any file already
+renamed into place is still flushed and verified before the cancellation error
+returns, so its completed write remains durable and accurately tracked.
+
 **Stale-file pruning is managed-set scoped.** When content-hash sync is on (default), bosun removes a target file only if it was in the *previous* deploy's manifest (`state.deployed_files`) **and** is absent from the current rendered source. Files bosun never wrote — container runtime data like `db.sqlite3`, `grafana.db`, or a service's `data/` dir living alongside config in the same appdata dir — are never in the manifest, so they are never deleted. A render that produces zero files also skips pruning entirely, so a templating failure can't wipe a populated target. The first deploy after upgrading (empty manifest) prunes nothing and simply seeds the manifest.
 
 ```bash

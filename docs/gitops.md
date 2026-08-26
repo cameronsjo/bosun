@@ -720,6 +720,13 @@ Staging                    Target
 staging/unraid/appdata/ -> /mnt/appdata/
 ```
 
+Local copy walks honor the reconcile context before every directory creation,
+file replacement, and managed stale-file deletion. Cancellation also interrupts
+copying into an atomic temp file, so a cancelled reconcile stops before the next
+live-target mutation. Files whose atomic rename already completed are still
+flushed and verified before the cancellation error returns; later files and
+stale deletions are left untouched.
+
 ### Remote Deployment
 
 Uses tar-over-SSH for efficient file transfer:

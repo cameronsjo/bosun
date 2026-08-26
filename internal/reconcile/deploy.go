@@ -50,10 +50,10 @@ type DeployOps struct {
 	extractBackupFn func(ctx context.Context, tarFile string) (root string, cleanup func(), err error)
 	// copyDirIfChangedFn fault-injects post-transition copy failures in tests.
 	// Nil uses fileutil.CopyDirIfChanged.
-	copyDirIfChangedFn func(src, dst string) ([]string, error)
+	copyDirIfChangedFn func(context.Context, string, string) ([]string, error)
 	// copyFileIfChangedFn fault-injects single-file copy failures in tests.
 	// Nil uses fileutil.CopyFileIfChanged.
-	copyFileIfChangedFn func(src, dst string) (bool, error)
+	copyFileIfChangedFn func(context.Context, string, string) (bool, error)
 	// backupFS fault-injects filesystem churn while writing local backup
 	// archives. Nil operations use filepath.Walk and os.Open.
 	backupFS *backupArchiveFS
@@ -222,13 +222,13 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 	// Content-hash mode: compare per-file against existing target, skip unchanged.
 	if d.ContentHashSync {
 		logger.Debug().Msg("Using content-hash sync mode for deployment")
-		transitions, err := prepareManagedTypeTransitions(sourceDir, targetDir, prevManaged)
+		transitions, err := prepareManagedTypeTransitions(ctx, sourceDir, targetDir, prevManaged)
 		if err != nil {
 			logger.Error().Err(err).Msg("Failed to deploy locally. Reason: file type transition failed")
 			return fmt.Errorf("prepare file type transitions: %w", err)
 		}
 		defer transitions.Close()
-		if err := transitions.Promote(); err != nil {
+		if err := transitions.Promote(ctx); err != nil {
 			return fmt.Errorf("promote file type transitions: %w", err)
 		}
 		rollback := func(cause error) error { return transitions.Rollback(cause) }
@@ -241,7 +241,7 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 		if copyFn == nil {
 			copyFn = fileutil.CopyDirIfChanged
 		}
-		written, err := copyFn(sourceDir, targetDir)
+		written, err := copyFn(ctx, sourceDir, targetDir)
 		if result != nil {
 			result.AddWritten(written...)
 		}
@@ -296,7 +296,7 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 		}
 	}()
 
-	if err := fileutil.CopyDir(sourceDir, tmpDir); err != nil {
+	if err := fileutil.CopyDir(ctx, sourceDir, tmpDir); err != nil {
 		logger.Error().Err(err).Msg("Failed to deploy locally. Reason: cannot copy to temp directory")
 		return fmt.Errorf("copy to temp: %w", err)
 	}
@@ -465,8 +465,11 @@ type managedTypeTransitions struct {
 	items []*managedTypeTransition
 }
 
-func prepareManagedTypeTransitions(sourceRoot, targetRoot string, prevManaged map[string]bool) (*managedTypeTransitions, error) {
+func prepareManagedTypeTransitions(ctx context.Context, sourceRoot, targetRoot string, prevManaged map[string]bool) (*managedTypeTransitions, error) {
 	tx := &managedTypeTransitions{}
+	if err := ctx.Err(); err != nil {
+		return tx, err
+	}
 	if err := validateManagedMapTransitionArtifacts(targetRoot, prevManaged); err != nil {
 		return tx, err
 	}
@@ -474,7 +477,7 @@ func prepareManagedTypeTransitions(sourceRoot, targetRoot string, prevManaged ma
 	if err != nil {
 		return tx, err
 	}
-	rootConflict, err := discoverManagedTypeConflict(sourceRoot, targetRoot, managedTargetRoot, sourceInfo, prevManaged)
+	rootConflict, err := discoverManagedTypeConflict(ctx, sourceRoot, targetRoot, managedTargetRoot, sourceInfo, prevManaged)
 	if err != nil {
 		return tx, err
 	}
@@ -482,6 +485,9 @@ func prepareManagedTypeTransitions(sourceRoot, targetRoot string, prevManaged ma
 		tx.items = append(tx.items, rootConflict)
 	} else if sourceInfo.IsDir() {
 		err = filepath.WalkDir(sourceRoot, func(sourcePath string, sourceEntry os.DirEntry, walkErr error) error {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			if walkErr != nil {
 				return walkErr
 			}
@@ -496,7 +502,7 @@ func prepareManagedTypeTransitions(sourceRoot, targetRoot string, prevManaged ma
 			if err != nil {
 				return err
 			}
-			conflict, err := discoverManagedTypeConflict(sourcePath, filepath.Join(targetRoot, relPath), filepath.ToSlash(relPath), info, prevManaged)
+			conflict, err := discoverManagedTypeConflict(ctx, sourcePath, filepath.Join(targetRoot, relPath), filepath.ToSlash(relPath), info, prevManaged)
 			if err != nil {
 				return err
 			}
@@ -514,7 +520,7 @@ func prepareManagedTypeTransitions(sourceRoot, targetRoot string, prevManaged ma
 		}
 	}
 	for _, item := range tx.items {
-		if err := item.stage(); err != nil {
+		if err := item.stage(ctx); err != nil {
 			tx.Close()
 			return tx, err
 		}
@@ -522,7 +528,10 @@ func prepareManagedTypeTransitions(sourceRoot, targetRoot string, prevManaged ma
 	return tx, nil
 }
 
-func discoverManagedTypeConflict(sourcePath, targetPath, relPath string, sourceInfo os.FileInfo, prevManaged map[string]bool) (*managedTypeTransition, error) {
+func discoverManagedTypeConflict(ctx context.Context, sourcePath, targetPath, relPath string, sourceInfo os.FileInfo, prevManaged map[string]bool) (*managedTypeTransition, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := validateTransitionArtifactsAbsent(targetPath); err != nil {
 		return nil, err
 	}
@@ -591,7 +600,7 @@ func discoverManagedTypeConflict(sourcePath, targetPath, relPath string, sourceI
 		}
 		item.deleted = []string{relPath}
 	} else {
-		deleted, err := validateManagedDirectory(targetPath, relPath, prevManaged)
+		deleted, err := validateManagedDirectory(ctx, targetPath, relPath, prevManaged)
 		if err != nil {
 			return nil, fmt.Errorf("inspect directory blocking file deployment at %s: %w", relPath, err)
 		}
@@ -614,9 +623,12 @@ func discoverManagedTypeConflict(sourcePath, targetPath, relPath string, sourceI
 	return item, nil
 }
 
-func validateManagedDirectory(conflictDir, conflictRel string, prevManaged map[string]bool) ([]string, error) {
+func validateManagedDirectory(ctx context.Context, conflictDir, conflictRel string, prevManaged map[string]bool) ([]string, error) {
 	var files, physicalFiles, dirs []string
 	err := filepath.WalkDir(conflictDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if walkErr != nil {
 			return walkErr
 		}
@@ -670,7 +682,10 @@ func dirEntryIsRegular(entry os.DirEntry) (bool, error) {
 	return info.Mode().IsRegular(), nil
 }
 
-func (t *managedTypeTransition) stage() (stageErr error) {
+func (t *managedTypeTransition) stage(ctx context.Context) (stageErr error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := t.createPrivateStage(); err != nil {
 		return err
 	}
@@ -707,7 +722,7 @@ func (t *managedTypeTransition) stage() (stageErr error) {
 		if err != nil {
 			return fmt.Errorf("stat private replacement directory for %s: %w", t.relPath, err)
 		}
-		written, err := fileutil.CopyDirIfChanged(t.sourcePath, replacement)
+		written, err := fileutil.CopyDirIfChanged(ctx, t.sourcePath, replacement)
 		if err != nil {
 			return fmt.Errorf("copy private replacement directory for %s: %w", t.relPath, err)
 		}
@@ -725,7 +740,7 @@ func (t *managedTypeTransition) stage() (stageErr error) {
 			}
 		}
 	} else {
-		if err := t.copyPrivateFile(replacement); err != nil {
+		if err := t.copyPrivateFile(ctx, replacement); err != nil {
 			return fmt.Errorf("copy private replacement file for %s: %w", t.relPath, err)
 		}
 		t.written = []string{t.relPath}
@@ -735,6 +750,9 @@ func (t *managedTypeTransition) stage() (stageErr error) {
 	t.newFingerprint, err = fingerprintPinnedPath(replacement, t.newHandle, t.newInfo)
 	if err != nil {
 		return fmt.Errorf("fingerprint private replacement for %s: %w", t.relPath, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := renameNoReplace(replacement, t.newPath); err != nil {
 		return fmt.Errorf("publish staged replacement for %s at %s: %w", t.relPath, t.newPath, err)
@@ -770,7 +788,10 @@ func (t *managedTypeTransition) createPrivateStage() error {
 	return nil
 }
 
-func (t *managedTypeTransition) copyPrivateFile(replacement string) error {
+func (t *managedTypeTransition) copyPrivateFile(ctx context.Context, replacement string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	source, err := os.Open(t.sourcePath)
 	if err != nil {
 		return err
@@ -783,11 +804,17 @@ func (t *managedTypeTransition) copyPrivateFile(replacement string) error {
 	if !sourceBefore.Mode().IsRegular() {
 		return fmt.Errorf("source is not a regular file")
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	t.newHandle, err = createPinnedFileExclusive(replacement, 0600)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(t.newHandle, source); err != nil {
+	if _, err := io.Copy(t.newHandle, contextReader{ctx: ctx, reader: source}); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := t.newHandle.Chmod(sourceBefore.Mode()); err != nil {
@@ -802,6 +829,18 @@ func (t *managedTypeTransition) copyPrivateFile(replacement string) error {
 	}
 	t.newInfo, err = t.newHandle.Stat()
 	return err
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
 }
 
 func (t *managedTypeTransition) cleanupPrivateStage() error {
@@ -857,8 +896,11 @@ func (t *managedTypeTransition) revalidateParent() error {
 	return revalidatePinned(filepath.Dir(t.targetPath), t.parentHandle, t.parentInfo)
 }
 
-func (ts *managedTypeTransitions) Promote() error {
+func (ts *managedTypeTransitions) Promote(ctx context.Context) error {
 	for _, item := range ts.items {
+		if err := ctx.Err(); err != nil {
+			return ts.Rollback(err)
+		}
 		if err := item.revalidateParent(); err != nil {
 			return ts.Rollback(fmt.Errorf("destination parent changed before promoting %s: %w", item.relPath, err))
 		}
@@ -872,16 +914,22 @@ func (ts *managedTypeTransitions) Promote() error {
 		if newFingerprint != item.newFingerprint {
 			return ts.Rollback(fmt.Errorf("staged replacement changed before promoting %s at %s", item.relPath, item.newPath))
 		}
+		if err := ctx.Err(); err != nil {
+			return ts.Rollback(err)
+		}
 		if err := renameNoReplace(item.targetPath, item.oldPath); err != nil {
 			return ts.Rollback(fmt.Errorf("quarantine destination %s at %s: %w", item.relPath, item.oldPath, err))
 		}
 		item.quarantined = true
 		if !item.sourceIsDir {
-			deleted, err := validateManagedDirectory(item.oldPath, item.relPath, item.prevManaged)
+			deleted, err := validateManagedDirectory(ctx, item.oldPath, item.relPath, item.prevManaged)
 			if err != nil {
 				return ts.Rollback(fmt.Errorf("destination changed while quarantining %s: %w", item.relPath, err))
 			}
 			item.deleted = deleted
+		}
+		if err := ctx.Err(); err != nil {
+			return ts.Rollback(err)
 		}
 		if err := renameNoReplace(item.newPath, item.targetPath); err != nil {
 			return ts.Rollback(fmt.Errorf("promote replacement %s from %s: %w", item.relPath, item.newPath, err))
@@ -1271,6 +1319,17 @@ func (ts *managedTypeTransitions) DeletedFiles() []string {
 // post-sync hooks can match against deletions, not just writes; result may be
 // nil when the caller doesn't need that tracking (e.g. direct unit tests).
 func removeStaleFiles(ctx context.Context, sourceDir, targetDir string, result *DeployResult, prevManaged map[string]bool) error {
+	return removeStaleFilesWithOps(ctx, sourceDir, targetDir, result, prevManaged, os.Lstat, os.Remove)
+}
+
+func removeStaleFilesWithOps(
+	ctx context.Context,
+	sourceDir, targetDir string,
+	result *DeployResult,
+	prevManaged map[string]bool,
+	lstat func(string) (os.FileInfo, error),
+	remove func(string) error,
+) error {
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 	logger.Debug().
 		Str(log.FieldPath, sourceDir).
@@ -1282,8 +1341,11 @@ func removeStaleFiles(ctx context.Context, sourceDir, targetDir string, result *
 		logger.Debug().Str("target", targetDir).Msg("No prior managed-file manifest; skipping stale-file pruning")
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
-	hasFiles, err := dirHasRegularFiles(sourceDir)
+	hasFiles, err := dirHasRegularFilesContext(ctx, sourceDir)
 	if err != nil {
 		return fmt.Errorf("inspect source %q for stale-file pruning: %w", sourceDir, err)
 	}
@@ -1300,6 +1362,9 @@ func removeStaleFiles(ctx context.Context, sourceDir, targetDir string, result *
 	var removedCount int
 
 	walkErr := filepath.WalkDir(targetDir, func(path string, d os.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			return err
 		}
@@ -1321,12 +1386,15 @@ func removeStaleFiles(ctx context.Context, sourceDir, targetDir string, result *
 
 		// Managed file — remove it only if it is gone from the current source.
 		srcPath := filepath.Join(sourceDir, relPath)
-		if _, statErr := os.Lstat(srcPath); statErr != nil {
+		if _, statErr := lstat(srcPath); statErr != nil {
 			if !os.IsNotExist(statErr) {
 				logger.Warn().Err(statErr).Str(log.FieldPath, relPath).Msg("Failed to stat source for stale file check")
 				return fmt.Errorf("stat source path %s: %w", relPath, statErr)
 			}
-			if rmErr := os.Remove(path); rmErr != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			if rmErr := remove(path); rmErr != nil {
 				logger.Warn().Err(rmErr).Str(log.FieldPath, relPath).Msg("Failed to remove stale file")
 				removalErrors = append(removalErrors, fmt.Errorf("remove file %s: %w", relPath, rmErr))
 			} else {
@@ -1399,12 +1467,12 @@ func (d *DeployOps) deployLocalFileManaged(ctx context.Context, sourceFile, targ
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	transitions, err := prepareManagedTypeTransitions(sourceFile, targetFile, prevManaged)
+	transitions, err := prepareManagedTypeTransitions(ctx, sourceFile, targetFile, prevManaged)
 	if err != nil {
 		return fmt.Errorf("prepare file type transition: %w", err)
 	}
 	defer transitions.Close()
-	if err := transitions.Promote(); err != nil {
+	if err := transitions.Promote(ctx); err != nil {
 		return fmt.Errorf("promote file type transition: %w", err)
 	}
 	if len(transitions.items) > 0 {
@@ -1424,7 +1492,7 @@ func (d *DeployOps) deployLocalFileManaged(ctx context.Context, sourceFile, targ
 		if copyFn == nil {
 			copyFn = fileutil.CopyFileIfChanged
 		}
-		changed, err := copyFn(sourceFile, targetFile)
+		changed, err := copyFn(ctx, sourceFile, targetFile)
 		if changed && result != nil {
 			// Use Base() so the path is relative (matches CopyDirIfChanged).
 			// The caller prefixes with the target's RelPath via PrefixLatest.

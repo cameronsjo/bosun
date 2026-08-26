@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -266,6 +267,13 @@ func fileEqual(src, dst string) (bool, error) {
 // least one regular file. Symlinks are not counted (Lstat semantics), matching
 // the copy path which never deploys them. Returns (false, nil) for a missing path.
 func dirHasRegularFiles(src string) (bool, error) {
+	return dirHasRegularFilesContext(context.Background(), src)
+}
+
+func dirHasRegularFilesContext(ctx context.Context, src string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	info, err := os.Lstat(src)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -279,6 +287,9 @@ func dirHasRegularFiles(src string) (bool, error) {
 
 	found := false
 	walkErr := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			return err
 		}
