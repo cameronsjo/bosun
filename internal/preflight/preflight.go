@@ -18,6 +18,9 @@ const DefaultLookPathTimeout = 5 * time.Second
 // ErrEmptyBinaryName indicates an empty binary name was provided.
 var ErrEmptyBinaryName = errors.New("empty binary name")
 
+type pathLookup func(string) (string, error)
+type contextPathLookup func(context.Context, string) (string, error)
+
 // BinaryCheck represents a required binary and its purpose.
 type BinaryCheck struct {
 	Name        string
@@ -50,6 +53,10 @@ var optionalBinaries = []BinaryCheck{
 // lookPathWithTimeout wraps exec.LookPath with a context timeout.
 // Returns the path and any error, including context deadline exceeded.
 func lookPathWithTimeout(ctx context.Context, name string) (string, error) {
+	return lookPathWith(ctx, name, exec.LookPath)
+}
+
+func lookPathWith(ctx context.Context, name string, lookup pathLookup) (string, error) {
 	if strings.TrimSpace(name) == "" {
 		return "", ErrEmptyBinaryName
 	}
@@ -61,7 +68,7 @@ func lookPathWithTimeout(ctx context.Context, name string) (string, error) {
 
 	ch := make(chan result, 1)
 	go func() {
-		path, err := exec.LookPath(name)
+		path, err := lookup(name)
 		ch <- result{path, err}
 	}()
 
@@ -81,20 +88,10 @@ func CheckBinaries() []BinaryCheck {
 
 // CheckBinariesWithTimeout validates all binaries with a custom timeout.
 func CheckBinariesWithTimeout(timeout time.Duration) []BinaryCheck {
-	var missing []BinaryCheck
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	allBinaries := append(requiredBinaries, optionalBinaries...)
-	for _, bin := range allBinaries {
-		if _, err := lookPathWithTimeout(ctx, bin.Name); err != nil {
-			bin.Error = err
-			missing = append(missing, bin)
-		}
-	}
-
-	return missing
+	allBinaries := make([]BinaryCheck, 0, len(requiredBinaries)+len(optionalBinaries))
+	allBinaries = append(allBinaries, requiredBinaries...)
+	allBinaries = append(allBinaries, optionalBinaries...)
+	return checkBinariesWithTimeout(allBinaries, timeout, lookPathWithTimeout)
 }
 
 // CheckRequiredBinaries validates only required binaries are available.
@@ -105,19 +102,7 @@ func CheckRequiredBinaries() []BinaryCheck {
 
 // CheckRequiredBinariesWithTimeout validates required binaries with a custom timeout.
 func CheckRequiredBinariesWithTimeout(timeout time.Duration) []BinaryCheck {
-	var missing []BinaryCheck
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	for _, bin := range requiredBinaries {
-		if _, err := lookPathWithTimeout(ctx, bin.Name); err != nil {
-			bin.Error = err
-			missing = append(missing, bin)
-		}
-	}
-
-	return missing
+	return checkBinariesWithTimeout(requiredBinaries, timeout, lookPathWithTimeout)
 }
 
 // CheckOptionalBinaries validates optional binaries and returns missing ones.
@@ -128,13 +113,21 @@ func CheckOptionalBinaries() []BinaryCheck {
 
 // CheckOptionalBinariesWithTimeout validates optional binaries with a custom timeout.
 func CheckOptionalBinariesWithTimeout(timeout time.Duration) []BinaryCheck {
+	return checkBinariesWithTimeout(optionalBinaries, timeout, lookPathWithTimeout)
+}
+
+func checkBinariesWithTimeout(
+	binaries []BinaryCheck,
+	timeout time.Duration,
+	lookup contextPathLookup,
+) []BinaryCheck {
 	var missing []BinaryCheck
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	for _, bin := range optionalBinaries {
-		if _, err := lookPathWithTimeout(ctx, bin.Name); err != nil {
+	for _, bin := range binaries {
+		if _, err := lookup(ctx, bin.Name); err != nil {
 			bin.Error = err
 			missing = append(missing, bin)
 		}
@@ -152,8 +145,12 @@ func CheckAll() (warnings []string, errs []string) {
 
 // CheckAllWithTimeout performs all pre-flight checks with a custom timeout.
 func CheckAllWithTimeout(timeout time.Duration) (warnings []string, errs []string) {
+	return checkAllWithTimeout(timeout, lookPathWithTimeout)
+}
+
+func checkAllWithTimeout(timeout time.Duration, lookup contextPathLookup) (warnings []string, errs []string) {
 	// Check required binaries
-	missingRequired := CheckRequiredBinariesWithTimeout(timeout)
+	missingRequired := checkBinariesWithTimeout(requiredBinaries, timeout, lookup)
 	for _, bin := range missingRequired {
 		errMsg := bin.Name + ": " + bin.InstallHint
 		if bin.Error != nil {
@@ -163,7 +160,7 @@ func CheckAllWithTimeout(timeout time.Duration) (warnings []string, errs []strin
 	}
 
 	// Check optional binaries
-	missingOptional := CheckOptionalBinariesWithTimeout(timeout)
+	missingOptional := checkBinariesWithTimeout(optionalBinaries, timeout, lookup)
 	for _, bin := range missingOptional {
 		warnMsg := bin.Name + ": " + bin.InstallHint
 		if bin.Error != nil {
