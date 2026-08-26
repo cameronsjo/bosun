@@ -252,15 +252,29 @@ func syncDestinationDir(dir string) error {
 // FileHash computes the SHA-256 hash of a file's contents.
 // Returns the hash as a byte slice, or an error if the file cannot be read.
 func FileHash(path string) ([sha256.Size]byte, error) {
+	return fileHashContext(context.Background(), path)
+}
+
+func fileHashContext(ctx context.Context, path string) ([sha256.Size]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return [sha256.Size]byte{}, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return [sha256.Size]byte{}, err
 	}
 	defer func() { _ = f.Close() }()
 
+	return hashReader(ctx, f)
+}
+
+func hashReader(ctx context.Context, reader io.Reader) ([sha256.Size]byte, error) {
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	if _, err := io.Copy(h, contextReader{ctx: ctx, reader: reader}); err != nil {
 		return [sha256.Size]byte{}, fmt.Errorf("hash file: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return [sha256.Size]byte{}, err
 	}
 
 	var sum [sha256.Size]byte
@@ -271,7 +285,19 @@ func FileHash(path string) ([sha256.Size]byte, error) {
 // ContentEqual reports whether the file at path has content matching
 // the given SHA-256 hash. Returns false if the file does not exist.
 func ContentEqual(path string, srcHash [sha256.Size]byte) (bool, error) {
-	dstHash, err := FileHash(path)
+	return contentEqualContext(context.Background(), path, srcHash, fileHashContext)
+}
+
+func contentEqualContext(
+	ctx context.Context,
+	path string,
+	srcHash [sha256.Size]byte,
+	hashFile func(context.Context, string) ([sha256.Size]byte, error),
+) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	dstHash, err := hashFile(ctx, path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
@@ -279,6 +305,29 @@ func ContentEqual(path string, srcHash [sha256.Size]byte) (bool, error) {
 		return false, err
 	}
 	return srcHash == dstHash, nil
+}
+
+func readFileContext(ctx context.Context, path string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	return readAllContext(ctx, file)
+}
+
+func readAllContext(ctx context.Context, reader io.Reader) ([]byte, error) {
+	contents, err := io.ReadAll(contextReader{ctx: ctx, reader: reader})
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return contents, nil
 }
 
 // CopyFileIfChanged copies src to dst only if the content differs.
@@ -289,23 +338,23 @@ func ContentEqual(path string, srcHash [sha256.Size]byte) (bool, error) {
 // Includes a size-based confidence check to catch FUSE stale-read scenarios where
 // the cached hash appears to match but the actual file content has diverged.
 func CopyFileIfChanged(ctx context.Context, src, dst string) (bool, error) {
-	return copyFileIfChanged(ctx, src, dst, FileHash)
+	return copyFileIfChanged(ctx, src, dst, fileHashContext)
 }
 
-// copyFileIfChanged accepts the post-write hash operation explicitly so tests
-// can reproduce a verification failure after the atomic rename without a
+// copyFileIfChanged accepts the context-aware hash operation explicitly so
+// tests can exercise comparison and post-write verification failures without a
 // package-global fault-injection seam.
-func copyFileIfChanged(ctx context.Context, src, dst string, verifyHash func(string) ([sha256.Size]byte, error)) (bool, error) {
-	return copyFileIfChangedWithCopy(ctx, src, dst, verifyHash, CopyFile)
+func copyFileIfChanged(ctx context.Context, src, dst string, hashFile func(context.Context, string) ([sha256.Size]byte, error)) (bool, error) {
+	return copyFileIfChangedWithCopy(ctx, src, dst, hashFile, CopyFile)
 }
 
 func copyFileIfChangedWithCopy(
 	ctx context.Context,
 	src, dst string,
-	verifyHash func(string) ([sha256.Size]byte, error),
+	hashFile func(context.Context, string) ([sha256.Size]byte, error),
 	copyFile func(context.Context, string, string) error,
 ) (bool, error) {
-	changed, verify, err := copyFileIfChangedDeferredWithCopy(ctx, src, dst, verifyHash, copyFile)
+	changed, verify, err := copyFileIfChangedDeferredWithCopy(ctx, src, dst, hashFile, copyFile)
 	if err != nil || verify == nil {
 		return changed, err
 	}
@@ -315,24 +364,34 @@ func copyFileIfChangedWithCopy(
 type postWriteVerification func() error
 
 func copyFileIfChangedDeferredWithoutDirSync(ctx context.Context, src, dst string) (bool, postWriteVerification, error) {
-	return copyFileIfChangedDeferredWithCopy(ctx, src, dst, FileHash, copyFileWithoutDirSyncContext)
+	return copyFileIfChangedDeferredWithCopy(ctx, src, dst, fileHashContext, copyFileWithoutDirSyncContext)
 }
 
 func copyFileIfChangedDeferredWithCopy(
 	ctx context.Context,
 	src, dst string,
-	verifyHash func(string) ([sha256.Size]byte, error),
+	hashFile func(context.Context, string) ([sha256.Size]byte, error),
+	copyFile func(context.Context, string, string) error,
+) (bool, postWriteVerification, error) {
+	return copyFileIfChangedDeferredWithOps(ctx, src, dst, hashFile, readFileContext, copyFile)
+}
+
+func copyFileIfChangedDeferredWithOps(
+	ctx context.Context,
+	src, dst string,
+	hashFile func(context.Context, string) ([sha256.Size]byte, error),
+	readFile func(context.Context, string) ([]byte, error),
 	copyFile func(context.Context, string, string) error,
 ) (bool, postWriteVerification, error) {
 	if err := ctx.Err(); err != nil {
 		return false, nil, err
 	}
-	srcHash, err := FileHash(src)
+	srcHash, err := hashFile(ctx, src)
 	if err != nil {
 		return false, nil, fmt.Errorf("hash source: %w", err)
 	}
 
-	equal, err := ContentEqual(dst, srcHash)
+	equal, err := contentEqualContext(ctx, dst, srcHash, hashFile)
 	if err != nil {
 		return false, nil, fmt.Errorf("compare destination: %w", err)
 	}
@@ -354,8 +413,14 @@ func copyFileIfChangedDeferredWithCopy(
 		} else {
 			// Read-back verification: compare raw bytes to catch hash computation
 			// bugs or FUSE cache inconsistencies that the size check didn't catch.
-			srcBytes, srcErr := os.ReadFile(src)
-			dstBytes, dstErr := os.ReadFile(dst)
+			srcBytes, srcErr := readFile(ctx, src)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return false, nil, ctxErr
+			}
+			dstBytes, dstErr := readFile(ctx, dst)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return false, nil, ctxErr
+			}
 			if srcErr != nil || dstErr != nil {
 				// Read-back failed — log a warning and proceed with copy to be safe.
 				// Silently skipping on I/O error could mask disk failures.
@@ -406,7 +471,7 @@ func copyFileIfChangedDeferredWithCopy(
 		// through the verification handle.
 		verifyLogger := log.Component(log.ComponentReconcile)
 		verifyLogger.Debug().Str(log.FieldPath, dst).Msg("Post-write verification: re-reading destination hash")
-		dstHash, verifyErr := verifyHash(dst)
+		dstHash, verifyErr := hashFile(ctx, dst)
 		if verifyErr != nil {
 			return fmt.Errorf("%w: cannot re-read destination %s: %w", ErrPostWriteVerification, dst, verifyErr)
 		} else if dstHash != srcHash {

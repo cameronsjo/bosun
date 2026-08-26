@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -160,11 +161,15 @@ func TestCopyDirIfChangedWithOps_SyncsEveryParentBeforeVerification(t *testing.T
 			return copyFileIfChangedDeferredWithCopy(context.Background(),
 				src,
 				dst,
-				func(path string) ([sha256.Size]byte, error) {
+				func(hashCtx context.Context, path string) ([sha256.Size]byte, error) {
 					rel, relErr := filepath.Rel(dstDir, path)
 					require.NoError(t, relErr)
-					events = append(events, "verify "+rel)
-					return FileHash(path)
+					if !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+						if _, statErr := os.Stat(path); statErr == nil {
+							events = append(events, "verify "+rel)
+						}
+					}
+					return fileHashContext(hashCtx, path)
 				},
 				copyFileWithoutDirSyncContext,
 			)
@@ -308,8 +313,13 @@ func TestCopyDirIfChangedWithOps_ReportsDeferredVerificationFailure(t *testing.T
 			return copyFileIfChangedDeferredWithCopy(context.Background(),
 				src,
 				dst,
-				func(string) ([sha256.Size]byte, error) {
-					return [sha256.Size]byte{}, readbackErr
+				func(hashCtx context.Context, path string) ([sha256.Size]byte, error) {
+					if path == filepath.Join(dstDir, "config.yml") {
+						if _, statErr := os.Stat(path); statErr == nil {
+							return [sha256.Size]byte{}, readbackErr
+						}
+					}
+					return fileHashContext(hashCtx, path)
 				},
 				copyFileWithoutDirSyncContext,
 			)
