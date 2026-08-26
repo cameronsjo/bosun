@@ -97,7 +97,7 @@ Applied to all 6 stderr logging sites across 3 functions.
 | Decision | Rationale |
 |----------|-----------|
 | GitHub App `forge-bellows` for release pipeline | App tokens bypass GITHUB_TOKEN loop prevention. Named after the bellows in a forge — it fans the flames (triggers workflows) |
-| Graceful fallback to GITHUB_TOKEN | Don't break the pipeline if the App isn't configured. Auto-merge still works, just without follow-up workflow triggers |
+| ~~Graceful fallback to GITHUB_TOKEN~~ (superseded) | The current fail-closed contract keeps release-PR generation successful but leaves the PR open unless App-token generation succeeds; a default-token merge would suppress the required follow-up workflow |
 | Delete Claude Code Review workflow | Was failing on Dependabot PRs (missing API key in Dependabot secret scope). Not worth the maintenance overhead for a single-developer project |
 | Neutral audit log message | "Handled socket request" instead of "Successfully handled socket request" — the word "successfully" is misleading for 4xx/5xx responses |
 
