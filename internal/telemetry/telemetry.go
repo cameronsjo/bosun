@@ -5,6 +5,9 @@ package telemetry
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -33,6 +36,7 @@ func Init(ctx context.Context, serviceName, serviceVersion, endpoint string) (fu
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
+	endpoint = strings.TrimSpace(endpoint)
 	if endpoint == "" {
 		np := noop.NewTracerProvider()
 		state.provider = np
@@ -41,19 +45,9 @@ func Init(ctx context.Context, serviceName, serviceVersion, endpoint string) (fu
 		return state.shutdown, nil
 	}
 
-	// WithEndpoint expects host:port only (no scheme, no path).
-	// Parse the endpoint to extract host:port and determine TLS.
-	insecure := true
-	hostPort := endpoint
-	if strings.HasPrefix(endpoint, "https://") {
-		hostPort = strings.TrimPrefix(endpoint, "https://")
-		insecure = false
-	} else if strings.HasPrefix(endpoint, "http://") {
-		hostPort = strings.TrimPrefix(endpoint, "http://")
-	}
-	// Strip any trailing path (e.g., /v1/traces) — the SDK appends it.
-	if idx := strings.Index(hostPort, "/"); idx != -1 {
-		hostPort = hostPort[:idx]
+	hostPort, insecure, err := parseEndpoint(endpoint)
+	if err != nil {
+		return nil, err
 	}
 
 	opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(hostPort)}
@@ -65,15 +59,12 @@ func Init(ctx context.Context, serviceName, serviceVersion, endpoint string) (fu
 		return nil, err
 	}
 
-	res, err := resource.New(ctx,
-		resource.WithAttributes(
-			semconv.ServiceName(serviceName),
-			semconv.ServiceVersion(serviceVersion),
-		),
+	// These static attributes cannot fail detection or schema merging, so use a
+	// schemaless resource instead of carrying an unreachable error path.
+	res := resource.NewSchemaless(
+		semconv.ServiceName(serviceName),
+		semconv.ServiceVersion(serviceVersion),
 	)
-	if err != nil {
-		return nil, err
-	}
 
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
@@ -88,6 +79,38 @@ func Init(ctx context.Context, serviceName, serviceVersion, endpoint string) (fu
 	}
 
 	return state.shutdown, nil
+}
+
+func parseEndpoint(endpoint string) (hostPort string, insecure bool, err error) {
+	value := strings.TrimSpace(endpoint)
+	if value == "" {
+		return "", false, errors.New("OpenTelemetry endpoint is empty")
+	}
+	if !strings.Contains(value, "://") {
+		value = "http://" + value
+	}
+
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", false, fmt.Errorf("parse OpenTelemetry endpoint: %w", err)
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", false, fmt.Errorf("unsupported OpenTelemetry endpoint scheme %q", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return "", false, errors.New("OpenTelemetry endpoint must include a host")
+	}
+	if parsed.User != nil {
+		return "", false, errors.New("OpenTelemetry endpoint must not include user information")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false, errors.New("OpenTelemetry endpoint must not include a query or fragment")
+	}
+
+	// WithEndpoint supplies the default /v1/traces path, matching the existing
+	// base-endpoint contract even when the configured value contains a path.
+	return parsed.Host, scheme == "http", nil
 }
 
 // Tracer returns a named tracer for creating spans.
