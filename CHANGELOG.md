@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.40.4](https://github.com/cameronsjo/bosun/compare/v0.40.3...v0.40.4) (2026-08-26)
+
+
+### Bug Fixes
+
+* **cmd:** preserve alert test error semantics ([#575](https://github.com/cameronsjo/bosun/issues/575)) ([273d92b](https://github.com/cameronsjo/bosun/commit/273d92b6577dea0447279ee245ff636b6f61bd19))
+* **reconcile:** defer backup retention until success ([3adad60](https://github.com/cameronsjo/bosun/commit/3adad60ddf85bbcc11f3bcdc823bab9c386151ee))
+* **reconcile:** make local sync cancellation-safe ([#572](https://github.com/cameronsjo/bosun/issues/572)) ([3465a0e](https://github.com/cameronsjo/bosun/commit/3465a0e69820616389d6dc66ac89c8d9dd70e6c4))
+* **reconcile:** validate mounted secrets before startup ([#574](https://github.com/cameronsjo/bosun/issues/574)) ([28994fb](https://github.com/cameronsjo/bosun/commit/28994fb65a5df9979b283dd84fc42ca0902aa6da))
+
 ## [0.40.3](https://github.com/cameronsjo/bosun/compare/v0.40.2...v0.40.3) (2026-08-24)
 
 
