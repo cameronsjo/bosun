@@ -4,9 +4,14 @@
   and non-zero Cobra error returns while adding checksum verification.
 - [ ] 1.2 Configure the production go-selfupdate client with
   `ChecksumValidator{UniqueFilename: "checksums.txt"}` and preserve existing
-  stable-release and platform selection.
+  stable-release, no-downgrade/development-version, prerelease, and platform
+  selection.
 - [ ] 1.3 Preserve wrapped validation errors through `internal/update` and the
-  CLI, suppress success output on failure, and add no unchecked fallback.
+  CLI, including underlying error identity where available and relevant asset
+  context; suppress success output on failure and add no unchecked fallback.
+- [ ] 1.4 Preserve the archive and checksum asset identities captured from one
+  detected release through `UpdateTo`; do not redetect, switch releases, or use
+  cached/unchecked data during an install attempt.
 
 ## 2. Add deterministic acceptance coverage
 
@@ -17,12 +22,18 @@
 - [ ] 2.3 Verify missing manifest, malformed manifest, missing selected-archive
   entry, and mismatched digest errors preserve the sentinel executable
   byte-for-byte and never report success.
-- [ ] 2.4 Table-test unchanged archive selection for darwin/amd64,
+- [ ] 2.4 Inject archive-download and checksum-download failures, cancellation,
+  and asset disappearance after detection; verify wrapped causes, captured
+  same-release asset identities, no fallback/retry, and no replacement.
+- [ ] 2.5 Table-test unchanged archive selection for darwin/amd64,
   darwin/arm64, linux/amd64, and linux/arm64.
-- [ ] 2.5 Verify `bosun update --check` performs metadata-only validation,
+- [ ] 2.6 Table-test unchanged version behavior for equal/newer stable versions,
+  the development version, and prerelease exclusion, plus unsupported-platform
+  check-only and install results.
+- [ ] 2.7 Verify `bosun update --check` checks same-release asset metadata only,
   downloads no assets, and returns non-zero when the required manifest asset is
   absent.
-- [ ] 2.6 Add a deterministic release-contract check for `.goreleaser.yaml`'s
+- [ ] 2.8 Add a deterministic release-contract check for `.goreleaser.yaml`'s
   SHA-256 `checksums.txt` name and supported archive matrix.
 
 ## 3. Update consumer documentation
@@ -31,8 +42,9 @@
   `skills/onboard/resources/commands.md`, `llms.txt`, and the README update claim
   to describe fail-closed archive checksum verification.
 - [ ] 3.2 State that same-release checksums provide integrity but not independent
-  publisher authenticity, and do not claim checksum signatures that the release
-  does not publish.
+  publisher authenticity, and correct the README's existing
+  `checksums.txt.pem`/`checksums.txt.sig` instructions because the release does
+  not publish those signature assets.
 
 ## 4. Verify and release
 

@@ -18,11 +18,14 @@ an integrity check.
   remain unchanged and the CLI must return a non-zero error without printing a
   success result.
 - Preserve current stable-release selection, platform archive selection,
-  check-only behavior, and go-selfupdate's replacement/rollback semantics.
+  no-downgrade/development-version behavior, check-only behavior, and
+  go-selfupdate's replacement/rollback semantics.
 - Add deterministic, no-network coverage for the successful and fail-closed
-  paths across the four release targets Bosun currently publishes.
+  paths, including asset-download failures and release mutation after
+  detection, across the four release targets Bosun currently publishes.
 - Correct command, onboarding, and model-context documentation so checksum
-  verification and its same-release trust boundary are explicit.
+  verification and its same-release trust boundary are explicit, including
+  removing stale claims about checksum signature assets releases do not publish.
 
 ## Impact
 

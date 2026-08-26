@@ -11,6 +11,10 @@ The system SHALL verify the SHA-256 digest of the exact compressed archive selec
 - **WHEN** Bosun validates a selected `.tar.gz` release asset
 - **THEN** it computes the digest over the downloaded compressed archive bytes named in `checksums.txt`, not over the extracted executable
 
+#### Scenario: Detected release identity remains stable
+- **WHEN** release detection captures a platform archive and `checksums.txt` from one release and the source's latest release changes before installation finishes
+- **THEN** Bosun validates only the captured archive against the captured manifest and does not redetect or combine assets from different releases
+
 ### Requirement: Fail closed on checksum-contract errors
 The system MUST reject an update when `checksums.txt` is missing, malformed, lacks the exact selected archive entry, or contains a digest that does not match the downloaded archive, without an unchecked fallback.
 
@@ -30,9 +34,13 @@ The system MUST reject an update when `checksums.txt` is missing, malformed, lac
 - **WHEN** the selected archive's calculated SHA-256 digest differs from its `checksums.txt` entry
 - **THEN** validation fails before decompression or executable replacement and the existing executable remains byte-for-byte unchanged
 
+#### Scenario: Captured asset download fails
+- **WHEN** downloading the captured archive or captured `checksums.txt` asset fails or either asset disappears after detection
+- **THEN** the invocation returns a non-zero error, preserves the existing executable, and does not switch releases, use cached unchecked data, or retry automatically
+
 #### Scenario: Command reports verification failure
 - **WHEN** checksum validation rejects an update
-- **THEN** `bosun update` and its `selfupdate` alias return a non-zero error that identifies the validation stage and do not print a successful-update result
+- **THEN** `bosun update` and its `selfupdate` alias return a non-zero error that preserves the underlying cause where available, identifies the failed stage and relevant asset, and does not print a successful-update result
 
 ### Requirement: Preserve release and platform selection
 The system SHALL preserve stable semantic-version release selection and select only the existing GoReleaser archive for the runtime's supported OS and architecture while adding checksum validation.
@@ -57,12 +65,24 @@ The system SHALL preserve stable semantic-version release selection and select o
 - **WHEN** a newer prerelease and an older stable release are available
 - **THEN** the updater preserves its existing default of selecting only the stable release and validates that release's selected archive
 
+#### Scenario: Installed stable version is not downgraded or reinstalled
+- **WHEN** the installed stable version is equal to or newer than the latest eligible stable release
+- **THEN** Bosun reports no update and does not download or replace an executable
+
+#### Scenario: Development version behavior remains unchanged
+- **WHEN** the installed version is the development build marker and an eligible stable release exists
+- **THEN** Bosun continues to treat that stable release as an available update and validates its selected archive before replacement
+
+#### Scenario: Runtime platform is unsupported
+- **WHEN** the runtime OS and architecture do not match one of the four published tuples
+- **THEN** the install path preserves its existing no-suitable-release error, the check-only path preserves its existing no-update result, and neither path selects another platform's archive
+
 ### Requirement: Preserve check-only behavior
 The system SHALL keep `bosun update --check` metadata-only while requiring the detected release to advertise the validation asset needed for a safe install.
 
 #### Scenario: Installable update is available
 - **WHEN** `--check` detects a newer supported release containing the selected archive and `checksums.txt`
-- **THEN** it reports the update without downloading the archive or checksum asset bytes
+- **THEN** it reports the update after checking same-release asset presence and identity metadata without downloading or parsing the archive or checksum asset bytes
 
 #### Scenario: Latest release lacks checksum metadata
 - **WHEN** `--check` detects a newer platform archive but the same release does not contain `checksums.txt`
