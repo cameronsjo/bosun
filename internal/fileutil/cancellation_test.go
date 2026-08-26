@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -207,7 +208,7 @@ func TestCopyFileIfChangedCancellationDuringReadPhases(t *testing.T) {
 			return hashReader(hashCtx, &cancelAfterFirstRead{cancel: cancel})
 		}
 
-		changed, verify, err := copyFileIfChangedDeferredWithOps(ctx, src, dst, hashFile, readFileContext, func(context.Context, string, string) error {
+		changed, verify, err := copyFileIfChangedDeferredWithOps(ctx, src, dst, hashFile, filesEqualContext, func(context.Context, string, string) error {
 			copyCalls++
 			return nil
 		})
@@ -227,7 +228,7 @@ func TestCopyFileIfChangedCancellationDuringReadPhases(t *testing.T) {
 		src, dst := setup(t, false)
 		ctx, cancel := context.WithCancel(context.Background())
 		hashCalls := 0
-		readCalls := 0
+		compareCalls := 0
 		copyCalls := 0
 		hashFile := func(hashCtx context.Context, path string) ([sha256.Size]byte, error) {
 			hashCalls++
@@ -237,9 +238,9 @@ func TestCopyFileIfChangedCancellationDuringReadPhases(t *testing.T) {
 			return fileHashContext(hashCtx, path)
 		}
 
-		changed, verify, err := copyFileIfChangedDeferredWithOps(ctx, src, dst, hashFile, func(context.Context, string) ([]byte, error) {
-			readCalls++
-			return nil, nil
+		changed, verify, err := copyFileIfChangedDeferredWithOps(ctx, src, dst, hashFile, func(context.Context, string, string) (bool, error) {
+			compareCalls++
+			return true, nil
 		}, func(context.Context, string, string) error {
 			copyCalls++
 			return nil
@@ -249,7 +250,7 @@ func TestCopyFileIfChangedCancellationDuringReadPhases(t *testing.T) {
 		assert.False(t, changed)
 		assert.Nil(t, verify)
 		assert.Equal(t, 2, hashCalls)
-		assert.Equal(t, 0, readCalls)
+		assert.Equal(t, 0, compareCalls)
 		assert.Equal(t, 0, copyCalls)
 		content, readErr := os.ReadFile(dst)
 		require.NoError(t, readErr)
@@ -260,14 +261,14 @@ func TestCopyFileIfChangedCancellationDuringReadPhases(t *testing.T) {
 		t.Parallel()
 		src, dst := setup(t, true)
 		ctx, cancel := context.WithCancel(context.Background())
-		readCalls := 0
+		compareCalls := 0
 		copyCalls := 0
-		readFile := func(readCtx context.Context, _ string) ([]byte, error) {
-			readCalls++
-			return readAllContext(readCtx, &cancelAfterFirstRead{cancel: cancel})
+		filesEqual := func(compareCtx context.Context, _, _ string) (bool, error) {
+			compareCalls++
+			return readersEqualContext(compareCtx, &cancelAfterFirstRead{cancel: cancel}, strings.NewReader("x"))
 		}
 
-		changed, verify, err := copyFileIfChangedDeferredWithOps(ctx, src, dst, fileHashContext, readFile, func(context.Context, string, string) error {
+		changed, verify, err := copyFileIfChangedDeferredWithOps(ctx, src, dst, fileHashContext, filesEqual, func(context.Context, string, string) error {
 			copyCalls++
 			return nil
 		})
@@ -275,7 +276,7 @@ func TestCopyFileIfChangedCancellationDuringReadPhases(t *testing.T) {
 		require.ErrorIs(t, err, context.Canceled)
 		assert.False(t, changed)
 		assert.Nil(t, verify)
-		assert.Equal(t, 1, readCalls)
+		assert.Equal(t, 1, compareCalls)
 		assert.Equal(t, 0, copyCalls)
 	})
 
@@ -296,7 +297,7 @@ func TestCopyFileIfChangedCancellationDuringReadPhases(t *testing.T) {
 			return fileHashContext(hashCtx, path)
 		}
 
-		changed, verify, err := copyFileIfChangedDeferredWithOps(ctx, src, dst, hashFile, readFileContext, func(copyCtx context.Context, src, dst string) error {
+		changed, verify, err := copyFileIfChangedDeferredWithOps(ctx, src, dst, hashFile, filesEqualContext, func(copyCtx context.Context, src, dst string) error {
 			copyCalls++
 			return copyFileWithoutDirSyncContext(copyCtx, src, dst)
 		})
