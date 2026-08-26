@@ -47,6 +47,24 @@ make test               # Run all tests
 make test-cover         # With coverage (creates coverage.out + coverage.html)
 ```
 
+### Agent Resource Gate
+
+Agents MUST wrap compiler-heavy local commands with
+`scripts/agent-go-gate.sh`, for example:
+
+```bash
+scripts/agent-go-gate.sh go test -race ./internal/reconcile
+scripts/agent-go-gate.sh golangci-lint run --new-from-rev=origin/main ./...
+```
+
+The gate serializes work across Git worktrees, uses the shared default Go,
+module, and golangci-lint caches, requires `GOTMPDIR` to be unset, and refuses
+to start below 20 GiB free. It reports before/after disk usage and fails a
+successful command that unexpectedly consumes more than 8 GiB. A waiting agent
+times out after 60 seconds and should retry later; it must not bypass the gate.
+Do not create per-agent Go, race, coverage, or lint caches. Ordinary user-invoked
+Make targets remain ungated; the wrapper is mandatory for agent-run local gates.
+
 **Patterns:**
 
 - `testify/assert` + `testify/require` (not stdlib assertions)
