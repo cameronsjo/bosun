@@ -84,6 +84,12 @@ func TestReleasePleaseWorkflowContractRejectsUnsafeMutations(t *testing.T) {
 			expected:    "must safely admit dispatch or a created release",
 		},
 		{
+			name:        "resolver inherits write permissions",
+			old:         "    permissions:\n      contents: read",
+			replacement: "    permissions:\n      contents: write",
+			expected:    "must have only read-only contents permission",
+		},
+		{
 			name:        "goreleaser accepts a failed resolver",
 			old:         "    if: ${{ always() && needs.resolve-release-tag.result == 'success' && needs.resolve-release-tag.outputs.tag_name != '' }}",
 			replacement: "    if: ${{ always() && needs.resolve-release-tag.outputs.tag_name != '' }}",

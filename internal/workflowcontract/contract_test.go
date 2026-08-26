@@ -51,10 +51,11 @@ type workflowInput struct {
 }
 
 type job struct {
-	If      string            `yaml:"if"`
-	Needs   any               `yaml:"needs"`
-	Outputs map[string]string `yaml:"outputs"`
-	Steps   []step            `yaml:"steps"`
+	If          string            `yaml:"if"`
+	Needs       any               `yaml:"needs"`
+	Permissions map[string]string `yaml:"permissions"`
+	Outputs     map[string]string `yaml:"outputs"`
+	Steps       []step            `yaml:"steps"`
 }
 
 type step struct {
@@ -160,6 +161,9 @@ func validateReleasePlease(data []byte) error {
 		}
 		if resolverJob.If != resolverIf {
 			problems = append(problems, errors.New("resolve-release-tag must safely admit dispatch or a created release"))
+		}
+		if len(resolverJob.Permissions) != 1 || resolverJob.Permissions["contents"] != "read" {
+			problems = append(problems, errors.New("resolve-release-tag must have only read-only contents permission"))
 		}
 		if len(resolverJob.Outputs) != 1 || resolverJob.Outputs["tag_name"] != releaseTagOutput {
 			problems = append(problems, errors.New("resolve-release-tag must publish one tag_name output"))
