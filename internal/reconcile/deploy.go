@@ -541,6 +541,17 @@ type managedTypeTransitions struct {
 }
 
 func prepareManagedTypeTransitions(ctx context.Context, sourceRoot, targetRoot string, prevManaged map[string]bool) (*managedTypeTransitions, error) {
+	return prepareManagedTypeTransitionsWithStage(ctx, sourceRoot, targetRoot, prevManaged, func(ctx context.Context, item *managedTypeTransition) error {
+		return item.stage(ctx)
+	})
+}
+
+func prepareManagedTypeTransitionsWithStage(
+	ctx context.Context,
+	sourceRoot, targetRoot string,
+	prevManaged map[string]bool,
+	stage func(context.Context, *managedTypeTransition) error,
+) (*managedTypeTransitions, error) {
 	tx := &managedTypeTransitions{}
 	if err := ctx.Err(); err != nil {
 		return tx, err
@@ -595,9 +606,8 @@ func prepareManagedTypeTransitions(ctx context.Context, sourceRoot, targetRoot s
 		}
 	}
 	for _, item := range tx.items {
-		if err := item.stage(ctx); err != nil {
-			tx.Close()
-			return tx, err
+		if err := stage(ctx, item); err != nil {
+			return tx, tx.Rollback(err)
 		}
 	}
 	return tx, nil

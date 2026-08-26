@@ -993,6 +993,75 @@ func TestManagedTypeTransitions_CancelledStagingCleansArtifactsForRetry(t *testi
 	require.Len(t, retry.items, 1)
 }
 
+func TestManagedTypeTransitions_CancelledSecondStageUnwindsAllArtifactsForRetry(t *testing.T) {
+	root := evalSymlinks(t, t.TempDir())
+	source := filepath.Join(root, "source")
+	targetParent := filepath.Join(root, "target")
+	managed := map[string]bool{"alpha": true, "bravo": true}
+	for _, name := range []string{"alpha", "bravo"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(source, name), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(source, name, "app.yml"), []byte("new-"+name), 0o644))
+	}
+	require.NoError(t, os.MkdirAll(targetParent, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(targetParent, "alpha"), []byte("old-alpha"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(targetParent, "bravo"), []byte("old-bravo"), 0o644))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stageCalls := 0
+	transitions, err := prepareManagedTypeTransitionsWithStage(ctx, source, targetParent, managed, func(stageCtx context.Context, item *managedTypeTransition) error {
+		stageCalls++
+		if stageCalls == 2 {
+			return item.stageWithCopyDir(stageCtx, func(_ context.Context, _, dst string) ([]string, error) {
+				require.NoError(t, os.WriteFile(filepath.Join(dst, "partial.yml"), []byte("partial"), 0o600))
+				cancel()
+				return nil, nil
+			})
+		}
+		return item.stage(stageCtx)
+	})
+
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotNil(t, transitions)
+	assert.Equal(t, 2, stageCalls)
+	for _, name := range []string{"alpha", "bravo"} {
+		content, readErr := os.ReadFile(filepath.Join(targetParent, name))
+		require.NoError(t, readErr)
+		assert.Equal(t, "old-"+name, string(content))
+		for _, suffix := range []string{
+			managedTransitionOldSuffix,
+			managedTransitionNewSuffix,
+			managedTransitionStageSuffix,
+			managedTransitionCleanSuffix,
+		} {
+			artifact := filepath.Join(targetParent, name) + suffix
+			_, statErr := os.Lstat(artifact)
+			assert.True(t, os.IsNotExist(statErr), "%s should be absent: %v", artifact, statErr)
+		}
+	}
+
+	retry, retryErr := prepareManagedTypeTransitions(context.Background(), source, targetParent, managed)
+	require.NoError(t, retryErr)
+	require.Len(t, retry.items, 2)
+	t.Cleanup(retry.Close)
+	require.NoError(t, retry.Promote(context.Background()))
+	retry.Commit(zerolog.Nop())
+	for _, name := range []string{"alpha", "bravo"} {
+		content, readErr := os.ReadFile(filepath.Join(targetParent, name, "app.yml"))
+		require.NoError(t, readErr)
+		assert.Equal(t, "new-"+name, string(content))
+		for _, suffix := range []string{
+			managedTransitionOldSuffix,
+			managedTransitionNewSuffix,
+			managedTransitionStageSuffix,
+			managedTransitionCleanSuffix,
+		} {
+			artifact := filepath.Join(targetParent, name) + suffix
+			_, statErr := os.Lstat(artifact)
+			assert.True(t, os.IsNotExist(statErr), "%s should be absent after retry: %v", artifact, statErr)
+		}
+	}
+}
+
 func TestManagedTypeTransitionCancellationTraversalGuards(t *testing.T) {
 	t.Run("prepare walk", func(t *testing.T) {
 		root := t.TempDir()
