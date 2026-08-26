@@ -88,13 +88,13 @@ func updateAvailable(currentVersion, latestVersion string) (bool, error) {
 }
 
 // CheckForUpdate checks if a newer version is available.
-func CheckForUpdate(currentVersion string) (*Release, bool, error) {
+func CheckForUpdate(ctx context.Context, currentVersion string) (*Release, bool, error) {
 	updater, err := newUpdateClient()
 	if err != nil {
 		return nil, false, err
 	}
 
-	latest, found, err := updater.DetectLatest(context.Background())
+	latest, found, err := updater.DetectLatest(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("detecting latest version: %w", err)
 	}
@@ -114,13 +114,13 @@ func CheckForUpdate(currentVersion string) (*Release, bool, error) {
 }
 
 // Update downloads and installs the latest version.
-func Update(currentVersion string) (*Release, error) {
+func Update(ctx context.Context, currentVersion string) (*Release, error) {
 	updater, err := newUpdateClient()
 	if err != nil {
 		return nil, err
 	}
 
-	latest, found, err := updater.DetectLatest(context.Background())
+	latest, found, err := updater.DetectLatest(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("detecting latest version: %w", err)
 	}
@@ -142,7 +142,7 @@ func Update(currentVersion string) (*Release, error) {
 		return nil, fmt.Errorf("getting executable path: %w", err)
 	}
 
-	if err := updater.UpdateTo(context.Background(), latest, exe); err != nil {
+	if err := updater.UpdateTo(ctx, latest, exe); err != nil {
 		return nil, fmt.Errorf("updating binary: %w", err)
 	}
 

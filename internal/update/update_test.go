@@ -18,19 +18,23 @@ type fakeUpdateClient struct {
 	found          bool
 	detectErr      error
 	updateErr      error
+	detectContext  context.Context
+	updateContext  context.Context
 	detectCalls    int
 	updateCalls    int
 	updatedRelease *Release
 	updatedPath    string
 }
 
-func (f *fakeUpdateClient) DetectLatest(context.Context) (*Release, bool, error) {
+func (f *fakeUpdateClient) DetectLatest(ctx context.Context) (*Release, bool, error) {
 	f.detectCalls++
+	f.detectContext = ctx
 	return f.release, f.found, f.detectErr
 }
 
-func (f *fakeUpdateClient) UpdateTo(_ context.Context, release *Release, path string) error {
+func (f *fakeUpdateClient) UpdateTo(ctx context.Context, release *Release, path string) error {
 	f.updateCalls++
+	f.updateContext = ctx
 	f.updatedRelease = release
 	f.updatedPath = path
 	return f.updateErr
@@ -57,6 +61,8 @@ func testRelease(version string) *Release {
 		Changelog:   "Fixed the thing",
 	}
 }
+
+type updateTestContextKey struct{}
 
 func TestUpdateAvailable(t *testing.T) {
 	tests := []struct {
@@ -92,11 +98,24 @@ func TestUpdateAvailable(t *testing.T) {
 }
 
 func TestCheckForUpdate(t *testing.T) {
+	t.Run("propagates caller context", func(t *testing.T) {
+		ctx := context.WithValue(context.Background(), updateTestContextKey{}, "request")
+		client := &fakeUpdateClient{release: testRelease("1.2.3"), found: true}
+		useUpdateDependencies(t, client, nil, "", nil)
+
+		release, available, err := CheckForUpdate(ctx, "1.2.2")
+
+		require.NoError(t, err)
+		assert.NotNil(t, release)
+		assert.True(t, available)
+		assert.Same(t, ctx, client.detectContext)
+	})
+
 	t.Run("client creation failure", func(t *testing.T) {
 		clientErr := errors.New("client unavailable")
 		useUpdateDependencies(t, nil, clientErr, "", nil)
 
-		release, available, err := CheckForUpdate("1.2.3")
+		release, available, err := CheckForUpdate(context.Background(), "1.2.3")
 
 		require.ErrorIs(t, err, clientErr)
 		assert.Nil(t, release)
@@ -108,7 +127,7 @@ func TestCheckForUpdate(t *testing.T) {
 		client := &fakeUpdateClient{detectErr: detectErr}
 		useUpdateDependencies(t, client, nil, "", nil)
 
-		release, available, err := CheckForUpdate("1.2.3")
+		release, available, err := CheckForUpdate(context.Background(), "1.2.3")
 
 		require.ErrorIs(t, err, detectErr)
 		assert.Contains(t, err.Error(), "detecting latest version")
@@ -121,7 +140,7 @@ func TestCheckForUpdate(t *testing.T) {
 		client := &fakeUpdateClient{}
 		useUpdateDependencies(t, client, nil, "", nil)
 
-		release, available, err := CheckForUpdate("1.2.3")
+		release, available, err := CheckForUpdate(context.Background(), "1.2.3")
 
 		require.NoError(t, err)
 		assert.Nil(t, release)
@@ -132,7 +151,7 @@ func TestCheckForUpdate(t *testing.T) {
 		client := &fakeUpdateClient{release: testRelease("1.2.3"), found: true}
 		useUpdateDependencies(t, client, nil, "", nil)
 
-		release, available, err := CheckForUpdate("1.2.3")
+		release, available, err := CheckForUpdate(context.Background(), "1.2.3")
 
 		require.NoError(t, err)
 		assert.Nil(t, release)
@@ -143,7 +162,7 @@ func TestCheckForUpdate(t *testing.T) {
 		client := &fakeUpdateClient{release: testRelease("1.2.3"), found: true}
 		useUpdateDependencies(t, client, nil, "", nil)
 
-		release, available, err := CheckForUpdate("broken")
+		release, available, err := CheckForUpdate(context.Background(), "broken")
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `parsing current version "broken"`)
@@ -157,7 +176,7 @@ func TestCheckForUpdate(t *testing.T) {
 			client := &fakeUpdateClient{release: latest, found: true}
 			useUpdateDependencies(t, client, nil, "", nil)
 
-			release, available, err := CheckForUpdate(currentVersion)
+			release, available, err := CheckForUpdate(context.Background(), currentVersion)
 
 			require.NoError(t, err)
 			assert.Same(t, latest, release)
@@ -167,11 +186,25 @@ func TestCheckForUpdate(t *testing.T) {
 }
 
 func TestUpdate(t *testing.T) {
+	t.Run("propagates caller context", func(t *testing.T) {
+		ctx := context.WithValue(context.Background(), updateTestContextKey{}, "request")
+		latest := testRelease("1.2.3")
+		client := &fakeUpdateClient{release: latest, found: true}
+		useUpdateDependencies(t, client, nil, "/opt/bin/bosun", nil)
+
+		release, err := Update(ctx, "1.2.2")
+
+		require.NoError(t, err)
+		assert.Same(t, latest, release)
+		assert.Same(t, ctx, client.detectContext)
+		assert.Same(t, ctx, client.updateContext)
+	})
+
 	t.Run("client creation failure", func(t *testing.T) {
 		clientErr := errors.New("client unavailable")
 		useUpdateDependencies(t, nil, clientErr, "", nil)
 
-		release, err := Update("1.2.3")
+		release, err := Update(context.Background(), "1.2.3")
 
 		require.ErrorIs(t, err, clientErr)
 		assert.Nil(t, release)
@@ -182,7 +215,7 @@ func TestUpdate(t *testing.T) {
 		client := &fakeUpdateClient{detectErr: detectErr}
 		useUpdateDependencies(t, client, nil, "", nil)
 
-		release, err := Update("1.2.3")
+		release, err := Update(context.Background(), "1.2.3")
 
 		require.ErrorIs(t, err, detectErr)
 		assert.Contains(t, err.Error(), "detecting latest version")
@@ -193,7 +226,7 @@ func TestUpdate(t *testing.T) {
 		client := &fakeUpdateClient{}
 		useUpdateDependencies(t, client, nil, "", nil)
 
-		release, err := Update("1.2.3")
+		release, err := Update(context.Background(), "1.2.3")
 
 		require.EqualError(t, err, "no releases found for cameronsjo/bosun")
 		assert.Nil(t, release)
@@ -203,7 +236,7 @@ func TestUpdate(t *testing.T) {
 		client := &fakeUpdateClient{release: testRelease("1.2.3"), found: true}
 		useUpdateDependencies(t, client, nil, "/tmp/bosun", nil)
 
-		release, err := Update("1.2.3")
+		release, err := Update(context.Background(), "1.2.3")
 
 		require.NoError(t, err)
 		assert.Nil(t, release)
@@ -214,7 +247,7 @@ func TestUpdate(t *testing.T) {
 		client := &fakeUpdateClient{release: testRelease("1.2.3"), found: true}
 		useUpdateDependencies(t, client, nil, "/tmp/bosun", nil)
 
-		release, err := Update("broken")
+		release, err := Update(context.Background(), "broken")
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `parsing current version "broken"`)
@@ -227,7 +260,7 @@ func TestUpdate(t *testing.T) {
 		client := &fakeUpdateClient{release: testRelease("1.2.3"), found: true}
 		useUpdateDependencies(t, client, nil, "", pathErr)
 
-		release, err := Update("1.2.2")
+		release, err := Update(context.Background(), "1.2.2")
 
 		require.ErrorIs(t, err, pathErr)
 		assert.Contains(t, err.Error(), "getting executable path")
@@ -241,7 +274,7 @@ func TestUpdate(t *testing.T) {
 		client := &fakeUpdateClient{release: latest, found: true, updateErr: updateErr}
 		useUpdateDependencies(t, client, nil, "/opt/bin/bosun", nil)
 
-		release, err := Update("1.2.2")
+		release, err := Update(context.Background(), "1.2.2")
 
 		require.ErrorIs(t, err, updateErr)
 		assert.Contains(t, err.Error(), "updating binary")
@@ -257,7 +290,7 @@ func TestUpdate(t *testing.T) {
 			client := &fakeUpdateClient{release: latest, found: true}
 			useUpdateDependencies(t, client, nil, "/opt/bin/bosun", nil)
 
-			release, err := Update(currentVersion)
+			release, err := Update(context.Background(), currentVersion)
 
 			require.NoError(t, err)
 			assert.Same(t, latest, release)
