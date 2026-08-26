@@ -100,7 +100,7 @@ func TestSocketLifecycle_StartAcceptShutdown(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-	var health HealthStatus
+	var health HealthResponse
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&health))
 	assert.Equal(t, "healthy", health.Status)
 

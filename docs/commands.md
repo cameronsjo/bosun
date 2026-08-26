@@ -551,12 +551,16 @@ bosun daemon -i 1800
 
 | Path | Method | Description |
 |------|--------|-------------|
-| `/health` | GET | Health check (JSON) |
+| `/health` | GET | Public liveness JSON: `status`, `ready`, and `uptime` |
 | `/ready` | GET | Readiness check |
 | `/webhook` | POST | Generic webhook trigger (validates `X-Signature` or `X-Hub-Signature-256`) |
 | `/webhook/github` | POST | GitHub push webhook |
 | `/webhook/manual` | POST | Manual trigger |
 | `/metrics` | GET | Prometheus metrics |
+
+`/health` is intentionally unauthenticated and never includes reconcile errors,
+repository paths, subsystem messages, or circuit-breaker state. Use `/status`
+over the local Unix socket or authenticated TCP API for operator diagnostics.
 
 GitLab, Gitea, and Bitbucket are **not** served by the daemon directly — use the
 standalone `bosun webhook` receiver (see below), which forwards normalized triggers
@@ -613,6 +617,9 @@ bosun daemon-status --socket /tmp/bosun.sock
   ✓ Ready: true
 ```
 
+`daemon-status` gets last-reconcile and last-error diagnostics from `/status`;
+the bounded `/health` response supplies only the displayed health and readiness.
+
 ### validate
 
 Validate configuration and daemon connectivity.
@@ -638,6 +645,9 @@ bosun validate --socket /tmp/bosun.sock
 3. Repository access
 4. Full dry-run (with `--full`)
 
+When daemon health is degraded, `validate` reads the sanitized last error from
+the local `/status` endpoint rather than from public `/health` output.
+
 ### webhook
 
 Run standalone webhook receiver.
@@ -658,6 +668,10 @@ bosun webhook --fetch-secret
 | `--fetch-secret` | Fetch secret from daemon (never stored on disk) |
 
 The webhook receiver validates signatures and forwards valid requests to the daemon's trigger endpoint. Supports GitHub, GitLab, Gitea, and Bitbucket webhook formats.
+
+Its `GET /health` endpoint proxies only `status`, `ready`, and `uptime`, while
+`GET /ready` retains the plain readiness response. Both endpoints reject other
+HTTP methods with `405 Method Not Allowed`.
 
 **Daemon-Injected Secrets:**
 

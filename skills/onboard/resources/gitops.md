@@ -399,8 +399,8 @@ The daemon's primary interface. All `bosun trigger`, `bosun daemon-status`, and 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/trigger` | POST | Trigger reconciliation |
-| `/status` | GET | Daemon status |
-| `/health` | GET | Health check (JSON) |
+| `/status` | GET | Operator status with sanitized reconcile diagnostics |
+| `/health` | GET | Public liveness JSON: `status`, `ready`, and `uptime` |
 | `/ready` | GET | Readiness check |
 | `/config` | GET | Current config |
 | `/ping` | GET | Simple ping |
@@ -408,6 +408,13 @@ The daemon's primary interface. All `bosun trigger`, `bosun daemon-status`, and 
 | `/api/containers` | GET | Container list with summary |
 | `/api/trigger` | POST | Trigger reconciliation (WebUI) |
 | `/api/status` | GET | Extended status (WebUI) |
+
+`/health` is intentionally unauthenticated and has the same bounded response on
+the webhook listener, TCP API, and Unix socket. It returns `200` when healthy,
+`503` otherwise, and `405` for non-GET methods; an Authorization header never
+expands it. Reconcile errors and timestamps, repository paths, subsystem detail,
+and circuit-breaker state stay off this response. Use bearer-protected TCP
+`/status` or local Unix-socket `/status` for operator diagnostics.
 
 **Direct access via curl:**
 

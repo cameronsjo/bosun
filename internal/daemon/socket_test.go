@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -282,16 +283,16 @@ func TestSocketHandleHealth(t *testing.T) {
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
 
-		var resp HealthStatus
-		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+		resp := requireBoundedHealthResponse(t, w.Body.Bytes())
 		assert.Equal(t, "healthy", resp.Status)
 	})
 
 	t.Run("GET degraded returns 503", func(t *testing.T) {
 		ss, d := newTestSocketServer(t)
+		const sensitive = "https://secret.example/repo /srv/private/bosun.yaml"
 
 		d.stateMu.Lock()
-		d.lastError = assert.AnError
+		d.lastError = errors.New(sensitive)
 		d.stateMu.Unlock()
 
 		req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -300,10 +301,9 @@ func TestSocketHandleHealth(t *testing.T) {
 
 		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 
-		var resp HealthStatus
-		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+		resp := requireBoundedHealthResponse(t, w.Body.Bytes())
 		assert.Equal(t, "degraded", resp.Status)
-		assert.NotEmpty(t, resp.LastError)
+		assert.NotContains(t, w.Body.String(), sensitive)
 	})
 
 	t.Run("POST returns 405", func(t *testing.T) {
@@ -314,6 +314,8 @@ func TestSocketHandleHealth(t *testing.T) {
 		ss.handleHealth(w, req)
 
 		assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+		assert.NotContains(t, w.Header().Get("Content-Type"), "application/json")
+		assert.NotContains(t, w.Body.String(), "{")
 	})
 }
 

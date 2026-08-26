@@ -184,7 +184,7 @@ func TestClient_Health(t *testing.T) {
 			}
 
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(HealthStatus{
+			_ = json.NewEncoder(w).Encode(HealthResponse{
 				Status: "healthy",
 				Ready:  true,
 			})
@@ -212,10 +212,11 @@ func TestClient_Health(t *testing.T) {
 	t.Run("degraded", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(HealthStatus{
-				Status:    "degraded",
-				Ready:     true,
-				LastError: "previous reconcile failed",
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(HealthResponse{
+				Status: "degraded",
+				Ready:  true,
+				Uptime: 2 * time.Minute,
 			})
 		}))
 		defer server.Close()
@@ -233,6 +234,40 @@ func TestClient_Health(t *testing.T) {
 		if resp.Status != "degraded" {
 			t.Errorf("Status = %q, want degraded", resp.Status)
 		}
+		assert.Equal(t, 2*time.Minute, resp.Uptime)
+	})
+
+	t.Run("malformed response", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, "{")
+		}))
+		defer server.Close()
+
+		client := &Client{baseURL: server.URL, httpClient: server.Client()}
+		_, err := client.Health(context.Background())
+		require.ErrorContains(t, err, "failed to decode response")
+	})
+
+	t.Run("transport failure", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		client := &Client{baseURL: server.URL, httpClient: server.Client()}
+		server.Close()
+
+		_, err := client.Health(context.Background())
+		require.ErrorContains(t, err, "failed to connect to daemon")
+	})
+
+	t.Run("non-health status remains an error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"status":"unhealthy","ready":false,"uptime":0}`)
+		}))
+		defer server.Close()
+
+		client := &Client{baseURL: server.URL, httpClient: server.Client()}
+		_, err := client.Health(context.Background())
+		require.EqualError(t, err, `daemon returned status 401: {"status":"unhealthy","ready":false,"uptime":0}`)
 	})
 }
 
@@ -240,7 +275,7 @@ func TestClient_Ping(t *testing.T) {
 	t.Run("ping success", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(HealthStatus{Status: "healthy"})
+			_ = json.NewEncoder(w).Encode(HealthResponse{Status: "healthy"})
 		}))
 		defer server.Close()
 
@@ -342,6 +377,14 @@ func daemonClientErrorMethods() []daemonClientErrorMethod {
 			path: "/status",
 			invoke: func(ctx context.Context, client *Client) error {
 				_, err := client.Status(ctx)
+				return err
+			},
+		},
+		{
+			name: "health",
+			path: "/health",
+			invoke: func(ctx context.Context, client *Client) error {
+				_, err := client.Health(ctx)
 				return err
 			},
 		},

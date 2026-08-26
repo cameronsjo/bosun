@@ -211,6 +211,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	logger.Debug().Msg("Processing health check request")
 	status := s.daemon.HealthStatus()
+	response := publicHealthResponse(status)
 
 	w.Header().Set("Content-Type", "application/json")
 	if status.Status != "healthy" {
@@ -225,7 +226,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			Msg("Health check passed")
 	}
 
-	_ = json.NewEncoder(w).Encode(status)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // handleReady handles the readiness check endpoint.
