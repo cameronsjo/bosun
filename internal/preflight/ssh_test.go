@@ -1,8 +1,10 @@
 package preflight
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,10 +21,9 @@ func evalDir(t *testing.T, dir string) string {
 }
 
 func TestCheckSSHKeyPermissions_NoKeyFound(t *testing.T) {
-	t.Setenv("BOSUN_SSH_KEY", "")
-	t.Setenv("HOME", t.TempDir()) // HOME with no .ssh dir → no candidates exist
+	missingPath := filepath.Join(t.TempDir(), "missing")
 
-	result := CheckSSHKeyPermissions()
+	result := checkSSHKeyPermissions("", []string{missingPath}, runtime.GOOS, os.Stat)
 
 	assert.Empty(t, result.Path, "no key found → empty path")
 	assert.Nil(t, result.Err, "no key found → not an error")
@@ -117,7 +118,7 @@ func TestCheckSSHKeyPermissions_WindowsSkipsPOSIXModeCheck(t *testing.T) {
 	require.NoError(t, os.WriteFile(keyPath, []byte("fake key"), 0600))
 	require.NoError(t, os.Chmod(keyPath, 0644))
 
-	result := checkSSHKeyPermissions([]string{keyPath}, "windows", os.Stat)
+	result := checkSSHKeyPermissions(keyPath, nil, "windows", os.Stat)
 
 	assert.Equal(t, keyPath, result.Path)
 	assert.Equal(t, os.FileMode(0644), result.Mode)
@@ -182,28 +183,131 @@ func TestCheckSSHKeyPermissions_FallsBackToHomeSSH(t *testing.T) {
 	keyPath := filepath.Join(sshDir, "id_ed25519")
 	require.NoError(t, os.WriteFile(keyPath, []byte("fake key"), 0600))
 
-	t.Setenv("BOSUN_SSH_KEY", "")
-	t.Setenv("HOME", home)
-
-	result := CheckSSHKeyPermissions()
+	result := checkSSHKeyPermissions("", []string{keyPath}, runtime.GOOS, os.Stat)
 
 	assert.Equal(t, keyPath, result.Path)
 	assert.Nil(t, result.Err)
 }
 
-func TestSSHKeyCandidates_EmptyEnvVar(t *testing.T) {
-	t.Setenv("BOSUN_SSH_KEY", "")
+func TestSSHKeyCandidates(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
 
-	candidates := sshKeyCandidates()
+	candidates := sshKeyCandidates(home)
 
-	for _, c := range candidates {
-		assert.NotEmpty(t, c, "no candidate path should be an empty string")
+	assert.Equal(t, []string{
+		"/config/deploy-key",
+		"/config/ssh-key",
+		filepath.Join(home, ".ssh", "id_ed25519"),
+		filepath.Join(home, ".ssh", "id_rsa"),
+	}, candidates)
+}
+
+func TestSSHKeyCandidates_EmptyHomeMatchesRuntime(t *testing.T) {
+	assert.Equal(t, []string{
+		"/config/deploy-key",
+		"/config/ssh-key",
+		filepath.Join(".ssh", "id_ed25519"),
+		filepath.Join(".ssh", "id_rsa"),
+	}, sshKeyCandidates(""))
+}
+
+func TestCheckSSHKeyPermissions_ExplicitMissingDoesNotFallBack(t *testing.T) {
+	dir := evalDir(t, t.TempDir())
+	missingPath := filepath.Join(dir, "missing")
+	fallbackPath := filepath.Join(dir, "fallback")
+	require.NoError(t, os.WriteFile(fallbackPath, []byte("fake key"), 0600))
+
+	result := checkSSHKeyPermissions(missingPath, []string{fallbackPath}, runtime.GOOS, os.Stat)
+
+	assert.Equal(t, missingPath, result.Path)
+	require.Error(t, result.Err)
+	assert.ErrorIs(t, result.Err, os.ErrNotExist)
+}
+
+func TestCheckSSHKeyPermissions_ConventionalFallback(t *testing.T) {
+	dir := evalDir(t, t.TempDir())
+	unusablePath := filepath.Join(dir, "unusable")
+	usablePath := filepath.Join(dir, "usable")
+	require.NoError(t, os.Mkdir(unusablePath, 0700))
+	require.NoError(t, os.WriteFile(usablePath, []byte("fake key"), 0600))
+
+	result := checkSSHKeyPermissions("", []string{unusablePath, usablePath}, runtime.GOOS, os.Stat)
+
+	assert.Equal(t, usablePath, result.Path)
+	assert.NoError(t, result.Err)
+}
+
+func TestCheckSSHKeyPermissions_ReportsFirstUnusableConventionalCandidate(t *testing.T) {
+	dir := evalDir(t, t.TempDir())
+	firstPath := filepath.Join(dir, "first")
+	secondPath := filepath.Join(dir, "second")
+	require.NoError(t, os.Mkdir(firstPath, 0700))
+	require.NoError(t, os.WriteFile(secondPath, nil, 0600))
+
+	result := checkSSHKeyPermissions("", []string{firstPath, secondPath}, runtime.GOOS, os.Stat)
+
+	assert.Equal(t, firstPath, result.Path)
+	require.Error(t, result.Err)
+	assert.Contains(t, result.Err.Error(), "not a regular file")
+}
+
+func TestCheckSSHKeyPermissions_FollowsSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires privileges on Windows")
 	}
-	// Should include the fixed paths and home-relative paths, but NOT empty strings.
-	assert.Contains(t, candidates, "/config/deploy-key")
-	assert.Contains(t, candidates, "/config/ssh-key")
-	assert.Contains(t, candidates, filepath.Join(home, ".ssh", "id_ed25519"))
-	assert.Contains(t, candidates, filepath.Join(home, ".ssh", "id_rsa"))
+
+	dir := evalDir(t, t.TempDir())
+	targetPath := filepath.Join(dir, "target")
+	symlinkPath := filepath.Join(dir, "key")
+	require.NoError(t, os.WriteFile(targetPath, []byte("fake key"), 0600))
+	require.NoError(t, os.Symlink(targetPath, symlinkPath))
+
+	result := checkSSHKeyPermissions(symlinkPath, nil, runtime.GOOS, os.Stat)
+
+	assert.Equal(t, symlinkPath, result.Path)
+	assert.NoError(t, result.Err)
+}
+
+func TestCheckSSHKeyPermissions_RejectsSymlinkToDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires privileges on Windows")
+	}
+
+	dir := evalDir(t, t.TempDir())
+	targetPath := filepath.Join(dir, "target")
+	symlinkPath := filepath.Join(dir, "key")
+	require.NoError(t, os.Mkdir(targetPath, 0700))
+	require.NoError(t, os.Symlink(targetPath, symlinkPath))
+
+	result := checkSSHKeyPermissions(symlinkPath, nil, runtime.GOOS, os.Stat)
+
+	assert.Equal(t, symlinkPath, result.Path)
+	require.Error(t, result.Err)
+	assert.Contains(t, result.Err.Error(), "not a regular file")
+}
+
+func TestCheckSSHKeyPermissions_RejectsBrokenExplicitSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires privileges on Windows")
+	}
+
+	dir := evalDir(t, t.TempDir())
+	symlinkPath := filepath.Join(dir, "key")
+	require.NoError(t, os.Symlink(filepath.Join(dir, "missing"), symlinkPath))
+
+	result := checkSSHKeyPermissions(symlinkPath, nil, runtime.GOOS, os.Stat)
+
+	assert.Equal(t, symlinkPath, result.Path)
+	require.Error(t, result.Err)
+	assert.ErrorIs(t, result.Err, os.ErrNotExist)
+}
+
+func TestCheckSSHKeyPermissions_PreservesMetadataErrorIdentity(t *testing.T) {
+	sentinel := errors.New("metadata unavailable")
+	stat := func(string) (os.FileInfo, error) { return nil, sentinel }
+
+	result := checkSSHKeyPermissions("key", nil, runtime.GOOS, stat)
+
+	require.Error(t, result.Err)
+	assert.ErrorIs(t, result.Err, sentinel)
 }

@@ -216,92 +216,97 @@ type SSHKeyPermResult struct {
 	Err error
 }
 
-// sshKeyCandidates returns the ordered list of SSH key paths to check.
-// Mirrors the resolution order used by the reconcile package's git.go so
-// that preflight validates exactly the key that would be used at runtime.
-func sshKeyCandidates() []string {
-	candidates := []string{
-		os.Getenv("BOSUN_SSH_KEY"),
+// sshKeyCandidates returns the ordered list of conventional SSH key paths to
+// check. BOSUN_SSH_KEY is handled separately because reconcile treats an
+// explicit path as authoritative rather than falling back when it is unusable.
+func sshKeyCandidates(home string) []string {
+	return []string{
 		"/config/deploy-key",
 		"/config/ssh-key",
+		filepath.Join(home, ".ssh", "id_ed25519"),
+		filepath.Join(home, ".ssh", "id_rsa"),
 	}
-	if home := os.Getenv("HOME"); home != "" {
-		candidates = append(candidates,
-			filepath.Join(home, ".ssh", "id_ed25519"),
-			filepath.Join(home, ".ssh", "id_rsa"),
-		)
-	}
-
-	// Filter empty strings from unset env vars.
-	var result []string
-	for _, p := range candidates {
-		if p != "" {
-			result = append(result, p)
-		}
-	}
-	return result
 }
 
-// CheckSSHKeyPermissions validates that the first SSH key path found is a
-// non-empty regular file and, on POSIX systems, has safe permissions (0400 or
-// 0600). Returns a result with an empty Path when no key file is found — that
-// is not treated as an error because SSH auth may use an agent or an HTTPS URL.
+// CheckSSHKeyPermissions validates the explicit SSH key or the first usable
+// conventional candidate. The key must be a non-empty regular file and, on
+// POSIX systems, have safe permissions (0400 or 0600). An empty Path means no
+// candidate was found; SSH auth may instead use an agent or an HTTPS URL.
 func CheckSSHKeyPermissions() SSHKeyPermResult {
-	return checkSSHKeyPermissions(sshKeyCandidates(), runtime.GOOS, os.Stat)
+	return checkSSHKeyPermissions(
+		os.Getenv("BOSUN_SSH_KEY"),
+		sshKeyCandidates(os.Getenv("HOME")),
+		runtime.GOOS,
+		os.Stat,
+	)
 }
 
-func checkSSHKeyPermissions(candidates []string, goos string, stat fileStat) SSHKeyPermResult {
-	for _, path := range candidates {
-		info, err := stat(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				// File does not exist — try the next candidate.
-				continue
-			}
-			// Any other error (e.g., permission denied on the parent directory)
-			// is surfaced immediately so it isn't silently ignored.
-			return SSHKeyPermResult{Path: path, Err: fmt.Errorf("reading SSH key metadata: %w", err)}
-		}
-
-		mode := info.Mode().Perm()
-		if !info.Mode().IsRegular() {
-			return SSHKeyPermResult{
-				Path: path,
-				Mode: mode,
-				Err:  fmt.Errorf("SSH deploy key is not a regular file: %s", path),
-			}
-		}
-		if info.Size() == 0 {
-			return SSHKeyPermResult{
-				Path: path,
-				Mode: mode,
-				Err:  fmt.Errorf("SSH deploy key is empty: %s", path),
-			}
-		}
-
-		// Windows protects private keys with ACLs rather than POSIX mode bits.
-		// The regular/non-empty checks above still catch paths runtime will reject.
-		if goos == "windows" {
-			return SSHKeyPermResult{Path: path, Mode: mode}
-		}
-
-		// Only 0400 (read-only owner) and 0600 (read-write owner) are safe.
-		// SSH will refuse a key with group or world read bits set.
-		if mode != 0400 && mode != 0600 {
-			return SSHKeyPermResult{
-				Path:               path,
-				Mode:               mode,
-				PermissionsChecked: true,
-				Err: fmt.Errorf(
-					"SSH deploy key has unsafe permissions %04o (want 0400 or 0600): chmod 600 %s",
-					mode, path,
-				),
-			}
-		}
-
-		return SSHKeyPermResult{Path: path, Mode: mode, PermissionsChecked: true}
+func checkSSHKeyPermissions(explicitPath string, candidates []string, goos string, stat fileStat) SSHKeyPermResult {
+	if explicitPath != "" {
+		return inspectSSHKey(explicitPath, goos, stat)
 	}
 
-	// No key file found — not an error here; runtime will use agent or HTTPS.
-	return SSHKeyPermResult{}
+	var firstUnusable SSHKeyPermResult
+	for _, path := range candidates {
+		result := inspectSSHKey(path, goos, stat)
+		if errors.Is(result.Err, os.ErrNotExist) {
+			continue
+		}
+		if result.Err != nil && !result.PermissionsChecked {
+			if firstUnusable.Path == "" {
+				firstUnusable = result
+			}
+			continue
+		}
+		return result
+	}
+
+	// Like reconcile, report the first unusable conventional candidate only if
+	// no later candidate can be used. Otherwise runtime can use an agent or HTTPS.
+	return firstUnusable
+}
+
+func inspectSSHKey(path, goos string, stat fileStat) SSHKeyPermResult {
+	info, err := stat(path)
+	if err != nil {
+		return SSHKeyPermResult{Path: path, Err: fmt.Errorf("reading SSH key metadata: %w", err)}
+	}
+
+	mode := info.Mode().Perm()
+	if !info.Mode().IsRegular() {
+		return SSHKeyPermResult{
+			Path: path,
+			Mode: mode,
+			Err:  fmt.Errorf("SSH deploy key is not a regular file: %s", path),
+		}
+	}
+	if info.Size() == 0 {
+		return SSHKeyPermResult{
+			Path: path,
+			Mode: mode,
+			Err:  fmt.Errorf("SSH deploy key is empty: %s", path),
+		}
+	}
+
+	// Windows protects private keys with ACLs rather than POSIX mode bits.
+	// The regular/non-empty checks above still catch paths runtime will reject.
+	if goos == "windows" {
+		return SSHKeyPermResult{Path: path, Mode: mode}
+	}
+
+	// Bosun requires private keys to be owner-readable without group or world
+	// access. Keep the accepted modes intentionally narrow and actionable.
+	if mode != 0400 && mode != 0600 {
+		return SSHKeyPermResult{
+			Path:               path,
+			Mode:               mode,
+			PermissionsChecked: true,
+			Err: fmt.Errorf(
+				"SSH deploy key has unsafe permissions %04o (want 0400 or 0600): chmod 600 %s",
+				mode, path,
+			),
+		}
+	}
+
+	return SSHKeyPermResult{Path: path, Mode: mode, PermissionsChecked: true}
 }
