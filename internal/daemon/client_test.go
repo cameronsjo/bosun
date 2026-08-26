@@ -321,13 +321,17 @@ func TestClient_Config(t *testing.T) {
 	})
 }
 
-func TestClient_ErrorResponseBodyBounded(t *testing.T) {
-	methods := []struct {
-		name   string
-		invoke func(context.Context, *Client) error
-	}{
+type daemonClientErrorMethod struct {
+	name   string
+	path   string
+	invoke func(context.Context, *Client) error
+}
+
+func daemonClientErrorMethods() []daemonClientErrorMethod {
+	return []daemonClientErrorMethod{
 		{
 			name: "trigger",
+			path: "/trigger",
 			invoke: func(ctx context.Context, client *Client) error {
 				_, err := client.Trigger(ctx, "test", false)
 				return err
@@ -335,6 +339,7 @@ func TestClient_ErrorResponseBodyBounded(t *testing.T) {
 		},
 		{
 			name: "status",
+			path: "/status",
 			invoke: func(ctx context.Context, client *Client) error {
 				_, err := client.Status(ctx)
 				return err
@@ -342,12 +347,17 @@ func TestClient_ErrorResponseBodyBounded(t *testing.T) {
 		},
 		{
 			name: "config",
+			path: "/config",
 			invoke: func(ctx context.Context, client *Client) error {
 				_, err := client.Config(ctx)
 				return err
 			},
 		},
 	}
+}
+
+func TestClient_ErrorResponseBodyBounded(t *testing.T) {
+	methods := daemonClientErrorMethods()
 
 	bodies := []struct {
 		name     string
@@ -392,6 +402,36 @@ func TestClient_ErrorResponseBodyBounded(t *testing.T) {
 					assert.Equal(t, fmt.Sprintf("daemon returned status %d: %s", http.StatusTeapot, body.expected), err.Error())
 				})
 			}
+		})
+	}
+}
+
+func TestClient_ErrorResponseReadFailure(t *testing.T) {
+	for _, method := range daemonClientErrorMethods() {
+		t.Run(method.name, func(t *testing.T) {
+			readErr := errors.New("response stream failed")
+			body := &trackingReadCloser{
+				Reader: io.MultiReader(strings.NewReader("partial daemon error"), iotest.ErrReader(readErr)),
+			}
+			client := &Client{
+				socketPath: "/tmp/test.sock",
+				baseURL:    "http://daemon",
+				httpClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+					require.Equal(t, method.path, request.URL.Path)
+					return &http.Response{
+						StatusCode: http.StatusBadGateway,
+						Body:       body,
+						Header:     make(http.Header),
+						Request:    request,
+					}, nil
+				})},
+			}
+
+			err := method.invoke(context.Background(), client)
+
+			require.ErrorIs(t, err, readErr)
+			assert.Equal(t, "daemon returned status 502: partial daemon error [response body read error: response stream failed]", err.Error())
+			assert.Equal(t, 1, body.closeCalls)
 		})
 	}
 }
@@ -473,6 +513,7 @@ func TestClient_SuccessResponsesUnchanged(t *testing.T) {
 }
 
 func TestDaemonStatusError_ReadFailure(t *testing.T) {
+	readErr := errors.New("boom")
 	tests := []struct {
 		name     string
 		body     io.Reader
@@ -480,12 +521,12 @@ func TestDaemonStatusError_ReadFailure(t *testing.T) {
 	}{
 		{
 			name:     "partial body",
-			body:     io.MultiReader(strings.NewReader("partial body"), iotest.ErrReader(errors.New("boom"))),
+			body:     io.MultiReader(strings.NewReader("partial body"), iotest.ErrReader(readErr)),
 			expected: "daemon returned status 502: partial body [response body read error: boom]",
 		},
 		{
 			name:     "empty body",
-			body:     iotest.ErrReader(errors.New("boom")),
+			body:     iotest.ErrReader(readErr),
 			expected: "daemon returned status 502: [response body read error: boom]",
 		},
 	}
@@ -495,6 +536,23 @@ func TestDaemonStatusError_ReadFailure(t *testing.T) {
 			err := daemonStatusError(http.StatusBadGateway, tt.body)
 
 			assert.Equal(t, tt.expected, err.Error())
+			require.ErrorIs(t, err, readErr)
 		})
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+type trackingReadCloser struct {
+	io.Reader
+	closeCalls int
+}
+
+func (r *trackingReadCloser) Close() error {
+	r.closeCalls++
+	return nil
 }
