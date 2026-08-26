@@ -1,10 +1,154 @@
 package preflight
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestLookPathWith(t *testing.T) {
+	lookupErr := errors.New("lookup failed")
+	tests := []struct {
+		name       string
+		binary     string
+		lookupPath string
+		lookupErr  error
+		wantPath   string
+		wantErr    error
+		wantCalls  int
+	}{
+		{
+			name:      "empty name is rejected without lookup",
+			binary:    " \t ",
+			wantErr:   ErrEmptyBinaryName,
+			wantCalls: 0,
+		},
+		{
+			name:       "found binary returns path",
+			binary:     "docker",
+			lookupPath: "/usr/local/bin/docker",
+			wantPath:   "/usr/local/bin/docker",
+			wantCalls:  1,
+		},
+		{
+			name:      "lookup failure is preserved",
+			binary:    "docker",
+			lookupErr: lookupErr,
+			wantErr:   lookupErr,
+			wantCalls: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			lookup := func(name string) (string, error) {
+				calls++
+				assert.Equal(t, tc.binary, name)
+				return tc.lookupPath, tc.lookupErr
+			}
+
+			path, err := lookPathWith(context.Background(), tc.binary, lookup)
+
+			assert.Equal(t, tc.wantPath, path)
+			assert.ErrorIs(t, err, tc.wantErr)
+			assert.Equal(t, tc.wantCalls, calls)
+		})
+	}
+}
+
+func TestLookPathWith_ContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	release := make(chan struct{})
+	lookupExited := make(chan struct{})
+	lookup := func(string) (string, error) {
+		defer close(lookupExited)
+		cancel()
+		<-release
+		return "", nil
+	}
+
+	_, err := lookPathWith(ctx, "docker", lookup)
+	close(release)
+	<-lookupExited
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.EqualError(t, err, "lookup docker: context canceled")
+}
+
+func TestCheckBinariesWithTimeout(t *testing.T) {
+	notFound := errors.New("not found")
+	binaries := []BinaryCheck{
+		{Name: "docker", Required: true, InstallHint: "install docker"},
+		{Name: "age", Required: false, InstallHint: "install age"},
+	}
+	var calls []string
+	lookup := func(_ context.Context, name string) (string, error) {
+		calls = append(calls, name)
+		if name == "docker" {
+			return "", notFound
+		}
+		return "/usr/bin/" + name, nil
+	}
+
+	missing := checkBinariesWithTimeout(binaries, time.Second, lookup)
+
+	require.Len(t, missing, 1)
+	assert.Equal(t, "docker", missing[0].Name)
+	assert.True(t, missing[0].Required)
+	assert.Equal(t, "install docker", missing[0].InstallHint)
+	assert.ErrorIs(t, missing[0].Error, notFound)
+	assert.Equal(t, []string{"docker", "age"}, calls)
+	assert.Nil(t, binaries[0].Error, "checking must not mutate configured binary metadata")
+}
+
+func TestCheckAllWithTimeout(t *testing.T) {
+	tests := []struct {
+		name         string
+		failures     map[string]error
+		wantWarnings []string
+		wantErrors   []string
+	}{
+		{
+			name: "all binaries found",
+		},
+		{
+			name: "classifies failures and includes lookup details",
+			failures: map[string]error{
+				"docker": errors.New("docker lookup failed"),
+				"age":    errors.New("age lookup failed"),
+			},
+			wantWarnings: []string{
+				"age: Install age: brew install age (needed for key generation with age-keygen) (age lookup failed)",
+			},
+			wantErrors: []string{
+				"docker: Install Docker: https://docs.docker.com/get-docker/ (docker lookup failed)",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := func(_ context.Context, name string) (string, error) {
+				if err := tc.failures[name]; err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("/bin/%s", name), nil
+			}
+
+			warnings, errs := checkAllWithTimeout(time.Second, lookup)
+
+			assert.Equal(t, tc.wantWarnings, warnings)
+			assert.Equal(t, tc.wantErrors, errs)
+		})
+	}
+}
 
 func TestCheckBinaries(t *testing.T) {
 	t.Run("returns list of missing binaries", func(t *testing.T) {

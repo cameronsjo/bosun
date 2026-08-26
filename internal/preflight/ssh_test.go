@@ -28,6 +28,22 @@ func TestCheckSSHKeyPermissions_NoKeyFound(t *testing.T) {
 	assert.Nil(t, result.Err, "no key found → not an error")
 }
 
+func TestCheckSSHKeyPermissions_MetadataError(t *testing.T) {
+	dir := evalDir(t, t.TempDir())
+	parentFile := filepath.Join(dir, "not-a-directory")
+	require.NoError(t, os.WriteFile(parentFile, []byte("file"), 0600))
+	keyPath := filepath.Join(parentFile, "deploy-key")
+	t.Setenv("BOSUN_SSH_KEY", keyPath)
+	t.Setenv("HOME", t.TempDir())
+
+	result := CheckSSHKeyPermissions()
+
+	assert.Equal(t, keyPath, result.Path)
+	assert.Zero(t, result.Mode)
+	require.Error(t, result.Err)
+	assert.Contains(t, result.Err.Error(), "reading SSH key metadata")
+}
+
 func TestCheckSSHKeyPermissions_SafePermissions(t *testing.T) {
 	tests := []struct {
 		name string
