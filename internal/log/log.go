@@ -43,6 +43,7 @@ var logger zerolog.Logger
 var config struct {
 	format            Format
 	level             Level
+	output            io.Writer
 	additionalWriters []io.Writer
 }
 
@@ -59,11 +60,13 @@ type Options struct {
 	Format   Format
 	Level    Level
 	LevelSet bool // Explicitly set level (needed because Level 0 is TraceLevel)
-	Output   io.Writer
+
+	// Output replaces stdout as the primary log destination when non-nil.
+	Output io.Writer
 
 	// AdditionalWriters are extra io.Writers that receive log output alongside
-	// the primary writer (stdout). Used by the Sentry integration to fan out
-	// logs to the Sentry zerolog writer without changing existing call sites.
+	// the primary writer (Output, or stdout when Output is nil). Used by the
+	// Sentry integration to fan out logs without changing existing call sites.
 	AdditionalWriters []io.Writer
 }
 
@@ -92,9 +95,20 @@ func Init(opts *Options) {
 		config.level = InfoLevel
 	}
 
-	// Store additional writers for multi-writer fan-out (e.g. Sentry).
-	config.additionalWriters = opts.AdditionalWriters
+	// Store writer configuration for the logger rebuild below. Assigning nil is
+	// intentional: a later Init(nil) must restore stdout rather than retaining a
+	// prior caller's output override.
+	config.output = opts.Output
+	config.additionalWriters = append([]io.Writer(nil), opts.AdditionalWriters...)
 
+	initLogger()
+}
+
+// EnableDaemonMode marks the process as a daemon and rebuilds the logger using
+// daemon-aware auto-detection. Explicit format and level choices, the primary
+// output, and additional writers remain intact across the rebuild.
+func EnableDaemonMode() {
+	_ = os.Setenv("BOSUN_DAEMON_MODE", "true")
 	initLogger()
 }
 
@@ -105,12 +119,15 @@ func initLogger() {
 		format = detectFormat()
 	}
 
-	var output io.Writer = os.Stdout
+	output := config.output
+	if output == nil {
+		output = os.Stdout
+	}
 
 	switch format {
 	case FormatConsole:
 		output = zerolog.ConsoleWriter{
-			Out:        os.Stdout,
+			Out:        output,
 			TimeFormat: time.Kitchen,
 			FormatLevel: func(i interface{}) string {
 				level := strings.ToUpper(i.(string))
@@ -129,8 +146,7 @@ func initLogger() {
 			},
 		}
 	case FormatJSON:
-		// JSON output uses default zerolog behavior.
-		output = os.Stdout
+		// JSON output uses the primary writer directly.
 	}
 
 	// If additional writers are configured (e.g. Sentry), fan out to all of them.
@@ -215,6 +231,7 @@ func With() zerolog.Context {
 
 // SetGlobalLevel sets the minimum log level.
 func SetGlobalLevel(level Level) {
+	config.level = level
 	zerolog.SetGlobalLevel(level)
 }
 

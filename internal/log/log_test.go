@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +73,158 @@ func TestInit(t *testing.T) {
 		Level:    InfoLevel,
 		LevelSet: true,
 	})
+}
+
+func TestInitHonorsOutput(t *testing.T) {
+	tests := []struct {
+		name   string
+		format Format
+	}{
+		{name: "json", format: FormatJSON},
+		{name: "console", format: FormatConsole},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			Init(&Options{
+				Format:   tt.format,
+				Level:    InfoLevel,
+				LevelSet: true,
+				Output:   &output,
+			})
+			t.Cleanup(func() {
+				Init(&Options{Format: FormatJSON, Level: InfoLevel, LevelSet: true})
+			})
+
+			Info().Msg("custom output")
+
+			assert.Contains(t, output.String(), "custom output")
+		})
+	}
+}
+
+func TestInitFansOutFromCustomOutput(t *testing.T) {
+	var primary bytes.Buffer
+	var additional bytes.Buffer
+	Init(&Options{
+		Format:            FormatJSON,
+		Level:             InfoLevel,
+		LevelSet:          true,
+		Output:            &primary,
+		AdditionalWriters: []io.Writer{&additional},
+	})
+	t.Cleanup(func() {
+		Init(&Options{Format: FormatJSON, Level: InfoLevel, LevelSet: true})
+	})
+
+	Info().Msg("fan out")
+
+	assert.Contains(t, primary.String(), "fan out")
+	assert.Equal(t, primary.String(), additional.String())
+}
+
+func TestInitNilClearsOutputOverride(t *testing.T) {
+	var output bytes.Buffer
+	Init(&Options{Format: FormatJSON, Level: InfoLevel, LevelSet: true, Output: &output})
+	require.Same(t, &output, config.output)
+
+	Init(nil)
+	t.Cleanup(func() {
+		Init(&Options{Format: FormatJSON, Level: InfoLevel, LevelSet: true})
+	})
+
+	assert.Nil(t, config.output)
+}
+
+func TestEnableDaemonModeUsesJSONForAutoFormat(t *testing.T) {
+	t.Setenv("BOSUN_DAEMON_MODE", "")
+	var output bytes.Buffer
+	Init(&Options{
+		Format:   FormatAuto,
+		Level:    InfoLevel,
+		LevelSet: true,
+		Output:   &output,
+	})
+	t.Cleanup(func() {
+		Init(&Options{Format: FormatJSON, Level: InfoLevel, LevelSet: true})
+	})
+
+	EnableDaemonMode()
+	Info().Msg("daemon output")
+
+	assert.Equal(t, "true", os.Getenv("BOSUN_DAEMON_MODE"))
+	assert.Equal(t, FormatJSON, GetFormat())
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal(output.Bytes(), &entry))
+	assert.Equal(t, "daemon output", entry["message"])
+}
+
+func TestEnableDaemonModePreservesExplicitConfiguration(t *testing.T) {
+	t.Setenv("BOSUN_DAEMON_MODE", "")
+	var primary bytes.Buffer
+	var additional bytes.Buffer
+	Init(&Options{
+		Format:            FormatConsole,
+		Level:             DebugLevel,
+		LevelSet:          true,
+		Output:            &primary,
+		AdditionalWriters: []io.Writer{&additional},
+	})
+	t.Cleanup(func() {
+		Init(&Options{Format: FormatJSON, Level: InfoLevel, LevelSet: true})
+	})
+
+	EnableDaemonMode()
+	EnableDaemonMode()
+	Debug().Msg("preserved daemon configuration")
+
+	assert.Equal(t, FormatConsole, GetFormat())
+	assert.Equal(t, DebugLevel, GetLevel())
+	assert.Equal(t, 1, strings.Count(primary.String(), "preserved daemon configuration"))
+	assert.Equal(t, 1, strings.Count(additional.String(), "preserved daemon configuration"))
+}
+
+func TestEnableDaemonModeUsesAdditionalWriterSnapshot(t *testing.T) {
+	t.Setenv("BOSUN_DAEMON_MODE", "")
+	var primary bytes.Buffer
+	var configured bytes.Buffer
+	var replacement bytes.Buffer
+	additionalWriters := []io.Writer{&configured}
+	Init(&Options{
+		Format:            FormatJSON,
+		Level:             InfoLevel,
+		LevelSet:          true,
+		Output:            &primary,
+		AdditionalWriters: additionalWriters,
+	})
+	t.Cleanup(func() {
+		Init(&Options{Format: FormatJSON, Level: InfoLevel, LevelSet: true})
+	})
+
+	additionalWriters[0] = &replacement
+	EnableDaemonMode()
+	Info().Msg("snapshotted writer")
+
+	assert.Contains(t, primary.String(), "snapshotted writer")
+	assert.Equal(t, primary.String(), configured.String())
+	assert.Empty(t, replacement.String())
+}
+
+func TestEnableDaemonModePreservesRuntimeLogLevel(t *testing.T) {
+	t.Setenv("BOSUN_DAEMON_MODE", "")
+	var output bytes.Buffer
+	Init(&Options{Format: FormatJSON, Level: InfoLevel, LevelSet: true, Output: &output})
+	t.Cleanup(func() {
+		Init(&Options{Format: FormatJSON, Level: InfoLevel, LevelSet: true})
+	})
+
+	SetGlobalLevel(DebugLevel)
+	EnableDaemonMode()
+	Debug().Msg("runtime level preserved")
+
+	assert.Equal(t, DebugLevel, GetLevel())
+	assert.Contains(t, output.String(), "runtime level preserved")
 }
 
 func TestLoggerOutput(t *testing.T) {
