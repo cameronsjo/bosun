@@ -44,6 +44,115 @@ func TestCopyFileWithChmod_PermissionFailurePrecedesPayloadCopy(t *testing.T) {
 	assert.Empty(t, tempMatches, "failed atomic copy must remove its temporary file")
 }
 
+func TestValidateRegularFile(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mode    fs.FileMode
+		wantErr bool
+	}{
+		{name: "regular file", mode: 0o640},
+		{name: "directory", mode: fs.ModeDir | 0o755, wantErr: true},
+		{name: "named pipe", mode: fs.ModeNamedPipe | 0o600, wantErr: true},
+		{name: "device", mode: fs.ModeDevice | 0o600, wantErr: true},
+		{name: "socket", mode: fs.ModeSocket | 0o600, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateRegularFile("source", fakeFileInfo{mode: tt.mode})
+			if tt.wantErr {
+				require.ErrorIs(t, err, ErrUnsupportedFileType)
+				assert.ErrorContains(t, err, "source has mode")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestValidateOpenedRegularFileRejectsUnfollowedSymlink(t *testing.T) {
+	t.Parallel()
+
+	err := validateOpenedRegularFile("source", false, fakeFileInfo{mode: fs.ModeSymlink | 0o777})
+
+	require.ErrorIs(t, err, ErrSymlinkSkipped)
+}
+
+func TestOpenRegularSourceWith(t *testing.T) {
+	t.Parallel()
+
+	t.Run("open failure", func(t *testing.T) {
+		t.Parallel()
+
+		openErr := errors.New("open failed")
+		file, info, err := openRegularSourceWith("source", true, func(string, bool) (*os.File, error) {
+			return nil, openErr
+		})
+
+		require.ErrorIs(t, err, openErr)
+		assert.ErrorContains(t, err, "open source")
+		assert.Nil(t, file)
+		assert.Nil(t, info)
+	})
+
+	t.Run("nofollow open failure on symlink preserves skip sentinel", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+		target := filepath.Join(tmpDir, "target")
+		link := filepath.Join(tmpDir, "link")
+		require.NoError(t, os.WriteFile(target, []byte("content"), 0o600))
+		require.NoError(t, os.Symlink(target, link))
+
+		file, info, err := openRegularSourceWith(link, false, func(string, bool) (*os.File, error) {
+			return nil, errors.New("nofollow open failed")
+		})
+
+		require.ErrorIs(t, err, ErrSymlinkSkipped)
+		assert.Nil(t, file)
+		assert.Nil(t, info)
+	})
+
+	t.Run("stat failure closes descriptor", func(t *testing.T) {
+		t.Parallel()
+
+		closed, err := os.CreateTemp(t.TempDir(), "closed-source")
+		require.NoError(t, err)
+		require.NoError(t, closed.Close())
+
+		file, info, err := openRegularSourceWith("source", true, func(string, bool) (*os.File, error) {
+			return closed, nil
+		})
+
+		require.ErrorIs(t, err, os.ErrClosed)
+		assert.ErrorContains(t, err, "stat source")
+		assert.Nil(t, file)
+		assert.Nil(t, info)
+	})
+
+	t.Run("rejected descriptor is closed", func(t *testing.T) {
+		t.Parallel()
+
+		reader, writer, err := os.Pipe()
+		require.NoError(t, err)
+		defer func() { _ = writer.Close() }()
+
+		file, info, err := openRegularSourceWith("source", true, func(string, bool) (*os.File, error) {
+			return reader, nil
+		})
+
+		require.ErrorIs(t, err, ErrUnsupportedFileType)
+		assert.Nil(t, file)
+		assert.Nil(t, info)
+		assert.ErrorIs(t, reader.Close(), os.ErrClosed)
+	})
+}
+
 func TestValidateCopyPermissions_ReportsLifecycleFailures(t *testing.T) {
 	t.Parallel()
 
