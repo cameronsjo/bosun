@@ -1,11 +1,15 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/creativeprojects/go-selfupdate"
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -129,6 +133,33 @@ func TestUpdateCommandReturnsInstallFailure(t *testing.T) {
 
 	require.ErrorIs(t, err, installErr)
 	assert.Contains(t, err.Error(), "update bosun")
+}
+
+func TestUpdateCommandReturnsChecksumFailureWithoutSuccess(t *testing.T) {
+	archiveName := "bosun_1.2.3_darwin_arm64.tar.gz"
+	checksumErr := fmt.Errorf(
+		"failed validating asset content %q: %w",
+		archiveName,
+		selfupdate.ErrChecksumValidationFailed,
+	)
+	var colorOutput bytes.Buffer
+	previousColorOutput := color.Output
+	color.Output = &colorOutput
+	t.Cleanup(func() {
+		color.Output = previousColorOutput
+	})
+	var runErr error
+	stdout := captureStdout(t, func() {
+		runErr = runUpdateCommand(context.Background(), "1.2.2", false, updateCommandDependencies{
+			install: func(context.Context, string) (*updatepkg.Release, error) {
+				return nil, checksumErr
+			},
+		})
+	})
+
+	require.ErrorIs(t, runErr, selfupdate.ErrChecksumValidationFailed)
+	assert.Contains(t, runErr.Error(), archiveName)
+	assert.NotContains(t, stdout+colorOutput.String(), "Successfully updated")
 }
 
 func TestUpdateCommandUsesErrorReturningHandler(t *testing.T) {

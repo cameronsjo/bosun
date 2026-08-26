@@ -13,8 +13,9 @@ import (
 
 const (
 	// Repository owner and name for GitHub releases.
-	repoOwner = "cameronsjo"
-	repoName  = "bosun"
+	repoOwner         = "cameronsjo"
+	repoName          = "bosun"
+	checksumAssetName = "checksums.txt"
 )
 
 var (
@@ -68,7 +69,7 @@ var (
 			return nil, fmt.Errorf("creating update source: %w", err)
 		}
 
-		updater, err := selfupdate.NewUpdater(selfupdate.Config{Source: source})
+		updater, err := newChecksumUpdater(source, "", "")
 		if err != nil {
 			return nil, fmt.Errorf("creating updater: %w", err)
 		}
@@ -77,6 +78,17 @@ var (
 	}
 	executablePath = selfupdate.ExecutablePath
 )
+
+func newChecksumUpdater(source selfupdate.Source, osName, archName string) (*selfupdate.Updater, error) {
+	return selfupdate.NewUpdater(selfupdate.Config{
+		Source: source,
+		Validator: &selfupdate.ChecksumValidator{
+			UniqueFilename: checksumAssetName,
+		},
+		OS:   osName,
+		Arch: archName,
+	})
+}
 
 func updateAvailable(currentVersion, latestVersion string) (bool, error) {
 	if currentVersion == "dev" {

@@ -20,7 +20,8 @@ var updateCmd = &cobra.Command{
 This command will:
 1. Check for a newer version on GitHub
 2. Download the appropriate binary for your platform
-3. Replace the current binary with the new version
+3. Verify the compressed archive against checksums.txt from the same release
+4. Replace the current binary with the new version
 
 Examples:
   bosun update           # Update to latest version

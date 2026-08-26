@@ -32,6 +32,8 @@ Everything uses nautical/Below Deck terminology:
 - `bosun init` - Interactive setup wizard
 - `bosun doctor` - Pre-flight checks
 - `bosun status` - Health dashboard
+- `bosun update` - Install the latest stable release only after verifying the selected compressed archive against the same release's `checksums.txt`; missing or invalid checksum data fails closed without replacing the executable
+- `bosun update --check` - Inspect same-release archive and checksum asset metadata without downloading either asset
 
 ### Daemon (GitOps)
 - `bosun daemon` - Run the GitOps daemon
@@ -71,6 +73,11 @@ The daemon provides:
 - Deploy state tracking with circuit breaker (stops retrying after 3 failures)
 - Post-sync `exec` hooks require a non-empty command; invalid root or per-target hook configuration fails before deployment
 - Private HTTPS Git clone and fetch use the paired `BOSUN_GIT_USERNAME`/`BOSUN_GIT_TOKEN` Basic credentials. Both unset preserves anonymous HTTPS; partial pairs, URL userinfo, non-HTTPS URLs, downgrade redirects, and cross-origin redirects fail closed. The pair has no legacy aliases or YAML keys, follows `BOSUN_REPO_URL` precedence, and rotates only after process restart
+
+Self-update's same-release SHA-256 validation is an integrity control, not
+independent publisher authentication. Replacing both the archive and
+`checksums.txt` remains outside this control, and current releases do not publish
+checksum signature assets.
 
 ## Project Structure
 
