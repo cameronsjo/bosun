@@ -844,7 +844,12 @@ an anchor.
 ### Retention
 
 By default, keeps the 5 most recent **valid** backups — those that pass the same
-verification used to select a rollback anchor. Older backups are automatically deleted.
+verification used to select a rollback anchor. Pruning is deferred until the
+current deploy clears its health checks, post-sync hooks, and post-deploy
+verification gates. With a retention count of 1, the prior known-good backup
+therefore remains available alongside the fresh pre-deploy snapshot throughout
+the deploy; a failed deploy keeps both, while a successful deploy prunes to the
+configured count.
 Corrupt or partial backup directories (a missing, unlistable, or truncated `configs.tar.gz`)
 do not count toward the retention limit and are removed outright, so a broken backup can
 never occupy a keep slot and evict an older good one. When a deploy has no managed files to

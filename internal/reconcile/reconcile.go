@@ -903,6 +903,12 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 		stagingLifecycleComplete = true
 	}
 
+	// Retention is intentionally the final filesystem mutation before success
+	// is recorded. Until every deploy and verification stage above has passed,
+	// the previous cycle's backup remains the last-known-good recovery anchor;
+	// pruning it earlier makes BackupsToKeep=1 unsafe (#243).
+	r.cleanupBackupsAfterSuccess(ctx)
+
 	// Deploy is verified (local) or verification-skipped (remote): record
 	// success. The recovery alert and attempt-counter reset live here — after
 	// verification — so a local verify failure never emits a premature
@@ -1970,6 +1976,13 @@ func (r *Reconciler) renderTemplates(ctx context.Context, secrets map[string]any
 // about to mutate.
 var ErrBackupFootprintIncomplete = errors.New("backup footprint incomplete")
 
+func (r *Reconciler) backupTimeout() time.Duration {
+	if r.config.BackupTimeout > 0 {
+		return r.config.BackupTimeout
+	}
+	return DefaultBackupTimeout
+}
+
 // createBackup creates a backup of current configs.
 func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, local bool) error {
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
@@ -1979,10 +1992,7 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 	// Bound backup creation + verification so a stuck tar/ssh (#319) cannot
 	// wedge the reconcile. On timeout the error propagates to the caller's
 	// rollback-anchor policy; incomplete footprint discovery returns earlier.
-	timeout := r.config.BackupTimeout
-	if timeout <= 0 {
-		timeout = DefaultBackupTimeout
-	}
+	timeout := r.backupTimeout()
 	logger.Debug().
 		Str(log.FieldOperation, "backup").
 		Int64("timeout_ms", timeout.Milliseconds()).
@@ -2072,14 +2082,35 @@ func (r *Reconciler) createBackup(ctx context.Context, secrets map[string]any, l
 	r.lastBackupIsFresh = true
 	logger.Info().Str(log.FieldPath, r.lastBackupPath).Msg("Successfully created backup")
 
-	// Cleanup old backups.
-	if err := r.deploy.CleanupBackups(ctx, r.config.BackupDir, r.config.BackupsToKeep); err != nil {
-		logger.Warn().Err(err).Int("backups_to_keep", r.config.BackupsToKeep).Msg("Failed to cleanup old backups")
-		ui.Warning("Failed to cleanup old backups: %v", err)
-	}
-
 	ui.Success("Backup saved: %s", backupName)
 	return nil
+}
+
+// cleanupBackupsAfterSuccess enforces retention only after the deployment has
+// crossed every success gate. It runs only for a fresh backup created by this
+// cycle, preserving the prior behavior for empty-footprint and stale-fallback
+// paths while keeping the prior last-known-good through failed deploys (#243).
+func (r *Reconciler) cleanupBackupsAfterSuccess(ctx context.Context) {
+	if !r.lastBackupIsFresh {
+		return
+	}
+
+	cleanupCtx, cleanupSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.backup_cleanup",
+		trace.WithAttributes(telemetry.IntAttr("backups_to_keep", r.config.BackupsToKeep)),
+	)
+	defer cleanupSpan.End()
+
+	cleanupCtx, cancel := context.WithTimeout(cleanupCtx, r.backupTimeout())
+	defer cancel()
+
+	if err := r.deploy.CleanupBackups(cleanupCtx, r.config.BackupDir, r.config.BackupsToKeep); err != nil {
+		telemetry.SpanError(cleanupSpan, err)
+		logger := log.ComponentCtx(ctx, log.ComponentDeploy)
+		logger.Warn().Err(err).Int("backups_to_keep", r.config.BackupsToKeep).Msg("Failed to cleanup old backups after successful deploy")
+		ui.Warning("Failed to cleanup old backups: %v", err)
+		return
+	}
+	telemetry.SpanOK(cleanupSpan)
 }
 
 // applyBackupFailurePolicy enforces the "never deploy without a rollback anchor"
