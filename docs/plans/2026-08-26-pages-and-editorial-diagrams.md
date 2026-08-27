@@ -104,7 +104,7 @@ Skill-driven diagram work and the interactive `/design` pass stay in-session; th
 - [x] `git fetch origin`; confirm baseline: `origin/main`'s diagram already carries `038b5dc`'s corrected ordering — do NOT start from the stale branch
 - [x] Evaluate residual edits from the code-read against current main: **(a) adopted** — DeployGate No-exit split into clean-skip (breaker reset, `reconcile.go:587`) vs breaker-trip (alert + error, `reconcile.go:634`); **(b) adopted** — health-gate failure edge made explicit (failure returns at `reconcile.go:853`, never reaches steps 12–15); **(c) declined** — Deploy node label already carries the sync invariant, a subgraph adds nodes without fixing an inaccuracy
 - [x] If `.mmd` changed: `make diagrams`; verified only the reconcile marker span moved in README; onboard-skill step numbering (10–16) unchanged — parity holds, no edit
-- [ ] Archive the stale branch's file to a temp path, then gate: `git diff origin/main...origin/docs/436-refresh-diagrams` must be **empty** (content evidence — the PR #563 record does not cover today's tip `4682053`); only then `git push origin --delete docs/436-refresh-diagrams --no-follow-tags`
+- [x] Archive + delete `docs/436-refresh-diagrams` — **moot at execution**: `git ls-remote --heads origin` shows the branch already absent (no local ref either); deleted between plan approval and execution. Nothing to archive, nothing to delete (see Deviations)
 
 ### Task 3 — bosun diagram profile from webui tokens
 
@@ -115,10 +115,10 @@ Skill-driven diagram work and the interactive `/design` pass stay in-session; th
 **Dispatch:** In-context · serial (after Task 1, parallel with Task 2) · **Report:** —
 
 **Steps:**
-- [ ] Run `diagram-design:doctor`; PASS/WARN acceptable (Playwright warn OK — SVG-only)
-- [ ] Derive style guide from webui tokens (parchment/ocean papers, brass accent, WCAG AA ink/paper, ≤3 font families); `profile save bosun`; copy profile body → `docs/styles/diagram-profile.md`
-- [ ] Commit profile doc + marker
-- [ ] Verify: `diagram-design:profile show bosun` matches the committed doc
+- [x] Run `diagram-design:doctor`; WARN (Playwright missing — acceptable, SVG-only; Python 3.13.14 + SKILL.md pass)
+- [x] Derive style guide from webui tokens (parchment/ocean papers, brass accent, WCAG AA ink/paper, 3 font families); saved `~/.diagram-design/profiles/bosun.md` (+ `default.md` pristine snapshot); canonical copy → `docs/styles/diagram-profile.md`
+- [x] Commit profile doc + marker
+- [x] Verify: marker-first resolution finds `bosun`; cached profile diff-identical to the committed doc
 
 ### Task 4 — Editorial redraw (SVG layer) + staleness guard
 
@@ -205,5 +205,7 @@ Skill-driven diagram work and the interactive `/design` pass stay in-session; th
 - Task 8: security findings folded or explicitly surfaced; post-merge live URL check under `/bosun/`.
 
 ## Deviations
+
+- 2026-08-26 (calm-quill): Task 2's stale-branch retirement was already done — `docs/436-refresh-diagrams` absent from `git ls-remote --heads origin` at execution time (deleted between approval and execution, presumably by the diagram-handoff session). The empty-content-diff gate was verified at planning; no archive or delete performed here.
 
 ## Learnings
