@@ -21,20 +21,46 @@ Four `.mmd` files on `main`, rendered by `scripts/diagrams/render.mjs` (pnpm):
 
 ## The one real finding — resolve this first
 
-`docs/436-refresh-diagrams` (pushed, no PR) and `main` hold **two different
-versions of `reconcile-pipeline.mmd`, and neither contains the other's nodes.**
+Two versions of `reconcile-pipeline.mmd` exist and **neither contains the other's
+nodes**. `main` has one; the now-deleted branch `docs/436-refresh-diagrams`
+(commit `6144455`) had the other.
 
-- `main`'s version has a `DeployGate` decision node, "Fail Closed if Missing",
-  "Verify Writes / Transfer", and a 14-step ordering.
-- The branch's version has "Deploy Sync Invariant Check", "Circuit Breaker",
-  and a different 15-step ordering.
+- `main`: a `DeployGate` decision node, "Fail Closed if Missing",
+  "Verify Writes / Transfer" — 16 steps.
+- The branch: "Deploy Sync Invariant Check", "Circuit Breaker", a `Skip
+  Reconciliation` edge — different ordering, also 16 steps.
 
-PR #563 (`docs: refresh reconcile and locking diagrams`) merged 2026-08-24 and is
-the branch's own PR — so the branch is *stale*, not orphaned, and `main` moved
-on afterward. **But the divergence is not a plain fast-forward**, so do not
-assume `main` is simply newer. Read `internal/reconcile/reconcile.go`'s `Run()`
-and settle which ordering matches the code before redrawing anything. Redrawing
-the wrong one produces a beautiful diagram of a pipeline that does not exist.
+PR #563 (`docs: refresh reconcile and locking diagrams`) merged 2026-08-24 and was
+that branch's own PR, so the branch was *stale* rather than orphaned — `main` moved
+on afterward. **But the divergence is not a fast-forward**, so do not assume `main`
+is simply correct. Read `Run()` in `internal/reconcile/reconcile.go` and settle
+which ordering matches the code before redrawing. Redrawing the wrong one produces
+a beautiful diagram of a pipeline that does not exist.
+
+The branch is deleted, so its version is reproduced here in full — this doc is the
+only surviving copy:
+
+```mermaid
+flowchart TD
+    AcquireLock["1. Acquire Lock"] --> GitSync["2. Git Repository Sync"]
+    GitSync --> LoadState["3. Load State<br/>Evaluate Skip / Circuit Breaker"]
+    LoadState -->|unchanged commit| Skip["Skip Reconciliation<br/>Release Lock"]
+    LoadState -->|deploy| Decrypt["4. Decrypt Secrets"]
+    Decrypt --> Render["5. Render Templates"]
+    Render --> DeclaredState["6. Extract Declared State"]
+    DeclaredState --> Backup["7. Create Backup"]
+    Backup --> Deploy["8. Deploy Files"]
+    Deploy --> Invariant["9. Deploy Sync Invariant Check"]
+    Invariant --> Compose["10. Docker Compose Up"]
+    Compose --> Cleanup["11. Clean Up Staging"]
+    Cleanup --> HealthGate["12. Critical Container Health Gate"]
+    HealthGate --> Hooks["13. Execute Post-Sync Hooks"]
+    Hooks --> Verify["14. Post-Deploy Drift Verification"]
+    Verify --> SaveState["15. Record Successful Deployment"]
+    SaveState --> ReleaseLock["16. Release Lock"]
+```
+
+Compare against `main`'s current `docs/diagrams/reconcile-pipeline.mmd`.
 
 The other three `.mmd` files were byte-identical across branch and `main` — they
 carry no such ambiguity.
@@ -52,13 +78,21 @@ carry no such ambiguity.
 
 ## Loose ends
 
-- `docs/436-refresh-diagrams` is pushed but has no PR. Delete it once step 2
-  settles which version wins — it holds nothing else.
-- `README.md` also differs between that branch and `main` (165+/176-), unrelated
-  to diagrams and almost certainly just drift. Ignore it; do not merge the branch.
+- `docs/436-refresh-diagrams` was deleted (local and remote) on 2026-08-26 after
+  its content proved otherwise-landed. Its diagram is inlined above; nothing else
+  on it was worth keeping. Commit `6144455` may still be reachable via reflog in
+  the primary checkout, but do not count on it.
 
 ## Context from the session that wrote this
 
-A branch sweep on 2026-08-26 cleared 103 remote and 71 local branches, all
-verified landed. Five survived; this diagram question is the only one that
-turned out to be a real open design question rather than stale cruft.
+A branch sweep on 2026-08-26 cleared the repo from 107 remote branches to 3. All
+five branches that initially survived the sweep turned out to be content-duplicates
+of already-merged work (PRs #610, #611, #612 opened then closed as superseded by
+#439, #597, #590). This divergent diagram is the only genuinely open question the
+sweep produced.
+
+Method note for whoever repeats that sweep: commit-count and head-SHA tests all
+produced false positives, because squash-merge rewrites SHAs, a squash body can
+carry two commit subjects while the PR title names one, and work can land under a
+different branch name. `git diff origin/main <branch> -- <paths>` settles it and
+costs the same.
