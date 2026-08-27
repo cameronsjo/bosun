@@ -2,6 +2,8 @@
 import BaseLayout from '../../layouts/BaseLayout.astro';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { DIAGRAM_NAMES } from '../../../../scripts/diagrams/manifest.mjs';
 
 // The four editorial SVGs are read from the repo at build time and embedded
 // inline. Each carries a <style>@import url('https://fonts.googleapis...')</style>
@@ -9,37 +11,43 @@ import path from 'node:path';
 // self-hosted @fontsource copies — that import is a runtime CDN fetch and is
 // stripped here so the page's fonts apply instead. role="img" plus each
 // SVG's own <title>/<desc> are left intact for accessibility.
-const REPO_ROOT = path.resolve(process.cwd(), '..');
+// Anchored on this file, not process.cwd(), so a build invoked from another
+// working directory still resolves the repo root.
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(HERE, '../../../..');
 const DIAGRAMS_DIR = path.join(REPO_ROOT, 'docs/diagrams');
 
-const diagrams = [
-  {
-    file: 'pipeline-overview.svg',
-    caption: 'The deploy pipeline, start to finish: push, clone, decrypt, template, deploy, reload, verify.',
-  },
-  {
-    file: 'architecture.svg',
-    caption: "Bosun's place on the yacht: one binary watching git and drift, driving Docker Compose.",
-  },
-  {
-    file: 'reconcile-pipeline.svg',
-    caption: 'The reconcile engine internals — lock, sync, decrypt, render, backup, deploy, verify.',
-  },
-  {
-    file: 'locking-singleflight.svg',
-    caption: 'Single-flight reconciliation: concurrent triggers coalesce into one run, then one follow-up batch.',
-  },
-];
+// Captions keyed by the shared diagram manifest — a name added there without
+// a caption here fails the build instead of silently dropping the diagram.
+const CAPTIONS = {
+  'pipeline-overview':
+    'The deploy pipeline, start to finish: push, clone, decrypt, template, deploy, reload, verify.',
+  architecture:
+    "Bosun's place on the yacht: one binary watching git and drift, driving Docker Compose.",
+  'reconcile-pipeline':
+    'The reconcile engine internals — lock, sync, decrypt, render, backup, deploy, verify.',
+  'locking-singleflight':
+    'Single-flight reconciliation: concurrent triggers coalesce into one run, then one follow-up batch.',
+};
+
+const diagrams = DIAGRAM_NAMES.map((name) => {
+  const caption = CAPTIONS[name];
+  if (!caption) {
+    throw new Error(`diagrams: no caption for "${name}" — update CAPTIONS to match scripts/diagrams/manifest.mjs`);
+  }
+  return { file: `${name}.svg`, caption };
+});
 
 const STYLE_IMPORT_RE = /<style[^>]*>\s*@import\s+url\((['"]).*?\1\);?\s*<\/style>/gi;
 
 async function loadInlineSvg(filename) {
   const raw = await fs.readFile(path.join(DIAGRAMS_DIR, filename), 'utf8');
   const out = raw.replace(STYLE_IMPORT_RE, '');
-  // Fail the build rather than ship a runtime font-CDN fetch: the regex above
-  // must have removed every @import (self-hosted fonts apply page-level).
-  if (/@import/i.test(out)) {
-    throw new Error(`diagrams: ${filename} still contains an @import after stripping — offline determinism would break`);
+  // Fail the build rather than ship a runtime third-party fetch: no @import
+  // may survive the strip, and no other external CSS/element reference may be
+  // present at all (self-hosted fonts apply page-level).
+  if (/@import|url\(\s*['"]?\s*(?:https?:)?\/\//i.test(out)) {
+    throw new Error(`diagrams: ${filename} carries an external reference after stripping — offline determinism would break`);
   }
   return out;
 }

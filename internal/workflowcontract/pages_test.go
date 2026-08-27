@@ -127,6 +127,16 @@ func TestPagesWorkflowDeployJobIsGatedAndBound(t *testing.T) {
 	assert.Equal(t, "pages", deploy.Concurrency.Group)
 	assert.False(t, deploy.Concurrency.CancelInProgress,
 		"an in-flight deploy must not be cancelled mid-publish")
+
+	// The pin-count floor alone cannot notice a specific action vanishing;
+	// the deploy step is asserted by name.
+	deployStep := false
+	for _, s := range deploy.Steps {
+		if regexp.MustCompile(`^actions/deploy-pages@`).MatchString(s.Uses) {
+			deployStep = true
+		}
+	}
+	assert.True(t, deployStep, "deploy job must invoke actions/deploy-pages")
 }
 
 func TestPagesWorkflowArtifactUploadIsBuildOutputAndPRGated(t *testing.T) {

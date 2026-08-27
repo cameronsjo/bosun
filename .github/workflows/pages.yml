@@ -74,6 +74,12 @@ jobs:
           cache: 'pnpm'
           cache-dependency-path: site/pnpm-lock.yaml
 
+      # The active-content + staleness lint must gate the artifact, not just
+      # ci.yml's lint job — CI and Pages are separate workflows, so a red
+      # diagrams-check over there would not stop this deploy on its own.
+      - name: Verify diagram exports (staleness + active content)
+        run: node scripts/diagrams/check-exports.mjs
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
         working-directory: site

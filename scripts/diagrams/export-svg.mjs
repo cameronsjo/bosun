@@ -6,15 +6,10 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DIAGRAM_NAMES as names } from "./manifest.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const diagramsDir = join(here, "..", "..", "docs", "diagrams");
-const names = [
-  "pipeline-overview",
-  "architecture",
-  "reconcile-pipeline",
-  "locking-singleflight",
-];
 
 const FONT_IMPORT =
   "@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,600;1,400&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;display=swap');";

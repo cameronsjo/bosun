@@ -16,7 +16,12 @@
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { BASE } from '../site.config.mjs';
+import { BASE as RAW_BASE } from '../site.config.mjs';
+
+// Astro's own base handling tolerates a trailing slash; the route strings
+// built below would emit `//` if BASE ever gained one. Normalize here so the
+// invariant site/src/lib/base.ts protects in pages holds in synced links too.
+const BASE = RAW_BASE.replace(/\/+$/, '');
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SITE_ROOT = path.resolve(SCRIPT_DIR, '..');
@@ -143,6 +148,20 @@ async function clean(dir) {
   await fs.mkdir(dir, { recursive: true });
 }
 
+// Repo images the site serves: copied at build time so artwork updates in the
+// repo flow to the site without a hand-copy (the committed public/ copies are
+// dev-server fallbacks; prebuild refreshes them).
+const IMAGE_SYNC = [
+  ['docs/mascot/bosun-reference-nobg.png', 'public/bosun-mascot.png'],
+  ['assets/icon.png', 'public/icon.png'],
+];
+
+async function syncImages() {
+  for (const [from, to] of IMAGE_SYNC) {
+    await fs.copyFile(path.join(REPO_ROOT, from), path.join(SITE_ROOT, to));
+  }
+}
+
 async function main() {
   const adrFiles = await readAdrFilenames();
   const allowlistMap = buildAllowlistMap(DOC_ALLOWLIST, adrFiles);
@@ -151,13 +170,18 @@ async function main() {
   await clean(OUT_ADR_DIR);
 
   for (const file of DOC_ALLOWLIST) {
-    await syncDoc(file, allowlistMap);
+    await syncDoc(file, allowlistMap).catch((err) => {
+      throw new Error(`sync-docs: failed on docs/${file}: ${err.message}`);
+    });
   }
   for (const file of adrFiles) {
-    await syncAdr(file, allowlistMap);
+    await syncAdr(file, allowlistMap).catch((err) => {
+      throw new Error(`sync-docs: failed on docs/adr/${file}: ${err.message}`);
+    });
   }
+  await syncImages();
 
-  console.log(`Synced ${DOC_ALLOWLIST.length} docs and ${adrFiles.length} ADRs.`);
+  console.log(`Synced ${DOC_ALLOWLIST.length} docs, ${adrFiles.length} ADRs, ${IMAGE_SYNC.length} images.`);
 }
 
 main().catch((err) => {

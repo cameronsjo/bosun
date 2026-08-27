@@ -63,6 +63,13 @@ Infrastructure created:
 
 ### Render Mermaid diagrams
 
+> **Superseded — do not run this command.** `docs/diagrams/*.svg` are now
+> committed editorial exports produced by the diagram-design skill, not by
+> mmdc. Writing mmdc output to those paths clobbers them and fails
+> `make diagrams-check`. Current pipeline: `make diagrams` for the README
+> ASCII, `node scripts/diagrams/export-svg.mjs` for the SVGs (see
+> AGENTS.md § Pages Site and Diagrams). Kept for the historical record.
+
 ```bash
 npx -y @mermaid-js/mermaid-cli -i docs/diagrams/architecture.mmd \
   -o docs/diagrams/architecture.svg -t dark -b transparent

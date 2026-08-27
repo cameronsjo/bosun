@@ -2,17 +2,16 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { renderMermaidAscii } from "beautiful-mermaid";
+import { DIAGRAM_NAMES } from "./manifest.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "../..");
 
 /** Map marker ID to .mmd source file (relative to repo root). */
-const DIAGRAMS = [
-  { id: "pipeline-overview", src: "docs/diagrams/pipeline-overview.mmd" },
-  { id: "architecture", src: "docs/diagrams/architecture.mmd" },
-  { id: "reconcile-pipeline", src: "docs/diagrams/reconcile-pipeline.mmd" },
-  { id: "locking-singleflight", src: "docs/diagrams/locking-singleflight.mmd" },
-];
+const DIAGRAMS = DIAGRAM_NAMES.map((id) => ({
+  id,
+  src: `docs/diagrams/${id}.mmd`,
+}));
 
 /**
  * Preprocess Mermaid source for ASCII rendering.
