@@ -6,7 +6,7 @@ machine: "cf6e768835c7"
 approved_in: "cedar-garden"
 approved_session_id: "6e388b76-ba53-4006-8fd9-cfb177538e66"
 status: in-progress
-next: "Diagram residuals (Task 2) + profile (Task 3)"
+next: "Task 6 /design pass with Cameron → flip PR #616 ready → merge → verify live /bosun/"
 branch: plan/pages-and-editorial-diagrams
 pr: "#616"
 updated: 2026-08-26
@@ -190,8 +190,8 @@ Skill-driven diagram work and the interactive `/design` pass stay in-session; th
 
 **Steps:**
 - [x] Security review (Opus-tier `cadence-forge:security-reviewer`): 0 Critical, 2 Important, 4 Nits; all SHA pins API-verified; gitleaks clean; no new exposure from `docs/security.md`. Folded: I-1 active-content lint on SVG exports in `check-exports.mjs` (red-tested on injected `<script>`); I-2 `pages.yml` header corrected — rollback is `git revert` on main, main-only env branch policy named as load-bearing; N-1 stepless-job + min-pin-count assertions in `pages_test.go`; N-2 global fail-closed `@import` strip in `diagrams/index.astro`; N-4 hashed `packageManager` pin. N-3 (raw HTML in synced markdown) accepted as-is: first-party allowlisted content only, `rehype-sanitize` is the move if that boundary ever widens
-- [ ] run `cadence-forge:polish`; fold findings (diff-based reviewers against the worktree — polish's built-in arms are cwd-blind to sub-worktrees)
-- [ ] Flip PR ready; squash subject = PR title `docs: add pages site and editorial diagrams`; merge; watch first Pages deploy replace the beadspace artifact; verify live URL serves landing + diagrams under `/bosun/`
+- [x] `cadence-forge:polish` ran (full scope, marker recorded, security arm Opus): review-and-fix folded 11 findings (shared diagram manifest, lint hardening, BASE normalization, image sync, Node setup in CI, deploy-step assertion, order-rank fix, repo-root anchoring, error naming), security arm's 2 Important folded (whole-file SVG lint + lint gating the Pages artifact), docs arm applied 5 drift fixes + drafted `docs/adr/0014` (Status: Draft, 2 TODOs for Cameron)
+- [ ] Flip PR ready; squash subject = PR title `docs: add pages site and editorial diagrams`; merge; watch first Pages deploy replace the beadspace artifact; verify live URL serves landing + diagrams under `/bosun/` — **held for Cameron** (Task 6 /design pass is interactive and precedes the ship)
 
 ---
 
