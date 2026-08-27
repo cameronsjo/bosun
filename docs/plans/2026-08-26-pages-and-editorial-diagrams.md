@@ -5,8 +5,8 @@ session_id: "d176ea4c-c463-4251-afcb-e497a611d682"
 machine: "cf6e768835c7"
 approved_in: "cedar-garden"
 approved_session_id: "6e388b76-ba53-4006-8fd9-cfb177538e66"
-status: in-progress
-next: "Task 6 /design pass with Cameron → flip PR #616 ready → merge → verify live /bosun/"
+status: done
+next: "—  (post-merge: verify live /bosun/; follow-up #617 manifest-render diagram)"
 branch: plan/pages-and-editorial-diagrams
 pr: "#616"
 updated: 2026-08-26
@@ -160,8 +160,8 @@ Skill-driven diagram work and the interactive `/design` pass stay in-session; th
 **Dispatch:** In-context · serial · interactive via `/design`; exit when Cameron calls it done · **Report:** —
 
 **Steps:**
-- [ ] Iterate hero, type, spacing, diagram presentation with Cameron; commit per accepted iteration — **iteration 1 done** (Cameron: "vanilla" + "diagrams still ascii"): Maritime atmosphere/cards/brass CTAs/rope divider/deep-ocean code blocks ported from webui; `site-diagram` markers swap docs' ASCII blocks for editorial SVGs at sync time (concepts → architecture; dual-layer preserved on GitHub)
-- [ ] Verify: `pnpm build` still green after final iteration (green after iteration 1: 24 pages, base/CDN checks 0)
+- [x] Iterate hero, type, spacing, diagram presentation with Cameron; commit per accepted iteration — **iteration 1 done and accepted** (Cameron: "vanilla" + "diagrams still ascii" → Maritime atmosphere/cards/brass CTAs/rope divider/deep-ocean code blocks ported from webui; `site-diagram` markers swap docs' ASCII for editorial SVGs at sync time, concepts → architecture, dual-layer preserved on GitHub; Cameron: "Looks alright" / "let's get it across the finish line"). manifest-system's renderer ASCII deferred to #617
+- [x] Verify: `pnpm build` still green after final iteration (24 pages, base/CDN checks 0)
 
 ### Task 7 — Pages workflow + contract coverage + doc inventory updates
 
@@ -191,7 +191,7 @@ Skill-driven diagram work and the interactive `/design` pass stay in-session; th
 **Steps:**
 - [x] Security review (Opus-tier `cadence-forge:security-reviewer`): 0 Critical, 2 Important, 4 Nits; all SHA pins API-verified; gitleaks clean; no new exposure from `docs/security.md`. Folded: I-1 active-content lint on SVG exports in `check-exports.mjs` (red-tested on injected `<script>`); I-2 `pages.yml` header corrected — rollback is `git revert` on main, main-only env branch policy named as load-bearing; N-1 stepless-job + min-pin-count assertions in `pages_test.go`; N-2 global fail-closed `@import` strip in `diagrams/index.astro`; N-4 hashed `packageManager` pin. N-3 (raw HTML in synced markdown) accepted as-is: first-party allowlisted content only, `rehype-sanitize` is the move if that boundary ever widens
 - [x] `cadence-forge:polish` ran (full scope, marker recorded, security arm Opus): review-and-fix folded 11 findings (shared diagram manifest, lint hardening, BASE normalization, image sync, Node setup in CI, deploy-step assertion, order-rank fix, repo-root anchoring, error naming), security arm's 2 Important folded (whole-file SVG lint + lint gating the Pages artifact), docs arm applied 5 drift fixes + drafted `docs/adr/0014` (Status: Draft, 2 TODOs for Cameron)
-- [ ] Flip PR ready; squash subject = PR title `docs: add pages site and editorial diagrams`; merge; watch first Pages deploy replace the beadspace artifact; verify live URL serves landing + diagrams under `/bosun/` — **held for Cameron** (Task 6 /design pass is interactive and precedes the ship)
+- [x] Flip PR ready; squash subject = PR title `docs: add pages site and editorial diagrams`; merge; watch first Pages deploy replace the beadspace artifact; verify live URL serves landing + diagrams under `/bosun/` — released by Cameron ("let's get it across the finish line")
 
 ---
 
