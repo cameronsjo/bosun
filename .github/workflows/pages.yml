@@ -2,9 +2,17 @@
 # https://cameronsjo.github.io/bosun.
 #
 # Pull requests run the build job only (no artifact, no deploy). Pushes to
-# main build and deploy. Rollback: run workflow_dispatch from a known-good
-# ref (Actions -> Pages -> Run workflow -> pick the ref); the deploy job
-# republishes whatever that ref builds.
+# main build and deploy. Rollback: `git revert` the bad commit on main —
+# the github-pages environment's deployment branch policy is main-only, so
+# a workflow_dispatch from any other ref builds and is then REJECTED at the
+# deploy job. workflow_dispatch exists to re-run a deploy of main itself.
+#
+# SECURITY: that main-only branch policy (repo Settings -> Environments ->
+# github-pages) is a load-bearing control, not a nuisance. Widening it
+# would let anyone with repo write access publish arbitrary branch content
+# to the public site via workflow_dispatch. It lives in repo settings, so
+# no test in this repo can pin it — treat any change to it as a security
+# review trigger.
 #
 # Contract-tested by internal/workflowcontract/pages_test.go (make
 # test-workflows): read-only workflow default, write scopes confined to the

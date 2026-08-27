@@ -17,6 +17,33 @@ const names = [
   "locking-singleflight",
 ];
 
+// Active-content lint: these exports are inlined into the Pages site via
+// set:html, so an SVG carrying script, event handlers, foreignObject, or
+// external references must never pass — the staleness hash alone cannot see
+// a hand-edited SVG (security review I-1, PR #616).
+const ACTIVE_CONTENT = [
+  [/<script/i, "script element"],
+  [/\son[a-z]+\s*=/i, "event-handler attribute"],
+  [/<foreignObject/i, "foreignObject element"],
+  [/(?:xlink:)?href\s*=\s*"(?!#)[^"]*/i, "non-fragment href"],
+  [/javascript:/i, "javascript: URL"],
+];
+
+function lintActiveContent(name, ext, content) {
+  // The HTML wrapper legitimately carries <style>/<link>; lint only the svg.
+  const svgMatch = content.match(/<svg[\s\S]*?<\/svg>/);
+  const scope = svgMatch ? svgMatch[0] : content;
+  let bad = false;
+  for (const [re, what] of ACTIVE_CONTENT) {
+    const m = scope.match(re);
+    if (m) {
+      console.error(`FAIL ${name}.${ext}: active content in svg — ${what} (${m[0].slice(0, 40)})`);
+      bad = true;
+    }
+  }
+  return bad;
+}
+
 let failed = false;
 for (const name of names) {
   const live = createHash("sha256")
@@ -32,6 +59,9 @@ for (const name of names) {
       console.error(`FAIL ${name}.${ext}: export missing`);
       failed = true;
       continue;
+    }
+    if (lintActiveContent(name, ext, content)) {
+      failed = true;
     }
     const m = content.match(/<!-- source-mmd: \S+ sha256:([0-9a-f]{64}) -->/);
     if (!m) {
@@ -49,7 +79,7 @@ for (const name of names) {
 }
 
 if (failed) {
-  console.error("diagrams-check: STALE — editorial exports do not match .mmd sources");
+  console.error("diagrams-check: FAIL — stale or active-content export (see lines above)");
   process.exit(1);
 }
 console.log("diagrams-check: all exports match their .mmd sources");

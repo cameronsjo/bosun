@@ -31,11 +31,17 @@ const diagrams = [
   },
 ];
 
-const STYLE_IMPORT_RE = /<style>\s*@import\s+url\((['"]).*?\1\);?\s*<\/style>/i;
+const STYLE_IMPORT_RE = /<style[^>]*>\s*@import\s+url\((['"]).*?\1\);?\s*<\/style>/gi;
 
 async function loadInlineSvg(filename) {
   const raw = await fs.readFile(path.join(DIAGRAMS_DIR, filename), 'utf8');
-  return raw.replace(STYLE_IMPORT_RE, '');
+  const out = raw.replace(STYLE_IMPORT_RE, '');
+  // Fail the build rather than ship a runtime font-CDN fetch: the regex above
+  // must have removed every @import (self-hosted fonts apply page-level).
+  if (/@import/i.test(out)) {
+    throw new Error(`diagrams: ${filename} still contains an @import after stripping — offline determinism would break`);
+  }
+  return out;
 }
 
 const rendered = await Promise.all(

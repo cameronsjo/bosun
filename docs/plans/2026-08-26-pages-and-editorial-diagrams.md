@@ -176,7 +176,7 @@ Skill-driven diagram work and the interactive `/design` pass stay in-session; th
 - [x] `pages_test.go`: trigger set asserted on raw keys (typed struct can't see empty-bodied `workflow_dispatch`), read-only default perms, write scopes confined to deploy, environment binding, SHA-pin regex; `make test-workflows` green + `go vet` clean
 - [x] Verified live Pages config: `build_type: workflow`, `github-pages` environment custom branch policy = `main` only; stale content inventoried (Beadspace dashboard at the live URL, HTTP 200 — left until replaced, per Cameron)
 - [x] `AGENTS.md` (§ Pages Site and Diagrams) + `llms.txt` (site/ in structure, Pages URL, diagrams-check) + README site link — staged `AGENTS.md`
-- [ ] Verify: PR checks show the build-only job green (post-push)
+- [x] Verify: PR #616 checks — `Build site` pass (18s), `Deploy to Pages` skipping on pull_request, as contracted
 
 ### Task 8 — Security review + ship
 
@@ -189,7 +189,7 @@ Skill-driven diagram work and the interactive `/design` pass stay in-session; th
 **Report:** `<reports-dir>/task-8-security.md` — concrete path at dispatch
 
 **Steps:**
-- [ ] Security review of the Pages control's file set: `pages.yml`, `dependabot.yml`, `internal/workflowcontract/`, `site/package.json` + lockfile + `astro.config.mjs` + `content.config.*`, the live `github-pages` environment policy (re-probe), `docs/security.md` as admitted by the allowlist; fold findings
+- [x] Security review (Opus-tier `cadence-forge:security-reviewer`): 0 Critical, 2 Important, 4 Nits; all SHA pins API-verified; gitleaks clean; no new exposure from `docs/security.md`. Folded: I-1 active-content lint on SVG exports in `check-exports.mjs` (red-tested on injected `<script>`); I-2 `pages.yml` header corrected — rollback is `git revert` on main, main-only env branch policy named as load-bearing; N-1 stepless-job + min-pin-count assertions in `pages_test.go`; N-2 global fail-closed `@import` strip in `diagrams/index.astro`; N-4 hashed `packageManager` pin. N-3 (raw HTML in synced markdown) accepted as-is: first-party allowlisted content only, `rehype-sanitize` is the move if that boundary ever widens
 - [ ] run `cadence-forge:polish`; fold findings (diff-based reviewers against the worktree — polish's built-in arms are cwd-blind to sub-worktrees)
 - [ ] Flip PR ready; squash subject = PR title `docs: add pages site and editorial diagrams`; merge; watch first Pages deploy replace the beadspace artifact; verify live URL serves landing + diagrams under `/bosun/`
 

@@ -150,13 +150,20 @@ func TestPagesWorkflowArtifactUploadIsBuildOutputAndPRGated(t *testing.T) {
 func TestPagesWorkflowActionsAreSHAPinned(t *testing.T) {
 	wf := loadPagesWorkflow(t)
 	shaPin := regexp.MustCompile(`@[0-9a-f]{40}$`)
+	pinned := 0
 	for jobName, j := range wf.Jobs {
+		// A job converted to a reusable-workflow call has no steps, which
+		// would make this loop pass vacuously on an unpinned reference.
+		require.NotEmpty(t, j.Steps, "job %s must declare steps (no reusable-workflow calls)", jobName)
 		for _, s := range j.Steps {
 			if s.Uses == "" {
 				continue
 			}
 			assert.Regexp(t, shaPin, s.Uses,
 				"job %s step %q must pin its action to a full commit SHA", jobName, s.Name)
+			pinned++
 		}
 	}
+	assert.GreaterOrEqual(t, pinned, 5,
+		"the workflow is expected to use at least checkout, pnpm, node, upload, and deploy actions")
 }
