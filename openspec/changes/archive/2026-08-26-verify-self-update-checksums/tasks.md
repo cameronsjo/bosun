@@ -55,5 +55,5 @@
   OpenSpec validation gates through the repository's guarded workflow.
 - [x] 4.3 Run a GoReleaser snapshot and assert every generated supported archive
   has exactly one SHA-256 entry in `checksums.txt`.
-- [ ] 4.4 After release, inspect the live GitHub assets and complete one
+- [x] 4.4 After release, inspect the live GitHub assets and complete one
   platform-appropriate self-update smoke test without weakening verification.
