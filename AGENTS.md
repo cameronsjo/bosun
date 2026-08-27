@@ -466,6 +466,13 @@ do not gain legacy aliases.
 - **`filepath.Join` silently drops prefix for absolute paths**: `filepath.Join("prefix", "/absolute/path")` returns `/absolute/path`. When adding paths to `WrittenFiles`, always use relative paths (e.g., `filepath.Base()`) so `PrefixLatest` works correctly
 - **CLAUDE.md symlink and the Edit tool**: `Read` must target `AGENTS.md` before `Edit` will work. The Edit tool tracks file modification times — if the symlink target was modified externally, Edit refuses with "file modified since read"
 - **`FindRoot` `$HOME`-anchor refusal**: `FindRoot` refuses to anchor on `manifest/` or `manifests/` alone when the candidate dir equals `$HOME` (after `filepath.EvalSymlinks` normalization on both sides). These generic directory names collide with npm, OCI tooling, and packaging pipelines. Strong markers (`bosun.yaml`, `bosun.yml`, `bosun/docker-compose.yml`) are accepted unconditionally everywhere, including inside `$HOME`.
+- **Triaging a stale branch: diff content, never count commits.** This repo squash-merges, so a landed branch's tip SHA never appears in `main`'s history and ancestry tests always say "unlanded". Every SHA- or count-based substitute fails too, in a way that reads as a confident finding: a squash body can carry **two** commit subjects while the PR title names one; work can land under a **different branch name** than the one you're holding; and a commit that nets to zero (a change plus its own revert) still counts as "ahead". A 2026-08-26 sweep produced six survivors by those tests and **all six were content-duplicates of already-merged work** — three cost a full merge-and-test dispatch each to disprove. The settling check is one command, no more expensive than counting:
+
+  ```bash
+  git diff origin/main <branch> -- <the files the branch actually touches>
+  ```
+
+  Empty output means the content landed, whatever the SHAs say. Scope it to the branch's own files — an unscoped diff against a `main` that has moved on returns thousands of lines and tells you nothing. Compare blob SHAs (`git rev-parse origin/main:<file>`) when you want a byte-identity claim you can cite.
 
 ## Issue Tracking
 
