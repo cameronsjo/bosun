@@ -5,10 +5,10 @@ session_id: "d176ea4c-c463-4251-afcb-e497a611d682"
 machine: "cf6e768835c7"
 approved_in: "cedar-garden"
 approved_session_id: "6e388b76-ba53-4006-8fd9-cfb177538e66"
-status: planned
-next: "Approve plan → worktree entry (Task 1) → diagram residuals (Task 2)"
+status: in-progress
+next: "Diagram residuals (Task 2) + profile (Task 3)"
 branch: plan/pages-and-editorial-diagrams
-pr: "—"
+pr: "#616"
 updated: 2026-08-26
 date: 2026-08-26
 ---
@@ -89,8 +89,8 @@ Skill-driven diagram work and the interactive `/design` pass stay in-session; th
 **Dispatch:** In-context · serial (first) · **Report:** —
 
 **Steps:**
-- [ ] `EnterWorktree` → push `-u`, draft PR titled `docs: add pages site and editorial diagrams`
-- [ ] Persist plan; commit (producer tuple); push
+- [x] `EnterWorktree` → push `-u`, draft PR titled `docs: add pages site and editorial diagrams` (#616)
+- [x] Persist plan; commit (producer tuple); push
 
 ### Task 2 — Reconcile-diagram residuals + retire the stale branch
 
@@ -101,9 +101,9 @@ Skill-driven diagram work and the interactive `/design` pass stay in-session; th
 **Dispatch:** In-context · serial (after Task 1) · **Report:** —
 
 **Steps:**
-- [ ] `git fetch origin`; confirm baseline: `origin/main`'s diagram already carries `038b5dc`'s corrected ordering — do NOT start from the stale branch
-- [ ] Evaluate residual edits from the code-read against current main: (a) split `DeployGate`'s No-exit into clean-skip (breaker reset) vs breaker-trip (alert + error return), (b) explicit Health-Gate-failure → rollback edge (today encoded in the node label), (c) per-target deploy-sync invariant as a Deploy subgraph. Adopt only what improves accuracy; a no-op verdict is a valid outcome recorded in the plan
-- [ ] If `.mmd` changed: `make diagrams`; verify only marker spans move in README; check onboard-skill numbering parity; commit
+- [x] `git fetch origin`; confirm baseline: `origin/main`'s diagram already carries `038b5dc`'s corrected ordering — do NOT start from the stale branch
+- [x] Evaluate residual edits from the code-read against current main: **(a) adopted** — DeployGate No-exit split into clean-skip (breaker reset, `reconcile.go:587`) vs breaker-trip (alert + error, `reconcile.go:634`); **(b) adopted** — health-gate failure edge made explicit (failure returns at `reconcile.go:853`, never reaches steps 12–15); **(c) declined** — Deploy node label already carries the sync invariant, a subgraph adds nodes without fixing an inaccuracy
+- [x] If `.mmd` changed: `make diagrams`; verified only the reconcile marker span moved in README; onboard-skill step numbering (10–16) unchanged — parity holds, no edit
 - [ ] Archive the stale branch's file to a temp path, then gate: `git diff origin/main...origin/docs/436-refresh-diagrams` must be **empty** (content evidence — the PR #563 record does not cover today's tip `4682053`); only then `git push origin --delete docs/436-refresh-diagrams --no-follow-tags`
 
 ### Task 3 — bosun diagram profile from webui tokens
