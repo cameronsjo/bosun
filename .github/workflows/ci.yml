@@ -54,6 +54,9 @@ jobs:
       - name: Validate workflow safety contracts
         run: make test-workflows
 
+      - name: Verify editorial diagram exports match .mmd sources
+        run: make diagrams-check
+
   webui:
     name: WebUI
     runs-on: ubuntu-latest

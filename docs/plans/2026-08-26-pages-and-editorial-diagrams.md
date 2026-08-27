@@ -129,10 +129,10 @@ Skill-driven diagram work and the interactive `/design` pass stay in-session; th
 **Dispatch:** In-context · serial (after Tasks 2+3) · **Report:** —
 
 **Steps:**
-- [ ] `diagram-design:import-mermaid` per file — size `doc-wide`, audience `mixed`; detail: `simplified` (pipeline-overview), `balanced` (architecture, locking-singleflight), `faithful` with zoning (reconcile-pipeline, ≤24 nodes); report each fidelity ledger; embed source `.mmd` sha256 in each HTML colophon
-- [ ] `diagram-design:export-diagram --svg-only` per HTML
-- [ ] `check-exports.mjs`: recompute each `.mmd` hash vs the colophon hash; wire `make diagrams-check` + CI step; verify it goes red on a mutated `.mmd`
-- [ ] Commit 8 artifacts + guard
+- [x] `diagram-design:import-mermaid` per file — done at `doc-wide`/`mixed`; fidelity ledgers: pipeline-overview 7/7 nodes 6/6 edges (no drops); architecture 9/9 drawable + 3 containers→zones, 8/8 edges; reconcile-pipeline 20/20 nodes 19/19 edges zoned into 4 phases (faithful); locking-singleflight 9/9 nodes 9/9 edges incl. the coalescing cycle. Labels rewritten for mixed audience; sha256 colophons embedded; plugin `self_check.py` green ×4
+- [x] SVG export via `scripts/diagrams/export-svg.mjs` (export.md contract: XML decl, xmlns, escaped font @import merged into defs, title/desc preserved); `xmllint` valid ×4
+- [x] `check-exports.mjs`: wired as `make diagrams-check` + CI step in the lint job; verified red (exit 2) on a mutated `.mmd`, green clean
+- [x] Commit 8 artifacts + guard
 
 ### Task 5 — Astro site scaffold
 

@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Reconcile Pipeline — Bosun</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<!-- source-mmd: docs/diagrams/reconcile-pipeline.mmd sha256:cfbc90392bfccb28c6d3b5612117453bb1662fd631f268b14be319060f888d62 -->
+<style>
+  body { margin: 0; background: #f8f5f0; color: #1a2744; font-family: 'IBM Plex Sans', system-ui, sans-serif; }
+  .page { max-width: 1320px; margin: 0 auto; padding: 2rem 1.25rem; }
+  .eyebrow { font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: #718096; margin: 0 0 0.5rem; }
+  h1 { font-family: 'Playfair Display', Georgia, serif; font-size: 1.75rem; font-weight: 500; margin: 0 0 0.25rem; }
+  .subtitle { color: #4a5568; font-size: 0.9375rem; margin: 0 0 1.5rem; }
+  svg { width: 100%; height: auto; display: block; }
+  .colophon { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #718096; border-top: 0.8px solid rgba(26,39,68,0.12); margin-top: 1.5rem; padding-top: 0.75rem; }
+</style>
+</head>
+<body>
+<div class="page">
+  <p class="eyebrow">Bosun · Reconcile Engine</p>
+  <h1>The Reconcile Pipeline</h1>
+  <p class="subtitle">Sixteen steps under one lock — gate, stage, deploy, verify — with every failure path explicit.</p>
+
+  <svg viewBox="0 0 1280 720" role="img" aria-labelledby="reconcile-pipeline-title reconcile-pipeline-desc" xmlns="http://www.w3.org/2000/svg">
+    <title id="reconcile-pipeline-title">Bosun reconcile pipeline, steps 1 to 16</title>
+    <desc id="reconcile-pipeline-desc">Four phases: the gate phase syncs git and decides whether a deploy is required, exiting early on a clean skip or a tripped circuit breaker; the stage phase decrypts, renders, and backs up; the deploy phase syncs files, runs docker compose up, and applies an optional health gate that rolls back on failure; the finish phase runs hooks, verifies health and drift, and records success before releasing the lock.</desc>
+    <defs>
+      <marker id="rp-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#4a5568"/>
+      </marker>
+      <marker id="rp-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#b8860b"/>
+      </marker>
+    </defs>
+
+    <rect width="100%" height="100%" fill="#f8f5f0"/>
+
+    <!-- phase zones -->
+    <rect x="48" y="96" width="280" height="544" rx="8" fill="rgba(26,39,68,0.02)" stroke="rgba(26,39,68,0.12)" stroke-width="1"/>
+    <text x="68" y="124" fill="#718096" font-size="8" font-family="'IBM Plex Mono', monospace" letter-spacing="0.18em">GATE</text>
+    <rect x="360" y="96" width="280" height="544" rx="8" fill="rgba(26,39,68,0.02)" stroke="rgba(26,39,68,0.12)" stroke-width="1"/>
+    <text x="380" y="124" fill="#718096" font-size="8" font-family="'IBM Plex Mono', monospace" letter-spacing="0.18em">STAGE</text>
+    <rect x="672" y="96" width="280" height="544" rx="8" fill="rgba(26,39,68,0.02)" stroke="rgba(26,39,68,0.12)" stroke-width="1"/>
+    <text x="692" y="124" fill="#718096" font-size="8" font-family="'IBM Plex Mono', monospace" letter-spacing="0.18em">DEPLOY</text>
+    <rect x="984" y="96" width="264" height="544" rx="8" fill="rgba(26,39,68,0.02)" stroke="rgba(26,39,68,0.12)" stroke-width="1"/>
+    <text x="1004" y="124" fill="#718096" font-size="8" font-family="'IBM Plex Mono', monospace" letter-spacing="0.18em">VERIFY &amp; FINISH</text>
+
+    <!-- arrows (before boxes) -->
+    <!-- gate column -->
+    <line x1="188" y1="184" x2="188" y2="212" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+    <line x1="188" y1="264" x2="188" y2="292" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+    <line x1="188" y1="352" x2="188" y2="384" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+    <!-- gate: skip exit -->
+    <line x1="124" y1="448" x2="124" y2="516" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+    <rect x="132" y="472" width="32" height="12" rx="2" fill="#f8f5f0"/>
+    <text x="148" y="481" fill="#718096" font-size="8" font-family="'IBM Plex Mono', monospace" text-anchor="middle" letter-spacing="0.06em">SKIP</text>
+    <!-- gate: breaker exit -->
+    <line x1="252" y1="448" x2="252" y2="516" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+    <rect x="260" y="472" width="32" height="12" rx="2" fill="#f8f5f0"/>
+    <text x="276" y="481" fill="#718096" font-size="8" font-family="'IBM Plex Mono', monospace" text-anchor="middle" letter-spacing="0.06em">TRIP</text>
+    <!-- gate -> stage (yes) -->
+    <path d="M 304 428 L 336 428 Q 344 428 344 420 L 344 172 Q 344 164 352 164 L 380 164" fill="none" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+    <rect x="352" y="384" width="28" height="12" rx="2" fill="#f8f5f0"/>
+    <text x="366" y="393" fill="#718096" font-size="8" font-family="'IBM Plex Mono', monospace" text-anchor="middle" letter-spacing="0.06em">YES</text>
+    <!-- stage column -->
+    <line x1="500" y1="192" x2="500" y2="220" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+    <line x1="500" y1="272" x2="500" y2="300" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+    <line x1="500" y1="360" x2="500" y2="388" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+    <line x1="500" y1="448" x2="500" y2="476" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+    <!-- stage -> deploy -->
+    <path d="M 616 508 L 648 508 Q 656 508 656 500 L 656 172 Q 656 164 664 164 L 692 164" fill="none" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+    <!-- deploy column -->
+    <line x1="812" y1="192" x2="812" y2="220" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+    <line x1="812" y1="280" x2="812" y2="328" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+    <line x1="812" y1="412" x2="812" y2="444" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+    <rect x="820" y="418" width="52" height="12" rx="2" fill="#f8f5f0"/>
+    <text x="846" y="427" fill="#718096" font-size="8" font-family="'IBM Plex Mono', monospace" text-anchor="middle" letter-spacing="0.06em">FAILED</text>
+    <!-- deploy -> finish (healthy) -->
+    <path d="M 928 372 L 960 372 Q 968 372 968 364 L 968 168 Q 968 160 976 160 L 1004 160" fill="none" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+    <rect x="932" y="350" width="64" height="12" rx="2" fill="#f8f5f0"/>
+    <text x="964" y="359" fill="#718096" font-size="8" font-family="'IBM Plex Mono', monospace" text-anchor="middle" letter-spacing="0.06em">HEALTHY</text>
+    <!-- finish column -->
+    <line x1="1116" y1="184" x2="1116" y2="212" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+    <line x1="1116" y1="272" x2="1116" y2="300" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+    <line x1="1116" y1="352" x2="1116" y2="380" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+    <line x1="1116" y1="440" x2="1116" y2="468" stroke="#4a5568" stroke-width="1" marker-end="url(#rp-arrow)"/>
+
+    <!-- GATE nodes -->
+    <rect x="72" y="136" width="232" height="48" rx="6" fill="#f8f5f0"/>
+    <rect x="72" y="136" width="232" height="48" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="188" y="164" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">1 · Acquire lock</text>
+
+    <rect x="72" y="216" width="232" height="48" rx="6" fill="#f8f5f0"/>
+    <rect x="72" y="216" width="232" height="48" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="188" y="244" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">2 · Git sync</text>
+
+    <rect x="72" y="296" width="232" height="56" rx="6" fill="#f8f5f0"/>
+    <rect x="72" y="296" width="232" height="56" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="188" y="320" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">3 · Reload config + state</text>
+    <text x="188" y="338" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace" text-anchor="middle">commit / path skips · breaker</text>
+
+    <!-- decision diamond -->
+    <polygon points="188,388 304,428 188,468 72,428" fill="#f8f5f0"/>
+    <polygon points="188,388 304,428 188,468 72,428" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="188" y="432" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">Deploy required?</text>
+
+    <!-- clean skip : optional treatment -->
+    <rect x="72" y="520" width="104" height="64" rx="6" fill="#f8f5f0"/>
+    <rect x="72" y="520" width="104" height="64" rx="6" fill="rgba(26,39,68,0.02)" stroke="rgba(26,39,68,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+    <text x="124" y="548" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">Clean skip</text>
+    <text x="124" y="566" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace" text-anchor="middle">reset · unlock</text>
+
+    <!-- breaker halt : security treatment -->
+    <rect x="200" y="520" width="104" height="64" rx="6" fill="#f8f5f0"/>
+    <rect x="200" y="520" width="104" height="64" rx="6" fill="rgba(184,134,11,0.05)" stroke="rgba(184,134,11,0.50)" stroke-width="1" stroke-dasharray="4,4"/>
+    <text x="252" y="548" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">Breaker halt</text>
+    <text x="252" y="566" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace" text-anchor="middle">alert · error</text>
+
+    <!-- STAGE nodes -->
+    <rect x="384" y="136" width="232" height="56" rx="6" fill="#f8f5f0"/>
+    <rect x="384" y="136" width="232" height="56" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="500" y="160" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">4 · Track attempt + decrypt</text>
+    <text x="500" y="178" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace" text-anchor="middle">resolve deploy mode</text>
+
+    <rect x="384" y="224" width="232" height="48" rx="6" fill="#f8f5f0"/>
+    <rect x="384" y="224" width="232" height="48" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="500" y="252" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">5 · Render staging tree</text>
+
+    <rect x="384" y="304" width="232" height="56" rx="6" fill="#f8f5f0"/>
+    <rect x="384" y="304" width="232" height="56" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="500" y="328" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">6 · Extract declared services</text>
+    <text x="500" y="346" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace" text-anchor="middle">fail closed if missing</text>
+
+    <rect x="384" y="392" width="232" height="56" rx="6" fill="#f8f5f0"/>
+    <rect x="384" y="392" width="232" height="56" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="500" y="416" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">7 · Create + verify backup</text>
+    <text x="500" y="434" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace" text-anchor="middle">rollback anchor</text>
+
+    <rect x="384" y="480" width="232" height="56" rx="6" fill="#f8f5f0"/>
+    <rect x="384" y="480" width="232" height="56" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="500" y="504" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">8 · Snapshot health</text>
+    <text x="500" y="522" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace" text-anchor="middle">mark NeedsRedeploy</text>
+
+    <!-- DEPLOY nodes -->
+    <rect x="696" y="136" width="232" height="56" rx="6" fill="#f8f5f0"/>
+    <rect x="696" y="136" width="232" height="56" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="812" y="160" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">9 · Deploy managed files</text>
+    <text x="812" y="178" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace" text-anchor="middle">verify writes / transfer</text>
+
+    <rect x="696" y="224" width="232" height="56" rx="6" fill="#f8f5f0"/>
+    <rect x="696" y="224" width="232" height="56" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="812" y="248" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">10 · docker compose up</text>
+    <text x="812" y="266" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace" text-anchor="middle">signal reload</text>
+
+    <!-- health gate diamond : focal -->
+    <polygon points="812,332 928,372 812,412 696,372" fill="#f8f5f0"/>
+    <polygon points="812,332 928,372 812,412 696,372" fill="rgba(184,134,11,0.08)" stroke="#b8860b" stroke-width="1.2"/>
+    <text x="812" y="368" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">11 · Health gate</text>
+    <text x="812" y="386" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace" text-anchor="middle">optional</text>
+
+    <!-- rollback : security treatment -->
+    <rect x="696" y="448" width="232" height="64" rx="6" fill="#f8f5f0"/>
+    <rect x="696" y="448" width="232" height="64" rx="6" fill="rgba(184,134,11,0.05)" stroke="rgba(184,134,11,0.50)" stroke-width="1" stroke-dasharray="4,4"/>
+    <text x="812" y="476" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">Rollback full tree</text>
+    <text x="812" y="494" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace" text-anchor="middle">fail deploy · retry next cycle</text>
+
+    <!-- FINISH nodes -->
+    <rect x="1008" y="136" width="216" height="48" rx="6" fill="#f8f5f0"/>
+    <rect x="1008" y="136" width="216" height="48" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="1116" y="164" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">12 · Post-sync hooks</text>
+
+    <rect x="1008" y="216" width="216" height="56" rx="6" fill="#f8f5f0"/>
+    <rect x="1008" y="216" width="216" height="56" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="1116" y="240" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">13 · Post-deploy verify</text>
+    <text x="1116" y="258" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace" text-anchor="middle">health + drift check</text>
+
+    <rect x="1008" y="304" width="216" height="48" rx="6" fill="#f8f5f0"/>
+    <rect x="1008" y="304" width="216" height="48" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="1116" y="332" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">14 · Finalize staging</text>
+
+    <rect x="1008" y="384" width="216" height="56" rx="6" fill="#f8f5f0"/>
+    <rect x="1008" y="384" width="216" height="56" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="1116" y="408" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">15 · Record success</text>
+    <text x="1116" y="426" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace" text-anchor="middle">retain verified backups</text>
+
+    <rect x="1008" y="472" width="216" height="48" rx="6" fill="#f8f5f0"/>
+    <rect x="1008" y="472" width="216" height="48" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="1116" y="500" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">16 · Release lock</text>
+
+    <!-- legend -->
+    <line x1="32" y1="664" x2="1248" y2="664" stroke="rgba(26,39,68,0.12)" stroke-width="0.8"/>
+    <text x="32" y="688" fill="#4a5568" font-size="8" font-family="'IBM Plex Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+    <rect x="120" y="680" width="12" height="12" rx="2" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="140" y="690" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace">pipeline step</text>
+    <rect x="280" y="680" width="12" height="12" rx="2" fill="rgba(184,134,11,0.08)" stroke="#b8860b" stroke-width="1"/>
+    <text x="300" y="690" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace">safety gate</text>
+    <rect x="440" y="680" width="12" height="12" rx="2" fill="rgba(184,134,11,0.05)" stroke="rgba(184,134,11,0.50)" stroke-width="1" stroke-dasharray="4,4"/>
+    <text x="460" y="690" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace">failure path</text>
+    <rect x="600" y="680" width="12" height="12" rx="2" fill="rgba(26,39,68,0.02)" stroke="rgba(26,39,68,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+    <text x="620" y="690" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace">benign exit</text>
+  </svg>
+
+  <p class="colophon">source: docs/diagrams/reconcile-pipeline.mmd · sha256 cfbc90392bfccb28c6d3b5612117453bb1662fd631f268b14be319060f888d62 · skin: bosun (maritime command center)</p>
+</div>
+</body>
+</html>
