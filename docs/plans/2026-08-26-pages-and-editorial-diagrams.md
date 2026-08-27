@@ -172,11 +172,11 @@ Skill-driven diagram work and the interactive `/design` pass stay in-session; th
 **Dispatch:** In-context · serial (after Task 6) · **Report:** —
 
 **Steps:**
-- [ ] `pages.yml`: SHA-pinned actions; workflow-level `permissions: contents: read`; build-only job on `pull_request` (paths: `site/**`, `docs/diagrams/**`, allowlisted docs); build+deploy on `main` push (same paths) + `workflow_dispatch`; deploy job: `pages: write` + `id-token: write` job-scoped, `environment: github-pages`, `concurrency: pages` + `cancel-in-progress: false`, artifact `path: site/dist`, `pnpm install --frozen-lockfile`; header comment documents rollback (dispatch from known-good ref)
-- [ ] `pages_test.go`: assert workflow-level perms read-only, write scopes only on deploy job, `on:` exactly main-push + dispatch + pull_request-build-only, deploy binds `environment: github-pages`; `make test-workflows` green
-- [ ] Verify live Pages config (`build_type: workflow`, main-only deployment branch policy — already enabled, no enablement step); inventory current stale beadspace content for the record (left live until replaced, per Cameron)
-- [ ] Update `AGENTS.md` + `llms.txt` (site/, pages.yml, diagrams layer) — stage `AGENTS.md`; README site link
-- [ ] Verify: PR checks show the build-only job green
+- [x] `pages.yml`: SHA-pinned actions (annotated tags dereferenced to commit SHAs); workflow-level `permissions: contents: read`; build-only on `pull_request` (artifact upload PR-gated); build+deploy on `main` push + `workflow_dispatch`; deploy job carries the only write scopes, `environment: github-pages`, `concurrency: pages` `cancel-in-progress: false`, artifact `site/dist`, `pnpm install --frozen-lockfile`; rollback documented in the header
+- [x] `pages_test.go`: trigger set asserted on raw keys (typed struct can't see empty-bodied `workflow_dispatch`), read-only default perms, write scopes confined to deploy, environment binding, SHA-pin regex; `make test-workflows` green + `go vet` clean
+- [x] Verified live Pages config: `build_type: workflow`, `github-pages` environment custom branch policy = `main` only; stale content inventoried (Beadspace dashboard at the live URL, HTTP 200 — left until replaced, per Cameron)
+- [x] `AGENTS.md` (§ Pages Site and Diagrams) + `llms.txt` (site/ in structure, Pages URL, diagrams-check) + README site link — staged `AGENTS.md`
+- [ ] Verify: PR checks show the build-only job green (post-push)
 
 ### Task 8 — Security review + ship
 

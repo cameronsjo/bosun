@@ -1,0 +1,100 @@
+# GitHub Pages: build the Astro site in site/ and deploy it to
+# https://cameronsjo.github.io/bosun.
+#
+# Pull requests run the build job only (no artifact, no deploy). Pushes to
+# main build and deploy. Rollback: run workflow_dispatch from a known-good
+# ref (Actions -> Pages -> Run workflow -> pick the ref); the deploy job
+# republishes whatever that ref builds.
+#
+# Contract-tested by internal/workflowcontract/pages_test.go (make
+# test-workflows): read-only workflow default, write scopes confined to the
+# deploy job, SHA-pinned actions, main-only deploy environment.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'docs/diagrams/**'
+      - 'docs/adr/**'
+      - 'docs/mascot/**'
+      - 'docs/commands.md'
+      - 'docs/concepts.md'
+      - 'docs/manifest-system.md'
+      - 'docs/gitops.md'
+      - 'docs/security.md'
+      - 'docs/troubleshooting.md'
+      - 'assets/icon.png'
+      - '.github/workflows/pages.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'docs/diagrams/**'
+      - 'docs/adr/**'
+      - 'docs/mascot/**'
+      - 'docs/commands.md'
+      - 'docs/concepts.md'
+      - 'docs/manifest-system.md'
+      - 'docs/gitops.md'
+      - 'docs/security.md'
+      - 'docs/troubleshooting.md'
+      - 'assets/icon.png'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          package_json_file: site/package.json
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: site/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: site
+
+      - name: Build
+        run: pnpm build
+        working-directory: site
+
+      - name: Upload Pages artifact
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site/dist
+
+  deploy:
+    name: Deploy to Pages
+    if: ${{ github.event_name != 'pull_request' }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

@@ -367,6 +367,11 @@ When a feature is added, changed, or removed, **MUST** update the onboard skill 
 
 The skill is the primary consumer-facing documentation. If the code changes but the skill doesn't, users and AI agents get stale information.
 
+## Pages Site and Diagrams
+
+- `site/` — raw Astro static site deployed to <https://cameronsjo.github.io/bosun> by `.github/workflows/pages.yml` (build-only on PRs; build+deploy on main push, `workflow_dispatch` from a known-good ref is the rollback). Deploy contract is asserted by `internal/workflowcontract/pages_test.go` (`make test-workflows`). `site/scripts/sync-docs.mjs` copies an explicit allowlist (six core docs + `docs/adr/*`) into the content collection at build time — extend the allowlist there, never with a directory glob.
+- Diagrams are dual-layer: `docs/diagrams/*.mmd` + README ASCII (`make diagrams`) are the bot/terminal layer; `docs/diagrams/*.{html,svg}` are the committed editorial layer, redrawn via the diagram-design skill under the `bosun` profile (`docs/styles/diagram-profile.md` canonical, `.diagram-design` marker). Each export embeds its source `.mmd` sha256; `make diagrams-check` (CI lint job) fails when a `.mmd` changes without a re-export — re-redraw and re-run `node scripts/diagrams/export-svg.mjs`.
+
 ## Environment Variables
 
 All bosun-specific env vars use the `BOSUN_` prefix. Existing legacy

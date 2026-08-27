@@ -6,6 +6,8 @@
 
 Push to git. Bosun receives orders. Containers deploy. Smooth sailing.
 
+**Docs site:** <https://cameronsjo.github.io/bosun/> — guides, ADRs, and the editorial diagram set.
+
 <!-- DIAGRAM:pipeline-overview -->
 ```text
 ┌──────────┐     ┌───────────────────────┐     ┌─────────────────┐     ┌──────────────────┐     ┌──────────────────┐     ┌───────────────────┐     ┌────────────────────┐
