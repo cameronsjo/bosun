@@ -1,0 +1,265 @@
+@import '@fontsource/playfair-display/400.css';
+@import '@fontsource/playfair-display/500.css';
+@import '@fontsource/playfair-display/600.css';
+@import '@fontsource/playfair-display/400-italic.css';
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+@import '@fontsource/ibm-plex-mono/600.css';
+@import './tokens.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  line-height: 1.6;
+}
+
+/* Maritime atmosphere — ported from webui's .maritime-bg: two radial washes
+   (ocean top-left, navy bottom-right) plus a whisper of fractal noise. */
+.maritime-bg {
+  position: relative;
+}
+
+.maritime-bg::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 20% 0%, rgba(26, 83, 92, 0.08) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 100%, rgba(26, 39, 68, 0.06) 0%, transparent 50%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.maritime-bg::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  opacity: 0.015;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.maritime-bg > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Maritime card — brass top bar always on for the accent variant */
+.maritime-card,
+.maritime-card-accent {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(26, 39, 68, 0.08);
+}
+
+.maritime-card-accent::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--brass-dark), var(--brass), var(--brass-dark));
+}
+
+/* Brass button — webui's .btn-primary */
+.btn-brass {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  text-decoration: none;
+  color: var(--bg-primary);
+  background: linear-gradient(180deg, var(--brass-light), var(--brass));
+  border-radius: 6px;
+  box-shadow: 0 1px 0 var(--brass-dark), 0 2px 4px rgba(0, 0, 0, 0.2);
+  transition: transform 150ms ease, box-shadow 150ms ease;
+}
+
+.btn-brass:hover {
+  color: var(--bg-primary);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 0 var(--brass-dark), 0 4px 8px rgba(0, 0, 0, 0.25);
+}
+
+.btn-quiet {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.75rem 1.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  text-decoration: none;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.btn-quiet:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+
+/* Rope divider — hairline with an anchor amidships */
+.rope-divider {
+  position: relative;
+  height: 1px;
+  background: var(--border);
+  margin: 3rem auto;
+  max-width: 44rem;
+}
+
+.rope-divider::before {
+  content: '⚓';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 0 1rem;
+  background: var(--bg-primary);
+  color: var(--brass);
+  font-size: 0.875rem;
+}
+
+/* Inline editorial diagram (swapped in for ASCII by sync-docs) */
+.editorial-diagram {
+  margin: 2rem 0;
+  padding: 1rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.editorial-diagram svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+code,
+pre,
+kbd {
+  font-family: var(--font-mono);
+}
+
+/* Code blocks read as the ship's log: deep-ocean ground, bone ink,
+   brass hairline — the one deliberately dark surface in light mode. */
+pre {
+  background: #0a1628;
+  color: #e8e4dc;
+  border: 1px solid #2a3a54;
+  border-top: 3px solid var(--brass);
+  border-radius: 6px;
+  padding: 1.25rem;
+  overflow-x: auto;
+  line-height: 1.7;
+  font-size: 0.85rem;
+}
+
+code {
+  background: var(--bg-tertiary);
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+  font-size: 0.9em;
+}
+
+pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+
+/* Shiki blocks keep their theme's ground; the site adds the brass hairline. */
+.astro-code {
+  border: 1px solid #2a3a54;
+  border-top: 3px solid var(--brass);
+  border-radius: 6px;
+  padding: 1.25rem;
+}
+
+a {
+  color: var(--info);
+}
+
+a:hover {
+  color: var(--brass);
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.75rem;
+  color: var(--brass-dark);
+}
+
+.prose {
+  max-width: 70ch;
+  margin: 0 auto;
+}
+
+.prose h1,
+.prose h2,
+.prose h3 {
+  margin-top: 2em;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th,
+td {
+  border: 1px solid var(--border-subtle);
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+
+th {
+  background: var(--bg-tertiary);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 2rem 0;
+}

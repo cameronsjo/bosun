@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- source-mmd: docs/diagrams/locking-singleflight.mmd sha256:f254f127ffd0e51d0e5e25e44b0b16672f4b2a274be32ff4100587197b8eb55d -->
+<svg viewBox="0 0 1280 720" role="img" aria-labelledby="locking-singleflight-title locking-singleflight-desc" xmlns="http://www.w3.org/2000/svg">
+    <title id="locking-singleflight-title">Bosun locking and single-flight trigger coalescing</title>
+    <desc id="locking-singleflight-desc">A trigger arriving during a running reconciliation is queued into a pending batch and answered 202; otherwise the file lock is acquired and reconciliation runs. Afterwards, a queued batch runs as one coalesced reconciliation, re-checking until the queue is empty.</desc>
+    <defs>
+      <style>@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,600;1,400&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;display=swap');</style>
+      <marker id="ls-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#4a5568"/>
+      </marker>
+      <marker id="ls-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#b8860b"/>
+      </marker>
+    </defs>
+
+    <rect width="100%" height="100%" fill="#f8f5f0"/>
+
+    <!-- arrows (before boxes) -->
+    <!-- trigger -> running? -->
+    <line x1="640" y1="144" x2="640" y2="176" stroke="#4a5568" stroke-width="1" marker-end="url(#ls-arrow)"/>
+    <!-- running? yes -> queue -->
+    <path d="M 508 220 L 336 220 Q 328 220 328 228 L 328 276" fill="none" stroke="#4a5568" stroke-width="1" marker-end="url(#ls-arrow)"/>
+    <rect x="404" y="200" width="28" height="12" rx="2" fill="#f8f5f0"/>
+    <text x="418" y="209" fill="#718096" font-size="8" font-family="'IBM Plex Mono', monospace" text-anchor="middle" letter-spacing="0.06em">YES</text>
+    <!-- queue -> 202 -->
+    <line x1="328" y1="344" x2="328" y2="388" stroke="#4a5568" stroke-width="1" marker-end="url(#ls-arrow)"/>
+    <!-- running? no -> flock -->
+    <line x1="640" y1="260" x2="640" y2="296" stroke="#4a5568" stroke-width="1" marker-end="url(#ls-arrow)"/>
+    <rect x="648" y="266" width="24" height="12" rx="2" fill="#f8f5f0"/>
+    <text x="660" y="275" fill="#718096" font-size="8" font-family="'IBM Plex Mono', monospace" text-anchor="middle" letter-spacing="0.06em">NO</text>
+    <!-- flock -> run -->
+    <line x1="640" y1="364" x2="640" y2="400" stroke="#4a5568" stroke-width="1" marker-end="url(#ls-arrow)"/>
+    <!-- run -> pending? -->
+    <line x1="640" y1="460" x2="640" y2="484" stroke="#4a5568" stroke-width="1" marker-end="url(#ls-arrow)"/>
+    <!-- pending? yes -> coalesced -->
+    <path d="M 772 532 L 1024 532 Q 1032 532 1032 524 L 1032 504" fill="none" stroke="#b8860b" stroke-width="1.2" marker-end="url(#ls-arrow-accent)"/>
+    <rect x="876" y="512" width="28" height="12" rx="2" fill="#f8f5f0"/>
+    <text x="890" y="521" fill="#718096" font-size="8" font-family="'IBM Plex Mono', monospace" text-anchor="middle" letter-spacing="0.06em">YES</text>
+    <!-- coalesced -> pending? (re-check loop) -->
+    <path d="M 896 468 L 728 468 Q 720 468 720 476 L 720 512" fill="none" stroke="#4a5568" stroke-width="1" marker-end="url(#ls-arrow)"/>
+    <rect x="776" y="440" width="68" height="12" rx="2" fill="#f8f5f0"/>
+    <text x="810" y="449" fill="#718096" font-size="8" font-family="'IBM Plex Mono', monospace" text-anchor="middle" letter-spacing="0.06em">RE-CHECK</text>
+    <!-- pending? no -> finish -->
+    <line x1="640" y1="576" x2="640" y2="612" stroke="#4a5568" stroke-width="1" marker-end="url(#ls-arrow)"/>
+    <rect x="648" y="582" width="24" height="12" rx="2" fill="#f8f5f0"/>
+    <text x="660" y="591" fill="#718096" font-size="8" font-family="'IBM Plex Mono', monospace" text-anchor="middle" letter-spacing="0.06em">NO</text>
+
+    <!-- trigger : input -->
+    <rect x="568" y="96" width="144" height="48" rx="6" fill="#f8f5f0"/>
+    <rect x="568" y="96" width="144" height="48" rx="6" fill="rgba(74,85,104,0.10)" stroke="#718096" stroke-width="1"/>
+    <text x="640" y="124" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">Trigger</text>
+
+    <!-- running? diamond -->
+    <polygon points="640,180 772,220 640,260 508,220" fill="#f8f5f0"/>
+    <polygon points="640,180 772,220 640,260 508,220" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="640" y="216" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">Reconciliation</text>
+    <text x="640" y="232" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">running?</text>
+
+    <!-- queue : store -->
+    <rect x="200" y="280" width="256" height="64" rx="6" fill="#f8f5f0"/>
+    <rect x="200" y="280" width="256" height="64" rx="6" fill="rgba(26,39,68,0.05)" stroke="#4a5568" stroke-width="1"/>
+    <text x="328" y="308" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">Queue the trigger</text>
+    <text x="328" y="326" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace" text-anchor="middle">pending batch · source · sticky force</text>
+
+    <!-- 202 accepted -->
+    <rect x="200" y="392" width="256" height="48" rx="6" fill="#f8f5f0"/>
+    <rect x="200" y="392" width="256" height="48" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="328" y="416" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">Return 202 Accepted</text>
+    <text x="328" y="432" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace" text-anchor="middle">caller unblocked</text>
+
+    <!-- flock -->
+    <rect x="512" y="300" width="256" height="64" rx="6" fill="#f8f5f0"/>
+    <rect x="512" y="300" width="256" height="64" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="640" y="328" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">Acquire the lock</text>
+    <text x="640" y="346" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace" text-anchor="middle">flock LOCK_EX | LOCK_NB</text>
+
+    <!-- run -->
+    <rect x="512" y="404" width="256" height="56" rx="6" fill="#f8f5f0"/>
+    <rect x="512" y="404" width="256" height="56" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="640" y="428" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">Run reconciliation</text>
+    <text x="640" y="446" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace" text-anchor="middle">full pipeline, one flight</text>
+
+    <!-- pending? diamond -->
+    <polygon points="640,488 772,532 640,576 508,532" fill="#f8f5f0"/>
+    <polygon points="640,488 772,532 640,576 508,532" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="640" y="528" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">Pending batch</text>
+    <text x="640" y="544" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">queued?</text>
+
+    <!-- coalesced : focal -->
+    <rect x="896" y="436" width="272" height="64" rx="6" fill="#f8f5f0"/>
+    <rect x="896" y="436" width="272" height="64" rx="6" fill="rgba(184,134,11,0.08)" stroke="#b8860b" stroke-width="1.2"/>
+    <text x="1032" y="464" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">One coalesced run</text>
+    <text x="1032" y="482" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace" text-anchor="middle">sorted sources · sticky force</text>
+
+    <!-- finish -->
+    <rect x="568" y="616" width="144" height="48" rx="6" fill="#f8f5f0"/>
+    <rect x="568" y="616" width="144" height="48" rx="6" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="640" y="644" fill="#1a2744" font-size="12" font-weight="600" font-family="'IBM Plex Sans', sans-serif" text-anchor="middle">Finish</text>
+
+    <!-- legend -->
+    <line x1="32" y1="684" x2="1248" y2="684" stroke="rgba(26,39,68,0.12)" stroke-width="0.8"/>
+    <text x="32" y="706" fill="#4a5568" font-size="8" font-family="'IBM Plex Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+    <rect x="120" y="696" width="12" height="12" rx="2" fill="rgba(184,134,11,0.08)" stroke="#b8860b" stroke-width="1"/>
+    <text x="140" y="706" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace">coalesced flight</text>
+    <rect x="300" y="696" width="12" height="12" rx="2" fill="#ffffff" stroke="#1a2744" stroke-width="1"/>
+    <text x="320" y="706" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace">step / decision</text>
+    <rect x="480" y="696" width="12" height="12" rx="2" fill="rgba(26,39,68,0.05)" stroke="#4a5568" stroke-width="1"/>
+    <text x="500" y="706" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace">queued state</text>
+    <rect x="660" y="696" width="12" height="12" rx="2" fill="rgba(74,85,104,0.10)" stroke="#718096" stroke-width="1"/>
+    <text x="680" y="706" fill="#4a5568" font-size="9" font-family="'IBM Plex Mono', monospace">incoming trigger</text>
+  </svg>

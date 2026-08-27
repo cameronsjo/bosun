@@ -242,7 +242,8 @@ body {
   position: relative;
 }
 
-.compass-loader::before {
+.compass-loader::before,
+.compass-loader-sm::before {
   content: '⎈';
   position: absolute;
   inset: 0;

@@ -1,4 +1,4 @@
-.PHONY: build install clean test test-agent-gate test-workflows lint lint-new run release release-dry-run completion ci all dagger-test dagger-lint dagger-build dagger-webui dagger-release-dry-run diagrams
+.PHONY: build install clean test test-agent-gate test-workflows lint lint-new run release release-dry-run completion ci all dagger-test dagger-lint dagger-build dagger-webui dagger-release-dry-run diagrams diagrams-check
 
 # Binary name
 BINARY := bosun
@@ -150,6 +150,10 @@ dagger-release-dry-run:
 diagrams:
 	cd scripts/diagrams && pnpm install --frozen-lockfile && pnpm run render
 
+# Verify editorial diagram exports (.html/.svg) match their .mmd sources
+diagrams-check:
+	node scripts/diagrams/check-exports.mjs
+
 # Help
 help:
 	@echo "Available targets:"
@@ -181,6 +185,7 @@ help:
 	@echo ""
 	@echo "Documentation:"
 	@echo "  diagrams        - Render .mmd diagrams to ASCII art in README.md"
+	@echo "  diagrams-check  - Verify editorial diagram exports match .mmd sources"
 	@echo ""
 	@echo "Release:"
 	@echo "  release-dry-run - Test release locally (no publish)"

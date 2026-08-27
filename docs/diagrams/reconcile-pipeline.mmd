@@ -1,7 +1,9 @@
 flowchart TD
     AcquireLock["1. Acquire Lock"] --> GitSync["2. Git Repository Sync"]
     GitSync --> LoadState["3. Reload Config + Check State<br/>Commit / Path Skips + Breaker"]
-    LoadState --> DeployGate{"Deploy required?<br/>No: release lock + return"}
+    LoadState --> DeployGate{"Deploy required?"}
+    DeployGate -->|"no change / no relevant paths"| CleanSkip["Clean Skip<br/>Reset Breaker + Release Lock"]
+    DeployGate -->|"breaker tripped"| BreakerHalt["Circuit Breaker Halt<br/>Alert + Error Return"]
     DeployGate -->|yes| Decrypt["4. Track Attempt + Decrypt<br/>Resolve Deploy Mode"]
     Decrypt --> Render["5. Render Private Staging Tree"]
     Render --> DeclaredState["6. Extract Declared Services<br/>Fail Closed if Missing"]
@@ -9,8 +11,9 @@ flowchart TD
     Backup --> Prepare["8. Snapshot Health<br/>Mark NeedsRedeploy"]
     Prepare --> Deploy["9. Deploy Managed Files<br/>Verify Writes / Transfer"]
     Deploy --> Compose["10. Docker Compose Up<br/>Signal Reload"]
-    Compose --> HealthGate["11. Optional Health Gate<br/>Rollback Failed Rollout"]
-    HealthGate --> Hooks["12. Execute Post-Sync Hooks"]
+    Compose --> HealthGate{"11. Optional Health Gate"}
+    HealthGate -->|"failed"| GateFail["Rollback Full Tree<br/>Fail Deploy, Retry Next Cycle"]
+    HealthGate -->|"healthy / disabled"| Hooks["12. Execute Post-Sync Hooks"]
     Hooks --> Verify["13. Local Post-Deploy<br/>Health + Drift Check"]
     Verify --> Cleanup["14. Finalize Staging Evidence"]
     Cleanup --> SaveState["15. Retain Verified Backups<br/>Record Success"]

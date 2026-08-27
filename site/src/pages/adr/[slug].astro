@@ -1,0 +1,22 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { getCollection, render } from 'astro:content';
+
+export async function getStaticPaths() {
+  const adrs = await getCollection('adr');
+  return adrs.map((adr) => ({
+    params: { slug: adr.id },
+    props: { adr },
+  }));
+}
+
+const { adr } = Astro.props;
+const { Content } = await render(adr);
+---
+
+<BaseLayout title={adr.data.title}>
+  <article class="prose">
+    <h1>{adr.data.title}</h1>
+    <Content />
+  </article>
+</BaseLayout>

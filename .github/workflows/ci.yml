@@ -54,6 +54,16 @@ jobs:
       - name: Validate workflow safety contracts
         run: make test-workflows
 
+      # Explicit Node for diagrams-check rather than the runner's implicit
+      # preinstall — an image bump must not surface as a diagram failure.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify editorial diagram exports match .mmd sources
+        run: make diagrams-check
+
   webui:
     name: WebUI
     runs-on: ubuntu-latest

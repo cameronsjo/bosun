@@ -95,8 +95,18 @@ bosun/
 │   ├── provisions/         # Reusable config templates
 │   ├── services/           # Service manifests
 │   └── stacks/             # Stack definitions
+├── site/                   # Astro docs site (GitHub Pages via pages.yml)
 └── docs/                   # Documentation
+    └── diagrams/           # Dual-layer: .mmd (bot/ASCII) + .html/.svg (editorial)
 ```
+
+The docs site is published at https://cameronsjo.github.io/bosun/ by
+`.github/workflows/pages.yml` (build-only on PRs, build+deploy on main push).
+Rolling back a bad deploy means reverting on `main` — the `github-pages`
+environment is main-only, so re-running the workflow against an older ref is
+rejected at the deploy step. Editorial diagram exports embed their source
+`.mmd` sha256; `make diagrams-check` fails CI when an export goes stale or
+when an exported SVG carries active content.
 
 ## Technology Stack
 

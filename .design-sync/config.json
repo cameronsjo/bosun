@@ -1,0 +1,21 @@
+{
+  "projectId": "e3cf07ee-999e-418f-b746-a5d39bda3eab",
+  "shape": "package",
+  "pkg": "webui",
+  "globalName": "BosunUI",
+  "srcDir": "src",
+  "readmeHeader": ".design-sync/conventions.md",
+  "buildCmd": "npm run build:bundle && cp dist/assets/index-*.css dist/maritime.css",
+  "cssEntry": "dist/maritime.css",
+  "componentSrcMap": {
+    "App": null,
+    "Dashboard": null,
+    "Containers": null,
+    "Logs": null,
+    "DarkModeToggle": "src/components/DarkModeToggle.tsx",
+    "LoadingSpinner": "src/components/LoadingSpinner.tsx",
+    "LoadingState": "src/components/LoadingSpinner.tsx",
+    "OfflineBanner": "src/components/OfflineBanner.tsx",
+    "ErrorBoundary": "src/components/ErrorBoundary.tsx"
+  }
+}
