@@ -15,6 +15,10 @@ const nav = [
   { label: 'ADRs', href: `${base}adr/` },
   { label: 'Diagrams', href: `${base}diagrams/` },
 ];
+
+const currentPath = Astro.url.pathname;
+const isActive = (href: string) =>
+  href === base ? currentPath === base : currentPath.startsWith(href);
 ---
 
 <!doctype html>
@@ -28,21 +32,24 @@ const nav = [
     <link rel="apple-touch-icon" href={`${base}icon.png`} />
     <meta name="generator" content={Astro.generator} />
   </head>
-  <body>
+  <body class="maritime-bg">
     <header class="site-header">
       <a class="brand" href={base}>
         <img src={`${base}icon.png`} alt="" width="28" height="28" />
         <span>Bosun</span>
       </a>
       <nav>
-        {nav.map((item) => <a href={item.href}>{item.label}</a>)}
+        {nav.map((item) => (
+          <a href={item.href} class={isActive(item.href) ? 'active' : ''}>{item.label}</a>
+        ))}
       </nav>
     </header>
     <main>
       <slot />
     </main>
     <footer class="site-footer">
-      <p class="eyebrow">Helm for home</p>
+      <div class="rope-divider" role="presentation"></div>
+      <p class="eyebrow">Helm for home · smooth sailing</p>
       <p>
         <a href="https://github.com/cameronsjo/bosun">github.com/cameronsjo/bosun</a>
       </p>
@@ -58,6 +65,7 @@ const nav = [
     padding: 1rem 2rem;
     border-bottom: 1px solid var(--border);
     background: var(--bg-secondary);
+    box-shadow: 0 1px 2px rgba(26, 39, 68, 0.06);
   }
 
   .brand {
@@ -89,17 +97,25 @@ const nav = [
     color: var(--brass);
   }
 
+  .site-header nav a.active {
+    color: var(--brass);
+    border-bottom: 2px solid var(--brass);
+    padding-bottom: 2px;
+  }
+
   main {
     min-height: 60vh;
     padding: 2rem;
   }
 
   .site-footer {
-    border-top: 1px solid var(--border);
-    background: var(--bg-secondary);
-    padding: 2rem;
+    padding: 0 2rem 2.5rem;
     text-align: center;
     color: var(--text-muted);
+  }
+
+  .site-footer .rope-divider {
+    margin-bottom: 2rem;
   }
 
   .site-footer a {

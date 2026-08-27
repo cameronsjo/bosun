@@ -2,6 +2,7 @@
 
 ## Architecture
 
+<!-- site-diagram: architecture -->
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              Your Yacht (Server)                             │

@@ -160,8 +160,8 @@ Skill-driven diagram work and the interactive `/design` pass stay in-session; th
 **Dispatch:** In-context · serial · interactive via `/design`; exit when Cameron calls it done · **Report:** —
 
 **Steps:**
-- [ ] Iterate hero, type, spacing, diagram presentation with Cameron; commit per accepted iteration
-- [ ] Verify: `pnpm build` still green after final iteration
+- [ ] Iterate hero, type, spacing, diagram presentation with Cameron; commit per accepted iteration — **iteration 1 done** (Cameron: "vanilla" + "diagrams still ascii"): Maritime atmosphere/cards/brass CTAs/rope divider/deep-ocean code blocks ported from webui; `site-diagram` markers swap docs' ASCII blocks for editorial SVGs at sync time (concepts → architecture; dual-layer preserved on GitHub)
+- [ ] Verify: `pnpm build` still green after final iteration (green after iteration 1: 24 pages, base/CDN checks 0)
 
 ### Task 7 — Pages workflow + contract coverage + doc inventory updates
 

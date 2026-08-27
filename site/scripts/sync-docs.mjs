@@ -84,6 +84,47 @@ function buildAllowlistMap(docFiles, adrFiles) {
   return map;
 }
 
+// A `<!-- site-diagram: <name> -->` marker immediately before a fenced code
+// block swaps that block for the editorial SVG on the site, while GitHub
+// readers keep the ASCII (dual-layer: mermaid/ASCII for bots and terminals,
+// editorial for humans). Fail-closed: an unknown name or a marker with no
+// following fence aborts the sync rather than shipping a half-swapped page.
+const DIAGRAM_MARKER_RE = /<!--\s*site-diagram:\s*([a-z0-9-]+)\s*-->\s*\n```[^\n]*\n[\s\S]*?\n```/g;
+const REPO_DIAGRAMS_DIR = path.join(REPO_ROOT, 'docs/diagrams');
+const SVG_FONT_IMPORT_RE = /<style[^>]*>\s*@import\s+url\((['"]).*?\1\);?\s*<\/style>/gi;
+
+async function swapEditorialDiagrams(body, sourceFile) {
+  const names = [...body.matchAll(/<!--\s*site-diagram:\s*([a-z0-9-]+)\s*-->/g)].map((m) => m[1]);
+  if (names.length === 0) return body;
+
+  const svgs = new Map();
+  for (const name of names) {
+    const raw = await fs.readFile(path.join(REPO_DIAGRAMS_DIR, `${name}.svg`), 'utf8').catch(() => {
+      throw new Error(`${sourceFile}: site-diagram "${name}" has no docs/diagrams/${name}.svg`);
+    });
+    const svgMatch = raw.match(/<svg[\s\S]*?<\/svg>/);
+    if (!svgMatch) throw new Error(`${sourceFile}: docs/diagrams/${name}.svg has no <svg> root`);
+    const svg = svgMatch[0].replace(SVG_FONT_IMPORT_RE, '');
+    if (/@import|url\(\s*['"]?\s*(?:https?:)?\/\//i.test(svg)) {
+      throw new Error(`${sourceFile}: ${name}.svg carries an external reference after stripping`);
+    }
+    // Collapse to one line: markdown re-parses indented lines inside an HTML
+    // block as a code block, which shreds a pretty-printed SVG.
+    svgs.set(name, svg.replace(/\n\s*/g, ' '));
+  }
+
+  let swapped = 0;
+  const out = body.replace(DIAGRAM_MARKER_RE, (whole) => {
+    const name = /site-diagram:\s*([a-z0-9-]+)/.exec(whole)[1];
+    swapped++;
+    return `<figure class="editorial-diagram">${svgs.get(name)}</figure>`;
+  });
+  if (swapped !== names.length) {
+    throw new Error(`${sourceFile}: ${names.length} site-diagram marker(s) but only ${swapped} followed by a fenced block`);
+  }
+  return out;
+}
+
 function rewriteLinks(body, sourceFilePath, allowlistMap) {
   const linkRegex = /\[([^\]]*)\]\(([^)]*)\)/g;
   return body.replace(linkRegex, (whole, label, rawUrl) => {
@@ -113,7 +154,8 @@ async function syncDoc(file, allowlistMap) {
   const sourcePath = path.join(REPO_DOCS_DIR, file);
   const raw = await fs.readFile(sourcePath, 'utf8');
   const { title, body } = extractTitleAndBody(raw);
-  const rewritten = rewriteLinks(body, sourcePath, allowlistMap);
+  const withDiagrams = await swapEditorialDiagrams(body, `docs/${file}`);
+  const rewritten = rewriteLinks(withDiagrams, sourcePath, allowlistMap);
   const slug = file.replace(/\.md$/, '');
   const frontmatter = [
     '---',
