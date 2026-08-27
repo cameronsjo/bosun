@@ -1,0 +1,91 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
+// The four editorial SVGs are read from the repo at build time and embedded
+// inline. Each carries a <style>@import url('https://fonts.googleapis...')</style>
+// block for the Playfair/Plex fonts, sized to match the page's own
+// self-hosted @fontsource copies — that import is a runtime CDN fetch and is
+// stripped here so the page's fonts apply instead. role="img" plus each
+// SVG's own <title>/<desc> are left intact for accessibility.
+const REPO_ROOT = path.resolve(process.cwd(), '..');
+const DIAGRAMS_DIR = path.join(REPO_ROOT, 'docs/diagrams');
+
+const diagrams = [
+  {
+    file: 'pipeline-overview.svg',
+    caption: 'The deploy pipeline, start to finish: push, clone, decrypt, template, deploy, reload, verify.',
+  },
+  {
+    file: 'architecture.svg',
+    caption: "Bosun's place on the yacht: one binary watching git and drift, driving Docker Compose.",
+  },
+  {
+    file: 'reconcile-pipeline.svg',
+    caption: 'The reconcile engine internals — lock, sync, decrypt, render, backup, deploy, verify.',
+  },
+  {
+    file: 'locking-singleflight.svg',
+    caption: 'Single-flight reconciliation: concurrent triggers coalesce into one run, then one follow-up batch.',
+  },
+];
+
+const STYLE_IMPORT_RE = /<style>\s*@import\s+url\((['"]).*?\1\);?\s*<\/style>/i;
+
+async function loadInlineSvg(filename) {
+  const raw = await fs.readFile(path.join(DIAGRAMS_DIR, filename), 'utf8');
+  return raw.replace(STYLE_IMPORT_RE, '');
+}
+
+const rendered = await Promise.all(
+  diagrams.map(async (d) => ({ ...d, svg: await loadInlineSvg(d.file) }))
+);
+---
+
+<BaseLayout title="Diagrams" description="Editorial diagrams of Bosun's pipeline and architecture.">
+  <div class="prose">
+    <p class="eyebrow">Diagrams</p>
+    <h1>Diagrams</h1>
+    <p>Editorial diagrams of Bosun's deploy pipeline, architecture, and concurrency model.</p>
+  </div>
+  <div class="diagrams">
+    {rendered.map((d) => (
+      <figure>
+        <div class="svg-wrap" set:html={d.svg} />
+        <figcaption>{d.caption}</figcaption>
+      </figure>
+    ))}
+  </div>
+</BaseLayout>
+
+<style>
+  .diagrams {
+    display: flex;
+    flex-direction: column;
+    gap: 3rem;
+    max-width: 960px;
+    margin: 2rem auto;
+  }
+
+  figure {
+    margin: 0;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+  }
+
+  .svg-wrap :global(svg) {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+
+  figcaption {
+    margin-top: 1rem;
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+    text-align: center;
+  }
+</style>

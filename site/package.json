@@ -1,0 +1,23 @@
+{
+  "name": "bosun-site",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "sync-docs": "node scripts/sync-docs.mjs",
+    "prebuild": "node scripts/sync-docs.mjs",
+    "dev": "node scripts/sync-docs.mjs && astro dev",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "5.3.0",
+    "@fontsource/ibm-plex-sans": "5.3.0",
+    "@fontsource/playfair-display": "5.3.0",
+    "astro": "7.2.8"
+  }
+}

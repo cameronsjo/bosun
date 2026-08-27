@@ -1,0 +1,108 @@
+---
+import '../styles/global.css';
+import { base } from '../lib/base';
+
+interface Props {
+  title: string;
+  description?: string;
+}
+
+const { title, description = 'GitOps for Docker Compose on bare metal.' } = Astro.props;
+
+const nav = [
+  { label: 'Home', href: base },
+  { label: 'Docs', href: `${base}docs/` },
+  { label: 'ADRs', href: `${base}adr/` },
+  { label: 'Diagrams', href: `${base}diagrams/` },
+];
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title} — Bosun</title>
+    <meta name="description" content={description} />
+    <link rel="icon" type="image/png" href={`${base}icon.png`} />
+    <link rel="apple-touch-icon" href={`${base}icon.png`} />
+    <meta name="generator" content={Astro.generator} />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href={base}>
+        <img src={`${base}icon.png`} alt="" width="28" height="28" />
+        <span>Bosun</span>
+      </a>
+      <nav>
+        {nav.map((item) => <a href={item.href}>{item.label}</a>)}
+      </nav>
+    </header>
+    <main>
+      <slot />
+    </main>
+    <footer class="site-footer">
+      <p class="eyebrow">Helm for home</p>
+      <p>
+        <a href="https://github.com/cameronsjo/bosun">github.com/cameronsjo/bosun</a>
+      </p>
+    </footer>
+  </body>
+</html>
+
+<style>
+  .site-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 2rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-secondary);
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 1.25rem;
+    color: var(--text-primary);
+    text-decoration: none;
+  }
+
+  .site-header nav {
+    display: flex;
+    gap: 1.5rem;
+  }
+
+  .site-header nav a {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    font-size: 0.8rem;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    text-decoration: none;
+  }
+
+  .site-header nav a:hover {
+    color: var(--brass);
+  }
+
+  main {
+    min-height: 60vh;
+    padding: 2rem;
+  }
+
+  .site-footer {
+    border-top: 1px solid var(--border);
+    background: var(--bg-secondary);
+    padding: 2rem;
+    text-align: center;
+    color: var(--text-muted);
+  }
+
+  .site-footer a {
+    color: var(--text-secondary);
+  }
+</style>

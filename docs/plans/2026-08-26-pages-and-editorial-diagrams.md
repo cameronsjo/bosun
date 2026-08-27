@@ -145,11 +145,11 @@ Skill-driven diagram work and the interactive `/design` pass stay in-session; th
 **Report:** `<reports-dir>/task-5.md` — concrete `mktemp -d` path minted at dispatch; reply `done` + path
 
 **Steps:**
-- [ ] Scaffold + config (pinned Astro version, `site`/`base`, static output)
-- [ ] Sync script: allowlist copy of six docs + `docs/adr/*` with derived frontmatter + link rewrite; wired into build
-- [ ] Pages: landing (mascot hero, nautical glossary, install/quickstart), docs section, ADR index, diagrams page (SVG embeds + alt text)
-- [ ] Token sheet from webui values (light + dark); self-hosted woff2
-- [ ] `pnpm build` green; internal-link check green (no `/…` links bypassing base); commit
+- [x] Scaffold + config — Astro `7.2.8` exact-pinned (≥5 per brief; deviation noted), `pnpm@10.33.0` packageManager pin, `site`/`base` single-sourced from `site/site.config.mjs`, static output
+- [x] Sync script: six-doc allowlist + `docs/adr/*` (template excluded by `NNNN-` filter), H1-derived titles, in-inventory links rewritten base-aware, out-of-inventory links unwrapped to text
+- [x] Pages: landing (mascot hero, glossary, quickstart), docs section, ADR index, diagrams page (4 SVGs inlined at build time with the Google-fonts @import stripped — page-level self-hosted fonts apply)
+- [x] Token sheet light + dark from webui values; fonts via pinned @fontsource (49 woff2 in dist, zero CDN refs)
+- [x] `pnpm build` green (23 pages, verified independently); 0 base-bypassing links; 4 inline `role="img"` diagrams; committed
 
 ### Task 6 — /design polish pass (interactive)
 

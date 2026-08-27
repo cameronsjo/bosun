@@ -1,0 +1,88 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { base } from '../lib/base';
+
+const glossary = [
+  { term: 'Bosun', def: 'CLI tool and orchestrator — receives orders, deploys containers.' },
+  { term: 'Manifest', def: 'Service definitions (the crew manifest).' },
+  { term: 'Provisions', def: 'Reusable config templates, stocked aboard.' },
+  { term: 'Captain', def: 'GitHub — gives orders.' },
+  { term: 'Radio', def: 'Webhook or tunnel (Tailscale Funnel or Cloudflare Tunnel).' },
+  { term: 'Crew', def: 'Containers.' },
+  { term: 'Yacht', def: 'The server or host running Docker Compose.' },
+];
+---
+
+<BaseLayout title="Home" description="GitOps for Docker Compose on bare metal — Helm for home.">
+  <section class="hero">
+    <img src={`${base}bosun-mascot.png`} alt="Bosun mascot" width="200" height="200" />
+    <h1>Bosun</h1>
+    <p class="tagline">GitOps for Docker Compose on bare metal — Helm for home.</p>
+  </section>
+
+  <section class="prose">
+    <h2>Quickstart</h2>
+    <pre><code>{`bosun init      # interactive setup wizard
+bosun doctor    # pre-flight checks
+bosun daemon    # run the GitOps daemon`}</code></pre>
+    <p>
+      See <a href={`${base}docs/commands/`}>Commands</a> for the full CLI reference and
+      <a href={`${base}docs/concepts/`}>Concepts</a> for the architecture.
+    </p>
+  </section>
+
+  <section class="prose">
+    <h2>Nautical Glossary</h2>
+    <dl class="glossary">
+      {glossary.map((entry) => (
+        <>
+          <dt>{entry.term}</dt>
+          <dd>{entry.def}</dd>
+        </>
+      ))}
+    </dl>
+  </section>
+</BaseLayout>
+
+<style>
+  .hero {
+    text-align: center;
+    padding: 2rem 0 3rem;
+  }
+
+  .hero img {
+    border-radius: 8px;
+  }
+
+  .hero h1 {
+    font-size: 3rem;
+    margin: 1rem 0 0.5rem;
+  }
+
+  .tagline {
+    color: var(--text-secondary);
+    font-size: 1.15rem;
+  }
+
+  .prose {
+    max-width: 70ch;
+    margin: 3rem auto;
+  }
+
+  .glossary {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.5rem 1.5rem;
+  }
+
+  .glossary dt {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--brass-dark);
+  }
+
+  .glossary dd {
+    margin: 0;
+    color: var(--text-secondary);
+  }
+</style>

@@ -1,0 +1,25 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { getCollection } from 'astro:content';
+import { base } from '../../lib/base';
+
+const docs = await getCollection('docs');
+
+// Presentation order follows the allowlist's intent, not alphabetical sort.
+const order = ['concepts', 'commands', 'manifest-system', 'gitops', 'security', 'troubleshooting'];
+docs.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+---
+
+<BaseLayout title="Docs">
+  <div class="prose">
+    <p class="eyebrow">Documentation</p>
+    <h1>Docs</h1>
+    <ul>
+      {docs.map((doc) => (
+        <li>
+          <a href={`${base}docs/${doc.id}/`}>{doc.data.title}</a>
+        </li>
+      ))}
+    </ul>
+  </div>
+</BaseLayout>

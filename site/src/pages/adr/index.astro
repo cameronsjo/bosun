@@ -1,0 +1,24 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { getCollection } from 'astro:content';
+import { base } from '../../lib/base';
+
+const adrs = await getCollection('adr');
+adrs.sort((a, b) => a.data.number.localeCompare(b.data.number));
+---
+
+<BaseLayout title="ADRs" description="Architecture Decision Records">
+  <div class="prose">
+    <p class="eyebrow">Architecture Decision Records</p>
+    <h1>ADRs</h1>
+    <ul>
+      {adrs.map((adr) => (
+        <li>
+          <a href={`${base}adr/${adr.id}/`}>
+            <code>ADR-{adr.data.number}</code> {adr.data.title.replace(/^ADR-\d+:\s*/, '')}
+          </a>
+        </li>
+      ))}
+    </ul>
+  </div>
+</BaseLayout>

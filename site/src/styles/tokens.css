@@ -1,0 +1,76 @@
+/* Maritime Command Center design tokens — derived from webui/src/index.css.
+   Light mode lives on :root; dark mode applies via .dark or
+   prefers-color-scheme, whichever the page opts into. */
+
+:root {
+  /* Backgrounds */
+  --bg-primary: #f8f5f0;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f0ebe3;
+
+  /* Text */
+  --text-primary: #1a2744;
+  --text-secondary: #4a5568;
+  --text-muted: #718096;
+
+  /* Borders */
+  --border: #d4c9b8;
+  --border-subtle: #e8e0d4;
+
+  /* Brass accent */
+  --brass: #b8860b;
+  --brass-light: #daa520;
+  --brass-dark: #8b6914;
+
+  /* Deep tones */
+  --navy: #1a2744;
+  --ocean: #1a535c;
+
+  /* Status */
+  --healthy: #20b2aa;
+  --warning: #d4a017;
+  --danger: #c94c4c;
+  --info: #4a90a4;
+
+  /* Typography */
+  --font-display: 'Playfair Display', Georgia, serif;
+  --font-body: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', Menlo, monospace;
+}
+
+:root.dark,
+.dark {
+  --bg-primary: #0a1628;
+  --bg-secondary: #111d32;
+  --bg-tertiary: #162440;
+
+  --text-primary: #e8e4dc;
+  --text-secondary: #a8b4c4;
+  --text-muted: #6b7a8f;
+
+  --border: #2a3a54;
+  --border-subtle: #1e2d44;
+
+  --brass: #daa520;
+  --brass-light: #f0c850;
+  --brass-dark: #b8860b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --bg-primary: #0a1628;
+    --bg-secondary: #111d32;
+    --bg-tertiary: #162440;
+
+    --text-primary: #e8e4dc;
+    --text-secondary: #a8b4c4;
+    --text-muted: #6b7a8f;
+
+    --border: #2a3a54;
+    --border-subtle: #1e2d44;
+
+    --brass: #daa520;
+    --brass-light: #f0c850;
+    --brass-dark: #b8860b;
+  }
+}
