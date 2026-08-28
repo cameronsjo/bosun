@@ -10,7 +10,10 @@ A health-gate failure only triggers rollback when `critical_containers` is confi
 - **critical** (default): unchanged. Gate only on `critical_containers` members; an empty list skips the gate. A declared-but-non-critical service coming up unhealthy does NOT trigger rollback.
 - **declared**: gate on ALL declared services, exempting any service that was already unhealthy before this deploy (a pre-existing casualty). Only a service this deploy made unhealthy triggers the existing rollback branch.
 - **off**: no health gate.
-- Unknown scope values fail validation (naming the valid set); at gate time an invalid value falls back to `critical` rather than failing the deploy.
+- An unknown config-file scope falls back to `critical` at gate time with an
+  error naming the valid set rather than failing the deploy. An invalid
+  `BOSUN_HEALTH_GATE_SCOPE` override is ignored with a warning, leaving the
+  config-file scope or default in effect.
 
 ## Impact
 
