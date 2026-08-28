@@ -1,53 +1,63 @@
+## Grounding Summary
+
+- Original task count: 30
+- Verified shipped: 26
+- Partial: 4 (tasks 1.3, 2.3, 8.2, and 8.4)
+- Known runtime defects: 1 (`bosun doctor` false warning for an omitted delay)
+- Archive blockers: focused recursive suffix/infix regressions through both
+  deploy-sync filter consumers, a source-aware doctor warning fix and
+  regression, and exact fallback wording in two documentation consumers
+
 ## 1. Glob matching correctness (#232)
 
-- [ ] 1.1 Replace `matchGlob` (`hooks.go:105-122`) prefix-only `**` handling with full doublestar semantics (suffix/infix honored, `**/foo` does not match unrelated files)
-- [ ] 1.2 Confirm `matchAnyPath` (`deploy.go`) uses the corrected matcher for `deploy_paths` / `deploy_sync_paths` / `deploy_sync_exclude`
-- [ ] 1.3 Tests: `matchGlob("**/foo.yml", "unrelated/bar.yml")==false`; `matchGlob("appdata/**/dynamic.yml", "appdata/traefik/dynamic.yml")==true`; deploy-path family regression cases
+- [x] 1.1 Replace prefix-only `**` handling with `doublestar.Match` — PR #401 (`e2670e6`); `internal/reconcile/hooks.go` `matchGlob`
+- [x] 1.2 Route hooks, `deploy_paths`, `deploy_sync_paths`, and `deploy_sync_exclude` through the same matcher — PR #401; `hooks.go`, `reconcile.go`, and `discovery.go`
+- [ ] 1.3 PARTIAL: suffix/infix and leading-recursive tests cover `matchGlob` and `matchAnyPath` (`hooks_test.go`), but focused `discoverDeployTargets` regressions do not yet exercise recursive suffix/infix behavior through both `deploy_sync_paths` and `deploy_sync_exclude`
 
 ## 2. FUSE-safe hook timing (#233)
 
-- [ ] 2.1 fsync the destination directory after rename in `fileutil.CopyFile` (`:60-110`)
-- [ ] 2.2 Change `HookSettleDelay` default from `0` to a safe non-zero value; apply the delay before running hooks in `hooks.go`
-- [ ] 2.3 Add a `doctor`/preflight check warning when a FUSE-like target runs with `hook_settle_delay: 0s`
-- [ ] 2.4 Tests: dir fsync invoked after write; non-zero default applied; doctor warns on zero-delay FUSE target
+- [x] 2.1 Sync destination parent directories after atomic rename and before post-write verification/hook execution — PR #402 (`5d7902f`), retained as deterministic unique-parent batching by PR #558 (`41a06ee`); `internal/fileutil/fileutil.go`
+- [x] 2.2 Apply a 2-second fallback only when the delay is unconfigured and the deploy path is `/mnt/user` or a descendant; honor explicit zero and retain zero elsewhere — PRs #402 and #544 (`24d511b`); `hooks.go`
+- [ ] 2.3 PARTIAL: `bosun doctor` warns when the decoded file value is zero, but it does not distinguish omission from explicit zero and therefore falsely warns when reconcile's effective `/mnt/user` delay is the safe 2-second fallback — PRs #402 and #544; `internal/cmd/diagnostics_doctor.go`
+- [x] 2.4 Cover directory sync seams, FUSE/non-FUSE/default/explicit-zero runtime resolution, and the existing doctor path classification/warning — PRs #402, #544, and #558; `directory_sync_test.go`, `hooks_test.go`, and `diagnostics_doctor_test.go`; the missing source-aware doctor regression remains in task 2.3
 
 ## 3. Deletion-aware hooks (#234)
 
-- [ ] 3.1 Append `removeStaleFiles` deletions (`deploy.go:155-158`, `:251-299`) to the deploy change set (`WrittenFiles` or parallel `DeletedFiles`), tagged op=remove
-- [ ] 3.2 Ensure `executePostSyncHooks` (`reconcile.go:769-786`) evaluates the merged add+remove set (move empty-match return below the merge)
-- [ ] 3.3 Tests: deletion-only commit matching a hook pattern fires the hook
+- [x] 3.1 Record removals separately in `DeployResult.DeletedFiles` with `AddDeleted` and staging-relative prefix helpers — PR #405 (`8cade1c`); `internal/reconcile/deploy.go`
+- [x] 3.2 Union written and deleted paths before local hook matching, including mixed write/delete deploys — PR #405; `internal/reconcile/reconcile.go`
+- [x] 3.3 Cover deletion-only and mixed write/delete matching plus deletion prefixing — PR #405 (`8cade1c`) covers mixed writes/deletions; PR #551 (`f6ed4a3`) adds direct deletion-only change-source and hook-selection regressions; reconcile/deploy tests
 
 ## 4. Hook match observability (#269)
 
-- [x] 4.1 In `executePostSyncHooks`, emit a warn-level log when hooks are configured and changed files were evaluated but nothing matched, with bounded pattern and staging-relative file samples plus complete counts
-- [x] 4.2 Distinguish "no files changed" from "files changed, none matched" in the log message
-- [x] 4.3 Tests: typo'd pattern over a non-empty change set produces a discoverable warning
+- [x] 4.1 Warn when a non-empty evaluated change set matches no configured hook, with complete counts and bounded/redacted samples — PR #546 (`323f0aa`); `reconcile.go`
+- [x] 4.2 Distinguish authoritative no-change from changed-but-unmatched input — PR #546
+- [x] 4.3 Cover typoed patterns, bounds, duplicate/empty counts, redaction, and no-change logging — PR #546; reconcile tests
 
 ## 5. Empty hook command rejection (#283)
 
-- [x] 5.1 Validate at config load that an `exec` hook has a non-empty command; reject with a clear error
-- [x] 5.2 Remove (or make unreachable) the silent warn-and-continue skip in `hooks.go:188-194`
-- [x] 5.3 Tests: config with `action: exec` and empty/absent command fails to load
+- [x] 5.1 Reject `exec` hooks with empty commands before deployment — PR #520 (`c56905e`); `ValidatePostSyncHooks`
+- [x] 5.2 Remove the silent execution-time empty-command skip by making invalid hooks unreachable and validating again at execution — PR #520
+- [x] 5.3 Cover root, target, environment, programmatic, startup, and reload invalid-command paths — PR #520; config/daemon/cmd/reconcile tests
 
 ## 6. Post-write verification propagation (#282)
 
-- [x] 6.1 In `CopyFileIfChanged` (`fileutil.go:217-221`) / `deploy.go:314-321`, ensure a successful rename whose post-write verification fails still records the path in the change set (or surfaces a hard error) — never silently omits it
-- [x] 6.2 Tests: simulated verification failure still results in the path being hook-eligible (not skipped on retry)
+- [x] 6.1 Preserve a successfully renamed path in the deploy result and return typed `fileutil.ErrPostWriteVerification`; run eligible remediation hooks without converting the deploy to success — PR #529 (`09b84cd`)
+- [x] 6.2 Cover hash/readback failure, path preservation, matching and non-matching hooks, failed state, alerting, and retry semantics — PR #529; `fileutil_verification_test.go` and `post_write_verification_test.go`
 
 ## 7. Hot-reload presence semantics (#267 / #268)
 
-- [x] 7.1 Preserve config-file-found metadata and raw `hook_settle_delay` key presence through `internal/config`, daemon and CLI `ConfigReloader` closures, and `ReloadedConfig`; distinguish a present empty file from no file, retain the effective delay when the key is absent, and honor explicit `0s`
-- [x] 7.2 Treat a successfully loaded root hook slice as authoritative in `reloadProjectConfig`: absent `post_sync_hooks`, explicit `[]`, and a present empty config all clear file-sourced hooks, while missing/read/parse/unknown-field errors produce no snapshot and retain prior state
-- [x] 7.3 Validate all root and target hooks before applying any hook-related field; invalid executable hooks abort the current reconciliation before deployment and retain prior hooks/delay, with source-aware redacted logs for apply/clear/retain/reject outcomes
-- [x] 7.4 Apply root hook state before target overrides: absent target hooks inherit root, explicit target `[]` clears inheritance, removing a target hook key or target descriptor discards stale operational hooks and falls back to root, and structural target removal remains restart-gated
-- [x] 7.5 Preserve replacement precedence for `BOSUN_POST_SYNC_HOOKS`, `BOSUN_HOOK_SETTLE_DELAY`, and authoritative `BOSUN_TARGETS` hook overrides; deep-clone hooks plus nested `Paths`/`Command` slices at loader, root, and target boundaries
-- [x] 7.6 Add table-driven tests for initial load and both daemon/CLI reload closures covering absent vs explicit zero/empty, present-empty vs missing/malformed config, environment precedence, atomic invalid-hook rejection, root/target inheritance, explicit-empty, key/descriptor removal, slice mutation, redacted logs, and concurrent target reload under `-race`
-- [x] 7.7 Add a failed-pipeline regression proving a template failure at commit B does not advance `DeployState.LastDeployedCommit` from A and the next hook fallback diff uses A; verify repo-relative fallback paths are normalized to the same staging-relative namespace as written/deleted paths
-- [x] 7.8 Run focused tests repeatedly and under `-race`, plus relevant full tests, vet, changed-code lint, build, and strict OpenSpec validation
+- [x] 7.1 Preserve config-file and raw delay-key presence through config, daemon/CLI reload closures, and `ReloadedConfig` — PRs #540 (`41041ba`) and #544 (`24d511b`)
+- [x] 7.2 Clear file-owned root hooks on an omitted/empty successful snapshot while retaining state on missing/read/parse/unknown-field failures — PR #544; `config_reload.go`
+- [x] 7.3 Validate all root/target hooks before atomic mutation and abort before deployment for invalid executable hooks with redacted logs — PRs #520 and #544
+- [x] 7.4 Apply root before target overrides; implement inheritance, explicit empty, key removal, descriptor removal fallback, and restart-gated topology — PR #544
+- [x] 7.5 Preserve `BOSUN_POST_SYNC_HOOKS`, `BOSUN_HOOK_SETTLE_DELAY`, and authoritative `BOSUN_TARGETS` ownership; deep-clone nested hook slices — PR #544
+- [x] 7.6 Cover daemon/CLI initial/reload parity, presence cases, environment ownership, atomic rejection, target transitions, slice isolation, redaction, and race behavior — PR #544
+- [x] 7.7 Keep `DeployState.LastDeployedCommit` at the last successful deployment across failed pipelines and normalize git fallback paths into the staging-relative namespace — PR #544
+- [x] 7.8 Run focused/full/race/vet/lint/build/OpenSpec gates recorded in the merged delivery PRs #520, #529, #544, and #546
 
 ## 8. Documentation
 
-- [x] 8.1 Update `skills/onboard/resources/configuration.md` (root/target presence, successful-snapshot, and environment precedence semantics)
-- [x] 8.2 Update `skills/onboard/resources/gitops.md` (hook timing, FUSE, deletion-aware hooks, glob and reload semantics)
-- [x] 8.3 Update `docs/gitops.md` and `docs/troubleshooting.md`
-- [x] 8.4 Update the `AGENTS.md` env-var table (settle-delay default change and authoritative environment replacement semantics)
+- [x] 8.1 Document root/target presence, successful-snapshot, and environment precedence in `skills/onboard/resources/configuration.md` — PR #544
+- [ ] 8.2 PARTIAL: `skills/onboard/resources/gitops.md` documents generic hook timing, fallback, deletion-aware inputs, recursive globs, and reload semantics, but does not state that the exact unconfigured `/mnt/user` fallback is 2 seconds while explicit zero and non-FUSE paths retain zero
+- [x] 8.3 Update `docs/gitops.md` and `docs/troubleshooting.md` for the released hook/change-source/diagnostic contract — PRs #405, #544, and #546
+- [ ] 8.4 PARTIAL: `AGENTS.md` documents environment replacement, staging-relative paths, reload presence, an example 2-second delay, and explicit-zero behavior, but does not state the exact unconfigured `/mnt/user` 2-second fallback contract

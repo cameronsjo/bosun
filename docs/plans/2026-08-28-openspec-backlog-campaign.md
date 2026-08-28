@@ -21,7 +21,7 @@ Each PR receives a fresh polish pass, independent exact-head review, hosted chec
 - **Archive all seven completed changes together:** declined because `preserve-failed-staging-evidence` needs delta repair plus downstream whole-block refreshes, while `add-directory-aware-deploy-tracking` depends on the not-yet-canonical `reconcile-fuse-hooks` capability.
 - **Refresh downstream `Pipeline Orchestration` deltas later:** declined because a later whole-block archive could silently discard the newly canonical sibling-continuation and stage-label clauses.
 - **Implement all 49 tasks listed under #438:** declined because the issue and checklist are stale relative to substantial multi-target behavior already present on `main`.
-- **Treat the ten unchecked FUSE-hook tasks as unimplemented:** declined because current `main` and merged PRs #401, #402, and #405 already contain their doublestar matching, filesystem durability/timing, doctor warning, deletion tracking, and regression coverage; the ledger needs grounding before any new code.
+- **Treat the ten unchecked FUSE-hook tasks as unimplemented:** declined because current `main` and merged PRs #401, #402, and #405 already contain their doublestar matching, filesystem durability/timing, doctor warning, and deletion tracking. Grounding found four bounded remainders: deploy-sync consumer coverage, a source-unaware doctor false warning, and exact fallback wording in two documentation consumers, not ten missing implementation slices.
 - **Open replacement issues:** declined because existing issues and OpenSpec changes are the durable records; update or close them instead.
 
 ## Checklist
@@ -53,9 +53,9 @@ Each PR receives a fresh polish pass, independent exact-head review, hosted chec
 
 ### 5. FUSE-hook grounding and closure (#431)
 
-- [ ] Revalidate the historical `ready-to-build` gate and current spec against `main`.
-- [ ] Map all 30 tasks to shipped code, tests, documentation, and merged delivery evidence; explicitly verify the ten stale unchecked tasks against PRs #401, #402, and #405 plus current `main`.
-- [ ] Correct the proposal, design, task checklist, and issue #431 so the shipped contract is accurate and non-duplicative.
+- [x] Revalidate the historical approved proposal in merged PR #311 and require a fresh independent gate for this grounded successor before any remaining behavior work.
+- [x] Map all 30 tasks to shipped code, tests, documentation, and merged delivery evidence; 26 are shipped, task 1.3 remains partial for focused recursive suffix/infix coverage through `deploy_sync_paths` and `deploy_sync_exclude`, task 2.3 remains partial because doctor falsely warns for an omitted delay despite the safe runtime fallback, and tasks 8.2/8.4 remain partial for exact fallback wording.
+- [x] Correct the proposal, design, task checklist, deltas, and proposed issue #431 replacement text so the shipped contract and four bounded remaining slices are accurate and non-duplicative; leave the live issue unchanged until this grounding PR merges.
 - [ ] Strict-validate, independently review, and merge the spec-only grounding PR before archiving the change.
 - [ ] If grounding exposes a concrete behavior gap, implement it as the smallest behavior PR with required tests, consumer documentation, onboard-skill resources, gated checks, and exact-head review; do not create speculative slices.
 - [ ] Archive `add-reconcile-fuse-hooks` without `--skip-specs` only after every task and requirement has verified merged and released evidence.

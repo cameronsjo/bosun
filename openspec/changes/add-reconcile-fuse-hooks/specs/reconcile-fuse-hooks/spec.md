@@ -4,7 +4,10 @@
 
 The glob matcher SHALL honor the full pattern including any literal suffix that follows a `**` segment, and SHALL NOT collapse a `**` pattern to a prefix-only check. A pattern beginning with `**/` SHALL match a file only when the remainder of the pattern matches the file's trailing path segments, and SHALL NOT match every changed file unconditionally.
 
-The same matcher backs post-sync hook path matching and the `deploy_paths`, `deploy_sync_paths`, and `deploy_sync_exclude` evaluation used for path-aware deploy skipping, so the corrected semantics SHALL apply identically to all of them.
+The same matcher SHALL back post-sync hook path matching, `deploy_paths`
+relevance checks, the `deploy_sync_paths` target allowlist, and the
+`deploy_sync_exclude` target blocklist, so recursive semantics apply identically
+at every consumer.
 
 #### Scenario: Suffix after recursive segment is honored
 
@@ -20,29 +23,57 @@ The same matcher backs post-sync hook path matching and the `deploy_paths`, `dep
 - **THEN** the pattern does NOT match
 - **AND** the changed file `nested/dir/foo.yml` DOES match
 
-#### Scenario: Deploy-path family uses the corrected matcher
+#### Scenario: Deploy paths use the corrected matcher
 
 - **WHEN** `deploy_paths` contains `traefik/**/*.yml`
 - **AND** a commit changes only `traefik/conf.d/dynamic.yml`
 - **THEN** path-aware skip treats the deploy as relevant (the pattern matches the suffix, not just the `traefik/` prefix)
 - **AND** a commit changing only `docker-compose.yml` is NOT matched by that pattern
 
+#### Scenario: Deploy-sync allowlist uses the corrected matcher
+
+- **WHEN** `deploy_sync_paths` contains `appdata/**/traefik`
+- **AND** one-level deploy-target discovery evaluates `appdata/traefik`
+- **THEN** that target is included
+- **AND** `appdata/authelia` is NOT included by that pattern
+
+#### Scenario: Deploy-sync blocklist uses the corrected matcher
+
+- **WHEN** `deploy_sync_exclude` contains `appdata/**/retired`
+- **AND** one-level deploy-target discovery evaluates `appdata/retired`
+- **THEN** that target is excluded
+- **AND** `appdata/active` is NOT excluded by that pattern
+
 ### Requirement: FUSE-Safe Hook Timing
 
-The reconciler SHALL ensure written files are durably visible on the target filesystem before running post-sync hooks. It SHALL fsync each destination directory after renaming written files into place, and it SHALL apply a settle delay before executing hooks whose default value is a safe non-zero duration rather than zero.
+For local file replacement, the reconciler SHALL sync each changed destination
+parent directory after atomic rename and before post-write verification or
+post-sync hooks. Directory-copy paths MAY batch these operations, but SHALL sync
+each unique changed parent deterministically before returning. Platform-specific
+directory-sync limitations SHALL retain the repository's portable file-copy
+contract rather than preventing supported deployments.
 
-The settle delay SHALL be configurable via `hook_settle_delay` in `bosun.yaml` and the `BOSUN_HOOK_SETTLE_DELAY` environment variable. The `bosun doctor` preflight SHALL warn when a FUSE-like deploy target is configured with a zero settle delay, because hooks may then fire before the rename has propagated through FUSE caches.
+The settle delay SHALL be configurable via `hook_settle_delay` in `bosun.yaml`
+and `BOSUN_HOOK_SETTLE_DELAY`. When neither source configured a value and the
+effective local deploy path is exactly `/mnt/user` or is beneath that
+path-segment boundary, the reconciler SHALL apply a 2-second fallback before
+hooks. An explicit file or environment value SHALL win, including `0s`, and an
+unconfigured non-`/mnt/user` path SHALL retain zero delay. Before this change
+can archive, `bosun doctor` SHALL use the same presence/source distinction and
+warn only when a `/mnt/user` deploy path has an effective zero delay; it SHALL
+NOT warn for an omitted value whose effective runtime delay is the 2-second
+fallback.
 
 #### Scenario: Destination directory fsynced after write
 
 - **WHEN** the reconciler writes a config file to a deploy target and renames it into place
-- **THEN** the destination directory is fsynced before any post-sync hook runs
+- **THEN** the changed destination parent is synced before post-write verification and before any post-sync hook runs
 
-#### Scenario: Default settle delay is non-zero
+#### Scenario: Unconfigured Unraid target receives safe fallback
 
 - **WHEN** neither `hook_settle_delay` nor `BOSUN_HOOK_SETTLE_DELAY` is set
-- **THEN** the reconciler applies a safe non-zero settle delay before running hooks
-- **AND** the deploy does not fire hooks with a zero delay by default
+- **AND** the local deploy path is `/mnt/user/appdata`
+- **THEN** the reconciler waits 2 seconds before running hooks
 
 #### Scenario: Doctor warns on zero delay for FUSE target
 
@@ -50,11 +81,31 @@ The settle delay SHALL be configurable via `hook_settle_delay` in `bosun.yaml` a
 - **AND** the effective `hook_settle_delay` is `0s`
 - **THEN** doctor emits a warning that hooks may fire before FUSE propagation completes
 
-#### Scenario: Explicit zero delay honored on non-FUSE target
+#### Scenario: Doctor does not warn for safe fallback
+
+- **WHEN** `bosun doctor` runs against a `/mnt/user` deploy target
+- **AND** neither settle-delay source is configured
+- **THEN** doctor does NOT emit a zero-delay warning
+- **AND** reconcile's effective settle delay remains the 2-second fallback
+
+#### Scenario: Explicit zero disables fallback
 
 - **WHEN** an operator sets `BOSUN_HOOK_SETTLE_DELAY=0s`
+- **AND** the deploy path is under `/mnt/user`
 - **THEN** the reconciler applies no settle delay
 - **AND** no startup error is raised
+
+#### Scenario: Unconfigured non-Unraid target retains zero delay
+
+- **WHEN** neither settle-delay source is configured
+- **AND** the deploy path is `/srv/appdata`
+- **THEN** the reconciler applies no settle delay
+
+#### Scenario: Lookalike path does not receive fallback
+
+- **WHEN** neither settle-delay source is configured
+- **AND** the deploy path is `/mnt/userdata/appdata`
+- **THEN** the reconciler applies no settle delay
 
 ### Requirement: Hook Match Observability
 
@@ -76,20 +127,29 @@ When post-sync hooks are configured and the reconciler evaluates a non-empty set
 
 ### Requirement: Post-Write Verification Propagation
 
-A successful file write whose post-write content verification fails SHALL NOT be silently omitted from the deploy change set. When `CopyFileIfChanged` renames a file into place successfully but the post-write hash readback fails — a known FUSE-staleness symptom — the reconciler SHALL either record the path in the change set so matching hooks still fire, or surface the verification failure as an error. It SHALL NOT return as if the file were unchanged, which would also cause the file to be skipped (and the hook to miss) on a later retry.
+A file whose atomic rename succeeds SHALL remain in the deploy result when its
+post-write content verification fails, and the copy SHALL return an error that
+wraps `fileutil.ErrPostWriteVerification`. The reconciliation SHALL remain
+failed, retain its redeploy marker, send the normal failure alert, and SHALL NOT
+advance the successful deployment diff base. When Docker is available, dry run
+is false, hooks are configured, and a previous successful commit exists, the
+reconciler SHALL still evaluate matching hooks for the preserved path as
+best-effort remediation. Hook execution SHALL NOT convert the deployment to
+success.
 
 #### Scenario: Verification failure still records the written path
 
 - **WHEN** a file is renamed into place successfully
 - **AND** the post-write content verification fails
-- **THEN** the path is recorded in the change set (hook-eligible) or the deploy surfaces an error
+- **THEN** the path is recorded in the deploy result and remains hook-eligible
+- **AND** the deploy surfaces `ErrPostWriteVerification`
 - **AND** the file is NOT silently treated as unchanged
 
-#### Scenario: Retry after verification failure does not orphan the hook
+#### Scenario: Verification remediation does not erase failure
 
-- **WHEN** a prior deploy left a file whose verification failed and which was not recorded
-- **AND** a subsequent deploy finds the on-disk content already matches the source hash
-- **THEN** the reconciler does not skip the file in a way that permanently prevents the hook from firing
+- **WHEN** a preserved path matches a configured hook after post-write verification fails
+- **THEN** the reconciler may execute that hook as best-effort remediation
+- **AND** the reconciliation still fails with its redeploy marker and successful diff base unchanged
 
 ### Requirement: Hook Config Presence Semantics
 
@@ -213,4 +273,4 @@ The reconciler SHALL validate root hooks and every target hook override before a
 - **WHEN** a valid project config initially omits both hook keys
 - **THEN** file-sourced hooks are empty
 - **AND** `hook_settle_delay` remains default-sourced (or environment-sourced) rather than being marked as an explicit file zero
-- **AND** the effective delay is the safe non-zero default unless an environment override is present
+- **AND** the effective delay receives the 2-second fallback only when the deploy path is `/mnt/user` or beneath it
