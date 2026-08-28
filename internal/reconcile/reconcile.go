@@ -401,7 +401,14 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 		}
 		rootSpan.End()
 	}()
+	lockHeld := false
 	defer func() {
+		// The target lock must cover final state persistence and interruption
+		// alert delivery. Register release inside this finalizer so it runs even
+		// if a provider panics, but only after finalizeAttempt returns or unwinds.
+		if lockHeld {
+			defer r.releaseLock()
+		}
 		r.finalizeAttempt(ctx, runErr, attemptSnapshot)
 	}()
 
@@ -491,11 +498,12 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 			Msg("Failed to acquire reconcile lock, another reconciliation may be in progress")
 		return fmt.Errorf("failed to acquire lock (another reconciliation may be in progress): %w", err)
 	}
-	defer r.releaseLock()
+	lockHeld = true
 
-	// Register the staging finalizer after the lock-release defer so LIFO defer
-	// order secures or deletes secret-bearing evidence before another process can
-	// acquire this target's lock. It remains dormant until render preparation.
+	// Registered after the run finalizer so LIFO order secures or deletes
+	// secret-bearing evidence first. Panic accounting then runs, interruption
+	// state and alerts finalize under the lock, and only then is the lock released.
+	// It remains dormant until render preparation.
 	stagingLifecycleActive := false
 	stagingLifecycleComplete := false
 	defer func() {
@@ -547,14 +555,16 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	// Track commit for alerting.
 	r.lastCommit = after
 
+	// Establish the attempt boundary before config reload. An invalid reloaded
+	// hook is an ordinary terminal pipeline failure, so it must supersede a
+	// stale interrupted outcome even though it fails before attempt accounting.
+	state := LoadState(r.config.StateFile)
+	attemptSnapshot = snapshotAttemptBudget(state, after)
+
 	// Step 2: Reload project config from repo (picks up hook changes).
 	if err := r.reloadProjectConfig(); err != nil {
 		return fmt.Errorf("invalid reloaded project configuration: %w", err)
 	}
-
-	// Load persistent deploy state to determine if pipeline should run.
-	state := LoadState(r.config.StateFile)
-	attemptSnapshot = snapshotAttemptBudget(state, after)
 
 	// State-based skip logic: compare last *deployed* commit, not last *fetched* commit.
 	// Also re-run if NeedsRedeploy is set from a previous partial failure.

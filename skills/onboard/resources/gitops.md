@@ -648,7 +648,9 @@ so the next run reconciles the full declared estate.
 **State tracking includes:**
 - Last successful deploy timestamp and commit
 - Last failed deploy details
-- Optional `last_attempt_outcome` metadata for the most recent interrupted run
+- Optional `last_attempt_outcome` metadata for the most recent interrupted run.
+  The next terminal outcome that is not a propagated caller cancellation,
+  including a successful deploy, clears this field.
 - Consecutive failure count
 - Declared services (what should be running)
 - Drift check results

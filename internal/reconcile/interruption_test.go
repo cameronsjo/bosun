@@ -219,6 +219,88 @@ func (d callbackDecryptor) DecryptFiles(ctx context.Context, _ []string) (map[st
 
 func (callbackDecryptor) CheckAgeKey() error { return nil }
 
+type lockOrderingAlertSender struct {
+	mockAlertSender
+	onFailure func(context.Context) error
+}
+
+func (a *lockOrderingAlertSender) SendDeployFailure(ctx context.Context, _, _, _ string, _ []string, _ time.Duration) error {
+	a.deployFailureCalls++
+	return a.onFailure(ctx)
+}
+
+func TestRun_FinalizesStateAndAlertBeforeReleasingTargetLock(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := &Config{
+		LockFile:  filepath.Join(tmp, "reconcile.lock"),
+		StateFile: filepath.Join(tmp, "state.json"),
+		OnFailure: true,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	var competitorErr error
+	alerted := false
+	alerter := &lockOrderingAlertSender{onFailure: func(context.Context) error {
+		alerted = true
+		saved := LoadState(cfg.StateFile)
+		require.NotNil(t, saved.LastAttemptOutcome,
+			"interruption state must be persisted before alert delivery begins")
+		assert.Equal(t, attemptOutcomeInterrupted, saved.LastAttemptOutcome.Outcome)
+
+		competitor := NewReconciler(&Config{LockFile: cfg.LockFile})
+		competitorErr = competitor.acquireLock()
+		if competitorErr == nil {
+			competitor.releaseLock()
+		}
+		return nil
+	}}
+	r := NewReconciler(cfg,
+		WithGitOperations(callbackGitOps{sync: func(context.Context) (bool, string, string, error) {
+			cancel()
+			return false, "", "new", context.Canceled
+		}}),
+		WithAlerter(alerter),
+	)
+
+	err := r.Run(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.True(t, alerted)
+	assert.Error(t, competitorErr, "target lock must remain held throughout interruption finalization")
+
+	competitor := NewReconciler(&Config{LockFile: cfg.LockFile})
+	require.NoError(t, competitor.acquireLock(), "target lock must release after finalization completes")
+	competitor.releaseLock()
+}
+
+func TestRun_ConfigReloadFailureClearsInterruptedOutcomeWithoutChangingBudget(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := &Config{
+		RepoDir: filepath.Join(tmp, "repo"), LockFile: filepath.Join(tmp, "reconcile.lock"),
+		StateFile: filepath.Join(tmp, "state.json"),
+		ConfigReloader: func(string) (*ReloadedConfig, error) {
+			return nil, fmt.Errorf("repo bosun.yaml: %w", ErrInvalidPostSyncHooks)
+		},
+	}
+	recordedAt := time.Now().Add(-time.Hour).UTC()
+	require.NoError(t, SaveState(cfg.StateFile, &DeployState{
+		LastAttemptedCommit: "new", AttemptCount: 2, LastAlertedAttempt: 1,
+		LastAttemptOutcome: &LastAttemptOutcome{
+			Outcome: attemptOutcomeInterrupted, Commit: "new", Timestamp: recordedAt,
+		},
+	}))
+	r := NewReconciler(cfg,
+		WithGitOperations(&mockGitOps{syncChanged: true, syncBefore: "old", syncAfter: "new"}),
+	)
+
+	err := r.Run(context.Background())
+	require.ErrorIs(t, err, ErrInvalidPostSyncHooks)
+	saved := LoadState(cfg.StateFile)
+	assert.Equal(t, "new", saved.LastAttemptedCommit)
+	assert.Equal(t, 2, saved.AttemptCount)
+	assert.Equal(t, 1, saved.LastAlertedAttempt)
+	assert.Nil(t, saved.LastAttemptOutcome)
+}
+
 func TestRun_PropagatedCancellationFinalizesAtPipelineBoundary(t *testing.T) {
 	tests := []struct {
 		name              string
