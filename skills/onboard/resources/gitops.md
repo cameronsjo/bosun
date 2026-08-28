@@ -310,6 +310,13 @@ Two timing controls are available:
 - **`hook_settle_delay`** — global pause after deploy, before any hooks run (filesystem propagation)
 - **`delay`** — per-hook pause before restarting a specific container
 
+When neither `hook_settle_delay` nor `BOSUN_HOOK_SETTLE_DELAY` is configured
+and the effective local deploy path is exactly `/mnt/user` or beneath it, bosun
+applies a 2-second settle delay before hooks. An explicit file or environment
+value always wins, including `0s`; an unconfigured non-`/mnt/user` path retains
+zero delay. `bosun doctor` treats the omitted `/mnt/user` fallback as safe and
+warns when an explicit effective delay there is non-positive.
+
 Hooks are configured in `bosun.yaml` under `post_sync_hooks`. See the [Configuration guide](configuration.md#post-sync-hooks) for schema and examples.
 `exec` hooks must provide a non-empty `command`; bosun rejects invalid root or per-target hook configuration before deployment instead of silently skipping it.
 

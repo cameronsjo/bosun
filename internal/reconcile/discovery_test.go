@@ -81,6 +81,16 @@ func TestDiscoverDeployTargets(t *testing.T) {
 			},
 		},
 		{
+			name: "allowlist honors suffix after recursive segment",
+			setup: func(t *testing.T, dir string) {
+				mkdirs(t, dir, "appdata/traefik", "appdata/authelia", "compose")
+			},
+			syncPaths: []string{"appdata/**/traefik"},
+			want: []DeployTarget{
+				{RelPath: "appdata/traefik", TargetPath: "traefik", IsDir: true},
+			},
+		},
+		{
 			name: "blocklist excludes matching targets",
 			setup: func(t *testing.T, dir string) {
 				mkdirs(t, dir, "appdata/traefik", "appdata/authelia", "compose")
@@ -88,6 +98,17 @@ func TestDiscoverDeployTargets(t *testing.T) {
 			excludePaths: []string{"appdata/authelia"},
 			want: []DeployTarget{
 				{RelPath: "appdata/traefik", TargetPath: "traefik", IsDir: true},
+				{RelPath: "compose", TargetPath: "compose", IsDir: true},
+			},
+		},
+		{
+			name: "blocklist honors suffix after recursive segment",
+			setup: func(t *testing.T, dir string) {
+				mkdirs(t, dir, "appdata/retired", "appdata/active", "compose")
+			},
+			excludePaths: []string{"appdata/**/retired"},
+			want: []DeployTarget{
+				{RelPath: "appdata/active", TargetPath: "active", IsDir: true},
 				{RelPath: "compose", TargetPath: "compose", IsDir: true},
 			},
 		},

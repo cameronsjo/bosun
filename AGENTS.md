@@ -403,7 +403,7 @@ do not gain legacy aliases.
 | `BOSUN_TEMPLATE_INCLUDE_DIR` | daemon, reconcile, render | Subtree that template `include`/`fromJsonFile` reads are confined to (allowlist). Default `<infraDir>/templates`. Relative values resolve against the infra dir; absolute values are used as-is. Confining reads here keeps sibling SOPS files and `bosun.yaml` unreachable from templates |
 | `BOSUN_STATE_DIR` | daemon, reconcile | Deploy state directory |
 | `BOSUN_POST_SYNC_HOOKS` | daemon, reconcile | JSON array overriding config file hooks |
-| `BOSUN_HOOK_SETTLE_DELAY` | daemon, reconcile | Global pause before post-sync hooks run (e.g., `2s`); explicit `0s` disables the safe FUSE fallback |
+| `BOSUN_HOOK_SETTLE_DELAY` | daemon, reconcile | Global pause before post-sync hooks run. When neither file nor environment configures a value and the effective local deploy path is exactly `/mnt/user` or beneath it, bosun applies a 2-second fallback. Explicit file or environment values always win, including `0s`; an unconfigured non-`/mnt/user` path retains zero delay |
 | `BOSUN_DEPLOY_PATHS` | daemon, reconcile | JSON array of glob patterns for deploy-relevant paths (overrides config file) |
 | `BOSUN_DEPLOY_SYNC_PATHS` | daemon, reconcile | JSON array of glob patterns for deploy sync target allowlist (overrides config file) |
 | `BOSUN_DEPLOY_SYNC_EXCLUDE` | daemon, reconcile | JSON array of glob patterns for deploy sync target blocklist (overrides config file) |

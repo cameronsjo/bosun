@@ -242,13 +242,24 @@ func deployTargetsUnderFUSE(cfg *config.Config) bool {
 	return reconcile.IsUnderFUSEDeployPath(reconcile.DefaultConfig().RemoteAppdataPath)
 }
 
-// checkHookSettleDelayFUSE warns when hook_settle_delay is unconfigured
-// (zero) while the deploy target lives under Unraid's /mnt/user FUSE (shfs)
-// mount, where writes need extra time to settle before post-sync hooks read
-// them back. reconcile.resolveHookSettleDelay already applies a runtime
-// default in this situation, so a missed warning here isn't a silent
-// failure — but explicit config is easier to reason about than a heuristic
-// default, hence the nudge.
+// hookSettleDelayForDoctor mirrors reconcile startup precedence without
+// changing project config: a valid environment value wins, an invalid one is
+// ignored, and explicit file presence remains distinguishable from omission.
+func hookSettleDelayForDoctor(cfg *config.Config) (time.Duration, bool) {
+	if value := os.Getenv("BOSUN_HOOK_SETTLE_DELAY"); value != "" {
+		if delay, ok := doctorDurationOrSeconds(value); ok {
+			return delay, true
+		}
+	}
+	if cfg.HookSettleDelayPresent() {
+		return cfg.HookSettleDelay(), true
+	}
+	return 0, false
+}
+
+// checkHookSettleDelayFUSE warns only when the effective configured delay is
+// non-positive for an Unraid /mnt/user FUSE target. An omitted value is safe:
+// reconcile applies its 2-second fallback before running hooks.
 func checkHookSettleDelayFUSE(cfg *config.Config) CheckResult {
 	if cfg == nil {
 		return CheckResult{}
@@ -257,12 +268,17 @@ func checkHookSettleDelayFUSE(cfg *config.Config) CheckResult {
 		return CheckResult{}
 	}
 
-	if cfg.HookSettleDelay() > 0 {
-		_, _ = ui.Green.Printf("  * hook_settle_delay is set (%s) for a /mnt/user (FUSE) deploy target\n", cfg.HookSettleDelay())
+	delay, configured := hookSettleDelayForDoctor(cfg)
+	if !configured {
+		_, _ = ui.Green.Println("  * hook_settle_delay uses the safe 2s fallback for a /mnt/user (FUSE) deploy target")
+		return CheckResult{Passed: 1}
+	}
+	if delay > 0 {
+		_, _ = ui.Green.Printf("  * hook_settle_delay is set (%s) for a /mnt/user (FUSE) deploy target\n", delay)
 		return CheckResult{Passed: 1}
 	}
 
-	_, _ = ui.Yellow.Println("  ! hook_settle_delay is unset for a /mnt/user (FUSE) deploy target")
+	_, _ = ui.Yellow.Printf("  ! hook_settle_delay is explicitly non-positive (%s) for a /mnt/user (FUSE) deploy target\n", delay)
 	_, _ = ui.Blue.Println("      To fix this:")
 	_, _ = ui.Blue.Println("      - Set hook_settle_delay: 2s (or higher) in bosun.yaml")
 	_, _ = ui.Blue.Println("      - Unraid's shfs FUSE layer can lag writes; post-sync hooks may otherwise fire before the write settles")
