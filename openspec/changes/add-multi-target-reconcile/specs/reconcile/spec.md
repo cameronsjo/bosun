@@ -4,7 +4,7 @@
 
 Bosun SHALL accept an ordered `targets:` list of named target descriptors in `bosun.yaml` and an authoritative `BOSUN_TARGETS` JSON array with the same field surface. JSON `null` SHALL retain project-config targets; an explicit empty JSON array SHALL resolve to the backwards-compatible implicit default.
 
-When no target descriptor is effective, Bosun SHALL synthesize one target named `default` from the flat configuration. A lone descriptor named `default`, case-insensitively, SHALL configure and normalize that compatibility target. A multi-target set containing `default` SHALL fail rather than silently discard or reinterpret it.
+When no target descriptor is effective, Bosun SHALL synthesize one target named `default` from the flat configuration. A lone descriptor named `default`, case-insensitively, SHALL configure and normalize that compatibility target. Every configured descriptor SHALL have a non-empty valid name; an invalid descriptor or case-insensitive duplicate SHALL reject the complete effective set rather than be skipped or replaced by an implicit default. A multi-target set containing `default` SHALL likewise fail rather than silently discard or reinterpret it.
 
 #### Scenario: YAML target order is preserved
 
@@ -51,7 +51,7 @@ Each complete canonical pipeline SHALL read and write only its target's slot. Ve
 
 ### Requirement: Per-Target State Persistence
 
-Every effective target SHALL use an independent path for the canonical deploy-state document. A named target without an explicit override SHALL derive `deploy-state-<target-name>.json` in the configured state directory; the implicit or lone default target SHALL preserve the legacy state path.
+Every effective target SHALL use an independent path for the canonical deploy-state document. A named target without a non-empty explicit override SHALL derive `deploy-state-<target-name>.json` in the configured state directory. The implicit default SHALL preserve the legacy state path; a lone default descriptor SHALL use that path unless it supplies a non-empty confined override.
 
 Canonical state schema, atomic-write, attempt, interruption, circuit-breaker, drift, backup, image, skip, and stale-outcome rules SHALL apply independently to each target document. An outcome for one target SHALL NOT mutate a sibling's state.
 
@@ -74,6 +74,8 @@ Bosun SHALL run targets sequentially in resolved order. For each target it SHALL
 
 Bosun SHALL NOT claim a once-per-cycle Git/decrypt phase, shared changed-file snapshot, or common commit pin across target attempts. An ordinary target failure SHALL be accumulated and later targets SHALL proceed while the shared cycle context remains live. Target iteration SHALL stop on a non-live shared context exactly as required by the canonical reconcile spec. After eligible targets finish, the cycle SHALL report an error when any target failed without undoing successful siblings.
 
+Every structured log record owned by a target's `Reconciler` SHALL carry that target's normalized identifier whether the pipeline was started by the daemon or direct CLI. Cycle-level records that do not belong to one target are excluded. Target log context SHALL NOT contain secrets.
+
 #### Scenario: Each target runs the full pipeline
 
 - **WHEN** two named targets are eligible for reconciliation
@@ -94,6 +96,12 @@ Bosun SHALL NOT claim a once-per-cycle Git/decrypt phase, shared changed-file sn
 - **WHEN** the shared cycle context becomes canceled or expired during the active target
 - **THEN** canonical active-target finalization runs as applicable
 - **AND** no later target starts, mutates state, stages files, acquires a lock, or sends an alert
+
+#### Scenario: Reconciler logs identify their target
+
+- **WHEN** daemon or direct CLI execution runs named target `pi`
+- **THEN** every target-owned structured reconciliation log record carries target `pi`
+- **AND** no secret value is added as target context
 
 ### Requirement: Daemon Multi-Target Admission
 
@@ -135,7 +143,7 @@ Top-level decrypted values SHALL remain shared input. When a target has a secret
 
 ### Requirement: Multi-Target CLI Filtering
 
-The direct `bosun reconcile` and `bosun drift` commands SHALL accept a target filter that selects one effective descriptor by name. An unknown target SHALL fail without falling back to the implicit default or running another target. Daemon trigger entry points SHALL continue to request a complete cycle and SHALL NOT gain target-specific trigger semantics in this change.
+The direct `bosun reconcile` and `bosun drift` commands SHALL accept a target filter that selects one effective descriptor by name. When project targets are available, an unknown target SHALL fail without falling back to the implicit default or running another target. When no project target configuration can be discovered, `drift --target` MAY retain the legacy compatibility fallback that derives only the requested cached-state path; it SHALL NOT execute a reconciliation target. Daemon trigger entry points SHALL continue to request a complete cycle and SHALL NOT gain target-specific trigger semantics in this change.
 
 #### Scenario: Reconcile filter selects one target
 
@@ -144,17 +152,31 @@ The direct `bosun reconcile` and `bosun drift` commands SHALL accept a target fi
 - **THEN** only `pi` runs its complete canonical pipeline
 - **AND** `unraid` remains untouched
 
-#### Scenario: Unknown filter fails closed
+#### Scenario: Unknown reconcile filter fails closed
 
-- **WHEN** the requested target name is not effective
-- **THEN** the command returns an error naming the unknown target
+- **WHEN** the requested reconcile target name is not effective
+- **THEN** `bosun reconcile` returns an error naming the unknown target
 - **AND** no target executes
+
+#### Scenario: Configured drift filter fails closed
+
+- **WHEN** project configuration exposes effective targets `unraid` and `pi`
+- **AND** the operator requests cached or live drift for target `nas`
+- **THEN** `bosun drift` returns an error naming the unknown target
+- **AND** it does not substitute the implicit default or inspect another target
+
+#### Scenario: No-config cached drift preserves compatibility
+
+- **WHEN** no project target configuration can be discovered
+- **AND** the operator requests cached drift for target `pi`
+- **THEN** Bosun MAY derive and inspect only `pi`'s legacy-compatible state path
+- **AND** it does not execute a target or silently inspect the default state path
 
 ### Requirement: Multi-Target Drift CLI
 
 Cached drift inspection SHALL read each selected target's independent canonical state document. Unfiltered multi-target JSON SHALL be one object with a `targets` array, `{"targets":[...]}`, where every entry names its target and contains that target's drift result or target-specific unavailable error.
 
-Live drift SHALL query only the Docker environment represented by the target. Until remote Docker inspection is supported, `drift --live` for a target with a non-empty remote host SHALL fail before any local Docker query and SHALL NOT mutate target state. Cached drift for that target SHALL remain available.
+Live drift SHALL query only the Docker environment represented by the target. Bosun SHALL preflight the complete selected live set before opening Docker. Until remote Docker inspection is supported, any selection containing a target with a non-empty remote host SHALL fail as a whole before any local Docker query and SHALL NOT mutate any selected target state. Cached drift for every target SHALL remain available.
 
 #### Scenario: Aggregate cached JSON has one targets array
 
@@ -169,9 +191,15 @@ Live drift SHALL query only the Docker environment represented by the target. Un
 - **THEN** the command returns a remote-live-drift unsupported error before opening the local Docker client
 - **AND** no target state is changed
 
+#### Scenario: Mixed unfiltered live drift fails atomically
+
+- **WHEN** unfiltered live drift selects local target `pi` and remote target `unraid`
+- **THEN** Bosun rejects the request before inspecting either target's Docker environment
+- **AND** neither target's state is changed
+
 ### Requirement: Target Configuration Validation
 
-Bosun SHALL apply equivalent target validation after YAML and `BOSUN_TARGETS` decoding. It SHALL prevent unsafe names and case-insensitive duplicates from executing, reject `default` in a multi-target set, and reject resource collisions in state files, equal or nested staging slots, Docker host/project namespaces, and effective deploy destinations.
+Bosun SHALL apply equivalent target validation after YAML and `BOSUN_TARGETS` decoding. An empty or unsafe name, a case-insensitive duplicate, `default` in a multi-target set, or a resource collision in state files, equal or nested staging slots, Docker host/project namespaces, or effective deploy destinations SHALL reject the complete effective target set.
 
 Explicit state and staging overrides SHALL be confined to their configured roots. Local appdata/deploy paths SHALL be confined to the permitted local deploy root. A confinement failure SHALL reject the complete effective target set before Git sync, staging preparation, lock acquisition, state mutation, deployment, or alerting.
 
@@ -193,11 +221,26 @@ Explicit state and staging overrides SHALL be confined to their configured roots
 - **BUT WHEN** that descriptor appears with a named sibling
 - **THEN** the complete set is rejected
 
+#### Scenario: Invalid descriptor cannot expose a sibling or fallback
+
+- **WHEN** any YAML or environment descriptor has an empty or unsafe name or duplicates a sibling case-insensitively
+- **THEN** target resolution rejects the complete effective set
+- **AND** no valid sibling or synthesized default target executes
+
 ### Requirement: Per-Target Configuration Independence
 
 Derivation and hot reload SHALL leave each effective target, every sibling, and the base configuration with independent mutable slices and maps. Nil slices SHALL inherit documented base values and explicitly present empty slices SHALL clear them.
 
-Target decoding SHALL preserve scalar presence where omission and explicit empty have different meanings. Each scalar SHALL have a documented rule. In particular, an empty `target_host` SHALL mean local rather than inherit another host; an omitted inheritable scalar SHALL retain its documented base value; and an explicitly empty clearable scalar SHALL clear rather than silently select a foreign path or project.
+Target decoding SHALL preserve scalar presence where omission and explicit empty have different meanings. Scalar fields SHALL follow these rules:
+
+- `name` is required and empty is invalid.
+- An omitted `target_host` inherits the base host; explicit empty selects local execution.
+- Omitted `local_appdata_path` and `remote_appdata_path` values inherit their base values; explicit empty is invalid rather than selecting an unrelated or secrets-derived deploy path.
+- An omitted `project_name` inherits the base project; explicit empty selects the Compose-derived project namespace.
+- An omitted `secrets_scope` inherits the base scope; explicit empty disables the target-scoped overlay.
+- For a named target, omitted or empty `state_file` and `staging_dir` values select their documented per-target derived paths; for the implicit or lone default they preserve the legacy paths. A non-empty value is an exact override subject to root confinement.
+
+No scalar rule SHALL silently select a sibling's host, path, project, or secrets scope.
 
 #### Scenario: Explicit empty slice clears only its target
 
@@ -212,20 +255,47 @@ Target decoding SHALL preserve scalar presence where omission and explicit empty
 - **AND** the explicit empty follows its documented clear or local rule
 - **AND** neither silently resolves to an unintended sibling or production target
 
+#### Scenario: Explicit-empty deploy path is invalid
+
+- **WHEN** a target explicitly sets its applicable local or remote appdata path to empty
+- **THEN** target resolution rejects the effective set
+- **AND** Bosun does not fall back to a sibling or secrets-derived deploy path
+
+#### Scenario: Explicit-empty project uses Compose derivation
+
+- **WHEN** a target explicitly sets `project_name` to empty
+- **THEN** Bosun leaves the effective Compose project name unset for Compose to derive
+- **AND** it does not inherit the base target's explicit project name
+
 ### Requirement: Per-Target Daemon State Visibility
 
-Daemon periodic drift, health/status, and circuit-breaker views SHALL enumerate the current effective targets and read each target's independent canonical state document. `bosun status` SHALL report the last deploy, drift, and breaker condition for each effective target. A single implicit or lone default target SHALL preserve the existing default presentation as closely as possible while reading the same legacy state path.
+The daemon SHALL use one centralized enumeration of its startup-resolved target snapshot and each target's independent canonical state document for periodic drift, circuit-breaker diagnostics, and operator status. Structural target changes SHALL require a daemon restart; file reload SHALL NOT silently replace the active topology. After restart, a removed target SHALL NOT be reported as current. Missing or malformed state SHALL be attributed to its target without substituting a sibling's state.
 
-Reloaded target topology SHALL supersede stale target visibility at the same safe configuration boundary used for reconciliation. Removed targets SHALL NOT be reported as current, and a target's missing or malformed state SHALL be attributed to that target without substituting a sibling's state.
+Periodic live drift SHALL inspect every local target against its own Docker namespace. It SHALL NOT inspect the local Docker daemon on behalf of a remote target; that target SHALL receive an attributable unsupported/unavailable result without mutating cached state, while eligible local siblings continue.
 
-#### Scenario: Status reports independent target outcomes
+The local or authenticated operator `/status` view and direct `bosun status` output SHALL report last deploy, drift, and circuit-breaker condition per effective target. Multi-target `/status` SHALL add an ordered target collection; a single implicit or lone default SHALL preserve the existing top-level presentation and legacy state path. The public `/health` response SHALL remain the bounded readiness projection required by the daemon-security spec and SHALL NOT expose the target collection, target names, state paths, drift details, or breaker details.
+
+#### Scenario: Operator status reports independent target outcomes
 
 - **WHEN** `unraid` has a successful current state and `pi` has a tripped breaker
-- **THEN** daemon and CLI status visibility report those conditions against their respective targets
+- **THEN** authenticated or local `/status` and `bosun status` attribute those conditions to their respective targets
 - **AND** neither state is read from the base default path by mistake
 
-#### Scenario: Removed target is not current after reload
+#### Scenario: Public health remains bounded
 
-- **WHEN** a valid configuration reload removes target `pi`
-- **THEN** subsequent daemon state visibility enumerates only the new effective set
-- **AND** the old state file is not presented as a current target
+- **WHEN** multiple targets have deploy, drift, or breaker details
+- **THEN** public `/health` still exposes only the bounded readiness fields required by daemon security
+- **AND** it does not expose target names, state paths, drift details, or breaker details
+
+#### Scenario: Periodic drift separates local and remote targets
+
+- **WHEN** periodic drift enumerates local target `pi` and remote target `unraid`
+- **THEN** it inspects `pi` against `pi`'s Docker namespace
+- **AND** marks `unraid` unsupported or unavailable without opening local Docker on its behalf or mutating its cached state
+
+#### Scenario: Structural change becomes current after restart
+
+- **WHEN** configuration removes target `pi` while the daemon is running
+- **THEN** the startup-resolved snapshot continues to govern until restart
+- **AND WHEN** the daemon restarts with the valid new configuration
+- **THEN** `pi` is no longer presented as a current target

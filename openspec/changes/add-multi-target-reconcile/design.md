@@ -39,7 +39,7 @@ Named targets receive derived lock paths through `ConfigForTarget`. This change 
 
 ### Decision: Preserve actual default and override semantics
 
-No configured targets resolves to one implicit `default`. A lone target named `default`, case-insensitively, is accepted and normalized so its explicit fields configure the compatibility target. A multi-target set containing `default` is rejected. Invalid names, duplicate names, staging overlap, deploy-path collisions, Docker namespace collisions, and state-path collisions are rejected or excluded according to the current resolver contract.
+No configured targets resolves to one implicit `default`. A lone target named `default`, case-insensitively, is accepted and normalized so its explicit fields configure the compatibility target. A multi-target set containing `default` is rejected. An empty or unsafe target name, a case-insensitive duplicate, staging overlap, a deploy-path collision, a Docker namespace collision, or a state-path collision rejects the complete effective target set. It must never be skipped in a way that permits a sibling or synthesized default target to run.
 
 `BOSUN_TARGETS` is a JSON array. JSON `null` leaves project targets in effect; an explicit empty array is authoritative and resolves to the implicit default. YAML and environment descriptors expose the same shipped fields.
 
@@ -51,19 +51,19 @@ Staging paths must be pairwise disjoint. A target owns only its staging slot, an
 
 ### Decision: Keep alert context additive
 
-Alert manager methods accept the target as a positional argument. A non-empty target other than `local` receives a bracketed title suffix and target metadata/message context. Empty and `local` identifiers preserve legacy titles. The design does not add a `TargetName` field to every alert API and does not replace lifecycle alert requirements.
+Alert manager methods accept the target as a positional argument. An explicit named target, including one literally named `local`, receives a bracketed title suffix and target metadata/message context. The implicit or lone-default local compatibility target uses the empty legacy sentinel; a default remote deployment retains its existing host-derived context. The design does not add a `TargetName` field to every alert API and does not replace lifecycle alert requirements.
 
 ### Decision: Record the actual CLI surface
 
 `bosun reconcile --target` and `bosun drift --target` filter a direct command to one effective target. Cached multi-target drift emits one JSON object with a `targets` array: `{"targets":[...]}`. A daemon trigger continues to request a complete cycle, so the proposed target-specific trigger flag is removed.
 
-Remote named targets cannot be inspected correctly through the local Docker daemon. The remaining implementation must reject `drift --live` for such a target before any Docker access while retaining cached-state reporting.
+Remote named targets cannot be inspected correctly through the local Docker daemon. The remaining implementation must preflight the complete live selection and reject it before any Docker access or state mutation when any selected target is remote. Cached reporting remains available. When no project target configuration is discoverable, the existing single-target drift compatibility fallback may still derive the requested cached-state path; it must not execute an unrelated target.
 
 ### Decision: Finish scalar presence and operational visibility explicitly
 
-Slice overrides already use presence semantics: nil inherits and an explicit empty slice clears, with independent backing storage after derivation and reload. Scalars currently cannot consistently distinguish omission from explicit empty values. The remaining implementation will preserve presence during decoding and document each field's rule; `target_host: ""` remains explicitly local.
+Slice overrides already use presence semantics: nil inherits and an explicit empty slice clears, with independent backing storage after derivation and reload. Scalar decoding will preserve presence and implement the normative field rules in the reconcile delta: `name` is required; omitted `target_host`, appdata paths, `project_name`, and `secrets_scope` inherit while their explicit-empty values respectively select local, fail validation, select the Compose-derived namespace, and disable the scoped overlay; state/staging omission or empty uses the documented default/derived path and a non-empty value is an exact confined override.
 
-The daemon currently reads its base state path for periodic drift, health/status, and circuit-breaker visibility. The remaining implementation will enumerate effective target state files and make `bosun status` expose each target without regressing the one-default presentation. Target context must also reach the reconciler's internal log records, not only the daemon wrapper.
+The daemon currently reads its base state path for periodic drift, operator status, and circuit-breaker visibility. The remaining implementation will enumerate the daemon's startup-resolved target snapshot, expose per-target state through operator-only status views, keep the public `/health` projection bounded by the daemon-security contract, and make `bosun status` expose each target without regressing the one-default presentation. Structural topology changes continue to require a daemon restart. Target context must also reach target-owned `Reconciler` log records from daemon and direct CLI runs, not only the daemon wrapper.
 
 ## Risks / Trade-offs
 
