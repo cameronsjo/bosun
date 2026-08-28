@@ -21,10 +21,10 @@
 
 - [ ] 3.1 Refactor daemon to hold `[]Target` instead of one `Reconciler`
 - [ ] 3.2 On each reconciliation cycle, iterate targets and create/run a `Reconciler` per target
-- [ ] 3.3 Failure on target N logs error + sends alert, then target N+1 proceeds
+- [ ] 3.3 A failure on target N logs error + sends alert, then target N+1 proceeds while the shared cycle context remains live; cancellation or deadline expiry stops later targets per the canonical reconcile spec
 - [ ] 3.4 Add target name to logger context for all reconciliation log messages
 - [ ] 3.5 Preserve single-flight reconciliation semantics: process-wide gate serializes all entry points, dirty-flag coalesces concurrent triggers into follow-up cycle
-- [ ] 3.6 Write integration test: two targets, one fails, second still runs
+- [ ] 3.6 Write integration test: two targets, one fails while the shared cycle context remains live, second still runs
 - [ ] 3.7 Write test: concurrent trigger during active cycle sets dirty flag and coalesces
 
 ## 4. Secrets scoping

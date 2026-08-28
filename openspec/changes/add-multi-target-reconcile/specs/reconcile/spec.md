@@ -121,12 +121,13 @@ The daemon SHALL reconcile targets sequentially in the order they appear in the 
 
 The git clone/pull result (commit hash, changed files) SHALL be reused for all targets in the cycle.
 
-A failure on one target SHALL be logged and alerted, then the next target proceeds. The daemon SHALL NOT abort the cycle on a per-target failure.
+A failure on one target SHALL be logged and alerted, then the next target proceeds while the shared cycle context remains live. The daemon SHALL NOT abort the cycle solely because of a per-target failure. If the shared cycle context is canceled or its deadline expires, target iteration SHALL stop as required by the canonical `Non-Live Cycle Context Stops Target Iteration` requirement.
 
 #### Scenario: Two targets, one fails, second proceeds
 
 - **WHEN** targets `unraid` and `pi` are configured in that order
 - **AND** `unraid` fails during compose up
+- **AND** the shared cycle context remains live
 - **THEN** a failure alert is sent for `unraid`
 - **AND** reconciliation proceeds to `pi`
 - **AND** `pi` completes successfully with its own state file updated
@@ -256,7 +257,7 @@ The reconciler SHALL execute a two-phase pipeline: cycle-level stages run once, 
 
 **Post-cycle:** Release process-wide single-flight gate. If dirty flag is set, start another cycle.
 
-A failure at any per-target stage SHALL abort the remaining stages for that target and release its per-target lock. The health gate (stage 13) failing SHALL trigger rollback for that target before aborting. Other targets in the cycle SHALL continue unaffected.
+A failure at any per-target stage SHALL abort the remaining stages for that target and release its per-target lock. The health gate (stage 13) failing SHALL trigger rollback for that target before aborting. While the shared cycle context remains live, other targets in the cycle SHALL continue unaffected. If the context is canceled or its deadline expires, target iteration SHALL stop as required by the canonical `Non-Live Cycle Context Stops Target Iteration` requirement.
 
 Per-target locks SHALL always be released via defer, even on panic. The single-flight gate SHALL always be released after all targets complete.
 
@@ -274,6 +275,7 @@ When only one target is configured (implicit default), behavior SHALL be identic
 #### Scenario: Pipeline aborts on stage failure for one target
 
 - **WHEN** target `unraid` fails during template rendering
+- **AND** the shared cycle context remains live
 - **THEN** remaining per-target stages for `unraid` are skipped
 - **AND** a throttled failure alert is sent for `unraid`
 - **AND** `unraid`'s per-target lock is released
