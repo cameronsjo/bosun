@@ -215,6 +215,32 @@ func TestRestore_SnapshotNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found")
 }
 
+func TestRestore_RefusesUninspectableOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+	snapshotName := "snapshot-20240101-120000"
+	snapshotPath := filepath.Join(snapshotsDir(tmpDir), snapshotName)
+	require.NoError(t, os.MkdirAll(snapshotPath, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(snapshotPath, "test.yml"), []byte("snapshot"), 0644))
+
+	outDir := outputDir(tmpDir)
+	require.NoError(t, os.WriteFile(outDir, []byte("current output"), 0644))
+
+	err := Restore(tmpDir, snapshotName)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "inspect current output for backup")
+	output, readErr := os.ReadFile(outDir)
+	require.NoError(t, readErr)
+	assert.Equal(t, "current output", string(output))
+	restoreArtifacts, globErr := filepath.Glob(outDir + ".restore-*")
+	require.NoError(t, globErr)
+	assert.Empty(t, restoreArtifacts)
+	snapshotEntries, readDirErr := os.ReadDir(snapshotsDir(tmpDir))
+	require.NoError(t, readDirErr)
+	require.Len(t, snapshotEntries, 1)
+	assert.Equal(t, snapshotName, snapshotEntries[0].Name())
+}
+
 func TestCleanup(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -563,4 +589,3 @@ func TestList_ReadDirError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, snapshots, 1)
 }
-
