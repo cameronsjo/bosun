@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.42.0](https://github.com/cameronsjo/bosun/compare/v0.41.0...v0.42.0) (2026-08-28)
+
+
+### Features
+
+* **reconcile:** distinguish interrupted attempts ([#626](https://github.com/cameronsjo/bosun/issues/626)) ([5e4e517](https://github.com/cameronsjo/bosun/commit/5e4e5177cbc76681c5aff5ae18c9aed0b2df621f))
+
 ## [0.41.0](https://github.com/cameronsjo/bosun/compare/v0.40.7...v0.41.0) (2026-08-26)
 
 
