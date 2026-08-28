@@ -36,13 +36,13 @@ Each PR receives a fresh polish pass, independent exact-head review, hosted chec
 - [x] Correct the two inaccurate claims in `add-health-gate-scope` before archive.
 - [x] Archive `harden-local-rollback-extraction`, `bound-alert-provider-content`, `add-health-gate-scope`, `add-https-git-auth`, and `add-drift-breaker-semantics` without `--skip-specs`.
 - [x] Strict-validate all specs and compare each archived delta with its canonical requirement.
-- [ ] Independently review and merge the archive PR; remove its worktree and temporary files.
+- [x] Independently review and merge the archive PR; remove its worktree and temporary files.
 
 ### 3. Failed-staging archive and downstream refresh
 
-- [ ] Correct `preserve-failed-staging-evidence` so its delta retains sibling continuation and uses the shipped stage labels.
-- [ ] Archive it separately without `--skip-specs`, then refresh the complete `Pipeline Orchestration` blocks in `add-backup-integrity-semantics`, `add-image-prepull`, `add-image-update-policy`, and `add-multi-target-reconcile`.
-- [ ] Strict-validate all specs, compare the archived delta with the canonical requirement, and verify each refreshed downstream block retains its own proposed behavior.
+- [x] Correct `preserve-failed-staging-evidence` so its delta retains sibling continuation and uses the shipped stage labels.
+- [x] Archive it separately without `--skip-specs`, then refresh the complete `Pipeline Orchestration` blocks in `add-backup-integrity-semantics`, `add-image-prepull`, `add-image-update-policy`, and `add-multi-target-reconcile`.
+- [x] Strict-validate all specs, compare the archived delta with the canonical requirement, and verify each refreshed downstream block retains its own proposed behavior.
 - [ ] Independently review and merge the archive/refresh PR; remove its worktree and temporary files.
 
 ### 4. Multi-target grounding (#438)

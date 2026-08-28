@@ -14,8 +14,10 @@ The safe design must protect the complete render rather than claim it is redacte
 
 Named targets already derive isolated staging paths through `ConfigForTarget` and
 `TargetStagingDir`. Both the daemon and CLI reconcile targets sequentially and
-continue after one target fails, so lifecycle operations must never act on the base
-staging root when a named target has an effective child or explicit override.
+continue after one target fails only while the shared cycle context remains live;
+they stop target iteration when it is canceled or its deadline expires. Lifecycle
+operations must never act on the base staging root when a named target has an
+effective child or explicit override.
 Configured overrides can nevertheless make two effective paths equal or nested, so
 derivation alone is not a sufficient deletion boundary.
 
@@ -27,7 +29,8 @@ derivation alone is not a sufficient deletion boundary.
   - Bound rendered plaintext to one per-target slot and owner-only access for its
     entire lifetime, not only after a failure is returned.
   - Preserve evidence regardless of rollback success, partial failure, or absence.
-  - Keep target outcomes and staging paths independent in multi-target runs.
+  - Keep target outcomes and staging paths independent in multi-target runs while
+    honoring the shared cycle context's stop condition.
   - Reject overlapping effective staging paths before any target execution.
 - Non-Goals:
   - Long-term or timestamped archival of rendered plaintext.
@@ -48,7 +51,7 @@ derivation alone is not a sufficient deletion boundary.
     arbitrary template transformations cannot be redacted soundly.
 
 - **Decision: cleanup follows the complete verification path.** The normal cleanup
-  call moves after the health gate, post-sync hook execution, and post-deploy
+  call moves after the configured health gate, post-sync hook execution, and post-deploy
   verification, but before successful completion is reported. Hook errors keep
   their existing non-fatal warning semantics. Any deployment failure after a
   completed render leaves that target's current render in place for diagnosis.
@@ -102,6 +105,12 @@ derivation alone is not a sufficient deletion boundary.
   rollback restores the live managed tree but does not explain why the rejected
   render failed. A failed or partial rollback makes that render even more valuable.
   Both outcomes retain the same secured staging slot.
+
+- **Decision: sibling continuation remains context-bound.** A target-local failure
+  retains only that target's evidence and does not stop later siblings while the
+  shared cycle context remains live. Cancellation or deadline expiry stops target
+  iteration under the canonical `Non-Live Cycle Context Stops Target Iteration`
+  requirement, without cleaning or replacing an untouched sibling's staging slot.
 
 ## Risks / Trade-offs
 
