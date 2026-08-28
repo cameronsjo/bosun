@@ -283,7 +283,9 @@ cleanup failure after verification is non-fatal only when the retained tree is
 successfully proven owner-only; if Bosun can neither harden nor delete that tree,
 the security failure SHALL abort successful completion.
 
-Per-target locks SHALL always be released via defer, even on panic. The single-flight gate SHALL always be released after all targets complete.
+Per-target locks and the process-wide single-flight gate SHALL always be released
+via defer, even on panic. The single-flight gate SHALL remain held until target
+iteration stops or completes.
 
 When only one target is configured (implicit default), behavior SHALL be identical to the pre-multi-target pipeline.
 
