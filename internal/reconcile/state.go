@@ -69,14 +69,15 @@ type DriftItem struct {
 
 // DeployState tracks the last successful deployment and attempt history.
 type DeployState struct {
-	SchemaVersion       int       `json:"schema_version"`
-	LastDeployedCommit  string    `json:"last_deployed_commit,omitempty"`
-	DeployedAt          time.Time `json:"deployed_at,omitempty"`
-	DeployCount         int       `json:"deploy_count,omitempty"`
-	Source              string    `json:"source,omitempty"`
-	LastAttemptedCommit string    `json:"last_attempted_commit,omitempty"`
-	AttemptCount        int       `json:"attempt_count,omitempty"`
-	LastAlertedAttempt  int       `json:"last_alerted_attempt,omitempty"`
+	SchemaVersion       int                 `json:"schema_version"`
+	LastDeployedCommit  string              `json:"last_deployed_commit,omitempty"`
+	DeployedAt          time.Time           `json:"deployed_at,omitempty"`
+	DeployCount         int                 `json:"deploy_count,omitempty"`
+	Source              string              `json:"source,omitempty"`
+	LastAttemptedCommit string              `json:"last_attempted_commit,omitempty"`
+	AttemptCount        int                 `json:"attempt_count,omitempty"`
+	LastAlertedAttempt  int                 `json:"last_alerted_attempt,omitempty"`
+	LastAttemptOutcome  *LastAttemptOutcome `json:"last_attempt_outcome,omitempty"`
 
 	// Declared state snapshot from last successful deployment.
 	DeclaredServices []DeclaredService `json:"declared_services,omitempty"`
@@ -119,6 +120,17 @@ type DeployState struct {
 	// data). Empty on a fresh state file, which makes the first deploy prune
 	// nothing and simply seed the manifest.
 	DeployedFiles []string `json:"deployed_files,omitempty"`
+}
+
+const attemptOutcomeInterrupted = "interrupted"
+
+// LastAttemptOutcome records a bounded, operator-visible terminal outcome that
+// is distinct from the deploy failure budget. It intentionally carries no
+// arbitrary pipeline error text because subprocess errors can contain secrets.
+type LastAttemptOutcome struct {
+	Outcome   string    `json:"outcome"`
+	Commit    string    `json:"commit,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // DriftSelfHealTracking is the persisted state machine for automatic drift

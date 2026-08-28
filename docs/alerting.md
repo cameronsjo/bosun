@@ -4,6 +4,7 @@ Bosun supports multiple alert providers for deployment notifications. Alerts are
 
 - **Deployment success** (optional, disabled by default)
 - **Deployment failure** (enabled by default)
+- **Interrupted reconciliation** (through the deployment-failure lifecycle)
 - **Rollback success**
 - **Rollback failure** (critical severity)
 
@@ -107,6 +108,26 @@ alerts:
   on_success: false  # Alert on successful deployments
   on_failure: true   # Alert on failed deployments (default: true)
 ```
+
+### Interrupted reconciliations
+
+Bosun distinguishes daemon shutdown from a commit-caused failure only when the
+caller context is cancelled and the returned pipeline error wraps
+`context.Canceled`. That interrupted attempt does not consume a circuit-breaker
+failure or repeated-failure alert-throttle slot. Bosun restores the prior
+attempt budget, keeps `needs_redeploy` set if deployment had already begun, and
+records a canonical `last_attempt_outcome` with outcome `interrupted`, the
+affected commit when known, and a timestamp. A later ordinary failure or
+success clears that marker.
+
+When `on_failure` is enabled, an interrupted run attempts exactly one existing
+deployment-failure alert with an interruption reason. Stage-specific failure
+and health-gate rollback companion alerts are suppressed for that cancellation.
+Delivery preserves reconcile correlation values, detaches caller cancellation,
+and is bounded to 30 seconds. A provider failure is logged without erasing the
+persisted outcome or consuming the alert throttle. Reconcile deadline expiry
+and a real stage error that races with shutdown remain ordinary counted
+failures.
 
 ## Severity Levels
 

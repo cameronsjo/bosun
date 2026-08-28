@@ -1063,6 +1063,14 @@ func (d *Daemon) executeReconcileWithMode(ctx context.Context, source string, fo
 	// subsystems are not yet fan-out aware. This means periodic drift alerts and
 	// health reporting only reflect the default/base target until these are refactored.
 	for _, target := range targets {
+		if cycleCtxErr := terminalReconcileCycleContextError(ctx); cycleCtxErr != nil {
+			if firstErr == nil {
+				firstErr = cycleCtxErr
+			}
+			logger.Info().Err(cycleCtxErr).Msg("Stopping target iteration because reconciliation context is no longer live")
+			break
+		}
+
 		targetLogger := logger.With().Str("target", target.Name).Logger()
 
 		// Create a per-target config and reconciler.
@@ -1094,11 +1102,20 @@ func (d *Daemon) executeReconcileWithMode(ctx context.Context, source string, fo
 			}
 			targetLogger.Error().Err(err).Msg("Target reconciliation failed")
 			ui.Error("Target %s failed: %v", target.Name, err)
+			if terminalReconcileCycleContextError(ctx) != nil {
+				break
+			}
 			continue
 		}
 
 		successCount++
 		targetLogger.Info().Msg("Target reconciliation completed")
+		if cycleCtxErr := terminalReconcileCycleContextError(ctx); cycleCtxErr != nil {
+			if firstErr == nil {
+				firstErr = cycleCtxErr
+			}
+			break
+		}
 	}
 
 	// Determine overall cycle result.
@@ -1154,6 +1171,14 @@ func (d *Daemon) executeReconcileWithMode(ctx context.Context, source string, fo
 		Msg("Reconciliation cycle completed")
 
 	ui.Success("Reconciliation completed in %s (%d targets)", time.Since(start), len(targets))
+	return nil
+}
+
+func terminalReconcileCycleContextError(ctx context.Context) error {
+	err := ctx.Err()
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
 	return nil
 }
 

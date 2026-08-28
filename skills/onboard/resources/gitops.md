@@ -243,6 +243,17 @@ Specific pipeline stages send throttled failure alerts to all configured alert p
 - **Backup retention cleanup, post-sync hooks, and state save**: logged without a dedicated failure alert
 - **Staging cleanup**: logged without a dedicated failure alert; aborts only when owner-only retention or deletion cannot establish staging confidentiality
 
+Daemon shutdown is classified as an interrupted reconcile only when the caller
+context reports `context.Canceled` and the returned pipeline error wraps that
+same cancellation. The run-boundary finalizer then owns one deployment-failure
+alert attempt and suppresses stage-specific failure alerts, including declared
+health-gate rollback companion alerts. Delivery retains correlation values but
+detaches cancellation under a 30-second maximum. It bypasses repeated-failure
+throttling and does not update `last_alerted_attempt`; provider failure is
+best-effort and does not erase the interrupted state marker. Reconcile deadline
+expiry and real errors racing with shutdown retain ordinary failure accounting
+and alert ownership.
+
 Success and recovery alerts are controlled by the `on_success` flag (default: `false`). When enabled, a success alert is sent after a successful deployment, and a recovery alert is sent when a deploy succeeds after prior failures.
 
 Configure these flags in `bosun.yaml` under `alerts`:
@@ -328,7 +339,7 @@ Only one reconciliation runs at a time. Triggers that arrive during a run increm
 
 ### Multi-Target Reconciliation
 
-When `targets:` is defined in `bosun.yaml`, the pipeline runs sequentially for each target. Each target gets its own lock file (`reconcile-<name>.lock`), state file (`deploy-state-<name>.json`), and staging subdirectory (`<staging>/<name>/`). Failure on one target does not block the others.
+When `targets:` is defined in `bosun.yaml`, the pipeline runs sequentially for each target. Each target gets its own lock file (`reconcile-<name>.lock`), state file (`deploy-state-<name>.json`), and staging subdirectory (`<staging>/<name>/`). An ordinary failure on one target does not block the others while the shared cycle context remains live. Caller cancellation or reconcile deadline expiry stops iteration before any later target is constructed, so later state files and alert streams remain untouched. Only an active target whose result is propagated caller cancellation records an interrupted outcome and spends the single bounded interruption-alert delivery window.
 
 Use `--target=NAME` to reconcile a single target instead of all targets. When `targets:` is absent, behavior is identical to before (a single implicit default target).
 
@@ -637,11 +648,14 @@ so the next run reconciles the full declared estate.
 **State tracking includes:**
 - Last successful deploy timestamp and commit
 - Last failed deploy details
+- Optional `last_attempt_outcome` metadata for the most recent interrupted run.
+  The next terminal outcome that is not a propagated caller cancellation,
+  including a successful deploy, clears this field.
 - Consecutive failure count
 - Declared services (what should be running)
 - Drift check results
 
-**Deploy circuit breaker:** After 3 consecutive deployment failures, the daemon stops retrying automatically. A manual `bosun trigger -f` (force) resets the circuit breaker and tries again.
+**Deploy circuit breaker:** After 3 consecutive deployment failures, the daemon stops retrying automatically. A propagated caller cancellation restores the pre-attempt `last_attempted_commit`, `attempt_count`, and `last_alerted_attempt`, while preserving an existing `needs_redeploy` marker so partial work is retried. Reconcile deadlines, independently returned cancellation errors, and real failures racing with shutdown remain counted. A manual `bosun trigger -f` (force) resets the circuit breaker and tries again.
 
 **Restart circuit breaker:** Detects containers in restart loops by tracking container identity and restart count increases across drift checks. Once restarts begin accumulating, Bosun preserves the earliest unresolved baseline until a clean sample observes no new restarts, so a slow loop still trips when the drift interval is longer than the nominal restart window. When a container accumulates `BOSUN_RESTART_THRESHOLD` (default: 5) restarts, the breaker trips and stops the container to prevent resource exhaustion. Docker resets the count when a deploy recreates a container, so an identity change does not resolve an existing trip; the same identity must remain free of additional restarts through the next drift-check interval before Bosun sends the resolution alert. Missing containers preserve the trip but restart the stability grace when they return, while inspect failures preserve the last persisted observation and cannot count as recovery. Runs during each drift check cycle. Sends critical alerts on trip and info alerts on resolution. Disabled with `BOSUN_RESTART_BREAKER=false`. Keep `BOSUN_DRIFT_INTERVAL` at or below `BOSUN_RESTART_WINDOW` for timely detection; configuration load and `bosun doctor` warn when the sampling interval is longer.
 
