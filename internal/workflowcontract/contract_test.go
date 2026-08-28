@@ -24,6 +24,7 @@ const (
 	appToken         = "${{ steps.app-token.outputs.token }}"
 	privateKey       = "${{ secrets.RELEASE_APP_PRIVATE_KEY }}"
 	releaseTagOutput = "${{ steps.release-tag.outputs.tag_name }}"
+	checkoutAction   = "actions/checkout@v7"
 )
 
 type workflow struct {
@@ -193,7 +194,7 @@ func validateReleasePlease(data []byte) error {
 		if goreleaserJob.If != goreleaserIf {
 			problems = append(problems, errors.New("goreleaser must require a successful non-empty resolved tag"))
 		}
-		checkoutStep, checkoutErr := exactlyOneStepUsing(goreleaserJob.Steps, "actions/checkout@v4")
+		checkoutStep, checkoutErr := exactlyOneStepUsing(goreleaserJob.Steps, checkoutAction)
 		if checkoutErr != nil {
 			problems = append(problems, checkoutErr)
 		} else if checkoutStep.With["ref"] != resolvedTag {
