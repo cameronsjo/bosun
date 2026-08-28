@@ -1,162 +1,86 @@
 ## Context
 
-Bosun's reconciler was designed around "one instance = one server." The daemon creates one `Reconciler` with one `Config`, and every field in `Config` is singular: `TargetHost`, `StateFile`, `StagingDir`, `ProjectName`. Users wanting multi-server deployments must run multiple daemon containers, each with independent env vars, no shared visibility, and duplicated git polling.
+Bosun already resolves target descriptors from YAML or `BOSUN_TARGETS`, derives isolated configurations, and runs the existing reconciler once per target. The active design predated that implementation and incorrectly described a shared Git worktree phase, a process-wide CLI/daemon mutex, a separate daemon-owned target slice, cleanup of failed staging, and several API shapes that never shipped.
 
-The "one yacht, many ports" principle requires the daemon to reconcile a single repo to multiple targets from a single process.
-
-### Prerequisites
-
-- `data-driven-deploy-paths` (bosun-qjs) SHOULD land first — it removes hardcoded deploy targets, reducing the surface area this change touches in the deploy pipeline
-- `refactor-dynamic-targets` (bosun-qjs) SHOULD land first — data-driven manifest output types reduce rigid struct coupling
-
-### Constraints
-
-- Single binary deployment — no orchestration layer, no database
-- Must work behind reverse proxy on each target
-- Daemon runs as a container — one process, one git clone
-- State must survive restarts (file-based persistence)
-- Backwards compatible — single-target configs work unchanged
+The canonical reconcile and alerting specs have also gained interruption, failed-staging, backup, health-gate, and image behavior since this change was proposed. Multi-target deltas must compose with those requirements rather than reproduce their whole blocks.
 
 ## Goals / Non-Goals
 
 - **Goals:**
-  - Deploy to N targets from one daemon instance with one git repo
-  - Per-target state tracking (independent deploy commits, circuit breakers, drift)
-  - Per-target alerting context (operators know which server failed)
-  - Isolated staging directories (no file collisions between targets)
-  - Backwards compatible (zero-config migration for single-target users)
-  - Per-target secrets scoping (shared secrets + target-specific overrides)
-
+  - Describe shipped multi-target behavior precisely and additively.
+  - Preserve backwards-compatible implicit and lone-default behavior.
+  - Keep per-target state, staging, secrets, alert, and CLI contracts explicit.
+  - Define a bounded, testable remainder for the genuine implementation gaps.
 - **Non-Goals:**
-  - Parallel target reconciliation (sequential is simpler, avoids resource contention; parallelism is a future optimization)
-  - Cross-target dependency ordering (targets are independent; service mesh coordination is out of scope)
-  - Per-target git branches (all targets deploy from the same branch and commit)
-  - Remote Docker API for health checks (health gate remains local-only; remote targets skip it)
-  - Web UI for multi-target status (CLI and alerts are sufficient for v1)
+  - Change runtime behavior in this proposal PR.
+  - Parallelize targets or share Git/decrypt work across target attempts.
+  - Introduce target-specific daemon triggers.
+  - Replace canonical pipeline, interruption, backup, image, health-gate, failed-staging, locking, or alert-delivery semantics.
 
 ## Decisions
 
-### Decision: Target as a named descriptor within Config
+### Decision: Overlay each target onto the existing reconciler configuration
 
-Each target is a named struct with its own host, paths, project name, secrets scope, and overrides. The reconciler iterates the targets list and runs the full pipeline for each.
+`ResolveTargets` returns effective descriptors. For each descriptor, `ConfigForTarget` copies the base configuration, applies target fields, derives named paths, and passes the result to the unchanged reconciler constructor. This matches the shipped architecture and keeps the complete canonical pipeline authoritative.
 
-```go
-type Target struct {
-    Name              string
-    TargetHost        string        // empty = local
-    LocalAppdataPath  string
-    RemoteAppdataPath string
-    ProjectName       string
-    StateFile         string        // derived from Name if not set
-    StagingDir        string        // derived from Name if not set
-    SecretsScope      string        // key prefix for per-target secrets
-    CriticalContainers []string
-    PostSyncHooks     []PostSyncHook
-    DeploySyncPaths   []string
-    DeploySyncExclude []string
-}
-```
+A separate target-aware constructor and a daemon-held `[]Target` were proposed but did not ship. They are superseded by this overlay model.
 
-**Alternatives considered:**
-- **Separate Config per target**: More isolation but duplicates shared fields (repo URL, branch, secrets files, backup config). Rejected — too much boilerplate for users.
-- **Config inheritance / overlay**: Target overrides base config. Elegant but complex to implement and reason about. Deferred — can be added later if targets share many fields.
-- **External orchestration**: Run N daemons via docker-compose replicas with different env vars. Already possible today but loses coordination and visibility. Not a solution — it's the problem statement.
+### Decision: Run the full canonical pipeline once per target
 
-### Decision: Sequential target reconciliation
+Targets execute sequentially in configuration order. Each target creates its own `Reconciler` and therefore performs the complete canonical pipeline, including Git sync and secret decryption. There is no once-per-cycle Git/decrypt phase, shared commit pin, or changed-file snapshot.
 
-The daemon reconciles targets one at a time in list order. A failure on target A logs an error and alert, then target B proceeds while the shared cycle context remains live. If that context is canceled or its deadline expires, iteration stops as required by the canonical `Non-Live Cycle Context Stops Target Iteration` requirement.
+An ordinary target failure is accumulated and the next target starts while the shared cycle context remains live. A canceled or expired shared context stops later targets under the canonical non-live-context requirement. Failed staging follows the canonical failed-evidence lifecycle: verified success may clean up; dry-run and failure evidence is hardened and retained or securely deleted if hardening cannot be proven.
 
-**Why not parallel:**
-- Git operations: single repo clone, single working tree. Parallel targets would need per-target clones or git worktrees, adding significant complexity.
-- Resource contention: template rendering, SSH connections, Docker API calls. Sequential avoids thundering herd.
-- Debugging: sequential execution produces linear, readable logs.
-- YAGNI: most users have 2-3 targets. Sequential latency is acceptable.
+### Decision: Distinguish daemon admission from reconciler file locking
 
-**Future path to parallel:** Per-target repo directories + goroutine pool. The Target struct is designed to support this without schema changes.
+Daemon-owned triggers use the daemon's in-process admission and dirty-trigger coalescing, so one daemon cycle runs at a time and concurrent triggers collapse into a follow-up cycle. A separately invoked CLI is another process and cannot share that mutex. Direct reconciler overlap is governed by the canonical file-lock requirement; a second holder fails immediately.
 
-### Decision: Per-target state files with naming convention
+Named targets receive derived lock paths through `ConfigForTarget`. This change does not promise blocking CLI/daemon coordination or a cross-process shared-worktree mutex.
 
-State files are named `deploy-state-<target-name>.json` under `StateDir`. The default target (backwards compat) uses `deploy-state.json`.
+### Decision: Preserve actual default and override semantics
 
-**Why not one aggregated state file:**
-- Atomic writes: each target saves independently without read-modify-write races
-- Failure isolation: corrupt state for target A doesn't affect target B
-- Simplicity: `LoadState` / `SaveState` don't change signature, just path
+No configured targets resolves to one implicit `default`. A lone target named `default`, case-insensitively, is accepted and normalized so its explicit fields configure the compatibility target. A multi-target set containing `default` is rejected. An empty or unsafe target name, a case-insensitive duplicate, staging overlap, a deploy-path collision, a Docker namespace collision, or a state-path collision rejects the complete effective target set. It must never be skipped in a way that permits a sibling or synthesized default target to run.
 
-### Decision: Per-target staging directories
+`BOSUN_TARGETS` is a JSON array. JSON `null` leaves project targets in effect; an explicit empty array is authoritative and resolves to the implicit default. YAML and environment descriptors expose the same shipped fields.
 
-Each target gets `<StagingDir>/<target-name>/` as its staging root. Template rendering writes to the target's staging dir. Deploy reads from it. Cleanup removes it after deploy.
+### Decision: Preserve target isolation without replacing canonical state behavior
 
-**Why not shared staging with namespaced subdirs:**
-- Risk of cross-contamination if cleanup fails mid-pipeline
-- Simpler mental model: each target has a clean workspace
+Named targets derive independent state, staging, and lock paths unless an explicit override is supplied. The default target keeps legacy paths. State files use the canonical deploy-state schema and update rules; multi-target behavior adds only independent path selection and sibling isolation.
 
-### Decision: Secrets scoping via key prefix
+Staging paths must be pairwise disjoint. A target owns only its staging slot, and its failed/dry-run evidence remains available under the canonical retention and permission rules. A later target never cleans or overwrites a sibling's evidence.
 
-Secrets are still flat-merged from SOPS files. Per-target secrets use a naming convention:
+### Decision: Keep alert context additive
 
-```yaml
-# Shared (all targets)
-db_host: shared-db.local
+Alert manager methods accept the target as a positional argument. An explicit named target, including one literally named `local`, receives a bracketed title suffix and target metadata/message context. The implicit or lone-default local compatibility target uses the empty legacy sentinel; a default remote deployment retains its existing host-derived context. The design does not add a `TargetName` field to every alert API and does not replace lifecycle alert requirements.
 
-# Target-specific
-targets:
-  unraid:
-    db_password: secret1
-  pi:
-    db_password: secret2
-```
+### Decision: Record the actual CLI surface
 
-The reconciler merges `targets.<name>.*` over the top-level keys when rendering templates for a given target. Templates don't change — `{{ .db_password }}` resolves to the correct value per target.
+`bosun reconcile --target` and `bosun drift --target` filter a direct command to one effective target. Cached multi-target drift emits one JSON object with a `targets` array: `{"targets":[...]}`. A daemon trigger continues to request a complete cycle, so the proposed target-specific trigger flag is removed.
 
-**Alternatives considered:**
-- **Per-target secret files**: `BOSUN_SECRETS_FILES_<TARGET>`. More isolation but multiplies SOPS key management. Supported as an optional override but not the primary mechanism.
-- **Dot-notation flattening**: `unraid.db_password` at top level. Ambiguous — is `unraid` a target name or a data key? Rejected.
+Remote named targets cannot be inspected correctly through the local Docker daemon. The remaining implementation must preflight the complete live selection and reject it before any Docker access or state mutation when any selected target is remote. Cached reporting remains available. When no project target configuration is discoverable, the existing single-target drift compatibility fallback may still derive the requested cached-state path; it must not execute an unrelated target.
 
-### Decision: Backwards-compatible config migration
+### Decision: Finish scalar presence and operational visibility explicitly
 
-When `targets:` is absent from `bosun.yaml` (or empty), the reconciler creates a single implicit target from the flat config fields. This target has `Name: "default"` and uses the existing `StateFile`, `StagingDir`, etc. No user action required.
+Slice overrides already use presence semantics: nil inherits and an explicit empty slice clears, with independent backing storage after derivation and reload. Scalar decoding will preserve presence and implement the normative field rules in the reconcile delta: `name` is required; omitted `target_host`, appdata paths, `project_name`, and `secrets_scope` inherit while their explicit-empty values respectively select local, fail validation, select the Compose-derived namespace, and disable the scoped overlay; state/staging omission or empty uses the documented default/derived path and a non-empty value is an exact confined override.
 
-When `targets:` is present, flat target fields (`target_host`, `project_name`, etc.) are ignored with a deprecation warning.
-
-### Decision: Two-layer locking for multi-target
-
-Reconciliation uses a two-layer locking model:
-
-1. **Process-wide single-flight gate** — an in-memory mutex that serializes all reconciliation entry points (daemon loop, CLI `bosun reconcile`, webhook triggers). Only one reconciliation cycle runs at a time within a process. Incoming triggers while a cycle is running set a dirty flag to coalesce a follow-up run after the current cycle completes.
-
-2. **Per-target file locks** — each target gets `<LockDir>/reconcile-<target-name>.lock` (the implicit default target uses `reconcile.lock`). These prevent the same target from being reconciled by two separate processes (e.g., daemon on host A and CLI on host B sharing a lock directory via NFS). Per-target file locks are acquired inside the single-flight gate.
-
-**Why two layers:**
-- The single-flight gate protects the shared git worktree. Without it, a CLI `bosun reconcile --target=pi` could race with the daemon mid-cycle on `unraid`, both touching the same git clone.
-- Per-target file locks protect cross-process overlap. The in-memory gate only serializes within one process; file locks extend protection across processes.
-- Dirty-flag coalescing prevents trigger storms from queuing N redundant cycles.
-
-**Why not per-target locks alone:**
-- Per-target locks would allow concurrent reconciliation of different targets, but all targets share one git working tree. Concurrent git operations on the same worktree are unsafe.
-
-**Future path to parallel:** Replace the single-flight gate with a per-target gate + per-target git clones. The file lock layer is already per-target and needs no changes.
+The daemon currently reads its base state path for periodic drift, operator `/status`, WebUI `/api/status`, and circuit-breaker visibility. The remaining implementation will enumerate the daemon's startup-resolved target snapshot, expose per-target state through those operator status views, keep the public `/health` projection bounded by the daemon-security contract, and make `bosun status` expose each target without regressing the one-default presentation. Structural topology changes continue to require a daemon restart. Target context must also reach target-owned `Reconciler` log records from daemon and direct CLI runs, not only the daemon wrapper.
 
 ## Risks / Trade-offs
 
-- **Increased config complexity** → Mitigated by backwards compatibility. Single-target users see no change. Multi-target users opt in via `targets:` section.
-- **Sequential latency** → For 3 targets at ~30s each, total cycle is ~90s. Acceptable for GitOps polling (typical interval 5–60 min). Webhook-triggered deploys may feel slower.
-- **Secrets merge precedence** → Target-scoped secrets override shared secrets. If a user accidentally scopes a secret, the shared value is silently shadowed. Mitigated by logging which secrets are overridden at debug level.
-- **State file proliferation** → N targets = N state files. Manageable for typical counts (2-5). `bosun status` aggregates all targets.
+- **Presence-aware scalar decoding adds schema machinery.** It is required to prevent an omitted field and a deliberate empty value from collapsing into an unsafe inherited path or host.
+- **Sequential full pipelines can observe different repository heads.** This is current behavior; commit pinning or a shared checkout phase would be a separate architectural change.
+- **Per-target state visibility expands daemon consumers.** Central target/state enumeration should be shared so status, drift, health, and breaker views cannot diverge.
+- **Remote live drift remains unavailable.** Failing before local Docker access is safer than reporting the wrong host; remote Docker transport is separate scope.
 
 ## Migration Plan
 
-1. **Phase 0 (this proposal):** Spec + design only. No code changes.
-2. **Phase 1:** Implement `Target` struct, config parsing, implicit default target. All tests pass with no config changes (backwards compat).
-3. **Phase 2:** Per-target state files, per-target staging dirs, per-target lock files. Daemon iterates targets.
-4. **Phase 3:** Secrets scoping, per-target alerting context, CLI `--target` flag.
-5. **Phase 4:** Deprecation warnings for flat target fields when `targets:` is present.
+1. Merge this grounding proposal and update issue #438 with the exact bounded remainder.
+2. Implement the unchecked task groups with focused compatibility and mutation-sensitive tests.
+3. Update onboard configuration, GitOps, and command resources with the final behavior.
+4. Strict-validate and archive the change only after every remaining task is implemented and verified.
 
-**Rollback:** Remove `targets:` from `bosun.yaml`. Daemon falls back to implicit default target. No data migration — state files are additive.
+Rollback of the eventual runtime work is scoped by feature: users can remove `targets:` to return to the implicit default, and each implementation slice must preserve existing state files and canonical single-target behavior.
 
 ## Open Questions
 
-- Should `bosun doctor` validate all targets' connectivity (SSH reachability, Docker availability)?
-- Should the daemon support per-target polling intervals, or is one interval for all targets sufficient?
-- Should `bosun trigger` accept a `--target` flag to trigger a single target, or always trigger all?
-- How should `bosun drift` display multi-target results — tabular summary or per-target sections?
+None. Target-specific daemon triggers, parallelism, shared cycle-level Git/decrypt stages, and remote Docker transport are explicitly outside this change.

@@ -47,8 +47,8 @@ Each PR receives a fresh polish pass, independent exact-head review, hosted chec
 
 ### 4. Multi-target grounding (#438)
 
-- [ ] Map every active task to shipped code, tests, documentation, or genuinely missing behavior.
-- [ ] Correct proposal, design, task, and issue text so the remaining contract is accurate and non-duplicative.
+- [x] Map every active task to shipped code, tests, documentation, or genuinely missing behavior.
+- [x] Correct proposal, design, task, and proposed issue replacement text so the remaining contract is accurate and non-duplicative; issue #438 remains unchanged until this grounding PR merges.
 - [ ] Strict-validate, independently review, and merge the spec-only grounding PR before starting newly discovered behavior.
 
 ### 5. FUSE-hook grounding and closure (#431)

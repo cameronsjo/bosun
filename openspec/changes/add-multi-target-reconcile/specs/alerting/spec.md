@@ -1,46 +1,44 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
-### Requirement: Reconciliation Lifecycle Alerts
+### Requirement: Named-Target Alert Context
 
-The alert system SHALL provide convenience methods for reconciliation lifecycle events with pre-formatted messages:
+Reconciliation, rollback, health-gate, drift, and restart-breaker alerts owned by a named target SHALL identify that target without replacing the canonical lifecycle-alert delivery, throttling, interruption, rollback, or severity rules.
 
-- **Deploy Success**: title "Deployment Successful", severity info, source "reconcile", includes short commit (first 8 chars) and target name
-- **Deploy Failure**: title "Deployment Failed", severity error, source "reconcile", includes short commit, target name, and error reason
-- **Deploy Recovery**: title "Deployment Recovered", severity info, source "reconcile", includes short commit, target name, and count of prior failures
-- **Rollback Success**: title "Rollback Successful", severity warning, source "reconcile", includes target name and backup name
-- **Rollback Failure**: title "CRITICAL: Rollback Failed", severity critical, source "reconcile", includes target name, error reason, and "Manual intervention required!" message
-- **Unhealthy Containers**: title "Unhealthy Containers Detected", severity warning, source "reconcile", includes target name and comma-separated container names
-- **Drift Detected**: title "Drift Detected", severity warning, source "drift", includes target name and comma-separated drift items
-- **Drift Resolved**: title "Drift Resolved", severity info, source "drift", includes target name and comma-separated resolved item keys
-- **Doctor Alert**: severity-dependent title (critical: "CRITICAL: Health Check Failed", error: "Health Check Errors", warning: "Health Check Warnings", info: "Health Check Complete"), source "doctor", message is newline-joined issues
+Alert helper APIs MAY receive the target as a positional value. For every explicit named target, including one literally named `local`, the visible title SHALL append ` [<target>]` and the message or fields SHALL retain target context for routing and diagnosis. The implicit or lone `default` target in local mode SHALL use the legacy empty sentinel so its single-target titles remain unchanged; a default remote deployment SHALL retain its existing host-derived context. Target context SHALL NOT expose configuration secrets or be inferred from the number of configured targets.
 
-When multiple targets are configured, each alert SHALL clearly identify which target it pertains to. The target name SHALL appear in both the alert title (e.g., "Deployment Successful [unraid]") and the metadata fields, so operators can filter and route alerts per target.
+#### Scenario: Named target adds alert context
 
-When only the implicit default target is configured, the target name SHALL be omitted from alert titles to preserve backwards-compatible alert formatting.
+- **WHEN** target `pi` owns a deployment failure
+- **THEN** the canonical deployment-failure alert title is `Deployment Failed [pi]`
+- **AND** the alert message or fields identify `pi`
+- **AND** canonical failure throttling and delivery rules remain unchanged
 
-#### Scenario: Single default target omits target name from title
+#### Scenario: Default target preserves legacy title
 
-- **WHEN** only the implicit default target is configured
-- **AND** a deploy success alert is sent for commit `abc123def456`
-- **THEN** the alert title is "Deployment Successful" (no target suffix)
-- **AND** the message contains the short commit `abc123de`
-- **AND** metadata includes the full commit hash
-- **AND** alert formatting is identical to pre-multi-target versions
+- **WHEN** the implicit or lone `default` target owns a deployment success
+- **THEN** the canonical title remains `Deployment Successful`
+- **AND** no `[default]` suffix is added
 
-#### Scenario: Multi-target alert includes target name in title
+#### Scenario: Explicit target named local remains attributable
 
-- **WHEN** multiple targets are configured
-- **AND** a deploy failure alert is sent for target `pi`
-- **THEN** the alert title is "Deployment Failed [pi]"
-- **AND** the message body includes the target name
+- **WHEN** an explicit named target literally named `local` owns a deployment failure
+- **THEN** the canonical title is `Deployment Failed [local]`
+- **AND** the target is not mistaken for the legacy local-default sentinel
 
-#### Scenario: Rollback failure triggers critical severity
+#### Scenario: Default remote target preserves host context
 
-- **WHEN** a rollback failure alert is sent
-- **THEN** the alert severity is critical
-- **AND** the message includes "Manual intervention required!"
+- **WHEN** the implicit or lone `default` target deploys through remote host `nas`
+- **THEN** its alert retains the existing host-derived context
+- **AND** no `[default]` suffix is added
 
-#### Scenario: Short commits are not truncated
+#### Scenario: Sibling alerts remain attributable
 
-- **WHEN** a deploy success alert is sent for a 3-character commit `abc`
-- **THEN** the message contains `abc` without truncation
+- **WHEN** one target fails and a later target succeeds while the shared context remains live
+- **THEN** each emitted lifecycle alert identifies only its owning named target
+- **AND** neither alert is attributed to the sibling
+
+#### Scenario: Interruption ownership remains canonical
+
+- **WHEN** a named target is interrupted by propagated caller cancellation
+- **THEN** exactly the canonical interruption owner sends the applicable target-context alert
+- **AND** stage and rollback companions remain suppressed as required by the canonical alerting and reconcile specs

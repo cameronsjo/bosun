@@ -2,422 +2,300 @@
 
 ### Requirement: Multi-Target Configuration
 
-The reconciler SHALL support deploying to multiple targets from a single daemon instance. Each target SHALL be described by a named target descriptor containing: target name, host (empty for local), appdata paths, project name, state file path, staging directory, secrets scope, critical containers, post-sync hooks, and deploy sync filters.
+Bosun SHALL accept an ordered `targets:` list of named target descriptors in `bosun.yaml` and an authoritative `BOSUN_TARGETS` JSON array with the same field surface. JSON `null` SHALL retain project-config targets; an explicit empty JSON array SHALL resolve to the backwards-compatible implicit default.
 
-Targets SHALL be configured via the `targets:` section in `bosun.yaml`, where each entry is a named target descriptor. When the `targets:` section is absent or empty, the reconciler SHALL synthesize a single implicit target named `default` from the flat config fields, preserving full backwards compatibility.
+When no target descriptor is effective, Bosun SHALL synthesize one target named `default` from the flat configuration. A lone descriptor named `default`, case-insensitively, SHALL configure and normalize that compatibility target. Every configured descriptor SHALL have a non-empty valid name; an invalid descriptor or case-insensitive duplicate SHALL reject the complete effective set rather than be skipped or replaced by an implicit default. A multi-target set containing `default` SHALL likewise fail rather than silently discard or reinterpret it.
 
-When both `targets:` and flat target fields (`target_host`, `project_name`, etc.) are present, the reconciler SHALL use `targets:` and log a deprecation warning for the flat fields.
+#### Scenario: YAML target order is preserved
 
-`BOSUN_TARGETS` (JSON array of target descriptors) SHALL override the `targets:` section from `bosun.yaml` when set.
+- **WHEN** `bosun.yaml` declares named targets `unraid` and `pi` in that order
+- **THEN** target resolution returns `unraid` followed by `pi`
+- **AND** each descriptor retains its target-owned configuration
 
-#### Scenario: Multi-target config parsed from YAML
+#### Scenario: Environment target array is authoritative
 
-- **WHEN** `bosun.yaml` contains a `targets:` section with entries `unraid` and `pi`
-- **THEN** the reconciler creates two target descriptors with the specified per-target configuration
-- **AND** each target has independent paths for state, staging, and locking
+- **WHEN** project configuration declares target `unraid`
+- **AND** `BOSUN_TARGETS` is a JSON array containing only target `pi`
+- **THEN** the effective target list contains only `pi`
 
-#### Scenario: Implicit default target from flat config
+#### Scenario: Empty configuration preserves the default
 
-- **WHEN** `bosun.yaml` has no `targets:` section
-- **AND** flat fields `target_host`, `project_name`, etc. are set
-- **THEN** the reconciler synthesizes one target named `default` from the flat fields
-- **AND** behavior is identical to pre-multi-target versions
+- **WHEN** no target list is configured or `BOSUN_TARGETS` is the authoritative empty array
+- **THEN** Bosun resolves one target named `default`
+- **AND** that target uses the legacy flat configuration and path behavior
 
-#### Scenario: Deprecation warning for mixed config
+#### Scenario: Lone default descriptor is compatibility configuration
 
-- **WHEN** `bosun.yaml` has both `targets:` and flat `target_host`
-- **THEN** the reconciler logs a deprecation warning
-- **AND** uses only the `targets:` section
-
-#### Scenario: Env var overrides targets
-
-- **WHEN** `BOSUN_TARGETS` is set to a JSON array with one target
-- **THEN** the reconciler uses the env var targets, ignoring `bosun.yaml` targets
+- **WHEN** the sole descriptor is named `DEFAULT` and supplies explicit target fields
+- **THEN** Bosun normalizes its name to `default`
+- **AND** honors its explicit fields on the compatibility target
 
 ### Requirement: Per-Target Staging Isolation
 
-Each target SHALL have an isolated staging directory derived from its name: `<StagingDir>/<target.Name>/`. Template rendering for a target SHALL write exclusively to that target's staging directory. The staging directory SHALL be created before rendering and cleaned up after deployment completes (success or failure).
+Each effective target SHALL own a staging slot distinct from every sibling's equal, ancestor, or descendant path. A named target without an explicit override SHALL derive its slot below the configured staging root; the implicit default SHALL preserve its legacy staging path.
 
-This isolation SHALL prevent file collisions when multiple targets are reconciled, even if future versions support parallel execution.
+Each complete canonical pipeline SHALL read and write only its target's slot. Verified success MAY clean that slot as allowed by the canonical pipeline. Failure and dry-run output SHALL follow the canonical Failed Staging Evidence Lifecycle: retain owner-only evidence, or securely delete it only when owner-only hardening cannot be proven. A later target SHALL NOT clean, overwrite, or relabel a sibling's retained evidence.
 
-#### Scenario: Isolated staging per target
+#### Scenario: Sibling staging slots are disjoint
 
-- **WHEN** targets `unraid` and `pi` are configured
-- **AND** reconciliation runs for both sequentially
-- **THEN** `unraid` renders to `<StagingDir>/unraid/`
-- **AND** `pi` renders to `<StagingDir>/pi/`
-- **AND** neither target's staging directory contains the other's files
+- **WHEN** named targets `unraid` and `pi` use derived staging paths
+- **THEN** each target renders only within its own derived slot
+- **AND** neither target can remove or replace the other's tree
 
-#### Scenario: Staging cleanup after failure
+#### Scenario: Failed evidence survives sibling execution
 
-- **WHEN** target `unraid` fails during template rendering
-- **THEN** `<StagingDir>/unraid/` is cleaned up
-- **AND** target `pi`'s staging directory is unaffected
+- **WHEN** `unraid` fails after rendering and its evidence is hardened successfully
+- **AND** the shared context remains live for `pi`
+- **THEN** `unraid`'s owner-only evidence remains available
+- **AND** `pi` proceeds only in its own staging slot
 
 ### Requirement: Per-Target State Persistence
 
-Each target SHALL have an independent state file tracking its deploy state. The state file path SHALL be derived from the target name: `<StateDir>/deploy-state-<target.Name>.json`. The implicit default target SHALL use the existing `deploy-state.json` path for backwards compatibility.
+Every effective target SHALL use an independent path for the canonical deploy-state document. A named target without a non-empty explicit override SHALL derive `deploy-state-<target-name>.json` in the configured state directory. The implicit default SHALL preserve the legacy state path; a lone default descriptor SHALL use that path unless it supplies a non-empty confined override.
 
-Per-target state files SHALL track the same fields as today (schema version, last deployed commit, deployment timestamp, deploy count, trigger source, attempt tracking, declared services, drift results) independently per target. A successful deploy on target A SHALL NOT affect target B's state.
+Canonical state schema, atomic-write, attempt, interruption, circuit-breaker, drift, backup, image, skip, and stale-outcome rules SHALL apply independently to each target document. An outcome for one target SHALL NOT mutate a sibling's state.
 
-#### Scenario: Independent deploy tracking per target
+#### Scenario: Success and failure update only their owners
 
-- **WHEN** target `unraid` deploys commit `abc123` successfully
-- **AND** target `pi` fails on the same commit
-- **THEN** `deploy-state-unraid.json` records `abc123` as last deployed
-- **AND** `deploy-state-pi.json` does NOT record `abc123` as last deployed
-- **AND** `deploy-state-pi.json` increments the attempt count
+- **WHEN** target `unraid` records a successful deployment of commit `abc123`
+- **AND** target `pi` records a failed attempt of that commit
+- **THEN** only `unraid` advances its last-deployed commit and success fields
+- **AND** only `pi` advances its applicable attempt and failure fields
 
-#### Scenario: Default target uses legacy state file
+#### Scenario: Default state remains backwards compatible
 
-- **WHEN** no `targets:` section is configured (implicit default target)
-- **THEN** the state file path is `<StateDir>/deploy-state.json` (unchanged from today)
+- **WHEN** Bosun resolves only the implicit or lone `default` target
+- **THEN** it reads and writes the configured legacy state path
+- **AND** no named-target migration is required
 
-#### Scenario: Circuit breaker independent per target
+### Requirement: Sequential Multi-Target Orchestration
 
-- **WHEN** target `pi` trips its circuit breaker after 3 failures
-- **AND** target `unraid` has been deploying successfully
-- **THEN** subsequent reconciliation cycles skip `pi` (circuit breaker)
-- **AND** `unraid` continues to deploy normally
+Bosun SHALL run targets sequentially in resolved order. For each target it SHALL derive an independent configuration and invoke the complete canonical reconciliation pipeline, including that target's Git sync, secret decryption, rendering, backup, deploy, configured health gate, hooks, verification, state finalization, failed-staging handling, and locking.
 
-### Requirement: Two-Layer Reconciliation Locking
+Bosun SHALL NOT claim a once-per-cycle Git/decrypt phase, shared changed-file snapshot, or common commit pin across target attempts. An ordinary target failure SHALL be accumulated and later targets SHALL proceed while the shared cycle context remains live. Target iteration SHALL stop on a non-live shared context exactly as required by the canonical reconcile spec. After eligible targets finish, the cycle SHALL report an error when any target failed without undoing successful siblings.
 
-Reconciliation SHALL use a two-layer locking model to protect both the shared git worktree and per-target state.
+Every structured log record owned by a target's `Reconciler` SHALL carry that target's normalized identifier whether the pipeline was started by the daemon or direct CLI. Cycle-level records that do not belong to one target are excluded. Target log context SHALL NOT contain secrets.
 
-**Layer 1: Process-wide single-flight gate.** An in-memory mutex SHALL serialize all reconciliation entry points within a process (daemon loop, CLI, webhook triggers). Only one reconciliation cycle SHALL run at a time. Incoming triggers while a cycle is running SHALL set a dirty flag to coalesce a follow-up run after the current cycle completes, rather than queuing or starting concurrently.
+#### Scenario: Each target runs the full pipeline
 
-**Layer 2: Per-target file locks.** Each target SHALL have an independent lock file: `<LockDir>/reconcile-<target.Name>.lock`. The implicit default target SHALL use the existing `reconcile.lock` path. File locking SHALL use `flock(2)` / `LockFileEx` as today. Per-target file locks SHALL be acquired inside the single-flight gate, after the process-wide gate is held.
+- **WHEN** two named targets are eligible for reconciliation
+- **THEN** the first target runs the complete canonical pipeline with its effective configuration
+- **AND** the second target subsequently runs the complete canonical pipeline with its effective configuration
+- **AND** Git sync and secret decryption occur inside each target's pipeline rather than once for the cycle
 
-The single-flight gate protects the shared git worktree from concurrent access. Per-target file locks protect against cross-process overlap (e.g., two separate bosun processes sharing a lock directory).
+#### Scenario: Ordinary failure does not consume a live sibling
 
-#### Scenario: Single-flight gate serializes daemon and CLI
-
-- **WHEN** the daemon is mid-cycle reconciling target `unraid`
-- **AND** a CLI `bosun reconcile --target=pi` is invoked
-- **THEN** the CLI blocks on the single-flight gate until the daemon cycle completes
-- **AND** then the CLI acquires the gate and the per-target lock for `pi`
-
-#### Scenario: Dirty-flag coalesces concurrent triggers
-
-- **WHEN** the daemon is mid-cycle
-- **AND** a webhook trigger arrives
-- **THEN** the trigger sets the dirty flag and returns immediately
-- **AND** after the current cycle completes, the daemon runs another cycle
-
-#### Scenario: Per-target file lock prevents cross-process overlap
-
-- **WHEN** process A holds the per-target lock for `unraid`
-- **AND** process B attempts to reconcile `unraid`
-- **THEN** process B fails with "lock already held" for `unraid`
-
-#### Scenario: Default target uses legacy lock file
-
-- **WHEN** no `targets:` section is configured
-- **THEN** the lock file path is `reconcile.lock` (unchanged from today)
-
-### Requirement: Sequential Target Reconciliation
-
-The daemon SHALL reconcile targets sequentially in the order they appear in the `targets:` list. Git sync and secret decryption are cycle-level stages that run once before target iteration (see Pipeline Orchestration). For each target, the per-target pipeline executes: acquire lock, apply secrets scoping, render, backup, deploy, compose up, health gate, hooks, drift check, state save, release lock.
-
-The git clone/pull result (commit hash, changed files) SHALL be reused for all targets in the cycle.
-
-A failure on one target SHALL be logged and alerted, then the next target proceeds while the shared cycle context remains live. The daemon SHALL NOT abort the cycle solely because of a per-target failure. If the shared cycle context is canceled or its deadline expires, target iteration SHALL stop as required by the canonical `Non-Live Cycle Context Stops Target Iteration` requirement.
-
-#### Scenario: Two targets, one fails, second proceeds
-
-- **WHEN** targets `unraid` and `pi` are configured in that order
-- **AND** `unraid` fails during compose up
+- **WHEN** `unraid` returns an ordinary compose or configured-health-gate failure
 - **AND** the shared cycle context remains live
-- **THEN** a failure alert is sent for `unraid`
-- **AND** reconciliation proceeds to `pi`
-- **AND** `pi` completes successfully with its own state file updated
+- **THEN** Bosun finalizes and alerts `unraid` under canonical rules
+- **AND** proceeds to `pi`
+- **AND** reports an aggregate cycle error after all eligible targets finish
 
-#### Scenario: Git sync shared across targets
+#### Scenario: Non-live context leaves later targets untouched
 
-- **WHEN** targets `unraid` and `pi` are configured
-- **AND** a new commit is available
-- **THEN** git clone/pull runs once at the start of the cycle
-- **AND** both targets see the same commit hash and changed files
+- **WHEN** the shared cycle context becomes canceled or expired during the active target
+- **THEN** canonical active-target finalization runs as applicable
+- **AND** no later target starts, mutates state, stages files, acquires a lock, or sends an alert
 
-#### Scenario: All targets skipped when no new commit
+#### Scenario: Reconciler logs identify their target
 
-- **WHEN** all targets' state files record the current HEAD commit
-- **AND** `force` is false
-- **THEN** all targets are skipped
-- **AND** no deploy activity occurs
+- **WHEN** daemon or direct CLI execution runs named target `pi`
+- **THEN** every target-owned structured reconciliation log record carries target `pi`
+- **AND** no secret value is added as target context
+
+### Requirement: Daemon Multi-Target Admission
+
+Daemon-owned polling, webhook, socket, TCP, manual, and drift-self-heal entry points SHALL share the daemon's in-process single-flight admission. Triggers received during an active cycle SHALL coalesce into the daemon's bounded follow-up-cycle behavior.
+
+A separately invoked CLI process SHALL NOT be described as sharing that in-memory admission. Every per-target reconciler SHALL instead acquire its derived file lock under the canonical Reconciliation Locking requirement, and a competing process SHALL fail immediately when the lock is held.
+
+#### Scenario: Daemon trigger coalesces during a target cycle
+
+- **WHEN** a daemon cycle is reconciling a target
+- **AND** one or more daemon-owned triggers arrive
+- **THEN** no concurrent daemon cycle starts
+- **AND** the daemon records the applicable follow-up work under its dirty-trigger contract
+
+#### Scenario: Separate process uses the file-lock boundary
+
+- **WHEN** one process holds a target's reconcile lock
+- **AND** a separate CLI process starts reconciliation for the same derived lock path
+- **THEN** the CLI attempt fails immediately under canonical file-lock semantics
+- **AND** no shared in-memory mutex is assumed
 
 ### Requirement: Per-Target Secrets Scoping
 
-The reconciler SHALL support per-target secrets via a naming convention in the decrypted secrets map. Top-level keys are shared across all targets. Keys under `targets.<target-name>.*` are scoped to the named target and SHALL override same-named top-level keys when rendering templates for that target.
+Top-level decrypted values SHALL remain shared input. When a target has a secrets scope, values under `targets.<scope>` SHALL overlay same-named shared values for only that target's rendering. A target without a scope SHALL receive shared values without another target's overlay. Diagnostic logging MAY name overridden keys but SHALL NOT persist or emit secret values.
 
-When a target has a `SecretsScope` configured, the reconciler SHALL merge `targets.<SecretsScope>.*` over the top-level keys. When `SecretsScope` is empty, the target receives only shared (top-level) secrets.
+#### Scenario: Scoped value overlays shared value
 
-Overridden keys SHALL be logged at debug level to aid troubleshooting.
+- **WHEN** shared secrets contain `db_password: shared`
+- **AND** `targets.unraid.db_password` is `specific`
+- **AND** target `unraid` selects scope `unraid`
+- **THEN** its templates receive `specific`
+- **AND** sibling targets do not receive that scoped value unless they select the same scope
 
-#### Scenario: Target-scoped secret overrides shared secret
+#### Scenario: Unscoped target receives shared values
 
-- **WHEN** secrets contain `db_password: shared` and `targets.unraid.db_password: secret1`
-- **AND** target `unraid` has `SecretsScope: "unraid"`
-- **THEN** templates for `unraid` resolve `{{ .db_password }}` to `secret1`
+- **WHEN** a target has no secrets scope
+- **THEN** its templates receive top-level shared values
+- **AND** target-scoped subtrees are not promoted into its render map
 
-#### Scenario: Target without scope gets shared secrets only
+### Requirement: Multi-Target CLI Filtering
 
-- **WHEN** secrets contain `db_password: shared` and `targets.pi.db_password: secret2`
-- **AND** target `unraid` has no `SecretsScope`
-- **THEN** templates for `unraid` resolve `{{ .db_password }}` to `shared`
+The direct `bosun reconcile` and `bosun drift` commands SHALL accept a target filter that selects one effective descriptor by name. When project targets are available, an unknown target SHALL fail without falling back to the implicit default or running another target. When no project target configuration can be discovered, `drift --target` MAY retain the legacy compatibility fallback that derives only the requested cached-state path; it SHALL NOT execute a reconciliation target. Daemon trigger entry points SHALL continue to request a complete cycle and SHALL NOT gain target-specific trigger semantics in this change.
 
-#### Scenario: No target-scoped secrets in map
+#### Scenario: Reconcile filter selects one target
 
-- **WHEN** secrets contain only top-level keys (no `targets:` section)
-- **THEN** all targets receive the same secrets
-- **AND** behavior is identical to pre-multi-target versions
+- **WHEN** effective targets are `unraid` and `pi`
+- **AND** the operator runs `bosun reconcile --target pi`
+- **THEN** only `pi` runs its complete canonical pipeline
+- **AND** `unraid` remains untouched
+
+#### Scenario: Unknown reconcile filter fails closed
+
+- **WHEN** the requested reconcile target name is not effective
+- **THEN** `bosun reconcile` returns an error naming the unknown target
+- **AND** no target executes
+
+#### Scenario: Configured drift filter fails closed
+
+- **WHEN** project configuration exposes effective targets `unraid` and `pi`
+- **AND** the operator requests cached or live drift for target `nas`
+- **THEN** `bosun drift` returns an error naming the unknown target
+- **AND** it does not substitute the implicit default or inspect another target
+
+#### Scenario: No-config cached drift preserves compatibility
+
+- **WHEN** no project target configuration can be discovered
+- **AND** the operator requests cached drift for target `pi`
+- **THEN** Bosun MAY derive and inspect only `pi`'s legacy-compatible state path
+- **AND** it does not execute a target or silently inspect the default state path
+
+### Requirement: Multi-Target Drift CLI
+
+Cached drift inspection SHALL read each selected target's independent canonical state document. Unfiltered multi-target JSON SHALL be one object with a `targets` array, `{"targets":[...]}`, where every entry names its target and contains that target's drift result or target-specific unavailable error.
+
+Live drift SHALL query only the Docker environment represented by the target. Bosun SHALL preflight the complete selected live set before opening Docker. Until remote Docker inspection is supported, any selection containing a target with a non-empty remote host SHALL fail as a whole before any local Docker query and SHALL NOT mutate any selected target state. Cached drift for every target SHALL remain available.
+
+#### Scenario: Aggregate cached JSON has one targets array
+
+- **WHEN** cached drift is requested as JSON for multiple effective targets
+- **THEN** the top-level value is an object containing exactly the aggregate `targets` collection
+- **AND** each entry identifies its target and isolated result
+
+#### Scenario: Remote live drift fails before local inspection
+
+- **WHEN** a selected named target has a non-empty remote host
+- **AND** the operator requests live drift
+- **THEN** the command returns a remote-live-drift unsupported error before opening the local Docker client
+- **AND** no target state is changed
+
+#### Scenario: Mixed unfiltered live drift fails atomically
+
+- **WHEN** unfiltered live drift selects local target `pi` and remote target `unraid`
+- **THEN** Bosun rejects the request before inspecting either target's Docker environment
+- **AND** neither target's state is changed
 
 ### Requirement: Target Configuration Validation
 
-`ResolveTargets` SHALL validate every target descriptor at config-load time and reject the configuration when a target is unsafe, regardless of whether targets came from `bosun.yaml` or `BOSUN_TARGETS`. Validation SHALL cover: path safety (state file, lock file, staging directory, and appdata paths SHALL reject path traversal and SHALL be confined to their permitted roots), reserved-name handling (the reserved name `default` SHALL be matched case-insensitively, consistent with case-insensitive duplicate-name detection), and resource-collision detection (no two targets SHALL resolve to the same state file, lock file, or staging directory, nor to the same Docker namespace — identical host plus project name — or deploy path).
+Bosun SHALL apply equivalent target validation after YAML and `BOSUN_TARGETS` decoding. An empty or unsafe name, a case-insensitive duplicate, `default` in a multi-target set, or a resource collision in state files, equal or nested staging slots, Docker host/project namespaces, or effective deploy destinations SHALL reject the complete effective target set.
 
-The set of per-target fields settable via `BOSUN_TARGETS` SHALL be identical to the set settable via the `targets:` YAML section; neither source SHALL expose a field the other cannot set. An empty `BOSUN_TARGETS` value (`[]`) SHALL be treated identically to an absent `targets:` section (implicit `default` target).
+Explicit state and staging overrides SHALL be confined to their configured roots. Local appdata/deploy paths SHALL be confined to the permitted local deploy root. A confinement failure SHALL reject the complete effective target set before Git sync, staging preparation, lock acquisition, state mutation, deployment, or alerting.
 
-#### Scenario: Path traversal in target paths is rejected
+#### Scenario: Explicit state path escapes its root
 
-- **WHEN** a target sets `state_file`, `staging_dir`, or an appdata path containing `..` or escaping its permitted root, via either `bosun.yaml` or `BOSUN_TARGETS`
-- **THEN** the configuration is rejected at config-load with a path-validation error
-- **AND** no reconcile runs for any target
+- **WHEN** any YAML or environment target resolves an explicit state path outside the configured state root
+- **THEN** target resolution rejects the complete set before reconciliation begins
+- **AND** no sibling target runs
 
-#### Scenario: Reserved name matched case-insensitively
+#### Scenario: Staging paths overlap
 
-- **WHEN** a user-defined target is named `Default` or `DEFAULT`
-- **THEN** it is rejected as using the reserved name, the same as lowercase `default`
+- **WHEN** two effective staging slots are equal or one is an ancestor of the other
+- **THEN** target resolution rejects the complete set before either slot is prepared
 
-#### Scenario: Colliding state files are rejected
+#### Scenario: Lone default differs from default in a set
 
-- **WHEN** two targets resolve to the same explicit `state_file` path
-- **THEN** the configuration is rejected at config-load
-- **AND** the error names both colliding targets
+- **WHEN** a case-insensitive `default` descriptor is the only target
+- **THEN** it configures the compatibility target
+- **BUT WHEN** that descriptor appears with a named sibling
+- **THEN** the complete set is rejected
 
-#### Scenario: Colliding Docker namespace is rejected
+#### Scenario: Invalid descriptor cannot expose a sibling or fallback
 
-- **WHEN** two distinct targets resolve to the same host and project name (and thus the same compose namespace and staging directory)
-- **THEN** the configuration is rejected or fails fast at config-load, rather than letting one target tear down the other's containers
-
-#### Scenario: YAML and env field parity
-
-- **WHEN** a per-target field (e.g. `state_file`, `staging_dir`) is settable via `BOSUN_TARGETS`
-- **THEN** the same field is settable via the `targets:` YAML section
-- **AND** an empty `BOSUN_TARGETS` (`[]`) yields the same implicit `default` target as an absent `targets:` section
+- **WHEN** any YAML or environment descriptor has an empty or unsafe name or duplicates a sibling case-insensitively
+- **THEN** target resolution rejects the complete effective set
+- **AND** no valid sibling or synthesized default target executes
 
 ### Requirement: Per-Target Configuration Independence
 
-`ConfigForTarget` and hot-reload (`applyTargetOverrides`) SHALL produce per-target configurations that share no mutable backing storage. Every slice and map field on the per-target `Config` — including `SecretsFiles`, `DeployPaths`, `DriftIgnore`, `PostSyncHooks`, and `CriticalContainers` — SHALL be deep-copied, so that mutating one target's configuration never alters another target's or the base configuration. Empty per-target fields SHALL follow explicit, documented inheritance rules; an empty override SHALL NOT silently inherit a base value in a way that causes a target to deploy to an unintended host or path.
+Derivation and hot reload SHALL leave each effective target, every sibling, and the base configuration with independent mutable slices and maps. Nil slices SHALL inherit documented base values and explicitly present empty slices SHALL clear them.
 
-#### Scenario: Mutating a per-target slice does not affect siblings
+Target decoding SHALL preserve scalar presence where omission and explicit empty have different meanings. Scalar fields SHALL follow these rules:
 
-- **WHEN** one target's `DeployPaths`, `SecretsFiles`, `DriftIgnore`, or `PostSyncHooks` slice is mutated after `ConfigForTarget`
-- **THEN** the base configuration and every other target's configuration are unchanged
+- `name` is required and empty is invalid.
+- An omitted `target_host` inherits the base host; explicit empty selects local execution.
+- Omitted `local_appdata_path` and `remote_appdata_path` values inherit their base values; explicit empty is invalid rather than selecting an unrelated or secrets-derived deploy path.
+- An omitted `project_name` inherits the base project; explicit empty selects the Compose-derived project namespace.
+- An omitted `secrets_scope` inherits the base scope; explicit empty disables the target-scoped overlay.
+- For a named target, omitted or empty `state_file` and `staging_dir` values select their documented per-target derived paths; for the implicit or lone default they preserve the legacy paths. A non-empty value is an exact override subject to root confinement.
 
-#### Scenario: Hot-reload preserves per-target independence
+No scalar rule SHALL silently select a sibling's host, path, project, or secrets scope.
 
-- **WHEN** `bosun.yaml` is hot-reloaded during a multi-target cycle and `applyTargetOverrides` assigns per-target slices
-- **THEN** mutating one target's reloaded slice leaves sibling targets' slices unchanged
+#### Scenario: Explicit empty slice clears only its target
 
-#### Scenario: Empty override does not silently inherit a different host
+- **WHEN** a target explicitly configures an empty hook or deploy-filter list
+- **THEN** that list is empty for the target
+- **AND** the base and sibling lists remain unchanged
 
-- **WHEN** a target leaves `target_host` empty
-- **THEN** inheritance follows the documented rule (empty means local, not "inherit the base/another target's host")
-- **AND** a dev target cannot accidentally resolve to a production host through silent inheritance
+#### Scenario: Omitted and explicit-empty scalar remain distinguishable
 
-## MODIFIED Requirements
+- **WHEN** an inheritable scalar is omitted on one target and explicitly empty on another
+- **THEN** the omitted field follows its documented inheritance rule
+- **AND** the explicit empty follows its documented clear or local rule
+- **AND** neither silently resolves to an unintended sibling or production target
 
-### Requirement: Pipeline Orchestration
+#### Scenario: Explicit-empty deploy path is invalid
 
-The reconciler SHALL execute a two-phase pipeline: cycle-level stages run once, then per-target stages run for each target sequentially.
+- **WHEN** a target explicitly sets its applicable local or remote appdata path to empty
+- **THEN** target resolution rejects the effective set
+- **AND** Bosun does not fall back to a sibling or secrets-derived deploy path
 
-**Cycle-level stages** (run once per reconciliation cycle):
+#### Scenario: Explicit-empty project uses Compose derivation
 
-1. Acquire process-wide single-flight gate
-2. Canonicalize and validate every effective target staging path, then harden-or-delete every pre-existing staging slot
-3. Git repository sync (clone or pull)
-4. Decrypt secrets (shared SOPS files)
+- **WHEN** a target explicitly sets `project_name` to empty
+- **THEN** Bosun leaves the effective Compose project name unset for Compose to derive
+- **AND** it does not inherit the base target's explicit project name
 
-**Per-target stages** (run for each target in list order):
+### Requirement: Per-Target Daemon State Visibility
 
-5. Acquire per-target file lock
-6. Load deploy state and evaluate skip/circuit-breaker logic
-7. Apply per-target secrets scoping
-8. Render templates (to isolated staging directory)
-9. Extract declared state from rendered compose
-10. Create configuration backup
-11. Deploy files (local or remote)
-12. Deploy sync invariant check (see Deploy Sync Invariants)
-13. Run `docker compose up`
-14. Configured health gate (if enabled; see Critical Container Health Gate and Health Gate Scope)
-15. Execute post-sync hooks
-16. Post-deploy verification (drift check)
-17. Clean up staging directory
-18. Record successful deployment in state file
-19. Release per-target file lock
+The daemon SHALL use one centralized enumeration of its startup-resolved target snapshot and each target's independent canonical state document for periodic drift, circuit-breaker diagnostics, local or authenticated operator `/status`, and authenticated WebUI `/api/status`. Structural target changes SHALL require a daemon restart; file reload SHALL NOT silently replace the active topology. After restart, a removed target SHALL NOT be reported as current. Missing or malformed state SHALL be attributed to its target without substituting a sibling's state.
 
-**Post-cycle:** Release process-wide single-flight gate. If dirty flag is set, start another cycle.
+Periodic live drift SHALL inspect every local target against its own Docker namespace. It SHALL NOT inspect the local Docker daemon on behalf of a remote target; that target SHALL receive an attributable unsupported/unavailable result without mutating cached state, while eligible local siblings continue.
 
-A fatal failure at any per-target stage SHALL abort the remaining stages for that
-target and release its per-target lock. While the shared cycle context remains
-live, other targets in the cycle SHALL continue unaffected. If the context is
-canceled or its deadline expires, target iteration SHALL stop as required by the
-canonical `Non-Live Cycle Context Stops Target Iteration` requirement. The
-configured health gate (stage 14) failing SHALL trigger rollback for that target
-before aborting. The invariant check (stage 12) failing SHALL abort that target
-before compose up runs; no rollback is needed because no compose changes have been
-applied at that point. After all eligible targets complete, the overall cycle
-SHALL report failure if any target failed, without undoing successful siblings.
-Failure and success alerts SHALL identify the applicable target.
+The local or authenticated operator `/status` view, authenticated WebUI `/api/status`, and direct `bosun status` output SHALL report last deploy, drift, and circuit-breaker condition per effective target. Multi-target `/status` and `/api/status` SHALL each add an ordered target collection appropriate to their existing response schema; a single implicit or lone default SHALL preserve each consumer's existing top-level presentation and legacy state path. The public `/health` response SHALL remain the bounded readiness projection required by the daemon-security spec and SHALL NOT expose the target collection, target names, state paths, drift details, or breaker details.
 
-Equal or ancestor/descendant staging paths SHALL reject the complete target set.
-If any pre-existing slot can be neither protected nor deleted, Bosun SHALL fail the
-cycle before Git sync, secret decryption, or target execution.
+#### Scenario: Operator status reports independent target outcomes
 
-Before writing decrypted render output, Bosun SHALL prepare the current target's
-private staging slot according to the Failed Staging Evidence Lifecycle
-requirement. After preparation begins, every normal or panic exit before successful
-staging cleanup SHALL run that lifecycle's harden-or-delete finalizer. A staging
-cleanup failure after verification is non-fatal only when the retained tree is
-successfully proven owner-only; if Bosun can neither harden nor delete that tree,
-the security failure SHALL abort successful completion.
+- **WHEN** `unraid` has a successful current state and `pi` has a tripped breaker
+- **THEN** authenticated or local `/status`, authenticated `/api/status`, and `bosun status` attribute those conditions to their respective targets
+- **AND** neither state is read from the base default path by mistake
 
-Per-target locks and the process-wide single-flight gate SHALL always be released
-via defer, even on panic. The single-flight gate SHALL remain held until target
-iteration stops or completes.
+#### Scenario: Public health remains bounded
 
-When only one target is configured (implicit default), behavior SHALL be identical to the pre-multi-target pipeline.
+- **WHEN** multiple targets have deploy, drift, or breaker details
+- **THEN** public `/health` still exposes only the bounded readiness fields required by daemon security
+- **AND** it does not expose target names, state paths, drift details, or breaker details
 
-#### Scenario: Full pipeline succeeds for all targets
+#### Scenario: Periodic drift separates local and remote targets
 
-- **WHEN** a reconciliation cycle triggers with a new commit and two targets
-- **THEN** the single-flight gate is acquired and effective staging paths and pre-existing slots are validated before git sync
-- **AND** git sync runs once
-- **AND** secrets are decrypted once
-- **AND** both targets execute per-target stages 5–19 in order
-- **AND** each target removes only its own staging slot after health checks, verification, and hooks complete
-- **AND** both targets' state files record the deployed commit
-- **AND** success alerts identify their respective targets
-- **AND** the single-flight gate is released
+- **WHEN** periodic drift enumerates local target `pi` and remote target `unraid`
+- **THEN** it inspects `pi` against `pi`'s Docker namespace
+- **AND** marks `unraid` unsupported or unavailable without opening local Docker on its behalf or mutating its cached state
 
-#### Scenario: Cycle-level failure aborts before targets
+#### Scenario: Structural change becomes current after restart
 
-- **WHEN** shared secret decryption fails before target iteration
-- **THEN** no target renders, backs up, deploys, or runs compose
-- **AND** evidence retained from every preceding target attempt is not replaced
-- **AND** a throttled failure alert is sent
-- **AND** the single-flight gate is released
-
-#### Scenario: Pipeline aborts on stage failure for one target
-
-- **WHEN** target `unraid` fails during template rendering
-- **AND** the shared cycle context remains live
-- **THEN** remaining per-target stages for `unraid` are skipped
-- **AND** `unraid`'s rendered staging tree is retained securely
-- **AND** a throttled failure alert is sent for `unraid`
-- **AND** `unraid`'s per-target lock is released
-- **AND** target `pi` proceeds with its full per-target pipeline
-- **AND** the overall cycle reports failure after both targets finish
-- **AND** alerts identify their respective target outcomes
-
-#### Scenario: Dry run mode with multiple targets
-
-- **WHEN** `DryRun` is true and two targets are configured
-- **THEN** both targets skip backup, deploy, invariant check, compose up, health gate, hooks, and verification
-- **AND** template rendering executes for both targets to validate templates
-- **AND** normal staging cleanup is skipped for both targets
-- **AND** Bosun hardens every rendered directory to `0700` and regular file to `0600` before returning
-- **AND** each rendered staging tree is retained securely in its isolated evidence slot
-- **AND** each replacement and retention outcome is reported without rendered content
-
-#### Scenario: Invariant check aborts before compose for one target
-
-- **WHEN** target `unraid` fails stage 12 invariants
-- **AND** the shared cycle context remains live
-- **THEN** compose up, health gate, hooks, verification, and successful cleanup are skipped for `unraid`
-- **AND** `unraid` retains its rendered staging tree securely and releases its per-target lock
-- **AND** a failure alert is sent for `unraid`
-- **AND** `unraid`'s state file is NOT updated
-- **AND** target `pi` proceeds with its full per-target pipeline
-
-#### Scenario: Configured health gate failure triggers rollback for one target only
-
-- **WHEN** target `pi` passes compose up but fails the health gate
-- **AND** the shared cycle context remains live
-- **THEN** `pi` triggers rollback to its backup compose files
-- **AND** `pi` retains its failed rendered staging tree securely regardless of rollback outcome
-- **AND** `pi`'s deployment is NOT recorded as successful
-- **AND** a failure alert is sent for `pi`
-- **AND** `pi`'s per-target lock is released
-- **AND** other targets proceed unaffected
-
-### Requirement: Deploy State Persistence
-
-The reconciler SHALL persist deployment state to a JSON file per target containing: schema version, last deployed commit hash, deployment timestamp, deploy count, trigger source, last attempted commit, attempt count, last alerted attempt, declared services snapshot, drift check timestamp, and drift items.
-
-The state file path SHALL be per-target: `<StateDir>/deploy-state-<target.Name>.json`. The implicit default target SHALL use `deploy-state.json` for backwards compatibility.
-
-The state file SHALL include a `schema_version` field (currently `2`) to support future schema evolution without breaking existing deployments.
-
-The state file SHALL be written atomically using the pattern: write temp file (in same directory as target) -> fsync temp -> rename -> fsync directory.
-
-#### Scenario: State file written after successful deploy
-
-- **WHEN** a reconcile pipeline completes all stages successfully for target `unraid`
-- **THEN** `deploy-state-unraid.json` is written with the current commit hash, timestamp, source, and declared services
-- **AND** the attempt count is reset to 0
-
-#### Scenario: State file not updated on failure
-
-- **WHEN** a reconcile pipeline fails for target `pi`
-- **THEN** `deploy-state-pi.json`'s `last_deployed_commit` is NOT updated
-- **AND** the attempt tracking fields ARE updated
-
-#### Scenario: Missing state file treated as never deployed
-
-- **WHEN** the state file for target `unraid` does not exist
-- **THEN** the reconciler returns a zero-value state with the current schema version
-- **AND** the full pipeline executes for `unraid` regardless of git HEAD
-
-#### Scenario: Corrupt state file treated as never deployed
-
-- **WHEN** the state file for target `pi` exists but contains invalid JSON
-- **THEN** the reconciler logs a warning and returns a zero-value state
-- **AND** the full pipeline executes for `pi`
-
-### Requirement: Drift CLI
-
-A `bosun drift` command SHALL display the current drift status. Without flags, it SHALL read the cached drift results from the deploy state file(s).
-
-When `--target` is specified, only the named target's drift is shown. When no `--target` is specified and multiple targets are configured, drift for all targets SHALL be displayed with target name headers.
-
-The `--live` flag SHALL perform a fresh drift check. For local targets, it queries Docker. For remote targets, live drift is not supported (logged as a warning).
-
-The `--json` flag SHALL output machine-readable JSON. For multiple targets, the output SHALL be a JSON object keyed by target name.
-
-When no deploy state file exists for a target, the command SHALL indicate that no deployments have been recorded for that target.
-
-#### Scenario: Cached drift status for all targets
-
-- **WHEN** `bosun drift` is run without `--target` and two targets are configured
-- **THEN** it displays drift results for both targets with target name headers
-- **AND** shows the timestamp of each target's last drift check
-
-#### Scenario: Cached drift for single target
-
-- **WHEN** `bosun drift --target=unraid` is run
-- **THEN** it reads only `deploy-state-unraid.json` and displays its drift results
-
-#### Scenario: Live drift check
-
-- **WHEN** `bosun drift --live` is run for a local target
-- **THEN** it reads declared state from the target's state file
-- **AND** queries Docker for actual state
-- **AND** displays the comparison result
-
-#### Scenario: No previous deployment for one target
-
-- **WHEN** `bosun drift` is run and target `pi` has no state file
-- **THEN** it prints a message indicating no deployments for `pi`
-- **AND** still shows drift for other targets that have state
+- **WHEN** configuration removes target `pi` while the daemon is running
+- **THEN** the startup-resolved snapshot continues to govern until restart
+- **AND WHEN** the daemon restarts with the valid new configuration
+- **THEN** `pi` is no longer presented as a current target
