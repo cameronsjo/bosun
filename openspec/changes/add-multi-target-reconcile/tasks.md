@@ -1,75 +1,93 @@
-## 1. Foundation — Target type and config parsing
+# Grounded implementation ledger
 
-- [ ] 1.1 Define `Target` struct in `internal/reconcile/reconcile.go` with all per-target fields
-- [ ] 1.2 Add `Targets []Target` to `reconcile.Config`
-- [ ] 1.3 Add `targets:` section to `bosun.yaml` schema in `internal/config/config.go`
-- [ ] 1.4 Implement `extractTargets()` to parse YAML targets into `[]Target`
-- [ ] 1.5 Implement implicit default target: when `Targets` is empty, synthesize one from flat config fields
-- [ ] 1.6 Add `BOSUN_TARGETS` env var parsing in `internal/daemon/daemon.go:ConfigFromEnv()`
-- [ ] 1.7 Add deprecation warning when both `targets:` and flat target fields are present
-- [ ] 1.8 Write tests for config parsing: multi-target YAML, single-target backwards compat, env var override
+This ledger preserves the original task identifiers while classifying them against current `main`. Completed boxes mean the delivered behavior was verified in code, tests, documentation, or the superseding implementation described inline. Partial boxes remain open and point to the bounded remainder below.
 
-## 2. Per-target isolation — staging, state, locking
+Summary: **35 shipped, 7 partially shipped, 5 superseded, 1 genuinely missing, and 1 invalid item removed from scope.**
 
-- [ ] 2.1 Derive per-target staging directory: `<StagingDir>/<target.Name>/`
-- [ ] 2.2 Derive per-target state file: `<StateDir>/deploy-state-<target.Name>.json` (default target uses `deploy-state.json`)
-- [ ] 2.3 Derive per-target lock file: `<LockDir>/reconcile-<target.Name>.lock`
-- [ ] 2.4 Update `New()` to accept a `Target` and configure paths accordingly
-- [ ] 2.5 Write tests for path derivation: default target, named target, custom overrides
+## 1. Foundation — target type and configuration parsing
 
-## 3. Daemon multi-target loop
+- [x] 1.1 **SHIPPED:** Define the public target descriptor with the YAML/JSON per-target fields used by reconciliation (`internal/reconcile/target.go`; PR #158).
+- [x] 1.2 **SHIPPED:** Store target descriptors on the base reconciliation configuration through its target accessors and resolver rather than an exported mutable slice (PR #158).
+- [x] 1.3 **SHIPPED:** Parse the `targets:` list from `bosun.yaml` (PR #158).
+- [x] 1.4 **SHIPPED:** Convert YAML target entries to independent reconcile target descriptors (PR #158).
+- [x] 1.5 **SHIPPED:** Resolve an absent or effectively empty target set to one implicit `default` target (PR #158).
+- [x] 1.6 **SHIPPED:** Parse the `BOSUN_TARGETS` JSON-array override; `null` retains project targets and `[]` is authoritative (PR #158).
+- [ ] 1.7 **PARTIAL:** The mixed-config warning ships for `targets:` plus flat `target_host`; finish the documented scalar presence/inheritance contract in R2 instead of claiming every flat field is ignored.
+- [x] 1.8 **SHIPPED:** Cover YAML targets, implicit-default compatibility, and environment override parsing (PRs #158 and #160).
 
-- [ ] 3.1 Refactor daemon to hold `[]Target` instead of one `Reconciler`
-- [ ] 3.2 On each reconciliation cycle, iterate targets and create/run a `Reconciler` per target
-- [ ] 3.3 A failure on target N logs error + sends alert, then target N+1 proceeds while the shared cycle context remains live; cancellation or deadline expiry stops later targets per the canonical reconcile spec
-- [ ] 3.4 Add target name to logger context for all reconciliation log messages
-- [ ] 3.5 Preserve single-flight reconciliation semantics: process-wide gate serializes all entry points, dirty-flag coalesces concurrent triggers into follow-up cycle
-- [ ] 3.6 Write integration test: two targets, one fails while the shared cycle context remains live, second still runs
-- [ ] 3.7 Write test: concurrent trigger during active cycle sets dirty flag and coalesces
+## 2. Per-target isolation — staging, state, and locking
+
+- [x] 2.1 **SHIPPED:** Derive a named target staging slot below the configured staging root unless an explicit override is supplied (PR #158).
+- [x] 2.2 **SHIPPED:** Derive `deploy-state-<name>.json` for named targets while preserving the default state path (PR #158).
+- [x] 2.3 **SHIPPED:** Derive `reconcile-<name>.lock` for named targets while preserving the default lock path (PR #158).
+- [x] 2.4 **SUPERSEDED:** Instead of changing `New` to accept a target, `ConfigForTarget(target)` overlays a copied config and the existing constructor remains unchanged (PR #158).
+- [x] 2.5 **SHIPPED:** Cover default, named, and explicit target path derivation (PRs #158 and #160).
+
+## 3. Sequential orchestration and admission
+
+- [x] 3.1 **SUPERSEDED:** The daemon retains its reconcile configuration and resolves targets per cycle rather than holding a separate `[]Target` (PR #158).
+- [x] 3.2 **SHIPPED:** Iterate effective targets in order, build `ConfigForTarget`, and run a complete reconciler pipeline for each (PR #158).
+- [x] 3.3 **SHIPPED:** Accumulate ordinary target failures and continue while the shared context is live; stop later targets when it is canceled or expired (PRs #158 and #626).
+- [ ] 3.4 **PARTIAL:** The daemon's outer target log records carry target context; propagate that context through every target-owned `Reconciler` log record in R3.
+- [ ] 3.5 **PARTIAL:** Daemon-owned entry points are single-flight and dirty-trigger coalesced; finish the spec/test boundary in R3 without claiming a cross-process CLI mutex. Direct overlap remains governed by canonical file locking.
+- [x] 3.6 **SHIPPED:** Cover continuation to a sibling after an ordinary target failure while context remains live (PRs #160 and #626).
+- [x] 3.7 **SHIPPED:** Cover daemon dirty-trigger coalescing during an active cycle (PR #160).
 
 ## 4. Secrets scoping
 
-- [ ] 4.1 Implement `mergeTargetSecrets()`: merge `targets.<name>.*` over top-level keys
-- [ ] 4.2 Pass scoped secrets to template rendering per target
-- [ ] 4.3 Log overridden keys at debug level
-- [ ] 4.4 Write tests: shared-only, target-scoped override, no target scope (passthrough)
+- [x] 4.1 **SHIPPED:** Merge `targets.<scope>` values over shared decrypted values for the active target (PR #158).
+- [x] 4.2 **SHIPPED:** Render each target with its scoped secret map (PR #158).
+- [x] 4.3 **SHIPPED:** Log scoped override keys at debug level without logging secret values (PR #158).
+- [x] 4.4 **SHIPPED:** Cover shared-only, scoped override, and no-scope behavior (PRs #158 and #160).
 
-## 5. Per-target alerting
+## 5. Named-target alert context
 
-- [ ] 5.1 Add `TargetName string` field to alert method signatures
-- [ ] 5.2 Include target name in deploy success/failure/recovery alert messages
-- [ ] 5.3 Include target name in drift alert messages
-- [ ] 5.4 Update alert tests to verify target context is present
+- [x] 5.1 **SUPERSEDED:** Alert helpers accept a positional target identifier rather than adding a `TargetName` field to every signature (PR #158).
+- [x] 5.2 **SHIPPED:** Include named-target context in deploy success, failure, recovery, and rollback alerts while preserving legacy empty/`local` titles (PR #158).
+- [x] 5.3 **SHIPPED:** Include named-target context in drift and breaker alerts (PRs #158 and #503).
+- [x] 5.4 **SHIPPED:** Cover title suffixes and target context across lifecycle alerts (PRs #158 and #160).
 
-## 6. CLI multi-target support
+## 6. CLI and daemon visibility
 
-- [ ] 6.1 Add `--target` flag to `bosun reconcile` to reconcile a single target
-- [ ] 6.2 Add `--target` flag to `bosun drift` to check drift for a specific target
-- [ ] 6.3 Update `bosun status` to show per-target state (last deploy, drift, circuit breaker)
-- [ ] 6.4 Add `--target` flag to `bosun trigger` for daemon-mode single-target trigger
-- [ ] 6.5 Write tests for CLI target filtering
+- [x] 6.1 **SHIPPED:** Filter direct `bosun reconcile` execution with `--target` (PR #158).
+- [x] 6.2 **SHIPPED:** Filter `bosun drift` with `--target` and aggregate cached results for all effective targets (PRs #158 and #503).
+- [ ] 6.3 **MISSING:** Implement per-target daemon state visibility and `bosun status` output for last deploy, drift, health, and circuit-breaker state in R4.
 
-## 7. Config reload for multi-target
+The original 6.4 target-specific `bosun trigger` task is removed as invalid scope. A daemon trigger requests a complete reconciliation cycle; direct per-target work uses the reconcile and drift filters.
 
-- [ ] 7.1 Update `ConfigReloaderFunc` to return per-target reloadable config
-- [ ] 7.2 Ensure env var overrides (`*FromEnv` flags) work per-target
-- [ ] 7.3 Write tests for config reload with multiple targets
+- [ ] 6.5 **PARTIAL:** Reconcile/drift filtering tests ship; add remote named-target live-drift fail-safe and exact aggregate JSON coverage in R5.
 
-## 8. Documentation and skill updates
+## 7. Configuration reload
 
-- [ ] 8.1 Update `docs/commands.md` with `--target` flag documentation
-- [ ] 8.2 Update `skills/onboard/resources/gitops.md` with multi-target workflow
-- [ ] 8.3 Update `skills/onboard/resources/configuration.md` with `targets:` schema
-- [ ] 8.4 Add multi-target example to `docs/` or README
+- [x] 7.1 **SHIPPED:** Reload target-owned fields through the effective per-target configuration rather than returning a separate target config type (PRs #158 and #506).
+- [x] 7.2 **SHIPPED:** Preserve environment-owned target and override fields during file reload (PRs #158, #506, and #510).
+- [x] 7.3 **SHIPPED:** Cover multiple targets, inheritance, clearing, and slice independence during reload (PRs #160, #506, and #510).
 
-## 9. Target validation and safety (folded from Cluster C bug hunt)
+## 8. Consumer documentation
 
-- [ ] 9.1 `ResolveTargets` validates target-derived paths (state_file, lock_file, staging_dir, appdata) for traversal/root-confinement — same checks for YAML and `BOSUN_TARGETS` (GHSA-57r2)
-- [ ] 9.2 Reserved-name `default` check is case-insensitive, matching dedup (#228)
-- [x] 9.3 Reject colliding state_file / lock_file / staging_dir across targets (#260)
-- [x] 9.4 Reject/fail-fast on colliding Docker namespace (host+project_name) or deploy path across targets (#287)
-- [x] 9.5 YAML and `BOSUN_TARGETS` expose identical per-target field sets; `BOSUN_TARGETS=[]` == absent targets (#272, #273)
-- [ ] 9.6 `ConfigForTarget` deep-copies ALL slice/map fields incl. SecretsFiles, DeployPaths, DriftIgnore (#270)
-- [ ] 9.7 `applyTargetOverrides` deep-copies caller-owned slices on hot-reload (#271)
-- [ ] 9.8 Explicit, documented empty-field inheritance; empty override never silently inherits a foreign host/path (GHSA-jxw8)
-- [ ] 9.9 Tests: path-traversal rejection, collision rejection, slice independence after derive + hot-reload, field parity
+- [x] 8.1 **SHIPPED:** Document direct CLI target filters in `docs/commands.md` (PR #167).
+- [x] 8.2 **SHIPPED:** Document sequential multi-target reconciliation in the onboard GitOps resource (PR #167).
+- [x] 8.3 **SHIPPED:** Document the target schema and full example in the onboard configuration resource (PR #167).
+- [x] 8.4 **SUPERSEDED:** The onboard configuration resource is the primary consumer document and already contains the complete example; duplicating it in README is unnecessary (PR #167).
+
+## 9. Target validation and safety
+
+- [ ] 9.1 **PARTIAL:** Name, remote-path, staging-overlap, state collision, Docker namespace, and deploy collision validation ship; finish explicit state/staging and local deploy-root confinement for YAML and `BOSUN_TARGETS` in R1.
+- [x] 9.2 **SUPERSEDED:** A lone case-insensitive `default` is accepted and normalized for compatibility; `default` in a multi-target set is rejected (PR #407).
+- [x] 9.3 **SHIPPED:** Reject target state collisions and equal or ancestor/descendant staging paths before execution (PRs #313 and #528).
+- [x] 9.4 **SHIPPED:** Reject colliding Docker namespaces and deploy destinations (PRs #313 and #528).
+- [x] 9.5 **SHIPPED:** Keep YAML/environment target fields in parity and resolve an authoritative empty environment array to the implicit default (PRs #510 and #526).
+- [x] 9.6 **SHIPPED:** Deep-copy target-owned and inherited slice fields during derivation (PRs #313 and #510).
+- [x] 9.7 **SHIPPED:** Deep-copy caller-owned slices during hot reload (PR #506).
+- [ ] 9.8 **PARTIAL:** Host and slice rules ship, but scalar path/project fields collapse omission and explicit empty values; finish presence-aware decoding and the field-by-field inheritance contract in R2.
+- [ ] 9.9 **PARTIAL:** Collision, deep-copy, parity, and default tests ship; add the remaining confinement and scalar-presence mutation tests in R1, R2, and R6.
+
+## Bounded remaining implementation
+
+- [ ] R1. Confine explicit named-target `state_file` and `staging_dir` values to their configured roots and local appdata/deploy values to their permitted local root. Apply identical checks to YAML and `BOSUN_TARGETS`; reject the whole target set before any reconcile work.
+- [ ] R2. Preserve scalar presence during YAML and JSON decoding, document each scalar's omitted and explicit-empty rule, keep `target_host: ""` local, and prevent an omitted or cleared path/project field from silently selecting an unintended target.
+- [ ] R3. Propagate target context into the reconciler logger and pin the true concurrency boundary: daemon entry points coalesce in process, while separate processes use canonical fail-fast file locking.
+- [ ] R4. Centralize effective target-state enumeration for daemon periodic drift, health/status, and circuit-breaker views; make `bosun status` show every target while preserving the one-default presentation and state compatibility.
+- [ ] R5. Reject `bosun drift --live` for a remote named target before local Docker access. Preserve cached target drift, filtering, and aggregate JSON as `{"targets":[...]}`.
+- [ ] R6. Add mutation-sensitive tests for R1-R5, including no partial execution on confinement failure, omission versus explicit empty values, sibling log attribution, untouched sibling state, remote live-drift rejection, exact JSON shape, and single-default compatibility.
+- [ ] R7. Update onboard configuration, GitOps, and command resources after behavior lands; run focused/full Go gates and strict OpenSpec validation, then archive this change without `--skip-specs`.
