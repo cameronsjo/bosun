@@ -2721,6 +2721,56 @@ func TestDeployOps_DeployLocal_CancellationMutationBoundaries(t *testing.T) {
 	})
 }
 
+func TestDeployOps_DeployLocal_BackupCleanupFailurePreservesRecoveryAnchor(t *testing.T) {
+	root := evalSymlinks(t, t.TempDir())
+	source := filepath.Join(root, "source")
+	target := filepath.Join(root, "target")
+	backup := target + ".bak"
+	require.NoError(t, os.MkdirAll(source, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "config.yml"), []byte("new"), 0o644))
+	require.NoError(t, os.MkdirAll(target, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "config.yml"), []byte("old"), 0o644))
+
+	cleanupErr := errors.New("injected backup cleanup failure")
+	var removedPaths []string
+	deploy := &DeployOps{localFS: &localDeployFS{
+		removeAll: func(path string) error {
+			removedPaths = append(removedPaths, path)
+			if path == backup {
+				return cleanupErr
+			}
+			return os.RemoveAll(path)
+		},
+	}}
+
+	err := deploy.DeployLocal(context.Background(), source, target, nil, nil)
+
+	require.NoError(t, err, "backup cleanup is best-effort after the new target is live")
+	assert.Equal(t, []string{backup}, removedPaths)
+	newContent, readErr := os.ReadFile(filepath.Join(target, "config.yml"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "new", string(newContent))
+	oldContent, readErr := os.ReadFile(filepath.Join(backup, "config.yml"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "old", string(oldContent), "failed cleanup must preserve the rollback copy")
+
+	err = deploy.DeployLocal(context.Background(), source, target, nil, nil)
+
+	require.ErrorContains(t, err, "stale deploy backup exists")
+	assert.ErrorContains(t, err, backup)
+	newContent, readErr = os.ReadFile(filepath.Join(target, "config.yml"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "new", string(newContent), "the stale-backup guard must fail before replacing the live target")
+	oldContent, readErr = os.ReadFile(filepath.Join(backup, "config.yml"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "old", string(oldContent))
+	entries, readDirErr := os.ReadDir(root)
+	require.NoError(t, readDirErr)
+	for _, entry := range entries {
+		assert.NotContains(t, entry.Name(), ".deploy-tmp-", "failed redeploy must remove its staging directory")
+	}
+}
+
 func TestDeployOps_DeployLocal_RenameFailureUsesSharedRestore(t *testing.T) {
 	tests := []struct {
 		name        string
