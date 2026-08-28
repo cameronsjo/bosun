@@ -107,23 +107,24 @@ classification. `runPostSyncHooksWithSpan` records them on its span and returns
 no error, so they cannot become the run's terminal result. This proposal does
 not make best-effort hooks fail or interrupt an otherwise completed reconcile.
 
-### Stop multi-target iteration when the cycle context is cancelled
+### Stop multi-target iteration when the cycle context is no longer live
 
 Ordinary target failures keep the existing continue-to-next-target behavior.
-Once the cycle context reports `context.Canceled`, however, the daemon stops
-before constructing or running any later target. If the in-flight target also
-returns propagated caller cancellation, only that target restores its attempt
-budget, persists an interrupted outcome, and attempts the bounded alert. If a
-real target error races with cancellation, it retains ordinary failure state and
-alert ownership, but target iteration still stops because the cycle context is
-no longer live. Later target state and alert streams remain untouched.
+Once the cycle context reports either `context.Canceled` or
+`context.DeadlineExceeded`, however, the daemon stops before constructing or
+running any later target. If the in-flight target returns propagated caller
+cancellation, only that target restores its attempt budget, persists an
+interrupted outcome, and attempts the bounded alert. If a real target error
+races with cancellation, it retains ordinary failure state and alert ownership,
+but target iteration still stops because the cycle context is no longer live.
+When the shared reconcile deadline expires, the active target likewise retains
+ordinary counted-failure and alert behavior while later targets remain untouched.
 
 The daemon also checks for caller cancellation between targets. Cancellation in
 that gap stops iteration without inventing an interrupted target attempt or
 alert. This bounds one shutdown cycle to at most one 30-second interruption
-alert delivery budget. Reconcile deadlines remain ordinary failures for the
-active target under this proposal; the shutdown-specific cycle stop is keyed to
-`context.Canceled`.
+alert delivery budget. An expired deadline observed between targets also stops
+iteration without inventing a failure for an untouched target.
 
 ## Risks / Trade-offs
 
@@ -148,8 +149,8 @@ active target under this proposal; the shutdown-specific cycle stop is keyed to
 2. Add pure interruption classification and attempt-budget restoration helpers.
 3. Suppress stage-owned alerts for classified cancellation and route the result
    through one interruption finalizer and bounded alert context.
-4. Stop multi-target iteration whenever the cycle context reports caller
-   cancellation.
+4. Stop multi-target iteration whenever the shared cycle context reports
+   cancellation or deadline expiry.
 5. Add daemon shutdown integration coverage and update operator/onboard docs.
 6. Roll back by reverting the implementation; older binaries ignore the optional
    state field and existing `needs_redeploy` behavior remains safe.

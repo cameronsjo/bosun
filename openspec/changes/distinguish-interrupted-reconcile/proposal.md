@@ -23,9 +23,9 @@ pipeline failure.
 - Make the run-boundary finalizer the sole owner of an interruption alert;
   stage-specific failure and health-gate alert paths suppress their ordinary
   notifications when they propagate the caller cancellation.
-- Stop a multi-target reconciliation cycle when caller cancellation is observed,
-  leaving later targets untouched and bounding interruption alert delivery to
-  one 30-second budget for the cycle.
+- Stop a multi-target reconciliation cycle when its shared context is no longer
+  live, leaving later targets untouched and bounding interruption alert delivery
+  to one 30-second budget for a cancelled cycle.
 - Continue treating reconcile deadlines and non-cancellation errors as ordinary
   failures that consume the circuit-breaker budget.
 - Document the interruption state, retry, breaker, and alert behavior in the
@@ -45,5 +45,6 @@ pipeline failure.
 - Adjacent active changes: `add-daemon-lifecycle` owns daemon task admission and
   shutdown cancellation, while `add-multi-target-reconcile` owns target
   orchestration and state paths. This change preserves ordinary per-target
-  failure continuation but adds a narrow cycle-stop exception after propagated
-  caller cancellation so shutdown does not start untouched targets.
+  failure continuation while the shared cycle context is live, but stops target
+  iteration after cancellation or deadline expiry so a terminal context is not
+  charged to untouched targets.

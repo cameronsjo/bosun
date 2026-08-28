@@ -123,21 +123,26 @@ interruption outcome.
 - **AND** post-sync hook cancellation does not consume or restore the deploy
   failure budget
 
-### Requirement: Cycle-Level Cancellation Stops Target Iteration
+### Requirement: Non-Live Cycle Context Stops Target Iteration
 
 Ordinary per-target failures SHALL retain the existing behavior of logging and
 alerting the failure before proceeding to the next configured target while the
-cycle context remains live. Caller cancellation SHALL be a narrow exception:
-when the cycle context reports `context.Canceled`, the daemon SHALL stop the
+cycle context remains live. When the shared cycle context reports either
+`context.Canceled` or `context.DeadlineExceeded`, the daemon SHALL stop the
 reconciliation cycle before constructing or running any later target, regardless
-of whether the in-flight target returned propagated cancellation or a real error
-that raced with shutdown.
+of the in-flight target's returned error.
 
-Only the in-flight target SHALL finalize its interrupted outcome and alert. State
-files and alert streams for later targets SHALL remain unchanged. If caller
-cancellation is observed between targets, the daemon SHALL stop before starting
-the next target without creating an interrupted outcome or alert for a target
-that did not begin.
+Only propagated caller cancellation SHALL receive interruption accounting. A
+shared reconcile deadline that expires during a target SHALL remain an ordinary
+counted failure with the active target's existing alert behavior, but the daemon
+SHALL NOT pass the already-expired context to later targets.
+
+Only an in-flight target that satisfies interruption classification SHALL
+finalize an interrupted outcome and alert. State files and alert streams for
+later targets SHALL remain unchanged. If a terminal cycle context is observed
+between targets, the daemon SHALL stop before starting the next target without
+creating an interrupted outcome, failure, or alert for a target that did not
+begin.
 
 #### Scenario: Shutdown during first target stops later targets
 
@@ -170,3 +175,13 @@ that did not begin.
 - **AND** the cycle context reports `context.Canceled`
 - **THEN** that target retains ordinary failure accounting and alert behavior
 - **AND** reconciliation does not start the next configured target
+
+#### Scenario: Shared reconcile deadline charges only the active target
+
+- **GIVEN** multiple targets share one cycle-level reconcile deadline
+- **WHEN** the deadline expires while one target is active
+- **AND** that target returns `context.DeadlineExceeded`
+- **THEN** the active target records an ordinary counted failure and retains its
+  existing failure-alert behavior
+- **AND** reconciliation does not start any later target
+- **AND** later target state and alert streams remain unchanged

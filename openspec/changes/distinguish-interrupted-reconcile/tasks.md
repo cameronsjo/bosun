@@ -20,11 +20,12 @@
 - [ ] 2.4 Cover same-commit prior failures, first run of a new commit, no-effect
   cancellation, partial deploy cancellation, deadline expiry, real-error races,
   force mode, swallowed hook cancellation, and per-target state isolation.
-- [ ] 2.5 Stop multi-target iteration whenever the cycle context reports caller
-  cancellation, including after a real target error races with shutdown, and
-  stop without target finalization when cancellation occurs between targets;
-  verify later target state and alerts remain untouched while ordinary target
-  failures continue only under a live cycle context.
+- [ ] 2.5 Stop multi-target iteration whenever the shared cycle context reports
+  caller cancellation or deadline expiry, including after a real target error
+  races with shutdown, and stop without target finalization when a terminal
+  context is observed between targets; verify later target state and alerts
+  remain untouched while ordinary target failures continue only under a live
+  cycle context.
 
 ## 3. Deliver Interruption Alert
 
@@ -43,7 +44,8 @@
 - [ ] 3.5 Add deterministic stage-table and health-gate tests proving propagated
   cancellation attempts exactly one finalizer-owned alert, real errors keep
   their existing stage-owned alerts, and a multi-target shutdown spends at most
-  one 30-second alert budget.
+  one 30-second alert budget; cover deadline expiry stopping later targets while
+  remaining a counted failure for the active target.
 
 ## 4. Documentation and Validation
 
