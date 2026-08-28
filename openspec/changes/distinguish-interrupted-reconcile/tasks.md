@@ -14,22 +14,36 @@
   budget for classified interruptions without clearing an existing
   `needs_redeploy` marker.
 - [ ] 2.3 Apply interruption finalization once at the run boundary across sync,
-  decrypt, render, backup, deploy, health, and hook cancellation paths without
-  changing panic or ordinary failure accounting.
+  decrypt, render, backup, deploy, and health cancellation paths without
+  changing panic or ordinary failure accounting; explicitly preserve swallowed
+  post-sync hook errors and cancellation as best-effort, non-terminal behavior.
 - [ ] 2.4 Cover same-commit prior failures, first run of a new commit, no-effect
   cancellation, partial deploy cancellation, deadline expiry, real-error races,
-  force mode, and per-target state isolation.
+  force mode, swallowed hook cancellation, and per-target state isolation.
+- [ ] 2.5 Stop multi-target iteration whenever the cycle context reports caller
+  cancellation, including after a real target error races with shutdown, and
+  stop without target finalization when cancellation occurs between targets;
+  verify later target state and alerts remain untouched while ordinary target
+  failures continue only under a live cycle context.
 
 ## 3. Deliver Interruption Alert
 
 - [ ] 3.1 Send exactly one existing-format deploy-failure alert with a canonical
   interrupted reason for each classified interruption when failure alerts are
   enabled.
-- [ ] 3.2 Preserve context values while detaching caller cancellation and
+- [ ] 3.2 Make the run-boundary finalizer the exclusive owner of interruption
+  alerts: pass causal errors through every stage alert site and suppress both
+  `sendThrottledFailureAlert` and `sendGateFailureAlerts` (including rollback
+  companion notifications) when propagated caller cancellation is detected.
+- [ ] 3.3 Preserve context values while detaching caller cancellation and
   enforcing the 30-second maximum delivery budget.
-- [ ] 3.3 Verify interruption delivery bypasses attempt throttling, does not
+- [ ] 3.4 Verify interruption delivery bypasses attempt throttling, does not
   mutate `last_alerted_attempt`, and leaves persisted outcome intact when a
   provider fails.
+- [ ] 3.5 Add deterministic stage-table and health-gate tests proving propagated
+  cancellation attempts exactly one finalizer-owned alert, real errors keep
+  their existing stage-owned alerts, and a multi-target shutdown spends at most
+  one 30-second alert budget.
 
 ## 4. Documentation and Validation
 

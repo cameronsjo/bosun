@@ -112,3 +112,61 @@ interruption outcome.
 - **WHEN** a later attempt reaches an ordinary failure or success
 - **THEN** the stale interrupted outcome is no longer reported as the last
   attempt outcome
+
+#### Scenario: Best-effort hook cancellation is not a terminal interruption
+
+- **GIVEN** a post-sync hook returns an error wrapping `context.Canceled`
+- **AND** `runPostSyncHooksWithSpan` records and swallows that best-effort error
+- **WHEN** the remaining pipeline completes successfully
+- **THEN** the reconcile is not classified as interrupted on the basis of the
+  swallowed hook error
+- **AND** post-sync hook cancellation does not consume or restore the deploy
+  failure budget
+
+### Requirement: Cycle-Level Cancellation Stops Target Iteration
+
+Ordinary per-target failures SHALL retain the existing behavior of logging and
+alerting the failure before proceeding to the next configured target while the
+cycle context remains live. Caller cancellation SHALL be a narrow exception:
+when the cycle context reports `context.Canceled`, the daemon SHALL stop the
+reconciliation cycle before constructing or running any later target, regardless
+of whether the in-flight target returned propagated cancellation or a real error
+that raced with shutdown.
+
+Only the in-flight target SHALL finalize its interrupted outcome and alert. State
+files and alert streams for later targets SHALL remain unchanged. If caller
+cancellation is observed between targets, the daemon SHALL stop before starting
+the next target without creating an interrupted outcome or alert for a target
+that did not begin.
+
+#### Scenario: Shutdown during first target stops later targets
+
+- **GIVEN** targets `unraid`, `pi`, and `nas` are configured in that order
+- **AND** `unraid` is currently reconciling
+- **WHEN** daemon shutdown cancels the cycle context
+- **AND** `unraid` returns an error wrapping `context.Canceled`
+- **THEN** `unraid` finalizes one interrupted outcome
+- **AND** the daemon does not construct or run `pi` or `nas`
+- **AND** the state files and alert streams for `pi` and `nas` remain unchanged
+
+#### Scenario: Cancellation between targets invents no interrupted attempt
+
+- **GIVEN** one target has completed and another target has not started
+- **WHEN** daemon shutdown cancels the cycle context between those targets
+- **THEN** target iteration stops before the next target begins
+- **AND** no interruption outcome or alert is created for the untouched target
+
+#### Scenario: Ordinary target failure still continues
+
+- **WHEN** a target returns an error that does not satisfy interruption
+  classification
+- **AND** the cycle context remains live
+- **THEN** the target failure retains its existing state and alert behavior
+- **AND** reconciliation proceeds to the next configured target
+
+#### Scenario: Real target error racing with shutdown stops iteration
+
+- **WHEN** a target returns an error that does not wrap `context.Canceled`
+- **AND** the cycle context reports `context.Canceled`
+- **THEN** that target retains ordinary failure accounting and alert behavior
+- **AND** reconciliation does not start the next configured target

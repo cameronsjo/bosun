@@ -2,9 +2,10 @@
 
 The reconciler persists its attempt count before running stages so crashes and
 ordinary failures cannot retry forever. Daemon shutdown cancels the same context
-used by Git, backup, copy, compose, health, and hook operations. Those operations
-correctly return cancellation, but the pre-recorded attempt currently remains in
-the deploy-failure budget.
+used by Git, backup, copy, compose, and health operations. Those terminal stages
+can return cancellation, but the pre-recorded attempt currently remains in the
+deploy-failure budget. Post-sync hook errors are different: their wrapper records
+telemetry and intentionally does not return the error to the pipeline.
 
 Failure alerts no longer inherit a cancelled transport context: commit
 `70d9df436ef4253d764e2afaab06b6acd17195fc` added a value-preserving 30-second
@@ -25,7 +26,9 @@ decision so shutdowns cannot create phantom circuit-breaker failures.
     cancellation;
   - exempting reconcile timeouts, provider failures, or independently generated
     `context.Canceled` errors from the circuit breaker;
-  - changing alert-provider message size, redaction, or fan-out policy.
+  - changing alert-provider message size, redaction, or fan-out policy;
+  - changing best-effort post-sync hook errors or cancellation into terminal
+    reconcile results.
 
 ## Decisions
 
@@ -74,14 +77,53 @@ detaches cancellation and applies a maximum 30-second timeout. Provider errors
 remain best-effort: they are logged, the interruption outcome remains persisted,
 and shutdown is not extended beyond the delivery budget.
 
+### Give the run-boundary finalizer exclusive interruption-alert ownership
+
+Every stage-specific alert path receives or retains the causal stage error long
+enough to run the same interruption classifier. When that classifier matches,
+the stage returns its wrapped cancellation without calling either
+`sendThrottledFailureAlert` or `sendGateFailureAlerts`. This includes both
+critical and declared health-gate paths; declared-scope rollback companion
+notifications are suppressed with the gate failure because the finalizer owns
+the only notification for that interrupted run.
+
+The run-boundary finalizer first restores and persists interruption state, then
+attempts the one cancellation-detached alert. Ordinary errors, including a real
+stage error that races with shutdown, retain their existing stage alert and do
+not receive a second finalizer alert. Explicit ownership removes double-send
+races instead of trying to deduplicate after provider I/O.
+
 ### Apply classification once at the run boundary
 
 Interruption finalization belongs at the reconcile run boundary, after stage
 errors have been wrapped but before the result is returned. A central decision
-keeps Git, backup, deploy, health, and hook cancellation consistent and avoids
+keeps Git, backup, deploy, and health cancellation consistent and avoids
 adding subtly different cancellation branches at each failure site. Panic
 recovery and errors that do not wrap caller cancellation retain their existing
 failure accounting.
+
+Post-sync hook errors and cancellation are explicitly outside this
+classification. `runPostSyncHooksWithSpan` records them on its span and returns
+no error, so they cannot become the run's terminal result. This proposal does
+not make best-effort hooks fail or interrupt an otherwise completed reconcile.
+
+### Stop multi-target iteration when the cycle context is cancelled
+
+Ordinary target failures keep the existing continue-to-next-target behavior.
+Once the cycle context reports `context.Canceled`, however, the daemon stops
+before constructing or running any later target. If the in-flight target also
+returns propagated caller cancellation, only that target restores its attempt
+budget, persists an interrupted outcome, and attempts the bounded alert. If a
+real target error races with cancellation, it retains ordinary failure state and
+alert ownership, but target iteration still stops because the cycle context is
+no longer live. Later target state and alert streams remain untouched.
+
+The daemon also checks for caller cancellation between targets. Cancellation in
+that gap stops iteration without inventing an interrupted target attempt or
+alert. This bounds one shutdown cycle to at most one 30-second interruption
+alert delivery budget. Reconcile deadlines remain ordinary failures for the
+active target under this proposal; the shutdown-specific cycle stop is keyed to
+`context.Canceled`.
 
 ## Risks / Trade-offs
 
@@ -93,17 +135,23 @@ failure accounting.
   without promising durability beyond process lifetime.
 - A new optional state object adds serialization surface. Backward-compatible
   omission and round-trip tests limit upgrade and downgrade risk.
-- Central finalization must not double-send the existing stage failure alert.
-  Implementation tests must assert exactly one interruption alert.
+- Suppressing declared health-gate failure and rollback companion alerts during
+  propagated cancellation trades stage-specific detail for one unambiguous
+  interruption alert; rollback results remain logged.
+- Stopping a multi-target cycle on shutdown is a narrow exception to ordinary
+  target-failure continuation and prevents later targets from consuming state or
+  delivery budgets after the cycle has no live context.
 
 ## Migration Plan
 
 1. Add the optional outcome state and backward-compatible serialization tests.
 2. Add pure interruption classification and attempt-budget restoration helpers.
-3. Route classified cancellations through one interruption finalizer and the
-   bounded alert context.
-4. Add daemon shutdown integration coverage and update operator/onboard docs.
-5. Roll back by reverting the implementation; older binaries ignore the optional
+3. Suppress stage-owned alerts for classified cancellation and route the result
+   through one interruption finalizer and bounded alert context.
+4. Stop multi-target iteration whenever the cycle context reports caller
+   cancellation.
+5. Add daemon shutdown integration coverage and update operator/onboard docs.
+6. Roll back by reverting the implementation; older binaries ignore the optional
    state field and existing `needs_redeploy` behavior remains safe.
 
 ## Open Questions
