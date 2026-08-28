@@ -269,16 +269,16 @@ No scalar rule SHALL silently select a sibling's host, path, project, or secrets
 
 ### Requirement: Per-Target Daemon State Visibility
 
-The daemon SHALL use one centralized enumeration of its startup-resolved target snapshot and each target's independent canonical state document for periodic drift, circuit-breaker diagnostics, and operator status. Structural target changes SHALL require a daemon restart; file reload SHALL NOT silently replace the active topology. After restart, a removed target SHALL NOT be reported as current. Missing or malformed state SHALL be attributed to its target without substituting a sibling's state.
+The daemon SHALL use one centralized enumeration of its startup-resolved target snapshot and each target's independent canonical state document for periodic drift, circuit-breaker diagnostics, local or authenticated operator `/status`, and authenticated WebUI `/api/status`. Structural target changes SHALL require a daemon restart; file reload SHALL NOT silently replace the active topology. After restart, a removed target SHALL NOT be reported as current. Missing or malformed state SHALL be attributed to its target without substituting a sibling's state.
 
 Periodic live drift SHALL inspect every local target against its own Docker namespace. It SHALL NOT inspect the local Docker daemon on behalf of a remote target; that target SHALL receive an attributable unsupported/unavailable result without mutating cached state, while eligible local siblings continue.
 
-The local or authenticated operator `/status` view and direct `bosun status` output SHALL report last deploy, drift, and circuit-breaker condition per effective target. Multi-target `/status` SHALL add an ordered target collection; a single implicit or lone default SHALL preserve the existing top-level presentation and legacy state path. The public `/health` response SHALL remain the bounded readiness projection required by the daemon-security spec and SHALL NOT expose the target collection, target names, state paths, drift details, or breaker details.
+The local or authenticated operator `/status` view, authenticated WebUI `/api/status`, and direct `bosun status` output SHALL report last deploy, drift, and circuit-breaker condition per effective target. Multi-target `/status` and `/api/status` SHALL each add an ordered target collection appropriate to their existing response schema; a single implicit or lone default SHALL preserve each consumer's existing top-level presentation and legacy state path. The public `/health` response SHALL remain the bounded readiness projection required by the daemon-security spec and SHALL NOT expose the target collection, target names, state paths, drift details, or breaker details.
 
 #### Scenario: Operator status reports independent target outcomes
 
 - **WHEN** `unraid` has a successful current state and `pi` has a tripped breaker
-- **THEN** authenticated or local `/status` and `bosun status` attribute those conditions to their respective targets
+- **THEN** authenticated or local `/status`, authenticated `/api/status`, and `bosun status` attribute those conditions to their respective targets
 - **AND** neither state is read from the base default path by mistake
 
 #### Scenario: Public health remains bounded
