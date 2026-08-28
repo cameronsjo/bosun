@@ -64,7 +64,7 @@ type Target struct {
 
 ### Decision: Sequential target reconciliation
 
-The daemon reconciles targets one at a time in list order. A failure on target A logs an error and alert, then target B proceeds.
+The daemon reconciles targets one at a time in list order. A failure on target A logs an error and alert, then target B proceeds while the shared cycle context remains live. If that context is canceled or its deadline expires, iteration stops as required by the canonical `Non-Live Cycle Context Stops Target Iteration` requirement.
 
 **Why not parallel:**
 - Git operations: single repo clone, single working tree. Parallel targets would need per-target clones or git worktrees, adding significant complexity.

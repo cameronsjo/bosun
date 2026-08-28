@@ -11,7 +11,7 @@ Bosun's design principle is "one yacht, many ports" — a single monorepo can de
 - **Per-target staging directories** — each target gets an isolated staging directory for execution isolation and future parallelization
 - **Per-target state files** — each target tracks its own deploy state (last commit, attempt count, drift) independently
 - **Namespaced secrets** — secrets can be scoped per-target via a naming convention (e.g., `targets.<name>.db_password`) alongside shared secrets accessible to all targets
-- **Sequential target reconciliation** — the daemon iterates targets in order, running the full pipeline for each; a failure on one target does not block others
+- **Sequential target reconciliation** — the daemon iterates targets in order, running the full pipeline for each; a per-target failure does not block others while the shared cycle context remains live, while cancellation or deadline expiry stops later targets as required by the canonical reconcile spec
 - **Per-target alerting context** — alerts include the target name so operators know which server is affected
 - **Config file schema** — `bosun.yaml` gains an optional `targets:` section; when absent, behavior is identical to today
 - **Env var mapping** — `BOSUN_TARGETS` (JSON) defines targets; individual `BOSUN_TARGET_<NAME>_*` vars override per-target fields
