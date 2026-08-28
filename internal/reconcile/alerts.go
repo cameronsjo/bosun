@@ -76,7 +76,10 @@ func (r *Reconciler) serviceNames() []string {
 // sendThrottledFailureAlert sends a failure alert if the throttle schedule allows it.
 // Updates LastAlertedAttempt in the state and persists it.
 // Gated on config.OnFailure: when false, no failure alerts are sent.
-func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *DeployState, reason string) {
+func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *DeployState, reason string, causes ...error) {
+	if len(causes) > 0 && isPropagatedCallerCancellation(ctx, causes[0]) {
+		return
+	}
 	if r.alerter == nil {
 		return
 	}
@@ -112,6 +115,33 @@ func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *Deplo
 	state.LastAlertedAttempt = state.AttemptCount
 	if err := SaveState(r.config.StateFile, state); err != nil {
 		logger.Warn().Err(err).Msg("Failed to persist alert throttle state")
+	}
+}
+
+// sendInterruptionAlert is owned exclusively by the run-boundary finalizer. It
+// bypasses attempt throttling and never mutates LastAlertedAttempt because an
+// operator interruption consumes no deploy-failure budget.
+func (r *Reconciler) sendInterruptionAlert(ctx context.Context) {
+	if r.alerter == nil || !r.config.OnFailure {
+		return
+	}
+
+	alertCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), failureAlertDeliveryTimeout)
+	defer cancel()
+	target := r.alertTarget()
+	logger := log.ComponentCtx(alertCtx, log.ComponentReconcile)
+	if err := r.alerter.SendDeployFailure(
+		alertCtx,
+		r.lastCommit,
+		target,
+		interruptedReconcileReason,
+		r.serviceNames(),
+		time.Since(r.runStartTime),
+	); err != nil {
+		logger.Warn().Err(err).
+			Str(log.FieldOperation, "alert_failure").
+			Str(log.FieldTarget, target).
+			Msg("Failed to send interrupted reconcile alert")
 	}
 }
 

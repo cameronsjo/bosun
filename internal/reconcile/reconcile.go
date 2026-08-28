@@ -381,6 +381,7 @@ func (r *Reconciler) SetRunOptions(source string, force bool) {
 // Run executes the full reconciliation workflow.
 func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	startTime := time.Now()
+	var attemptSnapshot *attemptBudgetSnapshot
 	if err := ValidatePostSyncHooks(r.config.PostSyncHooks.Value); err != nil {
 		return fmt.Errorf("invalid reconcile configuration: %w", err)
 	}
@@ -399,6 +400,9 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 			telemetry.SpanOK(rootSpan)
 		}
 		rootSpan.End()
+	}()
+	defer func() {
+		r.finalizeAttempt(ctx, runErr, attemptSnapshot)
 	}()
 
 	// A panic anywhere before the pipeline's own attempt-tracking write
@@ -425,6 +429,15 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 
 		panicMsg := fmt.Sprintf("reconcile pipeline panicked: %v", rec)
 		state := LoadState(r.config.StateFile)
+		if attemptSnapshot == nil {
+			attemptSnapshot = snapshotAttemptBudget(state, r.lastCommit)
+		} else {
+			// Keep the snapshot's pre-attempt budget, but finalize against the
+			// same freshly loaded state object that panic accounting mutates.
+			// Otherwise clearing a stale interrupted marker could persist the
+			// older pre-panic object and accidentally undo the panic attempt.
+			attemptSnapshot.state = state
+		}
 		// r.lastCommit is the best resolvable commit key: if the panic hit
 		// before syncRepo ever determined "after" (the exact scenario this
 		// guards -- a panicking Sync()), it still holds whatever commit the
@@ -522,11 +535,12 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 
 		// Load state before alerting so throttle state is available.
 		state := LoadState(r.config.StateFile)
+		attemptSnapshot = snapshotAttemptBudget(state, after)
 		syncErrMsg := fmt.Sprintf("failed to sync repository: %v", err)
-		if breakerErr := r.recordSyncFailureAttempt(ctx, state, after, syncErrMsg); breakerErr != nil {
+		if breakerErr := r.recordSyncFailureAttempt(ctx, state, after, syncErrMsg, err); breakerErr != nil {
 			return breakerErr
 		}
-		r.sendThrottledFailureAlert(ctx, state, syncErrMsg)
+		r.sendThrottledFailureAlert(ctx, state, syncErrMsg, err)
 		return fmt.Errorf("failed to sync repository: %w", err)
 	}
 
@@ -540,6 +554,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 
 	// Load persistent deploy state to determine if pipeline should run.
 	state := LoadState(r.config.StateFile)
+	attemptSnapshot = snapshotAttemptBudget(state, after)
 
 	// State-based skip logic: compare last *deployed* commit, not last *fetched* commit.
 	// Also re-run if NeedsRedeploy is set from a previous partial failure.
@@ -667,7 +682,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	if err != nil {
 		telemetry.SpanError(otelDecryptSpan, err)
 		otelDecryptSpan.End()
-		r.sendThrottledFailureAlert(ctx, state, "failed to decrypt secrets")
+		r.sendThrottledFailureAlert(ctx, state, "failed to decrypt secrets", err)
 		return fmt.Errorf("failed to decrypt secrets: %w", err)
 	}
 	telemetry.SpanOK(otelDecryptSpan)
@@ -681,7 +696,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	// Resolve deploy mode once with full context (config + secrets).
 	localDeploy, err := r.resolveDeployMode(ctx, secrets)
 	if err != nil {
-		r.sendThrottledFailureAlert(ctx, state, err.Error())
+		r.sendThrottledFailureAlert(ctx, state, err.Error(), err)
 		return fmt.Errorf("failed to resolve deploy mode: %w", err)
 	}
 
@@ -693,7 +708,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 		finishSpan(err)
 		telemetry.SpanError(otelTemplateSpan, err)
 		otelTemplateSpan.End()
-		r.sendThrottledFailureAlert(ctx, state, "failed to render templates")
+		r.sendThrottledFailureAlert(ctx, state, "failed to render templates", err)
 		return fmt.Errorf("failed to render templates: %w", err)
 	}
 	finishSpan(nil)
@@ -709,14 +724,14 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	declared, err := ExtractDeclaredState(stagingSubDir)
 	switch {
 	case errors.Is(err, ErrComposeDirMissing):
-		r.sendThrottledFailureAlert(ctx, state, "staging compose directory missing")
+		r.sendThrottledFailureAlert(ctx, state, "staging compose directory missing", err)
 		if hint := suggestInfraDir(r.config.InfraSubDir, findComposeCandidates(stagingSubDir)); hint != "" {
 			return fmt.Errorf("declared-state invariant: %w — %s", err, hint)
 		}
 		return fmt.Errorf("declared-state invariant: %w", err)
 	case errors.Is(err, ErrNoDeclaredServices):
 		if !r.config.AllowEmptyDeclaredState {
-			r.sendThrottledFailureAlert(ctx, state, "no declared services in staging compose")
+			r.sendThrottledFailureAlert(ctx, state, "no declared services in staging compose", err)
 			return fmt.Errorf("declared-state invariant: %w (set BOSUN_ALLOW_EMPTY_DECLARED_STATE=true to override)", err)
 		}
 		logger.Warn().
@@ -745,7 +760,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 			// An incomplete current footprint cannot be protected by an older
 			// backup because that anchor may omit paths this deploy will mutate.
 			if errors.Is(err, ErrBackupFootprintIncomplete) {
-				r.sendThrottledFailureAlert(ctx, state, err.Error())
+				r.sendThrottledFailureAlert(ctx, state, err.Error(), err)
 				return err
 			}
 
@@ -753,7 +768,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 			// Recover the most recent previously verified backup; if none exists,
 			// abort before mutation (#240).
 			if policyErr := r.applyBackupFailurePolicy(spanCtx, err); policyErr != nil {
-				r.sendThrottledFailureAlert(ctx, state, policyErr.Error())
+				r.sendThrottledFailureAlert(ctx, state, policyErr.Error(), policyErr)
 				return policyErr
 			}
 			ui.Warning("Using previous verified backup as rollback anchor: %s", r.lastBackupPath)
@@ -807,7 +822,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 			len(r.config.PostSyncHooks.Value) > 0 {
 			r.runPostSyncHooksWithSpan(ctx, state.LastDeployedCommit, after, deployResult, localDeploy)
 		}
-		r.sendThrottledFailureAlert(ctx, state, err.Error())
+		r.sendThrottledFailureAlert(ctx, state, err.Error(), err)
 		return fmt.Errorf("deployment failed: %w", err)
 	}
 	finishSpan(nil)
@@ -881,7 +896,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 				// Health verification failed — treat as a deploy failure. Success
 				// is not saved, so NeedsRedeploy stays set and the breaker counts
 				// this attempt.
-				r.sendThrottledFailureAlert(ctx, state, healthErr.Error())
+				r.sendThrottledFailureAlert(ctx, state, healthErr.Error(), healthErr)
 				return fmt.Errorf("post-deploy health verification failed: %w", healthErr)
 			}
 			telemetry.SpanOK(otelDriftSpan)
@@ -974,10 +989,11 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 // must return that error immediately without alerting again. Returns nil
 // after recording the attempt and persisting state, in which case the
 // caller alerts and returns its own failure error as usual.
-func (r *Reconciler) recordSyncFailureAttempt(ctx context.Context, state *DeployState, commit, reason string) error {
+func (r *Reconciler) recordSyncFailureAttempt(ctx context.Context, state *DeployState, commit, reason string, causes ...error) error {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
-	if shouldTriggerCircuitBreaker(state.LastAttemptedCommit, commit, state.AttemptCount, MaxAttempts, r.config.Force) {
+	interrupted := len(causes) > 0 && isPropagatedCallerCancellation(ctx, causes[0])
+	if !interrupted && shouldTriggerCircuitBreaker(state.LastAttemptedCommit, commit, state.AttemptCount, MaxAttempts, r.config.Force) {
 		logger.Error().
 			Str("commit", commit).
 			Int("attempts", state.AttemptCount).
@@ -985,7 +1001,7 @@ func (r *Reconciler) recordSyncFailureAttempt(ctx context.Context, state *Deploy
 		ui.Error("Circuit breaker: %d consecutive failures (use --force to retry): %s",
 			state.AttemptCount, reason)
 		breakerErr := fmt.Errorf("circuit breaker: %d consecutive failures: %s", state.AttemptCount, reason)
-		r.sendThrottledFailureAlert(ctx, state, breakerErr.Error())
+		r.sendThrottledFailureAlert(ctx, state, breakerErr.Error(), breakerErr)
 		return breakerErr
 	}
 
@@ -1623,7 +1639,7 @@ func (r *Reconciler) runHealthGate(ctx context.Context, state *DeployState, loca
 	if scope == HealthGateScopeDeclared {
 		r.sendGateFailureAlerts(ctx, state, gateErr, rolledBack, rollbackErr)
 	} else {
-		r.sendThrottledFailureAlert(ctx, state, gateErr.Error())
+		r.sendThrottledFailureAlert(ctx, state, gateErr.Error(), gateErr)
 	}
 	return rolledBack, gateErr
 }
@@ -1703,6 +1719,9 @@ func (r *Reconciler) healthCheckInterval() time.Duration {
 // from a failed restore (SendRollbackFailure). Critical scope does NOT use this
 // path — it keeps the bare sendThrottledFailureAlert (no rollback alert).
 func (r *Reconciler) sendGateFailureAlerts(ctx context.Context, state *DeployState, gateErr error, rolledBack bool, rollbackErr error) {
+	if isPropagatedCallerCancellation(ctx, gateErr) {
+		return
+	}
 	if r.alerter == nil || !r.config.OnFailure {
 		return
 	}

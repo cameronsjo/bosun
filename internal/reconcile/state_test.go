@@ -784,6 +784,45 @@ func TestNeedsRedeploy_BackwardsCompatible(t *testing.T) {
 	assert.Equal(t, "abc123", state.LastDeployedCommit)
 }
 
+func TestLastAttemptOutcome_RoundTrip(t *testing.T) {
+	path := filepath.Join(evalSymlinks(t, t.TempDir()), "deploy-state.json")
+	timestamp := time.Date(2026, time.August, 28, 16, 0, 0, 0, time.UTC)
+	state := &DeployState{
+		LastAttemptOutcome: &LastAttemptOutcome{
+			Outcome:   attemptOutcomeInterrupted,
+			Commit:    "abc123",
+			Timestamp: timestamp,
+		},
+	}
+
+	require.NoError(t, SaveState(path, state))
+	loaded := LoadState(path)
+
+	require.NotNil(t, loaded.LastAttemptOutcome)
+	assert.Equal(t, attemptOutcomeInterrupted, loaded.LastAttemptOutcome.Outcome)
+	assert.Equal(t, "abc123", loaded.LastAttemptOutcome.Commit)
+	assert.Equal(t, timestamp, loaded.LastAttemptOutcome.Timestamp)
+}
+
+func TestLastAttemptOutcome_OmittedWhenNil(t *testing.T) {
+	path := filepath.Join(evalSymlinks(t, t.TempDir()), "deploy-state.json")
+	require.NoError(t, SaveState(path, &DeployState{LastDeployedCommit: "abc123"}))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "last_attempt_outcome")
+}
+
+func TestLastAttemptOutcome_LegacyStateLoadsWithoutOutcome(t *testing.T) {
+	path := filepath.Join(evalSymlinks(t, t.TempDir()), "deploy-state.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"schema_version":2,"last_deployed_commit":"legacy"}`), 0o600))
+
+	loaded := LoadState(path)
+
+	assert.Nil(t, loaded.LastAttemptOutcome)
+	assert.Equal(t, "legacy", loaded.LastDeployedCommit)
+}
+
 func TestSaveState_SetsSchemaVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "deploy-state.json")

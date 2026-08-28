@@ -1507,6 +1507,7 @@ type mockAlertSender struct {
 	lastSuccessDuration    time.Duration
 	lastFailureServices    []string
 	lastFailureDuration    time.Duration
+	lastFailureReason      string
 	lastFailureContext     context.Context
 	lastFailureContextErr  error
 	lastRollbackContext    context.Context
@@ -1519,8 +1520,9 @@ func (m *mockAlertSender) SendDeploySuccess(_ context.Context, _, _ string, serv
 	m.lastSuccessDuration = duration
 	return m.lastErr
 }
-func (m *mockAlertSender) SendDeployFailure(ctx context.Context, _, _, _ string, services []string, duration time.Duration) error {
+func (m *mockAlertSender) SendDeployFailure(ctx context.Context, _, _, reason string, services []string, duration time.Duration) error {
 	m.deployFailureCalls++
+	m.lastFailureReason = reason
 	m.lastFailureServices = services
 	m.lastFailureDuration = duration
 	m.lastFailureContext = ctx
