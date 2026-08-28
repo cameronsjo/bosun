@@ -57,6 +57,6 @@
 ## 8. Documentation
 
 - [x] 8.1 Document root/target presence, successful-snapshot, and environment precedence in `skills/onboard/resources/configuration.md` — PR #544
-- [x] 8.2 Document the exact unconfigured `/mnt/user` 2-second fallback, explicit file/environment precedence including zero, unconfigured non-FUSE zero, and doctor warning contract in `skills/onboard/resources/gitops.md`
+- [x] 8.2 Document the exact unconfigured `/mnt/user` 2-second fallback, valid environment precedence and invalid-input fallback, explicit zero, unconfigured non-FUSE zero, and doctor warning contract in `skills/onboard/resources/gitops.md`
 - [x] 8.3 Update `docs/gitops.md` and `docs/troubleshooting.md` for the released hook/change-source/diagnostic contract — PRs #405, #544, and #546
-- [x] 8.4 Document the exact unconfigured `/mnt/user` 2-second fallback, explicit file/environment precedence including zero, and unconfigured non-FUSE zero in `AGENTS.md`
+- [x] 8.4 Document the exact unconfigured `/mnt/user` 2-second fallback, valid environment precedence and invalid-input fallback, explicit zero, and unconfigured non-FUSE zero in `AGENTS.md`
