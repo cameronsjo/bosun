@@ -88,6 +88,50 @@ SSH authentication SHALL be resolved in order: SSH agent (via `SSH_AUTH_SOCK`),
 then key files (`BOSUN_SSH_KEY`, `/config/deploy-key`, `/config/ssh-key`,
 `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`).
 
+Private HTTPS repository authentication SHALL use HTTP Basic authentication
+with `BOSUN_GIT_USERNAME` as the username and `BOSUN_GIT_TOKEN` as the
+password. Both variables MUST be configured together and MUST apply identically
+to initial clone and subsequent fetch operations in standalone and daemon
+reconciliation. When both variables are unset, HTTPS synchronization SHALL
+remain anonymous. Bosun SHALL read these values only from their `BOSUN_` names:
+it SHALL NOT recognize unprefixed aliases or project-configuration keys. The
+pair SHALL apply to the effective repository URL after the existing
+`BOSUN_REPO_URL`-over-`REPO_URL` precedence rule.
+
+Bosun MUST send these credentials only to an absolute `https://` repository URL
+with a non-empty host, comparing the scheme case-insensitively. A partial
+credential pair, credentials configured for another transport, or
+userinfo embedded in a repository URL MUST fail before network I/O. Credential
+validation SHALL parse standard URLs and reject any userinfo component,
+including username-only, password-bearing, and percent-encoded forms; SCP-like
+SSH syntax SHALL retain its existing meaning and SHALL NOT be treated as URL
+userinfo.
+
+For authenticated Git traffic, every redirect hop MUST remain HTTPS and MUST
+retain the configured origin's case-insensitive hostname and effective port;
+an omitted HTTPS port and explicit `:443` SHALL be equivalent. Bosun MUST reject
+HTTPS-to-HTTP downgrade and cross-origin redirects without forwarding the Basic
+Authorization header. Same-origin HTTPS redirects MAY proceed.
+
+Standalone reconcile SHALL validate this contract before entering the
+reconciliation pipeline. Daemon startup SHALL validate it before starting any
+listener or background reconcile loop. Clone, fetch, and `bosun validate` SHALL
+use the same validation rules so no consumer can bypass the pre-network guard.
+
+The credential pair SHALL remain process-environment state. Bosun MUST NOT copy
+it into `reconcile.Config`, project YAML, deploy state, metrics, trace
+attributes, logs, returned errors, validation diagnostics, daemon `/config`, or
+daemon health/status responses. Project config hot reload SHALL NOT define,
+replace, or rotate the pair; an operator-supplied rotation takes effect after
+the Bosun process is restarted with the new environment.
+
+Before presentation, Bosun SHALL remove `URL.User` from a parseable repository
+URL. If an invalid repository URL cannot be safely parsed, Bosun SHALL display a
+fixed redacted placeholder rather than echo the raw URL. Transport errors SHALL
+be wrapped or sanitized so observable output contains neither raw nor escaped
+username/token/userinfo values nor the derived Basic Authorization value, while
+still giving stable guidance for authentication failures.
+
 SSH host key verification SHALL use config-controlled known_hosts files,
 checked in order: `BOSUN_SSH_KNOWN_HOSTS` environment variable (explicit
 override), then `/config/known_hosts` (container convention). The user-profile
@@ -134,6 +178,167 @@ entirely.
 - **WHEN** `BOSUN_GIT_FETCH_DEPTH` is set to a value greater than 1
 - **THEN** git clone and fetch operations SHALL use the specified depth
 - **AND** the default depth SHALL remain 1 when unset
+
+#### Scenario: Authenticated HTTPS clone
+
+- **WHEN** a private `https://` repository is configured
+- **AND** both `BOSUN_GIT_USERNAME` and `BOSUN_GIT_TOKEN` are non-empty
+- **THEN** the initial clone authenticates with that username and token using HTTP Basic authentication
+
+#### Scenario: Authenticated HTTPS fetch
+
+- **WHEN** an existing private HTTPS checkout pulls a new remote commit
+- **AND** both HTTPS Git credential variables are non-empty
+- **THEN** the fetch authenticates with the same username and token used by clone
+
+#### Scenario: Same-origin HTTPS redirect preserves authentication
+
+- **WHEN** an authenticated HTTPS clone or fetch receives a redirect whose destination remains HTTPS with the same hostname and effective port
+- **THEN** Bosun follows the redirect
+- **AND** the redirected Git request carries the configured Basic credentials
+
+#### Scenario: HTTPS downgrade redirect is rejected
+
+- **WHEN** an authenticated HTTPS clone or fetch is redirected to an `http://` destination
+- **THEN** synchronization fails before requesting the downgrade destination
+- **AND** no Authorization header is forwarded
+
+#### Scenario: Cross-origin redirect is rejected
+
+- **WHEN** an authenticated HTTPS clone or fetch is redirected to a different hostname or effective port
+- **THEN** synchronization fails before requesting the cross-origin destination
+- **AND** no Authorization header is forwarded
+
+#### Scenario: Standalone reconcile consumes HTTPS credentials
+
+- **WHEN** `bosun reconcile` synchronizes a private HTTPS repository
+- **THEN** it uses the configured HTTPS Git credential pair for clone and fetch
+
+#### Scenario: Standalone reconcile rejects unsafe authentication before pipeline execution
+
+- **WHEN** `bosun reconcile` starts with a partial pair, a credential-bearing non-HTTPS URL, or URL userinfo
+- **THEN** command validation fails before the reconciliation pipeline or any Git network request starts
+- **AND** the error is actionable and redacted
+
+#### Scenario: Daemon reconcile consumes HTTPS credentials
+
+- **WHEN** the daemon poll or webhook loop synchronizes a private HTTPS repository
+- **THEN** it uses the same configured HTTPS Git credential pair as standalone reconcile
+
+#### Scenario: Daemon startup rejects unsafe Git authentication
+
+- **WHEN** daemon configuration contains a partial pair, a credential-bearing non-HTTPS URL, or URL userinfo
+- **THEN** daemon validation fails before socket, TCP, or HTTP listeners and background loops start
+- **AND** the startup error is actionable and redacted
+
+#### Scenario: Anonymous HTTPS remains supported
+
+- **WHEN** an HTTPS repository is configured and both HTTPS Git credential variables are unset
+- **THEN** clone and fetch proceed without an authentication method
+
+#### Scenario: Partial HTTPS credential pair fails closed
+
+- **WHEN** only one of `BOSUN_GIT_USERNAME` or `BOSUN_GIT_TOKEN` is non-empty
+- **THEN** repository synchronization fails before network I/O
+- **AND** the error identifies the missing environment variable by name without exposing the configured value
+
+#### Scenario: HTTPS credentials use the effective repository URL
+
+- **WHEN** both `BOSUN_REPO_URL` and legacy `REPO_URL` are configured with different URLs
+- **AND** the HTTPS Git credential pair is configured
+- **THEN** authentication validation and synchronization use `BOSUN_REPO_URL`
+- **AND** credentials are never evaluated against or sent to the shadowed legacy URL
+
+#### Scenario: HTTPS credentials reject other transports
+
+- **WHEN** both HTTPS Git credential variables are configured
+- **AND** the repository URL is HTTP, SSH, a local path, or another non-HTTPS transport
+- **THEN** repository synchronization fails before network I/O
+- **AND** the error explains that HTTPS Git credentials require an `https://` repository URL
+
+#### Scenario: HTTPS credentials reject malformed or hostless URLs
+
+- **WHEN** both HTTPS Git credential variables are configured
+- **AND** the effective repository URL is malformed or has an HTTPS scheme without a host
+- **THEN** repository synchronization fails before network I/O
+- **AND** the error does not echo the unsafe raw URL
+
+#### Scenario: URL-embedded credentials are rejected
+
+- **WHEN** a standard repository URL contains username-only, password-bearing, or percent-encoded userinfo
+- **THEN** repository synchronization fails before network I/O
+- **AND** logs, errors, validation diagnostics, and status responses omit the userinfo
+- **AND** the error directs the operator to the dedicated environment variables
+
+#### Scenario: SCP-like SSH URL is not userinfo
+
+- **WHEN** the repository URL uses SCP-like SSH syntax such as `git@example.com:owner/repo.git`
+- **AND** HTTPS Git credential variables are unset
+- **THEN** Bosun does not reject the `git@` portion as URL userinfo
+- **AND** existing SSH authentication resolution proceeds
+
+#### Scenario: Validate reports unsafe HTTPS credential configuration
+
+- **WHEN** `bosun validate` runs with a partial credential pair, credentials for a non-HTTPS URL, or URL-embedded userinfo
+- **THEN** validation fails with the same actionable configuration error as runtime synchronization
+- **AND** the diagnostic omits all credential and userinfo values
+
+#### Scenario: Authentication failure is actionable and redacted
+
+- **WHEN** a private HTTPS server rejects the configured Basic credentials
+- **THEN** clone or fetch returns an actionable authentication error
+- **AND** neither raw/escaped credentials nor the derived Basic Authorization value appears in the error, logs, or traces
+
+#### Scenario: New HTTPS credential variables have no legacy aliases
+
+- **WHEN** `GIT_USERNAME` or `GIT_TOKEN` is set without its `BOSUN_` counterpart
+- **THEN** Bosun does not use that value for repository authentication
+
+#### Scenario: BOSUN credential names cannot be completed by aliases
+
+- **WHEN** only one `BOSUN_` credential variable is configured
+- **AND** the corresponding unprefixed alias is also configured
+- **THEN** Bosun reports the `BOSUN_` pair as partial before network I/O
+- **AND** the unprefixed value is ignored
+
+#### Scenario: Project config reload cannot rotate Git credentials
+
+- **WHEN** `bosun.yaml` is reloaded during daemon reconciliation
+- **THEN** no YAML field can define or replace the HTTPS Git username or token
+- **AND** the daemon continues using the process environment received at startup
+
+#### Scenario: Credential rotation requires process restart
+
+- **WHEN** an operator changes the configured HTTPS Git credentials outside the running process
+- **THEN** Bosun does not claim hot-reload support for the pair
+- **AND** the new pair takes effect after the standalone command or daemon process is restarted
+
+#### Scenario: Git credentials are not persisted
+
+- **WHEN** Bosun constructs reconcile config, saves deploy state, emits metrics/traces, or serves daemon responses
+- **THEN** neither HTTPS Git credential value nor a reusable Basic Authorization value is serialized or emitted
+
+#### Scenario: Reconcile presentation redacts repository authentication
+
+- **WHEN** a repository URL or Git transport failure is logged or returned by clone, fetch, or the reconciliation pipeline
+- **THEN** parseable URL userinfo is removed and unsafe unparseable URLs use a fixed redacted placeholder
+- **AND** raw/escaped credentials and the derived Basic Authorization value are absent
+
+#### Scenario: Daemon config response redacts repository userinfo
+
+- **WHEN** the daemon `/config` response includes the configured repository URL
+- **THEN** the response includes only the sanitized URL without userinfo
+- **AND** it includes no HTTPS Git credential field
+
+#### Scenario: Daemon status and health responses redact authentication material
+
+- **WHEN** `/status`, `/api/status`, or `/health` presents a repository URL or reconciliation error
+- **THEN** raw/escaped credentials, URL userinfo, and the derived Basic Authorization value are absent
+
+#### Scenario: HTTPS credential variables do not alter SSH resolution
+
+- **WHEN** an SSH repository URL is configured and HTTPS Git credential variables are unset
+- **THEN** authentication continues to resolve through the SSH agent and key-file chain
 
 #### Scenario: known_hosts resolved from BOSUN_SSH_KNOWN_HOSTS
 
@@ -1248,3 +1453,277 @@ begin.
   existing failure-alert behavior
 - **AND** reconciliation does not start any later target
 - **AND** later target state and alert streams remain unchanged
+
+### Requirement: Local Rollback Archive Extraction Confinement
+
+Every local backup-consuming rollback path SHALL extract
+`<backupPath>/configs.tar.gz` with the same in-process, single-reader extraction
+policy used by remote compose rollback. `RollbackFromBackupSet` (the current
+full-managed-tree successor to `RollbackFromBackup`) and `ComposeUpIsolated`
+SHALL NOT invoke an external tar extractor for backup restore.
+
+The extractor SHALL map valid Bosun archive members into a fresh temporary root
+in the layout expected by `resolveBackupFile`. For each member, it SHALL validate
+the realized destination before writing. Member-name traversal, absolute or
+escaping symlink targets, and escaping hardlink targets SHALL be rejected before
+they can create or redirect content outside that root. Relative symlinks and
+archive-root-relative hardlinks whose realized targets remain within the root
+SHALL remain supported.
+
+Each local caller SHALL pass `safeExtractBackup` its existing background-derived,
+independently bounded rollback/extraction context, preserving the outer
+failed-deployment context's logging metadata without inheriting its
+cancellation. Cancellation of the outer method or deployment context SHALL NOT
+suppress a local rollback extraction attempt. The extractor SHALL honor
+cancellation or deadline expiry of the independent context it receives and the
+existing total decompressed size bound. It SHALL return a usable root only after
+the complete archive passes. On any validation, corruption, I/O, size-bound, or
+independent-context cancellation error, the extractor SHALL remove the partial
+temporary tree and return no usable root before a local caller copies to live
+state, removes a live path, invokes compose with a backup file, or includes a
+backup file in an orphan-reconciliation pass.
+
+`RollbackFromBackupSet` SHALL preserve its rollback-not-attempted outward
+contract on extraction failure while returning an actionable error that
+keeps the extraction cause discoverable via `errors.Is`/`errors.As`.
+`ComposeUpIsolated` SHALL preserve the original compose failure in its per-file
+result and aggregate outcome, log the extraction cause, report no successful
+rollback for that file, and exclude the unrolled failed file from the
+orphan-reconciliation pass.
+
+#### Scenario: Full-tree local rollback accepts a valid archive
+
+- **WHEN** `RollbackFromBackupSet` receives a valid Bosun backup archive whose members and any link targets remain within the extraction root
+- **THEN** the archive is extracted in-process and the requested managed files are resolved from the completed temporary tree
+- **AND** live managed files are restored before the restored compose files are re-applied
+
+#### Scenario: Per-file local rollback accepts a valid archive
+
+- **WHEN** `ComposeUpIsolated` needs to roll back a failed compose file and the backup archive is valid
+- **THEN** the archive is extracted in-process at most once for that operation
+- **AND** compose rollback uses the matching file from the completed temporary tree
+- **AND** only a successfully rolled-back backup file can be included in the orphan-reconciliation pass
+
+#### Scenario: Archive member traversal is rejected
+
+- **WHEN** a backup archive contains a member name that traverses outside the extraction root
+- **THEN** extraction fails before either local rollback consumer can use any extracted content
+- **AND** no path outside the temporary root is created or modified
+
+#### Scenario: Absolute symlink target is rejected
+
+- **WHEN** a backup archive contains a symlink with an absolute target
+- **THEN** extraction fails before the symlink or a later write through it can escape the temporary root
+- **AND** neither local rollback consumer uses the partially extracted archive
+
+#### Scenario: Relative symlink target escaping the root is rejected
+
+- **WHEN** a backup archive contains a symlink whose relative target resolves outside the extraction root
+- **THEN** extraction fails before the symlink or a later write through it is admitted
+- **AND** neither local rollback consumer uses the partially extracted archive
+
+#### Scenario: Hardlink target escaping the root is rejected
+
+- **WHEN** a backup archive contains a hardlink whose archive-relative target resolves outside the extraction root
+- **THEN** extraction fails before the hardlink is created
+- **AND** neither local rollback consumer uses the partially extracted archive
+
+#### Scenario: Full-tree rollback survives outer cancellation but honors its independent deadline
+
+- **WHEN** `RollbackFromBackupSet` is invoked with an already-cancelled outer method context after a failed deployment
+- **THEN** it still attempts extraction with its background-derived, independently bounded rollback context
+- **AND** when that independent context is cancelled or reaches its deadline before or during archive entry processing, extraction returns promptly with its context cause discoverable
+- **AND** the partial temporary tree is cleaned before any live managed-tree restore or compose invocation
+
+#### Scenario: Per-file rollback survives outer cancellation but honors its independent deadline
+
+- **WHEN** `ComposeUpIsolated` reaches backup extraction while its outer deployment context is cancelled
+- **THEN** it still attempts extraction with its background-derived, independently bounded extraction context
+- **AND** when that independent context is cancelled or reaches its deadline before or during archive entry processing, extraction returns promptly and logs its context cause
+- **AND** the partial temporary tree is cleaned before any backup-based compose invocation or orphan-pass use
+
+#### Scenario: Failed extraction cleans partial content before live use
+
+- **WHEN** a valid early archive entry is extracted and a later entry fails validation or extraction
+- **THEN** the extractor removes the entire partial temporary tree and returns no usable root
+- **AND** no live managed file is copied or removed and no compose or orphan-pass command receives a path from that tree
+
+#### Scenario: Full-tree extraction error preserves rollback outcome
+
+- **WHEN** archive extraction fails for `RollbackFromBackupSet`
+- **THEN** the method returns its rollback-not-attempted outcome with an actionable extraction cause discoverable via `errors.Is`/`errors.As`
+- **AND** it performs no managed-tree restore, deletion, or restored compose invocation
+
+#### Scenario: Per-file extraction error preserves the original compose failure
+
+- **WHEN** archive extraction fails after a compose file fails in `ComposeUpIsolated`
+- **THEN** the extraction cause is logged and the original compose failure remains on the per-file result and aggregate outcome
+- **AND** the file is not marked rolled back and its failed new path or partial backup path is excluded from the orphan-reconciliation pass
+
+### Requirement: Health Gate Scope
+
+The reconciler SHALL support a configurable `health_gate_scope` that selects which containers the post-compose-up health gate polls and rolls back on. The scope SHALL be one of `critical`, `declared`, or `off`, configured via `health_gate_scope` in `bosun.yaml` and overridable via the `BOSUN_HEALTH_GATE_SCOPE` environment variable. An empty or unset value SHALL resolve to `critical`.
+
+- **critical** (default): the gate polls only the configured `critical_containers` members, exactly as the Critical Container Health Gate requirement describes. An empty `critical_containers` list skips the gate. A declared-but-non-critical service coming up unhealthy SHALL NOT trigger rollback.
+- **declared**: the gate polls all declared services (those extracted from the staging compose files). A service that was already unhealthy BEFORE this deploy (a pre-existing casualty) SHALL be exempt and SHALL NOT trigger rollback; only a service this deploy made unhealthy triggers the gate. An empty declared set skips the gate.
+- **off**: the health gate SHALL be skipped entirely.
+
+When an unknown config-file `health_gate_scope` value reaches the gate at deploy
+time, the gate SHALL fall back to `critical` and log an error that names the
+three valid values rather than failing the deployment.
+
+Regardless of scope, the gate SHALL be skipped when the deploy is a dry run, the deploy is remote (the Docker API is local-only and cannot observe the remote host's containers), or no Docker client is available.
+
+On a gate failure under any scope, the reconciler SHALL trigger rollback to the backup compose files before post-sync hooks run, SHALL skip post-sync hooks when a rollback ran (the working tree is a hybrid of old compose and new config), and SHALL NOT record the deployment as successful.
+
+Alerting on a gate failure differs by scope, so a flapping healthcheck under `declared` does not spam:
+
+- **critical**: SHALL send only the existing throttled failure alert on the attempt-count schedule — byte-for-byte the prior behavior, with NO rollback-specific alert.
+- **declared**: SHALL send the throttled failure alert AND, when a rollback ran, a rollback alert (success or failure) — both on the SAME attempt-count throttle window, so they fire on the established cadence rather than once per cycle.
+
+`BOSUN_HEALTH_GATE_SCOPE` SHALL take precedence over the config file value. An invalid env value SHALL be ignored with a warning, leaving the config-file (or default) scope in effect.
+
+#### Scenario: Declared scope rolls back on a service this deploy broke
+
+- **WHEN** `health_gate_scope` is `declared`
+- **AND** a declared service is healthy before the deploy but reports unhealthy after compose up within the health gate timeout
+- **THEN** the health gate fails
+- **AND** the reconciler triggers rollback to the backup compose files
+- **AND** post-sync hooks are skipped
+- **AND** the deployment is NOT recorded as successful
+- **AND** a throttled failure alert AND a throttled rollback alert are sent on the same attempt-count window
+
+#### Scenario: Declared scope exempts a pre-existing unhealthy service
+
+- **WHEN** `health_gate_scope` is `declared`
+- **AND** a declared service was already unhealthy before the deploy and remains unhealthy after compose up
+- **THEN** the health gate does NOT fail on that service
+- **AND** no rollback is triggered
+- **AND** the deployment is recorded as successful
+
+#### Scenario: Critical scope ignores a non-critical declared service
+
+- **WHEN** `health_gate_scope` is `critical` (the default) with no `critical_containers` configured
+- **AND** a declared-but-non-critical service reports unhealthy after compose up
+- **THEN** the health gate is skipped
+- **AND** no rollback is triggered
+- **AND** the deployment is recorded as successful
+
+#### Scenario: Off scope runs no gate
+
+- **WHEN** `health_gate_scope` is `off`
+- **AND** a declared service reports unhealthy after compose up
+- **THEN** the health gate does not run
+- **AND** no rollback is triggered
+- **AND** the deployment is recorded as successful
+
+#### Scenario: Unknown config-file scope falls back at deploy time
+
+- **WHEN** config-file `health_gate_scope` is set to a value other than `critical`, `declared`, or `off`
+- **THEN** the invalid value may reach the gate at deploy time
+- **AND** the gate falls back to `critical`
+- **AND** the gate logs an error naming the invalid value and the three valid values
+
+#### Scenario: Unknown environment override is ignored
+
+- **GIVEN** the config file selects a valid `health_gate_scope`, or leaves it unset
+- **WHEN** `BOSUN_HEALTH_GATE_SCOPE` is set to a value other than `critical`, `declared`, or `off`
+- **THEN** the environment override is ignored with a warning
+- **AND** the config-file scope, or the `critical` default, remains in effect
+
+### Requirement: Drift Self-Heal Attempt Bounding
+
+Drift self-heal SHALL track reconciliation attempts per drift signature and SHALL stop attempting after a bounded number of attempts when reconciling does not resolve the drift, rather than looping indefinitely.
+
+When `BOSUN_DRIFT_SELF_HEAL` is enabled, a periodic drift check that finds drift
+MAY trigger a reconciliation. The daemon SHALL maintain, in the deploy state
+file, a per-drift-signature attempt counter, where a drift signature is the
+stable set of currently-drifted `service:type` items. The attempt bound SHALL be
+configurable via `BOSUN_DRIFT_SELF_HEAL_MAX_ATTEMPTS` with a small positive
+default.
+
+Each self-heal trigger for the current signature SHALL increment the counter.
+When the counter reaches the bound, the daemon SHALL mark the signature exhausted,
+SHALL stop triggering self-heal for that signature, and SHALL emit a
+`self-heal-exhausted` alert at most once per exhausted signature. When the drift
+signature changes, or the drifted items clear, the counter SHALL reset and an
+exhausted signature SHALL re-arm.
+
+#### Scenario: Out-of-band drift exhausts the self-heal bound
+- **WHEN** `BOSUN_DRIFT_SELF_HEAL` is enabled and a drift caused by out-of-band container state persists across self-heal attempts
+- **THEN** self-heal triggers up to the configured maximum number of attempts for that signature
+- **AND** after the bound is reached the daemon stops triggering self-heal for that signature
+- **AND** a `self-heal-exhausted` alert is emitted once
+
+#### Scenario: New drift signature resets the attempt counter
+- **WHEN** a different set of services enters drift after a prior signature was exhausted
+- **THEN** the attempt counter for the new signature starts at zero
+- **AND** self-heal may attempt reconciliation again for the new signature
+
+#### Scenario: Resolved drift re-arms an exhausted signature
+- **WHEN** a previously exhausted drift signature later clears (drift items become empty)
+- **THEN** the exhausted state for that signature is cleared
+- **AND** a subsequent recurrence of the same signature is eligible for self-heal again
+
+#### Scenario: Self-heal disabled performs no attempts
+- **WHEN** `BOSUN_DRIFT_SELF_HEAL` is disabled and a periodic drift check finds drift
+- **THEN** no self-heal reconciliation is triggered
+- **AND** no attempt counter is incremented
+
+### Requirement: Restart Breaker Baseline Integrity
+
+The restart circuit breaker SHALL NOT silently reset its restart-count baseline merely because the evaluation window elapsed while restarts are still accumulating, so that a sustained slow restart loop still trips.
+
+When evaluating a tracked service whose current restart count exceeds its
+baseline (`delta > 0`), the breaker SHALL preserve the earliest unresolved-restart
+baseline (its count and timestamp) when the elapsed time exceeds the configured
+window, rather than resetting the baseline to the current observation. The breaker
+SHALL advance the baseline normally only when no new restarts occurred since the
+last check (`delta <= 0`). A service that restarts repeatedly across intervals
+longer than `BOSUN_RESTART_WINDOW` SHALL still accumulate toward the threshold and
+trip.
+
+At configuration load, the daemon SHALL warn when `BOSUN_DRIFT_INTERVAL` is
+greater than `BOSUN_RESTART_WINDOW`, because the breaker observes restart counts
+on the drift-check cadence and a window-bounded delta would otherwise be
+unobservable.
+
+#### Scenario: Slow restart loop trips despite long drift interval
+- **WHEN** `BOSUN_DRIFT_INTERVAL` is greater than `BOSUN_RESTART_WINDOW` and a container restarts repeatedly across successive drift checks
+- **THEN** the breaker preserves the accumulating baseline rather than resetting it each interval
+- **AND** the service eventually trips the restart breaker
+
+#### Scenario: Clean check advances the baseline
+- **WHEN** a tracked service shows no new restarts since the last check (`delta <= 0`)
+- **THEN** the breaker advances the baseline to the current count and timestamp
+
+#### Scenario: Misconfigured intervals warn at load
+- **WHEN** the daemon loads configuration with `BOSUN_DRIFT_INTERVAL` greater than `BOSUN_RESTART_WINDOW`
+- **THEN** a warning is logged identifying the interval/window mismatch
+
+### Requirement: Restart Breaker Resolution Attribution
+
+The restart circuit breaker SHALL distinguish a container recreation caused by bosun's own deploy from external operator recovery and SHALL NOT record a deploy-driven recreation as resolution of a tripped service.
+
+The breaker SHALL track a container-identity field (such as the container ID)
+alongside the restart count for each tracked service. Because Docker resets a
+container's restart count to zero on recreation, a lower-or-equal restart count
+SHALL NOT by itself be treated as operator recovery. When the tracked
+container identity changes, the breaker SHALL treat the event as recreation and
+SHALL require a post-recreate stability grace period — at least one check cycle
+with no further restarts — before marking the service `Resolved`. A service that
+resumes restart-looping after recreation SHALL remain tripped.
+
+#### Scenario: Deploy-driven recreation does not falsely resolve
+- **WHEN** a tripped service is recreated by a reconcile and immediately resumes restart-looping
+- **THEN** the breaker recognizes the changed container identity as recreation
+- **AND** does not emit a `Resolved` event
+- **AND** the service remains tripped
+
+#### Scenario: Operator recovery resolves after stability
+- **WHEN** a tripped service is recreated or recovered and then runs with no further restarts across at least one check cycle
+- **THEN** the breaker marks the service `Resolved`
+
+#### Scenario: Same-container recovery requires stability
+- **WHEN** a tripped service shows a restart count that is lower or equal but the container identity is unchanged
+- **THEN** the breaker does not mark the service `Resolved` until a clean check cycle confirms stability

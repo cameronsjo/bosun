@@ -8,7 +8,9 @@ The reconciler SHALL support a configurable `health_gate_scope` that selects whi
 - **declared**: the gate polls all declared services (those extracted from the staging compose files). A service that was already unhealthy BEFORE this deploy (a pre-existing casualty) SHALL be exempt and SHALL NOT trigger rollback; only a service this deploy made unhealthy triggers the gate. An empty declared set skips the gate.
 - **off**: the health gate SHALL be skipped entirely.
 
-An unknown `health_gate_scope` value SHALL be rejected by validation, and the validation error SHALL name the three valid values. When an invalid value nonetheless reaches the gate at deploy time, the gate SHALL fall back to `critical` and log the invalid value rather than failing the deployment.
+When an unknown config-file `health_gate_scope` value reaches the gate at deploy
+time, the gate SHALL fall back to `critical` and log an error that names the
+three valid values rather than failing the deployment.
 
 Regardless of scope, the gate SHALL be skipped when the deploy is a dry run, the deploy is remote (the Docker API is local-only and cannot observe the remote host's containers), or no Docker client is available.
 
@@ -55,8 +57,16 @@ Alerting on a gate failure differs by scope, so a flapping healthcheck under `de
 - **AND** no rollback is triggered
 - **AND** the deployment is recorded as successful
 
-#### Scenario: Unknown scope value is rejected
+#### Scenario: Unknown config-file scope falls back at deploy time
 
-- **WHEN** `health_gate_scope` (or `BOSUN_HEALTH_GATE_SCOPE`) is set to a value other than `critical`, `declared`, or `off`
-- **THEN** validation returns an error naming the three valid values
-- **AND** if the invalid value reaches the gate at deploy time, the gate falls back to `critical` and logs the invalid value
+- **WHEN** config-file `health_gate_scope` is set to a value other than `critical`, `declared`, or `off`
+- **THEN** the invalid value may reach the gate at deploy time
+- **AND** the gate falls back to `critical`
+- **AND** the gate logs an error naming the invalid value and the three valid values
+
+#### Scenario: Unknown environment override is ignored
+
+- **GIVEN** the config file selects a valid `health_gate_scope`, or leaves it unset
+- **WHEN** `BOSUN_HEALTH_GATE_SCOPE` is set to a value other than `critical`, `declared`, or `off`
+- **THEN** the environment override is ignored with a warning
+- **AND** the config-file scope, or the `critical` default, remains in effect

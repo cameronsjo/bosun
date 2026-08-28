@@ -29,13 +29,13 @@ Each PR receives a fresh polish pass, independent exact-head review, hosted chec
 ### 1. Campaign entry
 
 - [x] Record the approved approach before implementation.
-- [ ] Merge this plan to `main` with no release-triggering commit prefix.
+- [x] Merge this plan to `main` with no release-triggering commit prefix.
 
 ### 2. Independently ready archive batch
 
-- [ ] Correct the two inaccurate claims in `add-health-gate-scope` before archive.
-- [ ] Archive `harden-local-rollback-extraction`, `bound-alert-provider-content`, `add-health-gate-scope`, `add-https-git-auth`, and `add-drift-breaker-semantics` without `--skip-specs`.
-- [ ] Strict-validate all specs and compare each archived delta with its canonical requirement.
+- [x] Correct the two inaccurate claims in `add-health-gate-scope` before archive.
+- [x] Archive `harden-local-rollback-extraction`, `bound-alert-provider-content`, `add-health-gate-scope`, `add-https-git-auth`, and `add-drift-breaker-semantics` without `--skip-specs`.
+- [x] Strict-validate all specs and compare each archived delta with its canonical requirement.
 - [ ] Independently review and merge the archive PR; remove its worktree and temporary files.
 
 ### 3. Failed-staging archive and downstream refresh
