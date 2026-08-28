@@ -4,7 +4,8 @@ The released implementation spans path matching, deploy-result production,
 filesystem durability, hook execution, configuration ownership, and both daemon
 and one-shot reload construction. This grounding treats merged code and tests as
 historical evidence while making the normative delta precise enough to archive
-only after the one remaining coverage item is delivered.
+only after the remaining deploy-sync coverage, doctor behavior, and exact
+fallback documentation items are delivered.
 
 ## Goals / Non-Goals
 
@@ -27,7 +28,8 @@ only after the one remaining coverage item is delivered.
   while deploy-sync include/exclude filters call it directly. The normative
   scenarios name each consumer. Direct tests cover hooks and `deploy_paths`;
   task 1.3 stays partial until suffix/infix cases traverse both deploy-sync
-  filters.
+  filters using candidates the one-level `appdata/<child>` discovery contract
+  can actually emit.
 
 - **Separate durability from propagation.** Atomic file replacement is followed
   by destination-parent directory sync before post-write verification. Directory
@@ -37,9 +39,14 @@ only after the one remaining coverage item is delivered.
   on the exact `/mnt/user` path boundary receives 2 seconds; explicit file or
   environment values always win, including zero; other paths keep zero.
 
-- **Warn on risky effective configuration.** `bosun doctor` warns when a
-  `/mnt/user` deploy path has an effective zero delay. The check uses the same
-  segment-aware path classification, so `/mnt/userdata` is not a match.
+- **Fix the source-unaware doctor warning before archive.** Reconcile correctly
+  distinguishes an omitted delay from explicit zero, but `bosun doctor` still
+  checks only the decoded file value. It therefore warns for an omitted
+  `/mnt/user` delay even though the effective runtime delay is the safe
+  2-second fallback. Task 2.3 remains partial until doctor uses the same
+  presence/source distinction and focused tests cover both omitted and explicit
+  zero; segment-aware path classification must continue to exclude
+  `/mnt/userdata`.
 
 - **Keep writes and deletions distinct, union them for hook matching.**
   `DeployResult.WrittenFiles` and `DeletedFiles` remain separate staging-relative
@@ -90,7 +97,9 @@ only after the one remaining coverage item is delivered.
 - Presence/reload: `internal/config`, daemon/CLI constructors,
   `config_reload.go`, target copying, and race regressions; PRs #540/#544.
 - Diagnostics/docs: `reconcile.go`, docs, onboard resources, and log tests;
-  PR #546.
+  PR #546. The onboard GitOps resource and `AGENTS.md` still need the exact
+  unconfigured `/mnt/user` 2-second fallback wording tracked by tasks 8.2 and
+  8.4.
 
 ## Risks / Trade-offs
 
@@ -99,6 +108,10 @@ only after the one remaining coverage item is delivered.
   the grounded contract.
 - Shared-helper correctness can hide consumer wiring regressions; keeping task
   1.3 partial requires focused include/exclude coverage before archive.
+- Doctor currently reports a false zero-delay warning for an omitted
+  `/mnt/user` delay even though reconcile applies 2 seconds; task 2.3 keeps that
+  runtime/diagnostic mismatch visible rather than archiving it as intended
+  behavior.
 - The `/mnt/user` heuristic is intentionally narrow. Operators using other FUSE
   mounts must configure a delay explicitly.
 - Best-effort hook action failures remain best-effort; this change does not turn
@@ -107,8 +120,11 @@ only after the one remaining coverage item is delivered.
 ## Completion and Archive Plan
 
 1. Merge this spec-only grounding after independent exact-head review.
-2. Add the two missing deploy-sync recursive consumer regression families in a
-   bounded behavior/test PR and run compiler-heavy checks through the agent gate.
-3. Mark task 1.3 complete only with merged and released evidence.
+2. Add the two missing deploy-sync recursive consumer regression families and
+   correct the source-unaware doctor warning in bounded behavior/test work;
+   update the two partial documentation consumers with the exact fallback rule;
+   run compiler-heavy checks through the agent gate.
+3. Mark tasks 1.3, 2.3, 8.2, and 8.4 complete only with merged and released
+   evidence.
 4. Archive with `openspec archive add-reconcile-fuse-hooks` without
    `--skip-specs`, then compare both canonical results to their deltas.

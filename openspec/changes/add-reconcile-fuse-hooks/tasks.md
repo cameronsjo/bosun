@@ -1,11 +1,12 @@
 ## Grounding Summary
 
 - Original task count: 30
-- Verified shipped: 29
-- Partial: 1 (task 1.3)
-- Known runtime defects: 0
-- Archive blocker: focused recursive suffix/infix regressions through both
-  deploy-sync filter consumers
+- Verified shipped: 26
+- Partial: 4 (tasks 1.3, 2.3, 8.2, and 8.4)
+- Known runtime defects: 1 (`bosun doctor` false warning for an omitted delay)
+- Archive blockers: focused recursive suffix/infix regressions through both
+  deploy-sync filter consumers, a source-aware doctor warning fix and
+  regression, and exact fallback wording in two documentation consumers
 
 ## 1. Glob matching correctness (#232)
 
@@ -17,14 +18,14 @@
 
 - [x] 2.1 Sync destination parent directories after atomic rename and before post-write verification/hook execution — PR #402 (`5d7902f`), retained as deterministic unique-parent batching by PR #558 (`41a06ee`); `internal/fileutil/fileutil.go`
 - [x] 2.2 Apply a 2-second fallback only when the delay is unconfigured and the deploy path is `/mnt/user` or a descendant; honor explicit zero and retain zero elsewhere — PRs #402 and #544 (`24d511b`); `hooks.go`
-- [x] 2.3 Warn in `bosun doctor` when an effective zero delay is used with a segment-aware `/mnt/user` path — PR #402; `internal/cmd/diagnostics_doctor.go`
-- [x] 2.4 Cover directory sync seams, FUSE/non-FUSE/default/explicit-zero resolution, and doctor warning/lookalike paths — PRs #402, #544, and #558; `directory_sync_test.go`, `hooks_test.go`, and `diagnostics_doctor_test.go`
+- [ ] 2.3 PARTIAL: `bosun doctor` warns when the decoded file value is zero, but it does not distinguish omission from explicit zero and therefore falsely warns when reconcile's effective `/mnt/user` delay is the safe 2-second fallback — PRs #402 and #544; `internal/cmd/diagnostics_doctor.go`
+- [x] 2.4 Cover directory sync seams, FUSE/non-FUSE/default/explicit-zero runtime resolution, and the existing doctor path classification/warning — PRs #402, #544, and #558; `directory_sync_test.go`, `hooks_test.go`, and `diagnostics_doctor_test.go`; the missing source-aware doctor regression remains in task 2.3
 
 ## 3. Deletion-aware hooks (#234)
 
 - [x] 3.1 Record removals separately in `DeployResult.DeletedFiles` with `AddDeleted` and staging-relative prefix helpers — PR #405 (`8cade1c`); `internal/reconcile/deploy.go`
 - [x] 3.2 Union written and deleted paths before local hook matching, including mixed write/delete deploys — PR #405; `internal/reconcile/reconcile.go`
-- [x] 3.3 Cover deletion-only and mixed write/delete matching plus deletion prefixing — PR #405; reconcile/deploy tests
+- [x] 3.3 Cover deletion-only and mixed write/delete matching plus deletion prefixing — PR #405 (`8cade1c`) covers mixed writes/deletions; PR #551 (`f6ed4a3`) adds direct deletion-only change-source and hook-selection regressions; reconcile/deploy tests
 
 ## 4. Hook match observability (#269)
 
@@ -57,6 +58,6 @@
 ## 8. Documentation
 
 - [x] 8.1 Document root/target presence, successful-snapshot, and environment precedence in `skills/onboard/resources/configuration.md` — PR #544
-- [x] 8.2 Document hook timing, `/mnt/user` fallback, deletion-aware inputs, recursive globs, and reload semantics in `skills/onboard/resources/gitops.md` — PRs #402, #405, #544, and #546
+- [ ] 8.2 PARTIAL: `skills/onboard/resources/gitops.md` documents generic hook timing, fallback, deletion-aware inputs, recursive globs, and reload semantics, but does not state that the exact unconfigured `/mnt/user` fallback is 2 seconds while explicit zero and non-FUSE paths retain zero
 - [x] 8.3 Update `docs/gitops.md` and `docs/troubleshooting.md` for the released hook/change-source/diagnostic contract — PRs #405, #544, and #546
-- [x] 8.4 Update `AGENTS.md` for the exact settle-delay default, environment replacement, staging-relative paths, and reload presence semantics — PRs #402 and #544
+- [ ] 8.4 PARTIAL: `AGENTS.md` documents environment replacement, staging-relative paths, reload presence, an example 2-second delay, and explicit-zero behavior, but does not state the exact unconfigured `/mnt/user` 2-second fallback contract

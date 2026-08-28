@@ -33,16 +33,16 @@ at every consumer.
 #### Scenario: Deploy-sync allowlist uses the corrected matcher
 
 - **WHEN** `deploy_sync_paths` contains `appdata/**/traefik`
-- **AND** deploy-target discovery evaluates `appdata/team/traefik`
+- **AND** one-level deploy-target discovery evaluates `appdata/traefik`
 - **THEN** that target is included
-- **AND** an unrelated target is NOT included by that pattern
+- **AND** `appdata/authelia` is NOT included by that pattern
 
 #### Scenario: Deploy-sync blocklist uses the corrected matcher
 
 - **WHEN** `deploy_sync_exclude` contains `appdata/**/retired`
-- **AND** deploy-target discovery evaluates `appdata/team/retired`
+- **AND** one-level deploy-target discovery evaluates `appdata/retired`
 - **THEN** that target is excluded
-- **AND** an unrelated target is NOT excluded by that pattern
+- **AND** `appdata/active` is NOT excluded by that pattern
 
 ### Requirement: FUSE-Safe Hook Timing
 
@@ -58,8 +58,11 @@ and `BOSUN_HOOK_SETTLE_DELAY`. When neither source configured a value and the
 effective local deploy path is exactly `/mnt/user` or is beneath that
 path-segment boundary, the reconciler SHALL apply a 2-second fallback before
 hooks. An explicit file or environment value SHALL win, including `0s`, and an
-unconfigured non-`/mnt/user` path SHALL retain zero delay. `bosun doctor` SHALL
-warn when a `/mnt/user` deploy path has an effective zero delay.
+unconfigured non-`/mnt/user` path SHALL retain zero delay. Before this change
+can archive, `bosun doctor` SHALL use the same presence/source distinction and
+warn only when a `/mnt/user` deploy path has an effective zero delay; it SHALL
+NOT warn for an omitted value whose effective runtime delay is the 2-second
+fallback.
 
 #### Scenario: Destination directory fsynced after write
 
@@ -77,6 +80,13 @@ warn when a `/mnt/user` deploy path has an effective zero delay.
 - **WHEN** `bosun doctor` runs against a FUSE-like deploy target (e.g. an Unraid `/mnt/user` path)
 - **AND** the effective `hook_settle_delay` is `0s`
 - **THEN** doctor emits a warning that hooks may fire before FUSE propagation completes
+
+#### Scenario: Doctor does not warn for safe fallback
+
+- **WHEN** `bosun doctor` runs against a `/mnt/user` deploy target
+- **AND** neither settle-delay source is configured
+- **THEN** doctor does NOT emit a zero-delay warning
+- **AND** reconcile's effective settle delay remains the 2-second fallback
 
 #### Scenario: Explicit zero disables fallback
 
