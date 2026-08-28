@@ -153,7 +153,13 @@ The `DeclaredService` struct SHALL include an `ImagePolicy` field populated from
 
 ### Requirement: Pipeline Orchestration
 
-The reconciler SHALL execute stages in this fixed order:
+Before any target pipeline starts, Bosun SHALL canonicalize and validate every
+effective target staging path, then harden-or-delete every pre-existing staging
+slot. Equal or ancestor/descendant staging paths SHALL reject the complete target
+set. If any pre-existing slot can be neither protected nor deleted, Bosun SHALL
+fail the cycle before Git sync, secret decryption, or target execution.
+
+For every valid target, the reconciler SHALL execute stages in this fixed order:
 
 1. Acquire lock
 2. Git repository sync
@@ -165,41 +171,88 @@ The reconciler SHALL execute stages in this fixed order:
 8. Pull images for `auto` services (`docker compose pull <services...>`)
 9. Create configuration backup
 10. Deploy files (local or remote)
-11. Run `docker compose up`
-12. Clean up staging directory
-13. Critical container health gate (if configured)
+11. Deploy sync invariant check (see Deploy Sync Invariants)
+12. Run `docker compose up`
+13. Configured health gate (if enabled; see Critical Container Health Gate and Health Gate Scope)
 14. Execute post-sync hooks
 15. Post-deploy verification (drift check)
-16. Record successful deployment in state file
-17. Release lock
+16. Clean up staging directory
+17. Record successful deployment in state file
+18. Release lock
 
-A failure at any stage SHALL abort the remaining stages and release the lock. The health gate (stage 13) failing SHALL trigger rollback before aborting.
+A fatal failure at any stage SHALL abort the current target's remaining deployment
+stages and release its lock, but while the shared cycle context remains live it
+SHALL NOT prevent a valid sibling target from running. If the shared cycle context
+is canceled or its deadline expires, target iteration SHALL stop as required by
+the canonical `Non-Live Cycle Context Stops Target Iteration` requirement. The
+configured health gate (stage 13) failing SHALL trigger rollback before aborting
+that target. The invariant check (stage 11) failing SHALL abort that target before
+compose up runs; no rollback is needed because no compose changes have been applied
+at that point. After all eligible targets complete, the overall cycle SHALL report
+failure if any target failed, without undoing successful siblings. Failure and
+success alerts SHALL identify the applicable target, and the process-wide cycle
+lock SHALL be released only after the target loop completes.
+
+Before writing decrypted render output, Bosun SHALL prepare the current target's
+private staging slot according to the Failed Staging Evidence Lifecycle
+requirement. After preparation begins, every normal or panic exit before successful
+staging cleanup SHALL run that lifecycle's harden-or-delete finalizer. A staging
+cleanup failure after verification is non-fatal only when the retained tree is
+successfully proven owner-only; if Bosun can neither harden nor delete that tree,
+the security failure SHALL abort successful completion.
+
 The lock SHALL always be released via defer, even on panic.
 
 #### Scenario: Full pipeline succeeds
 
 - **WHEN** a reconciliation is triggered and a new commit is available
 - **THEN** all stages execute in order
+- **AND** staging is removed after health checks and verification succeed and hook execution completes
 - **AND** the deploy state file records the deployed commit
 - **AND** a success alert is sent
 
 #### Scenario: Pipeline aborts on stage failure
 
 - **WHEN** secret decryption fails
-- **THEN** template rendering, backup, deploy, and compose stages are skipped
+- **THEN** template rendering, policy resolution, image pull, backup, deploy, invariant check, and compose stages are skipped
+- **AND** any evidence retained from the preceding attempt is not replaced
 - **AND** a throttled failure alert is sent
 - **AND** the lock is released
+
+#### Scenario: Invariant check aborts before compose
+
+- **WHEN** stage 11 invariants fail
+- **THEN** compose up, health gate, hooks, verification, and successful cleanup are skipped
+- **AND** the current rendered staging tree is retained securely
+- **AND** the lock is released
+- **AND** a failure alert is sent
+- **AND** the state file is NOT updated
 
 #### Scenario: Dry run mode
 
 - **WHEN** `DryRun` is true
-- **THEN** image pull, backup, deploy, compose up, health gate, post-sync hooks, and post-deploy verification are skipped
+- **THEN** image pull, backup, deploy, invariant check, compose up, health gate, post-sync hooks, and post-deploy verification are skipped
 - **AND** template rendering still executes to validate templates
+- **AND** normal staging cleanup is skipped
+- **AND** Bosun hardens every rendered directory to `0700` and regular file to `0600` before returning
+- **AND** the rendered staging tree is retained securely as the current evidence slot
+- **AND** the replacement and retention outcome is reported without rendered content
 
-#### Scenario: Health gate failure triggers rollback
+#### Scenario: One target failure does not suppress siblings
 
-- **WHEN** compose up succeeds but a critical container fails the health gate
+- **GIVEN** a valid target set contains targets `unraid` and `pi`
+- **WHEN** `unraid` fails after rendering and `pi` succeeds
+- **AND** the shared cycle context remains live
+- **THEN** `unraid` aborts its remaining stages and retains secured evidence
+- **AND** `pi` completes and removes only its own staging slot
+- **AND** the overall cycle reports failure after both targets finish
+- **AND** alerts identify their respective target outcomes
+
+#### Scenario: Configured health gate failure triggers rollback
+
+- **WHEN** compose up succeeds but the configured health gate rejects the deployment
 - **THEN** the reconciler triggers rollback to the backup compose files
+- **AND** the failed rendered staging tree is retained securely regardless of the rollback outcome
 - **AND** the deployment is NOT recorded as successful
 - **AND** a failure alert is sent
 - **AND** the lock is released

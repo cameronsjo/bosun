@@ -14,8 +14,8 @@ fail-closed security lifecycle, not only a reordered cleanup call.
 
 ## What Changes
 
-- Move successful staging cleanup until after the health gate, post-sync hooks, and
-  post-deploy verification have completed successfully.
+- Move successful staging cleanup until after the configured health gate,
+  post-sync hooks, and post-deploy verification have completed successfully.
 - Preserve the exact rendered tree in its existing per-target `StagingDir` after
   any post-render deployment failure, including health-gate failure with either a
   successful or failed rollback.
@@ -46,8 +46,8 @@ fail-closed security lifecycle, not only a reordered cleanup call.
   - Single-target `bosun reconcile` — preserves or cleans its configured staging
     slot according to the target outcome
   - Multi-target CLI reconciliation — rejects overlapping staging slots up front,
-    then continues valid sibling targets after a per-target failure while keeping
-    their evidence isolated
+    then continues valid sibling targets after a per-target failure only while the
+    shared cycle context remains live, while keeping their evidence isolated
   - Daemon reconciliation — applies the same preflight and per-target behavior
     across automated retries
   - Template rendering — securely prepares and replaces the prior evidence slot

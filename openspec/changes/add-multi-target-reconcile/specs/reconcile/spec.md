@@ -235,29 +235,53 @@ The reconciler SHALL execute a two-phase pipeline: cycle-level stages run once, 
 **Cycle-level stages** (run once per reconciliation cycle):
 
 1. Acquire process-wide single-flight gate
-2. Git repository sync (clone or pull)
-3. Decrypt secrets (shared SOPS files)
+2. Canonicalize and validate every effective target staging path, then harden-or-delete every pre-existing staging slot
+3. Git repository sync (clone or pull)
+4. Decrypt secrets (shared SOPS files)
 
 **Per-target stages** (run for each target in list order):
 
-4. Acquire per-target file lock
-5. Load deploy state and evaluate skip/circuit-breaker logic
-6. Apply per-target secrets scoping
-7. Render templates (to isolated staging directory)
-8. Extract declared state from rendered compose
-9. Create configuration backup
-10. Deploy files (local or remote)
-11. Run `docker compose up`
-12. Clean up staging directory
-13. Critical container health gate (if configured)
-14. Execute post-sync hooks
-15. Post-deploy verification (drift check)
-16. Record successful deployment in state file
-17. Release per-target file lock
+5. Acquire per-target file lock
+6. Load deploy state and evaluate skip/circuit-breaker logic
+7. Apply per-target secrets scoping
+8. Render templates (to isolated staging directory)
+9. Extract declared state from rendered compose
+10. Create configuration backup
+11. Deploy files (local or remote)
+12. Deploy sync invariant check (see Deploy Sync Invariants)
+13. Run `docker compose up`
+14. Configured health gate (if enabled; see Critical Container Health Gate and Health Gate Scope)
+15. Execute post-sync hooks
+16. Post-deploy verification (drift check)
+17. Clean up staging directory
+18. Record successful deployment in state file
+19. Release per-target file lock
 
 **Post-cycle:** Release process-wide single-flight gate. If dirty flag is set, start another cycle.
 
-A failure at any per-target stage SHALL abort the remaining stages for that target and release its per-target lock. The health gate (stage 13) failing SHALL trigger rollback for that target before aborting. While the shared cycle context remains live, other targets in the cycle SHALL continue unaffected. If the context is canceled or its deadline expires, target iteration SHALL stop as required by the canonical `Non-Live Cycle Context Stops Target Iteration` requirement.
+A fatal failure at any per-target stage SHALL abort the remaining stages for that
+target and release its per-target lock. While the shared cycle context remains
+live, other targets in the cycle SHALL continue unaffected. If the context is
+canceled or its deadline expires, target iteration SHALL stop as required by the
+canonical `Non-Live Cycle Context Stops Target Iteration` requirement. The
+configured health gate (stage 14) failing SHALL trigger rollback for that target
+before aborting. The invariant check (stage 12) failing SHALL abort that target
+before compose up runs; no rollback is needed because no compose changes have been
+applied at that point. After all eligible targets complete, the overall cycle
+SHALL report failure if any target failed, without undoing successful siblings.
+Failure and success alerts SHALL identify the applicable target.
+
+Equal or ancestor/descendant staging paths SHALL reject the complete target set.
+If any pre-existing slot can be neither protected nor deleted, Bosun SHALL fail the
+cycle before Git sync, secret decryption, or target execution.
+
+Before writing decrypted render output, Bosun SHALL prepare the current target's
+private staging slot according to the Failed Staging Evidence Lifecycle
+requirement. After preparation begins, every normal or panic exit before successful
+staging cleanup SHALL run that lifecycle's harden-or-delete finalizer. A staging
+cleanup failure after verification is non-fatal only when the retained tree is
+successfully proven owner-only; if Bosun can neither harden nor delete that tree,
+the security failure SHALL abort successful completion.
 
 Per-target locks SHALL always be released via defer, even on panic. The single-flight gate SHALL always be released after all targets complete.
 
@@ -266,10 +290,21 @@ When only one target is configured (implicit default), behavior SHALL be identic
 #### Scenario: Full pipeline succeeds for all targets
 
 - **WHEN** a reconciliation cycle triggers with a new commit and two targets
-- **THEN** the single-flight gate is acquired and git sync runs once
+- **THEN** the single-flight gate is acquired and effective staging paths and pre-existing slots are validated before git sync
+- **AND** git sync runs once
 - **AND** secrets are decrypted once
-- **AND** both targets execute per-target stages 4–17 in order
+- **AND** both targets execute per-target stages 5–19 in order
+- **AND** each target removes only its own staging slot after health checks, verification, and hooks complete
 - **AND** both targets' state files record the deployed commit
+- **AND** success alerts identify their respective targets
+- **AND** the single-flight gate is released
+
+#### Scenario: Cycle-level failure aborts before targets
+
+- **WHEN** shared secret decryption fails before target iteration
+- **THEN** no target renders, backs up, deploys, or runs compose
+- **AND** evidence retained from every preceding target attempt is not replaced
+- **AND** a throttled failure alert is sent
 - **AND** the single-flight gate is released
 
 #### Scenario: Pipeline aborts on stage failure for one target
@@ -277,22 +312,43 @@ When only one target is configured (implicit default), behavior SHALL be identic
 - **WHEN** target `unraid` fails during template rendering
 - **AND** the shared cycle context remains live
 - **THEN** remaining per-target stages for `unraid` are skipped
+- **AND** `unraid`'s rendered staging tree is retained securely
 - **AND** a throttled failure alert is sent for `unraid`
 - **AND** `unraid`'s per-target lock is released
 - **AND** target `pi` proceeds with its full per-target pipeline
+- **AND** the overall cycle reports failure after both targets finish
+- **AND** alerts identify their respective target outcomes
 
 #### Scenario: Dry run mode with multiple targets
 
 - **WHEN** `DryRun` is true and two targets are configured
-- **THEN** both targets skip backup, deploy, compose up, health gate, hooks, and verification
+- **THEN** both targets skip backup, deploy, invariant check, compose up, health gate, hooks, and verification
 - **AND** template rendering executes for both targets to validate templates
+- **AND** normal staging cleanup is skipped for both targets
+- **AND** Bosun hardens every rendered directory to `0700` and regular file to `0600` before returning
+- **AND** each rendered staging tree is retained securely in its isolated evidence slot
+- **AND** each replacement and retention outcome is reported without rendered content
 
-#### Scenario: Health gate failure triggers rollback for one target only
+#### Scenario: Invariant check aborts before compose for one target
+
+- **WHEN** target `unraid` fails stage 12 invariants
+- **AND** the shared cycle context remains live
+- **THEN** compose up, health gate, hooks, verification, and successful cleanup are skipped for `unraid`
+- **AND** `unraid` retains its rendered staging tree securely and releases its per-target lock
+- **AND** a failure alert is sent for `unraid`
+- **AND** `unraid`'s state file is NOT updated
+- **AND** target `pi` proceeds with its full per-target pipeline
+
+#### Scenario: Configured health gate failure triggers rollback for one target only
 
 - **WHEN** target `pi` passes compose up but fails the health gate
+- **AND** the shared cycle context remains live
 - **THEN** `pi` triggers rollback to its backup compose files
+- **AND** `pi` retains its failed rendered staging tree securely regardless of rollback outcome
 - **AND** `pi`'s deployment is NOT recorded as successful
-- **AND** other targets are unaffected
+- **AND** a failure alert is sent for `pi`
+- **AND** `pi`'s per-target lock is released
+- **AND** other targets proceed unaffected
 
 ### Requirement: Deploy State Persistence
 

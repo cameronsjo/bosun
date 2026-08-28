@@ -20,7 +20,7 @@ For every valid target, the reconciler SHALL execute stages in this fixed order:
 8. Deploy files (local or remote)
 9. Deploy sync invariant check (see Deploy Sync Invariants)
 10. Run `docker compose up`
-11. Critical container health gate (if configured)
+11. Configured health gate (if enabled; see Critical Container Health Gate and Health Gate Scope)
 12. Execute post-sync hooks
 13. Post-deploy verification (drift check)
 14. Clean up staging directory
@@ -28,8 +28,11 @@ For every valid target, the reconciler SHALL execute stages in this fixed order:
 16. Release lock
 
 A fatal failure at any stage SHALL abort the current target's remaining deployment
-stages and release its lock, but SHALL NOT prevent a valid sibling target from
-running. The health gate (stage 11) failing SHALL trigger rollback before aborting
+stages and release its lock, but while the shared cycle context remains live it
+SHALL NOT prevent a valid sibling target from running. If the shared cycle context
+is canceled or its deadline expires, target iteration SHALL stop as required by
+the canonical `Non-Live Cycle Context Stops Target Iteration` requirement. The
+configured health gate (stage 11) failing SHALL trigger rollback before aborting
 that target. The invariant check (stage 9) failing SHALL abort that target before
 compose up runs; no rollback is needed because no compose changes have been applied
 at that point. After all eligible targets complete, the overall cycle SHALL report
@@ -86,14 +89,15 @@ The lock SHALL always be released via defer, even on panic.
 
 - **GIVEN** a valid target set contains targets `unraid` and `pi`
 - **WHEN** `unraid` fails after rendering and `pi` succeeds
+- **AND** the shared cycle context remains live
 - **THEN** `unraid` aborts its remaining stages and retains secured evidence
 - **AND** `pi` completes and removes only its own staging slot
 - **AND** the overall cycle reports failure after both targets finish
 - **AND** alerts identify their respective target outcomes
 
-#### Scenario: Health gate failure triggers rollback
+#### Scenario: Configured health gate failure triggers rollback
 
-- **WHEN** compose up succeeds but a critical container fails the health gate
+- **WHEN** compose up succeeds but the configured health gate rejects the deployment
 - **THEN** the reconciler triggers rollback to the backup compose files
 - **AND** the failed rendered staging tree is retained securely regardless of the rollback outcome
 - **AND** the deployment is NOT recorded as successful
@@ -286,5 +290,13 @@ include rendered contents, secret values, or symlink targets.
 
 - **GIVEN** two named targets have distinct effective staging directories
 - **WHEN** the first target fails verification and the second target succeeds
+- **AND** the shared cycle context remains live
 - **THEN** the first target's secured evidence remains available
 - **AND** the second target removes only its own staging tree
+
+#### Scenario: Non-live cycle context leaves later sibling evidence untouched
+
+- **GIVEN** two named targets have distinct effective staging directories
+- **WHEN** the first target finishes with a failure and the shared cycle context is canceled or its deadline expires
+- **THEN** target iteration stops before the second target starts
+- **AND** the second target's staging slot is not cleaned, hardened, replaced, or rendered

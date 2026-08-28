@@ -40,9 +40,9 @@ Each PR receives a fresh polish pass, independent exact-head review, hosted chec
 
 ### 3. Failed-staging archive and downstream refresh
 
-- [ ] Correct `preserve-failed-staging-evidence` so its delta retains sibling continuation and uses the shipped stage labels.
-- [ ] Archive it separately without `--skip-specs`, then refresh the complete `Pipeline Orchestration` blocks in `add-backup-integrity-semantics`, `add-image-prepull`, `add-image-update-policy`, and `add-multi-target-reconcile`.
-- [ ] Strict-validate all specs, compare the archived delta with the canonical requirement, and verify each refreshed downstream block retains its own proposed behavior.
+- [x] Correct `preserve-failed-staging-evidence` so its delta retains sibling continuation and uses the shipped stage labels.
+- [x] Archive it separately without `--skip-specs`, then refresh the complete `Pipeline Orchestration` blocks in `add-backup-integrity-semantics`, `add-image-prepull`, `add-image-update-policy`, and `add-multi-target-reconcile`.
+- [x] Strict-validate all specs, compare the archived delta with the canonical requirement, and verify each refreshed downstream block retains its own proposed behavior.
 - [ ] Independently review and merge the archive/refresh PR; remove its worktree and temporary files.
 
 ### 4. Multi-target grounding (#438)

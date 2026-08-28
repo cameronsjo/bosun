@@ -1,6 +1,6 @@
 ## 1. Staging lifecycle
 
-- [x] 1.1 Move normal staging cleanup after the health gate, post-sync hooks, and
+- [x] 1.1 Move normal staging cleanup after the configured health gate, post-sync hooks, and
   post-deploy verification, while keeping it before successful completion is
   reported
 - [x] 1.2 Preserve staging after every failure that occurs after rendering begins,
@@ -47,7 +47,7 @@
 ## 4. Tests
 
 - [x] 4.1 Add full-pipeline tests proving staging is removed only after a verified
-  success and retained after health-gate failure
+  success and retained after configured-health-gate failure
 - [x] 4.2 Cover successful rollback, failed/partial rollback, post-deploy verification
   failure, backup/rollback-anchor failure, pre-deploy state-write failure, compose
   failure, cleanup failure, permission-hardening failure, and harden-plus-delete
@@ -59,8 +59,10 @@
   entries, traversal attempts, entry-replacement races, and deterministic
   replacement on the next render
 - [x] 4.4 Add multi-target CLI/daemon coverage showing one target may retain evidence
-  while a successful sibling cleans only its own staging directory; verify equal
-  and nested slots reject the whole target set before any target runs
+  while a successful sibling cleans only its own staging directory when the shared
+  cycle context remains live, and that cancellation or deadline expiry leaves later
+  siblings untouched; verify equal and nested slots reject the whole target set
+  before any target runs
 - [x] 4.5 Verify structured logs distinguish retained, discarded, replaced, and
   cleanup-fallback outcomes with target identity and path, but contain no rendered
   secret content or symlink target
@@ -76,7 +78,8 @@
 
 ## 5. Documentation
 
-- [x] 5.1 Update `docs/gitops.md` with the post-verification cleanup order, evidence
+- [x] 5.1 Update `docs/gitops.md` with the configured-health-gate and
+  post-verification cleanup order, evidence
   path, private active-staging and retained `0700`/`0600` security boundaries,
   single-slot replacement behavior, dry-run behavior, and cleanup-fallback warning
 - [x] 5.2 Update `skills/onboard/resources/gitops.md` with the same lifecycle and
