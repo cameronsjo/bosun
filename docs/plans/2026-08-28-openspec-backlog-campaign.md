@@ -56,9 +56,9 @@ Each PR receives a fresh polish pass, independent exact-head review, hosted chec
 - [x] Revalidate the historical approved proposal in merged PR #311 and require a fresh independent gate for this grounded successor before any remaining behavior work.
 - [x] Map all 30 tasks to shipped code, tests, documentation, and merged delivery evidence; 26 are shipped, task 1.3 remains partial for focused recursive suffix/infix coverage through `deploy_sync_paths` and `deploy_sync_exclude`, task 2.3 remains partial because doctor falsely warns for an omitted delay despite the safe runtime fallback, and tasks 8.2/8.4 remain partial for exact fallback wording.
 - [x] Correct the proposal, design, task checklist, deltas, and proposed issue #431 replacement text so the shipped contract and four bounded remaining slices are accurate and non-duplicative; leave the live issue unchanged until this grounding PR merges.
-- [ ] Strict-validate, independently review, and merge the spec-only grounding PR before archiving the change.
+- [x] Strict-validate, independently review, and merge the spec-only grounding PR (#633) before archiving the change.
 - [x] If grounding exposes a concrete behavior gap, implement it as the smallest behavior PR with required tests, consumer documentation, onboard-skill resources, gated checks, and exact-head review; do not create speculative slices.
-- [ ] Archive `add-reconcile-fuse-hooks` without `--skip-specs` only after every task and requirement has verified merged and released evidence.
+- [x] Archive `add-reconcile-fuse-hooks` without `--skip-specs` after the remaining implementation merged in #634 and shipped in v0.42.1 from `ca655b5afeec028fb4801357dc8130ad7427c8a5`.
 
 ### 6. Directory-aware deploy-tracking archive
 

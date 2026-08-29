@@ -1,5 +1,12 @@
-## ADDED Requirements
+# reconcile-fuse-hooks Specification
 
+## Purpose
+
+Define the filesystem durability, recursive path matching, change-set,
+diagnostic, and configuration-reload contracts that keep post-sync hooks
+reliable, including on Unraid FUSE deploy targets.
+
+## Requirements
 ### Requirement: Recursive Glob Matching Correctness
 
 The glob matcher SHALL honor the full pattern including any literal suffix that follows a `**` segment, and SHALL NOT collapse a `**` pattern to a prefix-only check. A pattern beginning with `**/` SHALL match a file only when the remainder of the pattern matches the file's trailing path segments, and SHALL NOT match every changed file unconditionally.
@@ -58,11 +65,10 @@ and `BOSUN_HOOK_SETTLE_DELAY`. When neither source configured a value and the
 effective local deploy path is exactly `/mnt/user` or is beneath that
 path-segment boundary, the reconciler SHALL apply a 2-second fallback before
 hooks. An explicit file or environment value SHALL win, including `0s`, and an
-unconfigured non-`/mnt/user` path SHALL retain zero delay. Before this change
-can archive, `bosun doctor` SHALL use the same presence/source distinction and
-warn only when a `/mnt/user` deploy path has an effective zero delay; it SHALL
-NOT warn for an omitted value whose effective runtime delay is the 2-second
-fallback.
+unconfigured non-`/mnt/user` path SHALL retain zero delay. `bosun doctor` SHALL
+use the same presence/source distinction and warn only when a `/mnt/user` deploy
+path has an effective zero delay; it SHALL NOT warn for an omitted value whose
+effective runtime delay is the 2-second fallback.
 
 #### Scenario: Destination directory fsynced after write
 
