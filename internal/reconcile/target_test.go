@@ -331,6 +331,7 @@ func TestResolveTargets_RejectsCompleteSetForInvalidDescriptors(t *testing.T) {
 func TestResolveTargets_ConfinesNamedTargetPaths(t *testing.T) {
 	tests := []struct {
 		name            string
+		configure       func(*testing.T, *Config, *Target)
 		target          Target
 		wantErrContains []string
 	}{
@@ -350,6 +351,44 @@ func TestResolveTargets_ConfinesNamedTargetPaths(t *testing.T) {
 			wantErrContains: []string{"nas", "local_appdata_path", "/srv/deploy"},
 		},
 		{
+			name: "explicit state file requires a configured state root",
+			configure: func(_ *testing.T, cfg *Config, _ *Target) {
+				cfg.StateFile = ""
+			},
+			target:          Target{Name: "nas", StateFile: "/var/lib/bosun/nas.json"},
+			wantErrContains: []string{"nas", "state_file", "no configured state root"},
+		},
+		{
+			name: "explicit staging directory requires a configured staging root",
+			configure: func(_ *testing.T, cfg *Config, _ *Target) {
+				cfg.StagingDir = ""
+			},
+			target:          Target{Name: "nas", StagingDir: "/app/staging/nas-slot"},
+			wantErrContains: []string{"nas", "staging_dir", "no configured permitted root"},
+		},
+		{
+			name: "uninspectable staging root fails closed",
+			configure: func(t *testing.T, cfg *Config, _ *Target) {
+				blockedParent := filepath.Join(t.TempDir(), "file")
+				require.NoError(t, os.WriteFile(blockedParent, []byte("not a directory"), 0o600))
+				cfg.StagingDir = filepath.Join(blockedParent, "staging")
+			},
+			target:          Target{Name: "nas", StagingDir: "/app/staging/nas-slot"},
+			wantErrContains: []string{"nas", "staging_dir root", "inspect path ancestor"},
+		},
+		{
+			name: "uninspectable candidate path fails closed",
+			configure: func(t *testing.T, cfg *Config, target *Target) {
+				root := evalSymlinks(t, t.TempDir())
+				blockedParent := filepath.Join(root, "file")
+				require.NoError(t, os.WriteFile(blockedParent, []byte("not a directory"), 0o600))
+				cfg.StagingDir = root
+				target.StagingDir = filepath.Join(blockedParent, "child")
+			},
+			target:          Target{Name: "nas"},
+			wantErrContains: []string{"nas", "staging_dir", "inspect path ancestor"},
+		},
+		{
 			name: "confined explicit paths are accepted",
 			target: Target{
 				Name:             "nas",
@@ -364,6 +403,9 @@ func TestResolveTargets_ConfinesNamedTargetPaths(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := DefaultConfig()
 			cfg.LocalAppdataPath = "/srv/deploy"
+			if tt.configure != nil {
+				tt.configure(t, cfg, &tt.target)
+			}
 			cfg.Targets = []Target{tt.target}
 
 			targets, err := cfg.ResolveTargets()
@@ -436,6 +478,23 @@ func TestResolveTargets_RejectsSymlinkAliasedStateCollision(t *testing.T) {
 	assert.ErrorContains(t, err, "prod-a")
 	assert.ErrorContains(t, err, "prod-b")
 	assert.ErrorContains(t, err, "same state file")
+}
+
+func TestResolveTargets_RejectsUninspectableDerivedStatePath(t *testing.T) {
+	blockedParent := filepath.Join(t.TempDir(), "state-parent")
+	require.NoError(t, os.WriteFile(blockedParent, []byte("not a directory"), 0o600))
+
+	cfg := DefaultConfig()
+	cfg.StateFile = filepath.Join(blockedParent, DefaultStateFile)
+	cfg.Targets = []Target{{Name: "nas"}}
+
+	targets, err := cfg.ResolveTargets()
+
+	require.Error(t, err)
+	assert.Nil(t, targets)
+	assert.ErrorContains(t, err, "nas")
+	assert.ErrorContains(t, err, "state file")
+	assert.ErrorContains(t, err, "inspect path ancestor")
 }
 
 func TestResolveTargets_RejectsResourceCollisions(t *testing.T) {
@@ -617,6 +676,13 @@ func TestValidateMultiTargetLayout(t *testing.T) {
 
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "unsafe characters")
+	})
+
+	t.Run("accepts lone default compatibility target", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Targets = []Target{{Name: "default", StateFile: "/custom/state.json"}}
+
+		require.NoError(t, cfg.ValidateMultiTargetLayout())
 	})
 }
 
