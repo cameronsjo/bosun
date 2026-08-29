@@ -23,5 +23,5 @@ Path checks use cleaned absolute paths, existing-symlink resolution, and `filepa
 - [x] Add state, staging, and local-path confinement tests for direct, YAML, and `BOSUN_TARGETS` inputs.
 - [x] Implement complete-set descriptor validation and root-confinement checks in the shared resolver.
 - [x] Update the OpenSpec task ledger and onboard configuration documentation.
-- [ ] Run focused tests, full tests, race tests, vet, lint, build, coverage, and strict OpenSpec validation through the resource gate where applicable.
+- [x] Run focused tests, full tests, race tests, vet, lint, build, coverage, and strict OpenSpec validation through the resource gate where applicable.
 - [ ] Run the polish review, fix findings, open the PR, verify hosted checks, merge, and remove the temporary worktree.

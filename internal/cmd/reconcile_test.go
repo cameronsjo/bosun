@@ -114,7 +114,7 @@ func TestRunReconcileRejectsUnsafeGitAuthenticationBeforePipeline(t *testing.T) 
 func TestRunReconcile_ConfigFieldSetup(t *testing.T) {
 	// Intercept ui.Fatal so the function doesn't exit the process.
 	old := ui.SetExitFn(func(int) {})
-	defer ui.SetExitFn(old)
+	t.Cleanup(func() { ui.SetExitFn(old) })
 
 	t.Run("env overrides set ConfigField source to env", func(t *testing.T) {
 		t.Setenv("REPO_URL", "https://example.com/repo.git")
@@ -186,7 +186,7 @@ func TestRunReconcile_InvalidExecHookFailsBeforeDeploy(t *testing.T) {
 func TestRunReconcile_BOSUNTargetsValidation(t *testing.T) {
 	// Intercept ui.Fatal so the function doesn't exit the process.
 	old := ui.SetExitFn(func(int) {})
-	defer ui.SetExitFn(old)
+	t.Cleanup(func() { ui.SetExitFn(old) })
 
 	// All subtests set REPO_URL so the function proceeds past the fatal check
 	// and reaches the BOSUN_TARGETS validation block at line ~259. The reconciler
@@ -436,7 +436,7 @@ func TestPrepareStateFileForCLIRun(t *testing.T) {
 
 func TestRunReconcile_CreatesConfiguredStateDir(t *testing.T) {
 	old := ui.SetExitFn(func(int) {})
-	defer ui.SetExitFn(old)
+	t.Cleanup(func() { ui.SetExitFn(old) })
 
 	stateDir := filepath.Join(t.TempDir(), "fresh", "state")
 	t.Setenv("REPO_URL", filepath.Join(t.TempDir(), "missing-repo"))
@@ -451,7 +451,7 @@ func TestRunReconcile_CreatesConfiguredStateDir(t *testing.T) {
 
 func TestRunReconcile_PreparesEachTargetStateDir(t *testing.T) {
 	old := ui.SetExitFn(func(int) {})
-	defer ui.SetExitFn(old)
+	t.Cleanup(func() { ui.SetExitFn(old) })
 
 	base := t.TempDir()
 	targets := []reconcile.Target{
@@ -484,7 +484,7 @@ func TestRunReconcile_PreparesEachTargetStateDir(t *testing.T) {
 
 func TestRunReconcile_DryRunDoesNotMutateConfiguredState(t *testing.T) {
 	old := ui.SetExitFn(func(int) {})
-	defer ui.SetExitFn(old)
+	t.Cleanup(func() { ui.SetExitFn(old) })
 
 	t.Run("missing state directory stays absent", func(t *testing.T) {
 		stateDir := filepath.Join(t.TempDir(), "production", "state")
