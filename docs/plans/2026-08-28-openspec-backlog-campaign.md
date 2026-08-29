@@ -2,7 +2,7 @@
 
 ## Goal
 
-Bring Bosun's specification ledger back in line with the released code, then ground and close the stale multi-target and FUSE-hook trackers without reopening already shipped work.
+Bring Bosun's specification ledger back in line with the released code, then ground the stale multi-target tracker and close the completed FUSE-hook tracker without reopening already shipped work.
 
 ## Chosen approach
 
@@ -43,18 +43,18 @@ Each PR receives a fresh polish pass, independent exact-head review, hosted chec
 - [x] Correct `preserve-failed-staging-evidence` so its delta retains sibling continuation and uses the shipped stage labels.
 - [x] Archive it separately without `--skip-specs`, then refresh the complete `Pipeline Orchestration` blocks in `add-backup-integrity-semantics`, `add-image-prepull`, `add-image-update-policy`, and `add-multi-target-reconcile`.
 - [x] Strict-validate all specs, compare the archived delta with the canonical requirement, and verify each refreshed downstream block retains its own proposed behavior.
-- [ ] Independently review and merge the archive/refresh PR; remove its worktree and temporary files.
+- [x] Independently review #631 at `9431193495a94af45a575158d1ba2d0404244603`, merge it as `f7d4546bbd68783f0f0a4e0213c7c8dc24e10f98`, and remove its worktree and temporary files.
 
 ### 4. Multi-target grounding (#438)
 
 - [x] Map every active task to shipped code, tests, documentation, or genuinely missing behavior.
 - [x] Correct proposal, design, task, and proposed issue replacement text so the remaining contract is accurate and non-duplicative; issue #438 remains unchanged until this grounding PR merges.
-- [ ] Strict-validate, independently review, and merge the spec-only grounding PR before starting newly discovered behavior.
+- [x] Strict-validate and independently review #632 at `a7bd1ac033330225639f963e76eab83552143221`, merge it as `b0c4ac10dfdc2c8112608b3e261af6a61804eada` before starting newly discovered behavior, remove its worktree and temporary files, and retain issue #438 as the open record for its grounded remaining implementation gaps.
 
 ### 5. FUSE-hook grounding and closure (#431)
 
 - [x] Revalidate the historical approved proposal in merged PR #311 and require a fresh independent gate for this grounded successor before any remaining behavior work.
-- [x] Map all 30 tasks to shipped code, tests, documentation, and merged delivery evidence; 26 are shipped, task 1.3 remains partial for focused recursive suffix/infix coverage through `deploy_sync_paths` and `deploy_sync_exclude`, task 2.3 remains partial because doctor falsely warns for an omitted delay despite the safe runtime fallback, and tasks 8.2/8.4 remain partial for exact fallback wording.
+- [x] Map all 30 tasks to shipped code, tests, documentation, and merged delivery evidence; at grounding time, 26 were shipped, task 1.3 remained partial for focused recursive suffix/infix coverage through `deploy_sync_paths` and `deploy_sync_exclude`, task 2.3 remained partial because doctor falsely warned for an omitted delay despite the safe runtime fallback, and tasks 8.2/8.4 remained partial for exact fallback wording.
 - [x] Correct the proposal, design, task checklist, deltas, and proposed issue #431 replacement text so the shipped contract and four bounded remaining slices are accurate and non-duplicative; leave the live issue unchanged until this grounding PR merges.
 - [x] Strict-validate, independently review, and merge the spec-only grounding PR (#633) before archiving the change.
 - [x] If grounding exposes a concrete behavior gap, implement it as the smallest behavior PR with required tests, consumer documentation, onboard-skill resources, gated checks, and exact-head review; do not create speculative slices.
@@ -65,13 +65,14 @@ Each PR receives a fresh polish pass, independent exact-head review, hosted chec
 - [x] Revalidate that `add-reconcile-fuse-hooks` was archived by #636 at `2341270de03778fec1c2584a0afe7dbd9ae3321c` and the canonical `reconcile-fuse-hooks` capability exists with all five base requirements.
 - [x] Archive `add-directory-aware-deploy-tracking` without `--skip-specs`, adding only `Directory-Aware Deploy Change Tracking` and modifying only `Deploy Sync Invariants`.
 - [x] Strict-validate the focused canonical specs and all OpenSpec items; compare both archived deltas with their exact canonical requirements; preserve the five base FUSE requirements, all 11 prior deploy-invariant scenarios, and the unchanged post-sync requirement.
-- [ ] Independently review and merge the archive PR, then remove its author worktree and temporary files.
+- [x] Independently review #637 at `10701e4261264107e28a91e62170fbb0a1f088d0`, merge it as `0fb5587240a4c93acb88a33fd134f0e0007008af`, then remove its author worktree and temporary files.
+- [x] Close issue #431 after #637 confirms the dependent archive preserves and extends the released FUSE-hook contract.
 
 ### 7. Exit hygiene
 
-- [ ] Confirm zero campaign PRs remain open and `main` CI is green.
-- [ ] Remove every campaign-owned worktree and temporary lane; do not clear shared Go build, module, or lint caches used by concurrent worktrees.
-- [ ] Preserve `.beads/`, shared caches, and unrelated Claude worktrees.
+- [x] Before creating this final ledger-only handoff PR, confirm zero prior campaign PRs (#629 through #637) remained open and `main` CI run `33228950590` was green at exact #637 merge `0fb5587240a4c93acb88a33fd134f0e0007008af`; Release Please run `33228950569` was also green.
+- [x] Before creating this final ledger-only review lane, remove every prior campaign-owned worktree and temporary lane; only the root, the two pre-existing Claude worktrees, and pre-existing `/private/tmp/bosun-panel-UuDxY2` remained, with shared Go build, module, and lint caches left intact.
+- [x] Preserve the root's existing `.beads/`, shared caches, and unrelated Claude worktrees; the preflight audit found 381 GiB free.
 
 ## Verification
 
@@ -83,4 +84,4 @@ Each PR receives a fresh polish pass, independent exact-head review, hosted chec
 
 ## Deviations
 
-Record scope or sequencing changes here in the same commit that adopts them.
+- PR #636's late archive review corrected the final FUSE archive evidence and unavailable-diff-base wording; it explicitly rejected parent-directory fsync after stale-file deletion because that would have promoted unreleased behavior into the canonical contract.
