@@ -5928,10 +5928,11 @@ func TestResolveTargets_RejectsDuplicateNames(t *testing.T) {
 	}
 
 	targets, err := cfg.ResolveTargets()
-	require.NoError(t, err)
-	assert.Len(t, targets, 2, "case-insensitive duplicate should be rejected")
-	assert.Equal(t, "alpha", targets[0].Name)
-	assert.Equal(t, "beta", targets[1].Name)
+	require.Error(t, err)
+	assert.Nil(t, targets, "a case-insensitive duplicate must reject the complete target set")
+	assert.ErrorContains(t, err, "alpha")
+	assert.ErrorContains(t, err, "Alpha")
+	assert.ErrorContains(t, err, "duplicate")
 }
 
 // Multi-target-with-default fail-loud coverage lives in
@@ -6063,7 +6064,7 @@ func TestValidateTargetName(t *testing.T) {
 	}
 }
 
-func TestResolveTargets_SkipsInvalidNames(t *testing.T) {
+func TestResolveTargets_RejectsInvalidNames(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Targets = []Target{
 		{Name: "good-target", TargetHost: "user@good"},
@@ -6072,10 +6073,10 @@ func TestResolveTargets_SkipsInvalidNames(t *testing.T) {
 	}
 
 	targets, err := cfg.ResolveTargets()
-	require.NoError(t, err)
-	assert.Len(t, targets, 2, "should skip the invalid target")
-	assert.Equal(t, "good-target", targets[0].Name)
-	assert.Equal(t, "also-good", targets[1].Name)
+	require.Error(t, err)
+	assert.Nil(t, targets, "an unsafe name must reject the complete target set")
+	assert.ErrorContains(t, err, "../../evil")
+	assert.ErrorContains(t, err, "unsafe characters")
 }
 
 func TestConfigForTarget_DefaultTargetPreservesExactPaths(t *testing.T) {

@@ -1030,11 +1030,6 @@ func extractTargets(cfg configFile) []reconcile.Target {
 
 	targets := make([]reconcile.Target, 0, len(cfg.Targets))
 	for _, raw := range cfg.Targets {
-		if raw.Name == "" {
-			log.Warn().Msg("Skipping target with empty name in config")
-			continue
-		}
-
 		// Validate security-sensitive fields that reach SSH shell commands.
 		// Warn and clear (rather than skip the whole target) so a single bad
 		// field does not block all deployments to that host.

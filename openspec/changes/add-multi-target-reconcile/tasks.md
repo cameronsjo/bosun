@@ -72,7 +72,7 @@ The original 6.4 target-specific `bosun trigger` task is removed as invalid scop
 
 ## 9. Target validation and safety
 
-- [ ] 9.1 **PARTIAL:** Collision checks ship, but unsafe/duplicate descriptors are skipped instead of rejecting the whole effective set; restore fail-closed descriptor validation and finish explicit state/staging and local deploy-root confinement for YAML and `BOSUN_TARGETS` in R1.
+- [x] 9.1 **SHIPPED:** Target resolution rejects the complete effective set for unsafe/duplicate descriptors and confines named-target state, staging, and local deploy overrides identically for YAML and `BOSUN_TARGETS` (R1).
 - [x] 9.2 **SUPERSEDED:** A lone case-insensitive `default` is accepted and normalized for compatibility; `default` in a multi-target set is rejected (PR #407).
 - [x] 9.3 **SHIPPED:** Reject target state collisions and equal or ancestor/descendant staging paths before execution (PRs #313 and #528).
 - [x] 9.4 **SHIPPED:** Reject colliding Docker namespaces and deploy destinations (PRs #313 and #528).
@@ -80,11 +80,11 @@ The original 6.4 target-specific `bosun trigger` task is removed as invalid scop
 - [x] 9.6 **SHIPPED:** Deep-copy target-owned and inherited slice fields during derivation (PRs #313 and #510).
 - [x] 9.7 **SHIPPED:** Deep-copy caller-owned slices during hot reload (PR #506).
 - [ ] 9.8 **PARTIAL:** Host and slice rules ship, but scalar path/project fields collapse omission and explicit empty values; finish presence-aware decoding and the field-by-field inheritance contract in R2.
-- [ ] 9.9 **PARTIAL:** Collision, deep-copy, parity, and default tests ship; add the remaining confinement and scalar-presence mutation tests in R1, R2, and R6.
+- [ ] 9.9 **PARTIAL:** Collision, deep-copy, parity, default, fail-whole-set, and confinement tests ship; add the remaining scalar-presence and cross-consumer mutation tests in R2-R6.
 
 ## Bounded remaining implementation
 
-- [ ] R1. Reject the complete effective set for an empty/unsafe name or case-insensitive duplicate. Confine explicit named-target `state_file` and `staging_dir` values to their configured roots and local appdata/deploy values to their permitted local root. Apply identical checks to YAML and `BOSUN_TARGETS`; never skip an invalid descriptor or run a sibling/default before validation succeeds.
+- [x] R1. Reject the complete effective set for an empty/unsafe name or case-insensitive duplicate. Confine explicit named-target `state_file` and `staging_dir` values to their configured roots and local appdata/deploy values to their permitted local root. Apply identical checks to YAML and `BOSUN_TARGETS`; never skip an invalid descriptor or run a sibling/default before validation succeeds.
 - [ ] R2. Preserve scalar presence during YAML and JSON decoding and implement the field-by-field normative rules: required `name`; omitted host/path/project/scope inheritance; explicit-empty host selects local, appdata path is invalid, project selects Compose derivation, and scope disables overlay; empty state/staging selects the documented derived or legacy path; non-empty overrides remain confined.
 - [ ] R3. Propagate normalized target context into every target-owned `Reconciler` structured log from daemon and direct CLI runs. Distinguish the legacy local-default alert sentinel from an explicit target literally named `local`, while preserving remote-default host context and canonical alert behavior.
 - [ ] R4. Centralize startup-resolved target-state enumeration for daemon periodic drift, operator `/status`, authenticated WebUI `/api/status`, and circuit-breaker diagnostics; make `bosun status` show every target, keep remote periodic drift from querying local Docker, preserve each one-default presentation, require restart for structural topology changes, and leave public `/health` bounded by daemon security.

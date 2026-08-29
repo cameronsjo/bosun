@@ -2401,12 +2401,12 @@ func TestTargetPathOverridesMatchEnvironmentAndReachReconcileConfig(t *testing.T
 			yaml: `targets:
   - name: nas
     state_file: /var/lib/bosun/nas-state.json
-    staging_dir: /app/nas-staging
+    staging_dir: /app/staging/nas-slot
 `,
-			envJSON:     `[{"name":"nas","state_file":"/var/lib/bosun/nas-state.json","staging_dir":"/app/nas-staging"}]`,
+			envJSON:     `[{"name":"nas","state_file":"/var/lib/bosun/nas-state.json","staging_dir":"/app/staging/nas-slot"}]`,
 			wantName:    "nas",
 			wantState:   "/var/lib/bosun/nas-state.json",
-			wantStaging: "/app/nas-staging",
+			wantStaging: "/app/staging/nas-slot",
 		},
 	}
 
@@ -2464,7 +2464,7 @@ func TestTargetsFromConfig_ExplicitEmptyTargetsSection(t *testing.T) {
 	assert.Nil(t, cfg.Targets(), "an explicit empty YAML list should use the same implicit default as an absent targets section")
 }
 
-func TestTargetsFromConfig_EmptyNameSkipped(t *testing.T) {
+func TestTargetsFromConfig_InvalidDescriptorIsPreservedForFailClosedResolution(t *testing.T) {
 	tmpDir := t.TempDir()
 	tmpDir = evalSymlinks(t, tmpDir)
 
@@ -2482,8 +2482,96 @@ targets:
 	require.NoError(t, err)
 
 	targets := cfg.Targets()
-	require.Len(t, targets, 1)
-	assert.Equal(t, "pi", targets[0].Name)
+	require.Len(t, targets, 2, "the YAML decoder must not hide an invalid descriptor from shared validation")
+	assert.Equal(t, "", targets[0].Name)
+	assert.Equal(t, "pi", targets[1].Name)
+
+	reconcileCfg := reconcile.DefaultConfig()
+	reconcileCfg.Targets = targets
+	resolved, err := reconcileCfg.ResolveTargets()
+	require.Error(t, err)
+	assert.Nil(t, resolved)
+	assert.ErrorContains(t, err, "target name must not be empty")
+}
+
+func TestTargetValidationMatchesYAMLAndEnvironment(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		envJSON string
+		wantErr string
+	}{
+		{
+			name: "empty name",
+			yaml: `targets:
+  - name: ""
+  - name: pi
+`,
+			envJSON: `[{"name":""},{"name":"pi"}]`,
+			wantErr: "target name must not be empty",
+		},
+		{
+			name: "case-insensitive duplicate",
+			yaml: `targets:
+  - name: pi
+  - name: PI
+`,
+			envJSON: `[{"name":"pi"},{"name":"PI"}]`,
+			wantErr: "duplicate",
+		},
+		{
+			name: "state root escape",
+			yaml: `targets:
+  - name: pi
+    state_file: /var/lib/escape.json
+`,
+			envJSON: `[{"name":"pi","state_file":"/var/lib/escape.json"}]`,
+			wantErr: "state_file",
+		},
+		{
+			name: "staging root escape",
+			yaml: `targets:
+  - name: pi
+    staging_dir: /app/other/pi
+`,
+			envJSON: `[{"name":"pi","staging_dir":"/app/other/pi"}]`,
+			wantErr: "staging_dir",
+		},
+		{
+			name: "local deploy root escape",
+			yaml: `targets:
+  - name: pi
+    local_appdata_path: /srv/other/pi
+`,
+			envJSON: `[{"name":"pi","local_appdata_path":"/srv/other/pi"}]`,
+			wantErr: "local_appdata_path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := evalSymlinks(t, t.TempDir())
+			require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(tt.yaml), 0o644))
+
+			projectCfg, err := LoadFrom(tmpDir)
+			require.NoError(t, err)
+			yamlTargets := projectCfg.Targets()
+			envTargets, apply, err := reconcile.ParseTargetsOverride(tt.envJSON)
+			require.NoError(t, err)
+			assert.True(t, apply)
+			assert.Equal(t, envTargets, yamlTargets)
+
+			for _, targets := range [][]reconcile.Target{yamlTargets, envTargets} {
+				base := reconcile.DefaultConfig()
+				base.LocalAppdataPath = "/srv/deploy"
+				base.Targets = targets
+				resolved, resolveErr := base.ResolveTargets()
+				require.Error(t, resolveErr)
+				assert.Nil(t, resolved)
+				assert.ErrorContains(t, resolveErr, tt.wantErr)
+			}
+		})
+	}
 }
 
 func TestExtractTargets_DeprecationWarning(t *testing.T) {

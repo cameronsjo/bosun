@@ -19,9 +19,9 @@ Path checks will use cleaned absolute paths and `filepath.Rel` containment rathe
 ## Checklist
 
 - [x] Reconcile the approved OpenSpec requirements, current target resolver, and issue #438 R1 scope.
-- [ ] Add mutation-sensitive tests for empty, unsafe, and case-insensitive duplicate descriptors that prove the entire set is rejected.
-- [ ] Add state, staging, and local-path confinement tests for direct, YAML, and `BOSUN_TARGETS` inputs.
-- [ ] Implement complete-set descriptor validation and root-confinement checks in the shared resolver.
-- [ ] Update the OpenSpec task ledger and onboard configuration documentation.
+- [x] Add mutation-sensitive tests for empty, unsafe, and case-insensitive duplicate descriptors that prove the entire set is rejected.
+- [x] Add state, staging, and local-path confinement tests for direct, YAML, and `BOSUN_TARGETS` inputs.
+- [x] Implement complete-set descriptor validation and root-confinement checks in the shared resolver.
+- [x] Update the OpenSpec task ledger and onboard configuration documentation.
 - [ ] Run focused tests, full tests, race tests, vet, lint, build, coverage, and strict OpenSpec validation through the resource gate where applicable.
 - [ ] Run the polish review, fix findings, open the PR, verify hosted checks, merge, and remove the temporary worktree.
