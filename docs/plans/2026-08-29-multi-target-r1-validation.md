@@ -24,4 +24,4 @@ Path checks use cleaned absolute paths, existing-symlink resolution, and `filepa
 - [x] Implement complete-set descriptor validation and root-confinement checks in the shared resolver.
 - [x] Update the OpenSpec task ledger and onboard configuration documentation.
 - [x] Run focused tests, full tests, race tests, vet, lint, build, coverage, and strict OpenSpec validation through the resource gate where applicable.
-- [ ] Run the polish review, fix findings, open the PR, verify hosted checks, merge, and remove the temporary worktree.
+- [x] Run the polish review, fix findings, open the PR, and verify hosted checks. Merge and temporary-worktree removal are controller cleanup after this plan lands.
