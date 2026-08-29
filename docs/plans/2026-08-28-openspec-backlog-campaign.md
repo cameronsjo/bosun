@@ -43,13 +43,13 @@ Each PR receives a fresh polish pass, independent exact-head review, hosted chec
 - [x] Correct `preserve-failed-staging-evidence` so its delta retains sibling continuation and uses the shipped stage labels.
 - [x] Archive it separately without `--skip-specs`, then refresh the complete `Pipeline Orchestration` blocks in `add-backup-integrity-semantics`, `add-image-prepull`, `add-image-update-policy`, and `add-multi-target-reconcile`.
 - [x] Strict-validate all specs, compare the archived delta with the canonical requirement, and verify each refreshed downstream block retains its own proposed behavior.
-- [ ] Independently review and merge the archive/refresh PR; remove its worktree and temporary files.
+- [x] Independently review and merge the archive/refresh PR (#631 at `f7d4546bbd68783f0f0a4e0213c7c8dc24e10f98`); remove its worktree and temporary files.
 
 ### 4. Multi-target grounding (#438)
 
 - [x] Map every active task to shipped code, tests, documentation, or genuinely missing behavior.
 - [x] Correct proposal, design, task, and proposed issue replacement text so the remaining contract is accurate and non-duplicative; issue #438 remains unchanged until this grounding PR merges.
-- [ ] Strict-validate, independently review, and merge the spec-only grounding PR before starting newly discovered behavior.
+- [x] Strict-validate, independently review, and merge the spec-only grounding PR (#632 at `b0c4ac10dfdc2c8112608b3e261af6a61804eada`) before starting newly discovered behavior; retain issue #438 as the open record for its grounded remaining implementation gaps.
 
 ### 5. FUSE-hook grounding and closure (#431)
 
@@ -65,13 +65,13 @@ Each PR receives a fresh polish pass, independent exact-head review, hosted chec
 - [x] Revalidate that `add-reconcile-fuse-hooks` was archived by #636 at `2341270de03778fec1c2584a0afe7dbd9ae3321c` and the canonical `reconcile-fuse-hooks` capability exists with all five base requirements.
 - [x] Archive `add-directory-aware-deploy-tracking` without `--skip-specs`, adding only `Directory-Aware Deploy Change Tracking` and modifying only `Deploy Sync Invariants`.
 - [x] Strict-validate the focused canonical specs and all OpenSpec items; compare both archived deltas with their exact canonical requirements; preserve the five base FUSE requirements, all 11 prior deploy-invariant scenarios, and the unchanged post-sync requirement.
-- [ ] Independently review and merge the archive PR, then remove its author worktree and temporary files.
+- [x] Independently review and merge the archive PR (#637 at `0fb5587240a4c93acb88a33fd134f0e0007008af`), then remove its author worktree and temporary files.
 
 ### 7. Exit hygiene
 
-- [ ] Confirm zero campaign PRs remain open and `main` CI is green.
-- [ ] Remove every campaign-owned worktree and temporary lane; do not clear shared Go build, module, or lint caches used by concurrent worktrees.
-- [ ] Preserve `.beads/`, shared caches, and unrelated Claude worktrees.
+- [x] Before creating this final ledger-only handoff PR, confirm zero implementation/archive campaign PRs remained open and `main` CI run `33228950590` was green at exact #637 merge `0fb5587240a4c93acb88a33fd134f0e0007008af`; Release Please run `33228950569` was also green.
+- [x] Before creating this final ledger-only review lane, remove every prior campaign-owned worktree and temporary lane; only the root, the two pre-existing Claude worktrees, and pre-existing `/private/tmp/bosun-panel-UuDxY2` remained, with shared Go build, module, and lint caches left intact.
+- [x] Preserve the root's existing `.beads/`, shared caches, and unrelated Claude worktrees; the preflight audit found 381 GiB free.
 
 ## Verification
 
@@ -83,4 +83,4 @@ Each PR receives a fresh polish pass, independent exact-head review, hosted chec
 
 ## Deviations
 
-Record scope or sequencing changes here in the same commit that adopts them.
+- PR #636's late archive review corrected the final FUSE archive evidence and unavailable-diff-base wording; it explicitly rejected parent-directory fsync after stale-file deletion because that would have promoted unreleased behavior into the canonical contract.
