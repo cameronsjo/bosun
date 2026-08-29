@@ -303,65 +303,130 @@ func loadBosunYAML(t *testing.T, bosunYAML string) *config.Config {
 func TestCheckHookSettleDelayFUSE(t *testing.T) {
 	t.Run("with nil config", func(t *testing.T) {
 		result := checkHookSettleDelayFUSE(nil)
-		assert.Equal(t, 0, result.Passed)
-		assert.Equal(t, 0, result.Failed)
-		assert.Equal(t, 0, result.Warned)
+		assert.Equal(t, CheckResult{}, result)
 	})
 
-	t.Run("warns when hook_settle_delay unset for a /mnt/user target", func(t *testing.T) {
-		cfg := loadBosunYAML(t, `
+	tests := []struct {
+		name       string
+		bosunYAML  string
+		envDelay   string
+		remotePath string
+		want       CheckResult
+	}{
+		{
+			name: "omitted delay uses fallback for exact FUSE root",
+			bosunYAML: `
+targets:
+  - name: unraid
+    remote_appdata_path: /mnt/user
+`,
+			want: CheckResult{Passed: 1},
+		},
+		{
+			name: "omitted delay uses fallback for FUSE descendant",
+			bosunYAML: `
 targets:
   - name: unraid
     remote_appdata_path: /mnt/user/appdata
-`)
-		result := checkHookSettleDelayFUSE(cfg)
-		assert.Equal(t, 0, result.Passed)
-		assert.Equal(t, 0, result.Failed)
-		assert.Equal(t, 1, result.Warned)
-	})
-
-	t.Run("passes when hook_settle_delay is set for a /mnt/user target", func(t *testing.T) {
-		cfg := loadBosunYAML(t, `
+`,
+			want: CheckResult{Passed: 1},
+		},
+		{
+			name: "explicit file zero warns for FUSE target",
+			bosunYAML: `
+hook_settle_delay: 0s
+targets:
+  - name: unraid
+    remote_appdata_path: /mnt/user/appdata
+`,
+			want: CheckResult{Warned: 1},
+		},
+		{
+			name: "positive file delay passes for FUSE target",
+			bosunYAML: `
 hook_settle_delay: 2s
 targets:
   - name: unraid
     remote_appdata_path: /mnt/user/appdata
-`)
-		result := checkHookSettleDelayFUSE(cfg)
-		assert.Equal(t, 1, result.Passed)
-		assert.Equal(t, 0, result.Failed)
-		assert.Equal(t, 0, result.Warned)
-	})
-
-	t.Run("skips when no configured target is under /mnt/user", func(t *testing.T) {
-		cfg := loadBosunYAML(t, `
+`,
+			want: CheckResult{Passed: 1},
+		},
+		{
+			name: "explicit environment zero overrides positive file delay",
+			bosunYAML: `
+hook_settle_delay: 2s
+targets:
+  - name: unraid
+    remote_appdata_path: /mnt/user/appdata
+`,
+			envDelay: "0s",
+			want:     CheckResult{Warned: 1},
+		},
+		{
+			name: "positive environment delay overrides explicit file zero",
+			bosunYAML: `
+hook_settle_delay: 0s
+targets:
+  - name: unraid
+    remote_appdata_path: /mnt/user/appdata
+`,
+			envDelay: "3",
+			want:     CheckResult{Passed: 1},
+		},
+		{
+			name: "invalid environment delay retains explicit file zero",
+			bosunYAML: `
+hook_settle_delay: 0s
+targets:
+  - name: unraid
+    remote_appdata_path: /mnt/user/appdata
+`,
+			envDelay: "invalid",
+			want:     CheckResult{Warned: 1},
+		},
+		{
+			name: "lookalike path is not FUSE root",
+			bosunYAML: `
+targets:
+  - name: lookalike
+    remote_appdata_path: /mnt/userdata/appdata
+`,
+			want: CheckResult{},
+		},
+		{
+			name: "non-FUSE target does not need a delay",
+			bosunYAML: `
+hook_settle_delay: 0s
 targets:
   - name: pi
     remote_appdata_path: /home/pi/appdata
     local_appdata_path: /mnt/appdata
-`)
-		result := checkHookSettleDelayFUSE(cfg)
-		assert.Equal(t, 0, result.Passed)
-		assert.Equal(t, 0, result.Failed)
-		assert.Equal(t, 0, result.Warned)
-	})
+`,
+			want: CheckResult{},
+		},
+		{
+			name:       "omitted delay uses fallback for legacy FUSE environment path",
+			bosunYAML:  "",
+			remotePath: "/mnt/user/appdata",
+			want:       CheckResult{Passed: 1},
+		},
+		{
+			name:      "omitted delay uses fallback for default FUSE path",
+			bosunYAML: "",
+			want:      CheckResult{Passed: 1},
+		},
+	}
 
-	t.Run("warns when no targets configured and REMOTE_APPDATA env is under /mnt/user", func(t *testing.T) {
-		t.Setenv("REMOTE_APPDATA", "/mnt/user/appdata")
-		cfg := loadBosunYAML(t, "")
-		result := checkHookSettleDelayFUSE(cfg)
-		assert.Equal(t, 0, result.Passed)
-		assert.Equal(t, 0, result.Failed)
-		assert.Equal(t, 1, result.Warned)
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("BOSUN_HOOK_SETTLE_DELAY", tt.envDelay)
+			t.Setenv("REMOTE_APPDATA", tt.remotePath)
+			t.Setenv("LOCAL_APPDATA", "")
 
-	t.Run("warns when no targets configured and no env override (hardcoded default is /mnt/user)", func(t *testing.T) {
-		cfg := loadBosunYAML(t, "")
-		result := checkHookSettleDelayFUSE(cfg)
-		assert.Equal(t, 0, result.Passed)
-		assert.Equal(t, 0, result.Failed)
-		assert.Equal(t, 1, result.Warned)
-	})
+			cfg := loadBosunYAML(t, tt.bosunYAML)
+			assert.Equal(t, tt.want, checkHookSettleDelayFUSE(cfg))
+		})
+	}
 }
 
 func TestCheckRestartBreakerSampling(t *testing.T) {

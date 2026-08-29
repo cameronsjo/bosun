@@ -1,25 +1,24 @@
 ## Grounding Summary
 
 - Original task count: 30
-- Verified shipped: 26
-- Partial: 4 (tasks 1.3, 2.3, 8.2, and 8.4)
-- Known runtime defects: 1 (`bosun doctor` false warning for an omitted delay)
-- Archive blockers: focused recursive suffix/infix regressions through both
-  deploy-sync filter consumers, a source-aware doctor warning fix and
-  regression, and exact fallback wording in two documentation consumers
+- Verified complete: 30
+- Partial: 0
+- Known runtime defects: 0
+- Archive prerequisite: merge and release the implementation evidence for
+  tasks 1.3, 2.3, 8.2, and 8.4 before archiving the change
 
 ## 1. Glob matching correctness (#232)
 
 - [x] 1.1 Replace prefix-only `**` handling with `doublestar.Match` — PR #401 (`e2670e6`); `internal/reconcile/hooks.go` `matchGlob`
 - [x] 1.2 Route hooks, `deploy_paths`, `deploy_sync_paths`, and `deploy_sync_exclude` through the same matcher — PR #401; `hooks.go`, `reconcile.go`, and `discovery.go`
-- [ ] 1.3 PARTIAL: suffix/infix and leading-recursive tests cover `matchGlob` and `matchAnyPath` (`hooks_test.go`), but focused `discoverDeployTargets` regressions do not yet exercise recursive suffix/infix behavior through both `deploy_sync_paths` and `deploy_sync_exclude`
+- [x] 1.3 Cover recursive suffix/infix behavior through both `deploy_sync_paths` and `deploy_sync_exclude` with reachable one-level `discoverDeployTargets` candidates — `internal/reconcile/discovery_test.go`
 
 ## 2. FUSE-safe hook timing (#233)
 
 - [x] 2.1 Sync destination parent directories after atomic rename and before post-write verification/hook execution — PR #402 (`5d7902f`), retained as deterministic unique-parent batching by PR #558 (`41a06ee`); `internal/fileutil/fileutil.go`
 - [x] 2.2 Apply a 2-second fallback only when the delay is unconfigured and the deploy path is `/mnt/user` or a descendant; honor explicit zero and retain zero elsewhere — PRs #402 and #544 (`24d511b`); `hooks.go`
-- [ ] 2.3 PARTIAL: `bosun doctor` warns when the decoded file value is zero, but it does not distinguish omission from explicit zero and therefore falsely warns when reconcile's effective `/mnt/user` delay is the safe 2-second fallback — PRs #402 and #544; `internal/cmd/diagnostics_doctor.go`
-- [x] 2.4 Cover directory sync seams, FUSE/non-FUSE/default/explicit-zero runtime resolution, and the existing doctor path classification/warning — PRs #402, #544, and #558; `directory_sync_test.go`, `hooks_test.go`, and `diagnostics_doctor_test.go`; the missing source-aware doctor regression remains in task 2.3
+- [x] 2.3 Make `bosun doctor` distinguish omitted delay from explicit zero using runtime-equivalent file/environment precedence: omitted `/mnt/user` values pass through the safe fallback, explicit non-positive values warn, positive values pass, invalid environment input falls back to the file/default source, and non-FUSE/lookalike paths remain excluded — `internal/cmd/diagnostics_doctor.go` and `diagnostics_doctor_test.go`
+- [x] 2.4 Cover directory sync seams, FUSE/non-FUSE/default/explicit-zero runtime resolution, and doctor path classification/warning behavior — PRs #402, #544, and #558 plus the source-aware task 2.3 regression; `directory_sync_test.go`, `hooks_test.go`, and `diagnostics_doctor_test.go`
 
 ## 3. Deletion-aware hooks (#234)
 
@@ -58,6 +57,6 @@
 ## 8. Documentation
 
 - [x] 8.1 Document root/target presence, successful-snapshot, and environment precedence in `skills/onboard/resources/configuration.md` — PR #544
-- [ ] 8.2 PARTIAL: `skills/onboard/resources/gitops.md` documents generic hook timing, fallback, deletion-aware inputs, recursive globs, and reload semantics, but does not state that the exact unconfigured `/mnt/user` fallback is 2 seconds while explicit zero and non-FUSE paths retain zero
+- [x] 8.2 Document the exact unconfigured `/mnt/user` 2-second fallback, valid environment precedence and invalid-input fallback, explicit zero, unconfigured non-FUSE zero, and doctor warning contract in `skills/onboard/resources/gitops.md`
 - [x] 8.3 Update `docs/gitops.md` and `docs/troubleshooting.md` for the released hook/change-source/diagnostic contract — PRs #405, #544, and #546
-- [ ] 8.4 PARTIAL: `AGENTS.md` documents environment replacement, staging-relative paths, reload presence, an example 2-second delay, and explicit-zero behavior, but does not state the exact unconfigured `/mnt/user` 2-second fallback contract
+- [x] 8.4 Document the exact unconfigured `/mnt/user` 2-second fallback, valid environment precedence and invalid-input fallback, explicit zero, and unconfigured non-FUSE zero in `AGENTS.md`
