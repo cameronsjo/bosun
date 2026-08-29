@@ -328,6 +328,24 @@ func TestResolveTargets_RejectsCompleteSetForInvalidDescriptors(t *testing.T) {
 	}
 }
 
+func TestResolveTargets_ReturnsDefensiveClone(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Targets = []Target{{
+		Name:               "nas",
+		CriticalContainers: []string{"traefik"},
+	}}
+
+	targets, err := cfg.ResolveTargets()
+	require.NoError(t, err)
+	require.Len(t, targets, 1)
+
+	targets[0].Name = "mutated"
+	targets[0].CriticalContainers[0] = "mutated"
+
+	assert.Equal(t, "nas", cfg.Targets[0].Name)
+	assert.Equal(t, []string{"traefik"}, cfg.Targets[0].CriticalContainers)
+}
+
 func TestResolveTargets_ConfinesNamedTargetPaths(t *testing.T) {
 	tests := []struct {
 		name            string

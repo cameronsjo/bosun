@@ -297,7 +297,7 @@ func (c *Config) resolveTargetLayout() ([]Target, error) {
 		if err := ValidateStagingEvidenceTargets(c, c.Targets); err != nil {
 			return nil, err
 		}
-		return c.Targets, nil
+		return cloneTargets(c.Targets), nil
 	}
 	defaults := []Target{c.implicitDefaultTarget(Target{})}
 	if err := ValidateStagingEvidenceTargets(c, defaults); err != nil {
