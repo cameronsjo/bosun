@@ -2,10 +2,11 @@
 
 The released implementation spans path matching, deploy-result production,
 filesystem durability, hook execution, configuration ownership, and both daemon
-and one-shot reload construction. This grounding treats merged code and tests as
-historical evidence while making the normative delta precise enough to archive
-only after the remaining deploy-sync coverage, doctor behavior, and exact
-fallback documentation items are delivered.
+and one-shot reload construction. This grounding treated merged code and tests
+as historical evidence while making the normative delta precise enough to
+archive only after the remaining deploy-sync coverage, doctor behavior, and
+exact fallback documentation items were delivered. PR #634 (`aaa182a`) delivered
+those items before release v0.42.1 (`ca655b5`) and this archive.
 
 ## Goals / Non-Goals
 
@@ -14,7 +15,8 @@ fallback documentation items are delivered.
   - Record the exact FUSE fallback, explicit-zero, and directory-sync contract.
   - Record the actual written/deleted change representation and source priority.
   - Preserve daemon/CLI and root/target configuration consumer parity.
-  - Keep the remaining deploy-sync consumer coverage gap visible.
+  - Keep the grounding-time deploy-sync consumer coverage gap visible until its
+    delivery in PR #634.
 - Non-Goals:
   - Runtime changes, archive, or issue mutation in this PR.
   - Filesystem-type probing beyond the shipped segment-aware `/mnt/user` rule.
@@ -26,27 +28,28 @@ fallback documentation items are delivered.
 - **Use one doublestar primitive across all path consumers.** `matchGlob` calls
   `doublestar.Match`; hook matching and `deploy_paths` call it through helpers,
   while deploy-sync include/exclude filters call it directly. The normative
-  scenarios name each consumer. Direct tests cover hooks and `deploy_paths`;
-  task 1.3 stays partial until suffix/infix cases traverse both deploy-sync
-  filters using candidates the one-level `appdata/<child>` discovery contract
-  can actually emit.
+  scenarios name each consumer. At grounding time, direct tests covered hooks
+  and `deploy_paths`; task 1.3 stayed partial until PR #634 added suffix/infix
+  cases through both deploy-sync filters using candidates the one-level
+  `appdata/<child>` discovery contract can actually emit.
 
 - **Separate durability from propagation.** Atomic file replacement is followed
   by destination-parent directory sync before post-write verification. Directory
   copies batch and deterministically sync unique changed parents. On platforms
   where directory sync is unsupported, the portable helper preserves the
   platform contract. Propagation is handled separately: an unconfigured default
-  on the exact `/mnt/user` path boundary receives 2 seconds; explicit file or
-  environment values always win, including zero; other paths keep zero.
+  on the exact `/mnt/user` path boundary receives 2 seconds; a valid environment
+  duration overrides the file, invalid environment input falls back to the file
+  or applicable default, and an explicit file value or valid environment value
+  of zero disables the fallback; other paths keep zero.
 
-- **Fix the source-unaware doctor warning before archive.** Reconcile correctly
-  distinguishes an omitted delay from explicit zero, but `bosun doctor` still
-  checks only the decoded file value. It therefore warns for an omitted
-  `/mnt/user` delay even though the effective runtime delay is the safe
-  2-second fallback. Task 2.3 remains partial until doctor uses the same
-  presence/source distinction and focused tests cover both omitted and explicit
-  zero; segment-aware path classification must continue to exclude
-  `/mnt/userdata`.
+- **Fix the source-unaware doctor warning before archive.** At grounding time,
+  reconcile distinguished an omitted delay from explicit zero, but `bosun
+  doctor` checked only the decoded file value and therefore warned for an
+  omitted `/mnt/user` delay even though the effective runtime delay was the safe
+  2-second fallback. PR #634 closed task 2.3 by applying the same presence/source
+  distinction and covering omitted, explicit-zero, and positive values while
+  retaining segment-aware exclusion of `/mnt/userdata`.
 
 - **Keep writes and deletions distinct, union them for hook matching.**
   `DeployResult.WrittenFiles` and `DeletedFiles` remain separate staging-relative
@@ -57,9 +60,10 @@ fallback documentation items are delivered.
   authoritative even when empty. Standard-copy results are direct evidence when
   either written or deleted paths are non-empty and otherwise fall back to a
   normalized git diff from `DeployState.LastDeployedCommit`. Remote deploys and
-  unavailable diff history conservatively make all configured hooks eligible.
-  Directory creation is intentionally left to the dependent directory-aware
-  change.
+  unavailable non-empty diff history conservatively make all configured hooks
+  eligible; an empty `LastDeployedCommit` is the first-deploy case and skips
+  hooks. Directory creation is intentionally left to the dependent
+  directory-aware change.
 
 - **Treat post-write verification as a failed deploy with remediation evidence.**
   Once rename succeeds, a readback failure returns
@@ -97,27 +101,29 @@ fallback documentation items are delivered.
 - Presence/reload: `internal/config`, daemon/CLI constructors,
   `config_reload.go`, target copying, and race regressions; PRs #540/#544.
 - Diagnostics/docs: `reconcile.go`, docs, onboard resources, and log tests;
-  PR #546. The onboard GitOps resource and `AGENTS.md` still need the exact
-  unconfigured `/mnt/user` 2-second fallback wording tracked by tasks 8.2 and
-  8.4.
+  PR #546. At grounding time, the onboard GitOps resource and `AGENTS.md` still
+  needed the exact unconfigured `/mnt/user` 2-second fallback wording tracked by
+  tasks 8.2 and 8.4; PR #634 supplied both updates.
 
 ## Risks / Trade-offs
 
 - A whole-block MODIFIED requirement can discard newer canonical text if stale;
   this delta starts from the current canonical hook requirement and adds only
   the grounded contract.
-- Shared-helper correctness can hide consumer wiring regressions; keeping task
-  1.3 partial requires focused include/exclude coverage before archive.
-- Doctor currently reports a false zero-delay warning for an omitted
-  `/mnt/user` delay even though reconcile applies 2 seconds; task 2.3 keeps that
-  runtime/diagnostic mismatch visible rather than archiving it as intended
-  behavior.
+- Shared-helper correctness can hide consumer wiring regressions; the
+  grounding-time partial task 1.3 required focused coverage of the include and
+  exclude filters, which PR #634 supplied before archive.
+- Doctor reported a false zero-delay warning for an omitted `/mnt/user` delay
+  at grounding time even though reconcile applied 2 seconds; PR #634 corrected
+  that runtime/diagnostic mismatch before archive.
 - The `/mnt/user` heuristic is intentionally narrow. Operators using other FUSE
   mounts must configure a delay explicitly.
 - Best-effort hook action failures remain best-effort; this change does not turn
   hook failures into deployment failure.
 
 ## Completion and Archive Plan
+
+The grounding plan, completed by PR #634, release v0.42.1, and this archive, was:
 
 1. Merge this spec-only grounding after independent exact-head review.
 2. Add the two missing deploy-sync recursive consumer regression families and
