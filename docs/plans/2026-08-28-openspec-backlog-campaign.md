@@ -62,9 +62,10 @@ Each PR receives a fresh polish pass, independent exact-head review, hosted chec
 
 ### 6. Directory-aware deploy-tracking archive
 
-- [ ] Revalidate that `add-reconcile-fuse-hooks` has been archived and the canonical `reconcile-fuse-hooks` capability now exists.
-- [ ] Archive `add-directory-aware-deploy-tracking` without `--skip-specs`, preserving both its dependent capability addition and `Deploy Sync Invariants` modification.
-- [ ] Strict-validate all specs, compare both archived deltas with their canonical requirements, independently review and merge the PR, and remove its worktree and temporary files.
+- [x] Revalidate that `add-reconcile-fuse-hooks` was archived by #636 at `2341270de03778fec1c2584a0afe7dbd9ae3321c` and the canonical `reconcile-fuse-hooks` capability exists with all five base requirements.
+- [x] Archive `add-directory-aware-deploy-tracking` without `--skip-specs`, adding only `Directory-Aware Deploy Change Tracking` and modifying only `Deploy Sync Invariants`.
+- [x] Strict-validate the focused canonical specs and all OpenSpec items; compare both archived deltas with their exact canonical requirements; preserve the five base FUSE requirements, all 11 prior deploy-invariant scenarios, and the unchanged post-sync requirement.
+- [ ] Independently review and merge the archive PR, then remove its author worktree and temporary files.
 
 ### 7. Exit hygiene
 
