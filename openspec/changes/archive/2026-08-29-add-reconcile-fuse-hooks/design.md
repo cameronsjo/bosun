@@ -36,8 +36,10 @@ fallback documentation items are delivered.
   copies batch and deterministically sync unique changed parents. On platforms
   where directory sync is unsupported, the portable helper preserves the
   platform contract. Propagation is handled separately: an unconfigured default
-  on the exact `/mnt/user` path boundary receives 2 seconds; explicit file or
-  environment values always win, including zero; other paths keep zero.
+  on the exact `/mnt/user` path boundary receives 2 seconds; a valid environment
+  duration overrides the file, invalid environment input falls back to the file
+  or applicable default, and an explicit file value or valid environment value
+  of zero disables the fallback; other paths keep zero.
 
 - **Fix the source-unaware doctor warning before archive.** Reconcile correctly
   distinguishes an omitted delay from explicit zero, but `bosun doctor` still

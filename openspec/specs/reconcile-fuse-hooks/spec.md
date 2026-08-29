@@ -61,14 +61,17 @@ directory-sync limitations SHALL retain the repository's portable file-copy
 contract rather than preventing supported deployments.
 
 The settle delay SHALL be configurable via `hook_settle_delay` in `bosun.yaml`
-and `BOSUN_HOOK_SETTLE_DELAY`. When neither source configured a value and the
-effective local deploy path is exactly `/mnt/user` or is beneath that
-path-segment boundary, the reconciler SHALL apply a 2-second fallback before
-hooks. An explicit file or environment value SHALL win, including `0s`, and an
-unconfigured non-`/mnt/user` path SHALL retain zero delay. `bosun doctor` SHALL
-use the same presence/source distinction and warn only when a `/mnt/user` deploy
-path has an effective zero delay; it SHALL NOT warn for an omitted value whose
-effective runtime delay is the 2-second fallback.
+and `BOSUN_HOOK_SETTLE_DELAY`. When no file value or valid environment duration
+is configured and the effective local deploy path is exactly `/mnt/user` or is
+beneath that path-segment boundary, the reconciler SHALL apply a 2-second
+fallback before hooks. A valid environment duration SHALL override the file
+value, including `0s`; invalid environment input SHALL be ignored in favor of
+the file value or applicable omitted-value default. An explicit file value,
+including `0s`, SHALL override the fallback, and an unconfigured non-`/mnt/user`
+path SHALL retain zero delay. `bosun doctor` SHALL use the same presence/source
+distinction and warn only when a `/mnt/user` deploy path has an effective zero
+delay; it SHALL NOT warn for an omitted value whose effective runtime delay is
+the 2-second fallback.
 
 #### Scenario: Destination directory fsynced after write
 
