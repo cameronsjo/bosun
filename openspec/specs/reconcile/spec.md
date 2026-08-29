@@ -1052,8 +1052,10 @@ Hook input SHALL use this priority:
    non-empty; otherwise the reconciler SHALL fall back to git diff.
 4. A git-diff fallback SHALL compare DeployState.LastDeployedCommit (the last
    successful deploy) with the current commit and normalize repo-relative paths
-   into the staging-relative namespace. If the diff base is unavailable, every
-   configured hook SHALL conservatively be eligible.
+   into the staging-relative namespace. If a non-empty diff base is unavailable,
+   every configured hook SHALL conservatively be eligible. An empty
+   DeployState.LastDeployedCommit is the first-deploy case and SHALL skip hooks
+   as specified below.
 
 For local direct evidence, the evaluated set SHALL include both written and
 deleted paths. Glob matching SHALL honor the complete recursive pattern,
