@@ -471,6 +471,8 @@ func TestRunReconcile_PreparesEachTargetStateDir(t *testing.T) {
 	targetsJSON, err := json.Marshal(targets)
 	require.NoError(t, err)
 	t.Setenv("REPO_URL", filepath.Join(t.TempDir(), "missing-repo"))
+	t.Setenv("BOSUN_STATE_DIR", base)
+	t.Setenv("LOCAL_APPDATA", base)
 	t.Setenv("BOSUN_TARGETS", string(targetsJSON))
 
 	runReconcile(nil, nil)
