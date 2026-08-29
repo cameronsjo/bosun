@@ -411,6 +411,33 @@ func TestResolveTargets_RejectsSymlinkPathEscape(t *testing.T) {
 	assert.ErrorContains(t, err, "escapes configured root")
 }
 
+func TestResolveTargets_RejectsSymlinkAliasedStateCollision(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on some Windows environments")
+	}
+
+	root := evalSymlinks(t, t.TempDir())
+	stateRoot := filepath.Join(root, "state")
+	require.NoError(t, os.MkdirAll(stateRoot, 0o755))
+	require.NoError(t, os.Symlink(stateRoot, filepath.Join(stateRoot, "alias")))
+
+	cfg := DefaultConfig()
+	cfg.StateFile = filepath.Join(stateRoot, DefaultStateFile)
+	cfg.StagingDir = filepath.Join(root, "staging")
+	cfg.Targets = []Target{
+		{Name: "prod-a", StateFile: filepath.Join(stateRoot, "shared.json"), TargetHost: "root@nas-a", ProjectName: "stack-a", RemoteAppdataPath: "/mnt/user/prod-a"},
+		{Name: "prod-b", StateFile: filepath.Join(stateRoot, "alias", "shared.json"), TargetHost: "root@nas-b", ProjectName: "stack-b", RemoteAppdataPath: "/mnt/user/prod-b"},
+	}
+
+	targets, err := cfg.ResolveTargets()
+
+	require.Error(t, err)
+	assert.Nil(t, targets)
+	assert.ErrorContains(t, err, "prod-a")
+	assert.ErrorContains(t, err, "prod-b")
+	assert.ErrorContains(t, err, "same state file")
+}
+
 func TestResolveTargets_RejectsResourceCollisions(t *testing.T) {
 	tests := []struct {
 		name            string

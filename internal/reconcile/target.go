@@ -263,16 +263,13 @@ func (c *Config) ValidateMultiTargetLayout() error {
 	if len(c.Targets) == 0 {
 		return nil
 	}
-	if err := validateTargetDescriptors(c.Targets); err != nil {
-		return err
-	}
-	if err := c.validateNamedTargetPathConfinement(c.Targets); err != nil {
-		return err
-	}
 	// A lone target cannot collide with a sibling. Avoid requiring operational
 	// base paths from partial embedded configs at daemon structural validation.
 	if len(c.Targets) == 1 {
-		return nil
+		if err := validateTargetDescriptors(c.Targets); err != nil {
+			return err
+		}
+		return c.validateNamedTargetPathConfinement(c.Targets)
 	}
 	_, err := c.resolveTargetLayout()
 	return err
@@ -384,38 +381,40 @@ func canonicalTargetPath(value string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve absolute path: %w", err)
 	}
-	abs = filepath.Clean(abs)
+	return canonicalPathFromExistingAncestor(filepath.Clean(abs), "path")
+}
 
-	probe := abs
+func canonicalPathFromExistingAncestor(root, label string) (string, error) {
+	probe := root
 	var suffix []string
 	for {
 		_, statErr := os.Lstat(probe)
 		if statErr == nil {
 			resolved, evalErr := filepath.EvalSymlinks(probe)
 			if evalErr != nil {
-				return "", fmt.Errorf("resolve existing path ancestor %q: %w", probe, evalErr)
+				return "", fmt.Errorf("resolve existing %s ancestor %q: %w", label, probe, evalErr)
 			}
 			for i := len(suffix) - 1; i >= 0; i-- {
 				resolved = filepath.Join(resolved, suffix[i])
 			}
-			abs = filepath.Clean(resolved)
+			root = filepath.Clean(resolved)
 			break
 		}
 		if !errors.Is(statErr, fs.ErrNotExist) {
-			return "", fmt.Errorf("inspect path ancestor %q: %w", probe, statErr)
+			return "", fmt.Errorf("inspect %s ancestor %q: %w", label, probe, statErr)
 		}
 		parent := filepath.Dir(probe)
 		if parent == probe {
-			return "", fmt.Errorf("no existing ancestor for path %q", value)
+			return "", fmt.Errorf("no existing ancestor for %s %q", label, root)
 		}
 		suffix = append(suffix, filepath.Base(probe))
 		probe = parent
 	}
 
 	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
-		abs = strings.ToLower(abs)
+		root = strings.ToLower(root)
 	}
-	return abs, nil
+	return root, nil
 }
 
 type targetResourceKey struct {
@@ -435,7 +434,10 @@ func (c *Config) validateTargetResourceCollisions(targets []Target) error {
 
 	for _, target := range targets {
 		effective := c.ConfigForTarget(target)
-		stateFile := normalizeTargetStateFile(effective.StateFile)
+		stateFile, err := canonicalTargetPath(effective.StateFile)
+		if err != nil {
+			return fmt.Errorf("target %q state file %q: %w", target.Name, effective.StateFile, err)
+		}
 		if first, ok := stateFiles[stateFile]; ok {
 			return fmt.Errorf(
 				"targets %q and %q resolve to the same state file: %q",
@@ -474,17 +476,6 @@ func (c *Config) validateTargetResourceCollisions(targets []Target) error {
 	}
 
 	return nil
-}
-
-func normalizeTargetStateFile(stateFile string) string {
-	normalized := filepath.Clean(stateFile)
-	// Windows paths are case-insensitive. Most macOS deployments use the
-	// case-insensitive APFS default, so reject case-only aliases there too rather
-	// than permit two targets to overwrite one state file on the common setup.
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
-		normalized = strings.ToLower(normalized)
-	}
-	return normalized
 }
 
 func normalizeTargetProjectName(projectName string) (normalized, label string) {

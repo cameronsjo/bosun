@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/cameronsjo/bosun/internal/log"
@@ -112,37 +111,7 @@ func canonicalStagingPath(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
-	probe := root
-	var suffix []string
-	for {
-		_, statErr := os.Lstat(probe)
-		if statErr == nil {
-			resolved, evalErr := filepath.EvalSymlinks(probe)
-			if evalErr != nil {
-				return "", fmt.Errorf("resolve existing staging ancestor %q", probe)
-			}
-			for i := len(suffix) - 1; i >= 0; i-- {
-				resolved = filepath.Join(resolved, suffix[i])
-			}
-			root = filepath.Clean(resolved)
-			break
-		}
-		if !errors.Is(statErr, fs.ErrNotExist) {
-			return "", fmt.Errorf("inspect staging ancestor %q: %w", probe, statErr)
-		}
-		parent := filepath.Dir(probe)
-		if parent == probe {
-			return "", fmt.Errorf("no existing ancestor for staging path %q", root)
-		}
-		suffix = append(suffix, filepath.Base(probe))
-		probe = parent
-	}
-
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
-		root = strings.ToLower(root)
-	}
-	return root, nil
+	return canonicalPathFromExistingAncestor(root, "staging")
 }
 
 func safeStagingRoot(path string) (string, error) {

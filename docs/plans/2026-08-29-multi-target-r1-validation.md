@@ -8,7 +8,7 @@ Complete issue #438's R1 slice by rejecting an invalid effective target set befo
 
 Keep structural validation in `internal/reconcile/target.go`, immediately before effective targets are returned. Validate every configured descriptor first, then derive effective configurations and validate confinement and resource collisions across the complete set. This makes every current consumer fail closed without duplicating admission rules in commands or the daemon.
 
-Path checks will use cleaned absolute paths and `filepath.Rel` containment rather than string prefixes. Explicit state and staging overrides will be checked against the base state directory and staging root; effective local appdata/deploy paths will be checked against the base local root for targets that execute locally.
+Path checks use cleaned absolute paths, existing-symlink resolution, and `filepath.Rel` containment rather than string prefixes. Explicit named-target state, staging, and local appdata/deploy overrides are checked against the base state directory, staging root, and local deploy root respectively.
 
 ## Boundaries
 
