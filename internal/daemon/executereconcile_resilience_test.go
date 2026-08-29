@@ -83,7 +83,14 @@ func TestExecuteReconcile_TargetFailureRetainsEvidenceAndSiblingCleans(t *testin
 	require.NoError(t, os.MkdirAll(secondAppdata, 0o755))
 
 	badStateParent := filepath.Join(baseDir, "bad-state-parent")
-	require.NoError(t, os.WriteFile(badStateParent, []byte("not a directory"), 0o600))
+	require.NoError(t, os.Mkdir(badStateParent, 0o500))
+	t.Cleanup(func() { require.NoError(t, os.Chmod(badStateParent, 0o700)) })
+	probe, probeErr := os.CreateTemp(badStateParent, ".permission-check-*")
+	if probeErr == nil {
+		require.NoError(t, probe.Close())
+		require.NoError(t, os.Remove(probe.Name()))
+		t.Skip("filesystem does not enforce owner write permission in this test environment")
+	}
 	firstState := filepath.Join(badStateParent, "state.json")
 	secondState := filepath.Join(baseDir, "second-state.json")
 
@@ -95,6 +102,7 @@ func TestExecuteReconcile_TargetFailureRetainsEvidenceAndSiblingCleans(t *testin
 	cfg.RepoDir = repoDir
 	cfg.StagingDir = filepath.Join(baseDir, "staging")
 	cfg.StateFile = filepath.Join(baseDir, "base-state.json")
+	cfg.LocalAppdataPath = filepath.Join(baseDir, "appdata")
 	cfg.LockFile = filepath.Join(baseDir, "reconcile.lock")
 	cfg.BackupDir = filepath.Join(baseDir, "backups")
 	cfg.InfraSubDir = "."

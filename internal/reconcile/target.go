@@ -2,15 +2,16 @@ package reconcile
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
 	"time"
-
-	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // ParseTargetsOverride decodes BOSUN_TARGETS and reports whether the decoded
@@ -259,10 +260,16 @@ func (c *Config) ResolveTargets() ([]Target, error) {
 // entry point so it can preserve its existing aggregation of every hook error
 // while rejecting target resource collisions before binding API listeners.
 func (c *Config) ValidateMultiTargetLayout() error {
-	// A zero- or one-target config cannot collide. Leave its legacy validation
-	// behavior unchanged, including support for partial embedded configs.
-	if len(c.Targets) < 2 {
+	if len(c.Targets) == 0 {
 		return nil
+	}
+	// A lone target cannot collide with a sibling. Avoid requiring operational
+	// base paths from partial embedded configs at daemon structural validation.
+	if len(c.Targets) == 1 {
+		if err := validateTargetDescriptors(c.Targets); err != nil {
+			return err
+		}
+		return c.validateNamedTargetPathConfinement(c.Targets)
 	}
 	_, err := c.resolveTargetLayout()
 	return err
@@ -278,42 +285,136 @@ func (c *Config) resolveTargetLayout() ([]Target, error) {
 			return defaults, nil
 		}
 
-		// Validate target names and reject duplicates to prevent path collisions.
-		valid := make([]Target, 0, len(c.Targets))
-		seen := make(map[string]bool, len(c.Targets))
-		for _, t := range c.Targets {
-			if t.IsDefault() {
-				return nil, fmt.Errorf("target %q uses the reserved default name in a multi-target config, expected every target to carry a distinct name: rename it, or make it the only target to configure the implicit default", t.Name)
-			}
-			if err := ValidateTargetName(t.Name); err != nil {
-				log.Warn().Str("target", t.Name).Err(err).Msg("Skipping target with invalid name")
-				continue
-			}
-			lower := strings.ToLower(t.Name)
-			if seen[lower] {
-				log.Warn().Str("target", t.Name).Msg("Skipping duplicate target name (case-insensitive)")
-				continue
-			}
-			seen[lower] = true
-			valid = append(valid, t)
+		if err := validateTargetDescriptors(c.Targets); err != nil {
+			return nil, err
 		}
-		if len(valid) > 0 {
-			if err := c.validateTargetResourceCollisions(valid); err != nil {
-				return nil, err
-			}
-			if err := ValidateStagingEvidenceTargets(c, valid); err != nil {
-				return nil, err
-			}
-			return valid, nil
+		if err := c.validateNamedTargetPathConfinement(c.Targets); err != nil {
+			return nil, err
 		}
-		// All configured targets had invalid names — fall through to implicit default.
-		log.Warn().Int("configured", len(c.Targets)).Msg("All configured targets have invalid names, falling back to default target")
+		if err := c.validateTargetResourceCollisions(c.Targets); err != nil {
+			return nil, err
+		}
+		if err := ValidateStagingEvidenceTargets(c, c.Targets); err != nil {
+			return nil, err
+		}
+		return cloneTargets(c.Targets), nil
 	}
 	defaults := []Target{c.implicitDefaultTarget(Target{})}
 	if err := ValidateStagingEvidenceTargets(c, defaults); err != nil {
 		return nil, err
 	}
 	return defaults, nil
+}
+
+func validateTargetDescriptors(targets []Target) error {
+	seen := make(map[string]string, len(targets))
+	for _, target := range targets {
+		if err := ValidateTargetName(target.Name); err != nil {
+			return fmt.Errorf("target %q: %w", target.Name, err)
+		}
+		if len(targets) > 1 && target.IsDefault() {
+			return fmt.Errorf("target %q uses the reserved default name in a multi-target config, expected every target to carry a distinct name: rename it, or make it the only target to configure the implicit default", target.Name)
+		}
+		key := strings.ToLower(target.Name)
+		if first, ok := seen[key]; ok {
+			return fmt.Errorf("targets %q and %q have duplicate names (case-insensitive)", first, target.Name)
+		}
+		seen[key] = target.Name
+	}
+	return nil
+}
+
+func (c *Config) validateNamedTargetPathConfinement(targets []Target) error {
+	for _, target := range targets {
+		// The implicit/lone-default compatibility target keeps its historical
+		// exact overrides. R1 confines named target-owned paths.
+		if target.IsDefault() {
+			continue
+		}
+		if target.StateFile != "" {
+			if c.StateFile == "" {
+				return fmt.Errorf("target %q state_file %q has no configured state root", target.Name, target.StateFile)
+			}
+			if err := validateTargetPathWithinRoot(target.Name, "state_file", filepath.Dir(c.StateFile), target.StateFile); err != nil {
+				return err
+			}
+		}
+		if target.StagingDir != "" {
+			if err := validateTargetPathWithinRoot(target.Name, "staging_dir", c.StagingDir, target.StagingDir); err != nil {
+				return err
+			}
+		}
+		if target.LocalAppdataPath != "" {
+			if err := validateTargetPathWithinRoot(target.Name, "local_appdata_path", c.LocalAppdataPath, target.LocalAppdataPath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateTargetPathWithinRoot(target, field, root, candidate string) error {
+	if root == "" {
+		return fmt.Errorf("target %q %s %q has no configured permitted root", target, field, candidate)
+	}
+	canonicalRoot, err := canonicalTargetPath(root)
+	if err != nil {
+		return fmt.Errorf("target %q %s root %q: %w", target, field, root, err)
+	}
+	canonicalCandidate, err := canonicalTargetPath(candidate)
+	if err != nil {
+		return fmt.Errorf("target %q %s %q: %w", target, field, candidate, err)
+	}
+	rel, err := filepath.Rel(canonicalRoot, canonicalCandidate)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("target %q %s %q escapes configured root %q", target, field, candidate, root)
+	}
+	return nil
+}
+
+// canonicalTargetPath resolves every existing ancestor so a symlink nested
+// under an allowed root cannot redirect a target-owned path outside it. Missing
+// suffixes are appended lexically because state and staging paths may not exist
+// until the first reconciliation.
+func canonicalTargetPath(value string) (string, error) {
+	abs, err := filepath.Abs(value)
+	if err != nil {
+		return "", fmt.Errorf("resolve absolute path: %w", err)
+	}
+	return canonicalPathFromExistingAncestor(filepath.Clean(abs), "path")
+}
+
+func canonicalPathFromExistingAncestor(root, label string) (string, error) {
+	probe := root
+	var suffix []string
+	for {
+		_, statErr := os.Lstat(probe)
+		if statErr == nil {
+			resolved, evalErr := filepath.EvalSymlinks(probe)
+			if evalErr != nil {
+				return "", fmt.Errorf("resolve existing %s ancestor %q: %w", label, probe, evalErr)
+			}
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			root = filepath.Clean(resolved)
+			break
+		}
+		if !errors.Is(statErr, fs.ErrNotExist) {
+			return "", fmt.Errorf("inspect %s ancestor %q: %w", label, probe, statErr)
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return "", fmt.Errorf("no existing ancestor for %s %q", label, root)
+		}
+		suffix = append(suffix, filepath.Base(probe))
+		probe = parent
+	}
+
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		root = strings.ToLower(root)
+	}
+	return root, nil
 }
 
 type targetResourceKey struct {
@@ -333,7 +434,10 @@ func (c *Config) validateTargetResourceCollisions(targets []Target) error {
 
 	for _, target := range targets {
 		effective := c.ConfigForTarget(target)
-		stateFile := normalizeTargetStateFile(effective.StateFile)
+		stateFile, err := canonicalTargetPath(effective.StateFile)
+		if err != nil {
+			return fmt.Errorf("target %q state file %q: %w", target.Name, effective.StateFile, err)
+		}
 		if first, ok := stateFiles[stateFile]; ok {
 			return fmt.Errorf(
 				"targets %q and %q resolve to the same state file: %q",
@@ -372,17 +476,6 @@ func (c *Config) validateTargetResourceCollisions(targets []Target) error {
 	}
 
 	return nil
-}
-
-func normalizeTargetStateFile(stateFile string) string {
-	normalized := filepath.Clean(stateFile)
-	// Windows paths are case-insensitive. Most macOS deployments use the
-	// case-insensitive APFS default, so reject case-only aliases there too rather
-	// than permit two targets to overwrite one state file on the common setup.
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
-		normalized = strings.ToLower(normalized)
-	}
-	return normalized
 }
 
 func normalizeTargetProjectName(projectName string) (normalized, label string) {

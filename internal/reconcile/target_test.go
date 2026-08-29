@@ -1,6 +1,8 @@
 package reconcile
 
 import (
+	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 
@@ -279,6 +281,240 @@ func TestResolveTargets_MultiTargetDefaultFailsLoud(t *testing.T) {
 	}
 }
 
+func TestResolveTargets_RejectsCompleteSetForInvalidDescriptors(t *testing.T) {
+	tests := []struct {
+		name            string
+		targets         []Target
+		wantErrContains []string
+	}{
+		{
+			name: "single empty name cannot synthesize default",
+			targets: []Target{
+				{Name: ""},
+			},
+			wantErrContains: []string{"target name must not be empty"},
+		},
+		{
+			name: "unsafe descriptor rejects valid sibling",
+			targets: []Target{
+				{Name: "prod-a", TargetHost: "root@nas-a", ProjectName: "stack-a", RemoteAppdataPath: "/mnt/user/prod-a"},
+				{Name: "../escape", TargetHost: "root@nas-b", ProjectName: "stack-b", RemoteAppdataPath: "/mnt/user/prod-b"},
+			},
+			wantErrContains: []string{"../escape", "unsafe characters"},
+		},
+		{
+			name: "case-insensitive duplicate rejects complete set",
+			targets: []Target{
+				{Name: "prod", TargetHost: "root@nas-a", ProjectName: "stack-a", RemoteAppdataPath: "/mnt/user/prod-a"},
+				{Name: "PROD", TargetHost: "root@nas-b", ProjectName: "stack-b", RemoteAppdataPath: "/mnt/user/prod-b"},
+			},
+			wantErrContains: []string{"prod", "PROD", "duplicate"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Targets = tt.targets
+
+			targets, err := cfg.ResolveTargets()
+
+			require.Error(t, err)
+			assert.Nil(t, targets, "an invalid descriptor must not expose a valid sibling or synthesized default")
+			for _, want := range tt.wantErrContains {
+				assert.ErrorContains(t, err, want)
+			}
+		})
+	}
+}
+
+func TestResolveTargets_ReturnsDefensiveClone(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Targets = []Target{{
+		Name:               "nas",
+		CriticalContainers: []string{"traefik"},
+	}}
+
+	targets, err := cfg.ResolveTargets()
+	require.NoError(t, err)
+	require.Len(t, targets, 1)
+
+	targets[0].Name = "mutated"
+	targets[0].CriticalContainers[0] = "mutated"
+
+	assert.Equal(t, "nas", cfg.Targets[0].Name)
+	assert.Equal(t, []string{"traefik"}, cfg.Targets[0].CriticalContainers)
+}
+
+func TestResolveTargets_ConfinesNamedTargetPaths(t *testing.T) {
+	tests := []struct {
+		name            string
+		configure       func(*testing.T, *Config, *Target)
+		target          Target
+		wantErrContains []string
+	}{
+		{
+			name:            "state file escapes state root",
+			target:          Target{Name: "nas", StateFile: "/var/lib/escape.json"},
+			wantErrContains: []string{"nas", "state_file", "/var/lib/bosun"},
+		},
+		{
+			name:            "staging directory escapes staging root",
+			target:          Target{Name: "nas", StagingDir: "/app/other/nas"},
+			wantErrContains: []string{"nas", "staging_dir", "/app/staging"},
+		},
+		{
+			name:            "local appdata path escapes local deploy root",
+			target:          Target{Name: "nas", LocalAppdataPath: "/srv/other/nas"},
+			wantErrContains: []string{"nas", "local_appdata_path", "/srv/deploy"},
+		},
+		{
+			name: "explicit state file requires a configured state root",
+			configure: func(_ *testing.T, cfg *Config, _ *Target) {
+				cfg.StateFile = ""
+			},
+			target:          Target{Name: "nas", StateFile: "/var/lib/bosun/nas.json"},
+			wantErrContains: []string{"nas", "state_file", "no configured state root"},
+		},
+		{
+			name: "explicit staging directory requires a configured staging root",
+			configure: func(_ *testing.T, cfg *Config, _ *Target) {
+				cfg.StagingDir = ""
+			},
+			target:          Target{Name: "nas", StagingDir: "/app/staging/nas-slot"},
+			wantErrContains: []string{"nas", "staging_dir", "no configured permitted root"},
+		},
+		{
+			name: "uninspectable staging root fails closed",
+			configure: func(t *testing.T, cfg *Config, _ *Target) {
+				blockedParent := filepath.Join(t.TempDir(), "file")
+				require.NoError(t, os.WriteFile(blockedParent, []byte("not a directory"), 0o600))
+				cfg.StagingDir = filepath.Join(blockedParent, "staging")
+			},
+			target:          Target{Name: "nas", StagingDir: "/app/staging/nas-slot"},
+			wantErrContains: []string{"nas", "staging_dir root", "inspect path ancestor"},
+		},
+		{
+			name: "uninspectable candidate path fails closed",
+			configure: func(t *testing.T, cfg *Config, target *Target) {
+				root := evalSymlinks(t, t.TempDir())
+				blockedParent := filepath.Join(root, "file")
+				require.NoError(t, os.WriteFile(blockedParent, []byte("not a directory"), 0o600))
+				cfg.StagingDir = root
+				target.StagingDir = filepath.Join(blockedParent, "child")
+			},
+			target:          Target{Name: "nas"},
+			wantErrContains: []string{"nas", "staging_dir", "inspect path ancestor"},
+		},
+		{
+			name: "confined explicit paths are accepted",
+			target: Target{
+				Name:             "nas",
+				StateFile:        "/var/lib/bosun/nas.json",
+				StagingDir:       "/app/staging/nas-slot",
+				LocalAppdataPath: "/srv/deploy/nas",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.LocalAppdataPath = "/srv/deploy"
+			if tt.configure != nil {
+				tt.configure(t, cfg, &tt.target)
+			}
+			cfg.Targets = []Target{tt.target}
+
+			targets, err := cfg.ResolveTargets()
+
+			if len(tt.wantErrContains) == 0 {
+				require.NoError(t, err)
+				assert.Equal(t, cfg.Targets, targets)
+				return
+			}
+			require.Error(t, err)
+			assert.Nil(t, targets)
+			for _, want := range tt.wantErrContains {
+				assert.ErrorContains(t, err, want)
+			}
+		})
+	}
+}
+
+func TestResolveTargets_RejectsSymlinkPathEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on some Windows environments")
+	}
+
+	root := evalSymlinks(t, t.TempDir())
+	stateRoot := filepath.Join(root, "state")
+	outside := filepath.Join(root, "outside")
+	require.NoError(t, os.MkdirAll(stateRoot, 0o755))
+	require.NoError(t, os.MkdirAll(outside, 0o755))
+	require.NoError(t, os.Symlink(outside, filepath.Join(stateRoot, "escape")))
+
+	cfg := DefaultConfig()
+	cfg.StateFile = filepath.Join(stateRoot, DefaultStateFile)
+	cfg.StagingDir = filepath.Join(root, "staging")
+	cfg.LocalAppdataPath = filepath.Join(root, "deploy")
+	cfg.Targets = []Target{{
+		Name:      "nas",
+		StateFile: filepath.Join(stateRoot, "escape", "nas.json"),
+	}}
+
+	targets, err := cfg.ResolveTargets()
+
+	require.Error(t, err)
+	assert.Nil(t, targets)
+	assert.ErrorContains(t, err, "state_file")
+	assert.ErrorContains(t, err, "escapes configured root")
+}
+
+func TestResolveTargets_RejectsSymlinkAliasedStateCollision(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on some Windows environments")
+	}
+
+	root := evalSymlinks(t, t.TempDir())
+	stateRoot := filepath.Join(root, "state")
+	require.NoError(t, os.MkdirAll(stateRoot, 0o755))
+	require.NoError(t, os.Symlink(stateRoot, filepath.Join(stateRoot, "alias")))
+
+	cfg := DefaultConfig()
+	cfg.StateFile = filepath.Join(stateRoot, DefaultStateFile)
+	cfg.StagingDir = filepath.Join(root, "staging")
+	cfg.Targets = []Target{
+		{Name: "prod-a", StateFile: filepath.Join(stateRoot, "shared.json"), TargetHost: "root@nas-a", ProjectName: "stack-a", RemoteAppdataPath: "/mnt/user/prod-a"},
+		{Name: "prod-b", StateFile: filepath.Join(stateRoot, "alias", "shared.json"), TargetHost: "root@nas-b", ProjectName: "stack-b", RemoteAppdataPath: "/mnt/user/prod-b"},
+	}
+
+	targets, err := cfg.ResolveTargets()
+
+	require.Error(t, err)
+	assert.Nil(t, targets)
+	assert.ErrorContains(t, err, "prod-a")
+	assert.ErrorContains(t, err, "prod-b")
+	assert.ErrorContains(t, err, "same state file")
+}
+
+func TestResolveTargets_RejectsUninspectableDerivedStatePath(t *testing.T) {
+	blockedParent := filepath.Join(t.TempDir(), "state-parent")
+	require.NoError(t, os.WriteFile(blockedParent, []byte("not a directory"), 0o600))
+
+	cfg := DefaultConfig()
+	cfg.StateFile = filepath.Join(blockedParent, DefaultStateFile)
+	cfg.Targets = []Target{{Name: "nas"}}
+
+	targets, err := cfg.ResolveTargets()
+
+	require.Error(t, err)
+	assert.Nil(t, targets)
+	assert.ErrorContains(t, err, "nas")
+	assert.ErrorContains(t, err, "state file")
+	assert.ErrorContains(t, err, "inspect path ancestor")
+}
+
 func TestResolveTargets_RejectsResourceCollisions(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -336,6 +572,9 @@ func TestResolveTargets_RejectsResourceCollisions(t *testing.T) {
 		},
 		{
 			name: "local deploy path normalizes dot segments and trailing slash",
+			configure: func(cfg *Config) {
+				cfg.LocalAppdataPath = "/srv/appdata"
+			},
 			targets: []Target{
 				{Name: "prod-a", ProjectName: "stack-a", LocalAppdataPath: "/srv/appdata/"},
 				{Name: "prod-b", ProjectName: "stack-b", LocalAppdataPath: "/srv/./appdata"},
@@ -446,6 +685,23 @@ func TestValidateMultiTargetLayout(t *testing.T) {
 		assert.ErrorContains(t, err, "prod-b")
 		assert.ErrorContains(t, err, "same state file")
 	})
+
+	t.Run("rejects one invalid descriptor", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Targets = []Target{{Name: "../escape"}}
+
+		err := cfg.ValidateMultiTargetLayout()
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "unsafe characters")
+	})
+
+	t.Run("accepts lone default compatibility target", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Targets = []Target{{Name: "default", StateFile: "/custom/state.json"}}
+
+		require.NoError(t, cfg.ValidateMultiTargetLayout())
+	})
 }
 
 func TestResolveTargets_AllowsDistinctResources(t *testing.T) {
@@ -484,7 +740,7 @@ func TestResolveTargets_AllowsDistinctResources(t *testing.T) {
 		{
 			name: "local and remote resources are distinct",
 			targets: []Target{
-				{Name: "prod-a", ProjectName: "stack", LocalAppdataPath: "/mnt/user/appdata"},
+				{Name: "prod-a", ProjectName: "stack", LocalAppdataPath: "/mnt/appdata/prod-a"},
 				{Name: "prod-b", TargetHost: "root@nas", ProjectName: "stack", RemoteAppdataPath: "/mnt/user/appdata"},
 			},
 		},

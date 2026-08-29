@@ -203,8 +203,8 @@ func newInterruptionCycleDaemon(t *testing.T) (*Daemon, string) {
 	base.DryRun = true
 	base.OnFailure = true
 	base.Targets = []reconcile.Target{
-		{Name: "alpha", ProjectName: "alpha", LocalAppdataPath: filepath.Join(stateDir, "appdata-alpha")},
-		{Name: "beta", ProjectName: "beta", LocalAppdataPath: filepath.Join(stateDir, "appdata-beta")},
+		{Name: "alpha", ProjectName: "alpha", LocalAppdataPath: filepath.Join(base.LocalAppdataPath, "alpha")},
+		{Name: "beta", ProjectName: "beta", LocalAppdataPath: filepath.Join(base.LocalAppdataPath, "beta")},
 	}
 	require.NoError(t, os.MkdirAll(filepath.Join(base.RepoDir, "compose"), 0o755))
 	for _, target := range base.Targets {

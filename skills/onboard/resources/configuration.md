@@ -174,7 +174,7 @@ targets:
     remote_appdata_path: /mnt/user/appdata
     project_name: homelab
     state_file: /var/lib/bosun/nas-state.json # Optional exact state-file override
-    staging_dir: /app/nas-staging            # Optional exact staging-dir override
+    staging_dir: /app/staging/nas-slot       # Optional confined staging-dir override
     secrets_scope: nas                   # Decrypt targets.nas.* from secrets
     critical_containers: [traefik, authelia]
     post_sync_hooks:
@@ -192,7 +192,11 @@ targets:
     secrets_scope: media
 ```
 
-Each named target gets isolated defaults: `deploy-state-<name>.json`, `<staging>/<name>/`, and `reconcile-<name>.lock`. Set `state_file` or `staging_dir` when a target needs an exact path instead. A lone `name: default` target may also override these paths while retaining the legacy default lock; a `default` entry in a multi-target list is rejected. Effective state-file paths must remain distinct after path cleaning; case-only variants count as the same path on Windows and macOS. Effective staging paths must remain canonically disjoint: equal paths and ancestor/descendant overlaps are rejected for the entire target set, including overlaps reached through an existing symlinked ancestor. The daemon rejects these structural target errors before binding its API listeners. Targets are reconciled sequentially; failure on one does not block others.
+Each named target gets isolated defaults: `deploy-state-<name>.json`, `<staging>/<name>/`, and `reconcile-<name>.lock`. Set `state_file` or `staging_dir` when a target needs an exact path instead. A named target's explicit `state_file` must remain within the directory containing the base state file. Its explicit `staging_dir` must remain within the base staging directory, and its explicit `local_appdata_path` must remain within the base local appdata/deploy root. Existing symlink ancestors are resolved before these containment checks.
+
+A lone `name: default` target may override these paths while retaining the legacy default lock. A `default` entry in a multi-target list is rejected. Effective state-file paths must remain distinct after canonicalizing existing ancestors; case-only variants count as the same path on Windows and macOS. Effective staging paths must remain canonically disjoint. Equal paths and ancestor/descendant overlaps are rejected for the entire target set, including overlaps reached through an existing symlinked ancestor.
+
+The daemon rejects structural target errors before binding its API listeners. Targets are reconciled sequentially; failure on one does not block others.
 
 Treat every effective `staging_dir` as secret-bearing storage. A failed render or
 later pipeline failure can retain plaintext diagnostic evidence in that one slot;
@@ -203,9 +207,9 @@ The daemon resolves target identity, host, and paths from its startup configurat
 
 Per-target secrets scoping: when `secrets_scope` is set, keys under `targets.<scope>.*` in the decrypted secrets override top-level keys for that target.
 
-Override via environment: `BOSUN_TARGETS` (JSON array) completely replaces the config file targets. It accepts the same snake_case fields as YAML, including `state_file` and `staging_dir`: `[{"name":"nas","target_host":"user@host","project_name":"homelab","state_file":"/var/lib/bosun/nas-state.json","staging_dir":"/app/nas-staging"}]`. Setting `BOSUN_TARGETS=[]` explicitly clears all targets (falls back to implicit default). A target-specific `post_sync_hooks` list supplied through `BOSUN_TARGETS` remains environment-owned during repo reload, including an explicit empty list.
+Override via environment: `BOSUN_TARGETS` (JSON array) completely replaces the config file targets. It accepts the same snake_case fields as YAML, including `state_file` and `staging_dir`: `[{"name":"nas","target_host":"user@host","project_name":"homelab","state_file":"/var/lib/bosun/nas-state.json","staging_dir":"/app/staging/nas-slot"}]`. Setting `BOSUN_TARGETS=[]` explicitly clears all targets (falls back to implicit default). A target-specific `post_sync_hooks` list supplied through `BOSUN_TARGETS` remains environment-owned during repo reload, including an explicit empty list.
 
-**Constraints:** Target names must be alphanumeric with hyphens/underscores (no dots, spaces, or path separators). The name `"default"` is reserved for a lone explicit default target; it cannot appear in a multi-target list. Duplicate names (case-insensitive) are rejected. Effective state-file paths must be distinct. Two targets may intentionally use the same host only when their effective `project_name` and deploy path are both distinct. Bosun rejects targets that resolve to the same host plus Compose project or the same host plus local/remote appdata path; an omitted project name uses Compose's derived `compose` namespace, and equivalent paths with `.` segments or trailing slashes count as the same destination.
+**Constraints:** Target names must be alphanumeric with hyphens/underscores (no dots, spaces, or path separators). The name `"default"` is reserved for a lone explicit default target; it cannot appear in a multi-target list. An empty or unsafe name or a duplicate name (case-insensitive) rejects the complete target set; Bosun never skips the bad descriptor and continues with a sibling or synthesized default. Effective state-file paths must be distinct. Two targets may intentionally use the same host only when their effective `project_name` and deploy path are both distinct. Bosun rejects targets that resolve to the same host plus Compose project or the same host plus local/remote appdata path; an omitted project name uses Compose's derived `compose` namespace, and equivalent paths with `.` segments or trailing slashes count as the same destination. YAML and `BOSUN_TARGETS` use the same fail-closed validation.
 
 ## Directory Structure
 

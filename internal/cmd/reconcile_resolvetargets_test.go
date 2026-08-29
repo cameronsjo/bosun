@@ -42,7 +42,7 @@ func TestRunReconcile_TargetResolution(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var exitCalls int
 			old := ui.SetExitFn(func(int) { exitCalls++ })
-			defer ui.SetExitFn(old)
+			t.Cleanup(func() { ui.SetExitFn(old) })
 
 			t.Setenv("REPO_URL", filepath.Join(t.TempDir(), "missing-repo"))
 			t.Setenv("BOSUN_TARGETS", tt.targetsJSON)
