@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Deploy bosun 0.42.2 to a host and verify it landed.
+# Deploy the latest released bosun to a host and verify it landed.
 #
-#   bash scripts/deploy-git-timeout.sh [ssh-host] [--yes] [--dry-run]
+#   bash scripts/deploy-git-timeout.sh [ssh-host] [--yes] [--dry-run] [--version X.Y.Z]
 #
 # Why this is manual: bosun runs ghcr.io/cameronsjo/bosun:latest, a moving tag.
 # An unchanged compose file means bosun's own reconcile never recreates the
@@ -22,9 +22,13 @@ set -uo pipefail
 
 HOST="unraid"
 CONTAINER="bosun"
-WANT_VERSION="0.42.2"
 ASSUME_YES=0
 DRY_RUN=0
+
+# Derived, not hardcoded: a pinned constant goes stale on the next release and
+# then reports a version mismatch for a deploy that is actually correct.
+# Order: --version flag, then the newest local tag, then the manifest.
+WANT_VERSION=""
 
 usage() {
   sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
@@ -36,6 +40,9 @@ while [[ $# -gt 0 ]]; do
     -h|--help|help) usage ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --dry-run|-n) DRY_RUN=1; shift ;;
+    --version|-V)
+      [[ $# -ge 2 ]] || { printf -- '--version needs a value\n' >&2; exit 64; }
+      WANT_VERSION="$2"; shift 2 ;;
     -*) printf 'unknown option: %s\n' "$1" >&2; exit 64 ;;
     *) HOST="$1"; shift ;;
   esac
@@ -44,6 +51,19 @@ done
 # An ssh host beginning with "-" would be read as a flag.
 if [[ ! "$HOST" =~ ^[A-Za-z0-9._@-]+$ || "$HOST" == -* ]]; then
   printf 'refusing hostname %q: expected an alphanumeric ssh host\n' "$HOST" >&2
+  exit 64
+fi
+
+# Resolve the expected version from the repo when the flag did not supply it.
+if [[ -z "$WANT_VERSION" ]]; then
+  REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  WANT_VERSION="$(git -C "$REPO_ROOT" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
+fi
+if [[ -z "$WANT_VERSION" && -f "${REPO_ROOT:-}/.release-please-manifest.json" ]]; then
+  WANT_VERSION="$(sed -n 's/.*"\.":"\([^"]*\)".*/\1/p' "${REPO_ROOT}/.release-please-manifest.json")"
+fi
+if [[ -z "$WANT_VERSION" ]]; then
+  printf 'could not determine the expected version; pass --version X.Y.Z\n' >&2
   exit 64
 fi
 
@@ -136,7 +156,7 @@ if [[ "$ASSUME_YES" -eq 0 ]]; then
   [[ "$reply" == [yY]* ]] || { echo "Aborted by operator; nothing was changed."; exit 0; }
 fi
 
-step "Pulling ghcr.io/cameronsjo/bosun:latest"
+step "Deploying bosun $WANT_VERSION (ghcr.io/cameronsjo/bosun:latest)"
 if ! remote "cd '$COMPOSE_DIR' && docker compose pull $COMPOSE_SERVICE"; then
   abort "pull failed; the old container is still running and unharmed."
 fi
