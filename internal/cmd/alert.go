@@ -173,6 +173,11 @@ func displayAlertStatus(alertCfg config.AlertConfig) {
 	} else {
 		fmt.Println("  Alert on failure: no")
 	}
+	if alertCfg.OnRecovery {
+		fmt.Println("  Alert on recovery: yes")
+	} else {
+		fmt.Println("  Alert on recovery: no")
+	}
 	fmt.Println()
 
 	if !hasProvider {

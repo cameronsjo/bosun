@@ -73,13 +73,23 @@ func init() {
 	}
 }
 
-// Git operation timeouts
+// Git operation timeouts. These are defaults; the effective values live on
+// GitOps so a caller can set them and a test can shorten them.
 const (
 	GitCloneTimeout      = 5 * time.Minute
 	GitFetchTimeout      = 2 * time.Minute
 	GitLocalTimeout      = 30 * time.Second
 	SSHAgentProbeTimeout = 5 * time.Second
 	DefaultGitFetchDepth = 1
+
+	// GitSSHDialTimeout bounds TCP connection establishment for git operations
+	// over SSH. It bounds the dial and nothing after it: go-git's transport
+	// applies ssh.ClientConfig.Timeout to the dial context only, then hands the
+	// raw connection to ssh.NewClientConn, which takes no context and sets no
+	// deadline. The handshake and packfile transfer therefore remain unbounded
+	// (#655) -- bounding them needs a custom transport.Transport, whose session
+	// layer exists only inside go-git's internal/ tree.
+	GitSSHDialTimeout = 30 * time.Second
 )
 
 // ErrCommitUnavailable indicates that a requested diff endpoint is not present
@@ -97,6 +107,13 @@ type GitOps struct {
 	// FetchDepth controls clone and fetch history depth. Values below 1 use
 	// DefaultGitFetchDepth.
 	FetchDepth int
+	// CloneTimeout, FetchTimeout and SSHDialTimeout bound their operations.
+	// A zero or negative value uses the package default, so a partially
+	// populated GitOps cannot produce an unbounded or instantly-expiring
+	// operation.
+	CloneTimeout   time.Duration
+	FetchTimeout   time.Duration
+	SSHDialTimeout time.Duration
 	// authResolver is an operation seam for deterministic ownership tests.
 	// Production leaves it nil and resolves from the process environment.
 	authResolver func(string) (transport.AuthMethod, error)
@@ -139,11 +156,150 @@ func (g *GitOps) effectiveFetchDepth() int {
 	return g.FetchDepth
 }
 
-func (g *GitOps) resolveAuthentication() (transport.AuthMethod, error) {
-	if g.authResolver != nil {
-		return g.authResolver(g.RepoURL)
+// effectiveCloneTimeout, effectiveFetchTimeout and effectiveSSHDialTimeout
+// resolve a configured field against its package default. Non-positive means
+// unset.
+func (g *GitOps) effectiveCloneTimeout() time.Duration {
+	if g.CloneTimeout > 0 {
+		return g.CloneTimeout
 	}
-	return ResolveGitAuth(g.RepoURL)
+	return GitCloneTimeout
+}
+
+func (g *GitOps) effectiveFetchTimeout() time.Duration {
+	if g.FetchTimeout > 0 {
+		return g.FetchTimeout
+	}
+	return GitFetchTimeout
+}
+
+func (g *GitOps) effectiveSSHDialTimeout() time.Duration {
+	if g.SSHDialTimeout > 0 {
+		return g.SSHDialTimeout
+	}
+	return GitSSHDialTimeout
+}
+
+// minDialTimeout keeps an already-expired budget from falling through to the
+// full dial timeout. go-git's dial ignores the context entirely, so without a
+// floor an operation entered with a dead deadline would still burn 30 seconds
+// before anything noticed.
+const minDialTimeout = time.Millisecond
+
+// effectiveBound is the earlier of an operation's own timeout and whatever the
+// caller's context has left. This is the bound that will actually expire, and
+// therefore the one an error should name.
+// It MUST be evaluated before the operation starts. Called from inside a
+// DeadlineExceeded branch it measures the budget remaining *after* expiry --
+// approximately zero -- and the error would name "bound 0s".
+func effectiveBound(ctx context.Context, opTimeout time.Duration) time.Duration {
+	bound := opTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining < bound {
+			bound = remaining
+		}
+	}
+	if bound < 0 {
+		return 0
+	}
+	return bound
+}
+
+// dialTimeoutFor is the dial bound for one operation: the SSH dial timeout,
+// capped by the operation's own timeout and by whatever budget the caller's
+// context has left.
+//
+// The cap is load-bearing rather than tidy. go-git's dial does not consult the
+// operation context at all -- it builds its own from context.Background() and
+// ssh.ClientConfig.Timeout -- so a stalled dial is invisible to
+// context.WithTimeout, which only fires between protocol steps. Without the cap
+// the effective bound is the *larger* of the two: a 500ms clone timeout with a
+// 30s dial timeout takes 30 seconds, measured.
+//
+// opTimeout is passed explicitly rather than read from the context, because the
+// auth method is resolved before the per-operation context exists.
+func (g *GitOps) dialTimeoutFor(ctx context.Context, opTimeout time.Duration) time.Duration {
+	timeout := g.effectiveSSHDialTimeout()
+	if bound := effectiveBound(ctx, opTimeout); bound < timeout {
+		timeout = bound
+	}
+	if timeout < minDialTimeout {
+		return minDialTimeout
+	}
+	return timeout
+}
+
+func (g *GitOps) resolveAuthentication(ctx context.Context, opTimeout time.Duration) (transport.AuthMethod, error) {
+	var (
+		auth transport.AuthMethod
+		err  error
+	)
+	if g.authResolver != nil {
+		auth, err = g.authResolver(g.RepoURL)
+	} else {
+		auth, err = ResolveGitAuth(g.RepoURL)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return withSSHDialTimeout(auth, g.dialTimeoutFor(ctx, opTimeout)), nil
+}
+
+// dialTimeoutAuth wraps a resolved SSH auth method so its ClientConfig carries
+// a dial timeout.
+//
+// The obvious alternative -- client.InstallProtocol with an ssh.ClientConfig
+// that sets only Timeout -- takes GitOps offline. go-git's overrideConfig
+// reflects over every ClientConfig field and assigns unconditionally, zero
+// values included, *after* the transport's nil-HostKeyCallback repair. A config
+// carrying only a timeout therefore blanks User, Auth, HostKeyCallback and
+// HostKeyAlgorithms, and every fetch dies "ssh: must specify HostKeyCallback".
+//
+// Wrapping the auth instead keeps every field the auth resolved. It is safe
+// because overrideConfig returns early when the client's own config is nil,
+// which is the default client's case.
+type dialTimeoutAuth struct {
+	// Embedded, not a named field: promotion is what supplies Name and String,
+	// and ssh.AuthMethod embeds transport.AuthMethod, so one field satisfies
+	// both interfaces. The explicit ClientConfig below shadows the promoted one.
+	ssh.AuthMethod
+	timeout time.Duration
+}
+
+// ClientConfig returns the wrapped auth's own config with Timeout filled in.
+func (a *dialTimeoutAuth) ClientConfig() (*xssh.ClientConfig, error) {
+	cfg, err := a.AuthMethod.ClientConfig()
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return nil, errors.New("ssh auth method returned a nil client config")
+	}
+	// Copy before mutating. Every go-git auth method builds a fresh config per
+	// call today, so mutating in place would be safe -- but that is an upstream
+	// implementation detail, and an auth method that cached or shared its config
+	// would turn this into a cross-operation mutation with no local symptom.
+	withTimeout := *cfg
+	withTimeout.Timeout = a.timeout
+	return &withTimeout, nil
+}
+
+// Close forwards to the wrapped auth so the ssh-agent socket still closes.
+func (a *dialTimeoutAuth) Close() error {
+	return closeGitAuth(a.AuthMethod)
+}
+
+// withSSHDialTimeout applies a dial timeout to SSH auth methods and leaves
+// every other auth kind untouched.
+func withSSHDialTimeout(auth transport.AuthMethod, timeout time.Duration) transport.AuthMethod {
+	if auth == nil || timeout <= 0 {
+		return auth
+	}
+	sshAuth, ok := auth.(ssh.AuthMethod)
+	if !ok {
+		return auth
+	}
+	return &dialTimeoutAuth{AuthMethod: sshAuth, timeout: timeout}
 }
 
 func closeGitAuth(auth transport.AuthMethod) error {
@@ -360,14 +516,19 @@ func (g *GitOps) Clone(ctx context.Context, depth int) error {
 		Int("depth", depth).
 		Msg("Cloning repository")
 
-	// Apply timeout if context doesn't have one
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, GitCloneTimeout)
-		defer cancel()
-	}
+	// Apply the clone timeout unconditionally. It used to apply only when the
+	// caller context carried no deadline -- and the daemon sets a
+	// ReconcileTimeout deadline on every reconcile cycle, so on the daemon path
+	// (the only unattended path) the declared clone bound was never applied
+	// while the error text named it regardless. context.WithTimeout already
+	// takes the earlier of the two deadlines.
+	cloneTimeout := g.effectiveCloneTimeout()
+	// Captured before the context is wrapped: after expiry this measures ~0.
+	cloneBound := effectiveBound(ctx, cloneTimeout)
+	ctx, cancel := context.WithTimeout(ctx, cloneTimeout)
+	defer cancel()
 
-	auth, err := g.resolveAuthentication()
+	auth, err := g.resolveAuthentication(ctx, cloneTimeout)
 	if err != nil {
 		safeErr := SanitizeGitError(err)
 		logger.Error().Err(safeErr).Msg("Failed to resolve Git authentication")
@@ -399,11 +560,19 @@ func (g *GitOps) Clone(ctx context.Context, depth int) error {
 			}
 		}
 		if ctx.Err() == context.DeadlineExceeded {
+			elapsed := time.Since(start)
+			bound := cloneBound
 			logger.Error().
 				Str(log.FieldOperation, "clone").
-				Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
+				Str(log.FieldURL, SanitizeGitURL(g.RepoURL)).
+				Str(log.FieldBranch, g.Branch).
+				Int64("elapsed_ms", elapsed.Milliseconds()).
+				Int64("timeout_ms", bound.Milliseconds()).
 				Msg("Git clone timed out")
-			return fmt.Errorf("git clone timed out after %v", GitCloneTimeout)
+			// Report the measured elapsed time, not the configured bound. An
+			// error naming a bound that was never applied is what made the
+			// 2026-09-08 incident unreadable.
+			return fmt.Errorf("git clone timed out after %v (bound %v)", elapsed.Round(time.Millisecond), bound)
 		}
 		safeErr := SanitizeGitError(err)
 		logger.Error().
@@ -434,7 +603,7 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 		logger.Error().Err(err).Str(log.FieldBranch, g.Branch).Msg("Failed to pull repository. Reason: invalid branch")
 		return false, "", "", fmt.Errorf("invalid branch: %w", err)
 	}
-	auth, authErr := g.resolveAuthentication()
+	auth, authErr := g.resolveAuthentication(ctx, g.effectiveFetchTimeout())
 	if authErr != nil {
 		return false, "", "", fmt.Errorf("failed to resolve Git authentication: %w", SanitizeGitError(authErr))
 	}
@@ -472,7 +641,11 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 	}
 
 	// Fetch with timeout
-	fetchCtx, fetchCancel := context.WithTimeout(ctx, GitFetchTimeout)
+	fetchTimeout := g.effectiveFetchTimeout()
+	// Captured before fetchCtx is created, for the same reason as clone.
+	fetchBound := effectiveBound(ctx, fetchTimeout)
+	fetchStart := time.Now()
+	fetchCtx, fetchCancel := context.WithTimeout(ctx, fetchTimeout)
 	defer fetchCancel()
 
 	fetchOpts := &git.FetchOptions{
@@ -484,7 +657,16 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 
 	if err := repo.FetchContext(fetchCtx, fetchOpts); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		if fetchCtx.Err() == context.DeadlineExceeded {
-			return false, "", "", fmt.Errorf("git fetch timed out after %v", GitFetchTimeout)
+			elapsed := time.Since(fetchStart)
+			bound := fetchBound
+			logger.Error().
+				Str(log.FieldOperation, "fetch").
+				Str(log.FieldURL, SanitizeGitURL(g.RepoURL)).
+				Str(log.FieldBranch, g.Branch).
+				Int64("elapsed_ms", elapsed.Milliseconds()).
+				Int64("timeout_ms", bound.Milliseconds()).
+				Msg("Git fetch timed out")
+			return false, "", "", fmt.Errorf("git fetch timed out after %v (bound %v)", elapsed.Round(time.Millisecond), bound)
 		}
 		return false, "", "", fmt.Errorf("git fetch failed: %w", SanitizeGitError(err))
 	}

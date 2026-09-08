@@ -233,7 +233,7 @@ curl http://localhost:8080/health
 
 1. Go to your repo → **Settings** → **Webhooks** → **Add webhook**
 2. Configure:
-   - **Payload URL**: `https://your-funnel-url/hooks/github-push`
+   - **Payload URL**: `https://your-funnel-url/webhook/github`
    - **Content type**: `application/json`
    - **Secret**: Same secret you set in bosun config
    - **Events**: Just the push event
@@ -312,7 +312,7 @@ After deployment, your projects appear in:
 docker logs bosun | tail -50
 
 # Verify webhook endpoint
-curl -X POST http://localhost:8080/hooks/github-push \
+curl -X POST http://localhost:8080/webhook/github \
   -H "Content-Type: application/json" \
   -d '{"ref": "refs/heads/main"}'
 ```

@@ -63,6 +63,19 @@ type Config struct {
 	// bosun over the docker bridge, not loopback.
 	ListenAddr string
 
+	// trustedProxiesError defers an invalid BOSUN_TRUSTED_PROXIES to
+	// ValidateConfig, which fails startup. Deferring rather than logging is the
+	// point: a single trailing comma would otherwise disable forwarded_for for
+	// a correctly-spelled proxy, with one log line as the only tell.
+	trustedProxiesError error
+
+	// TrustedProxies is the parsed allowlist of proxies whose X-Forwarded-For
+	// header the request log will record, in a field kept separate from the
+	// observed peer address. Nil or empty trusts nothing, which is the default
+	// and the direction this control must fail: ListenAddr binds all
+	// interfaces, so any reachable host can send a well-formed header.
+	TrustedProxies *trustedProxies
+
 	// AllowUnauthenticatedWebhook opts out of fail-closed webhook auth (#345).
 	// When WebhookSecret is empty, trigger endpoints reject every request
 	// unless this is true (BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true, strict match).
@@ -2077,6 +2090,38 @@ func ConfigFromEnv() *Config {
 	// HTTP bind address (empty = all interfaces; see Config.ListenAddr).
 	cfg.ListenAddr = os.Getenv("BOSUN_LISTEN_ADDR")
 
+	// Trusted proxies for request-log client attribution. An unparseable entry
+	// is refused loudly rather than dropped: a silently ignored entry disables
+	// attribution for the one sender the operator meant to trust.
+	if raw := strings.TrimSpace(os.Getenv("BOSUN_TRUSTED_PROXIES")); raw != "" {
+		logger := log.Component(log.ComponentDaemon)
+		parsed, err := parseTrustedProxies(strings.Split(raw, ","))
+		if err != nil {
+			// Fail startup rather than continue with attribution silently off.
+			// A single trailing comma would otherwise disable forwarded_for for
+			// a correctly-spelled proxy, with only one log line to say so.
+			logger.Error().
+				Err(err).
+				Str("env", "BOSUN_TRUSTED_PROXIES").
+				Msg("Invalid trusted proxy list")
+			cfg.trustedProxiesError = fmt.Errorf("BOSUN_TRUSTED_PROXIES: %w", err)
+		} else {
+			cfg.TrustedProxies = parsed
+			// Log what was accepted, not just what was rejected. Every other
+			// trust-affecting setting here announces itself at startup, and
+			// without this line a forwarded_for value in the log cannot be
+			// interpreted afterwards -- nothing says whose claim it is or which
+			// prefix admitted it, which is the one thing the field is for.
+			event := logger.Warn().
+				Str("env", "BOSUN_TRUSTED_PROXIES").
+				Strs("prefixes", parsed.describe())
+			if parsed.trustsEverything() {
+				event = event.Bool("trusts_everything", true)
+			}
+			event.Msg("X-Forwarded-For will be recorded for these proxies")
+		}
+	}
+
 	if d := config.BosunEnvDuration("POLL_INTERVAL", 0); d > 0 {
 		cfg.PollInterval = d
 	}
@@ -2348,6 +2393,7 @@ func ConfigFromEnv() *Config {
 		alertCfg := projectCfg.GetAlertConfig()
 		rcfg.OnFailure = alertCfg.OnFailure
 		rcfg.OnSuccess = alertCfg.OnSuccess
+		rcfg.OnRecovery = alertCfg.OnRecovery
 
 		// Config file debounce value: env var takes precedence (already parsed above).
 		if !cfg.DriftAlertDebounce.FromEnv() && projectCfg.DriftAlertDebounce() > 0 {
@@ -2526,6 +2572,9 @@ func ValidateConfig(cfg *Config) error {
 	}
 	if cfg.socketAllowedUIDsError != nil {
 		errs = append(errs, cfg.socketAllowedUIDsError.Error())
+	}
+	if cfg.trustedProxiesError != nil {
+		errs = append(errs, cfg.trustedProxiesError.Error())
 	}
 
 	if cfg.ReconcileConfig != nil {

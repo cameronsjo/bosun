@@ -1778,29 +1778,42 @@ func TestSendRecoveryAlert(t *testing.T) {
 
 	t.Run("sends recovery alert", func(t *testing.T) {
 		alerter := &mockAlertSender{}
-		cfg := &Config{TargetHost: "user@host", OnSuccess: true}
+		cfg := &Config{TargetHost: "user@host", OnRecovery: true}
 		r := NewReconciler(cfg, WithAlerter(alerter))
 		r.lastCommit = "def456"
 
-		r.sendRecoveryAlert(context.Background(), 5)
+		assert.Equal(t, recoveryDispatched, r.sendRecoveryAlert(context.Background(), 5))
 		assert.Equal(t, 1, alerter.deployRecoveryCalls)
 	})
 
-	t.Run("suppressed when OnSuccess is false", func(t *testing.T) {
+	t.Run("suppressed when OnRecovery is false", func(t *testing.T) {
+		// Recovery is gated on OnRecovery, not OnSuccess. OnSuccess is set true
+		// here deliberately: before this change it was the gate, so leaving it
+		// false would let this subtest pass for the wrong reason.
 		alerter := &mockAlertSender{}
-		cfg := &Config{TargetHost: "user@host", OnSuccess: false}
+		cfg := &Config{TargetHost: "user@host", OnSuccess: true, OnRecovery: false}
 		r := NewReconciler(cfg, WithAlerter(alerter))
 		r.lastCommit = "def456"
 
-		r.sendRecoveryAlert(context.Background(), 5)
+		assert.Equal(t, recoveryDisabled, r.sendRecoveryAlert(context.Background(), 5))
 		assert.Equal(t, 0, alerter.deployRecoveryCalls)
 	})
 
-	t.Run("alert error is logged not returned", func(t *testing.T) {
-		alerter := &mockAlertSender{lastErr: fmt.Errorf("send failed")}
-		cfg := &Config{OnSuccess: true}
+	t.Run("fires with OnSuccess false", func(t *testing.T) {
+		alerter := &mockAlertSender{}
+		cfg := &Config{TargetHost: "user@host", OnSuccess: false, OnRecovery: true}
 		r := NewReconciler(cfg, WithAlerter(alerter))
-		r.sendRecoveryAlert(context.Background(), 2)
+		r.lastCommit = "def456"
+
+		assert.Equal(t, recoveryDispatched, r.sendRecoveryAlert(context.Background(), 5))
+		assert.Equal(t, 1, alerter.deployRecoveryCalls)
+	})
+
+	t.Run("alert error is reported as a delivery failure, not swallowed", func(t *testing.T) {
+		alerter := &mockAlertSender{lastErr: fmt.Errorf("send failed")}
+		cfg := &Config{OnRecovery: true}
+		r := NewReconciler(cfg, WithAlerter(alerter))
+		assert.Equal(t, recoveryDeliveryFailed, r.sendRecoveryAlert(context.Background(), 2))
 		assert.Equal(t, 1, alerter.deployRecoveryCalls)
 	})
 }
@@ -4678,12 +4691,17 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 		infraDir := filepath.Join(repoDir, "unraid")
 		require.NoError(t, os.MkdirAll(infraDir, 0755))
 
-		// Pre-save state with previous failure on same commit
+		// Pre-save state with previous failure on same commit.
+		// LastAlertedAttempt is what real state carries: failure alerts fire at
+		// attempt 1, so a 2-attempt failure has always alerted. It is also the
+		// predicate for "a retraction is owed" -- AttemptCount alone would
+		// retract failures that never produced an alert.
 		state := &DeployState{
 			SchemaVersion:       2,
 			LastDeployedCommit:  "oldcommit",
 			LastAttemptedCommit: "bbb222",
 			AttemptCount:        2,
+			LastAlertedAttempt:  1,
 		}
 		require.NoError(t, SaveState(stateFile, state))
 
@@ -4707,6 +4725,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 			SecretsFiles:            []string{},
 			OnFailure:               true,
 			OnSuccess:               true,
+			OnRecovery:              true,
 		}
 		seedStubComposeService(t, cfg)
 		r := NewReconciler(cfg,
@@ -4717,7 +4736,6 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 		err := r.Run(context.Background())
 		require.NoError(t, err)
 
-		// Recovery alert should be sent (AttemptCount was 3 before success)
 		assert.Equal(t, 1, alerter.deployRecoveryCalls)
 		assert.Equal(t, 1, alerter.deploySuccessCalls)
 	})

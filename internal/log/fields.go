@@ -52,6 +52,16 @@ const (
 
 	// FieldStatus is an HTTP status code.
 	FieldStatus = "status"
+
+	// FieldRemoteAddr is the observed peer address of an HTTP connection.
+	// This is a fact: it comes from the connection, not from a header.
+	FieldRemoteAddr = "remote_addr"
+
+	// FieldForwardedFor is a client address claimed by an X-Forwarded-For
+	// header, recorded only when the observed peer is a trusted proxy.
+	// This is a claim, not a fact -- keep it in its own field so the two are
+	// never confused. See internal/daemon.forwardedForClient.
+	FieldForwardedFor = "forwarded_for"
 )
 
 // Component values for FieldComponent.

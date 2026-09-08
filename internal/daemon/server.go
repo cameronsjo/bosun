@@ -47,6 +47,10 @@ type Server struct {
 	registry *prometheus.Registry
 	metrics  *Metrics
 
+	// trustedProxies gates whether an X-Forwarded-For header is believed.
+	// Nil or empty means trust nothing, which is the default.
+	trustedProxies *trustedProxies
+
 	// Track in-flight reconciliation goroutines for graceful shutdown
 	wg sync.WaitGroup
 }
@@ -57,9 +61,10 @@ func NewServer(d *Daemon) *Server {
 	metrics := newMetrics(reg)
 
 	s := &Server{
-		daemon:   d,
-		registry: reg,
-		metrics:  metrics,
+		daemon:         d,
+		registry:       reg,
+		metrics:        metrics,
+		trustedProxies: d.config.TrustedProxies,
 	}
 
 	mux := http.NewServeMux()
@@ -156,8 +161,11 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
-		// Generate or extract request ID.
-		requestID := r.Header.Get("X-Request-ID")
+		// Generate or extract request ID. The header is caller-supplied and
+		// flows into every log line for this request, so it gets the same
+		// control-strip-and-cap boundary as GitHub pusher names -- otherwise a
+		// sender could park 32 KiB of control characters in the log.
+		requestID := SanitizeWebhookPusherName(r.Header.Get("X-Request-ID"))
 		if requestID == "" {
 			var id string
 			r = r.WithContext(log.WithRequestID(r.Context(), ""))
@@ -178,13 +186,25 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(wrapped, r)
 
 		// Log with enriched logger that already carries request_id.
-		enriched.Info().
+		//
+		// remote_addr is always present and always the observed peer.
+		// forwarded_for is a claim and appears only when that peer is a
+		// configured trusted proxy. The two are never collapsed and the header
+		// is never preferred: the listener binds all interfaces by design, so
+		// any host that can reach us may send a well-formed X-Forwarded-For,
+		// and recording it as the sender would make the next investigation
+		// confidently wrong.
+		event := enriched.Info().
 			Str(log.FieldComponent, log.ComponentHTTP).
 			Str(log.FieldMethod, r.Method).
 			Str(log.FieldURL, r.URL.Path).
+			Str(log.FieldRemoteAddr, r.RemoteAddr).
 			Int(log.FieldStatus, wrapped.statusCode).
-			Int64(log.FieldDurationMS, time.Since(start).Milliseconds()).
-			Msg("HTTP request completed")
+			Int64(log.FieldDurationMS, time.Since(start).Milliseconds())
+		if forwarded := forwardedForClient(r, s.trustedProxies); forwarded != "" {
+			event = event.Str(log.FieldForwardedFor, forwarded)
+		}
+		event.Msg("HTTP request completed")
 	})
 }
 

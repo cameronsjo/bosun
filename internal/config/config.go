@@ -161,6 +161,12 @@ type AlertConfig struct {
 	// Settings
 	OnSuccess bool `yaml:"on_success"` // Alert on successful deploys
 	OnFailure bool `yaml:"on_failure"` // Alert on failed deploys (default: true)
+	// OnRecovery gates the retraction of a failure alert (default: true).
+	// Unlike OnFailure it is NOT coupled to OnSuccess: the retract gate must
+	// never be more restrictive than the alert gate, and a system that alerts
+	// on failure and cannot retract leaves the operator worse informed than one
+	// that never alerted.
+	OnRecovery bool `yaml:"on_recovery"`
 }
 
 // alertConfigRaw is the YAML DTO for alert settings.
@@ -181,6 +187,7 @@ type alertConfigRaw struct {
 	WebhookMethod     string            `yaml:"webhook_method"`
 	OnSuccess         *bool             `yaml:"on_success"`
 	OnFailure         *bool             `yaml:"on_failure"`
+	OnRecovery        *bool             `yaml:"on_recovery"`
 }
 
 // targetRaw is the YAML DTO for a deployment target.
@@ -457,6 +464,7 @@ func LoadReloadedConfig(dir string) (*reconcile.ReloadedConfig, error) {
 		DriftIgnore:        cloneSlice(cfg.DriftIgnore()),
 		OnFailure:          boolPointer(alertCfg.OnFailure),
 		OnSuccess:          boolPointer(alertCfg.OnSuccess),
+		OnRecovery:         boolPointer(alertCfg.OnRecovery),
 		RemoveOrphans:      boolPointer(removeOrphans),
 		ProjectName:        stringPointer(projectName),
 		Targets:            cfg.Targets(),
@@ -1156,6 +1164,8 @@ func AlertConfigFromEnv() AlertConfig {
 		WebhookMethod:   getEnvOrDefault("BOSUN_WEBHOOK_METHOD", ""),
 		// OnFailure defaults to true when neither flag is set (same as extractAlertConfig).
 		OnFailure: true,
+		// OnRecovery defaults to true unconditionally -- it carries no coupling.
+		OnRecovery: true,
 	}
 }
 
@@ -1190,6 +1200,14 @@ func extractAlertConfig(cfg configFile) AlertConfig {
 	} else if raw.OnSuccess == nil {
 		// Neither flag set → default OnFailure to true.
 		alertCfg.OnFailure = true
+	}
+	// OnRecovery defaults to true whenever unset. Deliberately NOT coupled to
+	// OnSuccess the way OnFailure is: mirroring that pattern would silently
+	// disable retractions for anyone who sets on_success explicitly.
+	if raw.OnRecovery != nil {
+		alertCfg.OnRecovery = *raw.OnRecovery
+	} else {
+		alertCfg.OnRecovery = true
 	}
 
 	// Environment variable overrides for sensitive values.

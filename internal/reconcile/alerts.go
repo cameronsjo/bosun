@@ -164,26 +164,94 @@ func (r *Reconciler) sendUnhealthyAlert(ctx context.Context, containers []string
 	}
 }
 
-// sendRecoveryAlert sends a notification when deployment succeeds after failures.
-// Gated on config.OnSuccess: recovery is a success-side alert.
-func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) {
+// recoveryOutcome reports what happened to a recovery dispatch, because the
+// caller clears failure-tracking state differently for each. A caller that
+// cannot tell "gate disabled" from "every provider failed" either banks a stale
+// retraction for a later config flip, or consumes the retraction on an outage.
+type recoveryOutcome int
+
+const (
+	// recoveryDispatched: delivered, or there was nothing to deliver to.
+	recoveryDispatched recoveryOutcome = iota
+	// recoveryDisabled: the gate is off, so no retraction is ever owed.
+	recoveryDisabled
+	// recoveryDeliveryFailed: every provider failed; retry on the next clean run.
+	recoveryDeliveryFailed
+)
+
+// sendRecoveryAlert retracts a previously-sent failure alert.
+//
+// Gated on config.OnRecovery, not OnSuccess. Recovery is not a success-side
+// alert: the retract gate must never be more restrictive than the alert gate.
+func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) recoveryOutcome {
+	// No alerter is "nothing to deliver to", not a delivery failure -- retrying
+	// forever against a nil alerter would never succeed.
 	if r.alerter == nil {
-		return
+		return recoveryDispatched
 	}
 
-	if !r.config.OnSuccess {
-		return
+	if !r.config.OnRecovery {
+		return recoveryDisabled
 	}
 
 	target := r.alertTarget()
 
-	if err := r.alerter.SendDeployRecovery(ctx, r.lastCommit, target, priorFailures); err != nil {
-		logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+	// A cancelled caller context would fail delivery instantly and leave the
+	// retraction owed forever; failure alerts already use this helper.
+	// cancel is nil when the caller's context is still live -- the helper
+	// returns it unwrapped in that case, so a bare defer would panic.
+	alertCtx, cancel := failureAlertDeliveryContext(ctx)
+	if cancel != nil {
+		defer cancel()
+	}
+
+	if err := r.alerter.SendDeployRecovery(alertCtx, r.lastCommit, target, priorFailures); err != nil {
+		logger := log.ComponentCtx(alertCtx, log.ComponentReconcile)
 		logger.Warn().
 			Err(err).
 			Str(log.FieldOperation, "alert_recovery").
 			Str(log.FieldTarget, target).
 			Int("prior_failures", priorFailures).
-			Msg("Failed to send recovery alert")
+			Msg("Failed to send recovery alert, retraction still owed")
+		return recoveryDeliveryFailed
+	}
+	return recoveryDispatched
+}
+
+// retractionOwed reports whether a failure alert was sent for this target and
+// has not yet been retracted.
+//
+// The predicate is LastAlertedAttempt, not AttemptCount: a failure below the
+// alert threshold (state.go's alertThresholds) never produced an alert, so it
+// owes no retraction.
+func retractionOwed(state *DeployState) bool {
+	return state != nil && state.LastAlertedAttempt > 0
+}
+
+// retractFailureAlert dispatches the recovery alert a clean run owes, and
+// reports whether the caller may clear failure-tracking state.
+//
+// Called from every path a run can end cleanly on -- including the two skip
+// branches that return before the deploy-path dispatch site. Those two branches
+// fail differently: the deploy-path skip zeroes LastAlertedAttempt (destroying
+// the evidence), while the already-deployed skip leaves it set (so a dispatch
+// there that does not clear it re-alerts on every subsequent run).
+func (r *Reconciler) retractFailureAlert(ctx context.Context, state *DeployState) (clearState bool) {
+	if !retractionOwed(state) {
+		return true
+	}
+	// LastAlertedAttempt, not AttemptCount: the breaker resets AttemptCount on
+	// every verified deploy, so it is zero by the time a retried retraction
+	// reads it. LastAlertedAttempt survives exactly as long as the retraction
+	// is owed, which is the same lifetime the count needs.
+	switch r.sendRecoveryAlert(ctx, state.LastAlertedAttempt) {
+	case recoveryDeliveryFailed:
+		// Keep the evidence so the next clean run re-attempts. A provider
+		// outage must not consume the retraction.
+		return false
+	default:
+		// Dispatched, or disabled. Disabled clears too: retaining state would
+		// bank a stale retraction that fires whenever the gate is turned on.
+		return true
 	}
 }

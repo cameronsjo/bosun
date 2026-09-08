@@ -182,6 +182,11 @@ func (r *Reconciler) reloadProjectConfig() error {
 		changed = true
 	}
 
+	if reloaded.OnRecovery != nil {
+		r.config.OnRecovery = *reloaded.OnRecovery
+		changed = true
+	}
+
 	if reloaded.RemoveOrphans != nil {
 		if reloadField(&r.config.RemoveOrphans, *reloaded.RemoveOrphans, func(v bool) bool { return true }) {
 			if r.deploy != nil {
@@ -233,6 +238,7 @@ func (r *Reconciler) reloadProjectConfig() error {
 			Int("deploy_paths", len(r.config.DeployPaths.Value)).
 			Bool("on_failure", r.config.OnFailure).
 			Bool("on_success", r.config.OnSuccess).
+			Bool("on_recovery", r.config.OnRecovery).
 			Bool("remove_orphans", r.config.RemoveOrphans.Value).
 			Msg("Reloaded project config from repo")
 	}

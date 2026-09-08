@@ -18,6 +18,9 @@ import (
 
 const redactedGitURL = "[redacted invalid repository URL]"
 
+// redactedQueryValue replaces a credential-bearing query parameter's value.
+const redactedQueryValue = "REDACTED"
+
 var repositoryUserinfoPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@`)
 
 func init() {
@@ -140,9 +143,17 @@ func effectiveHTTPSPort(u *url.URL) string {
 	return "443"
 }
 
-// SanitizeGitURL removes URL userinfo before presentation. Raw malformed
-// standard URLs are replaced rather than echoed.
+// SanitizeGitURL removes credentials from a repository URL before presentation:
+// userinfo, every non-benign query parameter value, and the fragment. Raw
+// malformed standard URLs are replaced rather than echoed.
 func SanitizeGitURL(repoURL string) string {
+	// An scp-style remote is rewritten to ssh:// and then re-entered, so it
+	// gets the same userinfo, query and fragment redaction as any other URL.
+	// Returning the rewrite directly would let git@host:repo.git?token=secret
+	// through untouched.
+	if scp := scpStyleToSSHURL(repoURL); scp != "" {
+		return SanitizeGitURL(scp)
+	}
 	parsed, err := url.Parse(repoURL)
 	if err != nil {
 		return redactedGitURL
@@ -150,7 +161,86 @@ func SanitizeGitURL(repoURL string) string {
 	if parsed.User != nil {
 		parsed.User = nil
 	}
+	redactCredentialQueryParams(parsed)
+	// A fragment is not a normal part of a git remote, but url.String() emits
+	// it verbatim, so anything parked there would reach the log unexamined.
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
 	return parsed.String()
+}
+
+// scpStyleToSSHURL renders an scp-style remote (git@host:org/repo.git) as a
+// legible ssh:// URL, or returns "" when the input is not scp-style.
+//
+// url.Parse rejects scp-style remotes, which used to mean SanitizeGitURL
+// returned the "invalid repository URL" placeholder for them. That was
+// tolerable while this function only fed diagnostics; it is not now that the
+// git timeout log carries the URL, because the operator would lose repository
+// identity in exactly the incident the log line exists to explain.
+func scpStyleToSSHURL(repoURL string) string {
+	if strings.Contains(repoURL, "://") {
+		return ""
+	}
+	at := strings.LastIndex(repoURL, "@")
+	colon := strings.Index(repoURL[at+1:], ":")
+	if colon < 0 {
+		return ""
+	}
+	host := repoURL[at+1:][:colon]
+	path := repoURL[at+1:][colon+1:]
+	if host == "" || path == "" || strings.Contains(host, "/") {
+		return ""
+	}
+	// The user portion before "@" is dropped along with anything hiding in it.
+	return "ssh://" + host + "/" + strings.TrimPrefix(path, "/")
+}
+
+// benignQueryParams are the only query parameter values allowed through a
+// sanitized URL. Everything else is redacted.
+//
+// This is deliberately an allowlist. The denylist version of this function --
+// redact anything whose name contains "token", "password", "secret" and so on
+// -- enumerates someone else's surface, and that surface grows without telling
+// us: `pat`, `jwt`, `bearer`, `sas` and `code` are all real credential
+// parameter names that a reasonable denylist misses, and the remediation is
+// always "add one more name" with no way to know when the list is done.
+// Inverting costs two entries and cannot be incomplete.
+var benignQueryParams = map[string]struct{}{
+	"ref":   {},
+	"depth": {},
+}
+
+// redactCredentialQueryParams replaces every query parameter value not on the
+// benign allowlist, in place.
+//
+// Clearing url.Userinfo alone is not enough: a repository URL can carry its
+// credential as a query parameter, and this URL is written to timeout logs.
+// Parameter names are kept so the URL stays legible; only values go.
+func redactCredentialQueryParams(parsed *url.URL) {
+	if parsed.RawQuery == "" {
+		return
+	}
+	values, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		// An unparseable query could hide anything; drop it wholesale rather
+		// than pass it through unexamined.
+		parsed.RawQuery = redactedQueryValue
+		return
+	}
+	changed := false
+	for name, vals := range values {
+		if _, benign := benignQueryParams[strings.ToLower(name)]; benign {
+			continue
+		}
+		for i := range vals {
+			vals[i] = redactedQueryValue
+		}
+		values[name] = vals
+		changed = true
+	}
+	if changed {
+		parsed.RawQuery = values.Encode()
+	}
 }
 
 // SanitizeGitText removes configured credentials and their common encodings

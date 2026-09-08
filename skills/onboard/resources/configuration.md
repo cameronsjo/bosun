@@ -52,6 +52,7 @@ tunnel:
 alerts:
   on_success: false            # Alert on successful deploys
   on_failure: true             # Alert on failed deploys (default)
+  on_recovery: true            # Retract a failure alert on recovery (default)
 
   # Discord
   discord_webhook_url: "https://discord.com/api/webhooks/..."
@@ -147,7 +148,8 @@ post_sync_hooks:
 | `infrastructure.containers` | `[traefik, authelia, gatus]` | Infrastructure container names |
 | `tunnel.provider` | `tailscale` | Tunnel provider: `tailscale` or `cloudflare` |
 | `alerts.on_success` | `false` | Send alerts on successful deploys |
-| `alerts.on_failure` | `true` | Send alerts on failed deploys |
+| `alerts.on_failure` | `true` | Send alerts on failed deploys. Defaults to true only when neither `on_success` nor `on_failure` is set — setting `on_success` alone leaves this false |
+| `alerts.on_recovery` | `true` | Retract a failure alert once a run recovers. Not coupled to the other two: setting `on_success` does not disable it |
 | `remove_orphans` | `true` | Pass `--remove-orphans` to docker compose up |
 | `post_sync_hooks` | `[]` | Container restart or exec hooks triggered by deploy path changes |
 | `hook_settle_delay` | `2s` on unconfigured Unraid `/mnt/user` targets; `0` elsewhere | Global pause after deploy before hooks run. Explicit `0s` disables the FUSE fallback |
@@ -430,6 +432,7 @@ Bosun can notify you when deployments succeed or fail.
 alerts:
   on_failure: true             # Alert on failed deploys (default)
   on_success: false            # Alert on successful deploys
+  on_recovery: true            # Retract a failure alert on recovery (default)
 
   discord_webhook_url: "https://discord.com/api/webhooks/..."
 ```

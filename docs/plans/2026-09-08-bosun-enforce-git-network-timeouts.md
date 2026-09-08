@@ -9,10 +9,10 @@ machine: "cf6e768835c7"
 approved_in: "ember-fugue"
 approved_session_id: "20a7397f-5bc8-4ae0-b9fe-c27829ae80db"
 status: in_progress
-branch: spec/update-git-timeouts-and-alert-recovery
-implementation_branch: fix/git-timeout-enforcement
+branch: fix/git-timeout-enforcement
+spec_branch: spec/update-git-timeouts-and-alert-recovery (MERGED, bosun#651)
 repo: bosun
-next: Task 2b — drive the spec PR to the ready-to-build label; Tasks 3-5 are gated on it
+next: Task 7 — merge bosun#656, merge the release PR, then MANUALLY docker compose pull on unraid (moving :latest tag)
 ---
 
 # Bosun: enforce git network timeouts, make failure alerts retractable, close the 404
@@ -366,12 +366,12 @@ Driver: Opus family — the change decides what an `X-Forwarded-For` header is a
 
 - [x] 1. Repoint or delete the `dotfiles` webhook — **deleted** (hook `587540215`, `dotfiles` now has 0 hooks). `homelab/bosun.yaml` declares one target, so a `dotfiles` push could only ever trigger a no-op homelab fetch.
 - [x] 2. Author the OpenSpec proposal — `openspec/changes/update-git-timeouts-and-alert-recovery/`, `openspec validate --strict` passes.
-- [ ] 2b. Drive the spec PR through CodeRabbit convergence to the `ready-to-build` label.
-- [ ] 3. Make the git network timeouts real (`internal/reconcile/git.go`).
-- [ ] 4. Make recovery actually fire (`reconcile.go`, `alerts.go`, `config.go`, `target.go`, `daemon.go`, `cmd/alert.go`).
-- [ ] 5. Log the client address, unforgeably (`internal/daemon/server.go`).
-- [ ] 6. Correct the stale webhook paths in docs (rides the Task 3-5 PR, so gated on `ready-to-build`). Loose-end issues **filed**: [#652](https://github.com/cameronsjo/bosun/issues/652) `on_failure` contradiction, [#653](https://github.com/cameronsjo/bosun/issues/653) `GitLocalTimeout`, [#654](https://github.com/cameronsjo/bosun/issues/654) HTTPS transport.
-- [ ] 7. Changelog, PR, release, manual deploy on `unraid`, confirm new `StartedAt`.
+- [x] 2b. Spec PR [#651](https://github.com/cameronsjo/bosun/pull/651) **MERGED** (`145e7d9`). Three adversarial passes folded in; CodeRabbit stalled across two triggers, so `ready-to-build` was applied under the repo's documented advisory fallback, with the call recorded on the PR.
+- [x] 3. Git network timeouts enforced. Dial bounded and capped by the operation budget, `Clone`'s conditional application fixed, elapsed-time errors, throw-site logging, widened `SanitizeGitURL`. Handshake/transfer deferred to [#655](https://github.com/cameronsjo/bosun/issues/655) — not buildable here.
+- [x] 4. Recovery fires at the run boundary. `on_recovery` default true through all sites incl. hot reload; `LastAlertedAttempt` predicate; delivery-outcome split. Red-proof: 0 retractions on `origin/main` where the test expects 1.
+- [x] 5. `remote_addr` unconditional, `forwarded_for` gated on `BOSUN_TRUSTED_PROXIES` (default empty), canonical IP matching, middleware-level tests.
+- [x] 6. Five stale webhook paths corrected; `docs/troubleshooting.md` gained wedged-sync and request-attribution sections; `scripts/verify-git-timeout.sh` added. Issues [#652](https://github.com/cameronsjo/bosun/issues/652), [#653](https://github.com/cameronsjo/bosun/issues/653), [#654](https://github.com/cameronsjo/bosun/issues/654), [#655](https://github.com/cameronsjo/bosun/issues/655) filed.
+- [ ] 7. Changelog written and PR [#656](https://github.com/cameronsjo/bosun/pull/656) open. Remaining: merge, merge the release PR, **manual** `docker compose pull` on `unraid`, confirm new `StartedAt`.
 
 ## Deviations
 
@@ -383,6 +383,8 @@ Driver: Opus family — the change decides what an `X-Forwarded-For` header is a
 
 ## Learnings
 
+- **Two bugs I introduced were caught by review, both in the fix's own new machinery.** The dial cap was computed from the caller context while `Pull` resolved auth *before* creating the fetch context, so a configured `FetchTimeout` never reached the dial — the exact "effective bound is the larger of the two" failure the cap was written to prevent, reintroduced one call site over. And zeroing `AttemptCount` unconditionally while retaining `LastAlertedAttempt` on delivery failure made a *retried* retraction report "0 prior failures" — the same defect this change exists to remove, reappearing on the retry path the change itself added. Both shapes are the same: a fix that repeats its own bug in the new code around it.
+- **My first redaction pass was a denylist, which my own rules name as the wrong side.** Redacting query parameters called `token`, `password`, `secret` let `pat`, `jwt`, `bearer`, `sas` and `code` straight through, and the remediation would forever have been "add one more name". Inverting to an allowlist cost two entries.
 - **The spec cited as governing a behaviour may not govern it at all.** Two of the three plan-named spec anchors were wrong in the same direction: the reconcile timeout family was `BackupTimeout`, and the alerting spec specifies the recovery alert's *shape* without ever saying when it fires. Both defects survived precisely because no requirement covered them — which is the same reason the plan could not find the right line to cite.
 - **Setting the documented timeout field bounds less than the field's name implies.** `ssh.ClientConfig.Timeout` bounds the TCP dial and nothing after it — `ssh.NewClientConn` takes no context and honors no deadline. A first draft of the spec asserted a "stalled handshake is bounded" scenario that the proposed fix could not have satisfied: a green that could not go red, written into the requirement rather than the code.
 - **An idle timeout wearing an operation timeout's name.** A read deadline refreshed on every successful read bounds silence, not duration. A peer dripping one byte per interval holds the connection and the reconcile lock indefinitely while every read succeeds — and the stalled-read test passes throughout, because reads never stall.
