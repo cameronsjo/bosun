@@ -77,7 +77,7 @@ For instant deploys (vs hourly polling):
 
 1. Go to your repo → **Settings** → **Webhooks**
 2. Add webhook:
-   - **Payload URL**: `http://your-unraid:8080/hooks/github-push`
+   - **Payload URL**: `http://your-unraid:8080/webhook/github`
    - **Content type**: `application/json`
    - **Secret**: Generate a random string, save for template config
    - **Events**: Just the push event
@@ -166,7 +166,7 @@ docker logs -f bosun
 curl http://unraid:8080/health
 
 # Test webhook manually
-curl -X POST http://unraid:8080/hooks/test
+curl -X POST http://unraid:8080/webhook
 ```
 
 ### SOPS Decryption Errors

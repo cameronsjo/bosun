@@ -67,7 +67,7 @@ services:
   "Web": {
     "gateway.tail${TAILNET}.ts.net:443": {
       "Handlers": {
-        "/hooks/": { "Proxy": "http://bosun:8080" }
+        "/hooks/": { "Proxy": "http://bosun:8080/webhook" }
       }
     }
   }

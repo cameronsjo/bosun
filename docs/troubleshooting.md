@@ -160,6 +160,80 @@ prefix such as `appdata/`. Absolute or traversal paths are redacted. `No deploy
 paths changed; post-sync hooks have nothing to evaluate` is a separate informational
 outcome and does not indicate a pattern problem.
 
+### Git sync is wedged
+
+Symptom: a reconcile cycle runs far longer than any configured bound, holding
+the reconcile lock and queueing triggers behind it. A failure alert may arrive
+naming a timeout much shorter than the run's actual duration.
+
+**Which phases are bounded.** Bosun bounds what it can reach:
+
+| Phase | Bounded by | Enforced |
+|---|---|---|
+| TCP dial | `GitSSHDialTimeout` (30s), capped by the operation's remaining budget | Yes |
+| Between protocol steps | `GitFetchTimeout` (2m) / `GitCloneTimeout` (5m) | Yes |
+| SSH handshake | — | **No** |
+| Packfile transfer | — | **No** |
+
+The last two are a dependency limit, not an oversight. Bounding them needs a
+deadline on the connection itself, which needs a custom `transport.Transport`,
+and go-git's only implementation of that session layer lives in an `internal/`
+package bosun cannot import. Setting `ssh.ClientConfig.Timeout` does not help:
+the transport applies it to the dial context and then hands the raw connection
+to `ssh.NewClientConn`, which honors no deadline. Tracked in
+[#655](https://github.com/cameronsjo/bosun/issues/655).
+
+**Identifying it.** A bounded timeout logs at error level with the measured
+elapsed time next to the bound that expired:
+
+```json
+{"level":"error","component":"git","operation":"fetch","url":"ssh://git@github.com/owner/repo.git",
+ "branch":"main","elapsed_ms":30004,"timeout_ms":30000,"message":"Git fetch timed out"}
+```
+
+An *unbounded* stall is the absence of that line: the cycle simply does not
+finish. Compare the run's `duration_ms` against the configured bounds —
+`duration_ms` covers the whole run, not just the fetch, so a large value alone
+does not prove where the time went. The `elapsed_ms` field is what settles it.
+
+```bash
+docker logs --since 2h --timestamps bosun | grep -E 'timed out|duration_ms'
+```
+
+**Clearing it.** Restart the daemon: `docker restart bosun`. The reconcile lock
+is released on process exit, and the next cycle starts clean. Nothing is lost —
+a wedged fetch never reached the deploy stage.
+
+Note that an error naming a timeout is not by itself evidence the timeout was
+enforced. Before this behaviour existed, `git fetch timed out after 2m0s`
+appeared on a run lasting 16m30s, and `git clone timed out after 5m0s` could
+appear when `GitCloneTimeout` had never been applied at all. Errors now report
+measured elapsed time and name the bound that actually expired.
+
+### A webhook request you cannot account for
+
+The request log carries two address fields, and they mean different things:
+
+- `remote_addr` — always present, always the observed connection peer. A fact.
+- `forwarded_for` — the first `X-Forwarded-For` element, recorded **only** when
+  `remote_addr` is a configured trusted proxy. A claim.
+
+They are never collapsed and the header is never preferred. `BOSUN_LISTEN_ADDR`
+binds all interfaces by design, so any host that can reach the daemon may send a
+well-formed `X-Forwarded-For`; parsing it as an IP does not make it true.
+
+Set `BOSUN_TRUSTED_PROXIES` to a comma-separated list of IP addresses or CIDR
+prefixes to enable `forwarded_for`. It defaults to empty — trust nothing — and
+an unparseable entry is refused rather than ignored, so a typo cannot silently
+disable attribution.
+
+To find who sent an unexpected request, grep the path rather than the field
+name; once the field exists it matches every request line:
+
+```bash
+docker logs --since 1h bosun | grep '"url":"/some/unexpected/path"'
+```
+
 ## Debug Mode
 
 Set verbose output:

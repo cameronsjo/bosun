@@ -63,6 +63,13 @@ type Config struct {
 	// bosun over the docker bridge, not loopback.
 	ListenAddr string
 
+	// TrustedProxies is the parsed allowlist of proxies whose X-Forwarded-For
+	// header the request log will record, in a field kept separate from the
+	// observed peer address. Nil or empty trusts nothing, which is the default
+	// and the direction this control must fail: ListenAddr binds all
+	// interfaces, so any reachable host can send a well-formed header.
+	TrustedProxies *trustedProxies
+
 	// AllowUnauthenticatedWebhook opts out of fail-closed webhook auth (#345).
 	// When WebhookSecret is empty, trigger endpoints reject every request
 	// unless this is true (BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true, strict match).
@@ -2076,6 +2083,22 @@ func ConfigFromEnv() *Config {
 
 	// HTTP bind address (empty = all interfaces; see Config.ListenAddr).
 	cfg.ListenAddr = os.Getenv("BOSUN_LISTEN_ADDR")
+
+	// Trusted proxies for request-log client attribution. An unparseable entry
+	// is refused loudly rather than dropped: a silently ignored entry disables
+	// attribution for the one sender the operator meant to trust.
+	if raw := strings.TrimSpace(os.Getenv("BOSUN_TRUSTED_PROXIES")); raw != "" {
+		parsed, err := parseTrustedProxies(strings.Split(raw, ","))
+		if err != nil {
+			logger := log.Component(log.ComponentDaemon)
+			logger.Error().
+				Err(err).
+				Str("env", "BOSUN_TRUSTED_PROXIES").
+				Msg("Invalid trusted proxy list, refusing to trust any proxy")
+		} else {
+			cfg.TrustedProxies = parsed
+		}
+	}
 
 	if d := config.BosunEnvDuration("POLL_INTERVAL", 0); d > 0 {
 		cfg.PollInterval = d
