@@ -10,13 +10,16 @@
 # Exit 0 = every check passed. Exit 1 = at least one failed. Exit 64 = the
 # script could not run its checks at all, which is NOT a pass.
 
+# Deliberately no -e: this script runs every check and reports a verdict at the
+# end, so a single non-matching grep must not abort the run. Failures are
+# counted explicitly and the exit status is derived from that count.
 set -uo pipefail
 
 HOST="${1:-unraid}"
 CONTAINER="${2:-bosun}"
 WINDOW="${VERIFY_WINDOW:-2h}"
 
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; BOLD=$'\033[1m'; OFF=$'\033[0m'
 else
   RED=''; GREEN=''; YELLOW=''; BOLD=''; OFF=''
@@ -37,10 +40,12 @@ LOGFILE="$(mktemp -t bosun-verify)"
 trap 'rm -f "$LOGFILE"' EXIT
 
 step "Fetching ${CONTAINER} logs from ${HOST} (last ${WINDOW})"
+# shellcheck disable=SC2029  # WINDOW and CONTAINER are local script inputs and
+# are meant to expand here, not on the remote host.
 if ! ssh "$HOST" "docker logs --since ${WINDOW} --timestamps ${CONTAINER}" > "$LOGFILE" 2>&1; then
   abort "could not read logs from ${HOST}. Nothing was verified."
 fi
-if [ ! -s "$LOGFILE" ]; then
+if [[ ! -s "$LOGFILE" ]]; then
   abort "log output was empty. A zero-line log cannot distinguish a healthy daemon from an unreachable one."
 fi
 printf 'Captured %s log lines.\n' "$(wc -l < "$LOGFILE" | tr -d ' ')" >&2
@@ -72,11 +77,11 @@ fi
 # 3. Every completed request names its sender.
 step "Check 3: HTTP requests carry remote_addr"
 req_total=$(grep -c 'HTTP request completed' "$LOGFILE" || true)
-if [ "${req_total:-0}" -eq 0 ]; then
+if [[ "${req_total:-0}" -eq 0 ]]; then
   warn "no HTTP requests in this window; cannot verify attribution"
 else
   req_attributed=$(grep 'HTTP request completed' "$LOGFILE" | grep -c 'remote_addr' || true)
-  if [ "$req_attributed" -eq "$req_total" ]; then
+  if [[ "$req_attributed" -eq "$req_total" ]]; then
     pass "all ${req_total} completed requests carry remote_addr"
   else
     fail "${req_attributed}/${req_total} requests carry remote_addr — the field is not unconditional"
@@ -85,12 +90,23 @@ fi
 
 # 4. The dead webhook path is gone. Grep the PATH, not the field name: once
 #    remote_addr exists it matches every request line and proves nothing.
-step "Check 4: no requests to the retired /webhook/github-push path"
-if grep 'HTTP request completed' "$LOGFILE" | grep -q 'github-push'; then
-  fail "something is still posting to github-push:"
-  grep 'HTTP request completed' "$LOGFILE" | grep 'github-push' | tail -5 >&2
+step "Check 4: the retired /webhook/github-push path, if hit, 404s and names its sender"
+gp_lines=$(grep 'HTTP request completed' "$LOGFILE" | grep 'github-push' || true)
+if [[ -z "$gp_lines" ]]; then
+  pass "no github-push requests in this window (the webhook was deleted)"
 else
-  pass "no github-push requests in this window"
+  # Present is not automatically a failure -- what matters is that it still 404s
+  # (the daemon never registered it) and that the sender is attributable.
+  gp_total=$(printf '%s\n' "$gp_lines" | wc -l | tr -d " ")
+  gp_404=$(printf '%s\n' "$gp_lines" | grep -c '"status":404' || true)
+  gp_attributed=$(printf '%s\n' "$gp_lines" | grep -c 'remote_addr' || true)
+  warn "${gp_total} github-push request(s) seen — something is still pointed at the retired path:"
+  printf '%s\n' "$gp_lines" | tail -5 >&2
+  if [[ "$gp_404" -eq "$gp_total" && "$gp_attributed" -eq "$gp_total" ]]; then
+    pass "all ${gp_total} 404'd and carry remote_addr, so the sender is identifiable"
+  else
+    fail "${gp_404}/${gp_total} returned 404 and ${gp_attributed}/${gp_total} carry remote_addr"
+  fi
 fi
 
 # 5. Recovery alerts are reachable at all.
@@ -104,7 +120,7 @@ else
 fi
 
 printf '\n%s%d passed, %d failed%s\n' "$BOLD" "$pass_count" "$fail_count" "$OFF" >&2
-if [ "$fail_count" -gt 0 ]; then
+if [[ "$fail_count" -gt 0 ]]; then
   echo "VERDICT: FAIL"
   exit 1
 fi

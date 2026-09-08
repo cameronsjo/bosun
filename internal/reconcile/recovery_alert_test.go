@@ -165,3 +165,57 @@ func TestDefaultConfigEnablesRecovery(t *testing.T) {
 	assert.True(t, cfg.OnFailure, "on_failure default is unchanged")
 	assert.False(t, cfg.OnSuccess, "on_success default is unchanged")
 }
+
+// TestOnRecoveryHotReloads pins the gate to the config-reload path, not just
+// startup. Without this the reload applier could be deleted and every other
+// test would still pass, leaving on_recovery the one gate needing a restart.
+func TestOnRecoveryHotReloads(t *testing.T) {
+	falseVal, trueVal := false, true
+
+	reloadWith := func(t *testing.T, start bool, reloaded *ReloadedConfig) bool {
+		t.Helper()
+		r := &Reconciler{config: &Config{
+			OnRecovery: start,
+			ConfigReloader: func(string) (*ReloadedConfig, error) {
+				return reloaded, nil
+			},
+		}}
+		require.NoError(t, r.reloadProjectConfig())
+		return r.config.OnRecovery
+	}
+
+	t.Run("reload can disable it", func(t *testing.T) {
+		assert.False(t, reloadWith(t, true, &ReloadedConfig{OnRecovery: &falseVal}))
+	})
+
+	t.Run("reload can enable it", func(t *testing.T) {
+		assert.True(t, reloadWith(t, false, &ReloadedConfig{OnRecovery: &trueVal}))
+	})
+
+	t.Run("absent leaves it alone", func(t *testing.T) {
+		assert.True(t, reloadWith(t, true, &ReloadedConfig{}))
+		assert.False(t, reloadWith(t, false, &ReloadedConfig{}))
+	})
+}
+
+// TestRetriedRetractionReportsRealCount is the regression test for a bug this
+// change introduced and code review caught. AttemptCount was zeroed
+// unconditionally while LastAlertedAttempt was retained on delivery failure, so
+// the retry read AttemptCount as 0 and reported "0 prior failures" -- the same
+// defect this change exists to remove, reappearing on its own retry path.
+func TestRetriedRetractionReportsRealCount(t *testing.T) {
+	alerter := &recordingAlerter{recoveryError: errors.New("discord down")}
+	r := newRecoveryReconciler(t, alerter, &Config{OnRecovery: true})
+	state := &DeployState{AttemptCount: 1, LastAlertedAttempt: 1}
+
+	// First clean run: delivery fails, state is retained.
+	require.False(t, r.retractFailureAlert(context.Background(), state))
+	assert.Equal(t, 1, alerter.lastPrior)
+
+	// Callers must not zero AttemptCount while the retraction is still owed.
+	// Simulating a caller that does is what proves the coupling matters.
+	alerter.recoveryError = nil
+	require.True(t, r.retractFailureAlert(context.Background(), state))
+	assert.Equal(t, 1, alerter.lastPrior,
+		"the retried retraction must still report 1 prior failure, not 0")
+}

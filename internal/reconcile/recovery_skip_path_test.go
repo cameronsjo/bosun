@@ -146,3 +146,41 @@ func TestNoRecoveryWithoutAPriorAlert(t *testing.T) {
 	assert.Equal(t, 0, f.alerter.deployRecoveryCalls,
 		"nothing was ever alerted, so nothing is owed a retraction")
 }
+
+// TestRecoveryFiresOnAlreadyDeployedSkip covers the branch the design calls out
+// as the one that turns a missing alert into a repeating one.
+//
+// This branch fails differently from the docs-only skip: it returns before
+// dispatch but never zeroes LastAlertedAttempt, so dispatching here without
+// clearing it would re-alert on every subsequent quiet cycle. Both halves are
+// asserted -- fires once, then stops.
+func TestRecoveryFiresOnAlreadyDeployedSkip(t *testing.T) {
+	// syncAfter equals LastDeployedCommit, so shouldSkipDeploy takes the
+	// already-deployed branch rather than the deploy-paths branch.
+	git := &mockGitWithDiff{
+		syncChanged: false,
+		syncBefore:  "aaa111",
+		syncAfter:   "aaa111",
+	}
+
+	f := newRecoverySkipFixture(t, git, &DeployState{
+		SchemaVersion:       2,
+		LastDeployedCommit:  "aaa111",
+		LastAttemptedCommit: "aaa111",
+		AttemptCount:        1,
+		LastAlertedAttempt:  1,
+	}, nil)
+
+	require.NoError(t, f.reconciler.Run(context.Background()))
+	assert.Equal(t, 1, f.alerter.deployRecoveryCalls,
+		"the already-deployed skip must retract too; it returned before dispatch entirely")
+
+	state := LoadState(f.stateFile)
+	require.NotNil(t, state)
+	assert.Equal(t, 0, state.LastAlertedAttempt,
+		"this branch never cleared LastAlertedAttempt on its own; leaving it set re-alerts forever")
+
+	require.NoError(t, f.reconciler.Run(context.Background()))
+	assert.Equal(t, 1, f.alerter.deployRecoveryCalls,
+		"a second already-deployed cycle must not re-send the retraction")
+}

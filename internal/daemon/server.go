@@ -161,8 +161,11 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
-		// Generate or extract request ID.
-		requestID := r.Header.Get("X-Request-ID")
+		// Generate or extract request ID. The header is caller-supplied and
+		// flows into every log line for this request, so it gets the same
+		// control-strip-and-cap boundary as GitHub pusher names -- otherwise a
+		// sender could park 32 KiB of control characters in the log.
+		requestID := SanitizeWebhookPusherName(r.Header.Get("X-Request-ID"))
 		if requestID == "" {
 			var id string
 			r = r.WithContext(log.WithRequestID(r.Context(), ""))

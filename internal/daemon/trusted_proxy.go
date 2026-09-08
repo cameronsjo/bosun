@@ -49,6 +49,32 @@ func parseTrustedProxies(entries []string) (*trustedProxies, error) {
 	return tp, nil
 }
 
+// describe renders the parsed prefixes for a startup log line.
+func (t *trustedProxies) describe() []string {
+	if t.empty() {
+		return nil
+	}
+	out := make([]string, 0, len(t.nets))
+	for _, prefix := range t.nets {
+		out = append(out, prefix.String())
+	}
+	return out
+}
+
+// trustsEverything reports whether any configured prefix admits every address.
+// A legitimate operator choice, but one worth saying out loud.
+func (t *trustedProxies) trustsEverything() bool {
+	if t.empty() {
+		return false
+	}
+	for _, prefix := range t.nets {
+		if ones, _ := prefix.Mask.Size(); ones == 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // empty reports whether nothing is trusted.
 func (t *trustedProxies) empty() bool {
 	return t == nil || len(t.nets) == 0

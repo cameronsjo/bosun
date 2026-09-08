@@ -267,3 +267,101 @@ func TestSanitizeGitURLKeepsBenignQuery(t *testing.T) {
 	assert.Equal(t, "main", parsed.Query().Get("ref"))
 	assert.Equal(t, "1", parsed.Query().Get("depth"))
 }
+
+// TestSanitizeGitURLRedactsUnknownParameters pins the allowlist inversion.
+//
+// A denylist of credential-looking names is never done: pat, jwt, bearer, sas
+// and code are all real credential parameter names that a reasonable denylist
+// misses, and the remediation is always "add one more". These cases exist so a
+// future change back to a denylist fails here rather than in production.
+func TestSanitizeGitURLRedactsUnknownParameters(t *testing.T) {
+	for _, param := range []string{"pat", "jwt", "bearer", "sas", "code", "somethingnobodyhasthoughtof"} {
+		t.Run(param, func(t *testing.T) {
+			got := SanitizeGitURL("https://git.example.com/org/repo.git?" + param + "=s3cr3t-value")
+			assert.NotContains(t, got, "s3cr3t-value",
+				"every parameter value is redacted unless explicitly allowed")
+			assert.Contains(t, got, "git.example.com/org/repo.git")
+		})
+	}
+}
+
+func TestSanitizeGitURLDropsFragment(t *testing.T) {
+	got := SanitizeGitURL("https://git.example.com/org/repo.git#token=s3cr3t-value")
+	assert.NotContains(t, got, "s3cr3t-value")
+	assert.Contains(t, got, "git.example.com/org/repo.git")
+}
+
+// TestSanitizeGitURLKeepsSCPStyleLegible covers the form homelab actually uses.
+// Before this, url.Parse rejected it and the timeout log said only "[redacted
+// invalid repository URL]" -- losing repo identity in exactly the incident the
+// log line exists to explain.
+func TestSanitizeGitURLKeepsSCPStyleLegible(t *testing.T) {
+	got := SanitizeGitURL("git@github.com:cameronsjo/homelab.git")
+	assert.Equal(t, "ssh://github.com/cameronsjo/homelab.git", got)
+	assert.NotContains(t, got, redactedGitURL)
+}
+
+func TestSanitizeGitURLStillRedactsTrulyMalformed(t *testing.T) {
+	assert.Equal(t, redactedGitURL, SanitizeGitURL("ht tp://%zz"))
+}
+
+// TestFetchTimeoutCapsTheDial is the regression test for a bug this change
+// introduced and code review caught: the dial cap was computed from the caller
+// context, but Pull resolved its auth method *before* creating the fetch
+// context, so a configured FetchTimeout never reached the dial. The effective
+// bound was the larger of the two -- the exact failure the cap exists to stop.
+func TestFetchTimeoutCapsTheDial(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network dial timing")
+	}
+
+	dir := initRepoWithOrigin(t, blackholedSSHRemote)
+
+	g := NewGitOps(blackholedSSHRemote, "main", dir)
+	g.FetchTimeout = 400 * time.Millisecond
+	g.SSHDialTimeout = 30 * time.Second // must NOT be what bounds this
+	g.authResolver = func(string) (transport.AuthMethod, error) {
+		return &stubSSHAuth{cfg: newStubClientConfig()}, nil
+	}
+
+	start := time.Now()
+	_, _, _, err := g.Pull(context.Background())
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.Less(t, elapsed, 5*time.Second,
+		"FetchTimeout must cap the dial; without the cap this waits the full 30s SSHDialTimeout")
+}
+
+func TestDialTimeoutFor(t *testing.T) {
+	g := &GitOps{SSHDialTimeout: 10 * time.Second}
+
+	t.Run("operation timeout caps the dial", func(t *testing.T) {
+		assert.Equal(t, 2*time.Second, g.dialTimeoutFor(context.Background(), 2*time.Second))
+	})
+
+	t.Run("dial timeout wins when it is smaller", func(t *testing.T) {
+		assert.Equal(t, 10*time.Second, g.dialTimeoutFor(context.Background(), time.Minute))
+	})
+
+	t.Run("an expired context fails fast rather than waiting the full dial", func(t *testing.T) {
+		// go-git's dial ignores the context entirely, so without a floor an
+		// operation entered with a dead deadline still burns the dial timeout.
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+		defer cancel()
+		assert.Equal(t, minDialTimeout, g.dialTimeoutFor(ctx, time.Minute))
+	})
+}
+
+func TestEffectiveBound(t *testing.T) {
+	t.Run("no deadline yields the operation timeout", func(t *testing.T) {
+		assert.Equal(t, time.Minute, effectiveBound(context.Background(), time.Minute))
+	})
+
+	t.Run("an earlier caller deadline wins", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		assert.Less(t, effectiveBound(ctx, time.Minute), time.Minute,
+			"the error must name the bound that actually expires, not the one that did not")
+	})
+}
