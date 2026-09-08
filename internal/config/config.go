@@ -381,6 +381,19 @@ func FindRoot() (string, error) {
 // LoadFrom loads project config from a specific directory path (skips FindRoot).
 // Returns an empty Config with ConfigFileFound false when no supported file is
 // present, and an error when a present file cannot be read, parsed, or validated.
+// LoadFrom builds a Config from a specific directory, for the per-reconcile
+// config reload. It is NOT equivalent to Load: it deliberately omits fields
+// only the startup path needs.
+//
+// Populated: alert gates, post-sync hooks, deploy paths, drift settings,
+// template include dir, remove-orphans, targets.
+//
+// NOT populated -- these read as zero values through their getters, so do not
+// add a consumer for one without adding it here first: projectName,
+// ManifestDir, provisionsDir, ComposeFile, SnapshotsDir, infraContainers,
+// tunnelProvider, tunnelConfig. Omitting alertConfig was #652, where the zero
+// value silently disabled every deploy alert on the first reconcile after each
+// daemon start.
 func LoadFrom(dir string) (*Config, error) {
 	loaded, err := loadConfigFileSnapshot(dir)
 	if err != nil {
@@ -398,6 +411,13 @@ func LoadFrom(dir string) (*Config, error) {
 	templateIncludeDir := extractTemplateIncludeDir(fileCfg)
 	driftIgnore := extractDriftIgnore(fileCfg)
 	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
+	// alertConfig MUST be extracted here, not left zero-valued. LoadFrom feeds
+	// LoadReloadedConfig, which copies these gates into the running reconciler
+	// on every reconcile -- so omitting it silently set on_success, on_failure
+	// and on_recovery to false on the first cycle after every daemon start,
+	// overwriting the correct values Load() supplied at startup and disabling
+	// every deploy alert until the next restart (#652).
+	alertConfig := extractAlertConfig(fileCfg)
 	driftSelfHeal := extractDriftSelfHeal(fileCfg)
 	driftSelfHealCooldown := extractDriftSelfHealCooldown(fileCfg)
 	domain := extractDomain(fileCfg)
@@ -409,6 +429,7 @@ func LoadFrom(dir string) (*Config, error) {
 		Root:                   dir,
 		configFileFound:        loaded.found,
 		hookSettleDelayPresent: loaded.hookSettleDelayPresent,
+		alertConfig:            alertConfig,
 		postSyncHooks:          postSyncHooks,
 		hookSettleDelay:        hookSettleDelay,
 		deployPaths:            deployPaths,

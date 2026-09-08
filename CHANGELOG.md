@@ -13,16 +13,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **reconcile:** enforce git network timeouts and make failure alerts retractable ([#656](https://github.com/cameronsjo/bosun/issues/656)) ([1e2c602](https://github.com/cameronsjo/bosun/commit/1e2c602c2df47d67929c0699387035bcdb15e051))
 * **reconcile:** reject unsafe target sets ([#639](https://github.com/cameronsjo/bosun/issues/639)) ([0a9f5d4](https://github.com/cameronsjo/bosun/commit/0a9f5d4ac885de5ff617a113a9801edea47ef67b))
 
-## [Unreleased]
-
-### Bug Fixes
-
-* **reconcile:** enforce the git network timeouts. `GitSSHDialTimeout` (30s) now bounds the TCP dial, capped by the operation's remaining budget; without that cap the effective bound was the larger of the two, not the smaller. `Clone` applies its timeout even when the caller context already carries a deadline — the daemon sets one on every cycle, so the declared clone bound was previously never applied on the only unattended path. Timeout errors report measured elapsed time and name the bound that expired, and both throw sites log `operation`, sanitized URL, `branch`, `elapsed_ms` and `timeout_ms`. The SSH handshake and packfile transfer remain unbounded; see [#655](https://github.com/cameronsjo/bosun/issues/655) and `docs/troubleshooting.md`
-* **reconcile:** retract a failure alert when a run recovers. Adds `on_recovery` (default true, not coupled to `on_success`), dispatched at the run boundary so a recovery that skips deployment — no deploy-relevant files changed, or the commit is already deployed — still retracts. A single failure that alerted now earns one retraction, reported as one prior failure
-* **reconcile:** redact credential-bearing query parameters in sanitized git URLs, not just userinfo
-* **daemon:** log `remote_addr` on every completed HTTP request, plus `forwarded_for` in a separate field when the peer is in `BOSUN_TRUSTED_PROXIES` (default empty). The two are never collapsed and the header is never preferred
-* **docs:** correct five references to `/hooks/github-push`, an endpoint the daemon has never registered
-
 ## [0.42.1](https://github.com/cameronsjo/bosun/compare/v0.42.0...v0.42.1) (2026-08-29)
 
 
