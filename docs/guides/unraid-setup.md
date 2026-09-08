@@ -233,7 +233,7 @@ curl http://localhost:8080/health
 
 1. Go to your repo → **Settings** → **Webhooks** → **Add webhook**
 2. Configure:
-   - **Payload URL**: `https://your-funnel-url/hooks`
+   - **Payload URL**: `https://your-funnel-url/webhook/github`
    - **Content type**: `application/json`
    - **Secret**: Same secret you set in bosun config
    - **Events**: Just the push event

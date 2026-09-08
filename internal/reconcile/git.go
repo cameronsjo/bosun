@@ -189,13 +189,20 @@ const minDialTimeout = time.Millisecond
 // effectiveBound is the earlier of an operation's own timeout and whatever the
 // caller's context has left. This is the bound that will actually expire, and
 // therefore the one an error should name.
+// It MUST be evaluated before the operation starts. Called from inside a
+// DeadlineExceeded branch it measures the budget remaining *after* expiry --
+// approximately zero -- and the error would name "bound 0s".
 func effectiveBound(ctx context.Context, opTimeout time.Duration) time.Duration {
+	bound := opTimeout
 	if deadline, ok := ctx.Deadline(); ok {
-		if remaining := time.Until(deadline); remaining < opTimeout {
-			return remaining
+		if remaining := time.Until(deadline); remaining < bound {
+			bound = remaining
 		}
 	}
-	return opTimeout
+	if bound < 0 {
+		return 0
+	}
+	return bound
 }
 
 // dialTimeoutFor is the dial bound for one operation: the SSH dial timeout,
@@ -516,7 +523,8 @@ func (g *GitOps) Clone(ctx context.Context, depth int) error {
 	// while the error text named it regardless. context.WithTimeout already
 	// takes the earlier of the two deadlines.
 	cloneTimeout := g.effectiveCloneTimeout()
-	cloneStartCtx := ctx
+	// Captured before the context is wrapped: after expiry this measures ~0.
+	cloneBound := effectiveBound(ctx, cloneTimeout)
 	ctx, cancel := context.WithTimeout(ctx, cloneTimeout)
 	defer cancel()
 
@@ -553,7 +561,7 @@ func (g *GitOps) Clone(ctx context.Context, depth int) error {
 		}
 		if ctx.Err() == context.DeadlineExceeded {
 			elapsed := time.Since(start)
-			bound := effectiveBound(cloneStartCtx, cloneTimeout)
+			bound := cloneBound
 			logger.Error().
 				Str(log.FieldOperation, "clone").
 				Str(log.FieldURL, SanitizeGitURL(g.RepoURL)).
@@ -634,6 +642,8 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 
 	// Fetch with timeout
 	fetchTimeout := g.effectiveFetchTimeout()
+	// Captured before fetchCtx is created, for the same reason as clone.
+	fetchBound := effectiveBound(ctx, fetchTimeout)
 	fetchStart := time.Now()
 	fetchCtx, fetchCancel := context.WithTimeout(ctx, fetchTimeout)
 	defer fetchCancel()
@@ -648,7 +658,7 @@ func (g *GitOps) Pull(ctx context.Context) (bool, string, string, error) {
 	if err := repo.FetchContext(fetchCtx, fetchOpts); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		if fetchCtx.Err() == context.DeadlineExceeded {
 			elapsed := time.Since(fetchStart)
-			bound := effectiveBound(ctx, fetchTimeout)
+			bound := fetchBound
 			logger.Error().
 				Str(log.FieldOperation, "fetch").
 				Str(log.FieldURL, SanitizeGitURL(g.RepoURL)).

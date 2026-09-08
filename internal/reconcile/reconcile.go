@@ -620,10 +620,12 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 			// already-deployed run re-alerts.
 			clearFailureState := r.retractFailureAlert(ctx, state)
 
-			if clearFailureState && (state.AttemptCount != 0 || state.LastAttemptedCommit != "" || state.LastAlertedAttempt != 0) {
+			if state.AttemptCount != 0 || state.LastAttemptedCommit != "" || (clearFailureState && state.LastAlertedAttempt != 0) {
 				state.AttemptCount = 0
 				state.LastAttemptedCommit = ""
-				state.LastAlertedAttempt = 0
+				if clearFailureState {
+					state.LastAlertedAttempt = 0
+				}
 				if err := SaveState(r.config.StateFile, state); err != nil {
 					logger.Error().Err(err).Str(log.FieldPath, r.config.StateFile).Msg("Failed to reset breaker state after confirmed skip")
 				}
@@ -668,9 +670,9 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 			state.DeployedAt = time.Now()
 			state.Source = r.config.Source
 			state.NeedsRedeploy = false
+			state.AttemptCount = 0
+			state.LastAttemptedCommit = ""
 			if clearFailureState {
-				state.AttemptCount = 0
-				state.LastAttemptedCommit = ""
 				state.LastAlertedAttempt = 0
 			}
 			if err := SaveState(r.config.StateFile, state); err != nil {
@@ -978,12 +980,13 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	state.DeployedAt = time.Now()
 	state.DeployCount++
 	state.Source = r.config.Source
-	// Keep the attempt count alongside LastAlertedAttempt when delivery failed:
-	// the retry reads AttemptCount for its prior-failure count, and zeroing it
-	// here would make the retried retraction report "0 prior failures" -- the
-	// same defect this change removes, reappearing on the retry path.
+	// AttemptCount is the circuit breaker's counter and must always reset after
+	// a verified deploy -- retaining it to carry a pending retraction's count
+	// would let the breaker trip on a commit that just deployed successfully.
+	// LastAlertedAttempt carries that count instead, and is retained only while
+	// the retraction is still owed.
+	state.AttemptCount = 0
 	if clearFailureState {
-		state.AttemptCount = 0
 		state.LastAlertedAttempt = 0
 	}
 	state.NeedsRedeploy = false

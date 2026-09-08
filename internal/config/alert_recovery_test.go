@@ -30,34 +30,51 @@ func alertConfigFrom(t *testing.T, body string) AlertConfig {
 // retractions for anyone who sets on_success, which is exactly the operator
 // most likely to care about alert volume.
 func TestOnRecoveryDefault(t *testing.T) {
-	t.Run("unset defaults to true", func(t *testing.T) {
-		cfg := alertConfigFrom(t, "alerts:\n  discord_webhook_url: https://example.invalid/hook\n")
-		assert.True(t, cfg.OnRecovery)
-		assert.True(t, cfg.OnFailure, "existing on_failure default is unchanged")
-		assert.False(t, cfg.OnSuccess, "existing on_success default is unchanged")
-	})
+	tests := []struct {
+		name           string
+		body           string
+		wantOnRecovery bool
+		wantOnFailure  bool
+		wantOnSuccess  bool
+		why            string
+	}{
+		{
+			name:           "unset defaults to true",
+			body:           "alerts:\n  discord_webhook_url: https://example.invalid/hook\n",
+			wantOnRecovery: true, wantOnFailure: true, wantOnSuccess: false,
+			why: "existing on_failure and on_success defaults are unchanged",
+		},
+		{
+			name:           "no alerts block at all defaults to true",
+			body:           "infrastructure:\n  containers:\n    - nginx\n",
+			wantOnRecovery: true, wantOnFailure: true, wantOnSuccess: false,
+		},
+		{
+			name:           "explicit on_success does not suppress the recovery default",
+			body:           "alerts:\n  on_success: true\n",
+			wantOnRecovery: true, wantOnFailure: false, wantOnSuccess: true,
+			why: "on_recovery is not coupled to on_success; on_failure's existing coupling is preserved",
+		},
+		{
+			name:           "explicit false is honoured",
+			body:           "alerts:\n  on_recovery: false\n",
+			wantOnRecovery: false, wantOnFailure: true, wantOnSuccess: false,
+		},
+		{
+			name:           "explicit true with on_failure false",
+			body:           "alerts:\n  on_failure: false\n  on_recovery: true\n",
+			wantOnRecovery: true, wantOnFailure: false, wantOnSuccess: false,
+		},
+	}
 
-	t.Run("no alerts block at all defaults to true", func(t *testing.T) {
-		cfg := alertConfigFrom(t, "infrastructure:\n  containers:\n    - nginx\n")
-		assert.True(t, cfg.OnRecovery)
-	})
-
-	t.Run("explicit on_success does not suppress the recovery default", func(t *testing.T) {
-		cfg := alertConfigFrom(t, "alerts:\n  on_success: true\n")
-		assert.True(t, cfg.OnRecovery, "on_recovery is not coupled to on_success")
-		assert.False(t, cfg.OnFailure, "on_failure's existing coupling is preserved unchanged")
-	})
-
-	t.Run("explicit false is honoured", func(t *testing.T) {
-		cfg := alertConfigFrom(t, "alerts:\n  on_recovery: false\n")
-		assert.False(t, cfg.OnRecovery)
-	})
-
-	t.Run("explicit true with on_failure false", func(t *testing.T) {
-		cfg := alertConfigFrom(t, "alerts:\n  on_failure: false\n  on_recovery: true\n")
-		assert.True(t, cfg.OnRecovery)
-		assert.False(t, cfg.OnFailure)
-	})
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := alertConfigFrom(t, tc.body)
+			assert.Equal(t, tc.wantOnRecovery, cfg.OnRecovery, tc.why)
+			assert.Equal(t, tc.wantOnFailure, cfg.OnFailure, tc.why)
+			assert.Equal(t, tc.wantOnSuccess, cfg.OnSuccess, tc.why)
+		})
+	}
 }
 
 func TestAlertConfigFromEnvDefaultsRecovery(t *testing.T) {

@@ -2,7 +2,9 @@ package reconcile
 
 import (
 	"context"
+	"net"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -19,6 +21,28 @@ import (
 // dropped rather than refused, so a dial against it hangs until something
 // bounds it -- which is exactly the condition under test.
 const blackholedSSHRemote = "ssh://git@192.0.2.1:22/test/repo.git"
+
+const blackholedSSHAddr = "192.0.2.1:22"
+
+// requireBlackholedRemote skips when the runner does not actually blackhole the
+// TEST-NET address.
+//
+// These tests prove a timeout bounds a hang, so they need a dial that hangs. On
+// a host with no default route, or behind a firewall answering ICMP
+// unreachable, connect() returns ENETUNREACH in microseconds -- the assertions
+// would then fail for a reason that has nothing to do with the code. testing
+// .Short() does not gate on reachability, so probe it.
+func requireBlackholedRemote(t *testing.T) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", blackholedSSHAddr, 250*time.Millisecond)
+	if err == nil {
+		_ = conn.Close()
+		t.Skip("something answered on the TEST-NET address; this fixture needs a silent blackhole")
+	}
+	if !os.IsTimeout(err) {
+		t.Skipf("dial to %s failed fast (%v) instead of hanging; the runner is network-isolated", blackholedSSHAddr, err)
+	}
+}
 
 // stubSSHAuth is a minimal ssh.AuthMethod carrying the four fields the dial
 // timeout must not destroy.
@@ -163,6 +187,7 @@ func TestPullBoundedByDialTimeout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("network dial timing")
 	}
+	requireBlackholedRemote(t)
 
 	dir := initRepoWithOrigin(t, blackholedSSHRemote)
 
@@ -193,6 +218,7 @@ func TestCloneTimeoutAppliesUnderLongerCallerDeadline(t *testing.T) {
 	if testing.Short() {
 		t.Skip("network dial timing")
 	}
+	requireBlackholedRemote(t)
 
 	dir := filepath.Join(t.TempDir(), "checkout")
 
@@ -314,6 +340,7 @@ func TestFetchTimeoutCapsTheDial(t *testing.T) {
 	if testing.Short() {
 		t.Skip("network dial timing")
 	}
+	requireBlackholedRemote(t)
 
 	dir := initRepoWithOrigin(t, blackholedSSHRemote)
 
@@ -364,4 +391,58 @@ func TestEffectiveBound(t *testing.T) {
 		assert.Less(t, effectiveBound(ctx, time.Minute), time.Minute,
 			"the error must name the bound that actually expires, not the one that did not")
 	})
+}
+
+// TestSanitizeGitURLSCPStyleRedactsCredentials covers the gap in the scp-style
+// rewrite: it returned before query redaction and fragment removal, so
+// git@host:repo.git?token=secret reached the timeout log intact.
+func TestSanitizeGitURLSCPStyleRedactsCredentials(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+	}{
+		{"query credential", "git@github.com:org/repo.git?token=s3cr3t-value"},
+		{"fragment", "git@github.com:org/repo.git#s3cr3t-value"},
+		{"unknown parameter", "git@github.com:org/repo.git?pat=s3cr3t-value"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SanitizeGitURL(tc.in)
+			assert.NotContains(t, got, "s3cr3t-value")
+			assert.Contains(t, got, "github.com/org/repo.git")
+		})
+	}
+}
+
+// TestTimeoutBoundIsCapturedBeforeExpiry guards a defect where the reported
+// bound was measured inside the DeadlineExceeded branch -- after expiry, when
+// the remaining budget is ~0 -- so a caller-deadline timeout logged "bound 0s".
+func TestTimeoutBoundIsCapturedBeforeExpiry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network dial timing")
+	}
+	requireBlackholedRemote(t)
+
+	dir := filepath.Join(t.TempDir(), "checkout")
+	g := NewGitOps(blackholedSSHRemote, "main", dir)
+	g.CloneTimeout = time.Hour // the caller's deadline must be the earlier one
+	g.authResolver = func(string) (transport.AuthMethod, error) {
+		return &stubSSHAuth{cfg: newStubClientConfig()}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+
+	err := g.Clone(ctx, 1)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "bound 0s",
+		"the bound must be captured before the operation, not measured after it expires")
+}
+
+func TestEffectiveBoundNeverNegative(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+	defer cancel()
+	assert.Equal(t, time.Duration(0), effectiveBound(ctx, time.Minute),
+		"an expired context yields zero, never a negative duration in a log field")
 }

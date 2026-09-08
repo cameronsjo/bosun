@@ -96,7 +96,11 @@ func TestRequestLogSanitizesRequestID(t *testing.T) {
 	req.Header.Set("X-Request-ID", "abc\x00\ndef")
 
 	entry := captureRequestLog(t, mustParseProxies(t), req)
-	requestID, _ := entry["request_id"].(string)
-	assert.NotContains(t, requestID, "\n")
-	assert.NotContains(t, requestID, "\x00")
+	// Assert the exact expected value. A comma-ok that discards the failure
+	// yields "" for a missing field, and NotContains passes over "" -- deleting
+	// the sanitization call would leave this test green.
+	requestID, ok := entry["request_id"].(string)
+	require.True(t, ok, "request_id must be present and a string; got %#v", entry["request_id"])
+	assert.Equal(t, "abcdef", requestID,
+		"control characters are stripped, the rest of the caller's value is preserved")
 }

@@ -196,8 +196,17 @@ func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) r
 
 	target := r.alertTarget()
 
-	if err := r.alerter.SendDeployRecovery(ctx, r.lastCommit, target, priorFailures); err != nil {
-		logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+	// A cancelled caller context would fail delivery instantly and leave the
+	// retraction owed forever; failure alerts already use this helper.
+	// cancel is nil when the caller's context is still live -- the helper
+	// returns it unwrapped in that case, so a bare defer would panic.
+	alertCtx, cancel := failureAlertDeliveryContext(ctx)
+	if cancel != nil {
+		defer cancel()
+	}
+
+	if err := r.alerter.SendDeployRecovery(alertCtx, r.lastCommit, target, priorFailures); err != nil {
+		logger := log.ComponentCtx(alertCtx, log.ComponentReconcile)
 		logger.Warn().
 			Err(err).
 			Str(log.FieldOperation, "alert_recovery").
@@ -231,7 +240,11 @@ func (r *Reconciler) retractFailureAlert(ctx context.Context, state *DeployState
 	if !retractionOwed(state) {
 		return true
 	}
-	switch r.sendRecoveryAlert(ctx, state.AttemptCount) {
+	// LastAlertedAttempt, not AttemptCount: the breaker resets AttemptCount on
+	// every verified deploy, so it is zero by the time a retried retraction
+	// reads it. LastAlertedAttempt survives exactly as long as the retraction
+	// is owed, which is the same lifetime the count needs.
+	switch r.sendRecoveryAlert(ctx, state.LastAlertedAttempt) {
 	case recoveryDeliveryFailed:
 		// Keep the evidence so the next clean run re-attempts. A provider
 		// outage must not consume the retraction.

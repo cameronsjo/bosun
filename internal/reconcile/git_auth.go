@@ -147,8 +147,12 @@ func effectiveHTTPSPort(u *url.URL) string {
 // userinfo, every non-benign query parameter value, and the fragment. Raw
 // malformed standard URLs are replaced rather than echoed.
 func SanitizeGitURL(repoURL string) string {
-	if scp := sanitizeSCPStyleURL(repoURL); scp != "" {
-		return scp
+	// An scp-style remote is rewritten to ssh:// and then re-entered, so it
+	// gets the same userinfo, query and fragment redaction as any other URL.
+	// Returning the rewrite directly would let git@host:repo.git?token=secret
+	// through untouched.
+	if scp := scpStyleToSSHURL(repoURL); scp != "" {
+		return SanitizeGitURL(scp)
 	}
 	parsed, err := url.Parse(repoURL)
 	if err != nil {
@@ -165,7 +169,7 @@ func SanitizeGitURL(repoURL string) string {
 	return parsed.String()
 }
 
-// sanitizeSCPStyleURL renders an scp-style remote (git@host:org/repo.git) as a
+// scpStyleToSSHURL renders an scp-style remote (git@host:org/repo.git) as a
 // legible ssh:// URL, or returns "" when the input is not scp-style.
 //
 // url.Parse rejects scp-style remotes, which used to mean SanitizeGitURL
@@ -173,7 +177,7 @@ func SanitizeGitURL(repoURL string) string {
 // tolerable while this function only fed diagnostics; it is not now that the
 // git timeout log carries the URL, because the operator would lose repository
 // identity in exactly the incident the log line exists to explain.
-func sanitizeSCPStyleURL(repoURL string) string {
+func scpStyleToSSHURL(repoURL string) string {
 	if strings.Contains(repoURL, "://") {
 		return ""
 	}
