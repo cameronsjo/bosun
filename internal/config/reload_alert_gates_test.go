@@ -18,6 +18,19 @@ func writeProjectConfig(t *testing.T, body string) string {
 	return dir
 }
 
+// writeRootProjectConfig writes bosun.yaml at the root, which is both a config
+// file and a FindRoot anchor. Load() walks up looking for one of those anchors,
+// and a bare .bosun/config.yml is not among them -- so the Load-vs-LoadFrom
+// comparison needs this shape, not the one above.
+func writeRootProjectConfig(t *testing.T, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(resolved, "bosun.yaml"), []byte(body), 0o644))
+	return resolved
+}
+
 // TestLoadFromPopulatesAlertConfig is the regression test for #652.
 //
 // LoadFrom omitted alertConfig entirely, so GetAlertConfig() returned the zero
@@ -76,33 +89,45 @@ func TestLoadReloadedConfigCarriesAlertGates(t *testing.T) {
 	assert.False(t, *reloaded.OnSuccess)
 }
 
-// TestLoadAndLoadFromAgreeOnAlertGates pins the two loaders together. They
-// diverged silently because nothing compared them, and the divergence only
-// showed up as a production log line hours later.
+// TestLoadAndLoadFromAgreeOnAlertGates pins the two loaders against each other.
+// They diverged silently because nothing compared them, and the divergence
+// surfaced only as a production log line hours later.
+//
+// This calls Load() for real rather than recomputing extractAlertConfig: Load
+// is the thing that must agree, and comparing LoadFrom against the same helper
+// LoadFrom itself calls would be a tautology -- green even if Load stopped
+// calling extractAlertConfig or changed its resolution order, which is exactly
+// the divergence being guarded. Load resolves its root by walking up from the
+// working directory, so this chdirs; the file declares no t.Parallel().
 func TestLoadAndLoadFromAgreeOnAlertGates(t *testing.T) {
-	bodies := []string{
-		"infrastructure:\n  containers:\n    - nginx\n",
-		"alerts:\n  on_failure: false\n",
-		"alerts:\n  on_success: true\n",
-		"alerts:\n  on_recovery: false\n",
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"no alerts block", "infrastructure:\n  containers:\n    - nginx\n"},
+		{"on_failure false", "alerts:\n  on_failure: false\n"},
+		{"on_success true", "alerts:\n  on_success: true\n"},
+		{"on_recovery false", "alerts:\n  on_recovery: false\n"},
+		{"all three explicit", "alerts:\n  on_success: true\n  on_failure: true\n  on_recovery: false\n"},
 	}
 
-	for _, body := range bodies {
-		t.Run(body, func(t *testing.T) {
-			dir := writeProjectConfig(t, body)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeRootProjectConfig(t, tc.body)
+
+			original, err := os.Getwd()
+			require.NoError(t, err)
+			require.NoError(t, os.Chdir(dir))
+			t.Cleanup(func() { _ = os.Chdir(original) })
+
+			fromLoad, err := Load()
+			require.NoError(t, err)
 
 			fromLoadFrom, err := LoadFrom(dir)
 			require.NoError(t, err)
 
-			// Load() resolves the root by walking up from the working dir, so
-			// compare against extractAlertConfig directly -- the same helper
-			// Load uses -- rather than chdir-ing in a parallel-safe test.
-			snapshot, err := loadConfigFileSnapshot(dir)
-			require.NoError(t, err)
-			want := extractAlertConfig(snapshot.config)
-
-			assert.Equal(t, want, fromLoadFrom.GetAlertConfig(),
-				"LoadFrom must extract the same alert config Load does")
+			assert.Equal(t, fromLoad.GetAlertConfig(), fromLoadFrom.GetAlertConfig(),
+				"LoadFrom feeds the running reconciler; disagreeing with Load means a reload changes gates nobody set")
 		})
 	}
 }

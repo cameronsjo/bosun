@@ -172,6 +172,13 @@ func (r *Reconciler) reloadProjectConfig() error {
 	}
 	changed = reloadField(&r.config.DriftIgnore, cloneSlice(reloaded.DriftIgnore), func(v []DriftIgnoreRule) bool { return v != nil }) || changed
 
+	// The repo's bosun.yaml is authoritative for the alert gates, by design:
+	// "captain gives orders" -- the tracked config is the source of truth, so a
+	// reload overwriting the startup value is the intent, not an accident.
+	// These are plain assignments rather than reloadField because the gates
+	// have no environment variable to take precedence (#657); if one is ever
+	// added, they need reloadField's FromEnv handling the way RemoveOrphans
+	// does below.
 	if reloaded.OnFailure != nil {
 		r.config.OnFailure = *reloaded.OnFailure
 		changed = true

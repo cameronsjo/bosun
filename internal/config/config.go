@@ -381,6 +381,19 @@ func FindRoot() (string, error) {
 // LoadFrom loads project config from a specific directory path (skips FindRoot).
 // Returns an empty Config with ConfigFileFound false when no supported file is
 // present, and an error when a present file cannot be read, parsed, or validated.
+// LoadFrom builds a Config from a specific directory, for the per-reconcile
+// config reload. It is NOT equivalent to Load: it deliberately omits fields
+// only the startup path needs.
+//
+// Populated: alert gates, post-sync hooks, deploy paths, drift settings,
+// template include dir, remove-orphans, targets.
+//
+// NOT populated -- these read as zero values through their getters, so do not
+// add a consumer for one without adding it here first: projectName,
+// ManifestDir, provisionsDir, ComposeFile, SnapshotsDir, infraContainers,
+// tunnelProvider, tunnelConfig. Omitting alertConfig was #652, where the zero
+// value silently disabled every deploy alert on the first reconcile after each
+// daemon start.
 func LoadFrom(dir string) (*Config, error) {
 	loaded, err := loadConfigFileSnapshot(dir)
 	if err != nil {
