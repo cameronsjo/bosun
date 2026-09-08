@@ -243,8 +243,13 @@ func (a *dialTimeoutAuth) ClientConfig() (*xssh.ClientConfig, error) {
 	if cfg == nil {
 		return nil, errors.New("ssh auth method returned a nil client config")
 	}
-	cfg.Timeout = a.timeout
-	return cfg, nil
+	// Copy before mutating. Every go-git auth method builds a fresh config per
+	// call today, so mutating in place would be safe -- but that is an upstream
+	// implementation detail, and an auth method that cached or shared its config
+	// would turn this into a cross-operation mutation with no local symptom.
+	withTimeout := *cfg
+	withTimeout.Timeout = a.timeout
+	return &withTimeout, nil
 }
 
 // Close forwards to the wrapped auth so the ssh-agent socket still closes.
