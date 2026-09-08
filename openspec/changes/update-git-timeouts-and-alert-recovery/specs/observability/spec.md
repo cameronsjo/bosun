@@ -22,9 +22,18 @@ confidently wrong.
 When the observed peer is not a trusted proxy, `forwarded_for` SHALL be omitted
 entirely, even if an `X-Forwarded-For` header is present on the request.
 
-The set of trusted proxies SHALL be operator-configured and SHALL default to
+The set of trusted proxies SHALL be a list of CIDR prefixes, defaulting to
 empty, so `forwarded_for` is never emitted until an operator names a proxy. An
-empty set SHALL NOT be interpreted as "trust everything".
+empty set SHALL NOT be interpreted as "trust everything". A bare IP address SHALL
+be accepted and treated as a single-host prefix.
+
+Membership SHALL be tested against the **host portion** of `r.RemoteAddr`, which
+is `host:port`. A comparison against the raw value can never match a configured
+prefix, and fails in the safe direction — silently never emitting `forwarded_for`
+— so it cannot be caught by a test that only asserts the field is absent.
+
+An entry that does not parse as an IP or CIDR SHALL be rejected at configuration
+load rather than silently ignored, so a typo cannot quietly disable attribution.
 
 #### Scenario: No trusted proxies configured
 
@@ -46,6 +55,19 @@ empty set SHALL NOT be interpreted as "trust everything".
 - **WHEN** the request completes
 - **THEN** the log entry's `remote_addr` is the actual peer address
 - **AND** the log entry has no `forwarded_for` field
+
+#### Scenario: Port is stripped before the membership test
+
+- **GIVEN** a trusted-proxy list containing the proxy's exact IP address
+- **WHEN** a request arrives from that proxy, so `r.RemoteAddr` is that IP followed by a colon and an ephemeral port
+- **THEN** the proxy is recognised as trusted
+- **AND** `forwarded_for` is emitted
+
+#### Scenario: Unparseable trusted-proxy entry is rejected
+
+- **GIVEN** a trusted-proxy list containing an entry that is neither an IP nor a CIDR
+- **WHEN** the configuration is loaded
+- **THEN** loading fails with an error naming the offending entry
 
 #### Scenario: Trusted proxy contributes a forwarded address
 

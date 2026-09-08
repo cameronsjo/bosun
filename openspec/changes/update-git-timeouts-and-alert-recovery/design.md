@@ -7,16 +7,43 @@
 downstream honours it. Two independent severings:
 
 - **Dial.** go-git's SSH transport builds its dial context from
-  `context.Background()` (`plumbing/transport/ssh/common.go`), and bosun never
-  sets `ssh.ClientConfig.Timeout`. A TCP connect or SSH handshake against an
-  unresponsive peer blocks until the kernel gives up.
+  `context.Background()` (`plumbing/transport/ssh/common.go:159`), and bosun
+  never sets `ssh.ClientConfig.Timeout`. A TCP connect against an unresponsive
+  peer blocks until the kernel gives up.
+- **Handshake.** Even *with* `Timeout` set, `dial` applies it to the dial context
+  and then calls `ssh.NewClientConn(conn, addr, config)` (`common.go:197`), which
+  takes no context and honors no deadline. A peer that completes the TCP accept
+  and then never speaks stalls in the handshake indefinitely. This is the part
+  that reads as fixed when it is not, and it is why the field alone is not enough.
 - **Transfer.** `FetchContext` consults the context only *between* protocol
   steps. A packfile read that stalls mid-stream is inside a step, so the
   deadline is never observed.
 
-The result is a timeout that names a bound it does not impose. On 2026-09-08 a
-fetch declared `2m0s` and ran `16m30s`, holding the reconcile lock the whole
-time and queueing three triggers behind it.
+A fourth, found while reviewing this change: `Clone` applies `GitCloneTimeout`
+**only when the caller context carries no deadline** (`git.go:362-367`), and
+`daemon.go:1008` sets a `ReconcileTimeout` deadline on every reconcile cycle. On
+the daemon path — the only path that runs unattended — `GitCloneTimeout` is
+never applied, while the error text still names it.
+
+The result is a timeout that names a bound it does not impose.
+
+## What the incident does and does not establish
+
+The measured facts are: the error text said `2m0s`, and the run logged
+`duration_ms: 989971`. That is the **run** duration, which also covers lock
+acquisition, `validateBranch`, `IsDirty`, `GetLatestCommit` and `PlainOpen`
+(`git.go:433-472`), plus everything after the fetch error.
+
+So the incident establishes that **the error text reports the declared bound
+rather than the measured one** — that inference needs no assumption about where
+the time went. It does *not* establish which layer stalled. A fetch that ran ~2m
+and expired correctly, with 14m30s spent elsewhere in the run, produces the same
+two observations. The discriminating measurement is a fetch-scoped elapsed time,
+which is exactly the instrument this change adds and which did not exist when
+the incident happened.
+
+Both layers are unbounded by code-reading, and both are bounded here. Neither
+gets to borrow the incident's authority as its confirmed cause.
 
 ## Decision 1 — wrap the auth method, do not install a protocol
 
@@ -28,21 +55,43 @@ field and assigns unconditionally — zero values included — at `common.go:141
 *after* the nil-`HostKeyCallback` repair at `:127`. A config that sets only
 `Timeout` therefore blanks `User`, `Auth`, `HostKeyCallback`, and
 `HostKeyAlgorithms`, and every fetch dies with `ssh: must specify
-HostKeyCallback`. It is also a process-global mutation.
+HostKeyCallback`.
+
+Field-blanking is the whole disqualifier and it stands on its own. An earlier
+draft also listed "it is a process-global mutation" — that reason is withdrawn,
+because Decision 2's preferred design registers a transport through the same
+global registry. Rejecting one for globalness while preferring the other would
+be incoherent.
 
 **Instead:** wrap the resolved `transport.AuthMethod` so its `ClientConfig()`
 returns the auth's *own* config with `Timeout` filled in. Every field the auth
-resolved survives; nothing global is mutated.
+resolved survives. This is safe because `overrideConfig` returns early when the
+client's own config is nil (`common.go:291-293`), which is the default client's
+case.
 
 The requirement that a wrapped fetch still authenticates is stated in the spec
 rather than left to the implementer, because a broken wrap fails in exactly the
 way a working one looks — the timeout is present, the code compiles, and only a
 live fetch reveals the missing callback.
 
-## Decision 2 — bound the transfer at the connection, not by abandonment
+**Scope, stated plainly:** this bounds the **TCP dial only**. `dial` applies
+`config.Timeout` to the dial context and then calls
+`ssh.NewClientConn(conn, addr, config)` (`common.go:197`), which takes no context
+and honors no deadline. Decision 2 is therefore not optional hardening on top of
+Decision 1 — it is what bounds the handshake and the transfer.
 
-Decision 1 bounds dial and handshake only. A stalled packfile read is the
-failure mode the incident is attributed to, and it remains unbounded.
+## Decision 2 — bound the handshake and transfer at the connection, not by abandonment
+
+Decision 1 bounds the TCP dial. Everything after it — handshake, reference
+negotiation, packfile transfer — remains unbounded, and any of those layers
+could have produced the observed incident. Bounding them is justified by the
+code, not by an attribution the evidence cannot support.
+
+Decision 2 **subsumes** Decision 1 where both apply: once a custom transport
+owns the dial, `ClientConfig().Timeout` is no longer the thing enforcing it.
+Decision 1's auth-preservation requirement survives the subsumption unchanged,
+because the custom transport must replicate the same auth config faithfully —
+it is the same trap one layer down.
 
 Preferred: register a custom `transport.Transport` for `ssh` that dials the TCP
 connection itself, wraps it in a `net.Conn` refreshing a read deadline on every
@@ -62,8 +111,8 @@ independent defects, any one disqualifying:
   abandoned goroutine is still using.
 
 If the preferred transport proves unworkable inside its time box, the fallback
-is to ship Decision 1 alone and **state the residual** — dial and handshake
-bounded, transfer not — in the PR body and `docs/troubleshooting.md`. A stated
+is to ship Decision 1 alone and **state the residual** — TCP dial bounded,
+handshake and transfer not — in the PR body and `docs/troubleshooting.md`. A stated
 partial bound is honest; an abandonment guard is a regression wearing a fix's
 label.
 
@@ -105,18 +154,42 @@ which is the only path the incident took.
 
 ## Decision 5 — recovery is evaluated at the run boundary
 
-The current trigger sits on the deploy path and is unreachable for a
-docs-only recovery. Both skip branches (`reconcile.go:608` already-deployed,
-`:637-655` no deploy-relevant files) reset the failure counters and return
-before `reconcile.go:944`. Moving the trigger to the run boundary — dispatch
-when a run ends clean and a failure alert is outstanding, then clear — makes the
+The current trigger sits on the deploy path and is unreachable for a docs-only
+recovery. Both skip branches return before `reconcile.go:944`, but they are
+**not** the same bug and a fix that treats them as one is wrong:
+
+- `:637-655` (no deploy-relevant files) zeroes `AttemptCount`,
+  `LastAttemptedCommit` and `LastAlertedAttempt`, then returns. The evidence
+  that a retraction is owed is destroyed. Dispatch must be inserted *above* the
+  reset.
+- `:608-616` (already deployed) zeroes only `AttemptCount` and
+  `LastAttemptedCommit`, and only under a guard. `LastAlertedAttempt` survives.
+  The evidence is intact; the defect is purely the early return. But because
+  nothing clears it, dispatching here *without* also clearing
+  `LastAlertedAttempt` re-fires the retraction on every subsequent
+  already-deployed run — a fix that converts a missing alert into a repeating
+  one.
+
+Moving the trigger to the run boundary — dispatch when a run ends clean and a
+failure alert is outstanding, then clear on every clean path — makes the
 retraction independent of whether the recovering commit happened to touch a
 deploy path.
+
+**The predicate is `LastAlertedAttempt > 0`, not `AttemptCount > 0`.** A failure
+that never crossed an alert threshold owes no retraction. The three candidate
+fields clear differently per branch, so leaving the choice to the implementer
+means some scenarios pass and others silently do not.
 
 Dropping the `AttemptCount > 1` condition follows from `state.go:167`:
 `alertThresholds = []int{1, 3, 10, 30}` means failure alerts fire at attempt 1,
 so requiring two attempts before retracting guarantees the common case never
 retracts.
+
+The `-1` at `reconcile.go:945` goes with it. It exists only because the call was
+gated on `> 1`; keeping it while removing the gate reports **0 prior failures**
+in exactly the single-failure case this change exists to serve — and the
+retained Reconciliation Lifecycle Alerts requirement says the Deploy Recovery
+message carries a count of prior failures.
 
 ## Decision 6 — two address fields, never one
 
