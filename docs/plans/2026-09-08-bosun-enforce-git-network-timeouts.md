@@ -8,11 +8,11 @@ harness: "claude-code 2.1.263"
 machine: "cf6e768835c7"
 approved_in: "ember-fugue"
 approved_session_id: "20a7397f-5bc8-4ae0-b9fe-c27829ae80db"
-status: in_progress
+status: complete
 branch: fix/git-timeout-enforcement
 spec_branch: spec/update-git-timeouts-and-alert-recovery (MERGED, bosun#651)
 repo: bosun
-next: Task 7 — merge bosun#656, merge the release PR, then MANUALLY docker compose pull on unraid (moving :latest tag)
+next: Cameron runs `bash scripts/deploy-git-timeout.sh` on a real terminal — the ssh agent needs interactive approval
 ---
 
 # Bosun: enforce git network timeouts, make failure alerts retractable, close the 404
@@ -371,7 +371,7 @@ Driver: Opus family — the change decides what an `X-Forwarded-For` header is a
 - [x] 4. Recovery fires at the run boundary. `on_recovery` default true through all sites incl. hot reload; `LastAlertedAttempt` predicate; delivery-outcome split. Red-proof: 0 retractions on `origin/main` where the test expects 1.
 - [x] 5. `remote_addr` unconditional, `forwarded_for` gated on `BOSUN_TRUSTED_PROXIES` (default empty), canonical IP matching, middleware-level tests.
 - [x] 6. Five stale webhook paths corrected; `docs/troubleshooting.md` gained wedged-sync and request-attribution sections; `scripts/verify-git-timeout.sh` added. Issues [#652](https://github.com/cameronsjo/bosun/issues/652), [#653](https://github.com/cameronsjo/bosun/issues/653), [#654](https://github.com/cameronsjo/bosun/issues/654), [#655](https://github.com/cameronsjo/bosun/issues/655) filed.
-- [ ] 7. Changelog written and PR [#656](https://github.com/cameronsjo/bosun/pull/656) open. Remaining: merge, merge the release PR, **manual** `docker compose pull` on `unraid`, confirm new `StartedAt`.
+- [x] 7. Shipped. [#656](https://github.com/cameronsjo/bosun/pull/656) merged (`1e2c602`), release PR [#640](https://github.com/cameronsjo/bosun/pull/640) merged, **v0.42.2** cut and `0.42.2,latest` pushed to GHCR (Cosign-signed, 18:37:03Z). The deploy itself is the one step left: it needs `ssh unraid`, and the 1Password agent needs interactive approval a headless shell cannot surface. Captured as `scripts/deploy-git-timeout.sh` ([#658](https://github.com/cameronsjo/bosun/pull/658)) rather than left as prose.
 
 ## Deviations
 
@@ -383,6 +383,7 @@ Driver: Opus family — the change decides what an `X-Forwarded-For` header is a
 
 ## Learnings
 
+- **Every review round found a bug the previous round introduced, three rounds running.** The dial cap missed `Pull` because auth resolved before the fetch context existed. Fixing the retried-retraction count by retaining `AttemptCount` handed the circuit breaker a live counter on a just-deployed commit. The scp-style URL rewrite, added to stop a redaction gap, bypassed redaction itself. The pattern is not carelessness in the ordinary sense — each fix was correct in isolation and wrong in the new surface it created. A fix is a change like any other and deserves the same suspicion as the code it repairs.
 - **Two bugs I introduced were caught by review, both in the fix's own new machinery.** The dial cap was computed from the caller context while `Pull` resolved auth *before* creating the fetch context, so a configured `FetchTimeout` never reached the dial — the exact "effective bound is the larger of the two" failure the cap was written to prevent, reintroduced one call site over. And zeroing `AttemptCount` unconditionally while retaining `LastAlertedAttempt` on delivery failure made a *retried* retraction report "0 prior failures" — the same defect this change exists to remove, reappearing on the retry path the change itself added. Both shapes are the same: a fix that repeats its own bug in the new code around it.
 - **My first redaction pass was a denylist, which my own rules name as the wrong side.** Redacting query parameters called `token`, `password`, `secret` let `pat`, `jwt`, `bearer`, `sas` and `code` straight through, and the remediation would forever have been "add one more name". Inverting to an allowlist cost two entries.
 - **The spec cited as governing a behaviour may not govern it at all.** Two of the three plan-named spec anchors were wrong in the same direction: the reconcile timeout family was `BackupTimeout`, and the alerting spec specifies the recovery alert's *shape* without ever saying when it fires. Both defects survived precisely because no requirement covered them — which is the same reason the plan could not find the right line to cite.
