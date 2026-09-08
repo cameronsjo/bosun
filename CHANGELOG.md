@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.42.2](https://github.com/cameronsjo/bosun/compare/v0.42.1...v0.42.2) (2026-09-08)
+
+
+### Bug Fixes
+
+* **reconcile:** enforce git network timeouts and make failure alerts retractable ([#656](https://github.com/cameronsjo/bosun/issues/656)) ([1e2c602](https://github.com/cameronsjo/bosun/commit/1e2c602c2df47d67929c0699387035bcdb15e051))
+* **reconcile:** reject unsafe target sets ([#639](https://github.com/cameronsjo/bosun/issues/639)) ([0a9f5d4](https://github.com/cameronsjo/bosun/commit/0a9f5d4ac885de5ff617a113a9801edea47ef67b))
+
 ## [Unreleased]
 
 ### Bug Fixes
