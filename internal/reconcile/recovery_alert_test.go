@@ -31,9 +31,11 @@ func (a *recordingAlerter) SendDeployRecovery(_ context.Context, _, _ string, pr
 	return a.recoveryError
 }
 
-func (a *recordingAlerter) SendUnhealthyContainers(context.Context, string, []string) error { return nil }
-func (a *recordingAlerter) SendRollbackSuccess(context.Context, string, string) error       { return nil }
-func (a *recordingAlerter) SendRollbackFailure(context.Context, string, string) error       { return nil }
+func (a *recordingAlerter) SendUnhealthyContainers(context.Context, string, []string) error {
+	return nil
+}
+func (a *recordingAlerter) SendRollbackSuccess(context.Context, string, string) error { return nil }
+func (a *recordingAlerter) SendRollbackFailure(context.Context, string, string) error { return nil }
 
 func newRecoveryReconciler(t *testing.T, alerter *recordingAlerter, cfg *Config) *Reconciler {
 	t.Helper()
