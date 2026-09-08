@@ -370,7 +370,7 @@ Driver: Opus family — the change decides what an `X-Forwarded-For` header is a
 - [ ] 3. Make the git network timeouts real (`internal/reconcile/git.go`).
 - [ ] 4. Make recovery actually fire (`reconcile.go`, `alerts.go`, `config.go`, `target.go`, `daemon.go`, `cmd/alert.go`).
 - [ ] 5. Log the client address, unforgeably (`internal/daemon/server.go`).
-- [ ] 6. Correct the stale webhook paths in docs; file the three loose-end issues.
+- [ ] 6. Correct the stale webhook paths in docs (rides the Task 3-5 PR, so gated on `ready-to-build`). Loose-end issues **filed**: [#652](https://github.com/cameronsjo/bosun/issues/652) `on_failure` contradiction, [#653](https://github.com/cameronsjo/bosun/issues/653) `GitLocalTimeout`, [#654](https://github.com/cameronsjo/bosun/issues/654) HTTPS transport.
 - [ ] 7. Changelog, PR, release, manual deploy on `unraid`, confirm new `StartedAt`.
 
 ## Deviations
