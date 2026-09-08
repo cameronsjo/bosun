@@ -119,3 +119,59 @@ func TestForwardedForClient(t *testing.T) {
 		assert.Equal(t, "203.0.113.9", got)
 	})
 }
+
+func TestTrustedProxiesDescribe(t *testing.T) {
+	t.Run("renders parsed prefixes for the startup log", func(t *testing.T) {
+		tp := mustParseProxies(t, "172.18.0.5", "10.0.0.0/8")
+		assert.Equal(t, []string{"172.18.0.5/32", "10.0.0.0/8"}, tp.describe())
+	})
+
+	t.Run("empty describes nothing", func(t *testing.T) {
+		assert.Nil(t, mustParseProxies(t).describe())
+		assert.Nil(t, (*trustedProxies)(nil).describe())
+	})
+}
+
+func TestTrustedProxiesTrustsEverything(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []string
+		want    bool
+	}{
+		{"IPv4 default route", []string{"0.0.0.0/0"}, true},
+		{"IPv6 default route", []string{"::/0"}, true},
+		{"among narrower entries", []string{"172.18.0.5", "0.0.0.0/0"}, true},
+		{"narrow prefixes only", []string{"10.0.0.0/8", "172.18.0.5"}, false},
+		{"empty", nil, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, mustParseProxies(t, tc.entries...).trustsEverything())
+		})
+	}
+	assert.False(t, (*trustedProxies)(nil).trustsEverything())
+}
+
+// TestValidateConfigRejectsBadTrustedProxies pins the fail-closed path: an
+// unparseable list must stop startup, not log and continue with attribution
+// silently off.
+func TestValidateConfigRejectsBadTrustedProxies(t *testing.T) {
+	t.Setenv("BOSUN_TRUSTED_PROXIES", "172.18.0.5, proxy.internal")
+	cfg := ConfigFromEnv()
+
+	require.Nil(t, cfg.TrustedProxies, "a partially-valid list trusts nothing")
+	err := ValidateConfig(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "BOSUN_TRUSTED_PROXIES")
+	assert.Contains(t, err.Error(), "proxy.internal", "the error names the offending entry")
+}
+
+func TestConfigFromEnvAcceptsValidTrustedProxies(t *testing.T) {
+	t.Setenv("BOSUN_TRUSTED_PROXIES", "172.18.0.5, 10.0.0.0/8")
+	cfg := ConfigFromEnv()
+
+	require.NotNil(t, cfg.TrustedProxies)
+	assert.True(t, cfg.TrustedProxies.trusts("10.1.2.3:4567"))
+	assert.False(t, cfg.TrustedProxies.trusts("192.168.1.1:4567"))
+}
