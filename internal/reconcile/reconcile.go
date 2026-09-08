@@ -34,6 +34,7 @@ type ReloadedConfig struct {
 	DriftIgnore        []DriftIgnoreRule
 	OnFailure          *bool
 	OnSuccess          *bool
+	OnRecovery         *bool
 	RemoveOrphans      *bool
 	// ProjectName is the repo bosun.yaml's root-level project_name. When
 	// non-nil and non-empty, the default-target reconciler adopts it before
@@ -216,9 +217,14 @@ type Config struct {
 	// Defaults to true via DefaultConfig(). A bare Config{} leaves this false.
 	OnFailure bool
 
-	// OnSuccess gates success and recovery alert dispatch. When false, neither
-	// success nor recovery alerts are sent. Defaults to false.
+	// OnSuccess gates success alert dispatch only. Recovery has its own gate.
+	// Defaults to false.
 	OnSuccess bool
+
+	// OnRecovery gates recovery (retraction) alert dispatch. When false, a
+	// failure alert is never retracted. Defaults to true via DefaultConfig().
+	// A bare Config{} leaves this false.
+	OnRecovery bool
 
 	// ComposeUpTimeout is the maximum time allowed for docker compose up.
 	// Zero means use DefaultComposeUpTimeout (10 minutes).
@@ -605,9 +611,21 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 			// unrelated outages months apart accumulate on that same key
 			// until one silently tips a primed counter into a trip (review
 			// follow-up to #364's breaker fix).
-			if state.AttemptCount != 0 || state.LastAttemptedCommit != "" {
+			// A clean run retracts a failure alert even when it deploys
+			// nothing. This branch used to return before the dispatch site, so
+			// a failure followed by an already-deployed cycle never retracted.
+			// Unlike the deploy-path skip below, this branch never zeroed
+			// LastAlertedAttempt -- which is why clearing it here is required
+			// rather than incidental: leave it set and every subsequent
+			// already-deployed run re-alerts.
+			clearFailureState := r.retractFailureAlert(ctx, state)
+
+			if state.AttemptCount != 0 || state.LastAttemptedCommit != "" || (clearFailureState && state.LastAlertedAttempt != 0) {
 				state.AttemptCount = 0
 				state.LastAttemptedCommit = ""
+				if clearFailureState {
+					state.LastAlertedAttempt = 0
+				}
 				if err := SaveState(r.config.StateFile, state); err != nil {
 					logger.Error().Err(err).Str(log.FieldPath, r.config.StateFile).Msg("Failed to reset breaker state after confirmed skip")
 				}
@@ -641,6 +659,12 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 				Msg("No deploy-relevant files changed, skipping reconciliation")
 			ui.Info("=== No deploy-relevant changes (%d files), skipping ===", len(changedFiles))
 
+			// Retract before the reset below destroys the evidence. This is
+			// the branch the 2026-09-08 incident took: a docs-only commit
+			// recovered the target, and this reset zeroed LastAlertedAttempt
+			// on the way out, so no retraction could ever be owed afterwards.
+			clearFailureState := r.retractFailureAlert(ctx, state)
+
 			// Record commit as deployed to avoid re-evaluation on next poll.
 			state.LastDeployedCommit = after
 			state.DeployedAt = time.Now()
@@ -648,7 +672,9 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 			state.NeedsRedeploy = false
 			state.AttemptCount = 0
 			state.LastAttemptedCommit = ""
-			state.LastAlertedAttempt = 0
+			if clearFailureState {
+				state.LastAlertedAttempt = 0
+			}
 			if err := SaveState(r.config.StateFile, state); err != nil {
 				logger.Error().Err(err).Msg("Failed to save state after path-aware skip")
 			}
@@ -941,9 +967,13 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	// success. The recovery alert and attempt-counter reset live here — after
 	// verification — so a local verify failure never emits a premature
 	// "recovered" alert or resets the breaker mid-failure-streak.
-	if state.AttemptCount > 1 {
-		r.sendRecoveryAlert(ctx, state.AttemptCount-1)
-	}
+	// One failure that alerted earns one retraction. The old condition was
+	// AttemptCount > 1, but failure alerts fire at attempt 1 (state.go's
+	// alertThresholds), so the common single-failure case never retracted. The
+	// AttemptCount-1 argument went with it: it only made sense while the call
+	// was gated on > 1, and keeping it would report "0 prior failures" in
+	// exactly the case this fix exists to serve.
+	clearFailureState := r.retractFailureAlert(ctx, state)
 
 	// Record successful deployment in state file.
 	state.LastDeployedCommit = after
@@ -951,7 +981,9 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	state.DeployCount++
 	state.Source = r.config.Source
 	state.AttemptCount = 0
-	state.LastAlertedAttempt = 0
+	if clearFailureState {
+		state.LastAlertedAttempt = 0
+	}
 	state.NeedsRedeploy = false
 	state.DeclaredServices = r.declaredServices
 	// Persist this deploy's manifest so the next reconcile prunes only files

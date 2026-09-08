@@ -2348,6 +2348,7 @@ func ConfigFromEnv() *Config {
 		alertCfg := projectCfg.GetAlertConfig()
 		rcfg.OnFailure = alertCfg.OnFailure
 		rcfg.OnSuccess = alertCfg.OnSuccess
+		rcfg.OnRecovery = alertCfg.OnRecovery
 
 		// Config file debounce value: env var takes precedence (already parsed above).
 		if !cfg.DriftAlertDebounce.FromEnv() && projectCfg.DriftAlertDebounce() > 0 {

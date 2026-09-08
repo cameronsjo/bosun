@@ -231,6 +231,7 @@ func DefaultConfig() *Config {
 		RestartThreshold:      5,
 		RestartWindow:         10 * time.Minute,
 		OnFailure:             true,
+		OnRecovery:            true,
 		RemoveOrphans:         NewConfigField(true),
 		HealthGateTimeout:     60 * time.Second,
 	}
