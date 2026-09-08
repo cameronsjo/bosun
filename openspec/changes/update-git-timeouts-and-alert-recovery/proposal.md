@@ -28,8 +28,9 @@ a transient stall from a real outage.
   (`git.go:433-472`). That proves the error text reports the declared bound
   rather than the measured one; it does not identify which layer stalled, and a
   fetch that expired correctly at 2m with the remaining 14m30s spent elsewhere
-  fits the same two observations. Both layers are unbounded by code-reading and
-  both are bounded here; neither is confirmed as the cause.
+  fits the same two observations. Both layers are unbounded by code-reading;
+  only the dial is bounded here, and neither is confirmed as the cause. The
+  fetch-scoped elapsed time this change adds is what will settle it next time.
 
 - **A failure alert cannot be retracted.** Three independent suppressors sit in
   front of `sendRecoveryAlert`: `alerts.go:174` returns early on
@@ -61,10 +62,12 @@ controls it.
 ## What Changes
 
 - **Enforced git network timeouts** — the reconciler's declared git network
-  timeouts SHALL bound the wall-clock duration of the operation, not merely
-  label its error. A new `GitSSHDialTimeout` SHALL bound TCP connection
-  establishment; the handshake and transfer SHALL be bounded by a deadline on
-  the connection, because `ssh.NewClientConn` honors none. An operation's own
+  timeouts SHALL bound every phase they can reach, and report honestly on the
+  phases they cannot, rather than merely labelling an error. A new `GitSSHDialTimeout` SHALL bound TCP connection
+  establishment. The handshake and packfile transfer **cannot** be bounded from
+  bosun: doing so needs a custom `transport.Transport`, whose session layer
+  exists only in go-git's `internal/` tree. That residual is stated in operator
+  documentation rather than faked, and tracked as #655. An operation's own
   timeout SHALL apply even when the caller context already carries a deadline —
   the case in which `Clone`'s bound is silently never applied today. Timeout
   errors SHALL report the actual elapsed time and SHALL be logged at the throw
@@ -145,8 +148,9 @@ controls it.
     `:608`, `:658`, `:664`, `:695` (hardcoded `remote_addr` strings to converge)
   - `internal/log/fields.go` (new `FieldRemoteAddr`)
   - `internal/cmd/alert.go:166-175` (gate reporting)
-- Not in scope, filed separately: the `on_failure`-logged-false-yet-alert-
-  delivered contradiction (#652); `GitLocalTimeout` sharing the unenforced-label
+- Not in scope, filed separately: bounding the SSH handshake and packfile
+  transfer, blocked on a go-git transport hook that does not exist (#655); the
+  `on_failure`-logged-false-yet-alert-delivered contradiction (#652); `GitLocalTimeout` sharing the unenforced-label
   defect on local operations (#653); a timeout-bearing HTTP transport for the
   private-HTTPS git path (#654 — homelab authenticates over SSH). Operator-facing
   configuration of the git timeouts is also out of scope; the fields exist to be

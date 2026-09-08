@@ -2,17 +2,20 @@
 
 ### Requirement: Git Network Timeout Enforcement
 
-Each declared git network timeout SHALL bound the wall-clock duration of the operation it names. When the bound elapses, the call SHALL return a timeout error and its resources SHALL be released before the caller resumes.
+Each declared git network timeout SHALL bound the wall-clock duration of every phase of its operation that the caller can reach, and SHALL report accurately on the phases it cannot. When the bound elapses, the call SHALL return a timeout error and its resources SHALL be released before the caller resumes.
 
 The bound SHALL NOT be satisfied by handing the work to a detached goroutine and returning. A goroutine that outlives its bound keeps writing to the working tree, keeps the auth handle open, and cannot be cancelled — an in-flight guard built over one is fail-*stuck*, clearing only on process restart, which is worse than the unbounded stall it replaces.
 
 A `GitSSHDialTimeout` (default 30 seconds) SHALL bound TCP connection establishment for git operations over SSH.
 
-The SSH handshake SHALL be bounded separately, by a deadline on the connection itself. Setting `ssh.ClientConfig.Timeout` is **not** sufficient: the transport applies that value only to the dial context (`plumbing/transport/ssh/common.go:192`) and then hands the raw connection to `ssh.NewClientConn` (`:198`), which honors no deadline. A remote that completes the TCP accept and then never speaks therefore stalls indefinitely with `Timeout` set, so any implementation satisfied only by setting that field leaves the handshake unbounded.
+`GitCloneTimeout` and `GitFetchTimeout` SHALL bound every phase of their operations that the operation context can reach — which is the phase boundaries between protocol steps, plus the dial.
 
-`GitCloneTimeout` and `GitFetchTimeout` SHALL bound their respective whole operations, including the reference-negotiation and packfile-transfer phases. Because the transport consults the operation context only *between* protocol steps, satisfying this requires a deadline on the connection rather than on the context alone.
+**Two phases are explicitly out of scope, and the exclusion is a dependency boundary rather than a decision.** The SSH handshake and the packfile transfer remain unbounded, and no implementation available to this codebase can bound them:
 
-That connection deadline SHALL be derived from the **fixed operation deadline**, not refreshed freely on each read. A deadline reset to "now plus an idle interval" on every successful read enforces only an idle timeout: a peer that emits one byte before each interval elapses keeps the transfer — and the reconcile lock — alive indefinitely while every individual read succeeds. Each read deadline SHALL therefore be the earlier of any idle bound and the operation's absolute deadline, and the operation SHALL terminate at that absolute deadline regardless of how recently data arrived.
+- `dial` applies `ssh.ClientConfig.Timeout` only to the dial context (`plumbing/transport/ssh/common.go:192`) and then hands the raw connection to `ssh.NewClientConn` (`:198`), which takes no context and sets no deadline.
+- Bounding either phase requires owning the `net.Conn` so a deadline can be set on it, which requires registering a custom `transport.Transport`. Its `NewUploadPackSession` returns an `UploadPackSession`, and go-git's only implementation of that session layer is `common.NewClient` in `plumbing/transport/**internal**/common` — not importable. The exported `ssh.NewClient(config)` is the field-blanking path this requirement already forbids.
+
+An implementation SHALL NOT claim these phases are bounded, and SHALL NOT substitute a detached goroutine to fake the bound. The residual SHALL be stated in operator documentation so a wedged sync is diagnosable. Bounding them is tracked separately and depends on a go-git transport hook that does not exist today.
 
 Applying the dial timeout SHALL preserve every field of the resolved authentication method — at minimum `User`, `Auth`, `HostKeyCallback`, and `HostKeyAlgorithms`. An implementation that supplies a client configuration carrying only a timeout SHALL be treated as a defect: `overrideConfig` (`ssh/common.go:290-307`) assigns every field unconditionally via reflection, zero values included, at `:142` — *after* the nil-`HostKeyCallback` repair at `:128-134`. The same obligation applies to any replacement transport that builds the client itself.
 
@@ -24,35 +27,19 @@ The URL written to that log SHALL have credentials removed from **both** userinf
 
 The reconcile lock SHALL NOT be held past a git operation's configured bound on account of that operation.
 
+#### Scenario: The unbounded residual is documented, not hidden
+
+- **GIVEN** the handshake and transfer phases remain unbounded
+- **WHEN** an operator consults the troubleshooting documentation about a wedged git sync
+- **THEN** the documentation states which phases are bounded and which are not
+- **AND** it names the log fields that identify a wedged sync and what clears it
+
 #### Scenario: Unreachable remote is bounded at the dial
 
 - **GIVEN** a remote address that accepts no TCP connection and sends no reset — a blackholed address
 - **WHEN** the reconciler fetches from that remote with `GitSSHDialTimeout` configured to a short test value
 - **THEN** the fetch fails within that value plus a small margin
 - **AND** the returned error identifies the failure as a timeout
-
-#### Scenario: Stalled SSH handshake is bounded
-
-- **GIVEN** a listener that accepts the TCP connection and then never speaks
-- **WHEN** the reconciler fetches from that remote
-- **THEN** the fetch fails within the connection read deadline plus a small margin
-- **AND** it does NOT wait for the whole `GitFetchTimeout`
-- **AND** setting `ssh.ClientConfig.Timeout` alone SHALL NOT be accepted as satisfying this scenario, because the dial has already succeeded when the stall begins
-
-#### Scenario: Slow-drip transfer is bounded at the operation deadline
-
-- **GIVEN** a remote that completes the handshake and then emits a single byte just before each idle interval elapses, indefinitely
-- **WHEN** the reconciler fetches from that remote
-- **THEN** the fetch terminates at the configured operation bound
-- **AND** it does NOT continue because individual reads kept succeeding
-- **AND** the reconcile lock is released at that bound
-
-#### Scenario: Stalled transfer is bounded
-
-- **GIVEN** a remote that completes the SSH handshake and then stalls mid-transfer
-- **WHEN** the reconciler fetches from that remote
-- **THEN** the fetch fails within the configured fetch bound plus a small margin
-- **AND** no goroutine continues the abandoned fetch after the call returns
 
 #### Scenario: Authentication survives the dial timeout
 

@@ -42,8 +42,10 @@ two observations. The discriminating measurement is a fetch-scoped elapsed time,
 which is exactly the instrument this change adds and which did not exist when
 the incident happened.
 
-Both layers are unbounded by code-reading, and both are bounded here. Neither
-gets to borrow the incident's authority as its confirmed cause.
+Both layers are unbounded by code-reading. Only the dial is bounded here —
+Decision 2 explains why — so neither gets to borrow the incident's authority as
+its confirmed cause, and the instrument this change adds is what will settle it
+next time.
 
 ## Decision 1 — wrap the auth method, do not install a protocol
 
@@ -58,10 +60,8 @@ field and assigns unconditionally — zero values included — at `common.go:141
 HostKeyCallback`.
 
 Field-blanking is the whole disqualifier and it stands on its own. An earlier
-draft also listed "it is a process-global mutation" — that reason is withdrawn,
-because Decision 2's preferred design registers a transport through the same
-global registry. Rejecting one for globalness while preferring the other would
-be incoherent.
+draft also listed "it is a process-global mutation"; that reason is withdrawn as
+weak — plenty of acceptable fixes touch the same registry.
 
 **Instead:** wrap the resolved `transport.AuthMethod` so its `ClientConfig()`
 returns the auth's *own* config with `Timeout` filled in. Every field the auth
@@ -77,27 +77,33 @@ live fetch reveals the missing callback.
 **Scope, stated plainly:** this bounds the **TCP dial only**. `dial` applies
 `config.Timeout` to the dial context and then calls
 `ssh.NewClientConn(conn, addr, config)` (`common.go:197`), which takes no context
-and honors no deadline. Decision 2 is therefore not optional hardening on top of
-Decision 1 — it is what bounds the handshake and the transfer.
+and honors no deadline. Decision 2 explains why nothing available here closes
+that remaining gap.
 
-## Decision 2 — bound the handshake and transfer at the connection, not by abandonment
+## Decision 2 — the handshake and transfer cannot be bounded here; say so
 
 Decision 1 bounds the TCP dial. Everything after it — handshake, reference
-negotiation, packfile transfer — remains unbounded, and any of those layers
-could have produced the observed incident. Bounding them is justified by the
-code, not by an attribution the evidence cannot support.
+negotiation, packfile transfer — stays unbounded, and this is a dependency
+boundary, not a preference.
 
-Decision 2 **subsumes** Decision 1 where both apply: once a custom transport
-owns the dial, `ClientConfig().Timeout` is no longer the thing enforcing it.
-Decision 1's auth-preservation requirement survives the subsumption unchanged,
-because the custom transport must replicate the same auth config faithfully —
-it is the same trap one layer down.
+Bounding those phases requires owning the `net.Conn` so a deadline can be set on
+it, which requires registering a custom `transport.Transport`. That road ends:
 
-Preferred: register a custom `transport.Transport` for `ssh` that dials the TCP
-connection itself, wraps it in a `net.Conn` refreshing a read deadline on every
-`Read`, builds the client via `xssh.NewClientConn`, and replicates the auth
-config faithfully. This removes the leak, the corruption risk, and the need for
-any in-flight guard at once.
+```
+transport.Transport      needs NewUploadPackSession(*Endpoint, AuthMethod) (UploadPackSession, error)
+UploadPackSession        needs AdvertisedReferences(), UploadPack(ctx, ...), Close()
+go-git's implementation  common.NewClient(runner) in plumbing/transport/internal/common  <- internal
+```
+
+The session layer is behind `internal/`, so bosun cannot reuse it, and the
+exported `ssh.NewClient(config)` is Decision 1's field-blanking path. Reaching a
+read deadline would mean reimplementing git's pack protocol session layer.
+
+That is out of proportion for a homelab GitOps daemon, so this change **states
+the residual instead of faking it**: `docs/troubleshooting.md` names which
+phases are bounded and which are not, and the new elapsed-time error text plus
+throw-site logging make a wedged sync identifiable. Bounding the rest is
+tracked as its own issue and waits on a go-git transport hook.
 
 **Rejected: abandon the fetch in a goroutine behind an in-flight guard.** Three
 independent defects, any one disqualifying:
@@ -110,11 +116,10 @@ independent defects, any one disqualifying:
 - `defer closeGitAuth(auth)` (`git.go:441-445`) closes the ssh-agent socket the
   abandoned goroutine is still using.
 
-If the preferred transport proves unworkable inside its time box, the fallback
-is to ship Decision 1 alone and **state the residual** — TCP dial bounded,
-handshake and transfer not — in the PR body and `docs/troubleshooting.md`. A stated
-partial bound is honest; an abandonment guard is a regression wearing a fix's
-label.
+A watchdog becomes viable only if closing the connection is what unblocks the
+read *and* the auth handle's ownership moves to the goroutine. That is a
+different design than "run it in a goroutine and give up waiting", and it
+belongs in the follow-up, not here.
 
 **Rejected: shell out to `git fetch` and kill the process.** Trivially killable,
 and the container has git — but it breaks design principle 2 (single binary, no
