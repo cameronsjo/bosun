@@ -383,7 +383,8 @@ Driver: Opus family — the change decides what an `X-Forwarded-For` header is a
 ## Learnings
 
 - **The spec cited as governing a behaviour may not govern it at all.** Two of the three plan-named spec anchors were wrong in the same direction: the reconcile timeout family was `BackupTimeout`, and the alerting spec specifies the recovery alert's *shape* without ever saying when it fires. Both defects survived precisely because no requirement covered them — which is the same reason the plan could not find the right line to cite.
-
-## Learnings
-
-_None yet._
+- **Setting the documented timeout field bounds less than the field's name implies.** `ssh.ClientConfig.Timeout` bounds the TCP dial and nothing after it — `ssh.NewClientConn` takes no context and honors no deadline. A first draft of the spec asserted a "stalled handshake is bounded" scenario that the proposed fix could not have satisfied: a green that could not go red, written into the requirement rather than the code.
+- **An idle timeout wearing an operation timeout's name.** A read deadline refreshed on every successful read bounds silence, not duration. A peer dripping one byte per interval holds the connection and the reconcile lock indefinitely while every read succeeds — and the stalled-read test passes throughout, because reads never stall.
+- **Two branches that look like the same bug are not.** Both skip paths return before the recovery call, so both read as "resets the counters and returns". Only one resets `LastAlertedAttempt`. A fix written against the shared description turns a missing retraction on one path into a retraction that re-fires every run on the other.
+- **Removing a guard can invalidate the arithmetic the guard justified.** `AttemptCount - 1` was correct only while the call was gated on `AttemptCount > 1`. Dropping the gate without dropping the subtraction reports "0 prior failures" in precisely the single-failure case the change exists to serve.
+- **A new log line inherits the redaction its sanitizer happens to implement.** `SanitizeGitURL` strips userinfo only; a credential in a query parameter survives. The defect is not in the sanitizer's own scope — it is that a new caller assumed a boundary the function never claimed.

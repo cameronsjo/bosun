@@ -79,7 +79,17 @@ A single failure that produced an alert SHALL earn a retraction. Dispatch SHALL 
 
 The prior-failure count carried in the alert SHALL be the number of failed attempts, which is `AttemptCount` — not `AttemptCount - 1`. The existing call site subtracts one because it ran only when `AttemptCount > 1`; with that condition removed, the subtraction reports **0 prior failures** in exactly the single-failure case this change exists to serve, contradicting the retained requirement that the Deploy Recovery alert include a count of prior failures.
 
-Failure tracking state SHALL be cleared when a run ends clean — after dispatch when a retraction was owed and `on_recovery` is enabled, and unconditionally otherwise. State SHALL NOT be left uncleared because dispatch was disabled: an operator who later enables `on_recovery` must not receive a retraction for a months-old failure. Clearing SHALL include `LastAlertedAttempt` on **every** clean-run path, including the already-deployed skip, which does not clear it today.
+Failure tracking state clears on three distinct outcomes, and they SHALL NOT be collapsed:
+
+- **Dispatch succeeded.** Clear `LastAlertedAttempt` and the attempt counters. The retraction is delivered and nothing further is owed.
+- **`on_recovery` is disabled.** Clear them anyway. No retraction will ever be sent for this failure, so retaining the state only banks a stale retraction that fires whenever an operator later flips the gate on.
+- **Dispatch was attempted and every provider failed.** **Retain** `LastAlertedAttempt` so the next clean run re-attempts, matching the deliver-then-record rule this capability already applies to drift alerts. A provider outage SHALL NOT consume the retraction. Retention ends as soon as one delivery succeeds.
+
+The "no providers configured" case counts as a delivered no-op and clears, because there is nothing to deliver.
+
+Satisfying this requires `sendRecoveryAlert` to return a delivery outcome; it currently logs the error and returns nothing, so its caller cannot distinguish the second and third cases.
+
+Clearing SHALL include `LastAlertedAttempt` on **every** clean-run path, including the already-deployed skip, which does not clear it today.
 
 `on_recovery` SHALL be hot-reloadable on the same terms as `on_success` and `on_failure`. Those gates are propagated both at daemon startup and per run through the config-reload path; a gate wired only at startup would be the sole gate that cannot be changed without a restart, and the reload log would report two of three.
 
@@ -108,6 +118,29 @@ Failure tracking state SHALL be cleared when a run ends clean — after dispatch
 - **GIVEN** a target with a recorded failed attempt that did not reach an alert threshold, so `LastAlertedAttempt` is 0
 - **WHEN** the next run ends clean
 - **THEN** no Deploy Recovery alert is dispatched
+
+#### Scenario: Disabled recovery discards the pending retraction
+
+- **GIVEN** a target owing a retraction and `on_recovery: false`
+- **WHEN** a reconcile run ends clean
+- **THEN** no Deploy Recovery alert is dispatched
+- **AND** the failure tracking state is cleared
+- **AND** a later run after `on_recovery` is enabled does not emit a retraction for that old failure
+
+#### Scenario: Provider failure does not consume the retraction
+
+- **GIVEN** a target owing a retraction, `on_recovery: true`, and every configured provider failing
+- **WHEN** a reconcile run ends clean
+- **THEN** `LastAlertedAttempt` is retained
+- **AND** the next clean run re-attempts the recovery alert
+- **AND** once one provider succeeds, the state is cleared and no further retraction is sent
+
+#### Scenario: No providers configured clears the state
+
+- **GIVEN** a target owing a retraction and no alert providers configured
+- **WHEN** a reconcile run ends clean
+- **THEN** the failure tracking state is cleared
+- **AND** no retraction is banked for a later provider being configured
 
 #### Scenario: Recovery is not gated on the success gate
 
