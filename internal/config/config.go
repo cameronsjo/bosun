@@ -398,6 +398,13 @@ func LoadFrom(dir string) (*Config, error) {
 	templateIncludeDir := extractTemplateIncludeDir(fileCfg)
 	driftIgnore := extractDriftIgnore(fileCfg)
 	driftAlertDebounce := extractDriftAlertDebounce(fileCfg)
+	// alertConfig MUST be extracted here, not left zero-valued. LoadFrom feeds
+	// LoadReloadedConfig, which copies these gates into the running reconciler
+	// on every reconcile -- so omitting it silently set on_success, on_failure
+	// and on_recovery to false on the first cycle after every daemon start,
+	// overwriting the correct values Load() supplied at startup and disabling
+	// every deploy alert until the next restart (#652).
+	alertConfig := extractAlertConfig(fileCfg)
 	driftSelfHeal := extractDriftSelfHeal(fileCfg)
 	driftSelfHealCooldown := extractDriftSelfHealCooldown(fileCfg)
 	domain := extractDomain(fileCfg)
@@ -409,6 +416,7 @@ func LoadFrom(dir string) (*Config, error) {
 		Root:                   dir,
 		configFileFound:        loaded.found,
 		hookSettleDelayPresent: loaded.hookSettleDelayPresent,
+		alertConfig:            alertConfig,
 		postSyncHooks:          postSyncHooks,
 		hookSettleDelay:        hookSettleDelay,
 		deployPaths:            deployPaths,

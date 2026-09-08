@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Bug Fixes
+
+* **config:** stop the config reload from disabling every deploy alert. `LoadFrom` never populated `alertConfig`, so `GetAlertConfig()` returned the zero value and `LoadReloadedConfig` carried `on_success`, `on_failure` and `on_recovery` into the running reconciler as **false**. The first reconcile after every daemon start therefore overwrote the correct startup gates and silenced deploy alerts until the next restart ([#652](https://github.com/cameronsjo/bosun/issues/652))
+
 ## [0.42.2](https://github.com/cameronsjo/bosun/compare/v0.42.1...v0.42.2) (2026-09-08)
 
 
