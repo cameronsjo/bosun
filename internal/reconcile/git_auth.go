@@ -18,6 +18,9 @@ import (
 
 const redactedGitURL = "[redacted invalid repository URL]"
 
+// redactedQueryValue replaces a credential-bearing query parameter's value.
+const redactedQueryValue = "REDACTED"
+
 var repositoryUserinfoPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@`)
 
 func init() {
@@ -150,7 +153,56 @@ func SanitizeGitURL(repoURL string) string {
 	if parsed.User != nil {
 		parsed.User = nil
 	}
+	redactCredentialQueryParams(parsed)
 	return parsed.String()
+}
+
+// credentialQueryParams are query parameter names whose values are secrets.
+// Matching is case-insensitive and substring-based on the lowered name, so
+// "token" also covers "access_token", "private_token" and "api_token".
+var credentialQueryParams = []string{"token", "password", "passwd", "secret", "key", "auth", "credential", "sig", "signature"}
+
+// redactCredentialQueryParams replaces credential-bearing query parameter
+// values with a placeholder, in place.
+//
+// Clearing url.Userinfo alone is not enough: a repository URL can carry its
+// credential as a query parameter, and this URL is written to timeout logs.
+// The parameter names are kept so the URL stays legible; only values go.
+func redactCredentialQueryParams(parsed *url.URL) {
+	if parsed.RawQuery == "" {
+		return
+	}
+	values, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		// An unparseable query could hide anything; drop it wholesale rather
+		// than pass it through unexamined.
+		parsed.RawQuery = redactedQueryValue
+		return
+	}
+	changed := false
+	for name, vals := range values {
+		if !isCredentialQueryParam(name) {
+			continue
+		}
+		for i := range vals {
+			vals[i] = redactedQueryValue
+		}
+		values[name] = vals
+		changed = true
+	}
+	if changed {
+		parsed.RawQuery = values.Encode()
+	}
+}
+
+func isCredentialQueryParam(name string) bool {
+	lowered := strings.ToLower(name)
+	for _, candidate := range credentialQueryParams {
+		if strings.Contains(lowered, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 // SanitizeGitText removes configured credentials and their common encodings
