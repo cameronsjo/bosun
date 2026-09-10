@@ -2,7 +2,7 @@
 
 ## Status
 
-**Status: Draft** — TODO: set to Proposed or Accepted once reviewed.
+**Status: Accepted** — 2026-09-09, by owner ruling after the site and the dual-layer diagrams had been operating as described for two weeks.
 
 ## Context
 
@@ -64,8 +64,7 @@ an exported SVG carries active content.
 
 ## Consequences for contributors
 
-TODO: confirm whether the dual-layer diagram contract is permanent policy or
-provisional pending how the maintenance cost of two artifacts actually feels.
+The dual-layer diagram contract is permanent policy (ruled 2026-09-09): every architecture diagram keeps both a Mermaid source for the terminal and agent audience and an editorial render for the site, and a change to one is not complete until the other matches. Dropping a layer later needs a superseding ADR, not a quiet edit.
 
 ## References
 
