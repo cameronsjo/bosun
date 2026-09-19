@@ -4,9 +4,14 @@
 
 The one-shot `bosun reconcile` command SHALL read the same environment variables as the daemon for every configuration field that determines which files are rendered into staging and where: repository URL and branch, secrets files, infrastructure directory (`BOSUN_INFRA_DIR`), targets (`BOSUN_TARGETS`), state directory (`BOSUN_STATE_DIR`), post-sync hooks, hook settle delay, deploy paths, and template include directory. For each of these, the CLI SHALL apply the daemon's precedence between environment and project config.
 
-A test SHALL build the reconciler configuration through both the CLI path and the daemon path from one environment and one project config, and compare every field of `reconcile.Config`. Each field on which the two paths are allowed to differ SHALL be listed in that test with its reason. The test SHALL fail when:
+A test SHALL build the reconciler configuration through both the CLI path and the daemon path, and compare every field of `reconcile.Config`. Each field on which the two paths are allowed to differ SHALL be listed in that test with its reason. The test SHALL run at least two cases, so that matching values cannot hide a precedence difference:
 
-- two paths differ on a field that is not listed, or
+- **override**: every field that both the environment and the project config can set gets a *different* value in each, so the environment must win;
+- **fallback**: the same project config with those environment variables unset, so the project-config value must win.
+
+The test SHALL fail when:
+
+- two paths differ on a field that is not listed, in either case, or
 - `reconcile.Config` gains a field that the test neither compares nor lists.
 
 #### Scenario: CLI honors the infrastructure directory
@@ -15,6 +20,19 @@ A test SHALL build the reconciler configuration through both the CLI path and th
 - **WHEN** `bosun reconcile` builds its reconciler configuration
 - **THEN** `InfraSubDir` is `unraid`
 - **AND** it equals the `InfraSubDir` the daemon builds from the same environment
+
+#### Scenario: Environment overrides project config identically
+
+- **GIVEN** `bosun.yaml` sets `deploy_paths` and `template_include_dir`
+- **AND** `BOSUN_DEPLOY_PATHS` and `BOSUN_TEMPLATE_INCLUDE_DIR` are set to different values
+- **WHEN** both paths build their reconciler configuration
+- **THEN** both use the environment values
+
+#### Scenario: Project config applies identically when the environment is unset
+
+- **GIVEN** the same `bosun.yaml` and no `BOSUN_DEPLOY_PATHS` or `BOSUN_TEMPLATE_INCLUDE_DIR`
+- **WHEN** both paths build their reconciler configuration
+- **THEN** both use the `bosun.yaml` values
 
 #### Scenario: Unlisted divergence fails the parity test
 
@@ -37,6 +55,14 @@ A test SHALL build the reconciler configuration through both the CLI path and th
 #### Scenario: Failing dry run with alerts suppressed
 
 - **GIVEN** `DISCORD_WEBHOOK_URL` points at a reachable webhook receiver
+- **AND** the repository cannot be synchronized, so the run fails
+- **WHEN** `bosun reconcile --dry-run --no-alerts` runs
+- **THEN** the receiver gets no request
+
+#### Scenario: Alerts configured in the project file are suppressed
+
+- **GIVEN** no alert environment variables
+- **AND** `bosun.yaml` configures `alerts.discord_webhook_url` pointing at a reachable webhook receiver
 - **AND** the repository cannot be synchronized, so the run fails
 - **WHEN** `bosun reconcile --dry-run --no-alerts` runs
 - **THEN** the receiver gets no request
