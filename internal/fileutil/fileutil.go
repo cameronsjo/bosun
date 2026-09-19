@@ -801,7 +801,26 @@ func CopyDirIfChanged(ctx context.Context, src, dst string) ([]string, error) {
 	// directories a container can modify. Pin dst once and resolve every
 	// destination mutation from that handle, so a descendant directory swapped
 	// for a symlink mid-walk cannot redirect a write outside dst.
-	pinned := newPinnedDir(dst)
+	//
+	// os.OpenRoot resolves the pinned path itself by path, so dst must be a
+	// directory the container cannot replace. When it is not — a deploy into
+	// appdata/<service> — use CopyDirUnderRootIfChanged and pin higher.
+	return CopyDirUnderRootIfChanged(ctx, src, dst, dst)
+}
+
+// CopyDirUnderRootIfChanged is CopyDirIfChanged with every destination mutation
+// resolved from a handle pinned to root, which dst must lie under. It is the
+// directory counterpart of CopyFileUnderRootIfChanged: pinning above the
+// container-writable component keeps dst itself from being swapped for a
+// symlink that redirects the whole tree. A dst outside root is refused rather
+// than copied by path.
+//
+// root itself is resolved by path when the handle is opened, so root must be a
+// directory the container cannot replace.
+//
+// The returned paths stay relative to dst, exactly as CopyDirIfChanged's are.
+func CopyDirUnderRootIfChanged(ctx context.Context, src, root, dst string) ([]string, error) {
+	pinned := newPinnedDir(root)
 	defer pinned.close()
 	return copyDirIfChangedWithOps(ctx, src, dst, pinned.dirOps())
 }

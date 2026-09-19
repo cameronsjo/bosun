@@ -2387,7 +2387,11 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 		deletedSnapshot := len(result.DeletedFiles)
 		prevForTarget := filterManagedForTarget(prevManaged, t.TargetPath)
 		if t.IsDir {
-			if err := r.deploy.DeployLocal(ctx, src, dst, result, prevForTarget); err != nil {
+			// appdata is the deploy root, as in the single-file branch below:
+			// dst is appdata/<service>, which a compromised container can
+			// replace with a symlink. Pinning at appdata keeps that swap from
+			// redirecting the rendered tree.
+			if err := r.deploy.deployLocalManaged(ctx, src, dst, appdata, result, prevForTarget); err != nil {
 				result.PrefixLatest(snapshot, t.RelPath)
 				result.PrefixLatestDeleted(deletedSnapshot, t.RelPath)
 				return result, err
@@ -2446,7 +2450,7 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 		snapshot := len(result.WrittenFiles)
 		deletedSnapshot := len(result.DeletedFiles)
 		prevForCompose := filterManagedForTarget(prevManaged, "compose")
-		if err := r.deploy.DeployLocal(ctx, composeStaging, composeTarget, result, prevForCompose); err != nil {
+		if err := r.deploy.deployLocalManaged(ctx, composeStaging, composeTarget, appdata, result, prevForCompose); err != nil {
 			result.PrefixLatest(snapshot, "compose")
 			result.PrefixLatestDeleted(deletedSnapshot, "compose")
 			return result, err
