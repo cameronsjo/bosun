@@ -1577,11 +1577,19 @@ func listManagedFiles(sourceDir string) ([]string, error) {
 // DeployLocalFile syncs a single file locally using native Go file operations.
 // Uses atomic copy via temp file. When ContentHashSync is enabled, skips writing
 // if the file content has not changed.
+//
+// The write is pinned to targetFile's parent directory. The reconcile path calls
+// deployLocalFileManaged directly with the appdata root, which pins higher.
 func (d *DeployOps) DeployLocalFile(ctx context.Context, sourceFile, targetFile string, result *DeployResult) error {
-	return d.deployLocalFileManaged(ctx, sourceFile, targetFile, result, nil)
+	return d.deployLocalFileManaged(ctx, sourceFile, targetFile, filepath.Dir(targetFile), result, nil)
 }
 
-func (d *DeployOps) deployLocalFileManaged(ctx context.Context, sourceFile, targetFile string, result *DeployResult, prevManaged map[string]bool) error {
+// deployLocalFileManaged writes targetFile with every destination mutation
+// resolved from a handle pinned to deployRoot, which targetFile must lie under.
+// bosun runs as host root and single-file targets land in appdata, where a
+// compromised container can replace a directory with a symlink; resolving the
+// write by path lets that symlink redirect it out of appdata entirely.
+func (d *DeployOps) deployLocalFileManaged(ctx context.Context, sourceFile, targetFile, deployRoot string, result *DeployResult, prevManaged map[string]bool) error {
 	if d.DryRun {
 		return nil
 	}
@@ -1612,7 +1620,9 @@ func (d *DeployOps) deployLocalFileManaged(ctx context.Context, sourceFile, targ
 	if d.ContentHashSync {
 		copyFn := d.copyFileIfChangedFn
 		if copyFn == nil {
-			copyFn = fileutil.CopyFileIfChanged
+			copyFn = func(ctx context.Context, src, dst string) (bool, error) {
+				return fileutil.CopyFileUnderRootIfChanged(ctx, src, deployRoot, dst)
+			}
 		}
 		changed, err := copyFn(ctx, sourceFile, targetFile)
 		if changed && result != nil {
@@ -1628,7 +1638,9 @@ func (d *DeployOps) deployLocalFileManaged(ctx context.Context, sourceFile, targ
 	// must too. Treat ErrSymlinkSkipped as a benign no-op, not a deploy failure.
 	copyFn := d.copyFileFn
 	if copyFn == nil {
-		copyFn = fileutil.CopyFile
+		copyFn = func(ctx context.Context, src, dst string) error {
+			return fileutil.CopyFileUnderRoot(ctx, src, deployRoot, dst)
+		}
 	}
 	if err := copyFn(ctx, sourceFile, targetFile); err != nil {
 		if errors.Is(err, fileutil.ErrSymlinkSkipped) {

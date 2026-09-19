@@ -2403,7 +2403,11 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 					return nil, fmt.Errorf("create local deploy directory %q: %w", targetDir, err)
 				}
 			}
-			if err := r.deploy.deployLocalFileManaged(ctx, src, dst, result, prevForTarget); err != nil {
+			// appdata is the deploy root: discovery gives every target a
+			// single-component TargetPath, so dst sits directly under it.
+			// Pinning there keeps a container-controlled directory beneath
+			// appdata from redirecting this write.
+			if err := r.deploy.deployLocalFileManaged(ctx, src, dst, appdata, result, prevForTarget); err != nil {
 				result.PrefixLatest(snapshot, filepath.Dir(t.RelPath))
 				result.PrefixLatestDeleted(deletedSnapshot, t.RelPath)
 				return result, err

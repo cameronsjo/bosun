@@ -58,13 +58,15 @@ func TestCopyDirIfChangedStopsBeforeNextMutationAfterCancellation(t *testing.T) 
 		ctx,
 		src,
 		dst,
-		func(ctx context.Context, src, dst string) (bool, postWriteVerification, error) {
-			copyCalls++
-			copyErr := copyFileWithoutDirSyncContext(ctx, src, dst)
-			cancel()
-			return copyErr == nil, nil, copyErr
-		},
-		syncDestinationDir,
+		pathDirOps(
+			func(ctx context.Context, src, dst string) (bool, postWriteVerification, error) {
+				copyCalls++
+				copyErr := copyFileWithoutDirSyncContext(ctx, src, dst)
+				cancel()
+				return copyErr == nil, nil, copyErr
+			},
+			syncDestinationDir,
+		),
 	)
 
 	require.ErrorIs(t, err, context.Canceled)
