@@ -510,12 +510,11 @@ func buildRemoteStageCommand(tmpRoot, stagedDir string) string {
 // silently becomes TOFU — ssh then surfaces the real read error.
 //
 // The one remaining INTENTIONAL divergence is the terminal case: when no
-// known_hosts file exists and insecure is not set, git.go falls back to
-// InsecureIgnoreHostKey (no verification), but the deploy channel carries a
-// secret-bearing tar stream to a root account, so it uses openssh's TOFU
-// (accept-new) instead — the first connection pins the key and later
-// mismatches fail. Verification is never silently disabled here; only an
-// explicit BOSUN_SSH_INSECURE_HOST_KEY=true opts out.
+// known_hosts file exists and insecure is not set, git.go fails closed (it
+// returns an error and no Git operation runs), while the deploy channel uses
+// openssh's TOFU (accept-new) — the first connection pins the key and later
+// mismatches fail. Verification is never silently disabled on either channel;
+// only an explicit BOSUN_SSH_INSECURE_HOST_KEY=true opts out.
 func hostKeyOptions() []string {
 	if strings.EqualFold(os.Getenv("BOSUN_SSH_INSECURE_HOST_KEY"), "true") {
 		return []string{
@@ -539,10 +538,11 @@ func hostKeyOptions() []string {
 	return []string{"-o", "StrictHostKeyChecking=accept-new"}
 }
 
-// knownHostsCandidates resolves the ordered known_hosts candidate paths for the
-// deploy-path host-key policy, defaulting to git.go's buildKnownHostsPaths so
-// deploy and git ops share one resolution (the env var, then /config/known_hosts).
-// It is a package var so tests can inject a controlled candidate list.
+// knownHostsCandidates resolves the ordered known_hosts candidate paths for both
+// host-key policies — this file's deploy path and git.go's getHostKeyCallback —
+// defaulting to buildKnownHostsPaths so they share one resolution (the env var,
+// then /config/known_hosts). It is a package var so tests can inject a controlled
+// candidate list.
 var knownHostsCandidates = buildKnownHostsPaths
 
 // execWithHostKeyOptions builds an exec.Cmd for name (ssh or scp) with the

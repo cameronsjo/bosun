@@ -234,6 +234,21 @@ for _, char := range shellMetachars {
 hostPattern = regexp.MustCompile(`^([a-zA-Z0-9_-]+@)?[a-zA-Z0-9.-]+$`)
 ```
 
+### Host Key Verification
+
+**Implementation**: `internal/reconcile/git.go` (Git clone/fetch), `internal/reconcile/ssh.go` (deploy channel)
+
+Both SSH channels resolve a `known_hosts` file from config-controlled paths only, in order: `BOSUN_SSH_KNOWN_HOSTS`, then `/config/known_hosts`. `~/.ssh/known_hosts` is deliberately excluded — ephemeral entries written by manual `ssh` commands inside a container cause key mismatches.
+
+The two channels differ only in what happens when no `known_hosts` file exists:
+
+| Channel | No `known_hosts` file | Unparseable `known_hosts` |
+|---------|-----------------------|---------------------------|
+| Git clone/fetch | **Fails closed** — authentication resolution errors, the daemon refuses to start, and no connection is made | **Fails closed** — the error names the file; no later candidate is substituted |
+| Deploy (`ssh`/`scp`) | TOFU (`StrictHostKeyChecking=accept-new`) — the first connection pins the key, later mismatches fail | Strict against that file; `ssh` surfaces the read error |
+
+`BOSUN_SSH_INSECURE_HOST_KEY=true` is the only way to accept an unverified host key, on either channel. Populate `known_hosts` before the first Git operation (`ssh-keyscan <git-host> >> /config/known_hosts`); a Git repository over SSH with no host-key policy is rejected at startup rather than fetched from an unauthenticated peer.
+
 ## Environment Variable Filtering
 
 ### Blocked Variables

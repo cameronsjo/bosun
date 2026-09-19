@@ -746,7 +746,7 @@ Bosun verifies SSH host keys using only config-controlled paths:
 1. `BOSUN_SSH_KNOWN_HOSTS` (explicit override)
 2. `/config/known_hosts` (container convention)
 
-`~/.ssh/known_hosts` is intentionally excluded — ephemeral entries from manual `ssh` commands inside a container can cause go-git key mismatches. If neither path exists, verification falls back to insecure mode with a warning. Set `BOSUN_SSH_INSECURE_HOST_KEY=true` to disable verification entirely.
+`~/.ssh/known_hosts` is intentionally excluded — ephemeral entries from manual `ssh` commands inside a container can cause go-git key mismatches. If neither path exists, or the first one found does not parse, Git authentication fails closed: the operation returns an error and the daemon refuses to start, rather than connecting to an unverified host. Set `BOSUN_SSH_INSECURE_HOST_KEY=true` to disable verification entirely — that is the only opt-out.
 
 ## Environment Variables
 

@@ -441,8 +441,8 @@ do not gain legacy aliases.
 | `BOSUN_TWILIO_AUTH_TOKEN` | config | Twilio auth token (overrides config file; legacy: `TWILIO_AUTH_TOKEN`) |
 | `BOSUN_TWILIO_FROM_NUMBER` | config | Twilio sender number (overrides config file; legacy: `TWILIO_FROM_NUMBER`) |
 | `BOSUN_SSH_KEY` | reconcile | Explicit SSH key fallback for git operations; an agent wins only when it returns a signer, and a recognized SSH repository with no usable agent/key fails before network access |
-| `BOSUN_SSH_KNOWN_HOSTS` | reconcile | Known hosts file path |
-| `BOSUN_SSH_INSECURE_HOST_KEY` | reconcile | Skip host key verification (`true`/`false`) |
+| `BOSUN_SSH_KNOWN_HOSTS` | reconcile | Known hosts file path (checked before `/config/known_hosts`). Git over SSH fails closed when no candidate exists or the first one found does not parse: auth resolution errors and the daemon refuses to start |
+| `BOSUN_SSH_INSECURE_HOST_KEY` | reconcile | Skip host key verification (`true`/`false`; strict `== "true"`, case-insensitive). The only opt-out from host key verification on either SSH channel |
 | `BOSUN_DAEMON_MODE` | log, sentry | Set automatically when daemon starts |
 | `BOSUN_LOG_FORMAT` | log | Log format: `console` or `json` |
 | `BOSUN_LOG_LEVEL` | log | Log level: `debug`, `info`, `warn`, `error` |

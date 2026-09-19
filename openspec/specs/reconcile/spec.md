@@ -180,10 +180,12 @@ checked in order: `BOSUN_SSH_KNOWN_HOSTS` environment variable (explicit
 override), then `/config/known_hosts` (container convention). The user-profile
 path `~/.ssh/known_hosts` SHALL NOT be consulted, because it is an ephemeral
 location in container environments that can be polluted by manual `ssh`
-commands, causing key mismatches. When no known_hosts file is found, the
-reconciler SHALL fall back to insecure mode with a warning. The
-`BOSUN_SSH_INSECURE_HOST_KEY` environment variable SHALL disable verification
-entirely.
+commands, causing key mismatches. When no known_hosts file is found, or the
+first one found cannot be parsed, host key resolution SHALL fail closed: Git
+authentication resolution returns an error and no Git operation runs, so daemon
+startup validation rejects the configuration. The
+`BOSUN_SSH_INSECURE_HOST_KEY` environment variable SHALL be the only way to
+disable verification.
 
 #### Scenario: Fresh clone on first run
 
@@ -395,12 +397,19 @@ entirely.
 - **AND** `/config/known_hosts` exists
 - **THEN** host key verification uses `/config/known_hosts`
 
-#### Scenario: No known_hosts found falls back to insecure mode
+#### Scenario: No known_hosts found fails closed
 
 - **WHEN** `BOSUN_SSH_KNOWN_HOSTS` is not set
 - **AND** `/config/known_hosts` does not exist
-- **THEN** the reconciler falls back to insecure host key mode
-- **AND** logs a warning that host key verification is disabled
+- **AND** `BOSUN_SSH_INSECURE_HOST_KEY` is not `true`
+- **THEN** Git authentication resolution returns an error naming the remediation
+- **AND** no SSH connection is attempted
+
+#### Scenario: Unparseable known_hosts fails closed
+
+- **WHEN** the first known_hosts candidate that exists cannot be parsed
+- **THEN** Git authentication resolution returns an error naming that file
+- **AND** no later candidate is substituted for it
 
 #### Scenario: User-profile known_hosts not consulted
 
@@ -408,7 +417,7 @@ entirely.
 - **AND** `/config/known_hosts` does not exist
 - **AND** `~/.ssh/known_hosts` exists with valid host keys
 - **THEN** the reconciler does NOT use `~/.ssh/known_hosts`
-- **AND** falls back to insecure mode with a warning
+- **AND** Git authentication resolution fails closed
 
 #### Scenario: BOSUN_SSH_INSECURE_HOST_KEY disables verification entirely
 
