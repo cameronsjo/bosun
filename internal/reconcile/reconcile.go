@@ -491,7 +491,11 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	// below then misreports as "another reconciliation may be in progress",
 	// paralyzing every subsequent run. One MkdirAll here covers the default
 	// target and every named target, since they all share the base lock dir.
-	if err := os.MkdirAll(filepath.Dir(r.lockFile), 0755); err != nil {
+	// lockDirMode keeps a directory bosun creates owner-only so no other local
+	// principal can reach the lock files inside it; an already-existing
+	// directory keeps its mode, since it may be shared and not bosun's to
+	// retighten.
+	if err := os.MkdirAll(filepath.Dir(r.lockFile), lockDirMode); err != nil {
 		return fmt.Errorf("failed to create lock file directory: %w", err)
 	}
 
