@@ -28,6 +28,13 @@ The common repair is to make each boundary *resolve against the thing it is prot
 - **The reconcile lock is owner-only** and is opened without following a final-component symlink; an existing permissive lock has its mode tightened on next acquire.
 - **Every operator-facing text sink neutralizes untrusted input.** Webhook attribution and refs from all four providers, the socket trigger source, and container health-check output are stripped of control, formatting and separator characters before reaching a log, an error string or an alert body.
 
+## Known residuals
+
+Two are worth naming rather than implying the boundaries are now total.
+
+- **The skip-path gate closes the reported scenario, not the full race.** `CopyFileUnderRootIfChanged` now resolves its destination through the pinned handle before comparing, so a pre-placed copy behind a symlinked directory errors instead of reporting "no change". The comparison itself still reads the destination by path, so a swap landing between the gate and the comparison is still read by path. Closing that fully changes a shared signature and five existing call sites, and is left as follow-up work.
+- **`DeployLocal` keeps one unpinned directory creation** before the content-hash copy, as the `localFS` test seam. It cannot create a tree outside `appdata`: the untrusted component is `<service>`, and if that is already a symlink the creation makes nothing and the pinned copy then refuses.
+
 ## Impact
 
 - Affected specs: `reconcile`, `daemon-security`

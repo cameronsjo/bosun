@@ -73,6 +73,17 @@ All ten units below are implemented on `fix/security-hardening-2026-09`, one com
 - [x] 10.4 Strip before capping, so a control character cannot survive past the truncation point
 - [ ] 10.5 Commit the differential harness. During development 40,013 inputs were run through the old and new sanitizer bodies with zero drift, but that harness was not committed; `internal/log/sanitize_test.go` is a case table. Either land it or record the measurement as evidence rather than as a delivered test
 
+## 11. Gaps the review pass found in the above
+
+Two independent reviewers read the ten fixes back. These are their confirmed findings, fixed on the same branch.
+
+- [x] 11.1 Pin the directory deploy at `appdata`, not at `appdata/<service>`. The single-file path pinned one level above the container-writable component; the directory path pinned at the component itself, and the pinning call resolves its own root by path, so a swap at the service directory redirected the whole rendered tree
+- [x] 11.2 Refuse an escaping destination in `CopyFileUnderRootIfChanged` instead of skipping. The change decision hashed the destination by path, so a pre-placed copy behind a symlinked directory returned "no change" — a silent skip that never entered `WrittenFiles`, so the deploy invariant check could not see it
+- [x] 11.3 Delete the unpinned `os.MkdirAll` before the pinned single-file write, the last path-resolved destination mutation on that path
+- [x] 11.4 Sanitize the TCP `/trigger` source, which the socket handler already did. Bearer-token gating narrows who reaches it; it does not make the string trustworthy
+- [x] 11.5 Fix the stale host key table in `docs/security.md`, which still described the deploy channel as trust-on-first-use and contradicted another section in the same file
+- [x] 11.6 Document the three controls that shipped undocumented: template source type refusal, pinned deploy and extraction roots, and the owner-only lock
+
 ## Verification
 
 - [x] `go build ./...` clean on the merged tree
