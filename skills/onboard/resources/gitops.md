@@ -403,14 +403,22 @@ the already-restricted socket at its final path. This avoids a permissive
 also refuses to replace a stale-path symlink or non-socket entry and removes the
 socket at shutdown only if the path still refers to the inode it created.
 
-On Linux, mutating socket requests are independently authorized with
+On Linux, privileged socket requests are independently authorized with
 `SO_PEERCRED`: the daemon's effective UID is always allowed, and
 `BOSUN_SOCKET_ALLOWED_UIDS` adds comma-separated numeric UIDs. An unauthorized
 UID or a connection without available peer credentials receives `403` and
-cannot trigger reconciliation. This also means non-Linux platforms reject
-socket mutations by default. `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET=true` is the
-strict, loudly logged opt-out for deployments that intentionally rely only on
-socket filesystem permissions.
+cannot trigger reconciliation. This also means non-Linux platforms reject those
+requests by default. `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET=true` is the strict,
+loudly logged opt-out for deployments that intentionally rely only on socket
+filesystem permissions.
+
+Privileged means `POST /trigger` **and** `GET /config`. `/config` is a read,
+but it returns the webhook secret, and that secret is what the daemon's HTTP
+trigger endpoints accept — so serving it to an unauthorized peer would hand
+over a signed forced trigger by another route. `GET /status` and `GET /health`
+return no credential and are governed by socket file permissions alone. A
+`bosun webhook --fetch-secret` receiver must therefore run as the daemon's UID
+or a listed UID.
 
 ### Unix Socket API
 
@@ -483,6 +491,11 @@ secret is not an open door. On trusted networks, opt out explicitly with
 and per accepted request). The Unix socket trigger (`bosun trigger`) is not
 affected. `BOSUN_LISTEN_ADDR` narrows the HTTP bind; the default stays
 all-interfaces so container-side callers reach the daemon over the docker bridge.
+
+The standalone `bosun webhook` receiver applies the same gate on its own HTTP
+port, reading the same `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` opt-out. It needs
+its own copy: it forwards over the Unix socket, which authorizes by peer
+credential and never re-checks the daemon's webhook gate.
 
 GitHub pusher attribution is sanitized by both the daemon endpoint and the
 standalone receiver, whether a request has a valid signature or uses the direct

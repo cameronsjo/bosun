@@ -99,9 +99,16 @@ func shouldProcessGitHubPush(pushRef string, trackingBranch string) (process boo
 }
 
 // buildConfigResponse constructs a ConfigResponse from daemon configuration.
-func buildConfigResponse(cfg *Config) ConfigResponse {
-	resp := ConfigResponse{
-		WebhookSecret: cfg.WebhookSecret,
+//
+// includeWebhookSecret must be set explicitly by a caller that has already
+// authorized the peer. The credential is opt-in rather than default so a new
+// caller cannot emit it by forgetting to strip it: the zero value of the
+// parameter withholds the secret.
+func buildConfigResponse(cfg *Config, includeWebhookSecret bool) ConfigResponse {
+	resp := ConfigResponse{}
+
+	if includeWebhookSecret {
+		resp.WebhookSecret = cfg.WebhookSecret
 	}
 
 	if cfg.PollInterval > 0 {

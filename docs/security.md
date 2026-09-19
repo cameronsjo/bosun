@@ -560,6 +560,22 @@ other escape hatches). With the opt-out active:
 The opt-out never bypasses a configured secret — when `WEBHOOK_SECRET` is set,
 signature validation always runs.
 
+**The standalone `bosun webhook` receiver fails closed the same way.** It
+forwards to the daemon over the Unix socket, which authorizes by peer
+credential and never re-applies the daemon's own HTTP webhook gate — so the
+receiver's HTTP port needs its own. When no secret is resolved (`--secret`,
+`WEBHOOK_SECRET`, `GITHUB_WEBHOOK_SECRET`, or `--fetch-secret`), every receiver
+trigger endpoint (`/webhook`, `/webhook/github`, `/webhook/gitlab`,
+`/webhook/gitea`, `/webhook/bitbucket`) rejects requests with `403`. The
+receiver reads the same `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true` opt-out,
+warns loudly at startup about whichever posture is active, and logs a
+`SECURITY:` warning per accepted unauthenticated request. `/health` and
+`/ready` change nothing and stay open.
+
+This matters most on the implicit daemon-fetch path: a receiver started before
+the daemon gets no secret, and previously served with signature validation
+silently disabled while still forwarding triggers.
+
 GitHub pusher attribution is treated as untrusted even after signature
 validation. Both the daemon endpoint and the standalone webhook receiver strip
 control, formatting, and line-separator characters and cap the remaining name
@@ -597,7 +613,7 @@ remain authoritative.
 
 Socket file mode controls which processes can connect, but does not by itself
 authorize a deployment. On Linux, Bosun reads `SO_PEERCRED` for each accepted
-connection and authorizes mutating socket requests only when the peer UID is
+connection and authorizes privileged socket requests only when the peer UID is
 the daemon's effective UID or appears in `BOSUN_SOCKET_ALLOWED_UIDS`. The
 allowlist is a comma-separated list of numeric UIDs; malformed, negative, or
 out-of-range entries fail configuration validation instead of partially
@@ -608,8 +624,20 @@ returns `403` and does not reconcile. Operators who deliberately use socket
 permissions as their entire trust boundary can set
 `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET=true` (strict lowercase match). This
 security opt-out is logged at startup and for every accepted unauthenticated
-mutation. Read-only socket endpoints remain governed by the socket's filesystem
-permissions.
+request the check admits.
+
+**`GET /config` carries the same peer check, despite being a read.** It returns
+the webhook secret for the daemon-injected-secrets pattern, and that secret is
+exactly what the HTTP listener's trigger endpoints accept — so a peer refused
+by `POST /trigger` could otherwise read the secret here and sign a forced
+trigger against the HTTP port instead. The boundary is drawn on effect, not on
+HTTP verb. `GET /status` and `GET /health` return no credential and remain
+governed by the socket's filesystem permissions.
+
+A `bosun webhook` receiver using `--fetch-secret` must therefore run as the
+daemon's UID or as a `BOSUN_SOCKET_ALLOWED_UIDS` member. A receiver that fails
+the check could never have forwarded a trigger anyway, so this costs a
+correctly configured deployment nothing.
 
 ## Public Health and Operator Diagnostics
 

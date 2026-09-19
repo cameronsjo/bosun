@@ -391,6 +391,102 @@ func TestStandaloneGitHubWebhookSanitizesPusherAttribution(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(output, "\n"), "attacker input must not create extra log lines")
 }
 
+// webhookTriggerEndpoints are the receiver routes that forward to the daemon's
+// /trigger. /health and /ready are deliberately absent: they change nothing.
+var webhookTriggerEndpoints = []string{
+	"/webhook",
+	"/webhook/github",
+	"/webhook/gitlab",
+	"/webhook/gitea",
+	"/webhook/bitbucket",
+}
+
+// TestStandaloneWebhookFailsClosedWithoutSecret pins the receiver's fail-closed
+// posture. Without it, an empty h.secret turns every per-provider signature
+// guard into a no-op and any caller who can reach the HTTP port gets a deploy
+// over the Unix socket, which the daemon authorizes by peer credential and
+// never re-checks against its own webhook gate.
+//
+// Driven through newWebhookMux, because the defect lives in the handlers the
+// mux dispatches to, not in validateSignature.
+func TestStandaloneWebhookFailsClosedWithoutSecret(t *testing.T) {
+	for _, endpoint := range webhookTriggerEndpoints {
+		t.Run("no secret rejects "+endpoint, func(t *testing.T) {
+			client := &recordingWebhookClient{}
+			mux := newWebhookMux(&webhookHandler{client: client})
+
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, newWebhookPushRequest(endpoint, []byte(`{"ref":"refs/heads/main"}`)))
+
+			assert.Equal(t, http.StatusForbidden, w.Code)
+			assert.Contains(t, w.Body.String(), "Webhook authentication not configured")
+			assert.Equal(t, 0, client.triggerCalls, "an unauthenticated request must not reach the daemon")
+		})
+
+		t.Run("opt-out accepts "+endpoint, func(t *testing.T) {
+			client := &recordingWebhookClient{}
+			mux := newWebhookMux(&webhookHandler{client: client, allowUnauthenticated: true})
+
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, newWebhookPushRequest(endpoint, []byte(`{"ref":"refs/heads/main"}`)))
+
+			assert.Equal(t, http.StatusAccepted, w.Code)
+			assert.Equal(t, 1, client.triggerCalls, "the explicit opt-out must still forward")
+		})
+	}
+
+	t.Run("a configured secret still rejects a bad signature", func(t *testing.T) {
+		client := &recordingWebhookClient{}
+		mux := newWebhookMux(&webhookHandler{client: client, secret: "webhook-secret"})
+
+		payload := []byte(`{"ref":"refs/heads/main"}`)
+		req := newWebhookPushRequest("/webhook/github", payload)
+		req.Header.Set("X-Hub-Signature-256", "sha256="+computeHMAC(payload, "wrong-secret"))
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+		assert.Equal(t, 0, client.triggerCalls)
+	})
+
+	t.Run("a configured secret accepts a valid signature", func(t *testing.T) {
+		client := &recordingWebhookClient{}
+		mux := newWebhookMux(&webhookHandler{client: client, secret: "webhook-secret"})
+
+		payload := []byte(`{"ref":"refs/heads/main"}`)
+		req := newWebhookPushRequest("/webhook/github", payload)
+		req.Header.Set("X-Hub-Signature-256", "sha256="+computeHMAC(payload, "webhook-secret"))
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusAccepted, w.Code)
+		assert.Equal(t, 1, client.triggerCalls)
+	})
+
+	t.Run("liveness endpoints stay open without a secret", func(t *testing.T) {
+		client := &recordingWebhookClient{health: &daemon.HealthResponse{Status: "healthy", Ready: true}}
+		mux := newWebhookMux(&webhookHandler{client: client})
+
+		for _, path := range []string{"/health", "/ready"} {
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+			assert.Equal(t, http.StatusOK, w.Code, path)
+		}
+	})
+}
+
+// newWebhookPushRequest builds a request each provider endpoint accepts as a
+// push, so a 403 can only come from the auth gate and never from event-type
+// filtering.
+func newWebhookPushRequest(endpoint string, payload []byte) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-Gitlab-Event", "Push Hook")
+	req.Header.Set("X-Gitea-Event", "push")
+	req.Header.Set("X-Event-Key", "repo:push")
+	return req
+}
+
 func TestStandaloneWebhookLivenessHandlers(t *testing.T) {
 	t.Run("health proxies bounded healthy response", func(t *testing.T) {
 		client := &recordingWebhookClient{health: &daemon.HealthResponse{
@@ -474,14 +570,16 @@ func jsonObjectKeys(t *testing.T, body []byte) []string {
 }
 
 type recordingWebhookClient struct {
-	source      string
-	health      *daemon.HealthResponse
-	healthError error
-	healthCalls int
+	source       string
+	triggerCalls int
+	health       *daemon.HealthResponse
+	healthError  error
+	healthCalls  int
 }
 
 func (c *recordingWebhookClient) Trigger(_ context.Context, source string, _ bool) (*daemon.TriggerResponse, error) {
 	c.source = source
+	c.triggerCalls++
 	return &daemon.TriggerResponse{Status: "accepted"}, nil
 }
 

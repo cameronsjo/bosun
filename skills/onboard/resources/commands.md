@@ -534,6 +534,15 @@ bosun webhook --secret mysecret        # Set secret directly
 
 Validates webhook signatures and forwards valid requests to the daemon's trigger endpoint. Supports GitHub, GitLab, Gitea, and Bitbucket formats.
 
+**Fails closed.** With no secret resolved (`--secret`, `WEBHOOK_SECRET`,
+`GITHUB_WEBHOOK_SECRET`, or `--fetch-secret`), every trigger endpoint returns
+`403`. Set `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true` to accept unauthenticated
+triggers instead; the posture is logged at startup and each accepted request
+logs a security warning. `/health` and `/ready` stay open either way.
+
+`--fetch-secret` reads the daemon's peer-authorized `GET /config`, so the
+receiver must run as the daemon's UID or a `BOSUN_SOCKET_ALLOWED_UIDS` member.
+
 ---
 
 ## Alert Commands

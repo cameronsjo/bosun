@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cameronsjo/bosun/internal/daemon"
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -42,10 +43,20 @@ receiver in a container while the daemon runs on the host.
 The webhook server validates signatures and forwards valid requests
 to the daemon's trigger endpoint.
 
+WEBHOOK AUTH FAILS CLOSED:
+  With no secret resolved (--secret, WEBHOOK_SECRET, GITHUB_WEBHOOK_SECRET,
+  or --fetch-secret), the trigger endpoints reject every request with 403.
+  Set BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true to accept unauthenticated
+  triggers instead; each accepted request is logged as a security warning.
+  This mirrors the daemon's own webhook posture.
+
 DAEMON-INJECTED SECRETS:
   Use --fetch-secret to have the webhook server fetch the webhook secret
   from the daemon at startup. This way the secret is never stored on disk
-  in the webhook container - it only exists in the daemon's memory.
+  in the webhook container - it only exists in the daemon's memory. The
+  daemon serves that secret only to an authorized socket peer, so the
+  receiver must run as the daemon's UID or a BOSUN_SOCKET_ALLOWED_UIDS
+  member.
 
 Configuration:
   --port          HTTP port to listen on (default: 8080)
@@ -95,7 +106,9 @@ func runWebhook(cmd *cobra.Command, args []string) {
 				// Explicit request to fetch - fail if we can't
 				ui.Fatal("Failed to fetch config from daemon: %v", err)
 			}
-			// Implicit fallback - just warn
+			// Implicit fallback - the receiver still serves, but with no
+			// secret resolved the trigger endpoints fail closed below rather
+			// than silently accepting unsigned requests.
 			ui.Warning("Could not fetch config from daemon: %v", err)
 		} else if cfg.WebhookSecret != "" {
 			secret = cfg.WebhookSecret
@@ -105,22 +118,14 @@ func runWebhook(cmd *cobra.Command, args []string) {
 
 	// Create webhook handler
 	handler := &webhookHandler{
-		client: client,
-		secret: secret,
+		client:               client,
+		secret:               secret,
+		allowUnauthenticated: os.Getenv("BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK") == "true",
 	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/webhook", handler.handleWebhook)
-	mux.HandleFunc("/webhook/github", handler.handleGitHubWebhook)
-	mux.HandleFunc("/webhook/gitlab", handler.handleGitLabWebhook)
-	mux.HandleFunc("/webhook/gitea", handler.handleGiteaWebhook)
-	mux.HandleFunc("/webhook/bitbucket", handler.handleBitbucketWebhook)
-	mux.HandleFunc("/health", handler.handleHealth)
-	mux.HandleFunc("/ready", handler.handleReady)
 
 	server := &http.Server{
 		Addr:           fmt.Sprintf(":%d", webhookPort),
-		Handler:        mux,
+		Handler:        newWebhookMux(handler),
 		ReadTimeout:    10 * time.Second,
 		WriteTimeout:   30 * time.Second,
 		IdleTimeout:    60 * time.Second,
@@ -130,11 +135,7 @@ func runWebhook(cmd *cobra.Command, args []string) {
 	// Start server in goroutine
 	go func() {
 		ui.Info("Webhook server listening on :%d", webhookPort)
-		if secret != "" {
-			ui.Info("Signature validation: enabled")
-		} else {
-			ui.Warning("Signature validation: disabled (set WEBHOOK_SECRET)")
-		}
+		warnWebhookReceiverAuthPosture(handler)
 		ui.Info("Forwarding to daemon at %s", webhookSocket)
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -170,6 +171,48 @@ const maxWebhookHeaderBytes = 64 * 1024 // 64KB
 type webhookHandler struct {
 	client webhookTriggerClient
 	secret string
+
+	// allowUnauthenticated opts out of the fail-closed posture below
+	// (BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true, strict match), mirroring the
+	// daemon's own opt-out.
+	allowUnauthenticated bool
+}
+
+// authorizeTrigger enforces the receiver's webhook authentication posture
+// before a trigger endpoint does any work. On failure it writes the 403 itself
+// and returns false — the caller MUST NOT write a second response
+// (`if !h.authorizeTrigger(w, r) { return }`).
+//
+// It mirrors the daemon's gate (#345, internal/daemon/server.go
+// authorizeTrigger): with no secret resolved, every trigger request is
+// rejected with 403 unless the operator explicitly opted out via
+// BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true, in which case each accepted
+// unauthenticated request logs a security warning. The receiver needs its own
+// copy because it forwards over the Unix socket, which authorizes by peer
+// credential and never applies the daemon's HTTP webhook gate.
+//
+// A configured secret passes this gate; the caller's provider-specific
+// signature check is the second one.
+func (h *webhookHandler) authorizeTrigger(w http.ResponseWriter, r *http.Request) bool {
+	if h.secret != "" {
+		return true
+	}
+
+	logger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
+	if h.allowUnauthenticated {
+		logger.Warn().
+			Str("remote_addr", r.RemoteAddr).
+			Str("endpoint", r.URL.Path).
+			Msg("SECURITY: accepting unauthenticated trigger request. Reason: no webhook secret configured and BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true")
+		return true
+	}
+
+	logger.Warn().
+		Str("remote_addr", r.RemoteAddr).
+		Str("endpoint", r.URL.Path).
+		Msg("Rejecting trigger request, expected a configured webhook secret but none is set. Set WEBHOOK_SECRET, pass --secret or --fetch-secret, or set BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true to accept unauthenticated triggers")
+	http.Error(w, "Webhook authentication not configured", http.StatusForbidden)
+	return false
 }
 
 type webhookTriggerClient interface {
@@ -177,9 +220,47 @@ type webhookTriggerClient interface {
 	Health(context.Context) (*daemon.HealthResponse, error)
 }
 
+// newWebhookMux builds the receiver's routing table. Extracted from runWebhook
+// so tests exercise the same routes the server serves.
+func newWebhookMux(handler *webhookHandler) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/webhook", handler.handleWebhook)
+	mux.HandleFunc("/webhook/github", handler.handleGitHubWebhook)
+	mux.HandleFunc("/webhook/gitlab", handler.handleGitLabWebhook)
+	mux.HandleFunc("/webhook/gitea", handler.handleGiteaWebhook)
+	mux.HandleFunc("/webhook/bitbucket", handler.handleBitbucketWebhook)
+	mux.HandleFunc("/health", handler.handleHealth)
+	mux.HandleFunc("/ready", handler.handleReady)
+	return mux
+}
+
+// warnWebhookReceiverAuthPosture announces the receiver's webhook auth posture
+// at startup, mirroring the daemon's warnWebhookAuthPosture: fail-closed is the
+// default, so a secret-less receiver must never be a silent 403, and an
+// opted-out receiver must never hide its exposure.
+func warnWebhookReceiverAuthPosture(handler *webhookHandler) {
+	logger := log.Component(log.ComponentWebhook)
+	if handler.secret != "" {
+		ui.Info("Signature validation: enabled")
+		return
+	}
+	if handler.allowUnauthenticated {
+		logger.Warn().
+			Msg("SECURITY: webhook receiver forwards UNAUTHENTICATED trigger requests to the daemon. Reason: no webhook secret configured and BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true. Anyone who can reach the HTTP port can trigger a deploy")
+		ui.Warning("SECURITY: unauthenticated webhook triggers enabled (no secret, opt-out set)")
+		return
+	}
+	logger.Warn().
+		Msg("Webhook receiver will REJECT all trigger requests, expected a webhook secret but none is configured — webhook auth fails closed. Set WEBHOOK_SECRET, pass --secret or --fetch-secret, or set BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true to accept unauthenticated triggers")
+	ui.Warning("Webhooks fail closed: no WEBHOOK_SECRET set, trigger requests will be rejected (403)")
+}
+
 func (h *webhookHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authorizeTrigger(w, r) {
 		return
 	}
 
@@ -224,6 +305,9 @@ func (h *webhookHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 func (h *webhookHandler) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authorizeTrigger(w, r) {
 		return
 	}
 
@@ -298,6 +382,9 @@ func (h *webhookHandler) handleGitLabWebhook(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !h.authorizeTrigger(w, r) {
+		return
+	}
 
 	// Read body
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBodySize))
@@ -359,6 +446,9 @@ func (h *webhookHandler) handleGitLabWebhook(w http.ResponseWriter, r *http.Requ
 func (h *webhookHandler) handleGiteaWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authorizeTrigger(w, r) {
 		return
 	}
 
@@ -424,6 +514,9 @@ func (h *webhookHandler) handleGiteaWebhook(w http.ResponseWriter, r *http.Reque
 func (h *webhookHandler) handleBitbucketWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authorizeTrigger(w, r) {
 		return
 	}
 
