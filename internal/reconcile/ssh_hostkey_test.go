@@ -31,19 +31,25 @@ func setKnownHostsCandidates(t *testing.T, fn func(env string) []string) {
 	t.Cleanup(func() { knownHostsCandidates = orig })
 }
 
+// strictNoFile is the terminal (no-candidate) policy: strict verification
+// against openssh's own known_hosts defaults, with no UserKnownHostsFile
+// override. An unpinned host is refused, never accepted on first contact.
+var strictNoFile = []string{"-o", "StrictHostKeyChecking=yes"}
+
 // TestHostKeyOptions locks in the deploy-path host-key policy and its
 // precedence, which must mirror git.go's getHostKeyCallback: insecure wins over
 // known_hosts, an existing known_hosts file pins strict verification, the
 // insecure opt-out matches ONLY a case-insensitive "true", and the terminal
-// case is TOFU (accept-new) — never git.go's insecure fallback.
+// case is strict refusal — never accept-new TOFU, never git.go's insecure
+// fallback.
 //
 // The candidate resolver is injected so the table owns the full candidate list
-// (env path only, no /config/known_hosts fallback) and the accept-new cases
-// stay deterministic regardless of the host's filesystem.
+// (env path only, no /config/known_hosts fallback) and the terminal cases stay
+// deterministic regardless of the host's filesystem.
 func TestHostKeyOptions(t *testing.T) {
 	// Hermetic resolver: only the env-provided path is a candidate, so a case
-	// with no known_hosts set has zero candidates and deterministically falls
-	// to accept-new even on a host where /config/known_hosts exists.
+	// with no known_hosts set has zero candidates and deterministically hits
+	// the terminal policy even on a host where /config/known_hosts exists.
 	setKnownHostsCandidates(t, func(env string) []string {
 		if env == "" {
 			return nil
@@ -61,8 +67,8 @@ func TestHostKeyOptions(t *testing.T) {
 		want       []string
 	}{
 		{
-			name: "neither set defaults to TOFU accept-new",
-			want: []string{"-o", "StrictHostKeyChecking=accept-new"},
+			name: "neither set refuses an unpinned host",
+			want: strictNoFile,
 		},
 		{
 			name:       "existing known_hosts file pins strict verification",
@@ -70,9 +76,9 @@ func TestHostKeyOptions(t *testing.T) {
 			want:       []string{"-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=" + realKnownHosts},
 		},
 		{
-			name:       "known_hosts path that does not exist falls through to accept-new",
+			name:       "known_hosts path that does not exist falls through to strict refusal",
 			knownHosts: missingKnownHosts,
-			want:       []string{"-o", "StrictHostKeyChecking=accept-new"},
+			want:       strictNoFile,
 		},
 		{
 			name:     "insecure true disables verification",
@@ -92,12 +98,12 @@ func TestHostKeyOptions(t *testing.T) {
 		{
 			name:     "insecure 1 is not treated as true",
 			insecure: "1",
-			want:     []string{"-o", "StrictHostKeyChecking=accept-new"},
+			want:     strictNoFile,
 		},
 		{
 			name:     "insecure yes is not treated as true",
 			insecure: "yes",
-			want:     []string{"-o", "StrictHostKeyChecking=accept-new"},
+			want:     strictNoFile,
 		},
 		{
 			name:       "insecure true wins over an existing known_hosts file (precedence mirrors git.go)",
@@ -159,6 +165,51 @@ func TestHostKeyOptions_ResolvesLaterCandidateWhenEarlierAbsent(t *testing.T) {
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile=" + real,
 	}, hostKeyOptions())
+}
+
+// TestHostKeyOptions_RefusesUnpinnedHostWhenNoCandidateResolves is the
+// regression test for the deploy-channel TOFU fallback. With no known_hosts
+// candidate and no insecure opt-out, the policy must REFUSE an unpinned host,
+// never accept it on first contact: accept-new would stream the rendered
+// secrets to whichever host answers, and under the shipped compose (read-only
+// /home/bosun/.ssh) openssh cannot persist the pin, so every deploy is a first
+// contact.
+//
+// It also asserts no UserKnownHostsFile override is emitted: ssh's own defaults
+// (~/.ssh/known_hosts and the system-wide file) stay in play, so a host already
+// pinned there still deploys.
+func TestHostKeyOptions_RefusesUnpinnedHostWhenNoCandidateResolves(t *testing.T) {
+	setKnownHostsCandidates(t, func(string) []string { return nil })
+	t.Setenv("BOSUN_SSH_KNOWN_HOSTS", "")
+	t.Setenv("BOSUN_SSH_INSECURE_HOST_KEY", "")
+
+	opts := hostKeyOptions()
+
+	assert.Equal(t, strictNoFile, opts)
+	assert.NotContains(t, opts, "StrictHostKeyChecking=accept-new",
+		"TOFU must never be the fallback: the deploy channel carries decrypted secrets")
+	for _, o := range opts {
+		assert.NotContains(t, o, "UserKnownHostsFile=",
+			"no override: ssh's default known_hosts must stay readable so an existing pin still verifies")
+	}
+}
+
+// TestSSHTransferCommand_RefusesUnpinnedHost pins the property on the exact
+// command that carries the secret-bearing tar stream, through the production
+// seam the deploy uses, rather than on hostKeyOptions alone.
+func TestSSHTransferCommand_RefusesUnpinnedHost(t *testing.T) {
+	setKnownHostsCandidates(t, func(string) []string { return nil })
+	t.Setenv("BOSUN_SSH_KNOWN_HOSTS", "")
+	t.Setenv("BOSUN_SSH_INSECURE_HOST_KEY", "")
+
+	cmd := newSSHTransferCommand(context.Background(), "user@host", "tar -C /srv -xf -")
+
+	require.NotNil(t, cmd)
+	assert.Equal(t, []string{
+		"ssh",
+		"-o", "StrictHostKeyChecking=yes",
+		"user@host", "tar -C /srv -xf -",
+	}, cmd.Args)
 }
 
 // TestSSHExecCommand_AppliesHostKeyOptions proves the policy flags actually land

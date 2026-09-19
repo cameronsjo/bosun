@@ -509,12 +509,25 @@ func buildRemoteStageCommand(tmpRoot, stagedDir string) string {
 // accept-new, so a configured known_hosts we cannot prove absent never
 // silently becomes TOFU — ssh then surfaces the real read error.
 //
-// The one remaining INTENTIONAL divergence is the terminal case: when no
-// known_hosts file exists and insecure is not set, git.go fails closed (it
-// returns an error and no Git operation runs), while the deploy channel uses
-// openssh's TOFU (accept-new) — the first connection pins the key and later
-// mismatches fail. Verification is never silently disabled on either channel;
-// only an explicit BOSUN_SSH_INSECURE_HOST_KEY=true opts out.
+// The terminal case — no known_hosts candidate and insecure not set — now fails
+// closed on BOTH channels, but by different mechanisms, so the shapes differ:
+//
+//   - git.go returns an error from getHostKeyCallback, which ResolveGitAuth
+//     surfaces and ValidateGitAuthentication turns into a startup refusal. No
+//     Git operation runs.
+//   - this channel emits StrictHostKeyChecking=yes with no UserKnownHostsFile,
+//     which leaves openssh's own defaults (~/.ssh/known_hosts, ~/.ssh/known_hosts2
+//     and the system-wide /etc/ssh/ssh_known_hosts) in play: a host already
+//     pinned in one of those still deploys, and an unpinned host is refused with
+//     "Host key verification failed" before a single byte of the archive is
+//     written.
+//
+// This channel deliberately does NOT emit accept-new. TOFU would stream the
+// rendered secrets to whichever host answers the first connection, and under the
+// shipped compose — which mounts /home/bosun/.ssh read-only — openssh cannot
+// persist the pin at all, so it warns and continues and EVERY deploy is a first
+// connection. Verification is never silently disabled on either channel; only an
+// explicit BOSUN_SSH_INSECURE_HOST_KEY=true opts out.
 func hostKeyOptions() []string {
 	if strings.EqualFold(os.Getenv("BOSUN_SSH_INSECURE_HOST_KEY"), "true") {
 		return []string{
@@ -535,7 +548,9 @@ func hostKeyOptions() []string {
 			"-o", "UserKnownHostsFile=" + path,
 		}
 	}
-	return []string{"-o", "StrictHostKeyChecking=accept-new"}
+	// No candidate resolved. Fail closed against openssh's own known_hosts
+	// defaults rather than trusting the host on first contact.
+	return []string{"-o", "StrictHostKeyChecking=yes"}
 }
 
 // knownHostsCandidates resolves the ordered known_hosts candidate paths for both

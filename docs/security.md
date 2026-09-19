@@ -178,6 +178,44 @@ cmd := exec.CommandContext(ctx, "ssh",
 | `ConnectTimeout` | 5 seconds | Prevent DoS via slow hosts |
 | `BatchMode` | yes | Disable interactive prompts, enforce key auth |
 
+### Deploy Host Key Verification
+
+**Implementation**: `hostKeyOptions()` in `internal/reconcile/ssh.go`
+
+Every `ssh` and `scp` the deploy path spawns carries a host-key policy, because
+that channel streams the **fully rendered staging tree** — every decrypted SOPS
+value interpolated into compose files and app configs — to the target. A deploy
+to an unverified host discloses all of it.
+
+The policy resolves in this order:
+
+| Condition | Flags | Effect |
+|-----------|-------|--------|
+| `BOSUN_SSH_INSECURE_HOST_KEY=true` | `StrictHostKeyChecking=no`, `UserKnownHostsFile=/dev/null` | No verification (escape hatch) |
+| `BOSUN_SSH_KNOWN_HOSTS` or `/config/known_hosts` exists | `StrictHostKeyChecking=yes`, `UserKnownHostsFile=<that file>` | Pinned to that file only |
+| Neither | `StrictHostKeyChecking=yes` | Pinned to ssh's own defaults; **unknown hosts are refused** |
+
+There is no trust-on-first-use fallback. With no bosun-configured `known_hosts`,
+the deploy still runs strict against ssh's own defaults —
+`~/.ssh/known_hosts`, `~/.ssh/known_hosts2`, and the system-wide
+`/etc/ssh/ssh_known_hosts` — so a host already pinned in one of those deploys
+normally, and an unpinned host fails with `Host key verification failed` before
+any archive bytes are sent.
+
+**Populate a pin before the first remote deploy.** In the shipped
+`bosun/docker-compose.yml`, `/mnt/user/appdata/bosun/ssh` is mounted at
+`/home/bosun/.ssh`, so on the Docker host:
+
+```bash
+ssh-keyscan unraid.local >> /mnt/user/appdata/bosun/ssh/known_hosts
+```
+
+Verify the fingerprint out of band (from a console on the target, `ssh-keygen
+-lf /etc/ssh/ssh_host_ed25519_key.pub`) before trusting a scanned key — a
+`ssh-keyscan` run over a hostile network pins the attacker. Point
+`BOSUN_SSH_KNOWN_HOSTS` at a mounted file instead to pin against that file
+alone and ignore ssh's defaults.
+
 ### Retry on Transient Errors
 
 Bosun implements exponential backoff retry for transient SSH errors:
