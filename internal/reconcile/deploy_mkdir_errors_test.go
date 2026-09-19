@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -78,7 +79,9 @@ func TestDeployLocal_PropagatesSingleFileParentMkdirError(t *testing.T) {
 	// transition discovery — rather than from an unpinned os.MkdirAll.
 	result, err := r.deployLocal(context.Background(), nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), appdataDir)
+	assert.Contains(t, err.Error(), appdataDir, "the error must name the unusable parent")
+	assert.ErrorIs(t, err, syscall.ENOTDIR,
+		"the failure must be the blocked parent, not some other error on the way there")
 	require.NotNil(t, result)
 	assert.Empty(t, result.WrittenFiles, "an unusable deploy parent must abort before anything is written")
 }
