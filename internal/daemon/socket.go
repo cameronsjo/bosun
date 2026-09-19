@@ -276,8 +276,12 @@ func (s *SocketServer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Default source
-	source := req.Source
+	// Default source. The caller-supplied attribution becomes a zerolog field,
+	// a span attribute, and a persisted state.json value, so it gets the same
+	// control-strip-and-cap boundary as webhook pusher names here rather than
+	// relying on every client (the standalone webhook receiver included) to
+	// apply it before forwarding.
+	source := SanitizeWebhookPusherName(req.Source)
 	if source == "" {
 		source = "socket"
 	}

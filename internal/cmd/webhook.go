@@ -353,7 +353,7 @@ func (h *webhookHandler) handleGitHubWebhook(w http.ResponseWriter, r *http.Requ
 	pusherName := ""
 	if err := json.Unmarshal(body, &payload); err == nil {
 		pusherName = daemon.SanitizeWebhookPusherName(payload.Pusher.Name)
-		ui.Info("GitHub push from %s on %s", pusherName, payload.Ref)
+		ui.Info("GitHub push from %s on %s", pusherName, daemon.SanitizeWebhookPusherName(payload.Ref))
 	}
 
 	// Forward to daemon
@@ -418,8 +418,10 @@ func (h *webhookHandler) handleGitLabWebhook(w http.ResponseWriter, r *http.Requ
 		UserName string `json:"user_name"`
 		Ref      string `json:"ref"`
 	}
+	userName := ""
 	if err := json.Unmarshal(body, &payload); err == nil {
-		ui.Info("GitLab push from %s on %s", payload.UserName, payload.Ref)
+		userName = daemon.SanitizeWebhookPusherName(payload.UserName)
+		ui.Info("GitLab push from %s on %s", userName, daemon.SanitizeWebhookPusherName(payload.Ref))
 	}
 
 	// Forward to daemon
@@ -427,8 +429,8 @@ func (h *webhookHandler) handleGitLabWebhook(w http.ResponseWriter, r *http.Requ
 	defer cancel()
 
 	source := "gitlab"
-	if payload.UserName != "" {
-		source = fmt.Sprintf("gitlab:%s", payload.UserName)
+	if userName != "" {
+		source = fmt.Sprintf("gitlab:%s", userName)
 	}
 
 	resp, err := h.client.Trigger(ctx, source, false)
@@ -486,8 +488,10 @@ func (h *webhookHandler) handleGiteaWebhook(w http.ResponseWriter, r *http.Reque
 		} `json:"pusher"`
 		Ref string `json:"ref"`
 	}
+	pusherLogin := ""
 	if err := json.Unmarshal(body, &payload); err == nil {
-		ui.Info("Gitea push from %s on %s", payload.Pusher.Login, payload.Ref)
+		pusherLogin = daemon.SanitizeWebhookPusherName(payload.Pusher.Login)
+		ui.Info("Gitea push from %s on %s", pusherLogin, daemon.SanitizeWebhookPusherName(payload.Ref))
 	}
 
 	// Forward to daemon
@@ -495,8 +499,8 @@ func (h *webhookHandler) handleGiteaWebhook(w http.ResponseWriter, r *http.Reque
 	defer cancel()
 
 	source := "gitea"
-	if payload.Pusher.Login != "" {
-		source = fmt.Sprintf("gitea:%s", payload.Pusher.Login)
+	if pusherLogin != "" {
+		source = fmt.Sprintf("gitea:%s", pusherLogin)
 	}
 
 	resp, err := h.client.Trigger(ctx, source, false)
@@ -564,12 +568,14 @@ func (h *webhookHandler) handleBitbucketWebhook(w http.ResponseWriter, r *http.R
 			} `json:"changes"`
 		} `json:"push"`
 	}
+	actorName := ""
 	if err := json.Unmarshal(body, &payload); err == nil {
+		actorName = daemon.SanitizeWebhookPusherName(payload.Actor.DisplayName)
 		branch := ""
 		if len(payload.Push.Changes) > 0 {
-			branch = payload.Push.Changes[0].New.Name
+			branch = daemon.SanitizeWebhookPusherName(payload.Push.Changes[0].New.Name)
 		}
-		ui.Info("Bitbucket push from %s on %s", payload.Actor.DisplayName, branch)
+		ui.Info("Bitbucket push from %s on %s", actorName, branch)
 	}
 
 	// Forward to daemon
@@ -577,8 +583,8 @@ func (h *webhookHandler) handleBitbucketWebhook(w http.ResponseWriter, r *http.R
 	defer cancel()
 
 	source := "bitbucket"
-	if payload.Actor.DisplayName != "" {
-		source = fmt.Sprintf("bitbucket:%s", payload.Actor.DisplayName)
+	if actorName != "" {
+		source = fmt.Sprintf("bitbucket:%s", actorName)
 	}
 
 	resp, err := h.client.Trigger(ctx, source, false)

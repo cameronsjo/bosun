@@ -205,6 +205,60 @@ func TestSocketHandleTrigger_ForcePropagation(t *testing.T) {
 	}
 }
 
+// TestSocketHandleTriggerSanitizesSource pins the daemon-side boundary for
+// caller-supplied attribution: the socket trigger source reaches zerolog
+// fields, span attributes, and state.json, so the handler applies the
+// control-strip-and-cap itself instead of trusting every client to have done
+// it before forwarding.
+func TestSocketHandleTriggerSanitizesSource(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantPrefix string
+	}{
+		{
+			name:       "control characters stripped from forwarded source",
+			body:       `{"source":"gitea:trusted\nFORGED 2026-09-17 INFO deploy succeeded by root"}`,
+			wantPrefix: "gitea:trustedFORGED 2026-09-17 INFO deploy succeeded by root (pid:",
+		},
+		{
+			name:       "source of only control characters falls back to socket",
+			body:       `{"source":"\n\r"}`,
+			wantPrefix: "socket (pid:",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ss, d := newTestSocketServer(t)
+
+			sources := make(chan string, 1)
+			d.triggerReconcileFn = func(_ context.Context, source string, _ bool) error {
+				sources <- source
+				return nil
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/trigger", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			ss.handleTrigger(w, withTestSocketPeer(req))
+
+			require.Equal(t, http.StatusAccepted, w.Code)
+
+			var got string
+			select {
+			case got = <-sources:
+			case <-time.After(time.Second):
+				t.Fatal("trigger handler did not reach the reconcile entry point")
+			}
+
+			assert.True(t, strings.HasPrefix(got, tc.wantPrefix),
+				"source %q must start with %q", got, tc.wantPrefix)
+			assert.NotContains(t, got, "\n", "attacker input must not create extra log lines")
+		})
+	}
+}
+
 func TestSocketHandleStatus(t *testing.T) {
 	t.Run("GET idle state returns 200 with idle", func(t *testing.T) {
 		ss, _ := newTestSocketServer(t)

@@ -487,6 +487,126 @@ func newWebhookPushRequest(endpoint string, payload []byte) *http.Request {
 	return req
 }
 
+// TestStandaloneWebhookSanitizesAttributionAndRef pins the boundary for every
+// provider the receiver accepts: the pusher/actor name and the pushed ref are
+// attacker-controlled after signature validation, and both reach the console
+// and the forwarded trigger source (which the daemon writes to its logs,
+// telemetry, and state.json).
+func TestStandaloneWebhookSanitizesAttributionAndRef(t *testing.T) {
+	const secret = "webhook-secret"
+	const malicious = "trusted\nFORGED\r\t\x1b[31m\u0085\u2028\u2029\u202e"
+	const sanitizedName = "trustedFORGED[31m"
+	const maliciousRef = "refs/heads/main\r\n2026-09-17 INFO deploy succeeded by root"
+	const sanitizedRef = "refs/heads/main2026-09-17 INFO deploy succeeded by root"
+
+	tests := []struct {
+		name       string
+		path       string
+		payload    map[string]any
+		headers    func(body []byte) map[string]string
+		invoke     func(*webhookHandler, http.ResponseWriter, *http.Request)
+		wantSource string
+		wantOutput string
+	}{
+		{
+			name: "github ref",
+			path: "/webhook/github",
+			payload: map[string]any{
+				"ref":    maliciousRef,
+				"pusher": map[string]string{"name": "alice"},
+			},
+			headers: func(body []byte) map[string]string {
+				return map[string]string{
+					"X-GitHub-Event":      "push",
+					"X-Hub-Signature-256": "sha256=" + computeHMAC(body, secret),
+				}
+			},
+			invoke:     (*webhookHandler).handleGitHubWebhook,
+			wantSource: "github:alice",
+			wantOutput: "GitHub push from alice on " + sanitizedRef + "\n",
+		},
+		{
+			name: "gitlab user name and ref",
+			path: "/webhook/gitlab",
+			payload: map[string]any{
+				"user_name": malicious,
+				"ref":       maliciousRef,
+			},
+			headers: func([]byte) map[string]string {
+				return map[string]string{
+					"X-Gitlab-Event": "Push Hook",
+					"X-Gitlab-Token": secret,
+				}
+			},
+			invoke:     (*webhookHandler).handleGitLabWebhook,
+			wantSource: "gitlab:" + sanitizedName,
+			wantOutput: "GitLab push from " + sanitizedName + " on " + sanitizedRef + "\n",
+		},
+		{
+			name: "gitea pusher login and ref",
+			path: "/webhook/gitea",
+			payload: map[string]any{
+				"pusher": map[string]string{"login": malicious},
+				"ref":    maliciousRef,
+			},
+			headers: func(body []byte) map[string]string {
+				return map[string]string{
+					"X-Gitea-Event":     "push",
+					"X-Gitea-Signature": computeHMAC(body, secret),
+				}
+			},
+			invoke:     (*webhookHandler).handleGiteaWebhook,
+			wantSource: "gitea:" + sanitizedName,
+			wantOutput: "Gitea push from " + sanitizedName + " on " + sanitizedRef + "\n",
+		},
+		{
+			name: "bitbucket actor and branch",
+			path: "/webhook/bitbucket",
+			payload: map[string]any{
+				"actor": map[string]string{"display_name": malicious},
+				"push": map[string]any{
+					"changes": []map[string]any{
+						{"new": map[string]string{"name": maliciousRef}},
+					},
+				},
+			},
+			headers: func(body []byte) map[string]string {
+				return map[string]string{
+					"X-Event-Key":     "repo:push",
+					"X-Hub-Signature": "sha256=" + computeHMAC(body, secret),
+				}
+			},
+			invoke:     (*webhookHandler).handleBitbucketWebhook,
+			wantSource: "bitbucket:" + sanitizedName,
+			wantOutput: "Bitbucket push from " + sanitizedName + " on " + sanitizedRef + "\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &recordingWebhookClient{}
+			handler := &webhookHandler{client: client, secret: secret}
+			body, err := json.Marshal(tt.payload)
+			require.NoError(t, err)
+
+			req := httptest.NewRequest(http.MethodPost, tt.path, bytes.NewReader(body))
+			for header, value := range tt.headers(body) {
+				req.Header.Set(header, value)
+			}
+			w := httptest.NewRecorder()
+
+			output := captureWebhookColorOutput(t, func() {
+				tt.invoke(handler, w, req)
+			})
+
+			assert.Equal(t, http.StatusAccepted, w.Code)
+			assert.Equal(t, tt.wantSource, client.source, "forwarded trigger source must carry sanitized attribution")
+			assert.Equal(t, tt.wantOutput, output)
+			assert.Equal(t, 1, strings.Count(output, "\n"), "attacker input must not create extra log lines")
+		})
+	}
+}
+
 func TestStandaloneWebhookLivenessHandlers(t *testing.T) {
 	t.Run("health proxies bounded healthy response", func(t *testing.T) {
 		client := &recordingWebhookClient{health: &daemon.HealthResponse{
