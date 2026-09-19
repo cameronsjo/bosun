@@ -845,6 +845,34 @@ sudo systemctl start bosund
 sudo systemctl status bosund
 ```
 
+## Upgrading Bosun Itself
+
+Bosun deploys everything except its own container. A reconcile syncs bosun's own compose file to the host but never recreates the running daemon. So a new bosun release changes nothing until someone recreates the container. Two rules make that safe:
+
+- **Pin the image by tag and digest** (`ghcr.io/cameronsjo/bosun:X.Y.Z@sha256:…`) and opt the container out of auto-updaters (`com.centurylinklabs.watchtower.enable=false`). An auto-updater that cleans up old images removes the only rollback target.
+- **Upgrade with the canary script**, not a bare `docker compose up -d`.
+
+After a PR moves the pin and bosun has synced the file:
+
+```bash
+bash scripts/upgrade-bosun.sh            # full upgrade
+bash scripts/upgrade-bosun.sh --dry-run  # provenance + shadow render only
+```
+
+What it does:
+
+1. **Provenance.** Verifies the candidate digest was built and attested by bosun's release workflow (`gh attestation verify`).
+2. **Shadow render.** On the host, the running version and the candidate each run `bosun reconcile --dry-run --no-alerts` against the same commit, in throwaway containers. Each container gets an allowlisted environment (no alert, token, webhook, Sentry or OTel variables), read-only keys and appdata, and no Docker socket. The script compares the two staging trees by file name and prints only names. The output directory lives in RAM and is deleted on exit.
+3. **Cutover.** Asks first. `--yes` skips the question only when both renders are identical. Then it recreates the container from the pinned image with `--pull never`.
+4. **Watch.** Waits for the first reconcile after the new container started, through `bosun daemon-status --json`. The reconcile must finish with no `last_error`, with no restart and no panic, within `--watch-timeout` (default 15 minutes).
+5. **Rollback.** If the watch fails, the script recreates the container from `bosun:rollback-<old version>`, a local tag it made at preflight. It uses a persistent override file (`rollback.override.yml`), then watches again.
+
+The shadow render needs `reconcile --no-alerts` in the candidate. If the running version predates that flag, the script renders the candidate only and reports `RENDER-OK-NO-BASELINE`.
+
+Every run appends one line to `history.log` on the host. A run interrupted after cutover resumes the watch when re-run. Exit codes and next steps for each verdict are in `docs/troubleshooting.md` under "Upgrade script verdicts".
+
+The scripts assume the homelab layout: an Unraid host reached as `unraid`, the compose file in `/mnt/user/appdata/bosun`, and state in `/mnt/user/appdata/bosun-upgrade`. Override these with `--host` and the `BOSUN_UPGRADE_*` variables at the top of `scripts/upgrade-bosun-remote.sh`.
+
 ## Typical GitOps Setup
 
 1. **Initialize project:** `bosun init`

@@ -5,10 +5,10 @@ model: "claude-opus-5"
 harness: "claude-code 2.1.277"
 machine: "cf6e768835c7"
 approved_session_id: "a9d4a39f-36de-4a08-82d7-a71eddc33092"
-status: planned
-next: "Task 1 — homelab PR: Watchtower opt-out + digest pin (ships alone, closes the nightly blind upgrade)"
+status: in-progress
+next: "Merge homelab#770 and run its host checks; drive spec PR #673 to ready-to-build, then implement Task 2"
 branch: plan/bosun-upgrade-canary
-pr: —
+pr: 672
 updated: 2026-09-19
 date: 2026-09-19
 ---
@@ -84,9 +84,9 @@ NAS  upgrade-bosun-remote.sh   (mkdir lock + state file in /mnt/user/appdata/bos
 
 - [ ] Task 1 — homelab Watchtower opt-out + digest pin
 - [ ] Task 2 — OpenSpec change, then reconcile CLI parity + `--no-alerts`
-- [ ] Task 3 — file the `validate --full` state-write issue
-- [ ] Task 4 — upgrade scripts
-- [ ] Task 5 — script tests + docs
+- [x] Task 3 — file the `validate --full` state-write issue (#674)
+- [x] Task 4 — upgrade scripts
+- [x] Task 5 — script tests + docs
 - [ ] Task 6 — Opus security review
 
 ### Task 1 — Stop the nightly blind upgrade, pin the image (homelab PR; ships alone)
@@ -195,4 +195,19 @@ Panel: plan-reviewer (both lenses), red-team-reviewer, operability-reviewer, sec
 
 ## Deviations
 
+- **SSH host is `unraid`, not `nas`.** `~/.ssh/config` names the NAS `unraid` (user `root`); `nas` is refused. The wrapper takes `--host` (default `unraid`, or `$BOSUN_UPGRADE_HOST`).
+- **Parity detected by capability, not version.** Stage 2 probes each image with `bosun reconcile --help` for `--no-alerts` instead of comparing against the Task 2 release number, which does not exist yet and could drift. A candidate without the flag is refused (exit 64); an incumbent without it gives `RENDER-OK-NO-BASELINE`.
+- **Rollback watches the daemon's own start-up reconcile; no `bosun trigger`.** The daemon reconciles about 10s after start (`daemon.go:150`), the same event stage 4 watches. A trigger would queue a second cycle and add a socket-readiness race.
+- **Provenance is pinned to the release workflow** (`--signer-workflow …/release-please.yml`). Checked in both directions: the running `0.42.3` digest passes, and the same digest fails against `webui.yml`. A provenance failure exits 5 (`CANDIDATE-FAILED-PROVENANCE`) and is written to the NAS history through `--record-provenance-failure`.
+- **The shadow diff covers the whole staging root**, not only `TargetStagingDir(…, unraid)`. It is a superset that covers every target.
+- **Task 1 also sets `platform: linux/amd64`** on the bosun service (homelab rule, flagged by CodeRabbit on homelab#770).
+- **Task 2 scope.** The CLI misses about 20 daemon env reads, not just `BOSUN_INFRA_DIR`. As planned, it fixes only `BOSUN_INFRA_DIR`. The parity test classifies every `reconcile.Config` field, and the remaining gaps go to one follow-up issue (spec task 1.5).
+
 ## Learnings
+
+- **The Task 3 bug reproduces on `0.42.3`**: one `validate --full` moved `last_deployed_commit` to HEAD and reset `attempt_count` from 2 to 0. The state dir is `/var/lib/bosun` (`state.go:17`), and the live container mounts no volume there. So a `docker exec bosun bosun validate --full` writes the daemon's own state.
+- **`rollback.override.yml` is outside Bosun's reach.** It sits in `/mnt/user/appdata/bosun-upgrade/`, which is not in the homelab repo. Sync writes only repo files, and the prune step removes only files bosun itself wrote.
+- The image entrypoint is `tini --`, so a one-off command needs the `bosun` prefix (`… bosun reconcile --dry-run`).
+- `daemon-status` reports `last_reconcile` in local time (`-05:00`), while `StartedAt` is UTC. The watch compares epoch seconds.
+- The NAS has `jq`, GNU `date` and `flock`, but no `python3`. Compose is `v2.40.3`, which supports `!override`/`!reset`.
+- Watchtower's `Scanned=` count equals the running containers without the opt-out label (79 == 79 on 2026-09-19). Task 1 check (d) asserts that instead of grepping for "bosun", which Watchtower never logs at info level.

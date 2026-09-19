@@ -234,6 +234,25 @@ name; once the field exists it matches every request line:
 docker logs --since 1h bosun | grep '"url":"/some/unexpected/path"'
 ```
 
+### Upgrade script verdicts
+
+`scripts/upgrade-bosun.sh` ends with one `VERDICT:` line and a matching exit code. **Exit 1 means the upgrade was rolled back**, not "a check failed". The NAS keeps one line per run in `/mnt/user/appdata/bosun-upgrade/history.log`, with failure detail in `failures/` beside it.
+
+| Exit | Verdict | What happened | Next step |
+|---:|---|---|---|
+| 0 | `UPGRADED` | The candidate completed its first reconcile with no error | Nothing |
+| 0 | `ALREADY-CURRENT` | The running digest already equals the pin | Nothing |
+| 0 | `RENDER-IDENTICAL` / `RENDER-DIFFERS` / `RENDER-OK-NO-BASELINE` (dry run) | Shadow render only; nothing changed | Review any listed differences, then run without `--dry-run` |
+| 0 | `DECLINED at …` | You answered no at the cutover prompt | Nothing changed |
+| 1 | `ROLLED-BACK` | The candidate failed its watch; the previous version is back and healthy | Revert the pin PR in homelab, then delete `rollback.override.yml` on the NAS. Read `failures/<run>-candidate.log` |
+| 2 | `FAULT-NOT-UPGRADE` | The previous version also fails after rollback | The upgrade is not the cause. Follow homelab `docs/runbooks/bosun-deploys-blocked.md` |
+| 3 | `HALF-CHANGED` | The rollback itself did not start | Run the printed `docker compose … up -d` command on the NAS. The anchor image is `bosun:rollback-<version>`; do not prune it |
+| 4 | `HARNESS-INVALID` | The running version failed its own shadow render | The repo or the harness is broken, not the candidate. Read `failures/<run>-shadow-incumbent.log` |
+| 5 | `CANDIDATE-FAILED` | The candidate failed its shadow render; nothing changed | Read `failures/<run>-shadow-candidate.log` |
+| 5 | `CANDIDATE-FAILED` (provenance) | No attestation from bosun's release workflow for that digest | Check the pin names a real release digest. Never bypass this for an upgrade |
+| 64 | usage or config | Unpinned image, bad flag, missing container or compose file | Fix what the error names; nothing changed |
+| 75 | transient / `LOCKED` / `CONNECTION-LOST` | Pull failed, repo moved mid-render, another run holds the lock, or ssh dropped | Re-run. After a lost connection the re-run resumes the watch. A stale lock is the `lock` directory beside `history.log`; remove it only when no run is active |
+
 ## Debug Mode
 
 Set verbose output:
