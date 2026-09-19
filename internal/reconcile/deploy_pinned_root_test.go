@@ -65,3 +65,32 @@ func TestDeployLocal_DirectoryTargetPinsAboveContainerWritableDir(t *testing.T) 
 	_, statErr := os.Stat(filepath.Join(outside, "secret.conf"))
 	assert.ErrorIs(t, statErr, os.ErrNotExist, "the rendered tree must not land outside appdata")
 }
+
+// TestDeployLocal_SingleFileTargetMakesNoUnpinnedDestinationMutation asserts the
+// single-file deploy branch mutates the destination only through the pinned
+// copy. A path-resolved os.MkdirAll ahead of that copy created directories as
+// host root before the pinned copy could refuse anything; here the copy fails
+// on its source, so a destination that appears at all is one that call created.
+func TestDeployLocal_SingleFileTargetMakesNoUnpinnedDestinationMutation(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+
+	stagingDir := filepath.Join(base, "staging")
+	stagingRoot := filepath.Join(stagingDir, "unraid")
+	require.NoError(t, os.MkdirAll(stagingRoot, 0o755))
+	// A source the copy refuses before it touches the destination.
+	require.NoError(t, os.Symlink(filepath.Join(base, "absent"), filepath.Join(stagingRoot, "service.yml")))
+
+	appdata := filepath.Join(base, "appdata")
+	r := NewReconciler(&Config{
+		StagingDir:       stagingDir,
+		InfraSubDir:      "unraid",
+		LocalAppdataPath: appdata,
+	}, WithDeployOps(&DeployOps{ContentHashSync: true}))
+
+	_, err = r.deployLocal(context.Background(), nil)
+	require.Error(t, err, "an unreadable source must fail the deploy")
+
+	_, statErr := os.Stat(appdata)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "a refused copy must leave no destination directory behind")
+}

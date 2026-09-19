@@ -2405,12 +2405,11 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 				return nil, err
 			}
 		} else {
-			targetDir := filepath.Dir(dst)
-			if !r.config.DryRun {
-				if err := os.MkdirAll(targetDir, 0755); err != nil {
-					return nil, fmt.Errorf("create local deploy directory %q: %w", targetDir, err)
-				}
-			}
+			// No os.MkdirAll here: dst's parent is appdata itself, which the
+			// pinned copy creates through the same handle it writes with. A
+			// path-resolved mkdir would be the last unpinned destination
+			// mutation on this path.
+			//
 			// appdata is the deploy root: discovery gives every target a
 			// single-component TargetPath, so dst sits directly under it.
 			// Pinning there keeps a container-controlled directory beneath
