@@ -74,7 +74,7 @@ NAS  upgrade-bosun-remote.sh   (mkdir lock + state file in /mnt/user/appdata/bos
 - **A shadow container gets only what a render needs.** `environment: !override` allowlists these and nothing else: `BOSUN_REPO_URL`/`REPO_URL`, branch, `BOSUN_INFRA_DIR`, `BOSUN_TARGETS`, `BOSUN_SECRETS_FILE`, `SOPS_AGE_KEY_FILE`, `BOSUN_SSH_KEY`, deploy-path vars, `REPO_DIR`, `STAGING_DIR`, `LOG_DIR`, `BACKUP_DIR`, `DRY_RUN=true`, `TZ`. Every alert, token, webhook, Sentry and OTel variable is left out. `volumes: !override` gives it only the age key and deploy key (both `:ro`), `/mnt/user/appdata:/mnt/appdata:ro` (deploy-mode resolution stats it; `pure.go:101-117`) and its own tmp dirs. There is no `docker.sock` and no compose-manager mount. The lock path is fixed (`target.go:32`) but container-local, so it is isolated anyway.
 - **Every image reference is a digest.** A candidate without `@sha256:` is refused. Provenance is verified against the digest, never the tag. Rollback uses the local tag `bosun:rollback-<ver>` with `--pull never`.
 - **The script can resume.** Before cutover it writes the state file (`phase`, incumbent digest, rollback tag, candidate digest, cutover `StartedAt`). A re-run with `phase=cutover|watching` resumes the watch; it never takes "incumbent == candidate" as success.
-- **Bash waiver, declared:** the remote script will run past the 100-line rule. Why: the logic is Docker/compose orchestration on an Unraid host with no Python, and it replaces a 250-line predecessor of the same kind. `set -euo pipefail` and `shellcheck` still apply.
+- **Bash waiver, declared:** the remote script, the Mac wrapper and their test harness will all run past the 100-line rule (the waiver originally named only the remote script; polish flagged the other two). Why: the logic is Docker/compose orchestration on an Unraid host with no Python, and it replaces a 250-line predecessor of the same kind. `set -euo pipefail` and `shellcheck` still apply.
 
 ## Orchestrator
 
@@ -206,6 +206,14 @@ Panel: plan-reviewer (both lenses), red-team-reviewer, operability-reviewer, sec
 - **Cutover pins the verified digest in its own override** (security review). The live file is re-synced from git during the run, so a re-read could start a different image.
 - **The drill flag is fenced.** It refuses `--yes`, and the NAS history marks the run `[provenance skipped: drill]`. Provenance also pins `--source-ref refs/heads/main --deny-self-hosted-runners`, checked in both directions.
 - **Verification step 6 needs a different drill image.** A `docker load`ed image has no registry digest, and an entrypoint that exits 1 fails the shadow render (exit 5) before cutover. The drill image must be pushed to a registry under a digest. It must pass `reconcile --dry-run`, then fail only as a daemon, for example with a daemon that sets `last_error`.
+- **Polish pass** (fresh 4-finder review of the fixed branch) moved more behavior:
+  - The lock records its owner's pid and boot id. A dead owner's lock is reclaimed; a live owner is reported, never overridden. This is what makes "re-run to resume" true after a reboot or a silent disconnect.
+  - A pin whose tag and digest disagree now fails before cutover (exit 5).
+  - A pin reverted during an interrupted upgrade rolls back instead of exiting 64.
+  - The watch compares image IDs, not RepoDigests.
+  - A failed log read fails the watch.
+  - Every state-dir write reports a verdict instead of a bare exit 1.
+  - CI's shellcheck (0.9 on Ubuntu) needed SC2317 beside SC2329 on the trap functions; both versions are now clean.
 - **Task 2 scope.** The CLI misses about 20 daemon env reads, not just `BOSUN_INFRA_DIR`. As planned, it fixes only `BOSUN_INFRA_DIR`. The parity test classifies every `reconcile.Config` field, and the remaining gaps go to one follow-up issue (spec task 1.5).
 
 ## Learnings

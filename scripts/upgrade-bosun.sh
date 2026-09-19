@@ -26,9 +26,11 @@
 # Exit codes (the remote script's, passed through). NOTE: 1 means ROLLED-BACK.
 #   0 UPGRADED / ALREADY-CURRENT / clean dry run   1 ROLLED-BACK
 #   2 FAULT-NOT-UPGRADE   3 HALF-CHANGED   4 HARNESS-INVALID
-#   5 CANDIDATE-FAILED (includes failed provenance)
-#  64 usage or configuration error   75 transient; retry. A connection lost
-#     after cutover also exits 75: re-run, and the remote side resumes the watch.
+#   5 CANDIDATE-FAILED (includes failed provenance and a tag/digest mismatch)
+#  64 usage or configuration error   75 transient; retry. A lost connection
+#     also exits 75: the NAS side keeps running, and a re-run reports LOCKED
+#     with its pid until it exits, then resumes anything it left.
+#  129/130/143 the remote run was interrupted by HUP/INT/TERM; re-run to resume.
 #
 # The full log goes to ~/Library/Logs/bosun-upgrade/<UTC time>.log.
 
@@ -82,13 +84,15 @@ verify_provenance() {
   # a copy of the workflow dispatched from another branch does not pass.
   if ! gh attestation verify "oci://$IMAGE_REPO@${candidate##*@}" -R "$REPO" --signer-workflow "$SIGNER_WORKFLOW" \
       --source-ref refs/heads/main --deny-self-hosted-runners > /dev/null; then
-    remote_run --record-provenance-failure || true
+    remote_run --record-provenance-failure --operator "$OPERATOR" || true
     fail "no valid build provenance from $SIGNER_WORKFLOW for ${candidate##*@}" CANDIDATE-FAILED 5
   fi
   printf 'PASS provenance: built and attested by %s\n' "$SIGNER_WORKFLOW"
 }
 
 REMOTE_PATH=""
+OPERATOR="${USER:-unknown}@$(hostname -s 2>/dev/null || echo mac)"
+[[ "$OPERATOR" =~ ^[A-Za-z0-9._@-]{1,64}$ ]] || OPERATOR="unknown@mac"
 
 # remote_run runs the staged remote script without a TTY. Every argument is
 # %q-quoted: the remote shell parses this string before the script validates it.
@@ -98,7 +102,7 @@ remote_run() {
   ssh -o BatchMode=yes "$HOST" "bash $REMOTE_PATH$quoted"
 }
 
-# shellcheck disable=SC2329  # invoked by the EXIT trap
+# shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap
 remove_remote_script() {
   if [[ -n "$REMOTE_PATH" ]]; then
     ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "rm -f $REMOTE_PATH" 2>/dev/null || true
@@ -113,30 +117,31 @@ main() {
   printf '==> Stage 0: preflight and provenance (host %s)\n' "$HOST"
   ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" true || fail "cannot ssh to $HOST; nothing changed" TRANSIENT 75
 
-  local candidate rc operator
+  local candidate rc
   REMOTE_PATH="$(ssh -o BatchMode=yes "$HOST" 'mktemp /tmp/bosun-upgrade-remote.XXXXXX')" || fail "could not stage the remote script" TRANSIENT 75
   [[ "$REMOTE_PATH" =~ ^/tmp/bosun-upgrade-remote\.[A-Za-z0-9]+$ ]] || fail "unexpected remote temp path '$REMOTE_PATH'" CONFIG 64
   trap remove_remote_script EXIT
   scp -q "$REMOTE_SCRIPT" "$HOST:$REMOTE_PATH" || fail "could not copy the remote script" TRANSIENT 75
 
   candidate="$(remote_run --print-candidate)" || fail "could not read the pinned image on $HOST" TRANSIENT 75
-  [[ "$candidate" =~ $REF_RE ]] || fail "pinned image '$candidate' carries no @sha256: digest; refusing an unpinned candidate" CONFIG 64
+  [[ "$candidate" =~ $REF_RE ]] || fail "pinned image $(printf '%q' "$candidate") carries no @sha256: digest; refusing an unpinned candidate" CONFIG 64
   printf '  candidate: %s\n' "$candidate"
   verify_provenance "$candidate"
 
-  operator="${USER:-unknown}@$(hostname -s)"
-  [[ "$operator" =~ ^[A-Za-z0-9._@-]{1,64}$ ]] || operator="unknown@mac"
-  local args=(--expect-candidate "$candidate" --watch-timeout "$WATCH_TIMEOUT" --operator "$operator")
+  local args=(--expect-candidate "$candidate" --watch-timeout "$WATCH_TIMEOUT" --operator "$OPERATOR")
   [[ "$DRY_RUN" -eq 1 ]] && args+=(--dry-run)
   [[ "$ASSUME_YES" -eq 1 ]] && args+=(--yes)
   # The NAS history must show that this run was not verified.
   [[ "$SKIP_PROVENANCE" -eq 1 ]] && args+=(--provenance-skipped)
 
-  # One session with a TTY for the cutover prompt.
+  # One session with a TTY for the cutover prompt. Keepalives notice a dead
+  # link within about a minute instead of the TCP timeout.
   rc=0
-  ssh -t "$HOST" "bash $REMOTE_PATH$(printf ' %q' "${args[@]}")" || rc=$?
+  ssh -t -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$HOST" "bash $REMOTE_PATH$(printf ' %q' "${args[@]}")" || rc=$?
   if [[ "$rc" -eq 255 ]]; then
-    printf '\nThe ssh connection was lost. Re-run this script: if the cutover had started, it resumes the watch.\n'
+    printf '\nThe ssh connection was lost. The NAS side may still be running; it finishes on its own.\n'
+    printf 'Re-run this script: while that run is alive it reports LOCKED with its pid; once it exits, a re-run\n'
+    printf 'resumes any cutover or rollback it left behind.\n'
     printf '\nVERDICT: CONNECTION-LOST (exit 75)\n'
     exit 75
   fi
