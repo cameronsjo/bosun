@@ -235,7 +235,20 @@ func (d *DeployOps) remoteComposeUpCmd(composeDir string) string {
 // DeployLocal syncs files locally using native Go file operations.
 // Performs atomic copy: copies to temp directory first, then replaces target.
 // Uses --delete semantics: removes files in target that don't exist in source.
+//
+// The content-hash copy is pinned to targetDir. The reconcile path calls
+// deployLocalManaged directly with the appdata root, which pins higher.
 func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string, result *DeployResult, prevManaged map[string]bool) error {
+	return d.deployLocalManaged(ctx, sourceDir, targetDir, targetDir, result, prevManaged)
+}
+
+// deployLocalManaged is DeployLocal with the content-hash copy's destination
+// mutations resolved from a handle pinned to deployRoot, which targetDir must
+// lie under. bosun runs as host root and targetDir is appdata/<service>, a
+// directory a compromised container can replace with a symlink; pinning at
+// targetDir would resolve that symlink by path and redirect the whole rendered
+// tree, secrets included.
+func (d *DeployOps) deployLocalManaged(ctx context.Context, sourceDir, targetDir, deployRoot string, result *DeployResult, prevManaged map[string]bool) error {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
@@ -293,7 +306,9 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 
 		copyFn := d.copyDirIfChangedFn
 		if copyFn == nil {
-			copyFn = fileutil.CopyDirIfChanged
+			copyFn = func(ctx context.Context, src, dst string) ([]string, error) {
+				return fileutil.CopyDirUnderRootIfChanged(ctx, src, deployRoot, dst)
+			}
 		}
 		written, err := copyFn(ctx, sourceDir, targetDir)
 		if result != nil {

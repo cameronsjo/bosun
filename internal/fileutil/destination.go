@@ -251,20 +251,25 @@ func (p *pinnedDir) copyFileIfChangedDeferred(ctx context.Context, src, dst stri
 	return copyFileIfChangedDeferredWithCopy(ctx, src, dst, fileHashContext, p.copyFileWithoutDirSync)
 }
 
-// mkdirRoot creates the destination root itself, which opening the pinned
-// handle already does at 0755 — the mode the walk asks for. It refuses any
-// other path so a caller cannot use it to create a directory the pinned
-// operations would have checked.
-func (p *pinnedDir) mkdirRoot(path string, _ fs.FileMode) error {
+// mkdirRoot creates the copy's destination root. When that is the pinned path
+// itself, opening the handle already creates it at 0755 — the mode the walk
+// asks for. When the copy destination sits below the pinned root, the missing
+// directories are created through the handle, so the same swapped-component
+// check the file copies get applies here too. A path outside the pinned root is
+// refused.
+func (p *pinnedDir) mkdirRoot(path string, mode fs.FileMode) error {
+	dest, err := p.destination()
+	if err != nil {
+		return err
+	}
 	name, err := p.name(path)
 	if err != nil {
 		return err
 	}
-	if name != "." {
-		return fmt.Errorf("%w: %s is not the pinned root %s", errDestinationEscapesRoot, path, p.path)
+	if name == "." {
+		return nil
 	}
-	_, err = p.destination()
-	return err
+	return dest.mkdirAll(name, mode)
 }
 
 func (p *pinnedDir) mkdirIfMissing(path string, mode fs.FileMode) (bool, error) {
