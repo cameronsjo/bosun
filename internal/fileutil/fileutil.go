@@ -506,12 +506,18 @@ func CopyFileIfChanged(ctx context.Context, src, dst string) (bool, error) {
 // CopyFileUnderRootIfChanged is CopyFileIfChanged with the write pinned to
 // root, the way CopyFileUnderRoot pins CopyFile.
 //
-// The comparison that decides whether to write still reads dst by path. That
-// decision cannot leak content or write anywhere: a swapped destination only
-// makes the copy skip a write or perform one, and the write itself is pinned.
+// The destination is resolved through the pinned handle before the comparison
+// that decides whether to write, and one that escapes root is refused. A
+// comparison reading an attacker-placed file outside root would find it equal
+// and skip the write, which is an unreported deploy failure: nothing lands
+// inside root, and a skipped file never enters the written set a post-deploy
+// check could catch it in. See pinnedDir.assertDestinationInRoot.
 func CopyFileUnderRootIfChanged(ctx context.Context, src, root, dst string) (bool, error) {
 	pinned := newPinnedDir(root)
 	defer pinned.close()
+	if err := pinned.assertDestinationInRoot(dst); err != nil {
+		return false, err
+	}
 	return copyFileIfChangedWithCopy(ctx, src, dst, fileHashContext, pinned.copyFileSyncingDir)
 }
 
