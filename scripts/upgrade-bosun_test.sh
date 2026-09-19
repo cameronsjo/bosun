@@ -15,6 +15,9 @@ trap 'rm -rf -- "$ROOT"' EXIT
 
 INC_DIGEST="sha256:$(printf 'a%.0s' {1..64})"
 CAND_DIGEST="sha256:$(printf 'b%.0s' {1..64})"
+INC_ID="sha256:$(printf 'c%.0s' {1..64})"
+CAND_ID="sha256:$(printf 'd%.0s' {1..64})"
+OTHER_ID="sha256:$(printf 'e%.0s' {1..64})"
 CANDIDATE="ghcr.io/cameronsjo/bosun:0.43.0@$CAND_DIGEST"
 COMMIT_A="$(printf '1%.0s' {1..40})"
 COMMIT_B="$(printf '2%.0s' {1..40})"
@@ -32,14 +35,16 @@ running_role() { cat "$F/running_role"; }
 write_stubs() {
   local bin="$1"
   mkdir -p "$bin"
-  # date: translate GNU `-d <RFC3339 Z>` to BSD; pass everything else through.
+  # date: GNU `-d` on Linux; on macOS, translate RFC 3339 (fraction, Z or
+  # +-HH:MM offset) to BSD date. Everything else passes through.
   cat > "$bin/date" <<'EOF'
 #!/usr/bin/env bash
 args=("$@") val=""
 for ((i = 0; i < ${#args[@]}; i++)); do [[ "${args[$i]}" == -d ]] && val="${args[$((i + 1))]}"; done
-if [[ -n "$val" ]]; then
-  if [[ "$(uname)" == Darwin ]]; then exec /bin/date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "${val%%.*}" +%s; fi
-  exec /bin/date "$@"
+if [[ -n "$val" && "$(uname)" == Darwin ]]; then
+  tz="$(sed -E 's/^\.[0-9]+//' <<<"${val:19}")"   # drop the fraction
+  case "$tz" in Z|'') tz=+0000 ;; *) tz="${tz/:/}" ;; esac
+  exec /bin/date -j -u -f '%Y-%m-%dT%H:%M:%S%z' "${val:0:19}$tz" +%s
 fi
 exec /bin/date "$@"
 EOF
@@ -47,9 +52,13 @@ EOF
 #!/usr/bin/env bash
 # Fake docker. Scenario lives in $FAKE; every call is appended to $FAKE/calls.
 F="$FAKE"; printf '%s\n' "$*" >> "$F/calls"
-now() { /bin/date -u +%Y-%m-%dT%H:%M:%SZ; }
-role_of_ref() { case "$1" in *"$FAKE_INC_DIGEST"*|inc-id|bosun:rollback-*) echo incumbent ;; *) echo candidate ;; esac; }
-id_of_role() { [[ "$1" == incumbent ]] && echo inc-id || echo cand-id; }
+fmt_epoch() {  # $1 epoch, $2 offset seconds, $3 suffix
+  local e=$(( $1 + $2 ))
+  if [[ "$(uname)" == Darwin ]]; then /bin/date -u -r "$e" "+%Y-%m-%dT%H:%M:%S$3"; else /bin/date -u -d "@$e" "+%Y-%m-%dT%H:%M:%S$3"; fi
+}
+now() { fmt_epoch "$(/bin/date +%s)" 0 Z; }
+role_of_ref() { case "$1" in *"$FAKE_INC_DIGEST"*|"$FAKE_INC_ID"|bosun:rollback-*) echo incumbent ;; *) echo candidate ;; esac; }
+id_of_role() { case "$1" in incumbent) echo "$FAKE_INC_ID" ;; candidate) echo "$FAKE_CAND_ID" ;; *) echo "$FAKE_OTHER_ID" ;; esac; }
 case "$1" in
   compose)
     shift; files=() sub="" name=""
@@ -67,35 +76,46 @@ case "$1" in
       run)
         role="${name##*-}"; override="${files[1]}"
         cp "$override" "$F/override-$role.yml"
+        echo "$role" >> "$F/run-order"
         n=$(( $(cat "$F/runs-$role" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$F/runs-$role"
-        var="FAKE_RENDER_${role^^}"; [[ "${!var:-ok}" == ok ]] || { echo '{"level":"error","message":"render failed"}'; exit 1; }
+        var="FAKE_RENDER_${role^^}"; [[ "${!var:-ok}" != fail ]] || { echo '{"level":"error","message":"render failed"}'; exit 1; }
         dir="$(sed -n 's#^ *- "\(.*\):/work"$#\1#p' "$override")"
         mkdir -p "$dir/staging/unraid"
-        cvar="FAKE_CONTENT_${role^^}"; printf '%s\n' "${!cvar:-same}" > "$dir/staging/unraid/rendered.yml"
+        if [[ "${!var:-ok}" != empty ]]; then
+          cvar="FAKE_CONTENT_${role^^}"; printf '%s\n' "${!cvar:-same}" > "$dir/staging/unraid/rendered.yml"
+        fi
         kvar="FAKE_COMMITS_${role^^}"; read -r -a commits <<<"${!kvar:-$FAKE_DEFAULT_COMMIT}"
         commit="${commits[$((n - 1))]:-${commits[-1]}}"
         printf '{"level":"info","component":"reconcile","commit":"%s","message":"Reconcile pipeline completed"}\n' "$commit" ;;
       up)
-        target=candidate
-        [[ "${#files[@]}" -gt 1 ]] && target=incumbent
+        last="${files[-1]}"; target=candidate
+        grep -q 'bosun:rollback-' "$last" && target=incumbent
+        [[ "${#files[@]}" -gt 1 ]] && cp "$last" "$F/up-override-$target.yml"
         var="FAKE_UP_FAIL_${target^^}"; [[ "${!var:-0}" == 1 ]] && exit 1
-        echo "$target" > "$F/running_role"; now > "$F/started"; sleep 1 ;;
+        if [[ "$target" == incumbent && "${FAKE_ROLLBACK_WRONG_IMAGE:-0}" == 1 ]]; then target=other; fi
+        echo "$target" > "$F/running_role"
+        printf '%s\n' "$(now | sed 's/Z$/.123456789Z/')" > "$F/started"; sleep 1 ;;
     esac ;;
   inspect)
-    [[ -f "$F/running_role" ]] || exit 1
-    r="$(cat "$F/running_role")"
+    r="$(cat "$F/running_role")"; [[ "$r" != none ]] || exit 1
     if [[ "$3" == *'{{.Image}}'* ]]; then echo "$(id_of_role "$r") running $(cat "$F/started") 0 bosun"
     else echo "restarts=0 status=running"; fi ;;
   image)
-    [[ "${*: -1}" == inc-id ]] && echo "ghcr.io/cameronsjo/bosun@$FAKE_INC_DIGEST" || echo "ghcr.io/cameronsjo/bosun@$FAKE_CAND_DIGEST" ;;
+    case "${*: -1}" in
+      "$FAKE_INC_ID") echo "ghcr.io/cameronsjo/bosun@$FAKE_INC_DIGEST" ;;
+      "$FAKE_CAND_ID") echo "ghcr.io/cameronsjo/bosun@$FAKE_CAND_DIGEST" ;;
+      *) echo "ghcr.io/cameronsjo/bosun@sha256:$(printf 'f%.0s' {1..64})" ;;
+    esac ;;
   exec)
     r="$(cat "$F/running_role")"
     if [[ "$*" == *--version* ]]; then
-      [[ "$r" == incumbent ]] && echo "bosun version 0.42.3" || echo "bosun version ${FAKE_CAND_VERSION:-0.43.0}"
+      [[ "$r" == candidate ]] && echo "bosun version ${FAKE_CAND_VERSION:-0.43.0}" || echo "bosun version 0.42.3"
     else
-      var="FAKE_STATUS_${r^^}"
+      var="FAKE_STATUS_${r^^}"; e="$(/bin/date +%s)"
       case "${!var:-ok}" in
         ok) printf '{"state":"idle","last_reconcile":"%s","last_error":null}\n' "$(now)" ;;
+        offset) printf '{"state":"idle","last_reconcile":"%s","last_error":null}\n' "$(fmt_epoch "$e" -18000 -05:00)" ;;
+        stale) printf '{"state":"idle","last_reconcile":"%s","last_error":null}\n' "$(fmt_epoch "$e" -3600 Z)" ;;
         error) printf '{"state":"idle","last_reconcile":"%s","last_error":"deploy failed"}\n' "$(now)" ;;
         never) printf '{"state":"reconciling","last_reconcile":null,"last_error":null}\n' ;;
       esac
@@ -122,7 +142,7 @@ new_case() {
   write_stubs "$F/bin"
   : > "$F/calls"
   echo incumbent > "$F/running_role"
-  echo "2026-09-01T00:00:00Z" > "$F/started"
+  echo "2026-09-01T00:00:00.000000001Z" > "$F/started"
   : > "$F/compose/docker-compose.yml"
   jq -n --arg img "${2:-$CANDIDATE}" '{services: {bosun: {image: $img,
     environment: {TZ: "America/Chicago", BOSUN_REPO_URL: "git@github.com:x/homelab.git", BOSUN_INFRA_DIR: "unraid",
@@ -135,7 +155,8 @@ new_case() {
       {source: "/mnt/user/appdata", target: "/mnt/appdata"}]}}}' > "$F/live.json"
   echo n > "$F/tty"
   unset "${!FAKE_@}" 2>/dev/null || true
-  export FAKE="$F" FAKE_INC_DIGEST="$INC_DIGEST" FAKE_CAND_DIGEST="$CAND_DIGEST" FAKE_DEFAULT_COMMIT="$COMMIT_A"
+  export FAKE="$F" FAKE_INC_DIGEST="$INC_DIGEST" FAKE_CAND_DIGEST="$CAND_DIGEST" FAKE_DEFAULT_COMMIT="$COMMIT_A" \
+    FAKE_INC_ID="$INC_ID" FAKE_CAND_ID="$CAND_ID" FAKE_OTHER_ID="$OTHER_ID"
 }
 
 run_remote() {
@@ -146,14 +167,20 @@ run_remote() {
     BOSUN_UPGRADE_UP_WAIT_SECONDS=2 bash "$REMOTE" --watch-timeout 3 "$@" > "$OUT" 2>&1 || RC=$?
 }
 
+write_state() {  # $1 phase
+  printf '%s\n' "phase=$1" "project=bosun" "incumbent=ghcr.io/cameronsjo/bosun@$INC_DIGEST" "incumbent_image=$INC_ID" \
+    "incumbent_version=0.42.3" "rollback_tag=bosun:rollback-0.42.3" "candidate=$CANDIDATE" > "$F/state/state"
+}
+
 history_has() { grep -qF -- "$1" "$F/state/history.log" || fail "history lacks: $1"; }
 assert_clean_tmp() {
   local left; left="$(find "$F/tmp" -mindepth 1 -maxdepth 1 | head -n1)"
   [[ -z "$left" ]] || fail "shadow tmp dir left behind: $left"
   [[ ! -d "$F/state/lock" ]] || fail "lock left behind"
+  [[ ! -f "$F/state/cutover.override.yml" ]] || fail "cutover override left behind"
 }
 
-# ---- remote script ---------------------------------------------------------
+# ---- remote script: preflight ----------------------------------------------
 
 new_case already-current "ghcr.io/cameronsjo/bosun:0.42.3@$INC_DIGEST"
 run_remote
@@ -167,38 +194,56 @@ new_case expect-candidate-mismatch
 run_remote --expect-candidate "ghcr.io/cameronsjo/bosun:0.43.1@$CAND_DIGEST"
 assert_rc 64; assert_out "pin changed since provenance was checked"; ok
 
-new_case upgraded
-run_remote --yes
-assert_rc 0; assert_out "RENDER-IDENTICAL"; assert_out "VERDICT: UPGRADED"
-[[ "$(running_role)" == candidate ]] || fail "candidate not running"
-[[ "$(cat "$F/tagged")" == "bosun:rollback-0.42.3" ]] || fail "rollback anchor not tagged"
-[[ ! -f "$F/state/state" ]] || fail "state file left after success"
-history_has "UPGRADED"; history_has "exit=0"; assert_calls "--pull never"; assert_clean_tmp; ok
+new_case lock-held
+mkdir -p "$F/state/lock"
+run_remote --dry-run
+assert_rc 75; assert_out "Another upgrade holds"; [[ -d "$F/state/lock" ]] || fail "removed someone else's lock"; ok
+
+new_case state-dir-symlink
+rm -rf "$F/state"; mkdir -p "$F/elsewhere"; ln -s "$F/elsewhere" "$F/state"
+run_remote --dry-run
+assert_rc 64; assert_out "is a symlink"; ok
+
+# ---- remote script: shadow render ------------------------------------------
 
 new_case env-allowlist
 run_remote --dry-run
 assert_rc 0
-for forbidden in DISCORD_WEBHOOK_URL WEBHOOK_SECRET _TOKEN SENTRY OTEL docker.sock s3cret; do
-  for role in incumbent candidate; do
-    if grep -qF -- "$forbidden" "$F/override-$role.yml"; then fail "$role override carries $forbidden"; fi
+for role in incumbent candidate; do
+  o="$F/override-$role.yml"
+  for forbidden in DISCORD_WEBHOOK_URL WEBHOOK_SECRET _TOKEN SENTRY OTEL docker.sock s3cret "/mnt/user/appdata:"; do
+    if grep -qF -- "$forbidden" "$o"; then fail "$role override carries $forbidden"; fi
+  done
+  for required in 'BOSUN_INFRA_DIR: "unraid"' 'DRY_RUN: "true"' 'appdata-empty:/mnt/appdata:ro' \
+      'age-key.txt:/config/age-key.txt:ro' 'env_file: !reset []' 'privileged: false' 'cap_add: !reset []' \
+      'container_name: !reset null' 'network_mode: bridge'; do
+    grep -qF -- "$required" "$o" || fail "$role override lacks: $required"
   done
 done
-grep -qF 'BOSUN_INFRA_DIR: "unraid"' "$F/override-candidate.yml" || fail "override lost BOSUN_INFRA_DIR"
-grep -qF 'DRY_RUN: "true"' "$F/override-candidate.yml" || fail "override is not a dry run"
-grep -qF '/mnt/user/appdata:/mnt/appdata:ro' "$F/override-candidate.yml" || fail "appdata not read-only"
 assert_calls "reconcile --dry-run --no-alerts"
+[[ "$(head -n1 "$F/run-order")" == incumbent ]] || fail "incumbent must render first"
 [[ "$(running_role)" == incumbent ]] || fail "dry run changed the running container"; assert_clean_tmp; ok
+
+new_case ambiguous-key-mount
+jq '.services.bosun.volumes += [{source: "/other/age.txt", target: "/config/age-key.txt"}]' "$F/live.json" > "$F/l" && mv "$F/l" "$F/live.json"
+run_remote --dry-run
+assert_rc 64; assert_out "exactly one plain-path mount"; ok
 
 new_case render-differs-declined
 export FAKE_CONTENT_CANDIDATE=RENDERED-SECRET-MARKER
 run_remote --yes
-assert_rc 0; assert_out "the renders differ"; assert_out "unraid/rendered.yml"; assert_no_out "RENDERED-SECRET-MARKER"
+assert_rc 0; assert_out "RENDER-DIFFERS"; assert_out "unraid/rendered.yml"; assert_no_out "RENDERED-SECRET-MARKER"
 assert_out "DECLINED at RENDER-DIFFERS"; [[ "$(running_role)" == incumbent ]] || fail "declined run cut over"; ok
 
 new_case no-baseline
 export FAKE_NOALERTS_INCUMBENT=0
 run_remote --dry-run
 assert_rc 0; assert_out "RENDER-OK-NO-BASELINE"; [[ ! -f "$F/runs-incumbent" ]] || fail "incumbent rendered without a baseline"; ok
+
+new_case yes-without-identical-still-prompts
+export FAKE_NOALERTS_INCUMBENT=0
+run_remote --yes
+assert_rc 0; assert_out "Cut over bosun"; assert_out "DECLINED at RENDER-OK-NO-BASELINE"; ok
 
 new_case candidate-lacks-flag
 export FAKE_NOALERTS_CANDIDATE=0
@@ -211,20 +256,58 @@ run_remote --yes
 assert_rc 5; assert_out "VERDICT: CANDIDATE-FAILED"; [[ "$(running_role)" == incumbent ]] || fail "changed on candidate failure"
 ls "$F/state/failures/"*shadow-candidate.log >/dev/null || fail "no shadow log kept"; assert_clean_tmp; ok
 
+new_case candidate-empty-render
+export FAKE_RENDER_CANDIDATE=empty
+run_remote --yes
+assert_rc 5; assert_out "empty staging tree"; ok
+
 new_case harness-invalid
 export FAKE_RENDER_INCUMBENT=fail
 run_remote --yes
-assert_rc 4; assert_out "VERDICT: HARNESS-INVALID"; ok
+assert_rc 4; assert_out "VERDICT: HARNESS-INVALID"; [[ ! -f "$F/runs-candidate" ]] || fail "rendered the candidate on a broken harness"; ok
 
-new_case commit-mismatch-retry
-export FAKE_COMMITS_INCUMBENT="$COMMIT_B $COMMIT_A"
+# A push lands between the renders: the incumbent saw A, the candidate B. Only
+# re-running the earlier (incumbent) render can converge on B.
+new_case commit-moves-forward
+export FAKE_COMMITS_INCUMBENT="$COMMIT_A $COMMIT_B" FAKE_COMMITS_CANDIDATE="$COMMIT_B"
 run_remote --dry-run
-assert_rc 0; assert_out "re-running the incumbent once"; [[ "$(cat "$F/runs-incumbent")" == 2 ]] || fail "incumbent not re-run"; ok
+assert_rc 0; assert_out "re-running the incumbent once"; assert_out "RENDER-IDENTICAL"
+[[ "$(cat "$F/runs-incumbent")" == 2 ]] || fail "incumbent not re-run"; ok
 
-new_case commit-mismatch-transient
-export FAKE_COMMITS_INCUMBENT="$COMMIT_B $COMMIT_B"
+new_case commit-keeps-moving
+export FAKE_COMMITS_INCUMBENT="$COMMIT_A $COMMIT_A" FAKE_COMMITS_CANDIDATE="$COMMIT_B"
 run_remote --dry-run
 assert_rc 75; assert_out "repo moved"; ok
+
+# ---- remote script: cutover, watch, rollback --------------------------------
+
+new_case upgraded
+run_remote --yes
+assert_rc 0; assert_out "RENDER-IDENTICAL"; assert_out "VERDICT: UPGRADED"
+[[ "$(running_role)" == candidate ]] || fail "candidate not running"
+[[ "$(cat "$F/tagged")" == "bosun:rollback-0.42.3" ]] || fail "rollback anchor not tagged"
+grep -qF "image: \"$CANDIDATE\"" "$F/up-override-candidate.yml" || fail "cutover did not pin the verified digest"
+[[ ! -f "$F/state/state" ]] || fail "state file left after success"
+history_has "UPGRADED"; history_has "exit=0"; assert_calls "--pull never"; assert_clean_tmp; ok
+
+new_case offset-timestamps
+export FAKE_STATUS_CANDIDATE=offset
+run_remote --yes
+assert_rc 0; assert_out "VERDICT: UPGRADED"; ok
+
+new_case non-release-tag "ghcr.io/cameronsjo/bosun:0.43@$CAND_DIGEST"
+run_remote --yes
+assert_rc 0; assert_out "VERDICT: UPGRADED"; ok
+
+new_case release-tag-version-mismatch
+export FAKE_CAND_VERSION=0.44.0
+run_remote --yes
+assert_rc 1; assert_out "expected: bosun version 0.43.0"; ok
+
+new_case history-unwritable
+mkdir -p "$F/state/history.log"
+run_remote --yes
+assert_rc 0; assert_out "VERDICT: UPGRADED"; assert_out "could not append"; ok
 
 new_case rolled-back
 export FAKE_STATUS_CANDIDATE=error
@@ -232,6 +315,11 @@ run_remote --yes
 assert_rc 1; assert_out "VERDICT: ROLLED-BACK"; [[ "$(running_role)" == incumbent ]] || fail "incumbent not restored"
 grep -qF 'image: "bosun:rollback-0.42.3"' "$F/state/rollback.override.yml" || fail "rollback override missing"
 history_has "ROLLED-BACK"; ls "$F/state/failures/"*-candidate.log >/dev/null || fail "failure detail not kept"; ok
+
+new_case rolled-back-stale-reconcile
+export FAKE_STATUS_CANDIDATE=stale
+run_remote --yes
+assert_rc 1; assert_out "no reconcile finished within"; ok
 
 new_case rolled-back-timeout
 export FAKE_STATUS_CANDIDATE=never
@@ -254,23 +342,50 @@ run_remote --yes
 assert_rc 3; assert_out "VERDICT: HALF-CHANGED"; assert_out "bosun:rollback-0.42.3"
 grep -qF 'phase=rollback' "$F/state/state" || fail "state not kept for a resume"; ok
 
+new_case rollback-wrong-image
+export FAKE_STATUS_CANDIDATE=error FAKE_ROLLBACK_WRONG_IMAGE=1
+run_remote --yes
+assert_rc 3; assert_out "the incumbent recorded at preflight"; ok
+
+# ---- remote script: resume --------------------------------------------------
+
 new_case resume-watching
-echo candidate > "$F/running_role"; echo "2026-09-19T00:00:00Z" > "$F/started"
-printf '%s\n' "phase=watching" "project=bosun" "incumbent=ghcr.io/cameronsjo/bosun@$INC_DIGEST" \
-  "incumbent_version=0.42.3" "rollback_tag=bosun:rollback-0.42.3" "candidate=$CANDIDATE" > "$F/state/state"
+echo candidate > "$F/running_role"; echo "2026-09-19T00:00:00Z" > "$F/started"; write_state watching
 run_remote
-assert_rc 0; assert_out "resuming an interrupted upgrade (phase=watching)"; assert_out "VERDICT: UPGRADED"
+assert_rc 0; assert_out "interrupted upgrade is recorded (phase=watching)"; assert_out "VERDICT: UPGRADED"
 assert_no_calls "compose -p bosun-canary"; ok
 
-new_case lock-held
-mkdir -p "$F/state/lock"
-run_remote --dry-run
-assert_rc 75; assert_out "Another upgrade holds"; [[ -d "$F/state/lock" ]] || fail "removed someone else's lock"; ok
+new_case resume-container-missing
+echo none > "$F/running_role"; write_state cutover
+run_remote
+assert_rc 1; assert_out "resumed: candidate not running"; assert_out "VERDICT: ROLLED-BACK"; ok
 
-new_case yes-without-identical-still-prompts
-export FAKE_NOALERTS_INCUMBENT=0
-run_remote --yes
-assert_rc 0; assert_out "Cut over bosun"; assert_out "DECLINED at RENDER-OK-NO-BASELINE"; ok
+new_case resume-before-cutover
+write_state cutover
+run_remote
+assert_rc 75; assert_out "INTERRUPTED-BEFORE-CUTOVER"; [[ ! -f "$F/state/state" ]] || fail "state kept"
+assert_no_calls "up -d"; ok
+
+new_case dry-run-never-resumes
+echo candidate > "$F/running_role"; write_state watching
+run_remote --dry-run
+assert_rc 64; assert_out "--dry-run never resumes"; assert_no_calls "up -d"; assert_no_calls "exec bosun bosun daemon-status"
+grep -qF 'phase=watching' "$F/state/state" || fail "dry run touched the state"; ok
+
+new_case malformed-state
+printf 'phase=rollback\nrollback_tag=evil"; rm -rf /\n' > "$F/state/state"
+run_remote
+assert_rc 64; assert_out "malformed"; assert_no_calls "up -d"; ok
+
+# ---- remote script: drill marker --------------------------------------------
+
+new_case drill-refuses-yes
+run_remote --provenance-skipped --yes
+assert_rc 64; assert_out "--yes is refused"; ok
+
+new_case drill-marks-history
+run_remote --provenance-skipped --dry-run
+assert_rc 0; history_has "[provenance skipped: drill]"; ok
 
 # ---- Mac wrapper -----------------------------------------------------------
 
@@ -312,7 +427,10 @@ run_wrapper() {
 new_wrapper_case wrapper-pass-through
 export FAKE_REMOTE_RC=1
 run_wrapper
-assert_rc 1; grep -qF -- "--signer-workflow cameronsjo/bosun/.github/workflows/release-please.yml" "$F/gh-calls" || fail "provenance not pinned to the release workflow"
+assert_rc 1
+for pin in "--signer-workflow cameronsjo/bosun/.github/workflows/release-please.yml" "--source-ref refs/heads/main" "--deny-self-hosted-runners"; do
+  grep -qF -- "$pin" "$F/gh-calls" || fail "provenance check lacks: $pin"
+done
 grep -qF -- "--expect-candidate" "$F/ssh-calls" || fail "candidate not pinned for the remote run"; ok
 
 new_wrapper_case wrapper-provenance-failed
@@ -334,7 +452,12 @@ assert_rc 5; assert_out "is not from ghcr.io/cameronsjo/bosun"; ok
 new_wrapper_case wrapper-drill-skips-provenance
 export FAKE_GH_RC=1
 run_wrapper --skip-provenance-for-drill
-assert_rc 0; assert_out "provenance NOT checked"; [[ ! -s "$F/gh-calls" ]] || fail "drill ran gh"; ok
+assert_rc 0; assert_out "provenance NOT checked"; [[ ! -s "$F/gh-calls" ]] || fail "drill ran gh"
+grep -qF -- "--provenance-skipped" "$F/ssh-calls" || fail "drill not marked for the NAS history"; ok
+
+new_wrapper_case wrapper-drill-refuses-yes
+run_wrapper --skip-provenance-for-drill --yes
+assert_rc 64; assert_out "--yes is refused"; ok
 
 new_wrapper_case wrapper-connection-lost
 export FAKE_REMOTE_RC=255

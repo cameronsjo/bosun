@@ -19,7 +19,9 @@
 #   --watch-timeout S  seconds to wait for the first reconcile (default 900)
 #   --skip-provenance-for-drill
 #                      rollback drill ONLY: accept an image that has no release
-#                      provenance. Never use it for a real upgrade.
+#                      provenance. Never use it for a real upgrade. It refuses
+#                      --yes, and the NAS history marks the run as unverified.
+#                      The shadow render still hands the image the age key.
 #
 # Exit codes (the remote script's, passed through). NOTE: 1 means ROLLED-BACK.
 #   0 UPGRADED / ALREADY-CURRENT / clean dry run   1 ROLLED-BACK
@@ -43,7 +45,7 @@ REMOTE_SCRIPT="$SCRIPT_DIR/upgrade-bosun-remote.sh"
 
 DRY_RUN=0 ASSUME_YES=0 WATCH_TIMEOUT=900 SKIP_PROVENANCE=0
 
-usage() { sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0; }
 fail() { printf 'ERROR %s\n' "$1" >&2; printf '\nVERDICT: %s (exit %s)\n' "$2" "$3"; exit "$3"; }
 
 parse_args() {
@@ -63,6 +65,9 @@ parse_args() {
   # A host starting with "-" would reach ssh as an option.
   [[ "$HOST" =~ ^[A-Za-z0-9._@][A-Za-z0-9._@-]*$ ]] || fail "refusing ssh host '$HOST'" USAGE 64
   [[ "$WATCH_TIMEOUT" =~ ^[0-9]+$ && "$WATCH_TIMEOUT" -gt 0 ]] || fail "--watch-timeout must be a positive number of seconds" USAGE 64
+  if [[ "$SKIP_PROVENANCE" -eq 1 && "$ASSUME_YES" -eq 1 ]]; then
+    fail "--yes is refused with --skip-provenance-for-drill; an unverified image always gets the prompt" USAGE 64
+  fi
 }
 
 verify_provenance() {
@@ -73,7 +78,10 @@ verify_provenance() {
   fi
   [[ "${candidate%%[:@]*}" == "$IMAGE_REPO" ]] || fail "candidate $candidate is not from $IMAGE_REPO" CANDIDATE-FAILED 5
   command -v gh >/dev/null || fail "gh is not installed; it verifies release provenance" CONFIG 64
-  if ! gh attestation verify "oci://$IMAGE_REPO@${candidate##*@}" -R "$REPO" --signer-workflow "$SIGNER_WORKFLOW" > /dev/null; then
+  # Pinned to the release workflow, run from main, on a GitHub-hosted runner:
+  # a copy of the workflow dispatched from another branch does not pass.
+  if ! gh attestation verify "oci://$IMAGE_REPO@${candidate##*@}" -R "$REPO" --signer-workflow "$SIGNER_WORKFLOW" \
+      --source-ref refs/heads/main --deny-self-hosted-runners > /dev/null; then
     remote_run --record-provenance-failure || true
     fail "no valid build provenance from $SIGNER_WORKFLOW for ${candidate##*@}" CANDIDATE-FAILED 5
   fi
@@ -92,7 +100,9 @@ remote_run() {
 
 # shellcheck disable=SC2329  # invoked by the EXIT trap
 remove_remote_script() {
-  if [[ -n "$REMOTE_PATH" ]]; then ssh -o BatchMode=yes "$HOST" "rm -f $REMOTE_PATH" 2>/dev/null || true; fi
+  if [[ -n "$REMOTE_PATH" ]]; then
+    ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "rm -f $REMOTE_PATH" 2>/dev/null || true
+  fi
   return 0
 }
 
@@ -119,6 +129,8 @@ main() {
   local args=(--expect-candidate "$candidate" --watch-timeout "$WATCH_TIMEOUT" --operator "$operator")
   [[ "$DRY_RUN" -eq 1 ]] && args+=(--dry-run)
   [[ "$ASSUME_YES" -eq 1 ]] && args+=(--yes)
+  # The NAS history must show that this run was not verified.
+  [[ "$SKIP_PROVENANCE" -eq 1 ]] && args+=(--provenance-skipped)
 
   # One session with a TTY for the cutover prompt.
   rc=0

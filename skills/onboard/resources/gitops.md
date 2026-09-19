@@ -861,11 +861,11 @@ bash scripts/upgrade-bosun.sh --dry-run  # provenance + shadow render only
 
 What it does:
 
-1. **Provenance.** Verifies the candidate digest was built and attested by bosun's release workflow (`gh attestation verify`).
-2. **Shadow render.** On the host, the running version and the candidate each run `bosun reconcile --dry-run --no-alerts` against the same commit, in throwaway containers. Each container gets an allowlisted environment (no alert, token, webhook, Sentry or OTel variables), read-only keys and appdata, and no Docker socket. The script compares the two staging trees by file name and prints only names. The output directory lives in RAM and is deleted on exit.
-3. **Cutover.** Asks first. `--yes` skips the question only when both renders are identical. Then it recreates the container from the pinned image with `--pull never`.
+1. **Provenance.** Verifies the candidate digest was built and attested by bosun's release workflow, run from `main` on a GitHub-hosted runner (`gh attestation verify`).
+2. **Shadow render.** On the host, the running version renders first, then the candidate. Each runs `bosun reconcile --dry-run --no-alerts` against the same commit in a throwaway container. Each container gets an allowlisted environment (no alert, token, webhook, Sentry or OTel variables), read-only keys, an empty stand-in for appdata, and no Docker socket. The script compares the two staging trees by file name and prints only names. The output directory lives in RAM and is deleted on exit. If the running version fails its own render, the verdict is `HARNESS-INVALID`, not a candidate failure.
+3. **Cutover.** Asks first. `--yes` skips the question only when both renders are identical. Then it recreates the container from the verified digest with `--pull never`. The digest is pinned in an override, so a pin that moves during the run cannot swap in a different image.
 4. **Watch.** Waits for the first reconcile after the new container started, through `bosun daemon-status --json`. The reconcile must finish with no `last_error`, with no restart and no panic, within `--watch-timeout` (default 15 minutes).
-5. **Rollback.** If the watch fails, the script recreates the container from `bosun:rollback-<old version>`, a local tag it made at preflight. It uses a persistent override file (`rollback.override.yml`), then watches again.
+5. **Rollback.** If the watch fails, the script recreates the container from `bosun:rollback-<old version>`, a local tag it made at preflight. It uses a persistent override file (`rollback.override.yml`) and confirms the container runs the image ID recorded at preflight. Then it watches again.
 
 The shadow render needs `reconcile --no-alerts` in the candidate. If the running version predates that flag, the script renders the candidate only and reports `RENDER-OK-NO-BASELINE`.
 

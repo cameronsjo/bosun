@@ -201,6 +201,11 @@ Panel: plan-reviewer (both lenses), red-team-reviewer, operability-reviewer, sec
 - **Provenance is pinned to the release workflow** (`--signer-workflow …/release-please.yml`). Checked in both directions: the running `0.42.3` digest passes, and the same digest fails against `webui.yml`. A provenance failure exits 5 (`CANDIDATE-FAILED-PROVENANCE`) and is written to the NAS history through `--record-provenance-failure`.
 - **The shadow diff covers the whole staging root**, not only `TargetStagingDir(…, unraid)`. It is a superset that covers every target.
 - **Task 1 also sets `platform: linux/amd64`** on the bosun service (homelab rule, flagged by CodeRabbit on homelab#770).
+- **The incumbent renders first** (pre-PR code review). The first draft rendered the candidate first. That made the "re-run the incumbent" retry unable to converge on a forward push. It also blamed a broken harness on the candidate.
+- **The shadow gets an empty `/mnt/appdata`, not `appdata:ro`** (pre-PR security review). Deploy-mode detection only stats the path. The real appdata holds `bosun/.env`, with the secrets the env allowlist drops. The override also resets every inherited risky key (`privileged`, `cap_add`, `devices`, `secrets`, `pid`, …).
+- **Cutover pins the verified digest in its own override** (security review). The live file is re-synced from git during the run, so a re-read could start a different image.
+- **The drill flag is fenced.** It refuses `--yes`, and the NAS history marks the run `[provenance skipped: drill]`. Provenance also pins `--source-ref refs/heads/main --deny-self-hosted-runners`, checked in both directions.
+- **Verification step 6 needs a different drill image.** A `docker load`ed image has no registry digest, and an entrypoint that exits 1 fails the shadow render (exit 5) before cutover. The drill image must be pushed to a registry under a digest. It must pass `reconcile --dry-run`, then fail only as a daemon, for example with a daemon that sets `last_error`.
 - **Task 2 scope.** The CLI misses about 20 daemon env reads, not just `BOSUN_INFRA_DIR`. As planned, it fixes only `BOSUN_INFRA_DIR`. The parity test classifies every `reconcile.Config` field, and the remaining gaps go to one follow-up issue (spec task 1.5).
 
 ## Learnings

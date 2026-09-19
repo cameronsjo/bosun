@@ -250,8 +250,11 @@ docker logs --since 1h bosun | grep '"url":"/some/unexpected/path"'
 | 4 | `HARNESS-INVALID` | The running version failed its own shadow render | The repo or the harness is broken, not the candidate. Read `failures/<run>-shadow-incumbent.log` |
 | 5 | `CANDIDATE-FAILED` | The candidate failed its shadow render; nothing changed | Read `failures/<run>-shadow-candidate.log` |
 | 5 | `CANDIDATE-FAILED` (provenance) | No attestation from bosun's release workflow for that digest | Check the pin names a real release digest. Never bypass this for an upgrade |
-| 64 | usage or config | Unpinned image, bad flag, missing container or compose file | Fix what the error names; nothing changed |
-| 75 | transient / `LOCKED` / `CONNECTION-LOST` | Pull failed, repo moved mid-render, another run holds the lock, or ssh dropped | Re-run. After a lost connection the re-run resumes the watch. A stale lock is the `lock` directory beside `history.log`; remove it only when no run is active |
+| 64 | usage or config | Unpinned image, bad flag, missing container or compose file, malformed state file, or `--dry-run` while an interrupted upgrade is recorded | Fix what the error names; nothing changed. A `--dry-run` never resumes a cutover: run without it to finish |
+| 75 | transient / `LOCKED` / `CONNECTION-LOST` / `INTERRUPTED-BEFORE-CUTOVER` | Pull failed, repo moved mid-render, another run holds the lock, ssh dropped, or a run stopped before the old container was replaced | Re-run. After a lost connection the re-run resumes the watch. A stale lock is the `lock` directory beside `history.log`; remove it only when no run is active |
+| 129/130/143 | `INTERRUPTED by HUP/INT/TERM` | The remote script got a signal | Re-run the wrapper; a recorded cutover or rollback resumes |
+
+A history line that ends in `[provenance skipped: drill]` came from a `--skip-provenance-for-drill` run.
 
 ## Debug Mode
 
