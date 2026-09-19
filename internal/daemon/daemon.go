@@ -100,6 +100,11 @@ type Config struct {
 
 	// Reconcile settings
 	ReconcileConfig *reconcile.Config
+	// ProjectNameFromFile is the local bosun.yaml's root-level project_name,
+	// empty when the file omitted it. It scopes the restart breaker when no
+	// target supplies a project name; it never reaches the deploy path, so it
+	// cannot move the Compose namespace a deploy uses.
+	ProjectNameFromFile string
 	// projectConfigError retains the narrow class of project configuration
 	// errors that must fail startup instead of using graceful degradation.
 	projectConfigError error
@@ -359,6 +364,23 @@ func (d *Daemon) warnSocketAuthPosture(logger zerolog.Logger) {
 	}
 }
 
+// warnRestartBreakerScopePosture announces the restart breaker's scope posture
+// at startup, mirroring the webhook, metrics and socket opt-outs: a control that
+// has quietly become a no-op must say so before it is needed, not only in the
+// drift-cycle log where nobody is looking. No-op when the breaker is disabled or
+// a project scope resolves.
+func (d *Daemon) warnRestartBreakerScopePosture(logger zerolog.Logger) {
+	if d.config.ReconcileConfig == nil || !d.config.ReconcileConfig.RestartBreakerEnabled {
+		return
+	}
+	if d.restartBreakerProjectName() != "" {
+		return
+	}
+	logger.Warn().
+		Msg("Restart circuit breaker is DISABLED, expected a Docker Compose project scope but no target and no bosun.yaml root-level project_name supplies one — the breaker fails closed because an unscoped breaker would stop every restart-looping container on this Docker host. Set project_name, or set BOSUN_RESTART_BREAKER=false to silence this")
+	ui.Warning("Restart breaker fails closed: no project_name configured, restart loops will not be stopped")
+}
+
 // prepareStateDir creates and write-probes the deploy-state directory before
 // any listener starts. MkdirAll alone is insufficient for bind mounts: an
 // existing root-owned directory passes it even though the non-root daemon
@@ -438,6 +460,7 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	d.warnWebhookAuthPosture(logger)
 	d.warnMetricsAuthPosture(logger)
 	d.warnSocketAuthPosture(logger)
+	d.warnRestartBreakerScopePosture(logger)
 
 	// Ensure state storage is usable before any API listener or reconcile loop
 	// starts. A persistent mount that exists but is not writable is fatal: if we
@@ -1502,8 +1525,11 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	}
 
 	// Restart circuit breaker: detect containers in restart loops and stop them.
+	// It gets its own scope, resolved the way the reconcile path resolves a
+	// deploy's project: the drift check's projectName above is a read-only
+	// comparison scope and stays exactly as it was.
 	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.RestartBreakerEnabled {
-		d.runRestartBreaker(checkCtx, client, state, projectName)
+		d.runRestartBreaker(checkCtx, client, state, d.restartBreakerProjectName())
 	}
 
 	// Clean up empty restart tracking for omitempty serialization.
@@ -1625,6 +1651,30 @@ func (d *Daemon) reserveSelfHealReconcile(ctx context.Context) (*reconcileGorout
 	})
 }
 
+// restartBreakerProjectName resolves the Compose project the restart breaker
+// may stop containers in. The base ReconcileConfig.ProjectName is not it: no
+// daemon path populates that field, and the breaker reads an empty project name
+// as every container on the host. Targets resolve the same way the reconcile
+// path resolves them, falling back to the local bosun.yaml's root-level
+// project_name. An empty result disables the breaker (RunRestartBreaker).
+func (d *Daemon) restartBreakerProjectName() string {
+	rcfg := d.config.ReconcileConfig
+	if rcfg == nil {
+		return ""
+	}
+	targets, err := rcfg.ResolveTargets()
+	if err != nil {
+		// An unresolvable target list is a misconfiguration a reconcile also
+		// refuses; it is never a reason to widen the breaker's scope.
+		logger := log.Component(log.ComponentDaemon)
+		logger.Warn().
+			Err(err).
+			Msg("Restart breaker scope unresolved, expected a valid target list; the breaker will take no action this cycle")
+		return ""
+	}
+	return reconcile.RestartBreakerProjectName(targets, d.config.ProjectNameFromFile)
+}
+
 // runRestartBreaker checks running containers for restart loops and stops offenders.
 func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, state *reconcile.DeployState, projectName string) {
 	logger := log.Component(log.ComponentDaemon)
@@ -1643,7 +1693,7 @@ func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, s
 	}
 
 	result, err := reconcile.RunRestartBreaker(
-		ctx, client, actual, state,
+		ctx, client, projectName, actual, state,
 		rcfg.RestartThreshold, rcfg.RestartWindow,
 	)
 	if err != nil {
@@ -2383,6 +2433,10 @@ func ConfigFromEnv() *Config {
 		rcfg.CriticalContainers.SetFromFile(projectCfg.CriticalContainers())
 		rcfg.HealthGateScope = projectCfg.HealthGateScope()
 		rcfg.TemplateIncludeDir = projectCfg.TemplateIncludeDir()
+		// Restart breaker scope only. Deliberately not rcfg.ProjectName: that
+		// field is the compose -p namespace, and writing it here would move
+		// where an existing install's containers live.
+		cfg.ProjectNameFromFile = projectCfg.ProjectNameFromFile()
 
 		// Load targets from project config; BOSUN_TARGETS env var (parsed above) takes precedence.
 		// Skip if env explicitly set targets (even to empty — that's an intentional override).

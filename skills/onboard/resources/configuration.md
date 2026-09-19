@@ -370,7 +370,7 @@ directory when the host source is missing.
 | `BOSUN_BACKUP_TIMEOUT` | Timeout applied independently to pre-deploy backup creation + verification and post-success retention verification + cleanup (default: `5m`). Accepts Go duration strings or bare seconds. A pre-deploy timeout may fall back to an older verified rollback anchor; a retention timeout warns, preserves remaining backups, and does not revoke deploy success |
 | `BOSUN_DRIFT_INTERVAL` | Drift sampling interval (default: `5m`; `0` disables periodic drift checks). Configuration load and `bosun doctor` warn when this exceeds `BOSUN_RESTART_WINDOW` |
 | `BOSUN_DRIFT_SELF_HEAL_MAX_ATTEMPTS` | Positive attempt bound for one stable drift signature (default: `3`). Attempts and exhaustion persist across daemon restarts; invalid, zero, and negative values retain the default |
-| `BOSUN_RESTART_BREAKER` | Enable restart-loop protection (default: `true`) |
+| `BOSUN_RESTART_BREAKER` | Enable restart-loop protection (default: `true`). Acts only inside a resolved Compose project (a target's `project_name`, else the root-level `project_name`); with no scope it stops nothing |
 | `BOSUN_RESTART_THRESHOLD` | Accumulated restart count that trips the breaker (default: `5`; must be positive) |
 | `BOSUN_RESTART_WINDOW` | Restart observation window (default: `10m`; must be positive). Keep this at least as long as `BOSUN_DRIFT_INTERVAL`; sustained restart increases retain their earliest baseline until a clean sample |
 | `BOSUN_SECRETS_FILE` | Default secrets file for `bosun render` |

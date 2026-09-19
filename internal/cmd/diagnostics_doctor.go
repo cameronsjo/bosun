@@ -326,6 +326,46 @@ func checkRestartBreakerSampling() CheckResult {
 	return CheckResult{Passed: 1}
 }
 
+// doctorRestartBreakerEnabled mirrors the daemon's BOSUN_RESTART_BREAKER
+// parsing: only an explicit false value disables the breaker.
+func doctorRestartBreakerEnabled() bool {
+	switch strings.ToLower(os.Getenv("BOSUN_RESTART_BREAKER")) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+// checkRestartBreakerScope reports whether the restart breaker can resolve the
+// Compose project it is allowed to stop containers in. Without one it fails
+// closed at runtime (reconcile.RunRestartBreaker) rather than stopping every
+// restart-looping container on the host, which makes an enabled breaker a
+// silent no-op — the one state an operator cannot see from the outside.
+func checkRestartBreakerScope(cfg *config.Config) CheckResult {
+	if !doctorRestartBreakerEnabled() {
+		_, _ = ui.Blue.Println("  - Restart breaker scope check N/A (BOSUN_RESTART_BREAKER disables the breaker)")
+		return CheckResult{}
+	}
+
+	fileProjectName := ""
+	if cfg != nil {
+		fileProjectName = cfg.ProjectNameFromFile()
+	}
+	scope := reconcile.RestartBreakerProjectName(loadConfiguredTargets(), fileProjectName)
+	if scope != "" {
+		_, _ = ui.Green.Printf("  * Restart breaker is scoped to compose project %q\n", scope)
+		return CheckResult{Passed: 1}
+	}
+
+	_, _ = ui.Yellow.Println("  ! Restart breaker is enabled but has no compose project scope, so it will stop nothing")
+	_, _ = ui.Blue.Println("      To fix this:")
+	_, _ = ui.Blue.Println("      - Set project_name on the deploy target (bosun.yaml targets, or BOSUN_TARGETS)")
+	_, _ = ui.Blue.Println("      - Or set a root-level project_name in bosun.yaml when there is a single target")
+	_, _ = ui.Blue.Println("      - A breaker with no scope would stop every restart-looping container on this host, so it fails closed instead")
+	return CheckResult{Warned: 1}
+}
+
 // checkStateDir verifies the deploy-state directory is writable.
 // The state dir defaults to reconcile.DefaultStateDir but is overridden by
 // the BOSUN_STATE_DIR environment variable (same logic as the daemon).
@@ -681,6 +721,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	result.Add(checkManifestDirectory(cfg))
 	result.Add(checkHookSettleDelayFUSE(cfg))
 	result.Add(checkRestartBreakerSampling())
+	result.Add(checkRestartBreakerScope(cfg))
 	result.Add(checkStateDir())
 	result.Add(checkSocketDir())
 	result.Add(checkWebhook())
