@@ -48,7 +48,8 @@ All ten units below are implemented on `fix/security-hardening-2026-09`, one com
 - [x] 7.1 Open the deployment root once and perform directory creation, temp-file creation, rename, removal, and the directory sync relative to it
 - [x] 7.2 Cover the single-file entry point, whose `os.MkdirAll` succeeded silently on an existing symlink-to-directory with no race at all
 - [x] 7.3 Open the root lazily so a failed walk leaves no destination directory behind
-- [x] 7.4 Add a racing regression test; unpatched code escaped 11 of 40 rounds, patched code 0 of 150
+- [x] 7.4 Add deterministic swap-fixture regression tests in `internal/fileutil/destination_test.go`
+- [ ] 7.5 Commit the racing harness. During development a concurrent probe measured the unpatched code escaping 11 of 40 rounds and the patched code 0 of 150, but that harness was not committed, so the tree carries only the sequential fixtures. Either land it or record the measurement as evidence rather than as a delivered test
 
 ## 8. Restart breaker scoped to its Compose project
 
@@ -70,7 +71,7 @@ All ten units below are implemented on `fix/security-hardening-2026-09`, one com
 - [x] 10.2 Sanitize the socket `/trigger` source string
 - [x] 10.3 Sanitize container health-check output before the drift printout and the health-gate error path
 - [x] 10.4 Strip before capping, so a control character cannot survive past the truncation point
-- [x] 10.5 Differential-test the sanitizer: 40,013 inputs through the old and new bodies with zero drift
+- [ ] 10.5 Commit the differential harness. During development 40,013 inputs were run through the old and new sanitizer bodies with zero drift, but that harness was not committed; `internal/log/sanitize_test.go` is a case table. Either land it or record the measurement as evidence rather than as a delivered test
 
 ## Verification
 
