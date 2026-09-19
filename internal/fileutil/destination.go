@@ -42,6 +42,9 @@ type destination interface {
 	mkdirAll(name string, mode fs.FileMode) error
 	mkdir(name string, mode fs.FileMode) error
 	lstat(name string) (fs.FileInfo, error)
+	// open opens name for reading through this destination's own resolution,
+	// so a change decision reads the same entry the write would replace.
+	open(name string) (*os.File, error)
 	// createTemp creates a private 0600 file in dir and returns it with the
 	// name this destination's other methods accept for it.
 	createTemp(dir, pattern string) (*os.File, string, error)
@@ -65,6 +68,8 @@ func (pathDestination) mkdirAll(name string, mode fs.FileMode) error { return os
 func (pathDestination) mkdir(name string, mode fs.FileMode) error { return os.Mkdir(name, mode) }
 
 func (pathDestination) lstat(name string) (fs.FileInfo, error) { return os.Lstat(name) }
+
+func (pathDestination) open(name string) (*os.File, error) { return os.Open(name) }
 
 func (pathDestination) createTemp(dir, pattern string) (*os.File, string, error) {
 	file, err := os.CreateTemp(dir, pattern)
@@ -94,6 +99,8 @@ func (d rootDestination) mkdir(name string, mode fs.FileMode) error {
 }
 
 func (d rootDestination) lstat(name string) (fs.FileInfo, error) { return d.root.Lstat(name) }
+
+func (d rootDestination) open(name string) (*os.File, error) { return d.root.Open(name) }
 
 func (d rootDestination) createTemp(dir, pattern string) (*os.File, string, error) {
 	return rootCreateTemp(d.root, dir, pattern)
@@ -248,7 +255,68 @@ func (p *pinnedDir) copyFileSyncingDir(ctx context.Context, src, dst string) err
 }
 
 func (p *pinnedDir) copyFileIfChangedDeferred(ctx context.Context, src, dst string) (bool, postWriteVerification, error) {
+	if err := p.assertDestinationInRoot(dst); err != nil {
+		return false, nil, err
+	}
 	return copyFileIfChangedDeferredWithCopy(ctx, src, dst, fileHashContext, p.copyFileWithoutDirSync)
+}
+
+// openExistingRoot pins the root without creating it, so a caller that only
+// needs to resolve a destination leaves no directory behind. A missing root
+// yields a nil handle: the destination under it cannot exist either.
+func (p *pinnedDir) openExistingRoot() (*os.Root, error) {
+	if p.root != nil {
+		return p.root, nil
+	}
+	root, err := os.OpenRoot(p.path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("pin destination root: %w", err)
+	}
+	p.root = root
+	return root, nil
+}
+
+// assertDestinationInRoot resolves dst through the pinned handle before a
+// change decision reads it.
+//
+// The decision hashes and byte-compares the destination by path. Left ungated,
+// a container that replaces a directory under the root with a symlink to a
+// tree it owns, then pre-places a copy of the rendered file there, makes the
+// comparison read its file, find it equal, and skip the write. Nothing lands
+// inside the root, the skipped file never enters WrittenFiles so
+// verifyDeployTarget cannot catch it, and the deploy reports success while the
+// file the operator believes is deployed is attacker-owned. A silent skip is
+// an unreported deploy failure, so an escaping destination is refused here.
+//
+// A destination that resolves inside the root is still compared by path. The
+// residual is the in-root redirect os.Root allows by design, documented on the
+// destination interface.
+func (p *pinnedDir) assertDestinationInRoot(dst string) error {
+	name, err := p.name(dst)
+	if err != nil {
+		return err
+	}
+	root, err := p.openExistingRoot()
+	if err != nil {
+		return err
+	}
+	if root == nil {
+		return nil
+	}
+	file, err := rootDestination{root: root}.open(name)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// Absent inside the root: the pinned copy creates it.
+			return nil
+		}
+		// An escaping component reports here, and so does a destination that
+		// cannot be read at all. Neither can be compared safely.
+		return fmt.Errorf("%w: %s under %s: %w", errDestinationEscapesRoot, dst, p.path, err)
+	}
+	return file.Close()
 }
 
 // mkdirRoot creates the copy's destination root. When that is the pinned path
