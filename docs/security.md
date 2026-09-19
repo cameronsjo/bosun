@@ -278,12 +278,14 @@ hostPattern = regexp.MustCompile(`^([a-zA-Z0-9_-]+@)?[a-zA-Z0-9.-]+$`)
 
 Both SSH channels resolve a `known_hosts` file from config-controlled paths only, in order: `BOSUN_SSH_KNOWN_HOSTS`, then `/config/known_hosts`. `~/.ssh/known_hosts` is deliberately excluded — ephemeral entries written by manual `ssh` commands inside a container cause key mismatches.
 
-The two channels differ only in what happens when no `known_hosts` file exists:
+Both channels fail closed when no `known_hosts` file exists. They differ only in the mechanism, because one resolves the policy in-process and the other hands it to `openssh`:
 
 | Channel | No `known_hosts` file | Unparseable `known_hosts` |
 |---------|-----------------------|---------------------------|
 | Git clone/fetch | **Fails closed** — authentication resolution errors, the daemon refuses to start, and no connection is made | **Fails closed** — the error names the file; no later candidate is substituted |
-| Deploy (`ssh`/`scp`) | TOFU (`StrictHostKeyChecking=accept-new`) — the first connection pins the key, later mismatches fail | Strict against that file; `ssh` surfaces the read error |
+| Deploy (`ssh`/`scp`) | **Fails closed** — emits `StrictHostKeyChecking=yes` with no `UserKnownHostsFile`, leaving `openssh`'s own defaults in play; an unpinned host is refused before any archive bytes are written | Strict against that file; `ssh` surfaces the read error |
+
+The deploy channel deliberately does not emit `accept-new`. Trust-on-first-use would stream the rendered secrets to whichever host answers first, and the shipped compose mounts `/home/bosun/.ssh` read-only, so `openssh` cannot persist a pin at all and every deploy would be a first connection.
 
 `BOSUN_SSH_INSECURE_HOST_KEY=true` is the only way to accept an unverified host key, on either channel. Populate `known_hosts` before the first Git operation (`ssh-keyscan <git-host> >> /config/known_hosts`); a Git repository over SSH with no host-key policy is rejected at startup rather than fetched from an unauthenticated peer.
 
@@ -415,6 +417,23 @@ inode. Its existence does not mean the lock is held; kernel lock state does.
 Do not delete the file while a process might hold it, because a replacement
 file would have a different inode and could be locked concurrently.
 
+### Lock File Permissions
+
+**Implementation**: `internal/reconcile/lock.go`, `internal/reconcile/lock_unix.go`
+
+The reconcile lock file is created `0600` and opened without following a symlink
+at its final path component. The mode is the access control, not a convention: an
+exclusive advisory lock is granted on any open descriptor regardless of open mode,
+so a world-readable lock file lets any local principal open it, hold the lock, and
+block every deploy indefinitely. Lock directories bosun creates are `0700`; a
+pre-existing directory keeps its mode, because a configured lock path may live in
+a directory bosun does not own.
+
+Upgrading from a version that created the file `0644` needs no operator action.
+The next acquire tightens the existing file's mode through the open descriptor. A
+failed tighten logs a warning and the reconcile proceeds, because refusing there
+would cause the same outage the permission prevents.
+
 ### Lock Release
 
 Locks are automatically released when:
@@ -463,6 +482,34 @@ These controls prevent malicious archives containing paths like:
 - `../../../etc/passwd`
 - `/etc/shadow`
 - `foo/../../bar`
+
+### Pinned Roots for Deploy and Extraction Writes
+
+**Implementation**: `internal/fileutil/destination.go`, `internal/reconcile/remote_rollback.go`
+
+Validating a path as a string and then writing to that same string is two
+separate resolutions, and the filesystem can change between them. Both the deploy
+writer and the rollback extractor therefore resolve every mutation against a
+directory handle pinned on the root they are protecting, rather than by path.
+Directory creation, temporary-file creation, rename, removal, and the directory
+sync all go through that handle.
+
+For deploys this matters because the destination tree is writable by the
+containers bosun manages. A container that replaces one of its own destination
+subdirectories with a symlink to a host path can otherwise redirect a
+root-privileged deploy write out of its volume. Both entry points are covered:
+the directory walk and the single-file path, where `os.MkdirAll` succeeds
+silently on an existing symlink-to-directory and returns no error at all.
+
+For extraction it closes a chained-symlink archive: an entry that validates
+lexically inside the root while its parent, created by an earlier entry in the
+same archive, points outside it. An entry whose existing ancestor directory is a
+symlink is refused outright.
+
+The pinned root is opened lazily on the first mutation, so a deploy that fails
+while walking its source leaves no destination directory behind. A symlink whose
+target stays inside the pinned root is still followed; the guarantee is
+confinement to the root, not immutability within it.
 
 ### File Size Limits
 
@@ -562,6 +609,14 @@ The template renderer walks the entire cloned repository directory for `.tmpl` f
 
 **Mitigation**: Limit `.tmpl` files to the infrastructure subdirectory in your repository. Consider code review rules that flag `.tmpl` files in unexpected locations.
 
+### Template Source Type Refusal
+
+**Implementation**: `internal/reconcile/template.go`
+
+A repository committer controls the paths the renderer walks, so every template source is treated as untrusted. The renderer refuses any source that is not a regular file, and refuses a path whose final component is a symlink before its target is read. Without that refusal, a committed symlink named `x.tmpl` would make the renderer read a file outside the repository — the SOPS secrets file, the age identity, `bosun.yaml` — and write its contents into the deployed tree.
+
+A symlinked template entry found during the walk is skipped with a warning and the walk continues, so one bad entry does not block an otherwise valid deploy. Every other rendering error aborts staging rather than producing a partial deploy.
+
 ### Auth Ingress Chain
 
 The auth stack — Traefik, Authelia, and Tailscale gateway — forms a dependency chain for external access. A partial compose up failure where Authelia is down but Traefik is up could serve routes without authentication middleware.
@@ -624,6 +679,12 @@ Gitea, and Bitbucket — and the daemon's Unix socket `/trigger` handler applies
 it again to any caller-supplied `source`, so the property does not depend on
 each client sanitizing before it forwards. The same sanitization applies when
 the explicit unauthenticated-webhook opt-out is active.
+
+The same helper neutralizes container health-check output, which is the stdout
+and stderr of a command running inside a monitored container and is therefore
+controlled by anyone with code execution there. Both the drift printout and the
+health-gate error path strip before capping, so a control character cannot
+survive by sitting beyond the truncation point.
 
 All daemon HTTP transports — the webhook listener, Unix socket API, and
 optional bearer-authenticated TCP API — allow at most 5 seconds to receive
