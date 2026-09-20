@@ -258,6 +258,26 @@ func TestReconcileConfigRefusesEmptySecretsList(t *testing.T) {
 	}
 }
 
+// A boolean variable that is set but unparseable must not silently mean
+// "false": DRY_RUN=ture deploying for real is the case with no evidence trail.
+func TestReconcileConfigRejectsUnparseableBooleans(t *testing.T) {
+	for _, name := range []string{"DRY_RUN", "FORCE"} {
+		t.Run(name, func(t *testing.T) {
+			resetReconcileFlags(t)
+			t.Chdir(t.TempDir())
+			t.Setenv("BOSUN_REPO_URL", "git@github.com:cameronsjo/homelab.git")
+			t.Setenv("DRY_RUN", "")
+			t.Setenv("FORCE", "")
+			t.Setenv(name, "ture")
+
+			cfg, err := buildReconcileConfigFromEnv()
+			require.NoError(t, err)
+			require.False(t, cfg.DryRun, "an unparseable value is not a dry run")
+			require.False(t, cfg.Force, "an unparseable value is not a force")
+		})
+	}
+}
+
 // The two parsers the CLI used to get wrong on its own.
 func TestReconcileConfigSharedParsers(t *testing.T) {
 	cli, daemonCfg := buildBothConfigs(t, true)
