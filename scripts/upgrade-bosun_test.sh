@@ -126,11 +126,20 @@ case "$1" in
   logs)
     [[ "${FAKE_LOGS_FAIL:-0}" == 1 ]] && exit 1
     r="$(cat "$F/running_role")"; var="FAKE_PANIC_${r^^}"
-    [[ "${!var:-0}" == 1 ]] && echo "panic: runtime error" ; true ;;
+    [[ "${!var:-0}" == 1 ]] && echo "panic: runtime error"
+    # A healthy daemon logs this when a cycle ends; the watch requires it
+    # alongside daemon-status.
+    var="FAKE_NO_COMPLETION_${r^^}"
+    [[ "${!var:-0}" == 1 ]] || printf '{"level":"info","component":"reconcile","message":"Reconcile pipeline completed"}\n'
+    true ;;
   run)
-    # docker run --rm --entrypoint bosun IMAGE <args...>
-    r="$(role_of_ref "$5")"
-    if [[ "$6" == --version ]]; then
+    # docker run [flags...] --entrypoint bosun IMAGE <args...>
+    shift; img="" ; while [[ $# -gt 0 ]]; do
+      if [[ "$1" == --entrypoint ]]; then img="$3"; shift 3; break; fi
+      shift
+    done
+    r="$(role_of_ref "$img")"
+    if [[ "$1" == --version ]]; then
       [[ "$r" == candidate ]] && echo "bosun version ${FAKE_CAND_IMAGE_VERSION:-0.43.0}" || echo "bosun version 0.42.3"
       exit 0
     fi
@@ -191,7 +200,8 @@ write_live_lock() {
 
 history_has() { grep -qF -- "$1" "$F/state/history.log" || fail "history lacks: $1"; }
 assert_clean_tmp() {
-  local left; left="$(find "$F/tmp" -mindepth 1 -maxdepth 1 | head -n1)"
+  # The kept-failure dir is deliberate; a rendered tree is not.
+  local left; left="$(find "$F/tmp" -mindepth 1 -maxdepth 1 -name 'bosun-canary.*' | head -n1)"
   [[ -z "$left" ]] || fail "shadow tmp dir left behind: $left"
   [[ ! -d "$F/state/lock" ]] || fail "lock left behind"
   [[ ! -f "$F/state/cutover.override.yml" ]] || fail "cutover override left behind"
@@ -302,6 +312,18 @@ else
   printf 'skip %s (no docker compose on this machine)\n' "$CASE"
 fi
 
+# The two probes run an image the operator has not been asked about yet, and on
+# the drill path that image is unverified. They need neither.
+new_case probes-are-unprivileged
+run_remote --dry-run
+assert_rc 0
+while IFS= read -r probe; do
+  for flag in '--network none' '--cap-drop ALL' '--security-opt no-new-privileges'; do
+    case "$probe" in *"$flag"*) ;; *) fail "probe lacks $flag: $probe" ;; esac
+  done
+done < <(command grep -E '^run .*--entrypoint bosun' "$F/calls")
+command grep -qE '^run .*--entrypoint bosun' "$F/calls" || fail "no image probe ran"; ok
+
 new_case candidate-tag-digest-mismatch
 export FAKE_CAND_IMAGE_VERSION=0.41.0
 run_remote --yes
@@ -342,7 +364,9 @@ new_case candidate-failed
 export FAKE_RENDER_CANDIDATE=fail
 run_remote --yes
 assert_rc 5; assert_out "VERDICT: CANDIDATE-FAILED"; [[ "$(running_role)" == incumbent ]] || fail "changed on candidate failure"
-ls "$F/state/failures/"*shadow-candidate.log >/dev/null || fail "no shadow log kept"; assert_clean_tmp; ok
+ls "$F/tmp/bosun-canary-failures/"*shadow-candidate.log >/dev/null || fail "no shadow log kept in RAM"
+if find "$F/state" -name '*shadow*' | command grep -q .; then fail "a rendered-log copy reached the array-backed state dir"; fi
+assert_clean_tmp; ok
 
 new_case candidate-empty-render
 export FAKE_RENDER_CANDIDATE=empty
@@ -403,6 +427,13 @@ run_remote --yes
 assert_rc 1; assert_out "VERDICT: ROLLED-BACK"; [[ "$(running_role)" == incumbent ]] || fail "incumbent not restored"
 grep -qF "image: \"ghcr.io/cameronsjo/bosun@$INC_DIGEST\"" "$F/state/rollback.override.yml" || fail "rollback override does not pin the incumbent digest"
 history_has "ROLLED-BACK"; ls "$F/state/failures/"*-candidate.log >/dev/null || fail "failure detail not kept"; ok
+
+# daemon-status is the candidate's own word. A candidate that reports a fresh
+# reconcile it never ran must not pass the watch.
+new_case rolled-back-unsupported-status-claim
+export FAKE_NO_COMPLETION_CANDIDATE=1
+run_remote --yes
+assert_rc 1; assert_out "no completed-pipeline line is in the log yet"; assert_out "VERDICT: ROLLED-BACK"; ok
 
 new_case rolled-back-stale-reconcile
 export FAKE_STATUS_CANDIDATE=stale

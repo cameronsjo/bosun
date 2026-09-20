@@ -63,7 +63,7 @@ PATH_RE='^/[A-Za-z0-9._/-]+$'
 
 DRY_RUN=0 ASSUME_YES=0 WATCH_TIMEOUT=900 EXPECT_CANDIDATE="" PROVENANCE_SKIPPED=0
 OPERATOR="${USER:-unknown}@$(hostname -s 2>/dev/null || echo nas)"
-RUN_DIR="" LOCKED=0 FINISHING=0 CANDIDATE="" MUTATING=0
+RUN_DIR="" LOCKED=0 FINISHING=0 CANDIDATE="" MUTATING=0 DOWNGRADE=0
 # The upgrade record: set at preflight, or loaded from the state file on resume.
 PROJECT="" INCUMBENT="" INCUMBENT_IMAGE="" INCUMBENT_VERSION="" ROLLBACK_TAG="" CANDIDATE_IMAGE=""
 AGE_SRC="" DEPLOY_SRC=""
@@ -161,13 +161,20 @@ inspect_live() {
 
 running_ref_for() {
   # The RepoDigest of image id $1, preferring the candidate's repository.
-  local want_repo="${CANDIDATE%%[:@]*}" digests
+  local want_repo="${CANDIDATE%%[:@]*}" digests line first=""
   digests="$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$1")" || return 1
-  grep -m1 "^${want_repo}@sha256:" <<<"$digests" || head -n1 <<<"$digests"
+  # Prefix match, not a regex: the repository name carries dots.
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    [[ -n "$first" ]] || first="$line"
+    if [[ "$line" == "${want_repo}@sha256:"* ]]; then printf '%s' "$line"; return 0; fi
+  done <<<"$digests"
+  [[ -n "$first" ]] || return 1
+  printf '%s' "$first"
 }
 
 image_id_of() { docker image inspect -f '{{.Id}}' "$1"; }
-version_of_image() { docker run --rm --entrypoint bosun "$1" --version 2>/dev/null | head -n1; }
+version_of_image() { probe_image "$1" --version 2>/dev/null | head -n1; }
 
 # save_phase writes the upgrade record with its phase; any extra key=value
 # arguments are appended. Returns non-zero on any write failure; every caller
@@ -234,9 +241,19 @@ prompt_yes() {
   [[ "$reply" == [yY] || "$reply" == [yY][eE][sS] ]]
 }
 
+# probe_image runs one short command in the candidate image. These two probes
+# are the first thing that executes an image the operator has not been asked
+# about yet, and on the drill path the image is unverified, so they get no
+# network and no capabilities.
+probe_image() {
+  local image="$1"; shift
+  docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
+    --entrypoint bosun "$image" "$@" 2>&1
+}
+
 has_no_alerts_flag() {
   local help
-  help="$(docker run --rm --entrypoint bosun "$1" reconcile --help 2>&1)" || return 1
+  help="$(probe_image "$1" reconcile --help)" || return 1
   [[ "$help" == *--no-alerts* ]]
 }
 
@@ -305,6 +322,7 @@ write_shadow() {
   env_yaml="$(jq -r --argjson allow "$ENV_ALLOWLIST" '
       .services.bosun.environment // {} | to_entries
       | map(select(.key as $k | $allow | index($k)))
+      | map(select(.value != null))
       | .[] | "      \(.key): \(.value | tostring | gsub("\\$"; "$$") | @json)"' <<<"$cfg")" || return 1
   mkdir -p "$dir/appdata-empty" || return 1
   cat > "$dir/shadow.yml" <<EOF
@@ -358,17 +376,19 @@ shadow_run() {
   printf '%s' "$commit"
 }
 
-# keep_shadow_log keeps log lines only; the rendered tree stays in RAM and is
-# deleted on exit. A template error can quote a rendered line, so the copy is
-# 0600 in the root-only state dir. That exposes nothing new: the same rendered
-# secrets already sit in plaintext under appdata once bosun deploys them.
+# keep_shadow_log keeps the tail of a failed render's log. A template or SOPS
+# error can quote a rendered value, so this copy stays under TMP_ROOT (RAM on
+# Unraid) rather than the state dir: /mnt/user is the array share, which the
+# appdata backup copies off the box. It outlives the run -- RUN_DIR does not --
+# and lasts until the NAS reboots.
 keep_shadow_log() {
-  local out="$STATE_DIR/failures/$RUN_ID-shadow-$1.log"
-  if mkdir -p "$STATE_DIR/failures" 2>/dev/null && tail -n 60 "$RUN_DIR/$1/run.log" > "$out" 2>/dev/null; then
+  local dir="$TMP_ROOT/bosun-canary-failures"
+  local out="$dir/$RUN_ID-shadow-$1.log"
+  if mkdir -p "$dir" 2>/dev/null && chmod 700 "$dir" 2>/dev/null && tail -n 60 "$RUN_DIR/$1/run.log" > "$out" 2>/dev/null; then
     chmod 600 "$out" 2>/dev/null || true
-    say "  last 60 log lines kept on the NAS: $out"
+    say "  last 60 log lines kept at $out (RAM: gone at reboot, copy it now if you need it)"
   else
-    say "  WARNING could not keep the shadow log in $STATE_DIR/failures"
+    say "  WARNING could not keep the shadow log under $dir"
   fi
 }
 
@@ -403,13 +423,20 @@ watch_reconcile() {
     # an empty field survives (a tab-IFS read would collapse it).
     ds="$(jq -r '"\(.last_reconcile // "")|\(.last_error // "")"' <<<"$ds" 2>/dev/null)" || ds="|"
     lr="${ds%%|*}"; le="${ds#*|}"
-    if [[ -n "$lr" ]] && lr_epoch="$(to_epoch "$lr")" && (( lr_epoch >= started_epoch )); then
+    if [[ -n "$lr" ]] && lr_epoch="$(to_epoch "$lr")" && (( lr_epoch >= started_epoch )) && (( lr_epoch <= $(date +%s) + 120 )); then
       if [[ -n "$le" ]]; then
         say "  FAIL first reconcile ended with an error (expected: last_error empty; error text is in the NAS failure log)"
         return 1
       fi
-      say "  PASS $label: reconcile finished at $lr with no error"
-      return 0
+      # daemon-status is the candidate's own word about the candidate. Require
+      # one independent corroborator from the log before believing it: the
+      # same completion line shadow_run greps for.
+      if [[ "$logs" != *'Reconcile pipeline completed'* ]]; then
+        say "  waiting: daemon-status reports a reconcile at $lr, but no completed-pipeline line is in the log yet"
+      else
+        say "  PASS $label: reconcile finished at $(printable "$lr"), logged as completed, with no error"
+        return 0
+      fi
     fi
     if (( $(date +%s) >= deadline )); then
       say "  FAIL no reconcile finished within ${WATCH_TIMEOUT}s (last_reconcile=${lr:-null})"; return 1
@@ -469,7 +496,7 @@ EOF
   local line running_image=""
   if line="$(inspect_live)"; then read -r running_image _ _ _ _ <<<"$line"; fi
   if [[ "$running_image" != "$INCUMBENT_IMAGE" ]]; then
-    say "  FAIL rolled-back container runs image '$running_image' (expected: $INCUMBENT_IMAGE, the incumbent recorded at preflight)"
+    say "  FAIL rolled-back container runs image '$(printable "$running_image")' (expected: $INCUMBENT_IMAGE, the incumbent recorded at preflight)"
     finish 3 HALF-CHANGED
   fi
   if watch_reconcile "$INCUMBENT_IMAGE" "incumbent after rollback"; then
@@ -521,7 +548,7 @@ stage_cutover() {
   if [[ -n "$tag" && "$version" != "bosun version $tag" ]]; then
     stage_rollback "candidate reports '$version' (expected: bosun version $tag)"
   fi
-  say "  PASS candidate is running ($version), started $started"
+  say "  PASS candidate is running ($(printable "$version")), started $started"
   # phase=cutover already makes a re-run resume, so this write is advisory.
   save_phase watching "started=$started" || say "  WARNING could not record phase=watching; a re-run still resumes from phase=cutover"
   stage_watch
@@ -588,6 +615,7 @@ main() {
   fi
   [[ -f "$LIVE" ]] || die CONFIG "no compose file at $LIVE" 64
   [[ ! -L "$STATE_DIR" ]] || die CONFIG "$STATE_DIR is a symlink; refusing it" 64
+  [[ ! -L "$COMPOSE_DIR" && ! -L "$LIVE" ]] || die CONFIG "$COMPOSE_DIR or its compose file is a symlink; refusing it" 64
 
   CANDIDATE="$(read_candidate)" || die CONFIG "could not read the $SERVICE image from $LIVE" 64
   if [[ "$print_candidate" -eq 1 ]]; then printf '%s\n' "$CANDIDATE"; exit 0; fi
@@ -666,7 +694,16 @@ main() {
   cand_version="$(version_of_image "$CANDIDATE")" || cand_version=""
   [[ -n "$cand_version" ]] || die CANDIDATE-FAILED "the candidate does not answer bosun --version" 5
   if [[ -n "$want_version" && "$cand_version" != "bosun version $want_version" ]]; then
-    die CANDIDATE-FAILED "the pin's tag says $want_version but the image reports '$cand_version'" 5
+    die CANDIDATE-FAILED "the pin's tag says $want_version but the image reports '$(printable "$cand_version")'" 5
+  fi
+  # A downgrade passes provenance like any other release. Name it, and never
+  # let --yes skip the prompt for one.
+  DOWNGRADE=0
+  if [[ -n "$want_version" && "$want_version" != "$INCUMBENT_VERSION" ]]; then
+    if [[ "$(printf '%s\n%s\n' "$INCUMBENT_VERSION" "$want_version" | sort -V | head -n1)" == "$want_version" ]]; then
+      DOWNGRADE=1
+      say "  WARNING this is a DOWNGRADE: $INCUMBENT_VERSION -> $want_version"
+    fi
   fi
   local cfg inc_flag inc_commit="" cand_commit
   cfg="$(live_config)" || die CONFIG "docker compose config failed for $LIVE" 64
@@ -721,7 +758,7 @@ main() {
   fi
 
   if [[ "$DRY_RUN" -eq 1 ]]; then finish 0 "$verdict (dry run, nothing changed)"; fi
-  if [[ "$verdict" != RENDER-IDENTICAL || "$ASSUME_YES" -eq 0 ]]; then
+  if [[ "$verdict" != RENDER-IDENTICAL || "$ASSUME_YES" -eq 0 || "$DOWNGRADE" -eq 1 ]]; then
     prompt_yes "Cut over bosun to $CANDIDATE?" || finish 0 "DECLINED at $verdict (nothing changed)"
   fi
   stage_cutover "$started"
