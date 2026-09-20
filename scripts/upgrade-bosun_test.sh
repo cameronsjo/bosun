@@ -221,6 +221,13 @@ mkdir -p "$F/state/lock"; printf '999999 %s\n' "$(cat /proc/sys/kernel/random/bo
 run_remote --dry-run
 assert_rc 0; assert_out "reclaiming a stale lock"; [[ ! -d "$F/state/lock" ]] || fail "reclaimed lock not released"; ok
 
+# The reboot case: the pid may well be alive again as some other process, so
+# liveness alone must not decide. An owner from an earlier boot is stale.
+new_case lock-stale-after-reboot
+mkdir -p "$F/state/lock"; printf '%s %s\n' "$$" "boot-from-before-the-reboot" > "$F/state/lock/owner"
+run_remote --dry-run
+assert_rc 0; assert_out "belongs to an earlier boot"; ok
+
 new_case lock-without-owner-is-live
 mkdir -p "$F/state/lock"
 run_remote --dry-run

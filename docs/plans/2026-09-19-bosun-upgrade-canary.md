@@ -48,7 +48,7 @@ Scope chosen by Cameron: pin the image, add a shadow render check, and watch aft
 
 ## Architecture
 
-```
+```text
 homelab PR: pin tag@digest ──merge──▶ incumbent bosun syncs appdata/bosun/docker-compose.yml to NAS
                                          (file changes; container untouched; Watchtower opted out)
 Mac  scripts/upgrade-bosun.sh  (caffeinate -i; tee ~/Library/Logs/bosun-upgrade/<UTC>.log)

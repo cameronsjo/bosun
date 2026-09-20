@@ -42,7 +42,9 @@ IMAGE_REPO="ghcr.io/cameronsjo/bosun"
 SIGNER_WORKFLOW="cameronsjo/bosun/.github/workflows/release-please.yml"
 REF_RE='^[a-z0-9][a-z0-9./_-]*(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$'
 LOG_DIR="${BOSUN_UPGRADE_LOG_DIR:-$HOME/Library/Logs/bosun-upgrade}"
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# readlink -f keeps a symlinked invocation working; macOS before 12.3 has no
+# -f, and falling back to the raw path beats resolving to the current dir.
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")" && pwd -P)"
 REMOTE_SCRIPT="$SCRIPT_DIR/upgrade-bosun-remote.sh"
 
 DRY_RUN=0 ASSUME_YES=0 WATCH_TIMEOUT=900 SKIP_PROVENANCE=0
@@ -137,7 +139,10 @@ main() {
   # One session with a TTY for the cutover prompt. Keepalives notice a dead
   # link within about a minute instead of the TCP timeout.
   rc=0
-  ssh -t -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$HOST" "bash $REMOTE_PATH$(printf ' %q' "${args[@]}")" || rc=$?
+  # BatchMode too: without it a lost key waits on a password prompt that
+  # ConnectTimeout does not bound. -t still gives the remote its own TTY.
+  ssh -t -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+    "$HOST" "bash $REMOTE_PATH$(printf ' %q' "${args[@]}")" || rc=$?
   if [[ "$rc" -eq 255 ]]; then
     printf '\nThe ssh connection was lost. The NAS side may still be running; it finishes on its own.\n'
     printf 'Re-run this script: while that run is alive it reports LOCKED with its pid; once it exits, a re-run\n'

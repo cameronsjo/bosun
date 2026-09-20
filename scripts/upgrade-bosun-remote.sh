@@ -260,9 +260,12 @@ acquire_lock() {
   if ! mkdir "$LOCK" 2>/dev/null; then
     owner="$(cat "$LOCK/owner" 2>/dev/null || true)"
     read -r owner_pid owner_boot <<<"$owner" || true
-    # Only a lock whose owner is known and provably gone is stale. A lock with
-    # no owner file yet is a run between its mkdir and its owner write: live.
-    if ! [[ "$owner_pid" =~ ^[0-9]+$ && "$owner_boot" == "$boot" ]] || kill -0 "$owner_pid" 2>/dev/null; then
+    # Stale means the owner is known and provably gone: either it belongs to
+    # an earlier boot (its pid cannot still be that run) or it is this boot and
+    # the pid is gone. A lock with no owner file yet is a run between its mkdir
+    # and its owner write, so it counts as live.
+    if ! [[ "$owner_pid" =~ ^[0-9]+$ ]] ||
+      { [[ "$owner_boot" == "$boot" ]] && kill -0 "$owner_pid" 2>/dev/null; }; then
       say "Another upgrade run (pid ${owner_pid:-unknown}) holds $LOCK."
       say "A live run finishes on its own; follow it in $HISTORY. Re-run after it exits to resume anything it left."
       say "If no run is active and the owner is unknown, remove $LOCK by hand."
@@ -271,7 +274,11 @@ acquire_lock() {
     # Rename the stale lock away: the rename is atomic, so of two racing runs
     # only one moves it. Then confirm we moved the dead owner's lock and not a
     # fresh one another run published in between; if not, put it back.
-    say "  reclaiming a stale lock (owner pid $owner_pid is gone)"
+    if [[ "$owner_boot" == "$boot" ]]; then
+      say "  reclaiming a stale lock (owner pid $owner_pid is gone)"
+    else
+      say "  reclaiming a stale lock (owner pid $owner_pid belongs to an earlier boot)"
+    fi
     rm -rf -- "$LOCK.stale.$$" 2>/dev/null || true
     mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null || { printf '\nVERDICT: LOCKED (exit 75)\n'; exit 75; }
     moved="$(cat "$LOCK.stale.$$/owner" 2>/dev/null || true)"
