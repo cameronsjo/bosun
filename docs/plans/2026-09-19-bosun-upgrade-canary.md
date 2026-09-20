@@ -6,7 +6,7 @@ harness: "claude-code 2.1.277"
 machine: "cf6e768835c7"
 approved_session_id: "a9d4a39f-36de-4a08-82d7-a71eddc33092"
 status: in-progress
-next: "Merge homelab#770 and run its host checks; drive spec PR #673 to ready-to-build, then implement Task 2"
+next: "Cameron: review and merge bosun#678 and #677, merge homelab#770, then run its host checks — Verification steps 3-6 are all that remain"
 branch: plan/bosun-upgrade-canary
 pr: 672
 updated: 2026-09-19
@@ -87,7 +87,7 @@ NAS  upgrade-bosun-remote.sh   (mkdir lock + state file in /mnt/user/appdata/bos
 - [x] Task 3 — file the `validate --full` state-write issue (#674)
 - [x] Task 4 — upgrade scripts
 - [x] Task 5 — script tests + docs
-- [ ] Task 6 — Opus security review
+- [x] Task 6 — Opus security review (1 Critical + 1 Important fixed in bosun#678; 1 filed as bosun#680)
 
 ### Task 1 — Stop the nightly blind upgrade, pin the image (homelab PR; ships alone)
 
@@ -215,6 +215,10 @@ Panel: plan-reviewer (both lenses), red-team-reviewer, operability-reviewer, sec
   - Every state-dir write reports a verdict instead of a bare exit 1.
   - CI's shellcheck (0.9 on Ubuntu) needed SC2317 beside SC2329 on the trap functions; both versions are now clean.
 - **Task 2 scope.** The CLI misses about 20 daemon env reads, not just `BOSUN_INFRA_DIR`. As planned, it fixes only `BOSUN_INFRA_DIR`. The parity test classifies every `reconcile.Config` field, and the remaining gaps go to one follow-up issue (spec task 1.5).
+
+- **Task 6 ran against merged main and its findings shipped** (bosun#678). The one blocker was that `reconcile --no-alerts` does not exist yet, which fails closed at stage 2 (bosun#677 adds it). Applied: the watch requires the daemon's own end-of-cycle log line beside `daemon-status`, failure detail (both kinds) moved to RAM, the image probes run with no network and no capabilities, candidate output is made printable, a downgrade always prompts, and a symlinked compose dir is refused.
+- **The post-merge Task 6 review found one Critical, and the plan's env allowlist was the thing it broke.** The allowlist filters keys, but its values come from `docker compose config`, which has already expanded every `${VAR}` from the compose project's `.env` — the file holding the very secrets the allowlist exists to drop. A live compose file that writes `${DISCORD_WEBHOOK_URL}` into an allowlisted variable therefore carried it into a shadow container that has a network, on `--dry-run` alone, with both roles rendering from the same config so the verdict read `RENDER-IDENTICAL`. The Global Constraint "a shadow container gets only what a render needs" was key-scoped and needed to be value-scoped; `assert_env_allowlist_is_tight` now refuses before anything renders. Two more from the same review: a fixed `/tmp` failures directory a local user could pre-create and own, and a downgrade guard that used `sort -V`, which orders a prerelease after its own release and so let `--yes` skip the prompt on a stable-to-prerelease step. The third finding is filed as bosun#680.
+- **The first corroborator choice was wrong and a review caught it.** Requiring `Reconcile pipeline completed` would have rolled back every healthy upgrade whose commit had not moved: a cycle that skips still ends and still sets `last_reconcile`, but never logs a completed *pipeline*. The daemon's `Reconciliation cycle completed` is the line that fires on every cycle.
 
 ## Learnings
 

@@ -256,7 +256,13 @@ docker logs --since 1h bosun | grep '"url":"/some/unexpected/path"'
 | 75 | transient / `LOCKED` / `CONNECTION-LOST` / `INTERRUPTED-BEFORE-CUTOVER` | Pull failed, repo moved mid-render, a live run holds the lock, ssh dropped, or a run stopped before the old container was replaced | Re-run. `LOCKED` names the live run's pid: after a dropped connection the NAS side keeps going and finishes on its own, so wait for it. A lock whose owner is gone (killed, or the NAS rebooted) is reclaimed automatically, and the re-run resumes any recorded cutover or rollback |
 | 129/130/143 | `INTERRUPTED by HUP/INT/TERM` | The remote script got a signal | Re-run the wrapper; a recorded cutover or rollback resumes |
 
-A history line that ends in `[provenance skipped: drill]` came from a `--skip-provenance-for-drill` run.
+A history line that ends in `[provenance skipped: drill]` came from a `--skip-provenance-for-drill` run. One ending in `[provenance: not checked by wrapper]` came from running the NAS script directly, which skips the Mac-side provenance check.
+
+**Where failure detail lands.** Both kinds — a failed shadow render's last 60 log lines, and the daemon-side detail after a failed watch (`daemon-status`, restart count, the last 40 log lines) — go to `/tmp/bosun-canary-failures/`. That is RAM on Unraid, so it is gone at reboot. Copy a file elsewhere yourself if you need it to survive. The reason is that either can quote a rendered secret: a template error carries the value it failed on, and the daemon runs the same template pipeline the shadow does. `/mnt/user` is array-backed and copied by the appdata backup, so it is the wrong home for them.
+
+**After a hard kill.** The script cleans up on exit and on HUP/INT/TERM, but not on `SIGKILL`. If a run is killed outright, remove the rendered tree by hand: `rm -rf /tmp/bosun-canary.*`. The next run's preflight also sweeps it.
+
+**Downgrades.** A older release is a valid, signed image, so provenance accepts it. The script prints `WARNING this is a DOWNGRADE` and always asks, even with `--yes`.
 
 ## Debug Mode
 

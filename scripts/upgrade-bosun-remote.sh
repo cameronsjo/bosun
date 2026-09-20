@@ -29,7 +29,10 @@
 #
 # Secrets: shadow runs render decrypted secrets into a 0700 dir under /tmp
 # (RAM on Unraid), removed on exit. Only file names, counts and verdicts reach
-# stdout; failure detail goes to the NAS state directory.
+# stdout. Failure detail (shadow log tails and daemon logs, either of which can
+# quote a rendered value in a template error) is kept under /tmp too, in a dir
+# that outlives the run and is gone at reboot -- not on the array share, which
+# the appdata backup copies off the box.
 
 set -euo pipefail
 
@@ -53,7 +56,7 @@ RUN_ID="$(date -u +%Y%m%dt%H%M%Sz)-$$"
 # Environment a shadow render may see. Everything else in the live service's
 # environment -- alert webhooks, tokens, Sentry, OTel, the webhook secret -- is
 # dropped. The container also gets no docker socket and no view of appdata
-# (whose bosun/.env holds those secrets); see write_override.
+# (whose bosun/.env holds those secrets); see write_shadow.
 ENV_ALLOWLIST='["TZ","BOSUN_REPO_URL","REPO_URL","BOSUN_REPO_BRANCH","REPO_BRANCH","BOSUN_INFRA_DIR","BOSUN_TARGETS","BOSUN_SECRETS_FILE","SECRETS_FILES","SOPS_AGE_KEY_FILE","BOSUN_SSH_KEY","BOSUN_SSH_KNOWN_HOSTS","BOSUN_GIT_FETCH_DEPTH","BOSUN_DEPLOY_PATHS","BOSUN_DEPLOY_SYNC_PATHS","BOSUN_DEPLOY_SYNC_EXCLUDE","BOSUN_TEMPLATE_INCLUDE_DIR"]'
 # Kept byte-identical with upgrade-bosun.sh; the test suite checks it.
 REF_RE='^[a-z0-9][a-z0-9./_-]*(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$'
@@ -63,7 +66,9 @@ PATH_RE='^/[A-Za-z0-9._/-]+$'
 
 DRY_RUN=0 ASSUME_YES=0 WATCH_TIMEOUT=900 EXPECT_CANDIDATE="" PROVENANCE_SKIPPED=0
 OPERATOR="${USER:-unknown}@$(hostname -s 2>/dev/null || echo nas)"
-RUN_DIR="" LOCKED=0 FINISHING=0 CANDIDATE="" MUTATING=0
+RUN_DIR="" LOCKED=0 FINISHING=0 CANDIDATE="" MUTATING=0 DOWNGRADE=0
+# One failures directory per run, created on first use by failures_dir.
+FAILURES_DIR=""
 # The upgrade record: set at preflight, or loaded from the state file on resume.
 PROJECT="" INCUMBENT="" INCUMBENT_IMAGE="" INCUMBENT_VERSION="" ROLLBACK_TAG="" CANDIDATE_IMAGE=""
 AGE_SRC="" DEPLOY_SRC=""
@@ -140,6 +145,34 @@ release_version() {
   tag="${tag#v}"
   if [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then printf '%s' "$tag"; fi
 }
+# needs_downgrade_prompt answers the only version question this script asks:
+# may --yes move from $2 to $1 without stopping? It is not a general comparator,
+# and it fails closed -- an undecidable pair prompts.
+#
+# sort -V orders the X.Y.Z cores correctly but puts a prerelease after its own
+# release, which is backwards, so the prerelease part is decided here. Two
+# different prereleases of the same core are not decided at all: the SemVer rule
+# compares dot-separated identifiers with numeric and ASCII parts ordered
+# differently, sort -V disagrees with it (it puts alpha-1 before alpha.1), and a
+# hand-written comparator is more ways to be wrong than this is worth. They
+# prompt instead. The cost is one keystroke on an rc-to-rc move; the cost of
+# guessing is a silent downgrade, which is what this guard exists to stop.
+needs_downgrade_prompt() {
+  local a="${1%%+*}" b="${2%%+*}"   # build metadata carries no precedence
+  local a_core="${a%%-*}" b_core="${b%%-*}" a_pre="" b_pre=""
+  if [[ "$a" == *-* ]]; then a_pre="${a#*-}"; fi
+  if [[ "$b" == *-* ]]; then b_pre="${b#*-}"; fi
+  if [[ "$a_core" != "$b_core" ]]; then
+    [[ "$(printf '%s\n%s\n' "$a_core" "$b_core" | sort -V | head -n1)" == "$a_core" ]]
+    return
+  fi
+  # Same core: a release outranks every prerelease of it.
+  if [[ -z "$a_pre" ]]; then return 1; fi
+  if [[ -z "$b_pre" ]]; then return 0; fi
+  # 2, not 0: it prompts either way, but the operator is told which it is.
+  if [[ "$a_pre" != "$b_pre" ]]; then return 2; fi
+  return 1
+}
 to_epoch() {
   [[ -n "$1" ]] || return 1
   date -u -d "$1" +%s
@@ -161,13 +194,20 @@ inspect_live() {
 
 running_ref_for() {
   # The RepoDigest of image id $1, preferring the candidate's repository.
-  local want_repo="${CANDIDATE%%[:@]*}" digests
+  local want_repo="${CANDIDATE%%[:@]*}" digests line first=""
   digests="$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$1")" || return 1
-  grep -m1 "^${want_repo}@sha256:" <<<"$digests" || head -n1 <<<"$digests"
+  # Prefix match, not a regex: the repository name carries dots.
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    [[ -n "$first" ]] || first="$line"
+    if [[ "$line" == "${want_repo}@sha256:"* ]]; then printf '%s' "$line"; return 0; fi
+  done <<<"$digests"
+  [[ -n "$first" ]] || return 1
+  printf '%s' "$first"
 }
 
 image_id_of() { docker image inspect -f '{{.Id}}' "$1"; }
-version_of_image() { docker run --rm --entrypoint bosun "$1" --version 2>/dev/null | head -n1; }
+version_of_image() { probe_image "$1" --version 2>/dev/null | head -n1; }
 
 # save_phase writes the upgrade record with its phase; any extra key=value
 # arguments are appended. Returns non-zero on any write failure; every caller
@@ -210,18 +250,35 @@ load_state() {
     [[ "$STATE_CANDIDATE" =~ $REF_RE ]]
 }
 
+# failures_dir prints the RAM-backed directory failure detail is kept in, or
+# fails. One fresh directory per run, and the name is unguessable: /tmp is
+# shared and this runs as root, so a fixed name lets any local user pre-create
+# the directory, keep it, and read files that can quote a rendered secret.
+# mktemp -d refuses a path that already exists and creates ours 0700.
+failures_dir() {
+  if [[ -n "$FAILURES_DIR" ]]; then printf '%s' "$FAILURES_DIR"; return 0; fi
+  local dir
+  dir="$(mktemp -d "$TMP_ROOT/bosun-canary-failures.XXXXXX" 2>/dev/null)" || return 1
+  chmod 700 "$dir" 2>/dev/null || return 1
+  FAILURES_DIR="$dir"
+  printf '%s' "$dir"
+}
+
 # record_failure is best-effort: losing the detail must never block a rollback.
+# It lands in RAM with the shadow logs: the daemon's own log can quote a
+# rendered value in a template error, which is exactly when this runs.
 record_failure() {
-  local label="$1"
-  local out="$STATE_DIR/failures/$RUN_ID-$label.log"
-  if mkdir -p "$STATE_DIR/failures" 2>/dev/null && {
+  local label="$1" dir
+  dir="$(failures_dir)" || { say "  WARNING could not write failure detail under $TMP_ROOT"; return 0; }
+  local out="$dir/$RUN_ID-$label.log"
+  if {
     printf '== %s\n' "$label"
     docker exec "$CONTAINER" bosun daemon-status --json 2>&1 || true
     docker inspect -f 'restarts={{.RestartCount}} status={{.State.Status}}' "$CONTAINER" 2>&1 || true
     docker logs --tail 40 "$CONTAINER" 2>&1 || true
   } > "$out" 2>/dev/null; then
     chmod 600 "$out" 2>/dev/null || true
-    say "  failure detail kept on the NAS: $out"
+    say "  failure detail kept at $out (RAM: gone at reboot, copy it now if you need it)"
   else
     say "  WARNING could not write failure detail to $out"
   fi
@@ -234,9 +291,21 @@ prompt_yes() {
   [[ "$reply" == [yY] || "$reply" == [yY][eE][sS] ]]
 }
 
+# probe_image runs one short command in the candidate image. These two probes
+# are the first thing that executes an image the operator has not been asked
+# about yet, and on the drill path the image is unverified, so they get no
+# network and no capabilities.
+probe_image() {
+  local image="$1"; shift
+  # No 2>&1 here: each caller decides. Folding stderr in would let a docker
+  # warning become the version string.
+  docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
+    --entrypoint bosun "$image" "$@"
+}
+
 has_no_alerts_flag() {
   local help
-  help="$(docker run --rm --entrypoint bosun "$1" reconcile --help 2>&1)" || return 1
+  help="$(probe_image "$1" reconcile --help 2>&1)" || return 1
   [[ "$help" == *--no-alerts* ]]
 }
 
@@ -293,11 +362,36 @@ acquire_lock() {
   printf '%s %s\n' "$$" "$boot" > "$LOCK/owner" 2>/dev/null || true
 }
 
+# assert_env_allowlist_is_tight refuses a live config where a dropped value
+# appears inside a kept one. The allowlist filters keys, but the values come
+# from `docker compose config`, which has already expanded every ${VAR} from
+# the project's .env -- the file holding the webhooks and tokens the allowlist
+# exists to drop. A compose file that writes ${DISCORD_WEBHOOK_URL} into an
+# allowlisted variable therefore carries the secret into the shadow, which has
+# a network. That is worth refusing whether it was a mistake or deliberate.
+# Only values of 12 characters or more are compared: a secret is long, and
+# matching short ones ("info", "99") would block honest configs.
+assert_env_allowlist_is_tight() {
+  local leaks
+  leaks="$(jq -r --argjson allow "$ENV_ALLOWLIST" '
+      .services.bosun.environment // {} | to_entries | map(select(.value != null))
+      | (map(select(.key as $k | $allow | index($k)))) as $kept
+      | (map(select(.key as $k | ($allow | index($k)) | not))
+         | map(select((.value | tostring | length) >= 12))) as $dropped
+      | [ $kept[] as $k | $dropped[] as $d
+          | select(($k.value | tostring) | contains($d.value | tostring))
+          | "\($d.key) inside \($k.key)" ] | unique | .[]' <<<"$1")" ||
+    die CONFIG "could not read the live environment out of $LIVE" 64
+  [[ -z "$leaks" ]] ||
+    die CONFIG "the live config expands a dropped variable into an allowlisted one, so the shadow would carry it: $(printable "$(tr '\n' ' ' <<<"$leaks")")" 64
+}
+
 # write_shadow emits a standalone compose file for one shadow role. It is an
 # allowlist: the service is built from scratch, never merged with the live
 # one, so nothing the live service carries (the docker socket, appdata,
 # capabilities, devices, cgroup rules, labels) can reach the shadow. Only
 # allowlisted env values and the two key paths are read from the live config.
+# The keys are filtered here; assert_env_allowlist_is_tight checks the values.
 # /mnt/appdata is an empty directory: deploy-mode detection only stats it, and
 # the real appdata holds bosun/.env with the secrets the env allowlist drops.
 write_shadow() {
@@ -305,6 +399,7 @@ write_shadow() {
   env_yaml="$(jq -r --argjson allow "$ENV_ALLOWLIST" '
       .services.bosun.environment // {} | to_entries
       | map(select(.key as $k | $allow | index($k)))
+      | map(select(.value != null))
       | .[] | "      \(.key): \(.value | tostring | gsub("\\$"; "$$") | @json)"' <<<"$cfg")" || return 1
   mkdir -p "$dir/appdata-empty" || return 1
   cat > "$dir/shadow.yml" <<EOF
@@ -358,17 +453,20 @@ shadow_run() {
   printf '%s' "$commit"
 }
 
-# keep_shadow_log keeps log lines only; the rendered tree stays in RAM and is
-# deleted on exit. A template error can quote a rendered line, so the copy is
-# 0600 in the root-only state dir. That exposes nothing new: the same rendered
-# secrets already sit in plaintext under appdata once bosun deploys them.
+# keep_shadow_log keeps the tail of a failed render's log. A template or SOPS
+# error can quote a rendered value, so this copy stays under TMP_ROOT (RAM on
+# Unraid) rather than the state dir: /mnt/user is the array share, which the
+# appdata backup copies off the box. It outlives the run -- RUN_DIR does not --
+# and lasts until the NAS reboots.
 keep_shadow_log() {
-  local out="$STATE_DIR/failures/$RUN_ID-shadow-$1.log"
-  if mkdir -p "$STATE_DIR/failures" 2>/dev/null && tail -n 60 "$RUN_DIR/$1/run.log" > "$out" 2>/dev/null; then
+  local dir out
+  dir="$(failures_dir)" || { say "  WARNING could not keep the shadow log under $TMP_ROOT"; return 0; }
+  out="$dir/$RUN_ID-shadow-$1.log"
+  if tail -n 60 "$RUN_DIR/$1/run.log" > "$out" 2>/dev/null; then
     chmod 600 "$out" 2>/dev/null || true
-    say "  last 60 log lines kept on the NAS: $out"
+    say "  last 60 log lines kept at $out (RAM: gone at reboot, copy it now if you need it)"
   else
-    say "  WARNING could not keep the shadow log in $STATE_DIR/failures"
+    say "  WARNING could not keep the shadow log under $dir"
   fi
 }
 
@@ -377,6 +475,7 @@ keep_shadow_log() {
 # while the container kept running image $1 with no restart and no panic.
 watch_reconcile() {
   local expect_image="$1" label="$2" started started_epoch deadline line image status restarts lr le lr_epoch ds logs
+  local waiting_said=0
   line="$(inspect_live)" || { say "  FAIL container $CONTAINER is gone"; return 1; }
   read -r _ _ started _ _ <<<"$line"
   started_epoch="$(to_epoch "$started")" || { say "  FAIL could not read StartedAt"; return 1; }
@@ -403,16 +502,30 @@ watch_reconcile() {
     # an empty field survives (a tab-IFS read would collapse it).
     ds="$(jq -r '"\(.last_reconcile // "")|\(.last_error // "")"' <<<"$ds" 2>/dev/null)" || ds="|"
     lr="${ds%%|*}"; le="${ds#*|}"
-    if [[ -n "$lr" ]] && lr_epoch="$(to_epoch "$lr")" && (( lr_epoch >= started_epoch )); then
+    if [[ -n "$lr" ]] && lr_epoch="$(to_epoch "$lr")" && (( lr_epoch >= started_epoch )) && (( lr_epoch <= $(date +%s) + 120 )); then
       if [[ -n "$le" ]]; then
         say "  FAIL first reconcile ended with an error (expected: last_error empty; error text is in the NAS failure log)"
         return 1
       fi
-      say "  PASS $label: reconcile finished at $lr with no error"
-      return 0
+      # daemon-status is the candidate's own word about the candidate.
+      # Require one independent corroborator from the log: the daemon's own
+      # end-of-cycle line, which it writes next to the timestamp it just
+      # reported. It covers a cycle that skipped (already deployed, or no
+      # deploy-relevant changes) -- those never log a completed PIPELINE, and
+      # requiring that line instead would roll back every healthy upgrade
+      # whose commit had not moved.
+      if [[ "$logs" != *'Reconciliation cycle completed'* ]]; then
+        if [[ "$waiting_said" -eq 0 ]]; then
+          waiting_said=1
+          say "  waiting: daemon-status reports a reconcile at $(printable "$lr"), with no end-of-cycle line in the log yet"
+        fi
+      else
+        say "  PASS $label: reconcile finished at $(printable "$lr"), logged as a completed cycle, with no error"
+        return 0
+      fi
     fi
     if (( $(date +%s) >= deadline )); then
-      say "  FAIL no reconcile finished within ${WATCH_TIMEOUT}s (last_reconcile=${lr:-null})"; return 1
+      say "  FAIL no reconcile finished within ${WATCH_TIMEOUT}s (last_reconcile=$(printable "${lr:-null}"))"; return 1
     fi
     sleep "$POLL_SECONDS"
   done
@@ -469,7 +582,7 @@ EOF
   local line running_image=""
   if line="$(inspect_live)"; then read -r running_image _ _ _ _ <<<"$line"; fi
   if [[ "$running_image" != "$INCUMBENT_IMAGE" ]]; then
-    say "  FAIL rolled-back container runs image '$running_image' (expected: $INCUMBENT_IMAGE, the incumbent recorded at preflight)"
+    say "  FAIL rolled-back container runs image '$(printable "$running_image")' (expected: $INCUMBENT_IMAGE, the incumbent recorded at preflight)"
     finish 3 HALF-CHANGED
   fi
   if watch_reconcile "$INCUMBENT_IMAGE" "incumbent after rollback"; then
@@ -521,7 +634,7 @@ stage_cutover() {
   if [[ -n "$tag" && "$version" != "bosun version $tag" ]]; then
     stage_rollback "candidate reports '$version' (expected: bosun version $tag)"
   fi
-  say "  PASS candidate is running ($version), started $started"
+  say "  PASS candidate is running ($(printable "$version")), started $started"
   # phase=cutover already makes a re-run resume, so this write is advisory.
   save_phase watching "started=$started" || say "  WARNING could not record phase=watching; a re-run still resumes from phase=cutover"
   stage_watch
@@ -588,6 +701,7 @@ main() {
   fi
   [[ -f "$LIVE" ]] || die CONFIG "no compose file at $LIVE" 64
   [[ ! -L "$STATE_DIR" ]] || die CONFIG "$STATE_DIR is a symlink; refusing it" 64
+  [[ ! -L "$COMPOSE_DIR" && ! -L "$LIVE" ]] || die CONFIG "$COMPOSE_DIR or its compose file is a symlink; refusing it" 64
 
   CANDIDATE="$(read_candidate)" || die CONFIG "could not read the $SERVICE image from $LIVE" 64
   if [[ "$print_candidate" -eq 1 ]]; then printf '%s\n' "$CANDIDATE"; exit 0; fi
@@ -666,10 +780,28 @@ main() {
   cand_version="$(version_of_image "$CANDIDATE")" || cand_version=""
   [[ -n "$cand_version" ]] || die CANDIDATE-FAILED "the candidate does not answer bosun --version" 5
   if [[ -n "$want_version" && "$cand_version" != "bosun version $want_version" ]]; then
-    die CANDIDATE-FAILED "the pin's tag says $want_version but the image reports '$cand_version'" 5
+    die CANDIDATE-FAILED "the pin's tag says $want_version but the image reports '$(printable "$cand_version")'" 5
+  fi
+  # A downgrade passes provenance like any other release. Name it, and never
+  # let --yes skip the prompt for one.
+  # Keyed on what the image reports, not on the pin's tag: a digest-only or
+  # partial tag leaves want_version empty, and a downgrade must still prompt.
+  DOWNGRADE=0
+  local running_version="${cand_version#bosun version }"
+  if [[ "$running_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ && "$running_version" != "$INCUMBENT_VERSION" ]]; then
+    local verdict=0
+    needs_downgrade_prompt "$running_version" "$INCUMBENT_VERSION" || verdict=$?
+    if [[ "$verdict" -eq 0 ]]; then
+      DOWNGRADE=1
+      say "  WARNING this is a DOWNGRADE: $INCUMBENT_VERSION -> $(printable "$running_version")"
+    elif [[ "$verdict" -eq 2 ]]; then
+      DOWNGRADE=1
+      say "  WARNING two prereleases of the same version, order undecided: $INCUMBENT_VERSION -> $(printable "$running_version")"
+    fi
   fi
   local cfg inc_flag inc_commit="" cand_commit
   cfg="$(live_config)" || die CONFIG "docker compose config failed for $LIVE" 64
+  assert_env_allowlist_is_tight "$cfg"
   AGE_SRC="$(mount_source "$cfg" /config/age-key.txt)" || AGE_SRC=""
   DEPLOY_SRC="$(mount_source "$cfg" /config/deploy-key)" || DEPLOY_SRC=""
   if [[ -z "$AGE_SRC" || -z "$DEPLOY_SRC" ]]; then
@@ -721,7 +853,7 @@ main() {
   fi
 
   if [[ "$DRY_RUN" -eq 1 ]]; then finish 0 "$verdict (dry run, nothing changed)"; fi
-  if [[ "$verdict" != RENDER-IDENTICAL || "$ASSUME_YES" -eq 0 ]]; then
+  if [[ "$verdict" != RENDER-IDENTICAL || "$ASSUME_YES" -eq 0 || "$DOWNGRADE" -eq 1 ]]; then
     prompt_yes "Cut over bosun to $CANDIDATE?" || finish 0 "DECLINED at $verdict (nothing changed)"
   fi
   stage_cutover "$started"

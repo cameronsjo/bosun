@@ -112,7 +112,7 @@ case "$1" in
   exec)
     r="$(cat "$F/running_role")"
     if [[ "$*" == *--version* ]]; then
-      [[ "$r" == candidate ]] && echo "bosun version ${FAKE_CAND_VERSION:-0.43.0}" || echo "bosun version 0.42.3"
+      [[ "$r" == candidate ]] && echo "bosun version ${FAKE_CAND_VERSION:-0.43.0}" || echo "bosun version ${FAKE_INC_VERSION:-0.42.3}"
     else
       var="FAKE_STATUS_${r^^}"; e="$(/bin/date +%s)"
       case "${!var:-ok}" in
@@ -126,12 +126,31 @@ case "$1" in
   logs)
     [[ "${FAKE_LOGS_FAIL:-0}" == 1 ]] && exit 1
     r="$(cat "$F/running_role")"; var="FAKE_PANIC_${r^^}"
-    [[ "${!var:-0}" == 1 ]] && echo "panic: runtime error" ; true ;;
+    [[ "${!var:-0}" == 1 ]] && echo "panic: runtime error"
+    # What the daemon logged for its last cycle. "deployed" is a full deploy;
+    # "skipped" is the common case where the commit has not moved, which logs
+    # an end-of-cycle line but no completed PIPELINE; "none" is a daemon that
+    # reports a reconcile in daemon-status without logging one at all.
+    var="FAKE_CYCLE_LOG_${r^^}"
+    case "${!var:-deployed}" in
+      deployed)
+        printf '{"level":"info","component":"reconcile","message":"Reconcile pipeline completed"}\n'
+        printf '{"level":"info","success":true,"message":"Reconciliation cycle completed"}\n' ;;
+      skipped)
+        printf '{"level":"info","component":"reconcile","message":"No deploy-relevant files changed, skipping reconciliation"}\n'
+        printf '{"level":"info","success":true,"message":"Reconciliation cycle completed"}\n' ;;
+      none) ;;
+    esac
+    true ;;
   run)
-    # docker run --rm --entrypoint bosun IMAGE <args...>
-    r="$(role_of_ref "$5")"
-    if [[ "$6" == --version ]]; then
-      [[ "$r" == candidate ]] && echo "bosun version ${FAKE_CAND_IMAGE_VERSION:-0.43.0}" || echo "bosun version 0.42.3"
+    # docker run [flags...] --entrypoint bosun IMAGE <args...>
+    shift; img="" ; while [[ $# -gt 0 ]]; do
+      if [[ "$1" == --entrypoint ]]; then img="$3"; shift 3; break; fi
+      shift
+    done
+    r="$(role_of_ref "$img")"
+    if [[ "$1" == --version ]]; then
+      [[ "$r" == candidate ]] && echo "bosun version ${FAKE_CAND_IMAGE_VERSION:-0.43.0}" || echo "bosun version ${FAKE_INC_VERSION:-0.42.3}"
       exit 0
     fi
     var="FAKE_NOALERTS_${r^^}"
@@ -191,7 +210,8 @@ write_live_lock() {
 
 history_has() { grep -qF -- "$1" "$F/state/history.log" || fail "history lacks: $1"; }
 assert_clean_tmp() {
-  local left; left="$(find "$F/tmp" -mindepth 1 -maxdepth 1 | head -n1)"
+  # The kept-failure dir is deliberate; a rendered tree is not.
+  local left; left="$(find "$F/tmp" -mindepth 1 -maxdepth 1 -name 'bosun-canary.*' | head -n1)"
   [[ -z "$left" ]] || fail "shadow tmp dir left behind: $left"
   [[ ! -d "$F/state/lock" ]] || fail "lock left behind"
   [[ ! -f "$F/state/cutover.override.yml" ]] || fail "cutover override left behind"
@@ -302,6 +322,48 @@ else
   printf 'skip %s (no docker compose on this machine)\n' "$CASE"
 fi
 
+# The two probes run an image the operator has not been asked about yet, and on
+# the drill path that image is unverified. They need neither.
+new_case probes-are-unprivileged
+run_remote --dry-run
+assert_rc 0
+while IFS= read -r probe; do
+  for flag in '--network none' '--cap-drop ALL' '--security-opt no-new-privileges'; do
+    case "$probe" in *"$flag"*) ;; *) fail "probe lacks $flag: $probe" ;; esac
+  done
+done < <(command grep -E '^run .*--entrypoint bosun' "$F/calls")
+command grep -qE '^run .*--entrypoint bosun' "$F/calls" || fail "no image probe ran"; ok
+
+# A downgrade is a signed, provenance-passing release. It must be named and
+# must always prompt, including for a digest-only pin where the tag says
+# nothing: the version the image reports is what decides.
+new_case downgrade-forces-prompt "ghcr.io/cameronsjo/bosun:0.41.0@$CAND_DIGEST"
+export FAKE_CAND_IMAGE_VERSION=0.41.0 FAKE_CAND_VERSION=0.41.0
+run_remote --yes
+assert_rc 0; assert_out "WARNING this is a DOWNGRADE: 0.42.3 -> 0.41.0"; assert_out "DECLINED"; assert_no_calls "up -d"; ok
+
+new_case downgrade-detected-without-a-release-tag "ghcr.io/cameronsjo/bosun@$CAND_DIGEST"
+export FAKE_CAND_IMAGE_VERSION=0.41.0 FAKE_CAND_VERSION=0.41.0
+run_remote --yes
+assert_rc 0; assert_out "WARNING this is a DOWNGRADE"; assert_out "DECLINED"; ok
+
+# SemVer puts 1.0.0-rc.1 before 1.0.0, and sort -V puts it after. Getting that
+# backwards let --yes cut over to a prerelease with no prompt at all.
+new_case downgrade-to-a-prerelease "ghcr.io/cameronsjo/bosun:1.0.0-rc.1@$CAND_DIGEST"
+export FAKE_INC_VERSION=1.0.0 FAKE_CAND_IMAGE_VERSION=1.0.0-rc.1 FAKE_CAND_VERSION=1.0.0-rc.1
+run_remote --yes
+assert_rc 0; assert_out "RENDER-IDENTICAL"; assert_out "WARNING this is a DOWNGRADE: 1.0.0 -> 1.0.0-rc.1"
+assert_out "DECLINED"; assert_no_calls "up -d"; [[ "$(running_role)" == incumbent ]] || fail "cut over to a prerelease"; ok
+
+# sort -V puts alpha-1 before alpha.1; SemVer puts alpha.1 first. Rather than
+# hand-write the comparator, two different prereleases of one version are
+# undecided and always prompt, so --yes cannot carry either direction through.
+new_case prereleases-of-one-version-always-prompt "ghcr.io/cameronsjo/bosun:1.0.0-alpha-1@$CAND_DIGEST"
+export FAKE_INC_VERSION=1.0.0-alpha.1 FAKE_CAND_IMAGE_VERSION=1.0.0-alpha-1 FAKE_CAND_VERSION=1.0.0-alpha-1
+run_remote --yes
+assert_rc 0; assert_out "order undecided: 1.0.0-alpha.1 -> 1.0.0-alpha-1"; assert_out "DECLINED"
+assert_no_calls "up -d"; [[ "$(running_role)" == incumbent ]] || fail "moved between prereleases unprompted"; ok
+
 new_case candidate-tag-digest-mismatch
 export FAKE_CAND_IMAGE_VERSION=0.41.0
 run_remote --yes
@@ -316,6 +378,18 @@ new_case ambiguous-key-mount
 jq '.services.bosun.volumes += [{source: "/other/age.txt", target: "/config/age-key.txt"}]' "$F/live.json" > "$F/l" && mv "$F/l" "$F/live.json"
 run_remote --dry-run
 assert_rc 64; assert_out "exactly one plain-path mount"; ok
+
+# The allowlist drops keys, but `docker compose config` has already expanded
+# every ${VAR} from the project's .env. A compose file that writes the webhook
+# URL into an allowlisted variable carries it into a shadow that has a network,
+# and --dry-run alone is enough to send it. Refuse, and do not echo the value.
+new_case env-allowlist-leaks-through-a-value
+jq '.services.bosun.environment.BOSUN_REPO_URL = "https://attacker.example/https://discord.example/hook.git"' \
+  "$F/live.json" > "$F/l" && mv "$F/l" "$F/live.json"
+run_remote --dry-run
+assert_rc 64; assert_out "DISCORD_WEBHOOK_URL inside BOSUN_REPO_URL"
+if command grep -q 'discord.example' "$OUT"; then fail "the refusal printed the secret it was refusing to leak"; fi
+[[ ! -f "$F/runs-candidate" && ! -f "$F/runs-incumbent" ]] || fail "rendered anyway"; ok
 
 new_case render-differs-declined
 export FAKE_CONTENT_CANDIDATE=RENDERED-SECRET-MARKER
@@ -342,7 +416,26 @@ new_case candidate-failed
 export FAKE_RENDER_CANDIDATE=fail
 run_remote --yes
 assert_rc 5; assert_out "VERDICT: CANDIDATE-FAILED"; [[ "$(running_role)" == incumbent ]] || fail "changed on candidate failure"
-ls "$F/state/failures/"*shadow-candidate.log >/dev/null || fail "no shadow log kept"; assert_clean_tmp; ok
+ls "$F/tmp/bosun-canary-failures."*/*shadow-candidate.log >/dev/null || fail "no shadow log kept in RAM"
+if find "$F/state" -name '*shadow*' | command grep -q .; then fail "a rendered-log copy reached the array-backed state dir"; fi
+assert_clean_tmp; ok
+
+# /tmp is shared and this runs as root on the NAS. A fixed directory name lets
+# any local user pre-create it, keep ownership, and read failure detail that can
+# quote a rendered secret. Each run must make its own instead.
+new_case failures-dir-is-not-the-fixed-path
+mkdir -p "$F/tmp/bosun-canary-failures"
+export FAKE_RENDER_CANDIDATE=fail
+run_remote --yes
+assert_rc 5
+kept="$(find "$F/tmp" -name '*shadow-candidate.log' | head -n1)"
+[[ -n "$kept" ]] || fail "no shadow log kept at all"
+case "$kept" in "$F/tmp/bosun-canary-failures/"*) fail "wrote into the pre-created directory: $kept" ;; esac
+[[ -z "$(find "$F/tmp/bosun-canary-failures" -mindepth 1)" ]] || fail "the pre-created directory was used"
+assert_out "$kept"
+[[ -n "$(find "$F/tmp" -maxdepth 1 -name 'bosun-canary-failures.*')" ]] || fail "no per-run failures dir"
+[[ -z "$(find "$F/tmp" -maxdepth 1 -name 'bosun-canary.*')" ]] || fail "the stale sweep glob now matches the failures dir"
+ok
 
 new_case candidate-empty-render
 export FAKE_RENDER_CANDIDATE=empty
@@ -402,7 +495,31 @@ export FAKE_STATUS_CANDIDATE=error
 run_remote --yes
 assert_rc 1; assert_out "VERDICT: ROLLED-BACK"; [[ "$(running_role)" == incumbent ]] || fail "incumbent not restored"
 grep -qF "image: \"ghcr.io/cameronsjo/bosun@$INC_DIGEST\"" "$F/state/rollback.override.yml" || fail "rollback override does not pin the incumbent digest"
-history_has "ROLLED-BACK"; ls "$F/state/failures/"*-candidate.log >/dev/null || fail "failure detail not kept"; ok
+history_has "ROLLED-BACK"
+ls "$F/tmp/bosun-canary-failures."*/*-candidate.log >/dev/null || fail "failure detail not kept in RAM"
+if find "$F/state" -name '*candidate*' | command grep -q .; then fail "daemon failure detail reached the array-backed state dir"; fi; ok
+
+# daemon-status is the candidate's own word. A candidate that reports a fresh
+# reconcile with no end-of-cycle line in the log must not pass the watch.
+new_case rolled-back-unsupported-status-claim
+export FAKE_CYCLE_LOG_CANDIDATE=none
+run_remote --yes
+assert_rc 1; assert_out "no end-of-cycle line in the log yet"; assert_out "VERDICT: ROLLED-BACK"; ok
+
+# The common cutover: the commit has not moved, so the first cycle skips. It
+# logs an end-of-cycle line but never a completed pipeline. Requiring the
+# pipeline line would roll back every healthy upgrade.
+new_case upgraded-when-first-cycle-skips
+export FAKE_CYCLE_LOG_CANDIDATE=skipped
+run_remote --yes
+assert_rc 0; assert_out "VERDICT: UPGRADED"; [[ "$(running_role)" == candidate ]] || fail "rolled back a healthy candidate"; ok
+
+# The waiting line must not repeat once per poll for the whole timeout.
+new_case waiting-line-is-printed-once
+export FAKE_CYCLE_LOG_CANDIDATE=none
+run_remote --yes
+assert_rc 1
+[[ "$(command grep -c 'no end-of-cycle line' "$OUT")" -le 2 ]] || fail "waiting line repeated every poll"; ok
 
 new_case rolled-back-stale-reconcile
 export FAKE_STATUS_CANDIDATE=stale
