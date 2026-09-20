@@ -236,7 +236,7 @@ docker logs --since 1h bosun | grep '"url":"/some/unexpected/path"'
 
 ### Upgrade script verdicts
 
-`scripts/upgrade-bosun.sh` ends with one `VERDICT:` line and a matching exit code. **Exit 1 means the upgrade was rolled back**, not "a check failed". The NAS keeps one line per run in `/mnt/user/appdata/bosun-upgrade/history.log`, with failure detail in `failures/` beside it.
+`scripts/upgrade-bosun.sh` ends with one `VERDICT:` line and a matching exit code. **Exit 1 means the upgrade was rolled back**, not "a check failed". The NAS keeps one line per run in `/mnt/user/appdata/bosun-upgrade/history.log`. Failure detail does **not** live beside it — see [Where failure detail lands](#where-failure-detail-lands) below; the run prints the path it used.
 
 | Exit | Verdict | What happened | Next step |
 |---:|---|---|---|
@@ -244,11 +244,11 @@ docker logs --since 1h bosun | grep '"url":"/some/unexpected/path"'
 | 0 | `ALREADY-CURRENT` | The running digest already equals the pin | Nothing |
 | 0 | `RENDER-IDENTICAL` / `RENDER-DIFFERS` / `RENDER-OK-NO-BASELINE` (dry run) | Shadow render only; nothing changed | Review any listed differences, then run without `--dry-run` |
 | 0 | `DECLINED at …` | You answered no at the cutover prompt | Nothing changed |
-| 1 | `ROLLED-BACK` | The candidate failed its watch; the previous version is back and healthy | Revert the pin PR in homelab, then delete `rollback.override.yml` on the NAS. Read `failures/<run>-candidate.log` |
+| 1 | `ROLLED-BACK` | The candidate failed its watch; the previous version is back and healthy | Revert the pin PR in homelab, then delete `rollback.override.yml` on the NAS. Read the run's `<run>-candidate.log` (path printed by the run) |
 | 2 | `FAULT-NOT-UPGRADE` | The previous version also fails after rollback | The upgrade is not the cause. Follow homelab `docs/runbooks/bosun-deploys-blocked.md` |
 | 3 | `HALF-CHANGED` | The rollback itself did not start | Run the printed `docker compose … up -d` command on the NAS. The anchor image is `bosun:rollback-<version>`; do not prune it |
-| 4 | `HARNESS-INVALID` | The running version failed its own shadow render | The repo or the harness is broken, not the candidate. Read `failures/<run>-shadow-incumbent.log` |
-| 5 | `CANDIDATE-FAILED` | The candidate failed its shadow render; nothing changed | Read `failures/<run>-shadow-candidate.log` |
+| 4 | `HARNESS-INVALID` | The running version failed its own shadow render | The repo or the harness is broken, not the candidate. Read the run's `<run>-shadow-incumbent.log` (path printed by the run) |
+| 5 | `CANDIDATE-FAILED` | The candidate failed its shadow render; nothing changed | Read the run's `<run>-shadow-candidate.log` (path printed by the run) |
 | 5 | `CANDIDATE-FAILED` (provenance) | No attestation from bosun's release workflow for that digest | Check the pin names a real release digest. Never bypass this for an upgrade |
 | 64 | usage or config | Unpinned image, bad flag, missing container or compose file, malformed state file, or `--dry-run` while an interrupted upgrade is recorded | Fix what the error names; nothing changed. A `--dry-run` never resumes a cutover: run without it to finish |
 | 5 | `CANDIDATE-FAILED` (tag mismatch) | The pin's `X.Y.Z` tag and the image's `bosun --version` disagree | The digest belongs to another release. Fix the pin; nothing changed |
@@ -258,7 +258,13 @@ docker logs --since 1h bosun | grep '"url":"/some/unexpected/path"'
 
 A history line that ends in `[provenance skipped: drill]` came from a `--skip-provenance-for-drill` run. One ending in `[provenance: not checked by wrapper]` came from running the NAS script directly, which skips the Mac-side provenance check.
 
-**Where failure detail lands.** Both kinds — a failed shadow render's last 60 log lines, and the daemon-side detail after a failed watch (`daemon-status`, restart count, the last 40 log lines) — go to `/tmp/bosun-canary-failures/`. That is RAM on Unraid, so it is gone at reboot. Copy a file elsewhere yourself if you need it to survive. The reason is that either can quote a rendered secret: a template error carries the value it failed on, and the daemon runs the same template pipeline the shadow does. `/mnt/user` is array-backed and copied by the appdata backup, so it is the wrong home for them.
+### Where failure detail lands
+
+Both kinds — a failed shadow render's last 60 log lines, and the daemon-side detail after a failed watch (`daemon-status`, restart count, the last 40 log lines) — go to a directory the run creates for itself as `/tmp/bosun-canary-failures.XXXXXX`, where the suffix is random per run.
+
+**The path is not fixed, so read it from the run's output** — the run prints the file it wrote. Listing `/tmp/bosun-canary-failures.*` finds it too, along with any left by earlier runs. The name is unguessable on purpose: `/tmp` is shared and the script runs as root, so a fixed name would let any local user pre-create the directory, keep ownership, and read these files.
+
+That is RAM on Unraid, so it is gone at reboot. Copy a file elsewhere yourself if you need it to survive. The reason is that either can quote a rendered secret: a template error carries the value it failed on, and the daemon runs the same template pipeline the shadow does. `/mnt/user` is array-backed and copied by the appdata backup, so it is the wrong home for them.
 
 **After a hard kill.** The script cleans up on exit and on HUP/INT/TERM, but not on `SIGKILL`. If a run is killed outright, remove the rendered tree by hand: `rm -rf /tmp/bosun-canary.*`. The next run's preflight also sweeps it.
 
