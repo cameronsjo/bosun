@@ -29,7 +29,10 @@
 #
 # Secrets: shadow runs render decrypted secrets into a 0700 dir under /tmp
 # (RAM on Unraid), removed on exit. Only file names, counts and verdicts reach
-# stdout; failure detail goes to the NAS state directory.
+# stdout. Failure detail (shadow log tails and daemon logs, either of which can
+# quote a rendered value in a template error) is kept under /tmp too, in a dir
+# that outlives the run and is gone at reboot -- not on the array share, which
+# the appdata backup copies off the box.
 
 set -euo pipefail
 
@@ -217,18 +220,33 @@ load_state() {
     [[ "$STATE_CANDIDATE" =~ $REF_RE ]]
 }
 
+# failures_dir prints the RAM-backed directory failure detail is kept in, or
+# fails. A pre-existing symlink there is refused: /tmp is shared, and these
+# files can quote a rendered secret.
+failures_dir() {
+  local dir="$TMP_ROOT/bosun-canary-failures"
+  [[ ! -L "$dir" ]] || return 1
+  mkdir -p "$dir" 2>/dev/null || return 1
+  [[ ! -L "$dir" ]] || return 1
+  chmod 700 "$dir" 2>/dev/null || return 1
+  printf '%s' "$dir"
+}
+
 # record_failure is best-effort: losing the detail must never block a rollback.
+# It lands in RAM with the shadow logs: the daemon's own log can quote a
+# rendered value in a template error, which is exactly when this runs.
 record_failure() {
-  local label="$1"
-  local out="$STATE_DIR/failures/$RUN_ID-$label.log"
-  if mkdir -p "$STATE_DIR/failures" 2>/dev/null && {
+  local label="$1" dir
+  dir="$(failures_dir)" || { say "  WARNING could not write failure detail under $TMP_ROOT"; return 0; }
+  local out="$dir/$RUN_ID-$label.log"
+  if {
     printf '== %s\n' "$label"
     docker exec "$CONTAINER" bosun daemon-status --json 2>&1 || true
     docker inspect -f 'restarts={{.RestartCount}} status={{.State.Status}}' "$CONTAINER" 2>&1 || true
     docker logs --tail 40 "$CONTAINER" 2>&1 || true
   } > "$out" 2>/dev/null; then
     chmod 600 "$out" 2>/dev/null || true
-    say "  failure detail kept on the NAS: $out"
+    say "  failure detail kept at $out (RAM: gone at reboot, copy it now if you need it)"
   else
     say "  WARNING could not write failure detail to $out"
   fi
@@ -247,13 +265,15 @@ prompt_yes() {
 # network and no capabilities.
 probe_image() {
   local image="$1"; shift
+  # No 2>&1 here: each caller decides. Folding stderr in would let a docker
+  # warning become the version string.
   docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
-    --entrypoint bosun "$image" "$@" 2>&1
+    --entrypoint bosun "$image" "$@"
 }
 
 has_no_alerts_flag() {
   local help
-  help="$(probe_image "$1" reconcile --help)" || return 1
+  help="$(probe_image "$1" reconcile --help 2>&1)" || return 1
   [[ "$help" == *--no-alerts* ]]
 }
 
@@ -382,9 +402,10 @@ shadow_run() {
 # appdata backup copies off the box. It outlives the run -- RUN_DIR does not --
 # and lasts until the NAS reboots.
 keep_shadow_log() {
-  local dir="$TMP_ROOT/bosun-canary-failures"
-  local out="$dir/$RUN_ID-shadow-$1.log"
-  if mkdir -p "$dir" 2>/dev/null && chmod 700 "$dir" 2>/dev/null && tail -n 60 "$RUN_DIR/$1/run.log" > "$out" 2>/dev/null; then
+  local dir out
+  dir="$(failures_dir)" || { say "  WARNING could not keep the shadow log under $TMP_ROOT"; return 0; }
+  out="$dir/$RUN_ID-shadow-$1.log"
+  if tail -n 60 "$RUN_DIR/$1/run.log" > "$out" 2>/dev/null; then
     chmod 600 "$out" 2>/dev/null || true
     say "  last 60 log lines kept at $out (RAM: gone at reboot, copy it now if you need it)"
   else
@@ -397,6 +418,7 @@ keep_shadow_log() {
 # while the container kept running image $1 with no restart and no panic.
 watch_reconcile() {
   local expect_image="$1" label="$2" started started_epoch deadline line image status restarts lr le lr_epoch ds logs
+  local waiting_said=0
   line="$(inspect_live)" || { say "  FAIL container $CONTAINER is gone"; return 1; }
   read -r _ _ started _ _ <<<"$line"
   started_epoch="$(to_epoch "$started")" || { say "  FAIL could not read StartedAt"; return 1; }
@@ -428,13 +450,20 @@ watch_reconcile() {
         say "  FAIL first reconcile ended with an error (expected: last_error empty; error text is in the NAS failure log)"
         return 1
       fi
-      # daemon-status is the candidate's own word about the candidate. Require
-      # one independent corroborator from the log before believing it: the
-      # same completion line shadow_run greps for.
-      if [[ "$logs" != *'Reconcile pipeline completed'* ]]; then
-        say "  waiting: daemon-status reports a reconcile at $lr, but no completed-pipeline line is in the log yet"
+      # daemon-status is the candidate's own word about the candidate.
+      # Require one independent corroborator from the log: the daemon's own
+      # end-of-cycle line, which it writes next to the timestamp it just
+      # reported. It covers a cycle that skipped (already deployed, or no
+      # deploy-relevant changes) -- those never log a completed PIPELINE, and
+      # requiring that line instead would roll back every healthy upgrade
+      # whose commit had not moved.
+      if [[ "$logs" != *'Reconciliation cycle completed'* ]]; then
+        if [[ "$waiting_said" -eq 0 ]]; then
+          waiting_said=1
+          say "  waiting: daemon-status reports a reconcile at $(printable "$lr"), with no end-of-cycle line in the log yet"
+        fi
       else
-        say "  PASS $label: reconcile finished at $(printable "$lr"), logged as completed, with no error"
+        say "  PASS $label: reconcile finished at $(printable "$lr"), logged as a completed cycle, with no error"
         return 0
       fi
     fi
@@ -698,11 +727,14 @@ main() {
   fi
   # A downgrade passes provenance like any other release. Name it, and never
   # let --yes skip the prompt for one.
+  # Keyed on what the image reports, not on the pin's tag: a digest-only or
+  # partial tag leaves want_version empty, and a downgrade must still prompt.
   DOWNGRADE=0
-  if [[ -n "$want_version" && "$want_version" != "$INCUMBENT_VERSION" ]]; then
-    if [[ "$(printf '%s\n%s\n' "$INCUMBENT_VERSION" "$want_version" | sort -V | head -n1)" == "$want_version" ]]; then
+  local running_version="${cand_version#bosun version }"
+  if [[ "$running_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ && "$running_version" != "$INCUMBENT_VERSION" ]]; then
+    if [[ "$(printf '%s\n%s\n' "$INCUMBENT_VERSION" "$running_version" | sort -V | head -n1)" == "$running_version" ]]; then
       DOWNGRADE=1
-      say "  WARNING this is a DOWNGRADE: $INCUMBENT_VERSION -> $want_version"
+      say "  WARNING this is a DOWNGRADE: $INCUMBENT_VERSION -> $(printable "$running_version")"
     fi
   fi
   local cfg inc_flag inc_commit="" cand_commit

@@ -127,10 +127,20 @@ case "$1" in
     [[ "${FAKE_LOGS_FAIL:-0}" == 1 ]] && exit 1
     r="$(cat "$F/running_role")"; var="FAKE_PANIC_${r^^}"
     [[ "${!var:-0}" == 1 ]] && echo "panic: runtime error"
-    # A healthy daemon logs this when a cycle ends; the watch requires it
-    # alongside daemon-status.
-    var="FAKE_NO_COMPLETION_${r^^}"
-    [[ "${!var:-0}" == 1 ]] || printf '{"level":"info","component":"reconcile","message":"Reconcile pipeline completed"}\n'
+    # What the daemon logged for its last cycle. "deployed" is a full deploy;
+    # "skipped" is the common case where the commit has not moved, which logs
+    # an end-of-cycle line but no completed PIPELINE; "none" is a daemon that
+    # reports a reconcile in daemon-status without logging one at all.
+    var="FAKE_CYCLE_LOG_${r^^}"
+    case "${!var:-deployed}" in
+      deployed)
+        printf '{"level":"info","component":"reconcile","message":"Reconcile pipeline completed"}\n'
+        printf '{"level":"info","success":true,"message":"Reconciliation cycle completed"}\n' ;;
+      skipped)
+        printf '{"level":"info","component":"reconcile","message":"No deploy-relevant files changed, skipping reconciliation"}\n'
+        printf '{"level":"info","success":true,"message":"Reconciliation cycle completed"}\n' ;;
+      none) ;;
+    esac
     true ;;
   run)
     # docker run [flags...] --entrypoint bosun IMAGE <args...>
@@ -324,6 +334,19 @@ while IFS= read -r probe; do
 done < <(command grep -E '^run .*--entrypoint bosun' "$F/calls")
 command grep -qE '^run .*--entrypoint bosun' "$F/calls" || fail "no image probe ran"; ok
 
+# A downgrade is a signed, provenance-passing release. It must be named and
+# must always prompt, including for a digest-only pin where the tag says
+# nothing: the version the image reports is what decides.
+new_case downgrade-forces-prompt "ghcr.io/cameronsjo/bosun:0.41.0@$CAND_DIGEST"
+export FAKE_CAND_IMAGE_VERSION=0.41.0 FAKE_CAND_VERSION=0.41.0
+run_remote --yes
+assert_rc 0; assert_out "WARNING this is a DOWNGRADE: 0.42.3 -> 0.41.0"; assert_out "DECLINED"; assert_no_calls "up -d"; ok
+
+new_case downgrade-detected-without-a-release-tag "ghcr.io/cameronsjo/bosun@$CAND_DIGEST"
+export FAKE_CAND_IMAGE_VERSION=0.41.0 FAKE_CAND_VERSION=0.41.0
+run_remote --yes
+assert_rc 0; assert_out "WARNING this is a DOWNGRADE"; assert_out "DECLINED"; ok
+
 new_case candidate-tag-digest-mismatch
 export FAKE_CAND_IMAGE_VERSION=0.41.0
 run_remote --yes
@@ -426,14 +449,31 @@ export FAKE_STATUS_CANDIDATE=error
 run_remote --yes
 assert_rc 1; assert_out "VERDICT: ROLLED-BACK"; [[ "$(running_role)" == incumbent ]] || fail "incumbent not restored"
 grep -qF "image: \"ghcr.io/cameronsjo/bosun@$INC_DIGEST\"" "$F/state/rollback.override.yml" || fail "rollback override does not pin the incumbent digest"
-history_has "ROLLED-BACK"; ls "$F/state/failures/"*-candidate.log >/dev/null || fail "failure detail not kept"; ok
+history_has "ROLLED-BACK"
+ls "$F/tmp/bosun-canary-failures/"*-candidate.log >/dev/null || fail "failure detail not kept in RAM"
+if find "$F/state" -name '*candidate*' | command grep -q .; then fail "daemon failure detail reached the array-backed state dir"; fi; ok
 
 # daemon-status is the candidate's own word. A candidate that reports a fresh
-# reconcile it never ran must not pass the watch.
+# reconcile with no end-of-cycle line in the log must not pass the watch.
 new_case rolled-back-unsupported-status-claim
-export FAKE_NO_COMPLETION_CANDIDATE=1
+export FAKE_CYCLE_LOG_CANDIDATE=none
 run_remote --yes
-assert_rc 1; assert_out "no completed-pipeline line is in the log yet"; assert_out "VERDICT: ROLLED-BACK"; ok
+assert_rc 1; assert_out "no end-of-cycle line in the log yet"; assert_out "VERDICT: ROLLED-BACK"; ok
+
+# The common cutover: the commit has not moved, so the first cycle skips. It
+# logs an end-of-cycle line but never a completed pipeline. Requiring the
+# pipeline line would roll back every healthy upgrade.
+new_case upgraded-when-first-cycle-skips
+export FAKE_CYCLE_LOG_CANDIDATE=skipped
+run_remote --yes
+assert_rc 0; assert_out "VERDICT: UPGRADED"; [[ "$(running_role)" == candidate ]] || fail "rolled back a healthy candidate"; ok
+
+# The waiting line must not repeat once per poll for the whole timeout.
+new_case waiting-line-is-printed-once
+export FAKE_CYCLE_LOG_CANDIDATE=none
+run_remote --yes
+assert_rc 1
+[[ "$(command grep -c 'no end-of-cycle line' "$OUT")" -le 2 ]] || fail "waiting line repeated every poll"; ok
 
 new_case rolled-back-stale-reconcile
 export FAKE_STATUS_CANDIDATE=stale

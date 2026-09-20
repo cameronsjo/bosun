@@ -258,7 +258,7 @@ docker logs --since 1h bosun | grep '"url":"/some/unexpected/path"'
 
 A history line that ends in `[provenance skipped: drill]` came from a `--skip-provenance-for-drill` run. One ending in `[provenance: not checked by wrapper]` came from running the NAS script directly, which skips the Mac-side provenance check.
 
-**Where failure detail lands.** A failed shadow render keeps its last 60 log lines under `/tmp/bosun-canary-failures/` — RAM on Unraid, so it is gone at reboot. That is deliberate: a template or SOPS error can quote a rendered secret, and `/mnt/user` is array-backed and copied by the appdata backup. Copy the file elsewhere yourself if you need it to survive. Daemon-side detail (`daemon-status`, restart count, the last 40 log lines) stays in `/mnt/user/appdata/bosun-upgrade/failures/`; it holds no rendered content.
+**Where failure detail lands.** Both kinds — a failed shadow render's last 60 log lines, and the daemon-side detail after a failed watch (`daemon-status`, restart count, the last 40 log lines) — go to `/tmp/bosun-canary-failures/`. That is RAM on Unraid, so it is gone at reboot. Copy a file elsewhere yourself if you need it to survive. The reason is that either can quote a rendered secret: a template error carries the value it failed on, and the daemon runs the same template pipeline the shadow does. `/mnt/user` is array-backed and copied by the appdata backup, so it is the wrong home for them.
 
 **After a hard kill.** The script cleans up on exit and on HUP/INT/TERM, but not on `SIGKILL`. If a run is killed outright, remove the rendered tree by hand: `rm -rf /tmp/bosun-canary.*`. The next run's preflight also sweeps it.
 

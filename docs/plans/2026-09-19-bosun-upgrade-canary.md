@@ -87,7 +87,7 @@ NAS  upgrade-bosun-remote.sh   (mkdir lock + state file in /mnt/user/appdata/bos
 - [x] Task 3 — file the `validate --full` state-write issue (#674)
 - [x] Task 4 — upgrade scripts
 - [x] Task 5 — script tests + docs
-- [ ] Task 6 — Opus security review
+- [x] Task 6 — Opus security review (report acted on; no Critical findings)
 
 ### Task 1 — Stop the nightly blind upgrade, pin the image (homelab PR; ships alone)
 
@@ -215,6 +215,9 @@ Panel: plan-reviewer (both lenses), red-team-reviewer, operability-reviewer, sec
   - Every state-dir write reports a verdict instead of a bare exit 1.
   - CI's shellcheck (0.9 on Ubuntu) needed SC2317 beside SC2329 on the trap functions; both versions are now clean.
 - **Task 2 scope.** The CLI misses about 20 daemon env reads, not just `BOSUN_INFRA_DIR`. As planned, it fixes only `BOSUN_INFRA_DIR`. The parity test classifies every `reconcile.Config` field, and the remaining gaps go to one follow-up issue (spec task 1.5).
+
+- **Task 6 ran against merged main and its findings shipped** (bosun#678). No Critical findings; the one blocker was that `reconcile --no-alerts` does not exist yet, which fails closed at stage 2 (bosun#677 adds it). Applied: the watch requires the daemon's own end-of-cycle log line beside `daemon-status`, failure detail (both kinds) moved to RAM, the image probes run with no network and no capabilities, candidate output is made printable, a downgrade always prompts, and a symlinked compose dir is refused.
+- **The first corroborator choice was wrong and a review caught it.** Requiring `Reconcile pipeline completed` would have rolled back every healthy upgrade whose commit had not moved: a cycle that skips still ends and still sets `last_reconcile`, but never logs a completed *pipeline*. The daemon's `Reconciliation cycle completed` is the line that fires on every cycle.
 
 ## Learnings
 
