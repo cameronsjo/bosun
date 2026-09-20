@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -108,6 +109,17 @@ func SplitAndTrim(s string) []string {
 		}
 	}
 	return result
+}
+
+// SecretsFilesFromEnv parses a secrets-list variable. A value that is set but
+// names nothing is an error on every path: an empty list skips SOPS entirely,
+// so templates render with blank secret values and deploy.
+func SecretsFilesFromEnv(name, raw string) ([]string, error) {
+	files := SplitAndTrim(raw)
+	if len(files) == 0 {
+		return nil, fmt.Errorf("%s is set but names no secrets file", name)
+	}
+	return files, nil
 }
 
 // BosunEnvDuration parses BosunEnv(name) as a time.Duration.

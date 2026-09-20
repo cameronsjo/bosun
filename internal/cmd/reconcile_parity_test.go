@@ -250,6 +250,10 @@ func TestReconcileConfigRefusesEmptySecretsList(t *testing.T) {
 
 			_, err := buildReconcileConfigFromEnv()
 			require.ErrorContains(t, err, "names no secrets file")
+
+			// The daemon reads the same variables and must refuse the same
+			// value, as a startup failure rather than a silent empty list.
+			require.ErrorContains(t, daemon.ValidateConfig(daemon.ConfigFromEnv()), "names no secrets file")
 		})
 	}
 }

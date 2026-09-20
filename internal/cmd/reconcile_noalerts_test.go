@@ -27,8 +27,12 @@ func TestReconcileNoAlertsSuppressesEveryAlertSource(t *testing.T) {
 	}{
 		{
 			name: "environment",
-			configure: func(t *testing.T, _, webhook string) {
+			configure: func(t *testing.T, dir, webhook string) {
 				t.Setenv("DISCORD_WEBHOOK_URL", webhook)
+				// Anchor config.FindRoot's upward walk here: without a file in
+				// the temp dir it could reach a bosun.yaml above TMPDIR and
+				// take its alert destination.
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "bosun.yaml"), []byte("alerts: {}\n"), 0o600))
 			},
 		},
 		{
@@ -112,6 +116,9 @@ func runFailingReconcile(t *testing.T, configure func(t *testing.T, dir, webhook
 func TestReconcileNoAlertsIsNotImpliedByDryRun(t *testing.T) {
 	restore := reconcileNoAlerts
 	t.Cleanup(func() { reconcileNoAlerts = restore })
+	// Away from the repo's own bosun.yaml: otherwise an ambient provider, not
+	// the variable set below, could satisfy the assertion.
+	t.Chdir(t.TempDir())
 
 	reconcileNoAlerts = false
 	t.Setenv("DISCORD_WEBHOOK_URL", "https://discord.example/hook")

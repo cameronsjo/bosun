@@ -230,9 +230,9 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 		if raw == "" {
 			continue
 		}
-		files := config.SplitAndTrim(raw)
-		if len(files) == 0 {
-			return nil, fmt.Errorf("%s is set but names no secrets file", name)
+		files, err := config.SecretsFilesFromEnv(name, raw)
+		if err != nil {
+			return nil, err
 		}
 		cfg.SecretsFiles = files
 	}

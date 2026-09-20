@@ -104,6 +104,11 @@ type Config struct {
 	// errors that must fail startup instead of using graceful degradation.
 	projectConfigError error
 
+	// secretsFilesError retains a secrets-list variable that was set but named
+	// no file; ValidateConfig fails startup on it rather than reconciling with
+	// no secrets at all.
+	secretsFilesError error
+
 	// Timeout settings
 	ReconcileTimeout time.Duration // Max time for a reconcile operation (default: 10m)
 	ShutdownTimeout  time.Duration // Max time for graceful shutdown (default: 30s)
@@ -2130,11 +2135,20 @@ func ConfigFromEnv() *Config {
 		rcfg.TargetHost = target
 	}
 
-	if secrets := os.Getenv("SECRETS_FILES"); secrets != "" {
-		rcfg.SecretsFiles = splitAndTrim(secrets)
-	}
-	if secrets := os.Getenv("BOSUN_SECRETS_FILE"); secrets != "" {
-		rcfg.SecretsFiles = splitAndTrim(secrets)
+	// A set-but-names-nothing value is refused here too: an empty list skips
+	// SOPS entirely, and the daemon would deploy templates rendered with blank
+	// secret values. ValidateConfig turns this into a startup failure.
+	for _, name := range []string{"SECRETS_FILES", "BOSUN_SECRETS_FILE"} {
+		raw := os.Getenv(name)
+		if raw == "" {
+			continue
+		}
+		files, err := config.SecretsFilesFromEnv(name, raw)
+		if err != nil {
+			cfg.secretsFilesError = err
+			continue
+		}
+		rcfg.SecretsFiles = files
 	}
 
 	rcfg.DryRun = parseBoolVal(os.Getenv("DRY_RUN"), false)
@@ -2540,6 +2554,9 @@ func ValidateConfig(cfg *Config) error {
 	var errs []string
 	if cfg.projectConfigError != nil {
 		errs = append(errs, cfg.projectConfigError.Error())
+	}
+	if cfg.secretsFilesError != nil {
+		errs = append(errs, cfg.secretsFilesError.Error())
 	}
 
 	if cfg.Port < 1 || cfg.Port > 65535 {
