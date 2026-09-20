@@ -6,7 +6,7 @@ harness: "claude-code 2.1.277"
 machine: "cf6e768835c7"
 approved_session_id: "a9d4a39f-36de-4a08-82d7-a71eddc33092"
 status: in-progress
-next: "Cameron: review and merge bosun#678 and #677, merge homelab#770, then run its host checks — Verification steps 3-6 are all that remain"
+next: "Verification step 6 only — the rollback drill, which deliberately breaks the production deployer and wants the operator present. Steps 1-5 are done and evidenced."
 branch: plan/bosun-upgrade-canary
 pr: 672
 updated: 2026-09-19
@@ -178,9 +178,9 @@ Run `cadence-forge:security-reviewer` on Opus over both scripts, the generated o
 
 1. `scripts/agent-go-gate.sh go test ./internal/cmd/... ./internal/daemon/...` passes, and the parity test goes red on the staged break.
 2. `bash scripts/upgrade-bosun_test.sh` passes, and goes red on the staged allowlist break. `shellcheck` is clean.
-3. Task 1's host checks (a)–(d) pass.
-4. The first live run is `bash scripts/upgrade-bosun.sh --dry-run`, which runs stages 0–2 only. Expect `RENDER-OK-NO-BASELINE` (transition) or `RENDER-IDENTICAL`. Then check that `ssh nas ls -d /tmp/bosun-canary.*` shows nothing, and that Discord got nothing.
-5. The full run on the next real release exits 0. `daemon-status --json` shows a post-cutover `last_reconcile` with no error.
+3. ✅ Task 1's host checks (a)–(d) pass. (a)(b)(c) pass on the live NAS; (d)'s mechanism is verified directly — no `WATCHTOWER_LABEL_ENABLE`, bosun the only opted-out container, `CLEANUP=true` — with the 04:00 run left as confirmation. **The merge was not enough:** bosun syncs its own compose file but never recreates itself, so the label reached the file and not the container until a manual `docker compose up -d`. Evidence: `homelab/docs/evidence/2026-09-20-bosun-pin-and-first-canary-run/`.
+4. ✅ The first live `--dry-run` reached `RENDER-OK-NO-BASELINE`, exit 0, with no shadow tmp dirs, no lock and no Discord traffic. It took **three** runs to get there: the first stopped at `ALREADY-CURRENT` before stage 2, and the second exposed the bug below.
+5. ✅ The full run exits 0 `UPGRADED` (2026-09-20, 0.42.3 → 0.43.0). Post-cutover `daemon-status` is idle and healthy with `last_error: null`, the container has 0 restarts, the Watchtower opt-out label survived the cutover, no override or state files remain, and `bosun:rollback-0.42.3` is retained.
 6. Rollback drill, once: build a local image whose entrypoint exits 1, `docker save | ssh nas docker load` it, point the on-disk compose at its digest, and run. Skip provenance with a `--skip-provenance-for-drill` flag that is documented as drill-only. Expect exit 1 `ROLLED-BACK` and the incumbent running from the `bosun:rollback-<ver>` tag. Restore the compose file afterwards.
 
 ## Panel
@@ -195,6 +195,9 @@ Panel: plan-reviewer (both lenses), red-team-reviewer, operability-reviewer, sec
 
 ## Deviations
 
+- **Stage 2 had never worked, and only a live run could show it** (bosun#684). `write_shadow` emitted `user: "0:0"` with `cap_drop: [ALL]`; dropping ALL takes `CAP_DAC_OVERRIDE`, and without it uid 0 is subject to ordinary permission checks, so root could not write the uid-1000-owned lock dir in the image. Every shadow render failed to take the reconcile lock. The suite stubs `docker` entirely, so no test could see a capability semantic — the whole Verification-4 step existed for exactly this, and it earned its place. Fixed with a `tmpfs` over the lock dir (mode and size pinned), not `cap_add: DAC_OVERRIDE`, which would defeat every file-permission check in the container; `cap_add` is now forbidden unconditionally by the suite.
+- **The verdict blamed the candidate for that harness fault** (bosun#685). `HARNESS-INVALID` is reachable only when the *incumbent* render fails first, and candidate-only mode skips the incumbent render — so the canary's core property, telling a broken candidate from a broken harness, is off in exactly the mode the first upgrade runs in. Not fixed here; filed.
+- **A manual recreate interrupted a live reconcile.** Landing Task 1's label needed a recreate, the digest had not moved, so `upgrade-bosun.sh` exits `ALREADY-CURRENT` and the manual route was the only one (bosun#682). The interrupted run alerted, recovered on the next cycle, and **never said so** — an interruption alert is unretractable by construction (bosun#683). The fleet was unharmed; the confident-and-wrong "still broken" impression was the cost.
 - **SSH host is `unraid`, not `nas`.** `~/.ssh/config` names the NAS `unraid` (user `root`); `nas` is refused. The wrapper takes `--host` (default `unraid`, or `$BOSUN_UPGRADE_HOST`).
 - **Parity detected by capability, not version.** Stage 2 probes each image with `bosun reconcile --help` for `--no-alerts` instead of comparing against the Task 2 release number, which does not exist yet and could drift. A candidate without the flag is refused (exit 64); an incumbent without it gives `RENDER-OK-NO-BASELINE`.
 - **Rollback watches the daemon's own start-up reconcile; no `bosun trigger`.** The daemon reconciles about 10s after start (`daemon.go:150`), the same event stage 4 watches. A trigger would queue a second cycle and add a socket-readiness race.
