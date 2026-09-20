@@ -290,13 +290,28 @@ run_remote --dry-run
 assert_rc 0
 for role in incumbent candidate; do
   o="$F/override-$role.yml"
-  for forbidden in DISCORD_WEBHOOK_URL WEBHOOK_SECRET _TOKEN SENTRY OTEL docker.sock s3cret "/mnt/user/appdata:"; do
+  # cap_add is forbidden unconditionally: the obvious wrong fix for the lock
+  # problem below is cap_add: [DAC_OVERRIDE], and the assertion that would
+  # catch it sits behind a real-compose check that skips where compose is
+  # absent. This one always runs.
+  for forbidden in DISCORD_WEBHOOK_URL WEBHOOK_SECRET _TOKEN SENTRY OTEL docker.sock s3cret "/mnt/user/appdata:" cap_add; do
     if grep -qF -- "$forbidden" "$o"; then fail "$role override carries $forbidden"; fi
   done
+  # The tmpfs is load-bearing, not hygiene: cap_drop ALL takes CAP_DAC_OVERRIDE,
+  # and without it root cannot write the uid-1000-owned lock dir baked into the
+  # image, so every render fails to take the reconcile lock.
   for required in 'BOSUN_INFRA_DIR: "unraid"' 'DRY_RUN: "true"' 'appdata-empty:/mnt/appdata:ro' \
       'age-key.txt:/config/age-key.txt:ro' 'cap_drop: [ALL]' 'no-new-privileges:true' 'network_mode: bridge'; do
     grep -qF -- "$required" "$o" || fail "$role shadow file lacks: $required"
   done
+  # Placement, not just presence: the same entry under volumes: would be a host
+  # bind of /run/bosun into the shadow, and the jq check that tells the two
+  # apart sits behind a real-compose guard that skips where compose is absent.
+  awk '/^    tmpfs:$/ {under=1; next}
+       under && /^      - "\/run\/bosun:mode=0755,size=1m"$/ {found=1}
+       under && !/^      - / {under=0}
+       END {exit found ? 0 : 1}' "$o" ||
+    fail "$role shadow file does not list - \"/run/bosun:mode=0755,size=1m\" under tmpfs:"
 done
 assert_calls "reconcile --dry-run --no-alerts"
 if grep -F 'run --rm' "$F/calls" | grep -qF -- "$F/compose/docker-compose.yml"; then fail "shadow run merged the live compose file"; fi
@@ -315,6 +330,11 @@ if [[ -n "$REAL_DOCKER" ]] && "$REAL_DOCKER" compose version >/dev/null 2>&1; th
   [[ "$(jq -r '[.services.bosun.volumes[].target] | sort | join(",")' <<<"$merged")" == "/config/age-key.txt,/config/deploy-key,/mnt/appdata,/work" ]] ||
     fail "shadow volumes are not exactly the allowlist"
   [[ "$(jq -r '.services.bosun.cap_drop | join(",")' <<<"$merged")" == ALL ]] || fail "shadow keeps capabilities"
+  # The lock dir must be writable through a tmpfs, never by handing back
+  # DAC_OVERRIDE -- that one capability defeats every file-permission check in
+  # the container, and the cap_add assertion below is what stops that fix.
+  [[ "$(jq -r '(.services.bosun.tmpfs // []) | join(",")' <<<"$merged")" == "/run/bosun:mode=0755,size=1m" ]] ||
+    fail "shadow does not tmpfs the lock dir with a pinned mode and size"
   [[ "$(jq -r '[.services.bosun | .privileged, .devices, .cap_add, .pid] | map(select(. != null and . != false)) | length' <<<"$merged")" == 0 ]] ||
     fail "shadow carries a privilege-bearing key"
   ok
