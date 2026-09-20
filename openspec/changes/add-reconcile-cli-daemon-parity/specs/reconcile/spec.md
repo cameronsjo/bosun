@@ -2,17 +2,20 @@
 
 ### Requirement: Standalone Reconcile Configuration Parity
 
-The one-shot `bosun reconcile` command SHALL read the same environment variables as the daemon for every configuration field that determines which files are rendered into staging and where: repository URL and branch, secrets files, infrastructure directory (`BOSUN_INFRA_DIR`), targets (`BOSUN_TARGETS`), state directory (`BOSUN_STATE_DIR`), post-sync hooks, hook settle delay, deploy paths, and template include directory. For each of these, the CLI SHALL apply the daemon's precedence between environment and project config.
+The one-shot `bosun reconcile` command and the daemon SHALL build the same reconciler configuration from the same environment and project config, for every field that decides which files are rendered and what is deployed. That fixed set is: repository URL and branch, deploy target, secrets files, infrastructure directory (`BOSUN_INFRA_DIR`), targets (`BOSUN_TARGETS`), state directory (`BOSUN_STATE_DIR`), post-sync hooks, hook settle delay, deploy paths, template include directory, and the dry-run flag. For each of these, both paths SHALL apply the same parsing and the same precedence between environment and project config.
 
-A test SHALL build the reconciler configuration through both the CLI path and the daemon path, and compare every field of `reconcile.Config`. Each field on which the two paths are allowed to differ SHALL be listed in that test with its reason. The test SHALL run at least two cases, so that matching values cannot hide a precedence difference:
+Three fields in that set are known to be parsed differently today and SHALL be made to agree:
 
-- **override**: every field that both the environment and the project config can set gets a *different* value in each, so the environment must win;
-- **fallback**: the same project config with those environment variables unset, so the project-config value must win.
+- `SECRETS_FILES`: both SHALL split on commas, trim, and drop empty entries.
+- `BOSUN_SECRETS_FILE`: both SHALL apply the same splitting as `SECRETS_FILES`.
+- `DRY_RUN`: both SHALL accept the same boolean spellings.
 
-The test SHALL fail when:
+Every field of `reconcile.Config` outside that set SHALL be classified, in one place, as exactly one of:
 
-- two paths differ on a field that is not listed, in either case, or
-- `reconcile.Config` gains a field that the test neither compares nor lists.
+- **allowed difference** — the two paths legitimately differ (a one-shot invocation's own directories, its `Source`, its `FORCE` flag, the reloader function identity), each with its reason;
+- **unset by both** — neither path assigns it, so a comparison proves nothing; naming it keeps a field that later becomes live from hiding in the compared set.
+
+A test SHALL assert the classification against the live struct, so that a field added to `reconcile.Config` and left unclassified fails.
 
 #### Scenario: CLI honors the infrastructure directory
 
@@ -34,28 +37,28 @@ The test SHALL fail when:
 - **WHEN** both paths build their reconciler configuration
 - **THEN** both use the `bosun.yaml` values
 
-#### Scenario: Unlisted divergence fails the parity test
+#### Scenario: Secrets files parse identically
 
-- **GIVEN** the CLI path stops reading an environment variable that the daemon still reads, for a field not on the allowed-difference list
-- **WHEN** the parity test runs
-- **THEN** it fails and names the field together with both values
+- **GIVEN** `SECRETS_FILES=" a.yaml , ,b.yaml "`
+- **WHEN** both paths build their reconciler configuration
+- **THEN** both hold exactly `a.yaml` and `b.yaml`
 
-#### Scenario: Unclassified new field fails the parity test
+#### Scenario: Dry run accepts the same spellings
 
-- **GIVEN** a new field is added to `reconcile.Config`
-- **WHEN** the parity test runs without that field being compared or listed
-- **THEN** it fails and names the field
+- **GIVEN** `DRY_RUN=yes`
+- **WHEN** both paths build their reconciler configuration
+- **THEN** both report a dry run
 
 ### Requirement: Standalone Reconcile Alert Suppression
 
-`bosun reconcile` SHALL accept a `--no-alerts` flag. With the flag, the reconciler SHALL be built with no alert manager, so that no success, failure, interruption, unhealthy, or recovery alert is sent, regardless of alert environment variables or project alert configuration. The command SHALL report that alerts are disabled.
+`bosun reconcile` SHALL accept a `--no-alerts` flag. With the flag, the reconciler SHALL be built with no alert manager, so that no success, failure, interruption, unhealthy, or recovery alert is sent, regardless of alert environment variables or project alert configuration. With the flag, the command SHALL NOT report configured alert providers, and SHALL state that alerts are disabled.
 
 `--dry-run` SHALL NOT imply `--no-alerts`. Without the flag, alert behavior SHALL be unchanged, for dry runs and real runs alike.
 
 #### Scenario: Failing dry run with alerts suppressed
 
 - **GIVEN** `DISCORD_WEBHOOK_URL` points at a reachable webhook receiver
-- **AND** the repository cannot be synchronized, so the run fails
+- **AND** the repository passes authentication validation but cannot be cloned, so the run fails
 - **WHEN** `bosun reconcile --dry-run --no-alerts` runs
 - **THEN** the receiver gets no request
 
@@ -63,9 +66,16 @@ The test SHALL fail when:
 
 - **GIVEN** no alert environment variables
 - **AND** `bosun.yaml` configures `alerts.discord_webhook_url` pointing at a reachable webhook receiver
-- **AND** the repository cannot be synchronized, so the run fails
+- **AND** the same failing repository
 - **WHEN** `bosun reconcile --dry-run --no-alerts` runs
 - **THEN** the receiver gets no request
+
+#### Scenario: Suppression is announced, not implied
+
+- **GIVEN** `DISCORD_WEBHOOK_URL` is set
+- **WHEN** `bosun reconcile --no-alerts` runs
+- **THEN** the output says alerts are disabled
+- **AND** it does not list configured alert providers
 
 #### Scenario: Dry run alone keeps alerting
 
