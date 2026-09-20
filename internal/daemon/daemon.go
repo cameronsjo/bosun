@@ -104,6 +104,11 @@ type Config struct {
 	// errors that must fail startup instead of using graceful degradation.
 	projectConfigError error
 
+	// secretsFilesError retains a secrets-list variable that was set but named
+	// no file; ValidateConfig fails startup on it rather than reconciling with
+	// no secrets at all.
+	secretsFilesError error
+
 	// Timeout settings
 	ReconcileTimeout time.Duration // Max time for a reconcile operation (default: 10m)
 	ShutdownTimeout  time.Duration // Max time for graceful shutdown (default: 30s)
@@ -2014,14 +2019,7 @@ func versionOrDev(v string) string {
 // or as bare seconds if no unit suffix is present (e.g. "30" -> 30s).
 // Returns the parsed duration and true, or zero and false if parsing fails.
 func parseDurationOrSeconds(s string) (time.Duration, bool) {
-	if d, err := time.ParseDuration(s); err == nil {
-		return d, true
-	}
-	// Treat as bare number of seconds
-	if d, err := time.ParseDuration(s + "s"); err == nil {
-		return d, true
-	}
-	return 0, false
+	return config.ParseDurationValue(s)
 }
 
 func warnRestartBreakerSampling(logger zerolog.Logger, driftInterval, restartWindow time.Duration) {
@@ -2137,11 +2135,13 @@ func ConfigFromEnv() *Config {
 		rcfg.TargetHost = target
 	}
 
-	if secrets := os.Getenv("SECRETS_FILES"); secrets != "" {
-		rcfg.SecretsFiles = splitAndTrim(secrets)
-	}
-	if secrets := os.Getenv("BOSUN_SECRETS_FILE"); secrets != "" {
-		rcfg.SecretsFiles = splitAndTrim(secrets)
+	// A set-but-names-nothing value is refused here too: an empty list skips
+	// SOPS entirely, and the daemon would deploy templates rendered with blank
+	// secret values. ValidateConfig turns this into a startup failure.
+	if secretsFiles, secretsSet, err := config.SecretsFilesFromEnv(os.LookupEnv); err != nil {
+		cfg.secretsFilesError = err
+	} else if secretsSet {
+		rcfg.SecretsFiles = secretsFiles
 	}
 
 	rcfg.DryRun = parseBoolVal(os.Getenv("DRY_RUN"), false)
@@ -2511,27 +2511,12 @@ func ConfigFromEnv() *Config {
 // Using a single helper prevents the scattered patterns ("== true", "!= false && != 0")
 // from diverging and ensures "no"/"yes" work everywhere (GH #263).
 func parseBoolVal(v string, defaultVal bool) bool {
-	switch strings.ToLower(v) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return defaultVal
-	}
+	return config.ParseBoolValue(v, defaultVal)
 }
 
 // splitAndTrim splits a comma-separated string and trims whitespace.
 func splitAndTrim(s string) []string {
-	parts := strings.Split(s, ",")
-	result := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			result = append(result, p)
-		}
-	}
-	return result
+	return config.SplitAndTrim(s)
 }
 
 func parseSocketAllowedUIDs(value string) ([]uint32, error) {
@@ -2562,6 +2547,9 @@ func ValidateConfig(cfg *Config) error {
 	var errs []string
 	if cfg.projectConfigError != nil {
 		errs = append(errs, cfg.projectConfigError.Error())
+	}
+	if cfg.secretsFilesError != nil {
+		errs = append(errs, cfg.secretsFilesError.Error())
 	}
 
 	if cfg.Port < 1 || cfg.Port > 65535 {

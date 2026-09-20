@@ -24,11 +24,12 @@ import (
 )
 
 var (
-	reconcileDryRun bool
-	reconcileForce  bool
-	reconcileLocal  bool
-	reconcileRemote string
-	reconcileTarget string
+	reconcileDryRun   bool
+	reconcileForce    bool
+	reconcileLocal    bool
+	reconcileRemote   string
+	reconcileTarget   string
+	reconcileNoAlerts bool
 )
 
 // reconcileCmd represents the reconcile command.
@@ -50,6 +51,7 @@ var reconcileCmd = &cobra.Command{
 Configuration is loaded from environment variables:
   REPO_URL        - Git repository URL (required)
   REPO_BRANCH     - Git branch to track (default: main)
+  BOSUN_INFRA_DIR - Infrastructure subdirectory holding compose/ and appdata/
   BOSUN_GIT_USERNAME - Private HTTPS Git username (set with BOSUN_GIT_TOKEN)
   BOSUN_GIT_TOKEN    - Private HTTPS Git token (set with BOSUN_GIT_USERNAME)
   DEPLOY_TARGET   - Target host for remote deployment (e.g., root@192.168.1.8)
@@ -71,6 +73,7 @@ func init() {
 	reconcileCmd.Flags().BoolVarP(&reconcileLocal, "local", "l", false, "Force local deployment mode")
 	reconcileCmd.Flags().StringVarP(&reconcileRemote, "remote", "r", "", "Target host for remote deployment (e.g., root@192.168.1.8)")
 	reconcileCmd.Flags().StringVarP(&reconcileTarget, "target", "t", "", "Reconcile a single named target (from bosun.yaml targets: section)")
+	reconcileCmd.Flags().BoolVar(&reconcileNoAlerts, "no-alerts", false, "Send no alerts, whatever the alert configuration says (--dry-run does not imply this)")
 
 	rootCmd.AddCommand(reconcileCmd)
 }
@@ -164,15 +167,34 @@ func prepareStateFileForCLIRunWithSave(stateFile string, dryRun bool, saveState 
 	return scratchFile, cleanup, nil
 }
 
-func runReconcile(cmd *cobra.Command, args []string) {
-	// Build configuration from environment and flags.
+// envBoolOrWarn reads one unprefixed boolean variable. A value that is set but
+// not a boolean is reported: silently taking the default is how "why did a dry
+// run deploy?" ends up with no evidence.
+func envBoolOrWarn(name string) bool {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return false
+	}
+	value, ok := config.ParseBoolStrict(raw)
+	if !ok {
+		log.Warn().Str("env", name).Str("value", raw).Msg("Unrecognized boolean value; treating as false")
+		return false
+	}
+	return value
+}
+
+// buildReconcileConfigFromEnv assembles the one-shot reconciler configuration
+// from the environment, the project config and this command's flags. It is
+// separate from runReconcile so the CLI/daemon parity test can build a config
+// without running a reconciliation, and it returns errors instead of calling
+// ui.Fatal for the same reason.
+func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 	cfg := reconcile.DefaultConfig()
 
 	// Required: repo URL. BOSUN_REPO_URL takes precedence over legacy REPO_URL.
 	cfg.RepoURL = config.BosunEnv("REPO_URL")
 	if cfg.RepoURL == "" {
-		ui.Fatal("BOSUN_REPO_URL (or legacy REPO_URL) environment variable is required")
-		return
+		return nil, errors.New("BOSUN_REPO_URL (or legacy REPO_URL) environment variable is required")
 	}
 	// Optional settings from environment.
 	if branch := config.BosunEnv("REPO_BRANCH"); branch != "" {
@@ -197,19 +219,25 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		cfg.RemoteAppdataPath = remoteAppdata
 	}
 
-	// Secret files from environment.
-	if secretsFiles := os.Getenv("SECRETS_FILES"); secretsFiles != "" {
-		cfg.SecretsFiles = strings.Split(secretsFiles, ",")
-		for i, f := range cfg.SecretsFiles {
-			cfg.SecretsFiles[i] = strings.TrimSpace(f)
-		}
+	// Secret files from environment. config.SplitAndTrim is the daemon's own
+	// parser: both paths must read these the same way.
+	//
+	// A set-but-all-empty value is refused rather than silently yielding no
+	// secrets: reconciling with an empty list skips SOPS entirely and renders
+	// templates with empty secret values, which then deploy.
+	secretsFiles, secretsSet, err := config.SecretsFilesFromEnv(os.LookupEnv)
+	if err != nil {
+		return nil, err
 	}
-	if secretsFile := os.Getenv("BOSUN_SECRETS_FILE"); secretsFile != "" {
-		cfg.SecretsFiles = []string{strings.TrimSpace(secretsFile)}
+	if secretsSet {
+		cfg.SecretsFiles = secretsFiles
 	}
-	if err := validateReconcileStartup(cfg); err != nil {
-		ui.Fatal("Invalid reconciliation configuration: %v", err)
-		return
+
+	// Infrastructure directory, the same read the daemon does. Without it a
+	// CLI dry run renders from the repo root while the daemon renders from
+	// <infra dir>, so the two produce different staging trees.
+	if infraDir := os.Getenv("BOSUN_INFRA_DIR"); infraDir != "" {
+		cfg.InfraSubDir = infraDir
 	}
 
 	// Target host from environment or flags.
@@ -225,16 +253,18 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		cfg.DeployMode = "local"
 	}
 
-	// Dry run from environment or flags.
-	if os.Getenv("DRY_RUN") == "true" {
+	// Dry run from environment or flags. Same boolean spellings as the daemon:
+	// a DRY_RUN=yes environment must not make the one-shot deploy for real.
+	if envBoolOrWarn("DRY_RUN") {
 		cfg.DryRun = true
 	}
 	if reconcileDryRun {
 		cfg.DryRun = true
 	}
 
-	// Force from environment or flags.
-	if os.Getenv("FORCE") == "true" {
+	// Force from environment or flags, with the same grammar as DRY_RUN: two
+	// adjacent variables must not disagree about what a boolean is.
+	if envBoolOrWarn("FORCE") {
 		cfg.Force = true
 	}
 	if reconcileForce {
@@ -249,13 +279,18 @@ func runReconcile(cmd *cobra.Command, args []string) {
 	// Load post-sync hooks, settle delay, and deploy paths from project config file.
 	projectCfg, projectCfgErr := config.Load()
 	if errors.Is(projectCfgErr, config.ErrInvalidPostSyncHooks) {
-		ui.Fatal("Invalid configuration: %v", projectCfgErr)
-		return
+		return nil, fmt.Errorf("invalid configuration: %w", projectCfgErr)
 	}
 	if projectCfgErr == nil {
 		config.ApplyInitialHookConfig(projectCfg, cfg)
 		cfg.DeployPaths.SetFromFile(projectCfg.DeployPaths())
 		cfg.TemplateIncludeDir = projectCfg.TemplateIncludeDir()
+		// The alert gates are a user-set key, and the daemon honors them at
+		// startup (daemon.go's alertCfg block). Without this the CLI runs on
+		// the built-in defaults until the post-clone config reload, so a run
+		// that fails before that alerts even with on_failure: false.
+		alertCfg := projectCfg.GetAlertConfig()
+		cfg.OnFailure, cfg.OnSuccess, cfg.OnRecovery = alertCfg.OnFailure, alertCfg.OnSuccess, alertCfg.OnRecovery
 	}
 
 	// Wire config reloader so the reconciler can re-read bosun.yaml from the repo.
@@ -273,9 +308,7 @@ func runReconcile(cmd *cobra.Command, args []string) {
 
 	// Environment variable override for hook settle delay.
 	if v := os.Getenv("BOSUN_HOOK_SETTLE_DELAY"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.HookSettleDelay.SetFromEnv(d)
-		} else if d, err := time.ParseDuration(v + "s"); err == nil {
+		if d, ok := config.ParseDurationValue(v); ok {
 			cfg.HookSettleDelay.SetFromEnv(d)
 		} else {
 			log.Warn().Str("value", v).Msg("Failed to parse BOSUN_HOOK_SETTLE_DELAY, ignoring")
@@ -299,6 +332,45 @@ func runReconcile(cmd *cobra.Command, args []string) {
 
 	// Set source for state tracking.
 	cfg.Source = "cli"
+
+	// Load targets and operational defaults from project config if available.
+	if projectCfgErr == nil {
+		if len(cfg.Targets) == 0 {
+			if targets := projectCfg.Targets(); len(targets) > 0 {
+				cfg.Targets = targets
+			}
+		}
+		// Hydrate base config with project-level operational defaults so
+		// ConfigForTarget can inherit them for named targets.
+		if len(cfg.CriticalContainers.Value) == 0 && !cfg.CriticalContainers.FromEnv() {
+			cfg.CriticalContainers.SetFromFile(projectCfg.CriticalContainers())
+		}
+		if len(cfg.DeploySyncPaths.Value) == 0 && !cfg.DeploySyncPaths.FromEnv() {
+			cfg.DeploySyncPaths.SetFromFile(projectCfg.DeploySyncPaths())
+		}
+		if len(cfg.DeploySyncExclude.Value) == 0 && !cfg.DeploySyncExclude.FromEnv() {
+			cfg.DeploySyncExclude.SetFromFile(projectCfg.DeploySyncExclude())
+		}
+	}
+
+	// BOSUN_TARGETS env var overrides config file targets.
+	if v := os.Getenv("BOSUN_TARGETS"); v != "" {
+		applyTargetsOverrideForCLI(cfg, v)
+	}
+
+	return cfg, nil
+}
+
+func runReconcile(cmd *cobra.Command, args []string) {
+	cfg, err := buildReconcileConfigFromEnv()
+	if err != nil {
+		ui.Fatal("%v", err)
+		return
+	}
+	if err := validateReconcileStartup(cfg); err != nil {
+		ui.Fatal("Invalid reconciliation configuration: %v", err)
+		return
+	}
 
 	// Initialize OpenTelemetry tracing (noop if BOSUN_OTEL_ENDPOINT is unset).
 	initCtx := context.Background()
@@ -334,38 +406,7 @@ func runReconcile(cmd *cobra.Command, args []string) {
 		safeCancel()
 	}()
 
-	// Load targets and operational defaults from project config if available.
-	if projectCfgErr == nil {
-		if len(cfg.Targets) == 0 {
-			if targets := projectCfg.Targets(); len(targets) > 0 {
-				cfg.Targets = targets
-			}
-		}
-		// Hydrate base config with project-level operational defaults so
-		// ConfigForTarget can inherit them for named targets.
-		if len(cfg.CriticalContainers.Value) == 0 && !cfg.CriticalContainers.FromEnv() {
-			cfg.CriticalContainers.SetFromFile(projectCfg.CriticalContainers())
-		}
-		if len(cfg.DeploySyncPaths.Value) == 0 && !cfg.DeploySyncPaths.FromEnv() {
-			cfg.DeploySyncPaths.SetFromFile(projectCfg.DeploySyncPaths())
-		}
-		if len(cfg.DeploySyncExclude.Value) == 0 && !cfg.DeploySyncExclude.FromEnv() {
-			cfg.DeploySyncExclude.SetFromFile(projectCfg.DeploySyncExclude())
-		}
-	}
-
-	// BOSUN_TARGETS env var overrides config file targets.
-	if v := os.Getenv("BOSUN_TARGETS"); v != "" {
-		applyTargetsOverrideForCLI(cfg, v)
-	}
-
-	// Set up alert manager.
-	alerter := createAlertManager()
-
-	opts := []reconcile.ReconcilerOption{}
-	if alerter != nil {
-		opts = append(opts, reconcile.WithAlerter(alerter))
-	}
+	opts := reconcilerOptionsForCLI()
 
 	// Resolve targets and optionally filter by --target flag.
 	targets, targetsErr := cfg.ResolveTargets()
@@ -453,6 +494,22 @@ func applyTargetsOverrideForCLI(cfg *reconcile.Config, value string) {
 	})
 	cfg.Targets = targets
 	cfg.TargetsFromEnv = true
+}
+
+// reconcilerOptionsForCLI builds the reconciler options for a one-shot run.
+// --no-alerts skips building the alert manager entirely: createAlertManager
+// prints the configured providers, which would contradict the flag, and a
+// manager that exists can still be reached by a later code path.
+func reconcilerOptionsForCLI() []reconcile.ReconcilerOption {
+	opts := []reconcile.ReconcilerOption{}
+	if reconcileNoAlerts {
+		ui.Info("Alerts disabled (--no-alerts)")
+		return opts
+	}
+	if alerter := createAlertManager(); alerter != nil {
+		opts = append(opts, reconcile.WithAlerter(alerter))
+	}
+	return opts
 }
 
 // createAlertManager creates an alert manager with configured providers.
