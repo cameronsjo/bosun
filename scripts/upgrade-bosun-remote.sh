@@ -408,10 +408,20 @@ services:
   $SERVICE:
     image: "$image"
     # root, to read the root-owned 0600 key files; no capabilities beyond that.
+    # Reading those is an ordinary owner-permitted read, so it needs none.
     user: "0:0"
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     network_mode: bridge
+    # The reconcile lock path is fixed in target.go and lives in the image at
+    # /run/bosun, owned by uid 1000. Dropping ALL takes CAP_DAC_OVERRIDE with
+    # it, and without that capability uid 0 is subject to ordinary permission
+    # checks -- so root cannot write there and every render fails to take the
+    # lock. A tmpfs mounts root-owned 0755, which root writes with no
+    # capability at all, so the drop stays total. /var/run is a symlink to
+    # /run in this image; mount the real path.
+    tmpfs:
+      - /run/bosun
     environment:
 $env_yaml
       DRY_RUN: "true"
