@@ -355,6 +355,15 @@ run_remote --yes
 assert_rc 0; assert_out "RENDER-IDENTICAL"; assert_out "WARNING this is a DOWNGRADE: 1.0.0 -> 1.0.0-rc.1"
 assert_out "DECLINED"; assert_no_calls "up -d"; [[ "$(running_role)" == incumbent ]] || fail "cut over to a prerelease"; ok
 
+# sort -V puts alpha-1 before alpha.1; SemVer puts alpha.1 first. Rather than
+# hand-write the comparator, two different prereleases of one version are
+# undecided and always prompt, so --yes cannot carry either direction through.
+new_case prereleases-of-one-version-always-prompt "ghcr.io/cameronsjo/bosun:1.0.0-alpha-1@$CAND_DIGEST"
+export FAKE_INC_VERSION=1.0.0-alpha.1 FAKE_CAND_IMAGE_VERSION=1.0.0-alpha-1 FAKE_CAND_VERSION=1.0.0-alpha-1
+run_remote --yes
+assert_rc 0; assert_out "order undecided: 1.0.0-alpha.1 -> 1.0.0-alpha-1"; assert_out "DECLINED"
+assert_no_calls "up -d"; [[ "$(running_role)" == incumbent ]] || fail "moved between prereleases unprompted"; ok
+
 new_case candidate-tag-digest-mismatch
 export FAKE_CAND_IMAGE_VERSION=0.41.0
 run_remote --yes

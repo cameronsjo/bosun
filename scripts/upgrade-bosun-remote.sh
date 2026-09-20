@@ -56,7 +56,7 @@ RUN_ID="$(date -u +%Y%m%dt%H%M%Sz)-$$"
 # Environment a shadow render may see. Everything else in the live service's
 # environment -- alert webhooks, tokens, Sentry, OTel, the webhook secret -- is
 # dropped. The container also gets no docker socket and no view of appdata
-# (whose bosun/.env holds those secrets); see write_override.
+# (whose bosun/.env holds those secrets); see write_shadow.
 ENV_ALLOWLIST='["TZ","BOSUN_REPO_URL","REPO_URL","BOSUN_REPO_BRANCH","REPO_BRANCH","BOSUN_INFRA_DIR","BOSUN_TARGETS","BOSUN_SECRETS_FILE","SECRETS_FILES","SOPS_AGE_KEY_FILE","BOSUN_SSH_KEY","BOSUN_SSH_KNOWN_HOSTS","BOSUN_GIT_FETCH_DEPTH","BOSUN_DEPLOY_PATHS","BOSUN_DEPLOY_SYNC_PATHS","BOSUN_DEPLOY_SYNC_EXCLUDE","BOSUN_TEMPLATE_INCLUDE_DIR"]'
 # Kept byte-identical with upgrade-bosun.sh; the test suite checks it.
 REF_RE='^[a-z0-9][a-z0-9./_-]*(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$'
@@ -145,10 +145,19 @@ release_version() {
   tag="${tag#v}"
   if [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then printf '%s' "$tag"; fi
 }
-# semver_lt succeeds when $1 precedes $2 under SemVer precedence. sort -V
-# orders the X.Y.Z cores correctly but puts a prerelease after its own release,
-# which is backwards, so the prerelease part is decided here instead.
-semver_lt() {
+# needs_downgrade_prompt answers the only version question this script asks:
+# may --yes move from $2 to $1 without stopping? It is not a general comparator,
+# and it fails closed -- an undecidable pair prompts.
+#
+# sort -V orders the X.Y.Z cores correctly but puts a prerelease after its own
+# release, which is backwards, so the prerelease part is decided here. Two
+# different prereleases of the same core are not decided at all: the SemVer rule
+# compares dot-separated identifiers with numeric and ASCII parts ordered
+# differently, sort -V disagrees with it (it puts alpha-1 before alpha.1), and a
+# hand-written comparator is more ways to be wrong than this is worth. They
+# prompt instead. The cost is one keystroke on an rc-to-rc move; the cost of
+# guessing is a silent downgrade, which is what this guard exists to stop.
+needs_downgrade_prompt() {
   local a="${1%%+*}" b="${2%%+*}"   # build metadata carries no precedence
   local a_core="${a%%-*}" b_core="${b%%-*}" a_pre="" b_pre=""
   if [[ "$a" == *-* ]]; then a_pre="${a#*-}"; fi
@@ -160,10 +169,9 @@ semver_lt() {
   # Same core: a release outranks every prerelease of it.
   if [[ -z "$a_pre" ]]; then return 1; fi
   if [[ -z "$b_pre" ]]; then return 0; fi
-  # Both prerelease. sort -V on the dot-separated identifiers is not the full
-  # SemVer rule, but it never has to choose between a prerelease and a release.
-  [[ "$a_pre" != "$b_pre" &&
-    "$(printf '%s\n%s\n' "$a_pre" "$b_pre" | sort -V | head -n1)" == "$a_pre" ]]
+  # 2, not 0: it prompts either way, but the operator is told which it is.
+  if [[ "$a_pre" != "$b_pre" ]]; then return 2; fi
+  return 1
 }
 to_epoch() {
   [[ -n "$1" ]] || return 1
@@ -781,9 +789,14 @@ main() {
   DOWNGRADE=0
   local running_version="${cand_version#bosun version }"
   if [[ "$running_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ && "$running_version" != "$INCUMBENT_VERSION" ]]; then
-    if semver_lt "$running_version" "$INCUMBENT_VERSION"; then
+    local verdict=0
+    needs_downgrade_prompt "$running_version" "$INCUMBENT_VERSION" || verdict=$?
+    if [[ "$verdict" -eq 0 ]]; then
       DOWNGRADE=1
       say "  WARNING this is a DOWNGRADE: $INCUMBENT_VERSION -> $(printable "$running_version")"
+    elif [[ "$verdict" -eq 2 ]]; then
+      DOWNGRADE=1
+      say "  WARNING two prereleases of the same version, order undecided: $INCUMBENT_VERSION -> $(printable "$running_version")"
     fi
   fi
   local cfg inc_flag inc_commit="" cand_commit
