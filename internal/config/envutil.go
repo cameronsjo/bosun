@@ -111,15 +111,28 @@ func SplitAndTrim(s string) []string {
 	return result
 }
 
-// SecretsFilesFromEnv parses a secrets-list variable. A value that is set but
-// names nothing is an error on every path: an empty list skips SOPS entirely,
-// so templates render with blank secret values and deploy.
-func SecretsFilesFromEnv(name, raw string) ([]string, error) {
-	files := SplitAndTrim(raw)
-	if len(files) == 0 {
-		return nil, fmt.Errorf("%s is set but names no secrets file", name)
+// SecretsFilesFromEnv resolves the secrets list from the environment. It
+// prefers BOSUN_SECRETS_FILE and falls back to the legacy SECRETS_FILES,
+// matching BosunEnv's precedence, and reads only the effective one: a
+// malformed legacy value must not reject a valid preferred one.
+//
+// A variable that exists but names no file is an error, empty string
+// included. An empty list skips SOPS entirely, so templates render with blank
+// secret values and deploy; "no secrets" is expressed by leaving the variable
+// unset, not by setting it empty. ok is false when neither is set.
+func SecretsFilesFromEnv(lookup func(string) (string, bool)) (files []string, ok bool, err error) {
+	for _, name := range []string{"BOSUN_SECRETS_FILE", "SECRETS_FILES"} {
+		raw, present := lookup(name)
+		if !present {
+			continue
+		}
+		parsed := SplitAndTrim(raw)
+		if len(parsed) == 0 {
+			return nil, true, fmt.Errorf("%s is set but names no secrets file; unset it to run without secrets", name)
+		}
+		return parsed, true, nil
 	}
-	return files, nil
+	return nil, false, nil
 }
 
 // BosunEnvDuration parses BosunEnv(name) as a time.Duration.

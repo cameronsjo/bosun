@@ -2138,17 +2138,10 @@ func ConfigFromEnv() *Config {
 	// A set-but-names-nothing value is refused here too: an empty list skips
 	// SOPS entirely, and the daemon would deploy templates rendered with blank
 	// secret values. ValidateConfig turns this into a startup failure.
-	for _, name := range []string{"SECRETS_FILES", "BOSUN_SECRETS_FILE"} {
-		raw := os.Getenv(name)
-		if raw == "" {
-			continue
-		}
-		files, err := config.SecretsFilesFromEnv(name, raw)
-		if err != nil {
-			cfg.secretsFilesError = err
-			continue
-		}
-		rcfg.SecretsFiles = files
+	if secretsFiles, secretsSet, err := config.SecretsFilesFromEnv(os.LookupEnv); err != nil {
+		cfg.secretsFilesError = err
+	} else if secretsSet {
+		rcfg.SecretsFiles = secretsFiles
 	}
 
 	rcfg.DryRun = parseBoolVal(os.Getenv("DRY_RUN"), false)

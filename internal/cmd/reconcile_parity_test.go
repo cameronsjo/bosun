@@ -244,8 +244,13 @@ func TestReconcileConfigRefusesEmptySecretsList(t *testing.T) {
 			resetReconcileFlags(t)
 			t.Chdir(t.TempDir())
 			t.Setenv("BOSUN_REPO_URL", "git@github.com:cameronsjo/homelab.git")
-			t.Setenv("SECRETS_FILES", "")
-			t.Setenv("BOSUN_SECRETS_FILE", "")
+			// Only the variable under test is present: an empty value is now
+			// "configured", so leaving the other one set would test the wrong
+			// name. t.Setenv registers the restore; Unsetenv then removes it.
+			for _, other := range []string{"SECRETS_FILES", "BOSUN_SECRETS_FILE"} {
+				t.Setenv(other, "placeholder")
+				require.NoError(t, os.Unsetenv(other))
+			}
 			t.Setenv(name, " , ")
 
 			_, err := buildReconcileConfigFromEnv()

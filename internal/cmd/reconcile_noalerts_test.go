@@ -95,9 +95,10 @@ func runFailingReconcile(t *testing.T, configure func(t *testing.T, dir, webhook
 	t.Setenv("LOG_DIR", filepath.Join(dir, "logs"))
 	t.Setenv("BOSUN_STATE_DIR", filepath.Join(dir, "state"))
 
-	restore := reconcileNoAlerts
+	// Every flag global, not just this one: the builder reads --remote and
+	// --local too, and a prior command test leaves them set.
+	resetReconcileFlags(t)
 	reconcileNoAlerts = noAlerts
-	t.Cleanup(func() { reconcileNoAlerts = restore })
 
 	cfg, err := buildReconcileConfigFromEnv()
 	require.NoError(t, err)
@@ -114,8 +115,7 @@ func runFailingReconcile(t *testing.T, configure func(t *testing.T, dir, webhook
 }
 
 func TestReconcileNoAlertsIsNotImpliedByDryRun(t *testing.T) {
-	restore := reconcileNoAlerts
-	t.Cleanup(func() { reconcileNoAlerts = restore })
+	resetReconcileFlags(t)
 	// Away from the repo's own bosun.yaml: otherwise an ambient provider, not
 	// the variable set below, could satisfy the assertion.
 	t.Chdir(t.TempDir())

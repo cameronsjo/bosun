@@ -225,16 +225,12 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 	// A set-but-all-empty value is refused rather than silently yielding no
 	// secrets: reconciling with an empty list skips SOPS entirely and renders
 	// templates with empty secret values, which then deploy.
-	for _, name := range []string{"SECRETS_FILES", "BOSUN_SECRETS_FILE"} {
-		raw := os.Getenv(name)
-		if raw == "" {
-			continue
-		}
-		files, err := config.SecretsFilesFromEnv(name, raw)
-		if err != nil {
-			return nil, err
-		}
-		cfg.SecretsFiles = files
+	secretsFiles, secretsSet, err := config.SecretsFilesFromEnv(os.LookupEnv)
+	if err != nil {
+		return nil, err
+	}
+	if secretsSet {
+		cfg.SecretsFiles = secretsFiles
 	}
 
 	// Infrastructure directory, the same read the daemon does. Without it a

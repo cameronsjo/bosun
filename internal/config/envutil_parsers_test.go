@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -78,12 +79,45 @@ func TestSplitAndTrim(t *testing.T) {
 // empty list: an empty list skips SOPS, so templates render with blank secret
 // values and deploy.
 func TestSecretsFilesFromEnv(t *testing.T) {
-	files, err := SecretsFilesFromEnv("SECRETS_FILES", " a.sops.yaml ,b.sops.yaml")
-	require.NoError(t, err)
-	require.Equal(t, []string{"a.sops.yaml", "b.sops.yaml"}, files)
+	lookup := func(env map[string]string) func(string) (string, bool) {
+		return func(name string) (string, bool) {
+			v, ok := env[name]
+			return v, ok
+		}
+	}
 
-	for _, raw := range []string{" ", ",", " , ", ",,"} {
-		_, err := SecretsFilesFromEnv("BOSUN_SECRETS_FILE", raw)
-		require.ErrorContains(t, err, "BOSUN_SECRETS_FILE is set but names no secrets file", "input %q", raw)
+	t.Run("neither set", func(t *testing.T) {
+		files, ok, err := SecretsFilesFromEnv(lookup(map[string]string{}))
+		require.NoError(t, err)
+		require.False(t, ok)
+		require.Nil(t, files)
+	})
+
+	t.Run("legacy is parsed when the preferred name is absent", func(t *testing.T) {
+		files, ok, err := SecretsFilesFromEnv(lookup(map[string]string{"SECRETS_FILES": " a.yaml ,,b.yaml"}))
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Equal(t, []string{"a.yaml", "b.yaml"}, files)
+	})
+
+	// Precedence, and the reason it is read first: a malformed legacy value
+	// must not reject a valid preferred one.
+	t.Run("preferred wins over a malformed legacy value", func(t *testing.T) {
+		files, ok, err := SecretsFilesFromEnv(lookup(map[string]string{
+			"BOSUN_SECRETS_FILE": "good.yaml",
+			"SECRETS_FILES":      " , ",
+		}))
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Equal(t, []string{"good.yaml"}, files)
+	})
+
+	// An explicitly empty value is configured, not absent.
+	for _, raw := range []string{"", " ", ",", " , ", ",,"} {
+		t.Run("refuses "+strconv.Quote(raw), func(t *testing.T) {
+			_, ok, err := SecretsFilesFromEnv(lookup(map[string]string{"BOSUN_SECRETS_FILE": raw}))
+			require.True(t, ok)
+			require.ErrorContains(t, err, "BOSUN_SECRETS_FILE is set but names no secrets file")
+		})
 	}
 }
