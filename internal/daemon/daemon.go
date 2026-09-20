@@ -2511,27 +2511,12 @@ func ConfigFromEnv() *Config {
 // Using a single helper prevents the scattered patterns ("== true", "!= false && != 0")
 // from diverging and ensures "no"/"yes" work everywhere (GH #263).
 func parseBoolVal(v string, defaultVal bool) bool {
-	switch strings.ToLower(v) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return defaultVal
-	}
+	return config.ParseBoolValue(v, defaultVal)
 }
 
 // splitAndTrim splits a comma-separated string and trims whitespace.
 func splitAndTrim(s string) []string {
-	parts := strings.Split(s, ",")
-	result := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			result = append(result, p)
-		}
-	}
-	return result
+	return config.SplitAndTrim(s)
 }
 
 func parseSocketAllowedUIDs(value string) ([]uint32, error) {

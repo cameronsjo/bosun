@@ -55,6 +55,40 @@ func BosunEnvBool(name string, defaultVal bool) bool {
 	}
 }
 
+// ParseBoolValue parses an already-read string as a boolean, with the same
+// spellings as BosunEnvBool:
+//
+//	"1", "true", "yes", "on"      -> true  (case-insensitive)
+//	"0", "false", "no", "off"     -> false (case-insensitive)
+//	anything else                 -> defaultVal
+//
+// It exists so the daemon and the one-shot CLI cannot drift on a variable
+// they both read directly, such as DRY_RUN.
+func ParseBoolValue(v string, defaultVal bool) bool {
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultVal
+	}
+}
+
+// SplitAndTrim splits a comma-separated list, trims each entry and drops the
+// empty ones. Shared by the daemon and the one-shot CLI so a list-valued
+// variable parses the same on both paths.
+func SplitAndTrim(s string) []string {
+	parts := strings.Split(s, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
 // BosunEnvDuration parses BosunEnv(name) as a time.Duration.
 // Accepts bare integers (treated as seconds) for backward compatibility with
 // legacy POLL_INTERVAL config that used raw seconds — equivalent to appending

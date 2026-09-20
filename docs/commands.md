@@ -758,6 +758,12 @@ bosun reconcile --target=nas
 | `-l`, `--local` | Force local deployment mode |
 | `-r`, `--remote` | Target host for remote deployment |
 | `--target` | Reconcile a single named target (from `targets:` config) |
+| `--no-alerts` | Send no alerts, whatever the alert configuration says |
+
+`--no-alerts` builds the reconciler with no alert manager, so no success,
+failure, interruption, unhealthy or recovery alert is sent, and configured
+providers are not listed. `--dry-run` does **not** imply it: a failing dry run
+alerts exactly like a failing real run unless you pass `--no-alerts` too.
 
 **Workflow:**
 
@@ -777,6 +783,7 @@ bosun reconcile --target=nas
 |----------|-------------|---------|
 | `REPO_URL` | Git repository URL | Required |
 | `REPO_BRANCH` | Git branch to track | `main` |
+| `BOSUN_INFRA_DIR` | Subdirectory holding `compose/` and `appdata/`, same read as the daemon | Repo root |
 | `BOSUN_GIT_USERNAME` | Private HTTPS Git Basic-auth username; requires `BOSUN_GIT_TOKEN` | Unset |
 | `BOSUN_GIT_TOKEN` | Private HTTPS Git Basic-auth password/token; requires `BOSUN_GIT_USERNAME` | Unset |
 | `REPO_DIR` | Local repo directory | `/app/repo` |
@@ -787,8 +794,13 @@ bosun reconcile --target=nas
 | `REMOTE_APPDATA` | Remote appdata path | `/mnt/user/appdata` |
 | `DEPLOY_TARGET` | Target host | Local if unset |
 | `SECRETS_FILES` | Comma-separated SOPS files | None |
-| `DRY_RUN` | Enable dry run | `false` |
+| `DRY_RUN` | Enable dry run (`1`/`true`/`yes`/`on`, as the daemon reads it) | `false` |
 | `FORCE` | Force deployment | `false` |
+
+`SECRETS_FILES` and `BOSUN_SECRETS_FILE` are both comma-separated, trimmed,
+with empty entries dropped — the same parsing the daemon applies. `REPO_DIR`,
+`STAGING_DIR`, `BACKUP_DIR`, `LOG_DIR`, `LOCAL_APPDATA` and `REMOTE_APPDATA` are
+read by the one-shot command only; the daemon's are fixed by its image.
 
 `BOSUN_GIT_USERNAME` and `BOSUN_GIT_TOKEN` authenticate both clone and fetch
 for an absolute HTTPS repository URL. Set both or neither; anonymous HTTPS is
