@@ -1857,12 +1857,19 @@ func (r *Reconciler) decryptSecrets(ctx context.Context) (map[string]any, error)
 		Int("file_count", len(r.config.SecretsFiles)).
 		Msg("Preparing to decrypt secrets")
 
-	ui.Info("Decrypting secrets...")
-
+	// The skip is announced before the "Decrypting secrets..." line, not after:
+	// a run that decrypts nothing must not first say that it is decrypting. It
+	// is a Warn rather than a Debug because the default level hides Debug, and
+	// a render that silently used no secrets still produces templated output
+	// that looks complete. A repo with no secrets is legitimate, so this
+	// reports rather than refuses.
 	if len(r.config.SecretsFiles) == 0 {
-		logger.Debug().Msg("No secret files configured, skipping decryption")
+		logger.Warn().Msg("No secrets file configured; rendering without secrets. Reason: neither BOSUN_SECRETS_FILE nor SECRETS_FILES is set")
+		ui.Warning("No secrets file configured - rendering without secrets")
 		return make(map[string]any), nil
 	}
+
+	ui.Info("Decrypting secrets...")
 
 	// Build full paths to secret files.
 	var files []string
