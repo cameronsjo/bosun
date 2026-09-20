@@ -270,6 +270,45 @@ func TestReconciler_DecryptSecrets(t *testing.T) {
 		assert.Empty(t, secrets)
 	})
 
+	// A repo with no secrets is legitimate, so this is a report and not a
+	// refusal. It has to be visible, though: the skip used to log at Debug,
+	// which the default level hides, and the render still produced templated
+	// output that looked complete. The upgrade canary reads exactly this log
+	// to decide whether two renders agreed, so a silent skip lets it call two
+	// undecrypted trees identical.
+	t.Run("no secrets files says so at a visible level", func(t *testing.T) {
+		var logs bytes.Buffer
+		logger := zerolog.New(&logs).Level(zerolog.WarnLevel)
+		ctx := logpkg.WithContext(context.Background(), &logger)
+
+		r := NewReconciler(&Config{SecretsFiles: nil})
+		r.sops = NewSOPSOps()
+
+		secrets, err := r.decryptSecrets(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, secrets)
+
+		out := logs.String()
+		assert.Contains(t, out, "rendering without secrets",
+			"a skipped decryption must be visible at the default level, not only at Debug")
+		assert.Contains(t, out, "BOSUN_SECRETS_FILE", "the message must name what to set")
+	})
+
+	// The control arm: a configured run must not emit the warning, or the
+	// assertion above would pass for every run and prove nothing.
+	t.Run("a configured secrets file does not warn", func(t *testing.T) {
+		var logs bytes.Buffer
+		logger := zerolog.New(&logs).Level(zerolog.WarnLevel)
+		ctx := logpkg.WithContext(context.Background(), &logger)
+
+		r := NewReconciler(&Config{RepoDir: t.TempDir(), SecretsFiles: []string{"absent.yaml"}})
+		r.sops = NewSOPSOps()
+
+		_, err := r.decryptSecrets(ctx)
+		require.Error(t, err, "the fixture file does not exist, so this run must fail past the skip")
+		assert.NotContains(t, logs.String(), "rendering without secrets")
+	})
+
 	t.Run("non-existent secrets file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		cfg := &Config{

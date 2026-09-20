@@ -133,7 +133,9 @@ decryption. Pre-create container file-bind sources because Docker can create a
 directory when the host source is missing. If secrets files are configured,
 the daemon and one-shot reconcile validate the identity before Git; the daemon
 does so before binding any listener. Without secrets files, no Age identity is
-required.
+required — the reconcile renders without secrets and warns that it did so,
+naming `BOSUN_SECRETS_FILE`. Treat that warning as the signal when a render
+looks complete but the secrets path was never exercised.
 
 SSH Git authentication parses the go-git endpoint, preserves its SSH username,
 and tries `SSH_AUTH_SOCK` before private-key files. The agent must return at
