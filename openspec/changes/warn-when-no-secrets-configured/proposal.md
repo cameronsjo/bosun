@@ -13,10 +13,13 @@ two ways that mislead:
   actively claims a decryption that does not happen.
 
 Found by the Opus security review gating the upgrade canary's first live run
-(#680). The canary renders the same commit twice and compares the trees; if
-neither role has a secrets variable, it reports `RENDER-IDENTICAL` for two
-undecrypted trees, which reads as a passed comparison. Any other consumer that
-treats a clean render as evidence the secrets path worked has the same gap.
+(#680). The canary renders the same commit twice and compares the trees. Two
+trees that both decrypted nothing compare equal, so it reports
+`RENDER-IDENTICAL` and that reads as a passed comparison. The canary does not
+parse this warning — the comparison is a tree diff — so the log line is the only
+thing that tells the operator, which is why it has to be visible by default.
+Any other consumer that treats a clean render as evidence the secrets path
+worked has the same gap.
 
 ## What Changes
 

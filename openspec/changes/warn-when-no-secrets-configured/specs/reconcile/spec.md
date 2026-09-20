@@ -20,7 +20,7 @@ prevent leaking sensitive information (partial keys, decrypted content).
 
 When no secrets file is configured, the reconciler SHALL proceed without secrets
 and SHALL report that it did so at a level visible under the default log level,
-naming the variable that would configure one. It SHALL NOT announce that
+naming every variable that would configure one. It SHALL NOT announce that
 decryption is starting on a run that decrypts nothing. A repository with no
 secrets is valid, so this is a report and not a refusal.
 
@@ -50,7 +50,7 @@ secrets is valid, so this is a report and not a refusal.
 
 - **WHEN** the secrets file list is empty
 - **THEN** decryption returns an empty map without error
-- **AND** a warning names `BOSUN_SECRETS_FILE` and states that rendering proceeds without secrets
+- **AND** a warning names `BOSUN_SECRETS_FILE` and `SECRETS_FILES` and states that rendering proceeds without secrets
 - **AND** no message claims that decryption is starting
 
 #### Scenario: Configured secrets file does not warn

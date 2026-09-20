@@ -1864,7 +1864,7 @@ func (r *Reconciler) decryptSecrets(ctx context.Context) (map[string]any, error)
 	// that looks complete. A repo with no secrets is legitimate, so this
 	// reports rather than refuses.
 	if len(r.config.SecretsFiles) == 0 {
-		logger.Warn().Msg("No secrets file configured; rendering without secrets. Reason: neither BOSUN_SECRETS_FILE nor a secrets_file config value is set")
+		logger.Warn().Msg("No secrets file configured; rendering without secrets. Reason: neither BOSUN_SECRETS_FILE nor SECRETS_FILES is set")
 		ui.Warning("No secrets file configured - rendering without secrets")
 		return make(map[string]any), nil
 	}
