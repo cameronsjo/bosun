@@ -354,11 +354,36 @@ acquire_lock() {
   printf '%s %s\n' "$$" "$boot" > "$LOCK/owner" 2>/dev/null || true
 }
 
+# assert_env_allowlist_is_tight refuses a live config where a dropped value
+# appears inside a kept one. The allowlist filters keys, but the values come
+# from `docker compose config`, which has already expanded every ${VAR} from
+# the project's .env -- the file holding the webhooks and tokens the allowlist
+# exists to drop. A compose file that writes ${DISCORD_WEBHOOK_URL} into an
+# allowlisted variable therefore carries the secret into the shadow, which has
+# a network. That is worth refusing whether it was a mistake or deliberate.
+# Only values of 12 characters or more are compared: a secret is long, and
+# matching short ones ("info", "99") would block honest configs.
+assert_env_allowlist_is_tight() {
+  local leaks
+  leaks="$(jq -r --argjson allow "$ENV_ALLOWLIST" '
+      .services.bosun.environment // {} | to_entries | map(select(.value != null))
+      | (map(select(.key as $k | $allow | index($k)))) as $kept
+      | (map(select(.key as $k | ($allow | index($k)) | not))
+         | map(select((.value | tostring | length) >= 12))) as $dropped
+      | [ $kept[] as $k | $dropped[] as $d
+          | select(($k.value | tostring) | contains($d.value | tostring))
+          | "\($d.key) inside \($k.key)" ] | unique | .[]' <<<"$1")" ||
+    die CONFIG "could not read the live environment out of $LIVE" 64
+  [[ -z "$leaks" ]] ||
+    die CONFIG "the live config expands a dropped variable into an allowlisted one, so the shadow would carry it: $(printable "$(tr '\n' ' ' <<<"$leaks")")" 64
+}
+
 # write_shadow emits a standalone compose file for one shadow role. It is an
 # allowlist: the service is built from scratch, never merged with the live
 # one, so nothing the live service carries (the docker socket, appdata,
 # capabilities, devices, cgroup rules, labels) can reach the shadow. Only
 # allowlisted env values and the two key paths are read from the live config.
+# The keys are filtered here; assert_env_allowlist_is_tight checks the values.
 # /mnt/appdata is an empty directory: deploy-mode detection only stats it, and
 # the real appdata holds bosun/.env with the secrets the env allowlist drops.
 write_shadow() {
@@ -492,7 +517,7 @@ watch_reconcile() {
       fi
     fi
     if (( $(date +%s) >= deadline )); then
-      say "  FAIL no reconcile finished within ${WATCH_TIMEOUT}s (last_reconcile=${lr:-null})"; return 1
+      say "  FAIL no reconcile finished within ${WATCH_TIMEOUT}s (last_reconcile=$(printable "${lr:-null}"))"; return 1
     fi
     sleep "$POLL_SECONDS"
   done
@@ -763,6 +788,7 @@ main() {
   fi
   local cfg inc_flag inc_commit="" cand_commit
   cfg="$(live_config)" || die CONFIG "docker compose config failed for $LIVE" 64
+  assert_env_allowlist_is_tight "$cfg"
   AGE_SRC="$(mount_source "$cfg" /config/age-key.txt)" || AGE_SRC=""
   DEPLOY_SRC="$(mount_source "$cfg" /config/deploy-key)" || DEPLOY_SRC=""
   if [[ -z "$AGE_SRC" || -z "$DEPLOY_SRC" ]]; then

@@ -370,6 +370,18 @@ jq '.services.bosun.volumes += [{source: "/other/age.txt", target: "/config/age-
 run_remote --dry-run
 assert_rc 64; assert_out "exactly one plain-path mount"; ok
 
+# The allowlist drops keys, but `docker compose config` has already expanded
+# every ${VAR} from the project's .env. A compose file that writes the webhook
+# URL into an allowlisted variable carries it into a shadow that has a network,
+# and --dry-run alone is enough to send it. Refuse, and do not echo the value.
+new_case env-allowlist-leaks-through-a-value
+jq '.services.bosun.environment.BOSUN_REPO_URL = "https://attacker.example/https://discord.example/hook.git"' \
+  "$F/live.json" > "$F/l" && mv "$F/l" "$F/live.json"
+run_remote --dry-run
+assert_rc 64; assert_out "DISCORD_WEBHOOK_URL inside BOSUN_REPO_URL"
+if command grep -q 'discord.example' "$OUT"; then fail "the refusal printed the secret it was refusing to leak"; fi
+[[ ! -f "$F/runs-candidate" && ! -f "$F/runs-incumbent" ]] || fail "rendered anyway"; ok
+
 new_case render-differs-declined
 export FAKE_CONTENT_CANDIDATE=RENDERED-SECRET-MARKER
 run_remote --yes
