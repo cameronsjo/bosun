@@ -112,7 +112,7 @@ case "$1" in
   exec)
     r="$(cat "$F/running_role")"
     if [[ "$*" == *--version* ]]; then
-      [[ "$r" == candidate ]] && echo "bosun version ${FAKE_CAND_VERSION:-0.43.0}" || echo "bosun version 0.42.3"
+      [[ "$r" == candidate ]] && echo "bosun version ${FAKE_CAND_VERSION:-0.43.0}" || echo "bosun version ${FAKE_INC_VERSION:-0.42.3}"
     else
       var="FAKE_STATUS_${r^^}"; e="$(/bin/date +%s)"
       case "${!var:-ok}" in
@@ -150,7 +150,7 @@ case "$1" in
     done
     r="$(role_of_ref "$img")"
     if [[ "$1" == --version ]]; then
-      [[ "$r" == candidate ]] && echo "bosun version ${FAKE_CAND_IMAGE_VERSION:-0.43.0}" || echo "bosun version 0.42.3"
+      [[ "$r" == candidate ]] && echo "bosun version ${FAKE_CAND_IMAGE_VERSION:-0.43.0}" || echo "bosun version ${FAKE_INC_VERSION:-0.42.3}"
       exit 0
     fi
     var="FAKE_NOALERTS_${r^^}"
@@ -347,6 +347,14 @@ export FAKE_CAND_IMAGE_VERSION=0.41.0 FAKE_CAND_VERSION=0.41.0
 run_remote --yes
 assert_rc 0; assert_out "WARNING this is a DOWNGRADE"; assert_out "DECLINED"; ok
 
+# SemVer puts 1.0.0-rc.1 before 1.0.0, and sort -V puts it after. Getting that
+# backwards let --yes cut over to a prerelease with no prompt at all.
+new_case downgrade-to-a-prerelease "ghcr.io/cameronsjo/bosun:1.0.0-rc.1@$CAND_DIGEST"
+export FAKE_INC_VERSION=1.0.0 FAKE_CAND_IMAGE_VERSION=1.0.0-rc.1 FAKE_CAND_VERSION=1.0.0-rc.1
+run_remote --yes
+assert_rc 0; assert_out "RENDER-IDENTICAL"; assert_out "WARNING this is a DOWNGRADE: 1.0.0 -> 1.0.0-rc.1"
+assert_out "DECLINED"; assert_no_calls "up -d"; [[ "$(running_role)" == incumbent ]] || fail "cut over to a prerelease"; ok
+
 new_case candidate-tag-digest-mismatch
 export FAKE_CAND_IMAGE_VERSION=0.41.0
 run_remote --yes
@@ -387,9 +395,26 @@ new_case candidate-failed
 export FAKE_RENDER_CANDIDATE=fail
 run_remote --yes
 assert_rc 5; assert_out "VERDICT: CANDIDATE-FAILED"; [[ "$(running_role)" == incumbent ]] || fail "changed on candidate failure"
-ls "$F/tmp/bosun-canary-failures/"*shadow-candidate.log >/dev/null || fail "no shadow log kept in RAM"
+ls "$F/tmp/bosun-canary-failures."*/*shadow-candidate.log >/dev/null || fail "no shadow log kept in RAM"
 if find "$F/state" -name '*shadow*' | command grep -q .; then fail "a rendered-log copy reached the array-backed state dir"; fi
 assert_clean_tmp; ok
+
+# /tmp is shared and this runs as root on the NAS. A fixed directory name lets
+# any local user pre-create it, keep ownership, and read failure detail that can
+# quote a rendered secret. Each run must make its own instead.
+new_case failures-dir-is-not-the-fixed-path
+mkdir -p "$F/tmp/bosun-canary-failures"
+export FAKE_RENDER_CANDIDATE=fail
+run_remote --yes
+assert_rc 5
+kept="$(find "$F/tmp" -name '*shadow-candidate.log' | head -n1)"
+[[ -n "$kept" ]] || fail "no shadow log kept at all"
+case "$kept" in "$F/tmp/bosun-canary-failures/"*) fail "wrote into the pre-created directory: $kept" ;; esac
+[[ -z "$(find "$F/tmp/bosun-canary-failures" -mindepth 1)" ]] || fail "the pre-created directory was used"
+assert_out "$kept"
+[[ -n "$(find "$F/tmp" -maxdepth 1 -name 'bosun-canary-failures.*')" ]] || fail "no per-run failures dir"
+[[ -z "$(find "$F/tmp" -maxdepth 1 -name 'bosun-canary.*')" ]] || fail "the stale sweep glob now matches the failures dir"
+ok
 
 new_case candidate-empty-render
 export FAKE_RENDER_CANDIDATE=empty
@@ -450,7 +475,7 @@ run_remote --yes
 assert_rc 1; assert_out "VERDICT: ROLLED-BACK"; [[ "$(running_role)" == incumbent ]] || fail "incumbent not restored"
 grep -qF "image: \"ghcr.io/cameronsjo/bosun@$INC_DIGEST\"" "$F/state/rollback.override.yml" || fail "rollback override does not pin the incumbent digest"
 history_has "ROLLED-BACK"
-ls "$F/tmp/bosun-canary-failures/"*-candidate.log >/dev/null || fail "failure detail not kept in RAM"
+ls "$F/tmp/bosun-canary-failures."*/*-candidate.log >/dev/null || fail "failure detail not kept in RAM"
 if find "$F/state" -name '*candidate*' | command grep -q .; then fail "daemon failure detail reached the array-backed state dir"; fi; ok
 
 # daemon-status is the candidate's own word. A candidate that reports a fresh

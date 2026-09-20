@@ -67,6 +67,8 @@ PATH_RE='^/[A-Za-z0-9._/-]+$'
 DRY_RUN=0 ASSUME_YES=0 WATCH_TIMEOUT=900 EXPECT_CANDIDATE="" PROVENANCE_SKIPPED=0
 OPERATOR="${USER:-unknown}@$(hostname -s 2>/dev/null || echo nas)"
 RUN_DIR="" LOCKED=0 FINISHING=0 CANDIDATE="" MUTATING=0 DOWNGRADE=0
+# One failures directory per run, created on first use by failures_dir.
+FAILURES_DIR=""
 # The upgrade record: set at preflight, or loaded from the state file on resume.
 PROJECT="" INCUMBENT="" INCUMBENT_IMAGE="" INCUMBENT_VERSION="" ROLLBACK_TAG="" CANDIDATE_IMAGE=""
 AGE_SRC="" DEPLOY_SRC=""
@@ -142,6 +144,26 @@ release_version() {
   if [[ "${name##*/}" == *:* ]]; then tag="${name##*:}"; fi
   tag="${tag#v}"
   if [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then printf '%s' "$tag"; fi
+}
+# semver_lt succeeds when $1 precedes $2 under SemVer precedence. sort -V
+# orders the X.Y.Z cores correctly but puts a prerelease after its own release,
+# which is backwards, so the prerelease part is decided here instead.
+semver_lt() {
+  local a="${1%%+*}" b="${2%%+*}"   # build metadata carries no precedence
+  local a_core="${a%%-*}" b_core="${b%%-*}" a_pre="" b_pre=""
+  if [[ "$a" == *-* ]]; then a_pre="${a#*-}"; fi
+  if [[ "$b" == *-* ]]; then b_pre="${b#*-}"; fi
+  if [[ "$a_core" != "$b_core" ]]; then
+    [[ "$(printf '%s\n%s\n' "$a_core" "$b_core" | sort -V | head -n1)" == "$a_core" ]]
+    return
+  fi
+  # Same core: a release outranks every prerelease of it.
+  if [[ -z "$a_pre" ]]; then return 1; fi
+  if [[ -z "$b_pre" ]]; then return 0; fi
+  # Both prerelease. sort -V on the dot-separated identifiers is not the full
+  # SemVer rule, but it never has to choose between a prerelease and a release.
+  [[ "$a_pre" != "$b_pre" &&
+    "$(printf '%s\n%s\n' "$a_pre" "$b_pre" | sort -V | head -n1)" == "$a_pre" ]]
 }
 to_epoch() {
   [[ -n "$1" ]] || return 1
@@ -221,14 +243,16 @@ load_state() {
 }
 
 # failures_dir prints the RAM-backed directory failure detail is kept in, or
-# fails. A pre-existing symlink there is refused: /tmp is shared, and these
-# files can quote a rendered secret.
+# fails. One fresh directory per run, and the name is unguessable: /tmp is
+# shared and this runs as root, so a fixed name lets any local user pre-create
+# the directory, keep it, and read files that can quote a rendered secret.
+# mktemp -d refuses a path that already exists and creates ours 0700.
 failures_dir() {
-  local dir="$TMP_ROOT/bosun-canary-failures"
-  [[ ! -L "$dir" ]] || return 1
-  mkdir -p "$dir" 2>/dev/null || return 1
-  [[ ! -L "$dir" ]] || return 1
+  if [[ -n "$FAILURES_DIR" ]]; then printf '%s' "$FAILURES_DIR"; return 0; fi
+  local dir
+  dir="$(mktemp -d "$TMP_ROOT/bosun-canary-failures.XXXXXX" 2>/dev/null)" || return 1
   chmod 700 "$dir" 2>/dev/null || return 1
+  FAILURES_DIR="$dir"
   printf '%s' "$dir"
 }
 
@@ -731,8 +755,8 @@ main() {
   # partial tag leaves want_version empty, and a downgrade must still prompt.
   DOWNGRADE=0
   local running_version="${cand_version#bosun version }"
-  if [[ "$running_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ && "$running_version" != "$INCUMBENT_VERSION" ]]; then
-    if [[ "$(printf '%s\n%s\n' "$INCUMBENT_VERSION" "$running_version" | sort -V | head -n1)" == "$running_version" ]]; then
+  if [[ "$running_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ && "$running_version" != "$INCUMBENT_VERSION" ]]; then
+    if semver_lt "$running_version" "$INCUMBENT_VERSION"; then
       DOWNGRADE=1
       say "  WARNING this is a DOWNGRADE: $INCUMBENT_VERSION -> $(printable "$running_version")"
     fi
