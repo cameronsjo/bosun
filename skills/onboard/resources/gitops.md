@@ -854,6 +854,14 @@ Bosun deploys everything except its own container. A reconcile syncs bosun's own
 - **Pin the image by tag and digest** (`ghcr.io/cameronsjo/bosun:X.Y.Z@sha256:…`) and opt the container out of auto-updaters (`com.centurylinklabs.watchtower.enable=false`). An auto-updater that cleans up old images removes the only rollback target.
 - **Upgrade with the canary script**, not a bare `docker compose up -d`.
 
+One case the script does not cover yet: a compose change that is **not** an image change — a new label, an env var, a mount. The digest has not moved, so the script exits `ALREADY-CURRENT` and the manual recreate is the only route (bosun#682). Before recreating by hand, check the daemon is not mid-run:
+
+```bash
+ssh <host> 'docker exec bosun bosun daemon-status --json'   # state must be "idle"
+```
+
+Recreating during a reconcile kills it. The interrupted run alerts, recovers on the next cycle, and — until bosun#683 — never sends a notice saying it recovered.
+
 After a PR moves the pin and bosun has synced the file:
 
 ```bash
