@@ -33,6 +33,9 @@ var comparedFields = []string{
 	"HookSettleDelay",
 	"DeployPaths",
 	"DryRun",
+	"OnFailure",
+	"OnSuccess",
+	"OnRecovery",
 }
 
 // allowedDifferences may differ between the two paths. Each reason is either a
@@ -49,8 +52,8 @@ var allowedDifferences = map[string]string{
 	"ConfigReloader":    "design: both assign the same function; compared by pointer below",
 
 	"DeployMode":              "gap (bosun#676): daemon reads BOSUN_DEPLOY_MODE, CLI has --local only",
-	"DeploySyncPaths":         "gap (bosun#676): daemon reads BOSUN_DEPLOY_SYNC_PATHS",
-	"DeploySyncExclude":       "gap (bosun#676): daemon reads BOSUN_DEPLOY_SYNC_EXCLUDE",
+	"DeploySyncPaths":         "gap (bosun#676): daemon reads BOSUN_DEPLOY_SYNC_PATHS, CLI reads the project file — each ignores the other's source",
+	"DeploySyncExclude":       "gap (bosun#676): daemon reads BOSUN_DEPLOY_SYNC_EXCLUDE, CLI reads the project file — each ignores the other's source",
 	"CriticalContainers":      "gap (bosun#676): daemon reads BOSUN_CRITICAL_CONTAINERS",
 	"DriftIgnore":             "gap (bosun#676): daemon reads BOSUN_DRIFT_IGNORE",
 	"HealthGateTimeout":       "gap (bosun#676): daemon reads BOSUN_HEALTH_GATE_TIMEOUT",
@@ -66,9 +69,6 @@ var allowedDifferences = map[string]string{
 	"RemoveOrphans":           "gap (bosun#676): daemon reads BOSUN_REMOVE_ORPHANS and the project config",
 	"AllowEmptyDeclaredState": "gap (bosun#676): daemon reads BOSUN_ALLOW_EMPTY_DECLARED_STATE",
 	"SkipDeployInvariant":     "gap (bosun#676): daemon reads BOSUN_SKIP_DEPLOY_INVARIANT",
-	"OnFailure":               "gap (bosun#676): daemon copies the project alert gates",
-	"OnSuccess":               "gap (bosun#676): daemon copies the project alert gates",
-	"OnRecovery":              "gap (bosun#676): daemon copies the project alert gates",
 }
 
 // unsetByBoth are fields neither path assigns, so comparing them proves
@@ -85,6 +85,10 @@ var unsetByBoth = []string{
 }
 
 const parityProjectConfig = `
+alerts:
+  on_failure: false
+  on_success: true
+  on_recovery: false
 template_include_dir: from-file/templates
 deploy_paths:
   - "from-file/**"
@@ -108,24 +112,44 @@ func parityEnv(t *testing.T, override bool) {
 		}
 		t.Setenv(k, v)
 	}
-	// Always set: these have no file counterpart in this fixture.
+	// Always set: these have no file counterpart in this fixture. Every value
+	// differs from reconcile.DefaultConfig()'s, so a builder that ignores the
+	// variable cannot match by accident: "main" as a branch would.
 	t.Setenv("BOSUN_REPO_URL", "git@github.com:cameronsjo/homelab.git")
-	t.Setenv("BOSUN_REPO_BRANCH", "main")
+	t.Setenv("BOSUN_REPO_BRANCH", "parity-branch")
 	t.Setenv("BOSUN_INFRA_DIR", "unraid")
 	t.Setenv("BOSUN_SECRETS_FILE", " secrets.sops.yaml , ,other.sops.yaml ")
 	t.Setenv("DEPLOY_TARGET", "root@192.168.1.8")
 	t.Setenv("DRY_RUN", "yes")
 	t.Setenv("BOSUN_STATE_DIR", t.TempDir())
-	// Environment-vs-file precedence pairs.
+	// Environment-vs-file precedence pairs. The delay is a bare integer so the
+	// shared seconds fallback is exercised, not just the canonical spelling.
 	set("BOSUN_TEMPLATE_INCLUDE_DIR", "from-env/templates")
 	set("BOSUN_DEPLOY_PATHS", `["from-env/**"]`)
-	set("BOSUN_HOOK_SETTLE_DELAY", "11s")
+	set("BOSUN_HOOK_SETTLE_DELAY", "11")
 	set("BOSUN_POST_SYNC_HOOKS", `[{"paths":["from-env/**"],"action":"restart","container":"from-env"}]`)
 	set("BOSUN_TARGETS", `[{"name":"unraid","project_name":"homelab-from-env"}]`)
 }
 
+// resetReconcileFlags clears the cobra-bound globals the CLI builder reads.
+// They are package state: another test that ran the command with --remote
+// leaves it set, and the daemon has no equivalent, so the comparison would
+// depend on test order.
+func resetReconcileFlags(t *testing.T) {
+	t.Helper()
+	dryRun, force, local, remote, target, noAlerts :=
+		reconcileDryRun, reconcileForce, reconcileLocal, reconcileRemote, reconcileTarget, reconcileNoAlerts
+	t.Cleanup(func() {
+		reconcileDryRun, reconcileForce, reconcileLocal, reconcileRemote, reconcileTarget, reconcileNoAlerts =
+			dryRun, force, local, remote, target, noAlerts
+	})
+	reconcileDryRun, reconcileForce, reconcileLocal = false, false, false
+	reconcileRemote, reconcileTarget, reconcileNoAlerts = "", "", false
+}
+
 func buildBothConfigs(t *testing.T, override bool) (cli, daemonCfg *reconcile.Config) {
 	t.Helper()
+	resetReconcileFlags(t)
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "bosun.yaml"), []byte(parityProjectConfig), 0o600))
 	// Both builders read the project config from the working directory, so the
@@ -209,6 +233,25 @@ func TestReconcileConfigParityPrecedence(t *testing.T) {
 			require.Equalf(t, "homelab", cfg.Targets[0].ProjectName, "%s: target project name", name)
 		}
 	})
+}
+
+// A secrets variable that is set but names nothing used to yield an empty
+// list, which skips SOPS entirely: templates then render with blank secret
+// values and deploy. It must fail instead.
+func TestReconcileConfigRefusesEmptySecretsList(t *testing.T) {
+	for _, name := range []string{"SECRETS_FILES", "BOSUN_SECRETS_FILE"} {
+		t.Run(name, func(t *testing.T) {
+			resetReconcileFlags(t)
+			t.Chdir(t.TempDir())
+			t.Setenv("BOSUN_REPO_URL", "git@github.com:cameronsjo/homelab.git")
+			t.Setenv("SECRETS_FILES", "")
+			t.Setenv("BOSUN_SECRETS_FILE", "")
+			t.Setenv(name, " , ")
+
+			_, err := buildReconcileConfigFromEnv()
+			require.ErrorContains(t, err, "names no secrets file")
+		})
+	}
 }
 
 // The two parsers the CLI used to get wrong on its own.

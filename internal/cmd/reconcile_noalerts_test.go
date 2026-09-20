@@ -65,6 +65,20 @@ func runFailingReconcile(t *testing.T, configure func(t *testing.T, dir, webhook
 
 	dir := t.TempDir()
 	t.Chdir(dir)
+	// Clear every alert credential bosun reads. Without this, an operator's
+	// own exported webhook or Twilio token would take part in the run: the
+	// control arm's alert would go somewhere real, and the count would be
+	// wrong in both directions.
+	for _, name := range []string{
+		"BOSUN_DISCORD_WEBHOOK_URL", "DISCORD_WEBHOOK_URL",
+		"BOSUN_SLACK_WEBHOOK_URL", "SLACK_WEBHOOK_URL",
+		"BOSUN_SENDGRID_API_KEY", "SENDGRID_API_KEY", "BOSUN_SENDGRID_TO_EMAILS", "SENDGRID_TO_EMAILS",
+		"BOSUN_TWILIO_ACCOUNT_SID", "TWILIO_ACCOUNT_SID", "BOSUN_TWILIO_AUTH_TOKEN", "TWILIO_AUTH_TOKEN",
+		"BOSUN_TWILIO_TO_NUMBERS", "TWILIO_TO_NUMBERS",
+		"BOSUN_WEBHOOK_URL", "WEBHOOK_URL",
+	} {
+		t.Setenv(name, "")
+	}
 	configure(t, dir, receiver.URL)
 
 	// A URL that PASSES authentication validation but cannot be cloned: one

@@ -2014,14 +2014,7 @@ func versionOrDev(v string) string {
 // or as bare seconds if no unit suffix is present (e.g. "30" -> 30s).
 // Returns the parsed duration and true, or zero and false if parsing fails.
 func parseDurationOrSeconds(s string) (time.Duration, bool) {
-	if d, err := time.ParseDuration(s); err == nil {
-		return d, true
-	}
-	// Treat as bare number of seconds
-	if d, err := time.ParseDuration(s + "s"); err == nil {
-		return d, true
-	}
-	return 0, false
+	return config.ParseDurationValue(s)
 }
 
 func warnRestartBreakerSampling(logger zerolog.Logger, driftInterval, restartWindow time.Duration) {

@@ -40,18 +40,30 @@ func BosunEnvBool(name string, defaultVal bool) bool {
 	if v == "" {
 		return defaultVal
 	}
-	switch strings.ToLower(v) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
+	parsed, ok := ParseBoolStrict(v)
+	if !ok {
 		log.Debug().
 			Str("env", src).
 			Str("value", v).
 			Bool("default", defaultVal).
 			Msg("Unrecognized boolean value; using default")
 		return defaultVal
+	}
+	return parsed
+}
+
+// ParseBoolStrict is the one boolean grammar: every caller in this package and
+// ParseBoolValue go through it, so no second spelling can appear. The second
+// return distinguishes "parsed as false" from "not a boolean", which a caller
+// needs to log a rejected value rather than silently taking its default.
+func ParseBoolStrict(v string) (value, ok bool) {
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		return true, true
+	case "0", "false", "no", "off":
+		return false, true
+	default:
+		return false, false
 	}
 }
 
@@ -65,14 +77,23 @@ func BosunEnvBool(name string, defaultVal bool) bool {
 // It exists so the daemon and the one-shot CLI cannot drift on a variable
 // they both read directly, such as DRY_RUN.
 func ParseBoolValue(v string, defaultVal bool) bool {
-	switch strings.ToLower(v) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return defaultVal
+	if parsed, ok := ParseBoolStrict(v); ok {
+		return parsed
 	}
+	return defaultVal
+}
+
+// ParseDurationValue parses an already-read string as a duration, accepting a
+// bare integer as seconds (legacy POLL_INTERVAL spelling). The bool reports
+// whether it parsed. Shared for the same reason as ParseBoolValue.
+func ParseDurationValue(v string) (time.Duration, bool) {
+	if d, err := time.ParseDuration(v); err == nil {
+		return d, true
+	}
+	if d, err := time.ParseDuration(v + "s"); err == nil {
+		return d, true
+	}
+	return 0, false
 }
 
 // SplitAndTrim splits a comma-separated list, trims each entry and drops the
@@ -99,13 +120,9 @@ func BosunEnvDuration(name string, defaultVal time.Duration) time.Duration {
 	if v == "" {
 		return defaultVal
 	}
-	if d, err := time.ParseDuration(v); err == nil {
-		return d
-	}
 	// Bare-integer fallback: "3600" is interpreted as seconds for backward
 	// compat with legacy POLL_INTERVAL config that used raw seconds.
-	// This is the same convention as time.ParseDuration("3600s").
-	if d, err := time.ParseDuration(v + "s"); err == nil {
+	if d, ok := ParseDurationValue(v); ok {
 		return d
 	}
 	log.Debug().

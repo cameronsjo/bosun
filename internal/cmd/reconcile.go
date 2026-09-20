@@ -167,6 +167,22 @@ func prepareStateFileForCLIRunWithSave(stateFile string, dryRun bool, saveState 
 	return scratchFile, cleanup, nil
 }
 
+// envBoolOrWarn reads one unprefixed boolean variable. A value that is set but
+// not a boolean is reported: silently taking the default is how "why did a dry
+// run deploy?" ends up with no evidence.
+func envBoolOrWarn(name string) bool {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return false
+	}
+	value, ok := config.ParseBoolStrict(raw)
+	if !ok {
+		log.Warn().Str("env", name).Str("value", raw).Msg("Unrecognized boolean value; treating as false")
+		return false
+	}
+	return value
+}
+
 // buildReconcileConfigFromEnv assembles the one-shot reconciler configuration
 // from the environment, the project config and this command's flags. It is
 // separate from runReconcile so the CLI/daemon parity test can build a config
@@ -204,12 +220,21 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 	}
 
 	// Secret files from environment. config.SplitAndTrim is the daemon's own
-	// parser: both paths must read these the same way (#674 follow-up).
-	if secretsFiles := os.Getenv("SECRETS_FILES"); secretsFiles != "" {
-		cfg.SecretsFiles = config.SplitAndTrim(secretsFiles)
-	}
-	if secretsFile := os.Getenv("BOSUN_SECRETS_FILE"); secretsFile != "" {
-		cfg.SecretsFiles = config.SplitAndTrim(secretsFile)
+	// parser: both paths must read these the same way.
+	//
+	// A set-but-all-empty value is refused rather than silently yielding no
+	// secrets: reconciling with an empty list skips SOPS entirely and renders
+	// templates with empty secret values, which then deploy.
+	for _, name := range []string{"SECRETS_FILES", "BOSUN_SECRETS_FILE"} {
+		raw := os.Getenv(name)
+		if raw == "" {
+			continue
+		}
+		files := config.SplitAndTrim(raw)
+		if len(files) == 0 {
+			return nil, fmt.Errorf("%s is set but names no secrets file", name)
+		}
+		cfg.SecretsFiles = files
 	}
 
 	// Infrastructure directory, the same read the daemon does. Without it a
@@ -234,15 +259,16 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 
 	// Dry run from environment or flags. Same boolean spellings as the daemon:
 	// a DRY_RUN=yes environment must not make the one-shot deploy for real.
-	if config.ParseBoolValue(os.Getenv("DRY_RUN"), false) {
+	if envBoolOrWarn("DRY_RUN") {
 		cfg.DryRun = true
 	}
 	if reconcileDryRun {
 		cfg.DryRun = true
 	}
 
-	// Force from environment or flags.
-	if os.Getenv("FORCE") == "true" {
+	// Force from environment or flags, with the same grammar as DRY_RUN: two
+	// adjacent variables must not disagree about what a boolean is.
+	if envBoolOrWarn("FORCE") {
 		cfg.Force = true
 	}
 	if reconcileForce {
@@ -263,6 +289,12 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 		config.ApplyInitialHookConfig(projectCfg, cfg)
 		cfg.DeployPaths.SetFromFile(projectCfg.DeployPaths())
 		cfg.TemplateIncludeDir = projectCfg.TemplateIncludeDir()
+		// The alert gates are a user-set key, and the daemon honors them at
+		// startup (daemon.go's alertCfg block). Without this the CLI runs on
+		// the built-in defaults until the post-clone config reload, so a run
+		// that fails before that alerts even with on_failure: false.
+		alertCfg := projectCfg.GetAlertConfig()
+		cfg.OnFailure, cfg.OnSuccess, cfg.OnRecovery = alertCfg.OnFailure, alertCfg.OnSuccess, alertCfg.OnRecovery
 	}
 
 	// Wire config reloader so the reconciler can re-read bosun.yaml from the repo.
@@ -280,9 +312,7 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 
 	// Environment variable override for hook settle delay.
 	if v := os.Getenv("BOSUN_HOOK_SETTLE_DELAY"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.HookSettleDelay.SetFromEnv(d)
-		} else if d, err := time.ParseDuration(v + "s"); err == nil {
+		if d, ok := config.ParseDurationValue(v); ok {
 			cfg.HookSettleDelay.SetFromEnv(d)
 		} else {
 			log.Warn().Str("value", v).Msg("Failed to parse BOSUN_HOOK_SETTLE_DELAY, ignoring")
