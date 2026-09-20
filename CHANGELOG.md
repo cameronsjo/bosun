@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.43.1](https://github.com/cameronsjo/bosun/compare/v0.43.0...v0.43.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* **canary:** tmpfs the lock dir so the shadow render can take its lock ([#686](https://github.com/cameronsjo/bosun/issues/686)) ([60ff188](https://github.com/cameronsjo/bosun/commit/60ff1885b77b00f88d7a18ebbdaa314a4ab15880))
+
 ## [0.43.0](https://github.com/cameronsjo/bosun/compare/v0.42.3...v0.43.0) (2026-09-20)
 
 
