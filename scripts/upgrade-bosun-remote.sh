@@ -407,21 +407,25 @@ write_shadow() {
 services:
   $SERVICE:
     image: "$image"
-    # root, to read the root-owned 0600 key files; no capabilities beyond that.
-    # Reading those is an ordinary owner-permitted read, so it needs none.
+    # root, only to read the root-owned 0600 key files. That is an ordinary
+    # owner-permitted read, so it needs no capability at all.
     user: "0:0"
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     network_mode: bridge
-    # The reconcile lock path is fixed in target.go and lives in the image at
-    # /run/bosun, owned by uid 1000. Dropping ALL takes CAP_DAC_OVERRIDE with
+    # The reconcile lock dir is the DefaultLockDir constant in
+    # internal/reconcile/target.go -- /var/run/bosun, which bosun/Dockerfile
+    # creates and chowns to uid 1000. Dropping ALL takes CAP_DAC_OVERRIDE with
     # it, and without that capability uid 0 is subject to ordinary permission
     # checks -- so root cannot write there and every render fails to take the
-    # lock. A tmpfs mounts root-owned 0755, which root writes with no
-    # capability at all, so the drop stays total. /var/run is a symlink to
-    # /run in this image; mount the real path.
+    # lock. A tmpfs is root-owned, so root writes it with no capability at all
+    # and the drop stays total. /var/run is a symlink to /run in this image;
+    # mount the real path.
+    # mode is pinned because the default is 1777 -- world-writable and sticky,
+    # which is not what a lock directory should be even with one uid in here.
+    # size is pinned because the default is half of host RAM.
     tmpfs:
-      - /run/bosun
+      - "/run/bosun:mode=0755,size=1m"
     environment:
 $env_yaml
       DRY_RUN: "true"
