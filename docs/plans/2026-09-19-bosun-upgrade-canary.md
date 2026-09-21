@@ -6,10 +6,10 @@ harness: "claude-code 2.1.277"
 machine: "cf6e768835c7"
 approved_session_id: "a9d4a39f-36de-4a08-82d7-a71eddc33092"
 status: complete
-next: "Nothing. All six verification steps pass against the live NAS. Follow-ups are tracked as issues, not plan steps."
+next: "Nothing. Steps 3-6 are ticked and evidenced against the live NAS; steps 1-2 are the local gates, which CI runs on every push. Follow-ups are tracked as issues, not plan steps."
 branch: plan/bosun-upgrade-canary
 pr: 672
-updated: 2026-09-19
+updated: 2026-09-20
 date: 2026-09-19
 ---
 
@@ -82,8 +82,8 @@ NAS  upgrade-bosun-remote.sh   (mkdir lock + state file in /mnt/user/appdata/bos
 
 ## Tasks
 
-- [ ] Task 1 — homelab Watchtower opt-out + digest pin
-- [ ] Task 2 — OpenSpec change, then reconcile CLI parity + `--no-alerts`
+- [x] Task 1 — homelab Watchtower opt-out + digest pin (homelab#770, merged `8602a4f0`). The merge alone did not do it: bosun syncs its own compose file and never recreates itself, so the label reached the file and not the container until a manual recreate.
+- [x] Task 2 — OpenSpec change, then reconcile CLI parity + `--no-alerts` (spec bosun#673 `484a6b87`, implementation bosun#677 `93c439c6`, shipped in 0.43.0)
 - [x] Task 3 — file the `validate --full` state-write issue (#674)
 - [x] Task 4 — upgrade scripts
 - [x] Task 5 — script tests + docs
@@ -183,10 +183,11 @@ Run `cadence-forge:security-reviewer` on Opus over both scripts, the generated o
 5. ✅ The full run exits 0 `UPGRADED` (2026-09-20, 0.42.3 → 0.43.0). Post-cutover `daemon-status` is idle and healthy with `last_error: null`, the container has 0 restarts, the Watchtower opt-out label survived the cutover, no override or state files remain, and `bosun:rollback-0.42.3` is retained.
 6. ✅ Rollback drill, 2026-09-20: exit 1 `ROLLED-BACK [provenance skipped: drill]`, bosun restored to 0.43.1 healthy with 0 restarts, compose file byte-identical afterwards (`288e0976`). Now a repeatable harness, `scripts/rollback-drill.sh`, rather than a one-off.
 
-   **Three things the plan's recipe got wrong**, all found by trying it:
+   **Four things the plan's recipe got wrong**, all found by trying it:
    - *A locally loaded image cannot be pinned.* `docker save | ssh nas docker load` gives an image ID, never a RepoDigest, and the pin regex requires `@sha256:`. The drill image has to come from a registry. It lives in a **private** `ghcr.io/cameronsjo/bosun-drill` package, deliberately separate so nothing broken can ever be pulled by something expecting a release.
    - *An entrypoint that exits 1 tests the wrong stage.* It fails the shadow render and returns `CANDIDATE-FAILED` (exit 5), never reaching the watch. Rollback is only exercised by an image that renders correctly and fails **as a daemon** — here, one whose `bosun daemon` stays up and never reconciles.
    - *The fault must live in the image, not the environment.* Breaking the candidate through the shared compose file (a bad env var, a tiny `--watch-timeout`) breaks the rollback target too, so stage 5's own watch fails and the verdict becomes `FAULT-NOT-UPGRADE` (exit 2). Two plausible shortcuts die on this.
+   - *The rolled-back container does not run the `bosun:rollback-<ver>` tag.* Stage 5 writes the override with the incumbent's immutable **digest** (`scripts/upgrade-bosun-remote.sh:572-582`); the tag exists only so that image cannot be pruned. Asserting the tag is how you file a rollback bug that is not there.
 
    The drill also confirmed a guard the plan never asked for: `--yes` is refused alongside `--skip-provenance-for-drill`, so an unverified image always stops for a human. That is why this step needs an operator at a terminal and cannot be automated away.
 
