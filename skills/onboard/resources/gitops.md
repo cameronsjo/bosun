@@ -889,7 +889,7 @@ Stage 5 is the safety net, and it is the one stage a normal upgrade never runs. 
 
 It takes no arguments and three `BOSUN_*` environment knobs (`bash scripts/rollback-drill.sh --help`). Two prerequisites it will refuse without: the checkout it runs from must be a fast-forward of `origin/main`, and the NAS must be able to pull the drill image, which lives in a **private** `ghcr.io` package. A missing pull credential there exits 75, not 5.
 
-The drill image is pinned to one bosun release and does not track them. When it drifts far enough to fail the shadow render, `docs/rollback-drill-image.md` is the rebuild recipe, including the two properties that make an image usable for this and the reasons the rebuild is deliberately manual.
+The drill image is pinned to one bosun release and does not track them. Drift shows up as `RENDER-DIFFERS` — noisy, not fatal, since answering `y` still exercises the rollback. `docs/rollback-drill-image.md` is the rebuild recipe, including the two properties that make an image usable for this and the reasons the rebuild is deliberately manual.
 
 Three things about that image are load-bearing, and the first two were learned by getting them wrong:
 
