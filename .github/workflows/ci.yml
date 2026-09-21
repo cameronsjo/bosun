@@ -22,7 +22,7 @@ jobs:
 
       - name: Test upgrade scripts
         run: |
-          shellcheck scripts/upgrade-bosun.sh scripts/upgrade-bosun-remote.sh scripts/upgrade-bosun_test.sh
+          shellcheck scripts/upgrade-bosun.sh scripts/upgrade-bosun-remote.sh scripts/upgrade-bosun_test.sh scripts/rollback-drill.sh
           bash scripts/upgrade-bosun_test.sh
 
       - name: Set up Go

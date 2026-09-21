@@ -883,6 +883,20 @@ Every run appends one line to `history.log` on the host. One run at a time holds
 
 The scripts assume the homelab layout: an Unraid host reached as `unraid`, the compose file in `/mnt/user/appdata/bosun`, and state in `/mnt/user/appdata/bosun-upgrade`. Override these with `--host` and the `BOSUN_UPGRADE_*` variables at the top of `scripts/upgrade-bosun-remote.sh`.
 
+### Testing the rollback
+
+Stage 5 is the safety net, and it is the one stage a normal upgrade never runs. `bash scripts/rollback-drill.sh` exercises it deliberately: it points the host compose at a purpose-built image, runs the canary, and restores the file on every exit path it can trap. Expect exit 1, verdict `ROLLED-BACK [provenance skipped: drill]` — the suffix is always there, because the drill always passes `--skip-provenance-for-drill`. Re-run it after any change to stages 3–5.
+
+It takes no arguments and three `BOSUN_*` environment knobs (`bash scripts/rollback-drill.sh --help`). Two prerequisites it will refuse without: the checkout it runs from must be a fast-forward of `origin/main`, and the NAS must be able to pull the drill image, which lives in a **private** `ghcr.io` package. A missing pull credential there exits 75, not 5.
+
+Three things about that image are load-bearing, and the first two were learned by getting them wrong:
+
+- It must **render correctly and fail only as a daemon**. An image that exits immediately fails the shadow render and returns `CANDIDATE-FAILED`, never reaching the watch — so it tests the wrong stage.
+- The fault must live **in the image**, never in the shared compose file. Anything broken there breaks the rollback target too, and the verdict becomes `FAULT-NOT-UPGRADE` instead.
+- The shadow render **hands the drill image the age key**, exactly as it would a real candidate. Only an image you built belongs here; the drill's private package exists so nothing broken can reach anything expecting a release.
+
+It needs a terminal because the canary asks before cutover, on `/dev/tty`. That prompt cannot be suppressed: `--yes` is refused alongside `--skip-provenance-for-drill`, so an unverified image always stops for a human — which is why the drill cannot be automated.
+
 ## Typical GitOps Setup
 
 1. **Initialize project:** `bosun init`
