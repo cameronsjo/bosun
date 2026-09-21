@@ -5,8 +5,8 @@ model: "claude-opus-5"
 harness: "claude-code 2.1.277"
 machine: "cf6e768835c7"
 approved_session_id: "a9d4a39f-36de-4a08-82d7-a71eddc33092"
-status: in-progress
-next: "Verification step 6 only — the rollback drill, which deliberately breaks the production deployer and wants the operator present. Steps 1-5 are done and evidenced."
+status: complete
+next: "Nothing. All six verification steps pass against the live NAS. Follow-ups are tracked as issues, not plan steps."
 branch: plan/bosun-upgrade-canary
 pr: 672
 updated: 2026-09-19
@@ -181,7 +181,14 @@ Run `cadence-forge:security-reviewer` on Opus over both scripts, the generated o
 3. ✅ Task 1's host checks (a)–(d) pass. (a)(b)(c) pass on the live NAS; (d)'s mechanism is verified directly — no `WATCHTOWER_LABEL_ENABLE`, bosun the only opted-out container, `CLEANUP=true` — with the 04:00 run left as confirmation. **The merge was not enough:** bosun syncs its own compose file but never recreates itself, so the label reached the file and not the container until a manual `docker compose up -d`. Evidence: `homelab/docs/evidence/2026-09-20-bosun-pin-and-first-canary-run/`.
 4. ✅ The first live `--dry-run` reached `RENDER-OK-NO-BASELINE`, exit 0, with no shadow tmp dirs, no lock and no Discord traffic. It took **three** runs to get there: the first stopped at `ALREADY-CURRENT` before stage 2, and the second exposed the bug below.
 5. ✅ The full run exits 0 `UPGRADED` (2026-09-20, 0.42.3 → 0.43.0). Post-cutover `daemon-status` is idle and healthy with `last_error: null`, the container has 0 restarts, the Watchtower opt-out label survived the cutover, no override or state files remain, and `bosun:rollback-0.42.3` is retained.
-6. Rollback drill, once: build a local image whose entrypoint exits 1, `docker save | ssh nas docker load` it, point the on-disk compose at its digest, and run. Skip provenance with a `--skip-provenance-for-drill` flag that is documented as drill-only. Expect exit 1 `ROLLED-BACK` and the incumbent running from the `bosun:rollback-<ver>` tag. Restore the compose file afterwards.
+6. ✅ Rollback drill, 2026-09-20: exit 1 `ROLLED-BACK [provenance skipped: drill]`, bosun restored to 0.43.1 healthy with 0 restarts, compose file byte-identical afterwards (`288e0976`). Now a repeatable harness, `scripts/rollback-drill.sh`, rather than a one-off.
+
+   **Three things the plan's recipe got wrong**, all found by trying it:
+   - *A locally loaded image cannot be pinned.* `docker save | ssh nas docker load` gives an image ID, never a RepoDigest, and the pin regex requires `@sha256:`. The drill image has to come from a registry. It lives in a **private** `ghcr.io/cameronsjo/bosun-drill` package, deliberately separate so nothing broken can ever be pulled by something expecting a release.
+   - *An entrypoint that exits 1 tests the wrong stage.* It fails the shadow render and returns `CANDIDATE-FAILED` (exit 5), never reaching the watch. Rollback is only exercised by an image that renders correctly and fails **as a daemon** — here, one whose `bosun daemon` stays up and never reconciles.
+   - *The fault must live in the image, not the environment.* Breaking the candidate through the shared compose file (a bad env var, a tiny `--watch-timeout`) breaks the rollback target too, so stage 5's own watch fails and the verdict becomes `FAULT-NOT-UPGRADE` (exit 2). Two plausible shortcuts die on this.
+
+   The drill also confirmed a guard the plan never asked for: `--yes` is refused alongside `--skip-provenance-for-drill`, so an unverified image always stops for a human. That is why this step needs an operator at a terminal and cannot be automated away.
 
 ## Panel
 
