@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.0](https://github.com/cameronsjo/bosun/compare/v0.43.1...v0.44.0) (2026-09-21)
+
+
+### Features
+
+* **scripts:** add the rollback drill harness and close the canary plan ([#689](https://github.com/cameronsjo/bosun/issues/689)) ([974e784](https://github.com/cameronsjo/bosun/commit/974e784ef56e4e08eab48e4e0fc1244d821feeb3))
+
 ## [0.43.1](https://github.com/cameronsjo/bosun/compare/v0.43.0...v0.43.1) (2026-09-20)
 
 
