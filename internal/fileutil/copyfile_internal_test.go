@@ -161,7 +161,7 @@ func TestValidateCopyPermissions_ReportsLifecycleFailures(t *testing.T) {
 
 		createErr := errors.New("create failed")
 		err := validateCopyPermissions(t.TempDir(), 0640,
-			func(string, string) (*os.File, error) { return nil, createErr },
+			func(string, string) (*os.File, string, error) { return nil, "", createErr },
 			(*os.File).Chmod,
 			os.Remove,
 		)
@@ -176,12 +176,12 @@ func TestValidateCopyPermissions_ReportsLifecycleFailures(t *testing.T) {
 		tmpDir := t.TempDir()
 		var probePath string
 		err := validateCopyPermissions(tmpDir, 0640,
-			func(dir, pattern string) (*os.File, error) {
+			func(dir, pattern string) (*os.File, string, error) {
 				probe, createErr := os.CreateTemp(dir, pattern)
 				if createErr == nil {
 					probePath = probe.Name()
 				}
-				return probe, createErr
+				return probe, probePath, createErr
 			},
 			func(probe *os.File, _ fs.FileMode) error { return probe.Close() },
 			os.Remove,
@@ -199,12 +199,12 @@ func TestValidateCopyPermissions_ReportsLifecycleFailures(t *testing.T) {
 		removeCalls := 0
 		var probePath string
 		err := validateCopyPermissions(t.TempDir(), 0640,
-			func(dir, pattern string) (*os.File, error) {
+			func(dir, pattern string) (*os.File, string, error) {
 				probe, createErr := os.CreateTemp(dir, pattern)
 				if createErr == nil {
 					probePath = probe.Name()
 				}
-				return probe, createErr
+				return probe, probePath, createErr
 			},
 			(*os.File).Chmod,
 			func(path string) error {

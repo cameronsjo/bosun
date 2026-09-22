@@ -1594,6 +1594,56 @@ func TestLoad_DefaultProjectName(t *testing.T) {
 	assert.Equal(t, filepath.Base(tmpDir), cfg.ProjectName())
 }
 
+func TestLoad_ProjectNameFromFile(t *testing.T) {
+	t.Run("root-level project_name is reported as file-supplied", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+		require.NoError(t, os.WriteFile(
+			filepath.Join(tmpDir, "bosun.yaml"), []byte("project_name: homelab\n"), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, "homelab", cfg.ProjectName())
+		assert.Equal(t, "homelab", cfg.ProjectNameFromFile())
+	})
+
+	t.Run("directory fallback is not reported as file-supplied", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0755))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Base(tmpDir), cfg.ProjectName())
+		assert.Empty(t, cfg.ProjectNameFromFile(),
+			"a guessed name names no deployed compose project")
+	})
+
+	t.Run("rejected project_name falls back and is not file-supplied", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+		require.NoError(t, os.WriteFile(
+			filepath.Join(tmpDir, "bosun.yaml"), []byte("project_name: \"bad; rm -rf /\"\n"), 0644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Base(tmpDir), cfg.ProjectName())
+		assert.Empty(t, cfg.ProjectNameFromFile())
+	})
+}
+
 func TestHookSettleDelayFromConfig(t *testing.T) {
 	t.Run("parses duration string from bosun.yaml", func(t *testing.T) {
 		tmpDir := evalSymlinks(t, t.TempDir())

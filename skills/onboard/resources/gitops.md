@@ -405,14 +405,22 @@ the already-restricted socket at its final path. This avoids a permissive
 also refuses to replace a stale-path symlink or non-socket entry and removes the
 socket at shutdown only if the path still refers to the inode it created.
 
-On Linux, mutating socket requests are independently authorized with
+On Linux, privileged socket requests are independently authorized with
 `SO_PEERCRED`: the daemon's effective UID is always allowed, and
 `BOSUN_SOCKET_ALLOWED_UIDS` adds comma-separated numeric UIDs. An unauthorized
 UID or a connection without available peer credentials receives `403` and
-cannot trigger reconciliation. This also means non-Linux platforms reject
-socket mutations by default. `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET=true` is the
-strict, loudly logged opt-out for deployments that intentionally rely only on
-socket filesystem permissions.
+cannot trigger reconciliation. This also means non-Linux platforms reject those
+requests by default. `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET=true` is the strict,
+loudly logged opt-out for deployments that intentionally rely only on socket
+filesystem permissions.
+
+Privileged means `POST /trigger` **and** `GET /config`. `/config` is a read,
+but it returns the webhook secret, and that secret is what the daemon's HTTP
+trigger endpoints accept — so serving it to an unauthorized peer would hand
+over a signed forced trigger by another route. `GET /status` and `GET /health`
+return no credential and are governed by socket file permissions alone. A
+`bosun webhook --fetch-secret` receiver must therefore run as the daemon's UID
+or a listed UID.
 
 ### Unix Socket API
 
@@ -485,6 +493,11 @@ secret is not an open door. On trusted networks, opt out explicitly with
 and per accepted request). The Unix socket trigger (`bosun trigger`) is not
 affected. `BOSUN_LISTEN_ADDR` narrows the HTTP bind; the default stays
 all-interfaces so container-side callers reach the daemon over the docker bridge.
+
+The standalone `bosun webhook` receiver applies the same gate on its own HTTP
+port, reading the same `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` opt-out. It needs
+its own copy: it forwards over the Unix socket, which authorizes by peer
+credential and never re-checks the daemon's webhook gate.
 
 GitHub pusher attribution is sanitized by both the daemon endpoint and the
 standalone receiver, whether a request has a valid signature or uses the direct
@@ -668,7 +681,7 @@ so the next run reconciles the full declared estate.
 
 **Deploy circuit breaker:** After 3 consecutive deployment failures, the daemon stops retrying automatically. A propagated caller cancellation restores the pre-attempt `last_attempted_commit`, `attempt_count`, and `last_alerted_attempt`, while preserving an existing `needs_redeploy` marker so partial work is retried. Reconcile deadlines, independently returned cancellation errors, and real failures racing with shutdown remain counted. A manual `bosun trigger -f` (force) resets the circuit breaker and tries again.
 
-**Restart circuit breaker:** Detects containers in restart loops by tracking container identity and restart count increases across drift checks. Once restarts begin accumulating, Bosun preserves the earliest unresolved baseline until a clean sample observes no new restarts, so a slow loop still trips when the drift interval is longer than the nominal restart window. When a container accumulates `BOSUN_RESTART_THRESHOLD` (default: 5) restarts, the breaker trips and stops the container to prevent resource exhaustion. Docker resets the count when a deploy recreates a container, so an identity change does not resolve an existing trip; the same identity must remain free of additional restarts through the next drift-check interval before Bosun sends the resolution alert. Missing containers preserve the trip but restart the stability grace when they return, while inspect failures preserve the last persisted observation and cannot count as recovery. Runs during each drift check cycle. Sends critical alerts on trip and info alerts on resolution. Disabled with `BOSUN_RESTART_BREAKER=false`. Keep `BOSUN_DRIFT_INTERVAL` at or below `BOSUN_RESTART_WINDOW` for timely detection; configuration load and `bosun doctor` warn when the sampling interval is longer.
+**Restart circuit breaker:** Detects containers in restart loops by tracking container identity and restart count increases across drift checks. Once restarts begin accumulating, Bosun preserves the earliest unresolved baseline until a clean sample observes no new restarts, so a slow loop still trips when the drift interval is longer than the nominal restart window. When a container accumulates `BOSUN_RESTART_THRESHOLD` (default: 5) restarts, the breaker trips and stops the container to prevent resource exhaustion. Docker resets the count when a deploy recreates a container, so an identity change does not resolve an existing trip; the same identity must remain free of additional restarts through the next drift-check interval before Bosun sends the resolution alert. Missing containers preserve the trip but restart the stability grace when they return, while inspect failures preserve the last persisted observation and cannot count as recovery. Runs during each drift check cycle. Sends critical alerts on trip and info alerts on resolution. Disabled with `BOSUN_RESTART_BREAKER=false`. Keep `BOSUN_DRIFT_INTERVAL` at or below `BOSUN_RESTART_WINDOW` for timely detection; configuration load and `bosun doctor` warn when the sampling interval is longer. The breaker stops containers only inside a resolved Compose project — a single target's `project_name`, otherwise the root-level `project_name` in `bosun.yaml`, never the directory-name fallback. Without a scope it stops nothing, because an unscoped breaker would reach every restart-looping container on the Docker host; that disabled state is logged at startup, on every drift cycle, and reported by `bosun doctor`.
 
 ## Deployment Targets
 
@@ -748,7 +761,7 @@ Bosun verifies SSH host keys using only config-controlled paths:
 1. `BOSUN_SSH_KNOWN_HOSTS` (explicit override)
 2. `/config/known_hosts` (container convention)
 
-`~/.ssh/known_hosts` is intentionally excluded — ephemeral entries from manual `ssh` commands inside a container can cause go-git key mismatches. If neither path exists, verification falls back to insecure mode with a warning. Set `BOSUN_SSH_INSECURE_HOST_KEY=true` to disable verification entirely.
+`~/.ssh/known_hosts` is intentionally excluded — ephemeral entries from manual `ssh` commands inside a container can cause go-git key mismatches. If neither path exists, or the first one found does not parse, Git authentication fails closed: the operation returns an error and the daemon refuses to start, rather than connecting to an unverified host. Set `BOSUN_SSH_INSECURE_HOST_KEY=true` to disable verification entirely — that is the only opt-out.
 
 ## Environment Variables
 

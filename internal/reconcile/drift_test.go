@@ -216,6 +216,35 @@ func TestFormatHealthDetail(t *testing.T) {
 			},
 			expected: "failing_streak=2, last_exit=-1, output=killed",
 		},
+		{
+			// The healthcheck runs inside the container, so its output is
+			// attacker-controlled: CR/LF would forge a second operator line and
+			// the ESC introducer would let it clear or recolor the real one.
+			name: "control characters in healthcheck output are stripped",
+			details: &docker.ContainerDetails{
+				HealthFailingStreak: 1,
+				HealthLog: &docker.HealthCheckLog{
+					ExitCode: 1,
+					Output:   "probe failed\r\n\x1b[2KAll critical containers healthy \u202e",
+				},
+			},
+			expected: "failing_streak=1, last_exit=1, output=probe failed[2KAll critical containers healthy",
+		},
+		{
+			// Pins the ORDER: stripping happens before the length cap. The 60
+			// escapes plus 190 payload bytes exceed maxHealthOutput, so a cap
+			// applied first would truncate to 197 bytes + "..." and keep the
+			// escapes; stripping first leaves 190 bytes, under the cap.
+			name: "output is sanitized before the length cap",
+			details: &docker.ContainerDetails{
+				HealthFailingStreak: 4,
+				HealthLog: &docker.HealthCheckLog{
+					ExitCode: 1,
+					Output:   strings.Repeat("\x1b", 60) + strings.Repeat("x", 190),
+				},
+			},
+			expected: "failing_streak=4, last_exit=1, output=" + strings.Repeat("x", 190),
+		},
 	}
 
 	for _, tt := range tests {

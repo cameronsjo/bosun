@@ -51,8 +51,27 @@ func warnSymlinkSkipped(path string) {
 // Uses atomic write via temp file to prevent partial writes on failure.
 // Symlinks are skipped with a warning rather than causing an error.
 // Other non-regular source entries return ErrUnsupportedFileType.
+//
+// Every destination mutation is resolved by path, so a symlinked directory
+// anywhere in dst redirects the write to the link target. Callers writing into
+// a tree a container can modify must use CopyFileUnderRoot instead.
 func CopyFile(ctx context.Context, src, dst string) error {
 	return copyFileWithOps(ctx, src, dst, (*os.File).Chmod, syncDestinationDir, io.Copy)
+}
+
+// CopyFileUnderRoot copies src to dst with every destination mutation resolved
+// from a handle pinned to root, which dst must lie under. It is CopyFile's
+// contract for a destination a container can modify: a directory swapped for a
+// symlink pointing outside root cannot redirect the write, and a dst that is
+// itself such a symlink is replaced rather than followed. A dst outside root is
+// refused rather than copied by path.
+//
+// root itself is resolved by path when the handle is opened, so root must be a
+// directory the container cannot replace.
+func CopyFileUnderRoot(ctx context.Context, src, root, dst string) error {
+	pinned := newPinnedDir(root)
+	defer pinned.close()
+	return pinned.copyFileSyncingDir(ctx, src, dst)
 }
 
 // copyFileWithChmod exposes the permission operation as an explicit dependency
@@ -92,6 +111,23 @@ func copyFileWithOpsAndOpen(
 	copyContent func(io.Writer, io.Reader) (int64, error),
 	openSource func(string, bool) (*os.File, fs.FileInfo, error),
 ) error {
+	return copyFileIntoDestination(ctx, src, pathDestination{}, dst, chmod, adaptPathSync(syncParent), copyContent, openSource)
+}
+
+// copyFileIntoDestination performs the atomic replacement with every
+// destination-side mutation routed through dest. dstName is a name in dest's
+// namespace: a filesystem path for pathDestination, a root-relative path for a
+// pinned destination.
+func copyFileIntoDestination(
+	ctx context.Context,
+	src string,
+	dest destination,
+	dstName string,
+	chmod func(*os.File, fs.FileMode) error,
+	syncParent destinationSync,
+	copyContent func(io.Writer, io.Reader) (int64, error),
+	openSource func(string, bool) (*os.File, fs.FileInfo, error),
+) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -121,11 +157,11 @@ func copyFileWithOpsAndOpen(
 	defer func() { _ = srcFile.Close() }()
 
 	// Create parent directories if needed.
-	dstDir := filepath.Dir(dst)
+	dstDir := filepath.Dir(dstName)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dstDir, 0755); err != nil {
+	if err := dest.mkdirAll(dstDir, 0755); err != nil {
 		return fmt.Errorf("create parent directories: %w", err)
 	}
 
@@ -136,7 +172,7 @@ func copyFileWithOpsAndOpen(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := validateCopyPermissions(dstDir, srcInfo.Mode(), os.CreateTemp, chmod, os.Remove); err != nil {
+	if err := validateCopyPermissions(dstDir, srcInfo.Mode(), dest.createTemp, chmod, dest.remove); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
@@ -145,18 +181,17 @@ func copyFileWithOpsAndOpen(
 
 	// Create the private payload temp file in the same directory for atomic
 	// rename. It stays at CreateTemp's 0600 mode until the copy is complete.
-	tmpFile, err := os.CreateTemp(dstDir, ".tmp-*")
+	tmpFile, tmpName, err := dest.createTemp(dstDir, ".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
-	tmpPath := tmpFile.Name()
 
 	// Ensure cleanup on any failure
 	success := false
 	defer func() {
 		if !success {
 			_ = tmpFile.Close()
-			_ = os.Remove(tmpPath)
+			_ = dest.remove(tmpName)
 		}
 	}()
 
@@ -188,7 +223,7 @@ func copyFileWithOpsAndOpen(
 	}
 
 	// Atomic rename to destination
-	if err := os.Rename(tmpPath, dst); err != nil {
+	if err := dest.rename(tmpName, dstName); err != nil {
 		return fmt.Errorf("rename to destination: %w", err)
 	}
 
@@ -199,7 +234,7 @@ func copyFileWithOpsAndOpen(
 	// rename. Windows has no equivalent directory-fsync semantics, so this
 	// is skipped there.
 	if syncParent != nil {
-		if err := syncParent(dstDir); err != nil {
+		if err := syncParent(dest, dstDir); err != nil {
 			return fmt.Errorf("sync destination directory: %w", err)
 		}
 	}
@@ -267,18 +302,20 @@ func (r contextReader) Read(p []byte) (int, error) {
 	return r.reader.Read(p)
 }
 
+// validateCopyPermissions probes the destination's permission support. The
+// probe's name comes from createTemp rather than (*os.File).Name so a pinned
+// destination removes it through the same handle it created it with.
 func validateCopyPermissions(
 	dstDir string,
 	mode fs.FileMode,
-	createTemp func(string, string) (*os.File, error),
+	createTemp func(string, string) (*os.File, string, error),
 	chmod func(*os.File, fs.FileMode) error,
 	remove func(string) error,
 ) error {
-	probeFile, err := createTemp(dstDir, ".tmp-perm-*")
+	probeFile, probePath, err := createTemp(dstDir, ".tmp-perm-*")
 	if err != nil {
 		return fmt.Errorf("create permission probe: %w", err)
 	}
-	probePath := probeFile.Name()
 	defer func() {
 		_ = probeFile.Close()
 		_ = remove(probePath)
@@ -460,8 +497,28 @@ func readersEqualContext(ctx context.Context, a, b io.Reader) (bool, error) {
 // Uses SHA-256 content comparison to avoid unnecessary writes on FUSE filesystems.
 // Includes a size-based confidence check to catch FUSE stale-read scenarios where
 // the cached hash appears to match but the actual file content has diverged.
+// Like CopyFile, every destination mutation is resolved by path; use
+// CopyFileUnderRootIfChanged for a destination a container can modify.
 func CopyFileIfChanged(ctx context.Context, src, dst string) (bool, error) {
 	return copyFileIfChanged(ctx, src, dst, fileHashContext)
+}
+
+// CopyFileUnderRootIfChanged is CopyFileIfChanged with the write pinned to
+// root, the way CopyFileUnderRoot pins CopyFile.
+//
+// The destination is resolved through the pinned handle before the comparison
+// that decides whether to write, and one that escapes root is refused. A
+// comparison reading an attacker-placed file outside root would find it equal
+// and skip the write, which is an unreported deploy failure: nothing lands
+// inside root, and a skipped file never enters the written set a post-deploy
+// check could catch it in. See pinnedDir.assertDestinationInRoot.
+func CopyFileUnderRootIfChanged(ctx context.Context, src, root, dst string) (bool, error) {
+	pinned := newPinnedDir(root)
+	defer pinned.close()
+	if err := pinned.assertDestinationInRoot(dst); err != nil {
+		return false, err
+	}
+	return copyFileIfChangedWithCopy(ctx, src, dst, fileHashContext, pinned.copyFileSyncingDir)
 }
 
 // copyFileIfChanged accepts the context-aware hash operation explicitly so
@@ -742,16 +799,68 @@ func validateCopyRoots(src, dst string) error {
 // Other non-regular source entries return ErrUnsupportedFileType.
 // Cancellation stops the walk before its next destination mutation; completed
 // atomic renames are still synchronized and verified before returning.
+// The destination root is created when the walk first reaches it, so a call
+// that fails before that — an unreadable source, a rejected source/destination
+// pair — still leaves no destination directory behind.
 func CopyDirIfChanged(ctx context.Context, src, dst string) ([]string, error) {
-	return copyDirIfChangedWithOps(ctx, src, dst, copyFileIfChangedDeferredWithoutDirSync, syncDestinationDir)
+	// This is a deploy destination: bosun runs as host root and writes into
+	// directories a container can modify. Pin dst once and resolve every
+	// destination mutation from that handle, so a descendant directory swapped
+	// for a symlink mid-walk cannot redirect a write outside dst.
+	//
+	// os.OpenRoot resolves the pinned path itself by path, so dst must be a
+	// directory the container cannot replace. When it is not — a deploy into
+	// appdata/<service> — use CopyDirUnderRootIfChanged and pin higher.
+	return CopyDirUnderRootIfChanged(ctx, src, dst, dst)
+}
+
+// CopyDirUnderRootIfChanged is CopyDirIfChanged with every destination mutation
+// resolved from a handle pinned to root, which dst must lie under. It is the
+// directory counterpart of CopyFileUnderRootIfChanged: pinning above the
+// container-writable component keeps dst itself from being swapped for a
+// symlink that redirects the whole tree. A dst outside root is refused rather
+// than copied by path.
+//
+// root itself is resolved by path when the handle is opened, so root must be a
+// directory the container cannot replace.
+//
+// The returned paths stay relative to dst, exactly as CopyDirIfChanged's are.
+func CopyDirUnderRootIfChanged(ctx context.Context, src, root, dst string) ([]string, error) {
+	pinned := newPinnedDir(root)
+	defer pinned.close()
+	return copyDirIfChangedWithOps(ctx, src, dst, pinned.dirOps())
+}
+
+// destinationDirOps are the destination-side operations the content-hash walk
+// performs. Unset directory operations default to the path-based ones.
+type destinationDirOps struct {
+	// mkdirRoot creates the destination root and any missing ancestors.
+	mkdirRoot func(path string, mode fs.FileMode) error
+	// mkdirIfMissing creates one descendant directory and reports whether this
+	// call created it.
+	mkdirIfMissing func(path string, mode fs.FileMode) (bool, error)
+	// copyFile performs one atomic file copy, deferring its directory sync.
+	copyFile func(ctx context.Context, src, dst string) (bool, postWriteVerification, error)
+	// syncParent flushes one changed destination parent. Nil skips the flush.
+	syncParent func(dir string) error
+}
+
+func (ops destinationDirOps) withDefaults() destinationDirOps {
+	if ops.mkdirRoot == nil {
+		ops.mkdirRoot = os.MkdirAll
+	}
+	if ops.mkdirIfMissing == nil {
+		ops.mkdirIfMissing = mkdirIfMissing
+	}
+	return ops
 }
 
 func copyDirIfChangedWithOps(
 	ctx context.Context,
 	src, dst string,
-	copyFile func(context.Context, string, string) (bool, postWriteVerification, error),
-	syncParent func(string) error,
+	ops destinationDirOps,
 ) ([]string, error) {
+	ops = ops.withDefaults()
 	if err := validateCopyRoots(src, dst); err != nil {
 		return nil, err
 	}
@@ -783,17 +892,17 @@ func copyDirIfChangedWithOps(
 			// directly. It is deployment plumbing rather than a source-tree
 			// change, so create it without adding "." to the returned paths.
 			if relPath == "." {
-				return os.MkdirAll(dstPath, 0755)
+				return ops.mkdirRoot(dstPath, 0755)
 			}
 
-			created, err := mkdirIfMissing(dstPath, 0755)
+			created, err := ops.mkdirIfMissing(dstPath, 0755)
 			if created {
 				written = append(written, relPath)
 			}
 			return err
 		}
 
-		changed, verify, err := copyFile(ctx, path, dstPath)
+		changed, verify, err := ops.copyFile(ctx, path, dstPath)
 		if changed {
 			written = append(written, relPath)
 			changedParents[filepath.Dir(dstPath)] = struct{}{}
@@ -806,7 +915,7 @@ func copyDirIfChangedWithOps(
 		}
 		return nil
 	})
-	flushErr := syncParentDirs(changedParents, syncParent)
+	flushErr := syncParentDirs(changedParents, ops.syncParent)
 	verifyErr := runPostWriteVerifications(verifications)
 	return written, joinErrorsPreservingSingles(walkErr, flushErr, verifyErr)
 }

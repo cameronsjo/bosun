@@ -491,7 +491,11 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	// below then misreports as "another reconciliation may be in progress",
 	// paralyzing every subsequent run. One MkdirAll here covers the default
 	// target and every named target, since they all share the base lock dir.
-	if err := os.MkdirAll(filepath.Dir(r.lockFile), 0755); err != nil {
+	// lockDirMode keeps a directory bosun creates owner-only so no other local
+	// principal can reach the lock files inside it; an already-existing
+	// directory keeps its mode, since it may be shared and not bosun's to
+	// retighten.
+	if err := os.MkdirAll(filepath.Dir(r.lockFile), lockDirMode); err != nil {
 		return fmt.Errorf("failed to create lock file directory: %w", err)
 	}
 
@@ -2390,7 +2394,11 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 		deletedSnapshot := len(result.DeletedFiles)
 		prevForTarget := filterManagedForTarget(prevManaged, t.TargetPath)
 		if t.IsDir {
-			if err := r.deploy.DeployLocal(ctx, src, dst, result, prevForTarget); err != nil {
+			// appdata is the deploy root, as in the single-file branch below:
+			// dst is appdata/<service>, which a compromised container can
+			// replace with a symlink. Pinning at appdata keeps that swap from
+			// redirecting the rendered tree.
+			if err := r.deploy.deployLocalManaged(ctx, src, dst, appdata, result, prevForTarget); err != nil {
 				result.PrefixLatest(snapshot, t.RelPath)
 				result.PrefixLatestDeleted(deletedSnapshot, t.RelPath)
 				return result, err
@@ -2404,13 +2412,16 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 				return nil, err
 			}
 		} else {
-			targetDir := filepath.Dir(dst)
-			if !r.config.DryRun {
-				if err := os.MkdirAll(targetDir, 0755); err != nil {
-					return nil, fmt.Errorf("create local deploy directory %q: %w", targetDir, err)
-				}
-			}
-			if err := r.deploy.deployLocalFileManaged(ctx, src, dst, result, prevForTarget); err != nil {
+			// No os.MkdirAll here: dst's parent is appdata itself, which the
+			// pinned copy creates through the same handle it writes with. A
+			// path-resolved mkdir would be the last unpinned destination
+			// mutation on this path.
+			//
+			// appdata is the deploy root: discovery gives every target a
+			// single-component TargetPath, so dst sits directly under it.
+			// Pinning there keeps a container-controlled directory beneath
+			// appdata from redirecting this write.
+			if err := r.deploy.deployLocalFileManaged(ctx, src, dst, appdata, result, prevForTarget); err != nil {
 				result.PrefixLatest(snapshot, filepath.Dir(t.RelPath))
 				result.PrefixLatestDeleted(deletedSnapshot, t.RelPath)
 				return result, err
@@ -2445,7 +2456,7 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 		snapshot := len(result.WrittenFiles)
 		deletedSnapshot := len(result.DeletedFiles)
 		prevForCompose := filterManagedForTarget(prevManaged, "compose")
-		if err := r.deploy.DeployLocal(ctx, composeStaging, composeTarget, result, prevForCompose); err != nil {
+		if err := r.deploy.deployLocalManaged(ctx, composeStaging, composeTarget, appdata, result, prevForCompose); err != nil {
 			result.PrefixLatest(snapshot, "compose")
 			result.PrefixLatestDeleted(deletedSnapshot, "compose")
 			return result, err

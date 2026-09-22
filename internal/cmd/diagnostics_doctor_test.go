@@ -478,6 +478,64 @@ func TestCheckRestartBreakerSampling(t *testing.T) {
 	})
 }
 
+func TestCheckRestartBreakerScope(t *testing.T) {
+	t.Run("warns when an enabled breaker has no project scope", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_BREAKER", "")
+		t.Setenv("BOSUN_TARGETS", "")
+
+		var result CheckResult
+		output := captureWebhookColorOutput(t, func() {
+			result = checkRestartBreakerScope(loadBosunYAML(t, ""))
+		})
+
+		assert.Equal(t, CheckResult{Warned: 1}, result)
+		assert.Contains(t, output, "no compose project scope")
+		assert.Contains(t, output, "project_name")
+	})
+
+	t.Run("passes when a target supplies the project name", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_BREAKER", "")
+		t.Setenv("BOSUN_TARGETS", `[{"name":"unraid","project_name":"homelab"}]`)
+
+		var result CheckResult
+		output := captureWebhookColorOutput(t, func() {
+			result = checkRestartBreakerScope(loadBosunYAML(t, ""))
+		})
+
+		assert.Equal(t, CheckResult{Passed: 1}, result)
+		assert.Contains(t, output, `"homelab"`)
+	})
+
+	t.Run("passes on a root-level project_name in bosun.yaml", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_BREAKER", "")
+		t.Setenv("BOSUN_TARGETS", "")
+
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(
+			filepath.Join(tmpDir, "bosun.yaml"), []byte("project_name: homelab\n"), 0644))
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(originalWd) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := config.Load()
+		require.NoError(t, err)
+
+		result := checkRestartBreakerScope(cfg)
+
+		assert.Equal(t, CheckResult{Passed: 1}, result)
+	})
+
+	t.Run("skips when the breaker is disabled", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_BREAKER", "false")
+		t.Setenv("BOSUN_TARGETS", "")
+
+		result := checkRestartBreakerScope(loadBosunYAML(t, ""))
+
+		assert.Equal(t, CheckResult{}, result)
+	})
+}
+
 func TestCheckWebhook(t *testing.T) {
 	// Note: This test checks behavior when webhook is not running
 	// In a typical test environment, the webhook will not be running

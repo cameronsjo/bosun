@@ -367,6 +367,50 @@ func TestRestartBreakerSamplingMismatch(t *testing.T) {
 	}
 }
 
+func TestRestartBreakerProjectName(t *testing.T) {
+	tests := []struct {
+		name            string
+		targets         []Target
+		fileProjectName string
+		want            string
+	}{
+		{
+			name:    "no targets and no file name resolves nothing",
+			targets: []Target{{Name: DefaultTargetName}},
+			want:    "",
+		},
+		{
+			name:    "single target project_name is the scope",
+			targets: []Target{{Name: DefaultTargetName, ProjectName: "homelab"}},
+			want:    "homelab",
+		},
+		{
+			name:            "target project_name wins over the file value",
+			targets:         []Target{{Name: "unraid", ProjectName: "homelab"}},
+			fileProjectName: "from-file",
+			want:            "homelab",
+		},
+		{
+			name:            "file project_name covers a target without one",
+			targets:         []Target{{Name: DefaultTargetName}},
+			fileProjectName: "from-file",
+			want:            "from-file",
+		},
+		{
+			name:            "several targets have no single scope",
+			targets:         []Target{{Name: "a", ProjectName: "stack-a"}, {Name: "b", ProjectName: "stack-b"}},
+			fileProjectName: "from-file",
+			want:            "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, RestartBreakerProjectName(tt.targets, tt.fileProjectName))
+		})
+	}
+}
+
 func TestRunRestartBreaker(t *testing.T) {
 	fullID := "abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
 
@@ -411,12 +455,60 @@ func TestRunRestartBreaker(t *testing.T) {
 		}
 
 		result, err := RunRestartBreaker(
-			context.Background(), client, actual, state, 5, 10*time.Minute,
+			context.Background(), client, "test", actual, state, 5, 10*time.Minute,
 		)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"web"}, result.Tripped)
 		assert.Equal(t, "test-web-1", stoppedContainer)
 		assert.Equal(t, fullID[:12], result.Updated["web"].ContainerID)
+	})
+
+	t.Run("stops nothing when the project scope is empty", func(t *testing.T) {
+		mockAPI := &dockertest.MockDockerAPI{
+			ContainerInspectFunc: func(_ context.Context, _ string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+				return client.ContainerInspectResult{
+					Container: container.InspectResponse{
+						ID:           fullID,
+						Name:         "/foreign-web-1",
+						RestartCount: 12,
+						State: &container.State{
+							Status:    "running",
+							StartedAt: "2026-03-13T10:00:00Z",
+						},
+						Config: &container.Config{
+							Image:  "nginx",
+							Labels: map[string]string{},
+							Env:    []string{},
+						},
+						NetworkSettings: &container.NetworkSettings{
+							Networks: map[string]*network.EndpointSettings{},
+						},
+					},
+				}, nil
+			},
+		}
+		dockerClient := docker.NewClientWithAPI(mockAPI)
+
+		// This candidate set is exactly what an unscoped collection returns:
+		// every restarting container on the host, bosun-managed or not.
+		actual := []ActualService{
+			{Name: "web", ContainerName: "foreign-web-1", State: "running"},
+		}
+		tracking := map[string]RestartTrackingEntry{
+			"web": {RestartCount: 0, CheckedAt: time.Now().Add(-3 * time.Minute)},
+		}
+		state := &DeployState{RestartTracking: tracking}
+
+		result, err := RunRestartBreaker(
+			context.Background(), dockerClient, "", actual, state, 5, 10*time.Minute,
+		)
+
+		require.NoError(t, err)
+		assert.Equal(t, 0, mockAPI.ContainerStopCalls, "an unscoped breaker must stop nothing")
+		assert.Equal(t, 0, mockAPI.ContainerInspectCalls, "an unscoped breaker must not even sample")
+		assert.Empty(t, result.Tripped)
+		assert.Empty(t, result.Resolved)
+		assert.Equal(t, tracking, result.Updated, "tracking is returned unchanged")
 	})
 
 	t.Run("no action when below threshold", func(t *testing.T) {
@@ -455,7 +547,7 @@ func TestRunRestartBreaker(t *testing.T) {
 		}
 
 		result, err := RunRestartBreaker(
-			context.Background(), client, actual, state, 5, 10*time.Minute,
+			context.Background(), client, "test", actual, state, 5, 10*time.Minute,
 		)
 		require.NoError(t, err)
 		assert.Empty(t, result.Tripped)
@@ -472,7 +564,7 @@ func TestRunRestartBreaker(t *testing.T) {
 		state := &DeployState{}
 
 		result, err := RunRestartBreaker(
-			context.Background(), client, actual, state, 5, 10*time.Minute,
+			context.Background(), client, "test", actual, state, 5, 10*time.Minute,
 		)
 		require.NoError(t, err)
 		assert.Empty(t, result.Tripped)
@@ -492,7 +584,7 @@ func TestRunRestartBreaker(t *testing.T) {
 			},
 		}}
 
-		result, err := RunRestartBreaker(context.Background(), client, actual, state, 5, 10*time.Minute)
+		result, err := RunRestartBreaker(context.Background(), client, "test", actual, state, 5, 10*time.Minute)
 
 		require.NoError(t, err)
 		require.Contains(t, result.Updated, "web")
@@ -544,7 +636,7 @@ func TestRunRestartBreaker(t *testing.T) {
 			},
 		}
 
-		result, err := RunRestartBreaker(context.Background(), client, actual, state, 5, 10*time.Minute)
+		result, err := RunRestartBreaker(context.Background(), client, "test", actual, state, 5, 10*time.Minute)
 
 		require.NoError(t, err)
 		assert.Equal(t, webEntry, result.Updated["web"])
@@ -568,7 +660,7 @@ func TestRunRestartBreaker(t *testing.T) {
 		}
 		state := &DeployState{RestartTracking: map[string]RestartTrackingEntry{"web": entry}}
 
-		result, err := RunRestartBreaker(context.Background(), client, actual, state, 5, 10*time.Minute)
+		result, err := RunRestartBreaker(context.Background(), client, "test", actual, state, 5, 10*time.Minute)
 
 		require.NoError(t, err)
 		assert.Equal(t, entry, result.Updated["web"])

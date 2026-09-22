@@ -580,6 +580,34 @@ func TestTemplateOps_RenderDirectory(t *testing.T) {
 			IsDir:      true,
 		}}, targets)
 	})
+
+	t.Run("symlinked template is skipped instead of exfiltrating its target", func(t *testing.T) {
+		// A repository-authored .tmpl symlink is checked out verbatim by git.
+		// Following it would read a file outside the repository (age key,
+		// process environment) and stage the content for deployment. The
+		// lexically later real template must still render.
+		tmpDir := evalSymlinks(t, t.TempDir())
+		sourceDir := filepath.Join(tmpDir, "repo", "unraid")
+		composeDir := filepath.Join(sourceDir, "compose")
+		stagingDir := filepath.Join(tmpDir, "staging")
+		outsideSecret := filepath.Join(tmpDir, "age-key.txt")
+
+		require.NoError(t, os.MkdirAll(composeDir, 0755))
+		require.NoError(t, os.WriteFile(outsideSecret, []byte("AGE-SECRET-KEY-OUTSIDE-THE-REPO"), 0600))
+		if err := os.Symlink(outsideSecret, filepath.Join(composeDir, "aaa-loot.tmpl")); err != nil {
+			t.Skipf("symlink creation unavailable: %v", err)
+		}
+		require.NoError(t, os.WriteFile(filepath.Join(composeDir, "zzz-stack.yml.tmpl"), []byte("services: {}"), 0644))
+
+		tmpl := NewTemplateOps(map[string]any{})
+		require.NoError(t, tmpl.RenderDirectory(context.Background(), sourceDir, stagingDir, "unraid"))
+
+		stagingSubDir := filepath.Join(stagingDir, "unraid")
+		assert.NoFileExists(t, filepath.Join(stagingSubDir, "compose", "aaa-loot"),
+			"a symlinked template must not be rendered into staging")
+		assert.FileExists(t, filepath.Join(stagingSubDir, "compose", "zzz-stack.yml"),
+			"a later regular template must still render")
+	})
 }
 
 func TestTemplateOps_ExecuteTemplateErrors(t *testing.T) {
@@ -600,6 +628,27 @@ func TestTemplateOps_ExecuteTemplateErrors(t *testing.T) {
 		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to execute template")
+	})
+
+	t.Run("symlinked template file is refused before its target is read", func(t *testing.T) {
+		// Every caller of ExecuteTemplate is covered here, not just the
+		// RenderDirectory walk: the link target is never read or written.
+		tmpDir := evalSymlinks(t, t.TempDir())
+		ctx := context.Background()
+
+		outsideSecret := filepath.Join(tmpDir, "age-key.txt")
+		require.NoError(t, os.WriteFile(outsideSecret, []byte("AGE-SECRET-KEY-OUTSIDE-THE-REPO"), 0600))
+
+		templateFile := filepath.Join(tmpDir, "loot.tmpl")
+		if err := os.Symlink(outsideSecret, templateFile); err != nil {
+			t.Skipf("symlink creation unavailable: %v", err)
+		}
+		outputFile := filepath.Join(tmpDir, "output", "loot")
+
+		tmpl := NewTemplateOps(map[string]any{})
+		err := tmpl.ExecuteTemplate(ctx, templateFile, outputFile)
+		require.ErrorIs(t, err, fileutil.ErrSymlinkSkipped)
+		assert.NoFileExists(t, outputFile, "the symlink target must not be written to the output path")
 	})
 
 	t.Run("include function with missing file", func(t *testing.T) {

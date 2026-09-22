@@ -123,9 +123,10 @@ func logBackupAnchorAge(ctx context.Context, backupPath string) {
 }
 
 // safeExtractBackup extracts a gzip-compressed tar into a fresh temp dir with
-// Go's archive/tar for local and remote rollback consumers. It validates each
-// entry's realized path at write time so no member can escape the extraction
-// root — via its name, or via a symlink / hardlink target. It is the single
+// Go's archive/tar for local and remote rollback consumers. Every member is
+// created through an *os.Root pinned to that dir, so no entry can escape the
+// extraction root — via its name, via a symlink / hardlink target, or by
+// resolving through a symlink an earlier entry created. It is the single
 // reader for both validation and extraction,
 // which avoids the divergence a header pre-scan followed by external `tar -xzf`
 // would leave (two independent parsers, a PAX/GNU-longname or Linkname mismatch
@@ -149,7 +150,7 @@ func safeExtractBackupBoundedWithWriter(
 	ctx context.Context,
 	tarFile string,
 	maxBytes int64,
-	writeEntry func(context.Context, string, io.Reader) (int64, error),
+	writeEntry func(context.Context, *os.Root, string, io.Reader) (int64, error),
 ) (root string, cleanup func(), err error) {
 	noop := func() {}
 	if maxBytes < 0 {
@@ -173,6 +174,18 @@ func safeExtractBackupBoundedWithWriter(
 		return "", noop, fmt.Errorf("cannot create rollback temp dir: %w", err)
 	}
 	cleanupTmp := func() { _ = os.RemoveAll(tmp) }
+
+	// Every member is created THROUGH this pinned root, so the kernel decides
+	// where an entry may land instead of a string comparison. os.Root refuses to
+	// traverse a symlink that leaves the root, which is what the lexical checks
+	// below cannot see: they reason about an entry's name, not about the tree an
+	// earlier entry already built underneath it (#448, CWE-59).
+	rootFS, err := os.OpenRoot(tmp)
+	if err != nil {
+		cleanupTmp()
+		return "", noop, fmt.Errorf("cannot pin rollback temp dir: %w", err)
+	}
+	defer func() { _ = rootFS.Close() }()
 
 	// Bound and cancel the entire decompressed stream below tar.Reader. This is
 	// load-bearing: tar.Reader may consume entry bodies itself while advancing to
@@ -198,24 +211,35 @@ func safeExtractBackupBoundedWithWriter(
 			return "", noop, fmt.Errorf("cannot read archive entry header: %w", nextErr)
 		}
 
-		dest, ok := resolveWithinRoot(tmp, hdr.Name)
+		rel, ok := resolveWithinRoot(hdr.Name)
 		if !ok {
 			cleanupTmp()
 			return "", noop, fmt.Errorf("archive entry escapes extraction root: %q", hdr.Name)
 		}
 
+		// An entry whose parent path runs through a symlink is what makes the
+		// lexical link-target check below unsound: the parent it reasons about
+		// is not the directory the entry actually lands in. bosun's own archives
+		// never contain one — neither writeBackupArchive's filepath.Walk nor
+		// `tar -czf -` descends into a symlink — so refuse it rather than let a
+		// crafted chain of links redirect a later member.
+		if symlinkedParent(rootFS, rel) {
+			cleanupTmp()
+			return "", noop, fmt.Errorf("archive entry resolves through a symlinked parent: %q", hdr.Name)
+		}
+
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if mkErr := os.MkdirAll(dest, 0o755); mkErr != nil {
+			if mkErr := mkdirAllWithin(rootFS, rel); mkErr != nil {
 				cleanupTmp()
 				return "", noop, fmt.Errorf("cannot create dir %q: %w", hdr.Name, mkErr)
 			}
 		case tar.TypeReg:
-			if mkErr := os.MkdirAll(filepath.Dir(dest), 0o755); mkErr != nil {
+			if mkErr := mkdirAllWithin(rootFS, filepath.Dir(rel)); mkErr != nil {
 				cleanupTmp()
 				return "", noop, fmt.Errorf("cannot create parent for %q: %w", hdr.Name, mkErr)
 			}
-			_, wErr := writeEntry(ctx, dest, tr)
+			_, wErr := writeEntry(ctx, rootFS, rel, tr)
 			if wErr != nil {
 				cleanupTmp()
 				if errors.Is(wErr, ErrBackupTooLarge) {
@@ -226,17 +250,19 @@ func safeExtractBackupBoundedWithWriter(
 			}
 		case tar.TypeSymlink, tar.TypeLink:
 			// Reject any link whose target escapes root BEFORE creating it, so a
-			// later entry cannot be written through it to an outside path.
-			if !linkTargetWithinRoot(tmp, dest, hdr.Typeflag, hdr.Linkname) {
+			// later entry cannot be written through it to an outside path. The
+			// symlinked-parent refusal above is what keeps this check honest:
+			// the entry's realized parent is its lexical one.
+			if !linkTargetWithinRoot(rel, hdr.Typeflag, hdr.Linkname) {
 				cleanupTmp()
 				return "", noop, fmt.Errorf("archive %s target escapes extraction root: %q -> %q",
 					linkKind(hdr.Typeflag), hdr.Name, hdr.Linkname)
 			}
-			if mkErr := os.MkdirAll(filepath.Dir(dest), 0o755); mkErr != nil {
+			if mkErr := mkdirAllWithin(rootFS, filepath.Dir(rel)); mkErr != nil {
 				cleanupTmp()
 				return "", noop, fmt.Errorf("cannot create parent for %q: %w", hdr.Name, mkErr)
 			}
-			if lErr := writeLinkEntry(tmp, dest, hdr); lErr != nil {
+			if lErr := writeLinkEntry(rootFS, rel, hdr); lErr != nil {
 				cleanupTmp()
 				return "", noop, fmt.Errorf("cannot extract %s %q: %w", linkKind(hdr.Typeflag), hdr.Name, lErr)
 			}
@@ -294,21 +320,58 @@ func (r *boundedContextReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// resolveWithinRoot maps a tar member name to its extraction path under root,
-// mirroring tar's leading-'/' strip. It REJECTS (returns false) any name whose
-// cleaned relative form climbs out via `..` or is absolute, rather than silently
-// clamping it — bosun's own backups never contain such names, so one is a signal
-// to fail loudly, not to remap.
-func resolveWithinRoot(root, name string) (string, bool) {
+// resolveWithinRoot maps a tar member name to its extraction path RELATIVE to
+// the root, mirroring tar's leading-'/' strip. Every write goes through the
+// pinned *os.Root, which takes root-relative names. It REJECTS (returns false)
+// any name whose cleaned relative form climbs out via `..` or is absolute,
+// rather than silently clamping it — bosun's own backups never contain such
+// names, so one is a signal to fail loudly, not to remap.
+func resolveWithinRoot(name string) (string, bool) {
 	stripped := strings.TrimPrefix(filepath.ToSlash(name), "/")
 	if stripped == "" {
-		return root, true // a bare directory entry for the root itself
+		return ".", true // a bare directory entry for the root itself
 	}
 	rel := filepath.Clean(filepath.FromSlash(stripped))
 	if !relWithinRoot(rel) {
 		return "", false
 	}
-	return filepath.Join(root, rel), true
+	return rel, true
+}
+
+// mkdirAllWithin creates rel and any missing parents inside the pinned root.
+// The root itself always exists, so "." is a no-op rather than an error.
+func mkdirAllWithin(rootFS *os.Root, rel string) error {
+	if rel == "." || rel == string(os.PathSeparator) {
+		return nil
+	}
+	return rootFS.MkdirAll(rel, 0o755)
+}
+
+// symlinkedParent reports whether any existing ancestor directory of rel is a
+// symlink. A lookup failure answers false: the create that follows resolves the
+// same path and returns the real error for the entry, and os.Root confines it
+// either way.
+func symlinkedParent(rootFS *os.Root, rel string) bool {
+	dir := filepath.Dir(rel)
+	if dir == "." || dir == string(os.PathSeparator) {
+		return false
+	}
+	ancestor := ""
+	for _, part := range strings.Split(filepath.ToSlash(dir), "/") {
+		if ancestor == "" {
+			ancestor = part
+		} else {
+			ancestor += "/" + part
+		}
+		info, err := rootFS.Lstat(filepath.FromSlash(ancestor))
+		if err != nil {
+			return false // a missing or unreachable ancestor has no deeper entries
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // relWithinRoot reports whether a cleaned relative path stays under its base —
@@ -320,20 +383,12 @@ func relWithinRoot(rel string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
-// withinRoot reports whether path is root itself or a descendant of it.
-func withinRoot(root, path string) bool {
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return false
-	}
-	return relWithinRoot(rel)
-}
-
 // linkTargetWithinRoot reports whether a symlink/hardlink entry's target stays
-// within root. Symlink targets resolve against the link's own directory (an
-// absolute target always escapes a temp extraction root); hardlink targets are
-// archive-relative paths that must not climb above or point outside root.
-func linkTargetWithinRoot(root, linkPath string, typeflag byte, linkname string) bool {
+// within root, working in root-relative coordinates. Symlink targets resolve
+// against the link's own directory (an absolute target always escapes a temp
+// extraction root); hardlink targets are archive-relative paths that must not
+// climb above or point outside root.
+func linkTargetWithinRoot(relPath string, typeflag byte, linkname string) bool {
 	if linkname == "" {
 		return false
 	}
@@ -342,8 +397,7 @@ func linkTargetWithinRoot(root, linkPath string, typeflag byte, linkname string)
 		if filepath.IsAbs(linkname) {
 			return false
 		}
-		resolved := filepath.Join(filepath.Dir(linkPath), filepath.FromSlash(linkname))
-		return withinRoot(root, resolved)
+		return relWithinRoot(filepath.Join(filepath.Dir(relPath), filepath.FromSlash(linkname)))
 	case tar.TypeLink:
 		stripped := strings.TrimPrefix(filepath.ToSlash(linkname), "/")
 		rel := filepath.Clean(filepath.FromSlash(stripped))
@@ -354,9 +408,10 @@ func linkTargetWithinRoot(root, linkPath string, typeflag byte, linkname string)
 }
 
 // writeRegularEntry writes one regular file from the already bounded and
-// context-aware decompressed stream. Returns the number of bytes written.
-func writeRegularEntry(ctx context.Context, dest string, r io.Reader) (int64, error) {
-	out, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+// context-aware decompressed stream, through the pinned root so the realized
+// path cannot leave it. Returns the number of bytes written.
+func writeRegularEntry(ctx context.Context, rootFS *os.Root, rel string, r io.Reader) (int64, error) {
+	out, err := rootFS.OpenFile(rel, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return 0, err
 	}
@@ -368,15 +423,16 @@ func writeRegularEntry(ctx context.Context, dest string, r io.Reader) (int64, er
 	return n, closeErr
 }
 
-// writeLinkEntry creates a symlink or hardlink entry. The caller has already
-// validated the target stays within root.
-func writeLinkEntry(root, dest string, hdr *tar.Header) error {
-	_ = os.Remove(dest) // defensive: a well-formed backup won't collide
+// writeLinkEntry creates a symlink or hardlink entry through the pinned root.
+// The caller has already validated the target stays within root; the root
+// itself enforces that the link is PLACED within it.
+func writeLinkEntry(rootFS *os.Root, rel string, hdr *tar.Header) error {
+	_ = rootFS.Remove(rel) // defensive: a well-formed backup won't collide
 	if hdr.Typeflag == tar.TypeSymlink {
-		return os.Symlink(filepath.FromSlash(hdr.Linkname), dest)
+		return rootFS.Symlink(filepath.FromSlash(hdr.Linkname), rel)
 	}
-	rel := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(filepath.ToSlash(hdr.Linkname), "/")))
-	return os.Link(filepath.Join(root, rel), dest)
+	target := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(filepath.ToSlash(hdr.Linkname), "/")))
+	return rootFS.Link(target, rel)
 }
 
 // linkKind names a link typeflag for error messages.

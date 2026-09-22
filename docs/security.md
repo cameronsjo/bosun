@@ -178,6 +178,44 @@ cmd := exec.CommandContext(ctx, "ssh",
 | `ConnectTimeout` | 5 seconds | Prevent DoS via slow hosts |
 | `BatchMode` | yes | Disable interactive prompts, enforce key auth |
 
+### Deploy Host Key Verification
+
+**Implementation**: `hostKeyOptions()` in `internal/reconcile/ssh.go`
+
+Every `ssh` and `scp` the deploy path spawns carries a host-key policy, because
+that channel streams the **fully rendered staging tree** — every decrypted SOPS
+value interpolated into compose files and app configs — to the target. A deploy
+to an unverified host discloses all of it.
+
+The policy resolves in this order:
+
+| Condition | Flags | Effect |
+|-----------|-------|--------|
+| `BOSUN_SSH_INSECURE_HOST_KEY=true` | `StrictHostKeyChecking=no`, `UserKnownHostsFile=/dev/null` | No verification (escape hatch) |
+| `BOSUN_SSH_KNOWN_HOSTS` or `/config/known_hosts` exists | `StrictHostKeyChecking=yes`, `UserKnownHostsFile=<that file>` | Pinned to that file only |
+| Neither | `StrictHostKeyChecking=yes` | Pinned to ssh's own defaults; **unknown hosts are refused** |
+
+There is no trust-on-first-use fallback. With no bosun-configured `known_hosts`,
+the deploy still runs strict against ssh's own defaults —
+`~/.ssh/known_hosts`, `~/.ssh/known_hosts2`, and the system-wide
+`/etc/ssh/ssh_known_hosts` — so a host already pinned in one of those deploys
+normally, and an unpinned host fails with `Host key verification failed` before
+any archive bytes are sent.
+
+**Populate a pin before the first remote deploy.** In the shipped
+`bosun/docker-compose.yml`, `/mnt/user/appdata/bosun/ssh` is mounted at
+`/home/bosun/.ssh`, so on the Docker host:
+
+```bash
+ssh-keyscan unraid.local >> /mnt/user/appdata/bosun/ssh/known_hosts
+```
+
+Verify the fingerprint out of band (from a console on the target, `ssh-keygen
+-lf /etc/ssh/ssh_host_ed25519_key.pub`) before trusting a scanned key — a
+`ssh-keyscan` run over a hostile network pins the attacker. Point
+`BOSUN_SSH_KNOWN_HOSTS` at a mounted file instead to pin against that file
+alone and ignore ssh's defaults.
+
 ### Retry on Transient Errors
 
 Bosun implements exponential backoff retry for transient SSH errors:
@@ -233,6 +271,23 @@ for _, char := range shellMetachars {
 // Validate format with regex
 hostPattern = regexp.MustCompile(`^([a-zA-Z0-9_-]+@)?[a-zA-Z0-9.-]+$`)
 ```
+
+### Host Key Verification
+
+**Implementation**: `internal/reconcile/git.go` (Git clone/fetch), `internal/reconcile/ssh.go` (deploy channel)
+
+Both SSH channels resolve a `known_hosts` file from config-controlled paths only, in order: `BOSUN_SSH_KNOWN_HOSTS`, then `/config/known_hosts`. `~/.ssh/known_hosts` is deliberately excluded — ephemeral entries written by manual `ssh` commands inside a container cause key mismatches.
+
+Both channels fail closed when no `known_hosts` file exists. They differ only in the mechanism, because one resolves the policy in-process and the other hands it to `openssh`:
+
+| Channel | No `known_hosts` file | Unparseable `known_hosts` |
+|---------|-----------------------|---------------------------|
+| Git clone/fetch | **Fails closed** — authentication resolution errors, the daemon refuses to start, and no connection is made | **Fails closed** — the error names the file; no later candidate is substituted |
+| Deploy (`ssh`/`scp`) | **Fails closed** — emits `StrictHostKeyChecking=yes` with no `UserKnownHostsFile`, leaving `openssh`'s own defaults in play; an unpinned host is refused before any archive bytes are written | Strict against that file; `ssh` surfaces the read error |
+
+The deploy channel deliberately does not emit `accept-new`. Trust-on-first-use would stream the rendered secrets to whichever host answers first, and the shipped compose mounts `/home/bosun/.ssh` read-only, so `openssh` cannot persist a pin at all and every deploy would be a first connection.
+
+`BOSUN_SSH_INSECURE_HOST_KEY=true` is the only way to accept an unverified host key, on either channel. Populate `known_hosts` before the first Git operation (`ssh-keyscan <git-host> >> /config/known_hosts`); a Git repository over SSH with no host-key policy is rejected at startup rather than fetched from an unauthenticated peer.
 
 ## Environment Variable Filtering
 
@@ -362,6 +417,23 @@ inode. Its existence does not mean the lock is held; kernel lock state does.
 Do not delete the file while a process might hold it, because a replacement
 file would have a different inode and could be locked concurrently.
 
+### Lock File Permissions
+
+**Implementation**: `internal/reconcile/lock.go`, `internal/reconcile/lock_unix.go`
+
+The reconcile lock file is created `0600` and opened without following a symlink
+at its final path component. The mode is the access control, not a convention: an
+exclusive advisory lock is granted on any open descriptor regardless of open mode,
+so a world-readable lock file lets any local principal open it, hold the lock, and
+block every deploy indefinitely. Lock directories bosun creates are `0700`; a
+pre-existing directory keeps its mode, because a configured lock path may live in
+a directory bosun does not own.
+
+Upgrading from a version that created the file `0644` needs no operator action.
+The next acquire tightens the existing file's mode through the open descriptor. A
+failed tighten logs a warning and the reconcile proceeds, because refusing there
+would cause the same outage the permission prevents.
+
 ### Lock Release
 
 Locks are automatically released when:
@@ -410,6 +482,34 @@ These controls prevent malicious archives containing paths like:
 - `../../../etc/passwd`
 - `/etc/shadow`
 - `foo/../../bar`
+
+### Pinned Roots for Deploy and Extraction Writes
+
+**Implementation**: `internal/fileutil/destination.go`, `internal/reconcile/remote_rollback.go`
+
+Validating a path as a string and then writing to that same string is two
+separate resolutions, and the filesystem can change between them. Both the deploy
+writer and the rollback extractor therefore resolve every mutation against a
+directory handle pinned on the root they are protecting, rather than by path.
+Directory creation, temporary-file creation, rename, removal, and the directory
+sync all go through that handle.
+
+For deploys this matters because the destination tree is writable by the
+containers bosun manages. A container that replaces one of its own destination
+subdirectories with a symlink to a host path can otherwise redirect a
+root-privileged deploy write out of its volume. Both entry points are covered:
+the directory walk and the single-file path, where `os.MkdirAll` succeeds
+silently on an existing symlink-to-directory and returns no error at all.
+
+For extraction it closes a chained-symlink archive: an entry that validates
+lexically inside the root while its parent, created by an earlier entry in the
+same archive, points outside it. An entry whose existing ancestor directory is a
+symlink is refused outright.
+
+The pinned root is opened lazily on the first mutation, so a deploy that fails
+while walking its source leaves no destination directory behind. A symlink whose
+target stays inside the pinned root is still followed; the guarantee is
+confinement to the root, not immutability within it.
 
 ### File Size Limits
 
@@ -509,6 +609,14 @@ The template renderer walks the entire cloned repository directory for `.tmpl` f
 
 **Mitigation**: Limit `.tmpl` files to the infrastructure subdirectory in your repository. Consider code review rules that flag `.tmpl` files in unexpected locations.
 
+### Template Source Type Refusal
+
+**Implementation**: `internal/reconcile/template.go`
+
+A repository committer controls the paths the renderer walks, so every template source is treated as untrusted. The renderer refuses any source that is not a regular file, and refuses a path whose final component is a symlink before its target is read. Without that refusal, a committed symlink named `x.tmpl` would make the renderer read a file outside the repository — the SOPS secrets file, the age identity, `bosun.yaml` — and write its contents into the deployed tree.
+
+A symlinked template entry found during the walk is skipped with a warning and the walk continues, so one bad entry does not block an otherwise valid deploy. Every other rendering error aborts staging rather than producing a partial deploy.
+
 ### Auth Ingress Chain
 
 The auth stack — Traefik, Authelia, and Tailscale gateway — forms a dependency chain for external access. A partial compose up failure where Authelia is down but Traefik is up could serve routes without authentication middleware.
@@ -545,12 +653,38 @@ other escape hatches). With the opt-out active:
 The opt-out never bypasses a configured secret — when `WEBHOOK_SECRET` is set,
 signature validation always runs.
 
-GitHub pusher attribution is treated as untrusted even after signature
-validation. Both the daemon endpoint and the standalone webhook receiver strip
-control, formatting, and line-separator characters and cap the remaining name
-at 256 Unicode code points before writing it to logs or using it in the
-reconcile source propagated to tracing and Sentry. The same sanitization applies
-when the explicit unauthenticated-webhook opt-out is active.
+**The standalone `bosun webhook` receiver fails closed the same way.** It
+forwards to the daemon over the Unix socket, which authorizes by peer
+credential and never re-applies the daemon's own HTTP webhook gate — so the
+receiver's HTTP port needs its own. When no secret is resolved (`--secret`,
+`WEBHOOK_SECRET`, `GITHUB_WEBHOOK_SECRET`, or `--fetch-secret`), every receiver
+trigger endpoint (`/webhook`, `/webhook/github`, `/webhook/gitlab`,
+`/webhook/gitea`, `/webhook/bitbucket`) rejects requests with `403`. The
+receiver reads the same `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true` opt-out,
+warns loudly at startup about whichever posture is active, and logs a
+`SECURITY:` warning per accepted unauthenticated request. `/health` and
+`/ready` change nothing and stay open.
+
+This matters most on the implicit daemon-fetch path: a receiver started before
+the daemon gets no secret, and previously served with signature validation
+silently disabled while still forwarding triggers.
+
+Webhook attribution is treated as untrusted even after signature validation.
+Both the daemon endpoint and the standalone webhook receiver strip control,
+formatting, and line-separator characters and cap the remaining value at 256
+Unicode code points before writing it to logs or using it in the reconcile
+source propagated to tracing and Sentry. The receiver applies this to the
+pusher name and the pushed ref of every provider it accepts — GitHub, GitLab,
+Gitea, and Bitbucket — and the daemon's Unix socket `/trigger` handler applies
+it again to any caller-supplied `source`, so the property does not depend on
+each client sanitizing before it forwards. The same sanitization applies when
+the explicit unauthenticated-webhook opt-out is active.
+
+The same helper neutralizes container health-check output, which is the stdout
+and stderr of a command running inside a monitored container and is therefore
+controlled by anyone with code execution there. Both the drift printout and the
+health-gate error path strip before capping, so a control character cannot
+survive by sitting beyond the truncation point.
 
 All daemon HTTP transports — the webhook listener, Unix socket API, and
 optional bearer-authenticated TCP API — allow at most 5 seconds to receive
@@ -582,7 +716,7 @@ remain authoritative.
 
 Socket file mode controls which processes can connect, but does not by itself
 authorize a deployment. On Linux, Bosun reads `SO_PEERCRED` for each accepted
-connection and authorizes mutating socket requests only when the peer UID is
+connection and authorizes privileged socket requests only when the peer UID is
 the daemon's effective UID or appears in `BOSUN_SOCKET_ALLOWED_UIDS`. The
 allowlist is a comma-separated list of numeric UIDs; malformed, negative, or
 out-of-range entries fail configuration validation instead of partially
@@ -593,8 +727,20 @@ returns `403` and does not reconcile. Operators who deliberately use socket
 permissions as their entire trust boundary can set
 `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET=true` (strict lowercase match). This
 security opt-out is logged at startup and for every accepted unauthenticated
-mutation. Read-only socket endpoints remain governed by the socket's filesystem
-permissions.
+request the check admits.
+
+**`GET /config` carries the same peer check, despite being a read.** It returns
+the webhook secret for the daemon-injected-secrets pattern, and that secret is
+exactly what the HTTP listener's trigger endpoints accept — so a peer refused
+by `POST /trigger` could otherwise read the secret here and sign a forced
+trigger against the HTTP port instead. The boundary is drawn on effect, not on
+HTTP verb. `GET /status` and `GET /health` return no credential and remain
+governed by the socket's filesystem permissions.
+
+A `bosun webhook` receiver using `--fetch-secret` must therefore run as the
+daemon's UID or as a `BOSUN_SOCKET_ALLOWED_UIDS` member. A receiver that fails
+the check could never have forwarded a trigger anyway, so this costs a
+correctly configured deployment nothing.
 
 ## Public Health and Operator Diagnostics
 

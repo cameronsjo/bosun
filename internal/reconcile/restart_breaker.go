@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/docker"
@@ -203,6 +204,28 @@ func RestartBreakerSamplingMismatch(driftInterval, restartWindow time.Duration) 
 	return driftInterval > 0 && restartWindow > 0 && driftInterval > restartWindow
 }
 
+// RestartBreakerProjectName returns the Docker Compose project the restart
+// breaker may stop containers in, or "" when no scope can be resolved. The
+// breaker stops containers, and its candidate set comes from a project filter
+// that treats an empty project name as match-everything, so an unresolved scope
+// must disable it rather than widen it to the whole Docker host.
+//
+// A single target's project_name is the scope. Several targets have no single
+// scope, because the breaker runs once against one state file. fileProjectName
+// is the root-level project_name from bosun.yaml, which reaches Docker through
+// the top-level `name:` that `bosun provision` renders into the compose file;
+// it must never be the directory-name fallback, which names no deployed
+// project.
+func RestartBreakerProjectName(targets []Target, fileProjectName string) string {
+	if len(targets) > 1 {
+		return ""
+	}
+	if len(targets) == 1 && targets[0].ProjectName != "" {
+		return targets[0].ProjectName
+	}
+	return fileProjectName
+}
+
 // collectRestartCounts inspects running containers to get their restart counts.
 // Only inspects containers in the declared services list to minimize API calls.
 func collectRestartCounts(
@@ -240,9 +263,13 @@ func collectRestartCounts(
 
 // RunRestartBreaker performs restart circuit breaker evaluation and takes action
 // on containers that exceed the restart threshold. Returns the result for alerting.
+//
+// projectName is the Compose project the caller collected actual from. It is
+// required: an empty scope disables the breaker entirely (see below).
 func RunRestartBreaker(
 	ctx context.Context,
 	client *docker.Client,
+	projectName string,
 	actual []ActualService,
 	state *DeployState,
 	threshold int,
@@ -252,6 +279,23 @@ func RunRestartBreaker(
 
 	if state.RestartTracking == nil {
 		state.RestartTracking = make(map[string]RestartTrackingEntry)
+	}
+
+	// Fail closed when the project scope is unresolved. CollectActualState
+	// treats an empty project name as match-everything, so acting on that
+	// candidate set would stop containers bosun never deployed -- including
+	// shared dependencies such as DNS or ingress sharing the Docker host.
+	// Tracking is returned unchanged, so a trip recorded by an earlier binary
+	// stays in the state file and sends no resolution alert: advancing it would
+	// mean trusting the same unscoped observation this guard refuses. The
+	// warning names those stale entries so an operator can see them.
+	if projectName == "" {
+		event := logger.Warn().Int("candidate_containers", len(actual))
+		if stale := trippedServices(state.RestartTracking); len(stale) > 0 {
+			event = event.Strs("stale_tripped_services", stale)
+		}
+		event.Msg("Restart circuit breaker took no action, expected a Docker Compose project scope but none is configured — an unscoped breaker would stop every restart-looping container on this Docker host, including containers bosun does not manage. Set project_name on the deploy target or in bosun.yaml, or set BOSUN_RESTART_BREAKER=false")
+		return &RestartBreakerResult{Updated: state.RestartTracking}, nil
 	}
 
 	observations, unobserved := collectRestartCounts(ctx, client, actual)
@@ -293,6 +337,19 @@ func RunRestartBreaker(
 		return result, errors.Join(stopErrs...)
 	}
 	return result, nil
+}
+
+// trippedServices returns the sorted names of services currently recorded as
+// tripped, for operator-facing diagnostics.
+func trippedServices(tracked map[string]RestartTrackingEntry) []string {
+	var names []string
+	for service, entry := range tracked {
+		if entry.Tripped {
+			names = append(names, service)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // containerNameForService finds the container name for a service from actual state.
