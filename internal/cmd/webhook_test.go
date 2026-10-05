@@ -741,3 +741,45 @@ func computeExpectedHMAC(data []byte, secret string) string {
 	mac.Write(data)
 	return hex.EncodeToString(mac.Sum(nil))
 }
+
+// The receiver announces its auth posture at startup. Fail-closed is the
+// default, so the no-secret, no-opt-out case must say requests will be
+// rejected rather than imply they are accepted.
+func TestWarnWebhookReceiverAuthPosture(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler *webhookHandler
+		want    string
+		notWant string
+	}{
+		{
+			name:    "secret configured",
+			handler: &webhookHandler{secret: "s3cret"},
+			want:    "Signature validation: enabled",
+			notWant: "SECURITY",
+		},
+		{
+			name:    "unauthenticated opt-out",
+			handler: &webhookHandler{allowUnauthenticated: true},
+			want:    "unauthenticated webhook triggers enabled",
+			notWant: "Signature validation: enabled",
+		},
+		{
+			name:    "no secret fails closed",
+			handler: &webhookHandler{},
+			want:    "trigger requests will be rejected (403)",
+			notWant: "Signature validation: enabled",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := captureWebhookColorOutput(t, func() {
+				warnWebhookReceiverAuthPosture(tt.handler)
+			})
+
+			assert.Contains(t, output, tt.want)
+			assert.NotContains(t, output, tt.notWant)
+		})
+	}
+}
