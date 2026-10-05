@@ -756,12 +756,17 @@ The staged tree is promoted with a retain-old rename-swap: the live target is mo
 
 #### SSH Host Key Verification
 
-Bosun verifies SSH host keys using only config-controlled paths:
+Both SSH channels look for a bosun-configured `known_hosts` file in this order:
 
 1. `BOSUN_SSH_KNOWN_HOSTS` (explicit override)
 2. `/config/known_hosts` (container convention)
 
-`~/.ssh/known_hosts` is intentionally excluded — ephemeral entries from manual `ssh` commands inside a container can cause go-git key mismatches. If neither path exists, or the first one found does not parse, Git authentication fails closed: the operation returns an error and the daemon refuses to start, rather than connecting to an unverified host. Set `BOSUN_SSH_INSECURE_HOST_KEY=true` to disable verification entirely — that is the only opt-out.
+They differ when neither exists:
+
+- **Git** uses only those two paths. `~/.ssh/known_hosts` is intentionally excluded, because ephemeral entries from manual `ssh` commands inside a container can cause go-git key mismatches. If neither path exists, or the first one found does not parse, Git authentication fails closed: the operation returns an error and the daemon refuses to start, rather than connecting to an unverified host.
+- **Deploy** (`ssh`/`scp`) pins to the configured file when one exists. Otherwise it runs `StrictHostKeyChecking=yes` against OpenSSH's own default trust stores (`~/.ssh/known_hosts`, `~/.ssh/known_hosts2`, `/etc/ssh/ssh_known_hosts`): a host pinned there deploys, and an unpinned host is refused.
+
+Set `BOSUN_SSH_INSECURE_HOST_KEY=true` to disable verification on either channel — that is the only opt-out.
 
 ## Environment Variables
 

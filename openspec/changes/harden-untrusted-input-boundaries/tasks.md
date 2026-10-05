@@ -1,4 +1,4 @@
-# Tasks: Harden the reconcile and daemon boundaries against untrusted input
+## Tasks: Harden the reconcile and daemon boundaries against untrusted input
 
 All ten units below are implemented on `fix/security-hardening-2026-09`, one commit each, in the order listed. The merged tree builds clean, passes `go vet ./...`, and passes `go test -race ./...` across all 20 packages.
 

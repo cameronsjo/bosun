@@ -287,7 +287,9 @@ The daemon provides:
 > **Webhook auth fails closed.** With no `WEBHOOK_SECRET` set, the daemon's
 > HTTP trigger endpoints (`/webhook`, `/webhook/github`, `/webhook/manual`)
 > reject every request with `403`. The standalone `bosun webhook` receiver
-> applies the same rule to its own trigger endpoints. To restore the old
+> applies the same rule to its own trigger endpoints when it resolves no
+> secret from any of its sources (`--secret`, `WEBHOOK_SECRET`,
+> `GITHUB_WEBHOOK_SECRET`, or `--fetch-secret`). To restore the old
 > accept-anything behavior on a trusted network, set
 > `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true` explicitly. The Unix socket
 > trigger (`bosun trigger`) is unaffected.
