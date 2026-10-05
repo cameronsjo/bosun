@@ -707,9 +707,26 @@ Its `GET /health` endpoint proxies only `status`, `ready`, and `uptime`, while
 `GET /ready` retains the plain readiness response. Both endpoints reject other
 HTTP methods with `405 Method Not Allowed`.
 
+**Webhook auth fails closed:**
+
+With no secret resolved (`--secret`, `WEBHOOK_SECRET`, `GITHUB_WEBHOOK_SECRET`,
+or `--fetch-secret`), every trigger endpoint — `/webhook`, `/webhook/github`,
+`/webhook/gitlab`, `/webhook/gitea`, `/webhook/bitbucket` — rejects requests
+with `403`, matching the daemon's own posture. Set
+`BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true` (strict lowercase match) to accept
+unauthenticated triggers instead; the active posture is logged loudly at
+startup and every accepted unauthenticated request logs a `SECURITY:` warning.
+`/health` and `/ready` are unaffected.
+
 **Daemon-Injected Secrets:**
 
 Use `--fetch-secret` to have the webhook server fetch the secret from the daemon at startup. This way the secret is never stored on disk in the webhook container.
+
+The daemon's `GET /config` is peer-credential authorized, so the receiver must
+run as the daemon's effective UID or a `BOSUN_SOCKET_ALLOWED_UIDS` member to
+fetch it. An explicit `--fetch-secret` exits on a failed fetch; without the
+flag the receiver keeps serving, but its trigger endpoints then fail closed
+rather than accepting unsigned requests.
 
 ### init --systemd
 

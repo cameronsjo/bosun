@@ -326,9 +326,10 @@ func TestShouldProcessGitHubPush(t *testing.T) {
 
 func TestBuildConfigResponse(t *testing.T) {
 	tests := []struct {
-		name string
-		cfg  *Config
-		want ConfigResponse
+		name          string
+		cfg           *Config
+		includeSecret bool
+		want          ConfigResponse
 	}{
 		{
 			name: "full config",
@@ -340,6 +341,7 @@ func TestBuildConfigResponse(t *testing.T) {
 					RepoBranch: "main",
 				},
 			},
+			includeSecret: true,
 			want: ConfigResponse{
 				WebhookSecret: "secret123",
 				PollInterval:  3600,
@@ -353,6 +355,7 @@ func TestBuildConfigResponse(t *testing.T) {
 				WebhookSecret: "s",
 				PollInterval:  30 * time.Minute,
 			},
+			includeSecret: true,
 			want: ConfigResponse{
 				WebhookSecret: "s",
 				PollInterval:  1800,
@@ -364,20 +367,41 @@ func TestBuildConfigResponse(t *testing.T) {
 				WebhookSecret: "x",
 				PollInterval:  0,
 			},
+			includeSecret: true,
 			want: ConfigResponse{
 				WebhookSecret: "x",
 				PollInterval:  0,
 			},
 		},
 		{
-			name: "empty config",
-			cfg:  &Config{},
-			want: ConfigResponse{},
+			name:          "empty config",
+			cfg:           &Config{},
+			includeSecret: true,
+			want:          ConfigResponse{},
+		},
+		{
+			// The credential is opt-in: a caller that has not authorized its
+			// peer passes false and gets everything except the secret.
+			name: "secret withheld when not requested",
+			cfg: &Config{
+				WebhookSecret: "secret123",
+				PollInterval:  time.Hour,
+				ReconcileConfig: &reconcile.Config{
+					RepoURL:    "https://github.com/example/repo.git",
+					RepoBranch: "main",
+				},
+			},
+			includeSecret: false,
+			want: ConfigResponse{
+				PollInterval: 3600,
+				RepoURL:      "https://github.com/example/repo.git",
+				RepoBranch:   "main",
+			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, buildConfigResponse(tt.cfg))
+			assert.Equal(t, tt.want, buildConfigResponse(tt.cfg, tt.includeSecret))
 		})
 	}
 }

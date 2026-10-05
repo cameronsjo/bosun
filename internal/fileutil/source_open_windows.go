@@ -8,6 +8,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// destinationOpenNonblock is zero: Windows has no FIFO open that blocks.
+const destinationOpenNonblock = 0
+
 func openSourceFile(path string, followSymlinks bool) (*os.File, error) {
 	flags := os.O_RDONLY
 	if !followSymlinks {

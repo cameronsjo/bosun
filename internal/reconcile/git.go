@@ -54,8 +54,12 @@ func init() {
 	// We use our own auth chain: SSH agent -> key files (BOSUN_SSH_KEY, /config/*, ~/.ssh/*).
 	ssh.DefaultAuthBuilder = func(user string) (ssh.AuthMethod, error) {
 		// Try SSH agent first
-		if auth := resolveSSHAgentAuth(user); auth != nil {
-			if sshAuth, ok := auth.(ssh.AuthMethod); ok {
+		agentAuth, err := resolveSSHAgentAuth(user)
+		if err != nil {
+			return nil, err
+		}
+		if agentAuth != nil {
+			if sshAuth, ok := agentAuth.(ssh.AuthMethod); ok {
 				return sshAuth, nil
 			}
 		}
@@ -326,8 +330,12 @@ func getSSHAuth(url string) (transport.AuthMethod, error) {
 	user := normalizeSSHUser(endpoint.User)
 
 	// Try SSH agent first
-	if auth := resolveSSHAgentAuth(user); auth != nil {
-		return auth, nil
+	agentAuth, err := resolveSSHAgentAuth(user)
+	if err != nil {
+		return nil, err
+	}
+	if agentAuth != nil {
+		return agentAuth, nil
 	}
 
 	// Fall back to key file
@@ -345,21 +353,32 @@ func sshAuthUnavailableError() error {
 	return errors.New("SSH authentication is unavailable: load a key into SSH_AUTH_SOCK or set BOSUN_SSH_KEY to a regular, non-empty private key file")
 }
 
+// hostKeyRemediation lists every way an operator can satisfy the host-key
+// contract, so a fail-closed error is actionable without reading the source.
+const hostKeyRemediation = "set BOSUN_SSH_KNOWN_HOSTS to a known_hosts file, place one at /config/known_hosts, or set BOSUN_SSH_INSECURE_HOST_KEY=true to accept any host key"
+
 // getHostKeyCallback returns an SSH host key callback for verifying server identity.
 // Search order: BOSUN_SSH_KNOWN_HOSTS env var, /config/known_hosts.
 // ~/.ssh/known_hosts is intentionally excluded — ephemeral user-profile entries
 // (e.g. from manual ssh commands inside a container) can cause go-git key mismatches.
 // If BOSUN_SSH_INSECURE_HOST_KEY=true, verification is skipped entirely.
-// If no known_hosts file is found, falls back to insecure with a warning.
-func getHostKeyCallback() xssh.HostKeyCallback {
+//
+// Every other path FAILS CLOSED. No usable known_hosts file — none found, or the
+// first one found does not parse — returns an error instead of a callback, and the
+// caller surfaces it from ResolveGitAuth so the daemon refuses to start rather than
+// cloning deployable content from an unauthenticated SSH peer. A parse failure is
+// terminal rather than "try the next candidate": a malformed pin is a configuration
+// fault, and silently falling through to a weaker candidate is how a pin stops
+// pinning without anyone noticing.
+func getHostKeyCallback() (xssh.HostKeyCallback, error) {
 	logger := log.Component(log.ComponentGit) // No ctx available in this utility function.
 
 	if strings.EqualFold(os.Getenv("BOSUN_SSH_INSECURE_HOST_KEY"), "true") {
 		logger.Warn().Msg("SSH host key verification disabled via BOSUN_SSH_INSECURE_HOST_KEY")
-		return xssh.InsecureIgnoreHostKey()
+		return xssh.InsecureIgnoreHostKey(), nil
 	}
 
-	knownHostsPaths := buildKnownHostsPaths(os.Getenv("BOSUN_SSH_KNOWN_HOSTS"))
+	knownHostsPaths := knownHostsCandidates(os.Getenv("BOSUN_SSH_KNOWN_HOSTS"))
 
 	for _, path := range knownHostsPaths {
 		if _, err := os.Stat(path); err != nil {
@@ -367,15 +386,17 @@ func getHostKeyCallback() xssh.HostKeyCallback {
 		}
 		callback, err := knownhosts.New(path)
 		if err != nil {
-			logger.Warn().Err(err).Str(log.FieldPath, path).Msg("Failed to parse known_hosts file, trying next")
-			continue
+			return nil, fmt.Errorf("SSH known_hosts file %q could not be parsed: %w. Fix the file, or %s", path, err, hostKeyRemediation)
 		}
 		logger.Debug().Str(log.FieldPath, path).Msg("Using known_hosts for SSH host key verification")
-		return callback
+		return callback, nil
 	}
 
-	logger.Warn().Msg("No known_hosts file found, SSH host key verification disabled. Set BOSUN_SSH_KNOWN_HOSTS or place known_hosts at /config/known_hosts")
-	return xssh.InsecureIgnoreHostKey()
+	candidates := "none configured"
+	if len(knownHostsPaths) > 0 {
+		candidates = strings.Join(knownHostsPaths, ", ")
+	}
+	return nil, fmt.Errorf("SSH host key verification requires a known_hosts file; no readable candidate among %s. To proceed, %s", candidates, hostKeyRemediation)
 }
 
 func normalizeSSHUser(user string) string {
@@ -386,26 +407,30 @@ func normalizeSSHUser(user string) string {
 }
 
 // getSSHAgentAuth attempts to get auth from SSH agent.
-func getSSHAgentAuth(user string) transport.AuthMethod {
+func getSSHAgentAuth(user string) (transport.AuthMethod, error) {
 	return resolveSSHAgentAuthWithDialer(user, os.Getenv("SSH_AUTH_SOCK"), net.Dial)
 }
 
-func resolveSSHAgentAuthWithDialer(user, socket string, dial sshAgentDialer) transport.AuthMethod {
+// resolveSSHAgentAuthWithDialer returns (nil, nil) when no usable agent is
+// available, which is not an error: the caller falls back to a key file. It
+// returns an error only when the host-key policy cannot be satisfied, because
+// connecting anyway would offer every agent identity to an unverified peer.
+func resolveSSHAgentAuthWithDialer(user, socket string, dial sshAgentDialer) (transport.AuthMethod, error) {
 	logger := log.Component(log.ComponentGit)
 	if socket == "" {
 		logger.Debug().Msg("Skipping SSH agent auth. Reason: SSH_AUTH_SOCK not set")
-		return nil
+		return nil, nil
 	}
 
 	conn, err := dial("unix", socket)
 	if err != nil {
 		logger.Debug().Err(err).Str("socket", socket).Msg("Skipping SSH agent auth. Reason: cannot connect to agent socket")
-		return nil
+		return nil, nil
 	}
 	if err := conn.SetDeadline(time.Now().Add(SSHAgentProbeTimeout)); err != nil {
 		_ = conn.Close()
 		logger.Debug().Err(err).Str("socket", socket).Msg("Skipping SSH agent auth. Reason: cannot bound agent signer probe")
-		return nil
+		return nil, nil
 	}
 
 	agentClient := agent.NewClient(conn)
@@ -413,12 +438,18 @@ func resolveSSHAgentAuthWithDialer(user, socket string, dial sshAgentDialer) tra
 	if err != nil || len(signers) == 0 {
 		_ = conn.Close()
 		logger.Debug().Err(err).Str("socket", socket).Msg("Skipping SSH agent auth. Reason: agent has no usable signers")
-		return nil
+		return nil, nil
 	}
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		_ = conn.Close()
 		logger.Debug().Err(err).Str("socket", socket).Msg("Skipping SSH agent auth. Reason: cannot clear agent signer probe deadline")
-		return nil
+		return nil, nil
+	}
+
+	hostKeyCallback, err := getHostKeyCallback()
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
 	}
 
 	logger.Debug().Int("signer_count", len(signers)).Str("socket", socket).Msg("Successfully connected to SSH agent")
@@ -429,11 +460,11 @@ func resolveSSHAgentAuthWithDialer(user, socket string, dial sshAgentDialer) tra
 				return signers, nil
 			},
 			HostKeyCallbackHelper: ssh.HostKeyCallbackHelper{
-				HostKeyCallback: getHostKeyCallback(),
+				HostKeyCallback: hostKeyCallback,
 			},
 		},
 		conn: conn,
-	}
+	}, nil
 }
 
 // getSSHKeyFileAuth attempts to get auth from a key file.
@@ -453,7 +484,11 @@ func resolveSSHKeyFileAuthForUser(user, explicitKeyPath string, keyPaths []strin
 		if err != nil {
 			return nil, invalidSSHKeyMountError("BOSUN_SSH_KEY", explicitKeyPath, err)
 		}
-		auth.HostKeyCallback = getHostKeyCallback()
+		hostKeyCallback, err := getHostKeyCallback()
+		if err != nil {
+			return nil, err
+		}
+		auth.HostKeyCallback = hostKeyCallback
 		logger.Debug().Str(log.FieldPath, explicitKeyPath).Msg("Successfully loaded SSH key file")
 		return auth, nil
 	}
@@ -470,7 +505,11 @@ func resolveSSHKeyFileAuthForUser(user, explicitKeyPath string, keyPaths []strin
 			}
 			continue
 		}
-		auth.HostKeyCallback = getHostKeyCallback()
+		hostKeyCallback, err := getHostKeyCallback()
+		if err != nil {
+			return nil, err
+		}
+		auth.HostKeyCallback = hostKeyCallback
 		logger.Debug().Str(log.FieldPath, keyPath).Msg("Successfully loaded SSH key file")
 		return auth, nil
 	}

@@ -83,6 +83,37 @@ func TestCheckCriticalContainerHealth_OneUnhealthy(t *testing.T) {
 	assert.NotContains(t, err.Error(), "traefik")
 }
 
+// The gate error is logged to the operator console and handed to
+// SendDeployFailure as the alert reason, so healthcheck output reaching it must
+// already be free of the runes that forge or rewrite a line.
+func TestCheckCriticalContainerHealth_StripsControlCharsFromHealthOutput(t *testing.T) {
+	const forged = "probe failed\r\n\x1b[2KAll critical containers healthy"
+
+	mockAPI := newReconcileMockDockerAPI()
+	mockAPI.containerInspectFunc = func(_ context.Context, name string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+		return makeInspectResponse(name, "running", &container.Health{
+			Status:        "unhealthy",
+			FailingStreak: 3,
+			Log:           []*container.HealthcheckResult{{ExitCode: 1, Output: forged}},
+		}), nil
+	}
+	dockerClient := docker.NewClientWithAPI(mockAPI)
+
+	err := CheckCriticalContainerHealth(
+		context.Background(), dockerClient,
+		[]string{"authelia"},
+		1*time.Second,
+		HealthGatePollInterval,
+	)
+	require.Error(t, err)
+
+	msg := err.Error()
+	assert.NotContains(t, msg, "\r", "carriage return would let the container rewrite the operator's line")
+	assert.NotContains(t, msg, "\n", "newline would let the container forge a second log record")
+	assert.NotContains(t, msg, "\x1b", "ESC would let the container emit ANSI control sequences")
+	assert.Contains(t, msg, "authelia (unhealthy: failing_streak=3, last_exit=1, output=probe failed[2KAll critical containers healthy)")
+}
+
 func TestCheckCriticalContainerHealth_MissingContainer(t *testing.T) {
 	mockAPI := newReconcileMockDockerAPI()
 	mockAPI.containerInspectFunc = func(_ context.Context, name string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {

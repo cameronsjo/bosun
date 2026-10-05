@@ -79,6 +79,36 @@ func mkdirAllContext(ctx context.Context, path string, mode os.FileMode) error {
 	return os.MkdirAll(path, mode)
 }
 
+// mkdirAllUnderRoot creates path through a handle pinned to root, which path
+// must lie under. root itself is resolved by path and created if missing, as
+// the pinned copy does; every component below it is resolved from the handle,
+// so a component swapped for a symlink that escapes root is refused instead of
+// followed.
+func mkdirAllUnderRoot(ctx context.Context, root, path string, mode os.FileMode) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return fmt.Errorf("resolve %s under %s: %w", path, root, err)
+	}
+	if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%s is outside deploy root %s", path, root)
+	}
+	if err := os.MkdirAll(root, mode); err != nil {
+		return fmt.Errorf("create deploy root: %w", err)
+	}
+	if rel == "." {
+		return nil
+	}
+	pinned, err := os.OpenRoot(root)
+	if err != nil {
+		return fmt.Errorf("pin deploy root: %w", err)
+	}
+	defer func() { _ = pinned.Close() }()
+	return pinned.MkdirAll(rel, mode)
+}
+
 func mkdirTempContext(ctx context.Context, dir, pattern string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -235,7 +265,20 @@ func (d *DeployOps) remoteComposeUpCmd(composeDir string) string {
 // DeployLocal syncs files locally using native Go file operations.
 // Performs atomic copy: copies to temp directory first, then replaces target.
 // Uses --delete semantics: removes files in target that don't exist in source.
+//
+// The content-hash copy is pinned to targetDir. The reconcile path calls
+// deployLocalManaged directly with the appdata root, which pins higher.
 func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string, result *DeployResult, prevManaged map[string]bool) error {
+	return d.deployLocalManaged(ctx, sourceDir, targetDir, targetDir, result, prevManaged)
+}
+
+// deployLocalManaged is DeployLocal with the content-hash copy's destination
+// mutations resolved from a handle pinned to deployRoot, which targetDir must
+// lie under. bosun runs as host root and targetDir is appdata/<service>, a
+// directory a compromised container can replace with a symlink; pinning at
+// targetDir would resolve that symlink by path and redirect the whole rendered
+// tree, secrets included.
+func (d *DeployOps) deployLocalManaged(ctx context.Context, sourceDir, targetDir, deployRoot string, result *DeployResult, prevManaged map[string]bool) error {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
@@ -287,13 +330,23 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 		if err := ctx.Err(); err != nil {
 			return rollback(err)
 		}
-		if err := fsOps.mkdirAll(ctx, targetDir, 0755); err != nil {
+		// Create targetDir through the same pinned root the copy uses. The
+		// path-based seam runs only when a test injects it.
+		mkdirTarget := func(ctx context.Context) error {
+			return mkdirAllUnderRoot(ctx, deployRoot, targetDir, 0755)
+		}
+		if d.localFS != nil && d.localFS.mkdirAll != nil {
+			mkdirTarget = func(ctx context.Context) error { return fsOps.mkdirAll(ctx, targetDir, 0755) }
+		}
+		if err := mkdirTarget(ctx); err != nil {
 			return rollback(fmt.Errorf("create target directory: %w", err))
 		}
 
 		copyFn := d.copyDirIfChangedFn
 		if copyFn == nil {
-			copyFn = fileutil.CopyDirIfChanged
+			copyFn = func(ctx context.Context, src, dst string) ([]string, error) {
+				return fileutil.CopyDirUnderRootIfChanged(ctx, src, deployRoot, dst)
+			}
 		}
 		written, err := copyFn(ctx, sourceDir, targetDir)
 		if result != nil {
@@ -1577,11 +1630,19 @@ func listManagedFiles(sourceDir string) ([]string, error) {
 // DeployLocalFile syncs a single file locally using native Go file operations.
 // Uses atomic copy via temp file. When ContentHashSync is enabled, skips writing
 // if the file content has not changed.
+//
+// The write is pinned to targetFile's parent directory. The reconcile path calls
+// deployLocalFileManaged directly with the appdata root, which pins higher.
 func (d *DeployOps) DeployLocalFile(ctx context.Context, sourceFile, targetFile string, result *DeployResult) error {
-	return d.deployLocalFileManaged(ctx, sourceFile, targetFile, result, nil)
+	return d.deployLocalFileManaged(ctx, sourceFile, targetFile, filepath.Dir(targetFile), result, nil)
 }
 
-func (d *DeployOps) deployLocalFileManaged(ctx context.Context, sourceFile, targetFile string, result *DeployResult, prevManaged map[string]bool) error {
+// deployLocalFileManaged writes targetFile with every destination mutation
+// resolved from a handle pinned to deployRoot, which targetFile must lie under.
+// bosun runs as host root and single-file targets land in appdata, where a
+// compromised container can replace a directory with a symlink; resolving the
+// write by path lets that symlink redirect it out of appdata entirely.
+func (d *DeployOps) deployLocalFileManaged(ctx context.Context, sourceFile, targetFile, deployRoot string, result *DeployResult, prevManaged map[string]bool) error {
 	if d.DryRun {
 		return nil
 	}
@@ -1612,7 +1673,9 @@ func (d *DeployOps) deployLocalFileManaged(ctx context.Context, sourceFile, targ
 	if d.ContentHashSync {
 		copyFn := d.copyFileIfChangedFn
 		if copyFn == nil {
-			copyFn = fileutil.CopyFileIfChanged
+			copyFn = func(ctx context.Context, src, dst string) (bool, error) {
+				return fileutil.CopyFileUnderRootIfChanged(ctx, src, deployRoot, dst)
+			}
 		}
 		changed, err := copyFn(ctx, sourceFile, targetFile)
 		if changed && result != nil {
@@ -1628,7 +1691,9 @@ func (d *DeployOps) deployLocalFileManaged(ctx context.Context, sourceFile, targ
 	// must too. Treat ErrSymlinkSkipped as a benign no-op, not a deploy failure.
 	copyFn := d.copyFileFn
 	if copyFn == nil {
-		copyFn = fileutil.CopyFile
+		copyFn = func(ctx context.Context, src, dst string) error {
+			return fileutil.CopyFileUnderRoot(ctx, src, deployRoot, dst)
+		}
 	}
 	if err := copyFn(ctx, sourceFile, targetFile); err != nil {
 		if errors.Is(err, fileutil.ErrSymlinkSkipped) {

@@ -56,6 +56,11 @@ type Config struct {
 	// projectName is the docker compose project name.
 	projectName string
 
+	// projectNameFromFile is projectName when it came from the config file's
+	// root-level project_name, and empty when it was derived from the
+	// directory name. Consumers that must not act on a guessed name read this.
+	projectNameFromFile string
+
 	// infraContainers holds the configured infrastructure container names.
 	infraContainers []string
 
@@ -390,6 +395,7 @@ func FindRoot() (string, error) {
 //
 // NOT populated -- these read as zero values through their getters, so do not
 // add a consumer for one without adding it here first: projectName,
+// projectNameFromFile,
 // ManifestDir, provisionsDir, ComposeFile, SnapshotsDir, infraContainers,
 // tunnelProvider, tunnelConfig. Omitting alertConfig was #652, where the zero
 // value silently disabled every deploy alert on the first reconcile after each
@@ -572,6 +578,7 @@ func Load() (*Config, error) {
 
 	// Determine project name (defaults to directory name)
 	projectName := fileCfg.ProjectName
+	fromFile := projectName != ""
 	if projectName == "" {
 		projectName = filepath.Base(root)
 	}
@@ -582,6 +589,7 @@ func Load() (*Config, error) {
 			log.Warn().Err(err).Str("project_name", projectName).
 				Msg("Config: invalid project_name — ignoring and falling back to directory name")
 			projectName = filepath.Base(root)
+			fromFile = false
 		}
 	}
 	// Also validate the fallback value: the project directory name itself may
@@ -597,6 +605,15 @@ func Load() (*Config, error) {
 		projectName = sanitized
 	}
 
+	// Keep the effective name only when the file supplied it. The
+	// directory-name fallback names no deployed Compose project, so a consumer
+	// that must fail closed on a guess (the restart breaker's scope) can tell
+	// the two apart.
+	projectNameFromFile := ""
+	if fromFile {
+		projectNameFromFile = projectName
+	}
+
 	cfg := &Config{
 		Root:                   root,
 		configFileFound:        loaded.found,
@@ -606,6 +623,7 @@ func Load() (*Config, error) {
 		ComposeFile:            filepath.Join(root, "bosun", "docker-compose.yml"),
 		SnapshotsDir:           filepath.Join(manifestDir, ".bosun", "snapshots"),
 		projectName:            projectName,
+		projectNameFromFile:    projectNameFromFile,
 		infraContainers:        infraContainers,
 		tunnelProvider:         tunnelProvider,
 		tunnelConfig:           tunnelConfig,
@@ -783,6 +801,18 @@ func (c *Config) Format() string {
 // and --remove-orphans works correctly across stack boundaries.
 func (c *Config) ProjectName() string {
 	return c.projectName
+}
+
+// ProjectNameFromFile returns the docker compose project name only when the
+// config file's root-level project_name supplied it, and "" when ProjectName
+// fell back to the project directory's name. `bosun provision` renders the
+// configured name into the compose file's top-level `name:`, so a file-supplied
+// value names the project Docker labels containers with; the directory fallback
+// does not, because it is read on whichever host runs the command.
+//
+// Only Load populates this. LoadFrom leaves it empty, like projectName.
+func (c *Config) ProjectNameFromFile() string {
+	return c.projectNameFromFile
 }
 
 // Domain returns the project-level domain for Traefik defaultRule.

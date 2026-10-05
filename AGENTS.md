@@ -388,8 +388,8 @@ do not gain legacy aliases.
 | `BOSUN_GIT_FETCH_DEPTH` | reconcile | Positive shallow clone/fetch history depth (default: `1`); unavailable diff bases fail safe to full deploy/all hooks |
 | `BOSUN_POLL_INTERVAL` | daemon | Polling interval in seconds (default: `3600`) |
 | `BOSUN_SOCKET_PATH` | daemon | Unix socket path (default: `/var/run/bosun.sock`) |
-| `BOSUN_SOCKET_ALLOWED_UIDS` | daemon | Comma-separated numeric UIDs allowed to mutate through the Unix socket in addition to the daemon's own UID |
-| `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET` | daemon | Opt out of fail-closed Unix socket peer-credential authorization (default: `false`; strict `== "true"`). Required for mutations on platforms without peer credentials; logged loudly at startup and per request |
+| `BOSUN_SOCKET_ALLOWED_UIDS` | daemon | Comma-separated numeric UIDs allowed to reach the Unix socket's peer-authorized routes (`POST /trigger`, `GET /config`) in addition to the daemon's own UID |
+| `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET` | daemon | Opt out of fail-closed Unix socket peer-credential authorization (default: `false`; strict `== "true"`). Required for `/trigger` and `/config` on platforms without peer credentials; logged loudly at startup and per request |
 | `BOSUN_ENABLE_TCP` | daemon | Enable TCP API (`true`/`false`; default: `false`) |
 | `BOSUN_TCP_ADDR` | daemon | TCP listen address (default: `127.0.0.1:9090`) |
 | `BOSUN_BEARER_TOKEN` | daemon, trigger | Bearer token for TCP auth. Also accepted on `/metrics` and `/api/widget` (strictly more privileged than the read-scope token) |
@@ -398,7 +398,7 @@ do not gain legacy aliases.
 | `BOSUN_DISABLE_HTTP` | daemon | Disable HTTP webhook server |
 | `BOSUN_TRUSTED_PROXIES` | daemon | Comma-separated IP addresses or CIDR prefixes whose `X-Forwarded-For` header the request log will record, in a `forwarded_for` field kept separate from the observed `remote_addr` (default: empty = trust nothing). Hostnames are refused; an unparseable entry is rejected loudly rather than silently ignored |
 | `BOSUN_LISTEN_ADDR` | daemon | Host/IP the HTTP server binds to (default: empty = all interfaces — container-side callers reach bosun over the docker bridge; do not default to loopback) |
-| `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | daemon | Opt out of fail-closed webhook auth (default: `false`; strict `== "true"`). With no `WEBHOOK_SECRET`, trigger endpoints reject requests with `403` unless this is set. Logged loudly at startup and per accepted request |
+| `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | daemon, webhook receiver | Opt out of fail-closed webhook auth (default: `false`; strict `== "true"`). With no webhook secret resolved, trigger endpoints reject requests with `403` unless this is set. Read by the daemon's HTTP endpoints and, identically, by the standalone `bosun webhook` receiver — the receiver forwards over the peer-authorized socket, which never re-applies the daemon's webhook gate. Logged loudly at startup and per accepted request |
 | `BOSUN_SECRETS_FILE` | daemon, reconcile, render | SOPS secrets file path. Daemon and one-shot reconcile validate the Age identity before Git when configured; daemon failure occurs before listeners bind |
 | `BOSUN_INFRA_DIR` | daemon, render | Infrastructure directory |
 | `BOSUN_TEMPLATE_INCLUDE_DIR` | daemon, reconcile, render | Subtree that template `include`/`fromJsonFile` reads are confined to (allowlist). Default `<infraDir>/templates`. Relative values resolve against the infra dir; absolute values are used as-is. Confining reads here keeps sibling SOPS files and `bosun.yaml` unreachable from templates |
@@ -412,7 +412,7 @@ do not gain legacy aliases.
 | `BOSUN_BACKUP_TIMEOUT` | daemon, reconcile | Timeout applied independently to pre-deploy backup creation + verification and post-success retention verification + cleanup (default: `5m`; accepts Go durations or plain seconds). A pre-deploy timeout may fall back to an older verified rollback anchor; a retention timeout warns, preserves remaining backups, and does not revoke deploy success |
 | `BOSUN_HEALTH_CHECK_TIMEOUT` | daemon, reconcile | Post-deploy health verification timeout (default: `60s`; set to `0` to disable) |
 | `BOSUN_HEALTH_CHECK_INTERVAL` | daemon, reconcile | Poll interval for health verification (default: `5s`) |
-| `BOSUN_RESTART_BREAKER` | daemon, reconcile | Enable restart circuit breaker (default: `true`) |
+| `BOSUN_RESTART_BREAKER` | daemon, reconcile | Enable restart circuit breaker (default: `true`). The breaker only stops containers inside a resolved Compose project: a single target's `project_name`, else `bosun.yaml`'s root-level `project_name` (never the directory-name fallback). With no scope it stops nothing and says so at startup, per drift cycle, and in `bosun doctor` |
 | `BOSUN_RESTART_THRESHOLD` | daemon, reconcile | Accumulated restart-count increase in a sustained run that trips the breaker (default: `5`; must be positive) |
 | `BOSUN_RESTART_WINDOW` | daemon, reconcile | Nominal restart observation window (default: `10m`); sustained increases retain their earliest baseline beyond it, and config load plus `bosun doctor` warn when `BOSUN_DRIFT_INTERVAL` is longer |
 | `BOSUN_RECONCILE_TIMEOUT` | daemon | Reconciliation timeout |
@@ -441,8 +441,8 @@ do not gain legacy aliases.
 | `BOSUN_TWILIO_AUTH_TOKEN` | config | Twilio auth token (overrides config file; legacy: `TWILIO_AUTH_TOKEN`) |
 | `BOSUN_TWILIO_FROM_NUMBER` | config | Twilio sender number (overrides config file; legacy: `TWILIO_FROM_NUMBER`) |
 | `BOSUN_SSH_KEY` | reconcile | Explicit SSH key fallback for git operations; an agent wins only when it returns a signer, and a recognized SSH repository with no usable agent/key fails before network access |
-| `BOSUN_SSH_KNOWN_HOSTS` | reconcile | Known hosts file path |
-| `BOSUN_SSH_INSECURE_HOST_KEY` | reconcile | Skip host key verification (`true`/`false`) |
+| `BOSUN_SSH_KNOWN_HOSTS` | reconcile | Known hosts file path (checked before `/config/known_hosts`). Git over SSH fails closed when no candidate exists or the first one found does not parse: auth resolution errors and the daemon refuses to start |
+| `BOSUN_SSH_INSECURE_HOST_KEY` | reconcile | Skip host key verification (`true`/`false`; strict `== "true"`, case-insensitive). The only opt-out from host key verification on either SSH channel |
 | `BOSUN_DAEMON_MODE` | log, sentry | Set automatically when daemon starts |
 | `BOSUN_LOG_FORMAT` | log | Log format: `console` or `json` |
 | `BOSUN_LOG_LEVEL` | log | Log level: `debug`, `info`, `warn`, `error` |

@@ -220,3 +220,30 @@ func runNamedPipeOperation(t *testing.T, pipePath string, operation func() error
 		return nil
 	}
 }
+
+// A container that owns a directory under the pinned root can place a FIFO
+// where the rendered file goes. The pre-compare check must refuse it without
+// blocking until a writer appears.
+func TestPinnedDirCopyFileIfChangedDeferred_RejectsFIFODestinationWithoutBlocking(t *testing.T) {
+	t.Parallel()
+
+	tmpDir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	source := filepath.Join(tmpDir, "source.conf")
+	require.NoError(t, os.WriteFile(source, []byte("rendered"), 0o600))
+	root := filepath.Join(tmpDir, "appdata")
+	require.NoError(t, os.Mkdir(root, 0o755))
+	destination := filepath.Join(root, "app.conf")
+	require.NoError(t, syscall.Mkfifo(destination, 0o600))
+
+	pinned := newPinnedDir(root)
+	defer pinned.close()
+
+	err = runNamedPipeOperation(t, destination, func() error {
+		_, _, copyErr := pinned.copyFileIfChangedDeferred(context.Background(), source, destination)
+		return copyErr
+	})
+
+	require.ErrorIs(t, err, ErrUnsupportedFileType)
+	assert.ErrorContains(t, err, destination)
+}

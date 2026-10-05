@@ -509,12 +509,24 @@ func buildRemoteStageCommand(tmpRoot, stagedDir string) string {
 // accept-new, so a configured known_hosts we cannot prove absent never
 // silently becomes TOFU — ssh then surfaces the real read error.
 //
-// The one remaining INTENTIONAL divergence is the terminal case: when no
-// known_hosts file exists and insecure is not set, git.go falls back to
-// InsecureIgnoreHostKey (no verification), but the deploy channel carries a
-// secret-bearing tar stream to a root account, so it uses openssh's TOFU
-// (accept-new) instead — the first connection pins the key and later
-// mismatches fail. Verification is never silently disabled here; only an
+// The terminal case — no known_hosts candidate and insecure not set — now fails
+// closed on BOTH channels, but by different mechanisms, so the shapes differ:
+//
+//   - git.go returns an error from getHostKeyCallback, which ResolveGitAuth
+//     surfaces and ValidateGitAuthentication turns into a startup refusal. No
+//     Git operation runs.
+//   - this channel emits StrictHostKeyChecking=yes with no UserKnownHostsFile,
+//     which leaves openssh's own defaults (~/.ssh/known_hosts, ~/.ssh/known_hosts2
+//     and the system-wide /etc/ssh/ssh_known_hosts) in play: a host already
+//     pinned in one of those still deploys, and an unpinned host is refused with
+//     "Host key verification failed" before a single byte of the archive is
+//     written.
+//
+// This channel deliberately does NOT emit accept-new. TOFU would stream the
+// rendered secrets to whichever host answers the first connection, and under the
+// shipped compose — which mounts /home/bosun/.ssh read-only — openssh cannot
+// persist the pin at all, so it warns and continues and EVERY deploy is a first
+// connection. Verification is never silently disabled on either channel; only an
 // explicit BOSUN_SSH_INSECURE_HOST_KEY=true opts out.
 func hostKeyOptions() []string {
 	if strings.EqualFold(os.Getenv("BOSUN_SSH_INSECURE_HOST_KEY"), "true") {
@@ -536,13 +548,16 @@ func hostKeyOptions() []string {
 			"-o", "UserKnownHostsFile=" + path,
 		}
 	}
-	return []string{"-o", "StrictHostKeyChecking=accept-new"}
+	// No candidate resolved. Fail closed against openssh's own known_hosts
+	// defaults rather than trusting the host on first contact.
+	return []string{"-o", "StrictHostKeyChecking=yes"}
 }
 
-// knownHostsCandidates resolves the ordered known_hosts candidate paths for the
-// deploy-path host-key policy, defaulting to git.go's buildKnownHostsPaths so
-// deploy and git ops share one resolution (the env var, then /config/known_hosts).
-// It is a package var so tests can inject a controlled candidate list.
+// knownHostsCandidates resolves the ordered known_hosts candidate paths for both
+// host-key policies — this file's deploy path and git.go's getHostKeyCallback —
+// defaulting to buildKnownHostsPaths so they share one resolution (the env var,
+// then /config/known_hosts). It is a package var so tests can inject a controlled
+// candidate list.
 var knownHostsCandidates = buildKnownHostsPaths
 
 // execWithHostKeyOptions builds an exec.Cmd for name (ssh or scp) with the

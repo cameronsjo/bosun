@@ -240,7 +240,9 @@ type TriggerResponse struct {
 
 // ConfigResponse is the response body for /config.
 // This allows the webhook container to fetch secrets from the daemon
-// without storing them on disk.
+// without storing them on disk. WebhookSecret is a credential: /config is
+// peer-authorized like /trigger, and buildConfigResponse only fills the field
+// when its caller asks for it.
 type ConfigResponse struct {
 	WebhookSecret string `json:"webhook_secret,omitempty"`
 	PollInterval  int    `json:"poll_interval,omitempty"`
@@ -274,8 +276,12 @@ func (s *SocketServer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Default source
-	source := req.Source
+	// Default source. The caller-supplied attribution becomes a zerolog field,
+	// a span attribute, and a persisted state.json value, so it gets the same
+	// control-strip-and-cap boundary as webhook pusher names here rather than
+	// relying on every client (the standalone webhook receiver included) to
+	// apply it before forwarding.
+	source := SanitizeWebhookPusherName(req.Source)
 	if source == "" {
 		source = "socket"
 	}
@@ -400,13 +406,22 @@ func (s *SocketServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 // handleConfig handles GET /config requests.
 // This endpoint allows the webhook container to fetch secrets from the daemon
 // without storing them on disk (daemon-injected secrets pattern).
+//
+// It carries the same peer-credential check as handleTrigger even though it is
+// a GET. The response includes the webhook secret, and that secret is exactly
+// what authorizeTrigger accepts on the HTTP listener, so handing it to an
+// unauthorized peer hands it a signed forced trigger — a mutation by another
+// route. Read-versus-mutate is about the effect, not the HTTP verb.
 func (s *SocketServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.authorizeMutation(w, r) {
+		return
+	}
 
-	resp := buildConfigResponse(s.daemon.config)
+	resp := buildConfigResponse(s.daemon.config, true)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)

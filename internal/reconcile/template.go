@@ -55,8 +55,30 @@ func (t *TemplateOps) ExecuteTemplate(ctx context.Context, templateFile, outputF
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// Read template content.
-	content, err := os.ReadFile(templateFile)
+	// Refuse non-regular template files before reading. A git checkout writes a
+	// repository-authored symlink verbatim, so following one here would read an
+	// arbitrary file on the daemon host (age key, process environment) and stage
+	// its content for deployment. The open does not follow a final-component
+	// symlink and does not block on a FIFO, and the check runs on the opened
+	// descriptor, so the bytes read below are the entry that was checked. A
+	// path-based check followed by a second open would let a swap in between
+	// redirect the read. Symlinks carry fileutil's typed skip so a walking
+	// caller can treat them the way the non-template copy path does; other
+	// non-regular entries (FIFO, device) are refused outright. Any other
+	// failure keeps the read-failure message.
+	file, err := fileutil.OpenRegularNoFollow(templateFile)
+	if err != nil {
+		switch {
+		case errors.Is(err, fileutil.ErrSymlinkSkipped):
+			return fmt.Errorf("template %s: %w", templateFile, fileutil.ErrSymlinkSkipped)
+		case errors.Is(err, fileutil.ErrUnsupportedFileType):
+			return fmt.Errorf("template %s: %w", templateFile, err)
+		default:
+			return fmt.Errorf("failed to read template %s: %w", templateFile, err)
+		}
+	}
+	content, err := io.ReadAll(file)
+	_ = file.Close()
 	if err != nil {
 		return fmt.Errorf("failed to read template %s: %w", templateFile, err)
 	}
@@ -297,6 +319,16 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 			return nil
 		}
 
+		// WalkDir uses Lstat semantics, so skip symlinked templates before
+		// ExecuteTemplate can follow one out of the repository, mirroring how
+		// the non-template copy path treats them.
+		if d.Type()&os.ModeSymlink != 0 {
+			logger.Warn().
+				Str(log.FieldPath, path).
+				Msg("Skipping symlink during template render")
+			return nil
+		}
+
 		// Compute relative path and output path.
 		relPath, err := filepath.Rel(sourceDir, path)
 		if err != nil {
@@ -308,6 +340,15 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 		outputPath := filepath.Join(outDir, strings.TrimSuffix(relPath, ".tmpl"))
 
 		if err := t.ExecuteTemplate(ctx, path, outputPath); err != nil {
+			// The entry can become a symlink after WalkDir captured its DirEntry.
+			// Treat only the typed skip as benign; every other failure must abort
+			// staging rather than produce a partially rendered tree.
+			if errors.Is(err, fileutil.ErrSymlinkSkipped) {
+				logger.Warn().
+					Str(log.FieldPath, path).
+					Msg("Skipping symlink during template render")
+				return nil
+			}
 			return err
 		}
 		templatesRendered++
