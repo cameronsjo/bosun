@@ -91,3 +91,28 @@ func TestMkdirAllUnderRoot(t *testing.T) {
 		assert.NoDirExists(t, root)
 	})
 }
+
+// Pins the production wiring, not just the helper: with no localFS seam
+// injected, deployLocalManaged must create its target through the root pinned
+// at appdata. A path-based MkdirAll would follow the swapped service directory
+// and create the target in the tree it points at.
+func TestDeployLocalManaged_CreatesTargetThroughPinnedRoot(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+
+	source := filepath.Join(base, "staging", "svc", "conf")
+	require.NoError(t, os.MkdirAll(source, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "app.conf"), []byte("token: rendered"), 0o644))
+
+	appdata := filepath.Join(base, "appdata")
+	require.NoError(t, os.MkdirAll(appdata, 0o755))
+	outside := filepath.Join(base, "outside")
+	require.NoError(t, os.MkdirAll(outside, 0o755))
+	require.NoError(t, os.Symlink(outside, filepath.Join(appdata, "svc")))
+
+	ops := &DeployOps{ContentHashSync: true}
+	err = ops.deployLocalManaged(context.Background(), source, filepath.Join(appdata, "svc", "conf"), appdata, nil, nil)
+
+	require.ErrorContains(t, err, "create target directory")
+	assert.NoDirExists(t, filepath.Join(outside, "conf"), "no directory may be created through the swapped component")
+}

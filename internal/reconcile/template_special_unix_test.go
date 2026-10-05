@@ -15,9 +15,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// A FIFO in the checkout would block a plain read until a writer appears. The
-// template open is nonblocking and checks the opened descriptor, so it refuses
-// the entry instead.
+// Regression guard: a FIFO in the checkout must be refused without blocking.
+// The earlier Lstat check also refused it, so this does not pin the switch to
+// reading from the checked descriptor; it keeps the nonblocking open honest.
 func TestExecuteTemplate_RefusesFIFOWithoutBlocking(t *testing.T) {
 	tmpDir := evalSymlinks(t, t.TempDir())
 	templateFile := filepath.Join(tmpDir, "pipe.tmpl")
