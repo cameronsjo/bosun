@@ -325,8 +325,11 @@ func (p *pinnedDir) assertDestinationInRoot(dst string) error {
 	}
 	defer func() { _ = file.Close() }()
 	// The open is nonblocking, so a FIFO placed at the destination returns
-	// here instead of hanging the deploy. Check the opened descriptor, not a
-	// prior Lstat, so a swap between the two cannot pass.
+	// here instead of hanging the deploy. The type check runs on the opened
+	// descriptor, so a swap between a check and this open cannot pass it. The
+	// descriptor closes when this returns, and the change decision then reads
+	// the destination by path again; that window is the skip-path residual the
+	// proposal names.
 	info, err := file.Stat()
 	if err != nil {
 		return fmt.Errorf("stat destination %s: %w", dst, err)

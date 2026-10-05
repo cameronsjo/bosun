@@ -2449,7 +2449,9 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 		}
 		ui.Info("  Syncing compose files...")
 		if !r.config.DryRun {
-			if err := os.MkdirAll(composeTarget, 0755); err != nil {
+			// appdata/compose is created through a root pinned at appdata, like
+			// every other deploy target, so a swapped component is refused.
+			if err := mkdirAllUnderRoot(ctx, appdata, composeTarget, 0755); err != nil {
 				return nil, fmt.Errorf("create local compose directory %q: %w", composeTarget, err)
 			}
 		}
