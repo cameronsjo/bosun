@@ -84,6 +84,17 @@ Two independent reviewers read the ten fixes back. These are their confirmed fin
 - [x] 11.5 Fix the stale host key table in `docs/security.md`, which still described the deploy channel as trust-on-first-use and contradicted another section in the same file
 - [x] 11.6 Document the three controls that shipped undocumented: template source type refusal, pinned deploy and extraction roots, and the owner-only lock
 
+## 12. Gaps the PR review found
+
+- [x] 12.1 Create the directory deploy's target directory through the handle pinned at `appdata`. The path-based creation was reachable in production, not only through the `localFS` test seam
+- [x] 12.2 Read a template from the descriptor that was checked, opened without following a final-component symlink and without blocking on a FIFO, instead of an `Lstat` followed by a second open
+- [x] 12.3 Make the pinned destination check nonblocking and require a regular file on the opened descriptor, so a FIFO at the destination cannot hang a deploy
+- [x] 12.4 Validate a pinned operation's destination name before opening the root, so an outside-root path creates nothing
+- [x] 12.5 Refuse rooted and drive-relative symlink targets during rollback extraction on Windows
+- [x] 12.6 Sanitize `BOSUN_TARGETS` project names before `bosun doctor` resolves the restart-breaker scope, as the daemon does
+- [x] 12.7 Cap health-check output without splitting a multi-byte rune
+- [x] 12.8 Name the residual of the warn-and-continue lock tighten in the spec, and separate the Git and deploy `known_hosts` policies in `docs/security.md`
+
 ## Verification
 
 - [x] `go build ./...` clean on the merged tree

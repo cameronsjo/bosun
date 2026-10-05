@@ -498,7 +498,10 @@ A lock file that already exists with wider permissions SHALL have its mode
 tightened through the open descriptor on the next acquire, so an upgraded
 deployment does not retain the permissive mode. A failed tighten SHALL warn and
 continue rather than abort, because failing there would cause the same outage the
-requirement prevents.
+requirement prevents. This is the one accepted exception to owner-only access:
+after a failed tighten the file keeps its wider mode, so another local user who
+can open it may still hold the lock until the mode is corrected. The warning
+names the file and the mode it could not set.
 
 Lock directories the reconciler creates SHALL be owner-only. A pre-existing
 directory SHALL keep its mode, because a configured lock path may live in a

@@ -245,6 +245,20 @@ func TestFormatHealthDetail(t *testing.T) {
 			},
 			expected: "failing_streak=4, last_exit=1, output=" + strings.Repeat("x", 190),
 		},
+		{
+			// "é" is two bytes, so the 197-byte cut lands inside the 99th
+			// rune. The partial rune is dropped rather than emitted as
+			// invalid UTF-8.
+			name: "truncation does not split a multi-byte rune",
+			details: &docker.ContainerDetails{
+				HealthFailingStreak: 1,
+				HealthLog: &docker.HealthCheckLog{
+					ExitCode: 1,
+					Output:   strings.Repeat("é", 150),
+				},
+			},
+			expected: "failing_streak=1, last_exit=1, output=" + strings.Repeat("é", 98) + "...",
+		},
 	}
 
 	for _, tt := range tests {

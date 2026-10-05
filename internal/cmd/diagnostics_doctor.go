@@ -352,7 +352,10 @@ func checkRestartBreakerScope(cfg *config.Config) CheckResult {
 	if cfg != nil {
 		fileProjectName = cfg.ProjectNameFromFile()
 	}
-	scope := reconcile.RestartBreakerProjectName(loadConfiguredTargets(), fileProjectName)
+	// The daemon clears an invalid BOSUN_TARGETS project_name before resolving
+	// the scope, so doctor must too, or it reports a scope the breaker never uses.
+	targets := reconcile.ValidateAndSanitizeTargets(loadConfiguredTargets(), nil)
+	scope := reconcile.RestartBreakerProjectName(targets, fileProjectName)
 	if scope != "" {
 		_, _ = ui.Green.Printf("  * Restart breaker is scoped to compose project %q\n", scope)
 		return CheckResult{Passed: 1}

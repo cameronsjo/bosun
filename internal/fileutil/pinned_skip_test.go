@@ -62,3 +62,42 @@ func TestPinnedDirCopyFileIfChangedDeferred_RefusesEscapingDestination(t *testin
 	assert.False(t, changed)
 	assert.Nil(t, verify)
 }
+
+// Each pinned operation validates its name before opening the handle, so an
+// outside-root path is refused without creating the root it would pin.
+func TestPinnedDirRefusesOutsideRootBeforeCreatingRoot(t *testing.T) {
+	ops := map[string]func(p *pinnedDir, src, outside string) error{
+		"copyFileInto": func(p *pinnedDir, src, outside string) error {
+			return p.copyFileInto(context.Background(), src, outside, nil)
+		},
+		"mkdirRoot": func(p *pinnedDir, _, outside string) error {
+			return p.mkdirRoot(outside, 0o755)
+		},
+		"mkdirIfMissing": func(p *pinnedDir, _, outside string) error {
+			_, err := p.mkdirIfMissing(outside, 0o755)
+			return err
+		},
+		"syncParent": func(p *pinnedDir, _, outside string) error {
+			return p.syncParent(outside)
+		},
+	}
+
+	for name, op := range ops {
+		t.Run(name, func(t *testing.T) {
+			base, err := filepath.EvalSymlinks(t.TempDir())
+			require.NoError(t, err)
+			src := filepath.Join(base, "source.conf")
+			require.NoError(t, os.WriteFile(src, []byte("rendered"), 0o644))
+			root := filepath.Join(base, "appdata")
+			outside := filepath.Join(base, "outside", "app.conf")
+
+			pinned := newPinnedDir(root)
+			defer pinned.close()
+
+			err = op(pinned, src, outside)
+
+			require.ErrorIs(t, err, errDestinationEscapesRoot)
+			assert.NoDirExists(t, root, "a refused path must not create the pinned root")
+		})
+	}
+}

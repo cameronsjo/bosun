@@ -79,6 +79,36 @@ func mkdirAllContext(ctx context.Context, path string, mode os.FileMode) error {
 	return os.MkdirAll(path, mode)
 }
 
+// mkdirAllUnderRoot creates path through a handle pinned to root, which path
+// must lie under. root itself is resolved by path and created if missing, as
+// the pinned copy does; every component below it is resolved from the handle,
+// so a component swapped for a symlink that escapes root is refused instead of
+// followed.
+func mkdirAllUnderRoot(ctx context.Context, root, path string, mode os.FileMode) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return fmt.Errorf("resolve %s under %s: %w", path, root, err)
+	}
+	if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%s is outside deploy root %s", path, root)
+	}
+	if err := os.MkdirAll(root, mode); err != nil {
+		return fmt.Errorf("create deploy root: %w", err)
+	}
+	if rel == "." {
+		return nil
+	}
+	pinned, err := os.OpenRoot(root)
+	if err != nil {
+		return fmt.Errorf("pin deploy root: %w", err)
+	}
+	defer func() { _ = pinned.Close() }()
+	return pinned.MkdirAll(rel, mode)
+}
+
 func mkdirTempContext(ctx context.Context, dir, pattern string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -300,7 +330,15 @@ func (d *DeployOps) deployLocalManaged(ctx context.Context, sourceDir, targetDir
 		if err := ctx.Err(); err != nil {
 			return rollback(err)
 		}
-		if err := fsOps.mkdirAll(ctx, targetDir, 0755); err != nil {
+		// Create targetDir through the same pinned root the copy uses. The
+		// path-based seam runs only when a test injects it.
+		mkdirTarget := func(ctx context.Context) error {
+			return mkdirAllUnderRoot(ctx, deployRoot, targetDir, 0755)
+		}
+		if d.localFS != nil && d.localFS.mkdirAll != nil {
+			mkdirTarget = func(ctx context.Context) error { return fsOps.mkdirAll(ctx, targetDir, 0755) }
+		}
+		if err := mkdirTarget(ctx); err != nil {
 			return rollback(fmt.Errorf("create target directory: %w", err))
 		}
 

@@ -266,6 +266,16 @@ func openRegularSource(path string, followSymlinks bool) (*os.File, fs.FileInfo,
 	return openRegularSourceWith(path, followSymlinks, openSourceFile)
 }
 
+// OpenRegularNoFollow opens path for reading without following a symlink at
+// its final component and without blocking on a FIFO, then checks the opened
+// descriptor. A symlink returns ErrSymlinkSkipped and any other non-regular
+// entry returns ErrUnsupportedFileType. Reading from the returned file reads
+// the entry that was checked, so a swap after the check cannot redirect it.
+func OpenRegularNoFollow(path string) (*os.File, error) {
+	file, _, err := openRegularSource(path, false)
+	return file, err
+}
+
 func openRegularSourceWith(
 	path string,
 	followSymlinks bool,

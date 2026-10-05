@@ -58,25 +58,27 @@ func (t *TemplateOps) ExecuteTemplate(ctx context.Context, templateFile, outputF
 	// Refuse non-regular template files before reading. A git checkout writes a
 	// repository-authored symlink verbatim, so following one here would read an
 	// arbitrary file on the daemon host (age key, process environment) and stage
-	// its content for deployment. Lstat does not follow the link, so the mode
-	// below is the entry's own, and its failure keeps the read-failure message
-	// so a missing or unreadable template still reports the same way. Symlinks
-	// carry fileutil's typed skip so a walking caller can treat them the way the
-	// non-template copy path does; other non-regular entries (FIFO, device)
-	// would block or misread the read and are refused outright.
-	info, err := os.Lstat(templateFile)
+	// its content for deployment. The open does not follow a final-component
+	// symlink and does not block on a FIFO, and the check runs on the opened
+	// descriptor, so the bytes read below are the entry that was checked. A
+	// path-based check followed by a second open would let a swap in between
+	// redirect the read. Symlinks carry fileutil's typed skip so a walking
+	// caller can treat them the way the non-template copy path does; other
+	// non-regular entries (FIFO, device) are refused outright. Any other
+	// failure keeps the read-failure message.
+	file, err := fileutil.OpenRegularNoFollow(templateFile)
 	if err != nil {
-		return fmt.Errorf("failed to read template %s: %w", templateFile, err)
+		switch {
+		case errors.Is(err, fileutil.ErrSymlinkSkipped):
+			return fmt.Errorf("template %s: %w", templateFile, fileutil.ErrSymlinkSkipped)
+		case errors.Is(err, fileutil.ErrUnsupportedFileType):
+			return fmt.Errorf("template %s: %w", templateFile, err)
+		default:
+			return fmt.Errorf("failed to read template %s: %w", templateFile, err)
+		}
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("template %s: %w", templateFile, fileutil.ErrSymlinkSkipped)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%w: template %s has mode %s", fileutil.ErrUnsupportedFileType, templateFile, info.Mode())
-	}
-
-	// Read template content.
-	content, err := os.ReadFile(templateFile)
+	content, err := io.ReadAll(file)
+	_ = file.Close()
 	if err != nil {
 		return fmt.Errorf("failed to read template %s: %w", templateFile, err)
 	}

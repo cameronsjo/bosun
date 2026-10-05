@@ -291,7 +291,7 @@ The daemon provides:
 > accept-anything behavior on a trusted network, set
 > `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true` explicitly. The Unix socket
 > trigger (`bosun trigger`) is unaffected.
-
+>
 > **Unix socket auth also fails closed.** On Linux, the daemon UID and numeric
 > UIDs in `BOSUN_SOCKET_ALLOWED_UIDS` can trigger reconciliation and read
 > `GET /config`, which returns the webhook secret. A missing peer credential

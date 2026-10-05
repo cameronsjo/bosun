@@ -276,9 +276,10 @@ hostPattern = regexp.MustCompile(`^([a-zA-Z0-9_-]+@)?[a-zA-Z0-9.-]+$`)
 
 **Implementation**: `internal/reconcile/git.go` (Git clone/fetch), `internal/reconcile/ssh.go` (deploy channel)
 
-Both SSH channels resolve a `known_hosts` file from config-controlled paths only, in order: `BOSUN_SSH_KNOWN_HOSTS`, then `/config/known_hosts`. `~/.ssh/known_hosts` is deliberately excluded — ephemeral entries written by manual `ssh` commands inside a container cause key mismatches.
+Both SSH channels look for a bosun-configured `known_hosts` file in the same order: `BOSUN_SSH_KNOWN_HOSTS`, then `/config/known_hosts`. They differ in what happens when neither exists, because one resolves the policy in-process and the other hands it to `openssh`:
 
-Both channels fail closed when no `known_hosts` file exists. They differ only in the mechanism, because one resolves the policy in-process and the other hands it to `openssh`:
+- **Git** uses only those two paths. `~/.ssh/known_hosts` is deliberately excluded, because ephemeral entries written by manual `ssh` commands inside a container cause key mismatches. With no configured file, Git fails closed.
+- **Deploy** pins to the configured file when one exists. Otherwise it runs `StrictHostKeyChecking=yes` against `openssh`'s own default trust stores (`~/.ssh/known_hosts`, `~/.ssh/known_hosts2`, `/etc/ssh/ssh_known_hosts`). A host pinned there deploys; an unpinned host is refused. Audit those files too when no bosun-configured file is set.
 
 | Channel | No `known_hosts` file | Unparseable `known_hosts` |
 |---------|-----------------------|---------------------------|

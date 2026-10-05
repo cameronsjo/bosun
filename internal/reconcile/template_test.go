@@ -651,6 +651,16 @@ func TestTemplateOps_ExecuteTemplateErrors(t *testing.T) {
 		assert.NoFileExists(t, outputFile, "the symlink target must not be written to the output path")
 	})
 
+	t.Run("missing template keeps the read-failure message", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		templateFile := filepath.Join(tmpDir, "absent.tmpl")
+
+		err := NewTemplateOps(map[string]any{}).ExecuteTemplate(context.Background(), templateFile, filepath.Join(tmpDir, "out"))
+
+		require.ErrorIs(t, err, os.ErrNotExist)
+		assert.Contains(t, err.Error(), "failed to read template")
+	})
+
 	t.Run("include function with missing file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		ctx := context.Background()

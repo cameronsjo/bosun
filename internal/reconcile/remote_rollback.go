@@ -394,10 +394,14 @@ func linkTargetWithinRoot(relPath string, typeflag byte, linkname string) bool {
 	}
 	switch typeflag {
 	case tar.TypeSymlink:
-		if filepath.IsAbs(linkname) {
+		// On Windows, IsAbs is false for a rooted `\outside` and a
+		// drive-relative `C:outside`, and os.Root does not validate a
+		// symlink's target, so both are refused here explicitly.
+		target := filepath.FromSlash(linkname)
+		if filepath.IsAbs(target) || filepath.VolumeName(target) != "" || os.IsPathSeparator(target[0]) {
 			return false
 		}
-		return relWithinRoot(filepath.Join(filepath.Dir(relPath), filepath.FromSlash(linkname)))
+		return relWithinRoot(filepath.Join(filepath.Dir(relPath), target))
 	case tar.TypeLink:
 		stripped := strings.TrimPrefix(filepath.ToSlash(linkname), "/")
 		rel := filepath.Clean(filepath.FromSlash(stripped))

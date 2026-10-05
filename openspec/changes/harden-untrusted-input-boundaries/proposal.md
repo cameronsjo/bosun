@@ -30,10 +30,11 @@ The common repair is to make each boundary *resolve against the thing it is prot
 
 ## Known residuals
 
-Two are worth naming rather than implying the boundaries are now total.
+One is worth naming rather than implying the boundaries are now total.
 
 - **The skip-path gate closes the reported scenario, not the full race.** `CopyFileUnderRootIfChanged` now resolves its destination through the pinned handle before comparing, so a pre-placed copy behind a symlinked directory errors instead of reporting "no change". The comparison itself still reads the destination by path, so a swap landing between the gate and the comparison is still read by path. Closing that fully changes a shared signature and five existing call sites, and is left as follow-up work.
-- **`DeployLocal` keeps one unpinned directory creation** before the content-hash copy, as the `localFS` test seam. It cannot create a tree outside `appdata`: the untrusted component is `<service>`, and if that is already a symlink the creation makes nothing and the pinned copy then refuses.
+
+An earlier revision named a second residual: `DeployLocal` created the target directory by path before the content-hash copy. Review showed that path is reachable in production, not only through the `localFS` test seam, so the creation now goes through a handle pinned at the same deploy root as the copy. The path-based seam runs only when a test injects it.
 
 ## Impact
 

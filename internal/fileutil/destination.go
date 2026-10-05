@@ -100,7 +100,11 @@ func (d rootDestination) mkdir(name string, mode fs.FileMode) error {
 
 func (d rootDestination) lstat(name string) (fs.FileInfo, error) { return d.root.Lstat(name) }
 
-func (d rootDestination) open(name string) (*os.File, error) { return d.root.Open(name) }
+// open is nonblocking where the platform supports it, so a FIFO at name does
+// not block until a writer appears.
+func (d rootDestination) open(name string) (*os.File, error) {
+	return d.root.OpenFile(name, os.O_RDONLY|destinationOpenNonblock, 0)
+}
 
 func (d rootDestination) createTemp(dir, pattern string) (*os.File, string, error) {
 	return rootCreateTemp(d.root, dir, pattern)
@@ -234,12 +238,15 @@ func (p *pinnedDir) name(path string) (string, error) {
 
 // copyFileInto copies src to dst through the pinned root. A nil sync leaves the
 // destination-directory flush to a surrounding batch.
+//
+// Every pinned operation validates its name before calling destination, so an
+// outside-root path is refused without creating the root.
 func (p *pinnedDir) copyFileInto(ctx context.Context, src, dst string, sync destinationSync) error {
-	dest, err := p.destination()
+	name, err := p.name(dst)
 	if err != nil {
 		return err
 	}
-	name, err := p.name(dst)
+	dest, err := p.destination()
 	if err != nil {
 		return err
 	}
@@ -316,7 +323,15 @@ func (p *pinnedDir) assertDestinationInRoot(dst string) error {
 		// cannot be read at all. Neither can be compared safely.
 		return fmt.Errorf("%w: %s under %s: %w", errDestinationEscapesRoot, dst, p.path, err)
 	}
-	return file.Close()
+	defer func() { _ = file.Close() }()
+	// The open is nonblocking, so a FIFO placed at the destination returns
+	// here instead of hanging the deploy. Check the opened descriptor, not a
+	// prior Lstat, so a swap between the two cannot pass.
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat destination %s: %w", dst, err)
+	}
+	return validateRegularFile(dst, info)
 }
 
 // mkdirRoot creates the copy's destination root. When that is the pinned path
@@ -326,11 +341,11 @@ func (p *pinnedDir) assertDestinationInRoot(dst string) error {
 // check the file copies get applies here too. A path outside the pinned root is
 // refused.
 func (p *pinnedDir) mkdirRoot(path string, mode fs.FileMode) error {
-	dest, err := p.destination()
+	name, err := p.name(path)
 	if err != nil {
 		return err
 	}
-	name, err := p.name(path)
+	dest, err := p.destination()
 	if err != nil {
 		return err
 	}
@@ -341,11 +356,11 @@ func (p *pinnedDir) mkdirRoot(path string, mode fs.FileMode) error {
 }
 
 func (p *pinnedDir) mkdirIfMissing(path string, mode fs.FileMode) (bool, error) {
-	dest, err := p.destination()
+	name, err := p.name(path)
 	if err != nil {
 		return false, err
 	}
-	name, err := p.name(path)
+	dest, err := p.destination()
 	if err != nil {
 		return false, err
 	}
@@ -353,11 +368,11 @@ func (p *pinnedDir) mkdirIfMissing(path string, mode fs.FileMode) (bool, error) 
 }
 
 func (p *pinnedDir) syncParent(dir string) error {
-	dest, err := p.destination()
+	name, err := p.name(dir)
 	if err != nil {
 		return err
 	}
-	name, err := p.name(dir)
+	dest, err := p.destination()
 	if err != nil {
 		return err
 	}

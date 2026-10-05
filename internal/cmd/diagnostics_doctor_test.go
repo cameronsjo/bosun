@@ -506,6 +506,21 @@ func TestCheckRestartBreakerScope(t *testing.T) {
 		assert.Contains(t, output, `"homelab"`)
 	})
 
+	t.Run("warns when the target project name is invalid", func(t *testing.T) {
+		// The daemon clears an invalid project_name before resolving the
+		// scope, so doctor must not report it as a scope the breaker uses.
+		t.Setenv("BOSUN_RESTART_BREAKER", "")
+		t.Setenv("BOSUN_TARGETS", `[{"name":"unraid","project_name":"bad;name"}]`)
+
+		var result CheckResult
+		output := captureWebhookColorOutput(t, func() {
+			result = checkRestartBreakerScope(loadBosunYAML(t, ""))
+		})
+
+		assert.Equal(t, CheckResult{Warned: 1}, result)
+		assert.NotContains(t, output, "bad;name")
+	})
+
 	t.Run("passes on a root-level project_name in bosun.yaml", func(t *testing.T) {
 		t.Setenv("BOSUN_RESTART_BREAKER", "")
 		t.Setenv("BOSUN_TARGETS", "")
