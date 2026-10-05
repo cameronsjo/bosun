@@ -270,6 +270,56 @@ func TestReconciler_DecryptSecrets(t *testing.T) {
 		assert.Empty(t, secrets)
 	})
 
+	// A repo with no secrets is legitimate, so this is a report and not a
+	// refusal. It has to be visible, though: the skip used to log at Debug,
+	// which the default level hides, and the render still produced templated
+	// output that looked complete. The upgrade canary compares two rendered
+	// trees, and two trees that both decrypted nothing compare equal, so the
+	// only thing that tells the operator is this line in the shadow log.
+	t.Run("no secrets files says so at a visible level", func(t *testing.T) {
+		var logs bytes.Buffer
+		logger := zerolog.New(&logs).Level(zerolog.WarnLevel)
+		ctx := logpkg.WithContext(context.Background(), &logger)
+
+		r := NewReconciler(&Config{SecretsFiles: nil})
+		r.sops = NewSOPSOps()
+
+		secrets, err := r.decryptSecrets(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, secrets)
+
+		out := logs.String()
+		assert.Contains(t, out, "rendering without secrets",
+			"a skipped decryption must be visible at the default level, not only at Debug")
+		// Both variables, and only real ones: the first draft of this message
+		// named a `secrets_file` config key that nothing reads, which is worse
+		// than silence in a path whose whole job is honest advice.
+		assert.Contains(t, out, "BOSUN_SECRETS_FILE", "the message must name what to set")
+		assert.Contains(t, out, "SECRETS_FILES", "and the only variable that takes more than one file")
+	})
+
+	// The control arm: a configured run must not emit the warning, or the
+	// assertion above would pass for every run and prove nothing.
+	t.Run("a configured secrets file does not warn", func(t *testing.T) {
+		var logs bytes.Buffer
+		logger := zerolog.New(&logs).Level(zerolog.WarnLevel)
+		ctx := logpkg.WithContext(context.Background(), &logger)
+
+		r := NewReconciler(&Config{RepoDir: t.TempDir(), SecretsFiles: []string{"absent.yaml"}})
+		r.sops = NewSOPSOps()
+
+		_, err := r.decryptSecrets(ctx)
+		require.Error(t, err, "the fixture file does not exist, so this run must fail past the skip")
+
+		out := logs.String()
+		// Prove the buffer is wired before reading an absence out of it: an
+		// unwired logger writes nothing, and NotContains passes on an empty
+		// string whatever the code did.
+		require.Contains(t, out, "secrets file not found",
+			"the failure past the skip must reach this buffer, or the absence below proves nothing")
+		assert.NotContains(t, out, "rendering without secrets")
+	})
+
 	t.Run("non-existent secrets file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		cfg := &Config{

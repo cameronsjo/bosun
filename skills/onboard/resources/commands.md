@@ -287,6 +287,7 @@ bosun reconcile -f             # Force deploy even if no changes
 bosun reconcile -l             # Force local deployment mode
 bosun reconcile -r user@host   # Deploy to remote host
 bosun reconcile --target=nas   # Reconcile only the "nas" target
+bosun reconcile -n --no-alerts # Dry run that sends no alerts
 ```
 
 | Flag | Description |
@@ -296,6 +297,9 @@ bosun reconcile --target=nas   # Reconcile only the "nas" target
 | `-l`, `--local` | Force local deployment mode |
 | `-r`, `--remote` | Target host for remote deployment (SSH) |
 | `--target` | Reconcile a single named target (from `targets:` config) |
+| `--no-alerts` | Build no alert manager; send nothing, list no providers |
+
+A dry run alerts exactly like a real run — alert dispatch has no dry-run gate — so pass `--no-alerts` when a dry run must stay silent. The command reads `BOSUN_INFRA_DIR` the same way the daemon does, so a dry run renders the tree the daemon would deploy. Parsing of `SECRETS_FILES`, `BOSUN_SECRETS_FILE` and `DRY_RUN` is shared with the daemon; the remaining environment differences are tracked in bosun#676.
 
 ### `bosun trigger`
 
