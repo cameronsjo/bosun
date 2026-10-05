@@ -1,6 +1,14 @@
-## MODIFIED Requirements
+## REMOVED Requirements
 
 ### Requirement: Git Repository Sync
+
+**Reason**: Replaced by the ADDED requirement "Git Repository Sync and Host Key Verification" below. The canonical block carries the scenario "No known_hosts found falls back to insecure mode", which this change deliberately reverses to fail closed. A MODIFIED block cannot drop a scenario, so the requirement is removed and re-added whole. openspec refuses an ADDED and a REMOVED of the same name, so the replacement carries a new name.
+
+**Migration**: An SSH repository with no `known_hosts` file now fails at startup. Pin a host key at `BOSUN_SSH_KNOWN_HOSTS` or `/config/known_hosts`, or set `BOSUN_SSH_INSECURE_HOST_KEY=true`.
+
+## ADDED Requirements
+
+### Requirement: Git Repository Sync and Host Key Verification
 
 The reconciler SHALL clone the repository on first run (when no local repo
 exists) and pull on subsequent runs. Clones SHALL use depth 1 (shallow) and
@@ -341,6 +349,8 @@ read-only, so no pin can persist and every deploy would be a first connection.
 - **WHEN** `BOSUN_SSH_INSECURE_HOST_KEY=true`
 - **THEN** no known_hosts file is consulted
 - **AND** all host keys are accepted without verification
+
+## MODIFIED Requirements
 
 ### Requirement: Template Rendering
 

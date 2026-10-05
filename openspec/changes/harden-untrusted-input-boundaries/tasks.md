@@ -94,6 +94,7 @@ Two independent reviewers read the ten fixes back. These are their confirmed fin
 - [x] 12.6 Sanitize `BOSUN_TARGETS` project names before `bosun doctor` resolves the restart-breaker scope, as the daemon does
 - [x] 12.7 Cap health-check output without splitting a multi-byte rune
 - [x] 12.8 Name the residual of the warn-and-continue lock tighten in the spec, and separate the Git and deploy `known_hosts` policies in `docs/security.md`
+- [x] 12.9 Restructure the `Git Repository Sync` delta as REMOVED plus ADDED `Git Repository Sync and Host Key Verification`. The canonical block carries the insecure-fallback scenario this change reverses, and a MODIFIED block cannot drop a scenario, so `openspec validate --strict` and archive both refused it
 
 ## Verification
 
