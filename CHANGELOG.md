@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.4](https://github.com/cameronsjo/bosun/compare/v0.44.3...v0.44.4) (2026-10-14)
+
+
+### Bug Fixes
+
+* **scripts:** signal rollback drill image version drift ([8c4fb30](https://github.com/cameronsjo/bosun/commit/8c4fb305096d7e9f3fea108fcd640f18a5cbf149))
+
 ## [0.44.3](https://github.com/cameronsjo/bosun/compare/v0.44.2...v0.44.3) (2026-10-14)
 
 
