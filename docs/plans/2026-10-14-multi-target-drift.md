@@ -30,6 +30,9 @@ compatible.
       liveness while retaining them in detailed target status.
 - [x] Aggregate local and remote cached target deploy history in `WidgetData`;
       a missing named-target state file never falls back to the base state file.
+- [x] Preserve implicit-default embedded widget calls with only `StateFile`,
+      including after another consumer caches an operational validation error;
+      configured or captured targets remain authoritative and fail-closed.
 - [x] Label self-heal exhaustion alerts with the configured named target.
 - [x] Attempt the required local compiler gate and record its resource refusal.
 - [x] Verify build, race-enabled tests, lint, and WebUI through PR CI, and run
@@ -56,10 +59,15 @@ Codex did not bypass the gate.
 `openspec validate add-multi-target-reconcile --strict` passed locally.
 The fix-round target-liveness, widget aggregation, missing-state, and
 self-heal-label tests are included for the next CI run. Codex's fresh full
-build/race/vet/lint gate attempt exited 75 before compilation with 26.5 GiB
+build/race/vet/lint gate attempt exited 75 before compilation with 24.0 GiB
 free versus the required 100 GiB; no gate or cache override was used.
 Final-head execution evidence belongs in the requested `report-fix1.md`;
 the earlier runs below describe only their explicitly named commits.
+The first fix-round CI run exposed the partial embedded-widget regression:
+requiring a staging path changed legacy base-state reads to widget errors.
+Codex corrected that read-only compatibility path without changing startup
+validation or weakening the existing tests, and added cached-error ordering
+and invalid-named-topology regression cases.
 PR #701 CI run `38626151350` passed Build, Test (full race/coverage suite),
 Lint (including workflow and diagram contracts), and WebUI against feature
 commit `6e1afd145112cdcf4104bdde70413a8f11ceb106`. The first Test run exposed

@@ -524,6 +524,52 @@ func TestWidgetDataMissingTargetStateDoesNotFallBackToBaseState(t *testing.T) {
 	assert.Equal(t, "", data["git_sha"])
 }
 
+func TestWidgetDataInvalidNamedTopologyDoesNotFallBackToBaseState(t *testing.T) {
+	root := t.TempDir()
+	stateFile := filepath.Join(root, "base-state.json")
+	require.NoError(t, reconcile.SaveState(stateFile, &reconcile.DeployState{
+		DeployCount:        99,
+		LastDeployedCommit: "base-commit",
+		DeployedAt:         time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC),
+	}))
+
+	d := &Daemon{
+		config: &Config{ReconcileConfig: &reconcile.Config{
+			StateFile: stateFile,
+			Targets: []reconcile.Target{
+				{Name: "alpha", ProjectName: "alpha-stack"},
+				{Name: "alpha", ProjectName: "alpha-other-stack"},
+			},
+		}},
+	}
+
+	data := d.WidgetData()
+	assert.Equal(t, "error", data["status"])
+	assert.Equal(t, 0, data["deploys_total"], "invalid named topology must not fall back to the base state")
+	assert.Equal(t, "", data["last_deploy"])
+	assert.Equal(t, "", data["git_sha"])
+}
+
+func TestWidgetDataPartialDefaultSurvivesCachedImplicitValidationError(t *testing.T) {
+	root := t.TempDir()
+	stateFile := filepath.Join(root, "base-state.json")
+	require.NoError(t, reconcile.SaveState(stateFile, &reconcile.DeployState{
+		DeployCount:        7,
+		LastDeployedCommit: "legacy-commit",
+		DeployedAt:         time.Date(2026, 10, 14, 13, 0, 0, 0, time.UTC),
+	}))
+
+	d := &Daemon{config: &Config{ReconcileConfig: &reconcile.Config{StateFile: stateFile}}}
+	_, err := d.targetSnapshot()
+	require.Error(t, err, "partial implicit-default config should fail operational target validation")
+
+	data := d.WidgetData()
+	assert.Equal(t, "ok", data["status"])
+	assert.Equal(t, 7, data["deploys_total"])
+	assert.Equal(t, "2026-10-14T13:00:00Z", data["last_deploy"])
+	assert.Equal(t, "legacy-", data["git_sha"])
+}
+
 func TestRunDriftCheck_BaseStateFileDisablesTargetFanout(t *testing.T) {
 	d, _ := targetStatusTestDaemon(t, []reconcile.Target{
 		{Name: "local", ProjectName: "local-stack"},

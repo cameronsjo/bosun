@@ -2156,7 +2156,28 @@ func (d *Daemon) WidgetData() map[string]any {
 	// remote history is valid cached state even though remote Docker cannot be
 	// inspected locally. Live target availability remains a detail-endpoint
 	// concern.
-	targets, targetsErr := d.targetSnapshot()
+	//
+	// Keep the legacy embedded-call path independent of operational topology
+	// validation: older integrations construct a partial Config with only a
+	// StateFile, and the old widget read that file without requiring staging or
+	// appdata paths. A configured target list, or an already-captured startup
+	// snapshot, still goes through the fail-closed resolver so malformed named
+	// topologies never fall back to the base state file.
+	var (
+		targets    []reconcile.Target
+		targetsErr error
+	)
+	d.targetMu.RLock()
+	// A non-empty captured descriptor list is authoritative. A cached resolver
+	// error alone is not: a partial legacy Config may have been probed by a
+	// detail consumer first, and the widget must still read its base state.
+	hasCapturedTargets := len(d.targets) > 0
+	d.targetMu.RUnlock()
+	if !hasCapturedTargets && len(d.config.ReconcileConfig.Targets) == 0 {
+		targets = []reconcile.Target{{Name: reconcile.DefaultTargetName}}
+	} else {
+		targets, targetsErr = d.targetSnapshot()
+	}
 	if targetsErr != nil {
 		data["status"] = "error"
 		return data
