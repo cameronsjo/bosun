@@ -122,10 +122,11 @@ func ensureStateDirForCLI(stateFile string) error {
 	return nil
 }
 
-// prepareStateFileForCLIRun returns the state file a one-shot reconcile should
-// use. Real runs use the configured file after verifying its parent. Dry runs
-// use a temporary copy so skip and breaker decisions still see current state,
-// while simulated attempt/success writes cannot mutate production state.
+// prepareStateFileForCLIRun returns the state file a one-shot CLI
+// reconciliation should use. Real runs use the configured file after verifying
+// its parent. Dry runs use a temporary copy so skip and breaker decisions still
+// see current state, while simulated attempt/success writes cannot mutate
+// production state.
 func prepareStateFileForCLIRun(stateFile string, dryRun bool) (string, func(), error) {
 	return prepareStateFileForCLIRunWithSave(stateFile, dryRun, reconcile.SaveState)
 }
