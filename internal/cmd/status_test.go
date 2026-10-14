@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/cameronsjo/bosun/internal/daemon"
+	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 )
 
@@ -243,13 +244,19 @@ func TestRunStatus_MixedTargetsReportsDockerUnavailable(t *testing.T) {
 func captureColoredStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	var colorOutput bytes.Buffer
+	var logOutput bytes.Buffer
 	oldOutput := color.Output
 	oldNoColor := color.NoColor
+	oldLogger := *log.Logger()
 	color.Output = &colorOutput
 	color.NoColor = true
+	// UI warnings/errors use the structured logger outside console mode.
+	// Capture that existing destination too, without changing logger config.
+	*log.Logger() = oldLogger.Output(&logOutput).Level(log.InfoLevel)
 	defer func() {
 		color.Output = oldOutput
 		color.NoColor = oldNoColor
+		*log.Logger() = oldLogger
 	}()
-	return captureStdout(t, fn) + colorOutput.String()
+	return captureStdout(t, fn) + colorOutput.String() + logOutput.String()
 }
