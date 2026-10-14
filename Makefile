@@ -52,7 +52,7 @@ test-agent-gate:
 
 # Test the upgrade canary scripts against stubbed docker/ssh/gh.
 test-upgrade-scripts:
-	shellcheck scripts/upgrade-bosun.sh scripts/upgrade-bosun-remote.sh scripts/upgrade-bosun_test.sh scripts/rollback-drill.sh
+	shellcheck scripts/upgrade-bosun.sh scripts/upgrade-bosun-remote.sh scripts/upgrade-bosun_test.sh scripts/rollback-drill.sh scripts/rollback-drill_test.sh
 	bash scripts/upgrade-bosun_test.sh
 
 # Validate security-sensitive GitHub Actions control flow.
