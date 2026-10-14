@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.2](https://github.com/cameronsjo/bosun/compare/v0.44.1...v0.44.2) (2026-10-14)
+
+
+### Bug Fixes
+
+* **deps:** pin Bosun's direct HTTPS downgrade refusal ([05c3b26](https://github.com/cameronsjo/bosun/commit/05c3b26631c09ca9f79141e2444445902b9205ba))
+* **deps:** retain redirect security checks with updated Go dependencies ([1617934](https://github.com/cameronsjo/bosun/commit/1617934f67e17fc4c4bc7949922cc3decbbd59dd))
+
 ## [0.44.1](https://github.com/cameronsjo/bosun/compare/v0.44.0...v0.44.1) (2026-10-14)
 
 
