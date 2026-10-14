@@ -436,6 +436,53 @@ func TestDaemonRun_UnwritableStateDirFailsBeforeStartup(t *testing.T) {
 	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
+func TestDaemonRun_PreparesNestedStateFileForNamedTarget(t *testing.T) {
+	tmpDir := shortSocketDir(t)
+	socketPath := filepath.Join(tmpDir, "d.sock")
+	baseStateFile := filepath.Join(tmpDir, "state", "base.json")
+	nestedStateFile := filepath.Join(tmpDir, "state", "targets", "nested.json")
+
+	cfg := DefaultConfig()
+	cfg.SocketPath = socketPath
+	cfg.EnableHTTP = false
+	cfg.EnableTCP = false
+	cfg.PollInterval = 0
+	cfg.DriftInterval = 0
+	cfg.InitialDelay = 24 * time.Hour
+	cfg.ReconcileConfig = reconcile.DefaultConfig()
+	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
+	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
+	cfg.ReconcileConfig.StagingDir = filepath.Join(tmpDir, "staging")
+	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "reconcile.lock")
+	cfg.ReconcileConfig.StateFile = baseStateFile
+	cfg.ReconcileConfig.Targets = []reconcile.Target{{
+		Name:      "nested",
+		StateFile: nestedStateFile,
+	}}
+
+	d, err := New(cfg)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+
+	// The socket is published only after target resolution and every state
+	// directory probe complete, so observing it gives the startup probe a
+	// deterministic synchronization point.
+	require.Eventually(t, func() bool {
+		_, statErr := os.Lstat(socketPath)
+		return statErr == nil
+	}, time.Second, 5*time.Millisecond)
+	cancel()
+	require.NoError(t, <-done)
+
+	info, err := os.Stat(filepath.Dir(nestedStateFile))
+	require.NoError(t, err)
+	assert.True(t, info.IsDir())
+	assert.NoFileExists(t, nestedStateFile)
+	assert.NoFileExists(t, baseStateFile, "unused flat state path should not be probed for a named-only topology")
+}
+
 func TestDaemonRun_CancelledContext(t *testing.T) {
 	tmpDir := shortSocketDir(t)
 

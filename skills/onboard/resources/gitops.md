@@ -438,6 +438,14 @@ expands it. Reconcile errors and timestamps, repository paths, subsystem detail,
 and circuit-breaker state stay off this response. Use bearer-protected TCP
 `/status` or local Unix-socket `/status` for operator diagnostics.
 
+When named or multiple targets are configured, `/status` and authenticated `/api/status`
+include an ordered `targets` collection with each target's last deploy, drift,
+and circuit-breaker condition. A single implicit or lone `default` target keeps
+the existing top-level response shape, and the `bosun status` dashboard keeps
+its legacy local-container layout. Periodic drift inspects local targets only;
+remote targets retain their cached state and report unavailable for live
+inspection without querying the local Docker daemon on their behalf.
+
 **Direct access via curl:**
 
 ```bash

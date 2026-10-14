@@ -14,7 +14,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cameronsjo/bosun/internal/config"
+	"github.com/cameronsjo/bosun/internal/daemon"
 	"github.com/cameronsjo/bosun/internal/docker"
+	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -62,6 +64,36 @@ var statusCmd = &cobra.Command{
 func runStatus(cmd *cobra.Command, args []string) {
 	_, _ = ui.Blue.Println("Yacht Status Dashboard")
 	fmt.Println()
+
+	// Show deploy health from each startup-style target independently. This
+	// keeps a multi-target status view from reading the legacy default state
+	// file for every target.
+	daemonCfg := daemon.ConfigFromEnv()
+	targets, targetsErr := daemonCfg.ReconcileConfig.ResolveTargets()
+	if targetsErr != nil {
+		ui.Error("Failed to resolve deployment targets: %v", targetsErr)
+		return
+	}
+	showTargetBreakdown := len(targets) > 1 || (len(targets) == 1 && !targets[0].IsDefault())
+	if showTargetBreakdown {
+		printDeploymentTargetStatus(daemonCfg.ReconcileConfig, targets)
+	}
+
+	allRemote := len(targets) > 0
+	for _, target := range targets {
+		if target.TargetHost == "" {
+			allRemote = false
+			break
+		}
+	}
+	// Preserve the legacy yacht dashboard for the implicit or lone explicit
+	// default target. The per-target remote-only presentation is for named or
+	// multi-target topologies; daemon health still treats every remote target
+	// as having no local Docker inspection path.
+	if showTargetBreakdown && allRemote {
+		ui.Warning("All configured targets are remote; local Docker dashboard is unavailable")
+		return
+	}
 
 	// Load config for infrastructure container list
 	cfg, cfgErr := config.Load()
@@ -190,6 +222,40 @@ func runStatus(cmd *cobra.Command, args []string) {
 	if err != nil {
 		ui.Error("Docker not available: %v", err)
 	}
+}
+
+func printDeploymentTargetStatus(cfg *reconcile.Config, targets []reconcile.Target) {
+	_, _ = ui.Blue.Println("--- Deployment Targets ---")
+	for _, target := range targets {
+		targetCfg := cfg.ConfigForTarget(target)
+		state := &reconcile.DeployState{}
+		if targetCfg.StateFile != "" {
+			state = reconcile.LoadState(targetCfg.StateFile)
+		}
+
+		commit := state.LastDeployedCommit
+		if commit == "" {
+			commit = "none"
+		}
+		drift := "unknown"
+		if state.LastDeployedCommit != "" {
+			drift = "clean"
+			if len(state.DriftItems) > 0 {
+				drift = "drifted"
+			}
+		}
+		breaker := "closed"
+		if state.AttemptCount >= reconcile.MaxAttempts &&
+			(state.LastAttemptedCommit == "" || state.LastAttemptedCommit != state.LastDeployedCommit) {
+			breaker = "open"
+		}
+		if target.TargetHost != "" {
+			_, _ = ui.Yellow.Printf("  * %s: commit %s, drift %s, breaker %s (remote; cached only)\n", target.Name, commit, drift, breaker)
+			continue
+		}
+		_, _ = ui.Green.Printf("  * %s: commit %s, drift %s, breaker %s\n", target.Name, commit, drift, breaker)
+	}
+	fmt.Println()
 }
 
 // logCmd shows release history.

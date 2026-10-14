@@ -122,17 +122,32 @@ func printStatusHuman(status *daemon.StatusResponse, health *daemon.HealthRespon
 		_, _ = readyColor.Printf("  %s Ready: %v\n", readyIcon, health.Ready)
 	}
 
+	printDaemonTargetsHuman(status.Targets)
+
 	fmt.Println()
+}
+
+func printDaemonTargetsHuman(targets []daemon.TargetHealthStatus) {
+	if len(targets) == 0 {
+		return
+	}
+	fmt.Println()
+	_, _ = ui.Blue.Println("  Deployment Targets:")
+	for _, target := range targets {
+		fmt.Printf("    %s: deploy=%s drift=%s breaker=%s\n",
+			target.Name, target.LastDeployedCommit, target.Drift.Status, target.CircuitBreaker.Status)
+	}
 }
 
 // statusJSONOutput is the JSON representation of daemon status for machine-readable output.
 type statusJSONOutput struct {
-	State         string  `json:"state"`
-	Uptime        string  `json:"uptime"`
-	LastReconcile *string `json:"last_reconcile"`
-	LastError     *string `json:"last_error"`
-	Health        *string `json:"health"`
-	Ready         *bool   `json:"ready"`
+	State         string                      `json:"state"`
+	Uptime        string                      `json:"uptime"`
+	LastReconcile *string                     `json:"last_reconcile"`
+	LastError     *string                     `json:"last_error"`
+	Health        *string                     `json:"health"`
+	Ready         *bool                       `json:"ready"`
+	Targets       []daemon.TargetHealthStatus `json:"targets,omitempty"`
 }
 
 func printStatusJSON(status *daemon.StatusResponse, health *daemon.HealthResponse) {
@@ -154,6 +169,7 @@ func printStatusJSON(status *daemon.StatusResponse, health *daemon.HealthRespons
 		out.Health = &health.Status
 		out.Ready = &health.Ready
 	}
+	out.Targets = status.Targets
 
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")

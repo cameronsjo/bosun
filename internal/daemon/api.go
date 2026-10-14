@@ -15,14 +15,15 @@ import (
 
 // APIStatusResponse is the extended status response for the WebUI API.
 type APIStatusResponse struct {
-	Health        string     `json:"health"`
-	State         string     `json:"state"`
-	Uptime        string     `json:"uptime"`
-	UptimeSeconds int64      `json:"uptime_seconds"`
-	LastReconcile *time.Time `json:"last_reconcile,omitempty"`
-	LastError     string     `json:"last_error,omitempty"`
-	NextPoll      *time.Time `json:"next_poll,omitempty"`
-	PollInterval  int        `json:"poll_interval,omitempty"`
+	Health        string               `json:"health"`
+	State         string               `json:"state"`
+	Uptime        string               `json:"uptime"`
+	UptimeSeconds int64                `json:"uptime_seconds"`
+	LastReconcile *time.Time           `json:"last_reconcile,omitempty"`
+	LastError     string               `json:"last_error,omitempty"`
+	NextPoll      *time.Time           `json:"next_poll,omitempty"`
+	PollInterval  int                  `json:"poll_interval,omitempty"`
+	Targets       []TargetHealthStatus `json:"targets,omitempty"`
 }
 
 // APIContainerResponse represents a container in the API response.
@@ -67,11 +68,11 @@ type APIRestartResponse struct {
 
 // APIDriftResponse is the response for the drift status endpoint.
 type APIDriftResponse struct {
-	Status         string                 `json:"status"`
-	CheckedAt      *time.Time             `json:"checked_at,omitempty"`
-	DeclaredCount  int                    `json:"declared_count"`
-	DriftItemCount int                    `json:"drift_item_count"`
-	Items          []APIDriftItem         `json:"items"`
+	Status         string         `json:"status"`
+	CheckedAt      *time.Time     `json:"checked_at,omitempty"`
+	DeclaredCount  int            `json:"declared_count"`
+	DriftItemCount int            `json:"drift_item_count"`
+	Items          []APIDriftItem `json:"items"`
 }
 
 // APIDriftItem represents a single drift item in the API response.
@@ -108,6 +109,7 @@ func (d *Daemon) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 	uptime := time.Since(startTime)
 
 	resp := buildAPIStatusResponse(lastReconcile, lastErr, reconciling, health.Status, uptime, d.config.PollInterval)
+	resp.Targets = health.Targets
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)

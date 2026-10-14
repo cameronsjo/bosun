@@ -116,3 +116,19 @@ func TestDaemonStatusOutput_UsesStatusForDiagnostics(t *testing.T) {
 		assert.True(t, *decoded.Ready)
 	})
 }
+
+func TestDaemonStatusOutput_DefaultJSONShapeOmitsTargets(t *testing.T) {
+	status := &daemon.StatusResponse{State: "idle", Uptime: "1s"}
+	health := &daemon.HealthResponse{Status: "healthy", Ready: true}
+
+	output := captureStdout(t, func() { printStatusJSON(status, health) })
+	var fields map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(output), &fields))
+	assert.Len(t, fields, 6)
+	for _, key := range []string{"state", "uptime", "last_reconcile", "last_error", "health", "ready"} {
+		assert.Contains(t, fields, key)
+	}
+	assert.Equal(t, "null", string(fields["last_reconcile"]))
+	assert.Equal(t, "null", string(fields["last_error"]))
+	assert.NotContains(t, output, "targets")
+}

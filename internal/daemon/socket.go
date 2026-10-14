@@ -250,11 +250,12 @@ type ConfigResponse struct {
 
 // StatusResponse is the response body for /status.
 type StatusResponse struct {
-	State         string     `json:"state"` // idle, reconciling
-	LastReconcile *time.Time `json:"last_reconcile,omitempty"`
-	LastCommit    string     `json:"last_commit,omitempty"`
-	LastError     string     `json:"last_error,omitempty"`
-	Uptime        string     `json:"uptime"`
+	State         string               `json:"state"` // idle, reconciling
+	LastReconcile *time.Time           `json:"last_reconcile,omitempty"`
+	LastCommit    string               `json:"last_commit,omitempty"`
+	LastError     string               `json:"last_error,omitempty"`
+	Uptime        string               `json:"uptime"`
+	Targets       []TargetHealthStatus `json:"targets,omitempty"`
 }
 
 // handleTrigger handles POST /trigger requests.
@@ -366,6 +367,7 @@ func (s *SocketServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		State:  reconcileStateString(reconciling),
 		Uptime: time.Since(startTime).Round(time.Second).String(),
 	}
+	resp.Targets = s.daemon.detailedTargetStatuses()
 
 	if !lastReconcile.IsZero() {
 		resp.LastReconcile = &lastReconcile
