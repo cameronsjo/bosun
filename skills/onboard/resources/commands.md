@@ -372,6 +372,7 @@ bosun status
 **Alias:** `bridge`
 
 **Displays:**
+- Deployment target state for named or multiple configured targets: last deployed commit, cached drift condition, and circuit-breaker condition. Remote targets are labeled cached-only because periodic local Docker inspection cannot verify them. An implicit or lone `default` target keeps the legacy dashboard layout.
 - Crew status (running/total containers, health)
 - Infrastructure services (traefik, authelia, gatus)
 - Application containers

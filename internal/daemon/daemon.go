@@ -210,6 +210,24 @@ type Daemon struct {
 	lastReconcile time.Time
 	lastError     error
 
+	// targets is the startup-resolved target topology. It is intentionally
+	// immutable for the lifetime of a daemon: changing target identity or paths
+	// requires a restart so reconciliation, drift, and status all refer to the
+	// same state documents.
+	targetMu        sync.RWMutex
+	targets         []reconcile.Target
+	targetsResolved bool
+	// targetResolveErr preserves startup target validation for Run, which owns
+	// the public startup-error boundary. New must remain constructible for
+	// callers that inspect or report the configuration before Run is invoked.
+	targetResolveErr error
+
+	// targetRuntimeMu protects point-in-time diagnostics that are not part of
+	// the persisted deploy state (for example, a remote target that cannot be
+	// inspected by this daemon's local Docker client).
+	targetRuntimeMu sync.RWMutex
+	targetRuntime   map[string]targetRuntimeStatus
+
 	// Concurrency control: single-flight reconcile with lossless coalescing.
 	reconcileMu                   sync.Mutex          // Guards reconcile execution and pending trigger state
 	reconciling                   bool                // True while reconcile is in progress
@@ -247,6 +265,7 @@ func New(cfg *Config) (*Daemon, error) {
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	d := &Daemon{
 		config:          cfg,
+		targetRuntime:   make(map[string]targetRuntimeStatus),
 		alerter:         cfg.AlertManager,
 		stopLoops:       make(chan struct{}),
 		lifecycleCtx:    lifecycleCtx,
@@ -412,6 +431,13 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	if err := ValidateConfig(d.config); err != nil {
 		return fmt.Errorf("invalid daemon configuration: %w", err)
 	}
+	// Freeze the validated topology before any listener can accept a request.
+	// Direct embedded callers that use executeReconcile without Run lazily take
+	// the same one-time snapshot on their first consumer call.
+	targets, err := d.targetSnapshot()
+	if err != nil {
+		return fmt.Errorf("resolve daemon targets: %w", err)
+	}
 
 	// Rebuild structured logging for daemon mode without discarding explicit
 	// CLI options or additional writers configured during process startup.
@@ -444,18 +470,28 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	d.warnMetricsAuthPosture(logger)
 	d.warnSocketAuthPosture(logger)
 
-	// Ensure state storage is usable before any API listener or reconcile loop
-	// starts. A persistent mount that exists but is not writable is fatal: if we
-	// continued, drift, skip, and circuit-breaker state would silently disappear.
-	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.StateFile != "" {
-		stateDir := filepath.Dir(d.config.ReconcileConfig.StateFile)
-		logger.Debug().Str(log.FieldPath, stateDir).Msg("Preparing deploy state directory")
-		if err := prepareStateDir(d.config.ReconcileConfig.StateFile); err != nil {
+	// Ensure every effective target's state storage is usable before any API
+	// listener or reconcile loop starts. A persistent mount that exists but is
+	// not writable is fatal: if we continued, drift, skip, and circuit-breaker
+	// state would silently disappear. ConfigForTarget includes explicit nested
+	// state_file overrides, so this probes the actual path each target uses.
+	for _, target := range targets {
+		targetConfig := d.configForTarget(target)
+		if targetConfig == nil || targetConfig.StateFile == "" {
+			continue
+		}
+		stateDir := filepath.Dir(targetConfig.StateFile)
+		logger.Debug().
+			Str("target", target.Name).
+			Str(log.FieldPath, stateDir).
+			Msg("Preparing deploy state directory")
+		if err := prepareStateDir(targetConfig.StateFile); err != nil {
 			logger.Error().
 				Err(err).
+				Str("target", target.Name).
 				Str(log.FieldPath, stateDir).
 				Msg("Deploy state directory is not writable")
-			return fmt.Errorf("prepare deploy state: %w", err)
+			return fmt.Errorf("prepare deploy state for target %q: %w", target.Name, err)
 		}
 	}
 
@@ -1053,7 +1089,7 @@ func (d *Daemon) executeReconcileWithMode(ctx context.Context, source string, fo
 	// operational overrides (hooks, critical containers, deploy sync paths) hot-reload
 	// via ConfigReloader inside each reconciler.Run(). Structural target changes
 	// (adding/removing targets, changing host/paths) require a daemon restart.
-	targets, targetsErr := d.config.ReconcileConfig.ResolveTargets()
+	targets, targetsErr := d.targetSnapshot()
 	if targetsErr == nil {
 		targetsErr = reconcile.PreflightStagingEvidence(ctx, d.config.ReconcileConfig, targets)
 	}
@@ -1075,11 +1111,6 @@ func (d *Daemon) executeReconcileWithMode(ctx context.Context, source string, fo
 	firstErr := targetsErr
 	successCount := 0
 
-	// NOTE: Daemon-level drift checks (runDriftCheck), health status (HealthStatus),
-	// and circuit-breaker state still read from the base config's single state file.
-	// In multi-target mode, each target writes its own state file, but these daemon
-	// subsystems are not yet fan-out aware. This means periodic drift alerts and
-	// health reporting only reflect the default/base target until these are refactored.
 	for _, target := range targets {
 		if cycleCtxErr := terminalReconcileCycleContextError(ctx); cycleCtxErr != nil {
 			if firstErr == nil {
@@ -1092,7 +1123,13 @@ func (d *Daemon) executeReconcileWithMode(ctx context.Context, source string, fo
 		targetLogger := logger.With().Str("target", target.Name).Logger()
 
 		// Create a per-target config and reconciler.
-		targetCfg := d.config.ReconcileConfig.ConfigForTarget(target)
+		targetCfg := d.configForTarget(target)
+		if targetCfg == nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("target %s: reconciliation config is unavailable", target.Name)
+			}
+			continue
+		}
 		targetCfg.Source = source
 		targetCfg.Force = force
 
@@ -1113,7 +1150,17 @@ func (d *Daemon) executeReconcileWithMode(ctx context.Context, source string, fo
 			ui.Info("Reconciling target: %s", target.Name)
 		}
 
-		err := r.Run(ctx)
+		var err error
+		func() {
+			defer func() {
+				// ConfigReloader may have changed ProjectName before returning a
+				// success, operational error, or panic. Preserve that effective
+				// namespace for the next cycle's reconciler, drift check, and
+				// status view before the outer cycle recovery handles the panic.
+				d.recordTargetProjectName(target.Name, targetCfg.ProjectName)
+			}()
+			err = r.Run(ctx)
+		}()
 		if err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("target %s: %w", target.Name, err)
@@ -1261,6 +1308,13 @@ func (d *Daemon) driftCheckLoop(ctx context.Context) {
 // Skips if a reconciliation is in progress to avoid state file race conditions.
 func (d *Daemon) runDriftCheck(ctx context.Context) {
 	logger := log.Component(log.ComponentDaemon)
+	// An empty base StateFile is the explicit operator opt-out for periodic
+	// drift. Check it before resolving targets or touching Docker: named target
+	// path derivation must not turn this disabled mode back on.
+	if d.config == nil || d.config.ReconcileConfig == nil || d.config.ReconcileConfig.StateFile == "" {
+		logger.Debug().Str("reason", "state_file_disabled").Msg("Skipping periodic drift check")
+		return
+	}
 	d.driftCheckMu.Lock()
 	defer d.driftCheckMu.Unlock()
 
@@ -1278,34 +1332,74 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	}
 	defer d.reconcileMu.Unlock()
 
-	// Snapshot reloadable config fields once so we hold the lock only briefly.
-	dcfg := d.driftConfig()
-
-	stateFile := ""
-	projectName := ""
-	if d.config.ReconcileConfig != nil {
-		stateFile = d.config.ReconcileConfig.StateFile
-		projectName = d.config.ReconcileConfig.ProjectName
-	}
-	if stateFile == "" {
-		logger.Debug().
-			Str("reason", "no_state_file_configured").
-			Msg("Skipping drift check")
+	targets, err := d.targetSnapshot()
+	if err != nil {
+		logger.Warn().Err(err).Msg("Failed to resolve startup target snapshot for drift check")
 		return
 	}
+
+	localTargets := make([]reconcile.Target, 0, len(targets))
+	for _, target := range targets {
+		if target.TargetHost == "" {
+			localTargets = append(localTargets, target)
+			continue
+		}
+		d.recordTargetRuntime(target.Name, StatusUnavailable, "remote target cannot be inspected by local Docker", time.Time{})
+		logger.Warn().
+			Str("target", target.Name).
+			Str("target_host", target.TargetHost).
+			Msg("Skipping periodic drift check for remote target; local Docker inspection is unsupported")
+	}
+	if len(localTargets) == 0 {
+		return
+	}
+
+	client, err := d.DockerClient()
+	if err != nil {
+		for _, target := range localTargets {
+			d.recordTargetRuntime(target.Name, StatusUnavailable, "local Docker is unavailable", time.Time{})
+		}
+		logger.Warn().Err(err).Msg("Failed to get Docker client, skipping drift check")
+		return
+	}
+
+	for _, target := range localTargets {
+		d.runDriftCheckForTarget(ctx, target, client)
+	}
+}
+
+// runDriftCheckForTarget performs the canonical drift and restart-breaker
+// update for one local target. The caller owns driftCheckMu and reconcileMu so
+// sibling state files are updated under one daemon admission boundary.
+func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Target, client *docker.Client) {
+	logger := log.Component(log.ComponentDaemon).With().Str("target", target.Name).Logger()
+	targetCfg := d.configForTarget(target)
+	if targetCfg == nil {
+		d.recordTargetRuntime(target.Name, StatusUnavailable, "reconcile config unavailable", time.Time{})
+		return
+	}
+	stateFile := targetCfg.StateFile
+	projectName := targetCfg.ProjectName
+	// Compose derives the namespace "compose" when no project_name is set.
+	// Named-target drift must use that same bounded namespace so an unrelated
+	// labeled restart loop cannot be inspected or stopped. Preserve the legacy
+	// implicit-default blank-project behavior for direct callers.
+	if projectName == "" && !target.IsDefault() {
+		projectName = "compose"
+	}
+
+	if stateFile == "" {
+		d.recordTargetRuntime(target.Name, StatusUnavailable, "no state file configured", time.Time{})
+		logger.Debug().Str("reason", "no_state_file_configured").Msg("Skipping drift check")
+		return
+	}
+
+	dcfg := d.driftConfig()
 
 	logger.Debug().
 		Str(log.FieldPath, stateFile).
 		Str("project", projectName).
 		Msg("Preparing to collect Docker state for drift check")
-
-	client, err := d.DockerClient()
-	if err != nil {
-		logger.Warn().
-			Err(err).
-			Msg("Failed to get Docker client, skipping drift check")
-		return
-	}
 
 	checkCtx, cancel := context.WithTimeout(ctx, d.config.APITimeout)
 	defer cancel()
@@ -1313,7 +1407,7 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	// Collect drift ignore rules from reconcile config.
 	var ignoreRules []reconcile.DriftIgnoreRule
 	if d.config.ReconcileConfig != nil {
-		ignoreRules = d.config.ReconcileConfig.DriftIgnore.Value
+		ignoreRules = targetCfg.DriftIgnore.Value
 	}
 
 	checkCtx, finishSpan := sentrypkg.StartSpan(checkCtx, "drift.periodic_check", "Periodic drift check")
@@ -1324,6 +1418,7 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 		telemetry.SpanError(otelDriftSpan, err)
 		otelDriftSpan.End()
 		logger.Warn().Err(err).Msg("Drift check failed")
+		d.recordTargetRuntime(target.Name, StatusUnavailable, "drift check failed", time.Time{})
 		return
 	}
 	telemetry.SpanOK(otelDriftSpan)
@@ -1421,7 +1516,7 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 				if err := d.sendDriftAlert(ctx, &reconcile.DriftReport{
 					CheckedAt: report.CheckedAt,
 					Items:     alertItems,
-				}); err != nil {
+				}, targetContext(target)); err != nil {
 					// Delivery failed — leave dedup/cooldown state untouched so the
 					// next drift check retries the alert instead of silently dropping it.
 					logger.Warn().
@@ -1449,7 +1544,7 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 					actuallyResolved = append(actuallyResolved, key)
 				}
 				if len(actuallyResolved) > 0 {
-					if err := d.sendDriftResolvedAlert(ctx, actuallyResolved); err != nil {
+					if err := d.sendDriftResolvedAlert(ctx, actuallyResolved, targetContext(target)); err != nil {
 						// Delivery failed — keep the items marked as alerted so the
 						// resolution alert is retried on the next drift check.
 						logger.Warn().
@@ -1488,7 +1583,7 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 			for key := range state.DriftAlertedItems {
 				resolvedKeys = append(resolvedKeys, key)
 			}
-			if err := d.sendDriftResolvedAlert(ctx, resolvedKeys); err != nil {
+			if err := d.sendDriftResolvedAlert(ctx, resolvedKeys, targetContext(target)); err != nil {
 				// Delivery failed — leave DriftAlertedItems intact so the resolution
 				// alert is retried on the next drift check.
 				logger.Warn().
@@ -1507,8 +1602,11 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	}
 
 	// Restart circuit breaker: detect containers in restart loops and stop them.
-	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.RestartBreakerEnabled {
-		d.runRestartBreaker(checkCtx, client, state, projectName)
+	if targetCfg.RestartBreakerEnabled {
+		d.runRestartBreaker(checkCtx, client, state, projectName, restartBreakerTarget{
+			config: targetCfg,
+			name:   targetContext(target),
+		})
 	}
 
 	// Clean up empty restart tracking for omitempty serialization.
@@ -1540,10 +1638,17 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	// Persist state with drift results, alert timestamps, and self-heal budget.
 	if err := reconcile.SaveState(stateFile, state); err != nil {
 		logger.Warn().Err(err).Msg("Drift check: failed to save state")
+		d.recordTargetRuntime(target.Name, StatusUnavailable, "drift state could not be saved", time.Time{})
 		return
 	}
 
-	d.maybeSelfHeal(ctx, selfHeal, selfHealReservation)
+	driftStatus := "clean"
+	if report.HasDrift() {
+		driftStatus = "drifted"
+	}
+	d.recordTargetRuntime(target.Name, driftStatus, "", report.CheckedAt)
+
+	d.maybeSelfHeal(ctx, selfHeal, selfHealReservation, targetContext(target))
 }
 
 func criticalDriftItems(items []reconcile.DriftItem) []reconcile.DriftItem {
@@ -1558,7 +1663,7 @@ func criticalDriftItems(items []reconcile.DriftItem) []reconcile.DriftItem {
 
 // maybeSelfHeal executes a durable decision produced by planSelfHeal. The
 // attempt and once-per-signature alert marker have already been persisted.
-func (d *Daemon) maybeSelfHeal(ctx context.Context, decision selfHealDecision, reservation *reconcileGoroutineReservation) {
+func (d *Daemon) maybeSelfHeal(ctx context.Context, decision selfHealDecision, reservation *reconcileGoroutineReservation, targetName ...string) {
 	logger := log.Component(log.ComponentDaemon)
 
 	if !decision.trigger && !decision.alertExhausted {
@@ -1582,7 +1687,9 @@ func (d *Daemon) maybeSelfHeal(ctx context.Context, decision selfHealDecision, r
 			Msg("Drift self-heal attempt budget exhausted")
 		if d.alerter != nil {
 			target := "local"
-			if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.ProjectName != "" {
+			if len(targetName) > 0 && targetName[0] != "" {
+				target = targetName[0]
+			} else if d.config != nil && d.config.ReconcileConfig != nil && d.config.ReconcileConfig.ProjectName != "" {
 				target = d.config.ReconcileConfig.ProjectName
 			}
 			if err := d.alerter.SendDriftSelfHealExhausted(
@@ -1630,13 +1737,27 @@ func (d *Daemon) reserveSelfHealReconcile(ctx context.Context) (*reconcileGorout
 	})
 }
 
+type restartBreakerTarget struct {
+	config *reconcile.Config
+	name   string
+}
+
 // runRestartBreaker checks running containers for restart loops and stops offenders.
-func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, state *reconcile.DeployState, projectName string) {
+func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, state *reconcile.DeployState, projectName string, options ...restartBreakerTarget) {
 	logger := log.Component(log.ComponentDaemon)
 	logger.Debug().
 		Str("project", projectName).
 		Msg("Preparing to run restart circuit breaker check")
 	rcfg := d.config.ReconcileConfig
+	targetName := projectName
+	if len(options) > 0 {
+		if options[0].config != nil {
+			rcfg = options[0].config
+		}
+		if options[0].name != "" {
+			targetName = options[0].name
+		}
+	}
 
 	actual, err := reconcile.CollectActualState(ctx, client, projectName)
 	if err != nil {
@@ -1667,11 +1788,10 @@ func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, s
 			Strs("containers", result.Tripped).
 			Msg("Restart circuit breaker tripped, stopping containers")
 		if d.alerter != nil {
-			target := projectName
-			if err := d.alerter.SendRestartBreakerTripped(ctx, target, result.Tripped); err != nil {
+			if err := d.alerter.SendRestartBreakerTripped(ctx, targetName, result.Tripped); err != nil {
 				logger.Warn().
 					Err(err).
-					Str("target", target).
+					Str("target", targetName).
 					Msg("Failed to send restart breaker alert")
 			}
 		}
@@ -1683,11 +1803,10 @@ func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, s
 			Strs("containers", result.Resolved).
 			Msg("Containers resolved from restart circuit breaker")
 		if d.alerter != nil {
-			target := projectName
-			if err := d.alerter.SendRestartBreakerResolved(ctx, target, result.Resolved); err != nil {
+			if err := d.alerter.SendRestartBreakerResolved(ctx, targetName, result.Resolved); err != nil {
 				logger.Warn().
 					Err(err).
-					Str("target", target).
+					Str("target", targetName).
 					Msg("Failed to send restart breaker resolved alert")
 			}
 		}
@@ -1699,12 +1818,17 @@ func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, s
 // sendDriftAlert sends an alert for detected drift. Returns the delivery
 // error, if any, so callers can avoid advancing dedup/cooldown state for an
 // alert that never reached the provider.
-func (d *Daemon) sendDriftAlert(ctx context.Context, report *reconcile.DriftReport) error {
+func (d *Daemon) sendDriftAlert(ctx context.Context, report *reconcile.DriftReport, targetName ...string) error {
 	logger := log.Component(log.ComponentDaemon)
 
 	target := "local"
+	if len(targetName) > 0 && targetName[0] != "" {
+		target = targetName[0]
+	}
 	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.TargetHost != "" {
-		target = d.config.ReconcileConfig.TargetHost
+		if len(targetName) == 0 || targetName[0] == "" {
+			target = d.config.ReconcileConfig.TargetHost
+		}
 	}
 
 	// Build list of critical drift items for the alert.
@@ -1725,11 +1849,13 @@ func (d *Daemon) sendDriftAlert(ctx context.Context, report *reconcile.DriftRepo
 // sendDriftResolvedAlert sends an alert for drift items that have cleared.
 // Returns the delivery error, if any, so callers can avoid clearing alerted
 // state for a resolution alert that never reached the provider.
-func (d *Daemon) sendDriftResolvedAlert(ctx context.Context, resolvedKeys []string) error {
+func (d *Daemon) sendDriftResolvedAlert(ctx context.Context, resolvedKeys []string, targetName ...string) error {
 	logger := log.Component(log.ComponentDaemon)
 
 	target := "local"
-	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.TargetHost != "" {
+	if len(targetName) > 0 && targetName[0] != "" {
+		target = targetName[0]
+	} else if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.TargetHost != "" {
 		target = d.config.ReconcileConfig.TargetHost
 	}
 
@@ -1841,27 +1967,41 @@ func (d *Daemon) reloadDaemonConfig() {
 // HealthStatus returns the daemon health status with subsystem breakdown.
 func (d *Daemon) HealthStatus() HealthStatus {
 	lastReconcile, lastError := d.LastReconcile()
+	targets, targetsErr := d.targetSnapshot()
+	targetStatuses := d.targetHealthStatuses(targets)
 
 	subsystems := make(map[string]SubsystemStatus)
 
-	// Docker subsystem: live ping check (not cached).
+	// Docker subsystem: live ping check (not cached). A daemon whose complete
+	// target snapshot is remote has no local Docker environment to inspect.
 	dockerSub := SubsystemStatus{Status: StatusHealthy}
-	if client, err := d.DockerClient(); err != nil {
-		dockerSub.Status = StatusUnhealthy
-		dockerSub.Message = err.Error()
-	} else {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := client.Ping(ctx); err != nil {
-			dockerSub.Status = StatusUnhealthy
-			dockerSub.Message = fmt.Sprintf("ping failed: %v", err)
+	needsLocalDocker := targetsErr != nil || len(targets) == 0
+	for _, target := range targets {
+		if target.TargetHost == "" {
+			needsLocalDocker = true
+			break
 		}
+	}
+	if needsLocalDocker {
+		if client, err := d.DockerClient(); err != nil {
+			dockerSub.Status = StatusUnhealthy
+			dockerSub.Message = err.Error()
+		} else {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := client.Ping(ctx); err != nil {
+				dockerSub.Status = StatusUnhealthy
+				dockerSub.Message = fmt.Sprintf("ping failed: %v", err)
+			}
+			cancel()
+		}
+	} else {
+		dockerSub.Message = "no local target configured"
 	}
 	subsystems["docker"] = dockerSub
 
 	// Git subsystem: report healthy if repo URL is configured.
 	gitSub := SubsystemStatus{Status: StatusHealthy}
-	if d.config.ReconcileConfig == nil || d.config.ReconcileConfig.RepoURL == "" {
+	if d.config == nil || d.config.ReconcileConfig == nil || d.config.ReconcileConfig.RepoURL == "" {
 		gitSub.Status = StatusUnhealthy
 		gitSub.Message = "no repository URL configured"
 	}
@@ -1879,9 +2019,15 @@ func (d *Daemon) HealthStatus() HealthStatus {
 	}
 	subsystems["reconciler"] = reconcilerSub
 
-	// Circuit breaker subsystem: read from deploy state file.
+	// Circuit breaker subsystem: read from deploy state file(s).
 	cbSub := SubsystemStatus{Status: StatusClosed}
-	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.StateFile != "" {
+	showTargetDetails := len(targetStatuses) > 1 || (len(targetStatuses) == 1 && !targets[0].IsDefault())
+	if showTargetDetails {
+		cbSub = aggregateTargetCircuitBreaker(targetStatuses)
+		subsystems["targets"] = aggregateTargetStatus(targetStatuses)
+	} else if len(targetStatuses) == 1 {
+		cbSub = targetStatuses[0].CircuitBreaker
+	} else if d.config != nil && d.config.ReconcileConfig != nil && d.config.ReconcileConfig.StateFile != "" {
 		state := reconcile.LoadState(d.config.ReconcileConfig.StateFile)
 		cbSub.Failures = state.AttemptCount
 		if state.AttemptCount >= reconcile.MaxAttempts && state.LastAttemptedCommit != "" && state.LastAttemptedCommit == state.LastDeployedCommit {
@@ -1903,6 +2049,9 @@ func (d *Daemon) HealthStatus() HealthStatus {
 		Uptime:        time.Since(startTime),
 		Subsystems:    subsystems,
 	}
+	if len(targetStatuses) > 1 || (len(targetStatuses) == 1 && !targets[0].IsDefault()) {
+		status.Targets = targetStatuses
+	}
 
 	if lastError != nil {
 		status.LastError = reconcile.SanitizeGitText(lastError.Error())
@@ -1913,11 +2062,12 @@ func (d *Daemon) HealthStatus() HealthStatus {
 
 // Status constants for subsystem health.
 const (
-	StatusHealthy   = "healthy"
-	StatusDegraded  = "degraded"
-	StatusUnhealthy = "unhealthy"
-	StatusClosed    = "closed"
-	StatusOpen      = "open"
+	StatusHealthy     = "healthy"
+	StatusDegraded    = "degraded"
+	StatusUnhealthy   = "unhealthy"
+	StatusUnavailable = "unavailable"
+	StatusClosed      = "closed"
+	StatusOpen        = "open"
 )
 
 // SubsystemStatus represents the health of an individual subsystem.
@@ -1936,6 +2086,7 @@ type HealthStatus struct {
 	LastError     string                     `json:"last_error,omitempty"`
 	Uptime        time.Duration              `json:"uptime"`
 	Subsystems    map[string]SubsystemStatus `json:"subsystems"`
+	Targets       []TargetHealthStatus       `json:"targets,omitempty"`
 }
 
 // HealthResponse is the bounded public liveness response returned by /health.
@@ -1961,7 +2112,15 @@ func computeTopLevelStatus(subsystems map[string]SubsystemStatus) string {
 		return StatusUnhealthy
 	}
 
-	for _, sub := range subsystems {
+	for name, sub := range subsystems {
+		// Per-target health is operator detail, not daemon liveness. A remote
+		// target is necessarily unavailable to this daemon's local Docker API,
+		// and a local target's drift is actionable detail without meaning the
+		// daemon itself cannot serve requests. Keep those outcomes in the
+		// detailed target collection while preserving real daemon faults above.
+		if name == "targets" {
+			continue
+		}
 		switch sub.Status {
 		case StatusDegraded, StatusUnhealthy, StatusOpen:
 			return StatusDegraded
@@ -1988,18 +2147,68 @@ func (d *Daemon) WidgetData() map[string]any {
 		"git_sha":       "",
 	}
 
-	// Load persistent state for deploy history.
-	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.StateFile != "" {
-		state := reconcile.LoadState(d.config.ReconcileConfig.StateFile)
-		data["deploys_total"] = state.DeployCount
-		if !state.DeployedAt.IsZero() {
-			data["last_deploy"] = state.DeployedAt.UTC().Format(time.RFC3339)
+	if d.config == nil || d.config.ReconcileConfig == nil {
+		return data
+	}
+
+	// The widget schema is intentionally flat for Homepage compatibility. In
+	// multi-target mode, aggregate each target's persisted deployment history;
+	// remote history is valid cached state even though remote Docker cannot be
+	// inspected locally. Live target availability remains a detail-endpoint
+	// concern.
+	//
+	// Keep the legacy embedded-call path independent of operational topology
+	// validation: older integrations construct a partial Config with only a
+	// StateFile, and the old widget read that file without requiring staging or
+	// appdata paths. A configured target list, or an already-captured startup
+	// snapshot, still goes through the fail-closed resolver so malformed named
+	// topologies never fall back to the base state file.
+	var (
+		targets    []reconcile.Target
+		targetsErr error
+	)
+	d.targetMu.RLock()
+	// A non-empty captured descriptor list is authoritative. A cached resolver
+	// error alone is not: a partial legacy Config may have been probed by a
+	// detail consumer first, and the widget must still read its base state.
+	hasCapturedTargets := len(d.targets) > 0
+	d.targetMu.RUnlock()
+	if !hasCapturedTargets && len(d.config.ReconcileConfig.Targets) == 0 {
+		targets = []reconcile.Target{{Name: reconcile.DefaultTargetName}}
+	} else {
+		targets, targetsErr = d.targetSnapshot()
+	}
+	if targetsErr != nil {
+		data["status"] = "error"
+		return data
+	}
+	var (
+		deploysTotal int
+		latestDeploy time.Time
+		latestCommit string
+		latestSet    bool
+	)
+	for _, target := range targets {
+		targetCfg := d.configForTarget(target)
+		if targetCfg == nil || targetCfg.StateFile == "" {
+			continue
 		}
-		if len(state.LastDeployedCommit) >= 7 {
-			data["git_sha"] = state.LastDeployedCommit[:7]
-		} else if state.LastDeployedCommit != "" {
-			data["git_sha"] = state.LastDeployedCommit
+		state := reconcile.LoadState(targetCfg.StateFile)
+		deploysTotal += state.DeployCount
+		if !latestSet || state.DeployedAt.After(latestDeploy) {
+			latestDeploy = state.DeployedAt
+			latestCommit = state.LastDeployedCommit
+			latestSet = true
 		}
+	}
+	data["deploys_total"] = deploysTotal
+	if !latestDeploy.IsZero() {
+		data["last_deploy"] = latestDeploy.UTC().Format(time.RFC3339)
+	}
+	if len(latestCommit) >= 7 {
+		data["git_sha"] = latestCommit[:7]
+	} else if latestCommit != "" {
+		data["git_sha"] = latestCommit
 	}
 
 	return data

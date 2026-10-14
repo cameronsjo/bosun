@@ -230,6 +230,7 @@ func (s *TCPServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		State:  reconcileStateString(reconciling),
 		Uptime: time.Since(startTime).Round(time.Second).String(),
 	}
+	resp.Targets = s.daemon.detailedTargetStatuses()
 
 	if !lastReconcile.IsZero() {
 		resp.LastReconcile = &lastReconcile

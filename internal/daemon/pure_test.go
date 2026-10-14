@@ -197,6 +197,17 @@ func TestComputeTopLevelStatus(t *testing.T) {
 			},
 			want: StatusUnhealthy,
 		},
+		{
+			name: "target detail does not fail daemon liveness",
+			subsystems: map[string]SubsystemStatus{
+				"docker":          {Status: StatusHealthy},
+				"git":             {Status: StatusHealthy},
+				"reconciler":      {Status: StatusHealthy},
+				"circuit_breaker": {Status: StatusClosed},
+				"targets":         {Status: StatusDegraded, Message: "target nas is unavailable"},
+			},
+			want: StatusHealthy,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
