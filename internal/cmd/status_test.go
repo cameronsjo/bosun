@@ -141,6 +141,7 @@ func TestPrintDeploymentTargetStatus(t *testing.T) {
 	cfg.StateFile = filepath.Join(root, "base.json")
 	cfg.StagingDir = filepath.Join(root, "staging")
 	cfg.LockFile = filepath.Join(root, "reconcile.lock")
+	cfg.LocalAppdataPath = root
 	cfg.Targets = []reconcile.Target{
 		{Name: "none", ProjectName: "none", LocalAppdataPath: filepath.Join(root, "appdata-none"), StateFile: filepath.Join(root, "none.json")},
 		{Name: "clean", ProjectName: "clean", LocalAppdataPath: filepath.Join(root, "appdata-clean"), StateFile: filepath.Join(root, "clean.json")},
@@ -193,6 +194,7 @@ func TestPrintDaemonTargetsHuman(t *testing.T) {
 func TestRunStatus_AllRemoteUsesCachedTargetState(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("BOSUN_STATE_DIR", root)
+	t.Setenv("DOCKER_HOST", "unix://"+filepath.Join(root, "missing-docker.sock"))
 	targetsJSON, err := json.Marshal([]reconcile.Target{
 		{Name: "alpha", TargetHost: "operator@alpha", ProjectName: "alpha", RemoteAppdataPath: "/srv/alpha", StateFile: filepath.Join(root, "alpha.json")},
 		{Name: "beta", TargetHost: "operator@beta", ProjectName: "beta", RemoteAppdataPath: "/srv/beta", StateFile: filepath.Join(root, "beta.json")},
