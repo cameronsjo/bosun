@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.3](https://github.com/cameronsjo/bosun/compare/v0.44.2...v0.44.3) (2026-10-14)
+
+
+### Bug Fixes
+
+* **daemon:** fan drift and health checks across deployment targets ([9c770bc](https://github.com/cameronsjo/bosun/commit/9c770bce21dffc0cd18bd9510c83229d796e4f92))
+
 ## [0.44.2](https://github.com/cameronsjo/bosun/compare/v0.44.1...v0.44.2) (2026-10-14)
 
 
