@@ -23,6 +23,10 @@ const redactedQueryValue = "REDACTED"
 
 var repositoryUserinfoPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@`)
 
+// errGitHTTPSDowngrade identifies Bosun's own authenticated scheme refusal,
+// independent of any upstream transport wrapper or its diagnostic wording.
+var errGitHTTPSDowngrade = errors.New("authenticated Git redirect rejected: destination must remain on the configured HTTPS origin")
+
 func init() {
 	// go-git selects HTTP transports from a process-global protocol registry.
 	// Install the redirect policy once, before any reconciliation goroutines
@@ -117,7 +121,11 @@ func checkGitRedirect(req *http.Request, via []*http.Request) error {
 	}
 
 	origin := via[0].URL
-	if req.URL.User != nil || !strings.EqualFold(req.URL.Scheme, "https") || !sameHTTPSOrigin(origin, req.URL) {
+	if !strings.EqualFold(req.URL.Scheme, "https") {
+		req.Header.Del("Authorization")
+		return errGitHTTPSDowngrade
+	}
+	if req.URL.User != nil || !sameHTTPSOrigin(origin, req.URL) {
 		req.Header.Del("Authorization")
 		return errors.New("authenticated Git redirect rejected: destination must remain on the configured HTTPS origin")
 	}

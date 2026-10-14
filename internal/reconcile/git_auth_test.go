@@ -828,6 +828,23 @@ func TestGitRedirectPolicyEdgeCases(t *testing.T) {
 	require.NoError(t, checkGitRedirect(req, []*http.Request{origin}), "anonymous redirect remains unchanged")
 
 	origin.Header.Set("Authorization", "Basic dXNlcjp0b2tlbg==")
+	t.Run("authenticated scheme downgrade is refused directly", func(t *testing.T) {
+		// Keep hostname and effective port identical so only the scheme differs.
+		// Invoke Bosun's callback directly: go-git's wrapper rejects first during
+		// clone/fetch, which cannot prove this branch is still present.
+		downgradeURL, err := url.Parse("http://example.com:443/next")
+		require.NoError(t, err)
+		downgradeReq := &http.Request{URL: downgradeURL, Header: make(http.Header)}
+		downgradeReq.Header.Set("Authorization", origin.Header.Get("Authorization"))
+		require.ErrorIs(t, checkGitRedirect(downgradeReq, []*http.Request{origin}), errGitHTTPSDowngrade)
+		assert.Empty(t, downgradeReq.Header.Get("Authorization"))
+		assert.NotEmpty(t, origin.Header.Get("Authorization"), "source request remains authenticated")
+	})
+	t.Run("authenticated same origin remains allowed directly", func(t *testing.T) {
+		approvedReq := &http.Request{URL: target, Header: make(http.Header)}
+		require.NoError(t, checkGitRedirect(approvedReq, []*http.Request{origin}))
+		assert.Equal(t, origin.Header.Get("Authorization"), approvedReq.Header.Get("Authorization"))
+	})
 	userinfoTarget, err := url.Parse("https://embedded@example.com/next")
 	require.NoError(t, err)
 	userinfoReq := &http.Request{URL: userinfoTarget, Header: make(http.Header)}
@@ -886,9 +903,11 @@ func TestGitOpsAuthenticatedHTTPSRedirects(t *testing.T) {
 	tests := []struct {
 		name           string
 		newDestination func(http.Handler) *httptest.Server
+		wantError      string
 	}{
-		{name: "downgrade", newDestination: httptest.NewServer},
-		{name: "cross origin", newDestination: httptest.NewTLSServer},
+		// go-git blocks scheme downgrades before calling Bosun's origin guard.
+		{name: "downgrade", newDestination: httptest.NewServer, wantError: `http redirect: changes scheme from "https" to "http"`},
+		{name: "cross origin", newDestination: httptest.NewTLSServer, wantError: "redirect rejected"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name+" clone is rejected before destination", func(t *testing.T) {
@@ -909,7 +928,7 @@ func TestGitOpsAuthenticatedHTTPSRedirects(t *testing.T) {
 			g := NewGitOps(source.URL+"/repo.git", "main", filepath.Join(t.TempDir(), "clone"))
 			err := g.Clone(context.Background(), 1)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), "redirect rejected")
+			assert.Contains(t, err.Error(), tt.wantError)
 			assert.True(t, sourceAuthenticated.Load())
 			assert.Zero(t, destinationRequests.Load())
 		})
@@ -925,9 +944,10 @@ func TestGitOpsAuthenticatedHTTPSFetchRejectsUnsafeRedirects(t *testing.T) {
 	tests := []struct {
 		name           string
 		newDestination func(http.Handler) *httptest.Server
+		wantError      string
 	}{
-		{name: "downgrade", newDestination: httptest.NewServer},
-		{name: "cross origin", newDestination: httptest.NewTLSServer},
+		{name: "downgrade", newDestination: httptest.NewServer, wantError: `http redirect: changes scheme from "https" to "http"`},
+		{name: "cross origin", newDestination: httptest.NewTLSServer, wantError: "redirect rejected"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -971,7 +991,7 @@ func TestGitOpsAuthenticatedHTTPSFetchRejectsUnsafeRedirects(t *testing.T) {
 
 			redirectFetch.Store(true)
 			_, _, _, err = gitOps.Pull(context.Background())
-			require.ErrorContains(t, err, "redirect rejected")
+			require.ErrorContains(t, err, tt.wantError)
 			assert.Zero(t, destinationRequests.Load())
 		})
 	}
