@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
 	"testing"
 
 	"github.com/fatih/color"
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/cameronsjo/bosun/internal/daemon"
+	"github.com/cameronsjo/bosun/internal/reconcile"
 )
 
 func TestStatusCmd_Registration(t *testing.T) {
@@ -131,4 +133,121 @@ func TestDaemonStatusOutput_DefaultJSONShapeOmitsTargets(t *testing.T) {
 	assert.Equal(t, "null", string(fields["last_reconcile"]))
 	assert.Equal(t, "null", string(fields["last_error"]))
 	assert.NotContains(t, output, "targets")
+}
+
+func TestPrintDeploymentTargetStatus(t *testing.T) {
+	root := t.TempDir()
+	cfg := reconcile.DefaultConfig()
+	cfg.StateFile = filepath.Join(root, "base.json")
+	cfg.StagingDir = filepath.Join(root, "staging")
+	cfg.LockFile = filepath.Join(root, "reconcile.lock")
+	cfg.Targets = []reconcile.Target{
+		{Name: "none", ProjectName: "none", LocalAppdataPath: filepath.Join(root, "appdata-none"), StateFile: filepath.Join(root, "none.json")},
+		{Name: "clean", ProjectName: "clean", LocalAppdataPath: filepath.Join(root, "appdata-clean"), StateFile: filepath.Join(root, "clean.json")},
+		{Name: "drift", ProjectName: "drift", LocalAppdataPath: filepath.Join(root, "appdata-drift"), StateFile: filepath.Join(root, "drift.json")},
+		{Name: "remote", TargetHost: "operator@example.test", ProjectName: "remote", RemoteAppdataPath: "/srv/remote", StateFile: filepath.Join(root, "remote.json")},
+	}
+
+	for _, target := range cfg.Targets {
+		state := &reconcile.DeployState{}
+		switch target.Name {
+		case "clean":
+			state.LastDeployedCommit = "clean-commit"
+		case "drift":
+			state.LastDeployedCommit = "drift-commit"
+			state.DriftItems = []reconcile.DriftItem{{Service: "web", Type: reconcile.DriftMissing}}
+		case "remote":
+			state.LastDeployedCommit = "remote-commit"
+			state.AttemptCount = reconcile.MaxAttempts
+			state.LastAttemptedCommit = "failed-commit"
+		}
+		require.NoError(t, reconcile.SaveState(target.StateFile, state))
+	}
+
+	targets, err := cfg.ResolveTargets()
+	require.NoError(t, err)
+	output := captureColoredStdout(t, func() { printDeploymentTargetStatus(cfg, targets) })
+	assert.Contains(t, output, "none: commit none, drift unknown, breaker closed")
+	assert.Contains(t, output, "clean: commit clean-commit, drift clean, breaker closed")
+	assert.Contains(t, output, "drift: commit drift-commit, drift drifted, breaker closed")
+	assert.Contains(t, output, "remote: commit remote-commit, drift clean, breaker open (remote; cached only)")
+}
+
+func TestPrintDaemonTargetsHuman(t *testing.T) {
+	output := captureColoredStdout(t, func() {
+		printDaemonTargetsHuman([]daemon.TargetHealthStatus{
+			{
+				Name:               "alpha",
+				LastDeployedCommit: "abc123",
+				Drift:              daemon.TargetDriftStatus{Status: "drifted"},
+				CircuitBreaker:     daemon.SubsystemStatus{Status: daemon.StatusOpen},
+			},
+			{Name: "beta", LastDeployedCommit: "none", Drift: daemon.TargetDriftStatus{Status: "unknown"}, CircuitBreaker: daemon.SubsystemStatus{Status: daemon.StatusClosed}},
+		})
+	})
+	assert.Contains(t, output, "Deployment Targets:")
+	assert.Contains(t, output, "alpha: deploy=abc123 drift=drifted breaker=open")
+	assert.Contains(t, output, "beta: deploy=none drift=unknown breaker=closed")
+}
+
+func TestRunStatus_AllRemoteUsesCachedTargetState(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("BOSUN_STATE_DIR", root)
+	targetsJSON, err := json.Marshal([]reconcile.Target{
+		{Name: "alpha", TargetHost: "operator@alpha", ProjectName: "alpha", RemoteAppdataPath: "/srv/alpha", StateFile: filepath.Join(root, "alpha.json")},
+		{Name: "beta", TargetHost: "operator@beta", ProjectName: "beta", RemoteAppdataPath: "/srv/beta", StateFile: filepath.Join(root, "beta.json")},
+	})
+	require.NoError(t, err)
+	t.Setenv("BOSUN_TARGETS", string(targetsJSON))
+
+	cfg := daemon.ConfigFromEnv()
+	targets, err := cfg.ReconcileConfig.ResolveTargets()
+	require.NoError(t, err)
+	require.Len(t, targets, 2)
+	require.NoError(t, reconcile.SaveState(cfg.ReconcileConfig.ConfigForTarget(targets[0]).StateFile, &reconcile.DeployState{LastDeployedCommit: "alpha-commit"}))
+	require.NoError(t, reconcile.SaveState(cfg.ReconcileConfig.ConfigForTarget(targets[1]).StateFile, &reconcile.DeployState{LastDeployedCommit: "beta-commit"}))
+
+	output := captureColoredStdout(t, func() { runStatus(nil, nil) })
+	assert.Contains(t, output, "--- Deployment Targets ---")
+	assert.Contains(t, output, "alpha: commit alpha-commit")
+	assert.Contains(t, output, "beta: commit beta-commit")
+	assert.Contains(t, output, "All configured targets are remote; local Docker dashboard is unavailable")
+	assert.NotContains(t, output, "Crew Status")
+}
+
+func TestRunStatus_InvalidTargetLayoutReturnsBeforeDocker(t *testing.T) {
+	t.Setenv("BOSUN_STATE_DIR", t.TempDir())
+	t.Setenv("BOSUN_TARGETS", `[{"name":"alpha","project_name":"one"},{"name":"alpha","project_name":"two"}]`)
+	t.Setenv("DOCKER_HOST", "unix://"+filepath.Join(t.TempDir(), "docker.sock"))
+
+	output := captureColoredStdout(t, func() { runStatus(nil, nil) })
+	assert.Contains(t, output, "Failed to resolve deployment targets")
+	assert.Contains(t, output, "duplicate names")
+	assert.NotContains(t, output, "Docker not available")
+}
+
+func TestRunStatus_MixedTargetsReportsDockerUnavailable(t *testing.T) {
+	t.Setenv("BOSUN_STATE_DIR", t.TempDir())
+	t.Setenv("BOSUN_TARGETS", `[{"name":"local","project_name":"local"},{"name":"remote","target_host":"operator@remote","project_name":"remote","remote_appdata_path":"/srv/remote"}]`)
+	t.Setenv("DOCKER_HOST", "unix://"+filepath.Join(t.TempDir(), "missing-docker.sock"))
+
+	output := captureColoredStdout(t, func() { runStatus(nil, nil) })
+	assert.Contains(t, output, "--- Deployment Targets ---")
+	assert.Contains(t, output, "local:")
+	assert.Contains(t, output, "remote:")
+	assert.Contains(t, output, "Docker not available")
+}
+
+func captureColoredStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	var colorOutput bytes.Buffer
+	oldOutput := color.Output
+	oldNoColor := color.NoColor
+	color.Output = &colorOutput
+	color.NoColor = true
+	defer func() {
+		color.Output = oldOutput
+		color.NoColor = oldNoColor
+	}()
+	return captureStdout(t, fn) + colorOutput.String()
 }
