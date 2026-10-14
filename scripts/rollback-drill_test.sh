@@ -235,12 +235,18 @@ run_case
 assert_rc 75; assert_out 'version output was unreadable'; assert_no_out "$unsafe"
 assert_no_call 'cp -p'; assert_no_call 'sed -i'; ok
 
+new_case cold-image-stderr-preamble
+preamble="Unable to find image '$DRILL_REF' locally"
+export FAKE_DRILL_STDERR="$preamble" FAKE_INCUMBENT_OUTPUT='bosun version 0.43.1'
+run_case
+assert_rc 1; assert_out 'version comparison: SAME'; assert_out 'VERDICT: ROLLED-BACK'; assert_no_out "$preamble"
+assert_call 'docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges'; assert_no_call 'bosun --version 2>/dev/null'; ok
+
 new_case drill-unsafe-stderr
 unsafe=$'\033]0;drill-version\007'
 export FAKE_DRILL_STDERR="$unsafe" FAKE_INCUMBENT_OUTPUT='bosun version 0.43.1'
 run_case
-assert_rc 75; assert_out 'version output was unreadable'; assert_no_out "$unsafe"
-assert_no_call 'cp -p'; assert_no_call 'sed -i'; ok
+assert_rc 1; assert_out 'version comparison: SAME'; assert_out 'VERDICT: ROLLED-BACK'; assert_no_out "$unsafe"; ok
 
 new_case incumbent-unreadable
 export FAKE_DRILL_OUTPUT='bosun version 0.43.1' FAKE_INCUMBENT_FAIL=1
@@ -263,8 +269,8 @@ new_case incumbent-unsafe-stderr
 unsafe=$'\033[31mincumbent-version\033[0m'
 export FAKE_DRILL_OUTPUT='bosun version 0.43.1' FAKE_INCUMBENT_STDERR="$unsafe"
 run_case
-assert_rc 1; assert_out 'version comparison: UNKNOWN'; assert_out 'unreadable --version output'
-assert_no_out "$unsafe"; assert_call 'cp -p'; ok
+assert_rc 1; assert_out 'version comparison: SAME'; assert_out 'VERDICT: ROLLED-BACK'
+assert_no_out "$unsafe"; ok
 
 new_case drill-unreadable
 export FAKE_DRILL_OUTPUT='not a bosun version' FAKE_INCUMBENT_OUTPUT='bosun version 0.43.1'

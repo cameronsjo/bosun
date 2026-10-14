@@ -107,7 +107,7 @@ INCUMBENT_VERSION_KNOWN=0
 
 probe_drill_version() {
   local output="" rc=0
-  if output="$(on_nas "docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges $DRILL_REF bosun --version" 2>&1)"; then
+  if output="$(on_nas "docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges $DRILL_REF bosun --version" 2>/dev/null)"; then
     rc=0
   else
     rc=$?
@@ -124,7 +124,7 @@ probe_drill_version() {
 
 probe_incumbent_version() {
   local output="" rc=0
-  if output="$(on_nas "docker exec bosun bosun --version" 2>&1)"; then
+  if output="$(on_nas "docker exec bosun bosun --version" 2>/dev/null)"; then
     rc=0
   else
     rc=$?
@@ -247,7 +247,7 @@ echo
 echo "State now:"
 final_version=""
 final_version_rc=0
-if final_version="$(on_nas "docker exec bosun bosun --version" 2>&1)"; then
+if final_version="$(on_nas "docker exec bosun bosun --version" 2>/dev/null)"; then
   final_version="$(version_line "$final_version" 2>/dev/null || printf '%s' unknown)"
 else
   final_version_rc=$?

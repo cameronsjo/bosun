@@ -31,6 +31,11 @@ unprivileged shape used by the canary's remote probes:
 docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges <DRILL_REF> bosun --version
 ```
 
+Docker's image-cache/pull diagnostics and SSH stderr are deliberately excluded
+from the version signal; the strict parser validates only command stdout.
+Malformed stdout, or a nonzero probe, still fails closed before any compose
+mutation.
+
 The script prints `SAME` when the first version lines agree, `DRIFT` when both
 are readable but differ, and `UNKNOWN` when the incumbent cannot be read. A
 failed or unreadable drill-image probe returns transient exit 75 before any
