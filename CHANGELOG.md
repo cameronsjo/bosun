@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.1](https://github.com/cameronsjo/bosun/compare/v0.44.0...v0.44.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **validate:** isolate full dry-run deploy state ([facb319](https://github.com/cameronsjo/bosun/commit/facb319f23e21a7c04ef9cde3133924dd96c79c6))
+* **validate:** isolate full dry-run deploy state ([41a1aa0](https://github.com/cameronsjo/bosun/commit/41a1aa0c5333e13be044f0388e3cc67803ca2bf2))
+
 ## [0.44.0](https://github.com/cameronsjo/bosun/compare/v0.43.1...v0.44.0) (2026-10-05)
 
 
