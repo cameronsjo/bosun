@@ -200,10 +200,12 @@ func TestRunDriftCheckForTarget_NamedBlankProjectUsesComposeNamespace(t *testing
 			restartCount = 5
 		}
 		return client.ContainerInspectResult{Container: container.InspectResponse{
-			ID:           id + "-long-id",
-			Config:       &container.Config{Image: "nginx:latest"},
-			State:        &container.State{Status: container.StateRunning},
-			RestartCount: restartCount,
+			ID:              id + "-long-id",
+			Name:            "/" + id,
+			Config:          &container.Config{Image: "nginx:latest"},
+			State:           &container.State{Status: container.StateRunning},
+			RestartCount:    restartCount,
+			NetworkSettings: &container.NetworkSettings{},
 		}}, nil
 	}
 
@@ -256,10 +258,12 @@ func TestRunDriftCheckForTarget_RestartBreakerMutatesOnlySelectedTarget(t *testi
 	}
 	mock.ContainerInspectFunc = func(_ context.Context, id string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
 		return client.ContainerInspectResult{Container: container.InspectResponse{
-			ID:           id + "-long-id",
-			Config:       &container.Config{Image: "nginx:latest"},
-			State:        &container.State{Status: container.StateRunning},
-			RestartCount: 5,
+			ID:              id + "-long-id",
+			Name:            "/" + id,
+			Config:          &container.Config{Image: "nginx:latest"},
+			State:           &container.State{Status: container.StateRunning},
+			RestartCount:    5,
+			NetworkSettings: &container.NetworkSettings{},
 		}}, nil
 	}
 	d.runDriftCheckForTarget(context.Background(), targets[0], docker.NewClientWithAPI(mock))
