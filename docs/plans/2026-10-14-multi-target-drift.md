@@ -26,9 +26,11 @@ compatible.
       Compose project names across reconcile, drift, and status consumers.
 - [x] Keep the legacy `bosun status` dashboard for the implicit or lone
       `default` target, including when that target is remote.
-- [ ] Run the required compiler, race, vet, lint, and strict validation gates
-      (compiler execution remains pending external CI evidence).
-- [ ] Reconcile this checklist with final CI evidence before delivery.
+- [x] Attempt the required local compiler gate and record its resource refusal.
+- [x] Verify build, race-enabled tests, lint, and WebUI through PR CI, and run
+      strict OpenSpec validation locally.
+- [x] Reconcile the implementation checklist with CI evidence; the sweep
+      report records the final delivery head and all check names.
 
 ## Verification
 
@@ -38,10 +40,21 @@ focused gate when resources permit, then rely on CI evidence for compiler,
 race, vet, and lint results. Read-only formatting, `git diff --check`, and
 strict OpenSpec validation remain local checks.
 
-The focused gate was first blocked locally with exit 64 because the shared lock
-could not be created under `.git`. After that lock issue was fixed, the same
-gate exited 75 before running Go because the wrapper measured 41.2 GiB free,
-below its required 100 GiB floor. No compiler command ran:
-`scripts/agent-go-gate.sh go test ./internal/daemon ./internal/cmd -run
-'Test(DaemonRun_PreparesNestedStateFileForNamedTarget|RunDriftCheck_DisabledBaseStateSkipsNamedLocalAndRemoteTargets|RunDriftCheck_FanoutUsesIndependentLocalNamespacesAndStateFiles|ConfigForTarget_PreservesHotReloadedProjectName|HealthStatus_SingleNamedTargetIncludesTargetSubsystem|TargetHealthStatuses|RunDriftCheck_AllRemoteTargetsSkipDockerAndPreserveState|SocketStatus_DefaultShapeDoesNotPingDocker|APIStatus_IncludesOrderedTargetState)'`
-No ungated compiler command was used.
+Codex attempted `scripts/agent-go-gate.sh sh -c 'make build && go test -race
+./... && go vet ./... && make lint'`; it exited 75 before compilation with
+34.0 GiB free versus the mandatory 100 GiB floor. After the CI fixture fix,
+`scripts/agent-go-gate.sh go test -race ./internal/daemon` again exited 75
+with 32.1 GiB free. No compiler command or standalone vet ran locally, and
+Codex did not bypass the gate.
+
+`git diff --check`, `gofmt -d` on the changed Go files, and
+`openspec validate add-multi-target-reconcile --strict` passed locally.
+PR #701 CI run `38626151350` passed Build, Test (full race/coverage suite),
+Lint (including workflow and diagram contracts), and WebUI against feature
+commit `6e1afd145112cdcf4104bdde70413a8f11ceb106`. The first Test run exposed
+incomplete synthetic Docker inspect responses; Codex filled their required
+network settings and re-ran CI. Independent review verified the fixes for
+target isolation, state setup, namespace reload, and cached timestamps.
+
+Final-head checks after this evidence-only update are recorded in the sweep
+report. No live NAS deployment was performed.
