@@ -26,13 +26,15 @@
 # WHAT IT DOES
 #   1. Refuses unless the daemon is idle, no upgrade state is recorded, and no
 #      leftovers from an earlier drill are on the NAS.
-#   2. Backs up the NAS compose file, then points it at a drill image and
+#   2. Compares the pinned drill image's version with the running incumbent
+#      before any compose backup or edit.
+#   3. Backs up the NAS compose file, then points it at a drill image and
 #      asserts the edit landed.
-#   3. Runs the canary. Expect: shadow render PASSES (the drill image renders
+#   4. Runs the canary. Expect: shadow render PASSES (the drill image renders
 #      exactly like its base), cutover succeeds, then the watch times out
 #      because the drill daemon stays up and never reconciles -- and the canary
 #      rolls back to the incumbent's digest on its own.
-#   4. Restores the compose file, on every exit path including Ctrl-C, and
+#   5. Restores the compose file, on every exit path including Ctrl-C, and
 #      compares its sha256 with the one recorded before the edit.
 #
 # EXPECTED RESULT: exit 1, VERDICT: ROLLED-BACK [provenance skipped: drill],
@@ -89,6 +91,71 @@ WATCH="${BOSUN_DRILL_WATCH_TIMEOUT:-180}"
 
 on_nas() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "$1"; }
 
+# version_line deliberately parses locally, after the ssh/docker command has
+# returned. Keeping the command status separate matters: a remote
+# `bosun --version | head -1` can report success after bosun itself failed, and
+# a real bosun image may print more than one line.
+version_line() {
+  local line="${1%%$'\n'*}"
+  [[ "$line" =~ ^bosun\ version\ [A-Za-z0-9._+-]+$ ]] || return 1
+  printf '%s' "$line"
+}
+
+DRILL_VERSION=""
+INCUMBENT_VERSION="unknown"
+INCUMBENT_VERSION_KNOWN=0
+
+probe_drill_version() {
+  local output="" rc=0
+  if output="$(on_nas "docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges $DRILL_REF bosun --version" 2>/dev/null)"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if (( rc != 0 )); then
+    echo "could not read the drill image version (probe exit $rc); nothing was changed." >&2
+    return 75
+  fi
+  if ! DRILL_VERSION="$(version_line "$output")"; then
+    echo "could not read the drill image version; its --version output was unreadable and nothing was changed." >&2
+    return 75
+  fi
+}
+
+probe_incumbent_version() {
+  local output="" rc=0
+  if output="$(on_nas "docker exec bosun bosun --version" 2>/dev/null)"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if (( rc == 0 )) && INCUMBENT_VERSION="$(version_line "$output")"; then
+    INCUMBENT_VERSION_KNOWN=1
+    return 0
+  fi
+  INCUMBENT_VERSION="unknown"
+  INCUMBENT_VERSION_KNOWN=0
+  if (( rc != 0 )); then
+    echo "  incumbent version: unknown (probe exit $rc)" >&2
+  else
+    echo "  incumbent version: unknown (unreadable --version output)" >&2
+  fi
+  return 0
+}
+
+print_version_comparison() {
+  local drill_release="${DRILL_VERSION#bosun version }" incumbent_release="${INCUMBENT_VERSION#bosun version }"
+  if (( INCUMBENT_VERSION_KNOWN == 0 )); then
+    echo "  version comparison: UNKNOWN (drill image $drill_release, incumbent unknown)"
+    echo "  NOTICE: review any RENDER-DIFFERS output; the version comparison could not establish that it is harmless."
+  elif [[ "$DRILL_VERSION" == "$INCUMBENT_VERSION" ]]; then
+    echo "  version comparison: SAME (drill image $drill_release, incumbent $incumbent_release)"
+  else
+    echo "  version comparison: DRIFT (drill image $drill_release, incumbent $incumbent_release)"
+    echo "  NOTICE: drill image is built on $drill_release, incumbent is $incumbent_release — RENDER-DIFFERS may be version-related; review the diff before answering y. Rebuild first if matching versions are required: docs/rollback-drill-image.md"
+  fi
+}
+
 if ! (: < /dev/tty) 2>/dev/null; then
   echo "Run this from a terminal: the canary prompts for the unverified image." >&2
   exit 64
@@ -137,11 +204,15 @@ on_nas "[ -e $BACKUP ]" >/dev/null 2>&1 &&
   { echo "$BACKUP already exists on $HOST, so an earlier drill never restored. Move it back by hand first: this run would overwrite it." >&2; exit 64; }
 on_nas "[ -e $OVERRIDE ]" >/dev/null 2>&1 &&
   { echo "$OVERRIDE is still in place on $HOST from an earlier drill. Clear it first (the last run printed the two commands)." >&2; exit 64; }
-before="$(on_nas "docker exec bosun bosun --version | head -1")" || true
+if ! probe_drill_version; then
+  exit 75
+fi
+probe_incumbent_version
+print_version_comparison
 pre_sha="$(on_nas "sha256sum $NAS_FILE")" || true
 pre_sha="${pre_sha%% *}"
 [[ "$pre_sha" =~ ^[0-9a-f]{64}$ ]] || { echo "could not read the sha256 of $NAS_FILE on $HOST." >&2; exit 75; }
-echo "  daemon idle, running: ${before:-unknown}, compose sha256 ${pre_sha:0:12}"
+echo "  daemon idle, running: $INCUMBENT_VERSION, compose sha256 ${pre_sha:0:12}"
 
 echo "==> Pointing the NAS compose at the drill image"
 on_nas "cp -p $NAS_FILE $BACKUP"
@@ -174,7 +245,20 @@ esac
 
 echo
 echo "State now:"
-on_nas "docker exec bosun bosun --version | head -1; docker inspect bosun --format 'restarts={{.RestartCount}} status={{.State.Status}}'" || true
+final_version=""
+final_version_rc=0
+if final_version="$(on_nas "docker exec bosun bosun --version" 2>/dev/null)"; then
+  final_version="$(version_line "$final_version" 2>/dev/null || printf '%s' unknown)"
+else
+  final_version_rc=$?
+  final_version=unknown
+fi
+if (( final_version_rc != 0 )); then
+  echo "  bosun version: unknown (probe exit $final_version_rc)" >&2
+else
+  echo "  bosun version: $final_version"
+fi
+on_nas "docker inspect bosun --format 'restarts={{.RestartCount}} status={{.State.Status}}'" || true
 on_nas "[ -e $OVERRIDE ]" >/dev/null 2>&1 && cat <<NEXT
 
 An override is in place, pinning the rolled-back image. Ignore the canary's

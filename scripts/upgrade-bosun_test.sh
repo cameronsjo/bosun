@@ -752,3 +752,8 @@ WRAPPED="" run_wrapper
 assert_rc 2; ls "$F/logs/"*.log >/dev/null || fail "no log written"; ok
 
 printf '\n%d passed\n' "$passed"
+
+# Keep rollback-drill coverage on the existing CI entrypoint; the standalone
+# harness uses a PTY so the production terminal guard remains covered.
+shellcheck "$SCRIPT_DIR/rollback-drill_test.sh"
+bash "$SCRIPT_DIR/rollback-drill_test.sh"

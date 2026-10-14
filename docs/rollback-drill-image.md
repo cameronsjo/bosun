@@ -11,9 +11,42 @@ The drill image is built **FROM a specific bosun release**, pinned by digest. It
 - the drill reports **`RENDER-DIFFERS`** and lists files, because the base has drifted from the running version, or
 - you want the drill to exercise a newer release's cutover path.
 
-Drift is noisy, not fatal. `RENDER-DIFFERS` prompts rather than aborting, and answering `y` still cuts over and still exercises rollback — the renders differing is expected when the base and the incumbent are different releases. Answering `n` ends the run at **exit 0, `DECLINED at RENDER-DIFFERS`**, which is the signal to come here. It is not `CANDIDATE-FAILED`; that verdict means the drill image failed to render at all, which is a broken shim, not drift.
+Drift is a review signal, not an automatic failure. `RENDER-DIFFERS` may be
+version-related, but still requires reviewing the listed diff. Answering `y`
+still cuts over and exercises rollback; answering `n` ends the run at **exit 0,
+`DECLINED at RENDER-DIFFERS`**, which is the signal to come here. It is not
+`CANDIDATE-FAILED`; that verdict means the drill image failed to render at all,
+which is a broken shim, not drift.
 
 A stale drill image is not dangerous — it is pinned, private, and only ever runs during a drill. Do not schedule a rebuild. See [Why this is not automated](#why-this-is-not-automated).
+
+## The preflight version signal
+
+Before the drill backs up or edits the NAS compose file, `rollback-drill.sh`
+probes the pinned `DRILL_REF` with `bosun --version` and asks the running
+incumbent the same question. The image probe is deliberately the same
+unprivileged shape used by the canary's remote probes:
+
+```text
+docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges <DRILL_REF> bosun --version
+```
+
+Docker's image-cache/pull diagnostics and SSH stderr are deliberately excluded
+from the version signal; the strict parser validates only command stdout.
+Malformed stdout, or a nonzero probe, still fails closed before any compose
+mutation.
+
+The script prints `SAME` when the first version lines agree, `DRIFT` when both
+are readable but differ, and `UNKNOWN` when the incumbent cannot be read. A
+failed or unreadable drill-image probe returns transient exit 75 before any
+compose backup or edit. An unknown incumbent is displayed as unknown and does
+not silently make a later render difference harmless; review the diff and the
+operator prompt as usual.
+
+For `DRIFT`, `RENDER-DIFFERS` *may* be version-related, but it is still a diff
+to review. Rebuild the private drill image manually from the pinned release
+recipe below when matching versions are wanted; the script never rebuilds,
+publishes, or changes the image reference automatically.
 
 ## The two properties that matter
 
