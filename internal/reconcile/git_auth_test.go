@@ -828,6 +828,23 @@ func TestGitRedirectPolicyEdgeCases(t *testing.T) {
 	require.NoError(t, checkGitRedirect(req, []*http.Request{origin}), "anonymous redirect remains unchanged")
 
 	origin.Header.Set("Authorization", "Basic dXNlcjp0b2tlbg==")
+	t.Run("authenticated scheme downgrade is refused directly", func(t *testing.T) {
+		// Keep hostname and effective port identical so only the scheme differs.
+		// Invoke Bosun's callback directly: go-git's wrapper rejects first during
+		// clone/fetch, which cannot prove this branch is still present.
+		downgradeURL, err := url.Parse("http://example.com:443/next")
+		require.NoError(t, err)
+		downgradeReq := &http.Request{URL: downgradeURL, Header: make(http.Header)}
+		downgradeReq.Header.Set("Authorization", origin.Header.Get("Authorization"))
+		require.ErrorIs(t, checkGitRedirect(downgradeReq, []*http.Request{origin}), errGitHTTPSDowngrade)
+		assert.Empty(t, downgradeReq.Header.Get("Authorization"))
+		assert.NotEmpty(t, origin.Header.Get("Authorization"), "source request remains authenticated")
+	})
+	t.Run("authenticated same origin remains allowed directly", func(t *testing.T) {
+		approvedReq := &http.Request{URL: target, Header: make(http.Header)}
+		require.NoError(t, checkGitRedirect(approvedReq, []*http.Request{origin}))
+		assert.Equal(t, origin.Header.Get("Authorization"), approvedReq.Header.Get("Authorization"))
+	})
 	userinfoTarget, err := url.Parse("https://embedded@example.com/next")
 	require.NoError(t, err)
 	userinfoReq := &http.Request{URL: userinfoTarget, Header: make(http.Header)}
