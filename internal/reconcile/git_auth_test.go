@@ -886,9 +886,11 @@ func TestGitOpsAuthenticatedHTTPSRedirects(t *testing.T) {
 	tests := []struct {
 		name           string
 		newDestination func(http.Handler) *httptest.Server
+		wantError      string
 	}{
-		{name: "downgrade", newDestination: httptest.NewServer},
-		{name: "cross origin", newDestination: httptest.NewTLSServer},
+		// go-git blocks scheme downgrades before calling Bosun's origin guard.
+		{name: "downgrade", newDestination: httptest.NewServer, wantError: `http redirect: changes scheme from "https" to "http"`},
+		{name: "cross origin", newDestination: httptest.NewTLSServer, wantError: "redirect rejected"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name+" clone is rejected before destination", func(t *testing.T) {
@@ -909,7 +911,7 @@ func TestGitOpsAuthenticatedHTTPSRedirects(t *testing.T) {
 			g := NewGitOps(source.URL+"/repo.git", "main", filepath.Join(t.TempDir(), "clone"))
 			err := g.Clone(context.Background(), 1)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), "redirect rejected")
+			assert.Contains(t, err.Error(), tt.wantError)
 			assert.True(t, sourceAuthenticated.Load())
 			assert.Zero(t, destinationRequests.Load())
 		})
@@ -925,9 +927,10 @@ func TestGitOpsAuthenticatedHTTPSFetchRejectsUnsafeRedirects(t *testing.T) {
 	tests := []struct {
 		name           string
 		newDestination func(http.Handler) *httptest.Server
+		wantError      string
 	}{
-		{name: "downgrade", newDestination: httptest.NewServer},
-		{name: "cross origin", newDestination: httptest.NewTLSServer},
+		{name: "downgrade", newDestination: httptest.NewServer, wantError: `http redirect: changes scheme from "https" to "http"`},
+		{name: "cross origin", newDestination: httptest.NewTLSServer, wantError: "redirect rejected"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -971,7 +974,7 @@ func TestGitOpsAuthenticatedHTTPSFetchRejectsUnsafeRedirects(t *testing.T) {
 
 			redirectFetch.Store(true)
 			_, _, _, err = gitOps.Pull(context.Background())
-			require.ErrorContains(t, err, "redirect rejected")
+			require.ErrorContains(t, err, tt.wantError)
 			assert.Zero(t, destinationRequests.Load())
 		})
 	}
