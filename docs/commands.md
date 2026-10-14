@@ -672,6 +672,11 @@ bosun validate --socket /tmp/bosun.sock
 | `--socket` | Path to daemon socket |
 | `-t`, `--timeout` | Timeout in seconds (default: 30) |
 
+The `--full` dry-run reads the configured deploy state to make the same skip
+and circuit-breaker decisions as reconciliation, but writes simulated state to
+a temporary copy that is removed when validation exits. It never updates the
+daemon's configured state file.
+
 **Checks:**
 
 1. Environment variables (REPO_URL, etc.)
