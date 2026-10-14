@@ -414,6 +414,11 @@ bosun validate --full                  # Include full dry-run reconciliation
 | `--socket` | Path to daemon socket |
 | `-t`, `--timeout` | Timeout in seconds (default: 30) |
 
+The `--full` dry-run reads the configured deploy state for skip and
+circuit-breaker decisions, but writes simulated state only to a temporary copy
+that is removed after validation. It never updates the daemon's configured
+state file.
+
 ### `bosun breaker`
 
 View and manage the deploy circuit breaker, which stops retrying after 3
