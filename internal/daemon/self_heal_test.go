@@ -192,6 +192,7 @@ func TestPlanSelfHealClockRollbackCannotBypassCooldown(t *testing.T) {
 func TestMaybeSelfHealDispatchesOneOpaqueExhaustionAlert(t *testing.T) {
 	provider := &testAlertProvider{}
 	d := newAlertDaemon(t, provider)
+	d.config.ReconcileConfig.ProjectName = "legacy-stack"
 	decision := selfHealDecision{
 		alertExhausted: true,
 		signatureID:    "0123456789ab",
@@ -203,10 +204,31 @@ func TestMaybeSelfHealDispatchesOneOpaqueExhaustionAlert(t *testing.T) {
 	d.maybeSelfHeal(context.Background(), decision, nil)
 	require.Len(t, provider.alerts, 1)
 	assert.Equal(t, "self-heal-exhausted", provider.alerts[0].Source)
+	assert.Equal(t, "legacy-stack", provider.alerts[0].Metadata["target"])
 	assert.NotContains(t, provider.alerts[0].Message, "private")
 
 	decision.alertExhausted = false
 	decision.reason = "attempt_budget_exhausted"
 	d.maybeSelfHeal(context.Background(), decision, nil)
 	assert.Len(t, provider.alerts, 1)
+}
+
+func TestMaybeSelfHealUsesTargetLabelForExhaustionAlert(t *testing.T) {
+	provider := &testAlertProvider{}
+	d := newAlertDaemon(t, provider)
+	d.config.ReconcileConfig.ProjectName = "base-stack"
+	decision := selfHealDecision{
+		alertExhausted: true,
+		signatureID:    "0123456789ab",
+		itemCount:      1,
+		attempts:       3,
+		maxAttempts:    3,
+	}
+
+	d.maybeSelfHeal(context.Background(), decision, nil, "nas")
+
+	require.Len(t, provider.alerts, 1)
+	assert.Equal(t, "nas", provider.alerts[0].Metadata["target"])
+	assert.Contains(t, provider.alerts[0].Title, "nas")
+	assert.Contains(t, provider.alerts[0].Message, "nas")
 }

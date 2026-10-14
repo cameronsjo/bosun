@@ -26,6 +26,11 @@ compatible.
       Compose project names across reconcile, drift, and status consumers.
 - [x] Keep the legacy `bosun status` dashboard for the implicit or lone
       `default` target, including when that target is remote.
+- [x] Keep remote-unavailable and local-drift details out of public `/health`
+      liveness while retaining them in detailed target status.
+- [x] Aggregate local and remote cached target deploy history in `WidgetData`;
+      a missing named-target state file never falls back to the base state file.
+- [x] Label self-heal exhaustion alerts with the configured named target.
 - [x] Attempt the required local compiler gate and record its resource refusal.
 - [x] Verify build, race-enabled tests, lint, and WebUI through PR CI, and run
       strict OpenSpec validation locally.
@@ -49,6 +54,12 @@ Codex did not bypass the gate.
 
 `git diff --check`, `gofmt -d` on the changed Go files, and
 `openspec validate add-multi-target-reconcile --strict` passed locally.
+The fix-round target-liveness, widget aggregation, missing-state, and
+self-heal-label tests are included for the next CI run. Codex's fresh full
+build/race/vet/lint gate attempt exited 75 before compilation with 26.5 GiB
+free versus the required 100 GiB; no gate or cache override was used.
+Final-head execution evidence belongs in the requested `report-fix1.md`;
+the earlier runs below describe only their explicitly named commits.
 PR #701 CI run `38626151350` passed Build, Test (full race/coverage suite),
 Lint (including workflow and diagram contracts), and WebUI against feature
 commit `6e1afd145112cdcf4104bdde70413a8f11ceb106`. The first Test run exposed

@@ -438,6 +438,12 @@ expands it. Reconcile errors and timestamps, repository paths, subsystem detail,
 and circuit-breaker state stay off this response. Use bearer-protected TCP
 `/status` or local Unix-socket `/status` for operator diagnostics.
 
+Target-level drift is operator detail, not daemon liveness: a remote target that
+cannot be inspected through this daemon's local Docker socket is `unavailable`
+in detailed status, and a locally observed drifted target is `degraded` there,
+while either condition leaves `/health` focused on the local daemon's own
+readiness. A local Docker failure still fails `/health` liveness.
+
 When named or multiple targets are configured, `/status` and authenticated `/api/status`
 include an ordered `targets` collection with each target's last deploy, drift,
 and circuit-breaker condition. A single implicit or lone `default` target keeps
@@ -599,7 +605,17 @@ When drift is detected, bosun normally only sends alerts. With self-healing enab
 - Attempts and cooldown state persist in the deploy state file, so restarting the daemon does not restore a consumed budget.
 - A changed drift signature starts a fresh attempt budget but still honors the last global cooldown; cleared drift re-arms a later recurrence.
 - After the final attempt, continued drift marks that signature exhausted and emits one bounded `self-heal-exhausted` alert. Alerts and new breaker logs expose only a short opaque signature identifier and item count, not service names or image values.
-- Periodic daemon drift currently evaluates the base/default state file only. Named target state files keep independent deploy/restart state and are not charged against the base self-heal budget until daemon drift fan-out is implemented.
+- Periodic daemon drift fans out across each local target using its isolated
+  state file and Compose project; remote targets retain cached state and are
+  reported unavailable because this daemon cannot inspect their Docker engine.
+  Self-heal exhaustion alerts use the configured target name, so operators can
+  attribute the bounded alert without exposing drift details.
+
+The Homepage `/api/widget` response remains flat, but its deployment history is
+aggregated across every startup-resolved target. `deploys_total` includes local
+and remote cached state, while `last_deploy` and `git_sha` come from the newest
+target state file. A missing named-target state file contributes zero and never
+falls back to the legacy base state file.
 
 ```yaml
 drift_self_heal: true

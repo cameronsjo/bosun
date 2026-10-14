@@ -420,10 +420,123 @@ func TestHealthStatus_SingleNamedTargetIncludesTargetSubsystem(t *testing.T) {
 	saveTargetState(t, d.config.ReconcileConfig, d.targets[0], &reconcile.DeployState{LastDeployedCommit: "nas-commit"})
 
 	status := d.HealthStatus()
+	assert.Equal(t, StatusHealthy, status.Status, "remote target unavailability is detail, not daemon liveness")
 	require.Len(t, status.Targets, 1)
 	assert.Equal(t, "nas", status.Targets[0].Name)
 	assert.Contains(t, status.Subsystems, "targets")
 	assert.Equal(t, StatusUnavailable, status.Targets[0].Status)
+}
+
+func TestHealthHTTPKeepsTargetDetailsOutOfLiveness(t *testing.T) {
+	t.Run("remote target is unavailable in detail but healthy at top level", func(t *testing.T) {
+		d, _ := targetStatusTestDaemon(t, []reconcile.Target{{Name: "nas", TargetHost: "root@nas", ProjectName: "nas-stack"}})
+		s := &Server{daemon: d}
+
+		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		w := httptest.NewRecorder()
+		s.handleHealth(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		status := requireBoundedHealthResponse(t, w.Body.Bytes())
+		assert.Equal(t, StatusHealthy, status.Status)
+		assert.Equal(t, StatusUnavailable, d.HealthStatus().Targets[0].Status)
+	})
+
+	t.Run("local drift is unavailable to liveness but remains detailed", func(t *testing.T) {
+		d, _ := targetStatusTestDaemon(t, []reconcile.Target{{Name: "pi", ProjectName: "pi-stack"}})
+		saveTargetState(t, d.config.ReconcileConfig, d.targets[0], &reconcile.DeployState{
+			LastDeployedCommit: "pi-commit",
+			DriftItems:         []reconcile.DriftItem{{Service: "web", Type: reconcile.DriftMissing}},
+		})
+		d.dockerClientOverride = docker.NewClientWithAPI(dockertest.NewMockDockerAPI())
+		s := &Server{daemon: d}
+
+		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		w := httptest.NewRecorder()
+		s.handleHealth(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		status := requireBoundedHealthResponse(t, w.Body.Bytes())
+		assert.Equal(t, StatusHealthy, status.Status)
+		assert.Equal(t, StatusDegraded, d.HealthStatus().Targets[0].Status)
+	})
+
+	t.Run("real Docker fault still fails liveness", func(t *testing.T) {
+		d, _ := targetStatusTestDaemon(t, []reconcile.Target{{Name: "pi", ProjectName: "pi-stack"}})
+		d.dockerErr = errors.New("docker daemon not reachable")
+		d.dockerOnce.Do(func() {})
+		s := &Server{daemon: d}
+
+		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		w := httptest.NewRecorder()
+		s.handleHealth(w, req)
+
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+		status := requireBoundedHealthResponse(t, w.Body.Bytes())
+		assert.Equal(t, StatusUnhealthy, status.Status)
+	})
+}
+
+func TestWidgetDataAggregatesLocalAndRemoteTargetStates(t *testing.T) {
+	d, _ := targetStatusTestDaemon(t, []reconcile.Target{
+		{Name: "alpha", ProjectName: "alpha-stack"},
+		{Name: "beta", ProjectName: "beta-stack"},
+		{Name: "nas", TargetHost: "root@nas", ProjectName: "nas-stack"},
+	})
+	alphaDeployed := time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)
+	betaDeployed := alphaDeployed.Add(time.Hour)
+	remoteDeployed := betaDeployed.Add(time.Hour)
+	saveTargetState(t, d.config.ReconcileConfig, d.targets[0], &reconcile.DeployState{
+		DeployCount:        2,
+		LastDeployedCommit: "alpha-commit-long",
+		DeployedAt:         alphaDeployed,
+	})
+	saveTargetState(t, d.config.ReconcileConfig, d.targets[1], &reconcile.DeployState{
+		DeployCount:        3,
+		LastDeployedCommit: "beta-commit-long",
+		DeployedAt:         betaDeployed,
+	})
+	saveTargetState(t, d.config.ReconcileConfig, d.targets[2], &reconcile.DeployState{
+		DeployCount:        99,
+		LastDeployedCommit: "remote-commit",
+		DeployedAt:         remoteDeployed,
+	})
+
+	data := d.WidgetData()
+	assert.Equal(t, 104, data["deploys_total"], "widget totals include cached state for remote targets")
+	assert.Equal(t, remoteDeployed.Format(time.RFC3339), data["last_deploy"])
+	assert.Equal(t, "remote-", data["git_sha"])
+	assert.Len(t, data, 4, "Homepage widget schema remains flat")
+}
+
+func TestWidgetDataMissingTargetStateDoesNotFallBackToBaseState(t *testing.T) {
+	d, _ := targetStatusTestDaemon(t, []reconcile.Target{{Name: "nas", ProjectName: "nas-stack"}})
+	baseState := &reconcile.DeployState{
+		DeployCount:        99,
+		LastDeployedCommit: "base-commit",
+		DeployedAt:         time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC),
+	}
+	require.NoError(t, reconcile.SaveState(d.config.ReconcileConfig.StateFile, baseState))
+
+	data := d.WidgetData()
+	assert.Equal(t, 0, data["deploys_total"], "a missing target state must not read the legacy base state")
+	assert.Equal(t, "", data["last_deploy"])
+	assert.Equal(t, "", data["git_sha"])
+}
+
+func TestRunDriftCheck_BaseStateFileDisablesTargetFanout(t *testing.T) {
+	d, _ := targetStatusTestDaemon(t, []reconcile.Target{
+		{Name: "local", ProjectName: "local-stack"},
+		{Name: "remote", TargetHost: "root@remote", ProjectName: "remote-stack"},
+	})
+	d.config.ReconcileConfig.StateFile = ""
+	mock := dockertest.NewMockDockerAPI()
+	d.dockerClientOverride = docker.NewClientWithAPI(mock)
+
+	d.runDriftCheck(context.Background())
+
+	assert.Equal(t, 0, mock.ContainerListCalls, "the explicit base-state opt-out must skip Docker before target fanout")
+	assert.Equal(t, 0, mock.PingCalls, "the explicit base-state opt-out must skip Docker before target fanout")
 }
 
 func TestTargetHealthStatuses_UsesExplicitDefaultStateOverride(t *testing.T) {

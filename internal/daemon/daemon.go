@@ -1648,7 +1648,7 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 	}
 	d.recordTargetRuntime(target.Name, driftStatus, "", report.CheckedAt)
 
-	d.maybeSelfHeal(ctx, selfHeal, selfHealReservation)
+	d.maybeSelfHeal(ctx, selfHeal, selfHealReservation, targetContext(target))
 }
 
 func criticalDriftItems(items []reconcile.DriftItem) []reconcile.DriftItem {
@@ -1663,7 +1663,7 @@ func criticalDriftItems(items []reconcile.DriftItem) []reconcile.DriftItem {
 
 // maybeSelfHeal executes a durable decision produced by planSelfHeal. The
 // attempt and once-per-signature alert marker have already been persisted.
-func (d *Daemon) maybeSelfHeal(ctx context.Context, decision selfHealDecision, reservation *reconcileGoroutineReservation) {
+func (d *Daemon) maybeSelfHeal(ctx context.Context, decision selfHealDecision, reservation *reconcileGoroutineReservation, targetName ...string) {
 	logger := log.Component(log.ComponentDaemon)
 
 	if !decision.trigger && !decision.alertExhausted {
@@ -1687,7 +1687,9 @@ func (d *Daemon) maybeSelfHeal(ctx context.Context, decision selfHealDecision, r
 			Msg("Drift self-heal attempt budget exhausted")
 		if d.alerter != nil {
 			target := "local"
-			if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.ProjectName != "" {
+			if len(targetName) > 0 && targetName[0] != "" {
+				target = targetName[0]
+			} else if d.config != nil && d.config.ReconcileConfig != nil && d.config.ReconcileConfig.ProjectName != "" {
 				target = d.config.ReconcileConfig.ProjectName
 			}
 			if err := d.alerter.SendDriftSelfHealExhausted(
@@ -2110,7 +2112,15 @@ func computeTopLevelStatus(subsystems map[string]SubsystemStatus) string {
 		return StatusUnhealthy
 	}
 
-	for _, sub := range subsystems {
+	for name, sub := range subsystems {
+		// Per-target health is operator detail, not daemon liveness. A remote
+		// target is necessarily unavailable to this daemon's local Docker API,
+		// and a local target's drift is actionable detail without meaning the
+		// daemon itself cannot serve requests. Keep those outcomes in the
+		// detailed target collection while preserving real daemon faults above.
+		if name == "targets" {
+			continue
+		}
 		switch sub.Status {
 		case StatusDegraded, StatusUnhealthy, StatusOpen:
 			return StatusDegraded
@@ -2137,18 +2147,47 @@ func (d *Daemon) WidgetData() map[string]any {
 		"git_sha":       "",
 	}
 
-	// Load persistent state for deploy history.
-	if d.config.ReconcileConfig != nil && d.config.ReconcileConfig.StateFile != "" {
-		state := reconcile.LoadState(d.config.ReconcileConfig.StateFile)
-		data["deploys_total"] = state.DeployCount
-		if !state.DeployedAt.IsZero() {
-			data["last_deploy"] = state.DeployedAt.UTC().Format(time.RFC3339)
+	if d.config == nil || d.config.ReconcileConfig == nil {
+		return data
+	}
+
+	// The widget schema is intentionally flat for Homepage compatibility. In
+	// multi-target mode, aggregate each target's persisted deployment history;
+	// remote history is valid cached state even though remote Docker cannot be
+	// inspected locally. Live target availability remains a detail-endpoint
+	// concern.
+	targets, targetsErr := d.targetSnapshot()
+	if targetsErr != nil {
+		data["status"] = "error"
+		return data
+	}
+	var (
+		deploysTotal int
+		latestDeploy time.Time
+		latestCommit string
+		latestSet    bool
+	)
+	for _, target := range targets {
+		targetCfg := d.configForTarget(target)
+		if targetCfg == nil || targetCfg.StateFile == "" {
+			continue
 		}
-		if len(state.LastDeployedCommit) >= 7 {
-			data["git_sha"] = state.LastDeployedCommit[:7]
-		} else if state.LastDeployedCommit != "" {
-			data["git_sha"] = state.LastDeployedCommit
+		state := reconcile.LoadState(targetCfg.StateFile)
+		deploysTotal += state.DeployCount
+		if !latestSet || state.DeployedAt.After(latestDeploy) {
+			latestDeploy = state.DeployedAt
+			latestCommit = state.LastDeployedCommit
+			latestSet = true
 		}
+	}
+	data["deploys_total"] = deploysTotal
+	if !latestDeploy.IsZero() {
+		data["last_deploy"] = latestDeploy.UTC().Format(time.RFC3339)
+	}
+	if len(latestCommit) >= 7 {
+		data["git_sha"] = latestCommit[:7]
+	} else if latestCommit != "" {
+		data["git_sha"] = latestCommit
 	}
 
 	return data
