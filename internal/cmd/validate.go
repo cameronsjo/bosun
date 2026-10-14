@@ -312,6 +312,22 @@ func runFullDryRun() error {
 	// Force dry-run
 	cfg.DryRun = true
 
+	return runFullDryRunWithConfig(cfg)
+}
+
+// runFullDryRunWithConfig runs the full validation reconciliation against a
+// temporary state copy. Reconcile records simulated attempts and successes in
+// its configured state file, so a CLI dry run must isolate those writes while
+// preserving the state used for skip and breaker decisions.
+func runFullDryRunWithConfig(cfg *reconcile.Config) error {
+	cfg.DryRun = true
+	stateFile, cleanupState, err := prepareStateFileForCLIRun(cfg.StateFile, true)
+	if err != nil {
+		return fmt.Errorf("prepare state file for full dry run: %w", err)
+	}
+	defer cleanupState()
+	cfg.StateFile = stateFile
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
