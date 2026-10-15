@@ -42,9 +42,6 @@ type destination interface {
 	mkdirAll(name string, mode fs.FileMode) error
 	mkdir(name string, mode fs.FileMode) error
 	lstat(name string) (fs.FileInfo, error)
-	// open opens name for reading through this destination's own resolution,
-	// so a change decision reads the same entry the write would replace.
-	open(name string) (*os.File, error)
 	// createTemp creates a private 0600 file in dir and returns it with the
 	// name this destination's other methods accept for it.
 	createTemp(dir, pattern string) (*os.File, string, error)
@@ -68,8 +65,6 @@ func (pathDestination) mkdirAll(name string, mode fs.FileMode) error { return os
 func (pathDestination) mkdir(name string, mode fs.FileMode) error { return os.Mkdir(name, mode) }
 
 func (pathDestination) lstat(name string) (fs.FileInfo, error) { return os.Lstat(name) }
-
-func (pathDestination) open(name string) (*os.File, error) { return os.Open(name) }
 
 func (pathDestination) createTemp(dir, pattern string) (*os.File, string, error) {
 	file, err := os.CreateTemp(dir, pattern)
@@ -99,12 +94,6 @@ func (d rootDestination) mkdir(name string, mode fs.FileMode) error {
 }
 
 func (d rootDestination) lstat(name string) (fs.FileInfo, error) { return d.root.Lstat(name) }
-
-// open is nonblocking where the platform supports it, so a FIFO at name does
-// not block until a writer appears.
-func (d rootDestination) open(name string) (*os.File, error) {
-	return d.root.OpenFile(name, os.O_RDONLY|destinationOpenNonblock, 0)
-}
 
 func (d rootDestination) createTemp(dir, pattern string) (*os.File, string, error) {
 	return rootCreateTemp(d.root, dir, pattern)
