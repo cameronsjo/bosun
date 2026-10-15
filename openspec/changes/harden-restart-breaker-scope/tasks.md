@@ -21,4 +21,5 @@
   formatting, and diff checks.
 - [x] 2.6 Prepare a reversible staged-break recipe and execute the permitted
   Go gate attempt; record the 52.3 GiB resource-floor block.
-- [ ] 2.7 Execute the staged-break red/green test and record final CI results.
+- [x] 2.7 Execute guard-removal proof: CI38760065810 fails direct and daemon inspection assertions.
+- Final restored-head CI results and readiness: [PR #714](https://github.com/cameronsjo/bosun/pull/714).

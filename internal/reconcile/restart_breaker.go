@@ -253,6 +253,18 @@ func RunRestartBreaker(
 ) (*RestartBreakerResult, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
+	// CollectActualState treats an empty project name as match-everything. The
+	// restart breaker is destructive, so an unresolved target scope must not
+	// inspect or stop a container that Bosun cannot prove it owns. Keep the
+	// tracking state unchanged as well: advancing it would trust the same
+	// unscoped observation this guard refuses.
+	if projectName == "" {
+		logger.Warn().
+			Int("candidate_containers", len(actual)).
+			Msg("Restart circuit breaker skipped: Compose project scope is unresolved; no containers will be inspected or stopped")
+		return &RestartBreakerResult{Updated: state.RestartTracking}, nil
+	}
+
 	if state.RestartTracking == nil {
 		state.RestartTracking = make(map[string]RestartTrackingEntry)
 	}

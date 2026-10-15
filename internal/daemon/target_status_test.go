@@ -233,11 +233,12 @@ func TestRunDriftCheckForTarget_UnresolvedImplicitProjectFailsClosed(t *testing.
 			CheckedAt:            time.Now().Add(-time.Minute),
 		},
 	}
-	saveTargetState(t, d.config.ReconcileConfig, target, &reconcile.DeployState{
+	statePath := saveTargetState(t, d.config.ReconcileConfig, target, &reconcile.DeployState{
 		LastDeployedCommit: "default-commit",
 		DeclaredServices:   []reconcile.DeclaredService{{Name: "web", Image: "nginx:latest"}},
 		RestartTracking:    priorTracking,
 	})
+	persistedPrior := reconcile.LoadState(statePath)
 
 	mock := dockertest.NewMockDockerAPI()
 	mock.ContainerListFunc = func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
@@ -254,8 +255,8 @@ func TestRunDriftCheckForTarget_UnresolvedImplicitProjectFailsClosed(t *testing.
 
 	d.runDriftCheckForTarget(context.Background(), target, docker.NewClientWithAPI(mock))
 
-	state := reconcile.LoadState(d.configForTarget(target).StateFile)
-	assert.Equal(t, priorTracking["web"], state.RestartTracking["web"], "unresolved scope must preserve target restart tracking")
+	state := reconcile.LoadState(statePath)
+	assert.Equal(t, persistedPrior.RestartTracking["web"], state.RestartTracking["web"], "unresolved scope must preserve target restart tracking")
 	assert.Equal(t, 0, mock.ContainerInspectCalls, "unresolved scope must not inspect host containers")
 	assert.Equal(t, 0, mock.ContainerStopCalls, "unresolved scope must not stop host containers")
 }

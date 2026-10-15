@@ -1,6 +1,6 @@
 # Restart breaker scope guard (#668 unit 3)
-Status: completed
-Next action: root agent independently runs the staged red/green CI checks and publishes the authorized draft PR.
+Status: source implemented and negative-control proof recorded
+Delivery: [PR #714](https://github.com/cameronsjo/bosun/pull/714) carries current-head CI and readiness.
 
 ## Goal and completion criteria
 
@@ -71,3 +71,7 @@ The mandatory targeted command
 reached the gate and exited 75 because only 52.3 GiB was free against the
 100 GiB minimum. No cache or resource override was used and no compiler ran;
 root CI must supply the compiler/test evidence.
+
+## Published negative-control evidence
+
+CI38760065810 at515656b7 compiled and linted, then failed the direct empty-scope and unresolved implicit-target tests because Docker inspection was reached. Codex restored the reviewed guard through a new commit. The daemon fixture now compares the persisted JSON baseline with the persisted result, avoiding monotonic-clock fields lost during serialization; the inspection/stop assertions are unchanged. Current-head CI/readiness is attached to PR #714.
