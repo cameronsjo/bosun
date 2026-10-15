@@ -326,6 +326,51 @@ func checkRestartBreakerSampling() CheckResult {
 	return CheckResult{Passed: 1}
 }
 
+// restartBreakerScopeUnresolved reports the only startup topology that leaves
+// the destructive breaker without a bounded namespace: the implicit default
+// target has no project_name. Named targets with a blank project use the
+// daemon's existing compose fallback, so they do not trigger this check.
+func restartBreakerScopeUnresolved(cfg *config.Config) bool {
+	if !config.ParseBoolValue(os.Getenv("BOSUN_RESTART_BREAKER"), true) {
+		return false
+	}
+
+	targets := reconcile.ValidateAndSanitizeTargets(loadConfiguredTargets(), nil)
+	targetsFromEnv := false
+	if raw := os.Getenv("BOSUN_TARGETS"); raw != "" {
+		_, apply, err := reconcile.ParseTargetsOverride(raw)
+		targetsFromEnv = err == nil && apply
+	}
+	if len(targets) > 1 || (len(targets) == 1 && !targets[0].IsDefault()) {
+		return false
+	}
+	if len(targets) == 1 && targets[0].ProjectName != "" {
+		return false
+	}
+	return targetsFromEnv || cfg == nil || cfg.ProjectNameFromFile() == ""
+}
+
+// checkRestartBreakerScope reports whether the enabled restart breaker has a
+// resolved scope for the implicit default target. The runtime guard still
+// enforces this boundary; doctor makes the resulting fail-closed posture
+// visible before an operator relies on restart-loop protection.
+func checkRestartBreakerScope(cfg *config.Config) CheckResult {
+	if !config.ParseBoolValue(os.Getenv("BOSUN_RESTART_BREAKER"), true) {
+		_, _ = ui.Blue.Println("  - Restart breaker scope check N/A (BOSUN_RESTART_BREAKER disables the breaker)")
+		return CheckResult{}
+	}
+	if !restartBreakerScopeUnresolved(cfg) {
+		_, _ = ui.Green.Println("  * Restart breaker has a bounded Compose project scope")
+		return CheckResult{Passed: 1}
+	}
+
+	_, _ = ui.Yellow.Println("  ! Restart breaker is enabled for the implicit default target but no project_name is configured, so it will stop nothing")
+	_, _ = ui.Blue.Println("      To fix this:")
+	_, _ = ui.Blue.Println("      - Set project_name on the implicit default target in bosun.yaml or BOSUN_TARGETS")
+	_, _ = ui.Blue.Println("      - Or set BOSUN_RESTART_BREAKER=false to disable restart-loop protection explicitly")
+	return CheckResult{Warned: 1}
+}
+
 // checkStateDir verifies the deploy-state directory is writable.
 // The state dir defaults to reconcile.DefaultStateDir but is overridden by
 // the BOSUN_STATE_DIR environment variable (same logic as the daemon).
@@ -681,6 +726,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	result.Add(checkManifestDirectory(cfg))
 	result.Add(checkHookSettleDelayFUSE(cfg))
 	result.Add(checkRestartBreakerSampling())
+	result.Add(checkRestartBreakerScope(cfg))
 	result.Add(checkStateDir())
 	result.Add(checkSocketDir())
 	result.Add(checkWebhook())

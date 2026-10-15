@@ -56,6 +56,13 @@ type Config struct {
 	// projectName is the docker compose project name.
 	projectName string
 
+	// projectNameFromFile is the root-level project_name supplied by the
+	// configuration file. It is empty when the effective name came from the
+	// project directory fallback. Consumers that must report an unresolved
+	// destructive scope can distinguish the two without changing deployment
+	// namespace selection.
+	projectNameFromFile string
+
 	// infraContainers holds the configured infrastructure container names.
 	infraContainers []string
 
@@ -572,6 +579,7 @@ func Load() (*Config, error) {
 
 	// Determine project name (defaults to directory name)
 	projectName := fileCfg.ProjectName
+	fromFile := projectName != ""
 	if projectName == "" {
 		projectName = filepath.Base(root)
 	}
@@ -582,6 +590,7 @@ func Load() (*Config, error) {
 			log.Warn().Err(err).Str("project_name", projectName).
 				Msg("Config: invalid project_name — ignoring and falling back to directory name")
 			projectName = filepath.Base(root)
+			fromFile = false
 		}
 	}
 	// Also validate the fallback value: the project directory name itself may
@@ -596,6 +605,10 @@ func Load() (*Config, error) {
 			Msg("Config: project name derived from directory contains invalid characters — using sanitized version")
 		projectName = sanitized
 	}
+	projectNameFromFile := ""
+	if fromFile {
+		projectNameFromFile = projectName
+	}
 
 	cfg := &Config{
 		Root:                   root,
@@ -606,6 +619,7 @@ func Load() (*Config, error) {
 		ComposeFile:            filepath.Join(root, "bosun", "docker-compose.yml"),
 		SnapshotsDir:           filepath.Join(manifestDir, ".bosun", "snapshots"),
 		projectName:            projectName,
+		projectNameFromFile:    projectNameFromFile,
 		infraContainers:        infraContainers,
 		tunnelProvider:         tunnelProvider,
 		tunnelConfig:           tunnelConfig,
@@ -783,6 +797,18 @@ func (c *Config) Format() string {
 // and --remove-orphans works correctly across stack boundaries.
 func (c *Config) ProjectName() string {
 	return c.projectName
+}
+
+// ProjectNameFromFile returns the root-level project_name supplied by the
+// configuration file, or an empty string when the effective project name was
+// derived from the project directory. This is for startup and doctor posture
+// reporting only; deployment and per-target restart-breaker scope continue to
+// use their existing target-scoped configuration.
+func (c *Config) ProjectNameFromFile() string {
+	if c == nil {
+		return ""
+	}
+	return c.projectNameFromFile
 }
 
 // Domain returns the project-level domain for Traefik defaultRule.
