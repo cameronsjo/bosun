@@ -781,7 +781,11 @@ func TestHandleManualTrigger_CoalescedCycleGetsFreshTimeout(t *testing.T) {
 	firstW := httptest.NewRecorder()
 	s.handleManualTrigger(firstW, firstReq)
 	require.Equal(t, http.StatusAccepted, firstW.Code)
-	<-gitOps.started
+	select {
+	case <-gitOps.started:
+	case <-time.After(time.Second):
+		t.Fatal("first reconcile did not start")
+	}
 
 	secondReq := httptest.NewRequest(http.MethodPost, "/webhook/manual", nil)
 	secondW := httptest.NewRecorder()
