@@ -266,6 +266,42 @@ func openRegularSource(path string, followSymlinks bool) (*os.File, fs.FileInfo,
 	return openRegularSourceWith(path, followSymlinks, openSourceFile)
 }
 
+// OpenRegularNoFollow opens path without following a final-component symlink
+// and without blocking on a FIFO, then validates the opened descriptor. Reading
+// from the returned file therefore reads the entry that was checked.
+func OpenRegularNoFollow(path string) (*os.File, error) {
+	file, _, err := openRegularSource(path, false)
+	return file, err
+}
+
+// OpenRootRegular opens a file relative to a previously pinned root and
+// validates the descriptor. With followSymlinks false, a final-component
+// symlink is refused; with true, os.Root still prevents the resolved path from
+// escaping the pinned root. In both modes a special file is rejected before
+// the caller reads it.
+func OpenRootRegular(root *os.Root, name string, followSymlinks bool) (*os.File, error) {
+	file, err := root.OpenFile(name, rootOpenFlags(followSymlinks), 0)
+	if err != nil {
+		if !followSymlinks && isRootSymlinkError(err) {
+			return nil, ErrSymlinkSkipped
+		}
+		if !followSymlinks && errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("open root file %s: %w", name, err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("stat root file %s: %w", name, err)
+	}
+	if err := validateOpenedRegularFile(name, followSymlinks, info); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
 func openRegularSourceWith(
 	path string,
 	followSymlinks bool,
@@ -506,19 +542,17 @@ func CopyFileIfChanged(ctx context.Context, src, dst string) (bool, error) {
 // CopyFileUnderRootIfChanged is CopyFileIfChanged with the write pinned to
 // root, the way CopyFileUnderRoot pins CopyFile.
 //
-// The destination is resolved through the pinned handle before the comparison
-// that decides whether to write, and one that escapes root is refused. A
-// comparison reading an attacker-placed file outside root would find it equal
-// and skip the write, which is an unreported deploy failure: nothing lands
-// inside root, and a skipped file never enters the written set a post-deploy
-// check could catch it in. See pinnedDir.assertDestinationInRoot.
+// The destination hash, byte comparison, write, and post-write verification
+// all use the same pinned root. A comparison reading an attacker-placed file
+// outside root would otherwise find it equal and silently skip the write.
 func CopyFileUnderRootIfChanged(ctx context.Context, src, root, dst string) (bool, error) {
 	pinned := newPinnedDir(root)
 	defer pinned.close()
-	if err := pinned.assertDestinationInRoot(dst); err != nil {
-		return false, err
+	changed, verify, err := pinned.copyFileIfChangedDeferredWithCopy(ctx, src, dst, pinned.copyFileSyncingDir)
+	if err != nil || verify == nil {
+		return changed, err
 	}
-	return copyFileIfChangedWithCopy(ctx, src, dst, fileHashContext, pinned.copyFileSyncingDir)
+	return changed, verify()
 }
 
 // copyFileIfChanged accepts the context-aware hash operation explicitly so

@@ -100,7 +100,11 @@ func (d rootDestination) mkdir(name string, mode fs.FileMode) error {
 
 func (d rootDestination) lstat(name string) (fs.FileInfo, error) { return d.root.Lstat(name) }
 
-func (d rootDestination) open(name string) (*os.File, error) { return d.root.Open(name) }
+// open is nonblocking where the platform supports it, so a FIFO at name does
+// not block until a writer appears.
+func (d rootDestination) open(name string) (*os.File, error) {
+	return d.root.OpenFile(name, os.O_RDONLY|destinationOpenNonblock, 0)
+}
 
 func (d rootDestination) createTemp(dir, pattern string) (*os.File, string, error) {
 	return rootCreateTemp(d.root, dir, pattern)
@@ -198,6 +202,57 @@ type pinnedDir struct {
 	root *os.Root
 }
 
+// OpenPinnedRoot opens a directory without following a symlink in the root or
+// any ancestor. When create is true, missing components are created one at a
+// time after the existing ancestor chain has been validated. This keeps the
+// root selection itself from becoming the unpinned first mutation.
+func OpenPinnedRoot(path string, create bool) (*os.Root, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve root %q: %w", path, err)
+	}
+	absPath = filepath.Clean(absPath)
+	var missing []string
+	for current := absPath; ; current = filepath.Dir(current) {
+		info, statErr := os.Lstat(current)
+		if statErr == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return nil, fmt.Errorf("root %q has an untrusted ancestor %q", path, current)
+			}
+			break
+		}
+		if !errors.Is(statErr, fs.ErrNotExist) {
+			return nil, fmt.Errorf("inspect root ancestor %q: %w", current, statErr)
+		}
+		missing = append(missing, current)
+		next := filepath.Dir(current)
+		if next == current {
+			return nil, fmt.Errorf("root %q has no existing filesystem ancestor", path)
+		}
+	}
+	if len(missing) > 0 && !create {
+		return nil, fs.ErrNotExist
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		current := missing[i]
+		if err := os.Mkdir(current, 0755); err != nil && !errors.Is(err, fs.ErrExist) {
+			return nil, fmt.Errorf("create root ancestor %q: %w", current, err)
+		}
+		info, statErr := os.Lstat(current)
+		if statErr != nil {
+			return nil, fmt.Errorf("verify root ancestor %q: %w", current, statErr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return nil, fmt.Errorf("root %q has an untrusted ancestor %q", path, current)
+		}
+	}
+	root, err := os.OpenRoot(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("open pinned root %q: %w", path, err)
+	}
+	return root, nil
+}
+
 func newPinnedDir(path string) *pinnedDir {
 	return &pinnedDir{path: path}
 }
@@ -210,10 +265,7 @@ func (p *pinnedDir) destination() (destination, error) {
 	if p.root != nil {
 		return rootDestination{root: p.root}, nil
 	}
-	if err := os.MkdirAll(p.path, 0755); err != nil {
-		return nil, fmt.Errorf("create destination root: %w", err)
-	}
-	root, err := os.OpenRoot(p.path)
+	root, err := OpenPinnedRoot(p.path, true)
 	if err != nil {
 		return nil, fmt.Errorf("pin destination root: %w", err)
 	}
@@ -235,11 +287,11 @@ func (p *pinnedDir) name(path string) (string, error) {
 // copyFileInto copies src to dst through the pinned root. A nil sync leaves the
 // destination-directory flush to a surrounding batch.
 func (p *pinnedDir) copyFileInto(ctx context.Context, src, dst string, sync destinationSync) error {
-	dest, err := p.destination()
+	name, err := p.name(dst)
 	if err != nil {
 		return err
 	}
-	name, err := p.name(dst)
+	dest, err := p.destination()
 	if err != nil {
 		return err
 	}
@@ -255,10 +307,112 @@ func (p *pinnedDir) copyFileSyncingDir(ctx context.Context, src, dst string) err
 }
 
 func (p *pinnedDir) copyFileIfChangedDeferred(ctx context.Context, src, dst string) (bool, postWriteVerification, error) {
-	if err := p.assertDestinationInRoot(dst); err != nil {
+	return p.copyFileIfChangedDeferredWithCopy(ctx, src, dst, p.copyFileWithoutDirSync)
+}
+
+func (p *pinnedDir) copyFileIfChangedDeferredWithCopy(
+	ctx context.Context,
+	src, dst string,
+	copyFile func(context.Context, string, string) error,
+) (bool, postWriteVerification, error) {
+	name, err := p.name(dst)
+	if err != nil {
 		return false, nil, err
 	}
-	return copyFileIfChangedDeferredWithCopy(ctx, src, dst, fileHashContext, p.copyFileWithoutDirSync)
+	root, err := p.openExistingRoot()
+	if err != nil {
+		return false, nil, err
+	}
+	if root == nil {
+		// A missing root cannot be left unpinned while the skip decision runs:
+		// an attacker could create it after a path-based "missing" check and
+		// make an outside file look unchanged. Create and pin it first, then
+		// perform the complete decision through that handle.
+		dest, err := p.destination()
+		if err != nil {
+			return false, nil, err
+		}
+		rootDest, ok := dest.(rootDestination)
+		if !ok {
+			return false, nil, fmt.Errorf("pin destination root: unexpected destination implementation %T", dest)
+		}
+		root = rootDest.root
+	}
+	return copyFileIfChangedDeferredAtRoot(ctx, src, dst, root, name, copyFile)
+}
+
+// copyFileIfChangedDeferredAtRoot performs the complete skip decision through
+// one pinned destination namespace. The destination descriptor used for the
+// hash is rewound for the byte comparison, and post-write verification opens
+// the destination through the same root. A pathname-based compare here would
+// allow a swapped ancestor to make an attacker-controlled file look unchanged.
+func copyFileIfChangedDeferredAtRoot(
+	ctx context.Context,
+	src, dst string,
+	root *os.Root,
+	dstName string,
+	copyFile func(context.Context, string, string) error,
+) (bool, postWriteVerification, error) {
+	if err := ctx.Err(); err != nil {
+		return false, nil, err
+	}
+	srcHash, err := fileHashContext(ctx, src)
+	if err != nil {
+		return false, nil, fmt.Errorf("hash source: %w", err)
+	}
+
+	dstFile, err := OpenRootRegular(root, dstName, true)
+	if err == nil {
+		defer func() { _ = dstFile.Close() }()
+		dstHash, hashErr := hashReader(ctx, dstFile)
+		if hashErr != nil {
+			return false, nil, fmt.Errorf("compare destination: %w", hashErr)
+		}
+		if dstHash == srcHash {
+			if _, seekErr := dstFile.Seek(0, io.SeekStart); seekErr != nil {
+				return false, nil, fmt.Errorf("rewind destination comparison: %w", seekErr)
+			}
+			srcFile, srcErr := openRegularSource(src, true)
+			if srcErr != nil {
+				return false, nil, fmt.Errorf("open source comparison: %w", srcErr)
+			}
+			contentsEqual, compareErr := readersEqualContext(ctx, srcFile, dstFile)
+			_ = srcFile.Close()
+			if compareErr != nil {
+				return false, nil, fmt.Errorf("compare destination bytes: %w", compareErr)
+			}
+			if contentsEqual {
+				return false, nil, nil
+			}
+		}
+		// Do not hold the old destination open while the copy atomically
+		// replaces it; Windows can reject a rename while a reader is open.
+		_ = dstFile.Close()
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return false, nil, fmt.Errorf("compare destination: %w", err)
+	}
+
+	if err := copyFile(ctx, src, dst); err != nil {
+		if errors.Is(err, ErrSymlinkSkipped) {
+			return false, nil, nil
+		}
+		return false, nil, err
+	}
+	return true, func() error {
+		verifyFile, verifyErr := OpenRootRegular(root, dstName, true)
+		if verifyErr != nil {
+			return fmt.Errorf("%w: cannot re-read destination %s: %w", ErrPostWriteVerification, dst, verifyErr)
+		}
+		defer func() { _ = verifyFile.Close() }()
+		verifyHash, verifyErr := hashReader(ctx, verifyFile)
+		if verifyErr != nil {
+			return fmt.Errorf("%w: cannot hash destination %s: %w", ErrPostWriteVerification, dst, verifyErr)
+		}
+		if verifyHash != srcHash {
+			return fmt.Errorf("%w: destination hash mismatch after write: %s", ErrPostWriteVerification, dst)
+		}
+		return nil
+	}, nil
 }
 
 // openExistingRoot pins the root without creating it, so a caller that only
@@ -268,7 +422,7 @@ func (p *pinnedDir) openExistingRoot() (*os.Root, error) {
 	if p.root != nil {
 		return p.root, nil
 	}
-	root, err := os.OpenRoot(p.path)
+	root, err := OpenPinnedRoot(p.path, false)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
@@ -316,7 +470,12 @@ func (p *pinnedDir) assertDestinationInRoot(dst string) error {
 		// cannot be read at all. Neither can be compared safely.
 		return fmt.Errorf("%w: %s under %s: %w", errDestinationEscapesRoot, dst, p.path, err)
 	}
-	return file.Close()
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat destination %s: %w", dst, err)
+	}
+	return validateRegularFile(dst, info)
 }
 
 // mkdirRoot creates the copy's destination root. When that is the pinned path
@@ -326,11 +485,11 @@ func (p *pinnedDir) assertDestinationInRoot(dst string) error {
 // check the file copies get applies here too. A path outside the pinned root is
 // refused.
 func (p *pinnedDir) mkdirRoot(path string, mode fs.FileMode) error {
-	dest, err := p.destination()
+	name, err := p.name(path)
 	if err != nil {
 		return err
 	}
-	name, err := p.name(path)
+	dest, err := p.destination()
 	if err != nil {
 		return err
 	}
@@ -341,11 +500,11 @@ func (p *pinnedDir) mkdirRoot(path string, mode fs.FileMode) error {
 }
 
 func (p *pinnedDir) mkdirIfMissing(path string, mode fs.FileMode) (bool, error) {
-	dest, err := p.destination()
+	name, err := p.name(path)
 	if err != nil {
 		return false, err
 	}
-	name, err := p.name(path)
+	dest, err := p.destination()
 	if err != nil {
 		return false, err
 	}
@@ -353,11 +512,11 @@ func (p *pinnedDir) mkdirIfMissing(path string, mode fs.FileMode) (bool, error) 
 }
 
 func (p *pinnedDir) syncParent(dir string) error {
-	dest, err := p.destination()
+	name, err := p.name(dir)
 	if err != nil {
 		return err
 	}
-	name, err := p.name(dir)
+	dest, err := p.destination()
 	if err != nil {
 		return err
 	}

@@ -58,10 +58,10 @@ the security boundary.
 
 ## Status
 
-- [ ] Proposal, design, spec deltas, and tasks authored and strictly validated.
-- [ ] Source and tests ported from the approved hardening head.
-- [ ] Remaining template and destination comparison races closed.
-- [ ] Stale pruning uses the trusted destination root.
-- [ ] Consumer documentation updated.
+- [x] Proposal, design, spec deltas, and tasks authored and strictly validated.
+- [x] Source and tests ported from the approved hardening head.
+- [x] Remaining template and destination comparison races closed.
+- [x] Stale pruning uses the trusted destination root.
+- [x] Consumer documentation updated.
 - [ ] Focused tests and staged-break evidence recorded.
 - [ ] Local commit created with explicit paths; root agent independently reviews.

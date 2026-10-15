@@ -79,6 +79,36 @@ func mkdirAllContext(ctx context.Context, path string, mode os.FileMode) error {
 	return os.MkdirAll(path, mode)
 }
 
+// mkdirAllUnderRoot creates path through a handle pinned to root. The root is
+// created by path for compatibility, while every component below it is
+// resolved from the handle so a swapped component cannot redirect creation.
+func mkdirAllUnderRoot(ctx context.Context, root, path string, mode os.FileMode) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return fmt.Errorf("resolve %s under %s: %w", path, root, err)
+	}
+	if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%s is outside deploy root %s", path, root)
+	}
+	if rel == "." {
+		pinned, err := fileutil.OpenPinnedRoot(root, true)
+		if err != nil {
+			return fmt.Errorf("create deploy root: %w", err)
+		}
+		_ = pinned.Close()
+		return nil
+	}
+	pinned, err := fileutil.OpenPinnedRoot(root, true)
+	if err != nil {
+		return fmt.Errorf("pin deploy root: %w", err)
+	}
+	defer func() { _ = pinned.Close() }()
+	return pinned.MkdirAll(rel, mode)
+}
+
 func mkdirTempContext(ctx context.Context, dir, pattern string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -300,7 +330,13 @@ func (d *DeployOps) deployLocalManaged(ctx context.Context, sourceDir, targetDir
 		if err := ctx.Err(); err != nil {
 			return rollback(err)
 		}
-		if err := fsOps.mkdirAll(ctx, targetDir, 0755); err != nil {
+		mkdirTarget := func(ctx context.Context) error {
+			return mkdirAllUnderRoot(ctx, deployRoot, targetDir, 0755)
+		}
+		if d.localFS != nil && d.localFS.mkdirAll != nil {
+			mkdirTarget = func(ctx context.Context) error { return fsOps.mkdirAll(ctx, targetDir, 0755) }
+		}
+		if err := mkdirTarget(ctx); err != nil {
 			return rollback(fmt.Errorf("create target directory: %w", err))
 		}
 
@@ -319,10 +355,17 @@ func (d *DeployOps) deployLocalManaged(ctx context.Context, sourceDir, targetDir
 			return rollback(fmt.Errorf("copy with content hash: %w", err))
 		}
 
-		// Prune files bosun previously deployed that are gone from source.
-		if err := removeStaleFiles(ctx, sourceDir, targetDir, result, prevManaged); err != nil {
-			logger.Error().Err(err).Msg("Failed to deploy locally. Reason: stale file removal failed")
-			return rollback(fmt.Errorf("remove stale files: %w", err))
+		// Prune files through the same trusted root used by the copy. A later
+		// pathname walk/removal could otherwise follow a swapped target ancestor.
+		pinnedRoot, rootErr := fileutil.OpenPinnedRoot(deployRoot, false)
+		if rootErr != nil {
+			return rollback(fmt.Errorf("pin deploy root for stale-file pruning: %w", rootErr))
+		}
+		staleErr := removeStaleFilesUnderRoot(ctx, sourceDir, targetDir, deployRoot, pinnedRoot, result, prevManaged)
+		_ = pinnedRoot.Close()
+		if staleErr != nil {
+			logger.Error().Err(staleErr).Msg("Failed to deploy locally. Reason: stale file removal failed")
+			return rollback(fmt.Errorf("remove stale files: %w", staleErr))
 		}
 
 		if ctx.Err() != nil {
@@ -1457,6 +1500,86 @@ func (ts *managedTypeTransitions) DeletedFiles() []string {
 // nil when the caller doesn't need that tracking (e.g. direct unit tests).
 func removeStaleFiles(ctx context.Context, sourceDir, targetDir string, result *DeployResult, prevManaged map[string]bool) error {
 	return removeStaleFilesWithOps(ctx, sourceDir, targetDir, result, prevManaged, os.Lstat, os.Remove)
+}
+
+// removeStaleFilesUnderRoot is the production path for local deploy pruning.
+// The walk and every removal use a root opened above targetDir, so a swapped
+// target ancestor cannot redirect a privileged delete outside deployRoot.
+func removeStaleFilesUnderRoot(
+	ctx context.Context,
+	sourceDir, targetDir, deployRoot string,
+	root *os.Root,
+	result *DeployResult,
+	prevManaged map[string]bool,
+) error {
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
+	if len(prevManaged) == 0 {
+		return nil
+	}
+	hasFiles, err := dirHasRegularFilesContext(ctx, sourceDir)
+	if err != nil {
+		return fmt.Errorf("inspect source %q for stale-file pruning: %w", sourceDir, err)
+	}
+	if !hasFiles {
+		logger.Warn().Str(log.FieldPath, sourceDir).Int("managed_count", len(prevManaged)).
+			Msg("Source has no regular files but a prior deploy did; skipping stale-file pruning (suspected render failure)")
+		return nil
+	}
+	targetRel, err := filepath.Rel(filepath.Clean(deployRoot), filepath.Clean(targetDir))
+	if err != nil || filepath.IsAbs(targetRel) || targetRel == ".." || strings.HasPrefix(targetRel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("target %q escapes deploy root %q", targetDir, deployRoot)
+	}
+	walkRoot := filepath.ToSlash(targetRel)
+	if walkRoot == "." {
+		walkRoot = "."
+	}
+	var removalErrors []error
+	removedCount := 0
+	walkErr := fs.WalkDir(root, walkRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		relPath, relErr := filepath.Rel(filepath.FromSlash(walkRoot), filepath.FromSlash(path))
+		if relErr != nil {
+			return relErr
+		}
+		manifestPath := filepath.ToSlash(relPath)
+		if !prevManaged[manifestPath] {
+			return nil
+		}
+		srcPath := filepath.Join(sourceDir, filepath.FromSlash(relPath))
+		if _, statErr := os.Lstat(srcPath); statErr == nil {
+			return nil
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("stat source path %s: %w", manifestPath, statErr)
+		}
+		if err := root.Remove(path); err != nil {
+			removalErrors = append(removalErrors, fmt.Errorf("remove file %s: %w", manifestPath, err))
+			logger.Warn().Err(err).Str(log.FieldPath, manifestPath).Msg("Failed to remove stale file")
+			return nil
+		}
+		removedCount++
+		if result != nil {
+			result.AddDeleted(manifestPath)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return walkErr
+	}
+	if len(removalErrors) > 0 {
+		return fmt.Errorf("%d stale file(s) could not be removed: %w", len(removalErrors), errors.Join(removalErrors...))
+	}
+	if removedCount > 0 {
+		logger.Info().Int("removed", removedCount).Msg("Successfully removed stale files")
+	}
+	return nil
 }
 
 func removeStaleFilesWithOps(

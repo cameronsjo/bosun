@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/cameronsjo/bosun/internal/fileutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -93,4 +94,50 @@ func TestDeployLocal_SingleFileTargetMakesNoUnpinnedDestinationMutation(t *testi
 
 	_, statErr := os.Stat(appdata)
 	assert.ErrorIs(t, statErr, os.ErrNotExist, "a refused copy must leave no destination directory behind")
+}
+
+func TestRemoveStaleFilesUnderRoot_RefusesSwappedAncestor(t *testing.T) {
+	base := evalSymlinks(t, t.TempDir())
+	deployRoot := filepath.Join(base, "appdata")
+	targetDir := filepath.Join(deployRoot, "svc")
+	sourceDir := filepath.Join(base, "staging")
+	outside := filepath.Join(base, "outside")
+	require.NoError(t, os.MkdirAll(sourceDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "new.conf"), []byte("new"), 0o644))
+	require.NoError(t, os.MkdirAll(outside, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "old.conf"), []byte("old"), 0o644))
+	require.NoError(t, os.MkdirAll(deployRoot, 0o755))
+	require.NoError(t, os.Symlink(outside, targetDir))
+
+	root, err := fileutil.OpenPinnedRoot(deployRoot, false)
+	require.NoError(t, err)
+	defer func() { _ = root.Close() }()
+	err = removeStaleFilesUnderRoot(context.Background(), sourceDir, targetDir, deployRoot, root, nil, map[string]bool{"old.conf": true})
+
+	require.Error(t, err)
+	assert.FileExists(t, filepath.Join(outside, "old.conf"))
+}
+
+func TestDeployLocal_StalePruningRefusesSwappedDeployRoot(t *testing.T) {
+	base := evalSymlinks(t, t.TempDir())
+	deployRoot := filepath.Join(base, "appdata")
+	targetDir := filepath.Join(deployRoot, "svc")
+	sourceDir := filepath.Join(base, "staging")
+	outside := filepath.Join(base, "outside")
+	require.NoError(t, os.MkdirAll(sourceDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "new.conf"), []byte("new"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(outside, "svc"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "svc", "old.conf"), []byte("old"), 0o644))
+	require.NoError(t, os.MkdirAll(deployRoot, 0o755))
+
+	ops := &DeployOps{ContentHashSync: true}
+	ops.copyDirIfChangedFn = func(context.Context, string, string) ([]string, error) {
+		require.NoError(t, os.RemoveAll(deployRoot))
+		require.NoError(t, os.Symlink(outside, deployRoot))
+		return nil, nil
+	}
+
+	err := ops.deployLocalManaged(context.Background(), sourceDir, targetDir, deployRoot, nil, map[string]bool{"old.conf": true})
+	require.Error(t, err)
+	assert.FileExists(t, filepath.Join(outside, "svc", "old.conf"), "stale pruning must not follow a swapped deploy-root ancestor")
 }

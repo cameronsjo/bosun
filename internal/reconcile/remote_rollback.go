@@ -394,10 +394,11 @@ func linkTargetWithinRoot(relPath string, typeflag byte, linkname string) bool {
 	}
 	switch typeflag {
 	case tar.TypeSymlink:
-		if filepath.IsAbs(linkname) {
+		target := filepath.FromSlash(linkname)
+		if filepath.IsAbs(target) || filepath.VolumeName(target) != "" || os.IsPathSeparator(target[0]) {
 			return false
 		}
-		return relWithinRoot(filepath.Join(filepath.Dir(relPath), filepath.FromSlash(linkname)))
+		return relWithinRoot(filepath.Join(filepath.Dir(relPath), target))
 	case tar.TypeLink:
 		stripped := strings.TrimPrefix(filepath.ToSlash(linkname), "/")
 		rel := filepath.Clean(filepath.FromSlash(stripped))

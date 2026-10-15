@@ -9,6 +9,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// destinationOpenNonblock keeps a pinned destination open from blocking on a FIFO.
+const destinationOpenNonblock = unix.O_NONBLOCK
+
 func openSourceFile(path string, followSymlinks bool) (*os.File, error) {
 	flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NONBLOCK
 	if !followSymlinks {
@@ -24,3 +27,13 @@ func openSourceFile(path string, followSymlinks bool) (*os.File, error) {
 	}
 	return os.NewFile(uintptr(fd), path), nil
 }
+
+func rootOpenFlags(followSymlinks bool) int {
+	flags := unix.O_RDONLY | unix.O_NONBLOCK
+	if !followSymlinks {
+		flags |= unix.O_NOFOLLOW
+	}
+	return flags
+}
+
+func isRootSymlinkError(err error) bool { return errors.Is(err, unix.ELOOP) }

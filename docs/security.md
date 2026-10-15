@@ -154,6 +154,34 @@ secrets and must be protected and removed according to the operator's retention
 policy. Successfully written files from `bosun render --output` are requested
 output, not temporary state, and remain until the operator removes them.
 
+## Filesystem Confinement
+
+Local deploy copies open the configured application-data root once and resolve
+directory creation, temporary files, replacements, directory syncs, content
+hash comparisons, post-write verification, and managed stale-file removals
+through that trusted root. A swapped ancestor or escaping destination fails the
+deploy instead of redirecting a privileged write or delete outside the root.
+
+Template sources are opened and read from the descriptor that was validated.
+During a directory render, the source tree and the configured
+`template_include_dir` are pinned for the render operation. `include` and
+`fromJsonFile` preserve the existing IncludeDir allowlist and refuse paths that
+leave its root. Rollback archives are extracted beneath a fresh pinned
+temporary root and reject realized escapes through chained symlinks or
+hardlinks.
+
+Standard atomic-swap deployment uses a trusted sibling temporary directory and
+a trusted parent rename sequence. That mode retains its narrower parent-rename
+guarantee; the root-handle guarantee applies to content-hash destination
+operations and managed pruning.
+
+On Unix, reconcile creates missing lock ancestors owner-only, rejects
+symlinked or group/other-writable lock parents, creates new lock files as
+`0600`, and tightens existing files to `0600`. Failure to establish those
+properties stops reconciliation with the affected path and a `chmod`/ownership
+fix. Windows retains its current `LockFileEx` path and inherited ACL behavior;
+Windows reparse-point and ACL trust remain operator responsibilities.
+
 ## SSH Security
 
 ### Connection Validation
@@ -489,10 +517,14 @@ then re-checked after `filepath.EvalSymlinks` so a symlink whose target escapes
 the subtree is rejected. A `{{ include "/etc/shadow" }}` or a read of a sibling
 `*.sops.yaml` is now rejected with an error that names the allowed root. The
 allowlist confines by **location**: a hardlink whose path is inside `templates/`
-remains readable. Validation and `os.ReadFile` are separate operations, so this
-is not a race-free or file-descriptor-anchored guarantee against a local actor
-concurrently replacing paths during rendering. The trust model assumes the
-repository and include tree are not adversarially mutated while a render runs.
+remains readable. Reconciliation pins the source directory and include root
+before walking them; each source/include read is then opened and read through
+that descriptor-bound namespace. The standalone `bosun render` helpers pin the
+configured include root for each read. A root or ancestor that is missing,
+non-directory, or symlinked is refused, so a concurrent replacement cannot
+redirect a read outside the selected tree. The final guarantee is the pinned
+namespace; symlinks that resolve within that namespace remain subject to the
+usual `os.Root` semantics.
 
 **Configuration**: the allowlist root is `<infraDir>/templates` by default and
 is overridable with the `template_include_dir` config field or

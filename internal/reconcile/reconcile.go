@@ -485,20 +485,6 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	r.runStartTime = startTime
 	r.preDeployUnhealthy = nil
 
-	// Ensure the lock file's directory exists before acquiring the lock. On a
-	// fresh install, DefaultLockFile's parent (/var/run/bosun) doesn't exist
-	// yet, so acquireLock's OpenFile fails with ENOENT -- which the warning
-	// below then misreports as "another reconciliation may be in progress",
-	// paralyzing every subsequent run. One MkdirAll here covers the default
-	// target and every named target, since they all share the base lock dir.
-	// lockDirMode keeps a directory bosun creates owner-only so no other local
-	// principal can reach the lock files inside it; an already-existing
-	// directory keeps its mode, since it may be shared and not bosun's to
-	// retighten.
-	if err := os.MkdirAll(filepath.Dir(r.lockFile), lockDirMode); err != nil {
-		return fmt.Errorf("failed to create lock file directory: %w", err)
-	}
-
 	// Acquire lock to prevent concurrent runs.
 	// Lock failures are transient (another reconciliation is running) and lack state context,
 	// so they are logged as warnings without sending alerts.

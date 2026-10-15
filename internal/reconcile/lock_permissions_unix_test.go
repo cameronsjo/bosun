@@ -67,7 +67,23 @@ func TestAcquireLock_RefusesSymlinkedLockPath(t *testing.T) {
 
 	err := r.acquireLock()
 	require.Error(t, err, "a lock path that is a symlink must be refused, not followed")
-	assert.Contains(t, err.Error(), "failed to open lock file")
+	assert.Contains(t, err.Error(), "refusing reconcile lock")
+	assert.Contains(t, err.Error(), "chmod")
+	assert.Nil(t, r.lockFd)
+}
+
+func TestAcquireLock_RefusesWorldWritableParent(t *testing.T) {
+	tmpDir := t.TempDir()
+	require.NoError(t, os.Chmod(tmpDir, 0o777))
+	t.Cleanup(func() { _ = os.Chmod(tmpDir, 0o700) })
+
+	r := NewReconciler(DefaultConfig())
+	r.lockFile = filepath.Join(tmpDir, "reconcile.lock")
+
+	err := r.acquireLock()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "owner-only")
+	assert.Contains(t, err.Error(), tmpDir)
 	assert.Nil(t, r.lockFd)
 }
 
