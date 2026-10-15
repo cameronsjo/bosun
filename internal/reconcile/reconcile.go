@@ -2434,11 +2434,6 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 			return nil, err
 		}
 		ui.Info("  Syncing compose files...")
-		if !r.config.DryRun {
-			if err := os.MkdirAll(composeTarget, 0755); err != nil {
-				return nil, fmt.Errorf("create local compose directory %q: %w", composeTarget, err)
-			}
-		}
 		snapshot := len(result.WrittenFiles)
 		deletedSnapshot := len(result.DeletedFiles)
 		prevForCompose := filterManagedForTarget(prevManaged, "compose")

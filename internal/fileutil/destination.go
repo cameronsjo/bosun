@@ -202,55 +202,92 @@ type pinnedDir struct {
 	root *os.Root
 }
 
-// OpenPinnedRoot opens a directory without following a symlink in the root or
-// any ancestor. When create is true, missing components are created one at a
-// time after the existing ancestor chain has been validated. This keeps the
-// root selection itself from becoming the unpinned first mutation.
-func OpenPinnedRoot(path string, create bool) (*os.Root, error) {
+// CanonicalTrustedPath resolves only the platform's documented system aliases
+// (for example macOS /var and /tmp) and rejects an alias that does not point to
+// its expected root-owned directory. It does not resolve arbitrary symlinks.
+// Callers that need a filesystem object must still open the returned path
+// through a descriptor-bound traversal.
+func CanonicalTrustedPath(path string) (string, error) {
 	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve path %q: %w", path, err)
+	}
+	return canonicalizeTrustedPath(filepath.Clean(absPath))
+}
+
+// OpenPinnedRoot opens a directory without following a symlink in the root or
+// any ancestor. Every component is selected through the descriptor for its
+// parent; no path-based validation is followed by a path-based reopen. When
+// create is true, missing components are created through the same parent
+// handle before they are opened and identity-checked.
+func OpenPinnedRoot(path string, create bool) (*os.Root, error) {
+	absPath, err := CanonicalTrustedPath(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve root %q: %w", path, err)
 	}
-	absPath = filepath.Clean(absPath)
-	var missing []string
-	for current := absPath; ; current = filepath.Dir(current) {
-		info, statErr := os.Lstat(current)
-		if statErr == nil {
-			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-				return nil, fmt.Errorf("root %q has an untrusted ancestor %q", path, current)
-			}
-			break
-		}
-		if !errors.Is(statErr, fs.ErrNotExist) {
-			return nil, fmt.Errorf("inspect root ancestor %q: %w", current, statErr)
-		}
-		missing = append(missing, current)
-		next := filepath.Dir(current)
-		if next == current {
-			return nil, fmt.Errorf("root %q has no existing filesystem ancestor", path)
-		}
-	}
-	if len(missing) > 0 && !create {
-		return nil, fs.ErrNotExist
-	}
-	for i := len(missing) - 1; i >= 0; i-- {
-		current := missing[i]
-		if err := os.Mkdir(current, 0755); err != nil && !errors.Is(err, fs.ErrExist) {
-			return nil, fmt.Errorf("create root ancestor %q: %w", current, err)
-		}
-		info, statErr := os.Lstat(current)
-		if statErr != nil {
-			return nil, fmt.Errorf("verify root ancestor %q: %w", current, statErr)
-		}
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return nil, fmt.Errorf("root %q has an untrusted ancestor %q", path, current)
-		}
-	}
-	root, err := os.OpenRoot(absPath)
+	filesystemRoot := filepath.VolumeName(absPath) + string(filepath.Separator)
+	relative, err := filepath.Rel(filesystemRoot, absPath)
 	if err != nil {
-		return nil, fmt.Errorf("open pinned root %q: %w", path, err)
+		return nil, fmt.Errorf("resolve root %q relative to filesystem root: %w", path, err)
 	}
-	return root, nil
+	root, err := os.OpenRoot(filesystemRoot)
+	if err != nil {
+		return nil, fmt.Errorf("open filesystem root for %q: %w", path, err)
+	}
+	if relative == "." || relative == "" {
+		return root, nil
+	}
+
+	current := root
+	for _, component := range splitPathComponents(relative) {
+		next, openErr := current.OpenRoot(component)
+		if errors.Is(openErr, fs.ErrNotExist) && create {
+			if mkdirErr := current.Mkdir(component, 0755); mkdirErr != nil && !errors.Is(mkdirErr, fs.ErrExist) {
+				_ = current.Close()
+				return nil, fmt.Errorf("create root component %q under %q: %w", component, path, mkdirErr)
+			}
+			next, openErr = current.OpenRoot(component)
+		}
+		if openErr != nil {
+			_ = current.Close()
+			return nil, fmt.Errorf("open root component %q under %q: %w", component, path, openErr)
+		}
+
+		// The opened descriptor is authoritative. The handle-relative Lstat and
+		// Stat pair is an identity check for the selected object, not a selector;
+		// a concurrent rename/replacement therefore fails instead of reopening a
+		// different path object.
+		expected, statErr := current.Lstat(component)
+		if statErr != nil {
+			_ = next.Close()
+			_ = current.Close()
+			return nil, fmt.Errorf("verify root component %q under %q: %w", component, path, statErr)
+		}
+		actual, statErr := next.Stat(".")
+		if statErr != nil {
+			_ = next.Close()
+			_ = current.Close()
+			return nil, fmt.Errorf("stat opened root component %q under %q: %w", component, path, statErr)
+		}
+		if !actual.IsDir() || !os.SameFile(expected, actual) {
+			_ = next.Close()
+			_ = current.Close()
+			return nil, fmt.Errorf("root %q has an untrusted ancestor component %q", path, component)
+		}
+
+		if current != root {
+			_ = current.Close()
+		}
+		current = next
+	}
+	return current, nil
+}
+
+func splitPathComponents(path string) []string {
+	components := strings.FieldsFunc(path, func(r rune) bool {
+		return r == '/' || r == '\\'
+	})
+	return components
 }
 
 func newPinnedDir(path string) *pinnedDir {

@@ -72,6 +72,37 @@ func TestAcquireLock_RefusesSymlinkedLockPath(t *testing.T) {
 	assert.Nil(t, r.lockFd)
 }
 
+func TestValidateOpenedLockFile_RefusesDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	fd, err := os.Open(tmpDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = fd.Close() })
+
+	err = validateOpenedLockFile(fd, filepath.Join(tmpDir, "reconcile.lock"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a regular file")
+}
+
+func TestAcquireLock_RefusesForeignOwnedLockFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	lockFile := filepath.Join(tmpDir, "reconcile.lock")
+	require.NoError(t, os.WriteFile(lockFile, nil, 0o600))
+	foreignUID := os.Geteuid() + 1
+	if err := os.Chown(lockFile, foreignUID, -1); err != nil {
+		t.Skipf("test user cannot assign a foreign owner: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chown(lockFile, os.Geteuid(), -1) })
+
+	r := NewReconciler(DefaultConfig())
+	r.lockFile = lockFile
+
+	err := r.acquireLock()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "opened file is owned")
+	assert.Contains(t, err.Error(), lockFile)
+	assert.Nil(t, r.lockFd)
+}
+
 func TestAcquireLock_RefusesWorldWritableParent(t *testing.T) {
 	tmpDir := t.TempDir()
 	require.NoError(t, os.Chmod(tmpDir, 0o777))
@@ -83,6 +114,24 @@ func TestAcquireLock_RefusesWorldWritableParent(t *testing.T) {
 	err := r.acquireLock()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "owner-only")
+	assert.Contains(t, err.Error(), tmpDir)
+	assert.Nil(t, r.lockFd)
+}
+
+func TestAcquireLock_RefusesNonOwnerParent(t *testing.T) {
+	tmpDir := t.TempDir()
+	foreignUID := os.Geteuid() + 1
+	if err := os.Chown(tmpDir, foreignUID, -1); err != nil {
+		t.Skipf("test user cannot assign a foreign owner: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chown(tmpDir, os.Geteuid(), -1) })
+
+	r := NewReconciler(DefaultConfig())
+	r.lockFile = filepath.Join(tmpDir, "reconcile.lock")
+
+	err := r.acquireLock()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "need daemon uid")
 	assert.Contains(t, err.Error(), tmpDir)
 	assert.Nil(t, r.lockFd)
 }

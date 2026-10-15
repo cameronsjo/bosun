@@ -13,8 +13,9 @@ lock and block deployment.
 
 - Pin local destination mutations and destination comparisons to a trusted root
   handle, including content-hash skip decisions and stale-file pruning.
-- Preserve standard atomic-swap mode's trusted sibling temporary and parent
-  rename semantics, while documenting its narrower path-based boundary.
+- Preserve standard atomic-swap mode's sibling temporary tree in the target's
+  existing parent and same-parent rename semantics, while documenting its
+  narrower path-based boundary.
 - Bind template source and allowlisted include/fromJsonFile reads to a pinned
   source root and the descriptor used for validation.
 - Extract rollback archives beneath a pinned temporary root and reject chained

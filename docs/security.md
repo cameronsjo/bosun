@@ -170,17 +170,20 @@ leave its root. Rollback archives are extracted beneath a fresh pinned
 temporary root and reject realized escapes through chained symlinks or
 hardlinks.
 
-Standard atomic-swap deployment uses a trusted sibling temporary directory and
-a trusted parent rename sequence. That mode retains its narrower parent-rename
-guarantee; the root-handle guarantee applies to content-hash destination
-operations and managed pruning.
+Standard atomic-swap deployment creates its temporary tree directly in the
+target's existing parent and uses a same-parent rename sequence. That mode
+retains its narrower parent-rename guarantee; the root-handle guarantee applies
+to content-hash destination operations and managed pruning.
 
-On Unix, reconcile creates missing lock ancestors owner-only, rejects
-symlinked or group/other-writable lock parents, creates new lock files as
-`0600`, and tightens existing files to `0600`. Failure to establish those
-properties stops reconciliation with the affected path and a `chmod`/ownership
-fix. Windows retains its current `LockFileEx` path and inherited ACL behavior;
-Windows reparse-point and ACL trust remain operator responsibilities.
+On Unix, reconcile traverses lock ancestors through directory handles, accepts
+root- or daemon-owned ancestors (including a root-owned sticky system temporary
+ancestor), and requires the final directory to be daemon-owned `0700`. It opens
+the basename through that final handle, creates new lock files as `0600`, and
+tightens existing daemon-owned regular files to `0600`. Failure to establish
+those properties stops reconciliation with the affected path and a
+`chown`/`chmod` fix. Windows retains its current `LockFileEx` path and inherited
+ACL behavior; Windows reparse-point and ACL trust remain operator
+responsibilities.
 
 ## SSH Security
 

@@ -11,9 +11,9 @@ import "os"
 // lock reachable by the daemon's own uid, the only principal that legitimately
 // reconciles.
 //
-// lockDirMode applies to directories bosun creates itself; an existing lock
-// directory is never chmod'd, because a configured lock path may live in a
-// shared directory bosun does not own.
+// lockDirMode applies to directories bosun creates itself and is required on
+// the final existing lock directory too. Shared or differently owned final
+// directories fail closed with an actionable owner/mode repair message.
 const (
 	lockFileMode os.FileMode = 0o600
 	lockDirMode  os.FileMode = 0o700

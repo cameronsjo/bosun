@@ -387,7 +387,10 @@ func (d *DeployOps) deployLocalManaged(ctx context.Context, sourceDir, targetDir
 		return nil
 	}
 
-	// Standard mode: nuke-and-replace for atomic directory swap.
+	// Standard mode: nuke-and-replace for an atomic directory swap. The temp
+	// tree is created directly beside the target, so this mode relies on the
+	// existing target-parent selection and same-parent rename sequence rather
+	// than the descriptor-pinned namespace used by content-hash mode.
 	logger.Debug().Msg("Using atomic swap mode for deployment")
 	targetParent := filepath.Dir(targetDir)
 	if err := ctx.Err(); err != nil {
@@ -1535,7 +1538,7 @@ func removeStaleFilesUnderRoot(
 	}
 	var removalErrors []error
 	removedCount := 0
-	walkErr := fs.WalkDir(root, walkRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+	walkErr := fs.WalkDir(root.FS(), walkRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}

@@ -12,14 +12,17 @@ the security boundary.
 
 ## Decisions
 
-- Unix lock setup fails closed when the configured lock path or its trusted
-  parent cannot be proven owner-only. Errors name the path and the remediation.
+- Unix lock setup traverses the configured parent through handles, accepts only
+  trusted root- or daemon-owned ancestors, requires a daemon-owned `0700`
+  final directory, and fails closed with a path-specific remediation when
+  those properties cannot be proven.
 - Windows retains its existing `LockFileEx` behavior. The residual reparse/ACL
   guarantee is documented for the consumer and PR report.
 - Destination mutations and content comparisons use one trusted application-data
-  root handle where the operation has a root. Standard atomic-swap mode keeps
-  its trusted sibling temporary directory and trusted parent rename semantics;
-  it is not described as universally handle-pinned.
+  root handle where the operation has a root. Standard atomic-swap mode creates
+  its sibling temporary tree in the target's existing parent and preserves its
+  same-parent rename semantics; it is not described as universally
+  handle-pinned.
 - Template source, `include`, and `fromJsonFile` reads pin the source root and
   use descriptors from that root for validation and content reads. IncludeDir
   remains the configured allowlist and its current relative/absolute resolution.

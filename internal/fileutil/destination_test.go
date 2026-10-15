@@ -72,6 +72,20 @@ func TestCopyFileUnderRoot_RefusesEscapeThroughSymlinkedDirectory(t *testing.T) 
 	})
 }
 
+func TestOpenPinnedRoot_RefusesSymlinkedAncestor(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	realParent := filepath.Join(base, "real-parent")
+	realRoot := filepath.Join(realParent, "root")
+	alias := filepath.Join(base, "alias")
+	require.NoError(t, os.MkdirAll(realRoot, 0o755))
+	require.NoError(t, os.Symlink(realParent, alias))
+
+	root, err := OpenPinnedRoot(filepath.Join(alias, "root"), false)
+	require.Error(t, err, "a symlinked existing ancestor must not be selected by path")
+	assert.Nil(t, root)
+}
+
 func TestCopyFileUnderRootIfChanged_RefusesEscapeThroughSymlinkedDirectory(t *testing.T) {
 	t.Parallel()
 

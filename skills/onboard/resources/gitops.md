@@ -346,12 +346,15 @@ Environment variable overrides (`BOSUN_POST_SYNC_HOOKS`, `BOSUN_HOOK_SETTLE_DELA
 
 ### Lock Behavior
 
-On Unix, missing lock ancestors are created with mode `0700` and the lock file
-with mode `0600`. Existing lock files are tightened before acquisition. A
-symlinked, group/other-writable, or otherwise untrusted lock parent fails closed
-with the path and the owner-only permission fix. Windows keeps its existing
-`LockFileEx` and inherited ACL behavior, so operators must enforce trusted
-reparse-point and ACL configuration there.
+On Unix, lock ancestors are traversed through directory handles. Missing
+ancestors are created with mode `0700`; existing ancestors must be root- or
+daemon-owned, and the final directory must be daemon-owned with mode `0700`.
+The lock basename is opened through that final handle, and existing
+daemon-owned regular files are tightened to `0600` before acquisition. A
+symlinked, differently owned, group/other-writable, or otherwise untrusted lock
+path fails closed with the path and the ownership/permission fix. Windows keeps
+its existing `LockFileEx` and inherited ACL behavior, so operators must enforce
+trusted reparse-point and ACL configuration there.
 
 Only one reconciliation runs at a time. Triggers that arrive during a run increment a pending counter, retain every distinct source, and make `force` sticky for that batch. After the current run completes, bosun atomically drains the batch into one follow-up reconciliation. Triggers arriving during that follow-up form another batch, so the cycle-boundary reset cannot erase them.
 
@@ -733,9 +736,9 @@ Content-hash directory creation, replacement, destination hash/compare, post-wri
 verification, and managed stale-file pruning resolve through one trusted appdata
 root handle. A swapped destination ancestor therefore fails closed or stays
 inside that root instead of redirecting a write or removal. Standard atomic-swap
-mode uses a trusted parent and a private sibling temporary tree for its rename
-transaction; its parent-rename guarantee is narrower than the handle-pinned
-content-hash operations.
+mode creates a private sibling temporary tree directly in the target's existing
+parent and uses a same-parent rename transaction; its parent-rename guarantee is
+narrower than the handle-pinned content-hash operations.
 
 During reconciliation, template source files are read from a pinned source root,
 and `include`/`fromJsonFile` reads are confined to a pinned include root and the

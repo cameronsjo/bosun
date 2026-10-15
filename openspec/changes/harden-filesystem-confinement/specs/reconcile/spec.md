@@ -7,8 +7,9 @@ comparisons, managed stale-file removals, template source/include reads, and
 rollback extraction writes through a trusted root namespace whenever the
 platform provides one. An escaping, untrusted, or unopenable path SHALL fail
 closed and SHALL NOT be silently skipped. Standard atomic-swap deployment MAY
-use a trusted sibling temporary directory and trusted parent rename sequence,
-and documentation SHALL state that narrower guarantee precisely.
+create a temporary tree directly in the target's existing parent and use a
+same-parent rename sequence; documentation SHALL state that narrower guarantee
+precisely rather than claiming every mutation is root-handle-pinned.
 
 #### Scenario: Swapped destination ancestor
 
@@ -50,13 +51,16 @@ and documentation SHALL state that narrower guarantee precisely.
 
 ### Requirement: Reconcile Lock Ownership
 
-On Unix, Bosun SHALL create or migrate the reconcile lock directory with
-owner-only permissions, reject symlinked or untrusted lock paths, tighten an
-existing lock file to `0600`, and fail closed when these guarantees cannot be
-established. The error SHALL name the affected path and an actionable ownership
-or permission fix. On Windows, Bosun SHALL retain the existing `LockFileEx`
-behavior and consumer documentation SHALL identify the remaining reparse/ACL
-residual.
+On Unix, Bosun SHALL traverse the reconcile lock parent through descriptor-bound
+handles, create missing components with owner-only permissions, accept only
+root- or daemon-owned non-final ancestors (with a root-owned sticky system
+temporary ancestor allowed), and require the final directory to be daemon-owned
+with mode `0700`. Bosun SHALL open the lock basename through that final handle,
+require an owner-matching regular file, tighten it to `0600`, and fail closed
+when these guarantees cannot be established. The error SHALL name the affected
+path and an actionable ownership or permission fix. On Windows, Bosun SHALL
+retain the existing `LockFileEx` behavior and consumer documentation SHALL
+identify the remaining reparse/ACL residual.
 
 #### Scenario: New owner-only lock
 
@@ -73,3 +77,11 @@ residual.
 - **THEN** lock acquisition fails before reconciliation proceeds
 - **AND** the error names the path and tells the operator to fix owner and
   owner-only permissions
+
+#### Scenario: Existing lock parent and file are checked through handles
+
+- **WHEN** an existing lock parent is not daemon-owned and mode `0700`, or an
+  existing lock file is not a daemon-owned regular file
+- **THEN** lock acquisition fails before reconciliation proceeds
+- **AND** the error names the affected path and gives the required owner and
+  permission repair

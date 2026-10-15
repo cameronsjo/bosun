@@ -32,14 +32,17 @@ semantics.
   include helper reads from the pinned IncludeDir namespace. IncludeDir still
   accepts the existing absolute override and infra-relative override.
 - Rollback extraction uses one `os.Root` for the fresh temporary directory and
-  validates link targets before creating them. Standard atomic swap keeps its
-  trusted sibling temporary directory and trusted parent rename sequence; its
-  guarantee is described precisely instead of claiming every mutation is root
-  handle-pinned.
-- Unix lock setup creates missing parents owner-only, rejects symlinked or
-  untrusted lock paths, tightens pre-existing files before locking, and returns
-  an actionable error if any chmod/trust operation fails. Windows retains
-  `LockFileEx` and its existing path behavior; the residual is documented.
+  validates link targets before creating them. Standard atomic swap creates its
+  temporary tree directly beside the target and uses the existing parent
+  rename sequence; its guarantee is described precisely instead of claiming
+  every mutation is root handle-pinned.
+- Unix lock setup traverses parent directories through trusted handles, creates
+  missing components owner-only, requires root- or daemon-owned ancestors, and
+  requires a daemon-owned `0700` final directory. Existing lock files are
+  opened through that final handle, checked as daemon-owned regular files, and
+  tightened to `0600`; any trust or permission failure returns an actionable
+  path-specific error. Windows retains `LockFileEx` and its existing path
+  behavior; the residual is documented.
 
 ## Risks / Trade-offs
 
@@ -56,8 +59,9 @@ semantics.
 ## Migration Plan
 
 No data migration is required. On first acquisition, an existing Unix lock is
-tightened to `0600`; an insecure parent or symlinked path fails closed until the
-operator fixes ownership and permissions. Windows behavior is unchanged.
+tightened to `0600`; an insecure or differently owned final parent, untrusted
+ancestor, or symlinked path fails closed until the operator fixes ownership and
+permissions. Windows behavior is unchanged.
 
 ## Open Questions
 
