@@ -292,7 +292,7 @@ func (d *Daemon) handleAPITrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	source := req.Source
+	source := SanitizeWebhookPusherName(req.Source)
 	if source == "" {
 		source = "webui"
 	}

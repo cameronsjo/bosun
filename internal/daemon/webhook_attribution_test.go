@@ -189,3 +189,41 @@ func findWebhookLogField(t *testing.T, logs, message, field string) string {
 	require.FailNow(t, "matching webhook log event not found", "message=%q logs=%s", message, logs)
 	return ""
 }
+
+// Branch comparison stays byte-exact while every diagnostic sink is sanitized.
+func TestGitHubWebhookSanitizesRefWithoutChangingBranchMatch(t *testing.T) {
+	previousLevel := zerolog.GlobalLevel()
+	zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	t.Cleanup(func() { zerolog.SetGlobalLevel(previousLevel) })
+	for _, secret := range []string{"", "configured-secret"} {
+		t.Run("secret="+secret, func(t *testing.T) {
+			d, server := newTestDaemon(t)
+			d.config.WebhookSecret = secret
+			d.config.AllowUnauthenticatedWebhook = secret == ""
+			payload := GitHubPushPayload{Ref: "refs/heads/ma\nin\u202e", After: "abc123"}
+			body, err := json.Marshal(payload)
+			require.NoError(t, err)
+			request := httptest.NewRequest(http.MethodPost, "/webhook/github", bytes.NewReader(body))
+			request.Header.Set("X-GitHub-Event", "push")
+			if secret != "" {
+				request.Header.Set("X-Hub-Signature-256", computeHMACSHA256(body, secret))
+			}
+			var logs bytes.Buffer
+			logger := zerolog.New(&logs).Level(zerolog.DebugLevel)
+			request = request.WithContext(logger.WithContext(request.Context()))
+			response := httptest.NewRecorder()
+			server.handleGitHubWebhook(response, request)
+			require.Equal(t, http.StatusOK, response.Code)
+			assertNoReconcileTriggered(t, d, server)
+			message := "GitHub push on non-tracked branch ignored"
+			assert.Equal(t, "refs/heads/main", findWebhookLogField(t, logs.String(), message, "branch"))
+			reason := findWebhookLogField(t, logs.String(), message, "reason")
+			assert.NotContains(t, reason, "\n")
+			assert.NotContains(t, reason, "\u202e")
+			var reply map[string]string
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &reply))
+			assert.Equal(t, "ignored", reply["status"])
+			assert.Equal(t, reason, reply["message"])
+		})
+	}
+}
