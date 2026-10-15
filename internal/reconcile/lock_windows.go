@@ -5,6 +5,7 @@ package reconcile
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"golang.org/x/sys/windows"
 )
@@ -18,6 +19,10 @@ import (
 // identically. There is no Windows equivalent of the Unix fchmod tightening
 // or of O_NOFOLLOW here.
 func (r *Reconciler) acquireLock() error {
+	lockDir := filepath.Dir(r.lockFile)
+	if err := os.MkdirAll(lockDir, 0755); err != nil {
+		return fmt.Errorf("failed to create lock file directory %q: %w", lockDir, err)
+	}
 	fd, err := os.OpenFile(r.lockFile, os.O_CREATE|os.O_RDWR, lockFileMode)
 	if err != nil {
 		return fmt.Errorf("failed to open lock file: %w", err)
