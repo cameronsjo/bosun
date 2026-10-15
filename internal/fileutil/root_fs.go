@@ -3,7 +3,6 @@ package fileutil
 import (
 	"io/fs"
 	"os"
-	"path"
 	"sort"
 )
 
@@ -22,7 +21,18 @@ func (p pinnedRootFS) Open(name string) (fs.File, error) {
 	if !fs.ValidPath(name) {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
 	}
-	return p.root.FS().Open(name)
+	file, err := p.root.FS().Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return pinnedFile{File: file}, nil
+}
+
+// pinnedFile deliberately exposes only fs.File. In particular, callers must
+// use pinnedRootFS.ReadDir rather than recovering the underlying *os.File and
+// invoking its path-based directory-entry methods.
+type pinnedFile struct {
+	fs.File
 }
 
 func (p pinnedRootFS) Stat(name string) (fs.FileInfo, error) {
@@ -37,7 +47,12 @@ func (p pinnedRootFS) ReadDir(name string) ([]fs.DirEntry, error) {
 		return nil, &fs.PathError{Op: "readdir", Path: name, Err: fs.ErrInvalid}
 	}
 
-	dir, err := p.root.Open(name)
+	dirRoot, err := p.root.OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = dirRoot.Close() }()
+	dir, err := dirRoot.Open(".")
 	if err != nil {
 		return nil, err
 	}
@@ -49,8 +64,7 @@ func (p pinnedRootFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	}
 	entries := make([]fs.DirEntry, 0, len(names))
 	for _, child := range names {
-		childPath := path.Join(name, child)
-		info, err := p.root.Lstat(childPath)
+		info, err := dirRoot.Lstat(child)
 		if err != nil {
 			return nil, err
 		}
