@@ -758,7 +758,8 @@ selects and renames its sibling temporary tree.
 During reconciliation, template and non-template renderer source files are read
 from a pinned source root, and `include`/`fromJsonFile` reads are confined to a
 pinned include root and the same descriptor-bound namespace. `bosun render` pins
-its configured include root for each helper read. Missing, non-directory, or
+its configured include root for each helper read and pins each selected
+template's parent for the source read. Missing, non-directory, or
 symlinked roots and ancestors fail closed.
 
 ```bash

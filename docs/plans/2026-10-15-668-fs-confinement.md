@@ -70,3 +70,7 @@ the security boundary.
 - [x] All four staged-break recipes were assertion-checked against disposable
   scratch copies without introducing compile-invalid mutations.
 - [x] Local commit created with explicit paths; root agent independently reviews.
+
+## Review and publication
+
+Independent Codex review cleared the final source at f79c55f8 after descriptor-bound staging/cleanup, fingerprints, standalone render source reads, lock diagnostics, Darwin aliases, native Windows rename and compatibility fixes. All six negative-control families are assertion-checked outside the worktree; actual behavioral red and final restored-head CI are recorded on the delivery PR and in the external report. A deterministic fingerprint namespace swap test is included; the broad concurrent filesystem racing harness in #671 remains deferred. Windows native tests are present but have not run on Windows; standard atomic swap retains its documented trusted-parent precondition and Windows locks retain the approved ACL/reparse residual. #669 remains separate.
