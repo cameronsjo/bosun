@@ -80,7 +80,8 @@ func TestCopyNonTemplateFilesFromRoot_UsesPinnedSourceAfterAncestorSwap(t *testi
 	root, err := fileutil.OpenPinnedRoot(sourceDir, false)
 	require.NoError(t, err)
 	defer func() { _ = root.Close() }()
-	require.NoError(t, os.RemoveAll(sourceDir))
+	retainedDir := filepath.Join(tmpDir, "source-original")
+	require.NoError(t, os.Rename(sourceDir, retainedDir))
 	require.NoError(t, os.Symlink(outsideDir, sourceDir))
 
 	require.NoError(t, copyNonTemplateFilesFromRoot(context.Background(), sourceDir, dstDir, root))

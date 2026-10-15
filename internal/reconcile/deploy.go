@@ -824,7 +824,7 @@ func validateManagedDirectory(ctx context.Context, conflictDir, conflictRel stri
 		defer func() { _ = root.Close() }()
 	}
 	var files, physicalFiles, dirs []string
-	err := fs.WalkDir(root.FS(), ".", func(relativePath string, entry fs.DirEntry, walkErr error) error {
+	err := fs.WalkDir(root.FS(), ".", func(relativePath string, _ fs.DirEntry, walkErr error) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
@@ -836,15 +836,15 @@ func validateManagedDirectory(ctx context.Context, conflictDir, conflictRel stri
 		}
 		relativePath = filepath.FromSlash(relativePath)
 		physicalPath := filepath.Join(conflictDir, relativePath)
-		if entry.IsDir() {
-			dirs = append(dirs, relativePath)
-			return nil
-		}
-		regular, err := dirEntryIsRegular(entry)
+		info, err := root.Lstat(filepath.ToSlash(relativePath))
 		if err != nil {
 			return fmt.Errorf("inspect destination entry %s: %w", physicalPath, err)
 		}
-		if !regular {
+		if info.IsDir() {
+			dirs = append(dirs, relativePath)
+			return nil
+		}
+		if !info.Mode().IsRegular() {
 			return fmt.Errorf("destination entry %s is not a regular managed file", physicalPath)
 		}
 		relSlash := filepath.ToSlash(filepath.Join(conflictRel, relativePath))
@@ -857,6 +857,9 @@ func validateManagedDirectory(ctx context.Context, conflictDir, conflictRel stri
 	})
 	if err != nil {
 		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("destination directory %s has no managed descendants", conflictDir)
 	}
 	for _, dir := range dirs {
 		hasManaged := false
@@ -1531,14 +1534,14 @@ func pinRemovalTree(path string, rootHandle *os.File, rootInfo os.FileInfo, trus
 	entries[0].root = removalRoot
 	entries[0].rootOwned = true
 
-	err = fs.WalkDir(removalRoot.FS(), ".", func(relativePath string, entry fs.DirEntry, walkErr error) error {
+	err = fs.WalkDir(removalRoot.FS(), ".", func(relativePath string, _ fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if relativePath == "." {
 			return nil
 		}
-		info, err := entry.Info()
+		info, err := removalRoot.Lstat(relativePath)
 		if err != nil {
 			return err
 		}
@@ -1766,7 +1769,7 @@ func fingerprintPinnedPathAtRootWithHooks(path, rootPath string, handle *os.File
 		if hooks != nil && hooks.beforeWalk != nil {
 			hooks.beforeWalk()
 		}
-		walkErr := fs.WalkDir(os.DirFS(rootPath), filepath.ToSlash(walkStart), func(relativePath string, entry fs.DirEntry, walkErr error) error {
+		walkErr := fs.WalkDir(os.DirFS(rootPath), filepath.ToSlash(walkStart), func(relativePath string, _ fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
 			}
@@ -1777,7 +1780,7 @@ func fingerprintPinnedPathAtRootWithHooks(path, rootPath string, handle *os.File
 			if err != nil {
 				return err
 			}
-			info, err := entry.Info()
+			info, err := root.Lstat(filepath.FromSlash(relativePath))
 			if err != nil {
 				return err
 			}
