@@ -75,11 +75,11 @@ func TestPinnedRootFS_ReadDirListsPinnedNamesAndTypesAfterPathReplacement(t *tes
 	assert.True(t, info.Mode().IsRegular())
 }
 
-func TestPinnedRootFS_NestedReadDirInfoRemainsBoundAfterAncestorReplacement(t *testing.T) {
+func TestPinnedRootFS_NestedReadDirInfoRemainsBoundAfterDirectoryReplacement(t *testing.T) {
 	parent := t.TempDir()
 	rootPath := filepath.Join(parent, "source")
-	retainedPath := filepath.Join(parent, "source-original")
 	nestedPath := filepath.Join(rootPath, "trusted-dir")
+	retainedNestedPath := filepath.Join(rootPath, "trusted-dir-original")
 	const entryName = "trusted-file"
 	const trustedContent = "trusted nested content"
 	const foreignContent = "foreign nested content with a different size"
@@ -91,7 +91,7 @@ func TestPinnedRootFS_NestedReadDirInfoRemainsBoundAfterAncestorReplacement(t *t
 	defer func() { _ = root.Close() }()
 	pinned := pinnedRootFS{root: root}
 	entries, err := pinned.readDir("trusted-dir", func() {
-		require.NoError(t, os.Rename(rootPath, retainedPath))
+		require.NoError(t, os.Rename(nestedPath, retainedNestedPath))
 		require.NoError(t, os.MkdirAll(nestedPath, 0700))
 		require.NoError(t, os.WriteFile(filepath.Join(nestedPath, entryName), []byte(foreignContent), 0600))
 	})
