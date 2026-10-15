@@ -1,6 +1,6 @@
 # Restart breaker scope guard (#668 unit 3)
-Status: in progress
-Next action: review the final diff, commit the scoped unit, and hand off the gated CI and staged-break execution to the root agent.
+Status: completed
+Next action: root agent independently runs the staged red/green CI checks and publishes the authorized draft PR.
 
 ## Goal and completion criteria
 
@@ -42,7 +42,7 @@ collapse multiple target scopes and bypass the current per-target model.
 - [x] Prepare `/private/tmp/cos-bosun668-assessment/restart-breaker-staged-break.md` with a reversible guard-removal recipe and expected red test.
 - [x] Run gofmt, diff checks, strict OpenSpec validation, and permitted targeted static checks.
 - [x] Attempt required compiler-heavy checks through `scripts/agent-go-gate.sh`; record the resource-gate result without bypassing it.
-- [ ] Recheck branch/status, commit only explicit unit paths with the required trailers, and hand off for independent review.
+- [x] Recheck branch/status, commit only explicit unit paths with the required trailers, and hand off for independent review.
 
 ## Review
 
@@ -51,19 +51,23 @@ add only the empty-scope guard and listed tests, and leave labels/push/PR work
 to the root agent. Inline security and operability review is recorded in the
 design and spec: empty scope fails closed before Docker inspection, state is
 not advanced from untrusted host-wide observations, and the named-target
-fallback remains bounded to the existing target path.
+fallback remains bounded to the existing target path. The implementation is
+committed as `ddae61b086d399cfbfafe6b7a4d8dea3a914c2cc`; no push, PR, label, or
+shared-branch operation was performed.
 
 ## Completion evidence
 
-Source and tests are implemented in the requested worktree at
-`b1b557aeb140067c9caf6740a90cc6103476a4f0` (`origin/main` base; branch tip remains
-uncommitted during this checkpoint). `gofmt -w` completed for all changed Go
-files, `git diff --check` exited 0, `openspec validate
+Source and tests are implemented in the requested worktree from
+`b1b557aeb140067c9caf6740a90cc6103476a4f0` (`origin/main`) and committed on
+`cos/668-restart-breaker`. `gofmt -w` completed for all changed Go files,
+`git diff --check origin/main HEAD` exited 0, `openspec validate
 harden-restart-breaker-scope --strict` exited 0, and the staged-break patch
-passes `git apply --check`.
+passes `git apply --check`. A fresh `git status --short --branch` reports the
+branch two commits ahead of `origin/main` with no dirty paths.
 
 The mandatory targeted command
 `scripts/agent-go-gate.sh go test ./internal/reconcile ./internal/daemon -run
 '^TestRunRestartBreaker$|^TestRunDriftCheckForTarget_UnresolvedImplicitProjectFailsClosed$'`
 reached the gate and exited 75 because only 52.3 GiB was free against the
-100 GiB minimum. No cache or resource override was used and no compiler ran.
+100 GiB minimum. No cache or resource override was used and no compiler ran;
+root CI must supply the compiler/test evidence.
