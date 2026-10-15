@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### BREAKING CHANGES
 
+Filesystem confinement now refuses insecure Unix reconcile lock directories and
+symlinked template source/include paths. Before upgrading, stop Bosun and provision
+a persistent lock directory owned by the daemon UID/GID with mode `0700`. Repair
+the configured directory with `chown DAEMON_UID:DAEMON_GID LOCK_DIR` and
+`chmod 0700 LOCK_DIR`; an existing lock file must be a daemon-owned regular file
+with mode `0600`. Use trusted root- or daemon-owned ancestors without group/other
+write access (the validated root-owned sticky system temporary directory is the
+exception). Follow the path-specific error to repair an unsafe ancestor or replace
+a symlinked lock path before restarting Bosun. Windows lock behavior is unchanged.
+
+Use physical directory paths for template sources and include roots; arbitrary
+symlinked roots or ancestors are refused, apart from validated system aliases.
+Replace each symlinked `.tmpl` entry with a regular file containing the intended
+template before upgrading. Directory rendering now fails with the template path
+and this remedy instead of silently skipping the link, so a partial render cannot
+make previously deployed template output eligible for pruning.
+
 SSH Git no longer silently disables host verification, and deploy SSH no longer
 accepts first-contact keys implicitly.
 

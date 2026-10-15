@@ -371,6 +371,58 @@ func TestSafeExtractBackup_RejectsChainedSymlinkEscape(t *testing.T) {
 	assertFailedExtractionCleaned(t, tmpRoot, root, cleanup)
 }
 
+func TestSafeExtractBackup_RejectsSiblingSymlinkChainEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires Windows symlink capability")
+	}
+
+	for _, tt := range []struct {
+		name  string
+		links []*tar.Header
+	}{
+		{
+			name: "forward sibling order",
+			links: []*tar.Header{
+				{Name: "x/s", Typeflag: tar.TypeSymlink, Linkname: "..", Mode: 0o777},
+				{Name: "x/t", Typeflag: tar.TypeSymlink, Linkname: "s/../y", Mode: 0o777},
+			},
+		},
+		{
+			name: "reverse sibling order",
+			links: []*tar.Header{
+				{Name: "x/t", Typeflag: tar.TypeSymlink, Linkname: "s/../y", Mode: 0o777},
+				{Name: "x/s", Typeflag: tar.TypeSymlink, Linkname: "..", Mode: 0o777},
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			base := t.TempDir()
+			tmpRoot := filepath.Join(base, "extract-tmp")
+			require.NoError(t, os.MkdirAll(tmpRoot, 0o755))
+			t.Setenv("TMPDIR", tmpRoot)
+			outside := filepath.Join(tmpRoot, "y")
+			require.NoError(t, os.MkdirAll(outside, 0o755))
+			canary := filepath.Join(outside, "canary")
+			require.NoError(t, os.WriteFile(canary, []byte("outside preserved"), 0o600))
+
+			tarFile := filepath.Join(base, "sibling-chain.tar.gz")
+			entries := make([]*tar.Header, 0, len(tt.links)+1)
+			entries = append(entries, dirHdr("x"))
+			entries = append(entries, tt.links...)
+			writeGzTarArchiveHeaders(t, tarFile, entries...)
+
+			root, cleanup, err := safeExtractBackup(context.Background(), tarFile)
+			assert.ErrorContains(t, err, "symlink target escapes extraction root after resolution")
+			assert.Empty(t, root)
+			content, readErr := os.ReadFile(canary)
+			require.NoError(t, readErr)
+			assert.Equal(t, "outside preserved", string(content))
+			require.NoError(t, os.RemoveAll(outside))
+			assertFailedExtractionCleaned(t, tmpRoot, root, cleanup)
+		})
+	}
+}
+
 func TestWriteLinkEntry_CreateErrors(t *testing.T) {
 	rootFS, err := os.OpenRoot(t.TempDir())
 	require.NoError(t, err)

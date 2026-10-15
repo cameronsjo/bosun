@@ -161,6 +161,9 @@ directory creation, temporary files, replacements, directory syncs, content
 hash comparisons, post-write verification, and managed stale-file removals
 through that trusted root. A swapped ancestor or escaping destination fails the
 deploy instead of redirecting a privileged write or delete outside the root.
+The shared appdata root is the boundary, rather than each service directory:
+an in-root symlink raced into place after type checks can still redirect a
+service's write or prune into a sibling service's tree.
 
 Template sources are opened and read from the descriptor that was validated.
 During a directory render, the source tree and the configured
@@ -169,6 +172,13 @@ During a directory render, the source tree and the configured
 leave its root. Rollback archives are extracted beneath a fresh pinned
 temporary root and reject realized escapes through chained symlinks or
 hardlinks.
+
+Before upgrading, use physical template source and include directory paths;
+arbitrary symlinked roots and ancestors are refused, apart from validated system
+aliases. Replace symlinked `.tmpl` files with regular template files. Directory
+rendering refuses these links with the template path and replacement remedy,
+including links introduced after discovery, so an omitted template cannot
+silently turn its previous output into a stale-file prune candidate.
 
 Standard atomic-swap deployment creates its temporary tree directly in the
 target's existing parent and uses a same-parent rename sequence. That mode
@@ -186,6 +196,13 @@ those properties stops reconciliation with the affected path and a
 `chown`/`chmod` fix. Windows retains its current `LockFileEx` path and inherited
 ACL behavior; Windows reparse-point and ACL trust remain operator
 responsibilities.
+
+Stop Bosun before upgrading or repairing its Unix lock path. Provision a
+persistent directory for the configured lock, owned by the daemon UID/GID with
+mode `0700` (`chown DAEMON_UID:DAEMON_GID LOCK_DIR` and `chmod 0700 LOCK_DIR`).
+An existing lock file must be a daemon-owned regular file with mode `0600`.
+Repair unsafe ancestors or symlinked lock paths as named by the error before
+restarting Bosun.
 
 ## SSH Security
 

@@ -422,16 +422,6 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 			return nil
 		}
 
-		// WalkDir uses Lstat semantics, so skip symlinked templates before
-		// ExecuteTemplate can follow one out of the repository, mirroring how
-		// the non-template copy path treats them.
-		if d.Type()&os.ModeSymlink != 0 {
-			logger.Warn().
-				Str(log.FieldPath, path).
-				Msg("Skipping symlink during template render")
-			return nil
-		}
-
 		// Compute relative path and output path.
 		relPath := filepath.FromSlash(path)
 		var templatePath string
@@ -446,19 +436,22 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 			templatePath = filepath.Join(absSource, relPath)
 		}
 
+		// Omitting a template can make its previous output look stale. Refuse
+		// symlinked templates so reconciliation cannot deploy or prune from an
+		// incomplete render.
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing symlinked template %q: replace the symlink with a regular file", templatePath)
+		}
+
 		// Remove .tmpl extension for output. Use outDir (stagingDir/subDir)
 		// so rendered files land where deployLocal expects them.
 		outputPath := filepath.Join(outDir, strings.TrimSuffix(relPath, ".tmpl"))
 
 		if err := t.ExecuteTemplate(ctx, templatePath, outputPath); err != nil {
 			// The entry can become a symlink after WalkDir captured its DirEntry.
-			// Treat only the typed skip as benign; every other failure must abort
-			// staging rather than produce a partially rendered tree.
+			// Refuse the raced link just like one discovered during the walk.
 			if errors.Is(err, fileutil.ErrSymlinkSkipped) {
-				logger.Warn().
-					Str(log.FieldPath, path).
-					Msg("Skipping symlink during template render")
-				return nil
+				return fmt.Errorf("refusing symlinked template %q: replace the symlink with a regular file: %w", templatePath, err)
 			}
 			return err
 		}

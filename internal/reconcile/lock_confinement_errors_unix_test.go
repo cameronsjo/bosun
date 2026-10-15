@@ -29,6 +29,34 @@ func lockConfinementInfo(mode os.FileMode, uid uint32) os.FileInfo {
 	return lockConfinementFileInfo{mode: mode, sys: &syscall.Stat_t{Uid: uid}}
 }
 
+func TestValidateLockFileRefusesSwappedSymlinkBeforeChmod(t *testing.T) {
+	base := evalSymlinks(t, t.TempDir())
+	require.NoError(t, os.Chmod(base, 0o700))
+	lockPath := filepath.Join(base, "reconcile.lock")
+	target := filepath.Join(base, "target")
+	require.NoError(t, os.WriteFile(lockPath, nil, 0o600))
+	require.NoError(t, os.WriteFile(target, nil, 0o644))
+	require.NoError(t, os.Chmod(target, 0o644))
+	parent, err := os.OpenRoot(base)
+	require.NoError(t, err)
+	defer func() { _ = parent.Close() }()
+	before, err := parent.Lstat("reconcile.lock")
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(lockPath))
+	require.NoError(t, os.Symlink("target", lockPath))
+
+	// os.Root follows this in-root link; validation must refuse it before
+	// changing the permissions on the target it opened.
+	fd, err := parent.OpenFile("reconcile.lock", os.O_RDWR, 0o600)
+	require.NoError(t, err)
+	defer func() { _ = fd.Close() }()
+	err = validateLockFile(parent, "reconcile.lock", before, fd, lockPath)
+	require.ErrorContains(t, err, "lock path became a symlink")
+	info, err := os.Stat(target)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o644), info.Mode().Perm(), "refused lock must not chmod the substituted target")
+}
+
 func TestAcquireLockRejectsInvalidBasenamesAndOpenFailures(t *testing.T) {
 	t.Run("invalid basename", func(t *testing.T) {
 		tmpDir := evalSymlinks(t, t.TempDir())

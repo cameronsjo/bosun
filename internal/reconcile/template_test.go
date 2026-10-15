@@ -581,11 +581,11 @@ func TestTemplateOps_RenderDirectory(t *testing.T) {
 		}}, targets)
 	})
 
-	t.Run("symlinked template is skipped instead of exfiltrating its target", func(t *testing.T) {
+	t.Run("symlinked template aborts instead of omitting its output", func(t *testing.T) {
 		// A repository-authored .tmpl symlink is checked out verbatim by git.
 		// Following it would read a file outside the repository (age key,
-		// process environment) and stage the content for deployment. The
-		// lexically later real template must still render.
+		// process environment) and stage the content for deployment. Skipping it
+		// would let a partial render prune previously managed output.
 		tmpDir := evalSymlinks(t, t.TempDir())
 		sourceDir := filepath.Join(tmpDir, "repo", "unraid")
 		composeDir := filepath.Join(sourceDir, "compose")
@@ -594,19 +594,23 @@ func TestTemplateOps_RenderDirectory(t *testing.T) {
 
 		require.NoError(t, os.MkdirAll(composeDir, 0755))
 		require.NoError(t, os.WriteFile(outsideSecret, []byte("AGE-SECRET-KEY-OUTSIDE-THE-REPO"), 0600))
-		if err := os.Symlink(outsideSecret, filepath.Join(composeDir, "aaa-loot.tmpl")); err != nil {
+		templatePath := filepath.Join(composeDir, "aaa-loot.tmpl")
+		if err := os.Symlink(outsideSecret, templatePath); err != nil {
 			t.Skipf("symlink creation unavailable: %v", err)
 		}
 		require.NoError(t, os.WriteFile(filepath.Join(composeDir, "zzz-stack.yml.tmpl"), []byte("services: {}"), 0644))
 
 		tmpl := NewTemplateOps(map[string]any{})
-		require.NoError(t, tmpl.RenderDirectory(context.Background(), sourceDir, stagingDir, "unraid"))
+		err := tmpl.RenderDirectory(context.Background(), sourceDir, stagingDir, "unraid")
+		require.ErrorContains(t, err, "refusing symlinked template")
+		assert.Contains(t, err.Error(), templatePath)
+		assert.Contains(t, err.Error(), "replace the symlink with a regular file")
 
 		stagingSubDir := filepath.Join(stagingDir, "unraid")
 		assert.NoFileExists(t, filepath.Join(stagingSubDir, "compose", "aaa-loot"),
 			"a symlinked template must not be rendered into staging")
-		assert.FileExists(t, filepath.Join(stagingSubDir, "compose", "zzz-stack.yml"),
-			"a later regular template must still render")
+		assert.NoFileExists(t, filepath.Join(stagingSubDir, "compose", "zzz-stack.yml"),
+			"rendering must abort instead of succeeding with missing template output")
 	})
 }
 

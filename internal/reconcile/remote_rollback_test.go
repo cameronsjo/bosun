@@ -102,6 +102,19 @@ func TestSafeExtractBackup_ValidEntries(t *testing.T) {
 			},
 		},
 		{
+			name: "confined dangling symlink",
+			hdrs: func() []*tar.Header {
+				return []*tar.Header{
+					{Name: "compose/link.yml", Typeflag: tar.TypeSymlink, Linkname: "missing.yml", Mode: 0o777},
+				}
+			},
+			verify: func(t *testing.T, root string) {
+				target, err := os.Readlink(filepath.Join(root, "compose/link.yml"))
+				require.NoError(t, err)
+				assert.Equal(t, "missing.yml", target)
+			},
+		},
+		{
 			name: "confined archive-root-relative hardlink",
 			hdrs: func() []*tar.Header {
 				return []*tar.Header{

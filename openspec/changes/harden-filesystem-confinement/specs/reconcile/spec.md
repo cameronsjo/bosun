@@ -49,6 +49,14 @@ precisely rather than claiming every mutation is root-handle-pinned.
 - **THEN** extraction fails before an outside file is created
 - **AND** the temporary extraction tree is cleaned up
 
+#### Scenario: Symlinked template aborts rendering
+
+- **WHEN** a `.tmpl` entry is a symlink, or becomes one after discovery
+- **THEN** directory rendering fails instead of silently omitting its output
+- **AND** the error names the template and tells the operator to replace the
+  symlink with a regular file
+- **AND** reconciliation does not deploy or prune from that partial render
+
 #### Scenario: Managed type transition keeps the checked parent
 
 - **WHEN** a managed file/directory type transition quarantines the old entry

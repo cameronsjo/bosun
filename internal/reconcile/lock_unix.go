@@ -45,8 +45,9 @@ func (r *Reconciler) acquireLock() error {
 	}
 
 	// O_EXCL separates the two cases so the created file never exists with a
-	// broader mode, not even momentarily. os.Root adds O_NOFOLLOW to the
-	// descriptor-relative open itself.
+	// broader mode, not even momentarily. os.Root confines the open but can
+	// follow in-root symlinks; the before/after identity checks below refuse
+	// a replaced basename before any permission repair or lock acquisition.
 	fd, err := parent.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_RDWR, lockFileMode)
 	if errors.Is(err, fs.ErrExist) {
 		fd, err = parent.OpenFile(name, os.O_RDWR, lockFileMode)
@@ -58,11 +59,7 @@ func (r *Reconciler) acquireLock() error {
 		return fmt.Errorf("refusing reconcile lock %q: open owner-only lock file (chown %d and chmod %#o): %w", r.lockFile, os.Geteuid(), lockFileMode, err)
 	}
 
-	if err := validateOpenedLockFile(fd, r.lockFile); err != nil {
-		_ = fd.Close()
-		return err
-	}
-	if err := validateLockPathIdentity(parent, name, before, fd, r.lockFile); err != nil {
+	if err := validateLockFile(parent, name, before, fd, r.lockFile); err != nil {
 		_ = fd.Close()
 		return err
 	}
@@ -75,6 +72,14 @@ func (r *Reconciler) acquireLock() error {
 
 	r.lockFd = fd
 	return nil
+}
+
+// Validate identity before the owner/type check can repair file permissions.
+func validateLockFile(parent *os.Root, name string, before os.FileInfo, fd *os.File, path string) error {
+	if err := validateLockPathIdentity(parent, name, before, fd, path); err != nil {
+		return err
+	}
+	return validateOpenedLockFile(fd, path)
 }
 
 func validateLockPathIdentity(parent *os.Root, name string, before os.FileInfo, fd *os.File, path string) error {

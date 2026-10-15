@@ -20,7 +20,7 @@
 
 ## 4. Evidence and consumer docs
 
-- [x] 4.1 Add deterministic tests and staged-break mutation recipe.
+- [x] 4.1 Add deterministic tests and linked compiled-negative CI evidence.
 - [x] 4.2 Update `docs/security.md` and onboard GitOps/configuration resources.
 - [x] 4.3 Run formatting, OpenSpec strict validation, and gated checks where the
       resource floor permits; record blocked exit codes precisely (gate exit 75).

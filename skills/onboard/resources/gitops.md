@@ -762,6 +762,12 @@ its configured include root for each helper read and pins each selected
 template's parent for the source read. Missing, non-directory, or
 symlinked roots and ancestors fail closed.
 
+Before upgrading, use physical source/include directory paths and replace every
+symlinked `.tmpl` file with a regular template file. A symlinked template, even
+one introduced after discovery, aborts directory rendering with its path and the
+remedy to replace the symlink with a regular file. Bosun does not deploy or prune
+from that partial render; it no longer silently omits the linked template's output.
+
 ```bash
 bosun reconcile -l             # Force local mode
 ```
