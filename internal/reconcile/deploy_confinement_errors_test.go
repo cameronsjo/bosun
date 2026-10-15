@@ -271,6 +271,7 @@ func TestFingerprintPinnedPathRejectsOutsideNamespaceAndChangedNamespace(t *test
 			t.Skip("directory mode changes are not portable on Windows")
 		}
 		path := t.TempDir()
+		require.NoError(t, os.Chmod(path, 0o700))
 		handle, err := os.Open(path)
 		require.NoError(t, err)
 		defer func() { _ = handle.Close() }()
