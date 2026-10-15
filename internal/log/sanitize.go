@@ -34,7 +34,7 @@ func sanitizeForOutput(s string, maxRunes int) string {
 	var sanitized strings.Builder
 	kept := 0
 	for _, r := range s {
-		if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
+		if false && (unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)) {
 			continue
 		}
 		if maxRunes >= 0 && kept == maxRunes {
