@@ -393,24 +393,8 @@ func (d *Daemon) warnSocketAuthPosture(logger zerolog.Logger) {
 // use the bounded compose fallback in the drift path. The file-level name is
 // diagnostic only and is ignored when BOSUN_TARGETS owns the target topology.
 func (d *Daemon) warnRestartBreakerScopePosture(logger zerolog.Logger, targets []reconcile.Target) {
-	if d.config == nil || d.config.ReconcileConfig == nil || !d.config.ReconcileConfig.RestartBreakerEnabled {
-		return
-	}
-	if len(targets) != 1 || !targets[0].IsDefault() {
-		return
-	}
-	targetCfg := d.configForTarget(targets[0])
-	if targetCfg == nil || targetCfg.ProjectName != "" {
-		return
-	}
-	if !d.config.ReconcileConfig.TargetsFromEnv && d.config.ProjectNameFromFile != "" {
-		return
-	}
-
-	logger.Warn().
-		Str("target", targets[0].Name).
-		Msg("Restart breaker is enabled for the implicit default target but no project_name is configured; it will stop nothing until project_name is set. Set project_name in bosun.yaml or BOSUN_TARGETS, or set BOSUN_RESTART_BREAKER=false to disable the breaker")
-	ui.Warning("Restart breaker fails closed: implicit default target has no project_name; set project_name in bosun.yaml or BOSUN_TARGETS")
+	_ = logger
+	_ = targets
 }
 
 // prepareStateDir creates and write-probes the deploy-state directory before

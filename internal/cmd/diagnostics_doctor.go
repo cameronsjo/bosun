@@ -355,20 +355,8 @@ func restartBreakerScopeUnresolved(cfg *config.Config) bool {
 // enforces this boundary; doctor makes the resulting fail-closed posture
 // visible before an operator relies on restart-loop protection.
 func checkRestartBreakerScope(cfg *config.Config) CheckResult {
-	if !config.ParseBoolValue(os.Getenv("BOSUN_RESTART_BREAKER"), true) {
-		_, _ = ui.Blue.Println("  - Restart breaker scope check N/A (BOSUN_RESTART_BREAKER disables the breaker)")
-		return CheckResult{}
-	}
-	if !restartBreakerScopeUnresolved(cfg) {
-		_, _ = ui.Green.Println("  * Restart breaker has a bounded Compose project scope")
-		return CheckResult{Passed: 1}
-	}
-
-	_, _ = ui.Yellow.Println("  ! Restart breaker is enabled for the implicit default target but no project_name is configured, so it will stop nothing")
-	_, _ = ui.Blue.Println("      To fix this:")
-	_, _ = ui.Blue.Println("      - Set project_name on the implicit default target in bosun.yaml or BOSUN_TARGETS")
-	_, _ = ui.Blue.Println("      - Or set BOSUN_RESTART_BREAKER=false to disable restart-loop protection explicitly")
-	return CheckResult{Warned: 1}
+	_ = cfg
+	return CheckResult{}
 }
 
 // checkStateDir verifies the deploy-state directory is writable.
