@@ -143,6 +143,9 @@ func TestOpenPinnedDirectoryAndCreatePinnedChildDirectoryPropagateParentFailures
 	require.NoError(t, os.Mkdir(child, 0o700))
 	_, _, _, err = createPinnedChildDirectory(child, nil)
 	require.Error(t, err)
+
+	_, _, _, err = createPinnedChildDirectory("", nil)
+	require.ErrorContains(t, err, "invalid child name")
 }
 
 func TestRemovePinnedTreeReportsMissingCleanupParent(t *testing.T) {
@@ -166,7 +169,63 @@ func TestRemovePinnedTreeReportsMissingCleanupParent(t *testing.T) {
 	assert.FileExists(t, path)
 }
 
+func TestPinRemovalTreeRejectsUnopenableDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permission behavior is not portable on Windows")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("permission failure is not observable when tests run as root")
+	}
+	path := filepath.Join(t.TempDir(), "managed")
+	require.NoError(t, os.Mkdir(path, 0o700))
+	handle, err := os.Open(path)
+	require.NoError(t, err)
+	defer func() { _ = handle.Close() }()
+	info, err := handle.Stat()
+	require.NoError(t, err)
+	require.NoError(t, os.Chmod(path, 0))
+	t.Cleanup(func() { _ = os.Chmod(path, 0o700) })
+
+	_, err = pinRemovalTree(path, handle, info)
+
+	require.ErrorContains(t, err, "pin removal root")
+}
+
+func TestRemovePinnedTreeRejectsInvalidCleanupName(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, "managed.txt")
+	require.NoError(t, os.WriteFile(path, []byte("managed"), 0o600))
+	handle, err := os.Open(path)
+	require.NoError(t, err)
+	info, err := handle.Stat()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = handle.Close() })
+	fingerprint, err := fingerprintPinnedPath(path, handle, info)
+	require.NoError(t, err)
+
+	err = removePinnedTree(path, "", handle, info, fingerprint, "managed file", removalHooks{})
+
+	require.ErrorContains(t, err, "invalid cleanup namespace name")
+	assert.FileExists(t, path)
+}
+
 func TestFingerprintPinnedPathRejectsOutsideNamespaceAndChangedNamespace(t *testing.T) {
+	t.Run("closed root", func(t *testing.T) {
+		path := t.TempDir()
+		handle, err := os.Open(path)
+		require.NoError(t, err)
+		defer func() { _ = handle.Close() }()
+		info, err := handle.Stat()
+		require.NoError(t, err)
+		root, err := fileutil.OpenPinnedRoot(path, false)
+		require.NoError(t, err)
+		require.NoError(t, root.Close())
+
+		_, err = fingerprintPinnedPathAtRoot(path, path, handle, info, root)
+
+		require.ErrorContains(t, err, "stat fingerprint root")
+	})
+
 	t.Run("outside pinned root", func(t *testing.T) {
 		base := t.TempDir()
 		path := filepath.Join(base, "directory")
@@ -204,6 +263,31 @@ func TestFingerprintPinnedPathRejectsOutsideNamespaceAndChangedNamespace(t *test
 		})
 
 		require.ErrorContains(t, err, "fingerprint namespace changed")
+	})
+}
+
+func TestManagedTypeTransitionsRollbackReportsDescriptorRenameFailures(t *testing.T) {
+	t.Run("replacement quarantine collision", func(t *testing.T) {
+		transitions, _ := newFileToDirTransition(t)
+		item := transitions.items[0]
+		require.NoError(t, transitions.Promote(context.Background()))
+		require.NoError(t, os.WriteFile(item.newPath, []byte("collision"), 0o600))
+
+		err := transitions.Rollback(os.ErrInvalid)
+
+		require.ErrorContains(t, err, "quarantine failed replacement")
+	})
+
+	t.Run("closed parent while restoring original", func(t *testing.T) {
+		transitions, _ := newFileToDirTransition(t)
+		item := transitions.items[0]
+		require.NoError(t, renameNoReplacePinned(item.parentHandle, item.targetPath, item.parentHandle, item.oldPath))
+		item.quarantined = true
+		require.NoError(t, item.parentHandle.Close())
+
+		err := transitions.Rollback(os.ErrInvalid)
+
+		require.ErrorContains(t, err, "restore original destination")
 	})
 }
 
