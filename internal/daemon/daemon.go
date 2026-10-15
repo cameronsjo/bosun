@@ -100,6 +100,10 @@ type Config struct {
 
 	// Reconcile settings
 	ReconcileConfig *reconcile.Config
+	// ProjectNameFromFile is the local bosun.yaml root-level project_name,
+	// retained for startup posture reporting. It never changes the effective
+	// per-target deployment or restart-breaker namespace.
+	ProjectNameFromFile string
 	// projectConfigError retains the narrow class of project configuration
 	// errors that must fail startup instead of using graceful degradation.
 	projectConfigError error
@@ -383,6 +387,32 @@ func (d *Daemon) warnSocketAuthPosture(logger zerolog.Logger) {
 	}
 }
 
+// warnRestartBreakerScopePosture reports the one startup condition where the
+// destructive breaker is intentionally inactive: the implicit default target
+// has no resolved project_name. Named targets with a blank project continue to
+// use the bounded compose fallback in the drift path. The file-level name is
+// diagnostic only and is ignored when BOSUN_TARGETS owns the target topology.
+func (d *Daemon) warnRestartBreakerScopePosture(logger zerolog.Logger, targets []reconcile.Target) {
+	if d.config == nil || d.config.ReconcileConfig == nil || !d.config.ReconcileConfig.RestartBreakerEnabled {
+		return
+	}
+	if len(targets) != 1 || !targets[0].IsDefault() {
+		return
+	}
+	targetCfg := d.configForTarget(targets[0])
+	if targetCfg == nil || targetCfg.ProjectName != "" {
+		return
+	}
+	if !d.config.ReconcileConfig.TargetsFromEnv && d.config.ProjectNameFromFile != "" {
+		return
+	}
+
+	logger.Warn().
+		Str("target", targets[0].Name).
+		Msg("Restart breaker is enabled for the implicit default target but no project_name is configured; it will stop nothing until project_name is set. Set project_name in bosun.yaml or BOSUN_TARGETS, or set BOSUN_RESTART_BREAKER=false to disable the breaker")
+	ui.Warning("Restart breaker fails closed: implicit default target has no project_name; set project_name in bosun.yaml or BOSUN_TARGETS")
+}
+
 // prepareStateDir creates and write-probes the deploy-state directory before
 // any listener starts. MkdirAll alone is insufficient for bind mounts: an
 // existing root-owned directory passes it even though the non-root daemon
@@ -469,6 +499,7 @@ func (d *Daemon) Run(ctx context.Context) (err error) {
 	d.warnWebhookAuthPosture(logger)
 	d.warnMetricsAuthPosture(logger)
 	d.warnSocketAuthPosture(logger)
+	d.warnRestartBreakerScopePosture(logger, targets)
 
 	// Ensure every effective target's state storage is usable before any API
 	// listener or reconcile loop starts. A persistent mount that exists but is
@@ -1769,7 +1800,7 @@ func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, s
 	}
 
 	result, err := reconcile.RunRestartBreaker(
-		ctx, client, actual, state,
+		ctx, client, projectName, actual, state,
 		rcfg.RestartThreshold, rcfg.RestartWindow,
 	)
 	if err != nil {
@@ -2588,6 +2619,10 @@ func ConfigFromEnv() *Config {
 	// Post-sync hooks, settle delay, deploy paths, alert flags, drift debounce, remove_orphans, and targets: load from project config, env var overrides.
 	if projectCfg, err := config.Load(); err == nil {
 		config.ApplyInitialHookConfig(projectCfg, rcfg)
+		// Keep the explicit root-level name only for startup posture reporting.
+		// Do not assign it to rcfg.ProjectName: per-target deployment and
+		// restart-breaker scope remain owned by the existing target model.
+		cfg.ProjectNameFromFile = projectCfg.ProjectNameFromFile()
 		rcfg.DeployPaths.SetFromFile(projectCfg.DeployPaths())
 		rcfg.CriticalContainers.SetFromFile(projectCfg.CriticalContainers())
 		rcfg.HealthGateScope = projectCfg.HealthGateScope()

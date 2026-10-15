@@ -411,12 +411,38 @@ func TestRunRestartBreaker(t *testing.T) {
 		}
 
 		result, err := RunRestartBreaker(
-			context.Background(), client, actual, state, 5, 10*time.Minute,
+			context.Background(), client, "test", actual, state, 5, 10*time.Minute,
 		)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"web"}, result.Tripped)
 		assert.Equal(t, "test-web-1", stoppedContainer)
 		assert.Equal(t, fullID[:12], result.Updated["web"].ContainerID)
+	})
+
+	t.Run("empty project scope stops no containers or advances tracking", func(t *testing.T) {
+		mockAPI := &dockertest.MockDockerAPI{
+			ContainerInspectFunc: func(_ context.Context, _ string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+				t.Fatal("an unresolved scope must not inspect containers")
+				return client.ContainerInspectResult{}, nil
+			},
+		}
+		dockerClient := docker.NewClientWithAPI(mockAPI)
+		tracking := map[string]RestartTrackingEntry{
+			"web": {RestartCount: 4, CheckedAt: time.Now().Add(-3 * time.Minute)},
+		}
+		state := &DeployState{RestartTracking: tracking}
+		actual := []ActualService{{Name: "web", ContainerName: "foreign-web-1", State: "running"}}
+
+		result, err := RunRestartBreaker(
+			context.Background(), dockerClient, "", actual, state, 5, 10*time.Minute,
+		)
+
+		require.NoError(t, err)
+		assert.Empty(t, result.Tripped)
+		assert.Empty(t, result.Resolved)
+		assert.Equal(t, tracking, result.Updated, "unresolved scope must preserve existing tracking")
+		assert.Equal(t, 0, mockAPI.ContainerInspectCalls)
+		assert.Equal(t, 0, mockAPI.ContainerStopCalls)
 	})
 
 	t.Run("no action when below threshold", func(t *testing.T) {
@@ -455,7 +481,7 @@ func TestRunRestartBreaker(t *testing.T) {
 		}
 
 		result, err := RunRestartBreaker(
-			context.Background(), client, actual, state, 5, 10*time.Minute,
+			context.Background(), client, "test", actual, state, 5, 10*time.Minute,
 		)
 		require.NoError(t, err)
 		assert.Empty(t, result.Tripped)
@@ -472,7 +498,7 @@ func TestRunRestartBreaker(t *testing.T) {
 		state := &DeployState{}
 
 		result, err := RunRestartBreaker(
-			context.Background(), client, actual, state, 5, 10*time.Minute,
+			context.Background(), client, "test", actual, state, 5, 10*time.Minute,
 		)
 		require.NoError(t, err)
 		assert.Empty(t, result.Tripped)
@@ -492,7 +518,7 @@ func TestRunRestartBreaker(t *testing.T) {
 			},
 		}}
 
-		result, err := RunRestartBreaker(context.Background(), client, actual, state, 5, 10*time.Minute)
+		result, err := RunRestartBreaker(context.Background(), client, "test", actual, state, 5, 10*time.Minute)
 
 		require.NoError(t, err)
 		require.Contains(t, result.Updated, "web")
@@ -544,7 +570,7 @@ func TestRunRestartBreaker(t *testing.T) {
 			},
 		}
 
-		result, err := RunRestartBreaker(context.Background(), client, actual, state, 5, 10*time.Minute)
+		result, err := RunRestartBreaker(context.Background(), client, "test", actual, state, 5, 10*time.Minute)
 
 		require.NoError(t, err)
 		assert.Equal(t, webEntry, result.Updated["web"])
@@ -568,7 +594,7 @@ func TestRunRestartBreaker(t *testing.T) {
 		}
 		state := &DeployState{RestartTracking: map[string]RestartTrackingEntry{"web": entry}}
 
-		result, err := RunRestartBreaker(context.Background(), client, actual, state, 5, 10*time.Minute)
+		result, err := RunRestartBreaker(context.Background(), client, "test", actual, state, 5, 10*time.Minute)
 
 		require.NoError(t, err)
 		assert.Equal(t, entry, result.Updated["web"])
