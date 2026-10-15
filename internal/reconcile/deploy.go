@@ -1713,7 +1713,16 @@ func fingerprintPinnedPath(path string, handle *os.File, pinned os.FileInfo, roo
 	return fingerprintPinnedPathAtRoot(path, path, handle, pinned, root)
 }
 
+type fingerprintWalkHooks struct {
+	beforeWalk func()
+	afterWalk  func()
+}
+
 func fingerprintPinnedPathAtRoot(path, rootPath string, handle *os.File, pinned os.FileInfo, root *os.Root) ([sha256.Size]byte, error) {
+	return fingerprintPinnedPathAtRootWithHooks(path, rootPath, handle, pinned, root, nil)
+}
+
+func fingerprintPinnedPathAtRootWithHooks(path, rootPath string, handle *os.File, pinned os.FileInfo, root *os.Root, hooks *fingerprintWalkHooks) ([sha256.Size]byte, error) {
 	var empty [sha256.Size]byte
 	if err := revalidatePinned(path, handle, pinned); err != nil {
 		return empty, err
@@ -1750,8 +1759,14 @@ func fingerprintPinnedPathAtRoot(path, rootPath string, handle *os.File, pinned 
 			return empty, fmt.Errorf("fingerprint path %s is outside pinned root %s", path, rootPath)
 		}
 		walkStart = filepath.Clean(walkStart)
+		if walkStart == "." && !os.SameFile(namespaceBefore, rootBefore) {
+			return empty, fmt.Errorf("fingerprint root namespace does not match %s", path)
+		}
 		writeFingerprintMetadata(digest, managedTargetRoot, rootBefore)
-		if err := fs.WalkDir(root.FS(), filepath.ToSlash(walkStart), func(relativePath string, entry fs.DirEntry, walkErr error) error {
+		if hooks != nil && hooks.beforeWalk != nil {
+			hooks.beforeWalk()
+		}
+		walkErr := fs.WalkDir(root.FS(), filepath.ToSlash(walkStart), func(relativePath string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
 			}
@@ -1785,8 +1800,12 @@ func fingerprintPinnedPathAtRoot(path, rootPath string, handle *os.File, pinned 
 			fingerprintErr := fingerprintFile(digest, filepath.ToSlash(rel), file, opened)
 			closeErr := file.Close()
 			return errors.Join(fingerprintErr, closeErr)
-		}); err != nil {
-			return empty, err
+		})
+		if hooks != nil && hooks.afterWalk != nil {
+			hooks.afterWalk()
+		}
+		if walkErr != nil {
+			return empty, walkErr
 		}
 		namespaceAfter, err := root.Stat(".")
 		if err != nil || !sameFileMetadata(namespaceBefore, namespaceAfter) {

@@ -2004,8 +2004,7 @@ func TestManagedTypeTransitions_RollbackNeverOverwritesRecreatedTarget(t *testin
 func TestFingerprintPinnedPath_UsesPinnedDirectoryNamespaceAfterRelocation(t *testing.T) {
 	parent := evalSymlinks(t, t.TempDir())
 	directory := filepath.Join(parent, "target")
-	moved := filepath.Join(parent, "target-moved")
-	replaced := filepath.Join(parent, "target-replaced")
+	moved := filepath.Join(parent, "target-original")
 	require.NoError(t, os.Mkdir(directory, 0700))
 	require.NoError(t, os.WriteFile(filepath.Join(directory, "payload"), []byte("original"), 0600))
 
@@ -2020,13 +2019,19 @@ func TestFingerprintPinnedPath_UsesPinnedDirectoryNamespaceAfterRelocation(t *te
 	want, err := fingerprintPinnedPath(directory, handle, info, root)
 	require.NoError(t, err)
 
-	require.NoError(t, os.Rename(directory, moved))
-	require.NoError(t, os.Mkdir(replaced, 0700))
-	require.NoError(t, os.WriteFile(filepath.Join(replaced, "payload"), []byte("attacker"), 0600))
-
-	got, err := fingerprintPinnedPath(moved, handle, info, root)
+	got, err := fingerprintPinnedPathAtRootWithHooks(directory, directory, handle, info, root, &fingerprintWalkHooks{
+		beforeWalk: func() {
+			require.NoError(t, os.Rename(directory, moved))
+			require.NoError(t, os.Mkdir(directory, 0700))
+			require.NoError(t, os.WriteFile(filepath.Join(directory, "payload"), []byte("attacker"), 0600))
+		},
+		afterWalk: func() {
+			require.NoError(t, os.RemoveAll(directory))
+			require.NoError(t, os.Rename(moved, directory))
+		},
+	})
 	require.NoError(t, err)
-	assert.Equal(t, want, got, "fingerprinting must read the descriptor-bound directory after its path is relocated")
+	assert.Equal(t, want, got, "fingerprinting must read the descriptor-bound directory while its named path is replaced")
 }
 
 func TestManagedTypeTransitions_PromoteRejectsChangedTarget(t *testing.T) {
