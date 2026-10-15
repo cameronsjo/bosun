@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/cameronsjo/bosun/internal/log"
 )
 
 // errDestinationEscapesRoot reports a destination path that does not lie under
@@ -417,6 +419,12 @@ func copyFileIfChangedDeferredAtRoot(
 				return false, nil, fmt.Errorf("compare destination bytes: %w", compareErr)
 			}
 			if contentsEqual {
+				log.Component(log.ComponentReconcile).
+					Debug().
+					Str("src", src).
+					Str("dst", dst).
+					Str("reason", "hash_match").
+					Msg("skipped")
 				return false, nil, nil
 			}
 		}
@@ -424,6 +432,9 @@ func copyFileIfChangedDeferredAtRoot(
 		// replaces it; Windows can reject a rename while a reader is open.
 		_ = dstFile.Close()
 	} else if !errors.Is(err, fs.ErrNotExist) {
+		if isRootPathEscape(err) {
+			return false, nil, fmt.Errorf("compare destination: %w", errDestinationEscapesRoot)
+		}
 		return false, nil, fmt.Errorf("compare destination: %w", err)
 	}
 
@@ -446,8 +457,25 @@ func copyFileIfChangedDeferredAtRoot(
 		if verifyHash != srcHash {
 			return fmt.Errorf("%w: destination hash mismatch after write: %s", ErrPostWriteVerification, dst)
 		}
+		srcSize := int64(-1)
+		if info, statErr := os.Stat(src); statErr == nil {
+			srcSize = info.Size()
+		}
+		log.Component(log.ComponentReconcile).
+			Debug().
+			Str("src", src).
+			Str("dst", dst).
+			Int64("bytes", srcSize).
+			Msg("wrote")
 		return nil
 	}, nil
+}
+
+// Go's os.Root reports a symlink traversal that leaves the root with an
+// internal error on supported versions. Keep the public copy contract stable
+// without depending on that unexported standard-library sentinel.
+func isRootPathEscape(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "path escapes from parent")
 }
 
 // openExistingRoot pins the root without creating it, so a caller that only
