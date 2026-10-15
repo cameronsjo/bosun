@@ -1,7 +1,7 @@
 ## Implementation
 - [x] Record approved boundary, consumers and verification design before code.
-- [ ] Port authorization and sanitization fixes with current-main compatibility.
-- [ ] Reconcile consumer documentation and committed regression tests.
+- [x] Port authorization and sanitization fixes with current-main compatibility.
+- [x] Reconcile consumer documentation and regression test sources.
 - [ ] Complete independent review, staged-break proof and final-head CI.
 
 ## Approval and delivery

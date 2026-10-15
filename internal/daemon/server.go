@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"go.opentelemetry.io/otel/trace"
 
@@ -110,19 +109,7 @@ func listenAddr(host string, port int) string {
 // so the standalone webhook receiver applies the same boundary before
 // forwarding attribution to the daemon.
 func SanitizeWebhookPusherName(name string) string {
-	var sanitized strings.Builder
-	kept := 0
-	for _, r := range name {
-		if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
-			continue
-		}
-		if kept == maxWebhookPusherNameLength {
-			break
-		}
-		sanitized.WriteRune(r)
-		kept++
-	}
-	return sanitized.String()
+	return log.SanitizeForOutputCapped(name, maxWebhookPusherNameLength)
 }
 
 // Start starts the HTTP server on the given port, bound to the configured
