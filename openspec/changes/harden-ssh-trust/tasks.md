@@ -27,3 +27,9 @@
   rejection without bypassing it.
 - [x] 3.4 Stage a small break patch that removes the fail-closed controls and
   names the regression tests expected to fail.
+- [x] 3.5 Restructure the `Git Repository Sync` delta as REMOVED plus ADDED
+  `Git Repository Sync and Host Key Verification`, and carry every existing
+  scenario into both replaced blocks. The canonical block carries the
+  insecure-fallback scenario this change reverses, and a MODIFIED block cannot
+  drop a scenario, so `openspec validate --strict` and archive both refused the
+  delta (bosun#719).
