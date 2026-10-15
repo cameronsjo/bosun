@@ -397,10 +397,9 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	// Check if it's the branch we care about
 	process, branchReason := shouldProcessGitHubPush(payload.Ref, s.daemon.config.ReconcileConfig.RepoBranch)
 	// Compare the original ref: sanitization must never turn a different ref into the tracked branch.
-	branchReason = SanitizeWebhookPusherName(branchReason)
 	if !process {
 		logger.Debug().
-			Str(log.FieldBranch, SanitizeWebhookPusherName(payload.Ref)).
+			Str(log.FieldBranch, payload.Ref).
 			Str("reason", branchReason).
 			Msg("GitHub push on non-tracked branch ignored")
 		w.WriteHeader(http.StatusOK)
@@ -416,7 +415,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 
 	logger.Info().
 		Str(log.FieldSource, log.SourceGitHub).
-		Str(log.FieldBranch, SanitizeWebhookPusherName(payload.Ref)).
+		Str(log.FieldBranch, payload.Ref).
 		Str("pusher", pusherName).
 		Str(log.FieldCommit, payload.After).
 		Msg("GitHub push received on tracked branch")
