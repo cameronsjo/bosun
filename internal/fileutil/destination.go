@@ -346,6 +346,14 @@ func (p *pinnedDir) copyFileIfChangedDeferredWithCopy(
 	if err != nil {
 		return false, nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		return false, nil, err
+	}
+	source, _, err := openRegularSource(src, true)
+	if err != nil {
+		return false, nil, err
+	}
+	_ = source.Close()
 	root, err := p.openExistingRoot()
 	if err != nil {
 		return false, nil, err
