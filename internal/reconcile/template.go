@@ -467,7 +467,6 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 
 		return nil
 	}
-	var err error
 	if t.walkDirFn != nil {
 		err = walkDir(sourceDir, visitTemplate)
 	} else {

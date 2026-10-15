@@ -1479,7 +1479,7 @@ func removePinnedTree(path, cleanupPath string, rootHandle *os.File, rootInfo os
 	return nil
 }
 
-func restoreCleanupCandidate(cleanupHandle, quarantined, parentHandle *os.File, original string) string {
+func restoreCleanupCandidate(cleanupHandle *os.File, quarantined string, parentHandle *os.File, original string) string {
 	if err := renameNoReplacePinned(cleanupHandle, quarantined, parentHandle, original); err == nil {
 		return original
 	}
