@@ -52,12 +52,13 @@ the security boundary.
 
 - Run `gofmt`, focused static checks, OpenSpec strict validation, and the
   deterministic unit tests that fit the local environment.
-- Attempt compiler-heavy checks only through `scripts/agent-go-gate.sh`; the
-  current host has 57 GiB free against the mandatory 100 GiB floor, so a gate
-  exit 75 is an environment limit and must not be bypassed.
+- Attempt compiler-heavy checks only through `scripts/agent-go-gate.sh`; local
+  attempts observed 57 GiB free earlier and 42.4 GiB at the latest attempt,
+  both below the mandatory 100 GiB floor. Gate exit 75 is an environment limit
+  and must not be bypassed.
 - Provide a deterministic mutation recipe under
-  `/private/tmp/cos-bosun668-assessment` that removes each control and observes
-  a behavioral test failure without introducing compile failures.
+  the assessment workspace that removes each control and observes a behavioral
+  test failure without introducing compile failures.
 
 ## Status
 
@@ -67,10 +68,24 @@ the security boundary.
 - [x] Stale pruning uses the trusted destination root.
 - [x] Consumer documentation updated.
 - [ ] Focused Go tests remain pending the mandatory disk-floor gate (exit 75).
-- [x] All four staged-break recipes were assertion-checked against disposable
-  scratch copies without introducing compile-invalid mutations.
+- [x] Six filesystem control families plus the pinned-root directory-entry
+  regression were assertion-checked against disposable scratch copies without
+  introducing compile-invalid mutations.
+- [ ] Final restored-head CI and the 80% diff-coverage gate remain pending
+  publication.
 - [x] Local commit created with explicit paths; root agent independently reviews.
 
 ## Review and publication
 
-Independent Codex review cleared the final source at f79c55f8 after descriptor-bound staging/cleanup, fingerprints, standalone render source reads, lock diagnostics, Darwin aliases, native Windows rename and compatibility fixes. All six negative-control families are assertion-checked outside the worktree; actual behavioral red and final restored-head CI are recorded on the delivery PR and in the external report. A deterministic fingerprint namespace swap test is included; the broad concurrent filesystem racing harness in #671 remains deferred. Windows native tests are present but have not run on Windows; standard atomic swap retains its documented trusted-parent precondition and Windows locks retain the approved ACL/reparse residual. #669 remains separate.
+Independent review cleared the source after descriptor-bound staging/cleanup,
+fingerprints, standalone render source reads, lock diagnostics, Darwin/Linux
+aliases, native Windows rename and compatibility fixes. CI run 38764744519
+provided behavioral red evidence for both pinned-root directory-entry tests,
+stale-pruning ancestor replacement, the five earlier filesystem regressions,
+and the Linux alias regression before restoration. The final restored-head CI
+and coverage result remain pending. A deterministic fingerprint namespace swap
+test is included; the broad concurrent filesystem racing harness in #671
+remains deferred. Windows native tests are present but have not run on
+Windows; standard atomic swap retains its documented trusted-parent precondition
+and Windows locks retain the approved ACL/reparse residual. #669 remains
+separate.
