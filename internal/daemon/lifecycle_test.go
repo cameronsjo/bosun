@@ -54,7 +54,7 @@ func startDaemonSocket(t *testing.T) (*Daemon, string) {
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
 	cfg.ReconcileConfig.DryRun = true
 	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
-	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "test.lock")
+	cfg.ReconcileConfig.LockFile = privateLockPath(t, tmpDir, "test.lock")
 	cfg.ReconcileConfig.StateFile = filepath.Join(tmpDir, "state.json")
 
 	d, err := New(cfg)
@@ -176,7 +176,7 @@ func TestTCPLifecycle_StartAcceptShutdown(t *testing.T) {
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
 	cfg.ReconcileConfig.DryRun = true
 	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
-	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "test.lock")
+	cfg.ReconcileConfig.LockFile = privateLockPath(t, tmpDir, "test.lock")
 	cfg.ReconcileConfig.StateFile = filepath.Join(tmpDir, "state.json")
 
 	d, err := New(cfg)
@@ -244,7 +244,7 @@ func TestTCPLifecycle_AuthRequired(t *testing.T) {
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
 	cfg.ReconcileConfig.DryRun = true
 	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
-	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "test.lock")
+	cfg.ReconcileConfig.LockFile = privateLockPath(t, tmpDir, "test.lock")
 	cfg.ReconcileConfig.StateFile = filepath.Join(tmpDir, "state.json")
 
 	d, err := New(cfg)
@@ -453,7 +453,7 @@ func TestDaemonRun_PreparesNestedStateFileForNamedTarget(t *testing.T) {
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
 	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
 	cfg.ReconcileConfig.StagingDir = filepath.Join(tmpDir, "staging")
-	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "reconcile.lock")
+	cfg.ReconcileConfig.LockFile = privateLockPath(t, tmpDir, "reconcile.lock")
 	cfg.ReconcileConfig.StateFile = baseStateFile
 	cfg.ReconcileConfig.Targets = []reconcile.Target{{
 		Name:      "nested",
@@ -498,7 +498,7 @@ func TestDaemonRun_CancelledContext(t *testing.T) {
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
 	cfg.ReconcileConfig.DryRun = true
 	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
-	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "test.lock")
+	cfg.ReconcileConfig.LockFile = privateLockPath(t, tmpDir, "test.lock")
 	cfg.ReconcileConfig.StateFile = filepath.Join(tmpDir, "state.json")
 
 	d, err := New(cfg)
@@ -547,7 +547,7 @@ func TestDaemonRun_InitialReconcileFailure_StaysNotReady(t *testing.T) {
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
 	cfg.ReconcileConfig.DryRun = true
 	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
-	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "test.lock")
+	cfg.ReconcileConfig.LockFile = privateLockPath(t, tmpDir, "test.lock")
 	cfg.ReconcileConfig.StateFile = filepath.Join(tmpDir, "state.json")
 
 	d, err := New(cfg)
@@ -617,7 +617,7 @@ func TestDaemonRun_LaterReconcileSucceeds_BecomesReady(t *testing.T) {
 	cfg.ReconcileConfig.StagingDir = filepath.Join(tmpDir, "staging")
 	cfg.ReconcileConfig.LocalAppdataPath = filepath.Join(tmpDir, "appdata")
 	cfg.ReconcileConfig.InfraSubDir = "unraid"
-	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "test.lock")
+	cfg.ReconcileConfig.LockFile = privateLockPath(t, tmpDir, "test.lock")
 	cfg.ReconcileConfig.StateFile = filepath.Join(tmpDir, "state.json")
 	require.NoError(t, os.MkdirAll(cfg.ReconcileConfig.LocalAppdataPath, 0755))
 

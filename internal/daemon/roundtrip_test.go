@@ -130,7 +130,7 @@ func TestTCPClient_Health(t *testing.T) {
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
 	cfg.ReconcileConfig.DryRun = true
 	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
-	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "test.lock")
+	cfg.ReconcileConfig.LockFile = privateLockPath(t, tmpDir, "test.lock")
 	cfg.ReconcileConfig.StateFile = filepath.Join(tmpDir, "state.json")
 
 	d, err := New(cfg)
@@ -185,7 +185,7 @@ func TestTCPClient_WrongToken(t *testing.T) {
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
 	cfg.ReconcileConfig.DryRun = true
 	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
-	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "test.lock")
+	cfg.ReconcileConfig.LockFile = privateLockPath(t, tmpDir, "test.lock")
 	cfg.ReconcileConfig.StateFile = filepath.Join(tmpDir, "state.json")
 
 	d, err := New(cfg)

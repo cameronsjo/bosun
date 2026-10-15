@@ -66,7 +66,7 @@ func TestDaemonRunDriftCheck_UpdatesStateFile(t *testing.T) {
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
 	cfg.ReconcileConfig.DryRun = true
 	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
-	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "test.lock")
+	cfg.ReconcileConfig.LockFile = privateLockPath(t, tmpDir, "test.lock")
 	cfg.ReconcileConfig.StateFile = stateFile
 	cfg.ReconcileConfig.ProjectName = "myapp"
 
@@ -102,7 +102,7 @@ func TestDaemonRunDriftCheck_NoStateFile(t *testing.T) {
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
 	cfg.ReconcileConfig.DryRun = true
 	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
-	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "test.lock")
+	cfg.ReconcileConfig.LockFile = privateLockPath(t, tmpDir, "test.lock")
 	cfg.ReconcileConfig.StateFile = "" // No state file
 	cfg.ReconcileConfig.ProjectName = "myapp"
 
