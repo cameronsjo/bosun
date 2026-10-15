@@ -17,6 +17,7 @@ func TestWarnRestartBreakerScopePosture(t *testing.T) {
 		targets            []reconcile.Target
 		wantWarning        bool
 		wantProjectNameFix bool
+		wantText           []string
 	}{
 		{
 			name: "unresolved implicit default warns once at startup",
@@ -28,9 +29,36 @@ func TestWarnRestartBreakerScopePosture(t *testing.T) {
 			wantProjectNameFix: true,
 		},
 		{
-			name: "root project name resolves implicit default posture",
+			// bosun#719: the root-level name is posture input only; the breaker
+			// scope stays empty until a reconcile reloads it from the repo.
+			name: "root project name does not silence the unresolved implicit default",
 			cfg: &Config{
 				ReconcileConfig:     &reconcile.Config{RestartBreakerEnabled: true},
+				ProjectNameFromFile: "homelab",
+			},
+			targets:     []reconcile.Target{{Name: reconcile.DefaultTargetName}},
+			wantWarning: true,
+			wantText: []string{
+				"implicit default target",
+				"root-level project_name",
+				"will stop nothing until a reconcile loads project_name",
+				"set project_name on a target named default",
+			},
+		},
+		{
+			name: "env targets ignore the root project name",
+			cfg: &Config{
+				ReconcileConfig:     &reconcile.Config{RestartBreakerEnabled: true, TargetsFromEnv: true},
+				ProjectNameFromFile: "homelab",
+			},
+			targets:            []reconcile.Target{{Name: reconcile.DefaultTargetName}},
+			wantWarning:        true,
+			wantProjectNameFix: true,
+		},
+		{
+			name: "target project name resolves implicit default posture",
+			cfg: &Config{
+				ReconcileConfig:     &reconcile.Config{RestartBreakerEnabled: true, ProjectName: "homelab"},
 				ProjectNameFromFile: "homelab",
 			},
 			targets: []reconcile.Target{{Name: reconcile.DefaultTargetName}},
@@ -57,6 +85,12 @@ func TestWarnRestartBreakerScopePosture(t *testing.T) {
 			d := &Daemon{config: tt.cfg}
 			d.warnRestartBreakerScopePosture(zerolog.New(&output), tt.targets)
 
+			if tt.wantWarning && len(tt.wantText) > 0 {
+				for _, want := range tt.wantText {
+					assert.Contains(t, output.String(), want)
+				}
+				return
+			}
 			if tt.wantWarning {
 				assert.Contains(t, output.String(), "implicit default target")
 				assert.Contains(t, output.String(), "no project_name is configured")

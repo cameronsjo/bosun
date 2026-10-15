@@ -30,4 +30,8 @@
   disabled breaker.
 - [ ] 2.9 Execute the fix2 warning/check mutation red-green proof and record
   the restored-head CI result.
+- [x] 2.10 Stop the root-level `project_name` from suppressing the startup and
+  doctor warning, since it never scopes the breaker before a repository
+  reload. Reproduce with a daemon test that runs the startup warning and a
+  drift check against the same config (bosun#719).
 - Final restored-head CI results and readiness: [PR #714](https://github.com/cameronsjo/bosun/pull/714).

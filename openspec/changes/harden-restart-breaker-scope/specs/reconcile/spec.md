@@ -33,9 +33,13 @@ resolved project name, daemon startup SHALL emit one warning naming the
 unresolved `project_name` condition and instructing the operator to set
 `project_name`. `bosun doctor` SHALL report the same condition and fix. The
 per-cycle empty-scope message SHALL be debug-level so the condition does not
-flood logs. A root-level `project_name` supplied by the local configuration may
-resolve the startup/doctor posture, but this diagnostic value SHALL NOT replace
-the existing per-target deployment or restart-breaker namespace.
+flood logs. A root-level `project_name` supplied by the local configuration is
+diagnostic input only: it SHALL NOT replace the existing per-target deployment
+or restart-breaker namespace, and therefore SHALL NOT suppress the startup or
+doctor warning. Until a reconcile loads `project_name` from the repository
+configuration, the breaker for that target stops nothing; when the local
+configuration has a root-level name, the warning SHALL say that the name does
+not scope the breaker at startup.
 
 #### Scenario: Slow restart loop trips despite long drift interval
 - **WHEN** `BOSUN_DRIFT_INTERVAL` is greater than `BOSUN_RESTART_WINDOW` and a container restarts repeatedly across successive drift checks
@@ -72,3 +76,11 @@ the existing per-target deployment or restart-breaker namespace.
   and telling the operator to set it
 - **AND** `bosun doctor` reports the same warning and fix
 - **AND** recurring drift checks do not emit the condition at warning level
+
+#### Scenario: Root-level project name does not silence the posture warning
+- **WHEN** the restart breaker is enabled for an implicit default target with no
+  target-level project name
+- **AND** the local configuration sets only a root-level `project_name`
+- **THEN** a drift check before any repository config reload stops nothing
+- **AND** daemon startup and `bosun doctor` still warn, stating that the
+  root-level name does not scope the breaker until a reconcile loads it
