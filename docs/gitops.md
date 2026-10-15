@@ -231,6 +231,15 @@ Git sync or secret decryption.
 
 ## Deploy State Tracking
 
+Before upgrading to filesystem confinement, stop Bosun and ensure the configured
+Unix lock directory is persistent, daemon-owned and mode `0700`; an existing
+lock file must be daemon-owned, regular and mode `0600`. Repair the owner/mode
+or symlinked path named by the error before restarting. Use physical template
+source/include directory paths, and replace symlinked `.tmpl` entries with
+regular template files. Directory rendering now refuses a symlinked template
+with its path and that remedy, preventing deployment or stale-file pruning from
+a partial render. Windows lock behavior is unchanged.
+
 The reconciler maintains persistent state in a JSON file at `/var/lib/bosun/deploy-state.json` (configurable via `BOSUN_STATE_DIR`). This state drives skip logic, circuit breaking, and drift detection. Both daemon and one-shot modes create the state file's parent directory before a real reconciliation; one-shot multi-target runs prepare and verify each target's state directory independently and fail that target before deployment if the directory cannot be written. Multi-target configuration is rejected when two effective state-file paths collide after path cleaning; case-only variants also collide on Windows and macOS. Daemon startup performs this validation before binding API listeners or announcing readiness. A one-shot dry run works against a temporary copy of existing state, preserving skip and circuit-breaker decisions without creating or updating the configured state path.
 
 Container deployments must persist `/var/lib/bosun`. The shipped Compose and
@@ -1116,10 +1125,15 @@ reading. The default root is `<infraDir>/templates`; `template_include_dir` or
 paths whose resolved symlink target leaves that root are rejected with an error
 that names the allowed directory.
 
-Validation and reading are separate filesystem operations, not an atomic or
-file-descriptor-anchored transaction. The control assumes an adversarial local
-process is not concurrently replacing paths inside the trusted include tree
-during rendering; templates from untrusted sources remain unsupported.
+During reconciliation, Bosun opens the source tree and configured include root
+through descriptor-bound traversal before walking them. Each template source,
+include, and fromJsonFile read uses the already selected root namespace, and an
+ancestor or final-entry replacement fails closed instead of redirecting the
+read. The standalone `bosun render` command pins the selected template's
+parent for the source read and pins the configured include root for each helper
+read. Missing, non-directory, symlinked, or escaping roots fail closed;
+symlinks that resolve within an allowed root retain normal `os.Root` semantics.
+Templates from untrusted sources remain unsupported.
 
 ### Template Rendering Scope
 

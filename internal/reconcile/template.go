@@ -41,6 +41,14 @@ type TemplateOps struct {
 	beforeMutationFn func(string)
 	// walkDirFn is an instance-scoped traversal seam. Nil uses filepath.WalkDir.
 	walkDirFn func(string, fs.WalkDirFunc) error
+
+	// sourceRoot and includeRoot are opened once for RenderDirectory. Keeping
+	// them on the operation binds each source/include read to the namespace
+	// that was selected before walking the checkout.
+	sourceRoot      *os.Root
+	sourceRootPath  string
+	includeRoot     *os.Root
+	includeRootPath string
 }
 
 // NewTemplateOps creates a new TemplateOps instance with the given data.
@@ -55,8 +63,23 @@ func (t *TemplateOps) ExecuteTemplate(ctx context.Context, templateFile, outputF
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// Read template content.
-	content, err := os.ReadFile(templateFile)
+	// Open and validate one descriptor, then read from that descriptor. A
+	// pathname check followed by a second open permits an ancestor or final
+	// component swap to redirect the read.
+	file, cleanup, err := t.openTemplateSource(templateFile)
+	if err != nil {
+		switch {
+		case errors.Is(err, fileutil.ErrSymlinkSkipped):
+			return fmt.Errorf("template %s: %w", templateFile, fileutil.ErrSymlinkSkipped)
+		case errors.Is(err, fileutil.ErrUnsupportedFileType):
+			return fmt.Errorf("template %s: %w", templateFile, err)
+		default:
+			return fmt.Errorf("failed to read template %s: %w", templateFile, err)
+		}
+	}
+	defer cleanup()
+	content, err := io.ReadAll(file)
+	_ = file.Close()
 	if err != nil {
 		return fmt.Errorf("failed to read template %s: %w", templateFile, err)
 	}
@@ -65,7 +88,7 @@ func (t *TemplateOps) ExecuteTemplate(ctx context.Context, templateFile, outputF
 	tmpl := template.New(filepath.Base(templateFile)).
 		Option("missingkey=error").
 		Funcs(sprig.TxtFuncMap()).
-		Funcs(TemplateFuncs(t.IncludeDir))
+		Funcs(t.templateFuncs())
 
 	// Parse the template.
 	tmpl, err = tmpl.Parse(string(content))
@@ -118,6 +141,42 @@ func (t *TemplateOps) ExecuteTemplate(ctx context.Context, templateFile, outputF
 	}
 
 	return nil
+}
+
+func (t *TemplateOps) openTemplateSource(templateFile string) (*os.File, func(), error) {
+	if t.sourceRoot == nil {
+		absPath, err := filepath.Abs(templateFile)
+		if err != nil {
+			return nil, func() {}, fmt.Errorf("resolve template path %s: %w", templateFile, err)
+		}
+		// A bare ExecuteTemplate call has no RenderDirectory-owned root. Pin
+		// the parent for the duration of this read so an ancestor replacement
+		// cannot redirect the final-component no-follow open elsewhere.
+		parentRoot, err := fileutil.OpenPinnedRoot(filepath.Dir(absPath), false)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		file, err := fileutil.OpenRootRegular(parentRoot, filepath.Base(absPath), false)
+		if err != nil {
+			_ = parentRoot.Close()
+			return nil, func() {}, err
+		}
+		return file, func() { _ = parentRoot.Close() }, nil
+	}
+	absPath, err := filepath.Abs(templateFile)
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("resolve template path %s: %w", templateFile, err)
+	}
+	rel, err := filepath.Rel(t.sourceRootPath, absPath)
+	if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, func() {}, fmt.Errorf("template %s escapes source root %s", templateFile, t.sourceRootPath)
+	}
+	file, err := fileutil.OpenRootRegular(t.sourceRoot, rel, false)
+	return file, func() {}, err
+}
+
+func (t *TemplateOps) templateFuncs() template.FuncMap {
+	return templateFuncsWithRoot(t.IncludeDir, t.includeRoot, t.includeRootPath)
 }
 
 func (t *TemplateOps) checkBeforeMutation(ctx context.Context, operation string) error {
@@ -221,14 +280,54 @@ func ensureWithin(root, target, origPath, allowedRoot string) error {
 // TemplateFuncs returns custom template functions for bosun templates.
 // includeDir confines include/fromJsonFile reads to that subtree when non-empty.
 func TemplateFuncs(includeDir string) template.FuncMap {
+	return templateFuncsWithRoot(includeDir, nil, "")
+}
+
+func templateFuncsWithRoot(includeDir string, includeRoot *os.Root, includeRootPath string) template.FuncMap {
+	read := func(path string) ([]byte, error) {
+		if err := validateIncludePath(path, includeDir); err != nil {
+			return nil, err
+		}
+		root := includeRoot
+		rootPath := includeRootPath
+		closeRoot := func() {}
+		if root == nil && includeDir != "" {
+			absRoot, err := filepath.Abs(includeDir)
+			if err != nil {
+				return nil, fmt.Errorf("failed to resolve include directory: %w", err)
+			}
+			root, err = fileutil.OpenPinnedRoot(absRoot, false)
+			if err != nil {
+				return nil, err
+			}
+			rootPath = absRoot
+			closeRoot = func() { _ = root.Close() }
+		}
+		defer closeRoot()
+		if root == nil {
+			return os.ReadFile(path)
+		}
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve include path: %w", err)
+		}
+		rel, err := filepath.Rel(rootPath, absPath)
+		if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("include path %s escapes the allowed include directory %s", path, includeDir)
+		}
+		file, err := fileutil.OpenRootRegular(root, rel, true)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = file.Close() }()
+		return io.ReadAll(file)
+	}
+
 	return template.FuncMap{
 		// include reads and returns the contents of a file.
 		// Usage: {{ include "/path/to/file" }}
 		"include": func(path string) (string, error) {
-			if err := validateIncludePath(path, includeDir); err != nil {
-				return "", err
-			}
-			data, err := os.ReadFile(path)
+			data, err := read(path)
 			if err != nil {
 				return "", fmt.Errorf("include %s: %w", path, err)
 			}
@@ -239,10 +338,7 @@ func TemplateFuncs(includeDir string) template.FuncMap {
 		// This is a convenience function that combines include + fromJson.
 		// Usage: {{ $data := fromJsonFile "/path/to/file.json" }}
 		"fromJsonFile": func(path string) (any, error) {
-			if err := validateIncludePath(path, includeDir); err != nil {
-				return nil, err
-			}
-			data, err := os.ReadFile(path)
+			data, err := read(path)
 			if err != nil {
 				return nil, fmt.Errorf("fromJsonFile %s: %w", path, err)
 			}
@@ -271,9 +367,38 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 	if t.IncludeDir == "" {
 		t.IncludeDir = filepath.Join(sourceDir, DefaultIncludeSubdir)
 	}
+	absSource, err := filepath.Abs(sourceDir)
+	if err != nil {
+		return fmt.Errorf("resolve template source directory: %w", err)
+	}
+	sourceRoot, err := fileutil.OpenPinnedRoot(absSource, false)
+	if err != nil {
+		return fmt.Errorf("open template source root: %w", err)
+	}
+	defer func() { _ = sourceRoot.Close() }()
+	absInclude, err := filepath.Abs(t.IncludeDir)
+	if err != nil {
+		return fmt.Errorf("resolve template include directory: %w", err)
+	}
+	var includeRoot *os.Root
+	if root, rootErr := fileutil.OpenPinnedRoot(absInclude, false); rootErr == nil {
+		includeRoot = root
+		defer func() { _ = includeRoot.Close() }()
+	} else if !errors.Is(rootErr, fs.ErrNotExist) {
+		return fmt.Errorf("open template include root: %w", rootErr)
+	}
+	previousSourceRoot, previousSourcePath := t.sourceRoot, t.sourceRootPath
+	previousIncludeRoot, previousIncludePath := t.includeRoot, t.includeRootPath
+	t.sourceRoot, t.sourceRootPath = sourceRoot, absSource
+	t.includeRoot, t.includeRootPath = includeRoot, absInclude
+	defer func() {
+		t.sourceRoot, t.sourceRootPath = previousSourceRoot, previousSourcePath
+		t.includeRoot, t.includeRootPath = previousIncludeRoot, previousIncludePath
+	}()
 
-	// Copy non-template files from sourceDir (caller already joined InfraSubDir).
-	if err := copyNonTemplateFiles(ctx, sourceDir, outDir); err != nil {
+	// Copy non-template files from the already pinned source root. Discovery and
+	// the later source open must share that descriptor-bound namespace.
+	if err := copyNonTemplateFilesFromRoot(ctx, absSource, outDir, sourceRoot); err != nil {
 		return fmt.Errorf("failed to copy non-template files: %w", err)
 	}
 
@@ -283,7 +408,7 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 	if t.walkDirFn != nil {
 		walkDir = t.walkDirFn
 	}
-	err := walkDir(sourceDir, func(path string, d fs.DirEntry, err error) error {
+	visitTemplate := func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -298,22 +423,51 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 		}
 
 		// Compute relative path and output path.
-		relPath, err := filepath.Rel(sourceDir, path)
-		if err != nil {
-			return fmt.Errorf("failed to compute relative path for %s: %w", path, err)
+		relPath := filepath.FromSlash(path)
+		var templatePath string
+		if t.walkDirFn != nil {
+			var relErr error
+			relPath, relErr = filepath.Rel(sourceDir, path)
+			if relErr != nil {
+				return fmt.Errorf("failed to compute relative path for %s: %w", path, relErr)
+			}
+			templatePath = path
+		} else {
+			templatePath = filepath.Join(absSource, relPath)
+		}
+
+		// Omitting a template can make its previous output look stale. Refuse
+		// symlinked templates so reconciliation cannot deploy or prune from an
+		// incomplete render.
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing symlinked template %q: replace the symlink with a regular file", templatePath)
 		}
 
 		// Remove .tmpl extension for output. Use outDir (stagingDir/subDir)
 		// so rendered files land where deployLocal expects them.
 		outputPath := filepath.Join(outDir, strings.TrimSuffix(relPath, ".tmpl"))
 
-		if err := t.ExecuteTemplate(ctx, path, outputPath); err != nil {
+		if err := t.ExecuteTemplate(ctx, templatePath, outputPath); err != nil {
+			// The entry can become a symlink after WalkDir captured its DirEntry.
+			// Refuse the raced link just like one discovered during the walk.
+			if errors.Is(err, fileutil.ErrSymlinkSkipped) {
+				return fmt.Errorf("refusing symlinked template %q: replace the symlink with a regular file: %w", templatePath, err)
+			}
 			return err
 		}
 		templatesRendered++
 
 		return nil
-	})
+	}
+	if t.walkDirFn != nil {
+		err = walkDir(sourceDir, visitTemplate)
+	} else {
+		// The source root was selected and pinned above. Traverse that namespace
+		// too, so discovery cannot be redirected by a source ancestor swap after
+		// the root was opened; ExecuteTemplate then reads the same root-relative
+		// entry selected here.
+		err = fs.WalkDir(fileutil.PinnedRootFS(sourceRoot), ".", visitTemplate)
+	}
 
 	if err != nil {
 		return fmt.Errorf("failed to render templates: %w", err)
@@ -332,6 +486,54 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 // copyNonTemplateFiles copies all non-.tmpl files from src to dst.
 func copyNonTemplateFiles(ctx context.Context, src, dst string) error {
 	return copyNonTemplateFilesWith(ctx, src, dst, fileutil.CopyFile)
+}
+
+func copyNonTemplateFilesFromRoot(ctx context.Context, src, dst string, root *os.Root) error {
+	if root == nil {
+		return fmt.Errorf("source directory %s has no pinned root", src)
+	}
+	info, err := root.Stat(".")
+	if err != nil {
+		return fmt.Errorf("failed to stat pinned source directory %s: %w", src, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("source path is not a directory: %s", src)
+	}
+	logger := log.ComponentCtx(ctx, log.ComponentTemplate)
+	return fs.WalkDir(fileutil.PinnedRootFS(root), ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) && path != "." {
+				return nil
+			}
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if path == "." {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			logger.Warn().Str(log.FieldPath, filepath.Join(src, filepath.FromSlash(path))).Msg("Skipping symlink during template file copy")
+			return nil
+		}
+		relPath := filepath.FromSlash(path)
+		dstPath := filepath.Join(dst, relPath)
+		if d.IsDir() {
+			return mkdirAllContext(ctx, dstPath, 0755)
+		}
+		if strings.HasSuffix(path, ".tmpl") {
+			return nil
+		}
+		if err := fileutil.CopyFileFromRoot(ctx, root, relPath, dstPath); err != nil {
+			if errors.Is(err, fileutil.ErrSymlinkSkipped) {
+				logger.Warn().Str(log.FieldPath, filepath.Join(src, relPath)).Msg("Skipping symlink during template file copy")
+				return nil
+			}
+			return err
+		}
+		return nil
+	})
 }
 
 // copyNonTemplateFilesWith makes the copy operation explicit so the

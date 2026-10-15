@@ -1,0 +1,103 @@
+## ADDED Requirements
+
+### Requirement: Trusted Filesystem Namespaces
+
+Bosun SHALL resolve local deploy destination mutations, content-hash skip
+comparisons, managed stale-file removals, template source/include reads, and
+rollback extraction writes through a trusted root namespace whenever the
+platform provides one. An escaping, untrusted, or unopenable path SHALL fail
+closed and SHALL NOT be silently skipped. Standard atomic-swap deployment MAY
+create a temporary tree directly in the target's existing parent and use a
+same-parent rename sequence; documentation SHALL state that narrower guarantee
+precisely rather than claiming every mutation is root-handle-pinned.
+
+#### Scenario: Swapped destination ancestor
+
+- **WHEN** a container replaces a destination ancestor with a symlink to a
+  directory outside the configured application-data root after validation
+- **THEN** the local deploy fails before writing through that symlink
+- **AND** no file or directory is created outside the trusted root
+
+#### Scenario: Hash skip reads the pinned destination
+
+- **WHEN** a content-hash deploy compares an existing destination while a
+  container races an ancestor replacement
+- **THEN** comparison and the eventual copy use the same trusted destination
+  namespace
+- **AND** an unsafe comparison fails closed instead of reporting a silent skip
+
+#### Scenario: Managed stale removal
+
+- **WHEN** a previously managed file is absent from the rendered source tree
+- **THEN** Bosun removes only the corresponding relative entry beneath the
+  trusted destination root
+- **AND** an ancestor replacement cannot redirect removal outside that root
+
+#### Scenario: Template source and include race
+
+- **WHEN** a template source or an allowlisted `include`/`fromJsonFile` path is
+  replaced between validation and reading
+- **THEN** Bosun reads the already validated descriptor in the pinned source
+  namespace
+- **AND** a symlink, special file, ancestor escape, or unopenable path fails
+  rendering without reading outside the allowlist
+
+#### Scenario: Rollback archive link chain
+
+- **WHEN** a rollback archive uses a sequence of links whose lexical names stay
+  under the extraction directory but whose realized path escapes it
+- **THEN** extraction fails before an outside file is created
+- **AND** the temporary extraction tree is cleaned up
+
+#### Scenario: Symlinked template aborts rendering
+
+- **WHEN** a `.tmpl` entry is a symlink, or becomes one after discovery
+- **THEN** directory rendering fails instead of silently omitting its output
+- **AND** the error names the template and tells the operator to replace the
+  symlink with a regular file
+- **AND** reconciliation does not deploy or prune from that partial render
+
+#### Scenario: Managed type transition keeps the checked parent
+
+- **WHEN** a managed file/directory type transition quarantines the old entry
+  or publishes its staged replacement on Unix
+- **THEN** each no-replace rename uses the already-checked parent directory
+  descriptor
+- **AND** a parent replacement after validation cannot redirect the rename
+
+### Requirement: Reconcile Lock Ownership
+
+On Unix, Bosun SHALL traverse the reconcile lock parent through descriptor-bound
+handles, create missing components with owner-only permissions, accept only
+root- or daemon-owned non-final ancestors (with a root-owned sticky system
+temporary ancestor allowed), and require the final directory to be daemon-owned
+with mode `0700`. Bosun SHALL open the lock basename through that final handle,
+require an owner-matching regular file, tighten it to `0600`, and fail closed
+when these guarantees cannot be established. The error SHALL name the affected
+path and an actionable ownership or permission fix. On Windows, Bosun SHALL
+retain the existing `LockFileEx` behavior and consumer documentation SHALL
+identify the remaining reparse/ACL residual.
+
+#### Scenario: New owner-only lock
+
+- **WHEN** the configured Unix lock path and parent do not exist
+- **THEN** Bosun creates the parent with mode `0700` and the lock file with mode
+  `0600`
+- **AND** another local user cannot open the lock by ordinary filesystem
+  permissions
+
+#### Scenario: Insecure lock path fails closed
+
+- **WHEN** a Unix lock parent or lock file is symlinked, untrusted, or cannot be
+  tightened to owner-only permissions
+- **THEN** lock acquisition fails before reconciliation proceeds
+- **AND** the error names the path and tells the operator to fix owner and
+  owner-only permissions
+
+#### Scenario: Existing lock parent and file are checked through handles
+
+- **WHEN** an existing lock parent is not daemon-owned and mode `0700`, or an
+  existing lock file is not a daemon-owned regular file
+- **THEN** lock acquisition fails before reconciliation proceeds
+- **AND** the error names the affected path and gives the required owner and
+  permission repair

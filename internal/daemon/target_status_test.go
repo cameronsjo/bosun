@@ -43,7 +43,7 @@ func targetStatusTestDaemon(t *testing.T, targets []reconcile.Target) (*Daemon, 
 		RepoURL:     "https://example.test/repo.git",
 		StateFile:   stateFile,
 		StagingDir:  stagingRoot,
-		LockFile:    filepath.Join(root, "reconcile.lock"),
+		LockFile:    privateLockPath(t, root, "reconcile.lock"),
 		Targets:     targets,
 		ProjectName: "bosun",
 	}
@@ -358,7 +358,7 @@ func TestRunDriftCheck_DisabledBaseStateSkipsNamedLocalAndRemoteTargets(t *testi
 		RepoURL:    "https://example.test/repo.git",
 		StateFile:  "",
 		StagingDir: filepath.Join(root, "staging"),
-		LockFile:   filepath.Join(root, "reconcile.lock"),
+		LockFile:   privateLockPath(t, root, "reconcile.lock"),
 		Targets: []reconcile.Target{
 			{Name: "local", ProjectName: "local-stack"},
 			{Name: "remote", TargetHost: "root@remote", ProjectName: "remote-stack"},

@@ -5,14 +5,25 @@ package reconcile
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"golang.org/x/sys/windows"
 )
 
 // acquireLock acquires an exclusive lock to prevent concurrent runs.
 // On Windows, this uses LockFileEx for file locking.
+//
+// lockFileMode is passed for parity with the Unix path, but Windows derives
+// file access from ACLs inherited from the parent directory and maps the Go
+// mode only onto the read-only attribute -- which 0600 and 0644 set
+// identically. There is no Windows equivalent of the Unix fchmod tightening
+// or of O_NOFOLLOW here.
 func (r *Reconciler) acquireLock() error {
-	fd, err := os.OpenFile(r.lockFile, os.O_CREATE|os.O_RDWR, 0644)
+	lockDir := filepath.Dir(r.lockFile)
+	if err := os.MkdirAll(lockDir, 0755); err != nil {
+		return fmt.Errorf("failed to create lock file directory %q: %w", lockDir, err)
+	}
+	fd, err := os.OpenFile(r.lockFile, os.O_CREATE|os.O_RDWR, lockFileMode)
 	if err != nil {
 		return fmt.Errorf("failed to open lock file: %w", err)
 	}

@@ -232,7 +232,7 @@ func (a *lockOrderingAlertSender) SendDeployFailure(ctx context.Context, _, _, _
 func TestRun_FinalizesStateAndAlertBeforeReleasingTargetLock(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := &Config{
-		LockFile:  filepath.Join(tmp, "reconcile.lock"),
+		LockFile:  privateLockPath(t, tmp, "reconcile.lock"),
 		StateFile: filepath.Join(tmp, "state.json"),
 		OnFailure: true,
 	}
@@ -275,7 +275,7 @@ func TestRun_FinalizesStateAndAlertBeforeReleasingTargetLock(t *testing.T) {
 func TestRun_ConfigReloadFailureClearsInterruptedOutcomeWithoutChangingBudget(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := &Config{
-		RepoDir: filepath.Join(tmp, "repo"), LockFile: filepath.Join(tmp, "reconcile.lock"),
+		RepoDir: filepath.Join(tmp, "repo"), LockFile: privateLockPath(t, tmp, "reconcile.lock"),
 		StateFile: filepath.Join(tmp, "state.json"),
 		ConfigReloader: func(string) (*ReloadedConfig, error) {
 			return nil, fmt.Errorf("repo bosun.yaml: %w", ErrInvalidPostSyncHooks)
@@ -367,7 +367,7 @@ func TestRun_PropagatedCancellationFinalizesAtPipelineBoundary(t *testing.T) {
 			cfg := &Config{
 				RepoDir: filepath.Join(tmp, "repo"), StagingDir: filepath.Join(tmp, "staging"),
 				BackupDir: filepath.Join(tmp, "backups"), LocalAppdataPath: filepath.Join(tmp, "appdata"),
-				LockFile: filepath.Join(tmp, "reconcile.lock"), StateFile: filepath.Join(tmp, "state.json"),
+				LockFile: privateLockPath(t, tmp, "reconcile.lock"), StateFile: filepath.Join(tmp, "state.json"),
 				InfraSubDir: ".", DeployMode: "local", SecretsFiles: []string{"secrets.yaml"}, OnFailure: true,
 			}
 			require.NoError(t, os.MkdirAll(cfg.RepoDir, 0o755))
@@ -407,7 +407,7 @@ func TestRun_CancelledCriticalHealthGateUsesOnlyFinalizerAlert(t *testing.T) {
 	cfg := &Config{
 		RepoDir: filepath.Join(tmp, "repo"), StagingDir: filepath.Join(tmp, "staging"),
 		BackupDir: filepath.Join(tmp, "backups"), LocalAppdataPath: filepath.Join(tmp, "appdata"),
-		LockFile: filepath.Join(tmp, "reconcile.lock"), StateFile: stateFile,
+		LockFile: privateLockPath(t, tmp, "reconcile.lock"), StateFile: stateFile,
 		InfraSubDir: ".", DeployMode: "local", OnFailure: true,
 		HealthGateScope:    HealthGateScopeCritical,
 		CriticalContainers: NewConfigField([]string{"critical"}),
@@ -459,7 +459,7 @@ func TestRun_PostSyncHookCancellationRemainsBestEffort(t *testing.T) {
 	cfg := &Config{
 		RepoDir: filepath.Join(tmp, "repo"), StagingDir: filepath.Join(tmp, "staging"),
 		BackupDir: filepath.Join(tmp, "backups"), LocalAppdataPath: filepath.Join(tmp, "appdata"),
-		LockFile: filepath.Join(tmp, "reconcile.lock"), StateFile: stateFile,
+		LockFile: privateLockPath(t, tmp, "reconcile.lock"), StateFile: stateFile,
 		InfraSubDir: ".", DeployMode: "local", ContentHashSync: true, OnFailure: true,
 		PostSyncHooks: NewConfigField([]PostSyncHook{{
 			Paths: []string{"appdata/service/**"}, Container: "service", Action: "restart",
@@ -503,7 +503,7 @@ func TestRun_PostSyncHookCancellationRemainsBestEffort(t *testing.T) {
 func TestRun_PanicAfterSnapshotKeepsFailureAccountingWhileClearingInterruptedOutcome(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := &Config{
-		RepoDir: filepath.Join(tmp, "repo"), LockFile: filepath.Join(tmp, "reconcile.lock"),
+		RepoDir: filepath.Join(tmp, "repo"), LockFile: privateLockPath(t, tmp, "reconcile.lock"),
 		StateFile: filepath.Join(tmp, "state.json"), SecretsFiles: []string{"secrets.yaml"},
 	}
 	require.NoError(t, os.MkdirAll(cfg.RepoDir, 0o755))

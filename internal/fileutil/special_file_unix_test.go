@@ -165,6 +165,32 @@ func TestCopyFileRevalidatesSourceAfterLstat(t *testing.T) {
 		require.ErrorIs(t, err, ErrSymlinkSkipped)
 		assert.NoFileExists(t, destination)
 	})
+
+	t.Run("replacement regular file", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		source := filepath.Join(tmpDir, "source")
+		replacement := filepath.Join(tmpDir, "replacement")
+		destination := filepath.Join(tmpDir, "destination")
+		require.NoError(t, os.WriteFile(source, []byte("original"), 0o600))
+		// Keep a distinct inode alive so the replacement cannot reuse source's
+		// device/inode pair after source is removed.
+		require.NoError(t, os.WriteFile(replacement, []byte("replacement"), 0o600))
+
+		err := copyFileWithOpsAndOpen(
+			context.Background(), source, destination, (*os.File).Chmod,
+			syncDestinationDir, io.Copy,
+			func(path string, followSymlinks bool) (*os.File, os.FileInfo, error) {
+				require.NoError(t, os.Remove(path))
+				require.NoError(t, os.Rename(replacement, path))
+				return openRegularSource(path, followSymlinks)
+			},
+		)
+
+		require.ErrorContains(t, err, "source changed while opening")
+		assert.NoFileExists(t, destination)
+	})
 }
 
 func TestFileHashRevalidatesSourceAfterStat(t *testing.T) {

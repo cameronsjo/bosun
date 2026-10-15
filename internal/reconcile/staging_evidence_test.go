@@ -373,7 +373,7 @@ func TestRunRetainsPrivatePartialRenderEvidence(t *testing.T) {
 
 	cfg := &Config{
 		DryRun:           true,
-		LockFile:         filepath.Join(baseDir, "reconcile.lock"),
+		LockFile:         privateLockPath(t, baseDir, "reconcile.lock"),
 		StateFile:        filepath.Join(baseDir, "state.json"),
 		RepoDir:          repoDir,
 		StagingDir:       stagingDir,
@@ -394,7 +394,7 @@ func TestRunFinalizesStagingBeforeReleasingTargetLock(t *testing.T) {
 	baseDir := evalSymlinks(t, t.TempDir())
 	repoDir := filepath.Join(baseDir, "repo")
 	stagingDir := filepath.Join(baseDir, "staging")
-	lockFile := filepath.Join(baseDir, "reconcile.lock")
+	lockFile := privateLockPath(t, baseDir, "reconcile.lock")
 	require.NoError(t, os.MkdirAll(repoDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "broken.yml.tmpl"), []byte("{{ .missing }}"), 0o644))
 
@@ -477,7 +477,7 @@ func TestRunEarlyFailurePreservesPreflightedEvidence(t *testing.T) {
 			require.NoError(t, os.MkdirAll(stagingDir, 0o755))
 			require.NoError(t, os.WriteFile(evidence, []byte("prior-render"), 0o644))
 			cfg := &Config{
-				LockFile:   filepath.Join(baseDir, "reconcile.lock"),
+				LockFile:   privateLockPath(t, baseDir, "reconcile.lock"),
 				StateFile:  filepath.Join(baseDir, "state.json"),
 				RepoDir:    baseDir,
 				StagingDir: stagingDir,
@@ -510,7 +510,7 @@ func TestRunPanicAfterRenderFinalizesEvidence(t *testing.T) {
 
 	cfg := &Config{
 		DeployMode:              "local",
-		LockFile:                filepath.Join(baseDir, "reconcile.lock"),
+		LockFile:                privateLockPath(t, baseDir, "reconcile.lock"),
 		StateFile:               filepath.Join(baseDir, "state.json"),
 		RepoDir:                 repoDir,
 		StagingDir:              stagingDir,
@@ -567,7 +567,7 @@ func TestRunCleanupFallbackControlsSuccessfulState(t *testing.T) {
 
 			cfg := &Config{
 				DeployMode:       "local",
-				LockFile:         filepath.Join(baseDir, "reconcile.lock"),
+				LockFile:         privateLockPath(t, baseDir, "reconcile.lock"),
 				StateFile:        filepath.Join(baseDir, "state.json"),
 				RepoDir:          repoDir,
 				StagingDir:       stagingDir,
@@ -624,7 +624,7 @@ func TestRunDryRunProtectionFailurePrecedesSuccessStateAndAlert(t *testing.T) {
 		DryRun:           true,
 		OnSuccess:        true,
 		DeployMode:       "local",
-		LockFile:         filepath.Join(baseDir, "reconcile.lock"),
+		LockFile:         privateLockPath(t, baseDir, "reconcile.lock"),
 		StateFile:        filepath.Join(baseDir, "state.json"),
 		RepoDir:          repoDir,
 		StagingDir:       stagingDir,

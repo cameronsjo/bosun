@@ -40,7 +40,7 @@ func newTestReconciler(t *testing.T, git *mockGit) (*Reconciler, string) {
 	t.Helper()
 	dir := t.TempDir()
 	stateFile := filepath.Join(dir, "deploy-state.json")
-	lockFile := filepath.Join(dir, "reconcile.lock")
+	lockFile := privateLockPath(t, dir, "reconcile.lock")
 	stagingDir := filepath.Join(dir, "staging")
 	repoDir := filepath.Join(dir, "repo")
 	appdataDir := filepath.Join(dir, "appdata")
@@ -147,7 +147,7 @@ func TestRun_CircuitBreaker_TripsAfterMaxAttempts(t *testing.T) {
 		StagingDir:       filepath.Join(dir, "staging"),
 		BackupDir:        filepath.Join(dir, "backups"),
 		LogDir:           filepath.Join(dir, "logs"),
-		LockFile:         filepath.Join(dir, "reconcile.lock"),
+		LockFile:         privateLockPath(t, dir, "reconcile.lock"),
 		StateFile:        stateFile,
 		LocalAppdataPath: filepath.Join(dir, "appdata"),
 		InfraSubDir:      ".",
@@ -180,16 +180,16 @@ func TestRun_ForceFlag_OverridesCircuitBreaker(t *testing.T) {
 	}))
 
 	cfg := &Config{
-		RepoDir:          filepath.Join(dir, "repo"),
-		StagingDir:       filepath.Join(dir, "staging"),
-		BackupDir:        filepath.Join(dir, "backups"),
-		LogDir:           filepath.Join(dir, "logs"),
-		LockFile:         filepath.Join(dir, "reconcile.lock"),
-		StateFile:        stateFile,
-		LocalAppdataPath: filepath.Join(dir, "appdata"),
-		InfraSubDir:      ".",
-		Force:            true,
-		DryRun:           true,
+		RepoDir:                 filepath.Join(dir, "repo"),
+		StagingDir:              filepath.Join(dir, "staging"),
+		BackupDir:               filepath.Join(dir, "backups"),
+		LogDir:                  filepath.Join(dir, "logs"),
+		LockFile:                privateLockPath(t, dir, "reconcile.lock"),
+		StateFile:               stateFile,
+		LocalAppdataPath:        filepath.Join(dir, "appdata"),
+		InfraSubDir:             ".",
+		Force:                   true,
+		DryRun:                  true,
 		AllowEmptyDeclaredState: true,
 	}
 	require.NoError(t, os.MkdirAll(cfg.RepoDir, 0755))
@@ -220,15 +220,15 @@ func TestRun_NewCommit_ResetsAttemptCount(t *testing.T) {
 	git := &mockGit{changed: true, before: "old-commit", after: "new-commit"}
 
 	cfg := &Config{
-		RepoDir:          filepath.Join(dir, "repo"),
-		StagingDir:       filepath.Join(dir, "staging"),
-		BackupDir:        filepath.Join(dir, "backups"),
-		LogDir:           filepath.Join(dir, "logs"),
-		LockFile:         filepath.Join(dir, "reconcile.lock"),
-		StateFile:        stateFile,
-		LocalAppdataPath: filepath.Join(dir, "appdata"),
-		InfraSubDir:      ".",
-		DryRun:           true,
+		RepoDir:                 filepath.Join(dir, "repo"),
+		StagingDir:              filepath.Join(dir, "staging"),
+		BackupDir:               filepath.Join(dir, "backups"),
+		LogDir:                  filepath.Join(dir, "logs"),
+		LockFile:                privateLockPath(t, dir, "reconcile.lock"),
+		StateFile:               stateFile,
+		LocalAppdataPath:        filepath.Join(dir, "appdata"),
+		InfraSubDir:             ".",
+		DryRun:                  true,
 		AllowEmptyDeclaredState: true,
 	}
 	require.NoError(t, os.MkdirAll(cfg.RepoDir, 0755))
@@ -285,7 +285,7 @@ func TestReconcile_DeclaredStateZero_Errors_Default(t *testing.T) {
 		StagingDir:       filepath.Join(dir, "staging"),
 		BackupDir:        filepath.Join(dir, "backups"),
 		LogDir:           filepath.Join(dir, "logs"),
-		LockFile:         filepath.Join(dir, "reconcile.lock"),
+		LockFile:         privateLockPath(t, dir, "reconcile.lock"),
 		StateFile:        filepath.Join(dir, "state.json"),
 		LocalAppdataPath: filepath.Join(dir, "appdata"),
 		InfraSubDir:      ".",
@@ -319,7 +319,7 @@ func TestReconcile_DeclaredStateZero_AllowedViaConfig(t *testing.T) {
 		StagingDir:              filepath.Join(dir, "staging"),
 		BackupDir:               filepath.Join(dir, "backups"),
 		LogDir:                  filepath.Join(dir, "logs"),
-		LockFile:                filepath.Join(dir, "reconcile.lock"),
+		LockFile:                privateLockPath(t, dir, "reconcile.lock"),
 		StateFile:               filepath.Join(dir, "state.json"),
 		LocalAppdataPath:        filepath.Join(dir, "appdata"),
 		InfraSubDir:             ".",
@@ -349,7 +349,7 @@ func TestReconcile_ComposeDirMissing_ErrorsUnconditionally(t *testing.T) {
 		StagingDir:              filepath.Join(dir, "staging"),
 		BackupDir:               filepath.Join(dir, "backups"),
 		LogDir:                  filepath.Join(dir, "logs"),
-		LockFile:                filepath.Join(dir, "reconcile.lock"),
+		LockFile:                privateLockPath(t, dir, "reconcile.lock"),
 		StateFile:               filepath.Join(dir, "state.json"),
 		LocalAppdataPath:        filepath.Join(dir, "appdata"),
 		InfraSubDir:             ".",

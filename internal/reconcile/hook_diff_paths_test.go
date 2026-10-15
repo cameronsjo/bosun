@@ -102,7 +102,7 @@ func TestFailedTemplateKeepsHookDiffBaseAndNormalizesNextFallback(t *testing.T) 
 		RepoDir:     repoDir,
 		InfraSubDir: "unraid",
 		StagingDir:  filepath.Join(tmpDir, "staging"),
-		LockFile:    filepath.Join(tmpDir, "reconcile.lock"),
+		LockFile:    privateLockPath(t, tmpDir, "reconcile.lock"),
 		StateFile:   stateFile,
 		PostSyncHooks: FileConfigField([]PostSyncHook{{
 			Paths:     []string{"appdata/traefik/**"},

@@ -73,13 +73,17 @@ func TestDeployLocal_PropagatesSingleFileParentMkdirError(t *testing.T) {
 		LocalAppdataPath: appdataDir,
 	}, WithDeployOps(&DeployOps{}))
 
+	// The single-file branch no longer pre-creates the parent by path, so the
+	// unusable parent surfaces from the first operation that touches it —
+	// transition discovery — rather than from an unpinned os.MkdirAll.
 	result, err := r.deployLocal(context.Background(), nil)
 	require.Error(t, err)
-	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "create local deploy directory \""+appdataDir+"\"")
+	assert.Contains(t, err.Error(), appdataDir)
+	require.NotNil(t, result)
+	assert.Empty(t, result.WrittenFiles, "an unusable deploy parent must abort before anything is written")
 }
 
-func TestDeployLocal_PropagatesComposeMkdirError(t *testing.T) {
+func TestDeployLocal_PropagatesComposeTargetParentError(t *testing.T) {
 	base := t.TempDir()
 	stagingDir := filepath.Join(base, "staging")
 	composeStaging := filepath.Join(stagingDir, "unraid", "compose")
@@ -87,9 +91,7 @@ func TestDeployLocal_PropagatesComposeMkdirError(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(composeStaging, "core.yml"), []byte("services: {}"), 0o644))
 
 	appdataDir := filepath.Join(base, "appdata")
-	require.NoError(t, os.MkdirAll(appdataDir, 0o755))
-	composeTarget := filepath.Join(appdataDir, "compose")
-	require.NoError(t, os.WriteFile(composeTarget, []byte("block"), 0o644))
+	require.NoError(t, os.WriteFile(appdataDir, []byte("block"), 0o644))
 	r := NewReconciler(&Config{
 		DryRun:           false,
 		StagingDir:       stagingDir,
@@ -99,8 +101,10 @@ func TestDeployLocal_PropagatesComposeMkdirError(t *testing.T) {
 
 	result, err := r.deployLocal(context.Background(), nil)
 	require.Error(t, err)
-	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "create local compose directory \""+composeTarget+"\"")
+	require.NotNil(t, result)
+	assert.Empty(t, result.WrittenFiles, "an unusable compose target parent must abort before anything is written")
+	assert.Contains(t, err.Error(), "create target parent")
+	assert.Contains(t, err.Error(), appdataDir)
 }
 
 func TestDeployLocal_DryRunDoesNotCreateTargetDirectories(t *testing.T) {

@@ -1937,7 +1937,7 @@ func newConcurrencyDaemon(t *testing.T) *Daemon {
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
 	cfg.ReconcileConfig.DryRun = true
 	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
-	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "test.lock")
+	cfg.ReconcileConfig.LockFile = privateLockPath(t, tmpDir, "test.lock")
 	cfg.ReconcileConfig.StateFile = filepath.Join(tmpDir, "state.json")
 	cfg.SocketPath = filepath.Join(tmpDir, "test.sock")
 
@@ -2174,7 +2174,6 @@ func (blockingGitOps) Sync(ctx context.Context) (bool, string, string, error) {
 }
 
 func (blockingGitOps) IsRepo(context.Context) bool { return true }
-
 
 func (blockingGitOps) DiffFiles(context.Context, string, string) ([]string, error) {
 	return nil, nil
@@ -2545,7 +2544,7 @@ func newAlertDaemon(t *testing.T, provider *testAlertProvider) *Daemon {
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
 	cfg.ReconcileConfig.DryRun = true
 	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
-	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "test.lock")
+	cfg.ReconcileConfig.LockFile = privateLockPath(t, tmpDir, "test.lock")
 	cfg.ReconcileConfig.StateFile = filepath.Join(tmpDir, "state.json")
 	cfg.SocketPath = filepath.Join(tmpDir, "test.sock")
 

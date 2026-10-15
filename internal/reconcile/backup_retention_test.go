@@ -117,7 +117,7 @@ func TestReconciler_BackupRetentionN1RunsOnlyAfterSuccess(t *testing.T) {
 			stateFile := filepath.Join(root, "state.json")
 
 			cfg := &Config{
-				LockFile:         filepath.Join(root, "reconcile.lock"),
+				LockFile:         privateLockPath(t, root, "reconcile.lock"),
 				StateFile:        stateFile,
 				RepoDir:          repoDir,
 				StagingDir:       stagingDir,

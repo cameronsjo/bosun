@@ -76,11 +76,13 @@ func TestCopyDirIfChanged_PreservesWrittenPathOnVerificationFailure(t *testing.T
 	written, err := copyDirIfChangedWithOps(context.Background(),
 		srcDir,
 		dstDir,
-		func(_ context.Context, src, dst string) (bool, postWriteVerification, error) {
-			require.NoError(t, copyFileWithoutDirSyncContext(context.Background(), src, dst))
-			return true, func() error { return verificationErr }, nil
-		},
-		syncDestinationDir,
+		pathDirOps(
+			func(_ context.Context, src, dst string) (bool, postWriteVerification, error) {
+				require.NoError(t, copyFileWithoutDirSyncContext(context.Background(), src, dst))
+				return true, func() error { return verificationErr }, nil
+			},
+			syncDestinationDir,
+		),
 	)
 
 	require.Error(t, err)

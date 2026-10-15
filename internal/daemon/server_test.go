@@ -61,6 +61,20 @@ func (g *delayedTriggerGitOps) callCount() int {
 	return g.calls
 }
 
+func waitForServerTasks(t *testing.T, s *Server, timeout time.Duration) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		t.Fatal("server reconcile goroutines did not finish")
+	}
+}
+
 // newTestDaemon creates a Daemon+Server pair for handler testing.
 // HTTP is disabled so New() skips creating its own http.Server;
 // we test handler methods directly via httptest.
@@ -80,7 +94,7 @@ func newTestDaemon(t *testing.T) (*Daemon, *Server) {
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
 	cfg.ReconcileConfig.DryRun = true
 	cfg.ReconcileConfig.RepoDir = tmpDir
-	cfg.ReconcileConfig.LockFile = filepath.Join(tmpDir, "test.lock")
+	cfg.ReconcileConfig.LockFile = privateLockPath(t, tmpDir, "test.lock")
 	cfg.ReconcileConfig.StateFile = filepath.Join(tmpDir, "state.json")
 	cfg.SocketPath = filepath.Join(tmpDir, "test.sock")
 
@@ -93,7 +107,7 @@ func newTestDaemon(t *testing.T) (*Daemon, *Server) {
 	s := NewServer(d)
 
 	// Wait for background goroutines to finish before temp dir cleanup.
-	t.Cleanup(func() { s.wg.Wait() })
+	t.Cleanup(func() { waitForServerTasks(t, s, time.Second) })
 
 	return d, s
 }
@@ -767,7 +781,11 @@ func TestHandleManualTrigger_CoalescedCycleGetsFreshTimeout(t *testing.T) {
 	firstW := httptest.NewRecorder()
 	s.handleManualTrigger(firstW, firstReq)
 	require.Equal(t, http.StatusAccepted, firstW.Code)
-	<-gitOps.started
+	select {
+	case <-gitOps.started:
+	case <-time.After(time.Second):
+		t.Fatal("first reconcile did not start")
+	}
 
 	secondReq := httptest.NewRequest(http.MethodPost, "/webhook/manual", nil)
 	secondW := httptest.NewRecorder()
@@ -779,7 +797,7 @@ func TestHandleManualTrigger_CoalescedCycleGetsFreshTimeout(t *testing.T) {
 		return d.pendingTriggerCount == 1
 	}, time.Second, 5*time.Millisecond)
 
-	s.wg.Wait()
+	waitForServerTasks(t, s, time.Second)
 
 	assert.Equal(t, 2, gitOps.callCount(), "the queued trigger must execute a follow-up cycle")
 	_, lastErr := d.LastReconcile()

@@ -321,22 +321,22 @@ func TestRun_HealthGateRollback_RevertsFullTree(t *testing.T) {
 	}
 
 	cfg := &Config{
-		DryRun:             false,
+		DryRun: false,
 		// This fixture targets the health-gate rollback branch. The deploy
 		// invariant has its own focused coverage and depends on wall-clock
 		// mtimes, which can preempt this branch when a kernel file timestamp
 		// straddles a one-second boundary by a fraction of a millisecond.
 		SkipDeployInvariant: true,
-		LockFile:           filepath.Join(tmp, "reconcile.lock"),
-		StateFile:          stateFile,
-		RepoDir:            repoDir,
-		StagingDir:         filepath.Join(tmp, "staging"),
-		BackupDir:          filepath.Join(tmp, "backups"),
-		BackupsToKeep:      3, // keep the pre-deploy backup so the rollback can read it
-		LocalAppdataPath:   appdata,
-		InfraSubDir:        ".",
-		CriticalContainers: NewConfigField([]string{"chronic-critical"}),
-		HealthGateTimeout:  50 * time.Millisecond,
+		LockFile:            privateLockPath(t, tmp, "reconcile.lock"),
+		StateFile:           stateFile,
+		RepoDir:             repoDir,
+		StagingDir:          filepath.Join(tmp, "staging"),
+		BackupDir:           filepath.Join(tmp, "backups"),
+		BackupsToKeep:       3, // keep the pre-deploy backup so the rollback can read it
+		LocalAppdataPath:    appdata,
+		InfraSubDir:         ".",
+		CriticalContainers:  NewConfigField([]string{"chronic-critical"}),
+		HealthGateTimeout:   50 * time.Millisecond,
 	}
 	r := NewReconciler(cfg,
 		WithGitOperations(&mockGitOps{syncChanged: true, syncBefore: "prevcommit", syncAfter: "newcommit"}),

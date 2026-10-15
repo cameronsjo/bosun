@@ -485,16 +485,6 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	r.runStartTime = startTime
 	r.preDeployUnhealthy = nil
 
-	// Ensure the lock file's directory exists before acquiring the lock. On a
-	// fresh install, DefaultLockFile's parent (/var/run/bosun) doesn't exist
-	// yet, so acquireLock's OpenFile fails with ENOENT -- which the warning
-	// below then misreports as "another reconciliation may be in progress",
-	// paralyzing every subsequent run. One MkdirAll here covers the default
-	// target and every named target, since they all share the base lock dir.
-	if err := os.MkdirAll(filepath.Dir(r.lockFile), 0755); err != nil {
-		return fmt.Errorf("failed to create lock file directory: %w", err)
-	}
-
 	// Acquire lock to prevent concurrent runs.
 	// Lock failures are transient (another reconciliation is running) and lack state context,
 	// so they are logged as warnings without sending alerts.
@@ -2390,7 +2380,11 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 		deletedSnapshot := len(result.DeletedFiles)
 		prevForTarget := filterManagedForTarget(prevManaged, t.TargetPath)
 		if t.IsDir {
-			if err := r.deploy.DeployLocal(ctx, src, dst, result, prevForTarget); err != nil {
+			// appdata is the deploy root, as in the single-file branch below:
+			// dst is appdata/<service>, which a compromised container can
+			// replace with a symlink. Pinning at appdata keeps that swap from
+			// redirecting the rendered tree.
+			if err := r.deploy.deployLocalManaged(ctx, src, dst, appdata, result, prevForTarget); err != nil {
 				result.PrefixLatest(snapshot, t.RelPath)
 				result.PrefixLatestDeleted(deletedSnapshot, t.RelPath)
 				return result, err
@@ -2404,13 +2398,16 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 				return nil, err
 			}
 		} else {
-			targetDir := filepath.Dir(dst)
-			if !r.config.DryRun {
-				if err := os.MkdirAll(targetDir, 0755); err != nil {
-					return nil, fmt.Errorf("create local deploy directory %q: %w", targetDir, err)
-				}
-			}
-			if err := r.deploy.deployLocalFileManaged(ctx, src, dst, result, prevForTarget); err != nil {
+			// No os.MkdirAll here: dst's parent is appdata itself, which the
+			// pinned copy creates through the same handle it writes with. A
+			// path-resolved mkdir would be the last unpinned destination
+			// mutation on this path.
+			//
+			// appdata is the deploy root: discovery gives every target a
+			// single-component TargetPath, so dst sits directly under it.
+			// Pinning there keeps a container-controlled directory beneath
+			// appdata from redirecting this write.
+			if err := r.deploy.deployLocalFileManaged(ctx, src, dst, appdata, result, prevForTarget); err != nil {
 				result.PrefixLatest(snapshot, filepath.Dir(t.RelPath))
 				result.PrefixLatestDeleted(deletedSnapshot, t.RelPath)
 				return result, err
@@ -2437,15 +2434,10 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 			return nil, err
 		}
 		ui.Info("  Syncing compose files...")
-		if !r.config.DryRun {
-			if err := os.MkdirAll(composeTarget, 0755); err != nil {
-				return nil, fmt.Errorf("create local compose directory %q: %w", composeTarget, err)
-			}
-		}
 		snapshot := len(result.WrittenFiles)
 		deletedSnapshot := len(result.DeletedFiles)
 		prevForCompose := filterManagedForTarget(prevManaged, "compose")
-		if err := r.deploy.DeployLocal(ctx, composeStaging, composeTarget, result, prevForCompose); err != nil {
+		if err := r.deploy.deployLocalManaged(ctx, composeStaging, composeTarget, appdata, result, prevForCompose); err != nil {
 			result.PrefixLatest(snapshot, "compose")
 			result.PrefixLatestDeleted(deletedSnapshot, "compose")
 			return result, err

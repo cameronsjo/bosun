@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -77,6 +78,36 @@ func mkdirAllContext(ctx context.Context, path string, mode os.FileMode) error {
 		return err
 	}
 	return os.MkdirAll(path, mode)
+}
+
+// mkdirAllUnderRoot creates path through a handle pinned to root. The root is
+// created by path for compatibility, while every component below it is
+// resolved from the handle so a swapped component cannot redirect creation.
+func mkdirAllUnderRoot(ctx context.Context, root, path string, mode os.FileMode) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return fmt.Errorf("resolve %s under %s: %w", path, root, err)
+	}
+	if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%s is outside deploy root %s", path, root)
+	}
+	if rel == "." {
+		pinned, err := fileutil.OpenPinnedRoot(root, true)
+		if err != nil {
+			return fmt.Errorf("create deploy root: %w", err)
+		}
+		_ = pinned.Close()
+		return nil
+	}
+	pinned, err := fileutil.OpenPinnedRoot(root, true)
+	if err != nil {
+		return fmt.Errorf("pin deploy root: %w", err)
+	}
+	defer func() { _ = pinned.Close() }()
+	return pinned.MkdirAll(rel, mode)
 }
 
 func mkdirTempContext(ctx context.Context, dir, pattern string) (string, error) {
@@ -235,7 +266,20 @@ func (d *DeployOps) remoteComposeUpCmd(composeDir string) string {
 // DeployLocal syncs files locally using native Go file operations.
 // Performs atomic copy: copies to temp directory first, then replaces target.
 // Uses --delete semantics: removes files in target that don't exist in source.
+//
+// The content-hash copy is pinned to targetDir. The reconcile path calls
+// deployLocalManaged directly with the appdata root, which pins higher.
 func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string, result *DeployResult, prevManaged map[string]bool) error {
+	return d.deployLocalManaged(ctx, sourceDir, targetDir, targetDir, result, prevManaged)
+}
+
+// deployLocalManaged is DeployLocal with the content-hash copy's destination
+// mutations resolved from a handle pinned to deployRoot, which targetDir must
+// lie under. bosun runs as host root and targetDir is appdata/<service>, a
+// directory a compromised container can replace with a symlink; pinning at
+// targetDir would resolve that symlink by path and redirect the whole rendered
+// tree, secrets included.
+func (d *DeployOps) deployLocalManaged(ctx context.Context, sourceDir, targetDir, deployRoot string, result *DeployResult, prevManaged map[string]bool) error {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
@@ -287,13 +331,21 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 		if err := ctx.Err(); err != nil {
 			return rollback(err)
 		}
-		if err := fsOps.mkdirAll(ctx, targetDir, 0755); err != nil {
+		mkdirTarget := func(ctx context.Context) error {
+			return mkdirAllUnderRoot(ctx, deployRoot, targetDir, 0755)
+		}
+		if d.localFS != nil && d.localFS.mkdirAll != nil {
+			mkdirTarget = func(ctx context.Context) error { return fsOps.mkdirAll(ctx, targetDir, 0755) }
+		}
+		if err := mkdirTarget(ctx); err != nil {
 			return rollback(fmt.Errorf("create target directory: %w", err))
 		}
 
 		copyFn := d.copyDirIfChangedFn
 		if copyFn == nil {
-			copyFn = fileutil.CopyDirIfChanged
+			copyFn = func(ctx context.Context, src, dst string) ([]string, error) {
+				return fileutil.CopyDirUnderRootIfChanged(ctx, src, deployRoot, dst)
+			}
 		}
 		written, err := copyFn(ctx, sourceDir, targetDir)
 		if result != nil {
@@ -304,10 +356,17 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 			return rollback(fmt.Errorf("copy with content hash: %w", err))
 		}
 
-		// Prune files bosun previously deployed that are gone from source.
-		if err := removeStaleFiles(ctx, sourceDir, targetDir, result, prevManaged); err != nil {
-			logger.Error().Err(err).Msg("Failed to deploy locally. Reason: stale file removal failed")
-			return rollback(fmt.Errorf("remove stale files: %w", err))
+		// Prune files through the same trusted root used by the copy. A later
+		// pathname walk/removal could otherwise follow a swapped target ancestor.
+		pinnedRoot, rootErr := fileutil.OpenPinnedRoot(deployRoot, false)
+		if rootErr != nil {
+			return rollback(fmt.Errorf("pin deploy root for stale-file pruning: %w", rootErr))
+		}
+		staleErr := removeStaleFilesUnderRoot(ctx, sourceDir, targetDir, deployRoot, pinnedRoot, result, prevManaged)
+		_ = pinnedRoot.Close()
+		if staleErr != nil {
+			logger.Error().Err(staleErr).Msg("Failed to deploy locally. Reason: stale file removal failed")
+			return rollback(fmt.Errorf("remove stale files: %w", staleErr))
 		}
 
 		if ctx.Err() != nil {
@@ -329,7 +388,10 @@ func (d *DeployOps) DeployLocal(ctx context.Context, sourceDir, targetDir string
 		return nil
 	}
 
-	// Standard mode: nuke-and-replace for atomic directory swap.
+	// Standard mode: nuke-and-replace for an atomic directory swap. The temp
+	// tree is created directly beside the target, so this mode relies on the
+	// existing target-parent selection and same-parent rename sequence rather
+	// than the descriptor-pinned namespace used by content-hash mode.
 	logger.Debug().Msg("Using atomic swap mode for deployment")
 	targetParent := filepath.Dir(targetDir)
 	if err := ctx.Err(); err != nil {
@@ -443,6 +505,21 @@ const (
 	managedTransitionCleanSuffix = ".bosun-transition-cleanup"
 )
 
+// renameNoReplacePinned moves direct children of already-open parent
+// descriptors without re-resolving either parent path. The no-replace
+// primitive preserves transition rollback semantics while closing the
+// check-then-path-rename window around managed type changes.
+func renameNoReplacePinned(oldParent *os.File, oldPath string, newParent *os.File, newPath string) error {
+	if oldParent == nil || newParent == nil {
+		return fmt.Errorf("descriptor-relative rename has no trusted parent")
+	}
+	oldName, newName := filepath.Base(oldPath), filepath.Base(newPath)
+	if oldName == "." || oldName == string(filepath.Separator) || newName == "." || newName == string(filepath.Separator) {
+		return fmt.Errorf("descriptor-relative rename has an invalid basename: %s -> %s", oldPath, newPath)
+	}
+	return renameNoReplaceAt(oldParent, oldName, newParent, newName)
+}
+
 func validateTransitionSourceNamespace(sourceRoot string) error {
 	return filepath.WalkDir(sourceRoot, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -529,9 +606,13 @@ type managedTypeTransition struct {
 	newFingerprint                  [sha256.Size]byte
 	targetHandle, parentHandle      *os.File
 	newHandle                       *os.File
+	targetRoot, newRoot             *os.Root
 	privatePath                     string
 	privateInfo                     os.FileInfo
 	privateHandle                   *os.File
+	privateRoot                     *os.Root
+	privateParentRoot               *os.Root
+	privateParentName               string
 	oldPath, newPath                string
 	written, deleted                []string
 	prevManaged                     map[string]bool
@@ -643,11 +724,15 @@ func discoverManagedTypeConflict(ctx context.Context, sourcePath, targetPath, re
 		_ = parentHandle.Close()
 		return nil, fmt.Errorf("open destination %s: %w", relPath, err)
 	}
+	var targetRoot *os.Root
 	keepHandles := false
 	defer func() {
 		if !keepHandles {
 			_ = targetHandle.Close()
 			_ = parentHandle.Close()
+			if targetRoot != nil {
+				_ = targetRoot.Close()
+			}
 		}
 	}()
 	parentInfo, parentStatErr := parentHandle.Stat()
@@ -658,10 +743,21 @@ func discoverManagedTypeConflict(ctx context.Context, sourcePath, targetPath, re
 	if targetStatErr != nil || !os.SameFile(targetPathInfo, targetInfo) {
 		return nil, fmt.Errorf("destination changed while discovering %s", relPath)
 	}
+	if targetInfo.IsDir() {
+		targetRoot, err = fileutil.OpenPinnedRoot(targetPath, false)
+		if err != nil {
+			return nil, fmt.Errorf("open destination root for %s: %w", relPath, err)
+		}
+		rootInfo, rootErr := targetRoot.Stat(".")
+		if rootErr != nil || rootInfo == nil || !os.SameFile(rootInfo, targetInfo) {
+			_ = targetRoot.Close()
+			return nil, fmt.Errorf("destination root changed while discovering %s", relPath)
+		}
+	}
 	item := &managedTypeTransition{
 		sourcePath: sourcePath, targetPath: targetPath, relPath: relPath,
 		sourceIsDir: sourceInfo.IsDir(), targetInfo: targetInfo,
-		parentInfo: parentInfo, targetHandle: targetHandle, parentHandle: parentHandle,
+		parentInfo: parentInfo, targetHandle: targetHandle, parentHandle: parentHandle, targetRoot: targetRoot,
 		prevManaged: prevManaged,
 		oldPath:     targetPath + managedTransitionOldSuffix,
 		newPath:     targetPath + managedTransitionNewSuffix,
@@ -687,7 +783,7 @@ func discoverManagedTypeConflict(ctx context.Context, sourcePath, targetPath, re
 		}
 		item.deleted = []string{relPath}
 	} else {
-		deleted, err := validateManagedDirectory(ctx, targetPath, relPath, prevManaged)
+		deleted, err := validateManagedDirectory(ctx, targetPath, relPath, prevManaged, targetRoot)
 		if err != nil {
 			return nil, fmt.Errorf("inspect directory blocking file deployment at %s: %w", relPath, err)
 		}
@@ -702,7 +798,7 @@ func discoverManagedTypeConflict(ctx context.Context, sourcePath, targetPath, re
 	if err := revalidatePinned(targetPath, targetHandle, targetInfo); err != nil {
 		return nil, fmt.Errorf("destination changed while validating %s: %w", relPath, err)
 	}
-	item.targetFingerprint, err = fingerprintPinnedPath(targetPath, targetHandle, targetInfo)
+	item.targetFingerprint, err = fingerprintPinnedPath(targetPath, targetHandle, targetInfo, targetRoot)
 	if err != nil {
 		return nil, fmt.Errorf("fingerprint destination %s: %w", relPath, err)
 	}
@@ -710,40 +806,60 @@ func discoverManagedTypeConflict(ctx context.Context, sourcePath, targetPath, re
 	return item, nil
 }
 
-func validateManagedDirectory(ctx context.Context, conflictDir, conflictRel string, prevManaged map[string]bool) ([]string, error) {
+func validateManagedDirectory(ctx context.Context, conflictDir, conflictRel string, prevManaged map[string]bool, roots ...*os.Root) ([]string, error) {
+	var root *os.Root
+	if len(roots) != 0 {
+		root = roots[0]
+	}
+	ownedRoot := false
+	if root == nil {
+		var err error
+		root, err = fileutil.OpenPinnedRoot(conflictDir, false)
+		if err != nil {
+			return nil, fmt.Errorf("pin destination directory %s: %w", conflictDir, err)
+		}
+		ownedRoot = true
+	}
+	if ownedRoot {
+		defer func() { _ = root.Close() }()
+	}
 	var files, physicalFiles, dirs []string
-	err := filepath.WalkDir(conflictDir, func(path string, entry os.DirEntry, walkErr error) error {
+	err := fs.WalkDir(fileutil.PinnedRootFS(root), ".", func(relativePath string, _ fs.DirEntry, walkErr error) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
 		if walkErr != nil {
 			return walkErr
 		}
-		if entry.IsDir() {
-			dirs = append(dirs, path)
+		if relativePath == "." {
 			return nil
 		}
-		regular, err := dirEntryIsRegular(entry)
+		relativePath = filepath.FromSlash(relativePath)
+		physicalPath := filepath.Join(conflictDir, relativePath)
+		info, err := root.Lstat(filepath.ToSlash(relativePath))
 		if err != nil {
-			return fmt.Errorf("inspect destination entry %s: %w", path, err)
+			return fmt.Errorf("inspect destination entry %s: %w", physicalPath, err)
 		}
-		if !regular {
-			return fmt.Errorf("destination entry %s is not a regular managed file", path)
+		if info.IsDir() {
+			dirs = append(dirs, relativePath)
+			return nil
 		}
-		under, err := filepath.Rel(conflictDir, path)
-		if err != nil {
-			return err
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("destination entry %s is not a regular managed file", physicalPath)
 		}
-		relSlash := filepath.ToSlash(filepath.Join(conflictRel, under))
+		relSlash := filepath.ToSlash(filepath.Join(conflictRel, relativePath))
 		if !prevManaged[relSlash] {
 			return fmt.Errorf("destination entry %s is not in the managed-file manifest", relSlash)
 		}
 		files = append(files, relSlash)
-		physicalFiles = append(physicalFiles, path)
+		physicalFiles = append(physicalFiles, relativePath)
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("destination directory %s has no managed descendants", conflictDir)
 	}
 	for _, dir := range dirs {
 		hasManaged := false
@@ -770,7 +886,9 @@ func dirEntryIsRegular(entry os.DirEntry) (bool, error) {
 }
 
 func (t *managedTypeTransition) stage(ctx context.Context) (stageErr error) {
-	return t.stageWithCopyDir(ctx, fileutil.CopyDirIfChanged)
+	return t.stageWithCopyDir(ctx, func(ctx context.Context, src, dst string) ([]string, error) {
+		return fileutil.CopyDirUnderPinnedRootIfChanged(ctx, src, t.privatePath, dst, t.privateRoot)
+	})
 }
 
 func (t *managedTypeTransition) stageWithCopyDir(
@@ -811,10 +929,18 @@ func (t *managedTypeTransition) stageWithCopyDir(
 		if err != nil {
 			return err
 		}
-		if err := os.Mkdir(replacement, sourceInfo.Mode().Perm()); err != nil {
+		if t.privateRoot == nil {
+			return fmt.Errorf("create private replacement directory for %s: private stage has no pinned root", t.relPath)
+		}
+		replacementName := filepath.Base(replacement)
+		if err := t.privateRoot.Mkdir(replacementName, sourceInfo.Mode().Perm()); err != nil {
 			return fmt.Errorf("create private replacement directory for %s: %w", t.relPath, err)
 		}
-		t.newHandle, err = openPinnedPath(replacement)
+		t.newRoot, err = t.privateRoot.OpenRoot(replacementName)
+		if err != nil {
+			return fmt.Errorf("pin private replacement directory for %s: %w", t.relPath, err)
+		}
+		t.newHandle, err = t.newRoot.Open(".")
 		if err != nil {
 			return fmt.Errorf("pin private replacement directory for %s: %w", t.relPath, err)
 		}
@@ -847,14 +973,14 @@ func (t *managedTypeTransition) stageWithCopyDir(
 	}
 
 	var err error
-	t.newFingerprint, err = fingerprintPinnedPath(replacement, t.newHandle, t.newInfo)
+	t.newFingerprint, err = fingerprintPinnedPath(replacement, t.newHandle, t.newInfo, t.newRoot)
 	if err != nil {
 		return fmt.Errorf("fingerprint private replacement for %s: %w", t.relPath, err)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := renameNoReplace(replacement, t.newPath); err != nil {
+	if err := renameNoReplacePinned(t.privateHandle, replacement, t.parentHandle, t.newPath); err != nil {
 		return fmt.Errorf("publish staged replacement for %s at %s: %w", t.relPath, t.newPath, err)
 	}
 	published = true
@@ -869,22 +995,29 @@ func (t *managedTypeTransition) stageWithCopyDir(
 
 func (t *managedTypeTransition) createPrivateStage() error {
 	path := t.targetPath + managedTransitionStageSuffix
-	if err := os.Mkdir(path, 0700); err != nil {
+	parentRoot, privateRoot, privateHandle, err := createPinnedChildDirectory(path, t.parentInfo)
+	if err != nil {
 		return fmt.Errorf("create private transition stage for %s at %s: %w", t.relPath, path, err)
 	}
-	t.privatePath = path
-	var err error
-	t.privateHandle, err = openPinnedPath(path)
+	privateInfo, err := privateHandle.Stat()
 	if err != nil {
-		return fmt.Errorf("open private transition stage retained at %s: %w", path, err)
-	}
-	t.privateInfo, err = t.privateHandle.Stat()
-	if err != nil {
+		_ = privateHandle.Close()
+		_ = privateRoot.Close()
+		_ = parentRoot.Close()
 		return fmt.Errorf("stat private transition stage retained at %s: %w", path, err)
 	}
-	if err := revalidatePinned(path, t.privateHandle, t.privateInfo); err != nil {
+	if err := revalidatePinned(path, privateHandle, privateInfo); err != nil {
+		_ = privateHandle.Close()
+		_ = privateRoot.Close()
+		_ = parentRoot.Close()
 		return fmt.Errorf("pin private transition stage retained at %s: %w", path, err)
 	}
+	t.privatePath = path
+	t.privateParentName = filepath.Base(path)
+	t.privateParentRoot = parentRoot
+	t.privateRoot = privateRoot
+	t.privateHandle = privateHandle
+	t.privateInfo = privateInfo
 	return nil
 }
 
@@ -907,9 +1040,15 @@ func (t *managedTypeTransition) copyPrivateFile(ctx context.Context, replacement
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	t.newHandle, err = createPinnedFileExclusive(replacement, 0600)
+	if t.privateRoot == nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return fmt.Errorf("private stage has no pinned root")
+	}
+	t.newHandle, err = t.privateRoot.OpenFile(filepath.Base(replacement), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return err
+		return fmt.Errorf("create private replacement file: %w", err)
 	}
 	if _, err := io.Copy(t.newHandle, contextReader{ctx: ctx, reader: source}); err != nil {
 		return err
@@ -950,13 +1089,16 @@ func (t *managedTypeTransition) cleanupPrivateStage() error {
 	if err := revalidatePinned(t.privatePath, t.privateHandle, t.privateInfo); err != nil {
 		return fmt.Errorf("private transition stage retained at %s: %w", t.privatePath, err)
 	}
-	if err := os.Remove(t.privatePath); err != nil {
+	if t.privateParentRoot == nil || t.privateParentName == "" {
+		return fmt.Errorf("remove private transition stage %s: missing pinned parent", t.privatePath)
+	}
+	if err := t.privateParentRoot.Remove(t.privateParentName); err != nil {
 		return fmt.Errorf("remove private transition stage %s: %w", t.privatePath, err)
 	}
-	_ = t.privateHandle.Close()
-	t.privateHandle = nil
+	t.closePrivateStageHandles()
 	t.privatePath = ""
 	t.privateInfo = nil
+	t.privateParentName = ""
 	return nil
 }
 
@@ -967,25 +1109,46 @@ func (t *managedTypeTransition) discardPrivateStage() error {
 	if t.privatePath == "" {
 		return nil
 	}
-	expected, err := fingerprintPinnedPath(t.privatePath, t.privateHandle, t.privateInfo)
+	expected, err := fingerprintPinnedPath(t.privatePath, t.privateHandle, t.privateInfo, t.privateRoot)
 	if err != nil {
 		return fmt.Errorf("private transition stage retained at %s: %w", t.privatePath, err)
 	}
 	cleanupPath := t.targetPath + managedTransitionCleanSuffix
-	if err := removePinnedTree(t.privatePath, cleanupPath, t.privateHandle, t.privateInfo, expected, "private transition stage", removalHooks{}); err != nil {
+	if err := removePinnedTree(t.privatePath, cleanupPath, t.privateHandle, t.privateInfo, expected, "private transition stage", removalHooks{}, t.parentHandle); err != nil {
 		return fmt.Errorf("discard cancelled private transition stage at %s: %w", t.privatePath, err)
 	}
-	_ = t.privateHandle.Close()
-	t.privateHandle = nil
+	t.closePrivateStageHandles()
 	t.privatePath = ""
 	t.privateInfo = nil
+	t.privateParentName = ""
 	return nil
+}
+
+func (t *managedTypeTransition) closePrivateStageHandles() {
+	if t.privateHandle != nil {
+		_ = t.privateHandle.Close()
+		t.privateHandle = nil
+	}
+	if t.privateRoot != nil {
+		_ = t.privateRoot.Close()
+		t.privateRoot = nil
+	}
+	if t.privateParentRoot != nil {
+		_ = t.privateParentRoot.Close()
+		t.privateParentRoot = nil
+	}
 }
 
 func (ts *managedTypeTransitions) Close() {
 	for _, item := range ts.items {
 		if item.newHandle != nil {
 			_ = item.newHandle.Close()
+		}
+		if item.newRoot != nil {
+			_ = item.newRoot.Close()
+		}
+		if item.targetRoot != nil {
+			_ = item.targetRoot.Close()
 		}
 		if item.targetHandle != nil {
 			_ = item.targetHandle.Close()
@@ -995,6 +1158,12 @@ func (ts *managedTypeTransitions) Close() {
 		}
 		if item.privateHandle != nil {
 			_ = item.privateHandle.Close()
+		}
+		if item.privateRoot != nil {
+			_ = item.privateRoot.Close()
+		}
+		if item.privateParentRoot != nil {
+			_ = item.privateParentRoot.Close()
 		}
 	}
 }
@@ -1029,7 +1198,7 @@ func (ts *managedTypeTransitions) Promote(ctx context.Context) error {
 		if err := revalidatePinned(item.targetPath, item.targetHandle, item.targetInfo); err != nil {
 			return ts.Rollback(fmt.Errorf("destination changed before promoting %s: %w", item.relPath, err))
 		}
-		newFingerprint, err := fingerprintPinnedPath(item.newPath, item.newHandle, item.newInfo)
+		newFingerprint, err := fingerprintPinnedPath(item.newPath, item.newHandle, item.newInfo, item.newRoot)
 		if err != nil {
 			return ts.Rollback(fmt.Errorf("staged replacement changed before promoting %s at %s: %w", item.relPath, item.newPath, err))
 		}
@@ -1039,12 +1208,12 @@ func (ts *managedTypeTransitions) Promote(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return ts.Rollback(err)
 		}
-		if err := renameNoReplace(item.targetPath, item.oldPath); err != nil {
+		if err := renameNoReplacePinned(item.parentHandle, item.targetPath, item.parentHandle, item.oldPath); err != nil {
 			return ts.Rollback(fmt.Errorf("quarantine destination %s at %s: %w", item.relPath, item.oldPath, err))
 		}
 		item.quarantined = true
 		if !item.sourceIsDir {
-			deleted, err := validateManagedDirectory(ctx, item.oldPath, item.relPath, item.prevManaged)
+			deleted, err := validateManagedDirectory(ctx, item.oldPath, item.relPath, item.prevManaged, item.targetRoot)
 			if err != nil {
 				return ts.Rollback(fmt.Errorf("destination changed while quarantining %s: %w", item.relPath, err))
 			}
@@ -1053,7 +1222,7 @@ func (ts *managedTypeTransitions) Promote(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return ts.Rollback(err)
 		}
-		if err := renameNoReplace(item.newPath, item.targetPath); err != nil {
+		if err := renameNoReplacePinned(item.parentHandle, item.newPath, item.parentHandle, item.targetPath); err != nil {
 			return ts.Rollback(fmt.Errorf("promote replacement %s from %s: %w", item.relPath, item.newPath, err))
 		}
 		item.promoted = true
@@ -1075,7 +1244,7 @@ func (ts *managedTypeTransitions) Rollback(cause error) error {
 				rollbackErrs = append(rollbackErrs, fmt.Errorf("target %s changed during rollback; preserving it and %s: %w", item.relPath, item.oldPath, err))
 				continue
 			}
-			if err := renameNoReplace(item.targetPath, item.newPath); err != nil {
+			if err := renameNoReplacePinned(item.parentHandle, item.targetPath, item.parentHandle, item.newPath); err != nil {
 				rollbackErrs = append(rollbackErrs, fmt.Errorf("quarantine failed replacement %s at %s: %w", item.relPath, item.newPath, err))
 				continue
 			}
@@ -1093,7 +1262,7 @@ func (ts *managedTypeTransitions) Rollback(cause error) error {
 				rollbackErrs = append(rollbackErrs, fmt.Errorf("quarantined original changed at %s: %w", item.oldPath, err))
 				continue
 			}
-			if err := renameNoReplace(item.oldPath, item.targetPath); err != nil {
+			if err := renameNoReplacePinned(item.parentHandle, item.oldPath, item.parentHandle, item.targetPath); err != nil {
 				rollbackErrs = append(rollbackErrs, fmt.Errorf("restore original destination %s from %s: %w", item.relPath, item.oldPath, err))
 				continue
 			}
@@ -1125,14 +1294,14 @@ func (ts *managedTypeTransitions) Commit(logger zerolog.Logger) {
 }
 
 func (t *managedTypeTransition) removePinnedOld() error {
-	if err := removePinnedTree(t.oldPath, t.targetPath+managedTransitionCleanSuffix, t.targetHandle, t.targetInfo, t.targetFingerprint, "managed original", removalHooks{}); err != nil {
+	if err := removePinnedTree(t.oldPath, t.targetPath+managedTransitionCleanSuffix, t.targetHandle, t.targetInfo, t.targetFingerprint, "managed original", removalHooks{}, t.parentHandle); err != nil {
 		return fmt.Errorf("remove quarantined original %s: %w", t.oldPath, err)
 	}
 	return nil
 }
 
 func (t *managedTypeTransition) removePinnedNew() error {
-	if err := removePinnedTree(t.newPath, t.targetPath+managedTransitionCleanSuffix, t.newHandle, t.newInfo, t.newFingerprint, "staged replacement", removalHooks{}); err != nil {
+	if err := removePinnedTree(t.newPath, t.targetPath+managedTransitionCleanSuffix, t.newHandle, t.newInfo, t.newFingerprint, "staged replacement", removalHooks{}, t.parentHandle); err != nil {
 		return fmt.Errorf("remove staged replacement %s: %w", t.newPath, err)
 	}
 	return nil
@@ -1142,6 +1311,12 @@ type pinnedRemovalEntry struct {
 	path        string
 	handle      *os.File
 	info        os.FileInfo
+	root        *os.Root
+	rootPath    string
+	rootOwned   bool
+	parent      *os.File
+	parentRoot  *os.Root
+	parentOwned bool
 	mode        os.FileMode
 	fingerprint [sha256.Size]byte
 	regular     bool
@@ -1156,8 +1331,12 @@ type removalHooks struct {
 	beforeNamespaceRemove func(string)
 }
 
-func removePinnedTree(path, cleanupPath string, rootHandle *os.File, rootInfo os.FileInfo, expected [sha256.Size]byte, changedLabel string, hooks removalHooks) error {
-	entries, err := pinRemovalTree(path, rootHandle, rootInfo)
+func removePinnedTree(path, cleanupPath string, rootHandle *os.File, rootInfo os.FileInfo, expected [sha256.Size]byte, changedLabel string, hooks removalHooks, trustedParents ...*os.File) error {
+	var parentHandle *os.File
+	if len(trustedParents) != 0 {
+		parentHandle = trustedParents[0]
+	}
+	entries, err := pinRemovalTree(path, rootHandle, rootInfo, parentHandle)
 	if err != nil {
 		return err
 	}
@@ -1166,9 +1345,24 @@ func removePinnedTree(path, cleanupPath string, rootHandle *os.File, rootInfo os
 			if entry.owned {
 				_ = entry.handle.Close()
 			}
+			if entry.parentOwned {
+				_ = entry.parent.Close()
+				if entry.parentRoot != nil {
+					_ = entry.parentRoot.Close()
+				}
+			}
+		}
+		closedRoots := make(map[*os.Root]struct{})
+		for _, entry := range entries {
+			if entry.root != nil && entry.rootOwned {
+				if _, ok := closedRoots[entry.root]; !ok {
+					_ = entry.root.Close()
+					closedRoots[entry.root] = struct{}{}
+				}
+			}
 		}
 	}()
-	current, err := fingerprintPinnedPath(path, rootHandle, rootInfo)
+	current, err := fingerprintPinnedPath(path, rootHandle, rootInfo, entries[0].root)
 	if err != nil || current != expected {
 		return fmt.Errorf("%s changed at %s", changedLabel, path)
 	}
@@ -1180,7 +1374,7 @@ func removePinnedTree(path, cleanupPath string, rootHandle *os.File, rootInfo os
 		entries[i].mode = currentInfo.Mode()
 		entries[i].regular = currentInfo.Mode().IsRegular()
 		if entries[i].regular {
-			entries[i].fingerprint, err = fingerprintPinnedPath(entries[i].path, entries[i].handle, entries[i].info)
+			entries[i].fingerprint, err = fingerprintPinnedPathAtRoot(entries[i].path, entries[i].rootPath, entries[i].handle, entries[i].info, entries[i].root)
 			if err != nil {
 				return fmt.Errorf("fingerprint removal candidate %s: %w", entries[i].path, err)
 			}
@@ -1189,13 +1383,40 @@ func removePinnedTree(path, cleanupPath string, rootHandle *os.File, rootInfo os
 	if hooks.afterBaseline != nil {
 		hooks.afterBaseline()
 	}
-	if err := os.Mkdir(cleanupPath, 0700); err != nil {
+	cleanupParentRoot, cleanupParentHandle, err := openPinnedDirectory(filepath.Dir(cleanupPath))
+	if err != nil {
+		return fmt.Errorf("pin cleanup namespace parent for %s: %w", cleanupPath, err)
+	}
+	defer func() {
+		_ = cleanupParentHandle.Close()
+		_ = cleanupParentRoot.Close()
+	}()
+	parentInfo, parentErr := cleanupParentHandle.Stat()
+	if parentErr != nil || parentInfo == nil {
+		return fmt.Errorf("stat cleanup namespace parent for %s: %w", cleanupPath, parentErr)
+	}
+	if parentHandle != nil {
+		trustedInfo, trustedErr := parentHandle.Stat()
+		if trustedErr != nil || trustedInfo == nil || !os.SameFile(parentInfo, trustedInfo) {
+			return fmt.Errorf("cleanup namespace parent changed for %s", cleanupPath)
+		}
+	}
+	cleanupName := filepath.Base(cleanupPath)
+	if cleanupName == "." || cleanupName == string(filepath.Separator) || cleanupName == "" {
+		return fmt.Errorf("invalid cleanup namespace name for %s", cleanupPath)
+	}
+	if err := cleanupParentRoot.Mkdir(cleanupName, 0700); err != nil {
 		return fmt.Errorf("create protected cleanup namespace retained at %s: %w", cleanupPath, err)
 	}
 	if hooks.afterNamespaceCreate != nil {
 		hooks.afterNamespaceCreate(cleanupPath)
 	}
-	cleanupHandle, err := openPinnedPath(cleanupPath)
+	cleanupRoot, err := cleanupParentRoot.OpenRoot(cleanupName)
+	if err != nil {
+		return fmt.Errorf("open protected cleanup namespace retained at %s: %w", cleanupPath, err)
+	}
+	defer func() { _ = cleanupRoot.Close() }()
+	cleanupHandle, err := cleanupRoot.Open(".")
 	if err != nil {
 		return fmt.Errorf("open protected cleanup namespace retained at %s: %w", cleanupPath, err)
 	}
@@ -1222,28 +1443,28 @@ func removePinnedTree(path, cleanupPath string, rootHandle *os.File, rootInfo os
 			hooks.beforeQuarantine(entry.path)
 		}
 		quarantined := filepath.Join(cleanupPath, fmt.Sprintf("%06d", i))
-		if err := renameNoReplace(entry.path, quarantined); err != nil {
+		if err := renameNoReplacePinned(entry.parent, entry.path, cleanupHandle, quarantined); err != nil {
 			return fmt.Errorf("quarantine fingerprinted path %s at %s: %w", entry.path, quarantined, err)
 		}
 		if err := revalidatePinned(quarantined, entry.handle, entry.info); err != nil {
-			retained := restoreCleanupCandidate(quarantined, entry.path)
+			retained := restoreCleanupCandidate(cleanupHandle, quarantined, entry.parent, entry.path)
 			return fmt.Errorf("cleanup candidate changed; retained at %s: %w", retained, err)
 		}
 		if entry.regular {
-			fingerprint, fingerprintErr := fingerprintPinnedPath(quarantined, entry.handle, entry.info)
+			fingerprint, fingerprintErr := fingerprintPinnedPathAtRoot(quarantined, quarantined, entry.handle, entry.info, entry.root)
 			if fingerprintErr != nil || fingerprint != entry.fingerprint {
-				retained := restoreCleanupCandidate(quarantined, entry.path)
+				retained := restoreCleanupCandidate(cleanupHandle, quarantined, entry.parent, entry.path)
 				return fmt.Errorf("cleanup candidate content or mode changed; retained at %s", retained)
 			}
 		} else {
 			currentInfo, statErr := entry.handle.Stat()
 			if statErr != nil || currentInfo.Mode() != entry.mode {
-				retained := restoreCleanupCandidate(quarantined, entry.path)
+				retained := restoreCleanupCandidate(cleanupHandle, quarantined, entry.parent, entry.path)
 				return fmt.Errorf("cleanup candidate mode changed; retained at %s", retained)
 			}
 		}
-		if err := os.Remove(quarantined); err != nil {
-			retained := restoreCleanupCandidate(quarantined, entry.path)
+		if err := cleanupRoot.Remove(filepath.Base(quarantined)); err != nil {
+			retained := restoreCleanupCandidate(cleanupHandle, quarantined, entry.parent, entry.path)
 			return fmt.Errorf("remove quarantined fingerprinted path retained at %s: %w", retained, err)
 		}
 		_ = entry.handle.Close()
@@ -1255,59 +1476,231 @@ func removePinnedTree(path, cleanupPath string, rootHandle *os.File, rootInfo os
 	if err := revalidatePinned(cleanupPath, cleanupHandle, cleanupInfo); err != nil {
 		return fmt.Errorf("protected cleanup namespace retained at %s: %w", cleanupPath, err)
 	}
-	if err := os.Remove(cleanupPath); err != nil {
+	if err := cleanupParentRoot.Remove(cleanupName); err != nil {
 		return fmt.Errorf("remove protected cleanup namespace retained at %s: %w", cleanupPath, err)
 	}
 	return nil
 }
 
-func restoreCleanupCandidate(quarantined, original string) string {
-	if err := renameNoReplace(quarantined, original); err == nil {
+func restoreCleanupCandidate(cleanupHandle *os.File, quarantined string, parentHandle *os.File, original string) string {
+	if err := renameNoReplacePinned(cleanupHandle, quarantined, parentHandle, original); err == nil {
 		return original
 	}
 	return quarantined
 }
 
-func pinRemovalTree(path string, rootHandle *os.File, rootInfo os.FileInfo) ([]pinnedRemovalEntry, error) {
-	entries := []pinnedRemovalEntry{{path: path, handle: rootHandle, info: rootInfo}}
+func pinRemovalTree(path string, rootHandle *os.File, rootInfo os.FileInfo, trustedParents ...*os.File) ([]pinnedRemovalEntry, error) {
+	var parentHandle *os.File
+	if len(trustedParents) != 0 {
+		parentHandle = trustedParents[0]
+	}
+	var parentRoot *os.Root
+	if parentHandle == nil {
+		var err error
+		parentRoot, parentHandle, err = openPinnedDirectory(filepath.Dir(path))
+		if err != nil {
+			return nil, err
+		}
+	}
+	entries := []pinnedRemovalEntry{{
+		path: path, handle: rootHandle, info: rootInfo, rootPath: path,
+		parent: parentHandle, parentRoot: parentRoot, parentOwned: parentRoot != nil,
+	}}
 	if !rootInfo.IsDir() {
 		return entries, nil
 	}
-	err := filepath.WalkDir(path, func(entryPath string, entry os.DirEntry, walkErr error) error {
+
+	// Walk the directory through a root opened and identity-checked against the
+	// already-pinned root handle. A path-based WalkDir could be redirected to an
+	// attacker-controlled replacement after the baseline check, and the later
+	// quarantine rename would then remove that replacement.
+	removalRoot, err := fileutil.OpenPinnedRoot(path, false)
+	if err != nil {
+		if parentRoot != nil {
+			_ = parentHandle.Close()
+			_ = parentRoot.Close()
+		}
+		return nil, fmt.Errorf("pin removal root %s: %w", path, err)
+	}
+	removalRootInfo, err := removalRoot.Stat(".")
+	if err != nil || removalRootInfo == nil || rootInfo == nil || !os.SameFile(removalRootInfo, rootInfo) {
+		_ = removalRoot.Close()
+		if parentRoot != nil {
+			_ = parentHandle.Close()
+			_ = parentRoot.Close()
+		}
+		return nil, fmt.Errorf("removal root changed while pinning: %s", path)
+	}
+	entries[0].root = removalRoot
+	entries[0].rootOwned = true
+
+	err = fs.WalkDir(fileutil.PinnedRootFS(removalRoot), ".", func(relativePath string, _ fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if entryPath == path {
+		if relativePath == "." {
 			return nil
 		}
-		info, err := entry.Info()
+		info, err := removalRoot.Lstat(relativePath)
 		if err != nil {
 			return err
 		}
 		if !info.IsDir() && !info.Mode().IsRegular() {
-			return fmt.Errorf("refuse to remove irregular path %s", entryPath)
+			return fmt.Errorf("refuse to remove irregular path %s", filepath.Join(path, filepath.FromSlash(relativePath)))
 		}
-		handle, err := openPinnedPath(entryPath)
+		relativePath = filepath.FromSlash(relativePath)
+		handle, err := removalRoot.Open(relativePath)
 		if err != nil {
 			return err
 		}
 		opened, err := handle.Stat()
 		if err != nil || !os.SameFile(info, opened) {
 			_ = handle.Close()
-			return fmt.Errorf("path changed while pinning removal: %s", entryPath)
+			return fmt.Errorf("path changed while pinning removal: %s", filepath.Join(path, relativePath))
 		}
-		entries = append(entries, pinnedRemovalEntry{path: entryPath, handle: handle, info: opened, owned: true})
+
+		parent := rootHandle
+		var childParent *os.File
+		parentRelative := filepath.Dir(relativePath)
+		if parentRelative != "." {
+			childParent, err = removalRoot.Open(parentRelative)
+			if err != nil {
+				_ = handle.Close()
+				return err
+			}
+			parent = childParent
+		}
+		var entryRoot *os.Root
+		if info.IsDir() {
+			entryRoot, err = fileutil.OpenPinnedRoot(filepath.Join(path, relativePath), false)
+			if err != nil {
+				_ = handle.Close()
+				if childParent != nil {
+					_ = childParent.Close()
+				}
+				return err
+			}
+			entryRootInfo, rootErr := entryRoot.Stat(".")
+			if rootErr != nil || entryRootInfo == nil || !os.SameFile(entryRootInfo, opened) {
+				_ = entryRoot.Close()
+				_ = handle.Close()
+				if childParent != nil {
+					_ = childParent.Close()
+				}
+				return fmt.Errorf("path changed while pinning removal root: %s", filepath.Join(path, relativePath))
+			}
+		}
+		entries = append(entries, pinnedRemovalEntry{
+			path: filepath.Join(path, relativePath), handle: handle, info: opened,
+			root: entryRoot, rootPath: filepath.Join(path, relativePath), rootOwned: entryRoot != nil,
+			parent: parent, parentOwned: childParent != nil, owned: true,
+		})
 		return nil
 	})
 	if err != nil {
+		closedRoots := make(map[*os.Root]struct{})
 		for _, entry := range entries {
 			if entry.owned {
 				_ = entry.handle.Close()
 			}
+			if entry.root != nil && entry.rootOwned {
+				if _, ok := closedRoots[entry.root]; !ok {
+					_ = entry.root.Close()
+					closedRoots[entry.root] = struct{}{}
+				}
+			}
+			if entry.parentOwned {
+				_ = entry.parent.Close()
+			}
 		}
+		if parentRoot != nil {
+			_ = parentRoot.Close()
+		}
+		_ = removalRoot.Close()
 		return nil, err
 	}
 	return entries, nil
+}
+
+func openPinnedDirectory(path string) (*os.Root, *os.File, error) {
+	root, err := fileutil.OpenPinnedRoot(path, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	dir, err := root.Open(".")
+	if err != nil {
+		_ = root.Close()
+		return nil, nil, err
+	}
+	rootInfo, rootErr := root.Stat(".")
+	dirInfo, dirErr := dir.Stat()
+	if rootErr != nil || dirErr != nil || rootInfo == nil || dirInfo == nil || !os.SameFile(rootInfo, dirInfo) {
+		_ = dir.Close()
+		_ = root.Close()
+		return nil, nil, fmt.Errorf("pinned parent directory changed: %s", path)
+	}
+	return root, dir, nil
+}
+
+// createPinnedChildDirectory creates and opens one named child through a
+// descriptor-bound parent. expectedParent, when supplied, is the identity
+// already captured for the caller's trusted parent and prevents a path-based
+// reopen from selecting a replacement directory.
+func createPinnedChildDirectory(path string, expectedParent os.FileInfo) (*os.Root, *os.Root, *os.File, error) {
+	parentRoot, parentHandle, err := openPinnedDirectory(filepath.Dir(path))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	closeParent := func() {
+		_ = parentHandle.Close()
+		_ = parentRoot.Close()
+	}
+	parentInfo, err := parentHandle.Stat()
+	if err != nil {
+		closeParent()
+		return nil, nil, nil, fmt.Errorf("stat trusted parent for %s: %w", path, err)
+	}
+	if expectedParent != nil && !os.SameFile(parentInfo, expectedParent) {
+		closeParent()
+		return nil, nil, nil, fmt.Errorf("trusted parent changed for %s", path)
+	}
+	name := filepath.Base(path)
+	if name == "." || name == string(filepath.Separator) || name == "" {
+		closeParent()
+		return nil, nil, nil, fmt.Errorf("invalid child name for %s", path)
+	}
+	if err := parentRoot.Mkdir(name, 0700); err != nil {
+		closeParent()
+		return nil, nil, nil, err
+	}
+	childRoot, err := parentRoot.OpenRoot(name)
+	if err != nil {
+		closeParent()
+		return nil, nil, nil, fmt.Errorf("open created child %s: %w", path, err)
+	}
+	childHandle, err := childRoot.Open(".")
+	if err != nil {
+		_ = childRoot.Close()
+		closeParent()
+		return nil, nil, nil, fmt.Errorf("open created child handle %s: %w", path, err)
+	}
+	childInfo, childStatErr := childHandle.Stat()
+	rootInfo, rootStatErr := childRoot.Stat(".")
+	if childStatErr != nil || rootStatErr != nil || childInfo == nil || rootInfo == nil ||
+		!childInfo.IsDir() || !os.SameFile(childInfo, rootInfo) {
+		_ = childHandle.Close()
+		_ = childRoot.Close()
+		closeParent()
+		if childStatErr != nil {
+			return nil, nil, nil, fmt.Errorf("stat created child %s: %w", path, childStatErr)
+		}
+		if rootStatErr != nil {
+			return nil, nil, nil, fmt.Errorf("stat created child root %s: %w", path, rootStatErr)
+		}
+		return nil, nil, nil, fmt.Errorf("created child %s is not a stable directory", path)
+	}
+	_ = parentHandle.Close()
+	return parentRoot, childRoot, childHandle, nil
 }
 
 func sameFileMetadata(before, after os.FileInfo) bool {
@@ -1315,7 +1708,24 @@ func sameFileMetadata(before, after os.FileInfo) bool {
 		before.Size() == after.Size() && before.ModTime().Equal(after.ModTime())
 }
 
-func fingerprintPinnedPath(path string, handle *os.File, pinned os.FileInfo) ([sha256.Size]byte, error) {
+func fingerprintPinnedPath(path string, handle *os.File, pinned os.FileInfo, roots ...*os.Root) ([sha256.Size]byte, error) {
+	var root *os.Root
+	if len(roots) != 0 {
+		root = roots[0]
+	}
+	return fingerprintPinnedPathAtRoot(path, path, handle, pinned, root)
+}
+
+type fingerprintWalkHooks struct {
+	beforeWalk func()
+	afterWalk  func()
+}
+
+func fingerprintPinnedPathAtRoot(path, rootPath string, handle *os.File, pinned os.FileInfo, root *os.Root) ([sha256.Size]byte, error) {
+	return fingerprintPinnedPathAtRootWithHooks(path, rootPath, handle, pinned, root, nil)
+}
+
+func fingerprintPinnedPathAtRootWithHooks(path, rootPath string, handle *os.File, pinned os.FileInfo, root *os.Root, hooks *fingerprintWalkHooks) ([sha256.Size]byte, error) {
 	var empty [sha256.Size]byte
 	if err := revalidatePinned(path, handle, pinned); err != nil {
 		return empty, err
@@ -1330,19 +1740,47 @@ func fingerprintPinnedPath(path string, handle *os.File, pinned os.FileInfo) ([s
 			return empty, err
 		}
 	} else if rootBefore.IsDir() {
+		ownedRoot := false
+		if root == nil {
+			var err error
+			root, err = fileutil.OpenPinnedRoot(path, false)
+			if err != nil {
+				return empty, fmt.Errorf("pin fingerprint root %s: %w", path, err)
+			}
+			ownedRoot = true
+			rootPath = path
+		}
+		if ownedRoot {
+			defer func() { _ = root.Close() }()
+		}
+		namespaceBefore, err := root.Stat(".")
+		if err != nil {
+			return empty, fmt.Errorf("stat fingerprint root %s: %w", rootPath, err)
+		}
+		walkStart, err := filepath.Rel(rootPath, path)
+		if err != nil || filepath.IsAbs(walkStart) || walkStart == ".." || strings.HasPrefix(walkStart, ".."+string(filepath.Separator)) {
+			return empty, fmt.Errorf("fingerprint path %s is outside pinned root %s", path, rootPath)
+		}
+		walkStart = filepath.Clean(walkStart)
+		if walkStart == "." && !os.SameFile(namespaceBefore, rootBefore) {
+			return empty, fmt.Errorf("fingerprint root namespace does not match %s", path)
+		}
 		writeFingerprintMetadata(digest, managedTargetRoot, rootBefore)
-		if err := filepath.WalkDir(path, func(entryPath string, entry os.DirEntry, walkErr error) error {
+		if hooks != nil && hooks.beforeWalk != nil {
+			hooks.beforeWalk()
+		}
+		walkErr := fs.WalkDir(fileutil.PinnedRootFS(root), filepath.ToSlash(walkStart), func(relativePath string, _ fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
 			}
-			if entryPath == path {
+			if relativePath == filepath.ToSlash(walkStart) {
 				return nil
 			}
-			rel, err := filepath.Rel(path, entryPath)
+			rel, err := filepath.Rel(filepath.FromSlash(walkStart), filepath.FromSlash(relativePath))
 			if err != nil {
 				return err
 			}
-			info, err := entry.Info()
+			info, err := root.Lstat(filepath.FromSlash(relativePath))
 			if err != nil {
 				return err
 			}
@@ -1351,22 +1789,30 @@ func fingerprintPinnedPath(path string, handle *os.File, pinned os.FileInfo) ([s
 				return nil
 			}
 			if !info.Mode().IsRegular() {
-				return fmt.Errorf("fingerprint entry %s is not regular", entryPath)
+				return fmt.Errorf("fingerprint entry %s is not regular", filepath.Join(path, rel))
 			}
-			file, err := os.Open(entryPath)
+			file, err := fileutil.OpenRootRegular(root, filepath.FromSlash(relativePath), true)
 			if err != nil {
 				return err
 			}
 			opened, err := file.Stat()
 			if err != nil || !os.SameFile(opened, info) {
 				_ = file.Close()
-				return fmt.Errorf("fingerprint entry changed before reading: %s", entryPath)
+				return fmt.Errorf("fingerprint entry changed before reading: %s", filepath.Join(path, rel))
 			}
 			fingerprintErr := fingerprintFile(digest, filepath.ToSlash(rel), file, opened)
 			closeErr := file.Close()
 			return errors.Join(fingerprintErr, closeErr)
-		}); err != nil {
-			return empty, err
+		})
+		if hooks != nil && hooks.afterWalk != nil {
+			hooks.afterWalk()
+		}
+		if walkErr != nil {
+			return empty, walkErr
+		}
+		namespaceAfter, err := root.Stat(".")
+		if err != nil || !sameFileMetadata(namespaceBefore, namespaceAfter) {
+			return empty, fmt.Errorf("fingerprint namespace changed while reading: %s", rootPath)
 		}
 	} else {
 		return empty, fmt.Errorf("fingerprint root is neither a regular file nor directory: %s", path)
@@ -1442,6 +1888,86 @@ func (ts *managedTypeTransitions) DeletedFiles() []string {
 // nil when the caller doesn't need that tracking (e.g. direct unit tests).
 func removeStaleFiles(ctx context.Context, sourceDir, targetDir string, result *DeployResult, prevManaged map[string]bool) error {
 	return removeStaleFilesWithOps(ctx, sourceDir, targetDir, result, prevManaged, os.Lstat, os.Remove)
+}
+
+// removeStaleFilesUnderRoot is the production path for local deploy pruning.
+// The walk and every removal use a root opened above targetDir, so a swapped
+// target ancestor cannot redirect a privileged delete outside deployRoot.
+func removeStaleFilesUnderRoot(
+	ctx context.Context,
+	sourceDir, targetDir, deployRoot string,
+	root *os.Root,
+	result *DeployResult,
+	prevManaged map[string]bool,
+) error {
+	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
+	if len(prevManaged) == 0 {
+		return nil
+	}
+	hasFiles, err := dirHasRegularFilesContext(ctx, sourceDir)
+	if err != nil {
+		return fmt.Errorf("inspect source %q for stale-file pruning: %w", sourceDir, err)
+	}
+	if !hasFiles {
+		logger.Warn().Str(log.FieldPath, sourceDir).Int("managed_count", len(prevManaged)).
+			Msg("Source has no regular files but a prior deploy did; skipping stale-file pruning (suspected render failure)")
+		return nil
+	}
+	targetRel, err := filepath.Rel(filepath.Clean(deployRoot), filepath.Clean(targetDir))
+	if err != nil || filepath.IsAbs(targetRel) || targetRel == ".." || strings.HasPrefix(targetRel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("target %q escapes deploy root %q", targetDir, deployRoot)
+	}
+	walkRoot := filepath.ToSlash(targetRel)
+	if walkRoot == "." {
+		walkRoot = "."
+	}
+	var removalErrors []error
+	removedCount := 0
+	walkErr := fs.WalkDir(fileutil.PinnedRootFS(root), walkRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		relPath, relErr := filepath.Rel(filepath.FromSlash(walkRoot), filepath.FromSlash(path))
+		if relErr != nil {
+			return relErr
+		}
+		manifestPath := filepath.ToSlash(relPath)
+		if !prevManaged[manifestPath] {
+			return nil
+		}
+		srcPath := filepath.Join(sourceDir, filepath.FromSlash(relPath))
+		if _, statErr := os.Lstat(srcPath); statErr == nil {
+			return nil
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("stat source path %s: %w", manifestPath, statErr)
+		}
+		if err := root.Remove(path); err != nil {
+			removalErrors = append(removalErrors, fmt.Errorf("remove file %s: %w", manifestPath, err))
+			logger.Warn().Err(err).Str(log.FieldPath, manifestPath).Msg("Failed to remove stale file")
+			return nil
+		}
+		removedCount++
+		if result != nil {
+			result.AddDeleted(manifestPath)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return walkErr
+	}
+	if len(removalErrors) > 0 {
+		return fmt.Errorf("%d stale file(s) could not be removed: %w", len(removalErrors), errors.Join(removalErrors...))
+	}
+	if removedCount > 0 {
+		logger.Info().Int("removed", removedCount).Msg("Successfully removed stale files")
+	}
+	return nil
 }
 
 func removeStaleFilesWithOps(
@@ -1577,11 +2103,19 @@ func listManagedFiles(sourceDir string) ([]string, error) {
 // DeployLocalFile syncs a single file locally using native Go file operations.
 // Uses atomic copy via temp file. When ContentHashSync is enabled, skips writing
 // if the file content has not changed.
+//
+// The write is pinned to targetFile's parent directory. The reconcile path calls
+// deployLocalFileManaged directly with the appdata root, which pins higher.
 func (d *DeployOps) DeployLocalFile(ctx context.Context, sourceFile, targetFile string, result *DeployResult) error {
-	return d.deployLocalFileManaged(ctx, sourceFile, targetFile, result, nil)
+	return d.deployLocalFileManaged(ctx, sourceFile, targetFile, filepath.Dir(targetFile), result, nil)
 }
 
-func (d *DeployOps) deployLocalFileManaged(ctx context.Context, sourceFile, targetFile string, result *DeployResult, prevManaged map[string]bool) error {
+// deployLocalFileManaged writes targetFile with every destination mutation
+// resolved from a handle pinned to deployRoot, which targetFile must lie under.
+// bosun runs as host root and single-file targets land in appdata, where a
+// compromised container can replace a directory with a symlink; resolving the
+// write by path lets that symlink redirect it out of appdata entirely.
+func (d *DeployOps) deployLocalFileManaged(ctx context.Context, sourceFile, targetFile, deployRoot string, result *DeployResult, prevManaged map[string]bool) error {
 	if d.DryRun {
 		return nil
 	}
@@ -1612,7 +2146,9 @@ func (d *DeployOps) deployLocalFileManaged(ctx context.Context, sourceFile, targ
 	if d.ContentHashSync {
 		copyFn := d.copyFileIfChangedFn
 		if copyFn == nil {
-			copyFn = fileutil.CopyFileIfChanged
+			copyFn = func(ctx context.Context, src, dst string) (bool, error) {
+				return fileutil.CopyFileUnderRootIfChanged(ctx, src, deployRoot, dst)
+			}
 		}
 		changed, err := copyFn(ctx, sourceFile, targetFile)
 		if changed && result != nil {
@@ -1628,7 +2164,9 @@ func (d *DeployOps) deployLocalFileManaged(ctx context.Context, sourceFile, targ
 	// must too. Treat ErrSymlinkSkipped as a benign no-op, not a deploy failure.
 	copyFn := d.copyFileFn
 	if copyFn == nil {
-		copyFn = fileutil.CopyFile
+		copyFn = func(ctx context.Context, src, dst string) error {
+			return fileutil.CopyFileUnderRoot(ctx, src, deployRoot, dst)
+		}
 	}
 	if err := copyFn(ctx, sourceFile, targetFile); err != nil {
 		if errors.Is(err, fileutil.ErrSymlinkSkipped) {

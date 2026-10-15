@@ -24,3 +24,13 @@ func openSourceFile(path string, followSymlinks bool) (*os.File, error) {
 	}
 	return os.NewFile(uintptr(fd), path), nil
 }
+
+func rootOpenFlags(followSymlinks bool) int {
+	flags := unix.O_RDONLY | unix.O_NONBLOCK
+	if !followSymlinks {
+		flags |= unix.O_NOFOLLOW
+	}
+	return flags
+}
+
+func isRootSymlinkError(err error) bool { return errors.Is(err, unix.ELOOP) }

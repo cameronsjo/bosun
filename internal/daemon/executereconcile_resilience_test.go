@@ -103,7 +103,7 @@ func TestExecuteReconcile_TargetFailureRetainsEvidenceAndSiblingCleans(t *testin
 	cfg.StagingDir = filepath.Join(baseDir, "staging")
 	cfg.StateFile = filepath.Join(baseDir, "base-state.json")
 	cfg.LocalAppdataPath = filepath.Join(baseDir, "appdata")
-	cfg.LockFile = filepath.Join(baseDir, "reconcile.lock")
+	cfg.LockFile = privateLockPath(t, baseDir, "reconcile.lock")
 	cfg.BackupDir = filepath.Join(baseDir, "backups")
 	cfg.InfraSubDir = "."
 	cfg.Targets = []reconcile.Target{

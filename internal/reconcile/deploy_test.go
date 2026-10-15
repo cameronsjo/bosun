@@ -1181,6 +1181,30 @@ func TestManagedTypeTransitionCancellationTraversalGuards(t *testing.T) {
 	})
 }
 
+func TestCreatePinnedChildDirectoryRejectsReplacedParent(t *testing.T) {
+	base := t.TempDir()
+	parent := filepath.Join(base, "parent")
+	original := parent + "-original"
+	require.NoError(t, os.Mkdir(parent, 0o755))
+	expected, err := os.Stat(parent)
+	require.NoError(t, err)
+	require.NoError(t, os.Rename(parent, original))
+	require.NoError(t, os.Mkdir(parent, 0o755))
+
+	parentRoot, childRoot, childHandle, err := createPinnedChildDirectory(filepath.Join(parent, "child"), expected)
+	if parentRoot != nil {
+		_ = parentRoot.Close()
+	}
+	if childRoot != nil {
+		_ = childRoot.Close()
+	}
+	if childHandle != nil {
+		_ = childHandle.Close()
+	}
+	require.ErrorContains(t, err, "trusted parent changed")
+	assert.NoDirExists(t, filepath.Join(parent, "child"))
+}
+
 func TestManagedTypeTransitions_SuccessfulRollbackRemovesRedundantStage(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -1975,6 +1999,45 @@ func TestManagedTypeTransitions_RollbackNeverOverwritesRecreatedTarget(t *testin
 			require.NoError(t, statErr)
 		})
 	}
+}
+
+func TestFingerprintPinnedPath_UsesPinnedDirectoryNamespaceAfterRelocation(t *testing.T) {
+	parent := evalSymlinks(t, t.TempDir())
+	directory := filepath.Join(parent, "target")
+	moved := filepath.Join(parent, "target-original")
+	require.NoError(t, os.Mkdir(directory, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(directory, "payload"), []byte("original"), 0600))
+
+	root, err := fileutil.OpenPinnedRoot(directory, false)
+	require.NoError(t, err)
+	defer func() { _ = root.Close() }()
+	handle, err := root.Open(".")
+	require.NoError(t, err)
+	defer func() { _ = handle.Close() }()
+	info, err := handle.Stat()
+	require.NoError(t, err)
+	want, err := fingerprintPinnedPath(directory, handle, info, root)
+	require.NoError(t, err)
+
+	got, err := fingerprintPinnedPathAtRootWithHooks(directory, directory, handle, info, root, &fingerprintWalkHooks{
+		beforeWalk: func() {
+			require.NoError(t, os.Rename(directory, moved))
+			require.NoError(t, os.Mkdir(directory, 0700))
+			require.NoError(t, os.WriteFile(filepath.Join(directory, "payload"), []byte("attacker"), 0600))
+		},
+		afterWalk: func() {
+			require.NoError(t, os.RemoveAll(directory))
+			require.NoError(t, os.Rename(moved, directory))
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, want, got, "fingerprinting must read the descriptor-bound directory while its named path is replaced")
+
+	mismatchedRoot, err := fileutil.OpenPinnedRoot(parent, false)
+	require.NoError(t, err)
+	defer func() { _ = mismatchedRoot.Close() }()
+	_, err = fingerprintPinnedPath(directory, handle, info, mismatchedRoot)
+	require.ErrorContains(t, err, "fingerprint root namespace does not match")
 }
 
 func TestManagedTypeTransitions_PromoteRejectsChangedTarget(t *testing.T) {

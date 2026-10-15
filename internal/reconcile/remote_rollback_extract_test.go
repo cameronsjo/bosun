@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -161,9 +162,12 @@ func TestSafeExtractBackup_ErrorPaths(t *testing.T) {
 }
 
 func TestWriteRegularEntry_OpenError(t *testing.T) {
-	// dest under a nonexistent parent: os.OpenFile fails before any copy.
-	dest := filepath.Join(t.TempDir(), "missing-parent", "file")
-	_, err := writeRegularEntry(context.Background(), dest, nil)
+	// dest under a nonexistent parent: the open fails before any copy.
+	rootFS, err := os.OpenRoot(t.TempDir())
+	require.NoError(t, err)
+	defer func() { _ = rootFS.Close() }()
+
+	_, err = writeRegularEntry(context.Background(), rootFS, filepath.Join("missing-parent", "file"), nil)
 	require.Error(t, err)
 }
 
@@ -193,8 +197,8 @@ func TestSafeExtractBackup_CancellationDuringRegularCopyCleansPartialTree(t *tes
 		ctx,
 		tarFile,
 		MaxVerifyDecompressedBytes,
-		func(ctx context.Context, dest string, _ io.Reader) (int64, error) {
-			return writeRegularEntry(ctx, dest, &cancelAfterFirstRead{cancel: cancel})
+		func(ctx context.Context, rootFS *os.Root, rel string, _ io.Reader) (int64, error) {
+			return writeRegularEntry(ctx, rootFS, rel, &cancelAfterFirstRead{cancel: cancel})
 		},
 	)
 
@@ -331,18 +335,116 @@ func TestSafeExtractBackup_ValidationFailuresCleanPartialTree(t *testing.T) {
 	}
 }
 
-func TestWriteLinkEntry_CreateErrors(t *testing.T) {
+// TestSafeExtractBackup_RejectsChainedSymlinkEscape pins the chained-symlink
+// escape that a purely lexical target check accepts. Every link below names a
+// target that LOOKS like it stays under the extraction root, but because an
+// earlier entry turned the parent into a symlink, each one is REALIZED one level
+// further out. The final regular member then lands wherever the chain points —
+// arbitrary file creation as the daemon user, from the `tar -czf -` stream a
+// hostile remote deploy target returns (CWE-59).
+func TestSafeExtractBackup_RejectsChainedSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires Windows symlink capability")
+	}
 	base := t.TempDir()
+	tmpRoot := filepath.Join(base, "extract-tmp")
+	require.NoError(t, os.MkdirAll(tmpRoot, 0o755))
+	t.Setenv("TMPDIR", tmpRoot)
+
+	tarFile := filepath.Join(base, "chain.tar.gz")
+	writeGzTarArchiveHeaders(t, tarFile,
+		// l -> .        realized at <extract-root>/l, resolves to the root
+		&tar.Header{Name: "l", Typeflag: tar.TypeSymlink, Linkname: ".", Mode: 0o777},
+		// l/m -> ..     lexically the root; realized at <extract-root>/m -> TMPDIR
+		&tar.Header{Name: "l/m", Typeflag: tar.TypeSymlink, Linkname: "..", Mode: 0o777},
+		// l/m/n -> ..   lexically <extract-root>/l; realized at TMPDIR/n -> base
+		&tar.Header{Name: "l/m/n", Typeflag: tar.TypeSymlink, Linkname: "..", Mode: 0o777},
+		// the payload, realized at base/pwned — outside the extraction root
+		regHdr("l/m/n/pwned"),
+	)
+
+	root, cleanup, err := safeExtractBackup(context.Background(), tarFile)
+
+	require.Error(t, err, "an archive whose members resolve through a symlinked parent must be refused")
+	assert.NoFileExists(t, filepath.Join(base, "pwned"),
+		"no archive member may be realized outside the extraction root")
+	assertFailedExtractionCleaned(t, tmpRoot, root, cleanup)
+}
+
+func TestSafeExtractBackup_RejectsSiblingSymlinkChainEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires Windows symlink capability")
+	}
+
+	for _, tt := range []struct {
+		name  string
+		links []*tar.Header
+	}{
+		{
+			name: "forward sibling order",
+			links: []*tar.Header{
+				{Name: "x/s", Typeflag: tar.TypeSymlink, Linkname: "..", Mode: 0o777},
+				{Name: "x/t", Typeflag: tar.TypeSymlink, Linkname: "s/../y", Mode: 0o777},
+			},
+		},
+		{
+			name: "reverse sibling order",
+			links: []*tar.Header{
+				{Name: "x/t", Typeflag: tar.TypeSymlink, Linkname: "s/../y", Mode: 0o777},
+				{Name: "x/s", Typeflag: tar.TypeSymlink, Linkname: "..", Mode: 0o777},
+			},
+		},
+		{
+			name: "hardlink preserves replaced symlink inode",
+			links: []*tar.Header{
+				{Name: "x/a", Typeflag: tar.TypeSymlink, Linkname: "b/../y", Mode: 0o777},
+				{Name: "x/b", Typeflag: tar.TypeSymlink, Linkname: "..", Mode: 0o777},
+				{Name: "x/alias", Typeflag: tar.TypeLink, Linkname: "x/a", Mode: 0o777},
+				{Name: "x/a", Typeflag: tar.TypeSymlink, Linkname: "..", Mode: 0o777},
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			base := t.TempDir()
+			tmpRoot := filepath.Join(base, "extract-tmp")
+			require.NoError(t, os.MkdirAll(tmpRoot, 0o755))
+			t.Setenv("TMPDIR", tmpRoot)
+			outside := filepath.Join(tmpRoot, "y")
+			require.NoError(t, os.MkdirAll(outside, 0o755))
+			canary := filepath.Join(outside, "canary")
+			require.NoError(t, os.WriteFile(canary, []byte("outside preserved"), 0o600))
+
+			tarFile := filepath.Join(base, "sibling-chain.tar.gz")
+			entries := make([]*tar.Header, 0, len(tt.links)+1)
+			entries = append(entries, dirHdr("x"))
+			entries = append(entries, tt.links...)
+			writeGzTarArchiveHeaders(t, tarFile, entries...)
+
+			root, cleanup, err := safeExtractBackup(context.Background(), tarFile)
+			assert.ErrorContains(t, err, "link target escapes extraction root after resolution")
+			assert.Empty(t, root)
+			content, readErr := os.ReadFile(canary)
+			require.NoError(t, readErr)
+			assert.Equal(t, "outside preserved", string(content))
+			require.NoError(t, os.RemoveAll(outside))
+			assertFailedExtractionCleaned(t, tmpRoot, root, cleanup)
+		})
+	}
+}
+
+func TestWriteLinkEntry_CreateErrors(t *testing.T) {
+	rootFS, err := os.OpenRoot(t.TempDir())
+	require.NoError(t, err)
+	defer func() { _ = rootFS.Close() }()
 
 	t.Run("symlink create fails when the parent is missing", func(t *testing.T) {
-		dest := filepath.Join(base, "missing", "link")
-		err := writeLinkEntry(base, dest, &tar.Header{Typeflag: tar.TypeSymlink, Linkname: "target"})
+		err := writeLinkEntry(rootFS, filepath.Join("missing", "link"),
+			&tar.Header{Typeflag: tar.TypeSymlink, Linkname: "target"})
 		require.Error(t, err)
 	})
 
 	t.Run("hardlink create fails when the target is missing", func(t *testing.T) {
-		dest := filepath.Join(base, "hardlink")
-		err := writeLinkEntry(base, dest, &tar.Header{Typeflag: tar.TypeLink, Linkname: "does/not/exist"})
+		err := writeLinkEntry(rootFS, "hardlink", &tar.Header{Typeflag: tar.TypeLink, Linkname: "does/not/exist"})
 		require.Error(t, err)
 	})
 }

@@ -77,7 +77,7 @@ func TestNewReconciler(t *testing.T) {
 func TestReconciler_AcquireLock(t *testing.T) {
 	t.Run("acquire lock successfully", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "test.lock")
+		lockFile := privateLockPath(t, tmpDir, "test.lock")
 
 		cfg := DefaultConfig()
 		r := NewReconciler(cfg)
@@ -93,7 +93,7 @@ func TestReconciler_AcquireLock(t *testing.T) {
 
 	t.Run("fail to acquire already held lock", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "test.lock")
+		lockFile := privateLockPath(t, tmpDir, "test.lock")
 
 		cfg := DefaultConfig()
 
@@ -117,7 +117,7 @@ func TestReconciler_AcquireLock(t *testing.T) {
 func TestReconciler_ReleaseLock(t *testing.T) {
 	t.Run("release held lock", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "test.lock")
+		lockFile := privateLockPath(t, tmpDir, "test.lock")
 
 		cfg := DefaultConfig()
 		r := NewReconciler(cfg)
@@ -159,7 +159,7 @@ func TestReconcilerRun_InvalidPostSyncHooksFailBeforeSync(t *testing.T) {
 func TestReconcilerRun_InvalidReloadedPostSyncHooksFailBeforeDeploy(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := DefaultConfig()
-	cfg.LockFile = filepath.Join(tmpDir, "reconcile.lock")
+	cfg.LockFile = privateLockPath(t, tmpDir, "reconcile.lock")
 	cfg.ConfigReloader = func(string) (*ReloadedConfig, error) {
 		return &ReloadedConfig{PostSyncHooks: []PostSyncHook{{Action: "exec"}}}, nil
 	}
@@ -1163,7 +1163,7 @@ func TestRun_DeployPathsSkip(t *testing.T) {
 
 			cfg := &Config{
 				RepoDir:     tmpDir,
-				LockFile:    filepath.Join(tmpDir, "test.lock"),
+				LockFile:    privateLockPath(t, tmpDir, "test.lock"),
 				StateFile:   stateFile,
 				DeployPaths: NewConfigField([]string{"unraid/**"}),
 				Source:      "poll",
@@ -1224,7 +1224,7 @@ func TestRun_DeployPathsMatch(t *testing.T) {
 
 	cfg := &Config{
 		RepoDir:                 tmpDir,
-		LockFile:                filepath.Join(tmpDir, "test.lock"),
+		LockFile:                privateLockPath(t, tmpDir, "test.lock"),
 		StateFile:               stateFile,
 		StagingDir:              filepath.Join(tmpDir, "staging"),
 		DeployPaths:             NewConfigField([]string{"unraid/**"}),
@@ -1281,7 +1281,7 @@ func testRunDeployPathsDiffFails(t *testing.T, diffErr error) {
 
 	cfg := &Config{
 		RepoDir:                 tmpDir,
-		LockFile:                filepath.Join(tmpDir, "test.lock"),
+		LockFile:                privateLockPath(t, tmpDir, "test.lock"),
 		StateFile:               stateFile,
 		StagingDir:              filepath.Join(tmpDir, "staging"),
 		DeployPaths:             NewConfigField([]string{"unraid/**"}),
@@ -1316,7 +1316,7 @@ func TestRun_DeployPathsForceOverride(t *testing.T) {
 
 	cfg := &Config{
 		RepoDir:                 tmpDir,
-		LockFile:                filepath.Join(tmpDir, "test.lock"),
+		LockFile:                privateLockPath(t, tmpDir, "test.lock"),
 		StateFile:               stateFile,
 		StagingDir:              filepath.Join(tmpDir, "staging"),
 		DeployPaths:             NewConfigField([]string{"unraid/**"}),
@@ -1354,7 +1354,7 @@ func TestRun_DeployPathsFirstDeploySkipsPathCheck(t *testing.T) {
 	// entirely because there is no diff base (state.LastDeployedCommit == "").
 	cfg := &Config{
 		RepoDir:                 tmpDir,
-		LockFile:                filepath.Join(tmpDir, "test.lock"),
+		LockFile:                privateLockPath(t, tmpDir, "test.lock"),
 		StateFile:               stateFile,
 		StagingDir:              filepath.Join(tmpDir, "staging"),
 		DeployPaths:             NewConfigField([]string{"unraid/**"}),
@@ -1402,7 +1402,7 @@ func TestRun_DeployPathsUsesLastDeployedCommitAfterFailure(t *testing.T) {
 
 	cfg := &Config{
 		RepoDir:     tmpDir,
-		LockFile:    filepath.Join(tmpDir, "test.lock"),
+		LockFile:    privateLockPath(t, tmpDir, "test.lock"),
 		StateFile:   stateFile,
 		DeployPaths: NewConfigField([]string{"unraid/**"}),
 	}
@@ -3107,7 +3107,7 @@ func TestDoDeploy(t *testing.T) {
 func TestReconcilerRun(t *testing.T) {
 	t.Run("skip when already deployed same commit", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 
 		gitOps := &mockGitOps{
@@ -3135,7 +3135,7 @@ func TestReconcilerRun(t *testing.T) {
 
 	t.Run("circuit breaker blocks after max attempts", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 
 		gitOps := &mockGitOps{
@@ -3166,7 +3166,7 @@ func TestReconcilerRun(t *testing.T) {
 
 	t.Run("force overrides circuit breaker", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 		repoDir := filepath.Join(tmpDir, "repo")
 		stagingDir := filepath.Join(tmpDir, "staging")
@@ -3218,7 +3218,7 @@ func TestReconcilerRun(t *testing.T) {
 	// retries forever, since the breaker's attempt counter never advances.
 	t.Run("panicking sync accumulates attempts like an ordinary failure", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 
 		cfg := &Config{
@@ -3238,7 +3238,7 @@ func TestReconcilerRun(t *testing.T) {
 
 	t.Run("panicking sync trips the breaker after max attempts", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 
 		// Pre-save state as if 3 prior panicking attempts already ran --
@@ -3275,7 +3275,7 @@ func TestReconcilerRun(t *testing.T) {
 	// even though the pipeline itself is skipped as redundant.
 	t.Run("confirmed skip resets breaker state instead of preserving stale attempts", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 
 		// Simulate 2 prior sync-failure attempts (e.g. a transient outage
@@ -3329,7 +3329,7 @@ func TestReconcilerRun(t *testing.T) {
 	// commit-based skip so self-heal actually re-applies declared state.
 	t.Run("force redeploys unchanged commit (drift self-heal)", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 		repoDir := filepath.Join(tmpDir, "repo")
 		stagingDir := filepath.Join(tmpDir, "staging")
@@ -3385,7 +3385,7 @@ func TestReconcilerRun(t *testing.T) {
 	// deploy forever with no operator involved.
 	t.Run("self-heal does not bypass a tripped circuit breaker", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 
 		gitOps := &mockGitOps{
@@ -3417,7 +3417,7 @@ func TestReconcilerRun(t *testing.T) {
 
 	t.Run("git sync failure", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 
 		gitOps := &mockGitOps{
 			syncErr: fmt.Errorf("authentication failed"),
@@ -3435,7 +3435,7 @@ func TestReconcilerRun(t *testing.T) {
 
 	t.Run("deploy paths skip non-matching changes", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 
 		// Seed prior deploy so the path-aware check activates.
@@ -4147,7 +4147,7 @@ func TestDeployLocal_TopLevelTypeTransitions(t *testing.T) {
 // would treat untouched paths as bosun-managed and prune them.
 func TestRun_DryRunDoesNotSeedDeployedFiles(t *testing.T) {
 	tmpDir := t.TempDir()
-	lockFile := filepath.Join(tmpDir, "reconcile.lock")
+	lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 	stateFile := filepath.Join(tmpDir, "state.json")
 	repoDir := filepath.Join(tmpDir, "repo")
 	stagingDir := filepath.Join(tmpDir, "staging")
@@ -4422,7 +4422,7 @@ func TestSignalContainer(t *testing.T) {
 func TestReconcilerRunFullSuccess(t *testing.T) {
 	t.Run("full pipeline with dry run deploys successfully", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 		repoDir := filepath.Join(tmpDir, "repo")
 		stagingDir := filepath.Join(tmpDir, "staging")
@@ -4478,7 +4478,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 
 	t.Run("state mismatch triggers re-deploy", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 		repoDir := filepath.Join(tmpDir, "repo")
 		stagingDir := filepath.Join(tmpDir, "staging")
@@ -4525,7 +4525,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 
 	t.Run("decrypt failure sends throttled alert and returns error", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 		repoDir := filepath.Join(tmpDir, "repo")
 		appdataDir := filepath.Join(tmpDir, "appdata")
@@ -4574,7 +4574,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 
 	t.Run("template failure sends alert and returns error", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 		repoDir := filepath.Join(tmpDir, "repo")
 		appdataDir := filepath.Join(tmpDir, "appdata")
@@ -4621,7 +4621,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 
 	t.Run("full non-dry-run local deploy with backup and cleanup", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 		repoDir := filepath.Join(tmpDir, "repo")
 		stagingDir := filepath.Join(tmpDir, "staging")
@@ -4688,7 +4688,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 
 	t.Run("deploy failure sends alert and returns error", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 		repoDir := filepath.Join(tmpDir, "repo")
 		stagingDir := filepath.Join(tmpDir, "staging")
@@ -4730,7 +4730,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 
 	t.Run("recovery alert sent after previous failure", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 		repoDir := filepath.Join(tmpDir, "repo")
 		stagingDir := filepath.Join(tmpDir, "staging")
@@ -4796,7 +4796,7 @@ func TestReconcilerRunFullSuccess(t *testing.T) {
 func TestSyncRepoFailureSendsAlert(t *testing.T) {
 	t.Run("syncRepo failure triggers failure alert when OnFailure=true", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 
 		gitOps := &mockGitOps{
@@ -4826,7 +4826,7 @@ func TestSyncRepoFailureSendsAlert(t *testing.T) {
 
 	t.Run("syncRepo failure does NOT trigger alert when OnFailure=false", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 
 		gitOps := &mockGitOps{
@@ -4865,7 +4865,7 @@ func TestOnSuccessGate(t *testing.T) {
 func TestOnFailureGate(t *testing.T) {
 	t.Run("failure alert suppressed when OnFailure=false for decrypt failure", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 		repoDir := filepath.Join(tmpDir, "repo")
 		appdataDir := filepath.Join(tmpDir, "appdata")
@@ -4910,7 +4910,7 @@ func TestOnFailureGate(t *testing.T) {
 
 	t.Run("failure alert suppressed when OnFailure=false for template failure", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 		repoDir := filepath.Join(tmpDir, "repo")
 		appdataDir := filepath.Join(tmpDir, "appdata")
@@ -4955,7 +4955,7 @@ func TestOnFailureGate(t *testing.T) {
 
 	t.Run("failure alert suppressed when OnFailure=false for deploy failure", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 		repoDir := filepath.Join(tmpDir, "repo")
 		stagingDir := filepath.Join(tmpDir, "staging")
@@ -5063,7 +5063,7 @@ func TestMinLen(t *testing.T) {
 
 func TestRunLockContention(t *testing.T) {
 	tmpDir := t.TempDir()
-	lockFile := filepath.Join(tmpDir, "reconcile.lock")
+	lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 	stateFile := filepath.Join(tmpDir, "state.json")
 	repoDir := filepath.Join(tmpDir, "repo")
 	stagingDir := filepath.Join(tmpDir, "staging")
@@ -5118,7 +5118,7 @@ func TestDeployLocalSyncErrors(t *testing.T) {
 
 	t.Run("compose file present triggers compose up error", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		lockFile := filepath.Join(tmpDir, "reconcile.lock")
+		lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 		stateFile := filepath.Join(tmpDir, "state.json")
 		repoDir := filepath.Join(tmpDir, "repo")
 		stagingDir := filepath.Join(tmpDir, "staging")
@@ -5174,7 +5174,7 @@ func TestRunSaveStateErrorInAttemptTracking(t *testing.T) {
 	// Put the state file in a read-only directory so SaveState fails during
 	// attempt tracking (line 335 of reconcile.go).
 	tmpDir := t.TempDir()
-	lockFile := filepath.Join(tmpDir, "reconcile.lock")
+	lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 	repoDir := filepath.Join(tmpDir, "repo")
 	stagingDir := filepath.Join(tmpDir, "staging")
 	appdataDir := filepath.Join(tmpDir, "appdata")
@@ -5328,7 +5328,7 @@ func TestRun_HealthGateFailureWithRollback_SkipsPostSyncHooks(t *testing.T) {
 	// RollbackFromBackupSet shells out to `docker` for the final compose-up.
 	setupDockerShim(t, 0)
 	tmpDir := t.TempDir()
-	lockFile := filepath.Join(tmpDir, "reconcile.lock")
+	lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 	stateFile := filepath.Join(tmpDir, "state.json")
 	repoDir := filepath.Join(tmpDir, "repo")
 	stagingDir := filepath.Join(tmpDir, "staging")
@@ -5421,7 +5421,7 @@ func TestRun_HealthGateFailureWithRollback_SkipsPostSyncHooks(t *testing.T) {
 // a chronically unhealthy critical container (the original #392 intent).
 func TestRun_HealthGateFailureWithoutRollback_RunsPostSyncHooks(t *testing.T) {
 	tmpDir := t.TempDir()
-	lockFile := filepath.Join(tmpDir, "reconcile.lock")
+	lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 	stateFile := filepath.Join(tmpDir, "state.json")
 	repoDir := filepath.Join(tmpDir, "repo")
 	stagingDir := filepath.Join(tmpDir, "staging")
@@ -5512,7 +5512,7 @@ func TestRun_HealthGateFailureWithoutRollback_RunsPostSyncHooks(t *testing.T) {
 // deploy itself).
 func TestRun_PreDeployHealthSnapshotFailureIsNonFatal(t *testing.T) {
 	tmpDir := t.TempDir()
-	lockFile := filepath.Join(tmpDir, "reconcile.lock")
+	lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 	stateFile := filepath.Join(tmpDir, "state.json")
 	repoDir := filepath.Join(tmpDir, "repo")
 	stagingDir := filepath.Join(tmpDir, "staging")
@@ -5687,7 +5687,7 @@ func TestDeployRemoteErrorPropagation(t *testing.T) {
 func TestRunRemoteDeployFailure_StateNotUpdated(t *testing.T) {
 	// When deployRemote returns an error, Run() should NOT update LastDeployedCommit.
 	tmpDir := t.TempDir()
-	lockFile := filepath.Join(tmpDir, "reconcile.lock")
+	lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 	stateFile := filepath.Join(tmpDir, "state.json")
 
 	gitOps := &mockGitOps{syncChanged: true, syncBefore: "old-commit", syncAfter: "new-commit"}

@@ -15,3 +15,13 @@ func openSourceFile(path string, followSymlinks bool) (*os.File, error) {
 	}
 	return os.OpenFile(path, flags, 0)
 }
+
+func rootOpenFlags(followSymlinks bool) int {
+	flags := os.O_RDONLY
+	if !followSymlinks {
+		flags |= windows.O_FILE_FLAG_OPEN_REPARSE_POINT
+	}
+	return flags
+}
+
+func isRootSymlinkError(error) bool { return false }
