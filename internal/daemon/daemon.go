@@ -1769,7 +1769,7 @@ func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, s
 	}
 
 	result, err := reconcile.RunRestartBreaker(
-		ctx, client, actual, state,
+		ctx, client, projectName, actual, state,
 		rcfg.RestartThreshold, rcfg.RestartWindow,
 	)
 	if err != nil {

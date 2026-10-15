@@ -169,6 +169,7 @@ func TestRunDriftCheckForTarget_NamedBlankProjectUsesComposeNamespace(t *testing
 	d.config.ReconcileConfig.RestartBreakerEnabled = true
 	d.config.ReconcileConfig.RestartThreshold = 5
 	target := d.targets[0]
+	target.ProjectName = ""
 	saveTargetState(t, d.config.ReconcileConfig, target, &reconcile.DeployState{
 		LastDeployedCommit: "alpha-commit",
 		DeclaredServices:   []reconcile.DeclaredService{{Name: "web", Image: "nginx:latest"}},
@@ -215,6 +216,48 @@ func TestRunDriftCheckForTarget_NamedBlankProjectUsesComposeNamespace(t *testing
 	assert.Empty(t, state.DriftItems, "the Compose-derived namespace should match the declared web service")
 	assert.Equal(t, 1, mock.ContainerInspectCalls, "the unrelated project must not be inspected")
 	assert.Equal(t, 0, mock.ContainerStopCalls, "the unrelated restart loop must not be stopped")
+}
+
+func TestRunDriftCheckForTarget_UnresolvedImplicitProjectFailsClosed(t *testing.T) {
+	d, _ := targetStatusTestDaemon(t, []reconcile.Target{{Name: reconcile.DefaultTargetName}})
+	d.config.ReconcileConfig.ProjectName = ""
+	d.config.ReconcileConfig.RestartBreakerEnabled = true
+	d.config.ReconcileConfig.RestartThreshold = 5
+	target := d.targets[0]
+	target.ProjectName = ""
+	priorTracking := map[string]reconcile.RestartTrackingEntry{
+		"web": {
+			RestartCount:         0,
+			BaselineRestartCount: 0,
+			BaselineAt:           time.Now().Add(-time.Minute),
+			CheckedAt:            time.Now().Add(-time.Minute),
+		},
+	}
+	saveTargetState(t, d.config.ReconcileConfig, target, &reconcile.DeployState{
+		LastDeployedCommit: "default-commit",
+		DeclaredServices:   []reconcile.DeclaredService{{Name: "web", Image: "nginx:latest"}},
+		RestartTracking:    priorTracking,
+	})
+
+	mock := dockertest.NewMockDockerAPI()
+	mock.ContainerListFunc = func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+		return client.ContainerListResult{
+			Items: []container.Summary{
+				dockertest.MakeTestContainer("foreign-web", "foreign-web-1", "nginx:latest", "running", "foreign", "web"),
+			},
+		}, nil
+	}
+	mock.ContainerInspectFunc = func(_ context.Context, _ string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+		t.Fatal("an unresolved implicit target must not inspect containers")
+		return client.ContainerInspectResult{}, nil
+	}
+
+	d.runDriftCheckForTarget(context.Background(), target, docker.NewClientWithAPI(mock))
+
+	state := reconcile.LoadState(d.configForTarget(target).StateFile)
+	assert.Equal(t, priorTracking["web"], state.RestartTracking["web"], "unresolved scope must preserve target restart tracking")
+	assert.Equal(t, 0, mock.ContainerInspectCalls, "unresolved scope must not inspect host containers")
+	assert.Equal(t, 0, mock.ContainerStopCalls, "unresolved scope must not stop host containers")
 }
 
 func TestRunDriftCheckForTarget_RestartBreakerMutatesOnlySelectedTarget(t *testing.T) {

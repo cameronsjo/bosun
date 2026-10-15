@@ -240,15 +240,30 @@ func collectRestartCounts(
 
 // RunRestartBreaker performs restart circuit breaker evaluation and takes action
 // on containers that exceed the restart threshold. Returns the result for alerting.
+// An empty projectName is an unresolved destructive scope: the breaker returns
+// the existing tracking unchanged without inspecting or stopping any container.
 func RunRestartBreaker(
 	ctx context.Context,
 	client *docker.Client,
+	projectName string,
 	actual []ActualService,
 	state *DeployState,
 	threshold int,
 	window time.Duration,
 ) (*RestartBreakerResult, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+
+	// CollectActualState treats an empty project name as match-everything. The
+	// restart breaker is destructive, so an unresolved target scope must not
+	// inspect or stop a container that Bosun cannot prove it owns. Keep the
+	// tracking state unchanged as well: advancing it would trust the same
+	// unscoped observation this guard refuses.
+	if projectName == "" {
+		logger.Warn().
+			Int("candidate_containers", len(actual)).
+			Msg("Restart circuit breaker skipped: Compose project scope is unresolved; no containers will be inspected or stopped")
+		return &RestartBreakerResult{Updated: state.RestartTracking}, nil
+	}
 
 	if state.RestartTracking == nil {
 		state.RestartTracking = make(map[string]RestartTrackingEntry)
