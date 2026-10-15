@@ -118,6 +118,25 @@ func TestAcquireLock_RefusesWorldWritableParent(t *testing.T) {
 	assert.Nil(t, r.lockFd)
 }
 
+func TestAcquireLock_RefusesWorldWritableAncestorWithActualPath(t *testing.T) {
+	root := t.TempDir()
+	unsafeAncestor := filepath.Join(root, "unsafe")
+	lockDir := filepath.Join(unsafeAncestor, "bosun")
+	require.NoError(t, os.MkdirAll(lockDir, 0o700))
+	require.NoError(t, os.Chmod(unsafeAncestor, 0o777))
+	t.Cleanup(func() { _ = os.Chmod(unsafeAncestor, 0o700) })
+
+	r := NewReconciler(DefaultConfig())
+	r.lockFile = filepath.Join(lockDir, "reconcile.lock")
+
+	err := r.acquireLock()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), fmt.Sprintf("lock path %q", unsafeAncestor))
+	assert.Contains(t, err.Error(), "owner-only")
+	assert.NotContains(t, err.Error(), filepath.Join(lockDir, "unsafe"), "diagnostic must not append traversal components to the requested parent")
+	assert.Nil(t, r.lockFd)
+}
+
 func TestAcquireLock_RefusesNonOwnerParent(t *testing.T) {
 	tmpDir := t.TempDir()
 	foreignUID := os.Geteuid() + 1

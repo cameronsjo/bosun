@@ -152,9 +152,11 @@ func ensureTrustedLockParent(parent string) (*os.Root, error) {
 	}
 
 	current := root
+	currentPath := filesystemRoot
 	components := strings.FieldsFunc(relative, func(r rune) bool { return r == '/' })
 	for index, component := range components {
 		final := index == len(components)-1
+		componentPath := filepath.Join(currentPath, component)
 		next, openErr := current.OpenRoot(component)
 		if errors.Is(openErr, fs.ErrNotExist) {
 			if mkdirErr := current.Mkdir(component, lockDirMode); mkdirErr != nil && !errors.Is(mkdirErr, fs.ErrExist) {
@@ -185,7 +187,7 @@ func ensureTrustedLockParent(parent string) (*os.Root, error) {
 			_ = current.Close()
 			return nil, fmt.Errorf("refusing reconcile lock parent %q: %q is not the stable directory selected from its trusted parent; replace it with a real directory owned by root or uid %d", parent, component, os.Geteuid())
 		}
-		if err := validateTrustedLockDir(parent, component, actual, final); err != nil {
+		if err := validateTrustedLockDir(parent, componentPath, actual, final); err != nil {
 			_ = next.Close()
 			_ = current.Close()
 			return nil, err
@@ -196,34 +198,34 @@ func ensureTrustedLockParent(parent string) (*os.Root, error) {
 		// passed its identity checks.
 		_ = current.Close()
 		current = next
+		currentPath = componentPath
 	}
 	return current, nil
 }
 
-func validateTrustedLockDir(parent, component string, info os.FileInfo, final bool) error {
-	path := filepath.Join(parent, component)
+func validateTrustedLockDir(requestedParent, path string, info os.FileInfo, final bool) error {
 	if !info.IsDir() {
-		return fmt.Errorf("refusing reconcile lock path %q: trusted parent is not a real directory; replace it with an owner-only directory (chown %d and chmod %#o)", path, os.Geteuid(), lockDirMode)
+		return fmt.Errorf("refusing reconcile lock path %q (requested parent %q): trusted parent is not a real directory; replace it with an owner-only directory (chown %d and chmod %#o)", path, requestedParent, os.Geteuid(), lockDirMode)
 	}
 	uid, ok := unixFileOwner(info)
 	if !ok {
-		return fmt.Errorf("refusing reconcile lock path %q: cannot verify directory owner; replace it with a root-owned ancestor or daemon-owned directory (chown %d and chmod %#o)", path, os.Geteuid(), lockDirMode)
+		return fmt.Errorf("refusing reconcile lock path %q (requested parent %q): cannot verify directory owner; replace it with a root-owned ancestor or daemon-owned directory (chown %d and chmod %#o)", path, requestedParent, os.Geteuid(), lockDirMode)
 	}
 	if final {
 		if uid != uint32(os.Geteuid()) {
-			return fmt.Errorf("refusing reconcile lock path %q: final directory is owned by uid %d, need daemon uid %d; chown %d and chmod %#o", path, uid, os.Geteuid(), os.Geteuid(), lockDirMode)
+			return fmt.Errorf("refusing reconcile lock path %q (requested parent %q): final directory is owned by uid %d, need daemon uid %d; chown %d and chmod %#o", path, requestedParent, uid, os.Geteuid(), os.Geteuid(), lockDirMode)
 		}
 		if info.Mode().Perm() != lockDirMode.Perm() {
-			return fmt.Errorf("refusing reconcile lock path %q: final directory mode is %#o, need owner-only %#o; chmod %#o", path, info.Mode().Perm(), lockDirMode, lockDirMode)
+			return fmt.Errorf("refusing reconcile lock path %q (requested parent %q): final directory mode is %#o, need owner-only %#o; chmod %#o", path, requestedParent, info.Mode().Perm(), lockDirMode, lockDirMode)
 		}
 		return nil
 	}
 
 	if uid != 0 && uid != uint32(os.Geteuid()) {
-		return fmt.Errorf("refusing reconcile lock path %q: ancestor is owned by uid %d, need root or daemon uid %d; chown %d and remove group/other write access", path, uid, os.Geteuid(), os.Geteuid())
+		return fmt.Errorf("refusing reconcile lock path %q (requested parent %q): ancestor is owned by uid %d, need root or daemon uid %d; chown %d and remove group/other write access", path, requestedParent, uid, os.Geteuid(), os.Geteuid())
 	}
 	if info.Mode().Perm()&0o022 != 0 && !(uid == 0 && info.Mode()&os.ModeSticky != 0) {
-		return fmt.Errorf("refusing reconcile lock path %q: ancestor mode is %#o; make it root-owned and non-writable, or daemon-owned without group/other write access", path, info.Mode().Perm())
+		return fmt.Errorf("refusing reconcile lock path %q (requested parent %q): ancestor mode is %#o; make it root-owned and non-writable, or daemon-owned without group/other write access", path, requestedParent, info.Mode().Perm())
 	}
 	return nil
 }
