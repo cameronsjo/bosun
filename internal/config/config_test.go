@@ -1594,6 +1594,36 @@ func TestLoad_DefaultProjectName(t *testing.T) {
 	assert.Equal(t, filepath.Base(tmpDir), cfg.ProjectName())
 }
 
+func TestLoad_ProjectNameFromFile(t *testing.T) {
+	t.Run("reports explicit root-level name", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte("project_name: homelab\n"), 0o644))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { require.NoError(t, os.Chdir(originalWd)) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, "homelab", cfg.ProjectNameFromFile())
+	})
+
+	t.Run("does not report directory fallback", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0o755))
+
+		originalWd, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { require.NoError(t, os.Chdir(originalWd)) }()
+		require.NoError(t, os.Chdir(tmpDir))
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Empty(t, cfg.ProjectNameFromFile())
+	})
+}
+
 func TestHookSettleDelayFromConfig(t *testing.T) {
 	t.Run("parses duration string from bosun.yaml", func(t *testing.T) {
 		tmpDir := evalSymlinks(t, t.TempDir())
