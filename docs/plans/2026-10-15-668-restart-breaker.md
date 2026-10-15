@@ -1,5 +1,5 @@
 # Restart breaker scope guard (#668 unit 3)
-Status: source implemented and posture diagnostics extended; fix2 mutation proof and restored-head CI pending
+Status: source implemented and fix2 staged red proof complete; final restored-head CI pending
 Delivery: [PR #714](https://github.com/cameronsjo/bosun/pull/714) carries current-head CI and readiness.
 
 ## Goal and completion criteria
@@ -65,7 +65,9 @@ worktree on `cos/668-restart-breaker`. `gofmt -w` completed for all changed Go
 files, `git diff --check origin/main HEAD` exited 0, `openspec validate
 harden-restart-breaker-scope --strict` exited 0, and the guard-removal patch
 passes `git apply --check`. A fresh `git status --short --branch` reports a
-clean branch; compiler/runtime evidence remains CI-owned.
+clean branch; compiler/runtime evidence remains CI-owned. Restored-head CI38766411503
+for the source checkpoint passed Test, Lint, Build, WebUI, and Build site; its
+Codecov patch result was still pending when this plan checkpoint was written.
 
 The initial guard-focused command
 `scripts/agent-go-gate.sh go test ./internal/reconcile ./internal/daemon -run
@@ -79,4 +81,4 @@ no compiler ran. Root CI supplies the compiler/runtime evidence.
 
 ## Published negative-control evidence
 
-Initial guard-removal CI38760065810 compiled and linted, then failed the direct empty-scope and unresolved implicit-target tests because Docker inspection was reached. The reviewed guard was restored, and restored-head CI38760998225 passed the required Test, Lint, Build, WebUI, site-build, and patch-coverage checks. The daemon fixture compares the persisted JSON baseline with the persisted result, avoiding monotonic-clock fields lost during serialization; the inspection/stop assertions are unchanged. Fix2 negative-control CI38765578636 at the pushed mutation head recorded the intended startup warning and doctor scope-check assertion failures: `TestWarnRestartBreakerScopePosture` failed its unresolved-default warning assertions, and `TestCheckRestartBreakerScope` failed its warning and bounded-scope pass assertions. Its only additional failure was lint reporting the deliberately unused `restartBreakerScopeUnresolved` helper after the doctor body was removed; Build, WebUI, and site build passed. The two controls are restored in the current follow-on commit; restored-head CI remains pending.
+Initial guard-removal CI38760065810 compiled and linted, then failed the direct empty-scope and unresolved implicit-target tests because Docker inspection was reached. The reviewed guard was restored, and restored-head CI38760998225 passed the required Test, Lint, Build, WebUI, site-build, and patch-coverage checks. The daemon fixture compares the persisted JSON baseline with the persisted result, avoiding monotonic-clock fields lost during serialization; the inspection/stop assertions are unchanged. Fix2 negative-control CI38765578636 at the pushed mutation head recorded the intended startup warning and doctor scope-check assertion failures: `TestWarnRestartBreakerScopePosture` failed its unresolved-default warning assertions, and `TestCheckRestartBreakerScope` failed its warning and bounded-scope pass assertions. Its only additional failure was lint reporting the deliberately unused `restartBreakerScopeUnresolved` helper after the doctor body was removed; Build, WebUI, and site build passed. The two controls are restored in follow-on commit `bde612f`; restored-head CI38766411503 passed Test, Lint, Build, WebUI, and Build site, with the Codecov patch result pending at this checkpoint.
