@@ -2001,6 +2001,34 @@ func TestManagedTypeTransitions_RollbackNeverOverwritesRecreatedTarget(t *testin
 	}
 }
 
+func TestFingerprintPinnedPath_UsesPinnedDirectoryNamespaceAfterRelocation(t *testing.T) {
+	parent := evalSymlinks(t, t.TempDir())
+	directory := filepath.Join(parent, "target")
+	moved := filepath.Join(parent, "target-moved")
+	replaced := filepath.Join(parent, "target-replaced")
+	require.NoError(t, os.Mkdir(directory, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(directory, "payload"), []byte("original"), 0600))
+
+	root, err := fileutil.OpenPinnedRoot(directory, false)
+	require.NoError(t, err)
+	defer func() { _ = root.Close() }()
+	handle, err := root.Open(".")
+	require.NoError(t, err)
+	defer func() { _ = handle.Close() }()
+	info, err := handle.Stat()
+	require.NoError(t, err)
+	want, err := fingerprintPinnedPath(directory, handle, info, root)
+	require.NoError(t, err)
+
+	require.NoError(t, os.Rename(directory, moved))
+	require.NoError(t, os.Mkdir(replaced, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(replaced, "payload"), []byte("attacker"), 0600))
+
+	got, err := fingerprintPinnedPath(moved, handle, info, root)
+	require.NoError(t, err)
+	assert.Equal(t, want, got, "fingerprinting must read the descriptor-bound directory after its path is relocated")
+}
+
 func TestManagedTypeTransitions_PromoteRejectsChangedTarget(t *testing.T) {
 	transitions, target := newFileToDirTransition(t)
 	require.NoError(t, os.Remove(target))

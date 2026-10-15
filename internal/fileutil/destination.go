@@ -471,45 +471,6 @@ func (p *pinnedDir) openExistingRoot() (*os.Root, error) {
 	return root, nil
 }
 
-// assertDestinationInRoot resolves dst through the pinned handle before a
-// change decision reads it.
-//
-// The decision opens and compares the destination through the pinned root. An
-// escaping component therefore fails closed instead of letting a path-based
-// hash comparison silently skip a write to an attacker-controlled location.
-//
-// A destination that resolves through an in-root symlink retains the
-// destination interface's documented in-root redirect residual.
-func (p *pinnedDir) assertDestinationInRoot(dst string) error {
-	name, err := p.name(dst)
-	if err != nil {
-		return err
-	}
-	root, err := p.openExistingRoot()
-	if err != nil {
-		return err
-	}
-	if root == nil {
-		return nil
-	}
-	file, err := rootDestination{root: root}.open(name)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			// Absent inside the root: the pinned copy creates it.
-			return nil
-		}
-		// An escaping component reports here, and so does a destination that
-		// cannot be read at all. Neither can be compared safely.
-		return fmt.Errorf("%w: %s under %s: %w", errDestinationEscapesRoot, dst, p.path, err)
-	}
-	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("stat destination %s: %w", dst, err)
-	}
-	return validateRegularFile(dst, info)
-}
-
 // mkdirRoot creates the copy's destination root. When that is the pinned path
 // itself, opening the handle already creates it at 0755 — the mode the walk
 // asks for. When the copy destination sits below the pinned root, the missing

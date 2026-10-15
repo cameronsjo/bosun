@@ -119,7 +119,7 @@ func TestAcquireLock_RefusesWorldWritableParent(t *testing.T) {
 }
 
 func TestAcquireLock_RefusesWorldWritableAncestorWithActualPath(t *testing.T) {
-	root := t.TempDir()
+	root := evalSymlinks(t, t.TempDir())
 	unsafeAncestor := filepath.Join(root, "unsafe")
 	lockDir := filepath.Join(unsafeAncestor, "bosun")
 	require.NoError(t, os.MkdirAll(lockDir, 0o700))
@@ -132,7 +132,7 @@ func TestAcquireLock_RefusesWorldWritableAncestorWithActualPath(t *testing.T) {
 	err := r.acquireLock()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), fmt.Sprintf("lock path %q", unsafeAncestor))
-	assert.Contains(t, err.Error(), "owner-only")
+	assert.Contains(t, err.Error(), "group/other write access")
 	assert.NotContains(t, err.Error(), filepath.Join(lockDir, "unsafe"), "diagnostic must not append traversal components to the requested parent")
 	assert.Nil(t, r.lockFd)
 }
