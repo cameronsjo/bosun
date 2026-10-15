@@ -33,7 +33,7 @@ func newRecoverySkipFixture(t *testing.T, git GitOperations, seed *DeployState, 
 	cfg := &Config{
 		DryRun:                  true,
 		AllowEmptyDeclaredState: true,
-		LockFile:                filepath.Join(tmpDir, "reconcile.lock"),
+		LockFile:                privateLockPath(t, tmpDir, "reconcile.lock"),
 		StateFile:               stateFile,
 		RepoDir:                 repoDir,
 		StagingDir:              filepath.Join(tmpDir, "staging"),

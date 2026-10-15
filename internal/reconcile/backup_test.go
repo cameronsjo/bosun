@@ -366,7 +366,7 @@ func TestReconcilerRun_IncompleteBackupFootprintAbortsBeforeDeploy(t *testing.T)
 			stateFile := filepath.Join(tmpDir, "state.json")
 
 			cfg := &Config{
-				LockFile:         filepath.Join(tmpDir, "reconcile.lock"),
+				LockFile:         privateLockPath(t, tmpDir, "reconcile.lock"),
 				StateFile:        stateFile,
 				RepoDir:          repoDir,
 				StagingDir:       stagingDir,

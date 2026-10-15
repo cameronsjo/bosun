@@ -89,7 +89,7 @@ func gateScopeReconciler(
 
 	cfg := &Config{
 		DryRun:              false,
-		LockFile:            filepath.Join(tmp, "reconcile.lock"),
+		LockFile:            privateLockPath(t, tmp, "reconcile.lock"),
 		StateFile:           stateFile,
 		RepoDir:             repoDir,
 		StagingDir:          filepath.Join(tmp, "staging"),
@@ -459,7 +459,7 @@ func TestRunHealthGate_CriticalScope_RollbackEmitsNoRollbackAlert(t *testing.T) 
 
 	cfg := &Config{
 		DryRun:             false,
-		LockFile:           filepath.Join(tmp, "reconcile.lock"),
+		LockFile:           privateLockPath(t, tmp, "reconcile.lock"),
 		StateFile:          stateFile,
 		RepoDir:            repoDir,
 		StagingDir:         filepath.Join(tmp, "staging"),

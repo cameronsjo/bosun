@@ -47,7 +47,7 @@ func buildVerifyGateReconciler(
 	cfg := &Config{
 		DeployMode:          deployMode,
 		ProjectName:         "test",
-		LockFile:            filepath.Join(tmp, "reconcile.lock"),
+		LockFile:            privateLockPath(t, tmp, "reconcile.lock"),
 		StateFile:           stateFile,
 		RepoDir:             repoDir,
 		StagingDir:          filepath.Join(tmp, "staging"),

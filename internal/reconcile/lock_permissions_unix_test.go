@@ -20,7 +20,8 @@ import (
 // symlinked lock path, and the mode of a lock directory bosun creates.
 
 func TestAcquireLock_CreatesOwnerOnlyLockFile(t *testing.T) {
-	lockFile := filepath.Join(t.TempDir(), "reconcile.lock")
+	tmpDir := t.TempDir()
+	lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 
 	r := NewReconciler(DefaultConfig())
 	r.lockFile = lockFile
@@ -35,7 +36,8 @@ func TestAcquireLock_CreatesOwnerOnlyLockFile(t *testing.T) {
 }
 
 func TestAcquireLock_TightensPreExistingPermissiveLockFile(t *testing.T) {
-	lockFile := filepath.Join(t.TempDir(), "reconcile.lock")
+	tmpDir := t.TempDir()
+	lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 
 	// An upgraded deployment already has the lock file a prior release created
 	// world-readable.
@@ -59,7 +61,7 @@ func TestAcquireLock_RefusesSymlinkedLockPath(t *testing.T) {
 	planted := filepath.Join(tmpDir, "planted.target")
 	require.NoError(t, os.WriteFile(planted, nil, 0o600))
 
-	lockFile := filepath.Join(tmpDir, "reconcile.lock")
+	lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 	require.NoError(t, os.Symlink(planted, lockFile))
 
 	r := NewReconciler(DefaultConfig())
@@ -78,14 +80,14 @@ func TestValidateOpenedLockFile_RefusesDirectory(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = fd.Close() })
 
-	err = validateOpenedLockFile(fd, filepath.Join(tmpDir, "reconcile.lock"))
+	err = validateOpenedLockFile(fd, privateLockPath(t, tmpDir, "reconcile.lock"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a regular file")
 }
 
 func TestAcquireLock_RefusesForeignOwnedLockFile(t *testing.T) {
 	tmpDir := t.TempDir()
-	lockFile := filepath.Join(tmpDir, "reconcile.lock")
+	lockFile := privateLockPath(t, tmpDir, "reconcile.lock")
 	require.NoError(t, os.WriteFile(lockFile, nil, 0o600))
 	foreignUID := os.Geteuid() + 1
 	if err := os.Chown(lockFile, foreignUID, -1); err != nil {
@@ -127,7 +129,7 @@ func TestAcquireLock_RefusesWorldWritableAncestorWithActualPath(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(unsafeAncestor, 0o700) })
 
 	r := NewReconciler(DefaultConfig())
-	r.lockFile = filepath.Join(lockDir, "reconcile.lock")
+	r.lockFile = privateLockPath(t, lockDir, "reconcile.lock")
 
 	err := r.acquireLock()
 	require.Error(t, err)
