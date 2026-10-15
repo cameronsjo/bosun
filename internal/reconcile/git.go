@@ -378,7 +378,10 @@ func getHostKeyCallback() (xssh.HostKeyCallback, error) {
 
 	for _, path := range knownHostsPaths {
 		if _, err := os.Stat(path); err != nil {
-			continue
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("SSH known_hosts file %q could not be inspected: %w. Fix the path, or %s", path, err, hostKeyRemediation)
 		}
 		callback, err := knownhosts.New(path)
 		if err != nil {

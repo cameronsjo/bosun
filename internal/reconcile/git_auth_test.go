@@ -410,6 +410,8 @@ func TestResolveSSHAgentAuthRequiresUsableSigners(t *testing.T) {
 		agentAuth, ok := auth.(*sshAgentAuth)
 		require.True(t, ok)
 		callback := agentAuth.PublicKeysCallback
+		require.NotNil(t, callback.HostKeyCallback)
+		assert.Error(t, callback.HostKeyCallback("example.com:22", &net.TCPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 22}, freshHostKey(t)))
 		assert.Equal(t, "deploy", callback.User)
 		signers, err := callback.Callback()
 		require.NoError(t, err)

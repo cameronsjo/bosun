@@ -97,6 +97,22 @@ func TestGetHostKeyCallbackFailsClosed(t *testing.T) {
 		assert.Contains(t, err.Error(), malformed)
 	})
 
+	t.Run("candidate inspection failure is fatal rather than skipped", func(t *testing.T) {
+		fileAsParent := filepath.Join(t.TempDir(), "not-a-directory")
+		require.NoError(t, os.WriteFile(fileAsParent, []byte("x"), 0o600))
+		uninspectable := filepath.Join(fileAsParent, "known_hosts")
+		valid := writeValidKnownHosts(t)
+		setKnownHostsCandidates(t, func(string) []string { return []string{uninspectable, valid} })
+		t.Setenv("BOSUN_SSH_INSECURE_HOST_KEY", "")
+		t.Setenv("BOSUN_SSH_KNOWN_HOSTS", uninspectable)
+
+		callback, err := getHostKeyCallback()
+		require.Error(t, err)
+		assert.Nil(t, callback)
+		assert.Contains(t, err.Error(), uninspectable)
+		assert.Contains(t, err.Error(), "could not be inspected")
+	})
+
 	t.Run("valid known_hosts yields a verifying callback", func(t *testing.T) {
 		useVerifiedKnownHosts(t)
 
