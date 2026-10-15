@@ -772,7 +772,15 @@ Bosun verifies SSH host keys using only config-controlled paths:
 1. `BOSUN_SSH_KNOWN_HOSTS` (explicit override)
 2. `/config/known_hosts` (container convention)
 
-`~/.ssh/known_hosts` is intentionally excluded — ephemeral entries from manual `ssh` commands inside a container can cause go-git key mismatches. If neither path exists, verification falls back to insecure mode with a warning. Set `BOSUN_SSH_INSECURE_HOST_KEY=true` to disable verification entirely.
+The Git channel fails closed when neither path exists or the selected file is
+malformed; daemon startup and one-shot validation report an actionable error
+before network access. `~/.ssh/known_hosts` is intentionally excluded from
+Git — ephemeral entries from manual `ssh` commands inside a container can
+cause go-git key mismatches. Remote deploy `ssh` and `scp` commands use strict
+checking against the selected file; when no configured file exists they use
+OpenSSH's normal trust stores with `StrictHostKeyChecking=yes`, so an unpinned
+host is refused rather than accepted with TOFU. Set
+`BOSUN_SSH_INSECURE_HOST_KEY=true` only for an intentional bootstrap opt-out.
 
 ## Environment Variables
 

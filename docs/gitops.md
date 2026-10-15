@@ -445,6 +445,23 @@ repository paths ignore unrelated SSH key settings. For containers, pre-create
 a key bind-mount source as a file because Docker can create a directory when the
 host source is missing.
 
+#### SSH Host-Key Verification
+
+Both SSH channels resolve configured trust files in this order:
+
+1. `BOSUN_SSH_KNOWN_HOSTS` (explicit override)
+2. `/config/known_hosts` (container convention)
+
+Git fails closed before network access when neither candidate exists or the
+selected file is malformed. Remote `ssh` and `scp` operations use
+`StrictHostKeyChecking=yes` with the selected file; when no configured file
+exists, they leave OpenSSH's normal trust stores available but refuse an
+unpinned host. Bosun never uses `accept-new` as an implicit trust decision.
+`~/.ssh/known_hosts` is intentionally excluded from Git because container user
+profiles are ephemeral. Set `BOSUN_SSH_INSECURE_HOST_KEY=true` only for an
+intentional bootstrap opt-out; it disables host-key verification for both
+channels.
+
 ### Command-Line Flags
 
 ```bash

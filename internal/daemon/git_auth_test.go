@@ -2,8 +2,11 @@ package daemon
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +21,7 @@ import (
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	xssh "golang.org/x/crypto/ssh"
 )
 
 func TestValidateConfigGitAuthentication(t *testing.T) {
@@ -144,6 +148,43 @@ func TestDaemonRunRejectsInvalidSSHKeyBeforeStartup(t *testing.T) {
 	assert.Contains(t, err.Error(), keyPath)
 	_, statErr := os.Stat(cfg.SocketPath)
 	assert.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestDaemonRunRejectsMalformedSSHKnownHostsBeforeStartup(t *testing.T) {
+	t.Setenv("BOSUN_GIT_USERNAME", "")
+	t.Setenv("BOSUN_GIT_TOKEN", "")
+	t.Setenv("SSH_AUTH_SOCK", "")
+	t.Setenv("HOME", t.TempDir())
+	keyPath := filepath.Join(t.TempDir(), "deploy-key")
+	writeTestSSHPrivateKey(t, keyPath)
+	t.Setenv("BOSUN_SSH_KEY", keyPath)
+	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
+	require.NoError(t, os.WriteFile(knownHostsPath, []byte("not a known_hosts entry\n"), 0o600))
+	t.Setenv("BOSUN_SSH_KNOWN_HOSTS", knownHostsPath)
+
+	cfg := DefaultConfig()
+	cfg.EnableHTTP = false
+	cfg.EnableTCP = false
+	cfg.SocketPath = filepath.Join(t.TempDir(), "daemon.sock")
+	cfg.ReconcileConfig = reconcile.DefaultConfig()
+	cfg.ReconcileConfig.RepoURL = "git@example.com:owner/repo.git"
+	d, err := New(cfg)
+	require.NoError(t, err)
+
+	err = d.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "known_hosts")
+	_, statErr := os.Stat(cfg.SocketPath)
+	assert.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func writeTestSSHPrivateKey(t *testing.T, path string) {
+	t.Helper()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	block, err := xssh.MarshalPrivateKey(privateKey, "bosun test key")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, pem.EncodeToMemory(block), 0o600))
 }
 
 func TestDaemonRunRejectsInvalidAgeIdentityBeforeListeners(t *testing.T) {

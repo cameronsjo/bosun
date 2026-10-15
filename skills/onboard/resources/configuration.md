@@ -328,6 +328,8 @@ Used by `bosun daemon` and `bosun reconcile`:
 | `BOSUN_GIT_USERNAME` | | Private HTTPS Git Basic-auth username; set with `BOSUN_GIT_TOKEN` |
 | `BOSUN_GIT_TOKEN` | | Private HTTPS Git Basic-auth password/token; set with `BOSUN_GIT_USERNAME` |
 | `BOSUN_SSH_KEY` | conventional SSH paths | Private key fallback for SSH Git URLs; `SSH_AUTH_SOCK` takes precedence |
+| `BOSUN_SSH_KNOWN_HOSTS` | `/config/known_hosts` | Explicit known_hosts file for Git and remote SSH host-key verification |
+| `BOSUN_SSH_INSECURE_HOST_KEY` | `false` | Explicit bootstrap opt-out from SSH host-key verification; strict matching is otherwise fail closed |
 | `REPO_DIR` | `/app/repo` | Local clone directory |
 | `STAGING_DIR` | `/app/staging` | Secret-bearing rendered staging and single-slot failure evidence directory; target-effective paths must be disjoint |
 | `BACKUP_DIR` | `/app/backups` | Backup directory |
@@ -356,6 +358,13 @@ otherwise Bosun reports its path instead of passing nil authentication to
 go-git. HTTPS and public local repository paths ignore unrelated SSH key
 settings. Pre-create container file-bind sources because Docker can create a
 directory when the host source is missing.
+
+SSH host keys use `BOSUN_SSH_KNOWN_HOSTS`, then `/config/known_hosts`. Git
+authentication fails before network access when neither candidate exists or the
+selected file is malformed. Remote deploy commands use strict checking and
+refuse an unpinned host when no configured candidate resolves. Set
+`BOSUN_SSH_INSECURE_HOST_KEY=true` only for a deliberate bootstrap operation;
+it disables verification on both channels.
 
 ### Other Environment Variables
 

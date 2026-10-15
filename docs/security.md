@@ -178,6 +178,24 @@ cmd := exec.CommandContext(ctx, "ssh",
 | `ConnectTimeout` | 5 seconds | Prevent DoS via slow hosts |
 | `BatchMode` | yes | Disable interactive prompts, enforce key auth |
 
+### Host-Key Verification
+
+Bosun resolves SSH trust files in this order:
+
+1. `BOSUN_SSH_KNOWN_HOSTS`
+2. `/config/known_hosts`
+
+Git authentication fails before network access when no candidate exists or the
+selected file is malformed. Remote `ssh` and `scp` operations use
+`StrictHostKeyChecking=yes` with the selected file; without a configured file,
+OpenSSH's normal trust stores remain available for already-pinned hosts, while
+an unknown host is refused. Bosun does not use `accept-new` as an implicit
+trust decision, and Git does not consult `~/.ssh/known_hosts`.
+
+`BOSUN_SSH_INSECURE_HOST_KEY=true` is the only opt-out. It accepts any host key
+for both channels and is intended only for a one-time bootstrap while a
+parseable `known_hosts` file is provisioned.
+
 ### Retry on Transient Errors
 
 Bosun implements exponential backoff retry for transient SSH errors:
