@@ -22,7 +22,11 @@ func TestCanonicalTrustedPath_LinuxVarRunAlias(t *testing.T) {
 	}
 	linkTarget, err := os.Readlink(alias)
 	require.NoError(t, err)
-	if filepath.Clean(filepath.Join(filepath.Dir(alias), linkTarget)) != target {
+	normalized := filepath.Clean(linkTarget)
+	if !filepath.IsAbs(linkTarget) {
+		normalized = filepath.Clean(filepath.Join(filepath.Dir(alias), linkTarget))
+	}
+	if normalized != target {
 		t.Skipf("non-standard Linux %s alias target %q", alias, linkTarget)
 	}
 
