@@ -210,6 +210,10 @@ func copyFileIntoDestinationWithSource(
 		}
 		return err
 	}
+	if !os.SameFile(srcLstat, srcInfo) {
+		_ = srcFile.Close()
+		return fmt.Errorf("source changed while opening %s", src)
+	}
 	defer func() { _ = srcFile.Close() }()
 
 	// Create parent directories if needed.
