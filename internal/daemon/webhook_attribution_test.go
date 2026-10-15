@@ -192,6 +192,9 @@ func findWebhookLogField(t *testing.T, logs, message, field string) string {
 
 // Branch comparison stays byte-exact while every diagnostic sink is sanitized.
 func TestGitHubWebhookSanitizesRefWithoutChangingBranchMatch(t *testing.T) {
+	previousLevel := zerolog.GlobalLevel()
+	zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	t.Cleanup(func() { zerolog.SetGlobalLevel(previousLevel) })
 	for _, secret := range []string{"", "configured-secret"} {
 		t.Run("secret="+secret, func(t *testing.T) {
 			d, server := newTestDaemon(t)
