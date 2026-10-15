@@ -210,6 +210,28 @@ func TestRemovePinnedTreeRejectsInvalidCleanupName(t *testing.T) {
 }
 
 func TestFingerprintPinnedPathRejectsOutsideNamespaceAndChangedNamespace(t *testing.T) {
+	t.Run("cannot pin unreadable directory root", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("directory permission behavior is not portable on Windows")
+		}
+		if os.Getuid() == 0 {
+			t.Skip("permission failure is not observable when tests run as root")
+		}
+		path := filepath.Join(t.TempDir(), "directory")
+		require.NoError(t, os.Mkdir(path, 0o700))
+		handle, err := os.Open(path)
+		require.NoError(t, err)
+		defer func() { _ = handle.Close() }()
+		info, err := handle.Stat()
+		require.NoError(t, err)
+		require.NoError(t, os.Chmod(path, 0))
+		t.Cleanup(func() { _ = os.Chmod(path, 0o700) })
+
+		_, err = fingerprintPinnedPath(path, handle, info)
+
+		require.ErrorContains(t, err, "pin fingerprint root")
+	})
+
 	t.Run("closed root", func(t *testing.T) {
 		path := t.TempDir()
 		handle, err := os.Open(path)
@@ -354,4 +376,29 @@ func TestRemoveStaleFilesUnderRootReportsRemovalFailure(t *testing.T) {
 
 	require.ErrorContains(t, err, "stale file(s) could not be removed")
 	assert.FileExists(t, stale)
+}
+
+func TestRemoveStaleFilesUnderRootReportsSourceInspectionFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permission behavior is not portable on Windows")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("permission failure is not observable when tests run as root")
+	}
+	base := evalSymlinks(t, t.TempDir())
+	deployRoot := filepath.Join(base, "appdata")
+	targetDir := filepath.Join(deployRoot, "service")
+	sourceDir := filepath.Join(base, "source")
+	require.NoError(t, os.MkdirAll(targetDir, 0o755))
+	require.NoError(t, os.Mkdir(sourceDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "present.yml"), []byte("present"), 0o644))
+	require.NoError(t, os.Chmod(sourceDir, 0))
+	t.Cleanup(func() { _ = os.Chmod(sourceDir, 0o700) })
+	root, err := fileutil.OpenPinnedRoot(deployRoot, false)
+	require.NoError(t, err)
+	defer func() { _ = root.Close() }()
+
+	err = removeStaleFilesUnderRoot(context.Background(), sourceDir, targetDir, deployRoot, root, nil, map[string]bool{"old.yml": true})
+
+	require.ErrorContains(t, err, "inspect source")
 }
