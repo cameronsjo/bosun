@@ -27,6 +27,10 @@ semantics.
   a failed or escaping comparison is an error, never a silent skip.
 - Stale removals walk the managed set under the same destination root and remove
   relative names through that handle.
+- Managed file/directory type transitions publish and quarantine entries with
+  descriptor-relative no-replace renames on Unix, preserving the private
+  backup/rollback sequence while avoiding a path re-resolution after identity
+  checks. Windows retains its existing path-based rename behavior.
 - Template source and include roots are opened once per render operation. The
   source descriptor is validated as regular before parsing/reading, and the
   include helper reads from the pinned IncludeDir namespace. IncludeDir still

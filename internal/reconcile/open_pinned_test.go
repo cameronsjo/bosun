@@ -46,6 +46,25 @@ func TestOpenPinnedPath_AllowsNoReplaceRename(t *testing.T) {
 	}
 }
 
+func TestRenameNoReplacePinned_UsesParentDescriptor(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("descriptor-relative rename is fail-closed on this platform")
+	}
+	parent := t.TempDir()
+	source := filepath.Join(parent, "source")
+	destination := filepath.Join(parent, "destination")
+	require.NoError(t, os.WriteFile(source, []byte("payload"), 0o600))
+	parentHandle, err := openPinnedPath(parent)
+	require.NoError(t, err)
+	defer func() { _ = parentHandle.Close() }()
+
+	require.NoError(t, renameNoReplacePinned(parentHandle, source, parentHandle, destination))
+	assert.NoFileExists(t, source)
+	content, err := os.ReadFile(destination)
+	require.NoError(t, err)
+	assert.Equal(t, "payload", string(content))
+}
+
 func TestCreatePinnedFileExclusive_RetainsOriginalIdentityAcrossPathSwap(t *testing.T) {
 	parent := t.TempDir()
 	path := filepath.Join(parent, "replacement")

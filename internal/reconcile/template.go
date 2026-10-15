@@ -396,8 +396,9 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 		t.includeRoot, t.includeRootPath = previousIncludeRoot, previousIncludePath
 	}()
 
-	// Copy non-template files from sourceDir (caller already joined InfraSubDir).
-	if err := copyNonTemplateFiles(ctx, sourceDir, outDir); err != nil {
+	// Copy non-template files from the already pinned source root. Discovery and
+	// the later source open must share that descriptor-bound namespace.
+	if err := copyNonTemplateFilesFromRoot(ctx, absSource, outDir, sourceRoot); err != nil {
 		return fmt.Errorf("failed to copy non-template files: %w", err)
 	}
 
@@ -407,7 +408,7 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 	if t.walkDirFn != nil {
 		walkDir = t.walkDirFn
 	}
-	err := walkDir(sourceDir, func(path string, d fs.DirEntry, err error) error {
+	visitTemplate := func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -432,16 +433,24 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 		}
 
 		// Compute relative path and output path.
-		relPath, err := filepath.Rel(sourceDir, path)
-		if err != nil {
-			return fmt.Errorf("failed to compute relative path for %s: %w", path, err)
+		relPath := filepath.FromSlash(path)
+		templatePath := path
+		if t.walkDirFn != nil {
+			var relErr error
+			relPath, relErr = filepath.Rel(sourceDir, path)
+			if relErr != nil {
+				return fmt.Errorf("failed to compute relative path for %s: %w", path, relErr)
+			}
+			templatePath = path
+		} else {
+			templatePath = filepath.Join(absSource, relPath)
 		}
 
 		// Remove .tmpl extension for output. Use outDir (stagingDir/subDir)
 		// so rendered files land where deployLocal expects them.
 		outputPath := filepath.Join(outDir, strings.TrimSuffix(relPath, ".tmpl"))
 
-		if err := t.ExecuteTemplate(ctx, path, outputPath); err != nil {
+		if err := t.ExecuteTemplate(ctx, templatePath, outputPath); err != nil {
 			// The entry can become a symlink after WalkDir captured its DirEntry.
 			// Treat only the typed skip as benign; every other failure must abort
 			// staging rather than produce a partially rendered tree.
@@ -456,7 +465,17 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 		templatesRendered++
 
 		return nil
-	})
+	}
+	var err error
+	if t.walkDirFn != nil {
+		err = walkDir(sourceDir, visitTemplate)
+	} else {
+		// The source root was selected and pinned above. Traverse that namespace
+		// too, so discovery cannot be redirected by a source ancestor swap after
+		// the root was opened; ExecuteTemplate then reads the same root-relative
+		// entry selected here.
+		err = fs.WalkDir(sourceRoot.FS(), ".", visitTemplate)
+	}
 
 	if err != nil {
 		return fmt.Errorf("failed to render templates: %w", err)
@@ -475,6 +494,54 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 // copyNonTemplateFiles copies all non-.tmpl files from src to dst.
 func copyNonTemplateFiles(ctx context.Context, src, dst string) error {
 	return copyNonTemplateFilesWith(ctx, src, dst, fileutil.CopyFile)
+}
+
+func copyNonTemplateFilesFromRoot(ctx context.Context, src, dst string, root *os.Root) error {
+	if root == nil {
+		return fmt.Errorf("source directory %s has no pinned root", src)
+	}
+	info, err := root.Stat(".")
+	if err != nil {
+		return fmt.Errorf("failed to stat pinned source directory %s: %w", src, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("source path is not a directory: %s", src)
+	}
+	logger := log.ComponentCtx(ctx, log.ComponentTemplate)
+	return fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) && path != "." {
+				return nil
+			}
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if path == "." {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			logger.Warn().Str(log.FieldPath, filepath.Join(src, filepath.FromSlash(path))).Msg("Skipping symlink during template file copy")
+			return nil
+		}
+		relPath := filepath.FromSlash(path)
+		dstPath := filepath.Join(dst, relPath)
+		if d.IsDir() {
+			return mkdirAllContext(ctx, dstPath, 0755)
+		}
+		if strings.HasSuffix(path, ".tmpl") {
+			return nil
+		}
+		if err := fileutil.CopyFileFromRoot(ctx, root, relPath, dstPath); err != nil {
+			if errors.Is(err, fileutil.ErrSymlinkSkipped) {
+				logger.Warn().Str(log.FieldPath, filepath.Join(src, relPath)).Msg("Skipping symlink during template file copy")
+				return nil
+			}
+			return err
+		}
+		return nil
+	})
 }
 
 // copyNonTemplateFilesWith makes the copy operation explicit so the

@@ -114,6 +114,38 @@ func copyFileWithOpsAndOpen(
 	return copyFileIntoDestination(ctx, src, pathDestination{}, dst, chmod, adaptPathSync(syncParent), copyContent, openSource)
 }
 
+// CopyFileFromRoot copies a regular file selected from a pinned source root
+// into a path-resolved destination. The source lstat, open, and content read
+// all use the supplied root handle; the source pathname is used only for
+// diagnostics and destination-side operations retain CopyFile semantics.
+func CopyFileFromRoot(ctx context.Context, root *os.Root, srcName, dst string) error {
+	if root == nil {
+		return fmt.Errorf("copy source %s from nil root", srcName)
+	}
+	return copyFileIntoDestinationWithSource(
+		ctx,
+		srcName,
+		pathDestination{},
+		dst,
+		(*os.File).Chmod,
+		adaptPathSync(syncDestinationDir),
+		io.Copy,
+		func() (fs.FileInfo, error) { return root.Lstat(srcName) },
+		func(_ string, _ bool) (*os.File, fs.FileInfo, error) {
+			file, err := OpenRootRegular(root, srcName, false)
+			if err != nil {
+				return nil, nil, err
+			}
+			info, err := file.Stat()
+			if err != nil {
+				_ = file.Close()
+				return nil, nil, err
+			}
+			return file, info, nil
+		},
+	)
+}
+
 // copyFileIntoDestination performs the atomic replacement with every
 // destination-side mutation routed through dest. dstName is a name in dest's
 // namespace: a filesystem path for pathDestination, a root-relative path for a
@@ -128,12 +160,36 @@ func copyFileIntoDestination(
 	copyContent func(io.Writer, io.Reader) (int64, error),
 	openSource func(string, bool) (*os.File, fs.FileInfo, error),
 ) error {
+	return copyFileIntoDestinationWithSource(
+		ctx,
+		src,
+		dest,
+		dstName,
+		chmod,
+		syncParent,
+		copyContent,
+		func() (fs.FileInfo, error) { return os.Lstat(src) },
+		openSource,
+	)
+}
+
+func copyFileIntoDestinationWithSource(
+	ctx context.Context,
+	src string,
+	dest destination,
+	dstName string,
+	chmod func(*os.File, fs.FileMode) error,
+	syncParent destinationSync,
+	copyContent func(io.Writer, io.Reader) (int64, error),
+	sourceLstat func() (fs.FileInfo, error),
+	openSource func(string, bool) (*os.File, fs.FileInfo, error),
+) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
 	// Check if source is a symlink - Lstat doesn't follow symlinks
-	srcLstat, err := os.Lstat(src)
+	srcLstat, err := sourceLstat()
 	if err != nil {
 		return err // Return unwrapped to preserve os.IsNotExist compatibility
 	}
@@ -280,6 +336,16 @@ func OpenRegularNoFollow(path string) (*os.File, error) {
 // escaping the pinned root. In both modes a special file is rejected before
 // the caller reads it.
 func OpenRootRegular(root *os.Root, name string, followSymlinks bool) (*os.File, error) {
+	before, err := root.Lstat(name)
+	if err != nil {
+		if !followSymlinks && isRootSymlinkError(err) {
+			return nil, ErrSymlinkSkipped
+		}
+		return nil, fmt.Errorf("lstat root file %s: %w", name, err)
+	}
+	if !followSymlinks && before.Mode()&os.ModeSymlink != 0 {
+		return nil, ErrSymlinkSkipped
+	}
 	file, err := root.OpenFile(name, rootOpenFlags(followSymlinks), 0)
 	if err != nil {
 		if !followSymlinks && isRootSymlinkError(err) {
@@ -298,6 +364,18 @@ func OpenRootRegular(root *os.Root, name string, followSymlinks bool) (*os.File,
 	if err := validateOpenedRegularFile(name, followSymlinks, info); err != nil {
 		_ = file.Close()
 		return nil, err
+	}
+	after, err := root.Lstat(name)
+	if err != nil {
+		_ = file.Close()
+		if !followSymlinks && isRootSymlinkError(err) {
+			return nil, ErrSymlinkSkipped
+		}
+		return nil, fmt.Errorf("lstat root file %s after open: %w", name, err)
+	}
+	if !followSymlinks && (after.Mode()&os.ModeSymlink != 0 || !os.SameFile(before, info) || !os.SameFile(after, info)) {
+		_ = file.Close()
+		return nil, ErrSymlinkSkipped
 	}
 	return file, nil
 }

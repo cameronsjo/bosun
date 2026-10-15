@@ -49,6 +49,14 @@ precisely rather than claiming every mutation is root-handle-pinned.
 - **THEN** extraction fails before an outside file is created
 - **AND** the temporary extraction tree is cleaned up
 
+#### Scenario: Managed type transition keeps the checked parent
+
+- **WHEN** a managed file/directory type transition quarantines the old entry
+  or publishes its staged replacement on Unix
+- **THEN** each no-replace rename uses the already-checked parent directory
+  descriptor
+- **AND** a parent replacement after validation cannot redirect the rename
+
 ### Requirement: Reconcile Lock Ownership
 
 On Unix, Bosun SHALL traverse the reconcile lock parent through descriptor-bound

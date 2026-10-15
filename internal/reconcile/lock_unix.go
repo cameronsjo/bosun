@@ -33,6 +33,16 @@ func (r *Reconciler) acquireLock() error {
 	if name == "." || name == string(filepath.Separator) || name == "" || name == ".." {
 		return fmt.Errorf("refusing reconcile lock %q: invalid lock basename; use a regular owner-only lock file under a trusted directory", r.lockFile)
 	}
+	before, statErr := parent.Lstat(name)
+	if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
+		return fmt.Errorf("refusing reconcile lock %q: inspect existing basename (chown %d and chmod %#o): %w", r.lockFile, os.Geteuid(), lockFileMode, statErr)
+	}
+	if statErr == nil && before.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing reconcile lock %q: lock path is a symlink; replace it with an owner-only regular file (chown %d and chmod %#o)", r.lockFile, os.Geteuid(), lockFileMode)
+	}
+	if errors.Is(statErr, fs.ErrNotExist) {
+		before = nil
+	}
 
 	// O_EXCL separates the two cases so the created file never exists with a
 	// broader mode, not even momentarily. os.Root adds O_NOFOLLOW to the
@@ -52,6 +62,10 @@ func (r *Reconciler) acquireLock() error {
 		_ = fd.Close()
 		return err
 	}
+	if err := validateLockPathIdentity(parent, name, before, fd, r.lockFile); err != nil {
+		_ = fd.Close()
+		return err
+	}
 
 	// Try non-blocking exclusive lock.
 	if err := syscall.Flock(int(fd.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
@@ -60,6 +74,27 @@ func (r *Reconciler) acquireLock() error {
 	}
 
 	r.lockFd = fd
+	return nil
+}
+
+func validateLockPathIdentity(parent *os.Root, name string, before os.FileInfo, fd *os.File, path string) error {
+	after, err := parent.Lstat(name)
+	if err != nil {
+		return fmt.Errorf("refusing reconcile lock %q: cannot verify basename after open (chown %d and chmod %#o): %w", path, os.Geteuid(), lockFileMode, err)
+	}
+	if after.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing reconcile lock %q: lock path became a symlink during open; replace it with an owner-only regular file (chown %d and chmod %#o)", path, os.Geteuid(), lockFileMode)
+	}
+	if before != nil && !os.SameFile(before, after) {
+		return fmt.Errorf("refusing reconcile lock %q: lock path identity changed during open; restore a regular file owned by uid %d and chmod %#o", path, os.Geteuid(), lockFileMode)
+	}
+	info, err := fd.Stat()
+	if err != nil {
+		return fmt.Errorf("refusing reconcile lock %q: cannot stat opened descriptor (chown %d and chmod %#o): %w", path, os.Geteuid(), lockFileMode, err)
+	}
+	if !os.SameFile(after, info) {
+		return fmt.Errorf("refusing reconcile lock %q: opened descriptor does not match the basename; restore a regular file owned by uid %d and chmod %#o", path, os.Geteuid(), lockFileMode)
+	}
 	return nil
 }
 
@@ -117,7 +152,7 @@ func ensureTrustedLockParent(parent string) (*os.Root, error) {
 	}
 
 	current := root
-	components := strings.FieldsFunc(relative, func(r rune) bool { return r == '/' || r == '\\' })
+	components := strings.FieldsFunc(relative, func(r rune) bool { return r == '/' })
 	for index, component := range components {
 		final := index == len(components)-1
 		next, openErr := current.OpenRoot(component)
@@ -156,9 +191,10 @@ func ensureTrustedLockParent(parent string) (*os.Root, error) {
 			return nil, err
 		}
 
-		if current != root {
-			_ = current.Close()
-		}
+		// Only the final directory is returned. Close the filesystem-root and
+		// every intermediate traversal handle as soon as the next descriptor has
+		// passed its identity checks.
+		_ = current.Close()
 		current = next
 	}
 	return current, nil

@@ -275,9 +275,10 @@ func OpenPinnedRoot(path string, create bool) (*os.Root, error) {
 			return nil, fmt.Errorf("root %q has an untrusted ancestor component %q", path, component)
 		}
 
-		if current != root {
-			_ = current.Close()
-		}
+		// The returned handle owns the selected component. The filesystem-root
+		// handle and every intermediate component are traversal-only handles and
+		// must be closed before advancing, including the first iteration.
+		_ = current.Close()
 		current = next
 	}
 	return current, nil
@@ -285,7 +286,7 @@ func OpenPinnedRoot(path string, create bool) (*os.Root, error) {
 
 func splitPathComponents(path string) []string {
 	components := strings.FieldsFunc(path, func(r rune) bool {
-		return r == '/' || r == '\\'
+		return r == '/' || (runtime.GOOS == "windows" && r == '\\')
 	})
 	return components
 }

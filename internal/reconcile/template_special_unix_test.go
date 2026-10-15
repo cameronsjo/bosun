@@ -66,3 +66,25 @@ func TestExecuteTemplate_RefusesSwappedSourceAncestor(t *testing.T) {
 	require.Error(t, err)
 	assert.NoFileExists(t, filepath.Join(tmpDir, "output"))
 }
+
+func TestCopyNonTemplateFilesFromRoot_UsesPinnedSourceAfterAncestorSwap(t *testing.T) {
+	tmpDir := evalSymlinks(t, t.TempDir())
+	sourceDir := filepath.Join(tmpDir, "source")
+	outsideDir := filepath.Join(tmpDir, "outside")
+	dstDir := filepath.Join(tmpDir, "staging")
+	require.NoError(t, os.MkdirAll(sourceDir, 0o755))
+	require.NoError(t, os.MkdirAll(outsideDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "config.yml"), []byte("safe"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(outsideDir, "config.yml"), []byte("outside"), 0o644))
+
+	root, err := fileutil.OpenPinnedRoot(sourceDir, false)
+	require.NoError(t, err)
+	defer func() { _ = root.Close() }()
+	require.NoError(t, os.RemoveAll(sourceDir))
+	require.NoError(t, os.Symlink(outsideDir, sourceDir))
+
+	require.NoError(t, copyNonTemplateFilesFromRoot(context.Background(), sourceDir, dstDir, root))
+	content, err := os.ReadFile(filepath.Join(dstDir, "config.yml"))
+	require.NoError(t, err)
+	assert.Equal(t, "safe", string(content))
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -504,6 +505,21 @@ const (
 	managedTransitionCleanSuffix = ".bosun-transition-cleanup"
 )
 
+// renameNoReplacePinned moves direct children of already-open parent
+// descriptors without re-resolving either parent path. The no-replace
+// primitive preserves transition rollback semantics while closing the
+// check-then-path-rename window around managed type changes.
+func renameNoReplacePinned(oldParent *os.File, oldPath string, newParent *os.File, newPath string) error {
+	if oldParent == nil || newParent == nil {
+		return fmt.Errorf("descriptor-relative rename has no trusted parent")
+	}
+	oldName, newName := filepath.Base(oldPath), filepath.Base(newPath)
+	if oldName == "." || oldName == string(filepath.Separator) || newName == "." || newName == string(filepath.Separator) {
+		return fmt.Errorf("descriptor-relative rename has an invalid basename: %s -> %s", oldPath, newPath)
+	}
+	return renameNoReplaceAt(oldParent, oldName, newParent, newName)
+}
+
 func validateTransitionSourceNamespace(sourceRoot string) error {
 	return filepath.WalkDir(sourceRoot, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -915,7 +931,7 @@ func (t *managedTypeTransition) stageWithCopyDir(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := renameNoReplace(replacement, t.newPath); err != nil {
+	if err := renameNoReplacePinned(t.privateHandle, replacement, t.parentHandle, t.newPath); err != nil {
 		return fmt.Errorf("publish staged replacement for %s at %s: %w", t.relPath, t.newPath, err)
 	}
 	published = true
@@ -1033,7 +1049,7 @@ func (t *managedTypeTransition) discardPrivateStage() error {
 		return fmt.Errorf("private transition stage retained at %s: %w", t.privatePath, err)
 	}
 	cleanupPath := t.targetPath + managedTransitionCleanSuffix
-	if err := removePinnedTree(t.privatePath, cleanupPath, t.privateHandle, t.privateInfo, expected, "private transition stage", removalHooks{}); err != nil {
+	if err := removePinnedTree(t.privatePath, cleanupPath, t.privateHandle, t.privateInfo, expected, "private transition stage", removalHooks{}, t.parentHandle); err != nil {
 		return fmt.Errorf("discard cancelled private transition stage at %s: %w", t.privatePath, err)
 	}
 	_ = t.privateHandle.Close()
@@ -1100,7 +1116,7 @@ func (ts *managedTypeTransitions) Promote(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return ts.Rollback(err)
 		}
-		if err := renameNoReplace(item.targetPath, item.oldPath); err != nil {
+		if err := renameNoReplacePinned(item.parentHandle, item.targetPath, item.parentHandle, item.oldPath); err != nil {
 			return ts.Rollback(fmt.Errorf("quarantine destination %s at %s: %w", item.relPath, item.oldPath, err))
 		}
 		item.quarantined = true
@@ -1114,7 +1130,7 @@ func (ts *managedTypeTransitions) Promote(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return ts.Rollback(err)
 		}
-		if err := renameNoReplace(item.newPath, item.targetPath); err != nil {
+		if err := renameNoReplacePinned(item.parentHandle, item.newPath, item.parentHandle, item.targetPath); err != nil {
 			return ts.Rollback(fmt.Errorf("promote replacement %s from %s: %w", item.relPath, item.newPath, err))
 		}
 		item.promoted = true
@@ -1136,7 +1152,7 @@ func (ts *managedTypeTransitions) Rollback(cause error) error {
 				rollbackErrs = append(rollbackErrs, fmt.Errorf("target %s changed during rollback; preserving it and %s: %w", item.relPath, item.oldPath, err))
 				continue
 			}
-			if err := renameNoReplace(item.targetPath, item.newPath); err != nil {
+			if err := renameNoReplacePinned(item.parentHandle, item.targetPath, item.parentHandle, item.newPath); err != nil {
 				rollbackErrs = append(rollbackErrs, fmt.Errorf("quarantine failed replacement %s at %s: %w", item.relPath, item.newPath, err))
 				continue
 			}
@@ -1154,7 +1170,7 @@ func (ts *managedTypeTransitions) Rollback(cause error) error {
 				rollbackErrs = append(rollbackErrs, fmt.Errorf("quarantined original changed at %s: %w", item.oldPath, err))
 				continue
 			}
-			if err := renameNoReplace(item.oldPath, item.targetPath); err != nil {
+			if err := renameNoReplacePinned(item.parentHandle, item.oldPath, item.parentHandle, item.targetPath); err != nil {
 				rollbackErrs = append(rollbackErrs, fmt.Errorf("restore original destination %s from %s: %w", item.relPath, item.oldPath, err))
 				continue
 			}
@@ -1186,14 +1202,14 @@ func (ts *managedTypeTransitions) Commit(logger zerolog.Logger) {
 }
 
 func (t *managedTypeTransition) removePinnedOld() error {
-	if err := removePinnedTree(t.oldPath, t.targetPath+managedTransitionCleanSuffix, t.targetHandle, t.targetInfo, t.targetFingerprint, "managed original", removalHooks{}); err != nil {
+	if err := removePinnedTree(t.oldPath, t.targetPath+managedTransitionCleanSuffix, t.targetHandle, t.targetInfo, t.targetFingerprint, "managed original", removalHooks{}, t.parentHandle); err != nil {
 		return fmt.Errorf("remove quarantined original %s: %w", t.oldPath, err)
 	}
 	return nil
 }
 
 func (t *managedTypeTransition) removePinnedNew() error {
-	if err := removePinnedTree(t.newPath, t.targetPath+managedTransitionCleanSuffix, t.newHandle, t.newInfo, t.newFingerprint, "staged replacement", removalHooks{}); err != nil {
+	if err := removePinnedTree(t.newPath, t.targetPath+managedTransitionCleanSuffix, t.newHandle, t.newInfo, t.newFingerprint, "staged replacement", removalHooks{}, t.parentHandle); err != nil {
 		return fmt.Errorf("remove staged replacement %s: %w", t.newPath, err)
 	}
 	return nil
@@ -1203,6 +1219,9 @@ type pinnedRemovalEntry struct {
 	path        string
 	handle      *os.File
 	info        os.FileInfo
+	parent      *os.File
+	parentRoot  *os.Root
+	parentOwned bool
 	mode        os.FileMode
 	fingerprint [sha256.Size]byte
 	regular     bool
@@ -1217,8 +1236,12 @@ type removalHooks struct {
 	beforeNamespaceRemove func(string)
 }
 
-func removePinnedTree(path, cleanupPath string, rootHandle *os.File, rootInfo os.FileInfo, expected [sha256.Size]byte, changedLabel string, hooks removalHooks) error {
-	entries, err := pinRemovalTree(path, rootHandle, rootInfo)
+func removePinnedTree(path, cleanupPath string, rootHandle *os.File, rootInfo os.FileInfo, expected [sha256.Size]byte, changedLabel string, hooks removalHooks, trustedParents ...*os.File) error {
+	var parentHandle *os.File
+	if len(trustedParents) != 0 {
+		parentHandle = trustedParents[0]
+	}
+	entries, err := pinRemovalTree(path, rootHandle, rootInfo, parentHandle)
 	if err != nil {
 		return err
 	}
@@ -1226,6 +1249,12 @@ func removePinnedTree(path, cleanupPath string, rootHandle *os.File, rootInfo os
 		for _, entry := range entries {
 			if entry.owned {
 				_ = entry.handle.Close()
+			}
+			if entry.parentOwned {
+				_ = entry.parent.Close()
+				if entry.parentRoot != nil {
+					_ = entry.parentRoot.Close()
+				}
 			}
 		}
 	}()
@@ -1283,28 +1312,28 @@ func removePinnedTree(path, cleanupPath string, rootHandle *os.File, rootInfo os
 			hooks.beforeQuarantine(entry.path)
 		}
 		quarantined := filepath.Join(cleanupPath, fmt.Sprintf("%06d", i))
-		if err := renameNoReplace(entry.path, quarantined); err != nil {
+		if err := renameNoReplacePinned(entry.parent, entry.path, cleanupHandle, quarantined); err != nil {
 			return fmt.Errorf("quarantine fingerprinted path %s at %s: %w", entry.path, quarantined, err)
 		}
 		if err := revalidatePinned(quarantined, entry.handle, entry.info); err != nil {
-			retained := restoreCleanupCandidate(quarantined, entry.path)
+			retained := restoreCleanupCandidate(cleanupHandle, quarantined, entry.parent, entry.path)
 			return fmt.Errorf("cleanup candidate changed; retained at %s: %w", retained, err)
 		}
 		if entry.regular {
 			fingerprint, fingerprintErr := fingerprintPinnedPath(quarantined, entry.handle, entry.info)
 			if fingerprintErr != nil || fingerprint != entry.fingerprint {
-				retained := restoreCleanupCandidate(quarantined, entry.path)
+				retained := restoreCleanupCandidate(cleanupHandle, quarantined, entry.parent, entry.path)
 				return fmt.Errorf("cleanup candidate content or mode changed; retained at %s", retained)
 			}
 		} else {
 			currentInfo, statErr := entry.handle.Stat()
 			if statErr != nil || currentInfo.Mode() != entry.mode {
-				retained := restoreCleanupCandidate(quarantined, entry.path)
+				retained := restoreCleanupCandidate(cleanupHandle, quarantined, entry.parent, entry.path)
 				return fmt.Errorf("cleanup candidate mode changed; retained at %s", retained)
 			}
 		}
 		if err := os.Remove(quarantined); err != nil {
-			retained := restoreCleanupCandidate(quarantined, entry.path)
+			retained := restoreCleanupCandidate(cleanupHandle, quarantined, entry.parent, entry.path)
 			return fmt.Errorf("remove quarantined fingerprinted path retained at %s: %w", retained, err)
 		}
 		_ = entry.handle.Close()
@@ -1322,23 +1351,61 @@ func removePinnedTree(path, cleanupPath string, rootHandle *os.File, rootInfo os
 	return nil
 }
 
-func restoreCleanupCandidate(quarantined, original string) string {
-	if err := renameNoReplace(quarantined, original); err == nil {
+func restoreCleanupCandidate(cleanupHandle, quarantined, parentHandle *os.File, original string) string {
+	if err := renameNoReplacePinned(cleanupHandle, quarantined, parentHandle, original); err == nil {
 		return original
 	}
 	return quarantined
 }
 
-func pinRemovalTree(path string, rootHandle *os.File, rootInfo os.FileInfo) ([]pinnedRemovalEntry, error) {
-	entries := []pinnedRemovalEntry{{path: path, handle: rootHandle, info: rootInfo}}
+func pinRemovalTree(path string, rootHandle *os.File, rootInfo os.FileInfo, trustedParents ...*os.File) ([]pinnedRemovalEntry, error) {
+	var parentHandle *os.File
+	if len(trustedParents) != 0 {
+		parentHandle = trustedParents[0]
+	}
+	var parentRoot *os.Root
+	if parentHandle == nil {
+		var err error
+		parentRoot, parentHandle, err = openPinnedDirectory(filepath.Dir(path))
+		if err != nil {
+			return nil, err
+		}
+	}
+	entries := []pinnedRemovalEntry{{
+		path: path, handle: rootHandle, info: rootInfo,
+		parent: parentHandle, parentRoot: parentRoot, parentOwned: parentRoot != nil,
+	}}
 	if !rootInfo.IsDir() {
 		return entries, nil
 	}
-	err := filepath.WalkDir(path, func(entryPath string, entry os.DirEntry, walkErr error) error {
+
+	// Walk the directory through a root opened and identity-checked against the
+	// already-pinned root handle. A path-based WalkDir could be redirected to an
+	// attacker-controlled replacement after the baseline check, and the later
+	// quarantine rename would then remove that replacement.
+	removalRoot, err := fileutil.OpenPinnedRoot(path, false)
+	if err != nil {
+		if parentRoot != nil {
+			_ = parentHandle.Close()
+			_ = parentRoot.Close()
+		}
+		return nil, fmt.Errorf("pin removal root %s: %w", path, err)
+	}
+	defer func() { _ = removalRoot.Close() }()
+	removalRootInfo, err := removalRoot.Stat(".")
+	if err != nil || removalRootInfo == nil || rootInfo == nil || !os.SameFile(removalRootInfo, rootInfo) {
+		if parentRoot != nil {
+			_ = parentHandle.Close()
+			_ = parentRoot.Close()
+		}
+		return nil, fmt.Errorf("removal root changed while pinning: %s", path)
+	}
+
+	err = fs.WalkDir(removalRoot.FS(), ".", func(relativePath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if entryPath == path {
+		if relativePath == "." {
 			return nil
 		}
 		info, err := entry.Info()
@@ -1346,18 +1413,34 @@ func pinRemovalTree(path string, rootHandle *os.File, rootInfo os.FileInfo) ([]p
 			return err
 		}
 		if !info.IsDir() && !info.Mode().IsRegular() {
-			return fmt.Errorf("refuse to remove irregular path %s", entryPath)
+			return fmt.Errorf("refuse to remove irregular path %s", filepath.Join(path, filepath.FromSlash(relativePath)))
 		}
-		handle, err := openPinnedPath(entryPath)
+		relativePath = filepath.FromSlash(relativePath)
+		handle, err := removalRoot.Open(relativePath)
 		if err != nil {
 			return err
 		}
 		opened, err := handle.Stat()
 		if err != nil || !os.SameFile(info, opened) {
 			_ = handle.Close()
-			return fmt.Errorf("path changed while pinning removal: %s", entryPath)
+			return fmt.Errorf("path changed while pinning removal: %s", filepath.Join(path, relativePath))
 		}
-		entries = append(entries, pinnedRemovalEntry{path: entryPath, handle: handle, info: opened, owned: true})
+
+		parent := rootHandle
+		var childParent *os.File
+		parentRelative := filepath.Dir(relativePath)
+		if parentRelative != "." {
+			childParent, err = removalRoot.Open(parentRelative)
+			if err != nil {
+				_ = handle.Close()
+				return err
+			}
+			parent = childParent
+		}
+		entries = append(entries, pinnedRemovalEntry{
+			path: filepath.Join(path, relativePath), handle: handle, info: opened,
+			parent: parent, parentOwned: childParent != nil, owned: true,
+		})
 		return nil
 	})
 	if err != nil {
@@ -1365,10 +1448,36 @@ func pinRemovalTree(path string, rootHandle *os.File, rootInfo os.FileInfo) ([]p
 			if entry.owned {
 				_ = entry.handle.Close()
 			}
+			if entry.parentOwned {
+				_ = entry.parent.Close()
+			}
+		}
+		if parentRoot != nil {
+			_ = parentRoot.Close()
 		}
 		return nil, err
 	}
 	return entries, nil
+}
+
+func openPinnedDirectory(path string) (*os.Root, *os.File, error) {
+	root, err := fileutil.OpenPinnedRoot(path, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	dir, err := root.Open(".")
+	if err != nil {
+		_ = root.Close()
+		return nil, nil, err
+	}
+	rootInfo, rootErr := root.Stat(".")
+	dirInfo, dirErr := dir.Stat()
+	if rootErr != nil || dirErr != nil || rootInfo == nil || dirInfo == nil || !os.SameFile(rootInfo, dirInfo) {
+		_ = dir.Close()
+		_ = root.Close()
+		return nil, nil, fmt.Errorf("pinned parent directory changed: %s", path)
+	}
+	return root, dir, nil
 }
 
 func sameFileMetadata(before, after os.FileInfo) bool {

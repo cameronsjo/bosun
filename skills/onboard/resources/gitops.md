@@ -740,11 +740,11 @@ mode creates a private sibling temporary tree directly in the target's existing
 parent and uses a same-parent rename transaction; its parent-rename guarantee is
 narrower than the handle-pinned content-hash operations.
 
-During reconciliation, template source files are read from a pinned source root,
-and `include`/`fromJsonFile` reads are confined to a pinned include root and the
-same descriptor-bound namespace. `bosun render` pins its configured include root
-for each helper read. Missing, non-directory, or symlinked roots and ancestors
-fail closed.
+During reconciliation, template and non-template renderer source files are read
+from a pinned source root, and `include`/`fromJsonFile` reads are confined to a
+pinned include root and the same descriptor-bound namespace. `bosun render` pins
+its configured include root for each helper read. Missing, non-directory, or
+symlinked roots and ancestors fail closed.
 
 ```bash
 bosun reconcile -l             # Force local mode
