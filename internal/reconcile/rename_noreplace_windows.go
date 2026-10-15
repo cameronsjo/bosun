@@ -4,6 +4,7 @@ package reconcile
 
 import (
 	"os"
+	"runtime"
 	"syscall"
 	"unsafe"
 
@@ -33,6 +34,8 @@ func renameNoReplace(oldPath, newPath string) error {
 }
 
 func renameNoReplaceAt(oldDir *os.File, oldName string, newDir *os.File, newName string) error {
+	defer runtime.KeepAlive(oldDir)
+	defer runtime.KeepAlive(newDir)
 	if oldName == "" || newName == "" {
 		return syscall.EINVAL
 	}
