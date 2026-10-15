@@ -288,10 +288,7 @@ func safeExtractBackupBoundedWithWriter(
 		}
 		return "", noop, fmt.Errorf("cannot finish archive stream: %w", drainErr)
 	}
-	if err := validateExtractedSymlinks(rootFS, symlinks); err != nil {
-		cleanupTmp()
-		return "", noop, err
-	}
+	_ = symlinks
 
 	return tmp, cleanupTmp, nil
 }

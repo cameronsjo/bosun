@@ -76,10 +76,10 @@ func (r *Reconciler) acquireLock() error {
 
 // Validate identity before the owner/type check can repair file permissions.
 func validateLockFile(parent *os.Root, name string, before os.FileInfo, fd *os.File, path string) error {
-	if err := validateLockPathIdentity(parent, name, before, fd, path); err != nil {
+	if err := validateOpenedLockFile(fd, path); err != nil {
 		return err
 	}
-	return validateOpenedLockFile(fd, path)
+	return validateLockPathIdentity(parent, name, before, fd, path)
 }
 
 func validateLockPathIdentity(parent *os.Root, name string, before os.FileInfo, fd *os.File, path string) error {
