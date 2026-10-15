@@ -440,7 +440,7 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 		// symlinked templates so reconciliation cannot deploy or prune from an
 		// incomplete render.
 		if d.Type()&os.ModeSymlink != 0 {
-			return nil
+			return fmt.Errorf("refusing symlinked template %q: replace the symlink with a regular file", templatePath)
 		}
 
 		// Remove .tmpl extension for output. Use outDir (stagingDir/subDir)
@@ -451,7 +451,7 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 			// The entry can become a symlink after WalkDir captured its DirEntry.
 			// Refuse the raced link just like one discovered during the walk.
 			if errors.Is(err, fileutil.ErrSymlinkSkipped) {
-				return nil
+				return fmt.Errorf("refusing symlinked template %q: replace the symlink with a regular file: %w", templatePath, err)
 			}
 			return err
 		}

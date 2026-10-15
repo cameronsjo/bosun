@@ -37,8 +37,9 @@ semantics.
   accepts the existing absolute override and infra-relative override.
 - Rollback extraction uses one `os.Root` for the fresh temporary directory and
   validates link targets before creating them, then resolves every created
-  symlink through that root after the stream ends. This catches sibling and
-  forward link chains; confined dangling links remain allowed. Symlinked
+  link through that root after the stream ends, including hardlink aliases
+  that retain a symlink inode after its original name is replaced. This catches
+  sibling and forward link chains; confined dangling links remain allowed. Symlinked
   `.tmpl` files fail directory rendering with the path and the remedy to
   replace the link with a regular file, including links raced in after discovery.
   Standard atomic swap creates its

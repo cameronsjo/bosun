@@ -394,6 +394,15 @@ func TestSafeExtractBackup_RejectsSiblingSymlinkChainEscape(t *testing.T) {
 				{Name: "x/s", Typeflag: tar.TypeSymlink, Linkname: "..", Mode: 0o777},
 			},
 		},
+		{
+			name: "hardlink preserves replaced symlink inode",
+			links: []*tar.Header{
+				{Name: "x/a", Typeflag: tar.TypeSymlink, Linkname: "b/../y", Mode: 0o777},
+				{Name: "x/b", Typeflag: tar.TypeSymlink, Linkname: "..", Mode: 0o777},
+				{Name: "x/alias", Typeflag: tar.TypeLink, Linkname: "x/a", Mode: 0o777},
+				{Name: "x/a", Typeflag: tar.TypeSymlink, Linkname: "..", Mode: 0o777},
+			},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			base := t.TempDir()
@@ -412,7 +421,7 @@ func TestSafeExtractBackup_RejectsSiblingSymlinkChainEscape(t *testing.T) {
 			writeGzTarArchiveHeaders(t, tarFile, entries...)
 
 			root, cleanup, err := safeExtractBackup(context.Background(), tarFile)
-			assert.ErrorContains(t, err, "symlink target escapes extraction root after resolution")
+			assert.ErrorContains(t, err, "link target escapes extraction root after resolution")
 			assert.Empty(t, root)
 			content, readErr := os.ReadFile(canary)
 			require.NoError(t, readErr)

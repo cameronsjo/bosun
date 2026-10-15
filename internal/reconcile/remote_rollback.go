@@ -186,7 +186,7 @@ func safeExtractBackupBoundedWithWriter(
 		return "", noop, fmt.Errorf("cannot pin rollback temp dir: %w", err)
 	}
 	defer func() { _ = rootFS.Close() }()
-	var symlinks []string
+	var links []string
 
 	// Bound and cancel the entire decompressed stream below tar.Reader. This is
 	// load-bearing: tar.Reader may consume entry bodies itself while advancing to
@@ -267,9 +267,7 @@ func safeExtractBackupBoundedWithWriter(
 				cleanupTmp()
 				return "", noop, fmt.Errorf("cannot extract %s %q: %w", linkKind(hdr.Typeflag), hdr.Name, lErr)
 			}
-			if hdr.Typeflag == tar.TypeSymlink {
-				symlinks = append(symlinks, rel)
-			}
+			links = append(links, rel)
 		default:
 			// Devices, FIFOs, etc: a config backup never legitimately needs them.
 			continue
@@ -288,7 +286,10 @@ func safeExtractBackupBoundedWithWriter(
 		}
 		return "", noop, fmt.Errorf("cannot finish archive stream: %w", drainErr)
 	}
-	_ = symlinks
+	if err := validateExtractedLinks(rootFS, links); err != nil {
+		cleanupTmp()
+		return "", noop, err
+	}
 
 	return tmp, cleanupTmp, nil
 }
@@ -413,18 +414,19 @@ func linkTargetWithinRoot(relPath string, typeflag byte, linkname string) bool {
 	}
 }
 
-// validateExtractedSymlinks resolves each created symlink through the pinned
+// validateExtractedLinks resolves each created link through the pinned
 // extraction root after the complete archive has been materialized. Lexical
 // target checks cannot account for sibling links such as x/s -> .. followed by
-// x/t -> s/../y. A confined dangling link is valid and reports ErrNotExist;
-// every other resolution error fails closed.
-func validateExtractedSymlinks(rootFS *os.Root, symlinks []string) error {
-	for _, rel := range symlinks {
+// x/t -> s/../y. Hardlinks can preserve a symlink inode after its original name
+// is replaced, so their paths must also be checked. A confined dangling link is
+// valid and reports ErrNotExist; every other resolution error fails closed.
+func validateExtractedLinks(rootFS *os.Root, links []string) error {
+	for _, rel := range links {
 		if _, err := rootFS.Stat(rel); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return fmt.Errorf("archive symlink target escapes extraction root after resolution: %q: %w", rel, err)
+			return fmt.Errorf("archive link target escapes extraction root after resolution: %q: %w", rel, err)
 		}
 	}
 	return nil
