@@ -1,5 +1,5 @@
 # Restart breaker scope guard (#668 unit 3)
-Status: source implemented and negative-control proof recorded
+Status: source implemented and posture diagnostics extended; fix2 proof pending
 Delivery: [PR #714](https://github.com/cameronsjo/bosun/pull/714) carries current-head CI and readiness.
 
 ## Goal and completion criteria
@@ -8,9 +8,11 @@ Preserve #701's per-target restart-breaker behavior while preventing an
 unresolved project scope from inspecting or stopping every running container
 on the Docker host. The daemon must continue to use each target's independent
 configuration and state file; named local targets with a blank project retain
-the existing `compose` fallback. This unit excludes the #668 global project
-resolver, `Config.ProjectNameFromFile`, startup/doctor redesign, and any other
-security-hardening unit.
+the existing `compose` fallback. When the enabled implicit default target has
+no resolved `project_name`, startup and `bosun doctor` must identify the
+fail-closed posture and tell the operator to set `project_name`; the recurring
+cycle message is debug-level. The diagnostic root-level name is not a runtime
+scope resolver or deployment override.
 
 Completion requires the scoped code and tests, an OpenSpec proposal/design/
 delta under `openspec/changes/harden-restart-breaker-scope/`, exact consumer
@@ -39,31 +41,31 @@ collapse multiple target scopes and bypass the current per-target model.
 - [x] Add the empty-scope guard and pass the target scope through the existing breaker call.
 - [x] Keep and extend tests for unrelated containers, independent target state, and unresolved implicit target no-action behavior.
 - [x] Update `docs/gitops.md` and `skills/onboard/resources/gitops.md` to describe the bounded per-target semantics.
-- [x] Prepare `/private/tmp/cos-bosun668-assessment/restart-breaker-staged-break.md` with a reversible guard-removal recipe and expected red test.
+- [x] Prepare a reversible guard-removal recipe with the direct and daemon tests and expected red result.
 - [x] Run gofmt, diff checks, strict OpenSpec validation, and permitted targeted static checks.
 - [x] Attempt required compiler-heavy checks through `scripts/agent-go-gate.sh`; record the resource-gate result without bypassing it.
 - [x] Recheck branch/status, commit only explicit unit paths with the required trailers, and hand off for independent review.
+- [x] Add startup and `bosun doctor` posture checks with tests; keep the root-level file name diagnostic-only.
+- [ ] Run the fix2 warning/check mutation red-green proof and record restored-head CI.
 
 ## Review
 
-The orchestrator's GO explicitly approves this unit and says to preserve #701,
-add only the empty-scope guard and listed tests, and leave labels/push/PR work
-to the root agent. Inline security and operability review is recorded in the
+The orchestrator's fix2 approval extends the unit to startup and doctor
+posture reporting. Inline security and operability review is recorded in the
 design and spec: empty scope fails closed before Docker inspection, state is
-not advanced from untrusted host-wide observations, and the named-target
-fallback remains bounded to the existing target path. The implementation is
-committed as `ddae61b086d399cfbfafe6b7a4d8dea3a914c2cc`; no push, PR, label, or
-shared-branch operation was performed.
+not advanced from untrusted host-wide observations, the named-target fallback
+remains bounded to the existing target path, and an unresolved implicit default
+is visible before operators rely on the breaker. The root-level file name is
+diagnostic-only; per-target runtime scope remains authoritative.
 
 ## Completion evidence
 
-Source and tests are implemented in the requested worktree from
-`b1b557aeb140067c9caf6740a90cc6103476a4f0` (`origin/main`) and committed on
-`cos/668-restart-breaker`. `gofmt -w` completed for all changed Go files,
-`git diff --check origin/main HEAD` exited 0, `openspec validate
-harden-restart-breaker-scope --strict` exited 0, and the staged-break patch
-passes `git apply --check`. A fresh `git status --short --branch` reports the
-branch two commits ahead of `origin/main` with no dirty paths.
+Source, tests, and posture diagnostics are implemented in the requested
+worktree on `cos/668-restart-breaker`. `gofmt -w` completed for all changed Go
+files, `git diff --check origin/main HEAD` exited 0, `openspec validate
+harden-restart-breaker-scope --strict` exited 0, and the guard-removal patch
+passes `git apply --check`. A fresh `git status --short --branch` reports a
+clean branch; compiler/runtime evidence remains CI-owned.
 
 The mandatory targeted command
 `scripts/agent-go-gate.sh go test ./internal/reconcile ./internal/daemon -run
@@ -74,4 +76,4 @@ root CI must supply the compiler/test evidence.
 
 ## Published negative-control evidence
 
-CI38760065810 at515656b7 compiled and linted, then failed the direct empty-scope and unresolved implicit-target tests because Docker inspection was reached. Codex restored the reviewed guard through a new commit. The daemon fixture now compares the persisted JSON baseline with the persisted result, avoiding monotonic-clock fields lost during serialization; the inspection/stop assertions are unchanged. Current-head CI/readiness is attached to PR #714.
+CI38760065810 compiled and linted, then failed the direct empty-scope and unresolved implicit-target tests because Docker inspection was reached. Codex restored the reviewed guard through a new commit. The daemon fixture now compares the persisted JSON baseline with the persisted result, avoiding monotonic-clock fields lost during serialization; the inspection/stop assertions are unchanged. The fix2 mutation recipe and restored-head CI remain pending.

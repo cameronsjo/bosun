@@ -6,6 +6,9 @@
   `reconcile.RunRestartBreaker`.
 - [x] 1.3 Forward the existing target-specific scope from the daemon without
   changing target resolution, state paths, or named-target fallback behavior.
+- [x] 1.4 Add diagnostic-only startup and `bosun doctor` reporting for an
+  enabled implicit default target with no `project_name`; demote the recurring
+  cycle message to debug without changing the runtime guard.
 
 ## 2. Verification and consumer coverage
 
@@ -22,4 +25,9 @@
 - [x] 2.6 Prepare a reversible staged-break recipe and execute the permitted
   Go gate attempt; record the 52.3 GiB resource-floor block.
 - [x] 2.7 Execute guard-removal proof: CI38760065810 fails direct and daemon inspection assertions.
+- [x] 2.8 Add startup and doctor seam tests for the unresolved implicit-default
+  warning, explicit root project name, named-target `compose` fallback, and
+  disabled breaker.
+- [ ] 2.9 Execute the fix2 warning/check mutation red-green proof and record
+  the restored-head CI result.
 - Final restored-head CI results and readiness: [PR #714](https://github.com/cameronsjo/bosun/pull/714).

@@ -259,7 +259,7 @@ func RunRestartBreaker(
 	// tracking state unchanged as well: advancing it would trust the same
 	// unscoped observation this guard refuses.
 	if projectName == "" {
-		logger.Warn().
+		logger.Debug().
 			Int("candidate_containers", len(actual)).
 			Msg("Restart circuit breaker skipped: Compose project scope is unresolved; no containers will be inspected or stopped")
 		return &RestartBreakerResult{Updated: state.RestartTracking}, nil

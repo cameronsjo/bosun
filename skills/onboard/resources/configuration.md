@@ -525,4 +525,4 @@ Override if needed:
 project_name: my-homelab
 ```
 
-This affects container naming (`my-homelab-traefik-1`), network naming, and volume naming.
+This affects container naming (`my-homelab-traefik-1`), network naming, and volume naming. It also provides the bounded scope for the restart breaker when the implicit default target is used. If that target has no `project_name` while the breaker is enabled, the breaker fails closed, daemon startup warns once, and `bosun doctor` reports the condition; set `project_name` to restore restart-loop protection. Named local targets without a project name retain the `compose` fallback.

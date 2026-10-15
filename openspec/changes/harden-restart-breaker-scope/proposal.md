@@ -17,16 +17,22 @@ unrelated project could be inspected and stopped by Bosun.
   reload behavior, and the named-target blank-project `compose` fallback.
 - Add regression coverage for foreign containers, independent target state,
   and an unresolved implicit target.
+- Warn once at daemon startup and from `bosun doctor` when the enabled
+  implicit default target has no `project_name`; demote the per-cycle message
+  to debug to avoid repeated warnings.
 - Document the bounded per-target semantics for operators and onboarded agents.
 
-The #668 global project resolver, `Config.ProjectNameFromFile`, startup/doctor
-redesign, and unrelated security-hardening changes remain out of scope.
+The #668 global project resolver and unrelated security-hardening changes
+remain out of scope. The explicit root-level `project_name` is retained only
+for startup/doctor posture reporting and never replaces the existing
+per-target runtime scope.
 
 ## Impact
 
 - Affected specs: `reconcile` restart-breaker requirements.
 - Affected code: `internal/reconcile/restart_breaker.go`,
-  `internal/daemon/daemon.go`, and their tests.
+  `internal/daemon/daemon.go`, `internal/config/config.go`,
+  `internal/cmd/diagnostics_doctor.go`, and their tests.
 - Consumer documentation: `docs/gitops.md` and
   `skills/onboard/resources/gitops.md`.
 - All consumers: `Daemon.runDriftCheckForTarget` supplies the target-specific

@@ -12,10 +12,13 @@ but the restart breaker is destructive and cannot reuse that scope.
 
 - Goals: make an empty restart-breaker scope a no-op before Docker inspection;
   preserve restart tracking; retain independent target state and namespaces;
-  make the guard apply to every `RunRestartBreaker` caller.
-- Non-Goals: redesign target resolution; add a global project-name helper;
-  derive a scope from a directory name or root file snapshot; change doctor or
-  startup reporting; narrow read-only drift matching.
+  make the guard apply to every `RunRestartBreaker` caller; report the
+  unresolved implicit-default posture once at daemon startup and through
+  `bosun doctor`.
+- Non-Goals: redesign target resolution; add a global project-name resolver;
+  use the directory-name fallback as a destructive scope; change the existing
+  per-target deployment namespace or named-target `compose` fallback; narrow
+  read-only drift matching.
 
 ## Decisions
 
@@ -30,15 +33,21 @@ but the restart breaker is destructive and cannot reuse that scope.
 - Decision: leave stale tracked entries unchanged when the scope is empty.
   Advancing them would rely on an unscoped host-wide sample that the guard has
   refused to trust.
-- Decision: keep the guard warning at the cycle where it blocks action. This
-  unit does not add the separate #668 startup/doctor posture redesign.
+- Decision: keep the empty-scope cycle message at debug level so an unresolved
+  target does not flood logs. A one-time startup warning and a doctor warning
+  report the same condition with the fix (`project_name`) before an operator
+  relies on restart-loop protection.
+- Decision: retain the explicit root-level `project_name` from the local config
+  only as diagnostic posture input. It does not populate `reconcile.Config` or
+  override a target's effective deployment namespace; the existing per-target
+  reload and state model remains authoritative.
 
 ## Risks / Trade-offs
 
 - An implicit default target with no project name no longer receives restart
   protection, but this is the fail-closed result required to avoid stopping
-  unrelated containers. Operators can set `project_name` on that target or
-  disable the breaker explicitly.
+  unrelated containers. Startup and doctor report the condition; operators can
+  set `project_name` on that target or disable the breaker explicitly.
 - The internal function signature changes all current callers and tests. The
   compiler will identify any missed consumer; the consumer inventory in the
   proposal lists the current set.
@@ -51,5 +60,5 @@ target scope is available.
 
 ## Open Questions
 
-None within the approved unit. Root-level project-name fallback and operator
-posture reporting belong to a separate decision and are intentionally omitted.
+None within the approved unit. Root-level project-name fallback remains
+diagnostic-only; it is not a new runtime scope resolver or deployment override.

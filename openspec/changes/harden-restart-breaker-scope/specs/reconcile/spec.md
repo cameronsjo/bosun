@@ -28,6 +28,15 @@ destructive breaker. Multi-target checks SHALL retain independent state files,
 effective configs, and project namespaces; one target's breaker evaluation
 SHALL NOT update another target's state.
 
+When the restart breaker is enabled for an implicit default target with no
+resolved project name, daemon startup SHALL emit one warning naming the
+unresolved `project_name` condition and instructing the operator to set
+`project_name`. `bosun doctor` SHALL report the same condition and fix. The
+per-cycle empty-scope message SHALL be debug-level so the condition does not
+flood logs. A root-level `project_name` supplied by the local configuration may
+resolve the startup/doctor posture, but this diagnostic value SHALL NOT replace
+the existing per-target deployment or restart-breaker namespace.
+
 #### Scenario: Slow restart loop trips despite long drift interval
 - **WHEN** `BOSUN_DRIFT_INTERVAL` is greater than `BOSUN_RESTART_WINDOW` and a container restarts repeatedly across successive drift checks
 - **THEN** the breaker preserves the accumulating baseline rather than resetting it each interval
@@ -55,3 +64,11 @@ SHALL NOT update another target's state.
 - **WHEN** the restart breaker is enabled for an implicit default target with no resolved project name
 - **THEN** the breaker performs no Docker inspection or stop
 - **AND** it preserves the target's existing restart tracking unchanged
+
+#### Scenario: Unresolved implicit target reports its fix
+- **WHEN** the restart breaker is enabled for an implicit default target with no
+  resolved project name
+- **THEN** daemon startup emits one warning naming the missing `project_name`
+  and telling the operator to set it
+- **AND** `bosun doctor` reports the same warning and fix
+- **AND** recurring drift checks do not emit the condition at warning level
