@@ -2032,6 +2032,12 @@ func TestFingerprintPinnedPath_UsesPinnedDirectoryNamespaceAfterRelocation(t *te
 	})
 	require.NoError(t, err)
 	assert.Equal(t, want, got, "fingerprinting must read the descriptor-bound directory while its named path is replaced")
+
+	mismatchedRoot, err := fileutil.OpenPinnedRoot(parent, false)
+	require.NoError(t, err)
+	defer func() { _ = mismatchedRoot.Close() }()
+	_, err = fingerprintPinnedPath(directory, handle, info, mismatchedRoot)
+	require.ErrorContains(t, err, "fingerprint root namespace does not match")
 }
 
 func TestManagedTypeTransitions_PromoteRejectsChangedTarget(t *testing.T) {
