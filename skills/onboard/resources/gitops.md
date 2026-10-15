@@ -954,3 +954,7 @@ It needs a terminal because the canary asks before cutover, on `/dev/tty`. That 
 6. **Set up tunnel** if needed: Tailscale Funnel or Cloudflare Tunnel
 7. **Push changes** to git -- daemon auto-deploys
 8. **Monitor:** `bosun drift`, `bosun daemon-status`, `bosun status`
+
+### Upgrading SSH Trust
+
+Provision persistent `/config/known_hosts` or `BOSUN_SSH_KNOWN_HOSTS` before upgrading. Copy previously verified container-only deploy pins into that file; Git never reads `~/.ssh/known_hosts`. Collect candidate keys with `ssh-keyscan`, inspect them with `ssh-keygen -lf`, and verify retained fingerprints through the host console or another independent trusted channel before installing them. See [the upgrade procedure](../../../docs/security.md#upgrading-to-strict-host-trust) for exact commands.

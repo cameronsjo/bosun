@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### BREAKING CHANGES
+
+SSH Git no longer silently disables host verification, and deploy SSH no longer
+accepts first-contact keys implicitly.
+
+Before upgrading, provision a persistent known_hosts file inside Bosun at
+/config/known_hosts, or set BOSUN_SSH_KNOWN_HOSTS to its mounted path. Include the Git
+and deploy hosts; copy any previously verified deploy-host entries from the container's
+~/.ssh/known_hosts into this file before recreating the container. Git does not read
+~/.ssh/known_hosts. Collect new candidate keys with `ssh-keyscan -p 22 HOST >
+known_hosts.candidate`, inspect them with `ssh-keygen -lf known_hosts.candidate`, and
+verify each retained SHA256 fingerprint against the host console or administrator
+through an independent trusted channel before installing the entries. ssh-keyscan alone
+does not authenticate a host. Deploys without a Bosun trust file still use strict
+OpenSSH default stores; container-only pins must be persisted.
+
 ## [0.44.5](https://github.com/cameronsjo/bosun/compare/v0.44.4...v0.44.5) (2026-10-15)
 
 
