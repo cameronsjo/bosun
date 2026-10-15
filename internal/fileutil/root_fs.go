@@ -3,7 +3,9 @@ package fileutil
 import (
 	"io/fs"
 	"os"
+	"runtime"
 	"sort"
+	"strings"
 )
 
 // PinnedRootFS exposes a pinned root as an fs.FS for callers that need a
@@ -18,7 +20,7 @@ type pinnedRootFS struct {
 }
 
 func (p pinnedRootFS) Open(name string) (fs.File, error) {
-	if !fs.ValidPath(name) {
+	if !validPinnedFSPath(name) {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
 	}
 	file, err := p.root.FS().Open(name)
@@ -36,7 +38,7 @@ type pinnedFile struct {
 }
 
 func (p pinnedRootFS) Stat(name string) (fs.FileInfo, error) {
-	if !fs.ValidPath(name) {
+	if !validPinnedFSPath(name) {
 		return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrInvalid}
 	}
 	return fs.Stat(p.root.FS(), name)
@@ -50,7 +52,7 @@ func (p pinnedRootFS) ReadDir(name string) ([]fs.DirEntry, error) {
 // opened and before its entries are classified. Production callers use
 // ReadDir, which leaves the seam nil.
 func (p pinnedRootFS) readDir(name string, afterOpen func()) ([]fs.DirEntry, error) {
-	if !fs.ValidPath(name) {
+	if !validPinnedFSPath(name) {
 		return nil, &fs.PathError{Op: "readdir", Path: name, Err: fs.ErrInvalid}
 	}
 
@@ -84,4 +86,11 @@ func (p pinnedRootFS) readDir(name string, afterOpen func()) ([]fs.DirEntry, err
 		return entries[i].Name() < entries[j].Name()
 	})
 	return entries, nil
+}
+
+// validPinnedFSPath preserves the platform-specific path contract of
+// os.Root.FS. On Windows, a backslash is a separator to os.Root even though
+// io/fs.ValidPath accepts it as an ordinary filename character.
+func validPinnedFSPath(name string) bool {
+	return fs.ValidPath(name) && (runtime.GOOS != "windows" || !strings.ContainsRune(name, '\\'))
 }
