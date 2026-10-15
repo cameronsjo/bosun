@@ -382,7 +382,7 @@ func getHostKeyCallback() (xssh.HostKeyCallback, error) {
 		}
 		callback, err := knownhosts.New(path)
 		if err != nil {
-			log.Component(log.ComponentGit).Warn().Err(err).Str(log.FieldPath, path).Msg("Failed to parse known_hosts file, trying next")
+			logger.Warn().Err(err).Str(log.FieldPath, path).Msg("Failed to parse known_hosts file, trying next")
 			continue
 		}
 		logger.Debug().Str(log.FieldPath, path).Msg("Using known_hosts for SSH host key verification")
