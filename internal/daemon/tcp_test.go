@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -359,4 +360,60 @@ func TestResponseWriter(t *testing.T) {
 			t.Errorf("statusCode = %d, want %d", w.statusCode, http.StatusOK)
 		}
 	})
+}
+
+// TestTCPHandleTriggerSanitizesSource pins the same daemon-side boundary the
+// Unix socket handler carries. The TCP trigger source reaches zerolog fields,
+// span attributes, state.json, and console output that does not quote the
+// message, so the handler applies the control-strip-and-cap itself. Bearer-token
+// gating narrows who can reach this endpoint; it does not make the string
+// trustworthy.
+func TestTCPHandleTriggerSanitizesSource(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantPrefix string
+	}{
+		{
+			name:       "control characters stripped from supplied source",
+			body:       `{"source":"remote-ci\nFORGED 2026-09-19 INFO deploy succeeded by root"}`,
+			wantPrefix: "remote-ciFORGED 2026-09-19 INFO deploy succeeded by root (tcp:",
+		},
+		{
+			name:       "source of only control characters falls back to tcp",
+			body:       `{"source":"\n\r"}`,
+			wantPrefix: "tcp (tcp:",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ts, d := newTestTCPServer(t)
+
+			sources := make(chan string, 1)
+			d.triggerReconcileFn = func(_ context.Context, source string, _ bool) error {
+				sources <- source
+				return nil
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/trigger", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			req.RemoteAddr = "10.0.0.1:12345"
+			w := httptest.NewRecorder()
+			ts.handleTrigger(w, req)
+
+			require.Equal(t, http.StatusAccepted, w.Code)
+
+			var got string
+			select {
+			case got = <-sources:
+			case <-time.After(time.Second):
+				t.Fatal("trigger handler did not reach the reconcile entry point")
+			}
+
+			assert.True(t, strings.HasPrefix(got, tc.wantPrefix),
+				"source %q must start with %q", got, tc.wantPrefix)
+			assert.NotContains(t, got, "\n", "attacker input must not create extra log lines")
+		})
+	}
 }

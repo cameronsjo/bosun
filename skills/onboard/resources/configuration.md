@@ -361,8 +361,8 @@ directory when the host source is missing.
 
 | Variable | Description |
 |----------|-------------|
-| `BOSUN_SOCKET_ALLOWED_UIDS` | Comma-separated numeric UIDs allowed to mutate through the Unix socket in addition to the daemon UID. Invalid entries fail startup validation; no usernames or group grants |
-| `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET` | Opt out of fail-closed Unix socket peer-credential auth (default: `false`; strict `== "true"`). Required for mutations when peer credentials are unavailable, including non-Linux platforms; logged at startup and per accepted request |
+| `BOSUN_SOCKET_ALLOWED_UIDS` | Comma-separated numeric UIDs allowed to trigger and read `/config` (including the webhook secret) through the Unix socket in addition to the daemon UID. Invalid entries fail startup validation; no usernames or group grants |
+| `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET` | Opt out of fail-closed Unix socket peer-credential auth (default: `false`; strict `== "true"`). Required for `/trigger` and `/config` when peer credentials are unavailable, including non-Linux platforms; logged at startup and per accepted request |
 | `BOSUN_REMOVE_ORPHANS` | Pass `--remove-orphans` to docker compose up (default: `true`; overrides config file). Set to `false` in shared environments where Bosun doesn't own all containers |
 | `BOSUN_GIT_FETCH_DEPTH` | Positive shallow clone/fetch history depth (default: `1`). Increase when deploy-path or hook diffs regularly span multiple commits; unavailable history still fails safe to a full deploy/all hooks |
 | `BOSUN_CRITICAL_CONTAINERS` | JSON array of container names that must be healthy after deploy (overrides config file) |
@@ -377,7 +377,7 @@ directory when the host source is missing.
 | `BOSUN_ALLOW_EMPTY_DECLARED_STATE` | Allow reconcile to continue when the staging compose dir contains no declared services (default: `false` — strict). Set to `true` for genuinely empty repos. The dir-missing case is always fatal. |
 | `BOSUN_SKIP_DEPLOY_INVARIANT` | Bypass the post-deploy created/written path existence, type, fresh-mtime, and no-file-write content checks (default: `false`). Set to `true` for diagnostic deploys where silent-sync failures are acceptable. Logged at `Warn` with `override=true` when enabled. |
 | `WEBHOOK_SECRET` | HMAC secret for daemon webhook endpoints. Required for webhook triggers — with no secret the endpoints fail closed (reject with `403`) |
-| `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | Opt out of fail-closed webhook auth (default: `false`; strict `== "true"` match). Accepts unauthenticated triggers on trusted networks; logs a security warning at startup and per accepted request |
+| `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | Opt out of fail-closed webhook auth (default: `false`; strict `== "true"` match). Applies to daemon HTTP endpoints and the standalone webhook receiver. Accepts unauthenticated triggers on trusted networks; logs a security warning at startup and per accepted request |
 | `BOSUN_LISTEN_ADDR` | Host/IP the daemon HTTP server binds to (default: empty = all interfaces, so container-side callers like Traefik and Prometheus can reach it over the docker bridge) |
 | `SOPS_AGE_KEY_FILE` | Path to a regular, non-empty, parseable Age identity file (default: `~/.config/sops/age/keys.txt`); `SOPS_AGE_KEY` takes precedence. When secrets files are configured, daemon and one-shot startup validate the identity before Git, and the daemon binds no listeners on failure |
 
