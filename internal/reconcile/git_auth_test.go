@@ -365,7 +365,118 @@ func TestResolveGitAuthRecognizedSSHWithoutAuthFailsClosed(t *testing.T) {
 	assert.Contains(t, err.Error(), "SSH authentication is unavailable")
 }
 
+func TestDefaultSSHAuthBuilderPropagatesAgentError(t *testing.T) {
+	originalAgentResolver := resolveSSHAgentAuth
+	t.Cleanup(func() { resolveSSHAgentAuth = originalAgentResolver })
+	wantErr := errors.New("agent trust probe failed")
+	resolveSSHAgentAuth = func(string) (transport.AuthMethod, error) {
+		return nil, wantErr
+	}
+
+	auth, err := gitssh.DefaultAuthBuilder("git")
+	require.ErrorIs(t, err, wantErr)
+	assert.Nil(t, auth)
+}
+
+type transportOnlyAuth struct{}
+
+func (transportOnlyAuth) Name() string   { return "transport-only" }
+func (transportOnlyAuth) String() string { return "transport-only" }
+
+func TestDefaultSSHAuthBuilderUsesAgentAndFallsBackFromNonSSHAgentAuth(t *testing.T) {
+	originalAgentResolver := resolveSSHAgentAuth
+	originalKeyResolver := resolveSSHKeyAuth
+	t.Cleanup(func() {
+		resolveSSHAgentAuth = originalAgentResolver
+		resolveSSHKeyAuth = originalKeyResolver
+	})
+
+	t.Run("returns a usable SSH agent auth", func(t *testing.T) {
+		agentAuth := &gitssh.PublicKeysCallback{User: "agent"}
+		resolveSSHAgentAuth = func(user string) (transport.AuthMethod, error) {
+			assert.Equal(t, "deploy", user)
+			return agentAuth, nil
+		}
+		resolveSSHKeyAuth = func(string) (transport.AuthMethod, error) {
+			t.Fatal("key fallback must not run when the agent returns SSH auth")
+			return nil, nil
+		}
+
+		auth, err := gitssh.DefaultAuthBuilder("deploy")
+		require.NoError(t, err)
+		require.Same(t, agentAuth, auth)
+	})
+
+	t.Run("falls back when an agent returns only transport auth", func(t *testing.T) {
+		keyAuth := &gitssh.PublicKeys{User: "key"}
+		resolveSSHAgentAuth = func(string) (transport.AuthMethod, error) {
+			return transportOnlyAuth{}, nil
+		}
+		resolveSSHKeyAuth = func(user string) (transport.AuthMethod, error) {
+			assert.Equal(t, "deploy", user)
+			return keyAuth, nil
+		}
+
+		auth, err := gitssh.DefaultAuthBuilder("deploy")
+		require.NoError(t, err)
+		require.Same(t, keyAuth, auth)
+	})
+}
+
+func TestGetSSHAuthPropagatesAgentError(t *testing.T) {
+	originalAgentResolver := resolveSSHAgentAuth
+	t.Cleanup(func() { resolveSSHAgentAuth = originalAgentResolver })
+	wantErr := errors.New("agent connection refused")
+	resolveSSHAgentAuth = func(user string) (transport.AuthMethod, error) {
+		assert.Equal(t, "deploy", user)
+		return nil, wantErr
+	}
+
+	auth, err := getSSHAuth("ssh://deploy@example.com/owner/repo.git")
+	require.ErrorIs(t, err, wantErr)
+	assert.Nil(t, auth)
+}
+
+func TestResolveSSHKeyFileAuthFailsClosedOnFallbackTrustError(t *testing.T) {
+	useNoKnownHosts(t)
+	keyPath := filepath.Join(t.TempDir(), "deploy-key")
+	writeTestSSHPrivateKey(t, keyPath)
+
+	auth, err := resolveSSHKeyFileAuth("", []string{keyPath})
+	require.Error(t, err)
+	assert.Nil(t, auth)
+	assert.Contains(t, err.Error(), "known_hosts")
+}
+
 func TestResolveSSHAgentAuthRequiresUsableSigners(t *testing.T) {
+	t.Run("unavailable socket is a fallback", func(t *testing.T) {
+		wantErr := errors.New("socket unavailable")
+		auth, err := resolveSSHAgentAuthWithDialer("deploy", "agent.sock", func(string, string) (net.Conn, error) {
+			return nil, wantErr
+		})
+		require.NoError(t, err)
+		assert.Nil(t, auth)
+	})
+
+	t.Run("agent probe deadline failure is a fallback", func(t *testing.T) {
+		client, server := net.Pipe()
+		closed := make(chan struct{})
+		tracked := &deadlineErrorConn{
+			closeTrackingConn: &closeTrackingConn{Conn: client, closed: closed},
+			failOn:            1,
+			failErr:           errors.New("probe deadline refused"),
+		}
+		t.Cleanup(func() { _ = server.Close() })
+
+		auth, err := resolveSSHAgentAuthWithDialer("deploy", "agent.sock", func(string, string) (net.Conn, error) {
+			return tracked, nil
+		})
+		require.NoError(t, err)
+		assert.Nil(t, auth)
+		assert.Equal(t, 1, tracked.deadlineCalls)
+		assertAuthClosed(t, closed)
+	})
+
 	t.Run("empty agent is closed and rejected", func(t *testing.T) {
 		client, server := net.Pipe()
 		closed := make(chan struct{})
@@ -431,6 +542,33 @@ func TestResolveSSHAgentAuthRequiresUsableSigners(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("usable SSH agent connection was not closed")
 		}
+	})
+
+	t.Run("clearing the agent probe deadline failure is a fallback", func(t *testing.T) {
+		_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+		require.NoError(t, err)
+		keyring := xagent.NewKeyring()
+		require.NoError(t, keyring.Add(xagent.AddedKey{PrivateKey: privateKey}))
+		client, server := net.Pipe()
+		closed := make(chan struct{})
+		tracked := &deadlineErrorConn{
+			closeTrackingConn: &closeTrackingConn{Conn: client, closed: closed},
+			failOn:            2,
+			failErr:           errors.New("probe deadline clear refused"),
+		}
+		go func() { _ = xagent.ServeAgent(keyring, server) }()
+		t.Cleanup(func() {
+			_ = tracked.Close()
+			_ = server.Close()
+		})
+
+		auth, err := resolveSSHAgentAuthWithDialer("deploy", "agent.sock", func(string, string) (net.Conn, error) {
+			return tracked, nil
+		})
+		require.NoError(t, err)
+		assert.Nil(t, auth)
+		assert.Equal(t, 2, tracked.deadlineCalls)
+		assertAuthClosed(t, closed)
 	})
 }
 
@@ -520,6 +658,21 @@ type closeTrackingConn struct {
 	once   sync.Once
 	mu     sync.Mutex
 	times  []time.Time
+}
+
+type deadlineErrorConn struct {
+	*closeTrackingConn
+	failOn        int
+	deadlineCalls int
+	failErr       error
+}
+
+func (c *deadlineErrorConn) SetDeadline(deadline time.Time) error {
+	c.deadlineCalls++
+	if c.deadlineCalls == c.failOn {
+		return c.failErr
+	}
+	return c.closeTrackingConn.SetDeadline(deadline)
 }
 
 func (c *closeTrackingConn) Close() error {
