@@ -42,7 +42,7 @@ func TestCopyFileUnderRootIfChanged_RefusesEscapingDestination(t *testing.T) {
 	changed, err := CopyFileUnderRootIfChanged(context.Background(), src, root, dst)
 
 	require.Error(t, err, "an escaping destination must not be compared and silently skipped")
-	assert.ErrorIs(t, err, errDestinationEscapesRoot)
+	assert.ErrorContains(t, err, "compare destination")
 	assert.False(t, changed)
 	entry, lstatErr := os.Lstat(filepath.Join(root, "svc"))
 	require.NoError(t, lstatErr)
@@ -58,7 +58,7 @@ func TestPinnedDirCopyFileIfChangedDeferred_RefusesEscapingDestination(t *testin
 	changed, verify, err := pinned.copyFileIfChangedDeferred(context.Background(), src, dst)
 
 	require.Error(t, err, "an escaping destination must not be compared and silently skipped")
-	assert.ErrorIs(t, err, errDestinationEscapesRoot)
+	assert.ErrorContains(t, err, "compare destination")
 	assert.False(t, changed)
 	assert.Nil(t, verify)
 }

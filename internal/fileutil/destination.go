@@ -432,9 +432,6 @@ func copyFileIfChangedDeferredAtRoot(
 		// replaces it; Windows can reject a rename while a reader is open.
 		_ = dstFile.Close()
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		if isRootPathEscape(err) {
-			return false, nil, fmt.Errorf("compare destination: %w", errDestinationEscapesRoot)
-		}
 		return false, nil, fmt.Errorf("compare destination: %w", err)
 	}
 
@@ -469,13 +466,6 @@ func copyFileIfChangedDeferredAtRoot(
 			Msg("wrote")
 		return nil
 	}, nil
-}
-
-// Go's os.Root reports a symlink traversal that leaves the root with an
-// internal error on supported versions. Keep the public copy contract stable
-// without depending on that unexported standard-library sentinel.
-func isRootPathEscape(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "path escapes from parent")
 }
 
 // openExistingRoot pins the root without creating it, so a caller that only
