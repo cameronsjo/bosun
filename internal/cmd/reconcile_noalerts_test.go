@@ -104,9 +104,9 @@ func runFailingReconcile(t *testing.T, configure func(t *testing.T, dir, webhook
 	require.NoError(t, err)
 	require.NoError(t, reconcile.ValidateGitAuthentication(cfg.RepoURL),
 		"the fixture URL must pass validation, or the control arm is vacuous")
-	// The only value the CLI cannot express: its default lock path is not
-	// writable by a test process.
-	cfg.LockFile = filepath.Join(dir, "reconcile.lock")
+	// Keep the final lock directory private; Unix lock acquisition requires
+	// a daemon-owned 0700 directory.
+	cfg.LockFile = filepath.Join(dir, "lock", "reconcile.lock")
 	cfg.DryRun = true
 
 	r := reconcile.NewReconciler(cfg, reconcilerOptionsForCLI()...)

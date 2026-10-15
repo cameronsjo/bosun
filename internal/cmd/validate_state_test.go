@@ -95,7 +95,9 @@ func fullDryRunTestConfig(t *testing.T, repoDir, stateFile string) *reconcile.Co
 	cfg.StagingDir = filepath.Join(baseDir, "staging")
 	cfg.BackupDir = filepath.Join(baseDir, "backups")
 	cfg.LogDir = filepath.Join(baseDir, "logs")
-	cfg.LockFile = filepath.Join(baseDir, "reconcile.lock")
+	// Keep the final lock directory private; Unix lock acquisition requires
+	// a daemon-owned 0700 directory.
+	cfg.LockFile = filepath.Join(baseDir, "lock", "reconcile.lock")
 	cfg.StateFile = stateFile
 	cfg.LocalAppdataPath = appdataDir
 	cfg.DeployMode = "local"
