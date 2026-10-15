@@ -43,6 +43,13 @@ func (p pinnedRootFS) Stat(name string) (fs.FileInfo, error) {
 }
 
 func (p pinnedRootFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	return p.readDir(name, nil)
+}
+
+// readDir accepts a test-only seam that runs after the directory sub-root is
+// opened and before its entries are classified. Production callers use
+// ReadDir, which leaves the seam nil.
+func (p pinnedRootFS) readDir(name string, afterOpen func()) ([]fs.DirEntry, error) {
 	if !fs.ValidPath(name) {
 		return nil, &fs.PathError{Op: "readdir", Path: name, Err: fs.ErrInvalid}
 	}
@@ -52,6 +59,9 @@ func (p pinnedRootFS) ReadDir(name string) ([]fs.DirEntry, error) {
 		return nil, err
 	}
 	defer func() { _ = dirRoot.Close() }()
+	if afterOpen != nil {
+		afterOpen()
+	}
 	dir, err := dirRoot.Open(".")
 	if err != nil {
 		return nil, err

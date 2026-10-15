@@ -89,13 +89,14 @@ func TestPinnedRootFS_NestedReadDirInfoRemainsBoundAfterAncestorReplacement(t *t
 	root, err := os.OpenRoot(rootPath)
 	require.NoError(t, err)
 	defer func() { _ = root.Close() }()
-	entries, err := fs.ReadDir(PinnedRootFS(root), "trusted-dir")
+	pinned := pinnedRootFS{root: root}
+	entries, err := pinned.readDir("trusted-dir", func() {
+		require.NoError(t, os.Rename(rootPath, retainedPath))
+		require.NoError(t, os.MkdirAll(nestedPath, 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(nestedPath, entryName), []byte(foreignContent), 0600))
+	})
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
-
-	require.NoError(t, os.Rename(rootPath, retainedPath))
-	require.NoError(t, os.MkdirAll(nestedPath, 0700))
-	require.NoError(t, os.WriteFile(filepath.Join(nestedPath, entryName), []byte(foreignContent), 0600))
 
 	info, err := entries[0].Info()
 	require.NoError(t, err)
@@ -114,8 +115,6 @@ func TestPinnedRootFS_OpenHidesUnderlyingDirectoryMethods(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = file.Close() }()
 
-	_, exposesRawDirectoryMethods := file.(interface {
-		Readdirnames(int) ([]string, error)
-	})
+	_, exposesRawDirectoryMethods := file.(fs.ReadDirFile)
 	assert.False(t, exposesRawDirectoryMethods)
 }
