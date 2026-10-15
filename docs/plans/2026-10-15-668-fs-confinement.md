@@ -101,3 +101,13 @@ the shared-appdata in-root residual. Deterministic tests cover both sibling-chai
 orders, allowed dangling links, discovered template links and post-discovery
 replacement. Fresh red/restored-green evidence is recorded in the PR and report;
 the local resource gate remains mandatory.
+
+Independent security review additionally identified a hardlink alias that keeps
+an unsafe symlink inode after the original name is replaced. The final resolver
+checks every created link path, including hardlinks, and the regression models
+that exact replacement sequence. CI38777697413 at the first deliberate negative
+head compiled and failed the sibling-chain, template-refusal and
+identity-before-Chmod assertions. The alias-only negative is a separate proof
+with the ordinary sibling-chain and other fix3 controls restored. The final
+restoration retains all regressions and updates the older template test that
+previously expected a silent skip to require the same actionable refusal.

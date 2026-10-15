@@ -267,9 +267,7 @@ func safeExtractBackupBoundedWithWriter(
 				cleanupTmp()
 				return "", noop, fmt.Errorf("cannot extract %s %q: %w", linkKind(hdr.Typeflag), hdr.Name, lErr)
 			}
-			if hdr.Typeflag == tar.TypeSymlink {
-				links = append(links, rel)
-			}
+			links = append(links, rel)
 		default:
 			// Devices, FIFOs, etc: a config backup never legitimately needs them.
 			continue

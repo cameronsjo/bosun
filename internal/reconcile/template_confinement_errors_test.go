@@ -186,7 +186,7 @@ func TestTemplateOps_RenderDirectoryConfinementErrors(t *testing.T) {
 		assert.Equal(t, "destination sentinel", string(readConfinementFile(t, dstPath)))
 	})
 
-	t.Run("template replaced by symlink during walk is skipped", func(t *testing.T) {
+	t.Run("template replaced by symlink during walk is refused", func(t *testing.T) {
 		root := t.TempDir()
 		sourceDir := filepath.Join(root, "source")
 		stagingDir := filepath.Join(root, "staging")
@@ -209,7 +209,9 @@ func TestTemplateOps_RenderDirectoryConfinementErrors(t *testing.T) {
 
 		err := tmpl.RenderDirectory(context.Background(), sourceDir, stagingDir, ".")
 
-		require.NoError(t, err)
+		require.ErrorIs(t, err, fileutil.ErrSymlinkSkipped)
+		assert.Contains(t, err.Error(), templatePath)
+		assert.Contains(t, err.Error(), "replace the symlink with a regular file")
 		assert.NoFileExists(t, filepath.Join(stagingDir, "config"))
 		assert.Equal(t, "outside secret", string(readConfinementFile(t, outsidePath)))
 	})
