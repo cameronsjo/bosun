@@ -24,4 +24,4 @@
 - [x] 4.2 Update `docs/security.md` and onboard GitOps/configuration resources.
 - [x] 4.3 Run formatting, OpenSpec strict validation, and gated checks where the
       resource floor permits; record blocked exit codes precisely (gate exit 75).
-- [ ] 4.4 Commit explicit task paths with the required session trailers.
+- [x] 4.4 Commit explicit task paths with the required session trailers.

@@ -64,4 +64,4 @@ the security boundary.
 - [x] Stale pruning uses the trusted destination root.
 - [x] Consumer documentation updated.
 - [ ] Focused tests and staged-break evidence recorded.
-- [ ] Local commit created with explicit paths; root agent independently reviews.
+- [x] Local commit created with explicit paths; root agent independently reviews.
