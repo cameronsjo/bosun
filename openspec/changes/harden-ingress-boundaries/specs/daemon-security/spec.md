@@ -31,7 +31,7 @@ Every standalone receiver trigger endpoint SHALL reject requests with 403 when n
 - **THEN** startup fails instead of silently accepting unsigned triggers
 
 ### Requirement: Untrusted operator attribution is sanitized
-Provider attribution and refs, socket and TCP trigger sources, and container health output SHALL strip control, format and separator characters before applying length limits. Health byte caps SHALL preserve UTF-8 validity.
+Provider attribution and refs, socket, TCP and API trigger sources, and container health output SHALL strip control, format and separator characters before applying length limits. Health byte caps SHALL preserve UTF-8 validity.
 
 #### Scenario: Provider values include controls
 - **WHEN** any standalone provider or daemon GitHub webhook receives control-bearing attribution or refs
@@ -48,3 +48,11 @@ Provider attribution and refs, socket and TCP trigger sources, and container hea
 #### Scenario: Health output contains controls and multibyte text
 - **WHEN** unhealthy container output includes controls or exceeds its cap
 - **THEN** drift and health-gate diagnostics are sanitized, bounded and valid UTF-8
+
+#### Scenario: API source contains controls
+- **WHEN** an authorized /api/trigger supplies control-bearing source text
+- **THEN** reconciliation receives sanitized bounded text with the existing webui fallback
+
+#### Scenario: Sanitized ref resembles the tracked branch
+- **WHEN** an original nontracked ref becomes the tracked ref only after stripping controls
+- **THEN** the event remains ignored and branch fields and reasons are sanitized
