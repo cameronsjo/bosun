@@ -400,7 +400,7 @@ func copyFileIfChangedDeferredAtRoot(
 			if _, seekErr := dstFile.Seek(0, io.SeekStart); seekErr != nil {
 				return false, nil, fmt.Errorf("rewind destination comparison: %w", seekErr)
 			}
-			srcFile, srcErr := openRegularSource(src, true)
+			srcFile, _, srcErr := openRegularSource(src, true)
 			if srcErr != nil {
 				return false, nil, fmt.Errorf("open source comparison: %w", srcErr)
 			}
