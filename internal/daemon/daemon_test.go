@@ -2175,7 +2175,6 @@ func (blockingGitOps) Sync(ctx context.Context) (bool, string, string, error) {
 
 func (blockingGitOps) IsRepo(context.Context) bool { return true }
 
-
 func (blockingGitOps) DiffFiles(context.Context, string, string) ([]string, error) {
 	return nil, nil
 }
