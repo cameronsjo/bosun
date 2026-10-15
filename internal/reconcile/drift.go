@@ -485,9 +485,16 @@ func formatHealthDetail(details *docker.ContainerDetails) string {
 	result := fmt.Sprintf("failing_streak=%d, last_exit=%d", details.HealthFailingStreak, details.HealthLog.ExitCode)
 
 	if details.HealthLog.Output != "" {
-		output := strings.TrimSpace(details.HealthLog.Output)
+		// The HEALTHCHECK command runs INSIDE the monitored container, so its
+		// output is controlled by whoever controls that container. Neutralize
+		// it here, before the length cap, so both consumers inherit the safe
+		// value: the `bosun drift` printout and the health-gate error that
+		// reaches the deploy-failure alert. Only maxHealthOutput bounds the
+		// result — sanitizing drops runes without adding any. The cap is in
+		// bytes, so ToValidUTF8 drops a rune the cut would otherwise split.
+		output := strings.TrimSpace(log.SanitizeForOutput(details.HealthLog.Output))
 		if len(output) > maxHealthOutput {
-			output = output[:maxHealthOutput-3] + "..."
+			output = strings.ToValidUTF8(output[:maxHealthOutput-3], "") + "..."
 		}
 		result += fmt.Sprintf(", output=%s", output)
 	}

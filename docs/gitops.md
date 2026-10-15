@@ -100,6 +100,13 @@ endpoint — its generic handler expects `X-Signature`/`X-Hub-Signature-256`, so
 provider-specific signature header will fail validation. Signatures are validated
 using HMAC-SHA256 (or SHA1 for legacy) with constant-time comparison.
 
+The receiver's trigger endpoints fail closed, matching the daemon: with no
+secret resolved (`--secret`, `WEBHOOK_SECRET`, `GITHUB_WEBHOOK_SECRET`, or
+`--fetch-secret`) every one of them returns `403` unless
+`BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true` is set. `/health` and `/ready` stay
+open. `--fetch-secret` needs the receiver to run as an authorized socket peer,
+since the daemon's `GET /config` is peer-credential checked.
+
 ### Polling Mode
 
 Enable periodic reconciliation with `--poll-interval`:
@@ -125,12 +132,15 @@ This prevents concurrent docker compose operations while ensuring no trigger bat
 ### Security
 
 - **Socket permissions**: 0660 (owner and group only)
-- **SO_PEERCRED authorization**: On Linux, mutating requests require the
-  kernel-reported peer UID to match the daemon's effective UID or
+- **SO_PEERCRED authorization**: On Linux, `POST /trigger` and `GET /config`
+  require the kernel-reported peer UID to match the daemon's effective UID or
   `BOSUN_SOCKET_ALLOWED_UIDS`; missing credentials fail closed with `403`
-  unless `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET=true` explicitly opts out
+  unless `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET=true` explicitly opts out.
+  `/config` is checked despite being a read because it returns the webhook
+  secret, which authorizes a trigger on the HTTP port
 - **Bearer auth**: Optional TCP API requires `Authorization: Bearer <token>`
-- **Secret injection**: Webhook secret fetched from daemon, never on disk
+- **Secret injection**: Webhook secret fetched from daemon, never on disk — the
+  receiver must run as an authorized socket peer to fetch it
 
 See [docs/architecture/daemon-split.md](architecture/daemon-split.md) for the full security model.
 
