@@ -205,6 +205,60 @@ func TestSocketHandleTrigger_ForcePropagation(t *testing.T) {
 	}
 }
 
+// TestSocketHandleTriggerSanitizesSource pins the daemon-side boundary for
+// caller-supplied attribution: the socket trigger source reaches zerolog
+// fields, span attributes, and state.json, so the handler applies the
+// control-strip-and-cap itself instead of trusting every client to have done
+// it before forwarding.
+func TestSocketHandleTriggerSanitizesSource(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantPrefix string
+	}{
+		{
+			name:       "control characters stripped from forwarded source",
+			body:       `{"source":"gitea:trusted\nFORGED 2026-09-17 INFO deploy succeeded by root"}`,
+			wantPrefix: "gitea:trustedFORGED 2026-09-17 INFO deploy succeeded by root (pid:",
+		},
+		{
+			name:       "source of only control characters falls back to socket",
+			body:       `{"source":"\n\r"}`,
+			wantPrefix: "socket (pid:",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ss, d := newTestSocketServer(t)
+
+			sources := make(chan string, 1)
+			d.triggerReconcileFn = func(_ context.Context, source string, _ bool) error {
+				sources <- source
+				return nil
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/trigger", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			ss.handleTrigger(w, withTestSocketPeer(req))
+
+			require.Equal(t, http.StatusAccepted, w.Code)
+
+			var got string
+			select {
+			case got = <-sources:
+			case <-time.After(time.Second):
+				t.Fatal("trigger handler did not reach the reconcile entry point")
+			}
+
+			assert.True(t, strings.HasPrefix(got, tc.wantPrefix),
+				"source %q must start with %q", got, tc.wantPrefix)
+			assert.NotContains(t, got, "\n", "attacker input must not create extra log lines")
+		})
+	}
+}
+
 func TestSocketHandleStatus(t *testing.T) {
 	t.Run("GET idle state returns 200 with idle", func(t *testing.T) {
 		ss, _ := newTestSocketServer(t)
@@ -320,10 +374,10 @@ func TestSocketHandleHealth(t *testing.T) {
 }
 
 func TestSocketHandleConfig(t *testing.T) {
-	t.Run("GET returns 200 with config JSON", func(t *testing.T) {
+	t.Run("GET from authorized peer returns 200 with config JSON", func(t *testing.T) {
 		ss, _ := newTestSocketServer(t)
 
-		req := httptest.NewRequest(http.MethodGet, "/config", nil)
+		req := withTestSocketPeer(httptest.NewRequest(http.MethodGet, "/config", nil))
 		w := httptest.NewRecorder()
 		ss.handleConfig(w, req)
 
@@ -341,10 +395,62 @@ func TestSocketHandleConfig(t *testing.T) {
 	t.Run("POST returns 405", func(t *testing.T) {
 		ss, _ := newTestSocketServer(t)
 
-		req := httptest.NewRequest(http.MethodPost, "/config", nil)
+		req := withTestSocketPeer(httptest.NewRequest(http.MethodPost, "/config", nil))
 		w := httptest.NewRecorder()
 		ss.handleConfig(w, req)
 
 		assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+	})
+}
+
+// TestSocketHandleConfigWithholdsSecretFromUnauthorizedPeer pins the fix for
+// the /config credential leak: the webhook secret this endpoint returns is the
+// same value authorizeTrigger accepts on the HTTP listener, so a peer refused
+// by /trigger must not be able to read it here and sign a forced trigger
+// instead. /config therefore carries the same peer check as /trigger.
+func TestSocketHandleConfigWithholdsSecretFromUnauthorizedPeer(t *testing.T) {
+	tests := []struct {
+		name string
+		peer func(*http.Request) *http.Request
+	}{
+		{
+			name: "peer credentials unavailable",
+			peer: func(req *http.Request) *http.Request { return req },
+		},
+		{
+			name: "unauthorized peer UID",
+			peer: func(req *http.Request) *http.Request {
+				return withSocketPeer(req, peerCredentials{UID: testSocketUID + 1, GID: 100, PID: 4321})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ss, d := newTestSocketServer(t)
+			require.Equal(t, "test-secret", d.config.WebhookSecret)
+
+			req := tt.peer(httptest.NewRequest(http.MethodGet, "/config", nil))
+			w := httptest.NewRecorder()
+			ss.handleConfig(w, req)
+
+			assert.Equal(t, http.StatusForbidden, w.Code)
+			assert.NotContains(t, w.Body.String(), "test-secret")
+			assert.NotContains(t, w.Body.String(), "webhook_secret")
+		})
+	}
+
+	t.Run("opt-out still serves the secret", func(t *testing.T) {
+		ss, _ := newTestSocketServer(t)
+		ss.allowUnauthenticatedMutation = true
+
+		req := httptest.NewRequest(http.MethodGet, "/config", nil)
+		w := httptest.NewRecorder()
+		ss.handleConfig(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+		var resp ConfigResponse
+		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+		assert.Equal(t, "test-secret", resp.WebhookSecret)
 	})
 }

@@ -219,7 +219,7 @@ func TestDaemonGitCredentialResponseRedaction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			req := withTestSocketPeer(httptest.NewRequest(http.MethodGet, tt.target, nil))
 			w := httptest.NewRecorder()
 			tt.handler(w, req)
 			body := w.Body.String()
@@ -258,7 +258,7 @@ func TestGitCredentialsAreNotSerialized(t *testing.T) {
 
 	stateJSON, err := json.Marshal(&reconcile.DeployState{})
 	require.NoError(t, err)
-	responseJSON, err := json.Marshal(buildConfigResponse(&Config{ReconcileConfig: reconcile.DefaultConfig()}))
+	responseJSON, err := json.Marshal(buildConfigResponse(&Config{ReconcileConfig: reconcile.DefaultConfig()}, true))
 	require.NoError(t, err)
 	serialized := strings.Join([]string{string(stateJSON), string(responseJSON)}, "\n")
 	assert.NotContains(t, serialized, username)

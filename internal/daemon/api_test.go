@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -390,4 +391,27 @@ func TestAPIDrift(t *testing.T) {
 
 		assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
 	})
+}
+
+func TestAPITriggerSanitizesSource(t *testing.T) {
+	for _, test := range []struct{ name, body, want string }{
+		{"control-bearing source", `{"source":"ci\nFORGED\u202e"}`, "ciFORGED"},
+		{"controls only use default", `{"source":"\n\r"}`, "webui"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, daemon := newTestSocketServer(t)
+			sources := make(chan string, 1)
+			daemon.triggerReconcileFn = func(_ context.Context, source string, _ bool) error { sources <- source; return nil }
+			request := httptest.NewRequest(http.MethodPost, "/api/trigger", strings.NewReader(test.body))
+			response := httptest.NewRecorder()
+			daemon.handleAPITrigger(response, request)
+			require.Equal(t, http.StatusAccepted, response.Code)
+			select {
+			case got := <-sources:
+				assert.Equal(t, test.want, got)
+			case <-time.After(time.Second):
+				t.Fatal("API trigger did not reach the reconcile entry point")
+			}
+		})
+	}
 }

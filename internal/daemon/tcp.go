@@ -187,8 +187,13 @@ func (s *TCPServer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Default source with TCP identifier
-	source := req.Source
+	// Default source with TCP identifier. The caller-supplied attribution
+	// reaches the same sinks as the Unix socket's — a zerolog field, a span
+	// attribute, a persisted state.json value, and console output that does not
+	// quote the message — so it gets the same control-strip-and-cap boundary.
+	// Bearer-token gating narrows who can reach this, it does not make the
+	// string trustworthy.
+	source := SanitizeWebhookPusherName(req.Source)
 	if source == "" {
 		source = "tcp"
 	}

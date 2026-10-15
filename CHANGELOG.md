@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.5](https://github.com/cameronsjo/bosun/compare/v0.44.4...v0.44.5) (2026-10-15)
+
+
+### Bug Fixes
+
+* **ingress:** authorize credential reads and harden trigger output ([a5bef2b](https://github.com/cameronsjo/bosun/commit/a5bef2b0e4a316eb72fa007beac16d67f1f427bf))
+* **ingress:** authorize secret reads and reject unsigned receiver triggers ([d74c648](https://github.com/cameronsjo/bosun/commit/d74c648d003e184be856fc89909f66a137c79690))
+* **ingress:** restore controls after observed negative-control failures ([27204fb](https://github.com/cameronsjo/bosun/commit/27204fb2bed63b2999a4b634c3226e78baa66776))
+* **ingress:** restore ref diagnostics after verified sink regression ([35953a9](https://github.com/cameronsjo/bosun/commit/35953a9906d7bbc6687f70bd542630bead7a1044))
+* **ingress:** sanitize daemon ref diagnostics and API trigger sources ([b8f2fa5](https://github.com/cameronsjo/bosun/commit/b8f2fa58b80e29592e0045b39fa05924a660a2bb))
+
 ## [0.44.4](https://github.com/cameronsjo/bosun/compare/v0.44.3...v0.44.4) (2026-10-14)
 
 
