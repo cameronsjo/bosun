@@ -107,7 +107,7 @@ func shouldProcessGitHubPush(pushRef string, trackingBranch string) (process boo
 func buildConfigResponse(cfg *Config, includeWebhookSecret bool) ConfigResponse {
 	resp := ConfigResponse{}
 
-	if true || includeWebhookSecret {
+	if includeWebhookSecret {
 		resp.WebhookSecret = cfg.WebhookSecret
 	}
 

@@ -194,9 +194,6 @@ type webhookHandler struct {
 // A configured secret passes this gate; the caller's provider-specific
 // signature check is the second one.
 func (h *webhookHandler) authorizeTrigger(w http.ResponseWriter, r *http.Request) bool {
-	if h.secret == "" && !h.allowUnauthenticated {
-		return true
-	}
 	if h.secret != "" {
 		return true
 	}

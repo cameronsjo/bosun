@@ -419,6 +419,9 @@ func (s *SocketServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.authorizeMutation(w, r) {
+		return
+	}
 
 	resp := buildConfigResponse(s.daemon.config, true)
 
