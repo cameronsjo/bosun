@@ -224,7 +224,7 @@ func validateTrustedLockDir(requestedParent, path string, info os.FileInfo, fina
 	if uid != 0 && uid != uint32(os.Geteuid()) {
 		return fmt.Errorf("refusing reconcile lock path %q (requested parent %q): ancestor is owned by uid %d, need root or daemon uid %d; chown %d and remove group/other write access", path, requestedParent, uid, os.Geteuid(), os.Geteuid())
 	}
-	if info.Mode().Perm()&0o022 != 0 && !(uid == 0 && info.Mode()&os.ModeSticky != 0) {
+	if info.Mode().Perm()&0o022 != 0 && (uid != 0 || info.Mode()&os.ModeSticky == 0) {
 		return fmt.Errorf("refusing reconcile lock path %q (requested parent %q): ancestor mode is %#o; make it root-owned and non-writable, or daemon-owned without group/other write access", path, requestedParent, info.Mode().Perm())
 	}
 	return nil

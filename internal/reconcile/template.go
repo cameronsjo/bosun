@@ -66,8 +66,7 @@ func (t *TemplateOps) ExecuteTemplate(ctx context.Context, templateFile, outputF
 	// Open and validate one descriptor, then read from that descriptor. A
 	// pathname check followed by a second open permits an ancestor or final
 	// component swap to redirect the read.
-	file, err := fileutil.OpenRegularNoFollow(templateFile)
-	cleanup := func() {}
+	file, cleanup, err := t.openTemplateSource(templateFile)
 	if err != nil {
 		switch {
 		case errors.Is(err, fileutil.ErrSymlinkSkipped):
@@ -435,7 +434,7 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 
 		// Compute relative path and output path.
 		relPath := filepath.FromSlash(path)
-		templatePath := path
+		var templatePath string
 		if t.walkDirFn != nil {
 			var relErr error
 			relPath, relErr = filepath.Rel(sourceDir, path)
@@ -474,7 +473,7 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 		// too, so discovery cannot be redirected by a source ancestor swap after
 		// the root was opened; ExecuteTemplate then reads the same root-relative
 		// entry selected here.
-		err = fs.WalkDir(sourceRoot.FS(), ".", visitTemplate)
+		err = fs.WalkDir(fileutil.PinnedRootFS(sourceRoot), ".", visitTemplate)
 	}
 
 	if err != nil {
@@ -508,7 +507,7 @@ func copyNonTemplateFilesFromRoot(ctx context.Context, src, dst string, root *os
 		return fmt.Errorf("source path is not a directory: %s", src)
 	}
 	logger := log.ComponentCtx(ctx, log.ComponentTemplate)
-	return fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
+	return fs.WalkDir(fileutil.PinnedRootFS(root), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if os.IsNotExist(err) && path != "." {
 				return nil

@@ -170,7 +170,7 @@ func runRender(cmd *cobra.Command, args []string) {
 }
 
 func renderTemplate(ctx context.Context, tmplPath string, secrets map[string]any, outputDir, includeDir string) error {
-	content, err := os.ReadFile(tmplPath)
+	content, err := readRenderTemplateSource(tmplPath)
 	if err != nil {
 		return fmt.Errorf("failed to read: %w", err)
 	}

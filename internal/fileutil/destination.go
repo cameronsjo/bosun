@@ -365,8 +365,7 @@ func (p *pinnedDir) copyFileIfChangedDeferredWithCopy(
 		}
 		root = rootDest.root
 	}
-	_ = name
-	return copyFileIfChangedDeferredWithCopy(ctx, src, dst, fileHashContext, copyFile)
+	return copyFileIfChangedDeferredAtRoot(ctx, src, dst, root, name, copyFile)
 }
 
 // copyFileIfChangedDeferredAtRoot performs the complete skip decision through
