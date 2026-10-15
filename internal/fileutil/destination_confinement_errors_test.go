@@ -151,7 +151,8 @@ func TestPinnedDir_PropagatesNamespaceAndLifecycleErrors(t *testing.T) {
 	created, err = pinned.mkdirIfMissing(filePath, 0o755)
 	require.Error(t, err)
 	assert.False(t, created)
-	require.ErrorIs(t, pinned.mkdirIfMissing(filepath.Join(base, "outside-dir"), 0o755), errDestinationEscapesRoot)
+	_, err = pinned.mkdirIfMissing(filepath.Join(base, "outside-dir"), 0o755)
+	require.ErrorIs(t, err, errDestinationEscapesRoot)
 
 	if runtime.GOOS != "windows" {
 		require.NoError(t, pinned.syncParent(rootPath))
