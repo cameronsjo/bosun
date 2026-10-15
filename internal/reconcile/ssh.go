@@ -509,13 +509,14 @@ func buildRemoteStageCommand(tmpRoot, stagedDir string) string {
 // accept-new, so a configured known_hosts we cannot prove absent never
 // silently becomes TOFU — ssh then surfaces the real read error.
 //
-// The one remaining INTENTIONAL divergence is the terminal case: when no
-// known_hosts file exists and insecure is not set, git.go falls back to
-// InsecureIgnoreHostKey (no verification), but the deploy channel carries a
-// secret-bearing tar stream to a root account, so it uses openssh's TOFU
-// (accept-new) instead — the first connection pins the key and later
-// mismatches fail. Verification is never silently disabled here; only an
-// explicit BOSUN_SSH_INSECURE_HOST_KEY=true opts out.
+// The terminal case — no known_hosts candidate and insecure not set — fails
+// closed on both channels, but by different mechanisms: git.go returns an
+// error before any Git operation, while this channel emits
+// StrictHostKeyChecking=yes without a UserKnownHostsFile override. That leaves
+// OpenSSH's normal trust stores available for already-pinned hosts while an
+// unpinned host is refused before a secret-bearing transfer begins.
+// This channel deliberately does not emit accept-new TOFU. Only an explicit
+// BOSUN_SSH_INSECURE_HOST_KEY=true opts out.
 func hostKeyOptions() []string {
 	if strings.EqualFold(os.Getenv("BOSUN_SSH_INSECURE_HOST_KEY"), "true") {
 		return []string{
@@ -536,13 +537,15 @@ func hostKeyOptions() []string {
 			"-o", "UserKnownHostsFile=" + path,
 		}
 	}
-	return []string{"-o", "StrictHostKeyChecking=accept-new"}
+	// No candidate resolved. Fail closed against OpenSSH's own known_hosts
+	// defaults rather than trusting the host on first contact.
+	return []string{"-o", "StrictHostKeyChecking=yes"}
 }
 
-// knownHostsCandidates resolves the ordered known_hosts candidate paths for the
-// deploy-path host-key policy, defaulting to git.go's buildKnownHostsPaths so
-// deploy and git ops share one resolution (the env var, then /config/known_hosts).
-// It is a package var so tests can inject a controlled candidate list.
+// knownHostsCandidates resolves the ordered known_hosts candidate paths for
+// both host-key policies, defaulting to buildKnownHostsPaths so deploy and Git
+// operations share one resolution. It is a package var so tests can inject a
+// controlled candidate list.
 var knownHostsCandidates = buildKnownHostsPaths
 
 // execWithHostKeyOptions builds an exec.Cmd for name (ssh or scp) with the

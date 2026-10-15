@@ -156,6 +156,20 @@ output, not temporary state, and remain until the operator removes them.
 
 ## SSH Security
 
+### Upgrading to Strict Host Trust
+
+Before upgrading, provision a persistent known_hosts file inside Bosun at
+/config/known_hosts, or set BOSUN_SSH_KNOWN_HOSTS to its mounted path. Include the Git
+and deploy hosts; copy any previously verified deploy-host entries from the container's
+~/.ssh/known_hosts into this file before recreating the container. Git does not read
+~/.ssh/known_hosts. Collect new candidate keys with `ssh-keyscan -p 22 HOST >
+known_hosts.candidate`, inspect them with `ssh-keygen -lf known_hosts.candidate`, and
+verify each retained SHA256 fingerprint against the host console or administrator
+through an independent trusted channel before installing the entries. ssh-keyscan alone
+does not authenticate a host. Deploys without a Bosun trust file still use strict
+OpenSSH default stores; container-only pins must be persisted.
+
+
 ### Connection Validation
 
 **Implementation**: `internal/internal/reconcile/deploy.go`
@@ -177,6 +191,24 @@ cmd := exec.CommandContext(ctx, "ssh",
 |--------|-------|---------|
 | `ConnectTimeout` | 5 seconds | Prevent DoS via slow hosts |
 | `BatchMode` | yes | Disable interactive prompts, enforce key auth |
+
+### Host-Key Verification
+
+Bosun resolves SSH trust files in this order:
+
+1. `BOSUN_SSH_KNOWN_HOSTS`
+2. `/config/known_hosts`
+
+Git authentication fails before network access when no candidate exists or the
+selected file is malformed. Remote `ssh` and `scp` operations use
+`StrictHostKeyChecking=yes` with the selected file; without a configured file,
+OpenSSH's normal trust stores remain available for already-pinned hosts, while
+an unknown host is refused. Bosun does not use `accept-new` as an implicit
+trust decision, and Git does not consult `~/.ssh/known_hosts`.
+
+`BOSUN_SSH_INSECURE_HOST_KEY=true` is the only opt-out. It accepts any host key
+for both channels and is intended only for a one-time bootstrap while a
+parseable `known_hosts` file is provisioned.
 
 ### Retry on Transient Errors
 
