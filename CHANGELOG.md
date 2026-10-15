@@ -23,6 +23,15 @@ through an independent trusted channel before installing the entries. ssh-keysca
 does not authenticate a host. Deploys without a Bosun trust file still use strict
 OpenSSH default stores; container-only pins must be persisted.
 
+## [0.45.1](https://github.com/cameronsjo/bosun/compare/v0.45.0...v0.45.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **reconcile:** report unresolved restart scope posture ([7fb1c42](https://github.com/cameronsjo/bosun/commit/7fb1c42f4c8e498676599553fca8c60beb03ae0d))
+* **reconcile:** restore restart posture diagnostics after proof ([bde612f](https://github.com/cameronsjo/bosun/commit/bde612f18a605044e1d42928a7044ab7b04e17d9))
+* **reconcile:** skip restart breaker with unresolved scope ([ce53fc3](https://github.com/cameronsjo/bosun/commit/ce53fc300acd01da120126b4147f9fbdb7350659))
+
 ## [0.45.0](https://github.com/cameronsjo/bosun/compare/v0.44.5...v0.45.0) (2026-10-15)
 
 
