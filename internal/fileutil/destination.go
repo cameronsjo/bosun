@@ -454,15 +454,15 @@ func copyFileIfChangedDeferredAtRoot(
 		if verifyHash != srcHash {
 			return fmt.Errorf("%w: destination hash mismatch after write: %s", ErrPostWriteVerification, dst)
 		}
-		srcSize := int64(-1)
-		if info, statErr := os.Stat(src); statErr == nil {
-			srcSize = info.Size()
+		writtenSize := int64(-1)
+		if info, statErr := verifyFile.Stat(); statErr == nil {
+			writtenSize = info.Size()
 		}
 		logger := log.Component(log.ComponentReconcile)
 		logger.Debug().
 			Str("src", src).
 			Str("dst", dst).
-			Int64("bytes", srcSize).
+			Int64("bytes", writtenSize).
 			Msg("wrote")
 		return nil
 	}, nil
