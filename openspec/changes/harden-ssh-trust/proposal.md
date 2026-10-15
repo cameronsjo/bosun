@@ -39,4 +39,3 @@ secret-bearing Git or deploy operation into an unauthenticated first contact.
   `docs/gitops.md`, `docs/security.md`,
   `skills/onboard/resources/configuration.md`, and
   `skills/onboard/resources/gitops.md`.
-

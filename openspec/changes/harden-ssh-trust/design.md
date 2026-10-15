@@ -65,4 +65,3 @@ TOFU (`accept-new`).
 
 - None for this split unit. HTTPS authentication and redirect behavior remain
   governed by the current main implementation.
-

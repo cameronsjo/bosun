@@ -27,4 +27,3 @@
   rejection without bypassing it.
 - [x] 3.4 Stage a small break patch that removes the fail-closed controls and
   names the regression tests expected to fail.
-

@@ -78,4 +78,3 @@ operation.
 - **WHEN** `BOSUN_SSH_INSECURE_HOST_KEY=true`
 - **THEN** remote SSH and SCP legs omit strict host-key enforcement
 - **AND** the opt-out remains visible in operator documentation
-
