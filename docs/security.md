@@ -499,15 +499,10 @@ filesystem. Reads are confined to a **subtree allowlist** — by default
 `<infraDir>/templates` — so requested paths are limited to that subtree during
 normal rendering rather than permitting arbitrary filesystem reads:
 
-```go
-"include": func(path string) (string, error) {
-    if err := validateIncludePath(path, includeDir); err != nil {
-        return "", err
-    }
-    data, err := os.ReadFile(path)
-    // ...
-}
-```
+The implementation validates the allowlist path, then opens it through the
+pinned `os.Root`; `include` and `fromJsonFile` read from that returned
+descriptor. Validation or descriptor-open errors are returned to the template
+renderer.
 
 **Threat model**: Templates come from your own Git repository, which you
 control. The allowlist is a defense-in-depth control so that even a mistaken or
@@ -524,8 +519,9 @@ the subtree is rejected. A `{{ include "/etc/shadow" }}` or a read of a sibling
 allowlist confines by **location**: a hardlink whose path is inside `templates/`
 remains readable. Reconciliation pins the source directory and include root
 before walking them; each source/include read is then opened and read through
-that descriptor-bound namespace. The standalone `bosun render` helpers pin the
-configured include root for each read. A root or ancestor that is missing,
+that descriptor-bound namespace. The standalone `bosun render` command pins
+each selected template's parent for the source read and the configured include
+root for helper reads. A root or ancestor that is missing,
 non-directory, or symlinked is refused, so a concurrent replacement cannot
 redirect a read outside the selected tree. The final guarantee is the pinned
 namespace; symlinks that resolve within that namespace remain subject to the

@@ -1077,10 +1077,15 @@ reading. The default root is `<infraDir>/templates`; `template_include_dir` or
 paths whose resolved symlink target leaves that root are rejected with an error
 that names the allowed directory.
 
-Validation and reading are separate filesystem operations, not an atomic or
-file-descriptor-anchored transaction. The control assumes an adversarial local
-process is not concurrently replacing paths inside the trusted include tree
-during rendering; templates from untrusted sources remain unsupported.
+During reconciliation, Bosun opens the source tree and configured include root
+through descriptor-bound traversal before walking them. Each template source,
+include, and fromJsonFile read uses the already selected root namespace, and an
+ancestor or final-entry replacement fails closed instead of redirecting the
+read. The standalone `bosun render` command pins the selected template's
+parent for the source read and pins the configured include root for each helper
+read. Missing, non-directory, symlinked, or escaping roots fail closed;
+symlinks that resolve within an allowed root retain normal `os.Root` semantics.
+Templates from untrusted sources remain unsupported.
 
 ### Template Rendering Scope
 

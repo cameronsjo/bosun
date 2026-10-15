@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cameronsjo/bosun/internal/config"
+	"github.com/cameronsjo/bosun/internal/fileutil"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
@@ -168,7 +170,7 @@ func runRender(cmd *cobra.Command, args []string) {
 }
 
 func renderTemplate(ctx context.Context, tmplPath string, secrets map[string]any, outputDir, includeDir string) error {
-	content, err := os.ReadFile(tmplPath)
+	content, err := readRenderTemplateSource(tmplPath)
 	if err != nil {
 		return fmt.Errorf("failed to read: %w", err)
 	}
@@ -213,6 +215,31 @@ func renderTemplate(ctx context.Context, tmplPath string, secrets map[string]any
 
 	_, _ = ui.Green.Printf("  ✓ %s → %s\n", tmplPath, outputPath)
 	return nil
+}
+
+func readRenderTemplateSource(tmplPath string) ([]byte, error) {
+	absPath, err := filepath.Abs(tmplPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve template path: %w", err)
+	}
+
+	parentRoot, err := fileutil.OpenPinnedRoot(filepath.Dir(absPath), false)
+	if err != nil {
+		return nil, fmt.Errorf("pin template parent: %w", err)
+	}
+	defer func() { _ = parentRoot.Close() }()
+
+	source, err := fileutil.OpenRootRegular(parentRoot, filepath.Base(absPath), false)
+	if err != nil {
+		return nil, fmt.Errorf("open template source: %w", err)
+	}
+	defer func() { _ = source.Close() }()
+
+	content, err := io.ReadAll(source)
+	if err != nil {
+		return nil, fmt.Errorf("read template source: %w", err)
+	}
+	return content, nil
 }
 
 // renderTemplateIncludeDir resolves the render command's include allowlist
