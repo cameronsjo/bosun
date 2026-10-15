@@ -101,7 +101,8 @@ func TestDeployLocal_PropagatesComposeTargetParentError(t *testing.T) {
 
 	result, err := r.deployLocal(context.Background(), nil)
 	require.Error(t, err)
-	assert.Nil(t, result)
+	require.NotNil(t, result)
+	assert.Empty(t, result.WrittenFiles, "an unusable compose target parent must abort before anything is written")
 	assert.Contains(t, err.Error(), "create target parent")
 	assert.Contains(t, err.Error(), appdataDir)
 }

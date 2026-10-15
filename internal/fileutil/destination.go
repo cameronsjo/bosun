@@ -474,18 +474,12 @@ func (p *pinnedDir) openExistingRoot() (*os.Root, error) {
 // assertDestinationInRoot resolves dst through the pinned handle before a
 // change decision reads it.
 //
-// The decision hashes and byte-compares the destination by path. Left ungated,
-// a container that replaces a directory under the root with a symlink to a
-// tree it owns, then pre-places a copy of the rendered file there, makes the
-// comparison read its file, find it equal, and skip the write. Nothing lands
-// inside the root, the skipped file never enters WrittenFiles so
-// verifyDeployTarget cannot catch it, and the deploy reports success while the
-// file the operator believes is deployed is attacker-owned. A silent skip is
-// an unreported deploy failure, so an escaping destination is refused here.
+// The decision opens and compares the destination through the pinned root. An
+// escaping component therefore fails closed instead of letting a path-based
+// hash comparison silently skip a write to an attacker-controlled location.
 //
-// A destination that resolves inside the root is still compared by path. The
-// residual is the in-root redirect os.Root allows by design, documented on the
-// destination interface.
+// A destination that resolves through an in-root symlink retains the
+// destination interface's documented in-root redirect residual.
 func (p *pinnedDir) assertDestinationInRoot(dst string) error {
 	name, err := p.name(dst)
 	if err != nil {

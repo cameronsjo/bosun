@@ -1181,6 +1181,30 @@ func TestManagedTypeTransitionCancellationTraversalGuards(t *testing.T) {
 	})
 }
 
+func TestCreatePinnedChildDirectoryRejectsReplacedParent(t *testing.T) {
+	base := t.TempDir()
+	parent := filepath.Join(base, "parent")
+	original := parent + "-original"
+	require.NoError(t, os.Mkdir(parent, 0o755))
+	expected, err := os.Stat(parent)
+	require.NoError(t, err)
+	require.NoError(t, os.Rename(parent, original))
+	require.NoError(t, os.Mkdir(parent, 0o755))
+
+	parentRoot, childRoot, childHandle, err := createPinnedChildDirectory(filepath.Join(parent, "child"), expected)
+	if parentRoot != nil {
+		_ = parentRoot.Close()
+	}
+	if childRoot != nil {
+		_ = childRoot.Close()
+	}
+	if childHandle != nil {
+		_ = childHandle.Close()
+	}
+	require.ErrorContains(t, err, "trusted parent changed")
+	assert.NoDirExists(t, filepath.Join(parent, "child"))
+}
+
 func TestManagedTypeTransitions_SuccessfulRollbackRemovesRedundantStage(t *testing.T) {
 	for _, test := range []struct {
 		name  string

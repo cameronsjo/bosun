@@ -947,6 +947,19 @@ func CopyDirUnderRootIfChanged(ctx context.Context, src, root, dst string) ([]st
 	return copyDirIfChangedWithOps(ctx, src, dst, pinned.dirOps())
 }
 
+// CopyDirUnderPinnedRootIfChanged is the descriptor-preserving form of
+// CopyDirUnderRootIfChanged. The caller owns root and keeps it open for the
+// complete copy. This is used when a caller has already selected a trusted
+// parent and child directory and must not reopen the destination namespace by
+// path while staging its contents.
+func CopyDirUnderPinnedRootIfChanged(ctx context.Context, src, rootPath, dst string, root *os.Root) ([]string, error) {
+	if root == nil {
+		return nil, fmt.Errorf("copy destination %s has no pinned root", dst)
+	}
+	pinned := &pinnedDir{path: rootPath, root: root}
+	return copyDirIfChangedWithOps(ctx, src, dst, pinned.dirOps())
+}
+
 // destinationDirOps are the destination-side operations the content-hash walk
 // performs. Unset directory operations default to the path-based ones.
 type destinationDirOps struct {

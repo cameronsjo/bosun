@@ -66,5 +66,7 @@ the security boundary.
 - [x] Remaining template and destination comparison races closed.
 - [x] Stale pruning uses the trusted destination root.
 - [x] Consumer documentation updated.
-- [ ] Focused tests and staged-break evidence recorded.
+- [ ] Focused Go tests remain pending the mandatory disk-floor gate (exit 75).
+- [x] All four staged-break recipes were assertion-checked against disposable
+  scratch copies without introducing compile-invalid mutations.
 - [x] Local commit created with explicit paths; root agent independently reviews.

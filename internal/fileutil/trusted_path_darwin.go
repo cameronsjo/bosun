@@ -35,7 +35,12 @@ func canonicalizeTrustedPath(absPath string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("read trusted system alias %q: %w", alias.name, err)
 		}
-		if aliasTarget != alias.target {
+		// Darwin commonly reports the alias target as the relative link
+		// "private/var" (or "private/tmp"), even though the trusted target
+		// is conventionally written as an absolute path. Normalize relative
+		// link text in the alias's parent namespace before comparing it.
+		normalizedTarget := normalizeTrustedAliasTarget(alias.name, aliasTarget)
+		if normalizedTarget != alias.target {
 			return "", fmt.Errorf("trusted system alias %q points to %q, expected %q", alias.name, aliasTarget, alias.target)
 		}
 		if err := requireRootOwnedSystemPath(alias.name, aliasInfo, false); err != nil {
@@ -51,6 +56,13 @@ func canonicalizeTrustedPath(absPath string) (string, error) {
 		return alias.target + strings.TrimPrefix(absPath, alias.name), nil
 	}
 	return absPath, nil
+}
+
+func normalizeTrustedAliasTarget(aliasName, aliasTarget string) string {
+	if filepath.IsAbs(aliasTarget) {
+		return filepath.Clean(aliasTarget)
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(aliasName), aliasTarget))
 }
 
 func requireRootOwnedSystemPath(path string, info os.FileInfo, directory bool) error {

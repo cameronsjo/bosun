@@ -738,7 +738,9 @@ root handle. A swapped destination ancestor therefore fails closed or stays
 inside that root instead of redirecting a write or removal. Standard atomic-swap
 mode creates a private sibling temporary tree directly in the target's existing
 parent and uses a same-parent rename transaction; its parent-rename guarantee is
-narrower than the handle-pinned content-hash operations.
+narrower than the handle-pinned content-hash operations. The target's parent and
+ancestors must remain trusted and non-adversarial while that standard swap
+selects and renames its sibling temporary tree.
 
 During reconciliation, template and non-template renderer source files are read
 from a pinned source root, and `include`/`fromJsonFile` reads are confined to a

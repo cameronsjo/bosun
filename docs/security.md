@@ -173,7 +173,9 @@ hardlinks.
 Standard atomic-swap deployment creates its temporary tree directly in the
 target's existing parent and uses a same-parent rename sequence. That mode
 retains its narrower parent-rename guarantee; the root-handle guarantee applies
-to content-hash destination operations and managed pruning.
+to content-hash destination operations and managed pruning. The target's parent
+and its ancestors must therefore remain trusted and non-adversarial while the
+standard swap selects and renames its sibling temporary tree.
 
 On Unix, reconcile traverses lock ancestors through directory handles, accepts
 root- or daemon-owned ancestors (including a root-owned sticky system temporary

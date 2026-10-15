@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/cameronsjo/bosun/internal/fileutil"
@@ -21,6 +22,9 @@ import (
 // rendered tree. The mkdirAll seam stands in for the container winning that
 // race.
 func TestDeployLocal_DirectoryTargetPinsAboveContainerWritableDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires Windows symlink capability")
+	}
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
 
@@ -73,6 +77,9 @@ func TestDeployLocal_DirectoryTargetPinsAboveContainerWritableDir(t *testing.T) 
 // host root before the pinned copy could refuse anything; here the copy fails
 // on its source, so a destination that appears at all is one that call created.
 func TestDeployLocal_SingleFileTargetMakesNoUnpinnedDestinationMutation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires Windows symlink capability")
+	}
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
 
@@ -97,6 +104,9 @@ func TestDeployLocal_SingleFileTargetMakesNoUnpinnedDestinationMutation(t *testi
 }
 
 func TestRemoveStaleFilesUnderRoot_RefusesSwappedAncestor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires Windows symlink capability")
+	}
 	base := evalSymlinks(t, t.TempDir())
 	deployRoot := filepath.Join(base, "appdata")
 	targetDir := filepath.Join(deployRoot, "svc")
@@ -119,6 +129,9 @@ func TestRemoveStaleFilesUnderRoot_RefusesSwappedAncestor(t *testing.T) {
 }
 
 func TestDeployLocal_StalePruningRefusesSwappedDeployRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires Windows symlink capability")
+	}
 	base := evalSymlinks(t, t.TempDir())
 	deployRoot := filepath.Join(base, "appdata")
 	targetDir := filepath.Join(deployRoot, "svc")

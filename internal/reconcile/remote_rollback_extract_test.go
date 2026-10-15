@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -342,6 +343,9 @@ func TestSafeExtractBackup_ValidationFailuresCleanPartialTree(t *testing.T) {
 // arbitrary file creation as the daemon user, from the `tar -czf -` stream a
 // hostile remote deploy target returns (CWE-59).
 func TestSafeExtractBackup_RejectsChainedSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires Windows symlink capability")
+	}
 	base := t.TempDir()
 	tmpRoot := filepath.Join(base, "extract-tmp")
 	require.NoError(t, os.MkdirAll(tmpRoot, 0o755))

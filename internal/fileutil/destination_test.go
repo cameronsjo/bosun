@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -39,7 +40,9 @@ func newEscapeFixture(t *testing.T) escapeFixture {
 	writeTestFile(t, fixture.src, "rendered config")
 	require.NoError(t, os.MkdirAll(fixture.dst, 0o755))
 	require.NoError(t, os.MkdirAll(fixture.outside, 0o755))
-	require.NoError(t, os.Symlink(fixture.outside, filepath.Join(fixture.dst, "svc")))
+	if err := os.Symlink(fixture.outside, filepath.Join(fixture.dst, "svc")); err != nil {
+		t.Skipf("symlink capability unavailable: %v", err)
+	}
 	return fixture
 }
 
@@ -73,6 +76,9 @@ func TestCopyFileUnderRoot_RefusesEscapeThroughSymlinkedDirectory(t *testing.T) 
 }
 
 func TestOpenPinnedRoot_RefusesSymlinkedAncestor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires Windows symlink capability")
+	}
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
 	realParent := filepath.Join(base, "real-parent")

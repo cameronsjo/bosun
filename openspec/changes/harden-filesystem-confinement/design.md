@@ -28,9 +28,9 @@ semantics.
 - Stale removals walk the managed set under the same destination root and remove
   relative names through that handle.
 - Managed file/directory type transitions publish and quarantine entries with
-  descriptor-relative no-replace renames on Unix, preserving the private
-  backup/rollback sequence while avoiding a path re-resolution after identity
-  checks. Windows retains its existing path-based rename behavior.
+  descriptor-relative no-replace renames on Unix and the native handle-bound
+  Windows equivalent, preserving the private backup/rollback sequence while
+  avoiding a path re-resolution after identity checks.
 - Template source and include roots are opened once per render operation. The
   source descriptor is validated as regular before parsing/reading, and the
   include helper reads from the pinned IncludeDir namespace. IncludeDir still
@@ -39,7 +39,9 @@ semantics.
   validates link targets before creating them. Standard atomic swap creates its
   temporary tree directly beside the target and uses the existing parent
   rename sequence; its guarantee is described precisely instead of claiming
-  every mutation is root handle-pinned.
+  every mutation is root handle-pinned. Standard mode requires the target's
+  parent and ancestors to remain trusted and non-adversarial while that sibling
+  is selected and renamed.
 - Unix lock setup traverses parent directories through trusted handles, creates
   missing components owner-only, requires root- or daemon-owned ancestors, and
   requires a daemon-owned `0700` final directory. Existing lock files are
