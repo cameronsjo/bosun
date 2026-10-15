@@ -390,8 +390,14 @@ func (d *Daemon) warnSocketAuthPosture(logger zerolog.Logger) {
 // warnRestartBreakerScopePosture reports the one startup condition where the
 // destructive breaker is intentionally inactive: the implicit default target
 // has no resolved project_name. Named targets with a blank project continue to
-// use the bounded compose fallback in the drift path. The file-level name is
-// diagnostic only and is ignored when BOSUN_TARGETS owns the target topology.
+// use the bounded compose fallback in the drift path.
+//
+// The check reads the same effective target config the drift path passes to
+// the breaker. A root-level project_name in the local bosun.yaml does not
+// populate that config (it is posture input only), so it does not silence the
+// warning: until a reconcile reloads project_name from the repository's
+// bosun.yaml, the breaker stops nothing (bosun#719). The root-level name only
+// changes the wording, so the operator learns why it does not count yet.
 func (d *Daemon) warnRestartBreakerScopePosture(logger zerolog.Logger, targets []reconcile.Target) {
 	if d.config == nil || d.config.ReconcileConfig == nil || !d.config.ReconcileConfig.RestartBreakerEnabled {
 		return
@@ -404,6 +410,11 @@ func (d *Daemon) warnRestartBreakerScopePosture(logger zerolog.Logger, targets [
 		return
 	}
 	if !d.config.ReconcileConfig.TargetsFromEnv && d.config.ProjectNameFromFile != "" {
+		logger.Warn().
+			Str("target", targets[0].Name).
+			Str("project_name", d.config.ProjectNameFromFile).
+			Msg("Restart breaker is enabled for the implicit default target, but the root-level project_name in the local bosun.yaml does not scope it; it will stop nothing until a reconcile loads project_name from the repository's bosun.yaml. To scope it from startup, set project_name on a target named default in bosun.yaml or in BOSUN_TARGETS, or set BOSUN_RESTART_BREAKER=false to disable the breaker")
+		ui.Warning("Restart breaker fails closed until a reconcile loads project_name from the repository; the root-level project_name in the local bosun.yaml does not scope it at startup")
 		return
 	}
 

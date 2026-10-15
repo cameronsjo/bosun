@@ -506,7 +506,9 @@ func TestCheckRestartBreakerScope(t *testing.T) {
 		assert.Contains(t, output, "bounded Compose project scope")
 	})
 
-	t.Run("passes when root project name is explicit", func(t *testing.T) {
+	// bosun#719: the daemon never passes the root-level name to the breaker,
+	// so doctor must not report a bounded scope from it.
+	t.Run("warns when only the root project name is set", func(t *testing.T) {
 		t.Setenv("BOSUN_RESTART_BREAKER", "")
 		t.Setenv("BOSUN_TARGETS", "")
 		tmpDir := t.TempDir()
@@ -519,8 +521,25 @@ func TestCheckRestartBreakerScope(t *testing.T) {
 		cfg, err := config.Load()
 		require.NoError(t, err)
 
-		result := checkRestartBreakerScope(cfg)
+		var result CheckResult
+		output := captureWebhookColorOutput(t, func() {
+			result = checkRestartBreakerScope(cfg)
+		})
+		assert.Equal(t, CheckResult{Warned: 1}, result)
+		assert.Contains(t, output, "root-level project_name does not scope it at startup")
+		assert.NotContains(t, output, "bounded Compose project scope")
+	})
+
+	t.Run("passes when the default target sets its project name", func(t *testing.T) {
+		t.Setenv("BOSUN_RESTART_BREAKER", "")
+		t.Setenv("BOSUN_TARGETS", `[{"name":"default","project_name":"homelab"}]`)
+
+		var result CheckResult
+		output := captureWebhookColorOutput(t, func() {
+			result = checkRestartBreakerScope(loadBosunYAML(t, ""))
+		})
 		assert.Equal(t, CheckResult{Passed: 1}, result)
+		assert.Contains(t, output, "bounded Compose project scope")
 	})
 
 	t.Run("skips when breaker is disabled", func(t *testing.T) {

@@ -41,6 +41,13 @@ but the restart breaker is destructive and cannot reuse that scope.
   only as diagnostic posture input. It does not populate `reconcile.Config` or
   override a target's effective deployment namespace; the existing per-target
   reload and state model remains authoritative.
+- Decision (bosun#719): the root-level name does not suppress the startup or
+  doctor warning. Both reports judge the target-level project name, the value
+  the drift path passes to the breaker, so they cannot claim a bounded scope while the
+  breaker skips every cycle. When a root-level name is present, the warning
+  says it takes effect only after a reconcile loads it from the repository,
+  and names the startup fix (`project_name` on a target named `default`, or
+  `BOSUN_TARGETS`).
 
 ## Risks / Trade-offs
 

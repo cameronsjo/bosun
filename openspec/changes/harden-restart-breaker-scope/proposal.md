@@ -25,7 +25,10 @@ unrelated project could be inspected and stopped by Bosun.
 The #668 global project resolver and unrelated security-hardening changes
 remain out of scope. The explicit root-level `project_name` is retained only
 for startup/doctor posture reporting and never replaces the existing
-per-target runtime scope.
+per-target runtime scope. Because it is not a runtime scope, it does not
+silence the startup or doctor warning; it only changes the wording to explain
+that the breaker stays inactive until a reconcile loads the name from the
+repository (bosun#719).
 
 ## Impact
 

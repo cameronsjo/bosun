@@ -330,24 +330,32 @@ func checkRestartBreakerSampling() CheckResult {
 // the destructive breaker without a bounded namespace: the implicit default
 // target has no project_name. Named targets with a blank project use the
 // daemon's existing compose fallback, so they do not trigger this check.
-func restartBreakerScopeUnresolved(cfg *config.Config) bool {
+//
+// A root-level project_name does not resolve the scope. The daemon keeps it
+// as posture input only and never passes it to the breaker, so until a
+// reconcile loads project_name from the repository's bosun.yaml the breaker
+// stops nothing (bosun#719). It only changes the doctor's wording.
+func restartBreakerScopeUnresolved() bool {
 	if !config.ParseBoolValue(os.Getenv("BOSUN_RESTART_BREAKER"), true) {
 		return false
 	}
 
 	targets := reconcile.ValidateAndSanitizeTargets(loadConfiguredTargets(), nil)
-	targetsFromEnv := false
-	if raw := os.Getenv("BOSUN_TARGETS"); raw != "" {
-		_, apply, err := reconcile.ParseTargetsOverride(raw)
-		targetsFromEnv = err == nil && apply
-	}
 	if len(targets) > 1 || (len(targets) == 1 && !targets[0].IsDefault()) {
 		return false
 	}
-	if len(targets) == 1 && targets[0].ProjectName != "" {
+	return len(targets) == 0 || targets[0].ProjectName == ""
+}
+
+// restartBreakerTargetsFromEnv reports whether BOSUN_TARGETS owns the target
+// topology, in which case the daemon ignores bosun.yaml's root-level name.
+func restartBreakerTargetsFromEnv() bool {
+	raw := os.Getenv("BOSUN_TARGETS")
+	if raw == "" {
 		return false
 	}
-	return targetsFromEnv || cfg == nil || cfg.ProjectNameFromFile() == ""
+	_, apply, err := reconcile.ParseTargetsOverride(raw)
+	return err == nil && apply
 }
 
 // checkRestartBreakerScope reports whether the enabled restart breaker has a
@@ -359,14 +367,18 @@ func checkRestartBreakerScope(cfg *config.Config) CheckResult {
 		_, _ = ui.Blue.Println("  - Restart breaker scope check N/A (BOSUN_RESTART_BREAKER disables the breaker)")
 		return CheckResult{}
 	}
-	if !restartBreakerScopeUnresolved(cfg) {
+	if !restartBreakerScopeUnresolved() {
 		_, _ = ui.Green.Println("  * Restart breaker has a bounded Compose project scope")
 		return CheckResult{Passed: 1}
 	}
 
-	_, _ = ui.Yellow.Println("  ! Restart breaker is enabled for the implicit default target but no project_name is configured, so it will stop nothing")
+	if !restartBreakerTargetsFromEnv() && cfg.ProjectNameFromFile() != "" {
+		_, _ = ui.Yellow.Println("  ! Restart breaker is enabled for the implicit default target, but the root-level project_name does not scope it at startup; it stops nothing until a reconcile loads project_name from the repository's bosun.yaml")
+	} else {
+		_, _ = ui.Yellow.Println("  ! Restart breaker is enabled for the implicit default target but no project_name is configured, so it will stop nothing")
+	}
 	_, _ = ui.Blue.Println("      To fix this:")
-	_, _ = ui.Blue.Println("      - Set project_name on the implicit default target in bosun.yaml or BOSUN_TARGETS")
+	_, _ = ui.Blue.Println("      - Set project_name on the implicit default target in bosun.yaml (a target named default) or BOSUN_TARGETS")
 	_, _ = ui.Blue.Println("      - Or set BOSUN_RESTART_BREAKER=false to disable restart-loop protection explicitly")
 	return CheckResult{Warned: 1}
 }
