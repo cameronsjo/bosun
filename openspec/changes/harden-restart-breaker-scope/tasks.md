@@ -23,7 +23,7 @@
 - [x] 2.5 Run `openspec validate harden-restart-breaker-scope --strict`,
   formatting, and diff checks.
 - [x] 2.6 Prepare a reversible staged-break recipe and execute the permitted
-  Go gate attempt; record the 52.3 GiB resource-floor block.
+  Go gate attempt; record the mandatory free-space resource-floor block.
 - [x] 2.7 Execute guard-removal proof: CI38760065810 fails direct and daemon inspection assertions.
 - [x] 2.8 Add startup and doctor seam tests for the unresolved implicit-default
   warning, explicit root project name, named-target `compose` fallback, and

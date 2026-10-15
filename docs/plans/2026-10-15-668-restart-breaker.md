@@ -1,5 +1,5 @@
 # Restart breaker scope guard (#668 unit 3)
-Status: source implemented and posture diagnostics extended; fix2 proof pending
+Status: source implemented and posture diagnostics extended; fix2 mutation proof and restored-head CI pending
 Delivery: [PR #714](https://github.com/cameronsjo/bosun/pull/714) carries current-head CI and readiness.
 
 ## Goal and completion criteria
@@ -18,8 +18,8 @@ Completion requires the scoped code and tests, an OpenSpec proposal/design/
 delta under `openspec/changes/harden-restart-breaker-scope/`, exact consumer
 documentation, strict OpenSpec validation, formatting and diff checks, and a
 staged-break recipe showing the unresolved-implicit-target test fails when the
-guard is removed. Compiler-heavy gates remain pending because the agent Go gate
-currently reports only 52.3 GiB free against its mandatory 100 GiB floor.
+guard is removed. Compiler-heavy local gates remain pending because the agent Go gate
+reported a fresh fix2 attempt below its mandatory 100 GiB free-space floor.
 
 ## Approach and alternatives
 
@@ -67,13 +67,16 @@ harden-restart-breaker-scope --strict` exited 0, and the guard-removal patch
 passes `git apply --check`. A fresh `git status --short --branch` reports a
 clean branch; compiler/runtime evidence remains CI-owned.
 
-The mandatory targeted command
+The initial guard-focused command
 `scripts/agent-go-gate.sh go test ./internal/reconcile ./internal/daemon -run
 '^TestRunRestartBreaker$|^TestRunDriftCheckForTarget_UnresolvedImplicitProjectFailsClosed$'`
-reached the gate and exited 75 because only 52.3 GiB was free against the
-100 GiB minimum. No cache or resource override was used and no compiler ran;
-root CI must supply the compiler/test evidence.
+was blocked at the gate with exit 75 by the mandatory free-space floor. The
+fresh fix2 diagnostic command
+`scripts/agent-go-gate.sh go test ./internal/config ./internal/daemon ./internal/cmd -run
+'^TestLoad_ProjectNameFromFile$|^TestWarnRestartBreakerScopePosture$|^TestCheckRestartBreakerScope$'`
+was likewise blocked with exit 75; no cache or resource override was used and
+no compiler ran. Root CI supplies the compiler/runtime evidence.
 
 ## Published negative-control evidence
 
-CI38760065810 compiled and linted, then failed the direct empty-scope and unresolved implicit-target tests because Docker inspection was reached. Codex restored the reviewed guard through a new commit. The daemon fixture now compares the persisted JSON baseline with the persisted result, avoiding monotonic-clock fields lost during serialization; the inspection/stop assertions are unchanged. The fix2 mutation recipe and restored-head CI remain pending.
+Initial guard-removal CI38760065810 compiled and linted, then failed the direct empty-scope and unresolved implicit-target tests because Docker inspection was reached. The reviewed guard was restored, and restored-head CI38760998225 passed the required Test, Lint, Build, WebUI, site-build, and patch-coverage checks. The daemon fixture compares the persisted JSON baseline with the persisted result, avoiding monotonic-clock fields lost during serialization; the inspection/stop assertions are unchanged. Fresh fix2 static checks remain recorded above, while the fix2 mutation recipe and restored-head CI remain pending.
