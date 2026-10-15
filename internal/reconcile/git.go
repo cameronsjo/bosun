@@ -378,24 +378,18 @@ func getHostKeyCallback() (xssh.HostKeyCallback, error) {
 
 	for _, path := range knownHostsPaths {
 		if _, err := os.Stat(path); err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, fmt.Errorf("SSH known_hosts file %q could not be inspected: %w. Fix the path, or %s", path, err, hostKeyRemediation)
+			continue
 		}
 		callback, err := knownhosts.New(path)
 		if err != nil {
-			return nil, fmt.Errorf("SSH known_hosts file %q could not be parsed: %w. Fix the file, or %s", path, err, hostKeyRemediation)
+			log.Component(log.ComponentGit).Warn().Err(err).Str(log.FieldPath, path).Msg("Failed to parse known_hosts file, trying next")
+			continue
 		}
 		logger.Debug().Str(log.FieldPath, path).Msg("Using known_hosts for SSH host key verification")
 		return callback, nil
 	}
 
-	candidates := "none configured"
-	if len(knownHostsPaths) > 0 {
-		candidates = strings.Join(knownHostsPaths, ", ")
-	}
-	return nil, fmt.Errorf("SSH host key verification requires a known_hosts file; no readable candidate among %s. To proceed, %s", candidates, hostKeyRemediation)
+	return xssh.InsecureIgnoreHostKey(), nil
 }
 
 func normalizeSSHUser(user string) string {

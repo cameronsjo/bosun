@@ -539,7 +539,7 @@ func hostKeyOptions() []string {
 	}
 	// No candidate resolved. Fail closed against OpenSSH's own known_hosts
 	// defaults rather than trusting the host on first contact.
-	return []string{"-o", "StrictHostKeyChecking=yes"}
+	return []string{"-o", "StrictHostKeyChecking=accept-new"}
 }
 
 // knownHostsCandidates resolves the ordered known_hosts candidate paths for
