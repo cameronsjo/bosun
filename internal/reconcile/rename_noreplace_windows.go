@@ -4,7 +4,7 @@ package reconcile
 
 import (
 	"os"
-	"path/filepath"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -33,6 +33,9 @@ func renameNoReplace(oldPath, newPath string) error {
 }
 
 func renameNoReplaceAt(oldDir *os.File, oldName string, newDir *os.File, newName string) error {
+	if oldName == "" || newName == "" {
+		return syscall.EINVAL
+	}
 	oldNameUTF16, err := windows.NewNTUnicodeString(oldName)
 	if err != nil {
 		return err
@@ -76,7 +79,11 @@ func renameNoReplaceAt(oldDir *os.File, oldName string, newDir *os.File, newName
 	fileNameLength := (len(newNameUTF16) - 1) * 2
 	var dummy fileRenameInformation
 	bufferSize := int(unsafe.Offsetof(dummy.FileName)) + fileNameLength
-	buffer := make([]byte, bufferSize)
+	allocationSize := bufferSize
+	if allocationSize < int(unsafe.Sizeof(dummy)) {
+		allocationSize = int(unsafe.Sizeof(dummy))
+	}
+	buffer := make([]byte, allocationSize)
 	info := (*fileRenameInformation)(unsafe.Pointer(&buffer[0]))
 	info.RootDirectory = windows.Handle(newDir.Fd())
 	info.FileNameLength = uint32(fileNameLength)

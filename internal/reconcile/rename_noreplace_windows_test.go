@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -40,6 +41,16 @@ func TestRenameNoReplaceAtWindowsMovesFileAndDirectory(t *testing.T) {
 		assert.NoDirExists(t, source)
 		assert.DirExists(t, destination)
 	})
+
+	t.Run("single-character-file", func(t *testing.T) {
+		source := filepath.Join(parent, "s")
+		destination := filepath.Join(parent, "d")
+		require.NoError(t, os.WriteFile(source, []byte("payload"), 0o600))
+
+		require.NoError(t, renameNoReplaceAt(parentHandle, filepath.Base(source), parentHandle, filepath.Base(destination)))
+		assert.NoFileExists(t, source)
+		assert.FileExists(t, destination)
+	})
 }
 
 func TestRenameNoReplaceAtWindowsRefusesExistingDestination(t *testing.T) {
@@ -63,6 +74,16 @@ func TestRenameNoReplaceAtWindowsRefusesExistingDestination(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "source", string(sourceContent))
 	assert.Equal(t, "destination", string(destinationContent))
+}
+
+func TestRenameNoReplaceAtWindowsRejectsEmptyBasename(t *testing.T) {
+	parent := t.TempDir()
+	parentHandle, err := openPinnedPath(parent)
+	require.NoError(t, err)
+	defer func() { _ = parentHandle.Close() }()
+
+	err = renameNoReplaceAt(parentHandle, "", parentHandle, "destination")
+	assert.ErrorIs(t, err, syscall.EINVAL)
 }
 
 func TestRenameNoReplaceAtWindowsBindsParentHandles(t *testing.T) {
