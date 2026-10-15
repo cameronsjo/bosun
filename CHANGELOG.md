@@ -23,6 +23,17 @@ through an independent trusted channel before installing the entries. ssh-keysca
 does not authenticate a host. Deploys without a Bosun trust file still use strict
 OpenSSH default stores; container-only pins must be persisted.
 
+## [0.45.0](https://github.com/cameronsjo/bosun/compare/v0.44.5...v0.45.0) (2026-10-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* **reconcile:** SSH Git now refuses missing trust files and deploy SSH no longer accepts unpinned first-contact keys. Before upgrading, provision a persistent known_hosts file inside Bosun at /config/known_hosts, or set BOSUN_SSH_KNOWN_HOSTS to its mounted path. Include the Git and deploy hosts; copy any previously verified deploy-host entries from the container's ~/.ssh/known_hosts into this file before recreating the container. Git does not read ~/.ssh/known_hosts. Collect new candidate keys with `ssh-keyscan -p 22 HOST > known_hosts.candidate`, inspect them with `ssh-keygen -lf known_hosts.candidate`, and verify each retained SHA256 fingerprint against the host console or administrator through an independent trusted channel before installing the entries. ssh-keyscan alone does not authenticate a host. Deploys without a Bosun trust file still use strict OpenSSH default stores; container-only pins must be persisted.
+
+### Bug Fixes
+
+* **reconcile:** document SSH trust upgrade requirements ([41c7e38](https://github.com/cameronsjo/bosun/commit/41c7e38918157991ed201dc20410dd2e78683d1d))
+
 ## [0.44.5](https://github.com/cameronsjo/bosun/compare/v0.44.4...v0.44.5) (2026-10-15)
 
 
