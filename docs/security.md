@@ -626,8 +626,10 @@ the webhook secret for the daemon-injected-secrets pattern, and that secret is
 exactly what the HTTP listener's trigger endpoints accept — so a peer refused
 by `POST /trigger` could otherwise read the secret here and sign a forced
 trigger against the HTTP port instead. The boundary is drawn on effect, not on
-HTTP verb. `GET /status` and `GET /health` return no credential and remain
-governed by the socket's filesystem permissions.
+HTTP verb. `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET=true` also disables this
+`/config` peer check: any process able to connect can then retrieve the webhook
+secret as well as trigger reconciliation. `GET /status` and `GET /health` return
+no credential and remain governed by the socket's filesystem permissions.
 
 A `bosun webhook` receiver using `--fetch-secret` must therefore run as the
 daemon's UID or as a `BOSUN_SOCKET_ALLOWED_UIDS` member. A receiver that fails
@@ -696,7 +698,7 @@ Bosun ships several "escape hatch" environment variables that disable safety che
 | `BOSUN_SSH_INSECURE_HOST_KEY` | SSH host-key verification | `false` (strict) | Initial bootstrap before `known_hosts` is populated |
 | `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` | Fail-closed webhook authentication (secret-less trigger requests rejected with `403`) | `false` (strict) | Trusted, isolated networks where a webhook secret is impractical |
 | `BOSUN_ALLOW_UNAUTHENTICATED_METRICS` | Fail-closed metrics/widget authentication (token-less `/metrics` and `/api/widget` requests rejected with `403`) | `false` (strict) | Trusted, isolated networks where a metrics token is impractical |
-| `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET` | Fail-closed peer-credential authorization for mutating Unix socket requests | `false` (strict) | Platforms without peer credentials, when socket permissions are an intentionally sufficient trust boundary |
+| `BOSUN_ALLOW_UNAUTHENTICATED_SOCKET` | Fail-closed peer-credential authorization for mutating Unix socket requests and secret-bearing `/config` | `false` (strict) | Platforms without peer credentials, when socket permissions are an intentionally sufficient trust boundary |
 
 `ErrComposeDirMissing` (stage 6) has no escape hatch by design — a missing staging compose directory always indicates a misconfigured deploy path, never an intentional state.
 

@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Keep the shipped webhook implementation as an independent compatibility
-// reference. This is a delivered differential harness, not the old uncommitted
-// development experiment described in #671.
+// Keep the shipped webhook implementation as a fixed compatibility reference
+// for this refactor, including its historical 256-rune cap. Property tests in
+// sanitize_test.go independently pin stripping and configurable cap behavior.
 func priorWebhookSanitizer(name string) string {
 	var sanitized strings.Builder
 	kept := 0
