@@ -419,8 +419,8 @@ func copyFileIfChangedDeferredAtRoot(
 				return false, nil, fmt.Errorf("compare destination bytes: %w", compareErr)
 			}
 			if contentsEqual {
-				log.Component(log.ComponentReconcile).
-					Debug().
+				logger := log.Component(log.ComponentReconcile)
+				logger.Debug().
 					Str("src", src).
 					Str("dst", dst).
 					Str("reason", "hash_match").
@@ -458,8 +458,8 @@ func copyFileIfChangedDeferredAtRoot(
 		if info, statErr := os.Stat(src); statErr == nil {
 			srcSize = info.Size()
 		}
-		log.Component(log.ComponentReconcile).
-			Debug().
+		logger := log.Component(log.ComponentReconcile)
+		logger.Debug().
 			Str("src", src).
 			Str("dst", dst).
 			Int64("bytes", srcSize).
