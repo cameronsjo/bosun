@@ -35,15 +35,15 @@ func setKnownHostsCandidates(t *testing.T, fn func(env string) []string) {
 // precedence, which must mirror git.go's getHostKeyCallback: insecure wins over
 // known_hosts, an existing known_hosts file pins strict verification, the
 // insecure opt-out matches ONLY a case-insensitive "true", and the terminal
-// case is TOFU (accept-new) — never git.go's insecure fallback.
+// case is strict refusal — never accept-new TOFU or git.go's insecure fallback.
 //
 // The candidate resolver is injected so the table owns the full candidate list
-// (env path only, no /config/known_hosts fallback) and the accept-new cases
-// stay deterministic regardless of the host's filesystem.
+// (env path only, no /config/known_hosts fallback) and terminal cases stay
+// deterministic regardless of the host's filesystem.
 func TestHostKeyOptions(t *testing.T) {
 	// Hermetic resolver: only the env-provided path is a candidate, so a case
 	// with no known_hosts set has zero candidates and deterministically falls
-	// to accept-new even on a host where /config/known_hosts exists.
+	// to strict refusal even on a host where /config/known_hosts exists.
 	setKnownHostsCandidates(t, func(env string) []string {
 		if env == "" {
 			return nil
@@ -61,8 +61,8 @@ func TestHostKeyOptions(t *testing.T) {
 		want       []string
 	}{
 		{
-			name: "neither set defaults to TOFU accept-new",
-			want: []string{"-o", "StrictHostKeyChecking=accept-new"},
+			name: "neither set refuses an unpinned host",
+			want: []string{"-o", "StrictHostKeyChecking=yes"},
 		},
 		{
 			name:       "existing known_hosts file pins strict verification",
@@ -70,9 +70,9 @@ func TestHostKeyOptions(t *testing.T) {
 			want:       []string{"-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=" + realKnownHosts},
 		},
 		{
-			name:       "known_hosts path that does not exist falls through to accept-new",
+			name:       "known_hosts path that does not exist falls through to strict refusal",
 			knownHosts: missingKnownHosts,
-			want:       []string{"-o", "StrictHostKeyChecking=accept-new"},
+			want:       []string{"-o", "StrictHostKeyChecking=yes"},
 		},
 		{
 			name:     "insecure true disables verification",
@@ -92,12 +92,12 @@ func TestHostKeyOptions(t *testing.T) {
 		{
 			name:     "insecure 1 is not treated as true",
 			insecure: "1",
-			want:     []string{"-o", "StrictHostKeyChecking=accept-new"},
+			want:     []string{"-o", "StrictHostKeyChecking=yes"},
 		},
 		{
 			name:     "insecure yes is not treated as true",
 			insecure: "yes",
-			want:     []string{"-o", "StrictHostKeyChecking=accept-new"},
+			want:     []string{"-o", "StrictHostKeyChecking=yes"},
 		},
 		{
 			name:       "insecure true wins over an existing known_hosts file (precedence mirrors git.go)",
@@ -141,7 +141,25 @@ func TestHostKeyOptions_FailsClosedOnStatError(t *testing.T) {
 	assert.Equal(t, []string{
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile=" + candidate,
-	}, hostKeyOptions(), "a stat error other than not-found must fail closed, never downgrade to accept-new")
+	}, hostKeyOptions(), "a stat error other than not-found must fail closed, never downgrade to TOFU")
+}
+
+// TestHostKeyOptions_RefusesUnpinnedHostWhenNoCandidateResolves pins the
+// terminal deploy policy on the command seam: an unknown host cannot receive
+// a secret-bearing transfer on first contact.
+func TestHostKeyOptions_RefusesUnpinnedHostWhenNoCandidateResolves(t *testing.T) {
+	setKnownHostsCandidates(t, func(string) []string { return nil })
+	t.Setenv("BOSUN_SSH_KNOWN_HOSTS", "")
+	t.Setenv("BOSUN_SSH_INSECURE_HOST_KEY", "")
+
+	assert.Equal(t, []string{"-o", "StrictHostKeyChecking=yes"}, hostKeyOptions())
+	assert.NotContains(t, hostKeyOptions(), "StrictHostKeyChecking=accept-new")
+	cmd := newSSHTransferCommand(context.Background(), "user@host", "tar -C /srv -xf -")
+	require.Equal(t, []string{
+		"ssh",
+		"-o", "StrictHostKeyChecking=yes",
+		"user@host", "tar -C /srv -xf -",
+	}, cmd.Args)
 }
 
 // TestHostKeyOptions_ResolvesLaterCandidateWhenEarlierAbsent proves the on-disk

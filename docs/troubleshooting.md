@@ -103,6 +103,11 @@ recreated and the next reconcile renders it from scratch.
   container path.
 - If no agent or key is usable, Bosun rejects the SSH repository configuration
   before network access instead of allowing go-git to continue with nil auth.
+- Configure host-key trust before connecting: set `BOSUN_SSH_KNOWN_HOSTS` or
+  mount `/config/known_hosts`. Git fails before network access when neither
+  exists or the selected file is malformed; remote deploy refuses an unpinned
+  host with strict OpenSSH checking. Use `BOSUN_SSH_INSECURE_HOST_KEY=true`
+  only for a deliberate one-time bootstrap.
 - Verify host is reachable: `ping host`
 
 ### Deploy reports success but files unchanged
