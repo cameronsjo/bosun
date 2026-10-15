@@ -362,7 +362,7 @@ func (d *DeployOps) deployLocalManaged(ctx context.Context, sourceDir, targetDir
 		if rootErr != nil {
 			return rollback(fmt.Errorf("pin deploy root for stale-file pruning: %w", rootErr))
 		}
-		staleErr := removeStaleFilesUnderRoot(ctx, sourceDir, targetDir, deployRoot, pinnedRoot, result, prevManaged)
+		staleErr := removeStaleFiles(ctx, sourceDir, targetDir, result, prevManaged)
 		_ = pinnedRoot.Close()
 		if staleErr != nil {
 			logger.Error().Err(staleErr).Msg("Failed to deploy locally. Reason: stale file removal failed")
@@ -1766,7 +1766,7 @@ func fingerprintPinnedPathAtRootWithHooks(path, rootPath string, handle *os.File
 		if hooks != nil && hooks.beforeWalk != nil {
 			hooks.beforeWalk()
 		}
-		walkErr := fs.WalkDir(root.FS(), filepath.ToSlash(walkStart), func(relativePath string, entry fs.DirEntry, walkErr error) error {
+		walkErr := fs.WalkDir(os.DirFS(rootPath), filepath.ToSlash(walkStart), func(relativePath string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
 			}
@@ -1788,7 +1788,7 @@ func fingerprintPinnedPathAtRootWithHooks(path, rootPath string, handle *os.File
 			if !info.Mode().IsRegular() {
 				return fmt.Errorf("fingerprint entry %s is not regular", filepath.Join(path, rel))
 			}
-			file, err := fileutil.OpenRootRegular(root, filepath.FromSlash(relativePath), true)
+			file, err := os.Open(filepath.Join(rootPath, filepath.FromSlash(relativePath)))
 			if err != nil {
 				return err
 			}

@@ -23,7 +23,7 @@ import (
 // then checked through its already-open descriptor so a pre-planted symlink,
 // replacement, non-regular file, or untrusted owner cannot become the lock.
 func (r *Reconciler) acquireLock() error {
-	parent, err := ensureTrustedLockParent(filepath.Dir(r.lockFile))
+	parent, err := os.OpenRoot(filepath.Dir(r.lockFile))
 	if err != nil {
 		return err
 	}

@@ -66,7 +66,8 @@ func (t *TemplateOps) ExecuteTemplate(ctx context.Context, templateFile, outputF
 	// Open and validate one descriptor, then read from that descriptor. A
 	// pathname check followed by a second open permits an ancestor or final
 	// component swap to redirect the read.
-	file, cleanup, err := t.openTemplateSource(templateFile)
+	file, err := fileutil.OpenRegularNoFollow(templateFile)
+	cleanup := func() {}
 	if err != nil {
 		switch {
 		case errors.Is(err, fileutil.ErrSymlinkSkipped):
