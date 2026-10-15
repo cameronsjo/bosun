@@ -182,7 +182,7 @@ func TestValidateTrustedLockDirRejectsUnsafeMetadata(t *testing.T) {
 		wantErr string
 	}{
 		{name: "not a directory", info: lockConfinementInfo(0o600, uint32(os.Geteuid())), final: true, wantErr: "not a real directory"},
-		{name: "owner metadata unavailable", info: lockConfinementFileInfo{mode: 0o700}, final: true, wantErr: "cannot verify directory owner"},
+		{name: "owner metadata unavailable", info: lockConfinementFileInfo{mode: os.ModeDir | 0o700}, final: true, wantErr: "cannot verify directory owner"},
 		{name: "final directory foreign owner", info: lockConfinementInfo(os.ModeDir|0o700, foreignUID), final: true, wantErr: "need daemon uid"},
 		{name: "final directory permissive mode", info: lockConfinementInfo(os.ModeDir|0o755, uint32(os.Geteuid())), final: true, wantErr: "final directory mode"},
 		{name: "ancestor foreign owner", info: lockConfinementInfo(os.ModeDir|0o700, foreignUID), final: false, wantErr: "ancestor is owned"},
