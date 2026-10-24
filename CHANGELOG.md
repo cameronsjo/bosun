@@ -40,6 +40,18 @@ through an independent trusted channel before installing the entries. ssh-keysca
 does not authenticate a host. Deploys without a Bosun trust file still use strict
 OpenSSH default stores; container-only pins must be persisted.
 
+## [0.47.3](https://github.com/cameronsjo/bosun/compare/v0.47.2...v0.47.3) (2026-10-24)
+
+
+### Bug Fixes
+
+* **webhook:** /webhook/manual accepts only force, source, and nonce, and refuses bodies a webhook endpoint already handled ([016d5c6](https://github.com/cameronsjo/bosun/commit/016d5c60dfc5d22efc19832a2c898af589bb5a5b))
+* **webhook:** /webhook/manual accepts only force, source, and nonce, and refuses bodies a webhook endpoint already handled ([a7a5300](https://github.com/cameronsjo/bosun/commit/a7a5300255ac243315ead3756032320862ab97dd))
+* **webhook:** a repeated non-empty body to the generic /webhook within an hour is now ignored; send an empty body, vary it, or use /webhook/manual with a nonce ([016d5c6](https://github.com/cameronsjo/bosun/commit/016d5c60dfc5d22efc19832a2c898af589bb5a5b))
+* **webhook:** a repeated non-empty body to the generic /webhook within an hour is now ignored; send an empty body, vary it, or use /webhook/manual with a nonce ([a7a5300](https://github.com/cameronsjo/bosun/commit/a7a5300255ac243315ead3756032320862ab97dd))
+* **webhook:** ignore branch-delete pushes and drop replayed deliveries ([016d5c6](https://github.com/cameronsjo/bosun/commit/016d5c60dfc5d22efc19832a2c898af589bb5a5b))
+* **webhook:** ignore branch-delete pushes and drop replayed deliveries ([a7a5300](https://github.com/cameronsjo/bosun/commit/a7a5300255ac243315ead3756032320862ab97dd))
+
 ## [0.47.2](https://github.com/cameronsjo/bosun/compare/v0.47.1...v0.47.2) (2026-10-24)
 
 
