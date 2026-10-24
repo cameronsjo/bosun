@@ -197,7 +197,10 @@ func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) r
 // sendInterruptionRecoveryAlert retracts a delivered interruption alert, under
 // the same on_recovery gate and outcome contract as sendRecoveryAlert.
 func (r *Reconciler) sendInterruptionRecoveryAlert(ctx context.Context) recoveryOutcome {
-	return r.dispatchRecovery(ctx, "alert_interruption_recovery", r.alerter.SendInterruptionRecovery,
+	return r.dispatchRecovery(ctx, "alert_interruption_recovery", func(alertCtx context.Context, commit, target string) error {
+		// Lazy: r.alerter may be nil, and dispatchRecovery guards that first.
+		return r.alerter.SendInterruptionRecovery(alertCtx, commit, target)
+	},
 		"Failed to send interruption recovery alert, retraction still owed")
 }
 

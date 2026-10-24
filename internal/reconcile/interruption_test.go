@@ -695,3 +695,13 @@ func TestRun_InterruptionThenCleanRunSendsExactlyOneRecovery(t *testing.T) {
 	assert.Equal(t, 1, f.alerter.deployRecoveryCalls)
 	assert.Nil(t, LoadState(f.stateFile).LastAttemptOutcome)
 }
+
+func TestFinalizeAttempt_DeliveredInterruptionWithNoAlerterClearsMarkerWithoutPanic(t *testing.T) {
+	stateFile, state := interruptedState(t)
+	r := NewReconciler(&Config{StateFile: stateFile, OnFailure: true, OnRecovery: true})
+
+	assert.NotPanics(t, func() {
+		r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(state, "new"))
+	})
+	assert.Nil(t, LoadState(stateFile).LastAttemptOutcome)
+}
