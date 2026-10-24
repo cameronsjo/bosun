@@ -544,7 +544,7 @@ bosun webhook --secret mysecret        # Set secret directly
 | `--socket` | Path to daemon socket |
 | `--secret` | Webhook secret for signature validation |
 | `--fetch-secret` | Fetch secret from daemon at startup (never stored on disk) |
-| `--branch` | Tracked branch for the generic `/webhook` ref filter (default: `BOSUN_REPO_BRANCH`, then the daemon's configured branch) |
+| `--branch` | Tracked branch for the ref filter on every trigger endpoint (default: `BOSUN_REPO_BRANCH`, then the daemon's configured branch) |
 
 Validates webhook signatures and forwards valid requests to the daemon's trigger endpoint. Supports GitHub, GitLab, Gitea, and Bitbucket formats.
 
@@ -558,6 +558,8 @@ logs a security warning. `/health` and `/ready` stay open either way.
 receiver must run as the daemon's UID or a `BOSUN_SOCKET_ALLOWED_UIDS` member.
 
 The generic `/webhook` uses the daemon's branch filter: a JSON `ref` must equal `refs/heads/<branch>` or the request gets `200` `ignored` and is not forwarded. The branch comes from `--branch`, `BOSUN_REPO_BRANCH`, or the daemon's `/config`; when none is known the ref check is off and startup warns.
+
+The provider endpoints filter on the same branch after their signature and push-event checks: GitHub, GitLab, and Gitea need `ref` to equal `refs/heads/<branch>`; Bitbucket needs a `push.changes[].new` entry of type `branch` with that name. Other branches, tags, and deletions get `200` `ignored` and are not forwarded.
 
 ---
 

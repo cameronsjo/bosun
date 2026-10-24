@@ -538,6 +538,108 @@ func TestStandaloneGenericWebhookBranchFilter(t *testing.T) {
 	})
 }
 
+// providerPushRequest builds a validly signed push request for one provider
+// endpoint, so the only thing a test case varies is the payload's branch.
+func providerPushRequest(t *testing.T, endpoint, secret string, payload []byte) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+	switch endpoint {
+	case "/webhook/github":
+		req.Header.Set("X-GitHub-Event", "push")
+		req.Header.Set("X-Hub-Signature-256", "sha256="+computeHMAC(payload, secret))
+	case "/webhook/gitlab":
+		req.Header.Set("X-Gitlab-Event", "Push Hook")
+		req.Header.Set("X-Gitlab-Token", secret)
+	case "/webhook/gitea":
+		req.Header.Set("X-Gitea-Event", "push")
+		req.Header.Set("X-Gitea-Signature", computeHMAC(payload, secret))
+	case "/webhook/bitbucket":
+		req.Header.Set("X-Event-Key", "repo:push")
+		req.Header.Set("X-Hub-Signature", "sha256="+computeHMAC(payload, secret))
+	default:
+		t.Fatalf("no push request recipe for %s", endpoint)
+	}
+	return req
+}
+
+// TestStandaloneProviderWebhookBranchFilter pins #740: every provider endpoint
+// on the receiver forwards only pushes to the tracked branch, after its
+// signature check, and an ignored push never reaches the daemon.
+func TestStandaloneProviderWebhookBranchFilter(t *testing.T) {
+	const secret = "webhook-secret"
+
+	refBody := func(ref string) string { return `{"ref":"` + ref + `"}` }
+	bitbucketBody := func(changes string) string { return `{"push":{"changes":[` + changes + `]}}` }
+
+	type providerCase struct {
+		name        string
+		branch      string
+		body        string
+		wantCalls   int
+		wantMessage string
+	}
+	refCases := []providerCase{
+		{name: "matching branch forwards", branch: "main", body: refBody("refs/heads/main"), wantCalls: 1},
+		{name: "other branch ignored", branch: "main", body: refBody("refs/heads/develop"), wantMessage: "refs/heads/develop"},
+		{name: "tag ref ignored", branch: "main", body: refBody("refs/tags/v1.2.3"), wantMessage: "refs/tags/v1.2.3"},
+		{name: "bare branch name ignored", branch: "main", body: refBody("main"), wantMessage: "tracking refs/heads/main"},
+		{name: "missing ref ignored", branch: "main", body: `{}`, wantMessage: "without a readable ref"},
+		{name: "unknown branch forwards any ref", body: refBody("refs/heads/develop"), wantCalls: 1},
+	}
+	cases := map[string][]providerCase{
+		"/webhook/github": refCases,
+		"/webhook/gitlab": refCases,
+		"/webhook/gitea":  refCases,
+		"/webhook/bitbucket": {
+			{name: "matching branch forwards", branch: "main", body: bitbucketBody(`{"new":{"type":"branch","name":"main"}}`), wantCalls: 1},
+			{name: "matching branch among several changes forwards", branch: "main", body: bitbucketBody(`{"new":{"type":"branch","name":"develop"}},{"new":{"type":"branch","name":"main"}}`), wantCalls: 1},
+			{name: "other branch ignored", branch: "main", body: bitbucketBody(`{"new":{"type":"branch","name":"develop"}}`), wantMessage: "develop"},
+			{name: "tag with the branch name ignored", branch: "main", body: bitbucketBody(`{"new":{"type":"tag","name":"main"}}`), wantMessage: "tracking branch main"},
+			{name: "deleted branch ignored", branch: "main", body: bitbucketBody(`{"new":null,"old":{"type":"branch","name":"main"}}`), wantMessage: "tracking branch main"},
+			{name: "no changes ignored", branch: "main", body: bitbucketBody(``), wantMessage: "tracking branch main"},
+			{name: "unknown branch forwards any change", body: bitbucketBody(`{"new":{"type":"branch","name":"develop"}}`), wantCalls: 1},
+		},
+	}
+
+	for endpoint, providerCases := range cases {
+		for _, tt := range providerCases {
+			t.Run(endpoint+" "+tt.name, func(t *testing.T) {
+				client := &recordingWebhookClient{}
+				mux := newWebhookMux(&webhookHandler{client: client, secret: secret, branch: tt.branch})
+
+				w := httptest.NewRecorder()
+				mux.ServeHTTP(w, providerPushRequest(t, endpoint, secret, []byte(tt.body)))
+
+				assert.Equal(t, tt.wantCalls, client.triggerCalls)
+				if tt.wantCalls == 1 {
+					assert.Equal(t, http.StatusAccepted, w.Code)
+					return
+				}
+				require.Equal(t, http.StatusOK, w.Code)
+				var resp map[string]string
+				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+				assert.Equal(t, "ignored", resp["status"])
+				assert.Contains(t, resp["message"], tt.wantMessage)
+			})
+		}
+
+		t.Run(endpoint+" bad signature is rejected before the filter", func(t *testing.T) {
+			client := &recordingWebhookClient{}
+			mux := newWebhookMux(&webhookHandler{client: client, secret: secret, branch: "main"})
+
+			body := refBody("refs/heads/main")
+			if endpoint == "/webhook/bitbucket" {
+				body = bitbucketBody(`{"new":{"type":"branch","name":"main"}}`)
+			}
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, providerPushRequest(t, endpoint, "wrong-secret", []byte(body)))
+
+			assert.Equal(t, http.StatusUnauthorized, w.Code)
+			assert.Equal(t, 0, client.triggerCalls)
+		})
+	}
+}
+
 // newWebhookPushRequest builds a request each provider endpoint accepts as a
 // push, so a 403 can only come from the auth gate and never from event-type
 // filtering.

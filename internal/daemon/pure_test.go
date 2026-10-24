@@ -335,6 +335,30 @@ func TestShouldProcessGitHubPush(t *testing.T) {
 	}
 }
 
+func TestShouldProcessPushRef(t *testing.T) {
+	tests := []struct {
+		name        string
+		ref         string
+		branch      string
+		wantProcess bool
+		wantReason  string
+	}{
+		{name: "matching branch", ref: "refs/heads/main", branch: "main", wantProcess: true, wantReason: "push to tracked branch main"},
+		{name: "other branch", ref: "refs/heads/develop", branch: "main", wantReason: "Push to refs/heads/develop ignored (tracking refs/heads/main)"},
+		{name: "tag ref", ref: "refs/tags/v1.0.0", branch: "main", wantReason: "Push to refs/tags/v1.0.0 ignored (tracking refs/heads/main)"},
+		{name: "bare branch name", ref: "main", branch: "main", wantReason: "Push to main ignored (tracking refs/heads/main)"},
+		{name: "missing ref", ref: "", branch: "main", wantReason: "Push without a readable ref ignored (tracking refs/heads/main)"},
+		{name: "unknown branch passes any ref", ref: "refs/tags/v1.0.0", branch: "", wantProcess: true, wantReason: "no tracked branch configured; ref not checked"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			process, reason := ShouldProcessPushRef(tt.ref, tt.branch)
+			assert.Equal(t, tt.wantProcess, process)
+			assert.Equal(t, tt.wantReason, reason)
+		})
+	}
+}
+
 func TestShouldProcessGenericWebhook(t *testing.T) {
 	tests := []struct {
 		name        string
