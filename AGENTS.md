@@ -341,6 +341,7 @@ Releases are fully automated via **release-please** + **goreleaser**.
 - **Conventional Commits drive versioning**: `feat:` bumps minor, `fix:` bumps patch, `feat!:`/`BREAKING CHANGE:` bumps minor pre-1.0 (major post-1.0)
 - **Never manually edit version numbers** — release-please manages `.release-please-manifest.json` and `CHANGELOG.md`
 - **Squash-merge mixed-prefix PRs** — release-please reads commit subjects on `main`. A merge commit lands every branch commit (so an internal `fix(skill):`/`ci:` triggers a spurious release); squashing under one subject lets you pick the prefix release-please sees. Squash docs/chore PRs under `docs:`/`chore:` to avoid phantom version bumps
+- **A commit message body can drop the whole commit from release notes** — release-please parses every body line that starts at column 0 with `word(` as a conventional-commit footer. If the line then hits a second `(` before its closing `)` (for example `extractFoo(loadBar(dir)) -- ...` pasted at the start of a line), the parser throws, release-please logs the failure at debug level only, and the commit is skipped: no changelog entry, no release PR if it was the only one. `#659` lost its `0.42.3` entry this way; touching `CHANGELOG.md` was not the cause. Indent such lines or wrap them in backticks, and keep call expressions off the start of a line in squash bodies (the GitHub squash default pastes every branch commit body)
 
 **Release pipeline:**
 
