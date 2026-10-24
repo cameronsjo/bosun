@@ -8,13 +8,13 @@ The configuration SHALL support:
 - `discord_webhook_url` (env: `DISCORD_WEBHOOK_URL`)
 - `sendgrid_api_key` (env: `SENDGRID_API_KEY`), `sendgrid_from_email` (env: `SENDGRID_FROM_EMAIL`), `sendgrid_from_name` (env: `SENDGRID_FROM_NAME`), `sendgrid_to_emails`
 - `twilio_account_sid` (env: `TWILIO_ACCOUNT_SID`), `twilio_auth_token` (env: `TWILIO_AUTH_TOKEN`), `twilio_from_number` (env: `TWILIO_FROM_NUMBER`), `twilio_to_numbers`
-- `on_success` (bool), `on_failure` (bool, default: true), and `on_recovery` (bool, default: true)
+- `on_success` (bool, default: false), `on_failure` (bool, default: true), and `on_recovery` (bool, default: true)
 
-When neither `on_success` nor `on_failure` is explicitly set, `on_failure` SHALL default to true. This existing coupling is unchanged: setting `on_success` explicitly while leaving `on_failure` unset leaves `on_failure` false.
+Each gate SHALL resolve from its own key only. `on_failure` SHALL default to true whenever it is not explicitly set, whatever `on_success` is set to, and an explicit `false` SHALL be honored. This matches the `fix-alert-gate-defaults` change, which modifies the same requirement.
 
-`on_recovery` SHALL default to true whenever it is not explicitly set, unconditionally — it is **not** coupled to `on_success` or `on_failure`.
+`on_recovery` SHALL default to true whenever it is not explicitly set, unconditionally — it is not coupled to `on_success` or `on_failure`.
 
-The principle the default serves is that **the retract gate must never be more restrictive than the alert gate**: a system that alerts on failure and cannot retract leaves the operator worse informed than one that never alerted. Default-true satisfies that principle without tying `on_recovery` to a gate whose own effective value is currently in question, and it costs nothing when `on_failure` is false, since Deploy Recovery Dispatch already requires a prior failure alert.
+The principle the default serves is that **the retract gate must never be more restrictive than the alert gate**: a system that alerts on failure and cannot retract leaves the operator worse informed than one that never alerted. Default-true satisfies that principle without tying `on_recovery` to another gate, and it costs nothing when `on_failure` is false, since Deploy Recovery Dispatch already requires a prior failure alert.
 
 `on_success` SHALL default to false.
 
@@ -40,7 +40,7 @@ The default SHALL be applied everywhere an alert configuration is constructed �
 - **GIVEN** a configuration with `on_success: true` and neither `on_failure` nor `on_recovery` set
 - **WHEN** the configuration is loaded
 - **THEN** `on_recovery` is true
-- **AND** `on_failure` is false, preserving the existing coupling unchanged
+- **AND** `on_failure` is true, because no gate is coupled to `on_success`
 
 #### Scenario: Recovery alerting can be disabled explicitly
 

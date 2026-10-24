@@ -155,3 +155,5 @@ controls it.
   private-HTTPS git path (#654 — homelab authenticates over SSH). Operator-facing
   configuration of the git timeouts is also out of scope; the fields exist to be
   testable and caller-settable, and no `BOSUN_*` variable is added.
+
+Note: `fix-alert-gate-defaults` also modifies the Alert Configuration requirement. Its independent-gate wording (no coupling between `on_success` and `on_failure`) is mirrored in this change's delta so that archive order cannot restore the coupling.

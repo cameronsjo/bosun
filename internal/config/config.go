@@ -180,7 +180,7 @@ type AlertConfig struct {
 	OnSuccess bool `yaml:"on_success"` // Alert on successful deploys
 	OnFailure bool `yaml:"on_failure"` // Alert on failed deploys (default: true)
 	// OnRecovery gates the retraction of a failure alert (default: true).
-	// Unlike OnFailure it is NOT coupled to OnSuccess: the retract gate must
+	// Like OnFailure it is independent of OnSuccess: the retract gate must
 	// never be more restrictive than the alert gate, and a system that alerts
 	// on failure and cannot retract leaves the operator worse informed than one
 	// that never alerted.
@@ -1306,7 +1306,7 @@ func AlertConfigFromEnv() AlertConfig {
 		TwilioToNumbers: splitCommaSeparated(os.Getenv("BOSUN_TWILIO_TO_NUMBERS")),
 		WebhookURL:      getEnvOrDefault("BOSUN_WEBHOOK_URL", ""),
 		WebhookMethod:   getEnvOrDefault("BOSUN_WEBHOOK_METHOD", ""),
-		// OnFailure defaults to true when neither flag is set (same as extractAlertConfig).
+		// OnFailure defaults to true (same as extractAlertConfig).
 		OnFailure: true,
 		// OnRecovery defaults to true unconditionally -- it carries no coupling.
 		OnRecovery: true,
@@ -1335,19 +1335,18 @@ func extractAlertConfig(cfg configFile) AlertConfig {
 	}
 
 	// Resolve pointer booleans: nil = unset (apply default), non-nil = explicit.
-	// Default: OnFailure=true when neither flag was explicitly set.
+	// Each gate resolves independently so that setting one never flips another
+	// (#679): on_failure and on_recovery default to true, on_success to false.
+	// An explicit false is honored.
 	if raw.OnSuccess != nil {
 		alertCfg.OnSuccess = *raw.OnSuccess
 	}
 	if raw.OnFailure != nil {
 		alertCfg.OnFailure = *raw.OnFailure
-	} else if raw.OnSuccess == nil {
-		// Neither flag set → default OnFailure to true.
+	} else {
 		alertCfg.OnFailure = true
 	}
-	// OnRecovery defaults to true whenever unset. Deliberately NOT coupled to
-	// OnSuccess the way OnFailure is: mirroring that pattern would silently
-	// disable retractions for anyone who sets on_success explicitly.
+	// OnRecovery defaults to true whenever unset, independent of the others.
 	if raw.OnRecovery != nil {
 		alertCfg.OnRecovery = *raw.OnRecovery
 	} else {
