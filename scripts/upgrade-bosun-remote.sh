@@ -63,6 +63,9 @@ REF_RE='^[a-z0-9][a-z0-9./_-]*(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$'
 ROLLBACK_TAG_RE='^bosun:rollback-[0-9A-Za-z._-]+$'
 IMAGE_ID_RE='^sha256:[0-9a-f]{64}$'
 PATH_RE='^/[A-Za-z0-9._/-]+$'
+# Docker's own named-volume charset. It is disjoint from PATH_RE (no leading
+# slash), and no YAML metacharacter, quote, space or $ can match it.
+VOLUME_NAME_RE='^[A-Za-z0-9][A-Za-z0-9_.-]*$'
 
 DRY_RUN=0 ASSUME_YES=0 WATCH_TIMEOUT=900 EXPECT_CANDIDATE="" PROVENANCE_SKIPPED=0
 OPERATOR="${USER:-unknown}@$(hostname -s 2>/dev/null || echo nas)"
@@ -71,7 +74,7 @@ RUN_DIR="" LOCKED=0 FINISHING=0 CANDIDATE="" MUTATING=0 DOWNGRADE=0
 FAILURES_DIR=""
 # The upgrade record: set at preflight, or loaded from the state file on resume.
 PROJECT="" INCUMBENT="" INCUMBENT_IMAGE="" INCUMBENT_VERSION="" ROLLBACK_TAG="" CANDIDATE_IMAGE=""
-AGE_SRC="" DEPLOY_SRC="" KNOWN_HOSTS_VOLUMES=""
+AGE_SRC="" DEPLOY_SRC="" KNOWN_HOSTS_VOLUMES="" SHADOW_VOLUME_DECLS=""
 
 say() { printf '%s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }
@@ -319,6 +322,38 @@ mount_source() {
   printf '%s' "$src"
 }
 
+# mount_volume_source is mount_source for a mount that may also be a named
+# volume. It prints the source, a plain absolute path or a volume name, and
+# fails for anything else. A name needs a top-level volumes: entry whose own
+# name is also a valid volume name, because the shadow file declares it from
+# that entry. `docker compose config` writes sources already resolved, so a
+# non-absolute source is a volume name, never a relative host path.
+mount_volume_source() {
+  local LC_ALL=C src
+  src="$(jq -r --arg t "$2" '[.services.bosun.volumes[]? | select(.target == $t) | .source] | if length == 1 then .[0] else empty end' <<<"$1")" || return 1
+  if [[ "$src" =~ $PATH_RE ]]; then
+    printf '%s' "$src"
+  elif [[ "$src" =~ $VOLUME_NAME_RE ]] && [[ -n "$(volume_decl "$1" "$src")" ]]; then
+    printf '%s' "$src"
+  else
+    return 1
+  fi
+}
+
+# volume_decl prints the YAML for top-level volume $2 from the live config $1.
+# The name is the live volume's actual Docker name: `docker compose config`
+# resolves it to <project>_<key> for a project volume, and keeps an explicit
+# name: or an external volume's name as written. The shadow always declares it
+# external, so the canary project never owns, hash-checks or recreates a
+# volume the live service is using. It prints nothing unless the name is a
+# valid volume name.
+volume_decl() {
+  local LC_ALL=C name
+  name="$(jq -r --arg v "$2" '.volumes[$v].name // empty | strings' <<<"$1")" || return 0
+  [[ "$name" =~ $VOLUME_NAME_RE ]] || return 0
+  printf '  %s:\n    name: "%s"\n    external: true\n' "$2" "$name"
+}
+
 # resolve_known_hosts mirrors the daemon's lookup (buildKnownHostsPaths in
 # internal/reconcile/pure.go): candidates are BOSUN_SSH_KNOWN_HOSTS when
 # non-empty (empty means unset), then /config/known_hosts, and the first that
@@ -327,8 +362,11 @@ mount_source() {
 # walks the same order and lands on the same file. BOSUN_SSH_KNOWN_HOSTS is on
 # the env allowlist, so the shadow sees the same value. Sets
 # KNOWN_HOSTS_VOLUMES to the YAML volume lines, or "" when none is mounted.
+# A candidate may be a named volume (external or not): the mount line names it
+# and SHADOW_VOLUME_DECLS carries its top-level declaration, so the shadow
+# mounts the same volume read-only.
 resolve_known_hosts() {
-  local cfg="$1" env_path candidate src
+  local cfg="$1" env_path candidate src decl
   local -a candidates=()
   env_path="$(jq -r '.services.bosun.environment.BOSUN_SSH_KNOWN_HOSTS // ""' <<<"$cfg")" ||
     die CONFIG "could not read BOSUN_SSH_KNOWN_HOSTS out of $LIVE" 64
@@ -338,16 +376,28 @@ resolve_known_hosts() {
     candidates+=("$env_path")
   fi
   [[ "$env_path" == /config/known_hosts ]] || candidates+=(/config/known_hosts)
-  KNOWN_HOSTS_VOLUMES=""
+  KNOWN_HOSTS_VOLUMES="" SHADOW_VOLUME_DECLS=""
   for candidate in "${candidates[@]}"; do
-    src="$(mount_source "$cfg" "$candidate")" || src=""
+    # A subpath mount would be copied as the whole volume at a file path.
+    if [[ "$(jq -r --arg t "$candidate" '[.services.bosun.volumes[]? | select(.target == $t and .volume.subpath != null)] | length' <<<"$cfg")" != 0 ]]; then
+      die CONFIG "the live mount at $candidate uses a volume subpath, which the shadow cannot mirror; mount a whole volume or a host path" 64
+    fi
+    src="$(mount_volume_source "$cfg" "$candidate")" || src=""
     if [[ -n "$src" ]]; then
       KNOWN_HOSTS_VOLUMES+="$(printf '      - "%s:%s:ro"' "$src" "$candidate")"$'\n'
-      say "  shadow gets known_hosts $src at $candidate"
+      if [[ "$src" == /* ]]; then
+        say "  shadow gets known_hosts $src at $candidate"
+      else
+        decl="$(volume_decl "$cfg" "$src")"
+        # Two candidates can share one volume; declare it once.
+        [[ "$SHADOW_VOLUME_DECLS" == *"  $src:"$'\n'* ]] || SHADOW_VOLUME_DECLS+="$decl"$'\n'
+        say "  shadow gets known_hosts from named volume $src at $candidate"
+      fi
     fi
   done
+  [[ -z "$SHADOW_VOLUME_DECLS" ]] || SHADOW_VOLUME_DECLS=$'volumes:\n'"$SHADOW_VOLUME_DECLS"
   if [[ -z "$KNOWN_HOSTS_VOLUMES" ]]; then
-    say "  WARNING the live service has no single plain-path known_hosts mount at ${env_path:+$env_path or }/config/known_hosts; bosun 0.45.0+ refuses SSH Git without one"
+    say "  WARNING the live service has no single plain-path or named-volume known_hosts mount at ${env_path:+$env_path or }/config/known_hosts; bosun 0.45.0+ refuses SSH Git without one"
   fi
 }
 
@@ -475,6 +525,7 @@ ${KNOWN_HOSTS_VOLUMES}      - "$dir/appdata-empty:/mnt/appdata:ro"
       - "$dir:/work"
     labels:
       - com.centurylinklabs.watchtower.enable=false
+${SHADOW_VOLUME_DECLS}
 EOF
 }
 
