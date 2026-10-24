@@ -25,8 +25,9 @@ unchanged; SHALL count as a failed attempt for the circuit breaker; and SHALL
 send a failure alert naming the hook. Hooks after the failing one SHALL NOT
 run. A timed-out hook's process group SHALL be terminated, and after any
 hook exits the reconciler SHALL kill whatever remains in its process group.
-Hook names and output SHALL have control characters removed before they
-reach terminal output, logs, or alerts.
+Hook names, output, and start-failure text SHALL have control characters
+removed before they reach terminal output, logs, or alerts, and the failure
+alert reason SHALL be a single line.
 
 Configuration loading, daemon and CLI startup, a repository configuration
 reload, and the start of each reconcile SHALL reject a hook with an empty
@@ -80,6 +81,27 @@ send a failure alert or count as a failed attempt for the circuit breaker.
 
 - **WHEN** a pre-deploy hook that started a background child times out
 - **THEN** the child is stopped along with the hook
+
+#### Scenario: Daemon rejects invalid hooks at startup
+
+- **WHEN** the daemon starts with a `pre_deploy_hooks` entry that has an empty command
+- **THEN** daemon startup fails with an error naming the entry
+
+#### Scenario: CLI rejects invalid hooks at startup
+
+- **WHEN** `bosun reconcile` starts with a `pre_deploy_hooks` entry that has an empty command
+- **THEN** the CLI fails before reconciling, with an error naming the entry
+
+#### Scenario: Example hook does not match its own config
+
+- **WHEN** the documented `<no value>` hook runs against a staging tree that contains `bosun.yaml`
+- **AND** no rendered file contains `<no value>`
+- **THEN** the hook passes
+
+#### Scenario: Example hook fails closed on a grep error
+
+- **WHEN** the documented `<no value>` hook runs and `grep` exits with an error
+- **THEN** the hook fails and the deploy is blocked
 
 #### Scenario: Invalid hook configuration
 

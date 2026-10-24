@@ -52,7 +52,10 @@ const preDeployFallbackPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 type PreDeployHook struct {
 	// Name labels the hook in logs and alerts. Defaults to Command[0].
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`
-	// Command is the argv to run, e.g. ["sh", "-c", "! grep -rF '<no value>' ."].
+	// Command is the argv to run, e.g.
+	// ["sh", "-c", "grep -rlE '<no value[>]' .; test $? -eq 1"]. The staging
+	// tree can hold a copy of bosun.yaml, so the pattern is written so it does
+	// not match its own text, and only grep's "no match" status (1) passes.
 	Command []string `json:"command" yaml:"command"`
 	// Timeout bounds this hook. Zero means DefaultPreDeployHookTimeout.
 	Timeout Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
@@ -261,6 +264,9 @@ func runOnePreDeployHook(ctx context.Context, h PreDeployHook, timeout time.Dura
 		return nil
 	}
 	elapsed := time.Since(start)
+	// A start failure's text can carry the raw program path (fs.PathError
+	// does not quote it), so clean it before it reaches any output.
+	safeRunErr := log.SanitizeForOutputCapped(runErr.Error(), preDeployHookOutputLimit)
 
 	var reason string
 	var cause error
@@ -279,13 +285,13 @@ func runOnePreDeployHook(ctx context.Context, h PreDeployHook, timeout time.Dura
 		} else if errors.As(runErr, &exitErr) {
 			reason = fmt.Sprintf("pre-deploy hook %q exited with status %d", name, exitErr.ExitCode())
 		} else {
-			reason = fmt.Sprintf("pre-deploy hook %q could not run: %v", name, runErr)
+			reason = fmt.Sprintf("pre-deploy hook %q could not run: %s", name, safeRunErr)
 		}
 		cause = runErr
 	}
 
 	logger.Error().
-		Err(runErr).
+		Str(log.FieldError, safeRunErr).
 		Str("hook", name).
 		Int64(log.FieldDurationMS, elapsed.Milliseconds()).
 		Dur("timeout", timeout).
@@ -293,8 +299,19 @@ func runOnePreDeployHook(ctx context.Context, h PreDeployHook, timeout time.Dura
 		Msg("Pre-deploy hook failed, expected exit status 0; aborting deploy before any file sync or compose up")
 	ui.Error("  %s", reason)
 
-	return fmt.Errorf("%s: %w", reason, errors.Join(ErrPreDeployHookFailed, cause))
+	return &preDeployHookError{reason: reason, causes: []error{ErrPreDeployHookFailed, cause}}
 }
+
+// preDeployHookError is a blocked deploy. Its text is the one-line,
+// sanitized reason that goes into the failure alert; the sentinel and the
+// underlying cause stay reachable through errors.Is and errors.As.
+type preDeployHookError struct {
+	reason string
+	causes []error
+}
+
+func (e *preDeployHookError) Error() string   { return e.reason }
+func (e *preDeployHookError) Unwrap() []error { return e.causes }
 
 // undoDryRunAttempt restores the circuit-breaker counters a dry run bumped
 // before its pre-deploy hooks blocked it, so a preview never counts as a

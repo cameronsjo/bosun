@@ -25,3 +25,13 @@
   `BOSUN_TARGETS` JSON list surviving reload. Staged breaks of the group
   kill, the process-group setup, and the dry-run branch turn the matching
   tests red.
+- [x] 8. Review round 2 (CodeRabbit on #757): example hook excludes
+  `bosun.yaml`, `bosun.yml`, and `.bosun/` (staging copies the config, so the
+  old example matched its own pattern and blocked every deploy); start-failure
+  text sanitized and the returned error is the one-line reason (no joined
+  cause text); daemon and CLI startup tests; descendant-exit tests use FIFO
+  EOF instead of a marker file. Windows job objects declined: Windows is not
+  a release platform; documented that Windows stops only the hook process.
+- [x] 9. Review round 3: the example uses `grep -rlE '<no value[>]' .; test $? -eq 1`
+  (no `--exclude`, which BusyBox grep in the release image lacks; a grep
+  error now blocks instead of passing). The doc test adds a grep-error case.
