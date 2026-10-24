@@ -140,7 +140,7 @@ compose_ignore:
 # can run commands there and read bosun's keys.
 pre_deploy_hooks:
   - name: no-unresolved-templates
-    command: ["sh", "-c", "! grep -rlF --exclude=bosun.yaml --exclude=bosun.yml --exclude-dir=.bosun '<no value>' ."]
+    command: ["sh", "-c", "grep -rlE '<no value[>]' .; test $? -eq 1"]
     timeout: 30s
 
 # Post-sync hooks: act on containers when specific config files change.
@@ -212,7 +212,7 @@ targets:
     compose_ignore: [handmade-project]
     pre_deploy_hooks:
       - name: no-unresolved-templates
-        command: ["sh", "-c", "! grep -rlF --exclude=bosun.yaml --exclude=bosun.yml --exclude-dir=.bosun '<no value>' ."]
+        command: ["sh", "-c", "grep -rlE '<no value[>]' .; test $? -eq 1"]
 
   - name: media
     target_host: user@media-server

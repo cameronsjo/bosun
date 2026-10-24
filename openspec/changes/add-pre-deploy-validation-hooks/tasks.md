@@ -32,3 +32,6 @@
   cause text); daemon and CLI startup tests; descendant-exit tests use FIFO
   EOF instead of a marker file. Windows job objects declined: Windows is not
   a release platform; documented that Windows stops only the hook process.
+- [x] 9. Review round 3: the example uses `grep -rlE '<no value[>]' .; test $? -eq 1`
+  (no `--exclude`, which BusyBox grep in the release image lacks; a grep
+  error now blocks instead of passing). The doc test adds a grep-error case.

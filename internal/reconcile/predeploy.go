@@ -53,9 +53,9 @@ type PreDeployHook struct {
 	// Name labels the hook in logs and alerts. Defaults to Command[0].
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 	// Command is the argv to run, e.g.
-	// ["sh", "-c", "! grep -rlF --exclude=bosun.yaml '<no value>' ."]. The
-	// staging tree holds a copy of the render source, bosun.yaml included,
-	// so a search must skip the config that names its own pattern.
+	// ["sh", "-c", "grep -rlE '<no value[>]' .; test $? -eq 1"]. The staging
+	// tree can hold a copy of bosun.yaml, so the pattern is written so it does
+	// not match its own text, and only grep's "no match" status (1) passes.
 	Command []string `json:"command" yaml:"command"`
 	// Timeout bounds this hook. Zero means DefaultPreDeployHookTimeout.
 	Timeout Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`

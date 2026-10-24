@@ -113,4 +113,13 @@ func TestDocumentedNoValueHookIgnoresItsOwnConfig(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "compose", "b.yml"), []byte("password: <no value>\n"), 0o644))
 	err = runPreDeployHooks(context.Background(), hooks, dir, "t", "c")
 	assert.ErrorIs(t, err, ErrPreDeployHookFailed, "the example must block a rendered sentinel")
+
+	// A grep that errors (exit 2: unknown flag, unreadable file) must block,
+	// not pass. Remove the sentinel so only the error can fail the hook.
+	require.NoError(t, os.Remove(filepath.Join(dir, "compose", "b.yml")))
+	stubDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "grep"), []byte("#!/bin/sh\necho 'grep: unrecognized option' >&2\nexit 2\n"), 0o755))
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	err = runPreDeployHooks(context.Background(), hooks, dir, "t", "c")
+	assert.ErrorIs(t, err, ErrPreDeployHookFailed, "the example must fail closed when grep errors")
 }

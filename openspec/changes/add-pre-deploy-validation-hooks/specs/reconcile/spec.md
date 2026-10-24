@@ -98,6 +98,11 @@ send a failure alert or count as a failed attempt for the circuit breaker.
 - **AND** no rendered file contains `<no value>`
 - **THEN** the hook passes
 
+#### Scenario: Example hook fails closed on a grep error
+
+- **WHEN** the documented `<no value>` hook runs and `grep` exits with an error
+- **THEN** the hook fails and the deploy is blocked
+
 #### Scenario: Invalid hook configuration
 
 - **WHEN** `pre_deploy_hooks` holds a hook with an empty command
