@@ -40,6 +40,14 @@ through an independent trusted channel before installing the entries. ssh-keysca
 does not authenticate a host. Deploys without a Bosun trust file still use strict
 OpenSSH default stores; container-only pins must be persisted.
 
+## [0.46.1](https://github.com/cameronsjo/bosun/compare/v0.46.0...v0.46.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **reconcile:** skip orphan pass when a compose file failed without rollback ([1b55c76](https://github.com/cameronsjo/bosun/commit/1b55c76555323b55cd04e2eb06ba5c1664a7e1dc))
+* **reconcile:** skip orphan pass when a compose file failed without rollback ([043060d](https://github.com/cameronsjo/bosun/commit/043060d407e2c1187c60962582b14fb212da9b79))
+
 ## [0.46.0](https://github.com/cameronsjo/bosun/compare/v0.45.4...v0.46.0) (2026-10-24)
 
 
