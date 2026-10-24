@@ -32,6 +32,7 @@ var comparedFields = []string{
 	"PostSyncHooks",
 	"HookSettleDelay",
 	"DeployPaths",
+	"ComposeIgnore",
 	"DryRun",
 	"OnFailure",
 	"OnSuccess",
@@ -93,6 +94,7 @@ template_include_dir: from-file/templates
 deploy_paths:
   - "from-file/**"
 hook_settle_delay: 7s
+compose_ignore: [from-file]
 post_sync_hooks:
   - paths: ["from-file/**"]
     action: restart
@@ -231,6 +233,7 @@ func TestReconcileConfigParityPrecedence(t *testing.T) {
 			require.Equalf(t, []string{"from-file/**"}, cfg.DeployPaths.Value, "%s: deploy paths", name)
 			require.Lenf(t, cfg.Targets, 1, "%s: targets", name)
 			require.Equalf(t, "homelab", cfg.Targets[0].ProjectName, "%s: target project name", name)
+			require.Equalf(t, []string{"from-file"}, cfg.ComposeIgnore.Value, "%s: compose_ignore", name)
 		}
 	})
 }

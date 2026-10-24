@@ -3,6 +3,7 @@ package reconcile
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/cameronsjo/bosun/internal/log"
@@ -151,6 +152,11 @@ func (r *Reconciler) reloadProjectConfig() error {
 	changed = reloadField(&r.config.DeploySyncPaths, cloneSlice(reloaded.DeploySyncPaths), sliceSet) || changed
 	changed = reloadField(&r.config.DeploySyncExclude, cloneSlice(reloaded.DeploySyncExclude), sliceSet) || changed
 	changed = reloadField(&r.config.CriticalContainers, cloneSlice(reloaded.CriticalContainers), sliceSet) || changed
+	// compose_ignore is always set by a found config file (empty when the key
+	// is absent), so compare first to keep an unchanged list quiet.
+	if !slices.Equal(r.config.ComposeIgnore.Value, reloaded.ComposeIgnore) {
+		changed = reloadField(&r.config.ComposeIgnore, cloneSlice(reloaded.ComposeIgnore), sliceSet) || changed
+	}
 
 	// Validate reloaded drift_ignore rules before applying them -- GitOps reload
 	// is the normal path for changing drift_ignore in production, so an invalid
@@ -269,6 +275,9 @@ func applyTargetOverrides(r *Reconciler, t Target) bool {
 	}
 	if t.DeploySyncExclude != nil {
 		changed = reloadField(&r.config.DeploySyncExclude, cloneSlice(t.DeploySyncExclude), sliceSet) || changed
+	}
+	if t.ComposeIgnore != nil && !slices.Equal(r.config.ComposeIgnore.Value, t.ComposeIgnore) {
+		changed = reloadField(&r.config.ComposeIgnore, cloneSlice(t.ComposeIgnore), sliceSet) || changed
 	}
 	if t.ProjectName != "" && !r.config.TargetsFromEnv {
 		if r.setProjectName(t.ProjectName) {

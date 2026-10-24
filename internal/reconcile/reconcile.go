@@ -31,11 +31,15 @@ type ReloadedConfig struct {
 	DeploySyncPaths    []string
 	DeploySyncExclude  []string
 	CriticalContainers []string
-	DriftIgnore        []DriftIgnoreRule
-	OnFailure          *bool
-	OnSuccess          *bool
-	OnRecovery         *bool
-	RemoveOrphans      *bool
+	// ComposeIgnore is the root compose_ignore list. LoadReloadedConfig sets
+	// it to a non-nil empty list when the key is absent, so removing the key
+	// clears it on reload instead of keeping the old list.
+	ComposeIgnore []string
+	DriftIgnore   []DriftIgnoreRule
+	OnFailure     *bool
+	OnSuccess     *bool
+	OnRecovery    *bool
+	RemoveOrphans *bool
 	// ProjectName is the repo bosun.yaml's root-level project_name. When
 	// non-nil and non-empty, the default-target reconciler adopts it before
 	// the first deploy (#390); a lone `default` target's project_name wins
@@ -193,6 +197,12 @@ type Config struct {
 
 	// DriftIgnore is a list of rules for suppressing known drift noise.
 	DriftIgnore ConfigField[[]DriftIgnoreRule]
+
+	// ComposeIgnore lists exact names of entries in the live compose directory
+	// that bosun leaves alone on local deploys (#744): they do not force a
+	// full compose run and are never read as compose input. Names only; see
+	// ValidateComposeIgnore.
+	ComposeIgnore ConfigField[[]string]
 
 	// HealthGateTimeout is the maximum time to poll critical container health.
 	// Default 60s; non-positive disables the gate. Configurable via
@@ -2508,6 +2518,10 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 		if err != nil {
 			return nil, fmt.Errorf("failed to glob compose files: %w", err)
 		}
+		// compose_ignore entries are operator-owned: never inspected or run.
+		managed := liveManagedSet(appdata, result)
+		ignored := r.composeIgnoreSet(ctx, appdata, composeTarget, managed, prevManaged)
+		composeFiles = filterIgnoredComposeFiles(composeFiles, managed, ignored)
 		if len(composeFiles) == 0 {
 			ui.Warning("No compose files found in %s", composeTarget)
 		} else {
@@ -2515,7 +2529,7 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 			// --remove-orphans, so it must stay the FULL list: a subset there
 			// would remove every other file's services.
 			r.lastComposeFiles = composeFiles
-			sel := r.selectLocalComposeFiles(ctx, targets, appdata, composeTarget, composeFiles, hasTarget(targets, "compose"), result)
+			sel := r.selectLocalComposeFiles(ctx, targets, appdata, composeTarget, composeFiles, hasTarget(targets, "compose"), result, managed, ignored)
 			if len(sel.Files) == 0 {
 				ui.Info("  No compose file changed and every declared service is running; skipping compose up")
 			} else {
