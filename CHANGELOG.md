@@ -40,6 +40,20 @@ through an independent trusted channel before installing the entries. ssh-keysca
 does not authenticate a host. Deploys without a Bosun trust file still use strict
 OpenSSH default stores; container-only pins must be persisted.
 
+## [0.46.0](https://github.com/cameronsjo/bosun/compare/v0.45.4...v0.46.0) (2026-10-24)
+
+
+### Features
+
+* **reconcile:** run compose up only on compose files that changed ([51023be](https://github.com/cameronsjo/bosun/commit/51023be638f9ed9aea9b6180248af6fce007c7fc))
+
+
+### Bug Fixes
+
+* **reconcile:** catch host-deleted unmanaged compose entries ([cf60d02](https://github.com/cameronsjo/bosun/commit/cf60d02cb36c894c80544ce151f6f39cfa65ffe8)), closes [#726](https://github.com/cameronsjo/bosun/issues/726)
+* **reconcile:** fail closed on unmanaged compose-directory entries ([1097d55](https://github.com/cameronsjo/bosun/commit/1097d55fa23dfcbfe2e1b6f11546c01ff08ccc0a)), closes [#726](https://github.com/cameronsjo/bosun/issues/726)
+* **reconcile:** fail safe on untracked compose inputs (review round 1) ([6cd3ae6](https://github.com/cameronsjo/bosun/commit/6cd3ae64bc6b8361077acf7b1f95ce500511f4e2)), closes [#726](https://github.com/cameronsjo/bosun/issues/726)
+
 ## [0.45.4](https://github.com/cameronsjo/bosun/compare/v0.45.3...v0.45.4) (2026-10-24)
 
 
