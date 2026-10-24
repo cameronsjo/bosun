@@ -117,17 +117,26 @@ caller context is cancelled and the returned pipeline error wraps
 failure or repeated-failure alert-throttle slot. Bosun restores the prior
 attempt budget, keeps `needs_redeploy` set if deployment had already begun, and
 records a canonical `last_attempt_outcome` with outcome `interrupted`, the
-affected commit when known, and a timestamp. A later ordinary failure or
-success clears that marker.
+affected commit when known, and a timestamp. A later ordinary failure leaves
+that marker in place; a later clean run clears it.
 
 When `on_failure` is enabled, an interrupted run attempts exactly one existing
 deployment-failure alert with an interruption reason. Stage-specific failure
 and health-gate rollback companion alerts are suppressed for that cancellation.
 Delivery preserves reconcile correlation values, detaches caller cancellation,
 and is bounded to 30 seconds. A provider failure is logged without erasing the
-persisted outcome or consuming the alert throttle. Reconcile deadline expiry
-and a real stage error that races with shutdown remain ordinary counted
-failures.
+persisted outcome or consuming the alert throttle.
+
+When that interruption alert was delivered, the first later clean run sends one
+"Deployment Recovered" alert saying the deployment recovered after an interrupted
+deploy, so the operator is not left believing the deploy is still broken. The
+recovery follows the `on_recovery` setting (default: true). No recovery is sent
+when `on_failure` is off or every provider failed the interruption alert, because
+the operator never saw it. Delivery is at-least-once: a crash between sending and
+clearing may repeat the recovery.
+
+Reconcile deadline expiry and a real stage error that races with shutdown remain
+ordinary counted failures.
 
 ## Severity Levels
 

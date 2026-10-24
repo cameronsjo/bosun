@@ -31,6 +31,11 @@ func (a *recordingAlerter) SendDeployRecovery(_ context.Context, _, _ string, pr
 	return a.recoveryError
 }
 
+func (a *recordingAlerter) SendInterruptionRecovery(context.Context, string, string) error {
+	a.recoveries++
+	return a.recoveryError
+}
+
 func (a *recordingAlerter) SendUnhealthyContainers(context.Context, string, []string) error {
 	return nil
 }

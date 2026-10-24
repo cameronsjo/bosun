@@ -1546,22 +1546,23 @@ func TestCleanupStaging(t *testing.T) {
 
 // mockAlertSender implements AlertSender for testing.
 type mockAlertSender struct {
-	deploySuccessCalls     int
-	deployFailureCalls     int
-	deployRecoveryCalls    int
-	unhealthyContainerCall int
-	rollbackSuccessCalls   int
-	rollbackFailureCalls   int
-	lastErr                error
-	lastSuccessServices    []string
-	lastSuccessDuration    time.Duration
-	lastFailureServices    []string
-	lastFailureDuration    time.Duration
-	lastFailureReason      string
-	lastFailureContext     context.Context
-	lastFailureContextErr  error
-	lastRollbackContext    context.Context
-	lastRollbackContextErr error
+	deploySuccessCalls        int
+	deployFailureCalls        int
+	deployRecoveryCalls       int
+	interruptionRecoveryCalls int
+	unhealthyContainerCall    int
+	rollbackSuccessCalls      int
+	rollbackFailureCalls      int
+	lastErr                   error
+	lastSuccessServices       []string
+	lastSuccessDuration       time.Duration
+	lastFailureServices       []string
+	lastFailureDuration       time.Duration
+	lastFailureReason         string
+	lastFailureContext        context.Context
+	lastFailureContextErr     error
+	lastRollbackContext       context.Context
+	lastRollbackContextErr    error
 }
 
 func (m *mockAlertSender) SendDeploySuccess(_ context.Context, _, _ string, services []string, duration time.Duration) error {
@@ -1581,6 +1582,11 @@ func (m *mockAlertSender) SendDeployFailure(ctx context.Context, _, _, reason st
 }
 func (m *mockAlertSender) SendDeployRecovery(_ context.Context, _, _ string, _ int) error {
 	m.deployRecoveryCalls++
+	return m.lastErr
+}
+func (m *mockAlertSender) SendInterruptionRecovery(_ context.Context, _, _ string) error {
+	m.deployRecoveryCalls++
+	m.interruptionRecoveryCalls++
 	return m.lastErr
 }
 func (m *mockAlertSender) SendUnhealthyContainers(_ context.Context, _ string, _ []string) error {

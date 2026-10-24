@@ -140,7 +140,7 @@ func TestFinalizeAttempt_InterruptionRestoresBudgetAndPersistsOutcome(t *testing
 	}
 }
 
-func TestFinalizeAttempt_TerminalNonInterruptionClearsStaleOutcomeWithoutRestoringBudget(t *testing.T) {
+func TestFinalizeAttempt_TerminalNonInterruptionLeavesBudgetAndOnlyCleanRunClearsOutcome(t *testing.T) {
 	tests := []struct {
 		name string
 		ctx  context.Context
@@ -169,7 +169,11 @@ func TestFinalizeAttempt_TerminalNonInterruptionClearsStaleOutcomeWithoutRestori
 			saved := LoadState(stateFile)
 			assert.Equal(t, 3, saved.AttemptCount)
 			assert.Equal(t, 3, saved.LastAlertedAttempt)
-			assert.Nil(t, saved.LastAttemptOutcome)
+			if tt.err == nil {
+				assert.Nil(t, saved.LastAttemptOutcome)
+			} else {
+				assert.NotNil(t, saved.LastAttemptOutcome, "a failed run must keep the interruption debt")
+			}
 		})
 	}
 }
@@ -272,7 +276,7 @@ func TestRun_FinalizesStateAndAlertBeforeReleasingTargetLock(t *testing.T) {
 	competitor.releaseLock()
 }
 
-func TestRun_ConfigReloadFailureClearsInterruptedOutcomeWithoutChangingBudget(t *testing.T) {
+func TestRun_ConfigReloadFailureKeepsInterruptedOutcomeWithoutChangingBudget(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := &Config{
 		RepoDir: filepath.Join(tmp, "repo"), LockFile: privateLockPath(t, tmp, "reconcile.lock"),
@@ -298,7 +302,7 @@ func TestRun_ConfigReloadFailureClearsInterruptedOutcomeWithoutChangingBudget(t 
 	assert.Equal(t, "new", saved.LastAttemptedCommit)
 	assert.Equal(t, 2, saved.AttemptCount)
 	assert.Equal(t, 1, saved.LastAlertedAttempt)
-	assert.Nil(t, saved.LastAttemptOutcome)
+	assert.NotNil(t, saved.LastAttemptOutcome, "a failed run keeps the interruption debt")
 }
 
 func TestRun_PropagatedCancellationFinalizesAtPipelineBoundary(t *testing.T) {
@@ -500,7 +504,7 @@ func TestRun_PostSyncHookCancellationRemainsBestEffort(t *testing.T) {
 	assert.Zero(t, alerter.deployFailureCalls, "swallowed hook cancellation must not become a terminal interruption")
 }
 
-func TestRun_PanicAfterSnapshotKeepsFailureAccountingWhileClearingInterruptedOutcome(t *testing.T) {
+func TestRun_PanicAfterSnapshotKeepsFailureAccountingAndInterruptedOutcome(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := &Config{
 		RepoDir: filepath.Join(tmp, "repo"), LockFile: privateLockPath(t, tmp, "reconcile.lock"),
@@ -523,8 +527,8 @@ func TestRun_PanicAfterSnapshotKeepsFailureAccountingWhileClearingInterruptedOut
 	require.ErrorContains(t, err, "panicked")
 	saved := LoadState(cfg.StateFile)
 	assert.Equal(t, 3, saved.AttemptCount,
-		"existing post-tracking panic accounting must not be overwritten while clearing the prior outcome")
-	assert.Nil(t, saved.LastAttemptOutcome)
+		"existing post-tracking panic accounting must not be overwritten while keeping the prior outcome")
+	assert.NotNil(t, saved.LastAttemptOutcome, "a failed run keeps the interruption debt")
 }
 
 func canceledContext() context.Context {
@@ -538,4 +542,166 @@ func expiredDeadlineContext(t *testing.T) context.Context {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	t.Cleanup(cancel)
 	return ctx
+}
+
+func interruptedState(t *testing.T) (string, *DeployState) {
+	t.Helper()
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	state := &DeployState{
+		LastAttemptOutcome: &LastAttemptOutcome{Outcome: attemptOutcomeInterrupted, Commit: "old", Timestamp: time.Now(), Alerted: true},
+	}
+	require.NoError(t, SaveState(stateFile, state))
+	return stateFile, state
+}
+
+func TestFinalizeAttempt_CleanRunAfterInterruptionSendsOneRecovery(t *testing.T) {
+	stateFile, state := interruptedState(t)
+	alerter := &mockAlertSender{}
+	r := NewReconciler(&Config{StateFile: stateFile, OnFailure: true, OnRecovery: true}, WithAlerter(alerter))
+	r.lastCommit = "new"
+
+	r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(state, "new"))
+	assert.Equal(t, 1, alerter.deployRecoveryCalls)
+	assert.Nil(t, LoadState(stateFile).LastAttemptOutcome)
+
+	// Repeated successes owe nothing: the marker is gone.
+	for i := 0; i < 2; i++ {
+		r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(LoadState(stateFile), "new"))
+	}
+	assert.Equal(t, 1, alerter.deployRecoveryCalls)
+}
+
+func TestFinalizeAttempt_RecoveryGatedOnOnRecovery(t *testing.T) {
+	stateFile, state := interruptedState(t)
+	alerter := &mockAlertSender{}
+	r := NewReconciler(&Config{StateFile: stateFile, OnFailure: true, OnRecovery: false}, WithAlerter(alerter))
+
+	r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(state, "new"))
+	assert.Zero(t, alerter.deployRecoveryCalls)
+	assert.Nil(t, LoadState(stateFile).LastAttemptOutcome, "disabled gate must not bank a stale retraction")
+}
+
+func TestFinalizeAttempt_FailedRecoveryDeliveryKeepsMarkerForRetry(t *testing.T) {
+	stateFile, state := interruptedState(t)
+	alerter := &mockAlertSender{lastErr: errors.New("provider down")}
+	r := NewReconciler(&Config{StateFile: stateFile, OnRecovery: true}, WithAlerter(alerter))
+
+	r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(state, "new"))
+	require.NotNil(t, LoadState(stateFile).LastAttemptOutcome)
+	assert.Equal(t, 1, alerter.deployRecoveryCalls)
+
+	alerter.lastErr = nil
+	r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(LoadState(stateFile), "new"))
+	assert.Equal(t, 2, alerter.deployRecoveryCalls)
+	assert.Nil(t, LoadState(stateFile).LastAttemptOutcome)
+}
+
+func TestFinalizeAttempt_FailedRunAfterInterruptionSendsNoRecovery(t *testing.T) {
+	stateFile, state := interruptedState(t)
+	alerter := &mockAlertSender{}
+	r := NewReconciler(&Config{StateFile: stateFile, OnRecovery: true}, WithAlerter(alerter))
+
+	r.finalizeAttempt(context.Background(), errors.New("render failed"), snapshotAttemptBudget(state, "new"))
+	assert.Zero(t, alerter.deployRecoveryCalls)
+}
+
+func TestFinalizeAttempt_NoSecondRecoveryWhenRunAlreadyRetracted(t *testing.T) {
+	stateFile, state := interruptedState(t)
+	state.AttemptCount, state.LastAlertedAttempt = 1, 1
+	alerter := &mockAlertSender{}
+	r := NewReconciler(&Config{StateFile: stateFile, OnRecovery: true}, WithAlerter(alerter))
+
+	// Both debts outstanding: the in-run retraction covers the interruption too.
+	require.True(t, r.retractFailureAlert(context.Background(), state))
+	r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(state, "new"))
+	assert.Equal(t, 1, alerter.deployRecoveryCalls)
+}
+
+func TestFinalizeAttempt_InterruptionThenFailedRunThenCleanRunSendsOneRecovery(t *testing.T) {
+	stateFile, state := interruptedState(t)
+	alerter := &mockAlertSender{}
+	r := NewReconciler(&Config{StateFile: stateFile, OnRecovery: true}, WithAlerter(alerter))
+
+	r.finalizeAttempt(context.Background(), errors.New("render failed"), snapshotAttemptBudget(state, "new"))
+	assert.Zero(t, alerter.deployRecoveryCalls)
+	require.NotNil(t, LoadState(stateFile).LastAttemptOutcome)
+
+	r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(LoadState(stateFile), "new"))
+	assert.Equal(t, 1, alerter.deployRecoveryCalls)
+	assert.Nil(t, LoadState(stateFile).LastAttemptOutcome)
+
+	r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(LoadState(stateFile), "new"))
+	assert.Equal(t, 1, alerter.deployRecoveryCalls)
+}
+
+func TestFinalizeAttempt_InterruptionAlertDeliveryDecidesRecoveryDebt(t *testing.T) {
+	tests := []struct {
+		name        string
+		onFailure   bool
+		providerErr error
+		wantAlerted bool
+	}{
+		{name: "delivered alert owes a recovery", onFailure: true, wantAlerted: true},
+		{name: "on_failure off sent no alert", onFailure: false},
+		{name: "every provider failed", onFailure: true, providerErr: errors.New("provider down")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stateFile := filepath.Join(t.TempDir(), "state.json")
+			state := &DeployState{}
+			snapshot := snapshotAttemptBudget(state, "new")
+			alerter := &mockAlertSender{lastErr: tt.providerErr}
+			r := NewReconciler(&Config{StateFile: stateFile, OnFailure: tt.onFailure, OnRecovery: true}, WithAlerter(alerter))
+			r.lastCommit = "new"
+
+			r.finalizeAttempt(canceledContext(), context.Canceled, snapshot)
+			saved := LoadState(stateFile)
+			require.NotNil(t, saved.LastAttemptOutcome)
+			assert.Equal(t, tt.wantAlerted, saved.LastAttemptOutcome.Alerted)
+
+			alerter.lastErr = nil
+			r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(saved, "new"))
+			want := 0
+			if tt.wantAlerted {
+				want = 1
+			}
+			assert.Equal(t, want, alerter.interruptionRecoveryCalls)
+			assert.Nil(t, LoadState(stateFile).LastAttemptOutcome)
+		})
+	}
+}
+
+func TestRun_InterruptionThenCleanRunSendsExactlyOneRecovery(t *testing.T) {
+	f := newRecoverySkipFixture(t, &mockGitWithDiff{}, &DeployState{
+		SchemaVersion:      2,
+		LastDeployedCommit: "aaa111",
+	}, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	f.reconciler.git = callbackGitOps{sync: func(context.Context) (bool, string, string, error) {
+		cancel()
+		return false, "", "aaa111", context.Canceled
+	}}
+	require.ErrorIs(t, f.reconciler.Run(ctx), context.Canceled)
+	require.Equal(t, 1, f.alerter.deployFailureCalls)
+	require.True(t, LoadState(f.stateFile).LastAttemptOutcome.Alerted)
+
+	f.reconciler.git = &mockGitWithDiff{syncChanged: false, syncBefore: "aaa111", syncAfter: "aaa111"}
+	for i := 0; i < 3; i++ {
+		require.NoError(t, f.reconciler.Run(context.Background()))
+	}
+	assert.Equal(t, 1, f.alerter.interruptionRecoveryCalls)
+	assert.Equal(t, 1, f.alerter.deployRecoveryCalls)
+	assert.Nil(t, LoadState(f.stateFile).LastAttemptOutcome)
+}
+
+func TestFinalizeAttempt_DeliveredInterruptionWithNoAlerterClearsMarkerWithoutPanic(t *testing.T) {
+	stateFile, state := interruptedState(t)
+	r := NewReconciler(&Config{StateFile: stateFile, OnFailure: true, OnRecovery: true})
+
+	assert.NotPanics(t, func() {
+		r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(state, "new"))
+	})
+	assert.Nil(t, LoadState(stateFile).LastAttemptOutcome)
 }

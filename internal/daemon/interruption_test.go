@@ -65,6 +65,9 @@ func (a *cycleAlertSender) SendDeployFailure(context.Context, string, string, st
 }
 
 func (*cycleAlertSender) SendDeployRecovery(context.Context, string, string, int) error { return nil }
+func (*cycleAlertSender) SendInterruptionRecovery(context.Context, string, string) error {
+	return nil
+}
 func (*cycleAlertSender) SendUnhealthyContainers(context.Context, string, []string) error {
 	return nil
 }
