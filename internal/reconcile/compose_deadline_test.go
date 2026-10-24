@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -139,7 +140,7 @@ func TestComposeUpIsolated_ShutdownCancelsDuringPausedCycle(t *testing.T) {
 // a 10m cap, and a 5m rollback grace. a.yml finishes; the cap fires during
 // b.yml, which fails; c.yml is reached after the cap and is neither started nor
 // rolled back (its containers were never touched), so the orphan pass is
-// skipped (#737). b.yml's rollback runs under the shared grace: it succeeds
+// skipped (#737). b.yml's rollback must end by cap + grace: it succeeds
 // when cleanup fits in the grace, and the grace cuts it off when it does not,
 // so the cycle ends within cap + grace.
 func TestRun_TotalCapEndsALongComposePhase(t *testing.T) {
@@ -233,4 +234,115 @@ func TestRun_TotalCapEndsALongComposePhase(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRun_CleanupStartedBeforeTheCapEndsByCapPlusGrace is the pre-cap window:
+// b.yml fails on its own at 9m, one minute before the 10m cap, and its backup
+// extraction then wedges. Cleanup must still end at cap + grace (15m), not
+// after a fresh ComposeUpTimeout (19m). c.yml is reached after the cap and is
+// neither started nor rolled back.
+func TestRun_CleanupStartedBeforeTheCapEndsByCapPlusGrace(t *testing.T) {
+	const fileC = "services:\n  svc-c:\n    image: alpine:3\n"
+	prior := steadyPrior()
+	prior.NeedsRedeploy = true
+	prior.DeployedFiles = append(prior.DeployedFiles, "compose/c.yml")
+	prior.DeclaredServices = append(prior.DeclaredServices, DeclaredService{Name: "svc-c"})
+	r, calls, dockerLog, _ := changedOnlyHarnessWith(t, harnessOpts{
+		liveB:     "services:\n  svc-b:\n    image: alpine:OLD\n",
+		prior:     prior,
+		running:   []string{"svc-a", "svc-b", "svc-c"},
+		repoFiles: map[string]string{"compose/c.yml": fileC},
+		liveFiles: map[string]string{"compose/c.yml": fileC},
+	})
+	installRunDockerShim(t, dockerLog, 0)
+	r.deploy.ComposeUpTimeout = 10 * time.Minute
+
+	start := time.Now()
+	clock := deadlinetest.NewFakeClock(start)
+	cycleCtx, cancel := deadline.WithCycleBudget(context.Background(), 5*time.Minute, 10*time.Minute, 5*time.Minute, clock)
+	defer cancel()
+
+	r.deploy.composeUpFn = func(_ context.Context, files []string) error {
+		*calls = append(*calls, files)
+		if filepath.Base(files[0]) == "a.yml" {
+			clock.Advance(6 * time.Minute)
+			return nil
+		}
+		clock.Advance(3 * time.Minute) // b.yml fails on its own at 9m
+		return fmt.Errorf("image pull failed")
+	}
+	var cleanupErr error
+	var cleanupEnded time.Duration
+	r.deploy.extractBackupFn = func(ctx context.Context, _ string) (string, func(), error) {
+		require.NoError(t, ctx.Err())
+		require.False(t, deadline.CapExpired(cycleCtx), "precondition: cleanup starts before the cap")
+		clock.Advance(6*time.Minute - time.Second) // wedged: 14m59s
+		require.NoError(t, ctx.Err(), "cleanup may run until cap + grace")
+		clock.Advance(time.Second)
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Second):
+			t.Error("cleanup that started before the cap was not ended at cap + grace")
+		}
+		cleanupErr = ctx.Err()
+		cleanupEnded = clock.Now().Sub(start)
+		return "", nil, fmt.Errorf("extraction cut off: %w", cleanupErr)
+	}
+
+	err := r.Run(cycleCtx)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, cleanupErr, context.DeadlineExceeded)
+	assert.Equal(t, 15*time.Minute, cleanupEnded, "cleanup ended at cap + grace")
+	assert.Equal(t, []string{"a.yml", "b.yml"}, upFileBases(*calls), "c.yml is reached after the cap and not started")
+	log := readDockerLog(t, dockerLog)
+	assert.NotContains(t, log, " up ", "no rollback and no orphan pass run")
+	assert.Contains(t, err.Error(), "b.yml, c.yml")
+}
+
+// TestRollbackFromBackupSet_HealthGateRollbackEndsByCapPlusGrace: the
+// health-gate rollback after the cap fires uses the same bound. docker is
+// wedged (the rollback's compose up never returns on its own); the rollback
+// must still be running at cap + grace - 1s and must end at cap + grace.
+func TestRollbackFromBackupSet_HealthGateRollbackEndsByCapPlusGrace(t *testing.T) {
+	base := evalSymlinks(t, t.TempDir())
+	composeFile := writeLive(t, base, "compose/core.yml", "services: {}\n")
+	backupPath := filepath.Join(base, "backup")
+	writeTestBackupArchive(t, backupPath, composeFile)
+
+	shimDir := t.TempDir()
+	marker := filepath.Join(shimDir, "up-started")
+	shim := "#!/bin/sh\ncase \"$*\" in *\" up \"*) : > '" + marker + "'; exec sleep 30 ;; esac\nexit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(shimDir, "docker"), []byte(shim), 0o755))
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	clock := deadlinetest.NewFakeClock(time.Now())
+	cycleCtx, cancel := deadline.WithCycleBudget(context.Background(), 5*time.Minute, 10*time.Minute, 5*time.Minute, clock)
+	defer cancel()
+	clock.Advance(12 * time.Minute) // the cap fired at 10m, during the health gate
+	require.True(t, deadline.CapExpired(cycleCtx))
+
+	d := &DeployOps{ProjectName: "bosun", ComposeUpTimeout: 10 * time.Minute}
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		done <- d.RollbackFromBackupSet(cycleCtx, RollbackSet{Files: []string{composeFile}, ComposeFiles: []string{composeFile}, Root: base}, backupPath)
+	}()
+
+	require.Eventually(t, func() bool { _, err := os.Stat(marker); return err == nil },
+		5*time.Second, 10*time.Millisecond, "precondition: the rollback's compose up started")
+	clock.Advance(3*time.Minute - time.Second) // 14m59s
+	select {
+	case err := <-done:
+		t.Fatalf("rollback ended before cap + grace: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	clock.Advance(time.Second) // cap + grace
+	select {
+	case err := <-done:
+		require.Error(t, err, "the wedged rollback was cut off")
+	case <-time.After(15 * time.Second):
+		t.Fatal("health-gate rollback was not bounded by cap + grace")
+	}
+	assert.Less(t, time.Since(start), 20*time.Second)
 }

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/cameronsjo/bosun/internal/deadline"
 	"github.com/cameronsjo/bosun/internal/fileutil"
 	"github.com/cameronsjo/bosun/internal/log"
 )
@@ -68,12 +69,11 @@ func (d *DeployOps) RollbackFromBackupSet(ctx context.Context, set RollbackSet, 
 		return fmt.Errorf("%w: no backup available for rollback", errRollbackNotAttempted)
 	}
 
-	// Independent timeout so the restore runs even if ctx was cancelled by the
-	// gate failure; the enriched logger flows reconcile_id into rollback logs.
-	rollbackCtx, cancel := context.WithTimeout(
-		log.WithContext(context.Background(), log.Ctx(ctx)),
-		d.composeUpTimeout(),
-	)
+	// Independent of ctx's cancellation so the restore runs even if ctx was
+	// cancelled by the gate failure, but bounded by the cycle cap plus the
+	// rollback grace as well as ComposeUpTimeout (#727). ctx's values (the
+	// enriched logger with reconcile_id) flow into rollback logs.
+	rollbackCtx, cancel := deadline.CleanupContext(ctx, d.composeUpTimeout())
 	defer cancel()
 
 	tarFile := filepath.Join(backupPath, "configs.tar.gz")

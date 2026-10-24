@@ -477,7 +477,7 @@ flowchart TD
 | Docker compose up (per compose file) | 10 minutes (configurable via `BOSUN_COMPOSE_UP_TIMEOUT`) | `DefaultComposeUpTimeout` |
 | Reconcile cycle budget (daemon; paused during compose up) | 10 minutes (configurable via `BOSUN_RECONCILE_TIMEOUT`) | `Config.ReconcileTimeout` |
 | Reconcile cycle hard cap (daemon; compose up included) | 30 minutes (configurable via `BOSUN_RECONCILE_MAX_TIMEOUT`) | `DefaultReconcileMaxTimeout` |
-| Rollback grace after the cap fires (daemon; total, not per file) | 5 minutes (configurable via `BOSUN_RECONCILE_ROLLBACK_GRACE`) | `DefaultReconcileRollbackGrace` |
+| Rollback grace: extraction and rollbacks end by the cap's deadline plus this (daemon) | 5 minutes (configurable via `BOSUN_RECONCILE_ROLLBACK_GRACE`) | `DefaultReconcileRollbackGrace` |
 | Backup creation/verification and post-success retention verification/cleanup (separate deadlines) | 5 minutes each (configurable via `BOSUN_BACKUP_TIMEOUT`) | `DefaultBackupTimeout` |
 | Post-deploy health check | 60 seconds (configurable via `BOSUN_HEALTH_CHECK_TIMEOUT`) | `HealthCheckTimeout` |
 | Health check poll interval | 5 seconds (configurable via `BOSUN_HEALTH_CHECK_INTERVAL`) | `HealthCheckInterval` |

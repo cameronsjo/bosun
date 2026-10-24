@@ -212,16 +212,13 @@ func (d *DeployOps) composeUpIsolated(ctx context.Context, composeFiles []string
 	// configs.tar.gz (absolute paths inside), not loose files under backupPath,
 	// so rollback must consult the extracted tree (#332/#335). Extraction is
 	// skipped entirely on the happy path (no failures).
-	// cleanupContext bounds one extraction or rollback. It normally runs on its
-	// own ComposeUpTimeout, detached from ctx, so a canceled deploy is still
-	// rolled back. Once the cycle's hard cap has fired, it also ends with the
-	// cycle's shared rollback grace, so cleanup cannot run the cycle on for a
-	// full ComposeUpTimeout per failed file (#727).
+	// cleanupContext bounds one extraction or rollback: detached from ctx's
+	// cancellation, so a canceled deploy is still rolled back, and ending after
+	// ComposeUpTimeout or at the cycle cap's deadline plus the rollback grace,
+	// whichever is first, so cleanup cannot run the cycle past cap + grace
+	// (#727).
 	cleanupContext := func() (context.Context, context.CancelFunc) {
-		if grace, ok := deadline.CapGrace(ctx); ok {
-			return context.WithTimeout(grace, d.composeUpTimeout())
-		}
-		return context.WithTimeout(log.WithContext(context.Background(), log.Ctx(ctx)), d.composeUpTimeout())
+		return deadline.CleanupContext(ctx, d.composeUpTimeout())
 	}
 
 	var backupRoot string

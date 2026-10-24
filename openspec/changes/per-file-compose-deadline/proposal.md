@@ -30,16 +30,21 @@ the files together needed more than one cycle's budget.
   is three times the cycle budget: 10 minutes for the steps outside compose up
   plus about 20 minutes of compose up, room for a full run in which a few files
   pull large images.
-- When the cap fires, the file running at that moment fails. Its backup
-  extraction and rollback run under `ReconcileRollbackGrace`
-  (`BOSUN_RECONCILE_ROLLBACK_GRACE`, default 5 minutes), measured from the
-  cap's deadline and shared by every file, instead of a fresh
-  `ComposeUpTimeout` each. Later files are neither started nor rolled back:
-  their containers were never touched, and they count as unrecovered, so the
-  orphan pass is skipped and those containers keep running. The worst case is
+- When the cap fires, the file running at that moment fails. Later files are
+  neither started nor rolled back: their containers were never touched, and
+  they count as unrecovered, so the orphan pass is skipped and those
+  containers keep running.
+- Every backup extraction and rollback in the cycle (isolated compose up's
+  per-file rollback and the health-gate rollback, `RollbackFromBackupSet`)
+  runs detached from cancellation and ends at the earlier of its start plus
+  `ComposeUpTimeout` and the cap's deadline plus `ReconcileRollbackGrace`
+  (`BOSUN_RECONCILE_ROLLBACK_GRACE`, default 5 minutes), whether it started
+  before or after the cap fired. The cap never pauses, so its deadline is
+  fixed at cycle start (`deadline.CleanupDeadline`). The worst case is
   therefore `ReconcileMaxTimeout + ReconcileRollbackGrace` (35 minutes by
-  default). Shutdown is not a cap: files it interrupts are still rolled back
-  under their own timeout, as today.
+  default). Shutdown is not a cap: files it interrupts are still rolled back,
+  within the same bound. (Failure-alert delivery afterwards keeps its existing
+  30-second timeout.)
 - Caller cancellation (daemon shutdown) still stops the compose phase at once;
   only the cycle deadline pauses.
 - A file whose `up` hits its own deadline is a failed file, as today: it is

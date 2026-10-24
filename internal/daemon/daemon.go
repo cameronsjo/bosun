@@ -120,8 +120,9 @@ type Config struct {
 	// time, compose up included (default: 30m). Values below ReconcileTimeout
 	// are raised to it.
 	ReconcileMaxTimeout time.Duration
-	// ReconcileRollbackGrace is the total time allowed after the cap fires for
-	// rolling back the compose files it cut off (default: 5m). A cycle's worst
+	// ReconcileRollbackGrace extends the cap for cleanup only (default: 5m):
+	// every backup extraction and rollback in a cycle, started before or after
+	// the cap fires, ends by the cap's deadline plus this grace. A cycle's worst
 	// case is ReconcileMaxTimeout + ReconcileRollbackGrace.
 	ReconcileRollbackGrace time.Duration
 	ShutdownTimeout        time.Duration // Max time for graceful shutdown (default: 30s)
@@ -157,15 +158,14 @@ const DefaultDriftInterval = 5 * time.Minute
 // It is three times the default cycle budget: 10m for the steps outside compose
 // up plus about 20m of compose up, enough for a full run in which a few files
 // pull large images (a 17-file full run exceeded a shared 10m budget in #727).
-// After it fires, cleanup of cut-off files gets DefaultReconcileRollbackGrace,
-// so a wedged cycle ends within 35 minutes.
+// Cleanup may run DefaultReconcileRollbackGrace past it, so a wedged cycle
+// ends within 35 minutes.
 const DefaultReconcileMaxTimeout = 30 * time.Minute
 
-// DefaultReconcileRollbackGrace is the default total time, after the cycle cap
-// fires, for extracting the backup and rolling back the compose files the cap
-// cut off. Rollbacks re-apply known-good files whose images are already
-// present, so they usually take seconds; 5m leaves room for several while still
-// ending a wedged cycle within 35 minutes.
+// DefaultReconcileRollbackGrace is how far past the cycle cap's deadline
+// backup extraction and rollbacks may run. Rollbacks re-apply known-good files
+// whose images are already present, so they usually take seconds; 5m leaves
+// room for several while still ending a wedged cycle within 35 minutes.
 const DefaultReconcileRollbackGrace = 5 * time.Minute
 
 func DefaultConfig() *Config {
@@ -1131,8 +1131,8 @@ func (d *Daemon) executeReconcileWithMode(ctx context.Context, source string, fo
 	// compose file with its own ComposeUpTimeout instead, so the files no longer
 	// share one budget that trailing files run out of (#727). ReconcileMaxTimeout
 	// is a hard cap that keeps running while the budget is paused, so a long run
-	// of slow files still ends; ReconcileRollbackGrace bounds the rollbacks of
-	// the files it cut off, so the worst case is the cap plus the grace.
+	// of slow files still ends. Every extraction and rollback ends by the cap's
+	// deadline plus ReconcileRollbackGrace, so the worst case is cap + grace.
 	ctx, cancel := deadline.WithCycleBudget(ctx, d.config.ReconcileTimeout, d.config.ReconcileMaxTimeout, d.config.ReconcileRollbackGrace, deadline.RealClock)
 	defer cancel()
 

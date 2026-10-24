@@ -185,40 +185,72 @@ func TestTimeoutClock_IsNotPausable(t *testing.T) {
 	assert.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
 }
 
-func TestCapGrace_SharedAndMeasuredFromTheCap(t *testing.T) {
+func TestCleanupContext_BoundedByCapPlusGraceBeforeTheCapFires(t *testing.T) {
 	clock := deadlinetest.NewFakeClock(epoch)
 	ctx, cancel := WithCycleBudget(context.Background(), time.Minute, 10*time.Minute, 5*time.Minute, clock)
 	defer cancel()
 
-	_, ok := CapGrace(ctx)
-	assert.False(t, ok, "no grace before the cap fires")
-	assert.False(t, CapExpired(ctx))
+	dl, ok := CleanupDeadline(ctx)
+	require.True(t, ok)
+	assert.Equal(t, epoch.Add(15*time.Minute), dl, "fixed at cycle start: cap deadline + grace")
 
 	resume := Pause(ctx)
 	defer resume()
-	clock.Advance(12 * time.Minute) // the cap fired at 10m; this step overran it by 2m
-	require.True(t, CapExpired(ctx))
+	clock.Advance(9 * time.Minute) // cleanup starts 1m before the cap fires
+	require.False(t, CapExpired(ctx))
 	type childKey struct{}
-	child := context.WithValue(ctx, childKey{}, 1)
-	assert.True(t, CapExpired(child), "readable through derived contexts")
-
-	g1, ok := CapGrace(child)
+	cleanup, cleanupCancel := CleanupContext(context.WithValue(ctx, childKey{}, 1), 10*time.Minute)
+	defer cleanupCancel()
+	cdl, ok := cleanup.Deadline()
 	require.True(t, ok)
-	g2, _ := CapGrace(ctx)
-	assert.Same(t, g1, g2, "one grace for the whole cycle, not per caller")
-	dl, ok := g1.Deadline()
-	require.True(t, ok)
-	assert.Equal(t, epoch.Add(15*time.Minute), dl, "grace runs from the cap's deadline, not from when cleanup asks")
-	require.NoError(t, g1.Err(), "the grace context ignores the ended cycle")
+	assert.Equal(t, epoch.Add(15*time.Minute), cdl, "min(now + timeout, cap + grace)")
+	assert.Equal(t, 1, cleanup.Value(childKey{}), "values flow into cleanup")
 
-	clock.Advance(3 * time.Minute)
-	assert.ErrorIs(t, g1.Err(), context.DeadlineExceeded)
+	clock.Advance(time.Minute) // the cap fires; cleanup is detached from it
+	require.True(t, CapExpired(ctx))
+	require.NoError(t, cleanup.Err(), "cleanup outlives the cap until the grace ends")
+	clock.Advance(5*time.Minute - time.Second)
+	require.NoError(t, cleanup.Err())
+	clock.Advance(time.Second)
+	assert.ErrorIs(t, cleanup.Err(), context.DeadlineExceeded, "cleanup ends at cap + grace")
 }
 
-func TestCapGrace_NoCycleCap(t *testing.T) {
-	ctx, cancel := WithTimeoutClock(context.Background(), time.Minute, deadlinetest.NewFakeClock(epoch))
+func TestCleanupContext_OwnTimeoutWhenEarlier(t *testing.T) {
+	clock := deadlinetest.NewFakeClock(epoch)
+	ctx, cancel := WithCycleBudget(context.Background(), time.Minute, 30*time.Minute, 5*time.Minute, clock)
 	defer cancel()
-	_, ok := CapGrace(ctx)
+	cleanup, cleanupCancel := CleanupContext(ctx, 2*time.Minute)
+	defer cleanupCancel()
+	clock.Advance(2 * time.Minute)
+	assert.ErrorIs(t, cleanup.Err(), context.DeadlineExceeded)
+}
+
+func TestCleanupContext_DetachedFromShutdown(t *testing.T) {
+	shutdownCtx, shutdown := context.WithCancel(context.Background())
+	ctx, cancel := WithCycleBudget(shutdownCtx, time.Minute, 10*time.Minute, 5*time.Minute, deadlinetest.NewFakeClock(epoch))
+	defer cancel()
+	cleanup, cleanupCancel := CleanupContext(ctx, time.Minute)
+	defer cleanupCancel()
+	shutdown()
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+	assert.NoError(t, cleanup.Err(), "a canceled deploy is still cleaned up")
+}
+
+func TestCleanupContext_NoCycleCap(t *testing.T) {
+	_, ok := CleanupDeadline(context.Background())
 	assert.False(t, ok)
+	parent, cancelParent := context.WithCancel(context.Background())
+	cleanup, cleanupCancel := CleanupContext(parent, time.Minute)
+	defer cleanupCancel()
+	cancelParent()
+	assert.NoError(t, cleanup.Err(), "detached from the parent's cancellation")
+	_, hasDeadline := cleanup.Deadline()
+	assert.True(t, hasDeadline)
 	assert.False(t, CapExpired(context.Background()))
+}
+
+func TestCycleBudget_ZeroCapStillReportsExpired(t *testing.T) {
+	ctx, cancel := WithCycleBudget(context.Background(), 0, 0, time.Minute, deadlinetest.NewFakeClock(epoch))
+	defer cancel()
+	assert.True(t, CapExpired(ctx), "a zero cap is expired from the start")
 }

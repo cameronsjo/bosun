@@ -24,3 +24,11 @@
   tests: rollback fits in the grace and succeeds; the grace cuts a slow cleanup
   off; never-started files are not rolled back; elapsed time stays within
   cap + grace. Staged breaks (no skip; no grace) turn them red.
+- [x] 9. Review round 2: every extraction and rollback (per-file and the
+  health-gate `RollbackFromBackupSet`) uses `deadline.CleanupContext`:
+  detached, ending at min(start + `ComposeUpTimeout`, cap deadline + grace),
+  whether started before or after the cap. Fake-clock tests: cleanup started at
+  cap − 1m with a wedged extraction ends at cap + grace; a health-gate rollback
+  with wedged docker ends at cap + grace; shutdown still rolls back. Staged
+  breaks (compose cleanup unbounded; health-gate rollback unbounded; cleanup not
+  detached) each turn tests red.

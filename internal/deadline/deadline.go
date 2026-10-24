@@ -52,17 +52,19 @@ type timeoutCtx struct {
 	clock       Clock
 	// pausable is false for a hard cap: Pause skips it and its clock always runs.
 	pausable bool
-	// grace is set on a cycle cap (WithCycleBudget): the total time allowed
-	// after the cap fires for cleanup of work the cap cut off (CapGrace).
+	// grace is set on a cycle cap (WithCycleBudget): cleanup may run until the
+	// cap's deadline plus grace (CleanupContext).
 	grace    time.Duration
 	cycleCap bool
+	// capDeadline is a cycle cap's fixed deadline; a cap never pauses, so it
+	// is known when the cycle starts.
+	capDeadline time.Time
 
 	mu        sync.Mutex
-	expiredAt time.Time       // the deadline this timeout expired at (zero if it did not)
-	graceCtx  context.Context // memoized CapGrace context
-	err       error           // set when this context ended itself (expiry or cancel)
-	remaining time.Duration   // budget left when the clock last stopped
-	runningAt time.Time       // when the clock last started (valid while running)
+	expiredAt time.Time     // the deadline this timeout expired at (zero if it did not)
+	err       error         // set when this context ended itself (expiry or cancel)
+	remaining time.Duration // budget left when the clock last stopped
+	runningAt time.Time     // when the clock last started (valid while running)
 	pauses    int
 	stopTimer func() bool
 }
@@ -88,16 +90,20 @@ func WithTimeoutClock(parent context.Context, d time.Duration, clock Clock) (con
 // pausable cycle budget: phases with their own per-step bounds pause it.
 // maxTimeout is a hard cap on the whole cycle that keeps running while the
 // budget is paused, so a long run of slow steps still ends. A maxTimeout below
-// timeout is raised to timeout. grace is the total time, measured from when
-// the cap fires, that cleanup of cut-off work may take (CapGrace), so the
-// cycle's worst case is maxTimeout + grace.
+// timeout is raised to timeout. grace extends the cap for cleanup only
+// (CleanupContext): backup extraction and rollbacks end by the cap's deadline
+// plus grace, so the deploy work of a cycle ends within maxTimeout + grace.
 func WithCycleBudget(parent context.Context, timeout, maxTimeout, grace time.Duration, clock Clock) (context.Context, context.CancelFunc) {
 	if maxTimeout < timeout {
 		maxTimeout = timeout
 	}
 	capCtx, capCancel := newTimeout(parent, maxTimeout, clock, false)
-	capCtx.(*timeoutCtx).cycleCap = true
-	capCtx.(*timeoutCtx).grace = grace
+	capT := capCtx.(*timeoutCtx)
+	capT.mu.Lock()
+	capT.cycleCap = true
+	capT.grace = grace
+	capT.capDeadline = capT.runningAt.Add(maxTimeout)
+	capT.mu.Unlock()
 	ctx, cancel := WithPausableTimeoutClock(capCtx, timeout, clock)
 	return ctx, func() {
 		cancel()
@@ -135,11 +141,11 @@ func (c *timeoutCtx) startLocked() {
 	if c.inner.Err() != nil {
 		return
 	}
+	c.runningAt = c.clock.Now()
 	if c.remaining <= 0 {
 		c.endLocked(context.DeadlineExceeded)
 		return
 	}
-	c.runningAt = c.clock.Now()
 	c.stopTimer = c.clock.AfterFunc(c.remaining, func() { c.end(context.DeadlineExceeded) })
 }
 
@@ -269,27 +275,33 @@ func CapExpired(ctx context.Context) bool {
 	return !c.expiredAt.IsZero()
 }
 
-// CapGrace returns the context for cleaning up work the cycle cap cut off
-// (rollbacks, backup extraction) once the cap has fired, and true. It ends at
-// the cap's deadline plus the cycle's grace, on the cycle's clock, and is shared
-// by every caller in the cycle, so the grace is a total, not per step. It keeps
-// ctx's values but not its cancellation. Before the cap fires, or with no
-// cycle cap in ctx, it returns nil and false.
-func CapGrace(ctx context.Context) (context.Context, bool) {
+// CleanupDeadline returns the latest time cleanup in the cycle ctx belongs to
+// may run: the cycle cap's deadline plus its grace (WithCycleBudget). With no
+// cycle cap in ctx it returns false.
+func CleanupDeadline(ctx context.Context) (time.Time, bool) {
 	c, ok := ctx.Value(cycleCapKey{}).(*timeoutCtx)
 	if !ok {
-		return nil, false
+		return time.Time{}, false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.expiredAt.IsZero() {
-		return nil, false
+	return c.capDeadline.Add(c.grace), true
+}
+
+// CleanupContext returns a context for cleanup work (backup extraction,
+// rollbacks): it keeps ctx's values but not its cancellation, so a canceled
+// deploy is still rolled back, and it ends after timeout or at
+// CleanupDeadline, whichever comes first, whether or not the cap has fired
+// yet. With no cycle cap in ctx it ends after timeout.
+func CleanupContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	detached := context.WithoutCancel(ctx)
+	c, ok := ctx.Value(cycleCapKey{}).(*timeoutCtx)
+	if !ok {
+		return context.WithTimeout(detached, timeout)
 	}
-	if c.graceCtx == nil {
-		remaining := c.expiredAt.Add(c.grace).Sub(c.clock.Now())
-		// The context ends on its own when the grace runs out; that bounds the
-		// lifetime of its timer, so no cancel function is kept.
-		c.graceCtx, _ = newTimeout(context.WithoutCancel(ctx), remaining, c.clock, false)
-	}
-	return c.graceCtx, true
+	c.mu.Lock()
+	limit := c.capDeadline.Add(c.grace).Sub(c.clock.Now())
+	clock := c.clock
+	c.mu.Unlock()
+	return newTimeout(detached, min(timeout, limit), clock, false)
 }
