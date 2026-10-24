@@ -302,11 +302,12 @@ critical_containers:
 ```yaml
 pre_deploy_hooks:
   - name: no-unresolved-templates
-    command: ["sh", "-c", "! grep -rlF '<no value>' ."]
+    command: ["sh", "-c", "! grep -rlF --exclude=bosun.yaml --exclude=bosun.yml --exclude-dir=.bosun '<no value>' ."]
     timeout: 30s
 ```
 
 - **Blocking:** a hook that exits non-zero, cannot start, or runs past its `timeout` (default 2m) aborts the deploy. Nothing is synced, compose up and the orphan pass do not run, `LastDeployedCommit` and `NeedsRedeploy` stay as they were, the attempt counts toward the circuit breaker, and a failure alert names the hook. Later hooks do not run. The reconcile cycle deadline also stops a running hook; timeouts always block.
+- **Self-match:** the staging tree is a copy of the render source, so when the project config sits inside it (the usual case with `BOSUN_INFRA_DIR=.`), `bosun.yaml` (or `bosun.yml`, `.bosun/`) is in staging too. A search for a literal pattern must exclude the config that contains that pattern, or the hook finds its own command and blocks every deploy. The example above does this.
 - **Command:** `command` is the exact argv. It runs without a shell and is never templated, so repository content cannot change what runs. Wrap in `sh -c` yourself when you need shell syntax. A relative `command[0]` with a `/` resolves against the staging tree; a bare name is looked up on `PATH`.
 - **Trust:** `bosun.yaml` is read from the tracked branch on every reconcile, so **push access to that branch is code execution on the host running bosun, with bosun's privileges.** A hook can read everything bosun can: the SOPS age key (which decrypts every secret encrypted to it, not only one target's), the Git deploy key and SSH keys for every target, the Git token, alert credentials, the webhook secret, and bosun's own environment (`/proc/<bosun pid>/environ`). Where bosun can reach the docker socket, that is root-equivalent on the bosun host. For a local target this adds little, because compose files already run through that socket. For remote-only targets it is broader than what a branch writer had before: compose up runs on the remote host, but a hook runs on the bosun host and gets the keys to every target. Give push access to the tracked branch only to people you would give a shell on the bosun host.
 - **Environment:** only `PATH`, `BOSUN_STAGING_DIR`, `BOSUN_TARGET`, and `BOSUN_COMMIT` are set. This keeps a well-meaning tool that prints its environment from leaking bosun's credentials into logs. It is hygiene, not isolation: per the Trust bullet, a hook can still read those credentials. The staging tree holds decrypted secrets, so the hook can read them too.
@@ -314,7 +315,7 @@ pre_deploy_hooks:
 - **Timeout:** a timed-out hook's process group gets SIGTERM, then SIGKILL after 5 seconds.
 - **Dry run:** hooks also run on a dry run, so it reports whether the real deploy would be blocked. A dry run blocked by a hook sends no alert and does not count toward the circuit breaker.
 - **Read-only:** keep hooks read-only. The file sync reads the staging tree after the hooks, so anything a hook writes there is deployed.
-- **Background processes:** after each hook exits, pass or fail, its process group is killed. A hook that leaves a background process holding its output open blocks the deploy.
+- **Background processes:** after each hook exits, pass or fail, its process group is killed. A hook that leaves a background process holding its output open blocks the deploy. On Windows (not a release platform) only the hook process itself is stopped; its children are not.
 - **Downgrades:** `bosun.yaml` is parsed strictly. A bosun release without this feature rejects a config containing `pre_deploy_hooks`, so remove the key before downgrading.
 - **Config:** root level, overridable per target (`[]` disables for that target; a `BOSUN_TARGETS` list wins over the repo file). Invalid hooks (empty command, empty program name, NUL byte, negative timeout) fail config load, daemon and CLI startup, and a repository reload, which aborts the reconcile. Removing the key from `bosun.yaml` clears the hooks on the next reload.
 

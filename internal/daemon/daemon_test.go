@@ -16,6 +16,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/cameronsjo/bosun/internal/alert"
+	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/docker/dockertest"
 	"github.com/cameronsjo/bosun/internal/reconcile"
@@ -971,6 +972,31 @@ post_sync_hooks:
 		assert.Contains(t, err.Error(), filepath.Join(tmpDir, "bosun.yaml"))
 		assert.Contains(t, err.Error(), "post_sync_hooks[0]")
 		assert.Contains(t, err.Error(), "non-empty command")
+	})
+
+	t.Run("invalid pre-deploy hook fails daemon validation", func(t *testing.T) {
+		tmpDir := evalSymlinks(t, t.TempDir())
+		yamlContent := `manifest_dir: manifest
+pre_deploy_hooks:
+  - name: gate
+    command: []
+`
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(yamlContent), 0o644))
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "manifest"), 0o755))
+
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		defer func() { _ = os.Chdir(origDir) }()
+		require.NoError(t, os.Chdir(tmpDir))
+		t.Setenv("BOSUN_REPO_URL", "https://github.com/example/repo")
+
+		cfg := ConfigFromEnv()
+		err = ValidateConfig(cfg)
+
+		require.Error(t, err)
+		// ValidateConfig joins error text, so match the sentinel text.
+		assert.Contains(t, err.Error(), config.ErrInvalidPreDeployHooks.Error())
+		assert.Contains(t, err.Error(), "pre_deploy_hooks[0]")
 	})
 }
 
