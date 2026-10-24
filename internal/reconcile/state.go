@@ -120,6 +120,17 @@ type DeployState struct {
 	// data). Empty on a fresh state file, which makes the first deploy prune
 	// nothing and simply seed the manifest.
 	DeployedFiles []string `json:"deployed_files,omitempty"`
+
+	// ComposeUnmanagedEntries are the sorted names of compose-directory
+	// entries bosun did not deploy, listed at the last successful local
+	// deploy (#726). ComposeUnmanagedRecorded says the list was taken, so an
+	// empty list is known-empty; it is false on state from older versions and
+	// after a deploy that did not list the directory. Changed-only compose up
+	// forces a full run when the record is missing, or when a non-empty record
+	// differs from the current listing (a host-deleted .env leaves no other
+	// trace).
+	ComposeUnmanagedEntries  []string `json:"compose_unmanaged_entries,omitempty"`
+	ComposeUnmanagedRecorded bool     `json:"compose_unmanaged_recorded,omitempty"`
 }
 
 const attemptOutcomeInterrupted = "interrupted"

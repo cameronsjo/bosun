@@ -164,6 +164,14 @@ var errRollbackNotAttempted = errors.New("rollback not attempted")
 // the single file is rolled back from backup if available.
 // Phase 2: a single orphan-reconciliation pass with all files and --remove-orphans.
 func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string, backupPath string) (*ComposeUpSummary, error) {
+	return d.composeUpIsolated(ctx, composeFiles, backupPath, true)
+}
+
+// composeUpIsolated is ComposeUpIsolated with the orphan pass made explicit.
+// orphanPass must be false when composeFiles is a subset of the project's
+// files: `up --remove-orphans` over a subset treats every service in the
+// omitted files as an orphan and removes it (#726).
+func (d *DeployOps) composeUpIsolated(ctx context.Context, composeFiles []string, backupPath string, orphanPass bool) (*ComposeUpSummary, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
 	if d.DryRun {
@@ -301,7 +309,12 @@ func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string
 	// rather than a new-file success, is the gate: an all-rolled-back attempt still
 	// needs orphan cleanup against its restored service set.
 	orphanFiles := buildOrphanPassFiles(results, backupRoot)
-	if d.RemoveOrphans && len(orphanFiles) > 0 {
+	if !orphanPass && d.RemoveOrphans {
+		logger.Info().
+			Int("file_count", len(composeFiles)).
+			Msg("Skipping orphan reconciliation pass. Reason: compose up ran on a subset of files, and --remove-orphans over a subset would remove the other files' services")
+	}
+	if orphanPass && d.RemoveOrphans && len(orphanFiles) > 0 {
 		logger.Info().
 			Int("file_count", len(orphanFiles)).
 			Msg("Running orphan reconciliation pass")

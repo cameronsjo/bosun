@@ -295,6 +295,27 @@ type Reconciler struct {
 	preDeployUnhealthy map[string]bool
 	stagingOps         stagingEvidenceOps
 
+	// Changed-only compose up inputs (#726), set in Run() before the deploy.
+	// composeFullRunReason, when non-empty, makes deployLocal run compose up
+	// on every file. preDeployPresent holds the services with a present
+	// container just before compose up (presentServices), preDeployContainers
+	// those with a container in any state; preDeployLiveKnown is false when
+	// that listing was not taken or failed, which also forces a full run.
+	// prevDeclaredServices are the services recorded at the last successful
+	// deploy.
+	composeFullRunReason string
+	preDeployPresent     map[string]bool
+	preDeployContainers  map[string]bool
+	preDeployLiveKnown   bool
+	prevDeclaredServices []DeclaredService
+	// prevComposeUnmanaged(Known) carry the last deploy's record of unmanaged
+	// compose-directory entries into selection; composeUnmanaged(Listed)
+	// hold this run's listing, saved to state on success.
+	prevComposeUnmanaged      []string
+	prevComposeUnmanagedKnown bool
+	composeUnmanaged          []string
+	composeUnmanagedListed    bool
+
 	// backupFilesFromTargetsFn is an instance-scoped fault seam for exercising
 	// backup-footprint admission in pipeline tests. Nil uses the production
 	// enumerator.
@@ -484,6 +505,15 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	r.lastComposeFiles = nil
 	r.runStartTime = startTime
 	r.preDeployUnhealthy = nil
+	r.composeFullRunReason = ""
+	r.preDeployPresent = nil
+	r.preDeployContainers = nil
+	r.preDeployLiveKnown = false
+	r.prevDeclaredServices = nil
+	r.prevComposeUnmanaged = nil
+	r.prevComposeUnmanagedKnown = false
+	r.composeUnmanaged = nil
+	r.composeUnmanagedListed = false
 
 	// Acquire lock to prevent concurrent runs.
 	// Lock failures are transient (another reconciliation is running) and lack state context,
@@ -817,11 +847,25 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 					preExisting[name] = true
 				}
 				r.preDeployUnhealthy = preExisting
+				r.preDeployPresent = presentServices(actual, state.RestartTracking)
+				r.preDeployContainers = containerServices(actual)
+				r.preDeployLiveKnown = true
 			} else {
 				logger.Warn().Err(snapErr).Msg("Failed to snapshot pre-deploy container health; post-deploy gate won't exempt pre-existing casualties")
 			}
 		}
 	}
+
+	// Decide, before the pre-deploy marker overwrites NeedsRedeploy, whether
+	// compose up may skip unchanged files (#726). A previous deploy that never
+	// recorded success may have left any file un-applied, so it forces a full
+	// run, as do force, drift self-heal, and a missing prior deploy.
+	r.composeFullRunReason = composeFullRunReason(
+		r.config.Force, r.config.ForceRedeployUnchanged, state.NeedsRedeploy,
+		state.LastDeployedCommit, len(state.DeployedFiles), r.deploy.ContentHashSync)
+	r.prevDeclaredServices = state.DeclaredServices
+	r.prevComposeUnmanaged = state.ComposeUnmanagedEntries
+	r.prevComposeUnmanagedKnown = state.ComposeUnmanagedRecorded
 
 	// Step 5: Deploy.
 	// Mark NeedsRedeploy before deploy starts so partial failures
@@ -981,6 +1025,11 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	}
 	state.NeedsRedeploy = false
 	state.DeclaredServices = r.declaredServices
+	// Record this run's unmanaged compose entries (#726). A run that did not
+	// list the directory leaves no record, so the next local deploy runs
+	// every file once and records afresh.
+	state.ComposeUnmanagedEntries = r.composeUnmanaged
+	state.ComposeUnmanagedRecorded = r.composeUnmanagedListed
 	// Persist this deploy's manifest so the next reconcile prunes only files
 	// bosun itself wrote. Both modes now return a manifest (remote seeds it from
 	// the local staging walk, #334). A dry-run still populates ManagedFiles (the
@@ -2462,35 +2511,44 @@ func (r *Reconciler) deployLocal(ctx context.Context, prevManaged []string) (*De
 		if len(composeFiles) == 0 {
 			ui.Warning("No compose files found in %s", composeTarget)
 		} else {
+			// The health-gate rollback re-applies r.lastComposeFiles with
+			// --remove-orphans, so it must stay the FULL list: a subset there
+			// would remove every other file's services.
 			r.lastComposeFiles = composeFiles
-			summary, composeErr := r.deploy.ComposeUpIsolated(ctx, composeFiles, r.lastBackupPath)
-			if composeErr != nil {
-				// All files failed — fatal.
-				return nil, fmt.Errorf("CRITICAL: all compose files failed to deploy: %w", composeErr)
-			}
-			if summary.Failed > 0 {
-				// Partial failure — the started stacks stay up, but the deploy is
-				// NOT a success: report it so NeedsRedeploy stays set, a failure
-				// alert fires, the breaker counts it, and the next reconcile retries
-				// the failed stack (healthy ones are idempotent no-ops). Mirrors the
-				// post-deploy health gate, which also treats failure as deploy failure.
-				for _, res := range summary.Results {
-					if !res.Success {
-						if res.RolledBack {
-							ui.Warning("Compose file %s failed, rolled back: %v", filepath.Base(res.File), res.Err)
-						} else {
-							ui.Warning("Compose file %s failed: %v", filepath.Base(res.File), res.Err)
+			sel := r.selectLocalComposeFiles(ctx, targets, appdata, composeTarget, composeFiles, hasTarget(targets, "compose"), result)
+			if len(sel.Files) == 0 {
+				ui.Info("  No compose file changed and every declared service is running; skipping compose up")
+			} else {
+				summary, composeErr := r.deploy.composeUpIsolated(ctx, sel.Files, r.lastBackupPath, sel.All)
+				if composeErr != nil {
+					// All files failed — fatal.
+					return nil, fmt.Errorf("CRITICAL: all compose files failed to deploy: %w", composeErr)
+				}
+				if summary.Failed > 0 {
+					// Partial failure — the started stacks stay up, but the deploy is
+					// NOT a success: report it so NeedsRedeploy stays set, a failure
+					// alert fires, the breaker counts it, and the next reconcile retries
+					// (with every file, since NeedsRedeploy forces a full run). Mirrors
+					// the post-deploy health gate, which also treats failure as deploy
+					// failure.
+					for _, res := range summary.Results {
+						if !res.Success {
+							if res.RolledBack {
+								ui.Warning("Compose file %s failed, rolled back: %v", filepath.Base(res.File), res.Err)
+							} else {
+								ui.Warning("Compose file %s failed: %v", filepath.Base(res.File), res.Err)
+							}
 						}
 					}
+					ui.Warning("Partial deploy: %d/%d files succeeded, %d failed (%d rolled back)",
+						summary.Succeeded, len(sel.Files), summary.Failed, summary.RolledBack)
+					return nil, partialDeployError(summary, len(sel.Files))
 				}
-				ui.Warning("Partial deploy: %d/%d files succeeded, %d failed (%d rolled back)",
-					summary.Succeeded, len(composeFiles), summary.Failed, summary.RolledBack)
-				return nil, partialDeployError(summary, len(composeFiles))
-			}
-			// Check for unhealthy warnings.
-			for _, res := range summary.Results {
-				if res.Success && res.Err != nil && errors.Is(res.Err, ErrComposeUnhealthy) {
-					ui.Warning("Some containers are unhealthy in %s: %v", filepath.Base(res.File), res.Err)
+				// Check for unhealthy warnings.
+				for _, res := range summary.Results {
+					if res.Success && res.Err != nil && errors.Is(res.Err, ErrComposeUnhealthy) {
+						ui.Warning("Some containers are unhealthy in %s: %v", filepath.Base(res.File), res.Err)
+					}
 				}
 			}
 		}
