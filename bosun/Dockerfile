@@ -44,7 +44,7 @@ RUN addgroup -g 1000 bosun && \
     adduser -D -u 1000 -G bosun -h /home/bosun -s /sbin/nologin bosun && \
     mkdir -p /app/repo /app/staging /app/backups /app/logs /config /home/bosun/.ssh /var/lib/bosun /var/run/bosun && \
     chown -R bosun:bosun /app /config /home/bosun /var/lib/bosun /var/run/bosun && \
-    chmod 0700 /var/lib/bosun
+    chmod 0700 /var/lib/bosun /var/run/bosun
 
 # Layer 3: Copy the Go binary (built by goreleaser or make build)
 # --chmod=755 ensures executable permissions without extra layer

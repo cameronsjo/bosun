@@ -204,6 +204,28 @@ An existing lock file must be a daemon-owned regular file with mode `0600`.
 Repair unsafe ancestors or symlinked lock paths as named by the error before
 restarting Bosun.
 
+The published image creates `/var/run/bosun` owned by `bosun:bosun` (uid 1000)
+with mode `0700`, which satisfies this check for the image's default user. Images
+before 0.46.3 created it `0755`, which the check refuses even for that user. A
+container run as any other uid, including `user: "0:0"`, is still refused
+(`final directory is owned by uid 1000, need daemon uid 0`), and the lock path is
+not configurable. Mount a directory owned by the run uid with mode `0700` at
+`/run/bosun` (`/var/run` is a symlink to `/run` in the image). A tmpfs is the
+simplest choice, because the lock only needs to live as long as the container:
+
+```yaml
+services:
+  bosun:
+    user: "0:0"
+    tmpfs:
+      - "/run/bosun:mode=0700,size=1m"
+```
+
+A tmpfs is owned by root; for another uid, add `uid=<n>,gid=<n>` to its options.
+An existing named volume mounted at `/var/run/bosun` keeps the mode it was
+created with, because Docker copies the image's ownership and mode only into a
+new, empty volume. `chmod 0700` it by hand, or replace it with the tmpfs.
+
 ## SSH Security
 
 ### Upgrading to Strict Host Trust
