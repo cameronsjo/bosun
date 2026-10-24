@@ -132,7 +132,7 @@ switch {
 case strings.Contains(stderrLower, "permission denied"):
     return fmt.Errorf("SSH authentication failed for %s: permission denied. Check that your SSH key is added to the remote host's authorized_keys", host)
 case strings.Contains(stderrLower, "host key verification failed"):
-    return fmt.Errorf("SSH host key verification failed for %s: run 'ssh-keyscan %s >> ~/.ssh/known_hosts' to add the host key", host, host)
+    return hostKeyVerificationError(host) // names $BOSUN_SSH_KNOWN_HOSTS or /config/known_hosts
 // ... more cases
 }
 ```
@@ -316,7 +316,7 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 
 **Recovery**:
 1. Test SSH manually: `ssh user@host`
-2. Add host key: `ssh-keyscan hostname >> ~/.ssh/known_hosts`
+2. Add host key to the file bosun reads (`BOSUN_SSH_KNOWN_HOSTS`, else `/config/known_hosts`): `ssh-keyscan hostname >> /config/known_hosts`
 3. Check SSH key: `ssh-add -l`
 4. Verify `BOSUN_SSH_KEY` or an existing conventional key candidate is a
    regular, non-empty, parseable private key file

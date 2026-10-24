@@ -75,3 +75,21 @@ func TestParseSSHError(t *testing.T) {
 	}
 }
 
+func TestParseSSHError_HostKeyNamesBosunKnownHosts(t *testing.T) {
+	t.Run("env path is named", func(t *testing.T) {
+		t.Setenv("BOSUN_SSH_KNOWN_HOSTS", "/data/pins/known_hosts")
+		err := parseSSHError(errors.New("exit 255"), "Host key verification failed.", "root@nas.example")
+		msg := err.Error()
+		assert.Contains(t, msg, "/data/pins/known_hosts")
+		assert.Contains(t, msg, "BOSUN_SSH_KNOWN_HOSTS")
+		assert.Contains(t, msg, "ssh-keyscan nas.example >> /data/pins/known_hosts")
+		assert.Contains(t, msg, "does not read ~/.ssh/known_hosts")
+		assert.NotContains(t, msg, ">> ~/.ssh/known_hosts")
+	})
+	t.Run("default path is named", func(t *testing.T) {
+		t.Setenv("BOSUN_SSH_KNOWN_HOSTS", "")
+		err := parseSSHError(errors.New("exit 255"), "Host key verification failed.", "nas.example")
+		assert.Contains(t, err.Error(), "/config/known_hosts")
+		assert.NotContains(t, err.Error(), ">> ~/.ssh/known_hosts")
+	})
+}

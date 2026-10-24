@@ -774,7 +774,7 @@ func parseSSHError(err error, stderr, host string) error {
 		}
 		return fmt.Errorf("SSH connection refused by %s: the SSH service may not be running or the port may be blocked", host)
 	case "host_key":
-		return fmt.Errorf("SSH host key verification failed for %s: run 'ssh-keyscan %s >> ~/.ssh/known_hosts' to add the host key", host, host)
+		return hostKeyVerificationError(host)
 	case "dns":
 		return fmt.Errorf("cannot resolve hostname %s: check that the hostname is correct and DNS is working", host)
 	case "timeout":
@@ -782,6 +782,22 @@ func parseSSHError(err error, stderr, host string) error {
 	default:
 		return fmt.Errorf("SSH connection to %s failed: %w: %s", host, err, stderr)
 	}
+}
+
+// hostKeyVerificationError names the known_hosts file bosun actually reads
+// (BOSUN_SSH_KNOWN_HOSTS, then /config/known_hosts) rather than
+// ~/.ssh/known_hosts, which bosun's host-key policy ignores whenever a
+// candidate file exists.
+func hostKeyVerificationError(host string) error {
+	target := "/config/known_hosts"
+	if candidates := knownHostsCandidates(os.Getenv("BOSUN_SSH_KNOWN_HOSTS")); len(candidates) > 0 {
+		target = candidates[0]
+	}
+	hostname := host
+	if i := strings.LastIndex(hostname, "@"); i >= 0 {
+		hostname = hostname[i+1:]
+	}
+	return fmt.Errorf("SSH host key verification failed for %s: add the verified host key to %s (for example 'ssh-keyscan %s >> %s', then check the fingerprint). bosun does not read ~/.ssh/known_hosts. To change the file, %s", host, target, hostname, target, hostKeyRemediation)
 }
 
 // bosunOldSuffix marks the retained previous target tree during a swap
