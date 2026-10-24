@@ -335,6 +335,52 @@ func TestShouldProcessGitHubPush(t *testing.T) {
 	}
 }
 
+func TestShouldProcessGenericWebhook(t *testing.T) {
+	tests := []struct {
+		name        string
+		githubEvent string
+		body        string
+		wantProcess bool
+		wantRef     string
+		wantReason  string
+	}{
+		{name: "matching ref", body: `{"ref":"refs/heads/main"}`, wantProcess: true, wantRef: "refs/heads/main", wantReason: "push to tracked branch main"},
+		{name: "other branch", body: `{"ref":"refs/heads/develop"}`, wantRef: "refs/heads/develop", wantReason: "Push to refs/heads/develop ignored (tracking refs/heads/main)"},
+		{name: "tag named like the branch", body: `{"ref":"refs/tags/main"}`, wantRef: "refs/tags/main", wantReason: "Push to refs/tags/main ignored (tracking refs/heads/main)"},
+		{name: "bare branch name", body: `{"ref":"main"}`, wantRef: "main", wantReason: "Push to main ignored (tracking refs/heads/main)"},
+		{name: "empty ref", body: `{"ref":""}`, wantReason: "Push to  ignored (tracking refs/heads/main)"},
+		{name: "null ref", body: `{"ref":null}`, wantReason: "Push to  ignored (tracking refs/heads/main)"},
+		{name: "non-string ref", body: `{"ref":["refs/heads/main"]}`, wantReason: "Payload ref is not a string; ignored"},
+		{name: "missing ref", body: `{"event":"push"}`, wantProcess: true, wantReason: "no ref in payload"},
+		{name: "empty body", body: ``, wantProcess: true, wantReason: "no ref in payload"},
+		{name: "non-JSON body", body: `deploy please`, wantProcess: true, wantReason: "no ref in payload"},
+		{name: "JSON array body", body: `[{"ref":"refs/heads/develop"}]`, wantProcess: true, wantReason: "no ref in payload"},
+		{name: "github push to tracked branch", githubEvent: "push", body: `{"ref":"refs/heads/main"}`, wantProcess: true, wantRef: "refs/heads/main", wantReason: "push to tracked branch main"},
+		{name: "github push to other branch", githubEvent: "push", body: `{"ref":"refs/heads/feature"}`, wantRef: "refs/heads/feature", wantReason: "Push to refs/heads/feature ignored (tracking refs/heads/main)"},
+		{name: "github push form-encoded", githubEvent: "push", body: `payload=%7B%22ref%22%3A%22refs%2Fheads%2Fdevelop%22%7D`, wantReason: "GitHub push without a JSON ref ignored (set the hook content type to application/json)"},
+		{name: "github push JSON without ref", githubEvent: "push", body: `{"after":"abc"}`, wantReason: "GitHub push without a JSON ref ignored (set the hook content type to application/json)"},
+		{name: "github ping", githubEvent: "ping", body: `{"zen":"hi"}`, wantReason: "ping event received"},
+		{name: "github non-push event with matching ref", githubEvent: "create", body: `{"ref":"refs/heads/main"}`, wantReason: "Event type 'create' not handled"},
+	}
+	t.Run("unknown tracked branch checks only the event", func(t *testing.T) {
+		process, ref, reason := ShouldProcessGenericWebhook("", []byte(`{"ref":"refs/heads/develop"}`), "")
+		assert.True(t, process)
+		assert.Empty(t, ref)
+		assert.Equal(t, "no tracked branch configured; ref not checked", reason)
+
+		process, _, _ = ShouldProcessGenericWebhook("issues", []byte(`{}`), "")
+		assert.False(t, process)
+	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			process, ref, reason := ShouldProcessGenericWebhook(tt.githubEvent, []byte(tt.body), "main")
+			assert.Equal(t, tt.wantProcess, process)
+			assert.Equal(t, tt.wantRef, ref)
+			assert.Equal(t, tt.wantReason, reason)
+		})
+	}
+}
+
 func TestBuildConfigResponse(t *testing.T) {
 	tests := []struct {
 		name          string
