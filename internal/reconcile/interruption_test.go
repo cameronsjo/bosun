@@ -140,7 +140,7 @@ func TestFinalizeAttempt_InterruptionRestoresBudgetAndPersistsOutcome(t *testing
 	}
 }
 
-func TestFinalizeAttempt_TerminalNonInterruptionClearsStaleOutcomeWithoutRestoringBudget(t *testing.T) {
+func TestFinalizeAttempt_TerminalNonInterruptionLeavesBudgetAndOnlyCleanRunClearsOutcome(t *testing.T) {
 	tests := []struct {
 		name string
 		ctx  context.Context
@@ -169,7 +169,11 @@ func TestFinalizeAttempt_TerminalNonInterruptionClearsStaleOutcomeWithoutRestori
 			saved := LoadState(stateFile)
 			assert.Equal(t, 3, saved.AttemptCount)
 			assert.Equal(t, 3, saved.LastAlertedAttempt)
-			assert.Nil(t, saved.LastAttemptOutcome)
+			if tt.err == nil {
+				assert.Nil(t, saved.LastAttemptOutcome)
+			} else {
+				assert.NotNil(t, saved.LastAttemptOutcome, "a failed run must keep the interruption debt")
+			}
 		})
 	}
 }
@@ -272,7 +276,7 @@ func TestRun_FinalizesStateAndAlertBeforeReleasingTargetLock(t *testing.T) {
 	competitor.releaseLock()
 }
 
-func TestRun_ConfigReloadFailureClearsInterruptedOutcomeWithoutChangingBudget(t *testing.T) {
+func TestRun_ConfigReloadFailureKeepsInterruptedOutcomeWithoutChangingBudget(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := &Config{
 		RepoDir: filepath.Join(tmp, "repo"), LockFile: privateLockPath(t, tmp, "reconcile.lock"),
@@ -298,7 +302,7 @@ func TestRun_ConfigReloadFailureClearsInterruptedOutcomeWithoutChangingBudget(t 
 	assert.Equal(t, "new", saved.LastAttemptedCommit)
 	assert.Equal(t, 2, saved.AttemptCount)
 	assert.Equal(t, 1, saved.LastAlertedAttempt)
-	assert.Nil(t, saved.LastAttemptOutcome)
+	assert.NotNil(t, saved.LastAttemptOutcome, "a failed run keeps the interruption debt")
 }
 
 func TestRun_PropagatedCancellationFinalizesAtPipelineBoundary(t *testing.T) {
@@ -500,7 +504,7 @@ func TestRun_PostSyncHookCancellationRemainsBestEffort(t *testing.T) {
 	assert.Zero(t, alerter.deployFailureCalls, "swallowed hook cancellation must not become a terminal interruption")
 }
 
-func TestRun_PanicAfterSnapshotKeepsFailureAccountingWhileClearingInterruptedOutcome(t *testing.T) {
+func TestRun_PanicAfterSnapshotKeepsFailureAccountingAndInterruptedOutcome(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := &Config{
 		RepoDir: filepath.Join(tmp, "repo"), LockFile: privateLockPath(t, tmp, "reconcile.lock"),
@@ -523,8 +527,8 @@ func TestRun_PanicAfterSnapshotKeepsFailureAccountingWhileClearingInterruptedOut
 	require.ErrorContains(t, err, "panicked")
 	saved := LoadState(cfg.StateFile)
 	assert.Equal(t, 3, saved.AttemptCount,
-		"existing post-tracking panic accounting must not be overwritten while clearing the prior outcome")
-	assert.Nil(t, saved.LastAttemptOutcome)
+		"existing post-tracking panic accounting must not be overwritten while keeping the prior outcome")
+	assert.NotNil(t, saved.LastAttemptOutcome, "a failed run keeps the interruption debt")
 }
 
 func canceledContext() context.Context {
@@ -610,5 +614,22 @@ func TestFinalizeAttempt_NoSecondRecoveryWhenRunAlreadyRetracted(t *testing.T) {
 	// Both debts outstanding: the in-run retraction covers the interruption too.
 	require.True(t, r.retractFailureAlert(context.Background(), state))
 	r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(state, "new"))
+	assert.Equal(t, 1, alerter.deployRecoveryCalls)
+}
+
+func TestFinalizeAttempt_InterruptionThenFailedRunThenCleanRunSendsOneRecovery(t *testing.T) {
+	stateFile, state := interruptedState(t)
+	alerter := &mockAlertSender{}
+	r := NewReconciler(&Config{StateFile: stateFile, OnRecovery: true}, WithAlerter(alerter))
+
+	r.finalizeAttempt(context.Background(), errors.New("render failed"), snapshotAttemptBudget(state, "new"))
+	assert.Zero(t, alerter.deployRecoveryCalls)
+	require.NotNil(t, LoadState(stateFile).LastAttemptOutcome)
+
+	r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(LoadState(stateFile), "new"))
+	assert.Equal(t, 1, alerter.deployRecoveryCalls)
+	assert.Nil(t, LoadState(stateFile).LastAttemptOutcome)
+
+	r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(LoadState(stateFile), "new"))
 	assert.Equal(t, 1, alerter.deployRecoveryCalls)
 }

@@ -267,6 +267,19 @@ func TestManager_SendDeployRecovery(t *testing.T) {
 	assert.Equal(t, "5", alert.Metadata["prior_failures"])
 }
 
+func TestManager_SendDeployRecovery_AfterInterruption(t *testing.T) {
+	m := NewManager()
+	p := newMockProvider("test", true)
+	m.AddProvider(p)
+
+	require.NoError(t, m.SendDeployRecovery(context.Background(), "abc123def456", "unraid", 0))
+
+	alerts := p.getAlerts()
+	require.Len(t, alerts, 1)
+	assert.Contains(t, alerts[0].Message, "recovered after an interrupted deploy")
+	assert.NotContains(t, alerts[0].Message, "prior failure")
+}
+
 func TestManager_SendRollbackSuccess(t *testing.T) {
 	m := NewManager()
 	p := newMockProvider("test", true)

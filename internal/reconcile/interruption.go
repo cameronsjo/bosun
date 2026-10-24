@@ -60,16 +60,18 @@ func (r *Reconciler) finalizeAttempt(ctx context.Context, runErr error, snapshot
 		return
 	}
 
-	if state.LastAttemptOutcome == nil {
+	// Only a clean run settles an interruption. A failed run keeps the marker
+	// so the recovery is still owed when a later run succeeds.
+	if state.LastAttemptOutcome == nil || runErr != nil {
 		return
 	}
 
 	// An interruption alert told the operator the deploy is broken, so a later
-	// clean run owes a retraction whatever LastAlertedAttempt says. The budget
+	// clean run owes a retraction whatever LastAlertedAttempt says. Zero prior failures selects the interruption wording. The budget
 	// field is untouched by interruptions, so retractFailureAlert cannot see
 	// this debt. Skip it when that path already retracted during this run.
-	if runErr == nil && !recoverySent && state.LastAttemptOutcome.Outcome == attemptOutcomeInterrupted {
-		if r.sendRecoveryAlert(ctx, 1) == recoveryDeliveryFailed {
+	if !recoverySent && state.LastAttemptOutcome.Outcome == attemptOutcomeInterrupted {
+		if r.sendRecoveryAlert(ctx, 0) == recoveryDeliveryFailed {
 			// Keep the marker so the next clean run retries.
 			return
 		}

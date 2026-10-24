@@ -238,9 +238,15 @@ func (m *Manager) SendDeployRecovery(ctx context.Context, commit, target string,
 		shortCommit = commit[:8]
 	}
 
+	message := fmt.Sprintf("Deployment of commit %s to %s succeeded after %d prior failure(s)", shortCommit, target, priorFailures)
+	if priorFailures <= 0 {
+		// An interruption consumes no failure budget, so there is no failure count.
+		message = fmt.Sprintf("Deployment of commit %s to %s recovered after an interrupted deploy", shortCommit, target)
+	}
+
 	return m.Send(ctx, &Alert{
 		Title:    targetTitle("Deployment Recovered", target),
-		Message:  fmt.Sprintf("Deployment of commit %s to %s succeeded after %d prior failure(s)", shortCommit, target, priorFailures),
+		Message:  message,
 		Severity: SeverityInfo,
 		Source:   "reconcile",
 		Metadata: map[string]string{
