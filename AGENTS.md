@@ -416,6 +416,7 @@ do not gain legacy aliases.
 | `BOSUN_RESTART_THRESHOLD` | daemon, reconcile | Accumulated restart-count increase in a sustained run that trips the breaker (default: `5`; must be positive) |
 | `BOSUN_RESTART_WINDOW` | daemon, reconcile | Nominal restart observation window (default: `10m`); sustained increases retain their earliest baseline beyond it, and config load plus `bosun doctor` warn when `BOSUN_DRIFT_INTERVAL` is longer |
 | `BOSUN_RECONCILE_TIMEOUT` | daemon | Per-cycle reconciliation timeout (default: `10m`). Its clock pauses during local isolated compose up, which each file's `BOSUN_COMPOSE_UP_TIMEOUT` bounds instead (#727) |
+| `BOSUN_RECONCILE_MAX_TIMEOUT` | daemon | Hard cap on one reconcile cycle's wall-clock time, compose up included (default: `30m`; accepts Go durations or plain seconds). Keeps running while `BOSUN_RECONCILE_TIMEOUT` is paused; a value below `BOSUN_RECONCILE_TIMEOUT` is raised to it with a warning. Files cut off by the cap count as failed; any not rolled back block the orphan pass |
 | `BOSUN_SHUTDOWN_TIMEOUT` | daemon | Graceful shutdown timeout |
 | `BOSUN_API_TIMEOUT` | daemon | API request timeout |
 | `BOSUN_DRIFT_INTERVAL` | daemon | Drift check interval |

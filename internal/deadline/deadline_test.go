@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/deadline/deadlinetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -12,7 +13,7 @@ import (
 var epoch = time.Date(2026, 10, 24, 0, 0, 0, 0, time.UTC)
 
 func TestPausableTimeout_ExpiresAfterBudget(t *testing.T) {
-	clock := NewFakeClock(epoch)
+	clock := deadlinetest.NewFakeClock(epoch)
 	ctx, cancel := WithPausableTimeoutClock(context.Background(), 10*time.Minute, clock)
 	defer cancel()
 
@@ -28,7 +29,7 @@ func TestPausableTimeout_ExpiresAfterBudget(t *testing.T) {
 }
 
 func TestPausableTimeout_PauseKeepsRemainingBudget(t *testing.T) {
-	clock := NewFakeClock(epoch)
+	clock := deadlinetest.NewFakeClock(epoch)
 	ctx, cancel := WithPausableTimeoutClock(context.Background(), 10*time.Minute, clock)
 	defer cancel()
 
@@ -53,7 +54,7 @@ func TestPausableTimeout_PauseKeepsRemainingBudget(t *testing.T) {
 }
 
 func TestPausableTimeout_NestedPauses(t *testing.T) {
-	clock := NewFakeClock(epoch)
+	clock := deadlinetest.NewFakeClock(epoch)
 	ctx, cancel := WithPausableTimeoutClock(context.Background(), time.Minute, clock)
 	defer cancel()
 
@@ -69,7 +70,7 @@ func TestPausableTimeout_NestedPauses(t *testing.T) {
 
 func TestPausableTimeout_ParentCancelWhilePaused(t *testing.T) {
 	parent, parentCancel := context.WithCancel(context.Background())
-	ctx, cancel := WithPausableTimeoutClock(parent, time.Minute, NewFakeClock(epoch))
+	ctx, cancel := WithPausableTimeoutClock(parent, time.Minute, deadlinetest.NewFakeClock(epoch))
 	defer cancel()
 
 	resume := Pause(ctx)
@@ -84,7 +85,7 @@ func TestPausableTimeout_ParentCancelWhilePaused(t *testing.T) {
 }
 
 func TestPausableTimeout_DerivedContextSeesDeadlineExceeded(t *testing.T) {
-	clock := NewFakeClock(epoch)
+	clock := deadlinetest.NewFakeClock(epoch)
 	ctx, cancel := WithPausableTimeoutClock(context.Background(), time.Minute, clock)
 	defer cancel()
 
@@ -102,7 +103,7 @@ func TestPausableTimeout_DerivedContextSeesDeadlineExceeded(t *testing.T) {
 }
 
 func TestPausableTimeout_ChildCreatedWhilePausedGetsOwnDeadline(t *testing.T) {
-	ctx, cancel := WithPausableTimeoutClock(context.Background(), time.Nanosecond, NewFakeClock(epoch))
+	ctx, cancel := WithPausableTimeoutClock(context.Background(), time.Nanosecond, deadlinetest.NewFakeClock(epoch))
 	defer cancel()
 	resume := Pause(ctx)
 	defer resume()
@@ -115,7 +116,7 @@ func TestPausableTimeout_ChildCreatedWhilePausedGetsOwnDeadline(t *testing.T) {
 }
 
 func TestPausableTimeout_CancelAndAlreadyCanceledParent(t *testing.T) {
-	ctx, cancel := WithPausableTimeoutClock(context.Background(), time.Minute, NewFakeClock(epoch))
+	ctx, cancel := WithPausableTimeoutClock(context.Background(), time.Minute, deadlinetest.NewFakeClock(epoch))
 	cancel()
 	assert.ErrorIs(t, ctx.Err(), context.Canceled)
 	Pause(ctx)() // no-op on a finished context
@@ -140,4 +141,46 @@ func TestPausableTimeout_ValueDelegatesToParent(t *testing.T) {
 	ctx, cancel := WithPausableTimeout(parent, time.Minute)
 	defer cancel()
 	assert.Equal(t, "v", ctx.Value(key{}))
+}
+
+func TestCycleBudget_CapRunsWhilePaused(t *testing.T) {
+	clock := deadlinetest.NewFakeClock(epoch)
+	ctx, cancel := WithCycleBudget(context.Background(), 10*time.Minute, 30*time.Minute, clock)
+	defer cancel()
+
+	resume := Pause(ctx)
+	defer resume()
+	clock.Advance(29 * time.Minute)
+	require.NoError(t, ctx.Err(), "paused budget, cap not yet reached")
+	clock.Advance(time.Minute)
+	assert.ErrorIs(t, ctx.Err(), context.DeadlineExceeded, "the hard cap ends the cycle even while the budget is paused")
+}
+
+func TestCycleBudget_BudgetStillExpiresUnpaused(t *testing.T) {
+	clock := deadlinetest.NewFakeClock(epoch)
+	ctx, cancel := WithCycleBudget(context.Background(), 10*time.Minute, 30*time.Minute, clock)
+	defer cancel()
+	clock.Advance(10 * time.Minute)
+	assert.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
+}
+
+func TestCycleBudget_CapBelowTimeoutIsRaised(t *testing.T) {
+	clock := deadlinetest.NewFakeClock(epoch)
+	ctx, cancel := WithCycleBudget(context.Background(), 10*time.Minute, time.Minute, clock)
+	defer cancel()
+	clock.Advance(9 * time.Minute)
+	assert.NoError(t, ctx.Err(), "a cap below the cycle budget is raised to the budget")
+	clock.Advance(time.Minute)
+	assert.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
+}
+
+func TestTimeoutClock_IsNotPausable(t *testing.T) {
+	clock := deadlinetest.NewFakeClock(epoch)
+	ctx, cancel := WithTimeoutClock(context.Background(), time.Minute, clock)
+	defer cancel()
+	Pause(ctx)() // finds no pausable timeout; no-op
+	resume := Pause(ctx)
+	defer resume()
+	clock.Advance(time.Minute)
+	assert.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
 }

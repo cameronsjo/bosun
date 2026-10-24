@@ -1,4 +1,6 @@
-package deadline
+// Package deadlinetest holds test helpers for package deadline. Production
+// code must not import it.
+package deadlinetest
 
 import (
 	"sort"
@@ -6,7 +8,7 @@ import (
 	"time"
 )
 
-// FakeClock is a manually advanced Clock for tests. Timers fire synchronously
+// FakeClock is a manually advanced deadline.Clock. Timers fire synchronously
 // inside Advance, in deadline order.
 type FakeClock struct {
 	mu     sync.Mutex

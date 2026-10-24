@@ -8,12 +8,13 @@ import (
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/deadline"
+	"github.com/cameronsjo/bosun/internal/deadline/deadlinetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // TestRun_ComposeFilesDoNotShareTheCycleDeadline drives a full run under a
-// daemon-style cycle context (10m pausable budget on a fake clock) in which
+// daemon-style cycle context (10m pausable budget, 30m hard cap, fake clock) in which
 // each compose file's up takes 6 fake minutes: 12 minutes together, more than
 // the cycle budget, though each file is well inside its own ComposeUpTimeout.
 // Before #727 the second file ran on the expired cycle context and failed;
@@ -25,8 +26,8 @@ func TestRun_ComposeFilesDoNotShareTheCycleDeadline(t *testing.T) {
 	r, calls, _, _ := changedOnlyHarness(t, "services:\n  svc-b:\n    image: alpine:OLD\n", prior, []string{"svc-a", "svc-b"})
 	r.deploy.ComposeUpTimeout = 10 * time.Minute
 
-	clock := deadline.NewFakeClock(time.Now())
-	cycleCtx, cancel := deadline.WithPausableTimeoutClock(context.Background(), 10*time.Minute, clock)
+	clock := deadlinetest.NewFakeClock(time.Now())
+	cycleCtx, cancel := deadline.WithCycleBudget(context.Background(), 10*time.Minute, 30*time.Minute, clock)
 	defer cancel()
 
 	r.deploy.composeUpFn = func(ctx context.Context, files []string) error {
@@ -65,7 +66,7 @@ func TestRun_HungComposeFileFailsAtItsOwnDeadline(t *testing.T) {
 	installRunDockerShim(t, dockerLog, 1)
 	r.deploy.ComposeUpTimeout = perFile
 
-	clock := deadline.NewFakeClock(time.Now())
+	clock := deadlinetest.NewFakeClock(time.Now())
 	cycleCtx, cancel := deadline.WithPausableTimeoutClock(context.Background(), 10*time.Minute, clock)
 	defer cancel()
 
@@ -108,7 +109,7 @@ func TestRun_HungComposeFileFailsAtItsOwnDeadline(t *testing.T) {
 // reach the in-flight compose call immediately.
 func TestComposeUpIsolated_ShutdownCancelsDuringPausedCycle(t *testing.T) {
 	shutdownCtx, shutdown := context.WithCancel(context.Background())
-	cycleCtx, cancel := deadline.WithPausableTimeoutClock(shutdownCtx, time.Minute, deadline.NewFakeClock(time.Now()))
+	cycleCtx, cancel := deadline.WithPausableTimeoutClock(shutdownCtx, time.Minute, deadlinetest.NewFakeClock(time.Now()))
 	defer cancel()
 
 	var gotErr error
@@ -131,4 +132,61 @@ func TestComposeUpIsolated_ShutdownCancelsDuringPausedCycle(t *testing.T) {
 	require.Error(t, err)
 	require.NotNil(t, summary)
 	assert.ErrorIs(t, gotErr, context.Canceled, "shutdown, not a deadline, ended the call")
+}
+
+// TestRun_TotalCapEndsALongComposePhase: the hard cycle cap keeps running while
+// the budget is paused. Three files each take 6 fake minutes under a 5m budget
+// and a 10m cap. a.yml finishes; the cap fires during b.yml, which fails, and
+// c.yml then fails at once on the ended cycle. Their rollbacks fail, so both
+// are unrecovered, the orphan pass is skipped (#737), and the cycle has ended.
+func TestRun_TotalCapEndsALongComposePhase(t *testing.T) {
+	const fileC = "services:\n  svc-c:\n    image: alpine:3\n"
+	prior := steadyPrior()
+	prior.NeedsRedeploy = true
+	prior.DeployedFiles = append(prior.DeployedFiles, "compose/c.yml")
+	prior.DeclaredServices = append(prior.DeclaredServices, DeclaredService{Name: "svc-c"})
+	r, calls, dockerLog, _ := changedOnlyHarnessWith(t, harnessOpts{
+		liveB:     "services:\n  svc-b:\n    image: alpine:OLD\n",
+		prior:     prior,
+		running:   []string{"svc-a", "svc-b", "svc-c"},
+		repoFiles: map[string]string{"compose/c.yml": fileC},
+		liveFiles: map[string]string{"compose/c.yml": fileC},
+	})
+	installRunDockerShim(t, dockerLog, 1)
+	r.deploy.ComposeUpTimeout = 10 * time.Minute
+
+	clock := deadlinetest.NewFakeClock(time.Now())
+	cycleCtx, cancel := deadline.WithCycleBudget(context.Background(), 5*time.Minute, 10*time.Minute, clock)
+	defer cancel()
+
+	r.deploy.composeUpFn = func(ctx context.Context, files []string) error {
+		*calls = append(*calls, files)
+		clock.Advance(6 * time.Minute)
+		if cycleCtx.Err() != nil {
+			// The cap fired during this file. The file's own context learns
+			// of it asynchronously (stdlib propagation from a custom parent
+			// runs in a goroutine); give it a moment to follow.
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Second):
+				t.Error("the file's context did not follow the cycle cap")
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("docker compose up timed out: %w", err)
+		}
+		return nil
+	}
+
+	err := r.Run(cycleCtx)
+
+	require.Error(t, err)
+	assert.Equal(t, []string{"a.yml", "b.yml", "c.yml"}, upFileBases(*calls))
+	assert.Contains(t, err.Error(), "2 of 3 files failed")
+	assert.Contains(t, err.Error(), "orphan pass skipped")
+	assert.Contains(t, err.Error(), "b.yml")
+	assert.Contains(t, err.Error(), "c.yml")
+	assert.NotContains(t, readDockerLog(t, dockerLog), "--remove-orphans",
+		"files cut off by the cap and not rolled back are unrecovered, so the orphan pass must not run")
+	assert.ErrorIs(t, cycleCtx.Err(), context.DeadlineExceeded, "the hard cap ended the cycle")
 }

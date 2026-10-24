@@ -13,3 +13,8 @@
   back. Staged break (no pause) turns the first test red.
 - [x] 5. Spec delta: `specs/reconcile/spec.md`, ADDED requirement. Docs:
   env-var table and onboard skill.
+- [x] 6. Hard cycle cap `ReconcileMaxTimeout` (`BOSUN_RECONCILE_MAX_TIMEOUT`,
+  default 30m) that runs while the budget is paused. Fake-clock tests: the cap
+  runs while paused; three slow files hit the cap (b and c fail, rollbacks
+  fail, orphan pass skipped); one slow file does not starve the rest. Staged break (cap ignored) turns the cap tests red.
+- [x] 7. Fake clock moved to the test-helper package `internal/deadline/deadlinetest`.

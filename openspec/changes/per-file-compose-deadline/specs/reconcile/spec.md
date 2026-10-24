@@ -11,8 +11,16 @@ The daemon's per-cycle `ReconcileTimeout` SHALL NOT elapse while isolated
 compose up runs: the cycle clock pauses when the compose phase starts and
 resumes with the same remaining budget when it returns. The compose phase stays
 bounded by the per-file deadlines and the existing rollback, extraction, and
-orphan-pass timeouts, so a hung deploy still ends. Caller cancellation (daemon
-shutdown) SHALL still stop the compose phase immediately.
+orphan-pass timeouts. Caller cancellation (daemon shutdown) SHALL still stop
+the compose phase immediately.
+
+A hard cap, `ReconcileMaxTimeout` (default 30 minutes,
+`BOSUN_RECONCILE_MAX_TIMEOUT`), SHALL bound each cycle's wall-clock time,
+compose up included; it SHALL keep running while the cycle budget is paused. A
+cap below `ReconcileTimeout` SHALL be raised to `ReconcileTimeout`. When the
+cap fires, the file running at that moment and every later file SHALL count as
+failed and go through the per-file rollback; any not rolled back SHALL count as
+unrecovered for the orphan-pass safety rule.
 
 A file whose `up` exceeds its deadline SHALL be treated as a failed file:
 rolled back when a verified backup exists, and counted as unrecovered for the
@@ -31,6 +39,13 @@ orphan-pass safety rule when it is not.
 - **THEN** that file fails when its own `ComposeUpTimeout` elapses
 - **AND** the files after it still run, each with its full `ComposeUpTimeout`
 - **AND** when the hung file is not rolled back, no command in that deploy passes `--remove-orphans`
+
+#### Scenario: Many slow files reach the hard cap
+
+- **WHEN** the selected files' `up` calls together run past `ReconcileMaxTimeout`
+- **THEN** the file running when the cap fires fails, and every later file fails without waiting
+- **AND** when those files are not rolled back, no command in that deploy passes `--remove-orphans`
+- **AND** the deploy error names them
 
 #### Scenario: Shutdown during compose up
 

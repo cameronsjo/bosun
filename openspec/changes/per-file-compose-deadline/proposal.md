@@ -22,9 +22,18 @@ the files together needed more than one cycle's budget.
   budget, when compose up returns. `ReconcileTimeout` therefore bounds the rest
   of the pipeline (git, render, backup, deploy, health gate, hooks), and the
   compose phase is bounded by the per-file deadlines (plus the existing
-  per-file rollback, extraction, and orphan-pass timeouts). A hung deploy still
-  ends: overall time is at most `ReconcileTimeout` plus those per-file bounds
-  for the files actually selected.
+  per-file rollback, extraction, and orphan-pass timeouts).
+- A new hard cap, `ReconcileMaxTimeout` (`BOSUN_RECONCILE_MAX_TIMEOUT`, default
+  30 minutes), bounds the whole cycle's wall-clock time and keeps running while
+  the cycle budget is paused, so a run of many slow files still ends. A value
+  below `ReconcileTimeout` is raised to it with a warning. The 30-minute default
+  is three times the cycle budget: 10 minutes for the steps outside compose up
+  plus about 20 minutes of compose up, room for a full run in which a few files
+  pull large images, while hung files still end the cycle within half an hour.
+- When the cap fires, the file running at that moment fails, and every later
+  file fails at once on the ended cycle. Each goes through the existing per-file
+  rollback (which has its own timeout, as on shutdown today). Any of them not
+  rolled back counts as unrecovered, so the orphan pass is skipped.
 - Caller cancellation (daemon shutdown) still stops the compose phase at once;
   only the cycle deadline pauses.
 - A file whose `up` hits its own deadline is a failed file, as today: it is
@@ -37,12 +46,17 @@ the files together needed more than one cycle's budget.
 ## Impact
 
 - Affected specs: `reconcile` — ADDED: Per-File Compose Up Deadline.
-- Affected code: new `internal/deadline` (a cycle timeout that can pause),
-  `internal/daemon/daemon.go` (cycle context uses it),
+- Affected code: new `internal/deadline` (a cycle timeout that can pause, a
+  hard cap, and `WithCycleBudget` combining them; test clock in
+  `internal/deadline/deadlinetest`), `internal/daemon/daemon.go` (cycle context
+  uses it; `ReconcileMaxTimeout` config),
   `internal/reconcile/compose.go` (pause the cycle clock for the compose phase;
   per-file deadline).
-- No new env vars or config. `BOSUN_RECONCILE_TIMEOUT` now excludes the compose
-  phase; `BOSUN_COMPOSE_UP_TIMEOUT` is per file.
+- New env var `BOSUN_RECONCILE_MAX_TIMEOUT` (daemon). `BOSUN_RECONCILE_TIMEOUT`
+  now excludes the compose phase; `BOSUN_COMPOSE_UP_TIMEOUT` is per file.
+- Not included: running changed files before unchanged ones on a full run. The
+  per-file budgets remove the starvation that ordering would have reduced, and
+  passing per-file change reasons out of selection is a larger change.
 - Remote (SSH) deploys run one compose up for the whole directory and are
   unchanged.
 

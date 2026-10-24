@@ -50,8 +50,14 @@ Bosun requires Docker Compose v2:
 During a local deploy each compose file gets its own deadline, measured from
 when that file starts, and the daemon's `BOSUN_RECONCILE_TIMEOUT` clock pauses
 while compose up runs, so a slow file cannot run later files out of time (#727).
-If several files time out within seconds of each other, the cause is no longer a
-shared budget: check what each named file waits on (image pulls, dependencies).
+`BOSUN_RECONCILE_MAX_TIMEOUT` (default `30m`) still caps the whole cycle, compose
+up included. When it fires, the file running at that moment and every later
+file fail and are rolled back where possible; the orphan pass is skipped for
+any not rolled back. If files time out together after a run of about
+`BOSUN_RECONCILE_MAX_TIMEOUT`, the cap was reached: raise it, or find the slow
+files. Otherwise, several files timing out within seconds of each other no
+longer points to a shared budget: check what each named file waits on (image
+pulls, dependencies).
 When that deadline expires, Bosun signals the Docker CLI and Compose plugin so
 they cancel the daemon request, waits up to five seconds for a graceful exit,
 and then force-kills unresponsive local processes. The command can therefore
