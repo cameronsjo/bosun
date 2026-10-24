@@ -329,7 +329,7 @@ mount_source() {
 # that entry. `docker compose config` writes sources already resolved, so a
 # non-absolute source is a volume name, never a relative host path.
 mount_volume_source() {
-  local src
+  local LC_ALL=C src
   src="$(jq -r --arg t "$2" '[.services.bosun.volumes[]? | select(.target == $t) | .source] | if length == 1 then .[0] else empty end' <<<"$1")" || return 1
   if [[ "$src" =~ $PATH_RE ]]; then
     printf '%s' "$src"
@@ -340,17 +340,18 @@ mount_volume_source() {
   fi
 }
 
-# volume_decl prints the YAML for top-level volume $2, copied from the live
-# config $1 with only the keys the shadow needs: the resolved name and
-# external. It prints nothing unless the name is a valid volume name. external
-# is copied only as a boolean true; anything else is a project-owned volume.
+# volume_decl prints the YAML for top-level volume $2 from the live config $1.
+# The name is the live volume's actual Docker name: `docker compose config`
+# resolves it to <project>_<key> for a project volume, and keeps an explicit
+# name: or an external volume's name as written. The shadow always declares it
+# external, so the canary project never owns, hash-checks or recreates a
+# volume the live service is using. It prints nothing unless the name is a
+# valid volume name.
 volume_decl() {
-  local name ext
+  local LC_ALL=C name
   name="$(jq -r --arg v "$2" '.volumes[$v].name // empty | strings' <<<"$1")" || return 0
   [[ "$name" =~ $VOLUME_NAME_RE ]] || return 0
-  ext="$(jq -r --arg v "$2" 'if .volumes[$v].external == true then "true" else "false" end' <<<"$1")" || return 0
-  printf '  %s:\n    name: "%s"\n' "$2" "$name"
-  [[ "$ext" != true ]] || printf '    external: true\n'
+  printf '  %s:\n    name: "%s"\n    external: true\n' "$2" "$name"
 }
 
 # resolve_known_hosts mirrors the daemon's lookup (buildKnownHostsPaths in
@@ -377,6 +378,10 @@ resolve_known_hosts() {
   [[ "$env_path" == /config/known_hosts ]] || candidates+=(/config/known_hosts)
   KNOWN_HOSTS_VOLUMES="" SHADOW_VOLUME_DECLS=""
   for candidate in "${candidates[@]}"; do
+    # A subpath mount would be copied as the whole volume at a file path.
+    if [[ "$(jq -r --arg t "$candidate" '[.services.bosun.volumes[]? | select(.target == $t and .volume.subpath != null)] | length' <<<"$cfg")" != 0 ]]; then
+      die CONFIG "the live mount at $candidate uses a volume subpath, which the shadow cannot mirror; mount a whole volume or a host path" 64
+    fi
     src="$(mount_volume_source "$cfg" "$candidate")" || src=""
     if [[ -n "$src" ]]; then
       KNOWN_HOSTS_VOLUMES+="$(printf '      - "%s:%s:ro"' "$src" "$candidate")"$'\n'

@@ -390,25 +390,25 @@ run_remote --dry-run
 assert_rc 64; assert_out "is not a plain absolute path"; assert_no_calls "reconcile --dry-run"; ok
 
 # assert_volume_decl checks that file $1 declares top-level volume $2 with
-# name $3 and, when $4 is external, external: true, and that the mount line
-# names the volume. Placement counts: the awk reads only the top-level
+# name $3 and external: true, and that the mount line names the volume. Placement counts: the awk reads only the top-level
 # volumes: block, not a service-level volumes: list.
 assert_volume_decl() {
-  local o="$1" key="$2" name="$3" ext="$4"
+  local o="$1" key="$2" name="$3"
   grep -qF -- "- \"$key:/config/known_hosts:ro\"" "$o" || fail "$o lacks the named-volume mount of $key"
-  awk -v key="$key" -v name="$name" -v ext="$ext" '
+  awk -v key="$key" -v name="$name" '
     /^volumes:$/ {top=1; next}
     top && /^[^ ]/ {top=0}
     top && $0 == "  " key ":" {in_key=1; next}
     top && in_key && /^  [^ ]/ {in_key=0}
     top && in_key && $0 == "    name: \"" name "\"" {has_name=1}
     top && in_key && $0 == "    external: true" {has_ext=1}
-    END {exit (has_name && ((ext == "external") == (has_ext == 1))) ? 0 : 1}' "$o" ||
-    fail "$o does not declare top-level volume $key with name $name ($ext)"
+    END {exit (has_name && (has_ext)) ? 0 : 1}' "$o" ||
+    fail "$o does not declare top-level volume $key as external with name $name"
 }
 
-# A named volume is mounted by name, and its top-level declaration is copied,
-# so the shadow reads the same volume read-only.
+# A project volume is mounted by name under its resolved Docker name
+# (<project>_<key>), declared external so the canary project never owns it, and
+# the shadow reads the same volume read-only.
 new_case known-hosts-named-volume
 jq '.services.bosun.volumes += [{type: "volume", source: "bosun_kh", target: "/config/known_hosts"}]
     | .volumes = {bosun_kh: {name: "bosun_bosun_kh"}}' \
@@ -416,11 +416,24 @@ jq '.services.bosun.volumes += [{type: "volume", source: "bosun_kh", target: "/c
 run_remote --dry-run
 assert_rc 0
 for role in incumbent candidate; do
-  assert_volume_decl "$F/override-$role.yml" bosun_kh bosun_bosun_kh project
+  assert_volume_decl "$F/override-$role.yml" bosun_kh bosun_bosun_kh
 done
 assert_out "shadow gets known_hosts from named volume bosun_kh at /config/known_hosts"; ok
 
-# An external volume keeps external: true and its real name.
+# A project volume with an explicit name: keeps that name, still external in the
+# shadow.
+new_case known-hosts-named-volume-explicit-name
+jq '.services.bosun.volumes += [{type: "volume", source: "kh", target: "/config/known_hosts"}]
+    | .volumes = {kh: {name: "custom-kh"}}' \
+  "$F/live.json" > "$F/live.tmp" && mv "$F/live.tmp" "$F/live.json"
+run_remote --dry-run
+assert_rc 0
+for role in incumbent candidate; do
+  assert_volume_decl "$F/override-$role.yml" kh custom-kh
+done
+ok
+
+# An external volume keeps its real name and is external in the shadow.
 new_case known-hosts-external-named-volume
 jq '.services.bosun.volumes += [{type: "volume", source: "kh", target: "/config/known_hosts"}]
     | .volumes = {kh: {name: "shared-known-hosts", external: true}}' \
@@ -428,7 +441,7 @@ jq '.services.bosun.volumes += [{type: "volume", source: "kh", target: "/config/
 run_remote --dry-run
 assert_rc 0
 for role in incumbent candidate; do
-  assert_volume_decl "$F/override-$role.yml" kh shared-known-hosts external
+  assert_volume_decl "$F/override-$role.yml" kh shared-known-hosts
 done
 # Real compose must also accept the declaration and keep it external and read-only.
 if [[ -n "$REAL_DOCKER" ]] && "$REAL_DOCKER" compose version >/dev/null 2>&1; then
@@ -464,6 +477,14 @@ for role in incumbent candidate; do
   if grep -qE 'known_hosts|^volumes:' "$F/override-$role.yml"; then fail "$role shadow mounts an undeclared volume"; fi
 done
 assert_out "WARNING the live service has no single plain-path or named-volume known_hosts mount"; ok
+
+# A subpath mount cannot be mirrored: refuse with a clear error.
+new_case known-hosts-volume-subpath-refused
+jq '.services.bosun.volumes += [{type: "volume", source: "kh", target: "/config/known_hosts", volume: {subpath: "known_hosts"}}]
+    | .volumes = {kh: {name: "kh"}}' \
+  "$F/live.json" > "$F/live.tmp" && mv "$F/live.tmp" "$F/live.json"
+run_remote --dry-run
+assert_rc 64; assert_out "uses a volume subpath"; assert_no_calls "reconcile --dry-run"; ok
 
 # The age and deploy keys stay host-path only: a named volume there is refused.
 new_case named-volume-key-refused
