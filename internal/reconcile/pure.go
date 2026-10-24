@@ -282,6 +282,9 @@ type ComposeUpSummary struct {
 	Succeeded  int
 	Failed     int
 	RolledBack int
+	// OrphanPassSkipped, when non-empty, says why the orphan-reconciliation
+	// pass did not run although it was requested (orphanPassSkipReason).
+	OrphanPassSkipped string
 }
 
 // classifyComposeResults tallies per-file outcomes into a summary.
@@ -309,6 +312,10 @@ func classifyComposeResults(results []ComposeFileResult) ComposeUpSummary {
 func partialDeployError(summary *ComposeUpSummary, totalFiles int) error {
 	if summary == nil || summary.Failed == 0 {
 		return nil
+	}
+	if summary.OrphanPassSkipped != "" {
+		return fmt.Errorf("partial compose deploy: %d of %d files failed to start; orphan pass skipped: %s",
+			summary.Failed, totalFiles, summary.OrphanPassSkipped)
 	}
 	return fmt.Errorf("partial compose deploy: %d of %d files failed to start", summary.Failed, totalFiles)
 }
@@ -359,6 +366,32 @@ func buildOrphanPassFiles(results []ComposeFileResult, backupRoot string) []stri
 		}
 	}
 	return files
+}
+
+// orphanPassSkipReason returns why the orphan-reconciliation pass must not run
+// after phase one, or "" when it may. The pass runs `up --remove-orphans`, so
+// compose removes every project container whose service is absent from the
+// pass's files. buildOrphanPassFiles leaves out a failed file that was not
+// rolled back, which would make that file's still-running containers look like
+// orphans and get removed (#729). The pass is therefore skipped whenever any
+// file failed without a verified rollback, or its rollback state is uncertain
+// (marked rolled back but no extracted backup tree to point at).
+func orphanPassSkipReason(results []ComposeFileResult, backupRoot string) string {
+	var unrecovered []string
+	for _, r := range results {
+		if r.Success {
+			continue
+		}
+		if r.RolledBack && backupRoot != "" {
+			continue
+		}
+		unrecovered = append(unrecovered, filepath.Base(r.File))
+	}
+	if len(unrecovered) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("compose file(s) %s failed and were not rolled back, so --remove-orphans would remove their running containers",
+		strings.Join(unrecovered, ", "))
 }
 
 // composeFailureKind indicates whether a compose-up failure is recoverable.

@@ -314,6 +314,21 @@ func (d *DeployOps) composeUpIsolated(ctx context.Context, composeFiles []string
 			Int("file_count", len(composeFiles)).
 			Msg("Skipping orphan reconciliation pass. Reason: compose up ran on a subset of files, and --remove-orphans over a subset would remove the other files' services")
 	}
+	// Fail closed (#729): a failed file left out of the pass would have its
+	// running containers removed as orphans. Orphans wait for the next full
+	// run; the partial-deploy error carries the reason into the failure alert.
+	if orphanPass && d.RemoveOrphans {
+		if reason := orphanPassSkipReason(results, backupRoot); reason != "" {
+			summary.OrphanPassSkipped = reason
+			orphanPass = false
+			logger.Warn().
+				Int("failed", summary.Failed).
+				Int("rolled_back", summary.RolledBack).
+				Str("reason", reason).
+				Msg("Skipping orphan reconciliation pass. Reason: a compose file failed without a verified rollback")
+			ui.Warning("Orphan cleanup skipped: %s", reason)
+		}
+	}
 	if orphanPass && d.RemoveOrphans && len(orphanFiles) > 0 {
 		logger.Info().
 			Int("file_count", len(orphanFiles)).
@@ -343,6 +358,9 @@ func (d *DeployOps) composeUpIsolated(ctx context.Context, composeFiles []string
 			if result.Err != nil {
 				phaseErrs = append(phaseErrs, result.Err)
 			}
+		}
+		if summary.OrphanPassSkipped != "" {
+			phaseErrs = append(phaseErrs, fmt.Errorf("orphan pass skipped: %s", summary.OrphanPassSkipped))
 		}
 		if phaseErr := errors.Join(phaseErrs...); phaseErr != nil {
 			return &summary, fmt.Errorf("all %d compose files failed to deploy: %w", summary.Failed, phaseErr)
