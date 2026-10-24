@@ -2701,6 +2701,7 @@ func ConfigFromEnv() *Config {
 		rcfg.DeployPaths.SetFromFile(projectCfg.DeployPaths())
 		rcfg.CriticalContainers.SetFromFile(projectCfg.CriticalContainers())
 		rcfg.ComposeIgnore.SetFromFile(projectCfg.ComposeIgnore())
+		rcfg.PreDeployHooks.SetFromFile(projectCfg.PreDeployHooks())
 		rcfg.HealthGateScope = projectCfg.HealthGateScope()
 		rcfg.TemplateIncludeDir = projectCfg.TemplateIncludeDir()
 
@@ -2733,9 +2734,10 @@ func ConfigFromEnv() *Config {
 			cfg.RemoveOrphans = projectCfg.RemoveOrphans()
 			rcfg.RemoveOrphans.SetFromFile(cfg.RemoveOrphans)
 		}
-	} else if errors.Is(err, config.ErrInvalidPostSyncHooks) {
+	} else if errors.Is(err, config.ErrInvalidPostSyncHooks) || errors.Is(err, config.ErrInvalidPreDeployHooks) {
 		// Preserve graceful degradation for missing or otherwise unreadable
-		// config, but an invalid exec hook must fail daemon startup.
+		// config, but an invalid exec hook or pre-deploy hook must fail
+		// daemon startup.
 		cfg.projectConfigError = err
 	}
 

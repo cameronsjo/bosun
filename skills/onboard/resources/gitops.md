@@ -34,6 +34,9 @@ Every reconciliation follows this 16-stage sequence:
  6. Extract declared state from rendered compose (FATAL if dir missing;
     fatal on zero services unless BOSUN_ALLOW_EMPTY_DECLARED_STATE=true)
         |
+6b. Pre-deploy hooks (if configured): validation commands run against the
+    staging tree; any failure or timeout aborts before stage 7
+        |
  7. Create configuration backup
         |
  8. Deploy files (local copy or tar-over-SSH). Remote deploys use a
@@ -291,6 +294,31 @@ critical_containers:
   - traefik
   - authelia
 ```
+
+### Pre-Deploy Hooks
+
+`pre_deploy_hooks` are validation commands that can block a deploy (#477). They run after templates render and before the backup, the file sync, and compose up, with the working directory set to the rendered staging tree. Use them for checks on the rendered output, such as failing when Go's `<no value>` sentinel (a mistyped secret key) appears in a config file:
+
+```yaml
+pre_deploy_hooks:
+  - name: no-unresolved-templates
+    command: ["sh", "-c", "! grep -rlF '<no value>' ."]
+    timeout: 30s
+```
+
+- **Blocking:** a hook that exits non-zero, cannot start, or runs past its `timeout` (default 2m) aborts the deploy. Nothing is synced, compose up and the orphan pass do not run, `LastDeployedCommit` and `NeedsRedeploy` stay as they were, the attempt counts toward the circuit breaker, and a failure alert names the hook. Later hooks do not run. The reconcile cycle deadline also stops a running hook; timeouts always block.
+- **Command:** `command` is the exact argv. It runs without a shell and is never templated, so repository content cannot change what runs. Wrap in `sh -c` yourself when you need shell syntax. A relative `command[0]` with a `/` resolves against the staging tree; a bare name is looked up on `PATH`.
+- **Trust:** `bosun.yaml` is read from the tracked branch on every reconcile, so **push access to that branch is code execution on the host running bosun, with bosun's privileges.** A hook can read everything bosun can: the SOPS age key (which decrypts every secret encrypted to it, not only one target's), the Git deploy key and SSH keys for every target, the Git token, alert credentials, the webhook secret, and bosun's own environment (`/proc/<bosun pid>/environ`). Where bosun can reach the docker socket, that is root-equivalent on the bosun host. For a local target this adds little, because compose files already run through that socket. For remote-only targets it is broader than what a branch writer had before: compose up runs on the remote host, but a hook runs on the bosun host and gets the keys to every target. Give push access to the tracked branch only to people you would give a shell on the bosun host.
+- **Environment:** only `PATH`, `BOSUN_STAGING_DIR`, `BOSUN_TARGET`, and `BOSUN_COMMIT` are set. This keeps a well-meaning tool that prints its environment from leaking bosun's credentials into logs. It is hygiene, not isolation: per the Trust bullet, a hook can still read those credentials. The staging tree holds decrypted secrets, so the hook can read them too.
+- **Output:** on failure, the last 4 KiB of output goes to the reconcile log (not to the alert), with control characters removed. Hook names are cleaned the same way before they reach terminal lines and alerts. Do not print secret values.
+- **Timeout:** a timed-out hook's process group gets SIGTERM, then SIGKILL after 5 seconds.
+- **Dry run:** hooks also run on a dry run, so it reports whether the real deploy would be blocked. A dry run blocked by a hook sends no alert and does not count toward the circuit breaker.
+- **Read-only:** keep hooks read-only. The file sync reads the staging tree after the hooks, so anything a hook writes there is deployed.
+- **Background processes:** after each hook exits, pass or fail, its process group is killed. A hook that leaves a background process holding its output open blocks the deploy.
+- **Downgrades:** `bosun.yaml` is parsed strictly. A bosun release without this feature rejects a config containing `pre_deploy_hooks`, so remove the key before downgrading.
+- **Config:** root level, overridable per target (`[]` disables for that target; a `BOSUN_TARGETS` list wins over the repo file). Invalid hooks (empty command, empty program name, NUL byte, negative timeout) fail config load, daemon and CLI startup, and a repository reload, which aborts the reconcile. Removing the key from `bosun.yaml` clears the hooks on the next reload.
+
+Post-sync hooks cannot block a deploy: they run after compose up, and a failing `exec` hook is only logged.
 
 ### Post-Sync Hooks
 
@@ -903,6 +931,7 @@ The reconciliation pipeline emits these spans:
 | `reconcile.git_sync` | Child | Git clone/pull |
 | `reconcile.decrypt` | Child | SOPS secret decryption |
 | `reconcile.template` | Child | Go template rendering |
+| `reconcile.pre_deploy_hooks` | Child | Pre-deploy validation hooks |
 | `reconcile.backup` | Child | Configuration backup |
 | `reconcile.deploy` | Child | File deployment + compose up |
 | `reconcile.health_gate` | Child | Critical container health gate |

@@ -2938,3 +2938,66 @@ func TestComposeIgnoreConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestPreDeployHooksConfig(t *testing.T) {
+	write := func(t *testing.T, content string) string {
+		t.Helper()
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+		return tmpDir
+	}
+
+	t.Run("root and target lists load", func(t *testing.T) {
+		dir := write(t, `pre_deploy_hooks:
+  - name: no-value
+    command: ["sh", "-c", "! grep -rF '<no value>' ."]
+    timeout: 30s
+targets:
+  - name: nas
+    pre_deploy_hooks: []
+  - name: pi
+`)
+		cfg, err := LoadFrom(dir)
+		require.NoError(t, err)
+		hooks := cfg.PreDeployHooks()
+		require.Len(t, hooks, 1)
+		assert.Equal(t, "no-value", hooks[0].Name)
+		assert.Equal(t, []string{"sh", "-c", "! grep -rF '<no value>' ."}, hooks[0].Command)
+		assert.Equal(t, 30*time.Second, hooks[0].Timeout.Duration)
+		targets := cfg.Targets()
+		require.Len(t, targets, 2)
+		assert.NotNil(t, targets[0].PreDeployHooks, "an explicit [] disables the gate for that target")
+		assert.Empty(t, targets[0].PreDeployHooks)
+		assert.Nil(t, targets[1].PreDeployHooks, "an omitted target list inherits the root list")
+
+		reloaded, err := LoadReloadedConfig(dir)
+		require.NoError(t, err)
+		require.Len(t, reloaded.PreDeployHooks, 1)
+		assert.Equal(t, "no-value", reloaded.PreDeployHooks[0].Name)
+	})
+
+	t.Run("absent key reloads as an empty list so removal clears it", func(t *testing.T) {
+		reloaded, err := LoadReloadedConfig(write(t, "remove_orphans: true\n"))
+		require.NoError(t, err)
+		require.NotNil(t, reloaded)
+		assert.NotNil(t, reloaded.PreDeployHooks)
+		assert.Empty(t, reloaded.PreDeployHooks)
+	})
+
+	for name, content := range map[string]string{
+		"root empty command":   "pre_deploy_hooks:\n  - name: x\n",
+		"root blank program":   "pre_deploy_hooks:\n  - command: [\"\"]\n",
+		"target empty command": "targets:\n  - name: nas\n    pre_deploy_hooks:\n      - name: x\n        command: []\n",
+	} {
+		t.Run("rejects "+name, func(t *testing.T) {
+			dir := write(t, content)
+			_, err := LoadFrom(dir)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidPreDeployHooks)
+			reloaded, err := LoadReloadedConfig(dir)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidPreDeployHooks)
+			assert.Nil(t, reloaded)
+		})
+	}
+}

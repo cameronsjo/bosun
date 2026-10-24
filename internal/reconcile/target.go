@@ -64,6 +64,9 @@ type Target struct {
 	DeploySyncExclude []string `json:"deploy_sync_exclude,omitempty"`
 	// ComposeIgnore overrides the global compose_ignore list for this target.
 	ComposeIgnore []string `json:"compose_ignore,omitempty"`
+	// PreDeployHooks overrides the global pre_deploy_hooks list for this
+	// target. An explicit empty list disables the gate for this target.
+	PreDeployHooks []PreDeployHook `json:"pre_deploy_hooks,omitempty"`
 }
 
 // IsDefault returns true if this is the implicit default target. The comparison
@@ -76,7 +79,7 @@ func (t Target) IsDefault() bool {
 // ConfigForTarget returns a shallow copy of the base config with per-target
 // fields (TargetHost, appdata paths, ProjectName, StagingDir, StateFile,
 // LockFile, CriticalContainers, PostSyncHooks, DeploySyncPaths/Exclude,
-// ComposeIgnore)
+// ComposeIgnore, PreDeployHooks)
 // overridden from the given Target. This lets the existing pipeline run
 // unchanged per-target - the daemon creates a ConfigForTarget copy before
 // each reconciler instantiation.
@@ -162,6 +165,17 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 	} else if cp.ComposeIgnore.Value != nil {
 		cp.ComposeIgnore.Value = cloneSlice(cp.ComposeIgnore.Value)
 	}
+	if t.PreDeployHooks != nil {
+		if c.targetFieldFromEnv(t, func(x Target) bool { return x.PreDeployHooks != nil }) {
+			// A BOSUN_TARGETS list (explicit [] included) is env-owned, so the
+			// per-run repo reload cannot replace it (same rule as hooks).
+			cp.PreDeployHooks = EnvConfigField(ClonePreDeployHooks(t.PreDeployHooks))
+		} else {
+			cp.PreDeployHooks.Value = ClonePreDeployHooks(t.PreDeployHooks)
+		}
+	} else if cp.PreDeployHooks.Value != nil {
+		cp.PreDeployHooks.Value = ClonePreDeployHooks(cp.PreDeployHooks.Value)
+	}
 
 	if t.SecretsScope != "" {
 		cp.SecretsScope = t.SecretsScope
@@ -213,6 +227,7 @@ func cloneTargets(targets []Target) []Target {
 		cloned[i].DeploySyncPaths = cloneSlice(target.DeploySyncPaths)
 		cloned[i].DeploySyncExclude = cloneSlice(target.DeploySyncExclude)
 		cloned[i].ComposeIgnore = cloneSlice(target.ComposeIgnore)
+		cloned[i].PreDeployHooks = ClonePreDeployHooks(target.PreDeployHooks)
 	}
 	return cloned
 }
@@ -551,6 +566,7 @@ func (c *Config) implicitDefaultTarget(explicit Target) Target {
 		DeploySyncPaths:    c.DeploySyncPaths.Value,
 		DeploySyncExclude:  c.DeploySyncExclude.Value,
 		ComposeIgnore:      c.ComposeIgnore.Value,
+		PreDeployHooks:     c.PreDeployHooks.Value,
 	}
 	if explicit.TargetHost != "" {
 		t.TargetHost = explicit.TargetHost
@@ -589,6 +605,9 @@ func (c *Config) implicitDefaultTarget(explicit Target) Target {
 	}
 	if explicit.ComposeIgnore != nil {
 		t.ComposeIgnore = explicit.ComposeIgnore
+	}
+	if explicit.PreDeployHooks != nil {
+		t.PreDeployHooks = explicit.PreDeployHooks
 	}
 	return t
 }

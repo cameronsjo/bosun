@@ -34,6 +34,15 @@ func (r *Reconciler) reloadProjectConfig() error {
 				Msg("Reloaded post-sync hooks are invalid, aborting reconciliation")
 			return err
 		}
+		if errors.Is(err, ErrInvalidPreDeployHooks) {
+			// A broken gate must not be skipped or silently replaced by the
+			// previous one: abort before anything is deployed (#477).
+			logger.Error().
+				Err(err).
+				Str("pre_deploy_hooks_outcome", "rejected").
+				Msg("Reloaded pre-deploy hooks are invalid, aborting reconciliation")
+			return err
+		}
 		logger.Warn().
 			Str("hooks_outcome", "retained").
 			Str("hooks_source", configSourceName(r.config.PostSyncHooks.Source)).
@@ -65,6 +74,24 @@ func (r *Reconciler) reloadProjectConfig() error {
 				Str("hooks_source", "file").
 				Str("target", target.Name).
 				Msg("Reloaded target post-sync hooks are invalid, aborting reconciliation")
+			return targetErr
+		}
+	}
+	if err := ValidatePreDeployHooks(reloaded.PreDeployHooks); err != nil {
+		logger.Error().
+			Err(err).
+			Str("pre_deploy_hooks_outcome", "rejected").
+			Msg("Reloaded root pre-deploy hooks are invalid, aborting reconciliation")
+		return err
+	}
+	for _, target := range reloaded.Targets {
+		if err := ValidatePreDeployHooks(target.PreDeployHooks); err != nil {
+			targetErr := fmt.Errorf("target %q: %w", target.Name, err)
+			logger.Error().
+				Err(targetErr).
+				Str("pre_deploy_hooks_outcome", "rejected").
+				Str("target", target.Name).
+				Msg("Reloaded target pre-deploy hooks are invalid, aborting reconciliation")
 			return targetErr
 		}
 	}
@@ -156,6 +183,12 @@ func (r *Reconciler) reloadProjectConfig() error {
 	// is absent), so compare first to keep an unchanged list quiet.
 	if !slices.Equal(r.config.ComposeIgnore.Value, reloaded.ComposeIgnore) {
 		changed = reloadField(&r.config.ComposeIgnore, cloneSlice(reloaded.ComposeIgnore), sliceSet) || changed
+	}
+	// pre_deploy_hooks follows the same rule: a found config file always
+	// sets it (empty when absent), so removing the key clears the gate.
+	hooksSet := func(v []PreDeployHook) bool { return v != nil }
+	if !preDeployHooksEqual(r.config.PreDeployHooks.Value, reloaded.PreDeployHooks) {
+		changed = reloadField(&r.config.PreDeployHooks, ClonePreDeployHooks(reloaded.PreDeployHooks), hooksSet) || changed
 	}
 
 	// Validate reloaded drift_ignore rules before applying them -- GitOps reload
@@ -278,6 +311,9 @@ func applyTargetOverrides(r *Reconciler, t Target) bool {
 	}
 	if t.ComposeIgnore != nil && !slices.Equal(r.config.ComposeIgnore.Value, t.ComposeIgnore) {
 		changed = reloadField(&r.config.ComposeIgnore, cloneSlice(t.ComposeIgnore), sliceSet) || changed
+	}
+	if t.PreDeployHooks != nil && !preDeployHooksEqual(r.config.PreDeployHooks.Value, t.PreDeployHooks) {
+		changed = reloadField(&r.config.PreDeployHooks, ClonePreDeployHooks(t.PreDeployHooks), func(v []PreDeployHook) bool { return v != nil }) || changed
 	}
 	if t.ProjectName != "" && !r.config.TargetsFromEnv {
 		if r.setProjectName(t.ProjectName) {
