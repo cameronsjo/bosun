@@ -18,6 +18,7 @@ import (
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/docker/dockertest"
 	"github.com/cameronsjo/bosun/internal/reconcile"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -451,6 +452,88 @@ func TestHandleWebhook(t *testing.T) {
 		s.handleWebhook(w, req)
 
 		assert.Equal(t, http.StatusAccepted, w.Code)
+	})
+}
+
+// TestHandleWebhookBranchFilter pins #728: the generic endpoint ignores pushes
+// that name a ref other than the tracked branch, after authorization.
+func TestHandleWebhookBranchFilter(t *testing.T) {
+	const secret = "webhook-secret"
+
+	post := func(t *testing.T, s *Server, body, githubEvent string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
+		req.Header.Set("X-Signature", computeHMACSHA256([]byte(body), secret))
+		if githubEvent != "" {
+			req.Header.Set("X-GitHub-Event", githubEvent)
+		}
+		w := httptest.NewRecorder()
+		s.handleWebhook(w, req)
+		return w
+	}
+	genericTriggers := func(s *Server) float64 {
+		return testutil.ToFloat64(s.metrics.WebhookTriggersTotal.WithLabelValues("generic"))
+	}
+
+	tests := []struct {
+		name        string
+		body        string
+		githubEvent string
+		wantCode    int
+		wantStatus  string
+		wantMessage string
+	}{
+		{name: "matching ref triggers", body: `{"ref":"refs/heads/main"}`, wantCode: http.StatusAccepted, wantStatus: "accepted"},
+		{name: "other branch ignored", body: `{"ref":"refs/heads/develop"}`, wantCode: http.StatusOK, wantStatus: "ignored", wantMessage: "refs/heads/develop"},
+		{name: "tag ref ignored", body: `{"ref":"refs/tags/v1.2.3"}`, wantCode: http.StatusOK, wantStatus: "ignored", wantMessage: "refs/tags/v1.2.3"},
+		{name: "missing ref triggers", body: `{"event":"push"}`, wantCode: http.StatusAccepted, wantStatus: "accepted"},
+		{name: "github non-push event ignored", body: `{"action":"opened"}`, githubEvent: "pull_request", wantCode: http.StatusOK, wantStatus: "ignored", wantMessage: "pull_request"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, s := newTestDaemon(t)
+			d.config.WebhookSecret = secret
+			d.config.ReconcileConfig.RepoBranch = "main"
+
+			w := post(t, s, tt.body, tt.githubEvent)
+
+			require.Equal(t, tt.wantCode, w.Code)
+			var resp map[string]string
+			require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+			assert.Equal(t, tt.wantStatus, resp["status"])
+			assert.Contains(t, resp["message"], tt.wantMessage)
+			wantTriggers := 0.0
+			if tt.wantCode == http.StatusAccepted {
+				wantTriggers = 1.0
+			}
+			assert.Equal(t, wantTriggers, genericTriggers(s), "only accepted requests count as generic triggers")
+		})
+	}
+
+	t.Run("invalid signature with matching ref is rejected before the filter", func(t *testing.T) {
+		d, s := newTestDaemon(t)
+		d.config.WebhookSecret = secret
+		d.config.ReconcileConfig.RepoBranch = "main"
+
+		req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(`{"ref":"refs/heads/main"}`))
+		req.Header.Set("X-Signature", "sha256=deadbeef")
+		w := httptest.NewRecorder()
+		s.handleWebhook(w, req)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+		assert.Equal(t, 0.0, genericTriggers(s))
+	})
+
+	t.Run("invalid signature with non-matching ref is rejected, not ignored", func(t *testing.T) {
+		d, s := newTestDaemon(t)
+		d.config.WebhookSecret = secret
+
+		req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(`{"ref":"refs/heads/develop"}`))
+		req.Header.Set("X-Signature", "sha256=deadbeef")
+		w := httptest.NewRecorder()
+		s.handleWebhook(w, req)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
 	})
 }
 

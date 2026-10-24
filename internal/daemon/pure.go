@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/docker"
@@ -96,6 +97,45 @@ func shouldProcessGitHubPush(pushRef string, trackingBranch string) (process boo
 		return false, "Push to " + pushRef + " ignored (tracking " + expectedRef + ")"
 	}
 	return true, "push to tracked branch " + trackingBranch
+}
+
+// shouldProcessGenericWebhook decides whether an authorized generic webhook
+// starts a reconcile. A GitHub event header other than push is ignored. A
+// top-level "ref" in a JSON object body must name the tracked branch, using the
+// same comparison as the GitHub endpoint; tags, other branches, and non-string
+// values are ignored. A body without a ref (empty, not JSON, not an object, or
+// no "ref" key) still triggers, so the endpoint stays usable as a plain signed
+// trigger, unless the GitHub event header is set: a GitHub push always has a
+// ref, so one without a readable ref is ignored. The returned ref is the raw
+// value for logging; callers must sanitize it, and reason may embed it
+// unsanitized.
+func shouldProcessGenericWebhook(githubEvent string, body []byte, trackingBranch string) (process bool, ref string, reason string) {
+	if githubEvent != "" {
+		if action, eventReason := shouldProcessGitHubEvent(githubEvent); action != "process" {
+			return false, "", eventReason
+		}
+	}
+
+	var fields map[string]json.RawMessage
+	var rawRef json.RawMessage
+	present := false
+	if err := json.Unmarshal(body, &fields); err == nil {
+		rawRef, present = fields["ref"]
+	}
+	if !present {
+		// Every GitHub push carries a ref. Without one in a JSON body (for
+		// example a form-encoded hook), the branch is unknown, so do not deploy.
+		if githubEvent != "" {
+			return false, "", "GitHub push without a JSON ref ignored (set the hook content type to application/json)"
+		}
+		return true, "", "no ref in payload"
+	}
+	if err := json.Unmarshal(rawRef, &ref); err != nil {
+		return false, "", "Payload ref is not a string; ignored"
+	}
+	// A JSON null decodes to "", which never matches and is ignored.
+	process, reason = shouldProcessGitHubPush(ref, trackingBranch)
+	return process, ref, reason
 }
 
 // buildConfigResponse constructs a ConfigResponse from daemon configuration.

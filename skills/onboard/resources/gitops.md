@@ -510,6 +510,8 @@ The daemon serves GitHub and a generic HMAC endpoint:
 | Generic | `/webhook` | `X-Signature`, or `X-Hub-Signature-256` |
 | Manual | `/webhook/manual` | `X-Signature` |
 
+Both push endpoints act only on the tracked branch (`BOSUN_REPO_BRANCH`). The generic endpoint checks an optional top-level `ref` in a JSON body after the signature check: only `refs/heads/<branch>` triggers; other branches and tags get `200` `ignored`. An `X-GitHub-Event` other than `push`, or a GitHub push with no JSON `ref` (form-encoded hook), is ignored too. A body with no `ref` still triggers.
+
 **Webhook auth fails closed.** With no `WEBHOOK_SECRET` configured, all three
 endpoints reject every request with `403` and no reconcile runs — a missing
 secret is not an open door. On trusted networks, opt out explicitly with

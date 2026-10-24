@@ -285,8 +285,29 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Decide on the payload only after authorization (#728). The raw ref is
+	// compared; sanitization is for logs and the response only.
+	githubEvent := r.Header.Get("X-GitHub-Event")
+	process, ref, reason := shouldProcessGenericWebhook(githubEvent, body, s.daemon.config.ReconcileConfig.RepoBranch)
+	if !process {
+		reason = SanitizeWebhookPusherName(reason)
+		logger.Info().
+			Str(log.FieldSource, log.SourceWebhook).
+			Str(log.FieldBranch, SanitizeWebhookPusherName(ref)).
+			Str("event_type", SanitizeWebhookPusherName(githubEvent)).
+			Str("reason", reason).
+			Msg("Generic webhook ignored")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status":  "ignored",
+			"message": reason,
+		})
+		return
+	}
+
 	logger.Info().
 		Str(log.FieldSource, log.SourceWebhook).
+		Str(log.FieldBranch, SanitizeWebhookPusherName(ref)).
 		Msg("Generic webhook received")
 
 	s.metrics.RecordWebhookTrigger("generic")

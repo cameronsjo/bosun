@@ -84,6 +84,8 @@ The daemon itself serves two webhook endpoints:
 | GitHub | `/webhook/github` | `X-Hub-Signature-256` |
 | Generic | `/webhook` | `X-Signature`, or `X-Hub-Signature-256` |
 
+Both daemon endpoints act only on pushes to the tracked branch (`BOSUN_REPO_BRANCH`). After the signature check, the generic endpoint reads an optional top-level `ref` from a JSON body: a reconcile starts only when it equals `refs/heads/<branch>`. Other branches, tags, and a bare branch name get `200` with `{"status":"ignored"}` so the sender does not retry. A request with an `X-GitHub-Event` header other than `push` is ignored the same way, as is a GitHub push with no JSON `ref` (set the hook content type to `application/json`). A body with no `ref` still triggers, so a plain signed `POST` keeps working. Point GitHub at `/webhook/github`.
+
 GitLab, Gitea, and Bitbucket are **not** handled directly by the daemon. To receive
 them, run the standalone `bosun webhook` receiver, which understands each provider's
 signature scheme and forwards normalized triggers to the daemon over its Unix socket:
