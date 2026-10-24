@@ -279,7 +279,7 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 
 	// Load post-sync hooks, settle delay, and deploy paths from project config file.
 	projectCfg, projectCfgErr := config.Load()
-	if errors.Is(projectCfgErr, config.ErrInvalidPostSyncHooks) {
+	if errors.Is(projectCfgErr, config.ErrInvalidPostSyncHooks) || errors.Is(projectCfgErr, config.ErrInvalidPreDeployHooks) {
 		return nil, fmt.Errorf("invalid configuration: %w", projectCfgErr)
 	}
 	if projectCfgErr == nil {
@@ -354,6 +354,9 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 		}
 		if len(cfg.ComposeIgnore.Value) == 0 {
 			cfg.ComposeIgnore.SetFromFile(projectCfg.ComposeIgnore())
+		}
+		if len(cfg.PreDeployHooks.Value) == 0 {
+			cfg.PreDeployHooks.SetFromFile(projectCfg.PreDeployHooks())
 		}
 	}
 

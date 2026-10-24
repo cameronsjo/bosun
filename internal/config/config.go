@@ -27,6 +27,10 @@ const defaultTunnelProvider = "tailscale"
 // post-sync hook cannot execute as declared.
 var ErrInvalidPostSyncHooks = reconcile.ErrInvalidPostSyncHooks
 
+// ErrInvalidPreDeployHooks identifies project configuration rejected because a
+// pre-deploy hook cannot run as declared.
+var ErrInvalidPreDeployHooks = reconcile.ErrInvalidPreDeployHooks
+
 // Config holds the bosun project configuration.
 type Config struct {
 	// Root is the project root directory (contains bosun/ or manifest/).
@@ -97,6 +101,10 @@ type Config struct {
 
 	// composeIgnore lists exact compose-directory entry names bosun leaves alone.
 	composeIgnore []string
+
+	// preDeployHooks are validation commands run against the staging tree
+	// before anything is deployed.
+	preDeployHooks []reconcile.PreDeployHook
 
 	// healthGateScope selects the post-compose-up health gate target set:
 	// "critical" (default), "declared", or "off". Empty means "critical".
@@ -202,19 +210,20 @@ type alertConfigRaw struct {
 
 // targetRaw is the YAML DTO for a deployment target.
 type targetRaw struct {
-	Name               string                   `yaml:"name"`
-	TargetHost         string                   `yaml:"target_host"`
-	LocalAppdataPath   string                   `yaml:"local_appdata_path"`
-	RemoteAppdataPath  string                   `yaml:"remote_appdata_path"`
-	ProjectName        string                   `yaml:"project_name"`
-	StateFile          string                   `yaml:"state_file"`
-	StagingDir         string                   `yaml:"staging_dir"`
-	SecretsScope       string                   `yaml:"secrets_scope"`
-	CriticalContainers []string                 `yaml:"critical_containers"`
-	PostSyncHooks      []reconcile.PostSyncHook `yaml:"post_sync_hooks"`
-	DeploySyncPaths    []string                 `yaml:"deploy_sync_paths"`
-	DeploySyncExclude  []string                 `yaml:"deploy_sync_exclude"`
-	ComposeIgnore      []string                 `yaml:"compose_ignore"`
+	Name               string                    `yaml:"name"`
+	TargetHost         string                    `yaml:"target_host"`
+	LocalAppdataPath   string                    `yaml:"local_appdata_path"`
+	RemoteAppdataPath  string                    `yaml:"remote_appdata_path"`
+	ProjectName        string                    `yaml:"project_name"`
+	StateFile          string                    `yaml:"state_file"`
+	StagingDir         string                    `yaml:"staging_dir"`
+	SecretsScope       string                    `yaml:"secrets_scope"`
+	CriticalContainers []string                  `yaml:"critical_containers"`
+	PostSyncHooks      []reconcile.PostSyncHook  `yaml:"post_sync_hooks"`
+	DeploySyncPaths    []string                  `yaml:"deploy_sync_paths"`
+	DeploySyncExclude  []string                  `yaml:"deploy_sync_exclude"`
+	ComposeIgnore      []string                  `yaml:"compose_ignore"`
+	PreDeployHooks     []reconcile.PreDeployHook `yaml:"pre_deploy_hooks"`
 }
 
 // configFile represents the structure of .bosun/config.yml or bosun.yml.
@@ -277,6 +286,11 @@ type configFile struct {
 	// that bosun leaves alone on local deploys: they do not force a full
 	// compose run and are never read as compose input. No globs or paths.
 	ComposeIgnore []string `yaml:"compose_ignore"`
+
+	// PreDeployHooks are validation commands (exact argv, no shell) run with
+	// cwd set to the rendered staging tree before backup, file sync, and
+	// compose up. A non-zero exit or a timeout aborts the deploy.
+	PreDeployHooks []reconcile.PreDeployHook `yaml:"pre_deploy_hooks"`
 
 	// HealthGateScope selects the post-compose-up health gate target set:
 	// "critical" (default), "declared", or "off". Empty means "critical".
@@ -424,6 +438,7 @@ func LoadFrom(dir string) (*Config, error) {
 	deploySyncExclude := extractDeploySyncExclude(fileCfg)
 	criticalContainers := extractCriticalContainers(fileCfg)
 	composeIgnore := extractComposeIgnore(fileCfg)
+	preDeployHooks := reconcile.ClonePreDeployHooks(fileCfg.PreDeployHooks)
 	healthGateScope := extractHealthGateScope(fileCfg)
 	templateIncludeDir := extractTemplateIncludeDir(fileCfg)
 	driftIgnore := extractDriftIgnore(fileCfg)
@@ -454,6 +469,7 @@ func LoadFrom(dir string) (*Config, error) {
 		deploySyncExclude:      deploySyncExclude,
 		criticalContainers:     criticalContainers,
 		composeIgnore:          composeIgnore,
+		preDeployHooks:         preDeployHooks,
 		healthGateScope:        healthGateScope,
 		templateIncludeDir:     templateIncludeDir,
 		driftIgnore:            driftIgnore,
@@ -497,6 +513,11 @@ func LoadReloadedConfig(dir string) (*reconcile.ReloadedConfig, error) {
 	if composeIgnore == nil {
 		composeIgnore = []string{}
 	}
+	// The same holds for pre_deploy_hooks: an absent key clears the gate.
+	preDeployHooks := reconcile.ClonePreDeployHooks(cfg.PreDeployHooks())
+	if preDeployHooks == nil {
+		preDeployHooks = []reconcile.PreDeployHook{}
+	}
 
 	return &reconcile.ReloadedConfig{
 		PostSyncHooks:      postSyncHooks,
@@ -506,6 +527,7 @@ func LoadReloadedConfig(dir string) (*reconcile.ReloadedConfig, error) {
 		DeploySyncExclude:  cloneSlice(cfg.DeploySyncExclude()),
 		CriticalContainers: cloneSlice(cfg.CriticalContainers()),
 		ComposeIgnore:      composeIgnore,
+		PreDeployHooks:     preDeployHooks,
 		DriftIgnore:        cloneSlice(cfg.DriftIgnore()),
 		OnFailure:          boolPointer(alertCfg.OnFailure),
 		OnSuccess:          boolPointer(alertCfg.OnSuccess),
@@ -584,6 +606,7 @@ func Load() (*Config, error) {
 	deploySyncExclude := extractDeploySyncExclude(fileCfg)
 	criticalContainers := extractCriticalContainers(fileCfg)
 	composeIgnore := extractComposeIgnore(fileCfg)
+	preDeployHooks := reconcile.ClonePreDeployHooks(fileCfg.PreDeployHooks)
 	healthGateScope := extractHealthGateScope(fileCfg)
 	templateIncludeDir := extractTemplateIncludeDir(fileCfg)
 	driftIgnore := extractDriftIgnore(fileCfg)
@@ -649,6 +672,7 @@ func Load() (*Config, error) {
 		deploySyncExclude:      deploySyncExclude,
 		criticalContainers:     criticalContainers,
 		composeIgnore:          composeIgnore,
+		preDeployHooks:         preDeployHooks,
 		healthGateScope:        healthGateScope,
 		templateIncludeDir:     templateIncludeDir,
 		driftIgnore:            driftIgnore,
@@ -711,6 +735,9 @@ func loadConfigFileSnapshot(root string) (configFileSnapshot, error) {
 		if err := validateComposeIgnore(path, cfg); err != nil {
 			return configFileSnapshot{}, err
 		}
+		if err := validatePreDeployHooks(path, cfg); err != nil {
+			return configFileSnapshot{}, err
+		}
 
 		var raw map[string]yaml.Node
 		if err := yaml.Unmarshal(data, &raw); err != nil {
@@ -737,6 +764,21 @@ func validatePostSyncHooks(path string, cfg configFile) error {
 	}
 	for i, target := range cfg.Targets {
 		if err := reconcile.ValidatePostSyncHooks(target.PostSyncHooks); err != nil {
+			return fmt.Errorf("config file %q: targets[%d] %q: %w", path, i, target.Name, err)
+		}
+	}
+	return nil
+}
+
+// validatePreDeployHooks rejects pre_deploy_hooks that cannot run as
+// declared, at the root and on every target. The error wraps
+// ErrInvalidPreDeployHooks so startup and reload fail closed.
+func validatePreDeployHooks(path string, cfg configFile) error {
+	if err := reconcile.ValidatePreDeployHooks(cfg.PreDeployHooks); err != nil {
+		return fmt.Errorf("config file %q: %w", path, err)
+	}
+	for i, target := range cfg.Targets {
+		if err := reconcile.ValidatePreDeployHooks(target.PreDeployHooks); err != nil {
 			return fmt.Errorf("config file %q: targets[%d] %q: %w", path, i, target.Name, err)
 		}
 	}
@@ -974,6 +1016,11 @@ func (c *Config) ComposeIgnore() []string {
 	return c.composeIgnore
 }
 
+// PreDeployHooks returns the configured root pre_deploy_hooks.
+func (c *Config) PreDeployHooks() []reconcile.PreDeployHook {
+	return c.preDeployHooks
+}
+
 // extractComposeIgnore extracts compose_ignore entry names from a parsed config.
 func extractComposeIgnore(cfg configFile) []string {
 	return cfg.ComposeIgnore
@@ -1165,6 +1212,7 @@ func extractTargets(cfg configFile) []reconcile.Target {
 			DeploySyncPaths:    cloneSlice(raw.DeploySyncPaths),
 			DeploySyncExclude:  cloneSlice(raw.DeploySyncExclude),
 			ComposeIgnore:      cloneSlice(raw.ComposeIgnore),
+			PreDeployHooks:     reconcile.ClonePreDeployHooks(raw.PreDeployHooks),
 		})
 	}
 
@@ -1205,6 +1253,7 @@ func cloneTargets(targets []reconcile.Target) []reconcile.Target {
 		cloned[i].DeploySyncPaths = cloneSlice(target.DeploySyncPaths)
 		cloned[i].DeploySyncExclude = cloneSlice(target.DeploySyncExclude)
 		cloned[i].ComposeIgnore = cloneSlice(target.ComposeIgnore)
+		cloned[i].PreDeployHooks = reconcile.ClonePreDeployHooks(target.PreDeployHooks)
 	}
 	return cloned
 }

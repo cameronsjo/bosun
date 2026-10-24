@@ -132,6 +132,15 @@ health_gate_scope: critical
 compose_ignore:
   - handmade-project
 
+# Pre-deploy hooks: validation commands run with cwd = the rendered staging
+# tree, before backup, file sync, and compose up. A non-zero exit, a failure to
+# start, or a timeout (default 2m) aborts the deploy. Exact argv, no shell, no
+# templating; env is only PATH, BOSUN_STAGING_DIR, BOSUN_TARGET, BOSUN_COMMIT.
+pre_deploy_hooks:
+  - name: no-unresolved-templates
+    command: ["sh", "-c", "! grep -rlF '<no value>' ."]
+    timeout: 30s
+
 # Post-sync hooks: act on containers when specific config files change.
 # Solves services (like Traefik) not picking up config changes on FUSE mounts.
 post_sync_hooks:
@@ -162,6 +171,7 @@ post_sync_hooks:
 | `alerts.on_failure` | `true` | Send alerts on failed deploys. Defaults to true only when neither `on_success` nor `on_failure` is set — setting `on_success` alone leaves this false |
 | `alerts.on_recovery` | `true` | Retract a failure alert once a run recovers. Not coupled to the other two: setting `on_success` does not disable it |
 | `remove_orphans` | `true` | Pass `--remove-orphans` to docker compose up |
+| `pre_deploy_hooks` | `[]` (disabled) | Validation commands (`name`, `command` argv, `timeout`, default `2m`) run against the rendered staging tree before backup, file sync, and compose up. Any non-zero exit, start failure, or timeout aborts the deploy with state unchanged and a failure alert. No shell, no templating, minimal environment. Also run on dry runs. Invalid hooks fail config load. Per-target override supported (`[]` disables; a `BOSUN_TARGETS` list wins over the repo file) |
 | `post_sync_hooks` | `[]` | Container restart or exec hooks triggered by deploy path changes |
 | `hook_settle_delay` | `2s` on unconfigured Unraid `/mnt/user` targets; `0` elsewhere | Global pause after deploy before hooks run. Explicit `0s` disables the FUSE fallback |
 | `deploy_paths` | `[]` (deploy all) | Glob allowlist — skip pipeline when no changed files match |
@@ -198,6 +208,9 @@ targets:
     deploy_sync_paths: ["compose/**", "appdata/**"]
     deploy_sync_exclude: ["appdata/temp/**"]
     compose_ignore: [handmade-project]
+    pre_deploy_hooks:
+      - name: no-unresolved-templates
+        command: ["sh", "-c", "! grep -rlF '<no value>' ."]
 
   - name: media
     target_host: user@media-server

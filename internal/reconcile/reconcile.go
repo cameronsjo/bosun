@@ -35,11 +35,15 @@ type ReloadedConfig struct {
 	// it to a non-nil empty list when the key is absent, so removing the key
 	// clears it on reload instead of keeping the old list.
 	ComposeIgnore []string
-	DriftIgnore   []DriftIgnoreRule
-	OnFailure     *bool
-	OnSuccess     *bool
-	OnRecovery    *bool
-	RemoveOrphans *bool
+	// PreDeployHooks is the root pre_deploy_hooks list. LoadReloadedConfig
+	// sets it to a non-nil empty list when the key is absent, so removing
+	// the key clears it on reload.
+	PreDeployHooks []PreDeployHook
+	DriftIgnore    []DriftIgnoreRule
+	OnFailure      *bool
+	OnSuccess      *bool
+	OnRecovery     *bool
+	RemoveOrphans  *bool
 	// ProjectName is the repo bosun.yaml's root-level project_name. When
 	// non-nil and non-empty, the default-target reconciler adopts it before
 	// the first deploy (#390); a lone `default` target's project_name wins
@@ -203,6 +207,11 @@ type Config struct {
 	// full compose run and are never read as compose input. Names only; see
 	// ValidateComposeIgnore.
 	ComposeIgnore ConfigField[[]string]
+
+	// PreDeployHooks are validation commands run against the rendered
+	// staging tree before backup, file sync, and compose up (#477). Any
+	// failure, timeout included, aborts the deploy. Empty disables the gate.
+	PreDeployHooks ConfigField[[]PreDeployHook]
 
 	// HealthGateTimeout is the maximum time to poll critical container health.
 	// Default 60s; non-positive disables the gate. Configurable via
@@ -420,6 +429,9 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	startTime := time.Now()
 	var attemptSnapshot *attemptBudgetSnapshot
 	if err := ValidatePostSyncHooks(r.config.PostSyncHooks.Value); err != nil {
+		return fmt.Errorf("invalid reconcile configuration: %w", err)
+	}
+	if err := ValidatePreDeployHooks(r.config.PreDeployHooks.Value); err != nil {
 		return fmt.Errorf("invalid reconcile configuration: %w", err)
 	}
 
@@ -811,6 +823,25 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 		logger.Info().
 			Int("declared_services", len(declared)).
 			Msg("Extracted declared state from rendered compose")
+	}
+
+	// Step 3b: Pre-deploy hooks (#477). They run against the complete
+	// staging tree and before the backup, the file sync, and compose up, so
+	// a failing hook changes nothing on the target: no files are written, no
+	// container starts, no orphan pass runs, and NeedsRedeploy and
+	// LastDeployedCommit stay as they were. They also run on a dry run,
+	// which then reports whether the real deploy would be blocked.
+	if len(r.config.PreDeployHooks.Value) > 0 {
+		_, otelHookSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.pre_deploy_hooks")
+		hookErr := runPreDeployHooks(ctx, r.config.PreDeployHooks.Value, stagingSubDir, r.alertTarget(), after)
+		if hookErr != nil {
+			telemetry.SpanError(otelHookSpan, hookErr)
+			otelHookSpan.End()
+			r.sendThrottledFailureAlert(ctx, state, hookErr.Error(), hookErr)
+			return fmt.Errorf("pre-deploy hooks blocked the deploy: %w", hookErr)
+		}
+		telemetry.SpanOK(otelHookSpan)
+		otelHookSpan.End()
 	}
 
 	// Step 4: Create backup (unless dry run).
