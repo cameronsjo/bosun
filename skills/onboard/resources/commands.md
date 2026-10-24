@@ -561,6 +561,12 @@ The generic `/webhook` uses the daemon's branch filter: a JSON `ref` must equal 
 
 The provider endpoints filter on the same branch after their signature and push-event checks: GitHub, GitLab, and Gitea need `ref` to equal `refs/heads/<branch>`; Bitbucket needs a `push.changes[].new` entry of type `branch` with that name. Other branches, tags, and deletions get `200` `ignored` and are not forwarded.
 
+**Branch deletes and repeated deliveries:**
+
+A push that deletes the tracked branch (`deleted: true`, or an `after` made only of zeros) gets `200` `ignored` and a warning log instead of a reconcile. A Bitbucket push whose every change is a deletion (`new: null`) is ignored the same way, with or without a tracked branch. After the signature or token check, every push endpoint (the receiver's five, and the daemon's `/webhook` and `/webhook/github`) also records two replay keys: the delivery ID (`X-GitHub-Delivery`, `X-Gitea-Delivery`, GitLab's `webhook-id`/`Idempotency-Key`/`X-Gitlab-Event-UUID`, or Bitbucket's `X-Request-UUID`) and the SHA-256 of the request body. A request whose delivery ID or body was seen in the last hour gets `200` `ignored` and is not forwarded, so re-sending a captured body under a new delivery ID does not work either. The body key also applies to GitLab, which uses a token instead of a body signature. An empty body has no body key, so an empty-body signed trigger can be repeated; a repeated non-empty body to the generic endpoint is ignored within the hour. The record holds at most 1024 keys, and a delivery whose forward fails has both keys removed so the provider's retry goes through.
+
+**Manual trigger and the replay record:** the daemon's `/webhook/manual` accepts the same HMAC, so it does not take webhook bodies. Its body must be empty or a JSON object with only `force`, `source`, and `nonce`; anything else, including a push payload, gets `400`. A body that a webhook endpoint recorded in the last hour gets `409`. Manual triggers record nothing, so the same manual body can be sent again; to retrigger with a body that a webhook endpoint already used, add a fresh `nonce`, for example `{"force":true,"nonce":"2026-10-24T12:00:00Z"}`.
+
 ---
 
 ## Alert Commands
