@@ -18,30 +18,49 @@ func shouldSkipDeploy(lastDeployed, currentCommit string, force, needsRedeploy b
 	return lastDeployed == currentCommit
 }
 
+// ServiceIsPresent reports whether a declared service's container counts as
+// present for the commit-already-deployed skip check. Redeploying cannot fix
+// a container that already exists and is being supervised, so these count as
+// present:
+//   - state "running";
+//   - state "restarting" (a crash loop; drift reports it as unhealthy instead);
+//   - any state when the restart circuit breaker has tripped for the service.
+//     The breaker stops the container on purpose, and a compose up would
+//     start it again and undo the breaker.
+//
+// Every other state (exited, created, dead, paused, removing) and an absent
+// container count as missing, so a service that never started still forces
+// the pipeline. An absent container has no state; callers pass present=false
+// for it by not calling this function.
+func ServiceIsPresent(state string, tripped bool) bool {
+	return tripped || state == "running" || state == "restarting"
+}
+
 // hasMissingDeclaredServices returns true if any declared service has no
-// corresponding container in the actual state. A container that exists and is
-// running or restarting (a crash loop) counts as present: re-running the full
-// pipeline cannot fix a crash loop, which drift reports as unhealthy instead.
-// A stopped (exited, created, dead) container still counts as missing. This is used to detect
-// the case where a commit was marked as deployed but one or more services were
-// never actually started (e.g., the service was added to the compose file in a
+// container that ServiceIsPresent accepts. This is used to detect the case
+// where a commit was marked as deployed but one or more services were never
+// actually started (e.g., the service was added to the compose file in a
 // commit that was already recorded as deployed due to a prior run).
 //
+// restartTracking is the persisted restart-breaker state keyed by service
+// name; a nil map is valid. A tripped entry only matters for a service that
+// still has a container.
+//
 // When declared is empty, returns false — there is nothing to compare against.
-func hasMissingDeclaredServices(declared []DeclaredService, actual []ActualService) bool {
+func hasMissingDeclaredServices(declared []DeclaredService, actual []ActualService, restartTracking map[string]RestartTrackingEntry) bool {
 	if len(declared) == 0 {
 		return false
 	}
 
-	running := make(map[string]bool, len(actual))
+	present := make(map[string]bool, len(actual))
 	for _, svc := range actual {
-		if svc.State == "running" || svc.State == "restarting" {
-			running[svc.Name] = true
+		if ServiceIsPresent(svc.State, restartTracking[svc.Name].Tripped) {
+			present[svc.Name] = true
 		}
 	}
 
 	for _, decl := range declared {
-		if !running[decl.Name] {
+		if !present[decl.Name] {
 			return true
 		}
 	}

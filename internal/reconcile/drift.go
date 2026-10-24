@@ -105,6 +105,9 @@ func DriftSignature(items []DriftItem) string {
 	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
+// restartingActual is the DriftItem.Actual detail for a container in a restart loop.
+const restartingActual = "state=restarting"
+
 // HasCriticalDrift returns true if drift includes missing or unhealthy services.
 func (r *DriftReport) HasCriticalDrift() bool {
 	for _, item := range r.Items {
@@ -399,18 +402,15 @@ func CompareDrift(declared []DeclaredService, actual []ActualService) *DriftRepo
 
 		// A container in a restart loop exists; report it as unhealthy
 		// rather than missing so it alerts without implying a redeploy.
+		// Fall through so image drift is still reported for it.
 		if act.State == "restarting" {
 			report.Items = append(report.Items, DriftItem{
 				Service:  decl.Name,
 				Type:     DriftUnhealthy,
 				Declared: decl.Image,
-				Actual:   "state=restarting",
+				Actual:   restartingActual,
 			})
-			continue
-		}
-
-		// Check if service is running.
-		if act.State != "running" {
+		} else if act.State != "running" {
 			report.Items = append(report.Items, DriftItem{
 				Service:  decl.Name,
 				Type:     DriftMissing,
@@ -430,8 +430,8 @@ func CompareDrift(declared []DeclaredService, actual []ActualService) *DriftRepo
 			})
 		}
 
-		// Check health status.
-		if act.Health == "unhealthy" {
+		// Check health status. A restarting container was already reported above.
+		if act.State == "running" && act.Health == "unhealthy" {
 			report.Items = append(report.Items, DriftItem{
 				Service: decl.Name,
 				Type:    DriftUnhealthy,
@@ -483,7 +483,13 @@ func EnrichUnhealthyItems(ctx context.Context, client *docker.Client, report *Dr
 			continue
 		}
 
-		item.Actual = formatHealthDetail(details)
+		detail := formatHealthDetail(details)
+		if item.Actual == restartingActual {
+			// Keep the crash-loop cause; the health detail alone would
+			// read as a failing healthcheck.
+			detail = restartingActual + "; " + detail
+		}
+		item.Actual = detail
 	}
 }
 
