@@ -8,6 +8,7 @@
 
 - [x] 2.1 Move the bosun#676 fields from `allowedDifferences` to `comparedFields` in `reconcile_parity_test.go`, with env and file values that differ from defaults
 - [x] 2.2 Assert each variable changes the CLI value, and that `--local` outranks `BOSUN_DEPLOY_MODE`
+- [x] 2.2a `--remote` outranks `BOSUN_DEPLOY_MODE=local`, with a test
 - [x] 2.3 Stage the break (skip `ApplyReconcileEnv` in the CLI) and confirm the tests go red
 
 ## 3. Docs

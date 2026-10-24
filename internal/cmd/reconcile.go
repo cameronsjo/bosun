@@ -346,7 +346,12 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 	}
 	config.ApplyReconcileEnv(cfg)
 
-	// --local forces local deployment and outranks BOSUN_DEPLOY_MODE.
+	// Flags outrank BOSUN_DEPLOY_MODE in both directions: --remote names a host,
+	// so it forces remote mode; --local forces local mode and wins if both are
+	// given (the behavior before the shared loader).
+	if reconcileRemote != "" {
+		cfg.DeployMode = "remote"
+	}
 	if reconcileLocal {
 		cfg.DeployMode = "local"
 	}

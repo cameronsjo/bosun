@@ -2,7 +2,7 @@
 
 ### Requirement: Standalone Reconcile Operational Parity
 
-The one-shot `bosun reconcile` command and the daemon SHALL resolve the same value for each operational reconciler field from the same environment and project config, by calling one shared loader. The fields are: deploy mode (`BOSUN_DEPLOY_MODE`), deploy sync paths and excludes, critical containers, drift ignore rules, health gate timeout and scope, health check timeout and interval, compose up and backup timeouts, restart breaker enable, threshold and window, content-hash sync, orphan removal, and the empty-declared-state and skip-deploy-invariant overrides. An environment variable SHALL win over the project config. The `--local` flag SHALL outrank `BOSUN_DEPLOY_MODE`. Directories, `Source` and `Force` remain per-invocation differences.
+The one-shot `bosun reconcile` command and the daemon SHALL resolve the same value for each operational reconciler field from the same environment and project config, by calling one shared loader. The fields are: deploy mode (`BOSUN_DEPLOY_MODE`), deploy sync paths and excludes, critical containers, drift ignore rules, health gate timeout and scope, health check timeout and interval, compose up and backup timeouts, restart breaker enable, threshold and window, content-hash sync, orphan removal, and the empty-declared-state and skip-deploy-invariant overrides. An environment variable SHALL win over the project config. These fields join the compared set and leave the allowed-difference class. Directories, `Source` and `Force` remain per-invocation differences. The `--local` and `--remote` flags SHALL outrank `BOSUN_DEPLOY_MODE`.
 
 #### Scenario: CLI honors an operational variable
 
@@ -21,3 +21,10 @@ The one-shot `bosun reconcile` command and the daemon SHALL resolve the same val
 - **GIVEN** `BOSUN_DEPLOY_MODE=remote`
 - **WHEN** `bosun reconcile --local` builds its configuration
 - **THEN** the deploy mode is `local`
+
+#### Scenario: Remote flag outranks deploy mode variable
+
+- **GIVEN** `BOSUN_DEPLOY_MODE=local`
+- **WHEN** `bosun reconcile --remote root@host` builds its configuration
+- **THEN** the target host is `root@host`
+- **AND** the deploy mode is `remote`

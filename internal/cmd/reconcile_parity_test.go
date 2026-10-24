@@ -355,6 +355,19 @@ func TestReconcileConfigHonorsDaemonEnvironment(t *testing.T) {
 	require.Equal(t, "local", forced.DeployMode, "--local outranks BOSUN_DEPLOY_MODE")
 }
 
+// --remote must beat BOSUN_DEPLOY_MODE=local: the flag names the host to deploy
+// to, and a local-mode override would silently deploy to this machine instead.
+func TestReconcileRemoteFlagOutranksDeployModeEnv(t *testing.T) {
+	buildBothConfigs(t, true) // sets up cwd, project config and environment
+	t.Setenv("BOSUN_DEPLOY_MODE", "local")
+	reconcileRemote = "root@flag-host"
+
+	cfg, err := buildReconcileConfigFromEnv()
+	require.NoError(t, err)
+	require.Equal(t, "root@flag-host", cfg.TargetHost)
+	require.Equal(t, "remote", cfg.DeployMode, "--remote outranks BOSUN_DEPLOY_MODE=local")
+}
+
 // With the environment unset both paths read bosun.yaml, and the one-shot
 // keeps the daemon's content-hash default instead of reconcile.DefaultConfig's.
 func TestReconcileConfigOperationalFileValues(t *testing.T) {
@@ -363,6 +376,8 @@ func TestReconcileConfigOperationalFileValues(t *testing.T) {
 		require.Equalf(t, []string{"from-file"}, cfg.CriticalContainers.Value, "%s: critical_containers", name)
 		require.Equalf(t, []string{"from-file/**"}, cfg.DeploySyncPaths.Value, "%s: deploy_sync_paths", name)
 		require.Equalf(t, "declared", cfg.HealthGateScope, "%s: health_gate_scope", name)
+		require.Equalf(t, []string{"from-file/skip/**"}, cfg.DeploySyncExclude.Value, "%s: deploy_sync_exclude", name)
+		require.Equalf(t, []string{"from-file"}, cfg.ComposeIgnore.Value, "%s: compose_ignore", name)
 		require.Falsef(t, cfg.RemoveOrphans.Value, "%s: remove_orphans", name)
 	}
 }
