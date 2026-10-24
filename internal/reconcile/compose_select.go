@@ -40,7 +40,11 @@ import (
 //
 // Not detected, by design: a floating tag (for example :latest) updated
 // outside bosun, and ${VAR} interpolation from bosun's own process
-// environment. `bosun trigger -f` forces a full run that applies both.
+// environment. `bosun trigger -f` forces a full run, which applies the
+// interpolation change but not a moved tag: compose up does not pull an image
+// that is already present. A service on a floating tag is therefore logged as
+// a warning on every deploy (#648); pull_policy: always (or a digest pin) is
+// the fix.
 // A service that never runs by design (inactive profile, scale 0, an exited
 // one-shot job) is never present, so its file is selected on every deploy;
 // that is no worse than the old run-everything behavior.
@@ -87,8 +91,46 @@ type composeFileInputs struct {
 	// deployed path; such a file is always selected. OpaqueReason says why.
 	Opaque       bool
 	OpaqueReason string
+	// Floating lists "service (image)" entries for services on a mutable tag
+	// (:latest or no tag) that nothing re-pulls, sorted. See floatingImage.
+	Floating []string
 	// Err is set when the file could not be read or parsed.
 	Err error
+}
+
+// floatingImage reports whether an image reference names a mutable tag: no
+// tag, or :latest, and no digest. References with ${...} interpolation are
+// not judged, since the final value is unknown here.
+func floatingImage(image string) bool {
+	if image == "" || strings.Contains(image, "@") || strings.Contains(image, "${") {
+		return false
+	}
+	// A colon before the last slash is a registry port, not a tag.
+	name := image[strings.LastIndex(image, "/")+1:]
+	i := strings.Index(name, ":")
+	return i < 0 || name[i+1:] == "latest"
+}
+
+// floatingImageFix is the one place the remedy text lives, for the log line
+// and the console line alike.
+const floatingImageFix = "set pull_policy: always on the service or pin the image to a digest; `bosun trigger -f` does not pull"
+
+// logFloatingImages warns once per deploy about services on a floating tag.
+func logFloatingImages(ctx context.Context, files []composeFileInputs) {
+	var services []string
+	for _, f := range files {
+		services = append(services, f.Floating...)
+	}
+	if len(services) == 0 {
+		return
+	}
+	sort.Strings(services)
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+	logger.Warn().
+		Strs("services", services).
+		Msg("Services on a floating image tag will not pick up a new image. Fix: " + floatingImageFix)
+	ui.Warning("  Floating image tag, a new image will not be deployed: %s", strings.Join(services, ", "))
+	ui.Warning("    Fix: %s", floatingImageFix)
 }
 
 // inspectComposeFile reads one live compose file and records its services and
@@ -178,7 +220,19 @@ func inspectComposeFile(path, appdataRoot string) composeFileInputs {
 			if !ok {
 				continue
 			}
-			if pp, has := svc["pull_policy"]; has {
+			pp, hasPull := svc["pull_policy"]
+			// A service with build: runs a locally built image, which a pull
+			// policy does not refresh, so the remedy does not apply.
+			_, hasBuild := svc["build"]
+			if img, ok := svc["image"].(string); ok && !hasBuild && floatingImage(img) {
+				// Only a policy that pulls on every up (always) or on a
+				// schedule re-reads the tag; anything else leaves the old
+				// image in place.
+				if !hasPull || pp == "missing" || pp == "if_not_present" || pp == "never" {
+					info.Floating = append(info.Floating, fmt.Sprintf("%s (%s)", name, img))
+				}
+			}
+			if hasPull {
 				switch pp {
 				case "missing", "if_not_present", "never":
 				default:
@@ -229,6 +283,7 @@ func inspectComposeFile(path, appdataRoot string) composeFileInputs {
 
 	sort.Strings(info.Services)
 	sort.Strings(info.Inputs)
+	sort.Strings(info.Floating)
 	return info
 }
 
@@ -692,6 +747,7 @@ func (r *Reconciler) selectLocalComposeFiles(ctx context.Context, targets []Depl
 	for _, f := range composeFiles {
 		files = append(files, inspectComposeFile(f, appdata))
 	}
+	logFloatingImages(ctx, files)
 	prev := make([]string, 0, len(r.prevDeclaredServices))
 	for _, s := range r.prevDeclaredServices {
 		prev = append(prev, s.Name)
