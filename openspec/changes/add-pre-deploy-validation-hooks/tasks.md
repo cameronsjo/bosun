@@ -17,3 +17,11 @@
   Staged breaks (ignore the hook error; inherit bosun's environment) turn the
   matching tests red.
 - [x] 6. Spec delta and onboard docs.
+- [x] 7. Review round 1: honest trust docs (hooks are code execution as bosun;
+  env stripping is hygiene, not isolation); dry-run block sends no alert and
+  is not counted; kill the hook's process group after every exit; sanitize
+  hook names and output; tests for group death on timeout, no surviving
+  background child after a pass, dry-run accounting, sanitization, and a
+  `BOSUN_TARGETS` JSON list surviving reload. Staged breaks of the group
+  kill, the process-group setup, and the dry-run branch turn the matching
+  tests red.

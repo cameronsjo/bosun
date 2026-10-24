@@ -31,10 +31,17 @@ reads a value once on first start (a database superuser password consumed by
   repository content cannot change what runs. A relative `command[0]` with a
   path separator resolves against the staging tree.
 - The hook environment SHALL be minimal: `PATH` plus `BOSUN_STAGING_DIR`,
-  `BOSUN_TARGET`, and `BOSUN_COMMIT`. Nothing else from bosun's environment
-  (Git token, age key, alert credentials) is passed.
+  `BOSUN_TARGET`, and `BOSUN_COMMIT`. This stops a tool that prints its
+  environment from leaking bosun's credentials into logs. It is hygiene, not
+  isolation: the hook runs as bosun's user and can read those credentials
+  directly (see Trust under Impact).
 - A timed-out hook's process group is sent SIGTERM, then killed after a
-  5-second grace.
+  5-second grace. After every hook exits, its process group is killed, so no
+  background child keeps running during the deploy.
+- Hook names and output have control characters removed before they reach
+  terminal lines, logs, and alerts.
+- A dry run blocked by a hook SHALL NOT send an alert or count toward the
+  circuit breaker.
 - Hook output (last 4 KiB) goes to the reconcile log on failure. The alert
   names the hook and the exit status only.
 - Invalid hooks (empty command, empty program name, NUL byte, negative
@@ -45,7 +52,8 @@ reads a value once on first start (a database superuser password consumed by
   `pre_deploy_hooks` from `bosun.yaml` clears the gate. An explicit empty
   list on a target disables the gate for that target.
 - The hooks also run on a dry run, which then reports whether the real
-  deploy would be blocked. Hooks must therefore be read-only checks.
+  deploy would be blocked. Hooks must be read-only checks: the file sync
+  reads the staging tree after them.
 
 ## Impact
 
@@ -60,10 +68,20 @@ reads a value once on first start (a database superuser password consumed by
   flag that turns a failing post-sync hook into a failed reconcile) is not
   part of this change: it would still run after compose up.
 - No new environment variables.
-- Trust: hooks run on the bosun host as bosun's user and are read from the
-  tracked branch on every reconcile, so a branch writer can run commands
-  there. For remote targets this is a different host from the one compose up
-  runs on. Documented in the onboard GitOps guide.
+- Trust: hooks are read from the tracked branch on every reconcile, so push
+  access to that branch is code execution on the bosun host with bosun's
+  privileges. A hook can read the SOPS age key, the deploy and SSH keys for
+  every target, the Git token, alert credentials, the webhook secret, and
+  bosun's environment. Where bosun has the docker socket, that is
+  root-equivalent on the bosun host. For local targets this adds little, since
+  compose files already run through that socket. For remote-only targets it is
+  broader than compose access on the remote host. Documented in the onboard
+  GitOps guide.
+- Downgrade: `bosun.yaml` is decoded with unknown fields rejected, so an older
+  bosun rejects a config containing `pre_deploy_hooks`.
+- Not addressed: a hook can modify the staging tree after declared state is
+  extracted. That is within the trust model above; docs say hooks must be
+  read-only.
 
 ## Scope
 

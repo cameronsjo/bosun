@@ -830,13 +830,19 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	// a failing hook changes nothing on the target: no files are written, no
 	// container starts, no orphan pass runs, and NeedsRedeploy and
 	// LastDeployedCommit stay as they were. They also run on a dry run,
-	// which then reports whether the real deploy would be blocked.
+	// which then reports whether the real deploy would be blocked; that
+	// block is the preview's answer, not a failed deploy, so it sends no
+	// alert and does not count toward the circuit breaker.
 	if len(r.config.PreDeployHooks.Value) > 0 {
 		_, otelHookSpan := telemetry.Tracer("reconcile").Start(ctx, "reconcile.pre_deploy_hooks")
 		hookErr := runPreDeployHooks(ctx, r.config.PreDeployHooks.Value, stagingSubDir, r.alertTarget(), after)
 		if hookErr != nil {
 			telemetry.SpanError(otelHookSpan, hookErr)
 			otelHookSpan.End()
+			if r.config.DryRun {
+				r.undoDryRunAttempt(ctx, state, attemptSnapshot)
+				return fmt.Errorf("dry run: pre-deploy hooks would block the deploy: %w", hookErr)
+			}
 			r.sendThrottledFailureAlert(ctx, state, hookErr.Error(), hookErr)
 			return fmt.Errorf("pre-deploy hooks blocked the deploy: %w", hookErr)
 		}

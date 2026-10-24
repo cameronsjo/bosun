@@ -58,13 +58,19 @@ type PreDeployHook struct {
 	Timeout Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
 
-// label returns the name used for the hook in logs and alerts.
+// preDeployHookLabelLimit caps the hook name shown in terminal lines and alerts.
+const preDeployHookLabelLimit = 64
+
+// label returns the name used for the hook in logs and alerts, with control
+// and format characters removed so a name cannot inject terminal escapes or
+// extra lines into an alert.
 func (h PreDeployHook) label() string {
-	if h.Name != "" {
-		return h.Name
+	raw := h.Name
+	if raw == "" && len(h.Command) > 0 {
+		raw = h.Command[0]
 	}
-	if len(h.Command) > 0 {
-		return h.Command[0]
+	if label := log.SanitizeForOutputCapped(raw, preDeployHookLabelLimit); label != "" {
+		return label
 	}
 	return "unnamed"
 }
@@ -168,13 +174,23 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// String returns the kept output with control characters removed. Line
+// breaks become " | " so the output stays one readable log field.
 func (b *cappedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.truncated {
-		return "[truncated] " + string(b.buf)
+	lines := strings.Split(strings.ReplaceAll(string(b.buf), "\r\n", "\n"), "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if clean := log.SanitizeForOutput(line); clean != "" {
+			kept = append(kept, clean)
+		}
 	}
-	return string(b.buf)
+	out := strings.Join(kept, " | ")
+	if b.truncated {
+		return "[truncated] " + out
+	}
+	return out
 }
 
 // runPreDeployHooks runs each hook in order with cwd set to stagingDir and
@@ -235,6 +251,12 @@ func runOnePreDeployHook(ctx context.Context, h PreDeployHook, timeout time.Dura
 
 	start := time.Now()
 	runErr := cmd.Run()
+	// Kill whatever is left in the hook's process group, pass or fail, so a
+	// background child cannot keep running while the deploy proceeds. A
+	// child that called setsid has left the group and is not reached.
+	if cmd.Process != nil {
+		killPreDeployHookGroup(cmd.Process.Pid)
+	}
 	if runErr == nil {
 		return nil
 	}
@@ -252,7 +274,9 @@ func runOnePreDeployHook(ctx context.Context, h PreDeployHook, timeout time.Dura
 		reason = fmt.Sprintf("pre-deploy hook %q timed out after %s", name, timeout)
 	default:
 		var exitErr *exec.ExitError
-		if errors.As(runErr, &exitErr) {
+		if errors.Is(runErr, exec.ErrWaitDelay) {
+			reason = fmt.Sprintf("pre-deploy hook %q left a background process holding its output open", name)
+		} else if errors.As(runErr, &exitErr) {
 			reason = fmt.Sprintf("pre-deploy hook %q exited with status %d", name, exitErr.ExitCode())
 		} else {
 			reason = fmt.Sprintf("pre-deploy hook %q could not run: %v", name, runErr)
@@ -270,4 +294,24 @@ func runOnePreDeployHook(ctx context.Context, h PreDeployHook, timeout time.Dura
 	ui.Error("  %s", reason)
 
 	return fmt.Errorf("%s: %w", reason, errors.Join(ErrPreDeployHookFailed, cause))
+}
+
+// undoDryRunAttempt restores the circuit-breaker counters a dry run bumped
+// before its pre-deploy hooks blocked it, so a preview never counts as a
+// failed deploy attempt.
+func (r *Reconciler) undoDryRunAttempt(ctx context.Context, state *DeployState, snapshot *attemptBudgetSnapshot) {
+	if snapshot == nil {
+		return
+	}
+	state.LastAttemptedCommit = snapshot.lastAttemptedCommit
+	state.AttemptCount = snapshot.attemptCount
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+	if err := SaveState(r.config.StateFile, state); err != nil {
+		logger.Error().Err(err).Str(log.FieldPath, r.config.StateFile).
+			Msg("Failed to restore attempt counters after a dry run blocked by pre-deploy hooks")
+		return
+	}
+	logger.Warn().
+		Int("attempt_count", state.AttemptCount).
+		Msg("Dry run blocked by pre-deploy hooks; no alert sent and the attempt is not counted")
 }

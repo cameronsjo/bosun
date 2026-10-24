@@ -324,3 +324,109 @@ func TestReloadProjectConfig_PreDeployHooks(t *testing.T) {
 		assert.Equal(t, "env", r.config.PreDeployHooks.Value[0].Name)
 	})
 }
+
+func TestRun_PreDeployHook_DryRunBlockSendsNoAlertAndIsNotCounted(t *testing.T) {
+	skipWithoutPOSIXShell(t)
+	r, upCalls, dockerLog, appdata, alerter := preDeployHarness(t, []PreDeployHook{
+		{Name: "gate", Command: []string{"sh", "-c", "exit 1"}},
+	})
+	r.config.DryRun = true
+
+	err := r.Run(context.Background())
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrPreDeployHookFailed)
+	assert.Contains(t, err.Error(), "dry run")
+	assert.Empty(t, alerter.failures, "a dry-run block is a preview result, not a failed deploy")
+	state := LoadState(r.config.StateFile)
+	assert.Equal(t, 0, state.AttemptCount, "a dry-run block must not count toward the circuit breaker")
+	assert.Empty(t, state.LastAttemptedCommit)
+	assert.Equal(t, "prevcommit", state.LastDeployedCommit)
+	assert.Empty(t, *upCalls)
+	assert.Empty(t, readDockerLog(t, dockerLog))
+	live, readErr := os.ReadFile(filepath.Join(appdata, "compose", "b.yml"))
+	require.NoError(t, readErr)
+	assert.Contains(t, string(live), "alpine:OLD")
+}
+
+// TestRunPreDeployHooks_TimeoutKillsProcessGroup pins that a timeout reaches
+// the hook's children, not only the direct process: the background subshell
+// would write its marker after 2s if it survived.
+func TestRunPreDeployHooks_TimeoutKillsProcessGroup(t *testing.T) {
+	skipWithoutPOSIXShell(t)
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "survived")
+	hooks := []PreDeployHook{{
+		Name:    "spawner",
+		Command: []string{"sh", "-c", "(sleep 2; touch '" + marker + "') & sleep 30"},
+		Timeout: Duration{Duration: 200 * time.Millisecond},
+	}}
+
+	start := time.Now()
+	err := runPreDeployHooks(context.Background(), hooks, dir, "t", "c")
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	time.Sleep(time.Until(start.Add(3 * time.Second)))
+	_, statErr := os.Stat(marker)
+	assert.True(t, os.IsNotExist(statErr), "a child of a timed-out hook must not survive")
+}
+
+// TestRunPreDeployHooks_PassingHookLeavesNoBackgroundChild pins that the
+// group is killed after a hook exits 0, so a background child cannot keep
+// running while the deploy proceeds.
+func TestRunPreDeployHooks_PassingHookLeavesNoBackgroundChild(t *testing.T) {
+	skipWithoutPOSIXShell(t)
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "survived")
+	hooks := []PreDeployHook{{
+		Name:    "detacher",
+		Command: []string{"sh", "-c", "(sleep 2; touch '" + marker + "') >/dev/null 2>&1 & exit 0"},
+	}}
+
+	start := time.Now()
+	require.NoError(t, runPreDeployHooks(context.Background(), hooks, dir, "t", "c"))
+
+	time.Sleep(time.Until(start.Add(3 * time.Second)))
+	_, statErr := os.Stat(marker)
+	assert.True(t, os.IsNotExist(statErr), "a background child of a passing hook must be killed")
+}
+
+func TestPreDeployHookLabelAndOutputAreSanitized(t *testing.T) {
+	label := PreDeployHook{Name: "gate\x1b[31m\nfake line\u202e", Command: []string{"x"}}.label()
+	assert.NotContains(t, label, "\x1b")
+	assert.NotContains(t, label, "\n")
+	assert.NotContains(t, label, "\u202e")
+	assert.Equal(t, "unnamed", PreDeployHook{Name: "\x1b\n"}.label(), "a name of only control characters falls back")
+	assert.LessOrEqual(t, len([]rune(PreDeployHook{Name: strings.Repeat("a", 500)}.label())), preDeployHookLabelLimit)
+
+	b := &cappedBuffer{limit: 1024}
+	_, _ = b.Write([]byte("first\x1b[2J\r\nsecond\n"))
+	assert.Equal(t, "first[2J | second", b.String())
+}
+
+func TestPreDeployHooksFromBOSUNTargetsSurviveReload(t *testing.T) {
+	targets, override, err := ParseTargetsOverride(`[{"name":"nas","pre_deploy_hooks":[{"name":"env-gate","command":["sh","-c","true"],"timeout":"30s"}]}]`)
+	require.NoError(t, err)
+	require.True(t, override)
+	require.Len(t, targets, 1)
+	require.Len(t, targets[0].PreDeployHooks, 1)
+	assert.Equal(t, 30*time.Second, targets[0].PreDeployHooks[0].Timeout.Duration)
+
+	base := &Config{Targets: targets, TargetsFromEnv: true}
+	base.PreDeployHooks.SetFromFile([]PreDeployHook{{Name: "file-root", Command: []string{"true"}}})
+	cfg := base.ConfigForTarget(targets[0])
+	require.True(t, cfg.PreDeployHooks.FromEnv())
+
+	cfg.RepoDir = t.TempDir()
+	cfg.ConfigReloader = func(string) (*ReloadedConfig, error) {
+		return &ReloadedConfig{
+			PreDeployHooks: []PreDeployHook{{Name: "repo-root", Command: []string{"x"}}},
+			Targets:        []Target{{Name: "nas", PreDeployHooks: []PreDeployHook{{Name: "repo-nas", Command: []string{"y"}}}}},
+		}, nil
+	}
+	r := &Reconciler{config: cfg}
+	require.NoError(t, r.reloadProjectConfig())
+	require.Len(t, r.config.PreDeployHooks.Value, 1)
+	assert.Equal(t, "env-gate", r.config.PreDeployHooks.Value[0].Name, "a BOSUN_TARGETS list must win over the repo file on reload")
+}

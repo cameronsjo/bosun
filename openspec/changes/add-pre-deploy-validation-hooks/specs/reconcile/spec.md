@@ -23,7 +23,10 @@ the deploy. An aborted deploy SHALL NOT sync files, run compose up, or run
 the orphan pass; SHALL leave the last deployed commit and the redeploy marker
 unchanged; SHALL count as a failed attempt for the circuit breaker; and SHALL
 send a failure alert naming the hook. Hooks after the failing one SHALL NOT
-run. A timed-out hook's process group SHALL be terminated.
+run. A timed-out hook's process group SHALL be terminated, and after any
+hook exits the reconciler SHALL kill whatever remains in its process group.
+Hook names and output SHALL have control characters removed before they
+reach terminal output, logs, or alerts.
 
 Configuration loading, daemon and CLI startup, a repository configuration
 reload, and the start of each reconcile SHALL reject a hook with an empty
@@ -33,7 +36,8 @@ keeping or dropping the previous hooks. A hot reload of a configuration file
 without the field SHALL clear the hooks. An explicit empty list on a target
 SHALL disable the hooks for that target.
 
-The hooks SHALL also run on a dry run.
+The hooks SHALL also run on a dry run. A dry run blocked by a hook SHALL NOT
+send a failure alert or count as a failed attempt for the circuit breaker.
 
 #### Scenario: Passing hook
 
@@ -64,6 +68,18 @@ The hooks SHALL also run on a dry run.
 
 - **WHEN** bosun runs with a Git token in its environment
 - **THEN** a pre-deploy hook's environment does not contain it
+
+#### Scenario: Dry run blocked by a hook
+
+- **WHEN** a pre-deploy hook fails during a dry run
+- **THEN** the run reports the block
+- **AND** no failure alert is sent
+- **AND** the circuit-breaker attempt count is unchanged
+
+#### Scenario: Timed-out hook's children are stopped
+
+- **WHEN** a pre-deploy hook that started a background child times out
+- **THEN** the child is stopped along with the hook
 
 #### Scenario: Invalid hook configuration
 
