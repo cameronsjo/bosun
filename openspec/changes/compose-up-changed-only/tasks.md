@@ -22,3 +22,7 @@
   in the deploy manifest (covers host-created `.env`, extra `*.yml`, stray
   files); services with more than one replica always run. Pipeline tests for
   each host-created case; a staged break removing the rule turns them red.
+- [x] 9. Review round 3: record unmanaged compose-directory entry names in
+  deploy state on success; run every file when the record is missing or a
+  non-empty record differs from the current listing (host-deleted `.env`).
+  Staged break of the comparison turns its table and pipeline tests red.

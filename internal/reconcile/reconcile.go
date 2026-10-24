@@ -308,6 +308,13 @@ type Reconciler struct {
 	preDeployContainers  map[string]bool
 	preDeployLiveKnown   bool
 	prevDeclaredServices []DeclaredService
+	// prevComposeUnmanaged(Known) carry the last deploy's record of unmanaged
+	// compose-directory entries into selection; composeUnmanaged(Listed)
+	// hold this run's listing, saved to state on success.
+	prevComposeUnmanaged      []string
+	prevComposeUnmanagedKnown bool
+	composeUnmanaged          []string
+	composeUnmanagedListed    bool
 
 	// backupFilesFromTargetsFn is an instance-scoped fault seam for exercising
 	// backup-footprint admission in pipeline tests. Nil uses the production
@@ -503,6 +510,10 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	r.preDeployContainers = nil
 	r.preDeployLiveKnown = false
 	r.prevDeclaredServices = nil
+	r.prevComposeUnmanaged = nil
+	r.prevComposeUnmanagedKnown = false
+	r.composeUnmanaged = nil
+	r.composeUnmanagedListed = false
 
 	// Acquire lock to prevent concurrent runs.
 	// Lock failures are transient (another reconciliation is running) and lack state context,
@@ -853,6 +864,8 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 		r.config.Force, r.config.ForceRedeployUnchanged, state.NeedsRedeploy,
 		state.LastDeployedCommit, len(state.DeployedFiles), r.deploy.ContentHashSync)
 	r.prevDeclaredServices = state.DeclaredServices
+	r.prevComposeUnmanaged = state.ComposeUnmanagedEntries
+	r.prevComposeUnmanagedKnown = state.ComposeUnmanagedRecorded
 
 	// Step 5: Deploy.
 	// Mark NeedsRedeploy before deploy starts so partial failures
@@ -1012,6 +1025,11 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	}
 	state.NeedsRedeploy = false
 	state.DeclaredServices = r.declaredServices
+	// Record this run's unmanaged compose entries (#726). A run that did not
+	// list the directory leaves no record, so the next local deploy runs
+	// every file once and records afresh.
+	state.ComposeUnmanagedEntries = r.composeUnmanaged
+	state.ComposeUnmanagedRecorded = r.composeUnmanagedListed
 	// Persist this deploy's manifest so the next reconcile prunes only files
 	// bosun itself wrote. Both modes now return a manifest (remote seeds it from
 	// the local staging walk, #334). A dry-run still populates ManagedFiles (the

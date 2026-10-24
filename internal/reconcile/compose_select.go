@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -235,6 +236,11 @@ type composeSelectionInput struct {
 	// was not taken or failed, which forces a full run.
 	ComposeDirEntries []string
 	ComposeDirListed  bool
+	// PrevUnmanaged are the unmanaged compose-directory entry names recorded
+	// at the last successful deploy; PrevUnmanagedKnown is false when no
+	// record exists (older state, or the last deploy did not list).
+	PrevUnmanaged      []string
+	PrevUnmanagedKnown bool
 	// Managed are the live paths bosun deployed this run (the deploy
 	// manifest). Content-hash sync reports changes only for these, so a
 	// compose input outside it is untracked. Nil means none are tracked.
@@ -283,6 +289,14 @@ func selectComposeFiles(in composeSelectionInput) composeSelection {
 	}
 	if !in.ComposeDirListed {
 		return all("compose directory could not be listed")
+	}
+	if !in.PrevUnmanagedKnown {
+		return all("no record of unmanaged compose directory entries from the last deploy")
+	}
+	if cur := unmanagedComposeEntries(in.ComposeDirEntries, in.Managed); len(in.PrevUnmanaged) > 0 && !slices.Equal(in.PrevUnmanaged, cur) {
+		// An unmanaged entry present at the last deploy is gone or changed;
+		// a host-deleted .env leaves no other trace.
+		return all(fmt.Sprintf("unmanaged compose directory entries changed since the last deploy (was %s)", strings.Join(in.PrevUnmanaged, ", ")))
 	}
 	for _, e := range in.ComposeDirEntries {
 		if !managedEntry(filepath.Clean(e), in.Managed) {
@@ -350,6 +364,19 @@ func selectComposeFiles(in composeSelectionInput) composeSelection {
 		sel.Reason = "every file selected"
 	}
 	return sel
+}
+
+// unmanagedComposeEntries returns the sorted base names of compose-directory
+// entries that are not in the deploy manifest. Never nil.
+func unmanagedComposeEntries(entries []string, managed map[string]bool) []string {
+	out := []string{}
+	for _, e := range entries {
+		if !managedEntry(filepath.Clean(e), managed) {
+			out = append(out, filepath.Base(e))
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // managedEntry reports whether a compose-directory entry is in the deploy
@@ -514,6 +541,8 @@ func (r *Reconciler) selectLocalComposeFiles(ctx context.Context, targets []Depl
 		managed[filepath.Join(appdata, filepath.FromSlash(m))] = true
 	}
 
+	// The listing is taken after the sync and before compose up; a host
+	// write to compose/ inside that window is seen on the next deploy.
 	var dirEntries []string
 	dirListed := false
 	if entries, err := os.ReadDir(composeDir); err != nil {
@@ -534,18 +563,25 @@ func (r *Reconciler) selectLocalComposeFiles(ctx context.Context, targets []Depl
 		prev = append(prev, s.Name)
 	}
 
+	if dirListed {
+		r.composeUnmanaged = unmanagedComposeEntries(dirEntries, managed)
+		r.composeUnmanagedListed = true
+	}
+
 	sel := selectComposeFiles(composeSelectionInput{
-		Files:             files,
-		ComposeDir:        composeDir,
-		Changed:           changed,
-		FallbackReason:    fallback,
-		ComposeDirEntries: dirEntries,
-		ComposeDirListed:  dirListed,
-		Managed:           managed,
-		LiveKnown:         r.preDeployLiveKnown,
-		Present:           r.preDeployPresent,
-		Containers:        r.preDeployContainers,
-		PrevDeclared:      prev,
+		Files:              files,
+		ComposeDir:         composeDir,
+		Changed:            changed,
+		FallbackReason:     fallback,
+		ComposeDirEntries:  dirEntries,
+		ComposeDirListed:   dirListed,
+		PrevUnmanaged:      r.prevComposeUnmanaged,
+		PrevUnmanagedKnown: r.prevComposeUnmanagedKnown,
+		Managed:            managed,
+		LiveKnown:          r.preDeployLiveKnown,
+		Present:            r.preDeployPresent,
+		Containers:         r.preDeployContainers,
+		PrevDeclared:       prev,
 	})
 
 	if sel.All {

@@ -64,7 +64,12 @@ every entry in the live compose directory (file, symlink, or subdirectory) is
 in this run's deploy manifest; otherwise every file SHALL run. Compose reads
 more of that directory than the files passed with `-f` (a `.env` beside them,
 for one), and the reconciler cannot see changes to entries it does not deploy,
-so it fails closed on any of them.
+so it fails closed on any of them. Each successful local deploy SHALL record the
+sorted names of the compose directory's unmanaged entries in deploy state. Every
+file SHALL also run when no such record exists (state from an older version, or
+a deploy that did not list the directory), or when a non-empty record differs
+from the current listing, so an unmanaged entry deleted on the host still
+triggers a run.
 
 A local deploy SHALL run compose up only on the live compose files whose
 effective input changed this run, and on files that declare a service with no
@@ -143,3 +148,17 @@ rollback SHALL re-apply every live compose file. Remote deploys are unchanged.
 - **WHEN** the compose directory holds an entry that bosun did not deploy this run (for example a `.env` or an extra `*.yml` created on the host)
 - **THEN** compose up runs on every file
 - **AND** the `--remove-orphans` pass runs
+
+#### Scenario: Host-deleted unmanaged entry
+
+- **WHEN** the last successful deploy recorded `.env` as an unmanaged compose directory entry
+- **AND** the host has since deleted it
+- **THEN** compose up runs on every file
+- **AND** the `--remove-orphans` pass runs
+- **AND** deploy state records an empty unmanaged list
+
+#### Scenario: No unmanaged-entry record
+
+- **WHEN** deploy state has no record of unmanaged compose directory entries
+- **THEN** compose up runs on every file once
+- **AND** deploy state records the current unmanaged entries

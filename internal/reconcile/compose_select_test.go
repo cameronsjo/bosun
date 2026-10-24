@@ -22,14 +22,16 @@ func selectFixture() composeSelectionInput {
 			{Path: "/appdata/compose/a.yml", Services: []string{"svc-a"}, Inputs: []string{"/appdata/svc-a/app.env"}},
 			{Path: "/appdata/compose/b.yml", Services: []string{"svc-b"}},
 		},
-		ComposeDir:        "/appdata/compose",
-		ComposeDirEntries: []string{"/appdata/compose/a.yml", "/appdata/compose/b.yml"},
-		ComposeDirListed:  true,
-		Managed:           map[string]bool{"/appdata/compose/a.yml": true, "/appdata/compose/b.yml": true, "/appdata/svc-a/app.env": true},
-		LiveKnown:         true,
-		Present:           map[string]bool{"svc-a": true, "svc-b": true},
-		Containers:        map[string]bool{"svc-a": true, "svc-b": true},
-		PrevDeclared:      []string{"svc-a", "svc-b"},
+		ComposeDir:         "/appdata/compose",
+		ComposeDirEntries:  []string{"/appdata/compose/a.yml", "/appdata/compose/b.yml"},
+		ComposeDirListed:   true,
+		PrevUnmanaged:      []string{},
+		PrevUnmanagedKnown: true,
+		Managed:            map[string]bool{"/appdata/compose/a.yml": true, "/appdata/compose/b.yml": true, "/appdata/svc-a/app.env": true},
+		LiveKnown:          true,
+		Present:            map[string]bool{"svc-a": true, "svc-b": true},
+		Containers:         map[string]bool{"svc-a": true, "svc-b": true},
+		PrevDeclared:       []string{"svc-a", "svc-b"},
 	}
 }
 
@@ -140,6 +142,20 @@ func TestSelectComposeFiles(t *testing.T) {
 				in.Managed["/appdata/compose/fragments/x.yml"] = true
 			},
 			wantFiles: []string{},
+		},
+		{
+			name:       "no record of the last deploy's unmanaged entries runs every file",
+			mutate:     func(in *composeSelectionInput) { in.PrevUnmanagedKnown = false; in.PrevUnmanaged = nil },
+			wantFiles:  allFiles,
+			wantAll:    true,
+			wantReason: "no record of unmanaged compose directory entries",
+		},
+		{
+			name:       "an unmanaged entry gone since the last deploy runs every file",
+			mutate:     func(in *composeSelectionInput) { in.PrevUnmanaged = []string{".env"} },
+			wantFiles:  allFiles,
+			wantAll:    true,
+			wantReason: "changed since the last deploy (was .env)",
 		},
 		{
 			name:       "a caller fallback reason runs every file",
@@ -489,9 +505,10 @@ func changedOnlyHarnessWith(t *testing.T, o harnessOpts) (r *Reconciler, upCalls
 
 func steadyPrior() DeployState {
 	return DeployState{
-		LastDeployedCommit: "prevcommit",
-		DeployedFiles:      []string{"compose/a.yml", "compose/b.yml"},
-		DeclaredServices:   []DeclaredService{{Name: "svc-a"}, {Name: "svc-b"}},
+		ComposeUnmanagedRecorded: true,
+		LastDeployedCommit:       "prevcommit",
+		DeployedFiles:            []string{"compose/a.yml", "compose/b.yml"},
+		DeclaredServices:         []DeclaredService{{Name: "svc-a"}, {Name: "svc-b"}},
 	}
 }
 
@@ -754,4 +771,44 @@ func TestRun_ChangedOnlyComposeUp_UnmanagedComposeDirEntryRunsEveryFile(t *testi
 			assert.Contains(t, readDockerLog(t, dockerLog), "--remove-orphans", "a full run keeps the orphan pass")
 		})
 	}
+}
+
+// A host-deleted compose/.env leaves nothing on disk or in the written list;
+// only the last deploy's record of unmanaged entries shows it was there.
+func TestRun_ChangedOnlyComposeUp_HostDeletedUnmanagedEntryRunsEveryFile(t *testing.T) {
+	prior := steadyPrior()
+	prior.ComposeUnmanagedEntries = []string{".env"}
+	r, calls, dockerLog, _ := changedOnlyHarnessWith(t, harnessOpts{
+		liveB:   "services:\n  svc-b:\n    image: alpine:2\n",
+		prior:   prior,
+		running: []string{"svc-a", "svc-b"},
+		fileA:   "services:\n  svc-a:\n    image: alpine:${TAG:-1}\n",
+	})
+
+	require.NoError(t, r.Run(context.Background()))
+
+	assert.Equal(t, []string{"a.yml", "b.yml"}, upFileBases(*calls))
+	assert.Contains(t, readDockerLog(t, dockerLog), "--remove-orphans")
+	saved := LoadState(r.config.StateFile)
+	assert.True(t, saved.ComposeUnmanagedRecorded)
+	assert.Empty(t, saved.ComposeUnmanagedEntries, "the record now says nothing unmanaged remains, so the next deploy can narrow again")
+}
+
+// State from an older bosun has no record: fail closed once, then record.
+func TestRun_ChangedOnlyComposeUp_MissingUnmanagedRecordRunsEveryFileOnceThenRecords(t *testing.T) {
+	prior := steadyPrior()
+	prior.ComposeUnmanagedRecorded = false
+	r, calls, _, _ := changedOnlyHarnessWith(t, harnessOpts{
+		liveB:     "services:\n  svc-b:\n    image: alpine:2\n",
+		prior:     prior,
+		running:   []string{"svc-a", "svc-b"},
+		liveFiles: map[string]string{"compose/.env": "TAG=2\n"},
+	})
+
+	require.NoError(t, r.Run(context.Background()))
+
+	assert.Equal(t, []string{"a.yml", "b.yml"}, upFileBases(*calls))
+	saved := LoadState(r.config.StateFile)
+	assert.True(t, saved.ComposeUnmanagedRecorded)
+	assert.Equal(t, []string{".env"}, saved.ComposeUnmanagedEntries)
 }
