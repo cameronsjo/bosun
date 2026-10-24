@@ -555,6 +555,8 @@ and forwards normalized triggers to the daemon:
 
 All signatures are validated using HMAC-SHA256 (or SHA1 for legacy) with constant-time comparison.
 
+After the signature and push-event checks, each receiver endpoint forwards only pushes to the tracked branch (`--branch`, `BOSUN_REPO_BRANCH`, or the daemon's `/config`). GitHub, GitLab, and Gitea need `ref` to equal `refs/heads/<branch>`; Bitbucket needs a `push.changes[].new` entry of type `branch` with that name. Other branches, tags, and deletions get `200` `ignored` and are not forwarded. With no branch known, every push is forwarded and startup warns.
+
 ### Webhook Setup
 
 1. **Configure a webhook secret** in your bosun environment (`WEBHOOK_SECRET` — required unless you explicitly opt out; see above)

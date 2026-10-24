@@ -64,8 +64,9 @@ Configuration:
   --port          HTTP port to listen on (default: 8080)
   --socket        Path to daemon socket (default: $BOSUN_SOCKET_PATH or /var/run/bosun.sock)
   --secret        Webhook secret for signature validation
-  --branch        Tracked branch for the generic /webhook ref filter
-                  (default: $BOSUN_REPO_BRANCH, then the daemon's branch)
+  --branch        Tracked branch for the webhook ref filter (generic and
+                  provider endpoints; default: $BOSUN_REPO_BRANCH, then the
+                  daemon's branch)
   --fetch-secret  Fetch secret from daemon (never stored on disk)
 
 Examples:
@@ -81,7 +82,7 @@ func init() {
 	webhookCmd.Flags().StringVar(&webhookSocket, "socket", resolveSocketPath(), "Path to daemon socket")
 	webhookCmd.Flags().StringVar(&webhookSecret, "secret", "", "Webhook secret for signature validation")
 	webhookCmd.Flags().BoolVar(&webhookFetchSecret, "fetch-secret", false, "Fetch webhook secret from daemon (daemon-injected secrets)")
-	webhookCmd.Flags().StringVar(&webhookBranch, "branch", "", "Tracked branch for the generic /webhook ref filter (default: $BOSUN_REPO_BRANCH, then the daemon's configured branch)")
+	webhookCmd.Flags().StringVar(&webhookBranch, "branch", "", "Tracked branch for the webhook ref filter on every trigger endpoint (default: $BOSUN_REPO_BRANCH, then the daemon's configured branch)")
 
 	rootCmd.AddCommand(webhookCmd)
 }
@@ -199,9 +200,10 @@ type webhookHandler struct {
 	// daemon's own opt-out.
 	allowUnauthenticated bool
 
-	// branch is the tracked branch the generic /webhook compares a payload's
-	// ref against (#728). Empty means unknown: only the GitHub event filter
-	// applies, and startup says so.
+	// branch is the tracked branch every trigger endpoint compares a
+	// payload's ref against (#728 generic, #740 providers). Empty means
+	// unknown: the ref check is off, only event filters apply, and startup
+	// says so.
 	branch string
 }
 
@@ -283,16 +285,16 @@ func warnWebhookReceiverAuthPosture(handler *webhookHandler) {
 }
 
 // announceWebhookReceiverBranchFilter states at startup which branch the
-// generic /webhook filters on, or that the ref filter is off.
+// trigger endpoints filter on, or that the ref filter is off.
 func announceWebhookReceiverBranchFilter(handler *webhookHandler) {
 	if handler.branch != "" {
-		ui.Info("Generic /webhook branch filter: refs/heads/%s", daemon.SanitizeWebhookPusherName(handler.branch))
+		ui.Info("Webhook branch filter: refs/heads/%s", daemon.SanitizeWebhookPusherName(handler.branch))
 		return
 	}
 	logger := log.Component(log.ComponentWebhook)
 	logger.Warn().
-		Msg("Generic /webhook ref filter is off, expected a tracked branch but none is known. Pass --branch, set BOSUN_REPO_BRANCH, or let the receiver read the daemon config (--fetch-secret)")
-	ui.Warning("Generic /webhook ref filter off: tracked branch unknown")
+		Msg("Webhook ref filter is off on every trigger endpoint, expected a tracked branch but none is known. Pass --branch, set BOSUN_REPO_BRANCH, or let the receiver read the daemon config (--fetch-secret)")
+	ui.Warning("Webhook ref filter off: tracked branch unknown, pushes to any branch are forwarded")
 }
 
 func (h *webhookHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
@@ -415,6 +417,10 @@ func (h *webhookHandler) handleGitHubWebhook(w http.ResponseWriter, r *http.Requ
 		pusherName = daemon.SanitizeWebhookPusherName(payload.Pusher.Name)
 		ui.Info("GitHub push from %s on %s", pusherName, daemon.SanitizeWebhookPusherName(payload.Ref))
 	}
+	if process, reason := daemon.ShouldProcessPushRef(payload.Ref, h.branch); !process {
+		writeProviderPushIgnored(w, r, "github", payload.Ref, reason)
+		return
+	}
 
 	// Forward to daemon
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -482,6 +488,10 @@ func (h *webhookHandler) handleGitLabWebhook(w http.ResponseWriter, r *http.Requ
 	if err := json.Unmarshal(body, &payload); err == nil {
 		userName = daemon.SanitizeWebhookPusherName(payload.UserName)
 		ui.Info("GitLab push from %s on %s", userName, daemon.SanitizeWebhookPusherName(payload.Ref))
+	}
+	if process, reason := daemon.ShouldProcessPushRef(payload.Ref, h.branch); !process {
+		writeProviderPushIgnored(w, r, "gitlab", payload.Ref, reason)
+		return
 	}
 
 	// Forward to daemon
@@ -553,6 +563,10 @@ func (h *webhookHandler) handleGiteaWebhook(w http.ResponseWriter, r *http.Reque
 		pusherLogin = daemon.SanitizeWebhookPusherName(payload.Pusher.Login)
 		ui.Info("Gitea push from %s on %s", pusherLogin, daemon.SanitizeWebhookPusherName(payload.Ref))
 	}
+	if process, reason := daemon.ShouldProcessPushRef(payload.Ref, h.branch); !process {
+		writeProviderPushIgnored(w, r, "gitea", payload.Ref, reason)
+		return
+	}
 
 	// Forward to daemon
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -621,21 +635,21 @@ func (h *webhookHandler) handleBitbucketWebhook(w http.ResponseWriter, r *http.R
 			DisplayName string `json:"display_name"`
 		} `json:"actor"`
 		Push struct {
-			Changes []struct {
-				New struct {
-					Name string `json:"name"`
-				} `json:"new"`
-			} `json:"changes"`
+			Changes []bitbucketPushChange `json:"changes"`
 		} `json:"push"`
 	}
 	actorName := ""
 	if err := json.Unmarshal(body, &payload); err == nil {
 		actorName = daemon.SanitizeWebhookPusherName(payload.Actor.DisplayName)
 		branch := ""
-		if len(payload.Push.Changes) > 0 {
+		if len(payload.Push.Changes) > 0 && payload.Push.Changes[0].New != nil {
 			branch = daemon.SanitizeWebhookPusherName(payload.Push.Changes[0].New.Name)
 		}
 		ui.Info("Bitbucket push from %s on %s", actorName, branch)
+	}
+	if process, name, reason := shouldProcessBitbucketPush(payload.Push.Changes, h.branch); !process {
+		writeProviderPushIgnored(w, r, "bitbucket", name, reason)
+		return
 	}
 
 	// Forward to daemon
@@ -657,6 +671,59 @@ func (h *webhookHandler) handleBitbucketWebhook(w http.ResponseWriter, r *http.R
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// bitbucketPushChange is one entry of a Bitbucket push payload's
+// push.changes. New is nil when the change deletes a branch or tag.
+type bitbucketPushChange struct {
+	New *struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	} `json:"new"`
+}
+
+// shouldProcessBitbucketPush decides whether an authorized Bitbucket push
+// updates the tracked branch (#740). Bitbucket names a branch bare (no
+// refs/heads/ prefix) and lists one entry per updated ref, so the push passes
+// when any change's new target is a branch with exactly the tracked name. Tags,
+// deletions (no new target), other branches, and a push with no changes are
+// ignored. An empty trackingBranch means the branch is unknown: every push
+// passes. The returned name is the first change's raw target name for logging;
+// callers must sanitize it, and reason may embed it unsanitized.
+func shouldProcessBitbucketPush(changes []bitbucketPushChange, trackingBranch string) (process bool, name string, reason string) {
+	if trackingBranch == "" {
+		return true, "", "no tracked branch configured; branch not checked"
+	}
+	for _, change := range changes {
+		if change.New != nil && change.New.Type == "branch" && change.New.Name == trackingBranch {
+			return true, change.New.Name, "push to tracked branch " + trackingBranch
+		}
+	}
+	if len(changes) > 0 && changes[0].New != nil {
+		name = changes[0].New.Name
+		return false, name, "Push to " + changes[0].New.Type + " " + name + " ignored (tracking branch " + trackingBranch + ")"
+	}
+	return false, "", "Push with no new branch target ignored (tracking branch " + trackingBranch + ")"
+}
+
+// writeProviderPushIgnored answers an authorized provider push that does not
+// target the tracked branch (#740): 200 so the provider does not retry, a
+// sanitized log line, and nothing forwarded to the daemon. Mirrors the generic
+// /webhook's ignored response.
+func writeProviderPushIgnored(w http.ResponseWriter, r *http.Request, provider, ref, reason string) {
+	reason = daemon.SanitizeWebhookPusherName(reason)
+	logger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
+	logger.Info().
+		Str("provider", provider).
+		Str(log.FieldBranch, daemon.SanitizeWebhookPusherName(ref)).
+		Str("reason", reason).
+		Msg("Provider webhook push ignored, expected a push to the tracked branch")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ignored",
+		"message": reason,
+	})
 }
 
 func (h *webhookHandler) handleHealth(w http.ResponseWriter, r *http.Request) {

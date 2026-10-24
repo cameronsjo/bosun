@@ -705,7 +705,7 @@ bosun webhook --fetch-secret
 | `--socket` | Path to daemon socket |
 | `--secret` | Webhook secret for signature validation |
 | `--fetch-secret` | Fetch secret from daemon (never stored on disk) |
-| `--branch` | Tracked branch for the generic `/webhook` ref filter (default: `BOSUN_REPO_BRANCH`, then the daemon's configured branch) |
+| `--branch` | Tracked branch for the ref filter on every trigger endpoint (default: `BOSUN_REPO_BRANCH`, then the daemon's configured branch) |
 
 The webhook receiver validates signatures and forwards valid requests to the daemon's trigger endpoint. Supports GitHub, GitLab, Gitea, and Bitbucket webhook formats.
 
@@ -727,6 +727,10 @@ startup and every accepted unauthenticated request logs a `SECURITY:` warning.
 **Generic endpoint branch filter:**
 
 The receiver's generic `/webhook` applies the daemon's rule after the signature check: a JSON body with a top-level `ref` triggers only when it equals `refs/heads/<branch>`. Other branches, tags, and bare branch names get `200` `{"status":"ignored"}` and are not forwarded. An `X-GitHub-Event` other than `push`, or a GitHub push with no JSON `ref`, is ignored too. A body with no `ref` still forwards. The branch comes from `--branch`, then `BOSUN_REPO_BRANCH`/`REPO_BRANCH`, then the daemon's `GET /config`. When none is known the ref check is off and startup logs a warning.
+
+**Provider endpoint branch filter:**
+
+After the signature (or GitLab token) check and the push-event check, `/webhook/github`, `/webhook/gitlab`, and `/webhook/gitea` forward a push only when its `ref` equals `refs/heads/<branch>`. `/webhook/bitbucket` forwards a push when any `push.changes[].new` entry is a `branch` named `<branch>`. Other branches, tags, deleted branches, and pushes with no readable ref get `200` `{"status":"ignored"}` and are not forwarded. The branch is the same one the generic endpoint uses; with none known, every push is forwarded.
 
 **Daemon-Injected Secrets:**
 
