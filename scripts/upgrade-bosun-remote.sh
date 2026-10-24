@@ -71,7 +71,7 @@ RUN_DIR="" LOCKED=0 FINISHING=0 CANDIDATE="" MUTATING=0 DOWNGRADE=0
 FAILURES_DIR=""
 # The upgrade record: set at preflight, or loaded from the state file on resume.
 PROJECT="" INCUMBENT="" INCUMBENT_IMAGE="" INCUMBENT_VERSION="" ROLLBACK_TAG="" CANDIDATE_IMAGE=""
-AGE_SRC="" DEPLOY_SRC="" KNOWN_HOSTS_SRC="" KNOWN_HOSTS_TARGET=""
+AGE_SRC="" DEPLOY_SRC="" KNOWN_HOSTS_VOLUMES=""
 
 say() { printf '%s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }
@@ -319,15 +319,36 @@ mount_source() {
   printf '%s' "$src"
 }
 
-# known_hosts_volume prints the shadow volume line for the live service's SSH
-# known_hosts file, or nothing when the live service mounts none. bosun 0.45.0+
-# refuses SSH Git without one (internal/reconcile/git.go), so a shadow without
-# it fails every SSH render. The target is BOSUN_SSH_KNOWN_HOSTS when set (it is
-# on the env allowlist, so the shadow sees the same value), else the
-# /config/known_hosts default.
-known_hosts_volume() {
-  [[ -n "$KNOWN_HOSTS_SRC" ]] || return 0
-  printf '      - "%s:%s:ro"\n' "$KNOWN_HOSTS_SRC" "$KNOWN_HOSTS_TARGET"
+# resolve_known_hosts mirrors the daemon's lookup (buildKnownHostsPaths in
+# internal/reconcile/pure.go): candidates are BOSUN_SSH_KNOWN_HOSTS when
+# non-empty (empty means unset), then /config/known_hosts, and the first that
+# exists wins. bosun 0.45.0+ refuses SSH Git when none exists. The shadow gets
+# every candidate the live service mounts, read-only at the same path, so it
+# walks the same order and lands on the same file. BOSUN_SSH_KNOWN_HOSTS is on
+# the env allowlist, so the shadow sees the same value. Sets
+# KNOWN_HOSTS_VOLUMES to the YAML volume lines, or "" when none is mounted.
+resolve_known_hosts() {
+  local cfg="$1" env_path candidate src
+  local -a candidates=()
+  env_path="$(jq -r '.services.bosun.environment.BOSUN_SSH_KNOWN_HOSTS // ""' <<<"$cfg")" ||
+    die CONFIG "could not read BOSUN_SSH_KNOWN_HOSTS out of $LIVE" 64
+  if [[ -n "$env_path" ]]; then
+    [[ "$env_path" =~ $PATH_RE ]] ||
+      die CONFIG "BOSUN_SSH_KNOWN_HOSTS in $LIVE is not a plain absolute path: $(printable "$env_path")" 64
+    candidates+=("$env_path")
+  fi
+  [[ "$env_path" == /config/known_hosts ]] || candidates+=(/config/known_hosts)
+  KNOWN_HOSTS_VOLUMES=""
+  for candidate in "${candidates[@]}"; do
+    src="$(mount_source "$cfg" "$candidate")" || src=""
+    if [[ -n "$src" ]]; then
+      KNOWN_HOSTS_VOLUMES+="$(printf '      - "%s:%s:ro"' "$src" "$candidate")"$'\n'
+      say "  shadow gets known_hosts $src at $candidate"
+    fi
+  done
+  if [[ -z "$KNOWN_HOSTS_VOLUMES" ]]; then
+    say "  WARNING the live service has no single plain-path known_hosts mount at ${env_path:+$env_path or }/config/known_hosts; bosun 0.45.0+ refuses SSH Git without one"
+  fi
 }
 
 # acquire_lock takes the state-dir lock and records its owner. A lock whose
@@ -424,8 +445,8 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     network_mode: bridge
-    # The reconcile lock dir is the DefaultLockDir constant in
-    # internal/reconcile/target.go -- /var/run/bosun, which bosun/Dockerfile
+    # The reconcile lock dir is the directory of the DefaultLockFile constant
+    # in internal/reconcile/target.go -- /var/run/bosun, which bosun/Dockerfile
     # creates and chowns to uid 1000. Dropping ALL takes CAP_DAC_OVERRIDE with
     # it, and without that capability uid 0 is subject to ordinary permission
     # checks -- so root cannot write there and every render fails to take the
@@ -450,8 +471,7 @@ $env_yaml
     volumes:
       - "$AGE_SRC:/config/age-key.txt:ro"
       - "$DEPLOY_SRC:/config/deploy-key:ro"
-$(known_hosts_volume)
-      - "$dir/appdata-empty:/mnt/appdata:ro"
+${KNOWN_HOSTS_VOLUMES}      - "$dir/appdata-empty:/mnt/appdata:ro"
       - "$dir:/work"
     labels:
       - com.centurylinklabs.watchtower.enable=false
@@ -834,18 +854,7 @@ main() {
   if [[ -z "$AGE_SRC" || -z "$DEPLOY_SRC" ]]; then
     die CONFIG "$LIVE needs exactly one plain-path mount each for /config/age-key.txt and /config/deploy-key" 64
   fi
-  KNOWN_HOSTS_TARGET="$(jq -r '.services.bosun.environment.BOSUN_SSH_KNOWN_HOSTS // "/config/known_hosts"' <<<"$cfg")" ||
-    die CONFIG "could not read BOSUN_SSH_KNOWN_HOSTS out of $LIVE" 64
-  [[ "$KNOWN_HOSTS_TARGET" =~ $PATH_RE ]] ||
-    die CONFIG "BOSUN_SSH_KNOWN_HOSTS in $LIVE is not a plain absolute path: $(printable "$KNOWN_HOSTS_TARGET")" 64
-  # Optional: a pre-0.45.0 incumbent works without one. A candidate that needs
-  # it and lacks it fails its own render, which is CANDIDATE-FAILED.
-  KNOWN_HOSTS_SRC="$(mount_source "$cfg" "$KNOWN_HOSTS_TARGET")" || KNOWN_HOSTS_SRC=""
-  if [[ -n "$KNOWN_HOSTS_SRC" ]]; then
-    say "  shadow gets known_hosts $KNOWN_HOSTS_SRC at $KNOWN_HOSTS_TARGET"
-  else
-    say "  WARNING the live service mounts no known_hosts at $KNOWN_HOSTS_TARGET; bosun 0.45.0+ refuses SSH Git without one"
-  fi
+  resolve_known_hosts "$cfg"
   RUN_DIR="$(mktemp -d "$TMP_ROOT/bosun-canary.XXXXXX")" || die TRANSIENT "could not create a shadow directory under $TMP_ROOT" 75
   chmod 700 "$RUN_DIR" || die TRANSIENT "could not restrict $RUN_DIR" 75
   has_no_alerts_flag "$CANDIDATE" || die CONFIG "the candidate has no 'reconcile --no-alerts'; it predates the canary and cannot be shadow-rendered" 64

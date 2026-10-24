@@ -321,7 +321,7 @@ if grep -F 'run --rm' "$F/calls" | grep -qF -- "$F/compose/docker-compose.yml"; 
 for role in incumbent candidate; do
   if grep -qF known_hosts "$F/override-$role.yml"; then fail "$role shadow mounts a known_hosts the live service lacks"; fi
 done
-assert_out "mounts no known_hosts at /config/known_hosts"; ok
+assert_out "no single plain-path known_hosts mount at /config/known_hosts"; ok
 
 # bosun 0.45.0+ refuses SSH Git without known_hosts, so the shadow must carry
 # the live service's file, read-only, at the same container path.
@@ -336,19 +336,53 @@ for role in incumbent candidate; do
 done
 assert_out "shadow gets known_hosts /mnt/user/appdata/bosun/known_hosts"; ok
 
+# The daemon tries BOSUN_SSH_KNOWN_HOSTS first and falls back to
+# /config/known_hosts (internal/reconcile/pure.go buildKnownHostsPaths), so the
+# shadow carries both, env path first, to walk the same order.
 new_case known-hosts-env-path
 jq '.services.bosun.environment.BOSUN_SSH_KNOWN_HOSTS = "/ssh/known_hosts"
     | .services.bosun.volumes += [{source: "/mnt/user/appdata/bosun/kh", target: "/ssh/known_hosts"},
-                                  {source: "/mnt/user/appdata/bosun/unused", target: "/config/known_hosts"}]' \
+                                  {source: "/mnt/user/appdata/bosun/fallback", target: "/config/known_hosts"}]' \
   "$F/live.json" > "$F/live.tmp" && mv "$F/live.tmp" "$F/live.json"
 run_remote --dry-run
 assert_rc 0
 for role in incumbent candidate; do
   o="$F/override-$role.yml"
-  grep -qF -- '- "/mnt/user/appdata/bosun/kh:/ssh/known_hosts:ro"' "$o" || fail "$role shadow lacks the BOSUN_SSH_KNOWN_HOSTS mount"
-  if grep -qF unused "$o"; then fail "$role shadow mounted /config/known_hosts while BOSUN_SSH_KNOWN_HOSTS points elsewhere"; fi
+  env_line="$(grep -nF -- '- "/mnt/user/appdata/bosun/kh:/ssh/known_hosts:ro"' "$o" | cut -d: -f1)" || true
+  fb_line="$(grep -nF -- '- "/mnt/user/appdata/bosun/fallback:/config/known_hosts:ro"' "$o" | cut -d: -f1)" || true
+  [[ -n "$env_line" ]] || fail "$role shadow lacks the BOSUN_SSH_KNOWN_HOSTS mount"
+  [[ -n "$fb_line" ]] || fail "$role shadow lacks the /config/known_hosts fallback mount"
 done
 ok
+
+# An empty BOSUN_SSH_KNOWN_HOSTS is unset to the daemon, not an invalid path.
+new_case known-hosts-env-empty
+jq '.services.bosun.environment.BOSUN_SSH_KNOWN_HOSTS = ""
+    | .services.bosun.volumes += [{source: "/mnt/user/appdata/bosun/known_hosts", target: "/config/known_hosts"}]' \
+  "$F/live.json" > "$F/live.tmp" && mv "$F/live.tmp" "$F/live.json"
+run_remote --dry-run
+assert_rc 0
+for role in incumbent candidate; do
+  grep -qF -- '- "/mnt/user/appdata/bosun/known_hosts:/config/known_hosts:ro"' "$F/override-$role.yml" ||
+    fail "$role shadow lacks /config/known_hosts when BOSUN_SSH_KNOWN_HOSTS is empty"
+done
+ok
+
+# BOSUN_SSH_KNOWN_HOSTS set but not mounted: the daemon falls back to
+# /config/known_hosts, so the shadow must still carry it.
+new_case known-hosts-env-unmounted-fallback
+jq '.services.bosun.environment.BOSUN_SSH_KNOWN_HOSTS = "/ssh/known_hosts"
+    | .services.bosun.volumes += [{source: "/mnt/user/appdata/bosun/known_hosts", target: "/config/known_hosts"}]' \
+  "$F/live.json" > "$F/live.tmp" && mv "$F/live.tmp" "$F/live.json"
+run_remote --dry-run
+assert_rc 0
+for role in incumbent candidate; do
+  o="$F/override-$role.yml"
+  grep -qF -- '- "/mnt/user/appdata/bosun/known_hosts:/config/known_hosts:ro"' "$o" ||
+    fail "$role shadow lacks the /config/known_hosts fallback"
+  if grep -qF '/ssh/known_hosts:ro' "$o"; then fail "$role shadow mounted an env path the live service does not mount"; fi
+done
+assert_no_out "WARNING the live service has no single plain-path known_hosts mount"; ok
 
 new_case known-hosts-env-path-refused
 jq '.services.bosun.environment.BOSUN_SSH_KNOWN_HOSTS = "relative/kh"' "$F/live.json" > "$F/live.tmp" && mv "$F/live.tmp" "$F/live.json"

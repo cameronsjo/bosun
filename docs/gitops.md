@@ -858,6 +858,12 @@ The reconciler uses file-based locking to prevent concurrent runs.
 
 **Path**: `/var/run/bosun/reconcile.lock`
 
+The directory must be owned by the daemon uid with mode `0700`. The image's
+directory satisfies this for its default user (uid 1000). A container run as
+root or another uid needs its own `0700` directory at `/run/bosun`, such as
+`tmpfs: ["/run/bosun:mode=0700,size=1m"]`; see
+[Security § Filesystem Confinement](security.md#filesystem-confinement) for the full rule.
+
 ### Unix Implementation
 
 Uses `flock(2)` system call with `LOCK_EX | LOCK_NB` for non-blocking exclusive lock.
