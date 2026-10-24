@@ -28,3 +28,14 @@ The one-shot `bosun reconcile` command and the daemon SHALL resolve the same val
 - **WHEN** `bosun reconcile --remote root@host` builds its configuration
 - **THEN** the target host is `root@host`
 - **AND** the deploy mode is `remote`
+
+#### Scenario: Remote flag refused with named targets
+
+- **GIVEN** named targets from `bosun.yaml` or `BOSUN_TARGETS`
+- **WHEN** `bosun reconcile --remote root@host` builds its configuration
+- **THEN** it fails with an error saying `--remote` cannot be combined with named targets
+
+#### Scenario: Empty remote host rejected
+
+- **WHEN** `bosun reconcile --remote ""` builds its configuration
+- **THEN** it fails with an error requiring a non-empty host

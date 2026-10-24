@@ -30,6 +30,10 @@ var (
 	reconcileRemote   string
 	reconcileTarget   string
 	reconcileNoAlerts bool
+
+	// reconcileRemoteGiven records that --remote was passed at all, so an empty
+	// value can be rejected instead of read as "flag absent".
+	reconcileRemoteGiven bool
 )
 
 // reconcileCmd represents the reconcile command.
@@ -245,6 +249,9 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 	if target := os.Getenv("DEPLOY_TARGET"); target != "" {
 		cfg.TargetHost = target
 	}
+	if reconcileRemoteGiven && reconcileRemote == "" {
+		return nil, errors.New("--remote requires a non-empty host (for example root@192.168.1.8)")
+	}
 	if reconcileRemote != "" {
 		cfg.TargetHost = reconcileRemote
 	}
@@ -361,10 +368,21 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 		applyTargetsOverrideForCLI(cfg, v)
 	}
 
+	// --remote names one host for the implicit default target. A named target
+	// carries its own host (often none, meaning local), which would replace the
+	// flag's host while --remote had already forced remote mode: refuse instead.
+	if len(cfg.Targets) > 0 && reconcileRemote != "" {
+		return nil, errors.New("--remote cannot be combined with named targets (bosun.yaml targets: or BOSUN_TARGETS); set target_host on the target instead")
+	}
+
 	return cfg, nil
 }
 
 func runReconcile(cmd *cobra.Command, args []string) {
+	// Tests call runReconcile with a nil command.
+	if cmd != nil {
+		reconcileRemoteGiven = cmd.Flags().Changed("remote")
+	}
 	cfg, err := buildReconcileConfigFromEnv()
 	if err != nil {
 		ui.Fatal("%v", err)

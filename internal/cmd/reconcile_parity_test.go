@@ -355,10 +355,26 @@ func TestReconcileConfigHonorsDaemonEnvironment(t *testing.T) {
 	require.Equal(t, "local", forced.DeployMode, "--local outranks BOSUN_DEPLOY_MODE")
 }
 
-// --remote must beat BOSUN_DEPLOY_MODE=local: the flag names the host to deploy
-// to, and a local-mode override would silently deploy to this machine instead.
+// remoteFlagSetup prepares a bare environment (no named targets unless the
+// caller adds them) for the --remote flag tests.
+func remoteFlagSetup(t *testing.T, projectConfig string) {
+	t.Helper()
+	resetReconcileFlags(t)
+	dir := t.TempDir()
+	if projectConfig != "" {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "bosun.yaml"), []byte(projectConfig), 0o600))
+	}
+	t.Chdir(dir)
+	t.Setenv("BOSUN_REPO_URL", "git@github.com:cameronsjo/homelab.git")
+	t.Setenv("BOSUN_TARGETS", "")
+	t.Setenv("BOSUN_DEPLOY_MODE", "")
+}
+
+// --remote must beat BOSUN_DEPLOY_MODE=local for the default target: the flag
+// names the host to deploy to, and a local-mode override would silently deploy
+// to this machine instead.
 func TestReconcileRemoteFlagOutranksDeployModeEnv(t *testing.T) {
-	buildBothConfigs(t, true) // sets up cwd, project config and environment
+	remoteFlagSetup(t, "")
 	t.Setenv("BOSUN_DEPLOY_MODE", "local")
 	reconcileRemote = "root@flag-host"
 
@@ -366,6 +382,55 @@ func TestReconcileRemoteFlagOutranksDeployModeEnv(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "root@flag-host", cfg.TargetHost)
 	require.Equal(t, "remote", cfg.DeployMode, "--remote outranks BOSUN_DEPLOY_MODE=local")
+}
+
+// With named targets, --remote would force remote mode while each target's own
+// (often empty) host replaced the flag's host: a local target would switch to
+// SSH. It is refused instead, from either target source.
+func TestReconcileRemoteFlagRefusedWithNamedTargets(t *testing.T) {
+	const projectTargets = "targets:\n  - name: unraid\n    project_name: homelab\n"
+	for _, tc := range []struct {
+		name    string
+		project string
+		env     string
+	}{
+		{"project config targets", projectTargets, ""},
+		{"BOSUN_TARGETS", "", `[{"name":"unraid","project_name":"homelab"}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remoteFlagSetup(t, tc.project)
+			t.Setenv("BOSUN_TARGETS", tc.env)
+			reconcileRemote = "root@flag-host"
+
+			_, err := buildReconcileConfigFromEnv()
+			require.ErrorContains(t, err, "--remote cannot be combined with named targets")
+		})
+	}
+}
+
+// Without the flag, a named target's deploy mode and host are untouched.
+func TestReconcileNamedTargetsUnchangedWithoutRemoteFlag(t *testing.T) {
+	remoteFlagSetup(t, "targets:\n  - name: unraid\n    project_name: homelab\n")
+
+	cfg, err := buildReconcileConfigFromEnv()
+	require.NoError(t, err)
+	require.Empty(t, cfg.DeployMode, "no flag and no variable: mode stays auto-detected")
+	require.Empty(t, cfg.TargetHost)
+	require.Len(t, cfg.Targets, 1)
+	require.Empty(t, cfg.Targets[0].TargetHost)
+	require.Empty(t, cfg.ConfigForTarget(cfg.Targets[0]).DeployMode)
+}
+
+// --remote "" used to be silently ignored, which deploys somewhere other than
+// the operator typed.
+func TestReconcileRemoteFlagRejectsEmptyHost(t *testing.T) {
+	remoteFlagSetup(t, "")
+	t.Cleanup(func() { reconcileRemoteGiven = false })
+	reconcileRemoteGiven = true
+	reconcileRemote = ""
+
+	_, err := buildReconcileConfigFromEnv()
+	require.ErrorContains(t, err, "--remote requires a non-empty host")
 }
 
 // With the environment unset both paths read bosun.yaml, and the one-shot
