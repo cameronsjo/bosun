@@ -36,6 +36,8 @@ func isPropagatedCallerCancellation(ctx context.Context, err error) bool {
 }
 
 func (r *Reconciler) finalizeAttempt(ctx context.Context, runErr error, snapshot *attemptBudgetSnapshot) {
+	recoverySent := r.recoverySentThisRun
+	r.recoverySentThisRun = false
 	if snapshot == nil {
 		return
 	}
@@ -58,10 +60,23 @@ func (r *Reconciler) finalizeAttempt(ctx context.Context, runErr error, snapshot
 		return
 	}
 
-	if state.LastAttemptOutcome != nil {
-		state.LastAttemptOutcome = nil
-		if err := SaveState(r.config.StateFile, state); err != nil {
-			logger.Error().Err(err).Str(log.FieldPath, r.config.StateFile).Msg("Failed to clear stale interrupted reconcile outcome")
+	if state.LastAttemptOutcome == nil {
+		return
+	}
+
+	// An interruption alert told the operator the deploy is broken, so a later
+	// clean run owes a retraction whatever LastAlertedAttempt says. The budget
+	// field is untouched by interruptions, so retractFailureAlert cannot see
+	// this debt. Skip it when that path already retracted during this run.
+	if runErr == nil && !recoverySent && state.LastAttemptOutcome.Outcome == attemptOutcomeInterrupted {
+		if r.sendRecoveryAlert(ctx, 1) == recoveryDeliveryFailed {
+			// Keep the marker so the next clean run retries.
+			return
 		}
+	}
+
+	state.LastAttemptOutcome = nil
+	if err := SaveState(r.config.StateFile, state); err != nil {
+		logger.Error().Err(err).Str(log.FieldPath, r.config.StateFile).Msg("Failed to clear stale interrupted reconcile outcome")
 	}
 }

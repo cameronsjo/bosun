@@ -539,3 +539,76 @@ func expiredDeadlineContext(t *testing.T) context.Context {
 	t.Cleanup(cancel)
 	return ctx
 }
+
+func interruptedState(t *testing.T) (string, *DeployState) {
+	t.Helper()
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	state := &DeployState{
+		LastAttemptOutcome: &LastAttemptOutcome{Outcome: attemptOutcomeInterrupted, Commit: "old", Timestamp: time.Now()},
+	}
+	require.NoError(t, SaveState(stateFile, state))
+	return stateFile, state
+}
+
+func TestFinalizeAttempt_CleanRunAfterInterruptionSendsOneRecovery(t *testing.T) {
+	stateFile, state := interruptedState(t)
+	alerter := &mockAlertSender{}
+	r := NewReconciler(&Config{StateFile: stateFile, OnFailure: true, OnRecovery: true}, WithAlerter(alerter))
+	r.lastCommit = "new"
+
+	r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(state, "new"))
+	assert.Equal(t, 1, alerter.deployRecoveryCalls)
+	assert.Nil(t, LoadState(stateFile).LastAttemptOutcome)
+
+	// Repeated successes owe nothing: the marker is gone.
+	for i := 0; i < 2; i++ {
+		r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(LoadState(stateFile), "new"))
+	}
+	assert.Equal(t, 1, alerter.deployRecoveryCalls)
+}
+
+func TestFinalizeAttempt_RecoveryGatedOnOnRecovery(t *testing.T) {
+	stateFile, state := interruptedState(t)
+	alerter := &mockAlertSender{}
+	r := NewReconciler(&Config{StateFile: stateFile, OnFailure: true, OnRecovery: false}, WithAlerter(alerter))
+
+	r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(state, "new"))
+	assert.Zero(t, alerter.deployRecoveryCalls)
+	assert.Nil(t, LoadState(stateFile).LastAttemptOutcome, "disabled gate must not bank a stale retraction")
+}
+
+func TestFinalizeAttempt_FailedRecoveryDeliveryKeepsMarkerForRetry(t *testing.T) {
+	stateFile, state := interruptedState(t)
+	alerter := &mockAlertSender{lastErr: errors.New("provider down")}
+	r := NewReconciler(&Config{StateFile: stateFile, OnRecovery: true}, WithAlerter(alerter))
+
+	r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(state, "new"))
+	require.NotNil(t, LoadState(stateFile).LastAttemptOutcome)
+	assert.Equal(t, 1, alerter.deployRecoveryCalls)
+
+	alerter.lastErr = nil
+	r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(LoadState(stateFile), "new"))
+	assert.Equal(t, 2, alerter.deployRecoveryCalls)
+	assert.Nil(t, LoadState(stateFile).LastAttemptOutcome)
+}
+
+func TestFinalizeAttempt_FailedRunAfterInterruptionSendsNoRecovery(t *testing.T) {
+	stateFile, state := interruptedState(t)
+	alerter := &mockAlertSender{}
+	r := NewReconciler(&Config{StateFile: stateFile, OnRecovery: true}, WithAlerter(alerter))
+
+	r.finalizeAttempt(context.Background(), errors.New("render failed"), snapshotAttemptBudget(state, "new"))
+	assert.Zero(t, alerter.deployRecoveryCalls)
+}
+
+func TestFinalizeAttempt_NoSecondRecoveryWhenRunAlreadyRetracted(t *testing.T) {
+	stateFile, state := interruptedState(t)
+	state.AttemptCount, state.LastAlertedAttempt = 1, 1
+	alerter := &mockAlertSender{}
+	r := NewReconciler(&Config{StateFile: stateFile, OnRecovery: true}, WithAlerter(alerter))
+
+	// Both debts outstanding: the in-run retraction covers the interruption too.
+	require.True(t, r.retractFailureAlert(context.Background(), state))
+	r.finalizeAttempt(context.Background(), nil, snapshotAttemptBudget(state, "new"))
+	assert.Equal(t, 1, alerter.deployRecoveryCalls)
+}

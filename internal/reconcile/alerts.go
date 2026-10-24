@@ -215,6 +215,7 @@ func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) r
 			Msg("Failed to send recovery alert, retraction still owed")
 		return recoveryDeliveryFailed
 	}
+	r.recoverySentThisRun = true
 	return recoveryDispatched
 }
 

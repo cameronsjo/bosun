@@ -296,6 +296,9 @@ type Reconciler struct {
 	lastCommit        string            // Track commit for alerting
 	declaredServices  []DeclaredService // Extracted from rendered compose after templating
 	runStartTime      time.Time         // Pipeline start time for duration reporting
+	// recoverySentThisRun records that the run already dispatched a recovery
+	// alert, so finalizeAttempt does not send a second one for an interruption.
+	recoverySentThisRun bool
 
 	// preDeployUnhealthy snapshots which declared services were already
 	// unhealthy immediately before this run's `docker compose up`. Populated
