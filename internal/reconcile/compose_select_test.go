@@ -1017,3 +1017,55 @@ func TestRun_ComposeIgnore_IgnoredFileUnderBosunProjectIsOrphaned(t *testing.T) 
 	assert.Equal(t, []string{"a.yml", "b.yml"}, upFileBases(*calls), "the ignored file is not run, and its container forces a full run")
 	assert.Contains(t, readDockerLog(t, dockerLog), "--remove-orphans", "the full run's orphan pass removes the ignored file's containers")
 }
+
+func TestFloatingImage(t *testing.T) {
+	for image, want := range map[string]bool{
+		"nginx":                        true,
+		"nginx:latest":                 true,
+		"ghcr.io/o/app:latest":         true,
+		"localhost:5000/app":           true,
+		"localhost:5000/app:latest":    true,
+		"nginx:1.27":                   false,
+		"localhost:5000/app:v2":        false,
+		"nginx@sha256:abc":             false,
+		"nginx:latest@sha256:abc":      false,
+		"${IMG}":                       false,
+		"ghcr.io/o/app:${TAG:-latest}": false,
+		"":                             false,
+	} {
+		assert.Equal(t, want, floatingImage(image), image)
+	}
+}
+
+func TestInspectComposeFile_FloatingTags(t *testing.T) {
+	appdata := t.TempDir()
+	p := filepath.Join(appdata, "c.yml")
+	require.NoError(t, os.WriteFile(p, []byte(`
+services:
+  floaty:
+    image: ghcr.io/o/app:latest
+  untagged:
+    image: nginx
+  pinned:
+    image: nginx:1.27
+  digest:
+    image: nginx@sha256:abc
+  pulls:
+    image: nginx:latest
+    pull_policy: always
+  never:
+    image: nginx:latest
+    pull_policy: never
+  built:
+    build: .
+`), 0o644))
+	got := inspectComposeFile(p, appdata)
+	require.NoError(t, got.Err)
+	assert.Equal(t, []string{"floaty (ghcr.io/o/app:latest)", "never (nginx:latest)", "untagged (nginx)"}, got.Floating)
+
+	services, msg := floatingImageWarning([]composeFileInputs{got})
+	assert.Len(t, services, 3)
+	assert.Contains(t, msg, "pull_policy: always")
+	_, none := floatingImageWarning(nil)
+	assert.Empty(t, none)
+}
