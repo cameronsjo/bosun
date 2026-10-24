@@ -397,6 +397,18 @@ func CompareDrift(declared []DeclaredService, actual []ActualService) *DriftRepo
 			continue
 		}
 
+		// A container in a restart loop exists; report it as unhealthy
+		// rather than missing so it alerts without implying a redeploy.
+		if act.State == "restarting" {
+			report.Items = append(report.Items, DriftItem{
+				Service:  decl.Name,
+				Type:     DriftUnhealthy,
+				Declared: decl.Image,
+				Actual:   "state=restarting",
+			})
+			continue
+		}
+
 		// Check if service is running.
 		if act.State != "running" {
 			report.Items = append(report.Items, DriftItem{

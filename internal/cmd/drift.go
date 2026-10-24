@@ -433,7 +433,11 @@ func printDriftHuman(state *reconcile.DeployState) {
 			fmt.Printf("        declared: %s\n", item.Declared)
 			fmt.Printf("        actual:   %s\n", item.Actual)
 		case reconcile.DriftUnhealthy:
-			_, _ = ui.Red.Printf("    ✗ %s: unhealthy\n", item.Service)
+			_, _ = ui.Red.Printf("    ✗ %s: unhealthy", item.Service)
+			if item.Actual != "" {
+				fmt.Printf(" (%s)", item.Actual)
+			}
+			fmt.Println()
 		}
 	}
 	fmt.Println()

@@ -122,6 +122,24 @@ func TestHasMissingDeclaredServices(t *testing.T) {
 			want:     true,
 		},
 		{
+			name:     "crash-looping service is present, not missing",
+			declared: []DeclaredService{{Name: "web"}},
+			actual:   []ActualService{{Name: "web", State: "restarting"}},
+			want:     false,
+		},
+		{
+			name:     "created-but-never-started service is still missing",
+			declared: []DeclaredService{{Name: "web"}},
+			actual:   []ActualService{{Name: "web", State: "created"}},
+			want:     true,
+		},
+		{
+			name:     "crash loop does not mask a genuinely absent service",
+			declared: []DeclaredService{{Name: "web"}, {Name: "db"}},
+			actual:   []ActualService{{Name: "web", State: "restarting"}},
+			want:     true,
+		},
+		{
 			name:     "no actual containers at all",
 			declared: []DeclaredService{{Name: "web"}},
 			actual:   nil,

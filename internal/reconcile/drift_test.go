@@ -68,6 +68,22 @@ func TestCompareDrift_StoppedService(t *testing.T) {
 	assert.Equal(t, "state=exited", report.Items[0].Actual)
 }
 
+func TestCompareDrift_RestartingServiceIsUnhealthyNotMissing(t *testing.T) {
+	declared := []DeclaredService{
+		{Name: "web", Image: "nginx:latest"},
+	}
+	actual := []ActualService{
+		{Name: "web", Image: "nginx:latest", State: "restarting"},
+	}
+
+	report := CompareDrift(declared, actual)
+
+	assert.True(t, report.HasCriticalDrift())
+	require.Len(t, report.Items, 1)
+	assert.Equal(t, DriftUnhealthy, report.Items[0].Type)
+	assert.Equal(t, "state=restarting", report.Items[0].Actual)
+}
+
 func TestCompareDrift_ImageMismatch(t *testing.T) {
 	declared := []DeclaredService{
 		{Name: "web", Image: "nginx:1.25"},

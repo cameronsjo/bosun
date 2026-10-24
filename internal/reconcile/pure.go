@@ -19,7 +19,10 @@ func shouldSkipDeploy(lastDeployed, currentCommit string, force, needsRedeploy b
 }
 
 // hasMissingDeclaredServices returns true if any declared service has no
-// corresponding running container in the actual state. This is used to detect
+// corresponding container in the actual state. A container that exists and is
+// running or restarting (a crash loop) counts as present: re-running the full
+// pipeline cannot fix a crash loop, which drift reports as unhealthy instead.
+// A stopped (exited, created, dead) container still counts as missing. This is used to detect
 // the case where a commit was marked as deployed but one or more services were
 // never actually started (e.g., the service was added to the compose file in a
 // commit that was already recorded as deployed due to a prior run).
@@ -32,7 +35,7 @@ func hasMissingDeclaredServices(declared []DeclaredService, actual []ActualServi
 
 	running := make(map[string]bool, len(actual))
 	for _, svc := range actual {
-		if svc.State == "running" {
+		if svc.State == "running" || svc.State == "restarting" {
 			running[svc.Name] = true
 		}
 	}
