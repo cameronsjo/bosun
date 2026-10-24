@@ -408,14 +408,14 @@ do not gain legacy aliases.
 | `BOSUN_DEPLOY_PATHS` | daemon, reconcile | JSON array of glob patterns for deploy-relevant paths (overrides config file) |
 | `BOSUN_DEPLOY_SYNC_PATHS` | daemon, reconcile | JSON array of glob patterns for deploy sync target allowlist (overrides config file) |
 | `BOSUN_DEPLOY_SYNC_EXCLUDE` | daemon, reconcile | JSON array of glob patterns for deploy sync target blocklist (overrides config file) |
-| `BOSUN_COMPOSE_UP_TIMEOUT` | daemon, reconcile | Timeout for `docker compose up` (default: `10m`; accepts Go durations or plain seconds) |
+| `BOSUN_COMPOSE_UP_TIMEOUT` | daemon, reconcile | Timeout for `docker compose up`, applied to each compose file separately during isolated compose up (default: `10m`; accepts Go durations or plain seconds) |
 | `BOSUN_BACKUP_TIMEOUT` | daemon, reconcile | Timeout applied independently to pre-deploy backup creation + verification and post-success retention verification + cleanup (default: `5m`; accepts Go durations or plain seconds). A pre-deploy timeout may fall back to an older verified rollback anchor; a retention timeout warns, preserves remaining backups, and does not revoke deploy success |
 | `BOSUN_HEALTH_CHECK_TIMEOUT` | daemon, reconcile | Post-deploy health verification timeout (default: `60s`; set to `0` to disable) |
 | `BOSUN_HEALTH_CHECK_INTERVAL` | daemon, reconcile | Poll interval for health verification (default: `5s`) |
 | `BOSUN_RESTART_BREAKER` | daemon, reconcile | Enable restart circuit breaker (default: `true`) |
 | `BOSUN_RESTART_THRESHOLD` | daemon, reconcile | Accumulated restart-count increase in a sustained run that trips the breaker (default: `5`; must be positive) |
 | `BOSUN_RESTART_WINDOW` | daemon, reconcile | Nominal restart observation window (default: `10m`); sustained increases retain their earliest baseline beyond it, and config load plus `bosun doctor` warn when `BOSUN_DRIFT_INTERVAL` is longer |
-| `BOSUN_RECONCILE_TIMEOUT` | daemon | Reconciliation timeout |
+| `BOSUN_RECONCILE_TIMEOUT` | daemon | Per-cycle reconciliation timeout (default: `10m`). Its clock pauses during local isolated compose up, which each file's `BOSUN_COMPOSE_UP_TIMEOUT` bounds instead (#727) |
 | `BOSUN_SHUTDOWN_TIMEOUT` | daemon | Graceful shutdown timeout |
 | `BOSUN_API_TIMEOUT` | daemon | API request timeout |
 | `BOSUN_DRIFT_INTERVAL` | daemon | Drift check interval |

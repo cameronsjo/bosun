@@ -23,6 +23,7 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/alert"
 	"github.com/cameronsjo/bosun/internal/config"
+	"github.com/cameronsjo/bosun/internal/deadline"
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/reconcile"
@@ -1101,7 +1102,10 @@ func (d *Daemon) executeReconcileWithMode(ctx context.Context, source string, fo
 	// Entry points deliberately pass an unbounded parent context: wrapping them
 	// outside the coalescing loop would make every queued cycle inherit the first
 	// trigger's deadline instead of receiving a fresh per-cycle timeout budget.
-	ctx, cancel := context.WithTimeout(ctx, d.config.ReconcileTimeout)
+	// The timeout is pausable: isolated compose up pauses it and bounds each
+	// compose file with its own ComposeUpTimeout instead, so the files no longer
+	// share one budget that trailing files run out of (#727).
+	ctx, cancel := deadline.WithPausableTimeout(ctx, d.config.ReconcileTimeout)
 	defer cancel()
 
 	// Start a Sentry transaction for performance monitoring.

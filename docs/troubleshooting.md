@@ -47,6 +47,11 @@ Bosun requires Docker Compose v2:
 ### "docker compose up timed out"
 
 `BOSUN_COMPOSE_UP_TIMEOUT` bounds each compose-up operation (default `10m`).
+During a local deploy each compose file gets its own deadline, measured from
+when that file starts, and the daemon's `BOSUN_RECONCILE_TIMEOUT` clock pauses
+while compose up runs, so a slow file cannot run later files out of time (#727).
+If several files time out within seconds of each other, the cause is no longer a
+shared budget: check what each named file waits on (image pulls, dependencies).
 When that deadline expires, Bosun signals the Docker CLI and Compose plugin so
 they cancel the daemon request, waits up to five seconds for a graceful exit,
 and then force-kills unresponsive local processes. The command can therefore

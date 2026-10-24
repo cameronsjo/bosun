@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/deadline"
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
 	"github.com/kballard/go-shellquote"
@@ -30,14 +31,14 @@ var ErrRollbackFailed = errors.New("deployment and rollback both failed")
 var ErrComposeUnhealthy = errors.New("compose up completed with unhealthy containers")
 
 // ComposeUp runs docker compose up for the specified compose file.
-// Uses the configured compose up timeout if the parent context has no deadline.
+// Bounded by the configured compose up timeout (or an earlier caller deadline).
 // Returns an error if compose up fails (caller should handle rollback).
 func (d *DeployOps) ComposeUp(ctx context.Context, composeFile string) error {
 	return d.ComposeUpMultiple(ctx, []string{composeFile})
 }
 
 // ComposeUpMultiple runs docker compose up for multiple compose files.
-// Uses the configured compose up timeout if the parent context has no deadline.
+// Bounded by the configured compose up timeout (or an earlier caller deadline).
 // Returns an error if compose up fails (caller should handle rollback).
 func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string) error {
 	start := time.Now()
@@ -60,13 +61,11 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 		Str("project", d.ProjectName).
 		Msg("Starting docker compose up")
 
-	// Apply timeout if context doesn't have one
+	// Bound this call by the compose up timeout. An earlier caller deadline
+	// still wins; a later one no longer disables the per-call bound (#727).
 	timeout := d.composeUpTimeout()
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	// Build args: docker compose -p project -f file1.yml -f file2.yml up -d [--remove-orphans]
 	// Note: --wait is intentionally omitted. It exits non-zero when ANY container is
@@ -160,9 +159,13 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 var errRollbackNotAttempted = errors.New("rollback not attempted")
 
 // ComposeUpIsolated runs compose up per-file with isolated failure handling.
-// Phase 1: each file gets its own compose up (no --remove-orphans). On failure,
-// the single file is rolled back from backup if available.
+// Phase 1: each file gets its own compose up (no --remove-orphans) under its
+// own ComposeUpTimeout deadline. On failure, the single file is rolled back
+// from backup if available.
 // Phase 2: a single orphan-reconciliation pass with all files and --remove-orphans.
+// The caller's pausable cycle timeout, if any, is paused for the whole call:
+// the per-file deadlines bound this phase, so one slow file cannot use up the
+// time later files or later pipeline steps need (#727).
 func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string, backupPath string) (*ComposeUpSummary, error) {
 	return d.composeUpIsolated(ctx, composeFiles, backupPath, true)
 }
@@ -185,6 +188,11 @@ func (d *DeployOps) composeUpIsolated(ctx context.Context, composeFiles []string
 		summary := classifyComposeResults(results)
 		return &summary, nil
 	}
+
+	// Pause the daemon's cycle clock for the compose phase (#727). Caller
+	// cancellation still propagates; only the cycle deadline stops running.
+	resumeCycle := deadline.Pause(ctx)
+	defer resumeCycle()
 
 	upFn := d.composeUpFn
 	if upFn == nil {
@@ -245,7 +253,11 @@ func (d *DeployOps) composeUpIsolated(ctx context.Context, composeFiles []string
 			Str(log.FieldPath, f).
 			Msg("Starting isolated compose up for file")
 
-		err := upFn(ctx, []string{f})
+		// Each file gets a fresh deadline measured from its own start, so a
+		// slow earlier file cannot use up this one's budget (#727).
+		fileCtx, fileCancel := context.WithTimeout(ctx, d.composeUpTimeout())
+		err := upFn(fileCtx, []string{f})
+		fileCancel()
 		if err == nil {
 			results = append(results, ComposeFileResult{File: f, Success: true})
 			continue
