@@ -580,7 +580,7 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 				if collectErr != nil {
 					logger.Warn().Err(collectErr).Msg("Could not verify service health for skip check, proceeding with deploy")
 					skipConfirmed = false
-				} else if hasMissingDeclaredServices(state.DeclaredServices, actual) {
+				} else if hasMissingDeclaredServices(state.DeclaredServices, actual, state.RestartTracking) {
 					logger.Info().
 						Int("declared_services", len(state.DeclaredServices)).
 						Msg("Commit already deployed but declared services are missing containers, re-running pipeline")

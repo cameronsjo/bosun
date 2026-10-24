@@ -735,6 +735,32 @@ no changes), the reconciler SHALL proceed with the full pipeline.
 - **AND** `force` is false
 - **THEN** the reconciler logs "Already deployed commit X, skipping" and returns nil
 
+When the state file commit matches git HEAD, the reconciler SHALL still
+re-run the pipeline if a declared service has no present container. A container
+is present when it is running, restarting (a crash loop, which a redeploy cannot
+fix and drift reports as `unhealthy`), or stopped by a tripped restart circuit
+breaker. A container that is absent or in any other state (exited, created,
+dead, paused, removing) is not present.
+
+#### Scenario: Crash-looping container does not force a redeploy
+
+- **WHEN** git HEAD matches `last_deployed_commit` in the state file
+- **AND** a declared service's container is in "restarting" state
+- **AND** every other declared service is running
+- **THEN** the reconciler skips the pipeline
+
+#### Scenario: Absent container forces the pipeline
+
+- **WHEN** git HEAD matches `last_deployed_commit` in the state file
+- **AND** a declared service has no container
+- **THEN** the reconciler re-runs the full pipeline
+
+#### Scenario: Breaker-stopped container does not force a redeploy
+
+- **WHEN** git HEAD matches `last_deployed_commit` in the state file
+- **AND** a declared service's container is stopped and its restart tracking entry is tripped
+- **THEN** the reconciler skips the pipeline, so compose up does not restart the container
+
 #### Scenario: Interrupted deployment detected via state mismatch
 
 - **WHEN** a previous reconcile pulled a commit but was interrupted before completion
@@ -842,9 +868,11 @@ them to the compose project via labels (`com.docker.compose.project` and
 `com.docker.compose.service`). A name-based fallback SHALL be used for containers
 lacking compose labels.
 
-Drift types SHALL include: `missing` (declared but not running or not in running
-state), `image_mismatch` (declared image differs from running image after tag
-normalization), and `unhealthy` (running but Docker health status is "unhealthy").
+Drift types SHALL include: `missing` (declared but no container exists, or the
+container is in a stopped state such as exited, created, or dead),
+`image_mismatch` (declared image differs from running image after tag
+normalization), and `unhealthy` (running but Docker health status is
+"unhealthy", or the container is in the `restarting` state, a crash loop).
 
 Image comparison SHALL normalize tags: images without a tag are treated as
 `:latest`. Digest references (`image@sha256:...`) SHALL be compared verbatim.
@@ -856,8 +884,14 @@ Image comparison SHALL normalize tags: images without a tag are treated as
 
 #### Scenario: Non-running service detected as missing
 
-- **WHEN** a declared service has a container that is not in "running" state
+- **WHEN** a declared service has a container in a stopped state (not "running" and not "restarting")
 - **THEN** the drift report includes it as `missing` with the actual state noted
+
+#### Scenario: Restarting service detected as unhealthy
+
+- **WHEN** a declared service has a container in "restarting" state
+- **THEN** the drift report includes it as `unhealthy` with the actual detail beginning `state=restarting`, not as `missing`
+- **AND** an `image_mismatch` item is also reported if the container's image differs from the declared image
 
 #### Scenario: Image mismatch detected
 
@@ -1013,7 +1047,8 @@ pre-existing unhealthy containers do not cause deployment failures.
 Post-deploy health inspection SHALL categorize each container as:
 - **Healthy or no healthcheck**: success (no action)
 - **Unhealthy**: warning (alert sent, deployment not failed)
-- **Exited or restarting**: error (included in drift report as missing)
+- **Exited**: error (included in drift report as missing)
+- **Restarting**: error (included in drift report as unhealthy, with `state=restarting` detail)
 
 #### Scenario: Deploy succeeds despite unhealthy container
 

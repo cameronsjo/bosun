@@ -92,8 +92,30 @@ func TestHasMissingDeclaredServices(t *testing.T) {
 		name     string
 		declared []DeclaredService
 		actual   []ActualService
+		tracking map[string]RestartTrackingEntry
 		want     bool
 	}{
+		{
+			name:     "tripped breaker with stopped container counts as present",
+			declared: []DeclaredService{{Name: "web"}},
+			actual:   []ActualService{{Name: "web", State: "exited"}},
+			tracking: map[string]RestartTrackingEntry{"web": {Tripped: true}},
+			want:     false,
+		},
+		{
+			name:     "untripped tracking entry does not make a stopped container present",
+			declared: []DeclaredService{{Name: "web"}},
+			actual:   []ActualService{{Name: "web", State: "exited"}},
+			tracking: map[string]RestartTrackingEntry{"web": {Tripped: false}},
+			want:     true,
+		},
+		{
+			name:     "tripped entry does not make an absent container present",
+			declared: []DeclaredService{{Name: "web"}},
+			actual:   nil,
+			tracking: map[string]RestartTrackingEntry{"web": {Tripped: true}},
+			want:     true,
+		},
 		{
 			name:     "empty declared returns false",
 			declared: nil,
@@ -119,6 +141,24 @@ func TestHasMissingDeclaredServices(t *testing.T) {
 			name:     "service exists but not running",
 			declared: []DeclaredService{{Name: "web"}},
 			actual:   []ActualService{{Name: "web", State: "exited"}},
+			want:     true,
+		},
+		{
+			name:     "crash-looping service is present, not missing",
+			declared: []DeclaredService{{Name: "web"}},
+			actual:   []ActualService{{Name: "web", State: "restarting"}},
+			want:     false,
+		},
+		{
+			name:     "created-but-never-started service is still missing",
+			declared: []DeclaredService{{Name: "web"}},
+			actual:   []ActualService{{Name: "web", State: "created"}},
+			want:     true,
+		},
+		{
+			name:     "crash loop does not mask a genuinely absent service",
+			declared: []DeclaredService{{Name: "web"}, {Name: "db"}},
+			actual:   []ActualService{{Name: "web", State: "restarting"}},
 			want:     true,
 		},
 		{
@@ -149,7 +189,7 @@ func TestHasMissingDeclaredServices(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := hasMissingDeclaredServices(tt.declared, tt.actual)
+			got := hasMissingDeclaredServices(tt.declared, tt.actual, tt.tracking)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -1255,6 +1295,30 @@ func TestPartialDeployError(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestServiceIsPresent(t *testing.T) {
+	tests := []struct {
+		state   string
+		tripped bool
+		want    bool
+	}{
+		{"running", false, true},
+		{"restarting", false, true},
+		{"exited", false, false},
+		{"created", false, false},
+		{"dead", false, false},
+		{"paused", false, false},
+		{"removing", false, false},
+		{"exited", true, true},
+		{"", true, true},
+		{"", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%q/tripped=%v", tt.state, tt.tripped), func(t *testing.T) {
+			assert.Equal(t, tt.want, ServiceIsPresent(tt.state, tt.tripped))
 		})
 	}
 }

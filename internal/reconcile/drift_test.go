@@ -68,6 +68,43 @@ func TestCompareDrift_StoppedService(t *testing.T) {
 	assert.Equal(t, "state=exited", report.Items[0].Actual)
 }
 
+func TestCompareDrift_RestartingServiceIsUnhealthyNotMissing(t *testing.T) {
+	declared := []DeclaredService{
+		{Name: "web", Image: "nginx:latest"},
+	}
+	actual := []ActualService{
+		{Name: "web", Image: "nginx:latest", State: "restarting"},
+	}
+
+	report := CompareDrift(declared, actual)
+
+	assert.True(t, report.HasCriticalDrift())
+	require.Len(t, report.Items, 1)
+	assert.Equal(t, DriftUnhealthy, report.Items[0].Type)
+	assert.Equal(t, "state=restarting", report.Items[0].Actual)
+}
+
+func TestCompareDrift_RestartingServiceStillReportsImageMismatch(t *testing.T) {
+	declared := []DeclaredService{{Name: "web", Image: "nginx:new"}}
+	actual := []ActualService{{Name: "web", Image: "nginx:old", State: "restarting"}}
+
+	report := CompareDrift(declared, actual)
+
+	require.Len(t, report.Items, 2)
+	assert.Equal(t, DriftUnhealthy, report.Items[0].Type)
+	assert.Equal(t, DriftImageMismatch, report.Items[1].Type)
+}
+
+func TestCompareDrift_RestartingServiceWithUnhealthyHealthIsReportedOnce(t *testing.T) {
+	declared := []DeclaredService{{Name: "web", Image: "nginx:latest"}}
+	actual := []ActualService{{Name: "web", Image: "nginx:latest", State: "restarting", Health: "unhealthy"}}
+
+	report := CompareDrift(declared, actual)
+
+	require.Len(t, report.Items, 1)
+	assert.Equal(t, DriftUnhealthy, report.Items[0].Type)
+}
+
 func TestCompareDrift_ImageMismatch(t *testing.T) {
 	declared := []DeclaredService{
 		{Name: "web", Image: "nginx:1.25"},
@@ -1142,6 +1179,26 @@ func TestEnrichUnhealthyItems(t *testing.T) {
 		EnrichUnhealthyItems(ctx, client, report, actual)
 		assert.False(t, inspected, "should not inspect a container not in actual list")
 		assert.Empty(t, report.Items[0].Actual, "Actual should remain empty")
+	})
+
+	t.Run("restarting detail survives health enrichment", func(t *testing.T) {
+		mockAPI := newReconcileMockDockerAPI()
+		mockAPI.containerInspectFunc = func(ctx context.Context, containerID string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+			return makeTestInspectResponse("core-web-1", "nginx:latest", nil), nil
+		}
+		client := docker.NewClientWithAPI(mockAPI)
+
+		actual := []ActualService{
+			{Name: "web", ContainerName: "core-web-1", Image: "nginx:latest", State: "restarting"},
+		}
+		report := CompareDrift([]DeclaredService{{Name: "web", Image: "nginx:latest"}}, actual)
+
+		EnrichUnhealthyItems(ctx, client, report, actual)
+
+		require.Len(t, report.Items, 1)
+		assert.Equal(t, DriftUnhealthy, report.Items[0].Type)
+		assert.True(t, strings.HasPrefix(report.Items[0].Actual, "state=restarting; "),
+			"got %q", report.Items[0].Actual)
 	})
 
 	t.Run("inspect error leaves item.Actual empty", func(t *testing.T) {

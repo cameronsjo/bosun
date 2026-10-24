@@ -268,7 +268,7 @@ func TestHasMissingDeclaredServices_Integration(t *testing.T) {
 			{Name: "newservice", Image: "myapp:v2"},
 		}
 
-		assert.True(t, hasMissingDeclaredServices(declared, actual),
+		assert.True(t, hasMissingDeclaredServices(declared, actual, nil),
 			"newservice missing from Docker should indicate missing services")
 	})
 
@@ -290,7 +290,7 @@ func TestHasMissingDeclaredServices_Integration(t *testing.T) {
 			{Name: "api", Image: "myapp:v1"},
 		}
 
-		assert.False(t, hasMissingDeclaredServices(declared, actual),
+		assert.False(t, hasMissingDeclaredServices(declared, actual, nil),
 			"all declared services running — skip should proceed normally")
 	})
 
@@ -307,7 +307,7 @@ func TestHasMissingDeclaredServices_Integration(t *testing.T) {
 		require.NoError(t, err)
 
 		// Empty declared — no deployment has been recorded yet.
-		assert.False(t, hasMissingDeclaredServices(nil, actual),
+		assert.False(t, hasMissingDeclaredServices(nil, actual, nil),
 			"empty declared services should not override skip")
 	})
 }
