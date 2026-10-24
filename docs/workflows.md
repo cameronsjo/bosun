@@ -227,7 +227,7 @@ flowchart TD
 | `template render failed` | Template syntax error | Fix template, check error output |
 | `SSH authentication failed` | Invalid SSH key | Add key to remote authorized_keys |
 | `SSH connection refused` | SSH service not running | Start SSH service on remote |
-| `SSH host key verification failed` | Unknown host | Verify the key, then add it to `BOSUN_SSH_KNOWN_HOSTS` (or `/config/known_hosts`): `ssh-keyscan host >> /config/known_hosts` |
+| `SSH host key verification failed` | Unknown host | Verify the fingerprint out of band (`ssh-keygen -lf` on the host), then add the key to the first of `BOSUN_SSH_KNOWN_HOSTS` or `/config/known_hosts` that exists. If an entry already exists, the key changed: investigate first |
 | `file sync timed out after 5m` | Large files or slow network | Retry, reduce file sizes |
 | `docker compose up failed` | Container startup error | Check container logs, compose file |
 

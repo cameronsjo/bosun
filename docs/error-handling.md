@@ -125,14 +125,14 @@ Errors related to Docker, SSH, and Git connectivity.
 | Git clone timeout | `reconcile/git.go` | `clone repository timed out after 5m0s` |
 | Git fetch failed | `reconcile/git.go` | Error from go-git library |
 
-**SSH Error Parsing**: The `parseSSHError()` function in `deploy.go` converts generic SSH errors into actionable messages:
+**SSH Error Parsing**: The `parseSSHError()` function in `ssh.go` converts generic SSH errors into actionable messages:
 
 ```go
 switch {
 case strings.Contains(stderrLower, "permission denied"):
     return fmt.Errorf("SSH authentication failed for %s: permission denied. Check that your SSH key is added to the remote host's authorized_keys", host)
 case strings.Contains(stderrLower, "host key verification failed"):
-    return hostKeyVerificationError(host) // names $BOSUN_SSH_KNOWN_HOSTS or /config/known_hosts
+    return fmt.Errorf("SSH host key verification failed for %s: %s", host, hostKeyGuidance()) // names the pinned known_hosts file
 // ... more cases
 }
 ```
@@ -316,7 +316,7 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 
 **Recovery**:
 1. Test SSH manually: `ssh user@host`
-2. Add host key to the file bosun reads (`BOSUN_SSH_KNOWN_HOSTS`, else `/config/known_hosts`): `ssh-keyscan hostname >> /config/known_hosts`
+2. Verify the host's key fingerprint out of band (`ssh-keygen -lf` on the host), then add the key to the first of `BOSUN_SSH_KNOWN_HOSTS` or `/config/known_hosts` that exists: `ssh-keyscan hostname >> <known_hosts path>`. If the file is mounted read-only, edit its source on the host. If an entry for the host already exists, the key changed: investigate before replacing it
 3. Check SSH key: `ssh-add -l`
 4. Verify `BOSUN_SSH_KEY` or an existing conventional key candidate is a
    regular, non-empty, parseable private key file
