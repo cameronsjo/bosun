@@ -25,7 +25,10 @@ rolled back. A deploy that changes one stack should not act on the others.
   service with a `pull_policy` that can change the image on its own.
 - Not detected, by design: a floating tag pulled outside bosun and `${VAR}`
   from bosun's process environment. `bosun trigger -f` applies both.
-- Every file SHALL run, as before, whenever bosun cannot tell what changed:
+- Subset runs SHALL happen only when every entry in the compose directory is
+  in bosun's deploy manifest for the run; any host-created entry (`.env`, an
+  extra `*.yml`, anything) makes every file run.
+- Every file SHALL also run, as before, whenever bosun cannot tell what changed:
   force, drift self-heal, a previous deploy that did not record success
   (`NeedsRedeploy`), no previous successful deploy, no deploy manifest,
   content-hash sync off, compose not synced this run, a non-`*.yml` entry or a

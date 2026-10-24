@@ -18,3 +18,7 @@
   uses `ServiceIsPresent` with restart-breaker state; pipeline tests for a
   changed, unchanged, and deleted `env_file` (a staged break of the path
   mapping turns the changed case red); Service Orchestration MODIFIED.
+- [x] 8. Review round 2: fail closed when any compose-directory entry is not
+  in the deploy manifest (covers host-created `.env`, extra `*.yml`, stray
+  files); services with more than one replica always run. Pipeline tests for
+  each host-created case; a staged break removing the rule turns them red.

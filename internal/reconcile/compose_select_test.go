@@ -22,12 +22,14 @@ func selectFixture() composeSelectionInput {
 			{Path: "/appdata/compose/a.yml", Services: []string{"svc-a"}, Inputs: []string{"/appdata/svc-a/app.env"}},
 			{Path: "/appdata/compose/b.yml", Services: []string{"svc-b"}},
 		},
-		ComposeDir:   "/appdata/compose",
-		Managed:      map[string]bool{"/appdata/compose/a.yml": true, "/appdata/compose/b.yml": true, "/appdata/svc-a/app.env": true},
-		LiveKnown:    true,
-		Present:      map[string]bool{"svc-a": true, "svc-b": true},
-		Containers:   map[string]bool{"svc-a": true, "svc-b": true},
-		PrevDeclared: []string{"svc-a", "svc-b"},
+		ComposeDir:        "/appdata/compose",
+		ComposeDirEntries: []string{"/appdata/compose/a.yml", "/appdata/compose/b.yml"},
+		ComposeDirListed:  true,
+		Managed:           map[string]bool{"/appdata/compose/a.yml": true, "/appdata/compose/b.yml": true, "/appdata/svc-a/app.env": true},
+		LiveKnown:         true,
+		Present:           map[string]bool{"svc-a": true, "svc-b": true},
+		Containers:        map[string]bool{"svc-a": true, "svc-b": true},
+		PrevDeclared:      []string{"svc-a", "svc-b"},
 	}
 }
 
@@ -107,6 +109,39 @@ func TestSelectComposeFiles(t *testing.T) {
 			wantReason: "svc-stopped-orphan",
 		},
 		{
+			name:       "an unlisted compose directory runs every file",
+			mutate:     func(in *composeSelectionInput) { in.ComposeDirListed = false },
+			wantFiles:  allFiles,
+			wantAll:    true,
+			wantReason: "could not be listed",
+		},
+		{
+			name: "an unmanaged compose directory entry runs every file",
+			mutate: func(in *composeSelectionInput) {
+				in.ComposeDirEntries = append(in.ComposeDirEntries, "/appdata/compose/.env")
+			},
+			wantFiles:  allFiles,
+			wantAll:    true,
+			wantReason: `".env" is not deployed by bosun`,
+		},
+		{
+			name: "an unmanaged compose file runs every file",
+			mutate: func(in *composeSelectionInput) {
+				delete(in.Managed, "/appdata/compose/b.yml")
+			},
+			wantFiles:  allFiles,
+			wantAll:    true,
+			wantReason: `"b.yml" is not deployed by bosun`,
+		},
+		{
+			name: "a subdirectory holding managed files is managed",
+			mutate: func(in *composeSelectionInput) {
+				in.ComposeDirEntries = append(in.ComposeDirEntries, "/appdata/compose/fragments")
+				in.Managed["/appdata/compose/fragments/x.yml"] = true
+			},
+			wantFiles: []string{},
+		},
+		{
 			name:       "a caller fallback reason runs every file",
 			mutate:     func(in *composeSelectionInput) { in.FallbackReason = "force" },
 			wantFiles:  allFiles,
@@ -158,7 +193,7 @@ func TestSelectComposeFiles(t *testing.T) {
 			wantReason: `service "svc-old" was removed`,
 		},
 		{
-			name:       "an orphan container runs every file so the orphan pass cleans it",
+			name: "an orphan container runs every file so the orphan pass cleans it",
 			mutate: func(in *composeSelectionInput) {
 				in.Present["svc-orphan"] = true
 				in.Containers["svc-orphan"] = true
@@ -269,6 +304,9 @@ secrets:
 		"pull always":   "services:\n  a:\n    image: x\n    pull_policy: always\n",
 		"pull daily":    "services:\n  a:\n    image: x\n    pull_policy: daily\n",
 		"pull build":    "services:\n  a:\n    image: x\n    pull_policy: build\n",
+		"scale 3":       "services:\n  a:\n    image: x\n    scale: 3\n",
+		"replicas 2":    "services:\n  a:\n    image: x\n    deploy:\n      replicas: 2\n",
+		"replicas var":  "services:\n  a:\n    image: x\n    deploy:\n      replicas: ${N}\n",
 	}
 	for name, body := range opaqueCases {
 		t.Run("opaque: "+name, func(t *testing.T) {
@@ -286,6 +324,12 @@ secrets:
 			assert.False(t, got.Opaque, got.OpaqueReason)
 		})
 	}
+
+	t.Run("one replica is not opaque", func(t *testing.T) {
+		got := inspectComposeFile(write("one.yml", "services:\n  a:\n    image: x\n    scale: 1\n    deploy:\n      replicas: 1\n"), appdata)
+		require.NoError(t, got.Err)
+		assert.False(t, got.Opaque, got.OpaqueReason)
+	})
 
 	t.Run("same-file extends is not opaque", func(t *testing.T) {
 		got := inspectComposeFile(write("ext.yml", "services:\n  a:\n    image: x\n    extends: b\n  b:\n    image: y\n"), appdata)
@@ -630,6 +674,10 @@ func TestRun_ChangedOnlyComposeUp_UnchangedEnvFileSelectsNothing(t *testing.T) {
 	assert.Empty(t, *calls, "a managed, unchanged env_file is tracked and must not force a.yml")
 }
 
+// A deleted input is never in this run's manifest, so the unmanaged-input
+// rule selects a.yml before the deleted-path mapping is consulted; this pins
+// the behavior (the file runs), not the DeletedFiles mapping. The changed
+// env_file test above pins the mapping.
 func TestRun_ChangedOnlyComposeUp_DeletedEnvFileSelectsItsComposeFile(t *testing.T) {
 	r, calls, _, appdata := changedOnlyHarnessWith(t, harnessOpts{
 		liveB:   "services:\n  svc-b:\n    image: alpine:2\n",
@@ -650,4 +698,60 @@ func TestRun_ChangedOnlyComposeUp_DeletedEnvFileSelectsItsComposeFile(t *testing
 	_, statErr := os.Stat(filepath.Join(appdata, "svc-a", "app.env"))
 	require.True(t, os.IsNotExist(statErr), "precondition: the stale env_file was pruned")
 	assert.Equal(t, []string{"a.yml"}, upFileBases(*calls))
+}
+
+// Compose-directory entries an operator creates on the
+// host. Bosun never deploys them, so it cannot see their changes, and compose
+// still reads them (.env for interpolation, every *.yml through the glob).
+// Each must force a full run.
+func TestRun_ChangedOnlyComposeUp_UnmanagedComposeDirEntryRunsEveryFile(t *testing.T) {
+	tests := []struct {
+		name      string
+		fileA     string
+		liveFiles map[string]string
+		withSvcC  bool // svc-c is declared (by c.yml) and running
+		wantFiles []string
+	}{
+		{
+			name:      "host-created .env used for interpolation",
+			fileA:     "services:\n  svc-a:\n    image: alpine:${TAG}\n",
+			liveFiles: map[string]string{"compose/.env": "TAG=2\n"},
+			wantFiles: []string{"a.yml", "b.yml"},
+		},
+		{
+			name: "host-created compose file",
+			liveFiles: map[string]string{
+				"compose/c.yml": "services:\n  svc-c:\n    image: alpine:3\n",
+			},
+			withSvcC:  true,
+			wantFiles: []string{"a.yml", "b.yml", "c.yml"},
+		},
+		{
+			name:      "stray non-yml file",
+			liveFiles: map[string]string{"compose/notes.txt": "hand edit\n"},
+			wantFiles: []string{"a.yml", "b.yml"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			running := []string{"svc-a", "svc-b"}
+			prior := steadyPrior()
+			if tc.withSvcC {
+				running = append(running, "svc-c")
+				prior.DeclaredServices = append(prior.DeclaredServices, DeclaredService{Name: "svc-c"})
+			}
+			r, calls, dockerLog, _ := changedOnlyHarnessWith(t, harnessOpts{
+				liveB:     "services:\n  svc-b:\n    image: alpine:2\n",
+				prior:     prior,
+				running:   running,
+				fileA:     tc.fileA,
+				liveFiles: tc.liveFiles,
+			})
+
+			_ = r.Run(context.Background()) // outcome beyond compose selection is not under test
+
+			assert.Equal(t, tc.wantFiles, upFileBases(*calls), "nothing changed in bosun's view, but an unmanaged entry must still force every file")
+			assert.Contains(t, readDockerLog(t, dockerLog), "--remove-orphans", "a full run keeps the orphan pass")
+		})
+	}
 }

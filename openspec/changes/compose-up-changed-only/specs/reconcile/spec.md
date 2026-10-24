@@ -59,6 +59,13 @@ apply to compose operations.
 
 ### Requirement: Changed-Only Compose Up
 
+A local deploy SHALL run compose up on a subset of the compose files only when
+every entry in the live compose directory (file, symlink, or subdirectory) is
+in this run's deploy manifest; otherwise every file SHALL run. Compose reads
+more of that directory than the files passed with `-f` (a `.env` beside them,
+for one), and the reconciler cannot see changes to entries it does not deploy,
+so it fails closed on any of them.
+
 A local deploy SHALL run compose up only on the live compose files whose
 effective input changed this run, and on files that declare a service with no
 present container. Presence SHALL follow the pipeline's missing-service rule
@@ -69,8 +76,10 @@ compose file reads (`env_file`, `label_file`, top-level `configs` or `secrets`
 `file:`). A file SHALL always run when it reads an input the reconciler cannot
 map to a deployed path (`include`, `extends.file`, an absolute, out-of-tree, or
 interpolated path), reads an in-tree input that is not in this run's deploy
-manifest (content-hash sync does not track it), or declares a service whose
-`pull_policy` is anything other than `missing`, `if_not_present`, or `never`.
+manifest (content-hash sync does not track it), declares a service whose
+`pull_policy` is anything other than `missing`, `if_not_present`, or `never`,
+or declares a service with more than one replica (presence is tracked per
+service, so a lost replica would look present).
 When these rules select every file, the run is a full run.
 
 Two changes SHALL NOT trigger compose up on their own, and operators apply them
@@ -128,3 +137,9 @@ rollback SHALL re-apply every live compose file. Remote deploys are unchanged.
 
 - **WHEN** no compose input changed and a service's container is restarting
 - **THEN** compose up does not run on its file
+
+#### Scenario: Host-created entry in the compose directory
+
+- **WHEN** the compose directory holds an entry that bosun did not deploy this run (for example a `.env` or an extra `*.yml` created on the host)
+- **THEN** compose up runs on every file
+- **AND** the `--remove-orphans` pass runs

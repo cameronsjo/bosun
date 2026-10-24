@@ -44,8 +44,14 @@ import (
 // one-shot job) is never present, so its file is selected on every deploy;
 // that is no worse than the old run-everything behavior.
 //
-// Every file runs (today's behavior, orphan pass included) when any of these
-// hold: the caller supplied a fallback reason (force, drift self-heal, a
+// Subset runs happen only when every entry in the compose directory is
+// bosun-managed (in this run's deploy manifest); otherwise every file runs.
+// Compose reads more from that directory than the files bosun passes with -f
+// (a .env beside them, for one), and bosun cannot see changes to entries it
+// does not deploy, so it fails closed on any of them.
+//
+// Every file also runs (today's behavior, orphan pass included) when any of
+// these hold: the caller supplied a fallback reason (force, drift self-heal, a
 // previous deploy left NeedsRedeploy set, no prior deploy or manifest,
 // content-hash sync off, compose not synced this run); anything other than a
 // top-level *.yml changed in the compose directory (.env, a fragment, a
@@ -166,6 +172,11 @@ func inspectComposeFile(path, appdataRoot string) composeFileInputs {
 					opaque(fmt.Sprintf("service %s sets pull_policy %v, which can change the image without a config change", name, pp))
 				}
 			}
+			if replicaCountAboveOne(svc) {
+				// Presence is tracked per service, not per replica, so a lost
+				// replica would look present; always re-apply instead.
+				opaque(fmt.Sprintf("service %s runs more than one replica", name))
+			}
 			addPathList("env_file", svc["env_file"])
 			addPathList("label_file", svc["label_file"])
 			if ext, ok := svc["extends"].(map[string]any); ok {
@@ -219,6 +230,11 @@ type composeSelectionInput struct {
 	Changed []string
 	// FallbackReason, when non-empty, forces every file to run.
 	FallbackReason string
+	// ComposeDirEntries are the absolute paths of every entry directly in
+	// the live compose directory; ComposeDirListed is false when the listing
+	// was not taken or failed, which forces a full run.
+	ComposeDirEntries []string
+	ComposeDirListed  bool
 	// Managed are the live paths bosun deployed this run (the deploy
 	// manifest). Content-hash sync reports changes only for these, so a
 	// compose input outside it is untracked. Nil means none are tracked.
@@ -264,6 +280,14 @@ func selectComposeFiles(in composeSelectionInput) composeSelection {
 	}
 	if !in.LiveKnown {
 		return all("live container state unknown")
+	}
+	if !in.ComposeDirListed {
+		return all("compose directory could not be listed")
+	}
+	for _, e := range in.ComposeDirEntries {
+		if !managedEntry(filepath.Clean(e), in.Managed) {
+			return all(fmt.Sprintf("compose directory entry %q is not deployed by bosun", filepath.Base(e)))
+		}
 	}
 
 	topLevel := make(map[string]bool, len(in.Files))
@@ -326,6 +350,44 @@ func selectComposeFiles(in composeSelectionInput) composeSelection {
 		sel.Reason = "every file selected"
 	}
 	return sel
+}
+
+// managedEntry reports whether a compose-directory entry is in the deploy
+// manifest: the path itself, or (for a directory) any managed path beneath it.
+func managedEntry(entry string, managed map[string]bool) bool {
+	if managed[entry] {
+		return true
+	}
+	prefix := entry + string(filepath.Separator)
+	for m := range managed {
+		if strings.HasPrefix(m, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// replicaCountAboveOne reports whether a compose service declares more than
+// one replica (scale or deploy.replicas). An interpolated or non-numeric
+// value counts as more than one.
+func replicaCountAboveOne(svc map[string]any) bool {
+	above := func(v any) bool {
+		switch n := v.(type) {
+		case nil:
+			return false
+		case int:
+			return n > 1
+		default:
+			return true
+		}
+	}
+	if above(svc["scale"]) {
+		return true
+	}
+	if dep, ok := svc["deploy"].(map[string]any); ok {
+		return above(dep["replicas"])
+	}
+	return false
 }
 
 // composeFileSelectReason returns why one file must run, or "" to skip it.
@@ -452,6 +514,17 @@ func (r *Reconciler) selectLocalComposeFiles(ctx context.Context, targets []Depl
 		managed[filepath.Join(appdata, filepath.FromSlash(m))] = true
 	}
 
+	var dirEntries []string
+	dirListed := false
+	if entries, err := os.ReadDir(composeDir); err != nil {
+		logger.Warn().Err(err).Str(log.FieldPath, composeDir).Msg("Failed to list compose directory, running compose up on every file")
+	} else {
+		dirListed = true
+		for _, e := range entries {
+			dirEntries = append(dirEntries, filepath.Join(composeDir, e.Name()))
+		}
+	}
+
 	files := make([]composeFileInputs, 0, len(composeFiles))
 	for _, f := range composeFiles {
 		files = append(files, inspectComposeFile(f, appdata))
@@ -462,15 +535,17 @@ func (r *Reconciler) selectLocalComposeFiles(ctx context.Context, targets []Depl
 	}
 
 	sel := selectComposeFiles(composeSelectionInput{
-		Files:          files,
-		ComposeDir:     composeDir,
-		Changed:        changed,
-		FallbackReason: fallback,
-		Managed:        managed,
-		LiveKnown:      r.preDeployLiveKnown,
-		Present:        r.preDeployPresent,
-		Containers:     r.preDeployContainers,
-		PrevDeclared:   prev,
+		Files:             files,
+		ComposeDir:        composeDir,
+		Changed:           changed,
+		FallbackReason:    fallback,
+		ComposeDirEntries: dirEntries,
+		ComposeDirListed:  dirListed,
+		Managed:           managed,
+		LiveKnown:         r.preDeployLiveKnown,
+		Present:           r.preDeployPresent,
+		Containers:        r.preDeployContainers,
+		PrevDeclared:      prev,
 	})
 
 	if sel.All {
