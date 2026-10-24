@@ -999,3 +999,21 @@ func TestSelectComposeFiles_ComposeIgnore(t *testing.T) {
 	assert.False(t, got.All, "an ignored stray entry must not force a full run")
 	assert.Equal(t, []string{}, unmanagedComposeEntries(in.ComposeDirEntries, in.Managed, in.Ignored))
 }
+
+// Declared contract: an ignored compose file whose stack still runs under
+// bosun's project name is no longer declared, so its containers are orphans
+// and the next full run removes them.
+func TestRun_ComposeIgnore_IgnoredFileUnderBosunProjectIsOrphaned(t *testing.T) {
+	r, calls, dockerLog, _ := changedOnlyHarnessWith(t, harnessOpts{
+		liveB:         "services:\n  svc-b:\n    image: alpine:2\n",
+		prior:         steadyPrior(),
+		running:       []string{"svc-a", "svc-b", "svc-x"},
+		liveFiles:     map[string]string{"compose/extra.yml": "services:\n  svc-x:\n    image: alpine\n"},
+		composeIgnore: []string{"extra.yml"},
+	})
+
+	_ = r.Run(context.Background()) // outcome beyond compose selection is not under test
+
+	assert.Equal(t, []string{"a.yml", "b.yml"}, upFileBases(*calls), "the ignored file is not run, and its container forces a full run")
+	assert.Contains(t, readDockerLog(t, dockerLog), "--remove-orphans", "the full run's orphan pass removes the ignored file's containers")
+}

@@ -466,9 +466,10 @@ func liveManagedSet(appdata string, result *DeployResult) map[string]bool {
 // composeIgnoreSet returns the effective compose_ignore names as a set. An
 // invalid list (config validation normally rejects it first; BOSUN_TARGETS
 // can still carry one) is dropped whole, so selection fails closed. A name
-// bosun deploys, in this run's manifest (managed, live paths) or the last
-// deploy's (prevManaged, appdata-relative), is dropped with a warning: it
-// stays managed even when this run does not sync compose/.
+// bosun deploys, in this run's manifest (managed, live paths) or the previous
+// deploy's (prevManaged, appdata-relative), is dropped with a warning. The
+// previous manifest covers one run without a compose/ sync, not several.
+// Every deploy with a list logs it, and warns for each listed compose file.
 func (r *Reconciler) composeIgnoreSet(ctx context.Context, appdata, composeDir string, managed map[string]bool, prevManaged []string) map[string]bool {
 	names := r.config.ComposeIgnore.Value
 	if len(names) == 0 {
@@ -494,8 +495,22 @@ func (r *Reconciler) composeIgnoreSet(ctx context.Context, appdata, composeDir s
 				Msg("Not ignoring compose directory entry listed in compose_ignore. Reason: bosun deploys it, so it stays managed")
 			continue
 		}
+		if ext := strings.ToLower(filepath.Ext(n)); ext == ".yml" || ext == ".yaml" {
+			logger.Warn().
+				Str("entry", n).
+				Str("project", r.config.ProjectName).
+				Msg("Ignoring a compose file listed in compose_ignore. Risk: an ignored compose file must run under its own project name, or its containers are removed as orphans on the next full run")
+		}
 		set[n] = true
 	}
+	configured := make([]string, 0, len(set))
+	for n := range set {
+		configured = append(configured, n)
+	}
+	sort.Strings(configured)
+	logger.Info().
+		Strs("compose_ignore", configured).
+		Msg("Applying compose_ignore. Reason: listed compose directory entries are operator-owned, not deployed or read by bosun")
 	return set
 }
 
@@ -726,18 +741,13 @@ func (r *Reconciler) selectLocalComposeFiles(ctx context.Context, targets []Depl
 	return sel
 }
 
-// logComposeIgnore logs, on every deploy with a compose_ignore list, which
-// listed entries are present and skipped, so the list stays visible.
+// logComposeIgnore logs which listed entries are present in the compose
+// directory and skipped. composeIgnoreSet logs the list itself every deploy.
 func logComposeIgnore(ctx context.Context, dirEntries []string, managed, ignored map[string]bool) {
 	if len(ignored) == 0 {
 		return
 	}
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
-	configured := make([]string, 0, len(ignored))
-	for n := range ignored {
-		configured = append(configured, n)
-	}
-	sort.Strings(configured)
 	skipped := []string{}
 	for _, e := range dirEntries {
 		name := filepath.Base(e)
@@ -749,7 +759,6 @@ func logComposeIgnore(ctx context.Context, dirEntries []string, managed, ignored
 	sort.Strings(skipped)
 	logger.Info().
 		Strs("ignored", skipped).
-		Strs("compose_ignore", configured).
 		Msg("Skipping compose directory entries listed in compose_ignore. Reason: operator-owned, not deployed or read by bosun")
 	if len(skipped) > 0 {
 		ui.Info("  Ignoring compose directory entries: %s", strings.Join(skipped, ", "))

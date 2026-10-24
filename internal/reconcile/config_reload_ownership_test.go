@@ -242,3 +242,43 @@ func TestConfigForTarget_ComposeIgnore(t *testing.T) {
 	assert.NotNil(t, override.ComposeIgnore.Value)
 	assert.Empty(t, override.ComposeIgnore.Value, "an explicit empty target list clears the inherited one")
 }
+
+// A compose_ignore list from BOSUN_TARGETS is env-owned: the per-run repo
+// reload must not replace it, in either direction.
+func TestReloadProjectConfig_ComposeIgnoreFromEnvTargetSurvivesReload(t *testing.T) {
+	run := func(t *testing.T, envTarget Target, reloaded *ReloadedConfig) []string {
+		t.Helper()
+		base := &Config{
+			TargetsFromEnv: true,
+			Targets:        []Target{envTarget},
+			ConfigReloader: func(string) (*ReloadedConfig, error) { return reloaded, nil },
+		}
+		r := NewReconciler(base.ConfigForTarget(envTarget))
+		require.NoError(t, r.reloadProjectConfig())
+		return r.config.ComposeIgnore.Value
+	}
+
+	t.Run("repo root without the key keeps the env list", func(t *testing.T) {
+		got := run(t, Target{Name: "nas", ComposeIgnore: []string{"handmade"}}, &ReloadedConfig{ComposeIgnore: []string{}})
+		assert.Equal(t, []string{"handmade"}, got)
+	})
+
+	t.Run("env empty list is not refilled by the repo root", func(t *testing.T) {
+		got := run(t, Target{Name: "nas", ComposeIgnore: []string{}}, &ReloadedConfig{ComposeIgnore: []string{"x"}})
+		assert.NotNil(t, got)
+		assert.Empty(t, got)
+	})
+
+	t.Run("repo target override does not replace the env list", func(t *testing.T) {
+		got := run(t, Target{Name: "nas", ComposeIgnore: []string{"handmade"}}, &ReloadedConfig{
+			ComposeIgnore: []string{},
+			Targets:       []Target{{Name: "nas", ComposeIgnore: []string{"repo"}}},
+		})
+		assert.Equal(t, []string{"handmade"}, got)
+	})
+
+	t.Run("an env target without the key inherits the repo root", func(t *testing.T) {
+		got := run(t, Target{Name: "nas"}, &ReloadedConfig{ComposeIgnore: []string{"x"}})
+		assert.Equal(t, []string{"x"}, got)
+	})
+}

@@ -152,7 +152,13 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 		cp.DeploySyncExclude.Value = cloneSlice(cp.DeploySyncExclude.Value)
 	}
 	if t.ComposeIgnore != nil {
-		cp.ComposeIgnore.Value = cloneSlice(t.ComposeIgnore)
+		if c.targetFieldFromEnv(t, func(x Target) bool { return x.ComposeIgnore != nil }) {
+			// A BOSUN_TARGETS list (explicit [] included) is env-owned, so the
+			// per-run repo reload cannot replace it (same rule as hooks).
+			cp.ComposeIgnore = EnvConfigField(cloneSlice(t.ComposeIgnore))
+		} else {
+			cp.ComposeIgnore.Value = cloneSlice(t.ComposeIgnore)
+		}
 	} else if cp.ComposeIgnore.Value != nil {
 		cp.ComposeIgnore.Value = cloneSlice(cp.ComposeIgnore.Value)
 	}
@@ -170,13 +176,20 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 // BOSUN_TARGETS array and a lone default target with no hook key must continue
 // to inherit file-owned root hooks and accept later repo reloads.
 func (c *Config) targetHooksFromEnv(t Target) bool {
-	if !c.TargetsFromEnv || t.PostSyncHooks == nil {
+	return c.targetFieldFromEnv(t, func(x Target) bool { return x.PostSyncHooks != nil })
+}
+
+// targetFieldFromEnv reports whether t carries an explicit override (set
+// reports presence) that came from BOSUN_TARGETS, with the implicit-default
+// rule documented on targetHooksFromEnv.
+func (c *Config) targetFieldFromEnv(t Target, set func(Target) bool) bool {
+	if !c.TargetsFromEnv || !set(t) {
 		return false
 	}
 	if !t.IsDefault() {
 		return true
 	}
-	return len(c.Targets) == 1 && c.Targets[0].IsDefault() && c.Targets[0].PostSyncHooks != nil
+	return len(c.Targets) == 1 && c.Targets[0].IsDefault() && set(c.Targets[0])
 }
 
 func cloneSlice[T any](values []T) []T {

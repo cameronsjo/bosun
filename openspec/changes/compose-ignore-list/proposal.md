@@ -32,7 +32,13 @@ permanently and silently (#744).
   acts on). An invalid list reaching the reconciler some other way is dropped
   whole, so selection fails closed.
 - Each local deploy with a non-empty list SHALL log the configured names and
-  the entries it skipped.
+  the entries it skipped, and SHALL warn for each listed `*.yml`/`*.yaml`:
+  an ignored compose file must run under its own project name, or its
+  containers are removed as orphans on the next full run (a declared
+  contract, pinned by a spec scenario).
+- A list set on a target through `BOSUN_TARGETS` is environment-owned; the
+  per-run repository reload does not replace it (same rule as post-sync
+  hooks).
 - A config file without the key reloads as an empty list, so removing
   `compose_ignore` from `bosun.yaml` clears it without a restart.
 - The orphan pass is unchanged. It acts on containers in bosun's compose

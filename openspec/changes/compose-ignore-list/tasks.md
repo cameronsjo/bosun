@@ -19,3 +19,8 @@
   invalid list ignores nothing. Staged breaks
   of each rule turn the matching tests red.
 - [x] 7. Spec delta and onboard docs.
+- [x] 8. Review round 1: a `BOSUN_TARGETS` list is env-owned and survives the
+  per-run reload (tests for env list vs repo root, env `[]` vs repo root,
+  repo target override, inherit when omitted; staged break of the env
+  marking turns them red). Warn for listed compose files; document and pin
+  the orphan teardown for an ignored file run under bosun's project name.

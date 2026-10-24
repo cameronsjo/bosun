@@ -25,8 +25,11 @@ reaches the reconciler by another path, the reconciler SHALL log an error and
 ignore no entries.
 
 Each local deploy with a non-empty list SHALL log the configured names and the
-entries it skipped. A hot reload of a configuration file without the field
-SHALL clear the list.
+entries it skipped, and SHALL log a warning for each listed name ending in
+`.yml` or `.yaml`. A hot reload of a configuration file without the field
+SHALL clear the list. A list set on a target through `BOSUN_TARGETS`
+(including an empty list) is environment-owned, and a reload of the
+repository configuration SHALL NOT replace it.
 
 The orphan pass is not affected: it acts on containers in the reconciler's
 compose project, not on compose-directory entries.
@@ -63,6 +66,19 @@ compose project, not on compose-directory entries.
 
 - **WHEN** the compose directory holds an unmanaged `extra.yml` listed in `compose_ignore`
 - **THEN** `extra.yml` is not parsed and not passed to compose up
+
+#### Scenario: Ignored compose file whose stack runs under the bosun project
+
+- **WHEN** an unmanaged `extra.yml` that earlier deploys ran with bosun's project name is added to `compose_ignore`
+- **AND** its containers still run under bosun's project name
+- **THEN** the reconciler logs a warning that an ignored compose file must run under its own project name
+- **AND** those containers belong to no declared service, so compose up runs on every file and the `--remove-orphans` pass removes them
+
+#### Scenario: List set through BOSUN_TARGETS
+
+- **WHEN** `BOSUN_TARGETS` sets `compose_ignore` on a target
+- **AND** the repository `bosun.yaml` sets a different root list, or none
+- **THEN** the target keeps the `BOSUN_TARGETS` list across reloads
 
 #### Scenario: Listed name that bosun deploys
 
