@@ -23,12 +23,8 @@ func alertConfigFrom(t *testing.T, body string) AlertConfig {
 
 // TestOnRecoveryDefault pins the gate that makes a failure alert retractable.
 //
-// The subtle case is the third one. OnFailure's default is *coupled*: config.go
-// only defaults it to true when neither on_success nor on_failure was set, so
-// setting on_success alone silently leaves on_failure false. Mirroring that
-// pattern for on_recovery -- the obvious thing to do -- would disable
-// retractions for anyone who sets on_success, which is exactly the operator
-// most likely to care about alert volume.
+// The third case pins that no gate is coupled to on_success: setting it alone
+// leaves on_failure and on_recovery at their true defaults (#679).
 func TestOnRecoveryDefault(t *testing.T) {
 	tests := []struct {
 		name           string
