@@ -227,3 +227,54 @@ func TestStandaloneGenericWebhookEmptyBodyIsNotDeduplicated(t *testing.T) {
 	}
 	assert.Equal(t, 2, client.triggerCalls)
 }
+
+// TestStandaloneBitbucketDeletionIgnoredWithoutBranch covers the receiver with
+// no tracked branch: a push whose every change deletes its ref is not
+// forwarded (#753 review N1).
+func TestStandaloneBitbucketDeletionIgnoredWithoutBranch(t *testing.T) {
+	const secret = "webhook-secret"
+	cases := []struct {
+		name      string
+		body      string
+		wantCalls int
+	}{
+		{name: "only deletions ignored", body: `{"push":{"changes":[{"new":null,"old":{"type":"branch","name":"main"}}]}}`},
+		{name: "deletion plus update forwards", body: `{"push":{"changes":[{"new":null},{"new":{"type":"branch","name":"develop"}}]}}`, wantCalls: 1},
+		{name: "no changes forwards", body: `{"push":{"changes":[]}}`, wantCalls: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &recordingWebhookClient{}
+			mux := newWebhookMux(&webhookHandler{client: client, secret: secret})
+
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, receiverRequest(t, "/webhook/bitbucket", secret, tc.body, ""))
+
+			assert.Equal(t, tc.wantCalls, client.triggerCalls)
+			if tc.wantCalls == 0 {
+				assert.Contains(t, decodeIgnored(t, w), "deletes")
+			}
+		})
+	}
+}
+
+// TestDuplicateDeliveryNamesTheMatchedKey pins #753 review N2: the response
+// says which replay key matched.
+func TestDuplicateDeliveryNamesTheMatchedKey(t *testing.T) {
+	const secret = "webhook-secret"
+	client := &recordingWebhookClient{}
+	mux := newWebhookMux(&webhookHandler{client: client, secret: secret, branch: "main"})
+	body := receiverPushBody("/webhook/github", "abc123")
+
+	first := httptest.NewRecorder()
+	mux.ServeHTTP(first, receiverRequest(t, "/webhook/github", secret, body, "d-1"))
+	require.Equal(t, http.StatusAccepted, first.Code)
+
+	byID := httptest.NewRecorder()
+	mux.ServeHTTP(byID, receiverRequest(t, "/webhook/github", secret, receiverPushBody("/webhook/github", "def456"), "d-1"))
+	assert.Contains(t, decodeIgnored(t, byID), "d-1")
+
+	byBody := httptest.NewRecorder()
+	mux.ServeHTTP(byBody, receiverRequest(t, "/webhook/github", secret, body, "d-9"))
+	assert.Contains(t, decodeIgnored(t, byBody), "request body already handled")
+}

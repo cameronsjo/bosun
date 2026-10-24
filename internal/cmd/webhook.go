@@ -218,10 +218,11 @@ type webhookHandler struct {
 // so the provider's retry is processed.
 func (h *webhookHandler) claimDelivery(w http.ResponseWriter, r *http.Request, body []byte) ([]string, bool) {
 	keys := daemon.WebhookReplayKeys(r.Header, body)
-	if h.deliveries.Claim(keys...) {
+	matched, ok := h.deliveries.ClaimMatch(keys...)
+	if ok {
 		return keys, true
 	}
-	daemon.WriteDuplicateDeliveryIgnored(w, r, keys[0])
+	daemon.WriteDuplicateDeliveryIgnored(w, r, matched)
 	return keys, false
 }
 
@@ -710,6 +711,10 @@ func (h *webhookHandler) handleBitbucketWebhook(w http.ResponseWriter, r *http.R
 		writeProviderPushIgnored(w, r, "bitbucket", name, reason)
 		return
 	}
+	if bitbucketPushDeletesOnly(payload.Push.Changes) {
+		daemon.WriteBranchDeleteIgnored(w, r, "bitbucket", "")
+		return
+	}
 
 	// Forward to daemon
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -764,6 +769,22 @@ func shouldProcessBitbucketPush(changes []bitbucketPushChange, trackingBranch st
 		return false, name, "Push to " + changes[0].New.Type + " " + name + " ignored (tracking branch " + trackingBranch + ")"
 	}
 	return false, "", "Push with no new branch target ignored (tracking branch " + trackingBranch + ")"
+}
+
+// bitbucketPushDeletesOnly reports whether every change in a Bitbucket push
+// deletes its ref (no new target). The branch filter already ignores such a
+// push when a branch is tracked; this covers the receiver with no known branch
+// (#747). An empty change list is not a deletion.
+func bitbucketPushDeletesOnly(changes []bitbucketPushChange) bool {
+	if len(changes) == 0 {
+		return false
+	}
+	for _, change := range changes {
+		if change.New != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // writeProviderPushIgnored answers an authorized provider push that does not

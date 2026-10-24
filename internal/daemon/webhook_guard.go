@@ -21,6 +21,9 @@ const (
 	DefaultDeliveryCacheTTL = time.Hour
 )
 
+// webhookBodyKeyPrefix namespaces body digests apart from delivery IDs.
+const webhookBodyKeyPrefix = "body-sha256:"
+
 // deliveryIDHeaders lists the headers that carry a per-delivery ID, in lookup
 // order. Gitea sends X-GitHub-Delivery and X-Gitea-Delivery with one value.
 // GitLab sends webhook-id and Idempotency-Key (equal, constant across its
@@ -58,7 +61,13 @@ func WebhookBodyKey(body []byte) string {
 		return ""
 	}
 	sum := sha256.Sum256(body)
-	return "body-sha256:" + hex.EncodeToString(sum[:])
+	return webhookBodyKeyPrefix + hex.EncodeToString(sum[:])
+}
+
+// IsWebhookBodyKey reports whether a key returned by WebhookReplayKeys is the
+// body digest rather than the delivery ID.
+func IsWebhookBodyKey(key string) bool {
+	return strings.HasPrefix(key, webhookBodyKeyPrefix)
 }
 
 // WebhookReplayKeys returns the request's replay keys: its delivery ID and
@@ -142,9 +151,16 @@ func (c *DeliveryCache) init() {
 // should ignore, and then records nothing. Empty keys (no delivery header, an
 // empty body) are skipped; with no keys left it always returns true.
 func (c *DeliveryCache) Claim(ids ...string) bool {
+	_, ok := c.ClaimMatch(ids...)
+	return ok
+}
+
+// ClaimMatch is Claim that also returns, on a repeat, the first given id that
+// was already recorded, so the caller can log which key matched.
+func (c *DeliveryCache) ClaimMatch(ids ...string) (matched string, ok bool) {
 	keys := deliveryKeys(ids)
 	if len(keys) == 0 {
-		return true
+		return "", true
 	}
 
 	c.mu.Lock()
@@ -153,9 +169,12 @@ func (c *DeliveryCache) Claim(ids ...string) bool {
 
 	now := c.now()
 	c.evictExpired(now)
-	for _, key := range keys {
-		if _, ok := c.entries[key]; ok {
-			return false
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, seen := c.entries[sha256.Sum256([]byte(id))]; seen {
+			return id, false
 		}
 	}
 	for _, key := range keys {
@@ -164,7 +183,22 @@ func (c *DeliveryCache) Claim(ids ...string) bool {
 	for c.order.Len() > c.capacity {
 		c.remove(c.order.Back())
 	}
-	return true
+	return "", true
+}
+
+// Seen reports whether id was recorded within the TTL, without recording it
+// or changing the cache. An empty id is never seen.
+func (c *DeliveryCache) Seen(id string) bool {
+	if id == "" {
+		return false
+	}
+	key := sha256.Sum256([]byte(id))
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.init()
+	el, ok := c.entries[key]
+	return ok && c.now().Sub(el.Value.(*deliveryEntry).seen) < c.ttl
 }
 
 // Release forgets every given key, so a provider retry after a failed forward

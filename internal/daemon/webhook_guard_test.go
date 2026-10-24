@@ -322,3 +322,129 @@ func TestDaemonGenericWebhookEmptyBodyIsNotDeduplicated(t *testing.T) {
 	}
 	assert.Equal(t, 2.0, testutil.ToFloat64(s.metrics.WebhookTriggersTotal.WithLabelValues("generic")))
 }
+
+func TestDeliveryCacheSeenAndClaimMatch(t *testing.T) {
+	var c DeliveryCache
+	assert.False(t, c.Seen("a"))
+	assert.False(t, c.Seen("a"), "Seen records nothing")
+	assert.True(t, c.Claim("a", "body-sha256:x"))
+	assert.True(t, c.Seen("a"))
+	assert.True(t, c.Seen("body-sha256:x"))
+	assert.False(t, c.Seen(""))
+
+	matched, ok := c.ClaimMatch("b", "body-sha256:x")
+	assert.False(t, ok)
+	assert.Equal(t, "body-sha256:x", matched)
+	matched, ok = c.ClaimMatch("a", "body-sha256:y")
+	assert.False(t, ok)
+	assert.Equal(t, "a", matched)
+
+	clocked := NewDeliveryCache(8, time.Hour)
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	clocked.now = func() time.Time { return now }
+	require.True(t, clocked.Claim("a"))
+	now = now.Add(time.Hour)
+	assert.False(t, clocked.Seen("a"), "an expired entry is not seen")
+}
+
+func TestDecodeManualTriggerBody(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		want    manualTriggerRequest
+		wantErr bool
+	}{
+		{name: "empty", body: ``},
+		{name: "force", body: `{"force":true}`, want: manualTriggerRequest{Force: true}},
+		{name: "all fields", body: `{"source":"ops","force":false,"nonce":"2026-10-24T12:00:00Z"}`, want: manualTriggerRequest{Source: "ops", Nonce: "2026-10-24T12:00:00Z"}},
+		{name: "empty object", body: `{}`},
+		{name: "github push payload", body: `{"ref":"refs/heads/main","after":"abc123","pusher":{"name":"x"}}`, wantErr: true},
+		{name: "unknown field", body: `{"force":true,"target":"x"}`, wantErr: true},
+		{name: "malformed", body: `{not valid json`, wantErr: true},
+		{name: "trailing data", body: `{"force":true}{"force":false}`, wantErr: true},
+		{name: "not an object", body: `[1]`, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := decodeManualTriggerBody([]byte(tt.body))
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestManualTriggerCannotReplayWebhookBodies pins the #753 review finding:
+// /webhook/manual accepts the same HMAC as /webhook and /webhook/github, so it
+// must not accept their captured bodies.
+func TestManualTriggerCannotReplayWebhookBodies(t *testing.T) {
+	const secret = "webhook-secret"
+	setup := func(t *testing.T) *Server {
+		t.Helper()
+		d, s := newTestDaemon(t)
+		d.config.WebhookSecret = secret
+		d.config.ReconcileConfig.RepoBranch = "main"
+		return s
+	}
+	manual := func(s *Server, body, sig string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/webhook/manual", strings.NewReader(body))
+		req.Header.Set("X-Signature", sig)
+		w := httptest.NewRecorder()
+		s.handleManualTrigger(w, req)
+		return w
+	}
+	manualTriggers := func(s *Server) float64 {
+		return testutil.ToFloat64(s.metrics.WebhookTriggersTotal.WithLabelValues("manual"))
+	}
+
+	t.Run("captured github push re-signed under X-Signature is rejected", func(t *testing.T) {
+		s := setup(t)
+		body := `{"ref":"refs/heads/main","after":"abc123"}`
+		captured := signedDaemonRequest("/webhook/github", body, secret, "d-1")
+		first := httptest.NewRecorder()
+		s.handleGitHubWebhook(first, captured)
+		require.Equal(t, http.StatusAccepted, first.Code)
+
+		for i := 0; i < 3; i++ {
+			w := manual(s, body, captured.Header.Get("X-Hub-Signature-256"))
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+		}
+		assert.Equal(t, 0.0, manualTriggers(s))
+	})
+
+	t.Run("manual-shaped body already handled by /webhook is refused", func(t *testing.T) {
+		s := setup(t)
+		body := `{"source":"cron"}`
+		sig := computeHMACSHA256([]byte(body), secret)
+		generic := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
+		generic.Header.Set("X-Signature", sig)
+		first := httptest.NewRecorder()
+		s.handleWebhook(first, generic)
+		require.Equal(t, http.StatusAccepted, first.Code)
+
+		w := manual(s, body, sig)
+		assert.Equal(t, http.StatusConflict, w.Code)
+		assert.Contains(t, w.Body.String(), "nonce")
+		assert.Equal(t, 0.0, manualTriggers(s))
+
+		retrigger := `{"source":"cron","nonce":"2026-10-24T12:00:00Z"}`
+		w = manual(s, retrigger, computeHMACSHA256([]byte(retrigger), secret))
+		assert.Equal(t, http.StatusAccepted, w.Code)
+		assert.Equal(t, 1.0, manualTriggers(s))
+	})
+
+	t.Run("manual triggers stay repeatable and record nothing", func(t *testing.T) {
+		s := setup(t)
+		body := `{"force":true}`
+		sig := computeHMACSHA256([]byte(body), secret)
+		for i := 0; i < 2; i++ {
+			w := manual(s, body, sig)
+			require.Equal(t, http.StatusAccepted, w.Code)
+		}
+		assert.Equal(t, 2.0, manualTriggers(s))
+		assert.False(t, s.deliveries.Seen(WebhookBodyKey([]byte(body))), "manual must not record its body")
+	})
+}

@@ -589,7 +589,7 @@ bosun daemon -i 1800
 | `/ready` | GET | Readiness check |
 | `/webhook` | POST | Generic webhook trigger (validates `X-Signature` or `X-Hub-Signature-256`) |
 | `/webhook/github` | POST | GitHub push webhook |
-| `/webhook/manual` | POST | Manual trigger |
+| `/webhook/manual` | POST | Manual trigger (validates `X-Signature`; body empty or `{"force","source","nonce"}` only) |
 | `/metrics` | GET | Prometheus metrics |
 
 `/health` is intentionally unauthenticated and never includes reconcile errors,
@@ -734,7 +734,9 @@ After the signature (or GitLab token) check and the push-event check, `/webhook/
 
 **Branch deletes and repeated deliveries:**
 
-A push that deletes the tracked branch (`deleted: true`, or an `after` made only of zeros) gets `200` `ignored` and a warning log instead of a reconcile; Bitbucket deletions were already ignored. After the signature or token check, every trigger endpoint also records two replay keys: the delivery ID (`X-GitHub-Delivery`, `X-Gitea-Delivery`, GitLab's `webhook-id`/`Idempotency-Key`/`X-Gitlab-Event-UUID`, or Bitbucket's `X-Request-UUID`) and the SHA-256 of the request body. A request whose delivery ID or body was seen in the last hour gets `200` `ignored` and is not forwarded, so re-sending a captured body under a new delivery ID does not work either. The body key also applies to GitLab, which uses a token instead of a body signature. An empty body has no body key, so an empty-body signed trigger can be repeated; a repeated non-empty body to the generic endpoint is ignored within the hour. The record holds at most 1024 keys, and a delivery whose forward fails has both keys removed so the provider's retry goes through.
+A push that deletes the tracked branch (`deleted: true`, or an `after` made only of zeros) gets `200` `ignored` and a warning log instead of a reconcile. A Bitbucket push whose every change is a deletion (`new: null`) is ignored the same way, with or without a tracked branch. After the signature or token check, every push endpoint (the receiver's five, and the daemon's `/webhook` and `/webhook/github`) also records two replay keys: the delivery ID (`X-GitHub-Delivery`, `X-Gitea-Delivery`, GitLab's `webhook-id`/`Idempotency-Key`/`X-Gitlab-Event-UUID`, or Bitbucket's `X-Request-UUID`) and the SHA-256 of the request body. A request whose delivery ID or body was seen in the last hour gets `200` `ignored` and is not forwarded, so re-sending a captured body under a new delivery ID does not work either. The body key also applies to GitLab, which uses a token instead of a body signature. An empty body has no body key, so an empty-body signed trigger can be repeated; a repeated non-empty body to the generic endpoint is ignored within the hour. The record holds at most 1024 keys, and a delivery whose forward fails has both keys removed so the provider's retry goes through.
+
+**Manual trigger and the replay record:** the daemon's `/webhook/manual` accepts the same HMAC, so it does not take webhook bodies. Its body must be empty or a JSON object with only `force`, `source`, and `nonce`; anything else, including a push payload, gets `400`. A body that a webhook endpoint recorded in the last hour gets `409`. Manual triggers record nothing, so the same manual body can be sent again; to retrigger with a body that a webhook endpoint already used, add a fresh `nonce`, for example `{"force":true,"nonce":"2026-10-24T12:00:00Z"}`.
 
 **Daemon-Injected Secrets:**
 

@@ -17,5 +17,10 @@
   under a changed delivery header, different bodies to one branch, a bad
   signature on a repeated ID, a failed-forward retry, and the empty-body
   trigger. Staged break of each guard turns its tests red.
-- [x] 7. Docs: `docs/gitops.md`, `docs/commands.md`, and the onboard skill
+- [x] 7. `/webhook/manual`: strict body decode (`400`), read-only
+  `DeliveryCache.Seen` lookup of the body digest (`409`), tests for a
+  re-signed captured push, a recorded manual-shaped body, a nonce retrigger,
+  and repeated manual bodies. Receiver Bitbucket deletions ignored with no
+  tracked branch; refused repeats log `match=body` or `match=delivery`.
+- [x] 8. Docs: `docs/gitops.md`, `docs/commands.md`, and the onboard skill
   resources.

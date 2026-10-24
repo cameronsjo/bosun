@@ -12,7 +12,8 @@ check SHALL run after authorization and after the branch filter.
 An ignored delete SHALL receive `200` with status `ignored` and a reason,
 SHALL be logged at warn level with the sanitized ref, and SHALL NOT be
 forwarded to the daemon or start a reconcile. The receiver's Bitbucket
-endpoint already ignores a deletion, because the change has no `new` target.
+endpoint SHALL ignore a push whose every change has no `new` target, whether
+or not a tracked branch is known.
 
 #### Scenario: GitHub push deletes the tracked branch
 
@@ -83,7 +84,47 @@ provider's retry is processed.
 - **WHEN** the receiver fails to forward a delivery to the daemon and the provider retries the same body
 - **THEN** the retry is forwarded
 
+#### Scenario: Body-only repeat is logged as such
+
+- **WHEN** a request is refused because only its body key matched
+- **THEN** the warning log carries `match=body` instead of an empty delivery ID
+
 #### Scenario: Entry expires
 
 - **WHEN** a delivery ID and body were recorded more than an hour ago
 - **THEN** a request with that ID and body is processed again
+
+### Requirement: Manual trigger does not accept webhook bodies
+
+The daemon's `/webhook/manual` accepts the same HMAC as `/webhook` and
+`/webhook/github`, so it SHALL NOT be usable to replay their bodies. After
+authorization it SHALL decode its body strictly: an empty body, or one JSON
+object with only `force`, `source`, and `nonce`. Any other body, including a
+push payload, SHALL receive `400` and SHALL NOT start a reconcile.
+
+It SHALL then look up the body's digest in the replay record without recording
+anything. A body already in the record SHALL receive `409` with a message that
+names the `nonce` field, SHALL be logged at warn level, and SHALL NOT start a
+reconcile. Manual triggers SHALL NOT be recorded, so a manual body stays
+repeatable; a caller retriggers with a body a webhook endpoint used by adding
+a fresh `nonce`.
+
+#### Scenario: Captured push body sent to the manual endpoint
+
+- **WHEN** a signed GitHub push body accepted by `/webhook/github` is sent to `/webhook/manual` with the same signature under `X-Signature`
+- **THEN** the response is `400` and no reconcile starts
+
+#### Scenario: Manual-shaped body already handled by a webhook endpoint
+
+- **WHEN** `/webhook` accepted the body `{"source":"cron"}` and the same signed body is sent to `/webhook/manual`
+- **THEN** the response is `409` and no reconcile starts
+
+#### Scenario: Manual retrigger with a nonce
+
+- **WHEN** the same request is sent with a fresh `nonce` field
+- **THEN** the response is `202`
+
+#### Scenario: Repeated manual trigger
+
+- **WHEN** the same manual body that no webhook endpoint recorded is sent twice
+- **THEN** both are accepted

@@ -48,11 +48,22 @@ Two webhook gaps remained after `filter-generic-webhook-branch` (#738) and
   daemon is shutting down) SHALL have both keys removed from the record, so
   the provider's own retry still goes through.
 - A request without any delivery header is still checked by its body key.
+- The daemon's `/webhook/manual` accepts the same HMAC, so it SHALL decode its
+  body strictly (empty, or only `force`, `source`, `nonce`; anything else is
+  `400`) and SHALL answer `409` to a body already in the replay record, using
+  a lookup that records nothing. Manual triggers stay repeatable; a fresh
+  `nonce` retriggers with a body a webhook endpoint used. A body that was
+  malformed used to trigger without `force`; it is now `400`.
+- The receiver's Bitbucket endpoint SHALL ignore a push made only of
+  deletions even when no tracked branch is known.
+- A refused repeat SHALL log which key matched (`match=delivery` with the ID,
+  or `match=body`).
 
 ## Impact
 
 - Affected specs: `daemon-security`. ADDED: Webhook branch-delete pushes are
-  ignored; Webhook delivery replay is dropped.
+  ignored; Webhook delivery replay is dropped; Manual trigger does not accept
+  webhook bodies.
 - Affected code: `internal/daemon/webhook_guard.go` (new:
   `PushDeletesBranch`, `WebhookDeliveryID`, `WebhookBodyKey`,
   `DeliveryCache`),

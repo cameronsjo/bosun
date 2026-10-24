@@ -1,12 +1,15 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -505,31 +508,39 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 // provider retry is processed.
 func (s *Server) claimDelivery(w http.ResponseWriter, r *http.Request, body []byte) ([]string, bool) {
 	keys := WebhookReplayKeys(r.Header, body)
-	if s.deliveries.Claim(keys...) {
+	matched, ok := s.deliveries.ClaimMatch(keys...)
+	if ok {
 		return keys, true
 	}
-	WriteDuplicateDeliveryIgnored(w, r, keys[0])
+	WriteDuplicateDeliveryIgnored(w, r, matched)
 	return keys, false
 }
 
 // WriteDuplicateDeliveryIgnored answers an authorized request whose delivery
 // ID or body was already handled (#747): 200 so the provider does not retry, a
 // warn log because an unexpected repeat may be a replay, and no reconcile.
-// deliveryID may be "" when only the body repeated. Shared with the
+// matched is the replay key that hit (from DeliveryCache.ClaimMatch); the log
+// names it as match=delivery (with the ID) or match=body. Shared with the
 // standalone receiver.
-func WriteDuplicateDeliveryIgnored(w http.ResponseWriter, r *http.Request, deliveryID string) {
-	id := SanitizeWebhookPusherName(deliveryID)
+func WriteDuplicateDeliveryIgnored(w http.ResponseWriter, r *http.Request, matched string) {
 	logger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
-	logger.Warn().
-		Str("delivery_id", id).
+	event := logger.Warn().
 		Str("endpoint", r.URL.Path).
-		Str(log.FieldRemoteAddr, r.RemoteAddr).
-		Msg("Webhook delivery ignored, expected a new delivery ID but this one was already handled (possible replay)")
+		Str(log.FieldRemoteAddr, r.RemoteAddr)
+	message := "Duplicate delivery ignored (request body already handled)"
+	if IsWebhookBodyKey(matched) {
+		event = event.Str("match", "body")
+	} else {
+		id := SanitizeWebhookPusherName(matched)
+		event = event.Str("match", "delivery").Str("delivery_id", id)
+		message = "Duplicate delivery " + id + " ignored (delivery ID already handled)"
+	}
+	event.Msg("Webhook delivery ignored, expected a new delivery but this one was already handled (possible replay)")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status":  "ignored",
-		"message": "Duplicate delivery " + id + " ignored (delivery ID or body already handled)",
+		"message": message,
 	})
 }
 
@@ -556,14 +567,40 @@ func WriteBranchDeleteIgnored(w http.ResponseWriter, r *http.Request, provider, 
 	})
 }
 
+// manualTriggerRequest is the only body /webhook/manual accepts. Nonce carries
+// no meaning; a caller sets it to a fresh value (a timestamp or random string)
+// so a retrigger's body differs from any body a webhook endpoint recorded.
+type manualTriggerRequest struct {
+	Source string `json:"source,omitempty"`
+	Force  bool   `json:"force,omitempty"`
+	Nonce  string `json:"nonce,omitempty"`
+}
+
+// decodeManualTriggerBody decodes a /webhook/manual body strictly: empty, or
+// one JSON object with only source, force, and nonce. Anything else, such as
+// a push payload, is an error.
+func decodeManualTriggerBody(body []byte) (manualTriggerRequest, error) {
+	var req manualTriggerRequest
+	if len(body) == 0 {
+		return req, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		return manualTriggerRequest{}, fmt.Errorf("decode manual trigger body: %w", err)
+	}
+	if dec.More() {
+		return manualTriggerRequest{}, errors.New("decode manual trigger body: unexpected data after the JSON object")
+	}
+	return req, nil
+}
+
 // handleManualTrigger handles manual reconciliation triggers.
 func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	var req TriggerRequest
 
 	// Limit body size to prevent DoS; bytes needed for both HMAC and JSON decode.
 	var body []byte
@@ -580,15 +617,35 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Decode optional JSON body from the already-read bytes.
-	if len(body) > 0 {
-		if err := json.Unmarshal(body, &req); err != nil {
-			parseLogger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
-			parseLogger.Debug().
-				Err(err).
-				Str(log.FieldSource, log.SourceManual).
-				Msg("Failed to parse trigger request body, proceeding without force flag")
-		}
+	// The manual endpoint accepts the same HMAC as /webhook and
+	// /webhook/github, so a captured push body re-signed under X-Signature
+	// would otherwise bypass their replay record (#747). Accept only the
+	// manual-trigger shape, and refuse a body the record already holds.
+	req, err := decodeManualTriggerBody(body)
+	if err != nil {
+		reason := SanitizeWebhookPusherName(err.Error())
+		parseLogger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
+		parseLogger.Warn().
+			Str(log.FieldSource, log.SourceManual).
+			Str("reason", reason).
+			Msg("Manual trigger rejected, expected an empty body or a JSON object with only force, source, or nonce")
+		http.Error(w, "Invalid manual trigger body: "+reason, http.StatusBadRequest)
+		return
+	}
+	if s.deliveries.Seen(WebhookBodyKey(body)) {
+		replayLogger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
+		replayLogger.Warn().
+			Str(log.FieldSource, log.SourceManual).
+			Str("match", "body").
+			Str(log.FieldRemoteAddr, r.RemoteAddr).
+			Msg("Manual trigger refused, expected a body not already handled by a webhook endpoint (possible replay)")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status":  "refused",
+			"message": "Body already handled by a webhook endpoint in the last hour; add a unique nonce field to retrigger",
+		})
+		return
 	}
 
 	// Log the incoming trigger, distinguishing force from normal.
