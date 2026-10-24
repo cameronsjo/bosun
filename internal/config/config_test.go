@@ -2889,3 +2889,52 @@ func TestAlertConfigFromEnv_TwilioToNumbers(t *testing.T) {
 		assert.Nil(t, cfg.TwilioToNumbers)
 	})
 }
+
+func TestComposeIgnoreConfig(t *testing.T) {
+	write := func(t *testing.T, content string) string {
+		t.Helper()
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(content), 0644))
+		return tmpDir
+	}
+
+	t.Run("root and target lists load", func(t *testing.T) {
+		dir := write(t, "compose_ignore:\n  - handmade\n  - notes.txt\ntargets:\n  - name: nas\n    compose_ignore: [other]\n  - name: pi\n")
+		cfg, err := LoadFrom(dir)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"handmade", "notes.txt"}, cfg.ComposeIgnore())
+		targets := cfg.Targets()
+		require.Len(t, targets, 2)
+		assert.Equal(t, []string{"other"}, targets[0].ComposeIgnore)
+		assert.Nil(t, targets[1].ComposeIgnore, "an omitted target list inherits the root list")
+
+		reloaded, err := LoadReloadedConfig(dir)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"handmade", "notes.txt"}, reloaded.ComposeIgnore)
+	})
+
+	t.Run("absent key reloads as an empty list so removal clears it", func(t *testing.T) {
+		reloaded, err := LoadReloadedConfig(write(t, "remove_orphans: true\n"))
+		require.NoError(t, err)
+		require.NotNil(t, reloaded)
+		assert.NotNil(t, reloaded.ComposeIgnore)
+		assert.Empty(t, reloaded.ComposeIgnore)
+	})
+
+	for name, content := range map[string]string{
+		"root path separator": "compose_ignore: [\"../x\"]\n",
+		"root glob":           "compose_ignore: [\"*.yml\"]\n",
+		"root dotenv":         "compose_ignore: [.env]\n",
+		"target path":         "targets:\n  - name: nas\n    compose_ignore: [\"a/b\"]\n",
+	} {
+		t.Run("rejects "+name, func(t *testing.T) {
+			dir := write(t, content)
+			_, err := LoadFrom(dir)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "compose_ignore")
+			reloaded, err := LoadReloadedConfig(dir)
+			require.Error(t, err)
+			assert.Nil(t, reloaded)
+		})
+	}
+}

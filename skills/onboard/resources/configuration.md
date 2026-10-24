@@ -121,6 +121,17 @@ critical_containers:
 #   off                - no health gate
 health_gate_scope: critical
 
+# Compose ignore: exact names of entries in the live compose/ directory that
+# bosun leaves alone on local deploys (for example a separate compose project
+# checked out by hand). Listed entries do not force a full compose run and are
+# never read as compose input; a listed *.yml is not passed to compose up.
+# Exact names only: no globs, no paths, and not .env (compose reads it itself).
+# Warning: an ignored compose file must run under its own project name, or its
+# containers are removed as orphans. Listing a loose *.yml that bosun used to
+# run stops bosun declaring its services, so the next full run removes them.
+compose_ignore:
+  - handmade-project
+
 # Post-sync hooks: act on containers when specific config files change.
 # Solves services (like Traefik) not picking up config changes on FUSE mounts.
 post_sync_hooks:
@@ -157,6 +168,7 @@ post_sync_hooks:
 | `deploy_sync_paths` | `[]` (sync all) | Glob allowlist — only sync staging entries matching these patterns |
 | `deploy_sync_exclude` | `[]` (exclude none) | Glob blocklist — exclude matching staging entries from sync (wins over include) |
 | `critical_containers` | `[]` (disabled) | Container names that must be healthy after deploy — triggers rollback on failure |
+| `compose_ignore` | `[]` (ignore none) | Exact names of unmanaged entries in the live `compose/` directory that local deploys leave alone: they do not force a full compose run, are left out of the recorded unmanaged-entry list, and are never read as compose input. A name bosun deploys is never ignored. Invalid names (empty, `.`/`..`, path separators, glob characters, `.env`) fail config load. Per-target override supported (a `BOSUN_TARGETS` list wins over the repo file). **Warning:** an ignored compose file must run under its own project name, or its containers are removed as orphans on the next full run |
 | `health_gate_scope` | `critical` | Health gate target set: `critical` (only `critical_containers`), `declared` (all declared services, exempting pre-existing casualties), or `off`. Overridden by `BOSUN_HEALTH_GATE_SCOPE` |
 | `template_include_dir` | `templates` | Subtree that reconcile and `bosun render` template `include`/`fromJsonFile` reads are confined to (allowlist), relative to the infra dir (absolute values used as-is). Default `<infraDir>/templates` keeps sibling SOPS files and `bosun.yaml` unreachable from templates. Each directory render pins this source root before reading. Overridden by `BOSUN_TEMPLATE_INCLUDE_DIR` |
 | `drift_ignore` | `[]` (disabled) | Suppress known drift noise by service glob + type (`missing`, `image_mismatch`, `unhealthy`, or `*`). Validated at load: unknown types and invalid globs fail startup. Overridden by `BOSUN_DRIFT_IGNORE` env var (JSON array), validated identically |
@@ -185,6 +197,7 @@ targets:
         container: traefik
     deploy_sync_paths: ["compose/**", "appdata/**"]
     deploy_sync_exclude: ["appdata/temp/**"]
+    compose_ignore: [handmade-project]
 
   - name: media
     target_host: user@media-server

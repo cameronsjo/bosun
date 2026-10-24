@@ -352,6 +352,9 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 		if len(cfg.DeploySyncExclude.Value) == 0 && !cfg.DeploySyncExclude.FromEnv() {
 			cfg.DeploySyncExclude.SetFromFile(projectCfg.DeploySyncExclude())
 		}
+		if len(cfg.ComposeIgnore.Value) == 0 {
+			cfg.ComposeIgnore.SetFromFile(projectCfg.ComposeIgnore())
+		}
 	}
 
 	// BOSUN_TARGETS env var overrides config file targets.

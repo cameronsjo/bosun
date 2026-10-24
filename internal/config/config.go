@@ -95,6 +95,9 @@ type Config struct {
 	// criticalContainers is a list of container names that must be healthy after compose up.
 	criticalContainers []string
 
+	// composeIgnore lists exact compose-directory entry names bosun leaves alone.
+	composeIgnore []string
+
 	// healthGateScope selects the post-compose-up health gate target set:
 	// "critical" (default), "declared", or "off". Empty means "critical".
 	healthGateScope string
@@ -211,6 +214,7 @@ type targetRaw struct {
 	PostSyncHooks      []reconcile.PostSyncHook `yaml:"post_sync_hooks"`
 	DeploySyncPaths    []string                 `yaml:"deploy_sync_paths"`
 	DeploySyncExclude  []string                 `yaml:"deploy_sync_exclude"`
+	ComposeIgnore      []string                 `yaml:"compose_ignore"`
 }
 
 // configFile represents the structure of .bosun/config.yml or bosun.yml.
@@ -268,6 +272,11 @@ type configFile struct {
 	// CriticalContainers is a list of container names that must be healthy after compose up.
 	// When configured, the health gate runs after startup grace period and before state save.
 	CriticalContainers []string `yaml:"critical_containers"`
+
+	// ComposeIgnore lists exact names of entries in the live compose directory
+	// that bosun leaves alone on local deploys: they do not force a full
+	// compose run and are never read as compose input. No globs or paths.
+	ComposeIgnore []string `yaml:"compose_ignore"`
 
 	// HealthGateScope selects the post-compose-up health gate target set:
 	// "critical" (default), "declared", or "off". Empty means "critical".
@@ -414,6 +423,7 @@ func LoadFrom(dir string) (*Config, error) {
 	deploySyncPaths := extractDeploySyncPaths(fileCfg)
 	deploySyncExclude := extractDeploySyncExclude(fileCfg)
 	criticalContainers := extractCriticalContainers(fileCfg)
+	composeIgnore := extractComposeIgnore(fileCfg)
 	healthGateScope := extractHealthGateScope(fileCfg)
 	templateIncludeDir := extractTemplateIncludeDir(fileCfg)
 	driftIgnore := extractDriftIgnore(fileCfg)
@@ -443,6 +453,7 @@ func LoadFrom(dir string) (*Config, error) {
 		deploySyncPaths:        deploySyncPaths,
 		deploySyncExclude:      deploySyncExclude,
 		criticalContainers:     criticalContainers,
+		composeIgnore:          composeIgnore,
 		healthGateScope:        healthGateScope,
 		templateIncludeDir:     templateIncludeDir,
 		driftIgnore:            driftIgnore,
@@ -481,6 +492,11 @@ func LoadReloadedConfig(dir string) (*reconcile.ReloadedConfig, error) {
 	alertCfg := cfg.GetAlertConfig()
 	removeOrphans := cfg.RemoveOrphans()
 	projectName := cfg.ProjectName()
+	// A found file owns compose_ignore: an absent key clears the list.
+	composeIgnore := cloneSlice(cfg.ComposeIgnore())
+	if composeIgnore == nil {
+		composeIgnore = []string{}
+	}
 
 	return &reconcile.ReloadedConfig{
 		PostSyncHooks:      postSyncHooks,
@@ -489,6 +505,7 @@ func LoadReloadedConfig(dir string) (*reconcile.ReloadedConfig, error) {
 		DeploySyncPaths:    cloneSlice(cfg.DeploySyncPaths()),
 		DeploySyncExclude:  cloneSlice(cfg.DeploySyncExclude()),
 		CriticalContainers: cloneSlice(cfg.CriticalContainers()),
+		ComposeIgnore:      composeIgnore,
 		DriftIgnore:        cloneSlice(cfg.DriftIgnore()),
 		OnFailure:          boolPointer(alertCfg.OnFailure),
 		OnSuccess:          boolPointer(alertCfg.OnSuccess),
@@ -566,6 +583,7 @@ func Load() (*Config, error) {
 	deploySyncPaths := extractDeploySyncPaths(fileCfg)
 	deploySyncExclude := extractDeploySyncExclude(fileCfg)
 	criticalContainers := extractCriticalContainers(fileCfg)
+	composeIgnore := extractComposeIgnore(fileCfg)
 	healthGateScope := extractHealthGateScope(fileCfg)
 	templateIncludeDir := extractTemplateIncludeDir(fileCfg)
 	driftIgnore := extractDriftIgnore(fileCfg)
@@ -630,6 +648,7 @@ func Load() (*Config, error) {
 		deploySyncPaths:        deploySyncPaths,
 		deploySyncExclude:      deploySyncExclude,
 		criticalContainers:     criticalContainers,
+		composeIgnore:          composeIgnore,
 		healthGateScope:        healthGateScope,
 		templateIncludeDir:     templateIncludeDir,
 		driftIgnore:            driftIgnore,
@@ -689,6 +708,9 @@ func loadConfigFileSnapshot(root string) (configFileSnapshot, error) {
 		if err := validatePostSyncHooks(path, cfg); err != nil {
 			return configFileSnapshot{}, err
 		}
+		if err := validateComposeIgnore(path, cfg); err != nil {
+			return configFileSnapshot{}, err
+		}
 
 		var raw map[string]yaml.Node
 		if err := yaml.Unmarshal(data, &raw); err != nil {
@@ -715,6 +737,20 @@ func validatePostSyncHooks(path string, cfg configFile) error {
 	}
 	for i, target := range cfg.Targets {
 		if err := reconcile.ValidatePostSyncHooks(target.PostSyncHooks); err != nil {
+			return fmt.Errorf("config file %q: targets[%d] %q: %w", path, i, target.Name, err)
+		}
+	}
+	return nil
+}
+
+// validateComposeIgnore rejects compose_ignore entries that are not exact
+// compose-directory entry names, at the root and on every target.
+func validateComposeIgnore(path string, cfg configFile) error {
+	if err := reconcile.ValidateComposeIgnore(cfg.ComposeIgnore); err != nil {
+		return fmt.Errorf("config file %q: %w", path, err)
+	}
+	for i, target := range cfg.Targets {
+		if err := reconcile.ValidateComposeIgnore(target.ComposeIgnore); err != nil {
 			return fmt.Errorf("config file %q: targets[%d] %q: %w", path, i, target.Name, err)
 		}
 	}
@@ -933,6 +969,16 @@ func extractCriticalContainers(cfg configFile) []string {
 	return cfg.CriticalContainers
 }
 
+// ComposeIgnore returns the configured compose_ignore entry names.
+func (c *Config) ComposeIgnore() []string {
+	return c.composeIgnore
+}
+
+// extractComposeIgnore extracts compose_ignore entry names from a parsed config.
+func extractComposeIgnore(cfg configFile) []string {
+	return cfg.ComposeIgnore
+}
+
 // HealthGateScope returns the configured health gate scope ("critical",
 // "declared", "off", or "" for the default). Validation of unknown values
 // happens at the reconcile layer (resolveHealthGateScope).
@@ -1118,6 +1164,7 @@ func extractTargets(cfg configFile) []reconcile.Target {
 			PostSyncHooks:      clonePostSyncHooks(raw.PostSyncHooks),
 			DeploySyncPaths:    cloneSlice(raw.DeploySyncPaths),
 			DeploySyncExclude:  cloneSlice(raw.DeploySyncExclude),
+			ComposeIgnore:      cloneSlice(raw.ComposeIgnore),
 		})
 	}
 
@@ -1157,6 +1204,7 @@ func cloneTargets(targets []reconcile.Target) []reconcile.Target {
 		cloned[i].PostSyncHooks = clonePostSyncHooks(target.PostSyncHooks)
 		cloned[i].DeploySyncPaths = cloneSlice(target.DeploySyncPaths)
 		cloned[i].DeploySyncExclude = cloneSlice(target.DeploySyncExclude)
+		cloned[i].ComposeIgnore = cloneSlice(target.ComposeIgnore)
 	}
 	return cloned
 }

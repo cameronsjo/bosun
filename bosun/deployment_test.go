@@ -3,6 +3,7 @@ package bosun
 import (
 	"encoding/xml"
 	"os"
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -97,9 +98,17 @@ func TestContainerDeploymentsPersistState(t *testing.T) {
 
 		assert.Regexp(t, `(?m)^[[:space:]]*RUN addgroup -g 1000 bosun`, dockerfile)
 		assert.Regexp(t, `(?m)^[[:space:]]*adduser -D -u 1000 -G bosun [^\n]*$`, dockerfile)
-		assert.Regexp(t, `(?m)^[[:space:]]*mkdir -p [^\n]*/var/lib/bosun[^\n]*$`, dockerfile)
-		assert.Regexp(t, `(?m)^[[:space:]]*chown -R bosun:bosun [^\n]*/var/lib/bosun[^\n]*$`, dockerfile)
-		assert.Regexp(t, `(?m)^[[:space:]]*chmod 0700 /var/lib/bosun$`, dockerfile)
+		// /var/lib/bosun holds deploy state; /var/run/bosun is the reconcile
+		// lock dir, which bosun 0.45.0+ refuses unless it is owned by the
+		// daemon uid and mode 0700 (internal/reconcile/lock_unix.go).
+		for _, dir := range []string{"/var/lib/bosun", "/var/run/bosun"} {
+			// The path must stand alone: preceded by a space, followed by
+			// whitespace or end of line, so /var/lib/bosun2 does not count.
+			path := ` ` + regexp.QuoteMeta(dir) + `(?:[[:space:]]|$)`
+			assert.Regexp(t, `(?m)^[[:space:]]*mkdir -p [^\n]*`+path, dockerfile, dir)
+			assert.Regexp(t, `(?m)^[[:space:]]*chown -R bosun:bosun [^\n]*`+path, dockerfile, dir)
+			assert.Regexp(t, `(?m)^[[:space:]]*chmod 0700[^\n&]*`+path, dockerfile, dir)
+		}
 	})
 
 	t.Run("operator documentation", func(t *testing.T) {

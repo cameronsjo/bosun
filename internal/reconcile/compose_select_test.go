@@ -417,6 +417,10 @@ type harnessOpts struct {
 	fileA     string
 	repoFiles map[string]string
 	liveFiles map[string]string
+	// composeIgnore sets Config.ComposeIgnore (compose_ignore, #744).
+	composeIgnore []string
+	// syncExclude sets Config.DeploySyncExclude.
+	syncExclude []string
 }
 
 func changedOnlyHarnessWith(t *testing.T, o harnessOpts) (r *Reconciler, upCalls *[][]string, dockerLog string, appdata string) {
@@ -498,6 +502,8 @@ func changedOnlyHarnessWith(t *testing.T, o harnessOpts) (r *Reconciler, upCalls
 		ContentHashSync:    true,
 		HealthCheckTimeout: 0,
 	}
+	cfg.ComposeIgnore.Value = o.composeIgnore
+	cfg.DeploySyncExclude.Value = o.syncExclude
 	gitOps := &mockGitOps{syncChanged: true, syncBefore: "prevcommit", syncAfter: "newcommit"}
 	r = NewReconciler(cfg, WithGitOperations(gitOps), WithDeployOps(deploy), WithDockerClient(docker.NewClientWithAPI(mockAPI)))
 	return r, upCalls, dockerLog, appdata
@@ -811,4 +817,203 @@ func TestRun_ChangedOnlyComposeUp_MissingUnmanagedRecordRunsEveryFileOnceThenRec
 	saved := LoadState(r.config.StateFile)
 	assert.True(t, saved.ComposeUnmanagedRecorded)
 	assert.Equal(t, []string{".env"}, saved.ComposeUnmanagedEntries)
+}
+
+// compose_ignore (#744): an operator-listed unmanaged entry neither forces a
+// full run nor is read as compose input; an entry not on the list still does.
+const ignoreChangedB = "services:\n  svc-b:\n    image: alpine:OLD\n"
+
+func TestRun_ComposeIgnore_IgnoredStrayDirKeepsSubsetRun(t *testing.T) {
+	r, calls, dockerLog, _ := changedOnlyHarnessWith(t, harnessOpts{
+		liveB:         ignoreChangedB,
+		prior:         steadyPrior(),
+		running:       []string{"svc-a", "svc-b"},
+		liveFiles:     map[string]string{"compose/handmade/compose.yaml": "services:\n  other:\n    image: alpine\n"},
+		composeIgnore: []string{"handmade"},
+	})
+
+	require.NoError(t, r.Run(context.Background()))
+
+	assert.Equal(t, []string{"b.yml"}, upFileBases(*calls), "an ignored unmanaged directory must not force every file")
+	assert.NotContains(t, readDockerLog(t, dockerLog), "--remove-orphans")
+	saved := LoadState(r.config.StateFile)
+	assert.True(t, saved.ComposeUnmanagedRecorded)
+	assert.Empty(t, saved.ComposeUnmanagedEntries, "ignored entries stay out of the recorded unmanaged list")
+}
+
+func TestRun_ComposeIgnore_NonIgnoredStrayDirRunsEveryFile(t *testing.T) {
+	r, calls, dockerLog, _ := changedOnlyHarnessWith(t, harnessOpts{
+		liveB:         ignoreChangedB,
+		prior:         steadyPrior(),
+		running:       []string{"svc-a", "svc-b"},
+		liveFiles:     map[string]string{"compose/handmade/compose.yaml": "x: 1\n"},
+		composeIgnore: []string{"something-else"},
+	})
+
+	require.NoError(t, r.Run(context.Background()))
+
+	assert.Equal(t, []string{"a.yml", "b.yml"}, upFileBases(*calls), "an unmanaged entry not on the list keeps failing closed")
+	assert.Contains(t, readDockerLog(t, dockerLog), "--remove-orphans")
+}
+
+// The last deploy ran with "handmade" ignored (empty record); the operator has
+// since removed it from the list, so the entry is unmanaged again.
+func TestRun_ComposeIgnore_RemovedEntryFailsClosedAgain(t *testing.T) {
+	r, calls, dockerLog, _ := changedOnlyHarnessWith(t, harnessOpts{
+		liveB:     ignoreChangedB,
+		prior:     steadyPrior(),
+		running:   []string{"svc-a", "svc-b"},
+		liveFiles: map[string]string{"compose/handmade/compose.yaml": "x: 1\n"},
+	})
+
+	require.NoError(t, r.Run(context.Background()))
+
+	assert.Equal(t, []string{"a.yml", "b.yml"}, upFileBases(*calls))
+	assert.Contains(t, readDockerLog(t, dockerLog), "--remove-orphans")
+	saved := LoadState(r.config.StateFile)
+	assert.Equal(t, []string{"handmade"}, saved.ComposeUnmanagedEntries)
+}
+
+// The last deploy recorded "handmade" as unmanaged; adding it to the list
+// takes effect at once instead of tripping the changed-record rule.
+func TestRun_ComposeIgnore_AddedEntryTakesEffectImmediately(t *testing.T) {
+	prior := steadyPrior()
+	prior.ComposeUnmanagedEntries = []string{"handmade"}
+	r, calls, _, _ := changedOnlyHarnessWith(t, harnessOpts{
+		liveB:         ignoreChangedB,
+		prior:         prior,
+		running:       []string{"svc-a", "svc-b"},
+		liveFiles:     map[string]string{"compose/handmade/compose.yaml": "x: 1\n"},
+		composeIgnore: []string{"handmade"},
+	})
+
+	require.NoError(t, r.Run(context.Background()))
+
+	assert.Equal(t, []string{"b.yml"}, upFileBases(*calls))
+}
+
+func TestRun_ComposeIgnore_IgnoredYmlFileIsNotRun(t *testing.T) {
+	r, calls, dockerLog, _ := changedOnlyHarnessWith(t, harnessOpts{
+		liveB:   "services:\n  svc-b:\n    image: alpine:2\n",
+		prior:   steadyPrior(),
+		running: []string{"svc-a", "svc-b"},
+		// Unparseable on purpose: inspecting it would force a full run.
+		liveFiles:     map[string]string{"compose/extra.yml": "services: [not, a, mapping\n"},
+		composeIgnore: []string{"extra.yml"},
+	})
+
+	require.NoError(t, r.Run(context.Background()))
+
+	assert.Empty(t, *calls, "an ignored *.yml is neither inspected nor passed to compose up")
+	assert.NotContains(t, readDockerLog(t, dockerLog), "extra.yml")
+	for _, f := range r.lastComposeFiles {
+		assert.NotEqual(t, "extra.yml", filepath.Base(f), "rollback scope excludes ignored files too")
+	}
+}
+
+// b.yml is in this run's manifest only (the last deploy did not record it),
+// so this pins the current-run ownership check.
+func TestRun_ComposeIgnore_ManagedEntryIsNeverIgnored(t *testing.T) {
+	prior := steadyPrior()
+	prior.DeployedFiles = []string{"compose/a.yml"}
+	r, calls, _, _ := changedOnlyHarnessWith(t, harnessOpts{
+		liveB:         ignoreChangedB,
+		prior:         prior,
+		running:       []string{"svc-a", "svc-b"},
+		composeIgnore: []string{"b.yml"},
+	})
+
+	require.NoError(t, r.Run(context.Background()))
+
+	assert.Equal(t, []string{"b.yml"}, upFileBases(*calls), "a file bosun deploys stays managed even when listed")
+}
+
+// With compose/ excluded from this run's sync, this run's manifest has no
+// compose files; the last deploy's manifest still marks b.yml as bosun's.
+func TestRun_ComposeIgnore_PreviouslyManagedFileIsNeverIgnored(t *testing.T) {
+	r, calls, _, _ := changedOnlyHarnessWith(t, harnessOpts{
+		liveB:         "services:\n  svc-b:\n    image: alpine:2\n",
+		prior:         steadyPrior(),
+		running:       []string{"svc-a", "svc-b"},
+		composeIgnore: []string{"b.yml"},
+		syncExclude:   []string{"compose"},
+	})
+
+	_ = r.Run(context.Background()) // outcome beyond compose selection is not under test
+
+	assert.Equal(t, []string{"a.yml", "b.yml"}, upFileBases(*calls), "a file the last deploy owned stays managed when compose/ is not synced")
+}
+
+func TestRun_ComposeIgnore_InvalidListIgnoresNothing(t *testing.T) {
+	r, calls, _, _ := changedOnlyHarnessWith(t, harnessOpts{
+		liveB:         ignoreChangedB,
+		prior:         steadyPrior(),
+		running:       []string{"svc-a", "svc-b"},
+		liveFiles:     map[string]string{"compose/handmade/compose.yaml": "x: 1\n"},
+		composeIgnore: []string{"handmade", "../escape"},
+	})
+
+	require.NoError(t, r.Run(context.Background()))
+
+	assert.Equal(t, []string{"a.yml", "b.yml"}, upFileBases(*calls), "an invalid list is dropped whole, so selection fails closed")
+}
+
+func TestValidateComposeIgnore(t *testing.T) {
+	assert.NoError(t, ValidateComposeIgnore(nil))
+	assert.NoError(t, ValidateComposeIgnore([]string{"handmade", "notes.txt", ".git", "extra.yml"}))
+	bad := map[string]string{
+		"empty":       "",
+		"dot":         ".",
+		"dotdot":      "..",
+		"slash":       "a/b",
+		"traversal":   "../x",
+		"backslash":   `a\b`,
+		"star":        "*.yml",
+		"question":    "a?.yml",
+		"class":       "[ab].yml",
+		"whitespace":  " handmade",
+		"nul":         "a\x00b",
+		"dotenv":      ".env",
+		"absolute":    "/etc",
+		"trailing ws": "handmade\t",
+	}
+	for name, v := range bad {
+		t.Run(name, func(t *testing.T) {
+			err := ValidateComposeIgnore([]string{"ok", v})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "compose_ignore[1]")
+		})
+	}
+}
+
+func TestSelectComposeFiles_ComposeIgnore(t *testing.T) {
+	in := selectFixture()
+	stray := filepath.Join(in.ComposeDir, "handmade")
+	in.ComposeDirEntries = append(in.ComposeDirEntries, stray)
+
+	got := selectComposeFiles(in)
+	assert.True(t, got.All, "precondition: the stray entry forces a full run")
+
+	in.Ignored = map[string]bool{"handmade": true}
+	got = selectComposeFiles(in)
+	assert.False(t, got.All, "an ignored stray entry must not force a full run")
+	assert.Equal(t, []string{}, unmanagedComposeEntries(in.ComposeDirEntries, in.Managed, in.Ignored))
+}
+
+// Declared contract: an ignored compose file whose stack still runs under
+// bosun's project name is no longer declared, so its containers are orphans
+// and the next full run removes them.
+func TestRun_ComposeIgnore_IgnoredFileUnderBosunProjectIsOrphaned(t *testing.T) {
+	r, calls, dockerLog, _ := changedOnlyHarnessWith(t, harnessOpts{
+		liveB:         "services:\n  svc-b:\n    image: alpine:2\n",
+		prior:         steadyPrior(),
+		running:       []string{"svc-a", "svc-b", "svc-x"},
+		liveFiles:     map[string]string{"compose/extra.yml": "services:\n  svc-x:\n    image: alpine\n"},
+		composeIgnore: []string{"extra.yml"},
+	})
+
+	_ = r.Run(context.Background()) // outcome beyond compose selection is not under test
+
+	assert.Equal(t, []string{"a.yml", "b.yml"}, upFileBases(*calls), "the ignored file is not run, and its container forces a full run")
+	assert.Contains(t, readDockerLog(t, dockerLog), "--remove-orphans", "the full run's orphan pass removes the ignored file's containers")
 }

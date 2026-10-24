@@ -2700,6 +2700,7 @@ func ConfigFromEnv() *Config {
 		cfg.ProjectNameFromFile = projectCfg.ProjectNameFromFile()
 		rcfg.DeployPaths.SetFromFile(projectCfg.DeployPaths())
 		rcfg.CriticalContainers.SetFromFile(projectCfg.CriticalContainers())
+		rcfg.ComposeIgnore.SetFromFile(projectCfg.ComposeIgnore())
 		rcfg.HealthGateScope = projectCfg.HealthGateScope()
 		rcfg.TemplateIncludeDir = projectCfg.TemplateIncludeDir()
 

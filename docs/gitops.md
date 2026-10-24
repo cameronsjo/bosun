@@ -109,7 +109,7 @@ secret resolved (`--secret`, `WEBHOOK_SECRET`, `GITHUB_WEBHOOK_SECRET`, or
 open. `--fetch-secret` needs the receiver to run as an authorized socket peer,
 since the daemon's `GET /config` is peer-credential checked.
 
-The receiver's generic `/webhook` applies the same branch filter as the daemon's. It learns the branch from `--branch`, then `BOSUN_REPO_BRANCH`, then the daemon's `GET /config`; with none known, only the GitHub event filter applies and startup warns.
+The receiver's generic `/webhook` applies the same branch filter as the daemon's. Its provider endpoints filter on the same branch after their signature and push-event checks: GitHub, GitLab, and Gitea pushes forward only when `ref` is `refs/heads/<branch>`, and Bitbucket pushes only when a `push.changes[].new` entry is a `branch` with that name. Other branches, tags, and deletions get `200` `ignored`. The receiver learns the branch from `--branch`, then `BOSUN_REPO_BRANCH`, then the daemon's `GET /config`; with none known, the ref check is off on every endpoint and startup warns.
 
 ### Polling Mode
 
@@ -857,6 +857,12 @@ The reconciler uses file-based locking to prevent concurrent runs.
 ### Lock File
 
 **Path**: `/var/run/bosun/reconcile.lock`
+
+The directory must be owned by the daemon uid with mode `0700`. The image's
+directory satisfies this for its default user (uid 1000). A container run as
+root or another uid needs its own `0700` directory at `/run/bosun`, such as
+`tmpfs: ["/run/bosun:mode=0700,size=1m"]`; see
+[Security § Filesystem Confinement](security.md#filesystem-confinement) for the full rule.
 
 ### Unix Implementation
 

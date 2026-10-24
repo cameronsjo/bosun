@@ -62,6 +62,8 @@ type Target struct {
 	DeploySyncPaths []string `json:"deploy_sync_paths,omitempty"`
 	// DeploySyncExclude overrides the global blocklist for this target.
 	DeploySyncExclude []string `json:"deploy_sync_exclude,omitempty"`
+	// ComposeIgnore overrides the global compose_ignore list for this target.
+	ComposeIgnore []string `json:"compose_ignore,omitempty"`
 }
 
 // IsDefault returns true if this is the implicit default target. The comparison
@@ -73,7 +75,8 @@ func (t Target) IsDefault() bool {
 
 // ConfigForTarget returns a shallow copy of the base config with per-target
 // fields (TargetHost, appdata paths, ProjectName, StagingDir, StateFile,
-// LockFile, CriticalContainers, PostSyncHooks, DeploySyncPaths/Exclude)
+// LockFile, CriticalContainers, PostSyncHooks, DeploySyncPaths/Exclude,
+// ComposeIgnore)
 // overridden from the given Target. This lets the existing pipeline run
 // unchanged per-target - the daemon creates a ConfigForTarget copy before
 // each reconciler instantiation.
@@ -148,6 +151,17 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 	} else if cp.DeploySyncExclude.Value != nil {
 		cp.DeploySyncExclude.Value = cloneSlice(cp.DeploySyncExclude.Value)
 	}
+	if t.ComposeIgnore != nil {
+		if c.targetFieldFromEnv(t, func(x Target) bool { return x.ComposeIgnore != nil }) {
+			// A BOSUN_TARGETS list (explicit [] included) is env-owned, so the
+			// per-run repo reload cannot replace it (same rule as hooks).
+			cp.ComposeIgnore = EnvConfigField(cloneSlice(t.ComposeIgnore))
+		} else {
+			cp.ComposeIgnore.Value = cloneSlice(t.ComposeIgnore)
+		}
+	} else if cp.ComposeIgnore.Value != nil {
+		cp.ComposeIgnore.Value = cloneSlice(cp.ComposeIgnore.Value)
+	}
 
 	if t.SecretsScope != "" {
 		cp.SecretsScope = t.SecretsScope
@@ -162,13 +176,20 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 // BOSUN_TARGETS array and a lone default target with no hook key must continue
 // to inherit file-owned root hooks and accept later repo reloads.
 func (c *Config) targetHooksFromEnv(t Target) bool {
-	if !c.TargetsFromEnv || t.PostSyncHooks == nil {
+	return c.targetFieldFromEnv(t, func(x Target) bool { return x.PostSyncHooks != nil })
+}
+
+// targetFieldFromEnv reports whether t carries an explicit override (set
+// reports presence) that came from BOSUN_TARGETS, with the implicit-default
+// rule documented on targetHooksFromEnv.
+func (c *Config) targetFieldFromEnv(t Target, set func(Target) bool) bool {
+	if !c.TargetsFromEnv || !set(t) {
 		return false
 	}
 	if !t.IsDefault() {
 		return true
 	}
-	return len(c.Targets) == 1 && c.Targets[0].IsDefault() && c.Targets[0].PostSyncHooks != nil
+	return len(c.Targets) == 1 && c.Targets[0].IsDefault() && set(c.Targets[0])
 }
 
 func cloneSlice[T any](values []T) []T {
@@ -191,6 +212,7 @@ func cloneTargets(targets []Target) []Target {
 		cloned[i].PostSyncHooks = clonePostSyncHooks(target.PostSyncHooks)
 		cloned[i].DeploySyncPaths = cloneSlice(target.DeploySyncPaths)
 		cloned[i].DeploySyncExclude = cloneSlice(target.DeploySyncExclude)
+		cloned[i].ComposeIgnore = cloneSlice(target.ComposeIgnore)
 	}
 	return cloned
 }
@@ -528,6 +550,7 @@ func (c *Config) implicitDefaultTarget(explicit Target) Target {
 		PostSyncHooks:      c.PostSyncHooks.Value,
 		DeploySyncPaths:    c.DeploySyncPaths.Value,
 		DeploySyncExclude:  c.DeploySyncExclude.Value,
+		ComposeIgnore:      c.ComposeIgnore.Value,
 	}
 	if explicit.TargetHost != "" {
 		t.TargetHost = explicit.TargetHost
@@ -563,6 +586,9 @@ func (c *Config) implicitDefaultTarget(explicit Target) Target {
 	}
 	if explicit.DeploySyncExclude != nil {
 		t.DeploySyncExclude = explicit.DeploySyncExclude
+	}
+	if explicit.ComposeIgnore != nil {
+		t.ComposeIgnore = explicit.ComposeIgnore
 	}
 	return t
 }

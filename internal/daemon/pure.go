@@ -99,6 +99,24 @@ func shouldProcessGitHubPush(pushRef string, trackingBranch string) (process boo
 	return true, "push to tracked branch " + trackingBranch
 }
 
+// ShouldProcessPushRef decides whether an authorized provider push event
+// (GitHub, GitLab, or Gitea, whose payloads carry a full `ref`) targets the
+// tracked branch. It uses the GitHub endpoint's comparison: only
+// refs/heads/<trackingBranch> passes, so other branches, tags, and bare branch
+// names are ignored. A push event without a ref is ignored too, because its
+// branch is unknown. An empty trackingBranch means the caller does not know the
+// branch (the standalone receiver without configuration): every push passes.
+// reason may embed ref unsanitized; callers must sanitize it before logging.
+func ShouldProcessPushRef(ref string, trackingBranch string) (process bool, reason string) {
+	if trackingBranch == "" {
+		return true, "no tracked branch configured; ref not checked"
+	}
+	if ref == "" {
+		return false, "Push without a readable ref ignored (tracking refs/heads/" + trackingBranch + ")"
+	}
+	return shouldProcessGitHubPush(ref, trackingBranch)
+}
+
 // ShouldProcessGenericWebhook decides whether an authorized generic webhook
 // starts a reconcile. A GitHub event header other than push is ignored. A
 // top-level "ref" in a JSON object body must name the tracked branch, using the

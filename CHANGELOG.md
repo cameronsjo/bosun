@@ -40,6 +40,33 @@ through an independent trusted channel before installing the entries. ssh-keysca
 does not authenticate a host. Deploys without a Bosun trust file still use strict
 OpenSSH default stores; container-only pins must be persisted.
 
+## [0.47.0](https://github.com/cameronsjo/bosun/compare/v0.46.4...v0.47.0) (2026-10-24)
+
+
+### Features
+
+* **reconcile:** add compose_ignore for unmanaged compose-directory entries ([6809993](https://github.com/cameronsjo/bosun/commit/680999380f7f50c89c5fc92408f16b2e849aa38c))
+
+
+### Bug Fixes
+
+* **reconcile:** keep BOSUN_TARGETS compose_ignore across reloads; warn on ignored compose files ([c00450b](https://github.com/cameronsjo/bosun/commit/c00450b143e215b9d28b3e105ae700e1d921824e))
+
+## [0.46.4](https://github.com/cameronsjo/bosun/compare/v0.46.3...v0.46.4) (2026-10-24)
+
+
+### Bug Fixes
+
+* **upgrade:** let the canary and the image pass the 0.45.0 lock and SSH trust checks ([7215185](https://github.com/cameronsjo/bosun/commit/721518544a8375a6db29f12c064f2e12f3ad1b9c))
+
+## [0.46.3](https://github.com/cameronsjo/bosun/compare/v0.46.2...v0.46.3) (2026-10-24)
+
+
+### Bug Fixes
+
+* **webhook:** filter receiver provider pushes on the tracked branch ([b9c4f6b](https://github.com/cameronsjo/bosun/commit/b9c4f6bf0c6ad002ae7872c6b5d59941998d8fa1))
+* **webhook:** filter receiver provider pushes on the tracked branch ([3f476d8](https://github.com/cameronsjo/bosun/commit/3f476d893a95a628dadc7804afc2ff4abe3f52f1)), closes [#740](https://github.com/cameronsjo/bosun/issues/740)
+
 ## [0.46.2](https://github.com/cameronsjo/bosun/compare/v0.46.1...v0.46.2) (2026-10-24)
 
 
