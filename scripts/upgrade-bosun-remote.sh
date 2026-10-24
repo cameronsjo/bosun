@@ -71,7 +71,7 @@ RUN_DIR="" LOCKED=0 FINISHING=0 CANDIDATE="" MUTATING=0 DOWNGRADE=0
 FAILURES_DIR=""
 # The upgrade record: set at preflight, or loaded from the state file on resume.
 PROJECT="" INCUMBENT="" INCUMBENT_IMAGE="" INCUMBENT_VERSION="" ROLLBACK_TAG="" CANDIDATE_IMAGE=""
-AGE_SRC="" DEPLOY_SRC=""
+AGE_SRC="" DEPLOY_SRC="" KNOWN_HOSTS_SRC="" KNOWN_HOSTS_TARGET=""
 
 say() { printf '%s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }
@@ -319,6 +319,17 @@ mount_source() {
   printf '%s' "$src"
 }
 
+# known_hosts_volume prints the shadow volume line for the live service's SSH
+# known_hosts file, or nothing when the live service mounts none. bosun 0.45.0+
+# refuses SSH Git without one (internal/reconcile/git.go), so a shadow without
+# it fails every SSH render. The target is BOSUN_SSH_KNOWN_HOSTS when set (it is
+# on the env allowlist, so the shadow sees the same value), else the
+# /config/known_hosts default.
+known_hosts_volume() {
+  [[ -n "$KNOWN_HOSTS_SRC" ]] || return 0
+  printf '      - "%s:%s:ro"\n' "$KNOWN_HOSTS_SRC" "$KNOWN_HOSTS_TARGET"
+}
+
 # acquire_lock takes the state-dir lock and records its owner. A lock whose
 # owner is gone (killed, or the NAS rebooted) is reclaimed; a live owner --
 # for example a run that kept going after the ssh session dropped -- is
@@ -421,11 +432,12 @@ services:
     # lock. A tmpfs is root-owned, so root writes it with no capability at all
     # and the drop stays total. /var/run is a symlink to /run in this image;
     # mount the real path.
-    # mode is pinned because the default is 1777 -- world-writable and sticky,
-    # which is not what a lock directory should be even with one uid in here.
+    # mode is pinned to 0700 because bosun 0.45.0+ refuses a lock directory
+    # that is not owner-only (internal/reconcile/lock_unix.go); the tmpfs
+    # default, 1777, and the 0755 used before both fail that check.
     # size is pinned because the default is half of host RAM.
     tmpfs:
-      - "/run/bosun:mode=0755,size=1m"
+      - "/run/bosun:mode=0700,size=1m"
     environment:
 $env_yaml
       DRY_RUN: "true"
@@ -438,6 +450,7 @@ $env_yaml
     volumes:
       - "$AGE_SRC:/config/age-key.txt:ro"
       - "$DEPLOY_SRC:/config/deploy-key:ro"
+$(known_hosts_volume)
       - "$dir/appdata-empty:/mnt/appdata:ro"
       - "$dir:/work"
     labels:
@@ -820,6 +833,18 @@ main() {
   DEPLOY_SRC="$(mount_source "$cfg" /config/deploy-key)" || DEPLOY_SRC=""
   if [[ -z "$AGE_SRC" || -z "$DEPLOY_SRC" ]]; then
     die CONFIG "$LIVE needs exactly one plain-path mount each for /config/age-key.txt and /config/deploy-key" 64
+  fi
+  KNOWN_HOSTS_TARGET="$(jq -r '.services.bosun.environment.BOSUN_SSH_KNOWN_HOSTS // "/config/known_hosts"' <<<"$cfg")" ||
+    die CONFIG "could not read BOSUN_SSH_KNOWN_HOSTS out of $LIVE" 64
+  [[ "$KNOWN_HOSTS_TARGET" =~ $PATH_RE ]] ||
+    die CONFIG "BOSUN_SSH_KNOWN_HOSTS in $LIVE is not a plain absolute path: $(printable "$KNOWN_HOSTS_TARGET")" 64
+  # Optional: a pre-0.45.0 incumbent works without one. A candidate that needs
+  # it and lacks it fails its own render, which is CANDIDATE-FAILED.
+  KNOWN_HOSTS_SRC="$(mount_source "$cfg" "$KNOWN_HOSTS_TARGET")" || KNOWN_HOSTS_SRC=""
+  if [[ -n "$KNOWN_HOSTS_SRC" ]]; then
+    say "  shadow gets known_hosts $KNOWN_HOSTS_SRC at $KNOWN_HOSTS_TARGET"
+  else
+    say "  WARNING the live service mounts no known_hosts at $KNOWN_HOSTS_TARGET; bosun 0.45.0+ refuses SSH Git without one"
   fi
   RUN_DIR="$(mktemp -d "$TMP_ROOT/bosun-canary.XXXXXX")" || die TRANSIENT "could not create a shadow directory under $TMP_ROOT" 75
   chmod 700 "$RUN_DIR" || die TRANSIENT "could not restrict $RUN_DIR" 75

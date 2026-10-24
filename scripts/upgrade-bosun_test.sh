@@ -308,15 +308,52 @@ for role in incumbent candidate; do
   # bind of /run/bosun into the shadow, and the jq check that tells the two
   # apart sits behind a real-compose guard that skips where compose is absent.
   awk '/^    tmpfs:$/ {under=1; next}
-       under && /^      - "\/run\/bosun:mode=0755,size=1m"$/ {found=1}
+       under && /^      - "\/run\/bosun:mode=0700,size=1m"$/ {found=1}
        under && !/^      - / {under=0}
        END {exit found ? 0 : 1}' "$o" ||
-    fail "$role shadow file does not list - \"/run/bosun:mode=0755,size=1m\" under tmpfs:"
+    fail "$role shadow file does not list - \"/run/bosun:mode=0700,size=1m\" under tmpfs:"
 done
 assert_calls "reconcile --dry-run --no-alerts"
 if grep -F 'run --rm' "$F/calls" | grep -qF -- "$F/compose/docker-compose.yml"; then fail "shadow run merged the live compose file"; fi
 [[ "$(head -n1 "$F/run-order")" == incumbent ]] || fail "incumbent must render first"
-[[ "$(running_role)" == incumbent ]] || fail "dry run changed the running container"; assert_clean_tmp; ok
+[[ "$(running_role)" == incumbent ]] || fail "dry run changed the running container"; assert_clean_tmp
+# The default fixture mounts no known_hosts: the shadow gets none, and says so.
+for role in incumbent candidate; do
+  if grep -qF known_hosts "$F/override-$role.yml"; then fail "$role shadow mounts a known_hosts the live service lacks"; fi
+done
+assert_out "mounts no known_hosts at /config/known_hosts"; ok
+
+# bosun 0.45.0+ refuses SSH Git without known_hosts, so the shadow must carry
+# the live service's file, read-only, at the same container path.
+new_case known-hosts-default-path
+jq '.services.bosun.volumes += [{source: "/mnt/user/appdata/bosun/known_hosts", target: "/config/known_hosts"}]' \
+  "$F/live.json" > "$F/live.tmp" && mv "$F/live.tmp" "$F/live.json"
+run_remote --dry-run
+assert_rc 0
+for role in incumbent candidate; do
+  grep -qF -- '- "/mnt/user/appdata/bosun/known_hosts:/config/known_hosts:ro"' "$F/override-$role.yml" ||
+    fail "$role shadow lacks the live known_hosts mount"
+done
+assert_out "shadow gets known_hosts /mnt/user/appdata/bosun/known_hosts"; ok
+
+new_case known-hosts-env-path
+jq '.services.bosun.environment.BOSUN_SSH_KNOWN_HOSTS = "/ssh/known_hosts"
+    | .services.bosun.volumes += [{source: "/mnt/user/appdata/bosun/kh", target: "/ssh/known_hosts"},
+                                  {source: "/mnt/user/appdata/bosun/unused", target: "/config/known_hosts"}]' \
+  "$F/live.json" > "$F/live.tmp" && mv "$F/live.tmp" "$F/live.json"
+run_remote --dry-run
+assert_rc 0
+for role in incumbent candidate; do
+  o="$F/override-$role.yml"
+  grep -qF -- '- "/mnt/user/appdata/bosun/kh:/ssh/known_hosts:ro"' "$o" || fail "$role shadow lacks the BOSUN_SSH_KNOWN_HOSTS mount"
+  if grep -qF unused "$o"; then fail "$role shadow mounted /config/known_hosts while BOSUN_SSH_KNOWN_HOSTS points elsewhere"; fi
+done
+ok
+
+new_case known-hosts-env-path-refused
+jq '.services.bosun.environment.BOSUN_SSH_KNOWN_HOSTS = "relative/kh"' "$F/live.json" > "$F/live.tmp" && mv "$F/live.tmp" "$F/live.json"
+run_remote --dry-run
+assert_rc 64; assert_out "is not a plain absolute path"; assert_no_calls "reconcile --dry-run"; ok
 
 # The generated shadow file must also be valid to real compose, and carry
 # nothing beyond the allowlist. Skipped, and said so, where no compose exists.
@@ -333,7 +370,7 @@ if [[ -n "$REAL_DOCKER" ]] && "$REAL_DOCKER" compose version >/dev/null 2>&1; th
   # The lock dir must be writable through a tmpfs, never by handing back
   # DAC_OVERRIDE -- that one capability defeats every file-permission check in
   # the container, and the cap_add assertion below is what stops that fix.
-  [[ "$(jq -r '(.services.bosun.tmpfs // []) | join(",")' <<<"$merged")" == "/run/bosun:mode=0755,size=1m" ]] ||
+  [[ "$(jq -r '(.services.bosun.tmpfs // []) | join(",")' <<<"$merged")" == "/run/bosun:mode=0700,size=1m" ]] ||
     fail "shadow does not tmpfs the lock dir with a pinned mode and size"
   [[ "$(jq -r '[.services.bosun | .privileged, .devices, .cap_add, .pid] | map(select(. != null and . != false)) | length' <<<"$merged")" == 0 ]] ||
     fail "shadow carries a privilege-bearing key"
