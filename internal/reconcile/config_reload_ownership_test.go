@@ -194,3 +194,51 @@ func TestReloadProjectConfig_TargetOverrideSlicesDoNotRace(t *testing.T) {
 
 	assert.Equal(t, []string{"initial"}, shared)
 }
+
+func TestReloadProjectConfig_ComposeIgnore(t *testing.T) {
+	reload := func(t *testing.T, target string, start []string, reloaded *ReloadedConfig) []string {
+		t.Helper()
+		cfg := &Config{
+			TargetName:    target,
+			ComposeIgnore: NewConfigField(start),
+			ConfigReloader: func(string) (*ReloadedConfig, error) {
+				return reloaded, nil
+			},
+		}
+		r := NewReconciler(cfg)
+		require.NoError(t, r.reloadProjectConfig())
+		return r.config.ComposeIgnore.Value
+	}
+
+	t.Run("an empty reloaded list clears the old one", func(t *testing.T) {
+		got := reload(t, "", []string{"handmade"}, &ReloadedConfig{ComposeIgnore: []string{}})
+		assert.Empty(t, got, "removing compose_ignore from bosun.yaml must restore fail-closed selection")
+	})
+
+	t.Run("a target override wins over the root list", func(t *testing.T) {
+		got := reload(t, "nas", nil, &ReloadedConfig{
+			ComposeIgnore: []string{"root"},
+			Targets:       []Target{{Name: "nas", ComposeIgnore: []string{"nas-only"}}},
+		})
+		assert.Equal(t, []string{"nas-only"}, got)
+	})
+
+	t.Run("the reconciler owns its copy", func(t *testing.T) {
+		src := []string{"handmade"}
+		got := reload(t, "", nil, &ReloadedConfig{ComposeIgnore: src})
+		got[0] = "mutated"
+		assert.Equal(t, []string{"handmade"}, src)
+	})
+}
+
+func TestConfigForTarget_ComposeIgnore(t *testing.T) {
+	base := &Config{ComposeIgnore: NewConfigField([]string{"root"})}
+	inherited := base.ConfigForTarget(Target{Name: "pi"})
+	assert.Equal(t, []string{"root"}, inherited.ComposeIgnore.Value)
+	inherited.ComposeIgnore.Value[0] = "mutated"
+	assert.Equal(t, []string{"root"}, base.ComposeIgnore.Value, "per-target config must not alias the base list")
+
+	override := base.ConfigForTarget(Target{Name: "nas", ComposeIgnore: []string{}})
+	assert.NotNil(t, override.ComposeIgnore.Value)
+	assert.Empty(t, override.ComposeIgnore.Value, "an explicit empty target list clears the inherited one")
+}

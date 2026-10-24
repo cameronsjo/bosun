@@ -51,6 +51,18 @@ import (
 // (a .env beside them, for one), and bosun cannot see changes to entries it
 // does not deploy, so it fails closed on any of them.
 //
+// compose_ignore (#744) is the one exception: an operator-owned list of exact
+// entry names (a separate project checked out by hand, say) that bosun leaves
+// alone. An unmanaged entry on the list does not force a full run, is left
+// out of the recorded unmanaged-entry list and its comparison, and is never
+// read as a compose input: an ignored *.yml is not passed to compose up and
+// is not inspected. An entry bosun deploys is never ignored, even when listed.
+// `.env` cannot be listed, because compose reads it on its own. The orphan
+// pass is unchanged: it acts on containers in bosun's compose project, not on
+// directory entries, so containers an ignored file started under bosun's
+// project name still count as orphans (and force a full run that removes
+// them). An ignored file must run under its own project name.
+//
 // Every file also runs (today's behavior, orphan pass included) when any of
 // these hold: the caller supplied a fallback reason (force, drift self-heal, a
 // previous deploy left NeedsRedeploy set, no prior deploy or manifest,
@@ -241,6 +253,9 @@ type composeSelectionInput struct {
 	// record exists (older state, or the last deploy did not list).
 	PrevUnmanaged      []string
 	PrevUnmanagedKnown bool
+	// Ignored are the compose_ignore entry names. An unmanaged entry whose
+	// base name is listed is skipped by every compose-directory rule.
+	Ignored map[string]bool
 	// Managed are the live paths bosun deployed this run (the deploy
 	// manifest). Content-hash sync reports changes only for these, so a
 	// compose input outside it is untracked. Nil means none are tracked.
@@ -293,13 +308,16 @@ func selectComposeFiles(in composeSelectionInput) composeSelection {
 	if !in.PrevUnmanagedKnown {
 		return all("no record of unmanaged compose directory entries from the last deploy")
 	}
-	if cur := unmanagedComposeEntries(in.ComposeDirEntries, in.Managed); len(in.PrevUnmanaged) > 0 && !slices.Equal(in.PrevUnmanaged, cur) {
+	// Entries ignored now are dropped from the old record too, so adding a
+	// name to compose_ignore takes effect on the next deploy.
+	prevUnmanaged := withoutIgnored(in.PrevUnmanaged, in.Ignored)
+	if cur := unmanagedComposeEntries(in.ComposeDirEntries, in.Managed, in.Ignored); len(prevUnmanaged) > 0 && !slices.Equal(prevUnmanaged, cur) {
 		// An unmanaged entry present at the last deploy is gone or changed;
 		// a host-deleted .env leaves no other trace.
-		return all(fmt.Sprintf("unmanaged compose directory entries changed since the last deploy (was %s)", strings.Join(in.PrevUnmanaged, ", ")))
+		return all(fmt.Sprintf("unmanaged compose directory entries changed since the last deploy (was %s)", strings.Join(prevUnmanaged, ", ")))
 	}
 	for _, e := range in.ComposeDirEntries {
-		if !managedEntry(filepath.Clean(e), in.Managed) {
+		if !managedEntry(filepath.Clean(e), in.Managed) && !in.Ignored[filepath.Base(e)] {
 			return all(fmt.Sprintf("compose directory entry %q is not deployed by bosun", filepath.Base(e)))
 		}
 	}
@@ -367,16 +385,118 @@ func selectComposeFiles(in composeSelectionInput) composeSelection {
 }
 
 // unmanagedComposeEntries returns the sorted base names of compose-directory
-// entries that are not in the deploy manifest. Never nil.
-func unmanagedComposeEntries(entries []string, managed map[string]bool) []string {
+// entries that are not in the deploy manifest and not on the ignore list.
+// Never nil.
+func unmanagedComposeEntries(entries []string, managed, ignored map[string]bool) []string {
 	out := []string{}
 	for _, e := range entries {
-		if !managedEntry(filepath.Clean(e), managed) {
+		if !managedEntry(filepath.Clean(e), managed) && !ignored[filepath.Base(e)] {
 			out = append(out, filepath.Base(e))
 		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+// withoutIgnored returns names minus those on the ignore list, keeping order.
+// Never nil.
+func withoutIgnored(names []string, ignored map[string]bool) []string {
+	out := []string{}
+	for _, n := range names {
+		if !ignored[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// ValidateComposeIgnore checks compose_ignore entries. Each entry is the exact
+// name of one entry directly in the compose directory: no globs, no path
+// separators, not "." or "..", and not ".env", which compose reads by itself
+// whether or not bosun passes it.
+func ValidateComposeIgnore(names []string) error {
+	for i, n := range names {
+		switch {
+		case n == "":
+			return fmt.Errorf("compose_ignore[%d]: empty name", i)
+		case n != strings.TrimSpace(n):
+			return fmt.Errorf("compose_ignore[%d] %q: leading or trailing whitespace", i, n)
+		case n == "." || n == "..":
+			return fmt.Errorf("compose_ignore[%d] %q: must name an entry in the compose directory", i, n)
+		case strings.ContainsAny(n, `/\`):
+			return fmt.Errorf("compose_ignore[%d] %q: must be a bare entry name, without path separators", i, n)
+		case strings.ContainsAny(n, "*?[]"):
+			return fmt.Errorf("compose_ignore[%d] %q: must be an exact name; glob patterns are not supported", i, n)
+		case strings.ContainsRune(n, 0):
+			return fmt.Errorf("compose_ignore[%d] %q: contains a NUL byte", i, n)
+		case n == ".env":
+			return fmt.Errorf("compose_ignore[%d] %q: compose reads .env from the compose directory on its own, so it cannot be ignored", i, n)
+		}
+	}
+	return nil
+}
+
+// ignoredComposeEntry reports whether a compose-directory path is skipped by
+// compose_ignore: its base name is listed and bosun does not deploy it.
+func ignoredComposeEntry(path string, managed, ignored map[string]bool) bool {
+	return ignored[filepath.Base(path)] && !managedEntry(filepath.Clean(path), managed)
+}
+
+// filterIgnoredComposeFiles drops ignored compose files from the globbed
+// list, so they are never inspected or passed to compose up.
+func filterIgnoredComposeFiles(files []string, managed, ignored map[string]bool) []string {
+	out := make([]string, 0, len(files))
+	for _, f := range files {
+		if !ignoredComposeEntry(f, managed, ignored) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// liveManagedSet returns the absolute live paths in this run's deploy manifest.
+func liveManagedSet(appdata string, result *DeployResult) map[string]bool {
+	managed := make(map[string]bool, len(result.ManagedFiles))
+	for _, m := range result.ManagedFiles {
+		managed[filepath.Join(appdata, filepath.FromSlash(m))] = true
+	}
+	return managed
+}
+
+// composeIgnoreSet returns the effective compose_ignore names as a set. An
+// invalid list (config validation normally rejects it first; BOSUN_TARGETS
+// can still carry one) is dropped whole, so selection fails closed. A name
+// bosun deploys, in this run's manifest (managed, live paths) or the last
+// deploy's (prevManaged, appdata-relative), is dropped with a warning: it
+// stays managed even when this run does not sync compose/.
+func (r *Reconciler) composeIgnoreSet(ctx context.Context, appdata, composeDir string, managed map[string]bool, prevManaged []string) map[string]bool {
+	names := r.config.ComposeIgnore.Value
+	if len(names) == 0 {
+		return nil
+	}
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+	if err := ValidateComposeIgnore(names); err != nil {
+		logger.Error().Err(err).
+			Strs("compose_ignore", names).
+			Msg("Encountered an invalid compose_ignore list, ignoring none of it. Reason: entries must be exact names in the compose directory")
+		return nil
+	}
+	prev := make(map[string]bool, len(prevManaged))
+	for _, m := range prevManaged {
+		prev[filepath.Join(appdata, filepath.FromSlash(m))] = true
+	}
+	set := make(map[string]bool, len(names))
+	for _, n := range names {
+		entry := filepath.Join(composeDir, n)
+		if managedEntry(entry, managed) || managedEntry(entry, prev) {
+			logger.Warn().
+				Str("entry", n).
+				Msg("Not ignoring compose directory entry listed in compose_ignore. Reason: bosun deploys it, so it stays managed")
+			continue
+		}
+		set[n] = true
+	}
+	return set
 }
 
 // managedEntry reports whether a compose-directory entry is in the deploy
@@ -516,7 +636,10 @@ func containerServices(actual []ActualService) map[string]bool {
 // decision. composeSynced is false when compose/ was not a deploy target this
 // run, in which case bosun did not write the files and cannot tell what
 // changed.
-func (r *Reconciler) selectLocalComposeFiles(ctx context.Context, targets []DeployTarget, appdata, composeDir string, composeFiles []string, composeSynced bool, result *DeployResult) composeSelection {
+//
+// managed is liveManagedSet for this run and ignored is composeIgnoreSet;
+// composeFiles has already had ignored files removed.
+func (r *Reconciler) selectLocalComposeFiles(ctx context.Context, targets []DeployTarget, appdata, composeDir string, composeFiles []string, composeSynced bool, result *DeployResult, managed, ignored map[string]bool) composeSelection {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
 	fallback := r.composeFullRunReason
@@ -536,11 +659,6 @@ func (r *Reconciler) selectLocalComposeFiles(ctx context.Context, targets []Depl
 		}
 	}
 
-	managed := make(map[string]bool, len(result.ManagedFiles))
-	for _, m := range result.ManagedFiles {
-		managed[filepath.Join(appdata, filepath.FromSlash(m))] = true
-	}
-
 	// The listing is taken after the sync and before compose up; a host
 	// write to compose/ inside that window is seen on the next deploy.
 	var dirEntries []string
@@ -553,6 +671,7 @@ func (r *Reconciler) selectLocalComposeFiles(ctx context.Context, targets []Depl
 			dirEntries = append(dirEntries, filepath.Join(composeDir, e.Name()))
 		}
 	}
+	logComposeIgnore(ctx, dirEntries, managed, ignored)
 
 	files := make([]composeFileInputs, 0, len(composeFiles))
 	for _, f := range composeFiles {
@@ -564,7 +683,7 @@ func (r *Reconciler) selectLocalComposeFiles(ctx context.Context, targets []Depl
 	}
 
 	if dirListed {
-		r.composeUnmanaged = unmanagedComposeEntries(dirEntries, managed)
+		r.composeUnmanaged = unmanagedComposeEntries(dirEntries, managed, ignored)
 		r.composeUnmanagedListed = true
 	}
 
@@ -577,6 +696,7 @@ func (r *Reconciler) selectLocalComposeFiles(ctx context.Context, targets []Depl
 		ComposeDirListed:   dirListed,
 		PrevUnmanaged:      r.prevComposeUnmanaged,
 		PrevUnmanagedKnown: r.prevComposeUnmanagedKnown,
+		Ignored:            ignored,
 		Managed:            managed,
 		LiveKnown:          r.preDeployLiveKnown,
 		Present:            r.preDeployPresent,
@@ -604,4 +724,34 @@ func (r *Reconciler) selectLocalComposeFiles(ctx context.Context, targets []Depl
 		Msg("Successfully narrowed compose up to changed files")
 	ui.Info("  Compose up on %d of %d files (unchanged files skipped)", len(sel.Files), len(composeFiles))
 	return sel
+}
+
+// logComposeIgnore logs, on every deploy with a compose_ignore list, which
+// listed entries are present and skipped, so the list stays visible.
+func logComposeIgnore(ctx context.Context, dirEntries []string, managed, ignored map[string]bool) {
+	if len(ignored) == 0 {
+		return
+	}
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+	configured := make([]string, 0, len(ignored))
+	for n := range ignored {
+		configured = append(configured, n)
+	}
+	sort.Strings(configured)
+	skipped := []string{}
+	for _, e := range dirEntries {
+		name := filepath.Base(e)
+		if !ignoredComposeEntry(e, managed, ignored) {
+			continue
+		}
+		skipped = append(skipped, name)
+	}
+	sort.Strings(skipped)
+	logger.Info().
+		Strs("ignored", skipped).
+		Strs("compose_ignore", configured).
+		Msg("Skipping compose directory entries listed in compose_ignore. Reason: operator-owned, not deployed or read by bosun")
+	if len(skipped) > 0 {
+		ui.Info("  Ignoring compose directory entries: %s", strings.Join(skipped, ", "))
+	}
 }

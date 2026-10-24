@@ -62,6 +62,8 @@ type Target struct {
 	DeploySyncPaths []string `json:"deploy_sync_paths,omitempty"`
 	// DeploySyncExclude overrides the global blocklist for this target.
 	DeploySyncExclude []string `json:"deploy_sync_exclude,omitempty"`
+	// ComposeIgnore overrides the global compose_ignore list for this target.
+	ComposeIgnore []string `json:"compose_ignore,omitempty"`
 }
 
 // IsDefault returns true if this is the implicit default target. The comparison
@@ -73,7 +75,8 @@ func (t Target) IsDefault() bool {
 
 // ConfigForTarget returns a shallow copy of the base config with per-target
 // fields (TargetHost, appdata paths, ProjectName, StagingDir, StateFile,
-// LockFile, CriticalContainers, PostSyncHooks, DeploySyncPaths/Exclude)
+// LockFile, CriticalContainers, PostSyncHooks, DeploySyncPaths/Exclude,
+// ComposeIgnore)
 // overridden from the given Target. This lets the existing pipeline run
 // unchanged per-target - the daemon creates a ConfigForTarget copy before
 // each reconciler instantiation.
@@ -148,6 +151,11 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 	} else if cp.DeploySyncExclude.Value != nil {
 		cp.DeploySyncExclude.Value = cloneSlice(cp.DeploySyncExclude.Value)
 	}
+	if t.ComposeIgnore != nil {
+		cp.ComposeIgnore.Value = cloneSlice(t.ComposeIgnore)
+	} else if cp.ComposeIgnore.Value != nil {
+		cp.ComposeIgnore.Value = cloneSlice(cp.ComposeIgnore.Value)
+	}
 
 	if t.SecretsScope != "" {
 		cp.SecretsScope = t.SecretsScope
@@ -191,6 +199,7 @@ func cloneTargets(targets []Target) []Target {
 		cloned[i].PostSyncHooks = clonePostSyncHooks(target.PostSyncHooks)
 		cloned[i].DeploySyncPaths = cloneSlice(target.DeploySyncPaths)
 		cloned[i].DeploySyncExclude = cloneSlice(target.DeploySyncExclude)
+		cloned[i].ComposeIgnore = cloneSlice(target.ComposeIgnore)
 	}
 	return cloned
 }
@@ -528,6 +537,7 @@ func (c *Config) implicitDefaultTarget(explicit Target) Target {
 		PostSyncHooks:      c.PostSyncHooks.Value,
 		DeploySyncPaths:    c.DeploySyncPaths.Value,
 		DeploySyncExclude:  c.DeploySyncExclude.Value,
+		ComposeIgnore:      c.ComposeIgnore.Value,
 	}
 	if explicit.TargetHost != "" {
 		t.TargetHost = explicit.TargetHost
@@ -563,6 +573,9 @@ func (c *Config) implicitDefaultTarget(explicit Target) Target {
 	}
 	if explicit.DeploySyncExclude != nil {
 		t.DeploySyncExclude = explicit.DeploySyncExclude
+	}
+	if explicit.ComposeIgnore != nil {
+		t.ComposeIgnore = explicit.ComposeIgnore
 	}
 	return t
 }
