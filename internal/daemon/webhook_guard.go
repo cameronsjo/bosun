@@ -3,6 +3,7 @@ package daemon
 import (
 	"container/list"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -47,6 +48,25 @@ func WebhookDeliveryID(h http.Header) string {
 	return ""
 }
 
+// WebhookBodyKey returns the replay key for an authorized request body: its
+// SHA-256 in a namespace separate from delivery IDs. The delivery headers are
+// not signed, so a captured body re-sent with a fresh delivery ID still
+// matches this key. An empty body returns "": it carries no event, so the
+// plain signed trigger (an empty body sent repeatedly) keeps working.
+func WebhookBodyKey(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(body)
+	return "body-sha256:" + hex.EncodeToString(sum[:])
+}
+
+// WebhookReplayKeys returns the request's replay keys: its delivery ID and
+// its body digest. Either may be "".
+func WebhookReplayKeys(h http.Header, body []byte) []string {
+	return []string{WebhookDeliveryID(h), WebhookBodyKey(body)}
+}
+
 // PushDeletesBranch reports whether a push payload deletes its ref (#747):
 // GitHub sets "deleted": true, and GitHub, GitLab, and Gitea send an "after"
 // made only of zeros. A body that is not a JSON object, or whose fields have
@@ -73,8 +93,8 @@ func isZeroCommitID(s string) bool {
 	return s != "" && strings.Trim(s, "0") == ""
 }
 
-// DeliveryCache remembers recent webhook delivery IDs so a repeated delivery
-// is not acted on twice (#747). It is bounded: at most capacity entries, each
+// DeliveryCache remembers recent webhook replay keys (delivery IDs and body
+// digests) so a repeated delivery is not acted on twice (#747). It is bounded: at most capacity entries, each
 // forgotten after ttl, oldest dropped first when full. Keys are SHA-256
 // digests, so memory does not depend on header length. The zero value is ready
 // to use with DefaultDeliveryCacheSize and DefaultDeliveryCacheTTL. Safe for
@@ -117,14 +137,15 @@ func (c *DeliveryCache) init() {
 	c.entries = make(map[[sha256.Size]byte]*list.Element)
 }
 
-// Claim records id and returns true when it was not seen within the TTL.
-// It returns false for a repeat, which the caller should ignore. An empty id
-// (no delivery header) is never recorded and always returns true.
-func (c *DeliveryCache) Claim(id string) bool {
-	if id == "" {
+// Claim records every non-empty key and returns true when none was seen
+// within the TTL. It returns false for a repeat of any key, which the caller
+// should ignore, and then records nothing. Empty keys (no delivery header, an
+// empty body) are skipped; with no keys left it always returns true.
+func (c *DeliveryCache) Claim(ids ...string) bool {
+	keys := deliveryKeys(ids)
+	if len(keys) == 0 {
 		return true
 	}
-	key := sha256.Sum256([]byte(id))
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -132,29 +153,53 @@ func (c *DeliveryCache) Claim(id string) bool {
 
 	now := c.now()
 	c.evictExpired(now)
-	if _, ok := c.entries[key]; ok {
-		return false
+	for _, key := range keys {
+		if _, ok := c.entries[key]; ok {
+			return false
+		}
 	}
-	c.entries[key] = c.order.PushFront(&deliveryEntry{key: key, seen: now})
+	for _, key := range keys {
+		c.entries[key] = c.order.PushFront(&deliveryEntry{key: key, seen: now})
+	}
 	for c.order.Len() > c.capacity {
 		c.remove(c.order.Back())
 	}
 	return true
 }
 
-// Release forgets id, so a provider retry after a failed forward is processed.
-func (c *DeliveryCache) Release(id string) {
-	if id == "" {
+// Release forgets every given key, so a provider retry after a failed forward
+// is processed.
+func (c *DeliveryCache) Release(ids ...string) {
+	keys := deliveryKeys(ids)
+	if len(keys) == 0 {
 		return
 	}
-	key := sha256.Sum256([]byte(id))
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.init()
-	if el, ok := c.entries[key]; ok {
-		c.remove(el)
+	for _, key := range keys {
+		if el, ok := c.entries[key]; ok {
+			c.remove(el)
+		}
 	}
+}
+
+// deliveryKeys digests the non-empty ids, dropping duplicates.
+func deliveryKeys(ids []string) [][sha256.Size]byte {
+	keys := make([][sha256.Size]byte, 0, len(ids))
+	seen := make(map[[sha256.Size]byte]bool, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		key := sha256.Sum256([]byte(id))
+		if !seen[key] {
+			seen[key] = true
+			keys = append(keys, key)
+		}
+	}
+	return keys
 }
 
 // evictExpired drops entries older than the TTL. Entries are in insertion

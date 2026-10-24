@@ -211,17 +211,18 @@ type webhookHandler struct {
 	deliveries daemon.DeliveryCache
 }
 
-// claimDelivery records the request's delivery ID; call it only after the
-// signature or token check passes (#747). A repeat gets 200 ignored, written
-// here, and false; the caller MUST return. The caller releases the returned ID
-// when the forward fails, so the provider's retry is processed.
-func (h *webhookHandler) claimDelivery(w http.ResponseWriter, r *http.Request) (string, bool) {
-	id := daemon.WebhookDeliveryID(r.Header)
-	if h.deliveries.Claim(id) {
-		return id, true
+// claimDelivery records the request's replay keys (delivery ID and body
+// digest); call it only after the signature or token check passes (#747). A
+// repeat of either key gets 200 ignored, written here, and false; the caller
+// MUST return. The caller releases the returned keys when the forward fails,
+// so the provider's retry is processed.
+func (h *webhookHandler) claimDelivery(w http.ResponseWriter, r *http.Request, body []byte) ([]string, bool) {
+	keys := daemon.WebhookReplayKeys(r.Header, body)
+	if h.deliveries.Claim(keys...) {
+		return keys, true
 	}
-	daemon.WriteDuplicateDeliveryIgnored(w, r, id)
-	return id, false
+	daemon.WriteDuplicateDeliveryIgnored(w, r, keys[0])
+	return keys, false
 }
 
 // authorizeTrigger enforces the receiver's webhook authentication posture
@@ -342,7 +343,7 @@ func (h *webhookHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	deliveryID, fresh := h.claimDelivery(w, r)
+	replayKeys, fresh := h.claimDelivery(w, r, body)
 	if !fresh {
 		return
 	}
@@ -378,7 +379,7 @@ func (h *webhookHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.client.Trigger(ctx, "webhook", false)
 	if err != nil {
-		h.deliveries.Release(deliveryID)
+		h.deliveries.Release(replayKeys...)
 		ui.Error("Failed to trigger daemon: %v", err)
 		http.Error(w, "Failed to trigger reconciliation", http.StatusBadGateway)
 		return
@@ -416,7 +417,7 @@ func (h *webhookHandler) handleGitHubWebhook(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
-	deliveryID, fresh := h.claimDelivery(w, r)
+	replayKeys, fresh := h.claimDelivery(w, r, body)
 	if !fresh {
 		return
 	}
@@ -468,7 +469,7 @@ func (h *webhookHandler) handleGitHubWebhook(w http.ResponseWriter, r *http.Requ
 
 	resp, err := h.client.Trigger(ctx, source, false)
 	if err != nil {
-		h.deliveries.Release(deliveryID)
+		h.deliveries.Release(replayKeys...)
 		ui.Error("Failed to trigger daemon: %v", err)
 		http.Error(w, "Failed to trigger reconciliation", http.StatusBadGateway)
 		return
@@ -504,7 +505,7 @@ func (h *webhookHandler) handleGitLabWebhook(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
-	deliveryID, fresh := h.claimDelivery(w, r)
+	replayKeys, fresh := h.claimDelivery(w, r, body)
 	if !fresh {
 		return
 	}
@@ -549,7 +550,7 @@ func (h *webhookHandler) handleGitLabWebhook(w http.ResponseWriter, r *http.Requ
 
 	resp, err := h.client.Trigger(ctx, source, false)
 	if err != nil {
-		h.deliveries.Release(deliveryID)
+		h.deliveries.Release(replayKeys...)
 		ui.Error("Failed to trigger daemon: %v", err)
 		http.Error(w, "Failed to trigger reconciliation", http.StatusBadGateway)
 		return
@@ -585,7 +586,7 @@ func (h *webhookHandler) handleGiteaWebhook(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
-	deliveryID, fresh := h.claimDelivery(w, r)
+	replayKeys, fresh := h.claimDelivery(w, r, body)
 	if !fresh {
 		return
 	}
@@ -632,7 +633,7 @@ func (h *webhookHandler) handleGiteaWebhook(w http.ResponseWriter, r *http.Reque
 
 	resp, err := h.client.Trigger(ctx, source, false)
 	if err != nil {
-		h.deliveries.Release(deliveryID)
+		h.deliveries.Release(replayKeys...)
 		ui.Error("Failed to trigger daemon: %v", err)
 		http.Error(w, "Failed to trigger reconciliation", http.StatusBadGateway)
 		return
@@ -672,7 +673,7 @@ func (h *webhookHandler) handleBitbucketWebhook(w http.ResponseWriter, r *http.R
 			return
 		}
 	}
-	deliveryID, fresh := h.claimDelivery(w, r)
+	replayKeys, fresh := h.claimDelivery(w, r, body)
 	if !fresh {
 		return
 	}
@@ -721,7 +722,7 @@ func (h *webhookHandler) handleBitbucketWebhook(w http.ResponseWriter, r *http.R
 
 	resp, err := h.client.Trigger(ctx, source, false)
 	if err != nil {
-		h.deliveries.Release(deliveryID)
+		h.deliveries.Release(replayKeys...)
 		ui.Error("Failed to trigger daemon: %v", err)
 		http.Error(w, "Failed to trigger reconciliation", http.StatusBadGateway)
 		return

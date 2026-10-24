@@ -17,14 +17,14 @@ import (
 
 const zeroCommit = "0000000000000000000000000000000000000000"
 
-// receiverPushBody returns a push to the tracked branch main in the endpoint's
-// payload shape.
-func receiverPushBody(endpoint string) string {
+// receiverPushBody returns a push of commit to the tracked branch main in the
+// endpoint's payload shape. Different commits give different bodies.
+func receiverPushBody(endpoint, commit string) string {
 	switch endpoint {
 	case "/webhook/bitbucket":
-		return `{"push":{"changes":[{"new":{"type":"branch","name":"main"}}]}}`
+		return `{"push":{"changes":[{"new":{"type":"branch","name":"main","target":{"hash":"` + commit + `"}}}]}}`
 	default:
-		return `{"ref":"refs/heads/main","after":"abc123"}`
+		return `{"ref":"refs/heads/main","after":"` + commit + `"}`
 	}
 }
 
@@ -114,11 +114,13 @@ func TestStandaloneWebhookIgnoresBranchDelete(t *testing.T) {
 }
 
 // TestStandaloneWebhookDropsReplayedDelivery pins #747 on every receiver
-// endpoint: a repeated delivery ID is answered 200 ignored and forwarded once.
+// endpoint: a repeated delivery ID or a repeated authorized body is answered
+// 200 ignored and forwarded once.
 func TestStandaloneWebhookDropsReplayedDelivery(t *testing.T) {
 	const secret = "webhook-secret"
 	for endpoint := range receiverDeliveryHeader {
-		body := receiverPushBody(endpoint)
+		body := receiverPushBody(endpoint, "abc123")
+		otherBody := receiverPushBody(endpoint, "def456")
 
 		t.Run(endpoint+" repeat ignored", func(t *testing.T) {
 			client := &recordingWebhookClient{}
@@ -134,18 +136,34 @@ func TestStandaloneWebhookDropsReplayedDelivery(t *testing.T) {
 			assert.Equal(t, 1, client.triggerCalls)
 
 			other := httptest.NewRecorder()
-			mux.ServeHTTP(other, receiverRequest(t, endpoint, secret, body, "d-2"))
+			mux.ServeHTTP(other, receiverRequest(t, endpoint, secret, otherBody, "d-2"))
 			assert.Equal(t, http.StatusAccepted, other.Code)
 			assert.Equal(t, 2, client.triggerCalls)
 		})
 
-		t.Run(endpoint+" no delivery header is never deduplicated", func(t *testing.T) {
+		t.Run(endpoint+" same body with a changed delivery header is ignored", func(t *testing.T) {
 			client := &recordingWebhookClient{}
 			mux := newWebhookMux(&webhookHandler{client: client, secret: secret, branch: "main"})
 
-			for i := 0; i < 2; i++ {
+			first := httptest.NewRecorder()
+			mux.ServeHTTP(first, receiverRequest(t, endpoint, secret, body, "d-1"))
+			require.Equal(t, http.StatusAccepted, first.Code)
+
+			for _, id := range []string{"d-forged", ""} {
+				replay := httptest.NewRecorder()
+				mux.ServeHTTP(replay, receiverRequest(t, endpoint, secret, body, id))
+				assert.Contains(t, decodeIgnored(t, replay), "Duplicate delivery")
+			}
+			assert.Equal(t, 1, client.triggerCalls)
+		})
+
+		t.Run(endpoint+" different bodies to the same branch are accepted", func(t *testing.T) {
+			client := &recordingWebhookClient{}
+			mux := newWebhookMux(&webhookHandler{client: client, secret: secret, branch: "main"})
+
+			for _, b := range []string{body, otherBody} {
 				w := httptest.NewRecorder()
-				mux.ServeHTTP(w, receiverRequest(t, endpoint, secret, body, ""))
+				mux.ServeHTTP(w, receiverRequest(t, endpoint, secret, b, ""))
 				require.Equal(t, http.StatusAccepted, w.Code)
 			}
 			assert.Equal(t, 2, client.triggerCalls)
@@ -164,19 +182,21 @@ func TestStandaloneWebhookDropsReplayedDelivery(t *testing.T) {
 			assert.Equal(t, http.StatusUnauthorized, forged.Code)
 		})
 
-		t.Run(endpoint+" failed forward is retried", func(t *testing.T) {
-			client := &failingOnceWebhookClient{}
-			mux := newWebhookMux(&webhookHandler{client: client, secret: secret, branch: "main"})
+		for _, retryID := range []string{"d-1", ""} {
+			t.Run(endpoint+" failed forward is retried (retry delivery id "+retryID+")", func(t *testing.T) {
+				client := &failingOnceWebhookClient{}
+				mux := newWebhookMux(&webhookHandler{client: client, secret: secret, branch: "main"})
 
-			failed := httptest.NewRecorder()
-			mux.ServeHTTP(failed, receiverRequest(t, endpoint, secret, body, "d-1"))
-			require.Equal(t, http.StatusBadGateway, failed.Code)
+				failed := httptest.NewRecorder()
+				mux.ServeHTTP(failed, receiverRequest(t, endpoint, secret, body, "d-1"))
+				require.Equal(t, http.StatusBadGateway, failed.Code)
 
-			retry := httptest.NewRecorder()
-			mux.ServeHTTP(retry, receiverRequest(t, endpoint, secret, body, "d-1"))
-			assert.Equal(t, http.StatusAccepted, retry.Code)
-			assert.Equal(t, 2, client.triggerCalls)
-		})
+				retry := httptest.NewRecorder()
+				mux.ServeHTTP(retry, receiverRequest(t, endpoint, secret, body, retryID))
+				assert.Equal(t, http.StatusAccepted, retry.Code)
+				assert.Equal(t, 2, client.triggerCalls)
+			})
+		}
 	}
 }
 
@@ -191,4 +211,19 @@ func (c *failingOnceWebhookClient) Trigger(ctx context.Context, source string, f
 		return nil, errors.New("daemon unreachable")
 	}
 	return resp, err
+}
+
+// TestStandaloneGenericWebhookEmptyBodyIsNotDeduplicated keeps the receiver's
+// plain signed trigger working: an empty body has no body key.
+func TestStandaloneGenericWebhookEmptyBodyIsNotDeduplicated(t *testing.T) {
+	const secret = "webhook-secret"
+	client := &recordingWebhookClient{}
+	mux := newWebhookMux(&webhookHandler{client: client, secret: secret, branch: "main"})
+
+	for i := 0; i < 2; i++ {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, receiverRequest(t, "/webhook", secret, "", ""))
+		require.Equal(t, http.StatusAccepted, w.Code)
+	}
+	assert.Equal(t, 2, client.triggerCalls)
 }

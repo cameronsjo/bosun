@@ -68,6 +68,19 @@ func TestWebhookDeliveryID(t *testing.T) {
 	}
 }
 
+func TestWebhookBodyKey(t *testing.T) {
+	assert.Equal(t, "", WebhookBodyKey(nil))
+	assert.Equal(t, "", WebhookBodyKey([]byte{}))
+	a := WebhookBodyKey([]byte(`{"after":"abc"}`))
+	assert.Regexp(t, `^body-sha256:[0-9a-f]{64}$`, a)
+	assert.Equal(t, a, WebhookBodyKey([]byte(`{"after":"abc"}`)))
+	assert.NotEqual(t, a, WebhookBodyKey([]byte(`{"after":"abd"}`)))
+
+	h := http.Header{}
+	h.Set("X-GitHub-Delivery", "g-1")
+	assert.Equal(t, []string{"X-GitHub-Delivery:g-1", a}, WebhookReplayKeys(h, []byte(`{"after":"abc"}`)))
+}
+
 func TestDeliveryCache(t *testing.T) {
 	newClocked := func(capacity int, ttl time.Duration) (*DeliveryCache, *time.Time) {
 		now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
@@ -127,6 +140,22 @@ func TestDeliveryCache(t *testing.T) {
 		c.Release("")
 	})
 
+	t.Run("any repeated key refuses and records nothing", func(t *testing.T) {
+		c, _ := newClocked(8, time.Hour)
+		assert.True(t, c.Claim("id-1", "body-1"))
+		assert.False(t, c.Claim("id-2", "body-1"), "body repeated under a new id")
+		assert.True(t, c.Claim("id-2", "body-2"), "id-2 was not recorded by the refused claim")
+		assert.False(t, c.Claim("id-1", "body-3"), "id repeated with a new body")
+	})
+
+	t.Run("release forgets every key", func(t *testing.T) {
+		c, _ := newClocked(8, time.Hour)
+		assert.True(t, c.Claim("id-1", "body-1"))
+		c.Release("id-1", "body-1")
+		assert.True(t, c.Claim("id-9", "body-1"))
+		assert.True(t, c.Claim("id-1"))
+	})
+
 	t.Run("zero value uses defaults", func(t *testing.T) {
 		var c DeliveryCache
 		assert.True(t, c.Claim("a"))
@@ -176,6 +205,7 @@ func TestDaemonWebhookIgnoresBranchDelete(t *testing.T) {
 func TestDaemonWebhookDropsReplayedDelivery(t *testing.T) {
 	const secret = "webhook-secret"
 	body := `{"ref":"refs/heads/main","after":"abc123"}`
+	otherBody := `{"ref":"refs/heads/main","after":"def456"}`
 
 	for _, tc := range []struct{ endpoint, label string }{
 		{endpoint: "/webhook", label: "generic"},
@@ -201,9 +231,27 @@ func TestDaemonWebhookDropsReplayedDelivery(t *testing.T) {
 			assert.Equal(t, 1.0, triggers())
 
 			other := httptest.NewRecorder()
-			serveDaemonWebhook(s, other, signedDaemonRequest(tc.endpoint, body, secret, "d-2"))
+			serveDaemonWebhook(s, other, signedDaemonRequest(tc.endpoint, otherBody, secret, "d-2"))
 			assert.Equal(t, http.StatusAccepted, other.Code)
 			assert.Equal(t, 2.0, triggers())
+		})
+
+		t.Run(tc.endpoint+" same body with a changed delivery header is ignored", func(t *testing.T) {
+			d, s := newTestDaemon(t)
+			d.config.WebhookSecret = secret
+			d.config.ReconcileConfig.RepoBranch = "main"
+
+			first := httptest.NewRecorder()
+			serveDaemonWebhook(s, first, signedDaemonRequest(tc.endpoint, body, secret, "d-1"))
+			require.Equal(t, http.StatusAccepted, first.Code)
+
+			for _, id := range []string{"d-forged", ""} {
+				replay := httptest.NewRecorder()
+				serveDaemonWebhook(s, replay, signedDaemonRequest(tc.endpoint, body, secret, id))
+				require.Equal(t, http.StatusOK, replay.Code)
+				assert.Contains(t, replay.Body.String(), "Duplicate delivery")
+			}
+			assert.Equal(t, 1.0, testutil.ToFloat64(s.metrics.WebhookTriggersTotal.WithLabelValues(tc.label)))
 		})
 
 		t.Run(tc.endpoint+" bad signature on a recorded id is rejected", func(t *testing.T) {
@@ -254,4 +302,23 @@ func serveDaemonWebhook(s *Server, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.handleWebhook(w, r)
+}
+
+// TestDaemonGenericWebhookEmptyBodyIsNotDeduplicated keeps the plain signed
+// trigger working: an empty body carries no event, so it has no body key, and
+// sending it repeatedly still triggers each time.
+func TestDaemonGenericWebhookEmptyBodyIsNotDeduplicated(t *testing.T) {
+	const secret = "webhook-secret"
+	d, s := newTestDaemon(t)
+	d.config.WebhookSecret = secret
+	d.config.ReconcileConfig.RepoBranch = "main"
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(""))
+		req.Header.Set("X-Signature", computeHMACSHA256(nil, secret))
+		w := httptest.NewRecorder()
+		s.handleWebhook(w, req)
+		require.Equal(t, http.StatusAccepted, w.Code)
+	}
+	assert.Equal(t, 2.0, testutil.ToFloat64(s.metrics.WebhookTriggersTotal.WithLabelValues("generic")))
 }

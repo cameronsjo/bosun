@@ -32,23 +32,26 @@ endpoint already ignores a deletion, because the change has no `new` target.
 ### Requirement: Webhook delivery replay is dropped
 
 The daemon's HTTP listener and the standalone receiver SHALL each keep an
-in-memory record of recent delivery IDs. The delivery ID is the first
-non-empty header of `X-GitHub-Delivery`, `X-Gitea-Delivery`, `webhook-id`,
-`Idempotency-Key`, `X-Gitlab-Event-UUID`, and `X-Request-UUID`.
-`X-Gitlab-Webhook-UUID` SHALL NOT be used, because it names the webhook
-configuration rather than a delivery.
+in-memory record of two replay keys per authorized request: the delivery ID
+and the SHA-256 of the raw request body, in separate key namespaces. The
+delivery ID is the first non-empty header of `X-GitHub-Delivery`,
+`X-Gitea-Delivery`, `webhook-id`, `Idempotency-Key`, `X-Gitlab-Event-UUID`,
+and `X-Request-UUID`. `X-Gitlab-Webhook-UUID` SHALL NOT be used, because it
+names the webhook configuration rather than a delivery. An empty body SHALL
+have no body key.
 
 Each trigger endpoint SHALL check the record only after its signature or token
-check passes. A delivery ID already in the record SHALL receive `200` with
-status `ignored`, SHALL be logged at warn level, and SHALL NOT be forwarded or
-start a reconcile. A request without a delivery header SHALL be processed as
-before.
+check passes. The body key SHALL apply on token-authenticated endpoints
+(GitLab) as well as signature-authenticated ones. A request with either key
+already in the record SHALL receive `200` with status `ignored`, SHALL be
+logged at warn level, SHALL NOT be forwarded or start a reconcile, and SHALL
+NOT record its other key.
 
 The record SHALL hold at most 1024 entries, SHALL forget an entry after 1
 hour, SHALL drop its oldest entry when full, and SHALL store a fixed-size
-digest of each ID rather than the header value. When forwarding or starting
-the reconcile fails, the endpoint SHALL remove the delivery from the record so
-the provider's retry is processed.
+digest of each key rather than the input. When forwarding or starting the
+reconcile fails, the endpoint SHALL remove both keys from the record so the
+provider's retry is processed.
 
 #### Scenario: Repeated delivery
 
@@ -60,17 +63,27 @@ the provider's retry is processed.
 - **WHEN** a request repeats a recorded delivery ID but carries an invalid signature
 - **THEN** the response is `401`, not `ignored`
 
-#### Scenario: Distinct deliveries
+#### Scenario: Same body with a changed delivery header
 
-- **WHEN** two authorized pushes carry different delivery IDs
+- **WHEN** an authorized push is accepted and the same body is sent again with a different or missing delivery ID
+- **THEN** the second response is `200` with status `ignored`
+
+#### Scenario: Distinct pushes to the same branch
+
+- **WHEN** two authorized pushes to the tracked branch have different bodies and different delivery IDs
 - **THEN** both are processed
+
+#### Scenario: Plain signed trigger
+
+- **WHEN** an authorized empty-body request is sent to the generic endpoint twice
+- **THEN** both trigger a reconcile
 
 #### Scenario: Failed forward is retried
 
-- **WHEN** the receiver fails to forward a delivery to the daemon and the provider retries it with the same delivery ID
+- **WHEN** the receiver fails to forward a delivery to the daemon and the provider retries the same body
 - **THEN** the retry is forwarded
 
 #### Scenario: Entry expires
 
-- **WHEN** a delivery ID was recorded more than an hour ago
-- **THEN** a request with that ID is processed again
+- **WHEN** a delivery ID and body were recorded more than an hour ago
+- **THEN** a request with that ID and body is processed again

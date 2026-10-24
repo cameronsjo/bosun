@@ -288,7 +288,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeTrigger(w, r, body, schemeGeneric) {
 		return
 	}
-	deliveryID, fresh := s.claimDelivery(w, r)
+	replayKeys, fresh := s.claimDelivery(w, r, body)
 	if !fresh {
 		return
 	}
@@ -350,7 +350,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		webhookSpan.End()
 	}) {
 		s.wg.Done()
-		s.deliveries.Release(deliveryID)
+		s.deliveries.Release(replayKeys...)
 		http.Error(w, "Daemon is shutting down", http.StatusServiceUnavailable)
 		return
 	}
@@ -391,7 +391,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeTrigger(w, r, body, schemeGitHub) {
 		return
 	}
-	deliveryID, fresh := s.claimDelivery(w, r)
+	replayKeys, fresh := s.claimDelivery(w, r, body)
 	if !fresh {
 		return
 	}
@@ -485,7 +485,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 	}) {
 		s.wg.Done()
-		s.deliveries.Release(deliveryID)
+		s.deliveries.Release(replayKeys...)
 		http.Error(w, "Daemon is shutting down", http.StatusServiceUnavailable)
 		return
 	}
@@ -498,23 +498,25 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// claimDelivery records the request's delivery ID after authorization (#747).
-// A repeat within the cache window gets 200 ignored, written here, and false;
-// the caller MUST return. The caller releases the returned ID when the
-// reconcile cannot start, so a provider retry is processed.
-func (s *Server) claimDelivery(w http.ResponseWriter, r *http.Request) (string, bool) {
-	id := WebhookDeliveryID(r.Header)
-	if s.deliveries.Claim(id) {
-		return id, true
+// claimDelivery records the request's replay keys (delivery ID and body
+// digest) after authorization (#747). A repeat of either key within the cache
+// window gets 200 ignored, written here, and false; the caller MUST return.
+// The caller releases the returned keys when the reconcile cannot start, so a
+// provider retry is processed.
+func (s *Server) claimDelivery(w http.ResponseWriter, r *http.Request, body []byte) ([]string, bool) {
+	keys := WebhookReplayKeys(r.Header, body)
+	if s.deliveries.Claim(keys...) {
+		return keys, true
 	}
-	WriteDuplicateDeliveryIgnored(w, r, id)
-	return id, false
+	WriteDuplicateDeliveryIgnored(w, r, keys[0])
+	return keys, false
 }
 
 // WriteDuplicateDeliveryIgnored answers an authorized request whose delivery
-// ID was already handled (#747): 200 so the provider does not retry, a warn
-// log because an unexpected repeat may be a replay, and no reconcile. Shared
-// with the standalone receiver.
+// ID or body was already handled (#747): 200 so the provider does not retry, a
+// warn log because an unexpected repeat may be a replay, and no reconcile.
+// deliveryID may be "" when only the body repeated. Shared with the
+// standalone receiver.
 func WriteDuplicateDeliveryIgnored(w http.ResponseWriter, r *http.Request, deliveryID string) {
 	id := SanitizeWebhookPusherName(deliveryID)
 	logger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
@@ -527,7 +529,7 @@ func WriteDuplicateDeliveryIgnored(w http.ResponseWriter, r *http.Request, deliv
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status":  "ignored",
-		"message": "Duplicate delivery " + id + " ignored",
+		"message": "Duplicate delivery " + id + " ignored (delivery ID or body already handled)",
 	})
 }
 
