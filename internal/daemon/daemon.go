@@ -1810,8 +1810,11 @@ func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, s
 		return
 	}
 
+	// The breaker re-checks each candidate's Compose labels against this scope
+	// before it can trip, so CollectActualState's name-prefix fallback cannot
+	// put an unlabeled container in reach of a stop (#717).
 	result, err := reconcile.RunRestartBreaker(
-		ctx, client, projectName, actual, state,
+		ctx, client, reconcile.RestartBreakerScopeFor(rcfg, projectName), actual, state,
 		rcfg.RestartThreshold, rcfg.RestartWindow,
 	)
 	if err != nil {

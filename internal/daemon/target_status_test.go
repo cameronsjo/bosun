@@ -168,6 +168,8 @@ func TestRunDriftCheckForTarget_NamedBlankProjectUsesComposeNamespace(t *testing
 	d.config.ReconcileConfig.ProjectName = ""
 	d.config.ReconcileConfig.RestartBreakerEnabled = true
 	d.config.ReconcileConfig.RestartThreshold = 5
+	d.config.ReconcileConfig.LocalAppdataPath = t.TempDir()
+	composeDir := filepath.Join(d.config.ReconcileConfig.LocalAppdataPath, "compose")
 	target := d.targets[0]
 	target.ProjectName = ""
 	saveTargetState(t, d.config.ReconcileConfig, target, &reconcile.DeployState{
@@ -197,13 +199,15 @@ func TestRunDriftCheckForTarget_NamedBlankProjectUsesComposeNamespace(t *testing
 	mock.ContainerInspectFunc = func(ctx context.Context, id string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
 		assert.NoError(t, ctx.Err())
 		restartCount := 0
+		labels := breakerTestLabels("compose", "web", composeDir)
 		if id == "other-api-1" {
 			restartCount = 5
+			labels = breakerTestLabels("other", "api", "")
 		}
 		return client.ContainerInspectResult{Container: container.InspectResponse{
 			ID:              id + "-long-id",
 			Name:            "/" + id,
-			Config:          &container.Config{Image: "nginx:latest"},
+			Config:          &container.Config{Image: "nginx:latest", Labels: labels},
 			State:           &container.State{Status: container.StateRunning},
 			RestartCount:    restartCount,
 			NetworkSettings: &container.NetworkSettings{},
@@ -216,6 +220,90 @@ func TestRunDriftCheckForTarget_NamedBlankProjectUsesComposeNamespace(t *testing
 	assert.Empty(t, state.DriftItems, "the Compose-derived namespace should match the declared web service")
 	assert.Equal(t, 1, mock.ContainerInspectCalls, "the unrelated project must not be inspected")
 	assert.Equal(t, 0, mock.ContainerStopCalls, "the unrelated restart loop must not be stopped")
+}
+
+// breakerTestLabels returns the Compose labels the restart breaker checks
+// before it may stop a container; workingDir is omitted when empty.
+func breakerTestLabels(project, service, workingDir string) map[string]string {
+	labels := map[string]string{
+		reconcile.ComposeProjectLabel: project,
+		reconcile.ComposeServiceLabel: service,
+	}
+	if workingDir != "" {
+		labels[reconcile.ComposeWorkingDirLabel] = workingDir
+	}
+	return labels
+}
+
+// TestRunDriftCheckForTarget_NamedBlankProjectSparesForeignComposeStack pins
+// #717 through the daemon wiring: a named target with no project_name uses
+// Compose's fallback name "compose", which any stack started from another
+// directory called compose shares. Only the stack whose working_dir is this
+// target's compose directory may be stopped.
+func TestRunDriftCheckForTarget_NamedBlankProjectSparesForeignComposeStack(t *testing.T) {
+	d, _ := targetStatusTestDaemon(t, []reconcile.Target{{Name: "alpha"}})
+	d.config.ReconcileConfig.ProjectName = ""
+	d.config.ReconcileConfig.RestartBreakerEnabled = true
+	d.config.ReconcileConfig.RestartThreshold = 5
+	d.config.ReconcileConfig.LocalAppdataPath = t.TempDir()
+	ownedDir := filepath.Join(d.config.ReconcileConfig.LocalAppdataPath, "compose")
+	foreignDir := filepath.Join(t.TempDir(), "compose")
+	target := d.targets[0]
+	target.ProjectName = ""
+	baseline := func(id string) reconcile.RestartTrackingEntry {
+		return reconcile.RestartTrackingEntry{
+			ContainerID:          id,
+			BaselineAt:           time.Now().Add(-time.Minute),
+			CheckedAt:            time.Now().Add(-time.Minute),
+			RestartCount:         0,
+			BaselineRestartCount: 0,
+		}
+	}
+	saveTargetState(t, d.config.ReconcileConfig, target, &reconcile.DeployState{
+		LastDeployedCommit: "alpha-commit",
+		DeclaredServices: []reconcile.DeclaredService{
+			{Name: "web", Image: "nginx:latest"},
+			{Name: "api", Image: "nginx:latest"},
+		},
+		RestartTracking: map[string]reconcile.RestartTrackingEntry{
+			"web": baseline("compose-web-"),
+			"api": baseline("compose-api-"),
+		},
+	})
+
+	mock := dockertest.NewMockDockerAPI()
+	mock.ContainerListFunc = func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+		return client.ContainerListResult{Items: []container.Summary{
+			dockertest.MakeTestContainer("compose-web", "compose-web-1", "nginx:latest", "running", "compose", "web"),
+			dockertest.MakeTestContainer("compose-api", "compose-api-1", "nginx:latest", "running", "compose", "api"),
+		}}, nil
+	}
+	labelsByName := map[string]map[string]string{
+		"compose-web-1": breakerTestLabels("compose", "web", foreignDir),
+		"compose-api-1": breakerTestLabels("compose", "api", ownedDir),
+	}
+	mock.ContainerInspectFunc = func(_ context.Context, id string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+		return client.ContainerInspectResult{Container: container.InspectResponse{
+			ID:              id + "-long-id",
+			Name:            "/" + id,
+			Config:          &container.Config{Image: "nginx:latest", Labels: labelsByName[id]},
+			State:           &container.State{Status: container.StateRunning},
+			RestartCount:    5,
+			NetworkSettings: &container.NetworkSettings{},
+		}}, nil
+	}
+	var stopped []string
+	mock.ContainerStopFunc = func(_ context.Context, id string, _ client.ContainerStopOptions) (client.ContainerStopResult, error) {
+		stopped = append(stopped, id)
+		return client.ContainerStopResult{}, nil
+	}
+
+	d.runDriftCheckForTarget(context.Background(), target, docker.NewClientWithAPI(mock))
+
+	assert.Equal(t, []string{"compose-api-1"}, stopped, "the foreign compose stack must survive; only the owned one may be stopped")
+	state := reconcile.LoadState(d.configForTarget(target).StateFile)
+	assert.True(t, state.RestartTracking["api"].Tripped)
+	assert.False(t, state.RestartTracking["web"].Tripped)
 }
 
 func TestRunDriftCheckForTarget_UnresolvedImplicitProjectFailsClosed(t *testing.T) {
@@ -304,7 +392,7 @@ func TestRunDriftCheckForTarget_RestartBreakerMutatesOnlySelectedTarget(t *testi
 		return client.ContainerInspectResult{Container: container.InspectResponse{
 			ID:              id + "-long-id",
 			Name:            "/" + id,
-			Config:          &container.Config{Image: "nginx:latest"},
+			Config:          &container.Config{Image: "nginx:latest", Labels: breakerTestLabels("stack-alpha", "web", "")},
 			State:           &container.State{Status: container.StateRunning},
 			RestartCount:    5,
 			NetworkSettings: &container.NetworkSettings{},

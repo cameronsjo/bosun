@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/cameronsjo/bosun/internal/docker"
@@ -203,12 +204,99 @@ func RestartBreakerSamplingMismatch(driftInterval, restartWindow time.Duration) 
 	return driftInterval > 0 && restartWindow > 0 && driftInterval > restartWindow
 }
 
+// ComposeFallbackProjectName is the project name Docker Compose derives when
+// no project_name is configured and the rendered compose files live in a
+// directory named "compose". Any Compose stack started from such a directory
+// gets the same name, so the name alone does not prove Bosun owns a stack.
+const ComposeFallbackProjectName = "compose"
+
+// ComposeWorkingDirLabel is the label Docker Compose v2 sets to the absolute
+// project directory a container was created from.
+const ComposeWorkingDirLabel = "com.docker.compose.project.working_dir"
+
+// RestartBreakerScope names the containers the restart breaker may stop. The
+// breaker is destructive, so every field narrows the scope; none widens it.
+type RestartBreakerScope struct {
+	// ProjectName is the Compose project a container's
+	// com.docker.compose.project label must equal. Empty means the scope is
+	// unresolved and the breaker acts on nothing.
+	ProjectName string
+	// RequireWorkingDir additionally demands that a container's
+	// com.docker.compose.project.working_dir label equal ComposeWorkingDir.
+	// It is set when ProjectName is only Compose's derived fallback name.
+	RequireWorkingDir bool
+	// ComposeWorkingDir is the absolute, cleaned directory Bosun runs
+	// docker compose from for this target. Empty with RequireWorkingDir set
+	// means ownership cannot be proven and the breaker acts on nothing.
+	ComposeWorkingDir string
+}
+
+// RestartBreakerScopeFor derives the breaker scope for a target config and the
+// Compose project name the caller resolved for it. When that name is only
+// Compose's derived fallback (cfg sets no project_name), a foreign stack
+// started from any other directory named "compose" shares it, so the scope
+// also requires the working_dir label to point at this target's local compose
+// directory (#717).
+func RestartBreakerScopeFor(cfg *Config, projectName string) RestartBreakerScope {
+	scope := RestartBreakerScope{ProjectName: projectName}
+	if projectName != ComposeFallbackProjectName || (cfg != nil && cfg.ProjectName != "") {
+		return scope
+	}
+	scope.RequireWorkingDir = true
+	if cfg == nil || cfg.LocalAppdataPath == "" {
+		return scope
+	}
+	dir, err := filepath.Abs(filepath.Join(cfg.LocalAppdataPath, "compose"))
+	if err != nil {
+		return scope
+	}
+	scope.ComposeWorkingDir = dir
+	return scope
+}
+
+// unresolvedReason returns why the scope cannot prove ownership of any
+// container, or "" when it can.
+func (s RestartBreakerScope) unresolvedReason() string {
+	if s.ProjectName == "" {
+		return "Compose project scope is unresolved"
+	}
+	if s.RequireWorkingDir && s.ComposeWorkingDir == "" {
+		return "fallback Compose project name has no local compose directory to verify ownership against"
+	}
+	return ""
+}
+
+// ownsContainer reports whether a container's labels prove it is the given
+// service of the scoped Compose project. It reads labels only: a container
+// name is chosen by whoever creates the container, so a name prefix is never
+// evidence of ownership (#717). Missing labels fail closed.
+func (s RestartBreakerScope) ownsContainer(labels map[string]string, service string) bool {
+	if s.unresolvedReason() != "" || service == "" {
+		return false
+	}
+	if labels[ComposeProjectLabel] != s.ProjectName || labels[ComposeServiceLabel] != service {
+		return false
+	}
+	if !s.RequireWorkingDir {
+		return true
+	}
+	workingDir := labels[ComposeWorkingDirLabel]
+	if workingDir == "" || !filepath.IsAbs(workingDir) {
+		return false
+	}
+	return filepath.Clean(workingDir) == s.ComposeWorkingDir
+}
+
 // collectRestartCounts inspects running containers to get their restart counts.
 // Only inspects containers in the declared services list to minimize API calls.
+// A container whose inspected labels do not prove scope ownership is not
+// observed: it can never trip, and any prior tracking for its service is kept
+// as if the inspect had failed.
 func collectRestartCounts(
 	ctx context.Context,
 	client *docker.Client,
 	actual []ActualService,
+	scope RestartBreakerScope,
 ) (map[string]restartObservation, map[string]struct{}) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 	observations := make(map[string]restartObservation, len(actual))
@@ -229,6 +317,21 @@ func collectRestartCounts(
 			continue
 		}
 
+		if !scope.ownsContainer(details.Labels, svc.Name) {
+			// Info, not Warn: a foreign container that persists would repeat
+			// this line on every drift cycle.
+			logger.Info().
+				Str(log.FieldContainer, svc.ContainerName).
+				Str("service", svc.Name).
+				Str("expected_project", scope.ProjectName).
+				Str("observed_project", details.Labels[ComposeProjectLabel]).
+				Str("observed_service", details.Labels[ComposeServiceLabel]).
+				Bool("working_dir_required", scope.RequireWorkingDir).
+				Msg("Restart breaker: skipping container. Reason: its Compose labels do not prove it belongs to this target; it will not be stopped")
+			unobserved[svc.Name] = struct{}{}
+			continue
+		}
+
 		observations[svc.Name] = restartObservation{
 			ContainerID:  details.ID,
 			RestartCount: details.RestartCount,
@@ -240,12 +343,14 @@ func collectRestartCounts(
 
 // RunRestartBreaker performs restart circuit breaker evaluation and takes action
 // on containers that exceed the restart threshold. Returns the result for alerting.
-// An empty projectName is an unresolved destructive scope: the breaker returns
-// the existing tracking unchanged without inspecting or stopping any container.
+// An unresolved scope (no project name, or a fallback project name with no
+// directory to verify against) returns the existing tracking unchanged without
+// inspecting or stopping any container. Only containers whose inspected
+// Compose labels match the scope are evaluated or stopped.
 func RunRestartBreaker(
 	ctx context.Context,
 	client *docker.Client,
-	projectName string,
+	scope RestartBreakerScope,
 	actual []ActualService,
 	state *DeployState,
 	threshold int,
@@ -253,15 +358,18 @@ func RunRestartBreaker(
 ) (*RestartBreakerResult, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 
-	// CollectActualState treats an empty project name as match-everything. The
+	// CollectActualState treats an empty project name as match-everything and
+	// falls back to name-prefix matching for unlabeled containers. The
 	// restart breaker is destructive, so an unresolved target scope must not
 	// inspect or stop a container that Bosun cannot prove it owns. Keep the
 	// tracking state unchanged as well: advancing it would trust the same
 	// unscoped observation this guard refuses.
-	if projectName == "" {
+	if reason := scope.unresolvedReason(); reason != "" {
 		logger.Debug().
 			Int("candidate_containers", len(actual)).
-			Msg("Restart circuit breaker skipped: Compose project scope is unresolved; no containers will be inspected or stopped")
+			Str("project", scope.ProjectName).
+			Str("reason", reason).
+			Msg("Restart circuit breaker skipped: ownership cannot be proven; no containers will be inspected or stopped")
 		return &RestartBreakerResult{Updated: state.RestartTracking}, nil
 	}
 
@@ -269,7 +377,7 @@ func RunRestartBreaker(
 		state.RestartTracking = make(map[string]RestartTrackingEntry)
 	}
 
-	observations, unobserved := collectRestartCounts(ctx, client, actual)
+	observations, unobserved := collectRestartCounts(ctx, client, actual, scope)
 	result := evaluateRestartBreaker(observations, state.RestartTracking, threshold, window, time.Now())
 
 	// A partial Docker sample is not evidence that an unobserved service was

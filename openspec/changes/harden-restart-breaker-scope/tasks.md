@@ -34,4 +34,9 @@
   doctor warning, since it never scopes the breaker before a repository
   reload. Reproduce with a daemon test that runs the startup warning and a
   drift check against the same config (bosun#719).
+- [x] 2.11 Require label ownership before a stop: the breaker re-checks each
+  inspected container's Compose project and service labels, so an unlabeled
+  container matched only by name prefix is never stopped, and the `compose`
+  fallback also requires the working_dir label to equal the target's local
+  compose directory (bosun#717).
 - Final restored-head CI results and readiness: [PR #714](https://github.com/cameronsjo/bosun/pull/714).

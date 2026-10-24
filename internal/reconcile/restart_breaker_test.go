@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -385,7 +386,7 @@ func TestRunRestartBreaker(t *testing.T) {
 						},
 						Config: &container.Config{
 							Image:  "nginx",
-							Labels: map[string]string{},
+							Labels: composeLabels("test", "web"),
 							Env:    []string{},
 						},
 						NetworkSettings: &container.NetworkSettings{
@@ -411,7 +412,7 @@ func TestRunRestartBreaker(t *testing.T) {
 		}
 
 		result, err := RunRestartBreaker(
-			context.Background(), client, "test", actual, state, 5, 10*time.Minute,
+			context.Background(), client, RestartBreakerScope{ProjectName: "test"}, actual, state, 5, 10*time.Minute,
 		)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"web"}, result.Tripped)
@@ -434,7 +435,7 @@ func TestRunRestartBreaker(t *testing.T) {
 		actual := []ActualService{{Name: "web", ContainerName: "foreign-web-1", State: "running"}}
 
 		result, err := RunRestartBreaker(
-			context.Background(), dockerClient, "", actual, state, 5, 10*time.Minute,
+			context.Background(), dockerClient, RestartBreakerScope{}, actual, state, 5, 10*time.Minute,
 		)
 
 		require.NoError(t, err)
@@ -459,7 +460,7 @@ func TestRunRestartBreaker(t *testing.T) {
 						},
 						Config: &container.Config{
 							Image:  "nginx",
-							Labels: map[string]string{},
+							Labels: composeLabels("test", "web"),
 							Env:    []string{},
 						},
 						NetworkSettings: &container.NetworkSettings{
@@ -481,7 +482,7 @@ func TestRunRestartBreaker(t *testing.T) {
 		}
 
 		result, err := RunRestartBreaker(
-			context.Background(), client, "test", actual, state, 5, 10*time.Minute,
+			context.Background(), client, RestartBreakerScope{ProjectName: "test"}, actual, state, 5, 10*time.Minute,
 		)
 		require.NoError(t, err)
 		assert.Empty(t, result.Tripped)
@@ -498,7 +499,7 @@ func TestRunRestartBreaker(t *testing.T) {
 		state := &DeployState{}
 
 		result, err := RunRestartBreaker(
-			context.Background(), client, "test", actual, state, 5, 10*time.Minute,
+			context.Background(), client, RestartBreakerScope{ProjectName: "test"}, actual, state, 5, 10*time.Minute,
 		)
 		require.NoError(t, err)
 		assert.Empty(t, result.Tripped)
@@ -518,7 +519,7 @@ func TestRunRestartBreaker(t *testing.T) {
 			},
 		}}
 
-		result, err := RunRestartBreaker(context.Background(), client, "test", actual, state, 5, 10*time.Minute)
+		result, err := RunRestartBreaker(context.Background(), client, RestartBreakerScope{ProjectName: "test"}, actual, state, 5, 10*time.Minute)
 
 		require.NoError(t, err)
 		require.Contains(t, result.Updated, "web")
@@ -541,7 +542,7 @@ func TestRunRestartBreaker(t *testing.T) {
 						Name:         "/test-db-1",
 						RestartCount: 2,
 						State:        &container.State{Status: "running"},
-						Config:       &container.Config{Image: "postgres", Labels: map[string]string{}},
+						Config:       &container.Config{Image: "postgres", Labels: composeLabels("test", "db")},
 						NetworkSettings: &container.NetworkSettings{
 							Networks: map[string]*network.EndpointSettings{},
 						},
@@ -570,7 +571,7 @@ func TestRunRestartBreaker(t *testing.T) {
 			},
 		}
 
-		result, err := RunRestartBreaker(context.Background(), client, "test", actual, state, 5, 10*time.Minute)
+		result, err := RunRestartBreaker(context.Background(), client, RestartBreakerScope{ProjectName: "test"}, actual, state, 5, 10*time.Minute)
 
 		require.NoError(t, err)
 		assert.Equal(t, webEntry, result.Updated["web"])
@@ -594,10 +595,218 @@ func TestRunRestartBreaker(t *testing.T) {
 		}
 		state := &DeployState{RestartTracking: map[string]RestartTrackingEntry{"web": entry}}
 
-		result, err := RunRestartBreaker(context.Background(), client, "test", actual, state, 5, 10*time.Minute)
+		result, err := RunRestartBreaker(context.Background(), client, RestartBreakerScope{ProjectName: "test"}, actual, state, 5, 10*time.Minute)
 
 		require.NoError(t, err)
 		assert.Equal(t, entry, result.Updated["web"])
 		assert.Empty(t, result.Resolved, "an inspect error is not a clean stability observation")
 	})
+}
+
+// composeLabels returns the Compose ownership labels for a project service.
+func composeLabels(project, service string) map[string]string {
+	return map[string]string{
+		ComposeProjectLabel: project,
+		ComposeServiceLabel: service,
+	}
+}
+
+// composeLabelsAt adds the Compose working_dir label to composeLabels.
+func composeLabelsAt(project, service, workingDir string) map[string]string {
+	labels := composeLabels(project, service)
+	labels[ComposeWorkingDirLabel] = workingDir
+	return labels
+}
+
+// breakerInspectByName returns an inspect func that serves a restart-looping
+// container per name with the given labels; names absent from labelsByName
+// fail the test so an unexpected inspect is visible.
+func breakerInspectByName(t *testing.T, restartCount int, labelsByName map[string]map[string]string) func(context.Context, string, client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+	t.Helper()
+	return func(_ context.Context, name string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+		labels, ok := labelsByName[name]
+		if !ok {
+			t.Errorf("unexpected inspect of %q", name)
+		}
+		return client.ContainerInspectResult{
+			Container: container.InspectResponse{
+				ID:              name + "-0123456789abcdef",
+				Name:            "/" + name,
+				RestartCount:    restartCount,
+				State:           &container.State{Status: container.StateRunning},
+				Config:          &container.Config{Image: "nginx", Labels: labels},
+				NetworkSettings: &container.NetworkSettings{Networks: map[string]*network.EndpointSettings{}},
+			},
+		}, nil
+	}
+}
+
+func TestRestartBreakerScopeOwnsContainer(t *testing.T) {
+	ownedDir := filepath.Join(string(filepath.Separator), "srv", "appdata", "compose")
+	project := RestartBreakerScope{ProjectName: "homelab"}
+	fallback := RestartBreakerScope{ProjectName: ComposeFallbackProjectName, RequireWorkingDir: true, ComposeWorkingDir: ownedDir}
+
+	tests := []struct {
+		name    string
+		scope   RestartBreakerScope
+		labels  map[string]string
+		service string
+		want    bool
+	}{
+		{"labeled project service", project, composeLabels("homelab", "web"), "web", true},
+		{"no labels (name-prefix match only)", project, nil, "web", false},
+		{"empty labels", project, map[string]string{}, "web", false},
+		{"project label without service label", project, map[string]string{ComposeProjectLabel: "homelab"}, "web", false},
+		{"other project", project, composeLabels("other", "web"), "web", false},
+		{"service label disagrees with matched service", project, composeLabels("homelab", "api"), "web", false},
+		{"empty service", project, composeLabels("homelab", ""), "", false},
+		{"unresolved scope", RestartBreakerScope{}, composeLabels("", "web"), "web", false},
+		{"fallback with matching working dir", fallback, composeLabelsAt("compose", "web", ownedDir), "web", true},
+		{"fallback with uncleaned matching working dir", fallback, composeLabelsAt("compose", "web", ownedDir+string(filepath.Separator)), "web", true},
+		{"fallback without working dir label", fallback, composeLabels("compose", "web"), "web", false},
+		{"fallback from a foreign compose directory", fallback, composeLabelsAt("compose", "web", filepath.Join(string(filepath.Separator), "home", "someone", "compose")), "web", false},
+		{"fallback with relative working dir", fallback, composeLabelsAt("compose", "web", "compose"), "web", false},
+		{"fallback with no directory to verify", RestartBreakerScope{ProjectName: ComposeFallbackProjectName, RequireWorkingDir: true}, composeLabelsAt("compose", "web", ownedDir), "web", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.scope.ownsContainer(tt.labels, tt.service))
+		})
+	}
+}
+
+func TestRestartBreakerScopeFor(t *testing.T) {
+	appdata := filepath.Join(string(filepath.Separator), "srv", "appdata")
+
+	t.Run("explicit project needs no extra marker", func(t *testing.T) {
+		scope := RestartBreakerScopeFor(&Config{ProjectName: "homelab", LocalAppdataPath: appdata}, "homelab")
+		assert.Equal(t, RestartBreakerScope{ProjectName: "homelab"}, scope)
+		assert.Empty(t, scope.unresolvedReason())
+	})
+
+	t.Run("explicitly configured compose project is trusted as configured", func(t *testing.T) {
+		scope := RestartBreakerScopeFor(&Config{ProjectName: ComposeFallbackProjectName}, ComposeFallbackProjectName)
+		assert.False(t, scope.RequireWorkingDir)
+		assert.Empty(t, scope.unresolvedReason())
+	})
+
+	t.Run("fallback project requires the local compose directory", func(t *testing.T) {
+		scope := RestartBreakerScopeFor(&Config{LocalAppdataPath: appdata}, ComposeFallbackProjectName)
+		assert.True(t, scope.RequireWorkingDir)
+		assert.Equal(t, filepath.Join(appdata, "compose"), scope.ComposeWorkingDir)
+		assert.Empty(t, scope.unresolvedReason())
+	})
+
+	t.Run("fallback project without appdata path is unresolved", func(t *testing.T) {
+		scope := RestartBreakerScopeFor(&Config{}, ComposeFallbackProjectName)
+		assert.True(t, scope.RequireWorkingDir)
+		assert.NotEmpty(t, scope.unresolvedReason())
+	})
+
+	t.Run("nil config with fallback project is unresolved", func(t *testing.T) {
+		assert.NotEmpty(t, RestartBreakerScopeFor(nil, ComposeFallbackProjectName).unresolvedReason())
+	})
+
+	t.Run("empty project stays unresolved", func(t *testing.T) {
+		assert.NotEmpty(t, RestartBreakerScopeFor(&Config{LocalAppdataPath: appdata}, "").unresolvedReason())
+	})
+}
+
+// TestRunRestartBreaker_UnlabeledPrefixContainerSurvives pins #717: an
+// unlabeled container whose name starts with "<project>-" reaches the
+// breaker's candidate list through CollectActualState's name fallback, but its
+// labels do not prove ownership, so it must never be stopped. The labeled
+// sibling in the same sample proves the breaker still acts on real members.
+func TestRunRestartBreaker_UnlabeledPrefixContainerSurvives(t *testing.T) {
+	var stopped []string
+	mockAPI := &dockertest.MockDockerAPI{
+		ContainerListFunc: func(_ context.Context, _ client.ContainerListOptions) (client.ContainerListResult, error) {
+			return client.ContainerListResult{Items: []container.Summary{
+				dockertest.MakeTestContainer("foreign", "test-web-1", "nginx", "running", "", ""),
+				dockertest.MakeTestContainer("owned", "test-api-1", "api", "running", "test", "api"),
+			}}, nil
+		},
+		ContainerInspectFunc: breakerInspectByName(t, 12, map[string]map[string]string{
+			"test-web-1": nil,
+			"test-api-1": composeLabels("test", "api"),
+		}),
+		ContainerStopFunc: func(_ context.Context, id string, _ client.ContainerStopOptions) (client.ContainerStopResult, error) {
+			stopped = append(stopped, id)
+			return client.ContainerStopResult{}, nil
+		},
+	}
+	dockerClient := docker.NewClientWithAPI(mockAPI)
+
+	actual, err := CollectActualState(context.Background(), dockerClient, "test")
+	require.NoError(t, err)
+	require.Len(t, actual, 2, "fixture must reach the breaker through the name-prefix fallback")
+
+	webEntry := RestartTrackingEntry{RestartCount: 5, CheckedAt: time.Now().Add(-3 * time.Minute)}
+	state := &DeployState{RestartTracking: map[string]RestartTrackingEntry{
+		"web": webEntry,
+		"api": {RestartCount: 5, CheckedAt: time.Now().Add(-3 * time.Minute)},
+	}}
+
+	result, err := RunRestartBreaker(context.Background(), dockerClient, RestartBreakerScope{ProjectName: "test"}, actual, state, 5, 10*time.Minute)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"api"}, result.Tripped)
+	assert.Equal(t, []string{"test-api-1"}, stopped, "only the labeled project member may be stopped")
+	assert.Equal(t, webEntry, result.Updated["web"], "an unproven container must not advance or reset tracking")
+}
+
+// TestRunRestartBreaker_ForeignComposeStackSurvives pins #717's second half: a
+// stack Compose itself named "compose" (started from some other directory
+// called compose) shares the fallback project name, so without a working_dir
+// matching this target's compose directory it must not be stopped.
+func TestRunRestartBreaker_ForeignComposeStackSurvives(t *testing.T) {
+	appdata := t.TempDir()
+	scope := RestartBreakerScopeFor(&Config{LocalAppdataPath: appdata}, ComposeFallbackProjectName)
+	require.Empty(t, scope.unresolvedReason())
+
+	var stopped []string
+	mockAPI := &dockertest.MockDockerAPI{
+		ContainerInspectFunc: breakerInspectByName(t, 12, map[string]map[string]string{
+			"compose-web-1": composeLabelsAt("compose", "web", filepath.Join(t.TempDir(), "compose")),
+			"compose-api-1": composeLabelsAt("compose", "api", filepath.Join(appdata, "compose")),
+		}),
+		ContainerStopFunc: func(_ context.Context, id string, _ client.ContainerStopOptions) (client.ContainerStopResult, error) {
+			stopped = append(stopped, id)
+			return client.ContainerStopResult{}, nil
+		},
+	}
+	actual := []ActualService{
+		{Name: "web", ContainerName: "compose-web-1", State: "running"},
+		{Name: "api", ContainerName: "compose-api-1", State: "running"},
+	}
+	state := &DeployState{RestartTracking: map[string]RestartTrackingEntry{
+		"web": {RestartCount: 5, CheckedAt: time.Now().Add(-3 * time.Minute)},
+		"api": {RestartCount: 5, CheckedAt: time.Now().Add(-3 * time.Minute)},
+	}}
+
+	result, err := RunRestartBreaker(context.Background(), docker.NewClientWithAPI(mockAPI), scope, actual, state, 5, 10*time.Minute)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"api"}, result.Tripped)
+	assert.Equal(t, []string{"compose-api-1"}, stopped, "only the stack started from this target's compose directory may be stopped")
+}
+
+func TestRunRestartBreaker_FallbackWithoutMarkerStopsNothing(t *testing.T) {
+	mockAPI := &dockertest.MockDockerAPI{
+		ContainerInspectFunc: func(_ context.Context, _ string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+			t.Fatal("a fallback scope with no compose directory must not inspect containers")
+			return client.ContainerInspectResult{}, nil
+		},
+	}
+	tracking := map[string]RestartTrackingEntry{"web": {RestartCount: 4, CheckedAt: time.Now().Add(-3 * time.Minute)}}
+	state := &DeployState{RestartTracking: tracking}
+	actual := []ActualService{{Name: "web", ContainerName: "compose-web-1", State: "running"}}
+
+	result, err := RunRestartBreaker(context.Background(), docker.NewClientWithAPI(mockAPI),
+		RestartBreakerScopeFor(&Config{}, ComposeFallbackProjectName), actual, state, 5, 10*time.Minute)
+
+	require.NoError(t, err)
+	assert.Empty(t, result.Tripped)
+	assert.Equal(t, tracking, result.Updated)
+	assert.Equal(t, 0, mockAPI.ContainerStopCalls)
 }
