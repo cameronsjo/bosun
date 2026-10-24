@@ -21,24 +21,25 @@ type HealthCheckLog struct {
 
 // ContainerDetails holds detailed container information.
 type ContainerDetails struct {
-	ID                   string
-	Name                 string
-	Image                string
-	State                string
-	Status               string
-	Health               string
-	HealthFailingStreak  int
-	HealthLog            *HealthCheckLog // Last health check result (nil if no health checks)
-	Ports                []PortBinding
-	Networks             []string
-	Volumes              []string
-	Environment          []string
-	Labels               map[string]string
-	Created              time.Time
-	Started              time.Time
-	RestartCount         int
-	Platform             string
-	Driver               string
+	ID                  string // Short (12-character) ID for display and state.
+	FullID              string // Full daemon ID; use it to act on exactly the inspected container.
+	Name                string
+	Image               string
+	State               string
+	Status              string
+	Health              string
+	HealthFailingStreak int
+	HealthLog           *HealthCheckLog // Last health check result (nil if no health checks)
+	Ports               []PortBinding
+	Networks            []string
+	Volumes             []string
+	Environment         []string
+	Labels              map[string]string
+	Created             time.Time
+	Started             time.Time
+	RestartCount        int
+	Platform            string
+	Driver              string
 }
 
 // PortBinding represents a container port binding.
@@ -108,6 +109,7 @@ func (c *Client) Inspect(ctx context.Context, name string) (*ContainerDetails, e
 	info := inspectResult.Container
 	details := &ContainerDetails{
 		ID:           info.ID[:12],
+		FullID:       info.ID,
 		Name:         strings.TrimPrefix(info.Name, "/"),
 		Image:        info.Config.Image,
 		State:        string(info.State.Status),

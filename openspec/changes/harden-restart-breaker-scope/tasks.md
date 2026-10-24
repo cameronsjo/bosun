@@ -38,5 +38,6 @@
   inspected container's Compose project and service labels, so an unlabeled
   container matched only by name prefix is never stopped, and the `compose`
   fallback also requires the working_dir label to equal the target's local
-  compose directory (bosun#717).
+  compose directory, compared literally or after resolving symlinks. A trip
+  stops the inspected container ID rather than the name (bosun#717).
 - Final restored-head CI results and readiness: [PR #714](https://github.com/cameronsjo/bosun/pull/714).

@@ -25,14 +25,18 @@ container's inspected labels that `com.docker.compose.project` equals the
 target's project and `com.docker.compose.service` equals the service it was
 matched as. A container name, including a `<project>-` name prefix, SHALL NOT
 count as ownership. A container whose labels do not prove ownership SHALL NOT
-be stopped and SHALL NOT advance or reset that service's restart tracking.
+be stopped and SHALL NOT advance or reset that service's restart tracking. A
+trip SHALL stop the container by the full ID that was inspected and
+ownership-checked, never by name, so a container that took over the name in
+between is not stopped.
 
 The daemon SHALL derive the scope from the existing effective target config. A
 named local target with no project name SHALL retain the existing `compose`
 fallback used by the target drift path. Because any Compose stack started from
 a directory named `compose` derives that same name, the breaker SHALL also
 require a fallback-scoped container's `com.docker.compose.project.working_dir`
-label to equal the target's local compose directory (`<local appdata>/compose`);
+label to equal the target's local compose directory (`<local appdata>/compose`),
+either literally or after resolving symlinks on both paths;
 when the target has no local appdata path, the breaker SHALL fail closed before
 inspection. An explicitly configured `project_name` of `compose` SHALL NOT
 require the extra marker. An implicit default target with no

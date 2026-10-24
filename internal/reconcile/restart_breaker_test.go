@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -416,7 +417,7 @@ func TestRunRestartBreaker(t *testing.T) {
 		)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"web"}, result.Tripped)
-		assert.Equal(t, "test-web-1", stoppedContainer)
+		assert.Equal(t, fullID, stoppedContainer, "the stop must target the inspected container ID, not its name")
 		assert.Equal(t, fullID[:12], result.Updated["web"].ContainerID)
 	})
 
@@ -751,7 +752,7 @@ func TestRunRestartBreaker_UnlabeledPrefixContainerSurvives(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"api"}, result.Tripped)
-	assert.Equal(t, []string{"test-api-1"}, stopped, "only the labeled project member may be stopped")
+	assert.Equal(t, []string{"test-api-1-0123456789abcdef"}, stopped, "only the labeled project member may be stopped")
 	assert.Equal(t, webEntry, result.Updated["web"], "an unproven container must not advance or reset tracking")
 }
 
@@ -788,7 +789,7 @@ func TestRunRestartBreaker_ForeignComposeStackSurvives(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"api"}, result.Tripped)
-	assert.Equal(t, []string{"compose-api-1"}, stopped, "only the stack started from this target's compose directory may be stopped")
+	assert.Equal(t, []string{"compose-api-1-0123456789abcdef"}, stopped, "only the stack started from this target's compose directory may be stopped")
 }
 
 func TestRunRestartBreaker_FallbackWithoutMarkerStopsNothing(t *testing.T) {
@@ -809,4 +810,76 @@ func TestRunRestartBreaker_FallbackWithoutMarkerStopsNothing(t *testing.T) {
 	assert.Empty(t, result.Tripped)
 	assert.Equal(t, tracking, result.Updated)
 	assert.Equal(t, 0, mockAPI.ContainerStopCalls)
+}
+
+// TestRunRestartBreaker_StopsInspectedContainerID pins that a trip stops the
+// exact container that was inspected and ownership-checked. If another
+// container took over the name between inspect and stop, a name-based stop
+// would hit it instead.
+func TestRunRestartBreaker_StopsInspectedContainerID(t *testing.T) {
+	inspectedID := "feedfacecafe0000111122223333444455556666777788889999aaaabbbbcccc"
+	var stopped []string
+	mockAPI := &dockertest.MockDockerAPI{
+		ContainerInspectFunc: func(_ context.Context, _ string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+			return client.ContainerInspectResult{Container: container.InspectResponse{
+				ID:              inspectedID,
+				Name:            "/test-web-1",
+				RestartCount:    12,
+				State:           &container.State{Status: container.StateRunning},
+				Config:          &container.Config{Image: "nginx", Labels: composeLabels("test", "web")},
+				NetworkSettings: &container.NetworkSettings{Networks: map[string]*network.EndpointSettings{}},
+			}}, nil
+		},
+		ContainerStopFunc: func(_ context.Context, id string, _ client.ContainerStopOptions) (client.ContainerStopResult, error) {
+			stopped = append(stopped, id)
+			return client.ContainerStopResult{}, nil
+		},
+	}
+	actual := []ActualService{{Name: "web", ContainerName: "test-web-1", State: "running"}}
+	state := &DeployState{RestartTracking: map[string]RestartTrackingEntry{
+		"web": {RestartCount: 5, CheckedAt: time.Now().Add(-3 * time.Minute)},
+	}}
+
+	result, err := RunRestartBreaker(context.Background(), docker.NewClientWithAPI(mockAPI), RestartBreakerScope{ProjectName: "test"}, actual, state, 5, 10*time.Minute)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"web"}, result.Tripped)
+	assert.Equal(t, []string{inspectedID}, stopped, "stop must use the full inspected ID, never the reusable name")
+}
+
+// TestRestartBreakerScopeOwnsContainer_SymlinkedWorkingDir pins that the
+// compose-fallback working_dir check compares symlink-resolved paths: either
+// spelling of a symlinked appdata directory matches, while a symlink that
+// points at some other directory does not.
+func TestRestartBreakerScopeOwnsContainer_SymlinkedWorkingDir(t *testing.T) {
+	base := t.TempDir()
+	realAppdata := filepath.Join(base, "real-appdata")
+	otherAppdata := filepath.Join(base, "other-appdata")
+	require.NoError(t, os.MkdirAll(filepath.Join(realAppdata, "compose"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(otherAppdata, "compose"), 0o755))
+	linkToReal := filepath.Join(base, "appdata-link")
+	linkToOther := filepath.Join(base, "elsewhere-link")
+	require.NoError(t, os.Symlink(realAppdata, linkToReal))
+	require.NoError(t, os.Symlink(otherAppdata, linkToOther))
+
+	tests := []struct {
+		name       string
+		configured string
+		workingDir string
+		want       bool
+	}{
+		{"configured symlink, compose recorded resolved path", linkToReal, filepath.Join(realAppdata, "compose"), true},
+		{"configured real path, compose recorded symlink path", realAppdata, filepath.Join(linkToReal, "compose"), true},
+		{"configured symlink, compose recorded symlink path", linkToReal, filepath.Join(linkToReal, "compose"), true},
+		{"symlink pointing elsewhere", realAppdata, filepath.Join(linkToOther, "compose"), false},
+		{"configured symlink, foreign symlink elsewhere", linkToReal, filepath.Join(linkToOther, "compose"), false},
+		{"configured symlink, foreign real directory", linkToReal, filepath.Join(otherAppdata, "compose"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scope := RestartBreakerScopeFor(&Config{LocalAppdataPath: tt.configured}, ComposeFallbackProjectName)
+			require.Empty(t, scope.unresolvedReason())
+			assert.Equal(t, tt.want, scope.ownsContainer(composeLabelsAt("compose", "web", tt.workingDir), "web"))
+		})
+	}
 }

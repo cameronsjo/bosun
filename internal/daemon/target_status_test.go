@@ -300,7 +300,7 @@ func TestRunDriftCheckForTarget_NamedBlankProjectSparesForeignComposeStack(t *te
 
 	d.runDriftCheckForTarget(context.Background(), target, docker.NewClientWithAPI(mock))
 
-	assert.Equal(t, []string{"compose-api-1"}, stopped, "the foreign compose stack must survive; only the owned one may be stopped")
+	assert.Equal(t, []string{"compose-api-1-long-id"}, stopped, "the foreign compose stack must survive; only the owned one may be stopped")
 	state := reconcile.LoadState(d.configForTarget(target).StateFile)
 	assert.True(t, state.RestartTracking["api"].Tripped)
 	assert.False(t, state.RestartTracking["web"].Tripped)

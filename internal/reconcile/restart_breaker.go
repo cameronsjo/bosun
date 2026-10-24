@@ -26,6 +26,9 @@ type RestartBreakerResult struct {
 type restartObservation struct {
 	ContainerID  string
 	RestartCount int
+	// FullID is the full Docker ID of the inspected container. A trip stops
+	// this exact container, never whatever currently holds its name.
+	FullID string
 }
 
 // evaluateRestartBreaker is the pure function that computes restart circuit breaker
@@ -228,7 +231,18 @@ type RestartBreakerScope struct {
 	// ComposeWorkingDir is the absolute, cleaned directory Bosun runs
 	// docker compose from for this target. Empty with RequireWorkingDir set
 	// means ownership cannot be proven and the breaker acts on nothing.
+	// Matching also compares symlink-resolved paths, so a symlinked appdata
+	// path keeps protection whichever spelling Compose recorded.
 	ComposeWorkingDir string
+}
+
+// resolvePathForMatch returns path with symlinks resolved, or the cleaned
+// literal path when resolution fails (for example, the path does not exist).
+func resolvePathForMatch(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
 }
 
 // RestartBreakerScopeFor derives the breaker scope for a target config and the
@@ -284,7 +298,12 @@ func (s RestartBreakerScope) ownsContainer(labels map[string]string, service str
 	if workingDir == "" || !filepath.IsAbs(workingDir) {
 		return false
 	}
-	return filepath.Clean(workingDir) == s.ComposeWorkingDir
+	if filepath.Clean(workingDir) == s.ComposeWorkingDir {
+		return true
+	}
+	// Compose records the path it was given; Bosun's configured path may be
+	// the other spelling of the same directory through a symlink.
+	return resolvePathForMatch(workingDir) == resolvePathForMatch(s.ComposeWorkingDir)
 }
 
 // collectRestartCounts inspects running containers to get their restart counts.
@@ -335,6 +354,7 @@ func collectRestartCounts(
 		observations[svc.Name] = restartObservation{
 			ContainerID:  details.ID,
 			RestartCount: details.RestartCount,
+			FullID:       details.FullID,
 		}
 	}
 
@@ -389,26 +409,36 @@ func RunRestartBreaker(
 		}
 	}
 
-	// Stop tripped containers (best-effort: attempt all, collect errors).
+	// Stop tripped containers (best-effort: attempt all, collect errors). Stop
+	// by the full ID that was inspected and ownership-checked: a name can be
+	// reused by a different container between the inspect and the stop.
 	var stopErrs []error
 	for _, service := range result.Tripped {
 		containerName := containerNameForService(actual, service)
-		if containerName == "" {
+		containerID := observations[service].FullID
+		if containerID == "" {
+			logger.Error().
+				Str(log.FieldContainer, containerName).
+				Str("service", service).
+				Msg("Restart circuit breaker tripped but not stopping container. Reason: inspect returned no container ID to target")
+			stopErrs = append(stopErrs, fmt.Errorf("stop container for service %s: inspect returned no container ID", service))
 			continue
 		}
 
 		logger.Warn().
 			Str(log.FieldContainer, containerName).
+			Str("container_id", containerID).
 			Str("service", service).
 			Int("threshold", threshold).
 			Msg("Restart circuit breaker tripped: stopping container")
 
-		if err := client.StopContainer(ctx, containerName, 10); err != nil {
+		if err := client.StopContainer(ctx, containerID, 10); err != nil {
 			logger.Error().
 				Str(log.FieldContainer, containerName).
+				Str("container_id", containerID).
 				Err(err).
 				Msg("Failed to stop restart-looping container")
-			stopErrs = append(stopErrs, fmt.Errorf("stop container %s: %w", containerName, err))
+			stopErrs = append(stopErrs, fmt.Errorf("stop container %s (%s): %w", containerName, containerID, err))
 		}
 	}
 
