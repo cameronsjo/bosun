@@ -524,11 +524,7 @@ func hostKeyOptions() []string {
 			"-o", "UserKnownHostsFile=/dev/null",
 		}
 	}
-	for _, path := range knownHostsCandidates(os.Getenv("BOSUN_SSH_KNOWN_HOSTS")) {
-		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
-			// Genuinely absent — try the next candidate.
-			continue
-		}
+	if path, ok := resolveKnownHostsFile(); ok {
 		// The file exists, OR stat failed for a reason other than "not found".
 		// Fail closed in both cases: pin strict against this candidate rather
 		// than downgrading an explicitly configured policy to TOFU.
@@ -702,7 +698,7 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 		// DeployRemote stages into a new remote tmpDir each pass, so re-verifying
 		// never reads a dirty leftover.
 		if !isTransientSSHError(lastErr) && !errors.Is(lastErr, ErrTransferIntegrity) {
-			return lastErr
+			return annotateHostKeyError(lastErr)
 		}
 
 		// Log the transient failure and upcoming retry
@@ -774,7 +770,7 @@ func parseSSHError(err error, stderr, host string) error {
 		}
 		return fmt.Errorf("SSH connection refused by %s: the SSH service may not be running or the port may be blocked", host)
 	case "host_key":
-		return fmt.Errorf("SSH host key verification failed for %s: run 'ssh-keyscan %s >> ~/.ssh/known_hosts' to add the host key", host, host)
+		return fmt.Errorf("SSH host key verification failed for %s: %s", host, hostKeyGuidance())
 	case "dns":
 		return fmt.Errorf("cannot resolve hostname %s: check that the hostname is correct and DNS is working", host)
 	case "timeout":
@@ -782,6 +778,47 @@ func parseSSHError(err error, stderr, host string) error {
 	default:
 		return fmt.Errorf("SSH connection to %s failed: %w: %s", host, err, stderr)
 	}
+}
+
+// resolveKnownHostsFile returns the first known_hosts candidate that is not
+// provably absent (fs.ErrNotExist). hostKeyOptions pins this file, and
+// hostKeyGuidance names it, so the message and the policy cannot disagree.
+func resolveKnownHostsFile() (string, bool) {
+	for _, path := range knownHostsCandidates(os.Getenv("BOSUN_SSH_KNOWN_HOSTS")) {
+		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		return path, true
+	}
+	return "", false
+}
+
+// hostKeyGuidanceMarker identifies text produced by hostKeyGuidance so an
+// error is never annotated twice.
+const hostKeyGuidanceMarker = "out of band"
+
+// hostKeyGuidance tells the operator how to fix a host-key verification
+// failure. It leads with verifying the key, never offers the insecure opt-out,
+// and names the file bosun's policy actually pins.
+func hostKeyGuidance() string {
+	const changed = "If an entry for this host already exists, the key changed: investigate before replacing it."
+	if path, ok := resolveKnownHostsFile(); ok {
+		return fmt.Sprintf("verify the host's key fingerprint %s (run 'ssh-keygen -lf' on the host), then add the key to %s, the known_hosts file bosun uses (set BOSUN_SSH_KNOWN_HOSTS to use another; bosun does not read ~/.ssh/known_hosts while that file exists). %s If that file is mounted read-only, edit its source on the host.", hostKeyGuidanceMarker, path, changed)
+	}
+	candidates := strings.Join(knownHostsCandidates(os.Getenv("BOSUN_SSH_KNOWN_HOSTS")), " or ")
+	if candidates == "" {
+		candidates = "/config/known_hosts"
+	}
+	return fmt.Sprintf("no known_hosts file found at %s. Verify the host's key fingerprint %s (run 'ssh-keygen -lf' on the host), then create one containing the key (set BOSUN_SSH_KNOWN_HOSTS to choose the path). %s", candidates, hostKeyGuidanceMarker, changed)
+}
+
+// annotateHostKeyError appends hostKeyGuidance to an error whose text reports a
+// host-key verification failure from ssh or scp. Other errors pass through.
+func annotateHostKeyError(err error) error {
+	if err == nil || classifySSHError(err.Error()) != "host_key" || strings.Contains(err.Error(), hostKeyGuidanceMarker) {
+		return err
+	}
+	return fmt.Errorf("%w (%s)", err, hostKeyGuidance())
 }
 
 // bosunOldSuffix marks the retained previous target tree during a swap

@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -294,4 +295,74 @@ func TestBackupRemote_CarriesHostKeyOptions(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, name)
 	assertLegCarriesStrictHostKey(t, capture, kh)
+}
+
+// setupFailingSSHShim puts an ssh on PATH that fails the way OpenSSH does for
+// an unverifiable host key: stderr text plus exit status 255.
+func setupFailingSSHShim(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	shim := "#!/bin/sh\necho 'Host key verification failed.' >&2\nexit 255\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte(shim), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func assertHostKeyGuidance(t *testing.T, msg string) {
+	t.Helper()
+	assert.Contains(t, msg, "ssh-keygen -lf", "verification comes first")
+	assert.Contains(t, msg, "the key changed", "changed-key case is named")
+	assert.Contains(t, msg, "BOSUN_SSH_KNOWN_HOSTS")
+	assert.NotContains(t, msg, "BOSUN_SSH_INSECURE_HOST_KEY", "never nudge toward disabling verification")
+	assert.NotContains(t, msg, ">> ~/.ssh/known_hosts")
+}
+
+// A real deploy entry point (EnsureRemoteDir -> retryWithBackoff) must carry the
+// remediation, not just the raw OpenSSH stderr.
+func TestDeployEntryPoint_HostKeyFailureNamesKnownHosts(t *testing.T) {
+	setupFailingSSHShim(t)
+	pinned := writeTempKnownHosts(t)
+	setKnownHostsCandidates(t, func(string) []string { return []string{pinned} })
+	t.Setenv("BOSUN_SSH_INSECURE_HOST_KEY", "")
+
+	err := (&DeployOps{}).EnsureRemoteDir(context.Background(), "user@testhost", "/srv/x")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Host key verification failed.")
+	assert.Contains(t, err.Error(), pinned)
+	assertHostKeyGuidance(t, err.Error())
+}
+
+func TestHostKeyGuidance_PicksTheFilePolicyPins(t *testing.T) {
+	t.Setenv("BOSUN_SSH_KNOWN_HOSTS", "")
+	absentEnv := filepath.Join(t.TempDir(), "absent")
+	presentDefault := writeTempKnownHosts(t)
+	setKnownHostsCandidates(t, func(string) []string { return []string{absentEnv, presentDefault} })
+
+	msg := hostKeyGuidance()
+	assert.Contains(t, msg, presentDefault)
+	assert.NotContains(t, msg, absentEnv)
+	assert.Contains(t, hostKeyOptions(), "UserKnownHostsFile="+presentDefault)
+	assertHostKeyGuidance(t, msg)
+}
+
+func TestHostKeyGuidance_NoCandidateExists(t *testing.T) {
+	absentA := filepath.Join(t.TempDir(), "a")
+	absentB := filepath.Join(t.TempDir(), "b")
+	setKnownHostsCandidates(t, func(string) []string { return []string{absentA, absentB} })
+
+	msg := hostKeyGuidance()
+	assert.Contains(t, msg, "no known_hosts file found at "+absentA+" or "+absentB)
+	assert.NotContains(t, msg, "does not read ~/.ssh/known_hosts")
+	assertHostKeyGuidance(t, msg)
+}
+
+func TestParseSSHError_HostKeyUsesGuidance(t *testing.T) {
+	pinned := writeTempKnownHosts(t)
+	setKnownHostsCandidates(t, func(string) []string { return []string{pinned} })
+
+	err := parseSSHError(errors.New("exit 255"), "Host key verification failed.", "root@nas.example")
+
+	assert.Contains(t, err.Error(), "SSH host key verification failed for root@nas.example")
+	assert.Contains(t, err.Error(), pinned)
+	assertHostKeyGuidance(t, err.Error())
 }
