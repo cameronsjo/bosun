@@ -475,6 +475,69 @@ func TestStandaloneWebhookFailsClosedWithoutSecret(t *testing.T) {
 	})
 }
 
+// TestStandaloneGenericWebhookBranchFilter pins #728 on the receiver: its
+// generic /webhook applies the daemon's shared ref rule after the signature
+// check, and an ignored request never reaches the daemon.
+func TestStandaloneGenericWebhookBranchFilter(t *testing.T) {
+	const secret = "webhook-secret"
+
+	tests := []struct {
+		name        string
+		branch      string
+		body        string
+		githubEvent string
+		wantCode    int
+		wantCalls   int
+		wantMessage string
+	}{
+		{name: "matching ref forwards", branch: "main", body: `{"ref":"refs/heads/main"}`, wantCode: http.StatusAccepted, wantCalls: 1},
+		{name: "other branch ignored", branch: "main", body: `{"ref":"refs/heads/develop"}`, wantCode: http.StatusOK, wantMessage: "refs/heads/develop"},
+		{name: "tag ref ignored", branch: "main", body: `{"ref":"refs/tags/v1.2.3"}`, wantCode: http.StatusOK, wantMessage: "refs/tags/v1.2.3"},
+		{name: "bare branch name ignored", branch: "main", body: `{"ref":"main"}`, wantCode: http.StatusOK, wantMessage: "tracking refs/heads/main"},
+		{name: "missing ref forwards", branch: "main", body: `{"event":"push"}`, wantCode: http.StatusAccepted, wantCalls: 1},
+		{name: "github non-push event ignored", branch: "main", body: `{}`, githubEvent: "issues", wantCode: http.StatusOK, wantMessage: "issues"},
+		{name: "unknown branch forwards any ref", body: `{"ref":"refs/heads/develop"}`, wantCode: http.StatusAccepted, wantCalls: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &recordingWebhookClient{}
+			mux := newWebhookMux(&webhookHandler{client: client, secret: secret, branch: tt.branch})
+
+			payload := []byte(tt.body)
+			req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(payload))
+			req.Header.Set("X-Hub-Signature-256", "sha256="+computeHMAC(payload, secret))
+			if tt.githubEvent != "" {
+				req.Header.Set("X-GitHub-Event", tt.githubEvent)
+			}
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+
+			require.Equal(t, tt.wantCode, w.Code)
+			assert.Equal(t, tt.wantCalls, client.triggerCalls)
+			if tt.wantCode == http.StatusOK {
+				var resp map[string]string
+				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+				assert.Equal(t, "ignored", resp["status"])
+				assert.Contains(t, resp["message"], tt.wantMessage)
+			}
+		})
+	}
+
+	t.Run("bad signature is rejected before the filter", func(t *testing.T) {
+		client := &recordingWebhookClient{}
+		mux := newWebhookMux(&webhookHandler{client: client, secret: secret, branch: "main"})
+
+		payload := []byte(`{"ref":"refs/heads/develop"}`)
+		req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(payload))
+		req.Header.Set("X-Hub-Signature-256", "sha256="+computeHMAC(payload, "wrong-secret"))
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+		assert.Equal(t, 0, client.triggerCalls)
+	})
+}
+
 // newWebhookPushRequest builds a request each provider endpoint accepts as a
 // push, so a 403 can only come from the auth gate and never from event-type
 // filtering.

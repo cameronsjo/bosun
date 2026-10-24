@@ -705,6 +705,7 @@ bosun webhook --fetch-secret
 | `--socket` | Path to daemon socket |
 | `--secret` | Webhook secret for signature validation |
 | `--fetch-secret` | Fetch secret from daemon (never stored on disk) |
+| `--branch` | Tracked branch for the generic `/webhook` ref filter (default: `BOSUN_REPO_BRANCH`, then the daemon's configured branch) |
 
 The webhook receiver validates signatures and forwards valid requests to the daemon's trigger endpoint. Supports GitHub, GitLab, Gitea, and Bitbucket webhook formats.
 
@@ -722,6 +723,10 @@ with `403`, matching the daemon's own posture. Set
 unauthenticated triggers instead; the active posture is logged loudly at
 startup and every accepted unauthenticated request logs a `SECURITY:` warning.
 `/health` and `/ready` are unaffected.
+
+**Generic endpoint branch filter:**
+
+The receiver's generic `/webhook` applies the daemon's rule after the signature check: a JSON body with a top-level `ref` triggers only when it equals `refs/heads/<branch>`. Other branches, tags, and bare branch names get `200` `{"status":"ignored"}` and are not forwarded. An `X-GitHub-Event` other than `push`, or a GitHub push with no JSON `ref`, is ignored too. A body with no `ref` still forwards. The branch comes from `--branch`, then `BOSUN_REPO_BRANCH`/`REPO_BRANCH`, then the daemon's `GET /config`. When none is known the ref check is off and startup logs a warning.
 
 **Daemon-Injected Secrets:**
 

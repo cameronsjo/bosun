@@ -2,8 +2,9 @@
 
 ### Requirement: Generic webhook branch filter
 
-The generic `/webhook` handler SHALL authorize a request before reading its
-payload. After authorization it SHALL decide whether to start a reconcile:
+The daemon's generic `/webhook` handler and the standalone `bosun webhook`
+receiver's generic `/webhook` handler SHALL share one decision rule. Each SHALL
+authorize a request before reading its payload. After authorization it SHALL decide whether to start a reconcile:
 
 - When an `X-GitHub-Event` header is present and is not `push`, the request
   SHALL be ignored.
@@ -19,7 +20,14 @@ payload. After authorization it SHALL decide whether to start a reconcile:
 
 An ignored request SHALL receive `200` with status `ignored` and a reason, SHALL
 be logged with the sanitized ref or event type, and SHALL NOT start a reconcile
-or increment the generic webhook trigger metric.
+or increment the generic webhook trigger metric. The receiver SHALL NOT forward
+an ignored request to the daemon.
+
+The daemon compares against its tracked branch. The receiver SHALL take the
+tracked branch from `--branch`, then `BOSUN_REPO_BRANCH` (legacy `REPO_BRANCH`),
+then the daemon's `GET /config`. When no branch is known, the receiver SHALL
+apply only the GitHub event rule and SHALL log a startup warning that the ref
+filter is off.
 
 #### Scenario: Push to the tracked branch
 
@@ -55,3 +63,18 @@ or increment the generic webhook trigger metric.
 
 - **WHEN** a webhook secret is configured and a request with `ref` `refs/heads/main` carries an invalid signature
 - **THEN** the response is `401` and the payload decision is never reached
+
+#### Scenario: Receiver ignores a push to another branch
+
+- **WHEN** the standalone receiver tracks `main` and an authorized generic webhook body has `ref` `refs/heads/develop`
+- **THEN** the response is `200` with status `ignored` and nothing is forwarded to the daemon
+
+#### Scenario: Receiver forwards a matching push
+
+- **WHEN** the standalone receiver tracks `main` and an authorized generic webhook body has `ref` `refs/heads/main`
+- **THEN** the request is forwarded to the daemon and the response is `202`
+
+#### Scenario: Receiver with no known branch
+
+- **WHEN** the standalone receiver has no `--branch`, no branch environment variable, and cannot read the daemon config
+- **THEN** startup logs that the ref filter is off, and a generic webhook with any `ref` is forwarded unless a GitHub event rule ignores it

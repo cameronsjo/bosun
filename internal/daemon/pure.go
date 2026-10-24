@@ -99,21 +99,26 @@ func shouldProcessGitHubPush(pushRef string, trackingBranch string) (process boo
 	return true, "push to tracked branch " + trackingBranch
 }
 
-// shouldProcessGenericWebhook decides whether an authorized generic webhook
+// ShouldProcessGenericWebhook decides whether an authorized generic webhook
 // starts a reconcile. A GitHub event header other than push is ignored. A
 // top-level "ref" in a JSON object body must name the tracked branch, using the
 // same comparison as the GitHub endpoint; tags, other branches, and non-string
 // values are ignored. A body without a ref (empty, not JSON, not an object, or
 // no "ref" key) still triggers, so the endpoint stays usable as a plain signed
 // trigger, unless the GitHub event header is set: a GitHub push always has a
-// ref, so one without a readable ref is ignored. The returned ref is the raw
+// ref, so one without a readable ref is ignored. An empty trackingBranch means
+// the caller does not know the branch (the standalone receiver without
+// configuration): only the event filter applies. The returned ref is the raw
 // value for logging; callers must sanitize it, and reason may embed it
-// unsanitized.
-func shouldProcessGenericWebhook(githubEvent string, body []byte, trackingBranch string) (process bool, ref string, reason string) {
+// unsanitized. Shared by the daemon's /webhook and the standalone receiver's.
+func ShouldProcessGenericWebhook(githubEvent string, body []byte, trackingBranch string) (process bool, ref string, reason string) {
 	if githubEvent != "" {
 		if action, eventReason := shouldProcessGitHubEvent(githubEvent); action != "process" {
 			return false, "", eventReason
 		}
+	}
+	if trackingBranch == "" {
+		return true, "", "no tracked branch configured; ref not checked"
 	}
 
 	var fields map[string]json.RawMessage

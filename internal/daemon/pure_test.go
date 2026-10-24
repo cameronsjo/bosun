@@ -362,9 +362,18 @@ func TestShouldProcessGenericWebhook(t *testing.T) {
 		{name: "github ping", githubEvent: "ping", body: `{"zen":"hi"}`, wantReason: "ping event received"},
 		{name: "github non-push event with matching ref", githubEvent: "create", body: `{"ref":"refs/heads/main"}`, wantReason: "Event type 'create' not handled"},
 	}
+	t.Run("unknown tracked branch checks only the event", func(t *testing.T) {
+		process, ref, reason := ShouldProcessGenericWebhook("", []byte(`{"ref":"refs/heads/develop"}`), "")
+		assert.True(t, process)
+		assert.Empty(t, ref)
+		assert.Equal(t, "no tracked branch configured; ref not checked", reason)
+
+		process, _, _ = ShouldProcessGenericWebhook("issues", []byte(`{}`), "")
+		assert.False(t, process)
+	})
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			process, ref, reason := shouldProcessGenericWebhook(tt.githubEvent, []byte(tt.body), "main")
+			process, ref, reason := ShouldProcessGenericWebhook(tt.githubEvent, []byte(tt.body), "main")
 			assert.Equal(t, tt.wantProcess, process)
 			assert.Equal(t, tt.wantRef, ref)
 			assert.Equal(t, tt.wantReason, reason)

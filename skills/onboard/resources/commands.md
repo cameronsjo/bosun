@@ -544,6 +544,7 @@ bosun webhook --secret mysecret        # Set secret directly
 | `--socket` | Path to daemon socket |
 | `--secret` | Webhook secret for signature validation |
 | `--fetch-secret` | Fetch secret from daemon at startup (never stored on disk) |
+| `--branch` | Tracked branch for the generic `/webhook` ref filter (default: `BOSUN_REPO_BRANCH`, then the daemon's configured branch) |
 
 Validates webhook signatures and forwards valid requests to the daemon's trigger endpoint. Supports GitHub, GitLab, Gitea, and Bitbucket formats.
 
@@ -555,6 +556,8 @@ logs a security warning. `/health` and `/ready` stay open either way.
 
 `--fetch-secret` reads the daemon's peer-authorized `GET /config`, so the
 receiver must run as the daemon's UID or a `BOSUN_SOCKET_ALLOWED_UIDS` member.
+
+The generic `/webhook` uses the daemon's branch filter: a JSON `ref` must equal `refs/heads/<branch>` or the request gets `200` `ignored` and is not forwarded. The branch comes from `--branch`, `BOSUN_REPO_BRANCH`, or the daemon's `/config`; when none is known the ref check is off and startup warns.
 
 ---
 

@@ -31,19 +31,28 @@ to the deploy branch.
   SHALL keep starting a reconcile as before. This applies only without an
   `X-GitHub-Event` header. The generic endpoint stays a
   plain signed trigger for senders that carry no branch.
+- The standalone `bosun webhook` receiver's generic `/webhook` SHALL apply the
+  same rule through the same exported helper, and SHALL NOT forward an ignored
+  request. It learns the branch from a new `--branch` flag, then
+  `BOSUN_REPO_BRANCH`, then the daemon's `GET /config`. With no branch known,
+  only the GitHub event rule applies and startup warns that the ref filter is
+  off.
 - Authorization SHALL stay the first check. No payload is parsed before the
   signature or the fail-closed gate passes.
 
 ## Impact
 
 - Affected specs: `daemon-security` — ADDED: Generic webhook branch filter.
-- Affected code: `internal/daemon/pure.go` (pure decision function),
-  `internal/daemon/server.go` (`handleWebhook`), tests in
-  `internal/daemon/pure_test.go` and `internal/daemon/server_test.go`.
-- Docs: `docs/gitops.md`, `skills/onboard/resources/gitops.md`.
+- Affected code: `internal/daemon/pure.go` (exported decision function
+  `ShouldProcessGenericWebhook`), `internal/daemon/server.go` (`handleWebhook`),
+  `internal/cmd/webhook.go` (receiver `handleWebhook`, `--branch`), tests in
+  `internal/daemon/pure_test.go`, `internal/daemon/server_test.go`, and
+  `internal/cmd/webhook_test.go`.
+- Docs: `docs/gitops.md`, `docs/commands.md`,
+  `skills/onboard/resources/gitops.md`, `skills/onboard/resources/commands.md`.
 - Behavior change: a sender that posts a `ref` naming another branch, a tag,
-  or a bare branch name without `refs/heads/` no longer triggers. No new env
-  vars or config.
+  or a bare branch name without `refs/heads/` no longer triggers, on either
+  endpoint. One new receiver flag, `--branch`; no new env vars.
 
 ## Scope
 

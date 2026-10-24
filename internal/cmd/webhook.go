@@ -18,6 +18,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/daemon"
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
@@ -28,6 +29,7 @@ var (
 	webhookSocket      string
 	webhookSecret      string
 	webhookFetchSecret bool
+	webhookBranch      string
 )
 
 // webhookCmd represents the webhook command.
@@ -62,6 +64,8 @@ Configuration:
   --port          HTTP port to listen on (default: 8080)
   --socket        Path to daemon socket (default: $BOSUN_SOCKET_PATH or /var/run/bosun.sock)
   --secret        Webhook secret for signature validation
+  --branch        Tracked branch for the generic /webhook ref filter
+                  (default: $BOSUN_REPO_BRANCH, then the daemon's branch)
   --fetch-secret  Fetch secret from daemon (never stored on disk)
 
 Examples:
@@ -77,6 +81,7 @@ func init() {
 	webhookCmd.Flags().StringVar(&webhookSocket, "socket", resolveSocketPath(), "Path to daemon socket")
 	webhookCmd.Flags().StringVar(&webhookSecret, "secret", "", "Webhook secret for signature validation")
 	webhookCmd.Flags().BoolVar(&webhookFetchSecret, "fetch-secret", false, "Fetch webhook secret from daemon (daemon-injected secrets)")
+	webhookCmd.Flags().StringVar(&webhookBranch, "branch", "", "Tracked branch for the generic /webhook ref filter (default: $BOSUN_REPO_BRANCH, then the daemon's configured branch)")
 
 	rootCmd.AddCommand(webhookCmd)
 }
@@ -94,8 +99,16 @@ func runWebhook(cmd *cobra.Command, args []string) {
 		secret = os.Getenv("GITHUB_WEBHOOK_SECRET")
 	}
 
-	// Fetch secret from daemon if requested (daemon-injected secrets pattern)
-	if webhookFetchSecret || secret == "" {
+	// Tracked branch for the generic /webhook ref filter (#728) - priority:
+	// flag > env > daemon config.
+	branch := webhookBranch
+	if branch == "" {
+		branch = config.BosunEnv("REPO_BRANCH")
+	}
+
+	// Fetch secret (daemon-injected secrets pattern) and, when still unknown,
+	// the tracked branch from the daemon.
+	if webhookFetchSecret || secret == "" || branch == "" {
 		ui.Info("Fetching configuration from daemon...")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		cfg, err := client.Config(ctx)
@@ -110,9 +123,16 @@ func runWebhook(cmd *cobra.Command, args []string) {
 			// secret resolved the trigger endpoints fail closed below rather
 			// than silently accepting unsigned requests.
 			ui.Warning("Could not fetch config from daemon: %v", err)
-		} else if cfg.WebhookSecret != "" {
-			secret = cfg.WebhookSecret
-			ui.Success("Webhook secret fetched from daemon (never stored on disk)")
+		} else {
+			// Same rule as before the branch lookup: the daemon secret applies on
+			// --fetch-secret or when no secret resolved.
+			if (webhookFetchSecret || secret == "") && cfg.WebhookSecret != "" {
+				secret = cfg.WebhookSecret
+				ui.Success("Webhook secret fetched from daemon (never stored on disk)")
+			}
+			if branch == "" {
+				branch = cfg.RepoBranch
+			}
 		}
 	}
 
@@ -121,6 +141,7 @@ func runWebhook(cmd *cobra.Command, args []string) {
 		client:               client,
 		secret:               secret,
 		allowUnauthenticated: os.Getenv("BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK") == "true",
+		branch:               branch,
 	}
 
 	server := &http.Server{
@@ -136,6 +157,7 @@ func runWebhook(cmd *cobra.Command, args []string) {
 	go func() {
 		ui.Info("Webhook server listening on :%d", webhookPort)
 		warnWebhookReceiverAuthPosture(handler)
+		announceWebhookReceiverBranchFilter(handler)
 		ui.Info("Forwarding to daemon at %s", webhookSocket)
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -176,6 +198,11 @@ type webhookHandler struct {
 	// (BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true, strict match), mirroring the
 	// daemon's own opt-out.
 	allowUnauthenticated bool
+
+	// branch is the tracked branch the generic /webhook compares a payload's
+	// ref against (#728). Empty means unknown: only the GitHub event filter
+	// applies, and startup says so.
+	branch string
 }
 
 // authorizeTrigger enforces the receiver's webhook authentication posture
@@ -255,6 +282,19 @@ func warnWebhookReceiverAuthPosture(handler *webhookHandler) {
 	ui.Warning("Webhooks fail closed: no WEBHOOK_SECRET set, trigger requests will be rejected (403)")
 }
 
+// announceWebhookReceiverBranchFilter states at startup which branch the
+// generic /webhook filters on, or that the ref filter is off.
+func announceWebhookReceiverBranchFilter(handler *webhookHandler) {
+	if handler.branch != "" {
+		ui.Info("Generic /webhook branch filter: refs/heads/%s", daemon.SanitizeWebhookPusherName(handler.branch))
+		return
+	}
+	logger := log.Component(log.ComponentWebhook)
+	logger.Warn().
+		Msg("Generic /webhook ref filter is off, expected a tracked branch but none is known. Pass --branch, set BOSUN_REPO_BRANCH, or let the receiver read the daemon config (--fetch-secret)")
+	ui.Warning("Generic /webhook ref filter off: tracked branch unknown")
+}
+
 func (h *webhookHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -282,6 +322,26 @@ func (h *webhookHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Invalid signature", http.StatusUnauthorized)
 			return
 		}
+	}
+
+	// Decide on the payload only after authorization, with the daemon's
+	// shared rule (#728).
+	githubEvent := r.Header.Get("X-GitHub-Event")
+	if process, ref, reason := daemon.ShouldProcessGenericWebhook(githubEvent, body, h.branch); !process {
+		reason = daemon.SanitizeWebhookPusherName(reason)
+		logger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
+		logger.Info().
+			Str(log.FieldBranch, daemon.SanitizeWebhookPusherName(ref)).
+			Str("event_type", daemon.SanitizeWebhookPusherName(githubEvent)).
+			Str("reason", reason).
+			Msg("Generic webhook ignored")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status":  "ignored",
+			"message": reason,
+		})
+		return
 	}
 
 	// Forward to daemon

@@ -109,6 +109,8 @@ secret resolved (`--secret`, `WEBHOOK_SECRET`, `GITHUB_WEBHOOK_SECRET`, or
 open. `--fetch-secret` needs the receiver to run as an authorized socket peer,
 since the daemon's `GET /config` is peer-credential checked.
 
+The receiver's generic `/webhook` applies the same branch filter as the daemon's. It learns the branch from `--branch`, then `BOSUN_REPO_BRANCH`, then the daemon's `GET /config`; with none known, only the GitHub event filter applies and startup warns.
+
 ### Polling Mode
 
 Enable periodic reconciliation with `--poll-interval`:
