@@ -1,0 +1,194 @@
+package cmd
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/cameronsjo/bosun/internal/daemon"
+)
+
+const zeroCommit = "0000000000000000000000000000000000000000"
+
+// receiverPushBody returns a push to the tracked branch main in the endpoint's
+// payload shape.
+func receiverPushBody(endpoint string) string {
+	switch endpoint {
+	case "/webhook/bitbucket":
+		return `{"push":{"changes":[{"new":{"type":"branch","name":"main"}}]}}`
+	default:
+		return `{"ref":"refs/heads/main","after":"abc123"}`
+	}
+}
+
+// receiverDeliveryHeader names the delivery header each provider sends.
+var receiverDeliveryHeader = map[string]string{
+	"/webhook":           "X-GitHub-Delivery",
+	"/webhook/github":    "X-GitHub-Delivery",
+	"/webhook/gitlab":    "X-Gitlab-Event-UUID",
+	"/webhook/gitea":     "X-Gitea-Delivery",
+	"/webhook/bitbucket": "X-Request-UUID",
+}
+
+// receiverRequest builds a validly signed push for one receiver endpoint, with
+// the provider's delivery header when deliveryID is set.
+func receiverRequest(t *testing.T, endpoint, secret, body, deliveryID string) *http.Request {
+	t.Helper()
+	var req *http.Request
+	if endpoint == "/webhook" {
+		req = httptest.NewRequest(http.MethodPost, endpoint, bytes.NewReader([]byte(body)))
+		req.Header.Set("X-Hub-Signature-256", "sha256="+computeHMAC([]byte(body), secret))
+	} else {
+		req = providerPushRequest(t, endpoint, secret, []byte(body))
+	}
+	if deliveryID != "" {
+		req.Header.Set(receiverDeliveryHeader[endpoint], deliveryID)
+	}
+	return req
+}
+
+func decodeIgnored(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "ignored", resp["status"])
+	return resp["message"]
+}
+
+// TestStandaloneWebhookIgnoresBranchDelete pins #747: a push that deletes the
+// tracked branch passes the ref filter on every endpoint that reads a ref, and
+// must not be forwarded.
+func TestStandaloneWebhookIgnoresBranchDelete(t *testing.T) {
+	const secret = "webhook-secret"
+	cases := []struct {
+		name string
+		body string
+	}{
+		{name: "deleted flag", body: `{"ref":"refs/heads/main","deleted":true,"after":"` + zeroCommit + `"}`},
+		{name: "zero after", body: `{"ref":"refs/heads/main","after":"` + zeroCommit + `"}`},
+	}
+	for _, endpoint := range []string{"/webhook", "/webhook/github", "/webhook/gitlab", "/webhook/gitea"} {
+		for _, tc := range cases {
+			t.Run(endpoint+" "+tc.name, func(t *testing.T) {
+				client := &recordingWebhookClient{}
+				mux := newWebhookMux(&webhookHandler{client: client, secret: secret, branch: "main"})
+
+				w := httptest.NewRecorder()
+				mux.ServeHTTP(w, receiverRequest(t, endpoint, secret, tc.body, ""))
+
+				assert.Contains(t, decodeIgnored(t, w), "deletes refs/heads/main")
+				assert.Equal(t, 0, client.triggerCalls)
+			})
+		}
+		t.Run(endpoint+" delete with no known branch is still ignored", func(t *testing.T) {
+			client := &recordingWebhookClient{}
+			mux := newWebhookMux(&webhookHandler{client: client, secret: secret})
+
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, receiverRequest(t, endpoint, secret, cases[0].body, ""))
+
+			assert.Contains(t, decodeIgnored(t, w), "deletes")
+			assert.Equal(t, 0, client.triggerCalls)
+		})
+	}
+
+	t.Run("/webhook/bitbucket deletion stays ignored", func(t *testing.T) {
+		client := &recordingWebhookClient{}
+		mux := newWebhookMux(&webhookHandler{client: client, secret: secret, branch: "main"})
+
+		body := `{"push":{"changes":[{"new":null,"old":{"type":"branch","name":"main"}}]}}`
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, receiverRequest(t, "/webhook/bitbucket", secret, body, ""))
+
+		decodeIgnored(t, w)
+		assert.Equal(t, 0, client.triggerCalls)
+	})
+}
+
+// TestStandaloneWebhookDropsReplayedDelivery pins #747 on every receiver
+// endpoint: a repeated delivery ID is answered 200 ignored and forwarded once.
+func TestStandaloneWebhookDropsReplayedDelivery(t *testing.T) {
+	const secret = "webhook-secret"
+	for endpoint := range receiverDeliveryHeader {
+		body := receiverPushBody(endpoint)
+
+		t.Run(endpoint+" repeat ignored", func(t *testing.T) {
+			client := &recordingWebhookClient{}
+			mux := newWebhookMux(&webhookHandler{client: client, secret: secret, branch: "main"})
+
+			first := httptest.NewRecorder()
+			mux.ServeHTTP(first, receiverRequest(t, endpoint, secret, body, "d-1"))
+			require.Equal(t, http.StatusAccepted, first.Code)
+
+			replay := httptest.NewRecorder()
+			mux.ServeHTTP(replay, receiverRequest(t, endpoint, secret, body, "d-1"))
+			assert.Contains(t, decodeIgnored(t, replay), "Duplicate delivery")
+			assert.Equal(t, 1, client.triggerCalls)
+
+			other := httptest.NewRecorder()
+			mux.ServeHTTP(other, receiverRequest(t, endpoint, secret, body, "d-2"))
+			assert.Equal(t, http.StatusAccepted, other.Code)
+			assert.Equal(t, 2, client.triggerCalls)
+		})
+
+		t.Run(endpoint+" no delivery header is never deduplicated", func(t *testing.T) {
+			client := &recordingWebhookClient{}
+			mux := newWebhookMux(&webhookHandler{client: client, secret: secret, branch: "main"})
+
+			for i := 0; i < 2; i++ {
+				w := httptest.NewRecorder()
+				mux.ServeHTTP(w, receiverRequest(t, endpoint, secret, body, ""))
+				require.Equal(t, http.StatusAccepted, w.Code)
+			}
+			assert.Equal(t, 2, client.triggerCalls)
+		})
+
+		t.Run(endpoint+" bad signature on a recorded id is rejected", func(t *testing.T) {
+			client := &recordingWebhookClient{}
+			mux := newWebhookMux(&webhookHandler{client: client, secret: secret, branch: "main"})
+
+			first := httptest.NewRecorder()
+			mux.ServeHTTP(first, receiverRequest(t, endpoint, secret, body, "d-1"))
+			require.Equal(t, http.StatusAccepted, first.Code)
+
+			forged := httptest.NewRecorder()
+			mux.ServeHTTP(forged, receiverRequest(t, endpoint, "wrong-secret", body, "d-1"))
+			assert.Equal(t, http.StatusUnauthorized, forged.Code)
+		})
+
+		t.Run(endpoint+" failed forward is retried", func(t *testing.T) {
+			client := &failingOnceWebhookClient{}
+			mux := newWebhookMux(&webhookHandler{client: client, secret: secret, branch: "main"})
+
+			failed := httptest.NewRecorder()
+			mux.ServeHTTP(failed, receiverRequest(t, endpoint, secret, body, "d-1"))
+			require.Equal(t, http.StatusBadGateway, failed.Code)
+
+			retry := httptest.NewRecorder()
+			mux.ServeHTTP(retry, receiverRequest(t, endpoint, secret, body, "d-1"))
+			assert.Equal(t, http.StatusAccepted, retry.Code)
+			assert.Equal(t, 2, client.triggerCalls)
+		})
+	}
+}
+
+// failingOnceWebhookClient fails its first Trigger and accepts the rest.
+type failingOnceWebhookClient struct {
+	recordingWebhookClient
+}
+
+func (c *failingOnceWebhookClient) Trigger(ctx context.Context, source string, force bool) (*daemon.TriggerResponse, error) {
+	resp, err := c.recordingWebhookClient.Trigger(ctx, source, force)
+	if c.triggerCalls == 1 {
+		return nil, errors.New("daemon unreachable")
+	}
+	return resp, err
+}

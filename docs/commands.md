@@ -732,6 +732,10 @@ The receiver's generic `/webhook` applies the daemon's rule after the signature 
 
 After the signature (or GitLab token) check and the push-event check, `/webhook/github`, `/webhook/gitlab`, and `/webhook/gitea` forward a push only when its `ref` equals `refs/heads/<branch>`. `/webhook/bitbucket` forwards a push when any `push.changes[].new` entry is a `branch` named `<branch>`. Other branches, tags, deleted branches, and pushes with no readable ref get `200` `{"status":"ignored"}` and are not forwarded. The branch is the same one the generic endpoint uses; with none known, every push is forwarded.
 
+**Branch deletes and repeated deliveries:**
+
+A push that deletes the tracked branch (`deleted: true`, or an `after` made only of zeros) gets `200` `ignored` and a warning log instead of a reconcile; Bitbucket deletions were already ignored. After the signature or token check, every trigger endpoint also records the delivery ID (`X-GitHub-Delivery`, `X-Gitea-Delivery`, GitLab's `webhook-id`/`Idempotency-Key`/`X-Gitlab-Event-UUID`, or Bitbucket's `X-Request-UUID`). A delivery ID seen in the last hour gets `200` `ignored` and is not forwarded. The record holds at most 1024 IDs, and a delivery whose forward fails is removed from it so the provider's retry goes through. Delivery headers are not signed, so this stops a request sent again unchanged, not one whose delivery header was also changed.
+
 **Daemon-Injected Secrets:**
 
 Use `--fetch-secret` to have the webhook server fetch the secret from the daemon at startup. This way the secret is never stored on disk in the webhook container.

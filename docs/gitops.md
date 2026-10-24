@@ -111,6 +111,8 @@ since the daemon's `GET /config` is peer-credential checked.
 
 The receiver's generic `/webhook` applies the same branch filter as the daemon's. Its provider endpoints filter on the same branch after their signature and push-event checks: GitHub, GitLab, and Gitea pushes forward only when `ref` is `refs/heads/<branch>`, and Bitbucket pushes only when a `push.changes[].new` entry is a `branch` with that name. Other branches, tags, and deletions get `200` `ignored`. The receiver learns the branch from `--branch`, then `BOSUN_REPO_BRANCH`, then the daemon's `GET /config`; with none known, the ref check is off on every endpoint and startup warns.
 
+A push that deletes the tracked branch (`deleted: true` or an all-zero `after`) gets `200` `ignored` with a warning. A delivery ID (`X-GitHub-Delivery`, `X-Gitea-Delivery`, GitLab `webhook-id`/`Idempotency-Key`/`X-Gitlab-Event-UUID`, Bitbucket `X-Request-UUID`) seen in the last hour also gets `200` `ignored`; the record is checked only after the signature passes, holds at most 1024 IDs, and drops a delivery whose forward failed so the provider's retry goes through. The daemon's own `/webhook` and `/webhook/github` apply both checks too.
+
 ### Polling Mode
 
 Enable periodic reconciliation with `--poll-interval`:

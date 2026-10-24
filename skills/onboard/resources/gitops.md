@@ -557,6 +557,8 @@ All signatures are validated using HMAC-SHA256 (or SHA1 for legacy) with constan
 
 After the signature and push-event checks, each receiver endpoint forwards only pushes to the tracked branch (`--branch`, `BOSUN_REPO_BRANCH`, or the daemon's `/config`). GitHub, GitLab, and Gitea need `ref` to equal `refs/heads/<branch>`; Bitbucket needs a `push.changes[].new` entry of type `branch` with that name. Other branches, tags, and deletions get `200` `ignored` and are not forwarded. With no branch known, every push is forwarded and startup warns.
 
+A push that deletes the tracked branch (`deleted: true` or an all-zero `after`) gets `200` `ignored` with a warning. A delivery ID (`X-GitHub-Delivery`, `X-Gitea-Delivery`, GitLab `webhook-id`/`Idempotency-Key`/`X-Gitlab-Event-UUID`, Bitbucket `X-Request-UUID`) seen in the last hour also gets `200` `ignored`; the record is checked only after the signature passes, holds at most 1024 IDs, and drops a delivery whose forward failed so the provider's retry goes through. The daemon's own `/webhook` and `/webhook/github` apply both checks too.
+
 ### Webhook Setup
 
 1. **Configure a webhook secret** in your bosun environment (`WEBHOOK_SECRET` — required unless you explicitly opt out; see above)

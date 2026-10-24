@@ -561,6 +561,10 @@ The generic `/webhook` uses the daemon's branch filter: a JSON `ref` must equal 
 
 The provider endpoints filter on the same branch after their signature and push-event checks: GitHub, GitLab, and Gitea need `ref` to equal `refs/heads/<branch>`; Bitbucket needs a `push.changes[].new` entry of type `branch` with that name. Other branches, tags, and deletions get `200` `ignored` and are not forwarded.
 
+**Branch deletes and repeated deliveries:**
+
+A push that deletes the tracked branch (`deleted: true`, or an `after` made only of zeros) gets `200` `ignored` and a warning log instead of a reconcile; Bitbucket deletions were already ignored. After the signature or token check, every trigger endpoint also records the delivery ID (`X-GitHub-Delivery`, `X-Gitea-Delivery`, GitLab's `webhook-id`/`Idempotency-Key`/`X-Gitlab-Event-UUID`, or Bitbucket's `X-Request-UUID`). A delivery ID seen in the last hour gets `200` `ignored` and is not forwarded. The record holds at most 1024 IDs, and a delivery whose forward fails is removed from it so the provider's retry goes through. Delivery headers are not signed, so this stops a request sent again unchanged, not one whose delivery header was also changed.
+
 ---
 
 ## Alert Commands

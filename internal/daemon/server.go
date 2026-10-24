@@ -50,6 +50,10 @@ type Server struct {
 	// Nil or empty means trust nothing, which is the default.
 	trustedProxies *trustedProxies
 
+	// deliveries remembers recent webhook delivery IDs so a repeated delivery
+	// does not start a second reconcile (#747). The zero value is ready.
+	deliveries DeliveryCache
+
 	// Track in-flight reconciliation goroutines for graceful shutdown
 	wg sync.WaitGroup
 }
@@ -284,6 +288,10 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeTrigger(w, r, body, schemeGeneric) {
 		return
 	}
+	deliveryID, fresh := s.claimDelivery(w, r)
+	if !fresh {
+		return
+	}
 
 	// Decide on the payload only after authorization (#728). The raw ref is
 	// compared; sanitization is for logs and the response only.
@@ -302,6 +310,11 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 			"status":  "ignored",
 			"message": reason,
 		})
+		return
+	}
+
+	if PushDeletesBranch(body) {
+		WriteBranchDeleteIgnored(w, r, "generic", ref)
 		return
 	}
 
@@ -337,6 +350,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		webhookSpan.End()
 	}) {
 		s.wg.Done()
+		s.deliveries.Release(deliveryID)
 		http.Error(w, "Daemon is shutting down", http.StatusServiceUnavailable)
 		return
 	}
@@ -375,6 +389,10 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	// endpoint liveness, so fail-closed covers them too.
 	eventType := r.Header.Get("X-GitHub-Event")
 	if !s.authorizeTrigger(w, r, body, schemeGitHub) {
+		return
+	}
+	deliveryID, fresh := s.claimDelivery(w, r)
+	if !fresh {
 		return
 	}
 
@@ -432,6 +450,11 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if PushDeletesBranch(body) {
+		WriteBranchDeleteIgnored(w, r, "github", payload.Ref)
+		return
+	}
+
 	pusherName := SanitizeWebhookPusherName(payload.Pusher.Name)
 	source := log.SourceGitHub + ":" + pusherName
 
@@ -462,6 +485,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 	}) {
 		s.wg.Done()
+		s.deliveries.Release(deliveryID)
 		http.Error(w, "Daemon is shutting down", http.StatusServiceUnavailable)
 		return
 	}
@@ -471,6 +495,62 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		"status":  "accepted",
 		"message": "Reconciliation triggered",
 		"commit":  payload.After,
+	})
+}
+
+// claimDelivery records the request's delivery ID after authorization (#747).
+// A repeat within the cache window gets 200 ignored, written here, and false;
+// the caller MUST return. The caller releases the returned ID when the
+// reconcile cannot start, so a provider retry is processed.
+func (s *Server) claimDelivery(w http.ResponseWriter, r *http.Request) (string, bool) {
+	id := WebhookDeliveryID(r.Header)
+	if s.deliveries.Claim(id) {
+		return id, true
+	}
+	WriteDuplicateDeliveryIgnored(w, r, id)
+	return id, false
+}
+
+// WriteDuplicateDeliveryIgnored answers an authorized request whose delivery
+// ID was already handled (#747): 200 so the provider does not retry, a warn
+// log because an unexpected repeat may be a replay, and no reconcile. Shared
+// with the standalone receiver.
+func WriteDuplicateDeliveryIgnored(w http.ResponseWriter, r *http.Request, deliveryID string) {
+	id := SanitizeWebhookPusherName(deliveryID)
+	logger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
+	logger.Warn().
+		Str("delivery_id", id).
+		Str("endpoint", r.URL.Path).
+		Str(log.FieldRemoteAddr, r.RemoteAddr).
+		Msg("Webhook delivery ignored, expected a new delivery ID but this one was already handled (possible replay)")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ignored",
+		"message": "Duplicate delivery " + id + " ignored",
+	})
+}
+
+// WriteBranchDeleteIgnored answers an authorized push that deletes its branch
+// (#747): 200 so the provider does not retry, a warn log because deleting the
+// deploy branch is unusual, and no reconcile. Shared with the standalone
+// receiver.
+func WriteBranchDeleteIgnored(w http.ResponseWriter, r *http.Request, provider, ref string) {
+	ref = SanitizeWebhookPusherName(ref)
+	reason := "Push deletes " + ref + "; ignored"
+	if ref == "" {
+		reason = "Push deletes a branch; ignored"
+	}
+	logger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
+	logger.Warn().
+		Str("provider", provider).
+		Str(log.FieldBranch, ref).
+		Msg("Webhook push ignored, expected a push that updates the branch but it deletes it")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ignored",
+		"message": reason,
 	})
 }
 

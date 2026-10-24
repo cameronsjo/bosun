@@ -205,6 +205,23 @@ type webhookHandler struct {
 	// unknown: the ref check is off, only event filters apply, and startup
 	// says so.
 	branch string
+
+	// deliveries remembers recent delivery IDs so a repeated delivery is not
+	// forwarded twice (#747). The zero value is ready.
+	deliveries daemon.DeliveryCache
+}
+
+// claimDelivery records the request's delivery ID; call it only after the
+// signature or token check passes (#747). A repeat gets 200 ignored, written
+// here, and false; the caller MUST return. The caller releases the returned ID
+// when the forward fails, so the provider's retry is processed.
+func (h *webhookHandler) claimDelivery(w http.ResponseWriter, r *http.Request) (string, bool) {
+	id := daemon.WebhookDeliveryID(r.Header)
+	if h.deliveries.Claim(id) {
+		return id, true
+	}
+	daemon.WriteDuplicateDeliveryIgnored(w, r, id)
+	return id, false
 }
 
 // authorizeTrigger enforces the receiver's webhook authentication posture
@@ -325,11 +342,16 @@ func (h *webhookHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	deliveryID, fresh := h.claimDelivery(w, r)
+	if !fresh {
+		return
+	}
 
 	// Decide on the payload only after authorization, with the daemon's
 	// shared rule (#728).
 	githubEvent := r.Header.Get("X-GitHub-Event")
-	if process, ref, reason := daemon.ShouldProcessGenericWebhook(githubEvent, body, h.branch); !process {
+	process, ref, reason := daemon.ShouldProcessGenericWebhook(githubEvent, body, h.branch)
+	if !process {
 		reason = daemon.SanitizeWebhookPusherName(reason)
 		logger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
 		logger.Info().
@@ -345,6 +367,10 @@ func (h *webhookHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if daemon.PushDeletesBranch(body) {
+		daemon.WriteBranchDeleteIgnored(w, r, "generic", ref)
+		return
+	}
 
 	// Forward to daemon
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -352,6 +378,7 @@ func (h *webhookHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.client.Trigger(ctx, "webhook", false)
 	if err != nil {
+		h.deliveries.Release(deliveryID)
 		ui.Error("Failed to trigger daemon: %v", err)
 		http.Error(w, "Failed to trigger reconciliation", http.StatusBadGateway)
 		return
@@ -389,6 +416,10 @@ func (h *webhookHandler) handleGitHubWebhook(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
+	deliveryID, fresh := h.claimDelivery(w, r)
+	if !fresh {
+		return
+	}
 
 	// Parse event type
 	eventType := r.Header.Get("X-GitHub-Event")
@@ -421,6 +452,10 @@ func (h *webhookHandler) handleGitHubWebhook(w http.ResponseWriter, r *http.Requ
 		writeProviderPushIgnored(w, r, "github", payload.Ref, reason)
 		return
 	}
+	if daemon.PushDeletesBranch(body) {
+		daemon.WriteBranchDeleteIgnored(w, r, "github", payload.Ref)
+		return
+	}
 
 	// Forward to daemon
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -433,6 +468,7 @@ func (h *webhookHandler) handleGitHubWebhook(w http.ResponseWriter, r *http.Requ
 
 	resp, err := h.client.Trigger(ctx, source, false)
 	if err != nil {
+		h.deliveries.Release(deliveryID)
 		ui.Error("Failed to trigger daemon: %v", err)
 		http.Error(w, "Failed to trigger reconciliation", http.StatusBadGateway)
 		return
@@ -468,6 +504,10 @@ func (h *webhookHandler) handleGitLabWebhook(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
+	deliveryID, fresh := h.claimDelivery(w, r)
+	if !fresh {
+		return
+	}
 
 	// Parse event type
 	eventType := r.Header.Get("X-Gitlab-Event")
@@ -493,6 +533,10 @@ func (h *webhookHandler) handleGitLabWebhook(w http.ResponseWriter, r *http.Requ
 		writeProviderPushIgnored(w, r, "gitlab", payload.Ref, reason)
 		return
 	}
+	if daemon.PushDeletesBranch(body) {
+		daemon.WriteBranchDeleteIgnored(w, r, "gitlab", payload.Ref)
+		return
+	}
 
 	// Forward to daemon
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -505,6 +549,7 @@ func (h *webhookHandler) handleGitLabWebhook(w http.ResponseWriter, r *http.Requ
 
 	resp, err := h.client.Trigger(ctx, source, false)
 	if err != nil {
+		h.deliveries.Release(deliveryID)
 		ui.Error("Failed to trigger daemon: %v", err)
 		http.Error(w, "Failed to trigger reconciliation", http.StatusBadGateway)
 		return
@@ -540,6 +585,10 @@ func (h *webhookHandler) handleGiteaWebhook(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
+	deliveryID, fresh := h.claimDelivery(w, r)
+	if !fresh {
+		return
+	}
 
 	// Parse event type
 	eventType := r.Header.Get("X-Gitea-Event")
@@ -567,6 +616,10 @@ func (h *webhookHandler) handleGiteaWebhook(w http.ResponseWriter, r *http.Reque
 		writeProviderPushIgnored(w, r, "gitea", payload.Ref, reason)
 		return
 	}
+	if daemon.PushDeletesBranch(body) {
+		daemon.WriteBranchDeleteIgnored(w, r, "gitea", payload.Ref)
+		return
+	}
 
 	// Forward to daemon
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -579,6 +632,7 @@ func (h *webhookHandler) handleGiteaWebhook(w http.ResponseWriter, r *http.Reque
 
 	resp, err := h.client.Trigger(ctx, source, false)
 	if err != nil {
+		h.deliveries.Release(deliveryID)
 		ui.Error("Failed to trigger daemon: %v", err)
 		http.Error(w, "Failed to trigger reconciliation", http.StatusBadGateway)
 		return
@@ -617,6 +671,10 @@ func (h *webhookHandler) handleBitbucketWebhook(w http.ResponseWriter, r *http.R
 			http.Error(w, "Invalid signature", http.StatusUnauthorized)
 			return
 		}
+	}
+	deliveryID, fresh := h.claimDelivery(w, r)
+	if !fresh {
+		return
 	}
 
 	// Parse event type
@@ -663,6 +721,7 @@ func (h *webhookHandler) handleBitbucketWebhook(w http.ResponseWriter, r *http.R
 
 	resp, err := h.client.Trigger(ctx, source, false)
 	if err != nil {
+		h.deliveries.Release(deliveryID)
 		ui.Error("Failed to trigger daemon: %v", err)
 		http.Error(w, "Failed to trigger reconciliation", http.StatusBadGateway)
 		return
