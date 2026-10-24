@@ -3784,3 +3784,43 @@ func TestConfigFromEnv_DriftFromEnvFlags(t *testing.T) {
 		assert.False(t, cfg.DriftSelfHealCooldown.FromEnv())
 	})
 }
+
+func TestConfigFromEnv_ReconcileMaxTimeout(t *testing.T) {
+	t.Run("default is 30m when unset", func(t *testing.T) {
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 30*time.Minute, cfg.ReconcileMaxTimeout)
+	})
+
+	t.Run("parses Go duration and plain seconds", func(t *testing.T) {
+		t.Setenv("BOSUN_RECONCILE_MAX_TIMEOUT", "45m")
+		assert.Equal(t, 45*time.Minute, ConfigFromEnv().ReconcileMaxTimeout)
+		t.Setenv("BOSUN_RECONCILE_MAX_TIMEOUT", "3600")
+		assert.Equal(t, time.Hour, ConfigFromEnv().ReconcileMaxTimeout)
+	})
+
+	t.Run("invalid or non-positive falls back to default", func(t *testing.T) {
+		for _, v := range []string{"nope", "0", "-1m"} {
+			t.Setenv("BOSUN_RECONCILE_MAX_TIMEOUT", v)
+			assert.Equal(t, 30*time.Minute, ConfigFromEnv().ReconcileMaxTimeout, v)
+		}
+	})
+
+	t.Run("raised to the cycle budget when below it", func(t *testing.T) {
+		t.Setenv("BOSUN_RECONCILE_TIMEOUT", "40m")
+		t.Setenv("BOSUN_RECONCILE_MAX_TIMEOUT", "20m")
+		cfg := ConfigFromEnv()
+		assert.Equal(t, 40*time.Minute, cfg.ReconcileMaxTimeout)
+	})
+}
+
+func TestConfigFromEnv_ReconcileRollbackGrace(t *testing.T) {
+	assert.Equal(t, 5*time.Minute, ConfigFromEnv().ReconcileRollbackGrace, "default")
+	t.Setenv("BOSUN_RECONCILE_ROLLBACK_GRACE", "2m")
+	assert.Equal(t, 2*time.Minute, ConfigFromEnv().ReconcileRollbackGrace)
+	t.Setenv("BOSUN_RECONCILE_ROLLBACK_GRACE", "90")
+	assert.Equal(t, 90*time.Second, ConfigFromEnv().ReconcileRollbackGrace)
+	for _, v := range []string{"nope", "0", "-1s"} {
+		t.Setenv("BOSUN_RECONCILE_ROLLBACK_GRACE", v)
+		assert.Equal(t, 5*time.Minute, ConfigFromEnv().ReconcileRollbackGrace, v)
+	}
+}

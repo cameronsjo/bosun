@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cameronsjo/bosun/internal/deadline"
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/ui"
 	"github.com/kballard/go-shellquote"
@@ -30,14 +31,14 @@ var ErrRollbackFailed = errors.New("deployment and rollback both failed")
 var ErrComposeUnhealthy = errors.New("compose up completed with unhealthy containers")
 
 // ComposeUp runs docker compose up for the specified compose file.
-// Uses the configured compose up timeout if the parent context has no deadline.
+// Bounded by the configured compose up timeout (or an earlier caller deadline).
 // Returns an error if compose up fails (caller should handle rollback).
 func (d *DeployOps) ComposeUp(ctx context.Context, composeFile string) error {
 	return d.ComposeUpMultiple(ctx, []string{composeFile})
 }
 
 // ComposeUpMultiple runs docker compose up for multiple compose files.
-// Uses the configured compose up timeout if the parent context has no deadline.
+// Bounded by the configured compose up timeout (or an earlier caller deadline).
 // Returns an error if compose up fails (caller should handle rollback).
 func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string) error {
 	start := time.Now()
@@ -60,13 +61,11 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 		Str("project", d.ProjectName).
 		Msg("Starting docker compose up")
 
-	// Apply timeout if context doesn't have one
+	// Bound this call by the compose up timeout. An earlier caller deadline
+	// still wins; a later one no longer disables the per-call bound (#727).
 	timeout := d.composeUpTimeout()
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	// Build args: docker compose -p project -f file1.yml -f file2.yml up -d [--remove-orphans]
 	// Note: --wait is intentionally omitted. It exits non-zero when ANY container is
@@ -159,10 +158,18 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 // backup files) — distinct from the rollback command itself failing.
 var errRollbackNotAttempted = errors.New("rollback not attempted")
 
+// errCycleDeadlinePassed marks a compose file that was not started because the
+// reconcile cycle's deadline (its hard cap) had already passed.
+var errCycleDeadlinePassed = errors.New("reconcile cycle deadline passed before the file started")
+
 // ComposeUpIsolated runs compose up per-file with isolated failure handling.
-// Phase 1: each file gets its own compose up (no --remove-orphans). On failure,
-// the single file is rolled back from backup if available.
+// Phase 1: each file gets its own compose up (no --remove-orphans) under its
+// own ComposeUpTimeout deadline. On failure, the single file is rolled back
+// from backup if available.
 // Phase 2: a single orphan-reconciliation pass with all files and --remove-orphans.
+// The caller's pausable cycle timeout, if any, is paused for the whole call:
+// the per-file deadlines bound this phase, so one slow file cannot use up the
+// time later files or later pipeline steps need (#727).
 func (d *DeployOps) ComposeUpIsolated(ctx context.Context, composeFiles []string, backupPath string) (*ComposeUpSummary, error) {
 	return d.composeUpIsolated(ctx, composeFiles, backupPath, true)
 }
@@ -186,6 +193,11 @@ func (d *DeployOps) composeUpIsolated(ctx context.Context, composeFiles []string
 		return &summary, nil
 	}
 
+	// Pause the daemon's cycle clock for the compose phase (#727). Caller
+	// cancellation still propagates; only the cycle deadline stops running.
+	resumeCycle := deadline.Pause(ctx)
+	defer resumeCycle()
+
 	upFn := d.composeUpFn
 	if upFn == nil {
 		// Clone DeployOps with RemoveOrphans disabled for Phase 1.
@@ -200,6 +212,15 @@ func (d *DeployOps) composeUpIsolated(ctx context.Context, composeFiles []string
 	// configs.tar.gz (absolute paths inside), not loose files under backupPath,
 	// so rollback must consult the extracted tree (#332/#335). Extraction is
 	// skipped entirely on the happy path (no failures).
+	// cleanupContext bounds one extraction or rollback: detached from ctx's
+	// cancellation, so a canceled deploy is still rolled back, and ending after
+	// ComposeUpTimeout or at the cycle cap's deadline plus the rollback grace,
+	// whichever is first, so cleanup cannot run the cycle past cap + grace
+	// (#727).
+	cleanupContext := func() (context.Context, context.CancelFunc) {
+		return deadline.CleanupContext(ctx, d.composeUpTimeout())
+	}
+
 	var backupRoot string
 	var backupCleanup func()
 	var backupExtracted bool // memoize the attempt: one bad archive must not
@@ -218,10 +239,7 @@ func (d *DeployOps) composeUpIsolated(ctx context.Context, composeFiles []string
 		}
 		backupExtracted = true
 		// Independent timeout so extraction runs even if ctx was cancelled.
-		exCtx, exCancel := context.WithTimeout(
-			log.WithContext(context.Background(), log.Ctx(ctx)),
-			d.composeUpTimeout(),
-		)
+		exCtx, exCancel := cleanupContext()
 		defer exCancel()
 		tarFile := filepath.Join(backupPath, "configs.tar.gz")
 		root, cleanup, err := d.extractBackup(exCtx, tarFile)
@@ -241,11 +259,28 @@ func (d *DeployOps) composeUpIsolated(ctx context.Context, composeFiles []string
 	// Phase 1: per-file compose up without --remove-orphans.
 	results := make([]ComposeFileResult, 0, len(composeFiles))
 	for _, f := range composeFiles {
+		// The cycle's hard cap (or another deadline over the whole cycle) has
+		// passed: do not start this file, and do not roll it back. Its old
+		// containers were never touched; marking it failed and not rolled back
+		// skips the orphan pass (#737), which keeps them running. Shutdown
+		// (context.Canceled) keeps the attempt-and-rollback path below.
+		if deadline.CapExpired(ctx) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			logger.Warn().
+				Str(log.FieldPath, f).
+				Msg("Skipping compose up and rollback for file. Reason: the reconcile cycle deadline passed before this file started")
+			results = append(results, ComposeFileResult{File: f, Err: fmt.Errorf("compose up not started: %w", errCycleDeadlinePassed)})
+			continue
+		}
+
 		logger.Info().
 			Str(log.FieldPath, f).
 			Msg("Starting isolated compose up for file")
 
-		err := upFn(ctx, []string{f})
+		// Each file gets a fresh deadline measured from its own start, so a
+		// slow earlier file cannot use up this one's budget (#727).
+		fileCtx, fileCancel := context.WithTimeout(ctx, d.composeUpTimeout())
+		err := upFn(fileCtx, []string{f})
+		fileCancel()
 		if err == nil {
 			results = append(results, ComposeFileResult{File: f, Success: true})
 			continue
@@ -274,10 +309,7 @@ func (d *DeployOps) composeUpIsolated(ctx context.Context, composeFiles []string
 					Str(log.FieldPath, backupFile).
 					Msg("Rolling back single file from backup")
 
-				rollbackCtx, cancel := context.WithTimeout(
-					log.WithContext(context.Background(), log.Ctx(ctx)),
-					d.composeUpTimeout(),
-				)
+				rollbackCtx, cancel := cleanupContext()
 				rollbackArgs := d.buildUpArgs([]string{backupFile}, false)
 				rollbackCmd := dockerComposeCommandContext(rollbackCtx, rollbackArgs...)
 				var rollbackStderr bytes.Buffer

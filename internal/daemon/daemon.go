@@ -23,6 +23,7 @@ import (
 
 	"github.com/cameronsjo/bosun/internal/alert"
 	"github.com/cameronsjo/bosun/internal/config"
+	"github.com/cameronsjo/bosun/internal/deadline"
 	"github.com/cameronsjo/bosun/internal/docker"
 	"github.com/cameronsjo/bosun/internal/log"
 	"github.com/cameronsjo/bosun/internal/reconcile"
@@ -114,9 +115,18 @@ type Config struct {
 	secretsFilesError error
 
 	// Timeout settings
-	ReconcileTimeout time.Duration // Max time for a reconcile operation (default: 10m)
-	ShutdownTimeout  time.Duration // Max time for graceful shutdown (default: 30s)
-	APITimeout       time.Duration // Timeout for API handler requests (default: 30s)
+	ReconcileTimeout time.Duration // Cycle budget for a reconcile operation; paused during isolated compose up (default: 10m)
+	// ReconcileMaxTimeout is the hard cap on one reconcile cycle's wall-clock
+	// time, compose up included (default: 30m). Values below ReconcileTimeout
+	// are raised to it.
+	ReconcileMaxTimeout time.Duration
+	// ReconcileRollbackGrace extends the cap for cleanup only (default: 5m):
+	// every backup extraction and rollback in a cycle, started before or after
+	// the cap fires, ends by the cap's deadline plus this grace. A cycle's worst
+	// case is ReconcileMaxTimeout + ReconcileRollbackGrace.
+	ReconcileRollbackGrace time.Duration
+	ShutdownTimeout        time.Duration // Max time for graceful shutdown (default: 30s)
+	APITimeout             time.Duration // Timeout for API handler requests (default: 30s)
 
 	// Drift check settings
 	DriftInterval         time.Duration                        // Interval for periodic drift checks (0 disables, default: 5m)
@@ -144,29 +154,45 @@ type Config struct {
 const DefaultDriftInterval = 5 * time.Minute
 
 // DefaultConfig returns a Config with sensible defaults.
+// DefaultReconcileMaxTimeout is the default hard cap on one reconcile cycle.
+// It is three times the default cycle budget: 10m for the steps outside compose
+// up plus about 20m of compose up, enough for a full run in which a few files
+// pull large images (a 17-file full run exceeded a shared 10m budget in #727).
+// Cleanup may run DefaultReconcileRollbackGrace past it, so a wedged cycle
+// ends within 35 minutes.
+const DefaultReconcileMaxTimeout = 30 * time.Minute
+
+// DefaultReconcileRollbackGrace is how far past the cycle cap's deadline
+// backup extraction and rollbacks may run. Rollbacks re-apply known-good files
+// whose images are already present, so they usually take seconds; 5m leaves
+// room for several while still ending a wedged cycle within 35 minutes.
+const DefaultReconcileRollbackGrace = 5 * time.Minute
+
 func DefaultConfig() *Config {
 	return &Config{
-		SocketPath:            DefaultSocketPath,
-		SocketMode:            0o660,
-		EnableTCP:             false,            // Disabled by default for security
-		TCPAddr:               "127.0.0.1:9090", // Localhost only by default
-		Port:                  8080,
-		EnableHTTP:            true, // Backwards compat: enable HTTP by default for now
-		WebhookPath:           "/webhook",
-		HealthPath:            "/health",
-		ReadyPath:             "/ready",
-		PollInterval:          time.Hour,
-		InitialDelay:          10 * time.Second,
-		ReconcileTimeout:      10 * time.Minute,
-		ShutdownTimeout:       30 * time.Second,
-		APITimeout:            30 * time.Second,
-		DriftInterval:         DefaultDriftInterval,
-		DriftAlertCooldown:    time.Hour,
-		DriftResolveAlerts:    true,
-		DriftSelfHealCooldown: reconcile.NewConfigField(15 * time.Minute),
-		MaxSelfHealAttempts:   DefaultMaxSelfHealAttempts,
-		ContentHashSync:       true,
-		RemoveOrphans:         true,
+		SocketPath:             DefaultSocketPath,
+		SocketMode:             0o660,
+		EnableTCP:              false,            // Disabled by default for security
+		TCPAddr:                "127.0.0.1:9090", // Localhost only by default
+		Port:                   8080,
+		EnableHTTP:             true, // Backwards compat: enable HTTP by default for now
+		WebhookPath:            "/webhook",
+		HealthPath:             "/health",
+		ReadyPath:              "/ready",
+		PollInterval:           time.Hour,
+		InitialDelay:           10 * time.Second,
+		ReconcileTimeout:       10 * time.Minute,
+		ReconcileMaxTimeout:    DefaultReconcileMaxTimeout,
+		ReconcileRollbackGrace: DefaultReconcileRollbackGrace,
+		ShutdownTimeout:        30 * time.Second,
+		APITimeout:             30 * time.Second,
+		DriftInterval:          DefaultDriftInterval,
+		DriftAlertCooldown:     time.Hour,
+		DriftResolveAlerts:     true,
+		DriftSelfHealCooldown:  reconcile.NewConfigField(15 * time.Minute),
+		MaxSelfHealAttempts:    DefaultMaxSelfHealAttempts,
+		ContentHashSync:        true,
+		RemoveOrphans:          true,
 	}
 }
 
@@ -1101,7 +1127,13 @@ func (d *Daemon) executeReconcileWithMode(ctx context.Context, source string, fo
 	// Entry points deliberately pass an unbounded parent context: wrapping them
 	// outside the coalescing loop would make every queued cycle inherit the first
 	// trigger's deadline instead of receiving a fresh per-cycle timeout budget.
-	ctx, cancel := context.WithTimeout(ctx, d.config.ReconcileTimeout)
+	// The timeout is pausable: isolated compose up pauses it and bounds each
+	// compose file with its own ComposeUpTimeout instead, so the files no longer
+	// share one budget that trailing files run out of (#727). ReconcileMaxTimeout
+	// is a hard cap that keeps running while the budget is paused, so a long run
+	// of slow files still ends. Every extraction and rollback ends by the cap's
+	// deadline plus ReconcileRollbackGrace, so the worst case is cap + grace.
+	ctx, cancel := deadline.WithCycleBudget(ctx, d.config.ReconcileTimeout, d.config.ReconcileMaxTimeout, d.config.ReconcileRollbackGrace, deadline.RealClock)
 	defer cancel()
 
 	// Start a Sentry transaction for performance monitoring.
@@ -2526,6 +2558,35 @@ func ConfigFromEnv() *Config {
 		} else {
 			log.Warn().Str("env", "BOSUN_RECONCILE_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
 		}
+	}
+	if v := os.Getenv("BOSUN_RECONCILE_MAX_TIMEOUT"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_RECONCILE_MAX_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must be positive, falling back to default")
+			} else {
+				cfg.ReconcileMaxTimeout = d
+			}
+		} else {
+			log.Warn().Str("env", "BOSUN_RECONCILE_MAX_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
+	if v := os.Getenv("BOSUN_RECONCILE_ROLLBACK_GRACE"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			if d <= 0 {
+				log.Warn().Str("env", "BOSUN_RECONCILE_ROLLBACK_GRACE").Str("value", v).Msg("Skipping env var. Reason: duration must be positive, falling back to default")
+			} else {
+				cfg.ReconcileRollbackGrace = d
+			}
+		} else {
+			log.Warn().Str("env", "BOSUN_RECONCILE_ROLLBACK_GRACE").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
+		}
+	}
+	if cfg.ReconcileMaxTimeout < cfg.ReconcileTimeout {
+		log.Warn().
+			Dur("reconcile_max_timeout", cfg.ReconcileMaxTimeout).
+			Dur("reconcile_timeout", cfg.ReconcileTimeout).
+			Msg("Raising BOSUN_RECONCILE_MAX_TIMEOUT to BOSUN_RECONCILE_TIMEOUT. Reason: the hard cap cannot be shorter than the cycle budget")
+		cfg.ReconcileMaxTimeout = cfg.ReconcileTimeout
 	}
 	if v := os.Getenv("BOSUN_SHUTDOWN_TIMEOUT"); v != "" {
 		if d, ok := parseDurationOrSeconds(v); ok {
