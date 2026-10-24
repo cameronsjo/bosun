@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -8,8 +9,10 @@ import (
 	"testing"
 
 	"github.com/cameronsjo/bosun/internal/docker"
+	logpkg "github.com/cameronsjo/bosun/internal/log"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1058,14 +1061,25 @@ services:
     pull_policy: never
   built:
     build: .
+  builtlatest:
+    build: .
+    image: app:latest
 `), 0o644))
 	got := inspectComposeFile(p, appdata)
 	require.NoError(t, got.Err)
 	assert.Equal(t, []string{"floaty (ghcr.io/o/app:latest)", "never (nginx:latest)", "untagged (nginx)"}, got.Floating)
 
-	services, msg := floatingImageWarning([]composeFileInputs{got})
-	assert.Len(t, services, 3)
-	assert.Contains(t, msg, "pull_policy: always")
-	_, none := floatingImageWarning(nil)
-	assert.Empty(t, none)
+	var logs bytes.Buffer
+	logger := zerolog.New(&logs).Level(zerolog.WarnLevel)
+	ctx := logpkg.WithContext(context.Background(), &logger)
+	logFloatingImages(ctx, []composeFileInputs{got})
+	out := logs.String()
+	assert.Contains(t, out, "floaty (ghcr.io/o/app:latest)")
+	assert.Contains(t, out, "pull_policy: always")
+	assert.NotContains(t, out, "builtlatest")
+	assert.NotContains(t, out, "pinned")
+
+	logs.Reset()
+	logFloatingImages(ctx, nil)
+	assert.Empty(t, logs.String())
 }

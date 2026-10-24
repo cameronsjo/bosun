@@ -5,7 +5,7 @@
 A local deploy SHALL log a warning at the default log level for each compose
 service whose `image` has no tag or the tag `latest` (and no digest), unless the
 service's `pull_policy` is one that pulls (`always`, `daily`, `weekly`,
-`every_<duration>`, `build`). The warning SHALL name each service and image and
+`every_<duration>`, `build`) or the service has a `build` section. The warning SHALL name each service and image and
 SHALL state that a new image will not be deployed and that `pull_policy: always`
 or a digest pin fixes it. Images containing `${...}` interpolation are not
 judged. The warning SHALL NOT change what the deploy does.

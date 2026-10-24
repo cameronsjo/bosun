@@ -111,18 +111,26 @@ func floatingImage(image string) bool {
 	return i < 0 || name[i+1:] == "latest"
 }
 
-// floatingImageWarning formats the warning for services on floating tags, or
-// returns "" when there are none.
-func floatingImageWarning(files []composeFileInputs) (services []string, msg string) {
+// floatingImageFix is the one place the remedy text lives, for the log line
+// and the console line alike.
+const floatingImageFix = "set pull_policy: always on the service or pin the image to a digest; `bosun trigger -f` does not pull"
+
+// logFloatingImages warns once per deploy about services on a floating tag.
+func logFloatingImages(ctx context.Context, files []composeFileInputs) {
+	var services []string
 	for _, f := range files {
 		services = append(services, f.Floating...)
 	}
 	if len(services) == 0 {
-		return nil, ""
+		return
 	}
 	sort.Strings(services)
-	return services, "image tag can move without a compose change, so bosun will not redeploy it when a new image is published; " +
-		"set pull_policy: always on the service or pin the image to a digest. `bosun trigger -f` does not pull"
+	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+	logger.Warn().
+		Strs("services", services).
+		Msg("Services on a floating image tag will not pick up a new image. Fix: " + floatingImageFix)
+	ui.Warning("  Floating image tag, a new image will not be deployed: %s", strings.Join(services, ", "))
+	ui.Warning("    Fix: %s", floatingImageFix)
 }
 
 // inspectComposeFile reads one live compose file and records its services and
@@ -213,7 +221,10 @@ func inspectComposeFile(path, appdataRoot string) composeFileInputs {
 				continue
 			}
 			pp, hasPull := svc["pull_policy"]
-			if img, ok := svc["image"].(string); ok && floatingImage(img) {
+			// A service with build: runs a locally built image, which a pull
+			// policy does not refresh, so the remedy does not apply.
+			_, hasBuild := svc["build"]
+			if img, ok := svc["image"].(string); ok && !hasBuild && floatingImage(img) {
 				// Only a policy that pulls on every up (always) or on a
 				// schedule re-reads the tag; anything else leaves the old
 				// image in place.
@@ -736,13 +747,7 @@ func (r *Reconciler) selectLocalComposeFiles(ctx context.Context, targets []Depl
 	for _, f := range composeFiles {
 		files = append(files, inspectComposeFile(f, appdata))
 	}
-	if floating, msg := floatingImageWarning(files); floating != nil {
-		logger.Warn().
-			Strs("services", floating).
-			Msg("Services on a floating image tag will not pick up a new image. " + msg)
-		ui.Warning("  Floating image tag, a new image will not be deployed: %s", strings.Join(floating, ", "))
-		ui.Warning("    Set pull_policy: always or pin a digest; `bosun trigger -f` does not pull")
-	}
+	logFloatingImages(ctx, files)
 	prev := make([]string, 0, len(r.prevDeclaredServices))
 	for _, s := range r.prevDeclaredServices {
 		prev = append(prev, s.Name)
