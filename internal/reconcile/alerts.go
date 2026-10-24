@@ -121,9 +121,12 @@ func (r *Reconciler) sendThrottledFailureAlert(ctx context.Context, state *Deplo
 // sendInterruptionAlert is owned exclusively by the run-boundary finalizer. It
 // bypasses attempt throttling and never mutates LastAlertedAttempt because an
 // operator interruption consumes no deploy-failure budget.
-func (r *Reconciler) sendInterruptionAlert(ctx context.Context) {
+//
+// It reports whether the alert was delivered, because only a delivered alert
+// leaves the operator believing the deploy is broken.
+func (r *Reconciler) sendInterruptionAlert(ctx context.Context) (delivered bool) {
 	if r.alerter == nil || !r.config.OnFailure {
-		return
+		return false
 	}
 
 	alertCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), failureAlertDeliveryTimeout)
@@ -142,7 +145,9 @@ func (r *Reconciler) sendInterruptionAlert(ctx context.Context) {
 			Str(log.FieldOperation, "alert_failure").
 			Str(log.FieldTarget, target).
 			Msg("Failed to send interrupted reconcile alert")
+		return false
 	}
+	return true
 }
 
 // sendUnhealthyAlert sends a warning notification for unhealthy containers found post-deploy.
@@ -184,6 +189,19 @@ const (
 // Gated on config.OnRecovery, not OnSuccess. Recovery is not a success-side
 // alert: the retract gate must never be more restrictive than the alert gate.
 func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) recoveryOutcome {
+	return r.dispatchRecovery(ctx, "alert_recovery", func(alertCtx context.Context, commit, target string) error {
+		return r.alerter.SendDeployRecovery(alertCtx, commit, target, priorFailures)
+	}, "Failed to send recovery alert, retraction still owed")
+}
+
+// sendInterruptionRecoveryAlert retracts a delivered interruption alert, under
+// the same on_recovery gate and outcome contract as sendRecoveryAlert.
+func (r *Reconciler) sendInterruptionRecoveryAlert(ctx context.Context) recoveryOutcome {
+	return r.dispatchRecovery(ctx, "alert_interruption_recovery", r.alerter.SendInterruptionRecovery,
+		"Failed to send interruption recovery alert, retraction still owed")
+}
+
+func (r *Reconciler) dispatchRecovery(ctx context.Context, operation string, send func(ctx context.Context, commit, target string) error, failureMsg string) recoveryOutcome {
 	// No alerter is "nothing to deliver to", not a delivery failure -- retrying
 	// forever against a nil alerter would never succeed.
 	if r.alerter == nil {
@@ -205,14 +223,13 @@ func (r *Reconciler) sendRecoveryAlert(ctx context.Context, priorFailures int) r
 		defer cancel()
 	}
 
-	if err := r.alerter.SendDeployRecovery(alertCtx, r.lastCommit, target, priorFailures); err != nil {
+	if err := send(alertCtx, r.lastCommit, target); err != nil {
 		logger := log.ComponentCtx(alertCtx, log.ComponentReconcile)
 		logger.Warn().
 			Err(err).
-			Str(log.FieldOperation, "alert_recovery").
+			Str(log.FieldOperation, operation).
 			Str(log.FieldTarget, target).
-			Int("prior_failures", priorFailures).
-			Msg("Failed to send recovery alert, retraction still owed")
+			Msg(failureMsg)
 		return recoveryDeliveryFailed
 	}
 	r.recoverySentThisRun = true

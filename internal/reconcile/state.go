@@ -142,6 +142,10 @@ type LastAttemptOutcome struct {
 	Outcome   string    `json:"outcome"`
 	Commit    string    `json:"commit,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
+	// Alerted records that an interruption alert was actually delivered, so a
+	// later clean run owes the operator a recovery notice. It stays false when
+	// failure alerts are off or every provider failed.
+	Alerted bool `json:"alerted,omitempty"`
 }
 
 // DriftSelfHealTracking is the persisted state machine for automatic drift

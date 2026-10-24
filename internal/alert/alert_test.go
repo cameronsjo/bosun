@@ -272,7 +272,7 @@ func TestManager_SendDeployRecovery_AfterInterruption(t *testing.T) {
 	p := newMockProvider("test", true)
 	m.AddProvider(p)
 
-	require.NoError(t, m.SendDeployRecovery(context.Background(), "abc123def456", "unraid", 0))
+	require.NoError(t, m.SendInterruptionRecovery(context.Background(), "abc123def456", "unraid"))
 
 	alerts := p.getAlerts()
 	require.Len(t, alerts, 1)

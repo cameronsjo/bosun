@@ -271,6 +271,7 @@ type AlertSender interface {
 	SendDeploySuccess(ctx context.Context, commit, target string, services []string, duration time.Duration) error
 	SendDeployFailure(ctx context.Context, commit, target, reason string, services []string, duration time.Duration) error
 	SendDeployRecovery(ctx context.Context, commit, target string, priorFailures int) error
+	SendInterruptionRecovery(ctx context.Context, commit, target string) error
 	SendUnhealthyContainers(ctx context.Context, target string, containers []string) error
 	SendRollbackSuccess(ctx context.Context, target, backupName string) error
 	SendRollbackFailure(ctx context.Context, target, reason string) error

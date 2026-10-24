@@ -5,3 +5,5 @@
 - [x] 1.3 Suppress the finalizer recovery when the run already dispatched one
 - [x] 1.4 Tests: interruption then success sends one; repeated successes send none; `on_recovery=false` sends none; delivery failure retries; failed run sends none; no double send
 - [x] 1.5 Failed runs keep the marker; interruption recovery text omits the failure count
+- [x] 1.6 Record `alerted` on the outcome after delivery; gate the recovery on it
+- [x] 1.7 Add `SendInterruptionRecovery`; modify the reconcile requirement; update docs/alerting.md

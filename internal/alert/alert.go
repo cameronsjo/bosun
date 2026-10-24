@@ -231,6 +231,26 @@ func (m *Manager) SendRollbackFailure(ctx context.Context, target, reason string
 	})
 }
 
+// SendInterruptionRecovery retracts an interruption alert. An interruption
+// consumes no failure budget, so the message carries no failure count.
+func (m *Manager) SendInterruptionRecovery(ctx context.Context, commit, target string) error {
+	shortCommit := commit
+	if len(commit) > 8 {
+		shortCommit = commit[:8]
+	}
+
+	return m.Send(ctx, &Alert{
+		Title:    targetTitle("Deployment Recovered", target),
+		Message:  fmt.Sprintf("Deployment of commit %s to %s recovered after an interrupted deploy", shortCommit, target),
+		Severity: SeverityInfo,
+		Source:   "reconcile",
+		Metadata: map[string]string{
+			"commit": commit,
+			"target": target,
+		},
+	})
+}
+
 // SendDeployRecovery sends a notification when deployment succeeds after consecutive failures.
 func (m *Manager) SendDeployRecovery(ctx context.Context, commit, target string, priorFailures int) error {
 	shortCommit := commit
@@ -238,15 +258,9 @@ func (m *Manager) SendDeployRecovery(ctx context.Context, commit, target string,
 		shortCommit = commit[:8]
 	}
 
-	message := fmt.Sprintf("Deployment of commit %s to %s succeeded after %d prior failure(s)", shortCommit, target, priorFailures)
-	if priorFailures <= 0 {
-		// An interruption consumes no failure budget, so there is no failure count.
-		message = fmt.Sprintf("Deployment of commit %s to %s recovered after an interrupted deploy", shortCommit, target)
-	}
-
 	return m.Send(ctx, &Alert{
 		Title:    targetTitle("Deployment Recovered", target),
-		Message:  message,
+		Message:  fmt.Sprintf("Deployment of commit %s to %s succeeded after %d prior failure(s)", shortCommit, target, priorFailures),
 		Severity: SeverityInfo,
 		Source:   "reconcile",
 		Metadata: map[string]string{
