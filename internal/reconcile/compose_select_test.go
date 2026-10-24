@@ -23,8 +23,10 @@ func selectFixture() composeSelectionInput {
 			{Path: "/appdata/compose/b.yml", Services: []string{"svc-b"}},
 		},
 		ComposeDir:   "/appdata/compose",
+		Managed:      map[string]bool{"/appdata/compose/a.yml": true, "/appdata/compose/b.yml": true, "/appdata/svc-a/app.env": true},
 		LiveKnown:    true,
-		Running:      map[string]bool{"svc-a": true, "svc-b": true},
+		Present:      map[string]bool{"svc-a": true, "svc-b": true},
+		Containers:   map[string]bool{"svc-a": true, "svc-b": true},
 		PrevDeclared: []string{"svc-a", "svc-b"},
 	}
 }
@@ -78,9 +80,31 @@ func TestSelectComposeFiles(t *testing.T) {
 		},
 		{
 			name:       "a service with no running container selects its file",
-			mutate:     func(in *composeSelectionInput) { delete(in.Running, "svc-b") },
+			mutate:     func(in *composeSelectionInput) { delete(in.Present, "svc-b") },
 			wantFiles:  []string{"/appdata/compose/b.yml"},
-			wantReason: "svc-b has no running or restarting container",
+			wantReason: "svc-b has no present container",
+		},
+		{
+			name:       "an input bosun did not deploy selects the file that reads it",
+			mutate:     func(in *composeSelectionInput) { delete(in.Managed, "/appdata/svc-a/app.env") },
+			wantFiles:  []string{"/appdata/compose/a.yml"},
+			wantReason: "not deployed by bosun",
+		},
+		{
+			name: "per-file rules selecting every file make it a full run",
+			mutate: func(in *composeSelectionInput) {
+				in.Changed = []string{"/appdata/compose/a.yml", "/appdata/compose/b.yml"}
+			},
+			wantFiles:  allFiles,
+			wantAll:    true,
+			wantReason: "every file selected",
+		},
+		{
+			name:       "a stopped orphan container runs every file",
+			mutate:     func(in *composeSelectionInput) { in.Containers["svc-stopped-orphan"] = true },
+			wantFiles:  allFiles,
+			wantAll:    true,
+			wantReason: "svc-stopped-orphan",
 		},
 		{
 			name:       "a caller fallback reason runs every file",
@@ -91,7 +115,7 @@ func TestSelectComposeFiles(t *testing.T) {
 		},
 		{
 			name:       "unknown live state runs every file",
-			mutate:     func(in *composeSelectionInput) { in.LiveKnown = false; in.Running = nil },
+			mutate:     func(in *composeSelectionInput) { in.LiveKnown = false; in.Present = nil; in.Containers = nil },
 			wantFiles:  allFiles,
 			wantAll:    true,
 			wantReason: "live container state unknown",
@@ -135,7 +159,10 @@ func TestSelectComposeFiles(t *testing.T) {
 		},
 		{
 			name:       "an orphan container runs every file so the orphan pass cleans it",
-			mutate:     func(in *composeSelectionInput) { in.Running["svc-orphan"] = true },
+			mutate: func(in *composeSelectionInput) {
+				in.Present["svc-orphan"] = true
+				in.Containers["svc-orphan"] = true
+			},
 			wantFiles:  allFiles,
 			wantAll:    true,
 			wantReason: "svc-orphan",
@@ -239,6 +266,9 @@ secrets:
 		"escaping path": "services:\n  a:\n    image: x\n    env_file: ../../outside.env\n",
 		"interpolated":  "services:\n  a:\n    image: x\n    env_file: ${ENV_DIR}/a.env\n",
 		"bad env shape": "services:\n  a:\n    image: x\n    env_file: 3\n",
+		"pull always":   "services:\n  a:\n    image: x\n    pull_policy: always\n",
+		"pull daily":    "services:\n  a:\n    image: x\n    pull_policy: daily\n",
+		"pull build":    "services:\n  a:\n    image: x\n    pull_policy: build\n",
 	}
 	for name, body := range opaqueCases {
 		t.Run("opaque: "+name, func(t *testing.T) {
@@ -246,6 +276,14 @@ secrets:
 			require.NoError(t, got.Err)
 			assert.True(t, got.Opaque, "expected %s to be opaque", name)
 			assert.NotEmpty(t, got.OpaqueReason)
+		})
+	}
+
+	for _, policy := range []string{"missing", "if_not_present", "never"} {
+		t.Run("pull_policy "+policy+" is not opaque", func(t *testing.T) {
+			got := inspectComposeFile(write("pp.yml", "services:\n  a:\n    image: x\n    pull_policy: "+policy+"\n"), appdata)
+			require.NoError(t, got.Err)
+			assert.False(t, got.Opaque, got.OpaqueReason)
 		})
 	}
 
@@ -306,6 +344,24 @@ func TestStagingRelToLive(t *testing.T) {
 // orphan pass (which shells out) is observable.
 func changedOnlyHarness(t *testing.T, liveB string, prior DeployState, running []string) (r *Reconciler, upCalls *[][]string, dockerLog string, appdata string) {
 	t.Helper()
+	return changedOnlyHarnessWith(t, harnessOpts{liveB: liveB, prior: prior, running: running})
+}
+
+// harnessOpts extends changedOnlyHarness. fileA overrides a.yml's content (in
+// both repo and live). repoFiles are written under the repo root and
+// liveFiles under appdata, keyed by slash-separated relative path.
+type harnessOpts struct {
+	liveB     string
+	prior     DeployState
+	running   []string
+	fileA     string
+	repoFiles map[string]string
+	liveFiles map[string]string
+}
+
+func changedOnlyHarnessWith(t *testing.T, o harnessOpts) (r *Reconciler, upCalls *[][]string, dockerLog string, appdata string) {
+	t.Helper()
+	liveB, prior, running := o.liveB, o.prior, o.running
 	tmp := t.TempDir()
 	shimDir := t.TempDir()
 	dockerLog = filepath.Join(tmp, "docker.log")
@@ -316,7 +372,10 @@ func changedOnlyHarness(t *testing.T, liveB string, prior DeployState, running [
 	stateFile := filepath.Join(tmp, "state.json")
 	repoDir := filepath.Join(tmp, "repo")
 	appdata = filepath.Join(tmp, "appdata")
-	const fileA = "services:\n  svc-a:\n    image: alpine:1\n"
+	fileA := "services:\n  svc-a:\n    image: alpine:1\n"
+	if o.fileA != "" {
+		fileA = o.fileA
+	}
 	const fileB = "services:\n  svc-b:\n    image: alpine:2\n"
 	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "compose"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "compose", "a.yml"), []byte(fileA), 0o644))
@@ -324,6 +383,15 @@ func changedOnlyHarness(t *testing.T, liveB string, prior DeployState, running [
 	require.NoError(t, os.MkdirAll(filepath.Join(appdata, "compose"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(appdata, "compose", "a.yml"), []byte(fileA), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(appdata, "compose", "b.yml"), []byte(liveB), 0o644))
+	writeTree := func(root string, files map[string]string) {
+		for rel, body := range files {
+			p := filepath.Join(root, filepath.FromSlash(rel))
+			require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+			require.NoError(t, os.WriteFile(p, []byte(body), 0o644))
+		}
+	}
+	writeTree(repoDir, o.repoFiles)
+	writeTree(appdata, o.liveFiles)
 
 	prior.SchemaVersion = 2
 	require.NoError(t, SaveState(stateFile, &prior))
@@ -472,15 +540,23 @@ func TestRun_ChangedOnlyComposeUp_FallsBackToEveryFile(t *testing.T) {
 }
 
 func TestPresentServices(t *testing.T) {
-	got := presentServices([]ActualService{
+	actual := []ActualService{
 		{Name: "up", State: "running"},
 		{Name: "looping", State: "restarting"},
 		{Name: "stopped", State: "exited"},
+		{Name: "breaker", State: "exited"},
 		{Name: "fresh", State: "created"},
 		{Name: "dead", State: "dead"},
-	})
-	assert.Equal(t, map[string]bool{"up": true, "looping": true}, got,
-		"running and restarting count as present (same rule as the #725 missing-service check); exited/created/dead do not")
+	}
+	tracking := map[string]RestartTrackingEntry{"breaker": {Tripped: true}}
+	got := presentServices(actual, tracking)
+	assert.Equal(t, map[string]bool{"up": true, "looping": true, "breaker": true}, got,
+		"presence must follow ServiceIsPresent: running, restarting, or breaker-tripped")
+	for _, svc := range actual {
+		assert.Equal(t, ServiceIsPresent(svc.State, tracking[svc.Name].Tripped), got[svc.Name], svc.Name)
+	}
+	assert.Equal(t, map[string]bool{"up": true, "looping": true, "stopped": true, "breaker": true, "fresh": true, "dead": true},
+		containerServices(actual), "orphan detection counts containers in every state")
 }
 
 func TestRun_ChangedOnlyComposeUp_CrashLoopingServiceIsNotReapplied(t *testing.T) {
@@ -496,5 +572,82 @@ func TestRun_ChangedOnlyComposeUp_ExitedServiceSelectsItsFile(t *testing.T) {
 
 	_ = r.Run(context.Background())
 
+	assert.Equal(t, []string{"a.yml"}, upFileBases(*calls))
+}
+
+// envFileA is a.yml reading an env_file from its own appdata target, so the
+// pipeline must map content-hash sync's staging-relative write
+// ("appdata/svc-a/app.env") to the live path the compose file resolves
+// ("<appdata>/svc-a/app.env").
+const envFileA = "services:\n  svc-a:\n    image: alpine:1\n    env_file: ../svc-a/app.env\n"
+
+func envFilePrior() DeployState {
+	s := steadyPrior()
+	s.DeployedFiles = append(s.DeployedFiles, "svc-a/app.env", "svc-a/keep.conf")
+	return s
+}
+
+func TestRun_ChangedOnlyComposeUp_ChangedEnvFileSelectsItsComposeFile(t *testing.T) {
+	r, calls, dockerLog, _ := changedOnlyHarnessWith(t, harnessOpts{
+		liveB:   "services:\n  svc-b:\n    image: alpine:2\n",
+		prior:   envFilePrior(),
+		running: []string{"svc-a", "svc-b"},
+		fileA:   envFileA,
+		repoFiles: map[string]string{
+			"appdata/svc-a/app.env":   "LEVEL=new\n",
+			"appdata/svc-a/keep.conf": "same\n",
+		},
+		liveFiles: map[string]string{
+			"svc-a/app.env":   "LEVEL=old\n",
+			"svc-a/keep.conf": "same\n",
+		},
+	})
+
+	require.NoError(t, r.Run(context.Background()))
+
+	assert.Equal(t, []string{"a.yml"}, upFileBases(*calls), "an env_file change must re-apply the compose file that reads it, and only that one")
+	assert.NotContains(t, readDockerLog(t, dockerLog), "--remove-orphans")
+}
+
+func TestRun_ChangedOnlyComposeUp_UnchangedEnvFileSelectsNothing(t *testing.T) {
+	r, calls, _, _ := changedOnlyHarnessWith(t, harnessOpts{
+		liveB:   "services:\n  svc-b:\n    image: alpine:2\n",
+		prior:   envFilePrior(),
+		running: []string{"svc-a", "svc-b"},
+		fileA:   envFileA,
+		repoFiles: map[string]string{
+			"appdata/svc-a/app.env":   "LEVEL=same\n",
+			"appdata/svc-a/keep.conf": "same\n",
+		},
+		liveFiles: map[string]string{
+			"svc-a/app.env":   "LEVEL=same\n",
+			"svc-a/keep.conf": "same\n",
+		},
+	})
+
+	require.NoError(t, r.Run(context.Background()))
+
+	assert.Empty(t, *calls, "a managed, unchanged env_file is tracked and must not force a.yml")
+}
+
+func TestRun_ChangedOnlyComposeUp_DeletedEnvFileSelectsItsComposeFile(t *testing.T) {
+	r, calls, _, appdata := changedOnlyHarnessWith(t, harnessOpts{
+		liveB:   "services:\n  svc-b:\n    image: alpine:2\n",
+		prior:   envFilePrior(),
+		running: []string{"svc-a", "svc-b"},
+		fileA:   envFileA,
+		repoFiles: map[string]string{
+			"appdata/svc-a/keep.conf": "same\n",
+		},
+		liveFiles: map[string]string{
+			"svc-a/app.env":   "LEVEL=old\n",
+			"svc-a/keep.conf": "same\n",
+		},
+	})
+
+	_ = r.Run(context.Background()) // compose itself would reject the missing env_file; selection is under test
+
+	_, statErr := os.Stat(filepath.Join(appdata, "svc-a", "app.env"))
+	require.True(t, os.IsNotExist(statErr), "precondition: the stale env_file was pruned")
 	assert.Equal(t, []string{"a.yml"}, upFileBases(*calls))
 }

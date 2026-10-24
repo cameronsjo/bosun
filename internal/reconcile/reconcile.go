@@ -297,15 +297,17 @@ type Reconciler struct {
 
 	// Changed-only compose up inputs (#726), set in Run() before the deploy.
 	// composeFullRunReason, when non-empty, makes deployLocal run compose up
-	// on every file. preDeployRunning holds the services with a running or
-	// restarting container just before compose up (presentServices); preDeployRunningKnown is false when
+	// on every file. preDeployPresent holds the services with a present
+	// container just before compose up (presentServices), preDeployContainers
+	// those with a container in any state; preDeployLiveKnown is false when
 	// that listing was not taken or failed, which also forces a full run.
 	// prevDeclaredServices are the services recorded at the last successful
 	// deploy.
-	composeFullRunReason  string
-	preDeployRunning      map[string]bool
-	preDeployRunningKnown bool
-	prevDeclaredServices  []DeclaredService
+	composeFullRunReason string
+	preDeployPresent     map[string]bool
+	preDeployContainers  map[string]bool
+	preDeployLiveKnown   bool
+	prevDeclaredServices []DeclaredService
 
 	// backupFilesFromTargetsFn is an instance-scoped fault seam for exercising
 	// backup-footprint admission in pipeline tests. Nil uses the production
@@ -497,8 +499,9 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 	r.runStartTime = startTime
 	r.preDeployUnhealthy = nil
 	r.composeFullRunReason = ""
-	r.preDeployRunning = nil
-	r.preDeployRunningKnown = false
+	r.preDeployPresent = nil
+	r.preDeployContainers = nil
+	r.preDeployLiveKnown = false
 	r.prevDeclaredServices = nil
 
 	// Acquire lock to prevent concurrent runs.
@@ -833,8 +836,9 @@ func (r *Reconciler) Run(ctx context.Context) (runErr error) {
 					preExisting[name] = true
 				}
 				r.preDeployUnhealthy = preExisting
-				r.preDeployRunning = presentServices(actual)
-				r.preDeployRunningKnown = true
+				r.preDeployPresent = presentServices(actual, state.RestartTracking)
+				r.preDeployContainers = containerServices(actual)
+				r.preDeployLiveKnown = true
 			} else {
 				logger.Warn().Err(snapErr).Msg("Failed to snapshot pre-deploy container health; post-deploy gate won't exempt pre-existing casualties")
 			}

@@ -29,8 +29,20 @@ import (
 //   - a local file it reads (env_file, label_file, top-level configs/secrets
 //     file:) was written or deleted this run;
 //   - it reads an input bosun cannot map to a deployed path (include,
-//     extends.file, an absolute or out-of-tree path, an interpolated path);
-//   - it declares a service with no running or restarting container.
+//     extends.file, an absolute or out-of-tree path, an interpolated path),
+//     or an in-tree input bosun did not deploy this run (a file created on
+//     the host, which content-hash sync never reports as written);
+//   - one of its services sets a pull_policy that can change the image
+//     without a config change (anything but missing, if_not_present, never);
+//   - it declares a service with no present container (ServiceIsPresent:
+//     running, restarting, or stopped by the restart breaker).
+//
+// Not detected, by design: a floating tag (for example :latest) updated
+// outside bosun, and ${VAR} interpolation from bosun's own process
+// environment. `bosun trigger -f` forces a full run that applies both.
+// A service that never runs by design (inactive profile, scale 0, an exited
+// one-shot job) is never present, so its file is selected on every deploy;
+// that is no worse than the old run-everything behavior.
 //
 // Every file runs (today's behavior, orphan pass included) when any of these
 // hold: the caller supplied a fallback reason (force, drift self-heal, a
@@ -38,7 +50,7 @@ import (
 // content-hash sync off, compose not synced this run); anything other than a
 // top-level *.yml changed in the compose directory (.env, a fragment, a
 // deletion); a compose file failed to parse; live container state is unknown;
-// a running container belongs to no declared service (an orphan the
+// a container of any state belongs to no declared service (an orphan the
 // --remove-orphans pass must clean); or a service declared at the last
 // successful deploy is gone from every file.
 
@@ -147,6 +159,13 @@ func inspectComposeFile(path, appdataRoot string) composeFileInputs {
 			if !ok {
 				continue
 			}
+			if pp, has := svc["pull_policy"]; has {
+				switch pp {
+				case "missing", "if_not_present", "never":
+				default:
+					opaque(fmt.Sprintf("service %s sets pull_policy %v, which can change the image without a config change", name, pp))
+				}
+			}
 			addPathList("env_file", svc["env_file"])
 			addPathList("label_file", svc["label_file"])
 			if ext, ok := svc["extends"].(map[string]any); ok {
@@ -200,12 +219,18 @@ type composeSelectionInput struct {
 	Changed []string
 	// FallbackReason, when non-empty, forces every file to run.
 	FallbackReason string
-	// LiveKnown reports whether Running reflects a successful container
-	// listing taken before compose up.
+	// Managed are the live paths bosun deployed this run (the deploy
+	// manifest). Content-hash sync reports changes only for these, so a
+	// compose input outside it is untracked. Nil means none are tracked.
+	Managed map[string]bool
+	// LiveKnown reports whether Present and Containers reflect a successful
+	// container listing taken before compose up.
 	LiveKnown bool
-	// Running are the service names with a present (running or restarting)
-	// container in the project; see presentServices.
-	Running map[string]bool
+	// Present are the service names with a present container (see
+	// ServiceIsPresent).
+	Present map[string]bool
+	// Containers are the service names with a container in any state.
+	Containers map[string]bool
 	// PrevDeclared are the service names recorded at the last successful
 	// deploy.
 	PrevDeclared []string
@@ -275,30 +300,36 @@ func selectComposeFiles(in composeSelectionInput) composeSelection {
 		}
 	}
 	orphans := make([]string, 0)
-	for s := range in.Running {
+	for s := range in.Containers {
 		if !declared[s] {
 			orphans = append(orphans, s)
 		}
 	}
 	if len(orphans) > 0 {
 		sort.Strings(orphans)
-		return all(fmt.Sprintf("running containers belong to no declared service: %s", strings.Join(orphans, ", ")))
+		return all(fmt.Sprintf("containers belong to no declared service: %s", strings.Join(orphans, ", ")))
 	}
 
 	sel := composeSelection{Files: []string{}, Reasons: map[string]string{}}
 	for _, f := range in.Files {
-		reason := composeFileSelectReason(f, changed, in.Running)
+		reason := composeFileSelectReason(f, changed, in.Managed, in.Present)
 		if reason == "" {
 			continue
 		}
 		sel.Files = append(sel.Files, f.Path)
 		sel.Reasons[f.Path] = reason
 	}
+	if len(sel.Files) == len(in.Files) {
+		// Every file runs anyway, so the set is complete and the orphan
+		// pass is safe; run it as a full run would.
+		sel.All = true
+		sel.Reason = "every file selected"
+	}
 	return sel
 }
 
 // composeFileSelectReason returns why one file must run, or "" to skip it.
-func composeFileSelectReason(f composeFileInputs, changed, running map[string]bool) string {
+func composeFileSelectReason(f composeFileInputs, changed, managed, present map[string]bool) string {
 	if changed[filepath.Clean(f.Path)] {
 		return "rendered content changed"
 	}
@@ -306,6 +337,9 @@ func composeFileSelectReason(f composeFileInputs, changed, running map[string]bo
 		return "reads inputs bosun cannot track: " + f.OpaqueReason
 	}
 	for _, in := range f.Inputs {
+		if !managed[in] {
+			return "input " + in + " is not deployed by bosun, so its changes are not tracked"
+		}
 		for c := range changed {
 			// Exact match for a file input; prefix match covers an input that
 			// is a directory or a written parent directory.
@@ -315,8 +349,8 @@ func composeFileSelectReason(f composeFileInputs, changed, running map[string]bo
 		}
 	}
 	for _, s := range f.Services {
-		if !running[s] {
-			return "service " + s + " has no running or restarting container"
+		if !present[s] {
+			return "service " + s + " has no present container"
 		}
 	}
 	return ""
@@ -364,20 +398,28 @@ func stagingRelToLive(targets []DeployTarget, appdata, rel string) (string, bool
 	return filepath.Join(appdata, t.TargetPath, rest), true
 }
 
-// presentServices returns the names of services whose container is running
-// or restarting. A crash-looping (restarting) container counts as present on
-// purpose: `compose up -d` does not fix a crash loop, so re-applying its file
-// on every deploy would only re-touch that stack. This matches the presence
-// rule #725 (PR #730) gives the pipeline's missing-service check; switch to
-// that shared helper once it merges so the two cannot drift.
-func presentServices(actual []ActualService) map[string]bool {
+// presentServices returns the service names with a container that
+// ServiceIsPresent accepts (running, restarting, or stopped by the restart
+// breaker), the same rule the pipeline's missing-service check uses (#725).
+// A crash loop counts as present: compose up cannot fix it, so its unchanged
+// file is not re-applied on every deploy.
+func presentServices(actual []ActualService, restartTracking map[string]RestartTrackingEntry) map[string]bool {
 	present := make(map[string]bool, len(actual))
 	for _, svc := range actual {
-		if svc.State == "running" || svc.State == "restarting" {
+		if ServiceIsPresent(svc.State, restartTracking[svc.Name].Tripped) {
 			present[svc.Name] = true
 		}
 	}
 	return present
+}
+
+// containerServices returns the service names with a container in any state.
+func containerServices(actual []ActualService) map[string]bool {
+	names := make(map[string]bool, len(actual))
+	for _, svc := range actual {
+		names[svc.Name] = true
+	}
+	return names
 }
 
 // selectLocalComposeFiles gathers the inputs for selectComposeFiles from this
@@ -405,6 +447,11 @@ func (r *Reconciler) selectLocalComposeFiles(ctx context.Context, targets []Depl
 		}
 	}
 
+	managed := make(map[string]bool, len(result.ManagedFiles))
+	for _, m := range result.ManagedFiles {
+		managed[filepath.Join(appdata, filepath.FromSlash(m))] = true
+	}
+
 	files := make([]composeFileInputs, 0, len(composeFiles))
 	for _, f := range composeFiles {
 		files = append(files, inspectComposeFile(f, appdata))
@@ -419,8 +466,10 @@ func (r *Reconciler) selectLocalComposeFiles(ctx context.Context, targets []Depl
 		ComposeDir:     composeDir,
 		Changed:        changed,
 		FallbackReason: fallback,
-		LiveKnown:      r.preDeployRunningKnown,
-		Running:        r.preDeployRunning,
+		Managed:        managed,
+		LiveKnown:      r.preDeployLiveKnown,
+		Present:        r.preDeployPresent,
+		Containers:     r.preDeployContainers,
 		PrevDeclared:   prev,
 	})
 

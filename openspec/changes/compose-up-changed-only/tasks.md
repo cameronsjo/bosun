@@ -12,3 +12,9 @@
   stopped service, and the fallback cases. Staged breaks (orphan pass always on;
   fallback forced; fallback ignored) turn the matching tests red.
 - [x] 6. Spec delta: `specs/reconcile/spec.md`, ADDED Changed-Only Compose Up.
+- [x] 7. Review round 1: inputs outside the deploy manifest and a self-pulling
+  `pull_policy` make a file always run; orphan detection counts containers in
+  every state; per-file rules selecting every file make a full run; presence
+  uses `ServiceIsPresent` with restart-breaker state; pipeline tests for a
+  changed, unchanged, and deleted `env_file` (a staged break of the path
+  mapping turns the changed case red); Service Orchestration MODIFIED.
