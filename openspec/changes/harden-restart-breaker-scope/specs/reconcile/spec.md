@@ -20,9 +20,26 @@ closed before Docker inspection or stop calls: the breaker SHALL stop nothing
 and SHALL preserve that target's existing restart tracking unchanged. The
 read-only drift comparison MAY retain its existing broad matching behavior.
 
+Before a container can trip or be stopped, the breaker SHALL confirm from that
+container's inspected labels that `com.docker.compose.project` equals the
+target's project and `com.docker.compose.service` equals the service it was
+matched as. A container name, including a `<project>-` name prefix, SHALL NOT
+count as ownership. A container whose labels do not prove ownership SHALL NOT
+be stopped and SHALL NOT advance or reset that service's restart tracking. A
+trip SHALL stop the container by the full ID that was inspected and
+ownership-checked, never by name, so a container that took over the name in
+between is not stopped.
+
 The daemon SHALL derive the scope from the existing effective target config. A
 named local target with no project name SHALL retain the existing `compose`
-fallback used by the target drift path. An implicit default target with no
+fallback used by the target drift path. Because any Compose stack started from
+a directory named `compose` derives that same name, the breaker SHALL also
+require a fallback-scoped container's `com.docker.compose.project.working_dir`
+label to equal the target's local compose directory (`<local appdata>/compose`),
+either literally or after resolving symlinks on both paths;
+when the target has no local appdata path, the breaker SHALL fail closed before
+inspection. An explicitly configured `project_name` of `compose` SHALL NOT
+require the extra marker. An implicit default target with no
 resolved project name SHALL remain unscoped and therefore inactive for the
 destructive breaker. Multi-target checks SHALL retain independent state files,
 effective configs, and project namespaces; one target's breaker evaluation
@@ -58,6 +75,16 @@ not scope the breaker at startup.
 - **WHEN** a restart-looping container outside the selected target's resolved Compose project crosses the restart threshold
 - **THEN** the breaker does not inspect or stop it
 - **AND** it does not enter that target's restart tracking
+
+#### Scenario: Unlabeled container sharing the project prefix is never stopped
+- **WHEN** an unlabeled container named `<project>-<name>` restart-loops past the threshold
+- **THEN** the breaker does not stop it
+- **AND** that service's existing restart tracking is preserved unchanged
+
+#### Scenario: Foreign stack named compose is not acted on
+- **WHEN** a named local target has no project name and a restart-looping container labeled with project `compose` was created from a directory other than the target's local compose directory
+- **THEN** the breaker does not stop it
+- **AND** a container labeled `compose` whose working directory is the target's compose directory can still trip and be stopped
 
 #### Scenario: Target state remains independent
 - **WHEN** a multi-target daemon checks one target and a restart loop is present in another target's Compose project
