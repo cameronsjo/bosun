@@ -3812,3 +3812,15 @@ func TestConfigFromEnv_ReconcileMaxTimeout(t *testing.T) {
 		assert.Equal(t, 40*time.Minute, cfg.ReconcileMaxTimeout)
 	})
 }
+
+func TestConfigFromEnv_ReconcileRollbackGrace(t *testing.T) {
+	assert.Equal(t, 5*time.Minute, ConfigFromEnv().ReconcileRollbackGrace, "default")
+	t.Setenv("BOSUN_RECONCILE_ROLLBACK_GRACE", "2m")
+	assert.Equal(t, 2*time.Minute, ConfigFromEnv().ReconcileRollbackGrace)
+	t.Setenv("BOSUN_RECONCILE_ROLLBACK_GRACE", "90")
+	assert.Equal(t, 90*time.Second, ConfigFromEnv().ReconcileRollbackGrace)
+	for _, v := range []string{"nope", "0", "-1s"} {
+		t.Setenv("BOSUN_RECONCILE_ROLLBACK_GRACE", v)
+		assert.Equal(t, 5*time.Minute, ConfigFromEnv().ReconcileRollbackGrace, v)
+	}
+}

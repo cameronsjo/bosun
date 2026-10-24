@@ -18,3 +18,9 @@
   runs while paused; three slow files hit the cap (b and c fail, rollbacks
   fail, orphan pass skipped); one slow file does not starve the rest. Staged break (cap ignored) turns the cap tests red.
 - [x] 7. Fake clock moved to the test-helper package `internal/deadline/deadlinetest`.
+- [x] 8. Review round: after the cap fires, files not yet started are skipped
+  without rollback, and extraction/rollback for the cut-off file run under a
+  shared `ReconcileRollbackGrace` (default 5m) from the cap's deadline. Fake-clock
+  tests: rollback fits in the grace and succeeds; the grace cuts a slow cleanup
+  off; never-started files are not rolled back; elapsed time stays within
+  cap + grace. Staged breaks (no skip; no grace) turn them red.

@@ -37,6 +37,8 @@ var RealClock Clock = realClock{}
 
 type pausableKey struct{}
 
+type cycleCapKey struct{}
+
 // timeoutCtx expires after a budget of running time. Cancellation rides on an
 // inner context.WithCancelCause, so it reaches this context synchronously from
 // a stdlib parent (or from another timeoutCtx, whose inner context it derives
@@ -50,11 +52,17 @@ type timeoutCtx struct {
 	clock       Clock
 	// pausable is false for a hard cap: Pause skips it and its clock always runs.
 	pausable bool
+	// grace is set on a cycle cap (WithCycleBudget): the total time allowed
+	// after the cap fires for cleanup of work the cap cut off (CapGrace).
+	grace    time.Duration
+	cycleCap bool
 
 	mu        sync.Mutex
-	err       error         // set when this context ended itself (expiry or cancel)
-	remaining time.Duration // budget left when the clock last stopped
-	runningAt time.Time     // when the clock last started (valid while running)
+	expiredAt time.Time       // the deadline this timeout expired at (zero if it did not)
+	graceCtx  context.Context // memoized CapGrace context
+	err       error           // set when this context ended itself (expiry or cancel)
+	remaining time.Duration   // budget left when the clock last stopped
+	runningAt time.Time       // when the clock last started (valid while running)
 	pauses    int
 	stopTimer func() bool
 }
@@ -80,12 +88,16 @@ func WithTimeoutClock(parent context.Context, d time.Duration, clock Clock) (con
 // pausable cycle budget: phases with their own per-step bounds pause it.
 // maxTimeout is a hard cap on the whole cycle that keeps running while the
 // budget is paused, so a long run of slow steps still ends. A maxTimeout below
-// timeout is raised to timeout.
-func WithCycleBudget(parent context.Context, timeout, maxTimeout time.Duration, clock Clock) (context.Context, context.CancelFunc) {
+// timeout is raised to timeout. grace is the total time, measured from when
+// the cap fires, that cleanup of cut-off work may take (CapGrace), so the
+// cycle's worst case is maxTimeout + grace.
+func WithCycleBudget(parent context.Context, timeout, maxTimeout, grace time.Duration, clock Clock) (context.Context, context.CancelFunc) {
 	if maxTimeout < timeout {
 		maxTimeout = timeout
 	}
-	capCtx, capCancel := WithTimeoutClock(parent, maxTimeout, clock)
+	capCtx, capCancel := newTimeout(parent, maxTimeout, clock, false)
+	capCtx.(*timeoutCtx).cycleCap = true
+	capCtx.(*timeoutCtx).grace = grace
 	ctx, cancel := WithPausableTimeoutClock(capCtx, timeout, clock)
 	return ctx, func() {
 		cancel()
@@ -149,6 +161,9 @@ func (c *timeoutCtx) endLocked(err error) {
 	}
 	// Record the reason before closing Done, so a reader woken by Done sees it.
 	c.err = err
+	if err == context.DeadlineExceeded {
+		c.expiredAt = c.runningAt.Add(c.remaining)
+	}
 	c.cancelInner(err)
 }
 
@@ -186,6 +201,9 @@ func (c *timeoutCtx) Err() error {
 
 func (c *timeoutCtx) Value(key any) any {
 	if key == (pausableKey{}) && c.pausable {
+		return c
+	}
+	if key == (cycleCapKey{}) && c.cycleCap {
 		return c
 	}
 	return c.parent.Value(key)
@@ -235,4 +253,43 @@ func Pause(ctx context.Context) (resume func()) {
 	c.pause()
 	var once sync.Once
 	return func() { once.Do(c.resume) }
+}
+
+// CapExpired reports whether the hard cap of the cycle ctx belongs to
+// (WithCycleBudget) has fired. It reads the cap directly, so it is accurate
+// even through stdlib contexts derived from the cycle, which learn of the cap
+// asynchronously.
+func CapExpired(ctx context.Context) bool {
+	c, ok := ctx.Value(cycleCapKey{}).(*timeoutCtx)
+	if !ok {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.expiredAt.IsZero()
+}
+
+// CapGrace returns the context for cleaning up work the cycle cap cut off
+// (rollbacks, backup extraction) once the cap has fired, and true. It ends at
+// the cap's deadline plus the cycle's grace, on the cycle's clock, and is shared
+// by every caller in the cycle, so the grace is a total, not per step. It keeps
+// ctx's values but not its cancellation. Before the cap fires, or with no
+// cycle cap in ctx, it returns nil and false.
+func CapGrace(ctx context.Context) (context.Context, bool) {
+	c, ok := ctx.Value(cycleCapKey{}).(*timeoutCtx)
+	if !ok {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.expiredAt.IsZero() {
+		return nil, false
+	}
+	if c.graceCtx == nil {
+		remaining := c.expiredAt.Add(c.grace).Sub(c.clock.Now())
+		// The context ends on its own when the grace runs out; that bounds the
+		// lifetime of its timer, so no cancel function is kept.
+		c.graceCtx, _ = newTimeout(context.WithoutCancel(ctx), remaining, c.clock, false)
+	}
+	return c.graceCtx, true
 }

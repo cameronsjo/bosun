@@ -27,7 +27,7 @@ func TestRun_ComposeFilesDoNotShareTheCycleDeadline(t *testing.T) {
 	r.deploy.ComposeUpTimeout = 10 * time.Minute
 
 	clock := deadlinetest.NewFakeClock(time.Now())
-	cycleCtx, cancel := deadline.WithCycleBudget(context.Background(), 10*time.Minute, 30*time.Minute, clock)
+	cycleCtx, cancel := deadline.WithCycleBudget(context.Background(), 10*time.Minute, 30*time.Minute, 5*time.Minute, clock)
 	defer cancel()
 
 	r.deploy.composeUpFn = func(ctx context.Context, files []string) error {
@@ -135,58 +135,102 @@ func TestComposeUpIsolated_ShutdownCancelsDuringPausedCycle(t *testing.T) {
 }
 
 // TestRun_TotalCapEndsALongComposePhase: the hard cycle cap keeps running while
-// the budget is paused. Three files each take 6 fake minutes under a 5m budget
-// and a 10m cap. a.yml finishes; the cap fires during b.yml, which fails, and
-// c.yml then fails at once on the ended cycle. Their rollbacks fail, so both
-// are unrecovered, the orphan pass is skipped (#737), and the cycle has ended.
+// the budget is paused. Three files each take 6 fake minutes under a 5m budget,
+// a 10m cap, and a 5m rollback grace. a.yml finishes; the cap fires during
+// b.yml, which fails; c.yml is reached after the cap and is neither started nor
+// rolled back (its containers were never touched), so the orphan pass is
+// skipped (#737). b.yml's rollback runs under the shared grace: it succeeds
+// when cleanup fits in the grace, and the grace cuts it off when it does not,
+// so the cycle ends within cap + grace.
 func TestRun_TotalCapEndsALongComposePhase(t *testing.T) {
-	const fileC = "services:\n  svc-c:\n    image: alpine:3\n"
-	prior := steadyPrior()
-	prior.NeedsRedeploy = true
-	prior.DeployedFiles = append(prior.DeployedFiles, "compose/c.yml")
-	prior.DeclaredServices = append(prior.DeclaredServices, DeclaredService{Name: "svc-c"})
-	r, calls, dockerLog, _ := changedOnlyHarnessWith(t, harnessOpts{
-		liveB:     "services:\n  svc-b:\n    image: alpine:OLD\n",
-		prior:     prior,
-		running:   []string{"svc-a", "svc-b", "svc-c"},
-		repoFiles: map[string]string{"compose/c.yml": fileC},
-		liveFiles: map[string]string{"compose/c.yml": fileC},
-	})
-	installRunDockerShim(t, dockerLog, 1)
-	r.deploy.ComposeUpTimeout = 10 * time.Minute
-
-	clock := deadlinetest.NewFakeClock(time.Now())
-	cycleCtx, cancel := deadline.WithCycleBudget(context.Background(), 5*time.Minute, 10*time.Minute, clock)
-	defer cancel()
-
-	r.deploy.composeUpFn = func(ctx context.Context, files []string) error {
-		*calls = append(*calls, files)
-		clock.Advance(6 * time.Minute)
-		if cycleCtx.Err() != nil {
-			// The cap fired during this file. The file's own context learns
-			// of it asynchronously (stdlib propagation from a custom parent
-			// runs in a goroutine); give it a moment to follow.
-			select {
-			case <-ctx.Done():
-			case <-time.After(time.Second):
-				t.Error("the file's context did not follow the cycle cap")
-			}
-		}
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("docker compose up timed out: %w", err)
-		}
-		return nil
+	const (
+		budget = 5 * time.Minute
+		capDur = 10 * time.Minute
+		grace  = 5 * time.Minute
+	)
+	tests := []struct {
+		name         string
+		extractTakes time.Duration // fake time the backup extraction takes
+		wantRollback bool
+	}{
+		{name: "rollback fits in the grace", extractTakes: time.Minute, wantRollback: true},
+		{name: "grace cuts the rollback off", extractTakes: 6 * time.Minute, wantRollback: false},
 	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			const fileC = "services:\n  svc-c:\n    image: alpine:3\n"
+			prior := steadyPrior()
+			prior.NeedsRedeploy = true
+			prior.DeployedFiles = append(prior.DeployedFiles, "compose/c.yml")
+			prior.DeclaredServices = append(prior.DeclaredServices, DeclaredService{Name: "svc-c"})
+			r, calls, dockerLog, _ := changedOnlyHarnessWith(t, harnessOpts{
+				liveB:     "services:\n  svc-b:\n    image: alpine:OLD\n",
+				prior:     prior,
+				running:   []string{"svc-a", "svc-b", "svc-c"},
+				repoFiles: map[string]string{"compose/c.yml": fileC},
+				liveFiles: map[string]string{"compose/c.yml": fileC},
+			})
+			installRunDockerShim(t, dockerLog, 0) // rollbacks succeed when they run
+			r.deploy.ComposeUpTimeout = 10 * time.Minute
 
-	err := r.Run(cycleCtx)
+			start := time.Now()
+			clock := deadlinetest.NewFakeClock(start)
+			cycleCtx, cancel := deadline.WithCycleBudget(context.Background(), budget, capDur, grace, clock)
+			defer cancel()
 
-	require.Error(t, err)
-	assert.Equal(t, []string{"a.yml", "b.yml", "c.yml"}, upFileBases(*calls))
-	assert.Contains(t, err.Error(), "2 of 3 files failed")
-	assert.Contains(t, err.Error(), "orphan pass skipped")
-	assert.Contains(t, err.Error(), "b.yml")
-	assert.Contains(t, err.Error(), "c.yml")
-	assert.NotContains(t, readDockerLog(t, dockerLog), "--remove-orphans",
-		"files cut off by the cap and not rolled back are unrecovered, so the orphan pass must not run")
-	assert.ErrorIs(t, cycleCtx.Err(), context.DeadlineExceeded, "the hard cap ended the cycle")
+			r.deploy.composeUpFn = func(ctx context.Context, files []string) error {
+				*calls = append(*calls, files)
+				clock.Advance(6 * time.Minute)
+				if cycleCtx.Err() != nil {
+					// The cap fired during this file. The file's own context
+					// learns of it asynchronously (stdlib propagation from a
+					// custom parent runs in a goroutine); give it a moment.
+					select {
+					case <-ctx.Done():
+					case <-time.After(time.Second):
+						t.Error("the file's context did not follow the cycle cap")
+					}
+				}
+				if err := ctx.Err(); err != nil {
+					return fmt.Errorf("docker compose up timed out: %w", err)
+				}
+				return nil
+			}
+			var extractErr error
+			r.deploy.extractBackupFn = func(ctx context.Context, tarFile string) (string, func(), error) {
+				require.NoError(t, ctx.Err(), "post-cap cleanup starts with grace left")
+				clock.Advance(tc.extractTakes)
+				if !tc.wantRollback {
+					select { // the grace ran out; the cleanup context follows it
+					case <-ctx.Done():
+					case <-time.After(time.Second):
+						t.Error("post-cap cleanup was not bounded by the rollback grace")
+					}
+					extractErr = ctx.Err()
+					return "", nil, fmt.Errorf("extraction cut off: %w", extractErr)
+				}
+				return safeExtractBackup(ctx, tarFile)
+			}
+
+			err := r.Run(cycleCtx)
+
+			require.Error(t, err)
+			assert.Equal(t, []string{"a.yml", "b.yml"}, upFileBases(*calls), "no file starts after the cap fires")
+			assert.Contains(t, err.Error(), "2 of 3 files failed")
+			assert.Contains(t, err.Error(), "orphan pass skipped")
+			log := readDockerLog(t, dockerLog)
+			assert.NotContains(t, log, "--remove-orphans", "c.yml is unrecovered, so the orphan pass must not run")
+			assert.NotContains(t, log, "c.yml", "a file never started must not be rolled back")
+			assert.ErrorIs(t, cycleCtx.Err(), context.DeadlineExceeded, "the hard cap ended the cycle")
+			if tc.wantRollback {
+				assert.Contains(t, log, "b.yml", "the cut-off file is rolled back within the grace")
+				assert.Contains(t, err.Error(), "compose file(s) c.yml failed", "only the never-started file is unrecovered")
+				assert.LessOrEqual(t, clock.Now().Sub(start), capDur+grace, "cleanup finished within cap + grace")
+			} else {
+				assert.NotContains(t, log, " up ", "no rollback runs once the grace is spent")
+				assert.ErrorIs(t, extractErr, context.DeadlineExceeded, "the grace, not the per-file timeout, ended cleanup")
+				assert.Contains(t, err.Error(), "b.yml, c.yml")
+			}
+		})
+	}
 }

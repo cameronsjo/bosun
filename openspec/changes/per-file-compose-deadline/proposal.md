@@ -29,11 +29,17 @@ the files together needed more than one cycle's budget.
   below `ReconcileTimeout` is raised to it with a warning. The 30-minute default
   is three times the cycle budget: 10 minutes for the steps outside compose up
   plus about 20 minutes of compose up, room for a full run in which a few files
-  pull large images, while hung files still end the cycle within half an hour.
-- When the cap fires, the file running at that moment fails, and every later
-  file fails at once on the ended cycle. Each goes through the existing per-file
-  rollback (which has its own timeout, as on shutdown today). Any of them not
-  rolled back counts as unrecovered, so the orphan pass is skipped.
+  pull large images.
+- When the cap fires, the file running at that moment fails. Its backup
+  extraction and rollback run under `ReconcileRollbackGrace`
+  (`BOSUN_RECONCILE_ROLLBACK_GRACE`, default 5 minutes), measured from the
+  cap's deadline and shared by every file, instead of a fresh
+  `ComposeUpTimeout` each. Later files are neither started nor rolled back:
+  their containers were never touched, and they count as unrecovered, so the
+  orphan pass is skipped and those containers keep running. The worst case is
+  therefore `ReconcileMaxTimeout + ReconcileRollbackGrace` (35 minutes by
+  default). Shutdown is not a cap: files it interrupts are still rolled back
+  under their own timeout, as today.
 - Caller cancellation (daemon shutdown) still stops the compose phase at once;
   only the cycle deadline pauses.
 - A file whose `up` hits its own deadline is a failed file, as today: it is
@@ -52,7 +58,8 @@ the files together needed more than one cycle's budget.
   uses it; `ReconcileMaxTimeout` config),
   `internal/reconcile/compose.go` (pause the cycle clock for the compose phase;
   per-file deadline).
-- New env var `BOSUN_RECONCILE_MAX_TIMEOUT` (daemon). `BOSUN_RECONCILE_TIMEOUT`
+- New env vars `BOSUN_RECONCILE_MAX_TIMEOUT` and `BOSUN_RECONCILE_ROLLBACK_GRACE`
+  (daemon). `BOSUN_RECONCILE_TIMEOUT`
   now excludes the compose phase; `BOSUN_COMPOSE_UP_TIMEOUT` is per file.
 - Not included: running changed files before unchanged ones on a full run. The
   per-file budgets remove the starvation that ordering would have reduced, and

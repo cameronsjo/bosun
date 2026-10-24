@@ -158,6 +158,10 @@ func (d *DeployOps) ComposeUpMultiple(ctx context.Context, composeFiles []string
 // backup files) — distinct from the rollback command itself failing.
 var errRollbackNotAttempted = errors.New("rollback not attempted")
 
+// errCycleDeadlinePassed marks a compose file that was not started because the
+// reconcile cycle's deadline (its hard cap) had already passed.
+var errCycleDeadlinePassed = errors.New("reconcile cycle deadline passed before the file started")
+
 // ComposeUpIsolated runs compose up per-file with isolated failure handling.
 // Phase 1: each file gets its own compose up (no --remove-orphans) under its
 // own ComposeUpTimeout deadline. On failure, the single file is rolled back
@@ -208,6 +212,18 @@ func (d *DeployOps) composeUpIsolated(ctx context.Context, composeFiles []string
 	// configs.tar.gz (absolute paths inside), not loose files under backupPath,
 	// so rollback must consult the extracted tree (#332/#335). Extraction is
 	// skipped entirely on the happy path (no failures).
+	// cleanupContext bounds one extraction or rollback. It normally runs on its
+	// own ComposeUpTimeout, detached from ctx, so a canceled deploy is still
+	// rolled back. Once the cycle's hard cap has fired, it also ends with the
+	// cycle's shared rollback grace, so cleanup cannot run the cycle on for a
+	// full ComposeUpTimeout per failed file (#727).
+	cleanupContext := func() (context.Context, context.CancelFunc) {
+		if grace, ok := deadline.CapGrace(ctx); ok {
+			return context.WithTimeout(grace, d.composeUpTimeout())
+		}
+		return context.WithTimeout(log.WithContext(context.Background(), log.Ctx(ctx)), d.composeUpTimeout())
+	}
+
 	var backupRoot string
 	var backupCleanup func()
 	var backupExtracted bool // memoize the attempt: one bad archive must not
@@ -226,10 +242,7 @@ func (d *DeployOps) composeUpIsolated(ctx context.Context, composeFiles []string
 		}
 		backupExtracted = true
 		// Independent timeout so extraction runs even if ctx was cancelled.
-		exCtx, exCancel := context.WithTimeout(
-			log.WithContext(context.Background(), log.Ctx(ctx)),
-			d.composeUpTimeout(),
-		)
+		exCtx, exCancel := cleanupContext()
 		defer exCancel()
 		tarFile := filepath.Join(backupPath, "configs.tar.gz")
 		root, cleanup, err := d.extractBackup(exCtx, tarFile)
@@ -249,6 +262,19 @@ func (d *DeployOps) composeUpIsolated(ctx context.Context, composeFiles []string
 	// Phase 1: per-file compose up without --remove-orphans.
 	results := make([]ComposeFileResult, 0, len(composeFiles))
 	for _, f := range composeFiles {
+		// The cycle's hard cap (or another deadline over the whole cycle) has
+		// passed: do not start this file, and do not roll it back. Its old
+		// containers were never touched; marking it failed and not rolled back
+		// skips the orphan pass (#737), which keeps them running. Shutdown
+		// (context.Canceled) keeps the attempt-and-rollback path below.
+		if deadline.CapExpired(ctx) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			logger.Warn().
+				Str(log.FieldPath, f).
+				Msg("Skipping compose up and rollback for file. Reason: the reconcile cycle deadline passed before this file started")
+			results = append(results, ComposeFileResult{File: f, Err: fmt.Errorf("compose up not started: %w", errCycleDeadlinePassed)})
+			continue
+		}
+
 		logger.Info().
 			Str(log.FieldPath, f).
 			Msg("Starting isolated compose up for file")
@@ -286,10 +312,7 @@ func (d *DeployOps) composeUpIsolated(ctx context.Context, composeFiles []string
 					Str(log.FieldPath, backupFile).
 					Msg("Rolling back single file from backup")
 
-				rollbackCtx, cancel := context.WithTimeout(
-					log.WithContext(context.Background(), log.Ctx(ctx)),
-					d.composeUpTimeout(),
-				)
+				rollbackCtx, cancel := cleanupContext()
 				rollbackArgs := d.buildUpArgs([]string{backupFile}, false)
 				rollbackCmd := dockerComposeCommandContext(rollbackCtx, rollbackArgs...)
 				var rollbackStderr bytes.Buffer

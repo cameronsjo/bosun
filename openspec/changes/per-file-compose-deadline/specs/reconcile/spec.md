@@ -15,12 +15,22 @@ orphan-pass timeouts. Caller cancellation (daemon shutdown) SHALL still stop
 the compose phase immediately.
 
 A hard cap, `ReconcileMaxTimeout` (default 30 minutes,
-`BOSUN_RECONCILE_MAX_TIMEOUT`), SHALL bound each cycle's wall-clock time,
-compose up included; it SHALL keep running while the cycle budget is paused. A
-cap below `ReconcileTimeout` SHALL be raised to `ReconcileTimeout`. When the
-cap fires, the file running at that moment and every later file SHALL count as
-failed and go through the per-file rollback; any not rolled back SHALL count as
-unrecovered for the orphan-pass safety rule.
+`BOSUN_RECONCILE_MAX_TIMEOUT`), SHALL bound each cycle's run, compose up
+included; it SHALL keep running while the cycle budget is paused. A cap below
+`ReconcileTimeout` SHALL be raised to `ReconcileTimeout`. When the cap fires:
+
+- the file running at that moment SHALL fail, and its backup extraction and
+  rollback SHALL end no later than the cap's deadline plus
+  `ReconcileRollbackGrace` (default 5 minutes,
+  `BOSUN_RECONCILE_ROLLBACK_GRACE`), a total shared by every file rather than a
+  fresh budget per file;
+- every later file SHALL NOT be started and SHALL NOT be rolled back (its
+  containers were never touched); it SHALL count as failed and unrecovered, so
+  the orphan pass is skipped.
+
+A cycle therefore ends within `ReconcileMaxTimeout` plus
+`ReconcileRollbackGrace`. Caller cancellation (daemon shutdown) is not a cap:
+files it interrupts SHALL still be rolled back under their own timeout.
 
 A file whose `up` exceeds its deadline SHALL be treated as a failed file:
 rolled back when a verified backup exists, and counted as unrecovered for the
@@ -43,9 +53,14 @@ orphan-pass safety rule when it is not.
 #### Scenario: Many slow files reach the hard cap
 
 - **WHEN** the selected files' `up` calls together run past `ReconcileMaxTimeout`
-- **THEN** the file running when the cap fires fails, and every later file fails without waiting
-- **AND** when those files are not rolled back, no command in that deploy passes `--remove-orphans`
-- **AND** the deploy error names them
+- **THEN** the file running when the cap fires fails and is rolled back within `ReconcileRollbackGrace` of the cap
+- **AND** no later file is started or rolled back
+- **AND** no command in that deploy passes `--remove-orphans`, and the deploy error names the files not started
+
+#### Scenario: Rollback grace runs out
+
+- **WHEN** the cap has fired and backup extraction or rollback for the cut-off file is still running when `ReconcileRollbackGrace` elapses
+- **THEN** that work is canceled and the file counts as not rolled back
 
 #### Scenario: Shutdown during compose up
 

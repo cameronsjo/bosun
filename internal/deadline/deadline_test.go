@@ -145,7 +145,7 @@ func TestPausableTimeout_ValueDelegatesToParent(t *testing.T) {
 
 func TestCycleBudget_CapRunsWhilePaused(t *testing.T) {
 	clock := deadlinetest.NewFakeClock(epoch)
-	ctx, cancel := WithCycleBudget(context.Background(), 10*time.Minute, 30*time.Minute, clock)
+	ctx, cancel := WithCycleBudget(context.Background(), 10*time.Minute, 30*time.Minute, 5*time.Minute, clock)
 	defer cancel()
 
 	resume := Pause(ctx)
@@ -158,7 +158,7 @@ func TestCycleBudget_CapRunsWhilePaused(t *testing.T) {
 
 func TestCycleBudget_BudgetStillExpiresUnpaused(t *testing.T) {
 	clock := deadlinetest.NewFakeClock(epoch)
-	ctx, cancel := WithCycleBudget(context.Background(), 10*time.Minute, 30*time.Minute, clock)
+	ctx, cancel := WithCycleBudget(context.Background(), 10*time.Minute, 30*time.Minute, 5*time.Minute, clock)
 	defer cancel()
 	clock.Advance(10 * time.Minute)
 	assert.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
@@ -166,7 +166,7 @@ func TestCycleBudget_BudgetStillExpiresUnpaused(t *testing.T) {
 
 func TestCycleBudget_CapBelowTimeoutIsRaised(t *testing.T) {
 	clock := deadlinetest.NewFakeClock(epoch)
-	ctx, cancel := WithCycleBudget(context.Background(), 10*time.Minute, time.Minute, clock)
+	ctx, cancel := WithCycleBudget(context.Background(), 10*time.Minute, time.Minute, 5*time.Minute, clock)
 	defer cancel()
 	clock.Advance(9 * time.Minute)
 	assert.NoError(t, ctx.Err(), "a cap below the cycle budget is raised to the budget")
@@ -183,4 +183,42 @@ func TestTimeoutClock_IsNotPausable(t *testing.T) {
 	defer resume()
 	clock.Advance(time.Minute)
 	assert.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
+}
+
+func TestCapGrace_SharedAndMeasuredFromTheCap(t *testing.T) {
+	clock := deadlinetest.NewFakeClock(epoch)
+	ctx, cancel := WithCycleBudget(context.Background(), time.Minute, 10*time.Minute, 5*time.Minute, clock)
+	defer cancel()
+
+	_, ok := CapGrace(ctx)
+	assert.False(t, ok, "no grace before the cap fires")
+	assert.False(t, CapExpired(ctx))
+
+	resume := Pause(ctx)
+	defer resume()
+	clock.Advance(12 * time.Minute) // the cap fired at 10m; this step overran it by 2m
+	require.True(t, CapExpired(ctx))
+	type childKey struct{}
+	child := context.WithValue(ctx, childKey{}, 1)
+	assert.True(t, CapExpired(child), "readable through derived contexts")
+
+	g1, ok := CapGrace(child)
+	require.True(t, ok)
+	g2, _ := CapGrace(ctx)
+	assert.Same(t, g1, g2, "one grace for the whole cycle, not per caller")
+	dl, ok := g1.Deadline()
+	require.True(t, ok)
+	assert.Equal(t, epoch.Add(15*time.Minute), dl, "grace runs from the cap's deadline, not from when cleanup asks")
+	require.NoError(t, g1.Err(), "the grace context ignores the ended cycle")
+
+	clock.Advance(3 * time.Minute)
+	assert.ErrorIs(t, g1.Err(), context.DeadlineExceeded)
+}
+
+func TestCapGrace_NoCycleCap(t *testing.T) {
+	ctx, cancel := WithTimeoutClock(context.Background(), time.Minute, deadlinetest.NewFakeClock(epoch))
+	defer cancel()
+	_, ok := CapGrace(ctx)
+	assert.False(t, ok)
+	assert.False(t, CapExpired(context.Background()))
 }
