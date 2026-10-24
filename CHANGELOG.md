@@ -40,6 +40,18 @@ through an independent trusted channel before installing the entries. ssh-keysca
 does not authenticate a host. Deploys without a Bosun trust file still use strict
 OpenSSH default stores; container-only pins must be persisted.
 
+## [0.47.0](https://github.com/cameronsjo/bosun/compare/v0.46.4...v0.47.0) (2026-10-24)
+
+
+### Features
+
+* **reconcile:** add compose_ignore for unmanaged compose-directory entries ([6809993](https://github.com/cameronsjo/bosun/commit/680999380f7f50c89c5fc92408f16b2e849aa38c))
+
+
+### Bug Fixes
+
+* **reconcile:** keep BOSUN_TARGETS compose_ignore across reloads; warn on ignored compose files ([c00450b](https://github.com/cameronsjo/bosun/commit/c00450b143e215b9d28b3e105ae700e1d921824e))
+
 ## [0.46.4](https://github.com/cameronsjo/bosun/compare/v0.46.3...v0.46.4) (2026-10-24)
 
 
