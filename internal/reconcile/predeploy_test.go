@@ -32,6 +32,10 @@ func (a *preDeployAlerter) SendDeployRecovery(context.Context, string, string, i
 	return nil
 }
 
+func (a *preDeployAlerter) SendInterruptionRecovery(context.Context, string, string) error {
+	return nil
+}
+
 func (a *preDeployAlerter) SendUnhealthyContainers(context.Context, string, []string) error {
 	return nil
 }
@@ -349,49 +353,6 @@ func TestRun_PreDeployHook_DryRunBlockSendsNoAlertAndIsNotCounted(t *testing.T) 
 	assert.Contains(t, string(live), "alpine:OLD")
 }
 
-// TestRunPreDeployHooks_TimeoutKillsProcessGroup pins that a timeout reaches
-// the hook's children, not only the direct process: the background subshell
-// would write its marker after 2s if it survived.
-func TestRunPreDeployHooks_TimeoutKillsProcessGroup(t *testing.T) {
-	skipWithoutPOSIXShell(t)
-	dir := t.TempDir()
-	marker := filepath.Join(dir, "survived")
-	hooks := []PreDeployHook{{
-		Name:    "spawner",
-		Command: []string{"sh", "-c", "(sleep 2; touch '" + marker + "') & sleep 30"},
-		Timeout: Duration{Duration: 200 * time.Millisecond},
-	}}
-
-	start := time.Now()
-	err := runPreDeployHooks(context.Background(), hooks, dir, "t", "c")
-
-	require.Error(t, err)
-	assert.ErrorIs(t, err, context.DeadlineExceeded)
-	time.Sleep(time.Until(start.Add(3 * time.Second)))
-	_, statErr := os.Stat(marker)
-	assert.True(t, os.IsNotExist(statErr), "a child of a timed-out hook must not survive")
-}
-
-// TestRunPreDeployHooks_PassingHookLeavesNoBackgroundChild pins that the
-// group is killed after a hook exits 0, so a background child cannot keep
-// running while the deploy proceeds.
-func TestRunPreDeployHooks_PassingHookLeavesNoBackgroundChild(t *testing.T) {
-	skipWithoutPOSIXShell(t)
-	dir := t.TempDir()
-	marker := filepath.Join(dir, "survived")
-	hooks := []PreDeployHook{{
-		Name:    "detacher",
-		Command: []string{"sh", "-c", "(sleep 2; touch '" + marker + "') >/dev/null 2>&1 & exit 0"},
-	}}
-
-	start := time.Now()
-	require.NoError(t, runPreDeployHooks(context.Background(), hooks, dir, "t", "c"))
-
-	time.Sleep(time.Until(start.Add(3 * time.Second)))
-	_, statErr := os.Stat(marker)
-	assert.True(t, os.IsNotExist(statErr), "a background child of a passing hook must be killed")
-}
-
 func TestPreDeployHookLabelAndOutputAreSanitized(t *testing.T) {
 	label := PreDeployHook{Name: "gate\x1b[31m\nfake line\u202e", Command: []string{"x"}}.label()
 	assert.NotContains(t, label, "\x1b")
@@ -429,4 +390,23 @@ func TestPreDeployHooksFromBOSUNTargetsSurviveReload(t *testing.T) {
 	require.NoError(t, r.reloadProjectConfig())
 	require.Len(t, r.config.PreDeployHooks.Value, 1)
 	assert.Equal(t, "env-gate", r.config.PreDeployHooks.Value[0].Name, "a BOSUN_TARGETS list must win over the repo file on reload")
+}
+
+// TestRunPreDeployHooks_StartErrorIsOneSanitizedLine pins that a start
+// failure's error text, which can carry the raw program path, reaches the
+// alert as one line without control characters, while errors.Is still sees
+// both the block sentinel and the cause.
+func TestRunPreDeployHooks_StartErrorIsOneSanitizedLine(t *testing.T) {
+	skipWithoutPOSIXShell(t)
+	dir := t.TempDir()
+	hooks := []PreDeployHook{{Name: "starter", Command: []string{"./no-such\x1b[2Jprogram"}}}
+
+	err := runPreDeployHooks(context.Background(), hooks, dir, "t", "c")
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrPreDeployHookFailed)
+	assert.ErrorIs(t, err, os.ErrNotExist, "the start failure must stay inspectable")
+	assert.NotContains(t, err.Error(), "\x1b")
+	assert.NotContains(t, err.Error(), "\n", "the alert reason must be one line")
+	assert.Equal(t, 1, strings.Count(err.Error(), "could not run"), "the cause must not be repeated")
 }

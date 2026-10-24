@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/cameronsjo/bosun/internal/config"
 	"github.com/cameronsjo/bosun/internal/reconcile"
 	"github.com/cameronsjo/bosun/internal/ui"
 	"github.com/stretchr/testify/assert"
@@ -531,4 +532,29 @@ func TestRunFullDryRun_TemplateIncludeDirEnv(t *testing.T) {
 	// A non-existent repo makes Run return an error; we only assert the config
 	// path executed and surfaced a failure rather than panicking.
 	assert.Error(t, err)
+}
+
+// TestBuildReconcileConfig_InvalidPreDeployHookFailsStartup pins that the
+// one-shot CLI refuses to start on a pre_deploy_hooks entry that cannot run,
+// rather than degrading to "no project config" and deploying without the gate.
+func TestBuildReconcileConfig_InvalidPreDeployHookFailsStartup(t *testing.T) {
+	tmpDir := evalSymlinks(t, t.TempDir())
+	require.NoError(t, os.Mkdir(filepath.Join(tmpDir, "manifest"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "bosun.yaml"), []byte(`pre_deploy_hooks:
+  - name: gate
+    command: []
+`), 0o644))
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	defer func() { _ = os.Chdir(origDir) }()
+	require.NoError(t, os.Chdir(tmpDir))
+	t.Setenv("REPO_URL", "https://example.com/repo.git")
+
+	cfg, err := buildReconcileConfigFromEnv()
+
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.ErrorIs(t, err, config.ErrInvalidPreDeployHooks)
+	assert.Contains(t, err.Error(), "pre_deploy_hooks[0]")
 }
