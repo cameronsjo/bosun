@@ -321,7 +321,7 @@ if grep -F 'run --rm' "$F/calls" | grep -qF -- "$F/compose/docker-compose.yml"; 
 for role in incumbent candidate; do
   if grep -qF known_hosts "$F/override-$role.yml"; then fail "$role shadow mounts a known_hosts the live service lacks"; fi
 done
-assert_out "no single plain-path known_hosts mount at /config/known_hosts"; ok
+assert_out "no single plain-path or named-volume known_hosts mount at /config/known_hosts"; ok
 
 # bosun 0.45.0+ refuses SSH Git without known_hosts, so the shadow must carry
 # the live service's file, read-only, at the same container path.
@@ -382,12 +382,95 @@ for role in incumbent candidate; do
     fail "$role shadow lacks the /config/known_hosts fallback"
   if grep -qF '/ssh/known_hosts:ro' "$o"; then fail "$role shadow mounted an env path the live service does not mount"; fi
 done
-assert_no_out "WARNING the live service has no single plain-path known_hosts mount"; ok
+assert_no_out "WARNING the live service has no single plain-path or named-volume known_hosts mount"; ok
 
 new_case known-hosts-env-path-refused
 jq '.services.bosun.environment.BOSUN_SSH_KNOWN_HOSTS = "relative/kh"' "$F/live.json" > "$F/live.tmp" && mv "$F/live.tmp" "$F/live.json"
 run_remote --dry-run
 assert_rc 64; assert_out "is not a plain absolute path"; assert_no_calls "reconcile --dry-run"; ok
+
+# assert_volume_decl checks that file $1 declares top-level volume $2 with
+# name $3 and, when $4 is external, external: true, and that the mount line
+# names the volume. Placement counts: the awk reads only the top-level
+# volumes: block, not a service-level volumes: list.
+assert_volume_decl() {
+  local o="$1" key="$2" name="$3" ext="$4"
+  grep -qF -- "- \"$key:/config/known_hosts:ro\"" "$o" || fail "$o lacks the named-volume mount of $key"
+  awk -v key="$key" -v name="$name" -v ext="$ext" '
+    /^volumes:$/ {top=1; next}
+    top && /^[^ ]/ {top=0}
+    top && $0 == "  " key ":" {in_key=1; next}
+    top && in_key && /^  [^ ]/ {in_key=0}
+    top && in_key && $0 == "    name: \"" name "\"" {has_name=1}
+    top && in_key && $0 == "    external: true" {has_ext=1}
+    END {exit (has_name && ((ext == "external") == (has_ext == 1))) ? 0 : 1}' "$o" ||
+    fail "$o does not declare top-level volume $key with name $name ($ext)"
+}
+
+# A named volume is mounted by name, and its top-level declaration is copied,
+# so the shadow reads the same volume read-only.
+new_case known-hosts-named-volume
+jq '.services.bosun.volumes += [{type: "volume", source: "bosun_kh", target: "/config/known_hosts"}]
+    | .volumes = {bosun_kh: {name: "bosun_bosun_kh"}}' \
+  "$F/live.json" > "$F/live.tmp" && mv "$F/live.tmp" "$F/live.json"
+run_remote --dry-run
+assert_rc 0
+for role in incumbent candidate; do
+  assert_volume_decl "$F/override-$role.yml" bosun_kh bosun_bosun_kh project
+done
+assert_out "shadow gets known_hosts from named volume bosun_kh at /config/known_hosts"; ok
+
+# An external volume keeps external: true and its real name.
+new_case known-hosts-external-named-volume
+jq '.services.bosun.volumes += [{type: "volume", source: "kh", target: "/config/known_hosts"}]
+    | .volumes = {kh: {name: "shared-known-hosts", external: true}}' \
+  "$F/live.json" > "$F/live.tmp" && mv "$F/live.tmp" "$F/live.json"
+run_remote --dry-run
+assert_rc 0
+for role in incumbent candidate; do
+  assert_volume_decl "$F/override-$role.yml" kh shared-known-hosts external
+done
+# Real compose must also accept the declaration and keep it external and read-only.
+if [[ -n "$REAL_DOCKER" ]] && "$REAL_DOCKER" compose version >/dev/null 2>&1; then
+  merged="$("$REAL_DOCKER" compose -p canarytest -f "$F/override-candidate.yml" config --format json 2>&1)" ||
+    fail "real compose rejected the named-volume shadow file: $merged"
+  [[ "$(jq -r '.volumes.kh | "\(.name) \(.external)"' <<<"$merged")" == "shared-known-hosts true" ]] ||
+    fail "real compose did not keep kh external under its real name"
+  [[ "$(jq -r '[.services.bosun.volumes[] | select(.target == "/config/known_hosts") | "\(.type) \(.source) \(.read_only)"] | join(",")' <<<"$merged")" == "volume kh true" ]] ||
+    fail "real compose did not mount kh read-only as a volume"
+fi
+ok
+
+# A volume name that Docker would not accept, or a source with no top-level
+# declaration, is never written into the YAML: the shadow gets no mount and
+# the run says so.
+new_case known-hosts-named-volume-refused
+jq '.services.bosun.volumes += [{type: "volume", source: "kh\"\n    evil: 1", target: "/config/known_hosts"}]
+    | .volumes = {"kh\"\n    evil: 1": {name: "kh\"\n    evil: 1"}}' \
+  "$F/live.json" > "$F/live.tmp" && mv "$F/live.tmp" "$F/live.json"
+run_remote --dry-run
+assert_rc 0
+for role in incumbent candidate; do
+  if grep -qE 'evil|known_hosts|^volumes:' "$F/override-$role.yml"; then fail "$role shadow carries an invalid volume name"; fi
+done
+assert_out "WARNING the live service has no single plain-path or named-volume known_hosts mount"; ok
+
+new_case known-hosts-named-volume-undeclared
+jq '.services.bosun.volumes += [{type: "volume", source: "kh", target: "/config/known_hosts"}]' \
+  "$F/live.json" > "$F/live.tmp" && mv "$F/live.tmp" "$F/live.json"
+run_remote --dry-run
+assert_rc 0
+for role in incumbent candidate; do
+  if grep -qE 'known_hosts|^volumes:' "$F/override-$role.yml"; then fail "$role shadow mounts an undeclared volume"; fi
+done
+assert_out "WARNING the live service has no single plain-path or named-volume known_hosts mount"; ok
+
+# The age and deploy keys stay host-path only: a named volume there is refused.
+new_case named-volume-key-refused
+jq '.services.bosun.volumes |= map(if .target == "/config/age-key.txt" then .source = "agekeys" else . end)
+    | .volumes = {agekeys: {name: "agekeys"}}' "$F/live.json" > "$F/live.tmp" && mv "$F/live.tmp" "$F/live.json"
+run_remote --dry-run
+assert_rc 64; assert_out "needs exactly one plain-path mount"; ok
 
 # The generated shadow file must also be valid to real compose, and carry
 # nothing beyond the allowlist. Skipped, and said so, where no compose exists.
