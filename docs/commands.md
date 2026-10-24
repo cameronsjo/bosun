@@ -828,6 +828,8 @@ alerts exactly like a failing real run unless you pass `--no-alerts` too.
 | `DRY_RUN` | Enable dry run (`1`/`true`/`yes`/`on`, as the daemon reads it) | `false` |
 | `FORCE` | Force deployment | `false` |
 
+Beyond the table, `bosun reconcile` honors the same operational variables as the daemon, through one shared loader: `BOSUN_DEPLOY_MODE` (`--local` outranks it), `BOSUN_DEPLOY_SYNC_PATHS`, `BOSUN_DEPLOY_SYNC_EXCLUDE`, `BOSUN_CRITICAL_CONTAINERS`, `BOSUN_DRIFT_IGNORE`, `BOSUN_HEALTH_GATE_TIMEOUT`, `BOSUN_HEALTH_GATE_SCOPE`, `BOSUN_HEALTH_CHECK_TIMEOUT`, `BOSUN_HEALTH_CHECK_INTERVAL`, `BOSUN_COMPOSE_UP_TIMEOUT`, `BOSUN_BACKUP_TIMEOUT`, `BOSUN_RESTART_BREAKER`, `BOSUN_RESTART_THRESHOLD`, `BOSUN_RESTART_WINDOW`, `BOSUN_CONTENT_HASH_SYNC`, `BOSUN_REMOVE_ORPHANS`, `BOSUN_ALLOW_EMPTY_DECLARED_STATE` and `BOSUN_SKIP_DEPLOY_INVARIANT`. Each variable overrides the matching `bosun.yaml` key. See the daemon variable table for defaults.
+
 `SECRETS_FILES` and `BOSUN_SECRETS_FILE` are both comma-separated, trimmed,
 with empty entries dropped — the same parsing the daemon applies. `REPO_DIR`,
 `STAGING_DIR`, `BACKUP_DIR`, `LOG_DIR`, `LOCAL_APPDATA` and `REMOTE_APPDATA` are

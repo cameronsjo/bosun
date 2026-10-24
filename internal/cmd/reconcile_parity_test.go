@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -37,10 +38,28 @@ var comparedFields = []string{
 	"OnFailure",
 	"OnSuccess",
 	"OnRecovery",
+	"DeployMode",
+	"DeploySyncPaths",
+	"DeploySyncExclude",
+	"CriticalContainers",
+	"DriftIgnore",
+	"HealthGateTimeout",
+	"HealthGateScope",
+	"HealthCheckTimeout",
+	"HealthCheckInterval",
+	"ComposeUpTimeout",
+	"BackupTimeout",
+	"RestartBreakerEnabled",
+	"RestartThreshold",
+	"RestartWindow",
+	"ContentHashSync",
+	"RemoveOrphans",
+	"AllowEmptyDeclaredState",
+	"SkipDeployInvariant",
 }
 
 // allowedDifferences may differ between the two paths. Each reason is either a
-// design choice or a known gap; the gaps are tracked in bosun#676.
+// design choice or a known gap. The bosun#676 gaps are closed: those fields moved to comparedFields.
 var allowedDifferences = map[string]string{
 	"RepoDir":           "design: the one-shot points at its own directories; the daemon's are fixed by its image",
 	"StagingDir":        "design: same as RepoDir",
@@ -51,25 +70,6 @@ var allowedDifferences = map[string]string{
 	"Source":            "design: the CLI records \"cli\"; the daemon records its trigger",
 	"Force":             "design: FORCE/--force is per-invocation for the one-shot",
 	"ConfigReloader":    "design: both assign the same function; compared by pointer below",
-
-	"DeployMode":              "gap (bosun#676): daemon reads BOSUN_DEPLOY_MODE, CLI has --local only",
-	"DeploySyncPaths":         "gap (bosun#676): daemon reads BOSUN_DEPLOY_SYNC_PATHS, CLI reads the project file — each ignores the other's source",
-	"DeploySyncExclude":       "gap (bosun#676): daemon reads BOSUN_DEPLOY_SYNC_EXCLUDE, CLI reads the project file — each ignores the other's source",
-	"CriticalContainers":      "gap (bosun#676): daemon reads BOSUN_CRITICAL_CONTAINERS",
-	"DriftIgnore":             "gap (bosun#676): daemon reads BOSUN_DRIFT_IGNORE",
-	"HealthGateTimeout":       "gap (bosun#676): daemon reads BOSUN_HEALTH_GATE_TIMEOUT",
-	"HealthGateScope":         "gap (bosun#676): daemon reads BOSUN_HEALTH_GATE_SCOPE and the project config",
-	"HealthCheckTimeout":      "gap (bosun#676): daemon reads BOSUN_HEALTH_CHECK_TIMEOUT",
-	"HealthCheckInterval":     "gap (bosun#676): daemon reads BOSUN_HEALTH_CHECK_INTERVAL",
-	"ComposeUpTimeout":        "gap (bosun#676): daemon reads BOSUN_COMPOSE_UP_TIMEOUT",
-	"BackupTimeout":           "gap (bosun#676): daemon reads BOSUN_BACKUP_TIMEOUT",
-	"RestartBreakerEnabled":   "gap (bosun#676): daemon reads BOSUN_RESTART_BREAKER",
-	"RestartThreshold":        "gap (bosun#676): daemon reads BOSUN_RESTART_THRESHOLD",
-	"RestartWindow":           "gap (bosun#676): daemon reads BOSUN_RESTART_WINDOW",
-	"ContentHashSync":         "gap (bosun#676): daemon reads BOSUN_CONTENT_HASH_SYNC",
-	"RemoveOrphans":           "gap (bosun#676): daemon reads BOSUN_REMOVE_ORPHANS and the project config",
-	"AllowEmptyDeclaredState": "gap (bosun#676): daemon reads BOSUN_ALLOW_EMPTY_DECLARED_STATE",
-	"SkipDeployInvariant":     "gap (bosun#676): daemon reads BOSUN_SKIP_DEPLOY_INVARIANT",
 }
 
 // unsetByBoth are fields neither path assigns, so comparing them proves
@@ -95,6 +95,11 @@ deploy_paths:
   - "from-file/**"
 hook_settle_delay: 7s
 compose_ignore: [from-file]
+critical_containers: [from-file]
+deploy_sync_paths: ["from-file/**"]
+deploy_sync_exclude: ["from-file/skip/**"]
+health_gate_scope: declared
+remove_orphans: false
 post_sync_hooks:
   - paths: ["from-file/**"]
     action: restart
@@ -124,12 +129,32 @@ func parityEnv(t *testing.T, override bool) {
 	t.Setenv("DEPLOY_TARGET", "root@192.168.1.8")
 	t.Setenv("DRY_RUN", "yes")
 	t.Setenv("BOSUN_STATE_DIR", t.TempDir())
+	// bosun#676: operational variables the CLI used to ignore. Every value
+	// differs from reconcile.DefaultConfig()'s, and from the daemon's defaults.
+	t.Setenv("BOSUN_DEPLOY_MODE", "remote")
+	t.Setenv("BOSUN_DRIFT_IGNORE", `[{"service":"env-svc","type":"missing"}]`)
+	t.Setenv("BOSUN_HEALTH_GATE_TIMEOUT", "17s")
+	t.Setenv("BOSUN_HEALTH_CHECK_TIMEOUT", "23")
+	t.Setenv("BOSUN_HEALTH_CHECK_INTERVAL", "3s")
+	t.Setenv("BOSUN_COMPOSE_UP_TIMEOUT", "13m")
+	t.Setenv("BOSUN_BACKUP_TIMEOUT", "7m")
+	t.Setenv("BOSUN_RESTART_BREAKER", "false")
+	t.Setenv("BOSUN_RESTART_THRESHOLD", "9")
+	t.Setenv("BOSUN_RESTART_WINDOW", "21m")
+	t.Setenv("BOSUN_CONTENT_HASH_SYNC", "false")
+	t.Setenv("BOSUN_ALLOW_EMPTY_DECLARED_STATE", "true")
+	t.Setenv("BOSUN_SKIP_DEPLOY_INVARIANT", "true")
 	// Environment-vs-file precedence pairs. The delay is a bare integer so the
 	// shared seconds fallback is exercised, not just the canonical spelling.
 	set("BOSUN_TEMPLATE_INCLUDE_DIR", "from-env/templates")
 	set("BOSUN_DEPLOY_PATHS", `["from-env/**"]`)
 	set("BOSUN_HOOK_SETTLE_DELAY", "11")
 	set("BOSUN_POST_SYNC_HOOKS", `[{"paths":["from-env/**"],"action":"restart","container":"from-env"}]`)
+	set("BOSUN_CRITICAL_CONTAINERS", `["from-env"]`)
+	set("BOSUN_DEPLOY_SYNC_PATHS", `["from-env/**"]`)
+	set("BOSUN_DEPLOY_SYNC_EXCLUDE", `["from-env/skip/**"]`)
+	set("BOSUN_HEALTH_GATE_SCOPE", "off")
+	set("BOSUN_REMOVE_ORPHANS", "true")
 	set("BOSUN_TARGETS", `[{"name":"unraid","project_name":"homelab-from-env"}]`)
 }
 
@@ -298,4 +323,46 @@ func TestReconcileConfigSharedParsers(t *testing.T) {
 	// exactly, which meant it deployed for real in that environment.
 	require.True(t, cli.DryRun, "DRY_RUN=yes must be a dry run for the CLI")
 	require.Equal(t, daemonCfg.DryRun, cli.DryRun)
+}
+
+// bosun#676: each variable the CLI used to ignore now changes the value, and
+// the --local flag still outranks BOSUN_DEPLOY_MODE.
+func TestReconcileConfigHonorsDaemonEnvironment(t *testing.T) {
+	cli, _ := buildBothConfigs(t, true)
+
+	require.Equal(t, "remote", cli.DeployMode)
+	require.Equal(t, []string{"from-env/**"}, cli.DeploySyncPaths.Value)
+	require.Equal(t, []string{"from-env/skip/**"}, cli.DeploySyncExclude.Value)
+	require.Equal(t, []string{"from-env"}, cli.CriticalContainers.Value)
+	require.Equal(t, []reconcile.DriftIgnoreRule{{Service: "env-svc", Type: "missing"}}, cli.DriftIgnore.Value)
+	require.Equal(t, 17*time.Second, cli.HealthGateTimeout)
+	require.Equal(t, "off", cli.HealthGateScope)
+	require.Equal(t, 23*time.Second, cli.HealthCheckTimeout)
+	require.Equal(t, 3*time.Second, cli.HealthCheckInterval)
+	require.Equal(t, 13*time.Minute, cli.ComposeUpTimeout)
+	require.Equal(t, 7*time.Minute, cli.BackupTimeout)
+	require.False(t, cli.RestartBreakerEnabled)
+	require.Equal(t, 9, cli.RestartThreshold)
+	require.Equal(t, 21*time.Minute, cli.RestartWindow)
+	require.False(t, cli.ContentHashSync)
+	require.True(t, cli.RemoveOrphans.Value)
+	require.True(t, cli.AllowEmptyDeclaredState)
+	require.True(t, cli.SkipDeployInvariant)
+
+	reconcileLocal = true
+	forced, err := buildReconcileConfigFromEnv()
+	require.NoError(t, err)
+	require.Equal(t, "local", forced.DeployMode, "--local outranks BOSUN_DEPLOY_MODE")
+}
+
+// With the environment unset both paths read bosun.yaml, and the one-shot
+// keeps the daemon's content-hash default instead of reconcile.DefaultConfig's.
+func TestReconcileConfigOperationalFileValues(t *testing.T) {
+	cli, daemonCfg := buildBothConfigs(t, false)
+	for name, cfg := range map[string]*reconcile.Config{"cli": cli, "daemon": daemonCfg} {
+		require.Equalf(t, []string{"from-file"}, cfg.CriticalContainers.Value, "%s: critical_containers", name)
+		require.Equalf(t, []string{"from-file/**"}, cfg.DeploySyncPaths.Value, "%s: deploy_sync_paths", name)
+		require.Equalf(t, "declared", cfg.HealthGateScope, "%s: health_gate_scope", name)
+		require.Falsef(t, cfg.RemoveOrphans.Value, "%s: remove_orphans", name)
+	}
 }

@@ -249,11 +249,6 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 		cfg.TargetHost = reconcileRemote
 	}
 
-	// Force local mode if --local flag is set.
-	if reconcileLocal {
-		cfg.DeployMode = "local"
-	}
-
 	// Dry run from environment or flags. Same boolean spellings as the daemon:
 	// a DRY_RUN=yes environment must not make the one-shot deploy for real.
 	if envBoolOrWarn("DRY_RUN") {
@@ -341,20 +336,19 @@ func buildReconcileConfigFromEnv() (*reconcile.Config, error) {
 				cfg.Targets = targets
 			}
 		}
-		// Hydrate base config with project-level operational defaults so
-		// ConfigForTarget can inherit them for named targets.
-		if len(cfg.CriticalContainers.Value) == 0 && !cfg.CriticalContainers.FromEnv() {
-			cfg.CriticalContainers.SetFromFile(projectCfg.CriticalContainers())
-		}
-		if len(cfg.DeploySyncPaths.Value) == 0 && !cfg.DeploySyncPaths.FromEnv() {
-			cfg.DeploySyncPaths.SetFromFile(projectCfg.DeploySyncPaths())
-		}
-		if len(cfg.DeploySyncExclude.Value) == 0 && !cfg.DeploySyncExclude.FromEnv() {
-			cfg.DeploySyncExclude.SetFromFile(projectCfg.DeploySyncExclude())
-		}
-		if len(cfg.ComposeIgnore.Value) == 0 {
-			cfg.ComposeIgnore.SetFromFile(projectCfg.ComposeIgnore())
-		}
+	}
+
+	// Operational fields shared with the daemon: bosun.yaml first, then the
+	// environment, through the same loader the daemon calls (bosun#676). The
+	// base config carries them so ConfigForTarget can inherit them.
+	if projectCfgErr == nil {
+		config.ApplyProjectOperationalConfig(projectCfg, cfg)
+	}
+	config.ApplyReconcileEnv(cfg)
+
+	// --local forces local deployment and outranks BOSUN_DEPLOY_MODE.
+	if reconcileLocal {
+		cfg.DeployMode = "local"
 	}
 
 	// BOSUN_TARGETS env var overrides config file targets.

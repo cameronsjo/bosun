@@ -302,7 +302,7 @@ bosun reconcile -n --no-alerts # Dry run that sends no alerts
 | `--target` | Reconcile a single named target (from `targets:` config) |
 | `--no-alerts` | Build no alert manager; send nothing, list no providers |
 
-A dry run alerts exactly like a real run — alert dispatch has no dry-run gate — so pass `--no-alerts` when a dry run must stay silent. The command reads `BOSUN_INFRA_DIR` the same way the daemon does, so a dry run renders the tree the daemon would deploy. Parsing of `SECRETS_FILES`, `BOSUN_SECRETS_FILE` and `DRY_RUN` is shared with the daemon; the remaining environment differences are tracked in bosun#676.
+A dry run alerts exactly like a real run — alert dispatch has no dry-run gate — so pass `--no-alerts` when a dry run must stay silent. The command reads `BOSUN_INFRA_DIR` the same way the daemon does, so a dry run renders the tree the daemon would deploy. Parsing of `SECRETS_FILES`, `BOSUN_SECRETS_FILE` and `DRY_RUN` is shared with the daemon. It also honors the daemon's operational variables through one shared loader (deploy mode, sync paths, critical containers, drift ignore, health gate and check, compose and backup timeouts, restart breaker, content-hash sync, orphan removal, and the two safety overrides); `--local` outranks `BOSUN_DEPLOY_MODE`.
 
 ### `bosun trigger`
 

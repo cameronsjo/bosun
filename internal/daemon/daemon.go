@@ -2432,11 +2432,6 @@ func ConfigFromEnv() *Config {
 
 	rcfg.DryRun = parseBoolVal(os.Getenv("DRY_RUN"), false)
 
-	// Deploy mode override: "local" or "remote" skips auto-detection.
-	if mode := os.Getenv("BOSUN_DEPLOY_MODE"); mode != "" {
-		rcfg.DeployMode = mode
-	}
-
 	if infraDir := os.Getenv("BOSUN_INFRA_DIR"); infraDir != "" {
 		rcfg.InfraSubDir = infraDir
 	}
@@ -2472,80 +2467,14 @@ func ConfigFromEnv() *Config {
 
 	cfg.ReconcileConfig = rcfg
 
-	// Compose up timeout override
-	if v := os.Getenv("BOSUN_COMPOSE_UP_TIMEOUT"); v != "" {
-		if d, ok := parseDurationOrSeconds(v); ok {
-			if d <= 0 {
-				log.Warn().Str("env", "BOSUN_COMPOSE_UP_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
-			} else {
-				rcfg.ComposeUpTimeout = d
-			}
-		} else {
-			log.Warn().Str("env", "BOSUN_COMPOSE_UP_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
-		}
-	}
-	// Backup timeout override
-	if v := os.Getenv("BOSUN_BACKUP_TIMEOUT"); v != "" {
-		if d, ok := parseDurationOrSeconds(v); ok {
-			if d <= 0 {
-				log.Warn().Str("env", "BOSUN_BACKUP_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
-			} else {
-				log.Debug().Str("env", "BOSUN_BACKUP_TIMEOUT").Int64("duration_ms", d.Milliseconds()).Msg("Backup timeout configured from environment")
-				rcfg.BackupTimeout = d
-			}
-		} else {
-			log.Warn().Str("env", "BOSUN_BACKUP_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
-		}
-	}
-	if v := os.Getenv("BOSUN_HEALTH_CHECK_TIMEOUT"); v != "" {
-		if d, ok := parseDurationOrSeconds(v); ok {
-			if d < 0 {
-				log.Warn().Str("env", "BOSUN_HEALTH_CHECK_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must not be negative")
-			} else {
-				rcfg.HealthCheckTimeout = d
-			}
-		} else {
-			log.Warn().Str("env", "BOSUN_HEALTH_CHECK_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
-		}
-	}
-	if v := os.Getenv("BOSUN_HEALTH_CHECK_INTERVAL"); v != "" {
-		if d, ok := parseDurationOrSeconds(v); ok {
-			if d <= 0 {
-				log.Warn().Str("env", "BOSUN_HEALTH_CHECK_INTERVAL").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
-			} else {
-				rcfg.HealthCheckInterval = d
-			}
-		} else {
-			log.Warn().Str("env", "BOSUN_HEALTH_CHECK_INTERVAL").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
-		}
-	}
-
-	// Restart circuit breaker configuration
-	if v := os.Getenv("BOSUN_RESTART_BREAKER"); v != "" {
-		rcfg.RestartBreakerEnabled = parseBoolVal(v, true)
-	}
-	if v := os.Getenv("BOSUN_RESTART_THRESHOLD"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				log.Warn().Str("env", "BOSUN_RESTART_THRESHOLD").Str("value", v).Msg("Skipping env var. Reason: threshold must be positive")
-			} else {
-				rcfg.RestartThreshold = n
-			}
-		} else {
-			log.Warn().Str("env", "BOSUN_RESTART_THRESHOLD").Str("value", v).Msg("Skipping env var. Reason: invalid integer")
-		}
-	}
-	if v := os.Getenv("BOSUN_RESTART_WINDOW"); v != "" {
-		if d, ok := parseDurationOrSeconds(v); ok {
-			if d <= 0 {
-				log.Warn().Str("env", "BOSUN_RESTART_WINDOW").Str("value", v).Msg("Skipping env var. Reason: duration must be positive")
-			} else {
-				rcfg.RestartWindow = d
-			}
-		} else {
-			log.Warn().Str("env", "BOSUN_RESTART_WINDOW").Str("value", v).Msg("Skipping env var. Reason: invalid duration format")
-		}
-	}
+	// Operational reconcile fields (file layer, then environment) come from the
+	// shared loader so the one-shot CLI resolves them identically (bosun#676).
+	// The daemon-level copies below keep their own readers.
+	projectCfg, projectCfgErr := config.Load()
+	config.ApplyProjectOperationalConfig(projectCfg, rcfg)
+	config.ApplyReconcileEnv(rcfg)
+	cfg.ContentHashSync = rcfg.ContentHashSync
+	cfg.RemoveOrphans = rcfg.RemoveOrphans.Value
 
 	// Timeout overrides
 	if v := os.Getenv("BOSUN_RECONCILE_TIMEOUT"); v != "" {
@@ -2670,38 +2599,16 @@ func ConfigFromEnv() *Config {
 		}
 	}
 
-	// Content-hash file sync (default: true)
-	if v := os.Getenv("BOSUN_CONTENT_HASH_SYNC"); v != "" {
-		cfg.ContentHashSync = parseBoolVal(v, true)
-	}
-	rcfg.ContentHashSync = cfg.ContentHashSync
-
-	// Orphan container cleanup (default: true)
-	if v := os.Getenv("BOSUN_REMOVE_ORPHANS"); v != "" {
-		cfg.RemoveOrphans = parseBoolVal(v, true)
-		rcfg.RemoveOrphans.SetFromEnv(cfg.RemoveOrphans)
-	} else {
-		rcfg.RemoveOrphans = reconcile.NewConfigField(cfg.RemoveOrphans)
-	}
-
-	// Safety overrides use strict lowercase "true" match — intentional.
-	// These gates guard against accidental activation of dangerous behavior;
-	// "yes", "1", "TRUE" etc. are rejected by design.
-	rcfg.AllowEmptyDeclaredState = os.Getenv("BOSUN_ALLOW_EMPTY_DECLARED_STATE") == "true"
-	rcfg.SkipDeployInvariant = os.Getenv("BOSUN_SKIP_DEPLOY_INVARIANT") == "true"
 	cfg.AllowUnauthenticatedWebhook = os.Getenv("BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK") == "true"
 
 	// Post-sync hooks, settle delay, deploy paths, alert flags, drift debounce, remove_orphans, and targets: load from project config, env var overrides.
-	if projectCfg, err := config.Load(); err == nil {
+	if err := projectCfgErr; err == nil {
 		config.ApplyInitialHookConfig(projectCfg, rcfg)
 		// Keep the explicit root-level name only for startup posture reporting.
 		// Do not assign it to rcfg.ProjectName: per-target deployment and
 		// restart-breaker scope remain owned by the existing target model.
 		cfg.ProjectNameFromFile = projectCfg.ProjectNameFromFile()
 		rcfg.DeployPaths.SetFromFile(projectCfg.DeployPaths())
-		rcfg.CriticalContainers.SetFromFile(projectCfg.CriticalContainers())
-		rcfg.ComposeIgnore.SetFromFile(projectCfg.ComposeIgnore())
-		rcfg.HealthGateScope = projectCfg.HealthGateScope()
 		rcfg.TemplateIncludeDir = projectCfg.TemplateIncludeDir()
 
 		// Load targets from project config; BOSUN_TARGETS env var (parsed above) takes precedence.
@@ -2726,12 +2633,6 @@ func ConfigFromEnv() *Config {
 		}
 		if !cfg.DriftSelfHealCooldown.FromEnv() && projectCfg.DriftSelfHealCooldown() > 0 {
 			cfg.DriftSelfHealCooldown.SetFromFile(projectCfg.DriftSelfHealCooldown())
-		}
-
-		// Load remove_orphans from project config; env var (parsed above) takes precedence.
-		if !rcfg.RemoveOrphans.FromEnv() {
-			cfg.RemoveOrphans = projectCfg.RemoveOrphans()
-			rcfg.RemoveOrphans.SetFromFile(cfg.RemoveOrphans)
 		}
 	} else if errors.Is(err, config.ErrInvalidPostSyncHooks) {
 		// Preserve graceful degradation for missing or otherwise unreadable
@@ -2762,56 +2663,6 @@ func ConfigFromEnv() *Config {
 			log.Warn().Err(err).Msg("Failed to parse BOSUN_DEPLOY_PATHS, ignoring")
 		} else {
 			rcfg.DeployPaths.SetFromEnv(paths)
-		}
-	}
-	if v := os.Getenv("BOSUN_DEPLOY_SYNC_PATHS"); v != "" {
-		var paths []string
-		if err := json.Unmarshal([]byte(v), &paths); err != nil {
-			log.Warn().Err(err).Msg("Failed to parse BOSUN_DEPLOY_SYNC_PATHS, ignoring")
-		} else {
-			rcfg.DeploySyncPaths.SetFromEnv(paths)
-		}
-	}
-	if v := os.Getenv("BOSUN_DEPLOY_SYNC_EXCLUDE"); v != "" {
-		var paths []string
-		if err := json.Unmarshal([]byte(v), &paths); err != nil {
-			log.Warn().Err(err).Msg("Failed to parse BOSUN_DEPLOY_SYNC_EXCLUDE, ignoring")
-		} else {
-			rcfg.DeploySyncExclude.SetFromEnv(paths)
-		}
-	}
-	if v := os.Getenv("BOSUN_CRITICAL_CONTAINERS"); v != "" {
-		var containers []string
-		if err := json.Unmarshal([]byte(v), &containers); err != nil {
-			log.Warn().Err(err).Msg("Failed to parse BOSUN_CRITICAL_CONTAINERS, ignoring")
-		} else {
-			rcfg.CriticalContainers.SetFromEnv(containers)
-		}
-	}
-	if v := os.Getenv("BOSUN_DRIFT_IGNORE"); v != "" {
-		var rules []reconcile.DriftIgnoreRule
-		if err := json.Unmarshal([]byte(v), &rules); err != nil {
-			log.Warn().Err(err).Msg("Failed to parse BOSUN_DRIFT_IGNORE, ignoring")
-		} else {
-			rcfg.DriftIgnore.SetFromEnv(rules)
-		}
-	}
-	if v := os.Getenv("BOSUN_HEALTH_GATE_TIMEOUT"); v != "" {
-		if d, ok := parseDurationOrSeconds(v); ok {
-			if d < 0 {
-				log.Warn().Str("env", "BOSUN_HEALTH_GATE_TIMEOUT").Str("value", v).Msg("Skipping env var. Reason: duration must not be negative")
-			} else {
-				rcfg.HealthGateTimeout = d
-			}
-		} else {
-			log.Warn().Str("value", v).Msg("Failed to parse BOSUN_HEALTH_GATE_TIMEOUT, ignoring")
-		}
-	}
-	if v := os.Getenv("BOSUN_HEALTH_GATE_SCOPE"); v != "" {
-		if scope, err := reconcile.ResolveHealthGateScope(v); err == nil {
-			rcfg.HealthGateScope = scope
-		} else {
-			log.Warn().Err(err).Str("value", v).Msg("Invalid BOSUN_HEALTH_GATE_SCOPE, ignoring")
 		}
 	}
 	if v := os.Getenv("BOSUN_TEMPLATE_INCLUDE_DIR"); v != "" {
