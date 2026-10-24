@@ -57,6 +57,35 @@ func TestLoadFromPopulatesAlertConfig(t *testing.T) {
 		assert.False(t, alerts.OnSuccess, "on_success's default is genuinely false")
 	})
 
+	t.Run("on_success alone leaves failure and recovery gates on (#679)", func(t *testing.T) {
+		dir := writeProjectConfig(t, "alerts:\n  on_success: true\n")
+
+		cfg, err := LoadFrom(dir)
+		require.NoError(t, err)
+
+		alerts := cfg.GetAlertConfig()
+		assert.True(t, alerts.OnSuccess)
+		assert.True(t, alerts.OnFailure, "setting on_success must not disable failure alerts")
+		assert.True(t, alerts.OnRecovery)
+
+		reloaded, err := LoadReloadedConfig(dir)
+		require.NoError(t, err)
+		require.NotNil(t, reloaded.OnFailure)
+		assert.True(t, *reloaded.OnFailure, "the reload DTO must keep failure alerts on")
+	})
+
+	t.Run("explicit on_failure false survives with on_success set", func(t *testing.T) {
+		dir := writeProjectConfig(t, "alerts:\n  on_success: true\n  on_failure: false\n")
+
+		cfg, err := LoadFrom(dir)
+		require.NoError(t, err)
+
+		alerts := cfg.GetAlertConfig()
+		assert.True(t, alerts.OnSuccess)
+		assert.False(t, alerts.OnFailure)
+		assert.True(t, alerts.OnRecovery)
+	})
+
 	t.Run("explicit values survive the reload path", func(t *testing.T) {
 		dir := writeProjectConfig(t, "alerts:\n  on_success: true\n  on_failure: true\n  on_recovery: false\n")
 

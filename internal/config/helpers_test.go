@@ -107,8 +107,47 @@ func TestExtractAlertConfig(t *testing.T) {
 		alertCfg := extractAlertConfig(cfg)
 
 		assert.True(t, alertCfg.OnSuccess)
-		// When OnSuccess is explicitly set, OnFailure stays at zero value (false).
+		// Setting one gate must not flip the others (#679).
+		assert.True(t, alertCfg.OnFailure)
+		assert.True(t, alertCfg.OnRecovery)
+	})
+
+	t.Run("explicit on_success false keeps failure alerts on", func(t *testing.T) {
+		clearAlertEnvVars(t)
+
+		cfg := configFile{
+			Alerts: alertConfigRaw{OnSuccess: boolPtr(false)},
+		}
+		alertCfg := extractAlertConfig(cfg)
+
+		assert.False(t, alertCfg.OnSuccess)
+		assert.True(t, alertCfg.OnFailure)
+	})
+
+	t.Run("explicit on_failure false is honored when on_success is unset", func(t *testing.T) {
+		clearAlertEnvVars(t)
+
+		cfg := configFile{
+			Alerts: alertConfigRaw{OnFailure: boolPtr(false)},
+		}
+		alertCfg := extractAlertConfig(cfg)
+
 		assert.False(t, alertCfg.OnFailure)
+		assert.False(t, alertCfg.OnSuccess)
+		assert.True(t, alertCfg.OnRecovery)
+	})
+
+	t.Run("explicit on_recovery false leaves the other gates at their defaults", func(t *testing.T) {
+		clearAlertEnvVars(t)
+
+		cfg := configFile{
+			Alerts: alertConfigRaw{OnRecovery: boolPtr(false)},
+		}
+		alertCfg := extractAlertConfig(cfg)
+
+		assert.False(t, alertCfg.OnRecovery)
+		assert.True(t, alertCfg.OnFailure)
+		assert.False(t, alertCfg.OnSuccess)
 	})
 
 	t.Run("explicit false for both flags is respected", func(t *testing.T) {

@@ -52,8 +52,8 @@ func TestOnRecoveryDefault(t *testing.T) {
 		{
 			name:           "explicit on_success does not suppress the recovery default",
 			body:           "alerts:\n  on_success: true\n",
-			wantOnRecovery: true, wantOnFailure: false, wantOnSuccess: true,
-			why: "on_recovery is not coupled to on_success; on_failure's existing coupling is preserved",
+			wantOnRecovery: true, wantOnFailure: true, wantOnSuccess: true,
+			why: "no gate is coupled to on_success (#679)",
 		},
 		{
 			name:           "explicit false is honoured",

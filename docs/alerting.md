@@ -109,6 +109,9 @@ alerts:
   on_failure: true   # Alert on failed deployments (default: true)
 ```
 
+Each gate defaults on its own: `on_failure` and `on_recovery` to true, `on_success` to false.
+Setting one never changes another, and an explicit `false` is honored.
+
 ### Interrupted reconciliations
 
 Bosun distinguishes daemon shutdown from a commit-caused failure only when the
