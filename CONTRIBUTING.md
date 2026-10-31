@@ -16,17 +16,18 @@ Before contributing, understand the project philosophy:
 ## AI disclosure
 
 AI assistance is welcome here, but it must be disclosed. If you used any AI
-tool for a contribution, say so in the pull request, and say how much: which
-parts it wrote, which you wrote, and what you checked yourself. That includes
-AI-written PR descriptions and issue text.
+tool for a contribution, say so where you post it (the pull request, or the
+issue when there is no pull request), and say how much: which parts it wrote,
+which you wrote, and what you checked yourself. That includes AI-written PR
+descriptions and issue text.
 
 Disclosure tells the reviewer how closely to read. An undisclosed AI
 contribution that turns out to be one costs the reviewer twice. You are
 responsible for every line you submit: you should be able to explain any of
 it without the tool that produced it.
 
-<sub>Adapted from the [Absurd](https://github.com/earendil-works/absurd)
-contribution guide (Apache-2.0).</sub>
+*Adapted from the [Absurd](https://github.com/earendil-works/absurd)
+contribution guide (Apache-2.0).*
 
 ## How to Contribute
 
