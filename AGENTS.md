@@ -21,6 +21,8 @@ Keep this managed block so 'openspec update' can refresh the instructions.
 
 @llms.txt
 
+Before opening a pull request, read [CONTRIBUTING.md](CONTRIBUTING.md); its AI disclosure rule applies to agent-authored changes.
+
 ## Building and Running
 
 ```bash
