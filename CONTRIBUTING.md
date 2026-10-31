@@ -2,6 +2,8 @@
 
 Thanks for your interest in contributing! Bosun is designed to be simple and stay simple.
 
+Agents working in this repo are expected to read this file as well.
+
 ## Philosophy
 
 Before contributing, understand the project philosophy:
@@ -10,6 +12,21 @@ Before contributing, understand the project philosophy:
 - **Batteries included, batteries swappable.** Defaults work. Replace any component.
 - **Escape hatches everywhere.** Raw passthrough when abstractions don't fit.
 - **Guardrails matter.** Manifest stays under 250 lines. Max 10 provisions.
+
+## AI disclosure
+
+AI assistance is welcome here, but it must be disclosed. If you used any AI
+tool for a contribution, say so in the pull request, and say how much: which
+parts it wrote, which you wrote, and what you checked yourself. That includes
+AI-written PR descriptions and issue text.
+
+Disclosure tells the reviewer how closely to read. An undisclosed AI
+contribution that turns out to be one costs the reviewer twice. You are
+responsible for every line you submit: you should be able to explain any of
+it without the tool that produced it.
+
+<sub>Adapted from the [Absurd](https://github.com/earendil-works/absurd)
+contribution guide (Apache-2.0).</sub>
 
 ## How to Contribute
 
