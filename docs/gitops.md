@@ -102,6 +102,8 @@ endpoint — its generic handler expects `X-Signature`/`X-Hub-Signature-256`, so
 provider-specific signature header will fail validation. Signatures are validated
 using HMAC-SHA256 (or SHA1 for legacy) with constant-time comparison.
 
+Webhook bodies are capped at 1 MiB on every daemon trigger endpoint (`/webhook`, `/webhook/github`, `/webhook/manual`) and every receiver endpoint. A larger body gets `413 Request body too large` and starts no reconcile; it is never truncated and then judged. The daemon reads the body before its auth check, so it answers `413` even when it would otherwise answer `403`; the receiver's fail-closed `403` comes first.
+
 The receiver's trigger endpoints fail closed, matching the daemon: with no
 secret resolved (`--secret`, `WEBHOOK_SECRET`, `GITHUB_WEBHOOK_SECRET`, or
 `--fetch-secret`) every one of them returns `403` unless

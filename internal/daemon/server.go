@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -28,10 +27,6 @@ import (
 )
 
 const (
-	// maxWebhookBodySize is the maximum allowed size for webhook request bodies (1MB).
-	// This prevents denial-of-service attacks via oversized payloads.
-	maxWebhookBodySize = 1 * 1024 * 1024
-
 	// Bound attacker-controlled GitHub attribution before it reaches logs,
 	// reconcile state, traces, or Sentry transactions.
 	maxWebhookPusherNameLength = 256
@@ -278,13 +273,9 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	logger.Debug().Msg("Preparing to process generic webhook request")
 
-	// Limit body size to prevent DoS
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
-	if err != nil {
-		logger.Warn().
-			Err(err).
-			Msg("Failed to read webhook body")
-		http.Error(w, "Failed to read body", http.StatusBadRequest)
+	// Refuse an oversized body with 413 rather than truncate it (#794).
+	body, ok := ReadWebhookBody(w, r)
+	if !ok {
 		return
 	}
 
@@ -378,13 +369,9 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 
 	logger.Debug().Msg("Preparing to process GitHub webhook")
 
-	// Read body with size limit to prevent DoS
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
-	if err != nil {
-		logger.Warn().
-			Err(err).
-			Msg("Failed to read GitHub webhook body")
-		http.Error(w, "Failed to read body", http.StatusBadRequest)
+	// Refuse an oversized body with 413 rather than truncate it (#794).
+	body, ok := ReadWebhookBody(w, r)
+	if !ok {
 		return
 	}
 
@@ -602,15 +589,11 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Limit body size to prevent DoS; bytes needed for both HMAC and JSON decode.
-	var body []byte
-	if r.Body != nil {
-		var err error
-		body, err = io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
-		if err != nil {
-			http.Error(w, "Failed to read body", http.StatusBadRequest)
-			return
-		}
+	// The bytes feed both the HMAC and the JSON decode; an oversized body is
+	// refused with 413 rather than truncated (#794).
+	body, ok := ReadWebhookBody(w, r)
+	if !ok {
+		return
 	}
 
 	if !s.authorizeTrigger(w, r, body, schemeManual) {

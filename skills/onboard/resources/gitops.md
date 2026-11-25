@@ -541,6 +541,8 @@ The daemon serves GitHub and a generic HMAC endpoint:
 
 Both push endpoints act only on the tracked branch (`BOSUN_REPO_BRANCH`). The generic endpoint checks an optional top-level `ref` in a JSON body after the signature check: only `refs/heads/<branch>` triggers; other branches and tags get `200` `ignored`. An `X-GitHub-Event` other than `push`, or a GitHub push with no JSON `ref` (form-encoded hook), is ignored too. A body with no `ref` still triggers.
 
+**Webhook bodies are capped at 1 MiB.** A larger body gets `413` and starts no reconcile, on all three daemon endpoints and on every `bosun webhook` receiver endpoint; it is never truncated. The daemon answers `413` before its auth check; the receiver answers its fail-closed `403` first.
+
 **Webhook auth fails closed.** With no `WEBHOOK_SECRET` configured, all three
 endpoints reject every request with `403` and no reconcile runs — a missing
 secret is not an open door. On trusted networks, opt out explicitly with
