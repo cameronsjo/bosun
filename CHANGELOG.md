@@ -40,6 +40,13 @@ through an independent trusted channel before installing the entries. ssh-keysca
 does not authenticate a host. Deploys without a Bosun trust file still use strict
 OpenSSH default stores; container-only pins must be persisted.
 
+## [0.49.1](https://github.com/cameronsjo/bosun/compare/v0.49.0...v0.49.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **reconcile:** treat registry ports as part of the host in image drift ([#846](https://github.com/cameronsjo/bosun/issues/846)) ([f37b527](https://github.com/cameronsjo/bosun/commit/f37b5270f443364460e27b50fa7835a941c9411d))
+
 ## [0.49.0](https://github.com/cameronsjo/bosun/compare/v0.48.0...v0.49.0) (2026-11-25)
 
 
