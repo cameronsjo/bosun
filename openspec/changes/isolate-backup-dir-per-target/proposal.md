@@ -16,7 +16,7 @@ Named targets share one `BackupDir`, although state file, staging directory, and
 
 - Affected specs: `reconcile` (ADDED only).
 - Affected code: `internal/reconcile/target.go`, `reconcile.go`, `backup.go`; docs and `skills/onboard/resources/*`.
-- Upgrade: pre-existing `<BackupDir>/backup-*` directories of a multi-target deployment are orphaned until removed. The first failed backup of a named target aborts its deploy, because no verified anchor exists in its new directory.
+- Upgrade: pre-existing `<BackupDir>/backup-*` directories of a multi-target deployment are orphaned until removed. Per current code (`applyBackupFailurePolicy`), the first failed backup of a named target aborts its deploy, because no verified anchor exists in its new directory.
 
 ## Relationship to other changes
 
@@ -25,6 +25,7 @@ The requirement "Configuration Backup" is already modified by two unarchived cha
 - `add-backup-integrity-semantics` modifies "Configuration Backup" (fail-closed backup, deep verification).
 - `data-driven-deploy-paths` modifies "Configuration Backup" (deploy-path-driven backup scope).
 - Draft PR cameronsjo/bosun#824 edits both of those deltas and `openspec/specs/reconcile/spec.md`.
+- `add-multi-target-reconcile` (ADDED only) already says canonical backup rules apply independently to each target (Per-Target State Persistence). It defines no backup layout, so this change agrees with it and adds the layout.
 
 This change adds new requirements and modifies none of them. Archive replaces a modified requirement as a whole, so a third whole-block modification would be overwritten by, or would overwrite, the others. The new requirements read against whatever text "Configuration Backup" has when they archive: they scope its create, anchor, prune, and exclude operations to one target's directory and widen the exclusion to the shared root. Archive order does not matter.
 

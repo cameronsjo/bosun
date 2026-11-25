@@ -2,7 +2,7 @@
 
 ### Requirement: Per-Target Backup Directory
 
-Each effective target SHALL own a backup directory. The implicit default and a lone `default` target SHALL use the configured `BackupDir` unchanged. A named target SHALL use `<BackupDir>/<target-name>`. There is no per-target backup-directory override.
+Each effective target SHALL own a backup directory. The implicit default and a lone `default` target (name matched case-insensitively) SHALL use the configured `BackupDir` unchanged. A named target SHALL use `<BackupDir>/<target-name>`. There is no per-target backup-directory override.
 
 #### Scenario: Named targets derive distinct backup directories
 
@@ -44,10 +44,16 @@ A backup archive SHALL NOT contain the shared backup root, meaning the configure
 
 ### Requirement: Legacy Shared Backups
 
-Backup directories that earlier releases wrote directly under the shared root SHALL NOT be selected as a rollback anchor, counted for retention, or deleted by a named target. When a named target's reconcile finds such directories, it SHALL log a warning naming the shared root.
+A `backup-*` directory that directly holds `configs.tar.gz` under the shared root, written by an earlier release, SHALL NOT be selected as a rollback anchor, counted for retention, or deleted by a named target. When a named target's reconcile finds one, it SHALL log one warning per run naming the shared root.
 
 #### Scenario: Legacy shared backups are left alone
 
 - **WHEN** a named target finds `backup-*` directories holding an archive directly under the shared root
 - **THEN** it neither uses, counts, nor deletes them
-- **AND** it logs a warning naming the shared root
+- **AND** it logs one warning per run naming the shared root
+
+#### Scenario: A target directory named like a backup is not legacy
+
+- **WHEN** a target named `backup-pi` has a directory `<BackupDir>/backup-pi` that holds only its own `backup-*` subdirectories
+- **THEN** that directory is not treated as a legacy backup
+- **AND** no legacy warning is logged for it
