@@ -265,16 +265,33 @@ type Daemon struct {
 	targetRuntime   map[string]targetRuntimeStatus
 
 	// Concurrency control: single-flight reconcile with lossless coalescing.
-	reconcileMu                   sync.Mutex          // Guards reconcile execution and pending trigger state
+	// reconcileMu guards the admission flags and pending trigger state below.
+	// It is held only to read or change them, never across Docker, state-file,
+	// or alert I/O, so status handlers and trigger producers never wait on it
+	// for longer than a flag check (#793).
+	reconcileMu                   sync.Mutex
 	reconciling                   bool                // True while reconcile is in progress
 	pendingTriggerCount           uint64              // Number of triggers queued for the next coalesced run
 	pendingTriggerSources         map[string]struct{} // Distinct sources contributing to the next run
 	pendingTriggerForce           bool                // Sticky force flag for the next run
 	pendingForceRedeployUnchanged bool                // Preserve drift-self-heal semantics through source aggregation
 
-	// driftCheckMu serializes the drift state file's load-mutate-save cycle.
-	// The periodic loop is single-threaded, but tests and future callers may invoke
-	// runDriftCheck concurrently.
+	// drifting is true while a periodic drift cycle owns the deploy state
+	// files. Reconcile and drift both load, mutate, and save those files, so
+	// they never run at once: drift skips while reconciling, and a trigger
+	// that arrives during a drift cycle waits for driftDone before admission.
+	drifting bool
+	// driftDone is non-nil while drifting and is closed when the cycle ends.
+	driftDone chan struct{}
+	// reconcileWaiters counts triggers waiting for a drift cycle to end. Drift
+	// admission skips while it is non-zero so a cycle that outlasts the drift
+	// interval cannot re-enter ahead of a waiting trigger.
+	reconcileWaiters int
+
+	// driftCheckMu serializes runDriftCheck callers before drift admission.
+	// The periodic loop is single-threaded, but tests and future callers may
+	// invoke runDriftCheck concurrently. Lock order: driftCheckMu, then
+	// reconcileMu.
 	driftCheckMu sync.Mutex
 
 	// configMu guards daemon-level config fields that are hot-reloaded from bosun.yaml.
@@ -986,6 +1003,38 @@ func (d *Daemon) TriggerReconcile(ctx context.Context, source string, force bool
 
 	d.reconcileMu.Lock()
 
+	// A drift cycle owns the state files. Wait for it outside the mutex, as a
+	// counted waiter so the next drift tick cannot re-enter ahead of this
+	// trigger. The decrement and the admission decision below share one
+	// critical section, so no drift cycle can start in between.
+	for d.drifting {
+		done := d.driftDone
+		d.reconcileWaiters++
+		d.reconcileMu.Unlock()
+
+		logger.Debug().
+			Str(log.FieldSource, source).
+			Msg("Drift check in progress, waiting before reconcile admission")
+
+		var waitErr error
+		select {
+		case <-done:
+		case <-ctx.Done():
+			waitErr = ctx.Err()
+		}
+
+		d.reconcileMu.Lock()
+		d.reconcileWaiters--
+		if waitErr != nil {
+			d.reconcileMu.Unlock()
+			logger.Warn().
+				Err(waitErr).
+				Str(log.FieldSource, source).
+				Msg("Abandoned reconcile trigger while waiting for drift check to finish")
+			return fmt.Errorf("wait for drift check before reconcile from %s: %w", source, waitErr)
+		}
+	}
+
 	if d.reconciling {
 		// Another reconcile is in progress. Count every arrival and retain all
 		// distinct source metadata for the next coalesced run.
@@ -1408,18 +1457,32 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	defer d.driftCheckMu.Unlock()
 
 	// Reconciliation and drift checking both load, mutate, and save the same
-	// state file. Hold their shared admission mutex for the complete drift cycle
-	// so a reconcile cannot begin after this one-time busy check and overwrite
-	// drift, breaker, or self-heal state with a stale snapshot.
+	// state file. Claim drift admission for the complete cycle so a reconcile
+	// cannot begin mid-cycle and overwrite drift, breaker, or self-heal state
+	// with a stale snapshot. The claim is a flag, not a held mutex: status
+	// handlers and trigger producers only take reconcileMu for a flag check
+	// (#793). A waiting trigger keeps drift out so a cycle that outlasts the
+	// drift interval cannot re-enter ahead of it.
 	d.reconcileMu.Lock()
-	if d.reconciling {
+	if d.reconciling || d.reconcileWaiters > 0 {
+		reason := "reconciliation_in_progress"
+		if !d.reconciling {
+			reason = "reconcile_trigger_waiting"
+		}
+		waiters := d.reconcileWaiters
 		d.reconcileMu.Unlock()
 		logger.Debug().
-			Str("reason", "reconciliation_in_progress").
+			Str("reason", reason).
+			Int("waiting_triggers", waiters).
 			Msg("Skipping drift check")
 		return
 	}
-	defer d.reconcileMu.Unlock()
+	d.drifting = true
+	d.driftDone = make(chan struct{})
+	d.reconcileMu.Unlock()
+	// Deferred so a panic cannot leave drift admission claimed: driftCheckLoop
+	// recovers panics, and a stuck flag would hold every later reconcile.
+	defer d.endDriftCycle()
 
 	targets, err := d.targetSnapshot()
 	if err != nil {
@@ -1457,9 +1520,20 @@ func (d *Daemon) runDriftCheck(ctx context.Context) {
 	}
 }
 
+// endDriftCycle releases drift admission and wakes triggers that waited for it.
+func (d *Daemon) endDriftCycle() {
+	d.reconcileMu.Lock()
+	defer d.reconcileMu.Unlock()
+	d.drifting = false
+	if d.driftDone != nil {
+		close(d.driftDone)
+		d.driftDone = nil
+	}
+}
+
 // runDriftCheckForTarget performs the canonical drift and restart-breaker
-// update for one local target. The caller owns driftCheckMu and reconcileMu so
-// sibling state files are updated under one daemon admission boundary.
+// update for one local target. The caller owns driftCheckMu and drift
+// admission so sibling state files are updated under one admission boundary.
 func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Target, client *docker.Client) {
 	logger := log.Component(log.ComponentDaemon).With().Str("target", target.Name).Logger()
 	targetCfg := d.configForTarget(target)
@@ -1499,9 +1573,14 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 		ignoreRules = targetCfg.DriftIgnore.Value
 	}
 
+	// Load the state file once per tick: the drift comparison and the
+	// load-mutate-save below share this snapshot (#793).
+	state := reconcile.LoadState(stateFile)
+	previouslyDrifted := len(state.DriftItems) > 0
+
 	checkCtx, finishSpan := sentrypkg.StartSpan(checkCtx, "drift.periodic_check", "Periodic drift check")
 	checkCtx, otelDriftSpan := telemetry.Tracer("daemon").Start(checkCtx, "daemon.drift_check")
-	report, err := reconcile.RunDriftCheck(checkCtx, client, stateFile, projectName, ignoreRules)
+	report, actual, err := reconcile.RunDriftCheckWithState(checkCtx, client, state, projectName, ignoreRules)
 	finishSpan(err)
 	if err != nil {
 		telemetry.SpanError(otelDriftSpan, err)
@@ -1512,10 +1591,6 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 	}
 	telemetry.SpanOK(otelDriftSpan)
 	otelDriftSpan.End()
-
-	// Load previous state to detect drift resolution.
-	state := reconcile.LoadState(stateFile)
-	previouslyDrifted := len(state.DriftItems) > 0
 
 	// Stage drift results — save happens after alert dedup updates the state.
 	state.DriftCheckedAt = report.CheckedAt
@@ -1692,7 +1767,7 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 
 	// Restart circuit breaker: detect containers in restart loops and stop them.
 	if targetCfg.RestartBreakerEnabled {
-		d.runRestartBreaker(checkCtx, client, state, projectName, restartBreakerTarget{
+		d.runRestartBreaker(checkCtx, client, state, actual, projectName, restartBreakerTarget{
 			config: targetCfg,
 			name:   targetContext(target),
 		})
@@ -1831,8 +1906,12 @@ type restartBreakerTarget struct {
 	name   string
 }
 
-// runRestartBreaker checks running containers for restart loops and stops offenders.
-func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, state *reconcile.DeployState, projectName string, options ...restartBreakerTarget) {
+// runRestartBreaker checks running containers for restart loops and stops
+// offenders. actual is the drift check's container snapshot from this tick;
+// RunRestartBreaker re-inspects every candidate by name, re-checks Compose
+// ownership, and stops by the inspected ID, so reusing the snapshot widens
+// nothing. A container created after the snapshot is evaluated next tick.
+func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, state *reconcile.DeployState, actual []reconcile.ActualService, projectName string, options ...restartBreakerTarget) {
 	logger := log.Component(log.ComponentDaemon)
 	logger.Debug().
 		Str("project", projectName).
@@ -1846,15 +1925,6 @@ func (d *Daemon) runRestartBreaker(ctx context.Context, client *docker.Client, s
 		if options[0].name != "" {
 			targetName = options[0].name
 		}
-	}
-
-	actual, err := reconcile.CollectActualState(ctx, client, projectName)
-	if err != nil {
-		logger.Warn().
-			Err(err).
-			Str("project", projectName).
-			Msg("Failed to collect container state for restart breaker")
-		return
 	}
 
 	// The breaker re-checks each candidate's Compose labels against this scope

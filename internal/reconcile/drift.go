@@ -563,12 +563,20 @@ func normalizeImage(image string) string {
 // state file and compares against actual Docker state. Ignore rules filter
 // out known drift noise before reporting.
 func RunDriftCheck(ctx context.Context, client *docker.Client, stateFile, projectName string, ignoreRules []DriftIgnoreRule) (*DriftReport, error) {
+	report, _, err := RunDriftCheckWithState(ctx, client, LoadState(stateFile), projectName, ignoreRules)
+	return report, err
+}
+
+// RunDriftCheckWithState runs a drift check against an already loaded deploy
+// state and also returns the container snapshot it compared against, so a
+// caller that needs both (the daemon's drift tick and restart breaker) reads
+// the state file and lists containers once.
+func RunDriftCheckWithState(ctx context.Context, client *docker.Client, state *DeployState, projectName string, ignoreRules []DriftIgnoreRule) (*DriftReport, []ActualService, error) {
 	logger := log.ComponentCtx(ctx, log.ComponentReconcile)
 	start := time.Now()
 
-	state := LoadState(stateFile)
-	if len(state.DeclaredServices) == 0 {
-		return nil, fmt.Errorf("no declared services in state file (has a deployment been completed?)")
+	if state == nil || len(state.DeclaredServices) == 0 {
+		return nil, nil, fmt.Errorf("no declared services in state file (has a deployment been completed?)")
 	}
 
 	logger.Debug().
@@ -578,7 +586,7 @@ func RunDriftCheck(ctx context.Context, client *docker.Client, stateFile, projec
 
 	actual, err := CollectActualState(ctx, client, projectName)
 	if err != nil {
-		return nil, fmt.Errorf("collect actual state: %w", err)
+		return nil, nil, fmt.Errorf("collect actual state: %w", err)
 	}
 
 	report := CompareDrift(state.DeclaredServices, actual)
@@ -611,5 +619,5 @@ func RunDriftCheck(ctx context.Context, client *docker.Client, stateFile, projec
 	}
 	logEvent.Msg("Drift check completed")
 
-	return report, nil
+	return report, actual, nil
 }
