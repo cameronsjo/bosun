@@ -826,7 +826,10 @@ bosun reconcile -r user@host
 Requires SSH key authentication and POSIX `sh` plus `tar`, `find`, `readlink`,
 `sha256sum`, and a `test` implementation with `-ef` support on the remote host.
 Missing `sha256sum` fails the first attempt without retrying because integrity
-verification cannot succeed until the host capability changes. Test connectivity
+verification cannot succeed until the host capability changes. Any other failure
+reported by the remote command (exit status other than SSH's 255, such as a full
+disk) also fails without retrying; only transient SSH transport errors and a
+payload checksum mismatch are retried, each with fresh staging. Test connectivity
 first: `ssh user@host exit`.
 
 Bosun creates the tar archive locally, round-trips it against a source snapshot,
