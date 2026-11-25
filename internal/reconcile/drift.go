@@ -288,21 +288,22 @@ func CollectActualState(ctx context.Context, client *docker.Client, projectName 
 
 	logger.Debug().Int("total_containers", len(containers)).Msg("Listed containers, filtering by project")
 
-	var actual []ActualService
-	seen := make(map[string]bool)
-
+	// A service can have several containers (replicas, stopped leftovers).
+	// Keep one per service, chosen by preferContainer so the pick does not
+	// depend on Docker's list order.
+	selected := make(map[string]docker.ContainerInfo)
 	for _, c := range containers {
 		serviceName, matched := matchContainer(c, projectName)
 		if !matched {
 			continue
 		}
-
-		// Deduplicate by service name (replicas produce multiple containers).
-		if seen[serviceName] {
-			continue
+		if cur, ok := selected[serviceName]; !ok || preferContainer(cur, c) {
+			selected[serviceName] = c
 		}
-		seen[serviceName] = true
+	}
 
+	var actual []ActualService
+	for serviceName, c := range selected {
 		actual = append(actual, ActualService{
 			Name:          serviceName,
 			ContainerName: c.Name,
@@ -322,6 +323,24 @@ func CollectActualState(ctx context.Context, client *docker.Client, projectName 
 		Msg("Successfully collected actual container state")
 
 	return actual, nil
+}
+
+// preferContainer reports whether cand should replace cur as the observed
+// container of a service (Service State Selection). A live container (running
+// or restarting) beats a stopped one; among equals the oldest by creation time
+// wins, then the lexically smaller container ID (Docker's short ID, since
+// Created has one-second resolution and ties are common). Health and the
+// restarting/running alternation of a crash-looping replica never change the
+// pick, so the restart breaker keeps one baseline for it.
+func preferContainer(cur, cand docker.ContainerInfo) bool {
+	curLive, candLive := ServiceIsPresent(cur.State, false), ServiceIsPresent(cand.State, false)
+	if curLive != candLive {
+		return candLive
+	}
+	if !cand.Created.Equal(cur.Created) {
+		return cand.Created.Before(cur.Created)
+	}
+	return cand.ID < cur.ID
 }
 
 // matchContainer determines if a container belongs to the given compose project

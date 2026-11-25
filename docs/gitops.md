@@ -339,6 +339,8 @@ Containers are matched to declared services using Docker Compose v2 labels:
 
 Labels are preferred because they are authoritative and unambiguous. For containers without labels, a name-based fallback parses the `<project>-<service>-<replica>` convention.
 
+A service can match several containers (replicas, a stopped leftover). Bosun observes one per service for drift, the skip check, the post-deploy health poll, and the restart breaker: a running or restarting container wins over a stopped one, then the oldest container, then the smallest container ID. Health and a crash-looping replica's restarting/running alternation never change the pick, so a stopped leftover beside a running replica is not reported as `missing`. An unhealthy replica that is not the selected one is not reported ([#853](https://github.com/cameronsjo/bosun/issues/853)).
+
 ### Image Comparison
 
 Images are normalized before comparison: bare names (e.g., `nginx`) are treated as `nginx:latest`, including names whose registry carries a port (`localhost:5000/app` is `localhost:5000/app:latest`). Digest references (`nginx@sha256:...`) are compared exactly.
