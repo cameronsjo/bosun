@@ -199,8 +199,21 @@ func resolveBackupFile(root, originalPath string) (string, bool) {
 	return candidate, true
 }
 
-// Backup creates a timestamped tar.gz backup of the specified paths.
+// backupAbs resolves the archive exclusion path. It is a package variable so a
+// test can inject the failure filepath.Abs only returns when the working
+// directory is unreadable.
+var backupAbs = filepath.Abs
+
+// Backup creates a timestamped tar.gz backup of the specified paths. The
+// archive excludes backupDir itself.
 func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string) (string, error) {
+	return d.backupExcluding(ctx, backupDir, backupDir, paths)
+}
+
+// backupExcluding creates the backup under backupDir and keeps excludeDir out of
+// the archive. They differ for a named target: backupDir is <root>/<name> and
+// excludeDir is the shared root, so the archive holds no sibling's backups (#791).
+func (d *DeployOps) backupExcluding(ctx context.Context, excludeDir, backupDir string, paths []string) (string, error) {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
@@ -219,9 +232,9 @@ func (d *DeployOps) Backup(ctx context.Context, backupDir string, paths []string
 	// (#319). Resolving it is load-bearing for that safeguard, so failure is
 	// fatal — and it resolves BEFORE MkdirAll so no partial directory is left
 	// behind on this path.
-	absBackupDir, absErr := filepath.Abs(backupDir)
+	absBackupDir, absErr := backupAbs(excludeDir)
 	if absErr != nil {
-		logger.Error().Err(absErr).Str(log.FieldPath, backupDir).
+		logger.Error().Err(absErr).Str(log.FieldPath, excludeDir).
 			Msg("Failed to create backup. Reason: cannot resolve backup destination for self-exclusion")
 		return "", fmt.Errorf("failed to resolve backup destination: %w", absErr)
 	}
@@ -492,8 +505,15 @@ func (zeroReader) Read(p []byte) (int, error) {
 }
 
 // BackupRemote creates a backup from a remote host via SSH.
-// Retries on transient SSH errors with exponential backoff.
+// Retries on transient SSH errors with exponential backoff. The archive excludes
+// backupDir itself.
 func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, remotePaths []string) (string, error) {
+	return d.backupRemoteExcluding(ctx, host, backupDir, backupDir, remotePaths)
+}
+
+// backupRemoteExcluding is BackupRemote with the tar exclusion decoupled from the
+// destination: excludeDir is the shared backup root for a named target (#791).
+func (d *DeployOps) backupRemoteExcluding(ctx context.Context, host, excludeDir, backupDir string, remotePaths []string) (string, error) {
 	start := time.Now()
 	logger := log.ComponentCtx(ctx, log.ComponentDeploy)
 
@@ -532,14 +552,14 @@ func (d *DeployOps) BackupRemote(ctx context.Context, host, backupDir string, re
 	// nested backups subtree (#319), mirroring the local Backup() behavior.
 	// A remote path can only be resolved on the remote host — filepath.Abs here
 	// would resolve against the LOCAL cwd, which is wrong — so require an absolute
-	// backupDir for the exclude to match the path tar walks; skip (with a warning)
+	// excludeDir for the exclude to match the path tar walks; skip (with a warning)
 	// otherwise rather than emit an exclude that silently matches nothing.
 	var sshCmd string
-	if filepath.IsAbs(backupDir) {
+	if filepath.IsAbs(excludeDir) {
 		sshCmd = fmt.Sprintf("tar -czf - --exclude %s %s",
-			shellquote.Join(backupDir), shellquote.Join(remotePaths...))
+			shellquote.Join(excludeDir), shellquote.Join(remotePaths...))
 	} else {
-		logger.Warn().Str(log.FieldPath, backupDir).
+		logger.Warn().Str(log.FieldPath, excludeDir).
 			Msg("Remote backup destination is not absolute; self-exclusion skipped")
 		sshCmd = fmt.Sprintf("tar -czf - %s", shellquote.Join(remotePaths...))
 	}

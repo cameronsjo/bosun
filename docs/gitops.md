@@ -433,7 +433,7 @@ Status values: `clean` (no drift), `drifted` (items detected), `unknown` (no dep
 | `BOSUN_SSH_KEY` | No | conventional SSH paths | Private key fallback for SSH Git URLs; the SSH agent takes precedence |
 | `REPO_DIR` | No | `/app/repo` | Local clone directory |
 | `STAGING_DIR` | No | `/app/staging` | Secret-bearing rendered staging and single-slot failure evidence directory |
-| `BACKUP_DIR` | No | `/app/backups` | Configuration backups |
+| `BACKUP_DIR` | No | `/app/backups` | Configuration backups; named targets use `<dir>/<target>` |
 | `LOG_DIR` | No | `/app/logs` | Log files directory |
 | `LOCAL_APPDATA` | No | `/mnt/appdata` | Local appdata path |
 | `REMOTE_APPDATA` | No | `/mnt/user/appdata` | Remote appdata path |
@@ -902,6 +902,39 @@ backups/
   backup-20240115-143022/
     configs.tar.gz
 ```
+
+In a multi-target deployment each named target gets its own directory, so one
+target never selects, prunes, or archives another's backups. The implicit and
+lone `default` target keep the layout above.
+
+```
+backups/
+  unraid/
+    backup-20240115-143022/
+      configs.tar.gz
+  pi/
+    backup-20240115-143105/
+      configs.tar.gz
+```
+
+The archive of a named target excludes the shared `backups/` root, so a
+full-appdata fallback never contains a sibling's backups.
+
+**Upgrading a multi-target deployment.** Backups an earlier release wrote
+directly under `backups/` (`backups/backup-*`) are not used, counted, or pruned
+by named targets, because their owner is unknown. Each reconcile logs one
+warning while any remain. A named target's first failed backup after the
+upgrade aborts its deploy, because its new directory holds no verified anchor.
+Once every target has a fresh verified backup, review the old directories and
+remove them:
+
+```bash
+ls -d /app/backups/backup-*
+rm -r /app/backups/backup-*
+```
+
+`bosun restore` reads `BACKUP_DIR`; for a named target point it at that
+target's directory, for example `BACKUP_DIR=/app/backups/unraid bosun restore --list`.
 
 ### Backed Up Paths
 

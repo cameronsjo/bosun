@@ -360,7 +360,7 @@ Used by `bosun daemon` and `bosun reconcile`:
 | `BOSUN_SSH_INSECURE_HOST_KEY` | `false` | Explicit bootstrap opt-out from SSH host-key verification; strict matching is otherwise fail closed |
 | `REPO_DIR` | `/app/repo` | Local clone directory |
 | `STAGING_DIR` | `/app/staging` | Secret-bearing rendered staging and single-slot failure evidence directory; target-effective paths must be disjoint |
-| `BACKUP_DIR` | `/app/backups` | Backup directory |
+| `BACKUP_DIR` | `/app/backups` | Backup directory; named targets back up under `<dir>/<target>` |
 | `LOG_DIR` | `/app/logs` | Log directory |
 | `LOCAL_APPDATA` | `/mnt/appdata` | Local appdata path |
 | `REMOTE_APPDATA` | `/mnt/user/appdata` | Remote appdata path |

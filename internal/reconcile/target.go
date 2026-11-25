@@ -78,8 +78,8 @@ func (t Target) IsDefault() bool {
 
 // ConfigForTarget returns a shallow copy of the base config with per-target
 // fields (TargetHost, appdata paths, ProjectName, StagingDir, StateFile,
-// LockFile, CriticalContainers, PostSyncHooks, DeploySyncPaths/Exclude,
-// ComposeIgnore, PreDeployHooks)
+// LockFile, BackupDir/BackupRoot, CriticalContainers, PostSyncHooks,
+// DeploySyncPaths/Exclude, ComposeIgnore, PreDeployHooks)
 // overridden from the given Target. This lets the existing pipeline run
 // unchanged per-target - the daemon creates a ConfigForTarget copy before
 // each reconciler instantiation.
@@ -115,6 +115,11 @@ func (c *Config) ConfigForTarget(t Target) *Config {
 		cp.StagingDir = TargetStagingDir(c.StagingDir, t)
 		lockDir := filepath.Dir(c.LockFile)
 		cp.LockFile = TargetLockFile(lockDir, t)
+		// Each named target backs up under <root>/<name>, so one target can
+		// never select, prune, or archive a sibling's backups (#791). BackupRoot
+		// keeps the shared root for archive self-exclusion.
+		cp.BackupRoot = c.backupRoot()
+		cp.BackupDir = TargetBackupDir(cp.BackupRoot, t)
 	}
 
 	// Deep-copy all mutable slices so the returned config has independent backing
@@ -653,6 +658,27 @@ func TargetStagingDir(baseStagingDir string, t Target) string {
 		return baseStagingDir
 	}
 	return filepath.Join(baseStagingDir, t.Name)
+}
+
+// TargetBackupDir returns the backup directory for a target.
+// The default target uses the base backup dir; named targets use <backup>/<name>/.
+// Target has no backup-directory override, so the name alone derives the path;
+// ValidateTargetName keeps it free of separators and traversal.
+func TargetBackupDir(baseBackupDir string, t Target) string {
+	if t.IsDefault() {
+		return baseBackupDir
+	}
+	return filepath.Join(baseBackupDir, t.Name)
+}
+
+// backupRoot returns the shared parent of every per-target backup directory:
+// BackupRoot when a derived config already carries one, else BackupDir. Deriving
+// from the root keeps a second ConfigForTarget call from nesting <root>/a/b.
+func (c *Config) backupRoot() string {
+	if c.BackupRoot != "" {
+		return c.BackupRoot
+	}
+	return c.BackupDir
 }
 
 // TargetLockFile returns the lock file path for a target.

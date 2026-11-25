@@ -172,6 +172,10 @@ until that success boundary; failed deploys retain both, and only successful
 deploys prune to one. When no managed file exists yet (a fresh host's first
 deploy), no archive is written and no rollback anchor is recorded — a
 content-free backup is never reported as a real one (#360).
+In a multi-target deployment each named target backs up under its own
+`<BackupDir>/<target>/` directory, and creation, rollback-anchor recovery,
+retention, and corrupt-backup removal act on that directory only; the implicit
+and lone `default` target keep `BackupDir` unchanged (#791).
 Retention counts only backups that pass the same verification used to pick a
 rollback anchor: a corrupt or partial dir (missing,
 unlistable, or truncated archive) is removed rather than occupying a keep slot and
@@ -191,7 +195,19 @@ reconcile (GH#319, bosun-5qx):
   backed-up path. The local Go archive writer resolves that destination and
   skips its subtree during the filesystem walk. Remote `tar -czf -` receives a
   shell-quoted `--exclude` when `BackupDir` is absolute; a relative remote
-  destination logs that self-exclusion could not be applied.
+  destination logs that self-exclusion could not be applied. For a named
+  target the excluded path is the shared `BackupDir` root, not only the
+  target's `<BackupDir>/<target>` directory, so no archive holds a sibling's
+  backups.
+- **Upgrading a multi-target deployment.** Backups an earlier release wrote
+  directly under `BackupDir` (`<BackupDir>/backup-*`) are not used, counted, or
+  pruned by named targets, because their owner is unknown; each reconcile logs
+  one warning while any remain. A named target's first failed backup after the
+  upgrade aborts its deploy, since its new directory holds no verified anchor.
+  Once every target has a fresh verified backup, review
+  `ls -d <BackupDir>/backup-*` and remove the old directories with `rm -r`.
+  Restore a named target's backup with `BACKUP_DIR=<BackupDir>/<target> bosun
+  restore --list`.
 - **Bounded deadlines.** `BackupTimeout` (default 5m, overridable via
   `BOSUN_BACKUP_TIMEOUT` — accepts a Go duration or plain seconds) applies
   independently to pre-deploy creation + verification and post-success
@@ -889,7 +905,7 @@ These configure the reconciliation pipeline (used by daemon and one-shot modes):
 | `BOSUN_SSH_KEY` | conventional SSH paths | Private key fallback for SSH Git URLs; `SSH_AUTH_SOCK` takes precedence |
 | `REPO_DIR` | `/app/repo` | Local clone directory |
 | `STAGING_DIR` | `/app/staging` | Secret-bearing rendered staging and single-slot failure evidence directory |
-| `BACKUP_DIR` | `/app/backups` | Backup directory |
+| `BACKUP_DIR` | `/app/backups` | Backup directory; named targets use `<dir>/<target>` |
 | `LOG_DIR` | `/app/logs` | Log directory |
 | `LOCAL_APPDATA` | `/mnt/appdata` | Local appdata path |
 | `REMOTE_APPDATA` | `/mnt/user/appdata` | Remote appdata path |
