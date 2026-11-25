@@ -82,7 +82,7 @@ The restart circuit breaker SHALL evaluate every running or restarting container
 
 ### Requirement: Restart Breaker Tripped Entry Lifecycle
 
-A tripped entry SHALL stay tied to the container that tripped. A new container takes it over only when the tripped container no longer exists and the new one has the same Compose service and container number; a sibling with another number never inherits it. A gone container with no replacement SHALL clear its entry without a resolved alert. A service is resolved only when none of its containers is still tripped.
+A tripped entry SHALL stay tied to the container that tripped. A new container takes it over only when the tripped container no longer exists and the new one has the same Compose service and container number. A gone container with no replacement SHALL clear its entry without a resolved alert. A service is resolved when its last tripped entry ends, by recovery or by clearing once another container has recovered since the trip alert; clearing with no recovery is not resolved.
 
 #### Scenario: Restarted replica resolves after a stable run
 
@@ -115,6 +115,25 @@ A tripped entry SHALL stay tied to the container that tripped. A new container t
 - **WHEN** two containers of a service are tripped and one recovers
 - **THEN** no resolved alert is sent
 - **AND** a resolved alert is sent when the other recovers
+
+#### Scenario: Recover then clear reports resolved
+
+- **WHEN** two containers of a service are tripped and alerted
+- **AND** one recovers while the other is still tripped, in one check
+- **AND** the other container is later removed with no replacement, in a later check
+- **THEN** no resolved alert is sent for the recovery
+- **AND** a resolved alert is sent once, when the removed container's entry is cleared
+
+#### Scenario: Clearing every tripped container without a recovery reports nothing
+
+- **WHEN** every tripped container of a service is removed with no replacement and none recovered since the trip alert
+- **THEN** no resolved alert is sent
+
+#### Scenario: Tripping again restarts the alert cycle
+
+- **WHEN** a container of a service recovered after the trip alert while another stayed tripped
+- **AND** a container of the service then trips again
+- **THEN** the earlier recovery no longer counts toward a resolved alert
 
 #### Scenario: Restarted replica that keeps looping is not stopped again
 

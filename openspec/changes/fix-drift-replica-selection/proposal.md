@@ -49,9 +49,15 @@ each time the observed container ID changes (`evaluateRestartBreaker`,
   replacement clears its entry without a resolved alert, logged at info level,
   and the next deploy starts fresh; this replaces the earlier behavior of
   keeping the entry until a container returned. A service is reported resolved
-  only when none of its containers is still tripped, so one replica recovering
-  does not hide another that is still tripped. The skip check counts a service
-  as present when one of its stopped containers is tripped.
+  when its last tripped entry ends, so one replica recovering does not hide
+  another that is still tripped. The two ways it ends are by recovery and by a
+  quiet clear after another container recovered since the trip alert, whichever
+  comes last: recovering while another replica stays tripped and that replica
+  then being removed still reports the service resolved, once. Clearing every
+  tripped container with no recovery reports nothing. The recovery is
+  remembered across checks and forgotten when the service trips again. The skip
+  check counts a service as present when one of its stopped containers is
+  tripped.
 - The requirements supersede wording in existing requirements instead of
   modifying them. Service State Selection supersedes the per-container
   wording in Declared vs Actual State Comparison and State-Based Skip Logic;
