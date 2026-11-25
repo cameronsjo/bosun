@@ -35,7 +35,8 @@ func (m *mockSOPS) DecryptFiles(_ context.Context, _ []string) (map[string]any, 
 func (m *mockSOPS) CheckAgeKey() error { return nil }
 
 // newTestReconciler creates a Reconciler wired with mocks and temp directories.
-// Uses local mode with DryRun so the pipeline completes without actual deploys.
+// Runs a persisting (non-dry) Run() in local mode whose deploy step is inert
+// (DeployOps.DryRun), so state tracking is real but no file or container changes.
 func newTestReconciler(t *testing.T, git *mockGit) (*Reconciler, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -58,7 +59,9 @@ func newTestReconciler(t *testing.T, git *mockGit) (*Reconciler, string) {
 		StateFile:        stateFile,
 		LocalAppdataPath: appdataDir, // Existing dir triggers local mode
 		InfraSubDir:      ".",
-		DryRun:           true, // Prevents actual file deployment
+		// A persisting run: these tests assert deploy state across runs, which a dry
+		// run never writes. The inert DeployOps below prevents actual deployment.
+		SkipDeployInvariant: true,
 	}
 
 	// Seed a stub compose file so the renderer produces a non-empty staging
@@ -68,6 +71,7 @@ func newTestReconciler(t *testing.T, git *mockGit) (*Reconciler, string) {
 	r := NewReconciler(cfg,
 		WithGitOperations(git),
 		WithSecretsDecryptor(&mockSOPS{}),
+		WithDeployOps(&DeployOps{DryRun: true}),
 	)
 
 	return r, stateFile
@@ -220,15 +224,17 @@ func TestRun_NewCommit_ResetsAttemptCount(t *testing.T) {
 	git := &mockGit{changed: true, before: "old-commit", after: "new-commit"}
 
 	cfg := &Config{
-		RepoDir:                 filepath.Join(dir, "repo"),
-		StagingDir:              filepath.Join(dir, "staging"),
-		BackupDir:               filepath.Join(dir, "backups"),
-		LogDir:                  filepath.Join(dir, "logs"),
-		LockFile:                privateLockPath(t, dir, "reconcile.lock"),
-		StateFile:               stateFile,
-		LocalAppdataPath:        filepath.Join(dir, "appdata"),
-		InfraSubDir:             ".",
-		DryRun:                  true,
+		RepoDir:          filepath.Join(dir, "repo"),
+		StagingDir:       filepath.Join(dir, "staging"),
+		BackupDir:        filepath.Join(dir, "backups"),
+		LogDir:           filepath.Join(dir, "logs"),
+		LockFile:         privateLockPath(t, dir, "reconcile.lock"),
+		StateFile:        stateFile,
+		LocalAppdataPath: filepath.Join(dir, "appdata"),
+		InfraSubDir:      ".",
+		// A persisting run with an inert deploy step: the assertion below reads
+		// state that a dry run never writes.
+		SkipDeployInvariant:     true,
 		AllowEmptyDeclaredState: true,
 	}
 	require.NoError(t, os.MkdirAll(cfg.RepoDir, 0755))
@@ -238,6 +244,7 @@ func TestRun_NewCommit_ResetsAttemptCount(t *testing.T) {
 	r := NewReconciler(cfg,
 		WithGitOperations(git),
 		WithSecretsDecryptor(&mockSOPS{}),
+		WithDeployOps(&DeployOps{DryRun: true}),
 	)
 
 	err := r.Run(context.Background())

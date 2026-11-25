@@ -32,7 +32,7 @@ func newDockerDaemon(t *testing.T, mockAPI *dockertest.MockDockerAPI) *Daemon {
 	cfg.EnableHTTP = false
 	cfg.ReconcileConfig = reconcile.DefaultConfig()
 	cfg.ReconcileConfig.RepoURL = "https://github.com/test/repo"
-	cfg.ReconcileConfig.DryRun = true
+	cfg.ReconcileConfig.DryRun = false // the drift tick is observe-only under dry run (#792); these tests exercise it
 	cfg.ReconcileConfig.RepoDir = filepath.Join(tmpDir, "repo")
 	cfg.ReconcileConfig.LockFile = privateLockPath(t, tmpDir, "test.lock")
 	cfg.ReconcileConfig.StateFile = filepath.Join(tmpDir, "state.json")

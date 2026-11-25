@@ -268,7 +268,7 @@ bosun daemon --poll-interval 0        # Disable polling (webhook-only)
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-n`, `--dry-run` | `false` | Dry run mode (no actual changes) |
+| `-n`, `--dry-run` | `false` | Dry run mode: reconcile cycles deploy nothing and write no deploy state, and a polling dry-run daemon re-runs the whole pipeline every poll. The periodic drift check only observes: it saves no state, stops no container, triggers no self-heal, and sends no alert |
 | `-p`, `--port` | `8080` | HTTP server port |
 | `-i`, `--poll-interval` | `3600` | Poll interval in seconds (0 = disabled) |
 
@@ -302,7 +302,7 @@ bosun reconcile -n --no-alerts # Dry run that sends no alerts
 | `--target` | Reconcile a single named target (from `targets:` config) |
 | `--no-alerts` | Build no alert manager; send nothing, list no providers |
 
-A dry run alerts exactly like a real run — alert dispatch has no dry-run gate — so pass `--no-alerts` when a dry run must stay silent. The command reads `BOSUN_INFRA_DIR` the same way the daemon does, so a dry run renders the tree the daemon would deploy. Parsing of `SECRETS_FILES`, `BOSUN_SECRETS_FILE` and `DRY_RUN` is shared with the daemon; the remaining environment differences are tracked in bosun#676.
+A dry run sends failure, success, and interruption alerts like a real run, but no recovery alert, and it writes no deploy state. Pass `--no-alerts` when a dry run must stay silent. The command reads `BOSUN_INFRA_DIR` the same way the daemon does, so a dry run renders the tree the daemon would deploy. Parsing of `SECRETS_FILES`, `BOSUN_SECRETS_FILE` and `DRY_RUN` is shared with the daemon; the remaining environment differences are tracked in bosun#676.
 
 ### `bosun trigger`
 

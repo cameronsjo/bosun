@@ -251,7 +251,7 @@ regular template files. Directory rendering now refuses a symlinked template
 with its path and that remedy, preventing deployment or stale-file pruning from
 a partial render. Windows lock behavior is unchanged.
 
-The reconciler maintains persistent state in a JSON file at `/var/lib/bosun/deploy-state.json` (configurable via `BOSUN_STATE_DIR`). This state drives skip logic, circuit breaking, and drift detection. Both daemon and one-shot modes create the state file's parent directory before a real reconciliation; one-shot multi-target runs prepare and verify each target's state directory independently and fail that target before deployment if the directory cannot be written. Multi-target configuration is rejected when two effective state-file paths collide after path cleaning; case-only variants also collide on Windows and macOS. Daemon startup performs this validation before binding API listeners or announcing readiness. A one-shot dry run works against a temporary copy of existing state, preserving skip and circuit-breaker decisions without creating or updating the configured state path.
+The reconciler maintains persistent state in a JSON file at `/var/lib/bosun/deploy-state.json` (configurable via `BOSUN_STATE_DIR`). This state drives skip logic, circuit breaking, and drift detection. Both daemon and one-shot modes create the state file's parent directory before a real reconciliation; one-shot multi-target runs prepare and verify each target's state directory independently and fail that target before deployment if the directory cannot be written. Multi-target configuration is rejected when two effective state-file paths collide after path cleaning; case-only variants also collide on Windows and macOS. Daemon startup performs this validation before binding API listeners or announcing readiness. A dry run, in the daemon or the one-shot command, never writes this file: `Reconciler.Run` reads the state to make its skip and circuit-breaker decisions and drops every write, so the file is byte-identical afterwards (or still absent). The one-shot command also works against a temporary copy of existing state, as a second barrier. Because no dry run advances the state, a dry-run daemon re-runs the whole pipeline, including pre-deploy hooks, on every poll instead of skipping a commit it already rendered. The daemon's periodic drift check is observe-only under dry run too (see Drift Detection).
 
 Container deployments must persist `/var/lib/bosun`. The shipped Compose and
 Unraid definitions bind that directory to `/mnt/user/appdata/bosun/state`; keep
@@ -360,6 +360,8 @@ When running as a daemon, drift checks run on a configurable interval (default: 
 A reconcile trigger that arrives while a drift check runs waits for that check to finish, then starts. Status endpoints (`/status`, `/api/status`) are not blocked by a running drift check.
 
 Set `BOSUN_DRIFT_INTERVAL=0` to disable periodic drift checks.
+
+**Under dry run (`bosun daemon -n`, `DRY_RUN=true`) the drift check observes only.** It still detects drift, logs it, and updates metrics, and it keeps the last result in memory: `GET /api/drift` (default target) and the per-target `drift` record in detailed status serve that observation (status, items, `checked_at`), not the state file, whose drift fields stay frozen at the last real run. Before the first dry-run tick they report `unknown` with no items. `bosun drift` reads the state file and therefore shows the frozen record. The tick does not save the state file, run the restart circuit breaker (so no container is stopped), consume a self-heal attempt or trigger a reconcile, or send a drift, resolution, or breaker alert. Dedup and cooldown state could not persist across ticks, so alerts would repeat every interval.
 
 #### Restart Circuit Breaker
 
@@ -1105,7 +1107,10 @@ Use `--dry-run` to:
 - Preview deploy changes without applying
 - Skip service restarts
 - Skip backup creation
+- Leave the deploy state file untouched
 - Verify configuration without risk
+
+A dry run still sends failure, success, and interruption alerts (`--dry-run` does not imply `--no-alerts`), but it sends no recovery alert: with no state written it cannot record that a retraction was delivered, so it would repeat on every run.
 
 ```bash
 # Safe way to test configuration changes

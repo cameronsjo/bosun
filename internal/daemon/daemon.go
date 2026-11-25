@@ -1592,6 +1592,33 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 	telemetry.SpanOK(otelDriftSpan)
 	otelDriftSpan.End()
 
+	// A dry run observes only (#792). This gate sits after detection and before
+	// the first mutation; do not move it to the top of the function, which would
+	// drop detection, logging, and the observation. Everything after it mutates: it
+	// saves the state file, may stop a restart-looping container, consumes a
+	// self-heal attempt and triggers a reconcile, and alerts. None of it belongs
+	// to a daemon whose contract is "no actual changes", and its dedup and
+	// throttle state could not persist anyway, so alerts would repeat every tick.
+	// The gate is the tick's one dry-run check, ahead of those steps, so a change
+	// to what the breaker or self-heal do cannot reopen it. Detection, logging,
+	// metrics, and the observation that status views read stay. The observation
+	// is kept in memory, because the persisted drift fields are frozen under a
+	// dry run: status views serve this report instead, so one target record never
+	// pairs a fresh status with stale items.
+	if targetCfg.DryRun {
+		if d.metrics != nil {
+			d.metrics.RecordDriftCheck(report.HasDrift())
+		}
+		logDriftDetected(logger, report)
+		driftStatus := driftStatusLabel(report)
+		logger.Info().
+			Str("drift_status", driftStatus).
+			Msg("Dry run: drift observed only. Not saving state, running the restart breaker, self-healing, or alerting")
+		d.recordObservedDrift(target.Name, report)
+		d.recordTargetRuntime(target.Name, driftStatus, "", report.CheckedAt)
+		return
+	}
+
 	// Stage drift results — save happens after alert dedup updates the state.
 	state.DriftCheckedAt = report.CheckedAt
 	state.DriftItems = report.Items
@@ -1624,10 +1651,7 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 	}
 
 	if report.HasDrift() {
-		logger.Warn().
-			Int("drift_items", len(report.Items)).
-			Strs("drift_containers", report.DriftSummaries()).
-			Msg("Drift detected during periodic check")
+		logDriftDetected(logger, report)
 
 		// Deduplicated alerting for critical drift (missing/unhealthy).
 		// Always run cleanup when alerting is enabled so resolved items are cleared
@@ -1806,13 +1830,27 @@ func (d *Daemon) runDriftCheckForTarget(ctx context.Context, target reconcile.Ta
 		return
 	}
 
-	driftStatus := "clean"
-	if report.HasDrift() {
-		driftStatus = "drifted"
-	}
-	d.recordTargetRuntime(target.Name, driftStatus, "", report.CheckedAt)
+	d.recordTargetRuntime(target.Name, driftStatusLabel(report), "", report.CheckedAt)
 
 	d.maybeSelfHeal(ctx, selfHeal, selfHealReservation, targetContext(target))
+}
+
+// driftStatusLabel is the per-target status string the status views report for
+// a completed drift check.
+func driftStatusLabel(report *reconcile.DriftReport) string {
+	if report.HasDrift() {
+		return "drifted"
+	}
+	return "clean"
+}
+
+// logDriftDetected logs a detected drift once, for both the acting tick and the
+// dry-run observation, so the two cannot drift apart.
+func logDriftDetected(logger zerolog.Logger, report *reconcile.DriftReport) {
+	logger.Warn().
+		Int("drift_items", len(report.Items)).
+		Strs("drift_containers", report.DriftSummaries()).
+		Msg("Drift detected during periodic check")
 }
 
 func criticalDriftItems(items []reconcile.DriftItem) []reconcile.DriftItem {
