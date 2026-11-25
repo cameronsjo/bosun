@@ -413,6 +413,7 @@ func RunRestartBreaker(
 	// by the full ID that was inspected and ownership-checked: a name can be
 	// reused by a different container between the inspect and the stop.
 	var stopErrs []error
+	stoppedTripped := make([]string, 0, len(result.Tripped))
 	for _, service := range result.Tripped {
 		containerName := containerNameForService(actual, service)
 		containerID := observations[service].FullID
@@ -422,6 +423,7 @@ func RunRestartBreaker(
 				Str("service", service).
 				Msg("Restart circuit breaker tripped but not stopping container. Reason: inspect returned no container ID to target")
 			stopErrs = append(stopErrs, fmt.Errorf("stop container for service %s: inspect returned no container ID", service))
+			revertFailedTrip(result.Updated, state.RestartTracking, service)
 			continue
 		}
 
@@ -439,13 +441,29 @@ func RunRestartBreaker(
 				Err(err).
 				Msg("Failed to stop restart-looping container")
 			stopErrs = append(stopErrs, fmt.Errorf("stop container %s (%s): %w", containerName, containerID, err))
+			revertFailedTrip(result.Updated, state.RestartTracking, service)
+			continue
 		}
+		stoppedTripped = append(stoppedTripped, service)
 	}
+	result.Tripped = stoppedTripped
 
 	if len(stopErrs) > 0 {
 		return result, errors.Join(stopErrs...)
 	}
 	return result, nil
+}
+
+// revertFailedTrip restores a service's pre-trip tracking entry when stopping
+// its container failed, so it is not persisted as Tripped (which would skip
+// future stop attempts) while allowing other services' successful stops to
+// be persisted normally.
+func revertFailedTrip(updated, prior map[string]RestartTrackingEntry, service string) {
+	if prev, exists := prior[service]; exists {
+		updated[service] = prev
+	} else {
+		delete(updated, service)
+	}
 }
 
 // containerNameForService finds the container name for a service from actual state.

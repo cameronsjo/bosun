@@ -948,14 +948,12 @@ func TestBuildSSHKeyPaths(t *testing.T) {
 			},
 		},
 		{
-			name:    "empty home dir still produces paths",
+			name:    "empty home dir omits relative ssh paths",
 			envKey:  "",
 			homeDir: "",
 			want: []string{
 				"/config/deploy-key",
 				"/config/ssh-key",
-				".ssh/id_ed25519",
-				".ssh/id_rsa",
 			},
 		},
 	}

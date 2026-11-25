@@ -220,12 +220,17 @@ type SSHKeyPermResult struct {
 // check. BOSUN_SSH_KEY is handled separately because reconcile treats an
 // explicit path as authoritative rather than falling back when it is unusable.
 func sshKeyCandidates(home string) []string {
-	return []string{
+	paths := []string{
 		"/config/deploy-key",
 		"/config/ssh-key",
-		filepath.Join(home, ".ssh", "id_ed25519"),
-		filepath.Join(home, ".ssh", "id_rsa"),
 	}
+	if home != "" {
+		paths = append(paths,
+			filepath.Join(home, ".ssh", "id_ed25519"),
+			filepath.Join(home, ".ssh", "id_rsa"),
+		)
+	}
+	return paths
 }
 
 // CheckSSHKeyPermissions validates the explicit SSH key or the first usable

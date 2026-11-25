@@ -1184,18 +1184,19 @@ func (r *Reconciler) verifyPostDeploy(ctx context.Context, state *DeployState, c
 		return nil
 	}
 
+	interval := r.healthCheckInterval()
 	logger.Debug().
 		Int("service_count", len(r.declaredServices)).
 		Dur("timeout", r.config.HealthCheckTimeout).
-		Dur("interval", r.config.HealthCheckInterval).
+		Dur("interval", interval).
 		Msg("Preparing to verify container health")
 
 	ui.Info("Verifying container health (timeout: %s, interval: %s)...",
-		r.config.HealthCheckTimeout, r.config.HealthCheckInterval)
+		r.config.HealthCheckTimeout, interval)
 
-	result, err := pollContainerHealth(
+	result, err := pollContainerHealthWithBaseline(
 		ctx, client, r.declaredServices, r.config.ProjectName,
-		r.config.HealthCheckTimeout, r.config.HealthCheckInterval,
+		r.config.HealthCheckTimeout, interval, r.preDeployUnhealthy,
 	)
 
 	// Record health verdict in state file.
