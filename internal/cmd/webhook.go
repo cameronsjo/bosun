@@ -49,9 +49,11 @@ WEBHOOK AUTH FAILS CLOSED:
   or --fetch-secret), the trigger endpoints reject every request with 403.
   Set BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true to accept unauthenticated
   triggers instead; each accepted request is logged as a security warning.
-  The literal change-me counts as no secret. If WEBHOOK_SECRET and
-  GITHUB_WEBHOOK_SECRET are both set to different values and --secret is not
-  given, every trigger request is rejected with 403, opt-out or not.
+  A placeholder (change-me in any case, or the init template example) counts
+  as no secret. If WEBHOOK_SECRET and GITHUB_WEBHOOK_SECRET are both set to
+  different values and --secret is not given, or --fetch-secret reaches a
+  daemon reporting that conflict, every trigger request is rejected with 403,
+  opt-out or not.
   This mirrors the daemon's own webhook posture.
 
 DAEMON-INJECTED SECRETS:
@@ -121,11 +123,9 @@ func runWebhook(cmd *cobra.Command, args []string) {
 			// than silently accepting unsigned requests.
 			ui.Warning("Could not fetch config from daemon: %v", err)
 		} else {
-			// Same rule as before the branch lookup: the daemon secret applies on
-			// --fetch-secret or when no secret resolved. A local secret
-			// conflict stays fail-closed: the fetched secret does not settle it.
-			if (webhookFetchSecret || secret == "") && !secretConflict && daemon.WebhookSecretConfigured(cfg.WebhookSecret) {
-				secret = cfg.WebhookSecret
+			var fetched bool
+			secret, secretConflict, fetched = mergeFetchedSecret(secret, secretConflict, webhookFetchSecret, cfg)
+			if fetched {
 				ui.Success("Webhook secret fetched from daemon (never stored on disk)")
 			}
 			if branch == "" {
@@ -200,6 +200,26 @@ func resolveReceiverSecret(flag string, getenv func(string) string) (secret stri
 		return flag, false
 	}
 	return daemon.ResolveWebhookSecret(getenv)
+}
+
+// mergeFetchedSecret applies the daemon's GET /config answer to the secret the
+// receiver resolved locally. The daemon's secret applies on --fetch-secret, or
+// when no local secret resolved. A local conflict stays fail-closed, and a
+// daemon-reported conflict (#837) makes the receiver fail closed too: the empty
+// secret the daemon sends alongside it is not "no secret configured", so the
+// receiver's own opt-out must not open the endpoints. fetched reports that the
+// daemon's secret was adopted.
+func mergeFetchedSecret(secret string, conflict, fetchRequested bool, cfg *daemon.ConfigResponse) (merged string, mergedConflict, fetched bool) {
+	if conflict || cfg == nil || !(fetchRequested || secret == "") {
+		return secret, conflict, false
+	}
+	if cfg.WebhookSecretConflict {
+		return "", true, false
+	}
+	if daemon.WebhookSecretConfigured(cfg.WebhookSecret) {
+		return cfg.WebhookSecret, false, true
+	}
+	return secret, false, false
 }
 
 type webhookHandler struct {

@@ -3,6 +3,7 @@ package daemon
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -10,6 +11,29 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestWebhookSecretConfigured(t *testing.T) {
+	tests := []struct {
+		name   string
+		secret string
+		want   bool
+	}{
+		{name: "real secret", secret: "3f9a1c0e", want: true},
+		{name: "empty", secret: ""},
+		{name: "whitespace only", secret: " \t\n"},
+		{name: "placeholder", secret: "change-me"},
+		{name: "placeholder in another case", secret: "Change-Me"},
+		{name: "placeholder with surrounding whitespace", secret: "  CHANGE-ME\n"},
+		{name: "init template example uncommented as written", secret: InitTemplateWebhookSecretPlaceholder},
+		{name: "init template example in another case and padded", secret: " <OUTPUT OF: OPENSSL RAND -HEX 32> "},
+		{name: "secret that merely contains the placeholder", secret: "change-me-please-2a7f", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, WebhookSecretConfigured(tt.secret))
+		})
+	}
+}
 
 func TestResolveWebhookSecret(t *testing.T) {
 	tests := []struct {
@@ -142,6 +166,19 @@ func TestServerWebhooks_PlaceholderSecretFailsClosed(t *testing.T) {
 
 			require.Equal(t, http.StatusForbidden, w.Code)
 			assert.Equal(t, 0.0, testutil.ToFloat64(s.metrics.WebhookTriggersTotal.WithLabelValues(ep.label)))
+		})
+	}
+
+	for _, variant := range []string{" Change-Me\n", InitTemplateWebhookSecretPlaceholder} {
+		t.Run("variant "+strconv.Quote(variant), func(t *testing.T) {
+			d, s := newTestDaemon(t)
+			d.config.WebhookSecret = variant
+
+			w := httptest.NewRecorder()
+			s.handleWebhook(w, signedEmptyTrigger("/webhook", "X-Signature", "", variant))
+			waitForServerTasks(t, s, 5*time.Second)
+
+			assert.Equal(t, http.StatusForbidden, w.Code)
 		})
 	}
 

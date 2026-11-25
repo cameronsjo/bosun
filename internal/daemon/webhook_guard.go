@@ -20,10 +20,29 @@ import (
 // the receiver treat it exactly like an unset secret (#794).
 const PlaceholderWebhookSecret = "change-me"
 
-// WebhookSecretConfigured reports whether secret can authenticate a webhook:
-// it is non-empty and not PlaceholderWebhookSecret.
+// InitTemplateWebhookSecretPlaceholder is the example value `bosun init`
+// writes into its commented env template. An operator who uncomments the line
+// as written would otherwise configure this public string as the secret.
+const InitTemplateWebhookSecretPlaceholder = "<output of: openssl rand -hex 32>"
+
+// webhookSecretPlaceholders are public values that never authenticate.
+var webhookSecretPlaceholders = []string{PlaceholderWebhookSecret, InitTemplateWebhookSecretPlaceholder}
+
+// WebhookSecretConfigured reports whether secret can authenticate a webhook.
+// After trimming surrounding whitespace it must be non-empty and must not
+// match a placeholder in webhookSecretPlaceholders, compared without regard to
+// case (#794). The secret itself is used untrimmed for HMAC.
 func WebhookSecretConfigured(secret string) bool {
-	return secret != "" && secret != PlaceholderWebhookSecret
+	trimmed := strings.TrimSpace(secret)
+	if trimmed == "" {
+		return false
+	}
+	for _, placeholder := range webhookSecretPlaceholders {
+		if strings.EqualFold(trimmed, placeholder) {
+			return false
+		}
+	}
+	return true
 }
 
 // ResolveWebhookSecret resolves the webhook secret from WEBHOOK_SECRET, then
@@ -53,7 +72,7 @@ func ResolveWebhookSecret(getenv func(string) string) (secret string, conflict b
 // WebhookSecretConflictMessage is the error both servers log, at startup and
 // per rejected request, when ResolveWebhookSecret reports a conflict. It names
 // the variables and never their values.
-const WebhookSecretConflictMessage = "Webhook auth fails closed: WEBHOOK_SECRET and GITHUB_WEBHOOK_SECRET are both set to different values, expected one secret. Every trigger request is rejected with 403, even with BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true. Unset one, or set both to the same value"
+const WebhookSecretConflictMessage = "Webhook auth fails closed: WEBHOOK_SECRET and GITHUB_WEBHOOK_SECRET are both set to different values, expected one secret. Every trigger request is rejected with 403, even with BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true. Unset one, or set both to the same value (they are compared exactly, so a trailing newline or space counts as a difference)"
 
 // genericSignatureHeaders lists the headers the generic /webhook endpoint
 // reads its HMAC from, in lookup order. The first present header decides:

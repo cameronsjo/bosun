@@ -455,6 +455,20 @@ func TestBuildConfigResponse(t *testing.T) {
 			},
 		},
 		{
+			// A fetching receiver must learn of a secret conflict, or its own
+			// opt-out would read the empty secret as "none configured" (#837).
+			name:          "secret conflict travels with the secret",
+			cfg:           &Config{WebhookSecretConflict: true},
+			includeSecret: true,
+			want:          ConfigResponse{WebhookSecretConflict: true},
+		},
+		{
+			name:          "secret conflict withheld with the secret",
+			cfg:           &Config{WebhookSecretConflict: true},
+			includeSecret: false,
+			want:          ConfigResponse{},
+		},
+		{
 			name:          "empty config",
 			cfg:           &Config{},
 			includeSecret: true,

@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/cameronsjo/bosun/internal/daemon"
 	"github.com/cameronsjo/bosun/internal/ui"
 )
 
@@ -765,7 +766,7 @@ BOSUN_REPO_URL=https://github.com/your-org/your-infra-repo.git
 # starter compose refuses to start without it. Set only one of WEBHOOK_SECRET
 # and GITHUB_WEBHOOK_SECRET: if both are set to different values, every
 # webhook trigger is rejected with 403.
-# WEBHOOK_SECRET=<output of: openssl rand -hex 32>
+# WEBHOOK_SECRET=` + daemon.InitTemplateWebhookSecretPlaceholder + `
 
 # Optional: Discord webhook for notifications
 # DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...

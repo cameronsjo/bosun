@@ -554,6 +554,8 @@ Validates webhook signatures and forwards valid requests to the daemon's trigger
 triggers instead; the posture is logged at startup and each accepted request
 logs a security warning. `/health` and `/ready` stay open either way.
 
+**Secret resolution.** The receiver reads `--secret`, then `WEBHOOK_SECRET`, then `GITHUB_WEBHOOK_SECRET` (the daemon's order), then the daemon's secret over `--fetch-secret`. A placeholder counts as no secret: `change-me` in any case and with surrounding whitespace, or the `bosun init` template's example value. Every trigger endpoint answers `403`, even with the opt-out set, when `WEBHOOK_SECRET` and `GITHUB_WEBHOOK_SECRET` are set to different values and no `--secret` is given, or when the fetched daemon config reports that conflict on the daemon. Startup logs an error naming both variables. The generic `/webhook` reads the first present of `X-Signature`, `X-Hub-Signature-256`, `X-Signature-256`.
+
 `--fetch-secret` reads the daemon's peer-authorized `GET /config`, so the
 receiver must run as the daemon's UID or a `BOSUN_SOCKET_ALLOWED_UIDS` member.
 

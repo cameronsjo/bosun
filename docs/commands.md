@@ -725,10 +725,11 @@ startup and every accepted unauthenticated request logs a `SECURITY:` warning.
 `/health` and `/ready` are unaffected.
 
 The secret resolves as `--secret`, then `WEBHOOK_SECRET`, then
-`GITHUB_WEBHOOK_SECRET`, the daemon's order. The literal `change-me` counts as
-no secret. With no `--secret` and the two variables set to different values,
+`GITHUB_WEBHOOK_SECRET`, the daemon's order. A placeholder (`change-me` in any case and with surrounding
+whitespace, or the `bosun init` example value) counts as no secret. With no `--secret` and the two variables set to different values,
 every trigger endpoint answers `403`, even with the opt-out, and startup logs
-an error naming both variables.
+an error naming both variables. With `--fetch-secret`, a daemon that
+reports the same conflict in its config makes the receiver fail closed too.
 
 **Generic endpoint branch filter:**
 
