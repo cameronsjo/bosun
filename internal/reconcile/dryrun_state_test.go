@@ -135,6 +135,9 @@ func runDryRunCases(t *testing.T, cases []dryRunCase) {
 			assert.Equal(t, tc.wantFailureAlerts, h.alerter.deployFailureCalls, "failure alerts are unchanged by a dry run")
 			assert.Equal(t, tc.wantSuccessAlerts, h.alerter.deploySuccessCalls, "success alerts are unchanged by a dry run")
 			assert.Zero(t, h.alerter.deployRecoveryCalls, "a dry run sends no recovery alert")
+			// The mock counts an interruption recovery in both counters; asserting
+			// the specific one keeps the interruption half pinned on its own.
+			assert.Zero(t, h.alerter.interruptionRecoveryCalls, "a dry run sends no interruption recovery alert")
 		})
 	}
 }
@@ -481,6 +484,85 @@ func TestRun_RecoveryAlertSentAfterDeploy(t *testing.T) {
 	state := LoadState(h.cfg.StateFile)
 	assert.Equal(t, "bbb222", state.LastDeployedCommit)
 	assert.Zero(t, state.LastAlertedAttempt, "a delivered retraction clears the owed marker")
+}
+
+// TestRun_InterruptionRecoverySentAfterRealRun is the real-run counterpart of the
+// "interruption retraction" dry-run row: the same seed, run for real, sends the
+// interruption recovery and clears the marker. It keeps the dry-run assertion
+// from being vacuous, and it fails if the dry-run withholding leaks into real runs.
+func TestRun_InterruptionRecoverySentAfterRealRun(t *testing.T) {
+	h := newRunHarness(t, false)
+	h.seed(t, &DeployState{
+		SchemaVersion:      2,
+		LastDeployedCommit: "aaa111",
+		LastAttemptOutcome: &LastAttemptOutcome{
+			Outcome:   attemptOutcomeInterrupted,
+			Commit:    "bbb222",
+			Timestamp: time.Now().UTC(),
+			Alerted:   true,
+		},
+	})
+
+	r := NewReconciler(h.cfg,
+		WithGitOperations(gitSyncing("aaa111", "bbb222")),
+		WithSecretsDecryptor(&mockSOPS{}),
+		WithDeployOps(&DeployOps{DryRun: true}),
+		WithAlerter(h.alerter),
+	)
+	require.NoError(t, r.Run(context.Background()))
+
+	assert.Equal(t, 1, h.alerter.interruptionRecoveryCalls, "a real run retracts a delivered interruption alert")
+	assert.Nil(t, LoadState(h.cfg.StateFile).LastAttemptOutcome, "the retraction clears the marker")
+}
+
+// TestRun_DeployPathsGateRecordsAttemptState pins the deploy_paths gate on a
+// persisting run. The dry-run table (TestRun_DryRun_DeployPathsGate) cannot see
+// state, so these rows assert that a match, and a force override, deploy and
+// record the new commit, and that the diff base is the last deployed commit.
+func TestRun_DeployPathsGateRecordsAttemptState(t *testing.T) {
+	tests := []struct {
+		name     string
+		force    bool
+		diff     []string
+		wantDiff [][2]string
+	}{
+		{
+			name:     "a matching file deploys and records the commit",
+			diff:     []string{"unraid/compose/core.yml", "docs/README.md"},
+			wantDiff: [][2]string{{"aaa111", "bbb222"}},
+		},
+		{
+			name:  "force deploys although no file matches",
+			force: true,
+			diff:  []string{"docs/README.md"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newRunHarness(t, false)
+			h.cfg.DeployPaths = NewConfigField([]string{"unraid/**"})
+			h.cfg.Force = tt.force
+			h.seed(t, &DeployState{LastDeployedCommit: "aaa111", DeployCount: 1})
+			git := &mockGitWithDiff{
+				syncChanged: true, syncBefore: "aaa111", syncAfter: "bbb222",
+				diffFiles: tt.diff,
+			}
+
+			r := NewReconciler(h.cfg,
+				WithGitOperations(git),
+				WithSecretsDecryptor(&mockSOPS{}),
+				WithDeployOps(&DeployOps{DryRun: true}),
+				WithAlerter(h.alerter),
+			)
+			require.NoError(t, r.Run(context.Background()))
+
+			assert.Equal(t, tt.wantDiff, git.diffCalledWith)
+			state := LoadState(h.cfg.StateFile)
+			assert.Equal(t, "bbb222", state.LastDeployedCommit, "the gate did not skip: the commit is recorded as deployed")
+			assert.Equal(t, "bbb222", state.LastAttemptedCommit)
+			assert.Equal(t, 2, state.DeployCount)
+		})
+	}
 }
 
 // TestPersistState covers both arms of the single state-write choke point and
