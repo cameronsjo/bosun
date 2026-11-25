@@ -40,6 +40,17 @@ through an independent trusted channel before installing the entries. ssh-keysca
 does not authenticate a host. Deploys without a Bosun trust file still use strict
 OpenSSH default stores; container-only pins must be persisted.
 
+## [0.48.0](https://github.com/cameronsjo/bosun/compare/v0.47.14...v0.48.0) (2026-11-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **reconcile:** templates that call env, expandenv, or getHostByName fail to parse. Replace the earlier documented pattern     {{- $secrets := fromJson (env "SOPS_SECRETS") -}} and references such as $secrets.apps.myapp.db_password with the data context, for example {{ .apps.myapp.db_password }}.
+
+### Bug Fixes
+
+* **reconcile:** remove env and network functions from template Sprig map ([#841](https://github.com/cameronsjo/bosun/issues/841)) ([57153dd](https://github.com/cameronsjo/bosun/commit/57153dddc22744a8de34d4f543ced7d767329f2b))
+
 ## [0.47.14](https://github.com/cameronsjo/bosun/compare/v0.47.13...v0.47.14) (2026-11-25)
 
 
