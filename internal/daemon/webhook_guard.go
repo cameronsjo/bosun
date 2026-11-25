@@ -5,11 +5,54 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cameronsjo/bosun/internal/log"
 )
+
+// MaxWebhookBodySize is the largest webhook request body the daemon and the
+// standalone receiver accept (1 MiB). A larger body is refused with 413, never
+// truncated: a truncated body would reach authorization and payload decisions
+// as if it were the whole request (#794).
+const MaxWebhookBodySize = 1 << 20
+
+// ReadWebhookBody reads a webhook request body of at most MaxWebhookBodySize
+// bytes. It returns the body and true, or writes the error response and
+// returns false: 413 when the body exceeds the limit, 400 for any other read
+// failure. A nil body reads as empty.
+func ReadWebhookBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	if r.Body == nil {
+		return nil, true
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxWebhookBodySize))
+	if err == nil {
+		return body, true
+	}
+
+	logger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		logger.Warn().
+			Str(log.FieldPath, r.URL.Path).
+			Str(log.FieldRemoteAddr, r.RemoteAddr).
+			Int64("limit_bytes", maxErr.Limit).
+			Msg("Rejecting webhook body larger than the limit")
+		http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+		return nil, false
+	}
+	logger.Warn().
+		Err(err).
+		Str(log.FieldPath, r.URL.Path).
+		Str(log.FieldRemoteAddr, r.RemoteAddr).
+		Msg("Failed to read webhook body")
+	http.Error(w, "Failed to read body", http.StatusBadRequest)
+	return nil, false
+}
 
 const (
 	// DefaultDeliveryCacheSize bounds how many recent delivery IDs one server

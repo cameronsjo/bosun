@@ -25,7 +25,7 @@ const (
 	// Keep daemon client error responses within the same 1 MiB budget used for
 	// webhook request bodies. One additional byte is read only to detect
 	// truncation deterministically.
-	maxDaemonClientErrorBodySize = maxWebhookBodySize
+	maxDaemonClientErrorBodySize = MaxWebhookBodySize
 	daemonErrorBodyTruncated     = "... [truncated]"
 )
 

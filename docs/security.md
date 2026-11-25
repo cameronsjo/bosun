@@ -632,6 +632,11 @@ The daemon's HTTP trigger endpoints (`/webhook`, `/webhook/github`,
 request body, validated with constant-time comparison against `WEBHOOK_SECRET`
 (GitHub convention: `X-Hub-Signature-256`; generic/manual: `X-Signature`).
 
+The signature covers the whole body, so the body is read whole or not at all:
+both the daemon and the `bosun webhook` receiver refuse a body over 1 MiB with
+`413` and start no reconcile. Truncating it instead would let authorization
+and the branch filter judge a partial payload.
+
 **Webhook auth fails closed.** When no webhook secret is configured, every
 trigger request is rejected with `403` and no reconcile runs. This is the
 default posture; a missing secret MUST NOT silently grant anonymous callers
