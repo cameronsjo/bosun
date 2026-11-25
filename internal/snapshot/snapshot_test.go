@@ -210,9 +210,103 @@ func TestRestore_CreatesPreRollbackBackup(t *testing.T) {
 func TestRestore_SnapshotNotFound(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	err := Restore(tmpDir, "nonexistent-snapshot")
+	err := Restore(tmpDir, "snapshot-nonexistent")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestRestore_RejectsEscapingName(t *testing.T) {
+	tmpDir := t.TempDir()
+	evilDir := filepath.Join(tmpDir, ".bosun", "evil")
+	require.NoError(t, os.MkdirAll(evilDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(evilDir, "pwn.yml"), []byte("pwn"), 0644))
+	outDir := outputDir(tmpDir)
+	require.NoError(t, os.MkdirAll(outDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(outDir, "original.yml"), []byte("original"), 0644))
+
+	err := Restore(tmpDir, "../evil")
+
+	require.ErrorIs(t, err, ErrInvalidName)
+	content, readErr := os.ReadFile(filepath.Join(outDir, "original.yml"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "original", string(content))
+	assert.NoFileExists(t, filepath.Join(outDir, "pwn.yml"))
+}
+
+func TestRestore_RejectsSymlinkedSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "pwn.yml"), []byte("pwn"), 0644))
+	snapDir := snapshotsDir(tmpDir)
+	require.NoError(t, os.MkdirAll(snapDir, 0755))
+	require.NoError(t, os.Symlink(outside, filepath.Join(snapDir, "snapshot-link")))
+	outDir := outputDir(tmpDir)
+	require.NoError(t, os.MkdirAll(outDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(outDir, "original.yml"), []byte("original"), 0644))
+
+	err := Restore(tmpDir, "snapshot-link")
+
+	require.EqualError(t, err, "snapshot is a symlink: snapshot-link")
+	content, readErr := os.ReadFile(filepath.Join(outDir, "original.yml"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "original", string(content))
+}
+
+func TestRestore_PrunesPreRollbackCopies(t *testing.T) {
+	tmpDir := t.TempDir()
+	snapDir := snapshotsDir(tmpDir)
+	base := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	oldest := PreRollbackPrefix + base.Format(DateFormatPrecise)
+	for i := 0; i < MaxSnapshots; i++ {
+		name := PreRollbackPrefix + base.Add(time.Duration(i)*time.Second).Format(DateFormatPrecise)
+		require.NoError(t, os.MkdirAll(filepath.Join(snapDir, name), 0755))
+	}
+	snapshotName := SnapshotPrefix + base.Format(DateFormatPrecise)
+	require.NoError(t, os.MkdirAll(filepath.Join(snapDir, snapshotName), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(snapDir, snapshotName, "v1.yml"), []byte("v1"), 0644))
+	outDir := outputDir(tmpDir)
+	require.NoError(t, os.MkdirAll(outDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(outDir, "v2.yml"), []byte("v2"), 0644))
+
+	require.NoError(t, Restore(tmpDir, snapshotName))
+
+	copies, err := listPreRollback(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, copies, MaxSnapshots)
+	assert.FileExists(t, filepath.Join(copies[0].Path, "v2.yml"), "newest copy is the one this restore made")
+	assert.NoDirExists(t, filepath.Join(snapDir, oldest))
+	snapshots, err := List(tmpDir)
+	require.NoError(t, err)
+	assert.Len(t, snapshots, 1)
+}
+
+func TestCleanup_PrunesPreRollbackCopies(t *testing.T) {
+	tmpDir := t.TempDir()
+	snapDir := snapshotsDir(tmpDir)
+	base := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < MaxSnapshots+3; i++ {
+		name := PreRollbackPrefix + base.Add(time.Duration(i)*time.Second).Format(DateFormatPrecise)
+		require.NoError(t, os.MkdirAll(filepath.Join(snapDir, name), 0755))
+	}
+	for i := 0; i < 2; i++ {
+		name := SnapshotPrefix + base.Add(time.Duration(i)*time.Second).Format(DateFormatPrecise)
+		require.NoError(t, os.MkdirAll(filepath.Join(snapDir, name), 0755))
+	}
+
+	require.NoError(t, Cleanup(tmpDir))
+
+	copies, err := listPreRollback(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, copies, MaxSnapshots)
+	newest := PreRollbackPrefix + base.Add(time.Duration(MaxSnapshots+2)*time.Second).Format(DateFormatPrecise)
+	assert.Equal(t, newest, copies[0].Name)
+	for i := 0; i < 3; i++ {
+		pruned := PreRollbackPrefix + base.Add(time.Duration(i)*time.Second).Format(DateFormatPrecise)
+		assert.NoDirExists(t, filepath.Join(snapDir, pruned))
+	}
+	snapshots, err := List(tmpDir)
+	require.NoError(t, err)
+	assert.Len(t, snapshots, 2)
 }
 
 func TestRestore_RefusesUninspectableOutput(t *testing.T) {

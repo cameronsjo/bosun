@@ -537,8 +537,18 @@ bosun mayday -r interactive
 bosun mayday                    # Show recent errors
 bosun mayday -l                 # List snapshots
 bosun mayday -r interactive     # Interactive rollback menu
-bosun mayday -r 2024-01-15_143022  # Rollback to specific snapshot
+bosun mayday -r snapshot-20240115-143022.000000000  # Rollback to specific snapshot
 ```
+
+Snapshots live under `<manifest>/.bosun/snapshots/`, which must be git-ignored (`bosun init` adds `.bosun/` to `.gitignore`). `bosun provision` saves a snapshot of the current output before every write that overwrites it, and stops without writing if the snapshot fails. The newest 20 snapshots are kept.
+
+A rollback first saves the current output as `pre-rollback-<timestamp>` in the same directory. Those copies are also capped at 20 and do not appear in `--list`. To restore one by hand:
+
+```bash
+cp -a .bosun/snapshots/pre-rollback-<timestamp>/. output/
+```
+
+Rollback accepts only a `snapshot-*` name from `--list`; a symlinked snapshot directory is refused.
 
 ### overboard
 
