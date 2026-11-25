@@ -31,6 +31,36 @@ func TestRenderTemplate_MissingKeyIncludesTemplateAndKey(t *testing.T) {
 	assert.Contains(t, err.Error(), `map has no entry for key "db_passwrd"`)
 }
 
+// TestRenderTemplate_TemplateFunctionAllowlist verifies bosun render offers the
+// same Template Function Allowlist as reconcile: env, expandenv, and
+// getHostByName fail to parse instead of rendering to stdout.
+func TestRenderTemplate_TemplateFunctionAllowlist(t *testing.T) {
+	t.Setenv("BOSUN_TEST_SECRET", "s3cr3t")
+
+	tests := []struct {
+		function string
+		content  string
+	}{
+		{function: "env", content: `{{ env "BOSUN_TEST_SECRET" }}`},
+		{function: "expandenv", content: `{{ expandenv "$BOSUN_TEST_SECRET" }}`},
+		{function: "getHostByName", content: `{{ getHostByName "localhost" }}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.function, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			templatePath := filepath.Join(tmpDir, "denied.tmpl")
+			require.NoError(t, os.WriteFile(templatePath, []byte(tt.content), 0644))
+
+			err := renderTemplate(context.Background(), templatePath, map[string]any{}, "", filepath.Join(tmpDir, "templates"))
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "parse error")
+			assert.Contains(t, err.Error(), `function "`+tt.function+`" not defined`)
+		})
+	}
+}
+
 func TestRenderCmd_Registration(t *testing.T) {
 	cmd, _, err := rootCmd.Find([]string{"render"})
 	require.NoError(t, err)
@@ -57,6 +87,7 @@ func TestRenderCmd_Help(t *testing.T) {
 		output, err := executeCmd(t, "render", "--help")
 		require.NoError(t, err)
 		assert.Contains(t, output, "sprig")
+		assert.Contains(t, output, "except env, expandenv and getHostByName")
 		assert.Contains(t, output, "include")
 		assert.Contains(t, output, "fromJsonFile")
 	})

@@ -106,17 +106,96 @@ func TestIncludeSubtreeAllowlist(t *testing.T) {
 	})
 }
 
-// TestRenderDirectoryDefaultsIncludeDir verifies RenderDirectory defaults the
-// include allowlist root to <sourceDir>/templates when the caller left it empty.
-func TestRenderDirectoryDefaultsIncludeDir(t *testing.T) {
-	sourceDir, _ := filepath.EvalSymlinks(t.TempDir())
-	stagingDir, _ := filepath.EvalSymlinks(t.TempDir())
-	require.NoError(t, os.MkdirAll(filepath.Join(sourceDir, "templates"), 0755))
+// newIncludeSource creates a render source tree whose templates/frag.txt holds
+// fragment, plus a secret.txt in the source root above templates/.
+func newIncludeSource(t *testing.T, fragment string) string {
+	t.Helper()
+	sourceDir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(sourceDir, DefaultIncludeSubdir), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(sourceDir, DefaultIncludeSubdir, "frag.txt"), []byte(fragment), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "secret.txt"), []byte("s3cr3t"), 0600))
+	return sourceDir
+}
 
+// TestRenderDirectoryDefaultsIncludeDirPerCall verifies RenderDirectory
+// confines reads to <sourceDir>/templates when the caller left IncludeDir
+// empty, and restores the caller's empty value on every return.
+func TestRenderDirectoryDefaultsIncludeDirPerCall(t *testing.T) {
+	t.Run("default confines includes to templates and is restored", func(t *testing.T) {
+		sourceDir := newIncludeSource(t, "fragment-a")
+		stagingDir, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+		include := fmt.Sprintf(`{{ include "%s" }}`, filepath.Join(sourceDir, DefaultIncludeSubdir, "frag.txt"))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "a.tmpl"), []byte(include), 0644))
+
+		tmpl := &TemplateOps{Data: map[string]any{}}
+		require.NoError(t, tmpl.RenderDirectory(context.Background(), sourceDir, stagingDir, "."))
+
+		got, err := os.ReadFile(filepath.Join(stagingDir, "a"))
+		require.NoError(t, err)
+		assert.Equal(t, "fragment-a", string(got))
+		assert.Empty(t, tmpl.IncludeDir, "the per-call default must not persist on the TemplateOps")
+	})
+
+	t.Run("read above templates is refused and IncludeDir is restored", func(t *testing.T) {
+		sourceDir := newIncludeSource(t, "fragment-a")
+		stagingDir, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+		include := fmt.Sprintf(`{{ include "%s" }}`, filepath.Join(sourceDir, "secret.txt"))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "b.tmpl"), []byte(include), 0644))
+
+		tmpl := &TemplateOps{Data: map[string]any{}}
+		err = tmpl.RenderDirectory(context.Background(), sourceDir, stagingDir, ".")
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "escapes the allowed include directory")
+		assert.Empty(t, tmpl.IncludeDir)
+	})
+
+	t.Run("source root open failure restores IncludeDir", func(t *testing.T) {
+		missingSource := filepath.Join(t.TempDir(), "missing")
+		stagingDir := t.TempDir()
+
+		tmpl := &TemplateOps{Data: map[string]any{}}
+		err := tmpl.RenderDirectory(context.Background(), missingSource, stagingDir, ".")
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "open template source root")
+		assert.Empty(t, tmpl.IncludeDir, "an early return must restore IncludeDir too")
+	})
+
+	t.Run("explicit IncludeDir is kept", func(t *testing.T) {
+		sourceDir := newIncludeSource(t, "fragment-a")
+		stagingDir := t.TempDir()
+		explicit := filepath.Join(sourceDir, DefaultIncludeSubdir)
+
+		tmpl := &TemplateOps{Data: map[string]any{}, IncludeDir: explicit}
+		require.NoError(t, tmpl.RenderDirectory(context.Background(), sourceDir, stagingDir, "."))
+
+		assert.Equal(t, explicit, tmpl.IncludeDir)
+	})
+}
+
+// TestRenderDirectory_ReuseResolvesEachSourceIncludeDir verifies a reused
+// TemplateOps resolves each source tree's own templates/ directory rather than
+// staying confined to the first tree's.
+func TestRenderDirectory_ReuseResolvesEachSourceIncludeDir(t *testing.T) {
 	tmpl := &TemplateOps{Data: map[string]any{}}
-	require.NoError(t, tmpl.RenderDirectory(context.Background(), sourceDir, stagingDir, "."))
 
-	assert.Equal(t, filepath.Join(sourceDir, DefaultIncludeSubdir), tmpl.IncludeDir)
+	for _, fragment := range []string{"fragment-a", "fragment-b"} {
+		sourceDir := newIncludeSource(t, fragment)
+		stagingDir, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+		include := fmt.Sprintf(`{{ include "%s" }}`, filepath.Join(sourceDir, DefaultIncludeSubdir, "frag.txt"))
+		require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "a.tmpl"), []byte(include), 0644))
+
+		require.NoError(t, tmpl.RenderDirectory(context.Background(), sourceDir, stagingDir, "."), fragment)
+
+		got, err := os.ReadFile(filepath.Join(stagingDir, "a"))
+		require.NoError(t, err)
+		assert.Equal(t, fragment, string(got))
+	}
 }
 
 func TestResolveTemplateIncludeDir(t *testing.T) {

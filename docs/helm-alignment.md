@@ -177,7 +177,7 @@ compose:
 
 ### Available Functions
 
-All [Sprig functions](https://masterminds.github.io/sprig/) are available, plus:
+All [Sprig functions](https://masterminds.github.io/sprig/) are available, plus the functions below. This applies to chart templates. Reconcile `.tmpl` files and `bosun render` exclude `env`, `expandenv`, and `getHostByName`.
 
 | Function | Description |
 |----------|-------------|
