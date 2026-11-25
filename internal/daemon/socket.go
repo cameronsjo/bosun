@@ -245,9 +245,14 @@ type TriggerResponse struct {
 // when its caller asks for it.
 type ConfigResponse struct {
 	WebhookSecret string `json:"webhook_secret,omitempty"`
-	PollInterval  int    `json:"poll_interval,omitempty"`
-	RepoURL       string `json:"repo_url,omitempty"`
-	RepoBranch    string `json:"repo_branch,omitempty"`
+	// WebhookSecretConflict reports that the daemon's WEBHOOK_SECRET and
+	// GITHUB_WEBHOOK_SECRET differ (#794, #837). A receiver that fetches its secret
+	// MUST then fail closed: the empty WebhookSecret alongside it is not "no
+	// secret configured". Filled only with WebhookSecret.
+	WebhookSecretConflict bool   `json:"webhook_secret_conflict,omitempty"`
+	PollInterval          int    `json:"poll_interval,omitempty"`
+	RepoURL               string `json:"repo_url,omitempty"`
+	RepoBranch            string `json:"repo_branch,omitempty"`
 }
 
 // StatusResponse is the response body for /status.

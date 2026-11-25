@@ -478,14 +478,25 @@ func TestConfigFromEnv(t *testing.T) {
 		}
 	})
 
-	t.Run("GITHUB_WEBHOOK_SECRET overrides WEBHOOK_SECRET", func(t *testing.T) {
+	t.Run("differing WEBHOOK_SECRET and GITHUB_WEBHOOK_SECRET fail closed", func(t *testing.T) {
 		t.Setenv("WEBHOOK_SECRET", "generic-secret")
 		t.Setenv("GITHUB_WEBHOOK_SECRET", "github-secret")
 
 		cfg := ConfigFromEnv()
 
-		if cfg.WebhookSecret != "github-secret" {
-			t.Errorf("WebhookSecret = %q, want github-secret", cfg.WebhookSecret)
+		if cfg.WebhookSecret != "" || !cfg.WebhookSecretConflict {
+			t.Errorf("WebhookSecret = %q, conflict = %v; want no secret and a conflict", cfg.WebhookSecret, cfg.WebhookSecretConflict)
+		}
+	})
+
+	t.Run("only GITHUB_WEBHOOK_SECRET still resolves", func(t *testing.T) {
+		t.Setenv("WEBHOOK_SECRET", "")
+		t.Setenv("GITHUB_WEBHOOK_SECRET", "github-secret")
+
+		cfg := ConfigFromEnv()
+
+		if cfg.WebhookSecret != "github-secret" || cfg.WebhookSecretConflict {
+			t.Errorf("WebhookSecret = %q, conflict = %v; want github-secret and no conflict", cfg.WebhookSecret, cfg.WebhookSecretConflict)
 		}
 	})
 

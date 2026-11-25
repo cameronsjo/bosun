@@ -783,8 +783,9 @@ func (s *Server) metricsTokenValid(token string) bool {
 type triggerScheme int
 
 const (
-	// schemeGeneric accepts X-Signature or X-Hub-Signature-256 (the generic
-	// /webhook endpoint serves forwarders that use either convention).
+	// schemeGeneric reads the first present of X-Signature,
+	// X-Hub-Signature-256, X-Signature-256 (GenericWebhookSignature); the
+	// receiver's generic /webhook uses the same lookup (#794).
 	schemeGeneric triggerScheme = iota
 	// schemeGitHub accepts only X-Hub-Signature-256 (GitHub's convention).
 	schemeGitHub
@@ -800,11 +801,24 @@ const (
 // With no webhook secret configured the endpoints fail closed (#345): every
 // trigger request is rejected with 403 unless the operator explicitly opted
 // out via BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true, in which case each
-// accepted unauthenticated request logs a security warning.
+// accepted unauthenticated request logs a security warning. The placeholder
+// secret counts as none (#794).
+//
+// When WEBHOOK_SECRET and GITHUB_WEBHOOK_SECRET conflict, every request is
+// rejected with 403 before the opt-out is consulted (#794).
 func (s *Server) authorizeTrigger(w http.ResponseWriter, r *http.Request, body []byte, scheme triggerScheme) bool {
 	logger := log.ComponentCtx(r.Context(), log.ComponentWebhook)
 
-	if s.daemon.config.WebhookSecret == "" {
+	if s.daemon.config.WebhookSecretConflict {
+		logger.Error().
+			Str("remote_addr", r.RemoteAddr).
+			Str("endpoint", r.URL.Path).
+			Msg(WebhookSecretConflictMessage)
+		http.Error(w, "Webhook authentication misconfigured", http.StatusForbidden)
+		return false
+	}
+
+	if !WebhookSecretConfigured(s.daemon.config.WebhookSecret) {
 		if s.daemon.config.AllowUnauthenticatedWebhook {
 			logger.Warn().
 				Str("remote_addr", r.RemoteAddr).
@@ -827,10 +841,7 @@ func (s *Server) authorizeTrigger(w http.ResponseWriter, r *http.Request, body [
 	case schemeManual:
 		sig = r.Header.Get("X-Signature")
 	case schemeGeneric:
-		sig = r.Header.Get("X-Signature")
-		if sig == "" {
-			sig = r.Header.Get("X-Hub-Signature-256")
-		}
+		sig = GenericWebhookSignature(r.Header)
 	default:
 		// Fail closed on an unknown scheme: a future variant must pick its
 		// header policy explicitly, never inherit generic's broader one.

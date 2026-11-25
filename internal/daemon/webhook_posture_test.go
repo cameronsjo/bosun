@@ -38,6 +38,19 @@ func TestWarnWebhookAuthPosture(t *testing.T) {
 			name:   "disabled HTTP is silent",
 			mutate: func(c *Config) { c.EnableHTTP = false },
 		},
+		{
+			name:         "placeholder secret fails closed like no secret",
+			mutate:       func(c *Config) { c.WebhookSecret = PlaceholderWebhookSecret },
+			wantContains: []string{"REJECT all trigger requests"},
+		},
+		{
+			name: "secret conflict is a loud error that names both variables",
+			mutate: func(c *Config) {
+				c.WebhookSecretConflict = true
+				c.AllowUnauthenticatedWebhook = true
+			},
+			wantContains: []string{`"level":"error"`, "WEBHOOK_SECRET and GITHUB_WEBHOOK_SECRET", "rejected with 403"},
+		},
 	}
 
 	for _, tt := range tests {

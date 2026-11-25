@@ -101,7 +101,7 @@ For deployment notifications:
 | `BOSUN_GIT_USERNAME` | No | Private HTTPS Git username; set together with `BOSUN_GIT_TOKEN` |
 | `BOSUN_GIT_TOKEN` | No | Private HTTPS Git token (masked); set together with `BOSUN_GIT_USERNAME` |
 | `SOPS_AGE_KEY_FILE` | Yes | Path to Age private key |
-| `GITHUB_WEBHOOK_SECRET` | Yes | Webhook validation secret |
+| `GITHUB_WEBHOOK_SECRET` | Yes | Webhook signing secret. Bosun reads `WEBHOOK_SECRET` first; set only one of the two, because two different values make every webhook trigger fail with `403`. The literal `change-me` counts as unset |
 | `DISCORD_WEBHOOK_URL` | No | Discord notification webhook |
 | `BOSUN_POLL_INTERVAL` | No | Seconds between polls (default: 3600) |
 | `TZ` | No | Timezone (default: America/Chicago) |

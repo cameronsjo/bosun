@@ -143,7 +143,7 @@
     Target="GITHUB_WEBHOOK_SECRET"
     Default=""
     Mode=""
-    Description="Secret for validating GitHub webhook signatures. Must match webhook config in GitHub."
+    Description="Secret webhook senders sign with (GitHub: the hook secret). Bosun also reads WEBHOOK_SECRET; set only one. If both are set to different values, every webhook trigger is rejected with 403."
     Type="Variable"
     Display="always"
     Required="true"

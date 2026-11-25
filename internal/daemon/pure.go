@@ -172,6 +172,7 @@ func buildConfigResponse(cfg *Config, includeWebhookSecret bool) ConfigResponse 
 
 	if includeWebhookSecret {
 		resp.WebhookSecret = cfg.WebhookSecret
+		resp.WebhookSecretConflict = cfg.WebhookSecretConflict
 	}
 
 	if cfg.PollInterval > 0 {
