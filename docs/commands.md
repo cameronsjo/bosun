@@ -587,7 +587,7 @@ bosun daemon -i 1800
 |------|--------|-------------|
 | `/health` | GET | Public liveness JSON: `status`, `ready`, and `uptime` |
 | `/ready` | GET | Readiness check |
-| `/webhook` | POST | Generic webhook trigger (validates `X-Signature` or `X-Hub-Signature-256`) |
+| `/webhook` | POST | Generic webhook trigger (validates the first present of `X-Signature`, `X-Hub-Signature-256`, `X-Signature-256`) |
 | `/webhook/github` | POST | GitHub push webhook |
 | `/webhook/manual` | POST | Manual trigger (validates `X-Signature`; body empty or `{"force","source","nonce"}` only) |
 | `/metrics` | GET | Prometheus metrics |
@@ -723,6 +723,12 @@ with `403`, matching the daemon's own posture. Set
 unauthenticated triggers instead; the active posture is logged loudly at
 startup and every accepted unauthenticated request logs a `SECURITY:` warning.
 `/health` and `/ready` are unaffected.
+
+The secret resolves as `--secret`, then `WEBHOOK_SECRET`, then
+`GITHUB_WEBHOOK_SECRET`, the daemon's order. The literal `change-me` counts as
+no secret. With no `--secret` and the two variables set to different values,
+every trigger endpoint answers `403`, even with the opt-out, and startup logs
+an error naming both variables.
 
 **Generic endpoint branch filter:**
 

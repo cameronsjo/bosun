@@ -15,6 +15,67 @@ import (
 	"github.com/cameronsjo/bosun/internal/log"
 )
 
+// PlaceholderWebhookSecret is the value bosun's starter compose files used to
+// ship as a default. It is public, so it authenticates nothing: the daemon and
+// the receiver treat it exactly like an unset secret (#794).
+const PlaceholderWebhookSecret = "change-me"
+
+// WebhookSecretConfigured reports whether secret can authenticate a webhook:
+// it is non-empty and not PlaceholderWebhookSecret.
+func WebhookSecretConfigured(secret string) bool {
+	return secret != "" && secret != PlaceholderWebhookSecret
+}
+
+// ResolveWebhookSecret resolves the webhook secret from WEBHOOK_SECRET, then
+// GITHUB_WEBHOOK_SECRET, the one order the daemon, the receiver, and validate
+// share (#794). A placeholder value counts as unset. When both variables hold
+// different usable secrets it returns "" and conflict=true: no sender can be
+// told which secret to sign with, so trigger endpoints must fail closed rather
+// than pick one.
+func ResolveWebhookSecret(getenv func(string) string) (secret string, conflict bool) {
+	primary := getenv("WEBHOOK_SECRET")
+	if !WebhookSecretConfigured(primary) {
+		primary = ""
+	}
+	github := getenv("GITHUB_WEBHOOK_SECRET")
+	if !WebhookSecretConfigured(github) {
+		github = ""
+	}
+	if primary != "" && github != "" && primary != github {
+		return "", true
+	}
+	if primary != "" {
+		return primary, false
+	}
+	return github, false
+}
+
+// WebhookSecretConflictMessage is the error both servers log, at startup and
+// per rejected request, when ResolveWebhookSecret reports a conflict. It names
+// the variables and never their values.
+const WebhookSecretConflictMessage = "Webhook auth fails closed: WEBHOOK_SECRET and GITHUB_WEBHOOK_SECRET are both set to different values, expected one secret. Every trigger request is rejected with 403, even with BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true. Unset one, or set both to the same value"
+
+// genericSignatureHeaders lists the headers the generic /webhook endpoint
+// reads its HMAC from, in lookup order. The first present header decides:
+// a later valid header never rescues an invalid earlier one.
+var genericSignatureHeaders = []string{
+	"X-Signature",
+	"X-Hub-Signature-256",
+	"X-Signature-256",
+}
+
+// GenericWebhookSignature returns the generic endpoint's signature: the value
+// of the first non-empty header in genericSignatureHeaders, or "" when none is
+// set. The daemon's and the receiver's generic /webhook both use it (#794).
+func GenericWebhookSignature(h http.Header) string {
+	for _, name := range genericSignatureHeaders {
+		if v := h.Get(name); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // MaxWebhookBodySize is the largest webhook request body the daemon and the
 // standalone receiver accept (1 MiB). A larger body is refused with 413, never
 // truncated: a truncated body would reach authorization and payload decisions

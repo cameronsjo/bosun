@@ -82,7 +82,7 @@ The daemon itself serves two webhook endpoints:
 | Endpoint | Path | Signature Header |
 |----------|------|------------------|
 | GitHub | `/webhook/github` | `X-Hub-Signature-256` |
-| Generic | `/webhook` | `X-Signature`, or `X-Hub-Signature-256` |
+| Generic | `/webhook` | `X-Signature`, `X-Hub-Signature-256`, or `X-Signature-256` (the first one present decides) |
 
 Both daemon endpoints act only on pushes to the tracked branch (`BOSUN_REPO_BRANCH`). After the signature check, the generic endpoint reads an optional top-level `ref` from a JSON body: a reconcile starts only when it equals `refs/heads/<branch>`. Other branches, tags, and a bare branch name get `200` with `{"status":"ignored"}` so the sender does not retry. A request with an `X-GitHub-Event` header other than `push` is ignored the same way, as is a GitHub push with no JSON `ref` (set the hook content type to `application/json`). A body with no `ref` still triggers, so a plain signed `POST` keeps working. Point GitHub at `/webhook/github`.
 
@@ -92,13 +92,14 @@ signature scheme and forwards normalized triggers to the daemon over its Unix so
 
 | Provider | Path (receiver) | Signature Header |
 |----------|-----------------|------------------|
+| Generic | `/webhook` | `X-Signature`, `X-Hub-Signature-256`, or `X-Signature-256` (the first one present decides) |
 | GitHub | `/webhook/github` | `X-Hub-Signature-256` |
 | GitLab | `/webhook/gitlab` | `X-Gitlab-Token` |
 | Gitea | `/webhook/gitea` | `X-Gitea-Signature` |
 | Bitbucket | `/webhook/bitbucket` | `X-Hub-Signature` |
 
 Do not point a Gitea/GitLab/Bitbucket webhook directly at the daemon's `/webhook`
-endpoint — its generic handler expects `X-Signature`/`X-Hub-Signature-256`, so a
+endpoint — its generic handler expects `X-Signature`, `X-Hub-Signature-256`, or `X-Signature-256`, so a
 provider-specific signature header will fail validation. Signatures are validated
 using HMAC-SHA256 (or SHA1 for legacy) with constant-time comparison.
 
@@ -110,6 +111,8 @@ secret resolved (`--secret`, `WEBHOOK_SECRET`, `GITHUB_WEBHOOK_SECRET`, or
 `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true` is set. `/health` and `/ready` stay
 open. `--fetch-secret` needs the receiver to run as an authorized socket peer,
 since the daemon's `GET /config` is peer-credential checked.
+
+Both servers resolve the secret the same way: `--secret` (receiver only), then `WEBHOOK_SECRET`, then `GITHUB_WEBHOOK_SECRET`. The literal `change-me`, the old starter default, counts as no secret. If `WEBHOOK_SECRET` and `GITHUB_WEBHOOK_SECRET` are both set to different values, every trigger endpoint answers `403` and startup logs an error naming both variables. The opt-out does not apply then: auth was configured, only ambiguously. Unset one, or set both to the same value.
 
 The receiver's generic `/webhook` applies the same branch filter as the daemon's. Its provider endpoints filter on the same branch after their signature and push-event checks: GitHub, GitLab, and Gitea pushes forward only when `ref` is `refs/heads/<branch>`, and Bitbucket pushes only when a `push.changes[].new` entry is a `branch` with that name. Other branches, tags, and deletions get `200` `ignored`. The receiver learns the branch from `--branch`, then `BOSUN_REPO_BRANCH`, then the daemon's `GET /config`; with none known, the ref check is off on every endpoint and startup warns.
 

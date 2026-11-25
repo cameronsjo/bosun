@@ -630,7 +630,8 @@ The auth stack — Traefik, Authelia, and Tailscale gateway — forms a dependen
 The daemon's HTTP trigger endpoints (`/webhook`, `/webhook/github`,
 `/webhook/manual`) authenticate requests with an HMAC-SHA256 signature over the
 request body, validated with constant-time comparison against `WEBHOOK_SECRET`
-(GitHub convention: `X-Hub-Signature-256`; generic/manual: `X-Signature`).
+(GitHub convention: `X-Hub-Signature-256`; manual: `X-Signature`; generic: the
+header list below).
 
 The signature covers the whole body, so the body is read whole or not at all:
 both the daemon and the `bosun webhook` receiver refuse a body over 1 MiB with
@@ -653,6 +654,24 @@ other escape hatches). With the opt-out active:
 
 The opt-out never bypasses a configured secret — when `WEBHOOK_SECRET` is set,
 signature validation always runs.
+
+**One secret, resolved one way.** The daemon, the `bosun webhook` receiver, and
+`bosun validate` resolve the secret in one order: `--secret` (receiver only),
+then `WEBHOOK_SECRET`, then `GITHUB_WEBHOOK_SECRET`. Two cases fail closed:
+
+- The literal `change-me`, which older starter compose files shipped as a
+  default, is public and counts as no secret. A deployment still using it gets
+  the fail-closed `403` above unless the opt-out is set.
+- `WEBHOOK_SECRET` and `GITHUB_WEBHOOK_SECRET` set to different values reject
+  every trigger with `403`, **even with the opt-out set**, and both servers log
+  an error at startup and per request naming the two variables (never their
+  values). No sender can know which secret to sign with, so neither is picked.
+  `bosun validate` reports it as an error.
+
+The generic `/webhook` on both servers reads its HMAC from the first present of
+`X-Signature`, `X-Hub-Signature-256`, `X-Signature-256`; a later valid header
+never rescues an invalid earlier one. `/webhook/github` reads only
+`X-Hub-Signature-256` and `/webhook/manual` only `X-Signature`.
 
 **The standalone `bosun webhook` receiver fails closed the same way.** It
 forwards to the daemon over the Unix socket, which authorizes by peer

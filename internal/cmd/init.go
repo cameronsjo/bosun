@@ -419,7 +419,7 @@ services:
     restart: unless-stopped
     environment:
       TZ: ${TZ:-America/Chicago}
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-change-me}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?set WEBHOOK_SECRET}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${APPDATA:-./appdata}/bosun:/app/data
@@ -761,8 +761,11 @@ BOSUN_REPO_URL=https://github.com/your-org/your-infra-repo.git
 # Optional: Secrets files (comma-separated, relative to repo)
 # BOSUN_SECRETS_FILE=secrets/prod.sops.yaml
 
-# Optional: Webhook secret for GitHub webhooks
-# GITHUB_WEBHOOK_SECRET=your-webhook-secret
+# Webhook secret: required for webhook triggers. Senders sign with it; the
+# starter compose refuses to start without it. Set only one of WEBHOOK_SECRET
+# and GITHUB_WEBHOOK_SECRET: if both are set to different values, every
+# webhook trigger is rejected with 403.
+# WEBHOOK_SECRET=<output of: openssl rand -hex 32>
 
 # Optional: Discord webhook for notifications
 # DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...

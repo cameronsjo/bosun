@@ -136,15 +136,16 @@ func validateEnvironment() int {
 	}
 	_, _ = ui.Green.Printf("  * Branch: %s\n", branch)
 
-	// Check webhook secret
-	webhookSecret := os.Getenv("WEBHOOK_SECRET")
-	if webhookSecret == "" {
-		webhookSecret = os.Getenv("GITHUB_WEBHOOK_SECRET")
-	}
-	if webhookSecret != "" {
+	// Check webhook secret, resolved exactly as the daemon resolves it (#794).
+	webhookSecret, webhookSecretConflict := daemon.ResolveWebhookSecret(os.Getenv)
+	switch {
+	case webhookSecretConflict:
+		_, _ = ui.Red.Println("  x Webhook secret: WEBHOOK_SECRET and GITHUB_WEBHOOK_SECRET are set to different values (webhook triggers will be rejected with 403)")
+		errors++
+	case webhookSecret != "":
 		_, _ = ui.Green.Println("  * Webhook secret: configured")
-	} else {
-		_, _ = ui.Yellow.Println("  ! Webhook secret: not set (webhooks will be insecure)")
+	default:
+		_, _ = ui.Yellow.Println("  ! Webhook secret: not set or the change-me placeholder (webhook triggers will be rejected with 403)")
 	}
 
 	// Check deploy target

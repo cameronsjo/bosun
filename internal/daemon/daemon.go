@@ -82,6 +82,12 @@ type Config struct {
 	// unless this is true (BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK=true, strict match).
 	AllowUnauthenticatedWebhook bool
 
+	// WebhookSecretConflict records that WEBHOOK_SECRET and
+	// GITHUB_WEBHOOK_SECRET are both set to different values (#794). Trigger
+	// endpoints then reject every request with 403, and the opt-out above does
+	// not apply: the operator configured auth, just ambiguously.
+	WebhookSecretConflict bool
+
 	// MetricsToken is a read-scope credential for /metrics and /api/widget
 	// (BOSUN_METRICS_TOKEN). It is SEPARATE from BearerToken: the TCP bearer
 	// also authorizes /trigger and /api/restart (control operations), so a
@@ -353,9 +359,18 @@ func New(cfg *Config) (*Daemon, error) {
 // warnWebhookAuthPosture announces the webhook auth posture at startup (#345):
 // fail-closed is the default, so a secret-less upgrade must never be a silent
 // 403, and an opted-out daemon must never hide its exposure. No-op when HTTP
-// is disabled or a secret is configured.
+// is disabled or a secret is configured. A secret conflict (#794) is an error,
+// not a warning: auth was configured, and every trigger will be refused.
 func (d *Daemon) warnWebhookAuthPosture(logger zerolog.Logger) {
-	if !d.config.EnableHTTP || d.config.WebhookSecret != "" {
+	if !d.config.EnableHTTP {
+		return
+	}
+	if d.config.WebhookSecretConflict {
+		logger.Error().Msg(WebhookSecretConflictMessage)
+		ui.Error("Webhooks fail closed: WEBHOOK_SECRET and GITHUB_WEBHOOK_SECRET differ, trigger requests will be rejected (403)")
+		return
+	}
+	if WebhookSecretConfigured(d.config.WebhookSecret) {
 		return
 	}
 	if d.config.AllowUnauthenticatedWebhook {
@@ -2360,10 +2375,7 @@ func ConfigFromEnv() *Config {
 	}
 	cfg.BearerToken = os.Getenv("BOSUN_BEARER_TOKEN")
 
-	cfg.WebhookSecret = os.Getenv("WEBHOOK_SECRET")
-	if secret := os.Getenv("GITHUB_WEBHOOK_SECRET"); secret != "" {
-		cfg.WebhookSecret = secret
-	}
+	cfg.WebhookSecret, cfg.WebhookSecretConflict = ResolveWebhookSecret(os.Getenv)
 
 	// Read-scope credential for /metrics and /api/widget (#296), separate from
 	// the control bearer. AllowUnauthenticatedMetrics uses the same strict

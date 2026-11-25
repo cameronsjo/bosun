@@ -536,7 +536,7 @@ The daemon serves GitHub and a generic HMAC endpoint:
 | Endpoint | Path | Signature Header |
 |----------|------|------------------|
 | GitHub | `/webhook/github` | `X-Hub-Signature-256` |
-| Generic | `/webhook` | `X-Signature`, or `X-Hub-Signature-256` |
+| Generic | `/webhook` | `X-Signature`, `X-Hub-Signature-256`, or `X-Signature-256` (the first one present decides) |
 | Manual | `/webhook/manual` | `X-Signature` |
 
 Both push endpoints act only on the tracked branch (`BOSUN_REPO_BRANCH`). The generic endpoint checks an optional top-level `ref` in a JSON body after the signature check: only `refs/heads/<branch>` triggers; other branches and tags get `200` `ignored`. An `X-GitHub-Event` other than `push`, or a GitHub push with no JSON `ref` (form-encoded hook), is ignored too. A body with no `ref` still triggers.
@@ -550,6 +550,8 @@ secret is not an open door. On trusted networks, opt out explicitly with
 and per accepted request). The Unix socket trigger (`bosun trigger`) is not
 affected. `BOSUN_LISTEN_ADDR` narrows the HTTP bind; the default stays
 all-interfaces so container-side callers reach the daemon over the docker bridge.
+
+**Secret resolution is shared and strict.** The daemon and the `bosun webhook` receiver read `--secret` (receiver only), then `WEBHOOK_SECRET`, then `GITHUB_WEBHOOK_SECRET`. The literal `change-me` (the old starter default) counts as no secret. If `WEBHOOK_SECRET` and `GITHUB_WEBHOOK_SECRET` are both set to different values, every trigger gets `403`, even with the opt-out, and startup logs an error naming both variables. Set one, or set both to the same value.
 
 The standalone `bosun webhook` receiver applies the same gate on its own HTTP
 port, reading the same `BOSUN_ALLOW_UNAUTHENTICATED_WEBHOOK` opt-out. It needs
