@@ -251,7 +251,7 @@ regular template files. Directory rendering now refuses a symlinked template
 with its path and that remedy, preventing deployment or stale-file pruning from
 a partial render. Windows lock behavior is unchanged.
 
-The reconciler maintains persistent state in a JSON file at `/var/lib/bosun/deploy-state.json` (configurable via `BOSUN_STATE_DIR`). This state drives skip logic, circuit breaking, and drift detection. Both daemon and one-shot modes create the state file's parent directory before a real reconciliation; one-shot multi-target runs prepare and verify each target's state directory independently and fail that target before deployment if the directory cannot be written. Multi-target configuration is rejected when two effective state-file paths collide after path cleaning; case-only variants also collide on Windows and macOS. Daemon startup performs this validation before binding API listeners or announcing readiness. A one-shot dry run works against a temporary copy of existing state, preserving skip and circuit-breaker decisions without creating or updating the configured state path.
+The reconciler maintains persistent state in a JSON file at `/var/lib/bosun/deploy-state.json` (configurable via `BOSUN_STATE_DIR`). This state drives skip logic, circuit breaking, and drift detection. Both daemon and one-shot modes create the state file's parent directory before a real reconciliation; one-shot multi-target runs prepare and verify each target's state directory independently and fail that target before deployment if the directory cannot be written. Multi-target configuration is rejected when two effective state-file paths collide after path cleaning; case-only variants also collide on Windows and macOS. Daemon startup performs this validation before binding API listeners or announcing readiness. A dry run, in the daemon or the one-shot command, never writes this file: `Reconciler.Run` reads the state to make its skip and circuit-breaker decisions and drops every write, so the file is byte-identical afterwards (or still absent). The one-shot command also works against a temporary copy of existing state, as a second barrier. Because no dry run advances the state, a dry-run daemon re-runs the whole pipeline, including pre-deploy hooks, on every poll instead of skipping a commit it already rendered. This covers `Reconciler.Run` only; the daemon's periodic drift check is not part of it.
 
 Container deployments must persist `/var/lib/bosun`. The shipped Compose and
 Unraid definitions bind that directory to `/mnt/user/appdata/bosun/state`; keep
@@ -1101,7 +1101,10 @@ Use `--dry-run` to:
 - Preview deploy changes without applying
 - Skip service restarts
 - Skip backup creation
+- Leave the deploy state file untouched
 - Verify configuration without risk
+
+A dry run still sends failure, success, and interruption alerts (`--dry-run` does not imply `--no-alerts`), but it sends no recovery alert: with no state written it cannot record that a retraction was delivered, so it would repeat on every run.
 
 ```bash
 # Safe way to test configuration changes

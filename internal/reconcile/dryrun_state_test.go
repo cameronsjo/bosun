@@ -482,3 +482,42 @@ func TestRun_RecoveryAlertSentAfterDeploy(t *testing.T) {
 	assert.Equal(t, "bbb222", state.LastDeployedCommit)
 	assert.Zero(t, state.LastAlertedAttempt, "a delivered retraction clears the owed marker")
 }
+
+// TestPersistState covers both arms of the single state-write choke point and
+// its error propagation. SaveState requires the parent directory to exist, so a
+// missing one is the injected write failure.
+func TestPersistState(t *testing.T) {
+	tests := []struct {
+		name       string
+		dryRun     bool
+		parentDir  bool
+		wantErr    bool
+		wantExists bool
+	}{
+		{name: "a real run writes the file", dryRun: false, parentDir: true, wantExists: true},
+		{name: "a real run reports a failed write", dryRun: false, parentDir: false, wantErr: true},
+		{name: "a dry run writes nothing", dryRun: true, parentDir: true},
+		{name: "a dry run ignores an unwritable path", dryRun: true, parentDir: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			stateDir := filepath.Join(dir, "state")
+			if tt.parentDir {
+				require.NoError(t, os.MkdirAll(stateDir, 0o755))
+			}
+			stateFile := filepath.Join(stateDir, "state.json")
+			r := &Reconciler{config: &Config{StateFile: stateFile, DryRun: tt.dryRun}}
+
+			err := r.persistState(&DeployState{LastDeployedCommit: "aaa111"})
+
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			_, statErr := os.Stat(stateFile)
+			assert.Equal(t, tt.wantExists, statErr == nil, "state file existence")
+		})
+	}
+}
