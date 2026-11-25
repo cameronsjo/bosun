@@ -210,7 +210,7 @@ func resolveReceiverSecret(flag string, getenv func(string) string) (secret stri
 // receiver's own opt-out must not open the endpoints. fetched reports that the
 // daemon's secret was adopted.
 func mergeFetchedSecret(secret string, conflict, fetchRequested bool, cfg *daemon.ConfigResponse) (merged string, mergedConflict, fetched bool) {
-	if conflict || cfg == nil || !(fetchRequested || secret == "") {
+	if conflict || cfg == nil || (!fetchRequested && secret != "") {
 		return secret, conflict, false
 	}
 	if cfg.WebhookSecretConflict {
