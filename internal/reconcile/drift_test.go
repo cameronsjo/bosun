@@ -342,6 +342,13 @@ func TestImagesMatch(t *testing.T) {
 		// Digest references
 		{"nginx@sha256:abc123", "nginx@sha256:abc123", true},
 		{"nginx@sha256:abc123", "nginx@sha256:def456", false},
+		// Registry with a port: the colon before the last slash is not a tag.
+		{"localhost:5000/myapp", "localhost:5000/myapp:latest", true},
+		{"localhost:5000/myapp:latest", "localhost:5000/myapp", true},
+		{"registry.local:5000/org/app", "registry.local:5000/org/app:latest", true},
+		{"registry.local:5000/org/app", "registry.local:5000/org/app:v2", false},
+		{"registry.local:5000/org/app:v1", "registry.local:5000/org/app:v2", false},
+		{"localhost:5000/myapp@sha256:abc123", "localhost:5000/myapp@sha256:abc123", true},
 	}
 
 	for _, tt := range tests {
@@ -352,9 +359,29 @@ func TestImagesMatch(t *testing.T) {
 }
 
 func TestNormalizeImage(t *testing.T) {
-	assert.Equal(t, "nginx:latest", normalizeImage("nginx"))
-	assert.Equal(t, "nginx:1.25", normalizeImage("nginx:1.25"))
-	assert.Equal(t, "nginx@sha256:abc", normalizeImage("nginx@sha256:abc"))
+	tests := []struct {
+		name  string
+		image string
+		want  string
+	}{
+		{"bare name", "nginx", "nginx:latest"},
+		{"name with tag", "nginx:1.25", "nginx:1.25"},
+		{"repo path without tag", "myrepo/app", "myrepo/app:latest"},
+		{"digest", "nginx@sha256:abc", "nginx@sha256:abc"},
+		{"registry port without tag", "localhost:5000/myapp", "localhost:5000/myapp:latest"},
+		{"registry port with nested path and no tag", "registry.local:5000/org/app", "registry.local:5000/org/app:latest"},
+		{"registry port with tag", "registry.local:5000/org/app:v1", "registry.local:5000/org/app:v1"},
+		{"registry port with digest", "localhost:5000/myapp@sha256:abc", "localhost:5000/myapp@sha256:abc"},
+		// A bare host:port has no slash, so the colon reads as a tag separator.
+		// It is not a valid image reference, so this pins the behavior only.
+		{"host and port with no path", "host:5000", "host:5000"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, normalizeImage(tt.image))
+		})
+	}
 }
 
 func TestExtractDeclaredState(t *testing.T) {
