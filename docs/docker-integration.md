@@ -525,12 +525,15 @@ drain failures are returned to the caller.
 CPU percentage is calculated using delta values between the current and previous sample:
 
 ```go
-cpuDelta := float64(v.CPUStats.CPUUsage.TotalUsage - v.PreCPUStats.CPUUsage.TotalUsage)
-systemDelta := float64(v.CPUStats.SystemUsage - v.PreCPUStats.SystemUsage)
+cpuDelta := counterDelta(v.CPUStats.CPUUsage.TotalUsage, v.PreCPUStats.CPUUsage.TotalUsage)
+systemDelta := counterDelta(v.CPUStats.SystemUsage, v.PreCPUStats.SystemUsage)
 cpuPercent := (cpuDelta / systemDelta) * float64(numCPUs) * 100.0
 ```
 
-This matches the calculation used by `docker stats`.
+This matches the calculation used by `docker stats`, with two guards:
+
+- `counterDelta` returns 0 when a counter did not advance. The counters are `uint64`, so a bare subtraction after a counter reset would wrap to about 1.8e19.
+- `numCPUs` comes from the sample's `online_cpus`. cgroup v2 hosts omit `percpu_usage`, so the per-CPU list length is only the fallback for older daemons. A sample with neither reports 0%.
 
 ### Memory Calculation
 
