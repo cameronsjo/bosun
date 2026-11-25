@@ -46,7 +46,8 @@ func TestResolveBreakerStateFile_Default(t *testing.T) {
 	breakerStateDir = "/var/lib/bosun"
 	defer func() { breakerStateDir = origDir }()
 
-	got := resolveBreakerStateFile()
+	got, err := resolveBreakerStateFile()
+	require.NoError(t, err)
 	assert.Equal(t, filepath.Join("/var/lib/bosun", reconcile.DefaultStateFile), got)
 }
 
@@ -61,9 +62,25 @@ func TestResolveBreakerStateFile_WithTarget(t *testing.T) {
 	breakerStateDir = "/var/lib/bosun"
 	defer func() { breakerStateDir = origDir }()
 
-	got := resolveBreakerStateFile()
+	got, err := resolveBreakerStateFile()
+	require.NoError(t, err)
 	// Named target should produce deploy-state-<name>.json
 	assert.Equal(t, filepath.Join("/var/lib/bosun", "deploy-state-unraid.json"), got)
+}
+
+func TestResolveBreakerStateFile_RejectsPathTraversal(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("BOSUN_STATE_DIR", tmpDir)
+
+	orig := breakerTarget
+	defer func() { breakerTarget = orig }()
+
+	for _, bad := range []string{"../escape", "/../../tmp/pwn", "foo/bar", "foo\\bar"} {
+		breakerTarget = bad
+		_, err := resolveBreakerStateFile()
+		require.Error(t, err, "expected target %q to be rejected", bad)
+		assert.Contains(t, err.Error(), "invalid target name")
+	}
 }
 
 func TestResolveBreakerStateFile_StateDirEnvVar(t *testing.T) {
@@ -74,7 +91,8 @@ func TestResolveBreakerStateFile_StateDirEnvVar(t *testing.T) {
 	breakerTarget = ""
 	defer func() { breakerTarget = orig }()
 
-	got := resolveBreakerStateFile()
+	got, err := resolveBreakerStateFile()
+	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(tmpDir, reconcile.DefaultStateFile), got)
 }
 

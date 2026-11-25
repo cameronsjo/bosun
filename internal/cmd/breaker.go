@@ -62,32 +62,38 @@ func init() {
 	rootCmd.AddCommand(breakerCmd)
 }
 
-// resolveBreaker StateFile returns the state file for the active target, honoring
+// resolveBreakerStateFile returns the state file for the active target, honoring
 // the --target flag (and BOSUN_STATE_DIR override) in the same way that
 // bosun drift does.
-func resolveBreakerStateFile() string {
+func resolveBreakerStateFile() (string, error) {
 	dir := breakerStateDir
 	if d := os.Getenv("BOSUN_STATE_DIR"); d != "" {
 		dir = d
 	}
 
 	if breakerTarget != "" {
+		if err := reconcile.ValidateTargetName(breakerTarget); err != nil {
+			return "", fmt.Errorf("invalid target name %q: %w", breakerTarget, err)
+		}
 		targets := loadConfiguredTargets()
 		for _, t := range targets {
 			if t.Name == breakerTarget {
-				return reconcile.TargetStateFile(dir, t)
+				return reconcile.TargetStateFile(dir, t), nil
 			}
 		}
 		// Target not in config — still derive the state file by name.
 		t := reconcile.Target{Name: breakerTarget}
-		return reconcile.TargetStateFile(dir, t)
+		return reconcile.TargetStateFile(dir, t), nil
 	}
 
-	return filepath.Join(dir, reconcile.DefaultStateFile)
+	return filepath.Join(dir, reconcile.DefaultStateFile), nil
 }
 
 func runBreakerStatus(cmd *cobra.Command, args []string) error {
-	stateFile := resolveBreakerStateFile()
+	stateFile, err := resolveBreakerStateFile()
+	if err != nil {
+		return err
+	}
 	state := reconcile.LoadState(stateFile)
 
 	if breakerTarget != "" {
@@ -112,7 +118,10 @@ func runBreakerStatus(cmd *cobra.Command, args []string) error {
 }
 
 func runBreakerReset(cmd *cobra.Command, args []string) error {
-	stateFile := resolveBreakerStateFile()
+	stateFile, err := resolveBreakerStateFile()
+	if err != nil {
+		return err
+	}
 	state := reconcile.LoadState(stateFile)
 
 	if breakerTarget != "" {

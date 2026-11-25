@@ -96,52 +96,10 @@ func runRender(cmd *cobra.Command, args []string) {
 	_, _ = ui.Green.Printf("✓ Decrypted secrets from %s\n", secretsFile)
 
 	// Find templates to render
-	var templates []string
-	if len(args) == 0 {
-		// Find all .tmpl files in current directory recursively
-		if err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if !d.IsDir() && strings.HasSuffix(path, ".tmpl") {
-				templates = append(templates, path)
-			}
-			return nil
-		}); err != nil {
-			ui.Error("Failed to find templates: %v", err)
-			os.Exit(1)
-		}
-	} else {
-		// Expand globs and collect files
-		for _, arg := range args {
-			// Check if it's a directory
-			info, err := os.Stat(arg)
-			if err == nil && info.IsDir() {
-				// Walk directory for .tmpl files
-				if walkErr := filepath.WalkDir(arg, func(path string, d fs.DirEntry, err error) error {
-					if err != nil {
-						return err
-					}
-					if !d.IsDir() && strings.HasSuffix(path, ".tmpl") {
-						templates = append(templates, path)
-					}
-					return nil
-				}); walkErr != nil {
-					ui.Error("Failed to walk directory %s: %v", arg, walkErr)
-					os.Exit(1)
-				}
-			} else if err == nil {
-				templates = append(templates, arg)
-			} else {
-				// Try glob expansion
-				matches, globErr := filepath.Glob(arg)
-				if globErr != nil {
-					ui.Error("Invalid pattern %s: %v", arg, globErr)
-					os.Exit(1)
-				}
-				templates = append(templates, matches...)
-			}
-		}
+	templates, err := resolveRenderTemplates(args)
+	if err != nil {
+		ui.Error("%v", err)
+		os.Exit(1)
 	}
 
 	if len(templates) == 0 {
@@ -197,24 +155,112 @@ func renderTemplate(ctx context.Context, tmplPath string, secrets map[string]any
 		return nil
 	}
 
-	// Write to output directory
-	outputPath := filepath.Join(outputDir, strings.TrimSuffix(tmplPath, ".tmpl"))
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+	// Write to output directory with path containment and atomic 0600 permissions
+	// (rendered files may contain decrypted SOPS secrets).
+	outputPath, err := resolveRenderOutputPath(outputDir, tmplPath)
+	if err != nil {
+		return err
+	}
+	targetDir := filepath.Dir(outputPath)
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output dir: %w", err)
 	}
 
-	outFile, err := os.Create(outputPath)
+	tmpFile, err := os.CreateTemp(targetDir, ".bosun-render-*.tmp")
 	if err != nil {
-		return fmt.Errorf("failed to create output file: %w", err)
+		return fmt.Errorf("failed to create temp output file: %w", err)
 	}
-	defer func() { _ = outFile.Close() }()
+	tmpPath := tmpFile.Name()
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
 
-	if err := tmpl.Execute(outFile, secrets); err != nil {
+	if err := tmpl.Execute(tmpFile, secrets); err != nil {
+		_ = tmpFile.Close()
 		return fmt.Errorf("render error: %w", err)
 	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close output file: %w", err)
+	}
+	if err := os.Rename(tmpPath, outputPath); err != nil {
+		return fmt.Errorf("failed to finalize output file: %w", err)
+	}
+	cleanupTmp = false
 
 	_, _ = ui.Green.Printf("  ✓ %s → %s\n", tmplPath, outputPath)
 	return nil
+}
+
+func resolveRenderTemplates(args []string) ([]string, error) {
+	var templates []string
+	if len(args) == 0 {
+		if err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !d.IsDir() && strings.HasSuffix(path, ".tmpl") {
+				templates = append(templates, path)
+			}
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("failed to find templates: %w", err)
+		}
+		return templates, nil
+	}
+
+	for _, arg := range args {
+		info, err := os.Stat(arg)
+		if err == nil && info.IsDir() {
+			if walkErr := filepath.WalkDir(arg, func(path string, d fs.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				if !d.IsDir() && strings.HasSuffix(path, ".tmpl") {
+					templates = append(templates, path)
+				}
+				return nil
+			}); walkErr != nil {
+				return nil, fmt.Errorf("failed to walk directory %s: %w", arg, walkErr)
+			}
+			continue
+		}
+		if err == nil {
+			templates = append(templates, arg)
+			continue
+		}
+		if !strings.ContainsAny(arg, "*?[") {
+			return nil, fmt.Errorf("template not found: %s", arg)
+		}
+		matches, globErr := filepath.Glob(arg)
+		if globErr != nil {
+			return nil, fmt.Errorf("invalid pattern %s: %w", arg, globErr)
+		}
+		if len(matches) == 0 {
+			return nil, fmt.Errorf("no templates matched pattern: %s", arg)
+		}
+		templates = append(templates, matches...)
+	}
+	return templates, nil
+}
+
+func resolveRenderOutputPath(outputDir, tmplPath string) (string, error) {
+	absOutputDir, err := filepath.Abs(outputDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve output directory: %w", err)
+	}
+	outputPath := filepath.Join(absOutputDir, strings.TrimSuffix(tmplPath, ".tmpl"))
+	absOutputPath, err := filepath.Abs(outputPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve output path: %w", err)
+	}
+	rel, err := filepath.Rel(absOutputDir, absOutputPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("output path %q escapes output directory %q", tmplPath, outputDir)
+	}
+	return outputPath, nil
 }
 
 func readRenderTemplateSource(tmplPath string) ([]byte, error) {

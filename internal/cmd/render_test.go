@@ -287,3 +287,73 @@ func TestRenderTemplateIncludeDir(t *testing.T) {
 		assert.Equal(t, 1, exitCode)
 	})
 }
+
+func TestRenderTemplate_Writes0600AndNoPartialFileOnError(t *testing.T) {
+	tmpDir := t.TempDir()
+	outDir := filepath.Join(tmpDir, "out")
+	includeDir := filepath.Join(tmpDir, "templates")
+
+	t.Run("writes secret output with 0600 permissions", func(t *testing.T) {
+		tmplPath := filepath.Join(tmpDir, "secret.yml.tmpl")
+		require.NoError(t, os.WriteFile(tmplPath, []byte(`token: {{ .token }}`), 0o644))
+
+		err := renderTemplate(context.Background(), tmplPath, map[string]any{"token": "s3cr3t"}, outDir, includeDir)
+		require.NoError(t, err)
+
+		renderedPath := filepath.Join(outDir, strings.TrimSuffix(tmplPath, ".tmpl"))
+		info, err := os.Stat(renderedPath)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+
+		data, err := os.ReadFile(renderedPath)
+		require.NoError(t, err)
+		assert.Equal(t, "token: s3cr3t", string(data))
+	})
+
+	t.Run("does not leave truncated output file on render error", func(t *testing.T) {
+		tmplPath := filepath.Join(tmpDir, "broken.yml.tmpl")
+		require.NoError(t, os.WriteFile(tmplPath, []byte(`ok: true\nmissing: {{ .nope }}`), 0o644))
+
+		err := renderTemplate(context.Background(), tmplPath, map[string]any{}, outDir, includeDir)
+		require.Error(t, err)
+
+		renderedPath := filepath.Join(outDir, strings.TrimSuffix(tmplPath, ".tmpl"))
+		assert.NoFileExists(t, renderedPath)
+	})
+
+	t.Run("rejects output path traversal outside outputDir", func(t *testing.T) {
+		_, err := resolveRenderOutputPath(outDir, "../escape.yml.tmpl")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "escapes output directory")
+	})
+}
+
+func TestResolveRenderTemplates_ErrorsOnMissingExplicitFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	existing := filepath.Join(tmpDir, "ok.yml.tmpl")
+	require.NoError(t, os.WriteFile(existing, []byte("ok"), 0o644))
+
+	t.Run("missing explicit file returns error", func(t *testing.T) {
+		_, err := resolveRenderTemplates([]string{filepath.Join(tmpDir, "missing.yml.tmpl")})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "template not found")
+	})
+
+	t.Run("missing explicit file alongside valid file returns error", func(t *testing.T) {
+		_, err := resolveRenderTemplates([]string{existing, filepath.Join(tmpDir, "missing.yml.tmpl")})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "template not found")
+	})
+
+	t.Run("unmatched glob pattern returns error", func(t *testing.T) {
+		_, err := resolveRenderTemplates([]string{filepath.Join(tmpDir, "nope-*.tmpl")})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no templates matched pattern")
+	})
+
+	t.Run("valid explicit file succeeds", func(t *testing.T) {
+		got, err := resolveRenderTemplates([]string{existing})
+		require.NoError(t, err)
+		assert.Equal(t, []string{existing}, got)
+	})
+}
