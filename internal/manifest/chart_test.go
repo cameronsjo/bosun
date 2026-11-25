@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -130,6 +131,63 @@ func TestChartLoader_RenderChart(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, "custom:latest", testapp["image"])
 	})
+}
+
+// TestChartLoader_RenderChart_ComposeOverrideListEnvironment pins the chart
+// compose override call site: the override is merged into the rendered compose
+// document, so its services.<name>.environment list must merge with the
+// template's list instead of replacing it.
+func TestChartLoader_RenderChart_ComposeOverrideListEnvironment(t *testing.T) {
+	chartsDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(chartsDir, "templates"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(chartsDir, "envapp"), 0o755))
+
+	tmpl := `apiVersion: bosun.io/v1
+kind: Template
+
+compose:
+  services:
+    {{ .Chart.Name }}:
+      image: {{ .Values.image }}
+      environment:
+        - A=1
+        - SHARED=template
+      labels:
+        - app=envapp
+`
+	chartYAML := `apiVersion: bosun.io/v1
+kind: Chart
+name: envapp
+version: 1.0.0
+
+templates:
+  - container
+
+compose:
+  services:
+    envapp:
+      environment:
+        - B=2
+        - SHARED=override
+      labels:
+        - tier=web
+`
+	require.NoError(t, os.WriteFile(filepath.Join(chartsDir, "templates", "container.yaml"), []byte(tmpl), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(chartsDir, "envapp", "Chart.yaml"), []byte(chartYAML), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(chartsDir, "envapp", "values.yaml"), []byte("image: nginx:latest\n"), 0o600))
+
+	loader, err := NewChartLoader(chartsDir)
+	require.NoError(t, err)
+
+	output, err := loader.RenderChart("envapp", nil)
+	require.NoError(t, err)
+
+	services, ok := output.Targets[TargetCompose]["services"].(map[string]any)
+	require.True(t, ok)
+	svc, ok := services["envapp"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, map[string]any{"A": "1", "B": "2", "SHARED": "override"}, svc["environment"])
+	assert.Equal(t, map[string]any{"app": "envapp", "tier": "web"}, svc["labels"])
 }
 
 func TestChartLoader_ListCharts(t *testing.T) {

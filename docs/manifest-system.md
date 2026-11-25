@@ -178,7 +178,7 @@ endpoints:
 
 ### Environment/Labels Normalization
 
-The `environment` and `labels` keys are normalized from list to map before merging:
+A compose service's `environment` and `labels` (`services.<name>.environment` and `services.<name>.labels`) are normalized from list to map before merging, whichever form each side uses. A bare entry such as `FOO` (no `=`) is kept as a key with no value, so Compose passes it through from the host. An `environment` or `labels` key elsewhere (service `config:`, chart values) merges like any other key:
 
 ```yaml
 # Input (list format):
