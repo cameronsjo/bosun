@@ -1009,7 +1009,6 @@ func TestClient_GetAllContainerStats(t *testing.T) {
 		{
 			name: "skip failed stats",
 			setup: func(m *MockDockerAPI) {
-				callCount := 0
 				m.ContainerListFunc = func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
 					return client.ContainerListResult{Items: []container.Summary{
 						makeTestContainer("abc123456789", "web", "nginx:latest", "running"),
@@ -1020,8 +1019,7 @@ func TestClient_GetAllContainerStats(t *testing.T) {
 					return makeTestContainerJSON("abc123456789", "web", "nginx:latest", "running", true), nil
 				}
 				m.ContainerStatsFunc = func(ctx context.Context, containerID string, options client.ContainerStatsOptions) (client.ContainerStatsResult, error) {
-					callCount++
-					if callCount == 1 {
+					if containerID == "web" {
 						return client.ContainerStatsResult{}, errMockStats
 					}
 					stats := makeStatsJSON(100000000, 1000000000, 50000000, 500000000, 100000000, 200000000, 2)
