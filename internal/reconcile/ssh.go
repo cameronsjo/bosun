@@ -43,14 +43,26 @@ const (
 	commandOutputByteMax           = commandDiagnosticMax * 4
 	remoteStageIDBytes             = 16
 	remoteIntegrityUnavailableExit = 78
+	// remoteTransferChecksumMismatchExit is the exit status a remote transfer
+	// command uses when the received payload's SHA-256 differs from the hash
+	// computed locally. It is distinct from every other remote-command failure,
+	// which is permanent, so a damaged transfer stays retryable (#334, #795).
+	remoteTransferChecksumMismatchExit = 79
+	// sshTransportExit is the status OpenSSH reserves for its own
+	// client/transport failures; every other status came from the remote command.
+	sshTransportExit = 255
 )
 
-// ErrTransferIntegrity marks a remote tar-over-SSH transfer whose staged tree
-// failed SHA-256 verification against the locally-built manifest — a truncated,
-// partial, or misdirected transfer that must never be promoted to the live
-// target (#334). It is RETRYABLE: retryWithBackoff stages into a fresh remote
-// tmpDir on the next attempt, so a re-transfer is never overlaid on the dirty
-// leftover of a failed one.
+// ErrTransferIntegrity marks a remote tar-over-SSH transfer whose payload or
+// staged tree failed SHA-256 verification against the locally-built hash or
+// manifest — a truncated, partial, or misdirected transfer that must never be
+// promoted to the live target (#334). It also marks a transfer whose client
+// ended without a remote exit status (killed by a signal, or no exit status
+// at all), since the payload's fate is then unknown. It is RETRYABLE:
+// retryWithBackoff stages into a fresh remote tmpDir on the next attempt, so a
+// re-transfer is never overlaid on the dirty leftover of a failed one. A
+// remote command that exits with its own non-255 status (disk full,
+// permission denied) is NOT marked with it and is not retried (#795).
 var ErrTransferIntegrity = errors.New("remote transfer integrity check failed")
 
 // ErrRemoteIntegrityUnavailable marks a remote host that cannot provide the
@@ -625,9 +637,54 @@ func (e *sshCommandError) Unwrap() error {
 func (e *sshCommandError) isTransient() bool {
 	var exitErr *exec.ExitError
 	if errors.As(e.cause, &exitErr) {
-		return exitErr.ExitCode() == 255 && containsTransientSSHPattern(e.stderr)
+		return exitErr.ExitCode() == sshTransportExit && containsTransientSSHPattern(e.stderr)
 	}
 	return containsTransientSSHPattern(e.cause.Error())
+}
+
+// classifyRemoteExit maps a failed remote transfer command to the error that
+// tells retryWithBackoff whether another attempt can help. It is the single
+// exit-status policy for transfer legs (#795):
+//
+//   - 78: the remote host lacks sha256sum. Permanent until an operator acts.
+//   - 79: the received payload failed its SHA-256 check. Retried with fresh
+//     staging (#334).
+//   - 255: OpenSSH's own failure. Retried only when its stderr names a
+//     transient transport fault (sshCommandError.isTransient).
+//   - any other status: the remote command itself failed (disk full,
+//     permission denied, tar error). Permanent: re-sending the payload cannot
+//     fix it.
+//   - no exit status (killed by a signal, or a non-exit error): the payload's
+//     fate is unknown, so it is treated as a damaged transfer and retried.
+func classifyRemoteExit(op, host string, err error, stderr string) error {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() < 0 {
+		return fmt.Errorf("%w: %s ended without a remote exit status: %v: %s", ErrTransferIntegrity, op, err, stderr)
+	}
+	switch exitErr.ExitCode() {
+	case remoteIntegrityUnavailableExit:
+		return fmt.Errorf("%w: sha256sum is required on %s: %s", ErrRemoteIntegrityUnavailable, host, stderr)
+	case remoteTransferChecksumMismatchExit:
+		return fmt.Errorf("%w: %s: received payload checksum mismatch: %s", ErrTransferIntegrity, op, stderr)
+	default:
+		// 255 and every remote-command status share sshCommandError, whose
+		// isTransient admits only a 255 with a transient transport pattern.
+		return &sshCommandError{operation: op, cause: err, stderr: stderr}
+	}
+}
+
+// normalizeRemoteSwapTarget cleans a remote deploy target so the staging and
+// retained-copy siblings are always created beside it, never inside it: a
+// trailing slash would otherwise make path.Dir return the target itself
+// (#795). A target with no parent to stage beside ("/", ".", "", "..") is
+// rejected. Relative targets with a real parent are kept as-is, because
+// ValidateRemotePath accepts them.
+func normalizeRemoteSwapTarget(p string) (string, error) {
+	cleaned := path.Clean(p)
+	if cleaned == path.Dir(cleaned) || cleaned == ".." {
+		return "", fmt.Errorf("remote deploy target %q has no parent directory to stage beside", p)
+	}
+	return cleaned, nil
 }
 
 // isTransientSSHError checks if an error is transient and worth retrying.
@@ -655,6 +712,13 @@ func containsTransientSSHPattern(message string) bool {
 		"operation timed out",
 		"i/o timeout",
 		"temporary failure",
+		// Mid-stream drops: "client_loop: send disconnect: Broken pipe",
+		// "Connection closed by <host> port 22", "Connection to <host> closed
+		// by remote host", and "Timeout, server <host> not responding" (#795).
+		"broken pipe",
+		"connection closed",
+		"closed by remote host",
+		"not responding",
 	}
 	for _, pattern := range transientPatterns {
 		if strings.Contains(errStr, pattern) {
@@ -696,7 +760,10 @@ func retryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 		// Only retry on transient errors, plus a transfer-integrity failure
 		// whose recovery is a fresh staging dir on the next attempt (#334):
 		// DeployRemote stages into a new remote tmpDir each pass, so re-verifying
-		// never reads a dirty leftover.
+		// never reads a dirty leftover. classifyRemoteExit decides which
+		// transfer failures carry ErrTransferIntegrity; a remote command's own
+		// non-255 failure does not, so it returns here with host-key guidance
+		// applied (#795).
 		if !isTransientSSHError(lastErr) && !errors.Is(lastErr, ErrTransferIntegrity) {
 			return annotateHostKeyError(lastErr)
 		}
@@ -905,6 +972,16 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 	if err := validateHost(targetHost); err != nil {
 		return fmt.Errorf("invalid SSH host: %w", err)
 	}
+	cleanedTarget, err := normalizeRemoteSwapTarget(targetDir)
+	if err != nil {
+		logger.Error().
+			Err(err).
+			Str(log.FieldTarget, targetHost).
+			Str("target_dir", targetDir).
+			Msg("Refusing remote deploy: target has no parent directory for staging and retained copies")
+		return err
+	}
+	targetDir = cleanedTarget
 
 	if d.DryRun {
 		logger.Debug().
@@ -1012,9 +1089,10 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			Str("dest", tmpDir).
 			Msg("Preparing to tar and extract staging directory to remote")
 		remoteCmd := fmt.Sprintf(
-			"set -eu; umask 077; command -v sha256sum >/dev/null 2>&1 || { echo 'sha256sum is required for transfer verification' >&2; exit %d; }; cat > %s; actual=$(sha256sum < %s); actual=${actual%%%% *}; [ \"$actual\" = %s ]; tar -C %s -xf %s; rm -f %s",
+			"set -eu; umask 077; command -v sha256sum >/dev/null 2>&1 || { echo 'sha256sum is required for transfer verification' >&2; exit %d; }; cat > %s; actual=$(sha256sum < %s); actual=${actual%%%% *}; [ \"$actual\" = %s ] || exit %d; tar -C %s -xf %s; rm -f %s",
 			remoteIntegrityUnavailableExit,
 			shellquote.Join(remoteArchive), shellquote.Join(remoteArchive), shellquote.Join(archiveSHA),
+			remoteTransferChecksumMismatchExit,
 			shellquote.Join(tmpDir), shellquote.Join(remoteArchive), shellquote.Join(remoteArchive),
 		)
 		sshCmd := newSSHTransferCommand(ctx, targetHost, remoteCmd)
@@ -1044,11 +1122,14 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 			if ctx.Err() == context.DeadlineExceeded {
 				return fmt.Errorf("ssh timed out after %v", RemoteDeployTimeout)
 			}
-			var exitErr *exec.ExitError
-			if errors.As(sshErr, &exitErr) && exitErr.ExitCode() == remoteIntegrityUnavailableExit {
-				return fmt.Errorf("%w: sha256sum is required on %s: %s", ErrRemoteIntegrityUnavailable, targetHost, joinNonEmpty(sshStderr.String()))
-			}
-			return fmt.Errorf("%w: ssh extract failed: %v: %s", ErrTransferIntegrity, sshErr, joinNonEmpty(sshStderr.String()))
+			classified := classifyRemoteExit("ssh extract", targetHost, sshErr, joinNonEmpty(sshStderr.String()))
+			logger.Warn().
+				Err(classified).
+				Str(log.FieldTarget, targetHost).
+				Str(log.FieldPath, tmpDir).
+				Bool("retryable", isTransientSSHError(classified) || errors.Is(classified, ErrTransferIntegrity)).
+				Msg("Remote archive transfer or extraction failed, staging discarded")
+			return classified
 		}
 		if closeErr != nil {
 			cleanupTmp("archive_close_failed")

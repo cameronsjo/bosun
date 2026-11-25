@@ -851,6 +851,9 @@ SSH and file sync operations retry on transient errors with exponential backoff:
 - Host is down
 - I/O timeout
 - Temporary failure
+- Broken pipe, connection closed, closed by remote host, server not responding
+
+**Not retried**: a failure reported by the remote command itself (any exit status other than SSH's own 255, for example a full disk or a permission error) fails on the first attempt, because re-sending the payload cannot fix it. Host-key verification failures also fail on the first attempt, with guidance on pinning the key. Two transfer failures are the exception and are retried with a fresh staging directory: a checksum mismatch on the received payload, and a transfer whose ssh client ended without an exit status. A deploy target with no parent directory (`/`, `.`, an empty path, or `..`) is rejected before any SSH command runs; a trailing slash on the target is ignored.
 
 ## Locking
 
