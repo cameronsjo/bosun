@@ -279,10 +279,12 @@ func TestTriggerReconcile_ReturnsContextErrorWhileWaitingForDrift(t *testing.T) 
 	require.True(t, ok)
 	assert.Zero(t, n, "an abandoned waiter must not keep drift out")
 	finish()
+	// Give a wrongly surviving trigger time to reach git sync before
+	// declaring that none did.
 	select {
 	case <-git.synced:
 		t.Fatal("an abandoned trigger must not reconcile")
-	default:
+	case <-time.After(100 * time.Millisecond):
 	}
 	d.reconcileMu.Lock()
 	assert.False(t, d.reconciling)
@@ -308,29 +310,18 @@ func TestDaemonRunDriftCheck_SkipsWhileTriggerWaiting(t *testing.T) {
 	d.reconcileMu.Unlock()
 }
 
-func TestDriftCheckLoop_SlowCycleAdmitsWaitingTriggerBeforeNextCycle(t *testing.T) {
+// TestDriftCheck_BufferedTickAfterSlowCycleYieldsToWaitingTrigger drives the
+// buffered-tick case by hand: driftCheckLoop's ticker keeps one missed tick, so
+// a cycle that outlasts the interval is followed at once by another
+// runDriftCheck. That immediate second call must not list containers before
+// the trigger that waited through the first cycle reaches git sync.
+func TestDriftCheck_BufferedTickAfterSlowCycleYieldsToWaitingTrigger(t *testing.T) {
 	d, blocker := newBlockedDriftDaemon(t)
-	d.config.DriftInterval = 10 * time.Millisecond
 	git := newDriftOrderGitOps(d)
 	git.listCalls = &blocker.calls
 	d.reconcileOpts = append(d.reconcileOpts, reconcile.WithGitOperations(git))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	loopDone := make(chan struct{})
-	go func() {
-		defer close(loopDone)
-		d.driftCheckLoop(ctx)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-loopDone:
-		case <-time.After(driftAdmissionWait):
-			t.Error("drift loop did not stop")
-		}
-	})
-
-	blocker.waitEntered(t)
+	finish := startBlockedDrift(t, d, blocker)
 	triggerErr := make(chan error, 1)
 	go func() { triggerErr <- d.TriggerReconcile(context.Background(), "test", false) }()
 	require.Eventually(t, func() bool {
@@ -338,9 +329,10 @@ func TestDriftCheckLoop_SlowCycleAdmitsWaitingTriggerBeforeNextCycle(t *testing.
 		return ok && n == 1
 	}, driftAdmissionWait, 5*time.Millisecond)
 
-	// Let ticks pile up behind the slow cycle, then release it.
-	time.Sleep(50 * time.Millisecond)
-	close(blocker.release)
+	// End the slow cycle, then deliver the buffered tick immediately, as
+	// driftCheckLoop would, before the woken trigger has had a chance to run.
+	finish()
+	d.runDriftCheck(context.Background())
 
 	git.waitSynced(t)
 	git.mu.Lock()
