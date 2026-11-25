@@ -221,7 +221,8 @@ func (r *Reconciler) dispatchRecovery(ctx context.Context, operation string, sen
 	// deploy produced. Failure, success, and interruption alerts are unaffected.
 	// recoveryDisabled makes the caller clear the debt in memory only.
 	if r.config.DryRun {
-		log.ComponentCtx(ctx, log.ComponentReconcile).Info().
+		logger := log.ComponentCtx(ctx, log.ComponentReconcile)
+		logger.Info().
 			Str(log.FieldOperation, operation).
 			Msg("Recovery alert withheld. Reason: dry run persists no state, so the retraction cannot be recorded as delivered")
 		return recoveryDisabled
