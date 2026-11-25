@@ -1,12 +1,16 @@
 package cmd
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/cameronsjo/bosun/internal/config"
+	"github.com/cameronsjo/bosun/internal/manifest"
 )
 
 func TestProvisionCmd_Help(t *testing.T) {
@@ -191,9 +195,9 @@ func TestCreateCmd_ValidTemplates(t *testing.T) {
 // TestGenerateServiceTemplate_AllTypes tests service template generation for all types.
 func TestGenerateServiceTemplate_AllTypes(t *testing.T) {
 	testCases := []struct {
-		template     string
-		name         string
-		mustContain  []string
+		template       string
+		name           string
+		mustContain    []string
 		mustNotContain []string
 	}{
 		{
@@ -309,5 +313,82 @@ func TestParseSetValues(t *testing.T) {
 		_, err := parseSetValues([]string{"=value"})
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "empty key")
+	})
+}
+
+func TestWriteProvisionOutputs(t *testing.T) {
+	newOutput := func() *manifest.RenderOutput {
+		return &manifest.RenderOutput{Targets: map[string]map[string]any{
+			manifest.TargetCompose: {"name": "new"},
+		}}
+	}
+	composePath := func(manifestDir string) string {
+		return filepath.Join(manifestDir, "output", "compose", "core.yml.tmpl")
+	}
+	seedOld := func(t *testing.T, manifestDir string) {
+		t.Helper()
+		require.NoError(t, os.MkdirAll(filepath.Dir(composePath(manifestDir)), 0755))
+		require.NoError(t, os.WriteFile(composePath(manifestDir), []byte("name: old\n"), 0644))
+	}
+	readCompose := func(t *testing.T, manifestDir string) string {
+		t.Helper()
+		data, err := os.ReadFile(composePath(manifestDir))
+		require.NoError(t, err)
+		return string(data)
+	}
+
+	t.Run("existing output is snapshotted before it is overwritten", func(t *testing.T) {
+		manifestDir := t.TempDir()
+		seedOld(t, manifestDir)
+
+		err := writeProvisionOutputs(&config.Config{ManifestDir: manifestDir}, newOutput(), "core")
+
+		require.NoError(t, err)
+		assert.Equal(t, "name: new\n", readCompose(t, manifestDir))
+		snapped, globErr := filepath.Glob(filepath.Join(manifestDir, ".bosun", "snapshots", "snapshot-*", "compose", "core.yml.tmpl"))
+		require.NoError(t, globErr)
+		require.Len(t, snapped, 1)
+		data, readErr := os.ReadFile(snapped[0])
+		require.NoError(t, readErr)
+		assert.Equal(t, "name: old\n", string(data))
+	})
+
+	t.Run("empty output writes without a snapshot", func(t *testing.T) {
+		manifestDir := t.TempDir()
+
+		err := writeProvisionOutputs(&config.Config{ManifestDir: manifestDir}, newOutput(), "core")
+
+		require.NoError(t, err)
+		assert.Equal(t, "name: new\n", readCompose(t, manifestDir))
+		assert.NoDirExists(t, filepath.Join(manifestDir, ".bosun", "snapshots"))
+	})
+
+	t.Run("snapshot failure stops the write", func(t *testing.T) {
+		manifestDir := t.TempDir()
+		seedOld(t, manifestDir)
+		wantErr := errors.New("snapshot failed")
+		original := createSnapshot
+		createSnapshot = func(string) (string, error) { return "", wantErr }
+		t.Cleanup(func() { createSnapshot = original })
+
+		err := writeProvisionOutputs(&config.Config{ManifestDir: manifestDir}, newOutput(), "core")
+
+		require.ErrorIs(t, err, wantErr)
+		assert.Contains(t, err.Error(), "snapshot current output before provision")
+		assert.Equal(t, "name: old\n", readCompose(t, manifestDir))
+	})
+
+	t.Run("write failure is wrapped", func(t *testing.T) {
+		manifestDir := t.TempDir()
+		// A regular file where the output directory belongs makes WriteOutputs fail.
+		require.NoError(t, os.WriteFile(filepath.Join(manifestDir, "output"), nil, 0644))
+		original := createSnapshot
+		createSnapshot = func(string) (string, error) { return "", nil }
+		t.Cleanup(func() { createSnapshot = original })
+
+		err := writeProvisionOutputs(&config.Config{ManifestDir: manifestDir}, newOutput(), "core")
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "write outputs")
 	})
 }

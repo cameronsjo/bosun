@@ -20,6 +20,11 @@ var ErrPathTraversal = errors.New("path traversal detected")
 // ErrCircularInclude indicates a circular include was detected.
 var ErrCircularInclude = errors.New("circular include detected")
 
+// ErrIncludeDepthExceeded indicates template includes nested deeper than
+// MaxIncludeDepth, which in practice means a template includes itself,
+// directly or through other templates.
+var ErrIncludeDepthExceeded = errors.New("template include depth exceeded maximum")
+
 // validatePathWithinDir checks that a joined path stays within the base directory.
 // Returns the cleaned absolute path or an error if path traversal is detected.
 func validatePathWithinDir(baseDir, relativePath string) (string, error) {

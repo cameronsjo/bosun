@@ -177,13 +177,15 @@ compose:
 
 ### Available Functions
 
-All [Sprig functions](https://masterminds.github.io/sprig/) are available, plus:
+All [Sprig functions](https://masterminds.github.io/sprig/) are available, plus the functions below. This applies to chart templates. Reconcile `.tmpl` files and `bosun render` exclude `env`, `expandenv`, and `getHostByName`.
 
 | Function | Description |
 |----------|-------------|
-| `include "name" .` | Include a named template |
+| `include "name" .` | Include a named template; includes nest at most 64 levels deep |
 | `nindent N` | Add newline + indent |
 | `toYaml` | Convert value to YAML |
+
+A template that includes itself, directly or through other templates, stops with a `template include depth exceeded maximum` error once nesting passes 64 levels. Chart names, template names (including names passed to `include` and names in `dependencies:`) must resolve inside the `charts/` and `charts/templates/` directories: a name such as `../other` is rejected with a `path traversal detected` error. The check is on the path text and does not follow symlinks.
 
 ## Dependencies
 

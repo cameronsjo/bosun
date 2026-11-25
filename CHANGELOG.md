@@ -40,6 +40,45 @@ through an independent trusted channel before installing the entries. ssh-keysca
 does not authenticate a host. Deploys without a Bosun trust file still use strict
 OpenSSH default stores; container-only pins must be persisted.
 
+## [0.48.0](https://github.com/cameronsjo/bosun/compare/v0.47.14...v0.48.0) (2026-11-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **reconcile:** templates that call env, expandenv, or getHostByName fail to parse. Replace the earlier documented pattern     {{- $secrets := fromJson (env "SOPS_SECRETS") -}} and references such as $secrets.apps.myapp.db_password with the data context, for example {{ .apps.myapp.db_password }}.
+
+### Bug Fixes
+
+* **reconcile:** remove env and network functions from template Sprig map ([#841](https://github.com/cameronsjo/bosun/issues/841)) ([57153dd](https://github.com/cameronsjo/bosun/commit/57153dddc22744a8de34d4f543ced7d767329f2b))
+
+## [0.47.14](https://github.com/cameronsjo/bosun/compare/v0.47.13...v0.47.14) (2026-11-25)
+
+
+### Bug Fixes
+
+* **manifest:** bound template include depth and contain template and chart names ([#836](https://github.com/cameronsjo/bosun/issues/836)) ([db661e8](https://github.com/cameronsjo/bosun/commit/db661e86d84dbeb125b1582fbf7093c6d9794aae))
+
+## [0.47.13](https://github.com/cameronsjo/bosun/compare/v0.47.12...v0.47.13) (2026-11-25)
+
+
+### Bug Fixes
+
+* **reconcile:** fail fast on permanent remote extract errors and clean deploy targets ([#821](https://github.com/cameronsjo/bosun/issues/821)) ([f9335aa](https://github.com/cameronsjo/bosun/commit/f9335aaabdeb42aecfdc5ca9ff6d722d692833d4))
+
+## [0.47.12](https://github.com/cameronsjo/bosun/compare/v0.47.11...v0.47.12) (2026-11-25)
+
+
+### Bug Fixes
+
+* **manifest:** provision diamonds, .yaml loading, name containment; ports label parsing ([#829](https://github.com/cameronsjo/bosun/issues/829)) ([66cde8e](https://github.com/cameronsjo/bosun/commit/66cde8e59e03727f79b71d90802aca24a2b99e1b))
+
+## [0.47.11](https://github.com/cameronsjo/bosun/compare/v0.47.10...v0.47.11) (2026-11-25)
+
+
+### Bug Fixes
+
+* **snapshot,cmd:** confine restore sources and wire snapshot lifecycle ([#823](https://github.com/cameronsjo/bosun/issues/823)) ([2fbc968](https://github.com/cameronsjo/bosun/commit/2fbc968be2889785e04a50e91609cd734ba56f62))
+
 ## [0.47.10](https://github.com/cameronsjo/bosun/compare/v0.47.9...v0.47.10) (2026-11-25)
 
 

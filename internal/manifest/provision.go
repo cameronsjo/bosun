@@ -4,39 +4,93 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/cameronsjo/bosun/internal/log"
 )
 
-// LoadProvision loads a provision file, interpolates variables, and parses YAML.
-// Supports inheritance via 'includes' key with circular include protection.
-func LoadProvision(provisionName string, variables map[string]any, provisionsDir string) (*Provision, error) {
-	loaded := make(map[string]bool)
-	return loadProvisionInternal(provisionName, variables, provisionsDir, loaded)
+// provisionExtensions are the file extensions a provision may use, in lookup
+// order: a provisions directory holding both foo.yml and foo.yaml loads foo.yml.
+var provisionExtensions = []string{".yml", ".yaml"}
+
+// loadState tracks one LoadProvision call across its include graph.
+type loadState struct {
+	// stack holds the provisions on the current include path. A name found
+	// here is a real cycle.
+	stack map[string]bool
+	// done holds the provisions already loaded and merged. A name found here
+	// is a diamond (the same base reached by two paths): not an error, and it
+	// is not merged a second time.
+	done map[string]bool
 }
 
-func loadProvisionInternal(provisionName string, variables map[string]any, provisionsDir string, loaded map[string]bool) (*Provision, error) {
+// provisionPath resolves a provision name to a file inside provisionsDir.
+// It tries each of provisionExtensions in order and returns the first regular
+// file that exists (a directory named foo.yml is skipped); when none exists it
+// returns the first candidate so the caller's read reports "not found" for it.
+// A name that resolves outside provisionsDir returns ErrPathTraversal and
+// nothing is read. The check is lexical: it rejects ".." that climbs out of the
+// directory, and does not resolve symlinks.
+func provisionPath(provisionsDir, provisionName string) (string, error) {
+	var first string
+	for _, ext := range provisionExtensions {
+		candidate, err := validatePathWithinDir(provisionsDir, provisionName+ext)
+		if err != nil {
+			return "", err
+		}
+		if first == "" {
+			first = candidate
+		}
+		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return first, nil
+}
+
+// LoadProvision loads a provision file, interpolates variables, and parses YAML.
+// Supports inheritance via 'includes' key with circular include protection.
+// A provision reachable by more than one include path (a diamond) is merged
+// once, at its first occurrence. A name that resolves outside provisionsDir is
+// rejected with ErrPathTraversal.
+func LoadProvision(provisionName string, variables map[string]any, provisionsDir string) (*Provision, error) {
+	state := &loadState{stack: make(map[string]bool), done: make(map[string]bool)}
+	return loadProvisionInternal(provisionName, variables, provisionsDir, state)
+}
+
+func loadProvisionInternal(provisionName string, variables map[string]any, provisionsDir string, state *loadState) (*Provision, error) {
 	logger := log.Component(log.ComponentManifest)
 
 	// Prevent circular includes - return error instead of silently ignoring
-	if loaded[provisionName] {
+	if state.stack[provisionName] {
 		logger.Error().Str("provision", provisionName).Msg("Circular include detected")
 		return nil, fmt.Errorf("provision %s: %w", provisionName, ErrCircularInclude)
 	}
-	loaded[provisionName] = true
+	// A diamond include was already merged at its first occurrence
+	if state.done[provisionName] {
+		logger.Debug().Str("provision", provisionName).Msg("Provision already loaded through another include, skipping")
+		return &Provision{Targets: make(map[string]map[string]any)}, nil
+	}
+	state.stack[provisionName] = true
+	defer delete(state.stack, provisionName)
 	logger.Debug().Str("provision", provisionName).Msg("Loading provision")
 
-	provisionPath := filepath.Join(provisionsDir, provisionName+".yml")
-	rawContent, err := os.ReadFile(provisionPath)
+	filePath, err := provisionPath(provisionsDir, provisionName)
+	if err != nil {
+		logger.Error().Str("provision", provisionName).Err(err).Msg("Provision name resolves outside the provisions directory")
+		return nil, fmt.Errorf("provision %s: %w", provisionName, err)
+	}
+	rawContent, err := os.ReadFile(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			logger.Error().Str("provision", provisionName).Str(log.FieldPath, provisionPath).Msg("Provision file not found")
-			return nil, fmt.Errorf("provision not found: %s", provisionPath)
+			logger.Error().Str("provision", provisionName).Str(log.FieldPath, filePath).Msg("Provision file not found")
+			return nil, fmt.Errorf("provision not found: %s", filePath)
 		}
-		logger.Error().Str("provision", provisionName).Str(log.FieldPath, provisionPath).Err(err).Msg("Failed to read provision file")
-		return nil, fmt.Errorf("read provision %s: %w", provisionPath, err)
+		logger.Error().Str("provision", provisionName).Str(log.FieldPath, filePath).Err(err).Msg("Failed to read provision file")
+		return nil, fmt.Errorf("read provision %s: %w", filePath, err)
 	}
 
 	// Validate apiVersion if present (soft validation for backwards compatibility)
@@ -109,7 +163,7 @@ func loadProvisionInternal(provisionName string, variables map[string]any, provi
 				Str("provision", provisionName).
 				Str("included_provision", included).
 				Msg("Loading included provision")
-			includedProvision, err := loadProvisionInternal(included, variables, provisionsDir, loaded)
+			includedProvision, err := loadProvisionInternal(included, variables, provisionsDir, state)
 			if err != nil {
 				logger.Error().
 					Str("provision", provisionName).
@@ -142,6 +196,7 @@ func loadProvisionInternal(provisionName string, variables map[string]any, provi
 			}
 		}
 
+		state.done[provisionName] = true
 		return &Provision{Targets: result}, nil
 	}
 
@@ -153,6 +208,7 @@ func loadProvisionInternal(provisionName string, variables map[string]any, provi
 		}
 	}
 
+	state.done[provisionName] = true
 	return &Provision{Targets: targets}, nil
 }
 
@@ -172,14 +228,23 @@ func ListProvisions(provisionsDir string) ([]string, error) {
 	}
 
 	var provisions []string
+	seen := make(map[string]bool)
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
 		name := entry.Name()
-		if filepath.Ext(name) == ".yml" || filepath.Ext(name) == ".yaml" {
-			provisions = append(provisions, name[:len(name)-len(filepath.Ext(name))])
+		ext := filepath.Ext(name)
+		if !slices.Contains(provisionExtensions, ext) {
+			continue
 		}
+		// foo.yml and foo.yaml name the same provision; list it once
+		provision := strings.TrimSuffix(name, ext)
+		if seen[provision] {
+			continue
+		}
+		seen[provision] = true
+		provisions = append(provisions, provision)
 	}
 
 	logger.Debug().
@@ -189,9 +254,13 @@ func ListProvisions(provisionsDir string) ([]string, error) {
 	return provisions, nil
 }
 
-// ProvisionExists checks if a provision file exists.
+// ProvisionExists checks if a provision file (.yml or .yaml) exists. A name
+// that resolves outside provisionsDir does not exist.
 func ProvisionExists(provisionName, provisionsDir string) bool {
-	provisionPath := filepath.Join(provisionsDir, provisionName+".yml")
-	_, err := os.Stat(provisionPath)
-	return err == nil
+	filePath, err := provisionPath(provisionsDir, provisionName)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(filePath)
+	return err == nil && !info.IsDir()
 }

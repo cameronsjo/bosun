@@ -10,7 +10,6 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/Masterminds/sprig/v3"
 	"github.com/spf13/cobra"
 
 	"github.com/cameronsjo/bosun/internal/config"
@@ -35,7 +34,7 @@ reconciliation. Use it to preview rendered configs before pushing.
 
 Templates have access to:
   - Secrets data via {{ . }} (the root context)
-  - All sprig template functions
+  - sprig template functions, except env, expandenv and getHostByName
   - Custom functions: include, fromJsonFile
 
 include and fromJsonFile may only read from the configured template include
@@ -175,10 +174,10 @@ func renderTemplate(ctx context.Context, tmplPath string, secrets map[string]any
 		return fmt.Errorf("failed to read: %w", err)
 	}
 
-	// Create template with sprig and bosun functions
+	// Create template with the allowlisted sprig functions and bosun functions
 	tmpl := template.New(filepath.Base(tmplPath)).
 		Option("missingkey=error").
-		Funcs(sprig.TxtFuncMap()).
+		Funcs(reconcile.SafeSprigFuncMap()).
 		Funcs(reconcile.TemplateFuncs(includeDir))
 
 	tmpl, err = tmpl.Parse(string(content))

@@ -139,7 +139,7 @@ Creates snapshots before provisions, allows rollback to previous states.
 | **Partial copy on error** | Medium | Line 64: `os.RemoveAll(snapshotPath)` cleanup on error, but race possible | Use atomic rename pattern |
 | **Restore is not atomic** | High | Line 155: `RemoveAll()` then `copyDir()` - failure between leaves broken state | Copy to temp, then atomic rename |
 | **Concurrent provision race** | Resolved | Provision commands acquire a cross-process file lock | Keep lock regression coverage |
-| **Pre-rollback backup not in snapshot list** | Low | `pre-rollback-*` backups listed with regular snapshots | Filter or separate |
+| **Pre-rollback copies unbounded** | Resolved | `pre-rollback-*` copies are filtered from `List` and pruned to `MaxSnapshots` by `Cleanup`, which `Restore` now runs (#800) | Keep retention regression coverage |
 | **Large snapshot directory** | Medium | No size limit per snapshot | Add configurable max size |
 | **Symbolic links not handled** | Medium | `copyFile()` doesn't preserve symlinks | Use `os.Lstat()` and handle symlinks |
 

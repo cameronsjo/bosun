@@ -19,13 +19,16 @@ func testRestoreOps(t *testing.T) restoreOps {
 	dirInfo, err := os.Stat(t.TempDir())
 	require.NoError(t, err)
 
+	snapshotIsDir := func(path string) (os.FileInfo, error) {
+		if filepath.Base(filepath.Dir(path)) == "snapshots" {
+			return dirInfo, nil
+		}
+		return nil, os.ErrNotExist
+	}
+
 	return restoreOps{
-		stat: func(path string) (os.FileInfo, error) {
-			if filepath.Base(filepath.Dir(path)) == "snapshots" {
-				return dirInfo, nil
-			}
-			return nil, os.ErrNotExist
-		},
+		stat:         snapshotIsDir,
+		lstat:        snapshotIsDir,
 		dirSize:      func(string) (int64, error) { return 0, nil },
 		diskSpace:    func(string, int64) error { return nil },
 		hasContent:   func(string) (bool, error) { return false, nil },
@@ -35,6 +38,7 @@ func testRestoreOps(t *testing.T) restoreOps {
 		rename:       func(string, string) error { return nil },
 		now:          func() time.Time { return time.Date(2024, 1, 2, 3, 4, 5, 6, time.UTC) },
 		newRestoreID: func() string { return "fixed-id" },
+		cleanup:      func(string) error { return nil },
 	}
 }
 
@@ -42,7 +46,7 @@ func TestRestoreWithOps_RejectsInvalidSnapshot(t *testing.T) {
 	t.Run("inspection error preserves cause", func(t *testing.T) {
 		wantErr := errors.New("inspect failed")
 		ops := testRestoreOps(t)
-		ops.stat = func(string) (os.FileInfo, error) { return nil, wantErr }
+		ops.lstat = func(string) (os.FileInfo, error) { return nil, wantErr }
 
 		err := restoreWithOps(t.TempDir(), "snapshot-broken", ops)
 
@@ -53,11 +57,41 @@ func TestRestoreWithOps_RejectsInvalidSnapshot(t *testing.T) {
 
 	t.Run("missing snapshot retains public error", func(t *testing.T) {
 		ops := testRestoreOps(t)
-		ops.stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+		ops.lstat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
 
 		err := restoreWithOps(t.TempDir(), "snapshot-missing", ops)
 
 		require.EqualError(t, err, "snapshot not found: snapshot-missing")
+	})
+
+	t.Run("symlinked snapshot is refused before any copy", func(t *testing.T) {
+		linkDir := t.TempDir()
+		linkPath := filepath.Join(linkDir, "link")
+		require.NoError(t, os.Symlink(t.TempDir(), linkPath))
+		linkInfo, err := os.Lstat(linkPath)
+		require.NoError(t, err)
+		ops := testRestoreOps(t)
+		ops.lstat = func(string) (os.FileInfo, error) { return linkInfo, nil }
+		ops.copyDir = func(context.Context, string, string) error {
+			t.Fatal("copyDir must not run for a symlinked snapshot")
+			return nil
+		}
+
+		err = restoreWithOps(t.TempDir(), "snapshot-link", ops)
+
+		require.EqualError(t, err, "snapshot is a symlink: snapshot-link")
+	})
+
+	t.Run("invalid name is refused before inspection", func(t *testing.T) {
+		ops := testRestoreOps(t)
+		ops.lstat = func(string) (os.FileInfo, error) {
+			t.Fatal("lstat must not run for an invalid name")
+			return nil, nil
+		}
+
+		err := restoreWithOps(t.TempDir(), "../snapshot-x", ops)
+
+		require.ErrorIs(t, err, ErrInvalidName)
 	})
 
 	t.Run("regular file is not a snapshot", func(t *testing.T) {
@@ -175,23 +209,16 @@ func TestRestoreWithOps_RenameFailuresRecoverOriginal(t *testing.T) {
 	t.Run("current output inspection fails", func(t *testing.T) {
 		wantErr := errors.New("inspect output failed")
 		ops := testRestoreOps(t)
-		dirInfo, err := os.Stat(t.TempDir())
-		require.NoError(t, err)
-		statCalls := 0
-		ops.stat = func(string) (os.FileInfo, error) {
-			statCalls++
-			if statCalls == 1 {
-				return dirInfo, nil
-			}
-			return nil, wantErr
-		}
+		// The snapshot is inspected through lstat, so stat only sees the
+		// current output directory.
+		ops.stat = func(string) (os.FileInfo, error) { return nil, wantErr }
 		var removed string
 		ops.removeAll = func(path string) error {
 			removed = path
 			return nil
 		}
 
-		err = restoreWithOps(t.TempDir(), "snapshot-valid", ops)
+		err := restoreWithOps(t.TempDir(), "snapshot-valid", ops)
 
 		require.Error(t, err)
 		assert.ErrorIs(t, err, wantErr)
@@ -382,18 +409,118 @@ func TestList_ReadDirFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "read snapshots directory")
 }
 
-func TestGetRestoredFiles_IncludesBothYAMLExtensions(t *testing.T) {
+func TestGetRestoredFiles_IncludesYAMLAndTemplateOutputs(t *testing.T) {
 	manifestDir := t.TempDir()
 	outDir := outputDir(manifestDir)
-	require.NoError(t, os.MkdirAll(outDir, 0755))
-	for _, name := range []string{"compose.yml", "service.yaml", "README.md"} {
+	require.NoError(t, os.MkdirAll(filepath.Join(outDir, "compose"), 0755))
+	for _, name := range []string{"compose.yml", "service.yaml", "README.md", filepath.Join("compose", "core.yml.tmpl")} {
 		require.NoError(t, os.WriteFile(filepath.Join(outDir, name), nil, 0644))
 	}
 
 	files, err := GetRestoredFiles(manifestDir)
 
 	require.NoError(t, err)
-	assert.Equal(t, []string{"output/compose.yml", "output/service.yaml"}, files)
+	assert.Equal(t, []string{
+		filepath.Join("output", "compose", "core.yml.tmpl"),
+		filepath.Join("output", "compose.yml"),
+		filepath.Join("output", "service.yaml"),
+	}, files)
+}
+
+func TestValidateEntryName(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{name: "empty", input: "", wantErr: true},
+		{name: "dot", input: ".", wantErr: true},
+		{name: "dot dot", input: "..", wantErr: true},
+		{name: "parent escape", input: "../snapshot-x", wantErr: true},
+		{name: "nested escape", input: "snapshot-x/../../y", wantErr: true},
+		{name: "absolute", input: "/etc/passwd", wantErr: true},
+		{name: "two elements", input: "a/b", wantErr: true},
+		{name: "backslash", input: `snapshot-x\y`, wantErr: true},
+		{name: "prefix only", input: "snapshot-", wantErr: true},
+		{name: "other prefix", input: "pre-rollback-x", wantErr: true},
+		{name: "precise snapshot", input: "snapshot-20240115-143022.000000000"},
+		{name: "legacy snapshot", input: "snapshot-20240115-143022"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateEntryName(tt.input, SnapshotPrefix)
+			if tt.wantErr {
+				require.ErrorIs(t, err, ErrInvalidName)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestCleanupBuckets_ContinuesAndJoinsErrors(t *testing.T) {
+	errA := errors.New("bucket one list failed")
+	errB := errors.New("bucket two removal failed")
+	bucketTwo := make([]SnapshotInfo, MaxSnapshots+1)
+	for i := range bucketTwo {
+		bucketTwo[i] = SnapshotInfo{Name: PreRollbackPrefix + string(rune('a'+i)), Path: "/snapshots/" + string(rune('a'+i))}
+	}
+	var removed []string
+
+	err := cleanupBuckets("/manifest", []func(string) ([]SnapshotInfo, error){
+		func(string) ([]SnapshotInfo, error) { return nil, errA },
+		func(string) ([]SnapshotInfo, error) { return bucketTwo, nil },
+	}, func(path string, _ int) error {
+		removed = append(removed, path)
+		return errB
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errA)
+	assert.ErrorIs(t, err, errB)
+	assert.Equal(t, []string{bucketTwo[MaxSnapshots].Path}, removed)
+}
+
+func TestCleanupBuckets_AllCleanReturnsNil(t *testing.T) {
+	err := cleanupBuckets("/manifest", []func(string) ([]SnapshotInfo, error){
+		func(string) ([]SnapshotInfo, error) { return nil, nil },
+		func(string) ([]SnapshotInfo, error) { return nil, nil },
+	}, func(string, int) error {
+		t.Fatal("remove must not be called")
+		return nil
+	})
+
+	require.NoError(t, err)
+}
+
+func TestRestoreWithOps_CleanupFailureIsWarningOnly(t *testing.T) {
+	t.Run("cleanup error does not fail a successful restore", func(t *testing.T) {
+		ops := testRestoreOps(t)
+		calls := 0
+		ops.cleanup = func(string) error {
+			calls++
+			return errors.New("prune failed")
+		}
+
+		err := restoreWithOps(t.TempDir(), "snapshot-valid", ops)
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, calls)
+	})
+
+	t.Run("cleanup does not run when the restore fails", func(t *testing.T) {
+		ops := testRestoreOps(t)
+		ops.copyDir = func(context.Context, string, string) error { return errors.New("copy failed") }
+		ops.cleanup = func(string) error {
+			t.Fatal("cleanup must not run after a failed restore")
+			return nil
+		}
+
+		err := restoreWithOps(t.TempDir(), "snapshot-valid", ops)
+
+		require.Error(t, err)
+	})
 }
 
 func TestDirHasContentForRestore_PreservesInspectionError(t *testing.T) {

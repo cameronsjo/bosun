@@ -707,11 +707,10 @@ export BOSUN_TEMPLATE_INCLUDE_DIR=/srv/bosun/includes
 
 ### Available Template Functions
 
-The template engine provides Go's standard template functions plus all [Sprig functions](https://masterminds.github.io/sprig/). Commonly used:
+The template engine provides Go's standard template functions plus the [Sprig functions](https://masterminds.github.io/sprig/) except `env`, `expandenv`, and `getHostByName`. Those three read the daemon's environment or the network, so a template that calls one fails to parse. Template values come from the decrypted SOPS secrets in the data context (`{{ .apps.myapp.db_password }}`). Commonly used:
 
 | Function | Description |
 |----------|-------------|
-| `env "VAR"` | Get environment variable |
 | `include "path"` | Read an allowlisted file as text |
 | `fromJsonFile "path"` | Read and parse an allowlisted JSON file |
 | `fromJson "..."` | Parse JSON string |
@@ -856,6 +855,9 @@ SSH and file sync operations retry on transient errors with exponential backoff:
 - Host is down
 - I/O timeout
 - Temporary failure
+- Broken pipe, connection closed, closed by remote host, server not responding
+
+**Not retried**: a failure reported by the remote command itself (any exit status other than SSH's own 255, for example a full disk or a permission error) fails on the first attempt, because re-sending the payload cannot fix it. A refused host key or a failed login also fails on the first attempt, even when ssh or scp follows it with a transport message such as `Connection closed`; a refused host key comes back with guidance on pinning the key. A connection that the server closes before authentication (for example a TCP-wrapper or `MaxStartups` refusal) is treated as transient and retried, so such a permanent server-side refusal costs the full retry budget before it fails. Two transfer failures are the exception and are retried with a fresh staging directory: a checksum mismatch on the received payload, and a transfer whose ssh client ended without an exit status. A deploy target with no parent directory (`/`, `.`, an empty path, or `..`) is rejected before any SSH command runs; a trailing slash on the target is ignored.
 
 ## Locking
 

@@ -467,6 +467,9 @@ __pycache__/
 # Output
 manifest/output/
 
+# Snapshots and pre-rollback copies of rendered output (any depth)
+.bosun/
+
 # OS
 .DS_Store
 Thumbs.db

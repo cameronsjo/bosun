@@ -237,7 +237,7 @@ git checkout HEAD -- bin/bosun manifest/manifest.py manifest/pyproject.toml
 
 **Impact on templates:**
 - **Syntax unchanged** - Go template syntax (`{{ .value }}`, `{{ if }}`, etc.) works identically
-- **New functions available** - All [Sprig functions](https://masterminds.github.io/sprig/) are now available
+- **New functions available** - [Sprig functions](https://masterminds.github.io/sprig/) are available, except `env`, `expandenv`, and `getHostByName`, which would expose the daemon's environment or network
 - **No breaking changes** - Existing templates continue to work
 
 **Benefits:**

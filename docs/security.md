@@ -607,6 +607,36 @@ point the override at their location. For `bosun render`, the infra directory is
 the discovered project root plus `BOSUN_INFRA_DIR`; outside a Bosun project it
 is the current directory.
 
+### Template Function Allowlist
+
+**Implementation**: `internal/reconcile/template_funcs.go`, shared by
+reconciliation and `bosun render`.
+
+Templates are offered an explicit allowlist of Sprig functions: Sprig's text
+function map minus `env`, `expandenv`, and `getHostByName`. The daemon's
+environment carries the Git token, API bearer tokens, alert credentials, and
+often the age key, and rendered files are written `0644`, so `env` or
+`expandenv` would let any template in the repository copy those values into
+deployed output. `getHostByName` would let a template make DNS lookups during a
+reconcile. A template that calls one of these fails to parse, and no output file
+is written for it. A function added by a later Sprig release is not offered
+until it is reviewed into the list; a golden test fails on the upgrade until it
+is. Read template values from the data context (`{{ .apps.myapp.db_password }}`)
+instead of the environment.
+
+**Scope**: this closes the Sprig route from templates to the process
+environment. It is not an isolation boundary between the repository and the
+daemon. Other routes remain:
+
+- Compose `${VAR}` interpolation runs with the daemon's environment on local
+  deploys.
+- Repository-defined hooks run commands the repository chooses, as the daemon's
+  user.
+- An include root that covers `/proc` (for example a `template_include_dir` or
+  `BOSUN_TEMPLATE_INCLUDE_DIR` of `/` or `/proc`) lets `include` read
+  `/proc/<pid>/environ`. Keep the include root a dedicated subtree such as the
+  default `<infraDir>/templates`.
+
 ### Template Rendering Scope
 
 The template renderer walks the entire cloned repository directory for `.tmpl` files. Non-template files are only copied from the infrastructure subdirectory. This means a `.tmpl` file placed outside the expected path will still be rendered, potentially producing unexpected output files.

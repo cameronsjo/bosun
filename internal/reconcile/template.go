@@ -12,7 +12,6 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/Masterminds/sprig/v3"
 	"github.com/cameronsjo/bosun/internal/fileutil"
 	"github.com/cameronsjo/bosun/internal/log"
 )
@@ -84,10 +83,11 @@ func (t *TemplateOps) ExecuteTemplate(ctx context.Context, templateFile, outputF
 		return fmt.Errorf("failed to read template %s: %w", templateFile, err)
 	}
 
-	// Create template with sprig functions and custom bosun functions.
+	// Create template with the allowlisted sprig functions and custom bosun
+	// functions. env, expandenv, and getHostByName are not offered.
 	tmpl := template.New(filepath.Base(templateFile)).
 		Option("missingkey=error").
-		Funcs(sprig.TxtFuncMap()).
+		Funcs(SafeSprigFuncMap()).
 		Funcs(t.templateFuncs())
 
 	// Parse the template.
@@ -363,7 +363,11 @@ func (t *TemplateOps) RenderDirectory(ctx context.Context, sourceDir, stagingDir
 	// Confine include/fromJsonFile reads to the include subtree. Default to
 	// <sourceDir>/templates when the caller has not set an explicit allowlist
 	// root — secrets and bosun.yaml live in the source root, above this subtree,
-	// so they stay unreachable.
+	// so they stay unreachable. The default applies to this call only: restore
+	// the caller's value on every return, early ones included, so a reused
+	// TemplateOps resolves the next source tree's own include directory.
+	previousIncludeDir := t.IncludeDir
+	defer func() { t.IncludeDir = previousIncludeDir }()
 	if t.IncludeDir == "" {
 		t.IncludeDir = filepath.Join(sourceDir, DefaultIncludeSubdir)
 	}

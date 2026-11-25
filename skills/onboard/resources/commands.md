@@ -209,7 +209,7 @@ bosun render -o /tmp/rendered unraid/    # Render to output directory
 
 Templates have access to:
 - Secrets data via `{{ . }}` (the root context)
-- All Sprig template functions
+- Sprig template functions, except `env`, `expandenv`, and `getHostByName` (a template that calls one fails to parse)
 - Custom functions: `include`, `fromJsonFile`
 
 `include` and `fromJsonFile` are confined to `<infraDir>/templates` by default.
@@ -503,7 +503,7 @@ Error triage and rollback.
 bosun mayday                   # Show recent errors across all containers
 bosun mayday -l                # List available snapshots
 bosun mayday -r interactive    # Interactive rollback menu
-bosun mayday -r 2024-01-15_143022  # Rollback to specific snapshot
+bosun mayday -r snapshot-20240115-143022.000000000  # Rollback to specific snapshot
 ```
 
 **Alias:** `mutiny`
@@ -512,6 +512,16 @@ bosun mayday -r 2024-01-15_143022  # Rollback to specific snapshot
 |------|-------------|
 | `-l`, `--list` | List available snapshots |
 | `-r`, `--rollback` | Rollback to a snapshot (name or "interactive") |
+
+Snapshots live under `<manifest>/.bosun/snapshots/`, which must be git-ignored (`bosun init` adds `.bosun/` to `.gitignore`). `bosun provision` saves a snapshot of the current output before every write that overwrites it, and stops without writing if the snapshot fails. The newest 20 snapshots are kept.
+
+A rollback first saves the current output as `pre-rollback-<timestamp>` in the same directory. Those copies are also capped at 20 and do not appear in `--list`. To restore one by hand:
+
+```bash
+cp -a .bosun/snapshots/pre-rollback-<timestamp>/. output/
+```
+
+Rollback accepts only a `snapshot-*` name from `--list`; a symlinked snapshot directory is refused.
 
 ### `bosun overboard <name>`
 
@@ -609,14 +619,15 @@ bosun alert test -s error              # Set severity (info/warning/error)
 Restore infrastructure configs from a backup created during reconciliation.
 
 ```bash
-bosun restore                  # Restore latest backup
-bosun restore -l               # List available backups
-bosun restore 2024-01-15_143022  # Restore specific backup
+bosun restore -l                        # List available backups
+bosun restore backup-20240115-143022    # Restore a specific backup
 ```
 
 | Flag | Description |
 |------|-------------|
 | `-l`, `--list` | List available backups |
+
+A backup name is required; there is no "restore latest" default. The name must be a `backup-*` directory shown by `--list`, and its `configs.tar.gz` must be a regular file inside the backup directory. Symlinked backup directories and archives are refused.
 
 After restoring, automatically runs `docker compose up -d` if a compose file is present.
 

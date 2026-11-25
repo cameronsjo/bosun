@@ -1,4 +1,3 @@
-{{- $secrets := fromJson (env "SOPS_SECRETS") -}}
 # Example compose template rendered by Go text/template + Sprig
 # Variables from SOPS secrets are injected at deploy time
 
@@ -9,8 +8,8 @@ services:
     restart: unless-stopped
     environment:
       TZ: America/Chicago
-      DATABASE_URL: postgres://postgres:{{ $secrets.apps.myapp.db_password }}@myapp-db:5432/myapp
-      SECRET_KEY: {{ $secrets.apps.myapp.secret_key }}
+      DATABASE_URL: postgres://postgres:{{ .apps.myapp.db_password }}@myapp-db:5432/myapp
+      SECRET_KEY: {{ .apps.myapp.secret_key }}
     networks:
       - proxynet
     depends_on:
@@ -29,7 +28,7 @@ services:
     environment:
       POSTGRES_DB: myapp
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: {{ $secrets.apps.myapp.db_password }}
+      POSTGRES_PASSWORD: {{ .apps.myapp.db_password }}
     volumes:
       - myapp_db_data:/var/lib/postgresql/data
     networks:
