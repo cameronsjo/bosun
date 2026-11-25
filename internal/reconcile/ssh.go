@@ -701,6 +701,14 @@ func isTransientSSHError(err error) bool {
 }
 
 func containsTransientSSHPattern(message string) bool {
+	// A refused host key or a failed login is permanent even when a transport
+	// phrase follows it: OpenSSH 9+ scp prints "scp: Connection closed" after
+	// either, and retrying a refused host key only repeats the refusal and
+	// delays the operator's guidance (#795).
+	switch classifySSHError(message) {
+	case "host_key", "auth":
+		return false
+	}
 	errStr := strings.ToLower(message)
 	transientPatterns := []string{
 		"connection refused",
@@ -1123,12 +1131,15 @@ func (d *DeployOps) DeployRemote(ctx context.Context, sourceDir, targetHost, tar
 				return fmt.Errorf("ssh timed out after %v", RemoteDeployTimeout)
 			}
 			classified := classifyRemoteExit("ssh extract", targetHost, sshErr, joinNonEmpty(sshStderr.String()))
-			logger.Warn().
-				Err(classified).
-				Str(log.FieldTarget, targetHost).
-				Str(log.FieldPath, tmpDir).
-				Bool("retryable", isTransientSSHError(classified) || errors.Is(classified, ErrTransferIntegrity)).
-				Msg("Remote archive transfer or extraction failed, staging discarded")
+			// retryWithBackoff logs every retryable failure; log the permanent
+			// ones here so each failure is recorded exactly once.
+			if !isTransientSSHError(classified) && !errors.Is(classified, ErrTransferIntegrity) {
+				logger.Warn().
+					Err(classified).
+					Str(log.FieldTarget, targetHost).
+					Str(log.FieldPath, tmpDir).
+					Msg("Remote archive transfer or extraction failed permanently, staging discarded, not retrying")
+			}
 			return classified
 		}
 		if closeErr != nil {

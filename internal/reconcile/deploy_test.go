@@ -2316,6 +2316,8 @@ func TestIsTransientSSHError(t *testing.T) {
 		{"closed by remote host", fmt.Errorf("ssh: Connection to host closed by remote host"), true},
 		{"server not responding", fmt.Errorf("ssh: Timeout, server host not responding"), true},
 		{"permission denied", fmt.Errorf("permission denied (publickey)"), false},
+		{"host key then scp connection closed", fmt.Errorf("scp failed: exit status 1: Host key verification failed.\nscp: Connection closed"), false},
+		{"auth then scp connection closed", fmt.Errorf("scp failed: exit status 1: Permission denied (publickey).\nscp: Connection closed"), false},
 		{"authentication failure", fmt.Errorf("authentication failed"), false},
 		{"file not found", fmt.Errorf("file not found"), false},
 		{"generic error", fmt.Errorf("some other error"), false},
