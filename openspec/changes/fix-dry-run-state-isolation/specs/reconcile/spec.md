@@ -29,11 +29,18 @@ A dry run SHALL NOT create, modify, or delete the deploy state file. Decisions d
 
 ### Requirement: Dry Run Withholds Recovery Alerts
 
-A dry run SHALL NOT send a failure-recovery or interruption-recovery alert, because it cannot record that the owed retraction was delivered. It SHALL keep sending failure, success, and interruption alerts under their existing gates, and `--no-alerts` SHALL still suppress every alert. This narrows the unchanged-alert-behavior sentence of Standalone Reconcile Alert Suppression.
+Notwithstanding Interruption Alert Retraction, Deploy Recovery Dispatch, and the unchanged-alert-behavior sentence of Standalone Reconcile Alert Suppression, a dry run SHALL NOT send a failure-recovery or interruption-recovery alert, because it cannot record the delivery. It SHALL still send failure, success, and interruption alerts under their existing gates, and `--no-alerts` SHALL still suppress every alert.
 
 #### Scenario: Clean dry run after an alerted failure sends no recovery
 
 - **GIVEN** a state file recording an alerted failure
+- **WHEN** a dry run completes cleanly
+- **THEN** no recovery alert is sent
+- **AND** the state file is byte-identical to its content before the run
+
+#### Scenario: Clean dry run after a delivered interruption alert sends no recovery
+
+- **GIVEN** a state file recording an interrupted run whose alert was delivered
 - **WHEN** a dry run completes cleanly
 - **THEN** no recovery alert is sent
 - **AND** the state file is byte-identical to its content before the run
@@ -43,9 +50,14 @@ A dry run SHALL NOT send a failure-recovery or interruption-recovery alert, beca
 - **WHEN** a dry run fails and failure alerts are enabled
 - **THEN** a failure alert is sent as for a real run
 
+#### Scenario: No-alerts flag still suppresses every alert on a dry run
+
+- **WHEN** a dry run fails, is cancelled, or completes with `--no-alerts`
+- **THEN** no alert of any kind is sent
+
 ### Requirement: Dry-Run Daemon Takes No Periodic Action
 
-Notwithstanding Periodic Drift Checks and Drift Status Persistence, a daemon in dry run mode SHALL observe drift without side effects. Its periodic drift check SHALL NOT save the state file, run the restart breaker, stop a container, consume a self-heal attempt, trigger a reconciliation, or send a drift alert.
+Notwithstanding Periodic Drift Checks, Drift Status Persistence, and Drift Alert Delivery Confirmation, a daemon in dry run mode SHALL observe drift without side effects. Its periodic drift check SHALL NOT save the state file, run the restart breaker, stop a container, consume a self-heal attempt, trigger a reconciliation, or send a drift alert.
 
 #### Scenario: Dry-run drift check leaves state untouched
 
@@ -60,6 +72,19 @@ Notwithstanding Periodic Drift Checks and Drift Status Persistence, a daemon in 
 - **WHEN** a managed container exceeds the restart threshold
 - **THEN** no container is stopped
 - **AND** no restart-breaker alert is sent
+
+#### Scenario: Dry-run daemon never triggers self-heal
+
+- **GIVEN** a dry-run daemon with drift self-heal enabled
+- **WHEN** the periodic drift check finds drift
+- **THEN** no reconciliation is triggered
+- **AND** no self-heal attempt is recorded
+
+#### Scenario: Dry-run daemon sends no drift alert
+
+- **GIVEN** a dry-run daemon with an alert provider configured
+- **WHEN** the periodic drift check finds a missing or unhealthy service
+- **THEN** no drift alert is sent
 
 #### Scenario: A daemon outside dry run mode is unchanged
 
